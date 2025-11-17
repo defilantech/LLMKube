@@ -1,0 +1,24 @@
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: InferenceService
+metadata:
+  name: tinyllama-service
+  namespace: default
+  labels:
+    example: quickstart
+    model: tinyllama
+spec:
+  # Reference to the Model CRD
+  modelRef: tinyllama
+
+  # Number of inference replicas (scale horizontally)
+  replicas: 1
+
+  # Container resources for serving requests
+  resources:
+    cpu: "500m"    # 500m CPU (conservative for small nodes)
+    memory: "1Gi"  # 1GB RAM for inference runtime
+
+  # OpenAI-compatible endpoint configuration
+  endpoint:
+    port: 8080
+    type: ClusterIP  # Options: ClusterIP, NodePort, LoadBalancer

@@ -1,0 +1,93 @@
+# Example: GPU-accelerated Phi-3 7B model deployment
+# This manifest demonstrates LLMKube's GPU capabilities with a 7B model on T4 GPU
+#
+# Usage:
+#   kubectl apply -f config/samples/gpu-model-example.yaml
+#   kubectl get models,inferenceservices -w
+#
+# Expected performance on T4 GPU:
+#   - Prompt processing: >100 tok/s (vs ~29 on CPU)
+#   - Token generation: >100 tok/s (vs ~18.5 on CPU)
+#   - Latency P99: <1s
+#
+# Cost: ~$0.35/hr with T4 spot instance
+---
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: Model
+metadata:
+  name: phi-3-gpu
+  namespace: default
+spec:
+  # Source: Phi-3 Mini 4K Instruct (Q4 quantized, ~2.4GB)
+  source: https://huggingface.co/microsoft/Phi-3-mini-4k-instruct-gguf/resolve/main/Phi-3-mini-4k-instruct-q4.gguf
+  format: gguf
+  quantization: Q4
+
+  # Hardware configuration for GPU acceleration
+  hardware:
+    accelerator: cuda  # Use CUDA backend
+    gpu:
+      enabled: true
+      count: 1         # Single GPU
+      vendor: nvidia   # NVIDIA GPUs (T4/L4)
+      layers: -1       # -1 = offload all layers to GPU (auto-detect)
+                       # For partial offload, set to specific number (e.g., 20)
+
+  # Resource requirements
+  resources:
+    cpu: "4"           # CPU for preprocessing
+    memory: "8Gi"      # System memory for model loading
+
+---
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: InferenceService
+metadata:
+  name: phi-3-gpu-service
+  namespace: default
+spec:
+  modelRef: phi-3-gpu
+
+  # Replica configuration
+  replicas: 1          # Start with 1 pod
+
+  # Resource requirements for inference pods
+  resources:
+    gpu: 1             # Request 1 GPU per pod
+    gpuMemory: "16Gi"  # T4 has ~15GB memory
+    cpu: "2"           # CPU for serving
+    memory: "4Gi"      # Memory for inference
+
+  # Endpoint configuration
+  endpoint:
+    port: 8080
+    type: ClusterIP    # Use ClusterIP for internal access
+                       # Change to LoadBalancer for external access
+
+---
+# Optional: Example usage with curl (run after deployment)
+#
+# 1. Wait for service to be ready:
+#    kubectl wait --for=condition=Available inferenceservice/phi-3-gpu-service --timeout=600s
+#
+# 2. Port forward:
+#    kubectl port-forward svc/phi-3-gpu-service 8080:8080 &
+#
+# 3. Test inference:
+#    curl -X POST http://localhost:8080/v1/chat/completions \
+#      -H "Content-Type: application/json" \
+#      -d '{
+#        "model": "phi-3-gpu",
+#        "messages": [
+#          {"role": "user", "content": "Explain quantum computing in 50 words"}
+#        ],
+#        "max_tokens": 100
+#      }' | jq .
+#
+# 4. Check GPU utilization:
+#    POD=$(kubectl get pod -l app=phi-3-gpu-service -o jsonpath='{.items[0].metadata.name}')
+#    kubectl logs $POD -c llama-server | grep -i cuda
+#    # Should see: "using CUDA backend" and "offloaded XX/XX layers to GPU"
+#
+# 5. Monitor performance:
+#    kubectl logs $POD -c llama-server --tail=50
+#    # Look for tokens/sec in the logs

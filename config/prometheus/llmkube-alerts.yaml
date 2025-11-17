@@ -1,0 +1,82 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: llmkube-alerts
+  namespace: monitoring
+  labels:
+    app: llmkube
+    prometheus: kube-prometheus-stack-prometheus
+    role: alert-rules
+spec:
+  groups:
+  - name: llmkube-slo
+    interval: 30s
+    rules:
+    # GPU High Utilization Alert
+    - alert: GPUHighUtilization
+      expr: DCGM_FI_DEV_GPU_UTIL > 90
+      for: 5m
+      labels:
+        severity: warning
+        component: gpu
+      annotations:
+        summary: "GPU utilization is high"
+        description: "GPU {{ $labels.gpu }} utilization is {{ $value }}% (threshold: 90%)"
+
+    # GPU High Temperature Alert
+    - alert: GPUHighTemperature
+      expr: DCGM_FI_DEV_GPU_TEMP > 85
+      for: 2m
+      labels:
+        severity: critical
+        component: gpu
+      annotations:
+        summary: "GPU temperature is critically high"
+        description: "GPU {{ $labels.gpu }} temperature is {{ $value }}°C (threshold: 85°C)"
+
+    # GPU Memory Pressure Alert
+    - alert: GPUMemoryPressure
+      expr: (DCGM_FI_DEV_FB_USED / DCGM_FI_DEV_FB_TOTAL) * 100 > 90
+      for: 5m
+      labels:
+        severity: warning
+        component: gpu
+      annotations:
+        summary: "GPU memory usage is high"
+        description: "GPU {{ $labels.gpu }} memory usage is {{ $value }}% (threshold: 90%)"
+
+    # GPU Power Limit Alert
+    - alert: GPUPowerLimit
+      expr: DCGM_FI_DEV_POWER_USAGE > 250
+      for: 10m
+      labels:
+        severity: warning
+        component: gpu
+      annotations:
+        summary: "GPU power usage is high"
+        description: "GPU {{ $labels.gpu }} power usage is {{ $value }}W (threshold: 250W)"
+
+  - name: llmkube-inference
+    interval: 30s
+    rules:
+    # Inference Service Down Alert
+    - alert: InferenceServiceDown
+      expr: up{job="llmkube-inference"} == 0
+      for: 1m
+      labels:
+        severity: critical
+        component: inference
+      annotations:
+        summary: "Inference service is down"
+        description: "Inference service {{ $labels.instance }} has been down for more than 1 minute"
+
+    # Model Controller Down Alert
+    - alert: ControllerDown
+      expr: up{job="llmkube-controller"} == 0
+      for: 2m
+      labels:
+        severity: critical
+        component: controller
+      annotations:
+        summary: "LLMKube controller is down"
+        description: "Controller {{ $labels.instance }} has been down for more than 2 minutes"

@@ -1,0 +1,68 @@
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: Model
+metadata:
+  name: llama-3b-gpu
+  namespace: default
+  labels:
+    model: llama-3.2
+    size: 3b
+    accelerator: cuda
+    quantization: q8
+spec:
+  # Llama 3.2 3B Instruct (Q8_0 quantization for high quality on GPU)
+  # Q8_0 provides near-original quality with ~3.5GB VRAM usage - perfect for testing
+  source: https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q8_0.gguf
+  format: gguf
+  quantization: Q8_0
+
+  # GPU Hardware Configuration
+  hardware:
+    accelerator: cuda
+    gpu:
+      enabled: true
+      count: 1
+      vendor: nvidia
+      # Llama 3.2 3B Q8_0 needs ~4GB VRAM
+      # L4 has 23GB, plenty of headroom for KV cache and batch processing
+      memory: "8Gi"
+      # Offload all layers to GPU for maximum performance
+      # Llama 3.2 3B has 26 transformer layers
+      # -1 means auto-detect and offload all layers
+      layers: -1
+
+  # CPU/Memory resources for the model download init container
+  resources:
+    cpu: "2"
+    memory: "4Gi"
+---
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: InferenceService
+metadata:
+  name: llama-3b-gpu-service
+  namespace: default
+  labels:
+    model: llama-3.2
+    size: 3b
+    accelerator: cuda
+spec:
+  # Reference the GPU-enabled Llama model
+  modelRef: llama-3b-gpu
+
+  # Start with 1 replica for testing
+  replicas: 1
+
+  # Use llama.cpp with CUDA support
+  image: ghcr.io/ggerganov/llama.cpp:server-cuda
+
+  # Endpoint configuration (OpenAI-compatible API)
+  endpoint:
+    port: 8080
+    path: /v1/chat/completions
+    type: ClusterIP
+
+  # GPU Resource Requirements
+  resources:
+    gpu: 1  # Each pod gets 1 L4 GPU (23GB VRAM)
+    cpu: "2"  # 2 vCPUs for inference serving (g2-standard-4 has 4 total, ~3.9 allocatable)
+    memory: "4Gi"  # 4GB RAM (g2-standard-4 has 16GB total, ~13.5GB allocatable)
+    gpuMemory: "8Gi"  # Reserve 8GB of GPU memory

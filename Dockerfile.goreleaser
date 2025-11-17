@@ -1,0 +1,10 @@
+# Dockerfile for GoReleaser builds
+# This Dockerfile expects a pre-built binary in the build context
+# and simply packages it into a distroless container image.
+
+FROM gcr.io/distroless/static:nonroot
+WORKDIR /
+COPY manager .
+USER 65532:65532
+
+ENTRYPOINT ["/manager"]

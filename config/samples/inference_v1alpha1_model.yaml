@@ -1,0 +1,20 @@
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: Model
+metadata:
+  labels:
+    app.kubernetes.io/name: llmkube
+    app.kubernetes.io/managed-by: kustomize
+  name: phi-3-mini
+  namespace: default
+spec:
+  source: https://huggingface.co/microsoft/Phi-3-mini-4k-instruct-gguf/resolve/main/Phi-3-mini-4k-instruct-q4.gguf
+  format: gguf
+  quantization: Q4_K_M
+  hardware:
+    accelerator: cuda
+    gpu:
+      enabled: true
+      count: 1
+  resources:
+    cpu: "2"
+    memory: "4Gi"

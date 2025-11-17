@@ -1,0 +1,67 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: manager-role
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - services
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - inference.llmkube.dev
+  resources:
+  - inferenceservices
+  - models
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - inference.llmkube.dev
+  resources:
+  - inferenceservices/finalizers
+  - models/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - inference.llmkube.dev
+  resources:
+  - inferenceservices/status
+  - models/status
+  verbs:
+  - get
+  - patch
+  - update

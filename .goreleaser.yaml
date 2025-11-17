@@ -1,0 +1,253 @@
+# GoReleaser configuration for LLMKube CLI
+# https://goreleaser.com/customization/
+
+version: 2
+
+before:
+  hooks:
+    # Ensure dependencies are tidy
+    - go mod tidy
+    # Note: Tests run in separate CI workflow (test.yml) before release is triggered
+
+builds:
+  - id: llmkube-cli
+    main: ./cmd/cli
+    binary: llmkube
+
+    # Set version information at build time
+    ldflags:
+      - -s -w
+      - -X github.com/defilantech/llmkube/pkg/cli.Version={{.Version}}
+      - -X github.com/defilantech/llmkube/pkg/cli.GitCommit={{.FullCommit}}
+      - -X github.com/defilantech/llmkube/pkg/cli.BuildDate={{.Date}}
+
+    # Build for multiple platforms
+    goos:
+      - linux
+      - darwin
+      - windows
+
+    goarch:
+      - amd64
+      - arm64
+
+    # Ignore certain combinations
+    ignore:
+      - goos: windows
+        goarch: arm64
+
+    env:
+      - CGO_ENABLED=0
+
+  - id: llmkube-controller
+    main: ./cmd/main.go
+    binary: manager
+
+    # Only build for Linux (container deployment)
+    goos:
+      - linux
+
+    goarch:
+      - amd64
+      - arm64
+
+    env:
+      - CGO_ENABLED=0
+
+archives:
+  - id: llmkube-cli
+    builds:
+      - llmkube-cli
+
+    # Archive name template
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+    # Files to include in archive
+    files:
+      - LICENSE
+      - README.md
+      - CHANGELOG.md
+      - examples/gpu-quickstart/*
+
+    # Format by OS
+    format_overrides:
+      - goos: windows
+        format: zip
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+dockers:
+  - id: controller-amd64
+    goos: linux
+    goarch: amd64
+    ids:
+      - llmkube-controller
+    image_templates:
+      - "ghcr.io/defilantech/llmkube-controller:{{ .Version }}-amd64"
+      - "ghcr.io/defilantech/llmkube-controller:latest-amd64"
+    dockerfile: Dockerfile.goreleaser
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.created={{.Date}}"
+      - "--label=org.opencontainers.image.title={{.ProjectName}}"
+      - "--label=org.opencontainers.image.revision={{.FullCommit}}"
+      - "--label=org.opencontainers.image.version={{.Version}}"
+      - "--label=org.opencontainers.image.source={{.GitURL}}"
+
+  - id: controller-arm64
+    goos: linux
+    goarch: arm64
+    ids:
+      - llmkube-controller
+    image_templates:
+      - "ghcr.io/defilantech/llmkube-controller:{{ .Version }}-arm64"
+      - "ghcr.io/defilantech/llmkube-controller:latest-arm64"
+    dockerfile: Dockerfile.goreleaser
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.created={{.Date}}"
+      - "--label=org.opencontainers.image.title={{.ProjectName}}"
+      - "--label=org.opencontainers.image.revision={{.FullCommit}}"
+      - "--label=org.opencontainers.image.version={{.Version}}"
+      - "--label=org.opencontainers.image.source={{.GitURL}}"
+
+docker_manifests:
+  - name_template: "ghcr.io/defilantech/llmkube-controller:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/defilantech/llmkube-controller:{{ .Version }}-amd64"
+      - "ghcr.io/defilantech/llmkube-controller:{{ .Version }}-arm64"
+
+  - name_template: "ghcr.io/defilantech/llmkube-controller:latest"
+    image_templates:
+      - "ghcr.io/defilantech/llmkube-controller:latest-amd64"
+      - "ghcr.io/defilantech/llmkube-controller:latest-arm64"
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  use: github
+
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+      - "^chore:"
+      - "merge conflict"
+      - Merge pull request
+      - Merge remote-tracking branch
+      - Merge branch
+
+  groups:
+    - title: "New Features"
+      regexp: "^feat:"
+      order: 0
+    - title: "Bug Fixes"
+      regexp: "^fix:"
+      order: 1
+    - title: "Performance Improvements"
+      regexp: "^perf:"
+      order: 2
+    - title: "GPU & Observability"
+      regexp: "^gpu:|^obs:"
+      order: 3
+    - title: "Other Changes"
+      order: 999
+
+release:
+  github:
+    owner: defilantech
+    name: LLMKube
+
+  # Release name template
+  name_template: "v{{.Version}}"
+
+  # Draft release first (can be published manually)
+  draft: false
+
+  # Create release even if tag already exists
+  replace_existing_draft: true
+
+  # Include release notes from CHANGELOG
+  mode: replace
+
+  # Header and footer for release notes
+  header: |
+    ## LLMKube v{{ .Version }}
+
+    **Release Date**: {{ .Date }}
+
+    See [RELEASE_NOTES_v{{ .Version }}.md](https://github.com/defilantech/LLMKube/blob/main/RELEASE_NOTES_v{{ .Version }}.md) for complete details.
+
+  footer: |
+    ---
+
+    ## Installation
+
+    ### macOS
+    ```bash
+    # AMD64
+    curl -L https://github.com/defilantech/LLMKube/releases/download/v{{ .Version }}/llmkube_{{ .Version }}_darwin_amd64.tar.gz | tar xz
+    sudo mv llmkube /usr/local/bin/
+
+    # ARM64 (Apple Silicon)
+    curl -L https://github.com/defilantech/LLMKube/releases/download/v{{ .Version }}/llmkube_{{ .Version }}_darwin_arm64.tar.gz | tar xz
+    sudo mv llmkube /usr/local/bin/
+    ```
+
+    ### Linux
+    ```bash
+    # AMD64
+    curl -L https://github.com/defilantech/LLMKube/releases/download/v{{ .Version }}/llmkube_{{ .Version }}_linux_amd64.tar.gz | tar xz
+    sudo mv llmkube /usr/local/bin/
+
+    # ARM64
+    curl -L https://github.com/defilantech/LLMKube/releases/download/v{{ .Version }}/llmkube_{{ .Version }}_linux_arm64.tar.gz | tar xz
+    sudo mv llmkube /usr/local/bin/
+    ```
+
+    ### Windows
+    Download the `.zip` file for your architecture and add `llmkube.exe` to your PATH.
+
+    ### Verify Installation
+    ```bash
+    llmkube version
+    ```
+
+    ## Next Steps
+
+    1. [Install the operator](https://github.com/defilantech/LLMKube#installation)
+    2. [Try the GPU quickstart](https://github.com/defilantech/LLMKube/tree/main/examples/gpu-quickstart)
+    3. [Read the documentation](https://github.com/defilantech/LLMKube#documentation)
+
+    **Full Release Notes**: [RELEASE_NOTES_v{{ .Version }}.md](https://github.com/defilantech/LLMKube/blob/main/RELEASE_NOTES_v{{ .Version }}.md)
+
+# Homebrew tap
+brews:
+  - name: llmkube
+    repository:
+      owner: defilantech
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
+    description: "GPU-accelerated Kubernetes operator for local LLM inference"
+    homepage: "https://github.com/defilantech/LLMKube"
+    license: "Apache-2.0"
+
+    # Install instructions
+    install: |
+      bin.install "llmkube"
+
+    # Test the installation
+    test: |
+      system "#{bin}/llmkube", "version"
+
+# Metadata
+metadata:
+  mod_timestamp: "{{ .CommitTimestamp }}"

@@ -1,0 +1,20 @@
+# Copy this file to terraform.tfvars and fill in your values
+
+project_id   = "your-gcp-project-id"
+region       = "us-central1"
+cluster_name = "llmkube-gpu-cluster"
+
+# GPU Configuration
+gpu_type     = "nvidia-tesla-t4"  # T4 is cheapest, good for inference
+gpu_count    = 1
+machine_type = "n1-standard-4"    # 4 vCPUs, 15GB RAM
+
+# Auto-scaling (start at 0 to save money)
+min_gpu_nodes = 0
+max_gpu_nodes = 2
+
+# Cost savings (spot instances are ~70% cheaper but can be interrupted)
+use_spot = true
+
+# Storage
+disk_size_gb = 100

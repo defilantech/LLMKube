@@ -1,0 +1,28 @@
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: InferenceService
+metadata:
+  labels:
+    app.kubernetes.io/name: llmkube
+    app.kubernetes.io/managed-by: kustomize
+  name: phi-3-inference
+spec:
+  # Reference to the Model CR
+  modelRef: phi-3-mini
+
+  # Number of replicas (optional, defaults to 1)
+  replicas: 1
+
+  # Container image (optional, defaults to ghcr.io/ggerganov/llama.cpp:server)
+  image: ghcr.io/ggerganov/llama.cpp:server
+
+  # Endpoint configuration (optional)
+  endpoint:
+    port: 8080
+    path: /v1/chat/completions
+    type: ClusterIP  # ClusterIP, NodePort, or LoadBalancer
+
+  # Resource requirements (optional)
+  resources:
+    gpu: 1        # Number of GPUs (0 for CPU-only)
+    cpu: "2"      # CPU request (e.g., "2" or "2000m")
+    memory: "4Gi" # Memory request (e.g., "4Gi")

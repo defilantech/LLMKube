@@ -1,0 +1,26 @@
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: Model
+metadata:
+  name: tinyllama
+  namespace: default
+  labels:
+    example: quickstart
+    model-size: small
+spec:
+  # HuggingFace download URL for TinyLlama 1.1B (Q4_K_M quantized)
+  source: https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf
+
+  # Model format (GGUF is optimized for llama.cpp)
+  format: gguf
+
+  # Quantization method (Q4_K_M = 4-bit quantization, medium quality)
+  quantization: Q4_K_M
+
+  # Hardware configuration
+  hardware:
+    accelerator: cpu  # Use CPU inference (change to 'cuda' for GPU)
+
+  # Resource allocation for model loading and validation
+  resources:
+    cpu: "2"       # 2 CPU cores
+    memory: "2Gi"  # 2GB RAM (model is ~638MB)
