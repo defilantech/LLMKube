@@ -32,7 +32,9 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 )
@@ -479,6 +481,36 @@ func (r *InferenceServiceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&inferencev1alpha1.InferenceService{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
+		Watches(
+			&inferencev1alpha1.Model{},
+			handler.EnqueueRequestsFromMapFunc(r.findInferenceServicesForModel),
+		).
 		Named("inferenceservice").
 		Complete(r)
+}
+
+// findInferenceServicesForModel finds all InferenceServices that reference a given Model
+func (r *InferenceServiceReconciler) findInferenceServicesForModel(ctx context.Context, obj client.Object) []reconcile.Request {
+	model := obj.(*inferencev1alpha1.Model)
+
+	// List all InferenceServices in the same namespace
+	inferenceServiceList := &inferencev1alpha1.InferenceServiceList{}
+	if err := r.List(ctx, inferenceServiceList, client.InNamespace(model.Namespace)); err != nil {
+		return []reconcile.Request{}
+	}
+
+	// Find InferenceServices that reference this Model
+	var requests []reconcile.Request
+	for _, isvc := range inferenceServiceList.Items {
+		if isvc.Spec.ModelRef == model.Name {
+			requests = append(requests, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      isvc.Name,
+					Namespace: isvc.Namespace,
+				},
+			})
+		}
+	}
+
+	return requests
 }

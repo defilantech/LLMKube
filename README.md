@@ -148,7 +148,7 @@ cd LLMKube
 make install
 
 # Deploy controller with pre-built image
-make deploy IMG=ghcr.io/defilantech/llmkube-controller:v0.2.0
+make deploy IMG=ghcr.io/defilantech/llmkube-controller:0.2.1
 
 # Verify controller is running
 kubectl get pods -n llmkube-system
