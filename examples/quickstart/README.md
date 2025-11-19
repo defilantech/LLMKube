@@ -5,11 +5,12 @@ This guide walks you through deploying your first LLM inference service with LLM
 ## Prerequisites
 
 - Kubernetes cluster (v1.11.3+)
-  - **minikube**: `minikube start --memory=4096`
+  - **minikube**: `minikube start --cpus=4 --memory=6144` (see [Minikube Quickstart](../../docs/minikube-quickstart.md))
   - **kind**: `kind create cluster`
   - **GKE/EKS/AKS**: Any managed Kubernetes
 - `kubectl` configured and connected
 - At least 2GB free memory on your nodes
+- Go 1.24+ (if running controller locally)
 
 ## What You'll Deploy
 
@@ -19,12 +20,34 @@ This guide walks you through deploying your first LLM inference service with LLM
 
 ## Step 1: Install LLMKube Operator
 
+### For Minikube/Kind (Local Development)
+
+**Recommended:** Run the controller locally to avoid resource constraints:
+
+```bash
+# Clone the repository
+git clone https://github.com/defilantech/LLMKube.git
+cd LLMKube
+
+# Install CRDs
+make install
+
+# Run controller locally (requires Go 1.24+)
+make run
+```
+
+Keep this terminal open and continue in a new terminal. See the [Minikube Quickstart](../../docs/minikube-quickstart.md) for details.
+
+### For Cloud Kubernetes (GKE/EKS/AKS)
+
+Deploy the controller to your cluster:
+
 ```bash
 # Install CRDs
 kubectl apply -f https://raw.githubusercontent.com/Defilan/LLMKube/main/config/crd/bases/inference.llmkube.dev_models.yaml
 kubectl apply -f https://raw.githubusercontent.com/Defilan/LLMKube/main/config/crd/bases/inference.llmkube.dev_inferenceservices.yaml
 
-# Install operator (adjust IMG if using a different version)
+# Install operator
 kubectl apply -f https://raw.githubusercontent.com/Defilan/LLMKube/main/config/manager/manager.yaml
 
 # Wait for operator to be ready
@@ -40,7 +63,58 @@ kubectl get pods -n llmkube-system
 
 ## Step 2: Deploy TinyLlama Model
 
-Create `tinyllama-model.yaml`:
+### Option A: Using the CLI (Recommended)
+
+The `llmkube` CLI makes deployment simple:
+
+**Install the CLI:**
+
+**macOS:**
+```bash
+# Using Homebrew
+brew tap defilantech/tap
+brew install llmkube
+
+# Or download binary directly
+curl -L https://github.com/defilantech/LLMKube/releases/latest/download/llmkube_0.2.0_darwin_arm64.tar.gz | tar xz
+sudo mv llmkube /usr/local/bin/
+```
+
+**Linux:**
+```bash
+curl -L https://github.com/defilantech/LLMKube/releases/latest/download/llmkube_0.2.0_linux_amd64.tar.gz | tar xz
+sudo mv llmkube /usr/local/bin/
+```
+
+**Verify installation:**
+```bash
+llmkube version
+# Output: llmkube version 0.2.0
+```
+
+**Deploy TinyLlama:**
+```bash
+llmkube deploy tinyllama \
+  --source https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf \
+  --cpu 500m \
+  --memory 1Gi
+
+# Check deployment status
+llmkube list services
+
+# Check detailed status
+llmkube status tinyllama-service
+```
+
+**What happens:**
+- LLMKube downloads the GGUF file (~638MB) from HuggingFace
+- Creates a Model and InferenceService resource automatically
+- Deploys the inference pod with appropriate resources
+- Sets up an OpenAI-compatible API endpoint
+
+### Option B: Using kubectl (Advanced)
+
+For full control over CRD specifications, create `tinyllama-model.yaml`:
 
 ```yaml
 apiVersion: inference.llmkube.dev/v1alpha1
@@ -65,22 +139,6 @@ spec:
     memory: "2Gi"
 ```
 
-**Apply:**
-```bash
-kubectl apply -f tinyllama-model.yaml
-
-# Watch model download progress
-kubectl get model tinyllama -w
-# Wait until STATUS shows "Ready"
-```
-
-**What happens:**
-- LLMKube downloads the GGUF file from HuggingFace
-- Validates the model format
-- Updates status with model size and metadata
-
-## Step 3: Create Inference Service
-
 Create `tinyllama-service.yaml`:
 
 ```yaml
@@ -98,7 +156,7 @@ spec:
 
   # Container resources
   resources:
-    cpu: "1"
+    cpu: "500m"
     memory: "1Gi"
 
   # OpenAI-compatible endpoint
@@ -109,7 +167,12 @@ spec:
 
 **Apply:**
 ```bash
+kubectl apply -f tinyllama-model.yaml
 kubectl apply -f tinyllama-service.yaml
+
+# Watch model download progress
+kubectl get model tinyllama -w
+# Wait until STATUS shows "Ready"
 
 # Wait for pod to be ready
 kubectl wait --for=condition=ready --timeout=120s \
@@ -118,6 +181,19 @@ kubectl wait --for=condition=ready --timeout=120s \
 # Verify service is running
 kubectl get inferenceservice tinyllama-service
 # STATUS should show "Available"
+```
+
+## Step 3: Monitor Deployment
+
+```bash
+# Check model status
+kubectl get models
+
+# Check service status
+kubectl get inferenceservices
+
+# View pod logs
+kubectl logs -l app=tinyllama-service --tail=50 -f
 ```
 
 ## Step 4: Test the API
