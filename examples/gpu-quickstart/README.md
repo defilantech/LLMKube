@@ -11,7 +11,23 @@ Deploy Llama 3.2 3B with GPU acceleration in under 2 minutes.
 
 ## Quick Deploy
 
-### Option 1: Using kubectl
+### Option A: Using LLMKube CLI (Recommended)
+
+```bash
+# Deploy with one command
+llmkube deploy llama-3b-gpu --gpu \
+  --source https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q8_0.gguf
+
+# Check status
+llmkube status llama-3b-gpu
+
+# Port forward to access the API
+kubectl port-forward svc/llama-3b-gpu-service 8080:8080
+```
+
+### Option B: Using kubectl (Advanced)
+
+For full control over CRD specifications:
 
 ```bash
 # Deploy model and service
@@ -25,20 +41,6 @@ kubectl wait --for=jsonpath='{.status.phase}'=Ready model/llama-3b-gpu --timeout
 kubectl wait --for=jsonpath='{.status.phase}'=Ready inferenceservice/llama-3b-gpu-service --timeout=600s
 
 # Port forward to access the API
-kubectl port-forward svc/llama-3b-gpu-service 8080:8080
-```
-
-### Option 2: Using LLMKube CLI (Recommended)
-
-```bash
-# Deploy with one command
-llmkube deploy llama-3b-gpu --gpu \
-  --source https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q8_0.gguf
-
-# Check status
-llmkube status llama-3b-gpu
-
-# Port forward
 kubectl port-forward svc/llama-3b-gpu-service 8080:8080
 ```
 

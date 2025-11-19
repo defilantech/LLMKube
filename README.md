@@ -118,6 +118,8 @@ sudo mv bin/llmkube /usr/local/bin/
 
 ## Quick Start
 
+**New to LLMKube?** Try our [Minikube Quickstart Guide](docs/minikube-quickstart.md) to run LLMKube locally on your laptop in under 10 minutes - no cloud resources needed!
+
 ### Prerequisites
 
 #### For CPU Inference (Basic)
@@ -778,7 +780,7 @@ kubectl run test --rm -it --image=curlimages/curl -- \
 ## FAQ
 
 **Q: Can I run this on my laptop?**
-A: Yes! Use minikube or kind. Note that CPU inference is slow for large models.
+A: Yes! See our [Minikube Quickstart Guide](docs/minikube-quickstart.md) for step-by-step instructions. Works with minikube or kind. Note that CPU inference is slower than GPU for large models, but TinyLlama runs well locally.
 
 **Q: What model formats are supported?**
 A: Currently only GGUF. SafeTensors and HF format coming in Q2 2026.
