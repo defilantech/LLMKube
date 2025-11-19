@@ -106,10 +106,42 @@ kubectl get nodes
 
 ## Step 2: Install LLMKube Operator
 
-### Option A: Deploy to Minikube (Recommended)
+### Option A: Run Controller Locally (Recommended for Minikube)
+
+Running the controller on your host machine avoids resource constraints and download timeout issues in Minikube:
+
+**Prerequisites:**
+- Go 1.24+ installed
+- Git
+
+**Setup:**
+```bash
+# Clone the repository
+git clone https://github.com/defilantech/LLMKube.git
+cd LLMKube
+
+# Install CRDs to the cluster
+make install
+
+# Run controller locally
+make run
+```
+
+**What this does:**
+- Installs Custom Resource Definitions (CRDs) in your Minikube cluster
+- Runs the controller process on your host machine
+- Controller watches the Minikube cluster and manages resources
+- Model downloads happen on your host (no container resource limits)
+- Health check timeouts are avoided
+
+**Keep this terminal open** - the controller will run in the foreground. Open a new terminal for the next steps.
+
+### Option B: Deploy Controller to Minikube (Advanced)
+
+If you prefer running everything in-cluster or don't have Go installed:
 
 ```bash
-# Clone the repository to get manifests
+# Clone the repository
 git clone https://github.com/defilantech/LLMKube.git
 cd LLMKube
 
@@ -124,23 +156,7 @@ kubectl get pods -n llmkube-system
 # Expected: llmkube-controller-manager-xxxxx   1/1   Running
 ```
 
-### Option B: Run Controller Locally (Development)
-
-For development or if you prefer running the controller on your host machine:
-
-```bash
-# Clone the repository
-git clone https://github.com/defilantech/LLMKube.git
-cd LLMKube
-
-# Install CRDs
-make install
-
-# Run controller locally (requires Go 1.24+)
-make run
-```
-
-This runs the controller outside the cluster, which is useful for debugging.
+**Note:** This option may encounter timeout issues with large model downloads in resource-constrained Minikube environments. If the controller enters `CrashLoopBackOff`, switch to Option A.
 
 ## Step 3: Deploy Your First Model
 
@@ -348,6 +364,29 @@ kubectl top pods -l app=tinyllama-service
 ```
 
 ## Troubleshooting
+
+### Controller in CrashLoopBackOff
+
+If you deployed the controller to Minikube (Option B) and see it crashing:
+
+```bash
+kubectl get pods -n llmkube-system
+# NAME                                          READY   STATUS             RESTARTS
+# llmkube-controller-manager-xxxxx              0/1     CrashLoopBackOff   5
+```
+
+**Cause:** The controller is trying to download models directly and hitting liveness probe timeouts in the resource-constrained Minikube environment.
+
+**Solution:** Switch to running the controller locally (Option A):
+
+```bash
+# Delete the in-cluster controller
+kubectl delete deployment llmkube-controller-manager -n llmkube-system
+
+# Run controller locally instead
+cd /path/to/LLMKube
+make run
+```
 
 ### Pod Stuck in Pending
 

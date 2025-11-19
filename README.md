@@ -139,7 +139,27 @@ sudo mv bin/llmkube /usr/local/bin/
 
 The operator manages Model and InferenceService resources in your cluster.
 
-#### Option A: Deploy to Cluster (Recommended)
+#### For Local Development (Minikube/Kind)
+
+**Recommended for local clusters:** Run the controller on your host machine to avoid resource constraints. See the [Minikube Quickstart Guide](docs/minikube-quickstart.md) for detailed instructions.
+
+```bash
+# Clone the repository
+git clone https://github.com/defilantech/LLMKube.git
+cd LLMKube
+
+# Install CRDs to your cluster
+make install
+
+# Run controller locally (requires Go 1.24+)
+make run
+```
+
+Keep this terminal open and continue in a new terminal.
+
+#### For Production/Cloud (GKE/EKS/AKS)
+
+Deploy the controller to your cluster:
 
 ```bash
 # Clone the repository to get manifests
@@ -154,22 +174,6 @@ make deploy IMG=ghcr.io/defilantech/llmkube-controller:0.2.1
 
 # Verify controller is running
 kubectl get pods -n llmkube-system
-```
-
-#### Option B: Run Locally (Development)
-
-For development or testing without deploying to the cluster:
-
-```bash
-# Clone the repository
-git clone https://github.com/defilantech/LLMKube.git
-cd LLMKube
-
-# Install CRDs
-make install
-
-# Run controller locally (requires Go 1.24+)
-make run
 ```
 
 ### 2. Deploy Your First Model

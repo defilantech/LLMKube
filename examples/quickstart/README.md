@@ -5,11 +5,12 @@ This guide walks you through deploying your first LLM inference service with LLM
 ## Prerequisites
 
 - Kubernetes cluster (v1.11.3+)
-  - **minikube**: `minikube start --memory=4096`
+  - **minikube**: `minikube start --cpus=4 --memory=6144` (see [Minikube Quickstart](../../docs/minikube-quickstart.md))
   - **kind**: `kind create cluster`
   - **GKE/EKS/AKS**: Any managed Kubernetes
 - `kubectl` configured and connected
 - At least 2GB free memory on your nodes
+- Go 1.24+ (if running controller locally)
 
 ## What You'll Deploy
 
@@ -19,12 +20,34 @@ This guide walks you through deploying your first LLM inference service with LLM
 
 ## Step 1: Install LLMKube Operator
 
+### For Minikube/Kind (Local Development)
+
+**Recommended:** Run the controller locally to avoid resource constraints:
+
+```bash
+# Clone the repository
+git clone https://github.com/defilantech/LLMKube.git
+cd LLMKube
+
+# Install CRDs
+make install
+
+# Run controller locally (requires Go 1.24+)
+make run
+```
+
+Keep this terminal open and continue in a new terminal. See the [Minikube Quickstart](../../docs/minikube-quickstart.md) for details.
+
+### For Cloud Kubernetes (GKE/EKS/AKS)
+
+Deploy the controller to your cluster:
+
 ```bash
 # Install CRDs
 kubectl apply -f https://raw.githubusercontent.com/Defilan/LLMKube/main/config/crd/bases/inference.llmkube.dev_models.yaml
 kubectl apply -f https://raw.githubusercontent.com/Defilan/LLMKube/main/config/crd/bases/inference.llmkube.dev_inferenceservices.yaml
 
-# Install operator (adjust IMG if using a different version)
+# Install operator
 kubectl apply -f https://raw.githubusercontent.com/Defilan/LLMKube/main/config/manager/manager.yaml
 
 # Wait for operator to be ready
