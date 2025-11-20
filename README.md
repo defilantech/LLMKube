@@ -7,7 +7,7 @@
 
   <p>
     <strong>Status:</strong> ✅ Phase 1 Complete (GPU + Observability) |
-    <strong>Version:</strong> 0.2.0 |
+    <strong>Version:</strong> 0.2.1 |
     <strong>License:</strong> Apache 2.0
   </p>
 </div>
@@ -69,11 +69,11 @@ brew install llmkube
 **Manual Installation:**
 ```bash
 # Intel (x86_64)
-curl -L https://github.com/defilantech/LLMKube/releases/latest/download/llmkube_0.2.0_darwin_amd64.tar.gz | tar xz
+curl -L https://github.com/defilantech/LLMKube/releases/latest/download/llmkube_0.2.1_darwin_amd64.tar.gz | tar xz
 sudo mv llmkube /usr/local/bin/
 
 # Apple Silicon (ARM64)
-curl -L https://github.com/defilantech/LLMKube/releases/latest/download/llmkube_0.2.0_darwin_arm64.tar.gz | tar xz
+curl -L https://github.com/defilantech/LLMKube/releases/latest/download/llmkube_0.2.1_darwin_arm64.tar.gz | tar xz
 sudo mv llmkube /usr/local/bin/
 ```
 
@@ -81,20 +81,20 @@ sudo mv llmkube /usr/local/bin/
 
 **x86_64:**
 ```bash
-curl -L https://github.com/defilantech/LLMKube/releases/latest/download/llmkube_0.2.0_linux_amd64.tar.gz | tar xz
+curl -L https://github.com/defilantech/LLMKube/releases/latest/download/llmkube_0.2.1_linux_amd64.tar.gz | tar xz
 sudo mv llmkube /usr/local/bin/
 ```
 
 **ARM64:**
 ```bash
-curl -L https://github.com/defilantech/LLMKube/releases/latest/download/llmkube_0.2.0_linux_arm64.tar.gz | tar xz
+curl -L https://github.com/defilantech/LLMKube/releases/latest/download/llmkube_0.2.1_linux_arm64.tar.gz | tar xz
 sudo mv llmkube /usr/local/bin/
 ```
 
 #### Windows
 
 Download the appropriate `.zip` file from the [releases page](https://github.com/defilantech/LLMKube/releases/latest):
-- `llmkube_0.2.0_windows_amd64.zip` for x86_64
+- `llmkube_0.2.1_windows_amd64.zip` for x86_64
 
 Extract and add `llmkube.exe` to your PATH.
 
@@ -102,7 +102,7 @@ Extract and add `llmkube.exe` to your PATH.
 
 ```bash
 llmkube version
-# Output: llmkube version 0.2.0
+# Output: llmkube version 0.2.1
 ```
 
 #### Build from Source
