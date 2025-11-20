@@ -86,6 +86,9 @@ resource "google_container_node_pool" "gpu_pool" {
   location = var.region
   cluster  = google_container_cluster.gpu_cluster.name
 
+  # Restrict to zones where T4 GPUs are available (exclude us-west1-c)
+  node_locations = ["us-west1-a", "us-west1-b"]
+
   # Start with 0 nodes to save money, auto-scale up when needed
   initial_node_count = var.min_gpu_nodes
 

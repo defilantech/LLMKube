@@ -189,6 +189,40 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	return r.updateStatus(ctx, inferenceService, phase, modelReady, readyReplicas, desiredReplicas, endpoint, "")
 }
 
+// calculateTensorSplit computes the tensor split ratios for multi-GPU inference
+// Returns a comma-separated string of ratios for llama.cpp --tensor-split flag
+func calculateTensorSplit(gpuCount int32, sharding *inferencev1alpha1.GPUShardingSpec) string {
+	if gpuCount <= 1 {
+		return ""
+	}
+
+	// Check if custom layer split is specified in sharding config
+	if sharding != nil && len(sharding.LayerSplit) > 0 {
+		// Custom split ratios specified
+		// Example: LayerSplit: ["0-15", "16-31"] means 50%/50% for 32-layer model
+		// For now, we'll support even splits and weighted splits in the future
+		// TODO: Parse LayerSplit ranges to calculate exact ratios
+	}
+
+	// Default: Even split across all GPUs
+	// llama.cpp accepts integer ratios that will be normalized
+	// Example: 2 GPUs -> "1,1" (50%/50%)
+	//          4 GPUs -> "1,1,1,1" (25%/25%/25%/25%)
+	// We use "1" for each GPU as it's clearer than percentages
+	ratios := make([]string, gpuCount)
+	for i := range ratios {
+		ratios[i] = "1"
+	}
+
+	// Build comma-separated string
+	result := ratios[0]
+	for i := 1; i < len(ratios); i++ {
+		result = fmt.Sprintf("%s,%s", result, ratios[i])
+	}
+
+	return result
+}
+
 // constructDeployment builds a Deployment for the InferenceService
 func (r *InferenceServiceReconciler) constructDeployment(
 	isvc *inferencev1alpha1.InferenceService,
@@ -247,16 +281,40 @@ func (r *InferenceServiceReconciler) constructDeployment(
 		"--port", fmt.Sprintf("%d", port),
 	}
 
-	// Add GPU layer offloading if GPU is requested
-	if isvc.Spec.Resources != nil && isvc.Spec.Resources.GPU > 0 {
-		// Check if Model has GPU layer specification
+	// Determine GPU count from either Model or InferenceService spec
+	// Model spec takes precedence as it defines the hardware requirements
+	gpuCount := int32(0)
+	if model.Spec.Hardware != nil && model.Spec.Hardware.GPU != nil && model.Spec.Hardware.GPU.Count > 0 {
+		gpuCount = model.Spec.Hardware.GPU.Count
+	} else if isvc.Spec.Resources != nil && isvc.Spec.Resources.GPU > 0 {
+		gpuCount = isvc.Spec.Resources.GPU
+	}
+
+	// Add GPU configuration if GPU is requested
+	if gpuCount > 0 {
+		// Determine number of layers to offload
+		layers := int32(99) // default: offload all layers (max available)
 		if model.Spec.Hardware != nil && model.Spec.Hardware.GPU != nil && model.Spec.Hardware.GPU.Layers > 0 {
-			// Use specified layer count
-			args = append(args, "--n-gpu-layers", fmt.Sprintf("%d", model.Spec.Hardware.GPU.Layers))
-		} else {
-			// Default: offload all layers to GPU (99 offloads max available)
-			// Note: -1 doesn't work in current llama.cpp version
-			args = append(args, "--n-gpu-layers", "99")
+			// Use specified layer count from Model
+			layers = model.Spec.Hardware.GPU.Layers
+		} else if model.Spec.Hardware != nil && model.Spec.Hardware.GPU != nil && model.Spec.Hardware.GPU.Layers == -1 {
+			// -1 means auto-detect (use 99 for llama.cpp)
+			layers = 99
+		}
+		args = append(args, "--n-gpu-layers", fmt.Sprintf("%d", layers))
+
+		// Add multi-GPU configuration if using more than 1 GPU
+		if gpuCount > 1 {
+			// Set split mode to layer-based sharding
+			args = append(args, "--split-mode", "layer")
+
+			// Calculate and add tensor split ratios
+			var sharding *inferencev1alpha1.GPUShardingSpec
+			if model.Spec.Hardware != nil && model.Spec.Hardware.GPU != nil {
+				sharding = model.Spec.Hardware.GPU.Sharding
+			}
+			tensorSplit := calculateTensorSplit(gpuCount, sharding)
+			args = append(args, "--tensor-split", tensorSplit)
 		}
 	}
 
@@ -282,10 +340,11 @@ func (r *InferenceServiceReconciler) constructDeployment(
 	}
 
 	// Add GPU resource requirements if specified
-	if isvc.Spec.Resources != nil && isvc.Spec.Resources.GPU > 0 {
+	// Use the gpuCount variable calculated earlier (from Model or InferenceService spec)
+	if gpuCount > 0 {
 		container.Resources = corev1.ResourceRequirements{
 			Limits: corev1.ResourceList{
-				"nvidia.com/gpu": resource.MustParse(fmt.Sprintf("%d", isvc.Spec.Resources.GPU)),
+				"nvidia.com/gpu": resource.MustParse(fmt.Sprintf("%d", gpuCount)),
 			},
 		}
 	}
@@ -338,7 +397,8 @@ func (r *InferenceServiceReconciler) constructDeployment(
 	}
 
 	// Add GPU tolerations and node selector if GPU is requested
-	if isvc.Spec.Resources != nil && isvc.Spec.Resources.GPU > 0 {
+	// Use the gpuCount variable calculated earlier
+	if gpuCount > 0 {
 		deployment.Spec.Template.Spec.Tolerations = []corev1.Toleration{
 			{
 				Key:      "nvidia.com/gpu",

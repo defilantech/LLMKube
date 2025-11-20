@@ -1,0 +1,52 @@
+# Multi-GPU Model Example: Llama 2 13B with 2 GPUs
+# This example demonstrates layer-based sharding across 2 GPUs for a 13B parameter model
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: Model
+metadata:
+  name: llama-13b-multi-gpu
+  namespace: default
+spec:
+  # Llama 2 13B Q4_K_M (~7.4GB model)
+  source: https://huggingface.co/TheBloke/Llama-2-13B-GGUF/resolve/main/llama-2-13b.Q4_K_M.gguf
+  format: gguf
+  quantization: Q4_K_M
+
+  hardware:
+    accelerator: cuda
+    gpu:
+      enabled: true
+      count: 2              # Use 2 GPUs for multi-GPU inference
+      vendor: nvidia
+      layers: -1            # -1 = offload all layers (auto-detect)
+
+      # Optional: Configure sharding strategy
+      sharding:
+        strategy: layer     # Layer-based sharding (default)
+        # layerSplit: ["0-19", "20-39"]  # Optional: custom layer distribution
+
+  # Resource requirements for model processing
+  resources:
+    cpu: "4"
+    memory: "16Gi"
+---
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: InferenceService
+metadata:
+  name: llama-13b-multi-gpu-service
+  namespace: default
+spec:
+  modelRef: llama-13b-multi-gpu
+  replicas: 1
+
+  # Use CUDA-enabled llama.cpp image
+  image: ghcr.io/ggerganov/llama.cpp:server-cuda
+
+  resources:
+    gpu: 2              # Request 2 GPUs per pod
+    gpuMemory: "16Gi"   # 8Gi per GPU minimum (16Gi total)
+    cpu: "4"
+    memory: "8Gi"
+
+  endpoint:
+    port: 8080
+    type: ClusterIP
