@@ -39,6 +39,8 @@ Terraform configuration for a cost-optimized GKE cluster with GPU support for ru
 
 ## Configuration
 
+### Single-GPU Setup (Default)
+
 1. **Copy example config**:
    ```bash
    cp terraform.tfvars.example terraform.tfvars
@@ -50,6 +52,37 @@ Terraform configuration for a cost-optimized GKE cluster with GPU support for ru
    region     = "us-central1"           # Change if needed
    use_spot   = true                    # true = cheap but interruptible
    ```
+
+### Multi-GPU Setup (For Issue #2 Testing)
+
+For testing multi-GPU single-node support:
+
+1. **Use multi-GPU config**:
+   ```bash
+   cp multi-gpu.tfvars terraform.tfvars
+   ```
+
+2. **Edit `terraform.tfvars`** and set your `project_id`
+
+3. **Choose GPU configuration**:
+
+   **Option A: 2x T4 GPUs** (Recommended for testing)
+   ```hcl
+   gpu_type     = "nvidia-tesla-t4"
+   gpu_count    = 2
+   machine_type = "n1-standard-8"
+   ```
+   - Cost: ~$0.70/hr per node (spot)
+   - Good for: 13B models, cost-effective testing
+
+   **Option B: 2x L4 GPUs** (Better performance)
+   ```hcl
+   gpu_type     = "nvidia-l4"
+   gpu_count    = 2
+   machine_type = "g2-standard-24"
+   ```
+   - Cost: ~$1.40/hr per node (spot)
+   - Good for: 13B-70B models, production testing
 
 ## Usage
 
@@ -106,6 +139,8 @@ kubectl scale deployment --all --replicas=0 -n default
 
 ## Testing GPU
 
+### Single GPU Test
+
 After cluster creation:
 
 ```bash
@@ -134,6 +169,46 @@ kubectl logs gpu-test
 
 # Clean up
 kubectl delete pod gpu-test
+```
+
+### Multi-GPU Test
+
+For clusters with 2+ GPUs per node:
+
+```bash
+# Check GPU availability
+kubectl get nodes -o custom-columns=NAME:.metadata.name,GPU:.status.allocatable."nvidia\.com/gpu"
+# Should show: 2 (or more) per GPU node
+
+# Test 2-GPU allocation
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: multi-gpu-test
+spec:
+  restartPolicy: OnFailure
+  containers:
+  - name: cuda-container
+    image: nvidia/cuda:12.2.0-base-ubuntu22.04
+    command: ["nvidia-smi"]
+    resources:
+      limits:
+        nvidia.com/gpu: 2
+  tolerations:
+  - key: nvidia.com/gpu
+    operator: Exists
+    effect: NoSchedule
+  nodeSelector:
+    cloud.google.com/gke-nodepool: gpu-pool
+EOF
+
+# Check logs (should show 2 GPUs)
+kubectl logs multi-gpu-test
+# Expected: GPU 0 and GPU 1 listed
+
+# Clean up
+kubectl delete pod multi-gpu-test
 ```
 
 ## Deploying LLMKube

@@ -1,0 +1,48 @@
+# Example Terraform Configuration for EKS GPU Cluster
+# Copy this file to terraform.tfvars and customize
+
+# AWS Region (us-east-1 typically has good GPU availability)
+region = "us-east-1"
+
+# Cluster name
+cluster_name = "llmkube-gpu-cluster"
+
+# Single GPU Configuration (Cost-effective for testing)
+gpu_instance_type = "g4dn.xlarge"  # 1x T4 GPU, 4 vCPU, 16GB RAM
+gpu_type          = "tesla-t4"
+gpu_count         = 1
+
+# Auto-scaling configuration
+min_gpu_nodes = 0  # Start at 0 to save money
+max_gpu_nodes = 2  # Limit maximum spend
+
+# Use spot instances for ~70% cost savings
+use_spot = true
+
+# Disk size
+disk_size_gb = 100
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Alternative Configurations:
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# Multi-GPU with 4x T4 (g4dn.12xlarge):
+# gpu_instance_type = "g4dn.12xlarge"
+# gpu_count         = 4
+# disk_size_gb      = 200
+
+# Multi-GPU with 4x A10G (g5.12xlarge):
+# gpu_instance_type = "g5.12xlarge"
+# gpu_type          = "nvidia-a10g"
+# gpu_count         = 4
+# disk_size_gb      = 200
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Cost Estimates (us-east-1, Spot pricing):
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# g4dn.xlarge (1x T4):      ~$0.15/hr (~$110/mo if 24/7)
+# g4dn.12xlarge (4x T4):    ~$1.15/hr (~$850/mo if 24/7)
+# g5.xlarge (1x A10G):      ~$0.27/hr (~$200/mo if 24/7)
+# g5.12xlarge (4x A10G):    ~$1.63/hr (~$1200/mo if 24/7)
+#
+# With min_gpu_nodes=0 and testing workflow: ~$20-50/mo
