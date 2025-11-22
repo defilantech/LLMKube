@@ -1,5 +1,15 @@
 # Multi-GPU Model Example: Llama 2 13B with 2 GPUs
 # This example demonstrates layer-based sharding across 2 GPUs for a 13B parameter model
+#
+# This is the generic cloud-agnostic example that works on:
+# - Bare metal Kubernetes (with NVIDIA GPUs)
+# - Any cloud provider (GKE, AKS, EKS, etc.)
+# - Minikube, K3s, MicroK8s
+#
+# For cloud-specific configurations (spot instances, node pools, taints), see:
+# - multi-gpu-azure-spot.yaml (Azure AKS with spot instances)
+# - multi-gpu-gke-spot.yaml (Google GKE with preemptible VMs)
+# - multi-gpu-eks-spot.yaml (AWS EKS with spot instances)
 apiVersion: inference.llmkube.dev/v1alpha1
 kind: Model
 metadata:

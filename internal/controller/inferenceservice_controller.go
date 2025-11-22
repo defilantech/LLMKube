@@ -399,7 +399,8 @@ func (r *InferenceServiceReconciler) constructDeployment(
 	// Add GPU tolerations and node selector if GPU is requested
 	// Use the gpuCount variable calculated earlier
 	if gpuCount > 0 {
-		deployment.Spec.Template.Spec.Tolerations = []corev1.Toleration{
+		// Start with base NVIDIA toleration (works on all clouds)
+		tolerations := []corev1.Toleration{
 			{
 				Key:      "nvidia.com/gpu",
 				Operator: corev1.TolerationOpEqual,
@@ -408,10 +409,18 @@ func (r *InferenceServiceReconciler) constructDeployment(
 			},
 		}
 
-		// Add node selector to ensure pod lands on GPU nodes
-		// Default: select gpu-pool nodes (works for both T4 and L4)
-		deployment.Spec.Template.Spec.NodeSelector = map[string]string{
-			"cloud.google.com/gke-nodepool": "gpu-pool",
+		// Merge in user-provided tolerations from InferenceService spec
+		// This allows cloud-specific tolerations (e.g., spot instances, preemptible VMs)
+		if len(isvc.Spec.Tolerations) > 0 {
+			tolerations = append(tolerations, isvc.Spec.Tolerations...)
+		}
+
+		deployment.Spec.Template.Spec.Tolerations = tolerations
+
+		// Apply user-provided node selector from InferenceService spec
+		// This allows cloud-specific node selection (e.g., specific node pools)
+		if len(isvc.Spec.NodeSelector) > 0 {
+			deployment.Spec.Template.Spec.NodeSelector = isvc.Spec.NodeSelector
 		}
 	}
 

@@ -17,6 +17,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -48,6 +49,14 @@ type InferenceServiceSpec struct {
 	// Resources defines compute resources for inference pods
 	// +optional
 	Resources *InferenceResourceRequirements `json:"resources,omitempty"`
+
+	// Tolerations for pod scheduling (e.g., GPU taints, spot instances)
+	// +optional
+	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
+
+	// NodeSelector for pod placement (e.g., specific node pools)
+	// +optional
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
 }
 
 // EndpointSpec defines the service endpoint configuration
