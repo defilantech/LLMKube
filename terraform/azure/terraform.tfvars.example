@@ -1,0 +1,44 @@
+# Example Terraform Configuration for Azure AKS Multi-GPU Cluster
+# Copy this file to terraform.tfvars and customize for your environment
+
+# REQUIRED: Your Azure subscription ID
+# Find it with: az account show --query id -o tsv
+subscription_id = "00000000-0000-0000-0000-000000000000"  # CHANGE THIS!
+
+# Resource group and cluster naming
+resource_group_name = "llmkube-multi-gpu-rg"
+cluster_name        = "llmkube-multi-gpu-test"
+
+# Azure region (West US 2 recommended for GPU availability)
+location = "westus2"
+
+# Kubernetes version
+kubernetes_version = "1.28"
+
+# GPU Node Pool Configuration
+# Default: 2x V100 GPUs per node (Standard_NC12s_v3)
+gpu_vm_size = "Standard_NC12s_v3"
+gpu_count   = 2
+
+# Auto-scaling configuration
+min_gpu_nodes = 0  # Start at 0 to save money
+max_gpu_nodes = 2  # Allow up to 2 GPU nodes
+
+# System node pool (for Kubernetes system workloads)
+system_node_count = 1
+system_vm_size    = "Standard_D2s_v3"
+
+# Spot VMs for cost savings (~80% cheaper)
+enable_spot    = true
+spot_max_price = -1  # -1 = pay up to on-demand price
+
+# Disk size for nodes
+disk_size_gb = 200
+
+# Tags for resource organization
+tags = {
+  project     = "llmkube"
+  environment = "testing"
+  purpose     = "multi-gpu-llm-inference"
+  issue       = "2"
+}
