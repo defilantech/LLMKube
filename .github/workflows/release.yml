@@ -54,3 +54,31 @@ jobs:
         with:
           name: release-artifacts
           path: dist/*
+
+      - name: Update version.go to match release tag
+        run: |
+          # Extract version from tag (e.g., v0.2.1 -> 0.2.1)
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          echo "Updating version.go to $VERSION"
+
+          # Update version.go
+          sed -i.bak "s/Version = \".*\"/Version = \"$VERSION\"/" pkg/cli/version.go
+          rm -f pkg/cli/version.go.bak
+
+          # Check if there are changes
+          if git diff --quiet pkg/cli/version.go; then
+            echo "No changes needed to version.go"
+            exit 0
+          fi
+
+          # Configure git
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Commit and push
+          git checkout main
+          git add pkg/cli/version.go
+          git commit -m "chore: Bump version.go to $VERSION after release"
+          git push origin main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
