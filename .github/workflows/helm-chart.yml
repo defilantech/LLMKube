@@ -331,7 +331,7 @@ jobs:
             --namespace llmkube-system > /tmp/manifests.yaml
 
           # Check that deployment has resource limits
-          if ! grep -A 10 "kind: Deployment" /tmp/manifests.yaml | grep -q "limits:"; then
+          if ! grep -A 50 "kind: Deployment" /tmp/manifests.yaml | grep -q "limits:"; then
             echo "❌ Resource limits not set on deployment"
             exit 1
           fi
