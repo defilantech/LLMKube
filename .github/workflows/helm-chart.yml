@@ -1,0 +1,395 @@
+name: Helm Chart CI
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'charts/**'
+      - '.github/workflows/helm-chart.yml'
+  pull_request:
+    paths:
+      - 'charts/**'
+      - '.github/workflows/helm-chart.yml'
+
+jobs:
+  lint-and-validate:
+    name: Lint and Validate Chart
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.13.0
+
+      - name: Lint Helm Chart
+        run: |
+          helm lint charts/llmkube
+          echo "✅ Helm lint passed"
+
+      - name: Verify Chart Version
+        run: |
+          CHART_VERSION=$(grep '^version:' charts/llmkube/Chart.yaml | awk '{print $2}')
+          APP_VERSION=$(grep '^appVersion:' charts/llmkube/Chart.yaml | awk '{print $2}' | tr -d '"')
+          echo "Chart Version: $CHART_VERSION"
+          echo "App Version: $APP_VERSION"
+
+          # Verify versions are set
+          if [ -z "$CHART_VERSION" ] || [ -z "$APP_VERSION" ]; then
+            echo "❌ Version not set properly"
+            exit 1
+          fi
+          echo "✅ Chart versions validated"
+
+  template-validation:
+    name: Template Validation
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        values:
+          - "default"
+          - "basic"
+          - "production"
+          - "gpu-cluster"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.13.0
+
+      - name: Template Chart with ${{ matrix.values }} values
+        run: |
+          if [ "${{ matrix.values }}" = "default" ]; then
+            helm template llmkube charts/llmkube --namespace llmkube-system > manifests.yaml
+          else
+            helm template llmkube charts/llmkube \
+              --namespace llmkube-system \
+              -f charts/llmkube/examples/values-${{ matrix.values }}.yaml > manifests.yaml
+          fi
+
+          # Count resources
+          RESOURCE_COUNT=$(grep -c '^# Source:' manifests.yaml || true)
+          echo "Generated $RESOURCE_COUNT resources with ${{ matrix.values }} values"
+
+          # Ensure we got some output
+          if [ "$RESOURCE_COUNT" -lt 5 ]; then
+            echo "❌ Too few resources generated"
+            exit 1
+          fi
+          echo "✅ Template rendering successful"
+
+      - name: Validate Kubernetes Manifests
+        uses: docker://ghcr.io/yannh/kubeconform:latest
+        with:
+          entrypoint: '/kubeconform'
+          args: >
+            -summary
+            -output json
+            -ignore-missing-schemas
+            -skip CustomResourceDefinition
+            /github/workspace/manifests.yaml
+
+  prometheus-integration:
+    name: Test Prometheus Integration
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.13.0
+
+      - name: Test ServiceMonitor Creation
+        run: |
+          helm template llmkube charts/llmkube \
+            --namespace llmkube-system \
+            --set prometheus.serviceMonitor.enabled=true \
+            > /tmp/with-servicemonitor.yaml
+
+          if ! grep -q "kind: ServiceMonitor" /tmp/with-servicemonitor.yaml; then
+            echo "❌ ServiceMonitor not found when enabled"
+            exit 1
+          fi
+          echo "✅ ServiceMonitor renders correctly"
+
+      - name: Test PrometheusRule Creation
+        run: |
+          helm template llmkube charts/llmkube \
+            --namespace llmkube-system \
+            --set prometheus.prometheusRule.enabled=true \
+            > /tmp/with-prometheusrule.yaml
+
+          if ! grep -q "kind: PrometheusRule" /tmp/with-prometheusrule.yaml; then
+            echo "❌ PrometheusRule not found when enabled"
+            exit 1
+          fi
+
+          # Verify GPU alerts are present
+          if ! grep -q "GPUHighUtilization" /tmp/with-prometheusrule.yaml; then
+            echo "❌ GPU alerts not found"
+            exit 1
+          fi
+          echo "✅ PrometheusRule renders correctly with GPU alerts"
+
+      - name: Test Alert Threshold Customization
+        run: |
+          helm template llmkube charts/llmkube \
+            --namespace llmkube-system \
+            --set prometheus.prometheusRule.enabled=true \
+            --set prometheus.prometheusRule.rules.gpu.highUtilizationThreshold=95 \
+            > /tmp/custom-thresholds.yaml
+
+          if ! grep -q "DCGM_FI_DEV_GPU_UTIL > 95" /tmp/custom-thresholds.yaml; then
+            echo "❌ Custom GPU threshold not applied"
+            exit 1
+          fi
+          echo "✅ Custom alert thresholds work correctly"
+
+  crd-validation:
+    name: CRD Installation Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.13.0
+
+      - name: Test CRD Installation Enabled
+        run: |
+          helm template llmkube charts/llmkube \
+            --namespace llmkube-system \
+            --set crds.install=true \
+            > /tmp/with-crds.yaml
+
+          # Should contain both CRDs
+          if ! grep -q "kind: CustomResourceDefinition" /tmp/with-crds.yaml; then
+            echo "❌ CRDs not found when enabled"
+            exit 1
+          fi
+
+          if ! grep -q "models.inference.llmkube.dev" /tmp/with-crds.yaml; then
+            echo "❌ Model CRD not found"
+            exit 1
+          fi
+
+          if ! grep -q "inferenceservices.inference.llmkube.dev" /tmp/with-crds.yaml; then
+            echo "❌ InferenceService CRD not found"
+            exit 1
+          fi
+          echo "✅ CRDs render correctly when enabled"
+
+      - name: Test CRD Installation Disabled
+        run: |
+          helm template llmkube charts/llmkube \
+            --namespace llmkube-system \
+            --set crds.install=false \
+            > /tmp/without-crds.yaml
+
+          # Should NOT contain CRDs
+          if grep -q "kind: CustomResourceDefinition" /tmp/without-crds.yaml; then
+            echo "❌ CRDs found when disabled"
+            exit 1
+          fi
+          echo "✅ CRDs correctly omitted when disabled"
+
+  package-test:
+    name: Package and Install Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.13.0
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1.8.0
+        with:
+          cluster_name: chart-testing
+
+      - name: Package Chart
+        run: |
+          helm package charts/llmkube -d /tmp
+          echo "✅ Chart packaged successfully"
+
+      - name: Install Chart (dry-run)
+        run: |
+          helm install llmkube /tmp/llmkube-*.tgz \
+            --namespace llmkube-system \
+            --create-namespace \
+            --dry-run \
+            --debug
+          echo "✅ Dry-run installation successful"
+
+      - name: Install Chart on Kind Cluster
+        run: |
+          helm install llmkube /tmp/llmkube-*.tgz \
+            --namespace llmkube-system \
+            --create-namespace \
+            --wait \
+            --timeout 2m
+          echo "✅ Chart installed successfully"
+
+      - name: Verify Installation
+        run: |
+          # Check namespace created
+          kubectl get namespace llmkube-system
+
+          # Check CRDs installed
+          kubectl get crd models.inference.llmkube.dev
+          kubectl get crd inferenceservices.inference.llmkube.dev
+
+          # Check controller deployment
+          kubectl get deployment -n llmkube-system
+
+          # Check RBAC resources
+          kubectl get serviceaccount -n llmkube-system
+          kubectl get clusterrole -l app.kubernetes.io/name=llmkube
+
+          echo "✅ All resources deployed correctly"
+
+      - name: Test Helm Upgrade
+        run: |
+          # Upgrade with different values
+          helm upgrade llmkube /tmp/llmkube-*.tgz \
+            --namespace llmkube-system \
+            --set controllerManager.resources.limits.cpu=1 \
+            --wait \
+            --timeout 2m
+          echo "✅ Chart upgrade successful"
+
+      - name: Test Helm Uninstall
+        run: |
+          helm uninstall llmkube --namespace llmkube-system
+
+          # Verify CRDs are kept (due to keep policy)
+          if ! kubectl get crd models.inference.llmkube.dev 2>/dev/null; then
+            echo "❌ CRDs were deleted (should be kept)"
+            exit 1
+          fi
+          echo "✅ CRDs correctly preserved after uninstall"
+
+  security-scan:
+    name: Security and Best Practices
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.13.0
+
+      - name: Check for Hard-coded Secrets
+        run: |
+          # Search for potential secrets in templates
+          if grep -r "password\|secret\|token" charts/llmkube/templates/ | grep -v "serviceAccount\|SecretKeyRef"; then
+            echo "⚠️  Potential hard-coded secrets found"
+            exit 1
+          fi
+          echo "✅ No hard-coded secrets detected"
+
+      - name: Validate Security Contexts
+        run: |
+          helm template llmkube charts/llmkube \
+            --namespace llmkube-system > /tmp/manifests.yaml
+
+          # Check for runAsNonRoot
+          if ! grep -q "runAsNonRoot: true" /tmp/manifests.yaml; then
+            echo "❌ runAsNonRoot not set"
+            exit 1
+          fi
+
+          # Check for readOnlyRootFilesystem
+          if ! grep -q "readOnlyRootFilesystem: true" /tmp/manifests.yaml; then
+            echo "❌ readOnlyRootFilesystem not set"
+            exit 1
+          fi
+
+          echo "✅ Security contexts properly configured"
+
+      - name: Validate Resource Limits
+        run: |
+          helm template llmkube charts/llmkube \
+            --namespace llmkube-system > /tmp/manifests.yaml
+
+          # Check that deployment has resource limits
+          # Verify deployment exists and has limits configured
+          if ! grep -q "kind: Deployment" /tmp/manifests.yaml; then
+            echo "❌ No Deployment found"
+            exit 1
+          fi
+
+          if ! grep -q "limits:" /tmp/manifests.yaml; then
+            echo "❌ Resource limits not set"
+            exit 1
+          fi
+
+          echo "✅ Resource limits configured"
+
+  documentation:
+    name: Documentation Validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate Chart README
+        run: |
+          # Check README exists
+          if [ ! -f "charts/llmkube/README.md" ]; then
+            echo "❌ Chart README.md not found"
+            exit 1
+          fi
+
+          # Check for essential sections
+          for section in "Prerequisites" "Installing" "Configuration" "Uninstalling"; do
+            if ! grep -q "$section" charts/llmkube/README.md; then
+              echo "❌ Missing section: $section"
+              exit 1
+            fi
+          done
+
+          echo "✅ Chart documentation validated"
+
+      - name: Validate Example Values
+        run: |
+          for example in basic production gpu-cluster; do
+            if [ ! -f "charts/llmkube/examples/values-${example}.yaml" ]; then
+              echo "❌ Missing example: values-${example}.yaml"
+              exit 1
+            fi
+          done
+          echo "✅ All example values files present"
+
+      - name: Check NOTES.txt
+        run: |
+          if [ ! -f "charts/llmkube/templates/NOTES.txt" ]; then
+            echo "❌ NOTES.txt not found"
+            exit 1
+          fi
+
+          # Verify NOTES.txt contains helpful information
+          if ! grep -q "kubectl" charts/llmkube/templates/NOTES.txt; then
+            echo "❌ NOTES.txt doesn't contain kubectl examples"
+            exit 1
+          fi
+
+          echo "✅ NOTES.txt validated"

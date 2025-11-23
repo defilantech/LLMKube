@@ -1,0 +1,32 @@
+apiVersion: v2
+name: llmkube
+description: A Helm chart for LLMKube - Kubernetes operator for GPU-accelerated LLM inference
+type: application
+
+# This is the chart version. This version number should be incremented each time you make changes
+# to the chart and its templates, including the app version.
+version: 0.2.1
+
+# This is the version number of the application being deployed.
+appVersion: "0.2.1"
+
+keywords:
+  - llm
+  - kubernetes
+  - operator
+  - gpu
+  - inference
+  - ai
+  - machine-learning
+
+home: https://github.com/defilantech/LLMKube
+sources:
+  - https://github.com/defilantech/LLMKube
+
+maintainers:
+  - name: Chris Maher
+    email: contact@defilan.com
+
+annotations:
+  # Indicate that this chart contains CRDs
+  "helm.sh/resource-policy": keep

@@ -1,0 +1,269 @@
+{{- if .Values.crds.install }}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.19.0
+    {{- if .Values.crds.keep }}
+    helm.sh/resource-policy: keep
+    {{- end }}
+  name: models.inference.llmkube.dev
+spec:
+  group: inference.llmkube.dev
+  names:
+    kind: Model
+    listKind: ModelList
+    plural: models
+    shortNames:
+    - mdl
+    singular: model
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.size
+      name: Size
+      type: string
+    - jsonPath: .spec.hardware.accelerator
+      name: Accelerator
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Model is the Schema for the models API
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of Model
+            properties:
+              format:
+                default: gguf
+                description: Format specifies the model file format (currently only
+                  GGUF is supported)
+                enum:
+                - gguf
+                type: string
+              hardware:
+                description: Hardware specifies hardware acceleration preferences
+                properties:
+                  accelerator:
+                    default: cpu
+                    description: Accelerator specifies the type of hardware acceleration
+                    enum:
+                    - cpu
+                    - metal
+                    - cuda
+                    - rocm
+                    type: string
+                  gpu:
+                    description: GPU specifies GPU device requirements
+                    properties:
+                      count:
+                        description: |-
+                          Count specifies the number of GPUs required
+                          Supports multi-GPU for model sharding (future feature)
+                        format: int32
+                        maximum: 8
+                        minimum: 0
+                        type: integer
+                      enabled:
+                        description: Enabled indicates whether GPU acceleration is
+                          enabled
+                        type: boolean
+                      layers:
+                        description: |-
+                          Layers specifies layer offloading configuration for multi-GPU
+                          Format: number of layers to offload to GPU (e.g., 32 for full offload on 7B model)
+                          -1 means auto-detect optimal layer split
+                        format: int32
+                        minimum: -1
+                        type: integer
+                      memory:
+                        description: Memory specifies minimum GPU memory required
+                          per GPU (e.g., "8Gi", "16Gi")
+                        type: string
+                      sharding:
+                        description: |-
+                          Sharding defines how to shard the model across multiple GPUs
+                          Only applicable when Count > 1
+                        properties:
+                          layerSplit:
+                            description: |-
+                              LayerSplit defines custom layer splits per GPU
+                              Example: [0-15, 16-31] for 2-GPU split of 32-layer model
+                              If empty, auto-calculate even split
+                            items:
+                              type: string
+                            type: array
+                          strategy:
+                            default: layer
+                            description: |-
+                              Strategy defines the sharding approach
+                              - "layer": Shard by transformer layers (default)
+                              - "tensor": Tensor parallelism (future)
+                              - "pipeline": Pipeline parallelism (future)
+                            enum:
+                            - layer
+                            - tensor
+                            - pipeline
+                            type: string
+                        type: object
+                      vendor:
+                        default: nvidia
+                        description: |-
+                          Vendor specifies GPU vendor preference (nvidia, amd, intel)
+                          Future-proof for multi-vendor support
+                        enum:
+                        - nvidia
+                        - amd
+                        - intel
+                        type: string
+                    type: object
+                type: object
+              quantization:
+                description: Quantization describes the quantization level (e.g.,
+                  Q4_0, Q5_K_M, F16)
+                type: string
+              resources:
+                description: Resources defines resource requirements for running the
+                  model
+                properties:
+                  cpu:
+                    description: CPU specifies CPU requirements (e.g., "2" or "2000m")
+                    type: string
+                  memory:
+                    description: Memory specifies memory requirements (e.g., "4Gi")
+                    type: string
+                type: object
+              source:
+                description: |-
+                  Source defines where to obtain the model file (GGUF format)
+                  Supported schemes: http://, https://, file://
+                  Example: https://huggingface.co/microsoft/Phi-3-mini-4k-instruct-gguf/resolve/main/Phi-3-mini-4k-instruct-q4.gguf
+                pattern: ^(https?|file)://.*\.gguf$
+                type: string
+            required:
+            - source
+            type: object
+          status:
+            description: status defines the observed state of Model
+            properties:
+              acceleratorReady:
+                description: AcceleratorReady indicates if hardware acceleration is
+                  configured and ready
+                type: boolean
+              conditions:
+                description: |-
+                  conditions represent the current state of the Model resource.
+                  Each condition has a unique type and reflects the status of a specific aspect of the resource.
+
+                  Standard condition types include:
+                  - "Available": the model is downloaded and ready for use
+                  - "Progressing": the model is being downloaded or processed
+                  - "Degraded": the model download or setup failed
+
+                  The status of each condition is one of True, False, or Unknown.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              lastUpdated:
+                description: LastUpdated is the timestamp of the last status update
+                format: date-time
+                type: string
+              path:
+                description: Path represents the local path where the model is stored
+                type: string
+              phase:
+                description: |-
+                  Phase represents the current lifecycle phase of the model
+                  Possible values: Pending, Downloading, Ready, Failed
+                type: string
+              size:
+                description: Size represents the size of the downloaded model file
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+{{- end }}

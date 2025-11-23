@@ -1,0 +1,74 @@
+# Production installation with full monitoring
+# Usage: helm install llmkube charts/llmkube -f examples/values-production.yaml
+
+namespace: llmkube-system
+
+controllerManager:
+  image:
+    repository: ghcr.io/defilantech/llmkube-controller
+    tag: "0.2.1"
+    pullPolicy: IfNotPresent
+
+  replicaCount: 1
+
+  resources:
+    limits:
+      cpu: 1
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+  # Multi-architecture support
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: kubernetes.io/arch
+            operator: In
+            values:
+            - amd64
+            - arm64
+
+# Enable full Prometheus integration
+prometheus:
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+    namespace: ""  # Deploy in same namespace as release
+    additionalLabels:
+      prometheus: kube-prometheus-stack-prometheus
+
+  prometheusRule:
+    enabled: true
+    namespace: monitoring  # Deploy alerts to monitoring namespace
+    additionalLabels:
+      prometheus: kube-prometheus-stack-prometheus
+      role: alert-rules
+
+    rules:
+      gpu:
+        enabled: true
+        highUtilizationThreshold: 85
+        highTemperatureThreshold: 85
+        memoryPressureThreshold: 90
+        powerLimitThreshold: 250
+
+      inference:
+        enabled: true
+
+# Metrics configuration
+metrics:
+  enabled: true
+  service:
+    type: ClusterIP
+    port: 8443
+
+# RBAC
+rbac:
+  create: true
+
+serviceAccount:
+  create: true
+  annotations: {}

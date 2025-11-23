@@ -1,0 +1,150 @@
+# Default values for llmkube.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+# Namespace to deploy the controller
+namespace: llmkube-system
+
+# Controller manager configuration
+controllerManager:
+  # Controller image
+  image:
+    repository: ghcr.io/defilantech/llmkube-controller
+    pullPolicy: IfNotPresent
+    # Overrides the image tag whose default is the chart appVersion.
+    tag: ""
+
+  # Number of controller replicas (recommended: 1 for active/passive HA)
+  replicaCount: 1
+
+  # Leader election configuration
+  leaderElection:
+    enabled: true
+
+  # Resource limits and requests
+  resources:
+    limits:
+      cpu: 500m
+      memory: 128Mi
+    requests:
+      cpu: 10m
+      memory: 64Mi
+
+  # Security context for the controller pod
+  podSecurityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+
+  # Security context for the manager container
+  securityContext:
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - "ALL"
+
+  # Health probe configuration
+  livenessProbe:
+    httpGet:
+      path: /healthz
+      port: 8081
+    initialDelaySeconds: 15
+    periodSeconds: 20
+
+  readinessProbe:
+    httpGet:
+      path: /readyz
+      port: 8081
+    initialDelaySeconds: 5
+    periodSeconds: 10
+
+  # Node affinity for multi-architecture support
+  nodeSelector: {}
+
+  tolerations: []
+
+  affinity: {}
+
+  # Additional environment variables
+  env: []
+
+# Service account configuration
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: true
+  # Annotations to add to the service account
+  annotations: {}
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template
+  name: ""
+
+# RBAC configuration
+rbac:
+  # Specifies whether RBAC resources should be created
+  create: true
+
+# Metrics service configuration
+metrics:
+  # Enable metrics endpoint
+  enabled: true
+  # Service type for metrics
+  service:
+    type: ClusterIP
+    port: 8443
+    annotations: {}
+
+# Prometheus Operator integration
+prometheus:
+  # Enable Prometheus ServiceMonitor
+  serviceMonitor:
+    enabled: false
+    # Additional labels for ServiceMonitor (e.g., for prometheus-operator selector)
+    additionalLabels:
+      prometheus: kube-prometheus-stack-prometheus
+    # Scrape interval
+    interval: 30s
+    # Namespace for ServiceMonitor (defaults to release namespace)
+    namespace: ""
+
+  # Enable PrometheusRule for alerts
+  prometheusRule:
+    enabled: false
+    # Additional labels for PrometheusRule
+    additionalLabels:
+      prometheus: kube-prometheus-stack-prometheus
+      role: alert-rules
+    # Namespace for PrometheusRule
+    namespace: monitoring
+    # Alert rules configuration
+    rules:
+      # GPU alerts
+      gpu:
+        enabled: true
+        highUtilizationThreshold: 90
+        highTemperatureThreshold: 85
+        memoryPressureThreshold: 90
+        powerLimitThreshold: 250
+      # Inference service alerts
+      inference:
+        enabled: true
+
+# Custom Resource Definitions
+crds:
+  # Install CRDs as part of chart installation
+  install: true
+  # Keep CRDs on chart uninstall (recommended for production)
+  keep: true
+
+# Image pull secrets for private registries
+imagePullSecrets: []
+
+# Name override
+nameOverride: ""
+fullnameOverride: ""
+
+# Pod annotations
+podAnnotations: {}
+
+# Pod labels
+podLabels: {}

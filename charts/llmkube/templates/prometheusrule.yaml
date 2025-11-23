@@ -1,0 +1,89 @@
+{{- if .Values.prometheus.prometheusRule.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "llmkube.fullname" . }}-alerts
+  namespace: {{ include "llmkube.prometheus.prometheusRule.namespace" . }}
+  labels:
+    {{- include "llmkube.labels" . | nindent 4 }}
+    {{- with .Values.prometheus.prometheusRule.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+  {{- if .Values.prometheus.prometheusRule.rules.gpu.enabled }}
+  - name: llmkube-slo
+    interval: 30s
+    rules:
+    # GPU High Utilization Alert
+    - alert: GPUHighUtilization
+      expr: DCGM_FI_DEV_GPU_UTIL > {{ .Values.prometheus.prometheusRule.rules.gpu.highUtilizationThreshold }}
+      for: 5m
+      labels:
+        severity: warning
+        component: gpu
+      annotations:
+        summary: "GPU utilization is high"
+        description: "GPU {{`{{ $labels.gpu }}`}} utilization is {{`{{ $value }}`}}% (threshold: {{ .Values.prometheus.prometheusRule.rules.gpu.highUtilizationThreshold }}%)"
+
+    # GPU High Temperature Alert
+    - alert: GPUHighTemperature
+      expr: DCGM_FI_DEV_GPU_TEMP > {{ .Values.prometheus.prometheusRule.rules.gpu.highTemperatureThreshold }}
+      for: 2m
+      labels:
+        severity: critical
+        component: gpu
+      annotations:
+        summary: "GPU temperature is critically high"
+        description: "GPU {{`{{ $labels.gpu }}`}} temperature is {{`{{ $value }}`}}°C (threshold: {{ .Values.prometheus.prometheusRule.rules.gpu.highTemperatureThreshold }}°C)"
+
+    # GPU Memory Pressure Alert
+    - alert: GPUMemoryPressure
+      expr: (DCGM_FI_DEV_FB_USED / DCGM_FI_DEV_FB_TOTAL) * 100 > {{ .Values.prometheus.prometheusRule.rules.gpu.memoryPressureThreshold }}
+      for: 5m
+      labels:
+        severity: warning
+        component: gpu
+      annotations:
+        summary: "GPU memory usage is high"
+        description: "GPU {{`{{ $labels.gpu }}`}} memory usage is {{`{{ $value }}`}}% (threshold: {{ .Values.prometheus.prometheusRule.rules.gpu.memoryPressureThreshold }}%)"
+
+    # GPU Power Limit Alert
+    - alert: GPUPowerLimit
+      expr: DCGM_FI_DEV_POWER_USAGE > {{ .Values.prometheus.prometheusRule.rules.gpu.powerLimitThreshold }}
+      for: 10m
+      labels:
+        severity: warning
+        component: gpu
+      annotations:
+        summary: "GPU power usage is high"
+        description: "GPU {{`{{ $labels.gpu }}`}} power usage is {{`{{ $value }}`}}W (threshold: {{ .Values.prometheus.prometheusRule.rules.gpu.powerLimitThreshold }}W)"
+  {{- end }}
+
+  {{- if .Values.prometheus.prometheusRule.rules.inference.enabled }}
+  - name: llmkube-inference
+    interval: 30s
+    rules:
+    # Inference Service Down Alert
+    - alert: InferenceServiceDown
+      expr: up{job="llmkube-inference"} == 0
+      for: 1m
+      labels:
+        severity: critical
+        component: inference
+      annotations:
+        summary: "Inference service is down"
+        description: "Inference service {{`{{ $labels.instance }}`}} has been down for more than 1 minute"
+
+    # Model Controller Down Alert
+    - alert: ControllerDown
+      expr: up{job="llmkube-controller"} == 0
+      for: 2m
+      labels:
+        severity: critical
+        component: controller
+      annotations:
+        summary: "LLMKube controller is down"
+        description: "Controller {{`{{ $labels.instance }}`}} has been down for more than 2 minutes"
+  {{- end }}
+{{- end }}
