@@ -1,0 +1,80 @@
+LLMKube has been installed successfully!
+
+Thank you for installing {{ .Chart.Name }} version {{ .Chart.Version }}.
+
+Your release is named {{ .Release.Name }}.
+
+To learn more about the release, try:
+
+  $ helm status {{ .Release.Name }} --namespace {{ include "llmkube.namespace" . }}
+  $ helm get all {{ .Release.Name }} --namespace {{ include "llmkube.namespace" . }}
+
+---
+GETTING STARTED:
+
+1. Verify the controller is running:
+   kubectl get deployment -n {{ include "llmkube.namespace" . }} {{ include "llmkube.fullname" . }}-controller-manager
+
+2. Check controller logs:
+   kubectl logs -n {{ include "llmkube.namespace" . }} deployment/{{ include "llmkube.fullname" . }}-controller-manager -f
+
+3. Deploy your first model using the CLI:
+   llmkube deploy tinyllama \
+     --source https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf \
+     --cpu 500m \
+     --memory 1Gi
+
+   Or using kubectl:
+   kubectl apply -f - <<EOF
+   apiVersion: inference.llmkube.dev/v1alpha1
+   kind: Model
+   metadata:
+     name: tinyllama
+     namespace: default
+   spec:
+     source: https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf
+     format: gguf
+   ---
+   apiVersion: inference.llmkube.dev/v1alpha1
+   kind: InferenceService
+   metadata:
+     name: tinyllama
+     namespace: default
+   spec:
+     modelRef: tinyllama
+     replicas: 1
+     resources:
+       cpu: "500m"
+       memory: "1Gi"
+   EOF
+
+4. Check your models and services:
+   kubectl get models
+   kubectl get inferenceservices
+
+{{- if .Values.prometheus.serviceMonitor.enabled }}
+
+5. Prometheus metrics are enabled!
+   ServiceMonitor deployed to namespace: {{ include "llmkube.prometheus.serviceMonitor.namespace" . }}
+   Metrics endpoint: https://{{ include "llmkube.fullname" . }}-controller-manager-metrics-service.{{ include "llmkube.namespace" . }}.svc:{{ .Values.metrics.service.port }}/metrics
+{{- end }}
+
+{{- if .Values.prometheus.prometheusRule.enabled }}
+
+6. Prometheus alerts are configured!
+   PrometheusRule deployed to namespace: {{ include "llmkube.prometheus.prometheusRule.namespace" . }}
+   - GPU alerts: {{ if .Values.prometheus.prometheusRule.rules.gpu.enabled }}Enabled{{ else }}Disabled{{ end }}
+   - Inference alerts: {{ if .Values.prometheus.prometheusRule.rules.inference.enabled }}Enabled{{ else }}Disabled{{ end }}
+{{- end }}
+
+---
+DOCUMENTATION:
+
+- GitHub: https://github.com/defilantech/LLMKube
+- Documentation: https://github.com/defilantech/LLMKube/tree/main/docs
+- Minikube Quickstart: https://github.com/defilantech/LLMKube/blob/main/docs/minikube-quickstart.md
+
+For GPU deployments, see: https://github.com/defilantech/LLMKube/blob/main/docs/gpu-setup-guide.md
+
+---
+Happy inferencing!

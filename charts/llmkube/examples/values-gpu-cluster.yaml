@@ -1,0 +1,59 @@
+# GPU cluster installation with monitoring and custom thresholds
+# Usage: helm install llmkube charts/llmkube -f examples/values-gpu-cluster.yaml
+
+namespace: llmkube-system
+
+controllerManager:
+  image:
+    repository: ghcr.io/defilantech/llmkube-controller
+    tag: "0.2.1"
+
+  resources:
+    limits:
+      cpu: 1
+      memory: 256Mi
+    requests:
+      cpu: 50m
+      memory: 128Mi
+
+  # Run controller on CPU nodes only
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: cloud.google.com/gke-accelerator
+            operator: DoesNotExist
+
+# Enable Prometheus with GPU-specific alerts
+prometheus:
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+    additionalLabels:
+      prometheus: kube-prometheus-stack-prometheus
+
+  prometheusRule:
+    enabled: true
+    namespace: monitoring
+    additionalLabels:
+      prometheus: kube-prometheus-stack-prometheus
+      role: alert-rules
+
+    rules:
+      gpu:
+        enabled: true
+        # Custom thresholds for GPU monitoring
+        highUtilizationThreshold: 90  # Alert when GPU >90% utilized
+        highTemperatureThreshold: 85  # Alert when GPU temp >85°C
+        memoryPressureThreshold: 90   # Alert when GPU memory >90%
+        powerLimitThreshold: 250      # Alert when GPU power >250W
+
+      inference:
+        enabled: true
+
+metrics:
+  enabled: true
+  service:
+    type: ClusterIP
+    port: 8443

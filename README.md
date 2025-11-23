@@ -10,6 +10,12 @@
     <strong>Version:</strong> 0.2.1 |
     <strong>License:</strong> Apache 2.0
   </p>
+
+  <p>
+    <a href="https://github.com/defilantech/LLMKube/actions/workflows/helm-chart.yml">
+      <img src="https://github.com/defilantech/LLMKube/actions/workflows/helm-chart.yml/badge.svg" alt="Helm Chart CI">
+    </a>
+  </p>
 </div>
 
 ---
@@ -139,7 +145,34 @@ sudo mv bin/llmkube /usr/local/bin/
 
 The operator manages Model and InferenceService resources in your cluster.
 
-#### For Local Development (Minikube/Kind)
+#### Option A: Using Helm (Recommended for Production)
+
+The easiest way to install LLMKube is using the Helm chart:
+
+```bash
+# Clone the repository to get the chart
+git clone https://github.com/defilantech/LLMKube.git
+cd LLMKube
+
+# Basic installation
+helm install llmkube charts/llmkube \
+  --namespace llmkube-system \
+  --create-namespace
+
+# With Prometheus monitoring (recommended)
+helm install llmkube charts/llmkube \
+  --namespace llmkube-system \
+  --create-namespace \
+  --set prometheus.serviceMonitor.enabled=true \
+  --set prometheus.prometheusRule.enabled=true
+
+# Verify installation
+kubectl get pods -n llmkube-system
+```
+
+See the [Helm Chart README](charts/llmkube/README.md) for detailed configuration options.
+
+#### Option B: For Local Development (Minikube/Kind)
 
 **Recommended for local clusters:** Run the controller on your host machine to avoid resource constraints. See the [Minikube Quickstart Guide](docs/minikube-quickstart.md) for detailed instructions.
 
@@ -157,9 +190,9 @@ make run
 
 Keep this terminal open and continue in a new terminal.
 
-#### For Production/Cloud (GKE/EKS/AKS)
+#### Option C: For Production/Cloud with Kustomize (GKE/EKS/AKS)
 
-Deploy the controller to your cluster:
+Alternatively, deploy the controller using Kustomize:
 
 ```bash
 # Clone the repository to get manifests

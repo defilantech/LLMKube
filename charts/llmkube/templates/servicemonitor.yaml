@@ -1,0 +1,26 @@
+{{- if .Values.prometheus.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "llmkube.fullname" . }}-controller-manager-metrics-monitor
+  namespace: {{ include "llmkube.prometheus.serviceMonitor.namespace" . }}
+  labels:
+    {{- include "llmkube.labels" . | nindent 4 }}
+    {{- with .Values.prometheus.serviceMonitor.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  endpoints:
+  - path: /metrics
+    port: https
+    scheme: https
+    interval: {{ .Values.prometheus.serviceMonitor.interval }}
+    tlsConfig:
+      insecureSkipVerify: true
+  selector:
+    matchLabels:
+      {{- include "llmkube.selectorLabels" . | nindent 6 }}
+  namespaceSelector:
+    matchNames:
+    - {{ include "llmkube.namespace" . }}
+{{- end }}

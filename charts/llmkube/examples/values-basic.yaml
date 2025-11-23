@@ -1,0 +1,24 @@
+# Basic installation with minimal configuration
+# Usage: helm install llmkube charts/llmkube -f examples/values-basic.yaml
+
+namespace: llmkube-system
+
+controllerManager:
+  image:
+    repository: ghcr.io/defilantech/llmkube-controller
+    tag: "0.2.1"
+
+  resources:
+    limits:
+      cpu: 500m
+      memory: 128Mi
+    requests:
+      cpu: 10m
+      memory: 64Mi
+
+# Disable Prometheus integration
+prometheus:
+  serviceMonitor:
+    enabled: false
+  prometheusRule:
+    enabled: false
