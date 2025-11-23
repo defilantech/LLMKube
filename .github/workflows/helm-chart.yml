@@ -69,15 +69,15 @@ jobs:
       - name: Template Chart with ${{ matrix.values }} values
         run: |
           if [ "${{ matrix.values }}" = "default" ]; then
-            helm template llmkube charts/llmkube --namespace llmkube-system > /tmp/manifests.yaml
+            helm template llmkube charts/llmkube --namespace llmkube-system > manifests.yaml
           else
             helm template llmkube charts/llmkube \
               --namespace llmkube-system \
-              -f charts/llmkube/examples/values-${{ matrix.values }}.yaml > /tmp/manifests.yaml
+              -f charts/llmkube/examples/values-${{ matrix.values }}.yaml > manifests.yaml
           fi
 
           # Count resources
-          RESOURCE_COUNT=$(grep -c '^# Source:' /tmp/manifests.yaml || true)
+          RESOURCE_COUNT=$(grep -c '^# Source:' manifests.yaml || true)
           echo "Generated $RESOURCE_COUNT resources with ${{ matrix.values }} values"
 
           # Ensure we got some output
@@ -96,7 +96,7 @@ jobs:
             -output json
             -ignore-missing-schemas
             -skip CustomResourceDefinition
-            /tmp/manifests.yaml
+            /github/workspace/manifests.yaml
 
   prometheus-integration:
     name: Test Prometheus Integration
