@@ -1,8 +1,8 @@
 # LLMKube Roadmap
 
-**Current Version:** 0.2.1
+**Current Version:** 0.3.0
 **Last Updated:** November 2025
-**Status:** ✅ Phase 1 Complete - GPU Inference & Observability
+**Status:** ✅ Phase 1 Complete - GPU Inference, Metal Support & Model Catalog
 
 ---
 
@@ -20,7 +20,7 @@ Make GPU-accelerated LLM inference on Kubernetes **dead simple**. Deploy product
 
 ## Current Status
 
-### ✅ What's Working Now (v0.2.1)
+### ✅ What's Working Now (v0.3.0)
 
 **Core Platform:**
 - ✅ Kubernetes-native CRDs (`Model`, `InferenceService`)

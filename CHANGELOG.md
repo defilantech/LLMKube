@@ -5,6 +5,54 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2025-11-23
+
+### Added
+
+#### Metal GPU Support for macOS (Apple Silicon)
+- **Native Metal GPU Acceleration**: Full support for Apple Silicon (M1/M2/M3/M4) GPUs
+  - 60-120 tok/s generation on M4 Max (Llama 3.1 8B: 40-60 tok/s, Llama 3.2 3B: 80-120 tok/s)
+  - Native llama-server processes with Metal GPU offloading
+  - Hybrid architecture: Kubernetes orchestration + native Metal performance
+- **Metal Agent**: Background daemon for macOS that manages llama-server processes
+  - Watches InferenceService CRDs and spawns native processes
+  - Automatic Service and Endpoints creation for cluster integration
+  - Health checking and process lifecycle management
+  - Configurable via LaunchAgent (deployment/macos/com.llmkube.metal-agent.plist)
+- **Platform Detection**: Automatic detection of Metal availability and GPU capabilities
+- **CLI Metal Support**: `--accelerator metal` flag for one-command Metal deployments
+  - `llmkube deploy llama-3.1-8b --accelerator metal`
+  - Automatic GPU layer configuration and optimization
+- **Multi-Accelerator Support**: Unified CLI for CUDA (cloud) and Metal (local) deployments
+  - Same Kubernetes CRDs work across both platforms
+  - Test locally on Mac, deploy to cloud with same configs
+
+#### Developer Experience
+- **GoReleaser Configuration**: Multi-platform CLI builds for macOS, Linux, Windows
+  - Separate Metal agent binary for macOS (Intel + Apple Silicon)
+  - Automated release workflow with GitHub Actions
+- **Metal Quick Start Guide**: Comprehensive guide at `examples/metal-quickstart/README.md`
+  - Architecture diagrams and explanations
+  - Step-by-step setup instructions
+  - Troubleshooting and performance tuning
+- **macOS Deployment Guide**: Production deployment instructions at `deployment/macos/README.md`
+
+### Changed
+- **Deploy Command**: Enhanced to support Metal accelerator alongside GPU flag
+- **Service Registry**: Added support for manual Endpoints management to bridge native processes
+
+### Fixed
+- Endpoints API deprecation warnings (SA1019) with appropriate nolint directives
+- Metal agent linter issues and production stability improvements
+
+### Documentation
+- New: `examples/metal-quickstart/README.md` - Metal GPU quick start guide
+- New: `deployment/macos/README.md` - macOS deployment and setup
+- New: `cmd/metal-agent/main.go` - Metal agent binary implementation
+- New: `pkg/agent/` - Agent, executor, watcher, and registry implementations
+- New: `internal/platform/detect.go` - Platform and GPU detection
+- Updated: README with Metal support documentation
+
 ## [0.2.2] - 2025-11-23
 
 ### Added

@@ -24,7 +24,7 @@ import (
 
 var (
 	// Version is set during build
-	Version = "0.2.2"
+	Version = "0.3.0"
 	// GitCommit is set during build
 	GitCommit = "unknown"
 	// BuildDate is set during build

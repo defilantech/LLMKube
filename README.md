@@ -59,7 +59,7 @@ Simpler and faster! Just 3 commands:
 ```bash
 # 1. Install the CLI (choose one)
 brew tap defilantech/tap && brew install llmkube  # macOS
-# OR: curl -L https://github.com/defilantech/LLMKube/releases/latest/download/llmkube_0.2.1_linux_amd64.tar.gz | tar xz && sudo mv llmkube /usr/local/bin/  # Linux
+# OR: curl -L https://github.com/defilantech/LLMKube/releases/latest/download/llmkube_0.3.0_linux_amd64.tar.gz | tar xz && sudo mv llmkube /usr/local/bin/  # Linux
 
 # 2. Start Minikube
 minikube start --cpus 4 --memory 8192
@@ -270,9 +270,9 @@ brew install llmkube
 **Manual download:**
 ```bash
 # Intel
-curl -L https://github.com/defilantech/LLMKube/releases/latest/download/llmkube_0.2.1_darwin_amd64.tar.gz | tar xz
+curl -L https://github.com/defilantech/LLMKube/releases/latest/download/llmkube_0.3.0_darwin_amd64.tar.gz | tar xz
 # Apple Silicon
-curl -L https://github.com/defilantech/LLMKube/releases/latest/download/llmkube_0.2.1_darwin_arm64.tar.gz | tar xz
+curl -L https://github.com/defilantech/LLMKube/releases/latest/download/llmkube_0.3.0_darwin_arm64.tar.gz | tar xz
 sudo mv llmkube /usr/local/bin/
 ```
 </details>
@@ -282,9 +282,9 @@ sudo mv llmkube /usr/local/bin/
 
 ```bash
 # x86_64
-curl -L https://github.com/defilantech/LLMKube/releases/latest/download/llmkube_0.2.1_linux_amd64.tar.gz | tar xz
+curl -L https://github.com/defilantech/LLMKube/releases/latest/download/llmkube_0.3.0_linux_amd64.tar.gz | tar xz
 # ARM64
-curl -L https://github.com/defilantech/LLMKube/releases/latest/download/llmkube_0.2.1_linux_arm64.tar.gz | tar xz
+curl -L https://github.com/defilantech/LLMKube/releases/latest/download/llmkube_0.3.0_linux_arm64.tar.gz | tar xz
 sudo mv llmkube /usr/local/bin/
 ```
 </details>
@@ -293,7 +293,7 @@ sudo mv llmkube /usr/local/bin/
 <summary><b>Windows</b></summary>
 
 Download from [releases page](https://github.com/defilantech/LLMKube/releases/latest):
-- `llmkube_0.2.1_windows_amd64.zip`
+- `llmkube_0.3.0_windows_amd64.zip`
 
 Extract and add to PATH.
 </details>
