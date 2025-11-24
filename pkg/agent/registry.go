@@ -37,15 +37,19 @@ type ServiceRegistry struct {
 }
 
 // NewServiceRegistry creates a new service registry
-func NewServiceRegistry(client client.Client) *ServiceRegistry {
+func NewServiceRegistry(k8sClient client.Client) *ServiceRegistry {
 	return &ServiceRegistry{
-		client: client,
+		client: k8sClient,
 	}
 }
 
 // RegisterEndpoint creates/updates a Kubernetes Service and Endpoints
 // to expose the native process to the cluster
-func (r *ServiceRegistry) RegisterEndpoint(ctx context.Context, isvc *inferencev1alpha1.InferenceService, port int) error {
+func (r *ServiceRegistry) RegisterEndpoint(
+	ctx context.Context,
+	isvc *inferencev1alpha1.InferenceService,
+	port int,
+) error {
 	// Sanitize service name (replace dots with dashes for DNS-1035 compliance)
 	serviceName := sanitizeServiceName(isvc.Name)
 

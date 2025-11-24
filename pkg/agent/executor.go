@@ -170,13 +170,17 @@ func (e *MetalExecutor) ensureModel(ctx context.Context, source, name string) (s
 }
 
 // downloadFile downloads a file from URL to local path
-func (e *MetalExecutor) downloadFile(ctx context.Context, url, filepath string) error {
+func (e *MetalExecutor) downloadFile(ctx context.Context, url, filePath string) error {
 	// Create the file
-	out, err := os.Create(filepath)
+	out, err := os.Create(filePath)
 	if err != nil {
 		return err
 	}
-	defer out.Close()
+	defer func() {
+		if cerr := out.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
 
 	// Create HTTP request with context
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
@@ -189,7 +193,9 @@ func (e *MetalExecutor) downloadFile(ctx context.Context, url, filepath string) 
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("bad status: %s", resp.Status)
@@ -217,11 +223,11 @@ func (e *MetalExecutor) waitForHealthy(port int, timeout time.Duration) error {
 		case <-ticker.C:
 			resp, err := http.Get(healthURL)
 			if err == nil && resp.StatusCode == http.StatusOK {
-				resp.Body.Close()
+				_ = resp.Body.Close()
 				return nil
 			}
 			if resp != nil {
-				resp.Body.Close()
+				_ = resp.Body.Close()
 			}
 		}
 	}

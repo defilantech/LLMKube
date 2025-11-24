@@ -49,9 +49,9 @@ type InferenceServiceWatcher struct {
 }
 
 // NewInferenceServiceWatcher creates a new watcher
-func NewInferenceServiceWatcher(client client.Client, namespace string) *InferenceServiceWatcher {
+func NewInferenceServiceWatcher(k8sClient client.Client, namespace string) *InferenceServiceWatcher {
 	return &InferenceServiceWatcher{
-		client:    client,
+		client:    k8sClient,
 		namespace: namespace,
 	}
 }
@@ -110,7 +110,11 @@ func (w *InferenceServiceWatcher) listExisting(ctx context.Context, eventChan ch
 }
 
 // poll checks for changes to InferenceServices
-func (w *InferenceServiceWatcher) poll(ctx context.Context, eventChan chan<- InferenceServiceEvent, seen map[string]string) error {
+func (w *InferenceServiceWatcher) poll(
+	ctx context.Context,
+	eventChan chan<- InferenceServiceEvent,
+	seen map[string]string,
+) error {
 	list := &inferencev1alpha1.InferenceServiceList{}
 	opts := []client.ListOption{}
 	if w.namespace != "" {

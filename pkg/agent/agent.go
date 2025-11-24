@@ -76,7 +76,11 @@ func (a *MetalAgent) Start(ctx context.Context) error {
 
 	// Start watcher
 	eventChan := make(chan InferenceServiceEvent)
-	go a.watcher.Watch(ctx, eventChan)
+	go func() {
+		if err := a.watcher.Watch(ctx, eventChan); err != nil {
+			fmt.Printf("⚠️  Watcher error: %v\n", err)
+		}
+	}()
 
 	// Process events
 	for {
@@ -172,7 +176,7 @@ func (a *MetalAgent) ensureProcess(ctx context.Context, isvc *inferencev1alpha1.
 }
 
 // deleteProcess stops a running llama-server process
-func (a *MetalAgent) deleteProcess(ctx context.Context, key string) error {
+func (a *MetalAgent) deleteProcess(_ context.Context, key string) error {
 	a.mu.Lock()
 	process, exists := a.processes[key]
 	if !exists {
