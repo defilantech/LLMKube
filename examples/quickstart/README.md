@@ -44,7 +44,7 @@ Deploy the controller to your cluster:
 
 ```bash
 # Option 1: Using Helm (Recommended)
-helm install llmkube https://github.com/defilantech/LLMKube/releases/download/v0.3.0/llmkube-0.3.0.tgz \
+helm install llmkube https://github.com/defilantech/LLMKube/releases/download/v0.3.1/llmkube-0.3.1.tgz \
   --namespace llmkube-system --create-namespace
 
 # Option 2: Using Kustomize
@@ -78,20 +78,20 @@ brew tap defilantech/tap
 brew install llmkube
 
 # Or download binary directly
-curl -L https://github.com/defilantech/LLMKube/releases/latest/download/llmkube_0.3.0_darwin_arm64.tar.gz | tar xz
+curl -L https://github.com/defilantech/LLMKube/releases/latest/download/llmkube_0.3.1_darwin_arm64.tar.gz | tar xz
 sudo mv llmkube /usr/local/bin/
 ```
 
 **Linux:**
 ```bash
-curl -L https://github.com/defilantech/LLMKube/releases/latest/download/llmkube_0.3.0_linux_amd64.tar.gz | tar xz
+curl -L https://github.com/defilantech/LLMKube/releases/latest/download/llmkube_0.3.1_linux_amd64.tar.gz | tar xz
 sudo mv llmkube /usr/local/bin/
 ```
 
 **Verify installation:**
 ```bash
 llmkube version
-# Output: llmkube version 0.3.0
+# Output: llmkube version 0.3.1
 ```
 
 **Deploy TinyLlama:**

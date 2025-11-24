@@ -25,10 +25,10 @@ controllerManager:
   resources:
     limits:
       cpu: 500m
-      memory: 128Mi
+      memory: 2Gi
     requests:
       cpu: 10m
-      memory: 64Mi
+      memory: 512Mi
 
   # Security context for the controller pod
   podSecurityContext:

@@ -11,10 +11,10 @@ controllerManager:
   resources:
     limits:
       cpu: 1
-      memory: 256Mi
+      memory: 4Gi
     requests:
       cpu: 50m
-      memory: 128Mi
+      memory: 1Gi
 
   # Run controller on CPU nodes only
   affinity:

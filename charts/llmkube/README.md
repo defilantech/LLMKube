@@ -93,9 +93,9 @@ The following table lists the configurable parameters of the LLMKube chart and t
 | `controllerManager.replicaCount` | Number of controller replicas | `1` |
 | `controllerManager.leaderElection.enabled` | Enable leader election | `true` |
 | `controllerManager.resources.limits.cpu` | CPU limit | `500m` |
-| `controllerManager.resources.limits.memory` | Memory limit | `128Mi` |
+| `controllerManager.resources.limits.memory` | Memory limit | `2Gi` |
 | `controllerManager.resources.requests.cpu` | CPU request | `10m` |
-| `controllerManager.resources.requests.memory` | Memory request | `64Mi` |
+| `controllerManager.resources.requests.memory` | Memory request | `512Mi` |
 | `controllerManager.nodeSelector` | Node selector | `{}` |
 | `controllerManager.tolerations` | Tolerations | `[]` |
 | `controllerManager.affinity` | Affinity rules | `{}` |
@@ -163,10 +163,10 @@ controllerManager:
   resources:
     limits:
       cpu: 1
-      memory: 512Mi
+      memory: 4Gi
     requests:
       cpu: 100m
-      memory: 128Mi
+      memory: 1Gi
 
 prometheus:
   serviceMonitor:
