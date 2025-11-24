@@ -92,7 +92,8 @@ Examples:
 
 	// Flags
 	cmd.Flags().StringVarP(&opts.namespace, "namespace", "n", "default", "Kubernetes namespace")
-	cmd.Flags().StringVarP(&opts.modelSource, "source", "s", "", "Model source URL (GGUF format). Optional if using catalog model ID.")
+	cmd.Flags().StringVarP(&opts.modelSource, "source", "s", "",
+		"Model source URL (GGUF format). Optional if using catalog model ID.")
 	cmd.Flags().StringVar(&opts.modelFormat, "format", "gguf", "Model format")
 	cmd.Flags().StringVarP(&opts.quantization, "quantization", "q", "", "Model quantization (e.g., Q4_K_M, Q8_0)")
 	cmd.Flags().Int32VarP(&opts.replicas, "replicas", "r", 1, "Number of replicas")
@@ -128,7 +129,10 @@ func runDeploy(opts *deployOptions) error {
 		// Try to load from catalog
 		model, err := GetModel(opts.name)
 		if err != nil {
-			return fmt.Errorf("model '%s' not found in catalog and no --source provided. Use 'llmkube catalog list' to see available models", opts.name)
+			return fmt.Errorf(
+				"model '%s' not found in catalog and no --source provided. "+
+					"Use 'llmkube catalog list' to see available models",
+				opts.name)
 		}
 		catalogModel = model
 

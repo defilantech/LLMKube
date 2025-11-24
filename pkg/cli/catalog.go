@@ -206,8 +206,8 @@ func runCatalogList(tagFilter string) error {
 
 	// Create table writer
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "ID\tNAME\tSIZE\tQUANT\tUSE CASE\tVRAM")
-	fmt.Fprintln(w, "──\t────\t────\t─────\t────────\t────")
+	_, _ = fmt.Fprintln(w, "ID\tNAME\tSIZE\tQUANT\tUSE CASE\tVRAM")
+	_, _ = fmt.Fprintln(w, "──\t────\t────\t─────\t────────\t────")
 
 	for _, id := range modelIDs {
 		model := catalog.Models[id]
@@ -216,7 +216,7 @@ func runCatalogList(tagFilter string) error {
 			useCase = formatUseCase(model.UseCases[0])
 		}
 
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
 			id,
 			truncate(model.Name, 30),
 			model.Size,
@@ -226,7 +226,7 @@ func runCatalogList(tagFilter string) error {
 		)
 	}
 
-	w.Flush()
+	_ = w.Flush()
 
 	// Print footer
 	fmt.Printf("\n💡 To deploy: llmkube deploy <MODEL_ID> --gpu\n")
@@ -314,7 +314,9 @@ func formatUseCase(uc string) string {
 	// Convert kebab-case to Title Case
 	words := strings.Split(uc, "-")
 	for i, word := range words {
-		words[i] = strings.Title(word)
+		if len(word) > 0 {
+			words[i] = strings.ToUpper(word[:1]) + word[1:]
+		}
 	}
 	return strings.Join(words, " ")
 }
