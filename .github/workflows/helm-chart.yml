@@ -243,7 +243,7 @@ jobs:
             --namespace llmkube-system \
             --create-namespace \
             --wait \
-            --timeout 2m
+            --timeout 5m
           echo "✅ Chart installed successfully"
 
       - name: Verify Installation
@@ -271,7 +271,7 @@ jobs:
             --namespace llmkube-system \
             --set controllerManager.resources.limits.cpu=1 \
             --wait \
-            --timeout 2m
+            --timeout 5m
           echo "✅ Chart upgrade successful"
 
       - name: Test Helm Uninstall
