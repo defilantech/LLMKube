@@ -19,6 +19,9 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os/exec"
+	"runtime"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -158,15 +161,31 @@ func runDeploy(opts *deployOptions) error {
 		}
 	}
 
-	// Auto-detect accelerator and image based on GPU flag
+	// Auto-detect accelerator and image based on GPU flag and platform
 	if opts.gpu {
 		if opts.accelerator == "" {
-			opts.accelerator = "cuda"
-			fmt.Printf("ℹ️  Auto-detected accelerator: %s\n", opts.accelerator)
+			// Auto-detect based on platform
+			if detectMetalSupport() {
+				opts.accelerator = "metal"
+				fmt.Printf("ℹ️  Auto-detected accelerator: %s (Apple Silicon GPU)\n", opts.accelerator)
+			} else {
+				opts.accelerator = "cuda"
+				fmt.Printf("ℹ️  Auto-detected accelerator: %s\n", opts.accelerator)
+			}
 		}
-		if opts.image == "" {
-			opts.image = "ghcr.io/ggerganov/llama.cpp:server-cuda"
-			fmt.Printf("ℹ️  Auto-detected image: %s\n", opts.image)
+
+		// For Metal, we don't use a container image (native process)
+		if opts.accelerator == "metal" {
+			if opts.image == "" {
+				opts.image = "" // Metal uses native llama-server binary, not container
+			}
+			fmt.Printf("ℹ️  Metal acceleration: Using native llama-server (not containerized)\n")
+			fmt.Printf("ℹ️  Ensure Metal agent is installed: make install-metal-agent\n")
+		} else {
+			if opts.image == "" {
+				opts.image = "ghcr.io/ggerganov/llama.cpp:server-cuda"
+				fmt.Printf("ℹ️  Auto-detected image: %s\n", opts.image)
+			}
 		}
 	} else {
 		if opts.accelerator == "" {
@@ -364,4 +383,26 @@ func waitForReady(ctx context.Context, k8sClient client.Client, name, namespace 
 			}
 		}
 	}
+}
+
+// detectMetalSupport checks if the system supports Metal acceleration
+func detectMetalSupport() bool {
+	// Check if we're on macOS with Apple Silicon
+	if runtime.GOOS != "darwin" {
+		return false
+	}
+
+	// Check if Metal agent is available
+	if _, err := exec.LookPath("llmkube-metal-agent"); err != nil {
+		return false
+	}
+
+	// Verify Metal support via system_profiler
+	cmd := exec.Command("system_profiler", "SPDisplaysDataType")
+	output, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+
+	return strings.Contains(string(output), "Metal")
 }
