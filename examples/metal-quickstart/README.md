@@ -29,7 +29,17 @@ This guide shows you how to deploy GPU-accelerated LLM inference on your Mac usi
    sudo mv llmkube /usr/local/bin/
    ```
 
-4. **LLMKube Operator**
+4. **LLMKube Operator** (for development/testing from branch)
+   ```bash
+   # From the llmkube repository root
+   make deploy
+
+   # This builds and deploys the controller locally
+   # Wait for the operator to be ready:
+   kubectl wait --for=condition=ready pod -l control-plane=controller-manager -n llmkube-system --timeout=60s
+   ```
+
+   For released versions, use:
    ```bash
    kubectl apply -f https://github.com/defilantech/llmkube/releases/latest/download/install.yaml
    ```
@@ -76,23 +86,26 @@ kubectl get nodes
 ### Option 1: Deploy from Catalog (Recommended)
 
 ```bash
-# Deploy Llama 3.1 8B with Metal acceleration
-llmkube deploy llama-3.1-8b --gpu
+# Build the CLI from the repository (if testing from branch)
+make build
 
-# The CLI will auto-detect Metal and use it!
+# Deploy Llama 3.1 8B with Metal acceleration
+./bin/llmkube deploy llama-3.1-8b --accelerator metal
+
 # Output:
-# ℹ️  Auto-detected accelerator: metal (Apple Silicon GPU)
-# ℹ️  Metal acceleration: Using native llama-server (not containerized)
 # 📚 Using catalog model: Llama 3.1 8B Instruct
+# ℹ️  Metal acceleration: Using native llama-server (not containerized)
 # 🚀 Deploying LLM inference service
 # ...
 ```
 
-### Option 2: Explicit Metal Flag
+**Note**: Use `--accelerator metal` explicitly to ensure Metal acceleration is used.
+
+### Option 2: With Custom GPU Settings
 
 ```bash
-# Explicitly specify Metal accelerator
-llmkube deploy llama-3.1-8b --accelerator metal
+# Specify custom GPU layer offloading
+./bin/llmkube deploy llama-3.1-8b --accelerator metal --gpu-layers 33
 
 # Or with custom settings
 llmkube deploy qwen-2.5-coder-7b \
@@ -128,19 +141,29 @@ sudo powermetrics --samplers gpu_power -i 1000
 
 Once deployed, test your inference service:
 
-```bash
-# Port forward the service
-kubectl port-forward svc/llama-3.1-8b 8080:8080
+### Option 1: Direct Access (Fastest)
 
-# Send a test request (in another terminal)
+```bash
+# The Metal agent runs llama-server on your Mac (port 8080)
+# You can access it directly without Kubernetes
 curl http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{
-    "messages": [
-      {"role": "user", "content": "What is 2+2?"}
-    ]
-  }'
+  -d '{"messages":[{"role":"user","content":"What is 2+2?"}],"max_tokens":20}'
 ```
+
+### Option 2: Via Kubernetes Service
+
+```bash
+# Port forward the Kubernetes service (note the sanitized name: llama-3-1-8b)
+kubectl port-forward svc/llama-3-1-8b 8081:8080
+
+# Send a test request (in another terminal)
+curl http://localhost:8081/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"messages":[{"role":"user","content":"What is 2+2?"}]}'
+```
+
+**Note**: The Kubernetes Service name is sanitized (dots replaced with dashes): `llama-3.1-8b` → `llama-3-1-8b`
 
 ## Performance Expectations
 
@@ -183,6 +206,23 @@ On M4 Max (32 GPU cores):
 
 ## Troubleshooting
 
+### Operator pod ImagePullBackOff (when deploying from branch)
+
+If you see ImagePullBackOff when running `make deploy`:
+
+```bash
+# Build the controller image in minikube's Docker environment
+eval $(minikube docker-env)
+make docker-build
+
+# Delete the failing pod to recreate it
+kubectl delete pod -n llmkube-system -l control-plane=controller-manager
+
+# Patch the deployment to use local images
+kubectl patch deployment -n llmkube-system llmkube-controller-manager \
+  -p '{"spec":{"template":{"spec":{"containers":[{"name":"manager","imagePullPolicy":"IfNotPresent"}]}}}}'
+```
+
 ### Metal agent not starting
 
 ```bash
@@ -213,12 +253,14 @@ curl -L https://huggingface.co/bartowski/Meta-Llama-3.1-8B-Instruct-GGUF/resolve
 
 ### Service not accessible
 
+**Note**: Service names are sanitized - dots are replaced with dashes!
+
 ```bash
-# Check service exists
-kubectl get svc llama-3.1-8b
+# Check service exists (note the sanitized name: llama-3-1-8b)
+kubectl get svc llama-3-1-8b
 
 # Check endpoints
-kubectl get endpoints llama-3.1-8b
+kubectl get endpoints llama-3-1-8b
 
 # Check if llama-server is running
 ps aux | grep llama-server

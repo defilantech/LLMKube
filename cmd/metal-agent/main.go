@@ -25,7 +25,6 @@ import (
 	"syscall"
 	"time"
 
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
@@ -124,7 +123,7 @@ func main() {
 		fmt.Printf("❌ ERROR: Failed to create Kubernetes client: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Println("✅ Connected to Kubernetes cluster\n")
+	fmt.Println("✅ Connected to Kubernetes cluster")
 
 	// Create agent
 	fmt.Println("🎯 Starting Metal agent...")
@@ -152,7 +151,7 @@ func main() {
 
 	// Start the agent
 	fmt.Println("✅ Metal agent started successfully")
-	fmt.Println("👀 Watching for InferenceService resources...\n")
+	fmt.Println("👀 Watching for InferenceService resources...")
 
 	if err := metalAgent.Start(ctx); err != nil {
 		fmt.Printf("❌ ERROR: Agent failed: %v\n", err)

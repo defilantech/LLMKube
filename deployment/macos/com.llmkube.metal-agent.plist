@@ -13,7 +13,7 @@
         <string>--model-store</string>
         <string>/tmp/llmkube-models</string>
         <string>--llama-server</string>
-        <string>/usr/local/bin/llama-server</string>
+        <string>/opt/homebrew/bin/llama-server</string>
         <string>--port</string>
         <string>9090</string>
         <string>--log-level</string>
@@ -38,7 +38,7 @@
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
         <key>GGML_METAL_ENABLE</key>
         <string>1</string>
     </dict>

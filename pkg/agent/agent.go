@@ -136,13 +136,19 @@ func (a *MetalAgent) ensureProcess(ctx context.Context, isvc *inferencev1alpha1.
 		return fmt.Errorf("failed to get model %s: %w", isvc.Spec.ModelRef, err)
 	}
 
+	// Get GPU layers if specified
+	gpuLayers := int32(0) // Default: auto-detect (executor will use 99)
+	if model.Spec.Hardware.GPU != nil {
+		gpuLayers = model.Spec.Hardware.GPU.Layers
+	}
+
 	// Start the process
 	process, err := a.executor.StartProcess(ctx, ExecutorConfig{
-		Name:       isvc.Name,
-		Namespace:  isvc.Namespace,
+		Name:        isvc.Name,
+		Namespace:   isvc.Namespace,
 		ModelSource: model.Spec.Source,
-		ModelName:  model.Name,
-		GPULayers:  model.Spec.Hardware.GPU.Layers,
+		ModelName:   model.Name,
+		GPULayers:   gpuLayers,
 		ContextSize: 2048, // TODO: Get from model spec
 	})
 	if err != nil {

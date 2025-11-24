@@ -19,6 +19,8 @@ package agent
 import (
 	"context"
 	"fmt"
+	"net"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -44,10 +46,13 @@ func NewServiceRegistry(client client.Client) *ServiceRegistry {
 // RegisterEndpoint creates/updates a Kubernetes Service and Endpoints
 // to expose the native process to the cluster
 func (r *ServiceRegistry) RegisterEndpoint(ctx context.Context, isvc *inferencev1alpha1.InferenceService, port int) error {
+	// Sanitize service name (replace dots with dashes for DNS-1035 compliance)
+	serviceName := sanitizeServiceName(isvc.Name)
+
 	// Create or update Service
 	service := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      isvc.Name,
+			Name:      serviceName,
 			Namespace: isvc.Namespace,
 			Labels: map[string]string{
 				"app":                          isvc.Name,
@@ -85,7 +90,7 @@ func (r *ServiceRegistry) RegisterEndpoint(ctx context.Context, isvc *inferencev
 	// we can use the host's IP address
 	endpoints := &corev1.Endpoints{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      isvc.Name,
+			Name:      serviceName,
 			Namespace: isvc.Namespace,
 			Labels: map[string]string{
 				"app":                          isvc.Name,
@@ -97,9 +102,9 @@ func (r *ServiceRegistry) RegisterEndpoint(ctx context.Context, isvc *inferencev
 			{
 				Addresses: []corev1.EndpointAddress{
 					{
-						// Use host.docker.internal for Docker Desktop
-						// This allows pods to access host services
-						IP: "host.docker.internal",
+						// Use the host IP that Kubernetes can reach
+						// For minikube: host.minikube.internal (192.168.65.254)
+						IP: getHostIP(),
 						TargetRef: &corev1.ObjectReference{
 							Kind: "Pod",
 							Name: fmt.Sprintf("%s-metal", isvc.Name),
@@ -132,10 +137,13 @@ func (r *ServiceRegistry) RegisterEndpoint(ctx context.Context, isvc *inferencev
 
 // UnregisterEndpoint removes the Service and Endpoints for a process
 func (r *ServiceRegistry) UnregisterEndpoint(ctx context.Context, namespace, name string) error {
+	// Sanitize service name (replace dots with dashes for DNS-1035 compliance)
+	serviceName := sanitizeServiceName(name)
+
 	// Delete Service
 	service := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
+			Name:      serviceName,
 			Namespace: namespace,
 		},
 	}
@@ -146,7 +154,7 @@ func (r *ServiceRegistry) UnregisterEndpoint(ctx context.Context, namespace, nam
 	// Delete Endpoints
 	endpoints := &corev1.Endpoints{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
+			Name:      serviceName,
 			Namespace: namespace,
 		},
 	}
@@ -155,4 +163,28 @@ func (r *ServiceRegistry) UnregisterEndpoint(ctx context.Context, namespace, nam
 	}
 
 	return nil
+}
+
+// sanitizeServiceName converts a name to be DNS-1035 compliant
+// (lowercase alphanumeric characters or '-', must start with alpha, end with alphanumeric)
+func sanitizeServiceName(name string) string {
+	// Replace dots with dashes
+	return strings.ReplaceAll(name, ".", "-")
+}
+
+// getHostIP returns the IP address that Kubernetes can use to reach the host machine
+// For minikube, this is typically host.minikube.internal which resolves to 192.168.65.254
+func getHostIP() string {
+	// Try to resolve host.minikube.internal (for minikube)
+	if ips, err := net.LookupIP("host.minikube.internal"); err == nil && len(ips) > 0 {
+		return ips[0].String()
+	}
+
+	// Fallback: Try to resolve host.docker.internal (for Docker Desktop)
+	if ips, err := net.LookupIP("host.docker.internal"); err == nil && len(ips) > 0 {
+		return ips[0].String()
+	}
+
+	// Final fallback: Use a common default for minikube
+	return "192.168.65.254"
 }
