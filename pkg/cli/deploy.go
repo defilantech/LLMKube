@@ -317,6 +317,13 @@ func runDeploy(opts *deployOptions) error {
 	return nil
 }
 
+// sanitizeServiceName converts a name to be DNS-1035 compliant
+// (lowercase alphanumeric characters or '-', must start with alpha, end with alphanumeric)
+func sanitizeServiceName(name string) string {
+	// Replace dots with dashes
+	return strings.ReplaceAll(name, ".", "-")
+}
+
 func waitForReady(ctx context.Context, k8sClient client.Client, name, namespace string, timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -356,6 +363,9 @@ func waitForReady(ctx context.Context, k8sClient client.Client, name, namespace 
 
 			// Check if ready
 			if model.Status.Phase == "Ready" && isvc.Status.Phase == "Ready" {
+				// Sanitize service name for display (Kubernetes replaces dots with dashes)
+				serviceName := sanitizeServiceName(name)
+
 				fmt.Printf("\n✅ Deployment ready!\n")
 				fmt.Printf("═══════════════════════════════════════════════\n")
 				fmt.Printf("Model:       %s\n", name)
@@ -366,7 +376,7 @@ func waitForReady(ctx context.Context, k8sClient client.Client, name, namespace 
 				fmt.Printf("═══════════════════════════════════════════════\n\n")
 				fmt.Printf("🧪 To test the inference endpoint:\n\n")
 				fmt.Printf("  # Port forward the service\n")
-				fmt.Printf("  kubectl port-forward -n %s svc/%s 8080:8080\n\n", namespace, name)
+				fmt.Printf("  kubectl port-forward -n %s svc/%s 8080:8080\n\n", namespace, serviceName)
 				fmt.Printf("  # Send a test request\n")
 				fmt.Printf("  curl http://localhost:8080/v1/chat/completions \\\n")
 				fmt.Printf("    -H \"Content-Type: application/json\" \\\n")

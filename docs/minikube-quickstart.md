@@ -149,7 +149,7 @@ cd LLMKube
 make install
 
 # Deploy controller with pre-built image
-make deploy IMG=ghcr.io/defilantech/llmkube-controller:0.3.2
+make deploy IMG=ghcr.io/defilantech/llmkube-controller:0.3.3
 
 # Verify controller is running
 kubectl get pods -n llmkube-system
@@ -171,20 +171,20 @@ brew tap defilantech/tap
 brew install llmkube
 
 # Or download binary directly
-curl -L https://github.com/defilantech/LLMKube/releases/latest/download/llmkube_0.3.2_darwin_arm64.tar.gz | tar xz
+curl -L https://github.com/defilantech/LLMKube/releases/latest/download/llmkube_0.3.3_darwin_arm64.tar.gz | tar xz
 sudo mv llmkube /usr/local/bin/
 ```
 
 **Linux:**
 ```bash
-curl -L https://github.com/defilantech/LLMKube/releases/latest/download/llmkube_0.3.2_linux_amd64.tar.gz | tar xz
+curl -L https://github.com/defilantech/LLMKube/releases/latest/download/llmkube_0.3.3_linux_amd64.tar.gz | tar xz
 sudo mv llmkube /usr/local/bin/
 ```
 
 **Verify installation:**
 ```bash
 llmkube version
-# Output: llmkube version 0.3.2
+# Output: llmkube version 0.3.3
 ```
 
 **Deploy TinyLlama:**
