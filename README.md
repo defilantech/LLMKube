@@ -54,7 +54,7 @@ Try LLMKube on your laptop with Minikube - choose your preferred method:
 
 #### Option 1: Using the CLI (Recommended)
 
-Simpler and faster! Just 4 commands:
+Simpler and faster! Just 3 commands:
 
 ```bash
 # 1. Install the CLI (choose one)
@@ -67,20 +67,29 @@ minikube start --cpus 4 --memory 8192
 # 3. Install LLMKube operator
 kubectl apply -k https://github.com/defilantech/LLMKube/config/default
 
-# 4. Deploy a model (one command!)
-llmkube deploy tinyllama \
-  --source https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf \
-  --cpu 500m \
-  --memory 1Gi
+# 4. Deploy a model from the catalog (one command!)
+llmkube deploy phi-3-mini --cpu 500m --memory 1Gi
 
 # Wait for it to be ready (~30 seconds)
-kubectl wait --for=condition=available --timeout=300s inferenceservice/tinyllama-service
+kubectl wait --for=condition=available --timeout=300s inferenceservice/phi-3-mini
 
 # Test it!
-kubectl port-forward svc/tinyllama-service 8080:8080 &
+kubectl port-forward svc/phi-3-mini 8080:8080 &
 curl http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"messages":[{"role":"user","content":"What is Kubernetes?"}],"max_tokens":100}'
+```
+
+**New! 📚 Browse the Model Catalog:**
+```bash
+# See all available pre-configured models
+llmkube catalog list
+
+# Get details about a specific model
+llmkube catalog info llama-3.1-8b
+
+# Deploy with one command (no need to find GGUF URLs!)
+llmkube deploy llama-3.1-8b --gpu
 ```
 
 <details>
@@ -188,7 +197,8 @@ Real benchmarks on GKE with NVIDIA L4 GPU:
 - **Automatic model download** - From HuggingFace, HTTP, or S3
 - **OpenAI-compatible API** - `/v1/chat/completions` endpoint
 - **Multi-replica scaling** - Horizontal pod autoscaling support
-- **Full CLI** - `llmkube deploy/list/status/delete` commands
+- **Full CLI** - `llmkube deploy/list/status/delete/catalog` commands
+- **Model Catalog** - 10 pre-configured popular models (Llama 3.1, Mistral, Qwen, DeepSeek, etc.)
 
 **GPU Acceleration:**
 - ✅ NVIDIA GPU support (T4, L4, A100)
@@ -205,9 +215,9 @@ Real benchmarks on GKE with NVIDIA L4 GPU:
 ### 🔜 Coming Soon
 
 - **Multi-GPU support** - Scale to larger models (13B, 70B+)
-- **Model catalog** - Pre-configured popular models
 - **Auto-scaling** - Based on queue depth and latency
 - **Edge deployment** - K3s, ARM64, air-gapped mode
+- **Expanded catalog** - 50+ pre-configured models with benchmarks
 
 See [ROADMAP.md](ROADMAP.md) for the full development plan.
 
