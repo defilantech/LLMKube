@@ -65,7 +65,8 @@ brew tap defilantech/tap && brew install llmkube  # macOS
 minikube start --cpus 4 --memory 8192
 
 # 3. Install LLMKube operator with Helm (recommended)
-helm install llmkube https://github.com/defilantech/LLMKube/releases/download/v0.3.3/llmkube-0.3.3.tgz \
+helm repo add llmkube https://defilantech.github.io/LLMKube
+helm install llmkube llmkube/llmkube \
   --namespace llmkube-system --create-namespace
 
 # 4. Deploy a model from the catalog (one command!)
@@ -157,7 +158,8 @@ cd terraform/gke
 terraform init && terraform apply -var="project_id=YOUR_PROJECT"
 
 # 3. Install LLMKube with Helm
-helm install llmkube charts/llmkube \
+helm repo add llmkube https://defilantech.github.io/LLMKube
+helm install llmkube llmkube/llmkube \
   --namespace llmkube-system \
   --create-namespace
 
@@ -233,7 +235,12 @@ See [ROADMAP.md](ROADMAP.md) for the full development plan.
 ### Option 1: Helm Chart (Recommended)
 
 ```bash
-helm install llmkube charts/llmkube \
+# Add the Helm repository
+helm repo add llmkube https://defilantech.github.io/LLMKube
+helm repo update
+
+# Install the chart
+helm install llmkube llmkube/llmkube \
   --namespace llmkube-system \
   --create-namespace
 ```
