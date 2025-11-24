@@ -92,6 +92,7 @@ func (r *ServiceRegistry) RegisterEndpoint(
 	// Create or update Endpoints to point to localhost
 	// Since the Metal agent runs on the same machine as minikube,
 	// we can use the host's IP address
+	//nolint:staticcheck // SA1019: Endpoints API is still functional and appropriate for manual endpoint management
 	endpoints := &corev1.Endpoints{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      serviceName,
@@ -102,6 +103,7 @@ func (r *ServiceRegistry) RegisterEndpoint(
 				"llmkube.ai/inference-service": isvc.Name,
 			},
 		},
+		//nolint:staticcheck // SA1019: EndpointSubset still functional
 		Subsets: []corev1.EndpointSubset{
 			{
 				Addresses: []corev1.EndpointAddress{
@@ -156,6 +158,7 @@ func (r *ServiceRegistry) UnregisterEndpoint(ctx context.Context, namespace, nam
 	}
 
 	// Delete Endpoints
+	//nolint:staticcheck // SA1019: Endpoints API is still functional and appropriate for manual endpoint management
 	endpoints := &corev1.Endpoints{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      serviceName,
