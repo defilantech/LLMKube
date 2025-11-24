@@ -64,8 +64,9 @@ brew tap defilantech/tap && brew install llmkube  # macOS
 # 2. Start Minikube
 minikube start --cpus 4 --memory 8192
 
-# 3. Install LLMKube operator
-kubectl apply -k https://github.com/defilantech/LLMKube/config/default
+# 3. Install LLMKube operator with Helm (recommended)
+helm install llmkube https://github.com/defilantech/LLMKube/releases/download/v0.3.0/llmkube-0.3.0.tgz \
+  --namespace llmkube-system --create-namespace
 
 # 4. Deploy a model from the catalog (one command!)
 llmkube deploy phi-3-mini --cpu 500m --memory 1Gi
@@ -93,16 +94,20 @@ llmkube deploy llama-3.1-8b --gpu
 ```
 
 <details>
-<summary><b>Option 2: Using kubectl (No CLI Installation)</b></summary>
+<summary><b>Option 2: Using kubectl (No CLI or Helm)</b></summary>
 
-If you prefer not to install the CLI, use kubectl directly:
+If you prefer not to install the CLI or Helm, use kubectl with kustomize:
 
 ```bash
 # Start Minikube
 minikube start --cpus 4 --memory 8192
 
-# Install LLMKube operator
-kubectl apply -k https://github.com/defilantech/LLMKube/config/default
+# Install LLMKube operator (note: requires cloning the repo for correct image tags)
+git clone https://github.com/defilantech/LLMKube.git
+cd LLMKube
+kubectl apply -k config/default
+
+# Or install just the CRDs and use local controller (see minikube-quickstart.md)
 
 # Deploy a model (copy-paste this whole block)
 kubectl apply -f - <<EOF
@@ -238,7 +243,13 @@ helm install llmkube charts/llmkube \
 ### Option 2: Kustomize
 
 ```bash
-kubectl apply -k https://github.com/defilantech/LLMKube/config/default
+# Clone the repo to get the correct image configuration
+git clone https://github.com/defilantech/LLMKube.git
+cd LLMKube
+kubectl apply -k config/default
+
+# Or use make deploy (requires kustomize installed)
+make deploy
 ```
 
 ### Option 3: Local Development

@@ -43,12 +43,14 @@ Keep this terminal open and continue in a new terminal. See the [Minikube Quicks
 Deploy the controller to your cluster:
 
 ```bash
-# Install CRDs
-kubectl apply -f https://raw.githubusercontent.com/Defilan/LLMKube/main/config/crd/bases/inference.llmkube.dev_models.yaml
-kubectl apply -f https://raw.githubusercontent.com/Defilan/LLMKube/main/config/crd/bases/inference.llmkube.dev_inferenceservices.yaml
+# Option 1: Using Helm (Recommended)
+helm install llmkube https://github.com/defilantech/LLMKube/releases/download/v0.3.0/llmkube-0.3.0.tgz \
+  --namespace llmkube-system --create-namespace
 
-# Install operator
-kubectl apply -f https://raw.githubusercontent.com/Defilan/LLMKube/main/config/manager/manager.yaml
+# Option 2: Using Kustomize
+git clone https://github.com/defilantech/LLMKube.git
+cd LLMKube
+kubectl apply -k config/default
 
 # Wait for operator to be ready
 kubectl wait --for=condition=available --timeout=60s \
@@ -76,20 +78,20 @@ brew tap defilantech/tap
 brew install llmkube
 
 # Or download binary directly
-curl -L https://github.com/defilantech/LLMKube/releases/latest/download/llmkube_0.2.0_darwin_arm64.tar.gz | tar xz
+curl -L https://github.com/defilantech/LLMKube/releases/latest/download/llmkube_0.3.0_darwin_arm64.tar.gz | tar xz
 sudo mv llmkube /usr/local/bin/
 ```
 
 **Linux:**
 ```bash
-curl -L https://github.com/defilantech/LLMKube/releases/latest/download/llmkube_0.2.0_linux_amd64.tar.gz | tar xz
+curl -L https://github.com/defilantech/LLMKube/releases/latest/download/llmkube_0.3.0_linux_amd64.tar.gz | tar xz
 sudo mv llmkube /usr/local/bin/
 ```
 
 **Verify installation:**
 ```bash
 llmkube version
-# Output: llmkube version 0.2.0
+# Output: llmkube version 0.3.0
 ```
 
 **Deploy TinyLlama:**
