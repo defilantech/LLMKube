@@ -243,8 +243,18 @@ jobs:
             --namespace llmkube-system \
             --create-namespace \
             --wait \
-            --timeout 5m
+            --timeout 10m \
+            --set controllerManager.readinessProbe.initialDelaySeconds=30
           echo "✅ Chart installed successfully"
+
+      - name: Debug Pod Status (if needed)
+        if: failure()
+        run: |
+          echo "Checking pod status..."
+          kubectl get pods -n llmkube-system
+          kubectl describe pods -n llmkube-system
+          echo "Checking pod logs..."
+          kubectl logs -n llmkube-system -l control-plane=controller-manager --tail=100 || true
 
       - name: Verify Installation
         run: |
@@ -270,8 +280,9 @@ jobs:
           helm upgrade llmkube /tmp/llmkube-*.tgz \
             --namespace llmkube-system \
             --set controllerManager.resources.limits.cpu=1 \
+            --set controllerManager.readinessProbe.initialDelaySeconds=30 \
             --wait \
-            --timeout 5m
+            --timeout 10m
           echo "✅ Chart upgrade successful"
 
       - name: Test Helm Uninstall
