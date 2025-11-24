@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -43,6 +44,13 @@ import (
 type InferenceServiceReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+}
+
+// sanitizeDNSName converts a string to be DNS-1035 compliant by replacing dots with dashes
+// DNS-1035 requires: lowercase alphanumeric or '-', start with alphabetic, end with alphanumeric
+func sanitizeDNSName(name string) string {
+	// Replace dots with dashes to make it DNS-1035 compliant
+	return strings.ReplaceAll(name, ".", "-")
 }
 
 // +kubebuilder:rbac:groups=inference.llmkube.dev,resources=inferenceservices,verbs=get;list;watch;create;update;patch;delete
@@ -352,6 +360,9 @@ func (r *InferenceServiceReconciler) constructDeployment(
 
 // constructService builds a Service for the InferenceService
 func (r *InferenceServiceReconciler) constructService(isvc *inferencev1alpha1.InferenceService) *corev1.Service {
+	// Sanitize the service name to be DNS-1035 compliant (replace dots with dashes)
+	serviceName := sanitizeDNSName(isvc.Name)
+
 	labels := map[string]string{
 		"app":                           isvc.Name,
 		"inference.llmkube.dev/service": isvc.Name,
@@ -374,7 +385,7 @@ func (r *InferenceServiceReconciler) constructService(isvc *inferencev1alpha1.In
 
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      isvc.Name,
+			Name:      serviceName,
 			Namespace: isvc.Namespace,
 			Labels:    labels,
 		},
