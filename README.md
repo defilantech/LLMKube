@@ -50,13 +50,49 @@ Running LLMs in production shouldn't require a PhD in distributed systems. LLMKu
 
 ### 🏃 5-Minute Local Demo (No Cloud Required)
 
-Try LLMKube on your laptop with Minikube:
+Try LLMKube on your laptop with Minikube - choose your preferred method:
+
+#### Option 1: Using the CLI (Recommended)
+
+Simpler and faster! Just 4 commands:
+
+```bash
+# 1. Install the CLI (choose one)
+brew tap defilantech/tap && brew install llmkube  # macOS
+# OR: curl -L https://github.com/defilantech/LLMKube/releases/latest/download/llmkube_0.2.1_linux_amd64.tar.gz | tar xz && sudo mv llmkube /usr/local/bin/  # Linux
+
+# 2. Start Minikube
+minikube start --cpus 4 --memory 8192
+
+# 3. Install LLMKube operator
+kubectl apply -k https://github.com/defilantech/LLMKube/config/default
+
+# 4. Deploy a model (one command!)
+llmkube deploy tinyllama \
+  --source https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf \
+  --cpu 500m \
+  --memory 1Gi
+
+# Wait for it to be ready (~30 seconds)
+kubectl wait --for=condition=available --timeout=300s inferenceservice/tinyllama-service
+
+# Test it!
+kubectl port-forward svc/tinyllama-service 8080:8080 &
+curl http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"messages":[{"role":"user","content":"What is Kubernetes?"}],"max_tokens":100}'
+```
+
+<details>
+<summary><b>Option 2: Using kubectl (No CLI Installation)</b></summary>
+
+If you prefer not to install the CLI, use kubectl directly:
 
 ```bash
 # Start Minikube
 minikube start --cpus 4 --memory 8192
 
-# Install LLMKube
+# Install LLMKube operator
 kubectl apply -k https://github.com/defilantech/LLMKube/config/default
 
 # Deploy a model (copy-paste this whole block)
@@ -76,6 +112,9 @@ metadata:
 spec:
   modelRef: tinyllama
   replicas: 1
+  resources:
+    cpu: "500m"
+    memory: "1Gi"
 EOF
 
 # Wait for deployment (~30 seconds for model download)
@@ -87,8 +126,9 @@ kubectl run test --rm -i --image=curlimages/curl -- \
   -H "Content-Type: application/json" \
   -d '{"messages":[{"role":"user","content":"What is Kubernetes?"}],"max_tokens":100}'
 ```
+</details>
 
-**See full local setup:** [Minikube Quickstart Guide →](docs/minikube-quickstart.md)
+**See full local setup guide:** [Minikube Quickstart →](docs/minikube-quickstart.md)
 
 ### ⚡ Production GPU Deployment (GKE)
 
