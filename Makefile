@@ -1,5 +1,5 @@
 # Image URL to use all building/pushing image targets
-IMG ?= ghcr.io/defilantech/llmkube-controller:0.3.0
+IMG ?= ghcr.io/defilantech/llmkube-controller:0.3.1
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))

@@ -24,37 +24,56 @@ This guide shows you how to deploy GPU-accelerated LLM inference on your Mac usi
 
 3. **LLMKube CLI**
    ```bash
-   # Download latest release
-   curl -L https://github.com/defilantech/llmkube/releases/latest/download/llmkube_$(uname -s)_$(uname -m).tar.gz | tar xz
+   # Option 1: Install via Homebrew (Recommended for macOS)
+   brew tap defilantech/tap && brew install llmkube
+
+   # Option 2: Download binary manually
+   # For macOS (Apple Silicon M1/M2/M3/M4):
+   curl -L https://github.com/defilantech/LLMKube/releases/latest/download/LLMKube_0.3.1_darwin_arm64.tar.gz | tar xz
+   sudo mv llmkube /usr/local/bin/
+
+   # For macOS (Intel):
+   curl -L https://github.com/defilantech/LLMKube/releases/latest/download/LLMKube_0.3.1_darwin_amd64.tar.gz | tar xz
    sudo mv llmkube /usr/local/bin/
    ```
 
-4. **LLMKube Operator** (for development/testing from branch)
+4. **LLMKube Operator**
    ```bash
-   # From the llmkube repository root
-   make deploy
+   # Option 1: Install from GitHub (Recommended)
+   kubectl apply -k https://github.com/defilantech/LLMKube/config/default
 
-   # This builds and deploys the controller locally
    # Wait for the operator to be ready:
    kubectl wait --for=condition=ready pod -l control-plane=controller-manager -n llmkube-system --timeout=60s
    ```
 
-   For released versions, use:
+   For development/testing from branch:
    ```bash
-   kubectl apply -f https://github.com/defilantech/llmkube/releases/latest/download/install.yaml
+   # From the llmkube repository root
+   make deploy
+
+   # Wait for the operator to be ready:
+   kubectl wait --for=condition=ready pod -l control-plane=controller-manager -n llmkube-system --timeout=60s
    ```
 
 5. **Metal Agent**
    ```bash
+   # Option 1: Build and install from source (Recommended)
    # From llmkube repository
    make install-metal-agent
 
-   # Or download pre-built binary
-   curl -L https://github.com/defilantech/llmkube/releases/latest/download/llmkube-metal-agent_$(uname -s)_$(uname -m).tar.gz | tar xz
+   # Option 2: Download pre-built binary
+   # For macOS (Apple Silicon M1/M2/M3/M4):
+   curl -L https://github.com/defilantech/LLMKube/releases/latest/download/LLMKube-metal-agent_0.3.1_darwin_arm64.tar.gz | tar xz
+   sudo mv llmkube-metal-agent /usr/local/bin/
+
+   # For macOS (Intel):
+   curl -L https://github.com/defilantech/LLMKube/releases/latest/download/LLMKube-metal-agent_0.3.1_darwin_amd64.tar.gz | tar xz
    sudo mv llmkube-metal-agent /usr/local/bin/
 
    # Install and start the service
-   make install-metal-agent
+   mkdir -p ~/Library/LaunchAgents
+   cp deployment/macos/com.llmkube.metal-agent.plist ~/Library/LaunchAgents/
+   launchctl load ~/Library/LaunchAgents/com.llmkube.metal-agent.plist
    ```
 
 ## Verify Setup
