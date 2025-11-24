@@ -267,6 +267,9 @@ release:
 # Homebrew tap
 brews:
   - name: llmkube
+    # Only include the CLI archive (not Metal agent)
+    ids:
+      - llmkube-cli
     repository:
       owner: defilantech
       name: homebrew-tap
