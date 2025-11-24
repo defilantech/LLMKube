@@ -5,6 +5,46 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2025-11-23
+
+### Added
+
+#### Model Catalog (Phase 1)
+- **Pre-configured Model Catalog**: 10 battle-tested LLM models with optimized settings
+  - Small models (1-3B): Llama 3.2 3B, Phi-3 Mini
+  - Medium models (7-8B): Llama 3.1 8B, Mistral 7B, Qwen 2.5 Coder 7B, DeepSeek Coder 6.7B, Gemma 2 9B
+  - Large models (13B+): Qwen 2.5 14B, Mixtral 8x7B, Llama 3.1 70B
+- **Catalog CLI Commands**:
+  - `llmkube catalog list` - Browse all available models with specifications
+  - `llmkube catalog info <model-id>` - View detailed model information
+  - `llmkube catalog list --tag <tag>` - Filter models by tags (code, small, recommended, etc.)
+- **One-Command Deployments**: Deploy catalog models without specifying source URLs
+  - `llmkube deploy llama-3.1-8b --gpu` - No need to find GGUF URLs
+  - Automatic application of optimized settings (quantization, resources, GPU layers)
+  - Flag overrides still work for customization
+- **Embedded Catalog**: YAML catalog embedded in CLI binary for offline usage
+
+#### Developer Experience
+- **Enhanced Deploy Command**: Made `--source` flag optional for catalog models
+- **Smart Defaults**: Catalog models come with pre-configured CPU, memory, GPU layers, and quantization
+- **Better Error Messages**: Helpful suggestions when model not found in catalog
+- **Documentation Updates**: README showcases catalog feature prominently
+
+### Changed
+- **CLI Help Text**: Updated deploy command examples to highlight catalog usage
+- **README**: Added catalog section to features and quick start
+
+### Fixed
+- Line length and linter compliance in catalog implementation
+- E2E test binary path for catalog tests
+
+### Documentation
+- New: `pkg/cli/catalog.yaml` - Embedded model catalog with 10 models
+- New: Comprehensive unit tests (13 test functions, 50+ test cases)
+- New: E2E tests for catalog commands
+- Updated: README with catalog usage examples
+- Updated: Deploy command help text with catalog examples
+
 ## [0.2.0] - 2025-11-17
 
 ### Added
