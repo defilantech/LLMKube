@@ -63,29 +63,25 @@ func NewDeployCommand() *cobra.Command {
 This command creates both a Model resource (to download and manage the model)
 and an InferenceService resource (to serve the model via an OpenAI-compatible API).
 
+You can deploy models from the catalog (recommended) or provide a custom model URL.
+
 Examples:
-  # Deploy Phi-3 mini with CPU (default)
-  llmkube deploy phi-3-mini \
-    --source https://huggingface.co/microsoft/Phi-3-mini-4k-instruct-gguf/resolve/main/Phi-3-mini-4k-instruct-q4.gguf
+  # Deploy from catalog (simplest - recommended!)
+  llmkube deploy llama-3.1-8b --gpu
+  llmkube deploy qwen-2.5-coder-7b --gpu
 
-  # Deploy Llama 3B with GPU acceleration (simple - recommended)
-  llmkube deploy llama-3b --gpu \
-    --source https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q8_0.gguf
+  # List available catalog models
+  llmkube catalog list
 
-  # Deploy with full GPU configuration
-  llmkube deploy llama-7b --gpu \
-    --source <url> \
-    --gpu-count 2 \
-    --gpu-layers 32 \
-    --gpu-memory 16Gi \
-    --quantization Q4_K_M
+  # Deploy catalog model with custom settings
+  llmkube deploy llama-3.1-8b --gpu --replicas 3
 
-  # Deploy with specific resource requirements
-  llmkube deploy mistral-7b \
-    --source <url> \
+  # Deploy custom model with URL
+  llmkube deploy my-model --gpu \
+    --source https://huggingface.co/.../model.gguf \
     --cpu 4 \
     --memory 8Gi \
-    --replicas 2
+    --gpu-layers 32
 `,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -96,7 +92,8 @@ Examples:
 
 	// Flags
 	cmd.Flags().StringVarP(&opts.namespace, "namespace", "n", "default", "Kubernetes namespace")
-	cmd.Flags().StringVarP(&opts.modelSource, "source", "s", "", "Model source URL (GGUF format, required)")
+	cmd.Flags().StringVarP(&opts.modelSource, "source", "s", "",
+		"Model source URL (GGUF format). Optional if using catalog model ID.")
 	cmd.Flags().StringVar(&opts.modelFormat, "format", "gguf", "Model format")
 	cmd.Flags().StringVarP(&opts.quantization, "quantization", "q", "", "Model quantization (e.g., Q4_K_M, Q8_0)")
 	cmd.Flags().Int32VarP(&opts.replicas, "replicas", "r", 1, "Number of replicas")
@@ -120,17 +117,46 @@ Examples:
 	cmd.Flags().BoolVarP(&opts.wait, "wait", "w", true, "Wait for deployment to be ready")
 	cmd.Flags().DurationVar(&opts.timeout, "timeout", 10*time.Minute, "Timeout for waiting")
 
-	// Required flags
-	if err := cmd.MarkFlagRequired("source"); err != nil {
-		// This should never happen in practice as "source" is a valid flag
-		panic(fmt.Sprintf("failed to mark source flag as required: %v", err))
-	}
-
 	return cmd
 }
 
 func runDeploy(opts *deployOptions) error {
 	ctx := context.Background()
+
+	// Check if this is a catalog model (if source is not provided)
+	var catalogModel *Model
+	if opts.modelSource == "" {
+		// Try to load from catalog
+		model, err := GetModel(opts.name)
+		if err != nil {
+			return fmt.Errorf(
+				"model '%s' not found in catalog and no --source provided. "+
+					"Use 'llmkube catalog list' to see available models",
+				opts.name)
+		}
+		catalogModel = model
+
+		// Apply catalog defaults
+		opts.modelSource = catalogModel.Source
+		fmt.Printf("📚 Using catalog model: %s\n", catalogModel.Name)
+
+		// Apply catalog settings if not overridden by flags
+		if opts.quantization == "" {
+			opts.quantization = catalogModel.Quantization
+		}
+		if opts.cpu == "2" { // default value, not user-specified
+			opts.cpu = catalogModel.Resources.CPU
+		}
+		if opts.memory == "4Gi" { // default value, not user-specified
+			opts.memory = catalogModel.Resources.Memory
+		}
+		if opts.gpuLayers == -1 { // default value, not user-specified
+			opts.gpuLayers = catalogModel.GPULayers
+		}
+		if opts.gpuMemory == "" {
+			opts.gpuMemory = catalogModel.Resources.GPUMemory
+		}
+	}
 
 	// Auto-detect accelerator and image based on GPU flag
 	if opts.gpu {
