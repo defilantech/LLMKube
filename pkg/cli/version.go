@@ -33,6 +33,8 @@ var (
 
 // NewVersionCommand creates the version command
 func NewVersionCommand() *cobra.Command {
+	var checkUpdate bool
+
 	cmd := &cobra.Command{
 		Use:   "version",
 		Short: "Print version information",
@@ -41,8 +43,32 @@ func NewVersionCommand() *cobra.Command {
 			fmt.Printf("llmkube version %s\n", Version)
 			fmt.Printf("  git commit: %s\n", GitCommit)
 			fmt.Printf("  build date: %s\n", BuildDate)
+
+			if checkUpdate {
+				fmt.Println("\nChecking for updates...")
+				latestVersion, err := fetchLatestVersion()
+				if err != nil {
+					fmt.Printf("  Unable to check for updates: %v\n", err)
+					return
+				}
+
+				current := normalizeVersion(Version)
+				latest := normalizeVersion(latestVersion)
+
+				if current == latest {
+					fmt.Printf("  ✅ You're running the latest version!\n")
+				} else if current < latest {
+					fmt.Printf("  ⚠️  New version available: %s\n", latestVersion)
+					fmt.Printf("     Update with: brew upgrade llmkube\n")
+					fmt.Printf("     Or download from: https://github.com/defilantech/LLMKube/releases/latest\n")
+				} else {
+					fmt.Printf("  ℹ️  You're running a development version\n")
+				}
+			}
 		},
 	}
+
+	cmd.Flags().BoolVarP(&checkUpdate, "check", "c", false, "Check for updates")
 
 	return cmd
 }
