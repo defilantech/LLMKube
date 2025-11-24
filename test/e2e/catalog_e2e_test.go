@@ -39,14 +39,24 @@ var _ = Describe("Catalog E2E Tests", Ordered, func() {
 		_, err := utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to build CLI")
 
-		// Assuming the binary is output to bin/llmkube
-		cliPath = "../../bin/llmkube"
+		// Binary is output to bin/llmkube from project root
+		// Since tests run from test/e2e/, we need to go up two directories
+		cliPath = "bin/llmkube"
+
+		// Verify the binary exists
+		By("verifying the CLI binary exists")
+		verifyCmd := exec.Command("ls", "-la", cliPath)
+		output, err := utils.Run(verifyCmd)
+		if err != nil {
+			GinkgoWriter.Printf("Failed to find CLI binary at %s: %v\nDirectory contents:\n%s", cliPath, err, output)
+		}
+		Expect(err).NotTo(HaveOccurred(), "CLI binary should exist after build")
 	})
 
 	Context("Catalog Commands", func() {
 		It("should list all models in the catalog", func() {
 			By("running llmkube catalog list")
-			cmd := exec.Command(cliPath, "catalog", "list")
+			cmd := exec.Command("./"+cliPath, "catalog", "list")
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to run catalog list")
 
@@ -65,7 +75,7 @@ var _ = Describe("Catalog E2E Tests", Ordered, func() {
 
 		It("should filter models by tag", func() {
 			By("running llmkube catalog list --tag code")
-			cmd := exec.Command(cliPath, "catalog", "list", "--tag", "code")
+			cmd := exec.Command("./"+cliPath, "catalog", "list", "--tag", "code")
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to run catalog list with tag filter")
 
@@ -79,7 +89,7 @@ var _ = Describe("Catalog E2E Tests", Ordered, func() {
 
 		It("should show detailed info for a specific model", func() {
 			By("running llmkube catalog info llama-3.1-8b")
-			cmd := exec.Command(cliPath, "catalog", "info", "llama-3.1-8b")
+			cmd := exec.Command("./"+cliPath, "catalog", "info", "llama-3.1-8b")
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to run catalog info")
 
@@ -98,7 +108,7 @@ var _ = Describe("Catalog E2E Tests", Ordered, func() {
 
 		It("should fail gracefully for non-existent model", func() {
 			By("running llmkube catalog info non-existent-model")
-			cmd := exec.Command(cliPath, "catalog", "info", "non-existent-model")
+			cmd := exec.Command("./"+cliPath, "catalog", "info", "non-existent-model")
 			_, err := utils.Run(cmd)
 			Expect(err).To(HaveOccurred(), "Expected error for non-existent model")
 		})
@@ -109,7 +119,7 @@ var _ = Describe("Catalog E2E Tests", Ordered, func() {
 			Skip("This requires a running Kubernetes cluster with llmkube operator installed")
 
 			By("deploying llama-3.1-8b from catalog")
-			cmd := exec.Command(cliPath, "deploy", "llama-3.1-8b",
+			cmd := exec.Command("./"+cliPath, "deploy", "llama-3.1-8b",
 				"--cpu", "500m",
 				"--memory", "1Gi",
 				"--wait=false", // Don't wait for readiness in test
@@ -126,7 +136,7 @@ var _ = Describe("Catalog E2E Tests", Ordered, func() {
 			Skip("This requires a running Kubernetes cluster with llmkube operator installed")
 
 			By("attempting to deploy non-catalog model without source")
-			cmd := exec.Command(cliPath, "deploy", "my-custom-model")
+			cmd := exec.Command("./"+cliPath, "deploy", "my-custom-model")
 			_, err := utils.Run(cmd)
 			Expect(err).To(HaveOccurred(), "Expected error for missing source")
 
@@ -140,7 +150,7 @@ var _ = Describe("Catalog E2E Tests", Ordered, func() {
 	Context("Catalog Help Documentation", func() {
 		It("should show catalog in main help", func() {
 			By("running llmkube --help")
-			cmd := exec.Command(cliPath, "--help")
+			cmd := exec.Command("./"+cliPath, "--help")
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -150,7 +160,7 @@ var _ = Describe("Catalog E2E Tests", Ordered, func() {
 
 		It("should show catalog subcommands in help", func() {
 			By("running llmkube catalog --help")
-			cmd := exec.Command(cliPath, "catalog", "--help")
+			cmd := exec.Command("./"+cliPath, "catalog", "--help")
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -161,7 +171,7 @@ var _ = Describe("Catalog E2E Tests", Ordered, func() {
 
 		It("should mention catalog in deploy help", func() {
 			By("running llmkube deploy --help")
-			cmd := exec.Command(cliPath, "deploy", "--help")
+			cmd := exec.Command("./"+cliPath, "deploy", "--help")
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
