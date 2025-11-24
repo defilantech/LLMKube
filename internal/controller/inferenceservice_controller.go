@@ -97,30 +97,40 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		desiredReplicas = *inferenceService.Spec.Replicas
 	}
 
-	// 4. Create or update Deployment
-	deployment := r.constructDeployment(inferenceService, model, desiredReplicas)
-	if err := controllerutil.SetControllerReference(inferenceService, deployment, r.Scheme); err != nil {
-		log.Error(err, "Failed to set controller reference for Deployment")
-		return ctrl.Result{}, err
-	}
-
+	// 4. Check if this is a Metal accelerator deployment
+	// For Metal, we skip Deployment creation as the Metal agent runs llama-server natively
+	isMetal := model.Spec.Hardware != nil && model.Spec.Hardware.Accelerator == "metal"
+	var deployment *appsv1.Deployment
+	var err error
 	existingDeployment := &appsv1.Deployment{}
-	err := r.Get(ctx, types.NamespacedName{Name: deployment.Name, Namespace: deployment.Namespace}, existingDeployment)
-	if err != nil && apierrors.IsNotFound(err) {
-		log.Info("Creating new Deployment", "name", deployment.Name)
-		if err := r.Create(ctx, deployment); err != nil {
-			log.Error(err, "Failed to create Deployment")
-			return r.updateStatus(ctx, inferenceService, "Failed", modelReady, 0, desiredReplicas, "", "Failed to create Deployment")
-		}
-	} else if err != nil {
-		log.Error(err, "Failed to get Deployment")
-		return ctrl.Result{}, err
+
+	if isMetal {
+		log.Info("Metal accelerator detected, skipping Deployment creation (Metal agent handles native execution)")
 	} else {
-		// Update existing deployment if needed
-		existingDeployment.Spec = deployment.Spec
-		if err := r.Update(ctx, existingDeployment); err != nil {
-			log.Error(err, "Failed to update Deployment")
+		// 4a. Create or update Deployment for non-Metal deployments
+		deployment = r.constructDeployment(inferenceService, model, desiredReplicas)
+		if err := controllerutil.SetControllerReference(inferenceService, deployment, r.Scheme); err != nil {
+			log.Error(err, "Failed to set controller reference for Deployment")
 			return ctrl.Result{}, err
+		}
+
+		err = r.Get(ctx, types.NamespacedName{Name: deployment.Name, Namespace: deployment.Namespace}, existingDeployment)
+		if err != nil && apierrors.IsNotFound(err) {
+			log.Info("Creating new Deployment", "name", deployment.Name)
+			if err := r.Create(ctx, deployment); err != nil {
+				log.Error(err, "Failed to create Deployment")
+				return r.updateStatus(ctx, inferenceService, "Failed", modelReady, 0, desiredReplicas, "", "Failed to create Deployment")
+			}
+		} else if err != nil {
+			log.Error(err, "Failed to get Deployment")
+			return ctrl.Result{}, err
+		} else {
+			// Update existing deployment if needed
+			existingDeployment.Spec = deployment.Spec
+			if err := r.Update(ctx, existingDeployment); err != nil {
+				log.Error(err, "Failed to update Deployment")
+				return ctrl.Result{}, err
+			}
 		}
 	}
 
@@ -146,8 +156,14 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 	// 6. Get the Deployment status for ready replicas
 	readyReplicas := int32(0)
-	if err := r.Get(ctx, types.NamespacedName{Name: deployment.Name, Namespace: deployment.Namespace}, existingDeployment); err == nil {
-		readyReplicas = existingDeployment.Status.ReadyReplicas
+	if isMetal {
+		// For Metal deployments, the Metal agent manages the native process
+		// We'll assume it's ready if the Model is ready (Metal agent handles the rest)
+		readyReplicas = desiredReplicas
+	} else if deployment != nil {
+		if err := r.Get(ctx, types.NamespacedName{Name: deployment.Name, Namespace: deployment.Namespace}, existingDeployment); err == nil {
+			readyReplicas = existingDeployment.Status.ReadyReplicas
+		}
 	}
 
 	// 7. Construct endpoint URL

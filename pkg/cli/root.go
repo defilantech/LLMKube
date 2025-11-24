@@ -31,6 +31,10 @@ Scale, secure, and observe local LLMs like microservices.
 Deploy and manage local LLM inference services on Kubernetes with
 built-in observability, SLO enforcement, and edge-native capabilities.`,
 		SilenceUsage: true,
+		PersistentPreRun: func(cmd *cobra.Command, args []string) {
+			// Check for updates on every command (uses cache to avoid slowdown)
+			CheckForUpdate()
+		},
 	}
 
 	// Add subcommands
