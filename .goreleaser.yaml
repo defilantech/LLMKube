@@ -54,6 +54,28 @@ builds:
     env:
       - CGO_ENABLED=0
 
+  - id: llmkube-metal-agent
+    main: ./cmd/metal-agent
+    binary: llmkube-metal-agent
+
+    # Set version information at build time
+    ldflags:
+      - -s -w
+      - -X main.Version={{.Version}}
+      - -X main.GitCommit={{.FullCommit}}
+      - -X main.BuildDate={{.Date}}
+
+    # macOS only (Metal is macOS-specific)
+    goos:
+      - darwin
+
+    goarch:
+      - arm64  # M1/M2/M3/M4 (Apple Silicon)
+      - amd64  # Intel Macs (Metal 2+)
+
+    env:
+      - CGO_ENABLED=0
+
 archives:
   - id: llmkube-cli
     builds:
@@ -73,6 +95,20 @@ archives:
     format_overrides:
       - goos: windows
         format: zip
+
+  - id: llmkube-metal-agent
+    builds:
+      - llmkube-metal-agent
+
+    # Archive name template
+    name_template: "{{ .ProjectName }}-metal-agent_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+    # Files to include
+    files:
+      - LICENSE
+      - README.md
+      - examples/metal-quickstart/*
+      - deployment/macos/*
 
 checksum:
   name_template: "checksums.txt"

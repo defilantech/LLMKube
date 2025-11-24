@@ -116,6 +116,37 @@ build-cli: fmt vet ## Build llmkube CLI binary.
 install-cli: build-cli ## Install llmkube CLI to /usr/local/bin (requires sudo).
 	sudo cp bin/llmkube /usr/local/bin/llmkube
 
+##@ Metal Agent (macOS only)
+
+.PHONY: build-metal-agent
+build-metal-agent: fmt vet ## Build Metal agent for macOS (requires macOS).
+	@echo "Building Metal agent for macOS..."
+	GOOS=darwin GOARCH=$(shell uname -m | sed 's/x86_64/amd64/;s/arm64/arm64/') \
+		go build -o bin/llmkube-metal-agent ./cmd/metal-agent
+
+.PHONY: install-metal-agent
+install-metal-agent: build-metal-agent ## Install Metal agent and launchd service (macOS only).
+	@echo "Installing Metal agent..."
+	sudo cp bin/llmkube-metal-agent /usr/local/bin/llmkube-metal-agent
+	@echo "Installing launchd service..."
+	mkdir -p ~/Library/LaunchAgents
+	cp deployment/macos/com.llmkube.metal-agent.plist ~/Library/LaunchAgents/
+	@echo "Starting Metal agent service..."
+	launchctl load ~/Library/LaunchAgents/com.llmkube.metal-agent.plist || true
+	@echo "✅ Metal agent installed and started"
+	@echo ""
+	@echo "To check status: launchctl list | grep llmkube"
+	@echo "To view logs: tail -f /tmp/llmkube-metal-agent.log"
+
+.PHONY: uninstall-metal-agent
+uninstall-metal-agent: ## Uninstall Metal agent and launchd service.
+	@echo "Stopping Metal agent service..."
+	launchctl unload ~/Library/LaunchAgents/com.llmkube.metal-agent.plist || true
+	@echo "Removing Metal agent..."
+	sudo rm -f /usr/local/bin/llmkube-metal-agent
+	rm -f ~/Library/LaunchAgents/com.llmkube.metal-agent.plist
+	@echo "✅ Metal agent uninstalled"
+
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
 	go run ./cmd/main.go

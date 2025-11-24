@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.llmkube.metal-agent</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/llmkube-metal-agent</string>
+        <string>--namespace</string>
+        <string>default</string>
+        <string>--model-store</string>
+        <string>/tmp/llmkube-models</string>
+        <string>--llama-server</string>
+        <string>/opt/homebrew/bin/llama-server</string>
+        <string>--port</string>
+        <string>9090</string>
+        <string>--log-level</string>
+        <string>info</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/llmkube-metal-agent.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/llmkube-metal-agent.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>GGML_METAL_ENABLE</key>
+        <string>1</string>
+    </dict>
+
+    <key>WorkingDirectory</key>
+    <string>/tmp</string>
+
+    <!-- Restart on failure with throttle -->
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+
+    <!-- Nice level (lower = higher priority) -->
+    <key>Nice</key>
+    <integer>-5</integer>
+</dict>
+</plist>
