@@ -41,5 +41,8 @@ terraform/**/terraform.tfvars
 terraform/**/.terraform/
 terraform/**/.terraform.lock.hcl
 
+# Build artifacts
+dist/
+
 # Claude Code settings (IDE-specific)
 .claude/
