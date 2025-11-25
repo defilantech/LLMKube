@@ -1,0 +1,44 @@
+# Multi-GPU deployment for Azure AKS with Spot instances
+# This example shows how to configure for Azure-specific features
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: Model
+metadata:
+  name: llama-13b-multi-gpu
+spec:
+  source: https://huggingface.co/TheBloke/Llama-2-13B-GGUF/resolve/main/llama-2-13b.Q4_K_M.gguf
+  format: gguf
+  quantization: Q4_K_M
+  hardware:
+    accelerator: cuda
+    gpu:
+      enabled: true
+      count: 2              # Use 2 GPUs
+      vendor: nvidia
+      layers: -1            # Offload all layers
+      sharding:
+        strategy: layer     # Layer-based sharding
+---
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: InferenceService
+metadata:
+  name: llama-13b-multi-gpu-service
+spec:
+  modelRef: llama-13b-multi-gpu
+  replicas: 1
+  image: ghcr.io/ggerganov/llama.cpp:server-cuda
+  resources:
+    gpu: 2              # Request 2 GPUs
+    gpuMemory: "16Gi"
+    cpu: "4"
+    memory: "8Gi"
+
+  # Azure-specific configuration for spot instances
+  tolerations:
+    - key: kubernetes.azure.com/scalesetpriority
+      operator: Equal
+      value: spot
+      effect: NoSchedule
+
+  # Optional: target specific node pool
+  # nodeSelector:
+  #   agentpool: gpupool

@@ -1,0 +1,40 @@
+#!/bin/bash
+# Quick teardown script for EKS GPU cluster
+
+set -e
+
+echo "🗑️  LLMKube EKS GPU Cluster Teardown"
+echo "===================================="
+echo ""
+
+# Check if terraform state exists
+if [ ! -f terraform.tfstate ]; then
+    echo "❌ No terraform state found. Cluster may not exist or was already destroyed."
+    exit 1
+fi
+
+# Show current resources
+echo "📊 Current cluster resources:"
+terraform show | grep -E "(aws_eks_cluster|eks_node_group)" | head -20
+echo ""
+
+# Confirm
+read -p "⚠️  Destroy cluster and all resources? This cannot be undone! (y/N): " -n 1 -r
+echo
+if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+    echo "Cancelled."
+    exit 0
+fi
+
+# Destroy
+echo ""
+echo "🔥 Destroying cluster..."
+terraform destroy -auto-approve
+
+# Verify
+echo ""
+echo "✅ Cluster destroyed successfully!"
+echo ""
+echo "💰 Cost savings: No more hourly charges!"
+echo ""
+echo "Note: If you had persistent volumes or load balancers, check AWS Console to ensure they're deleted."

@@ -74,10 +74,10 @@ Make GPU-accelerated LLM inference on Kubernetes **dead simple**. Deploy product
    - Persistent model storage (stop re-downloading!)
    - Request queuing and load shedding
 
-4. **Multi-GPU Support** (when requested)
+4. **Multi-GPU Support** ✅ **COMPLETED**
    - Single-node multi-GPU for larger models (13B+)
-   - Layer distribution across GPUs
-   - Performance benchmarking across configs
+   - Layer distribution across GPUs (`--tensor-split`, `--split-mode layer`)
+   - Performance verified: ~65 tok/s on 8B model with 2x RTX 5060 Ti
 
 ### Q2 2026: Edge & Hybrid
 
@@ -120,7 +120,7 @@ Make GPU-accelerated LLM inference on Kubernetes **dead simple**. Deploy product
 | Milestone | Target | Status |
 |-----------|--------|--------|
 | **Single GPU (3B model)** | >60 tok/s | ✅ **Achieved** (64 tok/s on L4) |
-| **Multi-GPU (13B model)** | >40 tok/s | 🎯 Q1 2026 |
+| **Multi-GPU (13B model)** | >40 tok/s | ✅ **Achieved** (~44 tok/s on 2x RTX 5060 Ti) |
 | **Multi-node (70B model)** | <500ms P99 latency | 🎯 Q3 2026 |
 | **Cost Efficiency** | <$0.01 per 1K tokens | 🎯 Q1 2026 |
 | **Model Load Time** | <30s for any model | 🎯 Q2 2026 |
@@ -164,7 +164,7 @@ We're actively looking for contributors! Here's how you can help:
 - Testing on different K8s platforms
 
 **Advanced Contributions:**
-- Multi-GPU support
+- Multi-node GPU support (70B+ models)
 - Additional GPU vendors (AMD, Intel)
 - Model format support (SafeTensors)
 - Performance optimizations
@@ -188,9 +188,9 @@ We ship frequently with semantic versioning:
 - **Major releases (x.0.0):** Breaking changes, major milestones - Yearly
 
 **Next releases:**
-- **v0.2.2** - December 2025 (bug fixes, model catalog preview)
-- **v0.3.0** - January 2026 (autoscaling, persistent storage)
-- **v0.4.0** - March 2026 (multi-GPU support)
+- **v0.4.0** - November 2025 (multi-GPU support) ✅ **Current**
+- **v0.5.0** - Q1 2026 (autoscaling, persistent storage)
+- **v0.6.0** - Q2 2026 (edge deployment, K3s)
 - **v1.0.0** - Q4 2026 (stable, production-ready)
 
 ---

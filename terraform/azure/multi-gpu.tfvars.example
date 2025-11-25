@@ -1,0 +1,67 @@
+# Multi-GPU Configuration for LLMKube Testing on Azure
+# Use this for testing 2-GPU single-node deployments (Issue #2)
+
+# IMPORTANT: Set your Azure subscription ID
+subscription_id = "YOUR_SUBSCRIPTION_ID_HERE" # CHANGE THIS!
+
+# Resource group and cluster configuration
+resource_group_name = "llmkube-multi-gpu-rg"
+cluster_name        = "llmkube-multi-gpu-test"
+location            = "westus2" # West US 2 has good GPU quota availability
+kubernetes_version  = "1.28"
+
+# Multi-GPU Node Pool Configuration
+# Option 1: Standard_NC12s_v3 (2x V100, Recommended for 2-GPU testing)
+gpu_vm_size = "Standard_NC12s_v3" # 12 vCPU, 112GB RAM, 2x Tesla V100 (16GB each)
+gpu_count   = 2                   # Use both V100 GPUs
+
+# Option 2: Standard_NC64as_T4_v3 (4x T4, use 2 of them)
+# Uncomment these lines and comment out the V100 config above:
+# gpu_vm_size = "Standard_NC64as_T4_v3"  # 64 vCPU, 440GB RAM, 4x Tesla T4 (16GB each)
+# gpu_count   = 2                         # We'll use 2 of the 4 T4s
+
+# Option 3: Standard_NC24ads_A100_v4 (2x A100, highest performance but expensive)
+# Uncomment these lines and comment out the V100 config above:
+# gpu_vm_size = "Standard_NC24ads_A100_v4"  # 24 vCPU, 220GB RAM, 2x A100 (80GB each)
+# gpu_count   = 2                            # Use both A100 GPUs
+
+# Auto-scaling configuration
+min_gpu_nodes = 0 # Start at 0 to save money (auto-scale up when needed)
+max_gpu_nodes = 2 # Allow up to 2 nodes (4 total GPUs if both running with 2x GPU VMs)
+
+# System node pool (for Kubernetes system workloads)
+system_node_count = 1
+system_vm_size    = "Standard_D2s_v3" # 2 vCPU, 8GB RAM (cheap for system workloads)
+
+# Use Azure Spot VMs to save ~80% on cost
+enable_spot    = true
+spot_max_price = -1 # -1 means pay up to on-demand price (avoids eviction)
+
+# Disk size (increase for larger models)
+disk_size_gb = 200 # Larger disk for 13B+ models
+
+# Tags for cost tracking
+tags = {
+  project     = "llmkube"
+  environment = "testing"
+  purpose     = "multi-gpu-llm-inference"
+  issue       = "2"
+}
+
+# Estimated Costs (West US 2, as of Nov 2025):
+# Standard_NC12s_v3 (2x V100):
+#   - Spot: ~$0.90/hr per node (~$650/mo if 24/7)
+#   - On-demand: ~$4.536/hr per node (~$3,270/mo if 24/7)
+#
+# Standard_NC64as_T4_v3 (4x T4):
+#   - Spot: ~$1.20/hr per node (~$865/mo if 24/7)
+#   - On-demand: ~$6.024/hr per node (~$4,340/mo if 24/7)
+#
+# Standard_NC24ads_A100_v4 (2x A100):
+#   - Spot: ~$2.50/hr per node (~$1,800/mo if 24/7)
+#   - On-demand: ~$12.50/hr per node (~$9,000/mo if 24/7)
+#
+# With auto-scale to 0 and testing workflow: ~$50-200/mo
+#
+# Note: West US 2 typically has better GPU quota availability than East regions
+# Request GPU quota increase if needed: Portal > Subscriptions > Usage + quotas
