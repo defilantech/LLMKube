@@ -208,9 +208,10 @@ Real benchmarks on GKE with NVIDIA L4 GPU:
 - **Model Catalog** - 10 pre-configured popular models (Llama 3.1, Mistral, Qwen, DeepSeek, etc.)
 
 **GPU Acceleration:**
-- ✅ NVIDIA GPU support (T4, L4, A100)
-- ✅ Automatic layer offloading (29/29 layers to GPU)
-- ✅ GKE Terraform deployment included
+- ✅ NVIDIA GPU support (T4, L4, A100, RTX)
+- ✅ **Multi-GPU support** - Run 13B-70B+ models across 2-8 GPUs ([guide](MULTI-GPU-DEPLOYMENT.md))
+- ✅ Automatic layer offloading and tensor splitting
+- ✅ Multi-cloud Terraform (GKE, AKS, EKS)
 - ✅ Cost optimization (spot instances, auto-scale to 0)
 
 **Observability:**
@@ -221,7 +222,6 @@ Real benchmarks on GKE with NVIDIA L4 GPU:
 
 ### 🔜 Coming Soon
 
-- **Multi-GPU support** - Scale to larger models (13B, 70B+)
 - **Auto-scaling** - Based on queue depth and latency
 - **Edge deployment** - K3s, ARM64, air-gapped mode
 - **Expanded catalog** - 50+ pre-configured models with benchmarks
@@ -564,7 +564,7 @@ A: Yes - configure image pull secrets or use PersistentVolumes with `file://` UR
 A: Use spot instances (default), auto-scale to 0 (default), and run `terraform destroy` when not in use.
 
 **Q: Is this production-ready?**
-A: Yes for single-GPU deployments with monitoring. Multi-GPU and advanced auto-scaling coming in Q1 2026.
+A: Yes! Single-GPU and multi-GPU deployments are fully supported with monitoring. Advanced auto-scaling coming soon.
 
 **Q: Can I use this in air-gapped environments?**
 A: Yes! Pre-download models to PersistentVolumes and use local image registries. Full air-gap support planned for Q1 2026.
@@ -581,7 +581,6 @@ We're just getting started! Here's how to get involved:
 - 🤝 **Contributing:** We welcome PRs! See [ROADMAP.md](ROADMAP.md) for priorities
 
 **Help wanted:**
-- Multi-GPU support
 - Additional model formats (SafeTensors)
 - AMD/Intel GPU support
 - Documentation improvements
