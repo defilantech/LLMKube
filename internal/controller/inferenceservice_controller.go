@@ -191,18 +191,14 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 // calculateTensorSplit computes the tensor split ratios for multi-GPU inference
 // Returns a comma-separated string of ratios for llama.cpp --tensor-split flag
-func calculateTensorSplit(gpuCount int32, sharding *inferencev1alpha1.GPUShardingSpec) string {
+func calculateTensorSplit(gpuCount int32, _ *inferencev1alpha1.GPUShardingSpec) string {
 	if gpuCount <= 1 {
 		return ""
 	}
 
-	// Check if custom layer split is specified in sharding config
-	if sharding != nil && len(sharding.LayerSplit) > 0 {
-		// Custom split ratios specified
-		// Example: LayerSplit: ["0-15", "16-31"] means 50%/50% for 32-layer model
-		// For now, we'll support even splits and weighted splits in the future
-		// TODO: Parse LayerSplit ranges to calculate exact ratios
-	}
+	// TODO: Support custom layer splits from sharding.LayerSplit
+	// Example: LayerSplit: ["0-15", "16-31"] would mean 50%/50% for 32-layer model
+	// For now, we use even splits across all GPUs
 
 	// Default: Even split across all GPUs
 	// llama.cpp accepts integer ratios that will be normalized
