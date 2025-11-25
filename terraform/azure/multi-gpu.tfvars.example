@@ -2,7 +2,7 @@
 # Use this for testing 2-GPU single-node deployments (Issue #2)
 
 # IMPORTANT: Set your Azure subscription ID
-subscription_id = "05ca1589-3c77-4cb6-b779-51876c6481c4" # CHANGE THIS!
+subscription_id = "YOUR_SUBSCRIPTION_ID_HERE" # CHANGE THIS!
 
 # Resource group and cluster configuration
 resource_group_name = "llmkube-multi-gpu-rg"
