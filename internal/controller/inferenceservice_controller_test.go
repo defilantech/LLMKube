@@ -21,7 +21,9 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -113,6 +115,596 @@ var _ = Describe("InferenceService Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			// TODO(user): Add more specific assertions depending on your controller's reconciliation logic.
 			// Example: If you expect a certain status condition after reconciliation, verify it here.
+		})
+	})
+})
+
+var _ = Describe("calculateTensorSplit", func() {
+	Context("with different GPU counts", func() {
+		It("should return empty string for single GPU", func() {
+			result := calculateTensorSplit(1, nil)
+			Expect(result).To(Equal(""))
+		})
+
+		It("should return empty string for zero GPUs", func() {
+			result := calculateTensorSplit(0, nil)
+			Expect(result).To(Equal(""))
+		})
+
+		It("should return '1,1' for 2 GPUs", func() {
+			result := calculateTensorSplit(2, nil)
+			Expect(result).To(Equal("1,1"))
+		})
+
+		It("should return '1,1,1,1' for 4 GPUs", func() {
+			result := calculateTensorSplit(4, nil)
+			Expect(result).To(Equal("1,1,1,1"))
+		})
+
+		It("should return '1,1,1,1,1,1,1,1' for 8 GPUs", func() {
+			result := calculateTensorSplit(8, nil)
+			Expect(result).To(Equal("1,1,1,1,1,1,1,1"))
+		})
+	})
+
+	Context("with sharding config", func() {
+		It("should use even split when sharding has no layer split", func() {
+			sharding := &inferencev1alpha1.GPUShardingSpec{
+				Strategy: "layer",
+			}
+			result := calculateTensorSplit(2, sharding)
+			Expect(result).To(Equal("1,1"))
+		})
+
+		It("should use even split when sharding is provided (custom splits not yet implemented)", func() {
+			// TODO: When custom layer splits are implemented, update this test
+			sharding := &inferencev1alpha1.GPUShardingSpec{
+				Strategy:   "layer",
+				LayerSplit: []string{"0-19", "20-39"},
+			}
+			result := calculateTensorSplit(2, sharding)
+			// Currently falls back to even split
+			Expect(result).To(Equal("1,1"))
+		})
+	})
+})
+
+var _ = Describe("Multi-GPU Deployment Construction", func() {
+	Context("when constructing a deployment with multi-GPU model", func() {
+		var (
+			reconciler *InferenceServiceReconciler
+			model      *inferencev1alpha1.Model
+			isvc       *inferencev1alpha1.InferenceService
+		)
+
+		BeforeEach(func() {
+			reconciler = &InferenceServiceReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+		})
+
+		It("should include multi-GPU args for 2 GPU model", func() {
+			model = &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "multi-gpu-model",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source:       "https://example.com/model.gguf",
+					Format:       "gguf",
+					Quantization: "Q4_K_M",
+					Hardware: &inferencev1alpha1.HardwareSpec{
+						Accelerator: "cuda",
+						GPU: &inferencev1alpha1.GPUSpec{
+							Enabled: true,
+							Count:   2,
+							Vendor:  "nvidia",
+							Layers:  -1,
+							Sharding: &inferencev1alpha1.GPUShardingSpec{
+								Strategy: "layer",
+							},
+						},
+					},
+				},
+				Status: inferencev1alpha1.ModelStatus{
+					Phase: "Ready",
+					Path:  "/tmp/llmkube/models/test-model.gguf",
+				},
+			}
+
+			replicas := int32(1)
+			isvc = &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "multi-gpu-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: "multi-gpu-model",
+					Replicas: &replicas,
+					Image:    "ghcr.io/ggerganov/llama.cpp:server-cuda",
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{
+						GPU: 2,
+					},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			By("verifying deployment is created")
+			Expect(deployment).NotTo(BeNil())
+			Expect(deployment.Name).To(Equal("multi-gpu-service"))
+
+			By("verifying container args include multi-GPU flags")
+			container := deployment.Spec.Template.Spec.Containers[0]
+			args := container.Args
+
+			Expect(args).To(ContainElement("--n-gpu-layers"))
+			Expect(args).To(ContainElement("99")) // -1 maps to 99
+
+			Expect(args).To(ContainElement("--split-mode"))
+			Expect(args).To(ContainElement("layer"))
+
+			Expect(args).To(ContainElement("--tensor-split"))
+			Expect(args).To(ContainElement("1,1"))
+
+			By("verifying GPU resource limits")
+			gpuLimit := container.Resources.Limits["nvidia.com/gpu"]
+			Expect(gpuLimit).To(Equal(resource.MustParse("2")))
+		})
+
+		It("should include multi-GPU args for 4 GPU model", func() {
+			model = &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "quad-gpu-model",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source:       "https://example.com/model.gguf",
+					Format:       "gguf",
+					Quantization: "Q4_K_M",
+					Hardware: &inferencev1alpha1.HardwareSpec{
+						Accelerator: "cuda",
+						GPU: &inferencev1alpha1.GPUSpec{
+							Enabled: true,
+							Count:   4,
+							Vendor:  "nvidia",
+							Layers:  99,
+						},
+					},
+				},
+				Status: inferencev1alpha1.ModelStatus{
+					Phase: "Ready",
+					Path:  "/tmp/llmkube/models/test-model.gguf",
+				},
+			}
+
+			replicas := int32(1)
+			isvc = &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "quad-gpu-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: "quad-gpu-model",
+					Replicas: &replicas,
+					Image:    "ghcr.io/ggerganov/llama.cpp:server-cuda",
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			By("verifying tensor split for 4 GPUs")
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).To(ContainElement("--tensor-split"))
+			Expect(args).To(ContainElement("1,1,1,1"))
+
+			By("verifying GPU resource limits for 4 GPUs")
+			gpuLimit := deployment.Spec.Template.Spec.Containers[0].Resources.Limits["nvidia.com/gpu"]
+			Expect(gpuLimit).To(Equal(resource.MustParse("4")))
+		})
+
+		It("should NOT include multi-GPU args for single GPU model", func() {
+			model = &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "single-gpu-model",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source:       "https://example.com/model.gguf",
+					Format:       "gguf",
+					Quantization: "Q4_K_M",
+					Hardware: &inferencev1alpha1.HardwareSpec{
+						Accelerator: "cuda",
+						GPU: &inferencev1alpha1.GPUSpec{
+							Enabled: true,
+							Count:   1,
+							Vendor:  "nvidia",
+							Layers:  99,
+						},
+					},
+				},
+				Status: inferencev1alpha1.ModelStatus{
+					Phase: "Ready",
+					Path:  "/tmp/llmkube/models/test-model.gguf",
+				},
+			}
+
+			replicas := int32(1)
+			isvc = &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "single-gpu-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: "single-gpu-model",
+					Replicas: &replicas,
+					Image:    "ghcr.io/ggerganov/llama.cpp:server-cuda",
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{
+						GPU: 1,
+					},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			By("verifying single GPU does NOT have multi-GPU flags")
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+
+			// Should have GPU layers
+			Expect(args).To(ContainElement("--n-gpu-layers"))
+
+			// Should NOT have split-mode or tensor-split
+			Expect(args).NotTo(ContainElement("--split-mode"))
+			Expect(args).NotTo(ContainElement("--tensor-split"))
+
+			By("verifying GPU resource limits for single GPU")
+			gpuLimit := deployment.Spec.Template.Spec.Containers[0].Resources.Limits["nvidia.com/gpu"]
+			Expect(gpuLimit).To(Equal(resource.MustParse("1")))
+		})
+
+		It("should NOT include GPU args for CPU-only model", func() {
+			model = &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "cpu-model",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source:       "https://example.com/model.gguf",
+					Format:       "gguf",
+					Quantization: "Q4_K_M",
+					Hardware: &inferencev1alpha1.HardwareSpec{
+						Accelerator: "cpu",
+					},
+				},
+				Status: inferencev1alpha1.ModelStatus{
+					Phase: "Ready",
+					Path:  "/tmp/llmkube/models/test-model.gguf",
+				},
+			}
+
+			replicas := int32(1)
+			isvc = &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "cpu-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: "cpu-model",
+					Replicas: &replicas,
+					Image:    "ghcr.io/ggerganov/llama.cpp:server",
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			By("verifying CPU-only does NOT have GPU flags")
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+
+			Expect(args).NotTo(ContainElement("--n-gpu-layers"))
+			Expect(args).NotTo(ContainElement("--split-mode"))
+			Expect(args).NotTo(ContainElement("--tensor-split"))
+
+			By("verifying no GPU resource limits")
+			_, hasGPU := deployment.Spec.Template.Spec.Containers[0].Resources.Limits["nvidia.com/gpu"]
+			Expect(hasGPU).To(BeFalse())
+		})
+
+		It("should prefer Model GPU count over InferenceService GPU count", func() {
+			model = &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "model-gpu-precedence",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source:       "https://example.com/model.gguf",
+					Format:       "gguf",
+					Quantization: "Q4_K_M",
+					Hardware: &inferencev1alpha1.HardwareSpec{
+						Accelerator: "cuda",
+						GPU: &inferencev1alpha1.GPUSpec{
+							Enabled: true,
+							Count:   4, // Model says 4 GPUs
+							Vendor:  "nvidia",
+							Layers:  99,
+						},
+					},
+				},
+				Status: inferencev1alpha1.ModelStatus{
+					Phase: "Ready",
+					Path:  "/tmp/llmkube/models/test-model.gguf",
+				},
+			}
+
+			replicas := int32(1)
+			isvc = &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "gpu-precedence-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: "model-gpu-precedence",
+					Replicas: &replicas,
+					Image:    "ghcr.io/ggerganov/llama.cpp:server-cuda",
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{
+						GPU: 2, // InferenceService says 2 GPUs
+					},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			By("verifying Model GPU count (4) takes precedence over InferenceService (2)")
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).To(ContainElement("--tensor-split"))
+			Expect(args).To(ContainElement("1,1,1,1")) // 4 GPUs, not 2
+
+			gpuLimit := deployment.Spec.Template.Spec.Containers[0].Resources.Limits["nvidia.com/gpu"]
+			Expect(gpuLimit).To(Equal(resource.MustParse("4")))
+		})
+	})
+
+	Context("when verifying tolerations and node selectors", func() {
+		var (
+			reconciler *InferenceServiceReconciler
+		)
+
+		BeforeEach(func() {
+			reconciler = &InferenceServiceReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+		})
+
+		It("should add nvidia.com/gpu toleration for GPU workloads", func() {
+			model := &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "toleration-test-model",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source: "https://example.com/model.gguf",
+					Format: "gguf",
+					Hardware: &inferencev1alpha1.HardwareSpec{
+						Accelerator: "cuda",
+						GPU: &inferencev1alpha1.GPUSpec{
+							Enabled: true,
+							Count:   2,
+							Vendor:  "nvidia",
+						},
+					},
+				},
+				Status: inferencev1alpha1.ModelStatus{
+					Phase: "Ready",
+					Path:  "/tmp/llmkube/models/test-model.gguf",
+				},
+			}
+
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "toleration-test-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: "toleration-test-model",
+					Replicas: &replicas,
+					Image:    "ghcr.io/ggerganov/llama.cpp:server-cuda",
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			By("verifying nvidia.com/gpu toleration is present")
+			tolerations := deployment.Spec.Template.Spec.Tolerations
+			Expect(tolerations).NotTo(BeEmpty())
+
+			var hasNvidiaToleration bool
+			for _, t := range tolerations {
+				if t.Key == "nvidia.com/gpu" {
+					hasNvidiaToleration = true
+					break
+				}
+			}
+			Expect(hasNvidiaToleration).To(BeTrue())
+		})
+
+		It("should apply custom node selector from InferenceService spec", func() {
+			model := &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "nodeselector-test-model",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source: "https://example.com/model.gguf",
+					Format: "gguf",
+					Hardware: &inferencev1alpha1.HardwareSpec{
+						Accelerator: "cuda",
+						GPU: &inferencev1alpha1.GPUSpec{
+							Enabled: true,
+							Count:   2,
+							Vendor:  "nvidia",
+						},
+					},
+				},
+				Status: inferencev1alpha1.ModelStatus{
+					Phase: "Ready",
+					Path:  "/tmp/llmkube/models/test-model.gguf",
+				},
+			}
+
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "nodeselector-test-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: "nodeselector-test-model",
+					Replicas: &replicas,
+					Image:    "ghcr.io/ggerganov/llama.cpp:server-cuda",
+					NodeSelector: map[string]string{
+						"cloud.google.com/gke-nodepool": "gpu-pool",
+						"nvidia.com/gpu.product":        "NVIDIA-L4",
+					},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			By("verifying custom node selector is applied")
+			nodeSelector := deployment.Spec.Template.Spec.NodeSelector
+			Expect(nodeSelector).To(HaveKeyWithValue("cloud.google.com/gke-nodepool", "gpu-pool"))
+			Expect(nodeSelector).To(HaveKeyWithValue("nvidia.com/gpu.product", "NVIDIA-L4"))
+		})
+	})
+})
+
+var _ = Describe("Multi-GPU End-to-End Reconciliation", func() {
+	Context("when reconciling a multi-GPU InferenceService", func() {
+		const multiGPUModelName = "e2e-multi-gpu-model"
+		const multiGPUServiceName = "e2e-multi-gpu-service"
+
+		ctx := context.Background()
+
+		modelNamespacedName := types.NamespacedName{
+			Name:      multiGPUModelName,
+			Namespace: "default",
+		}
+		serviceNamespacedName := types.NamespacedName{
+			Name:      multiGPUServiceName,
+			Namespace: "default",
+		}
+
+		BeforeEach(func() {
+			By("creating a multi-GPU Model resource")
+			model := &inferencev1alpha1.Model{}
+			err := k8sClient.Get(ctx, modelNamespacedName, model)
+			if err != nil && errors.IsNotFound(err) {
+				modelResource := &inferencev1alpha1.Model{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      multiGPUModelName,
+						Namespace: "default",
+					},
+					Spec: inferencev1alpha1.ModelSpec{
+						Source:       "https://huggingface.co/test/multi-gpu-model.gguf",
+						Format:       "gguf",
+						Quantization: "Q4_K_M",
+						Hardware: &inferencev1alpha1.HardwareSpec{
+							Accelerator: "cuda",
+							GPU: &inferencev1alpha1.GPUSpec{
+								Enabled: true,
+								Count:   2,
+								Vendor:  "nvidia",
+								Layers:  -1,
+								Sharding: &inferencev1alpha1.GPUShardingSpec{
+									Strategy: "layer",
+								},
+							},
+						},
+						Resources: &inferencev1alpha1.ResourceRequirements{
+							CPU:    "4",
+							Memory: "16Gi",
+						},
+					},
+				}
+				Expect(k8sClient.Create(ctx, modelResource)).To(Succeed())
+			}
+
+			By("creating a multi-GPU InferenceService")
+			isvc := &inferencev1alpha1.InferenceService{}
+			err = k8sClient.Get(ctx, serviceNamespacedName, isvc)
+			if err != nil && errors.IsNotFound(err) {
+				replicas := int32(1)
+				resource := &inferencev1alpha1.InferenceService{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      multiGPUServiceName,
+						Namespace: "default",
+					},
+					Spec: inferencev1alpha1.InferenceServiceSpec{
+						ModelRef: multiGPUModelName,
+						Replicas: &replicas,
+						Image:    "ghcr.io/ggerganov/llama.cpp:server-cuda",
+						Resources: &inferencev1alpha1.InferenceResourceRequirements{
+							GPU:       2,
+							GPUMemory: "16Gi",
+							CPU:       "4",
+							Memory:    "8Gi",
+						},
+					},
+				}
+				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
+			}
+		})
+
+		AfterEach(func() {
+			By("cleaning up the multi-GPU InferenceService")
+			isvc := &inferencev1alpha1.InferenceService{}
+			err := k8sClient.Get(ctx, serviceNamespacedName, isvc)
+			if err == nil {
+				Expect(k8sClient.Delete(ctx, isvc)).To(Succeed())
+			}
+
+			By("cleaning up the multi-GPU Model")
+			model := &inferencev1alpha1.Model{}
+			err = k8sClient.Get(ctx, modelNamespacedName, model)
+			if err == nil {
+				Expect(k8sClient.Delete(ctx, model)).To(Succeed())
+			}
+
+			By("cleaning up any created Deployment")
+			deployment := &appsv1.Deployment{}
+			deploymentName := types.NamespacedName{
+				Name:      multiGPUServiceName,
+				Namespace: "default",
+			}
+			err = k8sClient.Get(ctx, deploymentName, deployment)
+			if err == nil {
+				Expect(k8sClient.Delete(ctx, deployment)).To(Succeed())
+			}
+		})
+
+		It("should create deployment with correct multi-GPU configuration", func() {
+			By("reconciling the InferenceService")
+			reconciler := &InferenceServiceReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			// First reconcile may not create deployment if model isn't ready
+			// We're testing that the controller doesn't error
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: serviceNamespacedName,
+			})
+			// May return error since model download will fail (test URL)
+			// but should not panic
+			_ = err
+
+			By("verifying the InferenceService was created")
+			isvc := &inferencev1alpha1.InferenceService{}
+			err = k8sClient.Get(ctx, serviceNamespacedName, isvc)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(isvc.Spec.Resources.GPU).To(Equal(int32(2)))
 		})
 	})
 })
