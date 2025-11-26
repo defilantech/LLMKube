@@ -380,14 +380,14 @@ terraform output estimated_hourly_cost
 ## Next Steps
 
 1. **Deploy LLMKube Operator**: See main [README.md](../../README.md)
-2. **Test Multi-GPU Model**: Follow [MULTI-GPU-DEPLOYMENT.md](../../MULTI-GPU-DEPLOYMENT.md)
+2. **Test Multi-GPU Model**: Follow [MULTI-GPU-DEPLOYMENT.md](../../docs/MULTI-GPU-DEPLOYMENT.md)
 3. **Run Benchmarks**: Use benchmark scripts in `test/e2e/`
 4. **Monitor Performance**: Set up Grafana dashboards
 
 ## Support & Resources
 
 - **LLMKube Docs**: [README.md](../../README.md)
-- **Multi-GPU Guide**: [MULTI-GPU-DEPLOYMENT.md](../../MULTI-GPU-DEPLOYMENT.md)
+- **Multi-GPU Guide**: [MULTI-GPU-DEPLOYMENT.md](../../docs/MULTI-GPU-DEPLOYMENT.md)
 - **Azure AKS Docs**: https://docs.microsoft.com/en-us/azure/aks/
 - **Azure GPU VMs**: https://docs.microsoft.com/en-us/azure/virtual-machines/sizes-gpu
 - **NVIDIA Device Plugin**: https://github.com/NVIDIA/k8s-device-plugin

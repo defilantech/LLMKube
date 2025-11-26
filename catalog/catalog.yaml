@@ -217,7 +217,7 @@ models:
     description: "Mixture of Experts (MoE) architecture. 46B effective parameters."
     size: "8x7B"
     quantization: "Q4_K_M"
-    source: "https://huggingface.co/bartowski/Mixtral-8x7B-Instruct-v0.1-GGUF/resolve/main/Mixtral-8x7B-Instruct-v0.1-Q4_K_M.gguf"
+    source: "https://huggingface.co/TheBloke/Mixtral-8x7B-Instruct-v0.1-GGUF/resolve/main/mixtral-8x7b-instruct-v0.1.Q4_K_M.gguf"
     context_size: 32768
     gpu_layers: 32
     use_cases:

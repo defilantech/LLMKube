@@ -246,33 +246,17 @@ time curl -X POST http://localhost:8080/v1/chat/completions \
 kubectl logs $POD --tail=30 | grep "tokens per second"
 ```
 
-### 4.2 Run Benchmark
+### 4.2 Run Benchmark with LLMKube CLI
 
 ```bash
-# Run comprehensive benchmark
-cd test/e2e
+# Benchmark a single model
+llmkube benchmark my-inference-service --iterations 10 --max-tokens 256
 
-# Create benchmark script
-cat > benchmark.sh <<'EOF'
-#!/bin/bash
-ENDPOINT="http://localhost:8080"
-ITERATIONS=5
-
-echo "Running $ITERATIONS iterations..."
-for i in $(seq 1 $ITERATIONS); do
-  echo "Iteration $i..."
-  curl -s -w "\nTime: %{time_total}s\n" -X POST $ENDPOINT/v1/chat/completions \
-    -H "Content-Type: application/json" \
-    -d '{
-      "messages": [{"role": "user", "content": "Explain machine learning"}],
-      "max_tokens": 200
-    }' | jq -r '.usage.completion_tokens, .usage.total_tokens'
-  sleep 2
-done
-EOF
-
-chmod +x benchmark.sh
-./benchmark.sh
+# Benchmark multiple models from the catalog with GPU support
+llmkube benchmark --catalog llama-3.2-3b,mistral-7b,llama-3.1-8b \
+  --gpu --gpu-count 2 \
+  --iterations 10 --max-tokens 256 \
+  --output markdown
 ```
 
 ### 4.3 Monitor GPU Utilization
