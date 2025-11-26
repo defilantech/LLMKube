@@ -5,6 +5,31 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1](https://github.com/defilantech/LLMKube/compare/llmkube-0.4.0...llmkubev0.4.1) (2025-11-26)
+
+
+### Features
+
+* Add benchmark command and reorganize documentation ([58307be](https://github.com/defilantech/LLMKube/commit/58307bece720644bbdf1e27026a90279b9009c51))
+* Add benchmark command and reorganize documentation ([ac8888e](https://github.com/defilantech/LLMKube/commit/ac8888ea2ac41f90ebd6b529deea86b2fa67f24f)), closes [#6](https://github.com/defilantech/LLMKube/issues/6)
+* Add persistent model cache to avoid re-downloading ([83f844f](https://github.com/defilantech/LLMKube/commit/83f844f7b8ca18c2eed407b0f6995f2dc13e0965)), closes [#52](https://github.com/defilantech/LLMKube/issues/52)
+* Add Release Please automation and version-agnostic docs ([dc2d54e](https://github.com/defilantech/LLMKube/commit/dc2d54ea15f936a62b6fa1d382c1f606d97a5610))
+* **helm:** Add image digest support for production deployments ([a38801d](https://github.com/defilantech/LLMKube/commit/a38801dd61d5f6606209577744cc5376bf1eb626))
+* Implement automatic port forwarding for benchmark command ([472b3ae](https://github.com/defilantech/LLMKube/commit/472b3ae74b73d1d55d5a8a2051625ed1c3834ad9))
+* Persistent model cache with per-namespace PVC support ([ab04261](https://github.com/defilantech/LLMKube/commit/ab0426161e3765e539e82ccbf864da943974f199))
+* Support per-namespace model cache PVCs ([c3cb891](https://github.com/defilantech/LLMKube/commit/c3cb891dc74c3718f495068c98418d84c78b6da9))
+
+
+### Bug Fixes
+
+* Add cacheKey to CRD and restrict cache to llmkube-system namespace ([464c23d](https://github.com/defilantech/LLMKube/commit/464c23d07bffebcab8cda58d8ce8d00ad8d4ecba))
+* Address lint issues in benchmark command ([bf80610](https://github.com/defilantech/LLMKube/commit/bf806107c664425d9f8a4a3056600ba6ec95b34e))
+
+
+### Documentation
+
+* Update MODEL-CACHE.md for per-namespace PVC pattern ([0be3f46](https://github.com/defilantech/LLMKube/commit/0be3f4697fd249aba4e9120de93fe0d5942a3f90))
+
 ## [0.3.0] - 2025-11-23
 
 ### Added
