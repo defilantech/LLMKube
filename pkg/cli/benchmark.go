@@ -185,6 +185,33 @@ type ChatCompletionResponse struct {
 // Default benchmark prompt designed to generate ~20-50 tokens response
 const defaultBenchmarkPrompt = "Explain what machine learning is in exactly three sentences."
 
+// Status constants for benchmark results
+const (
+	statusSuccess = "success"
+	statusFailed  = "failed"
+)
+
+// Phase constants for deployment status
+const (
+	phaseReady  = "Ready"
+	phaseFailed = "Failed"
+)
+
+// Accelerator type constants
+const (
+	acceleratorCUDA  = "cuda"
+	acceleratorMetal = "metal"
+	acceleratorROCm  = "rocm"
+	acceleratorCPU   = "cpu"
+)
+
+// Container image constants
+const (
+	imageLlamaCppServer     = "ghcr.io/ggerganov/llama.cpp:server"
+	imageLlamaCppServerCUDA = "ghcr.io/ggerganov/llama.cpp:server-cuda"
+	imageLlamaCppServerROCm = "ghcr.io/ggerganov/llama.cpp:server-rocm"
+)
+
 // NewBenchmarkCommand creates the benchmark command
 func NewBenchmarkCommand() *cobra.Command {
 	opts := &benchmarkOptions{}
@@ -260,10 +287,14 @@ Examples:
 	// Catalog mode flags
 	cmd.Flags().StringVar(&opts.catalog, "catalog", "", "Comma-separated list of catalog model IDs to benchmark")
 	cmd.Flags().BoolVar(&opts.gpu, "gpu", false, "Enable GPU acceleration for catalog deployments")
-	cmd.Flags().Int32Var(&opts.gpuCount, "gpu-count", 1, "Number of GPUs per pod (for multi-GPU benchmarks)")
-	cmd.Flags().Int32Var(&opts.gpuLayers, "gpu-layers", -1, "Number of model layers to offload to GPU (-1 = use catalog default)")
-	cmd.Flags().StringVar(&opts.accelerator, "accelerator", "", "Hardware accelerator: cuda, metal, rocm (auto-detected if --gpu is set)")
-	cmd.Flags().BoolVar(&opts.cleanup, "cleanup", true, "Cleanup deployments after benchmarking (use --no-cleanup to keep)")
+	cmd.Flags().Int32Var(&opts.gpuCount, "gpu-count", 1,
+		"Number of GPUs per pod (for multi-GPU benchmarks)")
+	cmd.Flags().Int32Var(&opts.gpuLayers, "gpu-layers", -1,
+		"Number of model layers to offload to GPU (-1 = use catalog default)")
+	cmd.Flags().StringVar(&opts.accelerator, "accelerator", "",
+		"Hardware accelerator: cuda, metal, rocm (auto-detected if --gpu is set)")
+	cmd.Flags().BoolVar(&opts.cleanup, "cleanup", true,
+		"Cleanup deployments after benchmarking (use --no-cleanup to keep)")
 	cmd.Flags().DurationVar(&opts.deployWait, "deploy-wait", 10*time.Minute, "Timeout waiting for deployment to be ready")
 
 	return cmd
@@ -335,9 +366,11 @@ func runBenchmark(opts *benchmarkOptions) error {
 	case "json":
 		return outputJSON(summary)
 	case "markdown":
-		return outputMarkdown(summary)
+		outputMarkdown(summary)
+		return nil
 	default:
-		return outputTable(summary)
+		outputTable(summary)
+		return nil
 	}
 }
 
@@ -369,7 +402,7 @@ func getEndpoint(ctx context.Context, opts *benchmarkOptions) (string, func(), e
 	}
 
 	// Check if service is ready
-	if isvc.Status.Phase != "Ready" {
+	if isvc.Status.Phase != phaseReady {
 		return "", nil, fmt.Errorf("InferenceService '%s' is not ready (phase: %s)", opts.name, isvc.Status.Phase)
 	}
 
@@ -383,7 +416,9 @@ func getEndpoint(ctx context.Context, opts *benchmarkOptions) (string, func(), e
 		return isvc.Status.Endpoint, nil, nil
 	}
 
-	return "", nil, fmt.Errorf("no endpoint found for service '%s'. Use --endpoint to specify manually or --port-forward", opts.name)
+	return "", nil, fmt.Errorf(
+		"no endpoint found for service '%s'. Use --endpoint to specify manually or --port-forward",
+		opts.name)
 }
 
 func setupPortForward(opts *benchmarkOptions) (string, func(), error) {
@@ -402,19 +437,21 @@ func setupPortForward(opts *benchmarkOptions) (string, func(), error) {
 	endpoint := "http://localhost:8080"
 
 	// Test connectivity
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get(endpoint + "/health")
+	httpClient := &http.Client{Timeout: 5 * time.Second}
+	resp, err := httpClient.Get(endpoint + "/health")
 	if err != nil {
 		return "", nil, fmt.Errorf(
 			"cannot connect to %s. Please run:\n  kubectl port-forward -n %s svc/%s 8080:8080",
 			endpoint, opts.namespace, serviceName)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	return endpoint, nil, nil
 }
 
-func sendBenchmarkRequest(ctx context.Context, endpoint string, opts *benchmarkOptions, iteration int) (BenchmarkResult, error) {
+func sendBenchmarkRequest(
+	ctx context.Context, endpoint string, opts *benchmarkOptions, iteration int,
+) (BenchmarkResult, error) {
 	result := BenchmarkResult{
 		Iteration: iteration,
 	}
@@ -442,14 +479,14 @@ func sendBenchmarkRequest(ctx context.Context, endpoint string, opts *benchmarkO
 	req.Header.Set("Content-Type", "application/json")
 
 	// Send request and measure time
-	client := &http.Client{Timeout: opts.timeout}
+	httpClient := &http.Client{Timeout: opts.timeout}
 	startTime := time.Now()
 
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return result, fmt.Errorf("request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	totalTime := time.Since(startTime)
 
@@ -492,7 +529,9 @@ func sendBenchmarkRequest(ctx context.Context, endpoint string, opts *benchmarkO
 	return result, nil
 }
 
-func calculateSummary(opts *benchmarkOptions, endpoint string, results []BenchmarkResult, startTime time.Time) BenchmarkSummary {
+func calculateSummary(
+	opts *benchmarkOptions, endpoint string, results []BenchmarkResult, startTime time.Time,
+) BenchmarkSummary {
 	summary := BenchmarkSummary{
 		ServiceName:  opts.name,
 		Namespace:    opts.namespace,
@@ -505,10 +544,10 @@ func calculateSummary(opts *benchmarkOptions, endpoint string, results []Benchma
 		Duration:     time.Since(startTime),
 	}
 
-	// Collect successful results
-	var latencies []float64
-	var genToks []float64
-	var promptToks []float64
+	// Collect successful results - pre-allocate slices
+	latencies := make([]float64, 0, len(results))
+	genToks := make([]float64, 0, len(results))
+	promptToks := make([]float64, 0, len(results))
 
 	for _, r := range results {
 		if r.Error != "" {
@@ -586,7 +625,7 @@ func percentile(sortedValues []float64, p float64) float64 {
 	return sortedValues[lower]*(1-weight) + sortedValues[upper]*weight
 }
 
-func outputTable(summary BenchmarkSummary) error {
+func outputTable(summary BenchmarkSummary) {
 	fmt.Printf("📈 Benchmark Results\n")
 	fmt.Printf("═══════════════════════════════════════════════════════════════\n\n")
 
@@ -597,43 +636,41 @@ func outputTable(summary BenchmarkSummary) error {
 
 	if summary.SuccessfulRuns == 0 {
 		fmt.Printf("❌ No successful runs to report.\n")
-		return nil
+		return
 	}
 
 	// Throughput table
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 
-	fmt.Fprintf(w, "THROUGHPUT\t\n")
-	fmt.Fprintf(w, "──────────\t\n")
-	fmt.Fprintf(w, "Generation:\t%.1f tok/s (mean)\t%.1f - %.1f tok/s (range)\n",
+	_, _ = fmt.Fprintf(w, "THROUGHPUT\t\n")
+	_, _ = fmt.Fprintf(w, "──────────\t\n")
+	_, _ = fmt.Fprintf(w, "Generation:\t%.1f tok/s (mean)\t%.1f - %.1f tok/s (range)\n",
 		summary.GenerationToksPerSecMean,
 		summary.GenerationToksPerSecMin,
 		summary.GenerationToksPerSecMax)
 	if summary.PromptToksPerSecMean > 0 {
-		fmt.Fprintf(w, "Prompt:\t%.1f tok/s (mean)\t\n", summary.PromptToksPerSecMean)
+		_, _ = fmt.Fprintf(w, "Prompt:\t%.1f tok/s (mean)\t\n", summary.PromptToksPerSecMean)
 	}
-	w.Flush()
+	_ = w.Flush()
 
 	fmt.Println()
 
 	// Latency table
 	w = tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintf(w, "LATENCY\t\n")
-	fmt.Fprintf(w, "───────\t\n")
-	fmt.Fprintf(w, "P50:\t%.0f ms\t\n", summary.LatencyP50)
-	fmt.Fprintf(w, "P95:\t%.0f ms\t\n", summary.LatencyP95)
-	fmt.Fprintf(w, "P99:\t%.0f ms\t\n", summary.LatencyP99)
-	fmt.Fprintf(w, "Min:\t%.0f ms\t\n", summary.LatencyMin)
-	fmt.Fprintf(w, "Max:\t%.0f ms\t\n", summary.LatencyMax)
-	fmt.Fprintf(w, "Mean:\t%.0f ms\t\n", summary.LatencyMean)
-	w.Flush()
+	_, _ = fmt.Fprintf(w, "LATENCY\t\n")
+	_, _ = fmt.Fprintf(w, "───────\t\n")
+	_, _ = fmt.Fprintf(w, "P50:\t%.0f ms\t\n", summary.LatencyP50)
+	_, _ = fmt.Fprintf(w, "P95:\t%.0f ms\t\n", summary.LatencyP95)
+	_, _ = fmt.Fprintf(w, "P99:\t%.0f ms\t\n", summary.LatencyP99)
+	_, _ = fmt.Fprintf(w, "Min:\t%.0f ms\t\n", summary.LatencyMin)
+	_, _ = fmt.Fprintf(w, "Max:\t%.0f ms\t\n", summary.LatencyMax)
+	_, _ = fmt.Fprintf(w, "Mean:\t%.0f ms\t\n", summary.LatencyMean)
+	_ = w.Flush()
 
 	fmt.Printf("\n═══════════════════════════════════════════════════════════════\n")
 	fmt.Printf("Duration: %s\n", summary.Duration.Round(time.Second))
 	fmt.Printf("Prompt: %d tokens | Max generation: %d tokens\n",
 		summary.PromptTokens, summary.MaxTokens)
-
-	return nil
 }
 
 func outputJSON(summary BenchmarkSummary) error {
@@ -642,7 +679,7 @@ func outputJSON(summary BenchmarkSummary) error {
 	return encoder.Encode(summary)
 }
 
-func outputMarkdown(summary BenchmarkSummary) error {
+func outputMarkdown(summary BenchmarkSummary) {
 	fmt.Printf("# LLMKube Benchmark Results\n\n")
 	fmt.Printf("**Service:** %s  \n", summary.ServiceName)
 	fmt.Printf("**Namespace:** %s  \n", summary.Namespace)
@@ -658,7 +695,7 @@ func outputMarkdown(summary BenchmarkSummary) error {
 
 	if summary.SuccessfulRuns == 0 {
 		fmt.Printf("No successful runs to report.\n")
-		return nil
+		return
 	}
 
 	fmt.Printf("## Throughput\n\n")
@@ -684,8 +721,6 @@ func outputMarkdown(summary BenchmarkSummary) error {
 
 	fmt.Printf("\n---\n")
 	fmt.Printf("*Generated by LLMKube v%s*\n", Version)
-
-	return nil
 }
 
 // ============================================================================
@@ -715,11 +750,11 @@ func runCatalogBenchmark(opts *benchmarkOptions) error {
 	}
 
 	// Determine accelerator for display
-	acceleratorDisplay := "cpu"
+	acceleratorDisplay := acceleratorCPU
 	if opts.gpu {
 		acceleratorDisplay = opts.accelerator
 		if acceleratorDisplay == "" {
-			acceleratorDisplay = "cuda"
+			acceleratorDisplay = acceleratorCUDA
 		}
 	}
 
@@ -786,7 +821,7 @@ func runCatalogBenchmark(opts *benchmarkOptions) error {
 		err := deployModel(ctx, k8sClient, modelID, catalogModel, opts)
 		if err != nil {
 			fmt.Printf("   ❌ Deployment failed: %v\n\n", err)
-			modelBenchmark.Status = "failed"
+			modelBenchmark.Status = statusFailed
 			modelBenchmark.Error = fmt.Sprintf("deployment failed: %v", err)
 			report.Models = append(report.Models, modelBenchmark)
 			continue
@@ -797,10 +832,10 @@ func runCatalogBenchmark(opts *benchmarkOptions) error {
 		err = waitForDeployment(ctx, k8sClient, modelID, opts)
 		if err != nil {
 			fmt.Printf("   ❌ Deployment not ready: %v\n", err)
-			modelBenchmark.Status = "failed"
+			modelBenchmark.Status = statusFailed
 			modelBenchmark.Error = fmt.Sprintf("deployment timeout: %v", err)
 			if opts.cleanup {
-				cleanupModel(ctx, k8sClient, modelID, opts)
+				_ = cleanupModel(ctx, k8sClient, modelID, opts)
 			}
 			report.Models = append(report.Models, modelBenchmark)
 			continue
@@ -812,10 +847,10 @@ func runCatalogBenchmark(opts *benchmarkOptions) error {
 		summary, err := runBenchmarkInternal(ctx, opts)
 		if err != nil {
 			fmt.Printf("   ❌ Benchmark failed: %v\n\n", err)
-			modelBenchmark.Status = "failed"
+			modelBenchmark.Status = statusFailed
 			modelBenchmark.Error = fmt.Sprintf("benchmark failed: %v", err)
 		} else {
-			modelBenchmark.Status = "success"
+			modelBenchmark.Status = statusSuccess
 			modelBenchmark.GenerationToksPerSec = summary.GenerationToksPerSecMean
 			modelBenchmark.PromptToksPerSec = summary.PromptToksPerSecMean
 			modelBenchmark.LatencyP50Ms = summary.LatencyP50
@@ -850,11 +885,17 @@ func runCatalogBenchmark(opts *benchmarkOptions) error {
 	}
 }
 
-func deployModel(ctx context.Context, k8sClient client.Client, modelID string, catalogModel *Model, opts *benchmarkOptions) error {
+func deployModel(
+	ctx context.Context,
+	k8sClient client.Client,
+	modelID string,
+	catalogModel *Model,
+	opts *benchmarkOptions,
+) error {
 	// Determine accelerator type
 	accelerator := opts.accelerator
 	if accelerator == "" && opts.gpu {
-		accelerator = "cuda" // default to CUDA if GPU enabled but no accelerator specified
+		accelerator = acceleratorCUDA // default to CUDA if GPU enabled but no accelerator specified
 	}
 
 	// Determine GPU layers (use catalog default or override)
@@ -886,11 +927,14 @@ func deployModel(ctx context.Context, k8sClient client.Client, modelID string, c
 	// Add GPU config if enabled
 	if opts.gpu {
 		// Determine vendor based on accelerator
-		vendor := "nvidia"
-		if accelerator == "rocm" {
+		var vendor string
+		switch accelerator {
+		case acceleratorROCm:
 			vendor = "amd"
-		} else if accelerator == "metal" {
+		case acceleratorMetal:
 			vendor = "apple"
+		default:
+			vendor = "nvidia"
 		}
 
 		model.Spec.Hardware = &inferencev1alpha1.HardwareSpec{
@@ -910,17 +954,17 @@ func deployModel(ctx context.Context, k8sClient client.Client, modelID string, c
 	}
 
 	// Determine image based on accelerator
-	image := "ghcr.io/ggerganov/llama.cpp:server"
+	image := imageLlamaCppServer
 	if opts.gpu {
 		switch accelerator {
-		case "cuda":
-			image = "ghcr.io/ggerganov/llama.cpp:server-cuda"
-		case "rocm":
-			image = "ghcr.io/ggerganov/llama.cpp:server-rocm"
-		case "metal":
+		case acceleratorCUDA:
+			image = imageLlamaCppServerCUDA
+		case acceleratorROCm:
+			image = imageLlamaCppServerROCm
+		case acceleratorMetal:
 			image = "" // Metal uses native binary, not container
 		default:
-			image = "ghcr.io/ggerganov/llama.cpp:server-cuda"
+			image = imageLlamaCppServerCUDA
 		}
 	}
 
@@ -957,7 +1001,7 @@ func deployModel(ctx context.Context, k8sClient client.Client, modelID string, c
 
 	if err := k8sClient.Create(ctx, inferenceService); err != nil {
 		// Cleanup model if inference service creation fails
-		k8sClient.Delete(ctx, model)
+		_ = k8sClient.Delete(ctx, model)
 		return fmt.Errorf("failed to create InferenceService: %w", err)
 	}
 
@@ -982,11 +1026,11 @@ func waitForDeployment(ctx context.Context, k8sClient client.Client, modelID str
 				continue
 			}
 
-			if isvc.Status.Phase == "Ready" {
+			if isvc.Status.Phase == phaseReady {
 				return nil
 			}
 
-			if isvc.Status.Phase == "Failed" {
+			if isvc.Status.Phase == phaseFailed {
 				return fmt.Errorf("deployment failed")
 			}
 
@@ -1085,7 +1129,7 @@ func outputComparisonTable(report ComparisonReport) error {
 	// Count successes and failures
 	successes := 0
 	for _, m := range report.Models {
-		if m.Status == "success" {
+		if m.Status == statusSuccess {
 			successes++
 		}
 	}
@@ -1094,30 +1138,31 @@ func outputComparisonTable(report ComparisonReport) error {
 		fmt.Printf("Accelerator: %s | GPU Count: %d | Iterations: %d | Max Tokens: %d\n\n",
 			report.Accelerator, report.GPUCount, report.Iterations, report.MaxTokens)
 	} else {
-		fmt.Printf("Accelerator: cpu | Iterations: %d | Max Tokens: %d\n\n", report.Iterations, report.MaxTokens)
+		fmt.Printf("Accelerator: cpu | Iterations: %d | Max Tokens: %d\n\n",
+			report.Iterations, report.MaxTokens)
 	}
 
 	// Create comparison table
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintf(w, "MODEL\tSIZE\tGEN TOK/S\tP50 (ms)\tP99 (ms)\tVRAM\tSTATUS\n")
-	fmt.Fprintf(w, "─────\t────\t─────────\t────────\t────────\t────\t──────\n")
+	_, _ = fmt.Fprintf(w, "MODEL\tSIZE\tGEN TOK/S\tP50 (ms)\tP99 (ms)\tVRAM\tSTATUS\n")
+	_, _ = fmt.Fprintf(w, "─────\t────\t─────────\t────────\t────────\t────\t──────\n")
 
 	for _, m := range report.Models {
 		status := "✅"
-		if m.Status != "success" {
+		if m.Status != statusSuccess {
 			status = "❌"
 		}
 
 		genToks := "-"
 		p50 := "-"
 		p99 := "-"
-		if m.Status == "success" {
+		if m.Status == statusSuccess {
 			genToks = fmt.Sprintf("%.1f", m.GenerationToksPerSec)
 			p50 = fmt.Sprintf("%.0f", m.LatencyP50Ms)
 			p99 = fmt.Sprintf("%.0f", m.LatencyP99Ms)
 		}
 
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			m.ModelID,
 			m.ModelSize,
 			genToks,
@@ -1127,7 +1172,7 @@ func outputComparisonTable(report ComparisonReport) error {
 			status,
 		)
 	}
-	w.Flush()
+	_ = w.Flush()
 
 	// Print any errors
 	hasErrors := false
@@ -1166,14 +1211,14 @@ func outputComparisonMarkdown(report ComparisonReport) error {
 
 	for _, m := range report.Models {
 		status := "✅ Success"
-		if m.Status != "success" {
+		if m.Status != statusSuccess {
 			status = "❌ Failed"
 		}
 
 		genToks := "-"
 		p50 := "-"
 		p99 := "-"
-		if m.Status == "success" {
+		if m.Status == statusSuccess {
 			genToks = fmt.Sprintf("%.1f", m.GenerationToksPerSec)
 			p50 = fmt.Sprintf("%.0f", m.LatencyP50Ms)
 			p99 = fmt.Sprintf("%.0f", m.LatencyP99Ms)

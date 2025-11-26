@@ -89,11 +89,26 @@ func TestCalculateSummary(t *testing.T) {
 	}
 
 	results := []BenchmarkResult{
-		{Iteration: 1, TotalTimeMs: 100, GenerationToksPerSec: 50, PromptToksPerSec: 500, PromptTokens: 10, CompletionTokens: 20},
-		{Iteration: 2, TotalTimeMs: 110, GenerationToksPerSec: 55, PromptToksPerSec: 520, PromptTokens: 10, CompletionTokens: 22},
-		{Iteration: 3, TotalTimeMs: 90, GenerationToksPerSec: 60, PromptToksPerSec: 480, PromptTokens: 10, CompletionTokens: 18},
-		{Iteration: 4, TotalTimeMs: 120, GenerationToksPerSec: 45, PromptToksPerSec: 510, PromptTokens: 10, CompletionTokens: 25},
-		{Iteration: 5, TotalTimeMs: 95, GenerationToksPerSec: 52, PromptToksPerSec: 490, PromptTokens: 10, CompletionTokens: 19},
+		{
+			Iteration: 1, TotalTimeMs: 100, GenerationToksPerSec: 50,
+			PromptToksPerSec: 500, PromptTokens: 10, CompletionTokens: 20,
+		},
+		{
+			Iteration: 2, TotalTimeMs: 110, GenerationToksPerSec: 55,
+			PromptToksPerSec: 520, PromptTokens: 10, CompletionTokens: 22,
+		},
+		{
+			Iteration: 3, TotalTimeMs: 90, GenerationToksPerSec: 60,
+			PromptToksPerSec: 480, PromptTokens: 10, CompletionTokens: 18,
+		},
+		{
+			Iteration: 4, TotalTimeMs: 120, GenerationToksPerSec: 45,
+			PromptToksPerSec: 510, PromptTokens: 10, CompletionTokens: 25,
+		},
+		{
+			Iteration: 5, TotalTimeMs: 95, GenerationToksPerSec: 52,
+			PromptToksPerSec: 490, PromptTokens: 10, CompletionTokens: 19,
+		},
 	}
 
 	summary := calculateSummary(opts, "http://localhost:8080", results, time.Now())
@@ -330,7 +345,7 @@ func TestSendBenchmarkRequest(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(response)
+		_ = json.NewEncoder(w).Encode(response)
 	}))
 	defer server.Close()
 
@@ -370,7 +385,7 @@ func TestSendBenchmarkRequestError(t *testing.T) {
 	// Create a mock server that returns an error
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte("Internal server error"))
+		_, _ = w.Write([]byte("Internal server error"))
 	}))
 	defer server.Close()
 
@@ -380,15 +395,12 @@ func TestSendBenchmarkRequestError(t *testing.T) {
 		timeout:   10 * time.Second,
 	}
 
-	result, err := sendBenchmarkRequest(t.Context(), server.URL, opts, 1)
+	_, err := sendBenchmarkRequest(t.Context(), server.URL, opts, 1)
 	if err == nil {
 		t.Fatal("Expected error for 500 response, got nil")
 	}
-
-	if result.Error != "" {
-		// Error should be in the err return, not result.Error
-		// (result.Error is only set when we catch the error in the benchmark loop)
-	}
+	// Error should be in the err return, not result.Error
+	// (result.Error is only set when we catch the error in the benchmark loop)
 }
 
 func TestOutputJSON(t *testing.T) {
