@@ -4,8 +4,8 @@ description: >-
   A Helm chart for LLMKube - Kubernetes operator for GPU-accelerated LLM
   inference
 type: application
-version: 0.4.5
-appVersion: 0.4.5
+version: 0.4.6
+appVersion: 0.4.6
 keywords:
   - llm
   - kubernetes
