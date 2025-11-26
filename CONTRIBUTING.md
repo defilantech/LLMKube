@@ -270,14 +270,29 @@ git diff --exit-code  # Should be no changes
 
 ### PR Title Format
 
+**Important:** PR titles are used for automated changelog generation and version bumps via [Release Please](https://github.com/googleapis/release-please). Since we use **squash merging**, your PR title becomes the commit message on `main`.
+
 ```
 <type>: <description>
 ```
+
+| Type | Description | Version Bump |
+|------|-------------|--------------|
+| `feat:` | New feature | Minor (0.x.0) |
+| `fix:` | Bug fix | Patch (0.0.x) |
+| `docs:` | Documentation only | None |
+| `ci:` | CI/CD changes | None |
+| `chore:` | Maintenance tasks | None |
+| `refactor:` | Code refactoring | None |
+| `test:` | Adding tests | None |
 
 **Examples:**
 - `feat: Add Prometheus metrics to InferenceService controller`
 - `fix: Resolve model download timeout on slow connections`
 - `docs: Add troubleshooting guide for GPU issues`
+- `feat(helm): Add image digest support for production deployments`
+
+**Scopes** (optional): Use parentheses to specify the area of change: `feat(cli):`, `fix(controller):`, `docs(helm):`, etc.
 
 ### Review Process
 
