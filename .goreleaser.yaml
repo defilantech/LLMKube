@@ -210,59 +210,57 @@ release:
   # Create release even if tag already exists
   replace_existing_draft: true
 
-  # Include release notes from CHANGELOG
-  mode: replace
+  # Keep Release Please's changelog, just add assets
+  mode: keep-existing
 
-  # Header and footer for release notes
-  header: |
-    ## LLMKube v{{ .Version }}
-
-    **Release Date**: {{ .Date }}
-
-    See [RELEASE_NOTES_v{{ .Version }}.md](https://github.com/defilantech/LLMKube/blob/main/RELEASE_NOTES_v{{ .Version }}.md) for complete details.
-
+  # Footer with installation instructions (Release Please provides the changelog)
   footer: |
     ---
 
     ## Installation
 
-    ### macOS
+    ### Homebrew (Recommended for macOS)
     ```bash
-    # AMD64
-    curl -L https://github.com/defilantech/LLMKube/releases/download/v{{ .Version }}/llmkube_{{ .Version }}_darwin_amd64.tar.gz | tar xz
+    brew install defilantech/tap/llmkube
+    ```
+
+    ### Install Script (Linux/macOS)
+    ```bash
+    curl -sSL https://raw.githubusercontent.com/defilantech/LLMKube/main/install.sh | bash
+    ```
+
+    ### Manual Download
+
+    **macOS**
+    ```bash
+    # ARM64 (Apple Silicon)
+    curl -L https://github.com/defilantech/LLMKube/releases/download/v{{ .Version }}/LLMKube_{{ .Version }}_darwin_arm64.tar.gz | tar xz
     sudo mv llmkube /usr/local/bin/
 
-    # ARM64 (Apple Silicon)
-    curl -L https://github.com/defilantech/LLMKube/releases/download/v{{ .Version }}/llmkube_{{ .Version }}_darwin_arm64.tar.gz | tar xz
+    # AMD64
+    curl -L https://github.com/defilantech/LLMKube/releases/download/v{{ .Version }}/LLMKube_{{ .Version }}_darwin_amd64.tar.gz | tar xz
     sudo mv llmkube /usr/local/bin/
     ```
 
-    ### Linux
+    **Linux**
     ```bash
     # AMD64
-    curl -L https://github.com/defilantech/LLMKube/releases/download/v{{ .Version }}/llmkube_{{ .Version }}_linux_amd64.tar.gz | tar xz
+    curl -L https://github.com/defilantech/LLMKube/releases/download/v{{ .Version }}/LLMKube_{{ .Version }}_linux_amd64.tar.gz | tar xz
     sudo mv llmkube /usr/local/bin/
 
     # ARM64
-    curl -L https://github.com/defilantech/LLMKube/releases/download/v{{ .Version }}/llmkube_{{ .Version }}_linux_arm64.tar.gz | tar xz
+    curl -L https://github.com/defilantech/LLMKube/releases/download/v{{ .Version }}/LLMKube_{{ .Version }}_linux_arm64.tar.gz | tar xz
     sudo mv llmkube /usr/local/bin/
     ```
 
-    ### Windows
-    Download the `.zip` file for your architecture and add `llmkube.exe` to your PATH.
+    **Windows**: Download the `.zip` file and add `llmkube.exe` to your PATH.
 
     ### Verify Installation
     ```bash
     llmkube version
     ```
 
-    ## Next Steps
-
-    1. [Install the operator](https://github.com/defilantech/LLMKube#installation)
-    2. [Try the GPU quickstart](https://github.com/defilantech/LLMKube/tree/main/examples/gpu-quickstart)
-    3. [Read the documentation](https://github.com/defilantech/LLMKube#documentation)
-
-    **Full Release Notes**: [RELEASE_NOTES_v{{ .Version }}.md](https://github.com/defilantech/LLMKube/blob/main/RELEASE_NOTES_v{{ .Version }}.md)
+    **Full Changelog**: [CHANGELOG.md](https://github.com/defilantech/LLMKube/blob/main/CHANGELOG.md)
 
 # Homebrew tap
 brews:
