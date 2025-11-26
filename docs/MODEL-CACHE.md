@@ -4,34 +4,73 @@ LLMKube includes a persistent model cache that avoids re-downloading models when
 
 ## Overview
 
-Without persistent caching, models are downloaded:
-- Once by the Model controller (to track status)
-- Once by each InferenceService pod via init container
-
-For large models (13B-70B), this means 26-40GB+ downloads taking 10-30+ minutes each time you recreate a deployment.
+Without persistent caching, models are downloaded via init container every time a pod starts. For large models (13B-70B), this means 26-40GB+ downloads taking 10-30+ minutes each time you recreate a deployment.
 
 With persistent caching:
-- Models are downloaded **once** to a shared PVC
-- InferenceService pods mount the cache read-only
+- A PVC is created **automatically** in each namespace where you deploy models
+- Models are downloaded **once** to the namespace's PVC
+- Subsequent pods mount the cache and skip download
 - Delete/recreate cycles complete in seconds
 
 ## Architecture
 
+LLMKube uses **per-namespace PVCs** for model caching. This provides:
+- **Namespace isolation**: Each namespace has its own cache
+- **No cross-namespace dependencies**: Models work independently
+- **Simple RBAC**: No need for cross-namespace access
+
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    Model Cache PVC                          │
-│  /models/<sha256-hash>/model.gguf                          │
-│  (ReadWriteMany for multi-node, ReadWriteOnce for single)   │
+│                 Namespace: production                        │
+│  ┌─────────────────────────────────────────────────────┐    │
+│  │          llmkube-model-cache PVC                     │    │
+│  │  /models/<cache-key>/model.gguf                     │    │
+│  └─────────────────────────────────────────────────────┘    │
+│           ▲                              ▲                   │
+│           │ (init container writes)      │ (read-only)       │
+│           │                              │                   │
+│  ┌────────┴────────┐        ┌────────────┴──────────────┐   │
+│  │  First Pod      │        │  Subsequent Pods          │   │
+│  │  - Downloads    │        │  - Mount cache read-only  │   │
+│  │  - Caches model │        │  - Skip download          │   │
+│  └─────────────────┘        └───────────────────────────┘   │
 └─────────────────────────────────────────────────────────────┘
-           ▲                              ▲
-           │ (write)                      │ (read-only)
-           │                              │
-┌──────────┴──────────┐      ┌────────────┴────────────────┐
-│  Controller Pod     │      │  InferenceService Pods      │
-│  - Downloads once   │      │  - Mount cache read-only    │
-│  - Hash-based key   │      │  - Skip download if cached  │
-└─────────────────────┘      └─────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────┐
+│                 Namespace: staging                           │
+│  ┌─────────────────────────────────────────────────────┐    │
+│  │          llmkube-model-cache PVC                     │    │
+│  │  /models/<cache-key>/model.gguf                     │    │
+│  └─────────────────────────────────────────────────────┘    │
+│                          ▲                                   │
+│                          │                                   │
+│                 ┌────────┴────────┐                         │
+│                 │  Pods in staging │                         │
+│                 └─────────────────┘                         │
+└─────────────────────────────────────────────────────────────┘
 ```
+
+## Deploying to Any Namespace
+
+You can deploy models to any namespace using the CLI:
+
+```bash
+# Deploy to production namespace
+llmkube deploy llama-3.1-8b --gpu -n production
+
+# Deploy to staging namespace
+llmkube deploy llama-3.1-8b --gpu -n staging
+
+# Deploy to default namespace
+llmkube deploy llama-3.1-8b --gpu
+```
+
+The controller will automatically:
+1. Create a `llmkube-model-cache` PVC in the target namespace (if it doesn't exist)
+2. Configure the pod's init-container to download the model to the PVC
+3. Mount the PVC read-only for the main container
+
+**Note**: Each namespace has its own PVC, so the same model deployed to multiple namespaces will be downloaded once per namespace.
 
 ## Cache Key
 
@@ -196,7 +235,7 @@ If models are still being downloaded via init container:
 
 1. Check if the Model has a CacheKey:
    ```bash
-   kubectl get model llama-3.1-8b -o jsonpath='{.status.cacheKey}'
+   kubectl get model llama-3.1-8b -n <namespace> -o jsonpath='{.status.cacheKey}'
    ```
 
 2. Verify the controller has cache enabled:
@@ -204,9 +243,14 @@ If models are still being downloaded via init container:
    kubectl get deploy -n llmkube-system llmkube-controller-manager -o yaml | grep model-cache
    ```
 
-3. Check PVC is mounted:
+3. Check PVC exists in your namespace:
    ```bash
-   kubectl describe pod -n llmkube-system -l app.kubernetes.io/name=llmkube | grep -A5 "Volumes:"
+   kubectl get pvc llmkube-model-cache -n <namespace>
+   ```
+
+4. Check if model is cached in the PVC:
+   ```bash
+   kubectl exec -n <namespace> <pod-name> -- ls -la /models/
    ```
 
 ### Cache PVC Full
@@ -215,17 +259,17 @@ If the cache PVC runs out of space:
 
 1. List cache entries:
    ```bash
-   llmkube cache list
+   llmkube cache list -n <namespace>
    ```
 
 2. Clear unused models:
    ```bash
-   llmkube cache clear --model <unused-model>
+   llmkube cache clear --model <unused-model> -n <namespace>
    ```
 
 3. Or resize the PVC (if your storage class supports it):
    ```bash
-   kubectl patch pvc llmkube-model-cache -n llmkube-system \
+   kubectl patch pvc llmkube-model-cache -n <namespace> \
      -p '{"spec":{"resources":{"requests":{"storage":"200Gi"}}}}'
    ```
 
@@ -233,15 +277,21 @@ If the cache PVC runs out of space:
 
 If you suspect cache corruption:
 
-1. Clear the specific cache entry:
+1. Clear the specific cache entry by deleting the directory in the PVC:
    ```bash
-   kubectl exec -n llmkube-system deploy/llmkube-controller-manager -- \
-     rm -rf /models/<cache-key>
+   # Find a pod in the namespace to exec into
+   kubectl exec -n <namespace> <pod-name> -- rm -rf /models/<cache-key>
    ```
 
-2. Delete and recreate the Model to trigger re-download:
+2. Delete and recreate the InferenceService to trigger re-download:
    ```bash
-   kubectl delete model llama-3.1-8b
+   kubectl delete inferenceservice llama-3.1-8b -n <namespace>
+   kubectl apply -f inferenceservice.yaml
+   ```
+
+   Or delete and recreate the Model:
+   ```bash
+   kubectl delete model llama-3.1-8b -n <namespace>
    kubectl apply -f model.yaml
    ```
 
