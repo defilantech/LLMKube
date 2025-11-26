@@ -3,12 +3,12 @@
   "release-type": "go",
   "packages": {
     ".": {
-      "package-name": "llmkube",
       "changelog-path": "CHANGELOG.md",
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": true,
       "draft": false,
       "prerelease": false,
+      "include-component-in-tag": false,
       "extra-files": [
         {
           "type": "yaml",
