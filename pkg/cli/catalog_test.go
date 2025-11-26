@@ -29,6 +29,7 @@ func TestLoadCatalog(t *testing.T) {
 
 	if catalog == nil {
 		t.Fatal("Catalog is nil")
+		return
 	}
 
 	if catalog.Version == "" {

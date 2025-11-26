@@ -270,6 +270,7 @@ func TestBenchmarkCommandDefaults(t *testing.T) {
 			flag := cmd.Flags().Lookup(tc.flag)
 			if flag == nil {
 				t.Fatalf("Flag '%s' not found", tc.flag)
+				return
 			}
 			if flag.DefValue != tc.expected {
 				t.Errorf("Expected default value '%s' for flag '%s', got '%s'",
