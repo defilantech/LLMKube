@@ -71,7 +71,7 @@ Make GPU-accelerated LLM inference on Kubernetes **dead simple**. Deploy product
 3. **Production Features**
    - Horizontal Pod Autoscaling (HPA) support
    - Better health checks and readiness probes
-   - Persistent model storage (stop re-downloading!)
+   - ~~Persistent model storage (stop re-downloading!)~~ ✅ v0.4.1
    - Request queuing and load shedding
 
 4. **Multi-GPU Support** ✅ **COMPLETED**
@@ -188,8 +188,9 @@ We ship frequently with semantic versioning:
 - **Major releases (x.0.0):** Breaking changes, major milestones - Yearly
 
 **Next releases:**
-- **v0.4.0** - November 2025 (multi-GPU support) ✅ **Current**
-- **v0.5.0** - Q1 2026 (autoscaling, persistent storage)
+- **v0.4.0** - November 2025 (multi-GPU support) ✅
+- **v0.4.1** - November 2025 (persistent model cache) ✅ **Current**
+- **v0.5.0** - Q1 2026 (autoscaling)
 - **v0.6.0** - Q2 2026 (edge deployment, K3s)
 - **v1.0.0** - Q4 2026 (stable, production-ready)
 

@@ -214,9 +214,10 @@ Consistent ~53 tok/s across 3-8B models demonstrates efficient GPU utilization w
 **Core Features:**
 - **Kubernetes-native CRDs** - `Model` and `InferenceService` resources
 - **Automatic model download** - From HuggingFace, HTTP, or S3
+- **Persistent model cache** - Download once, deploy instantly ([guide](docs/MODEL-CACHE.md))
 - **OpenAI-compatible API** - `/v1/chat/completions` endpoint
 - **Multi-replica scaling** - Horizontal pod autoscaling support
-- **Full CLI** - `llmkube deploy/list/status/delete/catalog` commands
+- **Full CLI** - `llmkube deploy/list/status/delete/catalog/cache` commands
 - **Model Catalog** - 10 pre-configured popular models (Llama 3.1, Mistral, Qwen, DeepSeek, etc.)
 
 **GPU Acceleration:**

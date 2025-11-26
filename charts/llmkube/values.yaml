@@ -136,6 +136,21 @@ crds:
   # Keep CRDs on chart uninstall (recommended for production)
   keep: true
 
+# Model cache configuration
+modelCache:
+  # Enable persistent model cache
+  enabled: true
+  # Storage size for model cache
+  size: 100Gi
+  # Storage class (leave empty for default)
+  storageClass: ""
+  # Access mode: ReadWriteOnce (single-node) or ReadWriteMany (multi-node with NFS/EFS)
+  accessMode: ReadWriteOnce
+  # Mount path inside controller pod
+  mountPath: /models
+  # Annotations for the PVC (e.g., for backup policies)
+  annotations: {}
+
 # Image pull secrets for private registries
 imagePullSecrets: []
 

@@ -145,6 +145,11 @@ type ModelStatus struct {
 	// +optional
 	Path string `json:"path,omitempty"`
 
+	// CacheKey is the SHA256 hash prefix of the source URL used for cache storage
+	// Models with the same source URL share the same cache entry
+	// +optional
+	CacheKey string `json:"cacheKey,omitempty"`
+
 	// AcceleratorReady indicates if hardware acceleration is configured and ready
 	// +optional
 	AcceleratorReady bool `json:"acceleratorReady,omitempty"`

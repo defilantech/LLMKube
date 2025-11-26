@@ -43,7 +43,8 @@ import (
 // InferenceServiceReconciler reconciles a InferenceService object
 type InferenceServiceReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme         *runtime.Scheme
+	ModelCachePath string // Path to the shared model cache PVC
 }
 
 // sanitizeDNSName converts a string to be DNS-1035 compliant by replacing dots with dashes
@@ -243,31 +244,83 @@ func (r *InferenceServiceReconciler) constructDeployment(
 		port = isvc.Spec.Endpoint.Port
 	}
 
-	// Construct model filename from source URL
-	modelFileName := fmt.Sprintf("%s-%s.gguf", isvc.Namespace, model.Name)
-	modelPath := fmt.Sprintf("/models/%s", modelFileName)
+	// Determine if we should use the shared model cache
+	// If the model has a CacheKey and cache path is configured, use the cached model
+	useCache := model.Status.CacheKey != "" && r.ModelCachePath != ""
+	var modelPath string
+	var initContainers []corev1.Container
+	var volumes []corev1.Volume
+	var volumeMounts []corev1.VolumeMount
 
-	// Build init container to download the model
-	initContainer := corev1.Container{
-		Name:  "model-downloader",
-		Image: "curlimages/curl:latest",
-		Command: []string{
-			"sh",
-			"-c",
-			fmt.Sprintf(
-				"if [ ! -f %s ]; then echo 'Downloading model from %s...'; curl -L -o %s '%s' && echo 'Model downloaded successfully'; else echo 'Model already exists, skipping download'; fi",
-				modelPath,
-				model.Spec.Source,
-				modelPath,
-				model.Spec.Source,
-			),
-		},
-		VolumeMounts: []corev1.VolumeMount{
+	if useCache {
+		// Use cached model from shared PVC
+		// The model is stored at <cache-path>/<cache-key>/model.gguf
+		modelPath = fmt.Sprintf("%s/%s/model.gguf", r.ModelCachePath, model.Status.CacheKey)
+
+		// Mount the cache PVC as read-only
+		volumes = []corev1.Volume{
+			{
+				Name: "model-cache",
+				VolumeSource: corev1.VolumeSource{
+					PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+						ClaimName: "llmkube-model-cache",
+						ReadOnly:  true,
+					},
+				},
+			},
+		}
+		volumeMounts = []corev1.VolumeMount{
+			{
+				Name:      "model-cache",
+				MountPath: r.ModelCachePath,
+				ReadOnly:  true,
+			},
+		}
+		// No init container needed - model is already cached
+		initContainers = nil
+	} else {
+		// Fallback to legacy behavior: download model via init container
+		modelFileName := fmt.Sprintf("%s-%s.gguf", isvc.Namespace, model.Name)
+		modelPath = fmt.Sprintf("/models/%s", modelFileName)
+
+		initContainers = []corev1.Container{
+			{
+				Name:  "model-downloader",
+				Image: "curlimages/curl:latest",
+				Command: []string{
+					"sh",
+					"-c",
+					fmt.Sprintf(
+						"if [ ! -f %s ]; then echo 'Downloading model from %s...'; curl -L -o %s '%s' && echo 'Model downloaded successfully'; else echo 'Model already exists, skipping download'; fi",
+						modelPath,
+						model.Spec.Source,
+						modelPath,
+						model.Spec.Source,
+					),
+				},
+				VolumeMounts: []corev1.VolumeMount{
+					{
+						Name:      "model-storage",
+						MountPath: "/models",
+					},
+				},
+			},
+		}
+		volumes = []corev1.Volume{
+			{
+				Name: "model-storage",
+				VolumeSource: corev1.VolumeSource{
+					EmptyDir: &corev1.EmptyDirVolumeSource{},
+				},
+			},
+		}
+		volumeMounts = []corev1.VolumeMount{
 			{
 				Name:      "model-storage",
 				MountPath: "/models",
+				ReadOnly:  true,
 			},
-		},
+		}
 	}
 
 	// Build container args
@@ -326,13 +379,7 @@ func (r *InferenceServiceReconciler) constructDeployment(
 				Protocol:      corev1.ProtocolTCP,
 			},
 		},
-		VolumeMounts: []corev1.VolumeMount{
-			{
-				Name:      "model-storage",
-				MountPath: "/models",
-				ReadOnly:  true,
-			},
-		},
+		VolumeMounts: volumeMounts,
 	}
 
 	// Add GPU resource requirements if specified
@@ -377,16 +424,9 @@ func (r *InferenceServiceReconciler) constructDeployment(
 					Labels: labels,
 				},
 				Spec: corev1.PodSpec{
-					InitContainers: []corev1.Container{initContainer},
+					InitContainers: initContainers,
 					Containers:     []corev1.Container{container},
-					Volumes: []corev1.Volume{
-						{
-							Name: "model-storage",
-							VolumeSource: corev1.VolumeSource{
-								EmptyDir: &corev1.EmptyDirVolumeSource{},
-							},
-						},
-					},
+					Volumes:        volumes,
 				},
 			},
 		},
