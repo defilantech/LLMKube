@@ -191,6 +191,18 @@ Real benchmarks on GKE with NVIDIA L4 GPU:
 
 **Cost:** ~$0.35/hour with T4 spot instances (auto-scales to $0 when idle)
 
+### Desktop GPU Benchmarks (Dual RTX 5060 Ti)
+
+Multi-model benchmark on ShadowStack (2x RTX 5060 Ti, 10 iterations, 256 max tokens):
+
+| Model | Size | Gen tok/s | P50 Latency | P99 Latency |
+|-------|------|-----------|-------------|-------------|
+| Llama 3.2 3B | 3B | **53.3** | 1930ms | 2260ms |
+| Mistral 7B v0.3 | 7B | **52.9** | 1912ms | 2071ms |
+| Llama 3.1 8B | 8B | **52.5** | 1878ms | 2178ms |
+
+Consistent ~53 tok/s across 3-8B models demonstrates efficient GPU utilization with LLMKube's automatic layer sharding.
+
 📊 [See detailed benchmarks →](docs/gpu-performance-phase0.md)
 
 ---
@@ -209,7 +221,7 @@ Real benchmarks on GKE with NVIDIA L4 GPU:
 
 **GPU Acceleration:**
 - ✅ NVIDIA GPU support (T4, L4, A100, RTX)
-- ✅ **Multi-GPU support** - Run 13B-70B+ models across 2-8 GPUs ([guide](MULTI-GPU-DEPLOYMENT.md))
+- ✅ **Multi-GPU support** - Run 13B-70B+ models across 2-8 GPUs ([guide](docs/MULTI-GPU-DEPLOYMENT.md))
 - ✅ Automatic layer offloading and tensor splitting
 - ✅ Multi-cloud Terraform (GKE, AKS, EKS)
 - ✅ Cost optimization (spot instances, auto-scale to 0)

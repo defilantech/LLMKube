@@ -39,6 +39,16 @@ spec:
 - Llama 2 13B Q4_K_M on 2x RTX 5060 Ti: ~44 tok/s generation
 - Both GPUs at 45-53% utilization during inference
 
+**Multi-Model Benchmark (ShadowStack - Dual RTX 5060 Ti):**
+
+| Model | Size | Gen tok/s | P50 Latency | P99 Latency |
+|-------|------|-----------|-------------|-------------|
+| Llama 3.2 3B | 3B | 53.3 | 1930ms | 2260ms |
+| Mistral 7B v0.3 | 7B | 52.9 | 1912ms | 2071ms |
+| Llama 3.1 8B | 8B | 52.5 | 1878ms | 2178ms |
+
+*10 iterations, 256 max tokens per test*
+
 ### Multi-Cloud Support
 
 The controller now works on any Kubernetes distribution without cloud-specific configuration:
@@ -98,7 +108,7 @@ helm install llmkube llmkube/llmkube --namespace llmkube-system --create-namespa
 ```
 
 ### New Documentation
-- `MULTI-GPU-DEPLOYMENT.md` - Step-by-step multi-GPU deployment guide
+- `docs/MULTI-GPU-DEPLOYMENT.md` - Step-by-step multi-GPU deployment guide
 - `docs/MULTI_CLOUD_DEPLOYMENT.md` - Cloud-agnostic deployment principles
 - `test/e2e/multi-gpu-test-plan.md` - Complete E2E test plan
 
@@ -264,7 +274,7 @@ None. This release is backward compatible with v0.3.x configurations.
 - Helm repository hosted on GitHub Pages (#46)
 
 ### Documentation
-- Added MULTI-GPU-DEPLOYMENT.md comprehensive guide
+- Added docs/MULTI-GPU-DEPLOYMENT.md comprehensive guide
 - Added docs/MULTI_CLOUD_DEPLOYMENT.md for cloud-agnostic deployments
 - Added test/e2e/multi-gpu-test-plan.md
 - Updated README.md with multi-GPU feature availability
@@ -287,7 +297,7 @@ See [ROADMAP.md](ROADMAP.md) for complete roadmap.
 ## Resources
 
 - **Issue #2**: [Multi-GPU single-node support](https://github.com/defilantech/LLMKube/issues/2)
-- **Multi-GPU Guide**: [MULTI-GPU-DEPLOYMENT.md](MULTI-GPU-DEPLOYMENT.md)
+- **Multi-GPU Guide**: [MULTI-GPU-DEPLOYMENT.md](docs/MULTI-GPU-DEPLOYMENT.md)
 - **Multi-Cloud Guide**: [docs/MULTI_CLOUD_DEPLOYMENT.md](docs/MULTI_CLOUD_DEPLOYMENT.md)
 - **Documentation**: [README.md](README.md)
 - **Roadmap**: [ROADMAP.md](ROADMAP.md)

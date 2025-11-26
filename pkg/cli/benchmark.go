@@ -1,0 +1,1210 @@
+/*
+Copyright 2025.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package cli
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"sort"
+	"strings"
+	"text/tabwriter"
+	"time"
+
+	"github.com/spf13/cobra"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/config"
+
+	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
+)
+
+// benchmarkOptions holds the options for the benchmark command
+type benchmarkOptions struct {
+	name        string
+	namespace   string
+	iterations  int
+	warmup      int
+	prompt      string
+	maxTokens   int
+	concurrent  int
+	output      string // table, json, markdown
+	endpoint    string // override endpoint URL
+	timeout     time.Duration
+	portForward bool
+
+	// Multi-model comparison options
+	catalog     string        // comma-separated list of catalog model IDs
+	gpu         bool          // enable GPU for catalog deployments
+	gpuCount    int32         // number of GPUs per pod
+	gpuLayers   int32         // number of model layers to offload to GPU
+	accelerator string        // hardware accelerator (cuda, metal, rocm)
+	cleanup     bool          // cleanup deployments after benchmarking
+	deployWait  time.Duration // timeout waiting for deployment
+}
+
+// BenchmarkResult holds the results of a single benchmark iteration
+type BenchmarkResult struct {
+	Iteration            int     `json:"iteration"`
+	PromptTokens         int     `json:"prompt_tokens"`
+	CompletionTokens     int     `json:"completion_tokens"`
+	TotalTokens          int     `json:"total_tokens"`
+	PromptTimeMs         float64 `json:"prompt_time_ms"`
+	GenerationTimeMs     float64 `json:"generation_time_ms"`
+	TotalTimeMs          float64 `json:"total_time_ms"`
+	PromptToksPerSec     float64 `json:"prompt_tokens_per_sec"`
+	GenerationToksPerSec float64 `json:"generation_tokens_per_sec"`
+	Error                string  `json:"error,omitempty"`
+}
+
+// BenchmarkSummary holds aggregated benchmark statistics
+type BenchmarkSummary struct {
+	ServiceName    string `json:"service_name"`
+	Namespace      string `json:"namespace"`
+	Endpoint       string `json:"endpoint"`
+	Iterations     int    `json:"iterations"`
+	SuccessfulRuns int    `json:"successful_runs"`
+	FailedRuns     int    `json:"failed_runs"`
+	PromptTokens   int    `json:"prompt_tokens"`
+	MaxTokens      int    `json:"max_tokens"`
+
+	// Latency stats (in ms)
+	LatencyMin  float64 `json:"latency_min_ms"`
+	LatencyMax  float64 `json:"latency_max_ms"`
+	LatencyMean float64 `json:"latency_mean_ms"`
+	LatencyP50  float64 `json:"latency_p50_ms"`
+	LatencyP95  float64 `json:"latency_p95_ms"`
+	LatencyP99  float64 `json:"latency_p99_ms"`
+
+	// Throughput stats
+	PromptToksPerSecMean     float64 `json:"prompt_toks_per_sec_mean"`
+	GenerationToksPerSecMean float64 `json:"generation_toks_per_sec_mean"`
+	GenerationToksPerSecMin  float64 `json:"generation_toks_per_sec_min"`
+	GenerationToksPerSecMax  float64 `json:"generation_toks_per_sec_max"`
+
+	// Individual results
+	Results []BenchmarkResult `json:"results"`
+
+	// Metadata
+	Timestamp time.Time     `json:"timestamp"`
+	Duration  time.Duration `json:"duration"`
+}
+
+// ComparisonReport holds benchmark results for multiple models
+type ComparisonReport struct {
+	Models      []ModelBenchmark `json:"models"`
+	Timestamp   time.Time        `json:"timestamp"`
+	Duration    time.Duration    `json:"duration"`
+	Iterations  int              `json:"iterations"`
+	MaxTokens   int              `json:"max_tokens"`
+	GPUEnabled  bool             `json:"gpu_enabled"`
+	GPUCount    int32            `json:"gpu_count,omitempty"`
+	Accelerator string           `json:"accelerator,omitempty"`
+}
+
+// ModelBenchmark holds benchmark results for a single model in a comparison
+type ModelBenchmark struct {
+	ModelID              string  `json:"model_id"`
+	ModelName            string  `json:"model_name"`
+	ModelSize            string  `json:"model_size"`
+	Status               string  `json:"status"` // "success", "failed", "skipped"
+	Error                string  `json:"error,omitempty"`
+	GenerationToksPerSec float64 `json:"generation_toks_per_sec"`
+	PromptToksPerSec     float64 `json:"prompt_toks_per_sec"`
+	LatencyP50Ms         float64 `json:"latency_p50_ms"`
+	LatencyP99Ms         float64 `json:"latency_p99_ms"`
+	VRAMEstimate         string  `json:"vram_estimate"`
+}
+
+// ChatCompletionRequest represents an OpenAI-compatible chat request
+type ChatCompletionRequest struct {
+	Model       string        `json:"model,omitempty"`
+	Messages    []ChatMessage `json:"messages"`
+	MaxTokens   int           `json:"max_tokens,omitempty"`
+	Temperature float64       `json:"temperature,omitempty"`
+	Stream      bool          `json:"stream,omitempty"`
+}
+
+// ChatMessage represents a chat message
+type ChatMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+// ChatCompletionResponse represents an OpenAI-compatible chat response
+type ChatCompletionResponse struct {
+	ID      string `json:"id"`
+	Object  string `json:"object"`
+	Created int64  `json:"created"`
+	Model   string `json:"model"`
+	Choices []struct {
+		Index   int `json:"index"`
+		Message struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"message"`
+		FinishReason string `json:"finish_reason"`
+	} `json:"choices"`
+	Usage struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+		TotalTokens      int `json:"total_tokens"`
+	} `json:"usage"`
+	Timings struct {
+		PromptN             int     `json:"prompt_n"`
+		PromptMs            float64 `json:"prompt_ms"`
+		PromptPerTokenMs    float64 `json:"prompt_per_token_ms"`
+		PromptPerSecond     float64 `json:"prompt_per_second"`
+		PredictedN          int     `json:"predicted_n"`
+		PredictedMs         float64 `json:"predicted_ms"`
+		PredictedPerTokenMs float64 `json:"predicted_per_token_ms"`
+		PredictedPerSecond  float64 `json:"predicted_per_second"`
+	} `json:"timings"`
+}
+
+// Default benchmark prompt designed to generate ~20-50 tokens response
+const defaultBenchmarkPrompt = "Explain what machine learning is in exactly three sentences."
+
+// NewBenchmarkCommand creates the benchmark command
+func NewBenchmarkCommand() *cobra.Command {
+	opts := &benchmarkOptions{}
+
+	cmd := &cobra.Command{
+		Use:   "benchmark [SERVICE_NAME]",
+		Short: "Benchmark an LLM inference service",
+		Long: `Run performance benchmarks against a deployed LLM inference service.
+
+This command sends test requests to the inference endpoint and measures:
+- Prompt processing speed (tokens/sec)
+- Generation speed (tokens/sec)
+- Latency percentiles (P50, P95, P99)
+- Request success rate
+
+SINGLE SERVICE MODE:
+  Benchmark an already-deployed inference service.
+
+CATALOG MODE (--catalog):
+  Automatically deploy, benchmark, and compare multiple models from the catalog.
+  Models are deployed sequentially, benchmarked, and optionally cleaned up.
+
+Examples:
+  # Benchmark a running service (requires port-forward or external access)
+  llmkube benchmark my-llm -n default
+
+  # Benchmark with custom settings
+  llmkube benchmark my-llm --iterations 20 --max-tokens 100
+
+  # Benchmark with specific endpoint (if externally exposed)
+  llmkube benchmark my-llm --endpoint http://my-llm.example.com:8080
+
+  # Output results as JSON
+  llmkube benchmark my-llm --output json
+
+  # CATALOG MODE: Benchmark multiple catalog models
+  llmkube benchmark --catalog llama-3.2-3b,mistral-7b,llama-3.1-8b --gpu
+
+  # Catalog mode with custom iterations and no cleanup
+  llmkube benchmark --catalog llama-3.2-3b,phi-3-mini --gpu --iterations 5 --no-cleanup
+
+  # Catalog mode with JSON output for CI/CD
+  llmkube benchmark --catalog llama-3.2-3b,mistral-7b --gpu --output json
+`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// Catalog mode: benchmark multiple models from catalog
+			if opts.catalog != "" {
+				return runCatalogBenchmark(opts)
+			}
+
+			// Single service mode: requires service name
+			if len(args) == 0 {
+				return fmt.Errorf("SERVICE_NAME is required (or use --catalog for multi-model comparison)")
+			}
+			opts.name = args[0]
+			return runBenchmark(opts)
+		},
+	}
+
+	// Flags
+	cmd.Flags().StringVarP(&opts.namespace, "namespace", "n", "default", "Kubernetes namespace")
+	cmd.Flags().IntVarP(&opts.iterations, "iterations", "i", 10, "Number of benchmark iterations")
+	cmd.Flags().IntVar(&opts.warmup, "warmup", 2, "Number of warmup requests (not counted)")
+	cmd.Flags().StringVarP(&opts.prompt, "prompt", "p", defaultBenchmarkPrompt, "Prompt to use for benchmarking")
+	cmd.Flags().IntVar(&opts.maxTokens, "max-tokens", 50, "Maximum tokens to generate per request")
+	cmd.Flags().IntVarP(&opts.concurrent, "concurrent", "c", 1, "Number of concurrent requests (not yet implemented)")
+	cmd.Flags().StringVarP(&opts.output, "output", "o", "table", "Output format: table, json, markdown")
+	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "Override endpoint URL (default: auto-detect from service)")
+	cmd.Flags().DurationVar(&opts.timeout, "timeout", 60*time.Second, "Request timeout")
+	cmd.Flags().BoolVar(&opts.portForward, "port-forward", true, "Automatically set up port forwarding")
+
+	// Catalog mode flags
+	cmd.Flags().StringVar(&opts.catalog, "catalog", "", "Comma-separated list of catalog model IDs to benchmark")
+	cmd.Flags().BoolVar(&opts.gpu, "gpu", false, "Enable GPU acceleration for catalog deployments")
+	cmd.Flags().Int32Var(&opts.gpuCount, "gpu-count", 1, "Number of GPUs per pod (for multi-GPU benchmarks)")
+	cmd.Flags().Int32Var(&opts.gpuLayers, "gpu-layers", -1, "Number of model layers to offload to GPU (-1 = use catalog default)")
+	cmd.Flags().StringVar(&opts.accelerator, "accelerator", "", "Hardware accelerator: cuda, metal, rocm (auto-detected if --gpu is set)")
+	cmd.Flags().BoolVar(&opts.cleanup, "cleanup", true, "Cleanup deployments after benchmarking (use --no-cleanup to keep)")
+	cmd.Flags().DurationVar(&opts.deployWait, "deploy-wait", 10*time.Minute, "Timeout waiting for deployment to be ready")
+
+	return cmd
+}
+
+func runBenchmark(opts *benchmarkOptions) error {
+	ctx := context.Background()
+	startTime := time.Now()
+
+	// Get endpoint URL
+	endpoint, cleanup, err := getEndpoint(ctx, opts)
+	if err != nil {
+		return err
+	}
+	if cleanup != nil {
+		defer cleanup()
+	}
+
+	fmt.Printf("\n🏁 LLMKube Benchmark\n")
+	fmt.Printf("═══════════════════════════════════════════════════════════════\n")
+	fmt.Printf("Service:     %s\n", opts.name)
+	fmt.Printf("Namespace:   %s\n", opts.namespace)
+	fmt.Printf("Endpoint:    %s\n", endpoint)
+	fmt.Printf("Iterations:  %d (+ %d warmup)\n", opts.iterations, opts.warmup)
+	fmt.Printf("Max Tokens:  %d\n", opts.maxTokens)
+	fmt.Printf("═══════════════════════════════════════════════════════════════\n\n")
+
+	// Run warmup requests
+	if opts.warmup > 0 {
+		fmt.Printf("🔥 Running %d warmup requests...\n", opts.warmup)
+		for i := 0; i < opts.warmup; i++ {
+			_, err := sendBenchmarkRequest(ctx, endpoint, opts, i+1)
+			if err != nil {
+				fmt.Printf("   Warmup %d: failed (%v)\n", i+1, err)
+			} else {
+				fmt.Printf("   Warmup %d: ok\n", i+1)
+			}
+		}
+		fmt.Println()
+	}
+
+	// Run benchmark iterations
+	fmt.Printf("📊 Running %d benchmark iterations...\n", opts.iterations)
+	results := make([]BenchmarkResult, 0, opts.iterations)
+
+	for i := 0; i < opts.iterations; i++ {
+		result, err := sendBenchmarkRequest(ctx, endpoint, opts, i+1)
+		if err != nil {
+			result = BenchmarkResult{
+				Iteration: i + 1,
+				Error:     err.Error(),
+			}
+			fmt.Printf("   [%d/%d] ❌ Error: %v\n", i+1, opts.iterations, err)
+		} else {
+			fmt.Printf("   [%d/%d] ✅ %.1f tok/s (%.0fms)\n",
+				i+1, opts.iterations,
+				result.GenerationToksPerSec,
+				result.TotalTimeMs)
+		}
+		results = append(results, result)
+	}
+	fmt.Println()
+
+	// Calculate summary statistics
+	summary := calculateSummary(opts, endpoint, results, startTime)
+
+	// Output results
+	switch opts.output {
+	case "json":
+		return outputJSON(summary)
+	case "markdown":
+		return outputMarkdown(summary)
+	default:
+		return outputTable(summary)
+	}
+}
+
+func getEndpoint(ctx context.Context, opts *benchmarkOptions) (string, func(), error) {
+	// If endpoint is provided directly, use it
+	if opts.endpoint != "" {
+		return opts.endpoint, nil, nil
+	}
+
+	// Get Kubernetes client to find the service
+	cfg, err := config.GetConfig()
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to get kubeconfig: %w", err)
+	}
+
+	if err := inferencev1alpha1.AddToScheme(scheme.Scheme); err != nil {
+		return "", nil, fmt.Errorf("failed to add scheme: %w", err)
+	}
+
+	k8sClient, err := client.New(cfg, client.Options{Scheme: scheme.Scheme})
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to create client: %w", err)
+	}
+
+	// Get InferenceService to find endpoint
+	isvc := &inferencev1alpha1.InferenceService{}
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: opts.name, Namespace: opts.namespace}, isvc); err != nil {
+		return "", nil, fmt.Errorf("failed to get InferenceService '%s': %w", opts.name, err)
+	}
+
+	// Check if service is ready
+	if isvc.Status.Phase != "Ready" {
+		return "", nil, fmt.Errorf("InferenceService '%s' is not ready (phase: %s)", opts.name, isvc.Status.Phase)
+	}
+
+	// If port-forward is enabled, set it up
+	if opts.portForward {
+		return setupPortForward(opts)
+	}
+
+	// Use the endpoint from status
+	if isvc.Status.Endpoint != "" {
+		return isvc.Status.Endpoint, nil, nil
+	}
+
+	return "", nil, fmt.Errorf("no endpoint found for service '%s'. Use --endpoint to specify manually or --port-forward", opts.name)
+}
+
+func setupPortForward(opts *benchmarkOptions) (string, func(), error) {
+	// For now, we'll use a simple approach - require the user to run port-forward manually
+	// In a future version, we could use k8s client-go portforward package
+
+	// Sanitize service name (dots become dashes in Kubernetes service names)
+	serviceName := strings.ReplaceAll(opts.name, ".", "-")
+
+	fmt.Printf("⚡ Port forwarding to service/%s...\n", serviceName)
+	fmt.Printf("   (If this hangs, run manually: kubectl port-forward -n %s svc/%s 8080:8080)\n\n",
+		opts.namespace, serviceName)
+
+	// Use localhost:8080 as the endpoint
+	// The user needs to have port-forward running
+	endpoint := "http://localhost:8080"
+
+	// Test connectivity
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(endpoint + "/health")
+	if err != nil {
+		return "", nil, fmt.Errorf(
+			"cannot connect to %s. Please run:\n  kubectl port-forward -n %s svc/%s 8080:8080",
+			endpoint, opts.namespace, serviceName)
+	}
+	resp.Body.Close()
+
+	return endpoint, nil, nil
+}
+
+func sendBenchmarkRequest(ctx context.Context, endpoint string, opts *benchmarkOptions, iteration int) (BenchmarkResult, error) {
+	result := BenchmarkResult{
+		Iteration: iteration,
+	}
+
+	// Build request
+	reqBody := ChatCompletionRequest{
+		Messages: []ChatMessage{
+			{Role: "user", Content: opts.prompt},
+		},
+		MaxTokens:   opts.maxTokens,
+		Temperature: 0.7,
+		Stream:      false,
+	}
+
+	jsonBody, err := json.Marshal(reqBody)
+	if err != nil {
+		return result, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	// Create HTTP request
+	req, err := http.NewRequestWithContext(ctx, "POST", endpoint+"/v1/chat/completions", bytes.NewReader(jsonBody))
+	if err != nil {
+		return result, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	// Send request and measure time
+	client := &http.Client{Timeout: opts.timeout}
+	startTime := time.Now()
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return result, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	totalTime := time.Since(startTime)
+
+	// Read response
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return result, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return result, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+	}
+
+	// Parse response
+	var chatResp ChatCompletionResponse
+	if err := json.Unmarshal(body, &chatResp); err != nil {
+		return result, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	// Extract metrics
+	result.PromptTokens = chatResp.Usage.PromptTokens
+	result.CompletionTokens = chatResp.Usage.CompletionTokens
+	result.TotalTokens = chatResp.Usage.TotalTokens
+	result.TotalTimeMs = float64(totalTime.Milliseconds())
+
+	// Use timings from llama.cpp if available, otherwise calculate
+	if chatResp.Timings.PromptMs > 0 {
+		result.PromptTimeMs = chatResp.Timings.PromptMs
+		result.GenerationTimeMs = chatResp.Timings.PredictedMs
+		result.PromptToksPerSec = chatResp.Timings.PromptPerSecond
+		result.GenerationToksPerSec = chatResp.Timings.PredictedPerSecond
+	} else {
+		// Fallback calculation
+		result.GenerationTimeMs = result.TotalTimeMs
+		if result.CompletionTokens > 0 && result.TotalTimeMs > 0 {
+			result.GenerationToksPerSec = float64(result.CompletionTokens) / (result.TotalTimeMs / 1000.0)
+		}
+	}
+
+	return result, nil
+}
+
+func calculateSummary(opts *benchmarkOptions, endpoint string, results []BenchmarkResult, startTime time.Time) BenchmarkSummary {
+	summary := BenchmarkSummary{
+		ServiceName:  opts.name,
+		Namespace:    opts.namespace,
+		Endpoint:     endpoint,
+		Iterations:   opts.iterations,
+		PromptTokens: 0,
+		MaxTokens:    opts.maxTokens,
+		Results:      results,
+		Timestamp:    startTime,
+		Duration:     time.Since(startTime),
+	}
+
+	// Collect successful results
+	var latencies []float64
+	var genToks []float64
+	var promptToks []float64
+
+	for _, r := range results {
+		if r.Error != "" {
+			summary.FailedRuns++
+			continue
+		}
+		summary.SuccessfulRuns++
+		summary.PromptTokens = r.PromptTokens // They should all be the same
+
+		latencies = append(latencies, r.TotalTimeMs)
+		if r.GenerationToksPerSec > 0 {
+			genToks = append(genToks, r.GenerationToksPerSec)
+		}
+		if r.PromptToksPerSec > 0 {
+			promptToks = append(promptToks, r.PromptToksPerSec)
+		}
+	}
+
+	if len(latencies) == 0 {
+		return summary
+	}
+
+	// Sort for percentile calculations
+	sort.Float64s(latencies)
+	sort.Float64s(genToks)
+
+	// Latency stats
+	summary.LatencyMin = latencies[0]
+	summary.LatencyMax = latencies[len(latencies)-1]
+	summary.LatencyMean = mean(latencies)
+	summary.LatencyP50 = percentile(latencies, 50)
+	summary.LatencyP95 = percentile(latencies, 95)
+	summary.LatencyP99 = percentile(latencies, 99)
+
+	// Throughput stats
+	if len(genToks) > 0 {
+		summary.GenerationToksPerSecMean = mean(genToks)
+		summary.GenerationToksPerSecMin = genToks[0]
+		summary.GenerationToksPerSecMax = genToks[len(genToks)-1]
+	}
+	if len(promptToks) > 0 {
+		summary.PromptToksPerSecMean = mean(promptToks)
+	}
+
+	return summary
+}
+
+func mean(values []float64) float64 {
+	if len(values) == 0 {
+		return 0
+	}
+	var sum float64
+	for _, v := range values {
+		sum += v
+	}
+	return sum / float64(len(values))
+}
+
+func percentile(sortedValues []float64, p float64) float64 {
+	if len(sortedValues) == 0 {
+		return 0
+	}
+	if len(sortedValues) == 1 {
+		return sortedValues[0]
+	}
+
+	index := (p / 100.0) * float64(len(sortedValues)-1)
+	lower := int(index)
+	upper := lower + 1
+	if upper >= len(sortedValues) {
+		return sortedValues[len(sortedValues)-1]
+	}
+
+	weight := index - float64(lower)
+	return sortedValues[lower]*(1-weight) + sortedValues[upper]*weight
+}
+
+func outputTable(summary BenchmarkSummary) error {
+	fmt.Printf("📈 Benchmark Results\n")
+	fmt.Printf("═══════════════════════════════════════════════════════════════\n\n")
+
+	// Success rate
+	successRate := float64(summary.SuccessfulRuns) / float64(summary.Iterations) * 100
+	fmt.Printf("Runs: %d/%d successful (%.1f%%)\n\n",
+		summary.SuccessfulRuns, summary.Iterations, successRate)
+
+	if summary.SuccessfulRuns == 0 {
+		fmt.Printf("❌ No successful runs to report.\n")
+		return nil
+	}
+
+	// Throughput table
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+
+	fmt.Fprintf(w, "THROUGHPUT\t\n")
+	fmt.Fprintf(w, "──────────\t\n")
+	fmt.Fprintf(w, "Generation:\t%.1f tok/s (mean)\t%.1f - %.1f tok/s (range)\n",
+		summary.GenerationToksPerSecMean,
+		summary.GenerationToksPerSecMin,
+		summary.GenerationToksPerSecMax)
+	if summary.PromptToksPerSecMean > 0 {
+		fmt.Fprintf(w, "Prompt:\t%.1f tok/s (mean)\t\n", summary.PromptToksPerSecMean)
+	}
+	w.Flush()
+
+	fmt.Println()
+
+	// Latency table
+	w = tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintf(w, "LATENCY\t\n")
+	fmt.Fprintf(w, "───────\t\n")
+	fmt.Fprintf(w, "P50:\t%.0f ms\t\n", summary.LatencyP50)
+	fmt.Fprintf(w, "P95:\t%.0f ms\t\n", summary.LatencyP95)
+	fmt.Fprintf(w, "P99:\t%.0f ms\t\n", summary.LatencyP99)
+	fmt.Fprintf(w, "Min:\t%.0f ms\t\n", summary.LatencyMin)
+	fmt.Fprintf(w, "Max:\t%.0f ms\t\n", summary.LatencyMax)
+	fmt.Fprintf(w, "Mean:\t%.0f ms\t\n", summary.LatencyMean)
+	w.Flush()
+
+	fmt.Printf("\n═══════════════════════════════════════════════════════════════\n")
+	fmt.Printf("Duration: %s\n", summary.Duration.Round(time.Second))
+	fmt.Printf("Prompt: %d tokens | Max generation: %d tokens\n",
+		summary.PromptTokens, summary.MaxTokens)
+
+	return nil
+}
+
+func outputJSON(summary BenchmarkSummary) error {
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(summary)
+}
+
+func outputMarkdown(summary BenchmarkSummary) error {
+	fmt.Printf("# LLMKube Benchmark Results\n\n")
+	fmt.Printf("**Service:** %s  \n", summary.ServiceName)
+	fmt.Printf("**Namespace:** %s  \n", summary.Namespace)
+	fmt.Printf("**Date:** %s  \n\n", summary.Timestamp.Format("2006-01-02 15:04:05"))
+
+	successRate := float64(summary.SuccessfulRuns) / float64(summary.Iterations) * 100
+	fmt.Printf("## Summary\n\n")
+	fmt.Printf("| Metric | Value |\n")
+	fmt.Printf("|--------|-------|\n")
+	fmt.Printf("| Iterations | %d |\n", summary.Iterations)
+	fmt.Printf("| Success Rate | %.1f%% |\n", successRate)
+	fmt.Printf("| Duration | %s |\n\n", summary.Duration.Round(time.Second))
+
+	if summary.SuccessfulRuns == 0 {
+		fmt.Printf("No successful runs to report.\n")
+		return nil
+	}
+
+	fmt.Printf("## Throughput\n\n")
+	fmt.Printf("| Metric | Mean | Min | Max |\n")
+	fmt.Printf("|--------|------|-----|-----|\n")
+	fmt.Printf("| Generation (tok/s) | %.1f | %.1f | %.1f |\n",
+		summary.GenerationToksPerSecMean,
+		summary.GenerationToksPerSecMin,
+		summary.GenerationToksPerSecMax)
+	if summary.PromptToksPerSecMean > 0 {
+		fmt.Printf("| Prompt (tok/s) | %.1f | - | - |\n", summary.PromptToksPerSecMean)
+	}
+
+	fmt.Printf("\n## Latency\n\n")
+	fmt.Printf("| Percentile | Value (ms) |\n")
+	fmt.Printf("|------------|------------|\n")
+	fmt.Printf("| P50 | %.0f |\n", summary.LatencyP50)
+	fmt.Printf("| P95 | %.0f |\n", summary.LatencyP95)
+	fmt.Printf("| P99 | %.0f |\n", summary.LatencyP99)
+	fmt.Printf("| Min | %.0f |\n", summary.LatencyMin)
+	fmt.Printf("| Max | %.0f |\n", summary.LatencyMax)
+	fmt.Printf("| Mean | %.0f |\n", summary.LatencyMean)
+
+	fmt.Printf("\n---\n")
+	fmt.Printf("*Generated by LLMKube v%s*\n", Version)
+
+	return nil
+}
+
+// ============================================================================
+// Catalog Mode: Multi-Model Comparison
+// ============================================================================
+
+func runCatalogBenchmark(opts *benchmarkOptions) error {
+	ctx := context.Background()
+	startTime := time.Now()
+
+	// Parse model IDs from catalog flag
+	modelIDs := strings.Split(opts.catalog, ",")
+	for i := range modelIDs {
+		modelIDs[i] = strings.TrimSpace(modelIDs[i])
+	}
+
+	// Validate all models exist in catalog before starting
+	fmt.Printf("\n🔍 Validating catalog models...\n")
+	catalogModels := make([]*Model, 0, len(modelIDs))
+	for _, modelID := range modelIDs {
+		model, err := GetModel(modelID)
+		if err != nil {
+			return fmt.Errorf("model '%s' not found in catalog: %w", modelID, err)
+		}
+		catalogModels = append(catalogModels, model)
+		fmt.Printf("   ✅ %s (%s)\n", modelID, model.Size)
+	}
+
+	// Determine accelerator for display
+	acceleratorDisplay := "cpu"
+	if opts.gpu {
+		acceleratorDisplay = opts.accelerator
+		if acceleratorDisplay == "" {
+			acceleratorDisplay = "cuda"
+		}
+	}
+
+	// Print benchmark plan
+	fmt.Printf("\n🏁 LLMKube Catalog Benchmark\n")
+	fmt.Printf("═══════════════════════════════════════════════════════════════\n")
+	fmt.Printf("Models:      %d (%s)\n", len(modelIDs), strings.Join(modelIDs, ", "))
+	fmt.Printf("Namespace:   %s\n", opts.namespace)
+	fmt.Printf("Accelerator: %s\n", acceleratorDisplay)
+	if opts.gpu {
+		fmt.Printf("GPU Count:   %d\n", opts.gpuCount)
+		if opts.gpuLayers >= 0 {
+			fmt.Printf("GPU Layers:  %d\n", opts.gpuLayers)
+		} else {
+			fmt.Printf("GPU Layers:  (catalog default)\n")
+		}
+	}
+	fmt.Printf("Iterations:  %d per model (+ %d warmup)\n", opts.iterations, opts.warmup)
+	fmt.Printf("Cleanup:     %v\n", opts.cleanup)
+	fmt.Printf("═══════════════════════════════════════════════════════════════\n\n")
+
+	// Get Kubernetes client
+	cfg, err := config.GetConfig()
+	if err != nil {
+		return fmt.Errorf("failed to get kubeconfig: %w", err)
+	}
+
+	if err := inferencev1alpha1.AddToScheme(scheme.Scheme); err != nil {
+		return fmt.Errorf("failed to add scheme: %w", err)
+	}
+
+	k8sClient, err := client.New(cfg, client.Options{Scheme: scheme.Scheme})
+	if err != nil {
+		return fmt.Errorf("failed to create client: %w", err)
+	}
+
+	// Benchmark each model
+	report := ComparisonReport{
+		Models:      make([]ModelBenchmark, 0, len(modelIDs)),
+		Timestamp:   startTime,
+		Iterations:  opts.iterations,
+		MaxTokens:   opts.maxTokens,
+		GPUEnabled:  opts.gpu,
+		GPUCount:    opts.gpuCount,
+		Accelerator: acceleratorDisplay,
+	}
+
+	for idx, modelID := range modelIDs {
+		catalogModel := catalogModels[idx]
+
+		fmt.Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+		fmt.Printf("📦 [%d/%d] Benchmarking: %s (%s)\n", idx+1, len(modelIDs), catalogModel.Name, catalogModel.Size)
+		fmt.Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n")
+
+		modelBenchmark := ModelBenchmark{
+			ModelID:      modelID,
+			ModelName:    catalogModel.Name,
+			ModelSize:    catalogModel.Size,
+			VRAMEstimate: catalogModel.VRAMEstimate,
+		}
+
+		// Deploy the model
+		fmt.Printf("🚀 Deploying %s...\n", modelID)
+		err := deployModel(ctx, k8sClient, modelID, catalogModel, opts)
+		if err != nil {
+			fmt.Printf("   ❌ Deployment failed: %v\n\n", err)
+			modelBenchmark.Status = "failed"
+			modelBenchmark.Error = fmt.Sprintf("deployment failed: %v", err)
+			report.Models = append(report.Models, modelBenchmark)
+			continue
+		}
+
+		// Wait for deployment to be ready
+		fmt.Printf("⏳ Waiting for deployment to be ready...\n")
+		err = waitForDeployment(ctx, k8sClient, modelID, opts)
+		if err != nil {
+			fmt.Printf("   ❌ Deployment not ready: %v\n", err)
+			modelBenchmark.Status = "failed"
+			modelBenchmark.Error = fmt.Sprintf("deployment timeout: %v", err)
+			if opts.cleanup {
+				cleanupModel(ctx, k8sClient, modelID, opts)
+			}
+			report.Models = append(report.Models, modelBenchmark)
+			continue
+		}
+		fmt.Printf("   ✅ Deployment ready\n\n")
+
+		// Run benchmark
+		opts.name = modelID
+		summary, err := runBenchmarkInternal(ctx, opts)
+		if err != nil {
+			fmt.Printf("   ❌ Benchmark failed: %v\n\n", err)
+			modelBenchmark.Status = "failed"
+			modelBenchmark.Error = fmt.Sprintf("benchmark failed: %v", err)
+		} else {
+			modelBenchmark.Status = "success"
+			modelBenchmark.GenerationToksPerSec = summary.GenerationToksPerSecMean
+			modelBenchmark.PromptToksPerSec = summary.PromptToksPerSecMean
+			modelBenchmark.LatencyP50Ms = summary.LatencyP50
+			modelBenchmark.LatencyP99Ms = summary.LatencyP99
+		}
+
+		report.Models = append(report.Models, modelBenchmark)
+
+		// Cleanup if requested
+		if opts.cleanup {
+			fmt.Printf("🧹 Cleaning up %s...\n", modelID)
+			if err := cleanupModel(ctx, k8sClient, modelID, opts); err != nil {
+				fmt.Printf("   ⚠️  Cleanup warning: %v\n", err)
+			} else {
+				fmt.Printf("   ✅ Cleaned up\n")
+			}
+		}
+		fmt.Println()
+	}
+
+	report.Duration = time.Since(startTime)
+
+	// Output comparison results
+	fmt.Printf("\n")
+	switch opts.output {
+	case "json":
+		return outputComparisonJSON(report)
+	case "markdown":
+		return outputComparisonMarkdown(report)
+	default:
+		return outputComparisonTable(report)
+	}
+}
+
+func deployModel(ctx context.Context, k8sClient client.Client, modelID string, catalogModel *Model, opts *benchmarkOptions) error {
+	// Determine accelerator type
+	accelerator := opts.accelerator
+	if accelerator == "" && opts.gpu {
+		accelerator = "cuda" // default to CUDA if GPU enabled but no accelerator specified
+	}
+
+	// Determine GPU layers (use catalog default or override)
+	gpuLayers := catalogModel.GPULayers
+	if opts.gpuLayers >= 0 {
+		gpuLayers = opts.gpuLayers
+	}
+
+	// Create Model resource
+	model := &inferencev1alpha1.Model{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      modelID,
+			Namespace: opts.namespace,
+			Labels: map[string]string{
+				"llmkube.dev/benchmark": "true",
+			},
+		},
+		Spec: inferencev1alpha1.ModelSpec{
+			Source:       catalogModel.Source,
+			Format:       "gguf",
+			Quantization: catalogModel.Quantization,
+			Resources: &inferencev1alpha1.ResourceRequirements{
+				CPU:    catalogModel.Resources.CPU,
+				Memory: catalogModel.Resources.Memory,
+			},
+		},
+	}
+
+	// Add GPU config if enabled
+	if opts.gpu {
+		// Determine vendor based on accelerator
+		vendor := "nvidia"
+		if accelerator == "rocm" {
+			vendor = "amd"
+		} else if accelerator == "metal" {
+			vendor = "apple"
+		}
+
+		model.Spec.Hardware = &inferencev1alpha1.HardwareSpec{
+			Accelerator: accelerator,
+			GPU: &inferencev1alpha1.GPUSpec{
+				Enabled: true,
+				Count:   opts.gpuCount,
+				Vendor:  vendor,
+				Layers:  gpuLayers,
+				Memory:  catalogModel.Resources.GPUMemory,
+			},
+		}
+	}
+
+	if err := k8sClient.Create(ctx, model); err != nil {
+		return fmt.Errorf("failed to create Model: %w", err)
+	}
+
+	// Determine image based on accelerator
+	image := "ghcr.io/ggerganov/llama.cpp:server"
+	if opts.gpu {
+		switch accelerator {
+		case "cuda":
+			image = "ghcr.io/ggerganov/llama.cpp:server-cuda"
+		case "rocm":
+			image = "ghcr.io/ggerganov/llama.cpp:server-rocm"
+		case "metal":
+			image = "" // Metal uses native binary, not container
+		default:
+			image = "ghcr.io/ggerganov/llama.cpp:server-cuda"
+		}
+	}
+
+	// Create InferenceService resource
+	replicas := int32(1)
+	inferenceService := &inferencev1alpha1.InferenceService{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      modelID,
+			Namespace: opts.namespace,
+			Labels: map[string]string{
+				"llmkube.dev/benchmark": "true",
+			},
+		},
+		Spec: inferencev1alpha1.InferenceServiceSpec{
+			ModelRef: modelID,
+			Replicas: &replicas,
+			Image:    image,
+			Endpoint: &inferencev1alpha1.EndpointSpec{
+				Port: 8080,
+				Path: "/v1/chat/completions",
+				Type: "ClusterIP",
+			},
+			Resources: &inferencev1alpha1.InferenceResourceRequirements{
+				CPU:    catalogModel.Resources.CPU,
+				Memory: catalogModel.Resources.Memory,
+			},
+		},
+	}
+
+	if opts.gpu {
+		inferenceService.Spec.Resources.GPU = opts.gpuCount
+		inferenceService.Spec.Resources.GPUMemory = catalogModel.Resources.GPUMemory
+	}
+
+	if err := k8sClient.Create(ctx, inferenceService); err != nil {
+		// Cleanup model if inference service creation fails
+		k8sClient.Delete(ctx, model)
+		return fmt.Errorf("failed to create InferenceService: %w", err)
+	}
+
+	return nil
+}
+
+func waitForDeployment(ctx context.Context, k8sClient client.Client, modelID string, opts *benchmarkOptions) error {
+	ctx, cancel := context.WithTimeout(ctx, opts.deployWait)
+	defer cancel()
+
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("timeout waiting for deployment")
+		case <-ticker.C:
+			// Check InferenceService status
+			isvc := &inferencev1alpha1.InferenceService{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: modelID, Namespace: opts.namespace}, isvc); err != nil {
+				continue
+			}
+
+			if isvc.Status.Phase == "Ready" {
+				return nil
+			}
+
+			if isvc.Status.Phase == "Failed" {
+				return fmt.Errorf("deployment failed")
+			}
+
+			fmt.Printf("   Status: %s (%d/%d replicas)\n",
+				isvc.Status.Phase, isvc.Status.ReadyReplicas, isvc.Status.DesiredReplicas)
+		}
+	}
+}
+
+func cleanupModel(ctx context.Context, k8sClient client.Client, modelID string, opts *benchmarkOptions) error {
+	// Delete InferenceService
+	isvc := &inferencev1alpha1.InferenceService{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      modelID,
+			Namespace: opts.namespace,
+		},
+	}
+	if err := k8sClient.Delete(ctx, isvc); err != nil {
+		// Ignore not found errors
+		if !strings.Contains(err.Error(), "not found") {
+			return fmt.Errorf("failed to delete InferenceService: %w", err)
+		}
+	}
+
+	// Delete Model
+	model := &inferencev1alpha1.Model{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      modelID,
+			Namespace: opts.namespace,
+		},
+	}
+	if err := k8sClient.Delete(ctx, model); err != nil {
+		if !strings.Contains(err.Error(), "not found") {
+			return fmt.Errorf("failed to delete Model: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func runBenchmarkInternal(ctx context.Context, opts *benchmarkOptions) (*BenchmarkSummary, error) {
+	// Get endpoint URL
+	endpoint, cleanup, err := getEndpoint(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+	if cleanup != nil {
+		defer cleanup()
+	}
+
+	startTime := time.Now()
+
+	// Run warmup requests
+	if opts.warmup > 0 {
+		fmt.Printf("🔥 Running %d warmup requests...\n", opts.warmup)
+		for i := 0; i < opts.warmup; i++ {
+			_, err := sendBenchmarkRequest(ctx, endpoint, opts, i+1)
+			if err != nil {
+				fmt.Printf("   Warmup %d: failed (%v)\n", i+1, err)
+			} else {
+				fmt.Printf("   Warmup %d: ok\n", i+1)
+			}
+		}
+	}
+
+	// Run benchmark iterations
+	fmt.Printf("📊 Running %d benchmark iterations...\n", opts.iterations)
+	results := make([]BenchmarkResult, 0, opts.iterations)
+
+	for i := 0; i < opts.iterations; i++ {
+		result, err := sendBenchmarkRequest(ctx, endpoint, opts, i+1)
+		if err != nil {
+			result = BenchmarkResult{
+				Iteration: i + 1,
+				Error:     err.Error(),
+			}
+			fmt.Printf("   [%d/%d] ❌ Error: %v\n", i+1, opts.iterations, err)
+		} else {
+			fmt.Printf("   [%d/%d] ✅ %.1f tok/s (%.0fms)\n",
+				i+1, opts.iterations,
+				result.GenerationToksPerSec,
+				result.TotalTimeMs)
+		}
+		results = append(results, result)
+	}
+
+	// Calculate summary statistics
+	summary := calculateSummary(opts, endpoint, results, startTime)
+	return &summary, nil
+}
+
+func outputComparisonTable(report ComparisonReport) error {
+	fmt.Printf("📊 Benchmark Comparison Results\n")
+	fmt.Printf("═══════════════════════════════════════════════════════════════════════════════\n\n")
+
+	// Count successes and failures
+	successes := 0
+	for _, m := range report.Models {
+		if m.Status == "success" {
+			successes++
+		}
+	}
+	fmt.Printf("Models: %d/%d benchmarked successfully\n", successes, len(report.Models))
+	if report.GPUEnabled {
+		fmt.Printf("Accelerator: %s | GPU Count: %d | Iterations: %d | Max Tokens: %d\n\n",
+			report.Accelerator, report.GPUCount, report.Iterations, report.MaxTokens)
+	} else {
+		fmt.Printf("Accelerator: cpu | Iterations: %d | Max Tokens: %d\n\n", report.Iterations, report.MaxTokens)
+	}
+
+	// Create comparison table
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintf(w, "MODEL\tSIZE\tGEN TOK/S\tP50 (ms)\tP99 (ms)\tVRAM\tSTATUS\n")
+	fmt.Fprintf(w, "─────\t────\t─────────\t────────\t────────\t────\t──────\n")
+
+	for _, m := range report.Models {
+		status := "✅"
+		if m.Status != "success" {
+			status = "❌"
+		}
+
+		genToks := "-"
+		p50 := "-"
+		p99 := "-"
+		if m.Status == "success" {
+			genToks = fmt.Sprintf("%.1f", m.GenerationToksPerSec)
+			p50 = fmt.Sprintf("%.0f", m.LatencyP50Ms)
+			p99 = fmt.Sprintf("%.0f", m.LatencyP99Ms)
+		}
+
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			m.ModelID,
+			m.ModelSize,
+			genToks,
+			p50,
+			p99,
+			m.VRAMEstimate,
+			status,
+		)
+	}
+	w.Flush()
+
+	// Print any errors
+	hasErrors := false
+	for _, m := range report.Models {
+		if m.Error != "" {
+			if !hasErrors {
+				fmt.Printf("\n⚠️  Errors:\n")
+				hasErrors = true
+			}
+			fmt.Printf("   %s: %s\n", m.ModelID, m.Error)
+		}
+	}
+
+	fmt.Printf("\n═══════════════════════════════════════════════════════════════════════════════\n")
+	fmt.Printf("Total Duration: %s\n", report.Duration.Round(time.Second))
+
+	return nil
+}
+
+func outputComparisonJSON(report ComparisonReport) error {
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(report)
+}
+
+func outputComparisonMarkdown(report ComparisonReport) error {
+	fmt.Printf("# LLMKube Benchmark Comparison\n\n")
+	fmt.Printf("**Date:** %s  \n", report.Timestamp.Format("2006-01-02 15:04:05"))
+	fmt.Printf("**GPU Enabled:** %v  \n", report.GPUEnabled)
+	fmt.Printf("**Iterations:** %d per model  \n", report.Iterations)
+	fmt.Printf("**Max Tokens:** %d  \n\n", report.MaxTokens)
+
+	fmt.Printf("## Results\n\n")
+	fmt.Printf("| Model | Size | Gen tok/s | P50 (ms) | P99 (ms) | VRAM | Status |\n")
+	fmt.Printf("|-------|------|-----------|----------|----------|------|--------|\n")
+
+	for _, m := range report.Models {
+		status := "✅ Success"
+		if m.Status != "success" {
+			status = "❌ Failed"
+		}
+
+		genToks := "-"
+		p50 := "-"
+		p99 := "-"
+		if m.Status == "success" {
+			genToks = fmt.Sprintf("%.1f", m.GenerationToksPerSec)
+			p50 = fmt.Sprintf("%.0f", m.LatencyP50Ms)
+			p99 = fmt.Sprintf("%.0f", m.LatencyP99Ms)
+		}
+
+		fmt.Printf("| %s | %s | %s | %s | %s | %s | %s |\n",
+			m.ModelID,
+			m.ModelSize,
+			genToks,
+			p50,
+			p99,
+			m.VRAMEstimate,
+			status,
+		)
+	}
+
+	// Print errors if any
+	hasErrors := false
+	for _, m := range report.Models {
+		if m.Error != "" {
+			if !hasErrors {
+				fmt.Printf("\n## Errors\n\n")
+				hasErrors = true
+			}
+			fmt.Printf("- **%s**: %s\n", m.ModelID, m.Error)
+		}
+	}
+
+	fmt.Printf("\n---\n")
+	fmt.Printf("*Total Duration: %s*  \n", report.Duration.Round(time.Second))
+	fmt.Printf("*Generated by LLMKube v%s*\n", Version)
+
+	return nil
+}
