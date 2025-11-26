@@ -246,7 +246,9 @@ func (r *InferenceServiceReconciler) constructDeployment(
 
 	// Determine if we should use the shared model cache
 	// If the model has a CacheKey and cache path is configured, use the cached model
-	useCache := model.Status.CacheKey != "" && r.ModelCachePath != ""
+	// Note: Cache PVC is only accessible in llmkube-system namespace (PVCs are namespace-scoped)
+	// For other namespaces, we fall back to init-container download
+	useCache := model.Status.CacheKey != "" && r.ModelCachePath != "" && isvc.Namespace == "llmkube-system"
 	var modelPath string
 	var initContainers []corev1.Container
 	var volumes []corev1.Volume
