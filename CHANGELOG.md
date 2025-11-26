@@ -5,6 +5,13 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.6](https://github.com/defilantech/LLMKube/compare/v0.4.5...v0.4.6) (2025-11-26)
+
+
+### Bug Fixes
+
+* Set empty component to prevent llmkube- prefix in releases ([#68](https://github.com/defilantech/LLMKube/issues/68)) ([45b61c6](https://github.com/defilantech/LLMKube/commit/45b61c680e4880040f9cab36fbf28cb931686462))
+
 ## [0.4.5](https://github.com/defilantech/LLMKube/compare/v0.4.4...v0.4.5) (2025-11-26)
 
 
