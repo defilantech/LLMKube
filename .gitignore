@@ -46,3 +46,4 @@ dist/
 
 # Claude Code settings (IDE-specific)
 .claude/
+CLAUDE.md
