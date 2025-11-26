@@ -13,6 +13,10 @@ controllerManager:
     pullPolicy: IfNotPresent
     # Overrides the image tag whose default is the chart appVersion.
     tag: ""
+    # Image digest (sha256:...) - takes precedence over tag when set.
+    # Use digests for production deployments to ensure immutable, verifiable images.
+    # Example: sha256:abc123def456...
+    digest: ""
 
   # Number of controller replicas (recommended: 1 for active/passive HA)
   replicaCount: 1

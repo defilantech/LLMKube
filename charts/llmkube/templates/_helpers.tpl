@@ -62,10 +62,15 @@ Create the name of the service account to use
 
 {{/*
 Create the controller manager image
+Supports both tag and digest. Digest takes precedence when set.
 */}}
 {{- define "llmkube.controllerImage" -}}
+{{- if .Values.controllerManager.image.digest }}
+{{- printf "%s@%s" .Values.controllerManager.image.repository .Values.controllerManager.image.digest }}
+{{- else }}
 {{- $tag := .Values.controllerManager.image.tag | default .Chart.AppVersion }}
 {{- printf "%s:%s" .Values.controllerManager.image.repository $tag }}
+{{- end }}
 {{- end }}
 
 {{/*

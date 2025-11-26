@@ -6,7 +6,10 @@ namespace: llmkube-system
 controllerManager:
   image:
     repository: ghcr.io/defilantech/llmkube-controller
-    tag: "0.2.1"
+    # Use a specific version tag
+    tag: "0.4.0"
+    # For maximum security, use digest instead of tag (get from: crane digest <image>:<tag>)
+    # digest: "sha256:..."
     pullPolicy: IfNotPresent
 
   replicaCount: 1
