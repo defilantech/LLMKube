@@ -30,6 +30,7 @@
   },
   "versioning": "default",
   "include-v-in-tag": true,
+  "include-component-in-tag": false,
   "tag-separator": "",
   "pull-request-title-pattern": "chore: release ${version}",
   "pull-request-header": ":rocket: Release ${version}",
