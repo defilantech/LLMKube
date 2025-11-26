@@ -43,7 +43,11 @@ import (
 // InferenceServiceReconciler reconciles a InferenceService object
 type InferenceServiceReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme               *runtime.Scheme
+	ModelCachePath       string // Path to the shared model cache PVC
+	ModelCacheSize       string // Size of the model cache PVC (e.g., "100Gi")
+	ModelCacheClass      string // Storage class for model cache PVC (empty for default)
+	ModelCacheAccessMode string // Access mode for model cache PVC (e.g., "ReadWriteOnce")
 }
 
 // sanitizeDNSName converts a string to be DNS-1035 compliant by replacing dots with dashes
@@ -53,6 +57,81 @@ func sanitizeDNSName(name string) string {
 	return strings.ReplaceAll(name, ".", "-")
 }
 
+// ModelCachePVCName is the name of the model cache PVC created in each namespace
+const ModelCachePVCName = "llmkube-model-cache"
+
+// ensureModelCachePVC ensures a model cache PVC exists in the given namespace
+// Returns true if the PVC exists or was created, false if creation failed
+func (r *InferenceServiceReconciler) ensureModelCachePVC(ctx context.Context, namespace string) error {
+	log := logf.FromContext(ctx)
+
+	// Check if PVC already exists
+	pvc := &corev1.PersistentVolumeClaim{}
+	err := r.Get(ctx, types.NamespacedName{Name: ModelCachePVCName, Namespace: namespace}, pvc)
+	if err == nil {
+		// PVC already exists
+		return nil
+	}
+	if !apierrors.IsNotFound(err) {
+		return fmt.Errorf("failed to check for existing PVC: %w", err)
+	}
+
+	// PVC doesn't exist, create it
+	log.Info("Creating model cache PVC in namespace", "namespace", namespace)
+
+	// Determine access mode
+	accessMode := corev1.ReadWriteOnce
+	if r.ModelCacheAccessMode == "ReadWriteMany" {
+		accessMode = corev1.ReadWriteMany
+	}
+
+	// Parse size
+	size := "100Gi"
+	if r.ModelCacheSize != "" {
+		size = r.ModelCacheSize
+	}
+	storageSize, err := resource.ParseQuantity(size)
+	if err != nil {
+		return fmt.Errorf("invalid cache size %q: %w", size, err)
+	}
+
+	newPVC := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      ModelCachePVCName,
+			Namespace: namespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/name":       "llmkube",
+				"app.kubernetes.io/component":  "model-cache",
+				"app.kubernetes.io/managed-by": "llmkube-controller",
+			},
+		},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes: []corev1.PersistentVolumeAccessMode{accessMode},
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceStorage: storageSize,
+				},
+			},
+		},
+	}
+
+	// Set storage class if specified
+	if r.ModelCacheClass != "" {
+		newPVC.Spec.StorageClassName = &r.ModelCacheClass
+	}
+
+	if err := r.Create(ctx, newPVC); err != nil {
+		if apierrors.IsAlreadyExists(err) {
+			// Race condition: another reconcile created it
+			return nil
+		}
+		return fmt.Errorf("failed to create PVC: %w", err)
+	}
+
+	log.Info("Created model cache PVC", "namespace", namespace, "name", ModelCachePVCName)
+	return nil
+}
+
 // +kubebuilder:rbac:groups=inference.llmkube.dev,resources=inferenceservices,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=inference.llmkube.dev,resources=inferenceservices/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=inference.llmkube.dev,resources=inferenceservices/finalizers,verbs=update
@@ -60,6 +139,7 @@ func sanitizeDNSName(name string) string {
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -103,6 +183,14 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	desiredReplicas := int32(1)
 	if inferenceService.Spec.Replicas != nil {
 		desiredReplicas = *inferenceService.Spec.Replicas
+	}
+
+	// 3a. Ensure model cache PVC exists in the InferenceService's namespace if caching is enabled
+	if model.Status.CacheKey != "" && r.ModelCachePath != "" {
+		if err := r.ensureModelCachePVC(ctx, inferenceService.Namespace); err != nil {
+			log.Error(err, "Failed to ensure model cache PVC exists", "namespace", inferenceService.Namespace)
+			return r.updateStatus(ctx, inferenceService, "Failed", modelReady, 0, desiredReplicas, "", "Failed to create model cache PVC")
+		}
 	}
 
 	// 4. Check if this is a Metal accelerator deployment
@@ -243,31 +331,110 @@ func (r *InferenceServiceReconciler) constructDeployment(
 		port = isvc.Spec.Endpoint.Port
 	}
 
-	// Construct model filename from source URL
-	modelFileName := fmt.Sprintf("%s-%s.gguf", isvc.Namespace, model.Name)
-	modelPath := fmt.Sprintf("/models/%s", modelFileName)
+	// Determine if we should use persistent model cache
+	// If the model has a CacheKey and cache path is configured, use per-namespace PVC caching
+	// Otherwise, fall back to EmptyDir (model re-downloaded on each pod restart)
+	useCache := model.Status.CacheKey != "" && r.ModelCachePath != ""
+	var modelPath string
+	var initContainers []corev1.Container
+	var volumes []corev1.Volume
+	var volumeMounts []corev1.VolumeMount
 
-	// Build init container to download the model
-	initContainer := corev1.Container{
-		Name:  "model-downloader",
-		Image: "curlimages/curl:latest",
-		Command: []string{
-			"sh",
-			"-c",
-			fmt.Sprintf(
-				"if [ ! -f %s ]; then echo 'Downloading model from %s...'; curl -L -o %s '%s' && echo 'Model downloaded successfully'; else echo 'Model already exists, skipping download'; fi",
-				modelPath,
-				model.Spec.Source,
-				modelPath,
-				model.Spec.Source,
-			),
-		},
-		VolumeMounts: []corev1.VolumeMount{
+	if useCache {
+		// Use per-namespace PVC with init-container download
+		// The model is stored at <mount-path>/<cache-key>/model.gguf
+		// Using cache key ensures models with same source share storage
+		cacheDir := fmt.Sprintf("/models/%s", model.Status.CacheKey)
+		modelPath = fmt.Sprintf("%s/model.gguf", cacheDir)
+
+		// Init container downloads model if not already cached
+		initContainers = []corev1.Container{
+			{
+				Name:  "model-downloader",
+				Image: "curlimages/curl:latest",
+				Command: []string{
+					"sh",
+					"-c",
+					fmt.Sprintf(
+						"mkdir -p %s && if [ ! -f %s ]; then echo 'Downloading model from %s...'; curl -L -o %s '%s' && echo 'Model downloaded successfully'; else echo 'Model already cached, skipping download'; fi",
+						cacheDir,
+						modelPath,
+						model.Spec.Source,
+						modelPath,
+						model.Spec.Source,
+					),
+				},
+				VolumeMounts: []corev1.VolumeMount{
+					{
+						Name:      "model-cache",
+						MountPath: "/models",
+					},
+				},
+			},
+		}
+
+		// Mount the per-namespace cache PVC
+		volumes = []corev1.Volume{
+			{
+				Name: "model-cache",
+				VolumeSource: corev1.VolumeSource{
+					PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+						ClaimName: ModelCachePVCName,
+						ReadOnly:  false, // Init container needs write access
+					},
+				},
+			},
+		}
+		volumeMounts = []corev1.VolumeMount{
+			{
+				Name:      "model-cache",
+				MountPath: "/models",
+				ReadOnly:  true, // Main container only needs read access
+			},
+		}
+	} else {
+		// Fallback to EmptyDir: download model via init container (no persistence)
+		modelFileName := fmt.Sprintf("%s-%s.gguf", isvc.Namespace, model.Name)
+		modelPath = fmt.Sprintf("/models/%s", modelFileName)
+
+		initContainers = []corev1.Container{
+			{
+				Name:  "model-downloader",
+				Image: "curlimages/curl:latest",
+				Command: []string{
+					"sh",
+					"-c",
+					fmt.Sprintf(
+						"if [ ! -f %s ]; then echo 'Downloading model from %s...'; curl -L -o %s '%s' && echo 'Model downloaded successfully'; else echo 'Model already exists, skipping download'; fi",
+						modelPath,
+						model.Spec.Source,
+						modelPath,
+						model.Spec.Source,
+					),
+				},
+				VolumeMounts: []corev1.VolumeMount{
+					{
+						Name:      "model-storage",
+						MountPath: "/models",
+					},
+				},
+			},
+		}
+		volumes = []corev1.Volume{
+			{
+				Name: "model-storage",
+				VolumeSource: corev1.VolumeSource{
+					EmptyDir: &corev1.EmptyDirVolumeSource{},
+				},
+			},
+		}
+		volumeMounts = []corev1.VolumeMount{
 			{
 				Name:      "model-storage",
 				MountPath: "/models",
+				ReadOnly:  true,
 			},
-		},
+		}
 	}
 
 	// Build container args
@@ -326,13 +493,7 @@ func (r *InferenceServiceReconciler) constructDeployment(
 				Protocol:      corev1.ProtocolTCP,
 			},
 		},
-		VolumeMounts: []corev1.VolumeMount{
-			{
-				Name:      "model-storage",
-				MountPath: "/models",
-				ReadOnly:  true,
-			},
-		},
+		VolumeMounts: volumeMounts,
 	}
 
 	// Add GPU resource requirements if specified
@@ -377,16 +538,9 @@ func (r *InferenceServiceReconciler) constructDeployment(
 					Labels: labels,
 				},
 				Spec: corev1.PodSpec{
-					InitContainers: []corev1.Container{initContainer},
+					InitContainers: initContainers,
 					Containers:     []corev1.Container{container},
-					Volumes: []corev1.Volume{
-						{
-							Name: "model-storage",
-							VolumeSource: corev1.VolumeSource{
-								EmptyDir: &corev1.EmptyDirVolumeSource{},
-							},
-						},
-					},
+					Volumes:        volumes,
 				},
 			},
 		},

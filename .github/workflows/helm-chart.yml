@@ -4,13 +4,26 @@ on:
   push:
     branches:
       - main
-      - develop
     paths:
       - 'charts/**'
+      - 'cmd/**'
+      - 'internal/**'
+      - 'api/**'
+      - 'pkg/**'
+      - 'Dockerfile'
+      - 'go.mod'
+      - 'go.sum'
       - '.github/workflows/helm-chart.yml'
   pull_request:
     paths:
       - 'charts/**'
+      - 'cmd/**'
+      - 'internal/**'
+      - 'api/**'
+      - 'pkg/**'
+      - 'Dockerfile'
+      - 'go.mod'
+      - 'go.sum'
       - '.github/workflows/helm-chart.yml'
 
 jobs:
@@ -223,6 +236,20 @@ jobs:
         with:
           cluster_name: chart-testing
 
+      # Build controller image from current code and load into Kind
+      # This ensures we test the actual code in the PR, not a released image
+      - name: Build controller image
+        run: |
+          IMAGE_TAG="test-${GITHUB_SHA::8}"
+          echo "IMAGE_TAG=${IMAGE_TAG}" >> $GITHUB_ENV
+          docker build -t ghcr.io/defilantech/llmkube-controller:${IMAGE_TAG} .
+          echo "✅ Controller image built: ghcr.io/defilantech/llmkube-controller:${IMAGE_TAG}"
+
+      - name: Load image into Kind
+        run: |
+          kind load docker-image ghcr.io/defilantech/llmkube-controller:${IMAGE_TAG} --name chart-testing
+          echo "✅ Image loaded into Kind cluster"
+
       - name: Package Chart
         run: |
           helm package charts/llmkube -d /tmp
@@ -234,7 +261,8 @@ jobs:
             --namespace llmkube-system \
             --create-namespace \
             --dry-run \
-            --debug
+            --debug \
+            --set controllerManager.image.tag=${IMAGE_TAG}
           echo "✅ Dry-run installation successful"
 
       - name: Install Chart on Kind Cluster
@@ -244,6 +272,8 @@ jobs:
             --create-namespace \
             --wait \
             --timeout 10m \
+            --set controllerManager.image.tag=${IMAGE_TAG} \
+            --set controllerManager.image.pullPolicy=Never \
             --set controllerManager.readinessProbe.initialDelaySeconds=30
           echo "✅ Chart installed successfully"
 
@@ -279,6 +309,8 @@ jobs:
           # Upgrade with different values
           helm upgrade llmkube /tmp/llmkube-*.tgz \
             --namespace llmkube-system \
+            --set controllerManager.image.tag=${IMAGE_TAG} \
+            --set controllerManager.image.pullPolicy=Never \
             --set controllerManager.resources.limits.cpu=1 \
             --set controllerManager.readinessProbe.initialDelaySeconds=30 \
             --wait \

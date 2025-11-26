@@ -23,6 +23,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	corev1 "k8s.io/api/core/v1"
 )
 
 func TestMean(t *testing.T) {
@@ -544,5 +546,140 @@ func TestDefaultBenchmarkPrompt(t *testing.T) {
 	// Verify prompt is designed to generate a reasonable response
 	if len(defaultBenchmarkPrompt) < 10 {
 		t.Error("Default benchmark prompt seems too short")
+	}
+}
+
+func TestFindAvailablePort(t *testing.T) {
+	port, err := findAvailablePort()
+	if err != nil {
+		t.Fatalf("findAvailablePort() failed: %v", err)
+	}
+
+	// Port should be in valid range
+	if port < 1024 || port > 65535 {
+		t.Errorf("Expected port in range 1024-65535, got %d", port)
+	}
+
+	// Should be able to find multiple different ports
+	port2, err := findAvailablePort()
+	if err != nil {
+		t.Fatalf("findAvailablePort() second call failed: %v", err)
+	}
+
+	// Ports should typically be different (not guaranteed but very likely)
+	t.Logf("Found ports: %d, %d", port, port2)
+}
+
+func TestIsPodReady(t *testing.T) {
+	testCases := []struct {
+		name     string
+		pod      *corev1.Pod
+		expected bool
+	}{
+		{
+			name: "running pod with ready condition",
+			pod: &corev1.Pod{
+				Status: corev1.PodStatus{
+					Phase: corev1.PodRunning,
+					Conditions: []corev1.PodCondition{
+						{
+							Type:   corev1.PodReady,
+							Status: corev1.ConditionTrue,
+						},
+					},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "running pod without ready condition",
+			pod: &corev1.Pod{
+				Status: corev1.PodStatus{
+					Phase:      corev1.PodRunning,
+					Conditions: []corev1.PodCondition{},
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "running pod with ready=false",
+			pod: &corev1.Pod{
+				Status: corev1.PodStatus{
+					Phase: corev1.PodRunning,
+					Conditions: []corev1.PodCondition{
+						{
+							Type:   corev1.PodReady,
+							Status: corev1.ConditionFalse,
+						},
+					},
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "pending pod",
+			pod: &corev1.Pod{
+				Status: corev1.PodStatus{
+					Phase: corev1.PodPending,
+					Conditions: []corev1.PodCondition{
+						{
+							Type:   corev1.PodReady,
+							Status: corev1.ConditionTrue,
+						},
+					},
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "failed pod",
+			pod: &corev1.Pod{
+				Status: corev1.PodStatus{
+					Phase: corev1.PodFailed,
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "succeeded pod",
+			pod: &corev1.Pod{
+				Status: corev1.PodStatus{
+					Phase: corev1.PodSucceeded,
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "running pod with multiple conditions",
+			pod: &corev1.Pod{
+				Status: corev1.PodStatus{
+					Phase: corev1.PodRunning,
+					Conditions: []corev1.PodCondition{
+						{
+							Type:   corev1.PodScheduled,
+							Status: corev1.ConditionTrue,
+						},
+						{
+							Type:   corev1.ContainersReady,
+							Status: corev1.ConditionTrue,
+						},
+						{
+							Type:   corev1.PodReady,
+							Status: corev1.ConditionTrue,
+						},
+					},
+				},
+			},
+			expected: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := isPodReady(tc.pod)
+			if result != tc.expected {
+				t.Errorf("isPodReady() = %v, expected %v", result, tc.expected)
+			}
+		})
 	}
 }

@@ -148,8 +148,8 @@ cd LLMKube
 # Install CRDs
 make install
 
-# Deploy controller with pre-built image
-make deploy IMG=ghcr.io/defilantech/llmkube-controller:0.4.0
+# Deploy controller with pre-built image (uses latest release)
+make deploy
 
 # Verify controller is running
 kubectl get pods -n llmkube-system
@@ -164,27 +164,17 @@ kubectl get pods -n llmkube-system
 
 The `llmkube` CLI makes deployment simple. First, install it:
 
-**macOS:**
 ```bash
-# Using Homebrew
-brew tap defilantech/tap
-brew install llmkube
+# macOS (Homebrew)
+brew install defilantech/tap/llmkube
 
-# Or download binary directly
-curl -L https://github.com/defilantech/LLMKube/releases/latest/download/llmkube_0.4.0_darwin_arm64.tar.gz | tar xz
-sudo mv llmkube /usr/local/bin/
-```
-
-**Linux:**
-```bash
-curl -L https://github.com/defilantech/LLMKube/releases/latest/download/llmkube_0.4.0_linux_amd64.tar.gz | tar xz
-sudo mv llmkube /usr/local/bin/
+# Linux/macOS (install script)
+curl -sSL https://raw.githubusercontent.com/defilantech/LLMKube/main/install.sh | bash
 ```
 
 **Verify installation:**
 ```bash
 llmkube version
-# Output: llmkube version 0.4.0
 ```
 
 **Deploy TinyLlama:**

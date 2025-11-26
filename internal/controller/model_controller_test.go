@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"os"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -74,14 +75,20 @@ var _ = Describe("Model Controller", func() {
 		})
 		It("should successfully reconcile the resource", func() {
 			By("Reconciling the created resource")
+			// Create a temp directory for model cache
+			tempDir, err := os.MkdirTemp("", "llmkube-test-*")
+			Expect(err).NotTo(HaveOccurred())
+			defer func() { _ = os.RemoveAll(tempDir) }()
+
 			controllerReconciler := &ModelReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				Client:      k8sClient,
+				Scheme:      k8sClient.Scheme(),
+				StoragePath: tempDir,
 			}
 
 			// Note: This will attempt to download the model, which will fail for test URL
 			// In a real scenario, you'd mock the download or use a valid test model
-			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
 			})
 			// We expect an error because the test URL doesn't exist

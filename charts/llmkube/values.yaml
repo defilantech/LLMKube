@@ -13,6 +13,10 @@ controllerManager:
     pullPolicy: IfNotPresent
     # Overrides the image tag whose default is the chart appVersion.
     tag: ""
+    # Image digest (sha256:...) - takes precedence over tag when set.
+    # Use digests for production deployments to ensure immutable, verifiable images.
+    # Example: sha256:abc123def456...
+    digest: ""
 
   # Number of controller replicas (recommended: 1 for active/passive HA)
   replicaCount: 1
@@ -135,6 +139,21 @@ crds:
   install: true
   # Keep CRDs on chart uninstall (recommended for production)
   keep: true
+
+# Model cache configuration
+modelCache:
+  # Enable persistent model cache
+  enabled: true
+  # Storage size for model cache
+  size: 100Gi
+  # Storage class (leave empty for default)
+  storageClass: ""
+  # Access mode: ReadWriteOnce (single-node) or ReadWriteMany (multi-node with NFS/EFS)
+  accessMode: ReadWriteOnce
+  # Mount path inside controller pod
+  mountPath: /models
+  # Annotations for the PVC (e.g., for backup policies)
+  annotations: {}
 
 # Image pull secrets for private registries
 imagePullSecrets: []

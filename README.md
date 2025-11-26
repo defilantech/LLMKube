@@ -58,8 +58,8 @@ Simpler and faster! Just 3 commands:
 
 ```bash
 # 1. Install the CLI (choose one)
-brew tap defilantech/tap && brew install llmkube  # macOS
-# OR: curl -L https://github.com/defilantech/LLMKube/releases/latest/download/llmkube_0.4.0_linux_amd64.tar.gz | tar xz && sudo mv llmkube /usr/local/bin/  # Linux
+brew install defilantech/tap/llmkube  # macOS (recommended)
+# OR: curl -sSL https://raw.githubusercontent.com/defilantech/LLMKube/main/install.sh | bash  # Linux/macOS
 
 # 2. Start Minikube
 minikube start --cpus 4 --memory 8192
@@ -214,9 +214,10 @@ Consistent ~53 tok/s across 3-8B models demonstrates efficient GPU utilization w
 **Core Features:**
 - **Kubernetes-native CRDs** - `Model` and `InferenceService` resources
 - **Automatic model download** - From HuggingFace, HTTP, or S3
+- **Persistent model cache** - Download once, deploy instantly ([guide](docs/MODEL-CACHE.md))
 - **OpenAI-compatible API** - `/v1/chat/completions` endpoint
 - **Multi-replica scaling** - Horizontal pod autoscaling support
-- **Full CLI** - `llmkube deploy/list/status/delete/catalog` commands
+- **Full CLI** - `llmkube deploy/list/status/delete/catalog/cache` commands
 - **Model Catalog** - 10 pre-configured popular models (Llama 3.1, Mistral, Qwen, DeepSeek, etc.)
 
 **GPU Acceleration:**
@@ -288,44 +289,37 @@ make run      # Run controller locally
 
 The `llmkube` CLI makes deployment simple:
 
-<details>
-<summary><b>macOS</b></summary>
+### Quick Install (Recommended)
 
-**Homebrew (recommended):**
 ```bash
-brew tap defilantech/tap
-brew install llmkube
+# macOS (Homebrew)
+brew install defilantech/tap/llmkube
+
+# Linux/macOS (install script)
+curl -sSL https://raw.githubusercontent.com/defilantech/LLMKube/main/install.sh | bash
 ```
 
-**Manual download:**
+<details>
+<summary><b>Manual Installation</b></summary>
+
+Download the latest release for your platform from the [releases page](https://github.com/defilantech/LLMKube/releases/latest).
+
+**macOS:**
 ```bash
-# Intel
-curl -L https://github.com/defilantech/LLMKube/releases/latest/download/llmkube_0.4.0_darwin_amd64.tar.gz | tar xz
-# Apple Silicon
-curl -L https://github.com/defilantech/LLMKube/releases/latest/download/llmkube_0.4.0_darwin_arm64.tar.gz | tar xz
+# Download and extract (replace VERSION and ARCH as needed)
+tar xzf llmkube_*_darwin_*.tar.gz
 sudo mv llmkube /usr/local/bin/
 ```
-</details>
 
-<details>
-<summary><b>Linux</b></summary>
-
+**Linux:**
 ```bash
-# x86_64
-curl -L https://github.com/defilantech/LLMKube/releases/latest/download/llmkube_0.4.0_linux_amd64.tar.gz | tar xz
-# ARM64
-curl -L https://github.com/defilantech/LLMKube/releases/latest/download/llmkube_0.4.0_linux_arm64.tar.gz | tar xz
+# Download and extract (replace VERSION and ARCH as needed)
+tar xzf llmkube_*_linux_*.tar.gz
 sudo mv llmkube /usr/local/bin/
 ```
-</details>
 
-<details>
-<summary><b>Windows</b></summary>
-
-Download from [releases page](https://github.com/defilantech/LLMKube/releases/latest):
-- `llmkube_0.4.0_windows_amd64.zip`
-
-Extract and add to PATH.
+**Windows:**
+Download the `.zip` file, extract, and add to PATH.
 </details>
 
 ---

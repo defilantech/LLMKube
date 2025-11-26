@@ -170,6 +170,11 @@ spec:
                 description: AcceleratorReady indicates if hardware acceleration is
                   configured and ready
                 type: boolean
+              cacheKey:
+                description: |-
+                  CacheKey is the SHA256 hash prefix of the source URL used for cache storage
+                  Models with the same source URL share the same cache entry
+                type: string
               conditions:
                 description: |-
                   conditions represent the current state of the Model resource.

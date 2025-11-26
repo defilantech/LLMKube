@@ -22,7 +22,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -30,9 +32,14 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/tools/portforward"
+	"k8s.io/client-go/transport/spdy"
+	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
 
@@ -422,31 +429,201 @@ func getEndpoint(ctx context.Context, opts *benchmarkOptions) (string, func(), e
 }
 
 func setupPortForward(opts *benchmarkOptions) (string, func(), error) {
-	// For now, we'll use a simple approach - require the user to run port-forward manually
-	// In a future version, we could use k8s client-go portforward package
+	// Suppress noisy klog errors from portforward package
+	// klog writes to stderr by default, so we need to suppress both output and logging
+	klog.SetOutput(io.Discard)
+	klog.LogToStderr(false)
 
 	// Sanitize service name (dots become dashes in Kubernetes service names)
 	serviceName := strings.ReplaceAll(opts.name, ".", "-")
 
 	fmt.Printf("⚡ Port forwarding to service/%s...\n", serviceName)
-	fmt.Printf("   (If this hangs, run manually: kubectl port-forward -n %s svc/%s 8080:8080)\n\n",
-		opts.namespace, serviceName)
 
-	// Use localhost:8080 as the endpoint
-	// The user needs to have port-forward running
-	endpoint := "http://localhost:8080"
-
-	// Test connectivity
-	httpClient := &http.Client{Timeout: 5 * time.Second}
-	resp, err := httpClient.Get(endpoint + "/health")
+	// Get REST config
+	restConfig, err := config.GetConfig()
 	if err != nil {
-		return "", nil, fmt.Errorf(
-			"cannot connect to %s. Please run:\n  kubectl port-forward -n %s svc/%s 8080:8080",
-			endpoint, opts.namespace, serviceName)
+		return "", nil, fmt.Errorf("failed to get kubeconfig: %w", err)
 	}
-	_ = resp.Body.Close()
 
-	return endpoint, nil, nil
+	// Create clientset to find pod
+	clientset, err := kubernetes.NewForConfig(restConfig)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to create clientset: %w", err)
+	}
+
+	// Find a ready pod for the service
+	podName, err := findReadyPodForService(clientset, opts.namespace, serviceName)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to find pod for service %s: %w", serviceName, err)
+	}
+
+	// Find an available local port
+	localPort, err := findAvailablePort()
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to find available port: %w", err)
+	}
+
+	// Set up port forwarding
+	stopChan := make(chan struct{}, 1)
+	readyChan := make(chan struct{})
+	errChan := make(chan error, 1)
+
+	// Create the port forward request URL
+	path := fmt.Sprintf("/api/v1/namespaces/%s/pods/%s/portforward", opts.namespace, podName)
+	hostIP := strings.TrimPrefix(restConfig.Host, "https://")
+	hostIP = strings.TrimPrefix(hostIP, "http://")
+
+	serverURL := url.URL{Scheme: "https", Host: hostIP, Path: path}
+	if strings.HasPrefix(restConfig.Host, "http://") {
+		serverURL.Scheme = "http"
+	}
+
+	// Create SPDY transport
+	transport, upgrader, err := spdy.RoundTripperFor(restConfig)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to create SPDY transport: %w", err)
+	}
+
+	dialer := spdy.NewDialer(upgrader, &http.Client{Transport: transport}, http.MethodPost, &serverURL)
+
+	// Set up port forwarding (local:remote)
+	ports := []string{fmt.Sprintf("%d:8080", localPort)}
+
+	// Create port forwarder with output suppressed
+	pf, err := portforward.New(dialer, ports, stopChan, readyChan, io.Discard, io.Discard)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to create port forwarder: %w", err)
+	}
+
+	// Start port forwarding in a goroutine
+	go func() {
+		if err := pf.ForwardPorts(); err != nil {
+			errChan <- err
+		}
+	}()
+
+	// Wait for port forward to be ready or error
+	select {
+	case <-readyChan:
+		// Port forward is ready
+	case err := <-errChan:
+		return "", nil, fmt.Errorf("port forward failed: %w", err)
+	case <-time.After(10 * time.Second):
+		close(stopChan)
+		return "", nil, fmt.Errorf("timeout waiting for port forward to be ready")
+	}
+
+	endpoint := fmt.Sprintf("http://localhost:%d", localPort)
+	cleanup := func() {
+		close(stopChan)
+	}
+
+	// Test connectivity with retries
+	httpClient := &http.Client{Timeout: 5 * time.Second}
+	var lastErr error
+	for i := 0; i < 5; i++ {
+		resp, err := httpClient.Get(endpoint + "/health")
+		if err == nil {
+			_ = resp.Body.Close()
+			fmt.Printf("   ✅ Connected on port %d\n", localPort)
+			break
+		}
+		lastErr = err
+		time.Sleep(500 * time.Millisecond)
+		if i == 4 {
+			cleanup()
+			return "", nil, fmt.Errorf("cannot connect to %s after port forward: %w", endpoint, lastErr)
+		}
+	}
+
+	// Wait for model to be loaded (server returns 200 on /health when ready)
+	fmt.Printf("   ⏳ Waiting for model to load...\n")
+	modelLoadTimeout := 10 * time.Minute // Large models can take a while
+	startTime := time.Now()
+	lastStatus := 0
+	for {
+		if time.Since(startTime) > modelLoadTimeout {
+			cleanup()
+			return "", nil, fmt.Errorf("timeout waiting for model to load (last status: %d)", lastStatus)
+		}
+
+		resp, err := httpClient.Get(endpoint + "/health")
+		if err != nil {
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		lastStatus = resp.StatusCode
+		_ = resp.Body.Close()
+
+		if resp.StatusCode == http.StatusOK {
+			fmt.Printf("   ✅ Model loaded (took %s)\n\n", time.Since(startTime).Round(time.Second))
+			return endpoint, cleanup, nil
+		}
+
+		// Still loading, wait and retry
+		time.Sleep(2 * time.Second)
+	}
+}
+
+// findReadyPodForService finds a ready pod that matches the service selector
+func findReadyPodForService(clientset *kubernetes.Clientset, namespace, serviceName string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Get the service to find selector
+	svc, err := clientset.CoreV1().Services(namespace).Get(ctx, serviceName, metav1.GetOptions{})
+	if err != nil {
+		return "", fmt.Errorf("failed to get service: %w", err)
+	}
+
+	// Build label selector from service selector
+	selectors := make([]string, 0, len(svc.Spec.Selector))
+	for k, v := range svc.Spec.Selector {
+		selectors = append(selectors, fmt.Sprintf("%s=%s", k, v))
+	}
+	labelSelector := strings.Join(selectors, ",")
+
+	// List pods matching the selector
+	pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: labelSelector,
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to list pods: %w", err)
+	}
+
+	// Find a ready pod
+	for _, pod := range pods.Items {
+		if isPodReady(&pod) {
+			return pod.Name, nil
+		}
+	}
+
+	return "", fmt.Errorf("no ready pods found for service %s", serviceName)
+}
+
+// isPodReady checks if a pod is in Ready condition
+func isPodReady(pod *corev1.Pod) bool {
+	if pod.Status.Phase != corev1.PodRunning {
+		return false
+	}
+	for _, cond := range pod.Status.Conditions {
+		if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue {
+			return true
+		}
+	}
+	return false
+}
+
+// findAvailablePort finds an available local port
+func findAvailablePort() (int, error) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, err
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	_ = listener.Close()
+	return port, nil
 }
 
 func sendBenchmarkRequest(

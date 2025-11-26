@@ -24,17 +24,8 @@ This guide shows you how to deploy GPU-accelerated LLM inference on your Mac usi
 
 3. **LLMKube CLI**
    ```bash
-   # Option 1: Install via Homebrew (Recommended for macOS)
-   brew tap defilantech/tap && brew install llmkube
-
-   # Option 2: Download binary manually
-   # For macOS (Apple Silicon M1/M2/M3/M4):
-   curl -L https://github.com/defilantech/LLMKube/releases/latest/download/LLMKube_0.4.0_darwin_arm64.tar.gz | tar xz
-   sudo mv llmkube /usr/local/bin/
-
-   # For macOS (Intel):
-   curl -L https://github.com/defilantech/LLMKube/releases/latest/download/LLMKube_0.4.0_darwin_amd64.tar.gz | tar xz
-   sudo mv llmkube /usr/local/bin/
+   # Install via Homebrew (Recommended for macOS)
+   brew install defilantech/tap/llmkube
    ```
 
 4. **LLMKube Operator**
@@ -57,23 +48,13 @@ This guide shows you how to deploy GPU-accelerated LLM inference on your Mac usi
 
 5. **Metal Agent**
    ```bash
-   # Option 1: Build and install from source (Recommended)
+   # Build and install from source (Recommended)
    # From llmkube repository
    make install-metal-agent
 
-   # Option 2: Download pre-built binary
-   # For macOS (Apple Silicon M1/M2/M3/M4):
-   curl -L https://github.com/defilantech/LLMKube/releases/latest/download/LLMKube-metal-agent_0.4.0_darwin_arm64.tar.gz | tar xz
-   sudo mv llmkube-metal-agent /usr/local/bin/
-
-   # For macOS (Intel):
-   curl -L https://github.com/defilantech/LLMKube/releases/latest/download/LLMKube-metal-agent_0.4.0_darwin_amd64.tar.gz | tar xz
-   sudo mv llmkube-metal-agent /usr/local/bin/
-
-   # Install and start the service
-   mkdir -p ~/Library/LaunchAgents
-   cp deployment/macos/com.llmkube.metal-agent.plist ~/Library/LaunchAgents/
-   launchctl load ~/Library/LaunchAgents/com.llmkube.metal-agent.plist
+   # Or download pre-built binary from releases page:
+   # https://github.com/defilantech/LLMKube/releases/latest
+   # Look for: llmkube-metal-agent_*_darwin_*.tar.gz
    ```
 
 ## Verify Setup

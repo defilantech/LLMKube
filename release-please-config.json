@@ -1,0 +1,49 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "release-type": "go",
+  "packages": {
+    ".": {
+      "package-name": "llmkube",
+      "changelog-path": "CHANGELOG.md",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "draft": false,
+      "prerelease": false,
+      "extra-files": [
+        {
+          "type": "yaml",
+          "path": "charts/llmkube/Chart.yaml",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "yaml",
+          "path": "charts/llmkube/Chart.yaml",
+          "jsonpath": "$.appVersion"
+        },
+        {
+          "type": "generic",
+          "path": "pkg/cli/version.go",
+          "glob": "pkg/cli/version.go"
+        }
+      ]
+    }
+  },
+  "versioning": "default",
+  "include-v-in-tag": true,
+  "tag-separator": "",
+  "pull-request-title-pattern": "chore: release ${version}",
+  "pull-request-header": ":rocket: Release ${version}",
+  "changelog-sections": [
+    {"type": "feat", "section": "Features", "hidden": false},
+    {"type": "fix", "section": "Bug Fixes", "hidden": false},
+    {"type": "perf", "section": "Performance Improvements", "hidden": false},
+    {"type": "revert", "section": "Reverts", "hidden": false},
+    {"type": "docs", "section": "Documentation", "hidden": false},
+    {"type": "chore", "section": "Miscellaneous", "hidden": true},
+    {"type": "ci", "section": "CI/CD", "hidden": true},
+    {"type": "test", "section": "Tests", "hidden": true},
+    {"type": "refactor", "section": "Code Refactoring", "hidden": true},
+    {"type": "style", "section": "Styles", "hidden": true},
+    {"type": "build", "section": "Build System", "hidden": true}
+  ]
+}

@@ -41,6 +41,14 @@ spec:
         - --leader-elect
         {{- end }}
         - --health-probe-bind-address=:8081
+        {{- if .Values.modelCache.enabled }}
+        - --model-cache-path={{ .Values.modelCache.mountPath }}
+        - --model-cache-size={{ .Values.modelCache.size }}
+        {{- if .Values.modelCache.storageClass }}
+        - --model-cache-storage-class={{ .Values.modelCache.storageClass }}
+        {{- end }}
+        - --model-cache-access-mode={{ .Values.modelCache.accessMode }}
+        {{- end }}
         {{- with .Values.controllerManager.env }}
         env:
           {{- toYaml . | nindent 10 }}
@@ -56,9 +64,18 @@ spec:
         volumeMounts:
         - name: tmp
           mountPath: /tmp
+        {{- if .Values.modelCache.enabled }}
+        - name: model-cache
+          mountPath: {{ .Values.modelCache.mountPath }}
+        {{- end }}
       volumes:
       - name: tmp
         emptyDir: {}
+      {{- if .Values.modelCache.enabled }}
+      - name: model-cache
+        persistentVolumeClaim:
+          claimName: {{ include "llmkube.fullname" . }}-model-cache
+      {{- end }}
       {{- with .Values.controllerManager.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

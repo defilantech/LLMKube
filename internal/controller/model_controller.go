@@ -18,6 +18,8 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -38,6 +40,10 @@ import (
 const (
 	// PhaseReady indicates the model is downloaded and ready
 	PhaseReady = "Ready"
+	// PhaseCached indicates the model was found in cache (no download needed)
+	PhaseCached = "Cached"
+	// DefaultModelCachePath is the default path for model cache
+	DefaultModelCachePath = "/models"
 )
 
 // ModelReconciler reconciles a Model object
@@ -70,34 +76,53 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 
 	// Set default storage path if not configured
 	if r.StoragePath == "" {
-		r.StoragePath = "/tmp/llmkube/models"
+		r.StoragePath = DefaultModelCachePath
 	}
 
-	// Ensure storage directory exists
-	if err := os.MkdirAll(r.StoragePath, 0755); err != nil {
-		logger.Error(err, "Failed to create storage directory")
+	// Compute cache key and model path
+	cacheKey := computeCacheKey(model.Spec.Source)
+	modelDir := filepath.Join(r.StoragePath, cacheKey)
+	modelPath := filepath.Join(modelDir, "model.gguf")
+
+	logger.Info("Using cache key for model", "cacheKey", cacheKey, "path", modelPath)
+
+	// Check if model already exists in cache
+	if fileInfo, err := os.Stat(modelPath); err == nil {
+		// Model exists in cache - update status and return
+		logger.Info("Model found in cache, skipping download", "path", modelPath, "size", fileInfo.Size())
+
+		model.Status.Phase = PhaseReady
+		model.Status.Path = modelPath
+		model.Status.Size = formatBytes(fileInfo.Size())
+		model.Status.CacheKey = cacheKey
+		model.Status.AcceleratorReady = r.checkAcceleratorAvailability(model.Spec.Hardware)
+		now := metav1.Now()
+		model.Status.LastUpdated = &now
+
+		if err := r.updateStatus(ctx, model, "Available", metav1.ConditionTrue, "ModelCached", "Model found in cache"); err != nil {
+			return ctrl.Result{}, err
+		}
+
+		return ctrl.Result{}, nil
+	}
+
+	// Ensure cache directory exists
+	if err := os.MkdirAll(modelDir, 0755); err != nil {
+		logger.Error(err, "Failed to create cache directory", "path", modelDir)
 		return ctrl.Result{}, err
 	}
 
-	// Check if model is already downloaded
-	if model.Status.Phase == PhaseReady && model.Status.Path != "" {
-		if _, err := os.Stat(model.Status.Path); err == nil {
-			logger.Info("Model already downloaded and ready", "path", model.Status.Path)
-			return ctrl.Result{}, nil
-		}
-	}
-
-	// Update phase to Downloading if not set
-	if model.Status.Phase == "" || model.Status.Phase == "Pending" {
+	// Update phase to Downloading
+	if model.Status.Phase != "Downloading" {
 		model.Status.Phase = "Downloading"
+		model.Status.CacheKey = cacheKey
 		if err := r.updateStatus(ctx, model, "Progressing", metav1.ConditionTrue, "DownloadStarted", "Started downloading model"); err != nil {
 			return ctrl.Result{}, err
 		}
-		logger.Info("Started downloading model", "source", model.Spec.Source)
+		logger.Info("Started downloading model", "source", model.Spec.Source, "cacheKey", cacheKey)
 	}
 
-	// Download the model
-	modelPath := filepath.Join(r.StoragePath, fmt.Sprintf("%s-%s.gguf", req.Namespace, req.Name))
+	// Download the model to cache
 	size, err := r.downloadModel(ctx, model.Spec.Source, modelPath)
 	if err != nil {
 		logger.Error(err, "Failed to download model")
@@ -112,15 +137,16 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	model.Status.Phase = PhaseReady
 	model.Status.Path = modelPath
 	model.Status.Size = formatBytes(size)
+	model.Status.CacheKey = cacheKey
 	model.Status.AcceleratorReady = r.checkAcceleratorAvailability(model.Spec.Hardware)
 	now := metav1.Now()
 	model.Status.LastUpdated = &now
 
-	if err := r.updateStatus(ctx, model, "Available", metav1.ConditionTrue, "ModelReady", "Model downloaded and ready"); err != nil {
+	if err := r.updateStatus(ctx, model, "Available", metav1.ConditionTrue, "ModelReady", "Model downloaded and cached"); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	logger.Info("Model ready", "path", modelPath, "size", model.Status.Size)
+	logger.Info("Model ready and cached", "path", modelPath, "size", model.Status.Size, "cacheKey", cacheKey)
 	return ctrl.Result{}, nil
 }
 
@@ -165,6 +191,8 @@ func (r *ModelReconciler) downloadModel(ctx context.Context, source, dest string
 }
 
 // updateStatus updates the Model status with the given condition
+//
+//nolint:unparam // status parameter kept for future use with different condition statuses
 func (r *ModelReconciler) updateStatus(ctx context.Context, model *inferencev1alpha1.Model, condType string, status metav1.ConditionStatus, reason, message string) error {
 	// Set or update condition
 	condition := metav1.Condition{
@@ -217,6 +245,12 @@ func formatBytes(bytes int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %ciB", float64(bytes)/float64(div), "KMGTPE"[exp])
+}
+
+// computeCacheKey generates a SHA256 hash of the source URL to use as cache key
+func computeCacheKey(source string) string {
+	hash := sha256.Sum256([]byte(source))
+	return hex.EncodeToString(hash[:])[:16] // Use first 16 chars for readability
 }
 
 // SetupWithManager sets up the controller with the Manager.
