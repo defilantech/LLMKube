@@ -57,6 +57,14 @@ type InferenceServiceSpec struct {
 	// NodeSelector for pod placement (e.g., specific node pools)
 	// +optional
 	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+
+	// ContextSize sets the context window size for the llama.cpp server (-c flag).
+	// Larger values allow processing longer inputs but require more memory.
+	// If not specified, llama.cpp uses its default (typically 512 or 2048).
+	// +kubebuilder:validation:Minimum=128
+	// +kubebuilder:validation:Maximum=131072
+	// +optional
+	ContextSize *int32 `json:"contextSize,omitempty"`
 }
 
 // EndpointSpec defines the service endpoint configuration

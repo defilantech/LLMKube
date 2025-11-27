@@ -580,6 +580,168 @@ var _ = Describe("Multi-GPU Deployment Construction", func() {
 	})
 })
 
+var _ = Describe("Context Size Configuration", func() {
+	Context("when constructing a deployment with context size", func() {
+		var (
+			reconciler *InferenceServiceReconciler
+			model      *inferencev1alpha1.Model
+		)
+
+		BeforeEach(func() {
+			reconciler = &InferenceServiceReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			model = &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "context-size-model",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source:       "https://example.com/model.gguf",
+					Format:       "gguf",
+					Quantization: "Q4_K_M",
+					Hardware: &inferencev1alpha1.HardwareSpec{
+						Accelerator: "cuda",
+						GPU: &inferencev1alpha1.GPUSpec{
+							Enabled: true,
+							Count:   1,
+							Vendor:  "nvidia",
+							Layers:  99,
+						},
+					},
+				},
+				Status: inferencev1alpha1.ModelStatus{
+					Phase: "Ready",
+					Path:  "/tmp/llmkube/models/test-model.gguf",
+				},
+			}
+		})
+
+		It("should include --ctx-size flag when contextSize is specified", func() {
+			replicas := int32(1)
+			contextSize := int32(8192)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "context-size-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef:    "context-size-model",
+					Replicas:    &replicas,
+					Image:       "ghcr.io/ggerganov/llama.cpp:server-cuda",
+					ContextSize: &contextSize,
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			By("verifying --ctx-size flag is present with correct value")
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).To(ContainElement("--ctx-size"))
+			Expect(args).To(ContainElement("8192"))
+		})
+
+		It("should include --ctx-size flag with large context size", func() {
+			replicas := int32(1)
+			contextSize := int32(131072)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "large-context-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef:    "context-size-model",
+					Replicas:    &replicas,
+					Image:       "ghcr.io/ggerganov/llama.cpp:server-cuda",
+					ContextSize: &contextSize,
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			By("verifying --ctx-size flag with large value")
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).To(ContainElement("--ctx-size"))
+			Expect(args).To(ContainElement("131072"))
+		})
+
+		It("should NOT include --ctx-size flag when contextSize is not specified", func() {
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "no-context-size-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: "context-size-model",
+					Replicas: &replicas,
+					Image:    "ghcr.io/ggerganov/llama.cpp:server-cuda",
+					// ContextSize not specified
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			By("verifying --ctx-size flag is NOT present")
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).NotTo(ContainElement("--ctx-size"))
+		})
+
+		It("should NOT include --ctx-size flag when contextSize is zero", func() {
+			replicas := int32(1)
+			contextSize := int32(0)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "zero-context-size-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef:    "context-size-model",
+					Replicas:    &replicas,
+					Image:       "ghcr.io/ggerganov/llama.cpp:server-cuda",
+					ContextSize: &contextSize,
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			By("verifying --ctx-size flag is NOT present for zero value")
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).NotTo(ContainElement("--ctx-size"))
+		})
+
+		It("should work with both GPU and context size configuration", func() {
+			replicas := int32(1)
+			contextSize := int32(16384)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "gpu-and-context-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef:    "context-size-model",
+					Replicas:    &replicas,
+					Image:       "ghcr.io/ggerganov/llama.cpp:server-cuda",
+					ContextSize: &contextSize,
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{
+						GPU: 1,
+					},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			By("verifying both GPU and context size flags are present")
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).To(ContainElement("--n-gpu-layers"))
+			Expect(args).To(ContainElement("--ctx-size"))
+			Expect(args).To(ContainElement("16384"))
+		})
+	})
+})
+
 var _ = Describe("Multi-GPU End-to-End Reconciliation", func() {
 	Context("when reconciling a multi-GPU InferenceService", func() {
 		const multiGPUModelName = "e2e-multi-gpu-model"
