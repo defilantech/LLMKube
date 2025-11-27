@@ -57,6 +57,15 @@ spec:
           spec:
             description: spec defines the desired state of InferenceService
             properties:
+              contextSize:
+                description: |-
+                  ContextSize sets the context window size for the llama.cpp server (-c flag).
+                  Larger values allow processing longer inputs but require more memory.
+                  If not specified, llama.cpp uses its default (typically 512 or 2048).
+                format: int32
+                maximum: 131072
+                minimum: 128
+                type: integer
               endpoint:
                 description: Endpoint defines the service endpoint configuration
                 properties:

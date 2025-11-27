@@ -307,6 +307,14 @@ func calculateTensorSplit(gpuCount int32, _ *inferencev1alpha1.GPUShardingSpec) 
 	return result
 }
 
+// appendContextSizeArgs adds context size flag if specified
+func appendContextSizeArgs(args []string, contextSize *int32) []string {
+	if contextSize != nil && *contextSize > 0 {
+		return append(args, "--ctx-size", fmt.Sprintf("%d", *contextSize))
+	}
+	return args
+}
+
 // constructDeployment builds a Deployment for the InferenceService
 func (r *InferenceServiceReconciler) constructDeployment(
 	isvc *inferencev1alpha1.InferenceService,
@@ -480,6 +488,9 @@ func (r *InferenceServiceReconciler) constructDeployment(
 			args = append(args, "--tensor-split", tensorSplit)
 		}
 	}
+
+	// Add context size if specified
+	args = appendContextSizeArgs(args, isvc.Spec.ContextSize)
 
 	// Build container
 	container := corev1.Container{

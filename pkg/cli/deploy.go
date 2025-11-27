@@ -50,6 +50,7 @@ type deployOptions struct {
 	cpu          string
 	memory       string
 	image        string
+	contextSize  int32
 	wait         bool
 	timeout      time.Duration
 }
@@ -111,6 +112,10 @@ Examples:
 	cmd.Flags().StringVar(&opts.gpuMemory, "gpu-memory", "", "GPU memory request (e.g., '8Gi', '16Gi')")
 	cmd.Flags().StringVar(&opts.gpuVendor, "gpu-vendor", "nvidia", "GPU vendor (nvidia, amd, intel)")
 
+	// Context size flag
+	cmd.Flags().Int32Var(&opts.contextSize, "context", 0,
+		"Context window size in tokens (e.g., 8192, 16384, 32768). If not specified, uses llama.cpp default.")
+
 	// Resource flags
 	cmd.Flags().StringVar(&opts.cpu, "cpu", "2", "CPU request (e.g., '2' or '2000m')")
 	cmd.Flags().StringVar(&opts.memory, "memory", "4Gi", "Memory request (e.g., '4Gi')")
@@ -138,27 +143,7 @@ func runDeploy(opts *deployOptions) error {
 				opts.name)
 		}
 		catalogModel = model
-
-		// Apply catalog defaults
-		opts.modelSource = catalogModel.Source
-		fmt.Printf("📚 Using catalog model: %s\n", catalogModel.Name)
-
-		// Apply catalog settings if not overridden by flags
-		if opts.quantization == "" {
-			opts.quantization = catalogModel.Quantization
-		}
-		if opts.cpu == "2" { // default value, not user-specified
-			opts.cpu = catalogModel.Resources.CPU
-		}
-		if opts.memory == "4Gi" { // default value, not user-specified
-			opts.memory = catalogModel.Resources.Memory
-		}
-		if opts.gpuLayers == -1 { // default value, not user-specified
-			opts.gpuLayers = catalogModel.GPULayers
-		}
-		if opts.gpuMemory == "" {
-			opts.gpuMemory = catalogModel.Resources.GPUMemory
-		}
+		applyCatalogDefaults(opts, catalogModel)
 	}
 
 	// Auto-detect accelerator and image based on GPU flag and platform
@@ -222,6 +207,9 @@ func runDeploy(opts *deployOptions) error {
 		fmt.Printf("GPU:         %d x %s (layers: %d)\n", opts.gpuCount, opts.gpuVendor, opts.gpuLayers)
 	}
 	fmt.Printf("Replicas:    %d\n", opts.replicas)
+	if opts.contextSize > 0 {
+		fmt.Printf("Context:     %d tokens\n", opts.contextSize)
+	}
 	fmt.Printf("Image:       %s\n", opts.image)
 	fmt.Printf("═══════════════════════════════════════════════\n\n")
 
@@ -299,6 +287,11 @@ func runDeploy(opts *deployOptions) error {
 		if opts.gpuMemory != "" {
 			inferenceService.Spec.Resources.GPUMemory = opts.gpuMemory
 		}
+	}
+
+	// Add context size if specified
+	if opts.contextSize > 0 {
+		inferenceService.Spec.ContextSize = &opts.contextSize
 	}
 
 	if err := k8sClient.Create(ctx, inferenceService); err != nil {
@@ -415,4 +408,30 @@ func detectMetalSupport() bool {
 	}
 
 	return strings.Contains(string(output), "Metal")
+}
+
+// applyCatalogDefaults applies default values from catalog model to deploy options
+func applyCatalogDefaults(opts *deployOptions, catalogModel *Model) {
+	opts.modelSource = catalogModel.Source
+	fmt.Printf("📚 Using catalog model: %s\n", catalogModel.Name)
+
+	// Apply catalog settings if not overridden by flags
+	if opts.quantization == "" {
+		opts.quantization = catalogModel.Quantization
+	}
+	if opts.cpu == "2" { // default value, not user-specified
+		opts.cpu = catalogModel.Resources.CPU
+	}
+	if opts.memory == "4Gi" { // default value, not user-specified
+		opts.memory = catalogModel.Resources.Memory
+	}
+	if opts.gpuLayers == -1 { // default value, not user-specified
+		opts.gpuLayers = catalogModel.GPULayers
+	}
+	if opts.gpuMemory == "" {
+		opts.gpuMemory = catalogModel.Resources.GPUMemory
+	}
+	if opts.contextSize == 0 && catalogModel.ContextSize > 0 {
+		opts.contextSize = int32(catalogModel.ContextSize)
+	}
 }
