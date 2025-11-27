@@ -5,6 +5,13 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.8](https://github.com/defilantech/LLMKube/compare/v0.4.7...v0.4.8) (2025-11-27)
+
+
+### Features
+
+* Support configurable context size for llama.cpp server ([#73](https://github.com/defilantech/LLMKube/issues/73)) ([6f8e04b](https://github.com/defilantech/LLMKube/commit/6f8e04bc9c420772e65a5dffe1961ae9e92144a4))
+
 ## [0.4.7](https://github.com/defilantech/LLMKube/compare/v0.4.6...v0.4.7) (2025-11-26)
 
 
