@@ -55,7 +55,6 @@ type deployOptions struct {
 	timeout      time.Duration
 }
 
-// NewDeployCommand creates the deploy command
 func NewDeployCommand() *cobra.Command {
 	opts := &deployOptions{}
 
@@ -94,7 +93,6 @@ Examples:
 		},
 	}
 
-	// Flags
 	cmd.Flags().StringVarP(&opts.namespace, "namespace", "n", "default", "Kubernetes namespace")
 	cmd.Flags().StringVarP(&opts.modelSource, "source", "s", "",
 		"Model source URL (GGUF format). Optional if using catalog model ID.")
@@ -102,7 +100,6 @@ Examples:
 	cmd.Flags().StringVarP(&opts.quantization, "quantization", "q", "", "Model quantization (e.g., Q4_K_M, Q8_0)")
 	cmd.Flags().Int32VarP(&opts.replicas, "replicas", "r", 1, "Number of replicas")
 
-	// GPU flags
 	cmd.Flags().BoolVar(&opts.gpu, "gpu", false, "Enable GPU acceleration (auto-detects CUDA image)")
 	cmd.Flags().StringVar(&opts.accelerator, "accelerator", "",
 		"Hardware accelerator (cpu, metal, cuda, rocm) - auto-detected if --gpu is set")
@@ -112,16 +109,13 @@ Examples:
 	cmd.Flags().StringVar(&opts.gpuMemory, "gpu-memory", "", "GPU memory request (e.g., '8Gi', '16Gi')")
 	cmd.Flags().StringVar(&opts.gpuVendor, "gpu-vendor", "nvidia", "GPU vendor (nvidia, amd, intel)")
 
-	// Context size flag
 	cmd.Flags().Int32Var(&opts.contextSize, "context", 0,
 		"Context window size in tokens (e.g., 8192, 16384, 32768). If not specified, uses llama.cpp default.")
 
-	// Resource flags
 	cmd.Flags().StringVar(&opts.cpu, "cpu", "2", "CPU request (e.g., '2' or '2000m')")
 	cmd.Flags().StringVar(&opts.memory, "memory", "4Gi", "Memory request (e.g., '4Gi')")
 	cmd.Flags().StringVar(&opts.image, "image", "", "Custom llama.cpp server image (auto-detected based on --gpu)")
 
-	// Behavior flags
 	cmd.Flags().BoolVarP(&opts.wait, "wait", "w", true, "Wait for deployment to be ready")
 	cmd.Flags().DurationVar(&opts.timeout, "timeout", 10*time.Minute, "Timeout for waiting")
 
@@ -131,10 +125,8 @@ Examples:
 func runDeploy(opts *deployOptions) error {
 	ctx := context.Background()
 
-	// Check if this is a catalog model (if source is not provided)
 	var catalogModel *Model
 	if opts.modelSource == "" {
-		// Try to load from catalog
 		model, err := GetModel(opts.name)
 		if err != nil {
 			return fmt.Errorf(
@@ -146,10 +138,8 @@ func runDeploy(opts *deployOptions) error {
 		applyCatalogDefaults(opts, catalogModel)
 	}
 
-	// Auto-detect accelerator and image based on GPU flag and platform
 	if opts.gpu {
 		if opts.accelerator == "" {
-			// Auto-detect based on platform
 			if detectMetalSupport() {
 				opts.accelerator = "metal"
 				fmt.Printf("ℹ️  Auto-detected accelerator: %s (Apple Silicon GPU)\n", opts.accelerator)
@@ -159,10 +149,9 @@ func runDeploy(opts *deployOptions) error {
 			}
 		}
 
-		// For Metal, we don't use a container image (native process)
 		if opts.accelerator == "metal" {
 			if opts.image == "" {
-				opts.image = "" // Metal uses native llama-server binary, not container
+				opts.image = ""
 			}
 			fmt.Printf("ℹ️  Metal acceleration: Using native llama-server (not containerized)\n")
 			fmt.Printf("ℹ️  Ensure Metal agent is installed: make install-metal-agent\n")
@@ -181,13 +170,11 @@ func runDeploy(opts *deployOptions) error {
 		}
 	}
 
-	// Get Kubernetes client
 	cfg, err := config.GetConfig()
 	if err != nil {
 		return fmt.Errorf("failed to get kubeconfig: %w", err)
 	}
 
-	// Register our custom types
 	if err := inferencev1alpha1.AddToScheme(scheme.Scheme); err != nil {
 		return fmt.Errorf("failed to add scheme: %w", err)
 	}
@@ -197,7 +184,6 @@ func runDeploy(opts *deployOptions) error {
 		return fmt.Errorf("failed to create client: %w", err)
 	}
 
-	// Print deployment summary
 	fmt.Printf("\n🚀 Deploying LLM inference service\n")
 	fmt.Printf("═══════════════════════════════════════════════\n")
 	fmt.Printf("Name:        %s\n", opts.name)
@@ -213,7 +199,6 @@ func runDeploy(opts *deployOptions) error {
 	fmt.Printf("Image:       %s\n", opts.image)
 	fmt.Printf("═══════════════════════════════════════════════\n\n")
 
-	// Create Model resource
 	fmt.Printf("📦 Creating Model '%s'...\n", opts.name)
 	model := &inferencev1alpha1.Model{
 		ObjectMeta: metav1.ObjectMeta{
@@ -234,7 +219,6 @@ func runDeploy(opts *deployOptions) error {
 		},
 	}
 
-	// Add GPU config if enabled
 	if opts.gpu {
 		model.Spec.Hardware.GPU = &inferencev1alpha1.GPUSpec{
 			Enabled: true,
@@ -242,12 +226,10 @@ func runDeploy(opts *deployOptions) error {
 			Vendor:  opts.gpuVendor,
 		}
 
-		// Set GPU layers if specified
 		if opts.gpuLayers != 0 {
 			model.Spec.Hardware.GPU.Layers = opts.gpuLayers
 		}
 
-		// Set GPU memory if specified
 		if opts.gpuMemory != "" {
 			model.Spec.Hardware.GPU.Memory = opts.gpuMemory
 		}
@@ -258,7 +240,6 @@ func runDeploy(opts *deployOptions) error {
 	}
 	fmt.Printf("   ✅ Model created\n\n")
 
-	// Create InferenceService resource
 	fmt.Printf("⚙️  Creating InferenceService '%s'...\n", opts.name)
 	inferenceService := &inferencev1alpha1.InferenceService{
 		ObjectMeta: metav1.ObjectMeta{
@@ -281,7 +262,6 @@ func runDeploy(opts *deployOptions) error {
 		},
 	}
 
-	// Add GPU resources if enabled
 	if opts.gpu {
 		inferenceService.Spec.Resources.GPU = opts.gpuCount
 		if opts.gpuMemory != "" {
@@ -289,7 +269,6 @@ func runDeploy(opts *deployOptions) error {
 		}
 	}
 
-	// Add context size if specified
 	if opts.contextSize > 0 {
 		inferenceService.Spec.ContextSize = &opts.contextSize
 	}
@@ -299,7 +278,6 @@ func runDeploy(opts *deployOptions) error {
 	}
 	fmt.Printf("   ✅ InferenceService created\n")
 
-	// Wait for resources to be ready if requested
 	if opts.wait {
 		fmt.Printf("\nWaiting for deployment to be ready (timeout: %s)...\n", opts.timeout)
 		if err := waitForReady(ctx, k8sClient, opts.name, opts.namespace, opts.timeout); err != nil {
@@ -310,10 +288,7 @@ func runDeploy(opts *deployOptions) error {
 	return nil
 }
 
-// sanitizeServiceName converts a name to be DNS-1035 compliant
-// (lowercase alphanumeric characters or '-', must start with alpha, end with alphanumeric)
 func sanitizeServiceName(name string) string {
-	// Replace dots with dashes
 	return strings.ReplaceAll(name, ".", "-")
 }
 
@@ -332,19 +307,16 @@ func waitForReady(ctx context.Context, k8sClient client.Client, name, namespace 
 		case <-ctx.Done():
 			return fmt.Errorf("timeout waiting for deployment to be ready")
 		case <-ticker.C:
-			// Check Model status
 			model := &inferencev1alpha1.Model{}
 			if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, model); err != nil {
 				return fmt.Errorf("failed to get Model: %w", err)
 			}
 
-			// Check InferenceService status
 			isvc := &inferencev1alpha1.InferenceService{}
 			if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, isvc); err != nil {
 				return fmt.Errorf("failed to get InferenceService: %w", err)
 			}
 
-			// Print status updates
 			currentPhase := fmt.Sprintf("Model: %s, Service: %s (%d/%d replicas)",
 				model.Status.Phase, isvc.Status.Phase, isvc.Status.ReadyReplicas, isvc.Status.DesiredReplicas)
 
@@ -354,9 +326,7 @@ func waitForReady(ctx context.Context, k8sClient client.Client, name, namespace 
 				lastPhase = currentPhase
 			}
 
-			// Check if ready
 			if model.Status.Phase == "Ready" && isvc.Status.Phase == "Ready" {
-				// Sanitize service name for display (Kubernetes replaces dots with dashes)
 				serviceName := sanitizeServiceName(name)
 
 				fmt.Printf("\n✅ Deployment ready!\n")
@@ -377,7 +347,6 @@ func waitForReady(ctx context.Context, k8sClient client.Client, name, namespace 
 				return nil
 			}
 
-			// Check for failures
 			if model.Status.Phase == "Failed" {
 				return fmt.Errorf("model deployment failed")
 			}
@@ -388,19 +357,15 @@ func waitForReady(ctx context.Context, k8sClient client.Client, name, namespace 
 	}
 }
 
-// detectMetalSupport checks if the system supports Metal acceleration
 func detectMetalSupport() bool {
-	// Check if we're on macOS with Apple Silicon
 	if runtime.GOOS != "darwin" {
 		return false
 	}
 
-	// Check if Metal agent is available
 	if _, err := exec.LookPath("llmkube-metal-agent"); err != nil {
 		return false
 	}
 
-	// Verify Metal support via system_profiler
 	cmd := exec.Command("system_profiler", "SPDisplaysDataType")
 	output, err := cmd.Output()
 	if err != nil {
@@ -410,12 +375,10 @@ func detectMetalSupport() bool {
 	return strings.Contains(string(output), "Metal")
 }
 
-// applyCatalogDefaults applies default values from catalog model to deploy options
 func applyCatalogDefaults(opts *deployOptions, catalogModel *Model) {
 	opts.modelSource = catalogModel.Source
 	fmt.Printf("📚 Using catalog model: %s\n", catalogModel.Name)
 
-	// Apply catalog settings if not overridden by flags
 	if opts.quantization == "" {
 		opts.quantization = catalogModel.Quantization
 	}

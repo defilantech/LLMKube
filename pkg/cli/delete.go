@@ -34,7 +34,6 @@ type deleteOptions struct {
 	namespace string
 }
 
-// NewDeleteCommand creates the delete command
 func NewDeleteCommand() *cobra.Command {
 	opts := &deleteOptions{}
 
@@ -58,7 +57,6 @@ func NewDeleteCommand() *cobra.Command {
 func runDelete(opts *deleteOptions) error {
 	ctx := context.Background()
 
-	// Get Kubernetes client
 	cfg, err := config.GetConfig()
 	if err != nil {
 		return fmt.Errorf("failed to get kubeconfig: %w", err)
@@ -73,7 +71,6 @@ func runDelete(opts *deleteOptions) error {
 		return fmt.Errorf("failed to create client: %w", err)
 	}
 
-	// Delete InferenceService first (it has a reference to Model)
 	fmt.Printf("Deleting InferenceService '%s' in namespace '%s'...\n", opts.name, opts.namespace)
 	inferenceService := &inferencev1alpha1.InferenceService{
 		ObjectMeta: metav1.ObjectMeta{
@@ -87,7 +84,6 @@ func runDelete(opts *deleteOptions) error {
 		fmt.Printf("✓ InferenceService '%s' deleted\n", opts.name)
 	}
 
-	// Delete Model
 	fmt.Printf("Deleting Model '%s'...\n", opts.name)
 	model := &inferencev1alpha1.Model{
 		ObjectMeta: metav1.ObjectMeta{

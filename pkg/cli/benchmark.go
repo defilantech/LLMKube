@@ -46,7 +46,6 @@ import (
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 )
 
-// benchmarkOptions holds the options for the benchmark command
 type benchmarkOptions struct {
 	name        string
 	namespace   string
@@ -55,22 +54,20 @@ type benchmarkOptions struct {
 	prompt      string
 	maxTokens   int
 	concurrent  int
-	output      string // table, json, markdown
-	endpoint    string // override endpoint URL
+	output      string
+	endpoint    string
 	timeout     time.Duration
 	portForward bool
 
-	// Multi-model comparison options
-	catalog     string        // comma-separated list of catalog model IDs
-	gpu         bool          // enable GPU for catalog deployments
-	gpuCount    int32         // number of GPUs per pod
-	gpuLayers   int32         // number of model layers to offload to GPU
-	accelerator string        // hardware accelerator (cuda, metal, rocm)
-	cleanup     bool          // cleanup deployments after benchmarking
-	deployWait  time.Duration // timeout waiting for deployment
+	catalog     string
+	gpu         bool
+	gpuCount    int32
+	gpuLayers   int32
+	accelerator string
+	cleanup     bool
+	deployWait  time.Duration
 }
 
-// BenchmarkResult holds the results of a single benchmark iteration
 type BenchmarkResult struct {
 	Iteration            int     `json:"iteration"`
 	PromptTokens         int     `json:"prompt_tokens"`
@@ -84,7 +81,6 @@ type BenchmarkResult struct {
 	Error                string  `json:"error,omitempty"`
 }
 
-// BenchmarkSummary holds aggregated benchmark statistics
 type BenchmarkSummary struct {
 	ServiceName    string `json:"service_name"`
 	Namespace      string `json:"namespace"`
@@ -109,15 +105,11 @@ type BenchmarkSummary struct {
 	GenerationToksPerSecMin  float64 `json:"generation_toks_per_sec_min"`
 	GenerationToksPerSecMax  float64 `json:"generation_toks_per_sec_max"`
 
-	// Individual results
-	Results []BenchmarkResult `json:"results"`
-
-	// Metadata
-	Timestamp time.Time     `json:"timestamp"`
-	Duration  time.Duration `json:"duration"`
+	Results   []BenchmarkResult `json:"results"`
+	Timestamp time.Time         `json:"timestamp"`
+	Duration  time.Duration     `json:"duration"`
 }
 
-// ComparisonReport holds benchmark results for multiple models
 type ComparisonReport struct {
 	Models      []ModelBenchmark `json:"models"`
 	Timestamp   time.Time        `json:"timestamp"`
@@ -129,7 +121,6 @@ type ComparisonReport struct {
 	Accelerator string           `json:"accelerator,omitempty"`
 }
 
-// ModelBenchmark holds benchmark results for a single model in a comparison
 type ModelBenchmark struct {
 	ModelID              string  `json:"model_id"`
 	ModelName            string  `json:"model_name"`
@@ -143,7 +134,6 @@ type ModelBenchmark struct {
 	VRAMEstimate         string  `json:"vram_estimate"`
 }
 
-// ChatCompletionRequest represents an OpenAI-compatible chat request
 type ChatCompletionRequest struct {
 	Model       string        `json:"model,omitempty"`
 	Messages    []ChatMessage `json:"messages"`
@@ -152,13 +142,11 @@ type ChatCompletionRequest struct {
 	Stream      bool          `json:"stream,omitempty"`
 }
 
-// ChatMessage represents a chat message
 type ChatMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
 }
 
-// ChatCompletionResponse represents an OpenAI-compatible chat response
 type ChatCompletionResponse struct {
 	ID      string `json:"id"`
 	Object  string `json:"object"`
@@ -189,22 +177,18 @@ type ChatCompletionResponse struct {
 	} `json:"timings"`
 }
 
-// Default benchmark prompt designed to generate ~20-50 tokens response
 const defaultBenchmarkPrompt = "Explain what machine learning is in exactly three sentences."
 
-// Status constants for benchmark results
 const (
 	statusSuccess = "success"
 	statusFailed  = "failed"
 )
 
-// Phase constants for deployment status
 const (
 	phaseReady  = "Ready"
 	phaseFailed = "Failed"
 )
 
-// Accelerator type constants
 const (
 	acceleratorCUDA  = "cuda"
 	acceleratorMetal = "metal"
@@ -212,14 +196,12 @@ const (
 	acceleratorCPU   = "cpu"
 )
 
-// Container image constants
 const (
 	imageLlamaCppServer     = "ghcr.io/ggerganov/llama.cpp:server"
 	imageLlamaCppServerCUDA = "ghcr.io/ggerganov/llama.cpp:server-cuda"
 	imageLlamaCppServerROCm = "ghcr.io/ggerganov/llama.cpp:server-rocm"
 )
 
-// NewBenchmarkCommand creates the benchmark command
 func NewBenchmarkCommand() *cobra.Command {
 	opts := &benchmarkOptions{}
 
@@ -265,12 +247,10 @@ Examples:
 `,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Catalog mode: benchmark multiple models from catalog
 			if opts.catalog != "" {
 				return runCatalogBenchmark(opts)
 			}
 
-			// Single service mode: requires service name
 			if len(args) == 0 {
 				return fmt.Errorf("SERVICE_NAME is required (or use --catalog for multi-model comparison)")
 			}
@@ -311,7 +291,6 @@ func runBenchmark(opts *benchmarkOptions) error {
 	ctx := context.Background()
 	startTime := time.Now()
 
-	// Get endpoint URL
 	endpoint, cleanup, err := getEndpoint(ctx, opts)
 	if err != nil {
 		return err
@@ -329,7 +308,6 @@ func runBenchmark(opts *benchmarkOptions) error {
 	fmt.Printf("Max Tokens:  %d\n", opts.maxTokens)
 	fmt.Printf("═══════════════════════════════════════════════════════════════\n\n")
 
-	// Run warmup requests
 	if opts.warmup > 0 {
 		fmt.Printf("🔥 Running %d warmup requests...\n", opts.warmup)
 		for i := 0; i < opts.warmup; i++ {
@@ -343,7 +321,6 @@ func runBenchmark(opts *benchmarkOptions) error {
 		fmt.Println()
 	}
 
-	// Run benchmark iterations
 	fmt.Printf("📊 Running %d benchmark iterations...\n", opts.iterations)
 	results := make([]BenchmarkResult, 0, opts.iterations)
 
@@ -365,10 +342,8 @@ func runBenchmark(opts *benchmarkOptions) error {
 	}
 	fmt.Println()
 
-	// Calculate summary statistics
 	summary := calculateSummary(opts, endpoint, results, startTime)
 
-	// Output results
 	switch opts.output {
 	case "json":
 		return outputJSON(summary)
@@ -382,12 +357,10 @@ func runBenchmark(opts *benchmarkOptions) error {
 }
 
 func getEndpoint(ctx context.Context, opts *benchmarkOptions) (string, func(), error) {
-	// If endpoint is provided directly, use it
 	if opts.endpoint != "" {
 		return opts.endpoint, nil, nil
 	}
 
-	// Get Kubernetes client to find the service
 	cfg, err := config.GetConfig()
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to get kubeconfig: %w", err)
@@ -402,23 +375,19 @@ func getEndpoint(ctx context.Context, opts *benchmarkOptions) (string, func(), e
 		return "", nil, fmt.Errorf("failed to create client: %w", err)
 	}
 
-	// Get InferenceService to find endpoint
 	isvc := &inferencev1alpha1.InferenceService{}
 	if err := k8sClient.Get(ctx, types.NamespacedName{Name: opts.name, Namespace: opts.namespace}, isvc); err != nil {
 		return "", nil, fmt.Errorf("failed to get InferenceService '%s': %w", opts.name, err)
 	}
 
-	// Check if service is ready
 	if isvc.Status.Phase != phaseReady {
 		return "", nil, fmt.Errorf("InferenceService '%s' is not ready (phase: %s)", opts.name, isvc.Status.Phase)
 	}
 
-	// If port-forward is enabled, set it up
 	if opts.portForward {
 		return setupPortForward(opts)
 	}
 
-	// Use the endpoint from status
 	if isvc.Status.Endpoint != "" {
 		return isvc.Status.Endpoint, nil, nil
 	}
@@ -429,46 +398,37 @@ func getEndpoint(ctx context.Context, opts *benchmarkOptions) (string, func(), e
 }
 
 func setupPortForward(opts *benchmarkOptions) (string, func(), error) {
-	// Suppress noisy klog errors from portforward package
-	// klog writes to stderr by default, so we need to suppress both output and logging
 	klog.SetOutput(io.Discard)
 	klog.LogToStderr(false)
 
-	// Sanitize service name (dots become dashes in Kubernetes service names)
 	serviceName := strings.ReplaceAll(opts.name, ".", "-")
 
 	fmt.Printf("⚡ Port forwarding to service/%s...\n", serviceName)
 
-	// Get REST config
 	restConfig, err := config.GetConfig()
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to get kubeconfig: %w", err)
 	}
 
-	// Create clientset to find pod
 	clientset, err := kubernetes.NewForConfig(restConfig)
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to create clientset: %w", err)
 	}
 
-	// Find a ready pod for the service
 	podName, err := findReadyPodForService(clientset, opts.namespace, serviceName)
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to find pod for service %s: %w", serviceName, err)
 	}
 
-	// Find an available local port
 	localPort, err := findAvailablePort()
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to find available port: %w", err)
 	}
 
-	// Set up port forwarding
 	stopChan := make(chan struct{}, 1)
 	readyChan := make(chan struct{})
 	errChan := make(chan error, 1)
 
-	// Create the port forward request URL
 	path := fmt.Sprintf("/api/v1/namespaces/%s/pods/%s/portforward", opts.namespace, podName)
 	hostIP := strings.TrimPrefix(restConfig.Host, "https://")
 	hostIP = strings.TrimPrefix(hostIP, "http://")
@@ -478,7 +438,6 @@ func setupPortForward(opts *benchmarkOptions) (string, func(), error) {
 		serverURL.Scheme = "http"
 	}
 
-	// Create SPDY transport
 	transport, upgrader, err := spdy.RoundTripperFor(restConfig)
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to create SPDY transport: %w", err)
@@ -486,26 +445,21 @@ func setupPortForward(opts *benchmarkOptions) (string, func(), error) {
 
 	dialer := spdy.NewDialer(upgrader, &http.Client{Transport: transport}, http.MethodPost, &serverURL)
 
-	// Set up port forwarding (local:remote)
 	ports := []string{fmt.Sprintf("%d:8080", localPort)}
 
-	// Create port forwarder with output suppressed
 	pf, err := portforward.New(dialer, ports, stopChan, readyChan, io.Discard, io.Discard)
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to create port forwarder: %w", err)
 	}
 
-	// Start port forwarding in a goroutine
 	go func() {
 		if err := pf.ForwardPorts(); err != nil {
 			errChan <- err
 		}
 	}()
 
-	// Wait for port forward to be ready or error
 	select {
 	case <-readyChan:
-		// Port forward is ready
 	case err := <-errChan:
 		return "", nil, fmt.Errorf("port forward failed: %w", err)
 	case <-time.After(10 * time.Second):
@@ -518,7 +472,6 @@ func setupPortForward(opts *benchmarkOptions) (string, func(), error) {
 		close(stopChan)
 	}
 
-	// Test connectivity with retries
 	httpClient := &http.Client{Timeout: 5 * time.Second}
 	var lastErr error
 	for i := 0; i < 5; i++ {
@@ -536,9 +489,8 @@ func setupPortForward(opts *benchmarkOptions) (string, func(), error) {
 		}
 	}
 
-	// Wait for model to be loaded (server returns 200 on /health when ready)
 	fmt.Printf("   ⏳ Waiting for model to load...\n")
-	modelLoadTimeout := 10 * time.Minute // Large models can take a while
+	modelLoadTimeout := 10 * time.Minute
 	startTime := time.Now()
 	lastStatus := 0
 	for {
@@ -561,30 +513,25 @@ func setupPortForward(opts *benchmarkOptions) (string, func(), error) {
 			return endpoint, cleanup, nil
 		}
 
-		// Still loading, wait and retry
 		time.Sleep(2 * time.Second)
 	}
 }
 
-// findReadyPodForService finds a ready pod that matches the service selector
 func findReadyPodForService(clientset *kubernetes.Clientset, namespace, serviceName string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// Get the service to find selector
 	svc, err := clientset.CoreV1().Services(namespace).Get(ctx, serviceName, metav1.GetOptions{})
 	if err != nil {
 		return "", fmt.Errorf("failed to get service: %w", err)
 	}
 
-	// Build label selector from service selector
 	selectors := make([]string, 0, len(svc.Spec.Selector))
 	for k, v := range svc.Spec.Selector {
 		selectors = append(selectors, fmt.Sprintf("%s=%s", k, v))
 	}
 	labelSelector := strings.Join(selectors, ",")
 
-	// List pods matching the selector
 	pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: labelSelector,
 	})
@@ -592,7 +539,6 @@ func findReadyPodForService(clientset *kubernetes.Clientset, namespace, serviceN
 		return "", fmt.Errorf("failed to list pods: %w", err)
 	}
 
-	// Find a ready pod
 	for _, pod := range pods.Items {
 		if isPodReady(&pod) {
 			return pod.Name, nil
@@ -602,7 +548,6 @@ func findReadyPodForService(clientset *kubernetes.Clientset, namespace, serviceN
 	return "", fmt.Errorf("no ready pods found for service %s", serviceName)
 }
 
-// isPodReady checks if a pod is in Ready condition
 func isPodReady(pod *corev1.Pod) bool {
 	if pod.Status.Phase != corev1.PodRunning {
 		return false
@@ -615,7 +560,6 @@ func isPodReady(pod *corev1.Pod) bool {
 	return false
 }
 
-// findAvailablePort finds an available local port
 func findAvailablePort() (int, error) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -633,7 +577,6 @@ func sendBenchmarkRequest(
 		Iteration: iteration,
 	}
 
-	// Build request
 	reqBody := ChatCompletionRequest{
 		Messages: []ChatMessage{
 			{Role: "user", Content: opts.prompt},
@@ -648,14 +591,12 @@ func sendBenchmarkRequest(
 		return result, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	// Create HTTP request
 	req, err := http.NewRequestWithContext(ctx, "POST", endpoint+"/v1/chat/completions", bytes.NewReader(jsonBody))
 	if err != nil {
 		return result, fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	// Send request and measure time
 	httpClient := &http.Client{Timeout: opts.timeout}
 	startTime := time.Now()
 
@@ -667,7 +608,6 @@ func sendBenchmarkRequest(
 
 	totalTime := time.Since(startTime)
 
-	// Read response
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return result, fmt.Errorf("failed to read response: %w", err)
@@ -677,19 +617,16 @@ func sendBenchmarkRequest(
 		return result, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
 	}
 
-	// Parse response
 	var chatResp ChatCompletionResponse
 	if err := json.Unmarshal(body, &chatResp); err != nil {
 		return result, fmt.Errorf("failed to parse response: %w", err)
 	}
 
-	// Extract metrics
 	result.PromptTokens = chatResp.Usage.PromptTokens
 	result.CompletionTokens = chatResp.Usage.CompletionTokens
 	result.TotalTokens = chatResp.Usage.TotalTokens
 	result.TotalTimeMs = float64(totalTime.Milliseconds())
 
-	// Use timings from llama.cpp if available, otherwise calculate
 	if chatResp.Timings.PromptMs > 0 {
 		result.PromptTimeMs = chatResp.Timings.PromptMs
 		result.GenerationTimeMs = chatResp.Timings.PredictedMs
@@ -721,7 +658,6 @@ func calculateSummary(
 		Duration:     time.Since(startTime),
 	}
 
-	// Collect successful results - pre-allocate slices
 	latencies := make([]float64, 0, len(results))
 	genToks := make([]float64, 0, len(results))
 	promptToks := make([]float64, 0, len(results))
@@ -747,11 +683,9 @@ func calculateSummary(
 		return summary
 	}
 
-	// Sort for percentile calculations
 	sort.Float64s(latencies)
 	sort.Float64s(genToks)
 
-	// Latency stats
 	summary.LatencyMin = latencies[0]
 	summary.LatencyMax = latencies[len(latencies)-1]
 	summary.LatencyMean = mean(latencies)
@@ -759,7 +693,6 @@ func calculateSummary(
 	summary.LatencyP95 = percentile(latencies, 95)
 	summary.LatencyP99 = percentile(latencies, 99)
 
-	// Throughput stats
 	if len(genToks) > 0 {
 		summary.GenerationToksPerSecMean = mean(genToks)
 		summary.GenerationToksPerSecMin = genToks[0]
@@ -900,21 +833,15 @@ func outputMarkdown(summary BenchmarkSummary) {
 	fmt.Printf("*Generated by LLMKube v%s*\n", Version)
 }
 
-// ============================================================================
-// Catalog Mode: Multi-Model Comparison
-// ============================================================================
-
 func runCatalogBenchmark(opts *benchmarkOptions) error {
 	ctx := context.Background()
 	startTime := time.Now()
 
-	// Parse model IDs from catalog flag
 	modelIDs := strings.Split(opts.catalog, ",")
 	for i := range modelIDs {
 		modelIDs[i] = strings.TrimSpace(modelIDs[i])
 	}
 
-	// Validate all models exist in catalog before starting
 	fmt.Printf("\n🔍 Validating catalog models...\n")
 	catalogModels := make([]*Model, 0, len(modelIDs))
 	for _, modelID := range modelIDs {
@@ -926,7 +853,6 @@ func runCatalogBenchmark(opts *benchmarkOptions) error {
 		fmt.Printf("   ✅ %s (%s)\n", modelID, model.Size)
 	}
 
-	// Determine accelerator for display
 	acceleratorDisplay := acceleratorCPU
 	if opts.gpu {
 		acceleratorDisplay = opts.accelerator
@@ -935,7 +861,6 @@ func runCatalogBenchmark(opts *benchmarkOptions) error {
 		}
 	}
 
-	// Print benchmark plan
 	fmt.Printf("\n🏁 LLMKube Catalog Benchmark\n")
 	fmt.Printf("═══════════════════════════════════════════════════════════════\n")
 	fmt.Printf("Models:      %d (%s)\n", len(modelIDs), strings.Join(modelIDs, ", "))
@@ -953,7 +878,6 @@ func runCatalogBenchmark(opts *benchmarkOptions) error {
 	fmt.Printf("Cleanup:     %v\n", opts.cleanup)
 	fmt.Printf("═══════════════════════════════════════════════════════════════\n\n")
 
-	// Get Kubernetes client
 	cfg, err := config.GetConfig()
 	if err != nil {
 		return fmt.Errorf("failed to get kubeconfig: %w", err)
@@ -968,7 +892,6 @@ func runCatalogBenchmark(opts *benchmarkOptions) error {
 		return fmt.Errorf("failed to create client: %w", err)
 	}
 
-	// Benchmark each model
 	report := ComparisonReport{
 		Models:      make([]ModelBenchmark, 0, len(modelIDs)),
 		Timestamp:   startTime,

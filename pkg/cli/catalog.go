@@ -31,13 +31,11 @@ import (
 //go:embed catalog.yaml
 var catalogYAML []byte
 
-// Catalog represents the model catalog structure
 type Catalog struct {
 	Version string           `yaml:"version"`
 	Models  map[string]Model `yaml:"models"`
 }
 
-// Model represents a pre-configured model in the catalog
 type Model struct {
 	Name         string       `yaml:"name"`
 	Description  string       `yaml:"description"`
@@ -54,7 +52,6 @@ type Model struct {
 	Notes        string       `yaml:"notes,omitempty"`
 }
 
-// ResourceSpec defines resource requirements for a model
 type ResourceSpec struct {
 	CPU       string `yaml:"cpu"`
 	Memory    string `yaml:"memory"`
@@ -63,7 +60,6 @@ type ResourceSpec struct {
 
 var catalogInstance *Catalog
 
-// LoadCatalog loads and parses the embedded catalog.yaml
 func LoadCatalog() (*Catalog, error) {
 	if catalogInstance != nil {
 		return catalogInstance, nil
@@ -78,7 +74,6 @@ func LoadCatalog() (*Catalog, error) {
 	return catalogInstance, nil
 }
 
-// GetModel retrieves a model from the catalog by ID
 func GetModel(modelID string) (*Model, error) {
 	catalog, err := LoadCatalog()
 	if err != nil {
@@ -93,7 +88,6 @@ func GetModel(modelID string) (*Model, error) {
 	return &model, nil
 }
 
-// NewCatalogCommand creates the catalog command
 func NewCatalogCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "catalog",
@@ -121,7 +115,6 @@ Examples:
 	return cmd
 }
 
-// NewCatalogListCommand creates the catalog list command
 func NewCatalogListCommand() *cobra.Command {
 	var tagFilter string
 
@@ -148,7 +141,6 @@ Examples:
 	return cmd
 }
 
-// NewCatalogInfoCommand creates the catalog info command
 func NewCatalogInfoCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "info MODEL_ID",
@@ -174,14 +166,12 @@ func runCatalogList(tagFilter string) error {
 		return err
 	}
 
-	// Get sorted model IDs for consistent output
 	modelIDs := make([]string, 0, len(catalog.Models))
 	for id := range catalog.Models {
 		modelIDs = append(modelIDs, id)
 	}
 	sort.Strings(modelIDs)
 
-	// Filter by tag if specified
 	filteredIDs := []string{}
 	if tagFilter != "" {
 		for _, id := range modelIDs {
@@ -197,14 +187,12 @@ func runCatalogList(tagFilter string) error {
 		modelIDs = filteredIDs
 	}
 
-	// Print header
 	fmt.Printf("\n📚 LLMKube Model Catalog (v%s)\n", catalog.Version)
 	if tagFilter != "" {
 		fmt.Printf("Filter: tag=%s\n", tagFilter)
 	}
 	fmt.Printf("═══════════════════════════════════════════════════════════════════════\n\n")
 
-	// Create table writer
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	_, _ = fmt.Fprintln(w, "ID\tNAME\tSIZE\tQUANT\tUSE CASE\tVRAM")
 	_, _ = fmt.Fprintln(w, "──\t────\t────\t─────\t────────\t────")
@@ -228,7 +216,6 @@ func runCatalogList(tagFilter string) error {
 
 	_ = w.Flush()
 
-	// Print footer
 	fmt.Printf("\n💡 To deploy: llmkube deploy <MODEL_ID> --gpu\n")
 	fmt.Printf("💡 For details: llmkube catalog info <MODEL_ID>\n\n")
 
@@ -241,7 +228,6 @@ func runCatalogInfo(modelID string) error {
 		return err
 	}
 
-	// Print detailed model information
 	fmt.Printf("\n📦 %s\n", model.Name)
 	fmt.Printf("═══════════════════════════════════════════════════════════════════════\n\n")
 	fmt.Printf("ID:              %s\n", modelID)
@@ -251,11 +237,9 @@ func runCatalogInfo(modelID string) error {
 	fmt.Printf("VRAM Estimate:   %s\n", model.VRAMEstimate)
 	fmt.Printf("\n")
 
-	// Description
 	fmt.Printf("Description:\n")
 	fmt.Printf("  %s\n\n", model.Description)
 
-	// Use cases
 	if len(model.UseCases) > 0 {
 		fmt.Printf("Use Cases:\n")
 		for _, uc := range model.UseCases {
@@ -264,7 +248,6 @@ func runCatalogInfo(modelID string) error {
 		fmt.Printf("\n")
 	}
 
-	// Resource requirements
 	fmt.Printf("Resource Requirements:\n")
 	fmt.Printf("  CPU:         %s\n", model.Resources.CPU)
 	fmt.Printf("  Memory:      %s\n", model.Resources.Memory)
@@ -272,17 +255,14 @@ func runCatalogInfo(modelID string) error {
 	fmt.Printf("  GPU Layers:  %d\n", model.GPULayers)
 	fmt.Printf("\n")
 
-	// Tags
 	if len(model.Tags) > 0 {
 		fmt.Printf("Tags: %s\n\n", strings.Join(model.Tags, ", "))
 	}
 
-	// Notes
 	if model.Notes != "" {
 		fmt.Printf("⚠️  Notes: %s\n\n", model.Notes)
 	}
 
-	// Deployment commands
 	fmt.Printf("═══════════════════════════════════════════════════════════════════════\n")
 	fmt.Printf("🚀 Quick Deploy:\n\n")
 	fmt.Printf("  # CPU deployment\n")
@@ -292,14 +272,11 @@ func runCatalogInfo(modelID string) error {
 	fmt.Printf("  # Custom configuration\n")
 	fmt.Printf("  llmkube deploy %s --gpu --replicas 3 --context 16384\n\n", modelID)
 
-	// Links
 	fmt.Printf("🔗 Homepage: %s\n", model.Homepage)
 	fmt.Printf("🔗 Source:   %s\n\n", model.Source)
 
 	return nil
 }
-
-// Helper functions
 
 func containsTag(tags []string, tag string) bool {
 	for _, t := range tags {
@@ -311,7 +288,6 @@ func containsTag(tags []string, tag string) bool {
 }
 
 func formatUseCase(uc string) string {
-	// Convert kebab-case to Title Case
 	words := strings.Split(uc, "-")
 	for i, word := range words {
 		if len(word) > 0 {

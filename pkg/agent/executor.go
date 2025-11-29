@@ -28,7 +28,6 @@ import (
 	"time"
 )
 
-// ExecutorConfig contains configuration for starting a process
 type ExecutorConfig struct {
 	Name        string
 	Namespace   string
@@ -38,14 +37,12 @@ type ExecutorConfig struct {
 	ContextSize int
 }
 
-// MetalExecutor manages llama-server processes with Metal acceleration
 type MetalExecutor struct {
 	llamaServerBin string
 	modelStorePath string
 	nextPort       int
 }
 
-// NewMetalExecutor creates a new executor
 func NewMetalExecutor(llamaServerBin, modelStorePath string) *MetalExecutor {
 	return &MetalExecutor{
 		llamaServerBin: llamaServerBin,
@@ -54,21 +51,17 @@ func NewMetalExecutor(llamaServerBin, modelStorePath string) *MetalExecutor {
 	}
 }
 
-// StartProcess downloads the model (if needed) and starts llama-server
 func (e *MetalExecutor) StartProcess(ctx context.Context, config ExecutorConfig) (*ManagedProcess, error) {
-	// Download model if not present
 	modelPath, err := e.ensureModel(ctx, config.ModelSource, config.ModelName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to ensure model: %w", err)
 	}
 
-	// Allocate port
 	port := e.allocatePort()
 
-	// Prepare command
 	gpuLayers := config.GPULayers
 	if gpuLayers == 0 {
-		gpuLayers = 99 // Default: offload all layers
+		gpuLayers = 99
 	}
 
 	args := []string{
@@ -77,18 +70,16 @@ func (e *MetalExecutor) StartProcess(ctx context.Context, config ExecutorConfig)
 		"--port", fmt.Sprintf("%d", port),
 		"--n-gpu-layers", fmt.Sprintf("%d", gpuLayers),
 		"--ctx-size", fmt.Sprintf("%d", config.ContextSize),
-		"--metrics", // Enable Prometheus metrics
+		"--metrics",
 	}
 
 	cmd := exec.Command(e.llamaServerBin, args...)
 
-	// Set environment variables for Metal
 	cmd.Env = append(os.Environ(),
 		"GGML_METAL_ENABLE=1",
 		"GGML_METAL_PATH_RESOURCES=/usr/local/share/llama.cpp",
 	)
 
-	// Start the process
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("failed to start llama-server: %w", err)
 	}
@@ -103,7 +94,6 @@ func (e *MetalExecutor) StartProcess(ctx context.Context, config ExecutorConfig)
 		Healthy:   false,
 	}
 
-	// Wait for health check
 	if err := e.waitForHealthy(port, 30*time.Second); err != nil {
 		_ = e.StopProcess(process.PID)
 		return nil, fmt.Errorf("process failed health check: %w", err)
@@ -113,19 +103,16 @@ func (e *MetalExecutor) StartProcess(ctx context.Context, config ExecutorConfig)
 	return process, nil
 }
 
-// StopProcess stops a running llama-server process
 func (e *MetalExecutor) StopProcess(pid int) error {
 	process, err := os.FindProcess(pid)
 	if err != nil {
 		return fmt.Errorf("failed to find process %d: %w", pid, err)
 	}
 
-	// Send SIGTERM for graceful shutdown
 	if err := process.Signal(syscall.SIGTERM); err != nil {
 		return fmt.Errorf("failed to send SIGTERM to process %d: %w", pid, err)
 	}
 
-	// Wait for process to exit (with timeout)
 	done := make(chan error, 1)
 	go func() {
 		_, err := process.Wait()
@@ -134,7 +121,6 @@ func (e *MetalExecutor) StopProcess(pid int) error {
 
 	select {
 	case <-time.After(10 * time.Second):
-		// Force kill if graceful shutdown fails
 		_ = process.Kill()
 		return fmt.Errorf("process %d did not exit gracefully, killed", pid)
 	case err := <-done:
@@ -142,24 +128,19 @@ func (e *MetalExecutor) StopProcess(pid int) error {
 	}
 }
 
-// ensureModel downloads the model if not present, returns path to model file
 func (e *MetalExecutor) ensureModel(ctx context.Context, source, name string) (string, error) {
-	// Generate local path
 	filename := filepath.Base(source)
 	localPath := filepath.Join(e.modelStorePath, name, filename)
 
-	// Check if already downloaded
 	if _, err := os.Stat(localPath); err == nil {
 		fmt.Printf("📦 Model already downloaded: %s\n", localPath)
 		return localPath, nil
 	}
 
-	// Create directory
 	if err := os.MkdirAll(filepath.Dir(localPath), 0755); err != nil {
 		return "", fmt.Errorf("failed to create model directory: %w", err)
 	}
 
-	// Download model
 	fmt.Printf("⬇️  Downloading model from %s...\n", source)
 	if err := e.downloadFile(ctx, source, localPath); err != nil {
 		return "", fmt.Errorf("failed to download model: %w", err)
@@ -169,9 +150,7 @@ func (e *MetalExecutor) ensureModel(ctx context.Context, source, name string) (s
 	return localPath, nil
 }
 
-// downloadFile downloads a file from URL to local path
 func (e *MetalExecutor) downloadFile(ctx context.Context, url, filePath string) error {
-	// Create the file
 	out, err := os.Create(filePath)
 	if err != nil {
 		return err
@@ -182,13 +161,11 @@ func (e *MetalExecutor) downloadFile(ctx context.Context, url, filePath string) 
 		}
 	}()
 
-	// Create HTTP request with context
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return err
 	}
 
-	// Download
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return err
@@ -201,12 +178,10 @@ func (e *MetalExecutor) downloadFile(ctx context.Context, url, filePath string) 
 		return fmt.Errorf("bad status: %s", resp.Status)
 	}
 
-	// Write to file
 	_, err = io.Copy(out, resp.Body)
 	return err
 }
 
-// waitForHealthy waits for the llama-server to become healthy
 func (e *MetalExecutor) waitForHealthy(port int, timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -233,7 +208,6 @@ func (e *MetalExecutor) waitForHealthy(port int, timeout time.Duration) error {
 	}
 }
 
-// allocatePort allocates a new port for a process
 func (e *MetalExecutor) allocatePort() int {
 	port := e.nextPort
 	e.nextPort++
