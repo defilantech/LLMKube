@@ -34,7 +34,6 @@ type statusOptions struct {
 	namespace string
 }
 
-// NewStatusCommand creates the status command
 func NewStatusCommand() *cobra.Command {
 	opts := &statusOptions{}
 
@@ -57,7 +56,6 @@ func NewStatusCommand() *cobra.Command {
 func runStatus(opts *statusOptions) error {
 	ctx := context.Background()
 
-	// Get Kubernetes client
 	cfg, err := config.GetConfig()
 	if err != nil {
 		return fmt.Errorf("failed to get kubeconfig: %w", err)
@@ -72,19 +70,16 @@ func runStatus(opts *statusOptions) error {
 		return fmt.Errorf("failed to create client: %w", err)
 	}
 
-	// Get Model
 	model := &inferencev1alpha1.Model{}
 	if err := k8sClient.Get(ctx, types.NamespacedName{Name: opts.name, Namespace: opts.namespace}, model); err != nil {
 		return fmt.Errorf("failed to get Model: %w", err)
 	}
 
-	// Get InferenceService
 	isvc := &inferencev1alpha1.InferenceService{}
 	if err := k8sClient.Get(ctx, types.NamespacedName{Name: opts.name, Namespace: opts.namespace}, isvc); err != nil {
 		return fmt.Errorf("failed to get InferenceService: %w", err)
 	}
 
-	// Print status
 	fmt.Printf("Deployment: %s\n", opts.name)
 	fmt.Printf("Namespace:  %s\n\n", opts.namespace)
 
@@ -110,7 +105,6 @@ func runStatus(opts *statusOptions) error {
 		fmt.Printf("  Updated:         %s\n", isvc.Status.LastUpdated.Format("2006-01-02 15:04:05"))
 	}
 
-	// Print conditions
 	if len(model.Status.Conditions) > 0 {
 		fmt.Printf("\nMODEL CONDITIONS:\n")
 		for _, cond := range model.Status.Conditions {

@@ -38,57 +38,45 @@ import (
 )
 
 const (
-	// PhaseReady indicates the model is downloaded and ready
-	PhaseReady = "Ready"
-	// PhaseCached indicates the model was found in cache (no download needed)
-	PhaseCached = "Cached"
-	// DefaultModelCachePath is the default path for model cache
+	PhaseReady            = "Ready"
+	PhaseCached           = "Cached"
 	DefaultModelCachePath = "/models"
 )
 
-// ModelReconciler reconciles a Model object
 type ModelReconciler struct {
 	client.Client
 	Scheme      *runtime.Scheme
-	StoragePath string // Base path for storing downloaded models
+	StoragePath string
 }
 
 // +kubebuilder:rbac:groups=inference.llmkube.dev,resources=models,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=inference.llmkube.dev,resources=models/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=inference.llmkube.dev,resources=models/finalizers,verbs=update
 
-// Reconcile is part of the main kubernetes reconciliation loop which aims to
-// move the current state of the cluster closer to the desired state.
 func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	logger.Info("Reconciling Model", "name", req.Name, "namespace", req.Namespace)
 
-	// Fetch the Model instance
 	model := &inferencev1alpha1.Model{}
 	if err := r.Get(ctx, req.NamespacedName, model); err != nil {
 		if errors.IsNotFound(err) {
-			logger.Info("Model resource not found, ignoring since object must be deleted")
 			return ctrl.Result{}, nil
 		}
 		logger.Error(err, "Failed to get Model")
 		return ctrl.Result{}, err
 	}
 
-	// Set default storage path if not configured
 	if r.StoragePath == "" {
 		r.StoragePath = DefaultModelCachePath
 	}
 
-	// Compute cache key and model path
 	cacheKey := computeCacheKey(model.Spec.Source)
 	modelDir := filepath.Join(r.StoragePath, cacheKey)
 	modelPath := filepath.Join(modelDir, "model.gguf")
 
 	logger.Info("Using cache key for model", "cacheKey", cacheKey, "path", modelPath)
 
-	// Check if model already exists in cache
 	if fileInfo, err := os.Stat(modelPath); err == nil {
-		// Model exists in cache - update status and return
 		logger.Info("Model found in cache, skipping download", "path", modelPath, "size", fileInfo.Size())
 
 		model.Status.Phase = PhaseReady
@@ -106,13 +94,11 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return ctrl.Result{}, nil
 	}
 
-	// Ensure cache directory exists
 	if err := os.MkdirAll(modelDir, 0755); err != nil {
 		logger.Error(err, "Failed to create cache directory", "path", modelDir)
 		return ctrl.Result{}, err
 	}
 
-	// Update phase to Downloading
 	if model.Status.Phase != "Downloading" {
 		model.Status.Phase = "Downloading"
 		model.Status.CacheKey = cacheKey
@@ -122,7 +108,6 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		logger.Info("Started downloading model", "source", model.Spec.Source, "cacheKey", cacheKey)
 	}
 
-	// Download the model to cache
 	size, err := r.downloadModel(ctx, model.Spec.Source, modelPath)
 	if err != nil {
 		logger.Error(err, "Failed to download model")
@@ -133,7 +118,6 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return ctrl.Result{RequeueAfter: 5 * time.Minute}, err
 	}
 
-	// Update status to Ready
 	model.Status.Phase = PhaseReady
 	model.Status.Path = modelPath
 	model.Status.Size = formatBytes(size)
@@ -150,11 +134,9 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	return ctrl.Result{}, nil
 }
 
-// downloadModel downloads a model from the given source URL to the destination path
 func (r *ModelReconciler) downloadModel(ctx context.Context, source, dest string) (int64, error) {
 	logger := log.FromContext(ctx)
 
-	// Create the file
 	out, err := os.Create(dest)
 	if err != nil {
 		return 0, fmt.Errorf("failed to create file: %w", err)
@@ -165,7 +147,6 @@ func (r *ModelReconciler) downloadModel(ctx context.Context, source, dest string
 		}
 	}()
 
-	// Download the file
 	logger.Info("Downloading model", "source", source, "dest", dest)
 	resp, err := http.Get(source)
 	if err != nil {
@@ -181,7 +162,6 @@ func (r *ModelReconciler) downloadModel(ctx context.Context, source, dest string
 		return 0, fmt.Errorf("bad status: %s", resp.Status)
 	}
 
-	// Write to file
 	size, err := io.Copy(out, resp.Body)
 	if err != nil {
 		return 0, fmt.Errorf("failed to write file: %w", err)
@@ -190,11 +170,8 @@ func (r *ModelReconciler) downloadModel(ctx context.Context, source, dest string
 	return size, nil
 }
 
-// updateStatus updates the Model status with the given condition
-//
-//nolint:unparam // status parameter kept for future use with different condition statuses
+//nolint:unparam
 func (r *ModelReconciler) updateStatus(ctx context.Context, model *inferencev1alpha1.Model, condType string, status metav1.ConditionStatus, reason, message string) error {
-	// Set or update condition
 	condition := metav1.Condition{
 		Type:               condType,
 		Status:             status,
@@ -204,7 +181,6 @@ func (r *ModelReconciler) updateStatus(ctx context.Context, model *inferencev1al
 		Message:            message,
 	}
 
-	// Find and update existing condition or append new one
 	found := false
 	for i, cond := range model.Status.Conditions {
 		if cond.Type == condType {
@@ -220,20 +196,15 @@ func (r *ModelReconciler) updateStatus(ctx context.Context, model *inferencev1al
 	return r.Status().Update(ctx, model)
 }
 
-// checkAcceleratorAvailability checks if the requested hardware accelerator is available
-//
-//nolint:unparam // Returns true for MVP; will implement actual checking in production
+//nolint:unparam
 func (r *ModelReconciler) checkAcceleratorAvailability(hardware *inferencev1alpha1.HardwareSpec) bool {
 	if hardware == nil {
-		return true // CPU is always available
+		return true
 	}
-
-	// For MVP, we'll just return true for any accelerator
-	// In production, this would check for actual GPU/Metal availability
+	// TODO: implement actual GPU/Metal availability checking
 	return true
 }
 
-// formatBytes formats bytes into human-readable format
 func formatBytes(bytes int64) string {
 	const unit = 1024
 	if bytes < unit {
@@ -247,13 +218,11 @@ func formatBytes(bytes int64) string {
 	return fmt.Sprintf("%.1f %ciB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }
 
-// computeCacheKey generates a SHA256 hash of the source URL to use as cache key
 func computeCacheKey(source string) string {
 	hash := sha256.Sum256([]byte(source))
-	return hex.EncodeToString(hash[:])[:16] // Use first 16 chars for readability
+	return hex.EncodeToString(hash[:])[:16]
 }
 
-// SetupWithManager sets up the controller with the Manager.
 func (r *ModelReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&inferencev1alpha1.Model{}).

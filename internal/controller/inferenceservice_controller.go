@@ -40,52 +40,40 @@ import (
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 )
 
-// InferenceServiceReconciler reconciles a InferenceService object
 type InferenceServiceReconciler struct {
 	client.Client
 	Scheme               *runtime.Scheme
-	ModelCachePath       string // Path to the shared model cache PVC
-	ModelCacheSize       string // Size of the model cache PVC (e.g., "100Gi")
-	ModelCacheClass      string // Storage class for model cache PVC (empty for default)
-	ModelCacheAccessMode string // Access mode for model cache PVC (e.g., "ReadWriteOnce")
+	ModelCachePath       string
+	ModelCacheSize       string
+	ModelCacheClass      string
+	ModelCacheAccessMode string
 }
 
-// sanitizeDNSName converts a string to be DNS-1035 compliant by replacing dots with dashes
-// DNS-1035 requires: lowercase alphanumeric or '-', start with alphabetic, end with alphanumeric
 func sanitizeDNSName(name string) string {
-	// Replace dots with dashes to make it DNS-1035 compliant
 	return strings.ReplaceAll(name, ".", "-")
 }
 
-// ModelCachePVCName is the name of the model cache PVC created in each namespace
 const ModelCachePVCName = "llmkube-model-cache"
 
-// ensureModelCachePVC ensures a model cache PVC exists in the given namespace
-// Returns true if the PVC exists or was created, false if creation failed
 func (r *InferenceServiceReconciler) ensureModelCachePVC(ctx context.Context, namespace string) error {
 	log := logf.FromContext(ctx)
 
-	// Check if PVC already exists
 	pvc := &corev1.PersistentVolumeClaim{}
 	err := r.Get(ctx, types.NamespacedName{Name: ModelCachePVCName, Namespace: namespace}, pvc)
 	if err == nil {
-		// PVC already exists
 		return nil
 	}
 	if !apierrors.IsNotFound(err) {
 		return fmt.Errorf("failed to check for existing PVC: %w", err)
 	}
 
-	// PVC doesn't exist, create it
 	log.Info("Creating model cache PVC in namespace", "namespace", namespace)
 
-	// Determine access mode
 	accessMode := corev1.ReadWriteOnce
 	if r.ModelCacheAccessMode == "ReadWriteMany" {
 		accessMode = corev1.ReadWriteMany
 	}
 
-	// Parse size
 	size := "100Gi"
 	if r.ModelCacheSize != "" {
 		size = r.ModelCacheSize
@@ -115,14 +103,12 @@ func (r *InferenceServiceReconciler) ensureModelCachePVC(ctx context.Context, na
 		},
 	}
 
-	// Set storage class if specified
 	if r.ModelCacheClass != "" {
 		newPVC.Spec.StorageClassName = &r.ModelCacheClass
 	}
 
 	if err := r.Create(ctx, newPVC); err != nil {
 		if apierrors.IsAlreadyExists(err) {
-			// Race condition: another reconcile created it
 			return nil
 		}
 		return fmt.Errorf("failed to create PVC: %w", err)
@@ -141,23 +127,18 @@ func (r *InferenceServiceReconciler) ensureModelCachePVC(ctx context.Context, na
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch
 
-// Reconcile is part of the main kubernetes reconciliation loop which aims to
-// move the current state of the cluster closer to the desired state.
 func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
-	// 1. Fetch the InferenceService instance
 	inferenceService := &inferencev1alpha1.InferenceService{}
 	if err := r.Get(ctx, req.NamespacedName, inferenceService); err != nil {
 		if apierrors.IsNotFound(err) {
-			log.Info("InferenceService resource not found. Ignoring since object must be deleted")
 			return ctrl.Result{}, nil
 		}
 		log.Error(err, "Failed to get InferenceService")
 		return ctrl.Result{}, err
 	}
 
-	// 2. Check if the referenced Model exists and is Ready
 	model := &inferencev1alpha1.Model{}
 	modelName := types.NamespacedName{
 		Name:      inferenceService.Spec.ModelRef,
@@ -172,20 +153,17 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, err
 	}
 
-	// Check if Model is Ready
 	modelReady := model.Status.Phase == PhaseReady
 	if !modelReady {
 		log.Info("Model not ready yet", "model", model.Name, "phase", model.Status.Phase)
 		return r.updateStatus(ctx, inferenceService, "Pending", false, 0, 0, "", "Waiting for Model to be Ready")
 	}
 
-	// 3. Set desired replicas (default to 1 if not specified)
 	desiredReplicas := int32(1)
 	if inferenceService.Spec.Replicas != nil {
 		desiredReplicas = *inferenceService.Spec.Replicas
 	}
 
-	// 3a. Ensure model cache PVC exists in the InferenceService's namespace if caching is enabled
 	if model.Status.CacheKey != "" && r.ModelCachePath != "" {
 		if err := r.ensureModelCachePVC(ctx, inferenceService.Namespace); err != nil {
 			log.Error(err, "Failed to ensure model cache PVC exists", "namespace", inferenceService.Namespace)
@@ -193,17 +171,15 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		}
 	}
 
-	// 4. Check if this is a Metal accelerator deployment
-	// For Metal, we skip Deployment creation as the Metal agent runs llama-server natively
+	// Metal accelerator uses native llama-server via Metal agent instead of k8s Deployment
 	isMetal := model.Spec.Hardware != nil && model.Spec.Hardware.Accelerator == "metal"
 	var deployment *appsv1.Deployment
 	var err error
 	existingDeployment := &appsv1.Deployment{}
 
 	if isMetal {
-		log.Info("Metal accelerator detected, skipping Deployment creation (Metal agent handles native execution)")
+		log.Info("Metal accelerator detected, skipping Deployment creation")
 	} else {
-		// 4a. Create or update Deployment for non-Metal deployments
 		deployment = r.constructDeployment(inferenceService, model, desiredReplicas)
 		if err := controllerutil.SetControllerReference(inferenceService, deployment, r.Scheme); err != nil {
 			log.Error(err, "Failed to set controller reference for Deployment")
@@ -221,7 +197,6 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			log.Error(err, "Failed to get Deployment")
 			return ctrl.Result{}, err
 		} else {
-			// Update existing deployment if needed
 			existingDeployment.Spec = deployment.Spec
 			if err := r.Update(ctx, existingDeployment); err != nil {
 				log.Error(err, "Failed to update Deployment")
@@ -230,7 +205,6 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		}
 	}
 
-	// 5. Create or update Service
 	service := r.constructService(inferenceService)
 	if err := controllerutil.SetControllerReference(inferenceService, service, r.Scheme); err != nil {
 		log.Error(err, "Failed to set controller reference for Service")
@@ -250,11 +224,9 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, err
 	}
 
-	// 6. Get the Deployment status for ready replicas
 	readyReplicas := int32(0)
 	if isMetal {
-		// For Metal deployments, the Metal agent manages the native process
-		// We'll assume it's ready if the Model is ready (Metal agent handles the rest)
+		// Metal agent manages native process, assume ready if Model is ready
 		readyReplicas = desiredReplicas
 	} else if deployment != nil {
 		if err := r.Get(ctx, types.NamespacedName{Name: deployment.Name, Namespace: deployment.Namespace}, existingDeployment); err == nil {
@@ -262,10 +234,8 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		}
 	}
 
-	// 7. Construct endpoint URL
 	endpoint := r.constructEndpoint(inferenceService, service)
 
-	// 8. Determine phase
 	phase := "Creating"
 	if readyReplicas == desiredReplicas && readyReplicas > 0 {
 		phase = "Ready"
@@ -273,32 +243,21 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		phase = "Progressing"
 	}
 
-	// 9. Update status
 	return r.updateStatus(ctx, inferenceService, phase, modelReady, readyReplicas, desiredReplicas, endpoint, "")
 }
 
-// calculateTensorSplit computes the tensor split ratios for multi-GPU inference
-// Returns a comma-separated string of ratios for llama.cpp --tensor-split flag
+// calculateTensorSplit returns comma-separated equal ratios for llama.cpp --tensor-split flag
 func calculateTensorSplit(gpuCount int32, _ *inferencev1alpha1.GPUShardingSpec) string {
 	if gpuCount <= 1 {
 		return ""
 	}
 
 	// TODO: Support custom layer splits from sharding.LayerSplit
-	// Example: LayerSplit: ["0-15", "16-31"] would mean 50%/50% for 32-layer model
-	// For now, we use even splits across all GPUs
-
-	// Default: Even split across all GPUs
-	// llama.cpp accepts integer ratios that will be normalized
-	// Example: 2 GPUs -> "1,1" (50%/50%)
-	//          4 GPUs -> "1,1,1,1" (25%/25%/25%/25%)
-	// We use "1" for each GPU as it's clearer than percentages
 	ratios := make([]string, gpuCount)
 	for i := range ratios {
 		ratios[i] = "1"
 	}
 
-	// Build comma-separated string
 	result := ratios[0]
 	for i := 1; i < len(ratios); i++ {
 		result = fmt.Sprintf("%s,%s", result, ratios[i])
@@ -307,7 +266,6 @@ func calculateTensorSplit(gpuCount int32, _ *inferencev1alpha1.GPUShardingSpec) 
 	return result
 }
 
-// appendContextSizeArgs adds context size flag if specified
 func appendContextSizeArgs(args []string, contextSize *int32) []string {
 	if contextSize != nil && *contextSize > 0 {
 		return append(args, "--ctx-size", fmt.Sprintf("%d", *contextSize))
@@ -315,7 +273,6 @@ func appendContextSizeArgs(args []string, contextSize *int32) []string {
 	return args
 }
 
-// constructDeployment builds a Deployment for the InferenceService
 func (r *InferenceServiceReconciler) constructDeployment(
 	isvc *inferencev1alpha1.InferenceService,
 	model *inferencev1alpha1.Model,
@@ -327,21 +284,16 @@ func (r *InferenceServiceReconciler) constructDeployment(
 		"inference.llmkube.dev/service": isvc.Name,
 	}
 
-	// Get image from spec or use default
 	image := "ghcr.io/ggerganov/llama.cpp:server"
 	if isvc.Spec.Image != "" {
 		image = isvc.Spec.Image
 	}
 
-	// Get endpoint port
 	port := int32(8080)
 	if isvc.Spec.Endpoint != nil && isvc.Spec.Endpoint.Port > 0 {
 		port = isvc.Spec.Endpoint.Port
 	}
 
-	// Determine if we should use persistent model cache
-	// If the model has a CacheKey and cache path is configured, use per-namespace PVC caching
-	// Otherwise, fall back to EmptyDir (model re-downloaded on each pod restart)
 	useCache := model.Status.CacheKey != "" && r.ModelCachePath != ""
 	var modelPath string
 	var initContainers []corev1.Container
@@ -349,13 +301,9 @@ func (r *InferenceServiceReconciler) constructDeployment(
 	var volumeMounts []corev1.VolumeMount
 
 	if useCache {
-		// Use per-namespace PVC with init-container download
-		// The model is stored at <mount-path>/<cache-key>/model.gguf
-		// Using cache key ensures models with same source share storage
 		cacheDir := fmt.Sprintf("/models/%s", model.Status.CacheKey)
 		modelPath = fmt.Sprintf("%s/model.gguf", cacheDir)
 
-		// Init container downloads model if not already cached
 		initContainers = []corev1.Container{
 			{
 				Name:  "model-downloader",
@@ -381,14 +329,13 @@ func (r *InferenceServiceReconciler) constructDeployment(
 			},
 		}
 
-		// Mount the per-namespace cache PVC
 		volumes = []corev1.Volume{
 			{
 				Name: "model-cache",
 				VolumeSource: corev1.VolumeSource{
 					PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
 						ClaimName: ModelCachePVCName,
-						ReadOnly:  false, // Init container needs write access
+						ReadOnly:  false,
 					},
 				},
 			},
@@ -397,11 +344,10 @@ func (r *InferenceServiceReconciler) constructDeployment(
 			{
 				Name:      "model-cache",
 				MountPath: "/models",
-				ReadOnly:  true, // Main container only needs read access
+				ReadOnly:  true,
 			},
 		}
 	} else {
-		// Fallback to EmptyDir: download model via init container (no persistence)
 		modelFileName := fmt.Sprintf("%s-%s.gguf", isvc.Namespace, model.Name)
 		modelPath = fmt.Sprintf("/models/%s", modelFileName)
 
@@ -445,15 +391,13 @@ func (r *InferenceServiceReconciler) constructDeployment(
 		}
 	}
 
-	// Build container args
 	args := []string{
 		"--model", modelPath,
 		"--host", "0.0.0.0",
 		"--port", fmt.Sprintf("%d", port),
 	}
 
-	// Determine GPU count from either Model or InferenceService spec
-	// Model spec takes precedence as it defines the hardware requirements
+	// Model spec takes precedence for GPU count
 	gpuCount := int32(0)
 	if model.Spec.Hardware != nil && model.Spec.Hardware.GPU != nil && model.Spec.Hardware.GPU.Count > 0 {
 		gpuCount = model.Spec.Hardware.GPU.Count
@@ -461,25 +405,18 @@ func (r *InferenceServiceReconciler) constructDeployment(
 		gpuCount = isvc.Spec.Resources.GPU
 	}
 
-	// Add GPU configuration if GPU is requested
 	if gpuCount > 0 {
-		// Determine number of layers to offload
-		layers := int32(99) // default: offload all layers (max available)
+		layers := int32(99)
 		if model.Spec.Hardware != nil && model.Spec.Hardware.GPU != nil && model.Spec.Hardware.GPU.Layers > 0 {
-			// Use specified layer count from Model
 			layers = model.Spec.Hardware.GPU.Layers
 		} else if model.Spec.Hardware != nil && model.Spec.Hardware.GPU != nil && model.Spec.Hardware.GPU.Layers == -1 {
-			// -1 means auto-detect (use 99 for llama.cpp)
 			layers = 99
 		}
 		args = append(args, "--n-gpu-layers", fmt.Sprintf("%d", layers))
 
-		// Add multi-GPU configuration if using more than 1 GPU
 		if gpuCount > 1 {
-			// Set split mode to layer-based sharding
 			args = append(args, "--split-mode", "layer")
 
-			// Calculate and add tensor split ratios
 			var sharding *inferencev1alpha1.GPUShardingSpec
 			if model.Spec.Hardware != nil && model.Spec.Hardware.GPU != nil {
 				sharding = model.Spec.Hardware.GPU.Sharding
@@ -489,10 +426,8 @@ func (r *InferenceServiceReconciler) constructDeployment(
 		}
 	}
 
-	// Add context size if specified
 	args = appendContextSizeArgs(args, isvc.Spec.ContextSize)
 
-	// Build container
 	container := corev1.Container{
 		Name:  "llama-server",
 		Image: image,
@@ -507,8 +442,6 @@ func (r *InferenceServiceReconciler) constructDeployment(
 		VolumeMounts: volumeMounts,
 	}
 
-	// Add GPU resource requirements if specified
-	// Use the gpuCount variable calculated earlier (from Model or InferenceService spec)
 	if gpuCount > 0 {
 		container.Resources = corev1.ResourceRequirements{
 			Limits: corev1.ResourceList{
@@ -517,7 +450,6 @@ func (r *InferenceServiceReconciler) constructDeployment(
 		}
 	}
 
-	// Add CPU/Memory if specified
 	if isvc.Spec.Resources != nil {
 		if container.Resources.Limits == nil {
 			container.Resources.Limits = corev1.ResourceList{}
@@ -557,10 +489,7 @@ func (r *InferenceServiceReconciler) constructDeployment(
 		},
 	}
 
-	// Add GPU tolerations and node selector if GPU is requested
-	// Use the gpuCount variable calculated earlier
 	if gpuCount > 0 {
-		// Start with base NVIDIA toleration (works on all clouds)
 		tolerations := []corev1.Toleration{
 			{
 				Key:      "nvidia.com/gpu",
@@ -570,16 +499,12 @@ func (r *InferenceServiceReconciler) constructDeployment(
 			},
 		}
 
-		// Merge in user-provided tolerations from InferenceService spec
-		// This allows cloud-specific tolerations (e.g., spot instances, preemptible VMs)
 		if len(isvc.Spec.Tolerations) > 0 {
 			tolerations = append(tolerations, isvc.Spec.Tolerations...)
 		}
 
 		deployment.Spec.Template.Spec.Tolerations = tolerations
 
-		// Apply user-provided node selector from InferenceService spec
-		// This allows cloud-specific node selection (e.g., specific node pools)
 		if len(isvc.Spec.NodeSelector) > 0 {
 			deployment.Spec.Template.Spec.NodeSelector = isvc.Spec.NodeSelector
 		}
@@ -588,9 +513,7 @@ func (r *InferenceServiceReconciler) constructDeployment(
 	return deployment
 }
 
-// constructService builds a Service for the InferenceService
 func (r *InferenceServiceReconciler) constructService(isvc *inferencev1alpha1.InferenceService) *corev1.Service {
-	// Sanitize the service name to be DNS-1035 compliant (replace dots with dashes)
 	serviceName := sanitizeDNSName(isvc.Name)
 
 	labels := map[string]string{
@@ -634,7 +557,6 @@ func (r *InferenceServiceReconciler) constructService(isvc *inferencev1alpha1.In
 	}
 }
 
-// constructEndpoint builds the endpoint URL for the InferenceService
 func (r *InferenceServiceReconciler) constructEndpoint(isvc *inferencev1alpha1.InferenceService, svc *corev1.Service) string {
 	port := int32(8080)
 	path := "/v1/chat/completions"
@@ -648,11 +570,9 @@ func (r *InferenceServiceReconciler) constructEndpoint(isvc *inferencev1alpha1.I
 		}
 	}
 
-	// For ClusterIP, use internal DNS name
 	return fmt.Sprintf("http://%s.%s.svc.cluster.local:%d%s", svc.Name, svc.Namespace, port, path)
 }
 
-// updateStatus updates the InferenceService status
 func (r *InferenceServiceReconciler) updateStatus(
 	ctx context.Context,
 	isvc *inferencev1alpha1.InferenceService,
@@ -673,7 +593,6 @@ func (r *InferenceServiceReconciler) updateStatus(
 	isvc.Status.Endpoint = endpoint
 	isvc.Status.LastUpdated = &now
 
-	// Set conditions based on phase
 	var condition metav1.Condition
 	switch phase {
 	case "Ready":
@@ -732,7 +651,6 @@ func (r *InferenceServiceReconciler) updateStatus(
 	return ctrl.Result{}, nil
 }
 
-// SetupWithManager sets up the controller with the Manager.
 func (r *InferenceServiceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&inferencev1alpha1.InferenceService{}).
@@ -746,17 +664,14 @@ func (r *InferenceServiceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// findInferenceServicesForModel finds all InferenceServices that reference a given Model
 func (r *InferenceServiceReconciler) findInferenceServicesForModel(ctx context.Context, obj client.Object) []reconcile.Request {
 	model := obj.(*inferencev1alpha1.Model)
 
-	// List all InferenceServices in the same namespace
 	inferenceServiceList := &inferencev1alpha1.InferenceServiceList{}
 	if err := r.List(ctx, inferenceServiceList, client.InNamespace(model.Namespace)); err != nil {
 		return []reconcile.Request{}
 	}
 
-	// Find InferenceServices that reference this Model
 	var requests []reconcile.Request
 	for _, isvc := range inferenceServiceList.Items {
 		if isvc.Spec.ModelRef == model.Name {

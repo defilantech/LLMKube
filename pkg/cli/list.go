@@ -35,7 +35,6 @@ type listOptions struct {
 	resource  string
 }
 
-// NewListCommand creates the list command
 func NewListCommand() *cobra.Command {
 	opts := &listOptions{}
 
@@ -63,7 +62,6 @@ func NewListCommand() *cobra.Command {
 func runList(opts *listOptions) error {
 	ctx := context.Background()
 
-	// Get Kubernetes client
 	cfg, err := config.GetConfig()
 	if err != nil {
 		return fmt.Errorf("failed to get kubeconfig: %w", err)
