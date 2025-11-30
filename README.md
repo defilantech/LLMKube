@@ -31,6 +31,14 @@
 
 ---
 
+## Getting Started Video
+
+[![Getting Started with LLMKube](https://img.youtube.com/vi/dmKnkxvC1U8/maxresdefault.jpg)](https://youtu.be/dmKnkxvC1U8)
+
+*Watch: Deploy your first LLM on Kubernetes in 5 minutes*
+
+---
+
 ## Why LLMKube?
 
 Running LLMs in production shouldn't require a PhD in distributed systems. LLMKube makes it as easy as deploying any other Kubernetes workload:
