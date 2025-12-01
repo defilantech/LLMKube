@@ -5,6 +5,18 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.9](https://github.com/defilantech/LLMKube/compare/v0.4.8...v0.4.9) (2025-12-01)
+
+
+### Features
+
+* add GPU contention visibility, queue position, and priority classes ([#81](https://github.com/defilantech/LLMKube/issues/81)) ([c0220e5](https://github.com/defilantech/LLMKube/commit/c0220e5a392a5958d826eabdffe68bfce46f84d4))
+
+
+### Documentation
+
+* add getting started video to README ([#76](https://github.com/defilantech/LLMKube/issues/76)) ([ceb83d7](https://github.com/defilantech/LLMKube/commit/ceb83d79d4338eafcedb6cce583321bb6100bc7e))
+
 ## [0.4.8](https://github.com/defilantech/LLMKube/compare/v0.4.7...v0.4.8) (2025-11-27)
 
 
