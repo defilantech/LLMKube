@@ -1,8 +1,8 @@
 # LLMKube Roadmap
 
-**Current Version:** 0.3.0
-**Last Updated:** November 2025
-**Status:** ✅ Phase 1 Complete - GPU Inference, Metal Support & Model Catalog
+**Current Version:** 0.4.9
+**Last Updated:** December 2025
+**Status:** ✅ Phase 1 Complete - GPU Inference, Metal Support, Model Catalog & GPU Scheduling
 
 ---
 
@@ -20,15 +20,16 @@ Make GPU-accelerated LLM inference on Kubernetes **dead simple**. Deploy product
 
 ## Current Status
 
-### ✅ What's Working Now (v0.3.0)
+### ✅ What's Working Now (v0.4.9)
 
 **Core Platform:**
 - ✅ Kubernetes-native CRDs (`Model`, `InferenceService`)
 - ✅ Automatic model download from HuggingFace/HTTP
 - ✅ OpenAI-compatible `/v1/chat/completions` API
 - ✅ Multi-replica deployment support
-- ✅ Full CLI tool (`llmkube deploy/list/status/delete`)
+- ✅ Full CLI tool (`llmkube deploy/list/status/delete/queue`)
 - ✅ Helm chart for easy installation
+- ✅ Model catalog with 10+ pre-configured models
 
 **GPU Acceleration:**
 - ✅ NVIDIA GPU support (T4, L4, A100)
@@ -36,6 +37,13 @@ Make GPU-accelerated LLM inference on Kubernetes **dead simple**. Deploy product
 - ✅ Automatic GPU layer offloading
 - ✅ GKE Terraform deployment configs
 - ✅ Cost optimization (spot instances, auto-scale to 0)
+
+**GPU Scheduling & Queue Management:** ✅ **NEW in v0.4.9**
+- ✅ GPU contention visibility (`WaitingForGPU` phase)
+- ✅ Queue position tracking for pending services
+- ✅ Priority classes (critical/high/normal/low/batch)
+- ✅ `llmkube queue` command to view waiting services
+- ✅ Detailed scheduling status and messages
 
 **Observability:**
 - ✅ Prometheus + Grafana integration
@@ -72,7 +80,7 @@ Make GPU-accelerated LLM inference on Kubernetes **dead simple**. Deploy product
    - Horizontal Pod Autoscaling (HPA) support
    - Better health checks and readiness probes
    - ~~Persistent model storage (stop re-downloading!)~~ ✅ v0.4.1
-   - Request queuing and load shedding
+   - ~~Request queuing and load shedding~~ ✅ v0.4.9 (GPU queue management)
 
 4. **Multi-GPU Support** ✅ **COMPLETED**
    - Single-node multi-GPU for larger models (13B+)
@@ -189,7 +197,8 @@ We ship frequently with semantic versioning:
 
 **Next releases:**
 - **v0.4.0** - November 2025 (multi-GPU support) ✅
-- **v0.4.1** - November 2025 (persistent model cache) ✅ **Current**
+- **v0.4.1** - November 2025 (persistent model cache) ✅
+- **v0.4.9** - December 2025 (GPU scheduling & priority classes) ✅ **Current**
 - **v0.5.0** - Q1 2026 (autoscaling)
 - **v0.6.0** - Q2 2026 (edge deployment, K3s)
 - **v1.0.0** - Q4 2026 (stable, production-ready)
@@ -231,7 +240,7 @@ Apache 2.0 - See [LICENSE](LICENSE)
 
 ---
 
-**Last Updated:** November 2025
-**Next Review:** January 2026
+**Last Updated:** December 2025
+**Next Review:** February 2026
 
 *This roadmap is a living document. Priorities may shift based on community feedback and real-world usage.*

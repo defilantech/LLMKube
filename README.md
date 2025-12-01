@@ -225,8 +225,9 @@ Consistent ~53 tok/s across 3-8B models demonstrates efficient GPU utilization w
 - **Persistent model cache** - Download once, deploy instantly ([guide](docs/MODEL-CACHE.md))
 - **OpenAI-compatible API** - `/v1/chat/completions` endpoint
 - **Multi-replica scaling** - Horizontal pod autoscaling support
-- **Full CLI** - `llmkube deploy/list/status/delete/catalog/cache` commands
+- **Full CLI** - `llmkube deploy/list/status/delete/catalog/cache/queue` commands
 - **Model Catalog** - 10 pre-configured popular models (Llama 3.1, Mistral, Qwen, DeepSeek, etc.)
+- **GPU Queue Management** - Priority classes, queue position tracking, contention visibility
 
 **GPU Acceleration:**
 - ✅ NVIDIA GPU support (T4, L4, A100, RTX)
@@ -359,6 +360,9 @@ llmkube list services
 
 # Check status
 llmkube status llama-3b-service
+
+# View GPU queue (services waiting for GPU resources)
+llmkube queue -A
 
 # Delete deployment
 llmkube delete llama-3b
