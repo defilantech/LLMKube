@@ -155,6 +155,11 @@ modelCache:
   # Annotations for the PVC (e.g., for backup policies)
   annotations: {}
 
+# Priority classes for GPU scheduling
+priorityClasses:
+  # Create LLMKube priority classes (critical, high, normal, low, batch)
+  enabled: true
+
 # Image pull secrets for private registries
 imagePullSecrets: []
 

@@ -65,6 +65,18 @@ type InferenceServiceSpec struct {
 	// +kubebuilder:validation:Maximum=131072
 	// +optional
 	ContextSize *int32 `json:"contextSize,omitempty"`
+
+	// Priority determines scheduling priority for GPU allocation.
+	// Higher priority services can preempt lower priority ones when GPUs are scarce.
+	// +kubebuilder:validation:Enum=critical;high;normal;low;batch
+	// +kubebuilder:default=normal
+	// +optional
+	Priority string `json:"priority,omitempty"`
+
+	// PriorityClassName allows specifying a custom Kubernetes PriorityClass.
+	// Takes precedence over the Priority field if set.
+	// +optional
+	PriorityClassName string `json:"priorityClassName,omitempty"`
 }
 
 // EndpointSpec defines the service endpoint configuration
@@ -138,6 +150,26 @@ type InferenceServiceStatus struct {
 	// +optional
 	LastUpdated *metav1.Time `json:"lastUpdated,omitempty"`
 
+	// SchedulingStatus indicates why pods cannot be scheduled (e.g., "InsufficientGPU")
+	// +optional
+	SchedulingStatus string `json:"schedulingStatus,omitempty"`
+
+	// SchedulingMessage provides details about scheduling issues
+	// +optional
+	SchedulingMessage string `json:"schedulingMessage,omitempty"`
+
+	// QueuePosition indicates position among pending InferenceServices cluster-wide (0 = not queued)
+	// +optional
+	QueuePosition int32 `json:"queuePosition,omitempty"`
+
+	// WaitingFor describes the resource constraint (e.g., "nvidia.com/gpu: 1")
+	// +optional
+	WaitingFor string `json:"waitingFor,omitempty"`
+
+	// EffectivePriority shows the resolved priority value from the applied PriorityClass
+	// +optional
+	EffectivePriority int32 `json:"effectivePriority,omitempty"`
+
 	// conditions represent the current state of the InferenceService resource.
 	// Each condition has a unique type and reflects the status of a specific aspect of the resource.
 	//
@@ -159,6 +191,9 @@ type InferenceServiceStatus struct {
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Model",type=string,JSONPath=`.spec.modelRef`
 // +kubebuilder:printcolumn:name="Replicas",type=string,JSONPath=`.status.readyReplicas`
+// +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.schedulingStatus`,priority=1
+// +kubebuilder:printcolumn:name="Queue",type=integer,JSONPath=`.status.queuePosition`,priority=1
+// +kubebuilder:printcolumn:name="Priority",type=string,JSONPath=`.spec.priority`,priority=1
 // +kubebuilder:printcolumn:name="Endpoint",type=string,JSONPath=`.status.endpoint`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
