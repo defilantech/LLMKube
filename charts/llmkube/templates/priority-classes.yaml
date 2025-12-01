@@ -1,0 +1,56 @@
+{{- if .Values.priorityClasses.enabled }}
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: llmkube-critical
+  labels:
+    {{- include "llmkube.labels" . | nindent 4 }}
+value: 1000000
+preemptionPolicy: PreemptLowerPriority
+globalDefault: false
+description: "Critical LLM inference services that can preempt all lower priority workloads"
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: llmkube-high
+  labels:
+    {{- include "llmkube.labels" . | nindent 4 }}
+value: 100000
+preemptionPolicy: PreemptLowerPriority
+globalDefault: false
+description: "High priority LLM inference services"
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: llmkube-normal
+  labels:
+    {{- include "llmkube.labels" . | nindent 4 }}
+value: 10000
+preemptionPolicy: PreemptLowerPriority
+globalDefault: false
+description: "Normal priority LLM inference services (default)"
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: llmkube-low
+  labels:
+    {{- include "llmkube.labels" . | nindent 4 }}
+value: 1000
+preemptionPolicy: PreemptLowerPriority
+globalDefault: false
+description: "Low priority LLM inference services for development and testing"
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: llmkube-batch
+  labels:
+    {{- include "llmkube.labels" . | nindent 4 }}
+value: 100
+preemptionPolicy: Never
+globalDefault: false
+description: "Batch priority LLM inference services that cannot preempt other workloads"
+{{- end }}

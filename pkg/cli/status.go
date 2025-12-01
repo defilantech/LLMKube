@@ -101,6 +101,27 @@ func runStatus(opts *statusOptions) error {
 	fmt.Printf("  Model Reference: %s\n", isvc.Spec.ModelRef)
 	fmt.Printf("  Replicas:        %d/%d ready\n", isvc.Status.ReadyReplicas, isvc.Status.DesiredReplicas)
 	fmt.Printf("  Endpoint:        %s\n", isvc.Status.Endpoint)
+
+	priority := isvc.Spec.Priority
+	if priority == "" {
+		priority = "normal"
+	}
+	fmt.Printf("  Priority:        %s\n", priority)
+
+	if isvc.Status.Phase == "WaitingForGPU" {
+		fmt.Printf("\nGPU SCHEDULING:\n")
+		fmt.Printf("  Status:          %s\n", isvc.Status.SchedulingStatus)
+		if isvc.Status.WaitingFor != "" {
+			fmt.Printf("  Waiting For:     %s\n", isvc.Status.WaitingFor)
+		}
+		if isvc.Status.QueuePosition > 0 {
+			fmt.Printf("  Queue Position:  %d\n", isvc.Status.QueuePosition)
+		}
+		if isvc.Status.SchedulingMessage != "" {
+			fmt.Printf("  Message:         %s\n", isvc.Status.SchedulingMessage)
+		}
+	}
+
 	if isvc.Status.LastUpdated != nil {
 		fmt.Printf("  Updated:         %s\n", isvc.Status.LastUpdated.Format("2006-01-02 15:04:05"))
 	}

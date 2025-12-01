@@ -55,6 +55,8 @@ func sanitizeDNSName(name string) string {
 
 const ModelCachePVCName = "llmkube-model-cache"
 
+const PhaseWaitingForGPU = "WaitingForGPU"
+
 func (r *InferenceServiceReconciler) ensureModelCachePVC(ctx context.Context, namespace string) error {
 	log := logf.FromContext(ctx)
 
@@ -126,6 +128,7 @@ func (r *InferenceServiceReconciler) ensureModelCachePVC(ctx context.Context, na
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups=scheduling.k8s.io,resources=priorityclasses,verbs=get;list;watch
 
 func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -139,24 +142,12 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, err
 	}
 
-	model := &inferencev1alpha1.Model{}
-	modelName := types.NamespacedName{
-		Name:      inferenceService.Spec.ModelRef,
-		Namespace: inferenceService.Namespace,
-	}
-	if err := r.Get(ctx, modelName, model); err != nil {
-		if apierrors.IsNotFound(err) {
-			log.Info("Referenced Model not found", "model", inferenceService.Spec.ModelRef)
-			return r.updateStatus(ctx, inferenceService, "Failed", false, 0, 0, "", "Model not found")
+	model, modelReady, result, err := r.getModelForInferenceService(ctx, inferenceService)
+	if err != nil || result != nil {
+		if result != nil {
+			return *result, err
 		}
-		log.Error(err, "Failed to get Model")
 		return ctrl.Result{}, err
-	}
-
-	modelReady := model.Status.Phase == PhaseReady
-	if !modelReady {
-		log.Info("Model not ready yet", "model", model.Name, "phase", model.Status.Phase)
-		return r.updateStatus(ctx, inferenceService, "Pending", false, 0, 0, "", "Waiting for Model to be Ready")
 	}
 
 	desiredReplicas := int32(1)
@@ -167,83 +158,286 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	if model.Status.CacheKey != "" && r.ModelCachePath != "" {
 		if err := r.ensureModelCachePVC(ctx, inferenceService.Namespace); err != nil {
 			log.Error(err, "Failed to ensure model cache PVC exists", "namespace", inferenceService.Namespace)
-			return r.updateStatus(ctx, inferenceService, "Failed", modelReady, 0, desiredReplicas, "", "Failed to create model cache PVC")
+			return r.updateStatusWithSchedulingInfo(ctx, inferenceService, "Failed", modelReady, 0, desiredReplicas, "", "Failed to create model cache PVC", nil)
 		}
 	}
 
-	// Metal accelerator uses native llama-server via Metal agent instead of k8s Deployment
 	isMetal := model.Spec.Hardware != nil && model.Spec.Hardware.Accelerator == "metal"
-	var deployment *appsv1.Deployment
-	var err error
-	existingDeployment := &appsv1.Deployment{}
 
-	if isMetal {
-		log.Info("Metal accelerator detected, skipping Deployment creation")
-	} else {
-		deployment = r.constructDeployment(inferenceService, model, desiredReplicas)
-		if err := controllerutil.SetControllerReference(inferenceService, deployment, r.Scheme); err != nil {
-			log.Error(err, "Failed to set controller reference for Deployment")
-			return ctrl.Result{}, err
+	deployment, readyReplicas, result, err := r.reconcileDeployment(ctx, inferenceService, model, desiredReplicas, modelReady, isMetal)
+	if err != nil || result != nil {
+		if result != nil {
+			return *result, err
 		}
-
-		err = r.Get(ctx, types.NamespacedName{Name: deployment.Name, Namespace: deployment.Namespace}, existingDeployment)
-		if err != nil && apierrors.IsNotFound(err) {
-			log.Info("Creating new Deployment", "name", deployment.Name)
-			if err := r.Create(ctx, deployment); err != nil {
-				log.Error(err, "Failed to create Deployment")
-				return r.updateStatus(ctx, inferenceService, "Failed", modelReady, 0, desiredReplicas, "", "Failed to create Deployment")
-			}
-		} else if err != nil {
-			log.Error(err, "Failed to get Deployment")
-			return ctrl.Result{}, err
-		} else {
-			existingDeployment.Spec = deployment.Spec
-			if err := r.Update(ctx, existingDeployment); err != nil {
-				log.Error(err, "Failed to update Deployment")
-				return ctrl.Result{}, err
-			}
-		}
-	}
-
-	service := r.constructService(inferenceService)
-	if err := controllerutil.SetControllerReference(inferenceService, service, r.Scheme); err != nil {
-		log.Error(err, "Failed to set controller reference for Service")
 		return ctrl.Result{}, err
 	}
 
+	service, result, err := r.reconcileService(ctx, inferenceService, modelReady, desiredReplicas)
+	if err != nil || result != nil {
+		if result != nil {
+			return *result, err
+		}
+		return ctrl.Result{}, err
+	}
+
+	endpoint := r.constructEndpoint(inferenceService, service)
+	phase, schedulingInfo := r.determinePhase(ctx, inferenceService, readyReplicas, desiredReplicas, isMetal, deployment)
+
+	return r.updateStatusWithSchedulingInfo(ctx, inferenceService, phase, modelReady, readyReplicas, desiredReplicas, endpoint, "", schedulingInfo)
+}
+
+func (r *InferenceServiceReconciler) getModelForInferenceService(ctx context.Context, isvc *inferencev1alpha1.InferenceService) (*inferencev1alpha1.Model, bool, *ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	model := &inferencev1alpha1.Model{}
+	modelName := types.NamespacedName{
+		Name:      isvc.Spec.ModelRef,
+		Namespace: isvc.Namespace,
+	}
+	if err := r.Get(ctx, modelName, model); err != nil {
+		if apierrors.IsNotFound(err) {
+			log.Info("Referenced Model not found", "model", isvc.Spec.ModelRef)
+			result, updateErr := r.updateStatusWithSchedulingInfo(ctx, isvc, "Failed", false, 0, 0, "", "Model not found", nil)
+			return nil, false, &result, updateErr
+		}
+		log.Error(err, "Failed to get Model")
+		return nil, false, nil, err
+	}
+
+	modelReady := model.Status.Phase == PhaseReady
+	if !modelReady {
+		log.Info("Model not ready yet", "model", model.Name, "phase", model.Status.Phase)
+		result, updateErr := r.updateStatusWithSchedulingInfo(ctx, isvc, "Pending", false, 0, 0, "", "Waiting for Model to be Ready", nil)
+		return nil, false, &result, updateErr
+	}
+
+	return model, modelReady, nil, nil
+}
+
+func (r *InferenceServiceReconciler) reconcileDeployment(ctx context.Context, isvc *inferencev1alpha1.InferenceService, model *inferencev1alpha1.Model, desiredReplicas int32, modelReady bool, isMetal bool) (*appsv1.Deployment, int32, *ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	if isMetal {
+		log.Info("Metal accelerator detected, skipping Deployment creation")
+		return nil, desiredReplicas, nil, nil
+	}
+
+	deployment := r.constructDeployment(isvc, model, desiredReplicas)
+	if err := controllerutil.SetControllerReference(isvc, deployment, r.Scheme); err != nil {
+		log.Error(err, "Failed to set controller reference for Deployment")
+		return nil, 0, nil, err
+	}
+
+	existingDeployment := &appsv1.Deployment{}
+	err := r.Get(ctx, types.NamespacedName{Name: deployment.Name, Namespace: deployment.Namespace}, existingDeployment)
+	if err != nil && apierrors.IsNotFound(err) {
+		log.Info("Creating new Deployment", "name", deployment.Name)
+		if err := r.Create(ctx, deployment); err != nil {
+			log.Error(err, "Failed to create Deployment")
+			result, updateErr := r.updateStatusWithSchedulingInfo(ctx, isvc, "Failed", modelReady, 0, desiredReplicas, "", "Failed to create Deployment", nil)
+			return nil, 0, &result, updateErr
+		}
+		return deployment, 0, nil, nil
+	} else if err != nil {
+		log.Error(err, "Failed to get Deployment")
+		return nil, 0, nil, err
+	}
+
+	existingDeployment.Spec = deployment.Spec
+	if err := r.Update(ctx, existingDeployment); err != nil {
+		log.Error(err, "Failed to update Deployment")
+		return nil, 0, nil, err
+	}
+
+	return deployment, existingDeployment.Status.ReadyReplicas, nil, nil
+}
+
+func (r *InferenceServiceReconciler) reconcileService(ctx context.Context, isvc *inferencev1alpha1.InferenceService, modelReady bool, desiredReplicas int32) (*corev1.Service, *ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	service := r.constructService(isvc)
+	if err := controllerutil.SetControllerReference(isvc, service, r.Scheme); err != nil {
+		log.Error(err, "Failed to set controller reference for Service")
+		return nil, nil, err
+	}
+
 	existingService := &corev1.Service{}
-	err = r.Get(ctx, types.NamespacedName{Name: service.Name, Namespace: service.Namespace}, existingService)
+	err := r.Get(ctx, types.NamespacedName{Name: service.Name, Namespace: service.Namespace}, existingService)
 	if err != nil && apierrors.IsNotFound(err) {
 		log.Info("Creating new Service", "name", service.Name)
 		if err := r.Create(ctx, service); err != nil {
 			log.Error(err, "Failed to create Service")
-			return r.updateStatus(ctx, inferenceService, "Failed", modelReady, 0, desiredReplicas, "", "Failed to create Service")
+			result, updateErr := r.updateStatusWithSchedulingInfo(ctx, isvc, "Failed", modelReady, 0, desiredReplicas, "", "Failed to create Service", nil)
+			return nil, &result, updateErr
 		}
 	} else if err != nil {
 		log.Error(err, "Failed to get Service")
-		return ctrl.Result{}, err
+		return nil, nil, err
 	}
 
-	readyReplicas := int32(0)
-	if isMetal {
-		// Metal agent manages native process, assume ready if Model is ready
-		readyReplicas = desiredReplicas
-	} else if deployment != nil {
-		if err := r.Get(ctx, types.NamespacedName{Name: deployment.Name, Namespace: deployment.Namespace}, existingDeployment); err == nil {
-			readyReplicas = existingDeployment.Status.ReadyReplicas
+	return service, nil, nil
+}
+
+func (r *InferenceServiceReconciler) determinePhase(ctx context.Context, isvc *inferencev1alpha1.InferenceService, readyReplicas, desiredReplicas int32, isMetal bool, deployment *appsv1.Deployment) (string, *SchedulingInfo) {
+	log := logf.FromContext(ctx)
+
+	if readyReplicas == desiredReplicas && readyReplicas > 0 {
+		return "Ready", nil
+	}
+	if readyReplicas > 0 {
+		return "Progressing", nil
+	}
+	if !isMetal && deployment != nil {
+		schedulingInfo, err := r.getPodSchedulingInfo(ctx, isvc)
+		if err != nil {
+			log.Error(err, "Failed to get pod scheduling info")
+		}
+		if schedulingInfo != nil && schedulingInfo.Status == "InsufficientGPU" {
+			return PhaseWaitingForGPU, schedulingInfo
+		}
+	}
+	return "Creating", nil
+}
+
+// Priority class mapping from priority level to Kubernetes PriorityClass name
+var priorityClassMap = map[string]string{
+	"critical": "llmkube-critical",
+	"high":     "llmkube-high",
+	"normal":   "llmkube-normal",
+	"low":      "llmkube-low",
+	"batch":    "llmkube-batch",
+}
+
+// Priority values corresponding to each level
+var priorityValues = map[string]int32{
+	"critical": 1000000,
+	"high":     100000,
+	"normal":   10000,
+	"low":      1000,
+	"batch":    100,
+}
+
+// SchedulingInfo contains information about pod scheduling status
+type SchedulingInfo struct {
+	Status     string
+	Message    string
+	WaitingFor string
+}
+
+func (r *InferenceServiceReconciler) getPodSchedulingInfo(ctx context.Context, isvc *inferencev1alpha1.InferenceService) (*SchedulingInfo, error) {
+	podList := &corev1.PodList{}
+	labels := client.MatchingLabels{
+		"app":                           isvc.Name,
+		"inference.llmkube.dev/service": isvc.Name,
+	}
+	if err := r.List(ctx, podList, client.InNamespace(isvc.Namespace), labels); err != nil {
+		return nil, err
+	}
+
+	for _, pod := range podList.Items {
+		if pod.Status.Phase != corev1.PodPending {
+			continue
+		}
+
+		for _, condition := range pod.Status.Conditions {
+			if condition.Type == corev1.PodScheduled && condition.Status == corev1.ConditionFalse {
+				info := &SchedulingInfo{
+					Status:  condition.Reason,
+					Message: condition.Message,
+				}
+
+				if strings.Contains(condition.Message, "Insufficient nvidia.com/gpu") {
+					info.Status = "InsufficientGPU"
+					gpuCount := int32(0)
+					if isvc.Spec.Resources != nil && isvc.Spec.Resources.GPU > 0 {
+						gpuCount = isvc.Spec.Resources.GPU
+					}
+					info.WaitingFor = fmt.Sprintf("nvidia.com/gpu: %d", gpuCount)
+				} else if strings.Contains(condition.Message, "Insufficient") {
+					info.Status = "InsufficientResources"
+				}
+
+				return info, nil
+			}
 		}
 	}
 
-	endpoint := r.constructEndpoint(inferenceService, service)
+	return nil, nil
+}
 
-	phase := "Creating"
-	if readyReplicas == desiredReplicas && readyReplicas > 0 {
-		phase = "Ready"
-	} else if readyReplicas > 0 {
-		phase = "Progressing"
+func (r *InferenceServiceReconciler) calculateQueuePosition(ctx context.Context, isvc *inferencev1alpha1.InferenceService) (int32, error) {
+	if isvc.Status.Phase != PhaseWaitingForGPU {
+		return 0, nil
 	}
 
-	return r.updateStatus(ctx, inferenceService, phase, modelReady, readyReplicas, desiredReplicas, endpoint, "")
+	allServices := &inferencev1alpha1.InferenceServiceList{}
+	if err := r.List(ctx, allServices); err != nil {
+		return 0, err
+	}
+
+	type queueEntry struct {
+		name      string
+		namespace string
+		created   metav1.Time
+	}
+
+	var waitingServices []queueEntry
+	for _, svc := range allServices.Items {
+		if svc.Status.Phase == PhaseWaitingForGPU {
+			waitingServices = append(waitingServices, queueEntry{
+				name:      svc.Name,
+				namespace: svc.Namespace,
+				created:   svc.CreationTimestamp,
+			})
+		}
+	}
+
+	// Sort by creation timestamp (FIFO)
+	for i := 0; i < len(waitingServices)-1; i++ {
+		for j := i + 1; j < len(waitingServices); j++ {
+			if waitingServices[j].created.Before(&waitingServices[i].created) {
+				waitingServices[i], waitingServices[j] = waitingServices[j], waitingServices[i]
+			}
+		}
+	}
+
+	for pos, entry := range waitingServices {
+		if entry.name == isvc.Name && entry.namespace == isvc.Namespace {
+			return int32(pos + 1), nil
+		}
+	}
+
+	return 0, nil
+}
+
+func (r *InferenceServiceReconciler) resolvePriorityClassName(isvc *inferencev1alpha1.InferenceService) string {
+	if isvc.Spec.PriorityClassName != "" {
+		return isvc.Spec.PriorityClassName
+	}
+
+	priority := isvc.Spec.Priority
+	if priority == "" {
+		priority = "normal"
+	}
+
+	if className, ok := priorityClassMap[priority]; ok {
+		return className
+	}
+
+	return "llmkube-normal"
+}
+
+func (r *InferenceServiceReconciler) resolveEffectivePriority(isvc *inferencev1alpha1.InferenceService) int32 {
+	priority := isvc.Spec.Priority
+	if priority == "" {
+		priority = "normal"
+	}
+
+	if value, ok := priorityValues[priority]; ok {
+		return value
+	}
+
+	return priorityValues["normal"]
 }
 
 // calculateTensorSplit returns comma-separated equal ratios for llama.cpp --tensor-split flag
@@ -481,9 +675,10 @@ func (r *InferenceServiceReconciler) constructDeployment(
 					Labels: labels,
 				},
 				Spec: corev1.PodSpec{
-					InitContainers: initContainers,
-					Containers:     []corev1.Container{container},
-					Volumes:        volumes,
+					InitContainers:    initContainers,
+					Containers:        []corev1.Container{container},
+					Volumes:           volumes,
+					PriorityClassName: r.resolvePriorityClassName(isvc),
 				},
 			},
 		},
@@ -573,7 +768,7 @@ func (r *InferenceServiceReconciler) constructEndpoint(isvc *inferencev1alpha1.I
 	return fmt.Sprintf("http://%s.%s.svc.cluster.local:%d%s", svc.Name, svc.Namespace, port, path)
 }
 
-func (r *InferenceServiceReconciler) updateStatus(
+func (r *InferenceServiceReconciler) updateStatusWithSchedulingInfo(
 	ctx context.Context,
 	isvc *inferencev1alpha1.InferenceService,
 	phase string,
@@ -582,6 +777,7 @@ func (r *InferenceServiceReconciler) updateStatus(
 	desiredReplicas int32,
 	endpoint string,
 	errorMsg string,
+	schedulingInfo *SchedulingInfo,
 ) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
@@ -592,6 +788,28 @@ func (r *InferenceServiceReconciler) updateStatus(
 	isvc.Status.DesiredReplicas = desiredReplicas
 	isvc.Status.Endpoint = endpoint
 	isvc.Status.LastUpdated = &now
+
+	isvc.Status.EffectivePriority = r.resolveEffectivePriority(isvc)
+
+	if schedulingInfo != nil {
+		isvc.Status.SchedulingStatus = schedulingInfo.Status
+		isvc.Status.SchedulingMessage = schedulingInfo.Message
+		isvc.Status.WaitingFor = schedulingInfo.WaitingFor
+	} else {
+		isvc.Status.SchedulingStatus = ""
+		isvc.Status.SchedulingMessage = ""
+		isvc.Status.WaitingFor = ""
+	}
+
+	if phase == PhaseWaitingForGPU {
+		queuePos, err := r.calculateQueuePosition(ctx, isvc)
+		if err != nil {
+			log.Error(err, "Failed to calculate queue position")
+		}
+		isvc.Status.QueuePosition = queuePos
+	} else {
+		isvc.Status.QueuePosition = 0
+	}
 
 	var condition metav1.Condition
 	switch phase {
@@ -607,6 +825,7 @@ func (r *InferenceServiceReconciler) updateStatus(
 		meta.SetStatusCondition(&isvc.Status.Conditions, condition)
 		meta.RemoveStatusCondition(&isvc.Status.Conditions, "Progressing")
 		meta.RemoveStatusCondition(&isvc.Status.Conditions, "Degraded")
+		meta.RemoveStatusCondition(&isvc.Status.Conditions, "GPUAvailable")
 
 	case "Progressing", "Creating":
 		condition = metav1.Condition{
@@ -618,6 +837,27 @@ func (r *InferenceServiceReconciler) updateStatus(
 			Message:            fmt.Sprintf("Creating inference service (%d/%d replicas ready)", readyReplicas, desiredReplicas),
 		}
 		meta.SetStatusCondition(&isvc.Status.Conditions, condition)
+
+	case PhaseWaitingForGPU:
+		condition = metav1.Condition{
+			Type:               "GPUAvailable",
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: isvc.Generation,
+			LastTransitionTime: now,
+			Reason:             "InsufficientGPU",
+			Message:            fmt.Sprintf("Waiting for GPU resources: %s", isvc.Status.WaitingFor),
+		}
+		meta.SetStatusCondition(&isvc.Status.Conditions, condition)
+
+		progressCondition := metav1.Condition{
+			Type:               "Progressing",
+			Status:             metav1.ConditionTrue,
+			ObservedGeneration: isvc.Generation,
+			LastTransitionTime: now,
+			Reason:             "WaitingForGPU",
+			Message:            fmt.Sprintf("Queued at position %d waiting for GPU", isvc.Status.QueuePosition),
+		}
+		meta.SetStatusCondition(&isvc.Status.Conditions, progressCondition)
 
 	case "Failed":
 		condition = metav1.Condition{
@@ -657,11 +897,33 @@ func (r *InferenceServiceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
 		Watches(
+			&corev1.Pod{},
+			handler.EnqueueRequestsFromMapFunc(r.findInferenceServiceForPod),
+		).
+		Watches(
 			&inferencev1alpha1.Model{},
 			handler.EnqueueRequestsFromMapFunc(r.findInferenceServicesForModel),
 		).
 		Named("inferenceservice").
 		Complete(r)
+}
+
+func (r *InferenceServiceReconciler) findInferenceServiceForPod(ctx context.Context, obj client.Object) []reconcile.Request {
+	pod := obj.(*corev1.Pod)
+
+	serviceName, ok := pod.Labels["inference.llmkube.dev/service"]
+	if !ok {
+		return nil
+	}
+
+	return []reconcile.Request{
+		{
+			NamespacedName: types.NamespacedName{
+				Name:      serviceName,
+				Namespace: pod.Namespace,
+			},
+		},
+	}
 }
 
 func (r *InferenceServiceReconciler) findInferenceServicesForModel(ctx context.Context, obj client.Object) []reconcile.Request {

@@ -42,6 +42,7 @@ built-in observability, SLO enforcement, and edge-native capabilities.`,
 	cmd.AddCommand(NewListCommand())
 	cmd.AddCommand(NewDeleteCommand())
 	cmd.AddCommand(NewStatusCommand())
+	cmd.AddCommand(NewQueueCommand())
 	cmd.AddCommand(NewVersionCommand())
 	cmd.AddCommand(NewCatalogCommand())
 	cmd.AddCommand(NewBenchmarkCommand())
