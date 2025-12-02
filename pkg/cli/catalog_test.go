@@ -41,7 +41,7 @@ func TestLoadCatalog(t *testing.T) {
 	}
 
 	// Verify we have the expected number of models
-	expectedModelCount := 10
+	expectedModelCount := 13
 	if len(catalog.Models) != expectedModelCount {
 		t.Errorf("Expected %d models, got %d", expectedModelCount, len(catalog.Models))
 	}
@@ -81,6 +81,9 @@ func TestGetModel(t *testing.T) {
 		{"Mixtral exists", "mixtral-8x7b", true},
 		{"Llama 70B exists", "llama-3.1-70b", true},
 		{"Llama 3.2 3B exists", "llama-3.2-3b", true},
+		{"Qwen 2.5 32B exists", "qwen-2.5-32b", true},
+		{"Qwen 2.5 Coder 32B exists", "qwen-2.5-coder-32b", true},
+		{"Qwen 3 32B exists", "qwen-3-32b", true},
 		{"Non-existent model", "non-existent-model", false},
 	}
 
