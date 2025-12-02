@@ -26,10 +26,13 @@ import (
 // ModelSpec defines the desired state of Model
 type ModelSpec struct {
 	// Source defines where to obtain the model file (GGUF format)
-	// Supported schemes: http://, https://, file://
-	// Example: https://huggingface.co/microsoft/Phi-3-mini-4k-instruct-gguf/resolve/main/Phi-3-mini-4k-instruct-q4.gguf
+	// Supported schemes: http://, https://, file://, or absolute paths
+	// Examples:
+	//   - https://huggingface.co/org/repo/resolve/main/model.gguf
+	//   - file:///mnt/models/model.gguf
+	//   - /mnt/models/model.gguf (air-gapped deployments)
 	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:Pattern=`^(https?|file)://.*\.gguf$`
+	// +kubebuilder:validation:Pattern=`^(https?|file)://.*\.gguf$|^/.*\.gguf$`
 	Source string `json:"source"`
 
 	// Format specifies the model file format (currently only GGUF is supported)
