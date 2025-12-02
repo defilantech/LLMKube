@@ -1,6 +1,6 @@
 # LLMKube Model Catalog
 # Version: v1
-# Last Updated: 2025-11-23
+# Last Updated: 2025-12-01
 #
 # This catalog contains pre-configured, battle-tested LLM models optimized
 # for various use cases. Each model includes verified GGUF sources and
@@ -187,6 +187,87 @@ models:
   # ============================================================================
   # Large Models (13B+) - Premium Quality
   # ============================================================================
+
+  qwen-2.5-32b:
+    name: "Qwen 2.5 32B Instruct"
+    description: "Powerful 32B model with excellent reasoning and multilingual capabilities. Perfect for 32GB VRAM setups."
+    size: "32B"
+    quantization: "Q4_K_M"
+    source: "https://huggingface.co/bartowski/Qwen2.5-32B-Instruct-GGUF/resolve/main/Qwen2.5-32B-Instruct-Q4_K_M.gguf"
+    context_size: 8192
+    gpu_layers: 64
+    use_cases:
+      - "complex-reasoning"
+      - "multilingual"
+      - "production"
+      - "high-quality-chat"
+    resources:
+      cpu: "8"
+      memory: "24Gi"
+      gpu_memory: "24Gi"
+    vram_estimate: "18-24GB"
+    tags:
+      - "qwen"
+      - "large"
+      - "recommended"
+      - "32gb-vram"
+      - "long-context"
+    homepage: "https://huggingface.co/Qwen/Qwen2.5-32B-Instruct"
+
+  qwen-2.5-coder-32b:
+    name: "Qwen 2.5 Coder 32B Instruct"
+    description: "State-of-the-art coding model matching GPT-4o. Best open-source code LLM available."
+    size: "32B"
+    quantization: "Q4_K_M"
+    source: "https://huggingface.co/bartowski/Qwen2.5-Coder-32B-Instruct-GGUF/resolve/main/Qwen2.5-Coder-32B-Instruct-Q4_K_M.gguf"
+    context_size: 8192
+    gpu_layers: 64
+    use_cases:
+      - "code-generation"
+      - "debugging"
+      - "code-review"
+      - "technical-docs"
+    resources:
+      cpu: "8"
+      memory: "24Gi"
+      gpu_memory: "24Gi"
+    vram_estimate: "18-24GB"
+    tags:
+      - "qwen"
+      - "code"
+      - "large"
+      - "recommended"
+      - "32gb-vram"
+      - "long-context"
+      - "gpt4-level"
+    homepage: "https://huggingface.co/Qwen/Qwen2.5-Coder-32B-Instruct"
+
+  qwen-3-32b:
+    name: "Qwen 3 32B"
+    description: "Latest Qwen 3 series with hybrid thinking modes. Newest and most capable 32B model."
+    size: "32B"
+    quantization: "Q4_K_M"
+    source: "https://huggingface.co/Qwen/Qwen3-32B-GGUF/resolve/main/Qwen3-32B-Q4_K_M.gguf"
+    context_size: 8192
+    gpu_layers: 64
+    use_cases:
+      - "complex-reasoning"
+      - "thinking-mode"
+      - "production"
+      - "high-quality-chat"
+    resources:
+      cpu: "8"
+      memory: "24Gi"
+      gpu_memory: "24Gi"
+    vram_estimate: "18-24GB"
+    tags:
+      - "qwen"
+      - "large"
+      - "newest"
+      - "32gb-vram"
+      - "long-context"
+      - "thinking"
+    homepage: "https://huggingface.co/Qwen/Qwen3-32B"
 
   qwen-2.5-14b:
     name: "Qwen 2.5 14B Instruct"
