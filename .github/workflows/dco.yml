@@ -1,0 +1,41 @@
+name: DCO Check
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  dco:
+    name: Developer Certificate of Origin
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Check DCO
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          echo "Checking commits from $BASE_SHA to $HEAD_SHA for DCO sign-off..."
+          FAILED=0
+          for sha in $(git rev-list $BASE_SHA..$HEAD_SHA); do
+            if ! git log -1 --format='%B' $sha | grep -q "^Signed-off-by: .* <.*@.*>"; then
+              echo "❌ Commit $sha is missing DCO sign-off"
+              git log -1 --format='  Author: %an <%ae>%n  Message: %s' $sha
+              FAILED=1
+            else
+              echo "✅ Commit $sha has DCO sign-off"
+            fi
+          done
+          if [ $FAILED -eq 1 ]; then
+            echo ""
+            echo "DCO check failed. Please sign off your commits with: git commit -s"
+            echo "To fix existing commits: git rebase -i HEAD~N --signoff"
+            exit 1
+          fi
+          echo "All commits have valid DCO sign-off!"
