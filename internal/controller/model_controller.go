@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -99,21 +100,33 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return ctrl.Result{}, err
 	}
 
-	if model.Status.Phase != "Downloading" {
-		model.Status.Phase = "Downloading"
-		model.Status.CacheKey = cacheKey
-		if err := r.updateStatus(ctx, model, "Progressing", metav1.ConditionTrue, "DownloadStarted", "Started downloading model"); err != nil {
-			return ctrl.Result{}, err
-		}
-		logger.Info("Started downloading model", "source", model.Spec.Source, "cacheKey", cacheKey)
+	isLocal := isLocalSource(model.Spec.Source)
+	progressPhase := "Downloading"
+	progressReason := "DownloadStarted"
+	progressMessage := "Started downloading model"
+	failReason := "DownloadFailed"
+	if isLocal {
+		progressPhase = "Copying"
+		progressReason = "CopyStarted"
+		progressMessage = "Started copying local model"
+		failReason = "CopyFailed"
 	}
 
-	size, err := r.downloadModel(ctx, model.Spec.Source, modelPath)
+	if model.Status.Phase != progressPhase {
+		model.Status.Phase = progressPhase
+		model.Status.CacheKey = cacheKey
+		if err := r.updateStatus(ctx, model, "Progressing", metav1.ConditionTrue, progressReason, progressMessage); err != nil {
+			return ctrl.Result{}, err
+		}
+		logger.Info(progressMessage, "source", model.Spec.Source, "cacheKey", cacheKey)
+	}
+
+	size, err := r.fetchModel(ctx, model.Spec.Source, modelPath)
 	if err != nil {
-		logger.Error(err, "Failed to download model")
+		logger.Error(err, "Failed to fetch model")
 		model.Status.Phase = "Failed"
-		if statusErr := r.updateStatus(ctx, model, "Degraded", metav1.ConditionTrue, "DownloadFailed", err.Error()); statusErr != nil {
-			logger.Error(statusErr, "Failed to update status after download failure")
+		if statusErr := r.updateStatus(ctx, model, "Degraded", metav1.ConditionTrue, failReason, err.Error()); statusErr != nil {
+			logger.Error(statusErr, "Failed to update status after fetch failure")
 		}
 		return ctrl.Result{RequeueAfter: 5 * time.Minute}, err
 	}
@@ -132,6 +145,57 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 
 	logger.Info("Model ready and cached", "path", modelPath, "size", model.Status.Size, "cacheKey", cacheKey)
 	return ctrl.Result{}, nil
+}
+
+func (r *ModelReconciler) fetchModel(ctx context.Context, source, dest string) (int64, error) {
+	if isLocalSource(source) {
+		return r.copyLocalModel(ctx, source, dest)
+	}
+	return r.downloadModel(ctx, source, dest)
+}
+
+func (r *ModelReconciler) copyLocalModel(ctx context.Context, source, dest string) (int64, error) {
+	logger := log.FromContext(ctx)
+
+	localPath := getLocalPath(source)
+	logger.Info("Copying local model", "source", localPath, "dest", dest)
+
+	srcFile, err := os.Open(localPath)
+	if err != nil {
+		return 0, fmt.Errorf("failed to open local model file: %w", err)
+	}
+	defer func() {
+		if closeErr := srcFile.Close(); closeErr != nil {
+			logger.Error(closeErr, "Failed to close source file")
+		}
+	}()
+
+	srcInfo, err := srcFile.Stat()
+	if err != nil {
+		return 0, fmt.Errorf("failed to stat local model file: %w", err)
+	}
+
+	dstFile, err := os.Create(dest)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create destination file: %w", err)
+	}
+	defer func() {
+		if closeErr := dstFile.Close(); closeErr != nil {
+			logger.Error(closeErr, "Failed to close destination file")
+		}
+	}()
+
+	size, err := io.Copy(dstFile, srcFile)
+	if err != nil {
+		return 0, fmt.Errorf("failed to copy model file: %w", err)
+	}
+
+	if size != srcInfo.Size() {
+		return 0, fmt.Errorf("copy incomplete: expected %d bytes, got %d", srcInfo.Size(), size)
+	}
+
+	logger.Info("Local model copied successfully", "size", size)
+	return size, nil
 }
 
 func (r *ModelReconciler) downloadModel(ctx context.Context, source, dest string) (int64, error) {
@@ -168,6 +232,17 @@ func (r *ModelReconciler) downloadModel(ctx context.Context, source, dest string
 	}
 
 	return size, nil
+}
+
+func isLocalSource(source string) bool {
+	return strings.HasPrefix(source, "file://") || strings.HasPrefix(source, "/")
+}
+
+func getLocalPath(source string) string {
+	if strings.HasPrefix(source, "file://") {
+		return strings.TrimPrefix(source, "file://")
+	}
+	return source
 }
 
 //nolint:unparam

@@ -19,7 +19,9 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -35,24 +37,25 @@ import (
 )
 
 type deployOptions struct {
-	name         string
-	namespace    string
-	modelSource  string
-	modelFormat  string
-	quantization string
-	replicas     int32
-	accelerator  string
-	gpu          bool
-	gpuCount     int32
-	gpuLayers    int32
-	gpuMemory    string
-	gpuVendor    string
-	cpu          string
-	memory       string
-	image        string
-	contextSize  int32
-	wait         bool
-	timeout      time.Duration
+	name           string
+	namespace      string
+	modelSource    string
+	sourceOverride string
+	modelFormat    string
+	quantization   string
+	replicas       int32
+	accelerator    string
+	gpu            bool
+	gpuCount       int32
+	gpuLayers      int32
+	gpuMemory      string
+	gpuVendor      string
+	cpu            string
+	memory         string
+	image          string
+	contextSize    int32
+	wait           bool
+	timeout        time.Duration
 }
 
 func NewDeployCommand() *cobra.Command {
@@ -67,6 +70,7 @@ This command creates both a Model resource (to download and manage the model)
 and an InferenceService resource (to serve the model via an OpenAI-compatible API).
 
 You can deploy models from the catalog (recommended) or provide a custom model URL.
+For air-gapped environments, you can use local file paths or file:// URLs.
 
 Examples:
   # Deploy from catalog (simplest - recommended!)
@@ -85,6 +89,14 @@ Examples:
     --cpu 4 \
     --memory 8Gi \
     --gpu-layers 32
+
+  # Air-gapped: Deploy from local file path
+  llmkube deploy my-model --gpu \
+    --source /mnt/models/llama-3.1-8b-q4_k_m.gguf
+
+  # Air-gapped: Use catalog defaults with local model file
+  llmkube deploy llama-3.1-8b --gpu \
+    --source-override /mnt/models/llama-3.1-8b-q4_k_m.gguf
 `,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -95,7 +107,10 @@ Examples:
 
 	cmd.Flags().StringVarP(&opts.namespace, "namespace", "n", "default", "Kubernetes namespace")
 	cmd.Flags().StringVarP(&opts.modelSource, "source", "s", "",
-		"Model source URL (GGUF format). Optional if using catalog model ID.")
+		"Model source URL or local path (GGUF format). Optional if using catalog model ID.\n"+
+			"Supports: https://, http://, file://, or absolute paths (e.g., /mnt/models/model.gguf)")
+	cmd.Flags().StringVar(&opts.sourceOverride, "source-override", "",
+		"Override the model source for catalog models with a local path (air-gapped deployments)")
 	cmd.Flags().StringVar(&opts.modelFormat, "format", "gguf", "Model format")
 	cmd.Flags().StringVarP(&opts.quantization, "quantization", "q", "", "Model quantization (e.g., Q4_K_M, Q8_0)")
 	cmd.Flags().Int32VarP(&opts.replicas, "replicas", "r", 1, "Number of replicas")
@@ -136,6 +151,21 @@ func runDeploy(opts *deployOptions) error {
 		}
 		catalogModel = model
 		applyCatalogDefaults(opts, catalogModel)
+	}
+
+	if opts.sourceOverride != "" {
+		if err := validateLocalPath(opts.sourceOverride); err != nil {
+			return fmt.Errorf("source-override validation failed: %w", err)
+		}
+		opts.modelSource = opts.sourceOverride
+		fmt.Printf("📂 Using local model source: %s\n", opts.sourceOverride)
+	}
+
+	if isLocalSourcePath(opts.modelSource) {
+		if err := validateLocalPath(opts.modelSource); err != nil {
+			return fmt.Errorf("local source validation failed: %w", err)
+		}
+		fmt.Printf("📂 Air-gapped mode: Using local model file\n")
 	}
 
 	if opts.gpu {
@@ -397,4 +427,37 @@ func applyCatalogDefaults(opts *deployOptions, catalogModel *Model) {
 	if opts.contextSize == 0 && catalogModel.ContextSize > 0 {
 		opts.contextSize = int32(catalogModel.ContextSize)
 	}
+}
+
+func isLocalSourcePath(source string) bool {
+	return strings.HasPrefix(source, "file://") || strings.HasPrefix(source, "/")
+}
+
+func validateLocalPath(source string) error {
+	path := source
+	if strings.HasPrefix(source, "file://") {
+		path = strings.TrimPrefix(source, "file://")
+	}
+
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("path must be absolute: %s", path)
+	}
+
+	if !strings.HasSuffix(strings.ToLower(path), ".gguf") {
+		return fmt.Errorf("file must have .gguf extension: %s", path)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("file does not exist: %s", path)
+		}
+		return fmt.Errorf("failed to access file: %w", err)
+	}
+
+	if info.IsDir() {
+		return fmt.Errorf("path is a directory, expected a file: %s", path)
+	}
+
+	return nil
 }
