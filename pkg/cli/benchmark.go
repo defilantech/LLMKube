@@ -66,6 +66,7 @@ type benchmarkOptions struct {
 	accelerator string
 	cleanup     bool
 	deployWait  time.Duration
+	contextSize int32
 }
 
 type BenchmarkResult struct {
@@ -283,6 +284,8 @@ Examples:
 	cmd.Flags().BoolVar(&opts.cleanup, "cleanup", true,
 		"Cleanup deployments after benchmarking (use --no-cleanup to keep)")
 	cmd.Flags().DurationVar(&opts.deployWait, "deploy-wait", 10*time.Minute, "Timeout waiting for deployment to be ready")
+	cmd.Flags().Int32Var(&opts.contextSize, "context", 0,
+		"Context size (KV cache) for model deployment (0 = use catalog default)")
 
 	return cmd
 }
@@ -1097,6 +1100,13 @@ func deployModel(
 	if opts.gpu {
 		inferenceService.Spec.Resources.GPU = opts.gpuCount
 		inferenceService.Spec.Resources.GPUMemory = catalogModel.Resources.GPUMemory
+	}
+
+	if opts.contextSize > 0 {
+		inferenceService.Spec.ContextSize = &opts.contextSize
+	} else if catalogModel.ContextSize > 0 {
+		contextSize := int32(catalogModel.ContextSize)
+		inferenceService.Spec.ContextSize = &contextSize
 	}
 
 	if err := k8sClient.Create(ctx, inferenceService); err != nil {
