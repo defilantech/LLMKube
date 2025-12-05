@@ -1,0 +1,23 @@
+# Add these scrape configs to your Prometheus configuration
+# on your remote monitoring cluster.
+#
+# Replace <YOUR-NODE-IP> with your GPU node's IP address.
+
+scrape_configs:
+  # Node Exporter - System metrics (CPU, memory, disk, temps)
+  - job_name: 'llmkube-node'
+    static_configs:
+      - targets:
+        - '<YOUR-NODE-IP>:9100'
+        labels:
+          cluster: 'llmkube'
+          instance: 'gpu-node'
+
+  # DCGM Exporter - GPU metrics (utilization, temp, power, memory)
+  - job_name: 'llmkube-gpu'
+    static_configs:
+      - targets:
+        - '<YOUR-NODE-IP>:30940'
+        labels:
+          cluster: 'llmkube'
+          instance: 'gpu-node'
