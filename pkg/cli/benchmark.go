@@ -28,6 +28,8 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"text/tabwriter"
 	"time"
 
@@ -58,6 +60,8 @@ type benchmarkOptions struct {
 	endpoint    string
 	timeout     time.Duration
 	portForward bool
+	duration    time.Duration
+	promptFile  string
 
 	catalog     string
 	gpu         bool
@@ -112,14 +116,28 @@ type BenchmarkSummary struct {
 }
 
 type ComparisonReport struct {
-	Models      []ModelBenchmark `json:"models"`
-	Timestamp   time.Time        `json:"timestamp"`
-	Duration    time.Duration    `json:"duration"`
-	Iterations  int              `json:"iterations"`
-	MaxTokens   int              `json:"max_tokens"`
-	GPUEnabled  bool             `json:"gpu_enabled"`
-	GPUCount    int32            `json:"gpu_count,omitempty"`
-	Accelerator string           `json:"accelerator,omitempty"`
+	Models         []ModelBenchmark `json:"models"`
+	Timestamp      time.Time        `json:"timestamp"`
+	Duration       time.Duration    `json:"duration"`
+	Iterations     int              `json:"iterations"`
+	MaxTokens      int              `json:"max_tokens"`
+	GPUEnabled     bool             `json:"gpu_enabled"`
+	GPUCount       int32            `json:"gpu_count,omitempty"`
+	Accelerator    string           `json:"accelerator,omitempty"`
+	IsStressTest   bool             `json:"is_stress_test,omitempty"`
+	Concurrency    int              `json:"concurrency,omitempty"`
+	TargetDuration time.Duration    `json:"target_duration,omitempty"`
+}
+
+type StressTestSummary struct {
+	BenchmarkSummary
+	Concurrency      int           `json:"concurrency"`
+	TargetDuration   time.Duration `json:"target_duration,omitempty"`
+	TotalRequests    int64         `json:"total_requests"`
+	RequestsPerSec   float64       `json:"requests_per_sec"`
+	ErrorRate        float64       `json:"error_rate"`
+	PeakToksPerSec   float64       `json:"peak_toks_per_sec"`
+	ToksPerSecStdDev float64       `json:"toks_per_sec_std_dev"`
 }
 
 type ModelBenchmark struct {
@@ -133,6 +151,9 @@ type ModelBenchmark struct {
 	LatencyP50Ms         float64 `json:"latency_p50_ms"`
 	LatencyP99Ms         float64 `json:"latency_p99_ms"`
 	VRAMEstimate         string  `json:"vram_estimate"`
+	TotalRequests        int64   `json:"total_requests,omitempty"`
+	RequestsPerSec       float64 `json:"requests_per_sec,omitempty"`
+	ErrorRate            float64 `json:"error_rate,omitempty"`
 }
 
 type ChatCompletionRequest struct {
@@ -186,6 +207,12 @@ const (
 )
 
 const (
+	outputFormatTable    = "table"
+	outputFormatJSON     = "json"
+	outputFormatMarkdown = "markdown"
+)
+
+const (
 	phaseReady  = "Ready"
 	phaseFailed = "Failed"
 )
@@ -202,6 +229,36 @@ const (
 	imageLlamaCppServerCUDA = "ghcr.io/ggerganov/llama.cpp:server-cuda"
 	imageLlamaCppServerROCm = "ghcr.io/ggerganov/llama.cpp:server-rocm"
 )
+
+var stressTestPrompts = []string{
+	// Short prompts (fast prefill, test generation throughput)
+	"What is 2+2?",
+	"Name three colors.",
+	"What is the capital of France?",
+	"Say hello in Spanish.",
+	// Medium prompts (balanced)
+	"Explain what machine learning is in exactly three sentences.",
+	"Write a haiku about programming.",
+	"What are the main differences between Python and Go?",
+	"Describe the water cycle in simple terms.",
+	// Long prompts (stress prefill, test compute)
+	"You are a senior software architect reviewing a microservices architecture. " +
+		"Analyze the following scenario: A company wants to migrate from a monolithic " +
+		"application to microservices. They currently have a single database serving all " +
+		"components. The application handles user authentication, order processing, " +
+		"inventory management, and reporting. What would be your recommended approach for " +
+		"decomposing this system into microservices? Consider data consistency, service " +
+		"boundaries, and communication patterns.",
+	"Imagine you are explaining quantum computing to a college student studying computer " +
+		"science. Cover the following topics in detail: qubits vs classical bits, " +
+		"superposition, entanglement, quantum gates, and why quantum computers might be " +
+		"faster for certain problems. Use analogies where helpful and provide concrete examples.",
+	"Write a detailed technical specification for a distributed caching system that needs " +
+		"to handle 100,000 requests per second with sub-millisecond latency. Include " +
+		"considerations for cache invalidation strategies, replication, partitioning, " +
+		"consistency models, and failure handling. The system should support both " +
+		"read-through and write-through caching patterns.",
+}
 
 func NewBenchmarkCommand() *cobra.Command {
 	opts := &benchmarkOptions{}
@@ -220,13 +277,29 @@ This command sends test requests to the inference endpoint and measures:
 SINGLE SERVICE MODE:
   Benchmark an already-deployed inference service.
 
+STRESS TEST MODE (--concurrent or --duration):
+  Run concurrent requests to stress test the service. Automatically uses varied
+  prompts (short, medium, long) to stress both prompt processing and generation.
+
 CATALOG MODE (--catalog):
   Automatically deploy, benchmark, and compare multiple models from the catalog.
   Models are deployed sequentially, benchmarked, and optionally cleaned up.
 
 Examples:
-  # Benchmark a running service (requires port-forward or external access)
+  # Basic benchmark (sequential requests)
   llmkube benchmark my-llm -n default
+
+  # STRESS TEST: 8 concurrent requests for 30 minutes
+  llmkube benchmark my-llm --concurrent 8 --duration 30m
+
+  # STRESS TEST: 4 concurrent requests, 100 iterations total
+  llmkube benchmark my-llm --concurrent 4 --iterations 100
+
+  # STRESS TEST: Use custom prompts from file
+  llmkube benchmark my-llm --concurrent 8 --duration 1h --prompt-file prompts.txt
+
+  # STRESS TEST: Long-running stability test (2 hours)
+  llmkube benchmark my-llm --concurrent 4 --duration 2h --max-tokens 256
 
   # Benchmark with custom settings
   llmkube benchmark my-llm --iterations 20 --max-tokens 100
@@ -266,11 +339,13 @@ Examples:
 	cmd.Flags().IntVar(&opts.warmup, "warmup", 2, "Number of warmup requests (not counted)")
 	cmd.Flags().StringVarP(&opts.prompt, "prompt", "p", defaultBenchmarkPrompt, "Prompt to use for benchmarking")
 	cmd.Flags().IntVar(&opts.maxTokens, "max-tokens", 50, "Maximum tokens to generate per request")
-	cmd.Flags().IntVarP(&opts.concurrent, "concurrent", "c", 1, "Number of concurrent requests (not yet implemented)")
+	cmd.Flags().IntVarP(&opts.concurrent, "concurrent", "c", 1, "Number of concurrent requests for stress testing")
 	cmd.Flags().StringVarP(&opts.output, "output", "o", "table", "Output format: table, json, markdown")
 	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "Override endpoint URL (default: auto-detect from service)")
 	cmd.Flags().DurationVar(&opts.timeout, "timeout", 60*time.Second, "Request timeout")
 	cmd.Flags().BoolVar(&opts.portForward, "port-forward", true, "Automatically set up port forwarding")
+	cmd.Flags().DurationVar(&opts.duration, "duration", 0, "Run stress test for specified duration (e.g., 30m, 2h)")
+	cmd.Flags().StringVar(&opts.promptFile, "prompt-file", "", "Load prompts from file (one per line) for varied workload")
 
 	// Catalog mode flags
 	cmd.Flags().StringVar(&opts.catalog, "catalog", "", "Comma-separated list of catalog model IDs to benchmark")
@@ -300,6 +375,11 @@ func runBenchmark(opts *benchmarkOptions) error {
 	}
 	if cleanup != nil {
 		defer cleanup()
+	}
+
+	// Use stress test mode if concurrent > 1 or duration is specified
+	if opts.concurrent > 1 || opts.duration > 0 {
+		return runStressTest(ctx, endpoint, opts, startTime)
 	}
 
 	fmt.Printf("\n🏁 LLMKube Benchmark\n")
@@ -348,15 +428,574 @@ func runBenchmark(opts *benchmarkOptions) error {
 	summary := calculateSummary(opts, endpoint, results, startTime)
 
 	switch opts.output {
-	case "json":
+	case outputFormatJSON:
 		return outputJSON(summary)
-	case "markdown":
+	case outputFormatMarkdown:
 		outputMarkdown(summary)
 		return nil
 	default:
 		outputTable(summary)
 		return nil
 	}
+}
+
+func runStressTest(ctx context.Context, endpoint string, opts *benchmarkOptions, startTime time.Time) error {
+	prompts, err := loadPrompts(opts)
+	if err != nil {
+		return fmt.Errorf("failed to load prompts: %w", err)
+	}
+
+	concurrency := opts.concurrent
+	if concurrency < 1 {
+		concurrency = 1
+	}
+
+	fmt.Printf("\n🔥 LLMKube Stress Test\n")
+	fmt.Printf("═══════════════════════════════════════════════════════════════\n")
+	fmt.Printf("Service:     %s\n", opts.name)
+	fmt.Printf("Namespace:   %s\n", opts.namespace)
+	fmt.Printf("Endpoint:    %s\n", endpoint)
+	fmt.Printf("Concurrency: %d\n", concurrency)
+	if opts.duration > 0 {
+		fmt.Printf("Duration:    %s\n", opts.duration)
+	} else {
+		fmt.Printf("Iterations:  %d\n", opts.iterations)
+	}
+	fmt.Printf("Prompts:     %d variants\n", len(prompts))
+	fmt.Printf("Max Tokens:  %d\n", opts.maxTokens)
+	fmt.Printf("═══════════════════════════════════════════════════════════════\n\n")
+
+	// Run warmup sequentially
+	if opts.warmup > 0 {
+		fmt.Printf("🔥 Running %d warmup requests...\n", opts.warmup)
+		for i := 0; i < opts.warmup; i++ {
+			_, err := sendBenchmarkRequestWithPrompt(ctx, endpoint, opts, i+1, prompts[i%len(prompts)])
+			if err != nil {
+				fmt.Printf("   Warmup %d: failed (%v)\n", i+1, err)
+			} else {
+				fmt.Printf("   Warmup %d: ok\n", i+1)
+			}
+		}
+		fmt.Println()
+	}
+
+	// Setup for concurrent execution
+	var (
+		results     []BenchmarkResult
+		resultsMu   sync.Mutex
+		completed   int64
+		errors      int64
+		totalToks   int64
+		wg          sync.WaitGroup
+		stopChan    = make(chan struct{})
+		iteration   int64
+		lastPrintAt = time.Now()
+		printMu     sync.Mutex
+	)
+
+	// Determine stop condition
+	var stopCondition func() bool
+	if opts.duration > 0 {
+		deadline := time.Now().Add(opts.duration)
+		stopCondition = func() bool {
+			return time.Now().After(deadline)
+		}
+		fmt.Printf("📊 Running stress test for %s with %d concurrent workers...\n\n", opts.duration, concurrency)
+	} else {
+		totalIterations := int64(opts.iterations)
+		stopCondition = func() bool {
+			return atomic.LoadInt64(&iteration) >= totalIterations
+		}
+		fmt.Printf("📊 Running %d iterations with %d concurrent workers...\n\n", opts.iterations, concurrency)
+	}
+
+	// Start worker goroutines
+	for w := 0; w < concurrency; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stopChan:
+					return
+				default:
+					if stopCondition() {
+						return
+					}
+
+					iter := atomic.AddInt64(&iteration, 1)
+					prompt := prompts[(int(iter)-1)%len(prompts)]
+
+					result, err := sendBenchmarkRequestWithPrompt(ctx, endpoint, opts, int(iter), prompt)
+					if err != nil {
+						result = BenchmarkResult{
+							Iteration: int(iter),
+							Error:     err.Error(),
+						}
+						atomic.AddInt64(&errors, 1)
+					} else {
+						atomic.AddInt64(&totalToks, int64(result.CompletionTokens))
+					}
+
+					resultsMu.Lock()
+					results = append(results, result)
+					resultsMu.Unlock()
+
+					currentCompleted := atomic.AddInt64(&completed, 1)
+
+					// Print progress every second
+					printMu.Lock()
+					if time.Since(lastPrintAt) >= time.Second {
+						elapsed := time.Since(startTime)
+						currentErrors := atomic.LoadInt64(&errors)
+						currentToks := atomic.LoadInt64(&totalToks)
+						rps := float64(currentCompleted) / elapsed.Seconds()
+						tps := float64(currentToks) / elapsed.Seconds()
+						errorRate := float64(currentErrors) / float64(currentCompleted) * 100
+
+						if opts.duration > 0 {
+							remaining := opts.duration - elapsed
+							if remaining < 0 {
+								remaining = 0
+							}
+							fmt.Printf("\r[%s remaining] Requests: %d | RPS: %.1f | Tokens: %.0f tok/s | Errors: %.1f%%   ",
+								remaining.Round(time.Second), currentCompleted, rps, tps, errorRate)
+						} else {
+							fmt.Printf("\r[%d/%d] RPS: %.1f | Tokens: %.0f tok/s | Errors: %.1f%%   ",
+								currentCompleted, opts.iterations, rps, tps, errorRate)
+						}
+						lastPrintAt = time.Now()
+					}
+					printMu.Unlock()
+				}
+			}
+		}()
+	}
+
+	// Wait for completion or duration
+	if opts.duration > 0 {
+		time.Sleep(opts.duration)
+		close(stopChan)
+	}
+	wg.Wait()
+	fmt.Printf("\n\n")
+
+	// Calculate summary
+	summary := calculateStressSummary(opts, endpoint, results, startTime, concurrency)
+
+	switch opts.output {
+	case outputFormatJSON:
+		return outputStressJSON(summary)
+	case outputFormatMarkdown:
+		outputStressMarkdown(summary)
+		return nil
+	default:
+		outputStressTable(summary)
+		return nil
+	}
+}
+
+func runStressTestInternal(
+	ctx context.Context, endpoint string, opts *benchmarkOptions, startTime time.Time,
+) (*StressTestSummary, error) {
+	prompts, err := loadPrompts(opts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load prompts: %w", err)
+	}
+
+	concurrency := opts.concurrent
+	if concurrency < 1 {
+		concurrency = 1
+	}
+
+	fmt.Printf("\n🔥 LLMKube Stress Test\n")
+	fmt.Printf("═══════════════════════════════════════════════════════════════\n")
+	fmt.Printf("Service:     %s\n", opts.name)
+	fmt.Printf("Namespace:   %s\n", opts.namespace)
+	fmt.Printf("Endpoint:    %s\n", endpoint)
+	fmt.Printf("Concurrency: %d\n", concurrency)
+	if opts.duration > 0 {
+		fmt.Printf("Duration:    %s\n", opts.duration)
+	} else {
+		fmt.Printf("Iterations:  %d\n", opts.iterations)
+	}
+	fmt.Printf("Prompts:     %d variants\n", len(prompts))
+	fmt.Printf("Max Tokens:  %d\n", opts.maxTokens)
+	fmt.Printf("═══════════════════════════════════════════════════════════════\n\n")
+
+	if opts.warmup > 0 {
+		fmt.Printf("🔥 Running %d warmup requests...\n", opts.warmup)
+		for i := 0; i < opts.warmup; i++ {
+			_, err := sendBenchmarkRequestWithPrompt(ctx, endpoint, opts, i+1, prompts[i%len(prompts)])
+			if err != nil {
+				fmt.Printf("   Warmup %d: failed (%v)\n", i+1, err)
+			} else {
+				fmt.Printf("   Warmup %d: ok\n", i+1)
+			}
+		}
+		fmt.Println()
+	}
+
+	var (
+		results     []BenchmarkResult
+		resultsMu   sync.Mutex
+		completed   int64
+		errors      int64
+		totalToks   int64
+		wg          sync.WaitGroup
+		stopChan    = make(chan struct{})
+		iteration   int64
+		lastPrintAt = time.Now()
+		printMu     sync.Mutex
+	)
+
+	var stopCondition func() bool
+	if opts.duration > 0 {
+		deadline := time.Now().Add(opts.duration)
+		stopCondition = func() bool {
+			return time.Now().After(deadline)
+		}
+		fmt.Printf("📊 Running stress test for %s with %d concurrent workers...\n\n", opts.duration, concurrency)
+	} else {
+		totalIterations := int64(opts.iterations)
+		stopCondition = func() bool {
+			return atomic.LoadInt64(&iteration) >= totalIterations
+		}
+		fmt.Printf("📊 Running %d iterations with %d concurrent workers...\n\n", opts.iterations, concurrency)
+	}
+
+	for w := 0; w < concurrency; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stopChan:
+					return
+				default:
+					if stopCondition() {
+						return
+					}
+
+					i := int(atomic.AddInt64(&iteration, 1))
+					prompt := prompts[(i-1)%len(prompts)]
+
+					result, err := sendBenchmarkRequestWithPrompt(ctx, endpoint, opts, i, prompt)
+					if err != nil {
+						result = BenchmarkResult{
+							Iteration: i,
+							Error:     err.Error(),
+						}
+						atomic.AddInt64(&errors, 1)
+					} else {
+						atomic.AddInt64(&completed, 1)
+						atomic.AddInt64(&totalToks, int64(result.CompletionTokens))
+					}
+
+					resultsMu.Lock()
+					results = append(results, result)
+					resultsMu.Unlock()
+
+					printMu.Lock()
+					if time.Since(lastPrintAt) >= 2*time.Second {
+						c := atomic.LoadInt64(&completed)
+						e := atomic.LoadInt64(&errors)
+						t := atomic.LoadInt64(&totalToks)
+						elapsed := time.Since(startTime).Seconds()
+
+						rps := float64(c+e) / elapsed
+						tps := float64(t) / elapsed
+						errRate := float64(0)
+						if c+e > 0 {
+							errRate = float64(e) / float64(c+e) * 100
+						}
+
+						if opts.duration > 0 {
+							remaining := opts.duration - time.Since(startTime)
+							if remaining < 0 {
+								remaining = 0
+							}
+							fmt.Printf("\r⏱  %s remaining | %d req (%.1f/s) | %.1f tok/s | %.1f%% errors     ",
+								remaining.Round(time.Second), c+e, rps, tps, errRate)
+						} else {
+							fmt.Printf("\r📊 %d/%d (%.1f%%) | %.1f req/s | %.1f tok/s | %.1f%% errors     ",
+								c+e, opts.iterations, float64(c+e)/float64(opts.iterations)*100, rps, tps, errRate)
+						}
+						lastPrintAt = time.Now()
+					}
+					printMu.Unlock()
+				}
+			}
+		}()
+	}
+
+	if opts.duration > 0 {
+		time.Sleep(opts.duration)
+		close(stopChan)
+	}
+	wg.Wait()
+	fmt.Printf("\n\n")
+
+	summary := calculateStressSummary(opts, endpoint, results, startTime, concurrency)
+	return &summary, nil
+}
+
+func loadPrompts(opts *benchmarkOptions) ([]string, error) {
+	if opts.promptFile != "" {
+		data, err := os.ReadFile(opts.promptFile)
+		if err != nil {
+			return nil, err
+		}
+		lines := strings.Split(string(data), "\n")
+		prompts := make([]string, 0, len(lines))
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line != "" {
+				prompts = append(prompts, line)
+			}
+		}
+		if len(prompts) == 0 {
+			return nil, fmt.Errorf("no prompts found in file %s", opts.promptFile)
+		}
+		return prompts, nil
+	}
+
+	// Use prompt flag if specified (single prompt mode)
+	if opts.prompt != defaultBenchmarkPrompt {
+		return []string{opts.prompt}, nil
+	}
+
+	// For stress tests, use built-in varied prompts by default
+	if opts.concurrent > 1 || opts.duration > 0 {
+		return stressTestPrompts, nil
+	}
+
+	// Default single prompt for regular benchmarks
+	return []string{opts.prompt}, nil
+}
+
+func sendBenchmarkRequestWithPrompt(
+	ctx context.Context, endpoint string, opts *benchmarkOptions, iteration int, prompt string,
+) (BenchmarkResult, error) {
+	result := BenchmarkResult{
+		Iteration: iteration,
+	}
+
+	reqBody := ChatCompletionRequest{
+		Messages: []ChatMessage{
+			{Role: "user", Content: prompt},
+		},
+		MaxTokens:   opts.maxTokens,
+		Temperature: 0.7,
+		Stream:      false,
+	}
+
+	jsonBody, err := json.Marshal(reqBody)
+	if err != nil {
+		return result, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", endpoint+"/v1/chat/completions", bytes.NewReader(jsonBody))
+	if err != nil {
+		return result, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	httpClient := &http.Client{Timeout: opts.timeout}
+	reqStartTime := time.Now()
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return result, fmt.Errorf("request failed: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	totalTime := time.Since(reqStartTime)
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return result, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return result, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+	}
+
+	var chatResp ChatCompletionResponse
+	if err := json.Unmarshal(body, &chatResp); err != nil {
+		return result, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	result.PromptTokens = chatResp.Usage.PromptTokens
+	result.CompletionTokens = chatResp.Usage.CompletionTokens
+	result.TotalTokens = chatResp.Usage.TotalTokens
+	result.TotalTimeMs = float64(totalTime.Milliseconds())
+
+	if chatResp.Timings.PromptMs > 0 {
+		result.PromptTimeMs = chatResp.Timings.PromptMs
+		result.GenerationTimeMs = chatResp.Timings.PredictedMs
+		result.PromptToksPerSec = chatResp.Timings.PromptPerSecond
+		result.GenerationToksPerSec = chatResp.Timings.PredictedPerSecond
+	} else {
+		result.GenerationTimeMs = result.TotalTimeMs
+		if result.CompletionTokens > 0 && result.TotalTimeMs > 0 {
+			result.GenerationToksPerSec = float64(result.CompletionTokens) / (result.TotalTimeMs / 1000.0)
+		}
+	}
+
+	return result, nil
+}
+
+func calculateStressSummary(
+	opts *benchmarkOptions, endpoint string, results []BenchmarkResult, startTime time.Time, concurrency int,
+) StressTestSummary {
+	baseSummary := calculateSummary(opts, endpoint, results, startTime)
+
+	summary := StressTestSummary{
+		BenchmarkSummary: baseSummary,
+		Concurrency:      concurrency,
+		TargetDuration:   opts.duration,
+		TotalRequests:    int64(len(results)),
+	}
+
+	elapsed := time.Since(startTime).Seconds()
+	if elapsed > 0 {
+		summary.RequestsPerSec = float64(len(results)) / elapsed
+	}
+
+	if len(results) > 0 {
+		summary.ErrorRate = float64(baseSummary.FailedRuns) / float64(len(results)) * 100
+	}
+
+	// Calculate peak and std dev for tok/s
+	genToks := make([]float64, 0, len(results))
+	for _, r := range results {
+		if r.Error == "" && r.GenerationToksPerSec > 0 {
+			genToks = append(genToks, r.GenerationToksPerSec)
+		}
+	}
+
+	if len(genToks) > 0 {
+		sort.Float64s(genToks)
+		summary.PeakToksPerSec = genToks[len(genToks)-1]
+
+		// Calculate std dev
+		mean := summary.GenerationToksPerSecMean
+		var sumSquares float64
+		for _, v := range genToks {
+			diff := v - mean
+			sumSquares += diff * diff
+		}
+		summary.ToksPerSecStdDev = sumSquares / float64(len(genToks))
+		if summary.ToksPerSecStdDev > 0 {
+			summary.ToksPerSecStdDev = float64(int(summary.ToksPerSecStdDev*100)) / 100 // sqrt approximation via variance
+		}
+	}
+
+	return summary
+}
+
+func outputStressTable(summary StressTestSummary) {
+	fmt.Printf("📈 Stress Test Results\n")
+	fmt.Printf("═══════════════════════════════════════════════════════════════\n\n")
+
+	// Overview
+	fmt.Printf("OVERVIEW\n")
+	fmt.Printf("────────\n")
+	fmt.Printf("Total Requests:  %d\n", summary.TotalRequests)
+	fmt.Printf("Success Rate:    %.1f%% (%d/%d)\n",
+		100-summary.ErrorRate, summary.SuccessfulRuns, summary.TotalRequests)
+	fmt.Printf("Duration:        %s\n", summary.Duration.Round(time.Second))
+	fmt.Printf("Concurrency:     %d\n", summary.Concurrency)
+	fmt.Printf("Requests/sec:    %.2f\n\n", summary.RequestsPerSec)
+
+	if summary.SuccessfulRuns == 0 {
+		fmt.Printf("❌ No successful runs to report.\n")
+		return
+	}
+
+	// Throughput
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	_, _ = fmt.Fprintf(w, "THROUGHPUT\t\n")
+	_, _ = fmt.Fprintf(w, "──────────\t\n")
+	_, _ = fmt.Fprintf(w, "Generation:\t%.1f tok/s (mean)\t%.1f - %.1f (range)\n",
+		summary.GenerationToksPerSecMean,
+		summary.GenerationToksPerSecMin,
+		summary.GenerationToksPerSecMax)
+	_, _ = fmt.Fprintf(w, "Peak:\t%.1f tok/s\t\n", summary.PeakToksPerSec)
+	if summary.PromptToksPerSecMean > 0 {
+		_, _ = fmt.Fprintf(w, "Prompt:\t%.1f tok/s (mean)\t\n", summary.PromptToksPerSecMean)
+	}
+	_ = w.Flush()
+
+	fmt.Println()
+
+	// Latency
+	w = tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	_, _ = fmt.Fprintf(w, "LATENCY\t\n")
+	_, _ = fmt.Fprintf(w, "───────\t\n")
+	_, _ = fmt.Fprintf(w, "P50:\t%.0f ms\t\n", summary.LatencyP50)
+	_, _ = fmt.Fprintf(w, "P95:\t%.0f ms\t\n", summary.LatencyP95)
+	_, _ = fmt.Fprintf(w, "P99:\t%.0f ms\t\n", summary.LatencyP99)
+	_, _ = fmt.Fprintf(w, "Min:\t%.0f ms\t\n", summary.LatencyMin)
+	_, _ = fmt.Fprintf(w, "Max:\t%.0f ms\t\n", summary.LatencyMax)
+	_, _ = fmt.Fprintf(w, "Mean:\t%.0f ms\t\n", summary.LatencyMean)
+	_ = w.Flush()
+
+	fmt.Printf("\n═══════════════════════════════════════════════════════════════\n")
+	fmt.Printf("Max tokens per request: %d\n", summary.MaxTokens)
+}
+
+func outputStressJSON(summary StressTestSummary) error {
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(summary)
+}
+
+func outputStressMarkdown(summary StressTestSummary) {
+	fmt.Printf("# LLMKube Stress Test Results\n\n")
+	fmt.Printf("**Service:** %s  \n", summary.ServiceName)
+	fmt.Printf("**Namespace:** %s  \n", summary.Namespace)
+	fmt.Printf("**Date:** %s  \n\n", summary.Timestamp.Format("2006-01-02 15:04:05"))
+
+	fmt.Printf("## Overview\n\n")
+	fmt.Printf("| Metric | Value |\n")
+	fmt.Printf("|--------|-------|\n")
+	fmt.Printf("| Total Requests | %d |\n", summary.TotalRequests)
+	fmt.Printf("| Success Rate | %.1f%% |\n", 100-summary.ErrorRate)
+	fmt.Printf("| Duration | %s |\n", summary.Duration.Round(time.Second))
+	fmt.Printf("| Concurrency | %d |\n", summary.Concurrency)
+	fmt.Printf("| Requests/sec | %.2f |\n\n", summary.RequestsPerSec)
+
+	if summary.SuccessfulRuns == 0 {
+		fmt.Printf("No successful runs to report.\n")
+		return
+	}
+
+	fmt.Printf("## Throughput\n\n")
+	fmt.Printf("| Metric | Mean | Min | Max | Peak |\n")
+	fmt.Printf("|--------|------|-----|-----|------|\n")
+	fmt.Printf("| Generation (tok/s) | %.1f | %.1f | %.1f | %.1f |\n",
+		summary.GenerationToksPerSecMean,
+		summary.GenerationToksPerSecMin,
+		summary.GenerationToksPerSecMax,
+		summary.PeakToksPerSec)
+	if summary.PromptToksPerSecMean > 0 {
+		fmt.Printf("| Prompt (tok/s) | %.1f | - | - | - |\n", summary.PromptToksPerSecMean)
+	}
+
+	fmt.Printf("\n## Latency\n\n")
+	fmt.Printf("| Percentile | Value (ms) |\n")
+	fmt.Printf("|------------|------------|\n")
+	fmt.Printf("| P50 | %.0f |\n", summary.LatencyP50)
+	fmt.Printf("| P95 | %.0f |\n", summary.LatencyP95)
+	fmt.Printf("| P99 | %.0f |\n", summary.LatencyP99)
+	fmt.Printf("| Min | %.0f |\n", summary.LatencyMin)
+	fmt.Printf("| Max | %.0f |\n", summary.LatencyMax)
+	fmt.Printf("| Mean | %.0f |\n", summary.LatencyMean)
+
+	fmt.Printf("\n---\n")
+	fmt.Printf("*Generated by LLMKube v%s*\n", Version)
 }
 
 func getEndpoint(ctx context.Context, opts *benchmarkOptions) (string, func(), error) {
@@ -877,7 +1516,17 @@ func runCatalogBenchmark(opts *benchmarkOptions) error {
 			fmt.Printf("GPU Layers:  (catalog default)\n")
 		}
 	}
-	fmt.Printf("Iterations:  %d per model (+ %d warmup)\n", opts.iterations, opts.warmup)
+	if opts.concurrent > 1 || opts.duration > 0 {
+		fmt.Printf("Mode:        Stress Test\n")
+		fmt.Printf("Concurrency: %d\n", opts.concurrent)
+		if opts.duration > 0 {
+			fmt.Printf("Duration:    %s per model\n", opts.duration)
+		} else {
+			fmt.Printf("Iterations:  %d per model\n", opts.iterations)
+		}
+	} else {
+		fmt.Printf("Iterations:  %d per model (+ %d warmup)\n", opts.iterations, opts.warmup)
+	}
 	fmt.Printf("Cleanup:     %v\n", opts.cleanup)
 	fmt.Printf("═══════════════════════════════════════════════════════════════\n\n")
 
@@ -895,14 +1544,18 @@ func runCatalogBenchmark(opts *benchmarkOptions) error {
 		return fmt.Errorf("failed to create client: %w", err)
 	}
 
+	isStressTest := opts.concurrent > 1 || opts.duration > 0
 	report := ComparisonReport{
-		Models:      make([]ModelBenchmark, 0, len(modelIDs)),
-		Timestamp:   startTime,
-		Iterations:  opts.iterations,
-		MaxTokens:   opts.maxTokens,
-		GPUEnabled:  opts.gpu,
-		GPUCount:    opts.gpuCount,
-		Accelerator: acceleratorDisplay,
+		Models:         make([]ModelBenchmark, 0, len(modelIDs)),
+		Timestamp:      startTime,
+		Iterations:     opts.iterations,
+		MaxTokens:      opts.maxTokens,
+		GPUEnabled:     opts.gpu,
+		GPUCount:       opts.gpuCount,
+		Accelerator:    acceleratorDisplay,
+		IsStressTest:   isStressTest,
+		Concurrency:    opts.concurrent,
+		TargetDuration: opts.duration,
 	}
 
 	for idx, modelID := range modelIDs {
@@ -945,19 +1598,55 @@ func runCatalogBenchmark(opts *benchmarkOptions) error {
 		}
 		fmt.Printf("   ✅ Deployment ready\n\n")
 
-		// Run benchmark
+		// Run benchmark (use stress test mode if concurrent > 1 or duration specified)
 		opts.name = modelID
-		summary, err := runBenchmarkInternal(ctx, opts)
+		endpoint, endpointCleanup, err := getEndpoint(ctx, opts)
 		if err != nil {
-			fmt.Printf("   ❌ Benchmark failed: %v\n\n", err)
+			fmt.Printf("   ❌ Failed to get endpoint: %v\n\n", err)
 			modelBenchmark.Status = statusFailed
-			modelBenchmark.Error = fmt.Sprintf("benchmark failed: %v", err)
+			modelBenchmark.Error = fmt.Sprintf("endpoint error: %v", err)
+			if opts.cleanup {
+				_ = cleanupModel(ctx, k8sClient, modelID, opts)
+			}
+			report.Models = append(report.Models, modelBenchmark)
+			continue
+		}
+
+		benchmarkStartTime := time.Now()
+		if isStressTest {
+			stressSummary, stressErr := runStressTestInternal(ctx, endpoint, opts, benchmarkStartTime)
+			err = stressErr
+			if err != nil {
+				fmt.Printf("   ❌ Benchmark failed: %v\n\n", err)
+				modelBenchmark.Status = statusFailed
+				modelBenchmark.Error = fmt.Sprintf("benchmark failed: %v", err)
+			} else {
+				modelBenchmark.Status = statusSuccess
+				modelBenchmark.GenerationToksPerSec = stressSummary.GenerationToksPerSecMean
+				modelBenchmark.PromptToksPerSec = stressSummary.PromptToksPerSecMean
+				modelBenchmark.LatencyP50Ms = stressSummary.LatencyP50
+				modelBenchmark.LatencyP99Ms = stressSummary.LatencyP99
+				modelBenchmark.TotalRequests = stressSummary.TotalRequests
+				modelBenchmark.RequestsPerSec = stressSummary.RequestsPerSec
+				modelBenchmark.ErrorRate = stressSummary.ErrorRate
+			}
 		} else {
-			modelBenchmark.Status = statusSuccess
-			modelBenchmark.GenerationToksPerSec = summary.GenerationToksPerSecMean
-			modelBenchmark.PromptToksPerSec = summary.PromptToksPerSecMean
-			modelBenchmark.LatencyP50Ms = summary.LatencyP50
-			modelBenchmark.LatencyP99Ms = summary.LatencyP99
+			summary, benchErr := runBenchmarkInternalWithEndpoint(ctx, endpoint, opts, benchmarkStartTime)
+			err = benchErr
+			if err != nil {
+				fmt.Printf("   ❌ Benchmark failed: %v\n\n", err)
+				modelBenchmark.Status = statusFailed
+				modelBenchmark.Error = fmt.Sprintf("benchmark failed: %v", err)
+			} else {
+				modelBenchmark.Status = statusSuccess
+				modelBenchmark.GenerationToksPerSec = summary.GenerationToksPerSecMean
+				modelBenchmark.PromptToksPerSec = summary.PromptToksPerSecMean
+				modelBenchmark.LatencyP50Ms = summary.LatencyP50
+				modelBenchmark.LatencyP99Ms = summary.LatencyP99
+			}
+		}
+		if endpointCleanup != nil {
+			endpointCleanup()
 		}
 
 		report.Models = append(report.Models, modelBenchmark)
@@ -979,9 +1668,9 @@ func runCatalogBenchmark(opts *benchmarkOptions) error {
 	// Output comparison results
 	fmt.Printf("\n")
 	switch opts.output {
-	case "json":
+	case outputFormatJSON:
 		return outputComparisonJSON(report)
-	case "markdown":
+	case outputFormatMarkdown:
 		return outputComparisonMarkdown(report)
 	default:
 		return outputComparisonTable(report)
@@ -995,6 +1684,12 @@ func deployModel(
 	catalogModel *Model,
 	opts *benchmarkOptions,
 ) error {
+	// Clean up any existing resources first to avoid "already exists" errors
+	// This is safe because catalog benchmark mode always wants a fresh deployment
+	_ = cleanupModel(ctx, k8sClient, modelID, opts)
+	// Give the cluster a moment to process the deletion
+	time.Sleep(2 * time.Second)
+
 	// Determine accelerator type
 	accelerator := opts.accelerator
 	if accelerator == "" && opts.gpu {
@@ -1181,19 +1876,9 @@ func cleanupModel(ctx context.Context, k8sClient client.Client, modelID string, 
 	return nil
 }
 
-func runBenchmarkInternal(ctx context.Context, opts *benchmarkOptions) (*BenchmarkSummary, error) {
-	// Get endpoint URL
-	endpoint, cleanup, err := getEndpoint(ctx, opts)
-	if err != nil {
-		return nil, err
-	}
-	if cleanup != nil {
-		defer cleanup()
-	}
-
-	startTime := time.Now()
-
-	// Run warmup requests
+func runBenchmarkInternalWithEndpoint(
+	ctx context.Context, endpoint string, opts *benchmarkOptions, startTime time.Time,
+) (*BenchmarkSummary, error) {
 	if opts.warmup > 0 {
 		fmt.Printf("🔥 Running %d warmup requests...\n", opts.warmup)
 		for i := 0; i < opts.warmup; i++ {
@@ -1206,7 +1891,6 @@ func runBenchmarkInternal(ctx context.Context, opts *benchmarkOptions) (*Benchma
 		}
 	}
 
-	// Run benchmark iterations
 	fmt.Printf("📊 Running %d benchmark iterations...\n", opts.iterations)
 	results := make([]BenchmarkResult, 0, opts.iterations)
 
@@ -1227,13 +1911,19 @@ func runBenchmarkInternal(ctx context.Context, opts *benchmarkOptions) (*Benchma
 		results = append(results, result)
 	}
 
-	// Calculate summary statistics
 	summary := calculateSummary(opts, endpoint, results, startTime)
+	if summary.SuccessfulRuns == 0 {
+		return nil, fmt.Errorf("all %d benchmark iterations failed", opts.iterations)
+	}
 	return &summary, nil
 }
 
 func outputComparisonTable(report ComparisonReport) error {
-	fmt.Printf("📊 Benchmark Comparison Results\n")
+	if report.IsStressTest {
+		fmt.Printf("📊 Stress Test Comparison Results\n")
+	} else {
+		fmt.Printf("📊 Benchmark Comparison Results\n")
+	}
 	fmt.Printf("═══════════════════════════════════════════════════════════════════════════════\n\n")
 
 	// Count successes and failures
@@ -1244,18 +1934,44 @@ func outputComparisonTable(report ComparisonReport) error {
 		}
 	}
 	fmt.Printf("Models: %d/%d benchmarked successfully\n", successes, len(report.Models))
-	if report.GPUEnabled {
-		fmt.Printf("Accelerator: %s | GPU Count: %d | Iterations: %d | Max Tokens: %d\n\n",
-			report.Accelerator, report.GPUCount, report.Iterations, report.MaxTokens)
+
+	if report.IsStressTest {
+		if report.GPUEnabled {
+			if report.TargetDuration > 0 {
+				fmt.Printf("Accelerator: %s | GPU Count: %d | Concurrency: %d | Duration: %s | Max Tokens: %d\n\n",
+					report.Accelerator, report.GPUCount, report.Concurrency, report.TargetDuration, report.MaxTokens)
+			} else {
+				fmt.Printf("Accelerator: %s | GPU Count: %d | Concurrency: %d | Iterations: %d | Max Tokens: %d\n\n",
+					report.Accelerator, report.GPUCount, report.Concurrency, report.Iterations, report.MaxTokens)
+			}
+		} else {
+			if report.TargetDuration > 0 {
+				fmt.Printf("Accelerator: cpu | Concurrency: %d | Duration: %s | Max Tokens: %d\n\n",
+					report.Concurrency, report.TargetDuration, report.MaxTokens)
+			} else {
+				fmt.Printf("Accelerator: cpu | Concurrency: %d | Iterations: %d | Max Tokens: %d\n\n",
+					report.Concurrency, report.Iterations, report.MaxTokens)
+			}
+		}
 	} else {
-		fmt.Printf("Accelerator: cpu | Iterations: %d | Max Tokens: %d\n\n",
-			report.Iterations, report.MaxTokens)
+		if report.GPUEnabled {
+			fmt.Printf("Accelerator: %s | GPU Count: %d | Iterations: %d | Max Tokens: %d\n\n",
+				report.Accelerator, report.GPUCount, report.Iterations, report.MaxTokens)
+		} else {
+			fmt.Printf("Accelerator: cpu | Iterations: %d | Max Tokens: %d\n\n",
+				report.Iterations, report.MaxTokens)
+		}
 	}
 
 	// Create comparison table
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintf(w, "MODEL\tSIZE\tGEN TOK/S\tP50 (ms)\tP99 (ms)\tVRAM\tSTATUS\n")
-	_, _ = fmt.Fprintf(w, "─────\t────\t─────────\t────────\t────────\t────\t──────\n")
+	if report.IsStressTest {
+		_, _ = fmt.Fprintf(w, "MODEL\tSIZE\tREQUESTS\tREQ/S\tTOK/S\tP50 (ms)\tP99 (ms)\tERROR%%\tSTATUS\n")
+		_, _ = fmt.Fprintf(w, "─────\t────\t────────\t─────\t─────\t────────\t────────\t──────\t──────\n")
+	} else {
+		_, _ = fmt.Fprintf(w, "MODEL\tSIZE\tGEN TOK/S\tP50 (ms)\tP99 (ms)\tVRAM\tSTATUS\n")
+		_, _ = fmt.Fprintf(w, "─────\t────\t─────────\t────────\t────────\t────\t──────\n")
+	}
 
 	for _, m := range report.Models {
 		status := "✅"
@@ -1263,24 +1979,51 @@ func outputComparisonTable(report ComparisonReport) error {
 			status = "❌"
 		}
 
-		genToks := "-"
-		p50 := "-"
-		p99 := "-"
-		if m.Status == statusSuccess {
-			genToks = fmt.Sprintf("%.1f", m.GenerationToksPerSec)
-			p50 = fmt.Sprintf("%.0f", m.LatencyP50Ms)
-			p99 = fmt.Sprintf("%.0f", m.LatencyP99Ms)
+		if report.IsStressTest {
+			requests := "-"
+			rps := "-"
+			tps := "-"
+			p50 := "-"
+			p99 := "-"
+			errRate := "-"
+			if m.Status == statusSuccess {
+				requests = fmt.Sprintf("%d", m.TotalRequests)
+				rps = fmt.Sprintf("%.1f", m.RequestsPerSec)
+				tps = fmt.Sprintf("%.1f", m.GenerationToksPerSec)
+				p50 = fmt.Sprintf("%.0f", m.LatencyP50Ms)
+				p99 = fmt.Sprintf("%.0f", m.LatencyP99Ms)
+				errRate = fmt.Sprintf("%.1f", m.ErrorRate)
+			}
+			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				m.ModelID,
+				m.ModelSize,
+				requests,
+				rps,
+				tps,
+				p50,
+				p99,
+				errRate,
+				status,
+			)
+		} else {
+			genToks := "-"
+			p50 := "-"
+			p99 := "-"
+			if m.Status == statusSuccess {
+				genToks = fmt.Sprintf("%.1f", m.GenerationToksPerSec)
+				p50 = fmt.Sprintf("%.0f", m.LatencyP50Ms)
+				p99 = fmt.Sprintf("%.0f", m.LatencyP99Ms)
+			}
+			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				m.ModelID,
+				m.ModelSize,
+				genToks,
+				p50,
+				p99,
+				m.VRAMEstimate,
+				status,
+			)
 		}
-
-		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			m.ModelID,
-			m.ModelSize,
-			genToks,
-			p50,
-			p99,
-			m.VRAMEstimate,
-			status,
-		)
 	}
 	_ = w.Flush()
 

@@ -571,6 +571,296 @@ func TestFindAvailablePort(t *testing.T) {
 	t.Logf("Found ports: %d, %d", port, port2)
 }
 
+func TestStressTestPrompts(t *testing.T) {
+	if len(stressTestPrompts) == 0 {
+		t.Error("stressTestPrompts should not be empty")
+	}
+
+	// Verify we have a mix of short, medium, and long prompts
+	var short, medium, long int
+	for _, p := range stressTestPrompts {
+		switch {
+		case len(p) < 50:
+			short++
+		case len(p) < 200:
+			medium++
+		default:
+			long++
+		}
+	}
+
+	if short == 0 {
+		t.Error("Expected at least one short prompt")
+	}
+	if medium == 0 {
+		t.Error("Expected at least one medium prompt")
+	}
+	if long == 0 {
+		t.Error("Expected at least one long prompt")
+	}
+}
+
+func TestLoadPromptsDefault(t *testing.T) {
+	// Test that stress test mode uses varied prompts by default
+	opts := &benchmarkOptions{
+		prompt:     defaultBenchmarkPrompt,
+		concurrent: 4,
+	}
+
+	prompts, err := loadPrompts(opts)
+	if err != nil {
+		t.Fatalf("loadPrompts failed: %v", err)
+	}
+
+	if len(prompts) != len(stressTestPrompts) {
+		t.Errorf("Expected %d prompts for stress test, got %d", len(stressTestPrompts), len(prompts))
+	}
+}
+
+func TestLoadPromptsCustomPrompt(t *testing.T) {
+	// Test that custom prompt overrides defaults
+	opts := &benchmarkOptions{
+		prompt:     "My custom prompt",
+		concurrent: 4,
+	}
+
+	prompts, err := loadPrompts(opts)
+	if err != nil {
+		t.Fatalf("loadPrompts failed: %v", err)
+	}
+
+	if len(prompts) != 1 {
+		t.Errorf("Expected 1 prompt for custom prompt, got %d", len(prompts))
+	}
+	if prompts[0] != "My custom prompt" {
+		t.Errorf("Expected 'My custom prompt', got '%s'", prompts[0])
+	}
+}
+
+func TestLoadPromptsSingleMode(t *testing.T) {
+	// Test that single benchmark mode uses single prompt
+	opts := &benchmarkOptions{
+		prompt:     defaultBenchmarkPrompt,
+		concurrent: 1,
+	}
+
+	prompts, err := loadPrompts(opts)
+	if err != nil {
+		t.Fatalf("loadPrompts failed: %v", err)
+	}
+
+	if len(prompts) != 1 {
+		t.Errorf("Expected 1 prompt for single mode, got %d", len(prompts))
+	}
+}
+
+func TestSendBenchmarkRequestWithPrompt(t *testing.T) {
+	// Create a mock server
+	receivedPrompt := ""
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req ChatCompletionRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
+			if len(req.Messages) > 0 {
+				receivedPrompt = req.Messages[0].Content
+			}
+		}
+
+		response := ChatCompletionResponse{
+			ID:      "test-id",
+			Object:  "chat.completion",
+			Created: time.Now().Unix(),
+			Model:   "test-model",
+			Choices: []struct {
+				Index   int `json:"index"`
+				Message struct {
+					Role    string `json:"role"`
+					Content string `json:"content"`
+				} `json:"message"`
+				FinishReason string `json:"finish_reason"`
+			}{
+				{
+					Index: 0,
+					Message: struct {
+						Role    string `json:"role"`
+						Content string `json:"content"`
+					}{
+						Role:    "assistant",
+						Content: "Test response",
+					},
+					FinishReason: "stop",
+				},
+			},
+			Usage: struct {
+				PromptTokens     int `json:"prompt_tokens"`
+				CompletionTokens int `json:"completion_tokens"`
+				TotalTokens      int `json:"total_tokens"`
+			}{
+				PromptTokens:     10,
+				CompletionTokens: 20,
+				TotalTokens:      30,
+			},
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	opts := &benchmarkOptions{
+		maxTokens: 50,
+		timeout:   10 * time.Second,
+	}
+
+	customPrompt := "What is 2+2?"
+	result, err := sendBenchmarkRequestWithPrompt(t.Context(), server.URL, opts, 1, customPrompt)
+	if err != nil {
+		t.Fatalf("sendBenchmarkRequestWithPrompt failed: %v", err)
+	}
+
+	if receivedPrompt != customPrompt {
+		t.Errorf("Expected prompt '%s', got '%s'", customPrompt, receivedPrompt)
+	}
+
+	if result.Iteration != 1 {
+		t.Errorf("Expected iteration 1, got %d", result.Iteration)
+	}
+
+	if result.PromptTokens != 10 {
+		t.Errorf("Expected 10 prompt tokens, got %d", result.PromptTokens)
+	}
+}
+
+func TestCalculateStressSummary(t *testing.T) {
+	opts := &benchmarkOptions{
+		name:       "test-service",
+		namespace:  "test-ns",
+		iterations: 100,
+		maxTokens:  50,
+		duration:   30 * time.Second,
+	}
+
+	// Create test results
+	results := make([]BenchmarkResult, 100)
+	for i := 0; i < 100; i++ {
+		results[i] = BenchmarkResult{
+			Iteration:            i + 1,
+			TotalTimeMs:          float64(100 + i),
+			GenerationToksPerSec: float64(45 + i%20),
+			PromptToksPerSec:     float64(400 + i%50),
+			PromptTokens:         10,
+			CompletionTokens:     20,
+		}
+	}
+	// Add some errors
+	results[50].Error = "timeout"
+	results[75].Error = "connection refused"
+
+	startTime := time.Now().Add(-30 * time.Second)
+	summary := calculateStressSummary(opts, "http://localhost:8080", results, startTime, 4)
+
+	if summary.Concurrency != 4 {
+		t.Errorf("Expected concurrency 4, got %d", summary.Concurrency)
+	}
+
+	if summary.TotalRequests != 100 {
+		t.Errorf("Expected 100 total requests, got %d", summary.TotalRequests)
+	}
+
+	if summary.SuccessfulRuns != 98 {
+		t.Errorf("Expected 98 successful runs, got %d", summary.SuccessfulRuns)
+	}
+
+	if summary.FailedRuns != 2 {
+		t.Errorf("Expected 2 failed runs, got %d", summary.FailedRuns)
+	}
+
+	if summary.ErrorRate != 2.0 {
+		t.Errorf("Expected error rate 2.0%%, got %.1f%%", summary.ErrorRate)
+	}
+
+	if summary.RequestsPerSec <= 0 {
+		t.Errorf("Expected positive requests/sec, got %.2f", summary.RequestsPerSec)
+	}
+
+	if summary.PeakToksPerSec <= 0 {
+		t.Errorf("Expected positive peak tok/s, got %.2f", summary.PeakToksPerSec)
+	}
+}
+
+func TestStressTestSummaryJSONSerialization(t *testing.T) {
+	summary := StressTestSummary{
+		BenchmarkSummary: BenchmarkSummary{
+			ServiceName:              "test-service",
+			Namespace:                "default",
+			Endpoint:                 "http://localhost:8080",
+			Iterations:               100,
+			SuccessfulRuns:           98,
+			FailedRuns:               2,
+			LatencyMin:               90,
+			LatencyMax:               200,
+			LatencyMean:              120,
+			GenerationToksPerSecMean: 50,
+		},
+		Concurrency:      4,
+		TargetDuration:   30 * time.Second,
+		TotalRequests:    100,
+		RequestsPerSec:   3.33,
+		ErrorRate:        2.0,
+		PeakToksPerSec:   65.0,
+		ToksPerSecStdDev: 5.2,
+	}
+
+	data, err := json.Marshal(summary)
+	if err != nil {
+		t.Fatalf("Failed to marshal StressTestSummary: %v", err)
+	}
+
+	var decoded StressTestSummary
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("Failed to unmarshal StressTestSummary: %v", err)
+	}
+
+	if decoded.Concurrency != 4 {
+		t.Errorf("Expected concurrency 4, got %d", decoded.Concurrency)
+	}
+
+	if decoded.TotalRequests != 100 {
+		t.Errorf("Expected 100 total requests, got %d", decoded.TotalRequests)
+	}
+
+	if decoded.ErrorRate != 2.0 {
+		t.Errorf("Expected error rate 2.0, got %.1f", decoded.ErrorRate)
+	}
+}
+
+func TestNewBenchmarkCommandStressTestFlags(t *testing.T) {
+	cmd := NewBenchmarkCommand()
+
+	// Check that stress test flags exist
+	stressFlags := []string{
+		"duration",
+		"prompt-file",
+	}
+
+	for _, flag := range stressFlags {
+		if cmd.Flags().Lookup(flag) == nil {
+			t.Errorf("Expected stress test flag '%s' not found", flag)
+		}
+	}
+
+	// Verify duration default is 0
+	durationFlag := cmd.Flags().Lookup("duration")
+	if durationFlag.DefValue != "0s" {
+		t.Errorf("Expected duration default '0s', got '%s'", durationFlag.DefValue)
+	}
+
+	// Verify prompt-file default is empty
+	promptFileFlag := cmd.Flags().Lookup("prompt-file")
+	if promptFileFlag.DefValue != "" {
+		t.Errorf("Expected prompt-file default '', got '%s'", promptFileFlag.DefValue)
+	}
+}
+
 func TestIsPodReady(t *testing.T) {
 	testCases := []struct {
 		name     string
