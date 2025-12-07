@@ -5,6 +5,23 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.10](https://github.com/defilantech/LLMKube/compare/v0.4.9...v0.4.10) (2025-12-07)
+
+
+### Features
+
+* add 32B models to catalog with --context flag ([#88](https://github.com/defilantech/LLMKube/issues/88)) ([6c06602](https://github.com/defilantech/LLMKube/commit/6c066026b11c108072fab77c2d7b6ee61b432203))
+* add air-gapped deployment support for local model paths ([#85](https://github.com/defilantech/LLMKube/issues/85)) ([31fe8d0](https://github.com/defilantech/LLMKube/commit/31fe8d051fa5be51626dc64c4bc56d05dbfade7a))
+* add GPU observability config and Grafana dashboard ([#105](https://github.com/defilantech/LLMKube/issues/105)) ([571643f](https://github.com/defilantech/LLMKube/commit/571643fadcc6a106f360b8bd1ceec26360f62058))
+* **cli:** add comprehensive benchmark test suites and sweeps ([#107](https://github.com/defilantech/LLMKube/issues/107)) ([323a28a](https://github.com/defilantech/LLMKube/commit/323a28ad8c1412fd1a09cd7e18cf7b42d7b55de8))
+* **cli:** add stress testing mode to benchmark command ([#104](https://github.com/defilantech/LLMKube/issues/104)) ([530c82e](https://github.com/defilantech/LLMKube/commit/530c82e1f0c62b56a7accae9026ef8a6df7ce1cd))
+
+
+### Documentation
+
+* add community standards and security policy ([#92](https://github.com/defilantech/LLMKube/issues/92)) ([e7c9cad](https://github.com/defilantech/LLMKube/commit/e7c9cad0887cbe43bcc72c01500919b9268009a2))
+* update documentation for v0.4.9 GPU scheduling features ([#83](https://github.com/defilantech/LLMKube/issues/83)) ([0934e8f](https://github.com/defilantech/LLMKube/commit/0934e8f605b3d65eee74fd2e62e8eeb3132f4518))
+
 ## [0.4.9](https://github.com/defilantech/LLMKube/compare/v0.4.8...v0.4.9) (2025-12-01)
 
 
