@@ -185,7 +185,7 @@ test_inference() {
     log_info "Test 6: Testing inference endpoint..."
 
     # Create a test pod to call the API
-    kubectl run e2e-test-curl --rm -i --image=curlimages/curl --restart=Never -n $TEST_NAMESPACE -- \
+    kubectl run e2e-test-curl --rm -i --image=docker.io/curlimages/curl --restart=Never -n $TEST_NAMESPACE -- \
         curl -s -X POST http://$TEST_SERVICE_NAME.$TEST_NAMESPACE.svc.cluster.local:8080/v1/chat/completions \
         -H "Content-Type: application/json" \
         -d '{"messages":[{"role":"user","content":"What is 2+2? Answer in one sentence."}],"max_tokens":50}' \

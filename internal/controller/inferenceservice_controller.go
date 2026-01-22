@@ -141,7 +141,7 @@ func buildCachedStorageConfig(model *inferencev1alpha1.Model) modelStorageConfig
 		initContainers: []corev1.Container{
 			{
 				Name:         "model-downloader",
-				Image:        "curlimages/curl:latest",
+				Image:        "docker.io/curlimages/curl:latest",
 				Command:      []string{"sh", "-c", buildModelInitCommand(model.Spec.Source, cacheDir, modelPath, true)},
 				VolumeMounts: initVolumeMounts,
 			},
@@ -160,7 +160,7 @@ func buildEmptyDirStorageConfig(model *inferencev1alpha1.Model, namespace string
 		initContainers: []corev1.Container{
 			{
 				Name:         "model-downloader",
-				Image:        "curlimages/curl:latest",
+				Image:        "docker.io/curlimages/curl:latest",
 				Command:      []string{"sh", "-c", buildModelInitCommand(model.Spec.Source, "", modelPath, false)},
 				VolumeMounts: []corev1.VolumeMount{{Name: "model-storage", MountPath: "/models"}},
 			},
