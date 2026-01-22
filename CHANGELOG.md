@@ -5,6 +5,13 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.12](https://github.com/defilantech/LLMKube/compare/v0.4.11...v0.4.12) (2026-01-22)
+
+
+### Features
+
+* add custom CA support and fix deprecated image tags ([#124](https://github.com/defilantech/LLMKube/issues/124)) ([5ec912e](https://github.com/defilantech/LLMKube/commit/5ec912e1c80076cd9a7af0c9e9ad98fe92381a27))
+
 ## [0.4.11](https://github.com/defilantech/LLMKube/compare/v0.4.10...v0.4.11) (2026-01-22)
 
 
