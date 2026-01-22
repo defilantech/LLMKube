@@ -144,7 +144,7 @@ EOF
 kubectl wait --for=condition=available --timeout=300s inferenceservice/tinyllama
 
 # Test it!
-kubectl run test --rm -i --image=curlimages/curl -- \
+kubectl run test --rm -i --image=docker.io/curlimages/curl -- \
   curl -X POST http://tinyllama.default.svc.cluster.local:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"messages":[{"role":"user","content":"What is Kubernetes?"}],"max_tokens":100}'

@@ -195,7 +195,7 @@ kubectl logs -l app=tinyllama-service --tail=50 -f
 
 ```bash
 # Create a test pod
-kubectl run test-curl --image=curlimages/curl --rm -it -- sh
+kubectl run test-curl --image=docker.io/curlimages/curl --rm -it -- sh
 
 # Inside the pod, run:
 curl -X POST http://tinyllama-service.default.svc.cluster.local:8080/v1/chat/completions \
