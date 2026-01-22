@@ -47,6 +47,7 @@ type InferenceServiceReconciler struct {
 	ModelCacheSize       string
 	ModelCacheClass      string
 	ModelCacheAccessMode string
+	CACertConfigMap      string
 }
 
 func sanitizeDNSName(name string) string {
@@ -91,14 +92,14 @@ type modelStorageConfig struct {
 	volumeMounts   []corev1.VolumeMount
 }
 
-func buildModelStorageConfig(model *inferencev1alpha1.Model, namespace string, useCache bool) modelStorageConfig {
+func buildModelStorageConfig(model *inferencev1alpha1.Model, namespace string, useCache bool, caCertConfigMap string) modelStorageConfig {
 	if useCache {
-		return buildCachedStorageConfig(model)
+		return buildCachedStorageConfig(model, caCertConfigMap)
 	}
-	return buildEmptyDirStorageConfig(model, namespace)
+	return buildEmptyDirStorageConfig(model, namespace, caCertConfigMap)
 }
 
-func buildCachedStorageConfig(model *inferencev1alpha1.Model) modelStorageConfig {
+func buildCachedStorageConfig(model *inferencev1alpha1.Model, caCertConfigMap string) modelStorageConfig {
 	cacheDir := fmt.Sprintf("/models/%s", model.Status.CacheKey)
 	modelPath := fmt.Sprintf("%s/model.gguf", cacheDir)
 
@@ -136,13 +137,31 @@ func buildCachedStorageConfig(model *inferencev1alpha1.Model) modelStorageConfig
 		})
 	}
 
+	cmd := buildModelInitCommand(model.Spec.Source, cacheDir, modelPath, true)
+	if caCertConfigMap != "" {
+		volumes = append(volumes, corev1.Volume{
+			Name: "custom-ca-cert",
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{Name: caCertConfigMap},
+				},
+			},
+		})
+		initVolumeMounts = append(initVolumeMounts, corev1.VolumeMount{
+			Name:      "custom-ca-cert",
+			MountPath: "/custom-certs",
+			ReadOnly:  true,
+		})
+		cmd = fmt.Sprintf("export CURL_CA_BUNDLE=/custom-certs/$(ls /custom-certs | grep -v '^\\.' | head -n 1) && %s", cmd)
+	}
+
 	return modelStorageConfig{
 		modelPath: modelPath,
 		initContainers: []corev1.Container{
 			{
 				Name:         "model-downloader",
 				Image:        "docker.io/curlimages/curl:latest",
-				Command:      []string{"sh", "-c", buildModelInitCommand(model.Spec.Source, cacheDir, modelPath, true)},
+				Command:      []string{"sh", "-c", cmd},
 				VolumeMounts: initVolumeMounts,
 			},
 		},
@@ -151,9 +170,35 @@ func buildCachedStorageConfig(model *inferencev1alpha1.Model) modelStorageConfig
 	}
 }
 
-func buildEmptyDirStorageConfig(model *inferencev1alpha1.Model, namespace string) modelStorageConfig {
+func buildEmptyDirStorageConfig(model *inferencev1alpha1.Model, namespace string, caCertConfigMap string) modelStorageConfig {
 	modelFileName := fmt.Sprintf("%s-%s.gguf", namespace, model.Name)
 	modelPath := fmt.Sprintf("/models/%s", modelFileName)
+
+	initVolumeMounts := []corev1.VolumeMount{{Name: "model-storage", MountPath: "/models"}}
+	volumes := []corev1.Volume{
+		{
+			Name:         "model-storage",
+			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+		},
+	}
+
+	cmd := buildModelInitCommand(model.Spec.Source, "", modelPath, false)
+	if caCertConfigMap != "" {
+		volumes = append(volumes, corev1.Volume{
+			Name: "custom-ca-cert",
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{Name: caCertConfigMap},
+				},
+			},
+		})
+		initVolumeMounts = append(initVolumeMounts, corev1.VolumeMount{
+			Name:      "custom-ca-cert",
+			MountPath: "/custom-certs",
+			ReadOnly:  true,
+		})
+		cmd = fmt.Sprintf("export CURL_CA_BUNDLE=/custom-certs/$(ls /custom-certs | grep -v '^\\.' | head -n 1) && %s", cmd)
+	}
 
 	return modelStorageConfig{
 		modelPath: modelPath,
@@ -161,16 +206,11 @@ func buildEmptyDirStorageConfig(model *inferencev1alpha1.Model, namespace string
 			{
 				Name:         "model-downloader",
 				Image:        "docker.io/curlimages/curl:latest",
-				Command:      []string{"sh", "-c", buildModelInitCommand(model.Spec.Source, "", modelPath, false)},
-				VolumeMounts: []corev1.VolumeMount{{Name: "model-storage", MountPath: "/models"}},
+				Command:      []string{"sh", "-c", cmd},
+				VolumeMounts: initVolumeMounts,
 			},
 		},
-		volumes: []corev1.Volume{
-			{
-				Name:         "model-storage",
-				VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
-			},
-		},
+		volumes:      volumes,
 		volumeMounts: []corev1.VolumeMount{{Name: "model-storage", MountPath: "/models", ReadOnly: true}},
 	}
 }
@@ -611,7 +651,7 @@ func (r *InferenceServiceReconciler) constructDeployment(
 	}
 
 	useCache := model.Status.CacheKey != "" && r.ModelCachePath != ""
-	storageConfig := buildModelStorageConfig(model, isvc.Namespace, useCache)
+	storageConfig := buildModelStorageConfig(model, isvc.Namespace, useCache, r.CACertConfigMap)
 	modelPath := storageConfig.modelPath
 
 	args := []string{
