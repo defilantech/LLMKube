@@ -104,7 +104,7 @@ metadata:
 spec:
   modelRef: $TEST_MODEL_NAME
   replicas: 1
-  image: ghcr.io/ggerganov/llama.cpp:server-cuda
+  image: ghcr.io/ggml-org/llama.cpp:server-cuda
   endpoint:
     port: 8080
     path: /v1/chat/completions

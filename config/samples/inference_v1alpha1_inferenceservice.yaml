@@ -12,8 +12,8 @@ spec:
   # Number of replicas (optional, defaults to 1)
   replicas: 1
 
-  # Container image (optional, defaults to ghcr.io/ggerganov/llama.cpp:server)
-  image: ghcr.io/ggerganov/llama.cpp:server
+  # Container image (optional, defaults to ghcr.io/ggml-org/llama.cpp:server)
+  image: ghcr.io/ggml-org/llama.cpp:server
 
   # Endpoint configuration (optional)
   endpoint:

@@ -95,7 +95,7 @@ spec:
                     type: string
                 type: object
               image:
-                default: ghcr.io/ggerganov/llama.cpp:server
+                default: ghcr.io/ggml-org/llama.cpp:server
                 description: Image is the container image for the llama.cpp runtime
                 type: string
               modelRef:

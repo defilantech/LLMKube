@@ -52,7 +52,7 @@ spec:
   replicas: 1
 
   # Use llama.cpp with CUDA support
-  image: ghcr.io/ggerganov/llama.cpp:server-cuda
+  image: ghcr.io/ggml-org/llama.cpp:server-cuda
 
   # Endpoint configuration (OpenAI-compatible API)
   endpoint:

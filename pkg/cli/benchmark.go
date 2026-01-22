@@ -252,9 +252,9 @@ const (
 )
 
 const (
-	imageLlamaCppServer     = "ghcr.io/ggerganov/llama.cpp:server"
-	imageLlamaCppServerCUDA = "ghcr.io/ggerganov/llama.cpp:server-cuda"
-	imageLlamaCppServerROCm = "ghcr.io/ggerganov/llama.cpp:server-rocm"
+	imageLlamaCppServer     = "ghcr.io/ggml-org/llama.cpp:server"
+	imageLlamaCppServerCUDA = "ghcr.io/ggml-org/llama.cpp:server-cuda"
+	imageLlamaCppServerROCm = "ghcr.io/ggml-org/llama.cpp:server-rocm"
 )
 
 // Suite names

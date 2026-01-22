@@ -396,6 +396,34 @@ print(response.choices[0].message.content)
 
 ---
 
+## Advanced Configuration
+
+### Custom CA Certificates
+
+For environments with SSL inspection or private Certificate Authorities (CAs), you can configure the controller to use a custom CA bundle for model downloads.
+
+1. **Create a ConfigMap** containing your CA certificate:
+   ```bash
+   kubectl create configmap my-custom-ca \
+     --from-file=ca.crt=path/to/cert.pem \
+     -n llmkube-system
+   ```
+
+2. **Configure the Controller** (choose one method):
+
+   **Helm:**
+   ```bash
+   helm upgrade --install llmkube llmkube/llmkube \
+     --set controller.args="{--ca-cert-configmap=my-custom-ca}"
+   ```
+
+   **Kustomize / Manifests:**
+   Edit the Deployment args to include `--ca-cert-configmap=my-custom-ca`.
+
+The controller will automatically mount this certificate into all model download pods.
+
+---
+
 ## GPU Setup
 
 ### Deploy GKE Cluster with GPU

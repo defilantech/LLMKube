@@ -38,7 +38,7 @@ type InferenceServiceSpec struct {
 	Replicas *int32 `json:"replicas,omitempty"`
 
 	// Image is the container image for the llama.cpp runtime
-	// +kubebuilder:default="ghcr.io/ggerganov/llama.cpp:server"
+	// +kubebuilder:default="ghcr.io/ggml-org/llama.cpp:server"
 	// +optional
 	Image string `json:"image,omitempty"`
 
