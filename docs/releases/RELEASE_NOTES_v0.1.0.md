@@ -246,7 +246,7 @@ Special thanks to the Kubernetes and LLM communities for inspiration and tools.
 
 **Container Images:**
 - Controller: `ghcr.io/defilan/llmkube-controller:v0.1.0`
-- Runtime: `ghcr.io/ggerganov/llama.cpp:server` (upstream)
+- Runtime: `ghcr.io/ggml-org/llama.cpp:server` (upstream)
 
 **Source Code:**
 - GitHub: https://github.com/Defilan/LLMKube/releases/tag/v0.1.0

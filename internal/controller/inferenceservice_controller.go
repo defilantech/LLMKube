@@ -68,7 +68,7 @@ func buildModelInitCommand(source, cacheDir, modelPath string, useCache bool) st
 			)
 		}
 		return fmt.Sprintf(
-			"mkdir -p %s && if [ ! -f %s ]; then echo 'Downloading model from %s...'; curl -L -o %s '%s' && echo 'Model downloaded successfully'; else echo 'Model already cached, skipping download'; fi",
+			"mkdir -p %s && if [ ! -f %s ]; then echo 'Downloading model from %s...'; curl -f -L -o %s '%s' && echo 'Model downloaded successfully'; else echo 'Model already cached, skipping download'; fi",
 			cacheDir, modelPath, source, modelPath, source,
 		)
 	}
@@ -80,7 +80,7 @@ func buildModelInitCommand(source, cacheDir, modelPath string, useCache bool) st
 		)
 	}
 	return fmt.Sprintf(
-		"if [ ! -f %s ]; then echo 'Downloading model from %s...'; curl -L -o %s '%s' && echo 'Model downloaded successfully'; else echo 'Model already exists, skipping download'; fi",
+		"if [ ! -f %s ]; then echo 'Downloading model from %s...'; curl -f -L -o %s '%s' && echo 'Model downloaded successfully'; else echo 'Model already exists, skipping download'; fi",
 		modelPath, source, modelPath, source,
 	)
 }
@@ -640,7 +640,7 @@ func (r *InferenceServiceReconciler) constructDeployment(
 		"inference.llmkube.dev/service": isvc.Name,
 	}
 
-	image := "ghcr.io/ggerganov/llama.cpp:server"
+	image := "ghcr.io/ggml-org/llama.cpp:server"
 	if isvc.Spec.Image != "" {
 		image = isvc.Spec.Image
 	}

@@ -187,7 +187,7 @@ func runDeploy(opts *deployOptions) error {
 			fmt.Printf("ℹ️  Ensure Metal agent is installed: make install-metal-agent\n")
 		} else {
 			if opts.image == "" {
-				opts.image = "ghcr.io/ggerganov/llama.cpp:server-cuda"
+				opts.image = "ghcr.io/ggml-org/llama.cpp:server-cuda"
 				fmt.Printf("ℹ️  Auto-detected image: %s\n", opts.image)
 			}
 		}
@@ -196,7 +196,7 @@ func runDeploy(opts *deployOptions) error {
 			opts.accelerator = "cpu"
 		}
 		if opts.image == "" {
-			opts.image = "ghcr.io/ggerganov/llama.cpp:server"
+			opts.image = "ghcr.io/ggml-org/llama.cpp:server"
 		}
 	}
 

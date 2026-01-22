@@ -25,7 +25,7 @@ metadata:
 spec:
   modelRef: llama-13b-multi-gpu
   replicas: 1
-  image: ghcr.io/ggerganov/llama.cpp:server-cuda
+  image: ghcr.io/ggml-org/llama.cpp:server-cuda
   resources:
     gpu: 2              # Request 2 GPUs
     gpuMemory: "16Gi"

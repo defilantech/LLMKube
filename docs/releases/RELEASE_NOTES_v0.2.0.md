@@ -54,7 +54,7 @@ llmkube deploy llama-3b --gpu \
   --source https://huggingface.co/.../model.gguf
 
 # Auto-detects:
-# - CUDA image (ghcr.io/ggerganov/llama.cpp:server-cuda)
+# - CUDA image (ghcr.io/ggml-org/llama.cpp:server-cuda)
 # - GPU resource requirements
 # - Optimal layer offloading
 # - Node selectors and tolerations
@@ -373,7 +373,7 @@ kubectl patch model mymodel --type=merge -p '{
 # Update InferenceService
 kubectl patch inferenceservice myservice --type=merge -p '{
   "spec": {
-    "image": "ghcr.io/ggerganov/llama.cpp:server-cuda",
+    "image": "ghcr.io/ggml-org/llama.cpp:server-cuda",
     "resources": {"gpu": 1, "gpuMemory": "8Gi"}
   }
 }'

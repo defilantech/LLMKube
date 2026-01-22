@@ -21,7 +21,7 @@
 - **Device Plugin**: nvidia-gpu-device-plugin-small-cos (GKE managed)
 
 ### Deployment Stack
-- **Runtime**: ghcr.io/ggerganov/llama.cpp:server-cuda
+- **Runtime**: ghcr.io/ggml-org/llama.cpp:server-cuda
 - **Model**: Llama 3.2 3B Instruct Q8_0 (3.18GB GGUF)
 - **GPU Offloading**: All 29 layers (28 transformer + 1 output layer)
 - **Key Argument**: `--n-gpu-layers 99` (⚠️ Note: `-1` didn't work in this llama.cpp version)

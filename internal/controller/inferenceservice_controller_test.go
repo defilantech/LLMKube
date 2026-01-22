@@ -82,7 +82,7 @@ var _ = Describe("InferenceService Controller", func() {
 					Spec: inferencev1alpha1.InferenceServiceSpec{
 						ModelRef: modelName,
 						Replicas: &replicas,
-						Image:    "ghcr.io/ggerganov/llama.cpp:server",
+						Image:    "ghcr.io/ggml-org/llama.cpp:server",
 					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
@@ -222,7 +222,7 @@ var _ = Describe("Multi-GPU Deployment Construction", func() {
 				Spec: inferencev1alpha1.InferenceServiceSpec{
 					ModelRef: "multi-gpu-model",
 					Replicas: &replicas,
-					Image:    "ghcr.io/ggerganov/llama.cpp:server-cuda",
+					Image:    "ghcr.io/ggml-org/llama.cpp:server-cuda",
 					Resources: &inferencev1alpha1.InferenceResourceRequirements{
 						GPU: 2,
 					},
@@ -288,7 +288,7 @@ var _ = Describe("Multi-GPU Deployment Construction", func() {
 				Spec: inferencev1alpha1.InferenceServiceSpec{
 					ModelRef: "quad-gpu-model",
 					Replicas: &replicas,
-					Image:    "ghcr.io/ggerganov/llama.cpp:server-cuda",
+					Image:    "ghcr.io/ggml-org/llama.cpp:server-cuda",
 				},
 			}
 
@@ -339,7 +339,7 @@ var _ = Describe("Multi-GPU Deployment Construction", func() {
 				Spec: inferencev1alpha1.InferenceServiceSpec{
 					ModelRef: "single-gpu-model",
 					Replicas: &replicas,
-					Image:    "ghcr.io/ggerganov/llama.cpp:server-cuda",
+					Image:    "ghcr.io/ggml-org/llama.cpp:server-cuda",
 					Resources: &inferencev1alpha1.InferenceResourceRequirements{
 						GPU: 1,
 					},
@@ -392,7 +392,7 @@ var _ = Describe("Multi-GPU Deployment Construction", func() {
 				Spec: inferencev1alpha1.InferenceServiceSpec{
 					ModelRef: "cpu-model",
 					Replicas: &replicas,
-					Image:    "ghcr.io/ggerganov/llama.cpp:server",
+					Image:    "ghcr.io/ggml-org/llama.cpp:server",
 				},
 			}
 
@@ -445,7 +445,7 @@ var _ = Describe("Multi-GPU Deployment Construction", func() {
 				Spec: inferencev1alpha1.InferenceServiceSpec{
 					ModelRef: "model-gpu-precedence",
 					Replicas: &replicas,
-					Image:    "ghcr.io/ggerganov/llama.cpp:server-cuda",
+					Image:    "ghcr.io/ggml-org/llama.cpp:server-cuda",
 					Resources: &inferencev1alpha1.InferenceResourceRequirements{
 						GPU: 2, // InferenceService says 2 GPUs
 					},
@@ -509,7 +509,7 @@ var _ = Describe("Multi-GPU Deployment Construction", func() {
 				Spec: inferencev1alpha1.InferenceServiceSpec{
 					ModelRef: "toleration-test-model",
 					Replicas: &replicas,
-					Image:    "ghcr.io/ggerganov/llama.cpp:server-cuda",
+					Image:    "ghcr.io/ggml-org/llama.cpp:server-cuda",
 				},
 			}
 
@@ -562,7 +562,7 @@ var _ = Describe("Multi-GPU Deployment Construction", func() {
 				Spec: inferencev1alpha1.InferenceServiceSpec{
 					ModelRef: "nodeselector-test-model",
 					Replicas: &replicas,
-					Image:    "ghcr.io/ggerganov/llama.cpp:server-cuda",
+					Image:    "ghcr.io/ggml-org/llama.cpp:server-cuda",
 					NodeSelector: map[string]string{
 						"cloud.google.com/gke-nodepool": "gpu-pool",
 						"nvidia.com/gpu.product":        "NVIDIA-L4",
@@ -630,7 +630,7 @@ var _ = Describe("Context Size Configuration", func() {
 				Spec: inferencev1alpha1.InferenceServiceSpec{
 					ModelRef:    "context-size-model",
 					Replicas:    &replicas,
-					Image:       "ghcr.io/ggerganov/llama.cpp:server-cuda",
+					Image:       "ghcr.io/ggml-org/llama.cpp:server-cuda",
 					ContextSize: &contextSize,
 				},
 			}
@@ -654,7 +654,7 @@ var _ = Describe("Context Size Configuration", func() {
 				Spec: inferencev1alpha1.InferenceServiceSpec{
 					ModelRef:    "context-size-model",
 					Replicas:    &replicas,
-					Image:       "ghcr.io/ggerganov/llama.cpp:server-cuda",
+					Image:       "ghcr.io/ggml-org/llama.cpp:server-cuda",
 					ContextSize: &contextSize,
 				},
 			}
@@ -677,7 +677,7 @@ var _ = Describe("Context Size Configuration", func() {
 				Spec: inferencev1alpha1.InferenceServiceSpec{
 					ModelRef: "context-size-model",
 					Replicas: &replicas,
-					Image:    "ghcr.io/ggerganov/llama.cpp:server-cuda",
+					Image:    "ghcr.io/ggml-org/llama.cpp:server-cuda",
 					// ContextSize not specified
 				},
 			}
@@ -700,7 +700,7 @@ var _ = Describe("Context Size Configuration", func() {
 				Spec: inferencev1alpha1.InferenceServiceSpec{
 					ModelRef:    "context-size-model",
 					Replicas:    &replicas,
-					Image:       "ghcr.io/ggerganov/llama.cpp:server-cuda",
+					Image:       "ghcr.io/ggml-org/llama.cpp:server-cuda",
 					ContextSize: &contextSize,
 				},
 			}
@@ -723,7 +723,7 @@ var _ = Describe("Context Size Configuration", func() {
 				Spec: inferencev1alpha1.InferenceServiceSpec{
 					ModelRef:    "context-size-model",
 					Replicas:    &replicas,
-					Image:       "ghcr.io/ggerganov/llama.cpp:server-cuda",
+					Image:       "ghcr.io/ggml-org/llama.cpp:server-cuda",
 					ContextSize: &contextSize,
 					Resources: &inferencev1alpha1.InferenceResourceRequirements{
 						GPU: 1,
@@ -806,7 +806,7 @@ var _ = Describe("Multi-GPU End-to-End Reconciliation", func() {
 					Spec: inferencev1alpha1.InferenceServiceSpec{
 						ModelRef: multiGPUModelName,
 						Replicas: &replicas,
-						Image:    "ghcr.io/ggerganov/llama.cpp:server-cuda",
+						Image:    "ghcr.io/ggml-org/llama.cpp:server-cuda",
 						Resources: &inferencev1alpha1.InferenceResourceRequirements{
 							GPU:       2,
 							GPUMemory: "16Gi",
