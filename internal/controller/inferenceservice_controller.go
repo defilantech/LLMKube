@@ -445,7 +445,7 @@ func (r *InferenceServiceReconciler) determinePhase(ctx context.Context, isvc *i
 	log := logf.FromContext(ctx)
 
 	if readyReplicas == desiredReplicas && readyReplicas > 0 {
-		return "Ready", nil
+		return PhaseReady, nil
 	}
 	if readyReplicas > 0 {
 		return "Progressing", nil
@@ -891,7 +891,7 @@ func (r *InferenceServiceReconciler) updateStatusWithSchedulingInfo(
 
 	var condition metav1.Condition
 	switch phase {
-	case "Ready":
+	case PhaseReady:
 		condition = metav1.Condition{
 			Type:               "Available",
 			Status:             metav1.ConditionTrue,

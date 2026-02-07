@@ -18,10 +18,12 @@ package controller
 
 import (
 	"context"
+	"fmt"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
@@ -1022,6 +1024,943 @@ var _ = Describe("Multi-GPU End-to-End Reconciliation", func() {
 			err = k8sClient.Get(ctx, serviceNamespacedName, isvc)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(isvc.Spec.Resources.GPU).To(Equal(int32(2)))
+		})
+	})
+})
+
+var _ = Describe("sanitizeDNSName", func() {
+	It("should replace dots with dashes", func() {
+		Expect(sanitizeDNSName("my.model.v1")).To(Equal("my-model-v1"))
+	})
+	It("should leave names without dots unchanged", func() {
+		Expect(sanitizeDNSName("my-service")).To(Equal("my-service"))
+	})
+})
+
+var _ = Describe("buildModelInitCommand", func() {
+	It("should generate cached remote download command", func() {
+		cmd := buildModelInitCommand("https://example.com/model.gguf", "/models/abc123", "/models/abc123/model.gguf", true)
+		Expect(cmd).To(ContainSubstring("mkdir -p /models/abc123"))
+		Expect(cmd).To(ContainSubstring("if [ ! -f /models/abc123/model.gguf ]"))
+		Expect(cmd).To(ContainSubstring("curl -f -L"))
+		Expect(cmd).To(ContainSubstring("https://example.com/model.gguf"))
+	})
+
+	It("should generate cached local copy command for file:// source", func() {
+		cmd := buildModelInitCommand("file:///mnt/models/test.gguf", "/models/abc123", "/models/abc123/model.gguf", true)
+		Expect(cmd).To(ContainSubstring("mkdir -p /models/abc123"))
+		Expect(cmd).To(ContainSubstring("cp /host-model/model.gguf"))
+	})
+
+	It("should generate cached local copy command for absolute path source", func() {
+		cmd := buildModelInitCommand("/mnt/models/test.gguf", "/models/abc123", "/models/abc123/model.gguf", true)
+		Expect(cmd).To(ContainSubstring("mkdir -p /models/abc123"))
+		Expect(cmd).To(ContainSubstring("cp /host-model/model.gguf"))
+	})
+
+	It("should generate error exit for uncached local source", func() {
+		cmd := buildModelInitCommand("file:///mnt/models/test.gguf", "", "/models/test.gguf", false)
+		Expect(cmd).To(ContainSubstring("ERROR: Local model source requires model cache"))
+		Expect(cmd).To(ContainSubstring("exit 1"))
+	})
+
+	It("should generate uncached remote download command", func() {
+		cmd := buildModelInitCommand("https://example.com/model.gguf", "", "/models/default-test.gguf", false)
+		Expect(cmd).To(ContainSubstring("curl -f -L"))
+		Expect(cmd).NotTo(ContainSubstring("mkdir -p"))
+	})
+})
+
+var _ = Describe("buildCachedStorageConfig", func() {
+	It("should configure PVC volume and init container for remote model", func() {
+		model := &inferencev1alpha1.Model{
+			Spec: inferencev1alpha1.ModelSpec{
+				Source: "https://example.com/model.gguf",
+			},
+			Status: inferencev1alpha1.ModelStatus{
+				CacheKey: "abc123def456",
+			},
+		}
+		config := buildCachedStorageConfig(model, "", "curl:latest")
+
+		Expect(config.modelPath).To(Equal("/models/abc123def456/model.gguf"))
+		Expect(config.volumes).To(HaveLen(1))
+		Expect(config.volumes[0].Name).To(Equal("model-cache"))
+		Expect(config.volumes[0].PersistentVolumeClaim.ClaimName).To(Equal(ModelCachePVCName))
+		Expect(config.initContainers).To(HaveLen(1))
+		Expect(config.initContainers[0].Name).To(Equal("model-downloader"))
+		Expect(config.initContainers[0].Image).To(Equal("curl:latest"))
+		Expect(config.volumeMounts[0].MountPath).To(Equal("/models"))
+		Expect(config.volumeMounts[0].ReadOnly).To(BeTrue())
+	})
+
+	It("should add host-model volume for local source", func() {
+		model := &inferencev1alpha1.Model{
+			Spec: inferencev1alpha1.ModelSpec{
+				Source: "file:///mnt/models/test.gguf",
+			},
+			Status: inferencev1alpha1.ModelStatus{
+				CacheKey: "abc123",
+			},
+		}
+		config := buildCachedStorageConfig(model, "", "curl:latest")
+
+		Expect(config.volumes).To(HaveLen(2))
+		Expect(config.volumes[1].Name).To(Equal("host-model"))
+		Expect(config.volumes[1].HostPath.Path).To(Equal("/mnt/models/test.gguf"))
+	})
+
+	It("should add CA cert volume when caCertConfigMap is set", func() {
+		model := &inferencev1alpha1.Model{
+			Spec: inferencev1alpha1.ModelSpec{
+				Source: "https://example.com/model.gguf",
+			},
+			Status: inferencev1alpha1.ModelStatus{
+				CacheKey: "abc123",
+			},
+		}
+		config := buildCachedStorageConfig(model, "my-ca-certs", "curl:latest")
+
+		var found bool
+		for _, v := range config.volumes {
+			if v.Name == "custom-ca-cert" {
+				found = true
+				Expect(v.ConfigMap.Name).To(Equal("my-ca-certs"))
+			}
+		}
+		Expect(found).To(BeTrue())
+		Expect(config.initContainers[0].Command[2]).To(ContainSubstring("CURL_CA_BUNDLE=/custom-certs/"))
+	})
+})
+
+var _ = Describe("buildEmptyDirStorageConfig", func() {
+	It("should configure emptyDir volume for remote model", func() {
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: "my-model"},
+			Spec:       inferencev1alpha1.ModelSpec{Source: "https://example.com/model.gguf"},
+		}
+		config := buildEmptyDirStorageConfig(model, "default", "", "curl:latest")
+
+		Expect(config.modelPath).To(Equal("/models/default-my-model.gguf"))
+		Expect(config.volumes).To(HaveLen(1))
+		Expect(config.volumes[0].Name).To(Equal("model-storage"))
+		Expect(config.volumes[0].EmptyDir).NotTo(BeNil())
+	})
+
+	It("should add CA cert volume when caCertConfigMap is set", func() {
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: "my-model"},
+			Spec:       inferencev1alpha1.ModelSpec{Source: "https://example.com/model.gguf"},
+		}
+		config := buildEmptyDirStorageConfig(model, "default", "my-ca-certs", "curl:latest")
+
+		var found bool
+		for _, v := range config.volumes {
+			if v.Name == "custom-ca-cert" {
+				found = true
+				Expect(v.ConfigMap.Name).To(Equal("my-ca-certs"))
+			}
+		}
+		Expect(found).To(BeTrue())
+		Expect(config.initContainers[0].Command[2]).To(ContainSubstring("CURL_CA_BUNDLE=/custom-certs/"))
+	})
+})
+
+var _ = Describe("constructService", func() {
+	var reconciler *InferenceServiceReconciler
+
+	BeforeEach(func() {
+		reconciler = &InferenceServiceReconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+	})
+
+	It("should create ClusterIP service with default port", func() {
+		isvc := &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-svc", Namespace: "default"},
+		}
+		svc := reconciler.constructService(isvc)
+
+		Expect(svc.Name).To(Equal("test-svc"))
+		Expect(svc.Spec.Type).To(Equal(corev1.ServiceTypeClusterIP))
+		Expect(svc.Spec.Ports[0].Port).To(Equal(int32(8080)))
+	})
+
+	It("should create NodePort service", func() {
+		isvc := &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-svc", Namespace: "default"},
+			Spec: inferencev1alpha1.InferenceServiceSpec{
+				Endpoint: &inferencev1alpha1.EndpointSpec{Type: "NodePort"},
+			},
+		}
+		svc := reconciler.constructService(isvc)
+		Expect(svc.Spec.Type).To(Equal(corev1.ServiceTypeNodePort))
+	})
+
+	It("should create LoadBalancer service", func() {
+		isvc := &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-svc", Namespace: "default"},
+			Spec: inferencev1alpha1.InferenceServiceSpec{
+				Endpoint: &inferencev1alpha1.EndpointSpec{Type: "LoadBalancer"},
+			},
+		}
+		svc := reconciler.constructService(isvc)
+		Expect(svc.Spec.Type).To(Equal(corev1.ServiceTypeLoadBalancer))
+	})
+
+	It("should use custom port", func() {
+		isvc := &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-svc", Namespace: "default"},
+			Spec: inferencev1alpha1.InferenceServiceSpec{
+				Endpoint: &inferencev1alpha1.EndpointSpec{Port: 3000},
+			},
+		}
+		svc := reconciler.constructService(isvc)
+		Expect(svc.Spec.Ports[0].Port).To(Equal(int32(3000)))
+	})
+
+	It("should sanitize service name with dots", func() {
+		isvc := &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: "my.model.v1", Namespace: "default"},
+		}
+		svc := reconciler.constructService(isvc)
+		Expect(svc.Name).To(Equal("my-model-v1"))
+	})
+})
+
+var _ = Describe("constructEndpoint", func() {
+	var reconciler *InferenceServiceReconciler
+
+	BeforeEach(func() {
+		reconciler = &InferenceServiceReconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+	})
+
+	It("should construct default endpoint URL", func() {
+		isvc := &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-svc", Namespace: "default"},
+		}
+		svc := &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-svc", Namespace: "default"},
+		}
+		endpoint := reconciler.constructEndpoint(isvc, svc)
+		Expect(endpoint).To(Equal("http://test-svc.default.svc.cluster.local:8080/v1/chat/completions"))
+	})
+
+	It("should use custom port", func() {
+		isvc := &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-svc", Namespace: "default"},
+			Spec: inferencev1alpha1.InferenceServiceSpec{
+				Endpoint: &inferencev1alpha1.EndpointSpec{Port: 9090},
+			},
+		}
+		svc := &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-svc", Namespace: "default"},
+		}
+		endpoint := reconciler.constructEndpoint(isvc, svc)
+		Expect(endpoint).To(ContainSubstring(":9090"))
+	})
+
+	It("should use custom path", func() {
+		isvc := &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-svc", Namespace: "default"},
+			Spec: inferencev1alpha1.InferenceServiceSpec{
+				Endpoint: &inferencev1alpha1.EndpointSpec{Path: "/api/generate"},
+			},
+		}
+		svc := &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-svc", Namespace: "default"},
+		}
+		endpoint := reconciler.constructEndpoint(isvc, svc)
+		Expect(endpoint).To(HaveSuffix("/api/generate"))
+	})
+})
+
+var _ = Describe("determinePhase", func() {
+	var reconciler *InferenceServiceReconciler
+
+	BeforeEach(func() {
+		reconciler = &InferenceServiceReconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+	})
+
+	It("should return Ready when readyReplicas equals desiredReplicas", func() {
+		isvc := &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+		}
+		phase, info := reconciler.determinePhase(context.Background(), isvc, 2, 2, false, &appsv1.Deployment{})
+		Expect(phase).To(Equal("Ready"))
+		Expect(info).To(BeNil())
+	})
+
+	It("should return Progressing when partially ready", func() {
+		isvc := &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+		}
+		phase, info := reconciler.determinePhase(context.Background(), isvc, 1, 3, false, &appsv1.Deployment{})
+		Expect(phase).To(Equal("Progressing"))
+		Expect(info).To(BeNil())
+	})
+
+	It("should return Creating when no replicas ready and no scheduling issues", func() {
+		isvc := &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: "no-pods-test", Namespace: "default"},
+		}
+		phase, _ := reconciler.determinePhase(context.Background(), isvc, 0, 1, false, &appsv1.Deployment{})
+		Expect(phase).To(Equal("Creating"))
+	})
+
+	It("should return Creating when deployment is nil (Metal path)", func() {
+		isvc := &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+		}
+		phase, _ := reconciler.determinePhase(context.Background(), isvc, 0, 1, true, nil)
+		Expect(phase).To(Equal("Creating"))
+	})
+})
+
+var _ = Describe("resolvePriorityClassName", func() {
+	var reconciler *InferenceServiceReconciler
+
+	BeforeEach(func() {
+		reconciler = &InferenceServiceReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+	})
+
+	It("should return custom PriorityClassName when explicitly set", func() {
+		isvc := &inferencev1alpha1.InferenceService{
+			Spec: inferencev1alpha1.InferenceServiceSpec{PriorityClassName: "my-custom-priority"},
+		}
+		Expect(reconciler.resolvePriorityClassName(isvc)).To(Equal("my-custom-priority"))
+	})
+
+	DescribeTable("should map priority levels",
+		func(priority, expected string) {
+			isvc := &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{Priority: priority},
+			}
+			Expect(reconciler.resolvePriorityClassName(isvc)).To(Equal(expected))
+		},
+		Entry("critical", "critical", "llmkube-critical"),
+		Entry("high", "high", "llmkube-high"),
+		Entry("normal", "normal", "llmkube-normal"),
+		Entry("low", "low", "llmkube-low"),
+		Entry("batch", "batch", "llmkube-batch"),
+		Entry("empty defaults to normal", "", "llmkube-normal"),
+		Entry("unknown defaults to normal", "unknown", "llmkube-normal"),
+	)
+})
+
+var _ = Describe("resolveEffectivePriority", func() {
+	var reconciler *InferenceServiceReconciler
+
+	BeforeEach(func() {
+		reconciler = &InferenceServiceReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+	})
+
+	DescribeTable("should resolve priority values",
+		func(priority string, expected int32) {
+			isvc := &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{Priority: priority},
+			}
+			Expect(reconciler.resolveEffectivePriority(isvc)).To(Equal(expected))
+		},
+		Entry("critical", "critical", int32(1000000)),
+		Entry("high", "high", int32(100000)),
+		Entry("normal", "normal", int32(10000)),
+		Entry("low", "low", int32(1000)),
+		Entry("batch", "batch", int32(100)),
+		Entry("empty defaults to normal", "", int32(10000)),
+		Entry("unknown defaults to normal", "unknown", int32(10000)),
+	)
+})
+
+func deletePVCForcibly(ctx context.Context, namespace string) {
+	pvc := &corev1.PersistentVolumeClaim{}
+	pvcKey := types.NamespacedName{Name: ModelCachePVCName, Namespace: namespace}
+	if err := k8sClient.Get(ctx, pvcKey, pvc); err != nil {
+		return
+	}
+	if len(pvc.Finalizers) > 0 {
+		pvc.Finalizers = nil
+		_ = k8sClient.Update(ctx, pvc)
+	}
+	_ = k8sClient.Delete(ctx, pvc)
+	Eventually(func() bool {
+		return errors.IsNotFound(k8sClient.Get(ctx, pvcKey, &corev1.PersistentVolumeClaim{}))
+	}, "5s", "100ms").Should(BeTrue())
+}
+
+var _ = Describe("ensureModelCachePVC", func() {
+	var reconciler *InferenceServiceReconciler
+
+	BeforeEach(func() {
+		deletePVCForcibly(context.Background(), "default")
+		reconciler = &InferenceServiceReconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+	})
+
+	AfterEach(func() {
+		deletePVCForcibly(context.Background(), "default")
+	})
+
+	It("should create PVC with default 100Gi and ReadWriteOnce", func() {
+		err := reconciler.ensureModelCachePVC(context.Background(), "default")
+		Expect(err).NotTo(HaveOccurred())
+
+		pvc := &corev1.PersistentVolumeClaim{}
+		err = k8sClient.Get(context.Background(), types.NamespacedName{Name: ModelCachePVCName, Namespace: "default"}, pvc)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(pvc.Spec.AccessModes).To(ContainElement(corev1.ReadWriteOnce))
+		storageReq := pvc.Spec.Resources.Requests[corev1.ResourceStorage]
+		Expect(storageReq.String()).To(Equal("100Gi"))
+		Expect(pvc.Labels["app.kubernetes.io/name"]).To(Equal("llmkube"))
+	})
+
+	It("should create PVC with custom size", func() {
+		reconciler.ModelCacheSize = "50Gi"
+		err := reconciler.ensureModelCachePVC(context.Background(), "default")
+		Expect(err).NotTo(HaveOccurred())
+
+		pvc := &corev1.PersistentVolumeClaim{}
+		err = k8sClient.Get(context.Background(), types.NamespacedName{Name: ModelCachePVCName, Namespace: "default"}, pvc)
+		Expect(err).NotTo(HaveOccurred())
+		storageReq := pvc.Spec.Resources.Requests[corev1.ResourceStorage]
+		Expect(storageReq.String()).To(Equal("50Gi"))
+	})
+
+	It("should create PVC with ReadWriteMany when configured", func() {
+		reconciler.ModelCacheAccessMode = "ReadWriteMany"
+		err := reconciler.ensureModelCachePVC(context.Background(), "default")
+		Expect(err).NotTo(HaveOccurred())
+
+		pvc := &corev1.PersistentVolumeClaim{}
+		err = k8sClient.Get(context.Background(), types.NamespacedName{Name: ModelCachePVCName, Namespace: "default"}, pvc)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(pvc.Spec.AccessModes).To(ContainElement(corev1.ReadWriteMany))
+	})
+
+	It("should set StorageClassName when configured", func() {
+		reconciler.ModelCacheClass = "fast-ssd"
+		err := reconciler.ensureModelCachePVC(context.Background(), "default")
+		Expect(err).NotTo(HaveOccurred())
+
+		pvc := &corev1.PersistentVolumeClaim{}
+		err = k8sClient.Get(context.Background(), types.NamespacedName{Name: ModelCachePVCName, Namespace: "default"}, pvc)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(*pvc.Spec.StorageClassName).To(Equal("fast-ssd"))
+	})
+
+	It("should not error if PVC already exists", func() {
+		err := reconciler.ensureModelCachePVC(context.Background(), "default")
+		Expect(err).NotTo(HaveOccurred())
+		err = reconciler.ensureModelCachePVC(context.Background(), "default")
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("should return error for invalid cache size", func() {
+		reconciler.ModelCacheSize = "not-a-size"
+		err := reconciler.ensureModelCachePVC(context.Background(), "default")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("invalid cache size"))
+	})
+})
+
+var _ = Describe("constructDeployment additional cases", func() {
+	var reconciler *InferenceServiceReconciler
+
+	BeforeEach(func() {
+		reconciler = &InferenceServiceReconciler{
+			Client:             k8sClient,
+			Scheme:             k8sClient.Scheme(),
+			InitContainerImage: "docker.io/curlimages/curl:latest",
+		}
+	})
+
+	It("should use default image when isvc.Spec.Image is empty", func() {
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: "m", Namespace: "default"},
+			Spec:       inferencev1alpha1.ModelSpec{Source: "https://example.com/model.gguf"},
+			Status:     inferencev1alpha1.ModelStatus{Phase: "Ready"},
+		}
+		isvc := &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "default"},
+			Spec:       inferencev1alpha1.InferenceServiceSpec{ModelRef: "m"},
+		}
+		deployment := reconciler.constructDeployment(isvc, model, 1)
+		Expect(deployment.Spec.Template.Spec.Containers[0].Image).To(Equal("ghcr.io/ggml-org/llama.cpp:server"))
+	})
+
+	It("should use custom endpoint port", func() {
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: "m", Namespace: "default"},
+			Spec:       inferencev1alpha1.ModelSpec{Source: "https://example.com/model.gguf"},
+			Status:     inferencev1alpha1.ModelStatus{Phase: "Ready"},
+		}
+		isvc := &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "default"},
+			Spec: inferencev1alpha1.InferenceServiceSpec{
+				ModelRef: "m",
+				Endpoint: &inferencev1alpha1.EndpointSpec{Port: 3000},
+			},
+		}
+		deployment := reconciler.constructDeployment(isvc, model, 1)
+		container := deployment.Spec.Template.Spec.Containers[0]
+		Expect(container.Args).To(ContainElement("3000"))
+		Expect(container.Ports[0].ContainerPort).To(Equal(int32(3000)))
+	})
+
+	It("should set CPU and Memory resource requests", func() {
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: "m", Namespace: "default"},
+			Spec:       inferencev1alpha1.ModelSpec{Source: "https://example.com/model.gguf"},
+			Status:     inferencev1alpha1.ModelStatus{Phase: "Ready"},
+		}
+		isvc := &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "default"},
+			Spec: inferencev1alpha1.InferenceServiceSpec{
+				ModelRef:  "m",
+				Resources: &inferencev1alpha1.InferenceResourceRequirements{CPU: "2", Memory: "4Gi"},
+			},
+		}
+		deployment := reconciler.constructDeployment(isvc, model, 1)
+		requests := deployment.Spec.Template.Spec.Containers[0].Resources.Requests
+		Expect(requests[corev1.ResourceCPU]).To(Equal(resource.MustParse("2")))
+		Expect(requests[corev1.ResourceMemory]).To(Equal(resource.MustParse("4Gi")))
+	})
+
+	It("should not add tolerations for CPU-only workload", func() {
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: "m", Namespace: "default"},
+			Spec: inferencev1alpha1.ModelSpec{
+				Source:   "https://example.com/model.gguf",
+				Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: "cpu"},
+			},
+			Status: inferencev1alpha1.ModelStatus{Phase: "Ready"},
+		}
+		isvc := &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "default"},
+			Spec:       inferencev1alpha1.InferenceServiceSpec{ModelRef: "m"},
+		}
+		deployment := reconciler.constructDeployment(isvc, model, 1)
+		Expect(deployment.Spec.Template.Spec.Tolerations).To(BeEmpty())
+		Expect(deployment.Spec.Template.Spec.NodeSelector).To(BeEmpty())
+	})
+
+	It("should use explicit GPU layers from Model spec", func() {
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: "m", Namespace: "default"},
+			Spec: inferencev1alpha1.ModelSpec{
+				Source: "https://example.com/model.gguf",
+				Hardware: &inferencev1alpha1.HardwareSpec{
+					Accelerator: "cuda",
+					GPU:         &inferencev1alpha1.GPUSpec{Enabled: true, Count: 1, Layers: 32},
+				},
+			},
+			Status: inferencev1alpha1.ModelStatus{Phase: "Ready"},
+		}
+		isvc := &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "default"},
+			Spec:       inferencev1alpha1.InferenceServiceSpec{ModelRef: "m"},
+		}
+		deployment := reconciler.constructDeployment(isvc, model, 1)
+		args := deployment.Spec.Template.Spec.Containers[0].Args
+		Expect(args).To(ContainElement("--n-gpu-layers"))
+		Expect(args).To(ContainElement("32"))
+		Expect(args).NotTo(ContainElement("99"))
+	})
+
+	It("should use PVC-based storage when cache is configured", func() {
+		reconciler.ModelCachePath = "/models"
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: "m", Namespace: "default"},
+			Spec:       inferencev1alpha1.ModelSpec{Source: "https://example.com/model.gguf"},
+			Status:     inferencev1alpha1.ModelStatus{Phase: "Ready", CacheKey: "abc123"},
+		}
+		isvc := &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "default"},
+			Spec:       inferencev1alpha1.InferenceServiceSpec{ModelRef: "m"},
+		}
+		deployment := reconciler.constructDeployment(isvc, model, 1)
+
+		var hasPVC bool
+		for _, v := range deployment.Spec.Template.Spec.Volumes {
+			if v.Name == "model-cache" && v.PersistentVolumeClaim != nil {
+				hasPVC = true
+			}
+		}
+		Expect(hasPVC).To(BeTrue())
+		Expect(deployment.Spec.Template.Spec.Containers[0].Args).To(ContainElement(ContainSubstring("abc123")))
+	})
+})
+
+var _ = Describe("findInferenceServiceForPod", func() {
+	It("should return reconcile request when pod has service label", func() {
+		reconciler := &InferenceServiceReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-pod",
+				Namespace: "default",
+				Labels: map[string]string{
+					"inference.llmkube.dev/service": "my-service",
+				},
+			},
+		}
+		requests := reconciler.findInferenceServiceForPod(context.Background(), pod)
+		Expect(requests).To(HaveLen(1))
+		Expect(requests[0].Name).To(Equal("my-service"))
+		Expect(requests[0].Namespace).To(Equal("default"))
+	})
+
+	It("should return nil when pod lacks service label", func() {
+		reconciler := &InferenceServiceReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-pod", Namespace: "default"},
+		}
+		requests := reconciler.findInferenceServiceForPod(context.Background(), pod)
+		Expect(requests).To(BeNil())
+	})
+})
+
+var _ = Describe("Reconcile lifecycle", func() {
+	It("should return empty result when InferenceService is not found", func() {
+		reconciler := &InferenceServiceReconciler{
+			Client:             k8sClient,
+			Scheme:             k8sClient.Scheme(),
+			InitContainerImage: "docker.io/curlimages/curl:latest",
+		}
+		result, err := reconciler.Reconcile(context.Background(), reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: "nonexistent", Namespace: "default"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(Equal(reconcile.Result{}))
+	})
+
+	Context("with envtest resources", func() {
+		ctx := context.Background()
+
+		It("should set Failed status when referenced Model does not exist", func() {
+			isvcName := "isvc-no-model"
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{Name: isvcName, Namespace: "default"},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: "nonexistent-model",
+					Replicas: &replicas,
+				},
+			}
+			Expect(k8sClient.Create(ctx, isvc)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Delete(ctx, isvc)
+			}()
+
+			reconciler := &InferenceServiceReconciler{
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
+				InitContainerImage: "docker.io/curlimages/curl:latest",
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: isvcName, Namespace: "default"},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := &inferencev1alpha1.InferenceService{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, updated)).To(Succeed())
+			Expect(updated.Status.Phase).To(Equal("Failed"))
+		})
+
+		It("should set Pending status when Model is not Ready", func() {
+			modelName := "model-not-ready"
+			isvcName := "isvc-pending"
+
+			model := &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source:   "https://example.com/model.gguf",
+					Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: "cpu"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, model)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Delete(ctx, model)
+			}()
+
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{Name: isvcName, Namespace: "default"},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: modelName,
+					Replicas: &replicas,
+				},
+			}
+			Expect(k8sClient.Create(ctx, isvc)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Delete(ctx, isvc)
+			}()
+
+			reconciler := &InferenceServiceReconciler{
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
+				InitContainerImage: "docker.io/curlimages/curl:latest",
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: isvcName, Namespace: "default"},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := &inferencev1alpha1.InferenceService{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, updated)).To(Succeed())
+			Expect(updated.Status.Phase).To(Equal("Pending"))
+		})
+
+		It("should create Deployment and Service when Model is Ready", func() {
+			modelName := "model-ready-deploy"
+			isvcName := "isvc-deploy"
+
+			model := &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source:   "https://example.com/model.gguf",
+					Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: "cpu"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, model)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Delete(ctx, model)
+			}()
+
+			model.Status.Phase = PhaseReady
+			Expect(k8sClient.Status().Update(ctx, model)).To(Succeed())
+
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{Name: isvcName, Namespace: "default"},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: modelName,
+					Replicas: &replicas,
+					Image:    "ghcr.io/ggml-org/llama.cpp:server",
+				},
+			}
+			Expect(k8sClient.Create(ctx, isvc)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Delete(ctx, isvc)
+				dep := &appsv1.Deployment{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, dep); err == nil {
+					_ = k8sClient.Delete(ctx, dep)
+				}
+				svc := &corev1.Service{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, svc); err == nil {
+					_ = k8sClient.Delete(ctx, svc)
+				}
+			}()
+
+			reconciler := &InferenceServiceReconciler{
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
+				InitContainerImage: "docker.io/curlimages/curl:latest",
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: isvcName, Namespace: "default"},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying Deployment was created")
+			dep := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, dep)).To(Succeed())
+			Expect(dep.OwnerReferences).To(HaveLen(1))
+			Expect(*dep.OwnerReferences[0].Controller).To(BeTrue())
+
+			By("verifying Service was created")
+			svc := &corev1.Service{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, svc)).To(Succeed())
+			Expect(svc.OwnerReferences).To(HaveLen(1))
+
+			By("verifying status was updated")
+			updated := &inferencev1alpha1.InferenceService{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, updated)).To(Succeed())
+			Expect(updated.Status.Phase).To(Equal("Creating"))
+			Expect(updated.Status.Endpoint).NotTo(BeEmpty())
+		})
+
+		It("should skip Deployment for Metal accelerator", func() {
+			modelName := "metal-model"
+			isvcName := "isvc-metal"
+
+			model := &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source:   "https://example.com/model.gguf",
+					Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: "metal"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, model)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Delete(ctx, model)
+			}()
+
+			model.Status.Phase = PhaseReady
+			Expect(k8sClient.Status().Update(ctx, model)).To(Succeed())
+
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{Name: isvcName, Namespace: "default"},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: modelName,
+					Replicas: &replicas,
+				},
+			}
+			Expect(k8sClient.Create(ctx, isvc)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Delete(ctx, isvc)
+				svc := &corev1.Service{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, svc); err == nil {
+					_ = k8sClient.Delete(ctx, svc)
+				}
+			}()
+
+			reconciler := &InferenceServiceReconciler{
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
+				InitContainerImage: "docker.io/curlimages/curl:latest",
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: isvcName, Namespace: "default"},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying no Deployment was created")
+			dep := &appsv1.Deployment{}
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, dep)
+			Expect(errors.IsNotFound(err)).To(BeTrue())
+
+			By("verifying Service was still created")
+			svc := &corev1.Service{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, svc)).To(Succeed())
+
+			By("verifying status is Ready (Metal returns desiredReplicas as ready)")
+			updated := &inferencev1alpha1.InferenceService{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, updated)).To(Succeed())
+			Expect(updated.Status.Phase).To(Equal("Ready"))
+		})
+
+		It("should default replicas to 1 when nil", func() {
+			modelName := "model-nil-replicas"
+			isvcName := "isvc-nil-replicas"
+
+			model := &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source:   "https://example.com/model.gguf",
+					Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: "cpu"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, model)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Delete(ctx, model)
+			}()
+
+			model.Status.Phase = PhaseReady
+			Expect(k8sClient.Status().Update(ctx, model)).To(Succeed())
+
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{Name: isvcName, Namespace: "default"},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: modelName,
+					// Replicas intentionally nil
+				},
+			}
+			Expect(k8sClient.Create(ctx, isvc)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Delete(ctx, isvc)
+				dep := &appsv1.Deployment{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, dep); err == nil {
+					_ = k8sClient.Delete(ctx, dep)
+				}
+				svc := &corev1.Service{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, svc); err == nil {
+					_ = k8sClient.Delete(ctx, svc)
+				}
+			}()
+
+			reconciler := &InferenceServiceReconciler{
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
+				InitContainerImage: "docker.io/curlimages/curl:latest",
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: isvcName, Namespace: "default"},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			dep := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, dep)).To(Succeed())
+			Expect(*dep.Spec.Replicas).To(Equal(int32(1)))
+		})
+
+		It("should create PVC when model has CacheKey and ModelCachePath is set", func() {
+			modelName := "model-with-cache"
+			isvcName := fmt.Sprintf("isvc-pvc-test-%d", GinkgoRandomSeed())
+
+			model := &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source:   "https://example.com/model.gguf",
+					Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: "cpu"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, model)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Delete(ctx, model)
+			}()
+
+			model.Status.Phase = PhaseReady
+			model.Status.CacheKey = "abc123def456"
+			Expect(k8sClient.Status().Update(ctx, model)).To(Succeed())
+
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{Name: isvcName, Namespace: "default"},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: modelName,
+					Replicas: &replicas,
+				},
+			}
+			Expect(k8sClient.Create(ctx, isvc)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Delete(ctx, isvc)
+				dep := &appsv1.Deployment{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, dep); err == nil {
+					_ = k8sClient.Delete(ctx, dep)
+				}
+				svc := &corev1.Service{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, svc); err == nil {
+					_ = k8sClient.Delete(ctx, svc)
+				}
+				pvc := &corev1.PersistentVolumeClaim{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: ModelCachePVCName, Namespace: "default"}, pvc); err == nil {
+					_ = k8sClient.Delete(ctx, pvc)
+				}
+			}()
+
+			reconciler := &InferenceServiceReconciler{
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
+				InitContainerImage: "docker.io/curlimages/curl:latest",
+				ModelCachePath:     "/models",
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: isvcName, Namespace: "default"},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			pvc := &corev1.PersistentVolumeClaim{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ModelCachePVCName, Namespace: "default"}, pvc)).To(Succeed())
 		})
 	})
 })
