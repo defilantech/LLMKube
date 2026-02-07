@@ -41,7 +41,7 @@ func TestLoadCatalog(t *testing.T) {
 	}
 
 	// Verify we have the expected number of models
-	expectedModelCount := 13
+	expectedModelCount := 17
 	if len(catalog.Models) != expectedModelCount {
 		t.Errorf("Expected %d models, got %d", expectedModelCount, len(catalog.Models))
 	}
@@ -74,16 +74,20 @@ func TestGetModel(t *testing.T) {
 		{"Llama 3.1 8B exists", "llama-3.1-8b", true},
 		{"Mistral 7B exists", "mistral-7b", true},
 		{"Qwen Coder exists", "qwen-2.5-coder-7b", true},
-		{"DeepSeek Coder exists", "deepseek-coder-6.7b", true},
-		{"Phi-3 Mini exists", "phi-3-mini", true},
-		{"Gemma 2 9B exists", "gemma-2-9b", true},
+		{"DeepSeek R1 7B exists", "deepseek-r1-7b", true},
+		{"Phi-4 Mini exists", "phi-4-mini", true},
+		{"Gemma 3 12B exists", "gemma-3-12b", true},
 		{"Qwen 14B exists", "qwen-2.5-14b", true},
 		{"Mixtral exists", "mixtral-8x7b", true},
-		{"Llama 70B exists", "llama-3.1-70b", true},
+		{"Llama 70B exists", "llama-3.3-70b", true},
 		{"Llama 3.2 3B exists", "llama-3.2-3b", true},
 		{"Qwen 2.5 32B exists", "qwen-2.5-32b", true},
 		{"Qwen 2.5 Coder 32B exists", "qwen-2.5-coder-32b", true},
 		{"Qwen 3 32B exists", "qwen-3-32b", true},
+		{"DeepSeek R1 14B exists", "deepseek-r1-14b", true},
+		{"DeepSeek R1 32B exists", "deepseek-r1-32b", true},
+		{"Mistral Small 24B exists", "mistral-small-24b", true},
+		{"Gemma 3 4B exists", "gemma-3-4b", true},
 		{"Non-existent model", "non-existent-model", false},
 	}
 
