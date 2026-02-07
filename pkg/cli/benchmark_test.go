@@ -21,6 +21,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -972,5 +975,812 @@ func TestIsPodReady(t *testing.T) {
 				t.Errorf("isPodReady() = %v, expected %v", result, tc.expected)
 			}
 		})
+	}
+}
+
+func TestParseNvidiaSMI(t *testing.T) {
+	tests := []struct {
+		name      string
+		output    string
+		wantNil   bool
+		wantMemMB int
+		wantUtil  int
+		wantTemp  int
+		wantPower int
+	}{
+		{
+			name:      "single GPU",
+			output:    "4096, 8192, 75, 65, 120.5",
+			wantMemMB: 4096,
+			wantUtil:  75,
+			wantTemp:  65,
+			wantPower: 120,
+		},
+		{
+			name:      "two GPUs",
+			output:    "4096, 8192, 75, 65, 120.5\n2048, 8192, 90, 70, 110.0",
+			wantMemMB: 6144,
+			wantUtil:  90,
+			wantTemp:  70,
+			wantPower: 230,
+		},
+		{
+			name:    "empty output",
+			output:  "",
+			wantNil: true,
+		},
+		{
+			name:      "minimal fields (3 fields)",
+			output:    "2048, 8192, 50",
+			wantMemMB: 2048,
+			wantUtil:  50,
+			wantTemp:  0,
+			wantPower: 0,
+		},
+		{
+			name:    "too few fields",
+			output:  "2048, 8192",
+			wantNil: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := parseNvidiaSMI(tt.output)
+			if tt.wantNil {
+				if result != nil && result.MemoryUsedMB == 0 && result.UtilPercent == 0 {
+					return
+				}
+				if result != nil && result.MemoryUsedMB > 0 {
+					t.Errorf("parseNvidiaSMI(%q) = non-nil with data, want nil-equivalent", tt.output)
+				}
+				return
+			}
+			if result == nil {
+				t.Fatalf("parseNvidiaSMI(%q) = nil, want non-nil", tt.output)
+			}
+			if result.MemoryUsedMB != tt.wantMemMB {
+				t.Errorf("MemoryUsedMB = %d, want %d", result.MemoryUsedMB, tt.wantMemMB)
+			}
+			if result.UtilPercent != tt.wantUtil {
+				t.Errorf("UtilPercent = %d, want %d", result.UtilPercent, tt.wantUtil)
+			}
+			if result.TempCelsius != tt.wantTemp {
+				t.Errorf("TempCelsius = %d, want %d", result.TempCelsius, tt.wantTemp)
+			}
+			if result.PowerWatts != tt.wantPower {
+				t.Errorf("PowerWatts = %d, want %d", result.PowerWatts, tt.wantPower)
+			}
+		})
+	}
+}
+
+func TestParseSweepValues(t *testing.T) {
+	tests := []struct {
+		name      string
+		input     string
+		expected  []int
+		wantError bool
+	}{
+		{"valid CSV", "1,2,4,8", []int{1, 2, 4, 8}, false},
+		{"single value", "16", []int{16}, false},
+		{"with spaces", "1, 2, 4", []int{1, 2, 4}, false},
+		{"empty string", "", nil, false},
+		{"invalid value", "1,abc,3", nil, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := parseSweepValues(tt.input)
+			if tt.wantError {
+				if err == nil {
+					t.Errorf("parseSweepValues(%q) = nil error, want error", tt.input)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseSweepValues(%q) error = %v", tt.input, err)
+			}
+			if len(result) != len(tt.expected) {
+				t.Fatalf("parseSweepValues(%q) length = %d, want %d", tt.input, len(result), len(tt.expected))
+			}
+			for i, v := range result {
+				if v != tt.expected[i] {
+					t.Errorf("parseSweepValues(%q)[%d] = %d, want %d", tt.input, i, v, tt.expected[i])
+				}
+			}
+		})
+	}
+}
+
+func TestOutputTable(t *testing.T) {
+	summary := BenchmarkSummary{
+		ServiceName:              "test-svc",
+		Namespace:                "test-ns",
+		Iterations:               10,
+		SuccessfulRuns:           10,
+		GenerationToksPerSecMean: 25.5,
+		GenerationToksPerSecMin:  20.0,
+		GenerationToksPerSecMax:  30.0,
+		LatencyP50:               100.0,
+		LatencyP95:               150.0,
+		LatencyP99:               200.0,
+		LatencyMin:               80.0,
+		LatencyMax:               250.0,
+		LatencyMean:              110.0,
+		Duration:                 30 * time.Second,
+	}
+
+	// Capture stdout
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	outputTable(summary)
+
+	_ = w.Close()
+	os.Stdout = old
+
+	var buf bytes.Buffer
+	_, _ = buf.ReadFrom(r)
+	output := buf.String()
+
+	if !strings.Contains(output, "Benchmark Results") {
+		t.Error("outputTable should contain 'Benchmark Results'")
+	}
+	if !strings.Contains(output, "10/10") {
+		t.Error("outputTable should show success rate")
+	}
+}
+
+func TestOutputTableNoSuccess(t *testing.T) {
+	summary := BenchmarkSummary{
+		Iterations:     5,
+		SuccessfulRuns: 0,
+	}
+
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	outputTable(summary)
+
+	_ = w.Close()
+	os.Stdout = old
+
+	var buf bytes.Buffer
+	_, _ = buf.ReadFrom(r)
+	output := buf.String()
+
+	if !strings.Contains(output, "No successful runs") {
+		t.Error("outputTable should indicate no successful runs")
+	}
+}
+
+func TestOutputMarkdown(t *testing.T) {
+	summary := BenchmarkSummary{
+		ServiceName:              "test-svc",
+		Namespace:                "test-ns",
+		Iterations:               5,
+		SuccessfulRuns:           5,
+		GenerationToksPerSecMean: 25.5,
+		GenerationToksPerSecMin:  20.0,
+		GenerationToksPerSecMax:  30.0,
+		PromptToksPerSecMean:     100.0,
+		LatencyP50:               100.0,
+		LatencyP95:               150.0,
+		LatencyP99:               200.0,
+		LatencyMin:               80.0,
+		LatencyMax:               250.0,
+		LatencyMean:              110.0,
+		Timestamp:                time.Date(2025, 1, 15, 10, 0, 0, 0, time.UTC),
+		Duration:                 30 * time.Second,
+	}
+
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	outputMarkdown(summary)
+
+	_ = w.Close()
+	os.Stdout = old
+
+	var buf bytes.Buffer
+	_, _ = buf.ReadFrom(r)
+	output := buf.String()
+
+	if !strings.Contains(output, "# LLMKube Benchmark Results") {
+		t.Error("outputMarkdown should contain markdown header")
+	}
+	if !strings.Contains(output, "test-svc") {
+		t.Error("outputMarkdown should contain service name")
+	}
+	if !strings.Contains(output, "## Throughput") {
+		t.Error("outputMarkdown should contain throughput section")
+	}
+	if !strings.Contains(output, "## Latency") {
+		t.Error("outputMarkdown should contain latency section")
+	}
+	if !strings.Contains(output, "Prompt (tok/s)") {
+		t.Error("outputMarkdown should contain prompt throughput when non-zero")
+	}
+}
+
+func TestOutputMarkdownNoSuccess(t *testing.T) {
+	summary := BenchmarkSummary{
+		ServiceName:    "fail-svc",
+		Namespace:      "test-ns",
+		Iterations:     5,
+		SuccessfulRuns: 0,
+		Timestamp:      time.Now(),
+	}
+
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	outputMarkdown(summary)
+
+	_ = w.Close()
+	os.Stdout = old
+
+	var buf bytes.Buffer
+	_, _ = buf.ReadFrom(r)
+	output := buf.String()
+
+	if !strings.Contains(output, "No successful runs") {
+		t.Error("outputMarkdown should indicate no successful runs")
+	}
+}
+
+func TestOutputStressTable(t *testing.T) {
+	summary := StressTestSummary{
+		BenchmarkSummary: BenchmarkSummary{
+			ServiceName:              "stress-svc",
+			Namespace:                "test-ns",
+			Iterations:               100,
+			SuccessfulRuns:           95,
+			GenerationToksPerSecMean: 50.0,
+			GenerationToksPerSecMin:  30.0,
+			GenerationToksPerSecMax:  70.0,
+			LatencyP50:               200.0,
+			LatencyP95:               500.0,
+			LatencyP99:               800.0,
+			LatencyMin:               100.0,
+			LatencyMax:               1000.0,
+			LatencyMean:              250.0,
+			Duration:                 60 * time.Second,
+		},
+		Concurrency:    4,
+		TotalRequests:  100,
+		RequestsPerSec: 1.67,
+		ErrorRate:      5.0,
+		PeakToksPerSec: 70.0,
+	}
+
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	outputStressTable(summary)
+
+	_ = w.Close()
+	os.Stdout = old
+
+	var buf bytes.Buffer
+	_, _ = buf.ReadFrom(r)
+	output := buf.String()
+
+	if !strings.Contains(output, "Stress Test Results") {
+		t.Error("outputStressTable should contain header")
+	}
+	if !strings.Contains(output, "100") {
+		t.Error("outputStressTable should show total requests")
+	}
+}
+
+func TestOutputStressMarkdown(t *testing.T) {
+	summary := StressTestSummary{
+		BenchmarkSummary: BenchmarkSummary{
+			ServiceName:              "stress-svc",
+			Namespace:                "test-ns",
+			Iterations:               100,
+			SuccessfulRuns:           100,
+			GenerationToksPerSecMean: 50.0,
+			GenerationToksPerSecMin:  30.0,
+			GenerationToksPerSecMax:  70.0,
+			LatencyP50:               200.0,
+			LatencyP95:               500.0,
+			LatencyP99:               800.0,
+			LatencyMin:               100.0,
+			LatencyMax:               1000.0,
+			LatencyMean:              250.0,
+			Timestamp:                time.Now(),
+			Duration:                 60 * time.Second,
+		},
+		Concurrency:    4,
+		TotalRequests:  100,
+		RequestsPerSec: 1.67,
+		ErrorRate:      0.0,
+		PeakToksPerSec: 70.0,
+	}
+
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	outputStressMarkdown(summary)
+
+	_ = w.Close()
+	os.Stdout = old
+
+	var buf bytes.Buffer
+	_, _ = buf.ReadFrom(r)
+	output := buf.String()
+
+	if !strings.Contains(output, "# LLMKube Stress Test Results") {
+		t.Error("outputStressMarkdown should contain header")
+	}
+	if !strings.Contains(output, "## Throughput") {
+		t.Error("outputStressMarkdown should contain throughput section")
+	}
+}
+
+func TestOutputStressJSON(t *testing.T) {
+	summary := StressTestSummary{
+		BenchmarkSummary: BenchmarkSummary{
+			ServiceName:    "test-svc",
+			Namespace:      "test-ns",
+			Iterations:     10,
+			SuccessfulRuns: 10,
+		},
+		Concurrency:   2,
+		TotalRequests: 10,
+	}
+
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	err := outputStressJSON(summary)
+
+	_ = w.Close()
+	os.Stdout = old
+
+	if err != nil {
+		t.Fatalf("outputStressJSON returned error: %v", err)
+	}
+
+	var buf bytes.Buffer
+	_, _ = buf.ReadFrom(r)
+
+	var decoded StressTestSummary
+	if err := json.Unmarshal(buf.Bytes(), &decoded); err != nil {
+		t.Fatalf("Failed to parse JSON output: %v", err)
+	}
+	if decoded.ServiceName != "test-svc" {
+		t.Errorf("ServiceName = %q, want %q", decoded.ServiceName, "test-svc")
+	}
+}
+
+func TestOutputComparisonTable(t *testing.T) {
+	report := ComparisonReport{
+		Models: []ModelBenchmark{
+			{
+				ModelID:              "llama-8b",
+				ModelName:            "Llama 8B",
+				ModelSize:            "8B",
+				Status:               statusSuccess,
+				GenerationToksPerSec: 25.0,
+				LatencyP50Ms:         100.0,
+				LatencyP99Ms:         200.0,
+				VRAMEstimate:         "6GB",
+			},
+			{
+				ModelID: "big-model",
+				Status:  statusFailed,
+				Error:   "insufficient GPU",
+			},
+		},
+		Iterations:  5,
+		MaxTokens:   256,
+		GPUEnabled:  true,
+		GPUCount:    1,
+		Accelerator: "cuda",
+		Duration:    2 * time.Minute,
+	}
+
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	err := outputComparisonTable(report)
+
+	_ = w.Close()
+	os.Stdout = old
+
+	if err != nil {
+		t.Fatalf("outputComparisonTable returned error: %v", err)
+	}
+
+	var buf bytes.Buffer
+	_, _ = buf.ReadFrom(r)
+	output := buf.String()
+
+	if !strings.Contains(output, "Benchmark Comparison Results") {
+		t.Error("outputComparisonTable should contain header")
+	}
+	if !strings.Contains(output, "1/2 benchmarked") {
+		t.Error("outputComparisonTable should show success count")
+	}
+	if !strings.Contains(output, "insufficient GPU") {
+		t.Error("outputComparisonTable should show errors")
+	}
+}
+
+func TestOutputComparisonTableStressTest(t *testing.T) {
+	report := ComparisonReport{
+		Models: []ModelBenchmark{
+			{
+				ModelID:        "llama-8b",
+				ModelSize:      "8B",
+				Status:         statusSuccess,
+				TotalRequests:  50,
+				RequestsPerSec: 2.5,
+				ErrorRate:      0.0,
+			},
+		},
+		IsStressTest: true,
+		Concurrency:  4,
+		Iterations:   50,
+		MaxTokens:    256,
+		Duration:     time.Minute,
+	}
+
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	_ = outputComparisonTable(report)
+
+	_ = w.Close()
+	os.Stdout = old
+
+	var buf bytes.Buffer
+	_, _ = buf.ReadFrom(r)
+	output := buf.String()
+
+	if !strings.Contains(output, "Stress Test Comparison") {
+		t.Error("outputComparisonTable should show stress test header")
+	}
+}
+
+func TestOutputComparisonJSON(t *testing.T) {
+	report := ComparisonReport{
+		Models: []ModelBenchmark{
+			{ModelID: "test", Status: statusSuccess},
+		},
+		Iterations: 5,
+		MaxTokens:  256,
+	}
+
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	err := outputComparisonJSON(report)
+
+	_ = w.Close()
+	os.Stdout = old
+
+	if err != nil {
+		t.Fatalf("outputComparisonJSON returned error: %v", err)
+	}
+
+	var buf bytes.Buffer
+	_, _ = buf.ReadFrom(r)
+
+	var decoded ComparisonReport
+	if err := json.Unmarshal(buf.Bytes(), &decoded); err != nil {
+		t.Fatalf("Failed to parse JSON: %v", err)
+	}
+	if len(decoded.Models) != 1 {
+		t.Errorf("Models count = %d, want 1", len(decoded.Models))
+	}
+}
+
+func TestOutputComparisonMarkdown(t *testing.T) {
+	report := ComparisonReport{
+		Models: []ModelBenchmark{
+			{
+				ModelID:              "llama-8b",
+				ModelName:            "Llama 8B",
+				ModelSize:            "8B",
+				Status:               statusSuccess,
+				GenerationToksPerSec: 25.0,
+				LatencyP50Ms:         100.0,
+				LatencyP99Ms:         200.0,
+				VRAMEstimate:         "6GB",
+			},
+		},
+		Timestamp:  time.Now(),
+		Iterations: 5,
+		MaxTokens:  256,
+		GPUEnabled: true,
+	}
+
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	err := outputComparisonMarkdown(report)
+
+	_ = w.Close()
+	os.Stdout = old
+
+	if err != nil {
+		t.Fatalf("outputComparisonMarkdown returned error: %v", err)
+	}
+
+	var buf bytes.Buffer
+	_, _ = buf.ReadFrom(r)
+	output := buf.String()
+
+	if !strings.Contains(output, "# LLMKube Benchmark Comparison") {
+		t.Error("outputComparisonMarkdown should contain markdown header")
+	}
+}
+
+func TestOutputSweepTable(t *testing.T) {
+	report := SweepReport{
+		SweepType: "Concurrency",
+		Results: []SweepResult{
+			{
+				Value: "1",
+				Summary: &BenchmarkSummary{
+					Iterations:               5,
+					SuccessfulRuns:           5,
+					GenerationToksPerSecMean: 25.0,
+					LatencyP50:               100.0,
+					LatencyP99:               200.0,
+				},
+			},
+			{
+				Value: "4",
+				Stress: &StressTestSummary{
+					BenchmarkSummary: BenchmarkSummary{
+						GenerationToksPerSecMean: 50.0,
+						LatencyP50:               200.0,
+						LatencyP99:               400.0,
+					},
+					TotalRequests:  20,
+					RequestsPerSec: 5.0,
+					ErrorRate:      2.0,
+				},
+			},
+			{
+				Value: "8",
+				Error: "timeout",
+			},
+		},
+		Duration: 30 * time.Second,
+	}
+
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	outputSweepTable(report)
+
+	_ = w.Close()
+	os.Stdout = old
+
+	var buf bytes.Buffer
+	_, _ = buf.ReadFrom(r)
+	output := buf.String()
+
+	if !strings.Contains(output, "Concurrency Sweep Results") {
+		t.Error("outputSweepTable should contain sweep type in header")
+	}
+}
+
+func TestGetReportPath(t *testing.T) {
+	t.Run("explicit path", func(t *testing.T) {
+		opts := &benchmarkOptions{report: "/tmp/report.md"}
+		path, err := getReportPath(opts)
+		if err != nil {
+			t.Fatalf("getReportPath error: %v", err)
+		}
+		if path != "/tmp/report.md" {
+			t.Errorf("path = %q, want /tmp/report.md", path)
+		}
+	})
+
+	t.Run("report dir", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		opts := &benchmarkOptions{reportDir: filepath.Join(tmpDir, "reports")}
+		path, err := getReportPath(opts)
+		if err != nil {
+			t.Fatalf("getReportPath error: %v", err)
+		}
+		if path == "" {
+			t.Error("path should not be empty")
+		}
+		if !strings.HasPrefix(path, filepath.Join(tmpDir, "reports")) {
+			t.Errorf("path %q should start with report dir", path)
+		}
+	})
+
+	t.Run("no report", func(t *testing.T) {
+		opts := &benchmarkOptions{}
+		path, err := getReportPath(opts)
+		if err != nil {
+			t.Fatalf("getReportPath error: %v", err)
+		}
+		if path != "" {
+			t.Errorf("path = %q, want empty", path)
+		}
+	})
+}
+
+func TestAvailableSuites(t *testing.T) {
+	suites := AvailableSuites()
+
+	expectedSuites := []string{"quick", "stress", "full", "context", "scaling"}
+	for _, name := range expectedSuites {
+		suite, ok := suites[name]
+		if !ok {
+			t.Errorf("Missing suite %q", name)
+			continue
+		}
+		if suite.Name == "" {
+			t.Errorf("Suite %q has empty Name", name)
+		}
+		if suite.Description == "" {
+			t.Errorf("Suite %q has empty Description", name)
+		}
+		if len(suite.Phases) == 0 {
+			t.Errorf("Suite %q has no phases", name)
+		}
+	}
+}
+
+func TestSuiteHelp(t *testing.T) {
+	help := SuiteHelp()
+	if help == "" {
+		t.Error("SuiteHelp returned empty string")
+	}
+	if !strings.Contains(help, "quick") {
+		t.Error("SuiteHelp should mention 'quick' suite")
+	}
+	if !strings.Contains(help, "full") {
+		t.Error("SuiteHelp should mention 'full' suite")
+	}
+}
+
+func TestNewGPUMonitor(t *testing.T) {
+	gm := newGPUMonitor()
+	if gm == nil {
+		t.Fatal("newGPUMonitor returned nil")
+	}
+	if gm.metrics == nil {
+		t.Error("metrics should be initialized")
+	}
+	if gm.stopChan == nil {
+		t.Error("stopChan should be initialized")
+	}
+}
+
+func TestGetHostname(t *testing.T) {
+	hostname := getHostname()
+	if hostname == "" {
+		t.Error("getHostname returned empty string")
+	}
+}
+
+func TestNewReportWriterNoPath(t *testing.T) {
+	opts := &benchmarkOptions{}
+	rw, err := newReportWriter(opts)
+	if err != nil {
+		t.Fatalf("newReportWriter error: %v", err)
+	}
+	if rw != nil {
+		t.Error("newReportWriter should return nil when no report path is set")
+	}
+}
+
+func TestNewReportWriterWithPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	reportPath := filepath.Join(tmpDir, "test-report.md")
+	opts := &benchmarkOptions{report: reportPath}
+
+	rw, err := newReportWriter(opts)
+	if err != nil {
+		t.Fatalf("newReportWriter error: %v", err)
+	}
+	if rw == nil {
+		t.Fatal("newReportWriter returned nil")
+	}
+
+	if err := rw.close(); err != nil {
+		t.Errorf("close error: %v", err)
+	}
+
+	content, err := os.ReadFile(reportPath)
+	if err != nil {
+		t.Fatalf("Failed to read report: %v", err)
+	}
+	if !strings.Contains(string(content), "# LLMKube Benchmark Report") {
+		t.Error("Report should contain header")
+	}
+}
+
+func TestReportWriterMethods(t *testing.T) {
+	tmpDir := t.TempDir()
+	reportPath := filepath.Join(tmpDir, "test-report.md")
+	opts := &benchmarkOptions{report: reportPath, name: "test-svc", namespace: "test-ns"}
+
+	rw, err := newReportWriter(opts)
+	if err != nil {
+		t.Fatalf("newReportWriter error: %v", err)
+	}
+	defer func() { _ = rw.close() }()
+
+	if err := rw.writeSection("Test Section", "Test content here"); err != nil {
+		t.Errorf("writeSection error: %v", err)
+	}
+
+	summary := &BenchmarkSummary{
+		ServiceName:              "test-svc",
+		Iterations:               5,
+		SuccessfulRuns:           5,
+		GenerationToksPerSecMean: 25.0,
+		LatencyP50:               100.0,
+		LatencyP95:               150.0,
+		LatencyP99:               200.0,
+		Duration:                 10 * time.Second,
+	}
+	if err := rw.writeBenchmarkResult(summary); err != nil {
+		t.Errorf("writeBenchmarkResult error: %v", err)
+	}
+
+	stressSummary := &StressTestSummary{
+		BenchmarkSummary: *summary,
+		Concurrency:      4,
+		TotalRequests:    20,
+		RequestsPerSec:   2.0,
+		ErrorRate:        5.0,
+		PeakToksPerSec:   30.0,
+	}
+	if err := rw.writeStressResult(stressSummary); err != nil {
+		t.Errorf("writeStressResult error: %v", err)
+	}
+
+	sweepReport := &SweepReport{
+		SweepType: "Concurrency",
+		Results: []SweepResult{
+			{Value: "1", Summary: summary},
+		},
+		Duration: 30 * time.Second,
+	}
+	if err := rw.writeSweepResults(sweepReport); err != nil {
+		t.Errorf("writeSweepResults error: %v", err)
+	}
+
+	gpuMetrics := []GPUMetric{
+		{Timestamp: time.Now(), MemoryUsedMB: 4096, MemoryTotalMB: 8192, UtilPercent: 75},
+	}
+	if err := rw.writeGPUMetrics(gpuMetrics); err != nil {
+		t.Errorf("writeGPUMetrics error: %v", err)
+	}
+
+	compReport := ComparisonReport{
+		Models: []ModelBenchmark{
+			{ModelID: "test", Status: statusSuccess, GenerationToksPerSec: 25.0},
+		},
+	}
+	if err := rw.writeComparisonReport(compReport); err != nil {
+		t.Errorf("writeComparisonReport error: %v", err)
 	}
 }

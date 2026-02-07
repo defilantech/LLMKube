@@ -17,6 +17,8 @@ limitations under the License.
 package cli
 
 import (
+	"bytes"
+	"os"
 	"strings"
 	"testing"
 )
@@ -418,5 +420,155 @@ func TestRecommendedModelsExist(t *testing.T) {
 				t.Errorf("Recommended model '%s' is nil", modelID)
 			}
 		})
+	}
+}
+
+func TestRunCatalogList(t *testing.T) {
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	err := runCatalogList("")
+
+	_ = w.Close()
+	os.Stdout = old
+
+	if err != nil {
+		t.Fatalf("runCatalogList error: %v", err)
+	}
+
+	var buf bytes.Buffer
+	_, _ = buf.ReadFrom(r)
+	output := buf.String()
+
+	if !strings.Contains(output, "Model Catalog") {
+		t.Error("output should contain catalog header")
+	}
+	if !strings.Contains(output, "llama") {
+		t.Error("output should list llama models")
+	}
+	if !strings.Contains(output, "To deploy") {
+		t.Error("output should contain deploy instructions")
+	}
+}
+
+func TestRunCatalogListWithTag(t *testing.T) {
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	err := runCatalogList("code")
+
+	_ = w.Close()
+	os.Stdout = old
+
+	if err != nil {
+		t.Fatalf("runCatalogList(code) error: %v", err)
+	}
+
+	var buf bytes.Buffer
+	_, _ = buf.ReadFrom(r)
+	output := buf.String()
+
+	if !strings.Contains(output, "tag=code") {
+		t.Error("output should show active tag filter")
+	}
+}
+
+func TestRunCatalogListWithNonexistentTag(t *testing.T) {
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	err := runCatalogList("nonexistent-tag-xyz")
+
+	_ = w.Close()
+	os.Stdout = old
+
+	if err != nil {
+		t.Fatalf("runCatalogList(nonexistent) error: %v", err)
+	}
+
+	var buf bytes.Buffer
+	_, _ = buf.ReadFrom(r)
+	output := buf.String()
+
+	if !strings.Contains(output, "No models found") {
+		t.Error("output should indicate no models found for tag")
+	}
+}
+
+func TestRunCatalogInfo(t *testing.T) {
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	err := runCatalogInfo("llama-3.1-8b")
+
+	_ = w.Close()
+	os.Stdout = old
+
+	if err != nil {
+		t.Fatalf("runCatalogInfo error: %v", err)
+	}
+
+	var buf bytes.Buffer
+	_, _ = buf.ReadFrom(r)
+	output := buf.String()
+
+	if !strings.Contains(output, "llama-3.1-8b") {
+		t.Error("output should contain model ID")
+	}
+	if !strings.Contains(output, "Quick Deploy") {
+		t.Error("output should contain deploy instructions")
+	}
+	if !strings.Contains(output, "Resource Requirements") {
+		t.Error("output should contain resource requirements")
+	}
+}
+
+func TestRunCatalogInfoNonexistent(t *testing.T) {
+	err := runCatalogInfo("nonexistent-model-xyz")
+	if err == nil {
+		t.Error("runCatalogInfo should error for non-existent model")
+	}
+}
+
+func TestNewCatalogCommand(t *testing.T) {
+	cmd := NewCatalogCommand()
+
+	if cmd.Use != "catalog" {
+		t.Errorf("Use = %q, want %q", cmd.Use, "catalog")
+	}
+
+	subcommands := make(map[string]bool)
+	for _, sub := range cmd.Commands() {
+		subcommands[sub.Name()] = true
+	}
+
+	if !subcommands["list"] {
+		t.Error("Missing 'list' subcommand")
+	}
+	if !subcommands["info"] {
+		t.Error("Missing 'info' subcommand")
+	}
+}
+
+func TestNewCatalogListCommand(t *testing.T) {
+	cmd := NewCatalogListCommand()
+
+	if cmd.Use != "list" {
+		t.Errorf("Use = %q, want %q", cmd.Use, "list")
+	}
+	if cmd.Flags().Lookup("tag") == nil {
+		t.Error("Missing --tag flag")
+	}
+}
+
+func TestNewCatalogInfoCommand(t *testing.T) {
+	cmd := NewCatalogInfoCommand()
+
+	if cmd.Use != "info MODEL_ID" {
+		t.Errorf("Use = %q, want %q", cmd.Use, "info MODEL_ID")
 	}
 }
