@@ -1,12 +1,12 @@
 # LLMKube Model Catalog
-# Version: v1
-# Last Updated: 2025-12-01
+# Version: v1.1
+# Last Updated: 2026-02-07
 #
 # This catalog contains pre-configured, battle-tested LLM models optimized
 # for various use cases. Each model includes verified GGUF sources and
 # optimal deployment settings based on benchmarking.
 
-version: "1.0"
+version: "1.1"
 models:
   # ============================================================================
   # Small Models (1-3B) - Fast & Efficient
@@ -35,12 +35,12 @@ models:
       - "efficient"
     homepage: "https://huggingface.co/meta-llama/Llama-3.2-3B-Instruct"
 
-  phi-3-mini:
-    name: "Phi-3 Mini (3.8B)"
-    description: "Microsoft's efficient model with exceptional reasoning for its size."
+  phi-4-mini:
+    name: "Phi-4 Mini Instruct (3.8B)"
+    description: "Microsoft's latest small model with strong reasoning and math capabilities."
     size: "3.8B"
     quantization: "Q5_K_M"
-    source: "https://huggingface.co/bartowski/Phi-3-mini-128k-instruct-GGUF/resolve/main/Phi-3-mini-128k-instruct-Q5_K_M.gguf"
+    source: "https://huggingface.co/bartowski/microsoft_Phi-4-mini-instruct-GGUF/resolve/main/microsoft_Phi-4-mini-instruct-Q5_K_M.gguf"
     context_size: 128000
     gpu_layers: 32
     use_cases:
@@ -58,7 +58,31 @@ models:
       - "small"
       - "reasoning"
       - "long-context"
-    homepage: "https://huggingface.co/microsoft/Phi-3-mini-128k-instruct"
+    homepage: "https://huggingface.co/microsoft/Phi-4-mini-instruct"
+
+  gemma-3-4b:
+    name: "Gemma 3 4B IT"
+    description: "Google's small efficient model. Great quality-to-size ratio for edge deployments."
+    size: "4B"
+    quantization: "Q5_K_M"
+    source: "https://huggingface.co/bartowski/google_gemma-3-4b-it-GGUF/resolve/main/google_gemma-3-4b-it-Q5_K_M.gguf"
+    context_size: 8192
+    gpu_layers: 26
+    use_cases:
+      - "general-chat"
+      - "lightweight-assistant"
+      - "edge-deployment"
+    resources:
+      cpu: "2"
+      memory: "4Gi"
+      gpu_memory: "4Gi"
+    vram_estimate: "3-4GB"
+    tags:
+      - "google"
+      - "gemma"
+      - "small"
+      - "efficient"
+    homepage: "https://huggingface.co/google/gemma-3-4b-it"
 
   # ============================================================================
   # Medium Models (7-8B) - Sweet Spot
@@ -137,16 +161,16 @@ models:
       - "recommended"
     homepage: "https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct"
 
-  deepseek-coder-6.7b:
-    name: "DeepSeek Coder 6.7B"
-    description: "Exceptional code comprehension and mathematical reasoning."
-    size: "6.7B"
+  deepseek-r1-7b:
+    name: "DeepSeek R1 Distill Qwen 7B"
+    description: "DeepSeek's reasoning model distilled into 7B. Strong chain-of-thought and math capabilities."
+    size: "7B"
     quantization: "Q5_K_M"
-    source: "https://huggingface.co/bartowski/deepseek-coder-6.7b-instruct-GGUF/resolve/main/deepseek-coder-6.7b-instruct-Q5_K_M.gguf"
-    context_size: 16384
+    source: "https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-7B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-7B-Q5_K_M.gguf"
+    context_size: 32768
     gpu_layers: 32
     use_cases:
-      - "code-generation"
+      - "reasoning"
       - "math-reasoning"
       - "problem-solving"
     resources:
@@ -156,37 +180,110 @@ models:
     vram_estimate: "5-8GB"
     tags:
       - "deepseek"
-      - "code"
       - "reasoning"
       - "math"
-    homepage: "https://huggingface.co/deepseek-ai/deepseek-coder-6.7b-instruct"
+      - "chain-of-thought"
+    homepage: "https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
 
-  gemma-2-9b:
-    name: "Gemma 2 9B Instruct"
-    description: "Google's efficient model with strong multilingual performance."
-    size: "9B"
+  gemma-3-12b:
+    name: "Gemma 3 12B IT"
+    description: "Google's latest Gemma 3 with improved reasoning and multilingual performance."
+    size: "12B"
     quantization: "Q5_K_M"
-    source: "https://huggingface.co/bartowski/gemma-2-9b-it-GGUF/resolve/main/gemma-2-9b-it-Q5_K_M.gguf"
+    source: "https://huggingface.co/bartowski/google_gemma-3-12b-it-GGUF/resolve/main/google_gemma-3-12b-it-Q5_K_M.gguf"
     context_size: 8192
-    gpu_layers: 42
+    gpu_layers: 48
     use_cases:
       - "general-purpose"
       - "multilingual"
       - "chat"
     resources:
       cpu: "4"
-      memory: "10Gi"
-      gpu_memory: "10Gi"
-    vram_estimate: "6-10GB"
+      memory: "12Gi"
+      gpu_memory: "12Gi"
+    vram_estimate: "8-12GB"
     tags:
       - "google"
       - "gemma"
       - "multilingual"
-    homepage: "https://huggingface.co/google/gemma-2-9b-it"
+    homepage: "https://huggingface.co/google/gemma-3-12b-it"
 
   # ============================================================================
   # Large Models (13B+) - Premium Quality
   # ============================================================================
+
+  deepseek-r1-14b:
+    name: "DeepSeek R1 Distill Qwen 14B"
+    description: "DeepSeek's reasoning model distilled into 14B. Excellent chain-of-thought for complex tasks."
+    size: "14B"
+    quantization: "Q5_K_M"
+    source: "https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-14B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-14B-Q5_K_M.gguf"
+    context_size: 32768
+    gpu_layers: 48
+    use_cases:
+      - "reasoning"
+      - "math-reasoning"
+      - "complex-tasks"
+    resources:
+      cpu: "6"
+      memory: "16Gi"
+      gpu_memory: "16Gi"
+    vram_estimate: "10-16GB"
+    tags:
+      - "deepseek"
+      - "reasoning"
+      - "math"
+      - "chain-of-thought"
+    homepage: "https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-14B"
+
+  deepseek-r1-32b:
+    name: "DeepSeek R1 Distill Qwen 32B"
+    description: "DeepSeek's most capable distilled reasoning model. Near-frontier reasoning in a deployable size."
+    size: "32B"
+    quantization: "Q4_K_M"
+    source: "https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-32B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-32B-Q4_K_M.gguf"
+    context_size: 32768
+    gpu_layers: 64
+    use_cases:
+      - "complex-reasoning"
+      - "math-reasoning"
+      - "production"
+    resources:
+      cpu: "8"
+      memory: "24Gi"
+      gpu_memory: "24Gi"
+    vram_estimate: "18-24GB"
+    tags:
+      - "deepseek"
+      - "reasoning"
+      - "math"
+      - "chain-of-thought"
+      - "32gb-vram"
+      - "recommended"
+    homepage: "https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-32B"
+
+  mistral-small-24b:
+    name: "Mistral Small 24B Instruct"
+    description: "Mistral's efficient 24B model. Strong general performance with fast inference."
+    size: "24B"
+    quantization: "Q4_K_M"
+    source: "https://huggingface.co/bartowski/Mistral-Small-24B-Instruct-2501-GGUF/resolve/main/Mistral-Small-24B-Instruct-2501-Q4_K_M.gguf"
+    context_size: 32768
+    gpu_layers: 56
+    use_cases:
+      - "general-purpose"
+      - "chat"
+      - "production"
+    resources:
+      cpu: "6"
+      memory: "18Gi"
+      gpu_memory: "18Gi"
+    vram_estimate: "14-18GB"
+    tags:
+      - "mistral"
+      - "efficient"
+      - "production"
+    homepage: "https://huggingface.co/mistralai/Mistral-Small-24B-Instruct-2501"
 
   qwen-2.5-32b:
     name: "Qwen 2.5 32B Instruct"
@@ -317,12 +414,12 @@ models:
       - "high-quality"
     homepage: "https://huggingface.co/mistralai/Mixtral-8x7B-Instruct-v0.1"
 
-  llama-3.1-70b:
-    name: "Llama 3.1 70B Instruct"
-    description: "Flagship open model. GPT-3.5+ quality for production workloads."
+  llama-3.3-70b:
+    name: "Llama 3.3 70B Instruct"
+    description: "Meta's latest 70B. Improved quality over 3.1 for production workloads."
     size: "70B"
     quantization: "Q4_K_M"
-    source: "https://huggingface.co/bartowski/Meta-Llama-3.1-70B-Instruct-GGUF/resolve/main/Meta-Llama-3.1-70B-Instruct-Q4_K_M.gguf"
+    source: "https://huggingface.co/bartowski/Llama-3.3-70B-Instruct-GGUF/resolve/main/Llama-3.3-70B-Instruct-Q4_K_M.gguf"
     context_size: 131072
     gpu_layers: 80
     use_cases:
@@ -341,5 +438,5 @@ models:
       - "large"
       - "multi-gpu"
       - "long-context"
-    homepage: "https://huggingface.co/meta-llama/Meta-Llama-3.1-70B-Instruct"
+    homepage: "https://huggingface.co/meta-llama/Llama-3.3-70B-Instruct"
     notes: "Requires multi-GPU setup (2x A100 40GB or 1x A100 80GB)"

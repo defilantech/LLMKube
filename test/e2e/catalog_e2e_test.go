@@ -64,7 +64,7 @@ var _ = Describe("Catalog E2E Tests", Ordered, func() {
 			Expect(output).To(ContainSubstring("llama-3.1-8b"))
 			Expect(output).To(ContainSubstring("mistral-7b"))
 			Expect(output).To(ContainSubstring("qwen-2.5-coder-7b"))
-			Expect(output).To(ContainSubstring("deepseek-coder-6.7b"))
+			Expect(output).To(ContainSubstring("deepseek-r1-7b"))
 
 			// Verify table headers
 			Expect(output).To(ContainSubstring("ID"))
@@ -81,7 +81,7 @@ var _ = Describe("Catalog E2E Tests", Ordered, func() {
 
 			// Should contain code-related models
 			Expect(output).To(ContainSubstring("qwen-2.5-coder-7b"))
-			Expect(output).To(ContainSubstring("deepseek-coder-6.7b"))
+			Expect(output).To(ContainSubstring("qwen-2.5-coder-32b"))
 
 			// Should show filter in output
 			Expect(output).To(ContainSubstring("Filter: tag=code"))

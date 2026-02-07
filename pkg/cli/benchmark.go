@@ -540,7 +540,7 @@ Examples:
   llmkube benchmark --catalog qwen-2.5-32b --context-sweep 4096,16384,32768 --gpu
 
   # CATALOG MODE: Full report with preloading
-  llmkube benchmark --catalog llama-3.2-3b,phi-3-mini --gpu --preload --report comparison.md
+  llmkube benchmark --catalog llama-3.2-3b,phi-4-mini --gpu --preload --report comparison.md
 `,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
