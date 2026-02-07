@@ -5,6 +5,16 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.13](https://github.com/defilantech/LLMKube/compare/v0.4.12...v0.4.13) (2026-02-07)
+
+
+### Features
+
+* **controller:** make init container image configurable ([#128](https://github.com/defilantech/LLMKube/issues/128)) ([38ccdf0](https://github.com/defilantech/LLMKube/commit/38ccdf0a1075373ce4b3e40d42ed6fe8e558f1ba))
+* expose llama.cpp parallel slots in InferenceService CRD ([#133](https://github.com/defilantech/LLMKube/issues/133)) ([cae7b52](https://github.com/defilantech/LLMKube/commit/cae7b52d780bff34ce1a6c1cf86165859e171621))
+* **helm:** add optional NetworkPolicy for controller manager ([#135](https://github.com/defilantech/LLMKube/issues/135)) ([8d61ce3](https://github.com/defilantech/LLMKube/commit/8d61ce3811a0d79be136ed078388a39310ad4f3a))
+* update model catalog with DeepSeek R1 and refresh stale entries ([#131](https://github.com/defilantech/LLMKube/issues/131)) ([89eb5a6](https://github.com/defilantech/LLMKube/commit/89eb5a6e99b27f8dbc4847727bc0d72834919a70))
+
 ## [0.4.12](https://github.com/defilantech/LLMKube/compare/v0.4.11...v0.4.12) (2026-01-22)
 
 
