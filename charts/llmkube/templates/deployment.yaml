@@ -49,6 +49,7 @@ spec:
         {{- end }}
         - --model-cache-access-mode={{ .Values.modelCache.accessMode }}
         {{- end }}
+        - --init-container-image={{ .Values.controllerManager.initContainerImage }}
         {{- with .Values.controllerManager.env }}
         env:
           {{- toYaml . | nindent 10 }}

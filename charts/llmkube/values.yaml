@@ -70,6 +70,9 @@ controllerManager:
 
   affinity: {}
 
+  # Container image used for the model downloader init container
+  initContainerImage: docker.io/curlimages/curl:latest
+
   # Additional environment variables
   env: []
 
