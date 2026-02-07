@@ -75,3 +75,7 @@ rbac:
 serviceAccount:
   create: true
   annotations: {}
+
+# Network isolation for the controller pod
+networkPolicies:
+  enabled: true
