@@ -175,3 +175,8 @@ podAnnotations: {}
 
 # Pod labels
 podLabels: {}
+
+# Network policies for the controller manager pod
+networkPolicies:
+  enabled: false
+  additionalEgressCIDRs: []

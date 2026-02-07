@@ -169,6 +169,105 @@ jobs:
           fi
           echo "✅ Custom alert thresholds work correctly"
 
+  network-policy:
+    name: Test NetworkPolicy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.13.0
+
+      - name: Test NetworkPolicy Disabled by Default
+        run: |
+          helm template llmkube charts/llmkube \
+            --namespace llmkube-system \
+            > /tmp/without-netpol.yaml
+
+          if grep -q "kind: NetworkPolicy" /tmp/without-netpol.yaml; then
+            echo "❌ NetworkPolicy found when disabled (default)"
+            exit 1
+          fi
+          echo "✅ NetworkPolicy correctly omitted by default"
+
+      - name: Test NetworkPolicy Enabled
+        run: |
+          helm template llmkube charts/llmkube \
+            --namespace llmkube-system \
+            --set networkPolicies.enabled=true \
+            > /tmp/with-netpol.yaml
+
+          if ! grep -q "kind: NetworkPolicy" /tmp/with-netpol.yaml; then
+            echo "❌ NetworkPolicy not found when enabled"
+            exit 1
+          fi
+
+          # Verify health probe port
+          if ! grep -q "port: 8081" /tmp/with-netpol.yaml; then
+            echo "❌ Health probe port 8081 not found"
+            exit 1
+          fi
+
+          # Verify DNS egress
+          if ! grep -q "port: 53" /tmp/with-netpol.yaml; then
+            echo "❌ DNS egress port 53 not found"
+            exit 1
+          fi
+          echo "✅ NetworkPolicy renders correctly when enabled"
+
+      - name: Test Metrics Port Conditional on metrics.enabled
+        run: |
+          # With metrics enabled (default), port 8443 should be present
+          helm template llmkube charts/llmkube \
+            --namespace llmkube-system \
+            --set networkPolicies.enabled=true \
+            --set metrics.enabled=true \
+            > /tmp/netpol-metrics-on.yaml
+
+          if ! grep -q "port: 8443" /tmp/netpol-metrics-on.yaml; then
+            echo "❌ Metrics port 8443 not found when metrics enabled"
+            exit 1
+          fi
+
+          # With metrics disabled, port 8443 should be absent from NetworkPolicy
+          helm template llmkube charts/llmkube \
+            --namespace llmkube-system \
+            --set networkPolicies.enabled=true \
+            --set metrics.enabled=false \
+            > /tmp/netpol-metrics-off.yaml
+
+          # Extract just the NetworkPolicy resource
+          sed -n '/kind: NetworkPolicy/,/^---/p' /tmp/netpol-metrics-off.yaml > /tmp/netpol-only.yaml
+
+          if grep -q "port: 8443" /tmp/netpol-only.yaml; then
+            echo "❌ Metrics port 8443 found in NetworkPolicy when metrics disabled"
+            exit 1
+          fi
+          echo "✅ Metrics port correctly conditional on metrics.enabled"
+
+      - name: Test Additional Egress CIDRs
+        run: |
+          helm template llmkube charts/llmkube \
+            --namespace llmkube-system \
+            --set networkPolicies.enabled=true \
+            --set 'networkPolicies.additionalEgressCIDRs[0]=10.0.0.0/8' \
+            --set 'networkPolicies.additionalEgressCIDRs[1]=172.16.0.0/12' \
+            > /tmp/netpol-cidrs.yaml
+
+          if ! grep -q "10.0.0.0/8" /tmp/netpol-cidrs.yaml; then
+            echo "❌ Additional CIDR 10.0.0.0/8 not found"
+            exit 1
+          fi
+
+          if ! grep -q "172.16.0.0/12" /tmp/netpol-cidrs.yaml; then
+            echo "❌ Additional CIDR 172.16.0.0/12 not found"
+            exit 1
+          fi
+          echo "✅ Additional egress CIDRs render correctly"
+
   crd-validation:
     name: CRD Installation Tests
     runs-on: ubuntu-latest
