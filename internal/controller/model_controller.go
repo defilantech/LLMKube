@@ -124,6 +124,9 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	size, err := r.fetchModel(ctx, model.Spec.Source, modelPath)
 	if err != nil {
 		logger.Error(err, "Failed to fetch model")
+		if removeErr := os.Remove(modelPath); removeErr != nil && !os.IsNotExist(removeErr) {
+			logger.Error(removeErr, "Failed to clean up partial download")
+		}
 		model.Status.Phase = "Failed"
 		if statusErr := r.updateStatus(ctx, model, "Degraded", metav1.ConditionTrue, failReason, err.Error()); statusErr != nil {
 			logger.Error(statusErr, "Failed to update status after fetch failure")

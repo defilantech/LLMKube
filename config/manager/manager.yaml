@@ -96,8 +96,12 @@ spec:
         volumeMounts:
         - name: tmp
           mountPath: /tmp
+        - name: model-cache
+          mountPath: /models
       volumes:
       - name: tmp
+        emptyDir: {}
+      - name: model-cache
         emptyDir: {}
       serviceAccountName: controller-manager
       terminationGracePeriodSeconds: 10

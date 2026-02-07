@@ -25,6 +25,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -264,16 +265,271 @@ var _ = Describe("Manager", Ordered, func() {
 		})
 
 		// +kubebuilder:scaffold:e2e-webhooks-checks
+	})
 
-		// TODO: Customize the e2e test suite with scenarios specific to your project.
-		// Consider applying sample/CR(s) and check their status and/or verifying
-		// the reconciliation by using the metrics, i.e.:
-		// metricsOutput, err := getMetricsOutput()
-		// Expect(err).NotTo(HaveOccurred(), "Failed to retrieve logs from curl pod")
-		// Expect(metricsOutput).To(ContainSubstring(
-		//    fmt.Sprintf(`controller_runtime_reconcile_total{controller="%s",result="success"} 1`,
-		//    strings.ToLower(<Kind>),
-		// ))
+	Context("CR Reconciliation", func() {
+		const crTestNs = "e2e-cr-test"
+		const testModelServerURL = "http://test-model-server.e2e-cr-test.svc.cluster.local/test-model.gguf"
+
+		BeforeAll(func() {
+			By("creating CR test namespace")
+			cmd := exec.Command("kubectl", "create", "ns", crTestNs)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create CR test namespace")
+
+			By("creating ConfigMap with fake GGUF file")
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(`apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: test-model-data
+  namespace: e2e-cr-test
+binaryData:
+  test-model.gguf: ZmFrZS1nZ3VmLWRhdGE=
+`)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create test model ConfigMap")
+
+			By("creating test model server pod")
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(`apiVersion: v1
+kind: Pod
+metadata:
+  name: test-model-server
+  namespace: e2e-cr-test
+  labels:
+    app: test-model-server
+spec:
+  containers:
+  - name: nginx
+    image: nginx:1.27-alpine
+    ports:
+    - containerPort: 80
+    volumeMounts:
+    - name: model-data
+      mountPath: /usr/share/nginx/html
+  volumes:
+  - name: model-data
+    configMap:
+      name: test-model-data
+`)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create test model server pod")
+
+			By("creating test model server service")
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(`apiVersion: v1
+kind: Service
+metadata:
+  name: test-model-server
+  namespace: e2e-cr-test
+spec:
+  selector:
+    app: test-model-server
+  ports:
+  - port: 80
+    targetPort: 80
+`)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create test model server service")
+
+			By("waiting for test model server to be ready")
+			verifyServerReady := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pod", "test-model-server",
+					"-n", crTestNs, "-o", "jsonpath={.status.phase}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("Running"))
+			}
+			Eventually(verifyServerReady, 2*time.Minute).Should(Succeed())
+		})
+
+		AfterAll(func() {
+			By("cleaning up CR test namespace")
+			cmd := exec.Command("kubectl", "delete", "ns", crTestNs, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+		})
+
+		It("should reconcile a Model CR to Ready", func() {
+			By("applying a Model CR pointing to the test server")
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(fmt.Sprintf(`apiVersion: inference.llmkube.dev/v1alpha1
+kind: Model
+metadata:
+  name: test-model
+  namespace: %s
+spec:
+  source: "%s"
+`, crTestNs, testModelServerURL))
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to apply Model CR")
+
+			By("waiting for Model to reach Ready phase")
+			verifyModelReady := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "model", "test-model",
+					"-n", crTestNs, "-o", "jsonpath={.status.phase}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("Ready"))
+			}
+			Eventually(verifyModelReady, 2*time.Minute).Should(Succeed())
+
+			By("verifying cacheKey is set")
+			cmd = exec.Command("kubectl", "get", "model", "test-model",
+				"-n", crTestNs, "-o", "jsonpath={.status.cacheKey}")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(output).To(MatchRegexp(`^[0-9a-f]{16}$`), "cacheKey should be 16-char hex")
+
+			By("verifying Available condition is True")
+			cmd = exec.Command("kubectl", "get", "model", "test-model",
+				"-n", crTestNs, "-o",
+				`jsonpath={.status.conditions[?(@.type=="Available")].status}`)
+			output, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(output).To(Equal("True"))
+		})
+
+		It("should create Deployment and Service for InferenceService", func() {
+			By("applying an InferenceService referencing the ready Model")
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(fmt.Sprintf(`apiVersion: inference.llmkube.dev/v1alpha1
+kind: InferenceService
+metadata:
+  name: test-inference
+  namespace: %s
+spec:
+  modelRef: test-model
+`, crTestNs))
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to apply InferenceService CR")
+
+			By("waiting for Deployment to be created")
+			verifyDeploymentExists := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "deployment", "test-inference",
+					"-n", crTestNs, "-o", "jsonpath={.metadata.labels}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(ContainSubstring(`"app":"test-inference"`))
+				g.Expect(output).To(ContainSubstring(`"inference.llmkube.dev/service":"test-inference"`))
+			}
+			Eventually(verifyDeploymentExists, 2*time.Minute).Should(Succeed())
+
+			By("verifying Service exists with correct port")
+			cmd = exec.Command("kubectl", "get", "service", "test-inference",
+				"-n", crTestNs, "-o", "jsonpath={.spec.ports[0].port}")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(output).To(Equal("8080"))
+
+			By("verifying Service selector matches")
+			cmd = exec.Command("kubectl", "get", "service", "test-inference",
+				"-n", crTestNs, "-o", "jsonpath={.spec.selector.app}")
+			output, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(output).To(Equal("test-inference"))
+
+			By("verifying InferenceService status endpoint")
+			verifyEndpoint := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "inferenceservice", "test-inference",
+					"-n", crTestNs, "-o", "jsonpath={.status.endpoint}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(ContainSubstring("test-inference"))
+				g.Expect(output).To(ContainSubstring(crTestNs))
+			}
+			Eventually(verifyEndpoint, 2*time.Minute).Should(Succeed())
+		})
+
+		It("should report Failed for InferenceService referencing non-existent Model", func() {
+			By("applying an InferenceService with a bad model ref")
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(fmt.Sprintf(`apiVersion: inference.llmkube.dev/v1alpha1
+kind: InferenceService
+metadata:
+  name: test-inference-bad-ref
+  namespace: %s
+spec:
+  modelRef: model-does-not-exist
+`, crTestNs))
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to apply InferenceService CR")
+
+			By("waiting for InferenceService to report Failed phase")
+			verifyFailed := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "inferenceservice", "test-inference-bad-ref",
+					"-n", crTestNs, "-o", "jsonpath={.status.phase}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("Failed"))
+			}
+			Eventually(verifyFailed, 2*time.Minute).Should(Succeed())
+		})
+
+		It("should clean up owned resources when InferenceService is deleted", func() {
+			By("verifying the Deployment exists before deletion")
+			cmd := exec.Command("kubectl", "get", "deployment", "test-inference", "-n", crTestNs)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Deployment should exist before deletion")
+
+			By("deleting the InferenceService")
+			cmd = exec.Command("kubectl", "delete", "inferenceservice", "test-inference", "-n", crTestNs)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to delete InferenceService")
+
+			By("waiting for Deployment to be garbage collected")
+			verifyDeploymentGone := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "deployment", "test-inference",
+					"-n", crTestNs, "--ignore-not-found", "-o", "jsonpath={.metadata.name}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(BeEmpty())
+			}
+			Eventually(verifyDeploymentGone, 1*time.Minute).Should(Succeed())
+
+			By("waiting for Service to be garbage collected")
+			verifyServiceGone := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "service", "test-inference",
+					"-n", crTestNs, "--ignore-not-found", "-o", "jsonpath={.metadata.name}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(BeEmpty())
+			}
+			Eventually(verifyServiceGone, 1*time.Minute).Should(Succeed())
+		})
+
+		It("should report Failed for Model with unreachable source", func() {
+			By("applying a Model CR with a URL that returns 404")
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(fmt.Sprintf(`apiVersion: inference.llmkube.dev/v1alpha1
+kind: Model
+metadata:
+  name: test-model-bad-source
+  namespace: %s
+spec:
+  source: "http://test-model-server.e2e-cr-test.svc.cluster.local/nonexistent.gguf"
+`, crTestNs))
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to apply Model CR")
+
+			By("waiting for Model to reach Failed phase")
+			verifyModelFailed := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "model", "test-model-bad-source",
+					"-n", crTestNs, "-o", "jsonpath={.status.phase}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("Failed"))
+			}
+			Eventually(verifyModelFailed, 2*time.Minute).Should(Succeed())
+
+			By("verifying Degraded condition with DownloadFailed reason")
+			cmd = exec.Command("kubectl", "get", "model", "test-model-bad-source",
+				"-n", crTestNs, "-o",
+				`jsonpath={.status.conditions[?(@.type=="Degraded")].reason}`)
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(output).To(Equal("DownloadFailed"))
+		})
 	})
 })
 
