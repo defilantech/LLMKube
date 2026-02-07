@@ -630,6 +630,13 @@ func appendContextSizeArgs(args []string, contextSize *int32) []string {
 	return args
 }
 
+func appendParallelSlotsArgs(args []string, parallelSlots *int32) []string {
+	if parallelSlots != nil && *parallelSlots > 1 {
+		return append(args, "--parallel", fmt.Sprintf("%d", *parallelSlots))
+	}
+	return args
+}
+
 func (r *InferenceServiceReconciler) constructDeployment(
 	isvc *inferencev1alpha1.InferenceService,
 	model *inferencev1alpha1.Model,
@@ -691,6 +698,7 @@ func (r *InferenceServiceReconciler) constructDeployment(
 	}
 
 	args = appendContextSizeArgs(args, isvc.Spec.ContextSize)
+	args = appendParallelSlotsArgs(args, isvc.Spec.ParallelSlots)
 
 	container := corev1.Container{
 		Name:  "llama-server",

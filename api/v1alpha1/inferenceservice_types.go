@@ -66,6 +66,14 @@ type InferenceServiceSpec struct {
 	// +optional
 	ContextSize *int32 `json:"contextSize,omitempty"`
 
+	// ParallelSlots sets the number of concurrent request slots for the llama.cpp server (--parallel flag).
+	// Each slot can process one request independently, enabling concurrent inference.
+	// Higher values use more memory. If not specified, llama.cpp defaults to 1.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=64
+	// +optional
+	ParallelSlots *int32 `json:"parallelSlots,omitempty"`
+
 	// Priority determines scheduling priority for GPU allocation.
 	// Higher priority services can preempt lower priority ones when GPUs are scarce.
 	// +kubebuilder:validation:Enum=critical;high;normal;low;batch

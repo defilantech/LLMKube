@@ -5,9 +5,6 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.19.0
-    {{- if .Values.crds.keep }}
-    helm.sh/resource-policy: keep
-    {{- end }}
   name: inferenceservices.inference.llmkube.dev
 spec:
   group: inference.llmkube.dev
@@ -29,6 +26,18 @@ spec:
       type: string
     - jsonPath: .status.readyReplicas
       name: Replicas
+      type: string
+    - jsonPath: .status.schedulingStatus
+      name: Reason
+      priority: 1
+      type: string
+    - jsonPath: .status.queuePosition
+      name: Queue
+      priority: 1
+      type: integer
+    - jsonPath: .spec.priority
+      name: Priority
+      priority: 1
       type: string
     - jsonPath: .status.endpoint
       name: Endpoint
@@ -107,6 +116,32 @@ spec:
                   type: string
                 description: NodeSelector for pod placement (e.g., specific node pools)
                 type: object
+              parallelSlots:
+                description: |-
+                  ParallelSlots sets the number of concurrent request slots for the llama.cpp server (--parallel flag).
+                  Each slot can process one request independently, enabling concurrent inference.
+                  Higher values use more memory. If not specified, llama.cpp defaults to 1.
+                format: int32
+                maximum: 64
+                minimum: 1
+                type: integer
+              priority:
+                default: normal
+                description: |-
+                  Priority determines scheduling priority for GPU allocation.
+                  Higher priority services can preempt lower priority ones when GPUs are scarce.
+                enum:
+                - critical
+                - high
+                - normal
+                - low
+                - batch
+                type: string
+              priorityClassName:
+                description: |-
+                  PriorityClassName allows specifying a custom Kubernetes PriorityClass.
+                  Takes precedence over the Priority field if set.
+                type: string
               replicas:
                 default: 1
                 description: Replicas is the desired number of inference pods
@@ -257,6 +292,11 @@ spec:
                 description: DesiredReplicas is the desired number of replicas
                 format: int32
                 type: integer
+              effectivePriority:
+                description: EffectivePriority shows the resolved priority value from
+                  the applied PriorityClass
+                format: int32
+                type: integer
               endpoint:
                 description: Endpoint is the service URL where inference requests
                   can be sent
@@ -273,10 +313,26 @@ spec:
                 description: Phase represents the current lifecycle phase (Pending,
                   Creating, Ready, Failed)
                 type: string
+              queuePosition:
+                description: QueuePosition indicates position among pending InferenceServices
+                  cluster-wide (0 = not queued)
+                format: int32
+                type: integer
               readyReplicas:
                 description: Replicas tracks the number of ready vs desired pods
                 format: int32
                 type: integer
+              schedulingMessage:
+                description: SchedulingMessage provides details about scheduling issues
+                type: string
+              schedulingStatus:
+                description: SchedulingStatus indicates why pods cannot be scheduled
+                  (e.g., "InsufficientGPU")
+                type: string
+              waitingFor:
+                description: 'WaitingFor describes the resource constraint (e.g.,
+                  "nvidia.com/gpu: 1")'
+                type: string
             type: object
         required:
         - spec

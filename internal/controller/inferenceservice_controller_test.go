@@ -791,6 +791,109 @@ var _ = Describe("Context Size Configuration", func() {
 			Expect(args).To(ContainElement("16384"))
 		})
 	})
+
+	Context("when parallelSlots is configured", func() {
+		var (
+			reconciler *InferenceServiceReconciler
+			model      *inferencev1alpha1.Model
+		)
+
+		BeforeEach(func() {
+			reconciler = &InferenceServiceReconciler{
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
+				InitContainerImage: "docker.io/curlimages/curl:latest",
+			}
+
+			model = &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "parallel-slots-model",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source: "https://example.com/model.gguf",
+					Hardware: &inferencev1alpha1.HardwareSpec{
+						Accelerator: "cuda",
+						GPU: &inferencev1alpha1.GPUSpec{
+							Enabled: true,
+							Count:   1,
+							Vendor:  "nvidia",
+							Layers:  99,
+						},
+					},
+				},
+				Status: inferencev1alpha1.ModelStatus{
+					Phase: "Ready",
+					Path:  "/tmp/llmkube/models/test-model.gguf",
+				},
+			}
+		})
+
+		It("should include --parallel flag when parallelSlots is specified", func() {
+			replicas := int32(1)
+			parallelSlots := int32(4)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "parallel-slots-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef:      "parallel-slots-model",
+					Replicas:      &replicas,
+					Image:         "ghcr.io/ggml-org/llama.cpp:server-cuda",
+					ParallelSlots: &parallelSlots,
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).To(ContainElement("--parallel"))
+			Expect(args).To(ContainElement("4"))
+		})
+
+		It("should NOT include --parallel flag when parallelSlots is not specified", func() {
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "no-parallel-slots-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: "parallel-slots-model",
+					Replicas: &replicas,
+					Image:    "ghcr.io/ggml-org/llama.cpp:server-cuda",
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).NotTo(ContainElement("--parallel"))
+		})
+
+		It("should NOT include --parallel flag when parallelSlots is 1", func() {
+			replicas := int32(1)
+			parallelSlots := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "single-parallel-slot-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef:      "parallel-slots-model",
+					Replicas:      &replicas,
+					Image:         "ghcr.io/ggml-org/llama.cpp:server-cuda",
+					ParallelSlots: &parallelSlots,
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).NotTo(ContainElement("--parallel"))
+		})
+	})
 })
 
 var _ = Describe("Multi-GPU End-to-End Reconciliation", func() {
