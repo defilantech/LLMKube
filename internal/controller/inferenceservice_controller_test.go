@@ -105,8 +105,9 @@ var _ = Describe("InferenceService Controller", func() {
 		It("should successfully reconcile the resource", func() {
 			By("Reconciling the created resource")
 			controllerReconciler := &InferenceServiceReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
+				InitContainerImage: "docker.io/curlimages/curl:latest",
 			}
 
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -179,8 +180,9 @@ var _ = Describe("Multi-GPU Deployment Construction", func() {
 
 		BeforeEach(func() {
 			reconciler = &InferenceServiceReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
+				InitContainerImage: "docker.io/curlimages/curl:latest",
 			}
 		})
 
@@ -464,6 +466,53 @@ var _ = Describe("Multi-GPU Deployment Construction", func() {
 		})
 	})
 
+	Context("when verifying init container image configuration", func() {
+		It("should use custom init container image when configured", func() {
+			customImage := "myregistry.local/curl:1.0"
+			reconciler := &InferenceServiceReconciler{
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
+				InitContainerImage: customImage,
+			}
+
+			model := &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "init-image-model",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source:       "https://example.com/model.gguf",
+					Format:       "gguf",
+					Quantization: "Q4_K_M",
+					Hardware: &inferencev1alpha1.HardwareSpec{
+						Accelerator: "cpu",
+					},
+				},
+				Status: inferencev1alpha1.ModelStatus{
+					Phase: "Ready",
+				},
+			}
+
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "init-image-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: "init-image-model",
+					Replicas: &replicas,
+					Image:    "ghcr.io/ggml-org/llama.cpp:server",
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			Expect(deployment.Spec.Template.Spec.InitContainers).To(HaveLen(1))
+			Expect(deployment.Spec.Template.Spec.InitContainers[0].Image).To(Equal(customImage))
+		})
+	})
+
 	Context("when verifying tolerations and node selectors", func() {
 		var (
 			reconciler *InferenceServiceReconciler
@@ -471,8 +520,9 @@ var _ = Describe("Multi-GPU Deployment Construction", func() {
 
 		BeforeEach(func() {
 			reconciler = &InferenceServiceReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
+				InitContainerImage: "docker.io/curlimages/curl:latest",
 			}
 		})
 
@@ -589,8 +639,9 @@ var _ = Describe("Context Size Configuration", func() {
 
 		BeforeEach(func() {
 			reconciler = &InferenceServiceReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
+				InitContainerImage: "docker.io/curlimages/curl:latest",
 			}
 
 			model = &inferencev1alpha1.Model{
@@ -849,8 +900,9 @@ var _ = Describe("Multi-GPU End-to-End Reconciliation", func() {
 		It("should create deployment with correct multi-GPU configuration", func() {
 			By("reconciling the InferenceService")
 			reconciler := &InferenceServiceReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
+				InitContainerImage: "docker.io/curlimages/curl:latest",
 			}
 
 			// First reconcile may not create deployment if model isn't ready

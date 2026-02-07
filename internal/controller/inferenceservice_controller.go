@@ -48,6 +48,7 @@ type InferenceServiceReconciler struct {
 	ModelCacheClass      string
 	ModelCacheAccessMode string
 	CACertConfigMap      string
+	InitContainerImage   string
 }
 
 func sanitizeDNSName(name string) string {
@@ -92,14 +93,14 @@ type modelStorageConfig struct {
 	volumeMounts   []corev1.VolumeMount
 }
 
-func buildModelStorageConfig(model *inferencev1alpha1.Model, namespace string, useCache bool, caCertConfigMap string) modelStorageConfig {
+func buildModelStorageConfig(model *inferencev1alpha1.Model, namespace string, useCache bool, caCertConfigMap string, initContainerImage string) modelStorageConfig {
 	if useCache {
-		return buildCachedStorageConfig(model, caCertConfigMap)
+		return buildCachedStorageConfig(model, caCertConfigMap, initContainerImage)
 	}
-	return buildEmptyDirStorageConfig(model, namespace, caCertConfigMap)
+	return buildEmptyDirStorageConfig(model, namespace, caCertConfigMap, initContainerImage)
 }
 
-func buildCachedStorageConfig(model *inferencev1alpha1.Model, caCertConfigMap string) modelStorageConfig {
+func buildCachedStorageConfig(model *inferencev1alpha1.Model, caCertConfigMap string, initContainerImage string) modelStorageConfig {
 	cacheDir := fmt.Sprintf("/models/%s", model.Status.CacheKey)
 	modelPath := fmt.Sprintf("%s/model.gguf", cacheDir)
 
@@ -160,7 +161,7 @@ func buildCachedStorageConfig(model *inferencev1alpha1.Model, caCertConfigMap st
 		initContainers: []corev1.Container{
 			{
 				Name:         "model-downloader",
-				Image:        "docker.io/curlimages/curl:latest",
+				Image:        initContainerImage,
 				Command:      []string{"sh", "-c", cmd},
 				VolumeMounts: initVolumeMounts,
 			},
@@ -170,7 +171,7 @@ func buildCachedStorageConfig(model *inferencev1alpha1.Model, caCertConfigMap st
 	}
 }
 
-func buildEmptyDirStorageConfig(model *inferencev1alpha1.Model, namespace string, caCertConfigMap string) modelStorageConfig {
+func buildEmptyDirStorageConfig(model *inferencev1alpha1.Model, namespace string, caCertConfigMap string, initContainerImage string) modelStorageConfig {
 	modelFileName := fmt.Sprintf("%s-%s.gguf", namespace, model.Name)
 	modelPath := fmt.Sprintf("/models/%s", modelFileName)
 
@@ -205,7 +206,7 @@ func buildEmptyDirStorageConfig(model *inferencev1alpha1.Model, namespace string
 		initContainers: []corev1.Container{
 			{
 				Name:         "model-downloader",
-				Image:        "docker.io/curlimages/curl:latest",
+				Image:        initContainerImage,
 				Command:      []string{"sh", "-c", cmd},
 				VolumeMounts: initVolumeMounts,
 			},
@@ -651,7 +652,7 @@ func (r *InferenceServiceReconciler) constructDeployment(
 	}
 
 	useCache := model.Status.CacheKey != "" && r.ModelCachePath != ""
-	storageConfig := buildModelStorageConfig(model, isvc.Namespace, useCache, r.CACertConfigMap)
+	storageConfig := buildModelStorageConfig(model, isvc.Namespace, useCache, r.CACertConfigMap, r.InitContainerImage)
 	modelPath := storageConfig.modelPath
 
 	args := []string{
