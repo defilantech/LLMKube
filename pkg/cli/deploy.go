@@ -54,6 +54,7 @@ type deployOptions struct {
 	memory         string
 	image          string
 	contextSize    int32
+	parallelSlots  int32
 	wait           bool
 	timeout        time.Duration
 }
@@ -126,6 +127,9 @@ Examples:
 
 	cmd.Flags().Int32Var(&opts.contextSize, "context", 0,
 		"Context window size in tokens (e.g., 8192, 16384, 32768). If not specified, uses llama.cpp default.")
+	cmd.Flags().Int32Var(&opts.parallelSlots, "parallel", 0,
+		"Number of concurrent request slots (1-64). "+
+			"Enables parallel inference for multiple users.")
 
 	cmd.Flags().StringVar(&opts.cpu, "cpu", "2", "CPU request (e.g., '2' or '2000m')")
 	cmd.Flags().StringVar(&opts.memory, "memory", "4Gi", "Memory request (e.g., '4Gi')")
@@ -226,6 +230,9 @@ func runDeploy(opts *deployOptions) error {
 	if opts.contextSize > 0 {
 		fmt.Printf("Context:     %d tokens\n", opts.contextSize)
 	}
+	if opts.parallelSlots > 0 {
+		fmt.Printf("Parallel:    %d slots\n", opts.parallelSlots)
+	}
 	fmt.Printf("Image:       %s\n", opts.image)
 	fmt.Printf("═══════════════════════════════════════════════\n\n")
 
@@ -271,7 +278,25 @@ func runDeploy(opts *deployOptions) error {
 	fmt.Printf("   ✅ Model created\n\n")
 
 	fmt.Printf("⚙️  Creating InferenceService '%s'...\n", opts.name)
-	inferenceService := &inferencev1alpha1.InferenceService{
+	inferenceService := buildInferenceService(opts)
+
+	if err := k8sClient.Create(ctx, inferenceService); err != nil {
+		return fmt.Errorf("failed to create InferenceService: %w", err)
+	}
+	fmt.Printf("   ✅ InferenceService created\n")
+
+	if opts.wait {
+		fmt.Printf("\nWaiting for deployment to be ready (timeout: %s)...\n", opts.timeout)
+		if err := waitForReady(ctx, k8sClient, opts.name, opts.namespace, opts.timeout); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func buildInferenceService(opts *deployOptions) *inferencev1alpha1.InferenceService {
+	isvc := &inferencev1alpha1.InferenceService{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      opts.name,
 			Namespace: opts.namespace,
@@ -293,29 +318,21 @@ func runDeploy(opts *deployOptions) error {
 	}
 
 	if opts.gpu {
-		inferenceService.Spec.Resources.GPU = opts.gpuCount
+		isvc.Spec.Resources.GPU = opts.gpuCount
 		if opts.gpuMemory != "" {
-			inferenceService.Spec.Resources.GPUMemory = opts.gpuMemory
+			isvc.Spec.Resources.GPUMemory = opts.gpuMemory
 		}
 	}
 
 	if opts.contextSize > 0 {
-		inferenceService.Spec.ContextSize = &opts.contextSize
+		isvc.Spec.ContextSize = &opts.contextSize
 	}
 
-	if err := k8sClient.Create(ctx, inferenceService); err != nil {
-		return fmt.Errorf("failed to create InferenceService: %w", err)
-	}
-	fmt.Printf("   ✅ InferenceService created\n")
-
-	if opts.wait {
-		fmt.Printf("\nWaiting for deployment to be ready (timeout: %s)...\n", opts.timeout)
-		if err := waitForReady(ctx, k8sClient, opts.name, opts.namespace, opts.timeout); err != nil {
-			return err
-		}
+	if opts.parallelSlots > 0 {
+		isvc.Spec.ParallelSlots = &opts.parallelSlots
 	}
 
-	return nil
+	return isvc
 }
 
 func sanitizeServiceName(name string) string {

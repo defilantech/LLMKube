@@ -115,6 +115,15 @@ spec:
                   type: string
                 description: NodeSelector for pod placement (e.g., specific node pools)
                 type: object
+              parallelSlots:
+                description: |-
+                  ParallelSlots sets the number of concurrent request slots for the llama.cpp server (--parallel flag).
+                  Each slot can process one request independently, enabling concurrent inference.
+                  Higher values use more memory. If not specified, llama.cpp defaults to 1.
+                format: int32
+                maximum: 64
+                minimum: 1
+                type: integer
               priority:
                 default: normal
                 description: |-
