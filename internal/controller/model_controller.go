@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -36,6 +37,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
+	"github.com/defilantech/llmkube/pkg/gguf"
 )
 
 const (
@@ -87,6 +89,15 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		model.Status.AcceleratorReady = r.checkAcceleratorAvailability(model.Spec.Hardware)
 		now := metav1.Now()
 		model.Status.LastUpdated = &now
+
+		// Parse GGUF metadata (non-fatal, skip if already populated)
+		if model.Status.GGUF == nil {
+			if ggufMeta, err := r.parseGGUFMetadata(modelPath); err != nil {
+				logger.Info("Failed to parse GGUF metadata (non-fatal)", "error", err)
+			} else {
+				model.Status.GGUF = ggufMeta
+			}
+		}
 
 		if err := r.updateStatus(ctx, model, "Available", metav1.ConditionTrue, "ModelCached", "Model found in cache"); err != nil {
 			return ctrl.Result{}, err
@@ -141,6 +152,13 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	model.Status.AcceleratorReady = r.checkAcceleratorAvailability(model.Spec.Hardware)
 	now := metav1.Now()
 	model.Status.LastUpdated = &now
+
+	// Parse GGUF metadata (non-fatal)
+	if ggufMeta, err := r.parseGGUFMetadata(modelPath); err != nil {
+		logger.Info("Failed to parse GGUF metadata (non-fatal)", "error", err)
+	} else {
+		model.Status.GGUF = ggufMeta
+	}
 
 	if err := r.updateStatus(ctx, model, "Available", metav1.ConditionTrue, "ModelReady", "Model downloaded and cached"); err != nil {
 		return ctrl.Result{}, err
@@ -299,6 +317,31 @@ func formatBytes(bytes int64) string {
 func computeCacheKey(source string) string {
 	hash := sha256.Sum256([]byte(source))
 	return hex.EncodeToString(hash[:])[:16]
+}
+
+func (r *ModelReconciler) parseGGUFMetadata(path string) (*inferencev1alpha1.GGUFMetadata, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open model file: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+
+	parsed, err := gguf.Parse(bufio.NewReader(f))
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse GGUF: %w", err)
+	}
+
+	return &inferencev1alpha1.GGUFMetadata{
+		Architecture:  parsed.Architecture(),
+		ModelName:     parsed.Name(),
+		Quantization:  parsed.Quantization(),
+		ContextLength: parsed.ContextLength(),
+		EmbeddingSize: parsed.EmbeddingLength(),
+		LayerCount:    parsed.BlockCount(),
+		HeadCount:     parsed.HeadCount(),
+		TensorCount:   parsed.Header.TensorCount,
+		FileVersion:   parsed.Header.Version,
+	}, nil
 }
 
 func (r *ModelReconciler) SetupWithManager(mgr ctrl.Manager) error {

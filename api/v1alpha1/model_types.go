@@ -133,6 +133,45 @@ type ResourceRequirements struct {
 	Memory string `json:"memory,omitempty"`
 }
 
+// GGUFMetadata contains metadata extracted from a parsed GGUF file header.
+type GGUFMetadata struct {
+	// Architecture is the model architecture (e.g., "llama", "mistral", "phi")
+	// +optional
+	Architecture string `json:"architecture,omitempty"`
+
+	// ModelName is the model name as stored in the GGUF file
+	// +optional
+	ModelName string `json:"modelName,omitempty"`
+
+	// Quantization is the quantization type (e.g., "Q4_K_M", "Q5_K_M")
+	// +optional
+	Quantization string `json:"quantization,omitempty"`
+
+	// ContextLength is the maximum context length (tokens)
+	// +optional
+	ContextLength uint64 `json:"contextLength,omitempty"`
+
+	// EmbeddingSize is the embedding dimension size
+	// +optional
+	EmbeddingSize uint64 `json:"embeddingSize,omitempty"`
+
+	// LayerCount is the number of transformer layers/blocks
+	// +optional
+	LayerCount uint64 `json:"layerCount,omitempty"`
+
+	// HeadCount is the number of attention heads
+	// +optional
+	HeadCount uint64 `json:"headCount,omitempty"`
+
+	// TensorCount is the number of tensors in the model
+	// +optional
+	TensorCount uint64 `json:"tensorCount,omitempty"`
+
+	// FileVersion is the GGUF file format version
+	// +optional
+	FileVersion uint32 `json:"fileVersion,omitempty"`
+}
+
 // ModelStatus defines the observed state of Model.
 type ModelStatus struct {
 	// Phase represents the current lifecycle phase of the model
@@ -156,6 +195,10 @@ type ModelStatus struct {
 	// AcceleratorReady indicates if hardware acceleration is configured and ready
 	// +optional
 	AcceleratorReady bool `json:"acceleratorReady,omitempty"`
+
+	// GGUF contains metadata extracted from the GGUF file header
+	// +optional
+	GGUF *GGUFMetadata `json:"gguf,omitempty"`
 
 	// LastUpdated is the timestamp of the last status update
 	// +optional
@@ -181,6 +224,7 @@ type ModelStatus struct {
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Size",type=string,JSONPath=`.status.size`
 // +kubebuilder:printcolumn:name="Accelerator",type=string,JSONPath=`.spec.hardware.accelerator`
+// +kubebuilder:printcolumn:name="Arch",type=string,JSONPath=`.status.gguf.architecture`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 // +kubebuilder:resource:shortName=mdl
 
