@@ -18,9 +18,13 @@ LLMKube is a Kubernetes operator that makes it easy to deploy, manage, and scale
 ### Add the Helm Repository
 
 ```bash
-# TODO: Update when chart is published to a repository
-# helm repo add llmkube https://charts.llmkube.dev
-# helm repo update
+helm repo add llmkube https://defilantech.github.io/LLMKube
+helm repo update
+
+# Install the chart
+helm install llmkube llmkube/llmkube \
+  --namespace llmkube-system \
+  --create-namespace
 ```
 
 ### Install from Local Chart

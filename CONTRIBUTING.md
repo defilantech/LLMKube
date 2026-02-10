@@ -346,12 +346,11 @@ func (r *ModelReconciler) ReconcileModel(ctx context.Context, model *inferencev1
 ### Communication Channels
 
 - **GitHub Issues**: Bug reports, feature requests
-- **GitHub Discussions**: Q&A, ideas, general discussion (coming soon)
-- **Slack/Discord**: Real-time chat (coming soon)
+- **GitHub Discussions**: [Q&A, ideas, general discussion](https://github.com/defilantech/LLMKube/discussions)
 
 ### Weekly Sync
 
-**When**: Mondays, 10am PT (details in Discord when available)
+**When**: Mondays, 10am PT (details in [GitHub Discussions](https://github.com/defilantech/LLMKube/discussions))
 **Agenda**: Review PRs, discuss roadmap, unblock contributors
 
 ### Recognition

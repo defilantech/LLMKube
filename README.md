@@ -8,15 +8,25 @@
   **17x faster inference** • **Production-ready** • **OpenAI-compatible API**
 
   <p>
+    <a href="https://github.com/defilantech/LLMKube/actions/workflows/test.yml">
+      <img src="https://github.com/defilantech/LLMKube/actions/workflows/test.yml/badge.svg" alt="Tests">
+    </a>
     <a href="https://github.com/defilantech/LLMKube/actions/workflows/helm-chart.yml">
       <img src="https://github.com/defilantech/LLMKube/actions/workflows/helm-chart.yml/badge.svg" alt="Helm Chart CI">
+    </a>
+    <a href="https://goreportcard.com/report/github.com/defilantech/llmkube">
+      <img src="https://goreportcard.com/badge/github.com/defilantech/llmkube" alt="Go Report Card">
     </a>
     <a href="https://github.com/defilantech/LLMKube/releases">
       <img src="https://img.shields.io/github/v/release/defilantech/LLMKube?label=version" alt="Version">
     </a>
+    <a href="https://github.com/defilantech/LLMKube/stargazers">
+      <img src="https://img.shields.io/github/stars/defilantech/LLMKube?style=social" alt="GitHub Stars">
+    </a>
     <a href="LICENSE">
       <img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License">
     </a>
+    <img src="https://img.shields.io/github/go-mod/go-version/defilantech/LLMKube" alt="Go Version">
   </p>
 
   <p>
@@ -622,7 +632,7 @@ A: Yes! Pre-download models to PersistentVolumes and use local image registries.
 We're just getting started! Here's how to get involved:
 
 - 🐛 **Bug reports & features:** [GitHub Issues](https://github.com/defilantech/LLMKube/issues)
-- 💬 **Questions & help:** [GitHub Discussions](https://github.com/defilantech/LLMKube/discussions) (coming soon)
+- 💬 **Questions & help:** [GitHub Discussions](https://github.com/defilantech/LLMKube/discussions)
 - 📖 **Roadmap:** [ROADMAP.md](ROADMAP.md)
 - 🤝 **Contributing:** We welcome PRs! See [ROADMAP.md](ROADMAP.md) for priorities
 
