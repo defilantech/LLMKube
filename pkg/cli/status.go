@@ -96,6 +96,18 @@ func runStatus(opts *statusOptions) error {
 		fmt.Printf("  Updated:     %s\n", model.Status.LastUpdated.Format("2006-01-02 15:04:05"))
 	}
 
+	if model.Status.GGUF != nil {
+		fmt.Printf("\nGGUF METADATA:\n")
+		fmt.Printf("  Architecture:   %s\n", model.Status.GGUF.Architecture)
+		fmt.Printf("  Model Name:     %s\n", model.Status.GGUF.ModelName)
+		fmt.Printf("  Quantization:   %s\n", model.Status.GGUF.Quantization)
+		fmt.Printf("  Context Length: %d\n", model.Status.GGUF.ContextLength)
+		fmt.Printf("  Embedding Dim:  %d\n", model.Status.GGUF.EmbeddingSize)
+		fmt.Printf("  Layers:         %d\n", model.Status.GGUF.LayerCount)
+		fmt.Printf("  Attn Heads:     %d\n", model.Status.GGUF.HeadCount)
+		fmt.Printf("  Tensors:        %d\n", model.Status.GGUF.TensorCount)
+	}
+
 	fmt.Printf("\nINFERENCE SERVICE STATUS:\n")
 	fmt.Printf("  Phase:           %s\n", isvc.Status.Phase)
 	fmt.Printf("  Model Reference: %s\n", isvc.Spec.ModelRef)
