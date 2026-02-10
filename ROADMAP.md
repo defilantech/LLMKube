@@ -1,7 +1,7 @@
 # LLMKube Roadmap
 
-**Current Version:** 0.4.9
-**Last Updated:** December 2025
+**Current Version:** 0.4.13
+**Last Updated:** February 2026
 **Status:** ✅ Phase 1 Complete - GPU Inference, Metal Support, Model Catalog & GPU Scheduling
 
 ---
@@ -20,7 +20,7 @@ Make GPU-accelerated LLM inference on Kubernetes **dead simple**. Deploy product
 
 ## Current Status
 
-### ✅ What's Working Now (v0.4.9)
+### ✅ What's Working Now (v0.4.13)
 
 **Core Platform:**
 - ✅ Kubernetes-native CRDs (`Model`, `InferenceService`)
@@ -139,9 +139,9 @@ Make GPU-accelerated LLM inference on Kubernetes **dead simple**. Deploy product
 
 | Metric | Current | Q1 2026 Goal | Q2 2026 Goal |
 |--------|---------|--------------|--------------|
-| **GitHub Stars** | 0 | 100 | 500 |
+| **GitHub Stars** | 17 | 100 | 500 |
 | **Contributors** | 1 | 5 | 10 |
-| **Production Deployments** | 0 | 10 | 25 |
+| **Production Deployments** | 1 | 10 | 25 |
 | **Models Supported** | Any GGUF | 20+ pre-configured | 50+ pre-configured |
 
 ---
@@ -198,7 +198,8 @@ We ship frequently with semantic versioning:
 **Next releases:**
 - **v0.4.0** - November 2025 (multi-GPU support) ✅
 - **v0.4.1** - November 2025 (persistent model cache) ✅
-- **v0.4.9** - December 2025 (GPU scheduling & priority classes) ✅ **Current**
+- **v0.4.9** - December 2025 (GPU scheduling & priority classes) ✅
+- **v0.4.13** - February 2026 (GGUF parser, init container customization, NetworkPolicy) ✅ **Current**
 - **v0.5.0** - Q1 2026 (autoscaling)
 - **v0.6.0** - Q2 2026 (edge deployment, K3s)
 - **v1.0.0** - Q4 2026 (stable, production-ready)
@@ -240,7 +241,7 @@ Apache 2.0 - See [LICENSE](LICENSE)
 
 ---
 
-**Last Updated:** December 2025
-**Next Review:** February 2026
+**Last Updated:** February 2026
+**Next Review:** April 2026
 
 *This roadmap is a living document. Priorities may shift based on community feedback and real-world usage.*

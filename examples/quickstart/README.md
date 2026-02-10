@@ -415,8 +415,7 @@ kubectl delete crd inferenceservices.inference.llmkube.dev
 ## Support
 
 - **Issues**: [GitHub Issues](https://github.com/Defilan/LLMKube/issues)
-- **Discussions**: Coming soon
-- **Community**: Discord/Slack (coming soon)
+- **Discussions**: [GitHub Discussions](https://github.com/defilantech/LLMKube/discussions)
 
 ---
 
