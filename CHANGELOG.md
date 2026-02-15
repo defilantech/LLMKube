@@ -5,6 +5,14 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.14](https://github.com/defilantech/LLMKube/compare/v0.4.13...v0.4.14) (2026-02-15)
+
+
+### Features
+
+* **gguf:** add native Go GGUF parser with CRD integration and CLI inspect ([#140](https://github.com/defilantech/LLMKube/issues/140)) ([9d96ed4](https://github.com/defilantech/LLMKube/commit/9d96ed4b7e0409d14808f536b23f615b7e232004))
+* **inference:** add flashAttention and contextSize to sample manifest ([914c929](https://github.com/defilantech/LLMKube/commit/914c929e0ae180bc7c1219582fc97e85398e47fe)), closes [#145](https://github.com/defilantech/LLMKube/issues/145)
+
 ## [0.4.13](https://github.com/defilantech/LLMKube/compare/v0.4.12...v0.4.13) (2026-02-07)
 
 
