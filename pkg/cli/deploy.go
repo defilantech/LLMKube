@@ -55,6 +55,7 @@ type deployOptions struct {
 	image          string
 	contextSize    int32
 	parallelSlots  int32
+	flashAttention bool
 	wait           bool
 	timeout        time.Duration
 }
@@ -130,6 +131,9 @@ Examples:
 	cmd.Flags().Int32Var(&opts.parallelSlots, "parallel", 0,
 		"Number of concurrent request slots (1-64). "+
 			"Enables parallel inference for multiple users.")
+	cmd.Flags().BoolVar(&opts.flashAttention, "flash-attn", false,
+		"Enable flash attention for faster prompt processing and reduced VRAM usage. "+
+			"Requires NVIDIA Ampere or newer GPU.")
 
 	cmd.Flags().StringVar(&opts.cpu, "cpu", "2", "CPU request (e.g., '2' or '2000m')")
 	cmd.Flags().StringVar(&opts.memory, "memory", "4Gi", "Memory request (e.g., '4Gi')")
@@ -233,6 +237,9 @@ func runDeploy(opts *deployOptions) error {
 	if opts.parallelSlots > 0 {
 		fmt.Printf("Parallel:    %d slots\n", opts.parallelSlots)
 	}
+	if opts.flashAttention {
+		fmt.Printf("Flash Attn:  enabled\n")
+	}
 	fmt.Printf("Image:       %s\n", opts.image)
 	fmt.Printf("═══════════════════════════════════════════════\n\n")
 
@@ -330,6 +337,10 @@ func buildInferenceService(opts *deployOptions) *inferencev1alpha1.InferenceServ
 
 	if opts.parallelSlots > 0 {
 		isvc.Spec.ParallelSlots = &opts.parallelSlots
+	}
+
+	if opts.flashAttention {
+		isvc.Spec.FlashAttention = &opts.flashAttention
 	}
 
 	return isvc
