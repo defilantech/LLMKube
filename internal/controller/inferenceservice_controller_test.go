@@ -896,6 +896,150 @@ var _ = Describe("Context Size Configuration", func() {
 			Expect(args).NotTo(ContainElement("--parallel"))
 		})
 	})
+
+	Context("when flashAttention is configured", func() {
+		var (
+			reconciler *InferenceServiceReconciler
+			model      *inferencev1alpha1.Model
+		)
+
+		BeforeEach(func() {
+			reconciler = &InferenceServiceReconciler{
+				ModelCachePath:     "/tmp/llmkube/models",
+				InitContainerImage: "docker.io/curlimages/curl:latest",
+			}
+
+			model = &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "flash-attn-model",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source: "https://example.com/model.gguf",
+					Hardware: &inferencev1alpha1.HardwareSpec{
+						GPU: &inferencev1alpha1.GPUSpec{
+							Count:  1,
+							Layers: 64,
+						},
+					},
+				},
+				Status: inferencev1alpha1.ModelStatus{
+					Phase:    "Ready",
+					CacheKey: "test-cache-key",
+					Path:     "/tmp/llmkube/models/test-model.gguf",
+				},
+			}
+		})
+
+		It("should include --flash-attn flag when flashAttention is true and GPU is configured", func() {
+			replicas := int32(1)
+			flashAttn := true
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "flash-attn-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef:       "flash-attn-model",
+					Replicas:       &replicas,
+					Image:          "ghcr.io/ggml-org/llama.cpp:server-cuda",
+					FlashAttention: &flashAttn,
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{
+						GPU: 1,
+					},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).To(ContainElement("--flash-attn"))
+		})
+
+		It("should NOT include --flash-attn flag when flashAttention is not specified", func() {
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "no-flash-attn-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: "flash-attn-model",
+					Replicas: &replicas,
+					Image:    "ghcr.io/ggml-org/llama.cpp:server-cuda",
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{
+						GPU: 1,
+					},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).NotTo(ContainElement("--flash-attn"))
+		})
+
+		It("should NOT include --flash-attn flag when flashAttention is false", func() {
+			replicas := int32(1)
+			flashAttn := false
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "flash-attn-false-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef:       "flash-attn-model",
+					Replicas:       &replicas,
+					Image:          "ghcr.io/ggml-org/llama.cpp:server-cuda",
+					FlashAttention: &flashAttn,
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{
+						GPU: 1,
+					},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).NotTo(ContainElement("--flash-attn"))
+		})
+
+		It("should NOT include --flash-attn flag when no GPU is configured", func() {
+			replicas := int32(1)
+			flashAttn := true
+			noGPUModel := &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "flash-attn-no-gpu-model",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source: "https://example.com/model.gguf",
+				},
+				Status: inferencev1alpha1.ModelStatus{
+					Phase:    "Ready",
+					CacheKey: "test-cache-key",
+					Path:     "/tmp/llmkube/models/test-model.gguf",
+				},
+			}
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "flash-attn-no-gpu-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef:       "flash-attn-no-gpu-model",
+					Replicas:       &replicas,
+					Image:          "ghcr.io/ggml-org/llama.cpp:server",
+					FlashAttention: &flashAttn,
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, noGPUModel, 1)
+
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).NotTo(ContainElement("--flash-attn"))
+		})
+	})
 })
 
 var _ = Describe("Multi-GPU End-to-End Reconciliation", func() {

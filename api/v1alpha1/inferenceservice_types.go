@@ -74,6 +74,12 @@ type InferenceServiceSpec struct {
 	// +optional
 	ParallelSlots *int32 `json:"parallelSlots,omitempty"`
 
+	// FlashAttention enables flash attention for faster prompt processing and reduced
+	// VRAM usage. Requires a GPU with flash attention support (NVIDIA Ampere or newer).
+	// Maps to llama.cpp --flash-attn flag. Only applied when GPU is configured.
+	// +optional
+	FlashAttention *bool `json:"flashAttention,omitempty"`
+
 	// Priority determines scheduling priority for GPU allocation.
 	// Higher priority services can preempt lower priority ones when GPUs are scarce.
 	// +kubebuilder:validation:Enum=critical;high;normal;low;batch

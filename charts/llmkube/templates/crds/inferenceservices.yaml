@@ -103,6 +103,12 @@ spec:
                     - LoadBalancer
                     type: string
                 type: object
+              flashAttention:
+                description: |-
+                  FlashAttention enables flash attention for faster prompt processing and reduced
+                  VRAM usage. Requires a GPU with flash attention support (NVIDIA Ampere or newer).
+                  Maps to llama.cpp --flash-attn flag. Only applied when GPU is configured.
+                type: boolean
               image:
                 default: ghcr.io/ggml-org/llama.cpp:server
                 description: Image is the container image for the llama.cpp runtime

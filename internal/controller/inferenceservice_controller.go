@@ -637,6 +637,13 @@ func appendParallelSlotsArgs(args []string, parallelSlots *int32) []string {
 	return args
 }
 
+func appendFlashAttentionArgs(args []string, flashAttention *bool, gpuCount int32) []string {
+	if gpuCount > 0 && flashAttention != nil && *flashAttention {
+		return append(args, "--flash-attn")
+	}
+	return args
+}
+
 func (r *InferenceServiceReconciler) constructDeployment(
 	isvc *inferencev1alpha1.InferenceService,
 	model *inferencev1alpha1.Model,
@@ -699,6 +706,7 @@ func (r *InferenceServiceReconciler) constructDeployment(
 
 	args = appendContextSizeArgs(args, isvc.Spec.ContextSize)
 	args = appendParallelSlotsArgs(args, isvc.Spec.ParallelSlots)
+	args = appendFlashAttentionArgs(args, isvc.Spec.FlashAttention, gpuCount)
 
 	container := corev1.Container{
 		Name:  "llama-server",
