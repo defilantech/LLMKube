@@ -21,6 +21,12 @@ spec:
     path: /v1/chat/completions
     type: ClusterIP  # ClusterIP, NodePort, or LoadBalancer
 
+  # Context window size in tokens (optional)
+  contextSize: 8192
+
+  # Enable flash attention for faster prompt processing (optional, requires Ampere+ GPU)
+  flashAttention: true
+
   # Resource requirements (optional)
   resources:
     gpu: 1        # Number of GPUs (0 for CPU-only)
