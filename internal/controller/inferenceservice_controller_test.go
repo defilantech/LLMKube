@@ -953,7 +953,7 @@ var _ = Describe("Context Size Configuration", func() {
 			deployment := reconciler.constructDeployment(isvc, model, 1)
 
 			args := deployment.Spec.Template.Spec.Containers[0].Args
-			Expect(args).To(ContainElement("--flash-attn"))
+			Expect(args).To(ContainElements("--flash-attn", "on"))
 		})
 
 		It("should NOT include --flash-attn flag when flashAttention is not specified", func() {

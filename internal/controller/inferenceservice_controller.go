@@ -639,7 +639,7 @@ func appendParallelSlotsArgs(args []string, parallelSlots *int32) []string {
 
 func appendFlashAttentionArgs(args []string, flashAttention *bool, gpuCount int32) []string {
 	if gpuCount > 0 && flashAttention != nil && *flashAttention {
-		return append(args, "--flash-attn")
+		return append(args, "--flash-attn", "on")
 	}
 	return args
 }
