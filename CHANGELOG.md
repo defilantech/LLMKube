@@ -5,6 +5,13 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.15](https://github.com/defilantech/LLMKube/compare/v0.4.14...v0.4.15) (2026-02-15)
+
+
+### Bug Fixes
+
+* **inference:** pass value to --flash-attn for newer llama.cpp versions ([#148](https://github.com/defilantech/LLMKube/issues/148)) ([25e08d0](https://github.com/defilantech/LLMKube/commit/25e08d0270241d15c0a1815c11e12627cfe5eb27))
+
 ## [0.4.14](https://github.com/defilantech/LLMKube/compare/v0.4.13...v0.4.14) (2026-02-15)
 
 
