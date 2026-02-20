@@ -5,6 +5,18 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.16](https://github.com/defilantech/LLMKube/compare/v0.4.15...v0.4.16) (2026-02-20)
+
+
+### Features
+
+* **agent:** add --host-ip flag for remote K8s cluster support ([#155](https://github.com/defilantech/LLMKube/issues/155)) ([b425569](https://github.com/defilantech/LLMKube/commit/b42556919afe0089e6ebde1d35fe79459e116fcb))
+
+
+### Documentation
+
+* Add Metal Agent (Apple Silicon) support to README ([#151](https://github.com/defilantech/LLMKube/issues/151)) ([3579426](https://github.com/defilantech/LLMKube/commit/3579426ea24616f75104233f90fdb0b90b933070))
+
 ## [0.4.15](https://github.com/defilantech/LLMKube/compare/v0.4.14...v0.4.15) (2026-02-15)
 
 
