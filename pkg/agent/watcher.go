@@ -22,6 +22,7 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
@@ -96,7 +97,7 @@ func (w *InferenceServiceWatcher) listExisting(ctx context.Context, eventChan ch
 
 	for i := range list.Items {
 		// Only watch services with Metal accelerator
-		if !w.shouldWatch(&list.Items[i]) {
+		if !w.shouldWatch(ctx, &list.Items[i]) {
 			continue
 		}
 
@@ -129,7 +130,7 @@ func (w *InferenceServiceWatcher) poll(
 	current := make(map[string]bool)
 
 	for i := range list.Items {
-		if !w.shouldWatch(&list.Items[i]) {
+		if !w.shouldWatch(ctx, &list.Items[i]) {
 			continue
 		}
 
@@ -179,11 +180,23 @@ func (w *InferenceServiceWatcher) poll(
 	return nil
 }
 
-// shouldWatch determines if this InferenceService should be watched
-func (w *InferenceServiceWatcher) shouldWatch(isvc *inferencev1alpha1.InferenceService) bool {
-	// TODO: Check if service has Metal annotation or label
-	// For now, watch all services (the executor will determine if Metal is appropriate)
-	return true
+// shouldWatch determines if this InferenceService should be watched by the Metal Agent.
+// It looks up the referenced Model and only returns true if the Model's accelerator is "metal".
+func (w *InferenceServiceWatcher) shouldWatch(ctx context.Context, isvc *inferencev1alpha1.InferenceService) bool {
+	if isvc.Spec.ModelRef == "" {
+		return false
+	}
+
+	model := &inferencev1alpha1.Model{}
+	if err := w.client.Get(ctx, types.NamespacedName{
+		Namespace: isvc.Namespace,
+		Name:      isvc.Spec.ModelRef,
+	}, model); err != nil {
+		// If we can't fetch the Model, don't watch it
+		return false
+	}
+
+	return model.Spec.Hardware != nil && model.Spec.Hardware.Accelerator == "metal"
 }
 
 // parseKey splits "namespace/name" into components
