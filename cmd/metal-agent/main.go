@@ -47,6 +47,7 @@ type AgentConfig struct {
 	LlamaServerBin string
 	Port           int
 	LogLevel       string
+	HostIP         string
 }
 
 func main() {
@@ -58,6 +59,7 @@ func main() {
 	flag.StringVar(&cfg.LlamaServerBin, "llama-server", "/usr/local/bin/llama-server", "Path to llama-server binary")
 	flag.IntVar(&cfg.Port, "port", 9090, "Agent metrics/health port")
 	flag.StringVar(&cfg.LogLevel, "log-level", "info", "Log level (debug, info, warn, error)")
+	flag.StringVar(&cfg.HostIP, "host-ip", "", "IP address to register in Kubernetes endpoints (auto-detected if empty)")
 	showVersion := flag.Bool("version", false, "Show version information")
 	flag.Parse()
 
@@ -75,6 +77,11 @@ func main() {
 	fmt.Printf("Model Store:     %s\n", cfg.ModelStorePath)
 	fmt.Printf("Llama Server:    %s\n", cfg.LlamaServerBin)
 	fmt.Printf("Agent Port:      %d\n", cfg.Port)
+	if cfg.HostIP != "" {
+		fmt.Printf("Host IP:         %s\n", cfg.HostIP)
+	} else {
+		fmt.Printf("Host IP:         (auto-detect)\n")
+	}
 	fmt.Println("═══════════════════════════════════════════════")
 
 	// Verify Metal support
@@ -133,6 +140,7 @@ func main() {
 		ModelStorePath: cfg.ModelStorePath,
 		LlamaServerBin: cfg.LlamaServerBin,
 		Port:           cfg.Port,
+		HostIP:         cfg.HostIP,
 	})
 
 	// Setup context with signal handling

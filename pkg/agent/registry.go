@@ -34,12 +34,17 @@ import (
 // to expose native Metal processes to the cluster
 type ServiceRegistry struct {
 	client client.Client
+	hostIP string // explicit host IP; if empty, auto-detect via DNS
 }
 
-// NewServiceRegistry creates a new service registry
-func NewServiceRegistry(k8sClient client.Client) *ServiceRegistry {
+// NewServiceRegistry creates a new service registry.
+// If hostIP is non-empty it is used as the endpoint address registered in
+// Kubernetes; otherwise the IP is auto-detected via DNS lookups
+// (host.minikube.internal / host.docker.internal).
+func NewServiceRegistry(k8sClient client.Client, hostIP string) *ServiceRegistry {
 	return &ServiceRegistry{
 		client: k8sClient,
+		hostIP: hostIP,
 	}
 }
 
@@ -89,9 +94,7 @@ func (r *ServiceRegistry) RegisterEndpoint(
 		}
 	}
 
-	// Create or update Endpoints to point to localhost
-	// Since the Metal agent runs on the same machine as minikube,
-	// we can use the host's IP address
+	// Create or update Endpoints to point to the host
 	//nolint:staticcheck // SA1019: Endpoints API is still functional and appropriate for manual endpoint management
 	endpoints := &corev1.Endpoints{
 		ObjectMeta: metav1.ObjectMeta{
@@ -108,9 +111,7 @@ func (r *ServiceRegistry) RegisterEndpoint(
 			{
 				Addresses: []corev1.EndpointAddress{
 					{
-						// Use the host IP that Kubernetes can reach
-						// For minikube: host.minikube.internal (192.168.65.254)
-						IP: getHostIP(),
+						IP: r.resolveHostIP(),
 						TargetRef: &corev1.ObjectReference{
 							Kind: "Pod",
 							Name: fmt.Sprintf("%s-metal", isvc.Name),
@@ -135,8 +136,8 @@ func (r *ServiceRegistry) RegisterEndpoint(
 		}
 	}
 
-	fmt.Printf("📝 Registered endpoint for %s/%s -> localhost:%d\n",
-		isvc.Namespace, isvc.Name, port)
+	fmt.Printf("📝 Registered endpoint for %s/%s -> %s:%d\n",
+		isvc.Namespace, isvc.Name, r.resolveHostIP(), port)
 
 	return nil
 }
@@ -179,8 +180,20 @@ func sanitizeServiceName(name string) string {
 	return strings.ReplaceAll(name, ".", "-")
 }
 
-// getHostIP returns the IP address that Kubernetes can use to reach the host machine
-// For minikube, this is typically host.minikube.internal which resolves to 192.168.65.254
+// resolveHostIP returns the IP address that Kubernetes uses to reach this host.
+// If an explicit hostIP was provided via --host-ip, that value is returned.
+// Otherwise it falls back to DNS auto-detection (host.minikube.internal,
+// host.docker.internal) for co-located setups.
+func (r *ServiceRegistry) resolveHostIP() string {
+	if r.hostIP != "" {
+		return r.hostIP
+	}
+	return getHostIP()
+}
+
+// getHostIP returns the auto-detected IP address that Kubernetes can use to
+// reach the host machine. For minikube, this is typically
+// host.minikube.internal which resolves to 192.168.65.254.
 func getHostIP() string {
 	// Try to resolve host.minikube.internal (for minikube)
 	if ips, err := net.LookupIP("host.minikube.internal"); err == nil && len(ips) > 0 {
