@@ -145,7 +145,7 @@ func TestHandleEvent_CreateMissingModel(t *testing.T) {
 	})
 	agent.watcher = NewInferenceServiceWatcher(k8sClient, "default")
 	agent.executor = NewMetalExecutor("/fake/llama-server", "/tmp/models")
-	agent.registry = NewServiceRegistry(k8sClient)
+	agent.registry = NewServiceRegistry(k8sClient, "")
 
 	event := InferenceServiceEvent{
 		Type: EventTypeCreated,

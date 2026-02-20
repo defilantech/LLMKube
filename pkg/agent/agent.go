@@ -35,6 +35,7 @@ type MetalAgentConfig struct {
 	ModelStorePath string
 	LlamaServerBin string
 	Port           int
+	HostIP         string // explicit IP to register in K8s endpoints; empty = auto-detect
 }
 
 // MetalAgent watches Kubernetes InferenceService resources and manages
@@ -72,7 +73,7 @@ func (a *MetalAgent) Start(ctx context.Context) error {
 	// Initialize components
 	a.watcher = NewInferenceServiceWatcher(a.config.K8sClient, a.config.Namespace)
 	a.executor = NewMetalExecutor(a.config.LlamaServerBin, a.config.ModelStorePath)
-	a.registry = NewServiceRegistry(a.config.K8sClient)
+	a.registry = NewServiceRegistry(a.config.K8sClient, a.config.HostIP)
 
 	// Start watcher
 	eventChan := make(chan InferenceServiceEvent)

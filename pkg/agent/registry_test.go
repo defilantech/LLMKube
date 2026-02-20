@@ -59,7 +59,7 @@ func TestNewServiceRegistry(t *testing.T) {
 	_ = corev1.AddToScheme(scheme)
 
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-	registry := NewServiceRegistry(k8sClient)
+	registry := NewServiceRegistry(k8sClient, "")
 
 	if registry == nil {
 		t.Fatal("NewServiceRegistry returned nil")
@@ -72,7 +72,7 @@ func TestRegisterEndpoint(t *testing.T) {
 	_ = corev1.AddToScheme(scheme)
 
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-	registry := NewServiceRegistry(k8sClient)
+	registry := NewServiceRegistry(k8sClient, "")
 
 	isvc := &inferencev1alpha1.InferenceService{
 		ObjectMeta: metav1.ObjectMeta{
@@ -160,7 +160,7 @@ func TestRegisterEndpoint_SanitizedName(t *testing.T) {
 	_ = corev1.AddToScheme(scheme)
 
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-	registry := NewServiceRegistry(k8sClient)
+	registry := NewServiceRegistry(k8sClient, "")
 
 	isvc := &inferencev1alpha1.InferenceService{
 		ObjectMeta: metav1.ObjectMeta{
@@ -213,7 +213,7 @@ func TestUnregisterEndpoint(t *testing.T) {
 		WithRuntimeObjects(svc, endpoints).
 		Build()
 
-	registry := NewServiceRegistry(k8sClient)
+	registry := NewServiceRegistry(k8sClient, "")
 
 	err := registry.UnregisterEndpoint(context.Background(), "default", "test-model")
 	if err != nil {
@@ -255,7 +255,7 @@ func TestUnregisterEndpoint_SanitizedName(t *testing.T) {
 		WithRuntimeObjects(svc, endpoints).
 		Build()
 
-	registry := NewServiceRegistry(k8sClient)
+	registry := NewServiceRegistry(k8sClient, "")
 
 	// Pass the dotted name — UnregisterEndpoint should sanitize it
 	err := registry.UnregisterEndpoint(context.Background(), "default", "model.v1.0")
@@ -269,5 +269,73 @@ func TestGetHostIP(t *testing.T) {
 	ip := getHostIP()
 	if ip == "" {
 		t.Error("getHostIP returned empty string")
+	}
+}
+
+func TestResolveHostIP_Explicit(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := NewServiceRegistry(k8sClient, "100.103.147.52")
+
+	ip := registry.resolveHostIP()
+	if ip != "100.103.147.52" {
+		t.Errorf("resolveHostIP() = %q, want %q", ip, "100.103.147.52")
+	}
+}
+
+func TestResolveHostIP_AutoDetect(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := NewServiceRegistry(k8sClient, "")
+
+	ip := registry.resolveHostIP()
+	if ip == "" {
+		t.Error("resolveHostIP() with empty hostIP should fall back to auto-detect, got empty string")
+	}
+}
+
+func TestRegisterEndpoint_ExplicitHostIP(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = inferencev1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := NewServiceRegistry(k8sClient, "10.0.0.42")
+
+	isvc := &inferencev1alpha1.InferenceService{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "remote-model",
+			Namespace: "default",
+		},
+		Spec: inferencev1alpha1.InferenceServiceSpec{
+			ModelRef: "remote-model",
+		},
+	}
+
+	err := registry.RegisterEndpoint(context.Background(), isvc, 8082)
+	if err != nil {
+		t.Fatalf("RegisterEndpoint returned error: %v", err)
+	}
+
+	// Verify the Endpoint uses the explicit host IP
+	//nolint:staticcheck // SA1019: Endpoints API is still functional and matches production code under test
+	endpoints := &corev1.Endpoints{}
+	err = k8sClient.Get(context.Background(), types.NamespacedName{
+		Name:      "remote-model",
+		Namespace: "default",
+	}, endpoints)
+	if err != nil {
+		t.Fatalf("Failed to get created Endpoints: %v", err)
+	}
+
+	if len(endpoints.Subsets) != 1 || len(endpoints.Subsets[0].Addresses) != 1 {
+		t.Fatal("Expected exactly 1 subset with 1 address")
+	}
+	if endpoints.Subsets[0].Addresses[0].IP != "10.0.0.42" {
+		t.Errorf("Endpoint IP = %q, want %q", endpoints.Subsets[0].Addresses[0].IP, "10.0.0.42")
 	}
 }
