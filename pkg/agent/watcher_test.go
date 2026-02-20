@@ -46,41 +46,126 @@ func TestNewInferenceServiceWatcher(t *testing.T) {
 func TestShouldWatch(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = inferencev1alpha1.AddToScheme(scheme)
-	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	metalModel := &inferencev1alpha1.Model{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "metal-model",
+			Namespace: "default",
+		},
+		Spec: inferencev1alpha1.ModelSpec{
+			Source: "https://example.com/model.gguf",
+			Format: "gguf",
+			Hardware: &inferencev1alpha1.HardwareSpec{
+				Accelerator: "metal",
+			},
+		},
+	}
+	cudaModel := &inferencev1alpha1.Model{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "cuda-model",
+			Namespace: "default",
+		},
+		Spec: inferencev1alpha1.ModelSpec{
+			Source: "https://example.com/model.gguf",
+			Format: "gguf",
+			Hardware: &inferencev1alpha1.HardwareSpec{
+				Accelerator: "cuda",
+			},
+		},
+	}
+	cpuModel := &inferencev1alpha1.Model{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "cpu-model",
+			Namespace: "default",
+		},
+		Spec: inferencev1alpha1.ModelSpec{
+			Source: "https://example.com/model.gguf",
+			Format: "gguf",
+			Hardware: &inferencev1alpha1.HardwareSpec{
+				Accelerator: "cpu",
+			},
+		},
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRuntimeObjects(metalModel, cudaModel, cpuModel).
+		Build()
 
 	watcher := NewInferenceServiceWatcher(k8sClient, "default")
 
-	// Currently shouldWatch returns true for all services (as per source code)
 	tests := []struct {
 		name string
 		isvc *inferencev1alpha1.InferenceService
 		want bool
 	}{
 		{
-			name: "basic inference service",
+			name: "metal model should be watched",
 			isvc: &inferencev1alpha1.InferenceService{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-model",
+					Name:      "metal-svc",
 					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: "metal-model",
 				},
 			},
 			want: true,
 		},
 		{
-			name: "service in different namespace",
+			name: "cuda model should not be watched",
 			isvc: &inferencev1alpha1.InferenceService{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "other-model",
-					Namespace: "production",
+					Name:      "cuda-svc",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: "cuda-model",
 				},
 			},
-			want: true,
+			want: false,
+		},
+		{
+			name: "cpu model should not be watched",
+			isvc: &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "cpu-svc",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: "cpu-model",
+				},
+			},
+			want: false,
+		},
+		{
+			name: "missing model should not be watched",
+			isvc: &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "missing-svc",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: "nonexistent-model",
+				},
+			},
+			want: false,
+		},
+		{
+			name: "empty modelRef should not be watched",
+			isvc: &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "empty-ref-svc",
+					Namespace: "default",
+				},
+			},
+			want: false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := watcher.shouldWatch(tt.isvc)
+			got := watcher.shouldWatch(context.Background(), tt.isvc)
 			if got != tt.want {
 				t.Errorf("shouldWatch() = %v, want %v", got, tt.want)
 			}
@@ -136,37 +221,35 @@ func TestListExisting_WithServices(t *testing.T) {
 	_ = inferencev1alpha1.AddToScheme(scheme)
 
 	replicas := int32(1)
-	existingServices := []inferencev1alpha1.InferenceService{
-		{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "model-a",
-				Namespace: "default",
-			},
-			Spec: inferencev1alpha1.InferenceServiceSpec{
-				ModelRef: "model-a",
-				Replicas: &replicas,
-			},
+
+	// Create Model resources with metal accelerator
+	modelA := &inferencev1alpha1.Model{
+		ObjectMeta: metav1.ObjectMeta{Name: "model-a", Namespace: "default"},
+		Spec: inferencev1alpha1.ModelSpec{
+			Source: "https://example.com/a.gguf", Format: "gguf",
+			Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: "metal"},
 		},
-		{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "model-b",
-				Namespace: "default",
-			},
-			Spec: inferencev1alpha1.InferenceServiceSpec{
-				ModelRef: "model-b",
-				Replicas: &replicas,
-			},
+	}
+	modelB := &inferencev1alpha1.Model{
+		ObjectMeta: metav1.ObjectMeta{Name: "model-b", Namespace: "default"},
+		Spec: inferencev1alpha1.ModelSpec{
+			Source: "https://example.com/b.gguf", Format: "gguf",
+			Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: "metal"},
 		},
 	}
 
-	objs := make([]runtime.Object, len(existingServices))
-	for i := range existingServices {
-		objs[i] = &existingServices[i]
+	svcA := &inferencev1alpha1.InferenceService{
+		ObjectMeta: metav1.ObjectMeta{Name: "model-a", Namespace: "default"},
+		Spec:       inferencev1alpha1.InferenceServiceSpec{ModelRef: "model-a", Replicas: &replicas},
+	}
+	svcB := &inferencev1alpha1.InferenceService{
+		ObjectMeta: metav1.ObjectMeta{Name: "model-b", Namespace: "default"},
+		Spec:       inferencev1alpha1.InferenceServiceSpec{ModelRef: "model-b", Replicas: &replicas},
 	}
 
 	k8sClient := fake.NewClientBuilder().
 		WithScheme(scheme).
-		WithRuntimeObjects(objs...).
+		WithRuntimeObjects(modelA, modelB, svcA, svcB).
 		Build()
 
 	watcher := NewInferenceServiceWatcher(k8sClient, "default")
@@ -194,37 +277,35 @@ func TestListExisting_NamespaceFiltering(t *testing.T) {
 	_ = inferencev1alpha1.AddToScheme(scheme)
 
 	replicas := int32(1)
-	services := []inferencev1alpha1.InferenceService{
-		{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "model-default",
-				Namespace: "default",
-			},
-			Spec: inferencev1alpha1.InferenceServiceSpec{
-				ModelRef: "model-default",
-				Replicas: &replicas,
-			},
+
+	// Both models use metal accelerator
+	modelDefault := &inferencev1alpha1.Model{
+		ObjectMeta: metav1.ObjectMeta{Name: "model-default", Namespace: "default"},
+		Spec: inferencev1alpha1.ModelSpec{
+			Source: "https://example.com/default.gguf", Format: "gguf",
+			Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: "metal"},
 		},
-		{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "model-prod",
-				Namespace: "production",
-			},
-			Spec: inferencev1alpha1.InferenceServiceSpec{
-				ModelRef: "model-prod",
-				Replicas: &replicas,
-			},
+	}
+	modelProd := &inferencev1alpha1.Model{
+		ObjectMeta: metav1.ObjectMeta{Name: "model-prod", Namespace: "production"},
+		Spec: inferencev1alpha1.ModelSpec{
+			Source: "https://example.com/prod.gguf", Format: "gguf",
+			Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: "metal"},
 		},
 	}
 
-	objs := make([]runtime.Object, len(services))
-	for i := range services {
-		objs[i] = &services[i]
+	svcDefault := &inferencev1alpha1.InferenceService{
+		ObjectMeta: metav1.ObjectMeta{Name: "model-default", Namespace: "default"},
+		Spec:       inferencev1alpha1.InferenceServiceSpec{ModelRef: "model-default", Replicas: &replicas},
+	}
+	svcProd := &inferencev1alpha1.InferenceService{
+		ObjectMeta: metav1.ObjectMeta{Name: "model-prod", Namespace: "production"},
+		Spec:       inferencev1alpha1.InferenceServiceSpec{ModelRef: "model-prod", Replicas: &replicas},
 	}
 
 	k8sClient := fake.NewClientBuilder().
 		WithScheme(scheme).
-		WithRuntimeObjects(objs...).
+		WithRuntimeObjects(modelDefault, modelProd, svcDefault, svcProd).
 		Build()
 
 	// Watch only "default" namespace
@@ -245,6 +326,13 @@ func TestPoll_DetectsNewService(t *testing.T) {
 	_ = inferencev1alpha1.AddToScheme(scheme)
 
 	replicas := int32(1)
+	model := &inferencev1alpha1.Model{
+		ObjectMeta: metav1.ObjectMeta{Name: "new-model", Namespace: "default"},
+		Spec: inferencev1alpha1.ModelSpec{
+			Source: "https://example.com/new.gguf", Format: "gguf",
+			Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: "metal"},
+		},
+	}
 	isvc := &inferencev1alpha1.InferenceService{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:            "new-model",
@@ -259,7 +347,7 @@ func TestPoll_DetectsNewService(t *testing.T) {
 
 	k8sClient := fake.NewClientBuilder().
 		WithScheme(scheme).
-		WithRuntimeObjects(isvc).
+		WithRuntimeObjects(model, isvc).
 		Build()
 
 	watcher := NewInferenceServiceWatcher(k8sClient, "default")
