@@ -5,15 +5,16 @@ This directory contains the macOS launchd configuration for the LLMKube Metal Ag
 ## Prerequisites
 
 1. **macOS with Apple Silicon** (M1/M2/M3/M4) or Intel Mac with Metal 2+ support
-2. **Minikube** running with Docker driver
+2. **Access to a Kubernetes cluster** — either a remote cluster (recommended) or local minikube
 3. **llama.cpp** with Metal support:
    ```bash
    brew install llama.cpp
    ```
-4. **LLMKube operator** installed in minikube:
+4. **LLMKube operator** installed in your cluster:
    ```bash
    kubectl apply -f https://github.com/defilantech/llmkube/releases/latest/download/install.yaml
    ```
+5. **`--host-ip` flag** (required when using a remote cluster): the Metal Agent must be started with `--host-ip <your-mac-ip>` so that Kubernetes endpoints point to the Mac's reachable IP address instead of `localhost`
 
 ## Installation
 
@@ -104,6 +105,30 @@ The launchd plist can be customized by editing `com.llmkube.metal-agent.plist`:
 </array>
 ```
 
+### `--host-ip` flag (remote cluster)
+
+When your Kubernetes cluster runs on a different machine (Linux server, cloud, etc.), the Metal Agent needs to register the Mac's reachable IP address so that pods in the cluster can route traffic to `llama-server`:
+
+```bash
+# Find your Mac's IP on the local network
+ipconfig getifaddr en0
+
+# Start the agent with --host-ip
+llmkube-metal-agent --host-ip 192.168.1.50
+
+# Or with a Tailscale / WireGuard address
+llmkube-metal-agent --host-ip 100.64.0.10
+```
+
+Without `--host-ip`, the agent registers `localhost` as the endpoint — which only works when K8s is on the same machine (e.g. minikube).
+
+To set this in the launchd plist, add these lines to the `ProgramArguments` array:
+
+```xml
+    <string>--host-ip</string>
+    <string>192.168.1.50</string>         <!-- Your Mac's reachable IP -->
+```
+
 After editing, reload the service:
 ```bash
 launchctl unload ~/Library/LaunchAgents/com.llmkube.metal-agent.plist
@@ -138,14 +163,34 @@ system_profiler SPDisplaysDataType | grep "Metal"
 ### Can't connect to Kubernetes
 
 ```bash
-# Verify minikube is running
-minikube status
-
-# Verify kubectl works
+# Verify kubectl can reach your cluster
 kubectl get nodes
 
-# Check kubeconfig
+# Check which context is active
+kubectl config current-context
+
+# Check kubeconfig path
 echo $KUBECONFIG
+
+# If using minikube locally
+minikube status
+```
+
+### Remote cluster: pods can't reach llama-server
+
+```bash
+# Verify --host-ip was set correctly
+# The IP must be reachable from the K8s nodes
+ping <your-mac-ip>   # run from a K8s node
+
+# Check that the endpoint was registered with the right IP
+kubectl get endpoints -l llmkube.dev/accelerator=metal
+
+# Verify firewall isn't blocking the llama-server port (default 8080+)
+# macOS may prompt to allow incoming connections on first run
+
+# If using Tailscale / WireGuard, verify the tunnel is up
+tailscale status   # or wg show
 ```
 
 ## Uninstallation
@@ -168,6 +213,33 @@ rm ~/Library/LaunchAgents/com.llmkube.metal-agent.plist
 4. **Spawns** llama-server processes with Metal acceleration
 5. **Registers** service endpoints back to Kubernetes
 6. **Pods** access the Metal-accelerated inference via Service endpoints
+
+### Remote cluster (Recommended)
+
+K8s runs on a Linux server or cloud; the Mac dedicates all resources to inference:
+
+```
+┌──────────────────────────────┐        ┌──────────────────────────────┐
+│ Linux Server / Cloud         │        │ macOS (Your Mac)             │
+│                              │        │                              │
+│  ┌────────────────────────┐  │  LAN/  │  ┌────────────────────────┐  │
+│  │ Kubernetes             │  │  VPN/  │  │ Metal Agent            │  │
+│  │  LLMKube Operator      │  │  TLS   │  │  --host-ip <mac-ip>   │  │
+│  │  InferenceService CRD  │◄─┼────────┼─►│  Watches K8s API      │  │
+│  │  Service → Mac IP      │  │        │  │  Spawns llama-server  │  │
+│  └────────────────────────┘  │        │  └────────────────────────┘  │
+│                              │        │               ↓              │
+│                              │        │  ┌────────────────────────┐  │
+│                              │        │  │ llama-server (Metal)   │  │
+│                              │        │  │  Direct GPU access ✅  │  │
+│                              │        │  │  All unified memory    │  │
+│                              │        │  └────────────────────────┘  │
+└──────────────────────────────┘        └──────────────────────────────┘
+```
+
+### Co-located (minikube on same Mac)
+
+Everything on one machine — simpler but minikube consumes resources:
 
 ```
 ┌─────────────────────────────────────────────────┐

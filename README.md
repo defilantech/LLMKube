@@ -166,7 +166,34 @@ kubectl run test --rm -i --image=docker.io/curlimages/curl -- \
 
 ### 🍎 Apple Silicon (Metal Agent)
 
-Run LLMs on macOS with native Metal GPU performance — no containers needed for inference. The Metal Agent runs `llama-server` natively while Kubernetes handles orchestration:
+Run LLMs on macOS with native Metal GPU performance — no containers needed for inference. The Metal Agent runs `llama-server` natively while Kubernetes handles orchestration.
+
+#### Option A: With an existing K8s cluster (Recommended)
+
+Your Mac dedicates 100% of its unified memory to inference — no Podman VM, no minikube, no K8s overhead:
+
+```bash
+# Install llama.cpp (Metal-accelerated inference)
+brew install llama.cpp
+
+# Download the Metal Agent binary from GitHub Releases
+# https://github.com/defilantech/LLMKube/releases
+
+# Copy kubeconfig from your cluster (e.g. a Linux server, cloud, etc.)
+export KUBECONFIG=~/.kube/config
+
+# Start the Metal Agent with your Mac's reachable IP
+llmkube-metal-agent --host-ip <your-mac-ip>
+
+# Deploy a model with Metal acceleration
+llmkube deploy llama-3.1-8b --accelerator metal
+```
+
+Works over LAN, Tailscale, WireGuard, or any routable network.
+
+#### Option B: Local minikube (single-machine)
+
+Run everything on one Mac (K8s + inference). Simpler to start, but minikube consumes RAM that could go to inference:
 
 ```bash
 # Install prerequisites
@@ -527,6 +554,34 @@ kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80
 
 ## Architecture
 
+### Option A: Remote cluster + Mac inference node (Recommended)
+
+K8s runs on a Linux server (or cloud); the Mac dedicates all resources to inference:
+
+```
+┌─────────────────────────────────────┐      ┌──────────────────────────────┐
+│ Linux Server / Cloud                │      │ Mac (Apple Silicon)          │
+│                                     │      │                              │
+│  ┌───────────────────────────────┐  │      │  ┌────────────────────────┐  │
+│  │ Kubernetes (Control Plane)    │  │      │  │ Metal Agent            │  │
+│  │  ┌─────────┐ ┌─────────────┐ │  │ LAN/ │  │  --host-ip <mac-ip>   │  │
+│  │  │ Model   │ │ Inference   │ │  │ VPN/ │  │  Watches K8s API      │  │
+│  │  │ Ctrl    │ │ Service Ctrl│ │◄─┼──────┼─►│  Spawns llama-server  │  │
+│  │  └─────────┘ └─────────────┘ │  │ TLS  │  └────────────────────────┘  │
+│  │  LLMKube Operator            │  │      │                              │
+│  └───────────────────────────────┘  │      │  ┌────────────────────────┐  │
+│                                     │      │  │ llama-server (Metal)   │  │
+│  ┌───────────────────────────────┐  │      │  │  Full GPU access ✅   │  │
+│  │ CUDA Nodes (optional)        │  │      │  │  All unified memory    │  │
+│  │  llama.cpp containers        │  │      │  └────────────────────────┘  │
+│  └───────────────────────────────┘  │      │                              │
+└─────────────────────────────────────┘      └──────────────────────────────┘
+```
+
+### Option B: Co-located (single machine)
+
+Everything on one Mac — simpler but minikube consumes resources:
+
 ```
 ┌──────────────┐
 │ User / CLI   │
@@ -561,7 +616,8 @@ kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80
 2. **InferenceService Controller** - Creates deployments and services
 3. **llama.cpp Runtime** - Efficient CPU/GPU inference (CUDA or Metal)
 4. **Metal Agent** - Native macOS process that watches CRDs and spawns `llama-server` with Metal GPU access ([docs](deployment/macos/))
-5. **DCGM Exporter** - GPU metrics for Prometheus
+5. **`--host-ip` flag** - Registers the Mac's reachable IP in K8s endpoints, enabling remote cluster architectures
+6. **DCGM Exporter** - GPU metrics for Prometheus
 
 ---
 
@@ -649,7 +705,7 @@ A: Yes - configure image pull secrets or use PersistentVolumes with `file://` UR
 A: Use spot instances (default), auto-scale to 0 (default), and run `terraform destroy` when not in use.
 
 **Q: Does this work on Apple Silicon Macs?**
-A: Yes! The [Metal Agent](deployment/macos/) runs `llama-server` natively on macOS with full Metal GPU performance. Kubernetes handles orchestration while inference runs outside containers for direct GPU access.
+A: Yes! The [Metal Agent](deployment/macos/) runs `llama-server` natively on macOS with full Metal GPU performance. You don't need Kubernetes running on the Mac — just point the Metal Agent at a remote cluster with `--host-ip` and a kubeconfig. Your Mac dedicates 100% of its unified memory to inference while K8s orchestrates from a Linux server or cloud.
 
 **Q: Is this production-ready?**
 A: Yes! Single-GPU and multi-GPU deployments are fully supported with monitoring. Advanced auto-scaling coming soon.
