@@ -23,3 +23,6 @@ jobs:
         run: |
           go mod tidy
           make test
+
+      - name: Build Metal Agent (compile check)
+        run: GOOS=darwin GOARCH=arm64 go build -o /dev/null ./cmd/metal-agent
