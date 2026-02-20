@@ -5,6 +5,13 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.17](https://github.com/defilantech/LLMKube/compare/v0.4.16...v0.4.17) (2026-02-20)
+
+
+### Bug Fixes
+
+* **agent:** filter InferenceServices by Metal accelerator type ([#157](https://github.com/defilantech/LLMKube/issues/157)) ([5737bb7](https://github.com/defilantech/LLMKube/commit/5737bb7c1cc9510507f9fda91519ecbfd1ab3271))
+
 ## [0.4.16](https://github.com/defilantech/LLMKube/compare/v0.4.15...v0.4.16) (2026-02-20)
 
 
