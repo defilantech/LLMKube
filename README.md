@@ -5,7 +5,7 @@
 
   ### Deploy GPU-accelerated LLMs on Kubernetes in 5 minutes
 
-  **17x faster inference** • **Production-ready** • **OpenAI-compatible API**
+  **17x faster inference** • **NVIDIA + Apple Silicon** • **Production-ready** • **OpenAI-compatible API**
 
   <p>
     <a href="https://github.com/defilantech/LLMKube/actions/workflows/test.yml">
@@ -55,12 +55,13 @@ Running LLMs in production shouldn't require a PhD in distributed systems. LLMKu
 
 - 🚀 **Deploy in minutes** - One command to production-ready GPU inference
 - ⚡ **17x faster** - Automatic GPU acceleration with NVIDIA support
+- 🍎 **Apple Silicon native** - Metal GPU acceleration via the [Metal Agent](deployment/macos/) — no containers needed for inference
 - 🔌 **OpenAI-compatible** - Drop-in replacement for OpenAI API
 - 📊 **Full observability** - Prometheus + Grafana GPU monitoring included
 - 💰 **Cost-optimized** - Auto-scaling and spot instance support
 - 🔒 **Air-gap ready** - Perfect for regulated industries and edge deployments
 
-**Perfect for:** AI-powered apps, internal tools, edge computing, air-gapped environments
+**Perfect for:** AI-powered apps, internal tools, edge computing, air-gapped environments, heterogeneous GPU clusters (NVIDIA + Apple Silicon)
 
 ---
 
@@ -163,6 +164,31 @@ kubectl run test --rm -i --image=docker.io/curlimages/curl -- \
 
 **See full local setup guide:** [Minikube Quickstart →](docs/minikube-quickstart.md)
 
+### 🍎 Apple Silicon (Metal Agent)
+
+Run LLMs on macOS with native Metal GPU performance — no containers needed for inference. The Metal Agent runs `llama-server` natively while Kubernetes handles orchestration:
+
+```bash
+# Install prerequisites
+brew install llama.cpp minikube
+
+# Start minikube and install LLMKube
+minikube start
+helm repo add llmkube https://defilantech.github.io/LLMKube
+helm install llmkube llmkube/llmkube --namespace llmkube-system --create-namespace
+
+# Install and start the Metal Agent
+cd deployment/macos
+make install
+
+# Deploy a model with Metal acceleration
+llmkube deploy llama-3.1-8b --accelerator metal
+```
+
+The same `InferenceService` CRD works on both CUDA and Metal — just change `accelerator: cuda` to `accelerator: metal`.
+
+**[Full Metal Agent guide →](deployment/macos/README.md)**
+
 ### ⚡ Production GPU Deployment (GKE)
 
 Get 17x faster inference with GPU acceleration:
@@ -241,6 +267,7 @@ Consistent ~53 tok/s across 3-8B models demonstrates efficient GPU utilization w
 
 **GPU Acceleration:**
 - ✅ NVIDIA GPU support (T4, L4, A100, RTX)
+- ✅ **Apple Silicon Metal** - Native macOS inference via [Metal Agent](deployment/macos/) (M1/M2/M3/M4)
 - ✅ **Multi-GPU support** - Run 13B-70B+ models across 2-8 GPUs ([guide](docs/MULTI-GPU-DEPLOYMENT.md))
 - ✅ Automatic layer offloading and tensor splitting
 - ✅ Multi-cloud Terraform (GKE, AKS, EKS)
@@ -513,26 +540,28 @@ kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80
 │ │ Model   │  │ Inference     │ │
 │ │ Controller  │ Service      │ │
 │ └─────────┘  └───────────────┘ │
-└─────────┬───────────────────────┘
-          │
-          ▼
-┌─────────────────────────────────┐
-│ Data Plane (GPU Nodes)          │
-│ ┌─────────────────────────────┐ │
-│ │ Init: Download Model        │ │
-│ └─────────────────────────────┘ │
-│ ┌─────────────────────────────┐ │
-│ │ llama.cpp Server (CUDA)     │ │
-│ │ /v1/chat/completions API    │ │
-│ └─────────────────────────────┘ │
-└─────────────────────────────────┘
+└─────────┬───────────┬──────────┘
+          │           │
+    accelerator:   accelerator:
+       cuda          metal
+          │           │
+          ▼           ▼
+┌──────────────┐ ┌──────────────────┐
+│ Linux Node   │ │ macOS Host       │
+│ (Container)  │ │ (Metal Agent)    │
+│ ┌──────────┐ │ │ ┌──────────────┐ │
+│ │ llama.cpp│ │ │ │ llama-server │ │
+│ │ (CUDA)   │ │ │ │ (Metal GPU)  │ │
+│ └──────────┘ │ │ └──────────────┘ │
+└──────────────┘ └──────────────────┘
 ```
 
 **Key components:**
 1. **Model Controller** - Downloads and validates models
 2. **InferenceService Controller** - Creates deployments and services
-3. **llama.cpp Runtime** - Efficient CPU/GPU inference
-4. **DCGM Exporter** - GPU metrics for Prometheus
+3. **llama.cpp Runtime** - Efficient CPU/GPU inference (CUDA or Metal)
+4. **Metal Agent** - Native macOS process that watches CRDs and spawns `llama-server` with Metal GPU access ([docs](deployment/macos/))
+5. **DCGM Exporter** - GPU metrics for Prometheus
 
 ---
 
@@ -619,6 +648,9 @@ A: Yes - configure image pull secrets or use PersistentVolumes with `file://` UR
 **Q: How do I reduce costs?**
 A: Use spot instances (default), auto-scale to 0 (default), and run `terraform destroy` when not in use.
 
+**Q: Does this work on Apple Silicon Macs?**
+A: Yes! The [Metal Agent](deployment/macos/) runs `llama-server` natively on macOS with full Metal GPU performance. Kubernetes handles orchestration while inference runs outside containers for direct GPU access.
+
 **Q: Is this production-ready?**
 A: Yes! Single-GPU and multi-GPU deployments are fully supported with monitoring. Advanced auto-scaling coming soon.
 
@@ -639,6 +671,7 @@ We're just getting started! Here's how to get involved:
 **Help wanted:**
 - Additional model formats (SafeTensors)
 - AMD/Intel GPU support
+- Metal Agent testing on M1/M2/M3 chips
 - Documentation improvements
 - Example applications
 
