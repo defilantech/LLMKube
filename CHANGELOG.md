@@ -5,6 +5,18 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.18](https://github.com/defilantech/LLMKube/compare/v0.4.17...v0.4.18) (2026-02-20)
+
+
+### Bug Fixes
+
+* **agent:** read contextSize from InferenceService CRD ([#160](https://github.com/defilantech/LLMKube/issues/160)) ([17f58d4](https://github.com/defilantech/LLMKube/commit/17f58d40c20c83d1cbb1d19e2ec473c18af7b218))
+
+
+### Documentation
+
+* update README and Metal Agent guide for remote K8s architecture ([#156](https://github.com/defilantech/LLMKube/issues/156)) ([79145b2](https://github.com/defilantech/LLMKube/commit/79145b2b2b59137d7792e0d1c3c36c1b78b9b460))
+
 ## [0.4.17](https://github.com/defilantech/LLMKube/compare/v0.4.16...v0.4.17) (2026-02-20)
 
 
