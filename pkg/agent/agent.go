@@ -147,6 +147,12 @@ func (a *MetalAgent) ensureProcess(ctx context.Context, isvc *inferencev1alpha1.
 		gpuLayers = model.Spec.Hardware.GPU.Layers
 	}
 
+	// Get context size from InferenceService spec, default to 2048
+	contextSize := 2048
+	if isvc.Spec.ContextSize != nil && *isvc.Spec.ContextSize > 0 {
+		contextSize = int(*isvc.Spec.ContextSize)
+	}
+
 	// Start the process
 	process, err := a.executor.StartProcess(ctx, ExecutorConfig{
 		Name:        isvc.Name,
@@ -154,7 +160,7 @@ func (a *MetalAgent) ensureProcess(ctx context.Context, isvc *inferencev1alpha1.
 		ModelSource: model.Spec.Source,
 		ModelName:   model.Name,
 		GPULayers:   gpuLayers,
-		ContextSize: 2048, // TODO: Get from model spec
+		ContextSize: contextSize,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to start process: %w", err)
