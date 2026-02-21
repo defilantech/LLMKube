@@ -5,6 +5,13 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.19](https://github.com/defilantech/LLMKube/compare/v0.4.18...v0.4.19) (2026-02-21)
+
+
+### Features
+
+* add --jinja flag for tool/function calling support ([#162](https://github.com/defilantech/LLMKube/issues/162)) ([47624ca](https://github.com/defilantech/LLMKube/commit/47624ca2e060aa0e1accd9950f3b15cd66312f46))
+
 ## [0.4.18](https://github.com/defilantech/LLMKube/compare/v0.4.17...v0.4.18) (2026-02-20)
 
 
