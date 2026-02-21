@@ -52,7 +52,11 @@ type InferenceServiceWatcher struct {
 }
 
 // NewInferenceServiceWatcher creates a new watcher
-func NewInferenceServiceWatcher(k8sClient client.Client, namespace string, logger ...*zap.SugaredLogger) *InferenceServiceWatcher {
+func NewInferenceServiceWatcher(
+	k8sClient client.Client,
+	namespace string,
+	logger ...*zap.SugaredLogger,
+) *InferenceServiceWatcher {
 	l := zap.NewNop().Sugar()
 	if len(logger) > 0 && logger[0] != nil {
 		l = logger[0]
