@@ -56,6 +56,7 @@ type deployOptions struct {
 	contextSize    int32
 	parallelSlots  int32
 	flashAttention bool
+	jinja          bool
 	wait           bool
 	timeout        time.Duration
 }
@@ -134,6 +135,8 @@ Examples:
 	cmd.Flags().BoolVar(&opts.flashAttention, "flash-attn", false,
 		"Enable flash attention for faster prompt processing and reduced VRAM usage. "+
 			"Requires NVIDIA Ampere or newer GPU.")
+	cmd.Flags().BoolVar(&opts.jinja, "jinja", false,
+		"Enable Jinja2 template rendering for tool/function calling support.")
 
 	cmd.Flags().StringVar(&opts.cpu, "cpu", "2", "CPU request (e.g., '2' or '2000m')")
 	cmd.Flags().StringVar(&opts.memory, "memory", "4Gi", "Memory request (e.g., '4Gi')")
@@ -240,6 +243,9 @@ func runDeploy(opts *deployOptions) error {
 	if opts.flashAttention {
 		fmt.Printf("Flash Attn:  enabled\n")
 	}
+	if opts.jinja {
+		fmt.Printf("Jinja:       enabled\n")
+	}
 	fmt.Printf("Image:       %s\n", opts.image)
 	fmt.Printf("═══════════════════════════════════════════════\n\n")
 
@@ -341,6 +347,10 @@ func buildInferenceService(opts *deployOptions) *inferencev1alpha1.InferenceServ
 
 	if opts.flashAttention {
 		isvc.Spec.FlashAttention = &opts.flashAttention
+	}
+
+	if opts.jinja {
+		isvc.Spec.Jinja = &opts.jinja
 	}
 
 	return isvc

@@ -112,6 +112,11 @@ spec:
                 default: ghcr.io/ggml-org/llama.cpp:server
                 description: Image is the container image for the llama.cpp runtime
                 type: string
+              jinja:
+                description: |-
+                  Jinja enables Jinja2 chat template rendering for tool/function calling support.
+                  Required when using the OpenAI-compatible API with tools. Maps to llama.cpp --jinja flag.
+                type: boolean
               modelRef:
                 description: ModelRef references the Model CR that contains the model
                   to serve

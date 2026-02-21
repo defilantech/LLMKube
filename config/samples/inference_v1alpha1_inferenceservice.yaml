@@ -27,6 +27,9 @@ spec:
   # Enable flash attention for faster prompt processing (optional, requires Ampere+ GPU)
   flashAttention: true
 
+  # Enable Jinja2 template rendering for tool/function calling support (optional)
+  jinja: true
+
   # Resource requirements (optional)
   resources:
     gpu: 1        # Number of GPUs (0 for CPU-only)

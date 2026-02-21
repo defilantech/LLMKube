@@ -80,6 +80,11 @@ type InferenceServiceSpec struct {
 	// +optional
 	FlashAttention *bool `json:"flashAttention,omitempty"`
 
+	// Jinja enables Jinja2 chat template rendering for tool/function calling support.
+	// Required when using the OpenAI-compatible API with tools. Maps to llama.cpp --jinja flag.
+	// +optional
+	Jinja *bool `json:"jinja,omitempty"`
+
 	// Priority determines scheduling priority for GPU allocation.
 	// Higher priority services can preempt lower priority ones when GPUs are scarce.
 	// +kubebuilder:validation:Enum=critical;high;normal;low;batch

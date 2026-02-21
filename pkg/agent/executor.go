@@ -35,6 +35,7 @@ type ExecutorConfig struct {
 	ModelName   string
 	GPULayers   int32
 	ContextSize int
+	Jinja       bool
 }
 
 type MetalExecutor struct {
@@ -71,6 +72,10 @@ func (e *MetalExecutor) StartProcess(ctx context.Context, config ExecutorConfig)
 		"--n-gpu-layers", fmt.Sprintf("%d", gpuLayers),
 		"--ctx-size", fmt.Sprintf("%d", config.ContextSize),
 		"--metrics",
+	}
+
+	if config.Jinja {
+		args = append(args, "--jinja")
 	}
 
 	cmd := exec.Command(e.llamaServerBin, args...)
