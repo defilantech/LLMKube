@@ -22,6 +22,7 @@ import (
 	"net"
 	"strings"
 
+	"go.uber.org/zap"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -35,16 +36,23 @@ import (
 type ServiceRegistry struct {
 	client client.Client
 	hostIP string // explicit host IP; if empty, auto-detect via DNS
+	logger *zap.SugaredLogger
 }
 
 // NewServiceRegistry creates a new service registry.
 // If hostIP is non-empty it is used as the endpoint address registered in
 // Kubernetes; otherwise the IP is auto-detected via DNS lookups
 // (host.minikube.internal / host.docker.internal).
-func NewServiceRegistry(k8sClient client.Client, hostIP string) *ServiceRegistry {
+func NewServiceRegistry(k8sClient client.Client, hostIP string, logger ...*zap.SugaredLogger) *ServiceRegistry {
+	l := zap.NewNop().Sugar()
+	if len(logger) > 0 && logger[0] != nil {
+		l = logger[0]
+	}
+
 	return &ServiceRegistry{
 		client: k8sClient,
 		hostIP: hostIP,
+		logger: l,
 	}
 }
 
@@ -136,8 +144,12 @@ func (r *ServiceRegistry) RegisterEndpoint(
 		}
 	}
 
-	fmt.Printf("📝 Registered endpoint for %s/%s -> %s:%d\n",
-		isvc.Namespace, isvc.Name, r.resolveHostIP(), port)
+	r.logger.Infow("registered endpoint",
+		"namespace", isvc.Namespace,
+		"name", isvc.Name,
+		"hostIP", r.resolveHostIP(),
+		"port", port,
+	)
 
 	return nil
 }

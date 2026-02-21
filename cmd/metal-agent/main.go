@@ -22,9 +22,12 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 	"k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
@@ -50,6 +53,25 @@ type AgentConfig struct {
 	HostIP         string
 }
 
+func parseLogLevel(level string) zapcore.Level {
+	switch strings.ToLower(level) {
+	case "debug":
+		return zapcore.DebugLevel
+	case "warn", "warning":
+		return zapcore.WarnLevel
+	case "error":
+		return zapcore.ErrorLevel
+	default:
+		return zapcore.InfoLevel
+	}
+}
+
+func newLogger(level string) (*zap.Logger, error) {
+	cfg := zap.NewProductionConfig()
+	cfg.Level = zap.NewAtomicLevelAt(parseLogLevel(level))
+	return cfg.Build()
+}
+
 func main() {
 	cfg := &AgentConfig{}
 
@@ -70,77 +92,96 @@ func main() {
 		os.Exit(0)
 	}
 
-	// Print startup banner
-	fmt.Printf("🚀 LLMKube Metal Agent v%s\n", Version)
-	fmt.Println("═══════════════════════════════════════════════")
-	fmt.Printf("Namespace:       %s\n", cfg.Namespace)
-	fmt.Printf("Model Store:     %s\n", cfg.ModelStorePath)
-	fmt.Printf("Llama Server:    %s\n", cfg.LlamaServerBin)
-	fmt.Printf("Agent Port:      %d\n", cfg.Port)
-	if cfg.HostIP != "" {
-		fmt.Printf("Host IP:         %s\n", cfg.HostIP)
-	} else {
-		fmt.Printf("Host IP:         (auto-detect)\n")
-	}
-	fmt.Println("═══════════════════════════════════════════════")
-
-	// Verify Metal support
-	fmt.Println("\n🔍 Checking Metal support...")
-	caps := platform.DetectCapabilities()
-	if !caps.Metal {
-		fmt.Println("❌ ERROR: Metal support not detected on this system")
-		fmt.Println("   This agent requires macOS with Apple Silicon (M1/M2/M3/M4)")
+	baseLogger, err := newLogger(cfg.LogLevel)
+	if err != nil {
+		fmt.Printf("failed to initialize logger: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("✅ Metal support detected: %s\n", caps.GPUName)
-	fmt.Printf("   GPU Cores: %d\n", caps.GPUCores)
-	fmt.Printf("   Metal Version: Metal %d\n", caps.MetalVersion)
+	defer func() {
+		_ = baseLogger.Sync()
+	}()
+	logger := baseLogger.Sugar()
+
+	// TODO: Wire this logger into controller-runtime via ctrl.SetLogger(...) so
+	// Kubernetes client/controller-runtime logs share the same configuration.
+
+	hostIP := cfg.HostIP
+	if hostIP == "" {
+		hostIP = "auto-detect"
+	}
+	logger.Infow("starting metal agent",
+		"version", Version,
+		"namespace", cfg.Namespace,
+		"modelStore", cfg.ModelStorePath,
+		"llamaServerBin", cfg.LlamaServerBin,
+		"agentPort", cfg.Port,
+		"hostIP", hostIP,
+		"logLevel", cfg.LogLevel,
+	)
+
+	// Verify Metal support
+	logger.Infow("checking Metal support")
+	caps := platform.DetectCapabilities()
+	if !caps.Metal {
+		logger.Errorw("Metal support not detected",
+			"requirement", "macOS with Apple Silicon (M1/M2/M3/M4)",
+		)
+		os.Exit(1)
+	}
+	logger.Infow("Metal support detected",
+		"gpuName", caps.GPUName,
+		"gpuCores", caps.GPUCores,
+		"metalVersion", caps.MetalVersion,
+	)
 
 	// Create model store directory
 	if err := os.MkdirAll(cfg.ModelStorePath, 0755); err != nil {
-		fmt.Printf("❌ ERROR: Failed to create model store directory: %v\n", err)
+		logger.Errorw("failed to create model store directory", "path", cfg.ModelStorePath, "error", err)
 		os.Exit(1)
 	}
 
 	// Verify llama-server binary exists
 	if _, err := os.Stat(cfg.LlamaServerBin); os.IsNotExist(err) {
-		fmt.Printf("⚠️  WARNING: llama-server not found at %s\n", cfg.LlamaServerBin)
-		fmt.Println("   Install llama.cpp with Metal support:")
-		fmt.Println("   brew install llama.cpp")
+		logger.Errorw("llama-server binary not found",
+			"path", cfg.LlamaServerBin,
+			"installHint", "brew install llama.cpp",
+		)
 		os.Exit(1)
 	}
-	fmt.Printf("✅ llama-server found at %s\n\n", cfg.LlamaServerBin)
+	logger.Infow("llama-server binary found", "path", cfg.LlamaServerBin)
 
 	// Get Kubernetes client
-	fmt.Println("🔗 Connecting to Kubernetes...")
+	logger.Infow("connecting to Kubernetes")
 	k8sConfig, err := config.GetConfig()
 	if err != nil {
-		fmt.Printf("❌ ERROR: Failed to get kubeconfig: %v\n", err)
+		logger.Errorw("failed to get kubeconfig", "error", err)
 		os.Exit(1)
 	}
 
 	// Register our custom types
 	if err := inferencev1alpha1.AddToScheme(scheme.Scheme); err != nil {
-		fmt.Printf("❌ ERROR: Failed to add scheme: %v\n", err)
+		logger.Errorw("failed to add scheme", "error", err)
 		os.Exit(1)
 	}
 
 	k8sClient, err := client.New(k8sConfig, client.Options{Scheme: scheme.Scheme})
 	if err != nil {
-		fmt.Printf("❌ ERROR: Failed to create Kubernetes client: %v\n", err)
+		logger.Errorw("failed to create Kubernetes client", "error", err)
 		os.Exit(1)
 	}
-	fmt.Println("✅ Connected to Kubernetes cluster")
+	logger.Infow("connected to Kubernetes cluster")
 
 	// Create agent
-	fmt.Println("🎯 Starting Metal agent...")
+	logger.Infow("creating Metal agent")
 	metalAgent := agent.NewMetalAgent(agent.MetalAgentConfig{
 		K8sClient:      k8sClient,
 		Namespace:      cfg.Namespace,
 		ModelStorePath: cfg.ModelStorePath,
 		LlamaServerBin: cfg.LlamaServerBin,
 		Port:           cfg.Port,
+		LogLevel:       cfg.LogLevel,
 		HostIP:         cfg.HostIP,
+		Logger:         logger,
 	})
 
 	// Setup context with signal handling
@@ -153,27 +194,27 @@ func main() {
 
 	go func() {
 		<-sigChan
-		fmt.Println("\n\n🛑 Received shutdown signal, cleaning up...")
+		logger.Infow("received shutdown signal; cleaning up")
 		cancel()
 	}()
 
 	// Start the agent
-	fmt.Println("✅ Metal agent started successfully")
-	fmt.Println("👀 Watching for InferenceService resources...")
+	logger.Infow("Metal agent started successfully")
+	logger.Infow("watching for InferenceService resources")
 
 	if err := metalAgent.Start(ctx); err != nil {
-		fmt.Printf("❌ ERROR: Agent failed: %v\n", err)
+		logger.Errorw("agent failed", "error", err)
 		os.Exit(1)
 	}
 
 	// Graceful shutdown
-	fmt.Println("👋 Shutting down gracefully...")
+	logger.Infow("shutting down gracefully")
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutdownCancel()
 
 	if err := metalAgent.Shutdown(shutdownCtx); err != nil {
-		fmt.Printf("⚠️  WARNING: Shutdown errors: %v\n", err)
+		logger.Warnw("shutdown completed with errors", "error", err)
 	}
 
-	fmt.Println("✅ Metal agent stopped")
+	logger.Infow("Metal agent stopped")
 }

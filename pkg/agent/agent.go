@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"go.uber.org/zap"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -35,7 +36,9 @@ type MetalAgentConfig struct {
 	ModelStorePath string
 	LlamaServerBin string
 	Port           int
+	LogLevel       string
 	HostIP         string // explicit IP to register in K8s endpoints; empty = auto-detect
+	Logger         *zap.SugaredLogger
 }
 
 // MetalAgent watches Kubernetes InferenceService resources and manages
@@ -46,6 +49,7 @@ type MetalAgent struct {
 	executor  *MetalExecutor
 	registry  *ServiceRegistry
 	processes map[string]*ManagedProcess // namespacedName -> process
+	logger    *zap.SugaredLogger
 	mu        sync.RWMutex
 }
 
@@ -62,24 +66,34 @@ type ManagedProcess struct {
 
 // NewMetalAgent creates a new Metal agent instance
 func NewMetalAgent(config MetalAgentConfig) *MetalAgent {
+	logger := config.Logger
+	if logger == nil {
+		logger = zap.NewNop().Sugar()
+	}
+
 	return &MetalAgent{
 		config:    config,
 		processes: make(map[string]*ManagedProcess),
+		logger:    logger.With("component", "metal-agent"),
 	}
 }
 
 // Start begins watching for InferenceService resources and managing processes
 func (a *MetalAgent) Start(ctx context.Context) error {
 	// Initialize components
-	a.watcher = NewInferenceServiceWatcher(a.config.K8sClient, a.config.Namespace)
-	a.executor = NewMetalExecutor(a.config.LlamaServerBin, a.config.ModelStorePath)
-	a.registry = NewServiceRegistry(a.config.K8sClient, a.config.HostIP)
+	a.watcher = NewInferenceServiceWatcher(a.config.K8sClient, a.config.Namespace, a.logger.With("subsystem", "watcher"))
+	a.executor = NewMetalExecutor(
+		a.config.LlamaServerBin,
+		a.config.ModelStorePath,
+		a.logger.With("subsystem", "executor"),
+	)
+	a.registry = NewServiceRegistry(a.config.K8sClient, a.config.HostIP, a.logger.With("subsystem", "registry"))
 
 	// Start watcher
 	eventChan := make(chan InferenceServiceEvent)
 	go func() {
 		if err := a.watcher.Watch(ctx, eventChan); err != nil {
-			fmt.Printf("⚠️  Watcher error: %v\n", err)
+			a.logger.Warnw("watcher exited with error", "error", err)
 		}
 	}()
 
@@ -90,7 +104,7 @@ func (a *MetalAgent) Start(ctx context.Context) error {
 			return nil
 		case event := <-eventChan:
 			if err := a.handleEvent(ctx, event); err != nil {
-				fmt.Printf("⚠️  Error handling event: %v\n", err)
+				a.logger.Warnw("failed to handle event", "eventType", event.Type, "error", err)
 			}
 		}
 	}
@@ -126,11 +140,11 @@ func (a *MetalAgent) ensureProcess(ctx context.Context, isvc *inferencev1alpha1.
 	a.mu.RUnlock()
 
 	if exists && existing.Healthy {
-		// Process already running and healthy
+		a.logger.Debugw("inference service already has a healthy process", "key", key)
 		return nil
 	}
 
-	fmt.Printf("🚀 Starting inference service: %s/%s\n", isvc.Namespace, isvc.Name)
+	a.logger.Infow("starting inference service", "namespace", isvc.Namespace, "name", isvc.Name)
 
 	// Get the Model resource
 	model := &inferencev1alpha1.Model{}
@@ -174,11 +188,22 @@ func (a *MetalAgent) ensureProcess(ctx context.Context, isvc *inferencev1alpha1.
 
 	// Register service endpoint in Kubernetes
 	if err := a.registry.RegisterEndpoint(ctx, isvc, process.Port); err != nil {
-		fmt.Printf("⚠️  Warning: Failed to register endpoint: %v\n", err)
+		a.logger.Warnw(
+			"failed to register endpoint",
+			"namespace", isvc.Namespace,
+			"name", isvc.Name,
+			"port", process.Port,
+			"error", err,
+		)
 	}
 
-	fmt.Printf("✅ Started inference service %s/%s on port %d (PID: %d)\n",
-		isvc.Namespace, isvc.Name, process.Port, process.PID)
+	a.logger.Infow(
+		"started inference service",
+		"namespace", isvc.Namespace,
+		"name", isvc.Name,
+		"port", process.Port,
+		"pid", process.PID,
+	)
 
 	return nil
 }
@@ -194,13 +219,13 @@ func (a *MetalAgent) deleteProcess(_ context.Context, key string) error {
 	delete(a.processes, key)
 	a.mu.Unlock()
 
-	fmt.Printf("🛑 Stopping inference service: %s\n", key)
+	a.logger.Infow("stopping inference service", "key", key)
 
 	if err := a.executor.StopProcess(process.PID); err != nil {
 		return fmt.Errorf("failed to stop process: %w", err)
 	}
 
-	fmt.Printf("✅ Stopped inference service: %s\n", key)
+	a.logger.Infow("stopped inference service", "key", key)
 	return nil
 }
 
@@ -209,7 +234,7 @@ func (a *MetalAgent) Shutdown(ctx context.Context) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	fmt.Printf("🧹 Cleaning up %d running processes...\n", len(a.processes))
+	a.logger.Infow("cleaning up running processes", "count", len(a.processes))
 
 	var errors []error
 	for key, process := range a.processes {
