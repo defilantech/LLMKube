@@ -644,6 +644,13 @@ func appendFlashAttentionArgs(args []string, flashAttention *bool, gpuCount int3
 	return args
 }
 
+func appendJinjaArgs(args []string, jinja *bool) []string {
+	if jinja != nil && *jinja {
+		return append(args, "--jinja")
+	}
+	return args
+}
+
 func (r *InferenceServiceReconciler) constructDeployment(
 	isvc *inferencev1alpha1.InferenceService,
 	model *inferencev1alpha1.Model,
@@ -707,6 +714,7 @@ func (r *InferenceServiceReconciler) constructDeployment(
 	args = appendContextSizeArgs(args, isvc.Spec.ContextSize)
 	args = appendParallelSlotsArgs(args, isvc.Spec.ParallelSlots)
 	args = appendFlashAttentionArgs(args, isvc.Spec.FlashAttention, gpuCount)
+	args = appendJinjaArgs(args, isvc.Spec.Jinja)
 
 	container := corev1.Container{
 		Name:  "llama-server",

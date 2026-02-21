@@ -161,6 +161,7 @@ func (a *MetalAgent) ensureProcess(ctx context.Context, isvc *inferencev1alpha1.
 		ModelName:   model.Name,
 		GPULayers:   gpuLayers,
 		ContextSize: contextSize,
+		Jinja:       isvc.Spec.Jinja != nil && *isvc.Spec.Jinja,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to start process: %w", err)

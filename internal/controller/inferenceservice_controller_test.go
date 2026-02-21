@@ -1040,6 +1040,114 @@ var _ = Describe("Context Size Configuration", func() {
 			Expect(args).NotTo(ContainElement("--flash-attn"))
 		})
 	})
+
+	Context("when jinja is configured", func() {
+		var (
+			reconciler *InferenceServiceReconciler
+			model      *inferencev1alpha1.Model
+		)
+
+		BeforeEach(func() {
+			reconciler = &InferenceServiceReconciler{
+				ModelCachePath:     "/tmp/llmkube/models",
+				InitContainerImage: "docker.io/curlimages/curl:latest",
+			}
+
+			model = &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "jinja-model",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source: "https://example.com/model.gguf",
+					Hardware: &inferencev1alpha1.HardwareSpec{
+						GPU: &inferencev1alpha1.GPUSpec{
+							Count:  1,
+							Layers: 64,
+						},
+					},
+				},
+				Status: inferencev1alpha1.ModelStatus{
+					Phase:    "Ready",
+					CacheKey: "test-cache-key",
+					Path:     "/tmp/llmkube/models/test-model.gguf",
+				},
+			}
+		})
+
+		It("should include --jinja flag when jinja is enabled", func() {
+			replicas := int32(1)
+			jinja := true
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "jinja-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: "jinja-model",
+					Replicas: &replicas,
+					Image:    "ghcr.io/ggml-org/llama.cpp:server-cuda",
+					Jinja:    &jinja,
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{
+						GPU: 1,
+					},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).To(ContainElement("--jinja"))
+		})
+
+		It("should NOT include --jinja flag when jinja is not specified", func() {
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "no-jinja-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: "jinja-model",
+					Replicas: &replicas,
+					Image:    "ghcr.io/ggml-org/llama.cpp:server-cuda",
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{
+						GPU: 1,
+					},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).NotTo(ContainElement("--jinja"))
+		})
+
+		It("should NOT include --jinja flag when jinja is false", func() {
+			replicas := int32(1)
+			jinja := false
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "jinja-false-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: "jinja-model",
+					Replicas: &replicas,
+					Image:    "ghcr.io/ggml-org/llama.cpp:server-cuda",
+					Jinja:    &jinja,
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{
+						GPU: 1,
+					},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).NotTo(ContainElement("--jinja"))
+		})
+	})
 })
 
 var _ = Describe("Multi-GPU End-to-End Reconciliation", func() {
