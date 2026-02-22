@@ -52,6 +52,7 @@ kubectl version
 - [ ] NVIDIA L4
 - [ ] NVIDIA V100
 - [ ] NVIDIA A100
+- [ ] Metal (Apple Silicon)
 - [ ] None (CPU only)
 - [ ] Other:
 
