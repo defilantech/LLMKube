@@ -1290,36 +1290,48 @@ var _ = Describe("sanitizeDNSName", func() {
 })
 
 var _ = Describe("buildModelInitCommand", func() {
-	It("should generate cached remote download command", func() {
-		cmd := buildModelInitCommand("https://example.com/model.gguf", "/models/abc123", "/models/abc123/model.gguf", true)
-		Expect(cmd).To(ContainSubstring("mkdir -p /models/abc123"))
-		Expect(cmd).To(ContainSubstring("if [ ! -f /models/abc123/model.gguf ]"))
+	It("should generate cached remote download command with env var references", func() {
+		cmd := buildModelInitCommand(false, true)
+		Expect(cmd).To(ContainSubstring(`mkdir -p "$CACHE_DIR"`))
+		Expect(cmd).To(ContainSubstring(`"$MODEL_PATH"`))
 		Expect(cmd).To(ContainSubstring("curl -f -L"))
-		Expect(cmd).To(ContainSubstring("https://example.com/model.gguf"))
+		Expect(cmd).To(ContainSubstring(`"$MODEL_SOURCE"`))
 	})
 
-	It("should generate cached local copy command for file:// source", func() {
-		cmd := buildModelInitCommand("file:///mnt/models/test.gguf", "/models/abc123", "/models/abc123/model.gguf", true)
-		Expect(cmd).To(ContainSubstring("mkdir -p /models/abc123"))
+	It("should generate cached local copy command", func() {
+		cmd := buildModelInitCommand(true, true)
+		Expect(cmd).To(ContainSubstring(`mkdir -p "$CACHE_DIR"`))
 		Expect(cmd).To(ContainSubstring("cp /host-model/model.gguf"))
-	})
-
-	It("should generate cached local copy command for absolute path source", func() {
-		cmd := buildModelInitCommand("/mnt/models/test.gguf", "/models/abc123", "/models/abc123/model.gguf", true)
-		Expect(cmd).To(ContainSubstring("mkdir -p /models/abc123"))
-		Expect(cmd).To(ContainSubstring("cp /host-model/model.gguf"))
+		Expect(cmd).To(ContainSubstring(`"$MODEL_PATH"`))
 	})
 
 	It("should generate error exit for uncached local source", func() {
-		cmd := buildModelInitCommand("file:///mnt/models/test.gguf", "", "/models/test.gguf", false)
+		cmd := buildModelInitCommand(true, false)
 		Expect(cmd).To(ContainSubstring("ERROR: Local model source requires model cache"))
 		Expect(cmd).To(ContainSubstring("exit 1"))
 	})
 
-	It("should generate uncached remote download command", func() {
-		cmd := buildModelInitCommand("https://example.com/model.gguf", "", "/models/default-test.gguf", false)
+	It("should generate uncached remote download command with env var references", func() {
+		cmd := buildModelInitCommand(false, false)
 		Expect(cmd).To(ContainSubstring("curl -f -L"))
+		Expect(cmd).To(ContainSubstring(`"$MODEL_SOURCE"`))
+		Expect(cmd).To(ContainSubstring(`"$MODEL_PATH"`))
 		Expect(cmd).NotTo(ContainSubstring("mkdir -p"))
+	})
+
+	It("should not contain user-controlled values in the command string", func() {
+		// Verify that a malicious source cannot appear in the shell script.
+		// The command is a static template with env var references only.
+		maliciousSource := `https://evil.com/$(touch /pwned).gguf`
+		cmd := buildModelInitCommand(false, true)
+		Expect(cmd).NotTo(ContainSubstring(maliciousSource))
+		Expect(cmd).NotTo(ContainSubstring("touch"))
+		Expect(cmd).NotTo(ContainSubstring("evil.com"))
+
+		// Env vars carry the value safely outside the shell script
+		env := modelInitEnvVars(maliciousSource, "/models/abc123", "/models/abc123/model.gguf")
+		Expect(env[0].Name).To(Equal("MODEL_SOURCE"))
+		Expect(env[0].Value).To(Equal(maliciousSource))
 	})
 })
 
@@ -1344,6 +1356,16 @@ var _ = Describe("buildCachedStorageConfig", func() {
 		Expect(config.initContainers[0].Image).To(Equal("curl:latest"))
 		Expect(config.volumeMounts[0].MountPath).To(Equal("/models"))
 		Expect(config.volumeMounts[0].ReadOnly).To(BeTrue())
+
+		// Verify env vars are set on the init container
+		env := config.initContainers[0].Env
+		Expect(env).To(HaveLen(3))
+		Expect(env[0]).To(Equal(corev1.EnvVar{Name: "MODEL_SOURCE", Value: "https://example.com/model.gguf"}))
+		Expect(env[1]).To(Equal(corev1.EnvVar{Name: "CACHE_DIR", Value: "/models/abc123def456"}))
+		Expect(env[2]).To(Equal(corev1.EnvVar{Name: "MODEL_PATH", Value: "/models/abc123def456/model.gguf"}))
+
+		// Verify the command does not contain the raw source URL
+		Expect(config.initContainers[0].Command[2]).NotTo(ContainSubstring("example.com"))
 	})
 
 	It("should add host-model volume for local source", func() {
@@ -1360,6 +1382,11 @@ var _ = Describe("buildCachedStorageConfig", func() {
 		Expect(config.volumes).To(HaveLen(2))
 		Expect(config.volumes[1].Name).To(Equal("host-model"))
 		Expect(config.volumes[1].HostPath.Path).To(Equal("/mnt/models/test.gguf"))
+
+		// Verify env vars are set
+		env := config.initContainers[0].Env
+		Expect(env).To(HaveLen(3))
+		Expect(env[0]).To(Equal(corev1.EnvVar{Name: "MODEL_SOURCE", Value: "file:///mnt/models/test.gguf"}))
 	})
 
 	It("should add CA cert volume when caCertConfigMap is set", func() {
@@ -1397,6 +1424,16 @@ var _ = Describe("buildEmptyDirStorageConfig", func() {
 		Expect(config.volumes).To(HaveLen(1))
 		Expect(config.volumes[0].Name).To(Equal("model-storage"))
 		Expect(config.volumes[0].EmptyDir).NotTo(BeNil())
+
+		// Verify env vars are set on the init container
+		env := config.initContainers[0].Env
+		Expect(env).To(HaveLen(3))
+		Expect(env[0]).To(Equal(corev1.EnvVar{Name: "MODEL_SOURCE", Value: "https://example.com/model.gguf"}))
+		Expect(env[1]).To(Equal(corev1.EnvVar{Name: "CACHE_DIR", Value: ""}))
+		Expect(env[2]).To(Equal(corev1.EnvVar{Name: "MODEL_PATH", Value: "/models/default-my-model.gguf"}))
+
+		// Verify the command does not contain the raw source URL
+		Expect(config.initContainers[0].Command[2]).NotTo(ContainSubstring("example.com"))
 	})
 
 	It("should add CA cert volume when caCertConfigMap is set", func() {
@@ -2070,10 +2107,6 @@ var _ = Describe("Reconcile lifecycle", func() {
 			Expect(k8sClient.Create(ctx, isvc)).To(Succeed())
 			defer func() {
 				_ = k8sClient.Delete(ctx, isvc)
-				svc := &corev1.Service{}
-				if err := k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, svc); err == nil {
-					_ = k8sClient.Delete(ctx, svc)
-				}
 			}()
 
 			reconciler := &InferenceServiceReconciler{
@@ -2091,14 +2124,166 @@ var _ = Describe("Reconcile lifecycle", func() {
 			err = k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, dep)
 			Expect(errors.IsNotFound(err)).To(BeTrue())
 
-			By("verifying Service was still created")
+			By("verifying no Service was created (Metal Agent manages its own)")
 			svc := &corev1.Service{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, svc)).To(Succeed())
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, svc)
+			Expect(errors.IsNotFound(err)).To(BeTrue())
 
 			By("verifying status is Ready (Metal returns desiredReplicas as ready)")
 			updated := &inferencev1alpha1.InferenceService{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, updated)).To(Succeed())
 			Expect(updated.Status.Phase).To(Equal("Ready"))
+		})
+
+		It("should set correct endpoint URL for Metal InferenceService", func() {
+			modelName := "metal-endpoint-model"
+			isvcName := "isvc-metal-endpoint"
+
+			model := &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source:   "https://example.com/model.gguf",
+					Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: "metal"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, model)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Delete(ctx, model)
+			}()
+
+			model.Status.Phase = PhaseReady
+			Expect(k8sClient.Status().Update(ctx, model)).To(Succeed())
+
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{Name: isvcName, Namespace: "default"},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: modelName,
+					Replicas: &replicas,
+				},
+			}
+			Expect(k8sClient.Create(ctx, isvc)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Delete(ctx, isvc)
+			}()
+
+			reconciler := &InferenceServiceReconciler{
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
+				InitContainerImage: "docker.io/curlimages/curl:latest",
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: isvcName, Namespace: "default"},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := &inferencev1alpha1.InferenceService{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, updated)).To(Succeed())
+			Expect(updated.Status.Endpoint).To(Equal(
+				"http://isvc-metal-endpoint.default.svc.cluster.local:8080/v1/chat/completions",
+			))
+		})
+
+		It("should set DNS-sanitized endpoint URL for Metal InferenceService with dots in name", func() {
+			modelName := "metal-dot-model"
+			isvcName := "isvc-metal.v1.0"
+
+			model := &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source:   "https://example.com/model.gguf",
+					Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: "metal"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, model)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Delete(ctx, model)
+			}()
+
+			model.Status.Phase = PhaseReady
+			Expect(k8sClient.Status().Update(ctx, model)).To(Succeed())
+
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{Name: isvcName, Namespace: "default"},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: modelName,
+					Replicas: &replicas,
+				},
+			}
+			Expect(k8sClient.Create(ctx, isvc)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Delete(ctx, isvc)
+			}()
+
+			reconciler := &InferenceServiceReconciler{
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
+				InitContainerImage: "docker.io/curlimages/curl:latest",
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: isvcName, Namespace: "default"},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := &inferencev1alpha1.InferenceService{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, updated)).To(Succeed())
+			Expect(updated.Status.Endpoint).To(Equal(
+				"http://isvc-metal-v1-0.default.svc.cluster.local:8080/v1/chat/completions",
+			))
+		})
+
+		It("should use custom endpoint port and path for Metal InferenceService", func() {
+			modelName := "metal-custom-ep-model"
+			isvcName := "isvc-metal-custom-ep"
+
+			model := &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source:   "https://example.com/model.gguf",
+					Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: "metal"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, model)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Delete(ctx, model)
+			}()
+
+			model.Status.Phase = PhaseReady
+			Expect(k8sClient.Status().Update(ctx, model)).To(Succeed())
+
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{Name: isvcName, Namespace: "default"},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: modelName,
+					Replicas: &replicas,
+					Endpoint: &inferencev1alpha1.EndpointSpec{
+						Port: 9090,
+						Path: "/api/generate",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, isvc)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Delete(ctx, isvc)
+			}()
+
+			reconciler := &InferenceServiceReconciler{
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
+				InitContainerImage: "docker.io/curlimages/curl:latest",
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: isvcName, Namespace: "default"},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := &inferencev1alpha1.InferenceService{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, updated)).To(Succeed())
+			Expect(updated.Status.Endpoint).To(Equal(
+				"http://isvc-metal-custom-ep.default.svc.cluster.local:9090/api/generate",
+			))
 		})
 
 		It("should default replicas to 1 when nil", func() {
@@ -2214,5 +2399,133 @@ var _ = Describe("Reconcile lifecycle", func() {
 			pvc := &corev1.PersistentVolumeClaim{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ModelCachePVCName, Namespace: "default"}, pvc)).To(Succeed())
 		})
+	})
+})
+
+var _ = Describe("reconcileService Metal path", func() {
+	var reconciler *InferenceServiceReconciler
+
+	BeforeEach(func() {
+		reconciler = &InferenceServiceReconciler{
+			Client:             k8sClient,
+			Scheme:             k8sClient.Scheme(),
+			InitContainerImage: "docker.io/curlimages/curl:latest",
+		}
+	})
+
+	It("should return minimal Service with correct name and namespace when isMetal is true", func() {
+		isvc := &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: "metal-svc-test", Namespace: "default"},
+			Spec:       inferencev1alpha1.InferenceServiceSpec{ModelRef: "some-model"},
+		}
+
+		svc, result, err := reconciler.reconcileService(context.Background(), isvc, true, 1, true)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(BeNil())
+		Expect(svc).NotTo(BeNil())
+		Expect(svc.Name).To(Equal("metal-svc-test"))
+		Expect(svc.Namespace).To(Equal("default"))
+	})
+
+	It("should DNS-sanitize the minimal Service name when isMetal is true", func() {
+		isvc := &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: "llama-3.2-3b", Namespace: "test-ns"},
+			Spec:       inferencev1alpha1.InferenceServiceSpec{ModelRef: "some-model"},
+		}
+
+		svc, result, err := reconciler.reconcileService(context.Background(), isvc, true, 1, true)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(BeNil())
+		Expect(svc.Name).To(Equal("llama-3-2-3b"))
+		Expect(svc.Namespace).To(Equal("test-ns"))
+	})
+
+	It("should not have Spec fields populated on the minimal Service", func() {
+		isvc := &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: "metal-minimal", Namespace: "default"},
+			Spec: inferencev1alpha1.InferenceServiceSpec{
+				ModelRef: "some-model",
+				Endpoint: &inferencev1alpha1.EndpointSpec{Port: 9090, Type: "LoadBalancer"},
+			},
+		}
+
+		svc, _, err := reconciler.reconcileService(context.Background(), isvc, true, 1, true)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(svc.Spec.Ports).To(BeEmpty())
+		Expect(svc.Spec.Type).To(Equal(corev1.ServiceType("")))
+	})
+
+	It("should not create any K8s Service resource when isMetal is true", func() {
+		isvcName := "metal-no-k8s-svc"
+		isvc := &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: isvcName, Namespace: "default"},
+			Spec:       inferencev1alpha1.InferenceServiceSpec{ModelRef: "some-model"},
+		}
+
+		_, _, err := reconciler.reconcileService(context.Background(), isvc, true, 1, true)
+		Expect(err).NotTo(HaveOccurred())
+
+		svc := &corev1.Service{}
+		err = k8sClient.Get(context.Background(), types.NamespacedName{Name: isvcName, Namespace: "default"}, svc)
+		Expect(errors.IsNotFound(err)).To(BeTrue())
+	})
+})
+
+var _ = Describe("constructEndpoint with Metal minimal Service", func() {
+	var reconciler *InferenceServiceReconciler
+
+	BeforeEach(func() {
+		reconciler = &InferenceServiceReconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+	})
+
+	It("should construct correct URL from minimal Metal Service with default settings", func() {
+		isvc := &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: "metal-test", Namespace: "default"},
+		}
+		minimalSvc := &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      sanitizeDNSName(isvc.Name),
+				Namespace: isvc.Namespace,
+			},
+		}
+		endpoint := reconciler.constructEndpoint(isvc, minimalSvc)
+		Expect(endpoint).To(Equal("http://metal-test.default.svc.cluster.local:8080/v1/chat/completions"))
+	})
+
+	It("should construct correct URL from minimal Metal Service with custom port and path", func() {
+		isvc := &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: "metal-custom", Namespace: "production"},
+			Spec: inferencev1alpha1.InferenceServiceSpec{
+				Endpoint: &inferencev1alpha1.EndpointSpec{
+					Port: 3000,
+					Path: "/api/v2/infer",
+				},
+			},
+		}
+		minimalSvc := &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      sanitizeDNSName(isvc.Name),
+				Namespace: isvc.Namespace,
+			},
+		}
+		endpoint := reconciler.constructEndpoint(isvc, minimalSvc)
+		Expect(endpoint).To(Equal("http://metal-custom.production.svc.cluster.local:3000/api/v2/infer"))
+	})
+
+	It("should construct correct URL when Metal Service name is DNS-sanitized", func() {
+		isvc := &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: "model.v2.1", Namespace: "ml"},
+		}
+		minimalSvc := &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      sanitizeDNSName(isvc.Name),
+				Namespace: isvc.Namespace,
+			},
+		}
+		endpoint := reconciler.constructEndpoint(isvc, minimalSvc)
+		Expect(endpoint).To(Equal("http://model-v2-1.ml.svc.cluster.local:8080/v1/chat/completions"))
 	})
 })

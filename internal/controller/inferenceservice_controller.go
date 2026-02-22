@@ -59,31 +59,26 @@ func isLocalModelSource(source string) bool {
 	return strings.HasPrefix(source, "file://") || strings.HasPrefix(source, "/")
 }
 
-func buildModelInitCommand(source, cacheDir, modelPath string, useCache bool) string {
+func buildModelInitCommand(isLocal, useCache bool) string {
 	if useCache {
-		if isLocalModelSource(source) {
-			localPath := getLocalPath(source)
-			return fmt.Sprintf(
-				"mkdir -p %s && if [ ! -f %s ]; then echo 'Copying model from local source %s...'; cp /host-model/model.gguf %s && echo 'Model copied successfully'; else echo 'Model already cached, skipping copy'; fi",
-				cacheDir, modelPath, localPath, modelPath,
-			)
+		if isLocal {
+			return `mkdir -p "$CACHE_DIR" && if [ ! -f "$MODEL_PATH" ]; then echo 'Copying model from local source...'; cp /host-model/model.gguf "$MODEL_PATH" && echo 'Model copied successfully'; else echo 'Model already cached, skipping copy'; fi`
 		}
-		return fmt.Sprintf(
-			"mkdir -p %s && if [ ! -f %s ]; then echo 'Downloading model from %s...'; curl -f -L -o %s '%s' && echo 'Model downloaded successfully'; else echo 'Model already cached, skipping download'; fi",
-			cacheDir, modelPath, source, modelPath, source,
-		)
+		return `mkdir -p "$CACHE_DIR" && if [ ! -f "$MODEL_PATH" ]; then echo 'Downloading model...'; curl -f -L -o "$MODEL_PATH" "$MODEL_SOURCE" && echo 'Model downloaded successfully'; else echo 'Model already cached, skipping download'; fi`
 	}
 
-	if isLocalModelSource(source) {
-		return fmt.Sprintf(
-			"echo 'ERROR: Local model source requires model cache to be configured. Source: %s'; exit 1",
-			source,
-		)
+	if isLocal {
+		return `echo 'ERROR: Local model source requires model cache to be configured.'; exit 1`
 	}
-	return fmt.Sprintf(
-		"if [ ! -f %s ]; then echo 'Downloading model from %s...'; curl -f -L -o %s '%s' && echo 'Model downloaded successfully'; else echo 'Model already exists, skipping download'; fi",
-		modelPath, source, modelPath, source,
-	)
+	return `if [ ! -f "$MODEL_PATH" ]; then echo 'Downloading model...'; curl -f -L -o "$MODEL_PATH" "$MODEL_SOURCE" && echo 'Model downloaded successfully'; else echo 'Model already exists, skipping download'; fi`
+}
+
+func modelInitEnvVars(source, cacheDir, modelPath string) []corev1.EnvVar {
+	return []corev1.EnvVar{
+		{Name: "MODEL_SOURCE", Value: source},
+		{Name: "CACHE_DIR", Value: cacheDir},
+		{Name: "MODEL_PATH", Value: modelPath},
+	}
 }
 
 type modelStorageConfig struct {
@@ -138,7 +133,8 @@ func buildCachedStorageConfig(model *inferencev1alpha1.Model, caCertConfigMap st
 		})
 	}
 
-	cmd := buildModelInitCommand(model.Spec.Source, cacheDir, modelPath, true)
+	cmd := buildModelInitCommand(isLocalModelSource(model.Spec.Source), true)
+	env := modelInitEnvVars(model.Spec.Source, cacheDir, modelPath)
 	if caCertConfigMap != "" {
 		volumes = append(volumes, corev1.Volume{
 			Name: "custom-ca-cert",
@@ -163,6 +159,7 @@ func buildCachedStorageConfig(model *inferencev1alpha1.Model, caCertConfigMap st
 				Name:         "model-downloader",
 				Image:        initContainerImage,
 				Command:      []string{"sh", "-c", cmd},
+				Env:          env,
 				VolumeMounts: initVolumeMounts,
 			},
 		},
@@ -183,7 +180,8 @@ func buildEmptyDirStorageConfig(model *inferencev1alpha1.Model, namespace string
 		},
 	}
 
-	cmd := buildModelInitCommand(model.Spec.Source, "", modelPath, false)
+	cmd := buildModelInitCommand(isLocalModelSource(model.Spec.Source), false)
+	env := modelInitEnvVars(model.Spec.Source, "", modelPath)
 	if caCertConfigMap != "" {
 		volumes = append(volumes, corev1.Volume{
 			Name: "custom-ca-cert",
@@ -208,6 +206,7 @@ func buildEmptyDirStorageConfig(model *inferencev1alpha1.Model, namespace string
 				Name:         "model-downloader",
 				Image:        initContainerImage,
 				Command:      []string{"sh", "-c", cmd},
+				Env:          env,
 				VolumeMounts: initVolumeMounts,
 			},
 		},
@@ -335,7 +334,7 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, err
 	}
 
-	service, result, err := r.reconcileService(ctx, inferenceService, modelReady, desiredReplicas)
+	service, result, err := r.reconcileService(ctx, inferenceService, modelReady, desiredReplicas, isMetal)
 	if err != nil || result != nil {
 		if result != nil {
 			return *result, err
@@ -415,8 +414,20 @@ func (r *InferenceServiceReconciler) reconcileDeployment(ctx context.Context, is
 	return deployment, existingDeployment.Status.ReadyReplicas, nil, nil
 }
 
-func (r *InferenceServiceReconciler) reconcileService(ctx context.Context, isvc *inferencev1alpha1.InferenceService, modelReady bool, desiredReplicas int32) (*corev1.Service, *ctrl.Result, error) {
+func (r *InferenceServiceReconciler) reconcileService(ctx context.Context, isvc *inferencev1alpha1.InferenceService, modelReady bool, desiredReplicas int32, isMetal bool) (*corev1.Service, *ctrl.Result, error) {
 	log := logf.FromContext(ctx)
+
+	if isMetal {
+		log.Info("Metal accelerator detected, skipping Service creation (managed by Metal Agent)")
+		// Return a minimal Service object so constructEndpoint can still build
+		// the endpoint URL from the sanitized name.
+		return &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      sanitizeDNSName(isvc.Name),
+				Namespace: isvc.Namespace,
+			},
+		}, nil, nil
+	}
 
 	service := r.constructService(isvc)
 	if err := controllerutil.SetControllerReference(isvc, service, r.Scheme); err != nil {
