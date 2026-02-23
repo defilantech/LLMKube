@@ -77,7 +77,7 @@ func main() {
 	flag.StringVar(&modelCacheAccessMode, "model-cache-access-mode", "ReadWriteOnce", "Access mode for model cache PVCs.")
 	flag.StringVar(&caCertConfigMap, "ca-cert-configmap", "",
 		"Name of the ConfigMap containing a custom CA certificate to trust for model downloads.")
-	flag.StringVar(&initContainerImage, "init-container-image", "docker.io/curlimages/curl:latest",
+	flag.StringVar(&initContainerImage, "init-container-image", "docker.io/curlimages/curl:8.18.0",
 		"Container image for the model downloader init container.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
