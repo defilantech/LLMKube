@@ -109,7 +109,7 @@ var _ = Describe("InferenceService Controller", func() {
 			controllerReconciler := &InferenceServiceReconciler{
 				Client:             k8sClient,
 				Scheme:             k8sClient.Scheme(),
-				InitContainerImage: "docker.io/curlimages/curl:latest",
+				InitContainerImage: "docker.io/curlimages/curl:8.18.0",
 			}
 
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -184,7 +184,7 @@ var _ = Describe("Multi-GPU Deployment Construction", func() {
 			reconciler = &InferenceServiceReconciler{
 				Client:             k8sClient,
 				Scheme:             k8sClient.Scheme(),
-				InitContainerImage: "docker.io/curlimages/curl:latest",
+				InitContainerImage: "docker.io/curlimages/curl:8.18.0",
 			}
 		})
 
@@ -524,7 +524,7 @@ var _ = Describe("Multi-GPU Deployment Construction", func() {
 			reconciler = &InferenceServiceReconciler{
 				Client:             k8sClient,
 				Scheme:             k8sClient.Scheme(),
-				InitContainerImage: "docker.io/curlimages/curl:latest",
+				InitContainerImage: "docker.io/curlimages/curl:8.18.0",
 			}
 		})
 
@@ -643,7 +643,7 @@ var _ = Describe("Context Size Configuration", func() {
 			reconciler = &InferenceServiceReconciler{
 				Client:             k8sClient,
 				Scheme:             k8sClient.Scheme(),
-				InitContainerImage: "docker.io/curlimages/curl:latest",
+				InitContainerImage: "docker.io/curlimages/curl:8.18.0",
 			}
 
 			model = &inferencev1alpha1.Model{
@@ -804,7 +804,7 @@ var _ = Describe("Context Size Configuration", func() {
 			reconciler = &InferenceServiceReconciler{
 				Client:             k8sClient,
 				Scheme:             k8sClient.Scheme(),
-				InitContainerImage: "docker.io/curlimages/curl:latest",
+				InitContainerImage: "docker.io/curlimages/curl:8.18.0",
 			}
 
 			model = &inferencev1alpha1.Model{
@@ -906,7 +906,7 @@ var _ = Describe("Context Size Configuration", func() {
 		BeforeEach(func() {
 			reconciler = &InferenceServiceReconciler{
 				ModelCachePath:     "/tmp/llmkube/models",
-				InitContainerImage: "docker.io/curlimages/curl:latest",
+				InitContainerImage: "docker.io/curlimages/curl:8.18.0",
 			}
 
 			model = &inferencev1alpha1.Model{
@@ -1050,7 +1050,7 @@ var _ = Describe("Context Size Configuration", func() {
 		BeforeEach(func() {
 			reconciler = &InferenceServiceReconciler{
 				ModelCachePath:     "/tmp/llmkube/models",
-				InitContainerImage: "docker.io/curlimages/curl:latest",
+				InitContainerImage: "docker.io/curlimages/curl:8.18.0",
 			}
 
 			model = &inferencev1alpha1.Model{
@@ -1259,7 +1259,7 @@ var _ = Describe("Multi-GPU End-to-End Reconciliation", func() {
 			reconciler := &InferenceServiceReconciler{
 				Client:             k8sClient,
 				Scheme:             k8sClient.Scheme(),
-				InitContainerImage: "docker.io/curlimages/curl:latest",
+				InitContainerImage: "docker.io/curlimages/curl:8.18.0",
 			}
 
 			// First reconcile may not create deployment if model isn't ready
@@ -1345,7 +1345,7 @@ var _ = Describe("buildCachedStorageConfig", func() {
 				CacheKey: "abc123def456",
 			},
 		}
-		config := buildCachedStorageConfig(model, "", "curl:latest")
+		config := buildCachedStorageConfig(model, "", "curl:8.18.0")
 
 		Expect(config.modelPath).To(Equal("/models/abc123def456/model.gguf"))
 		Expect(config.volumes).To(HaveLen(1))
@@ -1353,7 +1353,7 @@ var _ = Describe("buildCachedStorageConfig", func() {
 		Expect(config.volumes[0].PersistentVolumeClaim.ClaimName).To(Equal(ModelCachePVCName))
 		Expect(config.initContainers).To(HaveLen(1))
 		Expect(config.initContainers[0].Name).To(Equal("model-downloader"))
-		Expect(config.initContainers[0].Image).To(Equal("curl:latest"))
+		Expect(config.initContainers[0].Image).To(Equal("curl:8.18.0"))
 		Expect(config.volumeMounts[0].MountPath).To(Equal("/models"))
 		Expect(config.volumeMounts[0].ReadOnly).To(BeTrue())
 
@@ -1377,7 +1377,7 @@ var _ = Describe("buildCachedStorageConfig", func() {
 				CacheKey: "abc123",
 			},
 		}
-		config := buildCachedStorageConfig(model, "", "curl:latest")
+		config := buildCachedStorageConfig(model, "", "curl:8.18.0")
 
 		Expect(config.volumes).To(HaveLen(2))
 		Expect(config.volumes[1].Name).To(Equal("host-model"))
@@ -1398,7 +1398,7 @@ var _ = Describe("buildCachedStorageConfig", func() {
 				CacheKey: "abc123",
 			},
 		}
-		config := buildCachedStorageConfig(model, "my-ca-certs", "curl:latest")
+		config := buildCachedStorageConfig(model, "my-ca-certs", "curl:8.18.0")
 
 		var found bool
 		for _, v := range config.volumes {
@@ -1418,7 +1418,7 @@ var _ = Describe("buildEmptyDirStorageConfig", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: "my-model"},
 			Spec:       inferencev1alpha1.ModelSpec{Source: "https://example.com/model.gguf"},
 		}
-		config := buildEmptyDirStorageConfig(model, "default", "", "curl:latest")
+		config := buildEmptyDirStorageConfig(model, "default", "", "curl:8.18.0")
 
 		Expect(config.modelPath).To(Equal("/models/default-my-model.gguf"))
 		Expect(config.volumes).To(HaveLen(1))
@@ -1441,7 +1441,7 @@ var _ = Describe("buildEmptyDirStorageConfig", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: "my-model"},
 			Spec:       inferencev1alpha1.ModelSpec{Source: "https://example.com/model.gguf"},
 		}
-		config := buildEmptyDirStorageConfig(model, "default", "my-ca-certs", "curl:latest")
+		config := buildEmptyDirStorageConfig(model, "default", "my-ca-certs", "curl:8.18.0")
 
 		var found bool
 		for _, v := range config.volumes {
@@ -1768,7 +1768,7 @@ var _ = Describe("constructDeployment additional cases", func() {
 		reconciler = &InferenceServiceReconciler{
 			Client:             k8sClient,
 			Scheme:             k8sClient.Scheme(),
-			InitContainerImage: "docker.io/curlimages/curl:latest",
+			InitContainerImage: "docker.io/curlimages/curl:8.18.0",
 		}
 	})
 
@@ -1922,7 +1922,7 @@ var _ = Describe("Reconcile lifecycle", func() {
 		reconciler := &InferenceServiceReconciler{
 			Client:             k8sClient,
 			Scheme:             k8sClient.Scheme(),
-			InitContainerImage: "docker.io/curlimages/curl:latest",
+			InitContainerImage: "docker.io/curlimages/curl:8.18.0",
 		}
 		result, err := reconciler.Reconcile(context.Background(), reconcile.Request{
 			NamespacedName: types.NamespacedName{Name: "nonexistent", Namespace: "default"},
@@ -1952,7 +1952,7 @@ var _ = Describe("Reconcile lifecycle", func() {
 			reconciler := &InferenceServiceReconciler{
 				Client:             k8sClient,
 				Scheme:             k8sClient.Scheme(),
-				InitContainerImage: "docker.io/curlimages/curl:latest",
+				InitContainerImage: "docker.io/curlimages/curl:8.18.0",
 			}
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: isvcName, Namespace: "default"},
@@ -1996,7 +1996,7 @@ var _ = Describe("Reconcile lifecycle", func() {
 			reconciler := &InferenceServiceReconciler{
 				Client:             k8sClient,
 				Scheme:             k8sClient.Scheme(),
-				InitContainerImage: "docker.io/curlimages/curl:latest",
+				InitContainerImage: "docker.io/curlimages/curl:8.18.0",
 			}
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: isvcName, Namespace: "default"},
@@ -2052,7 +2052,7 @@ var _ = Describe("Reconcile lifecycle", func() {
 			reconciler := &InferenceServiceReconciler{
 				Client:             k8sClient,
 				Scheme:             k8sClient.Scheme(),
-				InitContainerImage: "docker.io/curlimages/curl:latest",
+				InitContainerImage: "docker.io/curlimages/curl:8.18.0",
 			}
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: isvcName, Namespace: "default"},
@@ -2112,7 +2112,7 @@ var _ = Describe("Reconcile lifecycle", func() {
 			reconciler := &InferenceServiceReconciler{
 				Client:             k8sClient,
 				Scheme:             k8sClient.Scheme(),
-				InitContainerImage: "docker.io/curlimages/curl:latest",
+				InitContainerImage: "docker.io/curlimages/curl:8.18.0",
 			}
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: isvcName, Namespace: "default"},
@@ -2170,7 +2170,7 @@ var _ = Describe("Reconcile lifecycle", func() {
 			reconciler := &InferenceServiceReconciler{
 				Client:             k8sClient,
 				Scheme:             k8sClient.Scheme(),
-				InitContainerImage: "docker.io/curlimages/curl:latest",
+				InitContainerImage: "docker.io/curlimages/curl:8.18.0",
 			}
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: isvcName, Namespace: "default"},
@@ -2219,7 +2219,7 @@ var _ = Describe("Reconcile lifecycle", func() {
 			reconciler := &InferenceServiceReconciler{
 				Client:             k8sClient,
 				Scheme:             k8sClient.Scheme(),
-				InitContainerImage: "docker.io/curlimages/curl:latest",
+				InitContainerImage: "docker.io/curlimages/curl:8.18.0",
 			}
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: isvcName, Namespace: "default"},
@@ -2272,7 +2272,7 @@ var _ = Describe("Reconcile lifecycle", func() {
 			reconciler := &InferenceServiceReconciler{
 				Client:             k8sClient,
 				Scheme:             k8sClient.Scheme(),
-				InitContainerImage: "docker.io/curlimages/curl:latest",
+				InitContainerImage: "docker.io/curlimages/curl:8.18.0",
 			}
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: isvcName, Namespace: "default"},
@@ -2328,7 +2328,7 @@ var _ = Describe("Reconcile lifecycle", func() {
 			reconciler := &InferenceServiceReconciler{
 				Client:             k8sClient,
 				Scheme:             k8sClient.Scheme(),
-				InitContainerImage: "docker.io/curlimages/curl:latest",
+				InitContainerImage: "docker.io/curlimages/curl:8.18.0",
 			}
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: isvcName, Namespace: "default"},
@@ -2388,7 +2388,7 @@ var _ = Describe("Reconcile lifecycle", func() {
 			reconciler := &InferenceServiceReconciler{
 				Client:             k8sClient,
 				Scheme:             k8sClient.Scheme(),
-				InitContainerImage: "docker.io/curlimages/curl:latest",
+				InitContainerImage: "docker.io/curlimages/curl:8.18.0",
 				ModelCachePath:     "/models",
 			}
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
@@ -2409,7 +2409,7 @@ var _ = Describe("reconcileService Metal path", func() {
 		reconciler = &InferenceServiceReconciler{
 			Client:             k8sClient,
 			Scheme:             k8sClient.Scheme(),
-			InitContainerImage: "docker.io/curlimages/curl:latest",
+			InitContainerImage: "docker.io/curlimages/curl:8.18.0",
 		}
 	})
 

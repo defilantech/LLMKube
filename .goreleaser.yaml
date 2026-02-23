@@ -122,7 +122,6 @@ dockers:
       - llmkube-controller
     image_templates:
       - "ghcr.io/defilantech/llmkube-controller:{{ .Version }}-amd64"
-      - "ghcr.io/defilantech/llmkube-controller:latest-amd64"
     dockerfile: Dockerfile.goreleaser
     use: buildx
     build_flag_templates:
@@ -140,7 +139,6 @@ dockers:
       - llmkube-controller
     image_templates:
       - "ghcr.io/defilantech/llmkube-controller:{{ .Version }}-arm64"
-      - "ghcr.io/defilantech/llmkube-controller:latest-arm64"
     dockerfile: Dockerfile.goreleaser
     use: buildx
     build_flag_templates:
@@ -156,11 +154,6 @@ docker_manifests:
     image_templates:
       - "ghcr.io/defilantech/llmkube-controller:{{ .Version }}-amd64"
       - "ghcr.io/defilantech/llmkube-controller:{{ .Version }}-arm64"
-
-  - name_template: "ghcr.io/defilantech/llmkube-controller:latest"
-    image_templates:
-      - "ghcr.io/defilantech/llmkube-controller:latest-amd64"
-      - "ghcr.io/defilantech/llmkube-controller:latest-arm64"
 
 snapshot:
   version_template: "{{ incpatch .Version }}-next"
