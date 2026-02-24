@@ -21,6 +21,19 @@ import (
 	"time"
 )
 
+func formatBytes(bytes int64) string {
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	div, exp := int64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(bytes)/float64(div), "KMGTPE"[exp])
+}
+
 // formatAge formats a time.Time into a human-readable age string
 func formatAge(t time.Time) string {
 	duration := time.Since(t)
