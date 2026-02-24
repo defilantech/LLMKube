@@ -647,6 +647,29 @@ spec:
 				}
 				Eventually(verifyModelReady, 2*time.Minute).Should(Succeed())
 
+				By("applying an InferenceService to trigger PVC creation")
+				cmd = exec.Command("kubectl", "apply", "-f", "-")
+				cmd.Stdin = strings.NewReader(fmt.Sprintf(`apiVersion: inference.llmkube.dev/v1alpha1
+kind: InferenceService
+metadata:
+  name: cache-test-inference
+  namespace: %s
+spec:
+  modelRef: cache-test-model
+`, cacheTestNs))
+				_, err = utils.Run(cmd)
+				Expect(err).NotTo(HaveOccurred(), "Failed to apply InferenceService CR")
+
+				By("waiting for the model cache PVC to exist")
+				verifyPVCExists := func(g Gomega) {
+					cmd := exec.Command("kubectl", "get", "pvc", "llmkube-model-cache",
+						"-n", cacheTestNs, "-o", "jsonpath={.metadata.name}")
+					output, err := utils.Run(cmd)
+					g.Expect(err).NotTo(HaveOccurred())
+					g.Expect(output).To(Equal("llmkube-model-cache"))
+				}
+				Eventually(verifyPVCExists, 2*time.Minute).Should(Succeed())
+
 				By("verifying llmkube cache list shows STATUS column and active entry")
 				verifyCacheList := func(g Gomega) {
 					cmd := exec.Command("./"+cliPath, "cache", "list", "-n", cacheTestNs)
