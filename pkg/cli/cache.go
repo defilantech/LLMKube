@@ -35,6 +35,11 @@ import (
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 )
 
+const (
+	statusActive   = "active"
+	statusOrphaned = "orphaned"
+)
+
 // CacheEntry represents a cached model
 type CacheEntry struct {
 	CacheKey   string
@@ -43,6 +48,7 @@ type CacheEntry struct {
 	SizeHuman  string
 	ModTime    time.Time
 	ModelNames []string // Models using this cache entry
+	Status     string   // "active" or "orphaned"
 }
 
 // NewCacheCommand creates the cache command
@@ -80,21 +86,24 @@ Examples:
 func newCacheListCommand() *cobra.Command {
 	var namespace string
 	var allNamespaces bool
+	var orphanedOnly bool
 
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List cached models",
 		Long: `List all models in the persistent cache.
 
-Shows cache entries with their size, age, and which Model resources
-are using each cache entry.`,
+Shows cache entries with their size, status, and which Model resources
+are using each cache entry. Inspects the actual PVC contents to detect
+orphaned cache entries that have no corresponding Model resource.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runCacheList(namespace, allNamespaces)
+			return runCacheList(namespace, allNamespaces, orphanedOnly)
 		},
 	}
 
 	cmd.Flags().StringVarP(&namespace, "namespace", "n", "default", "Kubernetes namespace")
 	cmd.Flags().BoolVarP(&allNamespaces, "all-namespaces", "A", false, "List models from all namespaces")
+	cmd.Flags().BoolVar(&orphanedOnly, "orphaned", false, "Show only orphaned cache entries (no matching Model)")
 
 	return cmd
 }
@@ -157,10 +166,9 @@ Examples:
 	return cmd
 }
 
-func runCacheList(namespace string, allNamespaces bool) error {
+func runCacheList(namespace string, allNamespaces bool, orphanedOnly bool) error {
 	ctx := context.Background()
 
-	// Get Kubernetes client
 	cfg, err := config.GetConfig()
 	if err != nil {
 		return fmt.Errorf("failed to get kubeconfig: %w", err)
@@ -175,7 +183,6 @@ func runCacheList(namespace string, allNamespaces bool) error {
 		return fmt.Errorf("failed to create client: %w", err)
 	}
 
-	// List all Models
 	modelList := &inferencev1alpha1.ModelList{}
 	listOpts := []client.ListOption{}
 	if !allNamespaces {
@@ -186,17 +193,10 @@ func runCacheList(namespace string, allNamespaces bool) error {
 		return fmt.Errorf("failed to list models: %w", err)
 	}
 
-	if len(modelList.Items) == 0 {
-		fmt.Println("No models found.")
-		return nil
-	}
-
-	// Group models by cache key
 	cacheEntries := make(map[string]*CacheEntry)
 	for _, model := range modelList.Items {
 		cacheKey := model.Status.CacheKey
 		if cacheKey == "" {
-			// Compute cache key for models without it
 			cacheKey = computeCacheKey(model.Spec.Source)
 		}
 
@@ -206,30 +206,75 @@ func runCacheList(namespace string, allNamespaces bool) error {
 				CacheKey:   cacheKey,
 				Source:     model.Spec.Source,
 				ModelNames: []string{},
+				Status:     statusActive,
 			}
 			cacheEntries[cacheKey] = entry
 		}
 
-		// Add model name (with namespace if showing all)
 		modelName := model.Name
 		if allNamespaces {
 			modelName = fmt.Sprintf("%s/%s", model.Namespace, model.Name)
 		}
 		entry.ModelNames = append(entry.ModelNames, modelName)
 
-		// Parse size if available
 		if model.Status.Size != "" {
 			entry.SizeHuman = model.Status.Size
 		}
 	}
 
-	// Print table
+	// Inspect actual PVC contents (only for single-namespace mode)
+	var pvcInspected bool
+	if !allNamespaces {
+		pvcEntries, err := inspectPVCCache(ctx, cfg, k8sClient, namespace)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not inspect PVC contents: %v\n", err)
+		} else if pvcEntries != nil {
+			pvcInspected = true
+			for _, pe := range pvcEntries {
+				if entry, exists := cacheEntries[pe.CacheKey]; exists {
+					entry.Size = pe.SizeBytes
+					entry.SizeHuman = formatBytes(pe.SizeBytes)
+				} else {
+					cacheEntries[pe.CacheKey] = &CacheEntry{
+						CacheKey:  pe.CacheKey,
+						Size:      pe.SizeBytes,
+						SizeHuman: formatBytes(pe.SizeBytes),
+						Status:    statusOrphaned,
+					}
+				}
+			}
+		}
+	}
+
+	if orphanedOnly {
+		for key, entry := range cacheEntries {
+			if entry.Status != statusOrphaned {
+				delete(cacheEntries, key)
+			}
+		}
+	}
+
+	if len(cacheEntries) == 0 {
+		if orphanedOnly {
+			fmt.Println("No orphaned cache entries found.")
+		} else {
+			fmt.Println("No cache entries found.")
+		}
+		return nil
+	}
+
 	fmt.Printf("\nModel Cache Entries\n")
 	fmt.Printf("═══════════════════════════════════════════════════════════════════════════════\n")
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintln(w, "CACHE KEY\tSIZE\tMODELS\tSOURCE")
+	if pvcInspected {
+		_, _ = fmt.Fprintln(w, "CACHE KEY\tSTATUS\tSIZE\tMODELS\tSOURCE")
+	} else {
+		_, _ = fmt.Fprintln(w, "CACHE KEY\tSIZE\tMODELS\tSOURCE")
+	}
 
+	var activeCount, orphanedCount int
+	var totalBytes int64
 	for _, entry := range cacheEntries {
 		models := strings.Join(entry.ModelNames, ", ")
 		if len(models) > 40 {
@@ -246,11 +291,27 @@ func runCacheList(namespace string, allNamespaces bool) error {
 			size = "-"
 		}
 
-		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", entry.CacheKey, size, models, source)
+		if entry.Status == statusOrphaned {
+			orphanedCount++
+		} else {
+			activeCount++
+		}
+		totalBytes += entry.Size
+
+		if pvcInspected {
+			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", entry.CacheKey, entry.Status, size, models, source)
+		} else {
+			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", entry.CacheKey, size, models, source)
+		}
 	}
 	_ = w.Flush()
 
-	fmt.Printf("\nTotal: %d cache entries, %d models\n", len(cacheEntries), len(modelList.Items))
+	if pvcInspected {
+		fmt.Printf("\nTotal: %d cache entries (%d active, %d orphaned), %s used\n",
+			len(cacheEntries), activeCount, orphanedCount, formatBytes(totalBytes))
+	} else {
+		fmt.Printf("\nTotal: %d cache entries, %d models\n", len(cacheEntries), len(modelList.Items))
+	}
 
 	return nil
 }
