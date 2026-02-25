@@ -23,7 +23,7 @@ import (
 )
 
 func TestNewMetalExecutor(t *testing.T) {
-	executor := NewMetalExecutor("/opt/homebrew/bin/llama-server", "/models")
+	executor := NewMetalExecutor("/opt/homebrew/bin/llama-server", "/models", newNopLogger())
 
 	if executor.llamaServerBin != "/opt/homebrew/bin/llama-server" {
 		t.Errorf("llamaServerBin = %q, want %q", executor.llamaServerBin, "/opt/homebrew/bin/llama-server")
@@ -37,7 +37,7 @@ func TestNewMetalExecutor(t *testing.T) {
 }
 
 func TestAllocatePort(t *testing.T) {
-	executor := NewMetalExecutor("/bin/llama-server", "/models")
+	executor := NewMetalExecutor("/bin/llama-server", "/models", newNopLogger())
 
 	ports := make([]int, 5)
 	for i := range ports {
@@ -53,7 +53,7 @@ func TestAllocatePort(t *testing.T) {
 }
 
 func TestAllocatePort_Sequential(t *testing.T) {
-	executor := NewMetalExecutor("/bin/llama-server", "/models")
+	executor := NewMetalExecutor("/bin/llama-server", "/models", newNopLogger())
 
 	first := executor.allocatePort()
 	second := executor.allocatePort()
@@ -75,7 +75,7 @@ func TestEnsureModel_AlreadyExists(t *testing.T) {
 		t.Fatalf("Failed to create model file: %v", err)
 	}
 
-	executor := NewMetalExecutor("/bin/llama-server", tmpDir)
+	executor := NewMetalExecutor("/bin/llama-server", tmpDir, newNopLogger())
 
 	// source URL basename must match the file we created
 	path, err := executor.ensureModel(
@@ -93,7 +93,7 @@ func TestEnsureModel_AlreadyExists(t *testing.T) {
 
 func TestEnsureModel_DownloadFails(t *testing.T) {
 	tmpDir := t.TempDir()
-	executor := NewMetalExecutor("/bin/llama-server", tmpDir)
+	executor := NewMetalExecutor("/bin/llama-server", tmpDir, newNopLogger())
 
 	// Use an invalid URL that will fail to download
 	_, err := executor.ensureModel(
@@ -107,7 +107,7 @@ func TestEnsureModel_DownloadFails(t *testing.T) {
 }
 
 func TestStopProcess_InvalidPID(t *testing.T) {
-	executor := NewMetalExecutor("/bin/llama-server", "/models")
+	executor := NewMetalExecutor("/bin/llama-server", "/models", newNopLogger())
 
 	// PID 0 is the calling process's group — Signal will fail
 	err := executor.StopProcess(-99999)

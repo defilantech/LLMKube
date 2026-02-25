@@ -179,7 +179,6 @@ func main() {
 		ModelStorePath: cfg.ModelStorePath,
 		LlamaServerBin: cfg.LlamaServerBin,
 		Port:           cfg.Port,
-		LogLevel:       cfg.LogLevel,
 		HostIP:         cfg.HostIP,
 		Logger:         logger,
 	})

@@ -47,17 +47,12 @@ type MetalExecutor struct {
 	logger         *zap.SugaredLogger
 }
 
-func NewMetalExecutor(llamaServerBin, modelStorePath string, logger ...*zap.SugaredLogger) *MetalExecutor {
-	l := zap.NewNop().Sugar()
-	if len(logger) > 0 && logger[0] != nil {
-		l = logger[0]
-	}
-
+func NewMetalExecutor(llamaServerBin, modelStorePath string, logger *zap.SugaredLogger) *MetalExecutor {
 	return &MetalExecutor{
 		llamaServerBin: llamaServerBin,
 		modelStorePath: modelStorePath,
 		nextPort:       8080, // TODO: Implement proper port allocation
-		logger:         l,
+		logger:         logger,
 	}
 }
 

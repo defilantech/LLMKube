@@ -43,16 +43,11 @@ type ServiceRegistry struct {
 // If hostIP is non-empty it is used as the endpoint address registered in
 // Kubernetes; otherwise the IP is auto-detected via DNS lookups
 // (host.minikube.internal / host.docker.internal).
-func NewServiceRegistry(k8sClient client.Client, hostIP string, logger ...*zap.SugaredLogger) *ServiceRegistry {
-	l := zap.NewNop().Sugar()
-	if len(logger) > 0 && logger[0] != nil {
-		l = logger[0]
-	}
-
+func NewServiceRegistry(k8sClient client.Client, hostIP string, logger *zap.SugaredLogger) *ServiceRegistry {
 	return &ServiceRegistry{
 		client: k8sClient,
 		hostIP: hostIP,
-		logger: l,
+		logger: logger,
 	}
 }
 

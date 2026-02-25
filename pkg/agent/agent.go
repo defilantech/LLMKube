@@ -36,7 +36,6 @@ type MetalAgentConfig struct {
 	ModelStorePath string
 	LlamaServerBin string
 	Port           int
-	LogLevel       string
 	HostIP         string // explicit IP to register in K8s endpoints; empty = auto-detect
 	Logger         *zap.SugaredLogger
 }
