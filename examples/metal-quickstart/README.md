@@ -151,14 +151,23 @@ curl http://localhost:8080/v1/chat/completions \
   -d '{"messages":[{"role":"user","content":"What is 2+2?"}],"max_tokens":20}'
 ```
 
-### Option 2: Via Kubernetes Service
+### Option 2: Via Kubernetes Service (In-Cluster)
+
+Metal services are **selectorless** (no pods), so `kubectl port-forward` will not work.
+To access the service from within the cluster, use Kubernetes DNS:
 
 ```bash
-# Port forward the Kubernetes service (note the sanitized name: llama-3-1-8b)
-kubectl port-forward svc/llama-3-1-8b 8081:8080
+# From a pod inside the cluster (note the sanitized name: llama-3-1-8b)
+curl http://llama-3-1-8b.default.svc.cluster.local:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"messages":[{"role":"user","content":"What is 2+2?"}]}'
+```
 
-# Send a test request (in another terminal)
-curl http://localhost:8081/v1/chat/completions \
+You can also test from a temporary pod:
+
+```bash
+kubectl run curl-test --rm -it --image=curlimages/curl -- \
+  curl -s http://llama-3-1-8b.default.svc.cluster.local:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"messages":[{"role":"user","content":"What is 2+2?"}]}'
 ```
