@@ -184,7 +184,7 @@ func (a *MetalAgent) ensureProcess(ctx context.Context, isvc *inferencev1alpha1.
 }
 
 // deleteProcess stops a running llama-server process
-func (a *MetalAgent) deleteProcess(_ context.Context, key string) error {
+func (a *MetalAgent) deleteProcess(ctx context.Context, key string) error {
 	a.mu.Lock()
 	process, exists := a.processes[key]
 	if !exists {
@@ -195,9 +195,26 @@ func (a *MetalAgent) deleteProcess(_ context.Context, key string) error {
 	a.mu.Unlock()
 
 	fmt.Printf("🛑 Stopping inference service: %s\n", key)
+	namespace, name := parseKey(key)
+
+	var cleanupErrors []error
+
+	// Best-effort pre-stop cleanup in case process termination fails.
+	if err := a.registry.UnregisterEndpoint(ctx, namespace, name); err != nil {
+		cleanupErrors = append(cleanupErrors, fmt.Errorf("failed pre-stop endpoint unregister: %w", err))
+	}
 
 	if err := a.executor.StopProcess(process.PID); err != nil {
-		return fmt.Errorf("failed to stop process: %w", err)
+		cleanupErrors = append(cleanupErrors, fmt.Errorf("failed to stop process: %w", err))
+	}
+
+	// Best-effort post-stop cleanup to handle races with EndpointSlice reconciliation.
+	if err := a.registry.UnregisterEndpoint(ctx, namespace, name); err != nil {
+		cleanupErrors = append(cleanupErrors, fmt.Errorf("failed post-stop endpoint unregister: %w", err))
+	}
+
+	if len(cleanupErrors) > 0 {
+		return fmt.Errorf("cleanup errors for %s: %v", key, cleanupErrors)
 	}
 
 	fmt.Printf("✅ Stopped inference service: %s\n", key)
