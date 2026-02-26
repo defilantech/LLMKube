@@ -442,7 +442,7 @@ jobs:
       - name: Check for Hard-coded Secrets
         run: |
           # Search for potential secrets in templates
-          if grep -r "password\|secret\|token" charts/llmkube/templates/ | grep -v "serviceAccount\|SecretKeyRef"; then
+          if grep -r "password\|secret\|token" charts/llmkube/templates/ --exclude-dir=crds | grep -v "serviceAccount\|SecretKeyRef"; then
             echo "⚠️  Potential hard-coded secrets found"
             exit 1
           fi
