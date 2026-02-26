@@ -26,6 +26,8 @@ import (
 	"path/filepath"
 	"syscall"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 type ExecutorConfig struct {
@@ -42,13 +44,15 @@ type MetalExecutor struct {
 	llamaServerBin string
 	modelStorePath string
 	nextPort       int
+	logger         *zap.SugaredLogger
 }
 
-func NewMetalExecutor(llamaServerBin, modelStorePath string) *MetalExecutor {
+func NewMetalExecutor(llamaServerBin, modelStorePath string, logger *zap.SugaredLogger) *MetalExecutor {
 	return &MetalExecutor{
 		llamaServerBin: llamaServerBin,
 		modelStorePath: modelStorePath,
 		nextPort:       8080, // TODO: Implement proper port allocation
+		logger:         logger,
 	}
 }
 
@@ -138,7 +142,7 @@ func (e *MetalExecutor) ensureModel(ctx context.Context, source, name string) (s
 	localPath := filepath.Join(e.modelStorePath, name, filename)
 
 	if _, err := os.Stat(localPath); err == nil {
-		fmt.Printf("📦 Model already downloaded: %s\n", localPath)
+		e.logger.Debugw("model already downloaded", "path", localPath)
 		return localPath, nil
 	}
 
@@ -146,12 +150,12 @@ func (e *MetalExecutor) ensureModel(ctx context.Context, source, name string) (s
 		return "", fmt.Errorf("failed to create model directory: %w", err)
 	}
 
-	fmt.Printf("⬇️  Downloading model from %s...\n", source)
+	e.logger.Infow("downloading model", "source", source, "destination", localPath)
 	if err := e.downloadFile(ctx, source, localPath); err != nil {
 		return "", fmt.Errorf("failed to download model: %w", err)
 	}
 
-	fmt.Printf("✅ Model downloaded: %s\n", localPath)
+	e.logger.Infow("model downloaded", "path", localPath)
 	return localPath, nil
 }
 

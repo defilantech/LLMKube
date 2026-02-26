@@ -33,7 +33,7 @@ func TestNewInferenceServiceWatcher(t *testing.T) {
 	_ = inferencev1alpha1.AddToScheme(scheme)
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
-	watcher := NewInferenceServiceWatcher(k8sClient, "test-ns")
+	watcher := NewInferenceServiceWatcher(k8sClient, "test-ns", newNopLogger())
 
 	if watcher == nil {
 		t.Fatal("NewInferenceServiceWatcher returned nil")
@@ -92,7 +92,7 @@ func TestShouldWatch(t *testing.T) {
 		WithRuntimeObjects(metalModel, cudaModel, cpuModel).
 		Build()
 
-	watcher := NewInferenceServiceWatcher(k8sClient, "default")
+	watcher := NewInferenceServiceWatcher(k8sClient, "default", newNopLogger())
 
 	tests := []struct {
 		name string
@@ -204,7 +204,7 @@ func TestListExisting_EmptyCluster(t *testing.T) {
 	_ = inferencev1alpha1.AddToScheme(scheme)
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
-	watcher := NewInferenceServiceWatcher(k8sClient, "default")
+	watcher := NewInferenceServiceWatcher(k8sClient, "default", newNopLogger())
 	eventChan := make(chan InferenceServiceEvent, 10)
 
 	err := watcher.listExisting(context.Background(), eventChan)
@@ -252,7 +252,7 @@ func TestListExisting_WithServices(t *testing.T) {
 		WithRuntimeObjects(modelA, modelB, svcA, svcB).
 		Build()
 
-	watcher := NewInferenceServiceWatcher(k8sClient, "default")
+	watcher := NewInferenceServiceWatcher(k8sClient, "default", newNopLogger())
 	eventChan := make(chan InferenceServiceEvent, 10)
 
 	err := watcher.listExisting(context.Background(), eventChan)
@@ -309,7 +309,7 @@ func TestListExisting_NamespaceFiltering(t *testing.T) {
 		Build()
 
 	// Watch only "default" namespace
-	watcher := NewInferenceServiceWatcher(k8sClient, "default")
+	watcher := NewInferenceServiceWatcher(k8sClient, "default", newNopLogger())
 	eventChan := make(chan InferenceServiceEvent, 10)
 
 	err := watcher.listExisting(context.Background(), eventChan)
@@ -350,7 +350,7 @@ func TestPoll_DetectsNewService(t *testing.T) {
 		WithRuntimeObjects(model, isvc).
 		Build()
 
-	watcher := NewInferenceServiceWatcher(k8sClient, "default")
+	watcher := NewInferenceServiceWatcher(k8sClient, "default", newNopLogger())
 	eventChan := make(chan InferenceServiceEvent, 10)
 	seen := make(map[string]string)
 
@@ -378,7 +378,7 @@ func TestPoll_DetectsDeletedService(t *testing.T) {
 	// Empty cluster — no services exist
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
-	watcher := NewInferenceServiceWatcher(k8sClient, "default")
+	watcher := NewInferenceServiceWatcher(k8sClient, "default", newNopLogger())
 	eventChan := make(chan InferenceServiceEvent, 10)
 
 	// Pre-populate "seen" as if we previously saw this service
@@ -408,7 +408,7 @@ func TestWatch_ContextCancellation(t *testing.T) {
 	_ = inferencev1alpha1.AddToScheme(scheme)
 
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-	watcher := NewInferenceServiceWatcher(k8sClient, "default")
+	watcher := NewInferenceServiceWatcher(k8sClient, "default", newNopLogger())
 	eventChan := make(chan InferenceServiceEvent, 10)
 
 	ctx, cancel := context.WithCancel(context.Background())

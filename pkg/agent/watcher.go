@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"time"
 
+	"go.uber.org/zap"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -47,13 +48,19 @@ type InferenceServiceEvent struct {
 type InferenceServiceWatcher struct {
 	client    client.Client
 	namespace string
+	logger    *zap.SugaredLogger
 }
 
 // NewInferenceServiceWatcher creates a new watcher
-func NewInferenceServiceWatcher(k8sClient client.Client, namespace string) *InferenceServiceWatcher {
+func NewInferenceServiceWatcher(
+	k8sClient client.Client,
+	namespace string,
+	logger *zap.SugaredLogger,
+) *InferenceServiceWatcher {
 	return &InferenceServiceWatcher{
 		client:    k8sClient,
 		namespace: namespace,
+		logger:    logger,
 	}
 }
 
@@ -77,7 +84,7 @@ func (w *InferenceServiceWatcher) Watch(ctx context.Context, eventChan chan<- In
 			return nil
 		case <-ticker.C:
 			if err := w.poll(ctx, eventChan, seen); err != nil {
-				fmt.Printf("⚠️  Warning: polling error: %v\n", err)
+				w.logger.Warnw("polling error", "error", err)
 			}
 		}
 	}
@@ -192,7 +199,13 @@ func (w *InferenceServiceWatcher) shouldWatch(ctx context.Context, isvc *inferen
 		Namespace: isvc.Namespace,
 		Name:      isvc.Spec.ModelRef,
 	}, model); err != nil {
-		// If we can't fetch the Model, don't watch it
+		w.logger.Debugw(
+			"skipping inference service because referenced model cannot be fetched",
+			"namespace", isvc.Namespace,
+			"inferenceService", isvc.Name,
+			"modelRef", isvc.Spec.ModelRef,
+			"error", err,
+		)
 		return false
 	}
 

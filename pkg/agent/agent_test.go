@@ -20,6 +20,7 @@ import (
 	"context"
 	"testing"
 
+	"go.uber.org/zap"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -31,6 +32,10 @@ func newTestScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = inferencev1alpha1.AddToScheme(s)
 	return s
+}
+
+func newNopLogger() *zap.SugaredLogger {
+	return zap.NewNop().Sugar()
 }
 
 func TestNewMetalAgent(t *testing.T) {
@@ -114,7 +119,7 @@ func TestHandleEvent_DeleteNonExistent(t *testing.T) {
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
 	agent := NewMetalAgent(MetalAgentConfig{K8sClient: k8sClient})
-	agent.executor = NewMetalExecutor("/fake/llama-server", "/tmp/models")
+	agent.executor = NewMetalExecutor("/fake/llama-server", "/tmp/models", newNopLogger())
 
 	event := InferenceServiceEvent{
 		Type: EventTypeDeleted,
@@ -143,9 +148,9 @@ func TestHandleEvent_CreateMissingModel(t *testing.T) {
 		ModelStorePath: "/tmp/models",
 		LlamaServerBin: "/fake/llama-server",
 	})
-	agent.watcher = NewInferenceServiceWatcher(k8sClient, "default")
-	agent.executor = NewMetalExecutor("/fake/llama-server", "/tmp/models")
-	agent.registry = NewServiceRegistry(k8sClient, "")
+	agent.watcher = NewInferenceServiceWatcher(k8sClient, "default", newNopLogger())
+	agent.executor = NewMetalExecutor("/fake/llama-server", "/tmp/models", newNopLogger())
+	agent.registry = NewServiceRegistry(k8sClient, "", newNopLogger())
 
 	event := InferenceServiceEvent{
 		Type: EventTypeCreated,
@@ -171,7 +176,7 @@ func TestShutdown_NoProcesses(t *testing.T) {
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
 	agent := NewMetalAgent(MetalAgentConfig{K8sClient: k8sClient})
-	agent.executor = NewMetalExecutor("/fake/llama-server", "/tmp/models")
+	agent.executor = NewMetalExecutor("/fake/llama-server", "/tmp/models", newNopLogger())
 
 	err := agent.Shutdown(context.Background())
 	if err != nil {

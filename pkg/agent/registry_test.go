@@ -59,7 +59,7 @@ func TestNewServiceRegistry(t *testing.T) {
 	_ = corev1.AddToScheme(scheme)
 
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-	registry := NewServiceRegistry(k8sClient, "")
+	registry := NewServiceRegistry(k8sClient, "", newNopLogger())
 
 	if registry == nil {
 		t.Fatal("NewServiceRegistry returned nil")
@@ -72,7 +72,7 @@ func TestRegisterEndpoint(t *testing.T) {
 	_ = corev1.AddToScheme(scheme)
 
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-	registry := NewServiceRegistry(k8sClient, "")
+	registry := NewServiceRegistry(k8sClient, "", newNopLogger())
 
 	isvc := &inferencev1alpha1.InferenceService{
 		ObjectMeta: metav1.ObjectMeta{
@@ -160,7 +160,7 @@ func TestRegisterEndpoint_SanitizedName(t *testing.T) {
 	_ = corev1.AddToScheme(scheme)
 
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-	registry := NewServiceRegistry(k8sClient, "")
+	registry := NewServiceRegistry(k8sClient, "", newNopLogger())
 
 	isvc := &inferencev1alpha1.InferenceService{
 		ObjectMeta: metav1.ObjectMeta{
@@ -213,7 +213,7 @@ func TestUnregisterEndpoint(t *testing.T) {
 		WithRuntimeObjects(svc, endpoints).
 		Build()
 
-	registry := NewServiceRegistry(k8sClient, "")
+	registry := NewServiceRegistry(k8sClient, "", newNopLogger())
 
 	err := registry.UnregisterEndpoint(context.Background(), "default", "test-model")
 	if err != nil {
@@ -255,7 +255,7 @@ func TestUnregisterEndpoint_SanitizedName(t *testing.T) {
 		WithRuntimeObjects(svc, endpoints).
 		Build()
 
-	registry := NewServiceRegistry(k8sClient, "")
+	registry := NewServiceRegistry(k8sClient, "", newNopLogger())
 
 	// Pass the dotted name — UnregisterEndpoint should sanitize it
 	err := registry.UnregisterEndpoint(context.Background(), "default", "model.v1.0")
@@ -277,7 +277,7 @@ func TestResolveHostIP_Explicit(t *testing.T) {
 	_ = corev1.AddToScheme(scheme)
 
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-	registry := NewServiceRegistry(k8sClient, "100.103.147.52")
+	registry := NewServiceRegistry(k8sClient, "100.103.147.52", newNopLogger())
 
 	ip := registry.resolveHostIP()
 	if ip != "100.103.147.52" {
@@ -290,7 +290,7 @@ func TestResolveHostIP_AutoDetect(t *testing.T) {
 	_ = corev1.AddToScheme(scheme)
 
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-	registry := NewServiceRegistry(k8sClient, "")
+	registry := NewServiceRegistry(k8sClient, "", newNopLogger())
 
 	ip := registry.resolveHostIP()
 	if ip == "" {
@@ -304,7 +304,7 @@ func TestRegisterEndpoint_ExplicitHostIP(t *testing.T) {
 	_ = corev1.AddToScheme(scheme)
 
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-	registry := NewServiceRegistry(k8sClient, "10.0.0.42")
+	registry := NewServiceRegistry(k8sClient, "10.0.0.42", newNopLogger())
 
 	isvc := &inferencev1alpha1.InferenceService{
 		ObjectMeta: metav1.ObjectMeta{
