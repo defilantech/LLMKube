@@ -5,6 +5,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.19.0
+    {{- if .Values.crds.keep }}
+    helm.sh/resource-policy: keep
+    {{- end }}
   name: inferenceservices.inference.llmkube.dev
 spec:
   group: inference.llmkube.dev
@@ -113,6 +116,11 @@ spec:
                 default: ghcr.io/ggml-org/llama.cpp:server
                 description: Image is the container image for the llama.cpp runtime
                 type: string
+              jinja:
+                description: |-
+                  Jinja enables Jinja2 chat template rendering for tool/function calling support.
+                  Required when using the OpenAI-compatible API with tools. Maps to llama.cpp --jinja flag.
+                type: boolean
               modelRef:
                 description: ModelRef references the Model CR that contains the model
                   to serve
@@ -200,9 +208,10 @@ spec:
                     operator:
                       description: |-
                         Operator represents a key's relationship to the value.
-                        Valid operators are Exists and Equal. Defaults to Equal.
+                        Valid operators are Exists, Equal, Lt, and Gt. Defaults to Equal.
                         Exists is equivalent to wildcard for value, so that a pod can
                         tolerate all taints of a particular category.
+                        Lt and Gt perform numeric comparisons (requires feature gate TaintTolerationComparisonOperators).
                       type: string
                     tolerationSeconds:
                       description: |-

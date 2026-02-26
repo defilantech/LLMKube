@@ -30,6 +30,10 @@ spec:
     - jsonPath: .spec.hardware.accelerator
       name: Accelerator
       type: string
+    - jsonPath: .status.gguf.architecture
+      name: Arch
+      priority: 1
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -160,9 +164,12 @@ spec:
               source:
                 description: |-
                   Source defines where to obtain the model file (GGUF format)
-                  Supported schemes: http://, https://, file://
-                  Example: https://huggingface.co/microsoft/Phi-3-mini-4k-instruct-gguf/resolve/main/Phi-3-mini-4k-instruct-q4.gguf
-                pattern: ^(https?|file)://.*\.gguf$
+                  Supported schemes: http://, https://, file://, or absolute paths
+                  Examples:
+                    - https://huggingface.co/org/repo/resolve/main/model.gguf
+                    - file:///mnt/models/model.gguf
+                    - /mnt/models/model.gguf (air-gapped deployments)
+                pattern: ^(https?|file)://.*\.gguf$|^/.*\.gguf$
                 type: string
             required:
             - source
@@ -248,6 +255,46 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              gguf:
+                description: GGUF contains metadata extracted from the GGUF file header
+                properties:
+                  architecture:
+                    description: Architecture is the model architecture (e.g., "llama",
+                      "mistral", "phi")
+                    type: string
+                  contextLength:
+                    description: ContextLength is the maximum context length (tokens)
+                    format: int64
+                    type: integer
+                  embeddingSize:
+                    description: EmbeddingSize is the embedding dimension size
+                    format: int64
+                    type: integer
+                  fileVersion:
+                    description: FileVersion is the GGUF file format version
+                    format: int32
+                    type: integer
+                  headCount:
+                    description: HeadCount is the number of attention heads
+                    format: int64
+                    type: integer
+                  layerCount:
+                    description: LayerCount is the number of transformer layers/blocks
+                    format: int64
+                    type: integer
+                  modelName:
+                    description: ModelName is the model name as stored in the GGUF
+                      file
+                    type: string
+                  quantization:
+                    description: Quantization is the quantization type (e.g., "Q4_K_M",
+                      "Q5_K_M")
+                    type: string
+                  tensorCount:
+                    description: TensorCount is the number of tensors in the model
+                    format: int64
+                    type: integer
+                type: object
               lastUpdated:
                 description: LastUpdated is the timestamp of the last status update
                 format: date-time
