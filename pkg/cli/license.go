@@ -123,7 +123,7 @@ func runLicenseCheck(modelName, namespace string) error {
 	}
 
 	if model.Status.GGUF == nil || model.Status.GGUF.License == "" {
-		if model.Status.Phase != "Ready" && model.Status.Phase != "Cached" {
+		if model.Status.Phase != phaseReady && model.Status.Phase != "Cached" {
 			fmt.Printf("Model '%s' is still %s — license metadata is not yet available.\n",
 				modelName, strings.ToLower(model.Status.Phase))
 			return nil
