@@ -26,8 +26,6 @@ import (
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
-
-	"github.com/defilantech/llmkube/pkg/license"
 )
 
 //go:embed catalog.yaml
@@ -51,7 +49,6 @@ type Model struct {
 	VRAMEstimate string       `yaml:"vram_estimate"`
 	Tags         []string     `yaml:"tags"`
 	Homepage     string       `yaml:"homepage"`
-	License      string       `yaml:"license,omitempty"`
 	Notes        string       `yaml:"notes,omitempty"`
 }
 
@@ -197,8 +194,8 @@ func runCatalogList(tagFilter string) error {
 	fmt.Printf("═══════════════════════════════════════════════════════════════════════\n\n")
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintln(w, "ID\tNAME\tSIZE\tQUANT\tLICENSE\tUSE CASE\tVRAM")
-	_, _ = fmt.Fprintln(w, "──\t────\t────\t─────\t───────\t────────\t────")
+	_, _ = fmt.Fprintln(w, "ID\tNAME\tSIZE\tQUANT\tUSE CASE\tVRAM")
+	_, _ = fmt.Fprintln(w, "──\t────\t────\t─────\t────────\t────")
 
 	for _, id := range modelIDs {
 		model := catalog.Models[id]
@@ -207,12 +204,11 @@ func runCatalogList(tagFilter string) error {
 			useCase = formatUseCase(model.UseCases[0])
 		}
 
-		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
 			id,
 			truncate(model.Name, 30),
 			model.Size,
 			model.Quantization,
-			model.License,
 			truncate(useCase, 20),
 			model.VRAMEstimate,
 		)
@@ -240,21 +236,6 @@ func runCatalogInfo(modelID string) error {
 	fmt.Printf("Context Size:    %s tokens\n", formatNumber(model.ContextSize))
 	fmt.Printf("VRAM Estimate:   %s\n", model.VRAMEstimate)
 	fmt.Printf("\n")
-
-	if model.License != "" {
-		fmt.Printf("License:         %s\n", model.License)
-		if lic := license.Get(model.License); lic != nil {
-			fmt.Printf("  Name:          %s\n", lic.Name)
-			fmt.Printf("  Commercial:    %t\n", lic.CommercialUse)
-			if len(lic.Restrictions) > 0 {
-				for _, r := range lic.Restrictions {
-					fmt.Printf("  Restriction:   %s\n", r)
-				}
-			}
-			fmt.Printf("  Details:       %s\n", lic.URL)
-		}
-		fmt.Printf("\n")
-	}
 
 	fmt.Printf("Description:\n")
 	fmt.Printf("  %s\n\n", model.Description)

@@ -21,8 +21,6 @@ import (
 	"os"
 	"strings"
 	"testing"
-
-	"github.com/defilantech/llmkube/pkg/license"
 )
 
 func TestNewLicenseCommand(t *testing.T) {
@@ -45,68 +43,24 @@ func TestNewLicenseCommand(t *testing.T) {
 	}
 }
 
-func TestRunLicenseCheck(t *testing.T) {
-	tests := []struct {
-		name     string
-		modelID  string
-		wantErr  bool
-		wantStrs []string
-		dontWant []string
-	}{
-		{
-			name:     "apache model",
-			modelID:  "mistral-7b",
-			wantStrs: []string{"Apache License 2.0", "Commercial Use:", "Yes", "No special restrictions"},
-		},
-		{
-			name:     "llama model with restrictions",
-			modelID:  "llama-3.1-8b",
-			wantStrs: []string{"Llama 3.1 Community", "700M monthly active users"},
-		},
-		{
-			name:     "MIT model",
-			modelID:  "phi-4-mini",
-			wantStrs: []string{"MIT License", "Commercial Use:", "Yes"},
-		},
-		{
-			name:    "nonexistent model",
-			modelID: "nonexistent-model-xyz",
-			wantErr: true,
-		},
+func TestNewLicenseCheckCommand(t *testing.T) {
+	cmd := NewLicenseCheckCommand()
+
+	if cmd.Use != "check MODEL_NAME" {
+		t.Errorf("Use = %q, want %q", cmd.Use, "check MODEL_NAME")
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			old := os.Stdout
-			r, w, _ := os.Pipe()
-			os.Stdout = w
+	if cmd.Flags().Lookup("namespace") == nil {
+		t.Error("Missing --namespace flag")
+	}
 
-			err := runLicenseCheck(tt.modelID)
+	ns := cmd.Flags().Lookup("namespace")
+	if ns.DefValue != "default" {
+		t.Errorf("namespace default = %q, want %q", ns.DefValue, "default")
+	}
 
-			_ = w.Close()
-			os.Stdout = old
-
-			if tt.wantErr {
-				if err == nil {
-					t.Error("expected error, got nil")
-				}
-				return
-			}
-
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-
-			var buf bytes.Buffer
-			_, _ = buf.ReadFrom(r)
-			output := buf.String()
-
-			for _, s := range tt.wantStrs {
-				if !strings.Contains(output, s) {
-					t.Errorf("output missing %q\nGot: %s", s, output)
-				}
-			}
-		})
+	if ns.Shorthand != "n" {
+		t.Errorf("namespace shorthand = %q, want %q", ns.Shorthand, "n")
 	}
 }
 
@@ -139,24 +93,5 @@ func TestRunLicenseList(t *testing.T) {
 	}
 	if !strings.Contains(output, "gemma") {
 		t.Error("output should contain gemma")
-	}
-}
-
-func TestAllModelsHaveKnownLicense(t *testing.T) {
-	catalog, err := LoadCatalog()
-	if err != nil {
-		t.Fatalf("Failed to load catalog: %v", err)
-	}
-
-	for modelID, model := range catalog.Models {
-		t.Run(modelID, func(t *testing.T) {
-			if model.License == "" {
-				t.Errorf("Model '%s' has no license", modelID)
-				return
-			}
-			if license.Get(model.License) == nil {
-				t.Errorf("Model '%s' has unknown license: %s", modelID, model.License)
-			}
-		})
 	}
 }

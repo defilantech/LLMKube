@@ -38,6 +38,7 @@ import (
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 	"github.com/defilantech/llmkube/pkg/gguf"
+	"github.com/defilantech/llmkube/pkg/license"
 )
 
 const (
@@ -341,7 +342,7 @@ func (r *ModelReconciler) parseGGUFMetadata(path string) (*inferencev1alpha1.GGU
 		HeadCount:     parsed.HeadCount(),
 		TensorCount:   parsed.Header.TensorCount,
 		FileVersion:   parsed.Header.Version,
-		License:       parsed.License(),
+		License:       license.Normalize(parsed.License()),
 	}, nil
 }
 

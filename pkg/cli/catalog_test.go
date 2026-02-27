@@ -151,10 +151,6 @@ func TestModelFields(t *testing.T) {
 		t.Error("Model homepage is empty")
 	}
 
-	if model.License == "" {
-		t.Error("Model license is empty")
-	}
-
 	// Test numeric fields have valid values
 	if model.ContextSize <= 0 {
 		t.Errorf("Expected positive context size, got %d", model.ContextSize)
@@ -207,7 +203,6 @@ func TestAllModelsHaveValidFields(t *testing.T) {
 				"cpu":          model.Resources.CPU,
 				"memory":       model.Resources.Memory,
 				"gpu_memory":   model.Resources.GPUMemory,
-				"license":      model.License,
 			}
 
 			for fieldName, fieldValue := range requiredFields {
@@ -452,9 +447,6 @@ func TestRunCatalogList(t *testing.T) {
 	if !strings.Contains(output, "llama") {
 		t.Error("output should list llama models")
 	}
-	if !strings.Contains(output, "LICENSE") {
-		t.Error("output should contain LICENSE header")
-	}
 	if !strings.Contains(output, "To deploy") {
 		t.Error("output should contain deploy instructions")
 	}
@@ -532,9 +524,6 @@ func TestRunCatalogInfo(t *testing.T) {
 	}
 	if !strings.Contains(output, "Resource Requirements") {
 		t.Error("output should contain resource requirements")
-	}
-	if !strings.Contains(output, "License:") {
-		t.Error("output should contain license information")
 	}
 }
 

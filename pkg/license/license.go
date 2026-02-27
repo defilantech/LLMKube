@@ -122,7 +122,6 @@ func Normalize(raw string) string {
 		id     string
 	}{
 		{"apache", "apache-2.0"},
-		{"mit", "mit"},
 		{"llama 3.3", "llama-3.3-community"},
 		{"llama-3.3", "llama-3.3-community"},
 		{"llama 3.2", "llama-3.2-community"},

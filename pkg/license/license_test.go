@@ -101,6 +101,8 @@ func TestNormalize(t *testing.T) {
 		{"Gemma Terms", "gemma"},
 		{"unknown-xyz", "unknown-xyz"},
 		{"", ""},
+		{"permit", "permit"},
+		{"limited", "limited"},
 	}
 
 	for _, tt := range tests {
