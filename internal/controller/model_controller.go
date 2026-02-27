@@ -341,6 +341,7 @@ func (r *ModelReconciler) parseGGUFMetadata(path string) (*inferencev1alpha1.GGU
 		HeadCount:     parsed.HeadCount(),
 		TensorCount:   parsed.Header.TensorCount,
 		FileVersion:   parsed.Header.Version,
+		License:       parsed.License(),
 	}, nil
 }
 

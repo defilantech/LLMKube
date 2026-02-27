@@ -42,6 +42,8 @@ func TestNewRootCommand(t *testing.T) {
 		"catalog":   false,
 		"benchmark": false,
 		"cache":     false,
+		"inspect":   false,
+		"license":   false,
 	}
 
 	for _, sub := range cmd.Commands() {

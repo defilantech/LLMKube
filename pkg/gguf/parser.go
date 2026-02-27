@@ -649,6 +649,19 @@ func (f *GGUFFile) HeadCount() uint64 {
 	return n
 }
 
+// License returns the license identifier from the GGUF metadata.
+func (f *GGUFFile) License() string {
+	v, ok := f.GetMetadata("general.license")
+	if !ok {
+		return ""
+	}
+	s, ok := AsStr(v)
+	if !ok {
+		return ""
+	}
+	return s
+}
+
 // ---------------------------------------------------------------------------
 // File type → quantization name mapping
 // ---------------------------------------------------------------------------

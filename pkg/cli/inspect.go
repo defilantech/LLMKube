@@ -97,6 +97,9 @@ func runInspect(path string, showMetadata, showTensors bool) error {
 	if hc := parsed.HeadCount(); hc > 0 {
 		fmt.Printf("Attn Heads:     %d\n", hc)
 	}
+	if lic := parsed.License(); lic != "" {
+		fmt.Printf("License:        %s\n", lic)
+	}
 	fmt.Printf("Tensors:        %d\n", parsed.Header.TensorCount)
 	fmt.Printf("Metadata Keys:  %d\n", parsed.Header.MetadataKVCount)
 

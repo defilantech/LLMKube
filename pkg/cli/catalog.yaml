@@ -34,6 +34,7 @@ models:
       - "small"
       - "efficient"
     homepage: "https://huggingface.co/meta-llama/Llama-3.2-3B-Instruct"
+    license: "llama-3.2-community"
 
   phi-4-mini:
     name: "Phi-4 Mini Instruct (3.8B)"
@@ -59,6 +60,7 @@ models:
       - "reasoning"
       - "long-context"
     homepage: "https://huggingface.co/microsoft/Phi-4-mini-instruct"
+    license: "mit"
 
   gemma-3-4b:
     name: "Gemma 3 4B IT"
@@ -83,6 +85,7 @@ models:
       - "small"
       - "efficient"
     homepage: "https://huggingface.co/google/gemma-3-4b-it"
+    license: "gemma"
 
   # ============================================================================
   # Medium Models (7-8B) - Sweet Spot
@@ -112,6 +115,7 @@ models:
       - "recommended"
       - "long-context"
     homepage: "https://huggingface.co/meta-llama/Meta-Llama-3.1-8B-Instruct"
+    license: "llama-3.1-community"
 
   mistral-7b:
     name: "Mistral 7B Instruct v0.3"
@@ -135,6 +139,7 @@ models:
       - "fast"
       - "battle-tested"
     homepage: "https://huggingface.co/mistralai/Mistral-7B-Instruct-v0.3"
+    license: "apache-2.0"
 
   qwen-2.5-coder-7b:
     name: "Qwen 2.5 Coder 7B Instruct"
@@ -160,6 +165,7 @@ models:
       - "long-context"
       - "recommended"
     homepage: "https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct"
+    license: "apache-2.0"
 
   deepseek-r1-7b:
     name: "DeepSeek R1 Distill Qwen 7B"
@@ -184,6 +190,7 @@ models:
       - "math"
       - "chain-of-thought"
     homepage: "https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
+    license: "mit"
 
   gemma-3-12b:
     name: "Gemma 3 12B IT"
@@ -207,6 +214,7 @@ models:
       - "gemma"
       - "multilingual"
     homepage: "https://huggingface.co/google/gemma-3-12b-it"
+    license: "gemma"
 
   # ============================================================================
   # Large Models (13B+) - Premium Quality
@@ -235,6 +243,7 @@ models:
       - "math"
       - "chain-of-thought"
     homepage: "https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-14B"
+    license: "mit"
 
   deepseek-r1-32b:
     name: "DeepSeek R1 Distill Qwen 32B"
@@ -261,6 +270,7 @@ models:
       - "32gb-vram"
       - "recommended"
     homepage: "https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-32B"
+    license: "mit"
 
   mistral-small-24b:
     name: "Mistral Small 24B Instruct"
@@ -284,6 +294,7 @@ models:
       - "efficient"
       - "production"
     homepage: "https://huggingface.co/mistralai/Mistral-Small-24B-Instruct-2501"
+    license: "apache-2.0"
 
   qwen-2.5-32b:
     name: "Qwen 2.5 32B Instruct"
@@ -310,6 +321,7 @@ models:
       - "32gb-vram"
       - "long-context"
     homepage: "https://huggingface.co/Qwen/Qwen2.5-32B-Instruct"
+    license: "apache-2.0"
 
   qwen-2.5-coder-32b:
     name: "Qwen 2.5 Coder 32B Instruct"
@@ -338,6 +350,7 @@ models:
       - "long-context"
       - "gpt4-level"
     homepage: "https://huggingface.co/Qwen/Qwen2.5-Coder-32B-Instruct"
+    license: "apache-2.0"
 
   qwen-3-32b:
     name: "Qwen 3 32B"
@@ -365,6 +378,7 @@ models:
       - "long-context"
       - "thinking"
     homepage: "https://huggingface.co/Qwen/Qwen3-32B"
+    license: "apache-2.0"
 
   qwen-2.5-14b:
     name: "Qwen 2.5 14B Instruct"
@@ -389,6 +403,7 @@ models:
       - "creative"
       - "long-context"
     homepage: "https://huggingface.co/Qwen/Qwen2.5-14B-Instruct"
+    license: "apache-2.0"
 
   mixtral-8x7b:
     name: "Mixtral 8x7B Instruct"
@@ -413,6 +428,7 @@ models:
       - "large"
       - "high-quality"
     homepage: "https://huggingface.co/mistralai/Mixtral-8x7B-Instruct-v0.1"
+    license: "apache-2.0"
 
   llama-3.3-70b:
     name: "Llama 3.3 70B Instruct"
@@ -439,4 +455,5 @@ models:
       - "multi-gpu"
       - "long-context"
     homepage: "https://huggingface.co/meta-llama/Llama-3.3-70B-Instruct"
+    license: "llama-3.3-community"
     notes: "Requires multi-GPU setup (2x A100 40GB or 1x A100 80GB)"

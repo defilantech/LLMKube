@@ -422,6 +422,7 @@ func TestConvenienceMethods(t *testing.T) {
 	data := buildGGUF([]metadataEntry{
 		{key: "general.architecture", value: testString{s: "phi"}},
 		{key: "general.file_type", value: testUint32{v: 15}},
+		{key: "general.license", value: testString{s: "Apache-2.0"}},
 		{key: "phi.context_length", value: testUint32{v: 2048}},
 		{key: "phi.embedding_length", value: testUint32{v: 2560}},
 		{key: "phi.block_count", value: testUint32{v: 24}},
@@ -450,6 +451,9 @@ func TestConvenienceMethods(t *testing.T) {
 	}
 	if gguf.HeadCount() != 32 {
 		t.Errorf("head_count = %d, want 32", gguf.HeadCount())
+	}
+	if gguf.License() != "Apache-2.0" {
+		t.Errorf("license = %q, want %q", gguf.License(), "Apache-2.0")
 	}
 }
 
@@ -492,6 +496,9 @@ func TestMissingMetadataReturnsZero(t *testing.T) {
 	}
 	if gguf.ContextLength() != 0 {
 		t.Errorf("context_length = %d, want 0", gguf.ContextLength())
+	}
+	if gguf.License() != "" {
+		t.Errorf("license = %q, want empty", gguf.License())
 	}
 }
 
