@@ -80,3 +80,39 @@ spec:
       annotations:
         summary: "LLMKube controller is down"
         description: "Controller {{ $labels.instance }} has been down for more than 2 minutes"
+
+  - name: llmkube-lifecycle
+    interval: 30s
+    rules:
+    # Model Download Slow Alert
+    - alert: ModelDownloadSlow
+      expr: histogram_quantile(0.95, rate(llmkube_model_download_duration_seconds_bucket[1h])) > 600
+      for: 5m
+      labels:
+        severity: warning
+        component: model
+      annotations:
+        summary: "Model downloads are slow"
+        description: "P95 model download duration is {{ $value }}s (threshold: 600s)"
+
+    # InferenceService Not Ready Alert
+    - alert: InferenceServiceNotReady
+      expr: llmkube_inferenceservice_phase{phase="Creating"} == 1
+      for: 10m
+      labels:
+        severity: warning
+        component: inference
+      annotations:
+        summary: "InferenceService stuck in Creating phase"
+        description: "InferenceService {{ $labels.inferenceservice }} in {{ $labels.namespace }} has been Creating for more than 10 minutes"
+
+    # GPU Queue Backlog Alert
+    - alert: GPUQueueBacklog
+      expr: llmkube_gpu_queue_depth > 0
+      for: 15m
+      labels:
+        severity: warning
+        component: gpu
+      annotations:
+        summary: "GPU queue has pending workloads"
+        description: "GPU queue depth is {{ $value }} for more than 15 minutes"

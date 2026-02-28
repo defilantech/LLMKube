@@ -114,6 +114,15 @@ prometheus:
     # Namespace for ServiceMonitor (defaults to release namespace)
     namespace: ""
 
+  # Enable PodMonitor for inference pod metrics (llama.cpp /metrics)
+  inferencePodMonitor:
+    enabled: false
+    # Additional labels for PodMonitor
+    additionalLabels:
+      prometheus: kube-prometheus-stack-prometheus
+    # Scrape interval
+    interval: 30s
+
   # Enable PrometheusRule for alerts
   prometheusRule:
     enabled: false

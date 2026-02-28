@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -38,6 +39,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
+	llmkubemetrics "github.com/defilantech/llmkube/internal/metrics"
 )
 
 type InferenceServiceReconciler struct {
@@ -293,6 +295,11 @@ func (r *InferenceServiceReconciler) ensureModelCachePVC(ctx context.Context, na
 // +kubebuilder:rbac:groups=scheduling.k8s.io,resources=priorityclasses,verbs=get;list;watch
 
 func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	reconcileStart := time.Now()
+	defer func() {
+		llmkubemetrics.ReconcileDuration.WithLabelValues("inferenceservice").Observe(time.Since(reconcileStart).Seconds())
+	}()
+
 	log := logf.FromContext(ctx)
 
 	inferenceService := &inferencev1alpha1.InferenceService{}
@@ -727,6 +734,9 @@ func (r *InferenceServiceReconciler) constructDeployment(
 	args = appendFlashAttentionArgs(args, isvc.Spec.FlashAttention, gpuCount)
 	args = appendJinjaArgs(args, isvc.Spec.Jinja)
 
+	// Enable Prometheus metrics endpoint on llama.cpp
+	args = append(args, "--metrics")
+
 	container := corev1.Container{
 		Name:  "llama-server",
 		Image: image,
@@ -739,6 +749,30 @@ func (r *InferenceServiceReconciler) constructDeployment(
 			},
 		},
 		VolumeMounts: storageConfig.volumeMounts,
+		LivenessProbe: &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{
+				HTTPGet: &corev1.HTTPGetAction{
+					Path: "/health",
+					Port: intstr.FromInt32(port),
+				},
+			},
+			InitialDelaySeconds: 30,
+			PeriodSeconds:       15,
+			TimeoutSeconds:      5,
+			FailureThreshold:    3,
+		},
+		ReadinessProbe: &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{
+				HTTPGet: &corev1.HTTPGetAction{
+					Path: "/health",
+					Port: intstr.FromInt32(port),
+				},
+			},
+			InitialDelaySeconds: 10,
+			PeriodSeconds:       10,
+			TimeoutSeconds:      5,
+			FailureThreshold:    3,
+		},
 	}
 
 	if gpuCount > 0 {
@@ -887,6 +921,7 @@ func (r *InferenceServiceReconciler) updateStatusWithSchedulingInfo(
 	log := logf.FromContext(ctx)
 
 	now := metav1.Now()
+	previousPhase := isvc.Status.Phase
 	isvc.Status.Phase = phase
 	isvc.Status.ModelReady = modelReady
 	isvc.Status.ReadyReplicas = readyReplicas
@@ -895,6 +930,19 @@ func (r *InferenceServiceReconciler) updateStatusWithSchedulingInfo(
 	isvc.Status.LastUpdated = &now
 
 	isvc.Status.EffectivePriority = r.resolveEffectivePriority(isvc)
+
+	// Update phase gauge metric
+	llmkubemetrics.InferenceServicePhase.WithLabelValues(isvc.Name, isvc.Namespace, phase).Set(1)
+	if previousPhase != "" && previousPhase != phase {
+		llmkubemetrics.InferenceServicePhase.WithLabelValues(isvc.Name, isvc.Namespace, previousPhase).Set(0)
+	}
+
+	// Track time-to-ready using creation timestamp
+	if phase == PhaseReady && previousPhase != PhaseReady {
+		readyDuration := time.Since(isvc.CreationTimestamp.Time).Seconds()
+		llmkubemetrics.InferenceServiceReadyDuration.WithLabelValues(isvc.Name, isvc.Namespace).Observe(readyDuration)
+		llmkubemetrics.ReconcileTotal.WithLabelValues("inferenceservice", "success").Inc()
+	}
 
 	if schedulingInfo != nil {
 		isvc.Status.SchedulingStatus = schedulingInfo.Status
@@ -912,6 +960,7 @@ func (r *InferenceServiceReconciler) updateStatusWithSchedulingInfo(
 			log.Error(err, "Failed to calculate queue position")
 		}
 		isvc.Status.QueuePosition = queuePos
+		llmkubemetrics.GPUQueueDepth.Set(float64(queuePos))
 	} else {
 		isvc.Status.QueuePosition = 0
 	}
