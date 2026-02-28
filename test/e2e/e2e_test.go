@@ -532,6 +532,176 @@ spec:
 		})
 	})
 
+	Context("License Check", func() {
+		const licenseTestNs = "e2e-license-test"
+		const testLicenseModelServerURL = "http://test-model-server.e2e-license-test.svc.cluster.local/test-model.gguf"
+		var licenseCLIPath string
+
+		BeforeAll(func() {
+			By("building the llmkube CLI")
+			cmd := exec.Command("make", "build-cli")
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to build CLI")
+			licenseCLIPath = "bin/llmkube"
+
+			By("creating license test namespace")
+			cmd = exec.Command("kubectl", "create", "ns", licenseTestNs)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create license test namespace")
+
+			By("creating ConfigMap with fake GGUF file")
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(fmt.Sprintf(`apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: test-model-data
+  namespace: %s
+binaryData:
+  test-model.gguf: ZmFrZS1nZ3VmLWRhdGE=
+`, licenseTestNs))
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create test model ConfigMap")
+
+			By("creating test model server pod")
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(fmt.Sprintf(`apiVersion: v1
+kind: Pod
+metadata:
+  name: test-model-server
+  namespace: %s
+  labels:
+    app: test-model-server
+spec:
+  containers:
+  - name: nginx
+    image: nginx:1.27-alpine
+    ports:
+    - containerPort: 80
+    volumeMounts:
+    - name: model-data
+      mountPath: /usr/share/nginx/html
+  volumes:
+  - name: model-data
+    configMap:
+      name: test-model-data
+`, licenseTestNs))
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create test model server pod")
+
+			By("creating test model server service")
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(fmt.Sprintf(`apiVersion: v1
+kind: Service
+metadata:
+  name: test-model-server
+  namespace: %s
+spec:
+  selector:
+    app: test-model-server
+  ports:
+  - port: 80
+    targetPort: 80
+`, licenseTestNs))
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create test model server service")
+
+			By("waiting for test model server to be ready")
+			verifyServerReady := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pod", "test-model-server",
+					"-n", licenseTestNs, "-o", "jsonpath={.status.phase}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("Running"))
+			}
+			Eventually(verifyServerReady, 2*time.Minute).Should(Succeed())
+
+			By("applying a Model CR pointing to the test server")
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(fmt.Sprintf(`apiVersion: inference.llmkube.dev/v1alpha1
+kind: Model
+metadata:
+  name: license-test-model
+  namespace: %s
+spec:
+  source: "%s"
+`, licenseTestNs, testLicenseModelServerURL))
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to apply Model CR")
+
+			By("waiting for Model to reach Ready phase")
+			verifyModelReady := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "model", "license-test-model",
+					"-n", licenseTestNs, "-o", "jsonpath={.status.phase}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("Ready"))
+			}
+			Eventually(verifyModelReady, 2*time.Minute).Should(Succeed())
+		})
+
+		AfterAll(func() {
+			By("cleaning up license test namespace")
+			cmd := exec.Command("kubectl", "delete", "ns", licenseTestNs, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+		})
+
+		It("should fail for a non-existent model", func() {
+			cmd := exec.Command("./"+licenseCLIPath, "license", "check", "nonexistent-model", "-n", licenseTestNs)
+			_, err := utils.Run(cmd)
+			Expect(err).To(HaveOccurred(), "Expected error for non-existent model")
+		})
+
+		It("should report no license info when GGUF metadata is absent", func() {
+			cmd := exec.Command("./"+licenseCLIPath, "license", "check", "license-test-model", "-n", licenseTestNs)
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Fake GGUF data won't parse, so Status.GGUF will be nil
+			Expect(output).To(ContainSubstring("no license information"))
+		})
+
+		It("should display license details after patching GGUF status", func() {
+			By("patching Model status to inject GGUF license metadata")
+			cmd := exec.Command("kubectl", "patch", "model", "license-test-model",
+				"-n", licenseTestNs,
+				"--type=merge",
+				"--subresource=status",
+				`-p={"status":{"gguf":{"license":"apache-2.0"}}}`,
+			)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to patch Model status")
+
+			By("running license check on the patched model")
+			cmd = exec.Command("./"+licenseCLIPath, "license", "check", "license-test-model", "-n", licenseTestNs)
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(output).To(ContainSubstring("Apache License 2.0"))
+			Expect(output).To(ContainSubstring("Commercial Use:  Yes"))
+			Expect(output).To(ContainSubstring("No special restrictions"))
+		})
+
+		It("should show unknown license for unrecognized license ID", func() {
+			By("patching Model status with an unknown license ID")
+			cmd := exec.Command("kubectl", "patch", "model", "license-test-model",
+				"-n", licenseTestNs,
+				"--type=merge",
+				"--subresource=status",
+				`-p={"status":{"gguf":{"license":"custom-proprietary-v1"}}}`,
+			)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to patch Model status")
+
+			By("running license check on the model with unknown license")
+			cmd = exec.Command("./"+licenseCLIPath, "license", "check", "license-test-model", "-n", licenseTestNs)
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(output).To(ContainSubstring("custom-proprietary-v1"))
+			Expect(output).To(ContainSubstring("Unknown license"))
+		})
+	})
+
 	Context("Cache Inspection", func() {
 		const cacheTestNs = "e2e-cache-test"
 		const testCacheModelServerURL = "http://test-model-server.e2e-cache-test.svc.cluster.local/test-model.gguf"
