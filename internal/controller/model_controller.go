@@ -37,6 +37,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
+	llmkubemetrics "github.com/defilantech/llmkube/internal/metrics"
 	"github.com/defilantech/llmkube/pkg/gguf"
 	"github.com/defilantech/llmkube/pkg/license"
 )
@@ -58,6 +59,11 @@ type ModelReconciler struct {
 // +kubebuilder:rbac:groups=inference.llmkube.dev,resources=models/finalizers,verbs=update
 
 func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	reconcileStart := time.Now()
+	defer func() {
+		llmkubemetrics.ReconcileDuration.WithLabelValues("model").Observe(time.Since(reconcileStart).Seconds())
+	}()
+
 	logger := log.FromContext(ctx)
 	logger.Info("Reconciling Model", "name", req.Name, "namespace", req.Namespace)
 
@@ -104,6 +110,8 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 			return ctrl.Result{}, err
 		}
 
+		llmkubemetrics.ModelStatus.WithLabelValues(model.Name, model.Namespace, "Cached").Set(1)
+		llmkubemetrics.ReconcileTotal.WithLabelValues("model", "success").Inc()
 		return ctrl.Result{}, nil
 	}
 
@@ -133,9 +141,18 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		logger.Info(progressMessage, "source", model.Spec.Source, "cacheKey", cacheKey)
 	}
 
+	fetchStart := time.Now()
+	sourceType := "remote"
+	if isLocal {
+		sourceType = "local"
+	}
 	size, err := r.fetchModel(ctx, model.Spec.Source, modelPath)
+	fetchDuration := time.Since(fetchStart).Seconds()
+	llmkubemetrics.ModelDownloadDuration.WithLabelValues(model.Name, model.Namespace, sourceType).Observe(fetchDuration)
 	if err != nil {
 		logger.Error(err, "Failed to fetch model")
+		llmkubemetrics.ReconcileTotal.WithLabelValues("model", "error").Inc()
+		llmkubemetrics.ModelStatus.WithLabelValues(model.Name, model.Namespace, "Failed").Set(1)
 		if removeErr := os.Remove(modelPath); removeErr != nil && !os.IsNotExist(removeErr) {
 			logger.Error(removeErr, "Failed to clean up partial download")
 		}
@@ -165,6 +182,8 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return ctrl.Result{}, err
 	}
 
+	llmkubemetrics.ModelStatus.WithLabelValues(model.Name, model.Namespace, "Ready").Set(1)
+	llmkubemetrics.ReconcileTotal.WithLabelValues("model", "success").Inc()
 	logger.Info("Model ready and cached", "path", modelPath, "size", model.Status.Size, "cacheKey", cacheKey)
 	return ctrl.Result{}, nil
 }
