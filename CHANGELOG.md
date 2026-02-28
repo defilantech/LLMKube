@@ -5,6 +5,29 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.20](https://github.com/defilantech/LLMKube/compare/v0.4.19...v0.4.20) (2026-02-28)
+
+
+### Features
+
+* add license compliance scanning for GGUF models ([#188](https://github.com/defilantech/LLMKube/issues/188)) ([c26400a](https://github.com/defilantech/LLMKube/commit/c26400a319af79995dc7bd5b20843b9926f0cfb4))
+* add Prometheus metrics, OpenTelemetry tracing, and inference observability ([#189](https://github.com/defilantech/LLMKube/issues/189)) ([c653ff1](https://github.com/defilantech/LLMKube/commit/c653ff1c2f1dbbe564a56cee22f34efc2d463049))
+* add PVC inspection to cache list for orphaned entry detection ([#183](https://github.com/defilantech/LLMKube/issues/183)) ([2723d92](https://github.com/defilantech/LLMKube/commit/2723d92b7030472f8dd0ba57f5dd523356672d94))
+* **agent:** add structured zap logging to metal agent ([#164](https://github.com/defilantech/LLMKube/issues/164)) ([e9d143c](https://github.com/defilantech/LLMKube/commit/e9d143c25e61438642ca2a033c3daaaf7e3a93d6))
+* **deps:** upgrade to Kubernetes 1.35 and controller-runtime v0.23.1 ([#175](https://github.com/defilantech/LLMKube/issues/175)) ([3c323f4](https://github.com/defilantech/LLMKube/commit/3c323f46ecfb3ec1b1d4849ce4b9c710d7cc8658))
+
+
+### Bug Fixes
+
+* correct Metal quickstart docs for selectorless services ([#173](https://github.com/defilantech/LLMKube/issues/173)) ([89471ec](https://github.com/defilantech/LLMKube/commit/89471ec7f5569ca0192fb76c15bd408aa2986c1b))
+* prevent command injection in init container shell commands ([#172](https://github.com/defilantech/LLMKube/issues/172)) ([3aa9cc3](https://github.com/defilantech/LLMKube/commit/3aa9cc30fce879f49ff42389fda5633c00d6396a))
+* remove mutable latest tags and pin container images ([#174](https://github.com/defilantech/LLMKube/issues/174)) ([3c4569a](https://github.com/defilantech/LLMKube/commit/3c4569aafdb73127eeee2260e8d722459a91823a))
+
+
+### Documentation
+
+* add Apple Silicon Metal option to bug report template ([#169](https://github.com/defilantech/LLMKube/issues/169)) ([e7689d8](https://github.com/defilantech/LLMKube/commit/e7689d868f2034f4e60d37a813cb4c72bf2b3f37))
+
 ## [0.4.19](https://github.com/defilantech/LLMKube/compare/v0.4.18...v0.4.19) (2026-02-21)
 
 
