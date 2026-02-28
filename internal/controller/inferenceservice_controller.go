@@ -922,6 +922,7 @@ func (r *InferenceServiceReconciler) constructEndpoint(isvc *inferencev1alpha1.I
 	return fmt.Sprintf("http://%s.%s.svc.cluster.local:%d%s", svc.Name, svc.Namespace, port, path)
 }
 
+// nolint:unparam // ctrl.Result is always zero but callers take &result to signal status-update path
 func (r *InferenceServiceReconciler) updateStatusWithSchedulingInfo(
 	ctx context.Context,
 	isvc *inferencev1alpha1.InferenceService,
