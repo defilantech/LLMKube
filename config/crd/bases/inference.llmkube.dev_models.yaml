@@ -278,6 +278,10 @@ spec:
                     description: LayerCount is the number of transformer layers/blocks
                     format: int64
                     type: integer
+                  license:
+                    description: License is the license identifier extracted from
+                      the GGUF file metadata
+                    type: string
                   modelName:
                     description: ModelName is the model name as stored in the GGUF
                       file

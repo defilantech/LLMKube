@@ -170,6 +170,10 @@ type GGUFMetadata struct {
 	// FileVersion is the GGUF file format version
 	// +optional
 	FileVersion uint32 `json:"fileVersion,omitempty"`
+
+	// License is the license identifier extracted from the GGUF file metadata
+	// +optional
+	License string `json:"license,omitempty"`
 }
 
 // ModelStatus defines the observed state of Model.
