@@ -749,6 +749,22 @@ func (r *InferenceServiceReconciler) constructDeployment(
 			},
 		},
 		VolumeMounts: storageConfig.volumeMounts,
+		// StartupProbe gates liveness/readiness until model is loaded.
+		// llama.cpp /health returns 503 during loading, 200 when ready.
+		// Budget: failureThreshold(180) * periodSeconds(10) = 1800s (30 min)
+		// for large model loading onto GPU.
+		StartupProbe: &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{
+				HTTPGet: &corev1.HTTPGetAction{
+					Path: "/health",
+					Port: intstr.FromInt32(port),
+				},
+			},
+			PeriodSeconds:    10,
+			TimeoutSeconds:   5,
+			FailureThreshold: 180,
+		},
+		// LivenessProbe detects deadlocks after startup completes.
 		LivenessProbe: &corev1.Probe{
 			ProbeHandler: corev1.ProbeHandler{
 				HTTPGet: &corev1.HTTPGetAction{
@@ -756,11 +772,11 @@ func (r *InferenceServiceReconciler) constructDeployment(
 					Port: intstr.FromInt32(port),
 				},
 			},
-			InitialDelaySeconds: 30,
-			PeriodSeconds:       15,
-			TimeoutSeconds:      5,
-			FailureThreshold:    3,
+			PeriodSeconds:    15,
+			TimeoutSeconds:   5,
+			FailureThreshold: 3,
 		},
+		// ReadinessProbe controls traffic routing after startup completes.
 		ReadinessProbe: &corev1.Probe{
 			ProbeHandler: corev1.ProbeHandler{
 				HTTPGet: &corev1.HTTPGetAction{
@@ -768,10 +784,9 @@ func (r *InferenceServiceReconciler) constructDeployment(
 					Port: intstr.FromInt32(port),
 				},
 			},
-			InitialDelaySeconds: 10,
-			PeriodSeconds:       10,
-			TimeoutSeconds:      5,
-			FailureThreshold:    3,
+			PeriodSeconds:    10,
+			TimeoutSeconds:   5,
+			FailureThreshold: 3,
 		},
 	}
 
