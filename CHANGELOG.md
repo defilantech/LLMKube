@@ -5,6 +5,13 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.21](https://github.com/defilantech/LLMKube/compare/v0.4.20...v0.4.21) (2026-03-01)
+
+
+### Documentation
+
+* rewrite README for clarity, positioning, and growth ([#190](https://github.com/defilantech/LLMKube/issues/190)) ([a7fc152](https://github.com/defilantech/LLMKube/commit/a7fc15238fe5c3dfe698aa6acb05234fe8b51adc))
+
 ## [0.4.20](https://github.com/defilantech/LLMKube/compare/v0.4.19...v0.4.20) (2026-02-28)
 
 
