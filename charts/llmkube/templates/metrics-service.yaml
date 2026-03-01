@@ -13,10 +13,13 @@ metadata:
 spec:
   type: {{ .Values.metrics.service.type }}
   ports:
-  - name: https
+  - name: {{ if .Values.metrics.secure }}https{{ else }}http{{ end }}
     port: {{ .Values.metrics.service.port }}
     protocol: TCP
-    targetPort: https
+    targetPort: metrics
+    {{- if and (eq .Values.metrics.service.type "NodePort") .Values.metrics.service.nodePort }}
+    nodePort: {{ .Values.metrics.service.nodePort }}
+    {{- end }}
   selector:
     {{- include "llmkube.selectorLabels" . | nindent 4 }}
 {{- end }}

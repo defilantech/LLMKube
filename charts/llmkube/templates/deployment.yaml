@@ -41,6 +41,10 @@ spec:
         - --leader-elect
         {{- end }}
         - --health-probe-bind-address=:8081
+        {{- if .Values.metrics.enabled }}
+        - --metrics-bind-address=:{{ .Values.metrics.service.port }}
+        - --metrics-secure={{ .Values.metrics.secure }}
+        {{- end }}
         {{- if .Values.modelCache.enabled }}
         - --model-cache-path={{ .Values.modelCache.mountPath }}
         - --model-cache-size={{ .Values.modelCache.size }}
@@ -50,6 +54,15 @@ spec:
         - --model-cache-access-mode={{ .Values.modelCache.accessMode }}
         {{- end }}
         - --init-container-image={{ .Values.controllerManager.initContainerImage }}
+        ports:
+        - name: health
+          containerPort: 8081
+          protocol: TCP
+        {{- if .Values.metrics.enabled }}
+        - name: metrics
+          containerPort: {{ .Values.metrics.service.port }}
+          protocol: TCP
+        {{- end }}
         {{- with .Values.controllerManager.env }}
         env:
           {{- toYaml . | nindent 10 }}

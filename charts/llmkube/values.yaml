@@ -95,10 +95,15 @@ rbac:
 metrics:
   # Enable metrics endpoint
   enabled: true
+  # Serve metrics over HTTPS with authn/authz (true) or plain HTTP (false).
+  # Set to false when scraping from outside the cluster without a ServiceAccount token.
+  secure: true
   # Service type for metrics
   service:
     type: ClusterIP
     port: 8443
+    # NodePort to expose when service type is NodePort (optional, auto-assigned if empty)
+    nodePort: ""
     annotations: {}
 
 # Prometheus Operator integration
