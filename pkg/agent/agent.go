@@ -222,15 +222,20 @@ func (a *MetalAgent) deleteProcess(ctx context.Context, key string) error {
 	a.logger.Infow("stopping inference service", "key", key)
 	namespace, name := parseKey(key)
 
+	var deleteErrors []error
 	if err := a.executor.StopProcess(process.PID); err != nil {
-		return fmt.Errorf("failed to stop process: %w", err)
+		deleteErrors = append(deleteErrors, fmt.Errorf("failed to stop process: %w", err))
 	}
 
 	// Unregister after the process has stopped. UnregisterEndpoint is idempotent
 	// (tolerates 404), so this is safe even if a prior cleanup attempt already
 	// removed the resources.
 	if err := a.registry.UnregisterEndpoint(ctx, namespace, name); err != nil {
-		return fmt.Errorf("failed to unregister endpoint for %s: %w", key, err)
+		deleteErrors = append(deleteErrors, fmt.Errorf("failed to unregister endpoint for %s: %w", key, err))
+	}
+
+	if len(deleteErrors) > 0 {
+		return fmt.Errorf("delete process cleanup errors: %w", errors.Join(deleteErrors...))
 	}
 
 	a.logger.Infow("stopped inference service", "key", key)

@@ -264,6 +264,41 @@ func TestUnregisterEndpoint_SanitizedName(t *testing.T) {
 	}
 }
 
+func TestUnregisterEndpoint_Idempotent(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = inferencev1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+
+	// Pre-create resources so first cleanup does actual deletes; second call should
+	// tolerate NotFound and still return nil.
+	svc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "idempotent-model",
+			Namespace: "default",
+		},
+	}
+	//nolint:staticcheck // SA1019: Endpoints API is still functional and matches production code under test
+	endpoints := &corev1.Endpoints{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "idempotent-model",
+			Namespace: "default",
+		},
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRuntimeObjects(svc, endpoints).
+		Build()
+	registry := NewServiceRegistry(k8sClient, "", newNopLogger())
+
+	if err := registry.UnregisterEndpoint(context.Background(), "default", "idempotent-model"); err != nil {
+		t.Fatalf("first UnregisterEndpoint returned error: %v", err)
+	}
+	if err := registry.UnregisterEndpoint(context.Background(), "default", "idempotent-model"); err != nil {
+		t.Fatalf("second UnregisterEndpoint should be idempotent, got error: %v", err)
+	}
+}
+
 func TestGetHostIP(t *testing.T) {
 	// getHostIP should return a non-empty string regardless of environment
 	ip := getHostIP()

@@ -166,6 +166,11 @@ func (r *ServiceRegistry) UnregisterEndpoint(ctx context.Context, namespace, nam
 		if !apierrors.IsNotFound(err) {
 			return fmt.Errorf("failed to delete service: %w", err)
 		}
+		r.logger.Debugw(
+			"service already deleted during endpoint cleanup",
+			"namespace", namespace,
+			"name", serviceName,
+		)
 	}
 
 	// Delete Endpoints
@@ -180,6 +185,11 @@ func (r *ServiceRegistry) UnregisterEndpoint(ctx context.Context, namespace, nam
 		if !apierrors.IsNotFound(err) {
 			return fmt.Errorf("failed to delete endpoints: %w", err)
 		}
+		r.logger.Debugw(
+			"endpoints already deleted during endpoint cleanup",
+			"namespace", namespace,
+			"name", serviceName,
+		)
 	}
 
 	return nil
