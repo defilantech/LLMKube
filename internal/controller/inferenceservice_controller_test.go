@@ -255,6 +255,9 @@ var _ = Describe("Multi-GPU Deployment Construction", func() {
 			By("verifying GPU resource limits")
 			gpuLimit := container.Resources.Limits["nvidia.com/gpu"]
 			Expect(gpuLimit).To(Equal(resource.MustParse("2")))
+
+			By("verifying Recreate strategy is set to avoid GPU deadlock")
+			Expect(deployment.Spec.Strategy.Type).To(Equal(appsv1.RecreateDeploymentStrategyType))
 		})
 
 		It("should include multi-GPU args for 4 GPU model", func() {
@@ -579,6 +582,9 @@ var _ = Describe("Multi-GPU Deployment Construction", func() {
 				}
 			}
 			Expect(hasNvidiaToleration).To(BeTrue())
+
+			By("verifying Recreate strategy is set for GPU workloads")
+			Expect(deployment.Spec.Strategy.Type).To(Equal(appsv1.RecreateDeploymentStrategyType))
 		})
 
 		It("should apply custom node selector from InferenceService spec", func() {
@@ -1840,6 +1846,7 @@ var _ = Describe("constructDeployment additional cases", func() {
 		deployment := reconciler.constructDeployment(isvc, model, 1)
 		Expect(deployment.Spec.Template.Spec.Tolerations).To(BeEmpty())
 		Expect(deployment.Spec.Template.Spec.NodeSelector).To(BeEmpty())
+		Expect(deployment.Spec.Strategy.Type).To(Equal(appsv1.DeploymentStrategyType("")))
 	})
 
 	It("should use explicit GPU layers from Model spec", func() {

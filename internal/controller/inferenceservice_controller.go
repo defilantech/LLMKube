@@ -839,6 +839,13 @@ func (r *InferenceServiceReconciler) constructDeployment(
 	}
 
 	if gpuCount > 0 {
+		// Use Recreate strategy for GPU workloads to prevent deadlock:
+		// RollingUpdate requires the new pod to be Ready before terminating the old,
+		// but the new pod cannot schedule if the old pod holds the only available GPU(s).
+		deployment.Spec.Strategy = appsv1.DeploymentStrategy{
+			Type: appsv1.RecreateDeploymentStrategyType,
+		}
+
 		tolerations := []corev1.Toleration{
 			{
 				Key:      "nvidia.com/gpu",
