@@ -18,6 +18,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -208,7 +209,7 @@ func (a *MetalAgent) ensureProcess(ctx context.Context, isvc *inferencev1alpha1.
 }
 
 // deleteProcess stops a running llama-server process
-func (a *MetalAgent) deleteProcess(_ context.Context, key string) error {
+func (a *MetalAgent) deleteProcess(ctx context.Context, key string) error {
 	a.mu.Lock()
 	process, exists := a.processes[key]
 	if !exists {
@@ -219,9 +220,22 @@ func (a *MetalAgent) deleteProcess(_ context.Context, key string) error {
 	a.mu.Unlock()
 
 	a.logger.Infow("stopping inference service", "key", key)
+	namespace, name := parseKey(key)
 
+	var deleteErrors []error
 	if err := a.executor.StopProcess(process.PID); err != nil {
-		return fmt.Errorf("failed to stop process: %w", err)
+		deleteErrors = append(deleteErrors, fmt.Errorf("failed to stop process: %w", err))
+	}
+
+	// Unregister after the process has stopped. UnregisterEndpoint is idempotent
+	// (tolerates 404), so this is safe even if a prior cleanup attempt already
+	// removed the resources.
+	if err := a.registry.UnregisterEndpoint(ctx, namespace, name); err != nil {
+		deleteErrors = append(deleteErrors, fmt.Errorf("failed to unregister endpoint for %s: %w", key, err))
+	}
+
+	if len(deleteErrors) > 0 {
+		return fmt.Errorf("delete process cleanup errors: %w", errors.Join(deleteErrors...))
 	}
 
 	a.logger.Infow("stopped inference service", "key", key)
@@ -235,15 +249,15 @@ func (a *MetalAgent) Shutdown(ctx context.Context) error {
 
 	a.logger.Infow("cleaning up running processes", "count", len(a.processes))
 
-	var errors []error
+	var shutdownErrors []error
 	for key, process := range a.processes {
 		if err := a.executor.StopProcess(process.PID); err != nil {
-			errors = append(errors, fmt.Errorf("failed to stop %s: %w", key, err))
+			shutdownErrors = append(shutdownErrors, fmt.Errorf("failed to stop %s: %w", key, err))
 		}
 	}
 
-	if len(errors) > 0 {
-		return fmt.Errorf("shutdown errors: %v", errors)
+	if len(shutdownErrors) > 0 {
+		return fmt.Errorf("shutdown errors: %w", errors.Join(shutdownErrors...))
 	}
 
 	return nil

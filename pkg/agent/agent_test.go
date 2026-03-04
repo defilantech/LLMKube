@@ -21,8 +21,10 @@ import (
 	"testing"
 
 	"go.uber.org/zap"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
@@ -181,5 +183,65 @@ func TestShutdown_NoProcesses(t *testing.T) {
 	err := agent.Shutdown(context.Background())
 	if err != nil {
 		t.Errorf("Shutdown with no processes returned error: %v", err)
+	}
+}
+
+func TestDeleteProcess_StopFailureStillUnregistersEndpoint(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = inferencev1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+
+	svc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-model",
+			Namespace: "default",
+		},
+	}
+	//nolint:staticcheck // SA1019: Endpoints API is still functional and matches production code under test
+	endpoints := &corev1.Endpoints{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-model",
+			Namespace: "default",
+		},
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRuntimeObjects(svc, endpoints).
+		Build()
+
+	agent := NewMetalAgent(MetalAgentConfig{K8sClient: k8sClient})
+	agent.executor = NewMetalExecutor("/fake/llama-server", "/tmp/models", newNopLogger())
+	agent.registry = NewServiceRegistry(k8sClient, "", newNopLogger())
+	agent.processes["default/test-model"] = &ManagedProcess{
+		Name:      "test-model",
+		Namespace: "default",
+		PID:       -99999, // invalid PID forces StopProcess error
+	}
+
+	err := agent.deleteProcess(context.Background(), "default/test-model")
+	if err == nil {
+		t.Fatal("deleteProcess should return error when StopProcess fails")
+	}
+
+	if _, exists := agent.processes["default/test-model"]; exists {
+		t.Fatal("process entry should be removed from map")
+	}
+
+	err = k8sClient.Get(context.Background(), types.NamespacedName{
+		Name:      "test-model",
+		Namespace: "default",
+	}, &corev1.Service{})
+	if err == nil {
+		t.Fatal("service should be deleted even when StopProcess fails")
+	}
+
+	//nolint:staticcheck // SA1019: Endpoints API is still functional and matches production code under test
+	err = k8sClient.Get(context.Background(), types.NamespacedName{
+		Name:      "test-model",
+		Namespace: "default",
+	}, &corev1.Endpoints{})
+	if err == nil {
+		t.Fatal("endpoints should be deleted even when StopProcess fails")
 	}
 }
