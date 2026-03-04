@@ -231,7 +231,7 @@ func (r *ModelReconciler) copyLocalModel(ctx context.Context, source, dest strin
 		return 0, fmt.Errorf("failed to create temp file: %w", err)
 	}
 	tmpPath := tmpFile.Name()
-	defer os.Remove(tmpPath) // clean up on any failure
+	defer func() { _ = os.Remove(tmpPath) }() // clean up on any failure
 
 	size, err := io.Copy(tmpFile, srcFile)
 	if closeErr := tmpFile.Close(); closeErr != nil {
@@ -278,7 +278,7 @@ func (r *ModelReconciler) downloadModel(ctx context.Context, source, dest string
 		return 0, fmt.Errorf("failed to create temp file: %w", err)
 	}
 	tmpPath := tmpFile.Name()
-	defer os.Remove(tmpPath) // clean up on any failure
+	defer func() { _ = os.Remove(tmpPath) }() // clean up on any failure
 
 	size, err := io.Copy(tmpFile, resp.Body)
 	if closeErr := tmpFile.Close(); closeErr != nil {
