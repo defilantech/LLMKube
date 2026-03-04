@@ -390,7 +390,7 @@ spec:
 			Expect(output).To(Equal("True"))
 		})
 
-		It("should not re-download a cached model after controller restart", func() {
+		It("should recover a cached model to Ready after controller restart", func() {
 			By("recording the current controller pod name")
 			cmd := exec.Command("kubectl", "get", "pods",
 				"-l", "control-plane=controller-manager",
@@ -433,26 +433,31 @@ spec:
 			// Update controllerPodName so AfterEach logs the right pod on failure
 			controllerPodName = newPod
 
-			By("verifying the Model is still Ready")
-			cmd = exec.Command("kubectl", "get", "model", "test-model",
-				"-n", crTestNs, "-o", "jsonpath={.status.phase}")
-			output, err := utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(output).To(Equal("Ready"))
+			By("waiting for the Model to return to Ready after restart")
+			// The Kind cluster uses emptyDir so the cached file is lost on restart.
+			// The controller detects this ("Model marked Ready but file missing")
+			// and re-downloads cleanly. Verify it returns to Ready.
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "model", "test-model",
+					"-n", crTestNs, "-o", "jsonpath={.status.phase}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("Ready"))
+			}, 2*time.Minute, 2*time.Second).Should(Succeed())
 
-			By("checking new controller logs for the cache-hit early return")
+			By("verifying the new controller detected the missing cache and recovered")
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "logs", newPod, "-n", namespace)
 				logs, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(logs).To(ContainSubstring("Model already Ready and cached, skipping reconcile"))
+				g.Expect(logs).To(ContainSubstring("Model marked Ready but file missing, will re-download"))
 			}, 1*time.Minute, 2*time.Second).Should(Succeed())
 
-			By("confirming no re-download was triggered in the new controller")
+			By("confirming the model was re-downloaded successfully")
 			cmd = exec.Command("kubectl", "logs", newPod, "-n", namespace)
 			logs, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(logs).NotTo(ContainSubstring("Downloading model"))
+			Expect(logs).To(ContainSubstring("Downloading model"))
 		})
 
 		It("should create Deployment and Service for InferenceService", func() {
