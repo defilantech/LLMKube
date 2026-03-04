@@ -5,6 +5,21 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.21](https://github.com/defilantech/LLMKube/compare/v0.4.20...v0.4.21) (2026-03-04)
+
+
+### Bug Fixes
+
+* **agent:** unregister service endpoints on metal process delete ([#168](https://github.com/defilantech/LLMKube/issues/168)) ([147b9bc](https://github.com/defilantech/LLMKube/commit/147b9bcb7a8ece1ecb2a91c62a249c591f9c9a07))
+* enable controller metrics endpoint in Helm chart ([#195](https://github.com/defilantech/LLMKube/issues/195)) ([70940af](https://github.com/defilantech/LLMKube/commit/70940afc948dae5a1a6d1fc6d4e330908ec973dc))
+* prevent model re-download of cached models after helm upgrade ([#203](https://github.com/defilantech/LLMKube/issues/203)) ([a8f9a88](https://github.com/defilantech/LLMKube/commit/a8f9a886f0e9d081505183f1d30d2a37ee050068))
+* use Recreate strategy for GPU workloads to prevent rolling update deadlock ([#196](https://github.com/defilantech/LLMKube/issues/196)) ([2e45181](https://github.com/defilantech/LLMKube/commit/2e4518106cd9306b4d2a472fc9c9432d015a69c9))
+
+
+### Documentation
+
+* rewrite README for clarity, positioning, and growth ([#190](https://github.com/defilantech/LLMKube/issues/190)) ([a7fc152](https://github.com/defilantech/LLMKube/commit/a7fc15238fe5c3dfe698aa6acb05234fe8b51adc))
+
 ## [0.4.20](https://github.com/defilantech/LLMKube/compare/v0.4.19...v0.4.20) (2026-02-28)
 
 
