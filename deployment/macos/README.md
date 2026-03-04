@@ -74,6 +74,12 @@ tail -f /tmp/llmkube-metal-agent.log
 
 # Check running processes
 ps aux | grep llmkube-metal-agent
+
+# Health check (liveness)
+curl http://localhost:9090/healthz
+
+# Readiness check (at least one process healthy, or no processes yet)
+curl http://localhost:9090/readyz
 ```
 
 ### Verify Metal Acceleration
@@ -163,6 +169,69 @@ To set this in the launchd plist:
 ```xml
     <string>--memory-fraction</string>
     <string>0.75</string>                 <!-- 75% of system memory -->
+```
+
+## Health Checks & Monitoring
+
+The Metal Agent exposes an HTTP server on `127.0.0.1:9090` (configurable via `--port`) with health check and Prometheus metrics endpoints. The server binds to localhost only; to expose it for remote Prometheus scraping, use a reverse proxy or SSH tunnel.
+
+### Endpoints
+
+| Endpoint | Purpose | Success | Failure |
+|----------|---------|---------|---------|
+| `GET /healthz` | Liveness probe — agent process is alive | Always 200 | — |
+| `GET /readyz` | Readiness probe — at least one process healthy (or no processes) | 200 | 503 (all unhealthy) |
+| `GET /metrics` | Prometheus metrics | 200 | — |
+
+### Prometheus Metrics
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `llmkube_metal_agent_managed_processes` | Gauge | Number of llama-server processes currently managed |
+| `llmkube_metal_agent_process_healthy` | Gauge | Whether a process is healthy (1) or not (0). Labels: `name`, `namespace` |
+| `llmkube_metal_agent_process_restarts_total` | Counter | Total process restarts triggered by health monitoring. Labels: `name`, `namespace` |
+| `llmkube_metal_agent_health_check_duration_seconds` | Histogram | Duration of health check probes. Labels: `name`, `namespace` |
+| `llmkube_metal_agent_memory_budget_bytes` | Gauge | Total memory budget for model serving |
+| `llmkube_metal_agent_memory_estimated_bytes` | Gauge | Estimated memory per process. Labels: `name`, `namespace` |
+
+Standard Go runtime and process metrics (`go_*`, `process_*`) are also available.
+
+### Continuous Health Monitoring
+
+The agent polls each managed llama-server process every 30 seconds via its `/health` endpoint. On failure:
+
+1. The process is marked unhealthy (`Healthy=false`, `process_healthy` gauge set to 0)
+2. The agent re-fetches the InferenceService from Kubernetes
+3. `ensureProcess()` is called to restart the llama-server
+4. The `process_restarts_total` counter is incremented
+
+When a previously unhealthy process recovers, it is marked healthy again automatically.
+
+### Scraping with Prometheus
+
+The health server binds to `127.0.0.1` by default. If Prometheus runs on the same Mac, scrape directly:
+
+```yaml
+scrape_configs:
+  - job_name: 'llmkube-metal-agent'
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          instance: 'metal-agent'
+```
+
+For remote Prometheus, use an SSH tunnel: `ssh -L 9090:localhost:9090 <your-mac>`.
+
+Quick verification:
+
+```bash
+# Check all endpoints
+curl http://localhost:9090/healthz   # → "ok"
+curl http://localhost:9090/readyz    # → "ready" or "not ready"
+curl http://localhost:9090/metrics   # → Prometheus text format
+
+# Check specific metric
+curl -s http://localhost:9090/metrics | grep llmkube_metal_agent_managed_processes
 ```
 
 ## Troubleshooting
@@ -261,7 +330,9 @@ rm ~/Library/LaunchAgents/com.llmkube.metal-agent.plist
 4. **Validates** that the model fits in the system's memory budget
 5. **Spawns** llama-server processes with Metal acceleration
 6. **Registers** service endpoints back to Kubernetes
-7. **Pods** access the Metal-accelerated inference via Service endpoints
+7. **Monitors** process health every 30s and auto-restarts on failure
+8. **Exposes** health checks and Prometheus metrics on port 9090
+9. **Pods** access the Metal-accelerated inference via Service endpoints
 
 ### Remote cluster (Recommended)
 

@@ -72,6 +72,10 @@ which llama-server
 launchctl list | grep llmkube
 # Should show: com.llmkube.metal-agent
 
+# 3b. Check Metal agent health endpoint
+curl http://localhost:9090/healthz
+# Should show: ok
+
 # 4. Check minikube is running
 minikube status
 # Should show: host: Running, kubelet: Running
@@ -129,6 +133,13 @@ llmkube deploy my-custom-model \
 ```bash
 # Watch the deployment
 kubectl get inferenceservices -w
+
+# Check Metal agent health
+curl http://localhost:9090/healthz   # Liveness: "ok"
+curl http://localhost:9090/readyz    # Readiness: "ready" when processes are healthy
+
+# Check Metal agent metrics
+curl -s http://localhost:9090/metrics | grep llmkube_metal_agent
 
 # Check Metal agent logs
 tail -f /tmp/llmkube-metal-agent.log
@@ -327,7 +338,7 @@ make uninstall-metal-agent
 - **Scale up**: Try larger models (Mixtral 8x7B, Llama 70B)
 - **Production**: Deploy multiple replicas for high availability
 - **Integration**: Connect to your applications using OpenAI SDK
-- **Monitoring**: Set up Prometheus + Grafana dashboards
+- **Monitoring**: Scrape `localhost:9090/metrics` with Prometheus for agent health and process metrics
 
 ## Example Applications
 
