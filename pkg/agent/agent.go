@@ -109,14 +109,15 @@ func NewMetalAgent(config MetalAgentConfig) *MetalAgent {
 
 // Start begins watching for InferenceService resources and managing processes
 func (a *MetalAgent) Start(ctx context.Context) error {
-	// Log effective memory budget
+	// Log effective memory budget and set gauge
 	if total, err := a.memoryProvider.TotalMemory(); err == nil {
-		budgetBytes := uint64(float64(total) * a.memoryFraction)
+		budget := uint64(float64(total) * a.memoryFraction)
 		a.logger.Infow("memory budget",
 			"total", formatMemory(total),
 			"fraction", a.memoryFraction,
-			"budget", formatMemory(budgetBytes),
+			"budget", formatMemory(budget),
 		)
+		memoryBudgetBytes.Set(float64(budget))
 	} else {
 		a.logger.Warnw("unable to query total memory", "error", err)
 	}
@@ -129,6 +130,25 @@ func (a *MetalAgent) Start(ctx context.Context) error {
 		a.logger.With("subsystem", "executor"),
 	)
 	a.registry = NewServiceRegistry(a.config.K8sClient, a.config.HostIP, a.logger.With("subsystem", "registry"))
+
+	// Start health server
+	if a.config.Port > 0 {
+		healthSrv := NewHealthServer(a, a.config.Port, a.logger.With("subsystem", "health-server"))
+		go func() {
+			if err := healthSrv.Run(ctx); err != nil {
+				a.logger.Warnw("health server exited with error", "error", err)
+			}
+		}()
+	}
+
+	// Start health monitor
+	monitor := NewHealthMonitor(
+		a,
+		NewDefaultProcessHealthChecker(5*time.Second),
+		30*time.Second,
+		a.logger.With("subsystem", "health-monitor"),
+	)
+	go monitor.Run(ctx)
 
 	// Start watcher
 	eventChan := make(chan InferenceServiceEvent)
@@ -212,6 +232,8 @@ func (a *MetalAgent) ensureProcess(ctx context.Context, isvc *inferencev1alpha1.
 	if estimate, err := a.estimateModelMemory(model, contextSize); err != nil {
 		a.logger.Warnw("memory estimation failed, proceeding without check", "error", err)
 	} else {
+		memoryEstimatedBytes.WithLabelValues(isvc.Name, isvc.Namespace).Set(float64(estimate.TotalBytes))
+
 		budget, err := CheckMemoryBudget(a.memoryProvider, estimate, a.memoryFraction)
 		if err != nil {
 			a.logger.Warnw("memory budget check failed, proceeding without check", "error", err)
@@ -256,10 +278,12 @@ func (a *MetalAgent) ensureProcess(ctx context.Context, isvc *inferencev1alpha1.
 		return fmt.Errorf("failed to start process: %w", err)
 	}
 
-	// Store process
+	// Store process and update metrics
 	a.mu.Lock()
 	a.processes[key] = process
+	managedProcesses.Set(float64(len(a.processes)))
 	a.mu.Unlock()
+	processHealthy.WithLabelValues(isvc.Name, isvc.Namespace).Set(1)
 
 	// Register service endpoint in Kubernetes
 	if err := a.registry.RegisterEndpoint(ctx, isvc, process.Port); err != nil {
@@ -292,10 +316,17 @@ func (a *MetalAgent) deleteProcess(ctx context.Context, key string) error {
 		return nil
 	}
 	delete(a.processes, key)
+	managedProcesses.Set(float64(len(a.processes)))
 	a.mu.Unlock()
 
 	a.logger.Infow("stopping inference service", "key", key)
 	namespace, name := parseKey(key)
+
+	// Clean up per-process metrics
+	processHealthy.DeleteLabelValues(name, namespace)
+	memoryEstimatedBytes.DeleteLabelValues(name, namespace)
+	healthCheckDuration.DeleteLabelValues(name, namespace)
+	processRestarts.DeleteLabelValues(name, namespace)
 
 	var deleteErrors []error
 	if err := a.executor.StopProcess(process.PID); err != nil {
@@ -315,6 +346,26 @@ func (a *MetalAgent) deleteProcess(ctx context.Context, key string) error {
 
 	a.logger.Infow("stopped inference service", "key", key)
 	return nil
+}
+
+// scheduleRestart increments the restart counter and re-runs ensureProcess
+// for the named InferenceService. It is called by HealthMonitor when a process
+// becomes unhealthy.
+func (a *MetalAgent) scheduleRestart(ctx context.Context, name, namespace string) {
+	processRestarts.WithLabelValues(name, namespace).Inc()
+
+	isvc := &inferencev1alpha1.InferenceService{}
+	if err := a.config.K8sClient.Get(ctx, types.NamespacedName{
+		Namespace: namespace,
+		Name:      name,
+	}, isvc); err != nil {
+		a.logger.Warnw("failed to fetch InferenceService for restart", "name", name, "namespace", namespace, "error", err)
+		return
+	}
+
+	if err := a.ensureProcess(ctx, isvc); err != nil {
+		a.logger.Warnw("failed to restart process", "name", name, "namespace", namespace, "error", err)
+	}
 }
 
 // Shutdown gracefully shuts down all running processes

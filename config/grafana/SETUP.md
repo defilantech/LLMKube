@@ -137,9 +137,18 @@ scrape_configs:
       - targets: ['<your-server>:8080']
         labels:
           instance: '<your-server>'
+
+  # LLMKube Metal Agent - Agent health and process metrics (if using Metal)
+  # Note: The agent binds to 127.0.0.1 by default.
+  # For remote scraping, use an SSH tunnel: ssh -L 9090:localhost:9090 <mac>
+  - job_name: 'llmkube-metal-agent'
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          instance: 'metal-agent'
 ```
 
-Replace `<your-server>` with your server's hostname or IP address.
+Replace `<your-server>` with your server's hostname or IP address. The Metal Agent binds to `127.0.0.1` for security; use an SSH tunnel (`ssh -L 9090:localhost:9090 <mac>`) for remote Prometheus scraping.
 
 ### Prometheus Docker Compose Example
 
@@ -194,6 +203,9 @@ curl http://<your-server>:9100/metrics | grep node_cpu
 # DCGM exporter metrics
 curl http://<your-server>:9400/metrics | grep DCGM_FI_DEV_GPU
 
+# Metal Agent metrics (if using Apple Silicon)
+curl http://<your-mac-ip>:9090/metrics | grep llmkube_metal_agent
+
 # Prometheus targets (should show UP)
 curl http://prometheus:9090/api/v1/targets
 ```
@@ -223,14 +235,29 @@ curl http://prometheus:9090/api/v1/targets
 | `DCGM_FI_DEV_FB_FREE` | GPU memory free |
 | `DCGM_FI_DEV_MEM_COPY_UTIL` | Memory copy utilization |
 
-### LLMKube Metrics (if instrumented)
+### LLMKube Controller Metrics
 
 | Metric | Description |
 |--------|-------------|
-| `llmkube_model_status` | Model download status |
-| `llmkube_inferenceservice_status` | Service running status |
-| `llmkube_inference_requests_total` | Total inference requests |
-| `llmkube_inference_latency_seconds` | Request latency histogram |
+| `llmkube_model_download_duration_seconds` | Model download/copy duration |
+| `llmkube_model_status` | Current model status phase |
+| `llmkube_inferenceservice_phase` | Current inference service phase |
+| `llmkube_inferenceservice_ready_duration_seconds` | Time to Ready phase |
+| `llmkube_reconcile_total` | Total reconciliation cycles |
+| `llmkube_reconcile_duration_seconds` | Reconciliation cycle duration |
+| `llmkube_active_models_total` | Models in Ready/Cached phase |
+| `llmkube_active_inferenceservices_total` | Inference services in Ready phase |
+
+### LLMKube Metal Agent Metrics
+
+| Metric | Description |
+|--------|-------------|
+| `llmkube_metal_agent_managed_processes` | Number of managed llama-server processes |
+| `llmkube_metal_agent_process_healthy` | Process health status (1=healthy, 0=unhealthy) |
+| `llmkube_metal_agent_process_restarts_total` | Process restarts from health monitoring |
+| `llmkube_metal_agent_health_check_duration_seconds` | Health check probe duration |
+| `llmkube_metal_agent_memory_budget_bytes` | Total memory budget for model serving |
+| `llmkube_metal_agent_memory_estimated_bytes` | Estimated memory usage per process |
 
 ## Troubleshooting
 
