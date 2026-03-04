@@ -20,6 +20,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -39,18 +41,25 @@ type MetalAgentConfig struct {
 	Port           int
 	HostIP         string // explicit IP to register in K8s endpoints; empty = auto-detect
 	Logger         *zap.SugaredLogger
+
+	// MemoryProvider supplies system memory info. Nil defaults to DarwinMemoryProvider.
+	MemoryProvider MemoryProvider
+	// MemoryFraction is the fraction of total memory to budget for models (0 = auto-detect).
+	MemoryFraction float64
 }
 
 // MetalAgent watches Kubernetes InferenceService resources and manages
 // native llama-server processes with Metal acceleration
 type MetalAgent struct {
-	config    MetalAgentConfig
-	watcher   *InferenceServiceWatcher
-	executor  *MetalExecutor
-	registry  *ServiceRegistry
-	processes map[string]*ManagedProcess // namespacedName -> process
-	logger    *zap.SugaredLogger
-	mu        sync.RWMutex
+	config         MetalAgentConfig
+	watcher        *InferenceServiceWatcher
+	executor       *MetalExecutor
+	registry       *ServiceRegistry
+	processes      map[string]*ManagedProcess // namespacedName -> process
+	logger         *zap.SugaredLogger
+	mu             sync.RWMutex
+	memoryProvider MemoryProvider
+	memoryFraction float64
 }
 
 // ManagedProcess represents a running llama-server process
@@ -71,15 +80,47 @@ func NewMetalAgent(config MetalAgentConfig) *MetalAgent {
 		logger = zap.NewNop().Sugar()
 	}
 
+	// Resolve memory provider
+	provider := config.MemoryProvider
+	if provider == nil {
+		provider = &DarwinMemoryProvider{}
+	}
+
+	// Resolve memory fraction
+	fraction := config.MemoryFraction
+	if fraction <= 0 {
+		total, err := provider.TotalMemory()
+		if err != nil {
+			logger.Warnw("failed to detect total memory for fraction auto-detection, using 0.67", "error", err)
+			fraction = 0.67
+		} else {
+			fraction = DefaultMemoryFraction(total)
+		}
+	}
+
 	return &MetalAgent{
-		config:    config,
-		processes: make(map[string]*ManagedProcess),
-		logger:    logger.With("component", "metal-agent"),
+		config:         config,
+		processes:      make(map[string]*ManagedProcess),
+		logger:         logger.With("component", "metal-agent"),
+		memoryProvider: provider,
+		memoryFraction: fraction,
 	}
 }
 
 // Start begins watching for InferenceService resources and managing processes
 func (a *MetalAgent) Start(ctx context.Context) error {
+	// Log effective memory budget
+	if total, err := a.memoryProvider.TotalMemory(); err == nil {
+		budgetBytes := uint64(float64(total) * a.memoryFraction)
+		a.logger.Infow("memory budget",
+			"total", formatMemory(total),
+			"fraction", a.memoryFraction,
+			"budget", formatMemory(budgetBytes),
+		)
+	} else {
+		a.logger.Warnw("unable to query total memory", "error", err)
+	}
+
 	// Initialize components
 	a.watcher = NewInferenceServiceWatcher(a.config.K8sClient, a.config.Namespace, a.logger.With("subsystem", "watcher"))
 	a.executor = NewMetalExecutor(
@@ -165,6 +206,40 @@ func (a *MetalAgent) ensureProcess(ctx context.Context, isvc *inferencev1alpha1.
 	contextSize := 2048
 	if isvc.Spec.ContextSize != nil && *isvc.Spec.ContextSize > 0 {
 		contextSize = int(*isvc.Spec.ContextSize)
+	}
+
+	// Pre-flight memory check
+	if estimate, err := a.estimateModelMemory(model, contextSize); err != nil {
+		a.logger.Warnw("memory estimation failed, proceeding without check", "error", err)
+	} else {
+		budget, err := CheckMemoryBudget(a.memoryProvider, estimate, a.memoryFraction)
+		if err != nil {
+			a.logger.Warnw("memory budget check failed, proceeding without check", "error", err)
+		} else if !budget.Fits {
+			msg := fmt.Sprintf("estimated %s required, budget %s (%s total * %.0f%%)",
+				formatMemory(budget.EstimateBytes),
+				formatMemory(budget.BudgetBytes),
+				formatMemory(budget.TotalBytes),
+				a.memoryFraction*100,
+			)
+			a.logger.Warnw("model does not fit in memory budget",
+				"estimate", formatMemory(budget.EstimateBytes),
+				"budget", formatMemory(budget.BudgetBytes),
+			)
+			// Update InferenceService status
+			isvc.Status.SchedulingStatus = "InsufficientMemory"
+			isvc.Status.SchedulingMessage = msg
+			if updateErr := a.config.K8sClient.Status().Update(ctx, isvc); updateErr != nil {
+				a.logger.Warnw("failed to update InferenceService status", "error", updateErr)
+			}
+			return fmt.Errorf("insufficient memory: %s", msg)
+		} else {
+			a.logger.Infow("memory check passed",
+				"estimate", formatMemory(budget.EstimateBytes),
+				"budget", formatMemory(budget.BudgetBytes),
+				"headroom", formatMemory(budget.HeadroomBytes),
+			)
+		}
 	}
 
 	// Start the process
@@ -273,4 +348,40 @@ func (a *MetalAgent) HealthCheck() map[string]bool {
 		health[key] = process.Healthy
 	}
 	return health
+}
+
+// estimateModelMemory builds a MemoryEstimate for a model using the file on disk
+// (preferred) or the Status.Size string, plus GGUF metadata when available.
+func (a *MetalAgent) estimateModelMemory(model *inferencev1alpha1.Model, contextSize int) (MemoryEstimate, error) {
+	var fileSizeBytes uint64
+
+	// Try to stat the model file on disk
+	filename := filepath.Base(model.Spec.Source)
+	localPath := filepath.Join(a.config.ModelStorePath, model.Name, filename)
+	if info, err := os.Stat(localPath); err == nil {
+		fileSizeBytes = uint64(info.Size())
+	} else if model.Status.Size != "" {
+		// Fall back to parsing the human-readable size from model status
+		parsed, err := parseSize(model.Status.Size)
+		if err != nil {
+			return MemoryEstimate{}, fmt.Errorf(
+				"cannot determine model size: file not found at %s and failed to parse status size %q: %w",
+				localPath, model.Status.Size, err,
+			)
+		}
+		fileSizeBytes = parsed
+	} else {
+		return MemoryEstimate{}, fmt.Errorf(
+			"cannot determine model size: file not found at %s and no status size available",
+			localPath,
+		)
+	}
+
+	var layerCount, embeddingSize uint64
+	if model.Status.GGUF != nil {
+		layerCount = model.Status.GGUF.LayerCount
+		embeddingSize = model.Status.GGUF.EmbeddingSize
+	}
+
+	return EstimateModelMemory(fileSizeBytes, layerCount, embeddingSize, contextSize), nil
 }

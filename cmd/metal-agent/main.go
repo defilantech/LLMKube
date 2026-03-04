@@ -51,6 +51,7 @@ type AgentConfig struct {
 	Port           int
 	LogLevel       string
 	HostIP         string
+	MemoryFraction float64
 }
 
 func parseLogLevel(level string) zapcore.Level {
@@ -82,6 +83,8 @@ func main() {
 	flag.IntVar(&cfg.Port, "port", 9090, "Agent metrics/health port")
 	flag.StringVar(&cfg.LogLevel, "log-level", "info", "Log level (debug, info, warn, error)")
 	flag.StringVar(&cfg.HostIP, "host-ip", "", "IP address to register in Kubernetes endpoints (auto-detected if empty)")
+	flag.Float64Var(&cfg.MemoryFraction, "memory-fraction", 0,
+		"Fraction of system memory to budget for models (0 = auto-detect based on total RAM)")
 	showVersion := flag.Bool("version", false, "Show version information")
 	flag.Parse()
 
@@ -181,6 +184,7 @@ func main() {
 		Port:           cfg.Port,
 		HostIP:         cfg.HostIP,
 		Logger:         logger,
+		MemoryFraction: cfg.MemoryFraction,
 	})
 
 	// Setup context with signal handling
