@@ -390,6 +390,71 @@ spec:
 			Expect(output).To(Equal("True"))
 		})
 
+		It("should not re-download a cached model after controller restart", func() {
+			By("recording the current controller pod name")
+			cmd := exec.Command("kubectl", "get", "pods",
+				"-l", "control-plane=controller-manager",
+				"-n", namespace,
+				"-o", "jsonpath={.items[0].metadata.name}")
+			oldPod, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(oldPod).NotTo(BeEmpty())
+
+			By("restarting the controller deployment")
+			cmd = exec.Command("kubectl", "rollout", "restart",
+				"deployment/llmkube-controller-manager", "-n", namespace)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for a new controller pod to be Running")
+			var newPod string
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pods",
+					"-l", "control-plane=controller-manager",
+					"-o", "go-template={{ range .items }}"+
+						"{{ if not .metadata.deletionTimestamp }}"+
+						"{{ .metadata.name }}"+
+						"{{ \"\\n\" }}{{ end }}{{ end }}",
+					"-n", namespace)
+				out, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				pods := utils.GetNonEmptyLines(out)
+				g.Expect(pods).To(HaveLen(1))
+				g.Expect(pods[0]).NotTo(Equal(oldPod), "new pod should have a different name")
+				newPod = pods[0]
+
+				cmd = exec.Command("kubectl", "get", "pod", newPod,
+					"-n", namespace, "-o", "jsonpath={.status.phase}")
+				phase, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(phase).To(Equal("Running"))
+			}, 3*time.Minute, 2*time.Second).Should(Succeed())
+
+			// Update controllerPodName so AfterEach logs the right pod on failure
+			controllerPodName = newPod
+
+			By("verifying the Model is still Ready")
+			cmd = exec.Command("kubectl", "get", "model", "test-model",
+				"-n", crTestNs, "-o", "jsonpath={.status.phase}")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(output).To(Equal("Ready"))
+
+			By("checking new controller logs for the cache-hit early return")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "logs", newPod, "-n", namespace)
+				logs, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(logs).To(ContainSubstring("Model already Ready and cached, skipping reconcile"))
+			}, 1*time.Minute, 2*time.Second).Should(Succeed())
+
+			By("confirming no re-download was triggered in the new controller")
+			cmd = exec.Command("kubectl", "logs", newPod, "-n", namespace)
+			logs, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(logs).NotTo(ContainSubstring("Downloading model"))
+		})
+
 		It("should create Deployment and Service for InferenceService", func() {
 			By("applying an InferenceService referencing the ready Model")
 			cmd := exec.Command("kubectl", "apply", "-f", "-")
