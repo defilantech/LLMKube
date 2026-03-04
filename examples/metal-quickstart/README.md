@@ -246,6 +246,23 @@ launchctl unload ~/Library/LaunchAgents/com.llmkube.metal-agent.plist
 launchctl load ~/Library/LaunchAgents/com.llmkube.metal-agent.plist
 ```
 
+### Model rejected (InsufficientMemory)
+
+The Metal Agent checks whether a model fits in memory before starting it. If your InferenceService shows `InsufficientMemory`:
+
+```bash
+# Check the status
+kubectl get isvc -o wide
+
+# See the detailed reason
+kubectl get isvc <name> -o jsonpath='{.status.schedulingMessage}'
+```
+
+Fix options:
+- Use a smaller quantization (Q4_K_M instead of Q8_0)
+- Reduce `contextSize` in the InferenceService spec
+- Increase the budget: restart the agent with `--memory-fraction 0.9`
+
 ### Model download slow/failing
 
 ```bash
@@ -360,9 +377,10 @@ curl http://localhost:8080/v1/chat/completions \
 
 1. **Use Q5_K_M quantization** - Best balance of quality and speed
 2. **Offload all layers** - Set `--gpu-layers 99` for maximum Metal usage
-3. **Close other apps** - Free up GPU resources for better performance
+3. **Close other apps** - Free up unified memory and GPU resources
 4. **Monitor temperature** - Keep your Mac cool for sustained performance
 5. **Use catalog models** - Pre-optimized settings for your hardware
+6. **Tune memory fraction** - On a dedicated inference Mac, use `--memory-fraction 0.9` to allow larger models
 
 ---
 

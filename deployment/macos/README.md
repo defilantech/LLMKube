@@ -135,6 +135,36 @@ launchctl unload ~/Library/LaunchAgents/com.llmkube.metal-agent.plist
 launchctl load ~/Library/LaunchAgents/com.llmkube.metal-agent.plist
 ```
 
+### `--memory-fraction` flag (memory budget)
+
+The Metal Agent estimates model memory requirements (weights + KV cache + overhead) before starting `llama-server`. If the model won't fit in the memory budget, the agent refuses to start it and sets the InferenceService status to `InsufficientMemory`.
+
+By default, the budget is auto-detected based on total system RAM:
+
+| Total RAM | Default Fraction | Budget |
+|-----------|-----------------|--------|
+| 16 GB | 67% | ~10.7 GB |
+| 36 GB | 67% | ~24.1 GB |
+| 48 GB | 75% | 36 GB |
+| 64 GB | 75% | 48 GB |
+
+To override:
+
+```bash
+# Use 50% of memory (conservative, leaves room for other apps)
+llmkube-metal-agent --memory-fraction 0.5
+
+# Use 90% of memory (dedicated inference machine)
+llmkube-metal-agent --memory-fraction 0.9
+```
+
+To set this in the launchd plist:
+
+```xml
+    <string>--memory-fraction</string>
+    <string>0.75</string>                 <!-- 75% of system memory -->
+```
+
 ## Troubleshooting
 
 ### Agent won't start
@@ -159,6 +189,24 @@ system_profiler SPDisplaysDataType
 # Check for Metal support
 system_profiler SPDisplaysDataType | grep "Metal"
 ```
+
+### Model rejected with InsufficientMemory
+
+The Metal Agent performs a pre-flight memory check before starting each model. If the estimated memory exceeds the budget, the InferenceService status will show `InsufficientMemory`:
+
+```bash
+# Check the scheduling status
+kubectl get inferenceservices -o wide
+
+# View the detailed message
+kubectl get isvc <name> -o jsonpath='{.status.schedulingMessage}'
+```
+
+To resolve:
+- **Use a smaller quantization** (e.g. Q4_K_M instead of Q8_0) to reduce model weight size
+- **Reduce context size** in the InferenceService spec to lower KV cache requirements
+- **Increase the memory fraction** with `--memory-fraction 0.9` if this is a dedicated inference machine
+- **Close other applications** to free unified memory
 
 ### Can't connect to Kubernetes
 
@@ -210,9 +258,10 @@ rm ~/Library/LaunchAgents/com.llmkube.metal-agent.plist
 1. **Metal Agent** runs as a native macOS process (not in Kubernetes)
 2. **Watches** for InferenceService resources in Kubernetes
 3. **Downloads** models from HuggingFace when needed
-4. **Spawns** llama-server processes with Metal acceleration
-5. **Registers** service endpoints back to Kubernetes
-6. **Pods** access the Metal-accelerated inference via Service endpoints
+4. **Validates** that the model fits in the system's memory budget
+5. **Spawns** llama-server processes with Metal acceleration
+6. **Registers** service endpoints back to Kubernetes
+7. **Pods** access the Metal-accelerated inference via Service endpoints
 
 ### Remote cluster (Recommended)
 
