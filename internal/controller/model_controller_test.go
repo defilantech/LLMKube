@@ -357,6 +357,186 @@ var _ = Describe("Model Controller Reconcile", func() {
 	})
 })
 
+var _ = Describe("Model Controller - Cache Bug Fixes", func() {
+	ctx := context.Background()
+
+	It("should skip reconcile when model is already Ready and file exists", func() {
+		tempDir, err := os.MkdirTemp("", "llmkube-test-*")
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = os.RemoveAll(tempDir) }()
+
+		source := "https://example.com/already-ready-model.gguf"
+		cacheKey := computeCacheKey(source)
+		modelDir := filepath.Join(tempDir, cacheKey)
+		modelPath := filepath.Join(modelDir, "model.gguf")
+		Expect(os.MkdirAll(modelDir, 0755)).To(Succeed())
+		Expect(os.WriteFile(modelPath, []byte("cached-model-data"), 0644)).To(Succeed())
+
+		modelName := "model-already-ready"
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
+			Spec:       inferencev1alpha1.ModelSpec{Source: source},
+		}
+		Expect(k8sClient.Create(ctx, model)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, model) }()
+
+		// First reconcile to set the model to Ready state
+		reconciler := &ModelReconciler{
+			Client:      k8sClient,
+			Scheme:      k8sClient.Scheme(),
+			StoragePath: tempDir,
+		}
+		result, err := reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(Equal(reconcile.Result{}))
+
+		// Verify model is Ready
+		updated := &inferencev1alpha1.Model{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: modelName, Namespace: "default"}, updated)).To(Succeed())
+		Expect(updated.Status.Phase).To(Equal(PhaseReady))
+		Expect(updated.Status.Path).To(Equal(modelPath))
+		lastUpdated := updated.Status.LastUpdated.DeepCopy()
+
+		// Second reconcile should return immediately without updating status
+		result, err = reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(Equal(reconcile.Result{}))
+
+		// Verify status was NOT updated (LastUpdated unchanged)
+		afterSecond := &inferencev1alpha1.Model{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: modelName, Namespace: "default"}, afterSecond)).To(Succeed())
+		Expect(afterSecond.Status.Phase).To(Equal(PhaseReady))
+		Expect(afterSecond.Status.LastUpdated.Equal(lastUpdated)).To(BeTrue())
+	})
+
+	It("should re-download when model is Ready but file is missing", func() {
+		tempDir, err := os.MkdirTemp("", "llmkube-test-*")
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = os.RemoveAll(tempDir) }()
+
+		modelContent := []byte("re-downloaded-model-content")
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(modelContent)
+		}))
+		defer server.Close()
+
+		source := fmt.Sprintf("%s/model.gguf", server.URL)
+		cacheKey := computeCacheKey(source)
+		modelPath := filepath.Join(tempDir, cacheKey, "model.gguf")
+
+		modelName := "model-ready-missing-file"
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
+			Spec:       inferencev1alpha1.ModelSpec{Source: source},
+		}
+		Expect(k8sClient.Create(ctx, model)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, model) }()
+
+		// Manually set the status to Ready with a path that doesn't exist
+		model.Status.Phase = PhaseReady
+		model.Status.Path = modelPath
+		Expect(k8sClient.Status().Update(ctx, model)).To(Succeed())
+
+		reconciler := &ModelReconciler{
+			Client:      k8sClient,
+			Scheme:      k8sClient.Scheme(),
+			StoragePath: tempDir,
+		}
+		result, err := reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(Equal(reconcile.Result{}))
+
+		// Verify model was re-downloaded and is Ready again
+		updated := &inferencev1alpha1.Model{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: modelName, Namespace: "default"}, updated)).To(Succeed())
+		Expect(updated.Status.Phase).To(Equal(PhaseReady))
+
+		// Verify the file now exists
+		_, err = os.Stat(modelPath)
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("should not leave partial file at final path on download failure", func() {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		}))
+		defer server.Close()
+
+		tempDir, err := os.MkdirTemp("", "llmkube-test-*")
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = os.RemoveAll(tempDir) }()
+
+		source := fmt.Sprintf("%s/model.gguf", server.URL)
+		cacheKey := computeCacheKey(source)
+		modelDir := filepath.Join(tempDir, cacheKey)
+		modelPath := filepath.Join(modelDir, "model.gguf")
+
+		modelName := "model-no-partial"
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
+			Spec:       inferencev1alpha1.ModelSpec{Source: source},
+		}
+		Expect(k8sClient.Create(ctx, model)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, model) }()
+
+		reconciler := &ModelReconciler{
+			Client:      k8sClient,
+			Scheme:      k8sClient.Scheme(),
+			StoragePath: tempDir,
+		}
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
+		})
+		Expect(err).To(HaveOccurred())
+
+		// Final model path must NOT exist
+		_, err = os.Stat(modelPath)
+		Expect(os.IsNotExist(err)).To(BeTrue(), "final model path should not exist after failed download")
+
+		// No temp files should remain in the cache directory
+		if entries, dirErr := os.ReadDir(modelDir); dirErr == nil {
+			for _, entry := range entries {
+				Expect(entry.Name()).NotTo(HavePrefix(".model-"), "temp file should have been cleaned up")
+			}
+		}
+	})
+
+	It("should detect Content-Length mismatch on truncated download", func() {
+		fullContent := []byte("this is a complete model file with enough data")
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Advertise full Content-Length but send truncated data
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(fullContent)))
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(fullContent[:10]) // only send 10 bytes
+		}))
+		defer server.Close()
+
+		tempDir, err := os.MkdirTemp("", "llmkube-test-*")
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = os.RemoveAll(tempDir) }()
+
+		dest := filepath.Join(tempDir, "model.gguf")
+		reconciler := &ModelReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		_, err = reconciler.downloadModel(context.Background(), server.URL+"/model.gguf", dest)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(SatisfyAny(
+			ContainSubstring("download incomplete"),
+			ContainSubstring("unexpected EOF"),
+		))
+
+		// Final file should not exist
+		_, statErr := os.Stat(dest)
+		Expect(os.IsNotExist(statErr)).To(BeTrue(), "final path should not exist after truncated download")
+	})
+})
+
 var _ = Describe("formatBytes", func() {
 	DescribeTable("should format byte sizes correctly",
 		func(bytes int64, expected string) {

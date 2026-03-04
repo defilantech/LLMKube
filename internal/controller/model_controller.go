@@ -84,6 +84,17 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	modelDir := filepath.Join(r.StoragePath, cacheKey)
 	modelPath := filepath.Join(modelDir, "model.gguf")
 
+	// Early exit: if status already shows Ready and the file exists on disk,
+	// skip the entire reconcile to avoid status updates that trigger re-reconciles.
+	if model.Status.Phase == PhaseReady && model.Status.Path != "" {
+		if _, err := os.Stat(model.Status.Path); err == nil {
+			logger.Info("Model already Ready and cached, skipping reconcile", "path", model.Status.Path)
+			llmkubemetrics.ReconcileTotal.WithLabelValues("model", "success").Inc()
+			return ctrl.Result{}, nil
+		}
+		logger.Info("Model marked Ready but file missing, will re-download", "path", model.Status.Path)
+	}
+
 	logger.Info("Using cache key for model", "cacheKey", cacheKey, "path", modelPath)
 
 	if fileInfo, err := os.Stat(modelPath); err == nil {
@@ -153,9 +164,6 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		logger.Error(err, "Failed to fetch model")
 		llmkubemetrics.ReconcileTotal.WithLabelValues("model", "error").Inc()
 		llmkubemetrics.ModelStatus.WithLabelValues(model.Name, model.Namespace, "Failed").Set(1)
-		if removeErr := os.Remove(modelPath); removeErr != nil && !os.IsNotExist(removeErr) {
-			logger.Error(removeErr, "Failed to clean up partial download")
-		}
 		model.Status.Phase = "Failed"
 		if statusErr := r.updateStatus(ctx, model, "Degraded", metav1.ConditionTrue, failReason, err.Error()); statusErr != nil {
 			logger.Error(statusErr, "Failed to update status after fetch failure")
@@ -216,17 +224,19 @@ func (r *ModelReconciler) copyLocalModel(ctx context.Context, source, dest strin
 		return 0, fmt.Errorf("failed to stat local model file: %w", err)
 	}
 
-	dstFile, err := os.Create(dest)
+	// Write to temp file in the same directory, then atomic rename
+	destDir := filepath.Dir(dest)
+	tmpFile, err := os.CreateTemp(destDir, ".model-*.tmp")
 	if err != nil {
-		return 0, fmt.Errorf("failed to create destination file: %w", err)
+		return 0, fmt.Errorf("failed to create temp file: %w", err)
 	}
-	defer func() {
-		if closeErr := dstFile.Close(); closeErr != nil {
-			logger.Error(closeErr, "Failed to close destination file")
-		}
-	}()
+	tmpPath := tmpFile.Name()
+	defer func() { _ = os.Remove(tmpPath) }() // clean up on any failure
 
-	size, err := io.Copy(dstFile, srcFile)
+	size, err := io.Copy(tmpFile, srcFile)
+	if closeErr := tmpFile.Close(); closeErr != nil {
+		logger.Error(closeErr, "Failed to close temp file")
+	}
 	if err != nil {
 		return 0, fmt.Errorf("failed to copy model file: %w", err)
 	}
@@ -235,22 +245,16 @@ func (r *ModelReconciler) copyLocalModel(ctx context.Context, source, dest strin
 		return 0, fmt.Errorf("copy incomplete: expected %d bytes, got %d", srcInfo.Size(), size)
 	}
 
+	if err := os.Rename(tmpPath, dest); err != nil {
+		return 0, fmt.Errorf("failed to rename temp file to final path: %w", err)
+	}
+
 	logger.Info("Local model copied successfully", "size", size)
 	return size, nil
 }
 
 func (r *ModelReconciler) downloadModel(ctx context.Context, source, dest string) (int64, error) {
 	logger := log.FromContext(ctx)
-
-	out, err := os.Create(dest)
-	if err != nil {
-		return 0, fmt.Errorf("failed to create file: %w", err)
-	}
-	defer func() {
-		if closeErr := out.Close(); closeErr != nil {
-			logger.Error(closeErr, "Failed to close file")
-		}
-	}()
 
 	logger.Info("Downloading model", "source", source, "dest", dest)
 	resp, err := http.Get(source)
@@ -267,9 +271,30 @@ func (r *ModelReconciler) downloadModel(ctx context.Context, source, dest string
 		return 0, fmt.Errorf("bad status: %s", resp.Status)
 	}
 
-	size, err := io.Copy(out, resp.Body)
+	// Write to temp file in the same directory, then atomic rename
+	destDir := filepath.Dir(dest)
+	tmpFile, err := os.CreateTemp(destDir, ".model-*.tmp")
+	if err != nil {
+		return 0, fmt.Errorf("failed to create temp file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	defer func() { _ = os.Remove(tmpPath) }() // clean up on any failure
+
+	size, err := io.Copy(tmpFile, resp.Body)
+	if closeErr := tmpFile.Close(); closeErr != nil {
+		logger.Error(closeErr, "Failed to close temp file")
+	}
 	if err != nil {
 		return 0, fmt.Errorf("failed to write file: %w", err)
+	}
+
+	// Validate Content-Length if the server provided one
+	if resp.ContentLength > 0 && size != resp.ContentLength {
+		return 0, fmt.Errorf("download incomplete: expected %d bytes, got %d", resp.ContentLength, size)
+	}
+
+	if err := os.Rename(tmpPath, dest); err != nil {
+		return 0, fmt.Errorf("failed to rename temp file to final path: %w", err)
 	}
 
 	return size, nil
