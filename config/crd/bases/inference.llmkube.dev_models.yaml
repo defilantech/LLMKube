@@ -141,6 +141,19 @@ spec:
                         - intel
                         type: string
                     type: object
+                  memoryBudget:
+                    description: |-
+                      MemoryBudget is an absolute memory limit for the model process
+                      (e.g., "24Gi", "8192Mi"). When set, it takes precedence over
+                      MemoryFraction and the agent-level --memory-fraction flag.
+                      Parsed via resource.ParseQuantity().
+                    type: string
+                  memoryFraction:
+                    description: |-
+                      MemoryFraction is the fraction of total system memory to budget for
+                      this model's inference process (0.0–1.0). Takes precedence over the
+                      agent-level --memory-fraction flag but not MemoryBudget.
+                    type: number
                 type: object
               quantization:
                 description: Quantization describes the quantization level (e.g.,

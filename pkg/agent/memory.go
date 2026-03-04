@@ -21,6 +21,10 @@ import (
 	"math"
 	"strconv"
 	"strings"
+
+	"k8s.io/apimachinery/pkg/api/resource"
+
+	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 )
 
 // MemoryProvider abstracts system memory queries for testability.
@@ -54,9 +58,25 @@ const overheadBytes = 512 * 1024 * 1024 // 512 MiB constant overhead
 // Otherwise it falls back to fileSize * 1.2 + overhead.
 func EstimateModelMemory(fileSizeBytes uint64, layerCount, embeddingSize uint64, contextSize int) MemoryEstimate {
 	if layerCount > 0 && embeddingSize > 0 {
-		// KV cache: 2 (K+V) * layers * embedding * context * 2 bytes (FP16)
-		kvCache := 2 * layerCount * embeddingSize * uint64(contextSize) * 2
+		// KV cache: 4 * layers * embedding * context (FP16 K+V)
+		// Guard against overflow in the multiplication chain.
+		layerEmbed := layerCount * embeddingSize
+		if layerEmbed/layerCount != embeddingSize {
+			return fallbackEstimate(fileSizeBytes)
+		}
+		ctx := uint64(contextSize)
+		product := layerEmbed * ctx
+		if ctx != 0 && product/ctx != layerEmbed {
+			return fallbackEstimate(fileSizeBytes)
+		}
+		kvCache := product * 4
+		if kvCache/4 != product {
+			return fallbackEstimate(fileSizeBytes)
+		}
 		total := fileSizeBytes + kvCache + uint64(overheadBytes)
+		if total < fileSizeBytes { // addition overflow
+			return fallbackEstimate(fileSizeBytes)
+		}
 		return MemoryEstimate{
 			WeightsBytes:  fileSizeBytes,
 			KVCacheBytes:  kvCache,
@@ -65,7 +85,12 @@ func EstimateModelMemory(fileSizeBytes uint64, layerCount, embeddingSize uint64,
 		}
 	}
 
-	// Fallback: file size * 1.2 + overhead
+	return fallbackEstimate(fileSizeBytes)
+}
+
+// fallbackEstimate uses a heuristic (fileSize * 1.2 + overhead) when GGUF
+// metadata is unavailable or the KV cache calculation would overflow.
+func fallbackEstimate(fileSizeBytes uint64) MemoryEstimate {
 	scaled := uint64(math.Ceil(float64(fileSizeBytes) * 1.2))
 	total := scaled + uint64(overheadBytes)
 	return MemoryEstimate{
@@ -158,4 +183,85 @@ func parseSize(s string) (uint64, error) {
 	}
 
 	return uint64(value * multiplier), nil
+}
+
+const (
+	// BudgetModeAbsolute indicates a fixed byte budget from the CRD.
+	BudgetModeAbsolute = "absolute"
+	// BudgetModeFraction indicates a fraction-of-memory budget.
+	BudgetModeFraction = "fraction"
+)
+
+// ResolvedBudget describes the effective memory budget after applying the
+// precedence chain: CRD absolute → CRD fraction → agent flag → auto-detect.
+type ResolvedBudget struct {
+	// Mode is BudgetModeAbsolute when a fixed byte budget is in effect, or
+	// BudgetModeFraction when the budget is a percentage of total system memory.
+	Mode string
+	// Bytes is the absolute budget in bytes. Set only when Mode == "absolute".
+	Bytes uint64
+	// Fraction is the fraction of total memory. Set only when Mode == "fraction".
+	Fraction float64
+	// Source describes where the value came from for logging.
+	Source string
+}
+
+// ResolveMemoryBudget implements the precedence chain:
+//  1. model.Spec.Hardware.MemoryBudget  (absolute byte limit)
+//  2. model.Spec.Hardware.MemoryFraction (fraction of total RAM)
+//  3. agentFraction                      (--memory-fraction flag)
+//
+// Returns an error only if MemoryBudget is set but cannot be parsed.
+func ResolveMemoryBudget(hardware *inferencev1alpha1.HardwareSpec, agentFraction float64) (ResolvedBudget, error) {
+	if hardware != nil && hardware.MemoryBudget != "" {
+		qty, err := resource.ParseQuantity(hardware.MemoryBudget)
+		if err != nil {
+			return ResolvedBudget{}, fmt.Errorf("invalid memoryBudget %q: %w", hardware.MemoryBudget, err)
+		}
+		if qty.Value() <= 0 {
+			return ResolvedBudget{}, fmt.Errorf("memoryBudget must be positive, got %q", hardware.MemoryBudget)
+		}
+		return ResolvedBudget{
+			Mode:   BudgetModeAbsolute,
+			Bytes:  uint64(qty.Value()),
+			Source: "crd-budget",
+		}, nil
+	}
+
+	if hardware != nil && hardware.MemoryFraction != nil {
+		f := *hardware.MemoryFraction
+		if math.IsNaN(f) || math.IsInf(f, 0) || f <= 0 || f > 1.0 {
+			return ResolvedBudget{}, fmt.Errorf("memoryFraction must be between 0.0 (exclusive) and 1.0 (inclusive), got %f", f)
+		}
+		return ResolvedBudget{
+			Mode:     BudgetModeFraction,
+			Fraction: f,
+			Source:   "crd-fraction",
+		}, nil
+	}
+
+	return ResolvedBudget{
+		Mode:     BudgetModeFraction,
+		Fraction: agentFraction,
+		Source:   "agent-flag",
+	}, nil
+}
+
+// CheckMemoryBudgetAbsolute checks whether a model's estimated memory fits
+// within a fixed byte budget (as opposed to a fraction of system memory).
+func CheckMemoryBudgetAbsolute(budgetBytes uint64, estimate MemoryEstimate) *MemoryBudget {
+	fits := estimate.TotalBytes <= budgetBytes
+
+	var headroom uint64
+	if fits {
+		headroom = budgetBytes - estimate.TotalBytes
+	}
+
+	return &MemoryBudget{
+		Fits:          fits,
+		TotalBytes:    0, // not applicable for absolute budgets
+		BudgetBytes:   budgetBytes,
+		EstimateBytes: estimate.TotalBytes,
+		HeadroomBytes: headroom,
+	}
 }

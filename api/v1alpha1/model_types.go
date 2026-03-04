@@ -65,6 +65,19 @@ type HardwareSpec struct {
 	// GPU specifies GPU device requirements
 	// +optional
 	GPU *GPUSpec `json:"gpu,omitempty"`
+
+	// MemoryBudget is an absolute memory limit for the model process
+	// (e.g., "24Gi", "8192Mi"). When set, it takes precedence over
+	// MemoryFraction and the agent-level --memory-fraction flag.
+	// Parsed via resource.ParseQuantity().
+	// +optional
+	MemoryBudget string `json:"memoryBudget,omitempty"`
+
+	// MemoryFraction is the fraction of total system memory to budget for
+	// this model's inference process (0.0–1.0). Takes precedence over the
+	// agent-level --memory-fraction flag but not MemoryBudget.
+	// +optional
+	MemoryFraction *float64 `json:"memoryFraction,omitempty"`
 }
 
 // GPUSpec defines GPU-specific requirements

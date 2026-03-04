@@ -234,33 +234,60 @@ func (a *MetalAgent) ensureProcess(ctx context.Context, isvc *inferencev1alpha1.
 	} else {
 		memoryEstimatedBytes.WithLabelValues(isvc.Name, isvc.Namespace).Set(float64(estimate.TotalBytes))
 
-		budget, err := CheckMemoryBudget(a.memoryProvider, estimate, a.memoryFraction)
-		if err != nil {
-			a.logger.Warnw("memory budget check failed, proceeding without check", "error", err)
-		} else if !budget.Fits {
-			msg := fmt.Sprintf("estimated %s required, budget %s (%s total * %.0f%%)",
-				formatMemory(budget.EstimateBytes),
-				formatMemory(budget.BudgetBytes),
-				formatMemory(budget.TotalBytes),
-				a.memoryFraction*100,
-			)
-			a.logger.Warnw("model does not fit in memory budget",
-				"estimate", formatMemory(budget.EstimateBytes),
-				"budget", formatMemory(budget.BudgetBytes),
-			)
-			// Update InferenceService status
-			isvc.Status.SchedulingStatus = "InsufficientMemory"
-			isvc.Status.SchedulingMessage = msg
-			if updateErr := a.config.K8sClient.Status().Update(ctx, isvc); updateErr != nil {
-				a.logger.Warnw("failed to update InferenceService status", "error", updateErr)
-			}
-			return fmt.Errorf("insufficient memory: %s", msg)
+		resolved, resolveErr := ResolveMemoryBudget(model.Spec.Hardware, a.memoryFraction)
+		if resolveErr != nil {
+			a.logger.Warnw("memory budget resolution failed, proceeding without check", "error", resolveErr)
 		} else {
-			a.logger.Infow("memory check passed",
-				"estimate", formatMemory(budget.EstimateBytes),
-				"budget", formatMemory(budget.BudgetBytes),
-				"headroom", formatMemory(budget.HeadroomBytes),
-			)
+			a.logger.Infow("resolved memory budget",
+				"mode", resolved.Mode, "source", resolved.Source)
+
+			var budget *MemoryBudget
+			switch resolved.Mode {
+			case BudgetModeAbsolute:
+				budget = CheckMemoryBudgetAbsolute(resolved.Bytes, estimate)
+				memoryBudgetBytes.Set(float64(resolved.Bytes))
+			default: // BudgetModeFraction
+				var budgetErr error
+				budget, budgetErr = CheckMemoryBudget(a.memoryProvider, estimate, resolved.Fraction)
+				if budgetErr != nil {
+					a.logger.Warnw("memory budget check failed, proceeding without check", "error", budgetErr)
+				}
+			}
+
+			if budget != nil && !budget.Fits {
+				var msg string
+				if resolved.Mode == BudgetModeAbsolute {
+					msg = fmt.Sprintf("estimated %s required, budget %s (absolute from CRD)",
+						formatMemory(budget.EstimateBytes),
+						formatMemory(budget.BudgetBytes),
+					)
+				} else {
+					msg = fmt.Sprintf("estimated %s required, budget %s (%s total * %.0f%%)",
+						formatMemory(budget.EstimateBytes),
+						formatMemory(budget.BudgetBytes),
+						formatMemory(budget.TotalBytes),
+						resolved.Fraction*100,
+					)
+				}
+				a.logger.Warnw("model does not fit in memory budget",
+					"estimate", formatMemory(budget.EstimateBytes),
+					"budget", formatMemory(budget.BudgetBytes),
+					"source", resolved.Source,
+				)
+				isvc.Status.SchedulingStatus = "InsufficientMemory"
+				isvc.Status.SchedulingMessage = msg
+				if updateErr := a.config.K8sClient.Status().Update(ctx, isvc); updateErr != nil {
+					a.logger.Warnw("failed to update InferenceService status", "error", updateErr)
+				}
+				return fmt.Errorf("insufficient memory: %s", msg)
+			} else if budget != nil {
+				a.logger.Infow("memory check passed",
+					"estimate", formatMemory(budget.EstimateBytes),
+					"budget", formatMemory(budget.BudgetBytes),
+					"headroom", formatMemory(budget.HeadroomBytes),
+					"source", resolved.Source,
+				)
+			}
 		}
 	}
 

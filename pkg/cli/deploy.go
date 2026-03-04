@@ -37,28 +37,30 @@ import (
 )
 
 type deployOptions struct {
-	name           string
-	namespace      string
-	modelSource    string
-	sourceOverride string
-	modelFormat    string
-	quantization   string
-	replicas       int32
-	accelerator    string
-	gpu            bool
-	gpuCount       int32
-	gpuLayers      int32
-	gpuMemory      string
-	gpuVendor      string
-	cpu            string
-	memory         string
-	image          string
-	contextSize    int32
-	parallelSlots  int32
-	flashAttention bool
-	jinja          bool
-	wait           bool
-	timeout        time.Duration
+	name                string
+	namespace           string
+	modelSource         string
+	sourceOverride      string
+	modelFormat         string
+	quantization        string
+	replicas            int32
+	accelerator         string
+	gpu                 bool
+	gpuCount            int32
+	gpuLayers           int32
+	gpuMemory           string
+	gpuVendor           string
+	cpu                 string
+	memory              string
+	image               string
+	contextSize         int32
+	parallelSlots       int32
+	flashAttention      bool
+	jinja               bool
+	metalMemoryFraction float64
+	metalMemoryBudget   string
+	wait                bool
+	timeout             time.Duration
 }
 
 func NewDeployCommand() *cobra.Command {
@@ -138,6 +140,13 @@ Examples:
 	cmd.Flags().BoolVar(&opts.jinja, "jinja", false,
 		"Enable Jinja2 template rendering for tool/function calling support.")
 
+	cmd.Flags().Float64Var(&opts.metalMemoryFraction, "memory-fraction", 0,
+		"Fraction of system memory to budget for model inference (0.0-1.0). "+
+			"Only used with --accelerator metal. Overrides the agent default.")
+	cmd.Flags().StringVar(&opts.metalMemoryBudget, "memory-budget", "",
+		"Absolute memory budget for model inference (e.g., '24Gi', '8192Mi'). "+
+			"Only used with --accelerator metal. Takes precedence over --memory-fraction.")
+
 	cmd.Flags().StringVar(&opts.cpu, "cpu", "2", "CPU request (e.g., '2' or '2000m')")
 	cmd.Flags().StringVar(&opts.memory, "memory", "4Gi", "Memory request (e.g., '4Gi')")
 	cmd.Flags().StringVar(&opts.image, "image", "", "Custom llama.cpp server image (auto-detected based on --gpu)")
@@ -150,6 +159,10 @@ Examples:
 
 func runDeploy(opts *deployOptions) error {
 	ctx := context.Background()
+
+	if opts.metalMemoryFraction != 0 && (opts.metalMemoryFraction < 0 || opts.metalMemoryFraction > 1.0) {
+		return fmt.Errorf("--memory-fraction must be between 0.0 and 1.0, got %f", opts.metalMemoryFraction)
+	}
 
 	var catalogModel *Model
 	if opts.modelSource == "" {
@@ -179,37 +192,7 @@ func runDeploy(opts *deployOptions) error {
 		fmt.Printf("📂 Air-gapped mode: Using local model file\n")
 	}
 
-	if opts.gpu {
-		if opts.accelerator == "" {
-			if detectMetalSupport() {
-				opts.accelerator = "metal"
-				fmt.Printf("ℹ️  Auto-detected accelerator: %s (Apple Silicon GPU)\n", opts.accelerator)
-			} else {
-				opts.accelerator = "cuda"
-				fmt.Printf("ℹ️  Auto-detected accelerator: %s\n", opts.accelerator)
-			}
-		}
-
-		if opts.accelerator == "metal" {
-			if opts.image == "" {
-				opts.image = ""
-			}
-			fmt.Printf("ℹ️  Metal acceleration: Using native llama-server (not containerized)\n")
-			fmt.Printf("ℹ️  Ensure Metal agent is installed: make install-metal-agent\n")
-		} else {
-			if opts.image == "" {
-				opts.image = "ghcr.io/ggml-org/llama.cpp:server-cuda"
-				fmt.Printf("ℹ️  Auto-detected image: %s\n", opts.image)
-			}
-		}
-	} else {
-		if opts.accelerator == "" {
-			opts.accelerator = "cpu"
-		}
-		if opts.image == "" {
-			opts.image = "ghcr.io/ggml-org/llama.cpp:server"
-		}
-	}
+	resolveAcceleratorAndImage(opts)
 
 	cfg, err := config.GetConfig()
 	if err != nil {
@@ -283,6 +266,13 @@ func runDeploy(opts *deployOptions) error {
 		if opts.gpuMemory != "" {
 			model.Spec.Hardware.GPU.Memory = opts.gpuMemory
 		}
+	}
+
+	if opts.metalMemoryBudget != "" {
+		model.Spec.Hardware.MemoryBudget = opts.metalMemoryBudget
+	}
+	if opts.metalMemoryFraction > 0 {
+		model.Spec.Hardware.MemoryFraction = &opts.metalMemoryFraction
 	}
 
 	if err := k8sClient.Create(ctx, model); err != nil {
@@ -421,6 +411,40 @@ func waitForReady(ctx context.Context, k8sClient client.Client, name, namespace 
 			if isvc.Status.Phase == "Failed" {
 				return fmt.Errorf("inference service deployment failed")
 			}
+		}
+	}
+}
+
+func resolveAcceleratorAndImage(opts *deployOptions) {
+	if opts.gpu {
+		if opts.accelerator == "" {
+			if detectMetalSupport() {
+				opts.accelerator = "metal"
+				fmt.Printf("ℹ️  Auto-detected accelerator: %s (Apple Silicon GPU)\n", opts.accelerator)
+			} else {
+				opts.accelerator = "cuda"
+				fmt.Printf("ℹ️  Auto-detected accelerator: %s\n", opts.accelerator)
+			}
+		}
+
+		if opts.accelerator == "metal" {
+			if opts.image == "" {
+				opts.image = ""
+			}
+			fmt.Printf("ℹ️  Metal acceleration: Using native llama-server (not containerized)\n")
+			fmt.Printf("ℹ️  Ensure Metal agent is installed: make install-metal-agent\n")
+		} else {
+			if opts.image == "" {
+				opts.image = "ghcr.io/ggml-org/llama.cpp:server-cuda"
+				fmt.Printf("ℹ️  Auto-detected image: %s\n", opts.image)
+			}
+		}
+	} else {
+		if opts.accelerator == "" {
+			opts.accelerator = "cpu"
+		}
+		if opts.image == "" {
+			opts.image = "ghcr.io/ggml-org/llama.cpp:server"
 		}
 	}
 }

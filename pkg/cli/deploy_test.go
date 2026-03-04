@@ -20,6 +20,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 )
 
 const testDefaultNamespace = "default"
@@ -390,6 +392,111 @@ func TestApplyCatalogDefaults(t *testing.T) {
 	})
 }
 
+func TestDeployOptions_MemoryFractionSetsHardwareSpec(t *testing.T) {
+	opts := &deployOptions{
+		name:                "mem-frac-model",
+		namespace:           testDefaultNamespace,
+		modelSource:         "https://example.com/model.gguf",
+		modelFormat:         "gguf",
+		accelerator:         "metal",
+		cpu:                 "2",
+		memory:              "4Gi",
+		metalMemoryFraction: 0.8,
+	}
+
+	// Build the model the same way runDeploy does
+	model := buildTestModel(opts)
+
+	if model.Spec.Hardware == nil {
+		t.Fatal("Hardware is nil")
+	}
+	if model.Spec.Hardware.MemoryFraction == nil {
+		t.Fatal("MemoryFraction is nil, want 0.8")
+	}
+	if *model.Spec.Hardware.MemoryFraction != 0.8 {
+		t.Errorf("MemoryFraction = %f, want 0.8", *model.Spec.Hardware.MemoryFraction)
+	}
+}
+
+func TestDeployOptions_MemoryBudgetSetsHardwareSpec(t *testing.T) {
+	opts := &deployOptions{
+		name:              "mem-budget-model",
+		namespace:         testDefaultNamespace,
+		modelSource:       "https://example.com/model.gguf",
+		modelFormat:       "gguf",
+		accelerator:       "metal",
+		cpu:               "2",
+		memory:            "4Gi",
+		metalMemoryBudget: "24Gi",
+	}
+
+	model := buildTestModel(opts)
+
+	if model.Spec.Hardware == nil {
+		t.Fatal("Hardware is nil")
+	}
+	if model.Spec.Hardware.MemoryBudget != "24Gi" {
+		t.Errorf("MemoryBudget = %q, want %q", model.Spec.Hardware.MemoryBudget, "24Gi")
+	}
+}
+
+func TestDeployOptions_ZeroMemoryFractionOmitted(t *testing.T) {
+	opts := &deployOptions{
+		name:                "zero-frac-model",
+		namespace:           testDefaultNamespace,
+		modelSource:         "https://example.com/model.gguf",
+		modelFormat:         "gguf",
+		accelerator:         "metal",
+		cpu:                 "2",
+		memory:              "4Gi",
+		metalMemoryFraction: 0,
+	}
+
+	model := buildTestModel(opts)
+
+	if model.Spec.Hardware.MemoryFraction != nil {
+		t.Errorf("MemoryFraction should be nil when 0, got %f", *model.Spec.Hardware.MemoryFraction)
+	}
+}
+
+// buildTestModel mirrors the model construction in runDeploy for testing.
+func buildTestModel(opts *deployOptions) *inferencev1alpha1.Model {
+	model := &inferencev1alpha1.Model{
+		Spec: inferencev1alpha1.ModelSpec{
+			Source:       opts.modelSource,
+			Format:       opts.modelFormat,
+			Quantization: opts.quantization,
+			Hardware: &inferencev1alpha1.HardwareSpec{
+				Accelerator: opts.accelerator,
+			},
+			Resources: &inferencev1alpha1.ResourceRequirements{
+				CPU:    opts.cpu,
+				Memory: opts.memory,
+			},
+		},
+	}
+	if opts.gpu {
+		model.Spec.Hardware.GPU = &inferencev1alpha1.GPUSpec{
+			Enabled: true,
+			Count:   opts.gpuCount,
+			Vendor:  opts.gpuVendor,
+		}
+		if opts.gpuLayers != 0 {
+			model.Spec.Hardware.GPU.Layers = opts.gpuLayers
+		}
+		if opts.gpuMemory != "" {
+			model.Spec.Hardware.GPU.Memory = opts.gpuMemory
+		}
+	}
+	if opts.metalMemoryBudget != "" {
+		model.Spec.Hardware.MemoryBudget = opts.metalMemoryBudget
+	}
+	if opts.metalMemoryFraction > 0 {
+		model.Spec.Hardware.MemoryFraction = &opts.metalMemoryFraction
+	}
+	return model
+}
+
 func TestNewDeployCommand(t *testing.T) {
 	cmd := NewDeployCommand()
 
@@ -412,6 +519,8 @@ func TestNewDeployCommand(t *testing.T) {
 		"gpu-vendor":      "",
 		"context":         "",
 		"parallel":        "",
+		"memory-fraction": "",
+		"memory-budget":   "",
 		"cpu":             "",
 		"memory":          "",
 		"image":           "",

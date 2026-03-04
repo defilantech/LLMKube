@@ -18,7 +18,10 @@ package agent
 
 import (
 	"fmt"
+	"math"
 	"testing"
+
+	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 )
 
 type mockMemoryProvider struct {
@@ -273,5 +276,218 @@ func TestNewMetalAgent_MemoryFraction(t *testing.T) {
 	})
 	if agent.memoryFraction != 0.67 {
 		t.Errorf("auto-detected fraction = %f, want 0.67 for 16GB", agent.memoryFraction)
+	}
+}
+
+// --- ResolveMemoryBudget tests ---
+
+func TestResolveMemoryBudget_AbsoluteTakesPrecedence(t *testing.T) {
+	frac := 0.8
+	hw := &inferencev1alpha1.HardwareSpec{
+		MemoryBudget:   "24Gi",
+		MemoryFraction: &frac,
+	}
+	resolved, err := ResolveMemoryBudget(hw, 0.67)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resolved.Mode != BudgetModeAbsolute {
+		t.Errorf("Mode = %q, want absolute", resolved.Mode)
+	}
+	if resolved.Source != "crd-budget" {
+		t.Errorf("Source = %q, want crd-budget", resolved.Source)
+	}
+	expectedBytes := uint64(24 * 1024 * 1024 * 1024)
+	if resolved.Bytes != expectedBytes {
+		t.Errorf("Bytes = %d, want %d", resolved.Bytes, expectedBytes)
+	}
+}
+
+func TestResolveMemoryBudget_FractionFromCRD(t *testing.T) {
+	frac := 0.9
+	hw := &inferencev1alpha1.HardwareSpec{
+		MemoryFraction: &frac,
+	}
+	resolved, err := ResolveMemoryBudget(hw, 0.67)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resolved.Mode != BudgetModeFraction {
+		t.Errorf("Mode = %q, want fraction", resolved.Mode)
+	}
+	if resolved.Source != "crd-fraction" {
+		t.Errorf("Source = %q, want crd-fraction", resolved.Source)
+	}
+	if resolved.Fraction != 0.9 {
+		t.Errorf("Fraction = %f, want 0.9", resolved.Fraction)
+	}
+}
+
+func TestResolveMemoryBudget_FallsBackToAgentDefault(t *testing.T) {
+	hw := &inferencev1alpha1.HardwareSpec{
+		Accelerator: "metal",
+	}
+	resolved, err := ResolveMemoryBudget(hw, 0.75)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resolved.Mode != BudgetModeFraction {
+		t.Errorf("Mode = %q, want fraction", resolved.Mode)
+	}
+	if resolved.Source != "agent-flag" {
+		t.Errorf("Source = %q, want agent-flag", resolved.Source)
+	}
+	if resolved.Fraction != 0.75 {
+		t.Errorf("Fraction = %f, want 0.75", resolved.Fraction)
+	}
+}
+
+func TestResolveMemoryBudget_InvalidBudgetString(t *testing.T) {
+	hw := &inferencev1alpha1.HardwareSpec{
+		MemoryBudget: "not-a-quantity",
+	}
+	_, err := ResolveMemoryBudget(hw, 0.67)
+	if err == nil {
+		t.Error("expected error for invalid memoryBudget string")
+	}
+}
+
+func TestResolveMemoryBudget_NilHardware(t *testing.T) {
+	resolved, err := ResolveMemoryBudget(nil, 0.67)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resolved.Mode != BudgetModeFraction {
+		t.Errorf("Mode = %q, want fraction", resolved.Mode)
+	}
+	if resolved.Source != "agent-flag" {
+		t.Errorf("Source = %q, want agent-flag", resolved.Source)
+	}
+	if resolved.Fraction != 0.67 {
+		t.Errorf("Fraction = %f, want 0.67", resolved.Fraction)
+	}
+}
+
+func TestResolveMemoryBudget_SmallAbsoluteBudget(t *testing.T) {
+	hw := &inferencev1alpha1.HardwareSpec{
+		MemoryBudget: "1Gi",
+	}
+	resolved, err := ResolveMemoryBudget(hw, 0.75)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resolved.Mode != BudgetModeAbsolute {
+		t.Errorf("Mode = %q, want absolute", resolved.Mode)
+	}
+	expectedBytes := uint64(1024 * 1024 * 1024)
+	if resolved.Bytes != expectedBytes {
+		t.Errorf("Bytes = %d, want %d", resolved.Bytes, expectedBytes)
+	}
+}
+
+// --- CheckMemoryBudgetAbsolute tests ---
+
+func TestCheckMemoryBudgetAbsolute_Fits(t *testing.T) {
+	estimate := MemoryEstimate{TotalBytes: 10 * 1024 * 1024 * 1024}  // 10 GiB
+	budget := CheckMemoryBudgetAbsolute(24*1024*1024*1024, estimate) // 24 GiB budget
+
+	if !budget.Fits {
+		t.Error("expected model to fit within absolute budget")
+	}
+	if budget.BudgetBytes != 24*1024*1024*1024 {
+		t.Errorf("BudgetBytes = %d, want %d", budget.BudgetBytes, uint64(24*1024*1024*1024))
+	}
+	expectedHeadroom := uint64(14 * 1024 * 1024 * 1024)
+	if budget.HeadroomBytes != expectedHeadroom {
+		t.Errorf("HeadroomBytes = %d, want %d", budget.HeadroomBytes, expectedHeadroom)
+	}
+}
+
+func TestCheckMemoryBudgetAbsolute_DoesNotFit(t *testing.T) {
+	estimate := MemoryEstimate{TotalBytes: 20 * 1024 * 1024 * 1024} // 20 GiB
+	budget := CheckMemoryBudgetAbsolute(8*1024*1024*1024, estimate) // 8 GiB budget
+
+	if budget.Fits {
+		t.Error("expected model to NOT fit within absolute budget")
+	}
+	if budget.HeadroomBytes != 0 {
+		t.Errorf("HeadroomBytes should be 0 when model doesn't fit, got %d", budget.HeadroomBytes)
+	}
+}
+
+// --- Edge-case validation tests ---
+
+func TestResolveMemoryBudget_ZeroFraction(t *testing.T) {
+	zero := 0.0
+	hw := &inferencev1alpha1.HardwareSpec{MemoryFraction: &zero}
+	_, err := ResolveMemoryBudget(hw, 0.75)
+	if err == nil {
+		t.Error("expected error for zero memoryFraction")
+	}
+}
+
+func TestResolveMemoryBudget_NegativeFraction(t *testing.T) {
+	neg := -0.5
+	hw := &inferencev1alpha1.HardwareSpec{MemoryFraction: &neg}
+	_, err := ResolveMemoryBudget(hw, 0.75)
+	if err == nil {
+		t.Error("expected error for negative memoryFraction")
+	}
+}
+
+func TestResolveMemoryBudget_FractionExceedsOne(t *testing.T) {
+	big := 1.5
+	hw := &inferencev1alpha1.HardwareSpec{MemoryFraction: &big}
+	_, err := ResolveMemoryBudget(hw, 0.75)
+	if err == nil {
+		t.Error("expected error for memoryFraction > 1.0")
+	}
+}
+
+func TestResolveMemoryBudget_NaNFraction(t *testing.T) {
+	nan := math.NaN()
+	hw := &inferencev1alpha1.HardwareSpec{MemoryFraction: &nan}
+	_, err := ResolveMemoryBudget(hw, 0.75)
+	if err == nil {
+		t.Error("expected error for NaN memoryFraction")
+	}
+}
+
+func TestResolveMemoryBudget_InfFraction(t *testing.T) {
+	inf := math.Inf(1)
+	hw := &inferencev1alpha1.HardwareSpec{MemoryFraction: &inf}
+	_, err := ResolveMemoryBudget(hw, 0.75)
+	if err == nil {
+		t.Error("expected error for Inf memoryFraction")
+	}
+}
+
+func TestResolveMemoryBudget_NegativeBudget(t *testing.T) {
+	hw := &inferencev1alpha1.HardwareSpec{MemoryBudget: "-8Gi"}
+	_, err := ResolveMemoryBudget(hw, 0.75)
+	if err == nil {
+		t.Error("expected error for negative memoryBudget")
+	}
+}
+
+func TestResolveMemoryBudget_ZeroBudget(t *testing.T) {
+	hw := &inferencev1alpha1.HardwareSpec{MemoryBudget: "0"}
+	_, err := ResolveMemoryBudget(hw, 0.75)
+	if err == nil {
+		t.Error("expected error for zero memoryBudget")
+	}
+}
+
+func TestEstimateModelMemory_OverflowFallsBack(t *testing.T) {
+	fileSize := uint64(4 * 1024 * 1024 * 1024) // 4 GiB
+	// Huge values that would overflow uint64 multiplication
+	est := EstimateModelMemory(fileSize, math.MaxUint64/2, 4, 2)
+
+	// Should have fallen back to heuristic (no KV cache)
+	if est.KVCacheBytes != 0 {
+		t.Errorf("expected fallback (KVCacheBytes=0) on overflow, got %d", est.KVCacheBytes)
+	}
+	if est.TotalBytes <= fileSize {
+		t.Error("fallback estimate should exceed file size")
 	}
 }
