@@ -5,6 +5,13 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1](https://github.com/defilantech/LLMKube/compare/v0.5.0...v0.5.1) (2026-03-05)
+
+
+### Bug Fixes
+
+* quote job-level if expression to fix YAML parsing in helm-chart workflow ([8714b9f](https://github.com/defilantech/LLMKube/commit/8714b9fc60d7020be4c21d5764ced7b88bd7f97a))
+
 ## [0.4.21](https://github.com/defilantech/LLMKube/compare/v0.4.20...v0.4.21) (2026-03-04)
 
 
