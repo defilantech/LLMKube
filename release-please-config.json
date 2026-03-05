@@ -25,6 +25,11 @@
           "type": "generic",
           "path": "pkg/cli/version.go",
           "glob": "pkg/cli/version.go"
+        },
+        {
+          "type": "generic",
+          "path": "Makefile",
+          "glob": "Makefile"
         }
       ]
     }

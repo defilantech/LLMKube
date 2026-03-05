@@ -14,6 +14,9 @@ on:
       - 'go.mod'
       - 'go.sum'
       - '.github/workflows/helm-chart.yml'
+      - '.release-please-manifest.json'
+      - 'release-please-config.json'
+      - 'Makefile'
   pull_request:
     paths:
       - 'charts/**'
@@ -25,6 +28,9 @@ on:
       - 'go.mod'
       - 'go.sum'
       - '.github/workflows/helm-chart.yml'
+      - '.release-please-manifest.json'
+      - 'release-please-config.json'
+      - 'Makefile'
 
 jobs:
   lint-and-validate:
@@ -58,7 +64,72 @@ jobs:
             echo "❌ Version not set properly"
             exit 1
           fi
-          echo "✅ Chart versions validated"
+
+          # Cross-check: Chart version must equal appVersion
+          if [ "$CHART_VERSION" != "$APP_VERSION" ]; then
+            echo "❌ Chart version ($CHART_VERSION) != appVersion ($APP_VERSION)"
+            exit 1
+          fi
+
+          # Cross-check: release-please manifest
+          MANIFEST_VERSION=$(jq -r '.["."]' .release-please-manifest.json)
+          if [ "$CHART_VERSION" != "$MANIFEST_VERSION" ]; then
+            echo "❌ Chart version ($CHART_VERSION) != manifest version ($MANIFEST_VERSION)"
+            exit 1
+          fi
+
+          # Cross-check: version.go
+          GO_VERSION=$(grep 'x-release-please-version' pkg/cli/version.go | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+          if [ "$CHART_VERSION" != "$GO_VERSION" ]; then
+            echo "❌ Chart version ($CHART_VERSION) != version.go ($GO_VERSION)"
+            exit 1
+          fi
+
+          echo "✅ All version files consistent at $CHART_VERSION"
+
+  release-pr-version-check:
+    name: Release PR Version Consistency
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' && startsWith(github.event.pull_request.title, 'chore: release ')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Verify PR title version matches file versions
+        run: |
+          # Extract version from PR title "chore: release X.Y.Z"
+          PR_TITLE="${{ github.event.pull_request.title }}"
+          PR_VERSION=$(echo "$PR_TITLE" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+          echo "PR title version: $PR_VERSION"
+
+          if [ -z "$PR_VERSION" ]; then
+            echo "❌ Could not extract version from PR title: $PR_TITLE"
+            exit 1
+          fi
+
+          MANIFEST_VERSION=$(jq -r '.["."]' .release-please-manifest.json)
+          CHART_VERSION=$(grep '^version:' charts/llmkube/Chart.yaml | awk '{print $2}')
+          APP_VERSION=$(grep '^appVersion:' charts/llmkube/Chart.yaml | awk '{print $2}' | tr -d '"')
+          GO_VERSION=$(grep 'x-release-please-version' pkg/cli/version.go | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+
+          FAILED=0
+          for pair in "manifest:$MANIFEST_VERSION" "Chart.yaml version:$CHART_VERSION" "Chart.yaml appVersion:$APP_VERSION" "version.go:$GO_VERSION"; do
+            NAME="${pair%%:*}"
+            VER="${pair#*:}"
+            if [ "$VER" != "$PR_VERSION" ]; then
+              echo "❌ $NAME ($VER) != PR title version ($PR_VERSION)"
+              FAILED=1
+            fi
+          done
+
+          if [ "$FAILED" -eq 1 ]; then
+            echo ""
+            echo "The PR title version does not match the file versions."
+            echo "This will cause a tag/image mismatch on merge."
+            exit 1
+          fi
+
+          echo "✅ PR title version ($PR_VERSION) matches all version files"
 
   template-validation:
     name: Template Validation
