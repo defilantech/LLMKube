@@ -73,13 +73,43 @@ func newLogger(level string) (*zap.Logger, error) {
 	return cfg.Build()
 }
 
+// defaultLlamaServerPaths is the list of paths to search for llama-server,
+// in order of preference. Apple Silicon Homebrew installs to /opt/homebrew/bin,
+// Intel Homebrew installs to /usr/local/bin.
+var defaultLlamaServerPaths = []string{
+	"/opt/homebrew/bin/llama-server",
+	"/usr/local/bin/llama-server",
+}
+
+// statFunc is the function used to check file existence (overridden in tests).
+var statFunc = os.Stat
+
+// resolveLlamaServerBin returns the llama-server binary path. If override is
+// non-empty, it is returned as-is. Otherwise the function searches
+// defaultLlamaServerPaths and returns the first one that exists.
+func resolveLlamaServerBin(override string) (string, error) {
+	if override != "" {
+		return override, nil
+	}
+	for _, p := range defaultLlamaServerPaths {
+		if _, err := statFunc(p); err == nil {
+			return p, nil
+		}
+	}
+	return "", fmt.Errorf(
+		"llama-server not found in default paths (%v); "+
+			"install with: brew install llama.cpp, or pass --llama-server=/path/to/binary",
+		defaultLlamaServerPaths)
+}
+
 func main() {
 	cfg := &AgentConfig{}
 
 	// Parse command-line flags
+	var llamaServerFlag string
 	flag.StringVar(&cfg.Namespace, "namespace", "default", "Kubernetes namespace to watch")
 	flag.StringVar(&cfg.ModelStorePath, "model-store", "/tmp/llmkube-models", "Path to store downloaded models")
-	flag.StringVar(&cfg.LlamaServerBin, "llama-server", "/usr/local/bin/llama-server", "Path to llama-server binary")
+	flag.StringVar(&llamaServerFlag, "llama-server", "", "Path to llama-server binary (auto-detected if not set)")
 	flag.IntVar(&cfg.Port, "port", 9090, "Agent metrics/health port")
 	flag.StringVar(&cfg.LogLevel, "log-level", "info", "Log level (debug, info, warn, error)")
 	flag.StringVar(&cfg.HostIP, "host-ip", "", "IP address to register in Kubernetes endpoints (auto-detected if empty)")
@@ -107,6 +137,18 @@ func main() {
 
 	// TODO: Wire this logger into controller-runtime via ctrl.SetLogger(...) so
 	// Kubernetes client/controller-runtime logs share the same configuration.
+
+	// Resolve llama-server binary path
+	resolvedBin, err := resolveLlamaServerBin(llamaServerFlag)
+	if err != nil {
+		logger.Errorw("llama-server binary not found",
+			"searchPaths", defaultLlamaServerPaths,
+			"installHint", "brew install llama.cpp",
+			"error", err,
+		)
+		os.Exit(1)
+	}
+	cfg.LlamaServerBin = resolvedBin
 
 	hostIP := cfg.HostIP
 	if hostIP == "" {
@@ -140,15 +182,6 @@ func main() {
 	// Create model store directory
 	if err := os.MkdirAll(cfg.ModelStorePath, 0755); err != nil {
 		logger.Errorw("failed to create model store directory", "path", cfg.ModelStorePath, "error", err)
-		os.Exit(1)
-	}
-
-	// Verify llama-server binary exists
-	if _, err := os.Stat(cfg.LlamaServerBin); os.IsNotExist(err) {
-		logger.Errorw("llama-server binary not found",
-			"path", cfg.LlamaServerBin,
-			"installHint", "brew install llama.cpp",
-		)
 		os.Exit(1)
 	}
 	logger.Infow("llama-server binary found", "path", cfg.LlamaServerBin)
