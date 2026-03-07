@@ -46,6 +46,9 @@ type MetalAgentConfig struct {
 	MemoryProvider MemoryProvider
 	// MemoryFraction is the fraction of total memory to budget for models (0 = auto-detect).
 	MemoryFraction float64
+
+	// WatchdogConfig configures the memory pressure watchdog. Nil disables it.
+	WatchdogConfig *MemoryWatchdogConfig
 }
 
 // MetalAgent watches Kubernetes InferenceService resources and manages
@@ -149,6 +152,18 @@ func (a *MetalAgent) Start(ctx context.Context) error {
 		a.logger.With("subsystem", "health-monitor"),
 	)
 	go monitor.Run(ctx)
+
+	// Start memory watchdog (if configured)
+	if a.config.WatchdogConfig != nil {
+		watchdog := NewMemoryWatchdog(
+			a.memoryProvider,
+			a.processMemInfoSnapshot,
+			nil, // observe-only in PR A; eviction callback added in PR B
+			*a.config.WatchdogConfig,
+			a.logger.With("subsystem", "watchdog"),
+		)
+		go watchdog.Run(ctx)
+	}
 
 	// Start watcher
 	eventChan := make(chan InferenceServiceEvent)
@@ -414,6 +429,21 @@ func (a *MetalAgent) Shutdown(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// processMemInfoSnapshot returns a snapshot of process names and PIDs for the watchdog.
+func (a *MetalAgent) processMemInfoSnapshot() []processMemInfo {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	infos := make([]processMemInfo, 0, len(a.processes))
+	for _, p := range a.processes {
+		infos = append(infos, processMemInfo{
+			Name: p.Name,
+			PID:  p.PID,
+		})
+	}
+	return infos
 }
 
 // HealthCheck returns the health status of all managed processes

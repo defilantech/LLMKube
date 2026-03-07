@@ -25,8 +25,10 @@ import (
 )
 
 type mockMemoryProvider struct {
-	totalBytes, availableBytes uint64
-	totalErr, availableErr     error
+	totalBytes, availableBytes, wiredBytes uint64
+	totalErr, availableErr, wiredErr       error
+	processRSS                             map[int]uint64
+	processRSSErr                          error
 }
 
 func (m *mockMemoryProvider) TotalMemory() (uint64, error) {
@@ -35,6 +37,22 @@ func (m *mockMemoryProvider) TotalMemory() (uint64, error) {
 
 func (m *mockMemoryProvider) AvailableMemory() (uint64, error) {
 	return m.availableBytes, m.availableErr
+}
+
+func (m *mockMemoryProvider) WiredMemory() (uint64, error) {
+	return m.wiredBytes, m.wiredErr
+}
+
+func (m *mockMemoryProvider) ProcessRSS(pid int) (uint64, error) {
+	if m.processRSSErr != nil {
+		return 0, m.processRSSErr
+	}
+	if m.processRSS != nil {
+		if v, ok := m.processRSS[pid]; ok {
+			return v, nil
+		}
+	}
+	return 0, fmt.Errorf("no RSS for pid %d", pid)
 }
 
 func TestEstimateModelMemory_WithFullMetadata(t *testing.T) {

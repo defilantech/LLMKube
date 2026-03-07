@@ -33,3 +33,11 @@ func (p *DarwinMemoryProvider) TotalMemory() (uint64, error) {
 func (p *DarwinMemoryProvider) AvailableMemory() (uint64, error) {
 	return 0, fmt.Errorf("DarwinMemoryProvider not supported on %s", runtime.GOOS)
 }
+
+func (p *DarwinMemoryProvider) WiredMemory() (uint64, error) {
+	return 0, fmt.Errorf("DarwinMemoryProvider not supported on %s", runtime.GOOS)
+}
+
+func (p *DarwinMemoryProvider) ProcessRSS(_ int) (uint64, error) {
+	return 0, fmt.Errorf("DarwinMemoryProvider not supported on %s", runtime.GOOS)
+}
