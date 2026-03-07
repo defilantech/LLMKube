@@ -63,9 +63,17 @@ spec:
         args:
           - --leader-elect
           - --health-probe-bind-address=:8081
+          - --metrics-bind-address=:8443
+          - --metrics-secure=true
         image: controller:latest
         name: manager
-        ports: []
+        ports:
+        - name: metrics
+          containerPort: 8443
+          protocol: TCP
+        - name: health
+          containerPort: 8081
+          protocol: TCP
         securityContext:
           readOnlyRootFilesystem: true
           allowPrivilegeEscalation: false
