@@ -5,7 +5,14 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.4.21](https://github.com/defilantech/LLMKube/compare/v0.4.20...v0.4.21) (2026-03-04)
+## [0.5.0](https://github.com/defilantech/LLMKube/compare/v0.4.20...v0.5.0) (2026-03-04)
+
+
+### Features
+
+* add pre-flight memory validation for Metal agent ([#204](https://github.com/defilantech/LLMKube/issues/204)) ([ba252ef](https://github.com/defilantech/LLMKube/commit/ba252efc6bf6cfbf6f29866a249cd6543e03dfed))
+* add health checks, metrics, and continuous monitoring to Metal agent ([#205](https://github.com/defilantech/LLMKube/issues/205)) ([a113fd1](https://github.com/defilantech/LLMKube/commit/a113fd1b5a8eb04608adbab719dee03c11d2fa54))
+* add per-model memoryBudget and memoryFraction CRD fields ([#206](https://github.com/defilantech/LLMKube/issues/206)) ([e632369](https://github.com/defilantech/LLMKube/commit/e6323692ae35ea2e9bcd07abbc074b4393da2875))
 
 
 ### Bug Fixes
