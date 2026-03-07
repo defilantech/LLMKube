@@ -34,6 +34,11 @@ func TestAgentMetricsRegistered(t *testing.T) {
 		{"llmkube_metal_agent_health_check_duration_seconds", healthCheckDuration},
 		{"llmkube_metal_agent_memory_budget_bytes", memoryBudgetBytes},
 		{"llmkube_metal_agent_memory_estimated_bytes", memoryEstimatedBytes},
+		{"llmkube_metal_agent_system_memory_available_bytes", systemMemoryAvailableBytes},
+		{"llmkube_metal_agent_system_memory_wired_bytes", systemMemoryWiredBytes},
+		{"llmkube_metal_agent_process_rss_bytes", processRSSBytes},
+		{"llmkube_metal_agent_memory_pressure_level", memoryPressureLevelGauge},
+		{"llmkube_metal_agent_evictions_total", evictionsTotal},
 	}
 
 	for _, c := range collectors {

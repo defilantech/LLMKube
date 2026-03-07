@@ -73,6 +73,42 @@ var (
 		},
 		[]string{"name", "namespace"},
 	)
+
+	systemMemoryAvailableBytes = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "llmkube_metal_agent_system_memory_available_bytes",
+			Help: "Available system memory in bytes.",
+		},
+	)
+
+	systemMemoryWiredBytes = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "llmkube_metal_agent_system_memory_wired_bytes",
+			Help: "Wired (non-pageable) system memory in bytes.",
+		},
+	)
+
+	processRSSBytes = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "llmkube_metal_agent_process_rss_bytes",
+			Help: "Actual resident set size per managed process in bytes.",
+		},
+		[]string{"name"},
+	)
+
+	memoryPressureLevelGauge = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "llmkube_metal_agent_memory_pressure_level",
+			Help: "Current memory pressure level: 0=normal, 1=warning, 2=critical.",
+		},
+	)
+
+	evictionsTotal = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "llmkube_metal_agent_evictions_total",
+			Help: "Total number of process eviction events triggered by memory pressure.",
+		},
+	)
 )
 
 func init() {
@@ -85,5 +121,10 @@ func init() {
 		healthCheckDuration,
 		memoryBudgetBytes,
 		memoryEstimatedBytes,
+		systemMemoryAvailableBytes,
+		systemMemoryWiredBytes,
+		processRSSBytes,
+		memoryPressureLevelGauge,
+		evictionsTotal,
 	)
 }

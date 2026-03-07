@@ -45,13 +45,17 @@ var (
 )
 
 type AgentConfig struct {
-	Namespace      string
-	ModelStorePath string
-	LlamaServerBin string
-	Port           int
-	LogLevel       string
-	HostIP         string
-	MemoryFraction float64
+	Namespace              string
+	ModelStorePath         string
+	LlamaServerBin         string
+	Port                   int
+	LogLevel               string
+	HostIP                 string
+	MemoryFraction         float64
+	WatchdogInterval       time.Duration
+	MemoryPressureWarning  float64
+	MemoryPressureCritical float64
+	EvictionEnabled        bool
 }
 
 func parseLogLevel(level string) zapcore.Level {
@@ -115,6 +119,14 @@ func main() {
 	flag.StringVar(&cfg.HostIP, "host-ip", "", "IP address to register in Kubernetes endpoints (auto-detected if empty)")
 	flag.Float64Var(&cfg.MemoryFraction, "memory-fraction", 0,
 		"Fraction of system memory to budget for models (0 = auto-detect based on total RAM)")
+	flag.DurationVar(&cfg.WatchdogInterval, "memory-watchdog-interval", 10*time.Second,
+		"How often to check memory pressure (0 to disable)")
+	flag.Float64Var(&cfg.MemoryPressureWarning, "memory-pressure-warning", 0.20,
+		"Available memory fraction below which a warning is emitted")
+	flag.Float64Var(&cfg.MemoryPressureCritical, "memory-pressure-critical", 0.10,
+		"Available memory fraction below which pressure is critical")
+	flag.BoolVar(&cfg.EvictionEnabled, "eviction-enabled", false,
+		"Enable automatic process eviction under critical memory pressure")
 	showVersion := flag.Bool("version", false, "Show version information")
 	flag.Parse()
 
@@ -209,7 +221,7 @@ func main() {
 
 	// Create agent
 	logger.Infow("creating Metal agent")
-	metalAgent := agent.NewMetalAgent(agent.MetalAgentConfig{
+	agentCfg := agent.MetalAgentConfig{
 		K8sClient:      k8sClient,
 		Namespace:      cfg.Namespace,
 		ModelStorePath: cfg.ModelStorePath,
@@ -218,7 +230,20 @@ func main() {
 		HostIP:         cfg.HostIP,
 		Logger:         logger,
 		MemoryFraction: cfg.MemoryFraction,
-	})
+	}
+	if cfg.WatchdogInterval > 0 {
+		agentCfg.WatchdogConfig = &agent.MemoryWatchdogConfig{
+			Interval:          cfg.WatchdogInterval,
+			WarningThreshold:  cfg.MemoryPressureWarning,
+			CriticalThreshold: cfg.MemoryPressureCritical,
+		}
+		logger.Infow("memory watchdog enabled",
+			"interval", cfg.WatchdogInterval,
+			"warningThreshold", cfg.MemoryPressureWarning,
+			"criticalThreshold", cfg.MemoryPressureCritical,
+		)
+	}
+	metalAgent := agent.NewMetalAgent(agentCfg)
 
 	// Setup context with signal handling
 	ctx, cancel := context.WithCancel(context.Background())

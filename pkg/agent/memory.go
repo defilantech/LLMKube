@@ -27,10 +27,32 @@ import (
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 )
 
+// MemoryPressureLevel represents the severity of memory pressure.
+type MemoryPressureLevel int
+
+const (
+	MemoryPressureNormal   MemoryPressureLevel = 0
+	MemoryPressureWarning  MemoryPressureLevel = 1
+	MemoryPressureCritical MemoryPressureLevel = 2
+)
+
+func (l MemoryPressureLevel) String() string {
+	switch l {
+	case MemoryPressureWarning:
+		return "warning"
+	case MemoryPressureCritical:
+		return "critical"
+	default:
+		return "normal"
+	}
+}
+
 // MemoryProvider abstracts system memory queries for testability.
 type MemoryProvider interface {
 	TotalMemory() (uint64, error)
 	AvailableMemory() (uint64, error)
+	WiredMemory() (uint64, error)
+	ProcessRSS(pid int) (uint64, error)
 }
 
 // MemoryEstimate holds the estimated memory requirements for a model.
