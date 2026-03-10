@@ -12,11 +12,13 @@ metadata:
 spec:
   endpoints:
   - path: /metrics
-    port: https
-    scheme: https
+    port: {{ if .Values.metrics.secure }}https{{ else }}http{{ end }}
+    scheme: {{ if .Values.metrics.secure }}https{{ else }}http{{ end }}
     interval: {{ .Values.prometheus.serviceMonitor.interval }}
+    {{- if .Values.metrics.secure }}
     tlsConfig:
       insecureSkipVerify: true
+    {{- end }}
   selector:
     matchLabels:
       {{- include "llmkube.selectorLabels" . | nindent 6 }}
