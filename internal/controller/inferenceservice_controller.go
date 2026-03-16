@@ -57,8 +57,9 @@ func sanitizeDNSName(name string) string {
 	return strings.ReplaceAll(name, ".", "-")
 }
 
+// isLocalModelSource delegates to the shared isLocalSource helper in source.go.
 func isLocalModelSource(source string) bool {
-	return strings.HasPrefix(source, "file://") || strings.HasPrefix(source, "/")
+	return isLocalSource(source)
 }
 
 func buildModelInitCommand(isLocal, useCache bool) string {
@@ -91,10 +92,39 @@ type modelStorageConfig struct {
 }
 
 func buildModelStorageConfig(model *inferencev1alpha1.Model, namespace string, useCache bool, caCertConfigMap string, initContainerImage string) modelStorageConfig {
+	if isPVCSource(model.Spec.Source) {
+		return buildPVCStorageConfig(model)
+	}
 	if useCache {
 		return buildCachedStorageConfig(model, caCertConfigMap, initContainerImage)
 	}
 	return buildEmptyDirStorageConfig(model, namespace, caCertConfigMap, initContainerImage)
+}
+
+// buildPVCStorageConfig mounts the user's PVC directly as a read-only volume.
+// No init container is needed since the model is already on the PVC.
+func buildPVCStorageConfig(model *inferencev1alpha1.Model) modelStorageConfig {
+	claimName, modelFilePath, _ := parsePVCSource(model.Spec.Source)
+
+	modelPath := fmt.Sprintf("/model-source/%s", modelFilePath)
+
+	return modelStorageConfig{
+		modelPath: modelPath,
+		volumes: []corev1.Volume{
+			{
+				Name: "model-source",
+				VolumeSource: corev1.VolumeSource{
+					PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+						ClaimName: claimName,
+						ReadOnly:  true,
+					},
+				},
+			},
+		},
+		volumeMounts: []corev1.VolumeMount{
+			{Name: "model-source", MountPath: "/model-source", ReadOnly: true},
+		},
+	}
 }
 
 func buildCachedStorageConfig(model *inferencev1alpha1.Model, caCertConfigMap string, initContainerImage string) modelStorageConfig {

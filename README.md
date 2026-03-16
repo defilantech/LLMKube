@@ -215,7 +215,7 @@ Consistent ~53 tok/s across 3-8B models with automatic layer sharding. **[Detail
 
 **Inference:**
 - Kubernetes-native CRDs (`Model` + `InferenceService`)
-- Automatic model download from HuggingFace, HTTP, or S3
+- Automatic model download from HuggingFace, HTTP, or PVC (S3 planned)
 - Persistent model cache — download once, deploy instantly ([guide](docs/MODEL-CACHE.md))
 - OpenAI-compatible `/v1/chat/completions` API
 - Multi-replica horizontal scaling

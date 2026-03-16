@@ -27,7 +27,9 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -654,5 +656,257 @@ var _ = Describe("downloadModel", func() {
 		_, err = reconciler.downloadModel(context.Background(), server.URL+"/model.gguf", filepath.Join(tempDir, "model.gguf"))
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("bad status"))
+	})
+})
+
+var _ = Describe("PVC Source Reconcile", func() {
+	ctx := context.Background()
+
+	It("should set Ready immediately for PVC source with Bound PVC", func() {
+		pvcName := "test-pvc-bound"
+		modelName := "model-pvc-source"
+
+		// Create a PVC in envtest
+		pvc := &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: pvcName, Namespace: "default"},
+			Spec: corev1.PersistentVolumeClaimSpec{
+				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadOnlyMany},
+				Resources: corev1.VolumeResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceStorage: resource.MustParse("10Gi"),
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, pvc)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, pvc) }()
+
+		// Manually set PVC status to Bound (envtest doesn't have a volume provisioner)
+		pvc.Status.Phase = corev1.ClaimBound
+		Expect(k8sClient.Status().Update(ctx, pvc)).To(Succeed())
+
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
+			Spec: inferencev1alpha1.ModelSpec{
+				Source: fmt.Sprintf("pvc://%s/models/llama.gguf", pvcName),
+			},
+		}
+		Expect(k8sClient.Create(ctx, model)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, model) }()
+
+		reconciler := &ModelReconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+		result, err := reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(Equal(reconcile.Result{}))
+
+		updated := &inferencev1alpha1.Model{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: modelName, Namespace: "default"}, updated)).To(Succeed())
+		Expect(updated.Status.Phase).To(Equal(PhaseReady))
+		Expect(updated.Status.Path).To(Equal("/model-source/models/llama.gguf"))
+	})
+
+	It("should set Failed when referenced PVC does not exist", func() {
+		modelName := "model-pvc-missing"
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
+			Spec: inferencev1alpha1.ModelSpec{
+				Source: "pvc://nonexistent-pvc/model.gguf",
+			},
+		}
+		Expect(k8sClient.Create(ctx, model)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, model) }()
+
+		reconciler := &ModelReconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+		result, err := reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
+		})
+		Expect(err).NotTo(HaveOccurred()) // Returns nil error with requeue
+		Expect(result.RequeueAfter).To(Equal(30 * time.Second))
+
+		updated := &inferencev1alpha1.Model{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: modelName, Namespace: "default"}, updated)).To(Succeed())
+		Expect(updated.Status.Phase).To(Equal("Failed"))
+
+		var hasDegraded bool
+		for _, cond := range updated.Status.Conditions {
+			if cond.Type == "Degraded" && cond.Reason == "PVCNotFound" {
+				hasDegraded = true
+			}
+		}
+		Expect(hasDegraded).To(BeTrue())
+	})
+})
+
+var _ = Describe("SHA256 Verification", func() {
+	ctx := context.Background()
+
+	It("should pass when spec SHA256 matches downloaded file", func() {
+		modelContent := []byte("sha256-test-model-content")
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(modelContent)
+		}))
+		defer server.Close()
+
+		tempDir, err := os.MkdirTemp("", "llmkube-sha-*")
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = os.RemoveAll(tempDir) }()
+
+		// Pre-compute the expected hash
+		filePath := filepath.Join(tempDir, "pre-hash.gguf")
+		Expect(os.WriteFile(filePath, modelContent, 0644)).To(Succeed())
+		expectedHash, err := computeFileSHA256(filePath)
+		Expect(err).NotTo(HaveOccurred())
+		_ = os.Remove(filePath)
+
+		modelName := "model-sha256-match"
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
+			Spec: inferencev1alpha1.ModelSpec{
+				Source: fmt.Sprintf("%s/model.gguf", server.URL),
+				SHA256: expectedHash,
+			},
+		}
+		Expect(k8sClient.Create(ctx, model)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, model) }()
+
+		reconciler := &ModelReconciler{
+			Client:      k8sClient,
+			Scheme:      k8sClient.Scheme(),
+			StoragePath: tempDir,
+		}
+		result, err := reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(Equal(reconcile.Result{}))
+
+		updated := &inferencev1alpha1.Model{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: modelName, Namespace: "default"}, updated)).To(Succeed())
+		Expect(updated.Status.Phase).To(Equal(PhaseReady))
+		Expect(updated.Status.SHA256).To(Equal(expectedHash))
+	})
+
+	It("should fail when spec SHA256 does not match downloaded file", func() {
+		modelContent := []byte("sha256-mismatch-content")
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(modelContent)
+		}))
+		defer server.Close()
+
+		tempDir, err := os.MkdirTemp("", "llmkube-sha-*")
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = os.RemoveAll(tempDir) }()
+
+		modelName := "model-sha256-mismatch"
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
+			Spec: inferencev1alpha1.ModelSpec{
+				Source: fmt.Sprintf("%s/model.gguf", server.URL),
+				SHA256: "0000000000000000000000000000000000000000000000000000000000000000",
+			},
+		}
+		Expect(k8sClient.Create(ctx, model)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, model) }()
+
+		reconciler := &ModelReconciler{
+			Client:      k8sClient,
+			Scheme:      k8sClient.Scheme(),
+			StoragePath: tempDir,
+		}
+		result, err := reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("SHA256 mismatch"))
+		Expect(result).To(Equal(reconcile.Result{}))
+
+		updated := &inferencev1alpha1.Model{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: modelName, Namespace: "default"}, updated)).To(Succeed())
+		Expect(updated.Status.Phase).To(Equal("Failed"))
+
+		var hasIntegrity bool
+		for _, cond := range updated.Status.Conditions {
+			if cond.Type == "Degraded" && cond.Reason == "IntegrityCheckFailed" {
+				hasIntegrity = true
+			}
+		}
+		Expect(hasIntegrity).To(BeTrue())
+
+		// Verify the file was cleaned up
+		cacheKey := computeCacheKey(model.Spec.Source)
+		modelPath := filepath.Join(tempDir, cacheKey, "model.gguf")
+		_, statErr := os.Stat(modelPath)
+		Expect(os.IsNotExist(statErr)).To(BeTrue(), "model file should be removed after integrity check failure")
+	})
+
+	It("should compute and store SHA256 even when not specified in spec", func() {
+		modelContent := []byte("sha256-auto-compute-content")
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(modelContent)
+		}))
+		defer server.Close()
+
+		tempDir, err := os.MkdirTemp("", "llmkube-sha-*")
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = os.RemoveAll(tempDir) }()
+
+		modelName := "model-sha256-auto"
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
+			Spec: inferencev1alpha1.ModelSpec{
+				Source: fmt.Sprintf("%s/model.gguf", server.URL),
+				// SHA256 intentionally not set
+			},
+		}
+		Expect(k8sClient.Create(ctx, model)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, model) }()
+
+		reconciler := &ModelReconciler{
+			Client:      k8sClient,
+			Scheme:      k8sClient.Scheme(),
+			StoragePath: tempDir,
+		}
+		result, err := reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(Equal(reconcile.Result{}))
+
+		updated := &inferencev1alpha1.Model{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: modelName, Namespace: "default"}, updated)).To(Succeed())
+		Expect(updated.Status.Phase).To(Equal(PhaseReady))
+		Expect(updated.Status.SHA256).To(HaveLen(64))
+	})
+})
+
+var _ = Describe("computeFileSHA256", func() {
+	It("should compute correct hash", func() {
+		tempDir, err := os.MkdirTemp("", "llmkube-hash-*")
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = os.RemoveAll(tempDir) }()
+
+		filePath := filepath.Join(tempDir, "test.gguf")
+		Expect(os.WriteFile(filePath, []byte("hello"), 0644)).To(Succeed())
+
+		hash, err := computeFileSHA256(filePath)
+		Expect(err).NotTo(HaveOccurred())
+		// SHA256 of "hello" is 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+		Expect(hash).To(Equal("2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"))
+	})
+
+	It("should return error for nonexistent file", func() {
+		_, err := computeFileSHA256("/nonexistent/file.gguf")
+		Expect(err).To(HaveOccurred())
 	})
 })

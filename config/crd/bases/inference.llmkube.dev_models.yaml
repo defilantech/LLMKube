@@ -170,15 +170,22 @@ spec:
                     description: Memory specifies memory requirements (e.g., "4Gi")
                     type: string
                 type: object
+              sha256:
+                description: |-
+                  SHA256 is the expected SHA256 hash of the model file for integrity verification.
+                  When set, the controller verifies the downloaded/copied file matches this hash.
+                pattern: ^[a-fA-F0-9]{64}$
+                type: string
               source:
                 description: |-
                   Source defines where to obtain the model file (GGUF format)
-                  Supported schemes: http://, https://, file://, or absolute paths
+                  Supported schemes: http://, https://, file://, pvc://, or absolute paths
                   Examples:
                     - https://huggingface.co/org/repo/resolve/main/model.gguf
                     - file:///mnt/models/model.gguf
                     - /mnt/models/model.gguf (air-gapped deployments)
-                pattern: ^(https?|file)://.*\.gguf$|^/.*\.gguf$
+                    - pvc://my-models-pvc/path/to/model.gguf (pre-staged on a PersistentVolumeClaim)
+                pattern: ^(https?|file|pvc)://.*\.gguf$|^/.*\.gguf$
                 type: string
             required:
             - source
@@ -319,6 +326,11 @@ spec:
                 description: |-
                   Phase represents the current lifecycle phase of the model
                   Possible values: Pending, Downloading, Ready, Failed
+                type: string
+              sha256:
+                description: |-
+                  SHA256 is the computed SHA256 hash of the model file.
+                  Populated after download/copy for integrity tracking.
                 type: string
               size:
                 description: Size represents the size of the downloaded model file

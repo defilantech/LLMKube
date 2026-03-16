@@ -29,9 +29,11 @@ import (
 	"strings"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -57,6 +59,7 @@ type ModelReconciler struct {
 // +kubebuilder:rbac:groups=inference.llmkube.dev,resources=models,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=inference.llmkube.dev,resources=models/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=inference.llmkube.dev,resources=models/finalizers,verbs=update
+// +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch
 
 func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	reconcileStart := time.Now()
@@ -78,6 +81,12 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 
 	if r.StoragePath == "" {
 		r.StoragePath = DefaultModelCachePath
+	}
+
+	// PVC sources are handled differently: the controller validates the PVC exists
+	// and sets the model as Ready without downloading anything.
+	if isPVCSource(model.Spec.Source) {
+		return r.reconcilePVCSource(ctx, model)
 	}
 
 	cacheKey := computeCacheKey(model.Spec.Source)
@@ -171,6 +180,19 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return ctrl.Result{RequeueAfter: 5 * time.Minute}, err
 	}
 
+	// SHA256 integrity verification
+	if err := r.verifySHA256(ctx, model, modelPath); err != nil {
+		logger.Error(err, "SHA256 integrity check failed")
+		_ = os.Remove(modelPath)
+		llmkubemetrics.ReconcileTotal.WithLabelValues("model", "error").Inc()
+		llmkubemetrics.ModelStatus.WithLabelValues(model.Name, model.Namespace, "Failed").Set(1)
+		model.Status.Phase = "Failed"
+		if statusErr := r.updateStatus(ctx, model, "Degraded", metav1.ConditionTrue, "IntegrityCheckFailed", err.Error()); statusErr != nil {
+			logger.Error(statusErr, "Failed to update status after integrity check failure")
+		}
+		return ctrl.Result{}, err
+	}
+
 	model.Status.Phase = PhaseReady
 	model.Status.Path = modelPath
 	model.Status.Size = formatBytes(size)
@@ -194,6 +216,97 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	llmkubemetrics.ReconcileTotal.WithLabelValues("model", "success").Inc()
 	logger.Info("Model ready and cached", "path", modelPath, "size", model.Status.Size, "cacheKey", cacheKey)
 	return ctrl.Result{}, nil
+}
+
+// reconcilePVCSource handles PVC-based model sources. It validates the referenced
+// PVC exists and is Bound, then sets the model to Ready without downloading.
+func (r *ModelReconciler) reconcilePVCSource(ctx context.Context, model *inferencev1alpha1.Model) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+
+	// Early exit if already Ready
+	if model.Status.Phase == PhaseReady {
+		logger.Info("PVC model already Ready, skipping reconcile")
+		llmkubemetrics.ReconcileTotal.WithLabelValues("model", "success").Inc()
+		return ctrl.Result{}, nil
+	}
+
+	claimName, modelFilePath, err := parsePVCSource(model.Spec.Source)
+	if err != nil {
+		model.Status.Phase = "Failed"
+		if statusErr := r.updateStatus(ctx, model, "Degraded", metav1.ConditionTrue, "InvalidSource", err.Error()); statusErr != nil {
+			logger.Error(statusErr, "Failed to update status")
+		}
+		return ctrl.Result{}, err
+	}
+
+	// Validate the PVC exists and is Bound
+	pvc := &corev1.PersistentVolumeClaim{}
+	pvcKey := types.NamespacedName{Name: claimName, Namespace: model.Namespace}
+	if err := r.Get(ctx, pvcKey, pvc); err != nil {
+		if errors.IsNotFound(err) {
+			logger.Info("Referenced PVC not found", "pvc", claimName)
+			model.Status.Phase = "Failed"
+			msg := fmt.Sprintf("PVC %q not found in namespace %q", claimName, model.Namespace)
+			if statusErr := r.updateStatus(ctx, model, "Degraded", metav1.ConditionTrue, "PVCNotFound", msg); statusErr != nil {
+				logger.Error(statusErr, "Failed to update status")
+			}
+			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		}
+		return ctrl.Result{}, err
+	}
+
+	if pvc.Status.Phase != corev1.ClaimBound {
+		logger.Info("PVC not yet bound", "pvc", claimName, "phase", pvc.Status.Phase)
+		model.Status.Phase = "Pending"
+		msg := fmt.Sprintf("PVC %q is %s, waiting for it to be Bound", claimName, pvc.Status.Phase)
+		if statusErr := r.updateStatus(ctx, model, "Progressing", metav1.ConditionTrue, "PVCNotBound", msg); statusErr != nil {
+			logger.Error(statusErr, "Failed to update status")
+		}
+		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+	}
+
+	// PVC is valid and bound — set model as Ready
+	cacheKey := computeCacheKey(model.Spec.Source)
+	mountPath := fmt.Sprintf("/model-source/%s", modelFilePath)
+
+	model.Status.Phase = PhaseReady
+	model.Status.Path = mountPath
+	model.Status.CacheKey = cacheKey
+	model.Status.AcceleratorReady = r.checkAcceleratorAvailability(model.Spec.Hardware)
+	now := metav1.Now()
+	model.Status.LastUpdated = &now
+
+	if err := r.updateStatus(ctx, model, "Available", metav1.ConditionTrue, "PVCModelReady", fmt.Sprintf("Model available on PVC %q", claimName)); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	llmkubemetrics.ModelStatus.WithLabelValues(model.Name, model.Namespace, "Ready").Set(1)
+	llmkubemetrics.ReconcileTotal.WithLabelValues("model", "success").Inc()
+	logger.Info("PVC model ready", "pvc", claimName, "path", mountPath)
+	return ctrl.Result{}, nil
+}
+
+// verifySHA256 computes the SHA256 hash of the file and verifies it against the
+// spec if provided. The computed hash is always stored in status.
+func (r *ModelReconciler) verifySHA256(ctx context.Context, model *inferencev1alpha1.Model, filePath string) error {
+	logger := log.FromContext(ctx)
+
+	computedHash, err := computeFileSHA256(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to compute SHA256: %w", err)
+	}
+
+	model.Status.SHA256 = computedHash
+	logger.Info("Computed model file SHA256", "sha256", computedHash)
+
+	if model.Spec.SHA256 != "" {
+		if !strings.EqualFold(computedHash, model.Spec.SHA256) {
+			return fmt.Errorf("SHA256 mismatch: expected %s, got %s", model.Spec.SHA256, computedHash)
+		}
+		logger.Info("SHA256 integrity check passed")
+	}
+
+	return nil
 }
 
 func (r *ModelReconciler) fetchModel(ctx context.Context, source, dest string) (int64, error) {
@@ -300,17 +413,6 @@ func (r *ModelReconciler) downloadModel(ctx context.Context, source, dest string
 	return size, nil
 }
 
-func isLocalSource(source string) bool {
-	return strings.HasPrefix(source, "file://") || strings.HasPrefix(source, "/")
-}
-
-func getLocalPath(source string) string {
-	if strings.HasPrefix(source, "file://") {
-		return strings.TrimPrefix(source, "file://")
-	}
-	return source
-}
-
 //nolint:unparam
 func (r *ModelReconciler) updateStatus(ctx context.Context, model *inferencev1alpha1.Model, condType string, status metav1.ConditionStatus, reason, message string) error {
 	condition := metav1.Condition{
@@ -388,6 +490,22 @@ func (r *ModelReconciler) parseGGUFMetadata(path string) (*inferencev1alpha1.GGU
 		FileVersion:   parsed.Header.Version,
 		License:       license.Normalize(parsed.License()),
 	}, nil
+}
+
+// computeFileSHA256 streams a file through SHA256 and returns the hex-encoded hash.
+func computeFileSHA256(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("failed to open file for hashing: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", fmt.Errorf("failed to read file for hashing: %w", err)
+	}
+
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 func (r *ModelReconciler) SetupWithManager(mgr ctrl.Manager) error {

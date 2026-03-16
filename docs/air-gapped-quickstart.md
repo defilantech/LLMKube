@@ -119,7 +119,39 @@ spec:
   format: gguf
 ```
 
-### Option 3: Private HTTP Server
+### Option 3: PVC Source (Recommended for Air-Gapped)
+
+Mount a model directly from an existing PersistentVolumeClaim — no download, no HostPath, portable across nodes:
+
+```yaml
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: Model
+metadata:
+  name: pvc-llama
+spec:
+  source: pvc://my-models-pvc/llama-3.1-8b-q4_k_m.gguf
+  format: gguf
+  hardware:
+    accelerator: cuda
+    gpu:
+      enabled: true
+      count: 1
+```
+
+The controller validates the PVC exists and is Bound, then sets the model to Ready immediately. The InferenceService mounts the PVC read-only — no init container or download step needed.
+
+**CLI equivalent:**
+```bash
+llmkube deploy my-llama --gpu \
+  --source pvc://my-models-pvc/llama-3.1-8b-q4_k_m.gguf
+```
+
+**Requirements:**
+- PVC must exist in the same namespace as the Model
+- PVC must be Bound
+- Use `ReadOnlyMany` access mode for multi-replica deployments
+
+### Option 4: Private HTTP Server
 
 For environments with an internal model server:
 
@@ -191,6 +223,15 @@ helm install llmkube ./llmkube \
 # Deploy from local file
 llmkube deploy my-model --gpu \
   --source /mnt/models/model.gguf
+
+# Deploy from PVC (recommended)
+llmkube deploy my-model --gpu \
+  --source pvc://my-models-pvc/model.gguf
+
+# Deploy with SHA256 integrity verification
+llmkube deploy my-model --gpu \
+  --source http://model-server.internal:8080/model.gguf \
+  --sha256 a1b2c3d4...
 
 # Deploy catalog model with local file override
 llmkube deploy llama-3.1-8b --gpu \
@@ -287,9 +328,50 @@ ls -la /mnt/models/model.gguf
 chmod 644 /mnt/models/model.gguf
 ```
 
+## SHA256 Integrity Verification
+
+LLMKube supports built-in SHA256 verification for model integrity — critical for compliance environments where model provenance must be assured.
+
+### Spec-Level Verification
+
+Set the expected hash in the Model spec. The controller computes the hash after download and fails the model if it doesn't match:
+
+```yaml
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: Model
+metadata:
+  name: verified-llama
+spec:
+  source: http://model-server.internal:8080/llama-3.1-8b-q4_k_m.gguf
+  sha256: "a1b2c3d4e5f6...64-char-hex-string..."
+  format: gguf
+```
+
+### CLI Usage
+
+```bash
+# Deploy with integrity verification
+llmkube deploy my-model --gpu \
+  --source http://model-server.internal:8080/model.gguf \
+  --sha256 a1b2c3d4e5f6...
+
+# Compute hash of a local file first
+sha256sum /mnt/models/model.gguf
+```
+
+### Status Tracking
+
+The computed SHA256 is always stored in `status.sha256`, even when no expected hash is provided. This lets you audit deployed models:
+
+```bash
+kubectl get model my-model -o jsonpath='{.status.sha256}'
+```
+
+**Note:** SHA256 verification is not available for `pvc://` sources since the controller does not mount the PVC.
+
 ## Security Considerations
 
-1. **Model Integrity**: Verify SHA256 checksums of downloaded models before deployment
+1. **Model Integrity**: Use the `sha256` field to verify model checksums automatically
 2. **File Permissions**: Restrict model file access to necessary users/groups
 3. **Network Segmentation**: Ensure internal model servers are properly firewalled
 4. **Audit Logging**: Track model deployments and access (see [SOC2 compliance](/docs/compliance.md))

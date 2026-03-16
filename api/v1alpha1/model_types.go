@@ -26,14 +26,21 @@ import (
 // ModelSpec defines the desired state of Model
 type ModelSpec struct {
 	// Source defines where to obtain the model file (GGUF format)
-	// Supported schemes: http://, https://, file://, or absolute paths
+	// Supported schemes: http://, https://, file://, pvc://, or absolute paths
 	// Examples:
 	//   - https://huggingface.co/org/repo/resolve/main/model.gguf
 	//   - file:///mnt/models/model.gguf
 	//   - /mnt/models/model.gguf (air-gapped deployments)
+	//   - pvc://my-models-pvc/path/to/model.gguf (pre-staged on a PersistentVolumeClaim)
 	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:Pattern=`^(https?|file)://.*\.gguf$|^/.*\.gguf$`
+	// +kubebuilder:validation:Pattern=`^(https?|file|pvc)://.*\.gguf$|^/.*\.gguf$`
 	Source string `json:"source"`
+
+	// SHA256 is the expected SHA256 hash of the model file for integrity verification.
+	// When set, the controller verifies the downloaded/copied file matches this hash.
+	// +kubebuilder:validation:Pattern=`^[a-fA-F0-9]{64}$`
+	// +optional
+	SHA256 string `json:"sha256,omitempty"`
 
 	// Format specifies the model file format (currently only GGUF is supported)
 	// +kubebuilder:validation:Enum=gguf
@@ -208,6 +215,11 @@ type ModelStatus struct {
 	// Models with the same source URL share the same cache entry
 	// +optional
 	CacheKey string `json:"cacheKey,omitempty"`
+
+	// SHA256 is the computed SHA256 hash of the model file.
+	// Populated after download/copy for integrity tracking.
+	// +optional
+	SHA256 string `json:"sha256,omitempty"`
 
 	// AcceleratorReady indicates if hardware acceleration is configured and ready
 	// +optional
