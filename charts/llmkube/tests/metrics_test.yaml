@@ -1,0 +1,109 @@
+suite: metrics port consistency
+templates:
+  - deployment.yaml
+  - metrics-service.yaml
+  - servicemonitor.yaml
+
+tests:
+  # Deployment: container ports declared when metrics enabled
+  - it: should declare metrics container port when metrics enabled
+    template: deployment.yaml
+    set:
+      metrics.enabled: true
+      metrics.service.port: 8443
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].ports
+          content:
+            name: metrics
+            containerPort: 8443
+            protocol: TCP
+
+  - it: should declare health container port
+    template: deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].ports
+          content:
+            name: health
+            containerPort: 8081
+            protocol: TCP
+
+  # Service: targetPort matches container port name
+  - it: should target container port by name
+    template: metrics-service.yaml
+    set:
+      metrics.enabled: true
+    asserts:
+      - equal:
+          path: spec.ports[0].targetPort
+          value: metrics
+
+  # Service: port name is "https" when secure
+  - it: should name service port https when metrics.secure is true
+    template: metrics-service.yaml
+    set:
+      metrics.enabled: true
+      metrics.secure: true
+    asserts:
+      - equal:
+          path: spec.ports[0].name
+          value: https
+
+  # Service: port name is "http" when not secure
+  - it: should name service port http when metrics.secure is false
+    template: metrics-service.yaml
+    set:
+      metrics.enabled: true
+      metrics.secure: false
+    asserts:
+      - equal:
+          path: spec.ports[0].name
+          value: http
+
+  # ServiceMonitor: port matches service port name (secure)
+  - it: should reference https port when metrics.secure is true
+    template: servicemonitor.yaml
+    set:
+      prometheus.serviceMonitor.enabled: true
+      metrics.secure: true
+    asserts:
+      - equal:
+          path: spec.endpoints[0].port
+          value: https
+      - equal:
+          path: spec.endpoints[0].scheme
+          value: https
+
+  # ServiceMonitor: port matches service port name (insecure)
+  - it: should reference http port when metrics.secure is false
+    template: servicemonitor.yaml
+    set:
+      prometheus.serviceMonitor.enabled: true
+      metrics.secure: false
+    asserts:
+      - equal:
+          path: spec.endpoints[0].port
+          value: http
+      - equal:
+          path: spec.endpoints[0].scheme
+          value: http
+
+  # ServiceMonitor: tlsConfig only when secure
+  - it: should include tlsConfig when secure
+    template: servicemonitor.yaml
+    set:
+      prometheus.serviceMonitor.enabled: true
+      metrics.secure: true
+    asserts:
+      - isNotNull:
+          path: spec.endpoints[0].tlsConfig
+
+  - it: should omit tlsConfig when not secure
+    template: servicemonitor.yaml
+    set:
+      prometheus.serviceMonitor.enabled: true
+      metrics.secure: false
+    asserts:
+      - isNull:
+          path: spec.endpoints[0].tlsConfig
