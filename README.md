@@ -27,6 +27,9 @@
       <img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License">
     </a>
     <img src="https://img.shields.io/github/go-mod/go-version/defilantech/LLMKube" alt="Go Version">
+    <a href="https://discord.gg/Ktz85RFHDv">
+      <img src="https://img.shields.io/badge/Discord-Join%20us-5865F2?logo=discord&logoColor=white" alt="Discord">
+    </a>
   </p>
 
   <p>
@@ -34,7 +37,8 @@
     <a href="#the-metal-agent">Metal Agent</a> &bull;
     <a href="#how-is-this-different">Why LLMKube?</a> &bull;
     <a href="#performance">Benchmarks</a> &bull;
-    <a href="ROADMAP.md">Roadmap</a>
+    <a href="ROADMAP.md">Roadmap</a> &bull;
+    <a href="https://discord.gg/Ktz85RFHDv">Discord</a>
   </p>
 
 </div>
@@ -345,6 +349,7 @@ We welcome contributions. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full gu
 
 ## Community
 
+- **Chat:** [Discord](https://discord.gg/Ktz85RFHDv)
 - **Bug reports & features:** [GitHub Issues](https://github.com/defilantech/LLMKube/issues)
 - **Questions & discussion:** [GitHub Discussions](https://github.com/defilantech/LLMKube/discussions)
 - **Roadmap:** [ROADMAP.md](ROADMAP.md)

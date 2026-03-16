@@ -345,6 +345,7 @@ func (r *ModelReconciler) ReconcileModel(ctx context.Context, model *inferencev1
 
 ### Communication Channels
 
+- **Discord**: [Join the community](https://discord.gg/Ktz85RFHDv) — real-time chat, support, and contributor coordination
 - **GitHub Issues**: Bug reports, feature requests
 - **GitHub Discussions**: [Q&A, ideas, general discussion](https://github.com/defilantech/LLMKube/discussions)
 
