@@ -5,6 +5,22 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1](https://github.com/defilantech/LLMKube/compare/v0.5.0...v0.5.1) (2026-03-16)
+
+
+### Features
+
+* add memory pressure watchdog with runtime monitoring ([#216](https://github.com/defilantech/LLMKube/issues/216)) ([5fa6d54](https://github.com/defilantech/LLMKube/commit/5fa6d54f778e68f9bf4739fb232e05c9a9791971))
+* add pvc:// model source and SHA256 integrity verification ([#229](https://github.com/defilantech/LLMKube/issues/229)) ([1b94f5d](https://github.com/defilantech/LLMKube/commit/1b94f5d560dd596315af76a40f377d6b8f34cedf))
+* auto-detect llama-server from Homebrew paths on macOS ([#215](https://github.com/defilantech/LLMKube/issues/215)) ([a1e4302](https://github.com/defilantech/LLMKube/commit/a1e4302702e6531f2a6cbda9434d9613514cf15a))
+
+
+### Bug Fixes
+
+* controller metrics port declarations and ServiceMonitor consistency ([#214](https://github.com/defilantech/LLMKube/issues/214)) ([296ec99](https://github.com/defilantech/LLMKube/commit/296ec990c17484a823a6b4261ce409b894535e02))
+* correct CHANGELOG entry from 0.4.21 to 0.5.0 ([#212](https://github.com/defilantech/LLMKube/issues/212)) ([f7f703a](https://github.com/defilantech/LLMKube/commit/f7f703ad32404a2a38aeab428ed76c37b0a8fcf8))
+* quote job-level if expression to fix YAML parsing in helm-chart workflow ([8714b9f](https://github.com/defilantech/LLMKube/commit/8714b9fc60d7020be4c21d5764ced7b88bd7f97a))
+
 ## [0.5.0](https://github.com/defilantech/LLMKube/compare/v0.4.20...v0.5.0) (2026-03-04)
 
 
