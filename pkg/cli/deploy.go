@@ -43,6 +43,7 @@ type deployOptions struct {
 	sourceOverride      string
 	modelFormat         string
 	quantization        string
+	sha256              string
 	replicas            int32
 	accelerator         string
 	gpu                 bool
@@ -99,6 +100,15 @@ Examples:
   llmkube deploy my-model --gpu \
     --source /mnt/models/llama-3.1-8b-q4_k_m.gguf
 
+  # Air-gapped: Deploy from a PersistentVolumeClaim
+  llmkube deploy my-model --gpu \
+    --source pvc://my-models-pvc/llama-3.1-8b-q4_k_m.gguf
+
+  # Deploy with SHA256 integrity verification
+  llmkube deploy my-model --gpu \
+    --source https://example.com/model.gguf \
+    --sha256 abc123...
+
   # Air-gapped: Use catalog defaults with local model file
   llmkube deploy llama-3.1-8b --gpu \
     --source-override /mnt/models/llama-3.1-8b-q4_k_m.gguf
@@ -113,11 +123,13 @@ Examples:
 	cmd.Flags().StringVarP(&opts.namespace, "namespace", "n", "default", "Kubernetes namespace")
 	cmd.Flags().StringVarP(&opts.modelSource, "source", "s", "",
 		"Model source URL or local path (GGUF format). Optional if using catalog model ID.\n"+
-			"Supports: https://, http://, file://, or absolute paths (e.g., /mnt/models/model.gguf)")
+			"Supports: https://, http://, file://, pvc://, or absolute paths (e.g., /mnt/models/model.gguf)")
 	cmd.Flags().StringVar(&opts.sourceOverride, "source-override", "",
 		"Override the model source for catalog models with a local path (air-gapped deployments)")
 	cmd.Flags().StringVar(&opts.modelFormat, "format", "gguf", "Model format")
 	cmd.Flags().StringVarP(&opts.quantization, "quantization", "q", "", "Model quantization (e.g., Q4_K_M, Q8_0)")
+	cmd.Flags().StringVar(&opts.sha256, "sha256", "",
+		"Expected SHA256 hash of the model file for integrity verification")
 	cmd.Flags().Int32VarP(&opts.replicas, "replicas", "r", 1, "Number of replicas")
 
 	cmd.Flags().BoolVar(&opts.gpu, "gpu", false, "Enable GPU acceleration (auto-detects CUDA image)")
@@ -242,6 +254,7 @@ func runDeploy(opts *deployOptions) error {
 			Source:       opts.modelSource,
 			Format:       opts.modelFormat,
 			Quantization: opts.quantization,
+			SHA256:       opts.sha256,
 			Hardware: &inferencev1alpha1.HardwareSpec{
 				Accelerator: opts.accelerator,
 			},
@@ -492,6 +505,9 @@ func applyCatalogDefaults(opts *deployOptions, catalogModel *Model) {
 }
 
 func isLocalSourcePath(source string) bool {
+	if strings.HasPrefix(source, "pvc://") {
+		return false
+	}
 	return strings.HasPrefix(source, "file://") || strings.HasPrefix(source, "/")
 }
 

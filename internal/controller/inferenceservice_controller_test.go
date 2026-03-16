@@ -1461,6 +1461,55 @@ var _ = Describe("buildEmptyDirStorageConfig", func() {
 	})
 })
 
+var _ = Describe("buildPVCStorageConfig", func() {
+	It("should configure PVC volume with correct claim name and path", func() {
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: "pvc-model"},
+			Spec:       inferencev1alpha1.ModelSpec{Source: "pvc://my-models/llama/model.gguf"},
+		}
+		config := buildPVCStorageConfig(model)
+
+		Expect(config.modelPath).To(Equal("/model-source/llama/model.gguf"))
+		Expect(config.initContainers).To(BeEmpty())
+		Expect(config.volumes).To(HaveLen(1))
+		Expect(config.volumes[0].Name).To(Equal("model-source"))
+		Expect(config.volumes[0].PersistentVolumeClaim).NotTo(BeNil())
+		Expect(config.volumes[0].PersistentVolumeClaim.ClaimName).To(Equal("my-models"))
+		Expect(config.volumes[0].PersistentVolumeClaim.ReadOnly).To(BeTrue())
+		Expect(config.volumeMounts).To(HaveLen(1))
+		Expect(config.volumeMounts[0].Name).To(Equal("model-source"))
+		Expect(config.volumeMounts[0].MountPath).To(Equal("/model-source"))
+		Expect(config.volumeMounts[0].ReadOnly).To(BeTrue())
+	})
+
+	It("should handle simple file at root of PVC", func() {
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: "pvc-model-simple"},
+			Spec:       inferencev1alpha1.ModelSpec{Source: "pvc://storage/model.gguf"},
+		}
+		config := buildPVCStorageConfig(model)
+
+		Expect(config.modelPath).To(Equal("/model-source/model.gguf"))
+		Expect(config.volumes[0].PersistentVolumeClaim.ClaimName).To(Equal("storage"))
+	})
+})
+
+var _ = Describe("buildModelStorageConfig PVC dispatch", func() {
+	It("should dispatch to PVC storage config when source is pvc://", func() {
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: "dispatch-test"},
+			Spec:       inferencev1alpha1.ModelSpec{Source: "pvc://my-claim/model.gguf"},
+			Status:     inferencev1alpha1.ModelStatus{CacheKey: "abc123"},
+		}
+		config := buildModelStorageConfig(model, "default", true, "", "curl:8.18.0")
+
+		// Should use PVC config, not cached config
+		Expect(config.volumes[0].Name).To(Equal("model-source"))
+		Expect(config.volumes[0].PersistentVolumeClaim.ClaimName).To(Equal("my-claim"))
+		Expect(config.initContainers).To(BeEmpty())
+	})
+})
+
 var _ = Describe("constructService", func() {
 	var reconciler *InferenceServiceReconciler
 
@@ -1968,7 +2017,7 @@ var _ = Describe("Reconcile lifecycle", func() {
 
 			updated := &inferencev1alpha1.InferenceService{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, updated)).To(Succeed())
-			Expect(updated.Status.Phase).To(Equal("Failed"))
+			Expect(updated.Status.Phase).To(Equal(PhaseFailed))
 		})
 
 		It("should set Pending status when Model is not Ready", func() {

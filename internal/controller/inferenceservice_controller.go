@@ -57,8 +57,9 @@ func sanitizeDNSName(name string) string {
 	return strings.ReplaceAll(name, ".", "-")
 }
 
+// isLocalModelSource delegates to the shared isLocalSource helper in source.go.
 func isLocalModelSource(source string) bool {
-	return strings.HasPrefix(source, "file://") || strings.HasPrefix(source, "/")
+	return isLocalSource(source)
 }
 
 func buildModelInitCommand(isLocal, useCache bool) string {
@@ -91,10 +92,39 @@ type modelStorageConfig struct {
 }
 
 func buildModelStorageConfig(model *inferencev1alpha1.Model, namespace string, useCache bool, caCertConfigMap string, initContainerImage string) modelStorageConfig {
+	if isPVCSource(model.Spec.Source) {
+		return buildPVCStorageConfig(model)
+	}
 	if useCache {
 		return buildCachedStorageConfig(model, caCertConfigMap, initContainerImage)
 	}
 	return buildEmptyDirStorageConfig(model, namespace, caCertConfigMap, initContainerImage)
+}
+
+// buildPVCStorageConfig mounts the user's PVC directly as a read-only volume.
+// No init container is needed since the model is already on the PVC.
+func buildPVCStorageConfig(model *inferencev1alpha1.Model) modelStorageConfig {
+	claimName, modelFilePath, _ := parsePVCSource(model.Spec.Source)
+
+	modelPath := fmt.Sprintf("/model-source/%s", modelFilePath)
+
+	return modelStorageConfig{
+		modelPath: modelPath,
+		volumes: []corev1.Volume{
+			{
+				Name: "model-source",
+				VolumeSource: corev1.VolumeSource{
+					PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+						ClaimName: claimName,
+						ReadOnly:  true,
+					},
+				},
+			},
+		},
+		volumeMounts: []corev1.VolumeMount{
+			{Name: "model-source", MountPath: "/model-source", ReadOnly: true},
+		},
+	}
 }
 
 func buildCachedStorageConfig(model *inferencev1alpha1.Model, caCertConfigMap string, initContainerImage string) modelStorageConfig {
@@ -327,7 +357,7 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	if model.Status.CacheKey != "" && r.ModelCachePath != "" {
 		if err := r.ensureModelCachePVC(ctx, inferenceService.Namespace); err != nil {
 			log.Error(err, "Failed to ensure model cache PVC exists", "namespace", inferenceService.Namespace)
-			return r.updateStatusWithSchedulingInfo(ctx, inferenceService, "Failed", modelReady, 0, desiredReplicas, "", "Failed to create model cache PVC", nil)
+			return r.updateStatusWithSchedulingInfo(ctx, inferenceService, PhaseFailed, modelReady, 0, desiredReplicas, "", "Failed to create model cache PVC", nil)
 		}
 	}
 
@@ -366,7 +396,7 @@ func (r *InferenceServiceReconciler) getModelForInferenceService(ctx context.Con
 	if err := r.Get(ctx, modelName, model); err != nil {
 		if apierrors.IsNotFound(err) {
 			log.Info("Referenced Model not found", "model", isvc.Spec.ModelRef)
-			result, updateErr := r.updateStatusWithSchedulingInfo(ctx, isvc, "Failed", false, 0, 0, "", "Model not found", nil)
+			result, updateErr := r.updateStatusWithSchedulingInfo(ctx, isvc, PhaseFailed, false, 0, 0, "", "Model not found", nil)
 			return nil, false, &result, updateErr
 		}
 		log.Error(err, "Failed to get Model")
@@ -403,7 +433,7 @@ func (r *InferenceServiceReconciler) reconcileDeployment(ctx context.Context, is
 		log.Info("Creating new Deployment", "name", deployment.Name)
 		if err := r.Create(ctx, deployment); err != nil {
 			log.Error(err, "Failed to create Deployment")
-			result, updateErr := r.updateStatusWithSchedulingInfo(ctx, isvc, "Failed", modelReady, 0, desiredReplicas, "", "Failed to create Deployment", nil)
+			result, updateErr := r.updateStatusWithSchedulingInfo(ctx, isvc, PhaseFailed, modelReady, 0, desiredReplicas, "", "Failed to create Deployment", nil)
 			return nil, 0, &result, updateErr
 		}
 		return deployment, 0, nil, nil
@@ -448,7 +478,7 @@ func (r *InferenceServiceReconciler) reconcileService(ctx context.Context, isvc 
 		log.Info("Creating new Service", "name", service.Name)
 		if err := r.Create(ctx, service); err != nil {
 			log.Error(err, "Failed to create Service")
-			result, updateErr := r.updateStatusWithSchedulingInfo(ctx, isvc, "Failed", modelReady, 0, desiredReplicas, "", "Failed to create Service", nil)
+			result, updateErr := r.updateStatusWithSchedulingInfo(ctx, isvc, PhaseFailed, modelReady, 0, desiredReplicas, "", "Failed to create Service", nil)
 			return nil, &result, updateErr
 		}
 	} else if err != nil {
@@ -1036,13 +1066,13 @@ func (r *InferenceServiceReconciler) updateStatusWithSchedulingInfo(
 		}
 		meta.SetStatusCondition(&isvc.Status.Conditions, progressCondition)
 
-	case "Failed":
+	case PhaseFailed:
 		condition = metav1.Condition{
-			Type:               "Degraded",
+			Type:               ConditionDegraded,
 			Status:             metav1.ConditionTrue,
 			ObservedGeneration: isvc.Generation,
 			LastTransitionTime: now,
-			Reason:             "Failed",
+			Reason:             PhaseFailed,
 			Message:            errorMsg,
 		}
 		meta.SetStatusCondition(&isvc.Status.Conditions, condition)
