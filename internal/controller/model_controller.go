@@ -46,8 +46,11 @@ import (
 
 const (
 	PhaseReady            = "Ready"
+	PhaseFailed           = "Failed"
 	PhaseCached           = "Cached"
 	DefaultModelCachePath = "/models"
+
+	ConditionDegraded = "Degraded"
 )
 
 type ModelReconciler struct {
@@ -172,9 +175,9 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	if err != nil {
 		logger.Error(err, "Failed to fetch model")
 		llmkubemetrics.ReconcileTotal.WithLabelValues("model", "error").Inc()
-		llmkubemetrics.ModelStatus.WithLabelValues(model.Name, model.Namespace, "Failed").Set(1)
-		model.Status.Phase = "Failed"
-		if statusErr := r.updateStatus(ctx, model, "Degraded", metav1.ConditionTrue, failReason, err.Error()); statusErr != nil {
+		llmkubemetrics.ModelStatus.WithLabelValues(model.Name, model.Namespace, PhaseFailed).Set(1)
+		model.Status.Phase = PhaseFailed
+		if statusErr := r.updateStatus(ctx, model, ConditionDegraded, metav1.ConditionTrue, failReason, err.Error()); statusErr != nil {
 			logger.Error(statusErr, "Failed to update status after fetch failure")
 		}
 		return ctrl.Result{RequeueAfter: 5 * time.Minute}, err
@@ -185,9 +188,9 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		logger.Error(err, "SHA256 integrity check failed")
 		_ = os.Remove(modelPath)
 		llmkubemetrics.ReconcileTotal.WithLabelValues("model", "error").Inc()
-		llmkubemetrics.ModelStatus.WithLabelValues(model.Name, model.Namespace, "Failed").Set(1)
-		model.Status.Phase = "Failed"
-		if statusErr := r.updateStatus(ctx, model, "Degraded", metav1.ConditionTrue, "IntegrityCheckFailed", err.Error()); statusErr != nil {
+		llmkubemetrics.ModelStatus.WithLabelValues(model.Name, model.Namespace, PhaseFailed).Set(1)
+		model.Status.Phase = PhaseFailed
+		if statusErr := r.updateStatus(ctx, model, ConditionDegraded, metav1.ConditionTrue, "IntegrityCheckFailed", err.Error()); statusErr != nil {
 			logger.Error(statusErr, "Failed to update status after integrity check failure")
 		}
 		return ctrl.Result{}, err
@@ -232,8 +235,8 @@ func (r *ModelReconciler) reconcilePVCSource(ctx context.Context, model *inferen
 
 	claimName, modelFilePath, err := parsePVCSource(model.Spec.Source)
 	if err != nil {
-		model.Status.Phase = "Failed"
-		if statusErr := r.updateStatus(ctx, model, "Degraded", metav1.ConditionTrue, "InvalidSource", err.Error()); statusErr != nil {
+		model.Status.Phase = PhaseFailed
+		if statusErr := r.updateStatus(ctx, model, ConditionDegraded, metav1.ConditionTrue, "InvalidSource", err.Error()); statusErr != nil {
 			logger.Error(statusErr, "Failed to update status")
 		}
 		return ctrl.Result{}, err
@@ -245,9 +248,9 @@ func (r *ModelReconciler) reconcilePVCSource(ctx context.Context, model *inferen
 	if err := r.Get(ctx, pvcKey, pvc); err != nil {
 		if errors.IsNotFound(err) {
 			logger.Info("Referenced PVC not found", "pvc", claimName)
-			model.Status.Phase = "Failed"
+			model.Status.Phase = PhaseFailed
 			msg := fmt.Sprintf("PVC %q not found in namespace %q", claimName, model.Namespace)
-			if statusErr := r.updateStatus(ctx, model, "Degraded", metav1.ConditionTrue, "PVCNotFound", msg); statusErr != nil {
+			if statusErr := r.updateStatus(ctx, model, ConditionDegraded, metav1.ConditionTrue, "PVCNotFound", msg); statusErr != nil {
 				logger.Error(statusErr, "Failed to update status")
 			}
 			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil

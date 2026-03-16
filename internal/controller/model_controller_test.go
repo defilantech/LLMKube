@@ -274,7 +274,7 @@ var _ = Describe("Model Controller Reconcile", func() {
 
 		updated := &inferencev1alpha1.Model{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: modelName, Namespace: "default"}, updated)).To(Succeed())
-		Expect(updated.Status.Phase).To(Equal("Failed"))
+		Expect(updated.Status.Phase).To(Equal(PhaseFailed))
 	})
 
 	It("should copy local model file and set Ready", func() {
@@ -347,11 +347,11 @@ var _ = Describe("Model Controller Reconcile", func() {
 
 		updated := &inferencev1alpha1.Model{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: modelName, Namespace: "default"}, updated)).To(Succeed())
-		Expect(updated.Status.Phase).To(Equal("Failed"))
+		Expect(updated.Status.Phase).To(Equal(PhaseFailed))
 
 		var hasDegraded bool
 		for _, cond := range updated.Status.Conditions {
-			if cond.Type == "Degraded" && cond.Reason == "CopyFailed" {
+			if cond.Type == ConditionDegraded && cond.Reason == "CopyFailed" {
 				hasDegraded = true
 			}
 		}
@@ -733,11 +733,11 @@ var _ = Describe("PVC Source Reconcile", func() {
 
 		updated := &inferencev1alpha1.Model{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: modelName, Namespace: "default"}, updated)).To(Succeed())
-		Expect(updated.Status.Phase).To(Equal("Failed"))
+		Expect(updated.Status.Phase).To(Equal(PhaseFailed))
 
 		var hasDegraded bool
 		for _, cond := range updated.Status.Conditions {
-			if cond.Type == "Degraded" && cond.Reason == "PVCNotFound" {
+			if cond.Type == ConditionDegraded && cond.Reason == "PVCNotFound" {
 				hasDegraded = true
 			}
 		}
@@ -832,11 +832,11 @@ var _ = Describe("SHA256 Verification", func() {
 
 		updated := &inferencev1alpha1.Model{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: modelName, Namespace: "default"}, updated)).To(Succeed())
-		Expect(updated.Status.Phase).To(Equal("Failed"))
+		Expect(updated.Status.Phase).To(Equal(PhaseFailed))
 
 		var hasIntegrity bool
 		for _, cond := range updated.Status.Conditions {
-			if cond.Type == "Degraded" && cond.Reason == "IntegrityCheckFailed" {
+			if cond.Type == ConditionDegraded && cond.Reason == "IntegrityCheckFailed" {
 				hasIntegrity = true
 			}
 		}

@@ -2017,7 +2017,7 @@ var _ = Describe("Reconcile lifecycle", func() {
 
 			updated := &inferencev1alpha1.InferenceService{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, updated)).To(Succeed())
-			Expect(updated.Status.Phase).To(Equal("Failed"))
+			Expect(updated.Status.Phase).To(Equal(PhaseFailed))
 		})
 
 		It("should set Pending status when Model is not Ready", func() {
