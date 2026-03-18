@@ -57,6 +57,41 @@ func sanitizeDNSName(name string) string {
 	return strings.ReplaceAll(name, ".", "-")
 }
 
+func boolPtr(b bool) *bool { return &b }
+
+func inferPodSecurityContext(isvc *inferencev1alpha1.InferenceService) *corev1.PodSecurityContext {
+	if isvc.Spec.PodSecurityContext != nil {
+		return isvc.Spec.PodSecurityContext
+	}
+	return &corev1.PodSecurityContext{
+		SeccompProfile: &corev1.SeccompProfile{
+			Type: corev1.SeccompProfileTypeRuntimeDefault,
+		},
+	}
+}
+
+func inferContainerSecurityContext(isvc *inferencev1alpha1.InferenceService) *corev1.SecurityContext {
+	if isvc.Spec.SecurityContext != nil {
+		return isvc.Spec.SecurityContext
+	}
+	return &corev1.SecurityContext{
+		AllowPrivilegeEscalation: boolPtr(false),
+		Capabilities: &corev1.Capabilities{
+			Drop: []corev1.Capability{"ALL"},
+		},
+	}
+}
+
+func initContainerSecurityContext() *corev1.SecurityContext {
+	return &corev1.SecurityContext{
+		AllowPrivilegeEscalation: boolPtr(false),
+		ReadOnlyRootFilesystem:   boolPtr(false),
+		Capabilities: &corev1.Capabilities{
+			Drop: []corev1.Capability{"ALL"},
+		},
+	}
+}
+
 // isLocalModelSource delegates to the shared isLocalSource helper in source.go.
 func isLocalModelSource(source string) bool {
 	return isLocalSource(source)
@@ -188,11 +223,12 @@ func buildCachedStorageConfig(model *inferencev1alpha1.Model, caCertConfigMap st
 		modelPath: modelPath,
 		initContainers: []corev1.Container{
 			{
-				Name:         "model-downloader",
-				Image:        initContainerImage,
-				Command:      []string{"sh", "-c", cmd},
-				Env:          env,
-				VolumeMounts: initVolumeMounts,
+				Name:            "model-downloader",
+				Image:           initContainerImage,
+				Command:         []string{"sh", "-c", cmd},
+				Env:             env,
+				VolumeMounts:    initVolumeMounts,
+				SecurityContext: initContainerSecurityContext(),
 			},
 		},
 		volumes:      volumes,
@@ -235,11 +271,12 @@ func buildEmptyDirStorageConfig(model *inferencev1alpha1.Model, namespace string
 		modelPath: modelPath,
 		initContainers: []corev1.Container{
 			{
-				Name:         "model-downloader",
-				Image:        initContainerImage,
-				Command:      []string{"sh", "-c", cmd},
-				Env:          env,
-				VolumeMounts: initVolumeMounts,
+				Name:            "model-downloader",
+				Image:           initContainerImage,
+				Command:         []string{"sh", "-c", cmd},
+				Env:             env,
+				VolumeMounts:    initVolumeMounts,
+				SecurityContext: initContainerSecurityContext(),
 			},
 		},
 		volumes:      volumes,
@@ -768,9 +805,10 @@ func (r *InferenceServiceReconciler) constructDeployment(
 	args = append(args, "--metrics")
 
 	container := corev1.Container{
-		Name:  "llama-server",
-		Image: image,
-		Args:  args,
+		Name:            "llama-server",
+		Image:           image,
+		Args:            args,
+		SecurityContext: inferContainerSecurityContext(isvc),
 		Ports: []corev1.ContainerPort{
 			{
 				Name:          "http",
@@ -859,6 +897,7 @@ func (r *InferenceServiceReconciler) constructDeployment(
 					Labels: labels,
 				},
 				Spec: corev1.PodSpec{
+					SecurityContext:   inferPodSecurityContext(isvc),
 					InitContainers:    storageConfig.initContainers,
 					Containers:        []corev1.Container{container},
 					Volumes:           storageConfig.volumes,

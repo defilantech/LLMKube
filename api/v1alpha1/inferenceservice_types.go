@@ -96,6 +96,15 @@ type InferenceServiceSpec struct {
 	// Takes precedence over the Priority field if set.
 	// +optional
 	PriorityClassName string `json:"priorityClassName,omitempty"`
+
+	// PodSecurityContext defines pod-level security attributes for inference pods.
+	// Use this to set fsGroup for volume permissions (required on OpenShift).
+	// +optional
+	PodSecurityContext *corev1.PodSecurityContext `json:"podSecurityContext,omitempty"`
+
+	// SecurityContext defines container-level security attributes for the inference container.
+	// +optional
+	SecurityContext *corev1.SecurityContext `json:"securityContext,omitempty"`
 }
 
 // EndpointSpec defines the service endpoint configuration

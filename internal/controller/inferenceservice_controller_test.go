@@ -2585,3 +2585,181 @@ var _ = Describe("constructEndpoint with Metal minimal Service", func() {
 		Expect(endpoint).To(Equal("http://model-v2-1.ml.svc.cluster.local:8080/v1/chat/completions"))
 	})
 })
+
+var _ = Describe("Security Context Configuration", func() {
+	var (
+		reconciler *InferenceServiceReconciler
+		model      *inferencev1alpha1.Model
+	)
+
+	BeforeEach(func() {
+		reconciler = &InferenceServiceReconciler{
+			Client:             k8sClient,
+			Scheme:             k8sClient.Scheme(),
+			InitContainerImage: "docker.io/curlimages/curl:8.18.0",
+		}
+
+		model = &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "secctx-model",
+				Namespace: "default",
+			},
+			Spec: inferencev1alpha1.ModelSpec{
+				Source:   "https://example.com/model.gguf",
+				Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: "cpu"},
+			},
+			Status: inferencev1alpha1.ModelStatus{
+				Phase: "Ready",
+			},
+		}
+	})
+
+	Context("default security contexts", func() {
+		It("should set seccompProfile RuntimeDefault on pod by default", func() {
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{Name: "secctx-default", Namespace: "default"},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: "secctx-model",
+					Replicas: &replicas,
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			podSecCtx := deployment.Spec.Template.Spec.SecurityContext
+			Expect(podSecCtx).NotTo(BeNil())
+			Expect(podSecCtx.SeccompProfile).NotTo(BeNil())
+			Expect(podSecCtx.SeccompProfile.Type).To(Equal(corev1.SeccompProfileTypeRuntimeDefault))
+		})
+
+		It("should set allowPrivilegeEscalation false and drop ALL on main container by default", func() {
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{Name: "secctx-container-default", Namespace: "default"},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: "secctx-model",
+					Replicas: &replicas,
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			containerSecCtx := deployment.Spec.Template.Spec.Containers[0].SecurityContext
+			Expect(containerSecCtx).NotTo(BeNil())
+			Expect(*containerSecCtx.AllowPrivilegeEscalation).To(BeFalse())
+			Expect(containerSecCtx.Capabilities).NotTo(BeNil())
+			Expect(containerSecCtx.Capabilities.Drop).To(ContainElement(corev1.Capability("ALL")))
+		})
+
+		It("should set allowPrivilegeEscalation false and drop ALL on init container", func() {
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{Name: "secctx-init-default", Namespace: "default"},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: "secctx-model",
+					Replicas: &replicas,
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			Expect(deployment.Spec.Template.Spec.InitContainers).To(HaveLen(1))
+			initSecCtx := deployment.Spec.Template.Spec.InitContainers[0].SecurityContext
+			Expect(initSecCtx).NotTo(BeNil())
+			Expect(*initSecCtx.AllowPrivilegeEscalation).To(BeFalse())
+			Expect(*initSecCtx.ReadOnlyRootFilesystem).To(BeFalse())
+			Expect(initSecCtx.Capabilities).NotTo(BeNil())
+			Expect(initSecCtx.Capabilities.Drop).To(ContainElement(corev1.Capability("ALL")))
+		})
+	})
+
+	Context("user-specified security context overrides", func() {
+		It("should use user-specified podSecurityContext with fsGroup", func() {
+			replicas := int32(1)
+			fsGroup := int64(1000680000)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{Name: "secctx-override-pod", Namespace: "default"},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: "secctx-model",
+					Replicas: &replicas,
+					PodSecurityContext: &corev1.PodSecurityContext{
+						FSGroup:      &fsGroup,
+						RunAsNonRoot: boolPtr(true),
+					},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			podSecCtx := deployment.Spec.Template.Spec.SecurityContext
+			Expect(podSecCtx).NotTo(BeNil())
+			Expect(*podSecCtx.FSGroup).To(Equal(int64(1000680000)))
+			Expect(*podSecCtx.RunAsNonRoot).To(BeTrue())
+			// Should NOT have default seccomp when user provides their own
+			// (user's override is used as-is)
+		})
+
+		It("should use user-specified container securityContext", func() {
+			replicas := int32(1)
+			runAsUser := int64(1000)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{Name: "secctx-override-container", Namespace: "default"},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: "secctx-model",
+					Replicas: &replicas,
+					SecurityContext: &corev1.SecurityContext{
+						RunAsUser:                boolPtr64(runAsUser),
+						AllowPrivilegeEscalation: boolPtr(false),
+						ReadOnlyRootFilesystem:   boolPtr(true),
+					},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			containerSecCtx := deployment.Spec.Template.Spec.Containers[0].SecurityContext
+			Expect(containerSecCtx).NotTo(BeNil())
+			Expect(*containerSecCtx.RunAsUser).To(Equal(int64(1000)))
+			Expect(*containerSecCtx.AllowPrivilegeEscalation).To(BeFalse())
+			Expect(*containerSecCtx.ReadOnlyRootFilesystem).To(BeTrue())
+		})
+	})
+
+	Context("init container security context with cached storage", func() {
+		It("should set security context on init container for cached model", func() {
+			reconciler.ModelCachePath = "/models"
+			cachedModel := &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{Name: "cached-secctx-model", Namespace: "default"},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source:   "https://example.com/model.gguf",
+					Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: "cpu"},
+				},
+				Status: inferencev1alpha1.ModelStatus{
+					Phase:    "Ready",
+					CacheKey: "abc123",
+				},
+			}
+
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{Name: "secctx-cached-init", Namespace: "default"},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: "cached-secctx-model",
+					Replicas: &replicas,
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, cachedModel, 1)
+
+			Expect(deployment.Spec.Template.Spec.InitContainers).To(HaveLen(1))
+			initSecCtx := deployment.Spec.Template.Spec.InitContainers[0].SecurityContext
+			Expect(initSecCtx).NotTo(BeNil())
+			Expect(*initSecCtx.AllowPrivilegeEscalation).To(BeFalse())
+			Expect(initSecCtx.Capabilities.Drop).To(ContainElement(corev1.Capability("ALL")))
+		})
+	})
+})
+
+// boolPtr64 is a test helper for creating *int64 inline
+func boolPtr64(v int64) *int64 { return &v }
