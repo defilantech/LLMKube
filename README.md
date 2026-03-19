@@ -122,7 +122,7 @@ kubectl apply -f model.yaml
 ```
 </details>
 
-**Full setup guides:** [Minikube Quickstart](docs/minikube-quickstart.md) | [GKE with GPUs](docs/gpu-setup-guide.md) | [Air-Gapped Deployment](docs/air-gapped-quickstart.md)
+**Full setup guides:** [Minikube Quickstart](docs/minikube-quickstart.md) | [GKE with GPUs](docs/gpu-setup-guide.md) | [Air-Gapped Deployment](docs/air-gapped-quickstart.md) | [OpenShift](#troubleshooting)
 
 ---
 
@@ -326,6 +326,30 @@ llmkube deploy <model> --memory 8Gi  # Rule of thumb: file size x 1.2
 kubectl get pods -n gpu-operator-resources
 kubectl get pods -n kube-system -l name=nvidia-device-plugin-ds
 ```
+</details>
+
+<details>
+<summary><b>OpenShift: init container "Permission denied"</b></summary>
+
+LLMKube sets secure defaults (`seccompProfile: RuntimeDefault`, `allowPrivilegeEscalation: false`, `capabilities.drop: ALL`) that work with OpenShift's `restricted-v2` SCC. If you still see permission errors on the `/models` volume, your namespace may need an explicit `fsGroup`:
+
+```bash
+# Find your namespace's supplemental group range
+oc get namespace <namespace> -o jsonpath='{.metadata.annotations.openshift\.io/sa\.scc\.supplemental-groups}'
+```
+
+```yaml
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: InferenceService
+metadata:
+  name: my-service
+spec:
+  modelRef: my-model
+  podSecurityContext:
+    fsGroup: 1000680000  # first value from the command above
+```
+
+This is typically only needed in the `default` namespace or namespaces with non-standard SCC annotations. New namespaces generally work without any extra configuration.
 </details>
 
 ---
