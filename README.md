@@ -388,6 +388,10 @@ Built on [Kubebuilder](https://kubebuilder.io), [llama.cpp](https://github.com/g
 
 Apache 2.0 — see [LICENSE](LICENSE).
 
+## Trademarks
+
+LLMKube is not affiliated with or endorsed by the Cloud Native Computing Foundation or the Kubernetes project. Kubernetes is a registered trademark of The Linux Foundation. All other trademarks are the property of their respective owners.
+
 <div align="center">
 
 **[Get started in 5 minutes →](docs/minikube-quickstart.md)**
