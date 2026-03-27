@@ -5,6 +5,20 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.2](https://github.com/defilantech/LLMKube/compare/v0.5.1...v0.5.2) (2026-03-27)
+
+
+### Features
+
+* add pod security context defaults and CRD overrides ([#239](https://github.com/defilantech/LLMKube/issues/239)) ([904432b](https://github.com/defilantech/LLMKube/commit/904432b4e4669d9a2efb44de43f2c49c4747d9b5))
+
+
+### Documentation
+
+* add CNCF/Kubernetes trademark disclaimer ([#246](https://github.com/defilantech/LLMKube/issues/246)) ([27a49eb](https://github.com/defilantech/LLMKube/commit/27a49eb46e37d53c028a53e46526ef9f408c9b7e))
+* add Discord community link ([#236](https://github.com/defilantech/LLMKube/issues/236)) ([c0d499d](https://github.com/defilantech/LLMKube/commit/c0d499d0bf5cbac220851ec5da81a04d466d2bdc))
+* add OpenShift troubleshooting to README ([#241](https://github.com/defilantech/LLMKube/issues/241)) ([47fd1b0](https://github.com/defilantech/LLMKube/commit/47fd1b039e64192e459ba50fc76f4d05293eabd8))
+
 ## [0.5.1](https://github.com/defilantech/LLMKube/compare/v0.5.0...v0.5.1) (2026-03-16)
 
 
