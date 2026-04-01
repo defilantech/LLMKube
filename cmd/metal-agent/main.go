@@ -48,6 +48,9 @@ type AgentConfig struct {
 	Namespace              string
 	ModelStorePath         string
 	LlamaServerBin         string
+	Runtime                string
+	OMLXBin                string
+	OMLXPort               int
 	Port                   int
 	LogLevel               string
 	HostIP                 string
@@ -106,6 +109,31 @@ func resolveLlamaServerBin(override string) (string, error) {
 		defaultLlamaServerPaths)
 }
 
+// defaultOMLXPaths is the list of paths to search for the omlx binary.
+var defaultOMLXPaths = []string{
+	"/opt/homebrew/opt/omlx/bin/omlx",
+	"/usr/local/opt/omlx/bin/omlx",
+	"/opt/homebrew/bin/omlx",
+	"/usr/local/bin/omlx",
+}
+
+// resolveOMLXBin returns the omlx binary path. If override is non-empty it is
+// returned as-is. Otherwise the function searches defaultOMLXPaths.
+func resolveOMLXBin(override string) (string, error) {
+	if override != "" {
+		return override, nil
+	}
+	for _, p := range defaultOMLXPaths {
+		if _, err := statFunc(p); err == nil {
+			return p, nil
+		}
+	}
+	return "", fmt.Errorf(
+		"omlx binary not found in default paths (%v); "+
+			"install with: brew install jundot/omlx/omlx, or pass --omlx-bin=/path/to/binary",
+		defaultOMLXPaths)
+}
+
 func main() {
 	cfg := &AgentConfig{}
 
@@ -114,6 +142,9 @@ func main() {
 	flag.StringVar(&cfg.Namespace, "namespace", "default", "Kubernetes namespace to watch")
 	flag.StringVar(&cfg.ModelStorePath, "model-store", "/tmp/llmkube-models", "Path to store downloaded models")
 	flag.StringVar(&llamaServerFlag, "llama-server", "", "Path to llama-server binary (auto-detected if not set)")
+	flag.StringVar(&cfg.Runtime, "runtime", "llama-server", "Inference runtime: llama-server or omlx")
+	flag.StringVar(&cfg.OMLXBin, "omlx-bin", "", "Path to omlx binary (auto-detected if not set)")
+	flag.IntVar(&cfg.OMLXPort, "omlx-port", 8000, "Port for oMLX server")
 	flag.IntVar(&cfg.Port, "port", 9090, "Agent metrics/health port")
 	flag.StringVar(&cfg.LogLevel, "log-level", "info", "Log level (debug, info, warn, error)")
 	flag.StringVar(&cfg.HostIP, "host-ip", "", "IP address to register in Kubernetes endpoints (auto-detected if empty)")
@@ -150,17 +181,32 @@ func main() {
 	// TODO: Wire this logger into controller-runtime via ctrl.SetLogger(...) so
 	// Kubernetes client/controller-runtime logs share the same configuration.
 
-	// Resolve llama-server binary path
-	resolvedBin, err := resolveLlamaServerBin(llamaServerFlag)
-	if err != nil {
-		logger.Errorw("llama-server binary not found",
-			"searchPaths", defaultLlamaServerPaths,
-			"installHint", "brew install llama.cpp",
-			"error", err,
-		)
-		os.Exit(1)
+	// Resolve runtime-specific binary paths
+	switch cfg.Runtime {
+	case "omlx":
+		resolvedBin, err := resolveOMLXBin(cfg.OMLXBin)
+		if err != nil {
+			logger.Errorw("omlx binary not found",
+				"searchPaths", defaultOMLXPaths,
+				"installHint", "brew install jundot/omlx/omlx",
+				"error", err,
+			)
+			os.Exit(1)
+		}
+		cfg.OMLXBin = resolvedBin
+	default:
+		cfg.Runtime = "llama-server"
+		resolvedBin, err := resolveLlamaServerBin(llamaServerFlag)
+		if err != nil {
+			logger.Errorw("llama-server binary not found",
+				"searchPaths", defaultLlamaServerPaths,
+				"installHint", "brew install llama.cpp",
+				"error", err,
+			)
+			os.Exit(1)
+		}
+		cfg.LlamaServerBin = resolvedBin
 	}
-	cfg.LlamaServerBin = resolvedBin
 
 	hostIP := cfg.HostIP
 	if hostIP == "" {
@@ -170,7 +216,9 @@ func main() {
 		"version", Version,
 		"namespace", cfg.Namespace,
 		"modelStore", cfg.ModelStorePath,
+		"runtime", cfg.Runtime,
 		"llamaServerBin", cfg.LlamaServerBin,
+		"omlxBin", cfg.OMLXBin,
 		"agentPort", cfg.Port,
 		"hostIP", hostIP,
 		"logLevel", cfg.LogLevel,
@@ -196,7 +244,12 @@ func main() {
 		logger.Errorw("failed to create model store directory", "path", cfg.ModelStorePath, "error", err)
 		os.Exit(1)
 	}
-	logger.Infow("llama-server binary found", "path", cfg.LlamaServerBin)
+	switch cfg.Runtime {
+	case "omlx":
+		logger.Infow("omlx binary found", "path", cfg.OMLXBin)
+	default:
+		logger.Infow("llama-server binary found", "path", cfg.LlamaServerBin)
+	}
 
 	// Get Kubernetes client
 	logger.Infow("connecting to Kubernetes")
@@ -226,6 +279,9 @@ func main() {
 		Namespace:      cfg.Namespace,
 		ModelStorePath: cfg.ModelStorePath,
 		LlamaServerBin: cfg.LlamaServerBin,
+		Runtime:        cfg.Runtime,
+		OMLXBin:        cfg.OMLXBin,
+		OMLXPort:       cfg.OMLXPort,
 		Port:           cfg.Port,
 		HostIP:         cfg.HostIP,
 		Logger:         logger,

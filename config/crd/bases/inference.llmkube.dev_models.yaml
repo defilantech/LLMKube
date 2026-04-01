@@ -60,10 +60,12 @@ spec:
             properties:
               format:
                 default: gguf
-                description: Format specifies the model file format (currently only
-                  GGUF is supported)
+                description: |-
+                  Format specifies the model file format.
+                  "gguf" is used with the llama-server runtime; "mlx" is used with the oMLX runtime.
                 enum:
                 - gguf
+                - mlx
                 type: string
               hardware:
                 description: Hardware specifies hardware acceleration preferences
@@ -178,14 +180,17 @@ spec:
                 type: string
               source:
                 description: |-
-                  Source defines where to obtain the model file (GGUF format)
-                  Supported schemes: http://, https://, file://, pvc://, or absolute paths
+                  Source defines where to obtain the model.
+                  For GGUF models: URL or path to a .gguf file.
+                  For MLX models: local directory path containing the model (config.json, weights).
+                  Supported schemes: http://, https://, file://, pvc://, or absolute paths.
                   Examples:
                     - https://huggingface.co/org/repo/resolve/main/model.gguf
                     - file:///mnt/models/model.gguf
                     - /mnt/models/model.gguf (air-gapped deployments)
                     - pvc://my-models-pvc/path/to/model.gguf (pre-staged on a PersistentVolumeClaim)
-                pattern: ^(https?|file|pvc)://.*\.gguf$|^/.*\.gguf$
+                    - /mnt/models/Llama-3.2-3B-Instruct-4bit (MLX model directory)
+                pattern: ^(https?|file|pvc)://.*\.gguf$|^/.*\.gguf$|^/[^\s]+$
                 type: string
             required:
             - source

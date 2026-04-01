@@ -42,6 +42,13 @@ type MetalAgentConfig struct {
 	HostIP         string // explicit IP to register in K8s endpoints; empty = auto-detect
 	Logger         *zap.SugaredLogger
 
+	// Runtime selects the inference backend: "llama-server" (default) or "omlx".
+	Runtime string
+	// OMLXBin is the path to the omlx binary. Only used when Runtime is "omlx".
+	OMLXBin string
+	// OMLXPort is the port the shared oMLX daemon listens on (default 8000).
+	OMLXPort int
+
 	// MemoryProvider supplies system memory info. Nil defaults to DarwinMemoryProvider.
 	MemoryProvider MemoryProvider
 	// MemoryFraction is the fraction of total memory to budget for models (0 = auto-detect).
@@ -52,11 +59,11 @@ type MetalAgentConfig struct {
 }
 
 // MetalAgent watches Kubernetes InferenceService resources and manages
-// native llama-server processes with Metal acceleration
+// native inference processes with Metal acceleration
 type MetalAgent struct {
 	config         MetalAgentConfig
 	watcher        *InferenceServiceWatcher
-	executor       *MetalExecutor
+	executor       ProcessExecutor
 	registry       *ServiceRegistry
 	processes      map[string]*ManagedProcess // namespacedName -> process
 	logger         *zap.SugaredLogger
@@ -65,13 +72,14 @@ type MetalAgent struct {
 	memoryFraction float64
 }
 
-// ManagedProcess represents a running llama-server process
+// ManagedProcess represents a running inference process (llama-server or oMLX model).
 type ManagedProcess struct {
 	Name      string
 	Namespace string
 	PID       int
 	Port      int
 	ModelPath string
+	ModelID   string // oMLX model identifier used for unload; empty for llama-server
 	StartedAt time.Time
 	Healthy   bool
 }
@@ -127,11 +135,27 @@ func (a *MetalAgent) Start(ctx context.Context) error {
 
 	// Initialize components
 	a.watcher = NewInferenceServiceWatcher(a.config.K8sClient, a.config.Namespace, a.logger.With("subsystem", "watcher"))
-	a.executor = NewMetalExecutor(
-		a.config.LlamaServerBin,
-		a.config.ModelStorePath,
-		a.logger.With("subsystem", "executor"),
-	)
+
+	switch a.config.Runtime {
+	case "omlx":
+		port := a.config.OMLXPort
+		if port == 0 {
+			port = 8000
+		}
+		a.executor = NewOMLXExecutor(
+			a.config.OMLXBin,
+			a.config.ModelStorePath,
+			port,
+			a.logger.With("subsystem", "executor"),
+		)
+	default:
+		a.executor = NewMetalExecutor(
+			a.config.LlamaServerBin,
+			a.config.ModelStorePath,
+			a.logger.With("subsystem", "executor"),
+		)
+	}
+
 	a.registry = NewServiceRegistry(a.config.K8sClient, a.config.HostIP, a.logger.With("subsystem", "registry"))
 
 	// Start health server
@@ -256,6 +280,26 @@ func (a *MetalAgent) ensureProcess(ctx context.Context, isvc *inferencev1alpha1.
 		Name:      isvc.Spec.ModelRef,
 	}, model); err != nil {
 		return fmt.Errorf("failed to get model %s: %w", isvc.Spec.ModelRef, err)
+	}
+
+	// Check for runtime/format mismatch
+	modelFormat := model.Spec.Format
+	if modelFormat == "" {
+		modelFormat = "gguf" // default
+	}
+	switch a.config.Runtime {
+	case "omlx":
+		if modelFormat == "gguf" {
+			a.logger.Warnw("skipping GGUF model on oMLX runtime",
+				"model", model.Name, "format", modelFormat, "runtime", a.config.Runtime)
+			return fmt.Errorf("model %s has format %q which is incompatible with omlx runtime", model.Name, modelFormat)
+		}
+	default:
+		if modelFormat == "mlx" {
+			a.logger.Warnw("skipping MLX model on llama-server runtime",
+				"model", model.Name, "format", modelFormat, "runtime", a.config.Runtime)
+			return fmt.Errorf("model %s has format %q which is incompatible with llama-server runtime", model.Name, modelFormat)
+		}
 	}
 
 	// Get GPU layers if specified
@@ -398,7 +442,13 @@ func (a *MetalAgent) deleteProcess(ctx context.Context, key string) error {
 	processRestarts.DeleteLabelValues(name, namespace)
 
 	var deleteErrors []error
-	if err := a.executor.StopProcess(process.PID); err != nil {
+
+	// For oMLX, unload the specific model instead of killing the shared daemon.
+	if omlx, ok := a.executor.(*OMLXExecutor); ok && process.ModelID != "" {
+		if err := omlx.UnloadModel(ctx, process.ModelID); err != nil {
+			deleteErrors = append(deleteErrors, fmt.Errorf("failed to unload oMLX model %s: %w", process.ModelID, err))
+		}
+	} else if err := a.executor.StopProcess(process.PID); err != nil {
 		deleteErrors = append(deleteErrors, fmt.Errorf("failed to stop process: %w", err))
 	}
 
@@ -445,9 +495,19 @@ func (a *MetalAgent) Shutdown(ctx context.Context) error {
 	a.logger.Infow("cleaning up running processes", "count", len(a.processes))
 
 	var shutdownErrors []error
+
+	// For oMLX, unload each model from the shared daemon.
+	omlx, isOMLX := a.executor.(*OMLXExecutor)
+
 	for key, process := range a.processes {
-		if err := a.executor.StopProcess(process.PID); err != nil {
-			shutdownErrors = append(shutdownErrors, fmt.Errorf("failed to stop %s: %w", key, err))
+		if isOMLX && process.ModelID != "" {
+			if err := omlx.UnloadModel(ctx, process.ModelID); err != nil {
+				shutdownErrors = append(shutdownErrors, fmt.Errorf("failed to unload oMLX model %s: %w", key, err))
+			}
+		} else {
+			if err := a.executor.StopProcess(process.PID); err != nil {
+				shutdownErrors = append(shutdownErrors, fmt.Errorf("failed to stop %s: %w", key, err))
+			}
 		}
 	}
 

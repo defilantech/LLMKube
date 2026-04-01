@@ -40,6 +40,13 @@ type ExecutorConfig struct {
 	Jinja       bool
 }
 
+// ProcessExecutor is the interface that both llama-server and oMLX executors
+// implement. It abstracts process lifecycle so the agent is runtime-agnostic.
+type ProcessExecutor interface {
+	StartProcess(ctx context.Context, config ExecutorConfig) (*ManagedProcess, error)
+	StopProcess(pid int) error
+}
+
 type MetalExecutor struct {
 	llamaServerBin string
 	modelStorePath string
