@@ -5,6 +5,20 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.3](https://github.com/defilantech/LLMKube/compare/v0.5.2...v0.5.3) (2026-04-01)
+
+
+### Features
+
+* add KV cache type configuration and extraArgs escape hatch ([#256](https://github.com/defilantech/LLMKube/issues/256)) ([7a4b855](https://github.com/defilantech/LLMKube/commit/7a4b855d180cabd224b5121eff60298c3bfb24f2))
+* add Ollama as runtime backend for Metal agent ([#258](https://github.com/defilantech/LLMKube/issues/258)) ([6148b89](https://github.com/defilantech/LLMKube/commit/6148b899547966bc18719bf73243af873d9064c4))
+* add oMLX as alternative runtime backend for Metal agent ([#257](https://github.com/defilantech/LLMKube/issues/257)) ([eaf9045](https://github.com/defilantech/LLMKube/commit/eaf90451c9f15cdd02f6eafbef12eda81768b955))
+
+
+### Bug Fixes
+
+* improve Metal agent usability ([#254](https://github.com/defilantech/LLMKube/issues/254)) ([149c582](https://github.com/defilantech/LLMKube/commit/149c582305b32b9bd51f498d7e2a85aa0dead223))
+
 ## [0.5.2](https://github.com/defilantech/LLMKube/compare/v0.5.1...v0.5.2) (2026-03-27)
 
 
