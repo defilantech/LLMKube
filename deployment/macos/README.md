@@ -462,14 +462,65 @@ llmkube-metal-agent \
   --omlx-bin /path/to/omlx   # Auto-detected from Homebrew if not set
 ```
 
+## Ollama Runtime
+
+The Metal Agent also supports [Ollama](https://ollama.com) as a runtime backend. Since Ollama 0.19 uses MLX natively on Apple Silicon, this gives you fast inference with the tool most Mac users already have installed.
+
+### Prerequisites
+
+Install Ollama if you haven't already:
+
+```bash
+brew install ollama
+```
+
+### Usage
+
+Start Ollama (if not already running as a menu bar app):
+
+```bash
+ollama serve
+```
+
+Start the Metal Agent with the Ollama runtime:
+
+```bash
+llmkube-metal-agent --runtime ollama
+```
+
+Deploy a model. The agent will pull the model through Ollama automatically:
+
+```bash
+llmkube deploy llama-3.2-3b --gpu --accelerator metal
+```
+
+The agent maps LLMKube catalog names to Ollama model tags (e.g., `llama-3.2-3b` becomes `llama3.2:3b`). If the model isn't already downloaded, Ollama pulls it from the Ollama registry.
+
+### Differences from llama-server and oMLX
+
+| | llama-server | oMLX | Ollama |
+|---|---|---|---|
+| Model format | GGUF | MLX | GGUF (via Ollama registry) |
+| Model download | Manual / init container | Manual | Automatic (`/api/pull`) |
+| Install base | llama.cpp users | Small | Most Mac users |
+| CRD changes needed | None | MLX format | None |
+
+### Ollama Flags
+
+```bash
+llmkube-metal-agent \
+  --runtime ollama \
+  --ollama-port 11434    # Ollama server port (default: 11434)
+```
+
 ## Performance
 
 Expected performance on M4 Max (32 GPU cores):
-- **Llama 3.2 3B**: 80-120 tok/s (llama-server), ~115 tok/s (oMLX)
+- **Llama 3.2 3B**: 80-120 tok/s (llama-server), ~115 tok/s (oMLX/Ollama MLX)
 - **Llama 3.1 8B**: 40-60 tok/s (llama-server)
 - **Mistral 7B**: 45-65 tok/s (llama-server)
 
-oMLX uses Apple's MLX framework which is optimized for Apple Silicon unified memory.
+oMLX and Ollama (0.19+) both use Apple's MLX framework for Apple Silicon inference.
 
 ## Security
 
