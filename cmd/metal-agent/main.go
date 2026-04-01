@@ -51,6 +51,7 @@ type AgentConfig struct {
 	Runtime                string
 	OMLXBin                string
 	OMLXPort               int
+	OllamaPort             int
 	Port                   int
 	LogLevel               string
 	HostIP                 string
@@ -142,9 +143,10 @@ func main() {
 	flag.StringVar(&cfg.Namespace, "namespace", "default", "Kubernetes namespace to watch")
 	flag.StringVar(&cfg.ModelStorePath, "model-store", "/tmp/llmkube-models", "Path to store downloaded models")
 	flag.StringVar(&llamaServerFlag, "llama-server", "", "Path to llama-server binary (auto-detected if not set)")
-	flag.StringVar(&cfg.Runtime, "runtime", "llama-server", "Inference runtime: llama-server or omlx")
+	flag.StringVar(&cfg.Runtime, "runtime", "llama-server", "Inference runtime: llama-server, omlx, or ollama")
 	flag.StringVar(&cfg.OMLXBin, "omlx-bin", "", "Path to omlx binary (auto-detected if not set)")
 	flag.IntVar(&cfg.OMLXPort, "omlx-port", 8000, "Port for oMLX server")
+	flag.IntVar(&cfg.OllamaPort, "ollama-port", 11434, "Port for Ollama server")
 	flag.IntVar(&cfg.Port, "port", 9090, "Agent metrics/health port")
 	flag.StringVar(&cfg.LogLevel, "log-level", "info", "Log level (debug, info, warn, error)")
 	flag.StringVar(&cfg.HostIP, "host-ip", "", "IP address to register in Kubernetes endpoints (auto-detected if empty)")
@@ -194,6 +196,10 @@ func main() {
 			os.Exit(1)
 		}
 		cfg.OMLXBin = resolvedBin
+	case "ollama":
+		// Ollama manages itself — no binary resolution needed.
+		// The agent will check if Ollama is running at startup via health check.
+		logger.Infow("using Ollama runtime", "port", cfg.OllamaPort)
 	default:
 		cfg.Runtime = "llama-server"
 		resolvedBin, err := resolveLlamaServerBin(llamaServerFlag)
@@ -247,6 +253,8 @@ func main() {
 	switch cfg.Runtime {
 	case "omlx":
 		logger.Infow("omlx binary found", "path", cfg.OMLXBin)
+	case "ollama":
+		logger.Infow("using Ollama daemon", "port", cfg.OllamaPort)
 	default:
 		logger.Infow("llama-server binary found", "path", cfg.LlamaServerBin)
 	}
@@ -282,6 +290,7 @@ func main() {
 		Runtime:        cfg.Runtime,
 		OMLXBin:        cfg.OMLXBin,
 		OMLXPort:       cfg.OMLXPort,
+		OllamaPort:     cfg.OllamaPort,
 		Port:           cfg.Port,
 		HostIP:         cfg.HostIP,
 		Logger:         logger,
