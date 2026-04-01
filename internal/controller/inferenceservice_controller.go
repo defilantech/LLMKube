@@ -736,6 +736,16 @@ func appendJinjaArgs(args []string, jinja *bool) []string {
 	return args
 }
 
+func appendCacheTypeArgs(args []string, cacheTypeK, cacheTypeV string) []string {
+	if cacheTypeK != "" {
+		args = append(args, "--cache-type-k", cacheTypeK)
+	}
+	if cacheTypeV != "" {
+		args = append(args, "--cache-type-v", cacheTypeV)
+	}
+	return args
+}
+
 func (r *InferenceServiceReconciler) constructDeployment(
 	isvc *inferencev1alpha1.InferenceService,
 	model *inferencev1alpha1.Model,
@@ -800,6 +810,10 @@ func (r *InferenceServiceReconciler) constructDeployment(
 	args = appendParallelSlotsArgs(args, isvc.Spec.ParallelSlots)
 	args = appendFlashAttentionArgs(args, isvc.Spec.FlashAttention, gpuCount)
 	args = appendJinjaArgs(args, isvc.Spec.Jinja)
+	args = appendCacheTypeArgs(args, isvc.Spec.CacheTypeK, isvc.Spec.CacheTypeV)
+	if len(isvc.Spec.ExtraArgs) > 0 {
+		args = append(args, isvc.Spec.ExtraArgs...)
+	}
 
 	// Enable Prometheus metrics endpoint on llama.cpp
 	args = append(args, "--metrics")

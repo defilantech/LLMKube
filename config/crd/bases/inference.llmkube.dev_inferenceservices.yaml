@@ -69,6 +69,35 @@ spec:
           spec:
             description: spec defines the desired state of InferenceService
             properties:
+              cacheTypeK:
+                description: |-
+                  CacheTypeK sets the KV cache quantization type for keys.
+                  Supported values depend on the llama.cpp build version.
+                  Maps to llama.cpp --cache-type-k flag. Default: f16 (llama.cpp default).
+                enum:
+                - f16
+                - f32
+                - q8_0
+                - q4_0
+                - q4_1
+                - q5_0
+                - q5_1
+                - iq4_nl
+                type: string
+              cacheTypeV:
+                description: |-
+                  CacheTypeV sets the KV cache quantization type for values.
+                  Maps to llama.cpp --cache-type-v flag. Default: f16 (llama.cpp default).
+                enum:
+                - f16
+                - f32
+                - q8_0
+                - q4_0
+                - q4_1
+                - q5_0
+                - q5_1
+                - iq4_nl
+                type: string
               contextSize:
                 description: |-
                   ContextSize sets the context window size for the llama.cpp server (-c flag).
@@ -102,6 +131,15 @@ spec:
                     - LoadBalancer
                     type: string
                 type: object
+              extraArgs:
+                description: |-
+                  ExtraArgs provides additional command-line arguments passed directly to the
+                  llama-server process. Use for flags not yet supported as typed CRD fields.
+                  Arguments are appended after all other configured flags.
+                  Example: ["--seed", "42", "--batch-size", "2048"]
+                items:
+                  type: string
+                type: array
               flashAttention:
                 description: |-
                   FlashAttention enables flash attention for faster prompt processing and reduced

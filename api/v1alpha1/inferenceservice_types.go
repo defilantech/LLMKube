@@ -85,6 +85,26 @@ type InferenceServiceSpec struct {
 	// +optional
 	Jinja *bool `json:"jinja,omitempty"`
 
+	// CacheTypeK sets the KV cache quantization type for keys.
+	// Supported values depend on the llama.cpp build version.
+	// Maps to llama.cpp --cache-type-k flag. Default: f16 (llama.cpp default).
+	// +kubebuilder:validation:Enum=f16;f32;q8_0;q4_0;q4_1;q5_0;q5_1;iq4_nl
+	// +optional
+	CacheTypeK string `json:"cacheTypeK,omitempty"`
+
+	// CacheTypeV sets the KV cache quantization type for values.
+	// Maps to llama.cpp --cache-type-v flag. Default: f16 (llama.cpp default).
+	// +kubebuilder:validation:Enum=f16;f32;q8_0;q4_0;q4_1;q5_0;q5_1;iq4_nl
+	// +optional
+	CacheTypeV string `json:"cacheTypeV,omitempty"`
+
+	// ExtraArgs provides additional command-line arguments passed directly to the
+	// llama-server process. Use for flags not yet supported as typed CRD fields.
+	// Arguments are appended after all other configured flags.
+	// Example: ["--seed", "42", "--batch-size", "2048"]
+	// +optional
+	ExtraArgs []string `json:"extraArgs,omitempty"`
+
 	// Priority determines scheduling priority for GPU allocation.
 	// Higher priority services can preempt lower priority ones when GPUs are scarce.
 	// +kubebuilder:validation:Enum=critical;high;normal;low;batch

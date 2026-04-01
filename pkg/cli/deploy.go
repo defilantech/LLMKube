@@ -60,6 +60,9 @@ type deployOptions struct {
 	parallelSlots       int32
 	flashAttention      bool
 	jinja               bool
+	cacheTypeK          string
+	cacheTypeV          string
+	extraArgs           []string
 	metalMemoryFraction float64
 	metalMemoryBudget   string
 	wait                bool
@@ -153,6 +156,12 @@ Examples:
 			"Requires NVIDIA Ampere or newer GPU.")
 	cmd.Flags().BoolVar(&opts.jinja, "jinja", false,
 		"Enable Jinja2 template rendering for tool/function calling support.")
+	cmd.Flags().StringVar(&opts.cacheTypeK, "cache-type-k", "",
+		"KV cache type for keys (f16, q8_0, q4_0, etc.). Maps to llama.cpp --cache-type-k.")
+	cmd.Flags().StringVar(&opts.cacheTypeV, "cache-type-v", "",
+		"KV cache type for values (f16, q8_0, q4_0, etc.). Maps to llama.cpp --cache-type-v.")
+	cmd.Flags().StringSliceVar(&opts.extraArgs, "extra-args", nil,
+		"Additional llama-server arguments (can specify multiple times)")
 
 	cmd.Flags().Float64Var(&opts.metalMemoryFraction, "memory-fraction", 0,
 		"Fraction of system memory to budget for model inference (0.0-1.0). "+
@@ -246,6 +255,17 @@ func runDeploy(opts *deployOptions) error {
 	}
 	if opts.jinja {
 		fmt.Printf("Jinja:       enabled\n")
+	}
+	if opts.cacheTypeK != "" || opts.cacheTypeV != "" {
+		k := opts.cacheTypeK
+		if k == "" {
+			k = "f16"
+		}
+		v := opts.cacheTypeV
+		if v == "" {
+			v = "f16"
+		}
+		fmt.Printf("KV Cache:    K=%s V=%s\n", k, v)
 	}
 	fmt.Printf("Image:       %s\n", opts.image)
 	fmt.Printf("═══════════════════════════════════════════════\n\n")
@@ -360,6 +380,16 @@ func buildInferenceService(opts *deployOptions) *inferencev1alpha1.InferenceServ
 
 	if opts.jinja {
 		isvc.Spec.Jinja = &opts.jinja
+	}
+
+	if opts.cacheTypeK != "" {
+		isvc.Spec.CacheTypeK = opts.cacheTypeK
+	}
+	if opts.cacheTypeV != "" {
+		isvc.Spec.CacheTypeV = opts.cacheTypeV
+	}
+	if len(opts.extraArgs) > 0 {
+		isvc.Spec.ExtraArgs = opts.extraArgs
 	}
 
 	return isvc

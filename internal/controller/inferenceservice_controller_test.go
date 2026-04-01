@@ -1154,6 +1154,223 @@ var _ = Describe("Context Size Configuration", func() {
 			Expect(args).NotTo(ContainElement("--jinja"))
 		})
 	})
+
+	Context("when cache type is configured", func() {
+		var (
+			reconciler *InferenceServiceReconciler
+			model      *inferencev1alpha1.Model
+		)
+
+		BeforeEach(func() {
+			reconciler = &InferenceServiceReconciler{
+				ModelCachePath:     "/tmp/llmkube/models",
+				InitContainerImage: "docker.io/curlimages/curl:8.18.0",
+			}
+
+			model = &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "cache-type-model",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source: "https://example.com/model.gguf",
+					Hardware: &inferencev1alpha1.HardwareSpec{
+						GPU: &inferencev1alpha1.GPUSpec{
+							Count:  1,
+							Layers: 64,
+						},
+					},
+				},
+				Status: inferencev1alpha1.ModelStatus{
+					Phase:    "Ready",
+					CacheKey: "test-cache-key",
+					Path:     "/tmp/llmkube/models/test-model.gguf",
+				},
+			}
+		})
+
+		It("should include --cache-type-k flag when cacheTypeK is set", func() {
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "cache-k-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef:   "cache-type-model",
+					Replicas:   &replicas,
+					Image:      "ghcr.io/ggml-org/llama.cpp:server-cuda",
+					CacheTypeK: "q4_0",
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{
+						GPU: 1,
+					},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).To(ContainElements("--cache-type-k", "q4_0"))
+		})
+
+		It("should include --cache-type-v flag when cacheTypeV is set", func() {
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "cache-v-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef:   "cache-type-model",
+					Replicas:   &replicas,
+					Image:      "ghcr.io/ggml-org/llama.cpp:server-cuda",
+					CacheTypeV: "q8_0",
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{
+						GPU: 1,
+					},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).To(ContainElements("--cache-type-v", "q8_0"))
+		})
+
+		It("should include both cache type flags when both are set", func() {
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "cache-both-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef:   "cache-type-model",
+					Replicas:   &replicas,
+					Image:      "ghcr.io/ggml-org/llama.cpp:server-cuda",
+					CacheTypeK: "q4_0",
+					CacheTypeV: "q8_0",
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{
+						GPU: 1,
+					},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).To(ContainElements("--cache-type-k", "q4_0"))
+			Expect(args).To(ContainElements("--cache-type-v", "q8_0"))
+		})
+
+		It("should NOT include cache type flags when neither is set", func() {
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "no-cache-type-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: "cache-type-model",
+					Replicas: &replicas,
+					Image:    "ghcr.io/ggml-org/llama.cpp:server-cuda",
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{
+						GPU: 1,
+					},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).NotTo(ContainElement("--cache-type-k"))
+			Expect(args).NotTo(ContainElement("--cache-type-v"))
+		})
+	})
+
+	Context("when extraArgs is configured", func() {
+		var (
+			reconciler *InferenceServiceReconciler
+			model      *inferencev1alpha1.Model
+		)
+
+		BeforeEach(func() {
+			reconciler = &InferenceServiceReconciler{
+				ModelCachePath:     "/tmp/llmkube/models",
+				InitContainerImage: "docker.io/curlimages/curl:8.18.0",
+			}
+
+			model = &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "extra-args-model",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source: "https://example.com/model.gguf",
+					Hardware: &inferencev1alpha1.HardwareSpec{
+						GPU: &inferencev1alpha1.GPUSpec{
+							Count:  1,
+							Layers: 64,
+						},
+					},
+				},
+				Status: inferencev1alpha1.ModelStatus{
+					Phase:    "Ready",
+					CacheKey: "test-cache-key",
+					Path:     "/tmp/llmkube/models/test-model.gguf",
+				},
+			}
+		})
+
+		It("should append all extra args in order", func() {
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "extra-args-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef:  "extra-args-model",
+					Replicas:  &replicas,
+					Image:     "ghcr.io/ggml-org/llama.cpp:server-cuda",
+					ExtraArgs: []string{"--seed", "42", "--batch-size", "2048"},
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{
+						GPU: 1,
+					},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).To(ContainElements("--seed", "42"))
+			Expect(args).To(ContainElements("--batch-size", "2048"))
+		})
+
+		It("should NOT append anything extra when extraArgs is empty", func() {
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "no-extra-args-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: "extra-args-model",
+					Replicas: &replicas,
+					Image:    "ghcr.io/ggml-org/llama.cpp:server-cuda",
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{
+						GPU: 1,
+					},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).NotTo(ContainElement("--seed"))
+			Expect(args).NotTo(ContainElement("--batch-size"))
+		})
+	})
 })
 
 var _ = Describe("Multi-GPU End-to-End Reconciliation", func() {
