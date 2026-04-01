@@ -557,6 +557,76 @@ func TestNewDeployCommand(t *testing.T) {
 	}
 }
 
+func TestResolveAcceleratorAndImage(t *testing.T) {
+	tests := []struct {
+		name       string
+		opts       *deployOptions
+		wantAccel  string
+		wantVendor string
+		wantImage  string
+	}{
+		{
+			name: "metal accelerator defaults vendor to apple",
+			opts: &deployOptions{
+				gpu:         true,
+				accelerator: "metal",
+				gpuVendor:   "nvidia", // flag default
+			},
+			wantAccel:  "metal",
+			wantVendor: "apple",
+			wantImage:  "",
+		},
+		{
+			name: "cuda accelerator keeps nvidia vendor",
+			opts: &deployOptions{
+				gpu:         true,
+				accelerator: "cuda",
+				gpuVendor:   "nvidia",
+			},
+			wantAccel:  "cuda",
+			wantVendor: "nvidia",
+			wantImage:  "ghcr.io/ggml-org/llama.cpp:server-cuda",
+		},
+		{
+			name: "metal with explicit amd vendor is preserved",
+			opts: &deployOptions{
+				gpu:         true,
+				accelerator: "metal",
+				gpuVendor:   "amd",
+			},
+			wantAccel:  "metal",
+			wantVendor: "amd",
+			wantImage:  "",
+		},
+		{
+			name: "cpu defaults",
+			opts: &deployOptions{
+				gpu:       false,
+				gpuVendor: "nvidia",
+			},
+			wantAccel:  "cpu",
+			wantVendor: "nvidia",
+			wantImage:  "ghcr.io/ggml-org/llama.cpp:server",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resolveAcceleratorAndImage(tt.opts)
+
+			if tt.opts.accelerator != tt.wantAccel {
+				t.Errorf("accelerator = %q, want %q", tt.opts.accelerator, tt.wantAccel)
+			}
+			if tt.opts.gpuVendor != tt.wantVendor {
+				t.Errorf("gpuVendor = %q, want %q", tt.opts.gpuVendor, tt.wantVendor)
+			}
+			if tt.opts.image != tt.wantImage {
+				t.Errorf("image = %q, want %q", tt.opts.image, tt.wantImage)
+			}
+		})
+	}
+}
+
 // contains is a helper since strings.Contains import isn't needed elsewhere
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && searchString(s, substr)

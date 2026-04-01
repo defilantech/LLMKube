@@ -77,6 +77,11 @@ func getEndpoint(ctx context.Context, opts *benchmarkOptions) (string, func(), e
 		return "", nil, fmt.Errorf("InferenceService '%s' is not ready (phase: %s)", opts.name, isvc.Status.Phase)
 	}
 
+	// Check if this is a Metal deployment by looking up the referenced Model's accelerator
+	if isMetalDeployment(ctx, k8sClient, isvc) {
+		return getMetalEndpoint(isvc)
+	}
+
 	if opts.portForward {
 		return setupPortForward(opts)
 	}
@@ -88,6 +93,46 @@ func getEndpoint(ctx context.Context, opts *benchmarkOptions) (string, func(), e
 	return "", nil, fmt.Errorf(
 		"no endpoint found for service '%s'. Use --endpoint to specify manually or --port-forward",
 		opts.name)
+}
+
+// isMetalDeployment checks if the InferenceService references a Model with Metal acceleration.
+func isMetalDeployment(ctx context.Context, k8sClient client.Client, isvc *inferencev1alpha1.InferenceService) bool {
+	model := &inferencev1alpha1.Model{}
+	modelKey := types.NamespacedName{
+		Name:      isvc.Spec.ModelRef,
+		Namespace: isvc.Namespace,
+	}
+	if err := k8sClient.Get(ctx, modelKey, model); err != nil {
+		return false
+	}
+	return model.Spec.Hardware != nil && model.Spec.Hardware.Accelerator == acceleratorMetal
+}
+
+// getMetalEndpoint returns the endpoint for a Metal deployment. Metal deployments run
+// natively on macOS without Kubernetes Services, so port-forwarding is not possible.
+// The Metal agent registers the endpoint on the InferenceService status. If the status
+// endpoint is a cluster-internal URL (svc.cluster.local), fall back to localhost:8080
+// since the Metal agent runs locally.
+func getMetalEndpoint(isvc *inferencev1alpha1.InferenceService) (string, func(), error) {
+	const defaultMetalEndpoint = "http://localhost:8080"
+
+	fmt.Printf("🍎 Metal deployment detected, using direct endpoint (skipping port-forward)\n")
+
+	if isvc.Status.Endpoint != "" {
+		endpoint := isvc.Status.Endpoint
+		// The controller constructs a svc.cluster.local endpoint even for Metal,
+		// but Metal runs natively — not inside the cluster. Use localhost instead.
+		if strings.Contains(endpoint, ".svc.cluster.local") {
+			fmt.Printf("   Status endpoint is cluster-internal (%s), using %s\n", endpoint, defaultMetalEndpoint)
+			endpoint = defaultMetalEndpoint
+		} else {
+			fmt.Printf("   Endpoint: %s\n", endpoint)
+		}
+		return endpoint, nil, nil
+	}
+
+	fmt.Printf("   No status endpoint set, using default %s\n", defaultMetalEndpoint)
+	return defaultMetalEndpoint, nil, nil
 }
 
 func setupPortForward(opts *benchmarkOptions) (string, func(), error) {

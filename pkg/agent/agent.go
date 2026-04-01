@@ -165,11 +165,38 @@ func (a *MetalAgent) Start(ctx context.Context) error {
 		go watchdog.Run(ctx)
 	}
 
-	// Start watcher
+	// Start watcher with retry logic. If the CRDs are not installed when
+	// the agent starts, Watch will fail immediately. We retry with
+	// exponential backoff so the agent recovers once CRDs become available.
 	eventChan := make(chan InferenceServiceEvent)
 	go func() {
-		if err := a.watcher.Watch(ctx, eventChan); err != nil {
-			a.logger.Warnw("watcher exited with error", "error", err)
+		const (
+			initialBackoff = 5 * time.Second
+			maxBackoff     = 60 * time.Second
+			backoffFactor  = 2
+		)
+		backoff := initialBackoff
+		for {
+			err := a.watcher.Watch(ctx, eventChan)
+			if err == nil {
+				// Clean exit (context cancelled) — don't retry.
+				return
+			}
+			// Check if context is done before retrying.
+			if ctx.Err() != nil {
+				return
+			}
+			a.logger.Warnw("watcher exited with error, retrying",
+				"error", err, "retryIn", backoff)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+			backoff *= backoffFactor
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
 		}
 	}()
 

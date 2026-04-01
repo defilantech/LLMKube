@@ -441,6 +441,9 @@ func resolveAcceleratorAndImage(opts *deployOptions) {
 		}
 
 		if opts.accelerator == "metal" {
+			if opts.gpuVendor == "nvidia" {
+				opts.gpuVendor = "apple"
+			}
 			if opts.image == "" {
 				opts.image = ""
 			}
