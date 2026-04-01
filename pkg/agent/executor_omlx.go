@@ -60,7 +60,7 @@ func NewOMLXExecutor(omlxBin, modelDir string, port int, logger *zap.SugaredLogg
 
 // omlxModelsStatusResponse is the response from GET /v1/models/status.
 type omlxModelsStatusResponse struct {
-	Data []omlxModelStatus `json:"data"`
+	Models []omlxModelStatus `json:"models"`
 }
 
 type omlxModelStatus struct {
@@ -73,9 +73,13 @@ type omlxModelStatus struct {
 // specified model. It returns a ManagedProcess whose PID is the daemon PID and
 // whose Port is the shared oMLX port.
 func (e *OMLXExecutor) StartProcess(ctx context.Context, config ExecutorConfig) (*ManagedProcess, error) {
-	// Resolve the model directory: oMLX models are directories containing config.json
-	modelID := config.ModelName
-	modelPath := filepath.Join(e.modelDir, modelID)
+	// For oMLX, the model source IS the model directory path.
+	// The model ID for oMLX is the directory base name.
+	modelPath := config.ModelSource
+	if modelPath == "" {
+		modelPath = filepath.Join(e.modelDir, config.ModelName)
+	}
+	modelID := filepath.Base(modelPath)
 
 	configPath := filepath.Join(modelPath, "config.json")
 	if _, err := os.Stat(configPath); err != nil {
@@ -348,7 +352,7 @@ func (e *OMLXExecutor) isModelLoaded(ctx context.Context, modelID string) (bool,
 		return false, fmt.Errorf("failed to decode models/status: %w", err)
 	}
 
-	for _, m := range status.Data {
+	for _, m := range status.Models {
 		if m.ID == modelID && m.Loaded {
 			return true, nil
 		}
