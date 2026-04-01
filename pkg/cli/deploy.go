@@ -36,6 +36,8 @@ import (
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 )
 
+const defaultGPUVendor = "nvidia"
+
 type deployOptions struct {
 	name                string
 	namespace           string
@@ -139,7 +141,7 @@ Examples:
 	cmd.Flags().Int32Var(&opts.gpuLayers, "gpu-layers", -1,
 		"Number of model layers to offload to GPU (-1 = all layers, 0 = auto)")
 	cmd.Flags().StringVar(&opts.gpuMemory, "gpu-memory", "", "GPU memory request (e.g., '8Gi', '16Gi')")
-	cmd.Flags().StringVar(&opts.gpuVendor, "gpu-vendor", "nvidia", "GPU vendor (nvidia, amd, intel)")
+	cmd.Flags().StringVar(&opts.gpuVendor, "gpu-vendor", defaultGPUVendor, "GPU vendor (nvidia, amd, intel)")
 
 	cmd.Flags().Int32Var(&opts.contextSize, "context", 0,
 		"Context window size in tokens (e.g., 8192, 16384, 32768). If not specified, uses llama.cpp default.")
@@ -441,7 +443,7 @@ func resolveAcceleratorAndImage(opts *deployOptions) {
 		}
 
 		if opts.accelerator == "metal" {
-			if opts.gpuVendor == "nvidia" {
+			if opts.gpuVendor == defaultGPUVendor {
 				opts.gpuVendor = "apple"
 			}
 			if opts.image == "" {

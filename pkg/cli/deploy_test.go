@@ -546,8 +546,8 @@ func TestNewDeployCommand(t *testing.T) {
 	if f := cmd.Flags().Lookup("replicas"); f.DefValue != "1" {
 		t.Errorf("replicas default = %q, want %q", f.DefValue, "1")
 	}
-	if f := cmd.Flags().Lookup("gpu-vendor"); f.DefValue != "nvidia" {
-		t.Errorf("gpu-vendor default = %q, want %q", f.DefValue, "nvidia")
+	if f := cmd.Flags().Lookup("gpu-vendor"); f.DefValue != defaultGPUVendor {
+		t.Errorf("gpu-vendor default = %q, want %q", f.DefValue, defaultGPUVendor)
 	}
 	if f := cmd.Flags().Lookup("cpu"); f.DefValue != "2" {
 		t.Errorf("cpu default = %q, want %q", f.DefValue, "2")
@@ -570,7 +570,7 @@ func TestResolveAcceleratorAndImage(t *testing.T) {
 			opts: &deployOptions{
 				gpu:         true,
 				accelerator: "metal",
-				gpuVendor:   "nvidia", // flag default
+				gpuVendor:   defaultGPUVendor, // flag default
 			},
 			wantAccel:  "metal",
 			wantVendor: "apple",
@@ -581,10 +581,10 @@ func TestResolveAcceleratorAndImage(t *testing.T) {
 			opts: &deployOptions{
 				gpu:         true,
 				accelerator: "cuda",
-				gpuVendor:   "nvidia",
+				gpuVendor:   defaultGPUVendor,
 			},
 			wantAccel:  "cuda",
-			wantVendor: "nvidia",
+			wantVendor: defaultGPUVendor,
 			wantImage:  "ghcr.io/ggml-org/llama.cpp:server-cuda",
 		},
 		{
@@ -602,10 +602,10 @@ func TestResolveAcceleratorAndImage(t *testing.T) {
 			name: "cpu defaults",
 			opts: &deployOptions{
 				gpu:       false,
-				gpuVendor: "nvidia",
+				gpuVendor: defaultGPUVendor,
 			},
 			wantAccel:  "cpu",
-			wantVendor: "nvidia",
+			wantVendor: defaultGPUVendor,
 			wantImage:  "ghcr.io/ggml-org/llama.cpp:server",
 		},
 	}
