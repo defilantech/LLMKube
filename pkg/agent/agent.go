@@ -42,12 +42,14 @@ type MetalAgentConfig struct {
 	HostIP         string // explicit IP to register in K8s endpoints; empty = auto-detect
 	Logger         *zap.SugaredLogger
 
-	// Runtime selects the inference backend: "llama-server" (default) or "omlx".
+	// Runtime selects the inference backend: "llama-server" (default), "omlx", or "ollama".
 	Runtime string
 	// OMLXBin is the path to the omlx binary. Only used when Runtime is "omlx".
 	OMLXBin string
 	// OMLXPort is the port the shared oMLX daemon listens on (default 8000).
 	OMLXPort int
+	// OllamaPort is the port the Ollama daemon listens on (default 11434).
+	OllamaPort int
 
 	// MemoryProvider supplies system memory info. Nil defaults to DarwinMemoryProvider.
 	MemoryProvider MemoryProvider
@@ -72,14 +74,14 @@ type MetalAgent struct {
 	memoryFraction float64
 }
 
-// ManagedProcess represents a running inference process (llama-server or oMLX model).
+// ManagedProcess represents a running inference process (llama-server, oMLX, or Ollama model).
 type ManagedProcess struct {
 	Name      string
 	Namespace string
 	PID       int
 	Port      int
 	ModelPath string
-	ModelID   string // oMLX model identifier used for unload; empty for llama-server
+	ModelID   string // oMLX/Ollama model identifier used for unload; empty for llama-server
 	StartedAt time.Time
 	Healthy   bool
 }
@@ -145,6 +147,15 @@ func (a *MetalAgent) Start(ctx context.Context) error {
 		a.executor = NewOMLXExecutor(
 			a.config.OMLXBin,
 			a.config.ModelStorePath,
+			port,
+			a.logger.With("subsystem", "executor"),
+		)
+	case "ollama":
+		port := a.config.OllamaPort
+		if port == 0 {
+			port = 11434
+		}
+		a.executor = NewOllamaExecutor(
 			port,
 			a.logger.With("subsystem", "executor"),
 		)
@@ -293,6 +304,14 @@ func (a *MetalAgent) ensureProcess(ctx context.Context, isvc *inferencev1alpha1.
 			a.logger.Warnw("skipping GGUF model on oMLX runtime",
 				"model", model.Name, "format", modelFormat, "runtime", a.config.Runtime)
 			return fmt.Errorf("model %s has format %q which is incompatible with omlx runtime", model.Name, modelFormat)
+		}
+	case "ollama":
+		if modelFormat == "mlx" {
+			a.logger.Warnw("skipping MLX model on Ollama runtime",
+				"model", model.Name, "format", modelFormat, "runtime", a.config.Runtime)
+			return fmt.Errorf(
+				"model %s has format %q which is incompatible with ollama runtime",
+				model.Name, modelFormat)
 		}
 	default:
 		if modelFormat == "mlx" {
@@ -443,10 +462,17 @@ func (a *MetalAgent) deleteProcess(ctx context.Context, key string) error {
 
 	var deleteErrors []error
 
-	// For oMLX, unload the specific model instead of killing the shared daemon.
-	if omlx, ok := a.executor.(*OMLXExecutor); ok && process.ModelID != "" {
+	// For shared-daemon runtimes (oMLX, Ollama), unload the specific model
+	// instead of killing the shared daemon.
+	if ollama, ok := a.executor.(*OllamaExecutor); ok && process.ModelID != "" {
+		if err := ollama.UnloadModel(ctx, process.ModelID); err != nil {
+			deleteErrors = append(deleteErrors,
+				fmt.Errorf("failed to unload Ollama model %s: %w", process.ModelID, err))
+		}
+	} else if omlx, ok := a.executor.(*OMLXExecutor); ok && process.ModelID != "" {
 		if err := omlx.UnloadModel(ctx, process.ModelID); err != nil {
-			deleteErrors = append(deleteErrors, fmt.Errorf("failed to unload oMLX model %s: %w", process.ModelID, err))
+			deleteErrors = append(deleteErrors,
+				fmt.Errorf("failed to unload oMLX model %s: %w", process.ModelID, err))
 		}
 	} else if err := a.executor.StopProcess(process.PID); err != nil {
 		deleteErrors = append(deleteErrors, fmt.Errorf("failed to stop process: %w", err))
@@ -496,17 +522,26 @@ func (a *MetalAgent) Shutdown(ctx context.Context) error {
 
 	var shutdownErrors []error
 
-	// For oMLX, unload each model from the shared daemon.
+	// For shared-daemon runtimes (oMLX, Ollama), unload each model instead of
+	// killing the daemon.
 	omlx, isOMLX := a.executor.(*OMLXExecutor)
+	ollama, isOllama := a.executor.(*OllamaExecutor)
 
 	for key, process := range a.processes {
-		if isOMLX && process.ModelID != "" {
+		if isOllama && process.ModelID != "" {
+			if err := ollama.UnloadModel(ctx, process.ModelID); err != nil {
+				shutdownErrors = append(shutdownErrors,
+					fmt.Errorf("failed to unload Ollama model %s: %w", key, err))
+			}
+		} else if isOMLX && process.ModelID != "" {
 			if err := omlx.UnloadModel(ctx, process.ModelID); err != nil {
-				shutdownErrors = append(shutdownErrors, fmt.Errorf("failed to unload oMLX model %s: %w", key, err))
+				shutdownErrors = append(shutdownErrors,
+					fmt.Errorf("failed to unload oMLX model %s: %w", key, err))
 			}
 		} else {
 			if err := a.executor.StopProcess(process.PID); err != nil {
-				shutdownErrors = append(shutdownErrors, fmt.Errorf("failed to stop %s: %w", key, err))
+				shutdownErrors = append(shutdownErrors,
+					fmt.Errorf("failed to stop %s: %w", key, err))
 			}
 		}
 	}
