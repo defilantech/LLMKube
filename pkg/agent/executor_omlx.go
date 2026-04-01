@@ -79,7 +79,9 @@ func (e *OMLXExecutor) StartProcess(ctx context.Context, config ExecutorConfig) 
 
 	configPath := filepath.Join(modelPath, "config.json")
 	if _, err := os.Stat(configPath); err != nil {
-		return nil, fmt.Errorf("oMLX model not found at %s (config.json missing): models must be pre-downloaded for oMLX", modelPath)
+		return nil, fmt.Errorf(
+			"oMLX model not found at %s (config.json missing): models must be pre-downloaded",
+			modelPath)
 	}
 
 	e.logger.Infow("starting oMLX model", "modelID", modelID, "modelPath", modelPath)
