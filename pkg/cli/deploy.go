@@ -231,44 +231,7 @@ func runDeploy(opts *deployOptions) error {
 		return fmt.Errorf("failed to create client: %w", err)
 	}
 
-	fmt.Printf("\n🚀 Deploying LLM inference service\n")
-	fmt.Printf("═══════════════════════════════════════════════\n")
-	fmt.Printf("Name:        %s\n", opts.name)
-	fmt.Printf("Namespace:   %s\n", opts.namespace)
-	fmt.Printf("Accelerator: %s\n", opts.accelerator)
-	if opts.gpu {
-		displayVendor := opts.gpuVendor
-		if opts.accelerator == acceleratorMetal {
-			displayVendor = "apple"
-		}
-		fmt.Printf("GPU:         %d x %s (layers: %d)\n", opts.gpuCount, displayVendor, opts.gpuLayers)
-	}
-	fmt.Printf("Replicas:    %d\n", opts.replicas)
-	if opts.contextSize > 0 {
-		fmt.Printf("Context:     %d tokens\n", opts.contextSize)
-	}
-	if opts.parallelSlots > 0 {
-		fmt.Printf("Parallel:    %d slots\n", opts.parallelSlots)
-	}
-	if opts.flashAttention {
-		fmt.Printf("Flash Attn:  enabled\n")
-	}
-	if opts.jinja {
-		fmt.Printf("Jinja:       enabled\n")
-	}
-	if opts.cacheTypeK != "" || opts.cacheTypeV != "" {
-		k := opts.cacheTypeK
-		if k == "" {
-			k = "f16"
-		}
-		v := opts.cacheTypeV
-		if v == "" {
-			v = "f16"
-		}
-		fmt.Printf("KV Cache:    K=%s V=%s\n", k, v)
-	}
-	fmt.Printf("Image:       %s\n", opts.image)
-	fmt.Printf("═══════════════════════════════════════════════\n\n")
+	printDeploySummary(opts)
 
 	fmt.Printf("📦 Creating Model '%s'...\n", opts.name)
 	model := &inferencev1alpha1.Model{
@@ -462,6 +425,47 @@ func waitForReady(ctx context.Context, k8sClient client.Client, name, namespace 
 			}
 		}
 	}
+}
+
+func printDeploySummary(opts *deployOptions) {
+	fmt.Printf("\n🚀 Deploying LLM inference service\n")
+	fmt.Printf("═══════════════════════════════════════════════\n")
+	fmt.Printf("Name:        %s\n", opts.name)
+	fmt.Printf("Namespace:   %s\n", opts.namespace)
+	fmt.Printf("Accelerator: %s\n", opts.accelerator)
+	if opts.gpu {
+		displayVendor := opts.gpuVendor
+		if opts.accelerator == acceleratorMetal {
+			displayVendor = "apple"
+		}
+		fmt.Printf("GPU:         %d x %s (layers: %d)\n", opts.gpuCount, displayVendor, opts.gpuLayers)
+	}
+	fmt.Printf("Replicas:    %d\n", opts.replicas)
+	if opts.contextSize > 0 {
+		fmt.Printf("Context:     %d tokens\n", opts.contextSize)
+	}
+	if opts.parallelSlots > 0 {
+		fmt.Printf("Parallel:    %d slots\n", opts.parallelSlots)
+	}
+	if opts.flashAttention {
+		fmt.Printf("Flash Attn:  enabled\n")
+	}
+	if opts.jinja {
+		fmt.Printf("Jinja:       enabled\n")
+	}
+	if opts.cacheTypeK != "" || opts.cacheTypeV != "" {
+		k := opts.cacheTypeK
+		if k == "" {
+			k = "f16"
+		}
+		v := opts.cacheTypeV
+		if v == "" {
+			v = "f16"
+		}
+		fmt.Printf("KV Cache:    K=%s V=%s\n", k, v)
+	}
+	fmt.Printf("Image:       %s\n", opts.image)
+	fmt.Printf("═══════════════════════════════════════════════\n\n")
 }
 
 func resolveAcceleratorAndImage(opts *deployOptions) {
