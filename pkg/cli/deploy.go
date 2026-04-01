@@ -228,7 +228,11 @@ func runDeploy(opts *deployOptions) error {
 	fmt.Printf("Namespace:   %s\n", opts.namespace)
 	fmt.Printf("Accelerator: %s\n", opts.accelerator)
 	if opts.gpu {
-		fmt.Printf("GPU:         %d x %s (layers: %d)\n", opts.gpuCount, opts.gpuVendor, opts.gpuLayers)
+		displayVendor := opts.gpuVendor
+		if opts.accelerator == "metal" {
+			displayVendor = "apple"
+		}
+		fmt.Printf("GPU:         %d x %s (layers: %d)\n", opts.gpuCount, displayVendor, opts.gpuLayers)
 	}
 	fmt.Printf("Replicas:    %d\n", opts.replicas)
 	if opts.contextSize > 0 {
@@ -443,9 +447,6 @@ func resolveAcceleratorAndImage(opts *deployOptions) {
 		}
 
 		if opts.accelerator == "metal" {
-			if opts.gpuVendor == defaultGPUVendor {
-				opts.gpuVendor = "apple"
-			}
 			if opts.image == "" {
 				opts.image = ""
 			}

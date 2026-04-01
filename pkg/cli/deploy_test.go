@@ -566,14 +566,14 @@ func TestResolveAcceleratorAndImage(t *testing.T) {
 		wantImage  string
 	}{
 		{
-			name: "metal accelerator defaults vendor to apple",
+			name: "metal accelerator keeps vendor as default (display-only override)",
 			opts: &deployOptions{
 				gpu:         true,
 				accelerator: "metal",
 				gpuVendor:   defaultGPUVendor, // flag default
 			},
 			wantAccel:  "metal",
-			wantVendor: "apple",
+			wantVendor: defaultGPUVendor, // vendor stays nvidia in opts, display shows "apple"
 			wantImage:  "",
 		},
 		{
