@@ -24,7 +24,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -35,7 +34,6 @@ import (
 // downloads, loading, and inference internally.
 type OllamaExecutor struct {
 	port       int
-	mu         sync.Mutex
 	logger     *zap.SugaredLogger
 	httpClient *http.Client
 }
