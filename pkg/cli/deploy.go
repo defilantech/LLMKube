@@ -229,7 +229,7 @@ func runDeploy(opts *deployOptions) error {
 	fmt.Printf("Accelerator: %s\n", opts.accelerator)
 	if opts.gpu {
 		displayVendor := opts.gpuVendor
-		if opts.accelerator == "metal" {
+		if opts.accelerator == acceleratorMetal {
 			displayVendor = "apple"
 		}
 		fmt.Printf("GPU:         %d x %s (layers: %d)\n", opts.gpuCount, displayVendor, opts.gpuLayers)
@@ -438,7 +438,7 @@ func resolveAcceleratorAndImage(opts *deployOptions) {
 	if opts.gpu {
 		if opts.accelerator == "" {
 			if detectMetalSupport() {
-				opts.accelerator = "metal"
+				opts.accelerator = acceleratorMetal
 				fmt.Printf("ℹ️  Auto-detected accelerator: %s (Apple Silicon GPU)\n", opts.accelerator)
 			} else {
 				opts.accelerator = "cuda"
@@ -446,7 +446,7 @@ func resolveAcceleratorAndImage(opts *deployOptions) {
 			}
 		}
 
-		if opts.accelerator == "metal" {
+		if opts.accelerator == acceleratorMetal {
 			if opts.image == "" {
 				opts.image = ""
 			}
