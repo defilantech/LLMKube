@@ -385,14 +385,91 @@ Everything on one machine — simpler but minikube consumes resources:
 └─────────────────────────────────────────────────┘
 ```
 
+## oMLX Runtime (MLX Backend)
+
+The Metal Agent supports an alternative runtime using [oMLX](https://github.com/jundot/omlx), an MLX-based inference server for Apple Silicon. oMLX provides roughly 40% faster generation compared to llama-server Metal on the same hardware.
+
+### Prerequisites
+
+Install oMLX via Homebrew:
+
+```bash
+brew tap jundot/omlx https://github.com/jundot/omlx
+brew install omlx
+```
+
+Download an MLX-format model (models from the `mlx-community` HuggingFace org):
+
+```bash
+pip install huggingface-hub
+huggingface-cli download mlx-community/Llama-3.2-3B-Instruct-4bit \
+  --local-dir ~/.omlx/models/Llama-3.2-3B-Instruct-4bit
+```
+
+### Usage
+
+Start the Metal Agent with the oMLX runtime:
+
+```bash
+llmkube-metal-agent --runtime omlx --model-store ~/.omlx/models
+```
+
+Deploy an MLX model:
+
+```bash
+kubectl apply -f - <<EOF
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: Model
+metadata:
+  name: llama-3b-mlx
+spec:
+  source: /path/to/models/Llama-3.2-3B-Instruct-4bit
+  format: mlx
+  hardware:
+    accelerator: metal
+    gpu:
+      enabled: true
+      count: 1
+---
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: InferenceService
+metadata:
+  name: llama-3b-mlx
+spec:
+  modelRef: llama-3b-mlx
+  replicas: 1
+EOF
+```
+
+The agent will start the oMLX daemon, load the model, and register the endpoint.
+
+### Differences from llama-server
+
+| | llama-server | oMLX |
+|---|---|---|
+| Model format | GGUF | MLX (safetensors) |
+| Process model | One per model | One daemon, all models |
+| Memory management | Pre-flight estimation | LRU eviction |
+| Metrics | Prometheus native | JSON only |
+
+### oMLX Flags
+
+```bash
+llmkube-metal-agent \
+  --runtime omlx \
+  --model-store ~/.omlx/models \
+  --omlx-port 8000 \         # oMLX server port (default: 8000)
+  --omlx-bin /path/to/omlx   # Auto-detected from Homebrew if not set
+```
+
 ## Performance
 
 Expected performance on M4 Max (32 GPU cores):
-- **Llama 3.2 3B**: 80-120 tok/s (generation)
-- **Llama 3.1 8B**: 40-60 tok/s (generation)
-- **Mistral 7B**: 45-65 tok/s (generation)
+- **Llama 3.2 3B**: 80-120 tok/s (llama-server), ~115 tok/s (oMLX)
+- **Llama 3.1 8B**: 40-60 tok/s (llama-server)
+- **Mistral 7B**: 45-65 tok/s (llama-server)
 
-Performance comparable to Ollama, but with Kubernetes orchestration!
+oMLX uses Apple's MLX framework which is optimized for Apple Silicon unified memory.
 
 ## Security
 
