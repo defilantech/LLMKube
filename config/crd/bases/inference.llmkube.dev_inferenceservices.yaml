@@ -69,6 +69,62 @@ spec:
           spec:
             description: spec defines the desired state of InferenceService
             properties:
+              autoscaling:
+                description: |-
+                  Autoscaling configures horizontal pod autoscaling for the inference service.
+                  When set, the controller creates and manages an HPA resource targeting the
+                  inference Deployment. Requires Prometheus Adapter for custom metrics.
+                  Mutually exclusive with manual replica management: when autoscaling is enabled,
+                  the Replicas field serves as the initial replica count only.
+                properties:
+                  maxReplicas:
+                    description: MaxReplicas is the upper limit for the number of
+                      replicas.
+                    format: int32
+                    maximum: 100
+                    minimum: 1
+                    type: integer
+                  metrics:
+                    description: |-
+                      Metrics defines the scaling metrics and target values.
+                      If empty, defaults to llamacpp:requests_processing with target average value of 2.
+                    items:
+                      description: MetricSpec defines a single metric for HPA scaling.
+                      properties:
+                        name:
+                          description: Name is the metric name (e.g., llamacpp:requests_processing).
+                          type: string
+                        targetAverageUtilization:
+                          description: TargetAverageUtilization is the target utilization
+                            percentage for Resource-type metrics.
+                          format: int32
+                          type: integer
+                        targetAverageValue:
+                          description: TargetAverageValue is the target per-pod average
+                            for Pods-type metrics.
+                          type: string
+                        type:
+                          description: Type is the metric source type.
+                          enum:
+                          - Pods
+                          - Resource
+                          type: string
+                      required:
+                      - name
+                      - type
+                      type: object
+                    type: array
+                  minReplicas:
+                    default: 1
+                    description: MinReplicas is the lower limit for the number of
+                      replicas.
+                    format: int32
+                    maximum: 10
+                    minimum: 1
+                    type: integer
+                required:
+                - maxReplicas
+                type: object
               cacheTypeK:
                 description: |-
                   CacheTypeK sets the KV cache quantization type for keys.

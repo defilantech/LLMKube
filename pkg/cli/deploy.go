@@ -65,6 +65,9 @@ type deployOptions struct {
 	extraArgs           []string
 	metalMemoryFraction float64
 	metalMemoryBudget   string
+	minReplicas         int32
+	maxReplicas         int32
+	autoscaleMetric     string
 	wait                bool
 	timeout             time.Duration
 }
@@ -136,6 +139,12 @@ Examples:
 	cmd.Flags().StringVar(&opts.sha256, "sha256", "",
 		"Expected SHA256 hash of the model file for integrity verification")
 	cmd.Flags().Int32VarP(&opts.replicas, "replicas", "r", 1, "Number of replicas")
+	cmd.Flags().Int32Var(&opts.minReplicas, "min-replicas", 0,
+		"Minimum replicas for autoscaling (enables HPA when set with --max-replicas)")
+	cmd.Flags().Int32Var(&opts.maxReplicas, "max-replicas", 0,
+		"Maximum replicas for autoscaling (enables HPA when set)")
+	cmd.Flags().StringVar(&opts.autoscaleMetric, "autoscale-metric", "",
+		"Custom metric for autoscaling (default: llamacpp:requests_processing)")
 
 	cmd.Flags().BoolVar(&opts.gpu, "gpu", false, "Enable GPU acceleration (auto-detects CUDA image)")
 	cmd.Flags().StringVar(&opts.accelerator, "accelerator", "",
@@ -355,6 +364,26 @@ func buildInferenceService(opts *deployOptions) *inferencev1alpha1.InferenceServ
 		isvc.Spec.ExtraArgs = opts.extraArgs
 	}
 
+	if opts.maxReplicas > 0 {
+		autoscaling := &inferencev1alpha1.AutoscalingSpec{
+			MaxReplicas: opts.maxReplicas,
+		}
+		if opts.minReplicas > 0 {
+			autoscaling.MinReplicas = &opts.minReplicas
+		}
+		if opts.autoscaleMetric != "" {
+			targetVal := "2"
+			autoscaling.Metrics = []inferencev1alpha1.MetricSpec{
+				{
+					Type:               "Pods",
+					Name:               opts.autoscaleMetric,
+					TargetAverageValue: &targetVal,
+				},
+			}
+		}
+		isvc.Spec.Autoscaling = autoscaling
+	}
+
 	return isvc
 }
 
@@ -441,6 +470,13 @@ func printDeploySummary(opts *deployOptions) {
 		fmt.Printf("GPU:         %d x %s (layers: %d)\n", opts.gpuCount, displayVendor, opts.gpuLayers)
 	}
 	fmt.Printf("Replicas:    %d\n", opts.replicas)
+	if opts.maxReplicas > 0 {
+		min := opts.minReplicas
+		if min == 0 {
+			min = 1
+		}
+		fmt.Printf("Autoscale:   %d-%d replicas\n", min, opts.maxReplicas)
+	}
 	if opts.contextSize > 0 {
 		fmt.Printf("Context:     %d tokens\n", opts.contextSize)
 	}

@@ -37,6 +37,14 @@ type InferenceServiceSpec struct {
 	// +optional
 	Replicas *int32 `json:"replicas,omitempty"`
 
+	// Autoscaling configures horizontal pod autoscaling for the inference service.
+	// When set, the controller creates and manages an HPA resource targeting the
+	// inference Deployment. Requires Prometheus Adapter for custom metrics.
+	// Mutually exclusive with manual replica management: when autoscaling is enabled,
+	// the Replicas field serves as the initial replica count only.
+	// +optional
+	Autoscaling *AutoscalingSpec `json:"autoscaling,omitempty"`
+
 	// Image is the container image for the llama.cpp runtime
 	// +kubebuilder:default="ghcr.io/ggml-org/llama.cpp:server"
 	// +optional
@@ -170,6 +178,44 @@ type InferenceResourceRequirements struct {
 	// Used for scheduling and validation
 	// +optional
 	GPUMemory string `json:"gpuMemory,omitempty"`
+}
+
+// AutoscalingSpec configures Horizontal Pod Autoscaler for the inference service.
+type AutoscalingSpec struct {
+	// MinReplicas is the lower limit for the number of replicas.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=10
+	// +kubebuilder:default=1
+	// +optional
+	MinReplicas *int32 `json:"minReplicas,omitempty"`
+
+	// MaxReplicas is the upper limit for the number of replicas.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=100
+	MaxReplicas int32 `json:"maxReplicas"`
+
+	// Metrics defines the scaling metrics and target values.
+	// If empty, defaults to llamacpp:requests_processing with target average value of 2.
+	// +optional
+	Metrics []MetricSpec `json:"metrics,omitempty"`
+}
+
+// MetricSpec defines a single metric for HPA scaling.
+type MetricSpec struct {
+	// Type is the metric source type.
+	// +kubebuilder:validation:Enum=Pods;Resource
+	Type string `json:"type"`
+
+	// Name is the metric name (e.g., llamacpp:requests_processing).
+	Name string `json:"name"`
+
+	// TargetAverageValue is the target per-pod average for Pods-type metrics.
+	// +optional
+	TargetAverageValue *string `json:"targetAverageValue,omitempty"`
+
+	// TargetAverageUtilization is the target utilization percentage for Resource-type metrics.
+	// +optional
+	TargetAverageUtilization *int32 `json:"targetAverageUtilization,omitempty"`
 }
 
 // InferenceServiceStatus defines the observed state of InferenceService.

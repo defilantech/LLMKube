@@ -23,6 +23,7 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -360,6 +361,7 @@ func (r *InferenceServiceReconciler) ensureModelCachePVC(ctx context.Context, na
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=scheduling.k8s.io,resources=priorityclasses,verbs=get;list;watch
+// +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
 
 func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	reconcileStart := time.Now()
@@ -413,6 +415,10 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		if result != nil {
 			return *result, err
 		}
+		return ctrl.Result{}, err
+	}
+
+	if err := r.reconcileHPA(ctx, inferenceService, inferenceService.Name, isMetal); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -480,6 +486,10 @@ func (r *InferenceServiceReconciler) reconcileDeployment(ctx context.Context, is
 	}
 
 	existingDeployment.Spec = deployment.Spec
+	// When autoscaling is enabled, let the HPA manage replicas
+	if isvc.Spec.Autoscaling != nil {
+		existingDeployment.Spec.Replicas = nil
+	}
 	if err := r.Update(ctx, existingDeployment); err != nil {
 		log.Error(err, "Failed to update Deployment")
 		return nil, 0, nil, err
@@ -524,6 +534,157 @@ func (r *InferenceServiceReconciler) reconcileService(ctx context.Context, isvc 
 	}
 
 	return service, nil, nil
+}
+
+func (r *InferenceServiceReconciler) reconcileHPA(
+	ctx context.Context,
+	isvc *inferencev1alpha1.InferenceService,
+	deploymentName string,
+	isMetal bool,
+) error {
+	logger := logf.FromContext(ctx)
+	hpaName := types.NamespacedName{
+		Name:      isvc.Name,
+		Namespace: isvc.Namespace,
+	}
+
+	// If autoscaling is not configured, clean up any existing HPA
+	if isvc.Spec.Autoscaling == nil {
+		existingHPA := &autoscalingv2.HorizontalPodAutoscaler{}
+		if err := r.Get(ctx, hpaName, existingHPA); err == nil {
+			logger.Info("Autoscaling removed, deleting HPA",
+				"name", isvc.Name)
+			if err := r.Delete(ctx, existingHPA); err != nil {
+				return fmt.Errorf("failed to delete HPA: %w", err)
+			}
+		}
+		return nil
+	}
+
+	// Skip HPA for Metal accelerator (no Deployment to scale)
+	if isMetal {
+		logger.Info("Skipping HPA for Metal accelerator workload")
+		return nil
+	}
+
+	hpa := r.constructHPA(isvc, deploymentName)
+
+	if err := controllerutil.SetControllerReference(
+		isvc, hpa, r.Scheme,
+	); err != nil {
+		return fmt.Errorf(
+			"failed to set controller reference on HPA: %w", err,
+		)
+	}
+
+	existingHPA := &autoscalingv2.HorizontalPodAutoscaler{}
+	if err := r.Get(ctx, hpaName, existingHPA); err != nil {
+		if apierrors.IsNotFound(err) {
+			logger.Info("Creating HPA",
+				"name", isvc.Name,
+				"maxReplicas", isvc.Spec.Autoscaling.MaxReplicas)
+			return r.Create(ctx, hpa)
+		}
+		return err
+	}
+
+	// Update existing HPA
+	existingHPA.Spec = hpa.Spec
+	return r.Update(ctx, existingHPA)
+}
+
+func (r *InferenceServiceReconciler) constructHPA(
+	isvc *inferencev1alpha1.InferenceService,
+	deploymentName string,
+) *autoscalingv2.HorizontalPodAutoscaler {
+	autoscaling := isvc.Spec.Autoscaling
+
+	minReplicas := int32(1)
+	if autoscaling.MinReplicas != nil {
+		minReplicas = *autoscaling.MinReplicas
+	}
+
+	// Build metrics list
+	var metrics []autoscalingv2.MetricSpec
+
+	if len(autoscaling.Metrics) == 0 {
+		// Default: scale on active request count
+		targetValue := resource.MustParse("2")
+		metrics = []autoscalingv2.MetricSpec{
+			{
+				Type: autoscalingv2.PodsMetricSourceType,
+				Pods: &autoscalingv2.PodsMetricSource{
+					Metric: autoscalingv2.MetricIdentifier{
+						Name: "llamacpp:requests_processing",
+					},
+					Target: autoscalingv2.MetricTarget{
+						Type:         autoscalingv2.AverageValueMetricType,
+						AverageValue: &targetValue,
+					},
+				},
+			},
+		}
+	} else {
+		for _, m := range autoscaling.Metrics {
+			switch m.Type {
+			case "Pods":
+				var target autoscalingv2.MetricTarget
+				if m.TargetAverageValue != nil {
+					val := resource.MustParse(*m.TargetAverageValue)
+					target = autoscalingv2.MetricTarget{
+						Type:         autoscalingv2.AverageValueMetricType,
+						AverageValue: &val,
+					}
+				}
+				metrics = append(metrics, autoscalingv2.MetricSpec{
+					Type: autoscalingv2.PodsMetricSourceType,
+					Pods: &autoscalingv2.PodsMetricSource{
+						Metric: autoscalingv2.MetricIdentifier{
+							Name: m.Name,
+						},
+						Target: target,
+					},
+				})
+			case "Resource":
+				if m.TargetAverageUtilization != nil {
+					metrics = append(
+						metrics,
+						autoscalingv2.MetricSpec{
+							Type: autoscalingv2.ResourceMetricSourceType,
+							Resource: &autoscalingv2.ResourceMetricSource{
+								Name: corev1.ResourceName(m.Name),
+								Target: autoscalingv2.MetricTarget{
+									Type:               autoscalingv2.UtilizationMetricType,
+									AverageUtilization: m.TargetAverageUtilization,
+								},
+							},
+						},
+					)
+				}
+			}
+		}
+	}
+
+	return &autoscalingv2.HorizontalPodAutoscaler{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      isvc.Name,
+			Namespace: isvc.Namespace,
+			Labels: map[string]string{
+				"app":                           isvc.Name,
+				"inference.llmkube.dev/service": isvc.Name,
+			},
+		},
+		Spec: autoscalingv2.HorizontalPodAutoscalerSpec{
+			ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{
+				APIVersion: "apps/v1",
+				Kind:       "Deployment",
+				Name:       deploymentName,
+			},
+			MinReplicas: &minReplicas,
+			MaxReplicas: autoscaling.MaxReplicas,
+			Metrics:     metrics,
+		},
+	}
 }
 
 func (r *InferenceServiceReconciler) determinePhase(ctx context.Context, isvc *inferencev1alpha1.InferenceService, readyReplicas, desiredReplicas int32, isMetal bool, deployment *appsv1.Deployment) (string, *SchedulingInfo) {
@@ -1156,6 +1317,7 @@ func (r *InferenceServiceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&inferencev1alpha1.InferenceService{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
+		Owns(&autoscalingv2.HorizontalPodAutoscaler{}).
 		Watches(
 			&corev1.Pod{},
 			handler.EnqueueRequestsFromMapFunc(r.findInferenceServiceForPod),
