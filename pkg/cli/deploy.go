@@ -181,7 +181,9 @@ Examples:
 
 	cmd.Flags().StringVar(&opts.cpu, "cpu", "2", "CPU request (e.g., '2' or '2000m')")
 	cmd.Flags().StringVar(&opts.memory, "memory", "4Gi", "Memory request (e.g., '4Gi')")
-	cmd.Flags().StringVar(&opts.image, "image", "", "Custom llama.cpp server image (auto-detected based on --gpu)")
+	cmd.Flags().StringVar(&opts.image, "image", "",
+		"Custom llama.cpp server image. Default: server-cuda13 for GPU, server for CPU.\n"+
+			"Use this to override with an older image (e.g., ghcr.io/ggml-org/llama.cpp:server-cuda for CUDA 12).")
 
 	cmd.Flags().BoolVarP(&opts.wait, "wait", "w", true, "Wait for deployment to be ready")
 	cmd.Flags().DurationVar(&opts.timeout, "timeout", 10*time.Minute, "Timeout for waiting")
@@ -524,7 +526,7 @@ func resolveAcceleratorAndImage(opts *deployOptions) {
 			fmt.Printf("ℹ️  Ensure Metal agent is installed: make install-metal-agent\n")
 		} else {
 			if opts.image == "" {
-				opts.image = "ghcr.io/ggml-org/llama.cpp:server-cuda"
+				opts.image = "ghcr.io/ggml-org/llama.cpp:server-cuda13"
 				fmt.Printf("ℹ️  Auto-detected image: %s\n", opts.image)
 			}
 		}

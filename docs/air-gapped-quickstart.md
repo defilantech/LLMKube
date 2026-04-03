@@ -181,11 +181,11 @@ python3 -m http.server 8080
 ```bash
 # Pull images
 docker pull ghcr.io/defilantech/llmkube:v0.4.9
-docker pull ghcr.io/ggml-org/llama.cpp:server-cuda
+docker pull ghcr.io/ggml-org/llama.cpp:server-cuda13
 
 # Save to tar files
 docker save ghcr.io/defilantech/llmkube:v0.4.9 > llmkube-controller.tar
-docker save ghcr.io/ggml-org/llama.cpp:server-cuda > llama-server-cuda.tar
+docker save ghcr.io/ggml-org/llama.cpp:server-cuda13 > llama-server-cuda.tar
 ```
 
 2. Transfer tar files to the air-gapped environment

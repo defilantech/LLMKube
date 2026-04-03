@@ -284,7 +284,7 @@ const (
 
 const (
 	imageLlamaCppServer     = "ghcr.io/ggml-org/llama.cpp:server"
-	imageLlamaCppServerCUDA = "ghcr.io/ggml-org/llama.cpp:server-cuda"
+	imageLlamaCppServerCUDA = "ghcr.io/ggml-org/llama.cpp:server-cuda13"
 	imageLlamaCppServerROCm = "ghcr.io/ggml-org/llama.cpp:server-rocm"
 )
 
