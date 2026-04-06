@@ -91,9 +91,14 @@ The following table lists the configurable parameters of the LLMKube chart and t
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
+| `controllerManager.image.registry` | Image registry prefix (prepended to repository when set) | `""` |
 | `controllerManager.image.repository` | Controller image repository | `ghcr.io/defilantech/llmkube-controller` |
 | `controllerManager.image.pullPolicy` | Image pull policy | `IfNotPresent` |
 | `controllerManager.image.tag` | Image tag (defaults to chart appVersion) | `""` |
+| `controllerManager.image.digest` | Image digest (takes precedence over tag) | `""` |
+| `controllerManager.initContainer.registry` | Init container image registry prefix | `""` |
+| `controllerManager.initContainer.repository` | Init container image repository | `docker.io/curlimages/curl` |
+| `controllerManager.initContainer.tag` | Init container image tag | `8.18.0` |
 | `controllerManager.replicaCount` | Number of controller replicas | `1` |
 | `controllerManager.leaderElection.enabled` | Enable leader election | `true` |
 | `controllerManager.resources.limits.cpu` | CPU limit | `500m` |
@@ -199,14 +204,18 @@ helm install llmkube charts/llmkube \
   --set crds.install=false
 ```
 
-### Custom Image Repository
+### Custom Image Registry
+
+For air-gapped or enterprise environments with a private registry:
 
 ```bash
 helm install llmkube charts/llmkube \
   --namespace llmkube-system \
   --create-namespace \
-  --set controllerManager.image.repository=my-registry.io/llmkube-controller \
-  --set controllerManager.image.tag=custom-tag
+  --set controllerManager.image.registry=my-registry.company.com \
+  --set controllerManager.image.repository=llmkube/llmkube-controller \
+  --set controllerManager.initContainer.registry=my-registry.company.com \
+  --set controllerManager.initContainer.repository=curlimages/curl
 ```
 
 ## Upgrading

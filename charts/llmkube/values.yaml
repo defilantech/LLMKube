@@ -9,6 +9,10 @@ namespace: llmkube-system
 controllerManager:
   # Controller image
   image:
+    # Registry for the controller image. When set, prepended to repository.
+    # Useful for air-gapped or enterprise proxy registries.
+    # Example: "my-registry.company.com"
+    registry: ""
     repository: ghcr.io/defilantech/llmkube-controller
     pullPolicy: IfNotPresent
     # Overrides the image tag whose default is the chart appVersion.
@@ -71,7 +75,10 @@ controllerManager:
   affinity: {}
 
   # Container image used for the model downloader init container
-  initContainerImage: docker.io/curlimages/curl:8.18.0
+  initContainer:
+    registry: ""
+    repository: docker.io/curlimages/curl
+    tag: "8.18.0"
 
   # Additional environment variables
   env: []

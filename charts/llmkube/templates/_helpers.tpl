@@ -62,15 +62,31 @@ Create the name of the service account to use
 
 {{/*
 Create the controller manager image
-Supports both tag and digest. Digest takes precedence when set.
+Supports registry prefix, tag, and digest. Digest takes precedence when set.
 */}}
 {{- define "llmkube.controllerImage" -}}
-{{- if .Values.controllerManager.image.digest }}
-{{- printf "%s@%s" .Values.controllerManager.image.repository .Values.controllerManager.image.digest }}
-{{- else }}
-{{- $tag := .Values.controllerManager.image.tag | default .Chart.AppVersion }}
-{{- printf "%s:%s" .Values.controllerManager.image.repository $tag }}
+{{- $repo := .Values.controllerManager.image.repository -}}
+{{- if .Values.controllerManager.image.registry -}}
+{{- $repo = printf "%s/%s" .Values.controllerManager.image.registry .Values.controllerManager.image.repository -}}
+{{- end -}}
+{{- if .Values.controllerManager.image.digest -}}
+{{- printf "%s@%s" $repo .Values.controllerManager.image.digest -}}
+{{- else -}}
+{{- $tag := .Values.controllerManager.image.tag | default .Chart.AppVersion -}}
+{{- printf "%s:%s" $repo $tag -}}
+{{- end -}}
 {{- end }}
+
+{{/*
+Create the init container image
+Supports optional registry prefix.
+*/}}
+{{- define "llmkube.initContainerImage" -}}
+{{- $repo := .Values.controllerManager.initContainer.repository -}}
+{{- if .Values.controllerManager.initContainer.registry -}}
+{{- $repo = printf "%s/%s" .Values.controllerManager.initContainer.registry .Values.controllerManager.initContainer.repository -}}
+{{- end -}}
+{{- printf "%s:%s" $repo .Values.controllerManager.initContainer.tag -}}
 {{- end }}
 
 {{/*

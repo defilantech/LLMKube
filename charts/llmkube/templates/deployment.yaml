@@ -53,7 +53,7 @@ spec:
         {{- end }}
         - --model-cache-access-mode={{ .Values.modelCache.accessMode }}
         {{- end }}
-        - --init-container-image={{ .Values.controllerManager.initContainerImage }}
+        - --init-container-image={{ include "llmkube.initContainerImage" . }}
         ports:
         - name: health
           containerPort: 8081
