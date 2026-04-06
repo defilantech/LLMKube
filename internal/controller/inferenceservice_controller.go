@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -849,24 +850,70 @@ func (r *InferenceServiceReconciler) resolveEffectivePriority(isvc *inferencev1a
 	return priorityValues["normal"]
 }
 
-// calculateTensorSplit returns comma-separated equal ratios for llama.cpp --tensor-split flag
-func calculateTensorSplit(gpuCount int32, _ *inferencev1alpha1.GPUShardingSpec) string {
+// calculateTensorSplit returns comma-separated ratios for llama.cpp --tensor-split flag.
+// When sharding.LayerSplit is provided, layer ranges are converted to proportional ratios
+// (e.g., ["0-24", "25-39"] becomes "5,3"). Falls back to equal split on any error.
+func calculateTensorSplit(gpuCount int32, sharding *inferencev1alpha1.GPUShardingSpec) string {
 	if gpuCount <= 1 {
 		return ""
 	}
 
-	// TODO: Support custom layer splits from sharding.LayerSplit
+	if sharding != nil && len(sharding.LayerSplit) > 0 && int32(len(sharding.LayerSplit)) == gpuCount {
+		layerCounts := make([]int, len(sharding.LayerSplit))
+		valid := true
+		for i, split := range sharding.LayerSplit {
+			start, end, err := parseLayerRange(split)
+			if err != nil {
+				valid = false
+				break
+			}
+			layerCounts[i] = end - start + 1
+		}
+		if valid {
+			g := layerCounts[0]
+			for _, c := range layerCounts[1:] {
+				g = gcd(g, c)
+			}
+			parts := make([]string, len(layerCounts))
+			for i, c := range layerCounts {
+				parts[i] = strconv.Itoa(c / g)
+			}
+			return strings.Join(parts, ",")
+		}
+	}
+
 	ratios := make([]string, gpuCount)
 	for i := range ratios {
 		ratios[i] = "1"
 	}
+	return strings.Join(ratios, ",")
+}
 
-	result := ratios[0]
-	for i := 1; i < len(ratios); i++ {
-		result = fmt.Sprintf("%s,%s", result, ratios[i])
+// parseLayerRange parses a "start-end" layer range string.
+func parseLayerRange(s string) (int, int, error) {
+	parts := strings.SplitN(s, "-", 2)
+	if len(parts) != 2 {
+		return 0, 0, fmt.Errorf("invalid layer range format: %q", s)
 	}
+	start, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+	if err != nil {
+		return 0, 0, fmt.Errorf("invalid start layer in %q: %w", s, err)
+	}
+	end, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+	if err != nil {
+		return 0, 0, fmt.Errorf("invalid end layer in %q: %w", s, err)
+	}
+	if start < 0 || end < 0 || start > end {
+		return 0, 0, fmt.Errorf("invalid layer range %q: start must be <= end and non-negative", s)
+	}
+	return start, end, nil
+}
 
-	return result
+func gcd(a, b int) int {
+	for b != 0 {
+		a, b = b, a%b
+	}
+	return a
 }
 
 func appendContextSizeArgs(args []string, contextSize *int32) []string {

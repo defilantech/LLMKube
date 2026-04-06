@@ -160,14 +160,57 @@ var _ = Describe("calculateTensorSplit", func() {
 			Expect(result).To(Equal("1,1"))
 		})
 
-		It("should use even split when sharding is provided (custom splits not yet implemented)", func() {
-			// TODO: When custom layer splits are implemented, update this test
+		It("should use equal split for equal layer ranges", func() {
 			sharding := &inferencev1alpha1.GPUShardingSpec{
 				Strategy:   "layer",
 				LayerSplit: []string{"0-19", "20-39"},
 			}
 			result := calculateTensorSplit(2, sharding)
-			// Currently falls back to even split
+			Expect(result).To(Equal("1,1"))
+		})
+
+		It("should use proportional split for unequal layer ranges", func() {
+			sharding := &inferencev1alpha1.GPUShardingSpec{
+				Strategy:   "layer",
+				LayerSplit: []string{"0-24", "25-39"},
+			}
+			result := calculateTensorSplit(2, sharding)
+			Expect(result).To(Equal("5,3"))
+		})
+
+		It("should handle three-way unequal split", func() {
+			sharding := &inferencev1alpha1.GPUShardingSpec{
+				Strategy:   "layer",
+				LayerSplit: []string{"0-15", "16-31", "32-39"},
+			}
+			result := calculateTensorSplit(3, sharding)
+			Expect(result).To(Equal("2,2,1"))
+		})
+
+		It("should fall back to equal split when LayerSplit count mismatches GPU count", func() {
+			sharding := &inferencev1alpha1.GPUShardingSpec{
+				Strategy:   "layer",
+				LayerSplit: []string{"0-19", "20-39"},
+			}
+			result := calculateTensorSplit(4, sharding)
+			Expect(result).To(Equal("1,1,1,1"))
+		})
+
+		It("should fall back to equal split for invalid range format", func() {
+			sharding := &inferencev1alpha1.GPUShardingSpec{
+				Strategy:   "layer",
+				LayerSplit: []string{"invalid", "also-bad"},
+			}
+			result := calculateTensorSplit(2, sharding)
+			Expect(result).To(Equal("1,1"))
+		})
+
+		It("should fall back to equal split for backwards range", func() {
+			sharding := &inferencev1alpha1.GPUShardingSpec{
+				Strategy:   "layer",
+				LayerSplit: []string{"20-0", "0-19"},
+			}
+			result := calculateTensorSplit(2, sharding)
 			Expect(result).To(Equal("1,1"))
 		})
 	})
