@@ -1,6 +1,15 @@
-# LLMKube GPU Monitoring Setup
+# LLMKube Monitoring Setup
 
-This guide covers setting up the monitoring stack for the LLMKube GPU dashboard.
+This guide covers setting up the monitoring stack for the LLMKube dashboards.
+
+## Dashboards
+
+| Dashboard | File | Description |
+|-----------|------|-------------|
+| GPU Server Monitor | `llmkube-gpu-dashboard.json` | System, GPU, and hardware metrics (Node Exporter + DCGM) |
+| Inference Monitor | `llmkube-inference-dashboard.json` | Token throughput, queue scheduling, model lifecycle, KV cache, controller health |
+
+The GPU dashboard requires Node Exporter and DCGM Exporter. The Inference dashboard requires the LLMKube controller ServiceMonitor and inference pod PodMonitor (enable via Helm: `prometheus.serviceMonitor.enabled=true`, `prometheus.inferencePodMonitor.enabled=true`).
 
 ## Prerequisites
 
@@ -173,22 +182,30 @@ volumes:
   prometheus_data:
 ```
 
-## 4. Import Dashboard into Grafana
+## 4. Import Dashboards into Grafana
 
 1. Open Grafana (default: http://localhost:3000)
 2. Go to **Dashboards** > **Import**
 3. Click **Upload JSON file**
-4. Select `llmkube-gpu-dashboard.json`
+4. Select `llmkube-gpu-dashboard.json` and/or `llmkube-inference-dashboard.json`
 5. Select your Prometheus datasource
 6. Click **Import**
 
 Alternatively, use the Grafana API:
 
 ```bash
+# GPU Server Monitor
 curl -X POST \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -d @llmkube-gpu-dashboard.json \
+  http://localhost:3000/api/dashboards/db
+
+# Inference Monitor
+curl -X POST \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -d @llmkube-inference-dashboard.json \
   http://localhost:3000/api/dashboards/db
 ```
 
@@ -234,6 +251,17 @@ curl http://prometheus:9090/api/v1/targets
 | `DCGM_FI_DEV_FB_USED` | GPU memory used |
 | `DCGM_FI_DEV_FB_FREE` | GPU memory free |
 | `DCGM_FI_DEV_MEM_COPY_UTIL` | Memory copy utilization |
+
+### llama.cpp Inference Metrics (PodMonitor)
+
+| Metric | Description |
+|--------|-------------|
+| `llamacpp_tokens_second` | Current generation speed (tokens/sec) |
+| `llamacpp_tokens_predicted_total` | Total generated tokens |
+| `llamacpp_prompt_tokens_total` | Total prompt tokens processed |
+| `llamacpp_kv_cache_usage_ratio` | KV cache utilization (0-1) |
+| `llamacpp_requests_processing` | Currently processing requests |
+| `llamacpp_requests_deferred` | Deferred/queued requests |
 
 ### LLMKube Controller Metrics
 
