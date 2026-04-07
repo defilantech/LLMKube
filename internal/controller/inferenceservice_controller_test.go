@@ -3755,6 +3755,11 @@ var _ = Describe("RuntimeBackend interface", func() {
 			Expect(args).To(Equal([]string{"--ssl", "/app/ssl"}))
 		})
 
+		It("should provide a command via CommandBuilder", func() {
+			cmd := backend.BuildCommand()
+			Expect(cmd).To(Equal([]string{"/app/moshi/.venv/bin/python", "-m", "moshi.server"}))
+		})
+
 		It("should build env with HF_TOKEN from secret ref", func() {
 			isvc := &inferencev1alpha1.InferenceService{
 				Spec: inferencev1alpha1.InferenceServiceSpec{
@@ -3829,6 +3834,9 @@ var _ = Describe("PersonaPlex Runtime Deployment Construction", func() {
 
 		By("verifying custom image")
 		Expect(container.Image).To(Equal("registry.defilan.net/personaplex:7b-v1-4bit-cuda13"))
+
+		By("verifying command set by CommandBuilder")
+		Expect(container.Command).To(Equal([]string{"/app/moshi/.venv/bin/python", "-m", "moshi.server"}))
 
 		By("verifying default port 8998")
 		Expect(container.Ports[0].ContainerPort).To(Equal(int32(8998)))
