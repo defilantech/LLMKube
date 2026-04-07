@@ -1024,6 +1024,8 @@ func (r *InferenceServiceReconciler) constructDeployment(
 	// Set command/args based on runtime
 	if len(isvc.Spec.Command) > 0 {
 		container.Command = isvc.Spec.Command
+	} else if cb, ok := backend.(CommandBuilder); ok {
+		container.Command = cb.BuildCommand()
 	}
 	if args != nil {
 		container.Args = args

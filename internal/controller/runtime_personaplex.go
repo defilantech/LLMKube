@@ -27,6 +27,10 @@ func (b *PersonaPlexBackend) NeedsModelInit() bool {
 	return false
 }
 
+func (b *PersonaPlexBackend) BuildCommand() []string {
+	return []string{"/app/moshi/.venv/bin/python", "-m", "moshi.server"}
+}
+
 func (b *PersonaPlexBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, _ *inferencev1alpha1.Model, _ string, _ int32) []string {
 	args := []string{"--ssl", "/app/ssl"}
 

@@ -32,6 +32,11 @@ type RuntimeBackend interface {
 }
 
 // resolveBackend returns the RuntimeBackend for the given InferenceService.
+// CommandBuilder is optionally implemented by backends that need a custom container entrypoint.
+type CommandBuilder interface {
+	BuildCommand() []string
+}
+
 // EnvBuilder is optionally implemented by backends that generate runtime-specific env vars.
 type EnvBuilder interface {
 	BuildEnv(isvc *inferencev1alpha1.InferenceService) []corev1.EnvVar

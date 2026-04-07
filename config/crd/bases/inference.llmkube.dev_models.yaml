@@ -194,7 +194,7 @@ spec:
                     - /mnt/models/model.gguf (air-gapped deployments)
                     - pvc://my-models-pvc/path/to/model.gguf (pre-staged on a PersistentVolumeClaim)
                     - /mnt/models/Llama-3.2-3B-Instruct-4bit (MLX model directory)
-                pattern: ^(https?|file|pvc)://.*\.gguf$|^/.*\.gguf$|^/[^\s]+$
+                pattern: ^(https?|file|pvc)://.*|^/[^\s]+$|^[a-zA-Z0-9][\w\-\.\/]+$
                 type: string
             required:
             - source

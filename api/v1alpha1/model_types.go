@@ -36,7 +36,7 @@ type ModelSpec struct {
 	//   - pvc://my-models-pvc/path/to/model.gguf (pre-staged on a PersistentVolumeClaim)
 	//   - /mnt/models/Llama-3.2-3B-Instruct-4bit (MLX model directory)
 	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:Pattern=`^(https?|file|pvc)://.*\.gguf$|^/.*\.gguf$|^/[^\s]+$`
+	// +kubebuilder:validation:Pattern=`^(https?|file|pvc)://.*|^/[^\s]+$|^[a-zA-Z0-9][\w\-\.\/]+$`
 	Source string `json:"source"`
 
 	// SHA256 is the expected SHA256 hash of the model file for integrity verification.
