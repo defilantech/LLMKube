@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -3606,6 +3607,609 @@ var _ = Describe("HPA Autoscaling", func() {
 			// so we verify the controller did NOT force the isvc's configured
 			// replicas (2) onto the deployment.
 			Expect(*dep.Spec.Replicas).NotTo(Equal(int32(2)))
+		})
+	})
+})
+
+var _ = Describe("RuntimeBackend interface", func() {
+	Context("LlamaCppBackend", func() {
+		var backend *LlamaCppBackend
+
+		BeforeEach(func() {
+			backend = &LlamaCppBackend{}
+		})
+
+		It("should return correct defaults", func() {
+			Expect(backend.ContainerName()).To(Equal("llama-server"))
+			Expect(backend.DefaultImage()).To(Equal("ghcr.io/ggml-org/llama.cpp:server"))
+			Expect(backend.DefaultPort()).To(Equal(int32(8080)))
+			Expect(backend.NeedsModelInit()).To(BeTrue())
+		})
+
+		It("should build HTTP /health probes", func() {
+			startup, liveness, readiness := backend.BuildProbes(8080)
+			Expect(startup.HTTPGet).NotTo(BeNil())
+			Expect(startup.HTTPGet.Path).To(Equal("/health"))
+			Expect(liveness.HTTPGet.Path).To(Equal("/health"))
+			Expect(readiness.HTTPGet.Path).To(Equal("/health"))
+		})
+	})
+
+	Context("GenericBackend", func() {
+		var backend *GenericBackend
+
+		BeforeEach(func() {
+			backend = &GenericBackend{}
+		})
+
+		It("should return correct defaults", func() {
+			Expect(backend.ContainerName()).To(Equal("inference-server"))
+			Expect(backend.DefaultImage()).To(Equal(""))
+			Expect(backend.DefaultPort()).To(Equal(int32(8080)))
+			Expect(backend.NeedsModelInit()).To(BeFalse())
+		})
+
+		It("should build TCP socket probes", func() {
+			startup, liveness, readiness := backend.BuildProbes(8998)
+			Expect(startup.TCPSocket).NotTo(BeNil())
+			Expect(startup.TCPSocket.Port.IntValue()).To(Equal(8998))
+			Expect(liveness.TCPSocket).NotTo(BeNil())
+			Expect(readiness.TCPSocket).NotTo(BeNil())
+		})
+
+		It("should pass through user args", func() {
+			isvc := &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					Args: []string{"--quantize-4bit", "--ssl", "/app/ssl"},
+				},
+			}
+			args := backend.BuildArgs(isvc, nil, "", 0)
+			Expect(args).To(Equal([]string{"--quantize-4bit", "--ssl", "/app/ssl"}))
+		})
+
+		It("should return nil args when none specified", func() {
+			isvc := &inferencev1alpha1.InferenceService{}
+			args := backend.BuildArgs(isvc, nil, "", 0)
+			Expect(args).To(BeNil())
+		})
+	})
+
+	Context("resolveBackend", func() {
+		It("should return LlamaCppBackend for empty runtime", func() {
+			isvc := &inferencev1alpha1.InferenceService{}
+			backend := resolveBackend(isvc)
+			_, ok := backend.(*LlamaCppBackend)
+			Expect(ok).To(BeTrue())
+		})
+
+		It("should return LlamaCppBackend for llamacpp runtime", func() {
+			isvc := &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{Runtime: "llamacpp"},
+			}
+			backend := resolveBackend(isvc)
+			_, ok := backend.(*LlamaCppBackend)
+			Expect(ok).To(BeTrue())
+		})
+
+		It("should return GenericBackend for generic runtime", func() {
+			isvc := &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{Runtime: "generic"},
+			}
+			backend := resolveBackend(isvc)
+			_, ok := backend.(*GenericBackend)
+			Expect(ok).To(BeTrue())
+		})
+	})
+})
+
+var _ = Describe("Generic Runtime Deployment Construction", func() {
+	var reconciler *InferenceServiceReconciler
+
+	BeforeEach(func() {
+		reconciler = &InferenceServiceReconciler{
+			Client:             k8sClient,
+			Scheme:             k8sClient.Scheme(),
+			InitContainerImage: "docker.io/curlimages/curl:8.18.0",
+		}
+	})
+
+	It("should deploy a custom container with command, args, env, and custom port", func() {
+		containerPort := int32(8998)
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: "personaplex-model", Namespace: "default"},
+			Spec: inferencev1alpha1.ModelSpec{
+				Source: "nvidia/personaplex-7b-v1",
+				Format: "safetensors",
+				Hardware: &inferencev1alpha1.HardwareSpec{
+					Accelerator: "cuda",
+					GPU:         &inferencev1alpha1.GPUSpec{Enabled: true, Count: 1, Vendor: "nvidia"},
+				},
+			},
+			Status: inferencev1alpha1.ModelStatus{Phase: "Ready"},
+		}
+
+		skipInit := true
+		isvc := &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: "personaplex-svc", Namespace: "voice-ai"},
+			Spec: inferencev1alpha1.InferenceServiceSpec{
+				ModelRef:      "personaplex-model",
+				Runtime:       "generic",
+				Image:         "registry.defilan.net/personaplex:7b-v1-4bit-cuda13",
+				Command:       []string{"/app/moshi/.venv/bin/python", "-m", "moshi.server"},
+				Args:          []string{"--ssl", "/app/ssl", "--quantize-4bit"},
+				ContainerPort: &containerPort,
+				SkipModelInit: &skipInit,
+				Env: []corev1.EnvVar{
+					{Name: "HF_TOKEN", Value: "test-token"},
+					{Name: "NO_TORCH_COMPILE", Value: "1"},
+				},
+				Resources: &inferencev1alpha1.InferenceResourceRequirements{
+					GPU:    1,
+					CPU:    "2",
+					Memory: "16Gi",
+				},
+			},
+		}
+
+		deployment := reconciler.constructDeployment(isvc, model, 1)
+
+		By("verifying container name is generic, not llama-server")
+		container := deployment.Spec.Template.Spec.Containers[0]
+		Expect(container.Name).To(Equal("inference-server"))
+
+		By("verifying custom image")
+		Expect(container.Image).To(Equal("registry.defilan.net/personaplex:7b-v1-4bit-cuda13"))
+
+		By("verifying custom command")
+		Expect(container.Command).To(Equal([]string{"/app/moshi/.venv/bin/python", "-m", "moshi.server"}))
+
+		By("verifying custom args")
+		Expect(container.Args).To(Equal([]string{"--ssl", "/app/ssl", "--quantize-4bit"}))
+
+		By("verifying custom port")
+		Expect(container.Ports[0].ContainerPort).To(Equal(int32(8998)))
+
+		By("verifying env vars")
+		Expect(container.Env).To(HaveLen(2))
+		Expect(container.Env[0].Name).To(Equal("HF_TOKEN"))
+		Expect(container.Env[1].Name).To(Equal("NO_TORCH_COMPILE"))
+
+		By("verifying no init containers (skipModelInit=true)")
+		Expect(deployment.Spec.Template.Spec.InitContainers).To(BeEmpty())
+
+		By("verifying no volumes (skipModelInit=true)")
+		Expect(deployment.Spec.Template.Spec.Volumes).To(BeEmpty())
+
+		By("verifying GPU resource limits")
+		gpuLimit := container.Resources.Limits["nvidia.com/gpu"]
+		Expect(gpuLimit).To(Equal(resource.MustParse("1")))
+
+		By("verifying TCP socket probes (not HTTP)")
+		Expect(container.StartupProbe.TCPSocket).NotTo(BeNil())
+		Expect(container.StartupProbe.TCPSocket.Port.IntValue()).To(Equal(8998))
+		Expect(container.StartupProbe.HTTPGet).To(BeNil())
+		Expect(container.LivenessProbe.TCPSocket).NotTo(BeNil())
+		Expect(container.ReadinessProbe.TCPSocket).NotTo(BeNil())
+	})
+
+	It("should support probe overrides", func() {
+		containerPort := int32(8000)
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: "vllm-model", Namespace: "default"},
+			Spec: inferencev1alpha1.ModelSpec{
+				Source: "meta-llama/Llama-3-8B",
+				Format: "safetensors",
+				Hardware: &inferencev1alpha1.HardwareSpec{
+					Accelerator: "cuda",
+					GPU:         &inferencev1alpha1.GPUSpec{Enabled: true, Count: 1, Vendor: "nvidia"},
+				},
+			},
+			Status: inferencev1alpha1.ModelStatus{Phase: "Ready"},
+		}
+
+		skipInit := true
+		isvc := &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: "vllm-svc", Namespace: "default"},
+			Spec: inferencev1alpha1.InferenceServiceSpec{
+				ModelRef:      "vllm-model",
+				Runtime:       "generic",
+				Image:         "vllm/vllm-openai:latest",
+				Args:          []string{"--model", "/models/llama3", "--host", "0.0.0.0"},
+				ContainerPort: &containerPort,
+				SkipModelInit: &skipInit,
+				ProbeOverrides: &inferencev1alpha1.ProbeOverrides{
+					Startup: &corev1.Probe{
+						ProbeHandler: corev1.ProbeHandler{
+							HTTPGet: &corev1.HTTPGetAction{
+								Path: "/health",
+								Port: intstr.FromInt32(8000),
+							},
+						},
+						PeriodSeconds:    10,
+						FailureThreshold: 60,
+					},
+					Liveness: &corev1.Probe{
+						ProbeHandler: corev1.ProbeHandler{
+							HTTPGet: &corev1.HTTPGetAction{
+								Path: "/health",
+								Port: intstr.FromInt32(8000),
+							},
+						},
+						PeriodSeconds: 30,
+					},
+				},
+			},
+		}
+
+		deployment := reconciler.constructDeployment(isvc, model, 1)
+		container := deployment.Spec.Template.Spec.Containers[0]
+
+		By("verifying startup probe is overridden to HTTP")
+		Expect(container.StartupProbe.HTTPGet).NotTo(BeNil())
+		Expect(container.StartupProbe.HTTPGet.Path).To(Equal("/health"))
+		Expect(container.StartupProbe.FailureThreshold).To(Equal(int32(60)))
+
+		By("verifying liveness probe is overridden")
+		Expect(container.LivenessProbe.HTTPGet).NotTo(BeNil())
+		Expect(container.LivenessProbe.PeriodSeconds).To(Equal(int32(30)))
+
+		By("verifying readiness probe uses default TCP (not overridden)")
+		Expect(container.ReadinessProbe.TCPSocket).NotTo(BeNil())
+	})
+
+	It("should use containerPort override with llamacpp runtime too", func() {
+		containerPort := int32(9090)
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: "port-test-model", Namespace: "default"},
+			Spec: inferencev1alpha1.ModelSpec{
+				Source: "https://example.com/model.gguf",
+				Format: "gguf",
+				Hardware: &inferencev1alpha1.HardwareSpec{
+					Accelerator: "cpu",
+				},
+			},
+			Status: inferencev1alpha1.ModelStatus{Phase: "Ready", Path: "/models/test.gguf"},
+		}
+
+		isvc := &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: "port-test-svc", Namespace: "default"},
+			Spec: inferencev1alpha1.InferenceServiceSpec{
+				ModelRef:      "port-test-model",
+				ContainerPort: &containerPort,
+			},
+		}
+
+		deployment := reconciler.constructDeployment(isvc, model, 1)
+		container := deployment.Spec.Template.Spec.Containers[0]
+
+		By("verifying containerPort override works for llamacpp")
+		Expect(container.Ports[0].ContainerPort).To(Equal(int32(9090)))
+		Expect(container.Args).To(ContainElement("9090"))
+		Expect(container.StartupProbe.HTTPGet.Port.IntValue()).To(Equal(9090))
+	})
+})
+
+// Regression tests for constructDeployment() — captures exact output before runtime abstraction refactor.
+// These tests verify container name, image, args, probes, ports, volumes, strategy, and resources.
+// If any of these break during the refactor, the llama.cpp path has regressed.
+var _ = Describe("constructDeployment Regression Tests", func() {
+	var reconciler *InferenceServiceReconciler
+
+	BeforeEach(func() {
+		reconciler = &InferenceServiceReconciler{
+			Client:             k8sClient,
+			Scheme:             k8sClient.Scheme(),
+			InitContainerImage: "docker.io/curlimages/curl:8.18.0",
+		}
+	})
+
+	Context("CPU-only model with default settings", func() {
+		It("should produce exact expected deployment", func() {
+			model := &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{Name: "cpu-basic", Namespace: "default"},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source: "https://example.com/model.gguf",
+					Format: "gguf",
+					Hardware: &inferencev1alpha1.HardwareSpec{
+						Accelerator: "cpu",
+					},
+				},
+				Status: inferencev1alpha1.ModelStatus{
+					Phase: "Ready",
+					Path:  "/models/cpu-basic.gguf",
+				},
+			}
+
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{Name: "cpu-basic-svc", Namespace: "default"},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: "cpu-basic",
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			By("verifying container basics")
+			Expect(deployment.Spec.Template.Spec.Containers).To(HaveLen(1))
+			container := deployment.Spec.Template.Spec.Containers[0]
+			Expect(container.Name).To(Equal("llama-server"))
+			Expect(container.Image).To(Equal("ghcr.io/ggml-org/llama.cpp:server"))
+
+			By("verifying default port is 8080")
+			Expect(container.Ports).To(HaveLen(1))
+			Expect(container.Ports[0].ContainerPort).To(Equal(int32(8080)))
+			Expect(container.Ports[0].Name).To(Equal("http"))
+
+			By("verifying base args")
+			Expect(container.Args).To(ContainElements("--model", "--host", "0.0.0.0", "--port", "8080"))
+			Expect(container.Args).To(ContainElement("--metrics"))
+
+			By("verifying no GPU args")
+			Expect(container.Args).NotTo(ContainElement("--n-gpu-layers"))
+			Expect(container.Args).NotTo(ContainElement("--split-mode"))
+
+			By("verifying startup probe")
+			Expect(container.StartupProbe).NotTo(BeNil())
+			Expect(container.StartupProbe.HTTPGet).NotTo(BeNil())
+			Expect(container.StartupProbe.HTTPGet.Path).To(Equal("/health"))
+			Expect(container.StartupProbe.HTTPGet.Port.IntValue()).To(Equal(8080))
+			Expect(container.StartupProbe.PeriodSeconds).To(Equal(int32(10)))
+			Expect(container.StartupProbe.FailureThreshold).To(Equal(int32(180)))
+
+			By("verifying liveness probe")
+			Expect(container.LivenessProbe).NotTo(BeNil())
+			Expect(container.LivenessProbe.HTTPGet.Path).To(Equal("/health"))
+			Expect(container.LivenessProbe.PeriodSeconds).To(Equal(int32(15)))
+			Expect(container.LivenessProbe.FailureThreshold).To(Equal(int32(3)))
+
+			By("verifying readiness probe")
+			Expect(container.ReadinessProbe).NotTo(BeNil())
+			Expect(container.ReadinessProbe.HTTPGet.Path).To(Equal("/health"))
+			Expect(container.ReadinessProbe.PeriodSeconds).To(Equal(int32(10)))
+			Expect(container.ReadinessProbe.FailureThreshold).To(Equal(int32(3)))
+
+			By("verifying no GPU resources")
+			_, hasGPU := container.Resources.Limits["nvidia.com/gpu"]
+			Expect(hasGPU).To(BeFalse())
+
+			By("verifying default strategy is not Recreate")
+			Expect(deployment.Spec.Strategy.Type).NotTo(Equal(appsv1.RecreateDeploymentStrategyType))
+		})
+	})
+
+	Context("GPU model with all llama.cpp options", func() {
+		It("should produce exact expected deployment with all flags", func() {
+			contextSize := int32(4096)
+			parallelSlots := int32(4)
+			flashAttn := true
+			jinja := true
+
+			model := &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{Name: "gpu-full", Namespace: "default"},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source: "https://example.com/model.gguf",
+					Format: "gguf",
+					Hardware: &inferencev1alpha1.HardwareSpec{
+						Accelerator: "cuda",
+						GPU: &inferencev1alpha1.GPUSpec{
+							Enabled: true,
+							Count:   1,
+							Vendor:  "nvidia",
+							Layers:  32,
+						},
+					},
+				},
+				Status: inferencev1alpha1.ModelStatus{
+					Phase: "Ready",
+					Path:  "/models/gpu-full.gguf",
+				},
+			}
+
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{Name: "gpu-full-svc", Namespace: "default"},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef:       "gpu-full",
+					Image:          "ghcr.io/ggml-org/llama.cpp:server-cuda13",
+					ContextSize:    &contextSize,
+					ParallelSlots:  &parallelSlots,
+					FlashAttention: &flashAttn,
+					Jinja:          &jinja,
+					CacheTypeK:     "q8_0",
+					CacheTypeV:     "q4_0",
+					ExtraArgs:      []string{"--log-disable"},
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{
+						GPU:    1,
+						CPU:    "2",
+						Memory: "4Gi",
+					},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+			container := deployment.Spec.Template.Spec.Containers[0]
+
+			By("verifying custom image")
+			Expect(container.Image).To(Equal("ghcr.io/ggml-org/llama.cpp:server-cuda13"))
+
+			By("verifying GPU layers")
+			Expect(container.Args).To(ContainElements("--n-gpu-layers", "32"))
+
+			By("verifying context size")
+			Expect(container.Args).To(ContainElements("--ctx-size", "4096"))
+
+			By("verifying parallel slots")
+			Expect(container.Args).To(ContainElements("--parallel", "4"))
+
+			By("verifying flash attention")
+			Expect(container.Args).To(ContainElements("--flash-attn", "on"))
+
+			By("verifying jinja")
+			Expect(container.Args).To(ContainElement("--jinja"))
+
+			By("verifying cache types")
+			Expect(container.Args).To(ContainElements("--cache-type-k", "q8_0"))
+			Expect(container.Args).To(ContainElements("--cache-type-v", "q4_0"))
+
+			By("verifying extra args")
+			Expect(container.Args).To(ContainElement("--log-disable"))
+
+			By("verifying metrics always present")
+			Expect(container.Args).To(ContainElement("--metrics"))
+
+			By("verifying GPU resource limits")
+			gpuLimit := container.Resources.Limits["nvidia.com/gpu"]
+			Expect(gpuLimit).To(Equal(resource.MustParse("1")))
+
+			By("verifying CPU and memory requests")
+			Expect(container.Resources.Requests[corev1.ResourceCPU]).To(Equal(resource.MustParse("2")))
+			Expect(container.Resources.Requests[corev1.ResourceMemory]).To(Equal(resource.MustParse("4Gi")))
+
+			By("verifying no multi-GPU flags for single GPU")
+			Expect(container.Args).NotTo(ContainElement("--split-mode"))
+			Expect(container.Args).NotTo(ContainElement("--tensor-split"))
+		})
+	})
+
+	Context("multi-GPU model with sharding", func() {
+		It("should produce Recreate strategy and GPU tolerations", func() {
+			model := &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{Name: "multi-gpu-reg", Namespace: "default"},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source: "https://example.com/model.gguf",
+					Format: "gguf",
+					Hardware: &inferencev1alpha1.HardwareSpec{
+						Accelerator: "cuda",
+						GPU: &inferencev1alpha1.GPUSpec{
+							Enabled: true,
+							Count:   2,
+							Vendor:  "nvidia",
+							Layers:  -1,
+							Sharding: &inferencev1alpha1.GPUShardingSpec{
+								Strategy: "layer",
+							},
+						},
+					},
+				},
+				Status: inferencev1alpha1.ModelStatus{
+					Phase: "Ready",
+					Path:  "/models/multi-gpu-reg.gguf",
+				},
+			}
+
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{Name: "multi-gpu-reg-svc", Namespace: "default"},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: "multi-gpu-reg",
+					Image:    "ghcr.io/ggml-org/llama.cpp:server-cuda13",
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+			container := deployment.Spec.Template.Spec.Containers[0]
+
+			By("verifying multi-GPU args")
+			Expect(container.Args).To(ContainElements("--n-gpu-layers", "99"))
+			Expect(container.Args).To(ContainElements("--split-mode", "layer"))
+			Expect(container.Args).To(ContainElements("--tensor-split", "1,1"))
+
+			By("verifying Recreate strategy")
+			Expect(deployment.Spec.Strategy.Type).To(Equal(appsv1.RecreateDeploymentStrategyType))
+
+			By("verifying GPU toleration")
+			tolerations := deployment.Spec.Template.Spec.Tolerations
+			Expect(tolerations).NotTo(BeEmpty())
+			found := false
+			for _, t := range tolerations {
+				if t.Key == "nvidia.com/gpu" {
+					found = true
+					Expect(t.Value).To(Equal("present"))
+					Expect(t.Effect).To(Equal(corev1.TaintEffectNoSchedule))
+				}
+			}
+			Expect(found).To(BeTrue(), "nvidia.com/gpu toleration not found")
+
+			By("verifying GPU resource limits for 2 GPUs")
+			gpuLimit := container.Resources.Limits["nvidia.com/gpu"]
+			Expect(gpuLimit).To(Equal(resource.MustParse("2")))
+		})
+	})
+
+	Context("init container and volume setup", func() {
+		It("should have init container for URL-sourced models", func() {
+			model := &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{Name: "init-test", Namespace: "default"},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source: "https://example.com/model.gguf",
+					Format: "gguf",
+					Hardware: &inferencev1alpha1.HardwareSpec{
+						Accelerator: "cpu",
+					},
+				},
+				Status: inferencev1alpha1.ModelStatus{
+					Phase: "Ready",
+					Path:  "/models/init-test.gguf",
+				},
+			}
+
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{Name: "init-test-svc", Namespace: "default"},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: "init-test",
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			By("verifying init containers exist for model download")
+			Expect(deployment.Spec.Template.Spec.InitContainers).NotTo(BeEmpty())
+
+			By("verifying volumes exist for model storage")
+			Expect(deployment.Spec.Template.Spec.Volumes).NotTo(BeEmpty())
+
+			By("verifying main container has volume mounts")
+			container := deployment.Spec.Template.Spec.Containers[0]
+			Expect(container.VolumeMounts).NotTo(BeEmpty())
+		})
+	})
+
+	Context("labels and metadata", func() {
+		It("should set correct labels on deployment and pod template", func() {
+			model := &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{Name: "label-model", Namespace: "default"},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source: "https://example.com/model.gguf",
+					Format: "gguf",
+					Hardware: &inferencev1alpha1.HardwareSpec{
+						Accelerator: "cpu",
+					},
+				},
+				Status: inferencev1alpha1.ModelStatus{
+					Phase: "Ready",
+					Path:  "/models/label-model.gguf",
+				},
+			}
+
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{Name: "label-svc", Namespace: "default"},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: "label-model",
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			By("verifying deployment labels")
+			Expect(deployment.Labels["app"]).To(Equal("label-svc"))
+			Expect(deployment.Labels["inference.llmkube.dev/model"]).To(Equal("label-model"))
+			Expect(deployment.Labels["inference.llmkube.dev/service"]).To(Equal("label-svc"))
+
+			By("verifying pod template labels match")
+			Expect(deployment.Spec.Template.Labels["app"]).To(Equal("label-svc"))
+			Expect(deployment.Spec.Template.Labels["inference.llmkube.dev/model"]).To(Equal("label-model"))
+			Expect(deployment.Spec.Template.Labels["inference.llmkube.dev/service"]).To(Equal("label-svc"))
+
+			By("verifying selector matches pod labels")
+			Expect(deployment.Spec.Selector.MatchLabels["app"]).To(Equal("label-svc"))
 		})
 	})
 })

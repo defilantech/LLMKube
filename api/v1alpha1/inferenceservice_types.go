@@ -30,6 +30,14 @@ type InferenceServiceSpec struct {
 	// +kubebuilder:validation:Required
 	ModelRef string `json:"modelRef"`
 
+	// Runtime selects the inference server backend.
+	// "llamacpp" (default): llama.cpp server with auto-generated args and /health probes.
+	// "generic": user-provided container with custom command, args, env, and probes.
+	// +kubebuilder:validation:Enum=llamacpp;generic
+	// +kubebuilder:default=llamacpp
+	// +optional
+	Runtime string `json:"runtime,omitempty"`
+
 	// Replicas is the desired number of inference pods
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Maximum=10
@@ -45,8 +53,9 @@ type InferenceServiceSpec struct {
 	// +optional
 	Autoscaling *AutoscalingSpec `json:"autoscaling,omitempty"`
 
-	// Image is the container image for the llama.cpp runtime
-	// +kubebuilder:default="ghcr.io/ggml-org/llama.cpp:server"
+	// Image is the container image for the inference runtime.
+	// For llamacpp runtime, defaults to ghcr.io/ggml-org/llama.cpp:server.
+	// For generic runtime, this field is required.
 	// +optional
 	Image string `json:"image,omitempty"`
 
@@ -109,9 +118,43 @@ type InferenceServiceSpec struct {
 	// ExtraArgs provides additional command-line arguments passed directly to the
 	// llama-server process. Use for flags not yet supported as typed CRD fields.
 	// Arguments are appended after all other configured flags.
+	// Only used when Runtime is "llamacpp".
 	// Example: ["--seed", "42", "--batch-size", "2048"]
 	// +optional
 	ExtraArgs []string `json:"extraArgs,omitempty"`
+
+	// Command overrides the container entrypoint.
+	// Only used when Runtime is "generic" or for advanced customization.
+	// +optional
+	Command []string `json:"command,omitempty"`
+
+	// Args overrides the container arguments entirely.
+	// Only used when Runtime is "generic". For llamacpp, use ExtraArgs instead.
+	// +optional
+	Args []string `json:"args,omitempty"`
+
+	// Env adds environment variables to the inference container.
+	// Useful for HF_TOKEN, custom runtime config, etc.
+	// +optional
+	Env []corev1.EnvVar `json:"env,omitempty"`
+
+	// ContainerPort overrides the primary container port.
+	// Each runtime has its own default (llamacpp: 8080).
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	// +optional
+	ContainerPort *int32 `json:"containerPort,omitempty"`
+
+	// ProbeOverrides allows replacing the auto-generated health probes.
+	// Useful for runtimes with non-HTTP health endpoints (e.g., TCP, WebSocket).
+	// +optional
+	ProbeOverrides *ProbeOverrides `json:"probeOverrides,omitempty"`
+
+	// SkipModelInit disables the model-downloader init container.
+	// Use when the model is baked into the image or downloaded by the
+	// container itself (e.g., via HF_TOKEN).
+	// +optional
+	SkipModelInit *bool `json:"skipModelInit,omitempty"`
 
 	// Priority determines scheduling priority for GPU allocation.
 	// Higher priority services can preempt lower priority ones when GPUs are scarce.
@@ -216,6 +259,22 @@ type MetricSpec struct {
 	// TargetAverageUtilization is the target utilization percentage for Resource-type metrics.
 	// +optional
 	TargetAverageUtilization *int32 `json:"targetAverageUtilization,omitempty"`
+}
+
+// ProbeOverrides allows custom probe configuration per-runtime.
+// When set, the specified probes replace the auto-generated defaults.
+type ProbeOverrides struct {
+	// Startup overrides the startup probe.
+	// +optional
+	Startup *corev1.Probe `json:"startup,omitempty"`
+
+	// Liveness overrides the liveness probe.
+	// +optional
+	Liveness *corev1.Probe `json:"liveness,omitempty"`
+
+	// Readiness overrides the readiness probe.
+	// +optional
+	Readiness *corev1.Probe `json:"readiness,omitempty"`
 }
 
 // InferenceServiceStatus defines the observed state of InferenceService.

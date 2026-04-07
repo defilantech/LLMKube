@@ -46,8 +46,9 @@ type ModelSpec struct {
 	SHA256 string `json:"sha256,omitempty"`
 
 	// Format specifies the model file format.
-	// "gguf" is used with the llama-server runtime; "mlx" is used with the oMLX runtime.
-	// +kubebuilder:validation:Enum=gguf;mlx
+	// "gguf" is used with the llama-server runtime; "mlx" is used with the oMLX runtime;
+	// "safetensors", "pytorch", and "custom" are used with the generic runtime.
+	// +kubebuilder:validation:Enum=gguf;mlx;safetensors;pytorch;custom
 	// +kubebuilder:default=gguf
 	// +optional
 	Format string `json:"format,omitempty"`

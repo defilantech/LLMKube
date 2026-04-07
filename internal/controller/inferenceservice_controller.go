@@ -959,77 +959,54 @@ func (r *InferenceServiceReconciler) constructDeployment(
 	model *inferencev1alpha1.Model,
 	replicas int32,
 ) *appsv1.Deployment {
+	backend := resolveBackend(isvc)
+
 	labels := map[string]string{
 		"app":                           isvc.Name,
 		"inference.llmkube.dev/model":   model.Name,
 		"inference.llmkube.dev/service": isvc.Name,
 	}
 
-	image := "ghcr.io/ggml-org/llama.cpp:server"
+	image := backend.DefaultImage()
 	if isvc.Spec.Image != "" {
 		image = isvc.Spec.Image
 	}
 
-	port := int32(8080)
-	if isvc.Spec.Endpoint != nil && isvc.Spec.Endpoint.Port > 0 {
+	port := backend.DefaultPort()
+	if isvc.Spec.ContainerPort != nil {
+		port = *isvc.Spec.ContainerPort
+	} else if isvc.Spec.Endpoint != nil && isvc.Spec.Endpoint.Port > 0 {
 		port = isvc.Spec.Endpoint.Port
 	}
 
-	useCache := model.Status.CacheKey != "" && r.ModelCachePath != ""
-	storageConfig := buildModelStorageConfig(model, isvc.Namespace, useCache, r.CACertConfigMap, r.InitContainerImage)
-	modelPath := storageConfig.modelPath
+	skipInit := isvc.Spec.SkipModelInit != nil && *isvc.Spec.SkipModelInit
 
-	args := []string{
-		"--model", modelPath,
-		"--host", "0.0.0.0",
-		"--port", fmt.Sprintf("%d", port),
+	var storageConfig modelStorageConfig
+	var modelPath string
+	if backend.NeedsModelInit() && !skipInit {
+		useCache := model.Status.CacheKey != "" && r.ModelCachePath != ""
+		storageConfig = buildModelStorageConfig(model, isvc.Namespace, useCache, r.CACertConfigMap, r.InitContainerImage)
+		modelPath = storageConfig.modelPath
 	}
 
-	// Model spec takes precedence for GPU count
-	gpuCount := int32(0)
-	if model.Spec.Hardware != nil && model.Spec.Hardware.GPU != nil && model.Spec.Hardware.GPU.Count > 0 {
-		gpuCount = model.Spec.Hardware.GPU.Count
-	} else if isvc.Spec.Resources != nil && isvc.Spec.Resources.GPU > 0 {
-		gpuCount = isvc.Spec.Resources.GPU
-	}
+	args := backend.BuildArgs(isvc, model, modelPath, port)
 
-	if gpuCount > 0 {
-		layers := int32(99)
-		if model.Spec.Hardware != nil && model.Spec.Hardware.GPU != nil && model.Spec.Hardware.GPU.Layers > 0 {
-			layers = model.Spec.Hardware.GPU.Layers
-		} else if model.Spec.Hardware != nil && model.Spec.Hardware.GPU != nil && model.Spec.Hardware.GPU.Layers == -1 {
-			layers = 99
+	startupProbe, livenessProbe, readinessProbe := backend.BuildProbes(port)
+	if isvc.Spec.ProbeOverrides != nil {
+		if isvc.Spec.ProbeOverrides.Startup != nil {
+			startupProbe = isvc.Spec.ProbeOverrides.Startup
 		}
-		args = append(args, "--n-gpu-layers", fmt.Sprintf("%d", layers))
-
-		if gpuCount > 1 {
-			args = append(args, "--split-mode", "layer")
-
-			var sharding *inferencev1alpha1.GPUShardingSpec
-			if model.Spec.Hardware != nil && model.Spec.Hardware.GPU != nil {
-				sharding = model.Spec.Hardware.GPU.Sharding
-			}
-			tensorSplit := calculateTensorSplit(gpuCount, sharding)
-			args = append(args, "--tensor-split", tensorSplit)
+		if isvc.Spec.ProbeOverrides.Liveness != nil {
+			livenessProbe = isvc.Spec.ProbeOverrides.Liveness
+		}
+		if isvc.Spec.ProbeOverrides.Readiness != nil {
+			readinessProbe = isvc.Spec.ProbeOverrides.Readiness
 		}
 	}
-
-	args = appendContextSizeArgs(args, isvc.Spec.ContextSize)
-	args = appendParallelSlotsArgs(args, isvc.Spec.ParallelSlots)
-	args = appendFlashAttentionArgs(args, isvc.Spec.FlashAttention, gpuCount)
-	args = appendJinjaArgs(args, isvc.Spec.Jinja)
-	args = appendCacheTypeArgs(args, isvc.Spec.CacheTypeK, isvc.Spec.CacheTypeV)
-	if len(isvc.Spec.ExtraArgs) > 0 {
-		args = append(args, isvc.Spec.ExtraArgs...)
-	}
-
-	// Enable Prometheus metrics endpoint on llama.cpp
-	args = append(args, "--metrics")
 
 	container := corev1.Container{
-		Name:            "llama-server",
+		Name:            backend.ContainerName(),
 		Image:           image,
-		Args:            args,
 		SecurityContext: inferContainerSecurityContext(isvc),
 		Ports: []corev1.ContainerPort{
 			{
@@ -1038,47 +1015,26 @@ func (r *InferenceServiceReconciler) constructDeployment(
 				Protocol:      corev1.ProtocolTCP,
 			},
 		},
-		VolumeMounts: storageConfig.volumeMounts,
-		// StartupProbe gates liveness/readiness until model is loaded.
-		// llama.cpp /health returns 503 during loading, 200 when ready.
-		// Budget: failureThreshold(180) * periodSeconds(10) = 1800s (30 min)
-		// for large model loading onto GPU.
-		StartupProbe: &corev1.Probe{
-			ProbeHandler: corev1.ProbeHandler{
-				HTTPGet: &corev1.HTTPGetAction{
-					Path: "/health",
-					Port: intstr.FromInt32(port),
-				},
-			},
-			PeriodSeconds:    10,
-			TimeoutSeconds:   5,
-			FailureThreshold: 180,
-		},
-		// LivenessProbe detects deadlocks after startup completes.
-		LivenessProbe: &corev1.Probe{
-			ProbeHandler: corev1.ProbeHandler{
-				HTTPGet: &corev1.HTTPGetAction{
-					Path: "/health",
-					Port: intstr.FromInt32(port),
-				},
-			},
-			PeriodSeconds:    15,
-			TimeoutSeconds:   5,
-			FailureThreshold: 3,
-		},
-		// ReadinessProbe controls traffic routing after startup completes.
-		ReadinessProbe: &corev1.Probe{
-			ProbeHandler: corev1.ProbeHandler{
-				HTTPGet: &corev1.HTTPGetAction{
-					Path: "/health",
-					Port: intstr.FromInt32(port),
-				},
-			},
-			PeriodSeconds:    10,
-			TimeoutSeconds:   5,
-			FailureThreshold: 3,
-		},
+		VolumeMounts:   storageConfig.volumeMounts,
+		StartupProbe:   startupProbe,
+		LivenessProbe:  livenessProbe,
+		ReadinessProbe: readinessProbe,
 	}
+
+	// Set command/args based on runtime
+	if len(isvc.Spec.Command) > 0 {
+		container.Command = isvc.Spec.Command
+	}
+	if args != nil {
+		container.Args = args
+	}
+
+	// Add user-specified env vars
+	if len(isvc.Spec.Env) > 0 {
+		container.Env = isvc.Spec.Env
+	}
+
+	gpuCount := resolveGPUCount(isvc, model)
 
 	if gpuCount > 0 {
 		container.Resources = corev1.ResourceRequirements{
