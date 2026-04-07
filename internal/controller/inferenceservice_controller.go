@@ -1029,9 +1029,12 @@ func (r *InferenceServiceReconciler) constructDeployment(
 		container.Args = args
 	}
 
-	// Add user-specified env vars
+	// Add runtime-generated env vars, then user-specified env vars (user wins on conflict)
+	if eb, ok := backend.(EnvBuilder); ok {
+		container.Env = append(container.Env, eb.BuildEnv(isvc)...)
+	}
 	if len(isvc.Spec.Env) > 0 {
-		container.Env = isvc.Spec.Env
+		container.Env = append(container.Env, isvc.Spec.Env...)
 	}
 
 	gpuCount := resolveGPUCount(isvc, model)

@@ -3699,6 +3699,167 @@ var _ = Describe("RuntimeBackend interface", func() {
 			_, ok := backend.(*GenericBackend)
 			Expect(ok).To(BeTrue())
 		})
+
+		It("should return PersonaPlexBackend for personaplex runtime", func() {
+			isvc := &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{Runtime: "personaplex"},
+			}
+			backend := resolveBackend(isvc)
+			_, ok := backend.(*PersonaPlexBackend)
+			Expect(ok).To(BeTrue())
+		})
+	})
+
+	Context("PersonaPlexBackend", func() {
+		var backend *PersonaPlexBackend
+
+		BeforeEach(func() {
+			backend = &PersonaPlexBackend{}
+		})
+
+		It("should return correct defaults", func() {
+			Expect(backend.ContainerName()).To(Equal("personaplex"))
+			Expect(backend.DefaultImage()).To(Equal(""))
+			Expect(backend.DefaultPort()).To(Equal(int32(8998)))
+			Expect(backend.NeedsModelInit()).To(BeFalse())
+		})
+
+		It("should build TCP socket probes on port 8998", func() {
+			startup, liveness, readiness := backend.BuildProbes(8998)
+			Expect(startup.TCPSocket).NotTo(BeNil())
+			Expect(startup.TCPSocket.Port.IntValue()).To(Equal(8998))
+			Expect(liveness.TCPSocket).NotTo(BeNil())
+			Expect(readiness.TCPSocket).NotTo(BeNil())
+		})
+
+		It("should build args with quantize-4bit and cpu-offload", func() {
+			quantize := true
+			cpuOffload := true
+			isvc := &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					PersonaPlexConfig: &inferencev1alpha1.PersonaPlexConfig{
+						Quantize4Bit: &quantize,
+						CPUOffload:   &cpuOffload,
+					},
+				},
+			}
+			args := backend.BuildArgs(isvc, nil, "", 0)
+			Expect(args).To(ContainElement("--ssl"))
+			Expect(args).To(ContainElement("--quantize-4bit"))
+			Expect(args).To(ContainElement("--cpu-offload"))
+		})
+
+		It("should build minimal args without config", func() {
+			isvc := &inferencev1alpha1.InferenceService{}
+			args := backend.BuildArgs(isvc, nil, "", 0)
+			Expect(args).To(Equal([]string{"--ssl", "/app/ssl"}))
+		})
+
+		It("should build env with HF_TOKEN from secret ref", func() {
+			isvc := &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					PersonaPlexConfig: &inferencev1alpha1.PersonaPlexConfig{
+						HFTokenSecretRef: &corev1.SecretKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{Name: "hf-token"},
+							Key:                  "HF_TOKEN",
+						},
+					},
+				},
+			}
+			env := backend.BuildEnv(isvc)
+			Expect(env).To(HaveLen(2))
+			Expect(env[0].Name).To(Equal("HF_TOKEN"))
+			Expect(env[0].ValueFrom.SecretKeyRef.Name).To(Equal("hf-token"))
+			Expect(env[1].Name).To(Equal("NO_TORCH_COMPILE"))
+		})
+	})
+})
+
+var _ = Describe("PersonaPlex Runtime Deployment Construction", func() {
+	var reconciler *InferenceServiceReconciler
+
+	BeforeEach(func() {
+		reconciler = &InferenceServiceReconciler{
+			Client:             k8sClient,
+			Scheme:             k8sClient.Scheme(),
+			InitContainerImage: "docker.io/curlimages/curl:8.18.0",
+		}
+	})
+
+	It("should deploy PersonaPlex with typed config", func() {
+		quantize := true
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: "pp-model", Namespace: "voice-ai"},
+			Spec: inferencev1alpha1.ModelSpec{
+				Source: "nvidia/personaplex-7b-v1",
+				Format: "safetensors",
+				Hardware: &inferencev1alpha1.HardwareSpec{
+					Accelerator: "cuda",
+					GPU:         &inferencev1alpha1.GPUSpec{Enabled: true, Count: 1, Vendor: "nvidia"},
+				},
+			},
+			Status: inferencev1alpha1.ModelStatus{Phase: "Ready"},
+		}
+
+		isvc := &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: "pp-svc", Namespace: "voice-ai"},
+			Spec: inferencev1alpha1.InferenceServiceSpec{
+				ModelRef: "pp-model",
+				Runtime:  "personaplex",
+				Image:    "registry.defilan.net/personaplex:7b-v1-4bit-cuda13",
+				PersonaPlexConfig: &inferencev1alpha1.PersonaPlexConfig{
+					Quantize4Bit: &quantize,
+					HFTokenSecretRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: "hf-token"},
+						Key:                  "HF_TOKEN",
+					},
+				},
+				Resources: &inferencev1alpha1.InferenceResourceRequirements{
+					GPU:    1,
+					Memory: "32Gi",
+				},
+			},
+		}
+
+		deployment := reconciler.constructDeployment(isvc, model, 1)
+		container := deployment.Spec.Template.Spec.Containers[0]
+
+		By("verifying container name")
+		Expect(container.Name).To(Equal("personaplex"))
+
+		By("verifying custom image")
+		Expect(container.Image).To(Equal("registry.defilan.net/personaplex:7b-v1-4bit-cuda13"))
+
+		By("verifying default port 8998")
+		Expect(container.Ports[0].ContainerPort).To(Equal(int32(8998)))
+
+		By("verifying args include --quantize-4bit")
+		Expect(container.Args).To(ContainElement("--ssl"))
+		Expect(container.Args).To(ContainElement("--quantize-4bit"))
+
+		By("verifying env includes HF_TOKEN from secret and NO_TORCH_COMPILE")
+		var hfToken, noCompile bool
+		for _, e := range container.Env {
+			if e.Name == "HF_TOKEN" && e.ValueFrom != nil && e.ValueFrom.SecretKeyRef.Name == "hf-token" {
+				hfToken = true
+			}
+			if e.Name == "NO_TORCH_COMPILE" {
+				noCompile = true
+			}
+		}
+		Expect(hfToken).To(BeTrue(), "HF_TOKEN env from secret not found")
+		Expect(noCompile).To(BeTrue(), "NO_TORCH_COMPILE env not found")
+
+		By("verifying no init containers")
+		Expect(deployment.Spec.Template.Spec.InitContainers).To(BeEmpty())
+
+		By("verifying TCP probes")
+		Expect(container.StartupProbe.TCPSocket).NotTo(BeNil())
+		Expect(container.StartupProbe.TCPSocket.Port.IntValue()).To(Equal(8998))
+
+		By("verifying GPU resources")
+		gpuLimit := container.Resources.Limits["nvidia.com/gpu"]
+		Expect(gpuLimit).To(Equal(resource.MustParse("1")))
 	})
 })
 

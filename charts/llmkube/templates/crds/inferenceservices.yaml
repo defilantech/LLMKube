@@ -417,6 +417,48 @@ spec:
                 maximum: 64
                 minimum: 1
                 type: integer
+              personaPlexConfig:
+                description: |-
+                  PersonaPlexConfig holds configuration for the PersonaPlex (Moshi) runtime.
+                  Only used when Runtime is "personaplex".
+                properties:
+                  cpuOffload:
+                    description: |-
+                      CPUOffload enables model weight offloading to system RAM when GPU VRAM is insufficient.
+                      Requires the accelerate package in the container image.
+                    type: boolean
+                  hfTokenSecretRef:
+                    description: |-
+                      HFTokenSecretRef references a Secret containing the HuggingFace token for model download.
+                      The Secret key must be "HF_TOKEN".
+                    properties:
+                      key:
+                        description: The key of the secret to select from.  Must be
+                          a valid secret key.
+                        type: string
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                      optional:
+                        description: Specify whether the Secret or its key must be
+                          defined
+                        type: boolean
+                    required:
+                    - key
+                    type: object
+                    x-kubernetes-map-type: atomic
+                  quantize4Bit:
+                    description: |-
+                      Quantize4Bit enables NF4 4-bit quantization for reduced VRAM usage (~9.6 GB vs ~14 GB).
+                      Requires the bitsandbytes package in the container image.
+                    type: boolean
+                type: object
               podSecurityContext:
                 description: |-
                   PodSecurityContext defines pod-level security attributes for inference pods.
@@ -1164,8 +1206,10 @@ spec:
                   Runtime selects the inference server backend.
                   "llamacpp" (default): llama.cpp server with auto-generated args and /health probes.
                   "generic": user-provided container with custom command, args, env, and probes.
+                  "personaplex": NVIDIA PersonaPlex (Moshi) speech-to-speech server.
                 enum:
                 - llamacpp
+                - personaplex
                 - generic
                 type: string
               securityContext:

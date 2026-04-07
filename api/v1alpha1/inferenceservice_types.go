@@ -33,7 +33,8 @@ type InferenceServiceSpec struct {
 	// Runtime selects the inference server backend.
 	// "llamacpp" (default): llama.cpp server with auto-generated args and /health probes.
 	// "generic": user-provided container with custom command, args, env, and probes.
-	// +kubebuilder:validation:Enum=llamacpp;generic
+	// "personaplex": NVIDIA PersonaPlex (Moshi) speech-to-speech server.
+	// +kubebuilder:validation:Enum=llamacpp;personaplex;generic
 	// +kubebuilder:default=llamacpp
 	// +optional
 	Runtime string `json:"runtime,omitempty"`
@@ -156,6 +157,11 @@ type InferenceServiceSpec struct {
 	// +optional
 	SkipModelInit *bool `json:"skipModelInit,omitempty"`
 
+	// PersonaPlexConfig holds configuration for the PersonaPlex (Moshi) runtime.
+	// Only used when Runtime is "personaplex".
+	// +optional
+	PersonaPlexConfig *PersonaPlexConfig `json:"personaPlexConfig,omitempty"`
+
 	// Priority determines scheduling priority for GPU allocation.
 	// Higher priority services can preempt lower priority ones when GPUs are scarce.
 	// +kubebuilder:validation:Enum=critical;high;normal;low;batch
@@ -275,6 +281,24 @@ type ProbeOverrides struct {
 	// Readiness overrides the readiness probe.
 	// +optional
 	Readiness *corev1.Probe `json:"readiness,omitempty"`
+}
+
+// PersonaPlexConfig holds configuration for the PersonaPlex (Moshi) speech-to-speech runtime.
+type PersonaPlexConfig struct {
+	// Quantize4Bit enables NF4 4-bit quantization for reduced VRAM usage (~9.6 GB vs ~14 GB).
+	// Requires the bitsandbytes package in the container image.
+	// +optional
+	Quantize4Bit *bool `json:"quantize4Bit,omitempty"`
+
+	// CPUOffload enables model weight offloading to system RAM when GPU VRAM is insufficient.
+	// Requires the accelerate package in the container image.
+	// +optional
+	CPUOffload *bool `json:"cpuOffload,omitempty"`
+
+	// HFTokenSecretRef references a Secret containing the HuggingFace token for model download.
+	// The Secret key must be "HF_TOKEN".
+	// +optional
+	HFTokenSecretRef *corev1.SecretKeySelector `json:"hfTokenSecretRef,omitempty"`
 }
 
 // InferenceServiceStatus defines the observed state of InferenceService.

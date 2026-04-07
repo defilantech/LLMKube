@@ -32,8 +32,16 @@ type RuntimeBackend interface {
 }
 
 // resolveBackend returns the RuntimeBackend for the given InferenceService.
+// EnvBuilder is optionally implemented by backends that generate runtime-specific env vars.
+type EnvBuilder interface {
+	BuildEnv(isvc *inferencev1alpha1.InferenceService) []corev1.EnvVar
+}
+
+// resolveBackend returns the RuntimeBackend for the given InferenceService.
 func resolveBackend(isvc *inferencev1alpha1.InferenceService) RuntimeBackend {
 	switch isvc.Spec.Runtime {
+	case "personaplex":
+		return &PersonaPlexBackend{}
 	case "generic":
 		return &GenericBackend{}
 	default:
