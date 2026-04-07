@@ -62,10 +62,14 @@ spec:
                 default: gguf
                 description: |-
                   Format specifies the model file format.
-                  "gguf" is used with the llama-server runtime; "mlx" is used with the oMLX runtime.
+                  "gguf" is used with the llama-server runtime; "mlx" is used with the oMLX runtime;
+                  "safetensors", "pytorch", and "custom" are used with the generic runtime.
                 enum:
                 - gguf
                 - mlx
+                - safetensors
+                - pytorch
+                - custom
                 type: string
               hardware:
                 description: Hardware specifies hardware acceleration preferences

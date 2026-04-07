@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -68,6 +69,12 @@ type deployOptions struct {
 	minReplicas         int32
 	maxReplicas         int32
 	autoscaleMetric     string
+	runtime             string
+	containerPort       int32
+	skipModelInit       bool
+	env                 []string
+	command             []string
+	args                []string
 	wait                bool
 	timeout             time.Duration
 }
@@ -171,6 +178,19 @@ Examples:
 		"KV cache type for values (f16, q8_0, q4_0, etc.). Maps to llama.cpp --cache-type-v.")
 	cmd.Flags().StringSliceVar(&opts.extraArgs, "extra-args", nil,
 		"Additional llama-server arguments (can specify multiple times)")
+
+	cmd.Flags().StringVar(&opts.runtime, "runtime", "llamacpp",
+		"Inference runtime backend (llamacpp, generic)")
+	cmd.Flags().Int32Var(&opts.containerPort, "container-port", 0,
+		"Override the container port (default depends on runtime)")
+	cmd.Flags().BoolVar(&opts.skipModelInit, "skip-model-init", false,
+		"Skip the model download init container (use when model is baked into image)")
+	cmd.Flags().StringSliceVar(&opts.env, "env", nil,
+		"Environment variables in KEY=VALUE format (can specify multiple times)")
+	cmd.Flags().StringSliceVar(&opts.command, "command", nil,
+		"Container entrypoint override (for generic runtime)")
+	cmd.Flags().StringSliceVar(&opts.args, "args", nil,
+		"Container args override (for generic runtime)")
 
 	cmd.Flags().Float64Var(&opts.metalMemoryFraction, "memory-fraction", 0,
 		"Fraction of system memory to budget for model inference (0.0-1.0). "+
@@ -364,6 +384,34 @@ func buildInferenceService(opts *deployOptions) *inferencev1alpha1.InferenceServ
 	}
 	if len(opts.extraArgs) > 0 {
 		isvc.Spec.ExtraArgs = opts.extraArgs
+	}
+
+	if opts.runtime != "" && opts.runtime != "llamacpp" {
+		isvc.Spec.Runtime = opts.runtime
+	}
+	if opts.containerPort > 0 {
+		isvc.Spec.ContainerPort = &opts.containerPort
+	}
+	if opts.skipModelInit {
+		isvc.Spec.SkipModelInit = &opts.skipModelInit
+	}
+	if len(opts.command) > 0 {
+		isvc.Spec.Command = opts.command
+	}
+	if len(opts.args) > 0 {
+		isvc.Spec.Args = opts.args
+	}
+	if len(opts.env) > 0 {
+		envVars := make([]corev1.EnvVar, 0, len(opts.env))
+		for _, e := range opts.env {
+			parts := strings.SplitN(e, "=", 2)
+			if len(parts) == 2 {
+				envVars = append(envVars, corev1.EnvVar{Name: parts[0], Value: parts[1]})
+			}
+		}
+		if len(envVars) > 0 {
+			isvc.Spec.Env = envVars
+		}
 	}
 
 	if opts.maxReplicas > 0 {
