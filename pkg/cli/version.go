@@ -24,7 +24,7 @@ import (
 
 var (
 	// Version is set during build via ldflags or updated by release-please
-	Version = "0.5.3" // x-release-please-version
+	Version = "0.6.0" // x-release-please-version
 	// GitCommit is set during build
 	GitCommit = "unknown"
 	// BuildDate is set during build

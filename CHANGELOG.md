@@ -5,6 +5,24 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0](https://github.com/defilantech/LLMKube/compare/v0.5.3...v0.6.0) (2026-04-08)
+
+
+### ⚠ BREAKING CHANGES
+
+* update default CUDA image to server-cuda13 for Qwen3.5 and Blackwell support ([#262](https://github.com/defilantech/LLMKube/issues/262))
+
+### Features
+
+* add first-class PersonaPlex (Moshi) runtime backend ([#272](https://github.com/defilantech/LLMKube/issues/272)) ([2b1c948](https://github.com/defilantech/LLMKube/commit/2b1c948052806108ea2dea3debeea54379dc450b))
+* add Grafana inference metrics dashboard ([#269](https://github.com/defilantech/LLMKube/issues/269)) ([be376c6](https://github.com/defilantech/LLMKube/commit/be376c67523cd2565997bd0cae886d19c2bc51ee))
+* add HPA autoscaling for InferenceService ([#260](https://github.com/defilantech/LLMKube/issues/260)) ([2d16502](https://github.com/defilantech/LLMKube/commit/2d165023b3595a137104acff382474ee5498c5ba))
+* add pluggable runtime backends for non-llama.cpp inference engines ([#271](https://github.com/defilantech/LLMKube/issues/271)) ([bb1576c](https://github.com/defilantech/LLMKube/commit/bb1576c04f685b5657aef7b0fb3f2c9a840fcd1a))
+* add vLLM and TGI runtime backends with per-runtime HPA metrics ([#273](https://github.com/defilantech/LLMKube/issues/273)) ([441c7c7](https://github.com/defilantech/LLMKube/commit/441c7c77cf72936fd1cf31ea0b44914018579172))
+* separate image registry from repository in Helm chart ([#268](https://github.com/defilantech/LLMKube/issues/268)) ([5c059a4](https://github.com/defilantech/LLMKube/commit/5c059a4f2b26227684c8e148793e259c05e82daa))
+* support custom layer splits from GPUShardingSpec ([#267](https://github.com/defilantech/LLMKube/issues/267)) ([a37701c](https://github.com/defilantech/LLMKube/commit/a37701c0bd355b0e209650e8b52a243b61efcdc5))
+* update default CUDA image to server-cuda13 for Qwen3.5 and Blackwell support ([#262](https://github.com/defilantech/LLMKube/issues/262)) ([cc9a95e](https://github.com/defilantech/LLMKube/commit/cc9a95eadd5077c6234f2cbf0518a804a303269a))
+
 ## [0.5.3](https://github.com/defilantech/LLMKube/compare/v0.5.2...v0.5.3) (2026-04-01)
 
 
