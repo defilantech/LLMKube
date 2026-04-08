@@ -3708,6 +3708,107 @@ var _ = Describe("RuntimeBackend interface", func() {
 			_, ok := backend.(*PersonaPlexBackend)
 			Expect(ok).To(BeTrue())
 		})
+
+		It("should return VLLMBackend for vllm runtime", func() {
+			isvc := &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{Runtime: "vllm"},
+			}
+			backend := resolveBackend(isvc)
+			_, ok := backend.(*VLLMBackend)
+			Expect(ok).To(BeTrue())
+		})
+
+		It("should return TGIBackend for tgi runtime", func() {
+			isvc := &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{Runtime: "tgi"},
+			}
+			backend := resolveBackend(isvc)
+			_, ok := backend.(*TGIBackend)
+			Expect(ok).To(BeTrue())
+		})
+	})
+
+	Context("VLLMBackend", func() {
+		var backend *VLLMBackend
+
+		BeforeEach(func() {
+			backend = &VLLMBackend{}
+		})
+
+		It("should return correct defaults", func() {
+			Expect(backend.ContainerName()).To(Equal("vllm"))
+			Expect(backend.DefaultImage()).To(Equal("vllm/vllm-openai:latest"))
+			Expect(backend.DefaultPort()).To(Equal(int32(8000)))
+			Expect(backend.NeedsModelInit()).To(BeTrue())
+			Expect(backend.DefaultHPAMetric()).To(Equal("vllm:num_requests_running"))
+		})
+
+		It("should build args with tensor parallel and quantization", func() {
+			tp := int32(2)
+			maxLen := int32(4096)
+			isvc := &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					VLLMConfig: &inferencev1alpha1.VLLMConfig{
+						TensorParallelSize: &tp,
+						MaxModelLen:        &maxLen,
+						Quantization:       "awq",
+						Dtype:              "float16",
+					},
+				},
+			}
+			model := &inferencev1alpha1.Model{}
+			args := backend.BuildArgs(isvc, model, "/models/llama3", 8000)
+			Expect(args).To(ContainElements("--model", "/models/llama3"))
+			Expect(args).To(ContainElements("--tensor-parallel-size", "2"))
+			Expect(args).To(ContainElements("--max-model-len", "4096"))
+			Expect(args).To(ContainElements("--quantization", "awq"))
+			Expect(args).To(ContainElements("--dtype", "float16"))
+		})
+
+		It("should build HTTP /health probes", func() {
+			startup, liveness, readiness := backend.BuildProbes(8000)
+			Expect(startup.HTTPGet.Path).To(Equal("/health"))
+			Expect(liveness.HTTPGet.Path).To(Equal("/health"))
+			Expect(readiness.HTTPGet.Path).To(Equal("/health"))
+		})
+	})
+
+	Context("TGIBackend", func() {
+		var backend *TGIBackend
+
+		BeforeEach(func() {
+			backend = &TGIBackend{}
+		})
+
+		It("should return correct defaults", func() {
+			Expect(backend.ContainerName()).To(Equal("tgi"))
+			Expect(backend.DefaultImage()).To(Equal("ghcr.io/huggingface/text-generation-inference:latest"))
+			Expect(backend.DefaultPort()).To(Equal(int32(80)))
+			Expect(backend.NeedsModelInit()).To(BeFalse())
+			Expect(backend.DefaultHPAMetric()).To(Equal("tgi:queue_size"))
+		})
+
+		It("should build args with quantize and model source fallback", func() {
+			maxInput := int32(2048)
+			maxTotal := int32(4096)
+			isvc := &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					TGIConfig: &inferencev1alpha1.TGIConfig{
+						Quantize:       "bitsandbytes",
+						MaxInputLength: &maxInput,
+						MaxTotalTokens: &maxTotal,
+					},
+				},
+			}
+			model := &inferencev1alpha1.Model{
+				Spec: inferencev1alpha1.ModelSpec{Source: "meta-llama/Llama-3-8B"},
+			}
+			args := backend.BuildArgs(isvc, model, "", 80)
+			Expect(args).To(ContainElements("--model-id", "meta-llama/Llama-3-8B"))
+			Expect(args).To(ContainElements("--quantize", "bitsandbytes"))
+			Expect(args).To(ContainElements("--max-input-length", "2048"))
+			Expect(args).To(ContainElements("--max-total-tokens", "4096"))
+		})
 	})
 
 	Context("PersonaPlexBackend", func() {

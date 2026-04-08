@@ -609,14 +609,19 @@ func (r *InferenceServiceReconciler) constructHPA(
 	var metrics []autoscalingv2.MetricSpec
 
 	if len(autoscaling.Metrics) == 0 {
-		// Default: scale on active request count
+		// Use the runtime's default metric if available
+		backend := resolveBackend(isvc)
+		metricName := "llamacpp:requests_processing"
+		if hp, ok := backend.(HPAMetricProvider); ok && hp.DefaultHPAMetric() != "" {
+			metricName = hp.DefaultHPAMetric()
+		}
 		targetValue := resource.MustParse("2")
 		metrics = []autoscalingv2.MetricSpec{
 			{
 				Type: autoscalingv2.PodsMetricSourceType,
 				Pods: &autoscalingv2.PodsMetricSource{
 					Metric: autoscalingv2.MetricIdentifier{
-						Name: "llamacpp:requests_processing",
+						Name: metricName,
 					},
 					Target: autoscalingv2.MetricTarget{
 						Type:         autoscalingv2.AverageValueMetricType,

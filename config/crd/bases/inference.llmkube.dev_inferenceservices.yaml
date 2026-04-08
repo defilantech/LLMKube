@@ -1223,9 +1223,13 @@ spec:
                   "llamacpp" (default): llama.cpp server with auto-generated args and /health probes.
                   "generic": user-provided container with custom command, args, env, and probes.
                   "personaplex": NVIDIA PersonaPlex (Moshi) speech-to-speech server.
+                  "vllm": vLLM OpenAI-compatible server with PagedAttention.
+                  "tgi": HuggingFace Text Generation Inference server.
                 enum:
                 - llamacpp
                 - personaplex
+                - vllm
+                - tgi
                 - generic
                 type: string
               securityContext:
@@ -1425,6 +1429,61 @@ spec:
                   Use when the model is baked into the image or downloaded by the
                   container itself (e.g., via HF_TOKEN).
                 type: boolean
+              tgiConfig:
+                description: |-
+                  TGIConfig holds configuration for the TGI runtime.
+                  Only used when Runtime is "tgi".
+                properties:
+                  dtype:
+                    description: Dtype sets the model data type (float16, bfloat16).
+                    enum:
+                    - float16
+                    - bfloat16
+                    type: string
+                  hfTokenSecretRef:
+                    description: HFTokenSecretRef references a Secret containing the
+                      HuggingFace token.
+                    properties:
+                      key:
+                        description: The key of the secret to select from.  Must be
+                          a valid secret key.
+                        type: string
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                      optional:
+                        description: Specify whether the Secret or its key must be
+                          defined
+                        type: boolean
+                    required:
+                    - key
+                    type: object
+                    x-kubernetes-map-type: atomic
+                  maxInputLength:
+                    description: MaxInputLength sets the maximum input token length.
+                    format: int32
+                    type: integer
+                  maxTotalTokens:
+                    description: MaxTotalTokens sets the maximum total tokens (input
+                      + output).
+                    format: int32
+                    type: integer
+                  quantize:
+                    description: Quantize sets the quantization method (bitsandbytes,
+                      gptq, awq, eetq).
+                    enum:
+                    - bitsandbytes
+                    - gptq
+                    - awq
+                    - eetq
+                    type: string
+                type: object
               tolerations:
                 description: Tolerations for pod scheduling (e.g., GPU taints, spot
                   instances)
@@ -1466,6 +1525,60 @@ spec:
                       type: string
                   type: object
                 type: array
+              vllmConfig:
+                description: |-
+                  VLLMConfig holds configuration for the vLLM runtime.
+                  Only used when Runtime is "vllm".
+                properties:
+                  dtype:
+                    description: Dtype sets the model data type (auto, float16, bfloat16).
+                    enum:
+                    - auto
+                    - float16
+                    - bfloat16
+                    type: string
+                  hfTokenSecretRef:
+                    description: HFTokenSecretRef references a Secret containing the
+                      HuggingFace token.
+                    properties:
+                      key:
+                        description: The key of the secret to select from.  Must be
+                          a valid secret key.
+                        type: string
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                      optional:
+                        description: Specify whether the Secret or its key must be
+                          defined
+                        type: boolean
+                    required:
+                    - key
+                    type: object
+                    x-kubernetes-map-type: atomic
+                  maxModelLen:
+                    description: MaxModelLen sets the maximum model context length.
+                    format: int32
+                    type: integer
+                  quantization:
+                    description: Quantization method (awq, gptq, squeezellm).
+                    enum:
+                    - awq
+                    - gptq
+                    - squeezellm
+                    type: string
+                  tensorParallelSize:
+                    description: TensorParallelSize sets the number of GPUs for tensor
+                      parallelism.
+                    format: int32
+                    type: integer
+                type: object
             required:
             - modelRef
             type: object

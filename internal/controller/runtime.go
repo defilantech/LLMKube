@@ -42,11 +42,20 @@ type EnvBuilder interface {
 	BuildEnv(isvc *inferencev1alpha1.InferenceService) []corev1.EnvVar
 }
 
+// HPAMetricProvider is optionally implemented by backends that have a default autoscaling metric.
+type HPAMetricProvider interface {
+	DefaultHPAMetric() string
+}
+
 // resolveBackend returns the RuntimeBackend for the given InferenceService.
 func resolveBackend(isvc *inferencev1alpha1.InferenceService) RuntimeBackend {
 	switch isvc.Spec.Runtime {
 	case "personaplex":
 		return &PersonaPlexBackend{}
+	case "vllm":
+		return &VLLMBackend{}
+	case "tgi":
+		return &TGIBackend{}
 	case "generic":
 		return &GenericBackend{}
 	default:

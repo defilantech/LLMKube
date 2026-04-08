@@ -34,7 +34,9 @@ type InferenceServiceSpec struct {
 	// "llamacpp" (default): llama.cpp server with auto-generated args and /health probes.
 	// "generic": user-provided container with custom command, args, env, and probes.
 	// "personaplex": NVIDIA PersonaPlex (Moshi) speech-to-speech server.
-	// +kubebuilder:validation:Enum=llamacpp;personaplex;generic
+	// "vllm": vLLM OpenAI-compatible server with PagedAttention.
+	// "tgi": HuggingFace Text Generation Inference server.
+	// +kubebuilder:validation:Enum=llamacpp;personaplex;vllm;tgi;generic
 	// +kubebuilder:default=llamacpp
 	// +optional
 	Runtime string `json:"runtime,omitempty"`
@@ -161,6 +163,16 @@ type InferenceServiceSpec struct {
 	// Only used when Runtime is "personaplex".
 	// +optional
 	PersonaPlexConfig *PersonaPlexConfig `json:"personaPlexConfig,omitempty"`
+
+	// VLLMConfig holds configuration for the vLLM runtime.
+	// Only used when Runtime is "vllm".
+	// +optional
+	VLLMConfig *VLLMConfig `json:"vllmConfig,omitempty"`
+
+	// TGIConfig holds configuration for the TGI runtime.
+	// Only used when Runtime is "tgi".
+	// +optional
+	TGIConfig *TGIConfig `json:"tgiConfig,omitempty"`
 
 	// ImagePullSecrets for pulling container images from private registries.
 	// +optional
@@ -301,6 +313,56 @@ type PersonaPlexConfig struct {
 
 	// HFTokenSecretRef references a Secret containing the HuggingFace token for model download.
 	// The Secret key must be "HF_TOKEN".
+	// +optional
+	HFTokenSecretRef *corev1.SecretKeySelector `json:"hfTokenSecretRef,omitempty"`
+}
+
+// VLLMConfig holds configuration for the vLLM inference server.
+type VLLMConfig struct {
+	// TensorParallelSize sets the number of GPUs for tensor parallelism.
+	// +optional
+	TensorParallelSize *int32 `json:"tensorParallelSize,omitempty"`
+
+	// MaxModelLen sets the maximum model context length.
+	// +optional
+	MaxModelLen *int32 `json:"maxModelLen,omitempty"`
+
+	// Quantization method (awq, gptq, squeezellm).
+	// +kubebuilder:validation:Enum=awq;gptq;squeezellm
+	// +optional
+	Quantization string `json:"quantization,omitempty"`
+
+	// Dtype sets the model data type (auto, float16, bfloat16).
+	// +kubebuilder:validation:Enum=auto;float16;bfloat16
+	// +optional
+	Dtype string `json:"dtype,omitempty"`
+
+	// HFTokenSecretRef references a Secret containing the HuggingFace token.
+	// +optional
+	HFTokenSecretRef *corev1.SecretKeySelector `json:"hfTokenSecretRef,omitempty"`
+}
+
+// TGIConfig holds configuration for the HuggingFace Text Generation Inference server.
+type TGIConfig struct {
+	// Quantize sets the quantization method (bitsandbytes, gptq, awq, eetq).
+	// +kubebuilder:validation:Enum=bitsandbytes;gptq;awq;eetq
+	// +optional
+	Quantize string `json:"quantize,omitempty"`
+
+	// MaxInputLength sets the maximum input token length.
+	// +optional
+	MaxInputLength *int32 `json:"maxInputLength,omitempty"`
+
+	// MaxTotalTokens sets the maximum total tokens (input + output).
+	// +optional
+	MaxTotalTokens *int32 `json:"maxTotalTokens,omitempty"`
+
+	// Dtype sets the model data type (float16, bfloat16).
+	// +kubebuilder:validation:Enum=float16;bfloat16
+	// +optional
+	Dtype string `json:"dtype,omitempty"`
+
+	// HFTokenSecretRef references a Secret containing the HuggingFace token.
 	// +optional
 	HFTokenSecretRef *corev1.SecretKeySelector `json:"hfTokenSecretRef,omitempty"`
 }

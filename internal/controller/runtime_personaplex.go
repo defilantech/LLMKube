@@ -23,9 +23,8 @@ func (b *PersonaPlexBackend) DefaultPort() int32 {
 	return 8998
 }
 
-func (b *PersonaPlexBackend) NeedsModelInit() bool {
-	return false
-}
+func (b *PersonaPlexBackend) NeedsModelInit() bool     { return false }
+func (b *PersonaPlexBackend) DefaultHPAMetric() string { return "" }
 
 func (b *PersonaPlexBackend) BuildCommand() []string {
 	return []string{"/app/moshi/.venv/bin/python", "-m", "moshi.server"}
