@@ -18,8 +18,12 @@ func (b *VLLMBackend) NeedsModelInit() bool     { return true }
 func (b *VLLMBackend) DefaultHPAMetric() string { return "vllm:num_requests_running" }
 
 func (b *VLLMBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, model *inferencev1alpha1.Model, modelPath string, port int32) []string {
+	source := modelPath
+	if source == "" {
+		source = model.Spec.Source
+	}
 	args := []string{
-		"--model", modelPath,
+		"--model", source,
 		"--host", "0.0.0.0",
 		"--port", fmt.Sprintf("%d", port),
 	}
@@ -48,8 +52,8 @@ func (b *VLLMBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, model 
 	return args
 }
 
-func (b *VLLMBackend) BuildProbes(port int32) (startup, liveness, readiness *corev1.Probe) {
-	startup = &corev1.Probe{
+func (b *VLLMBackend) BuildProbes(port int32) (*corev1.Probe, *corev1.Probe, *corev1.Probe) {
+	startup := &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{
 			HTTPGet: &corev1.HTTPGetAction{
 				Path: "/health",
@@ -60,7 +64,7 @@ func (b *VLLMBackend) BuildProbes(port int32) (startup, liveness, readiness *cor
 		TimeoutSeconds:   5,
 		FailureThreshold: 180,
 	}
-	liveness = &corev1.Probe{
+	liveness := &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{
 			HTTPGet: &corev1.HTTPGetAction{
 				Path: "/health",
@@ -71,7 +75,7 @@ func (b *VLLMBackend) BuildProbes(port int32) (startup, liveness, readiness *cor
 		TimeoutSeconds:   5,
 		FailureThreshold: 3,
 	}
-	readiness = &corev1.Probe{
+	readiness := &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{
 			HTTPGet: &corev1.HTTPGetAction{
 				Path: "/health",
@@ -82,7 +86,7 @@ func (b *VLLMBackend) BuildProbes(port int32) (startup, liveness, readiness *cor
 		TimeoutSeconds:   5,
 		FailureThreshold: 3,
 	}
-	return
+	return startup, liveness, readiness
 }
 
 func (b *VLLMBackend) BuildEnv(isvc *inferencev1alpha1.InferenceService) []corev1.EnvVar {

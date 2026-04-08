@@ -55,8 +55,8 @@ func (b *TGIBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, model *
 	return args
 }
 
-func (b *TGIBackend) BuildProbes(port int32) (startup, liveness, readiness *corev1.Probe) {
-	startup = &corev1.Probe{
+func (b *TGIBackend) BuildProbes(port int32) (*corev1.Probe, *corev1.Probe, *corev1.Probe) {
+	startup := &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{
 			HTTPGet: &corev1.HTTPGetAction{
 				Path: "/health",
@@ -67,7 +67,7 @@ func (b *TGIBackend) BuildProbes(port int32) (startup, liveness, readiness *core
 		TimeoutSeconds:   5,
 		FailureThreshold: 180,
 	}
-	liveness = &corev1.Probe{
+	liveness := &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{
 			HTTPGet: &corev1.HTTPGetAction{
 				Path: "/health",
@@ -78,7 +78,7 @@ func (b *TGIBackend) BuildProbes(port int32) (startup, liveness, readiness *core
 		TimeoutSeconds:   5,
 		FailureThreshold: 3,
 	}
-	readiness = &corev1.Probe{
+	readiness := &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{
 			HTTPGet: &corev1.HTTPGetAction{
 				Path: "/health",
@@ -89,7 +89,7 @@ func (b *TGIBackend) BuildProbes(port int32) (startup, liveness, readiness *core
 		TimeoutSeconds:   5,
 		FailureThreshold: 3,
 	}
-	return
+	return startup, liveness, readiness
 }
 
 func (b *TGIBackend) BuildEnv(isvc *inferencev1alpha1.InferenceService) []corev1.EnvVar {
