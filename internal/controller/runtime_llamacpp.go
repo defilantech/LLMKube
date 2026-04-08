@@ -24,9 +24,8 @@ func (b *LlamaCppBackend) DefaultPort() int32 {
 	return 8080
 }
 
-func (b *LlamaCppBackend) NeedsModelInit() bool {
-	return true
-}
+func (b *LlamaCppBackend) NeedsModelInit() bool     { return true }
+func (b *LlamaCppBackend) DefaultHPAMetric() string { return "llamacpp:requests_processing" }
 
 func (b *LlamaCppBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, model *inferencev1alpha1.Model, modelPath string, port int32) []string {
 	args := []string{
