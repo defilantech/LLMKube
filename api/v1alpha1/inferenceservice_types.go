@@ -162,6 +162,10 @@ type InferenceServiceSpec struct {
 	// +optional
 	PersonaPlexConfig *PersonaPlexConfig `json:"personaPlexConfig,omitempty"`
 
+	// ImagePullSecrets for pulling container images from private registries.
+	// +optional
+	ImagePullSecrets []corev1.LocalObjectReference `json:"imagePullSecrets,omitempty"`
+
 	// Priority determines scheduling priority for GPU allocation.
 	// Higher priority services can preempt lower priority ones when GPUs are scarce.
 	// +kubebuilder:validation:Enum=critical;high;normal;low;batch

@@ -1085,6 +1085,7 @@ func (r *InferenceServiceReconciler) constructDeployment(
 					Containers:        []corev1.Container{container},
 					Volumes:           storageConfig.volumes,
 					PriorityClassName: r.resolvePriorityClassName(isvc),
+					ImagePullSecrets:  isvc.Spec.ImagePullSecrets,
 				},
 			},
 		},
