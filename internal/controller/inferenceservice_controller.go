@@ -84,14 +84,30 @@ func inferContainerSecurityContext(isvc *inferencev1alpha1.InferenceService) *co
 	}
 }
 
-func initContainerSecurityContext() *corev1.SecurityContext {
-	return &corev1.SecurityContext{
+// initContainerSecurityContext sets up security context for the model downloader init container.
+// It inherits runAsUser/runAsGroup from podSecurityContext if specified by the user.
+// Users MUST specify runAsUser/runAsGroup in their InferenceService podSecurityContext to avoid
+// permission denied errors on the model volume.
+func initContainerSecurityContext(isvc *inferencev1alpha1.InferenceService) *corev1.SecurityContext {
+	sc := &corev1.SecurityContext{
 		AllowPrivilegeEscalation: boolPtr(false),
 		ReadOnlyRootFilesystem:   boolPtr(false),
 		Capabilities: &corev1.Capabilities{
 			Drop: []corev1.Capability{"ALL"},
 		},
 	}
+
+	// Inherit runAsUser/runAsGroup from podSecurityContext if specified
+	if isvc != nil && isvc.Spec.PodSecurityContext != nil {
+		if isvc.Spec.PodSecurityContext.RunAsUser != nil {
+			sc.RunAsUser = isvc.Spec.PodSecurityContext.RunAsUser
+		}
+		if isvc.Spec.PodSecurityContext.RunAsGroup != nil {
+			sc.RunAsGroup = isvc.Spec.PodSecurityContext.RunAsGroup
+		}
+	}
+
+	return sc
 }
 
 // isLocalModelSource delegates to the shared isLocalSource helper in source.go.
@@ -128,14 +144,14 @@ type modelStorageConfig struct {
 	volumeMounts   []corev1.VolumeMount
 }
 
-func buildModelStorageConfig(model *inferencev1alpha1.Model, namespace string, useCache bool, caCertConfigMap string, initContainerImage string) modelStorageConfig {
+func buildModelStorageConfig(model *inferencev1alpha1.Model, isvc *inferencev1alpha1.InferenceService, namespace string, useCache bool, caCertConfigMap string, initContainerImage string) modelStorageConfig {
 	if isPVCSource(model.Spec.Source) {
 		return buildPVCStorageConfig(model)
 	}
 	if useCache {
-		return buildCachedStorageConfig(model, caCertConfigMap, initContainerImage)
+		return buildCachedStorageConfig(model, isvc, caCertConfigMap, initContainerImage)
 	}
-	return buildEmptyDirStorageConfig(model, namespace, caCertConfigMap, initContainerImage)
+	return buildEmptyDirStorageConfig(model, isvc, namespace, caCertConfigMap, initContainerImage)
 }
 
 // buildPVCStorageConfig mounts the user's PVC directly as a read-only volume.
@@ -164,7 +180,7 @@ func buildPVCStorageConfig(model *inferencev1alpha1.Model) modelStorageConfig {
 	}
 }
 
-func buildCachedStorageConfig(model *inferencev1alpha1.Model, caCertConfigMap string, initContainerImage string) modelStorageConfig {
+func buildCachedStorageConfig(model *inferencev1alpha1.Model, isvc *inferencev1alpha1.InferenceService, caCertConfigMap string, initContainerImage string) modelStorageConfig {
 	cacheDir := fmt.Sprintf("/models/%s", model.Status.CacheKey)
 	modelPath := fmt.Sprintf("%s/model.gguf", cacheDir)
 
@@ -230,7 +246,7 @@ func buildCachedStorageConfig(model *inferencev1alpha1.Model, caCertConfigMap st
 				Command:         []string{"sh", "-c", cmd},
 				Env:             env,
 				VolumeMounts:    initVolumeMounts,
-				SecurityContext: initContainerSecurityContext(),
+				SecurityContext: initContainerSecurityContext(isvc),
 			},
 		},
 		volumes:      volumes,
@@ -238,7 +254,7 @@ func buildCachedStorageConfig(model *inferencev1alpha1.Model, caCertConfigMap st
 	}
 }
 
-func buildEmptyDirStorageConfig(model *inferencev1alpha1.Model, namespace string, caCertConfigMap string, initContainerImage string) modelStorageConfig {
+func buildEmptyDirStorageConfig(model *inferencev1alpha1.Model, isvc *inferencev1alpha1.InferenceService, namespace string, caCertConfigMap string, initContainerImage string) modelStorageConfig {
 	modelFileName := fmt.Sprintf("%s-%s.gguf", namespace, model.Name)
 	modelPath := fmt.Sprintf("/models/%s", modelFileName)
 
@@ -278,7 +294,7 @@ func buildEmptyDirStorageConfig(model *inferencev1alpha1.Model, namespace string
 				Command:         []string{"sh", "-c", cmd},
 				Env:             env,
 				VolumeMounts:    initVolumeMounts,
-				SecurityContext: initContainerSecurityContext(),
+				SecurityContext: initContainerSecurityContext(isvc),
 			},
 		},
 		volumes:      volumes,
@@ -990,7 +1006,7 @@ func (r *InferenceServiceReconciler) constructDeployment(
 	var modelPath string
 	if backend.NeedsModelInit() && !skipInit {
 		useCache := model.Status.CacheKey != "" && r.ModelCachePath != ""
-		storageConfig = buildModelStorageConfig(model, isvc.Namespace, useCache, r.CACertConfigMap, r.InitContainerImage)
+		storageConfig = buildModelStorageConfig(model, isvc, isvc.Namespace, useCache, r.CACertConfigMap, r.InitContainerImage)
 		modelPath = storageConfig.modelPath
 	}
 

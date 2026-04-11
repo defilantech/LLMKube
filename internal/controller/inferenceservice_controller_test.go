@@ -1613,7 +1613,7 @@ var _ = Describe("buildCachedStorageConfig", func() {
 				CacheKey: "abc123def456",
 			},
 		}
-		config := buildCachedStorageConfig(model, "", "curl:8.18.0")
+		config := buildCachedStorageConfig(model, nil, "", "curl:8.18.0")
 
 		Expect(config.modelPath).To(Equal("/models/abc123def456/model.gguf"))
 		Expect(config.volumes).To(HaveLen(1))
@@ -1645,7 +1645,7 @@ var _ = Describe("buildCachedStorageConfig", func() {
 				CacheKey: "abc123",
 			},
 		}
-		config := buildCachedStorageConfig(model, "", "curl:8.18.0")
+		config := buildCachedStorageConfig(model, nil, "", "curl:8.18.0")
 
 		Expect(config.volumes).To(HaveLen(2))
 		Expect(config.volumes[1].Name).To(Equal("host-model"))
@@ -1666,7 +1666,7 @@ var _ = Describe("buildCachedStorageConfig", func() {
 				CacheKey: "abc123",
 			},
 		}
-		config := buildCachedStorageConfig(model, "my-ca-certs", "curl:8.18.0")
+		config := buildCachedStorageConfig(model, nil, "my-ca-certs", "curl:8.18.0")
 
 		var found bool
 		for _, v := range config.volumes {
@@ -1686,7 +1686,7 @@ var _ = Describe("buildEmptyDirStorageConfig", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: "my-model"},
 			Spec:       inferencev1alpha1.ModelSpec{Source: "https://example.com/model.gguf"},
 		}
-		config := buildEmptyDirStorageConfig(model, "default", "", "curl:8.18.0")
+		config := buildEmptyDirStorageConfig(model, nil, "default", "", "curl:8.18.0")
 
 		Expect(config.modelPath).To(Equal("/models/default-my-model.gguf"))
 		Expect(config.volumes).To(HaveLen(1))
@@ -1709,7 +1709,7 @@ var _ = Describe("buildEmptyDirStorageConfig", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: "my-model"},
 			Spec:       inferencev1alpha1.ModelSpec{Source: "https://example.com/model.gguf"},
 		}
-		config := buildEmptyDirStorageConfig(model, "default", "my-ca-certs", "curl:8.18.0")
+		config := buildEmptyDirStorageConfig(model, nil, "default", "my-ca-certs", "curl:8.18.0")
 
 		var found bool
 		for _, v := range config.volumes {
@@ -1720,6 +1720,32 @@ var _ = Describe("buildEmptyDirStorageConfig", func() {
 		}
 		Expect(found).To(BeTrue())
 		Expect(config.initContainers[0].Command[2]).To(ContainSubstring("CURL_CA_BUNDLE=/custom-certs/"))
+	})
+
+	It("should inherit runAsUser/runAsGroup in emptyDir storage", func() {
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: "my-model"},
+			Spec:       inferencev1alpha1.ModelSpec{Source: "https://example.com/model.gguf"},
+		}
+		customUID := int64(2000)
+		customGID := int64(2000)
+		isvc := &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-isvc"},
+			Spec: inferencev1alpha1.InferenceServiceSpec{
+				PodSecurityContext: &corev1.PodSecurityContext{
+					RunAsUser:  &customUID,
+					RunAsGroup: &customGID,
+				},
+			},
+		}
+		config := buildEmptyDirStorageConfig(model, isvc, "default", "", "curl:8.18.0")
+
+		initSecCtx := config.initContainers[0].SecurityContext
+		Expect(initSecCtx).NotTo(BeNil())
+		Expect(initSecCtx.RunAsUser).NotTo(BeNil())
+		Expect(*initSecCtx.RunAsUser).To(Equal(int64(2000)))
+		Expect(initSecCtx.RunAsGroup).NotTo(BeNil())
+		Expect(*initSecCtx.RunAsGroup).To(Equal(int64(2000)))
 	})
 })
 
@@ -1763,7 +1789,7 @@ var _ = Describe("buildModelStorageConfig PVC dispatch", func() {
 			Spec:       inferencev1alpha1.ModelSpec{Source: "pvc://my-claim/model.gguf"},
 			Status:     inferencev1alpha1.ModelStatus{CacheKey: "abc123"},
 		}
-		config := buildModelStorageConfig(model, "default", true, "", "curl:8.18.0")
+		config := buildModelStorageConfig(model, nil, "default", true, "", "curl:8.18.0")
 
 		// Should use PVC config, not cached config
 		Expect(config.volumes[0].Name).To(Equal("model-source"))
@@ -3019,6 +3045,77 @@ var _ = Describe("Security Context Configuration", func() {
 			Expect(initSecCtx).NotTo(BeNil())
 			Expect(*initSecCtx.AllowPrivilegeEscalation).To(BeFalse())
 			Expect(initSecCtx.Capabilities.Drop).To(ContainElement(corev1.Capability("ALL")))
+		})
+
+		It("should not set runAsUser/runAsGroup without podSecurityContext", func() {
+			reconciler.ModelCachePath = DefaultModelCachePath
+			cachedModel := &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{Name: "cached-model", Namespace: "default"},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source:   "https://example.com/model.gguf",
+					Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: "cpu"},
+				},
+				Status: inferencev1alpha1.ModelStatus{
+					Phase:    "Ready",
+					CacheKey: "abc123",
+				},
+			}
+
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-init-secctx", Namespace: "default"},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: "cached-model",
+					Replicas: &replicas,
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, cachedModel, 1)
+
+			initSecCtx := deployment.Spec.Template.Spec.InitContainers[0].SecurityContext
+			Expect(initSecCtx).NotTo(BeNil())
+			Expect(initSecCtx.RunAsNonRoot).To(BeNil())
+			Expect(initSecCtx.RunAsUser).To(BeNil())
+			Expect(initSecCtx.RunAsGroup).To(BeNil())
+		})
+
+		It("should inherit runAsUser/runAsGroup from podSecurityContext", func() {
+			reconciler.ModelCachePath = DefaultModelCachePath
+			cachedModel := &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{Name: "cached-model", Namespace: "default"},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source:   "https://example.com/model.gguf",
+					Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: "cpu"},
+				},
+				Status: inferencev1alpha1.ModelStatus{
+					Phase:    "Ready",
+					CacheKey: "abc123",
+				},
+			}
+
+			replicas := int32(1)
+			customUID := int64(2000)
+			customGID := int64(2000)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-init-inherit", Namespace: "default"},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: "cached-model",
+					Replicas: &replicas,
+					PodSecurityContext: &corev1.PodSecurityContext{
+						RunAsUser:  &customUID,
+						RunAsGroup: &customGID,
+					},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, cachedModel, 1)
+
+			initSecCtx := deployment.Spec.Template.Spec.InitContainers[0].SecurityContext
+			Expect(initSecCtx).NotTo(BeNil())
+			Expect(initSecCtx.RunAsUser).NotTo(BeNil())
+			Expect(*initSecCtx.RunAsUser).To(Equal(int64(2000)))
+			Expect(initSecCtx.RunAsGroup).NotTo(BeNil())
+			Expect(*initSecCtx.RunAsGroup).To(Equal(int64(2000)))
 		})
 	})
 })
