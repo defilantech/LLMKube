@@ -46,14 +46,18 @@ func (b *LlamaCppBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, mo
 		args = append(args, "--n-gpu-layers", fmt.Sprintf("%d", layers))
 
 		if gpuCount > 1 {
-			args = append(args, "--split-mode", "layer")
-
 			var sharding *inferencev1alpha1.GPUShardingSpec
 			if model.Spec.Hardware != nil && model.Spec.Hardware.GPU != nil {
 				sharding = model.Spec.Hardware.GPU.Sharding
 			}
-			tensorSplit := calculateTensorSplit(gpuCount, sharding)
-			args = append(args, "--tensor-split", tensorSplit)
+			splitMode := resolveSplitMode(sharding)
+			args = append(args, "--split-mode", splitMode)
+
+			// --tensor-split ratios only apply to layer/row modes, not none.
+			if splitMode != "none" {
+				tensorSplit := calculateTensorSplit(gpuCount, sharding)
+				args = append(args, "--tensor-split", tensorSplit)
+			}
 		}
 	}
 

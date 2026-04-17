@@ -131,11 +131,15 @@ type GPUSpec struct {
 
 // GPUShardingSpec defines multi-GPU sharding strategy
 type GPUShardingSpec struct {
-	// Strategy defines the sharding approach
-	// - "layer": Shard by transformer layers (default)
-	// - "tensor": Tensor parallelism (future)
-	// - "pipeline": Pipeline parallelism (future)
-	// +kubebuilder:validation:Enum=layer;tensor;pipeline
+	// Strategy defines the sharding approach for multi-GPU model execution.
+	// - "layer" (default): shard by transformer layers. llama.cpp --split-mode layer.
+	// - "tensor" (alias: "row"): true tensor parallelism. llama.cpp --split-mode row.
+	//   Splits each tensor operation across GPUs rather than assigning whole layers
+	//   to each. Performance varies by workload; typically better on compute-bound ops.
+	// - "none": disable multi-GPU sharding (single GPU). llama.cpp --split-mode none.
+	// - "pipeline": accepted for forward compatibility but currently falls back to
+	//   "layer" with a reconciler warning; llama.cpp has no pipeline split-mode.
+	// +kubebuilder:validation:Enum=layer;tensor;row;pipeline;none
 	// +kubebuilder:default=layer
 	// +optional
 	Strategy string `json:"strategy,omitempty"`

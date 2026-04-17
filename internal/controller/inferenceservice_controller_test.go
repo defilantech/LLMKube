@@ -215,6 +215,47 @@ var _ = Describe("calculateTensorSplit", func() {
 			Expect(result).To(Equal("1,1"))
 		})
 	})
+
+	Context("resolveSplitMode", func() {
+		It("should return layer for nil sharding", func() {
+			Expect(resolveSplitMode(nil)).To(Equal("layer"))
+		})
+
+		It("should return layer for empty strategy", func() {
+			sharding := &inferencev1alpha1.GPUShardingSpec{}
+			Expect(resolveSplitMode(sharding)).To(Equal("layer"))
+		})
+
+		It("should return layer for explicit layer strategy", func() {
+			sharding := &inferencev1alpha1.GPUShardingSpec{Strategy: "layer"}
+			Expect(resolveSplitMode(sharding)).To(Equal("layer"))
+		})
+
+		It("should return row for tensor strategy", func() {
+			sharding := &inferencev1alpha1.GPUShardingSpec{Strategy: "tensor"}
+			Expect(resolveSplitMode(sharding)).To(Equal("row"))
+		})
+
+		It("should return row for row strategy", func() {
+			sharding := &inferencev1alpha1.GPUShardingSpec{Strategy: "row"}
+			Expect(resolveSplitMode(sharding)).To(Equal("row"))
+		})
+
+		It("should return none for none strategy", func() {
+			sharding := &inferencev1alpha1.GPUShardingSpec{Strategy: "none"}
+			Expect(resolveSplitMode(sharding)).To(Equal("none"))
+		})
+
+		It("should fall back to layer for pipeline strategy", func() {
+			sharding := &inferencev1alpha1.GPUShardingSpec{Strategy: "pipeline"}
+			Expect(resolveSplitMode(sharding)).To(Equal("layer"))
+		})
+
+		It("should fall back to layer for unknown strategy", func() {
+			sharding := &inferencev1alpha1.GPUShardingSpec{Strategy: "bogus"}
+			Expect(resolveSplitMode(sharding)).To(Equal("layer"))
+		})
+	})
 })
 
 var _ = Describe("Multi-GPU Deployment Construction", func() {
