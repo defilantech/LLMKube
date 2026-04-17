@@ -279,6 +279,21 @@ func (in *InferenceServiceSpec) DeepCopyInto(out *InferenceServiceSpec) {
 		*out = new(bool)
 		**out = **in
 	}
+	if in.MoeCPUOffload != nil {
+		in, out := &in.MoeCPUOffload, &out.MoeCPUOffload
+		*out = new(bool)
+		**out = **in
+	}
+	if in.MoeCPULayers != nil {
+		in, out := &in.MoeCPULayers, &out.MoeCPULayers
+		*out = new(int32)
+		**out = **in
+	}
+	if in.NoKvOffload != nil {
+		in, out := &in.NoKvOffload, &out.NoKvOffload
+		*out = new(bool)
+		**out = **in
+	}
 	if in.ExtraArgs != nil {
 		in, out := &in.ExtraArgs, &out.ExtraArgs
 		*out = make([]string, len(*in))

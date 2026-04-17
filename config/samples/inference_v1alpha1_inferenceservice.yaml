@@ -30,8 +30,18 @@ spec:
   # Enable Jinja2 template rendering for tool/function calling support (optional)
   jinja: true
 
+  # MoE CPU offloading: offload expert layers to CPU for MoE models (optional)
+  # moeCPUOffload: true
+
+  # Number of MoE layers to offload to CPU (optional, alternative to moeCPUOffload)
+  # moeCPULayers: 8
+
+  # Disable KV cache GPU offloading to save VRAM for extended context (optional)
+  # noKvOffload: true
+
   # Resource requirements (optional)
   resources:
     gpu: 1        # Number of GPUs (0 for CPU-only)
     cpu: "2"      # CPU request (e.g., "2" or "2000m")
     memory: "4Gi" # Memory request (e.g., "4Gi")
+    # hostMemory: "64Gi"  # System RAM for hybrid offloading (takes precedence over memory)

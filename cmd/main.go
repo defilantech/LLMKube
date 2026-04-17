@@ -247,6 +247,7 @@ func main() {
 	if err := (&controller.InferenceServiceReconciler{
 		Client:               mgr.GetClient(),
 		Scheme:               mgr.GetScheme(),
+		Recorder:             mgr.GetEventRecorderFor("inferenceservice-controller"),
 		ModelCachePath:       modelCachePath,
 		ModelCacheSize:       modelCacheSize,
 		ModelCacheClass:      modelCacheClass,

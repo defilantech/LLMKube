@@ -116,6 +116,26 @@ type InferenceServiceSpec struct {
 	// +optional
 	CacheTypeV string `json:"cacheTypeV,omitempty"`
 
+	// MoeCPUOffload offloads all MoE expert layers to CPU for reduced VRAM usage.
+	// Enables running large MoE models (e.g., Qwen3-30B, Mixtral) on VRAM-constrained
+	// hardware by keeping attention layers on GPU while expert weights use system RAM.
+	// Maps to llama.cpp --cpu-moe flag. Requires sufficient system RAM via resources.memory.
+	// +optional
+	MoeCPUOffload *bool `json:"moeCPUOffload,omitempty"`
+
+	// MoeCPULayers sets the number of MoE layers to offload to CPU.
+	// When set, only the specified number of MoE layers run on CPU rather than all.
+	// Maps to llama.cpp --n-cpu-moe flag.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	MoeCPULayers *int32 `json:"moeCPULayers,omitempty"`
+
+	// NoKvOffload keeps the KV cache in system RAM instead of VRAM.
+	// Useful for extended context windows when VRAM is constrained by model weights.
+	// Maps to llama.cpp --no-kv-offload flag. Requires sufficient system RAM via resources.memory.
+	// +optional
+	NoKvOffload *bool `json:"noKvOffload,omitempty"`
+
 	// ExtraArgs provides additional command-line arguments passed directly to the
 	// llama-server process. Use for flags not yet supported as typed CRD fields.
 	// Arguments are appended after all other configured flags.
@@ -226,6 +246,14 @@ type InferenceResourceRequirements struct {
 	// Memory requests (e.g., "4Gi")
 	// +optional
 	Memory string `json:"memory,omitempty"`
+
+	// HostMemory specifies the system RAM required for hybrid GPU/CPU offloading (e.g., "64Gi").
+	// Used when MoE expert weights or KV cache are offloaded to CPU via moeCPUOffload or noKvOffload.
+	// Translated to pod resources.requests.memory, taking precedence over Memory when set.
+	// Without this, the K8s scheduler has no visibility into the pod's actual RAM consumption,
+	// which can lead to OOM kills after model load.
+	// +optional
+	HostMemory string `json:"hostMemory,omitempty"`
 
 	// GPUMemory specifies GPU memory limit per pod (e.g., "16Gi")
 	// Used for scheduling and validation

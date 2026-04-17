@@ -1333,6 +1333,503 @@ var _ = Describe("Context Size Configuration", func() {
 		})
 	})
 
+	Context("when moeCPUOffload is configured", func() {
+		var (
+			reconciler *InferenceServiceReconciler
+			model      *inferencev1alpha1.Model
+		)
+
+		BeforeEach(func() {
+			reconciler = &InferenceServiceReconciler{
+				ModelCachePath:     "/tmp/llmkube/models",
+				InitContainerImage: "docker.io/curlimages/curl:8.18.0",
+			}
+
+			model = &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "moe-model",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source: "https://example.com/model.gguf",
+					Hardware: &inferencev1alpha1.HardwareSpec{
+						GPU: &inferencev1alpha1.GPUSpec{
+							Count:  1,
+							Layers: 64,
+						},
+					},
+				},
+				Status: inferencev1alpha1.ModelStatus{
+					Phase:    "Ready",
+					CacheKey: "test-cache-key",
+					Path:     "/tmp/llmkube/models/test-model.gguf",
+				},
+			}
+		})
+
+		It("should include --cpu-moe flag when moeCPUOffload is true", func() {
+			replicas := int32(1)
+			moeCPUOffload := true
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "moe-offload-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef:      "moe-model",
+					Replicas:      &replicas,
+					Image:         "ghcr.io/ggml-org/llama.cpp:server-cuda13",
+					MoeCPUOffload: &moeCPUOffload,
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{
+						GPU: 1,
+					},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).To(ContainElement("--cpu-moe"))
+		})
+
+		It("should NOT include --cpu-moe flag when moeCPUOffload is not specified", func() {
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "no-moe-offload-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: "moe-model",
+					Replicas: &replicas,
+					Image:    "ghcr.io/ggml-org/llama.cpp:server-cuda13",
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{
+						GPU: 1,
+					},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).NotTo(ContainElement("--cpu-moe"))
+		})
+
+		It("should NOT include --cpu-moe flag when moeCPUOffload is false", func() {
+			replicas := int32(1)
+			moeCPUOffload := false
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "moe-offload-false-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef:      "moe-model",
+					Replicas:      &replicas,
+					Image:         "ghcr.io/ggml-org/llama.cpp:server-cuda13",
+					MoeCPUOffload: &moeCPUOffload,
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{
+						GPU: 1,
+					},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).NotTo(ContainElement("--cpu-moe"))
+		})
+	})
+
+	Context("when moeCPULayers is configured", func() {
+		var (
+			reconciler *InferenceServiceReconciler
+			model      *inferencev1alpha1.Model
+		)
+
+		BeforeEach(func() {
+			reconciler = &InferenceServiceReconciler{
+				ModelCachePath:     "/tmp/llmkube/models",
+				InitContainerImage: "docker.io/curlimages/curl:8.18.0",
+			}
+
+			model = &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "moe-layers-model",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source: "https://example.com/model.gguf",
+					Hardware: &inferencev1alpha1.HardwareSpec{
+						GPU: &inferencev1alpha1.GPUSpec{
+							Count:  1,
+							Layers: 64,
+						},
+					},
+				},
+				Status: inferencev1alpha1.ModelStatus{
+					Phase:    "Ready",
+					CacheKey: "test-cache-key",
+					Path:     "/tmp/llmkube/models/test-model.gguf",
+				},
+			}
+		})
+
+		It("should include --n-cpu-moe flag with correct value when moeCPULayers is set", func() {
+			replicas := int32(1)
+			moeCPULayers := int32(8)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "moe-layers-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef:     "moe-layers-model",
+					Replicas:     &replicas,
+					Image:        "ghcr.io/ggml-org/llama.cpp:server-cuda13",
+					MoeCPULayers: &moeCPULayers,
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{
+						GPU: 1,
+					},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).To(ContainElements("--n-cpu-moe", "8"))
+		})
+
+		It("should NOT include --n-cpu-moe flag when moeCPULayers is not specified", func() {
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "no-moe-layers-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: "moe-layers-model",
+					Replicas: &replicas,
+					Image:    "ghcr.io/ggml-org/llama.cpp:server-cuda13",
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{
+						GPU: 1,
+					},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).NotTo(ContainElement("--n-cpu-moe"))
+		})
+
+		It("should NOT include --n-cpu-moe flag when moeCPULayers is zero", func() {
+			replicas := int32(1)
+			moeCPULayers := int32(0)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "moe-layers-zero-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef:     "moe-layers-model",
+					Replicas:     &replicas,
+					Image:        "ghcr.io/ggml-org/llama.cpp:server-cuda13",
+					MoeCPULayers: &moeCPULayers,
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{
+						GPU: 1,
+					},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).NotTo(ContainElement("--n-cpu-moe"))
+		})
+	})
+
+	Context("when noKvOffload is configured", func() {
+		var (
+			reconciler *InferenceServiceReconciler
+			model      *inferencev1alpha1.Model
+		)
+
+		BeforeEach(func() {
+			reconciler = &InferenceServiceReconciler{
+				ModelCachePath:     "/tmp/llmkube/models",
+				InitContainerImage: "docker.io/curlimages/curl:8.18.0",
+			}
+
+			model = &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "kv-offload-model",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source: "https://example.com/model.gguf",
+					Hardware: &inferencev1alpha1.HardwareSpec{
+						GPU: &inferencev1alpha1.GPUSpec{
+							Count:  1,
+							Layers: 64,
+						},
+					},
+				},
+				Status: inferencev1alpha1.ModelStatus{
+					Phase:    "Ready",
+					CacheKey: "test-cache-key",
+					Path:     "/tmp/llmkube/models/test-model.gguf",
+				},
+			}
+		})
+
+		It("should include --no-kv-offload flag when noKvOffload is true", func() {
+			replicas := int32(1)
+			noKvOffload := true
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "kv-offload-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef:    "kv-offload-model",
+					Replicas:    &replicas,
+					Image:       "ghcr.io/ggml-org/llama.cpp:server-cuda13",
+					NoKvOffload: &noKvOffload,
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{
+						GPU: 1,
+					},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).To(ContainElement("--no-kv-offload"))
+		})
+
+		It("should NOT include --no-kv-offload flag when noKvOffload is not specified", func() {
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "no-kv-offload-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: "kv-offload-model",
+					Replicas: &replicas,
+					Image:    "ghcr.io/ggml-org/llama.cpp:server-cuda13",
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{
+						GPU: 1,
+					},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).NotTo(ContainElement("--no-kv-offload"))
+		})
+
+		It("should NOT include --no-kv-offload flag when noKvOffload is false", func() {
+			replicas := int32(1)
+			noKvOffload := false
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "kv-offload-false-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef:    "kv-offload-model",
+					Replicas:    &replicas,
+					Image:       "ghcr.io/ggml-org/llama.cpp:server-cuda13",
+					NoKvOffload: &noKvOffload,
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{
+						GPU: 1,
+					},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).NotTo(ContainElement("--no-kv-offload"))
+		})
+	})
+
+	Context("when hybrid offloading memory warning is needed", func() {
+		It("should return true when moeCPUOffload is true and no memory set", func() {
+			moeCPUOffload := true
+			isvc := &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					MoeCPUOffload: &moeCPUOffload,
+				},
+			}
+			Expect(needsOffloadMemoryWarning(isvc)).To(BeTrue())
+		})
+
+		It("should return true when noKvOffload is true and no memory set", func() {
+			noKvOffload := true
+			isvc := &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					NoKvOffload: &noKvOffload,
+				},
+			}
+			Expect(needsOffloadMemoryWarning(isvc)).To(BeTrue())
+		})
+
+		It("should return false when moeCPUOffload is true and memory is set", func() {
+			moeCPUOffload := true
+			isvc := &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					MoeCPUOffload: &moeCPUOffload,
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{
+						Memory: "64Gi",
+					},
+				},
+			}
+			Expect(needsOffloadMemoryWarning(isvc)).To(BeFalse())
+		})
+
+		It("should return false when neither offload flag is set", func() {
+			isvc := &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{},
+			}
+			Expect(needsOffloadMemoryWarning(isvc)).To(BeFalse())
+		})
+
+		It("should return false when moeCPUOffload is false", func() {
+			moeCPUOffload := false
+			isvc := &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					MoeCPUOffload: &moeCPUOffload,
+				},
+			}
+			Expect(needsOffloadMemoryWarning(isvc)).To(BeFalse())
+		})
+
+		It("should return false when moeCPUOffload is true and hostMemory is set", func() {
+			moeCPUOffload := true
+			isvc := &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					MoeCPUOffload: &moeCPUOffload,
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{
+						HostMemory: "64Gi",
+					},
+				},
+			}
+			Expect(needsOffloadMemoryWarning(isvc)).To(BeFalse())
+		})
+	})
+
+	Context("when hostMemory is configured", func() {
+		var (
+			reconciler *InferenceServiceReconciler
+			model      *inferencev1alpha1.Model
+		)
+
+		BeforeEach(func() {
+			reconciler = &InferenceServiceReconciler{
+				ModelCachePath:     "/tmp/llmkube/models",
+				InitContainerImage: "docker.io/curlimages/curl:8.18.0",
+			}
+
+			model = &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "hostmem-model",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source: "https://example.com/model.gguf",
+					Hardware: &inferencev1alpha1.HardwareSpec{
+						GPU: &inferencev1alpha1.GPUSpec{
+							Count:  1,
+							Layers: 64,
+						},
+					},
+				},
+				Status: inferencev1alpha1.ModelStatus{
+					Phase:    "Ready",
+					CacheKey: "test-cache-key",
+					Path:     "/tmp/llmkube/models/test-model.gguf",
+				},
+			}
+		})
+
+		It("should use hostMemory for pod memory request", func() {
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "hostmem-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: "hostmem-model",
+					Replicas: &replicas,
+					Image:    "ghcr.io/ggml-org/llama.cpp:server-cuda13",
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{
+						GPU:        1,
+						HostMemory: "64Gi",
+					},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			container := deployment.Spec.Template.Spec.Containers[0]
+			Expect(container.Resources.Requests[corev1.ResourceMemory]).To(Equal(resource.MustParse("64Gi")))
+		})
+
+		It("should prefer hostMemory over memory when both are set", func() {
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "hostmem-precedence-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: "hostmem-model",
+					Replicas: &replicas,
+					Image:    "ghcr.io/ggml-org/llama.cpp:server-cuda13",
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{
+						GPU:        1,
+						Memory:     "4Gi",
+						HostMemory: "64Gi",
+					},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			container := deployment.Spec.Template.Spec.Containers[0]
+			Expect(container.Resources.Requests[corev1.ResourceMemory]).To(Equal(resource.MustParse("64Gi")))
+		})
+
+		It("should fall back to memory when hostMemory is not set", func() {
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "no-hostmem-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: "hostmem-model",
+					Replicas: &replicas,
+					Image:    "ghcr.io/ggml-org/llama.cpp:server-cuda13",
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{
+						GPU:    1,
+						Memory: "4Gi",
+					},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			container := deployment.Spec.Template.Spec.Containers[0]
+			Expect(container.Resources.Requests[corev1.ResourceMemory]).To(Equal(resource.MustParse("4Gi")))
+		})
+	})
+
 	Context("when extraArgs is configured", func() {
 		var (
 			reconciler *InferenceServiceReconciler
@@ -4152,6 +4649,8 @@ var _ = Describe("constructDeployment Regression Tests", func() {
 			parallelSlots := int32(4)
 			flashAttn := true
 			jinja := true
+			moeCPUOffload := true
+			noKvOffload := true
 
 			model := &inferencev1alpha1.Model{
 				ObjectMeta: metav1.ObjectMeta{Name: "gpu-full", Namespace: "default"},
@@ -4185,6 +4684,8 @@ var _ = Describe("constructDeployment Regression Tests", func() {
 					Jinja:          &jinja,
 					CacheTypeK:     "q8_0",
 					CacheTypeV:     "q4_0",
+					MoeCPUOffload:  &moeCPUOffload,
+					NoKvOffload:    &noKvOffload,
 					ExtraArgs:      []string{"--log-disable"},
 					Resources: &inferencev1alpha1.InferenceResourceRequirements{
 						GPU:    1,
@@ -4218,6 +4719,12 @@ var _ = Describe("constructDeployment Regression Tests", func() {
 			By("verifying cache types")
 			Expect(container.Args).To(ContainElements("--cache-type-k", "q8_0"))
 			Expect(container.Args).To(ContainElements("--cache-type-v", "q4_0"))
+
+			By("verifying MoE CPU offload")
+			Expect(container.Args).To(ContainElement("--cpu-moe"))
+
+			By("verifying no KV offload")
+			Expect(container.Args).To(ContainElement("--no-kv-offload"))
 
 			By("verifying extra args")
 			Expect(container.Args).To(ContainElement("--log-disable"))
