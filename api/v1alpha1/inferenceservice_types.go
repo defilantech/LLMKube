@@ -386,6 +386,13 @@ type VLLMConfig struct {
 	// +optional
 	Dtype string `json:"dtype,omitempty"`
 
+	// EnablePrefixCaching turns on vLLM's automatic prefix caching for repeated prompts.
+	// Significantly reduces time-to-first-token for conversational and agentic workloads
+	// where requests share a common system prompt.
+	// Maps to vLLM --enable-prefix-caching flag.
+	// +optional
+	EnablePrefixCaching *bool `json:"enablePrefixCaching,omitempty"`
+
 	// HFTokenSecretRef references a Secret containing the HuggingFace token.
 	// +optional
 	HFTokenSecretRef *corev1.SecretKeySelector `json:"hfTokenSecretRef,omitempty"`

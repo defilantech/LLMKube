@@ -1591,6 +1591,13 @@ spec:
                     - float16
                     - bfloat16
                     type: string
+                  enablePrefixCaching:
+                    description: |-
+                      EnablePrefixCaching turns on vLLM's automatic prefix caching for repeated prompts.
+                      Significantly reduces time-to-first-token for conversational and agentic workloads
+                      where requests share a common system prompt.
+                      Maps to vLLM --enable-prefix-caching flag.
+                    type: boolean
                   hfTokenSecretRef:
                     description: HFTokenSecretRef references a Secret containing the
                       HuggingFace token.

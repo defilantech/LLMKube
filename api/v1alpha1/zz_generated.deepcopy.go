@@ -672,6 +672,11 @@ func (in *VLLMConfig) DeepCopyInto(out *VLLMConfig) {
 		*out = new(int32)
 		**out = **in
 	}
+	if in.EnablePrefixCaching != nil {
+		in, out := &in.EnablePrefixCaching, &out.EnablePrefixCaching
+		*out = new(bool)
+		**out = **in
+	}
 	if in.HFTokenSecretRef != nil {
 		in, out := &in.HFTokenSecretRef, &out.HFTokenSecretRef
 		*out = new(v1.SecretKeySelector)

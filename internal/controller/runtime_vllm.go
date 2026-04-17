@@ -42,6 +42,9 @@ func (b *VLLMBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, model 
 		if cfg.Dtype != "" {
 			args = append(args, "--dtype", cfg.Dtype)
 		}
+		if cfg.EnablePrefixCaching != nil && *cfg.EnablePrefixCaching {
+			args = append(args, "--enable-prefix-caching")
+		}
 	}
 
 	gpuCount := resolveGPUCount(isvc, model)

@@ -4749,7 +4749,7 @@ var _ = Describe("RuntimeBackend interface", func() {
 			isvc := &inferencev1alpha1.InferenceService{
 				Spec: inferencev1alpha1.InferenceServiceSpec{
 					VLLMConfig: &inferencev1alpha1.VLLMConfig{TensorParallelSize: &tp},
-					ExtraArgs:  []string{"--enable-prefix-caching"},
+					ExtraArgs:  []string{"--gpu-memory-utilization", "0.9"},
 				},
 			}
 			model := &inferencev1alpha1.Model{}
@@ -4760,12 +4760,47 @@ var _ = Describe("RuntimeBackend interface", func() {
 				if a == "--tensor-parallel-size" {
 					tpIdx = i
 				}
-				if a == "--enable-prefix-caching" {
+				if a == "--gpu-memory-utilization" {
 					extraIdx = i
 				}
 			}
 			Expect(tpIdx).To(BeNumerically(">=", 0))
 			Expect(extraIdx).To(BeNumerically(">", tpIdx))
+		})
+
+		It("should include --enable-prefix-caching when enablePrefixCaching is true", func() {
+			enable := true
+			isvc := &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					VLLMConfig: &inferencev1alpha1.VLLMConfig{EnablePrefixCaching: &enable},
+				},
+			}
+			model := &inferencev1alpha1.Model{}
+			args := backend.BuildArgs(isvc, model, "/models/llama3", 8000)
+			Expect(args).To(ContainElement("--enable-prefix-caching"))
+		})
+
+		It("should NOT include --enable-prefix-caching when nil", func() {
+			isvc := &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					VLLMConfig: &inferencev1alpha1.VLLMConfig{},
+				},
+			}
+			model := &inferencev1alpha1.Model{}
+			args := backend.BuildArgs(isvc, model, "/models/llama3", 8000)
+			Expect(args).NotTo(ContainElement("--enable-prefix-caching"))
+		})
+
+		It("should NOT include --enable-prefix-caching when false", func() {
+			enable := false
+			isvc := &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					VLLMConfig: &inferencev1alpha1.VLLMConfig{EnablePrefixCaching: &enable},
+				},
+			}
+			model := &inferencev1alpha1.Model{}
+			args := backend.BuildArgs(isvc, model, "/models/llama3", 8000)
+			Expect(args).NotTo(ContainElement("--enable-prefix-caching"))
 		})
 	})
 
