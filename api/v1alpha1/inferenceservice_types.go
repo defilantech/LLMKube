@@ -138,6 +138,13 @@ type InferenceServiceSpec struct {
 	// +optional
 	NoKvOffload *bool `json:"noKvOffload,omitempty"`
 
+	// NoWarmup skips the llama.cpp startup warmup inference pass.
+	// Reduces pod ready time at the cost of slightly higher first-request latency.
+	// Useful for scale-to-zero and quick redeployment patterns.
+	// Maps to llama.cpp --no-warmup flag.
+	// +optional
+	NoWarmup *bool `json:"noWarmup,omitempty"`
+
 	// TensorOverrides provides fine-grained tensor placement overrides for power users.
 	// Each entry specifies a tensor name and target device (e.g., "exps=CPU", "token_embd=CUDA0").
 	// Maps to llama.cpp --override-tensor flag (one flag per entry).

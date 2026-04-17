@@ -1048,6 +1048,13 @@ func appendUBatchSizeArgs(args []string, uBatchSize *int32) []string {
 	return args
 }
 
+func appendNoWarmupArgs(args []string, noWarmup *bool) []string {
+	if noWarmup != nil && *noWarmup {
+		return append(args, "--no-warmup")
+	}
+	return args
+}
+
 func needsOffloadMemoryWarning(isvc *inferencev1alpha1.InferenceService) bool {
 	needsRAM := (isvc.Spec.MoeCPUOffload != nil && *isvc.Spec.MoeCPUOffload) ||
 		(isvc.Spec.NoKvOffload != nil && *isvc.Spec.NoKvOffload)

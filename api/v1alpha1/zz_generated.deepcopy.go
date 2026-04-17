@@ -294,6 +294,11 @@ func (in *InferenceServiceSpec) DeepCopyInto(out *InferenceServiceSpec) {
 		*out = new(bool)
 		**out = **in
 	}
+	if in.NoWarmup != nil {
+		in, out := &in.NoWarmup, &out.NoWarmup
+		*out = new(bool)
+		**out = **in
+	}
 	if in.TensorOverrides != nil {
 		in, out := &in.TensorOverrides, &out.TensorOverrides
 		*out = make([]string, len(*in))
