@@ -5594,6 +5594,8 @@ var _ = Describe("constructDeployment Regression Tests", func() {
 			noKvOffload := true
 			batchSize := int32(2048)
 			ubatchSize := int32(256)
+			noWarmup := true
+			reasoningBudget := int32(1024)
 
 			model := &inferencev1alpha1.Model{
 				ObjectMeta: metav1.ObjectMeta{Name: "gpu-full", Namespace: "default"},
@@ -5619,20 +5621,24 @@ var _ = Describe("constructDeployment Regression Tests", func() {
 			isvc := &inferencev1alpha1.InferenceService{
 				ObjectMeta: metav1.ObjectMeta{Name: "gpu-full-svc", Namespace: "default"},
 				Spec: inferencev1alpha1.InferenceServiceSpec{
-					ModelRef:        "gpu-full",
-					Image:           "ghcr.io/ggml-org/llama.cpp:server-cuda13",
-					ContextSize:     &contextSize,
-					ParallelSlots:   &parallelSlots,
-					FlashAttention:  &flashAttn,
-					Jinja:           &jinja,
-					CacheTypeK:      "q8_0",
-					CacheTypeV:      "q4_0",
-					MoeCPUOffload:   &moeCPUOffload,
-					NoKvOffload:     &noKvOffload,
-					TensorOverrides: []string{"exps=CPU", "token_embd=CUDA0"},
-					BatchSize:       &batchSize,
-					UBatchSize:      &ubatchSize,
-					ExtraArgs:       []string{"--log-disable"},
+					ModelRef:               "gpu-full",
+					Image:                  "ghcr.io/ggml-org/llama.cpp:server-cuda13",
+					ContextSize:            &contextSize,
+					ParallelSlots:          &parallelSlots,
+					FlashAttention:         &flashAttn,
+					Jinja:                  &jinja,
+					CacheTypeK:             "q8_0",
+					CacheTypeV:             "q4_0",
+					MoeCPUOffload:          &moeCPUOffload,
+					NoKvOffload:            &noKvOffload,
+					TensorOverrides:        []string{"exps=CPU", "token_embd=CUDA0"},
+					BatchSize:              &batchSize,
+					UBatchSize:             &ubatchSize,
+					NoWarmup:               &noWarmup,
+					ReasoningBudget:        &reasoningBudget,
+					ReasoningBudgetMessage: "wrap it up",
+					MetadataOverrides:      []string{"qwen35moe.context_length=int:1048576"},
+					ExtraArgs:              []string{"--log-disable"},
 					Resources: &inferencev1alpha1.InferenceResourceRequirements{
 						GPU:    1,
 						CPU:    "2",
@@ -5682,6 +5688,16 @@ var _ = Describe("constructDeployment Regression Tests", func() {
 			By("verifying micro-batch size")
 			Expect(container.Args).To(ContainElements("--ubatch-size", "256"))
 
+			By("verifying no warmup")
+			Expect(container.Args).To(ContainElement("--no-warmup"))
+
+			By("verifying reasoning budget")
+			Expect(container.Args).To(ContainElements("--reasoning-budget", "1024"))
+			Expect(container.Args).To(ContainElements("--reasoning-budget-message", "wrap it up"))
+
+			By("verifying metadata overrides")
+			Expect(container.Args).To(ContainElements("--override-kv", "qwen35moe.context_length=int:1048576"))
+
 			By("verifying extra args")
 			Expect(container.Args).To(ContainElement("--log-disable"))
 
@@ -5699,6 +5715,76 @@ var _ = Describe("constructDeployment Regression Tests", func() {
 			By("verifying no multi-GPU flags for single GPU")
 			Expect(container.Args).NotTo(ContainElement("--split-mode"))
 			Expect(container.Args).NotTo(ContainElement("--tensor-split"))
+		})
+	})
+
+	Context("GPU model with all vLLM options", func() {
+		It("should produce deployment with every supported vllmConfig field", func() {
+			tp := int32(2)
+			maxLen := int32(8192)
+			enablePrefixCache := true
+
+			backend := &VLLMBackend{}
+			model := &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{Name: "vllm-full", Namespace: "default"},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source: "meta-llama/Llama-3.1-8B-Instruct",
+					Format: "safetensors",
+				},
+			}
+
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{Name: "vllm-full-svc", Namespace: "default"},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: "vllm-full",
+					Runtime:  "vllm",
+					VLLMConfig: &inferencev1alpha1.VLLMConfig{
+						TensorParallelSize:  &tp,
+						MaxModelLen:         &maxLen,
+						Quantization:        "awq",
+						Dtype:               "bfloat16",
+						EnablePrefixCaching: &enablePrefixCache,
+						AttentionBackend:    "flashinfer",
+					},
+					ExtraArgs: []string{"--gpu-memory-utilization", "0.9"},
+				},
+			}
+
+			args := backend.BuildArgs(isvc, model, "/models/vllm-full", 8000)
+
+			By("verifying tensor parallel size")
+			Expect(args).To(ContainElements("--tensor-parallel-size", "2"))
+
+			By("verifying max model len")
+			Expect(args).To(ContainElements("--max-model-len", "8192"))
+
+			By("verifying quantization")
+			Expect(args).To(ContainElements("--quantization", "awq"))
+
+			By("verifying dtype")
+			Expect(args).To(ContainElements("--dtype", "bfloat16"))
+
+			By("verifying prefix caching")
+			Expect(args).To(ContainElement("--enable-prefix-caching"))
+
+			By("verifying attention backend")
+			Expect(args).To(ContainElements("--attention-backend", "flashinfer"))
+
+			By("verifying extraArgs passthrough")
+			Expect(args).To(ContainElements("--gpu-memory-utilization", "0.9"))
+
+			By("verifying extraArgs land after typed flags")
+			tpIdx, extraIdx := -1, -1
+			for i, a := range args {
+				if a == "--tensor-parallel-size" {
+					tpIdx = i
+				}
+				if a == "--gpu-memory-utilization" {
+					extraIdx = i
+				}
+			}
+			Expect(tpIdx).To(BeNumerically(">=", 0))
+			Expect(extraIdx).To(BeNumerically(">", tpIdx))
 		})
 	})
 

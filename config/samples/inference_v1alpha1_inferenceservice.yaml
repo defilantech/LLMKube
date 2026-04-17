@@ -50,6 +50,19 @@ spec:
   # Micro-batch size for decoding (optional)
   # uBatchSize: 256
 
+  # Skip llama.cpp startup warmup pass for faster pod ready time (optional)
+  # noWarmup: true
+
+  # Reasoning budget for thinking models like Qwen 3.6 / GLM-5 (optional)
+  # Caps thinking tokens per response. 0 disables visible thinking entirely.
+  # reasoningBudget: 1024
+  # reasoningBudgetMessage: "thinking budget exceeded, conclude now"
+
+  # GGUF metadata overrides at model load time (optional)
+  # Used to extend context windows beyond native training limits, etc.
+  # metadataOverrides:
+  #   - "qwen35moe.context_length=int:1048576"
+
   # Resource requirements (optional)
   resources:
     gpu: 1        # Number of GPUs (0 for CPU-only)
