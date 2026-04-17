@@ -161,6 +161,14 @@ type InferenceServiceSpec struct {
 	// +optional
 	ReasoningBudgetMessage string `json:"reasoningBudgetMessage,omitempty"`
 
+	// MetadataOverrides overrides GGUF metadata key-value pairs at model load time.
+	// Each entry is passed as a separate --override-kv flag. Format: key=type:value
+	// (e.g., "qwen35moe.context_length=int:1048576" to extend context window, or
+	// "tokenizer.chat_template.thinking=bool:false" to tweak tokenizer behavior).
+	// Maps to llama.cpp --override-kv flag (one flag per entry).
+	// +optional
+	MetadataOverrides []string `json:"metadataOverrides,omitempty"`
+
 	// TensorOverrides provides fine-grained tensor placement overrides for power users.
 	// Each entry specifies a tensor name and target device (e.g., "exps=CPU", "token_embd=CUDA0").
 	// Maps to llama.cpp --override-tensor flag (one flag per entry).

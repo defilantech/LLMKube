@@ -2365,6 +2365,94 @@ var _ = Describe("Context Size Configuration", func() {
 		})
 	})
 
+	Context("when metadataOverrides is configured", func() {
+		var (
+			reconciler *InferenceServiceReconciler
+			model      *inferencev1alpha1.Model
+		)
+
+		BeforeEach(func() {
+			reconciler = &InferenceServiceReconciler{
+				ModelCachePath:     "/tmp/llmkube/models",
+				InitContainerImage: "docker.io/curlimages/curl:8.18.0",
+			}
+
+			model = &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "meta-override-model",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source: "https://example.com/model.gguf",
+					Hardware: &inferencev1alpha1.HardwareSpec{
+						GPU: &inferencev1alpha1.GPUSpec{
+							Count:  1,
+							Layers: 64,
+						},
+					},
+				},
+				Status: inferencev1alpha1.ModelStatus{
+					Phase:    "Ready",
+					CacheKey: "test-cache-key",
+					Path:     "/tmp/llmkube/models/test-model.gguf",
+				},
+			}
+		})
+
+		buildISVC := func(overrides []string) *inferencev1alpha1.InferenceService {
+			replicas := int32(1)
+			return &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{Name: "meta-override-svc", Namespace: "default"},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef:          "meta-override-model",
+					Replicas:          &replicas,
+					Image:             "ghcr.io/ggml-org/llama.cpp:server-cuda13",
+					MetadataOverrides: overrides,
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{
+						GPU: 1,
+					},
+				},
+			}
+		}
+
+		It("should emit one --override-kv flag per entry", func() {
+			overrides := []string{
+				"qwen35moe.context_length=int:1048576",
+				"tokenizer.chat_template.thinking=bool:false",
+			}
+			deployment := reconciler.constructDeployment(buildISVC(overrides), model, 1)
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).To(ContainElements("--override-kv", "qwen35moe.context_length=int:1048576"))
+			Expect(args).To(ContainElements("--override-kv", "tokenizer.chat_template.thinking=bool:false"))
+			// Count occurrences
+			count := 0
+			for _, a := range args {
+				if a == "--override-kv" {
+					count++
+				}
+			}
+			Expect(count).To(Equal(2))
+		})
+
+		It("should emit single --override-kv for one entry", func() {
+			deployment := reconciler.constructDeployment(buildISVC([]string{"foo=int:42"}), model, 1)
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).To(ContainElements("--override-kv", "foo=int:42"))
+		})
+
+		It("should NOT emit --override-kv when slice is empty", func() {
+			deployment := reconciler.constructDeployment(buildISVC([]string{}), model, 1)
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).NotTo(ContainElement("--override-kv"))
+		})
+
+		It("should NOT emit --override-kv when slice is nil", func() {
+			deployment := reconciler.constructDeployment(buildISVC(nil), model, 1)
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).NotTo(ContainElement("--override-kv"))
+		})
+	})
+
 	Context("when extraArgs is configured", func() {
 		var (
 			reconciler *InferenceServiceReconciler

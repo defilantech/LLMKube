@@ -1034,6 +1034,13 @@ func appendTensorOverrideArgs(args []string, overrides []string) []string {
 	return args
 }
 
+func appendMetadataOverrideArgs(args []string, overrides []string) []string {
+	for _, override := range overrides {
+		args = append(args, "--override-kv", override)
+	}
+	return args
+}
+
 func appendBatchSizeArgs(args []string, batchSize *int32) []string {
 	if batchSize != nil && *batchSize > 0 {
 		return append(args, "--batch-size", fmt.Sprintf("%d", *batchSize))

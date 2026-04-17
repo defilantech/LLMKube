@@ -74,6 +74,7 @@ func (b *LlamaCppBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, mo
 	args = appendUBatchSizeArgs(args, isvc.Spec.UBatchSize)
 	args = appendNoWarmupArgs(args, isvc.Spec.NoWarmup)
 	args = appendReasoningBudgetArgs(args, isvc.Spec.ReasoningBudget, isvc.Spec.ReasoningBudgetMessage)
+	args = appendMetadataOverrideArgs(args, isvc.Spec.MetadataOverrides)
 	if len(isvc.Spec.ExtraArgs) > 0 {
 		args = append(args, isvc.Spec.ExtraArgs...)
 	}

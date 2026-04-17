@@ -424,6 +424,16 @@ spec:
                   Jinja enables Jinja2 chat template rendering for tool/function calling support.
                   Required when using the OpenAI-compatible API with tools. Maps to llama.cpp --jinja flag.
                 type: boolean
+              metadataOverrides:
+                description: |-
+                  MetadataOverrides overrides GGUF metadata key-value pairs at model load time.
+                  Each entry is passed as a separate --override-kv flag. Format: key=type:value
+                  (e.g., "qwen35moe.context_length=int:1048576" to extend context window, or
+                  "tokenizer.chat_template.thinking=bool:false" to tweak tokenizer behavior).
+                  Maps to llama.cpp --override-kv flag (one flag per entry).
+                items:
+                  type: string
+                type: array
               modelRef:
                 description: ModelRef references the Model CR that contains the model
                   to serve

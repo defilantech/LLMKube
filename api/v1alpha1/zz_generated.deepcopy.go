@@ -304,6 +304,11 @@ func (in *InferenceServiceSpec) DeepCopyInto(out *InferenceServiceSpec) {
 		*out = new(int32)
 		**out = **in
 	}
+	if in.MetadataOverrides != nil {
+		in, out := &in.MetadataOverrides, &out.MetadataOverrides
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	if in.TensorOverrides != nil {
 		in, out := &in.TensorOverrides, &out.TensorOverrides
 		*out = make([]string, len(*in))
