@@ -393,6 +393,15 @@ type VLLMConfig struct {
 	// +optional
 	EnablePrefixCaching *bool `json:"enablePrefixCaching,omitempty"`
 
+	// AttentionBackend selects the attention implementation used by vLLM.
+	// flashinfer is typically fastest on recent NVIDIA GPUs; flash_attn is a solid
+	// default; torch_sdpa and xformers are portability fallbacks. Requires a vLLM
+	// version that supports the chosen backend.
+	// Maps to vLLM --attention-backend flag.
+	// +kubebuilder:validation:Enum=flashinfer;flash_attn;xformers;torch_sdpa
+	// +optional
+	AttentionBackend string `json:"attentionBackend,omitempty"`
+
 	// HFTokenSecretRef references a Secret containing the HuggingFace token.
 	// +optional
 	HFTokenSecretRef *corev1.SecretKeySelector `json:"hfTokenSecretRef,omitempty"`

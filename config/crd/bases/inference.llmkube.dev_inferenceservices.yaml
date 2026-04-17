@@ -1584,6 +1584,19 @@ spec:
                   VLLMConfig holds configuration for the vLLM runtime.
                   Only used when Runtime is "vllm".
                 properties:
+                  attentionBackend:
+                    description: |-
+                      AttentionBackend selects the attention implementation used by vLLM.
+                      flashinfer is typically fastest on recent NVIDIA GPUs; flash_attn is a solid
+                      default; torch_sdpa and xformers are portability fallbacks. Requires a vLLM
+                      version that supports the chosen backend.
+                      Maps to vLLM --attention-backend flag.
+                    enum:
+                    - flashinfer
+                    - flash_attn
+                    - xformers
+                    - torch_sdpa
+                    type: string
                   dtype:
                     description: Dtype sets the model data type (auto, float16, bfloat16).
                     enum:

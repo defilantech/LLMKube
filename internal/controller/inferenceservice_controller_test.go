@@ -4802,6 +4802,42 @@ var _ = Describe("RuntimeBackend interface", func() {
 			args := backend.BuildArgs(isvc, model, "/models/llama3", 8000)
 			Expect(args).NotTo(ContainElement("--enable-prefix-caching"))
 		})
+
+		It("should include --attention-backend when attentionBackend is set", func() {
+			isvc := &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					VLLMConfig: &inferencev1alpha1.VLLMConfig{AttentionBackend: "flashinfer"},
+				},
+			}
+			model := &inferencev1alpha1.Model{}
+			args := backend.BuildArgs(isvc, model, "/models/llama3", 8000)
+			Expect(args).To(ContainElements("--attention-backend", "flashinfer"))
+		})
+
+		It("should include each supported attentionBackend value", func() {
+			backends := []string{"flashinfer", "flash_attn", "xformers", "torch_sdpa"}
+			for _, b := range backends {
+				isvc := &inferencev1alpha1.InferenceService{
+					Spec: inferencev1alpha1.InferenceServiceSpec{
+						VLLMConfig: &inferencev1alpha1.VLLMConfig{AttentionBackend: b},
+					},
+				}
+				model := &inferencev1alpha1.Model{}
+				args := backend.BuildArgs(isvc, model, "/models/llama3", 8000)
+				Expect(args).To(ContainElements("--attention-backend", b))
+			}
+		})
+
+		It("should NOT include --attention-backend when empty", func() {
+			isvc := &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					VLLMConfig: &inferencev1alpha1.VLLMConfig{},
+				},
+			}
+			model := &inferencev1alpha1.Model{}
+			args := backend.BuildArgs(isvc, model, "/models/llama3", 8000)
+			Expect(args).NotTo(ContainElement("--attention-backend"))
+		})
 	})
 
 	Context("TGIBackend", func() {
