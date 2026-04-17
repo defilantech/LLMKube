@@ -33,7 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -48,7 +48,7 @@ import (
 type InferenceServiceReconciler struct {
 	client.Client
 	Scheme               *runtime.Scheme
-	Recorder             record.EventRecorder
+	Recorder             events.EventRecorder
 	ModelCachePath       string
 	ModelCacheSize       string
 	ModelCacheClass      string
@@ -407,8 +407,8 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	isMetal := model.Spec.Hardware != nil && model.Spec.Hardware.Accelerator == "metal"
 
 	if r.Recorder != nil && needsOffloadMemoryWarning(inferenceService) {
-		r.Recorder.Event(inferenceService, corev1.EventTypeWarning, "MissingMemoryRequest",
-			"CPU/KV offloading is enabled but resources.memory is not set; hybrid pods consume significant host RAM")
+		r.Recorder.Eventf(inferenceService, nil, corev1.EventTypeWarning, "MissingMemoryRequest", "Reconcile",
+			"CPU/KV offloading is enabled but resources.memory/hostMemory is not set; hybrid pods consume significant host RAM")
 	}
 
 	deployment, readyReplicas, result, err := r.reconcileDeployment(ctx, inferenceService, model, desiredReplicas, modelReady, isMetal)
