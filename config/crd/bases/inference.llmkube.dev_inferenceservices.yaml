@@ -380,9 +380,9 @@ spec:
               extraArgs:
                 description: |-
                   ExtraArgs provides additional command-line arguments passed directly to the
-                  llama-server process. Use for flags not yet supported as typed CRD fields.
+                  runtime process. Use for flags not yet supported as typed CRD fields.
                   Arguments are appended after all other configured flags.
-                  Only used when Runtime is "llamacpp".
+                  Supported by the "llamacpp" and "vllm" runtimes. Ignored by others.
                   Example: ["--seed", "42", "--log-disable"]
                 items:
                   type: string

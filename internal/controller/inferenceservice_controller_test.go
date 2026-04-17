@@ -4677,6 +4677,55 @@ var _ = Describe("RuntimeBackend interface", func() {
 			Expect(liveness.HTTPGet.Path).To(Equal("/health"))
 			Expect(readiness.HTTPGet.Path).To(Equal("/health"))
 		})
+
+		It("should pass extraArgs through to vllm container args", func() {
+			isvc := &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ExtraArgs: []string{"--enable-prefix-caching", "--gpu-memory-utilization", "0.9"},
+				},
+			}
+			model := &inferencev1alpha1.Model{}
+			args := backend.BuildArgs(isvc, model, "/models/llama3", 8000)
+			Expect(args).To(ContainElement("--enable-prefix-caching"))
+			Expect(args).To(ContainElements("--gpu-memory-utilization", "0.9"))
+		})
+
+		It("should not include any extraArgs when nil", func() {
+			isvc := &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{},
+			}
+			model := &inferencev1alpha1.Model{}
+			args := backend.BuildArgs(isvc, model, "/models/llama3", 8000)
+			Expect(args).To(ContainElements("--model", "/models/llama3"))
+			Expect(args).To(ContainElements("--host", "0.0.0.0"))
+			Expect(args).To(ContainElements("--port", "8000"))
+			// No additional flags beyond defaults
+			Expect(len(args)).To(Equal(6))
+		})
+
+		It("should append extraArgs after typed flags", func() {
+			tp := int32(2)
+			isvc := &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					VLLMConfig: &inferencev1alpha1.VLLMConfig{TensorParallelSize: &tp},
+					ExtraArgs:  []string{"--enable-prefix-caching"},
+				},
+			}
+			model := &inferencev1alpha1.Model{}
+			args := backend.BuildArgs(isvc, model, "/models/llama3", 8000)
+			tpIdx := -1
+			extraIdx := -1
+			for i, a := range args {
+				if a == "--tensor-parallel-size" {
+					tpIdx = i
+				}
+				if a == "--enable-prefix-caching" {
+					extraIdx = i
+				}
+			}
+			Expect(tpIdx).To(BeNumerically(">=", 0))
+			Expect(extraIdx).To(BeNumerically(">", tpIdx))
+		})
 	})
 
 	Context("TGIBackend", func() {

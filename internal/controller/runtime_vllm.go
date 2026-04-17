@@ -49,6 +49,10 @@ func (b *VLLMBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, model 
 		args = append(args, "--tensor-parallel-size", fmt.Sprintf("%d", gpuCount))
 	}
 
+	if len(isvc.Spec.ExtraArgs) > 0 {
+		args = append(args, isvc.Spec.ExtraArgs...)
+	}
+
 	return args
 }
 
