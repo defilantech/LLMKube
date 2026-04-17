@@ -384,10 +384,10 @@ spec:
               extraArgs:
                 description: |-
                   ExtraArgs provides additional command-line arguments passed directly to the
-                  llama-server process. Use for flags not yet supported as typed CRD fields.
+                  runtime process. Use for flags not yet supported as typed CRD fields.
                   Arguments are appended after all other configured flags.
-                  Only used when Runtime is "llamacpp".
-                  Example: ["--seed", "42", "--batch-size", "2048"]
+                  Supported by the "llamacpp" and "vllm" runtimes. Ignored by others.
+                  Example: ["--seed", "42", "--log-disable"]
                 items:
                   type: string
                 type: array
@@ -428,6 +428,16 @@ spec:
                   Jinja enables Jinja2 chat template rendering for tool/function calling support.
                   Required when using the OpenAI-compatible API with tools. Maps to llama.cpp --jinja flag.
                 type: boolean
+              metadataOverrides:
+                description: |-
+                  MetadataOverrides overrides GGUF metadata key-value pairs at model load time.
+                  Each entry is passed as a separate --override-kv flag. Format: key=type:value
+                  (e.g., "qwen35moe.context_length=int:1048576" to extend context window, or
+                  "tokenizer.chat_template.thinking=bool:false" to tweak tokenizer behavior).
+                  Maps to llama.cpp --override-kv flag (one flag per entry).
+                items:
+                  type: string
+                type: array
               modelRef:
                 description: ModelRef references the Model CR that contains the model
                   to serve
@@ -452,6 +462,13 @@ spec:
                   NoKvOffload keeps the KV cache in system RAM instead of VRAM.
                   Useful for extended context windows when VRAM is constrained by model weights.
                   Maps to llama.cpp --no-kv-offload flag. Requires sufficient system RAM via resources.memory.
+                type: boolean
+              noWarmup:
+                description: |-
+                  NoWarmup skips the llama.cpp startup warmup inference pass.
+                  Reduces pod ready time at the cost of slightly higher first-request latency.
+                  Useful for scale-to-zero and quick redeployment patterns.
+                  Maps to llama.cpp --no-warmup flag.
                 type: boolean
               nodeSelector:
                 additionalProperties:
@@ -1219,6 +1236,23 @@ spec:
                         type: integer
                     type: object
                 type: object
+              reasoningBudget:
+                description: |-
+                  ReasoningBudget caps the number of reasoning tokens the model is allowed to
+                  emit per response. Zero disables visible thinking output entirely; the model
+                  still reasons internally but does not emit thinking tokens. Critical for
+                  production agentic workloads on thinking models (Qwen 3.6, GLM-5) where
+                  runaway reasoning can burn compute.
+                  Maps to llama.cpp --reasoning-budget flag.
+                format: int32
+                minimum: 0
+                type: integer
+              reasoningBudgetMessage:
+                description: |-
+                  ReasoningBudgetMessage is injected when the reasoning budget is exhausted,
+                  forcing the model to conclude. Ignored unless ReasoningBudget is also set.
+                  Maps to llama.cpp --reasoning-budget-message flag.
+                type: string
               replicas:
                 default: 1
                 description: Replicas is the desired number of inference pods
@@ -1588,6 +1622,19 @@ spec:
                   VLLMConfig holds configuration for the vLLM runtime.
                   Only used when Runtime is "vllm".
                 properties:
+                  attentionBackend:
+                    description: |-
+                      AttentionBackend selects the attention implementation used by vLLM.
+                      flashinfer is typically fastest on recent NVIDIA GPUs; flash_attn is a solid
+                      default; torch_sdpa and xformers are portability fallbacks. Requires a vLLM
+                      version that supports the chosen backend.
+                      Maps to vLLM --attention-backend flag.
+                    enum:
+                    - flashinfer
+                    - flash_attn
+                    - xformers
+                    - torch_sdpa
+                    type: string
                   dtype:
                     description: Dtype sets the model data type (auto, float16, bfloat16).
                     enum:
@@ -1595,6 +1642,13 @@ spec:
                     - float16
                     - bfloat16
                     type: string
+                  enablePrefixCaching:
+                    description: |-
+                      EnablePrefixCaching turns on vLLM's automatic prefix caching for repeated prompts.
+                      Significantly reduces time-to-first-token for conversational and agentic workloads
+                      where requests share a common system prompt.
+                      Maps to vLLM --enable-prefix-caching flag.
+                    type: boolean
                   hfTokenSecretRef:
                     description: HFTokenSecretRef references a Secret containing the
                       HuggingFace token.
