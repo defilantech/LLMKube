@@ -1055,6 +1055,17 @@ func appendNoWarmupArgs(args []string, noWarmup *bool) []string {
 	return args
 }
 
+func appendReasoningBudgetArgs(args []string, budget *int32, message string) []string {
+	if budget == nil {
+		return args
+	}
+	args = append(args, "--reasoning-budget", fmt.Sprintf("%d", *budget))
+	if message != "" {
+		args = append(args, "--reasoning-budget-message", message)
+	}
+	return args
+}
+
 func needsOffloadMemoryWarning(isvc *inferencev1alpha1.InferenceService) bool {
 	needsRAM := (isvc.Spec.MoeCPUOffload != nil && *isvc.Spec.MoeCPUOffload) ||
 		(isvc.Spec.NoKvOffload != nil && *isvc.Spec.NoKvOffload)

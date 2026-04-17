@@ -2276,6 +2276,95 @@ var _ = Describe("Context Size Configuration", func() {
 		})
 	})
 
+	Context("when reasoningBudget is configured", func() {
+		var (
+			reconciler *InferenceServiceReconciler
+			model      *inferencev1alpha1.Model
+		)
+
+		BeforeEach(func() {
+			reconciler = &InferenceServiceReconciler{
+				ModelCachePath:     "/tmp/llmkube/models",
+				InitContainerImage: "docker.io/curlimages/curl:8.18.0",
+			}
+
+			model = &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "reason-model",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source: "https://example.com/model.gguf",
+					Hardware: &inferencev1alpha1.HardwareSpec{
+						GPU: &inferencev1alpha1.GPUSpec{
+							Count:  1,
+							Layers: 64,
+						},
+					},
+				},
+				Status: inferencev1alpha1.ModelStatus{
+					Phase:    "Ready",
+					CacheKey: "test-cache-key",
+					Path:     "/tmp/llmkube/models/test-model.gguf",
+				},
+			}
+		})
+
+		buildISVC := func(budget *int32, message string) *inferencev1alpha1.InferenceService {
+			replicas := int32(1)
+			return &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{Name: "reason-service", Namespace: "default"},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef:               "reason-model",
+					Replicas:               &replicas,
+					Image:                  "ghcr.io/ggml-org/llama.cpp:server-cuda13",
+					ReasoningBudget:        budget,
+					ReasoningBudgetMessage: message,
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{
+						GPU: 1,
+					},
+				},
+			}
+		}
+
+		It("should include --reasoning-budget when budget is set (no message)", func() {
+			budget := int32(1024)
+			deployment := reconciler.constructDeployment(buildISVC(&budget, ""), model, 1)
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).To(ContainElements("--reasoning-budget", "1024"))
+			Expect(args).NotTo(ContainElement("--reasoning-budget-message"))
+		})
+
+		It("should include both flags when budget and message are set", func() {
+			budget := int32(2048)
+			deployment := reconciler.constructDeployment(buildISVC(&budget, "wrap it up"), model, 1)
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).To(ContainElements("--reasoning-budget", "2048"))
+			Expect(args).To(ContainElements("--reasoning-budget-message", "wrap it up"))
+		})
+
+		It("should emit --reasoning-budget 0 to disable visible thinking", func() {
+			budget := int32(0)
+			deployment := reconciler.constructDeployment(buildISVC(&budget, ""), model, 1)
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).To(ContainElements("--reasoning-budget", "0"))
+		})
+
+		It("should NOT emit reasoning-budget-message without budget", func() {
+			deployment := reconciler.constructDeployment(buildISVC(nil, "ignored"), model, 1)
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).NotTo(ContainElement("--reasoning-budget"))
+			Expect(args).NotTo(ContainElement("--reasoning-budget-message"))
+		})
+
+		It("should NOT emit either flag when both are unset", func() {
+			deployment := reconciler.constructDeployment(buildISVC(nil, ""), model, 1)
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).NotTo(ContainElement("--reasoning-budget"))
+			Expect(args).NotTo(ContainElement("--reasoning-budget-message"))
+		})
+	})
+
 	Context("when extraArgs is configured", func() {
 		var (
 			reconciler *InferenceServiceReconciler

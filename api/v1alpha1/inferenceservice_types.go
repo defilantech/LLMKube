@@ -145,6 +145,22 @@ type InferenceServiceSpec struct {
 	// +optional
 	NoWarmup *bool `json:"noWarmup,omitempty"`
 
+	// ReasoningBudget caps the number of reasoning tokens the model is allowed to
+	// emit per response. Zero disables visible thinking output entirely; the model
+	// still reasons internally but does not emit thinking tokens. Critical for
+	// production agentic workloads on thinking models (Qwen 3.6, GLM-5) where
+	// runaway reasoning can burn compute.
+	// Maps to llama.cpp --reasoning-budget flag.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	ReasoningBudget *int32 `json:"reasoningBudget,omitempty"`
+
+	// ReasoningBudgetMessage is injected when the reasoning budget is exhausted,
+	// forcing the model to conclude. Ignored unless ReasoningBudget is also set.
+	// Maps to llama.cpp --reasoning-budget-message flag.
+	// +optional
+	ReasoningBudgetMessage string `json:"reasoningBudgetMessage,omitempty"`
+
 	// TensorOverrides provides fine-grained tensor placement overrides for power users.
 	// Each entry specifies a tensor name and target device (e.g., "exps=CPU", "token_embd=CUDA0").
 	// Maps to llama.cpp --override-tensor flag (one flag per entry).
