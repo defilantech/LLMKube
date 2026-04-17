@@ -5011,7 +5011,7 @@ var _ = Describe("RuntimeBackend interface", func() {
 			Expect(args).To(ContainElements("--host", "0.0.0.0"))
 			Expect(args).To(ContainElements("--port", "8000"))
 			// No additional flags beyond defaults
-			Expect(len(args)).To(Equal(6))
+			Expect(args).To(HaveLen(6))
 		})
 
 		It("should append extraArgs after typed flags", func() {

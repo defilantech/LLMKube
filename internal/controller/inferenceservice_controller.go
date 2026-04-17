@@ -879,26 +879,33 @@ func (r *InferenceServiceReconciler) resolveEffectivePriority(isvc *inferencev1a
 	return priorityValues["normal"]
 }
 
+// llama.cpp --split-mode values.
+const (
+	splitModeLayer = "layer"
+	splitModeRow   = "row"
+	splitModeNone  = "none"
+)
+
 // resolveSplitMode maps the Model CRD's sharding.Strategy enum to the llama.cpp
-// --split-mode value. Unknown or missing values fall back to "layer". The
+// --split-mode value. Unknown or missing values fall back to layer. The
 // "pipeline" strategy is accepted for forward compatibility but falls back to
-// "layer" since llama.cpp has no pipeline split-mode.
+// layer since llama.cpp has no pipeline split-mode.
 func resolveSplitMode(sharding *inferencev1alpha1.GPUShardingSpec) string {
 	if sharding == nil {
-		return "layer"
+		return splitModeLayer
 	}
 	switch sharding.Strategy {
-	case "row", "tensor":
-		return "row"
-	case "none":
-		return "none"
+	case splitModeRow, "tensor":
+		return splitModeRow
+	case splitModeNone:
+		return splitModeNone
 	case "pipeline":
 		// llama.cpp has no pipeline split-mode; fall back to layer.
-		return "layer"
-	case "layer", "":
-		return "layer"
+		return splitModeLayer
+	case splitModeLayer, "":
+		return splitModeLayer
 	default:
-		return "layer"
+		return splitModeLayer
 	}
 }
 
