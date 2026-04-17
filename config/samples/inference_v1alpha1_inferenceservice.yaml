@@ -39,6 +39,17 @@ spec:
   # Disable KV cache GPU offloading to save VRAM for extended context (optional)
   # noKvOffload: true
 
+  # Tensor placement overrides for fine-grained GPU/CPU control (optional)
+  # tensorOverrides:
+  #   - "exps=CPU"
+  #   - "token_embd=CUDA0"
+
+  # Batch size for prompt processing (optional, default: llama.cpp default)
+  # batchSize: 2048
+
+  # Micro-batch size for decoding (optional)
+  # uBatchSize: 256
+
   # Resource requirements (optional)
   resources:
     gpu: 1        # Number of GPUs (0 for CPU-only)

@@ -294,6 +294,21 @@ func (in *InferenceServiceSpec) DeepCopyInto(out *InferenceServiceSpec) {
 		*out = new(bool)
 		**out = **in
 	}
+	if in.TensorOverrides != nil {
+		in, out := &in.TensorOverrides, &out.TensorOverrides
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
+	if in.BatchSize != nil {
+		in, out := &in.BatchSize, &out.BatchSize
+		*out = new(int32)
+		**out = **in
+	}
+	if in.UBatchSize != nil {
+		in, out := &in.UBatchSize, &out.UBatchSize
+		*out = new(int32)
+		**out = **in
+	}
 	if in.ExtraArgs != nil {
 		in, out := &in.ExtraArgs, &out.ExtraArgs
 		*out = make([]string, len(*in))

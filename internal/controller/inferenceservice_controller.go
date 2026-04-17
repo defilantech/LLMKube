@@ -1004,6 +1004,27 @@ func appendNoKvOffloadArgs(args []string, noKvOffload *bool) []string {
 	return args
 }
 
+func appendTensorOverrideArgs(args []string, overrides []string) []string {
+	for _, override := range overrides {
+		args = append(args, "--override-tensor", override)
+	}
+	return args
+}
+
+func appendBatchSizeArgs(args []string, batchSize *int32) []string {
+	if batchSize != nil && *batchSize > 0 {
+		return append(args, "--batch-size", fmt.Sprintf("%d", *batchSize))
+	}
+	return args
+}
+
+func appendUBatchSizeArgs(args []string, uBatchSize *int32) []string {
+	if uBatchSize != nil && *uBatchSize > 0 {
+		return append(args, "--ubatch-size", fmt.Sprintf("%d", *uBatchSize))
+	}
+	return args
+}
+
 func needsOffloadMemoryWarning(isvc *inferencev1alpha1.InferenceService) bool {
 	needsRAM := (isvc.Spec.MoeCPUOffload != nil && *isvc.Spec.MoeCPUOffload) ||
 		(isvc.Spec.NoKvOffload != nil && *isvc.Spec.NoKvOffload)

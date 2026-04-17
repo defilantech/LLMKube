@@ -136,6 +136,15 @@ spec:
                 required:
                 - maxReplicas
                 type: object
+              batchSize:
+                description: |-
+                  BatchSize sets the token batch size for prompt processing.
+                  Larger values improve throughput but use more memory.
+                  Maps to llama.cpp --batch-size flag.
+                format: int32
+                maximum: 16384
+                minimum: 1
+                type: integer
               cacheTypeK:
                 description: |-
                   CacheTypeK sets the KV cache quantization type for keys.
@@ -1462,6 +1471,14 @@ spec:
                   Use when the model is baked into the image or downloaded by the
                   container itself (e.g., via HF_TOKEN).
                 type: boolean
+              tensorOverrides:
+                description: |-
+                  TensorOverrides provides fine-grained tensor placement overrides for power users.
+                  Each entry specifies a tensor name and target device (e.g., "exps=CPU", "token_embd=CUDA0").
+                  Maps to llama.cpp --override-tensor flag (one flag per entry).
+                items:
+                  type: string
+                type: array
               tgiConfig:
                 description: |-
                   TGIConfig holds configuration for the TGI runtime.
@@ -1558,6 +1575,14 @@ spec:
                       type: string
                   type: object
                 type: array
+              uBatchSize:
+                description: |-
+                  UBatchSize sets the micro-batch size for decoding.
+                  Smaller micro-batches reduce memory usage during generation.
+                  Maps to llama.cpp --ubatch-size flag.
+                format: int32
+                minimum: 1
+                type: integer
               vllmConfig:
                 description: |-
                   VLLMConfig holds configuration for the vLLM runtime.

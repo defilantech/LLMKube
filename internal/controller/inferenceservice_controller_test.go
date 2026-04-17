@@ -1657,6 +1657,318 @@ var _ = Describe("Context Size Configuration", func() {
 		})
 	})
 
+	Context("when tensorOverrides is configured", func() {
+		var (
+			reconciler *InferenceServiceReconciler
+			model      *inferencev1alpha1.Model
+		)
+
+		BeforeEach(func() {
+			reconciler = &InferenceServiceReconciler{
+				ModelCachePath:     "/tmp/llmkube/models",
+				InitContainerImage: "docker.io/curlimages/curl:8.18.0",
+			}
+
+			model = &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "tensor-override-model",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source: "https://example.com/model.gguf",
+					Hardware: &inferencev1alpha1.HardwareSpec{
+						GPU: &inferencev1alpha1.GPUSpec{
+							Count:  1,
+							Layers: 64,
+						},
+					},
+				},
+				Status: inferencev1alpha1.ModelStatus{
+					Phase:    "Ready",
+					CacheKey: "test-cache-key",
+					Path:     "/tmp/llmkube/models/test-model.gguf",
+				},
+			}
+		})
+
+		It("should include --override-tensor flags when tensorOverrides is set", func() {
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "tensor-override-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef:        "tensor-override-model",
+					Replicas:        &replicas,
+					Image:           "ghcr.io/ggml-org/llama.cpp:server-cuda13",
+					TensorOverrides: []string{"exps=CPU", "token_embd=CUDA0"},
+					Resources:       &inferencev1alpha1.InferenceResourceRequirements{GPU: 1},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).To(ContainElements("--override-tensor", "exps=CPU"))
+			Expect(args).To(ContainElements("--override-tensor", "token_embd=CUDA0"))
+		})
+
+		It("should NOT include --override-tensor when tensorOverrides is empty", func() {
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "no-tensor-override-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef:        "tensor-override-model",
+					Replicas:        &replicas,
+					Image:           "ghcr.io/ggml-org/llama.cpp:server-cuda13",
+					TensorOverrides: []string{},
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{
+						GPU: 1,
+					},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).NotTo(ContainElement("--override-tensor"))
+		})
+
+		It("should NOT include --override-tensor when tensorOverrides is nil", func() {
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "nil-tensor-override-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: "tensor-override-model",
+					Replicas: &replicas,
+					Image:    "ghcr.io/ggml-org/llama.cpp:server-cuda13",
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{
+						GPU: 1,
+					},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).NotTo(ContainElement("--override-tensor"))
+		})
+	})
+
+	Context("when batchSize is configured", func() {
+		var (
+			reconciler *InferenceServiceReconciler
+			model      *inferencev1alpha1.Model
+		)
+
+		BeforeEach(func() {
+			reconciler = &InferenceServiceReconciler{
+				ModelCachePath:     "/tmp/llmkube/models",
+				InitContainerImage: "docker.io/curlimages/curl:8.18.0",
+			}
+
+			model = &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "batch-size-model",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source: "https://example.com/model.gguf",
+					Hardware: &inferencev1alpha1.HardwareSpec{
+						GPU: &inferencev1alpha1.GPUSpec{
+							Count:  1,
+							Layers: 64,
+						},
+					},
+				},
+				Status: inferencev1alpha1.ModelStatus{
+					Phase:    "Ready",
+					CacheKey: "test-cache-key",
+					Path:     "/tmp/llmkube/models/test-model.gguf",
+				},
+			}
+		})
+
+		It("should include --batch-size flag with correct value when batchSize is set", func() {
+			replicas := int32(1)
+			batchSize := int32(2048)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "batch-size-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef:  "batch-size-model",
+					Replicas:  &replicas,
+					Image:     "ghcr.io/ggml-org/llama.cpp:server-cuda13",
+					BatchSize: &batchSize,
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{
+						GPU: 1,
+					},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).To(ContainElements("--batch-size", "2048"))
+		})
+
+		It("should NOT include --batch-size when batchSize is not specified", func() {
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "no-batch-size-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: "batch-size-model",
+					Replicas: &replicas,
+					Image:    "ghcr.io/ggml-org/llama.cpp:server-cuda13",
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{
+						GPU: 1,
+					},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).NotTo(ContainElement("--batch-size"))
+		})
+
+		It("should NOT include --batch-size when batchSize is zero", func() {
+			replicas := int32(1)
+			batchSize := int32(0)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "zero-batch-size-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef:  "batch-size-model",
+					Replicas:  &replicas,
+					Image:     "ghcr.io/ggml-org/llama.cpp:server-cuda13",
+					BatchSize: &batchSize,
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{
+						GPU: 1,
+					},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).NotTo(ContainElement("--batch-size"))
+		})
+	})
+
+	Context("when uBatchSize is configured", func() {
+		var (
+			reconciler *InferenceServiceReconciler
+			model      *inferencev1alpha1.Model
+		)
+
+		BeforeEach(func() {
+			reconciler = &InferenceServiceReconciler{
+				ModelCachePath:     "/tmp/llmkube/models",
+				InitContainerImage: "docker.io/curlimages/curl:8.18.0",
+			}
+
+			model = &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "ubatch-size-model",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source: "https://example.com/model.gguf",
+					Hardware: &inferencev1alpha1.HardwareSpec{
+						GPU: &inferencev1alpha1.GPUSpec{
+							Count:  1,
+							Layers: 64,
+						},
+					},
+				},
+				Status: inferencev1alpha1.ModelStatus{
+					Phase:    "Ready",
+					CacheKey: "test-cache-key",
+					Path:     "/tmp/llmkube/models/test-model.gguf",
+				},
+			}
+		})
+
+		It("should include --ubatch-size flag with correct value when uBatchSize is set", func() {
+			replicas := int32(1)
+			ubatchSize := int32(256)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "ubatch-size-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef:   "ubatch-size-model",
+					Replicas:   &replicas,
+					Image:      "ghcr.io/ggml-org/llama.cpp:server-cuda13",
+					UBatchSize: &ubatchSize,
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{
+						GPU: 1,
+					},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).To(ContainElements("--ubatch-size", "256"))
+		})
+
+		It("should NOT include --ubatch-size when uBatchSize is not specified", func() {
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "no-ubatch-size-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: "ubatch-size-model",
+					Replicas: &replicas,
+					Image:    "ghcr.io/ggml-org/llama.cpp:server-cuda13",
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{
+						GPU: 1,
+					},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).NotTo(ContainElement("--ubatch-size"))
+		})
+
+		It("should NOT include --ubatch-size when uBatchSize is zero", func() {
+			replicas := int32(1)
+			ubatchSize := int32(0)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "zero-ubatch-size-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef:   "ubatch-size-model",
+					Replicas:   &replicas,
+					Image:      "ghcr.io/ggml-org/llama.cpp:server-cuda13",
+					UBatchSize: &ubatchSize,
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{
+						GPU: 1,
+					},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).NotTo(ContainElement("--ubatch-size"))
+		})
+	})
+
 	Context("when hybrid offloading memory warning is needed", func() {
 		It("should return true when moeCPUOffload is true and no memory set", func() {
 			moeCPUOffload := true
@@ -4849,6 +5161,8 @@ var _ = Describe("constructDeployment Regression Tests", func() {
 			jinja := true
 			moeCPUOffload := true
 			noKvOffload := true
+			batchSize := int32(2048)
+			ubatchSize := int32(256)
 
 			model := &inferencev1alpha1.Model{
 				ObjectMeta: metav1.ObjectMeta{Name: "gpu-full", Namespace: "default"},
@@ -4874,17 +5188,20 @@ var _ = Describe("constructDeployment Regression Tests", func() {
 			isvc := &inferencev1alpha1.InferenceService{
 				ObjectMeta: metav1.ObjectMeta{Name: "gpu-full-svc", Namespace: "default"},
 				Spec: inferencev1alpha1.InferenceServiceSpec{
-					ModelRef:       "gpu-full",
-					Image:          "ghcr.io/ggml-org/llama.cpp:server-cuda13",
-					ContextSize:    &contextSize,
-					ParallelSlots:  &parallelSlots,
-					FlashAttention: &flashAttn,
-					Jinja:          &jinja,
-					CacheTypeK:     "q8_0",
-					CacheTypeV:     "q4_0",
-					MoeCPUOffload:  &moeCPUOffload,
-					NoKvOffload:    &noKvOffload,
-					ExtraArgs:      []string{"--log-disable"},
+					ModelRef:        "gpu-full",
+					Image:           "ghcr.io/ggml-org/llama.cpp:server-cuda13",
+					ContextSize:     &contextSize,
+					ParallelSlots:   &parallelSlots,
+					FlashAttention:  &flashAttn,
+					Jinja:           &jinja,
+					CacheTypeK:      "q8_0",
+					CacheTypeV:      "q4_0",
+					MoeCPUOffload:   &moeCPUOffload,
+					NoKvOffload:     &noKvOffload,
+					TensorOverrides: []string{"exps=CPU", "token_embd=CUDA0"},
+					BatchSize:       &batchSize,
+					UBatchSize:      &ubatchSize,
+					ExtraArgs:       []string{"--log-disable"},
 					Resources: &inferencev1alpha1.InferenceResourceRequirements{
 						GPU:    1,
 						CPU:    "2",
@@ -4923,6 +5240,16 @@ var _ = Describe("constructDeployment Regression Tests", func() {
 
 			By("verifying no KV offload")
 			Expect(container.Args).To(ContainElement("--no-kv-offload"))
+
+			By("verifying tensor overrides")
+			Expect(container.Args).To(ContainElements("--override-tensor", "exps=CPU"))
+			Expect(container.Args).To(ContainElements("--override-tensor", "token_embd=CUDA0"))
+
+			By("verifying batch size")
+			Expect(container.Args).To(ContainElements("--batch-size", "2048"))
+
+			By("verifying micro-batch size")
+			Expect(container.Args).To(ContainElements("--ubatch-size", "256"))
 
 			By("verifying extra args")
 			Expect(container.Args).To(ContainElement("--log-disable"))

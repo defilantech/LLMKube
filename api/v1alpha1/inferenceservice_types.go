@@ -138,11 +138,32 @@ type InferenceServiceSpec struct {
 	// +optional
 	NoKvOffload *bool `json:"noKvOffload,omitempty"`
 
+	// TensorOverrides provides fine-grained tensor placement overrides for power users.
+	// Each entry specifies a tensor name and target device (e.g., "exps=CPU", "token_embd=CUDA0").
+	// Maps to llama.cpp --override-tensor flag (one flag per entry).
+	// +optional
+	TensorOverrides []string `json:"tensorOverrides,omitempty"`
+
+	// BatchSize sets the token batch size for prompt processing.
+	// Larger values improve throughput but use more memory.
+	// Maps to llama.cpp --batch-size flag.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=16384
+	// +optional
+	BatchSize *int32 `json:"batchSize,omitempty"`
+
+	// UBatchSize sets the micro-batch size for decoding.
+	// Smaller micro-batches reduce memory usage during generation.
+	// Maps to llama.cpp --ubatch-size flag.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	UBatchSize *int32 `json:"uBatchSize,omitempty"`
+
 	// ExtraArgs provides additional command-line arguments passed directly to the
 	// llama-server process. Use for flags not yet supported as typed CRD fields.
 	// Arguments are appended after all other configured flags.
 	// Only used when Runtime is "llamacpp".
-	// Example: ["--seed", "42", "--batch-size", "2048"]
+	// Example: ["--seed", "42", "--log-disable"]
 	// +optional
 	ExtraArgs []string `json:"extraArgs,omitempty"`
 
