@@ -81,8 +81,11 @@ type InferenceServiceSpec struct {
 	// ContextSize sets the context window size for the llama.cpp server (-c flag).
 	// Larger values allow processing longer inputs but require more memory.
 	// If not specified, llama.cpp uses its default (typically 512 or 2048).
+	// The upper bound covers Qwen 3.6 at 1M-via-YaRN with margin and accommodates
+	// near-future hybrid-attention model architectures. KV cache memory is the
+	// user's responsibility to size via spec.resources.memory or hostMemory.
 	// +kubebuilder:validation:Minimum=128
-	// +kubebuilder:validation:Maximum=131072
+	// +kubebuilder:validation:Maximum=2097152
 	// +optional
 	ContextSize *int32 `json:"contextSize,omitempty"`
 
