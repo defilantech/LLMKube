@@ -5,6 +5,26 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0](https://github.com/defilantech/LLMKube/compare/v0.6.0...v0.7.0) (2026-04-18)
+
+
+### Features
+
+* add hybrid GPU/CPU offloading support for MoE models ([#281](https://github.com/defilantech/LLMKube/issues/281)) ([2287f66](https://github.com/defilantech/LLMKube/commit/2287f664a638fc1a3e976ef63b902eb951adefa9))
+* add tensor overrides and batch size controls for hybrid offloading ([#283](https://github.com/defilantech/LLMKube/issues/283)) ([8be4adc](https://github.com/defilantech/LLMKube/commit/8be4adc56bfb959049ae84a3da48cc4f8ab7d98e))
+* expose additional runtime controls for llama.cpp and vllm ([#291](https://github.com/defilantech/LLMKube/issues/291)) ([2245718](https://github.com/defilantech/LLMKube/commit/2245718ae7790f399f96eb66e28717af3d593d97))
+* recognize runtime-resolved sources (HF repo IDs) in Model controller ([#293](https://github.com/defilantech/LLMKube/issues/293)) ([953e8a7](https://github.com/defilantech/LLMKube/commit/953e8a7de00836cc82173de4b81e06a406d43772))
+
+
+### Bug Fixes
+
+* inherit runAsUser/runAsGroup from podSecurityContext  ([#274](https://github.com/defilantech/LLMKube/issues/274)) ([72b9b5c](https://github.com/defilantech/LLMKube/commit/72b9b5cb6260e918bc56bef0c0bf137d69216b85))
+
+
+### Documentation
+
+* surface breaking behavior changes for 0.7.0 ([#294](https://github.com/defilantech/LLMKube/issues/294)) ([e234a40](https://github.com/defilantech/LLMKube/commit/e234a400ca3a20cf43d6d29dbb9f7e361b577a00))
+
 ## [0.6.0](https://github.com/defilantech/LLMKube/compare/v0.5.3...v0.6.0) (2026-04-08)
 
 
