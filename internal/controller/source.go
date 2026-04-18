@@ -70,3 +70,45 @@ func getLocalPath(source string) string {
 	}
 	return source
 }
+
+// isHFRepoSource reports whether source looks like a HuggingFace repo ID
+// (e.g., "TinyLlama/TinyLlama-1.1B-Chat-v1.0", "Qwen/Qwen3.6-35B-A3B").
+// These sources are downloaded by the runtime (vLLM) at startup, not by
+// the Model controller.
+//
+// Criteria:
+//
+//	Not a URL (no "://" scheme)
+//	Not an absolute path (doesn't start with "/")
+//	Not a PVC source (handled separately)
+//	Contains at least one "/" separator (HF convention: owner/repo)
+//	Matches Hugging Face's permitted character set
+func isHFRepoSource(source string) bool {
+	if source == "" {
+		return false
+	}
+	if isPVCSource(source) {
+		return false
+	}
+	if isLocalSource(source) {
+		return false
+	}
+	if strings.Contains(source, "://") {
+		return false
+	}
+	if !strings.Contains(source, "/") {
+		return false
+	}
+	// Match HF's permitted character set: alphanumeric, hyphens, underscores,
+	// dots, and forward slashes. Must start with alphanumeric.
+	for i, c := range source {
+		if i == 0 {
+			if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
+				return false
+			}
+		} else if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '/') {
+			return false
+		}
+	}
+	return true
+}

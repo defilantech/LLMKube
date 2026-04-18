@@ -1,0 +1,46 @@
+# This sample demonstrates running vLLM with a HuggingFace repo ID source.
+# The Model controller recognizes runtime-resolved sources and skips download;
+# vLLM fetches weights at pod startup using HF_TOKEN.
+#
+# Requires:
+#   - A Secret named "hf-token" with key "HF_TOKEN" in the same namespace
+#   - skipModelInit: true on the InferenceService spec
+---
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: Model
+metadata:
+  name: tinyllama-1b
+  namespace: default
+spec:
+  source: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+  format: safetensors
+  hardware:
+    accelerator: cuda
+    gpu:
+      enabled: true
+      count: 1
+      vendor: nvidia
+---
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: InferenceService
+metadata:
+  name: vllm-tinyllama
+  namespace: default
+spec:
+  modelRef: tinyllama-1b
+  runtime: vllm
+  image: vllm/vllm-openai:cu130-nightly
+  skipModelInit: true
+  vllmConfig:
+    maxModelLen: 2048
+    dtype: float16
+    hfTokenSecretRef:
+      name: hf-token
+      key: HF_TOKEN
+  endpoint:
+    port: 8000
+    type: ClusterIP
+  resources:
+    gpu: 1
+    cpu: "2"
+    memory: "8Gi"

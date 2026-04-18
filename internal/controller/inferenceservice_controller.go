@@ -427,6 +427,11 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			"CPU/KV offloading is enabled but resources.memory/hostMemory is not set; hybrid pods consume significant host RAM")
 	}
 
+	if r.Recorder != nil && model.Status.Phase == PhaseReady && model.Status.Path == "" && !needsSkipModelInit(inferenceService) {
+		r.Recorder.Eventf(inferenceService, nil, corev1.EventTypeWarning, "MissingSkipModelInit", "Reconcile",
+			"Model source is runtime-resolved but spec.skipModelInit is not set; init container will fail")
+	}
+
 	deployment, readyReplicas, result, err := r.reconcileDeployment(ctx, inferenceService, model, desiredReplicas, modelReady, isMetal)
 	if err != nil || result != nil {
 		if result != nil {
@@ -1030,6 +1035,10 @@ func needsOffloadMemoryWarning(isvc *inferencev1alpha1.InferenceService) bool {
 		(isvc.Spec.NoKvOffload != nil && *isvc.Spec.NoKvOffload)
 	memorySet := isvc.Spec.Resources != nil && (isvc.Spec.Resources.Memory != "" || isvc.Spec.Resources.HostMemory != "")
 	return needsRAM && !memorySet
+}
+
+func needsSkipModelInit(isvc *inferencev1alpha1.InferenceService) bool {
+	return isvc.Spec.SkipModelInit != nil && *isvc.Spec.SkipModelInit
 }
 
 func (r *InferenceServiceReconciler) constructDeployment(
