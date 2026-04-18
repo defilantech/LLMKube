@@ -96,7 +96,7 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	// runtime container at startup, not by the Model controller. The controller
 	// marks the model Ready immediately so referencing InferenceServices can proceed.
 	if isHFRepoSource(model.Spec.Source) {
-		return r.reconcileRuntimeResolvedSource(ctx, model)
+		return ctrl.Result{}, r.reconcileRuntimeResolvedSource(ctx, model)
 	}
 
 	cacheKey := computeCacheKey(model.Spec.Source)
@@ -300,14 +300,14 @@ func (r *ModelReconciler) reconcilePVCSource(ctx context.Context, model *inferen
 // HuggingFace repo IDs. The runtime container (e.g., vLLM) will fetch the model
 // at startup using its own mechanism (e.g., HF_TOKEN). The controller marks the
 // model Ready immediately without downloading anything.
-func (r *ModelReconciler) reconcileRuntimeResolvedSource(ctx context.Context, model *inferencev1alpha1.Model) (ctrl.Result, error) {
+func (r *ModelReconciler) reconcileRuntimeResolvedSource(ctx context.Context, model *inferencev1alpha1.Model) error {
 	logger := log.FromContext(ctx)
 
 	// Early exit if already Ready
 	if model.Status.Phase == PhaseReady {
 		logger.Info("Runtime-resolved model already Ready, skipping reconcile")
 		llmkubemetrics.ReconcileTotal.WithLabelValues("model", "success").Inc()
-		return ctrl.Result{}, nil
+		return nil
 	}
 
 	logger.Info("Source is runtime-resolved, skipping download", "source", model.Spec.Source)
@@ -322,13 +322,13 @@ func (r *ModelReconciler) reconcileRuntimeResolvedSource(ctx context.Context, mo
 
 	if err := r.updateStatus(ctx, model, "Available", metav1.ConditionTrue, "RuntimeResolved",
 		"Source is runtime-resolved (e.g., HuggingFace repo ID); runtime will fetch at startup"); err != nil {
-		return ctrl.Result{}, err
+		return err
 	}
 
 	llmkubemetrics.ModelStatus.WithLabelValues(model.Name, model.Namespace, "ready").Set(1)
 	llmkubemetrics.ReconcileTotal.WithLabelValues("model", "success").Inc()
 	logger.Info("Runtime-resolved model ready", "source", model.Spec.Source)
-	return ctrl.Result{}, nil
+	return nil
 }
 
 // verifySHA256 computes the SHA256 hash of the file and verifies it against the

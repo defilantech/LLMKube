@@ -103,12 +103,26 @@ func isHFRepoSource(source string) bool {
 	// dots, and forward slashes. Must start with alphanumeric.
 	for i, c := range source {
 		if i == 0 {
-			if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
+			if !isAlphaNum(c) {
 				return false
 			}
-		} else if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '/') {
+			continue
+		}
+		if !isAlphaNum(c) && c != '-' && c != '_' && c != '.' && c != '/' {
 			return false
 		}
 	}
 	return true
+}
+
+func isAlphaNum(c rune) bool {
+	switch {
+	case c >= 'a' && c <= 'z':
+		return true
+	case c >= 'A' && c <= 'Z':
+		return true
+	case c >= '0' && c <= '9':
+		return true
+	}
+	return false
 }
