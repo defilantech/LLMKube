@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.7.0](https://github.com/defilantech/LLMKube/compare/v0.6.0...v0.7.0) (2026-04-18)
 
 
+### ⚠ BREAKING CHANGES
+
+* **sharding:** `sharding.strategy: tensor` on a Model now correctly maps to llama.cpp's `--split-mode row` instead of silently falling back to `--split-mode layer`. Configs that set `strategy: tensor` expecting layer behavior may see performance regressions or new failure modes under concurrent load (particularly on consumer PCIe multi-GPU setups with quantized models). Explicitly set `strategy: layer` to retain the previous behavior. ([#291](https://github.com/defilantech/LLMKube/issues/291))
+* **vllm:** InferenceService `spec.extraArgs` is now forwarded to the vLLM runtime. Previously `extraArgs` was silently ignored when `runtime: vllm`. Configs that placed llama.cpp-only flags in `extraArgs` on a vLLM InferenceService will start failing at pod startup. Audit any vLLM InferenceService that sets `extraArgs` before upgrading. ([#291](https://github.com/defilantech/LLMKube/issues/291))
+
+
 ### Features
 
 * add hybrid GPU/CPU offloading support for MoE models ([#281](https://github.com/defilantech/LLMKube/issues/281)) ([2287f66](https://github.com/defilantech/LLMKube/commit/2287f664a638fc1a3e976ef63b902eb951adefa9))
