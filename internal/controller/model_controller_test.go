@@ -745,6 +745,130 @@ var _ = Describe("PVC Source Reconcile", func() {
 	})
 })
 
+var _ = Describe("Runtime-Resolved Source Reconcile", func() {
+	ctx := context.Background()
+
+	It("should set Ready immediately for HuggingFace repo ID source", func() {
+		modelName := "model-hf-repo"
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
+			Spec: inferencev1alpha1.ModelSpec{
+				Source: "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+			},
+		}
+		Expect(k8sClient.Create(ctx, model)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, model) }()
+
+		tempDir, err := os.MkdirTemp("", "llmkube-test-*")
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = os.RemoveAll(tempDir) }()
+
+		reconciler := &ModelReconciler{
+			Client:      k8sClient,
+			Scheme:      k8sClient.Scheme(),
+			StoragePath: tempDir,
+		}
+		result, err := reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(Equal(reconcile.Result{}))
+
+		updated := &inferencev1alpha1.Model{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: modelName, Namespace: "default"}, updated)).To(Succeed())
+		Expect(updated.Status.Phase).To(Equal(PhaseReady))
+		Expect(updated.Status.Path).To(BeEmpty())
+		Expect(updated.Status.CacheKey).To(BeEmpty())
+		Expect(updated.Status.Size).To(Equal("0"))
+		Expect(updated.Status.LastUpdated).NotTo(BeNil())
+
+		// Verify Available condition with RuntimeResolved reason
+		var hasRuntimeResolved bool
+		for _, cond := range updated.Status.Conditions {
+			if cond.Type == "Available" && cond.Reason == "RuntimeResolved" {
+				hasRuntimeResolved = true
+			}
+		}
+		Expect(hasRuntimeResolved).To(BeTrue())
+	})
+
+	It("should skip reconcile when runtime-resolved model is already Ready", func() {
+		modelName := "model-hf-repo-ready"
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
+			Spec: inferencev1alpha1.ModelSpec{
+				Source: "Qwen/Qwen3.6-35B-A3B",
+			},
+		}
+		Expect(k8sClient.Create(ctx, model)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, model) }()
+
+		tempDir, err := os.MkdirTemp("", "llmkube-test-*")
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = os.RemoveAll(tempDir) }()
+
+		reconciler := &ModelReconciler{
+			Client:      k8sClient,
+			Scheme:      k8sClient.Scheme(),
+			StoragePath: tempDir,
+		}
+		// First reconcile to set Ready
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Verify model is Ready
+		updated := &inferencev1alpha1.Model{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: modelName, Namespace: "default"}, updated)).To(Succeed())
+		Expect(updated.Status.Phase).To(Equal(PhaseReady))
+		lastUpdated := updated.Status.LastUpdated.DeepCopy()
+
+		// Second reconcile should return immediately
+		result, err := reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(Equal(reconcile.Result{}))
+
+		// Verify status was NOT re-updated
+		afterSecond := &inferencev1alpha1.Model{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: modelName, Namespace: "default"}, afterSecond)).To(Succeed())
+		Expect(afterSecond.Status.LastUpdated.Equal(lastUpdated)).To(BeTrue())
+	})
+
+	It("should not create any files in cache for runtime-resolved source", func() {
+		modelName := "model-hf-no-cache"
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
+			Spec: inferencev1alpha1.ModelSpec{
+				Source: "bartowski/Qwen_Qwen3.6-35B-A3B-GGUF",
+			},
+		}
+		Expect(k8sClient.Create(ctx, model)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, model) }()
+
+		tempDir, err := os.MkdirTemp("", "llmkube-test-*")
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = os.RemoveAll(tempDir) }()
+
+		reconciler := &ModelReconciler{
+			Client:      k8sClient,
+			Scheme:      k8sClient.Scheme(),
+			StoragePath: tempDir,
+		}
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Cache directory should be empty (no model downloaded)
+		entries, err := os.ReadDir(tempDir)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(entries).To(BeEmpty())
+	})
+})
+
 var _ = Describe("SHA256 Verification", func() {
 	ctx := context.Background()
 

@@ -92,6 +92,13 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return r.reconcilePVCSource(ctx, model)
 	}
 
+	// Runtime-resolved sources (e.g., HuggingFace repo IDs) are fetched by the
+	// runtime container at startup, not by the Model controller. The controller
+	// marks the model Ready immediately so referencing InferenceServices can proceed.
+	if isHFRepoSource(model.Spec.Source) {
+		return ctrl.Result{}, r.reconcileRuntimeResolvedSource(ctx, model)
+	}
+
 	cacheKey := computeCacheKey(model.Spec.Source)
 	modelDir := filepath.Join(r.StoragePath, cacheKey)
 	modelPath := filepath.Join(modelDir, "model.gguf")
@@ -287,6 +294,41 @@ func (r *ModelReconciler) reconcilePVCSource(ctx context.Context, model *inferen
 	llmkubemetrics.ReconcileTotal.WithLabelValues("model", "success").Inc()
 	logger.Info("PVC model ready", "pvc", claimName, "path", mountPath)
 	return ctrl.Result{}, nil
+}
+
+// reconcileRuntimeResolvedSource handles runtime-resolved model sources such as
+// HuggingFace repo IDs. The runtime container (e.g., vLLM) will fetch the model
+// at startup using its own mechanism (e.g., HF_TOKEN). The controller marks the
+// model Ready immediately without downloading anything.
+func (r *ModelReconciler) reconcileRuntimeResolvedSource(ctx context.Context, model *inferencev1alpha1.Model) error {
+	logger := log.FromContext(ctx)
+
+	// Early exit if already Ready
+	if model.Status.Phase == PhaseReady {
+		logger.Info("Runtime-resolved model already Ready, skipping reconcile")
+		llmkubemetrics.ReconcileTotal.WithLabelValues("model", "success").Inc()
+		return nil
+	}
+
+	logger.Info("Source is runtime-resolved, skipping download", "source", model.Spec.Source)
+
+	model.Status.Phase = PhaseReady
+	model.Status.Path = ""
+	model.Status.CacheKey = ""
+	model.Status.Size = "0"
+	model.Status.AcceleratorReady = r.checkAcceleratorAvailability(model.Spec.Hardware)
+	now := metav1.Now()
+	model.Status.LastUpdated = &now
+
+	if err := r.updateStatus(ctx, model, "Available", metav1.ConditionTrue, "RuntimeResolved",
+		"Source is runtime-resolved (e.g., HuggingFace repo ID); runtime will fetch at startup"); err != nil {
+		return err
+	}
+
+	llmkubemetrics.ModelStatus.WithLabelValues(model.Name, model.Namespace, "ready").Set(1)
+	llmkubemetrics.ReconcileTotal.WithLabelValues("model", "success").Inc()
+	logger.Info("Runtime-resolved model ready", "source", model.Spec.Source)
+	return nil
 }
 
 // verifySHA256 computes the SHA256 hash of the file and verifies it against the

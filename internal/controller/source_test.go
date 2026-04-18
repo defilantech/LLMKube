@@ -117,3 +117,39 @@ var _ = Describe("getLocalPath (source.go)", func() {
 		Expect(getLocalPath("/mnt/models/test.gguf")).To(Equal("/mnt/models/test.gguf"))
 	})
 })
+
+var _ = Describe("isHFRepoSource (source.go)", func() {
+	It("should return true for TinyLlama repo ID", func() {
+		Expect(isHFRepoSource("TinyLlama/TinyLlama-1.1B-Chat-v1.0")).To(BeTrue())
+	})
+	It("should return true for Qwen repo ID", func() {
+		Expect(isHFRepoSource("Qwen/Qwen3.6-35B-A3B")).To(BeTrue())
+	})
+	It("should return true for bartowski repo ID", func() {
+		Expect(isHFRepoSource("bartowski/Qwen_Qwen3.6-35B-A3B-GGUF")).To(BeTrue())
+	})
+	It("should return false for https URL", func() {
+		Expect(isHFRepoSource("https://example.com/model.gguf")).To(BeFalse())
+	})
+	It("should return false for http URL", func() {
+		Expect(isHFRepoSource("http://example.com/model.gguf")).To(BeFalse())
+	})
+	It("should return false for absolute path", func() {
+		Expect(isHFRepoSource("/models/local.gguf")).To(BeFalse())
+	})
+	It("should return false for file:// URL", func() {
+		Expect(isHFRepoSource("file:///models/local.gguf")).To(BeFalse())
+	})
+	It("should return false for PVC source", func() {
+		Expect(isHFRepoSource("pvc://my-claim/model.gguf")).To(BeFalse())
+	})
+	It("should return false for filename without slash", func() {
+		Expect(isHFRepoSource("just-a-filename")).To(BeFalse())
+	})
+	It("should return false for empty string", func() {
+		Expect(isHFRepoSource("")).To(BeFalse())
+	})
+	It("should return true for multi-part nested path", func() {
+		Expect(isHFRepoSource("multi/part/path/thing")).To(BeTrue())
+	})
+})
