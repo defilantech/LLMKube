@@ -5,6 +5,18 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1](https://github.com/defilantech/LLMKube/compare/v0.7.0...v0.7.1) (2026-04-18)
+
+
+### Bug Fixes
+
+* bump InferenceService spec.contextSize cap from 131072 to 2097152 ([#300](https://github.com/defilantech/LLMKube/issues/300)) ([a46a1bf](https://github.com/defilantech/LLMKube/commit/a46a1bf31ba222f66a7474d580500fe029640294))
+
+
+### Documentation
+
+* backfill ⚠ BREAKING CHANGES section into 0.7.0 changelog ([#296](https://github.com/defilantech/LLMKube/issues/296)) ([2ad4640](https://github.com/defilantech/LLMKube/commit/2ad4640c56b7592a5b3e7f337ec72444389012c9))
+
 ## [0.7.0](https://github.com/defilantech/LLMKube/compare/v0.6.0...v0.7.0) (2026-04-18)
 
 
