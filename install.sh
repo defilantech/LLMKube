@@ -3,14 +3,16 @@
 # Usage: curl -sSL https://raw.githubusercontent.com/defilantech/LLMKube/main/install.sh | bash
 #
 # Options (via environment variables):
-#   LLMKUBE_VERSION  - Install specific version (default: latest)
-#   LLMKUBE_INSTALL_DIR - Installation directory (default: /usr/local/bin)
-#   LLMKUBE_NO_SUDO  - Set to 1 to skip sudo (for user-local installs)
+#   LLMKUBE_VERSION        - Install specific version (default: latest)
+#   LLMKUBE_INSTALL_DIR    - Installation directory (default: /usr/local/bin)
+#   LLMKUBE_NO_SUDO        - Set to 1 to skip sudo (for user-local installs)
+#   LLMKUBE_SKIP_CHECKSUM  - Set to 1 to skip sha256 verification (NOT recommended)
 
 set -e
 
 REPO="defilantech/LLMKube"
-BINARY_NAME="llmkube"
+BINARY_NAME="llmkube"         # binary installed into $INSTALL_DIR
+ARCHIVE_PREFIX="LLMKube"      # tarball filename prefix emitted by goreleaser
 INSTALL_DIR="${LLMKUBE_INSTALL_DIR:-/usr/local/bin}"
 
 # Colors for output
@@ -66,6 +68,58 @@ get_latest_version() {
     fi
 }
 
+# Compute sha256 of a file, using whichever tool is available on this host.
+compute_sha256() {
+    local file="$1"
+    if command -v sha256sum &> /dev/null; then
+        sha256sum "$file" | awk '{print $1}'
+    elif command -v shasum &> /dev/null; then
+        shasum -a 256 "$file" | awk '{print $1}'
+    else
+        error "Neither sha256sum nor shasum is available; cannot verify integrity. Install one, or set LLMKUBE_SKIP_CHECKSUM=1 to bypass (NOT recommended)."
+    fi
+}
+
+# Fetch the release checksums.txt and verify the downloaded archive matches.
+# Aborts on any failure unless LLMKUBE_SKIP_CHECKSUM=1 is set.
+verify_checksum() {
+    local archive="$1"
+    local filename="$2"
+    local checksums_url="$3"
+    local tmp_dir="$4"
+
+    if [[ "${LLMKUBE_SKIP_CHECKSUM:-0}" == "1" ]]; then
+        warn "LLMKUBE_SKIP_CHECKSUM=1 — skipping integrity verification. Not recommended for production."
+        return 0
+    fi
+
+    info "Fetching checksums.txt..."
+    if command -v curl &> /dev/null; then
+        curl -fsSL "$checksums_url" -o "$tmp_dir/checksums.txt" \
+            || error "Failed to fetch checksums.txt from $checksums_url. Set LLMKUBE_SKIP_CHECKSUM=1 to bypass (NOT recommended)."
+    else
+        wget -q "$checksums_url" -O "$tmp_dir/checksums.txt" \
+            || error "Failed to fetch checksums.txt from $checksums_url. Set LLMKUBE_SKIP_CHECKSUM=1 to bypass (NOT recommended)."
+    fi
+
+    local expected
+    expected=$(awk -v fname="$filename" '$2 == fname { print $1 }' "$tmp_dir/checksums.txt")
+    if [[ -z "$expected" ]]; then
+        error "No checksum entry for $filename in checksums.txt. Set LLMKUBE_SKIP_CHECKSUM=1 to bypass (NOT recommended)."
+    fi
+
+    local actual
+    actual=$(compute_sha256 "$archive")
+    if [[ "$actual" != "$expected" ]]; then
+        error "Checksum mismatch for $filename
+  expected: $expected
+  actual:   $actual
+Refusing to install a binary that does not match its published checksum."
+    fi
+
+    info "Checksum verified (sha256: ${actual:0:12}…)"
+}
+
 # Download and install
 download_and_install() {
     local version="$1"
@@ -75,9 +129,11 @@ download_and_install() {
     # Remove 'v' prefix for filename
     local version_num="${version#v}"
 
-    # Construct download URL
-    local filename="${BINARY_NAME}_${version_num}_${os}_${arch}.tar.gz"
+    # Construct download URL (archive name follows goreleaser's "{{ .ProjectName }}_..."
+    # template, which resolves to "LLMKube_..." for this project.)
+    local filename="${ARCHIVE_PREFIX}_${version_num}_${os}_${arch}.tar.gz"
     local url="https://github.com/${REPO}/releases/download/${version}/${filename}"
+    local checksums_url="https://github.com/${REPO}/releases/download/${version}/checksums.txt"
 
     info "Downloading llmkube ${version} for ${os}/${arch}..."
 
@@ -85,12 +141,15 @@ download_and_install() {
     local tmp_dir=$(mktemp -d)
     trap "rm -rf $tmp_dir" EXIT
 
-    # Download
+    # Download (use -f so HTTP 4xx/5xx fail fast instead of silently saving an error page)
     if command -v curl &> /dev/null; then
-        curl -sSL "$url" -o "$tmp_dir/llmkube.tar.gz" || error "Failed to download from $url"
+        curl -fsSL "$url" -o "$tmp_dir/llmkube.tar.gz" || error "Failed to download from $url"
     else
         wget -q "$url" -O "$tmp_dir/llmkube.tar.gz" || error "Failed to download from $url"
     fi
+
+    # Verify checksum before unpacking any untrusted bytes
+    verify_checksum "$tmp_dir/llmkube.tar.gz" "$filename" "$checksums_url" "$tmp_dir"
 
     # Extract
     info "Extracting..."
