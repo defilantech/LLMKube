@@ -17,11 +17,9 @@ limitations under the License.
 package agent
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -164,10 +162,7 @@ func (e *OMLXExecutor) UnloadModel(ctx context.Context, modelID string) error {
 	if err != nil {
 		return fmt.Errorf("failed to unload model %s: %w", modelID, err)
 	}
-	defer func() {
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
-		_ = resp.Body.Close()
-	}()
+	defer drainAndClose(resp)
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("oMLX unload returned status %d for model %s", resp.StatusCode, modelID)
@@ -227,10 +222,7 @@ func (e *OMLXExecutor) isHealthy(ctx context.Context) bool {
 	if err != nil {
 		return false
 	}
-	defer func() {
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
-		_ = resp.Body.Close()
-	}()
+	defer drainAndClose(resp)
 
 	return resp.StatusCode == http.StatusOK
 }
@@ -267,31 +259,18 @@ func (e *OMLXExecutor) triggerModelLoad(ctx context.Context, modelID string) err
 		},
 		"max_tokens": 1,
 	}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("failed to marshal warmup request: %w", err)
-	}
 
 	// Use a longer timeout for the warmup since model loading can take a while
 	warmupClient := &http.Client{Timeout: 60 * time.Second}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("failed to create warmup request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := warmupClient.Do(req)
+	resp, err := postJSON(ctx, warmupClient, url, payload)
 	if err != nil {
 		// The warmup may timeout if the model is large — that's fine, we poll
 		// /v1/models/status separately.
 		e.logger.Warnw("warmup request failed (model may still be loading)", "modelID", modelID, "error", err)
 		return nil
 	}
-	defer func() {
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
-		_ = resp.Body.Close()
-	}()
+	defer drainAndClose(resp)
 
 	if resp.StatusCode >= 500 {
 		return fmt.Errorf("warmup request returned server error: %d", resp.StatusCode)
@@ -303,27 +282,14 @@ func (e *OMLXExecutor) triggerModelLoad(ctx context.Context, modelID string) err
 
 // waitForModelLoaded polls /v1/models/status until the target model reports loaded:true.
 func (e *OMLXExecutor) waitForModelLoaded(ctx context.Context, modelID string, timeout time.Duration) error {
-	deadline := time.After(timeout)
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-deadline:
-			return fmt.Errorf("timeout waiting for model %s to load", modelID)
-		case <-ticker.C:
-			loaded, err := e.isModelLoaded(ctx, modelID)
-			if err != nil {
-				e.logger.Debugw("error checking model status", "modelID", modelID, "error", err)
-				continue
-			}
-			if loaded {
-				return nil
-			}
+	return pollUntil(ctx, 500*time.Millisecond, timeout, func(ctx context.Context) (bool, error) {
+		loaded, err := e.isModelLoaded(ctx, modelID)
+		if err != nil {
+			e.logger.Debugw("error checking model status", "modelID", modelID, "error", err)
+			return false, nil
 		}
-	}
+		return loaded, nil
+	})
 }
 
 // isModelLoaded checks whether the specified model is loaded in oMLX.
@@ -338,10 +304,7 @@ func (e *OMLXExecutor) isModelLoaded(ctx context.Context, modelID string) (bool,
 	if err != nil {
 		return false, err
 	}
-	defer func() {
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
-		_ = resp.Body.Close()
-	}()
+	defer drainAndClose(resp)
 
 	if resp.StatusCode != http.StatusOK {
 		return false, fmt.Errorf("models/status returned %d", resp.StatusCode)
