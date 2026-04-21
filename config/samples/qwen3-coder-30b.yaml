@@ -1,0 +1,96 @@
+# Qwen3-Coder 30B A3B: Agentic coding model for use with Qwen Code CLI
+#
+# This deploys the Qwen3-Coder-30B-A3B-Instruct model (MoE, 30B total / 3.3B active)
+# across 2x NVIDIA GPUs with settings optimized for agentic coding workflows.
+#
+# Usage:
+#   1. Free GPU resources (scale down other inference services if needed):
+#      kubectl scale deployment qwen35-27b-agentic --replicas=0
+#
+#   2. Deploy:
+#      kubectl apply -f config/samples/qwen3-coder-30b.yaml
+#      kubectl get models,inferenceservices -w
+#
+#   3. Wait for model download (~18.6 GB) and service readiness:
+#      kubectl wait --for=condition=Available inferenceservice/qwen3-coder --timeout=1200s
+#
+#   4. Port forward and test:
+#      kubectl port-forward svc/qwen3-coder 8080:8080 &
+#      curl -s http://localhost:8080/v1/chat/completions \
+#        -H "Content-Type: application/json" \
+#        -d '{"model":"qwen3-coder","messages":[{"role":"user","content":"Write a fizzbuzz in Go"}],"max_tokens":512}' | jq .
+#
+#   5. Configure Qwen Code CLI (~/.qwen/settings.json):
+#      {
+#        "modelProviders": {
+#          "openai": [{
+#            "id": "qwen3-coder-30b",
+#            "name": "Qwen3-Coder-30B (LLMKube)",
+#            "baseUrl": "http://localhost:8080/v1"
+#          }]
+#        },
+#        "model": { "name": "qwen3-coder-30b" }
+#      }
+#
+# Hardware requirements:
+#   - 2x NVIDIA GPUs with 16 GB VRAM each (e.g., RTX 5060 Ti, RTX 4080, T4)
+#   - Model: 18.6 GB (sharded across GPUs via layer split)
+#   - KV cache: ~3 GB at Q8_0 with 65K context
+#   - Total VRAM: ~25 GB of 32 GB used
+---
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: Model
+metadata:
+  name: qwen3-coder-30b
+  namespace: default
+spec:
+  source: https://huggingface.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF/resolve/main/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf
+  format: gguf
+  quantization: Q4_K_M
+
+  hardware:
+    accelerator: cuda
+    gpu:
+      enabled: true
+      count: 2
+      vendor: nvidia
+      layers: -1
+      sharding:
+        strategy: layer
+
+  resources:
+    cpu: "4"
+    memory: "16Gi"
+
+---
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: InferenceService
+metadata:
+  name: qwen3-coder
+  namespace: default
+spec:
+  modelRef: qwen3-coder-30b
+  replicas: 1
+  image: ghcr.io/ggml-org/llama.cpp:server-cuda13
+
+  # 65K context with Q8_0 KV cache — near-lossless attention recall
+  # for multi-file agentic coding workflows (~3 GB KV cache usage)
+  contextSize: 65536
+  cacheTypeK: q8_0
+  cacheTypeV: q8_0
+
+  # Flash attention for faster prompt processing (Ampere+ GPU required)
+  flashAttention: true
+
+  # Jinja templates for OpenAI-compatible tool/function calling
+  jinja: true
+
+  resources:
+    gpu: 2
+    gpuMemory: "32Gi"
+    cpu: "4"
+    memory: "8Gi"
+
+  endpoint:
+    port: 8080
+    type: ClusterIP
