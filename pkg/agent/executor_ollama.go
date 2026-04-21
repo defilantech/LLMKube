@@ -17,11 +17,9 @@ limitations under the License.
 package agent
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -170,26 +168,13 @@ func (e *OllamaExecutor) UnloadModel(ctx context.Context, modelID string) error 
 		Prompt:    "",
 		KeepAlive: &keepAlive,
 	}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("failed to marshal unload request: %w", err)
-	}
 
 	url := fmt.Sprintf("http://localhost:%d/api/generate", e.port)
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("failed to create unload request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := e.httpClient.Do(req)
+	resp, err := postJSON(ctx, e.httpClient, url, payload)
 	if err != nil {
 		return fmt.Errorf("failed to unload model %s: %w", modelID, err)
 	}
-	defer func() {
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
-		_ = resp.Body.Close()
-	}()
+	defer drainAndClose(resp)
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf(
@@ -213,10 +198,7 @@ func (e *OllamaExecutor) isHealthy(ctx context.Context) bool {
 	if err != nil {
 		return false
 	}
-	defer func() {
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
-		_ = resp.Body.Close()
-	}()
+	defer drainAndClose(resp)
 
 	return resp.StatusCode == http.StatusOK
 }
@@ -228,17 +210,6 @@ func (e *OllamaExecutor) pullModel(ctx context.Context, ollamaModel string) erro
 		Model:  ollamaModel,
 		Stream: false,
 	}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("failed to marshal pull request: %w", err)
-	}
-
-	url := fmt.Sprintf("http://localhost:%d/api/pull", e.port)
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("failed to create pull request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
 
 	// Use a longer timeout for pulls since downloads can take minutes
 	pullClient := &http.Client{Timeout: 5 * time.Minute}
@@ -246,14 +217,12 @@ func (e *OllamaExecutor) pullModel(ctx context.Context, ollamaModel string) erro
 	e.logger.Infow("pulling Ollama model (this may take a while)",
 		"model", ollamaModel)
 
-	resp, err := pullClient.Do(req)
+	url := fmt.Sprintf("http://localhost:%d/api/pull", e.port)
+	resp, err := postJSON(ctx, pullClient, url, payload)
 	if err != nil {
 		return fmt.Errorf("pull request failed: %w", err)
 	}
-	defer func() {
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
-		_ = resp.Body.Close()
-	}()
+	defer drainAndClose(resp)
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("pull returned status %d for model %s",
@@ -272,32 +241,19 @@ func (e *OllamaExecutor) loadModel(ctx context.Context, ollamaModel string) erro
 		Model:  ollamaModel,
 		Prompt: "",
 	}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("failed to marshal load request: %w", err)
-	}
-
-	url := fmt.Sprintf("http://localhost:%d/api/generate", e.port)
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("failed to create load request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
 
 	// Use a 2-minute timeout for model loading
 	loadClient := &http.Client{Timeout: 2 * time.Minute}
 
-	resp, err := loadClient.Do(req)
+	url := fmt.Sprintf("http://localhost:%d/api/generate", e.port)
+	resp, err := postJSON(ctx, loadClient, url, payload)
 	if err != nil {
 		// Loading may timeout for large models — we poll /api/ps separately.
 		e.logger.Warnw("load request failed (model may still be loading)",
 			"model", ollamaModel, "error", err)
 		return nil
 	}
-	defer func() {
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
-		_ = resp.Body.Close()
-	}()
+	defer drainAndClose(resp)
 
 	if resp.StatusCode >= 500 {
 		return fmt.Errorf("load request returned server error: %d",
@@ -314,29 +270,15 @@ func (e *OllamaExecutor) loadModel(ctx context.Context, ollamaModel string) erro
 func (e *OllamaExecutor) waitForModelLoaded(
 	ctx context.Context, ollamaModel string, timeout time.Duration,
 ) error {
-	deadline := time.After(timeout)
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-deadline:
-			return fmt.Errorf(
-				"timeout waiting for model %s to load", ollamaModel)
-		case <-ticker.C:
-			loaded, err := e.isModelLoaded(ctx, ollamaModel)
-			if err != nil {
-				e.logger.Debugw("error checking model status",
-					"model", ollamaModel, "error", err)
-				continue
-			}
-			if loaded {
-				return nil
-			}
+	return pollUntil(ctx, 500*time.Millisecond, timeout, func(ctx context.Context) (bool, error) {
+		loaded, err := e.isModelLoaded(ctx, ollamaModel)
+		if err != nil {
+			e.logger.Debugw("error checking model status",
+				"model", ollamaModel, "error", err)
+			return false, nil
 		}
-	}
+		return loaded, nil
+	})
 }
 
 // isModelLoaded checks whether the specified model is loaded in Ollama by
@@ -354,10 +296,7 @@ func (e *OllamaExecutor) isModelLoaded(
 	if err != nil {
 		return false, err
 	}
-	defer func() {
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
-		_ = resp.Body.Close()
-	}()
+	defer drainAndClose(resp)
 
 	if resp.StatusCode != http.StatusOK {
 		return false, fmt.Errorf("api/ps returned %d", resp.StatusCode)
