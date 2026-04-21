@@ -1,6 +1,6 @@
 module github.com/defilantech/llmkube
 
-go 1.25.3
+go 1.25.9
 
 require (
 	github.com/onsi/ginkgo/v2 v2.28.1
