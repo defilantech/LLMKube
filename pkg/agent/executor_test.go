@@ -17,6 +17,8 @@ limitations under the License.
 package agent
 
 import (
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -31,36 +33,35 @@ func TestNewMetalExecutor(t *testing.T) {
 	if executor.modelStorePath != "/models" {
 		t.Errorf("modelStorePath = %q, want %q", executor.modelStorePath, "/models")
 	}
-	if executor.nextPort != 8080 {
-		t.Errorf("nextPort = %d, want %d", executor.nextPort, 8080)
-	}
 }
 
 func TestAllocatePort(t *testing.T) {
 	executor := NewMetalExecutor("/bin/llama-server", "/models", newNopLogger())
 
-	ports := make([]int, 5)
-	for i := range ports {
-		ports[i] = executor.allocatePort()
+	port, err := executor.allocatePort()
+	if err != nil {
+		t.Fatalf("allocatePort returned error: %v", err)
 	}
-
-	expected := []int{8080, 8081, 8082, 8083, 8084}
-	for i, want := range expected {
-		if ports[i] != want {
-			t.Errorf("allocatePort() call %d = %d, want %d", i+1, ports[i], want)
-		}
+	if port < 1 || port > 65535 {
+		t.Errorf("allocatePort returned port %d outside valid range 1-65535", port)
 	}
 }
 
-func TestAllocatePort_Sequential(t *testing.T) {
+func TestAllocatePort_Listenable(t *testing.T) {
 	executor := NewMetalExecutor("/bin/llama-server", "/models", newNopLogger())
 
-	first := executor.allocatePort()
-	second := executor.allocatePort()
-
-	if second != first+1 {
-		t.Errorf("second port (%d) should be first port (%d) + 1", second, first)
+	port, err := executor.allocatePort()
+	if err != nil {
+		t.Fatalf("allocatePort returned error: %v", err)
 	}
+
+	// The returned port must be immediately re-bindable by the caller.
+	// If the kernel left it in TIME_WAIT or similar we'd fail here.
+	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		t.Fatalf("allocated port %d was not bindable: %v", port, err)
+	}
+	_ = ln.Close()
 }
 
 func TestEnsureModel_AlreadyExists(t *testing.T) {

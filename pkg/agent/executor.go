@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -50,7 +51,6 @@ type ProcessExecutor interface {
 type MetalExecutor struct {
 	llamaServerBin string
 	modelStorePath string
-	nextPort       int
 	logger         *zap.SugaredLogger
 }
 
@@ -58,7 +58,6 @@ func NewMetalExecutor(llamaServerBin, modelStorePath string, logger *zap.Sugared
 	return &MetalExecutor{
 		llamaServerBin: llamaServerBin,
 		modelStorePath: modelStorePath,
-		nextPort:       8080, // TODO: Implement proper port allocation
 		logger:         logger,
 	}
 }
@@ -69,7 +68,10 @@ func (e *MetalExecutor) StartProcess(ctx context.Context, config ExecutorConfig)
 		return nil, fmt.Errorf("failed to ensure model: %w", err)
 	}
 
-	port := e.allocatePort()
+	port, err := e.allocatePort()
+	if err != nil {
+		return nil, fmt.Errorf("failed to allocate port: %w", err)
+	}
 
 	gpuLayers := config.GPULayers
 	if gpuLayers == 0 {
@@ -227,8 +229,17 @@ func (e *MetalExecutor) waitForHealthy(port int, timeout time.Duration) error {
 	}
 }
 
-func (e *MetalExecutor) allocatePort() int {
-	port := e.nextPort
-	e.nextPort++
-	return port
+// allocatePort asks the kernel for an unused TCP port by binding to
+// "127.0.0.1:0" and immediately closing the listener. The returned port
+// is guaranteed free at the moment of the call; there is a small TOCTOU
+// window before llama-server binds on the same port. For the Metal
+// executor that window is microseconds since we exec the child process
+// synchronously, so a collision is vanishingly unlikely in practice.
+func (e *MetalExecutor) allocatePort() (int, error) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = ln.Close() }()
+	return ln.Addr().(*net.TCPAddr).Port, nil
 }
