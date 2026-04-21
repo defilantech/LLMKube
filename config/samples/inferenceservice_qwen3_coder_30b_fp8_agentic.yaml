@@ -1,0 +1,94 @@
+# Qwen3-Coder-30B-A3B-Instruct-FP8 on 2x RTX 5060 Ti (Blackwell GB206, 32 GB total VRAM)
+# tuned for agentic coding workloads.
+#
+# What this sample demonstrates:
+#   - vLLM runtime with tensor parallelism across 2 GPUs (TP=2)
+#   - FP8 weight quantization (--quantization fp8)
+#   - FP8 E4M3 KV cache — matches the FP8 encoding of the weights. vLLM
+#     rejects fp8_e5m2 + fp8 checkpoints at load time. Use fp8_e5m2 only
+#     with bf16/fp16 weights where you're compressing only the KV cache.
+#   - Prefix caching ON — agentic loops reuse the same system prompt and
+#     tool-definition prefix every turn; this is typically the biggest
+#     single-user speedup.
+#   - Chunked prefill ON — lets a 32K-token file paste not starve concurrent
+#     decode streams.
+#   - FLASHINFER attention backend — fastest kernel on Blackwell.
+#   - --max-num-batched-tokens 8192 — tuned for the VRAM budget; too low
+#     leaves the prefill path idle, too high risks OOM on long context.
+#
+# VRAM budget math (why this is a 30B not a 35B sample):
+#   - 5060 Ti has 15.48 GiB usable VRAM per card (16 GB nameplate minus driver reserve)
+#   - FP8 weights: 30.5B params × 1 byte = ~30.5 GB total; TP=2 → ~15.25 GB/shard
+#   - Qwen3.6-35B-A3B-FP8 needs ~18 GB/shard → does NOT fit on 2x 5060 Ti.
+#     For that model you need 2x 24 GB (RTX 4090/5090/A5000) or better.
+#   - KV cache at FP8 E4M3, 131K context: ~0.5 GB/shard. Comfortable.
+#   - Activations + CUDA graph capture + compilation: ~1-2 GB/shard overhead.
+#   - Leaves ~-1 GB headroom per shard — will be tight. If OOM at load,
+#     reduce maxModelLen to 65536 or drop maxNumBatchedTokens to 4096.
+#
+# NOT demonstrated here (see spec comments for how to enable):
+#   - Speculative decoding (requires a second Model CR for the draft model;
+#     see VLLMConfig.Speculative in the CRD)
+#   - --enable-expert-parallel (meaningful if you want to shard MoE
+#     experts across TP ranks instead of replicating them)
+#
+# Requires:
+#   - NVIDIA GPU Operator installed on the cluster
+#   - Secret named "hf-token" with key "HF_TOKEN" in the default namespace
+#   - skipModelInit: true — vLLM fetches weights itself at pod start rather
+#     than going through the LLMKube init-container download flow
+---
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: Model
+metadata:
+  name: qwen3-coder-30b-fp8
+  namespace: default
+spec:
+  source: "Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8"
+  format: safetensors
+  quantization: fp8
+  hardware:
+    accelerator: cuda
+    gpu:
+      enabled: true
+      count: 2
+      vendor: nvidia
+---
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: InferenceService
+metadata:
+  name: qwen3-coder-agentic
+  namespace: default
+spec:
+  modelRef: qwen3-coder-30b-fp8
+  runtime: vllm
+  image: vllm/vllm-openai:latest
+  skipModelInit: true
+  replicas: 1
+  vllmConfig:
+    tensorParallelSize: 2
+    maxModelLen: 65536
+    quantization: fp8
+    dtype: bfloat16
+    kvCacheDtype: fp8_e4m3
+    enablePrefixCaching: true
+    enableChunkedPrefill: true
+    maxNumBatchedTokens: 4096
+    attentionBackend: FLASHINFER
+    hfTokenSecretRef:
+      name: hf-token
+      key: HF_TOKEN
+    # To enable speculative decoding, add a second Model CR (e.g. a 4B draft)
+    # and uncomment the block below. NumSpeculativeTokens defaults to 4.
+    #
+    # speculative:
+    #   enabled: true
+    #   model: qwen3-4b-draft
+    #   numSpeculativeTokens: 4
+  endpoint:
+    port: 8000
+    type: ClusterIP
+  resources:
+    gpu: 2
+    cpu: "8"
+    memory: "32Gi"
