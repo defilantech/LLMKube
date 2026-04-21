@@ -1,0 +1,26 @@
+# Codecov configuration
+# https://docs.codecov.com/docs/codecov-yaml
+
+coverage:
+  status:
+    # Project coverage is the real quality gate: if the overall number drops,
+    # fail the check. Allow 1pp of jitter for flakes in probabilistic tests.
+    project:
+      default:
+        target: auto
+        threshold: 1%
+
+    # Patch coverage is informational only. It counts "new lines" per PR and
+    # does not correlate additions with deletions, so pure code-move PRs
+    # (refactors that relocate already-tested functions into new files) show
+    # up as "new untested code" even when project coverage is unchanged.
+    # Surface the data in the Codecov comment but do not block merges on it.
+    patch:
+      default:
+        informational: true
+
+# Comment the default summary on every PR.
+comment:
+  layout: "reach,diff,flags,files,footer"
+  behavior: default
+  require_changes: false
