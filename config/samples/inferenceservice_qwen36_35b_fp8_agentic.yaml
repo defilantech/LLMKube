@@ -1,0 +1,87 @@
+# Qwen3.6-35B-A3B-FP8 on 2x RTX 5060 Ti (Blackwell GB206, 32 GB total VRAM)
+# tuned for agentic coding workloads.
+#
+# What this sample demonstrates:
+#   - vLLM runtime with tensor parallelism across 2 GPUs (TP=2)
+#   - FP8 weight quantization (--quantization fp8) so the 35B active-3B MoE
+#     fits in the 32 GB total VRAM budget
+#   - FP8 E5M2 KV cache — the single biggest lever for 128K context on
+#     consumer VRAM; ~halves KV cache memory vs bf16
+#   - Prefix caching ON — agentic loops reuse the same system prompt and
+#     tool-definition prefix every turn; this is typically the biggest
+#     single-user speedup
+#   - Chunked prefill ON — lets a 32K-token file paste not starve concurrent
+#     decode streams
+#   - FLASHINFER attention backend — fastest kernel on Blackwell; falls back
+#     to FLASH_ATTN automatically if flashinfer is not compiled in
+#   - --max-num-batched-tokens 8192 — tuned for the VRAM budget; too low
+#     leaves the prefill path idle, too high risks OOM on long context
+#
+# NOT demonstrated here (see spec comments for how to enable):
+#   - Speculative decoding (requires a second Model CR for the draft model;
+#     see VLLMConfig.Speculative in the CRD)
+#   - --enable-expert-parallel (only meaningful if you want to shard MoE
+#     experts across TP ranks instead of replicating them)
+#
+# Requires:
+#   - NVIDIA GPU Operator installed on the cluster
+#   - Secret named "hf-token" with key "HF_TOKEN" in the default namespace
+#     (needed for private HF repo access; delete both references if the
+#     model is public)
+#   - skipModelInit: true — vLLM fetches the weights itself at pod start
+#     rather than going through the LLMKube init-container download flow
+---
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: Model
+metadata:
+  name: qwen36-35b-a3b-fp8
+  namespace: default
+spec:
+  source: "Qwen/Qwen3.6-35B-A3B-FP8"
+  format: safetensors
+  quantization: fp8
+  hardware:
+    accelerator: cuda
+    gpu:
+      enabled: true
+      count: 2
+      vendor: nvidia
+---
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: InferenceService
+metadata:
+  name: qwen36-35b-agentic
+  namespace: default
+spec:
+  modelRef: qwen36-35b-a3b-fp8
+  runtime: vllm
+  image: vllm/vllm-openai:latest
+  skipModelInit: true
+  replicas: 1
+  vllmConfig:
+    tensorParallelSize: 2
+    maxModelLen: 131072
+    quantization: fp8
+    dtype: bfloat16
+    kvCacheDtype: fp8_e5m2
+    enablePrefixCaching: true
+    enableChunkedPrefill: true
+    maxNumBatchedTokens: 8192
+    attentionBackend: FLASHINFER
+    hfTokenSecretRef:
+      name: hf-token
+      key: HF_TOKEN
+    # To enable speculative decoding, add a second Model CR (e.g. a 4B draft)
+    # and uncomment the block below. NumSpeculativeTokens defaults to 4.
+    #
+    # speculative:
+    #   enabled: true
+    #   model: qwen36-4b-draft
+    #   numSpeculativeTokens: 4
+  endpoint:
+    port: 8000
+    type: ClusterIP
+  resources:
+    gpu: 2
+    cpu: "8"
+    memory: "32Gi"

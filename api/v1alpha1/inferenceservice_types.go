@@ -410,8 +410,12 @@ type VLLMConfig struct {
 	// +optional
 	MaxModelLen *int32 `json:"maxModelLen,omitempty"`
 
-	// Quantization method (awq, gptq, squeezellm).
-	// +kubebuilder:validation:Enum=awq;gptq;squeezellm
+	// Quantization method.
+	// awq, gptq, squeezellm are classic 4-bit formats. fp8 targets 8-bit FP
+	// checkpoints (Qwen FP8, Llama FP8, etc.). nvfp4 is NVIDIA's Blackwell-native
+	// 4-bit format. compressed-tensors is the neuralmagic/vLLM cross-format
+	// loader used by Unsloth and other recent releases.
+	// +kubebuilder:validation:Enum=awq;gptq;squeezellm;fp8;nvfp4;compressed-tensors
 	// +optional
 	Quantization string `json:"quantization,omitempty"`
 
@@ -420,25 +424,92 @@ type VLLMConfig struct {
 	// +optional
 	Dtype string `json:"dtype,omitempty"`
 
+	// KVCacheDtype selects the KV cache element type. fp8_e5m2 and fp8_e4m3 cut
+	// KV cache memory roughly in half versus auto (which follows dtype), which
+	// is what unlocks 128K+ context on consumer VRAM for agentic workloads.
+	// Maps to vLLM --kv-cache-dtype flag.
+	// +kubebuilder:validation:Enum=auto;fp8_e5m2;fp8_e4m3
+	// +kubebuilder:default=auto
+	// +optional
+	KVCacheDtype *string `json:"kvCacheDtype,omitempty"`
+
 	// EnablePrefixCaching turns on vLLM's automatic prefix caching for repeated prompts.
 	// Significantly reduces time-to-first-token for conversational and agentic workloads
 	// where requests share a common system prompt.
+	// Only emitted when explicitly set to true — when nil or false, vLLM's own
+	// default is used (do not emit the flag).
 	// Maps to vLLM --enable-prefix-caching flag.
 	// +optional
 	EnablePrefixCaching *bool `json:"enablePrefixCaching,omitempty"`
 
+	// EnableChunkedPrefill interleaves long prefills with decode steps so a
+	// large paste (e.g. a 32K-token file) does not starve concurrent decode
+	// streams. Only emitted when explicitly set to true.
+	// Maps to vLLM --enable-chunked-prefill flag.
+	// +optional
+	EnableChunkedPrefill *bool `json:"enableChunkedPrefill,omitempty"`
+
+	// MaxNumBatchedTokens sets the maximum number of tokens batched together
+	// per step. This is the main throughput knob: too low means prefill-bound,
+	// too high risks OOM on long context. No default — only emitted when set.
+	// Maps to vLLM --max-num-batched-tokens flag.
+	// +kubebuilder:validation:Minimum=512
+	// +optional
+	MaxNumBatchedTokens *int32 `json:"maxNumBatchedTokens,omitempty"`
+
 	// AttentionBackend selects the attention implementation used by vLLM.
-	// flashinfer is typically fastest on recent NVIDIA GPUs; flash_attn is a solid
-	// default; torch_sdpa and xformers are portability fallbacks. Requires a vLLM
-	// version that supports the chosen backend.
+	// FLASHINFER is typically fastest on recent NVIDIA GPUs (especially Blackwell);
+	// FLASH_ATTN is a solid default; XFORMERS and torch_sdpa are portability
+	// fallbacks. Requires a vLLM version that supports the chosen backend.
+	// Both uppercase (vLLM's native form) and lowercase spellings are accepted
+	// for backwards compatibility with earlier LLMKube releases.
 	// Maps to vLLM --attention-backend flag.
-	// +kubebuilder:validation:Enum=flashinfer;flash_attn;xformers;torch_sdpa
+	// +kubebuilder:validation:Enum=FLASH_ATTN;FLASHINFER;XFORMERS;flashinfer;flash_attn;xformers;torch_sdpa
 	// +optional
 	AttentionBackend string `json:"attentionBackend,omitempty"`
+
+	// Speculative enables draft-model speculative decoding. On single-stream
+	// agentic workloads this can be 30-60% faster than plain tensor-parallel
+	// execution. Requires a second (smaller) Model CR to act as the draft.
+	// +optional
+	Speculative *SpeculativeConfig `json:"speculative,omitempty"`
+
+	// EnableExpertParallel distributes MoE experts across tensor-parallel ranks
+	// instead of replicating them. Only meaningful for MoE models.
+	// Maps to vLLM --enable-expert-parallel flag.
+	// +optional
+	EnableExpertParallel *bool `json:"enableExpertParallel,omitempty"`
 
 	// HFTokenSecretRef references a Secret containing the HuggingFace token.
 	// +optional
 	HFTokenSecretRef *corev1.SecretKeySelector `json:"hfTokenSecretRef,omitempty"`
+}
+
+// SpeculativeConfig configures draft-model speculative decoding for vLLM.
+type SpeculativeConfig struct {
+	// Enabled toggles speculative decoding on. When false or nil, no
+	// speculative flags are emitted regardless of other fields.
+	// +optional
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// Model references the Model CR (in the same namespace as the
+	// InferenceService) to use as the speculative draft model.
+	// Required when Enabled is true. If missing, speculative decoding is
+	// skipped and the InferenceService surfaces a SpeculativeInvalid
+	// status condition rather than failing the reconcile.
+	// Maps to vLLM --speculative-model flag.
+	// +optional
+	Model string `json:"model,omitempty"`
+
+	// NumSpeculativeTokens is the number of draft tokens proposed per step.
+	// Typical sweet spot is 3-5; higher values increase wasted work when the
+	// draft disagrees with the target model.
+	// Maps to vLLM --num-speculative-tokens flag.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=16
+	// +kubebuilder:default=4
+	// +optional
+	NumSpeculativeTokens *int32 `json:"numSpeculativeTokens,omitempty"`
 }
 
 // TGIConfig holds configuration for the HuggingFace Text Generation Inference server.

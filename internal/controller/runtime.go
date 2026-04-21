@@ -52,7 +52,7 @@ func resolveBackend(isvc *inferencev1alpha1.InferenceService) RuntimeBackend {
 	switch isvc.Spec.Runtime {
 	case "personaplex":
 		return &PersonaPlexBackend{}
-	case "vllm":
+	case RuntimeVLLM:
 		return &VLLMBackend{}
 	case "tgi":
 		return &TGIBackend{}

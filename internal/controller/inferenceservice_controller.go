@@ -494,6 +494,12 @@ func (r *InferenceServiceReconciler) reconcileDeployment(ctx context.Context, is
 		return nil, desiredReplicas, nil, nil
 	}
 
+	// Surface non-fatal vLLM spec problems as a status condition before we
+	// build the Deployment. A failure here never blocks reconciliation — the
+	// Deployment is still produced with the offending flags silently skipped
+	// (see VLLMBackend.BuildArgs).
+	r.reconcileVLLMSpecCondition(isvc)
+
 	deployment := r.constructDeployment(isvc, model, desiredReplicas)
 	if err := controllerutil.SetControllerReference(isvc, deployment, r.Scheme); err != nil {
 		log.Error(err, "Failed to set controller reference for Deployment")
@@ -1094,6 +1100,42 @@ func needsOffloadMemoryWarning(isvc *inferencev1alpha1.InferenceService) bool {
 
 func needsSkipModelInit(isvc *inferencev1alpha1.InferenceService) bool {
 	return isvc.Spec.SkipModelInit != nil && *isvc.Spec.SkipModelInit
+}
+
+// reconcileVLLMSpecCondition sets or clears the VLLMSpecValid status condition
+// based on ValidateVLLMConfig. This is informational only — it does not block
+// Deployment creation. The controller's main Status().Update at the end of
+// reconcile persists the condition.
+func (r *InferenceServiceReconciler) reconcileVLLMSpecCondition(isvc *inferencev1alpha1.InferenceService) {
+	if isvc.Spec.Runtime != RuntimeVLLM {
+		meta.RemoveStatusCondition(&isvc.Status.Conditions, ConditionVLLMSpecValid)
+		return
+	}
+	reason, message := ValidateVLLMConfig(isvc)
+	now := metav1.NewTime(time.Now())
+	if reason == "" {
+		// Only emit a True condition when we previously set a False one; no
+		// need to churn the status for services that have always been valid.
+		if existing := meta.FindStatusCondition(isvc.Status.Conditions, ConditionVLLMSpecValid); existing != nil {
+			meta.SetStatusCondition(&isvc.Status.Conditions, metav1.Condition{
+				Type:               ConditionVLLMSpecValid,
+				Status:             metav1.ConditionTrue,
+				ObservedGeneration: isvc.Generation,
+				LastTransitionTime: now,
+				Reason:             "ConfigValid",
+				Message:            "vLLM configuration is valid",
+			})
+		}
+		return
+	}
+	meta.SetStatusCondition(&isvc.Status.Conditions, metav1.Condition{
+		Type:               ConditionVLLMSpecValid,
+		Status:             metav1.ConditionFalse,
+		ObservedGeneration: isvc.Generation,
+		LastTransitionTime: now,
+		Reason:             reason,
+		Message:            message,
+	})
 }
 
 func (r *InferenceServiceReconciler) constructDeployment(
