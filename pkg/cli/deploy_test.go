@@ -334,7 +334,7 @@ func TestApplyCatalogDefaults(t *testing.T) {
 		if opts.gpuMemory != catalogModel.Resources.GPUMemory {
 			t.Errorf("gpuMemory = %q, want %q", opts.gpuMemory, catalogModel.Resources.GPUMemory)
 		}
-		if opts.contextSize != int32(catalogModel.ContextSize) {
+		if opts.contextSize != int32(catalogModel.ContextSize) { //nolint:gosec // G115: test fixture is small positive int
 			t.Errorf("contextSize = %d, want %d", opts.contextSize, catalogModel.ContextSize)
 		}
 	})

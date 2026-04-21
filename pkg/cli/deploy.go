@@ -626,7 +626,7 @@ func applyCatalogDefaults(opts *deployOptions, catalogModel *Model) {
 		opts.gpuMemory = catalogModel.Resources.GPUMemory
 	}
 	if opts.contextSize == 0 && catalogModel.ContextSize > 0 {
-		opts.contextSize = int32(catalogModel.ContextSize)
+		opts.contextSize = int32(catalogModel.ContextSize) //nolint:gosec // G115: catalog ContextSize positive
 	}
 }
 

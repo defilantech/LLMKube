@@ -86,7 +86,7 @@ func EstimateModelMemory(fileSizeBytes uint64, layerCount, embeddingSize uint64,
 		if layerEmbed/layerCount != embeddingSize {
 			return fallbackEstimate(fileSizeBytes)
 		}
-		ctx := uint64(contextSize)
+		ctx := uint64(contextSize) //nolint:gosec // G115: contextSize is CRD-validated ≥128 upstream
 		product := layerEmbed * ctx
 		if ctx != 0 && product/ctx != layerEmbed {
 			return fallbackEstimate(fileSizeBytes)
@@ -245,7 +245,7 @@ func ResolveMemoryBudget(hardware *inferencev1alpha1.HardwareSpec, agentFraction
 		}
 		return ResolvedBudget{
 			Mode:   BudgetModeAbsolute,
-			Bytes:  uint64(qty.Value()),
+			Bytes:  uint64(qty.Value()), //nolint:gosec // G115: guarded positive by the qty.Value() <= 0 check above
 			Source: "crd-budget",
 		}, nil
 	}
