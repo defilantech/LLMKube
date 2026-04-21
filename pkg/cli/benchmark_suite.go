@@ -541,7 +541,7 @@ func runSuiteContextSweep(
 			fmt.Printf("📊 Testing context size: %d\n", contextSize)
 
 			testOpts := *opts
-			testOpts.contextSize = int32(contextSize)
+			testOpts.contextSize = int32(contextSize) //nolint:gosec // G115: sweep ContextSizes are user-provided positive ints
 			testOpts.name = modelID
 
 			result := SweepResult{

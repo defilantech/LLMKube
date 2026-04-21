@@ -853,7 +853,7 @@ func (r *InferenceServiceReconciler) calculateQueuePosition(ctx context.Context,
 
 	for pos, entry := range waitingServices {
 		if entry.name == isvc.Name && entry.namespace == isvc.Namespace {
-			return int32(pos + 1), nil
+			return int32(pos + 1), nil //nolint:gosec // G115: queue index bounded by waitingServices size
 		}
 	}
 
@@ -928,6 +928,7 @@ func calculateTensorSplit(gpuCount int32, sharding *inferencev1alpha1.GPUShardin
 		return ""
 	}
 
+	//nolint:gosec // G115: LayerSplit slice length is bounded by user-configured GPU count (≤8 per CRD)
 	if sharding != nil && len(sharding.LayerSplit) > 0 && int32(len(sharding.LayerSplit)) == gpuCount {
 		layerCounts := make([]int, len(sharding.LayerSplit))
 		valid := true

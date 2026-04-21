@@ -589,7 +589,7 @@ func (a *MetalAgent) estimateModelMemory(model *inferencev1alpha1.Model, context
 	filename := filepath.Base(model.Spec.Source)
 	localPath := filepath.Join(a.config.ModelStorePath, model.Name, filename)
 	if info, err := os.Stat(localPath); err == nil {
-		fileSizeBytes = uint64(info.Size())
+		fileSizeBytes = uint64(info.Size()) //nolint:gosec // G115: os.FileInfo.Size is non-negative by contract
 	} else if model.Status.Size != "" {
 		// Fall back to parsing the human-readable size from model status
 		parsed, err := parseSize(model.Status.Size)

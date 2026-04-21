@@ -4,12 +4,14 @@ run:
 linters:
   default: none
   enable:
+    - bodyclose
     - copyloopvar
     - dupl
     - errcheck
     - ginkgolinter
     - goconst
     - gocyclo
+    - gosec
     - govet
     - ineffassign
     - lll
@@ -26,6 +28,20 @@ linters:
       rules:
         - name: comment-spacings
         - name: import-shadowing
+    gosec:
+      # Rules disabled for being fundamentally noisy for an operator/CLI
+      # that intentionally runs user-provided binaries, fetches user-provided
+      # URLs, and reads/writes user-provided paths. Enforcing these would
+      # require tagging essentially every subprocess, HTTP, and file-open
+      # call-site with #nosec annotations and deliver no real security value.
+      # The remaining gosec rules (weak crypto, hardcoded creds, overflow
+      # conversions, etc.) remain enabled and do catch genuine bugs.
+      excludes:
+        - G107  # variable URL in HTTP request (design intent: model download)
+        - G204  # subprocess with variable args (design intent: exec runtimes)
+        - G301  # dir permissions ≤0750 (0755 is correct for shared caches)
+        - G304  # file inclusion via variable (design intent: read user files)
+        - G306  # file permissions ≤0600 (0644 is correct for cache/reports)
   exclusions:
     generated: lax
     rules:

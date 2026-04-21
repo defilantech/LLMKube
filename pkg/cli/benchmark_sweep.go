@@ -246,7 +246,7 @@ func runContextSweepIteration(
 	}
 
 	testOpts := *opts
-	testOpts.contextSize = int32(contextSize)
+	testOpts.contextSize = int32(contextSize) //nolint:gosec // G115: sweep contextSize is user-provided positive int
 	testOpts.name = modelID
 
 	fmt.Printf("🚀 Deploying with context size %d...\n", contextSize)

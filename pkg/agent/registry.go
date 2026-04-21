@@ -125,7 +125,7 @@ func (r *ServiceRegistry) RegisterEndpoint(
 				Ports: []corev1.EndpointPort{
 					{
 						Name:     "http",
-						Port:     int32(port),
+						Port:     int32(port), //nolint:gosec // G115: TCP port numbers 0-65535 fit in int32
 						Protocol: corev1.ProtocolTCP,
 					},
 				},

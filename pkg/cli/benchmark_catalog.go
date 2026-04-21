@@ -406,6 +406,7 @@ func deployModel(
 	if opts.contextSize > 0 {
 		inferenceService.Spec.ContextSize = &opts.contextSize
 	} else if catalogModel.ContextSize > 0 {
+		//nolint:gosec // G115: catalog ContextSize is always a sensible positive int
 		contextSize := int32(catalogModel.ContextSize)
 		inferenceService.Spec.ContextSize = &contextSize
 	}
