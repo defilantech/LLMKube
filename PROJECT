@@ -6,7 +6,7 @@ domain: llmkube.dev
 layout:
 - go.kubebuilder.io/v4
 projectName: llmkube
-repo: github.com/defilan/llmkube
+repo: github.com/defilantech/llmkube
 resources:
 - api:
     crdVersion: v1
@@ -15,7 +15,7 @@ resources:
   domain: llmkube.dev
   group: inference
   kind: Model
-  path: github.com/defilan/llmkube/api/v1alpha1
+  path: github.com/defilantech/llmkube/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
@@ -24,6 +24,6 @@ resources:
   domain: llmkube.dev
   group: inference
   kind: InferenceService
-  path: github.com/defilan/llmkube/api/v1alpha1
+  path: github.com/defilantech/llmkube/api/v1alpha1
   version: v1alpha1
 version: "3"
