@@ -2,11 +2,13 @@
 
 ## Supported Versions
 
+We support the latest minor release plus the previous one. Older minors receive security fixes only at our discretion.
+
 | Version | Supported          |
 | ------- | ------------------ |
-| 0.5.x   | :white_check_mark: |
-| 0.4.x   | :white_check_mark: |
-| < 0.4   | :x:                |
+| 0.7.x   | :white_check_mark: |
+| 0.6.x   | :white_check_mark: |
+| < 0.6   | :x:                |
 
 ## Reporting a Vulnerability
 

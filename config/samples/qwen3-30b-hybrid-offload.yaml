@@ -1,0 +1,95 @@
+# Qwen3-Coder 30B A3B: Hybrid GPU/CPU offloading demo
+#
+# Demonstrates MoE CPU offloading on dual RTX 5060 Ti (2x 16GB VRAM).
+# Instead of sharding model layers across GPUs, this keeps the small active
+# path (~3B params) on GPU while offloading all routed expert weights (~15B)
+# to system RAM. Combined with KV cache in RAM, this enables 90K+ context
+# that would be impossible with VRAM alone.
+#
+# Comparison with layer-sharding approach (qwen3-coder-30b.yaml):
+#   Layer sharding:  65K context, ~25GB VRAM used, experts compete with KV cache for VRAM
+#   Hybrid offload:  90K context, ~10GB VRAM used, experts + KV cache in RAM
+#
+# Usage:
+#   1. Deploy:
+#      kubectl apply -f config/samples/qwen3-30b-hybrid-offload.yaml
+#      kubectl get models,inferenceservices -w
+#
+#   2. Wait for model download (~18.6 GB) and service readiness:
+#      kubectl wait --for=condition=Available inferenceservice/qwen3-hybrid --timeout=1200s
+#
+#   3. Port forward and test:
+#      kubectl port-forward svc/qwen3-hybrid 8080:8080 &
+#      curl -s http://localhost:8080/v1/chat/completions \
+#        -H "Content-Type: application/json" \
+#        -d '{"model":"qwen3-hybrid","messages":[{"role":"user","content":"Explain the MoE architecture in transformers"}],"max_tokens":512}' | jq .
+#
+# Hardware requirements:
+#   - 2x NVIDIA GPUs with 16 GB VRAM each (e.g., RTX 5060 Ti)
+#   - 64 GB+ system RAM (for expert weights + KV cache)
+#   - Model active path: ~5-7 GB VRAM (attention, embeddings, shared experts)
+#   - Expert weights: ~11-13 GB in system RAM (via --cpu-moe)
+#   - KV cache at 90K context (q8_0): ~20 GB in system RAM (via --no-kv-offload)
+---
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: Model
+metadata:
+  name: qwen3-coder-30b-hybrid
+  namespace: default
+spec:
+  source: https://huggingface.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF/resolve/main/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf
+  format: gguf
+  quantization: Q4_K_M
+
+  hardware:
+    accelerator: cuda
+    gpu:
+      enabled: true
+      count: 2
+      vendor: nvidia
+      layers: -1
+      sharding:
+        strategy: layer
+
+  resources:
+    cpu: "8"
+    memory: "16Gi"
+
+---
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: InferenceService
+metadata:
+  name: qwen3-hybrid
+  namespace: default
+spec:
+  modelRef: qwen3-coder-30b-hybrid
+  replicas: 1
+  image: ghcr.io/ggml-org/llama.cpp:server-cuda13
+
+  # 90K context — only possible with KV cache in RAM
+  contextSize: 90112
+  cacheTypeK: q8_0
+  cacheTypeV: q8_0
+
+  # Offload all MoE expert weights to CPU RAM
+  moeCPUOffload: true
+
+  # Keep KV cache in system RAM instead of VRAM
+  noKvOffload: true
+
+  # Flash attention for faster prompt processing
+  flashAttention: true
+
+  # Jinja templates for tool/function calling
+  jinja: true
+
+  resources:
+    gpu: 2
+    cpu: "8"
+    # hostMemory declares the actual RAM the pod will consume:
+    # ~13 GB expert weights + ~20 GB KV cache + overhead
+    hostMemory: "48Gi"
+
+  endpoint:
+    port: 8080
+    type: ClusterIP

@@ -1868,8 +1868,16 @@ spec:
                   state
                 type: boolean
               phase:
-                description: Phase represents the current lifecycle phase (Pending,
-                  Creating, Ready, Failed)
+                description: |-
+                  Phase represents the current lifecycle phase of the InferenceService.
+                  Possible values: Pending, Creating, Progressing, Ready, WaitingForGPU, Failed.
+                enum:
+                - Pending
+                - Creating
+                - Progressing
+                - Ready
+                - WaitingForGPU
+                - Failed
                 type: string
               queuePosition:
                 description: QueuePosition indicates position among pending InferenceServices

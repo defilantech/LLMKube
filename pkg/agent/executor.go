@@ -111,7 +111,10 @@ func (e *MetalExecutor) StartProcess(ctx context.Context, config ExecutorConfig)
 	}
 
 	if err := e.waitForHealthy(port, 30*time.Second); err != nil {
-		_ = e.StopProcess(process.PID)
+		if stopErr := e.StopProcess(process.PID); stopErr != nil {
+			e.logger.Warnw("failed to stop unhealthy process after health check failure",
+				"pid", process.PID, "port", port, "error", stopErr)
+		}
 		return nil, fmt.Errorf("process failed health check: %w", err)
 	}
 

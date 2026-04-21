@@ -207,8 +207,9 @@ type GGUFMetadata struct {
 
 // ModelStatus defines the observed state of Model.
 type ModelStatus struct {
-	// Phase represents the current lifecycle phase of the model
-	// Possible values: Pending, Downloading, Ready, Failed
+	// Phase represents the current lifecycle phase of the model.
+	// Possible values: Pending, Downloading, Copying, Ready, Failed.
+	// +kubebuilder:validation:Enum=Pending;Downloading;Copying;Ready;Failed
 	// +optional
 	Phase string `json:"phase,omitempty"`
 

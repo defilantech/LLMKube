@@ -339,8 +339,14 @@ spec:
                 type: string
               phase:
                 description: |-
-                  Phase represents the current lifecycle phase of the model
-                  Possible values: Pending, Downloading, Ready, Failed
+                  Phase represents the current lifecycle phase of the model.
+                  Possible values: Pending, Downloading, Copying, Ready, Failed.
+                enum:
+                - Pending
+                - Downloading
+                - Copying
+                - Ready
+                - Failed
                 type: string
               sha256:
                 description: |-
