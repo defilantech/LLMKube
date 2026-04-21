@@ -285,13 +285,6 @@ func (r *InferenceServiceReconciler) reconcileService(ctx context.Context, isvc 
 	return service, nil, nil
 }
 
-func needsOffloadMemoryWarning(isvc *inferencev1alpha1.InferenceService) bool {
-	needsRAM := (isvc.Spec.MoeCPUOffload != nil && *isvc.Spec.MoeCPUOffload) ||
-		(isvc.Spec.NoKvOffload != nil && *isvc.Spec.NoKvOffload)
-	memorySet := isvc.Spec.Resources != nil && (isvc.Spec.Resources.Memory != "" || isvc.Spec.Resources.HostMemory != "")
-	return needsRAM && !memorySet
-}
-
 func needsSkipModelInit(isvc *inferencev1alpha1.InferenceService) bool {
 	return isvc.Spec.SkipModelInit != nil && *isvc.Spec.SkipModelInit
 }

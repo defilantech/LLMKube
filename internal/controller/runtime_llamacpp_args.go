@@ -16,13 +16,29 @@ limitations under the License.
 
 package controller
 
-import "fmt"
+import (
+	"fmt"
+
+	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
+)
 
 // Argument builders for the llama.cpp runtime. Each helper takes the current
 // args slice plus the relevant CRD field and returns the appended slice (or
 // the unchanged slice when the field is unset or not applicable). Kept as
 // free functions so they are trivially testable in isolation and can be
 // composed in any order from the deployment builder.
+
+// needsOffloadMemoryWarning returns true when llama.cpp hybrid-offload flags
+// (MoeCPUOffload, NoKvOffload) are set but no host RAM budget has been given
+// via resources.memory / resources.hostMemory. In that case the controller
+// emits a warning event so users are not surprised by pods getting OOM-killed
+// under offloaded weights.
+func needsOffloadMemoryWarning(isvc *inferencev1alpha1.InferenceService) bool {
+	needsRAM := (isvc.Spec.MoeCPUOffload != nil && *isvc.Spec.MoeCPUOffload) ||
+		(isvc.Spec.NoKvOffload != nil && *isvc.Spec.NoKvOffload)
+	memorySet := isvc.Spec.Resources != nil && (isvc.Spec.Resources.Memory != "" || isvc.Spec.Resources.HostMemory != "")
+	return needsRAM && !memorySet
+}
 
 func appendContextSizeArgs(args []string, contextSize *int32) []string {
 	if contextSize != nil && *contextSize > 0 {
