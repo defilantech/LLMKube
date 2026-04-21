@@ -24,5 +24,13 @@ jobs:
           go mod tidy
           make test
 
+      - name: Upload coverage to Codecov
+        # make test writes cover.out via `go test -coverprofile`.
+        # Tokenless public-repo upload; do not fail CI if Codecov is unreachable.
+        uses: codecov/codecov-action@v5
+        with:
+          files: ./cover.out
+          fail_ci_if_error: false
+
       - name: Build Metal Agent (compile check)
         run: GOOS=darwin GOARCH=arm64 go build -o /dev/null ./cmd/metal-agent
