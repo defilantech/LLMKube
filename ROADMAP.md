@@ -1,8 +1,7 @@
 # LLMKube Roadmap
 
-**Current Version:** 0.5.0
-**Last Updated:** March 2026
-**Status:** ✅ Phase 2 in Progress - Metal Agent, Memory Management, Observability, Benchmarking
+**Current Version:** 0.7.0 (released 2026-04-18)
+**Last Updated:** 2026-04-21
 
 ---
 
@@ -13,133 +12,113 @@ Make GPU-accelerated LLM inference on Kubernetes **dead simple**. Deploy product
 **Target Users:**
 - Developers building AI-powered applications
 - Platform teams running internal LLM services
-- Organizations needing air-gapped/edge deployments
+- Organizations needing air-gapped / edge deployments
 - Anyone wanting OpenAI-compatible APIs on their own infrastructure
 
 ---
 
-## Current Status
+## What's Working Now (v0.7.0)
 
-### ✅ What's Working Now (v0.5.0)
+### Core Platform
+- Kubernetes-native CRDs (`Model`, `InferenceService`)
+- Automatic model download from HuggingFace / HTTP / PVC / local file
+- OpenAI-compatible `/v1/chat/completions` API
+- Multi-replica deployment with Horizontal Pod Autoscaling (HPA)
+- Full CLI (`llmkube deploy/list/status/delete/queue/cache/benchmark/inspect/license`)
+- Helm chart for easy installation
+- Model catalog with pre-configured models and one-command deploy
+- Air-gapped mode with `file://` and local path model sources
 
-**Core Platform:**
-- ✅ Kubernetes-native CRDs (`Model`, `InferenceService`)
-- ✅ Automatic model download from HuggingFace/HTTP
-- ✅ OpenAI-compatible `/v1/chat/completions` API
-- ✅ Multi-replica deployment support
-- ✅ Full CLI tool (`llmkube deploy/list/status/delete/queue/cache/benchmark/inspect/license`)
-- ✅ Helm chart for easy installation
-- ✅ Model catalog with pre-configured models and one-command deployment
-- ✅ Air-gapped mode with `file://` and local path model sources
+### Runtime Backends (pluggable)
+- **llama.cpp** — default CPU/GPU backend with GGUF model support
+- **vLLM** — high-throughput batched inference with PagedAttention
+- **TGI** — Hugging Face Text Generation Inference
+- **PersonaPlex (Moshi)** — real-time voice/speech model serving
+- **Ollama / oMLX** — Metal-accelerated backends for Apple Silicon
 
-**GPU Acceleration:**
-- ✅ NVIDIA GPU support (T4, L4, A100)
-- ✅ **17x performance improvement** (64 tok/s GPU vs 4.6 tok/s CPU)
-- ✅ Automatic GPU layer offloading
-- ✅ Single-node multi-GPU sharding (up to 8 GPUs, layer-based splitting)
-- ✅ Cost optimization (spot instances, auto-scale to 0)
+### GPU Acceleration
+- NVIDIA GPU support (T4, L4, A100, H100, Blackwell) via CUDA 13 images
+- 17x performance improvement vs CPU (64+ tok/s on L4 for 3B models)
+- Automatic GPU layer offloading
+- Single-node multi-GPU sharding (layer-split and tensor-split modes, custom layer splits)
+- Hybrid GPU/CPU offloading for MoE models (CPU-resident expert layers)
+- Cost optimization (spot instances, auto-scale to zero, HPA)
 
-**Apple Silicon (Metal) Support:**
-- ✅ Metal Agent daemon for native macOS llama-server processes
-- ✅ Pre-flight memory validation with GGUF-based estimation
-- ✅ Per-model `memoryBudget` and `memoryFraction` CRD fields
-- ✅ Continuous health monitoring of managed processes
-- ✅ Agent metrics (memory budget, process health, active count)
-- ✅ Homebrew auto-detection for llama-server binary
-- ✅ Heterogeneous clusters (mix NVIDIA and Apple Silicon nodes)
+### Apple Silicon (Metal) Support
+- Metal Agent daemon for native macOS llama-server processes
+- oMLX and Ollama as alternative Metal-native backends
+- Pre-flight memory validation with GGUF-based estimation
+- Per-model `memoryBudget` and `memoryFraction` CRD fields
+- Continuous health monitoring, agent metrics, Homebrew auto-detection
+- Heterogeneous clusters (mix NVIDIA and Apple Silicon nodes)
 
-**GPU Scheduling & Queue Management:**
-- ✅ GPU contention visibility (`WaitingForGPU` phase)
-- ✅ Queue position tracking for pending services
-- ✅ Priority classes (critical/high/normal/low/batch)
-- ✅ `llmkube queue` command to view waiting services
-- ✅ Detailed scheduling status and messages
+### GPU Scheduling & Queue Management
+- GPU contention visibility (`WaitingForGPU` phase)
+- Queue position tracking for pending services
+- Priority classes (critical / high / normal / low / batch)
+- `llmkube queue` command
 
-**Observability:**
-- ✅ 10 custom Prometheus metrics (downloads, phases, queues, reconciliation)
-- ✅ OpenTelemetry tracing with Tempo export (gRPC port 4317)
-- ✅ GPU metrics via DCGM exporter (utilization, temperature, power, memory)
-- ✅ PodMonitor for llama.cpp inference metrics scraping
-- ✅ Pre-built Grafana dashboards
-- ✅ SLO alerts for GPU health and service availability
+### Observability
+- 10+ custom Prometheus metrics (downloads, phases, queues, reconciliation, HPA)
+- OpenTelemetry tracing to Tempo (gRPC port 4317)
+- GPU metrics via DCGM exporter
+- PodMonitor for inference pod scraping
+- Pre-built Grafana dashboards (operator + inference)
+- SLO alerts for GPU health and service availability
 
-**Model Management:**
-- ✅ PVC-based model caching with SHA256 cache keys
-- ✅ `llmkube cache` command (list, clear, preload, inspect)
-- ✅ Native GGUF parser with metadata extraction
-- ✅ `llmkube inspect` command for GGUF file introspection
-- ✅ License compliance scanning (`llmkube license`)
-- ✅ Init container customization with custom CA certificate support
+### Model Management
+- PVC-based model caching with SHA256 cache keys
+- `llmkube cache` (list, clear, preload, inspect)
+- Native GGUF parser with metadata extraction
+- `llmkube inspect` for GGUF file introspection
+- License compliance scanning (`llmkube license`)
+- Init container customization with custom CA certificate support
+- Agentic-coding flags for extended reasoning and long-context workloads
 
-**Benchmarking:**
-- ✅ `llmkube benchmark` with load testing, stress testing, and sweep modes
-- ✅ Concurrency, context size, and token count sweeps
-- ✅ Per-request latency and throughput capture (p50, p95, p99)
-- ✅ GPU monitoring during benchmarks
+### Benchmarking
+- `llmkube benchmark` (load, stress, sweep modes)
+- Concurrency / context / token sweeps
+- Per-request latency (p50, p95, p99) and throughput capture
+- GPU monitoring during benchmarks
 
-**Deployment Options:**
-- ✅ Minikube/Kind (local development)
-- ✅ GKE with GPU support (Terraform)
-- ✅ EKS with GPU support (Terraform)
-- ✅ AKS with GPU support (Terraform)
-- ✅ Network policies in Helm chart
+### Deployment Options
+- Minikube / Kind (local dev)
+- GKE / EKS / AKS with GPU support (Terraform modules)
+- NetworkPolicy-ready Helm chart
 
 ---
 
-## What's Next
+## Near-term Focus
 
-### Q1 2026: Polish & Growth *(in progress)*
+Direction of travel, not dated commitments. Community feedback shapes priority.
 
-**Focus:** Make it easier to use, support more use cases
+### API stability (v1beta1 prep)
+- Consolidate runtime-specific config into per-runtime substructs (`LlamaCppConfig` to mirror existing `VLLMConfig` / `TGIConfig` / `PersonaPlexConfig`)
+- Replace negative-boolean flags with clearer enums (e.g., `NoKvOffload` → `KVCacheDevice`)
+- Audit `ExtraArgs` usage and promote common flags to typed fields
+- Add validating webhook (Secret existence, `MinReplicas ≤ MaxReplicas`, resource quantity strings)
+- Conversion webhook for `v1alpha1` ↔ `v1beta1`
+- Status Phase → standard Conditions migration
 
-**Completed:**
-- ✅ **Model Catalog** - Pre-configured popular models with `llmkube deploy llama-3-8b --gpu`
-- ✅ **`llmkube benchmark`** - Comprehensive performance testing (load, stress, sweeps)
-- ✅ **Health checks and readiness probes** - Three-probe pattern for llama.cpp pods
-- ✅ **Persistent model storage** - PVC-based caching (v0.4.1)
-- ✅ **GPU queue management** - Priority classes and queue tracking (v0.4.9)
-- ✅ **Multi-GPU** - Single-node sharding for 13B+ models (~65 tok/s on 8B with 2x RTX 5060 Ti)
+### Supply-chain hardening
+- cosign-sign binaries, controller images, and Helm chart
+- SBOM publication with each release
+- Checksum verification in `install.sh`
+- `govulncheck` and security linters in CI
 
-**Remaining:**
-- `llmkube init` - Interactive setup wizard
-- `llmkube chat <model>` - Test inference from CLI
-- Horizontal Pod Autoscaling (HPA) support
+### Operator decomposition
+- Split `inferenceservice_controller.go` into focused per-concern files (model storage, HPA, scheduling, deployment builder, status)
 
-### Q2 2026: Edge & Hybrid
+---
 
-**Focus:** Support more deployment scenarios
+## Medium-term
 
-**Planned:**
-- **K3s Compatibility** - Lightweight Kubernetes for edge
-- **ARM64 Support** - Raspberry Pi, NVIDIA Jetson
-- **Cost Tracking** - Per-deployment cost attribution
-- **Additional Model Formats** - SafeTensors, HuggingFace native
-
-**Already shipped early:**
-- ~~Air-gapped Mode~~ ✅ Shipped in v0.4.x (file:// and local path model sources)
-
-### Q3 2026: Scale & Performance
-
-**Focus:** Larger models, better performance
-
-**Planned:**
-- **Distributed Inference** - Shard large models (70B+) across nodes via llama.cpp RPC backend
-- **Advanced Auto-scaling** - Queue depth, latency-based scaling
-- **AMD GPU Support** - ROCm backend for AMD GPUs
-- **Intel GPU Support** - oneAPI integration
-- **Performance Optimizations** - KV cache sharing, batching improvements
-
-### Q4 2026: Community & Ecosystem
-
-**Focus:** Build sustainable open-source project
-
-**Planned:**
-- **v1.0 Release** - Production-hardened, stable APIs
-- **Operator Hub** - Official Kubernetes Operator listing
-- **ArgoCD/Flux Templates** - GitOps-ready deployments
-- **Terraform Provider** - Infrastructure-as-code support
-- **VS Code Extension** - YAML validation, snippets
-- **Community Program** - Contributor guides, good first issues
+- **Distributed inference** across nodes (llama.cpp RPC, vLLM distributed)
+- **Additional GPU vendors** — AMD ROCm, Intel oneAPI
+- **Advanced autoscaling** — queue-depth and latency-based signals
+- **K3s / edge** compatibility, broader ARM64 node support
+- **Additional model formats** — SafeTensors, HuggingFace native (alongside GGUF)
+- **Cost tracking** — per-deployment cost attribution
 
 ---
 
@@ -147,126 +126,88 @@ Make GPU-accelerated LLM inference on Kubernetes **dead simple**. Deploy product
 
 | Milestone | Target | Status |
 |-----------|--------|--------|
-| **Single GPU (3B model)** | >60 tok/s | ✅ **Achieved** (64 tok/s on L4) |
-| **Multi-GPU (13B model)** | >40 tok/s | ✅ **Achieved** (~44 tok/s on 2x RTX 5060 Ti) |
-| **Multi-GPU (8B model)** | >60 tok/s | ✅ **Achieved** (~65 tok/s on 2x RTX 5060 Ti) |
-| **Multi-node (70B model)** | <500ms P99 latency | 🎯 Planned |
-| **Cost Efficiency** | <$0.01 per 1K tokens | 🎯 Planned |
-| **Model Load Time** | <30s for any model | 🎯 Planned |
+| Single GPU (3B model) | >60 tok/s | ✅ Achieved (64 tok/s on L4) |
+| Multi-GPU (8B model) | >60 tok/s | ✅ Achieved (~65 tok/s on 2×RTX 5060 Ti) |
+| Multi-GPU (13B model) | >40 tok/s | ✅ Achieved (~44 tok/s on 2×RTX 5060 Ti) |
+| Multi-node (70B model) | <500 ms P99 latency | 🎯 Planned |
+| Model load time | <30 s for any model | 🎯 Planned |
 
 ---
 
-## Community Metrics
+## Past Releases
 
-| Metric | Current | Q2 2026 Goal | Q4 2026 Goal |
-|--------|---------|--------------|--------------|
-| **GitHub Stars** | 25 | 200 | 1,000 |
-| **Contributors** | 4 | 10 | 25 |
-| **Forks** | 4 | 15 | 50 |
-| **Production Deployments** | 1 | 10 | 25 |
-| **Models Supported** | Any GGUF | 20+ pre-configured | 50+ pre-configured |
+- **v0.7.0** — April 2026 · Hybrid CPU/GPU offload for MoE, tensor overrides, batch-size controls, runtime-resolved HF sources, agentic-coding flags, vLLM `extraArgs` passthrough (breaking)
+- **v0.6.0** — April 2026 · Pluggable runtime backends (vLLM, TGI, PersonaPlex), HPA, custom GPU layer splits, CUDA 13 default image
+- **v0.5.3** — March 2026 · oMLX and Ollama as alternative Metal runtimes; KV cache type configuration
+- **v0.5.0** — March 2026 · Metal agent, memory validation, health monitoring, benchmarking
+- **v0.4.13** — February 2026 · GGUF parser, init container customization, NetworkPolicy
+- **v0.4.9** — December 2025 · GPU scheduling & priority classes
+- **v0.4.1** — November 2025 · Persistent model cache (PVC)
+- **v0.4.0** — November 2025 · Multi-GPU support
 
----
-
-## How to Contribute
-
-We're actively looking for contributors! Here's how you can help:
-
-### 🐛 Found a Bug?
-[Open an issue](https://github.com/defilantech/LLMKube/issues/new) with:
-- What you expected to happen
-- What actually happened
-- Steps to reproduce
-- Your environment (K8s version, cloud provider, etc.)
-
-### 💡 Have a Feature Idea?
-[Start a discussion](https://github.com/defilantech/LLMKube/discussions) to:
-- Explain your use case
-- Describe the proposed solution
-- Share why others might find it useful
-
-### 🔧 Want to Code?
-
-**Good First Issues:**
-- Documentation improvements
-- Example applications (chatbot UI, RAG system, etc.)
-- Additional model configurations
-- Testing on different K8s platforms
-
-**Advanced Contributions:**
-- Distributed inference via llama.cpp RPC (70B+ models)
-- Additional GPU vendors (AMD, Intel)
-- Model format support (SafeTensors)
-- Horizontal Pod Autoscaling (HPA)
-- Performance optimizations
-
-**Before starting:** Comment on the issue or open a discussion to avoid duplicate work.
-
-### 📚 Help with Documentation?
-- Tutorials and guides
-- Deployment examples
-- Use case write-ups
-- Troubleshooting tips
-
----
-
-## Release Schedule
-
-We ship frequently with semantic versioning:
-
-- **Patch releases (0.2.x):** Bug fixes, minor improvements - Monthly
-- **Minor releases (0.x.0):** New features, backward compatible - Quarterly
-- **Major releases (x.0.0):** Breaking changes, major milestones - Yearly
-
-**Past releases:**
-- **v0.4.0** - November 2025 (multi-GPU support) ✅
-- **v0.4.1** - November 2025 (persistent model cache) ✅
-- **v0.4.9** - December 2025 (GPU scheduling & priority classes) ✅
-- **v0.4.13** - February 2026 (GGUF parser, init container customization, NetworkPolicy) ✅
-- **v0.5.0** - March 2026 (Metal agent, memory validation, health monitoring, benchmarking) ✅ **Current**
-
-**Upcoming releases:**
-- **v0.6.0** - Q2 2026 (edge deployment, K3s, HPA)
-- **v1.0.0** - Q4 2026 (stable, production-ready)
+See [CHANGELOG.md](CHANGELOG.md) for the full history.
 
 ---
 
 ## Principles
 
-**What guides our development:**
+1. **Ease of Use** — If it takes more than 5 minutes to deploy, we're doing it wrong
+2. **Show, Don't Tell** — Working examples over lengthy docs
+3. **Performance Matters** — GPU acceleration should be automatic and obvious
+4. **Production-Ready** — Observability and reliability from day one
+5. **Community-First** — Build what users need, not what we think they need
+6. **Keep it Simple** — Avoid over-engineering until there's proven demand
 
-1. **Ease of Use** - If it takes more than 5 minutes to deploy, we're doing it wrong
-2. **Show, Don't Tell** - Working examples over lengthy docs
-3. **Performance Matters** - GPU acceleration should be automatic and obvious
-4. **Production-Ready** - Observability and reliability from day one
-5. **Community-First** - Build what users actually need, not what we think they need
-6. **Keep it Simple** - Avoid over-engineering until there's proven demand
+---
+
+## How to Contribute
+
+We're actively looking for contributors — especially for:
+
+- Distributed inference (llama.cpp RPC, vLLM distributed)
+- Additional GPU vendors (AMD ROCm, Intel oneAPI)
+- v1beta1 API cleanup and conversion webhook
+- Additional runtime backends (SGLang, MLC-LLM, …)
+- Documentation, examples, and getting-started guides
+
+**Good first issues:**
+- Documentation improvements
+- Example manifests and tutorials
+- Additional model catalog entries
+- Testing on different K8s platforms
+
+**Before starting:** comment on the issue or open a [discussion](https://github.com/defilantech/LLMKube/discussions) to avoid duplicate work.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for local setup, commit conventions, and the DCO sign-off requirement.
+
+---
+
+## Release Cadence
+
+- **Patch (0.x.y)** — bug fixes, minor improvements as needed
+- **Minor (0.x.0)** — new features, mostly backward compatible (breaking changes flagged in CHANGELOG while on v0.x)
+- **Major (x.0.0)** — reserved for post-v1.0
 
 ---
 
 ## Feedback
 
-Your feedback shapes our roadmap! Tell us:
+Your feedback shapes our roadmap:
 
 - What features would make LLMKube more useful for you?
-- What's blocking you from using it in production?
-- What models/use cases should we prioritize?
-- What's confusing or hard to use?
+- What's blocking production adoption?
+- Which models / use cases should we prioritize?
 
-**Ways to share:**
 - 💬 [GitHub Discussions](https://github.com/defilantech/LLMKube/discussions)
 - 🐛 [GitHub Issues](https://github.com/defilantech/LLMKube/issues)
-- ⭐ Star the repo if you find it useful!
+- ⭐ Star the repo if you find it useful
 
 ---
 
 ## License
 
-Apache 2.0 - See [LICENSE](LICENSE)
+Apache 2.0 — see [LICENSE](LICENSE)
 
 ---
 
-**Last Updated:** March 2026
-**Next Review:** June 2026
-
-*This roadmap is a living document. Priorities may shift based on community feedback and real-world usage.*
+*This roadmap is a living document. Priorities shift based on community feedback and real-world usage.*
