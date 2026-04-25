@@ -5,6 +5,29 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1](https://github.com/defilantech/LLMKube/compare/v0.7.0...v0.7.1) (2026-04-25)
+
+
+### Features
+
+* **agent:** pass Apple Silicon-optimized flags to llama-server ([#327](https://github.com/defilantech/LLMKube/issues/327)) ([a69ab6a](https://github.com/defilantech/LLMKube/commit/a69ab6a32c1039af53a2afcc8a8792e4932753eb))
+* **chart:** add values.schema.json for Helm value validation ([#322](https://github.com/defilantech/LLMKube/issues/322)) ([1f8a34d](https://github.com/defilantech/LLMKube/commit/1f8a34d86077d0afb015db3d1567f7bd75f98bda))
+* **crd:** extend InferenceService vLLM config for agentic-coding flags ([#306](https://github.com/defilantech/LLMKube/issues/306)) ([cb2aa6a](https://github.com/defilantech/LLMKube/commit/cb2aa6a8c8c921e3db11c71f9309b5b38dafb2df))
+* **security:** supply-chain MVP — checksum install, govulncheck, gosec, codecov ([#310](https://github.com/defilantech/LLMKube/issues/310)) ([f17f59d](https://github.com/defilantech/LLMKube/commit/f17f59d7f3be20d9719591f0d70f9102968e8365))
+
+
+### Bug Fixes
+
+* **agent:** detect stalled K8s polling and exit for supervisor restart ([#328](https://github.com/defilantech/LLMKube/issues/328)) ([c0636cc](https://github.com/defilantech/LLMKube/commit/c0636cc7ede733f43c6d38c99c615fe4c1d73659))
+* **agent:** let the kernel pick free ports for llama-server ([#321](https://github.com/defilantech/LLMKube/issues/321)) ([8111395](https://github.com/defilantech/LLMKube/commit/8111395c60f8f005082ace9efd7eb57b7f2b92d6))
+* bump InferenceService spec.contextSize cap from 131072 to 2097152 ([#300](https://github.com/defilantech/LLMKube/issues/300)) ([a46a1bf](https://github.com/defilantech/LLMKube/commit/a46a1bf31ba222f66a7474d580500fe029640294))
+
+
+### Documentation
+
+* add ADOPTERS.md inviting public user listings ([#324](https://github.com/defilantech/LLMKube/issues/324)) ([871a0cb](https://github.com/defilantech/LLMKube/commit/871a0cb8b5eba4e1fb918dfab2c2d67938ad73c7))
+* backfill ⚠ BREAKING CHANGES section into 0.7.0 changelog ([#296](https://github.com/defilantech/LLMKube/issues/296)) ([2ad4640](https://github.com/defilantech/LLMKube/commit/2ad4640c56b7592a5b3e7f337ec72444389012c9))
+
 ## [0.7.0](https://github.com/defilantech/LLMKube/compare/v0.6.0...v0.7.0) (2026-04-18)
 
 
