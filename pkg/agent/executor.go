@@ -71,10 +71,21 @@ type ProcessExecutor interface {
 	StopProcess(pid int) error
 }
 
+// DefaultLlamaServerStartupTimeout is how long the agent waits for a freshly
+// spawned llama-server to respond on /health. Was 30s historically; that's
+// fine for sub-30 GB models but breaks for anything larger because llama.cpp's
+// mlock pass + warmup grows roughly linearly with model size. Empirically an
+// 84 GB model (MiniMax M2.7 IQ3_S on M5 Max) takes ~30+ seconds just for
+// mlock; the original timeout would kill the process just before it would
+// have been ready. 120s gives generous headroom for the largest models that
+// fit in 128 GB unified memory while still failing fast on real breakage.
+const DefaultLlamaServerStartupTimeout = 120 * time.Second
+
 type MetalExecutor struct {
 	llamaServerBin string
 	modelStorePath string
 	logger         *zap.SugaredLogger
+	startupTimeout time.Duration
 }
 
 func NewMetalExecutor(llamaServerBin, modelStorePath string, logger *zap.SugaredLogger) *MetalExecutor {
@@ -82,7 +93,17 @@ func NewMetalExecutor(llamaServerBin, modelStorePath string, logger *zap.Sugared
 		llamaServerBin: llamaServerBin,
 		modelStorePath: modelStorePath,
 		logger:         logger,
+		startupTimeout: DefaultLlamaServerStartupTimeout,
 	}
+}
+
+// SetStartupTimeout overrides the default llama-server startup timeout.
+// Values <= 0 are coerced back to DefaultLlamaServerStartupTimeout.
+func (e *MetalExecutor) SetStartupTimeout(d time.Duration) {
+	if d <= 0 {
+		d = DefaultLlamaServerStartupTimeout
+	}
+	e.startupTimeout = d
 }
 
 func (e *MetalExecutor) StartProcess(ctx context.Context, config ExecutorConfig) (*ManagedProcess, error) {
@@ -119,12 +140,12 @@ func (e *MetalExecutor) StartProcess(ctx context.Context, config ExecutorConfig)
 		Healthy:   false,
 	}
 
-	if err := e.waitForHealthy(port, 30*time.Second); err != nil {
+	if err := e.waitForHealthy(port, e.startupTimeout); err != nil {
 		if stopErr := e.StopProcess(process.PID); stopErr != nil {
 			e.logger.Warnw("failed to stop unhealthy process after health check failure",
 				"pid", process.PID, "port", port, "error", stopErr)
 		}
-		return nil, fmt.Errorf("process failed health check: %w", err)
+		return nil, fmt.Errorf("process failed health check after %s: %w", e.startupTimeout, err)
 	}
 
 	process.Healthy = true
