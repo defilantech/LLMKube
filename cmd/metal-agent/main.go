@@ -162,7 +162,8 @@ func main() {
 	flag.BoolVar(&cfg.EvictionEnabled, "eviction-enabled", false,
 		"Enable automatic process eviction under critical memory pressure")
 	flag.IntVar(&cfg.MaxWatchFailures, "max-watch-failures", agent.DefaultMaxConsecutiveFailures,
-		"Consecutive Kubernetes list failures from the InferenceService watcher before the agent gives up and exits for supervisor restart. Set to 0 to use the agent default.")
+		"Consecutive Kubernetes list failures from the InferenceService watcher before the agent "+
+			"gives up and exits for supervisor restart. Set to 0 to use the agent default.")
 	showVersion := flag.Bool("version", false, "Show version information")
 	flag.Parse()
 

@@ -152,7 +152,9 @@ func (w *InferenceServiceWatcher) Watch(ctx context.Context, eventChan chan<- In
 				)
 				if consecutiveFailures >= threshold {
 					w.logger.Errorw(
-						"watcher stalled — exceeded consecutive failure threshold, returning ErrWatchStalled so the agent can exit and be restarted by its supervisor",
+						"watcher stalled — exceeded consecutive failure threshold, "+
+							"returning ErrWatchStalled so the agent can exit and "+
+							"be restarted by its supervisor",
 						"consecutiveFailures", consecutiveFailures,
 						"threshold", threshold,
 						"lastError", err,

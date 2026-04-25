@@ -190,16 +190,7 @@ func (a *MetalAgent) Start(ctx context.Context) error {
 	if a.config.Port > 0 {
 		healthSrv := NewHealthServer(a, a.config.Port, a.logger.With("subsystem", "health-server"))
 		go func() {
-			err := healthSrv.Run(ctx)
-			if err == nil || ctx.Err() != nil {
-				return
-			}
-			a.logger.Errorw("health server exited unexpectedly, signalling fatal exit", "error", err)
-			fatalExitsTotal.WithLabelValues("health-server").Inc()
-			select {
-			case fatalErrChan <- fmt.Errorf("health server exited unexpectedly: %w", err):
-			default:
-			}
+			a.reportHealthServerExit(ctx, healthSrv.Run(ctx), fatalErrChan)
 		}()
 	}
 
@@ -224,51 +215,12 @@ func (a *MetalAgent) Start(ctx context.Context) error {
 		go watchdog.Run(ctx)
 	}
 
-	// Start watcher with retry logic. If the CRDs are not installed when
-	// the agent starts, Watch will fail immediately. We retry with
-	// exponential backoff so the agent recovers once CRDs become available.
-	// ErrWatchStalled is the one error type we do NOT retry on — it means
-	// the watcher's Kubernetes client is wedged, which a fresh Watch on the
-	// same client cannot fix. Bubble it up via fatalErrChan so the agent
-	// returns and the supervisor restarts the process with a fresh client.
+	// Start watcher with retry logic. If the CRDs are not installed when the
+	// agent starts, Watch will fail immediately. The retry loop with
+	// exponential backoff makes the agent recover once the CRDs land.
+	// ErrWatchStalled bypasses the retry path — see runWatcherLoop for why.
 	eventChan := make(chan InferenceServiceEvent)
-	go func() {
-		const (
-			initialBackoff = 5 * time.Second
-			maxBackoff     = 60 * time.Second
-			backoffFactor  = 2
-		)
-		backoff := initialBackoff
-		for {
-			err := a.watcher.Watch(ctx, eventChan)
-			if err == nil {
-				// Clean exit (context cancelled) — don't retry.
-				return
-			}
-			if ctx.Err() != nil {
-				return
-			}
-			if errors.Is(err, ErrWatchStalled) {
-				fatalExitsTotal.WithLabelValues("watcher").Inc()
-				select {
-				case fatalErrChan <- err:
-				default:
-				}
-				return
-			}
-			a.logger.Warnw("watcher exited with error, retrying",
-				"error", err, "retryIn", backoff)
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(backoff):
-			}
-			backoff *= backoffFactor
-			if backoff > maxBackoff {
-				backoff = maxBackoff
-			}
-		}
-	}()
+	go a.runWatcherLoop(ctx, eventChan, fatalErrChan)
 
 	// Process events
 	for {
@@ -535,6 +487,80 @@ func (a *MetalAgent) deleteProcess(ctx context.Context, key string) error {
 // scheduleRestart increments the restart counter and re-runs ensureProcess
 // for the named InferenceService. It is called by HealthMonitor when a process
 // becomes unhealthy.
+// runWatcherLoop drives a.watcher.Watch in a loop, retrying transient errors
+// with exponential backoff (handles the "CRDs not installed yet" startup
+// race) but bubbling ErrWatchStalled up via fatalErrChan immediately.
+// Stalled means the watcher's controller-runtime client cache is wedged;
+// restarting Watch on the same client cannot fix that, so the agent has to
+// exit and let its supervisor recycle the process with a fresh client.
+//
+// Extracted from Start so the retry-vs-fatal decision is unit-testable.
+func (a *MetalAgent) runWatcherLoop(
+	ctx context.Context,
+	eventChan chan<- InferenceServiceEvent,
+	fatalErrChan chan<- error,
+) {
+	const (
+		initialBackoff = 5 * time.Second
+		maxBackoff     = 60 * time.Second
+		backoffFactor  = 2
+	)
+	backoff := initialBackoff
+	for {
+		err := a.watcher.Watch(ctx, eventChan)
+		if err == nil {
+			return
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		if errors.Is(err, ErrWatchStalled) {
+			fatalExitsTotal.WithLabelValues("watcher").Inc()
+			select {
+			case fatalErrChan <- err:
+			default:
+			}
+			return
+		}
+		a.logger.Warnw("watcher exited with error, retrying",
+			"error", err, "retryIn", backoff)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+		backoff *= backoffFactor
+		if backoff > maxBackoff {
+			backoff = maxBackoff
+		}
+	}
+}
+
+// reportHealthServerExit handles the post-Run state of the management HTTP
+// server. It is a no-op when the server returned cleanly or when the agent
+// itself is shutting down (ctx cancelled). Any other return is fatal and
+// pushed to fatalErrChan so the agent exits — running the agent without the
+// management plane (metrics, healthz, readyz) is exactly the failure mode
+// #276 reported.
+//
+// Extracted from the Start goroutine so the no-op-vs-fatal classification is
+// unit-testable without spinning up an HTTP server.
+func (a *MetalAgent) reportHealthServerExit(
+	ctx context.Context,
+	runErr error,
+	fatalErrChan chan<- error,
+) {
+	if runErr == nil || ctx.Err() != nil {
+		return
+	}
+	a.logger.Errorw("health server exited unexpectedly, signalling fatal exit", "error", runErr)
+	fatalExitsTotal.WithLabelValues("health-server").Inc()
+	select {
+	case fatalErrChan <- fmt.Errorf("health server exited unexpectedly: %w", runErr):
+	default:
+	}
+}
+
 func (a *MetalAgent) scheduleRestart(ctx context.Context, name, namespace string) {
 	processRestarts.WithLabelValues(name, namespace).Inc()
 

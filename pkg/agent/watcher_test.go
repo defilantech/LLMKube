@@ -473,7 +473,7 @@ func scriptedListClient(t *testing.T, failOnCall func(n int32) bool) (client.Cli
 func TestWatch_StalledExitsAfterThreshold(t *testing.T) {
 	// Call 1 (listExisting) succeeds; calls 2+ all fail. With threshold=2 the
 	// watcher should bail out after two consecutive poll failures.
-	c, _ := scriptedListClient(t, func(n int32) bool { return n > 1 })
+	c, calls := scriptedListClient(t, func(n int32) bool { return n > 1 })
 	w := NewInferenceServiceWatcher(c, "default", newNopLogger())
 	w.SetPollInterval(10 * time.Millisecond)
 	w.SetMaxConsecutiveFailures(2)
@@ -486,6 +486,11 @@ func TestWatch_StalledExitsAfterThreshold(t *testing.T) {
 	if !errors.Is(err, ErrWatchStalled) {
 		t.Fatalf("Watch returned %v, want ErrWatchStalled", err)
 	}
+	// Sanity: 1 listExisting + 2 failed polls = exactly 3 List calls. Anything
+	// higher means we burned past the threshold without bailing out.
+	if got := calls.Load(); got != 3 {
+		t.Errorf("List call count = %d, want 3 (1 list-existing + 2 failed polls)", got)
+	}
 }
 
 func TestWatch_RecoversAndResetsCounter(t *testing.T) {
@@ -493,7 +498,7 @@ func TestWatch_RecoversAndResetsCounter(t *testing.T) {
 	// succeeds. Threshold of 5 means the recovery on call 4 should reset the
 	// counter and Watch should never return ErrWatchStalled — only the
 	// context timeout exits the loop.
-	c, _ := scriptedListClient(t, func(n int32) bool { return n == 2 || n == 3 })
+	c, calls := scriptedListClient(t, func(n int32) bool { return n == 2 || n == 3 })
 	w := NewInferenceServiceWatcher(c, "default", newNopLogger())
 	w.SetPollInterval(10 * time.Millisecond)
 	w.SetMaxConsecutiveFailures(5)
@@ -506,6 +511,11 @@ func TestWatch_RecoversAndResetsCounter(t *testing.T) {
 
 	if errors.Is(err, ErrWatchStalled) {
 		t.Errorf("Watch returned ErrWatchStalled despite mid-run recovery; counter did not reset")
+	}
+	// We should see at least 4 calls (list-existing + the two failures + at
+	// least one recovery) within the 500ms test window at a 10ms tick.
+	if got := calls.Load(); got < 4 {
+		t.Errorf("List call count = %d, want >= 4 to prove recovery exercised", got)
 	}
 }
 
