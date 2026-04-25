@@ -18,12 +18,16 @@ package agent
 
 import (
 	"context"
+	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 )
@@ -400,6 +404,108 @@ func TestPoll_DetectsDeletedService(t *testing.T) {
 	}
 	if event.InferenceService.Name != "old-model" {
 		t.Errorf("event service name = %q, want %q", event.InferenceService.Name, "old-model")
+	}
+}
+
+func TestSetMaxConsecutiveFailures(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = inferencev1alpha1.AddToScheme(scheme)
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	w := NewInferenceServiceWatcher(k8sClient, "default", newNopLogger())
+
+	if w.maxConsecutiveFailures != DefaultMaxConsecutiveFailures {
+		t.Errorf("default = %d, want %d", w.maxConsecutiveFailures, DefaultMaxConsecutiveFailures)
+	}
+	w.SetMaxConsecutiveFailures(7)
+	if w.maxConsecutiveFailures != 7 {
+		t.Errorf("after Set(7) = %d, want 7", w.maxConsecutiveFailures)
+	}
+	// Non-positive coerces back to default.
+	w.SetMaxConsecutiveFailures(0)
+	if w.maxConsecutiveFailures != DefaultMaxConsecutiveFailures {
+		t.Errorf("after Set(0) = %d, want %d", w.maxConsecutiveFailures, DefaultMaxConsecutiveFailures)
+	}
+}
+
+func TestSetPollInterval(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = inferencev1alpha1.AddToScheme(scheme)
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	w := NewInferenceServiceWatcher(k8sClient, "default", newNopLogger())
+
+	if w.pollInterval != defaultPollInterval {
+		t.Errorf("default poll interval = %v, want %v", w.pollInterval, defaultPollInterval)
+	}
+	w.SetPollInterval(50 * time.Millisecond)
+	if w.pollInterval != 50*time.Millisecond {
+		t.Errorf("after Set(50ms) = %v", w.pollInterval)
+	}
+	// Non-positive ignored.
+	w.SetPollInterval(0)
+	if w.pollInterval != 50*time.Millisecond {
+		t.Errorf("Set(0) should be ignored, got %v", w.pollInterval)
+	}
+}
+
+// scriptedListClient wraps a fake client and lets each test prescribe a
+// failure pattern across successive List calls. failBetween reports whether
+// the n-th call (1-indexed) should fail.
+func scriptedListClient(t *testing.T, failOnCall func(n int32) bool) (client.Client, *atomic.Int32) {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	if err := inferencev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme: %v", err)
+	}
+	base := fake.NewClientBuilder().WithScheme(scheme).Build()
+	var calls atomic.Int32
+	c := interceptor.NewClient(base, interceptor.Funcs{
+		List: func(ctx context.Context, w client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			n := calls.Add(1)
+			if failOnCall(n) {
+				return errors.New("synthetic list failure")
+			}
+			return w.List(ctx, list, opts...)
+		},
+	})
+	return c, &calls
+}
+
+func TestWatch_StalledExitsAfterThreshold(t *testing.T) {
+	// Call 1 (listExisting) succeeds; calls 2+ all fail. With threshold=2 the
+	// watcher should bail out after two consecutive poll failures.
+	c, _ := scriptedListClient(t, func(n int32) bool { return n > 1 })
+	w := NewInferenceServiceWatcher(c, "default", newNopLogger())
+	w.SetPollInterval(10 * time.Millisecond)
+	w.SetMaxConsecutiveFailures(2)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	eventChan := make(chan InferenceServiceEvent, 1)
+	err := w.Watch(ctx, eventChan)
+	if !errors.Is(err, ErrWatchStalled) {
+		t.Fatalf("Watch returned %v, want ErrWatchStalled", err)
+	}
+}
+
+func TestWatch_RecoversAndResetsCounter(t *testing.T) {
+	// listExisting (call 1) succeeds; polls 2 and 3 fail; everything after
+	// succeeds. Threshold of 5 means the recovery on call 4 should reset the
+	// counter and Watch should never return ErrWatchStalled — only the
+	// context timeout exits the loop.
+	c, _ := scriptedListClient(t, func(n int32) bool { return n == 2 || n == 3 })
+	w := NewInferenceServiceWatcher(c, "default", newNopLogger())
+	w.SetPollInterval(10 * time.Millisecond)
+	w.SetMaxConsecutiveFailures(5)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	eventChan := make(chan InferenceServiceEvent, 1)
+	err := w.Watch(ctx, eventChan)
+
+	if errors.Is(err, ErrWatchStalled) {
+		t.Errorf("Watch returned ErrWatchStalled despite mid-run recovery; counter did not reset")
 	}
 }
 

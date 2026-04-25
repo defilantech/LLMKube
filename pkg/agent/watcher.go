@@ -18,6 +18,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -28,6 +29,21 @@ import (
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 )
+
+// ErrWatchStalled is returned from Watch when the polling loop has accumulated
+// more consecutive list errors than the configured threshold. The agent treats
+// this as a fatal condition and exits non-zero so the process supervisor
+// (launchd / systemd) can recycle it with a fresh Kubernetes client. This
+// recovers from situations like the underlying controller-runtime cache
+// silently serving stale data after its watch connection drops.
+var ErrWatchStalled = errors.New("watcher polling stalled: consecutive list failures exceeded threshold")
+
+// DefaultMaxConsecutiveFailures is the threshold at which the watcher gives
+// up on its current Kubernetes connection. Three failures over the 5-second
+// poll interval is 15 seconds of consecutive trouble — long enough to rule
+// out a single transient network blip and short enough that the agent does
+// not silently sit on a dead watch for hours.
+const DefaultMaxConsecutiveFailures = 3
 
 // EventType represents the type of InferenceService event
 type EventType string
@@ -44,27 +60,59 @@ type InferenceServiceEvent struct {
 	InferenceService *inferencev1alpha1.InferenceService
 }
 
+// defaultPollInterval is how often the watcher re-lists InferenceServices
+// looking for changes. Five seconds is a balance between responsiveness for
+// scaling events and load on the API server when many agents share a cluster.
+const defaultPollInterval = 5 * time.Second
+
 // InferenceServiceWatcher watches for InferenceService resources
 type InferenceServiceWatcher struct {
-	client    client.Client
-	namespace string
-	logger    *zap.SugaredLogger
+	client                 client.Client
+	namespace              string
+	logger                 *zap.SugaredLogger
+	maxConsecutiveFailures int
+	pollInterval           time.Duration
 }
 
-// NewInferenceServiceWatcher creates a new watcher
+// NewInferenceServiceWatcher creates a new watcher with the default failure
+// threshold (DefaultMaxConsecutiveFailures). Use SetMaxConsecutiveFailures to
+// override.
 func NewInferenceServiceWatcher(
 	k8sClient client.Client,
 	namespace string,
 	logger *zap.SugaredLogger,
 ) *InferenceServiceWatcher {
 	return &InferenceServiceWatcher{
-		client:    k8sClient,
-		namespace: namespace,
-		logger:    logger,
+		client:                 k8sClient,
+		namespace:              namespace,
+		logger:                 logger,
+		maxConsecutiveFailures: DefaultMaxConsecutiveFailures,
+		pollInterval:           defaultPollInterval,
 	}
 }
 
-// Watch starts watching for InferenceService changes
+// SetMaxConsecutiveFailures overrides the default failure threshold. Values
+// less than 1 are coerced to DefaultMaxConsecutiveFailures.
+func (w *InferenceServiceWatcher) SetMaxConsecutiveFailures(n int) {
+	if n < 1 {
+		n = DefaultMaxConsecutiveFailures
+	}
+	w.maxConsecutiveFailures = n
+}
+
+// SetPollInterval overrides the default 5s polling interval. Intended for
+// tests that want to drive the loop quickly; production code should leave
+// the default alone. Zero or negative values are ignored.
+func (w *InferenceServiceWatcher) SetPollInterval(d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	w.pollInterval = d
+}
+
+// Watch starts watching for InferenceService changes. It returns nil on clean
+// context cancellation, ErrWatchStalled when consecutive list failures exceed
+// the configured threshold, or a wrapped error on initial-list failure.
 func (w *InferenceServiceWatcher) Watch(ctx context.Context, eventChan chan<- InferenceServiceEvent) error {
 	// List existing InferenceServices on startup
 	if err := w.listExisting(ctx, eventChan); err != nil {
@@ -72,11 +120,22 @@ func (w *InferenceServiceWatcher) Watch(ctx context.Context, eventChan chan<- In
 	}
 
 	// Watch for changes
-	ticker := time.NewTicker(5 * time.Second)
+	interval := w.pollInterval
+	if interval <= 0 {
+		interval = defaultPollInterval
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	// Store last seen resource versions to detect changes
 	seen := make(map[string]string)
+
+	threshold := w.maxConsecutiveFailures
+	if threshold < 1 {
+		threshold = DefaultMaxConsecutiveFailures
+	}
+	consecutiveFailures := 0
+	watchConsecutiveFailures.Set(0)
 
 	for {
 		select {
@@ -84,7 +143,28 @@ func (w *InferenceServiceWatcher) Watch(ctx context.Context, eventChan chan<- In
 			return nil
 		case <-ticker.C:
 			if err := w.poll(ctx, eventChan, seen); err != nil {
-				w.logger.Warnw("polling error", "error", err)
+				consecutiveFailures++
+				watchConsecutiveFailures.Set(float64(consecutiveFailures))
+				w.logger.Warnw("polling error",
+					"error", err,
+					"consecutiveFailures", consecutiveFailures,
+					"threshold", threshold,
+				)
+				if consecutiveFailures >= threshold {
+					w.logger.Errorw(
+						"watcher stalled — exceeded consecutive failure threshold, returning ErrWatchStalled so the agent can exit and be restarted by its supervisor",
+						"consecutiveFailures", consecutiveFailures,
+						"threshold", threshold,
+						"lastError", err,
+					)
+					return ErrWatchStalled
+				}
+				continue
+			}
+			if consecutiveFailures > 0 {
+				w.logger.Infow("polling recovered after errors", "previousFailures", consecutiveFailures)
+				consecutiveFailures = 0
+				watchConsecutiveFailures.Set(0)
 			}
 		}
 	}

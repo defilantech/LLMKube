@@ -58,6 +58,12 @@ type MetalAgentConfig struct {
 
 	// WatchdogConfig configures the memory pressure watchdog. Nil disables it.
 	WatchdogConfig *MemoryWatchdogConfig
+
+	// MaxWatchFailures is the consecutive-failure threshold at which the
+	// InferenceService watcher gives up on its current Kubernetes connection
+	// and signals a fatal exit. Zero means use the watcher's built-in default
+	// (DefaultMaxConsecutiveFailures).
+	MaxWatchFailures int
 }
 
 // MetalAgent watches Kubernetes InferenceService resources and manages
@@ -135,8 +141,16 @@ func (a *MetalAgent) Start(ctx context.Context) error {
 		a.logger.Warnw("unable to query total memory", "error", err)
 	}
 
+	// fatalErrChan carries terminal failures from background subsystems
+	// (watcher, health server) up to the main select loop, so the agent can
+	// return cleanly and let the supervisor restart the process.
+	fatalErrChan := make(chan error, 2)
+
 	// Initialize components
 	a.watcher = NewInferenceServiceWatcher(a.config.K8sClient, a.config.Namespace, a.logger.With("subsystem", "watcher"))
+	if a.config.MaxWatchFailures > 0 {
+		a.watcher.SetMaxConsecutiveFailures(a.config.MaxWatchFailures)
+	}
 
 	switch a.config.Runtime {
 	case "omlx":
@@ -169,12 +183,22 @@ func (a *MetalAgent) Start(ctx context.Context) error {
 
 	a.registry = NewServiceRegistry(a.config.K8sClient, a.config.HostIP, a.logger.With("subsystem", "registry"))
 
-	// Start health server
+	// Start health server. An unexpected exit here (port binding lost,
+	// listener crashed) is fatal — the management plane is how operators
+	// observe and recover the agent, so running blind is worse than
+	// restarting clean.
 	if a.config.Port > 0 {
 		healthSrv := NewHealthServer(a, a.config.Port, a.logger.With("subsystem", "health-server"))
 		go func() {
-			if err := healthSrv.Run(ctx); err != nil {
-				a.logger.Warnw("health server exited with error", "error", err)
+			err := healthSrv.Run(ctx)
+			if err == nil || ctx.Err() != nil {
+				return
+			}
+			a.logger.Errorw("health server exited unexpectedly, signalling fatal exit", "error", err)
+			fatalExitsTotal.WithLabelValues("health-server").Inc()
+			select {
+			case fatalErrChan <- fmt.Errorf("health server exited unexpectedly: %w", err):
+			default:
 			}
 		}()
 	}
@@ -203,6 +227,10 @@ func (a *MetalAgent) Start(ctx context.Context) error {
 	// Start watcher with retry logic. If the CRDs are not installed when
 	// the agent starts, Watch will fail immediately. We retry with
 	// exponential backoff so the agent recovers once CRDs become available.
+	// ErrWatchStalled is the one error type we do NOT retry on — it means
+	// the watcher's Kubernetes client is wedged, which a fresh Watch on the
+	// same client cannot fix. Bubble it up via fatalErrChan so the agent
+	// returns and the supervisor restarts the process with a fresh client.
 	eventChan := make(chan InferenceServiceEvent)
 	go func() {
 		const (
@@ -217,8 +245,15 @@ func (a *MetalAgent) Start(ctx context.Context) error {
 				// Clean exit (context cancelled) — don't retry.
 				return
 			}
-			// Check if context is done before retrying.
 			if ctx.Err() != nil {
+				return
+			}
+			if errors.Is(err, ErrWatchStalled) {
+				fatalExitsTotal.WithLabelValues("watcher").Inc()
+				select {
+				case fatalErrChan <- err:
+				default:
+				}
 				return
 			}
 			a.logger.Warnw("watcher exited with error, retrying",
@@ -240,6 +275,10 @@ func (a *MetalAgent) Start(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return nil
+		case fatalErr := <-fatalErrChan:
+			a.logger.Errorw("agent received fatal signal, exiting for supervisor restart",
+				"error", fatalErr)
+			return fatalErr
 		case event := <-eventChan:
 			if err := a.handleEvent(ctx, event); err != nil {
 				a.logger.Warnw("failed to handle event", "eventType", event.Type, "error", err)
