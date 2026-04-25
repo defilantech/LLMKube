@@ -299,6 +299,121 @@ func TestUnregisterEndpoint_Idempotent(t *testing.T) {
 	}
 }
 
+func TestReconcileOrphanEndpoints(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = inferencev1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+
+	// Live InferenceService whose Service+Endpoints should NOT be cleaned up.
+	liveISVC := &inferencev1alpha1.InferenceService{
+		ObjectMeta: metav1.ObjectMeta{Name: "live-model", Namespace: "default"},
+		Spec:       inferencev1alpha1.InferenceServiceSpec{ModelRef: "live-model"},
+	}
+	liveSvc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "live-model",
+			Namespace: "default",
+			Labels: map[string]string{
+				"llmkube.ai/managed-by":        "metal-agent",
+				"llmkube.ai/inference-service": "live-model",
+			},
+		},
+	}
+
+	// Orphan: Service exists but no matching InferenceService.
+	orphanSvc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "orphan-model",
+			Namespace: "default",
+			Labels: map[string]string{
+				"llmkube.ai/managed-by":        "metal-agent",
+				"llmkube.ai/inference-service": "orphan-model",
+			},
+		},
+	}
+	//nolint:staticcheck // SA1019: Endpoints API is still functional and matches production code under test
+	orphanEndpoints := &corev1.Endpoints{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "orphan-model",
+			Namespace: "default",
+			Labels: map[string]string{
+				"llmkube.ai/managed-by":        "metal-agent",
+				"llmkube.ai/inference-service": "orphan-model",
+			},
+		},
+	}
+
+	// Foreign Service that we don't own — must be ignored entirely.
+	foreignSvc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "foreign-svc",
+			Namespace: "default",
+			Labels:    map[string]string{"app": "something-else"},
+		},
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRuntimeObjects(liveISVC, liveSvc, orphanSvc, orphanEndpoints, foreignSvc).
+		Build()
+
+	registry := NewServiceRegistry(k8sClient, "", newNopLogger())
+
+	cleaned, err := registry.ReconcileOrphanEndpoints(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("ReconcileOrphanEndpoints returned error: %v", err)
+	}
+	if cleaned != 1 {
+		t.Errorf("cleaned = %d, want 1 (only orphan-model should be cleaned)", cleaned)
+	}
+
+	// Live InferenceService's Service must still exist.
+	if err := k8sClient.Get(context.Background(),
+		types.NamespacedName{Name: "live-model", Namespace: "default"},
+		&corev1.Service{}); err != nil {
+		t.Errorf("live Service was wrongly deleted: %v", err)
+	}
+
+	// Orphan Service must be gone.
+	if err := k8sClient.Get(context.Background(),
+		types.NamespacedName{Name: "orphan-model", Namespace: "default"},
+		&corev1.Service{}); err == nil {
+		t.Error("orphan Service should have been deleted")
+	}
+
+	// Orphan Endpoints must also be gone.
+	//nolint:staticcheck // SA1019: Endpoints API is still functional and matches production code under test
+	if err := k8sClient.Get(context.Background(),
+		types.NamespacedName{Name: "orphan-model", Namespace: "default"},
+		&corev1.Endpoints{}); err == nil {
+		t.Error("orphan Endpoints should have been deleted")
+	}
+
+	// Foreign Service (not labeled managed-by us) must be untouched.
+	if err := k8sClient.Get(context.Background(),
+		types.NamespacedName{Name: "foreign-svc", Namespace: "default"},
+		&corev1.Service{}); err != nil {
+		t.Errorf("foreign Service was wrongly deleted: %v", err)
+	}
+}
+
+func TestReconcileOrphanEndpoints_EmptyCluster(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = inferencev1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := NewServiceRegistry(k8sClient, "", newNopLogger())
+
+	cleaned, err := registry.ReconcileOrphanEndpoints(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("ReconcileOrphanEndpoints on empty cluster returned error: %v", err)
+	}
+	if cleaned != 0 {
+		t.Errorf("cleaned = %d, want 0 on empty cluster", cleaned)
+	}
+}
+
 func TestGetHostIP(t *testing.T) {
 	// getHostIP should return a non-empty string regardless of environment
 	ip := getHostIP()
