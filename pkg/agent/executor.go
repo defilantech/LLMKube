@@ -39,6 +39,29 @@ type ExecutorConfig struct {
 	GPULayers   int32
 	ContextSize int
 	Jinja       bool
+
+	// FlashAttention enables llama.cpp's --flash-attn flag. On Apple Silicon
+	// this is a clear win for long-context agentic workloads (prevents the
+	// ~25% decode degradation observed at 4K+ context on Qwen-class models).
+	// Defaults true at the agent → executor boundary.
+	FlashAttention bool
+
+	// Mlock pins model weights and KV cache so macOS's wired collector cannot
+	// evict our Metal GPU buffers under memory pressure. Defaults true.
+	Mlock bool
+
+	// Threads sets --threads. Zero means auto-detect from performance core
+	// count via detectPerfCoreCount(); a non-positive detection result causes
+	// the flag to be omitted (let llama-server pick).
+	Threads int
+
+	// BatchSize sets --batch-size. Zero falls back to 2048, which prompt
+	// processing benchmarks on M-series chips treat as a sweet spot.
+	BatchSize int
+
+	// UBatchSize sets --ubatch-size. Zero omits the flag (use llama-server's
+	// own default).
+	UBatchSize int
 }
 
 // ProcessExecutor is the interface that both llama-server and oMLX executors
@@ -73,23 +96,7 @@ func (e *MetalExecutor) StartProcess(ctx context.Context, config ExecutorConfig)
 		return nil, fmt.Errorf("failed to allocate port: %w", err)
 	}
 
-	gpuLayers := config.GPULayers
-	if gpuLayers == 0 {
-		gpuLayers = 99
-	}
-
-	args := []string{
-		"--model", modelPath,
-		"--host", "0.0.0.0",
-		"--port", fmt.Sprintf("%d", port),
-		"--n-gpu-layers", fmt.Sprintf("%d", gpuLayers),
-		"--ctx-size", fmt.Sprintf("%d", config.ContextSize),
-		"--metrics",
-	}
-
-	if config.Jinja {
-		args = append(args, "--jinja")
-	}
+	args := buildLlamaServerArgs(modelPath, port, config)
 
 	cmd := exec.Command(e.llamaServerBin, args...)
 
@@ -227,6 +234,58 @@ func (e *MetalExecutor) waitForHealthy(port int, timeout time.Duration) error {
 			}
 		}
 	}
+}
+
+// buildLlamaServerArgs constructs the command-line argument vector for the
+// llama-server child process. It is split out from StartProcess so it can be
+// unit tested without spawning a real process and so the Apple-Silicon-specific
+// optimizations are inspectable in one place.
+func buildLlamaServerArgs(modelPath string, port int, config ExecutorConfig) []string {
+	gpuLayers := config.GPULayers
+	if gpuLayers == 0 {
+		gpuLayers = 99
+	}
+
+	args := []string{
+		"--model", modelPath,
+		"--host", "0.0.0.0",
+		"--port", fmt.Sprintf("%d", port),
+		"--n-gpu-layers", fmt.Sprintf("%d", gpuLayers),
+		"--ctx-size", fmt.Sprintf("%d", config.ContextSize),
+		"--metrics",
+	}
+
+	if config.FlashAttention {
+		args = append(args, "--flash-attn", "on")
+	}
+
+	if config.Mlock {
+		args = append(args, "--mlock")
+	}
+
+	threads := config.Threads
+	if threads == 0 {
+		threads = detectPerfCoreCount()
+	}
+	if threads > 0 {
+		args = append(args, "--threads", fmt.Sprintf("%d", threads))
+	}
+
+	batchSize := config.BatchSize
+	if batchSize == 0 {
+		batchSize = 2048
+	}
+	args = append(args, "--batch-size", fmt.Sprintf("%d", batchSize))
+
+	if config.UBatchSize > 0 {
+		args = append(args, "--ubatch-size", fmt.Sprintf("%d", config.UBatchSize))
+	}
+
+	if config.Jinja {
+		args = append(args, "--jinja")
+	}
+
+	return args
 }
 
 // allocatePort asks the kernel for an unused TCP port by binding to

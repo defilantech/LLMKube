@@ -396,15 +396,36 @@ func (a *MetalAgent) ensureProcess(ctx context.Context, isvc *inferencev1alpha1.
 		}
 	}
 
+	// Apple Silicon defaults: flash-attn and mlock both ON. The user can
+	// disable flash-attn by setting spec.flashAttention=false; mlock has no
+	// CRD opt-out because the macOS wired-collector eviction it prevents is
+	// the entire reason the Metal agent exists in the first place.
+	flashAttn := true
+	if isvc.Spec.FlashAttention != nil {
+		flashAttn = *isvc.Spec.FlashAttention
+	}
+	batchSize := 0
+	if isvc.Spec.BatchSize != nil {
+		batchSize = int(*isvc.Spec.BatchSize)
+	}
+	uBatchSize := 0
+	if isvc.Spec.UBatchSize != nil {
+		uBatchSize = int(*isvc.Spec.UBatchSize)
+	}
+
 	// Start the process
 	process, err := a.executor.StartProcess(ctx, ExecutorConfig{
-		Name:        isvc.Name,
-		Namespace:   isvc.Namespace,
-		ModelSource: model.Spec.Source,
-		ModelName:   model.Name,
-		GPULayers:   gpuLayers,
-		ContextSize: contextSize,
-		Jinja:       isvc.Spec.Jinja != nil && *isvc.Spec.Jinja,
+		Name:           isvc.Name,
+		Namespace:      isvc.Namespace,
+		ModelSource:    model.Spec.Source,
+		ModelName:      model.Name,
+		GPULayers:      gpuLayers,
+		ContextSize:    contextSize,
+		Jinja:          isvc.Spec.Jinja != nil && *isvc.Spec.Jinja,
+		FlashAttention: flashAttn,
+		Mlock:          true,
+		BatchSize:      batchSize,
+		UBatchSize:     uBatchSize,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to start process: %w", err)

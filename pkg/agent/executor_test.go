@@ -107,6 +107,100 @@ func TestEnsureModel_DownloadFails(t *testing.T) {
 	}
 }
 
+func TestBuildLlamaServerArgs_Defaults(t *testing.T) {
+	args := buildLlamaServerArgs("/models/test.gguf", 8080, ExecutorConfig{
+		ContextSize: 32768,
+	})
+
+	want := map[string]string{
+		"--model":        "/models/test.gguf",
+		"--host":         "0.0.0.0",
+		"--port":         "8080",
+		"--n-gpu-layers": "99",
+		"--ctx-size":     "32768",
+		"--batch-size":   "2048",
+	}
+	for flag, expected := range want {
+		if got := flagValue(args, flag); got != expected {
+			t.Errorf("%s = %q, want %q (full args: %v)", flag, got, expected, args)
+		}
+	}
+
+	if hasFlag(args, "--metrics") != true {
+		t.Error("--metrics flag must always be present")
+	}
+
+	// FlashAttention/Mlock/Jinja default to false at the buildArgs boundary;
+	// the agent layer is what defaults them to true.
+	for _, unwanted := range []string{"--flash-attn", "--mlock", "--jinja", "--ubatch-size"} {
+		if hasFlag(args, unwanted) {
+			t.Errorf("unexpected flag %q in default args: %v", unwanted, args)
+		}
+	}
+}
+
+func TestBuildLlamaServerArgs_AppleSiliconOptimized(t *testing.T) {
+	args := buildLlamaServerArgs("/models/test.gguf", 9000, ExecutorConfig{
+		ContextSize:    65536,
+		FlashAttention: true,
+		Mlock:          true,
+		Threads:        12,
+		BatchSize:      4096,
+		UBatchSize:     512,
+		Jinja:          true,
+	})
+
+	if got := flagValue(args, "--flash-attn"); got != "on" {
+		t.Errorf("--flash-attn = %q, want %q", got, "on")
+	}
+	if !hasFlag(args, "--mlock") {
+		t.Error("--mlock missing")
+	}
+	if got := flagValue(args, "--threads"); got != "12" {
+		t.Errorf("--threads = %q, want %q", got, "12")
+	}
+	if got := flagValue(args, "--batch-size"); got != "4096" {
+		t.Errorf("--batch-size = %q, want %q", got, "4096")
+	}
+	if got := flagValue(args, "--ubatch-size"); got != "512" {
+		t.Errorf("--ubatch-size = %q, want %q", got, "512")
+	}
+	if !hasFlag(args, "--jinja") {
+		t.Error("--jinja missing")
+	}
+}
+
+func TestBuildLlamaServerArgs_GPULayersOverride(t *testing.T) {
+	args := buildLlamaServerArgs("/m.gguf", 8080, ExecutorConfig{
+		ContextSize: 4096,
+		GPULayers:   42,
+	})
+	if got := flagValue(args, "--n-gpu-layers"); got != "42" {
+		t.Errorf("--n-gpu-layers = %q, want %q", got, "42")
+	}
+}
+
+// hasFlag reports whether a bare flag (no value following) is present.
+func hasFlag(args []string, name string) bool {
+	for _, a := range args {
+		if a == name {
+			return true
+		}
+	}
+	return false
+}
+
+// flagValue returns the argument immediately following the named flag, or ""
+// if the flag is absent or appears as the last element.
+func flagValue(args []string, name string) string {
+	for i, a := range args {
+		if a == name && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+
 func TestStopProcess_InvalidPID(t *testing.T) {
 	executor := NewMetalExecutor("/bin/llama-server", "/models", newNopLogger())
 

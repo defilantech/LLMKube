@@ -97,9 +97,14 @@ type InferenceServiceSpec struct {
 	// +optional
 	ParallelSlots *int32 `json:"parallelSlots,omitempty"`
 
-	// FlashAttention enables flash attention for faster prompt processing and reduced
-	// VRAM usage. Requires a GPU with flash attention support (NVIDIA Ampere or newer).
-	// Maps to llama.cpp --flash-attn flag. Only applied when GPU is configured.
+	// FlashAttention enables flash attention for faster prompt processing and
+	// reduced KV cache memory. Maps to llama.cpp --flash-attn flag.
+	//
+	// On NVIDIA GPUs requires Ampere or newer (compute capability 8.0+).
+	// On Apple Silicon (Metal agent path) the default is true when this field
+	// is unset, because the wired-collector + flash-attn combination prevents
+	// the ~25% decode degradation observed at long context on Qwen-class
+	// models running on M-series chips.
 	// +optional
 	FlashAttention *bool `json:"flashAttention,omitempty"`
 
