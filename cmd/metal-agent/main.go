@@ -60,6 +60,7 @@ type AgentConfig struct {
 	MemoryPressureWarning  float64
 	MemoryPressureCritical float64
 	EvictionEnabled        bool
+	MaxWatchFailures       int
 }
 
 func parseLogLevel(level string) zapcore.Level {
@@ -160,6 +161,9 @@ func main() {
 		"Available memory fraction below which pressure is critical")
 	flag.BoolVar(&cfg.EvictionEnabled, "eviction-enabled", false,
 		"Enable automatic process eviction under critical memory pressure")
+	flag.IntVar(&cfg.MaxWatchFailures, "max-watch-failures", agent.DefaultMaxConsecutiveFailures,
+		"Consecutive Kubernetes list failures from the InferenceService watcher before the agent "+
+			"gives up and exits for supervisor restart. Set to 0 to use the agent default.")
 	showVersion := flag.Bool("version", false, "Show version information")
 	flag.Parse()
 
@@ -283,18 +287,19 @@ func main() {
 	// Create agent
 	logger.Infow("creating Metal agent")
 	agentCfg := agent.MetalAgentConfig{
-		K8sClient:      k8sClient,
-		Namespace:      cfg.Namespace,
-		ModelStorePath: cfg.ModelStorePath,
-		LlamaServerBin: cfg.LlamaServerBin,
-		Runtime:        cfg.Runtime,
-		OMLXBin:        cfg.OMLXBin,
-		OMLXPort:       cfg.OMLXPort,
-		OllamaPort:     cfg.OllamaPort,
-		Port:           cfg.Port,
-		HostIP:         cfg.HostIP,
-		Logger:         logger,
-		MemoryFraction: cfg.MemoryFraction,
+		K8sClient:        k8sClient,
+		Namespace:        cfg.Namespace,
+		ModelStorePath:   cfg.ModelStorePath,
+		LlamaServerBin:   cfg.LlamaServerBin,
+		Runtime:          cfg.Runtime,
+		OMLXBin:          cfg.OMLXBin,
+		OMLXPort:         cfg.OMLXPort,
+		OllamaPort:       cfg.OllamaPort,
+		Port:             cfg.Port,
+		HostIP:           cfg.HostIP,
+		Logger:           logger,
+		MemoryFraction:   cfg.MemoryFraction,
+		MaxWatchFailures: cfg.MaxWatchFailures,
 	}
 	if cfg.WatchdogInterval > 0 {
 		agentCfg.WatchdogConfig = &agent.MemoryWatchdogConfig{

@@ -109,6 +109,26 @@ var (
 			Help: "Total number of process eviction events triggered by memory pressure.",
 		},
 	)
+
+	watchConsecutiveFailures = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "llmkube_metal_agent_watch_consecutive_failures",
+			Help: "Current count of consecutive Kubernetes list failures from the " +
+				"InferenceService watcher. Resets to 0 on a successful poll. " +
+				"Triggers a fatal exit when the configured threshold is reached.",
+		},
+	)
+
+	fatalExitsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llmkube_metal_agent_fatal_exits_total",
+			Help: "Total number of fatal-exit signals raised by agent subsystems " +
+				"(watcher, health-server). The agent process terminates after raising one; " +
+				"this counter is therefore typically 0 or 1 over a process lifetime, but " +
+				"useful when scraped by a metric pipeline that survives the restart.",
+		},
+		[]string{"subsystem"},
+	)
 )
 
 func init() {
@@ -126,5 +146,7 @@ func init() {
 		processRSSBytes,
 		memoryPressureLevelGauge,
 		evictionsTotal,
+		watchConsecutiveFailures,
+		fatalExitsTotal,
 	)
 }
