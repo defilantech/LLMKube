@@ -177,14 +177,31 @@ The Metal Agent can publish real-time CPU / GPU / ANE / Combined power gauges so
 
 ### Enable
 
-1. Install the NOPASSWD sudoers fragment so the agent can call `powermetrics` without a password:
+1. Install the NOPASSWD sudoers fragment so the agent can call `powermetrics` without a password. **The shipped fragment pins both the binary path and its argument vector** so the grant is `powermetrics --samplers cpu_power,gpu_power -i <numeric-interval>` only — not `powermetrics --output-file=/wherever`.
 
    ```bash
-   # Replace USERNAME with the user the agent runs as
-   sed "s/USERNAME/$(whoami)/" deployment/macos/sudoers.d/llmkube-powermetrics \
-     | sudo tee /etc/sudoers.d/llmkube-powermetrics > /dev/null
-   sudo chmod 0440 /etc/sudoers.d/llmkube-powermetrics
-   sudo visudo -c -f /etc/sudoers.d/llmkube-powermetrics
+   # Render the placeholder, validate syntax in a tempfile, then atomically
+   # install. visudo -cf will refuse to install a malformed file rather than
+   # leaving sudo broken.
+   TMP=$(mktemp)
+   sed "s/__LLMKUBE_USER__/$(whoami)/" deployment/macos/sudoers.d/llmkube-powermetrics > "$TMP"
+   sudo visudo -cf "$TMP"
+   sudo install -m 0440 -o root -g wheel "$TMP" /etc/sudoers.d/llmkube-powermetrics
+   rm "$TMP"
+   ```
+
+   Verify the grant is scoped as you expect:
+
+   ```bash
+   sudo -ln | grep powermetrics
+   # User <you> may run the following commands on this host:
+   #     (root) NOPASSWD: /usr/bin/powermetrics --samplers cpu_power\,gpu_power -i [0-9]*
+   ```
+
+   To **uninstall**, simply:
+
+   ```bash
+   sudo rm /etc/sudoers.d/llmkube-powermetrics
    ```
 
 2. Add `--apple-power-enabled` to the agent's `ProgramArguments` and reload launchd:

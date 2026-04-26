@@ -74,6 +74,11 @@ type ApplePowerSampler struct {
 	interval time.Duration
 	logger   *zap.SugaredLogger
 
+	// disabled is true when NewApplePowerSampler refused to construct a real
+	// sampler (e.g. because --powermetrics-bin was overridden). Run becomes a
+	// no-op so the agent keeps running without power data rather than crashing.
+	disabled bool
+
 	// commandFactory builds the exec.Cmd. Overridden in tests so the parser
 	// can be exercised without spawning powermetrics.
 	commandFactory func(ctx context.Context, bin string, interval time.Duration) *exec.Cmd
@@ -81,15 +86,30 @@ type ApplePowerSampler struct {
 
 // NewApplePowerSampler constructs a sampler. Empty bin or zero interval fall
 // back to DefaultPowermetricsBin / DefaultApplePowerInterval.
+//
+// SECURITY: bin is locked to DefaultPowermetricsBin. The shipped sudoers entry
+// grants NOPASSWD only for that exact path; allowing an arbitrary --powermetrics-bin
+// would let an operator point the agent at a binary the sudoers spec doesn't
+// match (silently broken, no power data) — or worse, line up a path that
+// happens to match a future, looser sudoers rule. We refuse to construct a
+// real sampler when bin diverges and return a no-op instead so the agent keeps
+// running without power data rather than failing closed.
 func NewApplePowerSampler(bin string, interval time.Duration, logger *zap.SugaredLogger) *ApplePowerSampler {
+	if logger == nil {
+		logger = zap.NewNop().Sugar()
+	}
 	if bin == "" {
 		bin = DefaultPowermetricsBin
 	}
+	if bin != DefaultPowermetricsBin {
+		logger.Warnw("apple-power: refusing to launch with non-default powermetrics bin — "+
+			"the shipped sudoers entry is pinned to "+DefaultPowermetricsBin+
+			"; remove --powermetrics-bin or rebuild from source if you really need a different path",
+			"requestedBin", bin, "expectedBin", DefaultPowermetricsBin)
+		return &ApplePowerSampler{disabled: true, logger: logger}
+	}
 	if interval <= 0 {
 		interval = DefaultApplePowerInterval
-	}
-	if logger == nil {
-		logger = zap.NewNop().Sugar()
 	}
 	return &ApplePowerSampler{
 		bin:            bin,
@@ -103,6 +123,10 @@ func NewApplePowerSampler(bin string, interval time.Duration, logger *zap.Sugare
 // cancelled or the child exits. It logs and returns on terminal errors but
 // does not panic the agent — Apple power data is purely additive.
 func (s *ApplePowerSampler) Run(ctx context.Context) {
+	if s.disabled {
+		s.logger.Infow("apple-power: sampler disabled (see prior warning); skipping")
+		return
+	}
 	cmd := s.commandFactory(ctx, s.bin, s.interval)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -244,15 +268,26 @@ func parsePowermetricsStream(r io.Reader, emit func(applePowerSample)) error {
 	return nil
 }
 
+// defaultSudoBin is the absolute path to sudo. Hard-coded so a $PATH attacker
+// can't substitute their own sudo wrapper to capture the (root) NOPASSWD
+// invocation. macOS ships sudo at /usr/bin/sudo and SIP keeps it there.
+const defaultSudoBin = "/usr/bin/sudo"
+
 // defaultPowermetricsCommand builds the actual sudo invocation. Split out so
 // tests can swap in a fixture-replay command.
+//
+// SECURITY: the argv emitted here is what the shipped sudoers fragment is
+// pinned to. If you change flags, update deployment/macos/sudoers.d/llmkube-powermetrics
+// in lockstep — and the regression test in power_darwin_test.go that asserts
+// the two stay in sync — or the agent will silently lose power data after
+// upgrade because sudoers will no longer match the new argv.
 func defaultPowermetricsCommand(ctx context.Context, bin string, interval time.Duration) *exec.Cmd {
 	intervalMS := int(interval / time.Millisecond)
 	if intervalMS < 100 {
 		intervalMS = 100
 	}
 	return exec.CommandContext(ctx,
-		"sudo", "-n", bin,
+		defaultSudoBin, "-n", bin,
 		"--samplers", "cpu_power,gpu_power",
 		"-i", strconv.Itoa(intervalMS),
 	)
