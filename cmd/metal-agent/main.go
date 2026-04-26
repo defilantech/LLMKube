@@ -63,6 +63,9 @@ type AgentConfig struct {
 	MaxWatchFailures          int
 	LlamaServerStartupTimeout time.Duration
 	OMLXStartupTimeout        time.Duration
+	ApplePowerEnabled         bool
+	ApplePowerInterval        time.Duration
+	PowermetricsBin           string
 }
 
 func parseLogLevel(level string) zapcore.Level {
@@ -174,6 +177,15 @@ func main() {
 		agent.DefaultOMLXStartupTimeout,
 		"How long to wait for the oMLX daemon to become healthy after launching it. "+
 			"First model loads on M-series take 30-90s; default 120s.")
+	flag.BoolVar(&cfg.ApplePowerEnabled, "apple-power-enabled", false,
+		"Enable the macOS powermetrics sampler that publishes apple_power_*_watts gauges "+
+			"for InferCost. Requires a NOPASSWD sudoers entry for /usr/bin/powermetrics; "+
+			"see deployment/macos/sudoers.d/llmkube-powermetrics. Darwin only.")
+	flag.DurationVar(&cfg.ApplePowerInterval, "apple-power-interval",
+		agent.DefaultApplePowerInterval,
+		"powermetrics sampling cadence. Only meaningful with --apple-power-enabled.")
+	flag.StringVar(&cfg.PowermetricsBin, "powermetrics-bin", agent.DefaultPowermetricsBin,
+		"Path to the macOS powermetrics binary. Only used with --apple-power-enabled.")
 	showVersion := flag.Bool("version", false, "Show version information")
 	flag.Parse()
 
@@ -312,6 +324,9 @@ func main() {
 		MaxWatchFailures:          cfg.MaxWatchFailures,
 		LlamaServerStartupTimeout: cfg.LlamaServerStartupTimeout,
 		OMLXStartupTimeout:        cfg.OMLXStartupTimeout,
+		ApplePowerEnabled:         cfg.ApplePowerEnabled,
+		ApplePowerInterval:        cfg.ApplePowerInterval,
+		PowermetricsBin:           cfg.PowermetricsBin,
 	}
 	if cfg.WatchdogInterval > 0 {
 		agentCfg.WatchdogConfig = &agent.MemoryWatchdogConfig{

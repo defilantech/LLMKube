@@ -1,0 +1,42 @@
+# LLMKube Metal Agent — NOPASSWD sudoers entry for /usr/bin/powermetrics.
+#
+# powermetrics requires root, but the Metal Agent runs as a regular user
+# under launchd. This fragment grants the *minimum* privilege needed: the
+# named user can run /usr/bin/powermetrics with EXACTLY the argument vector
+# the agent uses, and nothing else.
+#
+# SECURITY — argv is pinned, not just the binary
+# ===============================================
+# A common mistake is to grant `NOPASSWD: /usr/bin/powermetrics` (any args).
+# That's a one-line root escalation: powermetrics has --output-file and other
+# flags that, combined with root, give an attacker a write-anywhere primitive
+# (`sudo powermetrics --output-file=/etc/passwd …`). The pinned-argv form
+# below restricts the user to *only* the cpu_power+gpu_power sampler invocation
+# the agent actually needs, with a numeric sampling interval.
+#
+# If you upgrade the agent and powermetrics stops returning data, it likely
+# means the agent's argv changed and this file is now a no-match. Re-install
+# from the latest release.
+#
+# Install
+# -------
+#   sudo install -m 0440 -o root -g wheel \
+#     llmkube-powermetrics /etc/sudoers.d/llmkube-powermetrics
+#   sudo visudo -c -f /etc/sudoers.d/llmkube-powermetrics   # syntax check
+#
+# Replace __LLMKUBE_USER__ below with the user the metal-agent runs as
+# (typically the result of `whoami` from the user's shell, NOT from a sudo
+# session). Leaving the placeholder will make sudo refuse the agent's
+# powermetrics calls — the gauges will read zero and the agent will log
+# "powermetrics: failed to start ..." on startup.
+#
+# Uninstall
+# ---------
+#   sudo rm /etc/sudoers.d/llmkube-powermetrics
+#
+# Why a separate file under sudoers.d
+# -----------------------------------
+# Keeps the grant out of the main /etc/sudoers and makes uninstall a single
+# `rm`. Owner must be root:wheel and mode 0440 or sudo will refuse the file.
+
+__LLMKUBE_USER__ ALL = (root) NOPASSWD: /usr/bin/powermetrics --samplers cpu_power\,gpu_power -i [0-9]*
