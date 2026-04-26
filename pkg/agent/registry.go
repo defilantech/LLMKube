@@ -26,6 +26,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -193,6 +194,92 @@ func (r *ServiceRegistry) UnregisterEndpoint(ctx context.Context, namespace, nam
 	}
 
 	return nil
+}
+
+// ReconcileOrphanEndpoints scans all Service objects labeled as managed by
+// this agent and removes any whose corresponding InferenceService no longer
+// exists. Intended to be called once at agent startup to clean up state left
+// behind when the agent was down at the time an InferenceService was deleted.
+//
+// Why this is needed: the InferenceServiceWatcher only emits DELETED events
+// for resources it observed in its *current* session — its `seen` map is
+// reinitialized on each Watch() call. If a user deletes an InferenceService
+// between agent restarts, the new agent session has no record of the prior
+// resource and never invokes the cleanup path, so the K8s Service+Endpoints
+// stay around forever. This reconciler closes that gap by treating the
+// agent-managed-by label as the authoritative inventory of "things this
+// agent created" and cross-checking each one against the live API.
+//
+// Returns the number of orphan endpoints actually cleaned. Errors looking up
+// any individual InferenceService are logged and skipped so one transient
+// failure doesn't block cleanup of unrelated orphans.
+func (r *ServiceRegistry) ReconcileOrphanEndpoints(ctx context.Context, namespace string) (int, error) {
+	services := &corev1.ServiceList{}
+	opts := []client.ListOption{
+		client.MatchingLabels{"llmkube.ai/managed-by": "metal-agent"},
+	}
+	if namespace != "" {
+		opts = append(opts, client.InNamespace(namespace))
+	}
+	if err := r.client.List(ctx, services, opts...); err != nil {
+		return 0, fmt.Errorf("list managed services: %w", err)
+	}
+
+	cleaned := 0
+	for i := range services.Items {
+		svc := &services.Items[i]
+		isvcName := svc.Labels["llmkube.ai/inference-service"]
+		if isvcName == "" {
+			// Service is labeled managed-by us but missing the
+			// inference-service label — should never happen given how
+			// RegisterEndpoint stamps both, but skip rather than
+			// guess at an owner.
+			r.logger.Warnw(
+				"managed service missing inference-service label, skipping reconcile",
+				"namespace", svc.Namespace,
+				"service", svc.Name,
+			)
+			continue
+		}
+
+		isvc := &inferencev1alpha1.InferenceService{}
+		err := r.client.Get(ctx, types.NamespacedName{
+			Namespace: svc.Namespace,
+			Name:      isvcName,
+		}, isvc)
+		if err == nil {
+			// InferenceService still exists — leave the Service+Endpoints alone.
+			continue
+		}
+		if !apierrors.IsNotFound(err) {
+			// Something else went wrong looking up the InferenceService;
+			// log and move on. We'd rather leak a Service than delete one
+			// whose owner-status we couldn't verify.
+			r.logger.Warnw("failed to look up InferenceService for managed Service",
+				"namespace", svc.Namespace,
+				"service", svc.Name,
+				"isvc", isvcName,
+				"error", err,
+			)
+			continue
+		}
+
+		r.logger.Infow("cleaning up orphaned managed endpoint",
+			"namespace", svc.Namespace,
+			"service", svc.Name,
+			"isvc", isvcName,
+		)
+		if err := r.UnregisterEndpoint(ctx, svc.Namespace, isvcName); err != nil {
+			r.logger.Warnw("failed to unregister orphan endpoint",
+				"namespace", svc.Namespace,
+				"service", svc.Name,
+				"error", err,
+			)
+			continue
+		}
+		cleaned++
+	}
+	return cleaned, nil
 }
 
 // sanitizeServiceName converts a name to be DNS-1035 compliant

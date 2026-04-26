@@ -183,6 +183,17 @@ func (a *MetalAgent) Start(ctx context.Context) error {
 
 	a.registry = NewServiceRegistry(a.config.K8sClient, a.config.HostIP, a.logger.With("subsystem", "registry"))
 
+	// Reconcile orphaned Service+Endpoints from prior agent sessions. The
+	// watcher's `seen` map starts fresh each Watch() call, so InferenceServices
+	// deleted while the agent was down don't trigger the cleanup path. This
+	// pass closes that gap by treating the agent-managed-by label as the
+	// authoritative inventory and cross-checking each Service against the API.
+	if cleaned, err := a.registry.ReconcileOrphanEndpoints(ctx, a.config.Namespace); err != nil {
+		a.logger.Warnw("orphan endpoint reconciliation failed", "error", err)
+	} else if cleaned > 0 {
+		a.logger.Infow("cleaned up orphaned endpoints from prior sessions", "count", cleaned)
+	}
+
 	// Start health server. An unexpected exit here (port binding lost,
 	// listener crashed) is fatal — the management plane is how operators
 	// observe and recover the agent, so running blind is worse than
