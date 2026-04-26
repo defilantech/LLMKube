@@ -256,14 +256,7 @@ func (a *MetalAgent) Start(ctx context.Context) error {
 	// to powermetrics under sudo and publishes the apple_power_*_watts gauges
 	// for InferCost to scrape. Disabled by default because it requires a
 	// NOPASSWD sudoers entry the operator must install explicitly.
-	if a.config.ApplePowerEnabled {
-		sampler := NewApplePowerSampler(
-			a.config.PowermetricsBin,
-			a.config.ApplePowerInterval,
-			a.logger.With("subsystem", "apple-power"),
-		)
-		go sampler.Run(ctx)
-	}
+	a.maybeStartApplePowerSampler(ctx)
 
 	// Start memory watchdog (if configured)
 	if a.config.WatchdogConfig != nil {
@@ -642,6 +635,46 @@ func (a *MetalAgent) reportHealthServerExit(
 	case fatalErrChan <- fmt.Errorf("health server exited unexpectedly: %w", runErr):
 	default:
 	}
+}
+
+// applePowerRunner is the slice of ApplePowerSampler the agent depends on.
+// Defining it as an interface lets tests inject a fake whose Run() is a
+// guaranteed no-op without having to construct a darwin-only struct from a
+// Linux test binary.
+type applePowerRunner interface {
+	Run(ctx context.Context)
+}
+
+// maybeStartApplePowerSampler launches the powermetrics-driven Apple power
+// sampler in a goroutine if the feature is enabled in the agent config. It
+// returns the runner (or nil) so tests can verify wiring without poking into
+// goroutine state. The factory is overridable in tests via
+// applePowerSamplerFactory; in production it's NewApplePowerSampler.
+//
+// Extracted from Start so the conditional + wiring is unit-testable without
+// having to spin up the full agent loop.
+func (a *MetalAgent) maybeStartApplePowerSampler(ctx context.Context) applePowerRunner {
+	if !a.config.ApplePowerEnabled {
+		return nil
+	}
+	sampler := applePowerSamplerFactory(
+		a.config.PowermetricsBin,
+		a.config.ApplePowerInterval,
+		a.logger.With("subsystem", "apple-power"),
+	)
+	go sampler.Run(ctx)
+	return sampler
+}
+
+// applePowerSamplerFactory builds the runner. Defined as a package variable
+// (rather than a direct call to NewApplePowerSampler) so tests can swap in a
+// fake whose Run() is deterministic. Production code never reassigns it. The
+// declared return type is the interface; the production constructor returns
+// *ApplePowerSampler which satisfies it on every platform.
+var applePowerSamplerFactory func(string, time.Duration, *zap.SugaredLogger) applePowerRunner = func(
+	bin string, interval time.Duration, logger *zap.SugaredLogger,
+) applePowerRunner {
+	return NewApplePowerSampler(bin, interval, logger)
 }
 
 func (a *MetalAgent) scheduleRestart(ctx context.Context, name, namespace string) {
