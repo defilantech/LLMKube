@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestNewMetalExecutor(t *testing.T) {
@@ -199,6 +200,52 @@ func flagValue(args []string, name string) string {
 		}
 	}
 	return ""
+}
+
+func TestSetStartupTimeout(t *testing.T) {
+	executor := NewMetalExecutor("/bin/llama-server", "/models", newNopLogger())
+
+	if executor.startupTimeout != DefaultLlamaServerStartupTimeout {
+		t.Errorf("default startupTimeout = %v, want %v",
+			executor.startupTimeout, DefaultLlamaServerStartupTimeout)
+	}
+
+	executor.SetStartupTimeout(45 * time.Second)
+	if executor.startupTimeout != 45*time.Second {
+		t.Errorf("after Set(45s) = %v, want 45s", executor.startupTimeout)
+	}
+
+	// Non-positive should coerce back to default.
+	executor.SetStartupTimeout(0)
+	if executor.startupTimeout != DefaultLlamaServerStartupTimeout {
+		t.Errorf("after Set(0) = %v, want default %v",
+			executor.startupTimeout, DefaultLlamaServerStartupTimeout)
+	}
+	executor.SetStartupTimeout(-5 * time.Second)
+	if executor.startupTimeout != DefaultLlamaServerStartupTimeout {
+		t.Errorf("after Set(-5s) = %v, want default %v",
+			executor.startupTimeout, DefaultLlamaServerStartupTimeout)
+	}
+}
+
+func TestOMLXSetStartupTimeout(t *testing.T) {
+	executor := NewOMLXExecutor("/bin/omlx", "/models", 8000, newNopLogger())
+
+	if executor.startupTimeout != DefaultOMLXStartupTimeout {
+		t.Errorf("default startupTimeout = %v, want %v",
+			executor.startupTimeout, DefaultOMLXStartupTimeout)
+	}
+
+	executor.SetStartupTimeout(180 * time.Second)
+	if executor.startupTimeout != 180*time.Second {
+		t.Errorf("after Set(180s) = %v, want 180s", executor.startupTimeout)
+	}
+
+	executor.SetStartupTimeout(0)
+	if executor.startupTimeout != DefaultOMLXStartupTimeout {
+		t.Errorf("after Set(0) = %v, want default %v",
+			executor.startupTimeout, DefaultOMLXStartupTimeout)
+	}
 }
 
 func TestStopProcess_InvalidPID(t *testing.T) {

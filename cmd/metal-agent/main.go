@@ -45,22 +45,24 @@ var (
 )
 
 type AgentConfig struct {
-	Namespace              string
-	ModelStorePath         string
-	LlamaServerBin         string
-	Runtime                string
-	OMLXBin                string
-	OMLXPort               int
-	OllamaPort             int
-	Port                   int
-	LogLevel               string
-	HostIP                 string
-	MemoryFraction         float64
-	WatchdogInterval       time.Duration
-	MemoryPressureWarning  float64
-	MemoryPressureCritical float64
-	EvictionEnabled        bool
-	MaxWatchFailures       int
+	Namespace                 string
+	ModelStorePath            string
+	LlamaServerBin            string
+	Runtime                   string
+	OMLXBin                   string
+	OMLXPort                  int
+	OllamaPort                int
+	Port                      int
+	LogLevel                  string
+	HostIP                    string
+	MemoryFraction            float64
+	WatchdogInterval          time.Duration
+	MemoryPressureWarning     float64
+	MemoryPressureCritical    float64
+	EvictionEnabled           bool
+	MaxWatchFailures          int
+	LlamaServerStartupTimeout time.Duration
+	OMLXStartupTimeout        time.Duration
 }
 
 func parseLogLevel(level string) zapcore.Level {
@@ -164,6 +166,14 @@ func main() {
 	flag.IntVar(&cfg.MaxWatchFailures, "max-watch-failures", agent.DefaultMaxConsecutiveFailures,
 		"Consecutive Kubernetes list failures from the InferenceService watcher before the agent "+
 			"gives up and exits for supervisor restart. Set to 0 to use the agent default.")
+	flag.DurationVar(&cfg.LlamaServerStartupTimeout, "llama-server-startup-timeout",
+		agent.DefaultLlamaServerStartupTimeout,
+		"How long to wait for a freshly-spawned llama-server to respond on /health. "+
+			"Bump for very large models (mlock + warmup grow with model size).")
+	flag.DurationVar(&cfg.OMLXStartupTimeout, "omlx-startup-timeout",
+		agent.DefaultOMLXStartupTimeout,
+		"How long to wait for the oMLX daemon to become healthy after launching it. "+
+			"First model loads on M-series take 30-90s; default 120s.")
 	showVersion := flag.Bool("version", false, "Show version information")
 	flag.Parse()
 
@@ -287,19 +297,21 @@ func main() {
 	// Create agent
 	logger.Infow("creating Metal agent")
 	agentCfg := agent.MetalAgentConfig{
-		K8sClient:        k8sClient,
-		Namespace:        cfg.Namespace,
-		ModelStorePath:   cfg.ModelStorePath,
-		LlamaServerBin:   cfg.LlamaServerBin,
-		Runtime:          cfg.Runtime,
-		OMLXBin:          cfg.OMLXBin,
-		OMLXPort:         cfg.OMLXPort,
-		OllamaPort:       cfg.OllamaPort,
-		Port:             cfg.Port,
-		HostIP:           cfg.HostIP,
-		Logger:           logger,
-		MemoryFraction:   cfg.MemoryFraction,
-		MaxWatchFailures: cfg.MaxWatchFailures,
+		K8sClient:                 k8sClient,
+		Namespace:                 cfg.Namespace,
+		ModelStorePath:            cfg.ModelStorePath,
+		LlamaServerBin:            cfg.LlamaServerBin,
+		Runtime:                   cfg.Runtime,
+		OMLXBin:                   cfg.OMLXBin,
+		OMLXPort:                  cfg.OMLXPort,
+		OllamaPort:                cfg.OllamaPort,
+		Port:                      cfg.Port,
+		HostIP:                    cfg.HostIP,
+		Logger:                    logger,
+		MemoryFraction:            cfg.MemoryFraction,
+		MaxWatchFailures:          cfg.MaxWatchFailures,
+		LlamaServerStartupTimeout: cfg.LlamaServerStartupTimeout,
+		OMLXStartupTimeout:        cfg.OMLXStartupTimeout,
 	}
 	if cfg.WatchdogInterval > 0 {
 		agentCfg.WatchdogConfig = &agent.MemoryWatchdogConfig{

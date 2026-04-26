@@ -64,6 +64,19 @@ type MetalAgentConfig struct {
 	// and signals a fatal exit. Zero means use the watcher's built-in default
 	// (DefaultMaxConsecutiveFailures).
 	MaxWatchFailures int
+
+	// LlamaServerStartupTimeout is how long the Metal executor waits for a
+	// freshly-spawned llama-server to respond on /health before giving up.
+	// Zero means use the executor default (DefaultLlamaServerStartupTimeout).
+	// Bump this when serving very large models — mlock + warmup grow with
+	// model size and the default may be too aggressive for 80+ GB models.
+	LlamaServerStartupTimeout time.Duration
+
+	// OMLXStartupTimeout is how long the agent waits for the oMLX daemon to
+	// become healthy after launching it. Zero means use the executor default
+	// (DefaultOMLXStartupTimeout). The original 30s constant was too short
+	// for real M-series hardware.
+	OMLXStartupTimeout time.Duration
 }
 
 // MetalAgent watches Kubernetes InferenceService resources and manages
@@ -158,12 +171,16 @@ func (a *MetalAgent) Start(ctx context.Context) error {
 		if port == 0 {
 			port = 8000
 		}
-		a.executor = NewOMLXExecutor(
+		omlxExec := NewOMLXExecutor(
 			a.config.OMLXBin,
 			a.config.ModelStorePath,
 			port,
 			a.logger.With("subsystem", "executor"),
 		)
+		if a.config.OMLXStartupTimeout > 0 {
+			omlxExec.SetStartupTimeout(a.config.OMLXStartupTimeout)
+		}
+		a.executor = omlxExec
 	case "ollama":
 		port := a.config.OllamaPort
 		if port == 0 {
@@ -174,11 +191,15 @@ func (a *MetalAgent) Start(ctx context.Context) error {
 			a.logger.With("subsystem", "executor"),
 		)
 	default:
-		a.executor = NewMetalExecutor(
+		metalExec := NewMetalExecutor(
 			a.config.LlamaServerBin,
 			a.config.ModelStorePath,
 			a.logger.With("subsystem", "executor"),
 		)
+		if a.config.LlamaServerStartupTimeout > 0 {
+			metalExec.SetStartupTimeout(a.config.LlamaServerStartupTimeout)
+		}
+		a.executor = metalExec
 	}
 
 	a.registry = NewServiceRegistry(a.config.K8sClient, a.config.HostIP, a.logger.With("subsystem", "registry"))

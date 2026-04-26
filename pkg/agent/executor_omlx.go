@@ -30,17 +30,27 @@ import (
 	"go.uber.org/zap"
 )
 
+// DefaultOMLXStartupTimeout is how long the agent waits for the oMLX daemon
+// to become healthy after launching it. The original default was 30s, which
+// is too short on real hardware: Apple Silicon spinup for the oMLX daemon
+// includes scanning the model directory, sizing the engine pool, and loading
+// the MLX framework — empirically ~35s on M5 Max even with no models pinned.
+// 120s gives generous headroom for the slow-first-load case while still
+// failing fast if oMLX is genuinely broken.
+const DefaultOMLXStartupTimeout = 120 * time.Second
+
 // OMLXExecutor manages the shared oMLX daemon and individual model lifecycles.
 // Unlike MetalExecutor (one process per model), oMLX runs a single daemon that
 // serves all models from a shared model directory.
 type OMLXExecutor struct {
-	omlxBin    string
-	modelDir   string
-	port       int
-	process    *os.Process
-	mu         sync.Mutex
-	logger     *zap.SugaredLogger
-	httpClient *http.Client
+	omlxBin        string
+	modelDir       string
+	port           int
+	process        *os.Process
+	mu             sync.Mutex
+	logger         *zap.SugaredLogger
+	httpClient     *http.Client
+	startupTimeout time.Duration
 }
 
 // NewOMLXExecutor creates an executor that manages models via the oMLX daemon.
@@ -53,7 +63,17 @@ func NewOMLXExecutor(omlxBin, modelDir string, port int, logger *zap.SugaredLogg
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
+		startupTimeout: DefaultOMLXStartupTimeout,
 	}
+}
+
+// SetStartupTimeout overrides the default oMLX-daemon startup timeout.
+// Values <= 0 are coerced back to DefaultOMLXStartupTimeout.
+func (e *OMLXExecutor) SetStartupTimeout(d time.Duration) {
+	if d <= 0 {
+		d = DefaultOMLXStartupTimeout
+	}
+	e.startupTimeout = d
 }
 
 // omlxModelsStatusResponse is the response from GET /v1/models/status.
@@ -199,12 +219,14 @@ func (e *OMLXExecutor) ensureOMLXRunning(ctx context.Context) error {
 	e.process = cmd.Process
 	e.logger.Infow("oMLX daemon started", "pid", cmd.Process.Pid)
 
-	// Wait for oMLX to become healthy
-	if err := e.waitForHealthy(ctx, 30*time.Second); err != nil {
+	// Wait for oMLX to become healthy. On real hardware the first model load
+	// can take 30+ seconds — see DefaultOMLXStartupTimeout for the rationale.
+	if err := e.waitForHealthy(ctx, e.startupTimeout); err != nil {
 		// Best-effort kill if startup failed
 		_ = cmd.Process.Kill()
 		e.process = nil
-		return fmt.Errorf("oMLX daemon failed to become healthy: %w", err)
+		return fmt.Errorf("oMLX daemon failed to become healthy after %s: %w",
+			e.startupTimeout, err)
 	}
 
 	return nil
