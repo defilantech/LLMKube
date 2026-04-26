@@ -129,6 +129,42 @@ var (
 		},
 		[]string{"subsystem"},
 	)
+
+	// Apple Silicon power gauges. Populated by the powermetrics sampler when
+	// the agent is run with --apple-power-enabled. Zero otherwise. Designed
+	// to be scraped by InferCost's Metal collector for $/MTok cost
+	// attribution on macOS, where DCGM (NVIDIA-only) doesn't exist.
+	// See infercost issue #46 for the cross-repo design.
+	applePowerCombinedWatts = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "llmkube_metal_agent_apple_power_combined_watts",
+			Help: "Combined CPU + GPU + ANE package power in watts from macOS powermetrics. " +
+				"Zero unless the agent is run with --apple-power-enabled and a " +
+				"NOPASSWD sudoers entry for /usr/bin/powermetrics is installed.",
+		},
+	)
+	applePowerGPUWatts = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "llmkube_metal_agent_apple_power_gpu_watts",
+			Help: "GPU subsystem power in watts from macOS powermetrics. " +
+				"Zero unless --apple-power-enabled.",
+		},
+	)
+	applePowerCPUWatts = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "llmkube_metal_agent_apple_power_cpu_watts",
+			Help: "CPU subsystem power in watts from macOS powermetrics. " +
+				"Zero unless --apple-power-enabled.",
+		},
+	)
+	applePowerANEWatts = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "llmkube_metal_agent_apple_power_ane_watts",
+			Help: "Apple Neural Engine power in watts from macOS powermetrics. " +
+				"Zero unless --apple-power-enabled. ANE is typically idle for " +
+				"llama.cpp / Metal LLM inference (which uses GPU compute, not ANE).",
+		},
+	)
 )
 
 func init() {
@@ -148,5 +184,9 @@ func init() {
 		evictionsTotal,
 		watchConsecutiveFailures,
 		fatalExitsTotal,
+		applePowerCombinedWatts,
+		applePowerGPUWatts,
+		applePowerCPUWatts,
+		applePowerANEWatts,
 	)
 }

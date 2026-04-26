@@ -248,6 +248,95 @@ func TestReportHealthServerExit(t *testing.T) {
 	})
 }
 
+func TestMaybeStartApplePowerSampler_DisabledByDefault(t *testing.T) {
+	scheme := newTestScheme()
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	a := NewMetalAgent(MetalAgentConfig{
+		K8sClient: k8sClient,
+		Logger:    newNopLogger(),
+		// ApplePowerEnabled defaults false
+	})
+
+	got := a.maybeStartApplePowerSampler(context.Background())
+	if got != nil {
+		t.Errorf("expected nil sampler when ApplePowerEnabled=false, got %#v", got)
+	}
+}
+
+func TestMaybeStartApplePowerSampler_Enabled_LaunchesViaFactory(t *testing.T) {
+	scheme := newTestScheme()
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	// Swap the factory for a stub that records its construction arguments and
+	// returns a sampler whose Run() signals it executed. The whole point of
+	// the helper is the wiring between MetalAgentConfig and NewApplePowerSampler;
+	// we exercise that wiring deterministically without forking powermetrics.
+	origFactory := applePowerSamplerFactory
+	t.Cleanup(func() { applePowerSamplerFactory = origFactory })
+
+	type call struct {
+		bin      string
+		interval time.Duration
+	}
+	var got call
+	ranCh := make(chan struct{}, 1)
+	stub := &fakeApplePowerRunner{onRun: func(context.Context) {
+		select {
+		case ranCh <- struct{}{}:
+		default:
+		}
+	}}
+	applePowerSamplerFactory = func(bin string, interval time.Duration, _ *zap.SugaredLogger) applePowerRunner {
+		got = call{bin: bin, interval: interval}
+		return stub
+	}
+
+	a := NewMetalAgent(MetalAgentConfig{
+		K8sClient:          k8sClient,
+		Logger:             newNopLogger(),
+		ApplePowerEnabled:  true,
+		ApplePowerInterval: 2 * time.Second,
+		PowermetricsBin:    "/usr/bin/powermetrics",
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	returned := a.maybeStartApplePowerSampler(ctx)
+
+	if returned != stub {
+		t.Errorf("expected helper to return the constructed sampler, got %#v", returned)
+	}
+	if got.bin != "/usr/bin/powermetrics" {
+		t.Errorf("factory bin = %q, want %q", got.bin, "/usr/bin/powermetrics")
+	}
+	if got.interval != 2*time.Second {
+		t.Errorf("factory interval = %v, want %v", got.interval, 2*time.Second)
+	}
+
+	// Also verify Run was actually invoked by the goroutine — without this
+	// check the helper could silently regress to building the sampler but
+	// never starting it, and the missing power data would only surface in
+	// production.
+	select {
+	case <-ranCh:
+	case <-time.After(time.Second):
+		t.Error("sampler.Run was never invoked")
+	}
+}
+
+// fakeApplePowerRunner is a deterministic stand-in for ApplePowerSampler in
+// tests. The real sampler shells out to sudo and would fail or hang in CI; the
+// fake just records that Run was called.
+type fakeApplePowerRunner struct {
+	onRun func(context.Context)
+}
+
+func (f *fakeApplePowerRunner) Run(ctx context.Context) {
+	if f.onRun != nil {
+		f.onRun(ctx)
+	}
+}
+
 func TestRunWatcherLoop_StalledPushesFatal(t *testing.T) {
 	// Build a watcher whose Watch will return ErrWatchStalled on the first
 	// poll cycle. The scriptedListClient pattern from watcher_test.go is
