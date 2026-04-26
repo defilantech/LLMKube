@@ -171,6 +171,59 @@ To set this in the launchd plist:
     <string>0.75</string>                 <!-- 75% of system memory -->
 ```
 
+## Apple Silicon Power Metrics (for InferCost)
+
+The Metal Agent can publish real-time CPU / GPU / ANE / Combined power gauges sourced from macOS `powermetrics`. These gauges are designed to be scraped by [InferCost](https://github.com/defilantech/infercost) for per-token cost attribution on Apple Silicon (where DCGM doesn't exist). The feature is **disabled by default** because `powermetrics` requires root.
+
+### Enable
+
+1. Install the NOPASSWD sudoers fragment so the agent can call `powermetrics` without a password:
+
+   ```bash
+   # Replace USERNAME with the user the agent runs as
+   sed "s/USERNAME/$(whoami)/" deployment/macos/sudoers.d/llmkube-powermetrics \
+     | sudo tee /etc/sudoers.d/llmkube-powermetrics > /dev/null
+   sudo chmod 0440 /etc/sudoers.d/llmkube-powermetrics
+   sudo visudo -c -f /etc/sudoers.d/llmkube-powermetrics
+   ```
+
+2. Add `--apple-power-enabled` to the agent's `ProgramArguments` and reload launchd:
+
+   ```xml
+       <string>--apple-power-enabled</string>
+   ```
+
+   Then:
+
+   ```bash
+   launchctl unload ~/Library/LaunchAgents/com.llmkube.metal-agent.plist
+   launchctl load ~/Library/LaunchAgents/com.llmkube.metal-agent.plist
+   ```
+
+3. Verify the gauges are populated:
+
+   ```bash
+   curl -s http://localhost:9090/metrics | grep apple_power
+   ```
+
+   With no inference running you'll see ~1-3 W combined; running a model under load drives it to 35-50 W on M-series.
+
+### Gauges exposed
+
+| Metric | Description |
+|--------|-------------|
+| `llmkube_metal_agent_apple_power_combined_watts` | CPU + GPU + ANE package power |
+| `llmkube_metal_agent_apple_power_gpu_watts` | GPU subsystem power |
+| `llmkube_metal_agent_apple_power_cpu_watts` | CPU subsystem power |
+| `llmkube_metal_agent_apple_power_ane_watts` | Apple Neural Engine power (typically 0 for llama.cpp / MLX inference, which uses GPU compute) |
+
+All four gauges read 0 unless `--apple-power-enabled` is set.
+
+### Tuning
+
+- `--apple-power-interval=1s` — sampling cadence; tighter values don't add fidelity because `powermetrics` rounds to whole milliseconds.
+- `--powermetrics-bin=/usr/bin/powermetrics` — override only if you've installed `powermetrics` somewhere non-standard.
+
 ## Health Checks & Monitoring
 
 The Metal Agent exposes an HTTP server on `127.0.0.1:9090` (configurable via `--port`) with health check and Prometheus metrics endpoints. The server binds to localhost only; to expose it for remote Prometheus scraping, use a reverse proxy or SSH tunnel.
@@ -193,6 +246,10 @@ The Metal Agent exposes an HTTP server on `127.0.0.1:9090` (configurable via `--
 | `llmkube_metal_agent_health_check_duration_seconds` | Histogram | Duration of health check probes. Labels: `name`, `namespace` |
 | `llmkube_metal_agent_memory_budget_bytes` | Gauge | Total memory budget for model serving |
 | `llmkube_metal_agent_memory_estimated_bytes` | Gauge | Estimated memory per process. Labels: `name`, `namespace` |
+| `llmkube_metal_agent_apple_power_combined_watts` | Gauge | Combined CPU + GPU + ANE package power. Zero unless `--apple-power-enabled`. |
+| `llmkube_metal_agent_apple_power_gpu_watts` | Gauge | GPU subsystem power. Zero unless `--apple-power-enabled`. |
+| `llmkube_metal_agent_apple_power_cpu_watts` | Gauge | CPU subsystem power. Zero unless `--apple-power-enabled`. |
+| `llmkube_metal_agent_apple_power_ane_watts` | Gauge | Apple Neural Engine power. Zero unless `--apple-power-enabled`. |
 
 Standard Go runtime and process metrics (`go_*`, `process_*`) are also available.
 

@@ -77,6 +77,23 @@ type MetalAgentConfig struct {
 	// (DefaultOMLXStartupTimeout). The original 30s constant was too short
 	// for real M-series hardware.
 	OMLXStartupTimeout time.Duration
+
+	// ApplePowerEnabled launches the powermetrics-driven sampler that
+	// publishes apple_power_*_watts gauges. Defaults false because
+	// powermetrics requires sudo, which the agent reaches via a NOPASSWD
+	// sudoers entry the operator must install explicitly. The gauges feed
+	// InferCost's Apple Silicon per-token cost attribution. Darwin only.
+	ApplePowerEnabled bool
+
+	// ApplePowerInterval is the powermetrics sampling cadence. Zero means
+	// use DefaultApplePowerInterval (1s). Only meaningful when
+	// ApplePowerEnabled is true.
+	ApplePowerInterval time.Duration
+
+	// PowermetricsBin is the path to the macOS powermetrics binary. Empty
+	// means use DefaultPowermetricsBin (/usr/bin/powermetrics). Only used
+	// when ApplePowerEnabled is true.
+	PowermetricsBin string
 }
 
 // MetalAgent watches Kubernetes InferenceService resources and manages
@@ -234,6 +251,19 @@ func (a *MetalAgent) Start(ctx context.Context) error {
 		a.logger.With("subsystem", "health-monitor"),
 	)
 	go monitor.Run(ctx)
+
+	// Start Apple Silicon power sampler (if enabled). The sampler shells out
+	// to powermetrics under sudo and publishes the apple_power_*_watts gauges
+	// for InferCost to scrape. Disabled by default because it requires a
+	// NOPASSWD sudoers entry the operator must install explicitly.
+	if a.config.ApplePowerEnabled {
+		sampler := NewApplePowerSampler(
+			a.config.PowermetricsBin,
+			a.config.ApplePowerInterval,
+			a.logger.With("subsystem", "apple-power"),
+		)
+		go sampler.Run(ctx)
+	}
 
 	// Start memory watchdog (if configured)
 	if a.config.WatchdogConfig != nil {

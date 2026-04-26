@@ -1,0 +1,18 @@
+# LLMKube Metal Agent — NOPASSWD sudoers entry for /usr/bin/powermetrics.
+#
+# powermetrics requires root, but the Metal Agent runs as a regular user
+# under launchd. This fragment grants the *minimum* privilege needed: the
+# named user can run only /usr/bin/powermetrics without a password, and
+# nothing else.
+#
+# Install:
+#   sudo cp llmkube-powermetrics /etc/sudoers.d/llmkube-powermetrics
+#   sudo chmod 0440 /etc/sudoers.d/llmkube-powermetrics
+#   sudo visudo -c -f /etc/sudoers.d/llmkube-powermetrics   # syntax check
+#
+# Replace USERNAME below with the user the metal-agent runs as (typically
+# the result of `whoami`). Leaving the placeholder will make sudo refuse
+# the agent's powermetrics calls — the gauges will read zero and the agent
+# will log "powermetrics: failed to start ..." on startup.
+
+USERNAME ALL = (root) NOPASSWD: /usr/bin/powermetrics
