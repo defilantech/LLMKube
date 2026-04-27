@@ -155,3 +155,12 @@ func appendReasoningBudgetArgs(args []string, budget *int32, message string) []s
 	}
 	return args
 }
+
+func hasParallelArgs(args []string) bool {
+    for _, v := range args {
+        if v == "--parallel" {
+            return true
+        }
+    }
+    return false
+}
