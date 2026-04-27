@@ -148,6 +148,29 @@ uninstall-metal-agent: ## Uninstall Metal agent and launchd service.
 	rm -f ~/Library/LaunchAgents/com.llmkube.metal-agent.plist
 	@echo "✅ Metal agent uninstalled"
 
+.PHONY: install-powermetrics-sudo
+install-powermetrics-sudo: ## Install NOPASSWD sudoers entry for /usr/bin/powermetrics (required for --apple-power-enabled).
+	@echo "Installing sudoers entry for the Apple power sampler..."
+	@echo "This grants the current user ($(shell whoami)) NOPASSWD access to"
+	@echo "/usr/bin/powermetrics with the EXACT argv the agent uses, and nothing else."
+	@echo ""
+	@TMP=$$(mktemp); \
+		sed "s/__LLMKUBE_USER__/$(shell whoami)/" deployment/macos/sudoers.d/llmkube-powermetrics > "$$TMP"; \
+		sudo visudo -cf "$$TMP" || (echo "❌ sudoers syntax check failed; aborting"; rm -f "$$TMP"; exit 1); \
+		sudo install -m 0440 -o root -g wheel "$$TMP" /etc/sudoers.d/llmkube-powermetrics; \
+		rm -f "$$TMP"
+	@echo ""
+	@echo "✅ Sudoers entry installed. Granted command:"
+	@sudo -ln 2>/dev/null | grep powermetrics || echo "  (run 'sudo -ln | grep powermetrics' to verify)"
+	@echo ""
+	@echo "Now restart the Metal agent with --apple-power-enabled to publish the gauges."
+
+.PHONY: uninstall-powermetrics-sudo
+uninstall-powermetrics-sudo: ## Remove the NOPASSWD sudoers entry installed by install-powermetrics-sudo.
+	@echo "Removing /etc/sudoers.d/llmkube-powermetrics..."
+	sudo rm -f /etc/sudoers.d/llmkube-powermetrics
+	@echo "✅ Sudoers entry removed. Apple power gauges will now read 0 if the agent is run with --apple-power-enabled."
+
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
 	go run ./cmd/main.go $(ARGS)
