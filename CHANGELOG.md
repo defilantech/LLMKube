@@ -5,6 +5,20 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.2](https://github.com/defilantech/LLMKube/compare/v0.7.1...v0.7.2) (2026-04-27)
+
+
+### Features
+
+* **agent:** expose Apple Silicon power gauges via powermetrics ([#334](https://github.com/defilantech/LLMKube/issues/334)) ([58a94a7](https://github.com/defilantech/LLMKube/commit/58a94a7729daf95162e3feca347b86e2119e51b5))
+* **make:** one-command install-powermetrics-sudo + uninstall targets ([#336](https://github.com/defilantech/LLMKube/issues/336)) ([af48077](https://github.com/defilantech/LLMKube/commit/af4807795c605e97e532e2df38aec9566b8a1d25))
+
+
+### Bug Fixes
+
+* **agent:** make executor startup timeouts configurable; raise defaults to 120s ([#330](https://github.com/defilantech/LLMKube/issues/330)) ([5aa5fa2](https://github.com/defilantech/LLMKube/commit/5aa5fa2f5063bd14ff4396efec6ce93005dd8f5d))
+* **agent:** reconcile orphaned Service+Endpoints on agent startup ([#332](https://github.com/defilantech/LLMKube/issues/332)) ([d88c541](https://github.com/defilantech/LLMKube/commit/d88c541e28badb179723dcb2c907646d2e833c49))
+
 ## [0.7.1](https://github.com/defilantech/LLMKube/compare/v0.7.0...v0.7.1) (2026-04-25)
 
 
