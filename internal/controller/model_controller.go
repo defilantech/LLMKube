@@ -101,40 +101,55 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 
 	cacheKey := computeCacheKey(model.Spec.Source)
 	modelDir := filepath.Join(r.StoragePath, cacheKey)
-	modelPath := filepath.Join(modelDir, "model.gguf")
+	// downloadPath is the path used during/after download. After GGUF metadata
+	// parsing, the file is migrated to canonicalModelPath(modelDir, model).
+	downloadPath := filepath.Join(modelDir, legacyModelFilename)
 
-	// Early exit: if status already shows Ready and the file exists on disk,
-	// skip the entire reconcile to avoid status updates that trigger re-reconciles.
+	// Early exit: if status is Ready, file exists on disk, AND it is already at
+	// the canonical filename, skip the entire reconcile. Otherwise we fall through
+	// so legacy "model.gguf" files get migrated to a metadata-derived basename.
 	if model.Status.Phase == PhaseReady && model.Status.Path != "" {
 		if _, err := os.Stat(model.Status.Path); err == nil {
-			logger.Info("Model already Ready and cached, skipping reconcile", "path", model.Status.Path)
-			llmkubemetrics.ReconcileTotal.WithLabelValues("model", "success").Inc()
-			return ctrl.Result{}, nil
+			canonical := canonicalModelPath(filepath.Dir(model.Status.Path), model)
+			if model.Status.Path == canonical {
+				logger.Info("Model already Ready and cached at canonical path, skipping reconcile", "path", model.Status.Path)
+				llmkubemetrics.ReconcileTotal.WithLabelValues("model", "success").Inc()
+				return ctrl.Result{}, nil
+			}
+			logger.Info("Model needs filename migration", "currentPath", model.Status.Path, "canonicalPath", canonical)
+		} else {
+			logger.Info("Model marked Ready but file missing, will re-download", "path", model.Status.Path)
 		}
-		logger.Info("Model marked Ready but file missing, will re-download", "path", model.Status.Path)
 	}
 
-	logger.Info("Using cache key for model", "cacheKey", cacheKey, "path", modelPath)
+	logger.Info("Using cache key for model", "cacheKey", cacheKey, "dir", modelDir)
 
-	if fileInfo, err := os.Stat(modelPath); err == nil {
-		logger.Info("Model found in cache, skipping download", "path", modelPath, "size", fileInfo.Size())
+	if existingPath, fileInfo, ok := findCachedModelFile(modelDir); ok {
+		logger.Info("Model found in cache, skipping download", "path", existingPath, "size", fileInfo.Size())
 
-		model.Status.Phase = PhaseReady
-		model.Status.Path = modelPath
-		model.Status.Size = formatBytes(fileInfo.Size())
-		model.Status.CacheKey = cacheKey
-		model.Status.AcceleratorReady = r.checkAcceleratorAvailability(model.Spec.Hardware)
-		now := metav1.Now()
-		model.Status.LastUpdated = &now
-
-		// Parse GGUF metadata (non-fatal, skip if already populated)
+		// Parse GGUF metadata first (non-fatal) so we have the metadata-derived
+		// name available for the rename below.
 		if model.Status.GGUF == nil {
-			if ggufMeta, err := r.parseGGUFMetadata(modelPath); err != nil {
+			if ggufMeta, err := r.parseGGUFMetadata(existingPath); err != nil {
 				logger.Info("Failed to parse GGUF metadata (non-fatal)", "error", err)
 			} else {
 				model.Status.GGUF = ggufMeta
 			}
 		}
+
+		finalPath, err := r.migrateModelFilename(existingPath, modelDir, model)
+		if err != nil {
+			logger.Error(err, "Failed to migrate model filename, keeping existing")
+			finalPath = existingPath
+		}
+
+		model.Status.Phase = PhaseReady
+		model.Status.Path = finalPath
+		model.Status.Size = formatBytes(fileInfo.Size())
+		model.Status.CacheKey = cacheKey
+		model.Status.AcceleratorReady = r.checkAcceleratorAvailability(model.Spec.Hardware)
+		now := metav1.Now()
+		model.Status.LastUpdated = &now
 
 		if err := r.updateStatus(ctx, model, "Available", metav1.ConditionTrue, "ModelCached", "Model found in cache"); err != nil {
 			return ctrl.Result{}, err
@@ -176,7 +191,7 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	if isLocal {
 		sourceType = "local"
 	}
-	size, err := r.fetchModel(ctx, model.Spec.Source, modelPath)
+	size, err := r.fetchModel(ctx, model.Spec.Source, downloadPath)
 	fetchDuration := time.Since(fetchStart).Seconds()
 	llmkubemetrics.ModelDownloadDuration.WithLabelValues(model.Name, model.Namespace, sourceType).Observe(fetchDuration)
 	if err != nil {
@@ -191,9 +206,9 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	}
 
 	// SHA256 integrity verification
-	if err := r.verifySHA256(ctx, model, modelPath); err != nil {
+	if err := r.verifySHA256(ctx, model, downloadPath); err != nil {
 		logger.Error(err, "SHA256 integrity check failed")
-		_ = os.Remove(modelPath)
+		_ = os.Remove(downloadPath)
 		llmkubemetrics.ReconcileTotal.WithLabelValues("model", "error").Inc()
 		llmkubemetrics.ModelStatus.WithLabelValues(model.Name, model.Namespace, PhaseFailed).Set(1)
 		model.Status.Phase = PhaseFailed
@@ -203,20 +218,27 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return ctrl.Result{}, err
 	}
 
+	// Parse GGUF metadata (non-fatal). Done before the rename so the metadata-
+	// derived name is available to canonicalModelPath.
+	if ggufMeta, err := r.parseGGUFMetadata(downloadPath); err != nil {
+		logger.Info("Failed to parse GGUF metadata (non-fatal)", "error", err)
+	} else {
+		model.Status.GGUF = ggufMeta
+	}
+
+	finalPath, err := r.migrateModelFilename(downloadPath, modelDir, model)
+	if err != nil {
+		logger.Error(err, "Failed to rename model to canonical filename, keeping download path")
+		finalPath = downloadPath
+	}
+
 	model.Status.Phase = PhaseReady
-	model.Status.Path = modelPath
+	model.Status.Path = finalPath
 	model.Status.Size = formatBytes(size)
 	model.Status.CacheKey = cacheKey
 	model.Status.AcceleratorReady = r.checkAcceleratorAvailability(model.Spec.Hardware)
 	now := metav1.Now()
 	model.Status.LastUpdated = &now
-
-	// Parse GGUF metadata (non-fatal)
-	if ggufMeta, err := r.parseGGUFMetadata(modelPath); err != nil {
-		logger.Info("Failed to parse GGUF metadata (non-fatal)", "error", err)
-	} else {
-		model.Status.GGUF = ggufMeta
-	}
 
 	if err := r.updateStatus(ctx, model, "Available", metav1.ConditionTrue, "ModelReady", "Model downloaded and cached"); err != nil {
 		return ctrl.Result{}, err
@@ -224,7 +246,7 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 
 	llmkubemetrics.ModelStatus.WithLabelValues(model.Name, model.Namespace, "Ready").Set(1)
 	llmkubemetrics.ReconcileTotal.WithLabelValues("model", "success").Inc()
-	logger.Info("Model ready and cached", "path", modelPath, "size", model.Status.Size, "cacheKey", cacheKey)
+	logger.Info("Model ready and cached", "path", finalPath, "size", model.Status.Size, "cacheKey", cacheKey)
 	return ctrl.Result{}, nil
 }
 

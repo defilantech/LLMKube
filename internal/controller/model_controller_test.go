@@ -369,9 +369,9 @@ var _ = Describe("Model Controller - Cache Bug Fixes", func() {
 		source := "https://example.com/already-ready-model.gguf"
 		cacheKey := computeCacheKey(source)
 		modelDir := filepath.Join(tempDir, cacheKey)
-		modelPath := filepath.Join(modelDir, "model.gguf")
+		legacyPath := filepath.Join(modelDir, "model.gguf")
 		Expect(os.MkdirAll(modelDir, 0755)).To(Succeed())
-		Expect(os.WriteFile(modelPath, []byte("cached-model-data"), 0644)).To(Succeed())
+		Expect(os.WriteFile(legacyPath, []byte("cached-model-data"), 0644)).To(Succeed())
 
 		modelName := "model-already-ready"
 		model := &inferencev1alpha1.Model{
@@ -381,7 +381,9 @@ var _ = Describe("Model Controller - Cache Bug Fixes", func() {
 		Expect(k8sClient.Create(ctx, model)).To(Succeed())
 		defer func() { _ = k8sClient.Delete(ctx, model) }()
 
-		// First reconcile to set the model to Ready state
+		// First reconcile finds the legacy "model.gguf" in the cache, parses
+		// (fake) GGUF metadata (which fails non-fatally), and migrates the file
+		// to the canonical filename derived from Model.Name.
 		reconciler := &ModelReconciler{
 			Client:      k8sClient,
 			Scheme:      k8sClient.Scheme(),
@@ -393,11 +395,16 @@ var _ = Describe("Model Controller - Cache Bug Fixes", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result).To(Equal(reconcile.Result{}))
 
-		// Verify model is Ready
+		// Verify model is Ready and file was migrated to the canonical name.
+		expectedPath := filepath.Join(modelDir, modelName+".gguf")
 		updated := &inferencev1alpha1.Model{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: modelName, Namespace: "default"}, updated)).To(Succeed())
 		Expect(updated.Status.Phase).To(Equal(PhaseReady))
-		Expect(updated.Status.Path).To(Equal(modelPath))
+		Expect(updated.Status.Path).To(Equal(expectedPath))
+		_, err = os.Stat(expectedPath)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = os.Stat(legacyPath)
+		Expect(os.IsNotExist(err)).To(BeTrue(), "legacy model.gguf should have been renamed away")
 		lastUpdated := updated.Status.LastUpdated.DeepCopy()
 
 		// Second reconcile should return immediately without updating status
@@ -428,7 +435,7 @@ var _ = Describe("Model Controller - Cache Bug Fixes", func() {
 
 		source := fmt.Sprintf("%s/model.gguf", server.URL)
 		cacheKey := computeCacheKey(source)
-		modelPath := filepath.Join(tempDir, cacheKey, "model.gguf")
+		stalePath := filepath.Join(tempDir, cacheKey, "model.gguf")
 
 		modelName := "model-ready-missing-file"
 		model := &inferencev1alpha1.Model{
@@ -438,9 +445,10 @@ var _ = Describe("Model Controller - Cache Bug Fixes", func() {
 		Expect(k8sClient.Create(ctx, model)).To(Succeed())
 		defer func() { _ = k8sClient.Delete(ctx, model) }()
 
-		// Manually set the status to Ready with a path that doesn't exist
+		// Manually set the status to Ready with a path that doesn't exist on
+		// disk to simulate a controller restart with stale status.
 		model.Status.Phase = PhaseReady
-		model.Status.Path = modelPath
+		model.Status.Path = stalePath
 		Expect(k8sClient.Status().Update(ctx, model)).To(Succeed())
 
 		reconciler := &ModelReconciler{
@@ -454,13 +462,14 @@ var _ = Describe("Model Controller - Cache Bug Fixes", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result).To(Equal(reconcile.Result{}))
 
-		// Verify model was re-downloaded and is Ready again
+		// Verify model was re-downloaded and landed at the canonical filename
+		// (Model.Name fallback because fake GGUF data fails parsing).
+		expectedPath := filepath.Join(tempDir, cacheKey, modelName+".gguf")
 		updated := &inferencev1alpha1.Model{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: modelName, Namespace: "default"}, updated)).To(Succeed())
 		Expect(updated.Status.Phase).To(Equal(PhaseReady))
-
-		// Verify the file now exists
-		_, err = os.Stat(modelPath)
+		Expect(updated.Status.Path).To(Equal(expectedPath))
+		_, err = os.Stat(expectedPath)
 		Expect(err).NotTo(HaveOccurred())
 	})
 
@@ -741,6 +750,228 @@ var _ = Describe("PVC Source Reconcile", func() {
 			}
 		}
 		Expect(hasDegraded).To(BeTrue())
+	})
+})
+
+var _ = Describe("Model Controller - GGUF Filename Migration", func() {
+	ctx := context.Background()
+
+	It("renames downloaded model to GGUF metadata name", func() {
+		ggufBytes := buildMinimalGGUF("Gemma-4-E4B-It")
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(ggufBytes)
+		}))
+		defer server.Close()
+
+		tempDir, err := os.MkdirTemp("", "llmkube-test-*")
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = os.RemoveAll(tempDir) }()
+
+		modelName := "gemma-test"
+		source := fmt.Sprintf("%s/model.gguf", server.URL)
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
+			Spec:       inferencev1alpha1.ModelSpec{Source: source},
+		}
+		Expect(k8sClient.Create(ctx, model)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, model) }()
+
+		reconciler := &ModelReconciler{
+			Client:      k8sClient,
+			Scheme:      k8sClient.Scheme(),
+			StoragePath: tempDir,
+		}
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		updated := &inferencev1alpha1.Model{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: modelName, Namespace: "default"}, updated)).To(Succeed())
+		Expect(updated.Status.Phase).To(Equal(PhaseReady))
+		Expect(updated.Status.GGUF).NotTo(BeNil())
+		Expect(updated.Status.GGUF.ModelName).To(Equal("Gemma-4-E4B-It"))
+
+		cacheKey := computeCacheKey(source)
+		expectedPath := filepath.Join(tempDir, cacheKey, "Gemma-4-E4B-It.gguf")
+		Expect(updated.Status.Path).To(Equal(expectedPath))
+		_, err = os.Stat(expectedPath)
+		Expect(err).NotTo(HaveOccurred())
+
+		legacyPath := filepath.Join(tempDir, cacheKey, "model.gguf")
+		_, err = os.Stat(legacyPath)
+		Expect(os.IsNotExist(err)).To(BeTrue(), "legacy model.gguf should not exist alongside canonical name")
+	})
+
+	It("sanitizes unsafe characters from GGUF metadata name", func() {
+		ggufBytes := buildMinimalGGUF("Llama 3.1/Instruct")
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write(ggufBytes)
+		}))
+		defer server.Close()
+
+		tempDir, err := os.MkdirTemp("", "llmkube-test-*")
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = os.RemoveAll(tempDir) }()
+
+		modelName := "llama-test"
+		source := fmt.Sprintf("%s/model.gguf", server.URL)
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
+			Spec:       inferencev1alpha1.ModelSpec{Source: source},
+		}
+		Expect(k8sClient.Create(ctx, model)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, model) }()
+
+		reconciler := &ModelReconciler{
+			Client:      k8sClient,
+			Scheme:      k8sClient.Scheme(),
+			StoragePath: tempDir,
+		}
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		updated := &inferencev1alpha1.Model{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: modelName, Namespace: "default"}, updated)).To(Succeed())
+		cacheKey := computeCacheKey(source)
+		expectedPath := filepath.Join(tempDir, cacheKey, "Llama-3.1-Instruct.gguf")
+		Expect(updated.Status.Path).To(Equal(expectedPath))
+		_, err = os.Stat(expectedPath)
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("early-exits on second reconcile after rename to canonical path", func() {
+		ggufBytes := buildMinimalGGUF("Test-Model")
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write(ggufBytes)
+		}))
+		defer server.Close()
+
+		tempDir, err := os.MkdirTemp("", "llmkube-test-*")
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = os.RemoveAll(tempDir) }()
+
+		modelName := "test-rename-then-skip"
+		source := fmt.Sprintf("%s/model.gguf", server.URL)
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
+			Spec:       inferencev1alpha1.ModelSpec{Source: source},
+		}
+		Expect(k8sClient.Create(ctx, model)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, model) }()
+
+		reconciler := &ModelReconciler{
+			Client:      k8sClient,
+			Scheme:      k8sClient.Scheme(),
+			StoragePath: tempDir,
+		}
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		first := &inferencev1alpha1.Model{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: modelName, Namespace: "default"}, first)).To(Succeed())
+		firstUpdated := first.Status.LastUpdated.DeepCopy()
+
+		// Second reconcile must early-exit without bumping LastUpdated.
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		second := &inferencev1alpha1.Model{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: modelName, Namespace: "default"}, second)).To(Succeed())
+		Expect(second.Status.LastUpdated.Equal(firstUpdated)).To(BeTrue())
+	})
+
+	It("falls back to Model.Name when GGUF metadata name is missing", func() {
+		// Valid GGUF with no general.name key.
+		ggufBytes := buildMinimalGGUF("")
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write(ggufBytes)
+		}))
+		defer server.Close()
+
+		tempDir, err := os.MkdirTemp("", "llmkube-test-*")
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = os.RemoveAll(tempDir) }()
+
+		modelName := "fallback-by-cr-name"
+		source := fmt.Sprintf("%s/model.gguf", server.URL)
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
+			Spec:       inferencev1alpha1.ModelSpec{Source: source},
+		}
+		Expect(k8sClient.Create(ctx, model)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, model) }()
+
+		reconciler := &ModelReconciler{
+			Client:      k8sClient,
+			Scheme:      k8sClient.Scheme(),
+			StoragePath: tempDir,
+		}
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		updated := &inferencev1alpha1.Model{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: modelName, Namespace: "default"}, updated)).To(Succeed())
+		cacheKey := computeCacheKey(source)
+		expectedPath := filepath.Join(tempDir, cacheKey, modelName+".gguf")
+		Expect(updated.Status.Path).To(Equal(expectedPath))
+	})
+
+	It("migrates an existing legacy model.gguf to canonical name on next reconcile", func() {
+		tempDir, err := os.MkdirTemp("", "llmkube-test-*")
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = os.RemoveAll(tempDir) }()
+
+		// Pre-stage a real GGUF file at the legacy path.
+		ggufBytes := buildMinimalGGUF("Legacy-Cached-Model")
+		source := "https://example.com/legacy.gguf"
+		cacheKey := computeCacheKey(source)
+		modelDir := filepath.Join(tempDir, cacheKey)
+		legacyPath := filepath.Join(modelDir, "model.gguf")
+		Expect(os.MkdirAll(modelDir, 0755)).To(Succeed())
+		Expect(os.WriteFile(legacyPath, ggufBytes, 0644)).To(Succeed())
+
+		modelName := "model-with-legacy-cache"
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
+			Spec:       inferencev1alpha1.ModelSpec{Source: source},
+		}
+		Expect(k8sClient.Create(ctx, model)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, model) }()
+
+		// Simulate post-upgrade state: status was Ready under the legacy path.
+		model.Status.Phase = PhaseReady
+		model.Status.Path = legacyPath
+		Expect(k8sClient.Status().Update(ctx, model)).To(Succeed())
+
+		reconciler := &ModelReconciler{
+			Client:      k8sClient,
+			Scheme:      k8sClient.Scheme(),
+			StoragePath: tempDir,
+		}
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		updated := &inferencev1alpha1.Model{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: modelName, Namespace: "default"}, updated)).To(Succeed())
+		expectedPath := filepath.Join(modelDir, "Legacy-Cached-Model.gguf")
+		Expect(updated.Status.Path).To(Equal(expectedPath))
+
+		_, err = os.Stat(expectedPath)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = os.Stat(legacyPath)
+		Expect(os.IsNotExist(err)).To(BeTrue(), "legacy model.gguf should have been renamed away")
 	})
 })
 
