@@ -74,40 +74,115 @@ type MemoryBudget struct {
 
 const overheadBytes = 512 * 1024 * 1024 // 512 MiB constant overhead
 
-// EstimateModelMemory estimates total memory needed to serve a model.
-// When GGUF metadata is available (layerCount > 0 and embeddingSize > 0),
-// it computes KV cache as 2 * layerCount * embeddingSize * contextSize * 2 (FP16 K+V).
-// Otherwise it falls back to fileSize * 1.2 + overhead.
+// EstimateOptions tweaks EstimateModelMemoryWithOptions's KV-cache calculation.
+// Empty values reproduce the historical defaults (f16 K and V).
+type EstimateOptions struct {
+	// CacheTypeK is the llama.cpp --cache-type-k value (e.g. "q8_0", "turbo3").
+	// Empty means f16. Unknown values fall back to f16 so the estimate
+	// over-allocates rather than under, which is the safer default for a
+	// pre-flight check.
+	CacheTypeK string
+
+	// CacheTypeV mirrors CacheTypeK for --cache-type-v.
+	CacheTypeV string
+}
+
+// cacheTypeBytesPerElement returns the per-element byte cost of a llama.cpp
+// KV cache type. Quantized types include their per-block fp16 scale (and
+// fp16 min for q*_1) overhead, so this approximates real disk/memory cost
+// rather than the bare bit width. TurboQuant turbo3/turbo4 values come from
+// TheTom's spec (https://github.com/ggml-org/llama.cpp/discussions/20969).
+// The case labels are exactly the strings llama.cpp recognizes for
+// --cache-type-k / --cache-type-v; promoting them to named constants would
+// not improve safety since any typo would just move into the constant decl.
+//
+//nolint:goconst
+func cacheTypeBytesPerElement(t string) float64 {
+	switch t {
+	case "", "f16":
+		return 2.0
+	case "f32":
+		return 4.0
+	case "q8_0":
+		// 32 weights * 8 bits + fp16 scale = 272 bits / 32 = 8.5 bits = 1.0625 bytes
+		return 1.0625
+	case "q5_0":
+		// 32 * 5 + 16 = 176 / 32 = 5.5 bits
+		return 0.6875
+	case "q5_1":
+		// 32 * 5 + 32 (scale + min) = 192 / 32 = 6.0 bits
+		return 0.75
+	case "q4_0", "iq4_nl":
+		// 32 * 4 + 16 = 144 / 32 = 4.5 bits
+		return 0.5625
+	case "q4_1":
+		// 32 * 4 + 32 = 160 / 32 = 5.0 bits
+		return 0.625
+	case "turbo3":
+		// 3.25 bits/element per TurboQuant spec
+		return 0.40625
+	case "turbo4":
+		// 4.25 bits/element per TurboQuant spec
+		return 0.53125
+	default:
+		// Unknown type: assume f16 to over-estimate; safer for pre-flight check.
+		return 2.0
+	}
+}
+
+// EstimateModelMemory estimates total memory needed to serve a model with
+// llama.cpp's default f16 KV cache. Kept for backward compatibility with the
+// historical signature; new call sites should prefer EstimateModelMemoryWithOptions
+// so they can pass the actual configured cache types and get an accurate
+// estimate when TurboQuant or any quantized cache is in use.
 func EstimateModelMemory(fileSizeBytes uint64, layerCount, embeddingSize uint64, contextSize int) MemoryEstimate {
-	if layerCount > 0 && embeddingSize > 0 {
-		// KV cache: 4 * layers * embedding * context (FP16 K+V)
-		// Guard against overflow in the multiplication chain.
-		layerEmbed := layerCount * embeddingSize
-		if layerEmbed/layerCount != embeddingSize {
-			return fallbackEstimate(fileSizeBytes)
-		}
-		ctx := uint64(contextSize) //nolint:gosec // G115: contextSize is CRD-validated ≥128 upstream
-		product := layerEmbed * ctx
-		if ctx != 0 && product/ctx != layerEmbed {
-			return fallbackEstimate(fileSizeBytes)
-		}
-		kvCache := product * 4
-		if kvCache/4 != product {
-			return fallbackEstimate(fileSizeBytes)
-		}
-		total := fileSizeBytes + kvCache + uint64(overheadBytes)
-		if total < fileSizeBytes { // addition overflow
-			return fallbackEstimate(fileSizeBytes)
-		}
-		return MemoryEstimate{
-			WeightsBytes:  fileSizeBytes,
-			KVCacheBytes:  kvCache,
-			OverheadBytes: uint64(overheadBytes),
-			TotalBytes:    total,
-		}
+	return EstimateModelMemoryWithOptions(fileSizeBytes, layerCount, embeddingSize, contextSize, EstimateOptions{})
+}
+
+// EstimateModelMemoryWithOptions is EstimateModelMemory parameterized on the
+// configured KV cache types. The KV-cache term becomes
+// layers * embedding * context * (bytesPerK + bytesPerV) where bytesPerK / V
+// come from cacheTypeBytesPerElement. With f16/f16 (the empty-string default)
+// it produces the same result as EstimateModelMemory.
+func EstimateModelMemoryWithOptions(
+	fileSizeBytes uint64,
+	layerCount, embeddingSize uint64,
+	contextSize int,
+	opts EstimateOptions,
+) MemoryEstimate {
+	if layerCount == 0 || embeddingSize == 0 {
+		return fallbackEstimate(fileSizeBytes)
 	}
 
-	return fallbackEstimate(fileSizeBytes)
+	// Guard against overflow in the multiplication chain. The integer math
+	// here mirrors the historical behavior; the fractional bytes-per-element
+	// multiplication happens once at the end via float64.
+	layerEmbed := layerCount * embeddingSize
+	if layerEmbed/layerCount != embeddingSize {
+		return fallbackEstimate(fileSizeBytes)
+	}
+	ctx := uint64(contextSize) //nolint:gosec // G115: contextSize is CRD-validated ≥128 upstream
+	product := layerEmbed * ctx
+	if ctx != 0 && product/ctx != layerEmbed {
+		return fallbackEstimate(fileSizeBytes)
+	}
+
+	bytesPerKV := cacheTypeBytesPerElement(opts.CacheTypeK) + cacheTypeBytesPerElement(opts.CacheTypeV)
+	// product is at most ~10^15 for absurd configs (1M ctx, 200B model);
+	// float64 represents integers up to 2^53 ≈ 9e15 exactly, so the conversion
+	// is lossless for any realistic input.
+	kvCache := uint64(math.Ceil(float64(product) * bytesPerKV))
+
+	total := fileSizeBytes + kvCache + uint64(overheadBytes)
+	if total < fileSizeBytes { // addition overflow
+		return fallbackEstimate(fileSizeBytes)
+	}
+	return MemoryEstimate{
+		WeightsBytes:  fileSizeBytes,
+		KVCacheBytes:  kvCache,
+		OverheadBytes: uint64(overheadBytes),
+		TotalBytes:    total,
+	}
 }
 
 // fallbackEstimate uses a heuristic (fileSize * 1.2 + overhead) when GGUF

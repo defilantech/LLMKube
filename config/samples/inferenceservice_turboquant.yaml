@@ -29,5 +29,10 @@ spec:
   # turbo3 = ~3.25 bits/value, ~4.9x compression vs fp16. At 256K context this
   # is roughly ~13 GB of KV cache vs ~64 GB at fp16. Requires a TurboQuant-
   # enabled llama.cpp build; LLMKube does not validate the string.
+  #
+  # The Metal agent's pre-flight memory check is cache-type-aware, so a
+  # turbo3-equipped 256K context that would be rejected under f16 (default)
+  # will pass the budget gate. See docs/turboquant.md for the bytes-per-element
+  # table the estimator uses.
   cacheTypeCustomK: turbo3
   cacheTypeCustomV: turbo3

@@ -55,11 +55,20 @@ Approximate KV cache size per token at 35B-class models, fp16 reference = `~256 
 | `turbo3` | 3.25 | 4.9× | ~13 GB |
 | `turbo2` | 2.5 | ~6.4× | ~10 GB |
 
-Perplexity penalty for `turbo3` is around +1% on Qwen 3.5-class models per the upstream community discussion.
+Perplexity penalty for `turbo3` is around +1% on Qwen 3.6-class models per the upstream community discussion.
+
+## Pre-flight memory check
+
+The Metal agent's pre-flight memory check uses the configured `cacheTypeK` and `cacheTypeV` (or their `Custom` variants) when estimating per-process memory. Without this, the check would always assume `f16` and reject TurboQuant configs that actually fit. The bytes-per-element table for each cache type lives next to the estimator at `pkg/agent/memory.go` (`cacheTypeBytesPerElement`); add a new entry there if you ship a fork with additional types. Unknown types fall back to `f16` so the estimate over-allocates rather than under, which is the safer default for a pre-flight gate.
+
+## Asymmetric K and V
+
+`cacheTypeCustomK` and `cacheTypeCustomV` are independent. Setting only one is supported; mixing is too. Community guidance (see [renjithvr11.medium.com on this](https://renjithvr11.medium.com/)) suggests `q8_0` for K and `turbo4` for V on agentic workloads, on the theory that the K side is more sensitive to quantization than V. We have not run this in our own benchmarks yet — the M5 Max numbers below are all symmetric K=V.
 
 ## References
 
 - llama.cpp community discussion: <https://github.com/ggml-org/llama.cpp/discussions/20969>
 - TurboQuant paper: <https://arxiv.org/abs/2504.19874>
+- M5 Max benchmark across f16/q8_0/turbo3/turbo4 from 0 to 1M context: <https://llmkube.com/blog/turboquant-m5-max-long-context>
 - LLMKube tracking issue: [#308](https://github.com/defilantech/LLMKube/issues/308)
 - The CRD field decision: [#282](https://github.com/defilantech/LLMKube/issues/282)
