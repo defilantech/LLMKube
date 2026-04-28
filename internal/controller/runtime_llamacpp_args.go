@@ -47,8 +47,15 @@ func appendContextSizeArgs(args []string, contextSize *int32) []string {
 	return args
 }
 
-func appendParallelSlotsArgs(args []string, parallelSlots *int32) []string {
-	if parallelSlots != nil && *parallelSlots > 1 {
+func appendParallelSlotsArgs(args []string, parallelSlots *int32, extraArgs []string) []string {
+	// NOTE(#339): extra args has precedence.
+	if parallelSlots != nil && *parallelSlots >= 1 {
+		for _, v := range extraArgs {
+			if v == "--parallel" {
+				// TODO: emit warning
+				return args
+			}
+		}
 		return append(args, "--parallel", fmt.Sprintf("%d", *parallelSlots))
 	}
 	return args
@@ -154,13 +161,4 @@ func appendReasoningBudgetArgs(args []string, budget *int32, message string) []s
 		args = append(args, "--reasoning-budget-message", message)
 	}
 	return args
-}
-
-func hasParallelArgs(args []string) bool {
-    for _, v := range args {
-        if v == "--parallel" {
-            return true
-        }
-    }
-    return false
 }

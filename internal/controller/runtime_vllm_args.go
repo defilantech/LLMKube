@@ -22,11 +22,17 @@ package controller
 // free functions so they are trivially testable in isolation and can be
 // composed in any order from the deployment builder.
 
-func hasMaxNumSeqsArgs(args []string) bool {
-    for _, v := range args {
-        if v == "--max-num-seqs" {
-            return true
-        }
-    }
-    return false
+
+func appendMaxNumSeqsArgs(args []string, parallelSlots *int32, extraArgs []string) []string {
+	// NOTE(#339): extra args has precedence.
+	if parallelSlots != nil && *parallelSlots >= 1 {
+		for _, v := range extraArgs {
+			if v == "--max-num-seqs" {
+				// TODO: emit warning
+				return args
+			}
+		}
+		return append(args, "--max-num-seqs", fmt.Sprintf("%d", *parallelSlots))
+	}
+	return args
 }

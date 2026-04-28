@@ -5,9 +5,14 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 )
+
+// tgiLog is a package-level logger used for construction-time warnings from
+// BuildArgs.
+var tgiLog = logf.Log.WithName("runtime.tgi")
 
 type TGIBackend struct{}
 
@@ -20,6 +25,14 @@ func (b *TGIBackend) NeedsModelInit() bool     { return false }
 func (b *TGIBackend) DefaultHPAMetric() string { return "tgi:queue_size" }
 
 func (b *TGIBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, model *inferencev1alpha1.Model, modelPath string, port int32) []string {
+	if isvc.Spec.ParallelSlots != nil {
+		tgiLog.Error(nil,
+			"spec.parallelSlots is enabled but not supported by TGI runtime, skipping"
+			"inferenceService", isvc.Name,
+			"namespace", isvc.Namespace,
+		)
+	}
+
 	source := modelPath
 	if source == "" {
 		source = model.Spec.Source

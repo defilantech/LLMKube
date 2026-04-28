@@ -138,9 +138,7 @@ func (b *VLLMBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, model 
 		args = append(args, isvc.Spec.ExtraArgs...)
 	}
 
-	if isvc.Spec.ParallelSlots != nil && !hasMaxNumSeqsArgs(isvc.Spec.ExtraArgs) {
-		args = append(args, "--max-num-seqs", fmt.Sprintf("%d", isvc.Spec.ParallelSlots))
-	}
+	args = appendMaxNumSeqsArgs(args, isvc.Spec.ParallelSlots, isvc.Spec.ExtraArgs)
 
 	return args
 }

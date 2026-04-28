@@ -62,10 +62,7 @@ func (b *LlamaCppBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, mo
 	}
 
 	args = appendContextSizeArgs(args, isvc.Spec.ContextSize)
-	// NOTE(#339): extra args has precedence.
-	if !hasParallelArgs(isvc.Spec.ExtraArgs) {
-		args = appendParallelSlotsArgs(args, isvc.Spec.ParallelSlots)
-	}
+	args = appendParallelSlotsArgs(args, isvc.Spec.ParallelSlots, isvc.Spec.ExtraArgs)
 	args = appendFlashAttentionArgs(args, isvc.Spec.FlashAttention, gpuCount)
 	args = appendJinjaArgs(args, isvc.Spec.Jinja)
 	args = appendCacheTypeArgs(args, resolveCacheType(isvc.Spec.CacheTypeCustomK, isvc.Spec.CacheTypeK), resolveCacheType(isvc.Spec.CacheTypeCustomV, isvc.Spec.CacheTypeV))

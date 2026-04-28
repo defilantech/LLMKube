@@ -3,9 +3,14 @@ package controller
 import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 )
+
+// personaPlexLog is a package-level logger used for construction-time warnings from
+// BuildArgs.
+var personaPlexLog = logf.Log.WithName("runtime.tgi")
 
 // PersonaPlexBackend generates container configuration for the NVIDIA PersonaPlex
 // (Moshi) speech-to-speech inference server.
@@ -31,6 +36,14 @@ func (b *PersonaPlexBackend) BuildCommand() []string {
 }
 
 func (b *PersonaPlexBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, _ *inferencev1alpha1.Model, _ string, _ int32) []string {
+	if isvc.Spec.ParallelSlots != nil {
+		personaPlexLog.Error(nil,
+			"spec.parallelSlots is enabled but not supported by persona plex runtime, skipping"
+			"inferenceService", isvc.Name,
+			"namespace", isvc.Namespace,
+		)
+	}
+
 	args := []string{"--ssl", "/app/ssl"}
 
 	cfg := isvc.Spec.PersonaPlexConfig

@@ -3,9 +3,14 @@ package controller
 import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 )
+
+// genericLog is a package-level logger used for construction-time warnings from
+// BuildArgs.
+var genericLog = logf.Log.WithName("runtime.generic")
 
 // GenericBackend deploys user-provided containers with custom command, args, env, and probes.
 // It does not generate any runtime-specific configuration.
@@ -27,6 +32,13 @@ func (b *GenericBackend) NeedsModelInit() bool     { return false }
 func (b *GenericBackend) DefaultHPAMetric() string { return "" }
 
 func (b *GenericBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, _ *inferencev1alpha1.Model, _ string, _ int32) []string {
+	if isvc.Spec.ParallelSlots != nil {
+		genericLog.Error(nil,
+			"spec.parallelSlots is enabled but not supported by generic runtime, skipping"
+			"inferenceService", isvc.Name,
+			"namespace", isvc.Namespace,
+		)
+	}
 	return isvc.Spec.Args
 }
 
