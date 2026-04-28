@@ -76,10 +76,12 @@ func TestVLLMBuildArgs(t *testing.T) {
 		notContains []string
 	}{
 		{
-			name:        "nil config emits only base flags",
-			cfg:         nil,
-			contains:    []flagCheck{{"--model", modelPath}, {"--host", "0.0.0.0"}, {"--port", "8000"}},
-			notContains: []string{"--kv-cache-dtype", "--enable-prefix-caching", "--enable-chunked-prefill", "--max-num-batched-tokens", "--attention-backend", "--speculative-model", "--enable-expert-parallel"},
+			name: "nil config emits only base flags (model as positional)",
+			cfg:  nil,
+			// vLLM v0.20+ deprecated --model in favor of a positional argument.
+			// The bare model path appears as args[0]; --model itself must NOT appear.
+			contains:    []flagCheck{{"--host", "0.0.0.0"}, {"--port", "8000"}},
+			notContains: []string{"--model", "--kv-cache-dtype", "--enable-prefix-caching", "--enable-chunked-prefill", "--max-num-batched-tokens", "--attention-backend", "--speculative-model", "--enable-expert-parallel"},
 		},
 		{
 			name:        "empty config emits only base flags",

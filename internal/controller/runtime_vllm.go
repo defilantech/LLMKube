@@ -54,8 +54,12 @@ func (b *VLLMBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, model 
 	if source == "" {
 		source = model.Spec.Source
 	}
+	// vLLM v0.20 deprecated --model in favor of a positional argument; --model
+	// will be removed in a future minor. The positional form is supported by
+	// every vLLM release we run against, so this works on both v0.19 (silent
+	// accept) and v0.20+ (no deprecation warning).
 	args := []string{
-		"--model", source,
+		source,
 		"--host", "0.0.0.0",
 		"--port", fmt.Sprintf("%d", port),
 	}
