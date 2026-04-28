@@ -536,6 +536,129 @@ func TestComputeSpecHash_NilIsvc(t *testing.T) {
 	}
 }
 
+// TestBuildExecutorConfig_PassesAllSpecFieldsThrough is the regression guard
+// for issue #349: every flag-relevant InferenceServiceSpec field must reach
+// the executor. If a future field gets added to the spec but the agent
+// forgets to plumb it, this test fails loudly.
+func TestBuildExecutorConfig_PassesAllSpecFieldsThrough(t *testing.T) {
+	parallel := int32(4)
+	moeLayers := int32(8)
+	reasoning := int32(2048)
+	jinja := true
+	moeOff := true
+	noKv := true
+	noWarm := true
+
+	isvc := &inferencev1alpha1.InferenceService{
+		ObjectMeta: metav1.ObjectMeta{Name: "all-fields", Namespace: "default"},
+		Spec: inferencev1alpha1.InferenceServiceSpec{
+			ModelRef:               "any-model",
+			ParallelSlots:          &parallel,
+			Jinja:                  &jinja,
+			CacheTypeK:             "q8_0",
+			CacheTypeV:             "q8_0",
+			CacheTypeCustomK:       "turbo3", // wins over CacheTypeK
+			CacheTypeCustomV:       "turbo4", // wins over CacheTypeV
+			MoeCPUOffload:          &moeOff,
+			MoeCPULayers:           &moeLayers,
+			NoKvOffload:            &noKv,
+			TensorOverrides:        []string{"exps=CPU"},
+			MetadataOverrides:      []string{"general.architecture=qwen3"},
+			NoWarmup:               &noWarm,
+			ReasoningBudget:        &reasoning,
+			ReasoningBudgetMessage: "wrap up",
+			ExtraArgs:              []string{"--rope-scale", "4"},
+		},
+	}
+	model := &inferencev1alpha1.Model{
+		ObjectMeta: metav1.ObjectMeta{Name: "any-model", Namespace: "default"},
+		Spec:       inferencev1alpha1.ModelSpec{Source: "https://example.test/m.gguf"},
+	}
+
+	cfg := buildExecutorConfig(isvc, model, executorBaseConfig{
+		GPULayers:      99,
+		ContextSize:    65536,
+		FlashAttention: true,
+		BatchSize:      2048,
+		UBatchSize:     512,
+	})
+
+	checks := map[string]struct {
+		got, want any
+	}{
+		"Name":                   {cfg.Name, "all-fields"},
+		"Namespace":              {cfg.Namespace, "default"},
+		"ModelSource":            {cfg.ModelSource, "https://example.test/m.gguf"},
+		"ModelName":              {cfg.ModelName, "any-model"},
+		"GPULayers":              {cfg.GPULayers, int32(99)},
+		"ContextSize":            {cfg.ContextSize, 65536},
+		"Jinja":                  {cfg.Jinja, true},
+		"FlashAttention":         {cfg.FlashAttention, true},
+		"Mlock":                  {cfg.Mlock, true},
+		"BatchSize":              {cfg.BatchSize, 2048},
+		"UBatchSize":             {cfg.UBatchSize, 512},
+		"ParallelSlots":          {cfg.ParallelSlots, 4},
+		"CacheTypeK":             {cfg.CacheTypeK, "turbo3"},
+		"CacheTypeV":             {cfg.CacheTypeV, "turbo4"},
+		"MoeCPUOffload":          {cfg.MoeCPUOffload, true},
+		"MoeCPULayers":           {cfg.MoeCPULayers, 8},
+		"NoKvOffload":            {cfg.NoKvOffload, true},
+		"NoWarmup":               {cfg.NoWarmup, true},
+		"ReasoningBudget":        {cfg.ReasoningBudget, 2048},
+		"ReasoningBudgetMessage": {cfg.ReasoningBudgetMessage, "wrap up"},
+	}
+	for field, c := range checks {
+		if c.got != c.want {
+			t.Errorf("%s = %v, want %v", field, c.got, c.want)
+		}
+	}
+	if len(cfg.TensorOverrides) != 1 || cfg.TensorOverrides[0] != "exps=CPU" {
+		t.Errorf("TensorOverrides = %v, want [exps=CPU]", cfg.TensorOverrides)
+	}
+	if len(cfg.MetadataOverrides) != 1 || cfg.MetadataOverrides[0] != "general.architecture=qwen3" {
+		t.Errorf("MetadataOverrides = %v, want [general.architecture=qwen3]", cfg.MetadataOverrides)
+	}
+	if len(cfg.ExtraArgs) != 2 || cfg.ExtraArgs[0] != "--rope-scale" || cfg.ExtraArgs[1] != "4" {
+		t.Errorf("ExtraArgs = %v, want [--rope-scale 4]", cfg.ExtraArgs)
+	}
+}
+
+// TestBuildExecutorConfig_StandardCacheTypeWhenCustomEmpty confirms that the
+// standard cacheTypeK/V is used when the custom field is empty (the common
+// case for clusters not running a TurboQuant-enabled fork).
+func TestBuildExecutorConfig_StandardCacheTypeWhenCustomEmpty(t *testing.T) {
+	isvc := &inferencev1alpha1.InferenceService{
+		Spec: inferencev1alpha1.InferenceServiceSpec{
+			ModelRef:   "m",
+			CacheTypeK: "q8_0",
+			CacheTypeV: "q8_0",
+		},
+	}
+	model := &inferencev1alpha1.Model{Spec: inferencev1alpha1.ModelSpec{Source: "x"}}
+	cfg := buildExecutorConfig(isvc, model, executorBaseConfig{})
+	if cfg.CacheTypeK != "q8_0" {
+		t.Errorf("CacheTypeK = %q, want %q", cfg.CacheTypeK, "q8_0")
+	}
+	if cfg.CacheTypeV != "q8_0" {
+		t.Errorf("CacheTypeV = %q, want %q", cfg.CacheTypeV, "q8_0")
+	}
+}
+
+// TestBuildExecutorConfig_NilPointersAreSafe confirms that an InferenceService
+// with mostly-nil pointer fields produces a zero-valued ExecutorConfig (no
+// panics, no spurious flag values).
+func TestBuildExecutorConfig_NilPointersAreSafe(t *testing.T) {
+	isvc := &inferencev1alpha1.InferenceService{
+		Spec: inferencev1alpha1.InferenceServiceSpec{ModelRef: "m"},
+	}
+	model := &inferencev1alpha1.Model{Spec: inferencev1alpha1.ModelSpec{Source: "x"}}
+	cfg := buildExecutorConfig(isvc, model, executorBaseConfig{})
+	if cfg.ParallelSlots != 0 || cfg.MoeCPUOffload || cfg.MoeCPULayers != 0 ||
+		cfg.NoKvOffload || cfg.NoWarmup || cfg.ReasoningBudget != 0 || cfg.Jinja {
+		t.Errorf("nil pointers must produce zero-valued config, got: %+v", cfg)
+	}
+}
+
 // runEnsureProcessExpectingMapEviction sets up a metal-agent with a pre-seeded
 // healthy process at default/<name>, runs ensureProcess against the given isvc,
 // and asserts the process map entry has been removed. Pre-seeded PID -99999

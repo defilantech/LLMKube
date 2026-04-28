@@ -325,6 +325,77 @@ func (a *MetalAgent) handleEvent(ctx context.Context, event InferenceServiceEven
 	return nil
 }
 
+// executorBaseConfig holds the values ensureProcess derives from sources
+// outside isvc.Spec (memory check, defaults, perf-core detection). Passing
+// these alongside the isvc into buildExecutorConfig lets the helper own all
+// the spec → flag mapping in one place.
+type executorBaseConfig struct {
+	GPULayers      int32
+	ContextSize    int
+	FlashAttention bool
+	BatchSize      int
+	UBatchSize     int
+}
+
+// buildExecutorConfig collects every flag-relevant InferenceService field into
+// an ExecutorConfig that buildLlamaServerArgs can consume. Pointer fields are
+// dereferenced here so the executor sees plain values; cache types are resolved
+// (custom > standard) to mirror the controller's runtime_llamacpp arg builder.
+func buildExecutorConfig(
+	isvc *inferencev1alpha1.InferenceService,
+	model *inferencev1alpha1.Model,
+	base executorBaseConfig,
+) ExecutorConfig {
+	cacheTypeK := isvc.Spec.CacheTypeK
+	if isvc.Spec.CacheTypeCustomK != "" {
+		cacheTypeK = isvc.Spec.CacheTypeCustomK
+	}
+	cacheTypeV := isvc.Spec.CacheTypeV
+	if isvc.Spec.CacheTypeCustomV != "" {
+		cacheTypeV = isvc.Spec.CacheTypeCustomV
+	}
+
+	return ExecutorConfig{
+		Name:                   isvc.Name,
+		Namespace:              isvc.Namespace,
+		ModelSource:            model.Spec.Source,
+		ModelName:              model.Name,
+		GPULayers:              base.GPULayers,
+		ContextSize:            base.ContextSize,
+		Jinja:                  derefBool(isvc.Spec.Jinja),
+		FlashAttention:         base.FlashAttention,
+		Mlock:                  true,
+		BatchSize:              base.BatchSize,
+		UBatchSize:             base.UBatchSize,
+		ParallelSlots:          derefInt32(isvc.Spec.ParallelSlots),
+		CacheTypeK:             cacheTypeK,
+		CacheTypeV:             cacheTypeV,
+		MoeCPUOffload:          derefBool(isvc.Spec.MoeCPUOffload),
+		MoeCPULayers:           derefInt32(isvc.Spec.MoeCPULayers),
+		NoKvOffload:            derefBool(isvc.Spec.NoKvOffload),
+		TensorOverrides:        isvc.Spec.TensorOverrides,
+		MetadataOverrides:      isvc.Spec.MetadataOverrides,
+		NoWarmup:               derefBool(isvc.Spec.NoWarmup),
+		ReasoningBudget:        derefInt32(isvc.Spec.ReasoningBudget),
+		ReasoningBudgetMessage: isvc.Spec.ReasoningBudgetMessage,
+		ExtraArgs:              isvc.Spec.ExtraArgs,
+	}
+}
+
+func derefBool(p *bool) bool {
+	if p == nil {
+		return false
+	}
+	return *p
+}
+
+func derefInt32(p *int32) int {
+	if p == nil {
+		return 0
+	}
+	return int(*p)
+}
+
 // validateRuntimeFormat returns an error if the model's format is incompatible
 // with the agent's configured runtime. Empty format defaults to "gguf".
 func (a *MetalAgent) validateRuntimeFormat(model *inferencev1alpha1.Model) error {
@@ -508,20 +579,16 @@ func (a *MetalAgent) ensureProcess(ctx context.Context, isvc *inferencev1alpha1.
 		uBatchSize = int(*isvc.Spec.UBatchSize)
 	}
 
-	// Start the process
-	process, err := a.executor.StartProcess(ctx, ExecutorConfig{
-		Name:           isvc.Name,
-		Namespace:      isvc.Namespace,
-		ModelSource:    model.Spec.Source,
-		ModelName:      model.Name,
+	cfg := buildExecutorConfig(isvc, model, executorBaseConfig{
 		GPULayers:      gpuLayers,
 		ContextSize:    contextSize,
-		Jinja:          isvc.Spec.Jinja != nil && *isvc.Spec.Jinja,
 		FlashAttention: flashAttn,
-		Mlock:          true,
 		BatchSize:      batchSize,
 		UBatchSize:     uBatchSize,
 	})
+
+	// Start the process
+	process, err := a.executor.StartProcess(ctx, cfg)
 	if err != nil {
 		return fmt.Errorf("failed to start process: %w", err)
 	}

@@ -181,6 +181,150 @@ func TestBuildLlamaServerArgs_GPULayersOverride(t *testing.T) {
 	}
 }
 
+func TestBuildLlamaServerArgs_CacheTypes(t *testing.T) {
+	args := buildLlamaServerArgs("/m.gguf", 8080, ExecutorConfig{
+		ContextSize: 4096,
+		CacheTypeK:  "turbo3",
+		CacheTypeV:  "turbo4",
+	})
+	if got := flagValue(args, "--cache-type-k"); got != "turbo3" {
+		t.Errorf("--cache-type-k = %q, want %q (full args: %v)", got, "turbo3", args)
+	}
+	if got := flagValue(args, "--cache-type-v"); got != "turbo4" {
+		t.Errorf("--cache-type-v = %q, want %q (full args: %v)", got, "turbo4", args)
+	}
+}
+
+func TestBuildLlamaServerArgs_CacheTypesEmptyOmits(t *testing.T) {
+	args := buildLlamaServerArgs("/m.gguf", 8080, ExecutorConfig{ContextSize: 4096})
+	if hasFlag(args, "--cache-type-k") {
+		t.Errorf("--cache-type-k must be omitted when CacheTypeK is empty (full args: %v)", args)
+	}
+	if hasFlag(args, "--cache-type-v") {
+		t.Errorf("--cache-type-v must be omitted when CacheTypeV is empty (full args: %v)", args)
+	}
+}
+
+func TestBuildLlamaServerArgs_ParallelSlots(t *testing.T) {
+	args := buildLlamaServerArgs("/m.gguf", 8080, ExecutorConfig{
+		ContextSize:   4096,
+		ParallelSlots: 4,
+	})
+	if got := flagValue(args, "--parallel"); got != "4" {
+		t.Errorf("--parallel = %q, want %q (full args: %v)", got, "4", args)
+	}
+}
+
+func TestBuildLlamaServerArgs_ParallelSlotsOneOrZeroOmits(t *testing.T) {
+	for _, n := range []int{0, 1} {
+		args := buildLlamaServerArgs("/m.gguf", 8080, ExecutorConfig{
+			ContextSize:   4096,
+			ParallelSlots: n,
+		})
+		if hasFlag(args, "--parallel") {
+			t.Errorf("--parallel must be omitted for ParallelSlots=%d (full args: %v)", n, args)
+		}
+	}
+}
+
+func TestBuildLlamaServerArgs_MoeOffloadFlags(t *testing.T) {
+	args := buildLlamaServerArgs("/m.gguf", 8080, ExecutorConfig{
+		ContextSize:   4096,
+		MoeCPUOffload: true,
+		MoeCPULayers:  6,
+		NoKvOffload:   true,
+	})
+	if !hasFlag(args, "--cpu-moe") {
+		t.Errorf("--cpu-moe missing when MoeCPUOffload=true (full args: %v)", args)
+	}
+	if got := flagValue(args, "--n-cpu-moe"); got != "6" {
+		t.Errorf("--n-cpu-moe = %q, want %q", got, "6")
+	}
+	if !hasFlag(args, "--no-kv-offload") {
+		t.Errorf("--no-kv-offload missing when NoKvOffload=true")
+	}
+}
+
+func TestBuildLlamaServerArgs_TensorAndMetadataOverrides(t *testing.T) {
+	args := buildLlamaServerArgs("/m.gguf", 8080, ExecutorConfig{
+		ContextSize:       4096,
+		TensorOverrides:   []string{"exps=CPU", "attn=GPU"},
+		MetadataOverrides: []string{"general.architecture=qwen3", "qwen3.context_length=u32:262144"},
+	})
+	tensorCount := 0
+	kvCount := 0
+	for i, a := range args {
+		if a == "--override-tensor" && i+1 < len(args) {
+			tensorCount++
+		}
+		if a == "--override-kv" && i+1 < len(args) {
+			kvCount++
+		}
+	}
+	if tensorCount != 2 {
+		t.Errorf("--override-tensor count = %d, want 2 (full args: %v)", tensorCount, args)
+	}
+	if kvCount != 2 {
+		t.Errorf("--override-kv count = %d, want 2 (full args: %v)", kvCount, args)
+	}
+}
+
+func TestBuildLlamaServerArgs_NoWarmup(t *testing.T) {
+	args := buildLlamaServerArgs("/m.gguf", 8080, ExecutorConfig{
+		ContextSize: 4096,
+		NoWarmup:    true,
+	})
+	if !hasFlag(args, "--no-warmup") {
+		t.Errorf("--no-warmup missing when NoWarmup=true (full args: %v)", args)
+	}
+}
+
+func TestBuildLlamaServerArgs_ReasoningBudget(t *testing.T) {
+	args := buildLlamaServerArgs("/m.gguf", 8080, ExecutorConfig{
+		ContextSize:            4096,
+		ReasoningBudget:        2048,
+		ReasoningBudgetMessage: "wrap it up",
+	})
+	if got := flagValue(args, "--reasoning-budget"); got != "2048" {
+		t.Errorf("--reasoning-budget = %q, want %q", got, "2048")
+	}
+	if got := flagValue(args, "--reasoning-budget-message"); got != "wrap it up" {
+		t.Errorf("--reasoning-budget-message = %q, want %q", got, "wrap it up")
+	}
+}
+
+func TestBuildLlamaServerArgs_ReasoningBudgetMessageRequiresBudget(t *testing.T) {
+	// Message without a budget is meaningless and must not produce a stray flag.
+	args := buildLlamaServerArgs("/m.gguf", 8080, ExecutorConfig{
+		ContextSize:            4096,
+		ReasoningBudgetMessage: "wrap it up",
+	})
+	if hasFlag(args, "--reasoning-budget") {
+		t.Errorf("--reasoning-budget must be omitted when ReasoningBudget=0")
+	}
+	if hasFlag(args, "--reasoning-budget-message") {
+		t.Errorf("--reasoning-budget-message must be omitted when ReasoningBudget=0 (full args: %v)", args)
+	}
+}
+
+func TestBuildLlamaServerArgs_ExtraArgsAppendedLast(t *testing.T) {
+	args := buildLlamaServerArgs("/m.gguf", 8080, ExecutorConfig{
+		ContextSize: 4096,
+		ExtraArgs:   []string{"--rope-scaling", "yarn", "--rope-scale", "4"},
+	})
+	// All four ExtraArgs tokens must appear in order at the very end.
+	if len(args) < 4 {
+		t.Fatalf("args too short: %v", args)
+	}
+	tail := args[len(args)-4:]
+	want := []string{"--rope-scaling", "yarn", "--rope-scale", "4"}
+	for i, w := range want {
+		if tail[i] != w {
+			t.Errorf("tail[%d] = %q, want %q (full args: %v)", i, tail[i], w, args)
+		}
+	}
+}
+
 // hasFlag reports whether a bare flag (no value following) is present.
 func hasFlag(args []string, name string) bool {
 	for _, a := range args {

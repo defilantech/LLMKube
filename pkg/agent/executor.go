@@ -62,6 +62,47 @@ type ExecutorConfig struct {
 	// UBatchSize sets --ubatch-size. Zero omits the flag (use llama-server's
 	// own default).
 	UBatchSize int
+
+	// ParallelSlots maps to --parallel. Values <= 1 omit the flag (one slot
+	// is the llama-server default and adding the flag is just noise).
+	ParallelSlots int
+
+	// CacheTypeK / CacheTypeV are the resolved llama.cpp KV cache types,
+	// already passed through CRD custom-vs-standard resolution at the agent
+	// boundary. Empty omits the corresponding flag.
+	CacheTypeK string
+	CacheTypeV string
+
+	// MoeCPUOffload maps to --cpu-moe (offload all MoE expert layers to CPU).
+	MoeCPUOffload bool
+
+	// MoeCPULayers maps to --n-cpu-moe (offload first N MoE layers to CPU).
+	// Zero omits the flag.
+	MoeCPULayers int
+
+	// NoKvOffload maps to --no-kv-offload (keep KV cache on host RAM).
+	NoKvOffload bool
+
+	// TensorOverrides become repeated --override-tensor flags.
+	TensorOverrides []string
+
+	// MetadataOverrides become repeated --override-kv flags.
+	MetadataOverrides []string
+
+	// NoWarmup maps to --no-warmup (skip the prompt-processing warmup pass).
+	NoWarmup bool
+
+	// ReasoningBudget maps to --reasoning-budget. Zero omits both this and
+	// ReasoningBudgetMessage.
+	ReasoningBudget int
+
+	// ReasoningBudgetMessage maps to --reasoning-budget-message. Ignored
+	// unless ReasoningBudget > 0.
+	ReasoningBudgetMessage string
+
+	// ExtraArgs are appended to the command line as-is, last, so they can
+	// override any earlier flag llama-server emitted (last-wins).
+	ExtraArgs []string
 }
 
 // ProcessExecutor is the interface that both llama-server and oMLX executors
@@ -276,12 +317,39 @@ func buildLlamaServerArgs(modelPath string, port int, config ExecutorConfig) []s
 		"--metrics",
 	}
 
+	if config.ParallelSlots > 1 {
+		args = append(args, "--parallel", fmt.Sprintf("%d", config.ParallelSlots))
+	}
+
 	if config.FlashAttention {
 		args = append(args, "--flash-attn", "on")
 	}
 
 	if config.Mlock {
 		args = append(args, "--mlock")
+	}
+
+	if config.CacheTypeK != "" {
+		args = append(args, "--cache-type-k", config.CacheTypeK)
+	}
+	if config.CacheTypeV != "" {
+		args = append(args, "--cache-type-v", config.CacheTypeV)
+	}
+
+	if config.MoeCPUOffload {
+		args = append(args, "--cpu-moe")
+	}
+	if config.MoeCPULayers > 0 {
+		args = append(args, "--n-cpu-moe", fmt.Sprintf("%d", config.MoeCPULayers))
+	}
+	if config.NoKvOffload {
+		args = append(args, "--no-kv-offload")
+	}
+	for _, override := range config.TensorOverrides {
+		args = append(args, "--override-tensor", override)
+	}
+	for _, override := range config.MetadataOverrides {
+		args = append(args, "--override-kv", override)
 	}
 
 	threads := config.Threads
@@ -302,8 +370,24 @@ func buildLlamaServerArgs(modelPath string, port int, config ExecutorConfig) []s
 		args = append(args, "--ubatch-size", fmt.Sprintf("%d", config.UBatchSize))
 	}
 
+	if config.NoWarmup {
+		args = append(args, "--no-warmup")
+	}
+
+	if config.ReasoningBudget > 0 {
+		args = append(args, "--reasoning-budget", fmt.Sprintf("%d", config.ReasoningBudget))
+		if config.ReasoningBudgetMessage != "" {
+			args = append(args, "--reasoning-budget-message", config.ReasoningBudgetMessage)
+		}
+	}
+
 	if config.Jinja {
 		args = append(args, "--jinja")
+	}
+
+	// ExtraArgs comes last so user-provided overrides actually override.
+	if len(config.ExtraArgs) > 0 {
+		args = append(args, config.ExtraArgs...)
 	}
 
 	return args
