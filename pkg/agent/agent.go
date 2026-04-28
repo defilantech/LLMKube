@@ -18,6 +18,9 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -120,6 +123,11 @@ type ManagedProcess struct {
 	ModelID   string // oMLX/Ollama model identifier used for unload; empty for llama-server
 	StartedAt time.Time
 	Healthy   bool
+
+	// SpecHash captures the hash of InferenceServiceSpec fields that, if
+	// changed, require respawning the underlying process. Used by ensureProcess
+	// to detect spec drift on UPDATED events and respawn instead of no-oping.
+	SpecHash string
 }
 
 // NewMetalAgent creates a new Metal agent instance
@@ -311,21 +319,47 @@ func (a *MetalAgent) handleEvent(ctx context.Context, event InferenceServiceEven
 	return nil
 }
 
-// ensureProcess ensures a llama-server process is running for the InferenceService
+// ensureProcess ensures a llama-server process is running for the InferenceService.
+// On UPDATED events, the spec is diffed against the running process's stored
+// hash; if it changed, the existing process is stopped before a fresh one is
+// spawned so the new flags actually take effect. Replicas=0 stops the process
+// without restarting.
 func (a *MetalAgent) ensureProcess(ctx context.Context, isvc *inferencev1alpha1.InferenceService) error {
 	key := types.NamespacedName{
 		Namespace: isvc.Namespace,
 		Name:      isvc.Name,
 	}.String()
 
+	desiredHash := computeSpecHash(isvc)
+
 	// Check if process already exists
 	a.mu.RLock()
 	existing, exists := a.processes[key]
 	a.mu.RUnlock()
 
-	if exists && existing.Healthy {
-		a.logger.Debugw("inference service already has a healthy process", "key", key)
+	// Honor spec.replicas=0 by stopping a running process and not respawning.
+	// Without this, a user trying to take a model offline via spec edits has
+	// to fully reload the metal-agent to evict it.
+	if isvc.Spec.Replicas != nil && *isvc.Spec.Replicas == 0 {
+		if exists {
+			a.logger.Infow("replicas=0; stopping process",
+				"namespace", isvc.Namespace, "name", isvc.Name)
+			return a.deleteProcess(ctx, key)
+		}
 		return nil
+	}
+
+	if exists && existing.Healthy {
+		if existing.SpecHash == desiredHash {
+			a.logger.Debugw("inference service already has a healthy process with matching spec", "key", key)
+			return nil
+		}
+		a.logger.Infow("spec changed; restarting process to pick up new flags",
+			"namespace", isvc.Namespace, "name", isvc.Name,
+			"oldSpecHash", existing.SpecHash, "newSpecHash", desiredHash)
+		if err := a.deleteProcess(ctx, key); err != nil {
+			return fmt.Errorf("failed to stop process before respawn: %w", err)
+		}
 	}
 
 	a.logger.Infow("starting inference service", "namespace", isvc.Namespace, "name", isvc.Name)
@@ -476,6 +510,10 @@ func (a *MetalAgent) ensureProcess(ctx context.Context, isvc *inferencev1alpha1.
 	if err != nil {
 		return fmt.Errorf("failed to start process: %w", err)
 	}
+
+	// Stamp the spec hash onto the process so future ensureProcess calls
+	// can detect drift via simple string compare.
+	process.SpecHash = desiredHash
 
 	// Store process and update metrics
 	a.mu.Lock()
@@ -795,4 +833,74 @@ func (a *MetalAgent) estimateModelMemory(model *inferencev1alpha1.Model, context
 	}
 
 	return EstimateModelMemory(fileSizeBytes, layerCount, embeddingSize, contextSize), nil
+}
+
+// computeSpecHash returns a stable hash of the InferenceServiceSpec fields that,
+// if changed, require respawning the underlying llama-server process. Listing
+// fields explicitly (rather than hashing the full Spec) keeps the hash stable
+// across CRD additions that don't affect process invocation — adding a new
+// status-only or controller-only field won't trigger a spurious respawn.
+func computeSpecHash(isvc *inferencev1alpha1.InferenceService) string {
+	if isvc == nil {
+		return ""
+	}
+	// Fields included MUST match what the executor actually consumes (or what
+	// it will consume once #349 closes the ExecutorConfig gap). When adding a
+	// new spec field that affects llama-server args, add it here too.
+	relevant := struct {
+		ModelRef               string
+		ContextSize            *int32
+		BatchSize              *int32
+		UBatchSize             *int32
+		ParallelSlots          *int32
+		FlashAttention         *bool
+		Jinja                  *bool
+		NoKvOffload            *bool
+		NoWarmup               *bool
+		MoeCPUOffload          *bool
+		MoeCPULayers           *int32
+		CacheTypeK             string
+		CacheTypeV             string
+		CacheTypeCustomK       string
+		CacheTypeCustomV       string
+		TensorOverrides        []string
+		MetadataOverrides      []string
+		ExtraArgs              []string
+		ReasoningBudget        *int32
+		ReasoningBudgetMessage string
+		Replicas               *int32
+		Runtime                string
+	}{
+		ModelRef:               isvc.Spec.ModelRef,
+		ContextSize:            isvc.Spec.ContextSize,
+		BatchSize:              isvc.Spec.BatchSize,
+		UBatchSize:             isvc.Spec.UBatchSize,
+		ParallelSlots:          isvc.Spec.ParallelSlots,
+		FlashAttention:         isvc.Spec.FlashAttention,
+		Jinja:                  isvc.Spec.Jinja,
+		NoKvOffload:            isvc.Spec.NoKvOffload,
+		NoWarmup:               isvc.Spec.NoWarmup,
+		MoeCPUOffload:          isvc.Spec.MoeCPUOffload,
+		MoeCPULayers:           isvc.Spec.MoeCPULayers,
+		CacheTypeK:             isvc.Spec.CacheTypeK,
+		CacheTypeV:             isvc.Spec.CacheTypeV,
+		CacheTypeCustomK:       isvc.Spec.CacheTypeCustomK,
+		CacheTypeCustomV:       isvc.Spec.CacheTypeCustomV,
+		TensorOverrides:        isvc.Spec.TensorOverrides,
+		MetadataOverrides:      isvc.Spec.MetadataOverrides,
+		ExtraArgs:              isvc.Spec.ExtraArgs,
+		ReasoningBudget:        isvc.Spec.ReasoningBudget,
+		ReasoningBudgetMessage: isvc.Spec.ReasoningBudgetMessage,
+		Replicas:               isvc.Spec.Replicas,
+		Runtime:                isvc.Spec.Runtime,
+	}
+	b, err := json.Marshal(relevant)
+	if err != nil {
+		// json.Marshal on this struct shape is effectively infallible; if it
+		// somehow fails we fall back to the zero hash, which forces a respawn
+		// — safer than skipping the diff entirely.
+		return ""
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }
