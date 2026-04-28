@@ -39,14 +39,14 @@ func appendDtype(args []string, dtype string) []string {
 
 // appendEnableChunkedPrefill only emit when user explicitly opted in (true).
 // vLLM's own default handles the nil/false case.
-func appendEnableChunkedPrefill(args []string, enableChunkedPrefill *boolean) []string {
+func appendEnableChunkedPrefill(args []string, enableChunkedPrefill *bool) []string {
 	if enableChunkedPrefill != nil && *enableChunkedPrefill {
 		return append(args, "--enable-chunked-prefill")
 	}
 	return args
 }
 
-func appendEnableExpertParallel(args []string, enableExpertParallel *boolean) []string {
+func appendEnableExpertParallel(args []string, enableExpertParallel *bool) []string {
 	if enableExpertParallel != nil && *enableExpertParallel {
 		return append(args, "--enable-expert-parallel")
 	}
@@ -55,7 +55,7 @@ func appendEnableExpertParallel(args []string, enableExpertParallel *boolean) []
 
 // appendEnablePrefixCaching only emit when user explicitly opted in (true).
 // vLLM's own default handles the nil/false case.
-func appendEnablePrefixCaching(args []string, enablePrefixCaching *boolean) []string {
+func appendEnablePrefixCaching(args []string, enablePrefixCaching *bool) []string {
 	if enablePrefixCaching != nil && *enablePrefixCaching {
 		return append(args, "--enable-prefix-caching")
 	}
