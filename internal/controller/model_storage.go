@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -110,7 +111,17 @@ func buildPVCStorageConfig(model *inferencev1alpha1.Model) modelStorageConfig {
 
 func buildCachedStorageConfig(model *inferencev1alpha1.Model, isvc *inferencev1alpha1.InferenceService, caCertConfigMap string, initContainerImage string) modelStorageConfig {
 	cacheDir := fmt.Sprintf("/models/%s", model.Status.CacheKey)
-	modelPath := fmt.Sprintf("%s/model.gguf", cacheDir)
+	// Match the basename the Model controller renames the file to after
+	// parsing GGUF metadata. If the controller has already populated
+	// Status.Path, use that basename verbatim so the init container's cache
+	// hit lands on the same file. Otherwise (e.g. HF repo sources where the
+	// controller does no download), use the canonical basename so the init
+	// container creates the file at the same path the controller would.
+	basename := canonicalModelBasename(model)
+	if model.Status.Path != "" {
+		basename = filepath.Base(model.Status.Path)
+	}
+	modelPath := fmt.Sprintf("%s/%s", cacheDir, basename)
 
 	initVolumeMounts := []corev1.VolumeMount{
 		{Name: "model-cache", MountPath: "/models"},
