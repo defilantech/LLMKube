@@ -27,7 +27,7 @@ jobs:
       - name: Upload coverage to Codecov
         # make test writes cover.out via `go test -coverprofile`.
         # Do not fail CI if Codecov is unreachable.
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v6
         with:
           files: ./cover.out
           fail_ci_if_error: false
