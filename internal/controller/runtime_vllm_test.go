@@ -401,7 +401,6 @@ func TestVLLMBuildArgsDeterministic(t *testing.T) {
 	}
 }
 
-<<<<<<< HEAD
 // TestVLLMDisableServiceLinks asserts the VLLMBackend opts out of the legacy
 // K8s service-link env-var injection. vLLM v0.20+ flags every K8s-injected
 // VLLM_<svcname>_* env var as unknown; disabling service links suppresses the
@@ -460,8 +459,6 @@ func TestResolveEnableServiceLinks(t *testing.T) {
 	}
 }
 
-=======
->>>>>>> 5e796d0 (feat(api): add kvCacheCustomDtype for non-enum vLLM KV cache types (#359))
 // TestResolveKVCacheDtype covers the precedence rules for the custom-vs-standard
 // KV cache type field. Direct unit tests on the resolver are easier to debug
 // than going through BuildArgs and arg-list scanning.
