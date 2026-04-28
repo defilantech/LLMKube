@@ -1,0 +1,33 @@
+# InferenceService sample using TurboQuant KV cache compression for extended
+# context on memory-constrained hardware. Requires a llama-server binary built
+# from a TurboQuant-enabled fork (see docs/turboquant.md). The cacheTypeCustomK
+# / cacheTypeCustomV fields skip CRD enum validation so non-standard cache
+# types pass through to llama-server without LLMKube needing per-type updates.
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: Model
+metadata:
+  name: qwen35-30b-a3b-turboquant
+spec:
+  source: https://huggingface.co/unsloth/Qwen3.5-30B-A3B-GGUF/resolve/main/Qwen3.5-30B-A3B-Q8_0.gguf
+  format: gguf
+  quantization: Q8_0
+  hardware:
+    accelerator: metal
+---
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: InferenceService
+metadata:
+  name: qwen35-30b-a3b-turboquant
+spec:
+  modelRef: qwen35-30b-a3b-turboquant
+  runtime: llamacpp
+  replicas: 1
+  contextSize: 262144
+  flashAttention: true
+  jinja: true
+  parallelSlots: 2
+  # turbo3 = ~3.25 bits/value, ~4.9x compression vs fp16. At 256K context this
+  # is roughly ~13 GB of KV cache vs ~64 GB at fp16. Requires a TurboQuant-
+  # enabled llama.cpp build; LLMKube does not validate the string.
+  cacheTypeCustomK: turbo3
+  cacheTypeCustomV: turbo3
