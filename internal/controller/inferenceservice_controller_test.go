@@ -5074,7 +5074,10 @@ var _ = Describe("RuntimeBackend interface", func() {
 			}
 			model := &inferencev1alpha1.Model{}
 			args := backend.BuildArgs(isvc, model, "/models/llama3", 8000)
-			Expect(args).To(ContainElements("--model", "/models/llama3"))
+			// vLLM v0.20+ uses model as a positional argument (args[0]); the
+			// deprecated --model flag must not appear.
+			Expect(args[0]).To(Equal("/models/llama3"))
+			Expect(args).NotTo(ContainElement("--model"))
 			Expect(args).To(ContainElements("--tensor-parallel-size", "2"))
 			Expect(args).To(ContainElements("--max-model-len", "4096"))
 			Expect(args).To(ContainElements("--quantization", "awq"))
@@ -5106,11 +5109,14 @@ var _ = Describe("RuntimeBackend interface", func() {
 			}
 			model := &inferencev1alpha1.Model{}
 			args := backend.BuildArgs(isvc, model, "/models/llama3", 8000)
-			Expect(args).To(ContainElements("--model", "/models/llama3"))
+			// Model path is positional (args[0]) per vLLM v0.20+; --model is
+			// deprecated and intentionally omitted.
+			Expect(args[0]).To(Equal("/models/llama3"))
+			Expect(args).NotTo(ContainElement("--model"))
 			Expect(args).To(ContainElements("--host", "0.0.0.0"))
 			Expect(args).To(ContainElements("--port", "8000"))
-			// No additional flags beyond defaults
-			Expect(args).To(HaveLen(6))
+			// Five elements: <model> --host 0.0.0.0 --port 8000.
+			Expect(args).To(HaveLen(5))
 		})
 
 		It("should append extraArgs after typed flags", func() {
