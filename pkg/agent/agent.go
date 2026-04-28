@@ -1075,3 +1075,73 @@ func computeSpecHash(isvc *inferencev1alpha1.InferenceService) string {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
 }
+
+// computeSpecHash returns a stable hash of the InferenceServiceSpec fields that,
+// if changed, require respawning the underlying llama-server process. Listing
+// fields explicitly (rather than hashing the full Spec) keeps the hash stable
+// across CRD additions that don't affect process invocation — adding a new
+// status-only or controller-only field won't trigger a spurious respawn.
+func computeSpecHash(isvc *inferencev1alpha1.InferenceService) string {
+	if isvc == nil {
+		return ""
+	}
+	// Fields included MUST match what the executor actually consumes (or what
+	// it will consume once #349 closes the ExecutorConfig gap). When adding a
+	// new spec field that affects llama-server args, add it here too.
+	relevant := struct {
+		ModelRef               string
+		ContextSize            *int32
+		BatchSize              *int32
+		UBatchSize             *int32
+		ParallelSlots          *int32
+		FlashAttention         *bool
+		Jinja                  *bool
+		NoKvOffload            *bool
+		NoWarmup               *bool
+		MoeCPUOffload          *bool
+		MoeCPULayers           *int32
+		CacheTypeK             string
+		CacheTypeV             string
+		CacheTypeCustomK       string
+		CacheTypeCustomV       string
+		TensorOverrides        []string
+		MetadataOverrides      []string
+		ExtraArgs              []string
+		ReasoningBudget        *int32
+		ReasoningBudgetMessage string
+		Replicas               *int32
+		Runtime                string
+	}{
+		ModelRef:               isvc.Spec.ModelRef,
+		ContextSize:            isvc.Spec.ContextSize,
+		BatchSize:              isvc.Spec.BatchSize,
+		UBatchSize:             isvc.Spec.UBatchSize,
+		ParallelSlots:          isvc.Spec.ParallelSlots,
+		FlashAttention:         isvc.Spec.FlashAttention,
+		Jinja:                  isvc.Spec.Jinja,
+		NoKvOffload:            isvc.Spec.NoKvOffload,
+		NoWarmup:               isvc.Spec.NoWarmup,
+		MoeCPUOffload:          isvc.Spec.MoeCPUOffload,
+		MoeCPULayers:           isvc.Spec.MoeCPULayers,
+		CacheTypeK:             isvc.Spec.CacheTypeK,
+		CacheTypeV:             isvc.Spec.CacheTypeV,
+		CacheTypeCustomK:       isvc.Spec.CacheTypeCustomK,
+		CacheTypeCustomV:       isvc.Spec.CacheTypeCustomV,
+		TensorOverrides:        isvc.Spec.TensorOverrides,
+		MetadataOverrides:      isvc.Spec.MetadataOverrides,
+		ExtraArgs:              isvc.Spec.ExtraArgs,
+		ReasoningBudget:        isvc.Spec.ReasoningBudget,
+		ReasoningBudgetMessage: isvc.Spec.ReasoningBudgetMessage,
+		Replicas:               isvc.Spec.Replicas,
+		Runtime:                isvc.Spec.Runtime,
+	}
+	b, err := json.Marshal(relevant)
+	if err != nil {
+		// json.Marshal on this struct shape is effectively infallible; if it
+		// somehow fails we fall back to the zero hash, which forces a respawn
+		// — safer than skipping the diff entirely.
+		return ""
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
