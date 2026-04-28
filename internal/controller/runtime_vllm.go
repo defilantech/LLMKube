@@ -11,8 +11,7 @@ import (
 )
 
 // vllmLog is a package-level logger used for construction-time warnings from
-// BuildArgs. The reconciler surfaces the same issues as a status condition via
-// ValidateVLLMConfig; the log line is for operator debugging.
+// BuildArgs.
 var vllmLog = logf.Log.WithName("runtime.vllm")
 
 // Condition types set by the InferenceService reconciler when a vLLM-specific
@@ -71,6 +70,8 @@ func (b *VLLMBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, model 
 		"--port", fmt.Sprintf("%d", port),
 	}
 
+	var err error
+
 	cfg := isvc.Spec.VLLMConfig
 	if cfg != nil {
 		args = appendTensorParallelSize(args, cfg.TensorParallelSize)
@@ -102,8 +103,14 @@ func (b *VLLMBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, model 
 		args = append(args, isvc.Spec.ExtraArgs...)
 	}
 
-	args = appendMaxNumSeqsArgs(args, isvc.Spec.ParallelSlots, isvc.Spec.ExtraArgs)
-
+	args, err = appendMaxNumSeqsArgs(args, isvc.Spec.ParallelSlots, isvc.Spec.ExtraArgs)
+	if err != nil {
+		vllmLog.Error(nil,
+			err.Error,
+			"inferenceService", isvc.Name,
+			"namespace", isvc.Namespace,
+		)
+	}
 	return args
 }
 

@@ -91,6 +91,21 @@ func appendMaxNumBatchedTokens(args []string, maxNumBatchedTokens *int32) []stri
 	return args
 }
 
+func appendMaxNumSeqsArgs(args []string, parallelSlots *int32, extraArgs []string) ([]string, err) {
+	// NOTE(#339): extra args has precedence.
+	if parallelSlots != nil && *parallelSlots >= 1 {
+		for _, v := range extraArgs {
+			if v == "--max-num-seqs" {
+				return args, errors.New(
+					"spec.parallelSlots is enabled but `--max-num-seqs` is already defined in spec.ExtraArgs, skipping"
+				)
+			}
+		}
+		return append(args, "--max-num-seqs", fmt.Sprintf("%d", *parallelSlots)), nil
+	}
+	return args, nil
+}
+
 // appendSpeculativeModel require both Enabled=true and a non-empty
 // draft Model ref. Silent-skip with a log line when misconfigured;
 // the reconciler also sets a status condition via ValidateVLLMConfig.
@@ -112,20 +127,6 @@ func appendSpeculativeModel(args []string, speculativeCfg *SpeculativeConfig) ([
 func appendTensorParallelSize(args []string, tensorParallelSize *int32) []string {
 	if tensorParallelSize != nil && *tensorParallelSize > 1 {
 		return append(args, "--tensor-parallel-size", fmt.Sprintf("%d", *tensorParallelSize))
-	}
-	return args
-}
-
-func appendMaxNumSeqsArgs(args []string, parallelSlots *int32, extraArgs []string) []string {
-	// NOTE(#339): extra args has precedence.
-	if parallelSlots != nil && *parallelSlots >= 1 {
-		for _, v := range extraArgs {
-			if v == "--max-num-seqs" {
-				// TODO: emit warning
-				return args
-			}
-		}
-		return append(args, "--max-num-seqs", fmt.Sprintf("%d", *parallelSlots))
 	}
 	return args
 }
