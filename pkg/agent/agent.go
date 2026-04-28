@@ -35,6 +35,12 @@ import (
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 )
 
+// Inference runtime identifiers used by MetalAgentConfig.Runtime.
+const (
+	runtimeOMLX   = "omlx"
+	runtimeOllama = "ollama"
+)
+
 // MetalAgentConfig contains configuration for the Metal agent
 type MetalAgentConfig struct {
 	K8sClient      client.Client
@@ -191,7 +197,7 @@ func (a *MetalAgent) Start(ctx context.Context) error {
 	}
 
 	switch a.config.Runtime {
-	case "omlx":
+	case runtimeOMLX:
 		port := a.config.OMLXPort
 		if port == 0 {
 			port = 8000
@@ -206,7 +212,7 @@ func (a *MetalAgent) Start(ctx context.Context) error {
 			omlxExec.SetStartupTimeout(a.config.OMLXStartupTimeout)
 		}
 		a.executor = omlxExec
-	case "ollama":
+	case runtimeOllama:
 		port := a.config.OllamaPort
 		if port == 0 {
 			port = 11434
@@ -319,6 +325,39 @@ func (a *MetalAgent) handleEvent(ctx context.Context, event InferenceServiceEven
 	return nil
 }
 
+// validateRuntimeFormat returns an error if the model's format is incompatible
+// with the agent's configured runtime. Empty format defaults to "gguf".
+func (a *MetalAgent) validateRuntimeFormat(model *inferencev1alpha1.Model) error {
+	modelFormat := model.Spec.Format
+	if modelFormat == "" {
+		modelFormat = "gguf"
+	}
+
+	var bad bool
+	var runtimeLabel string
+	switch a.config.Runtime {
+	case runtimeOMLX:
+		bad = modelFormat == "gguf"
+		runtimeLabel = runtimeOMLX
+	case runtimeOllama:
+		bad = modelFormat == "mlx"
+		runtimeLabel = runtimeOllama
+	default:
+		bad = modelFormat == "mlx"
+		runtimeLabel = "llama-server"
+	}
+	if !bad {
+		return nil
+	}
+
+	a.logger.Warnw("skipping incompatible model format for runtime",
+		"model", model.Name, "format", modelFormat, "runtime", a.config.Runtime)
+	return fmt.Errorf(
+		"model %s has format %q which is incompatible with %s runtime",
+		model.Name, modelFormat, runtimeLabel,
+	)
+}
+
 // ensureProcess ensures a llama-server process is running for the InferenceService.
 // On UPDATED events, the spec is diffed against the running process's stored
 // hash; if it changed, the existing process is stopped before a fresh one is
@@ -373,32 +412,8 @@ func (a *MetalAgent) ensureProcess(ctx context.Context, isvc *inferencev1alpha1.
 		return fmt.Errorf("failed to get model %s: %w", isvc.Spec.ModelRef, err)
 	}
 
-	// Check for runtime/format mismatch
-	modelFormat := model.Spec.Format
-	if modelFormat == "" {
-		modelFormat = "gguf" // default
-	}
-	switch a.config.Runtime {
-	case "omlx":
-		if modelFormat == "gguf" {
-			a.logger.Warnw("skipping GGUF model on oMLX runtime",
-				"model", model.Name, "format", modelFormat, "runtime", a.config.Runtime)
-			return fmt.Errorf("model %s has format %q which is incompatible with omlx runtime", model.Name, modelFormat)
-		}
-	case "ollama":
-		if modelFormat == "mlx" {
-			a.logger.Warnw("skipping MLX model on Ollama runtime",
-				"model", model.Name, "format", modelFormat, "runtime", a.config.Runtime)
-			return fmt.Errorf(
-				"model %s has format %q which is incompatible with ollama runtime",
-				model.Name, modelFormat)
-		}
-	default:
-		if modelFormat == "mlx" {
-			a.logger.Warnw("skipping MLX model on llama-server runtime",
-				"model", model.Name, "format", modelFormat, "runtime", a.config.Runtime)
-			return fmt.Errorf("model %s has format %q which is incompatible with llama-server runtime", model.Name, modelFormat)
-		}
+	if err := a.validateRuntimeFormat(model); err != nil {
+		return err
 	}
 
 	// Get GPU layers if specified

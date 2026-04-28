@@ -496,8 +496,12 @@ func TestComputeSpecHash_StableForSameSpec(t *testing.T) {
 func TestComputeSpecHash_ChangesWithContextSize(t *testing.T) {
 	ctx1 := int32(65536)
 	ctx2 := int32(131072)
-	a := &inferencev1alpha1.InferenceService{Spec: inferencev1alpha1.InferenceServiceSpec{ModelRef: "m", ContextSize: &ctx1}}
-	b := &inferencev1alpha1.InferenceService{Spec: inferencev1alpha1.InferenceServiceSpec{ModelRef: "m", ContextSize: &ctx2}}
+	a := &inferencev1alpha1.InferenceService{
+		Spec: inferencev1alpha1.InferenceServiceSpec{ModelRef: "m", ContextSize: &ctx1},
+	}
+	b := &inferencev1alpha1.InferenceService{
+		Spec: inferencev1alpha1.InferenceServiceSpec{ModelRef: "m", ContextSize: &ctx2},
+	}
 	if computeSpecHash(a) == computeSpecHash(b) {
 		t.Error("hash should differ when contextSize changes")
 	}
@@ -505,15 +509,22 @@ func TestComputeSpecHash_ChangesWithContextSize(t *testing.T) {
 
 func TestComputeSpecHash_ChangesWithCacheTypeCustom(t *testing.T) {
 	a := &inferencev1alpha1.InferenceService{Spec: inferencev1alpha1.InferenceServiceSpec{ModelRef: "m"}}
-	b := &inferencev1alpha1.InferenceService{Spec: inferencev1alpha1.InferenceServiceSpec{ModelRef: "m", CacheTypeCustomK: "turbo3"}}
+	b := &inferencev1alpha1.InferenceService{
+		Spec: inferencev1alpha1.InferenceServiceSpec{ModelRef: "m", CacheTypeCustomK: "turbo3"},
+	}
 	if computeSpecHash(a) == computeSpecHash(b) {
-		t.Error("hash should differ when cacheTypeCustomK is set; this is the field added in #351 and the runtime arg builder uses it")
+		t.Error("hash should differ when cacheTypeCustomK is set (added in #351, used by runtime arg builder)")
 	}
 }
 
 func TestComputeSpecHash_ChangesWithExtraArgs(t *testing.T) {
 	a := &inferencev1alpha1.InferenceService{Spec: inferencev1alpha1.InferenceServiceSpec{ModelRef: "m"}}
-	b := &inferencev1alpha1.InferenceService{Spec: inferencev1alpha1.InferenceServiceSpec{ModelRef: "m", ExtraArgs: []string{"--cache-type-k", "turbo3"}}}
+	b := &inferencev1alpha1.InferenceService{
+		Spec: inferencev1alpha1.InferenceServiceSpec{
+			ModelRef:  "m",
+			ExtraArgs: []string{"--cache-type-k", "turbo3"},
+		},
+	}
 	if computeSpecHash(a) == computeSpecHash(b) {
 		t.Error("hash should differ when extraArgs is set")
 	}
@@ -525,13 +536,25 @@ func TestComputeSpecHash_NilIsvc(t *testing.T) {
 	}
 }
 
-func TestEnsureProcess_ReplicasZeroStopsExistingProcess(t *testing.T) {
+// runEnsureProcessExpectingMapEviction sets up a metal-agent with a pre-seeded
+// healthy process at default/<name>, runs ensureProcess against the given isvc,
+// and asserts the process map entry has been removed. Pre-seeded PID -99999
+// makes StopProcess error out so the function returns an error, but the
+// deletion branch has already run by then; that is the invariant we check
+// (mirrors TestDeleteProcess_StopFailureStillUnregistersEndpoint). Used by the
+// replicas=0 and spec-drift tests, which share this exact setup.
+func runEnsureProcessExpectingMapEviction(
+	t *testing.T,
+	name string,
+	isvc *inferencev1alpha1.InferenceService,
+) {
+	t.Helper()
 	scheme := newTestScheme()
 	_ = corev1.AddToScheme(scheme)
 
-	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "scale-down-isvc", Namespace: "default"}}
+	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"}}
 	//nolint:staticcheck // SA1019: Endpoints API matches production code under test
-	endpoints := &corev1.Endpoints{ObjectMeta: metav1.ObjectMeta{Name: "scale-down-isvc", Namespace: "default"}}
+	endpoints := &corev1.Endpoints{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"}}
 
 	k8sClient := fake.NewClientBuilder().
 		WithScheme(scheme).
@@ -541,14 +564,24 @@ func TestEnsureProcess_ReplicasZeroStopsExistingProcess(t *testing.T) {
 	agent := NewMetalAgent(MetalAgentConfig{K8sClient: k8sClient, Namespace: "default"})
 	agent.executor = NewMetalExecutor("/fake/llama-server", "/tmp/models", newNopLogger())
 	agent.registry = NewServiceRegistry(k8sClient, "", newNopLogger())
-	agent.processes["default/scale-down-isvc"] = &ManagedProcess{
-		Name:      "scale-down-isvc",
+
+	key := "default/" + name
+	agent.processes[key] = &ManagedProcess{
+		Name:      name,
 		Namespace: "default",
 		PID:       -99999,
 		Healthy:   true,
 		SpecHash:  "old-hash",
 	}
 
+	_ = agent.ensureProcess(context.Background(), isvc)
+
+	if _, exists := agent.processes[key]; exists {
+		t.Errorf("process entry %q should be removed", key)
+	}
+}
+
+func TestEnsureProcess_ReplicasZeroStopsExistingProcess(t *testing.T) {
 	zeroReplicas := int32(0)
 	isvc := &inferencev1alpha1.InferenceService{
 		ObjectMeta: metav1.ObjectMeta{Name: "scale-down-isvc", Namespace: "default"},
@@ -557,16 +590,7 @@ func TestEnsureProcess_ReplicasZeroStopsExistingProcess(t *testing.T) {
 			Replicas: &zeroReplicas,
 		},
 	}
-
-	// ensureProcess with replicas=0 + existing process must call deleteProcess.
-	// We expect an error because StopProcess(-99999) fails on the fake PID,
-	// but the process map entry should still be removed (deleteProcess
-	// removes-then-stops, mirroring TestDeleteProcess_StopFailureStillUnregistersEndpoint).
-	_ = agent.ensureProcess(context.Background(), isvc)
-
-	if _, exists := agent.processes["default/scale-down-isvc"]; exists {
-		t.Error("process entry should be removed when replicas=0")
-	}
+	runEnsureProcessExpectingMapEviction(t, "scale-down-isvc", isvc)
 }
 
 func TestEnsureProcess_ReplicasZeroNoOpWhenNoProcess(t *testing.T) {
@@ -628,31 +652,6 @@ func TestEnsureProcess_HealthyAndSpecMatchesIsNoOp(t *testing.T) {
 }
 
 func TestEnsureProcess_SpecDriftCallsDeleteBeforeRespawn(t *testing.T) {
-	scheme := newTestScheme()
-	_ = corev1.AddToScheme(scheme)
-
-	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "drift-isvc", Namespace: "default"}}
-	//nolint:staticcheck // SA1019: Endpoints API matches production code under test
-	endpoints := &corev1.Endpoints{ObjectMeta: metav1.ObjectMeta{Name: "drift-isvc", Namespace: "default"}}
-
-	k8sClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithRuntimeObjects(svc, endpoints).
-		Build()
-
-	agent := NewMetalAgent(MetalAgentConfig{K8sClient: k8sClient, Namespace: "default"})
-	agent.executor = NewMetalExecutor("/fake/llama-server", "/tmp/models", newNopLogger())
-	agent.registry = NewServiceRegistry(k8sClient, "", newNopLogger())
-
-	// Existing process recorded with a stale spec hash.
-	agent.processes["default/drift-isvc"] = &ManagedProcess{
-		Name:      "drift-isvc",
-		Namespace: "default",
-		PID:       -99999, // forces StopProcess error so respawn path won't run further
-		Healthy:   true,
-		SpecHash:  "stale-hash-from-old-spec",
-	}
-
 	ctx := int32(131072)
 	isvc := &inferencev1alpha1.InferenceService{
 		ObjectMeta: metav1.ObjectMeta{Name: "drift-isvc", Namespace: "default"},
@@ -661,13 +660,5 @@ func TestEnsureProcess_SpecDriftCallsDeleteBeforeRespawn(t *testing.T) {
 			ContextSize: &ctx,
 		},
 	}
-
-	// We expect an error because deleteProcess returns one (StopProcess of
-	// fake PID fails). What matters is the process map entry is gone — proves
-	// the drift-detection branch ran the delete before the failed respawn.
-	_ = agent.ensureProcess(context.Background(), isvc)
-
-	if _, exists := agent.processes["default/drift-isvc"]; exists {
-		t.Error("process entry should be removed during spec-drift respawn flow")
-	}
+	runEnsureProcessExpectingMapEviction(t, "drift-isvc", isvc)
 }
