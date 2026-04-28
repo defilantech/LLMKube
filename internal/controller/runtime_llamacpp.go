@@ -65,7 +65,7 @@ func (b *LlamaCppBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, mo
 	args = appendParallelSlotsArgs(args, isvc.Spec.ParallelSlots)
 	args = appendFlashAttentionArgs(args, isvc.Spec.FlashAttention, gpuCount)
 	args = appendJinjaArgs(args, isvc.Spec.Jinja)
-	args = appendCacheTypeArgs(args, isvc.Spec.CacheTypeK, isvc.Spec.CacheTypeV)
+	args = appendCacheTypeArgs(args, resolveCacheType(isvc.Spec.CacheTypeCustomK, isvc.Spec.CacheTypeK), resolveCacheType(isvc.Spec.CacheTypeCustomV, isvc.Spec.CacheTypeV))
 	args = appendMoeCPUOffloadArgs(args, isvc.Spec.MoeCPUOffload)
 	args = appendMoeCPULayersArgs(args, isvc.Spec.MoeCPULayers)
 	args = appendNoKvOffloadArgs(args, isvc.Spec.NoKvOffload)

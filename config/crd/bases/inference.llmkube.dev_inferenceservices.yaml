@@ -141,11 +141,28 @@ spec:
                 maximum: 16384
                 minimum: 1
                 type: integer
+              cacheTypeCustomK:
+                description: |-
+                  CacheTypeCustomK sets a custom KV cache type for keys that is not in the
+                  standard enum. Used for llama.cpp forks with additional cache formats such
+                  as TurboQuant (turbo3, turbo4, tbqp3, etc.). Maps to llama.cpp
+                  --cache-type-k. The runtime binary must understand the value or llama-server
+                  will fail to start; LLMKube does not validate the string.
+                  Takes precedence over CacheTypeK when both are set.
+                type: string
+              cacheTypeCustomV:
+                description: |-
+                  CacheTypeCustomV sets a custom KV cache type for values that is not in the
+                  standard enum. See CacheTypeCustomK for usage notes. Takes precedence over
+                  CacheTypeV when both are set.
+                type: string
               cacheTypeK:
                 description: |-
                   CacheTypeK sets the KV cache quantization type for keys.
                   Supported values depend on the llama.cpp build version.
                   Maps to llama.cpp --cache-type-k flag. Default: f16 (llama.cpp default).
+                  For custom build types not in the enum (e.g. TurboQuant turbo3, tbqp3), use
+                  CacheTypeCustomK instead.
                 enum:
                 - f16
                 - f32
@@ -160,6 +177,8 @@ spec:
                 description: |-
                   CacheTypeV sets the KV cache quantization type for values.
                   Maps to llama.cpp --cache-type-v flag. Default: f16 (llama.cpp default).
+                  For custom build types not in the enum (e.g. TurboQuant turbo3, tbqp3), use
+                  CacheTypeCustomV instead.
                 enum:
                 - f16
                 - f32
@@ -392,9 +411,14 @@ spec:
                 type: array
               flashAttention:
                 description: |-
-                  FlashAttention enables flash attention for faster prompt processing and reduced
-                  VRAM usage. Requires a GPU with flash attention support (NVIDIA Ampere or newer).
-                  Maps to llama.cpp --flash-attn flag. Only applied when GPU is configured.
+                  FlashAttention enables flash attention for faster prompt processing and
+                  reduced KV cache memory. Maps to llama.cpp --flash-attn flag.
+
+                  On NVIDIA GPUs requires Ampere or newer (compute capability 8.0+).
+                  On Apple Silicon (Metal agent path) the default is true when this field
+                  is unset, because the wired-collector + flash-attn combination prevents
+                  the ~25% decode degradation observed at long context on Qwen-class
+                  models running on M-series chips.
                 type: boolean
               image:
                 description: |-

@@ -78,6 +78,17 @@ func appendCacheTypeArgs(args []string, cacheTypeK, cacheTypeV string) []string 
 	return args
 }
 
+// resolveCacheType returns the custom cache type when set, otherwise the
+// enum-validated standard value. Lets users opt into fork-specific cache types
+// (TurboQuant turbo3/turbo4, etc.) without expanding the CRD enum, while
+// keeping the standard fields discoverable for the common case.
+func resolveCacheType(custom, standard string) string {
+	if custom != "" {
+		return custom
+	}
+	return standard
+}
+
 func appendMoeCPUOffloadArgs(args []string, moeCPUOffload *bool) []string {
 	if moeCPUOffload != nil && *moeCPUOffload {
 		return append(args, "--cpu-moe")

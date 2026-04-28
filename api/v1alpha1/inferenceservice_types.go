@@ -116,15 +116,34 @@ type InferenceServiceSpec struct {
 	// CacheTypeK sets the KV cache quantization type for keys.
 	// Supported values depend on the llama.cpp build version.
 	// Maps to llama.cpp --cache-type-k flag. Default: f16 (llama.cpp default).
+	// For custom build types not in the enum (e.g. TurboQuant turbo3, tbqp3), use
+	// CacheTypeCustomK instead.
 	// +kubebuilder:validation:Enum=f16;f32;q8_0;q4_0;q4_1;q5_0;q5_1;iq4_nl
 	// +optional
 	CacheTypeK string `json:"cacheTypeK,omitempty"`
 
 	// CacheTypeV sets the KV cache quantization type for values.
 	// Maps to llama.cpp --cache-type-v flag. Default: f16 (llama.cpp default).
+	// For custom build types not in the enum (e.g. TurboQuant turbo3, tbqp3), use
+	// CacheTypeCustomV instead.
 	// +kubebuilder:validation:Enum=f16;f32;q8_0;q4_0;q4_1;q5_0;q5_1;iq4_nl
 	// +optional
 	CacheTypeV string `json:"cacheTypeV,omitempty"`
+
+	// CacheTypeCustomK sets a custom KV cache type for keys that is not in the
+	// standard enum. Used for llama.cpp forks with additional cache formats such
+	// as TurboQuant (turbo3, turbo4, tbqp3, etc.). Maps to llama.cpp
+	// --cache-type-k. The runtime binary must understand the value or llama-server
+	// will fail to start; LLMKube does not validate the string.
+	// Takes precedence over CacheTypeK when both are set.
+	// +optional
+	CacheTypeCustomK string `json:"cacheTypeCustomK,omitempty"`
+
+	// CacheTypeCustomV sets a custom KV cache type for values that is not in the
+	// standard enum. See CacheTypeCustomK for usage notes. Takes precedence over
+	// CacheTypeV when both are set.
+	// +optional
+	CacheTypeCustomV string `json:"cacheTypeCustomV,omitempty"`
 
 	// MoeCPUOffload offloads all MoE expert layers to CPU for reduced VRAM usage.
 	// Enables running large MoE models (e.g., Qwen3-30B, Mixtral) on VRAM-constrained

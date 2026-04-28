@@ -1372,6 +1372,105 @@ var _ = Describe("Context Size Configuration", func() {
 			Expect(args).NotTo(ContainElement("--cache-type-k"))
 			Expect(args).NotTo(ContainElement("--cache-type-v"))
 		})
+
+		It("should pass through cacheTypeCustomK to --cache-type-k for fork-specific types", func() {
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "cache-custom-k-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef:         "cache-type-model",
+					Replicas:         &replicas,
+					Image:            "ghcr.io/ggml-org/llama.cpp:server-cuda13",
+					CacheTypeCustomK: "turbo3",
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{
+						GPU: 1,
+					},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).To(ContainElements("--cache-type-k", "turbo3"))
+		})
+
+		It("should prefer cacheTypeCustomK over cacheTypeK when both are set", func() {
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "cache-precedence-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef:         "cache-type-model",
+					Replicas:         &replicas,
+					Image:            "ghcr.io/ggml-org/llama.cpp:server-cuda13",
+					CacheTypeK:       "q8_0",
+					CacheTypeCustomK: "turbo3",
+					CacheTypeV:       "q8_0",
+					CacheTypeCustomV: "tbqp3",
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{
+						GPU: 1,
+					},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).To(ContainElements("--cache-type-k", "turbo3"))
+			Expect(args).To(ContainElements("--cache-type-v", "tbqp3"))
+			Expect(args).NotTo(ContainElement("q8_0"))
+		})
+
+		It("should fall back to cacheTypeK when cacheTypeCustomK is empty", func() {
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "cache-fallback-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef:         "cache-type-model",
+					Replicas:         &replicas,
+					Image:            "ghcr.io/ggml-org/llama.cpp:server-cuda13",
+					CacheTypeK:       "q5_1",
+					CacheTypeCustomK: "",
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{
+						GPU: 1,
+					},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).To(ContainElements("--cache-type-k", "q5_1"))
+		})
+
+		It("should pass through cacheTypeCustomV to --cache-type-v independently of K", func() {
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "cache-custom-v-only-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef:         "cache-type-model",
+					Replicas:         &replicas,
+					Image:            "ghcr.io/ggml-org/llama.cpp:server-cuda13",
+					CacheTypeCustomV: "turbo4",
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{
+						GPU: 1,
+					},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+			Expect(args).NotTo(ContainElement("--cache-type-k"))
+			Expect(args).To(ContainElements("--cache-type-v", "turbo4"))
+		})
 	})
 
 	Context("when moeCPUOffload is configured", func() {
