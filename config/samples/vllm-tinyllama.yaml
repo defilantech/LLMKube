@@ -29,7 +29,7 @@ metadata:
 spec:
   modelRef: tinyllama-1b
   runtime: vllm
-  image: vllm/vllm-openai:cu130-nightly
+  image: vllm/vllm-openai:v0.20.0
   skipModelInit: true
   vllmConfig:
     maxModelLen: 2048

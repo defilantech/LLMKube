@@ -1,0 +1,59 @@
+# Smoke-test manifest for vLLM v0.20.0 on a CUDA cluster. Pinned image so this
+# stays a deterministic operational gate even after :latest moves on. Designed
+# for a small enough model that it runs on a single 16 GB consumer GPU
+# (RTX 5060 Ti, RTX 4060 Ti, T4 with FP16, etc.) and exercises the full
+# operator path: model registration, init container, vLLM server startup,
+# probes, service registration, OpenAI-compatible endpoints.
+#
+# Apply:
+#   kubectl apply -f config/samples/vllm-v0.20-smoke.yaml
+#
+# Verify:
+#   kubectl get isvc vllm-v020-smoke -w
+#   kubectl port-forward svc/vllm-v020-smoke 8000:8000
+#   curl localhost:8000/v1/models
+#   curl localhost:8000/v1/completions \
+#     -H 'Content-Type: application/json' \
+#     -d '{"model":"Qwen/Qwen2.5-0.5B-Instruct","prompt":"hello","max_tokens":16}'
+---
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: Model
+metadata:
+  name: qwen25-0-5b-instruct
+  namespace: default
+spec:
+  # HF-resolved source: vLLM downloads weights at pod startup, no init download.
+  source: "Qwen/Qwen2.5-0.5B-Instruct"
+  format: safetensors
+  hardware:
+    accelerator: cuda
+    gpu:
+      enabled: true
+      count: 1
+      vendor: nvidia
+---
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: InferenceService
+metadata:
+  name: vllm-v020-smoke
+  namespace: default
+spec:
+  modelRef: qwen25-0-5b-instruct
+  runtime: vllm
+  image: vllm/vllm-openai:v0.20.0
+  skipModelInit: true
+  vllmConfig:
+    maxModelLen: 4096
+    dtype: float16
+    # Default kvCacheDtype: auto. Smoke test exercises the default path; the
+    # turbo2 / fp8 variants live in benchmarks/turboquant/manifests/.
+    hfTokenSecretRef:
+      name: hf-token
+      key: HF_TOKEN
+  endpoint:
+    port: 8000
+    type: ClusterIP
+  resources:
+    gpu: 1
+    cpu: "2"
+    memory: "8Gi"
