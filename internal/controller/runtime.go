@@ -47,6 +47,18 @@ type HPAMetricProvider interface {
 	DefaultHPAMetric() string
 }
 
+// ServiceLinksOptOut is optionally implemented by backends that should run with
+// the legacy Kubernetes service-link env-var injection disabled. Returning true
+// sets `enableServiceLinks: false` on the Pod spec, which suppresses the
+// `<UPPER_SERVICE_NAME>_*` env vars Kubernetes auto-injects for every Service
+// in the namespace. vLLM v0.20+ implements a strict env-var validator that
+// flags any `VLLM_*` env var as unknown — meaning every other vLLM Service in
+// the namespace produces a warning per env var per pod. DNS-based service
+// discovery is unaffected.
+type ServiceLinksOptOut interface {
+	DisableServiceLinks() bool
+}
+
 // resolveBackend returns the RuntimeBackend for the given InferenceService.
 func resolveBackend(isvc *inferencev1alpha1.InferenceService) RuntimeBackend {
 	switch isvc.Spec.Runtime {

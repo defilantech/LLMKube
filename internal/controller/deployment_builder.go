@@ -35,6 +35,20 @@ import (
 // init-container security context stays in the controller file with its
 // storage-builder callers.
 
+// resolveEnableServiceLinks returns the value to set on PodSpec.EnableServiceLinks
+// for a given backend. Backends that implement ServiceLinksOptOut and return
+// true get an explicit `false`; everyone else gets nil (Kubernetes default,
+// which is true). This keeps the legacy service-link env-var injection on for
+// llama.cpp / generic / personaplex / tgi where it is harmless, and disables
+// it for vLLM where the v0.20+ env-var validator turns it into log noise.
+func resolveEnableServiceLinks(backend RuntimeBackend) *bool {
+	if d, ok := backend.(ServiceLinksOptOut); ok && d.DisableServiceLinks() {
+		f := false
+		return &f
+	}
+	return nil
+}
+
 func inferPodSecurityContext(isvc *inferencev1alpha1.InferenceService) *corev1.PodSecurityContext {
 	if isvc.Spec.PodSecurityContext != nil {
 		return isvc.Spec.PodSecurityContext
@@ -186,12 +200,13 @@ func (r *InferenceServiceReconciler) constructDeployment(
 					Labels: labels,
 				},
 				Spec: corev1.PodSpec{
-					SecurityContext:   inferPodSecurityContext(isvc),
-					InitContainers:    storageConfig.initContainers,
-					Containers:        []corev1.Container{container},
-					Volumes:           storageConfig.volumes,
-					PriorityClassName: r.resolvePriorityClassName(isvc),
-					ImagePullSecrets:  isvc.Spec.ImagePullSecrets,
+					SecurityContext:    inferPodSecurityContext(isvc),
+					InitContainers:     storageConfig.initContainers,
+					Containers:         []corev1.Container{container},
+					Volumes:            storageConfig.volumes,
+					PriorityClassName:  r.resolvePriorityClassName(isvc),
+					ImagePullSecrets:   isvc.Spec.ImagePullSecrets,
+					EnableServiceLinks: resolveEnableServiceLinks(backend),
 				},
 			},
 		},
