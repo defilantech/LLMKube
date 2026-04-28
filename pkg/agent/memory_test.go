@@ -119,6 +119,96 @@ func TestEstimateModelMemory_LargeContext(t *testing.T) {
 	}
 }
 
+// TestEstimateModelMemory_F16DefaultMatchesLegacyFormula proves the new
+// EstimateModelMemoryWithOptions path is bit-for-bit identical to the legacy
+// integer-math formula when called with the historical f16/f16 default.
+// Critical regression guard for any future call site relying on the old shape.
+func TestEstimateModelMemory_F16DefaultMatchesLegacyFormula(t *testing.T) {
+	fileSize := uint64(4831838208)
+	got := EstimateModelMemoryWithOptions(fileSize, 32, 4096, 65536, EstimateOptions{})
+	// Legacy formula: 4 * layers * embed * ctx (2 bytes/element * K + V).
+	want := uint64(4 * 32 * 4096 * 65536)
+	if got.KVCacheBytes != want {
+		t.Errorf("default-options KV = %d, want legacy %d", got.KVCacheBytes, want)
+	}
+}
+
+// TestEstimateModelMemory_Q8KVHalvesCache: q8_0 K + V should be roughly half
+// of f16 K + V for the same model and context. (Exactly 1.0625/2.0 ≈ 0.531
+// thanks to the 16-bit per-block scale.)
+func TestEstimateModelMemory_Q8KVHalvesCache(t *testing.T) {
+	fileSize := uint64(4831838208)
+	f16 := EstimateModelMemoryWithOptions(fileSize, 32, 4096, 65536, EstimateOptions{})
+	q8 := EstimateModelMemoryWithOptions(fileSize, 32, 4096, 65536, EstimateOptions{
+		CacheTypeK: "q8_0",
+		CacheTypeV: "q8_0",
+	})
+	ratio := float64(q8.KVCacheBytes) / float64(f16.KVCacheBytes)
+	if ratio < 0.50 || ratio > 0.55 {
+		t.Errorf("q8_0/f16 KV ratio = %.3f, want ~0.531", ratio)
+	}
+}
+
+// TestEstimateModelMemory_Turbo3CompressesKV asserts the architecture-independent
+// invariant: turbo3 K + V (3.25 + 3.25 bits/element) should produce a KV cache
+// roughly 1/5 the size of f16 K + V (16 + 16 bits/element). 0.8125 / 4.0 ≈ 0.203,
+// so the ratio must land between 0.18 and 0.23.
+//
+// This is the user-visible behavior change that motivated wiring cache types
+// into the estimator: a 256K context with TurboQuant cache that previously got
+// rejected as OOM (f16 estimate) now passes the pre-flight check.
+func TestEstimateModelMemory_Turbo3CompressesKV(t *testing.T) {
+	const fileSize = uint64(35) * 1024 * 1024 * 1024
+	const layers, embed = uint64(64), uint64(5120)
+	const context = 262144 // 256K
+
+	f16 := EstimateModelMemoryWithOptions(fileSize, layers, embed, context, EstimateOptions{})
+	turbo3 := EstimateModelMemoryWithOptions(fileSize, layers, embed, context, EstimateOptions{
+		CacheTypeK: "turbo3",
+		CacheTypeV: "turbo3",
+	})
+
+	ratio := float64(turbo3.KVCacheBytes) / float64(f16.KVCacheBytes)
+	if ratio < 0.18 || ratio > 0.23 {
+		t.Errorf("turbo3/f16 KV ratio = %.3f, want ~0.203 (0.8125/4.0)", ratio)
+	}
+	if turbo3.TotalBytes >= f16.TotalBytes {
+		t.Errorf("turbo3 total should be lower than f16 total: turbo3=%d, f16=%d",
+			turbo3.TotalBytes, f16.TotalBytes)
+	}
+}
+
+func TestEstimateModelMemory_AsymmetricCacheTypes(t *testing.T) {
+	// Renjith's recommendation: -ctk q8_0 -ctv turbo4. The estimate should
+	// reflect this without forcing the user into symmetric K/V.
+	fileSize := uint64(4831838208)
+	got := EstimateModelMemoryWithOptions(fileSize, 32, 4096, 65536, EstimateOptions{
+		CacheTypeK: "q8_0",
+		CacheTypeV: "turbo4",
+	})
+	// q8_0 (1.0625) + turbo4 (0.53125) = 1.59375 bytes/element.
+	const product = uint64(32) * 4096 * 65536
+	want := uint64(float64(product) * 1.59375)
+	// Allow a single-byte rounding tolerance from math.Ceil. Compare via
+	// uint64 to dodge the int64 conversion lint.
+	if got.KVCacheBytes < want || got.KVCacheBytes > want+1 {
+		t.Errorf("asymmetric q8_0/turbo4 KV = %d, want %d or %d", got.KVCacheBytes, want, want+1)
+	}
+}
+
+func TestEstimateModelMemory_UnknownCacheTypeFallsBackToF16(t *testing.T) {
+	fileSize := uint64(4831838208)
+	unknown := EstimateModelMemoryWithOptions(fileSize, 32, 4096, 65536, EstimateOptions{
+		CacheTypeK: "future-cache-format",
+		CacheTypeV: "future-cache-format",
+	})
+	f16 := EstimateModelMemoryWithOptions(fileSize, 32, 4096, 65536, EstimateOptions{})
+	if unknown.KVCacheBytes != f16.KVCacheBytes {
+		t.Errorf("unknown cache type should fall back to f16: got %d, want %d",
+			unknown.KVCacheBytes, f16.KVCacheBytes)
+	}
+}
+
 func TestDefaultMemoryFraction_Small(t *testing.T) {
 	total := uint64(16 * 1024 * 1024 * 1024) // 16 GiB
 	f := DefaultMemoryFraction(total)

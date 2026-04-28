@@ -337,6 +337,23 @@ type executorBaseConfig struct {
 	UBatchSize     int
 }
 
+// resolveCacheTypes picks the effective llama.cpp KV cache types from the
+// InferenceService spec. Custom types (TurboQuant turbo3/turbo4 and any other
+// fork-specific value) win over the enum-validated standard fields. Mirrors
+// internal/controller's resolveCacheType so the metal-agent and the K8s
+// runtime emit identical flags for the same spec.
+func resolveCacheTypes(isvc *inferencev1alpha1.InferenceService) (k, v string) {
+	k = isvc.Spec.CacheTypeK
+	if isvc.Spec.CacheTypeCustomK != "" {
+		k = isvc.Spec.CacheTypeCustomK
+	}
+	v = isvc.Spec.CacheTypeV
+	if isvc.Spec.CacheTypeCustomV != "" {
+		v = isvc.Spec.CacheTypeCustomV
+	}
+	return k, v
+}
+
 // buildExecutorConfig collects every flag-relevant InferenceService field into
 // an ExecutorConfig that buildLlamaServerArgs can consume. Pointer fields are
 // dereferenced here so the executor sees plain values; cache types are resolved
@@ -346,14 +363,7 @@ func buildExecutorConfig(
 	model *inferencev1alpha1.Model,
 	base executorBaseConfig,
 ) ExecutorConfig {
-	cacheTypeK := isvc.Spec.CacheTypeK
-	if isvc.Spec.CacheTypeCustomK != "" {
-		cacheTypeK = isvc.Spec.CacheTypeCustomK
-	}
-	cacheTypeV := isvc.Spec.CacheTypeV
-	if isvc.Spec.CacheTypeCustomV != "" {
-		cacheTypeV = isvc.Spec.CacheTypeCustomV
-	}
+	cacheTypeK, cacheTypeV := resolveCacheTypes(isvc)
 
 	return ExecutorConfig{
 		Name:                   isvc.Name,
@@ -499,8 +509,14 @@ func (a *MetalAgent) ensureProcess(ctx context.Context, isvc *inferencev1alpha1.
 		contextSize = int(*isvc.Spec.ContextSize)
 	}
 
+	// Resolve KV cache types now (custom > standard) so the memory check and
+	// the executor config see the same values; otherwise the pre-flight check
+	// would always assume f16 and reject configs that fit thanks to TurboQuant
+	// or q8_0 KV.
+	cacheTypeK, cacheTypeV := resolveCacheTypes(isvc)
+
 	// Pre-flight memory check
-	if estimate, err := a.estimateModelMemory(model, contextSize); err != nil {
+	if estimate, err := a.estimateModelMemory(model, contextSize, cacheTypeK, cacheTypeV); err != nil {
 		a.logger.Warnw("memory estimation failed, proceeding without check", "error", err)
 	} else {
 		memoryEstimatedBytes.WithLabelValues(isvc.Name, isvc.Namespace).Set(float64(estimate.TotalBytes))
@@ -883,7 +899,13 @@ func (a *MetalAgent) HealthCheck() map[string]bool {
 
 // estimateModelMemory builds a MemoryEstimate for a model using the file on disk
 // (preferred) or the Status.Size string, plus GGUF metadata when available.
-func (a *MetalAgent) estimateModelMemory(model *inferencev1alpha1.Model, contextSize int) (MemoryEstimate, error) {
+// Cache types are passed through so quantized KV caches (q8_0, turbo3, turbo4)
+// produce a realistic estimate instead of always assuming f16.
+func (a *MetalAgent) estimateModelMemory(
+	model *inferencev1alpha1.Model,
+	contextSize int,
+	cacheTypeK, cacheTypeV string,
+) (MemoryEstimate, error) {
 	var fileSizeBytes uint64
 
 	// Try to stat the model file on disk
@@ -914,7 +936,10 @@ func (a *MetalAgent) estimateModelMemory(model *inferencev1alpha1.Model, context
 		embeddingSize = model.Status.GGUF.EmbeddingSize
 	}
 
-	return EstimateModelMemory(fileSizeBytes, layerCount, embeddingSize, contextSize), nil
+	return EstimateModelMemoryWithOptions(fileSizeBytes, layerCount, embeddingSize, contextSize, EstimateOptions{
+		CacheTypeK: cacheTypeK,
+		CacheTypeV: cacheTypeV,
+	}), nil
 }
 
 // computeSpecHash returns a stable hash of the InferenceServiceSpec fields that,
