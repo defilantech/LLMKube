@@ -452,10 +452,22 @@ type VLLMConfig struct {
 	// KV cache memory roughly in half versus auto (which follows dtype), which
 	// is what unlocks 128K+ context on consumer VRAM for agentic workloads.
 	// Maps to vLLM --kv-cache-dtype flag.
+	// For custom build types not in the enum (e.g. TurboQuant turbo2 from
+	// vLLM v0.20+), use KVCacheCustomDtype instead.
 	// +kubebuilder:validation:Enum=auto;fp8_e5m2;fp8_e4m3
 	// +kubebuilder:default=auto
 	// +optional
 	KVCacheDtype *string `json:"kvCacheDtype,omitempty"`
+
+	// KVCacheCustomDtype sets a custom vLLM KV cache element type that is not
+	// in the standard enum. Used for vLLM versions with additional cache
+	// formats such as TurboQuant 2-bit (turbo2, shipped in v0.20.0). Maps to
+	// vLLM --kv-cache-dtype. The runtime image must understand the value or
+	// vLLM will fail to start; LLMKube does not validate the string. Mirrors
+	// the llama.cpp-side CacheTypeCustomK/V escape hatch.
+	// Takes precedence over KVCacheDtype when both are set.
+	// +optional
+	KVCacheCustomDtype string `json:"kvCacheCustomDtype,omitempty"`
 
 	// EnablePrefixCaching turns on vLLM's automatic prefix caching for repeated prompts.
 	// Significantly reduces time-to-first-token for conversational and agentic workloads

@@ -1,0 +1,62 @@
+# Reference manifest for vLLM v0.20.0 + TurboQuant 2-bit KV cache (turbo2).
+# turbo2 ships in vllm/vllm-openai:v0.20.0 (vLLM PRs #38479, #40092). Earlier
+# images do NOT understand the turbo2 cache type and will fail to start.
+# LLMKube does not validate the kvCacheCustomDtype string.
+#
+# Why this manifest exists: turbo2 is not in the standard kvCacheDtype enum
+# (auto/fp8_e5m2/fp8_e4m3). The kvCacheCustomDtype escape hatch passes the
+# value straight through to vLLM's --kv-cache-dtype flag without LLMKube CRD
+# validation. Mirrors the llama.cpp-side cacheTypeCustomK/V pattern.
+#
+# Apply:
+#   kubectl apply -f config/samples/vllm-v0.20-qwen32b-turbo2.yaml
+#
+# Verify the spawned vLLM process picked up the flag:
+#   kubectl get pod -l app.kubernetes.io/instance=vllm-qwen32b-turbo2 \
+#     -o jsonpath='{.items[0].spec.containers[0].args}' | tr ' ' '\n' | grep -A1 cache-dtype
+---
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: Model
+metadata:
+  name: qwen32b-instruct
+  namespace: default
+spec:
+  source: "Qwen/Qwen2.5-32B-Instruct"
+  format: safetensors
+  hardware:
+    accelerator: cuda
+    gpu:
+      enabled: true
+      count: 2
+      vendor: nvidia
+---
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: InferenceService
+metadata:
+  name: vllm-qwen32b-turbo2
+  namespace: default
+spec:
+  modelRef: qwen32b-instruct
+  runtime: vllm
+  image: vllm/vllm-openai:v0.20.0
+  skipModelInit: true
+  vllmConfig:
+    tensorParallelSize: 2
+    maxModelLen: 131072
+    dtype: bfloat16
+    # turbo2 = TurboQuant 2-bit KV cache (vLLM v0.20+, PRs #38479 + #40092).
+    # ~6.4x compression vs f16. Compare with llama.cpp's turbo3/turbo4 on the
+    # Metal side (see docs/turboquant.md for cross-runtime context).
+    kvCacheCustomDtype: turbo2
+    enablePrefixCaching: true
+    enableChunkedPrefill: true
+    hfTokenSecretRef:
+      name: hf-token
+      key: HF_TOKEN
+  endpoint:
+    port: 8000
+    type: ClusterIP
+  resources:
+    gpu: 2
+    cpu: "4"
+    memory: "16Gi"

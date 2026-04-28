@@ -102,6 +102,28 @@ func TestVLLMBuildArgs(t *testing.T) {
 			contains: []flagCheck{{"--kv-cache-dtype", "fp8_e4m3"}},
 		},
 		{
+			name:     "kvCacheCustomDtype=turbo2 emits flag (vLLM v0.20+ TurboQuant 2-bit)",
+			cfg:      &inferencev1alpha1.VLLMConfig{KVCacheCustomDtype: "turbo2"},
+			contains: []flagCheck{{"--kv-cache-dtype", "turbo2"}},
+		},
+		{
+			name: "kvCacheCustomDtype wins over standard kvCacheDtype when both set",
+			cfg: &inferencev1alpha1.VLLMConfig{
+				KVCacheDtype:       ptrString("fp8_e4m3"),
+				KVCacheCustomDtype: "turbo2",
+			},
+			contains:    []flagCheck{{"--kv-cache-dtype", "turbo2"}},
+			notContains: []string{"fp8_e4m3"},
+		},
+		{
+			name: "kvCacheCustomDtype empty falls back to standard kvCacheDtype",
+			cfg: &inferencev1alpha1.VLLMConfig{
+				KVCacheDtype:       ptrString("fp8_e5m2"),
+				KVCacheCustomDtype: "",
+			},
+			contains: []flagCheck{{"--kv-cache-dtype", "fp8_e5m2"}},
+		},
+		{
 			name:     "enablePrefixCaching=true emits flag",
 			cfg:      &inferencev1alpha1.VLLMConfig{EnablePrefixCaching: ptrBool(true)},
 			contains: []flagCheck{{"--enable-prefix-caching", ""}},
@@ -269,6 +291,34 @@ func TestVLLMBuildArgsDeterministic(t *testing.T) {
 				t.Fatalf("iteration %d pos %d: %q != %q", i, j, got[j], first[j])
 			}
 		}
+	}
+}
+
+// TestResolveKVCacheDtype covers the precedence rules for the custom-vs-standard
+// KV cache type field. Direct unit tests on the resolver are easier to debug
+// than going through BuildArgs and arg-list scanning.
+func TestResolveKVCacheDtype(t *testing.T) {
+	cases := []struct {
+		name     string
+		custom   string
+		standard *string
+		want     string
+	}{
+		{name: "both unset returns empty", custom: "", standard: nil, want: ""},
+		{name: "standard nil and custom empty returns empty", custom: "", standard: nil, want: ""},
+		{name: "standard set, custom empty returns standard", custom: "", standard: ptrString("fp8_e4m3"), want: "fp8_e4m3"},
+		{name: "standard auto, custom empty returns auto", custom: "", standard: ptrString("auto"), want: "auto"},
+		{name: "custom set, standard nil returns custom", custom: "turbo2", standard: nil, want: "turbo2"},
+		{name: "custom set, standard set returns custom (custom wins)", custom: "turbo2", standard: ptrString("fp8_e5m2"), want: "turbo2"},
+		{name: "custom set, standard auto returns custom", custom: "turbo2", standard: ptrString("auto"), want: "turbo2"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := resolveKVCacheDtype(tc.custom, tc.standard)
+			if got != tc.want {
+				t.Errorf("resolveKVCacheDtype(%q, %v) = %q, want %q", tc.custom, tc.standard, got, tc.want)
+			}
+		})
 	}
 }
 

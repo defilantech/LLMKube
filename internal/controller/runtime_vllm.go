@@ -75,8 +75,10 @@ func (b *VLLMBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, model 
 			args = append(args, "--dtype", cfg.Dtype)
 		}
 		// KV cache dtype: emit unless unset or explicitly "auto" (vLLM's default).
-		if cfg.KVCacheDtype != nil && *cfg.KVCacheDtype != "" && *cfg.KVCacheDtype != "auto" {
-			args = append(args, "--kv-cache-dtype", *cfg.KVCacheDtype)
+		// Custom value (e.g. TurboQuant turbo2 from vLLM v0.20+) wins over the
+		// enum-validated standard field, mirroring llama.cpp's resolveCacheType.
+		if resolved := resolveKVCacheDtype(cfg.KVCacheCustomDtype, cfg.KVCacheDtype); resolved != "" && resolved != "auto" {
+			args = append(args, "--kv-cache-dtype", resolved)
 		}
 		// Prefix caching: only emit when user explicitly opted in (true).
 		// vLLM's own default handles the nil/false case.
@@ -126,6 +128,22 @@ func (b *VLLMBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, model 
 	}
 
 	return args
+}
+
+// resolveKVCacheDtype returns the custom vLLM KV cache type when set,
+// otherwise the enum-validated standard value (dereferenced; nil → ""). Lets
+// users opt into vLLM image-specific cache formats (TurboQuant turbo2 from
+// v0.20+, future variants) without expanding the CRD enum on every release,
+// while keeping the standard field discoverable for the common case. Mirrors
+// resolveCacheType on the llama.cpp side.
+func resolveKVCacheDtype(custom string, standard *string) string {
+	if custom != "" {
+		return custom
+	}
+	if standard == nil {
+		return ""
+	}
+	return *standard
 }
 
 // ValidateVLLMConfig checks the VLLMConfig for structurally invalid
