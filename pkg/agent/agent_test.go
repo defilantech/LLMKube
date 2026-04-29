@@ -32,6 +32,8 @@ import (
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 )
 
+const Q8_0 = "q8_0"
+
 func newTestScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = inferencev1alpha1.AddToScheme(s)
@@ -555,8 +557,8 @@ func TestBuildExecutorConfig_PassesAllSpecFieldsThrough(t *testing.T) {
 			ModelRef:               "any-model",
 			ParallelSlots:          &parallel,
 			Jinja:                  &jinja,
-			CacheTypeK:             "q8_0",
-			CacheTypeV:             "q8_0",
+			CacheTypeK:             Q8_0,
+			CacheTypeV:             Q8_0,
 			CacheTypeCustomK:       "turbo3", // wins over CacheTypeK
 			CacheTypeCustomV:       "turbo4", // wins over CacheTypeV
 			MoeCPUOffload:          &moeOff,
@@ -630,17 +632,17 @@ func TestBuildExecutorConfig_StandardCacheTypeWhenCustomEmpty(t *testing.T) {
 	isvc := &inferencev1alpha1.InferenceService{
 		Spec: inferencev1alpha1.InferenceServiceSpec{
 			ModelRef:   "m",
-			CacheTypeK: "q8_0",
-			CacheTypeV: "q8_0",
+			CacheTypeK: Q8_0,
+			CacheTypeV: Q8_0,
 		},
 	}
 	model := &inferencev1alpha1.Model{Spec: inferencev1alpha1.ModelSpec{Source: "x"}}
 	cfg := buildExecutorConfig(isvc, model, executorBaseConfig{})
-	if cfg.CacheTypeK != "q8_0" {
-		t.Errorf("CacheTypeK = %q, want %q", cfg.CacheTypeK, "q8_0")
+	if cfg.CacheTypeK != Q8_0 {
+		t.Errorf("CacheTypeK = %q, want %q", cfg.CacheTypeK, Q8_0)
 	}
-	if cfg.CacheTypeV != "q8_0" {
-		t.Errorf("CacheTypeV = %q, want %q", cfg.CacheTypeV, "q8_0")
+	if cfg.CacheTypeV != Q8_0 {
+		t.Errorf("CacheTypeV = %q, want %q", cfg.CacheTypeV, Q8_0)
 	}
 }
 

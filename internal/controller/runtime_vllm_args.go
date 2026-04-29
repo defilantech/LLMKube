@@ -68,10 +68,26 @@ func appendEnablePrefixCaching(args []string, enablePrefixCaching *bool) []strin
 	return args
 }
 
+// resolveKVCacheDtype returns the custom vLLM KV cache type when set,
+// otherwise the enum-validated standard value (dereferenced; nil → ""). Lets
+// users opt into vLLM image-specific cache formats (TurboQuant turbo2 from
+// v0.20+, future variants) without expanding the CRD enum on every release,
+// while keeping the standard field discoverable for the common case. Mirrors
+// resolveCacheType on the llama.cpp side.
+func resolveKVCacheDtype(custom string, standard *string) string {
+	if custom != "" {
+		return custom
+	}
+	if standard == nil {
+		return ""
+	}
+	return *standard
+}
+
 // appendKVCacheDtype emit flag unless unset or explicitly "auto" (vLLM's default).
-func appendKVCacheDtype(args []string, kvCacheDtype *string) []string {
-	if kvCacheDtype != nil && *kvCacheDtype != "" && *kvCacheDtype != "auto" {
-		return append(args, "--kv-cache-dtype", *kvCacheDtype)
+func appendKVCacheDtype(args []string, kvCacheDtype *string, kvCacheCustomDtype string) []string {
+	if resolved := resolveKVCacheDtype(kvCacheCustomDtype, kvCacheDtype); resolved != "" && resolved != "auto" {
+		args = append(args, "--kv-cache-dtype", resolved)
 	}
 	return args
 }
