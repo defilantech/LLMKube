@@ -266,7 +266,7 @@ func TestLlamaCppBuildArgs(t *testing.T) {
 			contains: []flagCheck{{"--cache-type-k", "key"}},
 		},
 		{
-			name: "cacheTypeK nil does not emits flag",
+			name: "cacheTypeK nil does not emit flag",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:  "llama",
 				ModelRef: "test-model",
@@ -283,7 +283,7 @@ func TestLlamaCppBuildArgs(t *testing.T) {
 			contains: []flagCheck{{"--cache-type-v", "value"}},
 		},
 		{
-			name: "cacheTypeV nil does not emits flag",
+			name: "cacheTypeV nil does not emit flag",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:  "llama",
 				ModelRef: "test-model",
@@ -303,7 +303,7 @@ func TestLlamaCppBuildArgs(t *testing.T) {
 			},
 		},
 		{
-			name: "cacheTypeV nil does not emits flag",
+			name: "tensorOverrides nil does not emit flag",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:  "llama",
 				ModelRef: "test-model",
