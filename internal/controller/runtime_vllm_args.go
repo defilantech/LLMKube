@@ -116,10 +116,8 @@ func appendMaxNumBatchedTokens(args []string, maxNumBatchedTokens *int32) []stri
 func appendMaxNumSeqsArgs(args []string, parallelSlots *int32, extraArgs []string) ([]string, error) {
 	// NOTE(#339): extra args has precedence.
 	if parallelSlots != nil && *parallelSlots >= 1 {
-		for _, v := range extraArgs {
-			if v == "--max-num-seqs" {
-				return args, errors.New("spec.parallelSlots is enabled but `--max-num-seqs` is already defined in spec.ExtraArgs, skipping")
-			}
+		if hasMatchingExtraArg(extraArgs, "max-num-seqs") {
+			return args, errors.New("spec.parallelSlots is enabled but `--max-num-seqs` is already defined in spec.ExtraArgs, skipping")
 		}
 		return append(args, "--max-num-seqs", fmt.Sprintf("%d", *parallelSlots)), nil
 	}
