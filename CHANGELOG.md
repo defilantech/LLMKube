@@ -5,6 +5,18 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.4](https://github.com/defilantech/LLMKube/compare/v0.7.3...v0.7.4) (2026-04-29)
+
+
+### Features
+
+* **controller:** pin vLLM default image to v0.20.0 ([#362](https://github.com/defilantech/LLMKube/issues/362)) ([d2ae561](https://github.com/defilantech/LLMKube/commit/d2ae561bb4900a52e4e538cd10c19ca848d8e69b))
+
+
+### Bug Fixes
+
+* **controller:** defer HTTP(S) Model downloads to the workload init container ([#364](https://github.com/defilantech/LLMKube/issues/364)) ([469f542](https://github.com/defilantech/LLMKube/commit/469f5428d16a01a6f8f0797976f70e2f8ecba62b))
+
 ## [0.7.3](https://github.com/defilantech/LLMKube/compare/v0.7.2...v0.7.3) (2026-04-29)
 
 
