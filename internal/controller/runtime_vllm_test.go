@@ -296,6 +296,64 @@ func TestVLLMBuildArgsDeterministic(t *testing.T) {
 	}
 }
 
+// TestVLLMDisableServiceLinks asserts the VLLMBackend opts out of the legacy
+// K8s service-link env-var injection. vLLM v0.20+ flags every K8s-injected
+// VLLM_<svcname>_* env var as unknown; disabling service links suppresses the
+// noise without affecting DNS service discovery.
+func TestVLLMDisableServiceLinks(t *testing.T) {
+	backend := &VLLMBackend{}
+	if !backend.DisableServiceLinks() {
+		t.Error("VLLMBackend.DisableServiceLinks() = false, want true (vLLM v0.20+ env validator noise)")
+	}
+}
+
+// TestResolveEnableServiceLinks covers the wiring between ServiceLinksOptOut
+// and the *bool the deployment builder writes to Pod.Spec.EnableServiceLinks.
+// nil = K8s default (links on); explicit *false = links off.
+func TestResolveEnableServiceLinks(t *testing.T) {
+	cases := []struct {
+		name       string
+		backend    RuntimeBackend
+		wantNil    bool
+		wantValue  bool
+		hasOptOut  bool
+		expectFlag string
+	}{
+		{
+			name:    "VLLMBackend opts out -> *false",
+			backend: &VLLMBackend{},
+			wantNil: false, wantValue: false,
+		},
+		{
+			name:    "LlamaCppBackend does not implement opt-out -> nil (default)",
+			backend: &LlamaCppBackend{},
+			wantNil: true,
+		},
+		{
+			name:    "GenericBackend does not implement opt-out -> nil (default)",
+			backend: &GenericBackend{},
+			wantNil: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := resolveEnableServiceLinks(tc.backend)
+			if tc.wantNil {
+				if got != nil {
+					t.Errorf("got %v, want nil (default service links)", *got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatal("got nil, want non-nil (explicit opt-out)")
+			}
+			if *got != tc.wantValue {
+				t.Errorf("got *%v, want *%v", *got, tc.wantValue)
+			}
+		})
+	}
+}
+
 // TestResolveKVCacheDtype covers the precedence rules for the custom-vs-standard
 // KV cache type field. Direct unit tests on the resolver are easier to debug
 // than going through BuildArgs and arg-list scanning.

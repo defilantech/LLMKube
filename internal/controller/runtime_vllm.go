@@ -37,6 +37,13 @@ func (b *VLLMBackend) DefaultPort() int32       { return 8000 }
 func (b *VLLMBackend) NeedsModelInit() bool     { return true }
 func (b *VLLMBackend) DefaultHPAMetric() string { return "vllm:num_requests_running" }
 
+// DisableServiceLinks returns true so the operator emits Pods with
+// `enableServiceLinks: false`. vLLM v0.20+ logs a warning for every K8s
+// service-link env var that matches the `VLLM_*` prefix; in a namespace with
+// multiple vLLM Services that's per-pod per-other-service noise. DNS-based
+// service discovery is unaffected — the env vars were a legacy mechanism.
+func (b *VLLMBackend) DisableServiceLinks() bool { return true }
+
 // BuildArgs generates the vLLM server CLI arguments. Arguments are emitted in a
 // deterministic order so snapshot-style tests and diff reviews stay stable:
 //
