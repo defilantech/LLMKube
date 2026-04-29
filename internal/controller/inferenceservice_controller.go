@@ -140,9 +140,9 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			"CPU/KV offloading is enabled but resources.memory/hostMemory is not set; hybrid pods consume significant host RAM")
 	}
 
-	if r.Recorder != nil && model.Status.Phase == PhaseReady && model.Status.Path == "" && !needsSkipModelInit(inferenceService) {
+	if r.Recorder != nil && shouldWarnMissingSkipModelInit(model, inferenceService) {
 		r.Recorder.Eventf(inferenceService, nil, corev1.EventTypeWarning, "MissingSkipModelInit", "Reconcile",
-			"Model source is runtime-resolved but spec.skipModelInit is not set; init container will fail")
+			"Model source is a HuggingFace repo ID (resolved by the runtime at startup); set spec.skipModelInit=true so the init container does not run")
 	}
 
 	deployment, readyReplicas, result, err := r.reconcileDeployment(ctx, inferenceService, model, desiredReplicas, modelReady, isMetal)
@@ -287,6 +287,32 @@ func (r *InferenceServiceReconciler) reconcileService(ctx context.Context, isvc 
 
 func needsSkipModelInit(isvc *inferencev1alpha1.InferenceService) bool {
 	return isvc.Spec.SkipModelInit != nil && *isvc.Spec.SkipModelInit
+}
+
+// shouldWarnMissingSkipModelInit reports whether the InferenceService should
+// receive a `MissingSkipModelInit` warning event. The warning fires when:
+//
+//   - The Model is Ready (so we know its source type matters), AND
+//   - The Model's source is resolved entirely by the runtime — currently
+//     only HuggingFace repo IDs, which vLLM/llama.cpp fetch directly via
+//     HF_TOKEN at workload startup, AND
+//   - The InferenceService still has the init container enabled
+//     (skipModelInit is unset or false).
+//
+// In that combination the init container has nothing to fetch and the Pod
+// will fail to start. HTTP(S) sources also have Status.Path == "" after
+// issue #363 — the controller defers their fetch to the workload init
+// container — but those DO need the init container (it is exactly how the
+// per-namespace cache PVC gets populated), so the warning must NOT fire for
+// them.
+func shouldWarnMissingSkipModelInit(model *inferencev1alpha1.Model, isvc *inferencev1alpha1.InferenceService) bool {
+	if model.Status.Phase != PhaseReady {
+		return false
+	}
+	if !isHFRepoSource(model.Spec.Source) {
+		return false
+	}
+	return !needsSkipModelInit(isvc)
 }
 
 func (r *InferenceServiceReconciler) SetupWithManager(mgr ctrl.Manager) error {

@@ -582,8 +582,15 @@ spec:
 			Eventually(verifyServiceGone, 1*time.Minute).Should(Succeed())
 		})
 
-		It("should report Failed for Model with unreachable source", func() {
-			By("applying a Model CR with a URL that returns 404")
+		It("should report Failed for Model with unreachable file:// source", func() {
+			// HTTP(S) sources are validated by the InferenceService Pod's init
+			// container, not by the Model controller (issue #363), so a 404
+			// HTTP source no longer surfaces a Failed Model phase. file://
+			// sources still flow through the controller's in-process path
+			// and surface broken sources as Model.status.phase=Failed with
+			// reason=CopyFailed, which is the controller-side failure
+			// surface we want to keep covered here.
+			By("applying a Model CR with a file:// path that does not exist on the controller pod")
 			cmd := exec.Command("kubectl", "apply", "-f", "-")
 			cmd.Stdin = strings.NewReader(fmt.Sprintf(`apiVersion: inference.llmkube.dev/v1alpha1
 kind: Model
@@ -591,7 +598,7 @@ metadata:
   name: test-model-bad-source
   namespace: %s
 spec:
-  source: "http://test-model-server.e2e-cr-test.svc.cluster.local/nonexistent.gguf"
+  source: "file:///nonexistent/path/to/missing-model.gguf"
 `, crTestNs))
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to apply Model CR")
@@ -606,13 +613,13 @@ spec:
 			}
 			Eventually(verifyModelFailed, 2*time.Minute).Should(Succeed())
 
-			By("verifying Degraded condition with DownloadFailed reason")
+			By("verifying Degraded condition with CopyFailed reason")
 			cmd = exec.Command("kubectl", "get", "model", "test-model-bad-source",
 				"-n", crTestNs, "-o",
 				`jsonpath={.status.conditions[?(@.type=="Degraded")].reason}`)
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(output).To(Equal("DownloadFailed"))
+			Expect(output).To(Equal("CopyFailed"))
 		})
 	})
 

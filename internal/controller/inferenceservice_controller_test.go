@@ -6036,3 +6036,52 @@ var _ = Describe("constructDeployment Regression Tests", func() {
 		})
 	})
 })
+
+// Regression coverage for the false-fire that landed alongside issue #363's
+// initial fix: extending the deferred-fetch path to HTTP(S) sources made
+// Status.Path == "" for those Models, and the existing
+// MissingSkipModelInit-warning heuristic was using `Status.Path == ""` as a
+// proxy for "runtime-internal source" — so it started warning on HTTP(S)
+// InferenceServices, which do need the init container. The fix narrows the
+// warning to HuggingFace repo IDs (the only source type that's truly
+// runtime-resolved). Below: the warning's full truth table so the heuristic
+// can't drift again.
+var _ = Describe("shouldWarnMissingSkipModelInit", func() {
+	tt := func(modelPhase, source string, skipInit *bool) bool {
+		model := &inferencev1alpha1.Model{
+			Spec:   inferencev1alpha1.ModelSpec{Source: source},
+			Status: inferencev1alpha1.ModelStatus{Phase: modelPhase},
+		}
+		isvc := &inferencev1alpha1.InferenceService{
+			Spec: inferencev1alpha1.InferenceServiceSpec{SkipModelInit: skipInit},
+		}
+		return shouldWarnMissingSkipModelInit(model, isvc)
+	}
+	pTrue := func() *bool { v := true; return &v }
+	pFalse := func() *bool { v := false; return &v }
+
+	It("warns: HuggingFace repo ID + Ready Model + skipModelInit unset", func() {
+		Expect(tt(PhaseReady, "Qwen/Qwen3.6-35B-A3B", nil)).To(BeTrue())
+	})
+	It("warns: HuggingFace repo ID + Ready Model + skipModelInit explicitly false", func() {
+		Expect(tt(PhaseReady, "Qwen/Qwen3.6-35B-A3B", pFalse())).To(BeTrue())
+	})
+	It("does not warn: HuggingFace repo ID + skipModelInit=true (correctly configured)", func() {
+		Expect(tt(PhaseReady, "Qwen/Qwen3.6-35B-A3B", pTrue())).To(BeFalse())
+	})
+	It("does not warn: HTTPS source — init container is required to populate the per-namespace cache PVC (issue #363)", func() {
+		Expect(tt(PhaseReady, "https://huggingface.co/example/repo/resolve/main/m.gguf", nil)).To(BeFalse())
+	})
+	It("does not warn: HTTP source — same as HTTPS", func() {
+		Expect(tt(PhaseReady, "http://example.com/m.gguf", nil)).To(BeFalse())
+	})
+	It("does not warn: file:// source — controller copies in-process and Status.Path is populated", func() {
+		Expect(tt(PhaseReady, "file:///mnt/models/m.gguf", nil)).To(BeFalse())
+	})
+	It("does not warn: pvc:// source — model is mounted directly, no init container needed", func() {
+		Expect(tt(PhaseReady, "pvc://my-claim/path/m.gguf", nil)).To(BeFalse())
+	})
+	It("does not warn: Model not yet Ready (irrelevant — warning waits until Status is settled)", func() {
+		Expect(tt("Downloading", "Qwen/Qwen3.6-35B-A3B", nil)).To(BeFalse())
+	})
+})
