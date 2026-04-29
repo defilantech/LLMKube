@@ -5,6 +5,23 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.3](https://github.com/defilantech/LLMKube/compare/v0.7.2...v0.7.3) (2026-04-29)
+
+
+### Features
+
+* **agent:** cache-type-aware memory estimator + TurboQuant docs ([#355](https://github.com/defilantech/LLMKube/issues/355)) ([0697afd](https://github.com/defilantech/LLMKube/commit/0697afdc44939605bb76d0d0a8872c3d326ff934))
+* **api:** add cacheTypeCustomK/V for non-enum llama.cpp KV cache types ([#351](https://github.com/defilantech/LLMKube/issues/351)) ([71bd762](https://github.com/defilantech/LLMKube/commit/71bd7622f983a1ea3a2b9032296346e094b753e1))
+* **api:** add kvCacheCustomDtype for non-enum vLLM KV cache types ([#359](https://github.com/defilantech/LLMKube/issues/359)) ([5e796d0](https://github.com/defilantech/LLMKube/commit/5e796d0767e15a300dddd74819765c031aa5d7f4))
+
+
+### Bug Fixes
+
+* **agent:** respawn on InferenceService spec drift, honor replicas=0, and plumb full spec to llama-server flags ([#353](https://github.com/defilantech/LLMKube/issues/353)) ([ff54cad](https://github.com/defilantech/LLMKube/commit/ff54cad355096ce34d70aebf4fe114ab32745348))
+* **controller:** use GGUF metadata name for downloaded model file basename ([#347](https://github.com/defilantech/LLMKube/issues/347)) ([e932c7a](https://github.com/defilantech/LLMKube/commit/e932c7ae1c484fab9f99202d9ea35a7c8abb3906))
+* **vllm:** set enableServiceLinks=false on vLLM Pod spec ([#361](https://github.com/defilantech/LLMKube/issues/361)) ([01eb5c5](https://github.com/defilantech/LLMKube/commit/01eb5c5bcaf6740bc4054c5185cbcbdd17d2685f))
+* **vllm:** use positional model argument instead of deprecated --model ([#360](https://github.com/defilantech/LLMKube/issues/360)) ([a17566c](https://github.com/defilantech/LLMKube/commit/a17566cc5211c2f2dea1a22dbe40c74031c486fa))
+
 ## [0.7.2](https://github.com/defilantech/LLMKube/compare/v0.7.1...v0.7.2) (2026-04-27)
 
 
