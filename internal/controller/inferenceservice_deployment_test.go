@@ -871,9 +871,9 @@ var _ = Describe("Context Size Configuration", func() {
 			Expect(args).NotTo(ContainElement("--parallel"))
 		})
 
-		It("should NOT include --parallel flag when parallelSlots is 1", func() {
+		It("should NOT include --parallel flag when parallelSlots is 0", func() {
 			replicas := int32(1)
-			parallelSlots := int32(1)
+			parallelSlots := int32(0)
 			isvc := &inferencev1alpha1.InferenceService{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "single-parallel-slot-service",

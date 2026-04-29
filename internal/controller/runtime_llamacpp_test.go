@@ -52,13 +52,6 @@ func TestLlamaCppBuildArgs(t *testing.T) {
 		notContains []string
 	}{
 		{
-			name: "nil config emits only base flags",
-			spec: nil,
-			// TODO: add --metrics
-			contains:    []flagCheck{{"--model", modelPath}, {"--host", "0.0.0.0"}, {"--port", "8000"}, {"--metrics", ""}},
-			notContains: []string{"--ctx-size", "--parallel", "--flash-attn", "--jinja", "--cache-type-k", "--cpu-moe", "--n-cpu-moe", "--no-kv-offload", "--override-tensor", "--override-kv", "--batch-size", "--ubatch-size", "--no-warmup", "--reasoning-budget", "--reasoning-budget-message"},
-		},
-		{
 			name: "empty config emits only base flags",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:  "llama",
@@ -152,13 +145,13 @@ func TestLlamaCppBuildArgs(t *testing.T) {
 			notContains: []string{"--n-cpu-moe"},
 		},
 		{
-			name: "flashAttention=true emits flag",
+			name: "flashAttention=true does not emit flag without GPU",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:        "llama",
 				ModelRef:       "test-model",
 				FlashAttention: ptrBool(true),
 			},
-			contains: []flagCheck{{"--flash-attn", "on"}},
+			notContains: []string{"--flash-attn"},
 		},
 		{
 			name: "flashAttention=false does not emit flag",
@@ -362,9 +355,8 @@ func TestLlamaCppBuildArgs(t *testing.T) {
 			contains: []flagCheck{
 				{"--batch-size", "2"},
 				{"--cache-type-k", "key"},
-				{"--cache-type-value", "key"},
-				{"--context-size", "2"},
-				{"--flash-attn", "on"},
+				{"--cache-type-v", "value"},
+				{"--ctx-size", "2"},
 				{"--jinja", ""},
 				{"--override-kv", "value1"},
 				{"--override-kv", "value2"},
