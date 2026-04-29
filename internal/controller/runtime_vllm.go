@@ -114,22 +114,6 @@ func (b *VLLMBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, model 
 	return args
 }
 
-// resolveKVCacheDtype returns the custom vLLM KV cache type when set,
-// otherwise the enum-validated standard value (dereferenced; nil → ""). Lets
-// users opt into vLLM image-specific cache formats (TurboQuant turbo2 from
-// v0.20+, future variants) without expanding the CRD enum on every release,
-// while keeping the standard field discoverable for the common case. Mirrors
-// resolveCacheType on the llama.cpp side.
-func resolveKVCacheDtype(custom string, standard *string) string {
-	if custom != "" {
-		return custom
-	}
-	if standard == nil {
-		return ""
-	}
-	return *standard
-}
-
 // ValidateVLLMConfig checks the VLLMConfig for structurally invalid
 // combinations that are non-fatal to reconciliation but should be surfaced as
 // a status condition. Returns (reason, message) when invalid; empty strings
