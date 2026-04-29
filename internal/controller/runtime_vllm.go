@@ -99,10 +99,6 @@ func (b *VLLMBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, model 
 		args = appendTensorParallelSize(args, &gpuCount)
 	}
 
-	if len(isvc.Spec.ExtraArgs) > 0 {
-		args = append(args, isvc.Spec.ExtraArgs...)
-	}
-
 	args, err = appendMaxNumSeqsArgs(args, isvc.Spec.ParallelSlots, isvc.Spec.ExtraArgs)
 	if err != nil {
 		vllmLog.Error(nil,
@@ -111,6 +107,11 @@ func (b *VLLMBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, model 
 			"namespace", isvc.Namespace,
 		)
 	}
+
+	if len(isvc.Spec.ExtraArgs) > 0 {
+		args = append(args, isvc.Spec.ExtraArgs...)
+	}
+
 	return args
 }
 
