@@ -16,12 +16,18 @@ limitations under the License.
 
 package controller
 
+import (
+	"errors"
+	"fmt"
+
+	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
+)
+
 // Argument builders for the vllm runtime. Each helper takes the current
 // args slice plus the relevant CRD field and returns the appended slice (or
 // the unchanged slice when the field is unset or not applicable). Kept as
 // free functions so they are trivially testable in isolation and can be
 // composed in any order from the deployment builder.
-
 
 func appendAttentionBackend(args []string, attentionBackend string) []string {
 	if attentionBackend != "" {
@@ -60,7 +66,7 @@ func appendEnablePrefixCaching(args []string, enablePrefixCaching *bool) []strin
 		return append(args, "--enable-prefix-caching")
 	}
 	return args
-} 
+}
 
 // appendKVCacheDtype emit flag unless unset or explicitly "auto" (vLLM's default).
 func appendKVCacheDtype(args []string, kvCacheDtype *string) []string {
@@ -91,14 +97,12 @@ func appendMaxNumBatchedTokens(args []string, maxNumBatchedTokens *int32) []stri
 	return args
 }
 
-func appendMaxNumSeqsArgs(args []string, parallelSlots *int32, extraArgs []string) ([]string, err) {
+func appendMaxNumSeqsArgs(args []string, parallelSlots *int32, extraArgs []string) ([]string, error) {
 	// NOTE(#339): extra args has precedence.
 	if parallelSlots != nil && *parallelSlots >= 1 {
 		for _, v := range extraArgs {
 			if v == "--max-num-seqs" {
-				return args, errors.New(
-					"spec.parallelSlots is enabled but `--max-num-seqs` is already defined in spec.ExtraArgs, skipping"
-				)
+				return args, errors.New("spec.parallelSlots is enabled but `--max-num-seqs` is already defined in spec.ExtraArgs, skipping")
 			}
 		}
 		return append(args, "--max-num-seqs", fmt.Sprintf("%d", *parallelSlots)), nil
@@ -109,7 +113,7 @@ func appendMaxNumSeqsArgs(args []string, parallelSlots *int32, extraArgs []strin
 // appendSpeculativeModel require both Enabled=true and a non-empty
 // draft Model ref. Silent-skip with a log line when misconfigured;
 // the reconciler also sets a status condition via ValidateVLLMConfig.
-func appendSpeculativeModel(args []string, speculativeCfg *SpeculativeConfig) ([]string, error) {
+func appendSpeculativeModel(args []string, speculativeCfg *inferencev1alpha1.SpeculativeConfig) ([]string, error) {
 	if speculativeCfg == nil || speculativeCfg.Enabled == nil || !*speculativeCfg.Enabled {
 		return args, nil
 	}

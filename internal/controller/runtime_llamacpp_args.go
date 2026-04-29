@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"errors"
 	"fmt"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
@@ -47,14 +48,12 @@ func appendContextSizeArgs(args []string, contextSize *int32) []string {
 	return args
 }
 
-func appendParallelSlotsArgs(args []string, parallelSlots *int32, extraArgs []string) ([]string, err) {
+func appendParallelSlotsArgs(args []string, parallelSlots *int32, extraArgs []string) ([]string, error) {
 	// NOTE(#339): extra args has precedence.
 	if parallelSlots != nil && *parallelSlots >= 1 {
 		for _, v := range extraArgs {
 			if v == "--parallel" {
-				return args, errors.New(
-					"spec.parallelSlots is enabled but `--parallel` is already defined in spec.ExtraArgs, skipping"
-				)
+				return args, errors.New("spec.parallelSlots is enabled but `--parallel` is already defined in spec.ExtraArgs, skipping")
 			}
 		}
 		return append(args, "--parallel", fmt.Sprintf("%d", *parallelSlots)), nil

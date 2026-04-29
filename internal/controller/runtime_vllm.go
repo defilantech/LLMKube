@@ -77,7 +77,7 @@ func (b *VLLMBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, model 
 		args = appendTensorParallelSize(args, cfg.TensorParallelSize)
 		args = appendMaxModelLen(args, cfg.MaxModelLen)
 		args = appendQuantization(args, cfg.Quantization)
-		args = appendDType(args, cfg.Dtype)
+		args = appendDtype(args, cfg.Dtype)
 		args = appendKVCacheDtype(args, cfg.KVCacheDtype)
 		args = appendEnablePrefixCaching(args, cfg.EnablePrefixCaching)
 		args = appendEnableChunkedPrefill(args, cfg.EnableChunkedPrefill)
@@ -86,12 +86,12 @@ func (b *VLLMBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, model 
 		args, err = appendSpeculativeModel(args, cfg.Speculative)
 		if err != nil {
 			vllmLog.Error(nil,
-				err.Error,
+				err.Error(),
 				"inferenceService", isvc.Name,
 				"namespace", isvc.Namespace,
 			)
 		}
-		args = appendEnableExpertParallel(args, cfg.enableExpertParallel)
+		args = appendEnableExpertParallel(args, cfg.EnableExpertParallel)
 	}
 
 	gpuCount := resolveGPUCount(isvc, model)
@@ -106,7 +106,7 @@ func (b *VLLMBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, model 
 	args, err = appendMaxNumSeqsArgs(args, isvc.Spec.ParallelSlots, isvc.Spec.ExtraArgs)
 	if err != nil {
 		vllmLog.Error(nil,
-			err.Error,
+			err.Error(),
 			"inferenceService", isvc.Name,
 			"namespace", isvc.Namespace,
 		)
