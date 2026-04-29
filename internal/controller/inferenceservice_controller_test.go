@@ -5053,7 +5053,7 @@ var _ = Describe("RuntimeBackend interface", func() {
 
 		It("should return correct defaults", func() {
 			Expect(backend.ContainerName()).To(Equal("vllm"))
-			Expect(backend.DefaultImage()).To(Equal("vllm/vllm-openai:latest"))
+			Expect(backend.DefaultImage()).To(Equal("vllm/vllm-openai:v0.20.0"))
 			Expect(backend.DefaultPort()).To(Equal(int32(8000)))
 			Expect(backend.NeedsModelInit()).To(BeTrue())
 			Expect(backend.DefaultHPAMetric()).To(Equal("vllm:num_requests_running"))

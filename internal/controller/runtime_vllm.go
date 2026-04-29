@@ -32,7 +32,7 @@ const (
 type VLLMBackend struct{}
 
 func (b *VLLMBackend) ContainerName() string    { return "vllm" }
-func (b *VLLMBackend) DefaultImage() string     { return "vllm/vllm-openai:latest" }
+func (b *VLLMBackend) DefaultImage() string     { return "vllm/vllm-openai:v0.20.0" }
 func (b *VLLMBackend) DefaultPort() int32       { return 8000 }
 func (b *VLLMBackend) NeedsModelInit() bool     { return true }
 func (b *VLLMBackend) DefaultHPAMetric() string { return "vllm:num_requests_running" }

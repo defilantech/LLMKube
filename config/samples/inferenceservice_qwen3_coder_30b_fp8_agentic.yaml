@@ -62,7 +62,7 @@ metadata:
 spec:
   modelRef: qwen3-coder-30b-fp8
   runtime: vllm
-  image: vllm/vllm-openai:latest
+  image: vllm/vllm-openai:v0.20.0
   skipModelInit: true
   replicas: 1
   vllmConfig:
