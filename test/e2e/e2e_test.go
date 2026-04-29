@@ -390,9 +390,22 @@ spec:
 			Expect(output).To(Equal("True"))
 		})
 
-		It("should recover a cached model to Ready after controller restart", func() {
+		It("should keep an HTTP-sourced Model Ready across a controller restart", func() {
+			// HTTP(S) sources are deferred to the InferenceService Pod's init
+			// container (issue #363) — the Model controller doesn't manage
+			// the cache for these sources, so a controller restart should
+			// not trigger a re-download and Status.CacheKey should persist
+			// across the restart.
+			By("recording Status.CacheKey before the restart")
+			cmd := exec.Command("kubectl", "get", "model", "test-model",
+				"-n", crTestNs, "-o", "jsonpath={.status.cacheKey}")
+			cacheKeyBefore, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cacheKeyBefore).To(MatchRegexp(`^[0-9a-f]{16}$`),
+				"HTTP(S) Models must have a CacheKey populated so the InferenceService init container can build /models/<cacheKey>/<basename>")
+
 			By("recording the current controller pod name")
-			cmd := exec.Command("kubectl", "get", "pods",
+			cmd = exec.Command("kubectl", "get", "pods",
 				"-l", "control-plane=controller-manager",
 				"-n", namespace,
 				"-o", "jsonpath={.items[0].metadata.name}")
@@ -433,31 +446,32 @@ spec:
 			// Update controllerPodName so AfterEach logs the right pod on failure
 			controllerPodName = newPod
 
-			By("waiting for the Model to return to Ready after restart")
-			// The Kind cluster uses emptyDir so the cached file is lost on restart.
-			// The controller detects this ("Model marked Ready but file missing")
-			// and re-downloads cleanly. Verify it returns to Ready.
+			By("verifying the Model stays Ready and CacheKey is preserved")
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "model", "test-model",
 					"-n", crTestNs, "-o", "jsonpath={.status.phase}")
-				output, err := utils.Run(cmd)
+				phase, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(Equal("Ready"))
+				g.Expect(phase).To(Equal("Ready"))
+
+				cmd = exec.Command("kubectl", "get", "model", "test-model",
+					"-n", crTestNs, "-o", "jsonpath={.status.cacheKey}")
+				cacheKeyAfter, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(cacheKeyAfter).To(Equal(cacheKeyBefore), "CacheKey must survive controller restart")
 			}, 2*time.Minute, 2*time.Second).Should(Succeed())
 
-			By("verifying the new controller detected the missing cache and recovered")
-			Eventually(func(g Gomega) {
-				cmd := exec.Command("kubectl", "logs", newPod, "-n", namespace)
-				logs, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(logs).To(ContainSubstring("Model marked Ready but file missing, will re-download"))
-			}, 1*time.Minute, 2*time.Second).Should(Succeed())
-
-			By("confirming the model was re-downloaded successfully")
+			By("verifying the new controller did NOT attempt a controller-side download (issue #363)")
+			// Regression guard: prior to issue #363's fix the controller
+			// downloaded HTTP(S) sources in-process to its own filesystem,
+			// which lived on a different PVC than the inference Pod read
+			// from. Asserting absence of "Downloading model" guarantees the
+			// new controller takes the workload-deferred path on restart.
 			cmd = exec.Command("kubectl", "logs", newPod, "-n", namespace)
 			logs, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(logs).To(ContainSubstring("Downloading model"))
+			Expect(logs).NotTo(ContainSubstring("Downloading model"),
+				"controller must not perform an in-process download for HTTP(S) sources after restart")
 		})
 
 		It("should create Deployment and Service for InferenceService", func() {
@@ -568,8 +582,15 @@ spec:
 			Eventually(verifyServiceGone, 1*time.Minute).Should(Succeed())
 		})
 
-		It("should report Failed for Model with unreachable source", func() {
-			By("applying a Model CR with a URL that returns 404")
+		It("should report Failed for Model with unreachable file:// source", func() {
+			// HTTP(S) sources are validated by the InferenceService Pod's init
+			// container, not by the Model controller (issue #363), so a 404
+			// HTTP source no longer surfaces a Failed Model phase. file://
+			// sources still flow through the controller's in-process path
+			// and surface broken sources as Model.status.phase=Failed with
+			// reason=CopyFailed, which is the controller-side failure
+			// surface we want to keep covered here.
+			By("applying a Model CR with a file:// path that does not exist on the controller pod")
 			cmd := exec.Command("kubectl", "apply", "-f", "-")
 			cmd.Stdin = strings.NewReader(fmt.Sprintf(`apiVersion: inference.llmkube.dev/v1alpha1
 kind: Model
@@ -577,7 +598,7 @@ metadata:
   name: test-model-bad-source
   namespace: %s
 spec:
-  source: "http://test-model-server.e2e-cr-test.svc.cluster.local/nonexistent.gguf"
+  source: "file:///nonexistent/path/to/missing-model.gguf"
 `, crTestNs))
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to apply Model CR")
@@ -592,13 +613,13 @@ spec:
 			}
 			Eventually(verifyModelFailed, 2*time.Minute).Should(Succeed())
 
-			By("verifying Degraded condition with DownloadFailed reason")
+			By("verifying Degraded condition with CopyFailed reason")
 			cmd = exec.Command("kubectl", "get", "model", "test-model-bad-source",
 				"-n", crTestNs, "-o",
 				`jsonpath={.status.conditions[?(@.type=="Degraded")].reason}`)
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(output).To(Equal("DownloadFailed"))
+			Expect(output).To(Equal("CopyFailed"))
 		})
 	})
 

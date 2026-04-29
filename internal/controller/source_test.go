@@ -153,3 +153,67 @@ var _ = Describe("isHFRepoSource (source.go)", func() {
 		Expect(isHFRepoSource("multi/part/path/thing")).To(BeTrue())
 	})
 })
+
+var _ = Describe("isRemoteHTTPSource (source.go)", func() {
+	// Regression coverage for issue #363: the controller defers HTTP(S)
+	// sources to the workload init container so the per-namespace cache PVC
+	// is populated. If a future change widens or narrows what this matcher
+	// considers HTTP(S), the dispatch in Reconcile() flips silently, so this
+	// matcher needs explicit, exhaustive cases.
+	It("should return true for https URL", func() {
+		Expect(isRemoteHTTPSource("https://huggingface.co/org/repo/resolve/main/model.gguf")).To(BeTrue())
+	})
+	It("should return true for http URL", func() {
+		Expect(isRemoteHTTPSource("http://example.com/model.gguf")).To(BeTrue())
+	})
+	It("should return true for https URL with port and query", func() {
+		Expect(isRemoteHTTPSource("https://my-mirror.local:8443/m.gguf?token=abc")).To(BeTrue())
+	})
+	It("should return false for HuggingFace repo ID", func() {
+		Expect(isRemoteHTTPSource("Qwen/Qwen3.6-35B-A3B")).To(BeFalse())
+	})
+	It("should return false for file:// URL", func() {
+		Expect(isRemoteHTTPSource("file:///mnt/models/local.gguf")).To(BeFalse())
+	})
+	It("should return false for absolute path", func() {
+		Expect(isRemoteHTTPSource("/mnt/models/local.gguf")).To(BeFalse())
+	})
+	It("should return false for pvc:// source", func() {
+		Expect(isRemoteHTTPSource("pvc://my-claim/path/model.gguf")).To(BeFalse())
+	})
+	It("should return false for empty string", func() {
+		Expect(isRemoteHTTPSource("")).To(BeFalse())
+	})
+	It("should return false for ftp:// URL (out of scope for the workload init container)", func() {
+		Expect(isRemoteHTTPSource("ftp://example.com/model.gguf")).To(BeFalse())
+	})
+	It("source-type matchers must be mutually exclusive", func() {
+		// Architectural invariant: every reachable source falls into exactly
+		// one category. If this regresses, Reconcile()'s dispatch order
+		// becomes load-bearing and silent bugs creep in.
+		cases := []string{
+			"https://huggingface.co/org/repo/resolve/main/m.gguf",
+			"http://mirror.local/m.gguf",
+			"Qwen/Qwen3.6-35B-A3B",
+			"file:///mnt/models/m.gguf",
+			"/mnt/models/m.gguf",
+			"pvc://my-claim/path/m.gguf",
+		}
+		for _, src := range cases {
+			matchCount := 0
+			if isPVCSource(src) {
+				matchCount++
+			}
+			if isHFRepoSource(src) {
+				matchCount++
+			}
+			if isRemoteHTTPSource(src) {
+				matchCount++
+			}
+			if isLocalSource(src) {
+				matchCount++
+			}
+			Expect(matchCount).To(Equal(1), "source %q must match exactly one category, got %d", src, matchCount)
+		}
+	})
+})
