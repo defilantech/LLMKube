@@ -79,9 +79,8 @@ var _ = Describe("Model Controller", func() {
 			By("Cleanup the specific resource instance Model")
 			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
 		})
-		It("should successfully reconcile the resource", func() {
+		It("should defer HTTPS sources to the workload init container without downloading", func() {
 			By("Reconciling the created resource")
-			// Create a temp directory for model cache
 			tempDir, err := os.MkdirTemp("", "llmkube-test-*")
 			Expect(err).NotTo(HaveOccurred())
 			defer func() { _ = os.RemoveAll(tempDir) }()
@@ -92,15 +91,24 @@ var _ = Describe("Model Controller", func() {
 				StoragePath: tempDir,
 			}
 
-			// Note: This will attempt to download the model, which will fail for test URL
-			// In a real scenario, you'd mock the download or use a valid test model
-			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+			// HTTPS sources are downloaded by the InferenceService Pod's init
+			// container into the per-namespace model cache PVC, not by the
+			// controller (whose StoragePath lives on the operator-namespace PVC).
+			// The controller marks the model Ready immediately so the workload
+			// can proceed to download.
+			result, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
 			})
-			// We expect an error because the test URL doesn't exist
-			// This test validates the controller handles the error gracefully
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("bad status"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(reconcile.Result{}))
+
+			updated := &inferencev1alpha1.Model{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, updated)).To(Succeed())
+			Expect(updated.Status.Phase).To(Equal(PhaseReady))
+			Expect(updated.Status.CacheKey).To(HaveLen(16))
+			// Controller did not write to its filesystem.
+			entries, _ := os.ReadDir(tempDir)
+			Expect(entries).To(BeEmpty(), "controller must not write under StoragePath for HTTPS sources")
 		})
 	})
 })
@@ -152,7 +160,15 @@ var _ = Describe("Model Controller Reconcile", func() {
 
 	It("should set Ready when model file already exists in cache", func() {
 		modelName := "model-cached"
-		source := "https://example.com/cached-model.gguf"
+		// Use a file:// source so the test exercises the controller's cache-hit
+		// path. HTTPS sources are deferred to the workload init container and
+		// don't go through the in-process cache logic.
+		srcDir, err := os.MkdirTemp("", "llmkube-src-*")
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = os.RemoveAll(srcDir) }()
+		srcFile := filepath.Join(srcDir, "src-model.gguf")
+		Expect(os.WriteFile(srcFile, []byte("fake-model-data"), 0644)).To(Succeed())
+		source := fmt.Sprintf("file://%s", srcFile)
 
 		tempDir, err := os.MkdirTemp("", "llmkube-test-*")
 		Expect(err).NotTo(HaveOccurred())
@@ -195,29 +211,28 @@ var _ = Describe("Model Controller Reconcile", func() {
 		Expect(updated.Status.LastUpdated).NotTo(BeNil())
 	})
 
-	It("should download model from HTTP server and set Ready", func() {
-		modelContent := []byte("fake-gguf-model-content-for-test")
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write(modelContent)
-		}))
-		defer server.Close()
-
-		modelName := "model-download-test"
+	// HTTPS sources deferred to the workload init container — see issue #363.
+	// The controller does NOT download HTTP(S) sources because its filesystem
+	// (StoragePath) lives on the operator-namespace cache PVC, which Pods in
+	// user namespaces cannot mount. Downloading there means the workload's
+	// init container would still re-fetch the model from scratch. The
+	// equivalent "controller fetches a non-PVC source and lands at the
+	// expected cache path" coverage for sources that DO go through the
+	// in-process path lives at "should copy local model file and set Ready"
+	// below (file:// sources).
+	It("should defer HTTPS source to the InferenceService init container", func() {
+		modelName := "model-https-deferred"
 		tempDir, err := os.MkdirTemp("", "llmkube-test-*")
 		Expect(err).NotTo(HaveOccurred())
 		defer func() { _ = os.RemoveAll(tempDir) }()
 
+		source := "https://example.com/some-model.gguf"
 		model := &inferencev1alpha1.Model{
 			ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
-			Spec: inferencev1alpha1.ModelSpec{
-				Source: fmt.Sprintf("%s/model.gguf", server.URL),
-			},
+			Spec:       inferencev1alpha1.ModelSpec{Source: source},
 		}
 		Expect(k8sClient.Create(ctx, model)).To(Succeed())
-		defer func() {
-			_ = k8sClient.Delete(ctx, model)
-		}()
+		defer func() { _ = k8sClient.Delete(ctx, model) }()
 
 		reconciler := &ModelReconciler{
 			Client:      k8sClient,
@@ -233,47 +248,31 @@ var _ = Describe("Model Controller Reconcile", func() {
 		updated := &inferencev1alpha1.Model{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: modelName, Namespace: "default"}, updated)).To(Succeed())
 		Expect(updated.Status.Phase).To(Equal(PhaseReady))
-		Expect(updated.Status.Size).NotTo(BeEmpty())
-		Expect(updated.Status.CacheKey).To(HaveLen(16))
-	})
+		// CacheKey populated so the InferenceService init container can build
+		// the canonical /models/<cacheKey>/<basename> path.
+		Expect(updated.Status.CacheKey).To(Equal(computeCacheKey(source)))
+		// Controller-side fields stay empty: the workload populates these when
+		// it actually downloads the model.
+		Expect(updated.Status.Path).To(BeEmpty())
+		Expect(updated.Status.SHA256).To(BeEmpty())
 
-	It("should set Failed and requeue on download failure", func() {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusNotFound)
-		}))
-		defer server.Close()
+		// Critical regression check (issue #363): the controller must not
+		// write anything under its own StoragePath for HTTP(S) sources, since
+		// that storage is invisible to inference Pods in other namespaces.
+		entries, readErr := os.ReadDir(tempDir)
+		Expect(readErr).NotTo(HaveOccurred())
+		Expect(entries).To(BeEmpty(), "controller must not write under StoragePath for HTTPS sources (issue #363)")
 
-		modelName := "model-download-fail"
-		tempDir, err := os.MkdirTemp("", "llmkube-test-*")
-		Expect(err).NotTo(HaveOccurred())
-		defer func() { _ = os.RemoveAll(tempDir) }()
-
-		model := &inferencev1alpha1.Model{
-			ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
-			Spec: inferencev1alpha1.ModelSpec{
-				Source: fmt.Sprintf("%s/model.gguf", server.URL),
-			},
+		// Condition is Available with the WorkloadResolved reason so users can
+		// distinguish runtime-internal HF resolution from init-container
+		// HTTP fetches.
+		var hasWorkloadResolved bool
+		for _, cond := range updated.Status.Conditions {
+			if cond.Type == "Available" && cond.Reason == "WorkloadResolved" {
+				hasWorkloadResolved = true
+			}
 		}
-		Expect(k8sClient.Create(ctx, model)).To(Succeed())
-		defer func() {
-			_ = k8sClient.Delete(ctx, model)
-		}()
-
-		reconciler := &ModelReconciler{
-			Client:      k8sClient,
-			Scheme:      k8sClient.Scheme(),
-			StoragePath: tempDir,
-		}
-		result, err := reconciler.Reconcile(ctx, reconcile.Request{
-			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
-		})
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("bad status"))
-		Expect(result.RequeueAfter).To(Equal(5 * time.Minute))
-
-		updated := &inferencev1alpha1.Model{}
-		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: modelName, Namespace: "default"}, updated)).To(Succeed())
-		Expect(updated.Status.Phase).To(Equal(PhaseFailed))
+		Expect(hasWorkloadResolved).To(BeTrue(), "expected Available/WorkloadResolved condition")
 	})
 
 	It("should copy local model file and set Ready", func() {
@@ -366,7 +365,14 @@ var _ = Describe("Model Controller - Cache Bug Fixes", func() {
 		Expect(err).NotTo(HaveOccurred())
 		defer func() { _ = os.RemoveAll(tempDir) }()
 
-		source := "https://example.com/already-ready-model.gguf"
+		// file:// source so the test exercises the controller's in-process
+		// cache + migration path. HTTPS sources are deferred to the workload.
+		srcDir, err := os.MkdirTemp("", "llmkube-src-*")
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = os.RemoveAll(srcDir) }()
+		srcFile := filepath.Join(srcDir, "src.gguf")
+		Expect(os.WriteFile(srcFile, []byte("cached-model-data"), 0644)).To(Succeed())
+		source := fmt.Sprintf("file://%s", srcFile)
 		cacheKey := computeCacheKey(source)
 		modelDir := filepath.Join(tempDir, cacheKey)
 		legacyPath := filepath.Join(modelDir, "model.gguf")
@@ -421,19 +427,21 @@ var _ = Describe("Model Controller - Cache Bug Fixes", func() {
 		Expect(afterSecond.Status.LastUpdated.Equal(lastUpdated)).To(BeTrue())
 	})
 
-	It("should re-download when model is Ready but file is missing", func() {
+	It("should re-fetch when model is Ready but file is missing", func() {
 		tempDir, err := os.MkdirTemp("", "llmkube-test-*")
 		Expect(err).NotTo(HaveOccurred())
 		defer func() { _ = os.RemoveAll(tempDir) }()
 
-		modelContent := []byte("re-downloaded-model-content")
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write(modelContent)
-		}))
-		defer server.Close()
+		// Use a file:// source so the test exercises the controller's
+		// re-fetch behavior on stale status. HTTPS is deferred to the
+		// workload init container.
+		srcDir, err := os.MkdirTemp("", "llmkube-src-*")
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = os.RemoveAll(srcDir) }()
+		srcFile := filepath.Join(srcDir, "src.gguf")
+		Expect(os.WriteFile(srcFile, []byte("re-fetched-model-content"), 0644)).To(Succeed())
 
-		source := fmt.Sprintf("%s/model.gguf", server.URL)
+		source := fmt.Sprintf("file://%s", srcFile)
 		cacheKey := computeCacheKey(source)
 		stalePath := filepath.Join(tempDir, cacheKey, "model.gguf")
 
@@ -473,17 +481,16 @@ var _ = Describe("Model Controller - Cache Bug Fixes", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("should not leave partial file at final path on download failure", func() {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusInternalServerError)
-		}))
-		defer server.Close()
-
+	It("should not leave partial file at final path on fetch failure", func() {
 		tempDir, err := os.MkdirTemp("", "llmkube-test-*")
 		Expect(err).NotTo(HaveOccurred())
 		defer func() { _ = os.RemoveAll(tempDir) }()
 
-		source := fmt.Sprintf("%s/model.gguf", server.URL)
+		// Point at a file:// source whose target does not exist. This
+		// exercises the controller's atomic-rename guarantee for non-PVC,
+		// non-HTTP sources (HTTP sources are deferred to the workload init
+		// container, see issue #363).
+		source := "file:///nonexistent/path/to/source-model.gguf"
 		cacheKey := computeCacheKey(source)
 		modelDir := filepath.Join(tempDir, cacheKey)
 		modelPath := filepath.Join(modelDir, "model.gguf")
@@ -508,7 +515,7 @@ var _ = Describe("Model Controller - Cache Bug Fixes", func() {
 
 		// Final model path must NOT exist
 		_, err = os.Stat(modelPath)
-		Expect(os.IsNotExist(err)).To(BeTrue(), "final model path should not exist after failed download")
+		Expect(os.IsNotExist(err)).To(BeTrue(), "final model path should not exist after failed fetch")
 
 		// No temp files should remain in the cache directory
 		if entries, dirErr := os.ReadDir(modelDir); dirErr == nil {
@@ -756,20 +763,24 @@ var _ = Describe("PVC Source Reconcile", func() {
 var _ = Describe("Model Controller - GGUF Filename Migration", func() {
 	ctx := context.Background()
 
-	It("renames downloaded model to GGUF metadata name", func() {
+	It("renames fetched model to GGUF metadata name", func() {
+		// HTTPS sources defer to the workload init container; the controller's
+		// canonical-name migration runs only for in-process source types like
+		// file://. The init container performs its own naming on the
+		// per-namespace cache PVC.
 		ggufBytes := buildMinimalGGUF("Gemma-4-E4B-It")
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write(ggufBytes)
-		}))
-		defer server.Close()
+		srcDir, err := os.MkdirTemp("", "llmkube-src-*")
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = os.RemoveAll(srcDir) }()
+		srcFile := filepath.Join(srcDir, "src.gguf")
+		Expect(os.WriteFile(srcFile, ggufBytes, 0644)).To(Succeed())
 
 		tempDir, err := os.MkdirTemp("", "llmkube-test-*")
 		Expect(err).NotTo(HaveOccurred())
 		defer func() { _ = os.RemoveAll(tempDir) }()
 
 		modelName := "gemma-test"
-		source := fmt.Sprintf("%s/model.gguf", server.URL)
+		source := fmt.Sprintf("file://%s", srcFile)
 		model := &inferencev1alpha1.Model{
 			ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
 			Spec:       inferencev1alpha1.ModelSpec{Source: source},
@@ -806,17 +817,18 @@ var _ = Describe("Model Controller - GGUF Filename Migration", func() {
 
 	It("sanitizes unsafe characters from GGUF metadata name", func() {
 		ggufBytes := buildMinimalGGUF("Llama 3.1/Instruct")
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			_, _ = w.Write(ggufBytes)
-		}))
-		defer server.Close()
+		srcDir, err := os.MkdirTemp("", "llmkube-src-*")
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = os.RemoveAll(srcDir) }()
+		srcFile := filepath.Join(srcDir, "src.gguf")
+		Expect(os.WriteFile(srcFile, ggufBytes, 0644)).To(Succeed())
 
 		tempDir, err := os.MkdirTemp("", "llmkube-test-*")
 		Expect(err).NotTo(HaveOccurred())
 		defer func() { _ = os.RemoveAll(tempDir) }()
 
 		modelName := "llama-test"
-		source := fmt.Sprintf("%s/model.gguf", server.URL)
+		source := fmt.Sprintf("file://%s", srcFile)
 		model := &inferencev1alpha1.Model{
 			ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
 			Spec:       inferencev1alpha1.ModelSpec{Source: source},
@@ -889,19 +901,23 @@ var _ = Describe("Model Controller - GGUF Filename Migration", func() {
 	})
 
 	It("falls back to Model.Name when GGUF metadata name is missing", func() {
-		// Valid GGUF with no general.name key.
+		// Valid GGUF with no general.name key, served via a file:// source.
+		// HTTP(S) sources are deferred to the workload init container, so the
+		// controller's GGUF parsing + canonical-name migration only runs for
+		// in-process source types (file://, etc.).
 		ggufBytes := buildMinimalGGUF("")
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			_, _ = w.Write(ggufBytes)
-		}))
-		defer server.Close()
+		srcDir, err := os.MkdirTemp("", "llmkube-src-*")
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = os.RemoveAll(srcDir) }()
+		srcFile := filepath.Join(srcDir, "src.gguf")
+		Expect(os.WriteFile(srcFile, ggufBytes, 0644)).To(Succeed())
 
 		tempDir, err := os.MkdirTemp("", "llmkube-test-*")
 		Expect(err).NotTo(HaveOccurred())
 		defer func() { _ = os.RemoveAll(tempDir) }()
 
 		modelName := "fallback-by-cr-name"
-		source := fmt.Sprintf("%s/model.gguf", server.URL)
+		source := fmt.Sprintf("file://%s", srcFile)
 		model := &inferencev1alpha1.Model{
 			ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
 			Spec:       inferencev1alpha1.ModelSpec{Source: source},
@@ -931,9 +947,16 @@ var _ = Describe("Model Controller - GGUF Filename Migration", func() {
 		Expect(err).NotTo(HaveOccurred())
 		defer func() { _ = os.RemoveAll(tempDir) }()
 
-		// Pre-stage a real GGUF file at the legacy path.
+		// Pre-stage a real GGUF file at the legacy path. file:// source so the
+		// controller's migration path runs (HTTP(S) is deferred to the
+		// workload init container).
 		ggufBytes := buildMinimalGGUF("Legacy-Cached-Model")
-		source := "https://example.com/legacy.gguf"
+		srcDir, err := os.MkdirTemp("", "llmkube-src-*")
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = os.RemoveAll(srcDir) }()
+		srcFile := filepath.Join(srcDir, "src.gguf")
+		Expect(os.WriteFile(srcFile, ggufBytes, 0644)).To(Succeed())
+		source := fmt.Sprintf("file://%s", srcFile)
 		cacheKey := computeCacheKey(source)
 		modelDir := filepath.Join(tempDir, cacheKey)
 		legacyPath := filepath.Join(modelDir, "model.gguf")
@@ -1102,13 +1125,17 @@ var _ = Describe("Runtime-Resolved Source Reconcile", func() {
 var _ = Describe("SHA256 Verification", func() {
 	ctx := context.Background()
 
-	It("should pass when spec SHA256 matches downloaded file", func() {
+	It("should pass when spec SHA256 matches the fetched file", func() {
+		// HTTP(S) sources are deferred to the workload init container, so the
+		// controller's SHA256 verification path runs only for in-process
+		// sources (file://, etc.). Workload-side SHA verification is the
+		// responsibility of the runtime / init container.
 		modelContent := []byte("sha256-test-model-content")
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write(modelContent)
-		}))
-		defer server.Close()
+		srcDir, err := os.MkdirTemp("", "llmkube-src-*")
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = os.RemoveAll(srcDir) }()
+		srcFile := filepath.Join(srcDir, "src.gguf")
+		Expect(os.WriteFile(srcFile, modelContent, 0644)).To(Succeed())
 
 		tempDir, err := os.MkdirTemp("", "llmkube-sha-*")
 		Expect(err).NotTo(HaveOccurred())
@@ -1125,7 +1152,7 @@ var _ = Describe("SHA256 Verification", func() {
 		model := &inferencev1alpha1.Model{
 			ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
 			Spec: inferencev1alpha1.ModelSpec{
-				Source: fmt.Sprintf("%s/model.gguf", server.URL),
+				Source: fmt.Sprintf("file://%s", srcFile),
 				SHA256: expectedHash,
 			},
 		}
@@ -1149,13 +1176,13 @@ var _ = Describe("SHA256 Verification", func() {
 		Expect(updated.Status.SHA256).To(Equal(expectedHash))
 	})
 
-	It("should fail when spec SHA256 does not match downloaded file", func() {
+	It("should fail when spec SHA256 does not match the fetched file", func() {
 		modelContent := []byte("sha256-mismatch-content")
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write(modelContent)
-		}))
-		defer server.Close()
+		srcDir, err := os.MkdirTemp("", "llmkube-src-*")
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = os.RemoveAll(srcDir) }()
+		srcFile := filepath.Join(srcDir, "src.gguf")
+		Expect(os.WriteFile(srcFile, modelContent, 0644)).To(Succeed())
 
 		tempDir, err := os.MkdirTemp("", "llmkube-sha-*")
 		Expect(err).NotTo(HaveOccurred())
@@ -1165,7 +1192,7 @@ var _ = Describe("SHA256 Verification", func() {
 		model := &inferencev1alpha1.Model{
 			ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
 			Spec: inferencev1alpha1.ModelSpec{
-				Source: fmt.Sprintf("%s/model.gguf", server.URL),
+				Source: fmt.Sprintf("file://%s", srcFile),
 				SHA256: "0000000000000000000000000000000000000000000000000000000000000000",
 			},
 		}
@@ -1205,11 +1232,11 @@ var _ = Describe("SHA256 Verification", func() {
 
 	It("should compute and store SHA256 even when not specified in spec", func() {
 		modelContent := []byte("sha256-auto-compute-content")
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write(modelContent)
-		}))
-		defer server.Close()
+		srcDir, err := os.MkdirTemp("", "llmkube-src-*")
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = os.RemoveAll(srcDir) }()
+		srcFile := filepath.Join(srcDir, "src.gguf")
+		Expect(os.WriteFile(srcFile, modelContent, 0644)).To(Succeed())
 
 		tempDir, err := os.MkdirTemp("", "llmkube-sha-*")
 		Expect(err).NotTo(HaveOccurred())
@@ -1219,7 +1246,7 @@ var _ = Describe("SHA256 Verification", func() {
 		model := &inferencev1alpha1.Model{
 			ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
 			Spec: inferencev1alpha1.ModelSpec{
-				Source: fmt.Sprintf("%s/model.gguf", server.URL),
+				Source: fmt.Sprintf("file://%s", srcFile),
 				// SHA256 intentionally not set
 			},
 		}
@@ -1262,5 +1289,142 @@ var _ = Describe("computeFileSHA256", func() {
 	It("should return error for nonexistent file", func() {
 		_, err := computeFileSHA256("/nonexistent/file.gguf")
 		Expect(err).To(HaveOccurred())
+	})
+})
+
+// Regression coverage for issue #363 — "Model cache PVC created in
+// llmkube-system instead of the Model CR's namespace".
+//
+// The original disconnect: the Model controller downloaded HTTPS sources
+// in-process to its own pod's filesystem (operator-namespace cache PVC),
+// while the InferenceService init container read from a per-namespace cache
+// PVC. Because PVCs cannot be cross-namespace mounted, the controller's
+// download was invisible to the inference Pod, which silently re-fetched
+// from source on every fresh InferenceService.
+//
+// These tests assert the architectural invariants that prevent that
+// disconnect from coming back:
+//  1. For HTTP(S) sources, the controller writes nothing under StoragePath.
+//  2. The Model.Status.CacheKey produced by Reconcile() is the same key the
+//     InferenceService Pod's storage config uses to build the init
+//     container's MODEL_PATH. If those ever desync, the inference Pod's
+//     "skip download if file exists" cache check fails silently and
+//     every Pod re-downloads.
+//  3. CacheKey is populated only for source types that flow through the
+//     per-namespace cache PVC (HTTP(S)), not for runtime-internal sources
+//     (HF repo IDs that vLLM resolves itself).
+var _ = Describe("Issue #363 regression — controller / workload cache disconnect", func() {
+	ctx := context.Background()
+
+	It("does not write under StoragePath for HTTPS sources", func() {
+		tempDir, err := os.MkdirTemp("", "llmkube-test-*")
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = os.RemoveAll(tempDir) }()
+
+		modelName := "issue-363-no-fs-write"
+		source := "https://huggingface.co/example-org/example-repo/resolve/main/m.gguf"
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
+			Spec:       inferencev1alpha1.ModelSpec{Source: source},
+		}
+		Expect(k8sClient.Create(ctx, model)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, model) }()
+
+		reconciler := &ModelReconciler{
+			Client:      k8sClient,
+			Scheme:      k8sClient.Scheme(),
+			StoragePath: tempDir,
+		}
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// The controller must not have created any directory or file under
+		// its StoragePath. Any write here would land on the operator-
+		// namespace PVC, which Pods in user namespaces cannot mount.
+		entries, readErr := os.ReadDir(tempDir)
+		Expect(readErr).NotTo(HaveOccurred())
+		Expect(entries).To(BeEmpty(), "operator-namespace cache PVC must stay untouched for HTTPS sources")
+	})
+
+	It("emits a CacheKey that matches the InferenceService init container's MODEL_PATH for HTTPS sources", func() {
+		tempDir, err := os.MkdirTemp("", "llmkube-test-*")
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = os.RemoveAll(tempDir) }()
+
+		modelName := "issue-363-cachekey-roundtrip"
+		source := "https://huggingface.co/example-org/example-repo/resolve/main/m.gguf"
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
+			Spec:       inferencev1alpha1.ModelSpec{Source: source},
+		}
+		Expect(k8sClient.Create(ctx, model)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, model) }()
+
+		reconciler := &ModelReconciler{
+			Client:      k8sClient,
+			Scheme:      k8sClient.Scheme(),
+			StoragePath: tempDir,
+		}
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		updated := &inferencev1alpha1.Model{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: modelName, Namespace: "default"}, updated)).To(Succeed())
+		Expect(updated.Status.CacheKey).NotTo(BeEmpty(), "HTTPS source must populate CacheKey so the init container can build /models/<cacheKey>/<basename>")
+
+		// Build the InferenceService Pod's storage config from this Model and
+		// assert the init container's MODEL_PATH lines up with the Model's
+		// CacheKey. The init container's `if [ ! -f "$MODEL_PATH" ]` check
+		// only works when both sides agree on the path.
+		config := buildCachedStorageConfig(updated, nil, "", "curl:8.18.0")
+		expectedPrefix := "/models/" + updated.Status.CacheKey + "/"
+		Expect(config.modelPath).To(HavePrefix(expectedPrefix),
+			"init container MODEL_PATH must live under /models/<Status.CacheKey>/")
+
+		var modelPathEnv string
+		for _, e := range config.initContainers[0].Env {
+			if e.Name == "MODEL_PATH" {
+				modelPathEnv = e.Value
+			}
+		}
+		Expect(modelPathEnv).To(Equal(config.modelPath))
+		Expect(modelPathEnv).To(HavePrefix(expectedPrefix),
+			"MODEL_PATH env on the init container must use Status.CacheKey from Reconcile()")
+	})
+
+	It("leaves CacheKey empty for HuggingFace repo IDs (runtime-internal resolution)", func() {
+		// HF repo IDs are resolved by vLLM/llama.cpp at runtime, not by the
+		// init container. CacheKey is irrelevant in that path; this test
+		// guards against accidentally populating it (which would cause the
+		// init container to try to materialize a file at a synthetic path).
+		tempDir, err := os.MkdirTemp("", "llmkube-test-*")
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = os.RemoveAll(tempDir) }()
+
+		modelName := "issue-363-hf-no-cachekey"
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
+			Spec:       inferencev1alpha1.ModelSpec{Source: "Qwen/Qwen3.6-35B-A3B"},
+		}
+		Expect(k8sClient.Create(ctx, model)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, model) }()
+
+		reconciler := &ModelReconciler{
+			Client:      k8sClient,
+			Scheme:      k8sClient.Scheme(),
+			StoragePath: tempDir,
+		}
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		updated := &inferencev1alpha1.Model{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: modelName, Namespace: "default"}, updated)).To(Succeed())
+		Expect(updated.Status.CacheKey).To(BeEmpty(), "HF repo IDs must not populate CacheKey — runtime resolves them internally")
 	})
 })

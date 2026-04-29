@@ -96,7 +96,19 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	// runtime container at startup, not by the Model controller. The controller
 	// marks the model Ready immediately so referencing InferenceServices can proceed.
 	if isHFRepoSource(model.Spec.Source) {
-		return ctrl.Result{}, r.reconcileRuntimeResolvedSource(ctx, model)
+		return ctrl.Result{}, r.reconcileRuntimeResolvedSource(ctx, model, "")
+	}
+
+	// Remote HTTP(S) sources are downloaded by the InferenceService Pod's
+	// init container into the per-namespace model cache PVC, not by the
+	// Model controller. The controller pod's storage path lives on the
+	// operator-namespace PVC (e.g. llmkube-system/llmkube-model-cache) and
+	// PVCs cannot be cross-namespace mounted, so a controller-side download
+	// is invisible to inference Pods. Defer the fetch to the workload and
+	// populate CacheKey so the init container can land the file at the
+	// canonical /models/<cacheKey>/<basename> path the runtime expects.
+	if isRemoteHTTPSource(model.Spec.Source) {
+		return ctrl.Result{}, r.reconcileRuntimeResolvedSource(ctx, model, computeCacheKey(model.Spec.Source))
 	}
 
 	cacheKey := computeCacheKey(model.Spec.Source)
@@ -318,11 +330,20 @@ func (r *ModelReconciler) reconcilePVCSource(ctx context.Context, model *inferen
 	return ctrl.Result{}, nil
 }
 
-// reconcileRuntimeResolvedSource handles runtime-resolved model sources such as
-// HuggingFace repo IDs. The runtime container (e.g., vLLM) will fetch the model
-// at startup using its own mechanism (e.g., HF_TOKEN). The controller marks the
-// model Ready immediately without downloading anything.
-func (r *ModelReconciler) reconcileRuntimeResolvedSource(ctx context.Context, model *inferencev1alpha1.Model) error {
+// reconcileRuntimeResolvedSource handles model sources whose actual fetch is
+// performed outside the Model controller — either by the runtime container
+// itself (HuggingFace repo IDs resolved by vLLM/llama.cpp at startup) or by
+// the InferenceService Pod's init container (remote HTTP(S) URLs downloaded
+// into the per-namespace model cache PVC). In both cases the controller
+// marks the model Ready immediately so referencing InferenceServices can
+// proceed.
+//
+// cacheKey is populated for sources that flow through the per-namespace cache
+// PVC (HTTP(S) URLs). It is empty for runtime-internal sources like HF repo
+// IDs where the runtime resolves and stores the model on its own. A non-empty
+// cacheKey lets InferenceService.spec build the canonical
+// /models/<cacheKey>/<basename> path that the init container will populate.
+func (r *ModelReconciler) reconcileRuntimeResolvedSource(ctx context.Context, model *inferencev1alpha1.Model, cacheKey string) error {
 	logger := log.FromContext(ctx)
 
 	// Early exit if already Ready
@@ -332,18 +353,24 @@ func (r *ModelReconciler) reconcileRuntimeResolvedSource(ctx context.Context, mo
 		return nil
 	}
 
-	logger.Info("Source is runtime-resolved, skipping download", "source", model.Spec.Source)
+	reason := "RuntimeResolved"
+	message := "Source is runtime-resolved (e.g., HuggingFace repo ID); runtime will fetch at startup"
+	if cacheKey != "" {
+		reason = "WorkloadResolved"
+		message = "Source is a remote URL; the InferenceService Pod's init container will fetch the model into the per-namespace model cache PVC at startup"
+	}
+
+	logger.Info("Source is runtime-resolved, skipping controller-side download", "source", model.Spec.Source, "cacheKey", cacheKey)
 
 	model.Status.Phase = PhaseReady
 	model.Status.Path = ""
-	model.Status.CacheKey = ""
+	model.Status.CacheKey = cacheKey
 	model.Status.Size = "0"
 	model.Status.AcceleratorReady = r.checkAcceleratorAvailability(model.Spec.Hardware)
 	now := metav1.Now()
 	model.Status.LastUpdated = &now
 
-	if err := r.updateStatus(ctx, model, "Available", metav1.ConditionTrue, "RuntimeResolved",
-		"Source is runtime-resolved (e.g., HuggingFace repo ID); runtime will fetch at startup"); err != nil {
+	if err := r.updateStatus(ctx, model, "Available", metav1.ConditionTrue, reason, message); err != nil {
 		return err
 	}
 

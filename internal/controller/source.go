@@ -71,6 +71,16 @@ func getLocalPath(source string) string {
 	return source
 }
 
+// isRemoteHTTPSource reports whether source is an http:// or https:// URL.
+// These sources are downloaded by the inference Pod's init container into the
+// per-namespace model cache PVC, not by the Model controller. Downloading in
+// the controller's pod writes to the operator-namespace PVC, which is not
+// visible to Pods in user namespaces (PVCs cannot be cross-namespace mounted),
+// so the controller defers the actual fetch to the workload.
+func isRemoteHTTPSource(source string) bool {
+	return strings.HasPrefix(source, "https://") || strings.HasPrefix(source, "http://")
+}
+
 // isHFRepoSource reports whether source looks like a HuggingFace repo ID
 // (e.g., "TinyLlama/TinyLlama-1.1B-Chat-v1.0", "Qwen/Qwen3.6-35B-A3B").
 // These sources are downloaded by the runtime (vLLM) at startup, not by
