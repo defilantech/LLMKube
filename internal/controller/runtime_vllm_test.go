@@ -212,7 +212,7 @@ func TestVLLMBuildArgs(t *testing.T) {
 			notContains: []string{"--max-num-batched-tokens"},
 		},
 		{
-			name: "parallelSlots set emits flag",
+			name: "parallelSlots set emits flag (without extraArgs precedence)",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:       "vllm",
 				ModelRef:      "test-model",
@@ -220,6 +220,34 @@ func TestVLLMBuildArgs(t *testing.T) {
 				VLLMConfig:    &inferencev1alpha1.VLLMConfig{},
 			},
 			contains: []flagCheck{{"--max-num-seqs", "1"}},
+		},
+		{
+			name: "parallelSlots set emits flag (with extraArgs precedence)",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime:       "vllm",
+				ModelRef:      "test-model",
+				ExtraArgs:     []string{"--max-num-seqs", "8"},
+				ParallelSlots: ptrInt32(4),
+			},
+			// NOTE: Since extraArgs are always last in position but still have priority
+			// and containsArgs helper function always validate first occurrence, having
+			// --max-num-seqs 8 case true mean that no duplicate due to parallelSlots was
+			// found along the way.
+			contains: []flagCheck{{"--max-num-seqs", "8"}},
+		},
+		{
+			name: "parallelSlots set emits flag (with extraArgs inline precedence)",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime:       "vllm",
+				ModelRef:      "test-model",
+				ExtraArgs:     []string{"--max-num-seqs=8"},
+				ParallelSlots: ptrInt32(4),
+			},
+			// NOTE: Since extraArgs are always last in position but still have priority
+			// and containsArgs helper function always validate first occurrence, having
+			// --max-num-seqs 8 case true mean that no duplicate due to parallelSlots was
+			// found along the way.
+			contains: []flagCheck{{"--max-num-seqs=8", ""}},
 		},
 		{
 			name: "parallelSlots nil does not emit flag",

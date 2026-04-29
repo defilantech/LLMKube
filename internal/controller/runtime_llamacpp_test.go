@@ -77,7 +77,7 @@ func TestLlamaCppBuildArgs(t *testing.T) {
 			notContains: []string{"--ctx-size"},
 		},
 		{
-			name: "parallelSlots set emits flag (without precedence)",
+			name: "parallelSlots set emits flag (without extraArgs precedence)",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:       "llama",
 				ModelRef:      "test-model",
@@ -86,7 +86,35 @@ func TestLlamaCppBuildArgs(t *testing.T) {
 			contains: []flagCheck{{"--parallel", "8192"}},
 		},
 		{
-			name: "parallelSlots nil does not emit flag (without precedence)",
+			name: "parallelSlots set emits flag (with extraArgs precedence)",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime:       "llama",
+				ModelRef:      "test-model",
+				ExtraArgs:     []string{"--parallel", "8"},
+				ParallelSlots: ptrInt32(4),
+			},
+			// NOTE: Since extraArgs are always last in position but still have priority
+			// and containsArgs helper function always validate first occurrence, having
+			// --parallel 8 case true mean that no duplicate due to parallelSlots was
+			// found along the way.
+			contains: []flagCheck{{"--parallel", "8"}},
+		},
+		{
+			name: "parallelSlots set emits flag (with extraArgs inline precedence)",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime:       "llama",
+				ModelRef:      "test-model",
+				ExtraArgs:     []string{"--parallel=8"},
+				ParallelSlots: ptrInt32(4),
+			},
+			// NOTE: Since extraArgs are always last in position but still have priority
+			// and containsArgs helper function always validate first occurrence, having
+			// --parallel 8 case true mean that no duplicate due to parallelSlots was
+			// found along the way.
+			contains: []flagCheck{{"--parallel=8", ""}},
+		},
+		{
+			name: "parallelSlots nil does not emit flag (without extraArgs precedence)",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:  "llama",
 				ModelRef: "test-model",
