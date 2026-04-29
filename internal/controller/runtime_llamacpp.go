@@ -71,7 +71,7 @@ func (b *LlamaCppBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, mo
 	args = appendContextSizeArgs(args, isvc.Spec.ContextSize)
 	args, err = appendParallelSlotsArgs(args, isvc.Spec.ParallelSlots, isvc.Spec.ExtraArgs)
 	if err != nil {
-		llamaCppLog.Error(nil,
+		llamaCppLog.Info(
 			err.Error(),
 			"inferenceService", isvc.Name,
 			"namespace", isvc.Namespace,

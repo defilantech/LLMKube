@@ -85,7 +85,7 @@ func (b *VLLMBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, model 
 		args = appendAttentionBackend(args, cfg.AttentionBackend)
 		args, err = appendSpeculativeModel(args, cfg.Speculative)
 		if err != nil {
-			vllmLog.Error(nil,
+			vllmLog.Info(
 				err.Error(),
 				"inferenceService", isvc.Name,
 				"namespace", isvc.Namespace,
@@ -101,7 +101,7 @@ func (b *VLLMBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, model 
 
 	args, err = appendMaxNumSeqsArgs(args, isvc.Spec.ParallelSlots, isvc.Spec.ExtraArgs)
 	if err != nil {
-		vllmLog.Error(nil,
+		vllmLog.Info(
 			err.Error(),
 			"inferenceService", isvc.Name,
 			"namespace", isvc.Namespace,
