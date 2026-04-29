@@ -75,7 +75,7 @@ func appendJinjaArgs(args []string, jinja *bool) []string {
 	return args
 }
 
-func appendCacheTypeArgs(args []string, cacheTypeK, cacheTypeV string) []string {
+func appendCacheTypeArgs(args []string, cacheTypeK string, cacheTypeV string) []string {
 	if cacheTypeK != "" {
 		args = append(args, "--cache-type-k", cacheTypeK)
 	}
