@@ -5,6 +5,13 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.5](https://github.com/defilantech/LLMKube/compare/v0.7.4...v0.7.5) (2026-04-30)
+
+
+### Bug Fixes
+
+* **chart:** sync Helm CRDs from kubebuilder source and add CI guard ([#367](https://github.com/defilantech/LLMKube/issues/367)) ([73bd2b4](https://github.com/defilantech/LLMKube/commit/73bd2b40367a88c3f345fbcaf5872039505846d3))
+
 ## [0.7.4](https://github.com/defilantech/LLMKube/compare/v0.7.3...v0.7.4) (2026-04-29)
 
 
