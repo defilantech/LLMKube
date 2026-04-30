@@ -389,6 +389,28 @@ jobs:
           fi
           echo "✅ CRDs correctly omitted when disabled"
 
+  crd-sync-check:
+    name: CRD Sync Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Sync Chart CRDs
+        run: make chart-crds
+
+      - name: Verify Chart CRDs Are In Sync
+        run: |
+          git diff --exit-code -- charts/llmkube/templates/crds/ || \
+            { echo "Chart CRDs are out of sync with config/crd/bases/. Run 'make chart-crds' locally and commit the result."; exit 1; }
+
   package-test:
     name: Package and Install Test
     runs-on: ubuntu-latest

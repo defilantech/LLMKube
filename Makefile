@@ -46,6 +46,10 @@ manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and Cust
 # crd:allowDangerousTypes=true is required for HardwareSpec.MemoryFraction (*float64).
 	$(CONTROLLER_GEN) rbac:roleName=manager-role crd:allowDangerousTypes=true webhook paths="./..." output:crd:artifacts:config=config/crd/bases
 
+.PHONY: chart-crds
+chart-crds: manifests ## Generate CRDs and sync to Helm chart templates
+	@./scripts/sync-crds.sh
+
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
 	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./..."
