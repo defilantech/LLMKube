@@ -94,22 +94,6 @@ var (
 		},
 		[]string{"controller"},
 	)
-
-	// Aggregate gauges
-
-	ActiveModelsTotal = prometheus.NewGauge(
-		prometheus.GaugeOpts{
-			Name: "llmkube_active_models_total",
-			Help: "Total number of models in Ready/Cached phase.",
-		},
-	)
-
-	ActiveInferenceServicesTotal = prometheus.NewGauge(
-		prometheus.GaugeOpts{
-			Name: "llmkube_active_inferenceservices_total",
-			Help: "Total number of inference services in Ready phase.",
-		},
-	)
 )
 
 func init() {
@@ -122,7 +106,5 @@ func init() {
 		GPUQueueWaitDuration,
 		ReconcileTotal,
 		ReconcileDuration,
-		ActiveModelsTotal,
-		ActiveInferenceServicesTotal,
 	)
 }

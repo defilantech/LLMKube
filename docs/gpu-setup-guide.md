@@ -87,21 +87,21 @@ kubectl delete pod gpu-test
 The controller now includes GPU scheduling logic. Rebuild and deploy:
 
 ```bash
-# From project root
-cd /Users/defilan/stuffy/code/ai/llmkube
+# From the llmkube repo root:
+export VERSION=v0.7.5  # or whatever you tag your build
 
-# Regenerate CRDs with new GPU fields
+# Regenerate CRDs with the latest GPU fields
 make generate
 make manifests
 
 # Install updated CRDs
 make install
 
-# Build and push new controller image
-make docker-build docker-push IMG=ghcr.io/defilan/llmkube-controller:v0.2.0
+# Build and push your controller image
+make docker-build docker-push IMG=ghcr.io/defilan/llmkube-controller:${VERSION}
 
-# Deploy updated controller
-make deploy IMG=ghcr.io/defilan/llmkube-controller:v0.2.0
+# Deploy the updated controller
+make deploy IMG=ghcr.io/defilan/llmkube-controller:${VERSION}
 
 # Verify controller is running
 kubectl get pods -n llmkube-system
@@ -294,10 +294,10 @@ kubectl scale deployment -n kube-system --replicas=0 $(kubectl get deploy -n kub
 
 ## Next Steps
 
-1. **Set up monitoring** (Phase 2-3): Prometheus + Grafana for GPU metrics
-2. **CLI support** (Phase 2): Add `llmkube deploy --gpu 1` flag
-3. **Multi-GPU** (Phase 4-5): Test 13B models on 2x T4 GPUs
-4. **Optimize costs**: Implement auto-scaling based on traffic
+1. **Set up monitoring**: Prometheus, Grafana, and DCGM exporter for GPU metrics. See the [observability docs](../README.md#observability).
+2. **Use the CLI**: `llmkube deploy <model> --gpu 1` provisions a GPU-backed InferenceService in one command.
+3. **Try multi-GPU**: shard 13B-70B+ models across multiple GPUs on a single node. See [MULTI-GPU-DEPLOYMENT.md](./MULTI-GPU-DEPLOYMENT.md).
+4. **Optimize costs**: spot instances, scale-to-zero, and per-model GPU queues are all configurable on the InferenceService CRD.
 
 ## Troubleshooting
 
