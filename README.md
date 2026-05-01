@@ -76,10 +76,10 @@ helm repo add llmkube https://defilantech.github.io/LLMKube
 helm install llmkube llmkube/llmkube --namespace llmkube-system --create-namespace
 
 # Deploy a model (one command)
-llmkube deploy phi-3-mini --cpu 500m --memory 1Gi
+llmkube deploy phi-4-mini --cpu 500m --memory 1Gi
 
 # Query it (OpenAI-compatible)
-kubectl port-forward svc/phi-3-mini 8080:8080 &
+kubectl port-forward svc/phi-4-mini 8080:8080 &
 curl http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"messages":[{"role":"user","content":"Hello!"}],"max_tokens":100}'
@@ -211,7 +211,7 @@ Real benchmarks, real hardware:
 | Mistral 7B v0.3 | 7B | **52.9** | 1912ms | 2071ms |
 | Llama 3.1 8B | 8B | **52.5** | 1878ms | 2178ms |
 
-Consistent ~53 tok/s across 3-8B models with automatic layer sharding. **[Detailed benchmarks →](docs/gpu-performance-phase0.md)**
+Consistent ~53 tok/s across 3-8B models with automatic layer sharding. See [v0.4 release notes](docs/releases/RELEASE_NOTES_v0.4.0.md) for the full multi-GPU benchmark suite.
 
 ---
 
