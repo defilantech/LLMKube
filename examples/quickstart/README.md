@@ -10,7 +10,7 @@ This guide walks you through deploying your first LLM inference service with LLM
   - **GKE/EKS/AKS**: Any managed Kubernetes
 - `kubectl` configured and connected
 - At least 2GB free memory on your nodes
-- Go 1.24+ (if running controller locally)
+- Go 1.25+ (if running controller locally)
 
 ## What You'll Deploy
 
@@ -32,7 +32,7 @@ cd LLMKube
 # Install CRDs
 make install
 
-# Run controller locally (requires Go 1.24+)
+# Run controller locally (requires Go 1.25+)
 make run
 ```
 
@@ -414,7 +414,7 @@ kubectl delete crd inferenceservices.inference.llmkube.dev
 
 ## Support
 
-- **Issues**: [GitHub Issues](https://github.com/Defilan/LLMKube/issues)
+- **Issues**: [GitHub Issues](https://github.com/defilantech/llmkube/issues)
 - **Discussions**: [GitHub Discussions](https://github.com/defilantech/LLMKube/discussions)
 
 ---

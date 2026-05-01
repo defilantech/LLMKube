@@ -189,6 +189,10 @@ Works over LAN, Tailscale, WireGuard, or any routable network. **[Full Metal Age
 
 **LLMKube is for teams that want Kubernetes-managed LLM inference across heterogeneous hardware.** If you just need to run a model on one machine, Ollama is simpler. If you need maximum throughput on NVIDIA-only clusters, vLLM is faster. LLMKube occupies the space where Kubernetes orchestration, multi-hardware support, and operational simplicity intersect.
 
+**Versus newer adjacent projects:**
+- **KubeAI**: similar Kubernetes-operator scope. KubeAI focuses on autoscaling vLLM/Ollama on NVIDIA. LLMKube adds first-class Apple Silicon Metal support, GGUF + HF runtime mixing, and a model catalog CLI.
+- **llm-d**: distributed inference for very large models on NVIDIA fleets. Different problem space. LLMKube targets heterogeneous on-prem clusters (laptops, edge nodes, single GPUs) where llm-d's distributed-NVIDIA-first design is overkill.
+
 ---
 
 ## Performance
@@ -219,11 +223,11 @@ Consistent ~53 tok/s across 3-8B models with automatic layer sharding. See [v0.4
 
 **Inference:**
 - Kubernetes-native CRDs (`Model` + `InferenceService`)
+- Multiple runtimes: llama.cpp (GGUF), vLLM (HuggingFace + safetensors), TGI, Ollama
 - Automatic model download from HuggingFace, HTTP, or PVC (S3 planned)
-- Persistent model cache — download once, deploy instantly ([guide](docs/MODEL-CACHE.md))
+- Persistent model cache, download once, deploy instantly ([guide](docs/MODEL-CACHE.md))
 - OpenAI-compatible `/v1/chat/completions` API
 - Multi-replica horizontal scaling
-- GGUF format with quantization support
 - License compliance scanning for GGUF models
 
 **GPU:**
@@ -382,7 +386,7 @@ We welcome contributions. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full gu
 
 ## Acknowledgments
 
-Built on [Kubebuilder](https://kubebuilder.io), [llama.cpp](https://github.com/ggerganov/llama.cpp), [Prometheus](https://prometheus.io), and [Helm](https://helm.sh).
+Built on [Kubebuilder](https://kubebuilder.io), [llama.cpp](https://github.com/ggml-org/llama.cpp), [Prometheus](https://prometheus.io), and [Helm](https://helm.sh).
 
 ## License
 
