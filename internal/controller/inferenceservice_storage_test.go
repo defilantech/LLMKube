@@ -300,3 +300,89 @@ var _ = Describe("ensureModelCachePVC", func() {
 		Expect(err.Error()).To(ContainSubstring("invalid cache size"))
 	})
 })
+
+var _ = Describe("buildModelInitCommand", func() {
+	It("should generate cached remote download command with env var references", func() {
+		cmd := buildModelInitCommand(false, true)
+		Expect(cmd).To(ContainSubstring(`mkdir -p "$CACHE_DIR"`))
+		Expect(cmd).To(ContainSubstring(`"$MODEL_PATH"`))
+		Expect(cmd).To(ContainSubstring("curl -f -L"))
+		Expect(cmd).To(ContainSubstring(`"$MODEL_SOURCE"`))
+	})
+
+	It("should generate cached local copy command", func() {
+		cmd := buildModelInitCommand(true, true)
+		Expect(cmd).To(ContainSubstring(`mkdir -p "$CACHE_DIR"`))
+		Expect(cmd).To(ContainSubstring("cp /host-model/model.gguf"))
+		Expect(cmd).To(ContainSubstring(`"$MODEL_PATH"`))
+	})
+
+	It("should generate error exit for uncached local source", func() {
+		cmd := buildModelInitCommand(true, false)
+		Expect(cmd).To(ContainSubstring("ERROR: Local model source requires model cache"))
+		Expect(cmd).To(ContainSubstring("exit 1"))
+	})
+
+	It("should generate uncached remote download command with env var references", func() {
+		cmd := buildModelInitCommand(false, false)
+		Expect(cmd).To(ContainSubstring("curl -f -L"))
+		Expect(cmd).To(ContainSubstring(`"$MODEL_SOURCE"`))
+		Expect(cmd).To(ContainSubstring(`"$MODEL_PATH"`))
+		Expect(cmd).NotTo(ContainSubstring("mkdir -p"))
+	})
+
+	It("should not contain user-controlled values in the command string", func() {
+		// Verify that a malicious source cannot appear in the shell script.
+		// The command is a static template with env var references only.
+		maliciousSource := `https://evil.com/$(touch /pwned).gguf`
+		cmd := buildModelInitCommand(false, true)
+		Expect(cmd).NotTo(ContainSubstring(maliciousSource))
+		Expect(cmd).NotTo(ContainSubstring("touch"))
+		Expect(cmd).NotTo(ContainSubstring("evil.com"))
+
+		// Env vars carry the value safely outside the shell script
+		env := modelInitEnvVars(maliciousSource, "/models/abc123", "/models/abc123/model.gguf")
+		Expect(env[0].Name).To(Equal("MODEL_SOURCE"))
+		Expect(env[0].Value).To(Equal(maliciousSource))
+	})
+})
+
+var _ = Describe("shouldWarnMissingSkipModelInit", func() {
+	tt := func(modelPhase, source string, skipInit *bool) bool {
+		model := &inferencev1alpha1.Model{
+			Spec:   inferencev1alpha1.ModelSpec{Source: source},
+			Status: inferencev1alpha1.ModelStatus{Phase: modelPhase},
+		}
+		isvc := &inferencev1alpha1.InferenceService{
+			Spec: inferencev1alpha1.InferenceServiceSpec{SkipModelInit: skipInit},
+		}
+		return shouldWarnMissingSkipModelInit(model, isvc)
+	}
+	pTrue := func() *bool { v := true; return &v }
+	pFalse := func() *bool { v := false; return &v }
+
+	It("warns: HuggingFace repo ID + Ready Model + skipModelInit unset", func() {
+		Expect(tt(PhaseReady, "Qwen/Qwen3.6-35B-A3B", nil)).To(BeTrue())
+	})
+	It("warns: HuggingFace repo ID + Ready Model + skipModelInit explicitly false", func() {
+		Expect(tt(PhaseReady, "Qwen/Qwen3.6-35B-A3B", pFalse())).To(BeTrue())
+	})
+	It("does not warn: HuggingFace repo ID + skipModelInit=true (correctly configured)", func() {
+		Expect(tt(PhaseReady, "Qwen/Qwen3.6-35B-A3B", pTrue())).To(BeFalse())
+	})
+	It("does not warn: HTTPS source — init container is required to populate the per-namespace cache PVC (issue #363)", func() {
+		Expect(tt(PhaseReady, "https://huggingface.co/example/repo/resolve/main/m.gguf", nil)).To(BeFalse())
+	})
+	It("does not warn: HTTP source — same as HTTPS", func() {
+		Expect(tt(PhaseReady, "http://example.com/m.gguf", nil)).To(BeFalse())
+	})
+	It("does not warn: file:// source — controller copies in-process and Status.Path is populated", func() {
+		Expect(tt(PhaseReady, "file:///mnt/models/m.gguf", nil)).To(BeFalse())
+	})
+	It("does not warn: pvc:// source — model is mounted directly, no init container needed", func() {
+		Expect(tt(PhaseReady, "pvc://my-claim/path/m.gguf", nil)).To(BeFalse())
+	})
+	It("does not warn: Model not yet Ready (irrelevant — warning waits until Status is settled)", func() {
+		Expect(tt("Downloading", "Qwen/Qwen3.6-35B-A3B", nil)).To(BeFalse())
+	})
+})
