@@ -90,6 +90,7 @@ func initContainerSecurityContext(isvc *inferencev1alpha1.InferenceService) *cor
 // +kubebuilder:rbac:groups=inference.llmkube.dev,resources=models,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=endpoints,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=scheduling.k8s.io,resources=priorityclasses,verbs=get;list;watch
@@ -203,8 +204,15 @@ func (r *InferenceServiceReconciler) reconcileDeployment(ctx context.Context, is
 	log := logf.FromContext(ctx)
 
 	if isMetal {
-		log.Info("Metal accelerator detected, skipping Deployment creation")
-		return nil, desiredReplicas, nil, nil
+		// No Deployment for metal: the host metal-agent runs llama-server natively
+		// and registers the InferenceService's Endpoints once the model is fetched
+		// and the server is healthy. Derive readyReplicas from the Endpoints rather
+		// than blindly returning desiredReplicas, otherwise Phase reports Ready
+		// before the agent has done anything (issue #374).
+		readyReplicas := r.metalReadyEndpoints(ctx, isvc)
+		log.Info("Metal accelerator detected, skipping Deployment creation",
+			"readyEndpoints", readyReplicas, "desiredReplicas", desiredReplicas)
+		return nil, readyReplicas, nil, nil
 	}
 
 	// Surface non-fatal vLLM spec problems as a status condition before we
@@ -283,6 +291,30 @@ func (r *InferenceServiceReconciler) reconcileService(ctx context.Context, isvc 
 	}
 
 	return service, nil, nil
+}
+
+// metalReadyEndpoints returns the count of ready addresses on the Endpoints
+// object that the metal-agent is expected to populate when its host-side
+// llama-server has fetched the model and become healthy. The Endpoints object
+// shares the sanitized name of the metal stub Service (see reconcileService's
+// metal branch). Missing-or-unpopulated Endpoints return 0, which is the
+// correct readyReplicas value while we wait on the agent.
+func (r *InferenceServiceReconciler) metalReadyEndpoints(ctx context.Context, isvc *inferencev1alpha1.InferenceService) int32 {
+	log := logf.FromContext(ctx)
+	endpoints := &corev1.Endpoints{}
+	name := sanitizeDNSName(isvc.Name)
+	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: isvc.Namespace}, endpoints)
+	if err != nil {
+		if !apierrors.IsNotFound(err) {
+			log.Error(err, "Failed to get Endpoints for metal accelerator", "name", name)
+		}
+		return 0
+	}
+	var ready int32
+	for _, subset := range endpoints.Subsets {
+		ready += int32(len(subset.Addresses))
+	}
+	return ready
 }
 
 func needsSkipModelInit(isvc *inferencev1alpha1.InferenceService) bool {

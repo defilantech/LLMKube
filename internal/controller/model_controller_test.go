@@ -275,6 +275,53 @@ var _ = Describe("Model Controller Reconcile", func() {
 		Expect(hasWorkloadResolved).To(BeTrue(), "expected Available/WorkloadResolved condition")
 	})
 
+	// On the metal accelerator path the host metal-agent fetches the model;
+	// there is no Pod and no init container. The Available condition's message
+	// should describe the agent fetch path rather than the init-container path
+	// users see for CUDA/CPU deployments (issue #374).
+	It("should describe the metal-agent fetch path for HTTPS source on metal accelerator", func() {
+		modelName := "metal-model-https"
+		tempDir, err := os.MkdirTemp("", "llmkube-test-*")
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = os.RemoveAll(tempDir) }()
+
+		source := "https://example.com/metal-model.gguf"
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
+			Spec: inferencev1alpha1.ModelSpec{
+				Source:   source,
+				Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: "metal"},
+			},
+		}
+		Expect(k8sClient.Create(ctx, model)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, model) }()
+
+		reconciler := &ModelReconciler{
+			Client:      k8sClient,
+			Scheme:      k8sClient.Scheme(),
+			StoragePath: tempDir,
+		}
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		updated := &inferencev1alpha1.Model{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: modelName, Namespace: "default"}, updated)).To(Succeed())
+
+		var foundCondition bool
+		for _, cond := range updated.Status.Conditions {
+			if cond.Type == "Available" && cond.Reason == "WorkloadResolved" {
+				foundCondition = true
+				Expect(cond.Message).To(ContainSubstring("metal-agent"),
+					"metal-accelerator message should describe the host agent fetch path, not the init container")
+				Expect(cond.Message).NotTo(ContainSubstring("init container"),
+					"metal-accelerator path has no Pod and no init container")
+			}
+		}
+		Expect(foundCondition).To(BeTrue(), "expected Available/WorkloadResolved condition")
+	})
+
 	It("should copy local model file and set Ready", func() {
 		tempDir, err := os.MkdirTemp("", "llmkube-test-*")
 		Expect(err).NotTo(HaveOccurred())
