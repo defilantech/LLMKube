@@ -374,7 +374,7 @@ kubectl get model my-model -o jsonpath='{.status.sha256}'
 1. **Model Integrity**: Use the `sha256` field to verify model checksums automatically
 2. **File Permissions**: Restrict model file access to necessary users/groups
 3. **Network Segmentation**: Ensure internal model servers are properly firewalled
-4. **Audit Logging**: Track model deployments and access (see [SOC2 compliance](/docs/compliance.md))
+4. **Audit Logging**: Track model deployments and access events through the controller's structured logs and Prometheus metrics. For SOC 2 / HIPAA / FedRAMP environments, forward operator logs to your SIEM via Vector, Fluent Bit, or your existing logging stack.
 
 ## Next Steps
 

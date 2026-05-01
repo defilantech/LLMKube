@@ -54,8 +54,6 @@ func TestMetricsRegistered(t *testing.T) {
 		{"llmkube_gpu_queue_wait_duration_seconds", GPUQueueWaitDuration},
 		{"llmkube_reconcile_total", ReconcileTotal},
 		{"llmkube_reconcile_duration_seconds", ReconcileDuration},
-		{"llmkube_active_models_total", ActiveModelsTotal},
-		{"llmkube_active_inferenceservices_total", ActiveInferenceServicesTotal},
 	}
 
 	for _, c := range collectors {
@@ -178,25 +176,6 @@ func TestReconcileDuration(t *testing.T) {
 	}
 }
 
-func TestActiveGauges(t *testing.T) {
-	ActiveModelsTotal.Set(5)
-	ActiveInferenceServicesTotal.Set(3)
-
-	var m dto.Metric
-	if err := ActiveModelsTotal.Write(&m); err != nil {
-		t.Fatalf("failed to write metric: %v", err)
-	}
-	if m.GetGauge().GetValue() != 5 {
-		t.Errorf("expected 5 active models, got %f", m.GetGauge().GetValue())
-	}
-
-	if err := ActiveInferenceServicesTotal.Write(&m); err != nil {
-		t.Fatalf("failed to write metric: %v", err)
-	}
-	if m.GetGauge().GetValue() != 3 {
-		t.Errorf("expected 3 active inference services, got %f", m.GetGauge().GetValue())
-	}
-}
 
 func TestHistogramBuckets(t *testing.T) {
 	tests := []struct {
