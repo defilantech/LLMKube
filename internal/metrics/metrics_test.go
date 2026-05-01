@@ -176,7 +176,6 @@ func TestReconcileDuration(t *testing.T) {
 	}
 }
 
-
 func TestHistogramBuckets(t *testing.T) {
 	tests := []struct {
 		name    string
