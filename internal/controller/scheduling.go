@@ -115,13 +115,13 @@ func (r *InferenceServiceReconciler) getPodSchedulingInfo(ctx context.Context, i
 					Message: condition.Message,
 				}
 
-				if strings.Contains(condition.Message, "Insufficient nvidia.com/gpu") {
+				if gpuResourceName, ok := detectInsufficientGPUResource(condition.Message); ok {
 					info.Status = "InsufficientGPU"
 					gpuCount := int32(0)
 					if isvc.Spec.Resources != nil && isvc.Spec.Resources.GPU > 0 {
 						gpuCount = isvc.Spec.Resources.GPU
 					}
-					info.WaitingFor = fmt.Sprintf("nvidia.com/gpu: %d", gpuCount)
+					info.WaitingFor = fmt.Sprintf("%s: %d", gpuResourceName, gpuCount)
 				} else if strings.Contains(condition.Message, "Insufficient") {
 					info.Status = "InsufficientResources"
 				}

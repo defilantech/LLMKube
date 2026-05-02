@@ -292,6 +292,8 @@ func resolveImage(accelerator string, gpuEnabled bool) string {
 	switch accelerator {
 	case acceleratorCUDA:
 		return imageLlamaCppServerCUDA
+	case acceleratorIntel:
+		return imageLlamaCppServerIntel
 	case acceleratorROCm:
 		return imageLlamaCppServerROCm
 	case acceleratorMetal:
@@ -303,6 +305,8 @@ func resolveImage(accelerator string, gpuEnabled bool) string {
 
 func gpuVendor(accelerator string) string {
 	switch accelerator {
+	case acceleratorIntel:
+		return acceleratorIntel
 	case acceleratorROCm:
 		return "amd"
 	case acceleratorMetal:

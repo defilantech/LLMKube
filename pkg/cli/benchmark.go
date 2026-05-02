@@ -279,13 +279,15 @@ const (
 	acceleratorCUDA  = "cuda"
 	acceleratorMetal = "metal"
 	acceleratorROCm  = "rocm"
+	acceleratorIntel = "intel"
 	acceleratorCPU   = "cpu"
 )
 
 const (
-	imageLlamaCppServer     = "ghcr.io/ggml-org/llama.cpp:server"
-	imageLlamaCppServerCUDA = "ghcr.io/ggml-org/llama.cpp:server-cuda13"
-	imageLlamaCppServerROCm = "ghcr.io/ggml-org/llama.cpp:server-rocm"
+	imageLlamaCppServer      = "ghcr.io/ggml-org/llama.cpp:server"
+	imageLlamaCppServerCUDA  = "ghcr.io/ggml-org/llama.cpp:server-cuda13"
+	imageLlamaCppServerIntel = "ghcr.io/ggml-org/llama.cpp:server-intel"
+	imageLlamaCppServerROCm  = "ghcr.io/ggml-org/llama.cpp:server-rocm"
 )
 
 // Suite names
@@ -444,7 +446,7 @@ Examples:
 	cmd.Flags().Int32Var(&opts.gpuLayers, "gpu-layers", -1,
 		"Number of model layers to offload to GPU (-1 = use catalog default)")
 	cmd.Flags().StringVar(&opts.accelerator, "accelerator", "",
-		"Hardware accelerator: cuda, metal, rocm (auto-detected if --gpu is set)")
+		"Hardware accelerator: cuda, metal, rocm, intel (auto-detected if --gpu is set)")
 	cmd.Flags().BoolVar(&opts.cleanup, "cleanup", true,
 		"Cleanup deployments after benchmarking (use --no-cleanup to keep)")
 	cmd.Flags().DurationVar(&opts.deployWait, "deploy-wait", 10*time.Minute, "Timeout waiting for deployment to be ready")

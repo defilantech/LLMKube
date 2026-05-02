@@ -231,11 +231,12 @@ func (r *InferenceServiceReconciler) constructDeployment(
 	}
 
 	gpuCount := resolveGPUCount(isvc, model)
+	gpuResourceName := resolveGPUResourceName(model)
 
 	if gpuCount > 0 {
 		container.Resources = corev1.ResourceRequirements{
 			Limits: corev1.ResourceList{
-				"nvidia.com/gpu": resource.MustParse(fmt.Sprintf("%d", gpuCount)),
+				gpuResourceName: resource.MustParse(fmt.Sprintf("%d", gpuCount)),
 			},
 		}
 	}
@@ -300,7 +301,7 @@ func (r *InferenceServiceReconciler) constructDeployment(
 
 		tolerations := []corev1.Toleration{
 			{
-				Key:      "nvidia.com/gpu",
+				Key:      string(gpuResourceName),
 				Operator: corev1.TolerationOpEqual,
 				Value:    "present",
 				Effect:   corev1.TaintEffectNoSchedule,

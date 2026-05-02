@@ -599,6 +599,17 @@ func TestResolveAcceleratorAndImage(t *testing.T) {
 			wantImage:  "",
 		},
 		{
+			name: "intel accelerator sets intel vendor and intel image",
+			opts: &deployOptions{
+				gpu:         true,
+				accelerator: "intel",
+				gpuVendor:   defaultGPUVendor,
+			},
+			wantAccel:  "intel",
+			wantVendor: "intel",
+			wantImage:  "ghcr.io/ggml-org/llama.cpp:server-intel",
+		},
+		{
 			name: "cpu defaults",
 			opts: &deployOptions{
 				gpu:       false,

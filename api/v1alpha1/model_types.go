@@ -76,7 +76,7 @@ type ModelSpec struct {
 // HardwareSpec defines hardware acceleration settings
 type HardwareSpec struct {
 	// Accelerator specifies the type of hardware acceleration
-	// +kubebuilder:validation:Enum=cpu;metal;cuda;rocm
+	// +kubebuilder:validation:Enum=cpu;metal;cuda;rocm;intel
 	// +kubebuilder:default=cpu
 	// +optional
 	Accelerator string `json:"accelerator,omitempty"`

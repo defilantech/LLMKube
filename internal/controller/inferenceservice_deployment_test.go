@@ -581,6 +581,62 @@ var _ = Describe("Multi-GPU Deployment Construction", func() {
 			Expect(deployment.Spec.Strategy.Type).To(Equal(appsv1.RecreateDeploymentStrategyType))
 		})
 
+		It("should use Intel GPU resource key when model vendor is intel", func() {
+			model := &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "intel-gpu-model",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source: "https://example.com/model.gguf",
+					Format: "gguf",
+					Hardware: &inferencev1alpha1.HardwareSpec{
+						Accelerator: "cuda",
+						GPU: &inferencev1alpha1.GPUSpec{
+							Enabled: true,
+							Count:   1,
+							Vendor:  "intel",
+						},
+					},
+				},
+				Status: inferencev1alpha1.ModelStatus{
+					Phase: "Ready",
+					Path:  "/tmp/llmkube/models/intel-model.gguf",
+				},
+			}
+
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "intel-gpu-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: "intel-gpu-model",
+					Replicas: &replicas,
+					Image:    "ghcr.io/ggml-org/llama.cpp:server",
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			By("verifying GPU resource limits use Intel resource key")
+			gpuLimit := deployment.Spec.Template.Spec.Containers[0].Resources.Limits["gpu.intel.com/i915"]
+			Expect(gpuLimit).To(Equal(resource.MustParse("1")))
+
+			By("verifying Intel GPU toleration is present")
+			tolerations := deployment.Spec.Template.Spec.Tolerations
+			Expect(tolerations).NotTo(BeEmpty())
+			var hasIntelToleration bool
+			for _, t := range tolerations {
+				if t.Key == "gpu.intel.com/i915" {
+					hasIntelToleration = true
+					break
+				}
+			}
+			Expect(hasIntelToleration).To(BeTrue())
+		})
+
 		It("should apply custom node selector from InferenceService spec", func() {
 			model := &inferencev1alpha1.Model{
 				ObjectMeta: metav1.ObjectMeta{

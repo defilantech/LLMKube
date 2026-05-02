@@ -155,7 +155,7 @@ Examples:
 
 	cmd.Flags().BoolVar(&opts.gpu, "gpu", false, "Enable GPU acceleration (auto-detects CUDA image)")
 	cmd.Flags().StringVar(&opts.accelerator, "accelerator", "",
-		"Hardware accelerator (cpu, metal, cuda, rocm) - auto-detected if --gpu is set")
+		"Hardware accelerator (cpu, metal, cuda, rocm, intel) - auto-detected if --gpu is set")
 	cmd.Flags().Int32Var(&opts.gpuCount, "gpu-count", 1, "Number of GPUs per pod")
 	cmd.Flags().Int32Var(&opts.gpuLayers, "gpu-layers", -1,
 		"Number of model layers to offload to GPU (-1 = all layers, 0 = auto)")
@@ -561,8 +561,14 @@ func resolveAcceleratorAndImage(opts *deployOptions) {
 				opts.accelerator = acceleratorMetal
 				fmt.Printf("ℹ️  Auto-detected accelerator: %s (Apple Silicon GPU)\n", opts.accelerator)
 			} else {
-				opts.accelerator = "cuda"
+				opts.accelerator = acceleratorCUDA
 				fmt.Printf("ℹ️  Auto-detected accelerator: %s\n", opts.accelerator)
+			}
+		}
+
+		if opts.accelerator == acceleratorIntel {
+			if opts.gpuVendor == "" || opts.gpuVendor == defaultGPUVendor {
+				opts.gpuVendor = acceleratorIntel
 			}
 		}
 
@@ -574,16 +580,21 @@ func resolveAcceleratorAndImage(opts *deployOptions) {
 			fmt.Printf("ℹ️  Ensure Metal agent is installed: make install-metal-agent\n")
 		} else {
 			if opts.image == "" {
-				opts.image = "ghcr.io/ggml-org/llama.cpp:server-cuda13"
+				if opts.accelerator == acceleratorIntel {
+					opts.image = imageLlamaCppServerIntel
+					fmt.Printf("ℹ️  Intel accelerator: using default Intel image (override with --image if needed)\n")
+				} else {
+					opts.image = imageLlamaCppServerCUDA
+				}
 				fmt.Printf("ℹ️  Auto-detected image: %s\n", opts.image)
 			}
 		}
 	} else {
 		if opts.accelerator == "" {
-			opts.accelerator = "cpu"
+			opts.accelerator = acceleratorCPU
 		}
 		if opts.image == "" {
-			opts.image = "ghcr.io/ggml-org/llama.cpp:server"
+			opts.image = imageLlamaCppServer
 		}
 	}
 }
