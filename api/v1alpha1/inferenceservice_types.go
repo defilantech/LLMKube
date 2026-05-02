@@ -75,6 +75,23 @@ type InferenceServiceSpec struct {
 	// +optional
 	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
 
+	// PodAnnotations are merged into the inference Pod's metadata.annotations.
+	// Use this to tag Pods for downstream tooling (cost attribution, service
+	// mesh routing, custom admission controllers) without those tools needing
+	// to know about LLMKube's CRD schema. Pure passthrough; the operator
+	// itself does not set any annotations on inference Pods today.
+	// +optional
+	PodAnnotations map[string]string `json:"podAnnotations,omitempty"`
+
+	// PodLabels are merged into the inference Pod's metadata.labels alongside
+	// the operator-managed labels (`app`, `inference.llmkube.dev/model`,
+	// `inference.llmkube.dev/service`). Operator-managed keys take precedence
+	// on collision so the Deployment selector stays in sync with the Pods it
+	// owns. The Deployment selector itself uses only the operator-managed
+	// labels and is immutable, so changing PodLabels later is safe.
+	// +optional
+	PodLabels map[string]string `json:"podLabels,omitempty"`
+
 	// RuntimeClassName selects a Kubernetes RuntimeClass for the inference Pod.
 	// Most commonly set to "nvidia" on clusters where the NVIDIA Container
 	// Runtime is not configured as the cluster default. Without it, GPU pods

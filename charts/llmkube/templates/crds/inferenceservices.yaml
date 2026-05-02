@@ -553,6 +553,27 @@ spec:
                       Requires the bitsandbytes package in the container image.
                     type: boolean
                 type: object
+              podAnnotations:
+                additionalProperties:
+                  type: string
+                description: |-
+                  PodAnnotations are merged into the inference Pod's metadata.annotations.
+                  Use this to tag Pods for downstream tooling (cost attribution, service
+                  mesh routing, custom admission controllers) without those tools needing
+                  to know about LLMKube's CRD schema. Pure passthrough; the operator
+                  itself does not set any annotations on inference Pods today.
+                type: object
+              podLabels:
+                additionalProperties:
+                  type: string
+                description: |-
+                  PodLabels are merged into the inference Pod's metadata.labels alongside
+                  the operator-managed labels (`app`, `inference.llmkube.dev/model`,
+                  `inference.llmkube.dev/service`). Operator-managed keys take precedence
+                  on collision so the Deployment selector stays in sync with the Pods it
+                  owns. The Deployment selector itself uses only the operator-managed
+                  labels and is immutable, so changing PodLabels later is safe.
+                type: object
               podSecurityContext:
                 description: |-
                   PodSecurityContext defines pod-level security attributes for inference pods.

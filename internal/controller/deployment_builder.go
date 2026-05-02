@@ -72,6 +72,36 @@ func inferContainerSecurityContext(isvc *inferencev1alpha1.InferenceService) *co
 	}
 }
 
+// mergePodLabels combines operator-managed labels with the user's
+// spec.podLabels for use on the Pod template metadata. Operator-managed keys
+// always win on collision so the Deployment selector (which uses the
+// operator-only set, not this merged result) keeps matching the Pods it owns.
+// Returns a fresh map; callers may safely mutate either input afterwards.
+func mergePodLabels(operator, user map[string]string) map[string]string {
+	merged := make(map[string]string, len(operator)+len(user))
+	for k, v := range user {
+		merged[k] = v
+	}
+	for k, v := range operator {
+		merged[k] = v // operator wins on collision
+	}
+	return merged
+}
+
+// copyMap returns a fresh shallow copy of m, or nil when m is empty. Used to
+// pass spec.podAnnotations through to PodTemplateSpec.ObjectMeta.Annotations
+// without sharing storage with the user's spec.
+func copyMap(m map[string]string) map[string]string {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
 func (r *InferenceServiceReconciler) constructDeployment(
 	isvc *inferencev1alpha1.InferenceService,
 	model *inferencev1alpha1.Model,
@@ -197,7 +227,8 @@ func (r *InferenceServiceReconciler) constructDeployment(
 			},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels: labels,
+					Labels:      mergePodLabels(labels, isvc.Spec.PodLabels),
+					Annotations: copyMap(isvc.Spec.PodAnnotations),
 				},
 				Spec: corev1.PodSpec{
 					SecurityContext:    inferPodSecurityContext(isvc),

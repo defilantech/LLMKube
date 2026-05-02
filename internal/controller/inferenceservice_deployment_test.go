@@ -2620,6 +2620,176 @@ var _ = Describe("Context Size Configuration", func() {
 			Expect(deployment.Spec.Template.Spec.RuntimeClassName).To(BeNil())
 		})
 	})
+
+	// Issue #326: PodAnnotations and PodLabels passthrough lets users tag
+	// Pods for downstream tooling (cost attribution, service mesh routing,
+	// admission controllers) without requiring those tools to know about
+	// LLMKube's CRD schema. Operator-managed labels win on collision so the
+	// Deployment selector keeps matching the Pods it owns.
+	Context("when podAnnotations and podLabels are configured", func() {
+		var (
+			reconciler *InferenceServiceReconciler
+			model      *inferencev1alpha1.Model
+		)
+
+		BeforeEach(func() {
+			reconciler = &InferenceServiceReconciler{
+				ModelCachePath:     "/tmp/llmkube/models",
+				InitContainerImage: "docker.io/curlimages/curl:8.18.0",
+			}
+
+			model = &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "pod-meta-model",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source: "https://example.com/model.gguf",
+					Hardware: &inferencev1alpha1.HardwareSpec{
+						GPU: &inferencev1alpha1.GPUSpec{Count: 1, Layers: 64},
+					},
+				},
+				Status: inferencev1alpha1.ModelStatus{
+					Phase:    "Ready",
+					CacheKey: "pod-meta-cache-key",
+					Path:     "/tmp/llmkube/models/pod-meta-model.gguf",
+				},
+			}
+		})
+
+		It("should propagate user annotations to the Pod template", func() {
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "annotated-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: "pod-meta-model",
+					Replicas: &replicas,
+					Image:    "ghcr.io/ggml-org/llama.cpp:server-cuda13",
+					PodAnnotations: map[string]string{
+						"infercost.ai/backend": "vllm",
+						"linkerd.io/inject":    "enabled",
+					},
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{GPU: 1},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			ann := deployment.Spec.Template.Annotations
+			Expect(ann).To(HaveKeyWithValue("infercost.ai/backend", "vllm"))
+			Expect(ann).To(HaveKeyWithValue("linkerd.io/inject", "enabled"))
+		})
+
+		It("should propagate user labels to the Pod template alongside operator labels", func() {
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "labeled-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: "pod-meta-model",
+					Replicas: &replicas,
+					Image:    "ghcr.io/ggml-org/llama.cpp:server-cuda13",
+					PodLabels: map[string]string{
+						"team":      "platform",
+						"cost-tier": "premium",
+					},
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{GPU: 1},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			podLabels := deployment.Spec.Template.Labels
+			Expect(podLabels).To(HaveKeyWithValue("team", "platform"))
+			Expect(podLabels).To(HaveKeyWithValue("cost-tier", "premium"))
+			// Operator-managed labels still present
+			Expect(podLabels).To(HaveKeyWithValue("app", "labeled-service"))
+			Expect(podLabels).To(HaveKeyWithValue("inference.llmkube.dev/service", "labeled-service"))
+			Expect(podLabels).To(HaveKeyWithValue("inference.llmkube.dev/model", "pod-meta-model"))
+		})
+
+		It("should let operator labels win on collision with user labels", func() {
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "collision-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: "pod-meta-model",
+					Replicas: &replicas,
+					Image:    "ghcr.io/ggml-org/llama.cpp:server-cuda13",
+					PodLabels: map[string]string{
+						"app":                           "user-supplied-app",
+						"inference.llmkube.dev/service": "user-supplied-svc",
+					},
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{GPU: 1},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			podLabels := deployment.Spec.Template.Labels
+			Expect(podLabels).To(HaveKeyWithValue("app", "collision-service"))
+			Expect(podLabels).To(HaveKeyWithValue("inference.llmkube.dev/service", "collision-service"))
+		})
+
+		It("should keep the Deployment selector unaffected by user labels", func() {
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "selector-stability-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef:  "pod-meta-model",
+					Replicas:  &replicas,
+					Image:     "ghcr.io/ggml-org/llama.cpp:server-cuda13",
+					PodLabels: map[string]string{"team": "platform"},
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{GPU: 1},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			selector := deployment.Spec.Selector.MatchLabels
+			// User labels MUST NOT bleed into the selector (selector is immutable
+			// post-creation; a future PodLabels change would orphan running Pods).
+			Expect(selector).NotTo(HaveKey("team"))
+			Expect(selector).To(HaveKeyWithValue("app", "selector-stability-service"))
+			Expect(selector).To(HaveKeyWithValue("inference.llmkube.dev/service", "selector-stability-service"))
+		})
+
+		It("should leave annotations nil and pod labels operator-only when both fields are unset", func() {
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "bare-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef:  "pod-meta-model",
+					Replicas:  &replicas,
+					Image:     "ghcr.io/ggml-org/llama.cpp:server-cuda13",
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{GPU: 1},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			Expect(deployment.Spec.Template.Annotations).To(BeNil())
+			podLabels := deployment.Spec.Template.Labels
+			Expect(podLabels).To(HaveLen(3))
+			Expect(podLabels).To(HaveKey("app"))
+			Expect(podLabels).To(HaveKey("inference.llmkube.dev/model"))
+			Expect(podLabels).To(HaveKey("inference.llmkube.dev/service"))
+		})
+	})
 })
 
 var _ = Describe("constructDeployment additional cases", func() {
