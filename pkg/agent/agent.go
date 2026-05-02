@@ -117,6 +117,17 @@ type MetalAgent struct {
 	mu             sync.RWMutex
 	memoryProvider MemoryProvider
 	memoryFraction float64
+
+	// pressureBlocked records namespacedName keys of processes the agent
+	// evicted under memory pressure. Subsequent ensureProcess calls for these
+	// keys are no-ops while lastPressureLevel != Normal, to prevent a
+	// thrashing respawn loop where the controller's UPDATED event simply
+	// re-spawns the process we just killed for memory.
+	pressureBlocked map[string]bool
+	// lastPressureLevel is the most recent pressure level reported by the
+	// watchdog. Used to gate respawn (above) and to detect transitions for
+	// status condition updates.
+	lastPressureLevel MemoryPressureLevel
 }
 
 // ManagedProcess represents a running inference process (llama-server, oMLX, or Ollama model).
@@ -134,6 +145,12 @@ type ManagedProcess struct {
 	// changed, require respawning the underlying process. Used by ensureProcess
 	// to detect spec drift on UPDATED events and respawn instead of no-oping.
 	SpecHash string
+
+	// Priority is the InferenceService.Spec.Priority enum value
+	// (critical/high/normal/low/batch) captured at spawn time. Used by the
+	// memory-pressure eviction selector to pick the lowest-priority running
+	// process when system memory is critical. Empty defaults to "normal".
+	Priority string
 }
 
 // NewMetalAgent creates a new Metal agent instance
@@ -162,11 +179,12 @@ func NewMetalAgent(config MetalAgentConfig) *MetalAgent {
 	}
 
 	return &MetalAgent{
-		config:         config,
-		processes:      make(map[string]*ManagedProcess),
-		logger:         logger.With("component", "metal-agent"),
-		memoryProvider: provider,
-		memoryFraction: fraction,
+		config:          config,
+		processes:       make(map[string]*ManagedProcess),
+		logger:          logger.With("component", "metal-agent"),
+		memoryProvider:  provider,
+		memoryFraction:  fraction,
+		pressureBlocked: make(map[string]bool),
 	}
 }
 
@@ -272,12 +290,16 @@ func (a *MetalAgent) Start(ctx context.Context) error {
 	// NOPASSWD sudoers entry the operator must install explicitly.
 	a.maybeStartApplePowerSampler(ctx)
 
-	// Start memory watchdog (if configured)
+	// Start memory watchdog (if configured). Pass handleMemoryPressure as
+	// the callback so the watchdog can drive condition updates and (under
+	// Critical pressure) eviction.
 	if a.config.WatchdogConfig != nil {
 		watchdog := NewMemoryWatchdog(
 			a.memoryProvider,
 			a.processMemInfoSnapshot,
-			nil, // observe-only in PR A; eviction callback added in PR B
+			func(level MemoryPressureLevel, stats MemoryStats) {
+				a.handleMemoryPressure(ctx, level, stats)
+			},
 			*a.config.WatchdogConfig,
 			a.logger.With("subsystem", "watchdog"),
 		)
@@ -455,7 +477,21 @@ func (a *MetalAgent) ensureProcess(ctx context.Context, isvc *inferencev1alpha1.
 	// Check if process already exists
 	a.mu.RLock()
 	existing, exists := a.processes[key]
+	blocked := a.pressureBlocked[key]
+	pressureLevel := a.lastPressureLevel
 	a.mu.RUnlock()
+
+	// Refuse to respawn a service the watchdog evicted while pressure is
+	// still abnormal. Without this guard, the controller's UPDATED event
+	// loop would silently re-spawn the very process we just killed for
+	// memory, defeating eviction. The block clears automatically once the
+	// watchdog reports MemoryPressureNormal.
+	if blocked && pressureLevel != MemoryPressureNormal {
+		a.logger.Warnw("skipping ensureProcess; eviction-blocked under memory pressure",
+			"namespace", isvc.Namespace, "name", isvc.Name,
+			"pressureLevel", pressureLevel.String())
+		return nil
+	}
 
 	// Honor spec.replicas=0 by stopping a running process and not respawning.
 	// Without this, a user trying to take a model offline via spec edits has
@@ -612,6 +648,9 @@ func (a *MetalAgent) ensureProcess(ctx context.Context, isvc *inferencev1alpha1.
 	// Stamp the spec hash onto the process so future ensureProcess calls
 	// can detect drift via simple string compare.
 	process.SpecHash = desiredHash
+	// Capture the workload's priority enum at spawn time so the eviction
+	// selector can rank running processes without re-reading the CRD.
+	process.Priority = isvc.Spec.Priority
 
 	// Store process and update metrics
 	a.mu.Lock()
