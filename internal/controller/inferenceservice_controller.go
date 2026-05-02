@@ -299,6 +299,13 @@ func (r *InferenceServiceReconciler) reconcileService(ctx context.Context, isvc 
 // shares the sanitized name of the metal stub Service (see reconcileService's
 // metal branch). Missing-or-unpopulated Endpoints return 0, which is the
 // correct readyReplicas value while we wait on the agent.
+//
+// We read core/v1 Endpoints (deprecated in k8s v1.33+) rather than
+// discovery/v1 EndpointSlice because pkg/agent/registry.go still creates
+// Endpoints. Migrating both producer and consumer to EndpointSlice is tracked
+// as a follow-up; doing it in this PR would balloon scope.
+//
+//nolint:staticcheck // SA1019: see comment above; agent and controller migrate together
 func (r *InferenceServiceReconciler) metalReadyEndpoints(ctx context.Context, isvc *inferencev1alpha1.InferenceService) int32 {
 	log := logf.FromContext(ctx)
 	endpoints := &corev1.Endpoints{}
@@ -312,7 +319,15 @@ func (r *InferenceServiceReconciler) metalReadyEndpoints(ctx context.Context, is
 	}
 	var ready int32
 	for _, subset := range endpoints.Subsets {
-		ready += int32(len(subset.Addresses))
+		// In a kind/k8s cluster the agent typically registers a small handful
+		// of addresses (one per host-mode replica). Cap the per-subset count
+		// well below int32 max so the conversion is guaranteed safe even if a
+		// pathological Endpoints object lands in the cache.
+		n := len(subset.Addresses)
+		if n > 1<<20 {
+			n = 1 << 20
+		}
+		ready += int32(n) //nolint:gosec // bounded above
 	}
 	return ready
 }

@@ -48,9 +48,13 @@ const (
 	PhaseReady            = "Ready"
 	PhaseFailed           = "Failed"
 	PhaseCached           = "Cached"
+	PhaseCreating         = "Creating"
 	DefaultModelCachePath = "/models"
 
-	ConditionDegraded = "Degraded"
+	ConditionAvailable = "Available"
+	ConditionDegraded  = "Degraded"
+
+	ReasonWorkloadResolved = "WorkloadResolved"
 )
 
 type ModelReconciler struct {
@@ -358,7 +362,7 @@ func (r *ModelReconciler) reconcileRuntimeResolvedSource(ctx context.Context, mo
 	reason := "RuntimeResolved"
 	message := "Source is runtime-resolved (e.g., HuggingFace repo ID); runtime will fetch at startup"
 	if cacheKey != "" {
-		reason = "WorkloadResolved"
+		reason = ReasonWorkloadResolved
 		if isMetal {
 			// On the metal accelerator path there is no Pod and no init container.
 			// The host metal-agent fetches the file into its model store when it

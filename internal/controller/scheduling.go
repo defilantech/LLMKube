@@ -82,12 +82,12 @@ func (r *InferenceServiceReconciler) determinePhase(ctx context.Context, isvc *i
 		}
 	}
 	if isMetal {
-		return "Creating", &SchedulingInfo{
+		return PhaseCreating, &SchedulingInfo{
 			Status:  "WaitingForMetalAgent",
 			Message: "Waiting for the host metal-agent to fetch the model and register Endpoints",
 		}
 	}
-	return "Creating", nil
+	return PhaseCreating, nil
 }
 
 func (r *InferenceServiceReconciler) getPodSchedulingInfo(ctx context.Context, isvc *inferencev1alpha1.InferenceService) (*SchedulingInfo, error) {

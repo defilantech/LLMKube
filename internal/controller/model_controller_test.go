@@ -268,7 +268,7 @@ var _ = Describe("Model Controller Reconcile", func() {
 		// HTTP fetches.
 		var hasWorkloadResolved bool
 		for _, cond := range updated.Status.Conditions {
-			if cond.Type == "Available" && cond.Reason == "WorkloadResolved" {
+			if cond.Type == ConditionAvailable && cond.Reason == "WorkloadResolved" {
 				hasWorkloadResolved = true
 			}
 		}
@@ -311,7 +311,7 @@ var _ = Describe("Model Controller Reconcile", func() {
 
 		var foundCondition bool
 		for _, cond := range updated.Status.Conditions {
-			if cond.Type == "Available" && cond.Reason == "WorkloadResolved" {
+			if cond.Type == ConditionAvailable && cond.Reason == "WorkloadResolved" {
 				foundCondition = true
 				Expect(cond.Message).To(ContainSubstring("metal-agent"),
 					"metal-accelerator message should describe the host agent fetch path, not the init container")
@@ -1085,7 +1085,7 @@ var _ = Describe("Runtime-Resolved Source Reconcile", func() {
 		// Verify Available condition with RuntimeResolved reason
 		var hasRuntimeResolved bool
 		for _, cond := range updated.Status.Conditions {
-			if cond.Type == "Available" && cond.Reason == "RuntimeResolved" {
+			if cond.Type == ConditionAvailable && cond.Reason == "RuntimeResolved" {
 				hasRuntimeResolved = true
 			}
 		}

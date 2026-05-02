@@ -573,10 +573,13 @@ var _ = Describe("Reconcile lifecycle", func() {
 				_ = k8sClient.Delete(ctx, isvc)
 			}()
 
-			// Simulate the metal-agent registering Endpoints once llama-server is healthy.
-			endpoints := &corev1.Endpoints{
+			// Simulate the metal-agent registering Endpoints once llama-server
+			// is healthy. core/v1 Endpoints is deprecated in k8s v1.33+, but
+			// pkg/agent/registry.go still uses it; migration to EndpointSlice
+			// is tracked as a follow-up to this PR.
+			endpoints := &corev1.Endpoints{ //nolint:staticcheck // SA1019: agent + controller migrate together
 				ObjectMeta: metav1.ObjectMeta{Name: isvcName, Namespace: "default"},
-				Subsets: []corev1.EndpointSubset{{
+				Subsets: []corev1.EndpointSubset{{ //nolint:staticcheck // SA1019: same
 					Addresses: []corev1.EndpointAddress{{IP: "192.0.2.10"}},
 					Ports:     []corev1.EndpointPort{{Port: 8080, Protocol: corev1.ProtocolTCP}},
 				}},
