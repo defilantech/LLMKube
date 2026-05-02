@@ -157,7 +157,7 @@ kubectl apply -f model.yaml
 ```
 </details>
 
-**Full setup guides:** [Minikube Quickstart](docs/minikube-quickstart.md) | [GKE with GPUs](docs/gpu-setup-guide.md) | [Air-Gapped Deployment](docs/air-gapped-quickstart.md) | [OpenShift](#troubleshooting)
+**Full setup guides:** [Minikube Quickstart](docs/minikube-quickstart.md) | [GKE with GPUs](docs/gpu-setup-guide.md) | [Intel GPU Quickstart](docs/intel-gpu-quickstart.md) | [Air-Gapped Deployment](docs/air-gapped-quickstart.md) | [OpenShift](#troubleshooting)
 
 ---
 
@@ -173,7 +173,7 @@ LLMKube's **Metal Agent** inverts the model. Instead of stuffing inference into 
 2. **Spawns `llama-server` natively** on macOS with full Metal GPU access
 3. **Registers endpoints back into Kubernetes** so the rest of your cluster can route to it
 
-Your Mac dedicates 100% of its unified memory to inference. Kubernetes handles orchestration. The same CRD works on NVIDIA and Apple Silicon — just change `accelerator: cuda` to `accelerator: metal`.
+Your Mac dedicates 100% of its unified memory to inference. Kubernetes handles orchestration. The same CRD works across NVIDIA, Intel, and Apple Silicon by selecting the accelerator in the model spec.
 
 ```
 ┌──────────────────────────────┐      ┌──────────────────────────────┐
@@ -328,6 +328,7 @@ Consistent ~53 tok/s across 3-8B models with automatic layer sharding. See [v0.4
 
 **GPU:**
 - NVIDIA CUDA (T4, L4, A100, RTX)
+- Intel GPU (i915 or xe plugin resources) with llama.cpp SYCL backend
 - Apple Silicon Metal via [Metal Agent](deployment/macos/) (M1-M4)
 - Multi-GPU inference for 13B-70B+ models ([guide](docs/MULTI-GPU-DEPLOYMENT.md))
 - Automatic layer offloading and tensor splitting

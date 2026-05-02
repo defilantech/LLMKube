@@ -1,6 +1,8 @@
-# GPU Setup and Verification Guide
+# GPU Setup and Verification Guide (NVIDIA)
 
-This guide walks you through verifying GPU setup and deploying your first GPU-accelerated LLM.
+This guide walks you through verifying NVIDIA GPU setup and deploying your first CUDA-accelerated LLM.
+
+For Intel GPU setup and SYCL-backed deployments, use [docs/intel-gpu-quickstart.md](intel-gpu-quickstart.md).
 
 ## Prerequisites
 
