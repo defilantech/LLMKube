@@ -2540,6 +2540,86 @@ var _ = Describe("Context Size Configuration", func() {
 			Expect(args).NotTo(ContainElement("--batch-size"))
 		})
 	})
+
+	// Issue #375: spec.runtimeClassName threads through to PodSpec.RuntimeClassName
+	// so users on clusters where the NVIDIA Container Runtime is not the cluster
+	// default can opt their inference Pods into the right RuntimeClass without
+	// resorting to mutating-webhook hacks.
+	Context("when runtimeClassName is configured", func() {
+		var (
+			reconciler *InferenceServiceReconciler
+			model      *inferencev1alpha1.Model
+		)
+
+		BeforeEach(func() {
+			reconciler = &InferenceServiceReconciler{
+				ModelCachePath:     "/tmp/llmkube/models",
+				InitContainerImage: "docker.io/curlimages/curl:8.18.0",
+			}
+
+			model = &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "rcn-model",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source: "https://example.com/model.gguf",
+					Hardware: &inferencev1alpha1.HardwareSpec{
+						GPU: &inferencev1alpha1.GPUSpec{Count: 1, Layers: 64},
+					},
+				},
+				Status: inferencev1alpha1.ModelStatus{
+					Phase:    "Ready",
+					CacheKey: "rcn-cache-key",
+					Path:     "/tmp/llmkube/models/rcn-model.gguf",
+				},
+			}
+		})
+
+		It("should set PodSpec.RuntimeClassName when spec.runtimeClassName is set", func() {
+			replicas := int32(1)
+			rcn := "nvidia"
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "rcn-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef:         "rcn-model",
+					Replicas:         &replicas,
+					Image:            "ghcr.io/ggml-org/llama.cpp:server-cuda13",
+					RuntimeClassName: &rcn,
+					Resources:        &inferencev1alpha1.InferenceResourceRequirements{GPU: 1},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			rcnGot := deployment.Spec.Template.Spec.RuntimeClassName
+			Expect(rcnGot).NotTo(BeNil())
+			Expect(*rcnGot).To(Equal("nvidia"))
+		})
+
+		It("should leave PodSpec.RuntimeClassName nil when spec.runtimeClassName is unset", func() {
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "no-rcn-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef:  "rcn-model",
+					Replicas:  &replicas,
+					Image:     "ghcr.io/ggml-org/llama.cpp:server-cuda13",
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{GPU: 1},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			Expect(deployment.Spec.Template.Spec.RuntimeClassName).To(BeNil())
+		})
+	})
 })
 
 var _ = Describe("constructDeployment additional cases", func() {

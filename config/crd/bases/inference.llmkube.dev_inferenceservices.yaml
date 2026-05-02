@@ -1331,6 +1331,19 @@ spec:
                 - tgi
                 - generic
                 type: string
+              runtimeClassName:
+                description: |-
+                  RuntimeClassName selects a Kubernetes RuntimeClass for the inference Pod.
+                  Most commonly set to "nvidia" on clusters where the NVIDIA Container
+                  Runtime is not configured as the cluster default. Without it, GPU pods
+                  schedule onto the GPU node but never get the device files bind-mounted,
+                  and the container fails at runtime with "no CUDA-capable device is
+                  detected". Maps directly to PodSpec.RuntimeClassName.
+
+                  Most clusters running the NVIDIA GPU Operator with the default toolkit
+                  env do not need this set; it is a safety hatch for clusters where the
+                  runtime configuration is non-default.
+                type: string
               securityContext:
                 description: SecurityContext defines container-level security attributes
                   for the inference container.

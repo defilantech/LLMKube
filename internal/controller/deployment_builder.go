@@ -205,6 +205,7 @@ func (r *InferenceServiceReconciler) constructDeployment(
 					Containers:         []corev1.Container{container},
 					Volumes:            storageConfig.volumes,
 					PriorityClassName:  r.resolvePriorityClassName(isvc),
+					RuntimeClassName:   isvc.Spec.RuntimeClassName,
 					ImagePullSecrets:   isvc.Spec.ImagePullSecrets,
 					EnableServiceLinks: resolveEnableServiceLinks(backend),
 				},

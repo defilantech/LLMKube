@@ -75,6 +75,19 @@ type InferenceServiceSpec struct {
 	// +optional
 	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
 
+	// RuntimeClassName selects a Kubernetes RuntimeClass for the inference Pod.
+	// Most commonly set to "nvidia" on clusters where the NVIDIA Container
+	// Runtime is not configured as the cluster default. Without it, GPU pods
+	// schedule onto the GPU node but never get the device files bind-mounted,
+	// and the container fails at runtime with "no CUDA-capable device is
+	// detected". Maps directly to PodSpec.RuntimeClassName.
+	//
+	// Most clusters running the NVIDIA GPU Operator with the default toolkit
+	// env do not need this set; it is a safety hatch for clusters where the
+	// runtime configuration is non-default.
+	// +optional
+	RuntimeClassName *string `json:"runtimeClassName,omitempty"`
+
 	// ContextSize sets the context window size for the llama.cpp server (-c flag).
 	// Larger values allow processing longer inputs but require more memory.
 	// If not specified, llama.cpp uses its default (typically 512 or 2048).

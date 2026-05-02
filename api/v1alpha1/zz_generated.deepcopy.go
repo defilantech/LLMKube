@@ -259,6 +259,11 @@ func (in *InferenceServiceSpec) DeepCopyInto(out *InferenceServiceSpec) {
 			(*out)[key] = val
 		}
 	}
+	if in.RuntimeClassName != nil {
+		in, out := &in.RuntimeClassName, &out.RuntimeClassName
+		*out = new(string)
+		**out = **in
+	}
 	if in.ContextSize != nil {
 		in, out := &in.ContextSize, &out.ContextSize
 		*out = new(int32)
