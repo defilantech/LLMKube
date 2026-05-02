@@ -48,9 +48,13 @@ const (
 	PhaseReady            = "Ready"
 	PhaseFailed           = "Failed"
 	PhaseCached           = "Cached"
+	PhaseCreating         = "Creating"
 	DefaultModelCachePath = "/models"
 
-	ConditionDegraded = "Degraded"
+	ConditionAvailable = "Available"
+	ConditionDegraded  = "Degraded"
+
+	ReasonWorkloadResolved = "WorkloadResolved"
 )
 
 type ModelReconciler struct {
@@ -353,11 +357,20 @@ func (r *ModelReconciler) reconcileRuntimeResolvedSource(ctx context.Context, mo
 		return nil
 	}
 
+	isMetal := model.Spec.Hardware != nil && model.Spec.Hardware.Accelerator == "metal"
+
 	reason := "RuntimeResolved"
 	message := "Source is runtime-resolved (e.g., HuggingFace repo ID); runtime will fetch at startup"
 	if cacheKey != "" {
-		reason = "WorkloadResolved"
-		message = "Source is a remote URL; the InferenceService Pod's init container will fetch the model into the per-namespace model cache PVC at startup"
+		reason = ReasonWorkloadResolved
+		if isMetal {
+			// On the metal accelerator path there is no Pod and no init container.
+			// The host metal-agent fetches the file into its model store when it
+			// reconciles the InferenceService that references this Model.
+			message = "Source is a remote URL; the host metal-agent will fetch the model into its model store when the InferenceService is reconciled"
+		} else {
+			message = "Source is a remote URL; the InferenceService Pod's init container will fetch the model into the per-namespace model cache PVC at startup"
+		}
 	}
 
 	logger.Info("Source is runtime-resolved, skipping controller-side download", "source", model.Spec.Source, "cacheKey", cacheKey)

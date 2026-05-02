@@ -536,10 +536,73 @@ var _ = Describe("Reconcile lifecycle", func() {
 			err = k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, svc)
 			Expect(errors.IsNotFound(err)).To(BeTrue())
 
-			By("verifying status is Ready (Metal returns desiredReplicas as ready)")
+			By("verifying status is Creating (no Endpoints yet from the metal-agent; issue #374)")
+			updated := &inferencev1alpha1.InferenceService{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, updated)).To(Succeed())
+			Expect(updated.Status.Phase).To(Equal("Creating"))
+		})
+
+		It("should be Ready once the metal-agent registers Endpoints (issue #374)", func() {
+			modelName := "metal-model-with-ep"
+			isvcName := "isvc-metal-with-ep"
+
+			model := &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source:   "https://example.com/model.gguf",
+					Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: "metal"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, model)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Delete(ctx, model)
+			}()
+			model.Status.Phase = PhaseReady
+			Expect(k8sClient.Status().Update(ctx, model)).To(Succeed())
+
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{Name: isvcName, Namespace: "default"},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: modelName,
+					Replicas: &replicas,
+				},
+			}
+			Expect(k8sClient.Create(ctx, isvc)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Delete(ctx, isvc)
+			}()
+
+			// Simulate the metal-agent registering Endpoints once llama-server
+			// is healthy. core/v1 Endpoints is deprecated in k8s v1.33+, but
+			// pkg/agent/registry.go still uses it; migration to EndpointSlice
+			// is tracked as a follow-up to this PR.
+			endpoints := &corev1.Endpoints{ //nolint:staticcheck // SA1019: agent + controller migrate together
+				ObjectMeta: metav1.ObjectMeta{Name: isvcName, Namespace: "default"},
+				Subsets: []corev1.EndpointSubset{{ //nolint:staticcheck // SA1019: same
+					Addresses: []corev1.EndpointAddress{{IP: "192.0.2.10"}},
+					Ports:     []corev1.EndpointPort{{Port: 8080, Protocol: corev1.ProtocolTCP}},
+				}},
+			}
+			Expect(k8sClient.Create(ctx, endpoints)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Delete(ctx, endpoints)
+			}()
+
+			reconciler := &InferenceServiceReconciler{
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
+				InitContainerImage: "docker.io/curlimages/curl:8.18.0",
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: isvcName, Namespace: "default"},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
 			updated := &inferencev1alpha1.InferenceService{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, updated)).To(Succeed())
 			Expect(updated.Status.Phase).To(Equal("Ready"))
+			Expect(updated.Status.ReadyReplicas).To(Equal(int32(1)))
 		})
 
 		It("should set correct endpoint URL for Metal InferenceService", func() {
