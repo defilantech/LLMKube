@@ -72,6 +72,25 @@ func inferContainerSecurityContext(isvc *inferencev1alpha1.InferenceService) *co
 	}
 }
 
+// deploymentSelectorLabels returns the immutable subset of operator-managed
+// labels used for Deployment.Spec.Selector.MatchLabels. Kubernetes treats
+// the selector as immutable after creation, so any label that can change
+// over the InferenceService's lifetime (notably model.Name when the user
+// edits spec.modelRef) must NOT appear here. The model label still ships
+// on the Pod template + Deployment metadata for kubectl filtering; only
+// the selector is restricted.
+//
+// See #301 for the silent-update bug this avoids: putting modelRef into
+// the selector made the field effectively immutable, with no error
+// surfaced to the user, just an apiserver "field is immutable" error
+// looping in the controller logs.
+func deploymentSelectorLabels(isvc *inferencev1alpha1.InferenceService) map[string]string {
+	return map[string]string{
+		"app":                           isvc.Name,
+		"inference.llmkube.dev/service": isvc.Name,
+	}
+}
+
 // mergePodLabels combines operator-managed labels with the user's
 // spec.podLabels for use on the Pod template metadata. Operator-managed keys
 // always win on collision so the Deployment selector (which uses the
@@ -223,7 +242,10 @@ func (r *InferenceServiceReconciler) constructDeployment(
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
 			Selector: &metav1.LabelSelector{
-				MatchLabels: labels,
+				// Selector uses the immutable subset only; the model label
+				// is allowed to change when the user edits spec.modelRef
+				// and must not be matched on. See #301.
+				MatchLabels: deploymentSelectorLabels(isvc),
 			},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
