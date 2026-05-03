@@ -64,26 +64,24 @@ Two cooperating processes. An in-cluster controller owns Kubernetes-side desired
 
 ```mermaid
 %%{init: {'theme':'neutral','flowchart':{'curve':'linear'}}}%%
-flowchart LR
+flowchart TB
     subgraph CLUSTER["Kubernetes cluster"]
-        direction TB
-        CTRL["LLMKube controller<br/>(Deployment in llmkube-system)"]
-        CRD["Custom resources<br/>Model · InferenceService"]
-        OWNED["Owned objects<br/>Job · Deployment · Service · PodMonitor"]
-        POD["Runtime pod (Linux/GPU node)<br/>llama.cpp · vLLM · TGI · PersonaPlex"]
-        CTRL -- watches --> CRD
-        CTRL -- creates --> OWNED
-        OWNED -.- POD
+        direction LR
+        CTRL["LLMKube controller"]
+        CRD["Model · InferenceService<br/>(custom resources)"]
+        POD["Runtime pods<br/>llama.cpp · vLLM · TGI"]
+        CRD -- watched by --> CTRL
+        CTRL -- schedules --> POD
     end
 
     subgraph HOST["Apple Silicon host (optional)"]
-        direction TB
-        AGENT["metal-agent<br/>(launchd, on-host)"]
-        NATIVE["Native processes<br/>llama-server · oMLX · Ollama"]
+        direction LR
+        AGENT["metal-agent"]
+        NATIVE["llama-server · oMLX · Ollama<br/>(native processes)"]
         AGENT -- supervises --> NATIVE
     end
 
-    AGENT -- "registers Endpoints<br/>(HTTPS · kubeconfig)" --> CLUSTER
+    AGENT -- "registers Endpoints" --> CLUSTER
 ```
 
 Same operator manages Linux/GPU pods and Apple Silicon hosts; both surface as `InferenceService` objects to `kubectl`. Full breakdown with reconciliation flow and the CRD reference: **[docs.llmkube.com/concepts/architecture](https://llmkube.com/docs/concepts/architecture)**.
