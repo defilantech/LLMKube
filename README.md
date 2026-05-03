@@ -373,6 +373,14 @@ We welcome contributions. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full gu
 - SafeTensors format support
 - Multi-node GPU sharding for 70B+ models
 
+### Contributors
+
+Thanks to the people who've shipped code, tests, and docs:
+
+<a href="https://github.com/defilantech/LLMKube/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=defilantech/LLMKube&excludeBot=true" alt="LLMKube contributors" />
+</a>
+
 ---
 
 ## Community
