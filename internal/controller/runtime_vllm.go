@@ -11,8 +11,7 @@ import (
 )
 
 // vllmLog is a package-level logger used for construction-time warnings from
-// BuildArgs. The reconciler surfaces the same issues as a status condition via
-// ValidateVLLMConfig; the log line is for operator debugging.
+// BuildArgs.
 var vllmLog = logf.Log.WithName("runtime.vllm")
 
 // Condition types set by the InferenceService reconciler when a vLLM-specific
@@ -71,67 +70,42 @@ func (b *VLLMBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, model 
 		"--port", fmt.Sprintf("%d", port),
 	}
 
+	var err error
+
 	cfg := isvc.Spec.VLLMConfig
 	if cfg != nil {
-		if cfg.TensorParallelSize != nil && *cfg.TensorParallelSize > 1 {
-			args = append(args, "--tensor-parallel-size", fmt.Sprintf("%d", *cfg.TensorParallelSize))
+		args = appendTensorParallelSize(args, cfg.TensorParallelSize)
+		args = appendMaxModelLen(args, cfg.MaxModelLen)
+		args = appendQuantization(args, cfg.Quantization)
+		args = appendDtype(args, cfg.Dtype)
+		args = appendKVCacheDtype(args, cfg.KVCacheDtype, cfg.KVCacheCustomDtype)
+		args = appendEnablePrefixCaching(args, cfg.EnablePrefixCaching)
+		args = appendEnableChunkedPrefill(args, cfg.EnableChunkedPrefill)
+		args = appendMaxNumBatchedTokens(args, cfg.MaxNumBatchedTokens)
+		args = appendAttentionBackend(args, cfg.AttentionBackend)
+		args, err = appendSpeculativeModel(args, cfg.Speculative)
+		if err != nil {
+			vllmLog.Info(
+				err.Error(),
+				"inferenceService", isvc.Name,
+				"namespace", isvc.Namespace,
+			)
 		}
-		if cfg.MaxModelLen != nil {
-			args = append(args, "--max-model-len", fmt.Sprintf("%d", *cfg.MaxModelLen))
-		}
-		if cfg.Quantization != "" {
-			args = append(args, "--quantization", cfg.Quantization)
-		}
-		if cfg.Dtype != "" {
-			args = append(args, "--dtype", cfg.Dtype)
-		}
-		// KV cache dtype: emit unless unset or explicitly "auto" (vLLM's default).
-		// Custom value (e.g. TurboQuant turbo2 from vLLM v0.20+) wins over the
-		// enum-validated standard field, mirroring llama.cpp's resolveCacheType.
-		if resolved := resolveKVCacheDtype(cfg.KVCacheCustomDtype, cfg.KVCacheDtype); resolved != "" && resolved != "auto" {
-			args = append(args, "--kv-cache-dtype", resolved)
-		}
-		// Prefix caching: only emit when user explicitly opted in (true).
-		// vLLM's own default handles the nil/false case.
-		if cfg.EnablePrefixCaching != nil && *cfg.EnablePrefixCaching {
-			args = append(args, "--enable-prefix-caching")
-		}
-		// Chunked prefill: same policy as prefix caching — opt-in only.
-		if cfg.EnableChunkedPrefill != nil && *cfg.EnableChunkedPrefill {
-			args = append(args, "--enable-chunked-prefill")
-		}
-		if cfg.MaxNumBatchedTokens != nil {
-			args = append(args, "--max-num-batched-tokens", fmt.Sprintf("%d", *cfg.MaxNumBatchedTokens))
-		}
-		if cfg.AttentionBackend != "" {
-			args = append(args, "--attention-backend", cfg.AttentionBackend)
-		}
-		// Speculative decoding: require both Enabled=true and a non-empty
-		// draft Model ref. Silent-skip with a log line when misconfigured;
-		// the reconciler also sets a status condition via ValidateVLLMConfig.
-		if cfg.Speculative != nil && cfg.Speculative.Enabled != nil && *cfg.Speculative.Enabled {
-			if cfg.Speculative.Model == "" {
-				vllmLog.Error(nil,
-					"speculative decoding enabled but spec.vllmConfig.speculative.model is empty; skipping speculative flags",
-					"inferenceService", isvc.Name,
-					"namespace", isvc.Namespace,
-				)
-			} else {
-				args = append(args, "--speculative-model", cfg.Speculative.Model)
-				if cfg.Speculative.NumSpeculativeTokens != nil {
-					args = append(args, "--num-speculative-tokens",
-						fmt.Sprintf("%d", *cfg.Speculative.NumSpeculativeTokens))
-				}
-			}
-		}
-		if cfg.EnableExpertParallel != nil && *cfg.EnableExpertParallel {
-			args = append(args, "--enable-expert-parallel")
-		}
+		args = appendEnableExpertParallel(args, cfg.EnableExpertParallel)
 	}
 
 	gpuCount := resolveGPUCount(isvc, model)
 	if gpuCount > 1 && (cfg == nil || cfg.TensorParallelSize == nil) {
-		args = append(args, "--tensor-parallel-size", fmt.Sprintf("%d", gpuCount))
+		args = appendTensorParallelSize(args, &gpuCount)
+	}
+
+	args, err = appendMaxNumSeqsArgs(args, isvc.Spec.ParallelSlots, isvc.Spec.ExtraArgs)
+	if err != nil {
+		vllmLog.Info(
+			err.Error(),
+			"inferenceService", isvc.Name,
+			"namespace", isvc.Namespace,
+		)
 	}
 
 	if len(isvc.Spec.ExtraArgs) > 0 {
@@ -139,22 +113,6 @@ func (b *VLLMBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, model 
 	}
 
 	return args
-}
-
-// resolveKVCacheDtype returns the custom vLLM KV cache type when set,
-// otherwise the enum-validated standard value (dereferenced; nil → ""). Lets
-// users opt into vLLM image-specific cache formats (TurboQuant turbo2 from
-// v0.20+, future variants) without expanding the CRD enum on every release,
-// while keeping the standard field discoverable for the common case. Mirrors
-// resolveCacheType on the llama.cpp side.
-func resolveKVCacheDtype(custom string, standard *string) string {
-	if custom != "" {
-		return custom
-	}
-	if standard == nil {
-		return ""
-	}
-	return *standard
 }
 
 // ValidateVLLMConfig checks the VLLMConfig for structurally invalid

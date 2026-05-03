@@ -5,9 +5,14 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 )
+
+// llamaCppLog is a package-level logger used for construction-time warnings from
+// BuildArgs.
+var llamaCppLog = logf.Log.WithName("runtime.llamacpp")
 
 // LlamaCppBackend generates container configuration for the llama.cpp inference server.
 type LlamaCppBackend struct{}
@@ -61,8 +66,17 @@ func (b *LlamaCppBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, mo
 		}
 	}
 
+	var err error
+
 	args = appendContextSizeArgs(args, isvc.Spec.ContextSize)
-	args = appendParallelSlotsArgs(args, isvc.Spec.ParallelSlots)
+	args, err = appendParallelSlotsArgs(args, isvc.Spec.ParallelSlots, isvc.Spec.ExtraArgs)
+	if err != nil {
+		llamaCppLog.Info(
+			err.Error(),
+			"inferenceService", isvc.Name,
+			"namespace", isvc.Namespace,
+		)
+	}
 	args = appendFlashAttentionArgs(args, isvc.Spec.FlashAttention, gpuCount)
 	args = appendJinjaArgs(args, isvc.Spec.Jinja)
 	args = appendCacheTypeArgs(args, resolveCacheType(isvc.Spec.CacheTypeCustomK, isvc.Spec.CacheTypeK), resolveCacheType(isvc.Spec.CacheTypeCustomV, isvc.Spec.CacheTypeV))

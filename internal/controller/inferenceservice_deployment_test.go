@@ -871,7 +871,7 @@ var _ = Describe("Context Size Configuration", func() {
 			Expect(args).NotTo(ContainElement("--parallel"))
 		})
 
-		It("should NOT include --parallel flag when parallelSlots is 1", func() {
+		It("should include --parallel 1 when parallelSlots is 1", func() {
 			replicas := int32(1)
 			parallelSlots := int32(1)
 			isvc := &inferencev1alpha1.InferenceService{
@@ -890,7 +890,8 @@ var _ = Describe("Context Size Configuration", func() {
 			deployment := reconciler.constructDeployment(isvc, model, 1)
 
 			args := deployment.Spec.Template.Spec.Containers[0].Args
-			Expect(args).NotTo(ContainElement("--parallel"))
+			Expect(args).To(ContainElement("--parallel"))
+			Expect(args).To(ContainElement("1"))
 		})
 	})
 

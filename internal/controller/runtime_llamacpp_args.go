@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"errors"
 	"fmt"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
@@ -47,11 +48,15 @@ func appendContextSizeArgs(args []string, contextSize *int32) []string {
 	return args
 }
 
-func appendParallelSlotsArgs(args []string, parallelSlots *int32) []string {
-	if parallelSlots != nil && *parallelSlots > 1 {
-		return append(args, "--parallel", fmt.Sprintf("%d", *parallelSlots))
+func appendParallelSlotsArgs(args []string, parallelSlots *int32, extraArgs []string) ([]string, error) {
+	// NOTE(#339): extra args has precedence.
+	if parallelSlots != nil && *parallelSlots >= 1 {
+		if hasMatchingExtraArg(extraArgs, "parallel") {
+			return args, errors.New("spec.parallelSlots is enabled but `--parallel` is already defined in spec.ExtraArgs, skipping")
+		}
+		return append(args, "--parallel", fmt.Sprintf("%d", *parallelSlots)), nil
 	}
-	return args
+	return args, nil
 }
 
 func appendFlashAttentionArgs(args []string, flashAttention *bool, gpuCount int32) []string {
@@ -68,7 +73,7 @@ func appendJinjaArgs(args []string, jinja *bool) []string {
 	return args
 }
 
-func appendCacheTypeArgs(args []string, cacheTypeK, cacheTypeV string) []string {
+func appendCacheTypeArgs(args []string, cacheTypeK string, cacheTypeV string) []string {
 	if cacheTypeK != "" {
 		args = append(args, "--cache-type-k", cacheTypeK)
 	}

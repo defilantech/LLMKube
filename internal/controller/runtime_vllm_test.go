@@ -71,107 +71,222 @@ func TestVLLMBuildArgs(t *testing.T) {
 
 	cases := []struct {
 		name        string
-		cfg         *inferencev1alpha1.VLLMConfig
+		spec        *inferencev1alpha1.InferenceServiceSpec
 		contains    []flagCheck
 		notContains []string
 	}{
 		{
 			name: "nil config emits only base flags (model as positional)",
-			cfg:  nil,
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime:    "vllm",
+				ModelRef:   "test-model",
+				VLLMConfig: nil,
+			},
 			// vLLM v0.20+ deprecated --model in favor of a positional argument.
 			// The bare model path appears as args[0]; --model itself must NOT appear.
 			contains:    []flagCheck{{"--host", "0.0.0.0"}, {"--port", "8000"}},
 			notContains: []string{"--model", "--kv-cache-dtype", "--enable-prefix-caching", "--enable-chunked-prefill", "--max-num-batched-tokens", "--attention-backend", "--speculative-model", "--enable-expert-parallel"},
 		},
 		{
-			name:        "empty config emits only base flags",
-			cfg:         &inferencev1alpha1.VLLMConfig{},
+			name: "empty config emits only base flags",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime:    "vllm",
+				ModelRef:   "test-model",
+				VLLMConfig: &inferencev1alpha1.VLLMConfig{},
+			},
 			notContains: []string{"--kv-cache-dtype", "--enable-prefix-caching", "--enable-chunked-prefill", "--max-num-batched-tokens", "--speculative-model", "--enable-expert-parallel"},
 		},
 		{
-			name:        "kvCacheDtype=auto does not emit flag (vLLM default)",
-			cfg:         &inferencev1alpha1.VLLMConfig{KVCacheDtype: ptrString("auto")},
+			name: "kvCacheDtype=auto does not emit flag (vLLM default)",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime:    "vllm",
+				ModelRef:   "test-model",
+				VLLMConfig: &inferencev1alpha1.VLLMConfig{KVCacheDtype: ptrString("auto")},
+			},
 			notContains: []string{"--kv-cache-dtype"},
 		},
 		{
-			name:     "kvCacheDtype=fp8_e5m2 emits flag",
-			cfg:      &inferencev1alpha1.VLLMConfig{KVCacheDtype: ptrString("fp8_e5m2")},
+			name: "kvCacheDtype=fp8_e5m2 emits flag",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime:    "vllm",
+				ModelRef:   "test-model",
+				VLLMConfig: &inferencev1alpha1.VLLMConfig{KVCacheDtype: ptrString("fp8_e5m2")},
+			},
 			contains: []flagCheck{{"--kv-cache-dtype", "fp8_e5m2"}},
 		},
 		{
-			name:     "kvCacheDtype=fp8_e4m3 emits flag",
-			cfg:      &inferencev1alpha1.VLLMConfig{KVCacheDtype: ptrString("fp8_e4m3")},
+			name: "kvCacheDtype=fp8_e4m3 emits flag",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime:    "vllm",
+				ModelRef:   "test-model",
+				VLLMConfig: &inferencev1alpha1.VLLMConfig{KVCacheDtype: ptrString("fp8_e4m3")},
+			},
 			contains: []flagCheck{{"--kv-cache-dtype", "fp8_e4m3"}},
 		},
 		{
-			name:     "kvCacheCustomDtype=turbo2 emits flag (vLLM v0.20+ TurboQuant 2-bit)",
-			cfg:      &inferencev1alpha1.VLLMConfig{KVCacheCustomDtype: "turbo2"},
+			name: "kvCacheCustomDtype=turbo2 emits flag (vLLM v0.20+ TurboQuant 2-bit)",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime:    "vllm",
+				ModelRef:   "test-model",
+				VLLMConfig: &inferencev1alpha1.VLLMConfig{KVCacheCustomDtype: "turbo2"},
+			},
 			contains: []flagCheck{{"--kv-cache-dtype", "turbo2"}},
 		},
 		{
 			name: "kvCacheCustomDtype wins over standard kvCacheDtype when both set",
-			cfg: &inferencev1alpha1.VLLMConfig{
-				KVCacheDtype:       ptrString("fp8_e4m3"),
-				KVCacheCustomDtype: "turbo2",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime:  "vllm",
+				ModelRef: "test-model",
+				VLLMConfig: &inferencev1alpha1.VLLMConfig{
+					KVCacheDtype:       ptrString("fp8_e4m3"),
+					KVCacheCustomDtype: "turbo2",
+				},
 			},
 			contains:    []flagCheck{{"--kv-cache-dtype", "turbo2"}},
 			notContains: []string{"fp8_e4m3"},
 		},
 		{
 			name: "kvCacheCustomDtype empty falls back to standard kvCacheDtype",
-			cfg: &inferencev1alpha1.VLLMConfig{
-				KVCacheDtype:       ptrString("fp8_e5m2"),
-				KVCacheCustomDtype: "",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime:  "vllm",
+				ModelRef: "test-model",
+				VLLMConfig: &inferencev1alpha1.VLLMConfig{
+					KVCacheDtype:       ptrString("fp8_e5m2"),
+					KVCacheCustomDtype: "",
+				},
 			},
 			contains: []flagCheck{{"--kv-cache-dtype", "fp8_e5m2"}},
 		},
 		{
-			name:     "enablePrefixCaching=true emits flag",
-			cfg:      &inferencev1alpha1.VLLMConfig{EnablePrefixCaching: ptrBool(true)},
+			name: "enablePrefixCaching=true emits flag",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime:    "vllm",
+				ModelRef:   "test-model",
+				VLLMConfig: &inferencev1alpha1.VLLMConfig{EnablePrefixCaching: ptrBool(true)},
+			},
 			contains: []flagCheck{{"--enable-prefix-caching", ""}},
 		},
 		{
-			name:        "enablePrefixCaching=false does not emit flag (lets vLLM default)",
-			cfg:         &inferencev1alpha1.VLLMConfig{EnablePrefixCaching: ptrBool(false)},
+			name: "enablePrefixCaching=false does not emit flag (lets vLLM default)",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime:    "vllm",
+				ModelRef:   "test-model",
+				VLLMConfig: &inferencev1alpha1.VLLMConfig{EnablePrefixCaching: ptrBool(false)},
+			},
 			notContains: []string{"--enable-prefix-caching"},
 		},
 		{
-			name:     "enableChunkedPrefill=true emits flag",
-			cfg:      &inferencev1alpha1.VLLMConfig{EnableChunkedPrefill: ptrBool(true)},
+			name: "enableChunkedPrefill=true emits flag",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime:    "vllm",
+				ModelRef:   "test-model",
+				VLLMConfig: &inferencev1alpha1.VLLMConfig{EnableChunkedPrefill: ptrBool(true)},
+			},
 			contains: []flagCheck{{"--enable-chunked-prefill", ""}},
 		},
 		{
-			name:        "enableChunkedPrefill=false does not emit flag",
-			cfg:         &inferencev1alpha1.VLLMConfig{EnableChunkedPrefill: ptrBool(false)},
+			name: "enableChunkedPrefill=false does not emit flag",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime:    "vllm",
+				ModelRef:   "test-model",
+				VLLMConfig: &inferencev1alpha1.VLLMConfig{EnableChunkedPrefill: ptrBool(false)},
+			},
 			notContains: []string{"--enable-chunked-prefill"},
 		},
 		{
-			name:     "maxNumBatchedTokens set emits flag",
-			cfg:      &inferencev1alpha1.VLLMConfig{MaxNumBatchedTokens: ptrInt32(8192)},
+			name: "maxNumBatchedTokens set emits flag",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime:    "vllm",
+				ModelRef:   "test-model",
+				VLLMConfig: &inferencev1alpha1.VLLMConfig{MaxNumBatchedTokens: ptrInt32(8192)},
+			},
 			contains: []flagCheck{{"--max-num-batched-tokens", "8192"}},
 		},
 		{
-			name:        "maxNumBatchedTokens nil does not emit flag",
-			cfg:         &inferencev1alpha1.VLLMConfig{},
+			name: "maxNumBatchedTokens nil does not emit flag",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime:    "vllm",
+				ModelRef:   "test-model",
+				VLLMConfig: &inferencev1alpha1.VLLMConfig{},
+			},
 			notContains: []string{"--max-num-batched-tokens"},
 		},
 		{
-			name:     "attentionBackend=FLASHINFER emits flag (uppercase)",
-			cfg:      &inferencev1alpha1.VLLMConfig{AttentionBackend: "FLASHINFER"},
+			name: "parallelSlots set emits flag (without extraArgs precedence)",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime:       "vllm",
+				ModelRef:      "test-model",
+				ParallelSlots: ptrInt32(1),
+				VLLMConfig:    &inferencev1alpha1.VLLMConfig{},
+			},
+			contains: []flagCheck{{"--max-num-seqs", "1"}},
+		},
+		{
+			name: "parallelSlots set emits flag (with extraArgs precedence)",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime:       "vllm",
+				ModelRef:      "test-model",
+				ExtraArgs:     []string{"--max-num-seqs", "8"},
+				ParallelSlots: ptrInt32(4),
+			},
+			// NOTE: Since extraArgs are always last in position but still have priority
+			// and containsArgs helper function always validate first occurrence, having
+			// --max-num-seqs 8 case true mean that no duplicate due to parallelSlots was
+			// found along the way.
+			contains: []flagCheck{{"--max-num-seqs", "8"}},
+		},
+		{
+			name: "parallelSlots set emits flag (with extraArgs inline precedence)",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime:       "vllm",
+				ModelRef:      "test-model",
+				ExtraArgs:     []string{"--max-num-seqs=8"},
+				ParallelSlots: ptrInt32(4),
+			},
+			// NOTE: Since extraArgs are always last in position but still have priority
+			// and containsArgs helper function always validate first occurrence, having
+			// --max-num-seqs 8 case true mean that no duplicate due to parallelSlots was
+			// found along the way.
+			contains: []flagCheck{{"--max-num-seqs=8", ""}},
+		},
+		{
+			name: "parallelSlots nil does not emit flag",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime:    "vllm",
+				ModelRef:   "test-model",
+				VLLMConfig: &inferencev1alpha1.VLLMConfig{},
+			},
+			notContains: []string{"--max-num-seqs"},
+		},
+		{
+			name: "attentionBackend=FLASHINFER emits flag (uppercase)",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime:    "vllm",
+				ModelRef:   "test-model",
+				VLLMConfig: &inferencev1alpha1.VLLMConfig{AttentionBackend: "FLASHINFER"},
+			},
 			contains: []flagCheck{{"--attention-backend", "FLASHINFER"}},
 		},
 		{
-			name:     "attentionBackend=flashinfer emits flag (lowercase compat)",
-			cfg:      &inferencev1alpha1.VLLMConfig{AttentionBackend: "flashinfer"},
+			name: "attentionBackend=flashinfer emits flag (lowercase compat)",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime:    "vllm",
+				ModelRef:   "test-model",
+				VLLMConfig: &inferencev1alpha1.VLLMConfig{AttentionBackend: "flashinfer"},
+			},
 			contains: []flagCheck{{"--attention-backend", "flashinfer"}},
 		},
 		{
 			name: "speculative enabled+model emits both flags",
-			cfg: &inferencev1alpha1.VLLMConfig{
-				Speculative: &inferencev1alpha1.SpeculativeConfig{
-					Enabled:              ptrBool(true),
-					Model:                "Qwen/Qwen3.6-4B",
-					NumSpeculativeTokens: ptrInt32(4),
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime:  "vllm",
+				ModelRef: "test-model",
+				VLLMConfig: &inferencev1alpha1.VLLMConfig{
+					Speculative: &inferencev1alpha1.SpeculativeConfig{
+						Enabled:              ptrBool(true),
+						Model:                "Qwen/Qwen3.6-4B",
+						NumSpeculativeTokens: ptrInt32(4),
+					},
 				},
 			},
 			contains: []flagCheck{
@@ -181,46 +296,67 @@ func TestVLLMBuildArgs(t *testing.T) {
 		},
 		{
 			name: "speculative enabled without model skips both flags",
-			cfg: &inferencev1alpha1.VLLMConfig{
-				Speculative: &inferencev1alpha1.SpeculativeConfig{
-					Enabled:              ptrBool(true),
-					NumSpeculativeTokens: ptrInt32(4),
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime:  "vllm",
+				ModelRef: "test-model",
+				VLLMConfig: &inferencev1alpha1.VLLMConfig{
+					Speculative: &inferencev1alpha1.SpeculativeConfig{
+						Enabled:              ptrBool(true),
+						NumSpeculativeTokens: ptrInt32(4),
+					},
 				},
 			},
 			notContains: []string{"--speculative-model", "--num-speculative-tokens"},
 		},
 		{
 			name: "speculative disabled does not emit flags even with model set",
-			cfg: &inferencev1alpha1.VLLMConfig{
-				Speculative: &inferencev1alpha1.SpeculativeConfig{
-					Enabled: ptrBool(false),
-					Model:   "Qwen/Qwen3.6-4B",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime:  "vllm",
+				ModelRef: "test-model",
+				VLLMConfig: &inferencev1alpha1.VLLMConfig{
+					Speculative: &inferencev1alpha1.SpeculativeConfig{
+						Enabled: ptrBool(false),
+						Model:   "Qwen/Qwen3.6-4B",
+					},
 				},
 			},
 			notContains: []string{"--speculative-model", "--num-speculative-tokens"},
 		},
 		{
-			name:     "enableExpertParallel=true emits flag",
-			cfg:      &inferencev1alpha1.VLLMConfig{EnableExpertParallel: ptrBool(true)},
+			name: "enableExpertParallel=true emits flag",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime:    "vllm",
+				ModelRef:   "test-model",
+				VLLMConfig: &inferencev1alpha1.VLLMConfig{EnableExpertParallel: ptrBool(true)},
+			},
 			contains: []flagCheck{{"--enable-expert-parallel", ""}},
 		},
 		{
-			name:        "enableExpertParallel=false does not emit flag",
-			cfg:         &inferencev1alpha1.VLLMConfig{EnableExpertParallel: ptrBool(false)},
+			name: "enableExpertParallel=false does not emit flag",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime:    "vllm",
+				ModelRef:   "test-model",
+				VLLMConfig: &inferencev1alpha1.VLLMConfig{EnableExpertParallel: ptrBool(false)},
+			},
 			notContains: []string{"--enable-expert-parallel"},
 		},
 		{
 			name: "full agentic config emits all flags together",
-			cfg: &inferencev1alpha1.VLLMConfig{
-				TensorParallelSize:   ptrInt32(2),
-				MaxModelLen:          ptrInt32(131072),
-				Quantization:         "fp8",
-				Dtype:                "bfloat16",
-				KVCacheDtype:         ptrString("fp8_e5m2"),
-				EnablePrefixCaching:  ptrBool(true),
-				EnableChunkedPrefill: ptrBool(true),
-				MaxNumBatchedTokens:  ptrInt32(8192),
-				AttentionBackend:     "FLASHINFER",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime:       "vllm",
+				ModelRef:      "test-model",
+				ParallelSlots: ptrInt32(1),
+				VLLMConfig: &inferencev1alpha1.VLLMConfig{
+					TensorParallelSize:   ptrInt32(2),
+					MaxModelLen:          ptrInt32(131072),
+					Quantization:         "fp8",
+					Dtype:                "bfloat16",
+					KVCacheDtype:         ptrString("fp8_e5m2"),
+					EnablePrefixCaching:  ptrBool(true),
+					EnableChunkedPrefill: ptrBool(true),
+					MaxNumBatchedTokens:  ptrInt32(8192),
+					AttentionBackend:     "FLASHINFER",
+				},
 			},
 			contains: []flagCheck{
 				{"--tensor-parallel-size", "2"},
@@ -231,6 +367,7 @@ func TestVLLMBuildArgs(t *testing.T) {
 				{"--enable-prefix-caching", ""},
 				{"--enable-chunked-prefill", ""},
 				{"--max-num-batched-tokens", "8192"},
+				{"--max-num-seqs", "1"},
 				{"--attention-backend", "FLASHINFER"},
 			},
 		},
@@ -240,11 +377,7 @@ func TestVLLMBuildArgs(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			isvc := &inferencev1alpha1.InferenceService{
 				ObjectMeta: metav1.ObjectMeta{Name: "isvc-" + strings.ReplaceAll(tc.name, " ", "-"), Namespace: "default"},
-				Spec: inferencev1alpha1.InferenceServiceSpec{
-					Runtime:    "vllm",
-					ModelRef:   "test-model",
-					VLLMConfig: tc.cfg,
-				},
+				Spec:       *tc.spec,
 			}
 			args := backend.BuildArgs(isvc, model, modelPath, port)
 			for _, fc := range tc.contains {
