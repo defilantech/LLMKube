@@ -41,7 +41,12 @@ models:
     size: "3.8B"
     quantization: "Q5_K_M"
     source: "https://huggingface.co/bartowski/microsoft_Phi-4-mini-instruct-GGUF/resolve/main/microsoft_Phi-4-mini-instruct-Q5_K_M.gguf"
-    context_size: 128000
+    # Default context kept at 8192 even though Phi-4 supports 128K. Reason:
+    # the KV cache for 128K context on a 3.8B model exceeds the catalog's
+    # recommended 4Gi memory request, OOMing on first deploy. Users who need
+    # the full 128K can override via spec.contextSize on InferenceService or
+    # --context on the CLI. See #386.
+    context_size: 8192
     gpu_layers: 32
     use_cases:
       - "reasoning"
