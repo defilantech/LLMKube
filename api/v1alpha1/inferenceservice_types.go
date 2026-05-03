@@ -311,6 +311,19 @@ type InferenceServiceSpec struct {
 	// +optional
 	Priority string `json:"priority,omitempty"`
 
+	// EvictionProtection marks this service as ineligible for memory-pressure
+	// eviction by the metal-agent watchdog. Use this for production workloads
+	// that should never be silently stopped under memory pressure, even when
+	// they are the lowest-priority option. The agent's per-process pickEvictionTarget
+	// excludes protected processes from the eviction-candidate set; the
+	// MemoryPressure status condition is still patched on protected services
+	// for operator visibility.
+	//
+	// Has no effect when --eviction-enabled is unset on the metal-agent or
+	// for non-llama-server runtimes (oMLX, Ollama). Defaults to false.
+	// +optional
+	EvictionProtection *bool `json:"evictionProtection,omitempty"`
+
 	// PriorityClassName allows specifying a custom Kubernetes PriorityClass.
 	// Takes precedence over the Priority field if set.
 	// +optional

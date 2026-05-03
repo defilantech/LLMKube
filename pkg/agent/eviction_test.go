@@ -38,12 +38,15 @@ func TestPickEvictionTarget_LowestPriorityFirst(t *testing.T) {
 			StartedAt: time.Now(),
 		},
 	}
-	target := pickEvictionTarget(processes, nil)
+	target, reason := pickEvictionTarget(processes, nil)
 	if target == nil {
-		t.Fatal("pickEvictionTarget returned nil; expected svc-low")
+		t.Fatalf("pickEvictionTarget returned nil (reason=%q); expected svc-low", reason)
 	}
 	if target.Name != "svc-low" {
 		t.Errorf("evicted %q, want %q", target.Name, "svc-low")
+	}
+	if reason != "" {
+		t.Errorf("reason should be empty when target returned, got %q", reason)
 	}
 }
 
@@ -62,7 +65,7 @@ func TestPickEvictionTarget_TieBreakByRSS(t *testing.T) {
 		"small.gguf": 1 << 30,
 		"large.gguf": 10 << 30,
 	}
-	target := pickEvictionTarget(processes, rss)
+	target, _ := pickEvictionTarget(processes, rss)
 	if target == nil || target.Name != "large" {
 		t.Errorf("expected eviction of larger-RSS process %q, got %v", "large", target)
 	}
@@ -84,22 +87,119 @@ func TestPickEvictionTarget_TieBreakByStartedAt(t *testing.T) {
 	// Same priority, same RSS lookup key (both point at same basename → same RSS),
 	// so the tie-break should pick the older one.
 	rss := map[string]uint64{"m.gguf": 5 << 30}
-	target := pickEvictionTarget(processes, rss)
+	target, _ := pickEvictionTarget(processes, rss)
 	if target == nil || target.Name != "older" {
 		t.Errorf("expected eviction of older process, got %v", target)
 	}
 }
 
-func TestPickEvictionTarget_NoEligibleCandidates(t *testing.T) {
-	if got := pickEvictionTarget(nil, nil); got != nil {
-		t.Errorf("nil map should return nil, got %v", got)
+func TestPickEvictionTarget_NilAndEmptyMaps(t *testing.T) {
+	if got, reason := pickEvictionTarget(nil, nil); got != nil || reason != SkipReasonEmpty {
+		t.Errorf("nil map should return (nil, %q), got (%v, %q)", SkipReasonEmpty, got, reason)
 	}
-	if got := pickEvictionTarget(map[string]*ManagedProcess{}, nil); got != nil {
-		t.Errorf("empty map should return nil, got %v", got)
+	if got, reason := pickEvictionTarget(map[string]*ManagedProcess{}, nil); got != nil || reason != SkipReasonEmpty {
+		t.Errorf("empty map should return (nil, %q), got (%v, %q)", SkipReasonEmpty, got, reason)
 	}
 }
 
-func TestPickEvictionTarget_SkipsNonLlamaServerProcesses(t *testing.T) {
+// TestPickEvictionTarget_FloorReturnsNilForLastProcess locks down the PR-2B
+// safety net for single-tenant setups. With exactly one managed process,
+// the selector refuses to evict regardless of priority — killing the only
+// workload is never an improvement over leaving it alone.
+func TestPickEvictionTarget_FloorReturnsNilForLastProcess(t *testing.T) {
+	processes := map[string]*ManagedProcess{
+		"default/only": {
+			Name: "only-svc", Namespace: "default", Priority: "batch",
+			ModelPath: "/models/only.gguf", StartedAt: time.Now(),
+		},
+	}
+	got, reason := pickEvictionTarget(processes, nil)
+	if got != nil {
+		t.Errorf("floor must refuse to evict the last managed process, got %v", got)
+	}
+	if reason != SkipReasonFloor {
+		t.Errorf("reason = %q, want %q", reason, SkipReasonFloor)
+	}
+}
+
+// TestPickEvictionTarget_FloorAllowsEvictionAtTwoUnprotected is the regression
+// guard for the floor's exact semantics: counts the FULL processes map,
+// not the candidate set. Two unprotected processes are both eligible, and
+// the lower-priority one gets evicted as before.
+func TestPickEvictionTarget_FloorAllowsEvictionAtTwoUnprotected(t *testing.T) {
+	processes := map[string]*ManagedProcess{
+		"default/svc-low": {
+			Name: "svc-low", Namespace: "default", Priority: "low",
+			ModelPath: "/models/low.gguf", StartedAt: time.Now(),
+		},
+		"default/svc-high": {
+			Name: "svc-high", Namespace: "default", Priority: "high",
+			ModelPath: "/models/high.gguf", StartedAt: time.Now(),
+		},
+	}
+	target, reason := pickEvictionTarget(processes, nil)
+	if target == nil {
+		t.Fatalf("floor must permit eviction at len=2 (reason=%q)", reason)
+	}
+	if target.Name != "svc-low" {
+		t.Errorf("evicted %q, want %q", target.Name, "svc-low")
+	}
+}
+
+// TestPickEvictionTarget_SkipsProtectedFromCandidates locks down the
+// per-workload opt-out: a single unprotected process alongside a protected
+// one is the only eviction target, even if the protected one has lower
+// priority. (Two managed processes total → floor permits eviction.)
+func TestPickEvictionTarget_SkipsProtectedFromCandidates(t *testing.T) {
+	processes := map[string]*ManagedProcess{
+		"default/protected-low": {
+			Name: "protected-low", Namespace: "default", Priority: "batch",
+			ModelPath: "/models/p.gguf", StartedAt: time.Now(),
+			EvictionProtection: true,
+		},
+		"default/unprotected-high": {
+			Name: "unprotected-high", Namespace: "default", Priority: "high",
+			ModelPath: "/models/u.gguf", StartedAt: time.Now(),
+		},
+	}
+	target, _ := pickEvictionTarget(processes, nil)
+	if target == nil || target.Name != "unprotected-high" {
+		t.Errorf("expected eviction of the only unprotected process, got %v", target)
+	}
+}
+
+// TestPickEvictionTarget_AllProtectedReturnsAllProtectedReason verifies
+// that when every llama-server-eligible process is opted out, the selector
+// returns nil with a reason operators can act on (review their
+// evictionProtection settings). Floor passes (len=2), so this is purely
+// the protected-set check.
+func TestPickEvictionTarget_AllProtectedReturnsAllProtectedReason(t *testing.T) {
+	processes := map[string]*ManagedProcess{
+		"default/p1": {
+			Name: "p1", Namespace: "default", Priority: "low",
+			ModelPath: "/models/a.gguf", StartedAt: time.Now(),
+			EvictionProtection: true,
+		},
+		"default/p2": {
+			Name: "p2", Namespace: "default", Priority: "low",
+			ModelPath: "/models/b.gguf", StartedAt: time.Now(),
+			EvictionProtection: true,
+		},
+	}
+	got, reason := pickEvictionTarget(processes, nil)
+	if got != nil {
+		t.Errorf("all-protected must return nil, got %v", got)
+	}
+	if reason != SkipReasonAllProtected {
+		t.Errorf("reason = %q, want %q", reason, SkipReasonAllProtected)
+	}
+}
+
+// TestPickEvictionTarget_AllRuntimeIneligibleReturnsRuntimeReason is the
+// pre-existing oMLX/Ollama path. Reason renamed from the implicit catch-all
+// to runtime_ineligible so operators see "no llama-server workloads to
+// evict here" rather than thinking they have a protection-config issue.
+func TestPickEvictionTarget_AllRuntimeIneligibleReturnsRuntimeReason(t *testing.T) {
 	processes := map[string]*ManagedProcess{
 		"default/ollama-only": {
 			Name: "ollama-model", Namespace: "default", Priority: "low",
@@ -112,8 +212,12 @@ func TestPickEvictionTarget_SkipsNonLlamaServerProcesses(t *testing.T) {
 			ModelID: "mlx-community/Qwen3-4B-4bit", StartedAt: time.Now(),
 		},
 	}
-	if got := pickEvictionTarget(processes, nil); got != nil {
-		t.Errorf("non-llama-server processes (ModelID set) must be skipped, got %v", got)
+	got, reason := pickEvictionTarget(processes, nil)
+	if got != nil {
+		t.Errorf("non-llama-server processes must be skipped, got %v", got)
+	}
+	if reason != SkipReasonRuntimeIneligible {
+		t.Errorf("reason = %q, want %q", reason, SkipReasonRuntimeIneligible)
 	}
 }
 
@@ -131,7 +235,7 @@ func TestPickEvictionTarget_UnknownPriorityTreatedAsNormal(t *testing.T) {
 	// A garbage value is treated as "normal", same priority as "normal",
 	// so the tie-break (larger RSS, then older) picks "normal" because it
 	// started earlier.
-	target := pickEvictionTarget(processes, nil)
+	target, _ := pickEvictionTarget(processes, nil)
 	if target == nil {
 		t.Fatal("expected one of the two candidates")
 	}

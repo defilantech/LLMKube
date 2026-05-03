@@ -21,11 +21,13 @@ import (
 	"testing"
 	"time"
 
+	dto "github.com/prometheus/client_model/go"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
@@ -241,6 +243,216 @@ func TestEnsureProcess_BlockedUnderCriticalSkipsRespawn(t *testing.T) {
 	if _, exists := a.processes["default/svc-a"]; exists {
 		t.Error("ensureProcess respawned despite pressureBlocked guard")
 	}
+}
+
+// TestHandleMemoryPressure_PatchesConditionForLateSpawnedProcess locks down
+// the PR-2B fix for the gap PR-2A had: a process that spawns AFTER a level
+// transition would not get a MemoryPressure condition until the next
+// transition. Now the handler patches any key not yet observed at the
+// current level, so a late-arrival sees the condition on the very next
+// watchdog tick.
+func TestHandleMemoryPressure_PatchesConditionForLateSpawnedProcess(t *testing.T) {
+	earlyISvc := newPressureTestISvc("svc-early", "normal")
+	lateISvc := newPressureTestISvc("svc-late", "normal")
+	a := newPressureTestAgent(t, earlyISvc, lateISvc)
+
+	// Simulate the agent has already observed svc-early at Critical (the
+	// transition tick fired before svc-late spawned).
+	a.processes["default/svc-early"] = &ManagedProcess{
+		Name: "svc-early", Namespace: "default", ModelPath: "/m.gguf",
+		Priority: "normal", StartedAt: time.Now(),
+	}
+	a.lastPressureLevel = MemoryPressureCritical
+	a.pressureObserved["default/svc-early"] = MemoryPressureCritical
+
+	// Now svc-late spawns mid-pressure, then the watchdog ticks again at
+	// the same level (no transition).
+	a.processes["default/svc-late"] = &ManagedProcess{
+		Name: "svc-late", Namespace: "default", ModelPath: "/m.gguf",
+		Priority: "normal", StartedAt: time.Now(),
+	}
+	a.handleMemoryPressure(context.Background(), MemoryPressureCritical, MemoryStats{
+		TotalMemory: 100 << 30, TotalRSS: 25 << 30,
+	})
+
+	got := &inferencev1alpha1.InferenceService{}
+	if err := a.config.K8sClient.Get(context.Background(),
+		types.NamespacedName{Namespace: "default", Name: "svc-late"}, got); err != nil {
+		t.Fatalf("get svc-late: %v", err)
+	}
+	cond := meta.FindStatusCondition(got.Status.Conditions, ConditionMemoryPressure)
+	if cond == nil {
+		t.Fatal("late-spawned process must receive a MemoryPressure condition on the next tick")
+	}
+	if cond.Reason != ReasonMemoryCritical {
+		t.Errorf("condition reason = %q, want %q", cond.Reason, ReasonMemoryCritical)
+	}
+
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.pressureObserved["default/svc-late"] != MemoryPressureCritical {
+		t.Error("svc-late must be marked observed at Critical after the patch")
+	}
+}
+
+// countingClient wraps the fake client to track how many Status().Update
+// calls land on the apiserver. We use it to verify that the
+// already-observed short-circuit prevents redundant patches.
+type countingStatusClient struct {
+	client.Client
+	updates *int
+}
+
+func (c countingStatusClient) Status() client.SubResourceWriter {
+	return countingStatusWriter{SubResourceWriter: c.Client.Status(), updates: c.updates}
+}
+
+type countingStatusWriter struct {
+	client.SubResourceWriter
+	updates *int
+}
+
+func (w countingStatusWriter) Update(
+	ctx context.Context, obj client.Object, opts ...client.SubResourceUpdateOption,
+) error {
+	*w.updates++
+	return w.SubResourceWriter.Update(ctx, obj, opts...)
+}
+
+// TestHandleMemoryPressure_DoesNotRePatchAlreadyObserved verifies the
+// other side of the late-spawn fix: a key that has been observed at the
+// current level must not generate another Status().Update on subsequent
+// ticks at the same level. Without this, sustained Critical pressure would
+// thrash the apiserver every tick.
+func TestHandleMemoryPressure_DoesNotRePatchAlreadyObserved(t *testing.T) {
+	isvc := newPressureTestISvc("svc-a", "normal")
+	a := newPressureTestAgent(t, isvc)
+	updates := 0
+	a.config.K8sClient = countingStatusClient{Client: a.config.K8sClient, updates: &updates}
+
+	a.processes["default/svc-a"] = &ManagedProcess{
+		Name: "svc-a", Namespace: "default", ModelPath: "/m.gguf",
+		Priority: "normal", StartedAt: time.Now(),
+	}
+
+	stats := MemoryStats{TotalMemory: 100 << 30, TotalRSS: 25 << 30}
+	a.handleMemoryPressure(context.Background(), MemoryPressureCritical, stats)
+	if updates != 1 {
+		t.Errorf("first tick at Critical should patch once, got %d", updates)
+	}
+	a.handleMemoryPressure(context.Background(), MemoryPressureCritical, stats)
+	if updates != 1 {
+		t.Errorf("second tick at same Critical level must not re-patch, got %d total updates", updates)
+	}
+}
+
+// TestHandleMemoryPressure_IncrementsSkippedCounter is the table-driven
+// regression guard for the new evictions_skipped_total metric. Each
+// scenario forces a different skip path and asserts the labelled counter
+// ticks exactly once.
+func TestHandleMemoryPressure_IncrementsSkippedCounter(t *testing.T) {
+	tests := []struct {
+		name           string
+		evictionEnable bool
+		level          MemoryPressureLevel
+		processes      func(*MetalAgent)
+		stats          MemoryStats
+		wantReason     string
+	}{
+		{
+			name:           "disabled at critical",
+			evictionEnable: false,
+			level:          MemoryPressureCritical,
+			processes: func(a *MetalAgent) {
+				a.processes["default/svc-a"] = &ManagedProcess{
+					Name: "svc-a", Namespace: "default", ModelPath: "/m.gguf",
+					Priority: "low", StartedAt: time.Now(),
+				}
+			},
+			stats:      MemoryStats{TotalMemory: 100 << 30, TotalRSS: 80 << 30},
+			wantReason: "disabled",
+		},
+		{
+			name:           "enabled but below guard at critical",
+			evictionEnable: true,
+			level:          MemoryPressureCritical,
+			processes: func(a *MetalAgent) {
+				a.processes["default/svc-a"] = &ManagedProcess{
+					Name: "svc-a", Namespace: "default", ModelPath: "/m.gguf",
+					Priority: "low", StartedAt: time.Now(),
+				}
+				a.processes["default/svc-b"] = &ManagedProcess{
+					Name: "svc-b", Namespace: "default", ModelPath: "/m.gguf",
+					Priority: "low", StartedAt: time.Now(),
+				}
+			},
+			stats:      MemoryStats{TotalMemory: 100 << 30, TotalRSS: 30 << 30},
+			wantReason: "below_guard",
+		},
+		{
+			name:           "floor with one process",
+			evictionEnable: true,
+			level:          MemoryPressureCritical,
+			processes: func(a *MetalAgent) {
+				a.processes["default/svc-only"] = &ManagedProcess{
+					Name: "svc-only", Namespace: "default", ModelPath: "/m.gguf",
+					Priority: "low", StartedAt: time.Now(),
+				}
+			},
+			stats:      MemoryStats{TotalMemory: 100 << 30, TotalRSS: 80 << 30},
+			wantReason: SkipReasonFloor,
+		},
+		{
+			name:           "all protected",
+			evictionEnable: true,
+			level:          MemoryPressureCritical,
+			processes: func(a *MetalAgent) {
+				a.processes["default/p1"] = &ManagedProcess{
+					Name: "p1", Namespace: "default", ModelPath: "/m.gguf",
+					Priority: "low", StartedAt: time.Now(),
+					EvictionProtection: true,
+				}
+				a.processes["default/p2"] = &ManagedProcess{
+					Name: "p2", Namespace: "default", ModelPath: "/m.gguf",
+					Priority: "low", StartedAt: time.Now(),
+					EvictionProtection: true,
+				}
+			},
+			stats:      MemoryStats{TotalMemory: 100 << 30, TotalRSS: 80 << 30},
+			wantReason: SkipReasonAllProtected,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			a := newPressureTestAgent(t)
+			a.config.EvictionEnabled = tc.evictionEnable
+			a.executor = stubExecutor{}
+			a.registry = NewServiceRegistry(a.config.K8sClient, "", newNopLogger())
+			tc.processes(a)
+
+			before := readSkippedCounter(t, tc.wantReason)
+			a.handleMemoryPressure(context.Background(), tc.level, tc.stats)
+			after := readSkippedCounter(t, tc.wantReason)
+
+			if got := after - before; got != 1 {
+				t.Errorf("evictions_skipped_total{reason=%q} delta = %v, want 1", tc.wantReason, got)
+			}
+		})
+	}
+}
+
+// readSkippedCounter pulls the current value of evictions_skipped_total
+// for a given reason label out of the shared Prometheus registry. Skipped
+// counters survive across tests in this package because the registry is a
+// process-global; tests measure deltas instead of absolute values.
+func readSkippedCounter(t *testing.T, reason string) float64 {
+	t.Helper()
+	m := &dto.Metric{}
+	if err := evictionsSkippedTotal.WithLabelValues(reason).Write(m); err != nil {
+		t.Fatalf("read counter: %v", err)
+	}
+	return m.GetCounter().GetValue()
 }
 
 // TestHandleMemoryPressure_NormalClearsBlockedSet verifies that when pressure

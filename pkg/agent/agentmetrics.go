@@ -110,6 +110,18 @@ var (
 		},
 	)
 
+	evictionsSkippedTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llmkube_metal_agent_evictions_skipped_total",
+			Help: "Total number of times the watchdog wanted to evict but did not. " +
+				"Reasons: 'disabled' (eviction CLI flag off), 'below_guard' (LLMKube " +
+				"not responsible for >50% of system RSS), 'floor' (would have left " +
+				"zero managed processes), 'all_protected' (every candidate has " +
+				"EvictionProtection=true), 'empty' (no managed processes).",
+		},
+		[]string{"reason"},
+	)
+
 	watchConsecutiveFailures = prometheus.NewGauge(
 		prometheus.GaugeOpts{
 			Name: "llmkube_metal_agent_watch_consecutive_failures",
@@ -182,6 +194,7 @@ func init() {
 		processRSSBytes,
 		memoryPressureLevelGauge,
 		evictionsTotal,
+		evictionsSkippedTotal,
 		watchConsecutiveFailures,
 		fatalExitsTotal,
 		applePowerCombinedWatts,

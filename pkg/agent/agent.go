@@ -134,6 +134,12 @@ type MetalAgent struct {
 	// watchdog. Used to gate respawn (above) and to detect transitions for
 	// status condition updates.
 	lastPressureLevel MemoryPressureLevel
+	// pressureObserved records the pressure level at which each managed
+	// process key has already received a MemoryPressure condition patch.
+	// Lets handleMemoryPressure patch new (late-spawned) processes at the
+	// current level without re-patching ones already observed at it.
+	// Reset on every level transition.
+	pressureObserved map[string]MemoryPressureLevel
 }
 
 // ManagedProcess represents a running inference process (llama-server, oMLX, or Ollama model).
@@ -157,6 +163,13 @@ type ManagedProcess struct {
 	// memory-pressure eviction selector to pick the lowest-priority running
 	// process when system memory is critical. Empty defaults to "normal".
 	Priority string
+
+	// EvictionProtection mirrors InferenceService.Spec.EvictionProtection
+	// at spawn time. When true, the memory-pressure eviction selector
+	// excludes this process from its candidate set. The MemoryPressure
+	// status condition is still patched on protected services so operators
+	// can see system pressure even when their workload is shielded from it.
+	EvictionProtection bool
 }
 
 // NewMetalAgent creates a new Metal agent instance
@@ -185,12 +198,13 @@ func NewMetalAgent(config MetalAgentConfig) *MetalAgent {
 	}
 
 	return &MetalAgent{
-		config:          config,
-		processes:       make(map[string]*ManagedProcess),
-		logger:          logger.With("component", "metal-agent"),
-		memoryProvider:  provider,
-		memoryFraction:  fraction,
-		pressureBlocked: make(map[string]bool),
+		config:           config,
+		processes:        make(map[string]*ManagedProcess),
+		logger:           logger.With("component", "metal-agent"),
+		memoryProvider:   provider,
+		memoryFraction:   fraction,
+		pressureBlocked:  make(map[string]bool),
+		pressureObserved: make(map[string]MemoryPressureLevel),
 	}
 }
 
@@ -657,6 +671,11 @@ func (a *MetalAgent) ensureProcess(ctx context.Context, isvc *inferencev1alpha1.
 	// Capture the workload's priority enum at spawn time so the eviction
 	// selector can rank running processes without re-reading the CRD.
 	process.Priority = isvc.Spec.Priority
+	// Capture eviction protection so the selector can filter the candidate
+	// set without round-tripping to the apiserver under memory pressure.
+	if isvc.Spec.EvictionProtection != nil {
+		process.EvictionProtection = *isvc.Spec.EvictionProtection
+	}
 
 	// Store process and update metrics
 	a.mu.Lock()
