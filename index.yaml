@@ -4,6 +4,33 @@ entries:
   - annotations:
       helm.sh/resource-policy: keep
     apiVersion: v2
+    appVersion: 0.7.6
+    created: "2026-05-03T19:46:20.828600579Z"
+    description: A Helm chart for LLMKube - Kubernetes operator for GPU-accelerated
+      LLM inference
+    digest: c37c561d38ea42d5f089b5dc3fb068c43423129e159870c4f923dcaf295983c0
+    home: https://github.com/defilantech/LLMKube
+    keywords:
+    - llm
+    - kubernetes
+    - operator
+    - gpu
+    - inference
+    - ai
+    - machine-learning
+    maintainers:
+    - email: contact@defilan.com
+      name: Chris Maher
+    name: llmkube
+    sources:
+    - https://github.com/defilantech/LLMKube
+    type: application
+    urls:
+    - https://github.com/defilantech/LLMKube/releases/download/llmkube-0.7.6/llmkube-0.7.6.tgz
+    version: 0.7.6
+  - annotations:
+      helm.sh/resource-policy: keep
+    apiVersion: v2
     appVersion: 0.7.5
     created: "2026-04-30T18:38:37.577143736Z"
     description: A Helm chart for LLMKube - Kubernetes operator for GPU-accelerated
@@ -838,4 +865,4 @@ entries:
     urls:
     - https://defilantech.github.io/LLMKube/llmkube-0.3.3.tgz
     version: 0.3.3
-generated: "2026-04-30T18:38:37.577334375Z"
+generated: "2026-05-03T19:46:20.828829769Z"
