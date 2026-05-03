@@ -116,9 +116,10 @@ type InferenceServiceSpec struct {
 	// +optional
 	ContextSize *int32 `json:"contextSize,omitempty"`
 
-	// ParallelSlots sets the number of concurrent request slots for the llama.cpp server (--parallel flag).
-	// Each slot can process one request independently, enabling concurrent inference.
-	// Higher values use more memory. If not specified, llama.cpp defaults to 1.
+	// ParallelSlots sets the number of concurrent request slots for the llama.cpp
+	// server (--parallel flag). Each slot processes one request independently;
+	// higher values use more KV cache memory. If not specified, the operator
+	// omits --parallel and llama.cpp picks an auto value (currently 4).
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=64
 	// +optional
