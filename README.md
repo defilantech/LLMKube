@@ -34,6 +34,7 @@
 
   <p>
     <a href="#quick-start">Quick Start</a> &bull;
+    <a href="#architecture">Architecture</a> &bull;
     <a href="#the-metal-agent">Metal Agent</a> &bull;
     <a href="#how-is-this-different">Why LLMKube?</a> &bull;
     <a href="#performance">Benchmarks</a> &bull;
@@ -54,6 +55,38 @@ So you set up llama.cpp. It works great on one machine. Then you need to scale i
 Suddenly you're building an entire platform instead of shipping your product.
 
 **LLMKube is a Kubernetes operator that turns LLM deployment into a two-line YAML problem.** Define a `Model` and an `InferenceService`, and the operator handles downloading, caching, GPU scheduling, health checks, scaling, and exposing an OpenAI-compatible API.
+
+---
+
+## Architecture
+
+Two cooperating processes. An in-cluster controller owns Kubernetes-side desired state. An out-of-cluster `metal-agent` (optional, only needed for Apple Silicon hosts) owns OS-level process supervision and registers Endpoints back into the cluster.
+
+```mermaid
+%%{init: {'theme':'neutral','flowchart':{'curve':'linear'}}}%%
+flowchart LR
+    subgraph CLUSTER["Kubernetes cluster"]
+        direction TB
+        CTRL["LLMKube controller<br/>(Deployment in llmkube-system)"]
+        CRD["Custom resources<br/>Model · InferenceService"]
+        OWNED["Owned objects<br/>Job · Deployment · Service · PodMonitor"]
+        POD["Runtime pod (Linux/GPU node)<br/>llama.cpp · vLLM · TGI · PersonaPlex"]
+        CTRL -- watches --> CRD
+        CTRL -- creates --> OWNED
+        OWNED -.- POD
+    end
+
+    subgraph HOST["Apple Silicon host (optional)"]
+        direction TB
+        AGENT["metal-agent<br/>(launchd, on-host)"]
+        NATIVE["Native processes<br/>llama-server · oMLX · Ollama"]
+        AGENT -- supervises --> NATIVE
+    end
+
+    AGENT -- "registers Endpoints<br/>(HTTPS · kubeconfig)" --> CLUSTER
+```
+
+Same operator manages Linux/GPU pods and Apple Silicon hosts; both surface as `InferenceService` objects to `kubectl`. Full breakdown with reconciliation flow and the CRD reference: **[docs.llmkube.com/concepts/architecture](https://llmkube.com/docs/concepts/architecture)**.
 
 ---
 
