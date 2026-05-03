@@ -4280,6 +4280,74 @@ var _ = Describe("constructDeployment Regression Tests", func() {
 			By("verifying selector matches pod labels")
 			Expect(deployment.Spec.Selector.MatchLabels["app"]).To(Equal("label-svc"))
 		})
+
+		// Regression for #301: putting modelRef into the Deployment selector
+		// made spec.modelRef silently immutable. Kubernetes rejects selector
+		// changes after creation, so a user patching modelRef saw "the CR
+		// updates but my pod never rolls" with no surfaced error. The fix
+		// drops inference.llmkube.dev/model from selector.matchLabels while
+		// keeping it on the Deployment metadata + Pod template (kubectl
+		// label filtering still works). These tests lock in the new shape.
+		It("must not include inference.llmkube.dev/model in the Deployment selector (#301)", func() {
+			model := &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{Name: "label-model", Namespace: "default"},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source:   "hf://meta-llama/Llama-3-8B",
+					Format:   "gguf",
+					Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: "cuda"},
+				},
+			}
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{Name: "label-svc", Namespace: "default"},
+				Spec:       inferencev1alpha1.InferenceServiceSpec{ModelRef: "label-model"},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			selector := deployment.Spec.Selector.MatchLabels
+			Expect(selector).NotTo(HaveKey("inference.llmkube.dev/model"),
+				"selector must not match on the model label; modelRef must remain mutable")
+			Expect(selector).To(HaveKeyWithValue("app", "label-svc"))
+			Expect(selector).To(HaveKeyWithValue("inference.llmkube.dev/service", "label-svc"))
+		})
+
+		It("changing modelRef must produce a Deployment whose selector still matches the previous one (#301)", func() {
+			before := &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{Name: "model-q4", Namespace: "default"},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source:   "hf://org/repo-q4",
+					Format:   "gguf",
+					Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: "cuda"},
+				},
+			}
+			after := &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{Name: "model-q5", Namespace: "default"},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source:   "hf://org/repo-q5",
+					Format:   "gguf",
+					Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: "cuda"},
+				},
+			}
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{Name: "swap-svc", Namespace: "default"},
+				Spec:       inferencev1alpha1.InferenceServiceSpec{ModelRef: "model-q4"},
+			}
+
+			deploymentBefore := reconciler.constructDeployment(isvc, before, 1)
+
+			// User edits spec.modelRef to swap quantizations.
+			isvc.Spec.ModelRef = "model-q5"
+			deploymentAfter := reconciler.constructDeployment(isvc, after, 1)
+
+			// The selector must be byte-identical so an apiserver Update on
+			// the Deployment does not trip the "field is immutable" check.
+			Expect(deploymentAfter.Spec.Selector.MatchLabels).To(Equal(deploymentBefore.Spec.Selector.MatchLabels))
+
+			// And the new model label must be on the Pod template so
+			// kubectl get pods -l inference.llmkube.dev/model=model-q5 still works.
+			Expect(deploymentAfter.Spec.Template.Labels).To(
+				HaveKeyWithValue("inference.llmkube.dev/model", "model-q5"))
+		})
 	})
 })
 
