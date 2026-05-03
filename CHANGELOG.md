@@ -5,6 +5,30 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.6](https://github.com/defilantech/LLMKube/compare/v0.7.5...v0.7.6) (2026-05-03)
+
+
+### Features
+
+* **agent:** eviction safety floor + evictionProtection opt-out + late-spawn condition fix ([#186](https://github.com/defilantech/LLMKube/issues/186)) ([#384](https://github.com/defilantech/LLMKube/issues/384)) ([6544747](https://github.com/defilantech/LLMKube/commit/65447470c1fe4ca5291cb63eead12a3d9533de58))
+* **agent:** memory-pressure eviction and respawn protection ([#186](https://github.com/defilantech/LLMKube/issues/186)) ([#382](https://github.com/defilantech/LLMKube/issues/382)) ([65a78b5](https://github.com/defilantech/LLMKube/commit/65a78b5409c1a98db8389516a7a8a2be3bc69dc2))
+* **api:** add podAnnotations and podLabels passthrough (closes [#326](https://github.com/defilantech/LLMKube/issues/326)) ([#381](https://github.com/defilantech/LLMKube/issues/381)) ([baecd68](https://github.com/defilantech/LLMKube/commit/baecd687578f4fe240ce3d4a9d923908161fe10a))
+* **api:** expose runtimeClassName on InferenceServiceSpec (closes [#375](https://github.com/defilantech/LLMKube/issues/375)) ([#380](https://github.com/defilantech/LLMKube/issues/380)) ([cc44ff5](https://github.com/defilantech/LLMKube/commit/cc44ff5e14ec0129cee411c5f704b28d15c6d38f))
+* **crd:** add ParallelSlots support for vllm and fix llamacpp ([#340](https://github.com/defilantech/LLMKube/issues/340)) ([d81babb](https://github.com/defilantech/LLMKube/commit/d81babbc2b4ffb7437f6111e3b9e5e0c85ec66bc))
+
+
+### Bug Fixes
+
+* **catalog:** default phi-4-mini context to 8K (closes [#386](https://github.com/defilantech/LLMKube/issues/386)) ([#387](https://github.com/defilantech/LLMKube/issues/387)) ([7bcd685](https://github.com/defilantech/LLMKube/commit/7bcd6856837784c13f2534493ed059316f188db4))
+* **controller:** drop model label from Deployment selector to make modelRef mutable (closes [#301](https://github.com/defilantech/LLMKube/issues/301)) ([#385](https://github.com/defilantech/LLMKube/issues/385)) ([a1de3bf](https://github.com/defilantech/LLMKube/commit/a1de3bf7801748666a0089bd44dbdc094a7e5244))
+* derive metal InferenceService phase from Endpoints, not desiredReplicas (closes [#374](https://github.com/defilantech/LLMKube/issues/374)) ([#376](https://github.com/defilantech/LLMKube/issues/376)) ([350dafe](https://github.com/defilantech/LLMKube/commit/350dafe281d843527a53a10f4013a67b60d306cf))
+
+
+### Documentation
+
+* fix broken phi-3-mini command and dead benchmark link ([#369](https://github.com/defilantech/LLMKube/issues/369)) ([6a1fd58](https://github.com/defilantech/LLMKube/commit/6a1fd58b62966c3ee7c310c10859978bc75bf2df))
+* HN launch prep README polish (llama.cpp credit, vLLM, KubeAI/llm-d) ([#371](https://github.com/defilantech/LLMKube/issues/371)) ([9d27774](https://github.com/defilantech/LLMKube/commit/9d277744d5fd3a59ea55888299f5c715e8e53523))
+
 ## [0.7.5](https://github.com/defilantech/LLMKube/compare/v0.7.4...v0.7.5) (2026-04-30)
 
 
