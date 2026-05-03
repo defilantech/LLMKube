@@ -327,6 +327,7 @@ func main() {
 		ApplePowerEnabled:         cfg.ApplePowerEnabled,
 		ApplePowerInterval:        cfg.ApplePowerInterval,
 		PowermetricsBin:           cfg.PowermetricsBin,
+		EvictionEnabled:           cfg.EvictionEnabled,
 	}
 	if cfg.WatchdogInterval > 0 {
 		agentCfg.WatchdogConfig = &agent.MemoryWatchdogConfig{

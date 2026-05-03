@@ -21,8 +21,10 @@ import (
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -31,7 +33,13 @@ import (
 
 func newPressureTestAgent(t *testing.T, isvcs ...*inferencev1alpha1.InferenceService) *MetalAgent {
 	t.Helper()
-	scheme := newTestScheme()
+	// We need corev1 in the scheme so deleteProcess -> UnregisterEndpoint can
+	// issue Delete calls against Service/Endpoints (the fake client returns
+	// "no kind registered" instead of NotFound otherwise, and that error
+	// would be misinterpreted as a real failure).
+	scheme := runtime.NewScheme()
+	_ = inferencev1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
 	builder := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&inferencev1alpha1.InferenceService{})
 	for _, isvc := range isvcs {
 		builder = builder.WithObjects(isvc)
@@ -133,6 +141,85 @@ func TestHandleMemoryPressure_EvictionBlockedBelowGuard(t *testing.T) {
 	defer a.mu.RUnlock()
 	if len(a.pressureBlocked) != 0 {
 		t.Errorf("must not evict below 50%% RSS guard, got %d blocked", len(a.pressureBlocked))
+	}
+}
+
+// stubExecutor lets handleMemoryPressure exercise the eviction path
+// (deleteProcess -> StopProcess) without spawning a real llama-server. We
+// only need StopProcess to be a no-op; StartProcess is unused in these tests.
+type stubExecutor struct{}
+
+func (stubExecutor) StartProcess(_ context.Context, _ ExecutorConfig) (*ManagedProcess, error) {
+	return nil, nil
+}
+func (stubExecutor) StopProcess(_ int) error { return nil }
+
+// TestHandleMemoryPressure_EvictsLowestPriorityWhenEnabledAndAboveGuard is the
+// end-to-end test for the eviction path: guard satisfied, EvictionEnabled
+// true, multiple priorities — verifies the lowest-priority process is the
+// one removed from the managed map and the key lands in pressureBlocked so
+// a subsequent ensureProcess will not respawn it.
+func TestHandleMemoryPressure_EvictsLowestPriorityWhenEnabledAndAboveGuard(t *testing.T) {
+	low := newPressureTestISvc("svc-low", "low")
+	high := newPressureTestISvc("svc-high", "high")
+	a := newPressureTestAgent(t, low, high)
+	a.config.EvictionEnabled = true
+	a.executor = stubExecutor{}
+	a.registry = NewServiceRegistry(a.config.K8sClient, "", newNopLogger())
+
+	a.processes["default/svc-low"] = &ManagedProcess{
+		Name: "svc-low", Namespace: "default", Priority: "low",
+		ModelPath: "/m.gguf", PID: 999990, StartedAt: time.Now(),
+	}
+	a.processes["default/svc-high"] = &ManagedProcess{
+		Name: "svc-high", Namespace: "default", Priority: "high",
+		ModelPath: "/m.gguf", PID: 999991, StartedAt: time.Now(),
+	}
+
+	a.handleMemoryPressure(context.Background(), MemoryPressureCritical, MemoryStats{
+		TotalMemory: 100 << 30, TotalRSS: 80 << 30,
+	})
+
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if _, stillRunning := a.processes["default/svc-low"]; stillRunning {
+		t.Error("svc-low should have been evicted (lowest priority)")
+	}
+	if _, stillRunning := a.processes["default/svc-high"]; !stillRunning {
+		t.Error("svc-high should still be running (only one eviction per tick)")
+	}
+	if !a.pressureBlocked["default/svc-low"] {
+		t.Error("evicted key must be in pressureBlocked to prevent respawn")
+	}
+}
+
+// TestHandleMemoryPressure_DisabledHonorsCLIFlag confirms the CLI opt-in:
+// even at Critical pressure with the guard satisfied, EvictionEnabled=false
+// must keep the process alive. Regression guard for the bug where the
+// handler hardcoded evictionEnabled=true.
+func TestHandleMemoryPressure_DisabledHonorsCLIFlag(t *testing.T) {
+	isvc := newPressureTestISvc("svc-low", "low")
+	a := newPressureTestAgent(t, isvc)
+	a.config.EvictionEnabled = false // explicit
+	a.executor = stubExecutor{}
+	a.registry = NewServiceRegistry(a.config.K8sClient, "", newNopLogger())
+
+	a.processes["default/svc-low"] = &ManagedProcess{
+		Name: "svc-low", Namespace: "default", Priority: "low",
+		ModelPath: "/m.gguf", PID: 999990, StartedAt: time.Now(),
+	}
+
+	a.handleMemoryPressure(context.Background(), MemoryPressureCritical, MemoryStats{
+		TotalMemory: 100 << 30, TotalRSS: 80 << 30,
+	})
+
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if _, stillRunning := a.processes["default/svc-low"]; !stillRunning {
+		t.Error("EvictionEnabled=false must prevent eviction even at Critical+guard")
+	}
+	if a.pressureBlocked["default/svc-low"] {
+		t.Error("no eviction means no pressureBlocked entry")
 	}
 }
 

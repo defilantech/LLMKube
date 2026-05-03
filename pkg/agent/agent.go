@@ -68,6 +68,12 @@ type MetalAgentConfig struct {
 	// WatchdogConfig configures the memory pressure watchdog. Nil disables it.
 	WatchdogConfig *MemoryWatchdogConfig
 
+	// EvictionEnabled gates the watchdog's eviction action. When false the
+	// watchdog still updates conditions and metrics but never stops a
+	// process. Default false because killing inference workloads silently
+	// is a sharp tool: operators must opt in. Wire from --eviction-enabled.
+	EvictionEnabled bool
+
 	// MaxWatchFailures is the consecutive-failure threshold at which the
 	// InferenceService watcher gives up on its current Kubernetes connection
 	// and signals a fatal exit. Zero means use the watcher's built-in default

@@ -89,10 +89,10 @@ func (a *MetalAgent) handleMemoryPressure(ctx context.Context, level MemoryPress
 		}
 	}
 
-	// Eviction path. evictionEnabled is currently always true when the
-	// watchdog is configured; the parameter exists so a future CRD/CLI flag
-	// can opt out without rewriting this call site.
-	if !shouldEvict(level, stats, true) {
+	// Eviction path. Honored via the --eviction-enabled CLI flag (default
+	// false) so that operators must explicitly opt in to having the
+	// watchdog stop inference processes.
+	if !shouldEvict(level, stats, a.config.EvictionEnabled) {
 		return
 	}
 	target := pickEvictionTarget(snapshot, stats.ProcessRSS)
