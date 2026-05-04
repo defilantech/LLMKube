@@ -1,0 +1,38 @@
+# InferenceService served by vllm-swift on the metal-agent path with
+# TurboQuant KV cache compression. Requires the metal-agent to be running
+# with `--runtime vllm-swift` against this cluster.
+#
+# Reference: TheTom/vllm-swift v0.3.1+ (the bf16 TurboFlash + dim=512 kernel
+# work that landed in v0.3.0 enables Gemma 4 31B too once vllm-swift gains a
+# matching loader; today this manifest targets Qwen3-4B which the README ships
+# as the recommended TurboQuant demo).
+#
+# The `cacheTypeCustomK`/`cacheTypeCustomV` strings are passed through to
+# vllm-swift as `--additional-config '{"kv_scheme":"<value>","kv_bits":<n>}'`.
+# Recognized schemes: turbo4v2 (recommended), turbo3, turbo4, turbo2.
+# Unrecognized strings cause the executor to omit --additional-config so
+# vllm-swift falls back to its built-in fp16 KV cache.
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: Model
+metadata:
+  name: qwen3-4b-tq
+spec:
+  source: mlx-community/Qwen3-4B-4bit
+  format: mlx
+  hardware:
+    accelerator: metal
+---
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: InferenceService
+metadata:
+  name: qwen-tq
+spec:
+  modelRef: qwen3-4b-tq
+  replicas: 1
+  contextSize: 8192
+  parallelSlots: 4
+  # turbo4v2 = ~3x KV cache compression vs fp16 with quality preserved
+  # (TheTom's recommended scheme for the quality/compression sweet spot).
+  # Use turbo3 for ~4.6x compression at a small PPL cost on long context.
+  cacheTypeCustomK: turbo4v2
+  cacheTypeCustomV: turbo4v2

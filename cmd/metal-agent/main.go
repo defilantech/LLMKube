@@ -52,6 +52,7 @@ type AgentConfig struct {
 	OMLXBin                   string
 	OMLXPort                  int
 	OllamaPort                int
+	VLLMSwiftBin              string
 	Port                      int
 	LogLevel                  string
 	HostIP                    string
@@ -63,6 +64,7 @@ type AgentConfig struct {
 	MaxWatchFailures          int
 	LlamaServerStartupTimeout time.Duration
 	OMLXStartupTimeout        time.Duration
+	VLLMSwiftStartupTimeout   time.Duration
 	ApplePowerEnabled         bool
 	ApplePowerInterval        time.Duration
 	PowermetricsBin           string
@@ -124,6 +126,30 @@ var defaultOMLXPaths = []string{
 	"/usr/local/bin/omlx",
 }
 
+// defaultVLLMSwiftPaths is the list of paths to search for the vllm-swift binary.
+var defaultVLLMSwiftPaths = []string{
+	"/opt/homebrew/bin/vllm-swift",
+	"/usr/local/bin/vllm-swift",
+}
+
+// resolveVLLMSwiftBin returns the vllm-swift binary path. If override is
+// non-empty it is returned as-is. Otherwise the function searches
+// defaultVLLMSwiftPaths.
+func resolveVLLMSwiftBin(override string) (string, error) {
+	if override != "" {
+		return override, nil
+	}
+	for _, p := range defaultVLLMSwiftPaths {
+		if _, err := statFunc(p); err == nil {
+			return p, nil
+		}
+	}
+	return "", fmt.Errorf(
+		"vllm-swift binary not found in default paths (%v); "+
+			"install with: brew tap TheTom/tap && brew install vllm-swift, or pass --vllm-swift-bin=/path/to/binary",
+		defaultVLLMSwiftPaths)
+}
+
 // resolveOMLXBin returns the omlx binary path. If override is non-empty it is
 // returned as-is. Otherwise the function searches defaultOMLXPaths.
 func resolveOMLXBin(override string) (string, error) {
@@ -149,10 +175,11 @@ func main() {
 	flag.StringVar(&cfg.Namespace, "namespace", "default", "Kubernetes namespace to watch")
 	flag.StringVar(&cfg.ModelStorePath, "model-store", "/tmp/llmkube-models", "Path to store downloaded models")
 	flag.StringVar(&llamaServerFlag, "llama-server", "", "Path to llama-server binary (auto-detected if not set)")
-	flag.StringVar(&cfg.Runtime, "runtime", "llama-server", "Inference runtime: llama-server, omlx, or ollama")
+	flag.StringVar(&cfg.Runtime, "runtime", "llama-server", "Inference runtime: llama-server, omlx, ollama, or vllm-swift")
 	flag.StringVar(&cfg.OMLXBin, "omlx-bin", "", "Path to omlx binary (auto-detected if not set)")
 	flag.IntVar(&cfg.OMLXPort, "omlx-port", 8000, "Port for oMLX server")
 	flag.IntVar(&cfg.OllamaPort, "ollama-port", 11434, "Port for Ollama server")
+	flag.StringVar(&cfg.VLLMSwiftBin, "vllm-swift-bin", "", "Path to vllm-swift binary (auto-detected if not set)")
 	flag.IntVar(&cfg.Port, "port", 9090, "Agent metrics/health port")
 	flag.StringVar(&cfg.LogLevel, "log-level", "info", "Log level (debug, info, warn, error)")
 	flag.StringVar(&cfg.HostIP, "host-ip", "", "IP address to register in Kubernetes endpoints (auto-detected if empty)")
@@ -177,6 +204,11 @@ func main() {
 		agent.DefaultOMLXStartupTimeout,
 		"How long to wait for the oMLX daemon to become healthy after launching it. "+
 			"First model loads on M-series take 30-90s; default 120s.")
+	flag.DurationVar(&cfg.VLLMSwiftStartupTimeout, "vllm-swift-startup-timeout",
+		agent.DefaultVLLMSwiftStartupTimeout,
+		"How long to wait for vllm-swift to respond on /health. vLLM init plus "+
+			"Swift bridge load plus weight load grow with model size; default 120s "+
+			"works for 30B-class models on M5 Max. Bump for larger models.")
 	flag.BoolVar(&cfg.ApplePowerEnabled, "apple-power-enabled", false,
 		"Enable the macOS powermetrics sampler that publishes apple_power_*_watts gauges "+
 			"for InferCost. Requires a NOPASSWD sudoers entry for /usr/bin/powermetrics; "+
@@ -226,6 +258,17 @@ func main() {
 		// Ollama manages itself — no binary resolution needed.
 		// The agent will check if Ollama is running at startup via health check.
 		logger.Infow("using Ollama runtime", "port", cfg.OllamaPort)
+	case "vllm-swift":
+		resolvedBin, err := resolveVLLMSwiftBin(cfg.VLLMSwiftBin)
+		if err != nil {
+			logger.Errorw("vllm-swift binary not found",
+				"searchPaths", defaultVLLMSwiftPaths,
+				"installHint", "brew tap TheTom/tap && brew install vllm-swift",
+				"error", err,
+			)
+			os.Exit(1)
+		}
+		cfg.VLLMSwiftBin = resolvedBin
 	default:
 		cfg.Runtime = "llama-server"
 		resolvedBin, err := resolveLlamaServerBin(llamaServerFlag)
@@ -251,6 +294,7 @@ func main() {
 		"runtime", cfg.Runtime,
 		"llamaServerBin", cfg.LlamaServerBin,
 		"omlxBin", cfg.OMLXBin,
+		"vllmSwiftBin", cfg.VLLMSwiftBin,
 		"agentPort", cfg.Port,
 		"hostIP", hostIP,
 		"logLevel", cfg.LogLevel,
@@ -281,6 +325,8 @@ func main() {
 		logger.Infow("omlx binary found", "path", cfg.OMLXBin)
 	case "ollama":
 		logger.Infow("using Ollama daemon", "port", cfg.OllamaPort)
+	case "vllm-swift":
+		logger.Infow("vllm-swift binary found", "path", cfg.VLLMSwiftBin)
 	default:
 		logger.Infow("llama-server binary found", "path", cfg.LlamaServerBin)
 	}
@@ -317,6 +363,7 @@ func main() {
 		OMLXBin:                   cfg.OMLXBin,
 		OMLXPort:                  cfg.OMLXPort,
 		OllamaPort:                cfg.OllamaPort,
+		VLLMSwiftBin:              cfg.VLLMSwiftBin,
 		Port:                      cfg.Port,
 		HostIP:                    cfg.HostIP,
 		Logger:                    logger,
@@ -324,6 +371,7 @@ func main() {
 		MaxWatchFailures:          cfg.MaxWatchFailures,
 		LlamaServerStartupTimeout: cfg.LlamaServerStartupTimeout,
 		OMLXStartupTimeout:        cfg.OMLXStartupTimeout,
+		VLLMSwiftStartupTimeout:   cfg.VLLMSwiftStartupTimeout,
 		ApplePowerEnabled:         cfg.ApplePowerEnabled,
 		ApplePowerInterval:        cfg.ApplePowerInterval,
 		PowermetricsBin:           cfg.PowermetricsBin,

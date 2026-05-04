@@ -37,8 +37,9 @@ import (
 
 // Inference runtime identifiers used by MetalAgentConfig.Runtime.
 const (
-	runtimeOMLX   = "omlx"
-	runtimeOllama = "ollama"
+	runtimeOMLX      = "omlx"
+	runtimeOllama    = "ollama"
+	runtimeVLLMSwift = "vllm-swift"
 )
 
 // MetalAgentConfig contains configuration for the Metal agent
@@ -59,6 +60,9 @@ type MetalAgentConfig struct {
 	OMLXPort int
 	// OllamaPort is the port the Ollama daemon listens on (default 11434).
 	OllamaPort int
+	// VLLMSwiftBin is the path to the vllm-swift binary. Only used when
+	// Runtime is "vllm-swift". Empty means auto-detect via $PATH.
+	VLLMSwiftBin string
 
 	// MemoryProvider supplies system memory info. Nil defaults to DarwinMemoryProvider.
 	MemoryProvider MemoryProvider
@@ -92,6 +96,12 @@ type MetalAgentConfig struct {
 	// (DefaultOMLXStartupTimeout). The original 30s constant was too short
 	// for real M-series hardware.
 	OMLXStartupTimeout time.Duration
+
+	// VLLMSwiftStartupTimeout is how long the agent waits for vllm-swift to
+	// respond on /health. Zero means use the executor default
+	// (DefaultVLLMSwiftStartupTimeout). vLLM init + Swift bridge load + weight
+	// load grow with model size; 120s default works for ~30B models on M5 Max.
+	VLLMSwiftStartupTimeout time.Duration
 
 	// ApplePowerEnabled launches the powermetrics-driven sampler that
 	// publishes apple_power_*_watts gauges. Defaults false because
@@ -259,6 +269,16 @@ func (a *MetalAgent) Start(ctx context.Context) error {
 			port,
 			a.logger.With("subsystem", "executor"),
 		)
+	case runtimeVLLMSwift:
+		vllmSwiftExec := NewVLLMSwiftExecutor(
+			a.config.VLLMSwiftBin,
+			a.config.ModelStorePath,
+			a.logger.With("subsystem", "executor"),
+		)
+		if a.config.VLLMSwiftStartupTimeout > 0 {
+			vllmSwiftExec.SetStartupTimeout(a.config.VLLMSwiftStartupTimeout)
+		}
+		a.executor = vllmSwiftExec
 	default:
 		metalExec := NewMetalExecutor(
 			a.config.LlamaServerBin,
@@ -465,6 +485,12 @@ func (a *MetalAgent) validateRuntimeFormat(model *inferencev1alpha1.Model) error
 	case runtimeOllama:
 		bad = modelFormat == "mlx"
 		runtimeLabel = runtimeOllama
+	case runtimeVLLMSwift:
+		// vllm-swift accepts MLX directories AND HuggingFace safetensors
+		// directories (the SwiftInferenceEngine reads both). gguf is the
+		// only incompatible format.
+		bad = modelFormat == "gguf"
+		runtimeLabel = runtimeVLLMSwift
 	default:
 		bad = modelFormat == "mlx"
 		runtimeLabel = "llama-server"
