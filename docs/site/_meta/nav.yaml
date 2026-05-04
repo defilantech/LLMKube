@@ -1,0 +1,100 @@
+# Sidebar navigation for llmkube.com/docs.
+#
+# This file is the source of truth for the docs site sidebar. The llmkube-web
+# build pipeline reads this YAML and renders the sidebar from it. Order here is
+# render order on the site.
+#
+# Schema:
+#   sections:
+#     - title: <section heading>
+#       items:
+#         - label: <link text>
+#           slug: <path under /docs/>          # required for live pages
+#           file: <path under docs/site/>      # the .md file to render
+#           status: real | stub                # optional, defaults to real
+#
+# A `status: stub` entry renders a "this page is in progress" placeholder
+# (using llmkube-web's DocStub component) until the markdown is ported.
+# Once the markdown lands, drop the status field.
+
+sections:
+  - title: Getting Started
+    items:
+      - label: Overview
+        slug: ""
+        file: index.md
+      - label: Install in 5 minutes
+        slug: getting-started
+        file: getting-started/index.md
+      - label: Quickstart on Minikube
+        slug: quickstart-minikube
+        file: getting-started/minikube.md
+        status: stub
+
+  - title: Concepts
+    items:
+      - label: Architecture
+        slug: concepts/architecture
+        file: concepts/architecture.md
+      - label: CRD reference
+        slug: concepts/crds
+        file: concepts/crds.md
+      - label: Runtime backends
+        slug: concepts/runtime-backends
+        file: concepts/runtime-backends.md
+        status: stub
+      - label: How LLMKube compares
+        slug: concepts/comparison
+        file: concepts/comparison.md
+
+  - title: Guides
+    items:
+      - label: Air-gapped install
+        slug: guides/air-gapped
+        file: guides/air-gapped.md
+        status: stub
+      - label: Multi-GPU sharding
+        slug: guides/multi-gpu
+        file: guides/multi-gpu.md
+        status: stub
+      - label: GPU setup
+        slug: guides/gpu-setup
+        file: guides/gpu-setup.md
+        status: stub
+      - label: Model cache
+        slug: guides/model-cache
+        file: guides/model-cache.md
+        status: stub
+
+  - title: Operations
+    items:
+      - label: Memory-pressure protection
+        slug: memory-pressure-protection
+        file: guides/memory-pressure.md
+      - label: Observability
+        slug: operations/observability
+        file: operations/observability.md
+        status: stub
+      - label: KV cache types
+        slug: operations/kv-cache
+        file: operations/kv-cache.md
+        status: stub
+
+  - title: Reference
+    items:
+      - label: CLI
+        slug: reference/cli
+        file: reference/cli.md
+        status: stub
+      - label: Helm values
+        slug: reference/helm-values
+        file: reference/helm-values.md
+        status: stub
+      - label: Metrics
+        slug: reference/metrics
+        file: reference/metrics.md
+        status: stub
+      - label: CRD YAML
+        slug: reference/crds-yaml
+        file: reference/crds.md
+        status: stub
