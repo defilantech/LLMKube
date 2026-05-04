@@ -18,6 +18,16 @@ package agent
 
 import (
 	"encoding/json"
+	"fmt"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -236,4 +246,189 @@ func TestBuildVLLMSwiftArgs_TurboQuantPlusParallelSlots(t *testing.T) {
 	if !hasFlag(args, "--additional-config") {
 		t.Errorf("--additional-config missing in combined invocation: %v", args)
 	}
+}
+
+func TestVLLMSwiftProcessLogPath(t *testing.T) {
+	executor := NewVLLMSwiftExecutor("/bin/vllm-swift", "/var/lib/llmkube", newNopLogger())
+
+	got := executor.processLogPath("default", "qwen-coder")
+	want := filepath.Join("/var/lib/llmkube", "vllm-swift-default-qwen-coder.log")
+	if got != want {
+		t.Errorf("processLogPath = %q, want %q", got, want)
+	}
+
+	// Different namespace + name yields a distinct path.
+	other := executor.processLogPath("prod", "qwen-coder")
+	if other == got {
+		t.Errorf("processLogPath collided across namespaces: %q == %q", other, got)
+	}
+}
+
+func TestVLLMSwiftResolveModelPath(t *testing.T) {
+	tmp := t.TempDir()
+
+	// Build a real on-disk layout that exercises the symlink path:
+	//   <tmp>/models/Qwen3-4B-4bit/        (the actual model dir)
+	//   <tmp>/models/mlx-community/Qwen3-4B-4bit -> ../Qwen3-4B-4bit
+	modelStore := filepath.Join(tmp, "models")
+	realDir := filepath.Join(modelStore, "Qwen3-4B-4bit")
+	if err := os.MkdirAll(realDir, 0o755); err != nil {
+		t.Fatalf("mkdir real: %v", err)
+	}
+	hfDir := filepath.Join(modelStore, "mlx-community")
+	if err := os.MkdirAll(hfDir, 0o755); err != nil {
+		t.Fatalf("mkdir hf: %v", err)
+	}
+	symlink := filepath.Join(hfDir, "Qwen3-4B-4bit")
+	if err := os.Symlink(realDir, symlink); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	executor := NewVLLMSwiftExecutor("/bin/vllm-swift", modelStore, newNopLogger())
+
+	tests := []struct {
+		name   string
+		config ExecutorConfig
+		want   string
+	}{
+		{
+			name:   "absolute path passes through and resolves symlinks",
+			config: ExecutorConfig{ModelSource: symlink},
+			want:   realDir,
+		},
+		{
+			name:   "relative HF-shorthand resolves under modelStorePath then through symlink",
+			config: ExecutorConfig{ModelSource: "mlx-community/Qwen3-4B-4bit"},
+			want:   realDir,
+		},
+		{
+			name:   "absolute non-symlinked path stays as-is",
+			config: ExecutorConfig{ModelSource: realDir},
+			want:   realDir,
+		},
+		{
+			name:   "empty source falls back to <modelStore>/<name>",
+			config: ExecutorConfig{ModelName: "Qwen3-4B-4bit"},
+			want:   realDir,
+		},
+		{
+			name:   "non-existent path returns the candidate unchanged",
+			config: ExecutorConfig{ModelSource: "/nope/does-not-exist"},
+			want:   "/nope/does-not-exist",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// On macOS /tmp resolves to /private/tmp; resolve the want side
+			// the same way so the comparison is symlink-agnostic.
+			wantResolved, err := filepath.EvalSymlinks(tc.want)
+			if err != nil {
+				wantResolved = tc.want
+			}
+			got := executor.resolveModelPath(tc.config)
+			if got != wantResolved && got != tc.want {
+				t.Errorf("resolveModelPath = %q, want %q (or %q before EvalSymlinks)",
+					got, wantResolved, tc.want)
+			}
+		})
+	}
+}
+
+func TestVLLMSwiftAllocatePort(t *testing.T) {
+	executor := NewVLLMSwiftExecutor("/bin/vllm-swift", "/models", newNopLogger())
+
+	port, err := executor.allocatePort()
+	if err != nil {
+		t.Fatalf("allocatePort: %v", err)
+	}
+	if port < 1 || port > 65535 {
+		t.Errorf("allocatePort returned port %d outside valid range", port)
+	}
+
+	// The returned port must be immediately bindable (we want a fresh
+	// non-collided port back, not one stuck in TIME_WAIT or similar).
+	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		t.Fatalf("port %d not bindable after allocate: %v", port, err)
+	}
+	_ = ln.Close()
+}
+
+func TestVLLMSwiftWaitForHealthy_OK(t *testing.T) {
+	// Mock health server that responds 200 immediately.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	port := mustExtractPort(t, srv.URL)
+	executor := NewVLLMSwiftExecutor("/bin/vllm-swift", "/models", newNopLogger())
+
+	if err := executor.waitForHealthy(port, 5*time.Second); err != nil {
+		t.Errorf("waitForHealthy returned error against healthy server: %v", err)
+	}
+}
+
+func TestVLLMSwiftWaitForHealthy_Timeout(t *testing.T) {
+	// Server that returns 503 forever — waitForHealthy should give up after
+	// the deadline rather than hanging or false-positive-ing.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	port := mustExtractPort(t, srv.URL)
+	executor := NewVLLMSwiftExecutor("/bin/vllm-swift", "/models", newNopLogger())
+
+	start := time.Now()
+	err := executor.waitForHealthy(port, 1500*time.Millisecond)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("waitForHealthy must return error when server is never healthy")
+	}
+	if !strings.Contains(err.Error(), "timeout") {
+		t.Errorf("error must mention timeout, got: %v", err)
+	}
+	if elapsed < 1400*time.Millisecond || elapsed > 3*time.Second {
+		t.Errorf("waitForHealthy elapsed = %v, want roughly 1.5s", elapsed)
+	}
+}
+
+func TestVLLMSwiftStopProcess_HappyPath(t *testing.T) {
+	// Spawn a `sleep` child the executor doesn't manage, then ask
+	// StopProcess to send it SIGTERM. The default SIGTERM handler exits the
+	// child cleanly, which Wait() observes. This validates the SIGTERM path
+	// without needing a real vllm-swift child.
+	cmd := exec.Command("sleep", "60")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("could not spawn sleep: %v", err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+	}()
+
+	executor := NewVLLMSwiftExecutor("/bin/vllm-swift", "/models", newNopLogger())
+	if err := executor.StopProcess(cmd.Process.Pid); err != nil {
+		t.Errorf("StopProcess returned error on graceful SIGTERM exit: %v", err)
+	}
+}
+
+// mustExtractPort pulls the numeric port out of an httptest.Server URL.
+func mustExtractPort(t *testing.T, raw string) int {
+	t.Helper()
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("parse server URL %q: %v", raw, err)
+	}
+	port, err := strconv.Atoi(u.Port())
+	if err != nil {
+		t.Fatalf("parse port from %q: %v", u.Port(), err)
+	}
+	return port
 }
