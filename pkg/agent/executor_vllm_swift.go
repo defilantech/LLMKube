@@ -76,7 +76,9 @@ func (e *VLLMSwiftExecutor) StartProcess(ctx context.Context, config ExecutorCon
 	modelPath := e.resolveModelPath(config)
 	if _, err := os.Stat(modelPath); err != nil {
 		return nil, fmt.Errorf(
-			"vllm-swift model directory not found at %s: %w (the host metal-agent does not download MLX/HF model directories; pre-download with `vllm-swift download <hf-id>`)",
+			"vllm-swift model directory not found at %s: %w "+
+				"(the host metal-agent does not download MLX/HF model directories; "+
+				"pre-download with `vllm-swift download <hf-id>`)",
 			modelPath, err)
 	}
 
@@ -99,7 +101,7 @@ func (e *VLLMSwiftExecutor) StartProcess(ctx context.Context, config ExecutorCon
 	// trail. The log path is stable per (namespace, name) so operators
 	// can `tail -f` it during demos and post-mortem after bad rollouts.
 	logPath := e.processLogPath(config.Namespace, config.Name)
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open vllm-swift log file %s: %w", logPath, err)
 	}
@@ -287,6 +289,16 @@ func buildVLLMSwiftArgs(modelPath string, port int, config ExecutorConfig) []str
 	return args
 }
 
+// TurboQuant KV scheme identifiers passed to vllm-swift via additional_config.
+// Defined as exported constants so callers (CLI samples, future callers) can
+// reference the canonical strings without typos and so goconst is happy.
+const (
+	turboQuantScheme4v2 = "turbo4v2"
+	turboQuantScheme4   = "turbo4"
+	turboQuantScheme3   = "turbo3"
+	turboQuantScheme2   = "turbo2"
+)
+
 // turboQuantConfig maps a CacheTypeCustomK string to (kv_scheme, kv_bits)
 // for vllm-swift's --additional-config JSON. Only the documented turbo*
 // schemes are recognized; anything else (including empty) returns ("", 0)
@@ -296,11 +308,11 @@ func buildVLLMSwiftArgs(modelPath string, port int, config ExecutorConfig) []str
 // kv_scheme/kv_bits from vllm_config.additional_config.
 func turboQuantConfig(cacheType string) (scheme string, bits int) {
 	switch cacheType {
-	case "turbo4v2", "turbo4":
+	case turboQuantScheme4v2, turboQuantScheme4:
 		return cacheType, 4
-	case "turbo3":
+	case turboQuantScheme3:
 		return cacheType, 3
-	case "turbo2":
+	case turboQuantScheme2:
 		return cacheType, 2
 	default:
 		return "", 0

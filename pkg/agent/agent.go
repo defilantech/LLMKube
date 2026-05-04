@@ -42,6 +42,14 @@ const (
 	runtimeVLLMSwift = "vllm-swift"
 )
 
+// Model format identifiers (Model.Spec.Format) the agent recognizes for
+// runtime-compatibility checks. Defined here so validateRuntimeFormat can
+// switch on them without scattering literals (goconst).
+const (
+	formatGGUF = "gguf"
+	formatMLX  = "mlx"
+)
+
 // MetalAgentConfig contains configuration for the Metal agent
 type MetalAgentConfig struct {
 	K8sClient      client.Client
@@ -473,26 +481,26 @@ func derefInt32(p *int32) int {
 func (a *MetalAgent) validateRuntimeFormat(model *inferencev1alpha1.Model) error {
 	modelFormat := model.Spec.Format
 	if modelFormat == "" {
-		modelFormat = "gguf"
+		modelFormat = formatGGUF
 	}
 
 	var bad bool
 	var runtimeLabel string
 	switch a.config.Runtime {
 	case runtimeOMLX:
-		bad = modelFormat == "gguf"
+		bad = modelFormat == formatGGUF
 		runtimeLabel = runtimeOMLX
 	case runtimeOllama:
-		bad = modelFormat == "mlx"
+		bad = modelFormat == formatMLX
 		runtimeLabel = runtimeOllama
 	case runtimeVLLMSwift:
 		// vllm-swift accepts MLX directories AND HuggingFace safetensors
 		// directories (the SwiftInferenceEngine reads both). gguf is the
 		// only incompatible format.
-		bad = modelFormat == "gguf"
+		bad = modelFormat == formatGGUF
 		runtimeLabel = runtimeVLLMSwift
 	default:
-		bad = modelFormat == "mlx"
+		bad = modelFormat == formatMLX
 		runtimeLabel = "llama-server"
 	}
 	if !bad {
