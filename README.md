@@ -90,11 +90,11 @@ Setup guide for the metal-agent on Apple Silicon: [`deployment/macos/README.md`]
 
 ---
 
-## Getting Started Video
+## See it in action
 
-[![Getting Started with LLMKube](https://img.youtube.com/vi/dmKnkxvC1U8/maxresdefault.jpg)](https://youtu.be/dmKnkxvC1U8)
+[![LLMKube quickstart cast](docs/site/images/quickstart-cast-poster.png)](https://llmkube.com/docs/getting-started)
 
-*Watch: Deploy your first LLM on Kubernetes in 5 minutes*
+*Live asciinema cast on [llmkube.com/docs/getting-started](https://llmkube.com/docs/getting-started): deploy a model on a kind cluster, stream tokens from the OpenAI-compatible endpoint, and run the built-in throughput benchmark in under a minute.*
 
 ---
 
