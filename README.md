@@ -84,7 +84,9 @@ flowchart TB
     AGENT -- "registers Endpoints" --> CLUSTER
 ```
 
-Same operator manages Linux/GPU pods and Apple Silicon hosts; both surface as `InferenceService` objects to `kubectl`. Full breakdown with reconciliation flow and the CRD reference: **[docs.llmkube.com/concepts/architecture](https://llmkube.com/docs/concepts/architecture)**.
+Same operator manages Linux/GPU pods and Apple Silicon hosts; both surface as `InferenceService` objects to `kubectl`.
+
+Setup guide for the metal-agent on Apple Silicon: [`deployment/macos/README.md`](deployment/macos/README.md).
 
 ---
 
@@ -106,8 +108,8 @@ brew install defilantech/tap/llmkube
 helm repo add llmkube https://defilantech.github.io/LLMKube
 helm install llmkube llmkube/llmkube --namespace llmkube-system --create-namespace
 
-# Deploy a model (one command)
-llmkube deploy phi-4-mini --cpu 500m --memory 1Gi
+# Deploy a model (one command, uses catalog-tested defaults)
+llmkube deploy phi-4-mini
 
 # Query it (OpenAI-compatible)
 kubectl port-forward svc/phi-4-mini 8080:8080 &
