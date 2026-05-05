@@ -1,4 +1,4 @@
-{"version":3,"term":{"cols":110,"rows":32},"timestamp":1777966201,"idle_time_limit":2.0,"command":"/Users/defilan/stuffy/code/ai/llmkube-internal/marketing/demo-script-quickstart.sh","env":{"SHELL":"/bin/zsh"}}
+{"version": 3, "term": {"cols": 110, "rows": 32}, "timestamp": 1777966201, "idle_time_limit": 2.0, "env": {"SHELL": "/bin/zsh"}}
 [0.011, "o", "\u001b[3J\u001b[H\u001b[2J"]
 [0.000, "o", "\u001b[2m# LLMKube quickstart on a kind cluster\u001b[0m\r\n\u001b[2m# Operator + Helm already installed (see the README); this is the deploy + serve flow.\u001b[0m\r\n"]
 [0.000, "o", "\r\n"]
