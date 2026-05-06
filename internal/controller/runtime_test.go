@@ -36,17 +36,6 @@ type FlagCheck struct {
 	value string
 }
 
-type RuntimeBuildArgsTestCase struct {
-	// contains is a slice of flag/value pairs ("" value means "flag must be
-	// present as a bare toggle").
-	contains []FlagCheck
-	// notContains is just a list of flags that must NOT appear anywhere in args.
-	notContains []string
-	model       *inferencev1alpha1.Model
-	name        string
-	spec        *inferencev1alpha1.InferenceServiceSpec
-}
-
 func TestResolveGPUCount(t *testing.T) {
 	cases := []struct {
 		expected int32

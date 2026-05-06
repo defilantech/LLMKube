@@ -48,7 +48,16 @@ func TestVLLMBuildArgs(t *testing.T) {
 	const modelPath = "/models/test"
 	const port = int32(8000)
 
-	cases := []RuntimeBuildArgsTestCase{
+	cases := []struct {
+		// contains is a slice of flag/value pairs ("" value means "flag must be
+		// present as a bare toggle").
+		contains []FlagCheck
+		// notContains is just a list of flags that must NOT appear anywhere in args.
+		notContains []string
+		model       *inferencev1alpha1.Model
+		name        string
+		spec        *inferencev1alpha1.InferenceServiceSpec
+	}{
 		{
 			model: model,
 			name:  "nil config emits only base flags (model as positional)",
