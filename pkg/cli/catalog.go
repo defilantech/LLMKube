@@ -26,10 +26,9 @@ import (
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
-)
 
-//go:embed catalog.yaml
-var catalogYAML []byte
+	modelcatalog "github.com/defilantech/llmkube/catalog"
+)
 
 type Catalog struct {
 	Version string           `yaml:"version"`
@@ -66,7 +65,7 @@ func LoadCatalog() (*Catalog, error) {
 	}
 
 	var catalog Catalog
-	if err := yaml.Unmarshal(catalogYAML, &catalog); err != nil {
+	if err := yaml.Unmarshal(modelcatalog.CatalogYAML, &catalog); err != nil {
 		return nil, fmt.Errorf("failed to parse catalog: %w", err)
 	}
 
