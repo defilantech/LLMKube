@@ -74,3 +74,14 @@ func resolveBackend(isvc *inferencev1alpha1.InferenceService) RuntimeBackend {
 		return &LlamaCppBackend{}
 	}
 }
+
+// resolveGPUCount determines the GPU count from Model spec or InferenceService spec.
+func resolveGPUCount(isvc *inferencev1alpha1.InferenceService, model *inferencev1alpha1.Model) int32 {
+	if model.Spec.Hardware != nil && model.Spec.Hardware.GPU != nil && model.Spec.Hardware.GPU.Count > 0 {
+		return model.Spec.Hardware.GPU.Count
+	}
+	if isvc.Spec.Resources != nil && isvc.Spec.Resources.GPU > 0 {
+		return isvc.Spec.Resources.GPU
+	}
+	return 0
+}
