@@ -1,6 +1,10 @@
 package controller
 
-import inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
+import (
+	"testing"
+
+	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
+)
 
 // containsArg reports whether args contains the given flag. When value is
 // non-empty, it also requires the immediately following entry to equal value
@@ -41,4 +45,74 @@ type RuntimeBuildArgsTestCase struct {
 	model       *inferencev1alpha1.Model
 	name        string
 	spec        *inferencev1alpha1.InferenceServiceSpec
+}
+
+func TestResolveGPUCount(t *testing.T) {
+	cases := []struct {
+		expected int32
+		isvc     *inferencev1alpha1.InferenceService
+		model    *inferencev1alpha1.Model
+		name     string
+	}{
+		{
+			expected: 1,
+			isvc:     &inferencev1alpha1.InferenceService{},
+			model: &inferencev1alpha1.Model{
+				Spec: inferencev1alpha1.ModelSpec{
+					Hardware: &inferencev1alpha1.HardwareSpec{
+						GPU: &inferencev1alpha1.GPUSpec{
+							Count: 1,
+						},
+					},
+				},
+			},
+			name: "model.Spec.Hardware.GPU.Count set resolve GPU count",
+		},
+		{
+			expected: 1,
+			isvc: &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{
+						GPU: 1,
+					},
+				},
+			},
+			model: &inferencev1alpha1.Model{},
+			name:  "isvc.Spec.Resources.GPU set resolve GPU count",
+		},
+		{
+			expected: 1,
+			isvc: &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{
+						GPU: 2,
+					},
+				},
+			},
+			model: &inferencev1alpha1.Model{
+				Spec: inferencev1alpha1.ModelSpec{
+					Hardware: &inferencev1alpha1.HardwareSpec{
+						GPU: &inferencev1alpha1.GPUSpec{
+							Count: 1,
+						},
+					},
+				},
+			},
+			name: "model.Spec.Hardware.GPU.Count have precedence over isvc.Spec.Resources.GPU",
+		},
+		{
+			expected: 0,
+			isvc:     &inferencev1alpha1.InferenceService{},
+			model:    &inferencev1alpha1.Model{},
+			name:     "no GPU set resolve to 0",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			actual := resolveGPUCount(tc.isvc, tc.model)
+			if actual != tc.expected {
+				t.Errorf("expected %d GPU count, got: %d", tc.expected, actual)
+			}
+		})
+	}
 }
