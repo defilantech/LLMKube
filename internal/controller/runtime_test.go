@@ -1,5 +1,7 @@
 package controller
 
+import inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
+
 // containsArg reports whether args contains the given flag. When value is
 // non-empty, it also requires the immediately following entry to equal value
 // (i.e. `--flag value` as separate slice elements, which is how BuildArgs
@@ -24,3 +26,19 @@ func ptrBool(b bool) *bool          { return &b }
 func ptrFloat64(f float64) *float64 { return &f }
 func ptrInt32(i int32) *int32       { return &i }
 func ptrString(s string) *string    { return &s }
+
+type FlagCheck struct {
+	flag  string
+	value string
+}
+
+type RuntimeBuildArgsTestCase struct {
+	// contains is a slice of flag/value pairs ("" value means "flag must be
+	// present as a bare toggle").
+	contains []FlagCheck
+	// notContains is just a list of flags that must NOT appear anywhere in args.
+	notContains []string
+	model       *inferencev1alpha1.Model
+	name        string
+	spec        *inferencev1alpha1.InferenceServiceSpec
+}

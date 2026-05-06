@@ -48,22 +48,10 @@ func TestVLLMBuildArgs(t *testing.T) {
 	const modelPath = "/models/test"
 	const port = int32(8000)
 
-	// contains is a slice of flag/value pairs ("" value means "flag must be
-	// present as a bare toggle"). notContains is just a list of flags that
-	// must NOT appear anywhere in args.
-	type flagCheck struct {
-		flag  string
-		value string
-	}
-
-	cases := []struct {
-		name        string
-		spec        *inferencev1alpha1.InferenceServiceSpec
-		contains    []flagCheck
-		notContains []string
-	}{
+	cases := []RuntimeBuildArgsTestCase{
 		{
-			name: "nil config emits only base flags (model as positional)",
+			model: model,
+			name:  "nil config emits only base flags (model as positional)",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:    "vllm",
 				ModelRef:   "test-model",
@@ -71,7 +59,7 @@ func TestVLLMBuildArgs(t *testing.T) {
 			},
 			// vLLM v0.20+ deprecated --model in favor of a positional argument.
 			// The bare model path appears as args[0]; --model itself must NOT appear.
-			contains: []flagCheck{{"--host", "0.0.0.0"}, {"--port", "8000"}},
+			contains: []FlagCheck{{"--host", "0.0.0.0"}, {"--port", "8000"}},
 			notContains: []string{
 				"--attention-backend",
 				"--cpu-offload-gb",
@@ -86,7 +74,8 @@ func TestVLLMBuildArgs(t *testing.T) {
 			},
 		},
 		{
-			name: "empty config emits only base flags",
+			model: model,
+			name:  "empty config emits only base flags",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:    "vllm",
 				ModelRef:   "test-model",
@@ -104,16 +93,18 @@ func TestVLLMBuildArgs(t *testing.T) {
 			},
 		},
 		{
-			name: "cpuOffloadGB set emits flag if gpu is enabled",
+			model: modelWithGpu,
+			name:  "cpuOffloadGB set emits flag if gpu is enabled",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:    "vllm",
 				ModelRef:   "test-model-gpu",
 				VLLMConfig: &inferencev1alpha1.VLLMConfig{CPUOffloadGB: ptrInt32(4)},
 			},
-			contains: []flagCheck{{"--cpu-offload-gb", "4"}},
+			contains: []FlagCheck{{"--cpu-offload-gb", "4"}},
 		},
 		{
-			name: "cpuOffloadGB set does not emit flag if gpu is not enabled",
+			model: model,
+			name:  "cpuOffloadGB set does not emit flag if gpu is not enabled",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:    "vllm",
 				ModelRef:   "test-model",
@@ -122,7 +113,8 @@ func TestVLLMBuildArgs(t *testing.T) {
 			notContains: []string{"--cpu-offload-gb"},
 		},
 		{
-			name: "cpuOffloadGB nil does not emit flag",
+			model: model,
+			name:  "cpuOffloadGB nil does not emit flag",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:    "vllm",
 				ModelRef:   "test-model",
@@ -131,16 +123,18 @@ func TestVLLMBuildArgs(t *testing.T) {
 			notContains: []string{"--cpu-offload-gb"},
 		},
 		{
-			name: "gpuMemoryUtilization set emits flag if gpu is enabled",
+			model: modelWithGpu,
+			name:  "gpuMemoryUtilization set emits flag if gpu is enabled",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:    "vllm",
 				ModelRef:   "test-model-gpu",
 				VLLMConfig: &inferencev1alpha1.VLLMConfig{GPUMemoryUtilization: ptrFloat64(0.80)},
 			},
-			contains: []flagCheck{{"--gpu-memory-utilization", "0.8"}},
+			contains: []FlagCheck{{"--gpu-memory-utilization", "0.8"}},
 		},
 		{
-			name: "gpuMemoryUtilization does not emit flag if gpu is not enabled",
+			model: model,
+			name:  "gpuMemoryUtilization does not emit flag if gpu is not enabled",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:    "vllm",
 				ModelRef:   "test-model",
@@ -149,7 +143,8 @@ func TestVLLMBuildArgs(t *testing.T) {
 			notContains: []string{"--gpu-memory-utilization"},
 		},
 		{
-			name: "gpuMemoryUtilization nil does not emit flag",
+			model: model,
+			name:  "gpuMemoryUtilization nil does not emit flag",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:    "vllm",
 				ModelRef:   "test-model",
@@ -158,7 +153,8 @@ func TestVLLMBuildArgs(t *testing.T) {
 			notContains: []string{"--gpu-memory-utilization"},
 		},
 		{
-			name: "kvCacheDtype=auto does not emit flag (vLLM default)",
+			model: model,
+			name:  "kvCacheDtype=auto does not emit flag (vLLM default)",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:    "vllm",
 				ModelRef:   "test-model",
@@ -167,34 +163,38 @@ func TestVLLMBuildArgs(t *testing.T) {
 			notContains: []string{"--kv-cache-dtype"},
 		},
 		{
-			name: "kvCacheDtype=fp8_e5m2 emits flag",
+			model: model,
+			name:  "kvCacheDtype=fp8_e5m2 emits flag",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:    "vllm",
 				ModelRef:   "test-model",
 				VLLMConfig: &inferencev1alpha1.VLLMConfig{KVCacheDtype: ptrString("fp8_e5m2")},
 			},
-			contains: []flagCheck{{"--kv-cache-dtype", "fp8_e5m2"}},
+			contains: []FlagCheck{{"--kv-cache-dtype", "fp8_e5m2"}},
 		},
 		{
-			name: "kvCacheDtype=fp8_e4m3 emits flag",
+			model: model,
+			name:  "kvCacheDtype=fp8_e4m3 emits flag",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:    "vllm",
 				ModelRef:   "test-model",
 				VLLMConfig: &inferencev1alpha1.VLLMConfig{KVCacheDtype: ptrString("fp8_e4m3")},
 			},
-			contains: []flagCheck{{"--kv-cache-dtype", "fp8_e4m3"}},
+			contains: []FlagCheck{{"--kv-cache-dtype", "fp8_e4m3"}},
 		},
 		{
-			name: "kvCacheCustomDtype=turbo2 emits flag (vLLM v0.20+ TurboQuant 2-bit)",
+			model: model,
+			name:  "kvCacheCustomDtype=turbo2 emits flag (vLLM v0.20+ TurboQuant 2-bit)",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:    "vllm",
 				ModelRef:   "test-model",
 				VLLMConfig: &inferencev1alpha1.VLLMConfig{KVCacheCustomDtype: "turbo2"},
 			},
-			contains: []flagCheck{{"--kv-cache-dtype", "turbo2"}},
+			contains: []FlagCheck{{"--kv-cache-dtype", "turbo2"}},
 		},
 		{
-			name: "kvCacheCustomDtype wins over standard kvCacheDtype when both set",
+			model: model,
+			name:  "kvCacheCustomDtype wins over standard kvCacheDtype when both set",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:  "vllm",
 				ModelRef: "test-model",
@@ -203,11 +203,12 @@ func TestVLLMBuildArgs(t *testing.T) {
 					KVCacheCustomDtype: "turbo2",
 				},
 			},
-			contains:    []flagCheck{{"--kv-cache-dtype", "turbo2"}},
+			contains:    []FlagCheck{{"--kv-cache-dtype", "turbo2"}},
 			notContains: []string{"fp8_e4m3"},
 		},
 		{
-			name: "kvCacheCustomDtype empty falls back to standard kvCacheDtype",
+			model: model,
+			name:  "kvCacheCustomDtype empty falls back to standard kvCacheDtype",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:  "vllm",
 				ModelRef: "test-model",
@@ -216,19 +217,21 @@ func TestVLLMBuildArgs(t *testing.T) {
 					KVCacheCustomDtype: "",
 				},
 			},
-			contains: []flagCheck{{"--kv-cache-dtype", "fp8_e5m2"}},
+			contains: []FlagCheck{{"--kv-cache-dtype", "fp8_e5m2"}},
 		},
 		{
-			name: "enablePrefixCaching=true emits flag",
+			model: model,
+			name:  "enablePrefixCaching=true emits flag",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:    "vllm",
 				ModelRef:   "test-model",
 				VLLMConfig: &inferencev1alpha1.VLLMConfig{EnablePrefixCaching: ptrBool(true)},
 			},
-			contains: []flagCheck{{"--enable-prefix-caching", ""}},
+			contains: []FlagCheck{{"--enable-prefix-caching", ""}},
 		},
 		{
-			name: "enablePrefixCaching=false does not emit flag (lets vLLM default)",
+			model: model,
+			name:  "enablePrefixCaching=false does not emit flag (lets vLLM default)",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:    "vllm",
 				ModelRef:   "test-model",
@@ -237,16 +240,18 @@ func TestVLLMBuildArgs(t *testing.T) {
 			notContains: []string{"--enable-prefix-caching"},
 		},
 		{
-			name: "enableChunkedPrefill=true emits flag",
+			model: model,
+			name:  "enableChunkedPrefill=true emits flag",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:    "vllm",
 				ModelRef:   "test-model",
 				VLLMConfig: &inferencev1alpha1.VLLMConfig{EnableChunkedPrefill: ptrBool(true)},
 			},
-			contains: []flagCheck{{"--enable-chunked-prefill", ""}},
+			contains: []FlagCheck{{"--enable-chunked-prefill", ""}},
 		},
 		{
-			name: "enableChunkedPrefill=false does not emit flag",
+			model: model,
+			name:  "enableChunkedPrefill=false does not emit flag",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:    "vllm",
 				ModelRef:   "test-model",
@@ -255,16 +260,18 @@ func TestVLLMBuildArgs(t *testing.T) {
 			notContains: []string{"--enable-chunked-prefill"},
 		},
 		{
-			name: "maxNumBatchedTokens set emits flag",
+			model: model,
+			name:  "maxNumBatchedTokens set emits flag",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:    "vllm",
 				ModelRef:   "test-model",
 				VLLMConfig: &inferencev1alpha1.VLLMConfig{MaxNumBatchedTokens: ptrInt32(8192)},
 			},
-			contains: []flagCheck{{"--max-num-batched-tokens", "8192"}},
+			contains: []FlagCheck{{"--max-num-batched-tokens", "8192"}},
 		},
 		{
-			name: "maxNumBatchedTokens nil does not emit flag",
+			model: model,
+			name:  "maxNumBatchedTokens nil does not emit flag",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:    "vllm",
 				ModelRef:   "test-model",
@@ -273,17 +280,19 @@ func TestVLLMBuildArgs(t *testing.T) {
 			notContains: []string{"--max-num-batched-tokens"},
 		},
 		{
-			name: "parallelSlots set emits flag (without extraArgs precedence)",
+			model: model,
+			name:  "parallelSlots set emits flag (without extraArgs precedence)",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:       "vllm",
 				ModelRef:      "test-model",
 				ParallelSlots: ptrInt32(1),
 				VLLMConfig:    &inferencev1alpha1.VLLMConfig{},
 			},
-			contains: []flagCheck{{"--max-num-seqs", "1"}},
+			contains: []FlagCheck{{"--max-num-seqs", "1"}},
 		},
 		{
-			name: "parallelSlots set emits flag (with extraArgs precedence)",
+			model: model,
+			name:  "parallelSlots set emits flag (with extraArgs precedence)",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:       "vllm",
 				ModelRef:      "test-model",
@@ -294,10 +303,11 @@ func TestVLLMBuildArgs(t *testing.T) {
 			// and containsArgs helper function always validate first occurrence, having
 			// --max-num-seqs 8 case true mean that no duplicate due to parallelSlots was
 			// found along the way.
-			contains: []flagCheck{{"--max-num-seqs", "8"}},
+			contains: []FlagCheck{{"--max-num-seqs", "8"}},
 		},
 		{
-			name: "parallelSlots set emits flag (with extraArgs inline precedence)",
+			model: model,
+			name:  "parallelSlots set emits flag (with extraArgs inline precedence)",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:       "vllm",
 				ModelRef:      "test-model",
@@ -308,10 +318,11 @@ func TestVLLMBuildArgs(t *testing.T) {
 			// and containsArgs helper function always validate first occurrence, having
 			// --max-num-seqs 8 case true mean that no duplicate due to parallelSlots was
 			// found along the way.
-			contains: []flagCheck{{"--max-num-seqs=8", ""}},
+			contains: []FlagCheck{{"--max-num-seqs=8", ""}},
 		},
 		{
-			name: "parallelSlots nil does not emit flag",
+			model: model,
+			name:  "parallelSlots nil does not emit flag",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:    "vllm",
 				ModelRef:   "test-model",
@@ -320,25 +331,28 @@ func TestVLLMBuildArgs(t *testing.T) {
 			notContains: []string{"--max-num-seqs"},
 		},
 		{
-			name: "attentionBackend=FLASHINFER emits flag (uppercase)",
+			model: model,
+			name:  "attentionBackend=FLASHINFER emits flag (uppercase)",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:    "vllm",
 				ModelRef:   "test-model",
 				VLLMConfig: &inferencev1alpha1.VLLMConfig{AttentionBackend: "FLASHINFER"},
 			},
-			contains: []flagCheck{{"--attention-backend", "FLASHINFER"}},
+			contains: []FlagCheck{{"--attention-backend", "FLASHINFER"}},
 		},
 		{
-			name: "attentionBackend=flashinfer emits flag (lowercase compat)",
+			model: model,
+			name:  "attentionBackend=flashinfer emits flag (lowercase compat)",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:    "vllm",
 				ModelRef:   "test-model",
 				VLLMConfig: &inferencev1alpha1.VLLMConfig{AttentionBackend: "flashinfer"},
 			},
-			contains: []flagCheck{{"--attention-backend", "flashinfer"}},
+			contains: []FlagCheck{{"--attention-backend", "flashinfer"}},
 		},
 		{
-			name: "speculative enabled+model emits both flags",
+			model: model,
+			name:  "speculative enabled+model emits both flags",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:  "vllm",
 				ModelRef: "test-model",
@@ -350,13 +364,14 @@ func TestVLLMBuildArgs(t *testing.T) {
 					},
 				},
 			},
-			contains: []flagCheck{
+			contains: []FlagCheck{
 				{"--speculative-model", "Qwen/Qwen3.6-4B"},
 				{"--num-speculative-tokens", "4"},
 			},
 		},
 		{
-			name: "speculative enabled without model skips both flags",
+			model: model,
+			name:  "speculative enabled without model skips both flags",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:  "vllm",
 				ModelRef: "test-model",
@@ -370,7 +385,8 @@ func TestVLLMBuildArgs(t *testing.T) {
 			notContains: []string{"--speculative-model", "--num-speculative-tokens"},
 		},
 		{
-			name: "speculative disabled does not emit flags even with model set",
+			model: model,
+			name:  "speculative disabled does not emit flags even with model set",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:  "vllm",
 				ModelRef: "test-model",
@@ -384,16 +400,18 @@ func TestVLLMBuildArgs(t *testing.T) {
 			notContains: []string{"--speculative-model", "--num-speculative-tokens"},
 		},
 		{
-			name: "enableExpertParallel=true emits flag",
+			model: model,
+			name:  "enableExpertParallel=true emits flag",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:    "vllm",
 				ModelRef:   "test-model",
 				VLLMConfig: &inferencev1alpha1.VLLMConfig{EnableExpertParallel: ptrBool(true)},
 			},
-			contains: []flagCheck{{"--enable-expert-parallel", ""}},
+			contains: []FlagCheck{{"--enable-expert-parallel", ""}},
 		},
 		{
-			name: "enableExpertParallel=false does not emit flag",
+			model: model,
+			name:  "enableExpertParallel=false does not emit flag",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:    "vllm",
 				ModelRef:   "test-model",
@@ -402,7 +420,8 @@ func TestVLLMBuildArgs(t *testing.T) {
 			notContains: []string{"--enable-expert-parallel"},
 		},
 		{
-			name: "full agentic config emits all flags together",
+			model: model,
+			name:  "full agentic config emits all flags together",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:       "vllm",
 				ModelRef:      "test-model",
@@ -419,7 +438,7 @@ func TestVLLMBuildArgs(t *testing.T) {
 					TensorParallelSize:   ptrInt32(2),
 				},
 			},
-			contains: []flagCheck{
+			contains: []FlagCheck{
 				{"--attention-backend", "FLASHINFER"},
 				{"--dtype", "bfloat16"},
 				{"--enable-prefix-caching", ""},
@@ -440,12 +459,7 @@ func TestVLLMBuildArgs(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{Name: "isvc-" + strings.ReplaceAll(tc.name, " ", "-"), Namespace: "default"},
 				Spec:       *tc.spec,
 			}
-			var args []string
-			if tc.spec.ModelRef == "test-model-gpu" {
-				args = backend.BuildArgs(isvc, modelWithGpu, modelPath, port)
-			} else {
-				args = backend.BuildArgs(isvc, model, modelPath, port)
-			}
+			args := backend.BuildArgs(isvc, tc.model, modelPath, port)
 			for _, fc := range tc.contains {
 				if !containsArg(args, fc.flag, fc.value) {
 					t.Errorf("expected %q %q in args, got: %v", fc.flag, fc.value, args)

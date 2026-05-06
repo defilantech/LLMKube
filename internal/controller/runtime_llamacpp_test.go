@@ -37,22 +37,10 @@ func TestLlamaCppBuildArgs(t *testing.T) {
 	const modelPath = "/models/test"
 	const port = int32(8000)
 
-	// contains is a slice of flag/value pairs ("" value means "flag must be
-	// present as a bare toggle"). notContains is just a list of flags that
-	// must NOT appear anywhere in args.
-	type flagCheck struct {
-		flag  string
-		value string
-	}
-
-	cases := []struct {
-		name        string
-		spec        *inferencev1alpha1.InferenceServiceSpec
-		contains    []flagCheck
-		notContains []string
-	}{
+	cases := []RuntimeBuildArgsTestCase{
 		{
-			name: "empty config emits only base flags",
+			model: model,
+			name:  "empty config emits only base flags",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:  "llama",
 				ModelRef: "test-model",
@@ -60,16 +48,18 @@ func TestLlamaCppBuildArgs(t *testing.T) {
 			notContains: []string{"--ctx-size", "--parallel", "--flash-attn", "--jinja", "--cache-type-k", "--cpu-moe", "--n-cpu-moe", "--no-kv-offload", "--override-tensor", "--override-kv", "--batch-size", "--ubatch-size", "--no-warmup", "--reasoning-budget", "--reasoning-budget-message"},
 		},
 		{
-			name: "contextSize set emits flag",
+			model: model,
+			name:  "contextSize set emits flag",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:     "llama",
 				ModelRef:    "test-model",
 				ContextSize: ptrInt32(8192),
 			},
-			contains: []flagCheck{{"--ctx-size", "8192"}},
+			contains: []FlagCheck{{"--ctx-size", "8192"}},
 		},
 		{
-			name: "contextSize nil does not emit flag",
+			model: model,
+			name:  "contextSize nil does not emit flag",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:  "llama",
 				ModelRef: "test-model",
@@ -77,16 +67,18 @@ func TestLlamaCppBuildArgs(t *testing.T) {
 			notContains: []string{"--ctx-size"},
 		},
 		{
-			name: "parallelSlots set emits flag (without extraArgs precedence)",
+			model: model,
+			name:  "parallelSlots set emits flag (without extraArgs precedence)",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:       "llama",
 				ModelRef:      "test-model",
 				ParallelSlots: ptrInt32(8192),
 			},
-			contains: []flagCheck{{"--parallel", "8192"}},
+			contains: []FlagCheck{{"--parallel", "8192"}},
 		},
 		{
-			name: "parallelSlots set emits flag (with extraArgs precedence)",
+			model: model,
+			name:  "parallelSlots set emits flag (with extraArgs precedence)",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:       "llama",
 				ModelRef:      "test-model",
@@ -97,10 +89,11 @@ func TestLlamaCppBuildArgs(t *testing.T) {
 			// and containsArgs helper function always validate first occurrence, having
 			// --parallel 8 case true mean that no duplicate due to parallelSlots was
 			// found along the way.
-			contains: []flagCheck{{"--parallel", "8"}},
+			contains: []FlagCheck{{"--parallel", "8"}},
 		},
 		{
-			name: "parallelSlots set emits flag (with extraArgs inline precedence)",
+			model: model,
+			name:  "parallelSlots set emits flag (with extraArgs inline precedence)",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:       "llama",
 				ModelRef:      "test-model",
@@ -111,10 +104,11 @@ func TestLlamaCppBuildArgs(t *testing.T) {
 			// and containsArgs helper function always validate first occurrence, having
 			// --parallel 8 case true mean that no duplicate due to parallelSlots was
 			// found along the way.
-			contains: []flagCheck{{"--parallel=8", ""}},
+			contains: []FlagCheck{{"--parallel=8", ""}},
 		},
 		{
-			name: "parallelSlots nil does not emit flag (without extraArgs precedence)",
+			model: model,
+			name:  "parallelSlots nil does not emit flag (without extraArgs precedence)",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:  "llama",
 				ModelRef: "test-model",
@@ -122,16 +116,18 @@ func TestLlamaCppBuildArgs(t *testing.T) {
 			notContains: []string{"--parallel"},
 		},
 		{
-			name: "batchSize set emits flag",
+			model: model,
+			name:  "batchSize set emits flag",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:   "llama",
 				ModelRef:  "test-model",
 				BatchSize: ptrInt32(8192),
 			},
-			contains: []flagCheck{{"--batch-size", "8192"}},
+			contains: []FlagCheck{{"--batch-size", "8192"}},
 		},
 		{
-			name: "batchSize nil does not emit flag",
+			model: model,
+			name:  "batchSize nil does not emit flag",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:  "llama",
 				ModelRef: "test-model",
@@ -139,16 +135,18 @@ func TestLlamaCppBuildArgs(t *testing.T) {
 			notContains: []string{"--batch-size"},
 		},
 		{
-			name: "uBatchSize set emits flag",
+			model: model,
+			name:  "uBatchSize set emits flag",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:    "llama",
 				ModelRef:   "test-model",
 				UBatchSize: ptrInt32(8192),
 			},
-			contains: []flagCheck{{"--ubatch-size", "8192"}},
+			contains: []FlagCheck{{"--ubatch-size", "8192"}},
 		},
 		{
-			name: "uBatchSize nil does not emit flag",
+			model: model,
+			name:  "uBatchSize nil does not emit flag",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:  "llama",
 				ModelRef: "test-model",
@@ -156,16 +154,18 @@ func TestLlamaCppBuildArgs(t *testing.T) {
 			notContains: []string{"--ubatch-size"},
 		},
 		{
-			name: "moeCPULayers set emits flag",
+			model: model,
+			name:  "moeCPULayers set emits flag",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:      "llama",
 				ModelRef:     "test-model",
 				MoeCPULayers: ptrInt32(8192),
 			},
-			contains: []flagCheck{{"--n-cpu-moe", "8192"}},
+			contains: []FlagCheck{{"--n-cpu-moe", "8192"}},
 		},
 		{
-			name: "moeCPULayers nil does not emit flag",
+			model: model,
+			name:  "moeCPULayers nil does not emit flag",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:  "llama",
 				ModelRef: "test-model",
@@ -173,7 +173,8 @@ func TestLlamaCppBuildArgs(t *testing.T) {
 			notContains: []string{"--n-cpu-moe"},
 		},
 		{
-			name: "flashAttention=true does not emit flag without GPU",
+			model: model,
+			name:  "flashAttention=true does not emit flag without GPU",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:        "llama",
 				ModelRef:       "test-model",
@@ -182,7 +183,8 @@ func TestLlamaCppBuildArgs(t *testing.T) {
 			notContains: []string{"--flash-attn"},
 		},
 		{
-			name: "flashAttention=false does not emit flag",
+			model: model,
+			name:  "flashAttention=false does not emit flag",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:        "llama",
 				ModelRef:       "test-model",
@@ -191,16 +193,18 @@ func TestLlamaCppBuildArgs(t *testing.T) {
 			notContains: []string{"--flash-attn"},
 		},
 		{
-			name: "jinja=true emits flag",
+			model: model,
+			name:  "jinja=true emits flag",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:  "llama",
 				ModelRef: "test-model",
 				Jinja:    ptrBool(true),
 			},
-			contains: []flagCheck{{"--jinja", ""}},
+			contains: []FlagCheck{{"--jinja", ""}},
 		},
 		{
-			name: "jinja=false does not emit flag",
+			model: model,
+			name:  "jinja=false does not emit flag",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:  "llama",
 				ModelRef: "test-model",
@@ -209,16 +213,18 @@ func TestLlamaCppBuildArgs(t *testing.T) {
 			notContains: []string{"--jinja"},
 		},
 		{
-			name: "moeCPUOffload=true emits flag",
+			model: model,
+			name:  "moeCPUOffload=true emits flag",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:       "llama",
 				ModelRef:      "test-model",
 				MoeCPUOffload: ptrBool(true),
 			},
-			contains: []flagCheck{{"--cpu-moe", ""}},
+			contains: []FlagCheck{{"--cpu-moe", ""}},
 		},
 		{
-			name: "moeCPUOffload=false does not emit flag",
+			model: model,
+			name:  "moeCPUOffload=false does not emit flag",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:       "llama",
 				ModelRef:      "test-model",
@@ -227,16 +233,18 @@ func TestLlamaCppBuildArgs(t *testing.T) {
 			notContains: []string{"--cpu-moe"},
 		},
 		{
-			name: "noKVOffload=true emits flag",
+			model: model,
+			name:  "noKVOffload=true emits flag",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:     "llama",
 				ModelRef:    "test-model",
 				NoKvOffload: ptrBool(true),
 			},
-			contains: []flagCheck{{"--no-kv-offload", ""}},
+			contains: []FlagCheck{{"--no-kv-offload", ""}},
 		},
 		{
-			name: "noKVOffload=false does not emit flag",
+			model: model,
+			name:  "noKVOffload=false does not emit flag",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:     "llama",
 				ModelRef:    "test-model",
@@ -245,16 +253,18 @@ func TestLlamaCppBuildArgs(t *testing.T) {
 			notContains: []string{"--no-kv-offload"},
 		},
 		{
-			name: "noWarmup=true emits flag",
+			model: model,
+			name:  "noWarmup=true emits flag",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:  "llama",
 				ModelRef: "test-model",
 				NoWarmup: ptrBool(true),
 			},
-			contains: []flagCheck{{"--no-warmup", ""}},
+			contains: []FlagCheck{{"--no-warmup", ""}},
 		},
 		{
-			name: "noWarmup=false does not emit flag",
+			model: model,
+			name:  "noWarmup=false does not emit flag",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:  "llama",
 				ModelRef: "test-model",
@@ -263,38 +273,42 @@ func TestLlamaCppBuildArgs(t *testing.T) {
 			notContains: []string{"--no-warmup"},
 		},
 		{
-			name: "reasoningBudget set emits flag (without message)",
+			model: model,
+			name:  "reasoningBudget set emits flag (without message)",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:         "llama",
 				ModelRef:        "test-model",
 				ReasoningBudget: ptrInt32(8192),
 			},
-			contains: []flagCheck{{"--reasoning-budget", "8192"}},
+			contains: []FlagCheck{{"--reasoning-budget", "8192"}},
 		},
 		{
-			name: "reasoningBudget set emits flag (with message)",
+			model: model,
+			name:  "reasoningBudget set emits flag (with message)",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:                "llama",
 				ModelRef:               "test-model",
 				ReasoningBudget:        ptrInt32(8192),
 				ReasoningBudgetMessage: "message",
 			},
-			contains: []flagCheck{
+			contains: []FlagCheck{
 				{"--reasoning-budget", "8192"},
 				{"--reasoning-budget-message", "message"},
 			},
 		},
 		{
-			name: "cacheTypeK set emits flag",
+			model: model,
+			name:  "cacheTypeK set emits flag",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:    "llama",
 				ModelRef:   "test-model",
 				CacheTypeK: "key",
 			},
-			contains: []flagCheck{{"--cache-type-k", "key"}},
+			contains: []FlagCheck{{"--cache-type-k", "key"}},
 		},
 		{
-			name: "cacheTypeK nil does not emit flag",
+			model: model,
+			name:  "cacheTypeK nil does not emit flag",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:  "llama",
 				ModelRef: "test-model",
@@ -302,16 +316,18 @@ func TestLlamaCppBuildArgs(t *testing.T) {
 			notContains: []string{"--cache-type-k"},
 		},
 		{
-			name: "cacheTypeV set emits flag",
+			model: model,
+			name:  "cacheTypeV set emits flag",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:    "llama",
 				ModelRef:   "test-model",
 				CacheTypeV: "value",
 			},
-			contains: []flagCheck{{"--cache-type-v", "value"}},
+			contains: []FlagCheck{{"--cache-type-v", "value"}},
 		},
 		{
-			name: "cacheTypeV nil does not emit flag",
+			model: model,
+			name:  "cacheTypeV nil does not emit flag",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:  "llama",
 				ModelRef: "test-model",
@@ -319,19 +335,21 @@ func TestLlamaCppBuildArgs(t *testing.T) {
 			notContains: []string{"--cache-type-v"},
 		},
 		{
-			name: "tensorOverride set emits flag",
+			model: model,
+			name:  "tensorOverride set emits flag",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:         "llama",
 				ModelRef:        "test-model",
 				TensorOverrides: []string{"value1", "value2"},
 			},
-			contains: []flagCheck{
+			contains: []FlagCheck{
 				{"--override-tensor", "value1"},
 				{"--override-tensor", "value2"},
 			},
 		},
 		{
-			name: "tensorOverrides nil does not emit flag",
+			model: model,
+			name:  "tensorOverrides nil does not emit flag",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:  "llama",
 				ModelRef: "test-model",
@@ -339,19 +357,21 @@ func TestLlamaCppBuildArgs(t *testing.T) {
 			notContains: []string{"--override-tensor"},
 		},
 		{
-			name: "metadataOverride set emits flag",
+			model: model,
+			name:  "metadataOverride set emits flag",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:           "llama",
 				ModelRef:          "test-model",
 				MetadataOverrides: []string{"value1", "value2"},
 			},
-			contains: []flagCheck{
+			contains: []FlagCheck{
 				{"--override-kv", "value1"},
 				{"--override-kv", "value2"},
 			},
 		},
 		{
-			name: "metadataOverride nil does not emits flag",
+			model: model,
+			name:  "metadataOverride nil does not emits flag",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:  "llama",
 				ModelRef: "test-model",
@@ -359,7 +379,8 @@ func TestLlamaCppBuildArgs(t *testing.T) {
 			notContains: []string{"--override-kv"},
 		},
 		{
-			name: "full agentic config emits all flags together",
+			model: model,
+			name:  "full agentic config emits all flags together",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:                "llama",
 				ModelRef:               "test-model",
@@ -380,7 +401,7 @@ func TestLlamaCppBuildArgs(t *testing.T) {
 				TensorOverrides:        []string{"value1", "value2"},
 				UBatchSize:             ptrInt32(2),
 			},
-			contains: []flagCheck{
+			contains: []FlagCheck{
 				{"--batch-size", "2"},
 				{"--cache-type-k", "key"},
 				{"--cache-type-v", "value"},
@@ -409,7 +430,7 @@ func TestLlamaCppBuildArgs(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{Name: "isvc-" + strings.ReplaceAll(tc.name, " ", "-"), Namespace: "default"},
 				Spec:       *tc.spec,
 			}
-			args := backend.BuildArgs(isvc, model, modelPath, port)
+			args := backend.BuildArgs(isvc, tc.model, modelPath, port)
 			for _, fc := range tc.contains {
 				if !containsArg(args, fc.flag, fc.value) {
 					t.Errorf("expected %q %q in args, got: %v", fc.flag, fc.value, args)
