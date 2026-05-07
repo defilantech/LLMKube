@@ -36,6 +36,40 @@ type FlagCheck struct {
 	value string
 }
 
+func TestRuntimeNameLabel(t *testing.T) {
+	cases := []struct {
+		name     string
+		runtime  string
+		expected string
+	}{
+		{name: "empty runtime defaults to llamacpp", runtime: "", expected: "llamacpp"},
+		{name: "vllm passes through", runtime: "vllm", expected: "vllm"},
+		{name: "tgi passes through", runtime: "tgi", expected: "tgi"},
+		{name: "personaplex passes through", runtime: "personaplex", expected: "personaplex"},
+		{name: "generic passes through", runtime: "generic", expected: "generic"},
+		// Future runtimes (vllm-swift on metal, etc.) pass through
+		// untouched: the label is the user-declared identifier, not a
+		// validated enum, so new backends do not need to update this map.
+		{name: "unknown runtime passes through verbatim", runtime: "future-thing", expected: "future-thing"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			isvc := &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{Runtime: tc.runtime},
+			}
+			if got := runtimeNameLabel(isvc); got != tc.expected {
+				t.Errorf("runtimeNameLabel(%q) = %q, want %q", tc.runtime, got, tc.expected)
+			}
+		})
+	}
+
+	t.Run("nil isvc returns llamacpp", func(t *testing.T) {
+		if got := runtimeNameLabel(nil); got != "llamacpp" {
+			t.Errorf("runtimeNameLabel(nil) = %q, want %q", got, "llamacpp")
+		}
+	})
+}
+
 func TestResolveGPUCount(t *testing.T) {
 	cases := []struct {
 		expected int32

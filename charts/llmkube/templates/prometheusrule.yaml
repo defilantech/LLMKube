@@ -85,5 +85,57 @@ spec:
       annotations:
         summary: "LLMKube controller is down"
         description: "Controller {{`{{ $labels.instance }}`}} has been down for more than 2 minutes"
+
+  - name: llmkube-inference-recording
+    interval: 30s
+    rules:
+    # Request latency p95 over 5m, unified across llama.cpp and vLLM. Each
+    # runtime publishes its own histogram name; this rule exposes a single
+    # series families (one per runtime) so dashboards can render either one
+    # without knowing the upstream metric path. TTFT is exposed only for vLLM
+    # today; llama.cpp lacks a first-token-specific histogram, so we report
+    # end-to-end request latency for it instead.
+    - record: llmkube:inference:request_latency:p95_5m
+      expr: |
+        histogram_quantile(0.95,
+          sum by (service, namespace, runtime, le) (
+            rate(vllm:e2e_request_latency_seconds_bucket[5m])
+          )
+        )
+      labels:
+        latency_kind: end_to_end
+    - record: llmkube:inference:ttft:p95_5m
+      expr: |
+        histogram_quantile(0.95,
+          sum by (service, namespace, runtime, le) (
+            rate(vllm:time_to_first_token_seconds_bucket[5m])
+          )
+        )
+      labels:
+        latency_kind: ttft
+    - record: llmkube:inference:llamacpp_request:p95_5m
+      expr: |
+        histogram_quantile(0.95,
+          sum by (service, namespace, runtime, le) (
+            rate(llamacpp:request_seconds_bucket[5m])
+          )
+        )
+      labels:
+        latency_kind: end_to_end
+
+    # Inference pod restart rate as a coarse error proxy. Per-request
+    # 4xx/5xx counters are tracked in #409 and will replace this once the
+    # upstream metric paths are confirmed for each runtime. The container
+    # regex below must be extended when new runtimes ship a real container
+    # name (e.g. add `vllm-swift` to the alternation when that backend
+    # graduates from skeletal to a deployable runtime; tracked in #409).
+    - record: llmkube:inference:restarts:rate5m
+      expr: |
+        sum by (service, namespace, runtime) (
+          rate(kube_pod_container_status_restarts_total{
+            pod=~".+",
+            container=~"llamacpp|vllm|tgi|personaplex|llm-server"
+          }[5m])
+        )
   {{- end }}
 {{- end }}

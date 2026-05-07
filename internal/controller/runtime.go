@@ -75,6 +75,18 @@ func resolveBackend(isvc *inferencev1alpha1.InferenceService) RuntimeBackend {
 	}
 }
 
+// runtimeNameLabel returns a stable, lowercase identifier for the runtime
+// selected by isvc.Spec.Runtime. The returned value is used as the
+// `inference.llmkube.dev/runtime` pod label so Prometheus scrapes can attach a
+// `runtime` series label without parsing isvc back out of the cluster. Empty
+// spec.Runtime maps to "llamacpp" because that's resolveBackend's default.
+func runtimeNameLabel(isvc *inferencev1alpha1.InferenceService) string {
+	if isvc == nil || isvc.Spec.Runtime == "" {
+		return "llamacpp"
+	}
+	return isvc.Spec.Runtime
+}
+
 // resolveGPUCount determines the GPU count from Model spec or InferenceService spec.
 func resolveGPUCount(isvc *inferencev1alpha1.InferenceService, model *inferencev1alpha1.Model) int32 {
 	if model.Spec.Hardware != nil && model.Spec.Hardware.GPU != nil && model.Spec.Hardware.GPU.Count > 0 {

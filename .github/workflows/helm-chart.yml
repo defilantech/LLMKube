@@ -534,8 +534,15 @@ jobs:
 
       - name: Check for Hard-coded Secrets
         run: |
-          # Search for potential secrets in templates
-          if grep -r "password\|secret\|token" charts/llmkube/templates/ --exclude-dir=crds | grep -v "serviceAccount\|SecretKeyRef"; then
+          # Look for YAML/env-style assignments (keyword + colon + non-empty
+          # value), not freeform mentions of the words. Comments,
+          # documentation, and identifiers like `vllm:time_to_first_token_seconds_bucket`
+          # do not match this pattern, so they no longer produce false
+          # positives. The trailing `[^[:space:]{]` keeps Helm template
+          # placeholders like `password: {{ .Values.foo }}` from triggering
+          # (those are not hard-coded values).
+          if grep -rEi "(password|secret|token)[[:space:]]*:[[:space:]]*[^[:space:]{]" \
+              charts/llmkube/templates/ --exclude-dir=crds | grep -v "serviceAccount\|SecretKeyRef"; then
             echo "⚠️  Potential hard-coded secrets found"
             exit 1
           fi

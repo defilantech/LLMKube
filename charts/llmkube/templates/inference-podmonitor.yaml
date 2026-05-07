@@ -20,6 +20,18 @@ spec:
     - port: http
       path: /metrics
       interval: {{ .Values.prometheus.inferencePodMonitor.interval | default "30s" }}
+      relabelings:
+        # Promote the operator-managed pod labels onto every scraped series so
+        # recording rules and dashboards can group by service / namespace /
+        # runtime without re-joining against the kube_pod_labels metric.
+        - sourceLabels: [__meta_kubernetes_pod_label_inference_llmkube_dev_service]
+          targetLabel: service
+        - sourceLabels: [__meta_kubernetes_namespace]
+          targetLabel: namespace
+        - sourceLabels: [__meta_kubernetes_pod_label_inference_llmkube_dev_model]
+          targetLabel: model
+        - sourceLabels: [__meta_kubernetes_pod_label_inference_llmkube_dev_runtime]
+          targetLabel: runtime
   namespaceSelector:
     any: true
 {{- end }}

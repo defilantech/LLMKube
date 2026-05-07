@@ -2785,10 +2785,11 @@ var _ = Describe("Context Size Configuration", func() {
 
 			Expect(deployment.Spec.Template.Annotations).To(BeNil())
 			podLabels := deployment.Spec.Template.Labels
-			Expect(podLabels).To(HaveLen(3))
+			Expect(podLabels).To(HaveLen(4))
 			Expect(podLabels).To(HaveKey("app"))
 			Expect(podLabels).To(HaveKey("inference.llmkube.dev/model"))
 			Expect(podLabels).To(HaveKey("inference.llmkube.dev/service"))
+			Expect(podLabels).To(HaveKeyWithValue("inference.llmkube.dev/runtime", "llamacpp"))
 		})
 	})
 })

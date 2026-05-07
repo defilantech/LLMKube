@@ -132,6 +132,7 @@ func (r *InferenceServiceReconciler) constructDeployment(
 		"app":                           isvc.Name,
 		"inference.llmkube.dev/model":   model.Name,
 		"inference.llmkube.dev/service": isvc.Name,
+		"inference.llmkube.dev/runtime": runtimeNameLabel(isvc),
 	}
 
 	image := backend.DefaultImage()
