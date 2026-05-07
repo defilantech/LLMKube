@@ -29,7 +29,9 @@ import (
 	"time"
 
 	"go.uber.org/zap"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
@@ -59,6 +61,14 @@ type MetalAgentConfig struct {
 	Port           int
 	HostIP         string // explicit IP to register in K8s endpoints; empty = auto-detect
 	Logger         *zap.SugaredLogger
+
+	// EventRecorder publishes Kubernetes events on managed InferenceService
+	// objects so operators can triage memory pressure / eviction / respawn
+	// behavior via `kubectl describe` (and any tool that surfaces K8s events:
+	// k9s, Lens, ArgoCD). Nil disables event emission; the agent still
+	// updates conditions and metrics. Tests can pass a record.FakeRecorder
+	// to assert on the event stream. Closes #390.
+	EventRecorder record.EventRecorder
 
 	// Runtime selects the inference backend: "llama-server" (default), "omlx", or "ollama".
 	Runtime string
@@ -544,6 +554,15 @@ func (a *MetalAgent) ensureProcess(ctx context.Context, isvc *inferencev1alpha1.
 		a.logger.Warnw("skipping ensureProcess; eviction-blocked under memory pressure",
 			"namespace", isvc.Namespace, "name", isvc.Name,
 			"pressureLevel", pressureLevel.String())
+		// Surface the block as a Kubernetes event so an operator who
+		// `kubectl describe`s a service that "won't start" can see why.
+		// Synthesize a ManagedProcess shell with just the IS coordinates;
+		// emitInferenceEvent re-fetches the live IS for the event target.
+		a.emitInferenceEvent(ctx, &ManagedProcess{Namespace: isvc.Namespace, Name: isvc.Name},
+			corev1.EventTypeWarning, EventReasonRespawnBlocked,
+			"Respawn blocked: previous process was evicted and host memory pressure is %s",
+			pressureLevel.String(),
+		)
 		return nil
 	}
 

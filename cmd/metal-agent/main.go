@@ -28,7 +28,11 @@ import (
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
+	typedcorev1 "k8s.io/client-go/kubernetes/typed/core/v1"
+	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
 
@@ -352,10 +356,29 @@ func main() {
 	}
 	logger.Infow("connected to Kubernetes cluster")
 
+	// EventRecorder feeds operator-facing Kubernetes events on managed
+	// InferenceService objects (memory-pressure transitions, evictions,
+	// respawn blocks). The controller-runtime client doesn't expose an
+	// EventSink, so we build a typed clientset just for the events API and
+	// wire it through a shared broadcaster. Closes #390.
+	clientset, err := kubernetes.NewForConfig(k8sConfig)
+	if err != nil {
+		logger.Errorw("failed to create kubernetes clientset for events", "error", err)
+		os.Exit(1)
+	}
+	eventBroadcaster := record.NewBroadcaster()
+	eventBroadcaster.StartRecordingToSink(&typedcorev1.EventSinkImpl{
+		Interface: clientset.CoreV1().Events(""),
+	})
+	eventRecorder := eventBroadcaster.NewRecorder(scheme.Scheme,
+		corev1.EventSource{Component: "llmkube-metal-agent"})
+	defer eventBroadcaster.Shutdown()
+
 	// Create agent
 	logger.Infow("creating Metal agent")
 	agentCfg := agent.MetalAgentConfig{
 		K8sClient:                 k8sClient,
+		EventRecorder:             eventRecorder,
 		Namespace:                 cfg.Namespace,
 		ModelStorePath:            cfg.ModelStorePath,
 		LlamaServerBin:            cfg.LlamaServerBin,

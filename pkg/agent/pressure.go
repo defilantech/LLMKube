@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -42,6 +43,42 @@ const (
 	ReasonMemoryCritical = "Critical"
 	ReasonEvicted        = "Evicted"
 )
+
+// Kubernetes event reasons emitted by the watchdog. Kept short and
+// UpperCamelCase per the corev1.Event convention so they show up cleanly in
+// `kubectl describe inferenceservice` and in tools like k9s/Lens.
+const (
+	EventReasonMemoryPressureLevelChanged = "MemoryPressureLevelChanged"
+	EventReasonEvicted                    = "Evicted"
+	EventReasonEvictionSkipped            = "EvictionSkipped"
+	EventReasonRespawnBlocked             = "RespawnBlocked"
+)
+
+// emitInferenceEvent publishes a Kubernetes event on the InferenceService
+// identified by p (namespace+name). It re-fetches the IS so the event lands
+// on the up-to-date object metadata; failures are logged and ignored, since
+// observability must never block the watchdog. No-op when EventRecorder is
+// nil, which keeps tests that wire only K8sClient working unchanged.
+func (a *MetalAgent) emitInferenceEvent(ctx context.Context, p *ManagedProcess, eventType, reason, messageFmt string, args ...interface{}) {
+	if a.config.EventRecorder == nil || p == nil {
+		return
+	}
+	if a.config.K8sClient == nil {
+		// Without a client we cannot fetch the involved object; the recorder
+		// requires a real runtime.Object to set the involvedObjectReference.
+		return
+	}
+	isvc := &inferencev1alpha1.InferenceService{}
+	key := types.NamespacedName{Namespace: p.Namespace, Name: p.Name}
+	if err := a.config.K8sClient.Get(ctx, key, isvc); err != nil {
+		if !apierrors.IsNotFound(err) {
+			a.logger.Debugw("emitInferenceEvent: get IS failed",
+				"key", key.String(), "reason", reason, "error", err)
+		}
+		return
+	}
+	a.config.EventRecorder.Eventf(isvc, eventType, reason, messageFmt, args...)
+}
 
 // handleMemoryPressure is the watchdog callback. It runs on the watchdog
 // goroutine, so it must not block on long operations: K8s status writes are
@@ -108,6 +145,25 @@ func (a *MetalAgent) handleMemoryPressure(ctx context.Context, level MemoryPress
 		}
 	}
 
+	// Emit a single Kubernetes event per managed process on level transitions
+	// (not on every same-level tick, otherwise sustained pressure floods the
+	// event stream). Type Warning for non-Normal levels so tools like k9s
+	// surface them with the appropriate icon. Closes #390.
+	if level != previous {
+		eventType := corev1.EventTypeNormal
+		if level != MemoryPressureNormal {
+			eventType = corev1.EventTypeWarning
+		}
+		eventMsg := fmt.Sprintf("MemoryPressure transitioned from %s to %s (totalRSS=%s of %s)",
+			previous.String(), level.String(),
+			formatMemory(stats.TotalRSS), formatMemory(stats.TotalMemory),
+		)
+		for _, p := range snapshot {
+			a.emitInferenceEvent(ctx, p, eventType,
+				EventReasonMemoryPressureLevelChanged, "%s", eventMsg)
+		}
+	}
+
 	// Eviction path. Honored via the --eviction-enabled CLI flag (default
 	// false) so that operators must explicitly opt in to having the
 	// watchdog stop inference processes.
@@ -117,6 +173,8 @@ func (a *MetalAgent) handleMemoryPressure(ctx context.Context, level MemoryPress
 		// every Warning tick and obscure the signal operators care about.
 		if level == MemoryPressureCritical {
 			evictionsSkippedTotal.WithLabelValues("disabled").Inc()
+			a.emitEvictionSkippedAcrossManaged(ctx, snapshot, "disabled",
+				"watchdog at Critical but eviction disabled (set --eviction-enabled to opt in)")
 		}
 		return
 	}
@@ -126,6 +184,9 @@ func (a *MetalAgent) handleMemoryPressure(ctx context.Context, level MemoryPress
 		// is the watchdog's normal observation, not a refusal.
 		if level == MemoryPressureCritical {
 			evictionsSkippedTotal.WithLabelValues("below_guard").Inc()
+			a.emitEvictionSkippedAcrossManaged(ctx, snapshot, "below_guard",
+				fmt.Sprintf("watchdog at Critical but managed processes hold less than 50%% of system RSS (totalRSS=%s of %s); refusing friendly fire",
+					formatMemory(stats.TotalRSS), formatMemory(stats.TotalMemory)))
 		}
 		return
 	}
@@ -134,6 +195,10 @@ func (a *MetalAgent) handleMemoryPressure(ctx context.Context, level MemoryPress
 		evictionsSkippedTotal.WithLabelValues(skipReason).Inc()
 		a.logger.Warnw("memory critical but no eligible eviction target found",
 			"managed", len(snapshot), "reason", skipReason)
+		a.emitEvictionSkippedAcrossManaged(ctx, snapshot, skipReason,
+			fmt.Sprintf("eviction skipped: reason=%s (managed=%d, totalRSS=%s of %s)",
+				skipReason, len(snapshot),
+				formatMemory(stats.TotalRSS), formatMemory(stats.TotalMemory)))
 		return
 	}
 
@@ -167,6 +232,28 @@ func (a *MetalAgent) handleMemoryPressure(ctx context.Context, level MemoryPress
 		delete(a.pressureBlocked, key)
 		a.mu.Unlock()
 		a.logger.Errorw("eviction failed; cleared pressure block", "key", key, "error", err)
+		return
+	}
+
+	a.emitInferenceEvent(ctx, target, corev1.EventTypeWarning, EventReasonEvicted,
+		"Process evicted to relieve memory pressure (priority=%s, totalRSS=%s of %s)",
+		target.Priority,
+		formatMemory(stats.TotalRSS), formatMemory(stats.TotalMemory),
+	)
+}
+
+// emitEvictionSkippedAcrossManaged broadcasts an EvictionSkipped event to
+// every currently-managed process. Used when the watchdog would have evicted
+// but couldn't (eviction disabled, below-guard, or no candidate found): no
+// single InferenceService is the "subject" of the skip, but operators on any
+// of the managed services should be able to see why their host stayed under
+// pressure without action. Type Normal because the agent is behaving as
+// designed; the higher-severity signal is the underlying MemoryPressure
+// condition + level-changed event.
+func (a *MetalAgent) emitEvictionSkippedAcrossManaged(ctx context.Context, snapshot map[string]*ManagedProcess, reason, message string) {
+	for _, p := range snapshot {
+		a.emitInferenceEvent(ctx, p, corev1.EventTypeNormal,
+			EventReasonEvictionSkipped, "%s (skip-reason=%s)", message, reason)
 	}
 }
 

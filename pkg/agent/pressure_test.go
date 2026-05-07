@@ -18,6 +18,7 @@ package agent
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,6 +28,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -477,4 +479,199 @@ func TestHandleMemoryPressure_NormalClearsBlockedSet(t *testing.T) {
 	if a.lastPressureLevel != MemoryPressureNormal {
 		t.Errorf("lastPressureLevel = %v, want Normal", a.lastPressureLevel)
 	}
+}
+
+// drainEvents reads everything currently buffered in a record.FakeRecorder
+// channel and returns it. The FakeRecorder's channel buffer is configured by
+// the test author; we drain non-blocking so an empty channel returns nil.
+func drainEvents(rec *record.FakeRecorder) []string {
+	var out []string
+	for {
+		select {
+		case e := <-rec.Events:
+			out = append(out, e)
+		default:
+			return out
+		}
+	}
+}
+
+// TestHandleMemoryPressure_EmitsLevelChangedEvent verifies that a level
+// transition publishes one MemoryPressureLevelChanged event per managed
+// process. Type Warning when leaving Normal, Type Normal when returning.
+// Closes #390 for the level-changed reason.
+func TestHandleMemoryPressure_EmitsLevelChangedEvent(t *testing.T) {
+	isvc := newPressureTestISvc("svc-a", "normal")
+	a := newPressureTestAgent(t, isvc)
+	rec := record.NewFakeRecorder(32)
+	a.config.EventRecorder = rec
+
+	a.processes["default/svc-a"] = &ManagedProcess{
+		Name: "svc-a", Namespace: "default", ModelPath: "/m.gguf",
+		Priority: "normal", StartedAt: time.Now(),
+	}
+
+	// Normal -> Warning transition
+	a.handleMemoryPressure(context.Background(), MemoryPressureWarning, MemoryStats{
+		TotalMemory: 100 << 30, TotalRSS: 25 << 30,
+	})
+
+	events := drainEvents(rec)
+	if len(events) != 1 {
+		t.Fatalf("expected exactly 1 event on transition, got %d: %v", len(events), events)
+	}
+	if !strings.Contains(events[0], EventReasonMemoryPressureLevelChanged) {
+		t.Errorf("event missing reason %q: %s", EventReasonMemoryPressureLevelChanged, events[0])
+	}
+	if !strings.Contains(events[0], corev1.EventTypeWarning) {
+		t.Errorf("non-Normal level should emit type Warning, got: %s", events[0])
+	}
+	if !strings.Contains(events[0], "normal to warning") {
+		t.Errorf("event message should describe the transition, got: %s", events[0])
+	}
+
+	// Same-level tick: no new event (we only fire on transitions, not every
+	// watchdog tick, otherwise sustained pressure floods event history).
+	a.handleMemoryPressure(context.Background(), MemoryPressureWarning, MemoryStats{
+		TotalMemory: 100 << 30, TotalRSS: 25 << 30,
+	})
+	if len(drainEvents(rec)) != 0 {
+		t.Error("same-level ticks must not emit a level-changed event")
+	}
+}
+
+// TestHandleMemoryPressure_EmitsEvictedEvent verifies that a successful
+// eviction emits an Evicted event of Type Warning on the target service. The
+// event message must include the priority (so operators can reason about the
+// eviction selector) and the system memory state at decision time.
+func TestHandleMemoryPressure_EmitsEvictedEvent(t *testing.T) {
+	low := newPressureTestISvc("svc-low", "low")
+	high := newPressureTestISvc("svc-high", "high")
+	a := newPressureTestAgent(t, low, high)
+	a.config.EvictionEnabled = true
+	a.executor = stubExecutor{}
+	a.registry = NewServiceRegistry(a.config.K8sClient, "", newNopLogger())
+	rec := record.NewFakeRecorder(32)
+	a.config.EventRecorder = rec
+
+	a.processes["default/svc-low"] = &ManagedProcess{
+		Name: "svc-low", Namespace: "default", Priority: "low",
+		ModelPath: "/m.gguf", PID: 999990, StartedAt: time.Now(),
+	}
+	a.processes["default/svc-high"] = &ManagedProcess{
+		Name: "svc-high", Namespace: "default", Priority: "high",
+		ModelPath: "/m.gguf", PID: 999991, StartedAt: time.Now(),
+	}
+
+	a.handleMemoryPressure(context.Background(), MemoryPressureCritical, MemoryStats{
+		TotalMemory: 100 << 30, TotalRSS: 80 << 30,
+	})
+
+	events := drainEvents(rec)
+	var evicted string
+	for _, e := range events {
+		if strings.Contains(e, EventReasonEvicted) {
+			evicted = e
+			break
+		}
+	}
+	if evicted == "" {
+		t.Fatalf("expected an Evicted event in the stream, got: %v", events)
+	}
+	if !strings.Contains(evicted, corev1.EventTypeWarning) {
+		t.Errorf("Evicted must be Type Warning, got: %s", evicted)
+	}
+	if !strings.Contains(evicted, "priority=low") {
+		t.Errorf("Evicted message should record priority of victim, got: %s", evicted)
+	}
+}
+
+// TestHandleMemoryPressure_EmitsEvictionSkippedWhenDisabled covers the
+// "watchdog wanted to act, refused" path: critical pressure with eviction
+// disabled emits an EvictionSkipped event so operators understand why their
+// host stayed pressured without action.
+func TestHandleMemoryPressure_EmitsEvictionSkippedWhenDisabled(t *testing.T) {
+	isvc := newPressureTestISvc("svc-low", "low")
+	a := newPressureTestAgent(t, isvc)
+	a.config.EvictionEnabled = false
+	a.executor = stubExecutor{}
+	a.registry = NewServiceRegistry(a.config.K8sClient, "", newNopLogger())
+	rec := record.NewFakeRecorder(32)
+	a.config.EventRecorder = rec
+
+	a.processes["default/svc-low"] = &ManagedProcess{
+		Name: "svc-low", Namespace: "default", Priority: "low",
+		ModelPath: "/m.gguf", PID: 999990, StartedAt: time.Now(),
+	}
+
+	a.handleMemoryPressure(context.Background(), MemoryPressureCritical, MemoryStats{
+		TotalMemory: 100 << 30, TotalRSS: 80 << 30,
+	})
+
+	events := drainEvents(rec)
+	var skipped string
+	for _, e := range events {
+		if strings.Contains(e, EventReasonEvictionSkipped) {
+			skipped = e
+			break
+		}
+	}
+	if skipped == "" {
+		t.Fatalf("expected EvictionSkipped event when eviction disabled, got: %v", events)
+	}
+	if !strings.Contains(skipped, "skip-reason=disabled") {
+		t.Errorf("EvictionSkipped should record skip-reason, got: %s", skipped)
+	}
+}
+
+// TestEnsureProcess_EmitsRespawnBlockedEvent verifies the back-pressure
+// guard surfaces as a Kubernetes event so an operator who runs
+// `kubectl describe inferenceservice <svc>` after a "won't start" complaint
+// sees the agent's reason rather than just empty status.
+func TestEnsureProcess_EmitsRespawnBlockedEvent(t *testing.T) {
+	isvc := newPressureTestISvc("svc-a", "low")
+	a := newPressureTestAgent(t, isvc)
+	a.executor = NewMetalExecutor("/fake/llama-server", "/tmp/models", newNopLogger())
+	rec := record.NewFakeRecorder(32)
+	a.config.EventRecorder = rec
+
+	a.pressureBlocked["default/svc-a"] = true
+	a.lastPressureLevel = MemoryPressureCritical
+
+	if err := a.ensureProcess(context.Background(), isvc); err != nil {
+		t.Fatalf("ensureProcess returned error, expected silent skip: %v", err)
+	}
+
+	events := drainEvents(rec)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 RespawnBlocked event, got %d: %v", len(events), events)
+	}
+	if !strings.Contains(events[0], EventReasonRespawnBlocked) {
+		t.Errorf("event missing reason %q: %s", EventReasonRespawnBlocked, events[0])
+	}
+	if !strings.Contains(events[0], corev1.EventTypeWarning) {
+		t.Errorf("RespawnBlocked must be Type Warning, got: %s", events[0])
+	}
+	if !strings.Contains(events[0], MemoryPressureCritical.String()) {
+		t.Errorf("RespawnBlocked should mention current pressure level, got: %s", events[0])
+	}
+}
+
+// TestEmitInferenceEvent_NilRecorderIsNoop verifies the agent stays
+// functional when the operator runs without an EventRecorder configured
+// (today's default in tests; the metal-agent main.go always wires one in
+// production). No panic, no crash, no event.
+func TestEmitInferenceEvent_NilRecorderIsNoop(t *testing.T) {
+	isvc := newPressureTestISvc("svc-a", "normal")
+	a := newPressureTestAgent(t, isvc)
+	// EventRecorder intentionally nil
+
+	a.processes["default/svc-a"] = &ManagedProcess{
+		Name: "svc-a", Namespace: "default", ModelPath: "/m.gguf",
+		Priority: "normal", StartedAt: time.Now(),
+	}
+
+	a.handleMemoryPressure(context.Background(), MemoryPressureWarning, MemoryStats{
+		TotalMemory: 100 << 30, TotalRSS: 25 << 30,
+	})
 }
