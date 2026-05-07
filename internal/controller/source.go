@@ -17,9 +17,40 @@ limitations under the License.
 package controller
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"strings"
 )
+
+// isUnrecoverableFetchError reports whether err is the kind of failure that
+// will not heal by retrying without operator intervention. Used by the Model
+// reconciler to short-circuit the rate-limited tight-retry path when the
+// problem is a missing or unreachable source path rather than a transient
+// cluster condition.
+//
+// The canonical example is the hot-spin from #405: a file:// source pointing
+// at a path that exists on the metal-agent's host filesystem but not inside
+// the controller pod. Returning an error from Reconcile in that case made
+// controller-runtime spin on the rate-limited workqueue, pinning a CPU core
+// for hours. Treating these errors as "stop returning err to the runtime, do
+// periodic recheck on RequeueAfter instead" keeps the operator log honest
+// and the CPU floor flat.
+//
+// Recognized terminal errors:
+//
+//   - fs.ErrNotExist: the path does not exist on the controller pod's
+//     filesystem. Common in hybrid topologies (in-cluster controller + host
+//     agent) where the user references a host path that is correct for the
+//     agent but invisible to the controller.
+//   - fs.ErrPermission: the controller cannot read the file. This is also
+//     unrecoverable without operator action (chmod / chown / SELinux).
+func isUnrecoverableFetchError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, fs.ErrPermission)
+}
 
 // isPVCSource returns true if the source uses the pvc:// scheme.
 func isPVCSource(source string) bool {

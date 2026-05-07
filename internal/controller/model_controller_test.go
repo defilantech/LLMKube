@@ -362,7 +362,15 @@ var _ = Describe("Model Controller Reconcile", func() {
 		Expect(updated.Status.Phase).To(Equal(PhaseReady))
 	})
 
-	It("should set Failed with CopyFailed for nonexistent local file", func() {
+	// Locks down the #405 fix: an unreachable file:// source must not return
+	// an error to controller-runtime, because doing so invokes the
+	// rate-limited workqueue (5ms initial backoff, ramping into hundreds of
+	// reconciles/sec) and pinned a Mac kind cluster's CPU at ~295% for 35
+	// hours in the wild. The reconciler must mark Failed AND back off to a
+	// fixed 5-minute interval AND return nil from the function so the
+	// runtime treats this as a "successful, please-recheck-later" reconcile
+	// rather than a transient error.
+	It("should set Failed with CopyFailed for nonexistent local file (no rate-limited tight retry, #405)", func() {
 		tempDir, err := os.MkdirTemp("", "llmkube-test-*")
 		Expect(err).NotTo(HaveOccurred())
 		defer func() { _ = os.RemoveAll(tempDir) }()
@@ -387,8 +395,10 @@ var _ = Describe("Model Controller Reconcile", func() {
 		result, err := reconciler.Reconcile(ctx, reconcile.Request{
 			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
 		})
-		Expect(err).To(HaveOccurred())
-		Expect(result.RequeueAfter).To(Equal(5 * time.Minute))
+		// nil error is the load-bearing assertion: any non-nil err here
+		// regresses the #405 hot-spin (rate limiter kicks in).
+		Expect(err).NotTo(HaveOccurred(), "unrecoverable fetch errors must not return err to controller-runtime; see #405")
+		Expect(result.RequeueAfter).To(Equal(5*time.Minute), "fixed 5min RequeueAfter is the only retry signal")
 
 		updated := &inferencev1alpha1.Model{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: modelName, Namespace: "default"}, updated)).To(Succeed())
@@ -401,6 +411,41 @@ var _ = Describe("Model Controller Reconcile", func() {
 			}
 		}
 		Expect(hasDegraded).To(BeTrue())
+	})
+
+	// Repeated reconciles on the same broken source must stay on the
+	// fixed-interval path: status updates must succeed, RequeueAfter must
+	// remain 5min, and no err must escape the function. If a future change
+	// regresses this (e.g. by making the second pass take a different code
+	// path that returns err), the hot-spin returns silently.
+	It("repeated reconciles on same broken source must stay on fixed RequeueAfter (#405)", func() {
+		tempDir, err := os.MkdirTemp("", "llmkube-test-*")
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = os.RemoveAll(tempDir) }()
+
+		modelName := "model-local-fail-stable"
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
+			Spec: inferencev1alpha1.ModelSpec{
+				Source: "file:///still/not/here.gguf",
+			},
+		}
+		Expect(k8sClient.Create(ctx, model)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, model) }()
+
+		reconciler := &ModelReconciler{
+			Client:      k8sClient,
+			Scheme:      k8sClient.Scheme(),
+			StoragePath: tempDir,
+		}
+		req := reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
+		}
+		for i := 0; i < 3; i++ {
+			result, err := reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred(), "iter %d: unrecoverable fetch must not return err", i)
+			Expect(result.RequeueAfter).To(Equal(5*time.Minute), "iter %d: RequeueAfter must stay 5m", i)
+		}
 	})
 })
 
@@ -558,7 +603,13 @@ var _ = Describe("Model Controller - Cache Bug Fixes", func() {
 		_, err = reconciler.Reconcile(ctx, reconcile.Request{
 			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
 		})
-		Expect(err).To(HaveOccurred())
+		// Pre-#405 the unreachable file:// path returned err here, which
+		// was correct from a "did the fetch succeed?" perspective but
+		// caused controller-runtime's rate limiter to hot-spin. The fix
+		// returns nil error + RequeueAfter for unrecoverable failures, so
+		// this assertion now checks the atomic-rename guarantee against
+		// the model status condition rather than the err return.
+		Expect(err).NotTo(HaveOccurred())
 
 		// Final model path must NOT exist
 		_, err = os.Stat(modelPath)

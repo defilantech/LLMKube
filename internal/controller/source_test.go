@@ -17,6 +17,12 @@ limitations under the License.
 package controller
 
 import (
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -215,5 +221,46 @@ var _ = Describe("isRemoteHTTPSource (source.go)", func() {
 			}
 			Expect(matchCount).To(Equal(1), "source %q must match exactly one category, got %d", src, matchCount)
 		}
+	})
+})
+
+var _ = Describe("isUnrecoverableFetchError (source.go)", func() {
+	It("should return false for nil error", func() {
+		Expect(isUnrecoverableFetchError(nil)).To(BeFalse())
+	})
+
+	It("should return true for fs.ErrNotExist directly", func() {
+		Expect(isUnrecoverableFetchError(fs.ErrNotExist)).To(BeTrue())
+	})
+
+	It("should return true for fs.ErrPermission directly", func() {
+		Expect(isUnrecoverableFetchError(fs.ErrPermission)).To(BeTrue())
+	})
+
+	It("should unwrap fmt.Errorf-wrapped fs.ErrNotExist (the #405 path)", func() {
+		// This is the exact wrap shape that copyLocalModel produces and
+		// that pinned a Mac kind cluster's CPU for 35 hours. If this
+		// assertion ever regresses, the hot-spin guard is silently
+		// disabled.
+		_, openErr := os.Open(filepath.Join(GinkgoT().TempDir(), "definitely-does-not-exist.gguf"))
+		Expect(openErr).To(HaveOccurred())
+		wrapped := fmt.Errorf("failed to open local model file: %w", openErr)
+		Expect(isUnrecoverableFetchError(wrapped)).To(BeTrue())
+	})
+
+	It("should return false for a generic non-filesystem error", func() {
+		Expect(isUnrecoverableFetchError(errors.New("network timeout"))).To(BeFalse())
+	})
+
+	It("should return false for a wrapped non-filesystem error", func() {
+		Expect(isUnrecoverableFetchError(fmt.Errorf("download failed: %w", errors.New("503")))).To(BeFalse())
+	})
+
+	It("should return true for double-wrapped fs.ErrNotExist", func() {
+		// errors.Is walks the wrap chain, so even a deeply-wrapped
+		// not-exist error must be detected.
+		inner := fmt.Errorf("inner: %w", fs.ErrNotExist)
+		outer := fmt.Errorf("outer: %w", inner)
+		Expect(isUnrecoverableFetchError(outer)).To(BeTrue())
 	})
 })

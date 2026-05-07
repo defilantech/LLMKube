@@ -32,6 +32,16 @@ type ModelSpec struct {
 	//   - /mnt/models/model.gguf (air-gapped deployments)
 	//   - pvc://my-models-pvc/path/to/model.gguf (pre-staged on a PersistentVolumeClaim)
 	//   - /mnt/models/Llama-3.2-3B-Instruct-4bit (MLX model directory)
+	//
+	// file:// caveat for hybrid topologies: the controller pod must be
+	// able to read the path. In Mac kind / k3s / GKE deployments where
+	// the metal-agent runs on the host and the controller runs inside a
+	// container, /Users/... and other host paths are invisible to the
+	// controller and will fail to fetch. The controller marks the Model
+	// Failed and backs off to a 5-minute requeue rather than retrying
+	// tightly (#405). Workaround: pre-stage on a pvc://, or use the
+	// equivalent https://huggingface.co/.../<filename>.gguf URL which
+	// the runtime/init container resolves at deploy time.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:Pattern=`^(https?|file|pvc)://.*|^/[^\s]+$|^[a-zA-Z0-9][\w\-\.\/]+$`
 	Source string `json:"source"`

@@ -218,6 +218,28 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		if statusErr := r.updateStatus(ctx, model, ConditionDegraded, metav1.ConditionTrue, failReason, err.Error()); statusErr != nil {
 			logger.Error(statusErr, "Failed to update status after fetch failure")
 		}
+
+		// Unrecoverable failures (missing path, permission denied) get
+		// requeued on a fixed 5-minute interval WITHOUT returning the
+		// error to controller-runtime. Returning err here invokes the
+		// rate-limited workqueue, which under sustained failure starts at
+		// ~5ms and ramps to a cap, doing expensive reconcile work
+		// (status updates, GGUF parses, metric churn) hundreds of times
+		// per second along the way. That's the #405 hot-spin: a Mac kind
+		// cluster pinned a CPU core for 35 hours when a file:// source
+		// referenced a host path invisible to the controller pod.
+		// Returning nil here keeps RequeueAfter as the only retry signal
+		// and makes the steady-state cost a single reconcile every
+		// 5 minutes until the operator fixes the spec.
+		if isUnrecoverableFetchError(err) {
+			logger.Info(
+				"Fetch error is terminal; deferring retry to RequeueAfter without rate-limited backoff",
+				"source", model.Spec.Source,
+				"reason", "unrecoverable fetch error (ENOENT or EACCES)",
+			)
+			return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
+		}
+
 		return ctrl.Result{RequeueAfter: 5 * time.Minute}, err
 	}
 
