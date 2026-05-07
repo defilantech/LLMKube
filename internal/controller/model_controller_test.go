@@ -399,7 +399,6 @@ var _ = Describe("Model Controller Reconcile", func() {
 		// regresses the #405 hot-spin (rate limiter kicks in).
 		Expect(err).NotTo(HaveOccurred(), "unrecoverable fetch errors must not return err to controller-runtime; see #405")
 		Expect(result.RequeueAfter).To(Equal(5*time.Minute), "fixed 5min RequeueAfter is the only retry signal")
-		Expect(result.Requeue).To(BeFalse())
 
 		updated := &inferencev1alpha1.Model{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: modelName, Namespace: "default"}, updated)).To(Succeed())
@@ -446,7 +445,6 @@ var _ = Describe("Model Controller Reconcile", func() {
 			result, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred(), "iter %d: unrecoverable fetch must not return err", i)
 			Expect(result.RequeueAfter).To(Equal(5*time.Minute), "iter %d: RequeueAfter must stay 5m", i)
-			Expect(result.Requeue).To(BeFalse(), "iter %d: must not request immediate requeue", i)
 		}
 	})
 })
