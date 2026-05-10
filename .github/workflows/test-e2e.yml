@@ -8,7 +8,7 @@ on:
 
 jobs:
   test-e2e:
-    name: Run on Ubuntu
+    name: Run on Ubuntu (kind, default storage)
     runs-on: ubuntu-latest
     steps:
       - name: Clone the code
@@ -29,6 +29,86 @@ jobs:
         run: kind version
 
       - name: Running Test e2e
+        run: |
+          go mod tidy
+          make test-e2e
+
+  test-e2e-longhorn:
+    name: Run on Ubuntu (kind + Longhorn, restrictive storage)
+    runs-on: ubuntu-latest
+    # Best-effort while the Longhorn-in-CI setup is hardened. The default
+    # kind job above remains the merge gate. This job catches restrictive-
+    # storage-class regressions (refs #418, #420) and will be promoted to
+    # required once stable.
+    continue-on-error: true
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Install Longhorn host prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y open-iscsi nfs-common
+          sudo systemctl enable --now iscsid
+
+      - name: Install the latest version of kind
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/latest/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Pre-create kind cluster with Longhorn host mounts
+        env:
+          KIND_CLUSTER: llmkube-test-e2e
+        run: |
+          cat <<EOF > /tmp/kind-longhorn.yaml
+          kind: Cluster
+          apiVersion: kind.x-k8s.io/v1alpha4
+          name: ${KIND_CLUSTER}
+          nodes:
+            - role: control-plane
+              extraMounts:
+                - hostPath: /lib/modules
+                  containerPath: /lib/modules
+                  readOnly: true
+                - hostPath: /dev
+                  containerPath: /dev
+                - hostPath: /sys
+                  containerPath: /sys
+          EOF
+          kind create cluster --config /tmp/kind-longhorn.yaml
+
+      - name: Install Longhorn and set as default storage class
+        run: |
+          helm repo add longhorn https://charts.longhorn.io
+          helm repo update
+          kubectl create namespace longhorn-system
+          helm install longhorn longhorn/longhorn \
+            --namespace longhorn-system \
+            --set persistence.defaultClass=true \
+            --set persistence.defaultClassReplicaCount=1 \
+            --set defaultSettings.defaultDataLocality=best-effort \
+            --wait --timeout 10m
+
+      - name: Verify Longhorn ready and default class
+        run: |
+          kubectl -n longhorn-system get pods
+          kubectl get storageclass
+          # Demote any other default classes (kind ships standard as default)
+          for sc in $(kubectl get storageclass -o name | grep -v longhorn); do
+            kubectl patch "$sc" -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"false"}}}' || true
+          done
+          kubectl get storageclass
+
+      - name: Running Test e2e against Longhorn-backed cluster
         run: |
           go mod tidy
           make test-e2e
