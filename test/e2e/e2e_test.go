@@ -931,6 +931,22 @@ spec:
 				}
 				Eventually(verifyPVCExists, 2*time.Minute).Should(Succeed())
 
+				// Wait for the InferenceService Deployment to come Available
+				// before invoking cache list. cache_inspect.go reuses an
+				// existing Running pod that has the PVC mounted (via exec)
+				// when one exists, and only spawns a separate inspector pod
+				// otherwise. On Longhorn the PVC is RWO; an inspector pod
+				// trying to mount it while the Deployment pod is still in
+				// ContainerCreating blocks indefinitely on volume attach.
+				// Waiting for the Deployment to be Available avoids that
+				// contention and exercises the "reuse existing pod" code
+				// path, which is the path real users hit anyway.
+				By("waiting for the InferenceService deployment to be available")
+				cmd = exec.Command("kubectl", "wait", "--for=condition=available",
+					"deployment/cache-test-inference", "-n", cacheTestNs, "--timeout=4m")
+				_, err = utils.Run(cmd)
+				Expect(err).NotTo(HaveOccurred(), "InferenceService deployment did not become available")
+
 				By("verifying llmkube cache list shows STATUS column and active entry")
 				verifyCacheList := func(g Gomega) {
 					cmd := exec.Command("./"+cliPath, "cache", "list", "-n", cacheTestNs)
