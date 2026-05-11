@@ -155,11 +155,12 @@ jobs:
           minc create
           minc status
 
-      - name: Export kubeconfig and verify SCC available
+      - name: Generate kubeconfig and verify SCC available
         run: |
-          minc generate-kubeconfig > /tmp/kubeconfig
-          echo "KUBECONFIG=/tmp/kubeconfig" >> "$GITHUB_ENV"
-          export KUBECONFIG=/tmp/kubeconfig
+          # minc generate-kubeconfig writes to the default kubeconfig
+          # location (~/.kube/config). kubectl picks it up automatically;
+          # we don't capture stdout.
+          minc generate-kubeconfig
           kubectl get nodes
           kubectl get securitycontextconstraints restricted-v2 -o name
 
@@ -191,7 +192,6 @@ jobs:
 
       - name: Install LLMKube via Helm with OpenShift preset
         run: |
-          export KUBECONFIG=/tmp/kubeconfig
           kubectl create namespace llmkube-system
           helm install llmkube ./charts/llmkube \
             -n llmkube-system \
@@ -213,7 +213,6 @@ jobs:
           # cert-manager install that BeforeSuite would otherwise attempt.
           CERT_MANAGER_INSTALL_SKIP: "true"
         run: |
-          export KUBECONFIG=/tmp/kubeconfig
           go mod tidy
           go test -tags=e2e ./test/e2e/ -v -ginkgo.v
 
