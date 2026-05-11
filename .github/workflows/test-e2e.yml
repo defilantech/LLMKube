@@ -119,12 +119,18 @@ jobs:
           make test-e2e
 
   test-e2e-openshift:
-    name: Run on Ubuntu (MicroShift, OpenShift SCC)
+    name: Run on Ubuntu (MicroShift via MINC, OpenShift SCC)
     runs-on: ubuntu-latest
     # Best-effort while the MicroShift-in-CI setup is hardened. The
     # default kind job above remains the merge gate. This job catches
     # OpenShift SCC admission regressions (refs #418, #419, #421) and
     # will be promoted to required once stable.
+    #
+    # Uses minc-org/minc to run MicroShift as a privileged Docker
+    # container on the runner. MINC's own CI runs on ubuntu-24.04, so
+    # the install path is known-good on this runner image; the prior
+    # container-tools/microshift-action approach is broken because that
+    # action targets ubuntu-20.04 packages.
     continue-on-error: true
     steps:
       - name: Clone the code
@@ -135,72 +141,83 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Start runner-local container registry
+      - name: Install MINC
         run: |
-          docker run -d --restart=always -p 5000:5000 --name local-registry registry:2
-          # Wait for the registry to accept traffic before we try to push.
-          for i in $(seq 1 30); do
-            if curl -fsS http://localhost:5000/v2/ >/dev/null; then
-              echo "local registry ready"; break
-            fi
-            sleep 1
-          done
+          curl -LsSf -o minc \
+            https://github.com/minc-org/minc/releases/latest/download/minc_linux_amd64
+          chmod +x minc
+          sudo mv minc /usr/local/bin/minc
+          minc version
+          minc config set provider docker
 
-      - name: Install MicroShift
-        uses: container-tools/microshift-action@v0.3.0
-        with:
-          microshift-version: "4.18"
-
-      - name: Verify MicroShift ready and SCC available
+      - name: Create MicroShift cluster via MINC
         run: |
+          minc create
+          minc status
+
+      - name: Export kubeconfig and verify SCC available
+        run: |
+          minc generate-kubeconfig > /tmp/kubeconfig
+          echo "KUBECONFIG=/tmp/kubeconfig" >> "$GITHUB_ENV"
+          export KUBECONFIG=/tmp/kubeconfig
           kubectl get nodes
-          kubectl get clusterrole | grep -i scc || true
           kubectl get securitycontextconstraints restricted-v2 -o name
-
-      - name: Configure cri-o to trust runner-local registry
-        run: |
-          sudo mkdir -p /etc/containers/registries.conf.d
-          sudo tee /etc/containers/registries.conf.d/99-llmkube-ci.conf >/dev/null <<EOF
-          [[registry]]
-          location = "localhost:5000"
-          insecure = true
-          EOF
-          sudo systemctl restart crio || sudo systemctl restart microshift
 
       - name: Install Helm
         uses: azure/setup-helm@v4
 
-      - name: Build and push controller image to runner-local registry
+      - name: Build controller image and side-load into MINC
         env:
-          IMG: localhost:5000/llmkube-controller:ci-${{ github.sha }}
+          IMG: localhost/llmkube-controller:ci-${{ github.sha }}
         run: |
           make docker-build IMG="${IMG}"
-          docker push "${IMG}"
+
+          # MINC runs MicroShift inside a single privileged container.
+          # Side-load the image via docker save + podman load inside the
+          # MINC container (analogous to 'kind load docker-image').
+          MINC_CTR=$(docker ps --filter "ancestor=quay.io/minc-org/minc" --format "{{.ID}}" | head -1)
+          if [ -z "$MINC_CTR" ]; then
+            echo "ERROR: could not find MINC container; running containers:"
+            docker ps
+            exit 1
+          fi
+          echo "MINC container: $MINC_CTR"
+
+          docker save "${IMG}" -o /tmp/llmkube-controller.tar
+          docker cp /tmp/llmkube-controller.tar "$MINC_CTR":/tmp/llmkube-controller.tar
+          docker exec "$MINC_CTR" podman load -i /tmp/llmkube-controller.tar
+          docker exec "$MINC_CTR" podman images | grep llmkube-controller
+          echo "IMG=${IMG}" >> "$GITHUB_ENV"
 
       - name: Install LLMKube via Helm with OpenShift preset
-        env:
-          IMG_REPO: localhost:5000/llmkube-controller
-          IMG_TAG: ci-${{ github.sha }}
         run: |
+          export KUBECONFIG=/tmp/kubeconfig
           kubectl create namespace llmkube-system
           helm install llmkube ./charts/llmkube \
             -n llmkube-system \
             -f charts/llmkube/values-openshift.yaml \
-            --set controllerManager.image.repository="${IMG_REPO}" \
-            --set controllerManager.image.tag="${IMG_TAG}" \
+            --set controllerManager.image.repository=localhost/llmkube-controller \
+            --set controllerManager.image.tag=ci-${{ github.sha }} \
+            --set controllerManager.image.pullPolicy=Never \
             --wait --timeout 5m
           kubectl -n llmkube-system get pods
 
-      - name: Running Test e2e against MicroShift cluster
+      - name: Running Test e2e against MINC-backed MicroShift
         env:
           # Tells the e2e suite to skip kind-specific BeforeSuite steps
-          # (docker-build + LoadImageToKindClusterWithName) and to run the
-          # OpenShift-only SCC admission spec. The image is already built
-          # and Helm-deployed via the steps above.
+          # (docker-build + LoadImageToKindClusterWithName) and to run
+          # the OpenShift-only SCC admission spec. The image is already
+          # built, side-loaded, and Helm-deployed via the steps above.
           LLMKUBE_E2E_OPENSHIFT: "true"
           # MicroShift ships its own service-serving certs; skip the
           # cert-manager install that BeforeSuite would otherwise attempt.
           CERT_MANAGER_INSTALL_SKIP: "true"
         run: |
+          export KUBECONFIG=/tmp/kubeconfig
           go mod tidy
           go test -tags=e2e ./test/e2e/ -v -ginkgo.v
+
+      - name: Tear down MicroShift cluster
+        if: always()
+        run: |
+          minc delete || true
