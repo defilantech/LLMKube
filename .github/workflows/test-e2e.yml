@@ -147,7 +147,7 @@ jobs:
           done
 
       - name: Install MicroShift
-        uses: container-tools/microshift-action@v0.3
+        uses: container-tools/microshift-action@v0.3.0
         with:
           microshift-version: "4.18"
 
