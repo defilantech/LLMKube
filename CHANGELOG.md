@@ -5,6 +5,36 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.7](https://github.com/defilantech/LLMKube/compare/v0.7.6...v0.7.7) (2026-05-11)
+
+
+### Features
+
+* **agent:** vllm-swift runtime + TurboQuant passthrough ([#391](https://github.com/defilantech/LLMKube/issues/391)) ([#393](https://github.com/defilantech/LLMKube/issues/393)) ([2691e67](https://github.com/defilantech/LLMKube/commit/2691e67eb855e2af00b2767f046a34c1dfe07db7))
+* **ci+chart:** make OpenShift a first-class deploy target (closes [#421](https://github.com/defilantech/LLMKube/issues/421)) ([#422](https://github.com/defilantech/LLMKube/issues/422)) ([798a13e](https://github.com/defilantech/LLMKube/commit/798a13e70d1b6a46e8dd08f448654fbed5f49de4))
+* **crd:** add gpuMemoryUtilization and cpuOffloadGB to VLLMConfig ([#394](https://github.com/defilantech/LLMKube/issues/394)) ([6883f78](https://github.com/defilantech/LLMKube/commit/6883f784eae6813adb268ddb982b68d99faf45e7))
+* **metal-agent:** emit Kubernetes events for memory-pressure transitions, evictions, skips, and respawn blocks (closes [#390](https://github.com/defilantech/LLMKube/issues/390)) ([#411](https://github.com/defilantech/LLMKube/issues/411)) ([e0d17d1](https://github.com/defilantech/LLMKube/commit/e0d17d1aa27246db1fda2d8bca4c90686d0fbc72))
+* **observability:** runtime label on inference pods + recording rules + starter dashboard (refs [#409](https://github.com/defilantech/LLMKube/issues/409)) ([#410](https://github.com/defilantech/LLMKube/issues/410)) ([71743ed](https://github.com/defilantech/LLMKube/commit/71743ed7901d8f493a20583dea4c572d8d261304))
+
+
+### Bug Fixes
+
+* **controller:** default FSGroup to curl_group + Longhorn-backed e2e job (closes [#418](https://github.com/defilantech/LLMKube/issues/418), closes [#420](https://github.com/defilantech/LLMKube/issues/420)) ([adce90f](https://github.com/defilantech/LLMKube/commit/adce90fd46be37aa8ad6be566012b7c7dbd6d016))
+* **controller:** stop hot-spinning on unreachable file:// model sources (closes [#405](https://github.com/defilantech/LLMKube/issues/405)) ([#412](https://github.com/defilantech/LLMKube/issues/412)) ([4ac6f57](https://github.com/defilantech/LLMKube/commit/4ac6f573910ea1f08aa41db2c3dbb374431a5490))
+
+
+### Documentation
+
+* add NVIDIA Blackwell B200 (sm_100) validation matrix (refs [#413](https://github.com/defilantech/LLMKube/issues/413)) ([#414](https://github.com/defilantech/LLMKube/issues/414)) ([bfda149](https://github.com/defilantech/LLMKube/commit/bfda149844c006d66acb5dcfc7c95909e2dfba8d))
+* **operations:** seed runbooks index + first 2 entries (file:// hot-spin, metal-agent memory pressure) ([#417](https://github.com/defilantech/LLMKube/issues/417)) ([d3bce8d](https://github.com/defilantech/LLMKube/commit/d3bce8d7f1d481a5792135f5e46ffd5f77102334))
+* port concepts/comparison to markdown (first Phase 1C content port) ([#403](https://github.com/defilantech/LLMKube/issues/403)) ([51c396b](https://github.com/defilantech/LLMKube/commit/51c396b9b0b66d2cabf985da4a3533347aefee76))
+* **readme:** HN-launch readiness fixes (broken link, Apple Silicon CTA, quickstart memory) ([#401](https://github.com/defilantech/LLMKube/issues/401)) ([3e44bfb](https://github.com/defilantech/LLMKube/commit/3e44bfb8bcfb21ce950c3305b2ebca653645e191))
+* refresh quickstart cast for v0.7.6 (HN launch) ([#404](https://github.com/defilantech/LLMKube/issues/404)) ([5abaddb](https://github.com/defilantech/LLMKube/commit/5abaddb99b994b393ac3201de4d363aba4d0f231))
+* split docs/ into site/ and contributors/, prep for site rendering ([#396](https://github.com/defilantech/LLMKube/issues/396)) ([9299a31](https://github.com/defilantech/LLMKube/commit/9299a3168fef2f2afd1329a026f39486da42b8e6))
+* **upgrade:** OpenShift / OKD / MicroShift installs must use `helm ... -f charts/llmkube/values-openshift.yaml` so restricted-v2 SCC can inject fsGroup from the namespace's allocated range ([adce90f](https://github.com/defilantech/LLMKube/commit/adce90fd46be37aa8ad6be566012b7c7dbd6d016))
+* **upgrade:** operators using a custom `--init-container-image` whose user is not curl (uid=101 gid=102) should set `spec.podSecurityContext` on each InferenceService or pass `--default-fsgroup=<gid>` to the controller ([adce90f](https://github.com/defilantech/LLMKube/commit/adce90fd46be37aa8ad6be566012b7c7dbd6d016))
+* **upgrade:** v0.7.7 rolls every InferenceService Pod once on first reconcile (Deployment template gains fsGroup=102 and the new `inference.llmkube.dev/runtime` label) ([adce90f](https://github.com/defilantech/LLMKube/commit/adce90fd46be37aa8ad6be566012b7c7dbd6d016))
+
 ## [0.7.6](https://github.com/defilantech/LLMKube/compare/v0.7.5...v0.7.6) (2026-05-03)
 
 
