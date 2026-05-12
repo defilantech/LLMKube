@@ -1,0 +1,774 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.19.0
+  name: modelrouters.inference.llmkube.dev
+spec:
+  group: inference.llmkube.dev
+  names:
+    kind: ModelRouter
+    listKind: ModelRouterList
+    plural: modelrouters
+    shortNames:
+    - mr
+    singular: modelrouter
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.endpoint
+      name: Endpoint
+      type: string
+    - jsonPath: .status.activeRules
+      name: Rules
+      type: integer
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          ModelRouter is the Schema for the modelrouters API. It exposes a single
+          OpenAI-compatible HTTP endpoint that dispatches requests across multiple
+          InferenceService backends and external providers per declarative routing
+          rules. See docs/site/concepts/model-router.md (Phase 1) for usage.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of ModelRouter
+            properties:
+              backends:
+                description: |-
+                  Backends are the candidate destinations the router can dispatch to.
+                  Order is not significant; selection is rule-driven. At least one
+                  backend must be declared.
+                items:
+                  description: |-
+                    RouterBackend is one candidate destination for routed requests.
+                    Exactly one of InferenceServiceRef or External must be set.
+                  properties:
+                    capabilities:
+                      description: |-
+                        Capabilities advertised by this backend. Rules can require
+                        capabilities (e.g. ["tools", "vision", "long-context"]) to filter
+                        candidates.
+                      items:
+                        type: string
+                      type: array
+                    costPerMillionTokens:
+                      description: |-
+                        CostPerMillionTokens is informational. Used for cost-aware routing
+                        metrics and audit-log enrichment. Values are USD.
+                      properties:
+                        completionUSD:
+                          description: |-
+                            CompletionUSD is the cost per million completion (output) tokens,
+                            in USD.
+                          pattern: ^[0-9]+(\.[0-9]+)?$
+                          type: string
+                        promptUSD:
+                          description: PromptUSD is the cost per million prompt (input)
+                            tokens, in USD.
+                          pattern: ^[0-9]+(\.[0-9]+)?$
+                          type: string
+                      type: object
+                    external:
+                      description: |-
+                        External describes an out-of-cluster provider (Anthropic, OpenAI,
+                        or a LiteLLM proxy). Mutually exclusive with InferenceServiceRef.
+                      properties:
+                        credentialsSecretRef:
+                          description: |-
+                            CredentialsSecretRef points to a Kubernetes Secret containing the
+                            provider credentials. Conventional keys: ANTHROPIC_API_KEY,
+                            OPENAI_API_KEY, LITELLM_MASTER_KEY. The router-proxy reads these as
+                            environment variables.
+                          properties:
+                            name:
+                              default: ""
+                              description: |-
+                                Name of the referent.
+                                This field is effectively required, but due to backwards compatibility is
+                                allowed to be empty. Instances of this type with an empty value here are
+                                almost certainly wrong.
+                                More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                              type: string
+                          type: object
+                          x-kubernetes-map-type: atomic
+                        model:
+                          description: |-
+                            Model is the upstream model identifier passed through to the
+                            provider (e.g. "claude-opus-4-7", "gpt-5", a LiteLLM model alias).
+                          type: string
+                        provider:
+                          description: |-
+                            Provider identifies the upstream API surface. For "litellm", URL must
+                            point at a running LiteLLM proxy speaking OpenAI-compatible API.
+                            For first-party providers, URL is optional (provider defaults apply).
+                          enum:
+                          - anthropic
+                          - openai
+                          - bedrock
+                          - vertex_ai
+                          - litellm
+                          type: string
+                        url:
+                          description: |-
+                            URL is the base URL for the provider. Required for "litellm";
+                            optional for first-party providers, which use their published default.
+                          type: string
+                      required:
+                      - model
+                      - provider
+                      type: object
+                    healthCheck:
+                      description: |-
+                        HealthCheck overrides the default health probe applied to this
+                        backend by the router-proxy.
+                      properties:
+                        intervalSeconds:
+                          default: 10
+                          description: IntervalSeconds is how often the router-proxy
+                            probes the backend.
+                          format: int32
+                          minimum: 1
+                          type: integer
+                        path:
+                          description: |-
+                            Path is the HTTP path probed for health. Defaults to "/health" for
+                            local backends and to the provider's documented health route for
+                            external providers.
+                          type: string
+                        timeoutSeconds:
+                          default: 2
+                          description: TimeoutSeconds is the maximum time a single
+                            probe may take.
+                          format: int32
+                          minimum: 1
+                          type: integer
+                      type: object
+                    inferenceServiceRef:
+                      description: |-
+                        InferenceServiceRef references an in-cluster InferenceService.
+                        Mutually exclusive with External.
+                      properties:
+                        name:
+                          default: ""
+                          description: |-
+                            Name of the referent.
+                            This field is effectively required, but due to backwards compatibility is
+                            allowed to be empty. Instances of this type with an empty value here are
+                            almost certainly wrong.
+                            More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                          type: string
+                      type: object
+                      x-kubernetes-map-type: atomic
+                    name:
+                      description: |-
+                        Name is the stable identifier used by rules and observability labels.
+                        Must be lowercase alphanumeric or '-'.
+                      pattern: ^[a-z0-9][a-z0-9-]{0,62}$
+                      type: string
+                    tier:
+                      default: local
+                      description: |-
+                        Tier classifies the backend for rule matching. "local" backends are
+                        served from inside the cluster; "cloud" backends egress the cluster
+                        boundary. Fail-closed rules can only route to local-tier backends.
+                      enum:
+                      - local
+                      - cloud
+                      type: string
+                    weight:
+                      description: |-
+                        Weight is used for the "weighted" routing strategy. Higher values
+                        receive proportionally more traffic. Ignored for other strategies.
+                        Default 1 when unset.
+                      format: int32
+                      minimum: 0
+                      type: integer
+                  required:
+                  - name
+                  type: object
+                minItems: 1
+                type: array
+              defaultRoute:
+                description: |-
+                  DefaultRoute names a backend used when no rule matches.
+                  Must reference the Name of an entry in Backends.
+                type: string
+              endpoint:
+                description: |-
+                  Endpoint defines the Kubernetes Service the router-proxy is exposed
+                  through. Mirrors the shape used by InferenceService.
+                properties:
+                  path:
+                    default: /v1/chat/completions
+                    description: Path is the HTTP path for the inference endpoint
+                    type: string
+                  port:
+                    default: 8080
+                    description: Port is the service port
+                    format: int32
+                    maximum: 65535
+                    minimum: 1
+                    type: integer
+                  type:
+                    default: ClusterIP
+                    description: Type is the Kubernetes service type (ClusterIP, NodePort,
+                      LoadBalancer)
+                    enum:
+                    - ClusterIP
+                    - NodePort
+                    - LoadBalancer
+                    type: string
+                type: object
+              mcpServer:
+                description: |-
+                  MCPServer optionally exposes this router as a Model Context Protocol
+                  endpoint. Inactive until the Phase 3 MCP feature lands; the field is
+                  reserved in the schema for forward compatibility.
+                properties:
+                  enabled:
+                    description: |-
+                      Enabled toggles MCP exposure. Default false. When true (after Phase
+                      3 lands), the router-proxy serves an MCP endpoint at /mcp using
+                      Streamable HTTP transport and OAuth 2.1.
+                    type: boolean
+                type: object
+              policy:
+                description: Policy holds cross-cutting controls (budgets, classification,
+                  audit).
+                properties:
+                  auditLog:
+                    description: |-
+                      AuditLog controls structured audit emission. Auditing is always on;
+                      this field tunes the destination and verbosity.
+                    properties:
+                      filePath:
+                        description: |-
+                          FilePath is the destination when Sink=file. Must be writable inside
+                          the router-proxy container. Defaults to "/var/log/mlx-router/audit.log".
+                        type: string
+                      includeRequestBody:
+                        description: |-
+                          IncludeRequestBody, when true, includes the OpenAI request body in
+                          every audit entry. Disabled by default for size and privacy.
+                        type: boolean
+                      sink:
+                        default: stdout
+                        description: |-
+                          Sink selects the audit-log destination.
+                          "stdout" (default) emits one JSON object per line to the proxy
+                            container stdout, where it can be collected by the cluster log
+                            stack.
+                          "file" writes to FilePath inside the proxy container.
+                          "otlp" forwards entries to an OTel collector as log records.
+                        enum:
+                        - stdout
+                        - file
+                        - otlp
+                        type: string
+                    type: object
+                  budgets:
+                    description: |-
+                      Budgets caps token and dollar consumption per scope over a rolling
+                      window. Empty list means no budget enforcement.
+                    items:
+                      description: BudgetSpec defines a token or dollar cap over a
+                        rolling window.
+                      properties:
+                        headerKey:
+                          description: |-
+                            HeaderKey is the request header carrying the team identifier when
+                            Scope=team. Defaults to "x-llmkube-team".
+                          type: string
+                        maxTokens:
+                          description: |-
+                            MaxTokens caps total tokens (prompt + completion) over the window.
+                            Either MaxTokens or MaxUSD (or both) must be set.
+                          format: int64
+                          minimum: 1
+                          type: integer
+                        maxUSD:
+                          description: |-
+                            MaxUSD caps total estimated cost in USD over the window. Cost is
+                            computed from RouterBackend.CostPerMillionTokens.
+                          pattern: ^[0-9]+(\.[0-9]+)?$
+                          type: string
+                        name:
+                          description: Name identifies this budget for metrics, status,
+                            and audit logs.
+                          pattern: ^[a-z0-9][a-z0-9-]{0,62}$
+                          type: string
+                        ruleName:
+                          description: RuleName is required when Scope=rule. References
+                            a RouterRule.Name.
+                          type: string
+                        scope:
+                          description: |-
+                            Scope determines what the budget applies to.
+                            "router" caps all traffic through this ModelRouter.
+                            "rule" caps traffic matching a single named rule (see RuleName).
+                            "team" caps traffic identified by a request header (see HeaderKey).
+                          enum:
+                          - router
+                          - rule
+                          - team
+                          type: string
+                        windowSeconds:
+                          default: 3600
+                          description: WindowSeconds is the rolling window over which
+                            the cap is evaluated.
+                          format: int32
+                          minimum: 1
+                          type: integer
+                      required:
+                      - name
+                      - scope
+                      type: object
+                    type: array
+                  classification:
+                    description: |-
+                      Classification configures how the router determines the data
+                      classification of an inbound request.
+                    properties:
+                      headerKey:
+                        description: |-
+                          HeaderKey is the request header carrying the classification.
+                          Defaults to "x-llmkube-classification".
+                        type: string
+                      mode:
+                        default: header-only
+                        description: |-
+                          Mode determines how the router determines a request's
+                          classification.
+                          "header-only" (default) trusts the request header
+                            (HeaderKey, defaults to x-llmkube-classification).
+                          "detector" runs the bundled in-proxy detector.
+                          "hybrid" prefers the header, falling back to the detector when no
+                            header is present.
+                        enum:
+                        - header-only
+                        - detector
+                        - hybrid
+                        type: string
+                      sensitiveClassifications:
+                        description: |-
+                          SensitiveClassifications are the classification values that trigger
+                          fail-closed validation: any rule matching one of these values must
+                          have FailClosed=true and reference only local-tier backends.
+                          Defaults to ["pii", "phi"].
+                        items:
+                          type: string
+                        type: array
+                    type: object
+                type: object
+              proxy:
+                description: |-
+                  Proxy configures the managed router-proxy Deployment (replicas,
+                  image override for air-gapped sites, resources). Sensible defaults
+                  apply when omitted.
+                properties:
+                  image:
+                    description: |-
+                      Image overrides the default router-proxy container image. Useful
+                      for air-gapped clusters that pin to an internal registry digest.
+                    type: string
+                  imagePullSecrets:
+                    description: ImagePullSecrets are passed through to the router-proxy
+                      pod spec.
+                    items:
+                      description: |-
+                        LocalObjectReference contains enough information to let you locate the
+                        referenced object inside the same namespace.
+                      properties:
+                        name:
+                          default: ""
+                          description: |-
+                            Name of the referent.
+                            This field is effectively required, but due to backwards compatibility is
+                            allowed to be empty. Instances of this type with an empty value here are
+                            almost certainly wrong.
+                            More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                          type: string
+                      type: object
+                      x-kubernetes-map-type: atomic
+                    type: array
+                  replicas:
+                    description: |-
+                      Replicas is the desired number of router-proxy pods. Defaults to 1.
+                      The proxy is stateless for routing decisions; budget and SLO
+                      counters live in memory and reset on pod restart until the
+                      persistence feature lands.
+                    format: int32
+                    maximum: 10
+                    minimum: 1
+                    type: integer
+                  resources:
+                    description: Resources sets the pod's compute resource requests
+                      and limits.
+                    properties:
+                      claims:
+                        description: |-
+                          Claims lists the names of resources, defined in spec.resourceClaims,
+                          that are used by this container.
+
+                          This field depends on the
+                          DynamicResourceAllocation feature gate.
+
+                          This field is immutable. It can only be set for containers.
+                        items:
+                          description: ResourceClaim references one entry in PodSpec.ResourceClaims.
+                          properties:
+                            name:
+                              description: |-
+                                Name must match the name of one entry in pod.spec.resourceClaims of
+                                the Pod where this field is used. It makes that resource available
+                                inside a container.
+                              type: string
+                            request:
+                              description: |-
+                                Request is the name chosen for a request in the referenced claim.
+                                If empty, everything from the claim is made available, otherwise
+                                only the result of this request.
+                              type: string
+                          required:
+                          - name
+                          type: object
+                        type: array
+                        x-kubernetes-list-map-keys:
+                        - name
+                        x-kubernetes-list-type: map
+                      limits:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: |-
+                          Limits describes the maximum amount of compute resources allowed.
+                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                        type: object
+                      requests:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: |-
+                          Requests describes the minimum amount of compute resources required.
+                          If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                          otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                        type: object
+                    type: object
+                type: object
+              rules:
+                description: |-
+                  Rules are evaluated in declaration order. The first matching rule wins.
+                  If no rule matches, DefaultRoute is used. If neither a matching rule
+                  nor DefaultRoute is set, the request is rejected with HTTP 503.
+                items:
+                  description: RouterRule pairs a match expression with a routing
+                    action.
+                  properties:
+                    failClosed:
+                      description: |-
+                        FailClosed: when true, if no backend in Route.Backends is healthy
+                        or otherwise eligible, the router rejects the request with HTTP 503
+                        rather than falling through to DefaultRoute or subsequent rules.
+                        This is the regulated-data gate: a fail-closed rule guarantees that
+                        matched requests are never served by any other route.
+                      type: boolean
+                    match:
+                      description: |-
+                        Match groups all match conditions. All declared conditions must be
+                        true for the rule to fire (AND semantics). If Match is omitted the
+                        rule always matches (useful as a catch-all before DefaultRoute).
+                      properties:
+                        dataClassification:
+                          description: |-
+                            DataClassification matches if the inbound request carries any of
+                            these classifications. The classification source depends on
+                            Policy.Classification.Mode: a request header
+                            (x-llmkube-classification by default), the bundled detector, or
+                            both. Common values: "public", "internal", "confidential", "pii",
+                            "phi".
+                          items:
+                            type: string
+                          type: array
+                        headers:
+                          additionalProperties:
+                            type: string
+                          description: |-
+                            Headers performs exact-match equality on inbound HTTP headers
+                            (case-insensitive header name comparison).
+                          type: object
+                        latencySLOMs:
+                          description: |-
+                            LatencySLOMs is a P95 first-token-latency target in milliseconds.
+                            When set, if the rolling P95 for the primary backend exceeds this
+                            value the rule promotes its declared fallback. Honored only by the
+                            "primary-fallback" strategy.
+                          format: int32
+                          minimum: 1
+                          type: integer
+                        models:
+                          description: |-
+                            Models matches against the OpenAI-style "model" field in the
+                            request body. Glob patterns are supported (e.g. "qwen3-*").
+                          items:
+                            type: string
+                          type: array
+                        requiredCapabilities:
+                          description: |-
+                            RequiredCapabilities filters backends. The rule only matches if at
+                            least one backend in Route.Backends advertises every listed
+                            capability.
+                          items:
+                            type: string
+                          type: array
+                        taskComplexity:
+                          description: |-
+                            TaskComplexity matches the inbound complexity hint (header
+                            x-llmkube-task-complexity).
+                          enum:
+                          - simple
+                          - moderate
+                          - complex
+                          type: string
+                      type: object
+                    name:
+                      description: Name is used in audit logs and metrics labels.
+                      pattern: ^[a-z0-9][a-z0-9-]{0,62}$
+                      type: string
+                    route:
+                      description: Route is the action taken when this rule matches.
+                      properties:
+                        backends:
+                          description: |-
+                            Backends is an ordered list of RouterBackend.Name values. For the
+                            "primary-fallback" strategy, the first entry is the primary and
+                            subsequent entries are tried in order on failure. For "weighted",
+                            traffic is distributed across all entries by Backend.Weight. For
+                            "shadow", the first entry serves the response and subsequent entries
+                            receive mirrored requests for evaluation only.
+                          items:
+                            type: string
+                          minItems: 1
+                          type: array
+                        strategy:
+                          default: primary-fallback
+                          description: Strategy selects how multiple backends are
+                            used.
+                          enum:
+                          - primary-fallback
+                          - weighted
+                          - shadow
+                          type: string
+                      required:
+                      - backends
+                      type: object
+                  required:
+                  - name
+                  - route
+                  type: object
+                type: array
+            required:
+            - backends
+            type: object
+          status:
+            description: status defines the observed state of ModelRouter
+            properties:
+              activeRules:
+                description: |-
+                  ActiveRules is the count of rules that successfully validated
+                  against current backend state.
+                format: int32
+                type: integer
+              backends:
+                description: |-
+                  Backends reports the resolved address and current health of every
+                  declared backend.
+                items:
+                  description: BackendStatus reports the runtime state of one declared
+                    backend.
+                  properties:
+                    address:
+                      description: |-
+                        Address is the resolved upstream URL the router-proxy dispatches to.
+                        For local backends this is the InferenceService's cluster URL; for
+                        external backends it is the provider's base URL.
+                      type: string
+                    healthy:
+                      description: Healthy reflects the most recent probe result.
+                      type: boolean
+                    lastProbeTime:
+                      description: |-
+                        LastProbeTime is when the proxy last completed a health probe for
+                        this backend.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        Message provides extra context, especially when Healthy is false
+                        (e.g. "InferenceService not Ready", "Secret missing key
+                        ANTHROPIC_API_KEY").
+                      type: string
+                    name:
+                      description: Name matches RouterBackend.Name.
+                      type: string
+                    tier:
+                      description: Tier mirrors RouterBackend.Tier for convenience.
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+              budgetUtilization:
+                description: BudgetUtilization summarises current budget consumption.
+                items:
+                  description: BudgetStatus reports current consumption against a
+                    declared budget.
+                  properties:
+                    name:
+                      description: Name matches BudgetSpec.Name.
+                      type: string
+                    tokensUsed:
+                      description: TokensUsed is the rolling-window token count.
+                      format: int64
+                      type: integer
+                    usdUsed:
+                      description: USDUsed is the rolling-window estimated cost in
+                        USD.
+                      type: string
+                    utilization:
+                      description: |-
+                        Utilization is the fraction of the budget consumed, 0.0 to 1.0.
+                        When both MaxTokens and MaxUSD are set this is the maximum of the
+                        two utilizations.
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+              conditions:
+                description: |-
+                  conditions represent the current state of the ModelRouter resource.
+
+                  Standard condition types:
+                  - "Validated":     the spec passed static validation
+                  - "BackendsReady": all referenced backends are reachable and healthy
+                  - "Available":     the router-proxy is serving traffic
+                  - "Degraded":      at least one backend is unhealthy but the router
+                                     can still serve other routes
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              endpoint:
+                description: |-
+                  Endpoint is the in-cluster URL clients should hit. Populated once
+                  the router-proxy Service is ready.
+                type: string
+              lastUpdated:
+                description: LastUpdated is the timestamp of the last status reconciliation.
+                format: date-time
+                type: string
+              phase:
+                description: |-
+                  Phase is a coarse summary of the router's state.
+                  Possible values: Pending, Provisioning, Ready, Degraded, Failed.
+                enum:
+                - Pending
+                - Provisioning
+                - Ready
+                - Degraded
+                - Failed
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
