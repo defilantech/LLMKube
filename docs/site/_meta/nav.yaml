@@ -49,6 +49,9 @@ sections:
 
   - title: Guides
     items:
+      - label: Model matrix
+        slug: guides/model-matrix
+        file: guides/model-matrix.md
       - label: Air-gapped install
         slug: guides/air-gapped
         file: guides/air-gapped.md
