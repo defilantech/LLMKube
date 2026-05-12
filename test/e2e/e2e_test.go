@@ -530,19 +530,25 @@ spec:
 			}
 			Eventually(verifyDeploymentExists, 2*time.Minute).Should(Succeed())
 
-			By("verifying Service exists with correct port")
-			cmd = exec.Command("kubectl", "get", "service", "test-inference",
-				"-n", crTestNs, "-o", "jsonpath={.spec.ports[0].port}")
-			output, err := utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(output).To(Equal("8080"))
+			By("verifying Service exists with correct port and selector")
+			// The Service is reconciled separately from the Deployment, so
+			// even after the Deployment is observed it can take a beat
+			// for the Service to land. Wrap both checks in Eventually so
+			// kind runs under load (a CI runner alongside Helm install +
+			// MicroShift jobs) don't surface this as a flake.
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "service", "test-inference",
+					"-n", crTestNs, "-o", "jsonpath={.spec.ports[0].port}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("8080"))
 
-			By("verifying Service selector matches")
-			cmd = exec.Command("kubectl", "get", "service", "test-inference",
-				"-n", crTestNs, "-o", "jsonpath={.spec.selector.app}")
-			output, err = utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(output).To(Equal("test-inference"))
+				cmd = exec.Command("kubectl", "get", "service", "test-inference",
+					"-n", crTestNs, "-o", "jsonpath={.spec.selector.app}")
+				output, err = utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("test-inference"))
+			}, 1*time.Minute, time.Second).Should(Succeed())
 
 			By("verifying InferenceService status endpoint")
 			verifyEndpoint := func(g Gomega) {
