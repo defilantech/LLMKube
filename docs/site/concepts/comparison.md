@@ -1,12 +1,12 @@
 ---
 title: How LLMKube compares
 description: Honest comparison of LLMKube against KubeAI, llm-d, Ollama, and NVIDIA NIM. Where each one fits and where they don't.
-updated: 2026-05-12
+updated: 2026-05-03
 ---
 
 # How LLMKube compares
 
-LLMKube is the only Kubernetes operator we've found that combines two things: native Apple Silicon processes alongside Linux GPU pods (with per-process memory-pressure protection built in), and a [policy-aware hybrid routing layer](/docs/concepts/model-router) that lets agents transparently hand off between local and cloud models under fail-closed compliance controls. For everything else listed below, another project on this page is the better choice.
+LLMKube is the only Kubernetes operator we've found that runs native Apple Silicon processes alongside Linux GPU pods, with per-process memory-pressure protection built in. For everything else listed below, another project on this page is the better choice.
 
 <DocCallout variant="note" title="Read this first">
 
@@ -24,13 +24,13 @@ Honest comparison, not a sales pitch. We use vLLM, llama.cpp, and TGI as runtime
 
 ## Capability matrix
 
-| Project | K8s-native | Apple Silicon | Memory-pressure protection | Engines | Multi-GPU | Hybrid routing | License |
-|---|---|---|---|---|---|---|---|
-| **LLMKube** | ✓ operator + Model, InferenceService, ModelRouter CRDs | ✓ native via the metal-agent (no containers) | ✓ watchdog, priority-based eviction, per-service opt-out | llama.cpp, vLLM, TGI, oMLX, Ollama | Layer-based sharding across GPUs on a node | ✓ [ModelRouter](/docs/concepts/model-router): local + cloud handoff with fail-closed for regulated data | Apache 2.0 |
-| **KubeAI** | ✓ operator + Model CRD | — Linux containers only | — | vLLM, Ollama, Faster-Whisper, Infinity (embeddings) | Multi-GPU pods via `resourceProfile`, tensor-parallel args passed to vLLM | — local intra-cluster only via Model Proxy | Apache 2.0 |
-| **llm-d** | ✓ Helm + Gateway API + `InferencePool` | — datacenter accelerators only (NVIDIA, AMD, Intel, TPU) | — | vLLM (primary), SGLang | Wide expert parallelism + disaggregated multi-node serving | — vLLM-focused, single-engine | Apache 2.0 |
-| **Ollama** | — single binary on a host | ✓ native (its sweet spot) | — | Forked llama.cpp (GGUF), MLX engine (Safetensors, macOS) | Automatic spreading across GPUs on one node | — single-node | MIT |
-| **NVIDIA NIM Operator** | ✓ CRDs + Helm + KServe integration | — | — | TensorRT-LLM (primary), vLLM (select models), Triton serving | Tensor parallelism via TRT-LLM, multi-node via the Operator | — | Operator: Apache 2.0. Runtime: NVIDIA AI Enterprise (free cloud tier on build.nvidia.com) |
+| Project | K8s-native | Apple Silicon | Memory-pressure protection | Engines | Multi-GPU | License |
+|---|---|---|---|---|---|---|
+| **LLMKube** | ✓ operator + Model and InferenceService CRDs | ✓ native via the metal-agent (no containers) | ✓ watchdog, priority-based eviction, per-service opt-out | llama.cpp, vLLM, TGI, oMLX, Ollama | Layer-based sharding across GPUs on a node | Apache 2.0 |
+| **KubeAI** | ✓ operator + Model CRD | — Linux containers only | — | vLLM, Ollama, Faster-Whisper, Infinity (embeddings) | Multi-GPU pods via `resourceProfile`, tensor-parallel args passed to vLLM | Apache 2.0 |
+| **llm-d** | ✓ Helm + Gateway API + `InferencePool` | — datacenter accelerators only (NVIDIA, AMD, Intel, TPU) | — | vLLM (primary), SGLang | Wide expert parallelism + disaggregated multi-node serving | Apache 2.0 |
+| **Ollama** | — single binary on a host | ✓ native (its sweet spot) | — | Forked llama.cpp (GGUF), MLX engine (Safetensors, macOS) | Automatic spreading across GPUs on one node | MIT |
+| **NVIDIA NIM Operator** | ✓ CRDs + Helm + KServe integration | — | — | TensorRT-LLM (primary), vLLM (select models), Triton serving | Tensor parallelism via TRT-LLM, multi-node via the Operator | Operator: Apache 2.0. Runtime: NVIDIA AI Enterprise (free cloud tier on build.nvidia.com) |
 
 Verified against project repos and official docs. If you spot anything inaccurate, please [open an issue](https://github.com/defilantech/LLMKube/issues/new?title=Comparison+page+correction).
 

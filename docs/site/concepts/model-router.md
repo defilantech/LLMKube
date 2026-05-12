@@ -20,7 +20,7 @@ ModelRouter is **alpha** as of LLMKube 0.8. The CRD lives in `inference.llmkube.
 
 </DocCallout>
 
-<DocCallout variant="warning" title="Router-proxy image not yet in the release pipeline">
+<DocCallout variant="warn" title="Router-proxy image not yet in the release pipeline">
 
 The release pipeline currently builds and publishes the controller image (`ghcr.io/defilantech/llmkube-controller`) on every release. The router-proxy image (`ghcr.io/defilantech/llmkube-router-proxy`) is not yet built by CI: see [issue #449](https://github.com/defilantech/LLMKube/issues/449).
 
