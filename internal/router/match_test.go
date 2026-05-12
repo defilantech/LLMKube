@@ -1,0 +1,145 @@
+/*
+Copyright 2025.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+*/
+
+package router
+
+import "testing"
+
+func matcherFromValid() *Matcher {
+	return NewMatcher(validConfig())
+}
+
+func TestMatchPIIRouteWins(t *testing.T) {
+	got := matcherFromValid().Match(&RequestFeatures{Classification: "pii"})
+	if got.Rule == nil {
+		t.Fatal("expected pii rule to match, got default")
+	}
+	if got.Rule.Name != "pii-stays-local" {
+		t.Errorf("matched rule = %q, want pii-stays-local", got.Rule.Name)
+	}
+	if !got.FailClosed {
+		t.Error("matched fail-closed rule should report FailClosed=true")
+	}
+	if got.Strategy != strategyPrimaryFallback {
+		t.Errorf("default strategy = %q, want primary-fallback", got.Strategy)
+	}
+}
+
+func TestMatchFallsThroughToDefault(t *testing.T) {
+	got := matcherFromValid().Match(&RequestFeatures{Classification: "public"})
+	if got.Rule != nil {
+		t.Errorf("expected no rule match, got %q", got.Rule.Name)
+	}
+	if len(got.Backends) != 1 || got.Backends[0] != "local-qwen" {
+		t.Errorf("expected default-route fallback to local-qwen, got %v", got.Backends)
+	}
+}
+
+func TestMatchReturnsEmptyWhenNoDefaultAndNoRule(t *testing.T) {
+	cfg := validConfig()
+	cfg.Rules = nil
+	cfg.DefaultRoute = ""
+	got := NewMatcher(cfg).Match(&RequestFeatures{Classification: "public"})
+	if len(got.Backends) != 0 {
+		t.Errorf("expected no backends, got %v", got.Backends)
+	}
+}
+
+func TestMatchModelGlob(t *testing.T) {
+	cfg := validConfig()
+	cfg.Rules = []Rule{{
+		Name:  "qwen-family",
+		Match: RuleMatch{Models: []string{"qwen3-*"}},
+		Route: RuleRoute{Backends: []string{"local-qwen"}},
+	}}
+	m := NewMatcher(cfg)
+	if got := m.Match(&RequestFeatures{Model: "qwen3-coder-30b"}); got.Rule == nil {
+		t.Error("qwen3-coder-30b should match qwen3-*")
+	}
+	if got := m.Match(&RequestFeatures{Model: "llama-3"}); got.Rule != nil {
+		t.Errorf("llama-3 should not match qwen3-*, matched %q", got.Rule.Name)
+	}
+}
+
+func TestMatchHeadersCaseInsensitive(t *testing.T) {
+	cfg := validConfig()
+	cfg.Rules = []Rule{{
+		Name:  "team-rule",
+		Match: RuleMatch{Headers: map[string]string{"X-Team": "research"}},
+		Route: RuleRoute{Backends: []string{"local-qwen"}},
+	}}
+	m := NewMatcher(cfg)
+	got := m.Match(&RequestFeatures{Headers: map[string]string{"x-team": "research"}})
+	if got.Rule == nil {
+		t.Error("lowercase header should match canonical declaration")
+	}
+}
+
+func TestMatchTaskComplexity(t *testing.T) {
+	cfg := validConfig()
+	cfg.Rules = []Rule{{
+		Name:  "complex-to-cloud",
+		Match: RuleMatch{TaskComplexity: "complex"},
+		Route: RuleRoute{Backends: []string{"cloud-opus"}},
+	}}
+	m := NewMatcher(cfg)
+	if got := m.Match(&RequestFeatures{TaskComplexity: "complex"}); got.Rule == nil {
+		t.Error("complex task should match")
+	}
+	if got := m.Match(&RequestFeatures{TaskComplexity: "simple"}); got.Rule != nil {
+		t.Errorf("simple task should not match complex rule, matched %q", got.Rule.Name)
+	}
+}
+
+func TestMatchRequiredCapabilities(t *testing.T) {
+	cfg := validConfig()
+	cfg.Backends[0].Capabilities = []string{"code"}
+	cfg.Backends[1].Capabilities = []string{"vision", "long-context"}
+	cfg.Rules = []Rule{{
+		Name: "vision-rule",
+		Match: RuleMatch{
+			Models:               []string{"*"},
+			RequiredCapabilities: []string{"vision"},
+		},
+		Route: RuleRoute{Backends: []string{"local-qwen", "cloud-opus"}},
+	}}
+	m := NewMatcher(cfg)
+	// At least one route backend has vision; should match.
+	if got := m.Match(&RequestFeatures{Model: "any"}); got.Rule == nil {
+		t.Error("expected match: cloud-opus has vision")
+	}
+
+	// Remove vision from cloud-opus; now no backend in the route has it.
+	cfg.Backends[1].Capabilities = []string{"long-context"}
+	m = NewMatcher(cfg)
+	if got := m.Match(&RequestFeatures{Model: "any"}); got.Rule != nil {
+		t.Errorf("expected no match when no route backend has vision; matched %q", got.Rule.Name)
+	}
+}
+
+func TestMatchFirstRuleWins(t *testing.T) {
+	cfg := validConfig()
+	cfg.Rules = []Rule{
+		{
+			Name:  "first",
+			Match: RuleMatch{Models: []string{"*"}},
+			Route: RuleRoute{Backends: []string{"local-qwen"}},
+		},
+		{
+			Name:  "second",
+			Match: RuleMatch{Models: []string{"*"}},
+			Route: RuleRoute{Backends: []string{"cloud-opus"}},
+		},
+	}
+	got := NewMatcher(cfg).Match(&RequestFeatures{Model: "any-model"})
+	if got.Rule == nil || got.Rule.Name != "first" {
+		t.Errorf("expected first rule to win, got %v", got.Rule)
+	}
+}

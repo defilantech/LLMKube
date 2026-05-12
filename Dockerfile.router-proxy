@@ -1,0 +1,34 @@
+# Build stage: full Go toolchain on a small base.
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
+
+ARG TARGETOS
+ARG TARGETARCH
+
+WORKDIR /workspace
+
+# Dependency layer cache: copy module files first so source-only changes
+# don't bust the module download cache.
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY api/ api/
+COPY cmd/ cmd/
+COPY internal/ internal/
+
+# Static build so the resulting binary runs on the distroless static
+# image (no libc). -s -w strips DWARF and symbol table for size.
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags="-s -w" -o router-proxy ./cmd/router-proxy
+
+# Runtime stage: distroless, non-root, no shell.
+FROM gcr.io/distroless/static:nonroot
+
+WORKDIR /
+COPY --from=builder /workspace/router-proxy /usr/local/bin/router-proxy
+
+# Expose the default HTTP port; the binary's --listen flag overrides.
+EXPOSE 8080
+
+USER 65532:65532
+
+ENTRYPOINT ["/usr/local/bin/router-proxy"]

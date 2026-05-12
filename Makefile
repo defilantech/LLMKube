@@ -190,6 +190,19 @@ docker-build: ## Build docker image with the manager.
 docker-push: ## Push docker image with the manager.
 	$(CONTAINER_TOOL) push ${IMG}
 
+ROUTER_PROXY_IMG ?= ghcr.io/defilantech/llmkube-router-proxy:dev
+.PHONY: docker-build-router-proxy
+docker-build-router-proxy: ## Build docker image for the router-proxy data plane.
+	$(CONTAINER_TOOL) build -f Dockerfile.router-proxy -t ${ROUTER_PROXY_IMG} .
+
+.PHONY: docker-push-router-proxy
+docker-push-router-proxy: ## Push the router-proxy image.
+	$(CONTAINER_TOOL) push ${ROUTER_PROXY_IMG}
+
+.PHONY: build-router-proxy
+build-router-proxy: fmt vet ## Build router-proxy binary into bin/.
+	go build -o bin/router-proxy ./cmd/router-proxy
+
 # PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
 # architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:
 # - be able to use docker buildx. More info: https://docs.docker.com/build/buildx/
