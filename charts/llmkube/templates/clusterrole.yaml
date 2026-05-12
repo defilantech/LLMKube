@@ -66,6 +66,7 @@ rules:
   - inference.llmkube.dev
   resources:
   - inferenceservices
+  - modelrouters
   - models
   verbs:
   - create
@@ -79,6 +80,7 @@ rules:
   - inference.llmkube.dev
   resources:
   - inferenceservices/finalizers
+  - modelrouters/finalizers
   - models/finalizers
   verbs:
   - update
@@ -86,6 +88,7 @@ rules:
   - inference.llmkube.dev
   resources:
   - inferenceservices/status
+  - modelrouters/status
   - models/status
   verbs:
   - get

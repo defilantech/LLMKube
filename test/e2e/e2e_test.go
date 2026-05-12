@@ -654,6 +654,170 @@ spec:
 		})
 	})
 
+	Context("ModelRouter Reconciliation", func() {
+		const mrTestNs = "e2e-modelrouter-test"
+
+		BeforeAll(func() {
+			By("creating ModelRouter test namespace")
+			cmd := exec.Command("kubectl", "create", "ns", mrTestNs)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create test namespace")
+		})
+
+		AfterAll(func() {
+			By("cleaning up ModelRouter test namespace")
+			cmd := exec.Command("kubectl", "delete", "ns", mrTestNs, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+		})
+
+		// ModelRouter validation does not require referenced InferenceServices
+		// to actually exist in the cluster; it only enforces self-consistency
+		// of the spec (exactly-one-of, name uniqueness, fail-closed gate,
+		// budget invariants). The data plane lands in #428, at which point
+		// E2E coverage will broaden to actual request dispatch.
+
+		It("should report Validated=True for a well-formed ModelRouter", func() {
+			By("applying a ModelRouter with a valid spec")
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(fmt.Sprintf(`apiVersion: inference.llmkube.dev/v1alpha1
+kind: ModelRouter
+metadata:
+  name: e2e-good-router
+  namespace: %s
+spec:
+  backends:
+    - name: local-stub
+      inferenceServiceRef:
+        name: stub-isvc
+      tier: local
+    - name: cloud-stub
+      external:
+        provider: anthropic
+        model: claude-opus-4-7
+      tier: cloud
+  rules:
+    - name: pii-stays-local
+      match:
+        dataClassification: ["pii"]
+      route:
+        backends: ["local-stub"]
+      failClosed: true
+    - name: complex-to-cloud
+      match:
+        taskComplexity: complex
+      route:
+        backends: ["cloud-stub"]
+  defaultRoute: local-stub
+`, mrTestNs))
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to apply ModelRouter CR")
+
+			By("waiting for ModelRouter status.phase=Pending and Validated=True")
+			verifyValidated := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "modelrouter", "e2e-good-router",
+					"-n", mrTestNs, "-o", "jsonpath={.status.phase}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("Pending"))
+
+				cmd = exec.Command("kubectl", "get", "modelrouter", "e2e-good-router",
+					"-n", mrTestNs, "-o",
+					`jsonpath={.status.conditions[?(@.type=="Validated")].status}`)
+				output, err = utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("True"))
+
+				cmd = exec.Command("kubectl", "get", "modelrouter", "e2e-good-router",
+					"-n", mrTestNs, "-o", "jsonpath={.status.activeRules}")
+				output, err = utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("2"))
+			}
+			Eventually(verifyValidated, 1*time.Minute).Should(Succeed())
+		})
+
+		It("should report Validated=False for a sensitive-data rule routing to cloud", func() {
+			By("applying a ModelRouter whose fail-closed PII rule points at a cloud backend")
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(fmt.Sprintf(`apiVersion: inference.llmkube.dev/v1alpha1
+kind: ModelRouter
+metadata:
+  name: e2e-bad-router
+  namespace: %s
+spec:
+  backends:
+    - name: local-stub
+      inferenceServiceRef:
+        name: stub-isvc
+      tier: local
+    - name: cloud-stub
+      external:
+        provider: anthropic
+        model: claude-opus-4-7
+      tier: cloud
+  rules:
+    - name: pii-leak
+      match:
+        dataClassification: ["pii"]
+      route:
+        backends: ["cloud-stub"]
+      failClosed: true
+  defaultRoute: local-stub
+`, mrTestNs))
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to apply invalid ModelRouter CR")
+
+			By("waiting for ModelRouter status.phase=Failed and Validated=False with SpecInvalid reason")
+			verifyInvalid := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "modelrouter", "e2e-bad-router",
+					"-n", mrTestNs, "-o", "jsonpath={.status.phase}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("Failed"))
+
+				cmd = exec.Command("kubectl", "get", "modelrouter", "e2e-bad-router",
+					"-n", mrTestNs, "-o",
+					`jsonpath={.status.conditions[?(@.type=="Validated")].status}`)
+				output, err = utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("False"))
+
+				cmd = exec.Command("kubectl", "get", "modelrouter", "e2e-bad-router",
+					"-n", mrTestNs, "-o",
+					`jsonpath={.status.conditions[?(@.type=="Validated")].reason}`)
+				output, err = utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("SpecInvalid"))
+
+				cmd = exec.Command("kubectl", "get", "modelrouter", "e2e-bad-router",
+					"-n", mrTestNs, "-o",
+					`jsonpath={.status.conditions[?(@.type=="Validated")].message}`)
+				output, err = utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(ContainSubstring("cannot route to cloud-tier backend"))
+			}
+			Eventually(verifyInvalid, 1*time.Minute).Should(Succeed())
+		})
+
+		It("should clean up ModelRouter resources on deletion", func() {
+			By("deleting both test ModelRouters")
+			cmd := exec.Command("kubectl", "delete", "modelrouter", "e2e-good-router", "e2e-bad-router",
+				"-n", mrTestNs, "--ignore-not-found")
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to delete ModelRouters")
+
+			By("verifying both ModelRouters are gone")
+			verifyGone := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "modelrouters", "-n", mrTestNs,
+					"-o", "jsonpath={.items[*].metadata.name}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(BeEmpty())
+			}
+			Eventually(verifyGone, 30*time.Second).Should(Succeed())
+		})
+	})
+
 	Context("License Check", func() {
 		const licenseTestNs = "e2e-license-test"
 		const testLicenseModelServerURL = "http://test-model-server.e2e-license-test.svc.cluster.local/test-model.gguf"
