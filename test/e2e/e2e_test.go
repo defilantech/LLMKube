@@ -662,6 +662,39 @@ spec:
 			cmd := exec.Command("kubectl", "create", "ns", mrTestNs)
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create test namespace")
+
+			By("seeding a stub InferenceService for backend resolution")
+			// The controller resolves InferenceServiceRef to a cluster URL
+			// when compiling the router config. The referenced
+			// InferenceService doesn't need to be Ready (its pods would
+			// require a real model image which the kind e2e doesn't
+			// side-load), only present so resolution succeeds.
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(fmt.Sprintf(`apiVersion: inference.llmkube.dev/v1alpha1
+kind: Model
+metadata:
+  name: stub-model
+  namespace: %s
+spec:
+  source: file:///tmp/stub.gguf
+---
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: InferenceService
+metadata:
+  name: stub-isvc
+  namespace: %s
+spec:
+  modelRef: stub-model
+`, mrTestNs, mrTestNs))
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to seed stub InferenceService")
+
+			By("seeding a stub Secret for the cloud backend credentials")
+			cmd = exec.Command("kubectl", "create", "secret", "generic", "anthropic-key",
+				"-n", mrTestNs,
+				"--from-literal=ANTHROPIC_API_KEY=stub-key-for-e2e")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create stub credentials Secret")
 		})
 
 		AfterAll(func() {
@@ -670,13 +703,7 @@ spec:
 			_, _ = utils.Run(cmd)
 		})
 
-		// ModelRouter validation does not require referenced InferenceServices
-		// to actually exist in the cluster; it only enforces self-consistency
-		// of the spec (exactly-one-of, name uniqueness, fail-closed gate,
-		// budget invariants). The data plane lands in #428, at which point
-		// E2E coverage will broaden to actual request dispatch.
-
-		It("should report Validated=True for a well-formed ModelRouter", func() {
+		It("should reconcile a ModelRouter to a populated endpoint and child resources", func() {
 			By("applying a ModelRouter with a valid spec")
 			cmd := exec.Command("kubectl", "apply", "-f", "-")
 			cmd.Stdin = strings.NewReader(fmt.Sprintf(`apiVersion: inference.llmkube.dev/v1alpha1
@@ -694,6 +721,9 @@ spec:
       external:
         provider: anthropic
         model: claude-opus-4-7
+        url: https://api.anthropic.com
+        credentialsSecretRef:
+          name: anthropic-key
       tier: cloud
   rules:
     - name: pii-stays-local
@@ -712,20 +742,22 @@ spec:
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to apply ModelRouter CR")
 
-			By("waiting for ModelRouter status.phase=Pending and Validated=True")
-			verifyValidated := func(g Gomega) {
+			By("waiting for ModelRouter Validated=True and status.endpoint to be populated")
+			verifyStatus := func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "modelrouter", "e2e-good-router",
-					"-n", mrTestNs, "-o", "jsonpath={.status.phase}")
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(Equal("Pending"))
-
-				cmd = exec.Command("kubectl", "get", "modelrouter", "e2e-good-router",
 					"-n", mrTestNs, "-o",
 					`jsonpath={.status.conditions[?(@.type=="Validated")].status}`)
-				output, err = utils.Run(cmd)
+				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal("True"))
+
+				cmd = exec.Command("kubectl", "get", "modelrouter", "e2e-good-router",
+					"-n", mrTestNs, "-o", "jsonpath={.status.endpoint}")
+				output, err = utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				// Endpoint convention: http://<name>-router-proxy.<ns>.svc.cluster.local:8080/v1/chat/completions
+				g.Expect(output).To(ContainSubstring("e2e-good-router-router-proxy." + mrTestNs))
+				g.Expect(output).To(ContainSubstring(":8080/v1/chat/completions"))
 
 				cmd = exec.Command("kubectl", "get", "modelrouter", "e2e-good-router",
 					"-n", mrTestNs, "-o", "jsonpath={.status.activeRules}")
@@ -733,7 +765,48 @@ spec:
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal("2"))
 			}
-			Eventually(verifyValidated, 1*time.Minute).Should(Succeed())
+			Eventually(verifyStatus, 1*time.Minute).Should(Succeed())
+
+			By("verifying the proxy ConfigMap exists with the compiled config")
+			verifyConfigMap := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "configmap", "e2e-good-router-router-proxy",
+					"-n", mrTestNs, "-o", "jsonpath={.data.config\\.json}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(ContainSubstring("local-stub"))
+				g.Expect(output).To(ContainSubstring("cloud-stub"))
+				g.Expect(output).To(ContainSubstring("pii-stays-local"))
+			}
+			Eventually(verifyConfigMap, 1*time.Minute).Should(Succeed())
+
+			By("verifying the proxy Service exists on the expected port")
+			verifyService := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "service", "e2e-good-router-router-proxy",
+					"-n", mrTestNs, "-o", "jsonpath={.spec.ports[0].port}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("8080"))
+			}
+			Eventually(verifyService, 1*time.Minute).Should(Succeed())
+
+			By("verifying the proxy Deployment exists with the config hash annotation")
+			verifyDeployment := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "deployment", "e2e-good-router-router-proxy",
+					"-n", mrTestNs, "-o",
+					`jsonpath={.spec.template.metadata.annotations.inference\.llmkube\.dev/router-config-hash}`)
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).NotTo(BeEmpty(),
+					"Deployment must carry the config hash annotation that triggers rollout")
+
+				cmd = exec.Command("kubectl", "get", "deployment", "e2e-good-router-router-proxy",
+					"-n", mrTestNs, "-o",
+					`jsonpath={.spec.template.spec.containers[0].image}`)
+				output, err = utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).NotTo(BeEmpty(), "Deployment container must have an image set")
+			}
+			Eventually(verifyDeployment, 1*time.Minute).Should(Succeed())
 		})
 
 		It("should report Validated=False for a sensitive-data rule routing to cloud", func() {
@@ -799,7 +872,7 @@ spec:
 			Eventually(verifyInvalid, 1*time.Minute).Should(Succeed())
 		})
 
-		It("should clean up ModelRouter resources on deletion", func() {
+		It("should clean up ModelRouter resources and child resources on deletion", func() {
 			By("deleting both test ModelRouters")
 			cmd := exec.Command("kubectl", "delete", "modelrouter", "e2e-good-router", "e2e-bad-router",
 				"-n", mrTestNs, "--ignore-not-found")
@@ -807,14 +880,28 @@ spec:
 			Expect(err).NotTo(HaveOccurred(), "Failed to delete ModelRouters")
 
 			By("verifying both ModelRouters are gone")
-			verifyGone := func(g Gomega) {
+			verifyMRGone := func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "modelrouters", "-n", mrTestNs,
 					"-o", "jsonpath={.items[*].metadata.name}")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(BeEmpty())
 			}
-			Eventually(verifyGone, 30*time.Second).Should(Succeed())
+			Eventually(verifyMRGone, 30*time.Second).Should(Succeed())
+
+			By("verifying owner-ref GC removed the child Deployment, Service, and ConfigMap")
+			verifyChildrenGone := func(g Gomega) {
+				for _, kind := range []string{"deployment", "service", "configmap"} {
+					cmd := exec.Command("kubectl", "get", kind, "e2e-good-router-router-proxy",
+						"-n", mrTestNs, "--ignore-not-found",
+						"-o", "jsonpath={.metadata.name}")
+					output, err := utils.Run(cmd)
+					g.Expect(err).NotTo(HaveOccurred())
+					g.Expect(output).To(BeEmpty(),
+						"child %s should be garbage-collected after ModelRouter deletion", kind)
+				}
+			}
+			Eventually(verifyChildrenGone, 1*time.Minute).Should(Succeed())
 		})
 	})
 

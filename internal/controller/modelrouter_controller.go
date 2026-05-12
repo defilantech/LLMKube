@@ -15,6 +15,8 @@ import (
 	"math"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -37,29 +39,45 @@ import (
 const (
 	ModelRouterPhasePending      = "Pending"
 	ModelRouterPhaseProvisioning = "Provisioning"
+	ModelRouterPhaseDegraded     = "Degraded"
 
 	ModelRouterConditionValidated     = "Validated"
 	ModelRouterConditionBackendsReady = "BackendsReady"
 
-	ModelRouterReasonSpecValid   = "SpecValid"
-	ModelRouterReasonSpecInvalid = "SpecInvalid"
+	ModelRouterReasonSpecValid          = "SpecValid"
+	ModelRouterReasonSpecInvalid        = "SpecInvalid"
+	ModelRouterReasonCompileFailed      = "CompileFailed"
+	ModelRouterReasonReconcileFailed    = "ReconcileFailed"
+	ModelRouterReasonBackendsResolved   = "BackendsResolved"
+	ModelRouterReasonBackendsUnresolved = "BackendsUnresolved"
+	ModelRouterReasonDeploymentReady    = "DeploymentReady"
+	ModelRouterReasonDeploymentNotReady = "DeploymentNotReady"
+	ModelRouterReasonDeploymentDegraded = "DeploymentDegraded"
 
 	modelRouterControllerName = "modelrouter"
 )
 
-// ModelRouterReconciler reconciles the ModelRouter CRD. In Phase 1 (this
-// commit) the reconciler validates the spec and writes a Validated
-// condition. No data plane is managed yet; the proxy Deployment, Service,
-// and ConfigMap land in #428.
+// ModelRouterReconciler reconciles the ModelRouter CRD. It validates the
+// spec, compiles the routing config, and creates / updates the ConfigMap,
+// Deployment, and Service that constitute the data plane.
 type ModelRouterReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+
+	// RouterProxyImage is the default container image for the
+	// router-proxy. Per-ModelRouter overrides in spec.proxy.image take
+	// precedence. Wired in cmd/main.go from --router-proxy-image.
+	RouterProxyImage string
 }
 
 // +kubebuilder:rbac:groups=inference.llmkube.dev,resources=modelrouters,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=inference.llmkube.dev,resources=modelrouters/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=inference.llmkube.dev,resources=modelrouters/finalizers,verbs=update
 // +kubebuilder:rbac:groups=inference.llmkube.dev,resources=inferenceservices,verbs=get;list;watch
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 
 func (r *ModelRouterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	reconcileStart := time.Now()
@@ -80,53 +98,233 @@ func (r *ModelRouterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	valErrors := validateModelRouter(mr)
-	if err := r.updateStatus(ctx, mr, valErrors); err != nil {
-		return ctrl.Result{}, err
+	if len(valErrors) > 0 {
+		return ctrl.Result{}, r.recordValidationFailure(ctx, mr, valErrors)
 	}
-	return ctrl.Result{}, nil
+
+	compiled, err := r.compileRouterConfig(ctx, mr)
+	if err != nil {
+		return ctrl.Result{}, r.recordCompileFailure(ctx, mr, err)
+	}
+
+	if err := r.reconcileRouterConfigMap(ctx, mr, compiled); err != nil {
+		return ctrl.Result{}, r.recordReconcileFailure(ctx, mr, compiled, "ConfigMap", err)
+	}
+	if err := r.reconcileRouterDeployment(ctx, mr, compiled.Hash); err != nil {
+		return ctrl.Result{}, r.recordReconcileFailure(ctx, mr, compiled, "Deployment", err)
+	}
+	if err := r.reconcileRouterService(ctx, mr); err != nil {
+		return ctrl.Result{}, r.recordReconcileFailure(ctx, mr, compiled, "Service", err)
+	}
+
+	deployReady, deployMessage, err := r.fetchDeploymentReadiness(ctx, mr)
+	if err != nil {
+		return ctrl.Result{}, r.recordReconcileFailure(ctx, mr, compiled, "DeploymentReadiness", err)
+	}
+
+	return ctrl.Result{}, r.recordSuccess(ctx, mr, compiled, deployReady, deployMessage)
 }
 
-// updateStatus patches the ModelRouter status with the Validated condition
-// and an appropriate phase. Other conditions (BackendsReady, Available,
-// Degraded) will be set by the data-plane reconciler in #428.
-func (r *ModelRouterReconciler) updateStatus(
+// recordValidationFailure writes the validated=false branch of the
+// status. Used when validateModelRouter rejects the spec.
+func (r *ModelRouterReconciler) recordValidationFailure(
 	ctx context.Context,
 	mr *inferencev1alpha1.ModelRouter,
 	valErrors []ModelRouterValidationError,
 ) error {
-	logger := log.FromContext(ctx)
-
 	desired := mr.DeepCopy()
 	now := metav1.Now()
 	desired.Status.LastUpdated = &now
+	apimeta.SetStatusCondition(&desired.Status.Conditions, metav1.Condition{
+		Type:    ModelRouterConditionValidated,
+		Status:  metav1.ConditionFalse,
+		Reason:  ModelRouterReasonSpecInvalid,
+		Message: formatValidationErrors(valErrors),
+	})
+	desired.Status.Phase = PhaseFailed
+	desired.Status.ActiveRules = 0
+	desired.Status.Backends = nil
+	return r.patchStatus(ctx, mr, desired)
+}
 
-	if len(valErrors) == 0 {
-		apimeta.SetStatusCondition(&desired.Status.Conditions, metav1.Condition{
-			Type:    ModelRouterConditionValidated,
-			Status:  metav1.ConditionTrue,
-			Reason:  ModelRouterReasonSpecValid,
-			Message: "spec passed static validation",
-		})
-		// Phase 1: no data plane yet, so a valid spec stays Pending.
-		// #428 will advance this to Provisioning / Ready / Degraded.
-		desired.Status.Phase = ModelRouterPhasePending
-		desired.Status.ActiveRules = safeInt32(len(desired.Spec.Rules))
-	} else {
-		apimeta.SetStatusCondition(&desired.Status.Conditions, metav1.Condition{
-			Type:    ModelRouterConditionValidated,
-			Status:  metav1.ConditionFalse,
-			Reason:  ModelRouterReasonSpecInvalid,
-			Message: formatValidationErrors(valErrors),
-		})
-		desired.Status.Phase = PhaseFailed
-		desired.Status.ActiveRules = 0
+// recordCompileFailure writes the configmap-compile-failed branch.
+func (r *ModelRouterReconciler) recordCompileFailure(
+	ctx context.Context,
+	mr *inferencev1alpha1.ModelRouter,
+	err error,
+) error {
+	desired := mr.DeepCopy()
+	now := metav1.Now()
+	desired.Status.LastUpdated = &now
+	apimeta.SetStatusCondition(&desired.Status.Conditions, metav1.Condition{
+		Type:    ModelRouterConditionValidated,
+		Status:  metav1.ConditionTrue,
+		Reason:  ModelRouterReasonSpecValid,
+		Message: "spec passed static validation",
+	})
+	apimeta.SetStatusCondition(&desired.Status.Conditions, metav1.Condition{
+		Type:    ConditionAvailable,
+		Status:  metav1.ConditionFalse,
+		Reason:  ModelRouterReasonCompileFailed,
+		Message: err.Error(),
+	})
+	desired.Status.Phase = PhaseFailed
+	return r.patchStatus(ctx, mr, desired)
+}
+
+// recordReconcileFailure writes the data-plane-reconcile-failed branch.
+// We keep Validated=True (spec was good) but flip Available=False with a
+// message identifying which child resource broke.
+func (r *ModelRouterReconciler) recordReconcileFailure(
+	ctx context.Context,
+	mr *inferencev1alpha1.ModelRouter,
+	compiled *compiledConfig,
+	resourceKind string,
+	err error,
+) error {
+	desired := mr.DeepCopy()
+	now := metav1.Now()
+	desired.Status.LastUpdated = &now
+	apimeta.SetStatusCondition(&desired.Status.Conditions, metav1.Condition{
+		Type:    ModelRouterConditionValidated,
+		Status:  metav1.ConditionTrue,
+		Reason:  ModelRouterReasonSpecValid,
+		Message: "spec passed static validation",
+	})
+	apimeta.SetStatusCondition(&desired.Status.Conditions, metav1.Condition{
+		Type:    ConditionAvailable,
+		Status:  metav1.ConditionFalse,
+		Reason:  ModelRouterReasonReconcileFailed,
+		Message: resourceKind + ": " + err.Error(),
+	})
+	if compiled != nil {
+		desired.Status.Backends = compiled.Backends
 	}
+	desired.Status.Phase = PhaseFailed
+	return r.patchStatus(ctx, mr, desired)
+}
 
-	if err := r.Status().Patch(ctx, desired, client.MergeFrom(mr)); err != nil {
-		logger.Error(err, "failed to update ModelRouter status")
+// recordSuccess writes the happy-path status when the data plane is at
+// least provisioning correctly. Phase ranges over Provisioning / Ready
+// / Degraded depending on backend health and deployment readiness.
+func (r *ModelRouterReconciler) recordSuccess(
+	ctx context.Context,
+	mr *inferencev1alpha1.ModelRouter,
+	compiled *compiledConfig,
+	deployReady bool,
+	deployMessage string,
+) error {
+	desired := mr.DeepCopy()
+	now := metav1.Now()
+	desired.Status.LastUpdated = &now
+	desired.Status.Endpoint = routerProxyEndpoint(mr)
+	desired.Status.ActiveRules = safeInt32(len(mr.Spec.Rules))
+	desired.Status.Backends = compiled.Backends
+
+	apimeta.SetStatusCondition(&desired.Status.Conditions, metav1.Condition{
+		Type:    ModelRouterConditionValidated,
+		Status:  metav1.ConditionTrue,
+		Reason:  ModelRouterReasonSpecValid,
+		Message: "spec passed static validation",
+	})
+
+	backendsReady, backendsMessage := summarizeBackends(compiled.Backends)
+	apimeta.SetStatusCondition(&desired.Status.Conditions, metav1.Condition{
+		Type:    ModelRouterConditionBackendsReady,
+		Status:  conditionBool(backendsReady),
+		Reason:  conditionPick(backendsReady, ModelRouterReasonBackendsResolved, ModelRouterReasonBackendsUnresolved),
+		Message: backendsMessage,
+	})
+
+	apimeta.SetStatusCondition(&desired.Status.Conditions, metav1.Condition{
+		Type:    ConditionAvailable,
+		Status:  conditionBool(deployReady),
+		Reason:  conditionPick(deployReady, ModelRouterReasonDeploymentReady, ModelRouterReasonDeploymentNotReady),
+		Message: deployMessage,
+	})
+
+	switch {
+	case deployReady && backendsReady:
+		desired.Status.Phase = PhaseReady
+	case deployReady && !backendsReady:
+		desired.Status.Phase = ModelRouterPhaseDegraded
+	default:
+		desired.Status.Phase = ModelRouterPhaseProvisioning
+	}
+	return r.patchStatus(ctx, mr, desired)
+}
+
+func (r *ModelRouterReconciler) patchStatus(
+	ctx context.Context,
+	original, desired *inferencev1alpha1.ModelRouter,
+) error {
+	if err := r.Status().Patch(ctx, desired, client.MergeFrom(original)); err != nil {
+		log.FromContext(ctx).Error(err, "failed to update ModelRouter status")
 		return err
 	}
 	return nil
+}
+
+// fetchDeploymentReadiness reads the proxy Deployment's current replica
+// status and returns a (ready, message, err) triple. Returns (false,
+// "Deployment not yet created", nil) when the Deployment does not exist
+// (the create just queued and we'll re-reconcile when the cache observes
+// it).
+func (r *ModelRouterReconciler) fetchDeploymentReadiness(
+	ctx context.Context,
+	mr *inferencev1alpha1.ModelRouter,
+) (bool, string, error) {
+	dep := &appsv1.Deployment{}
+	err := r.Get(ctx, types.NamespacedName{
+		Name:      routerProxyResourceName(mr.Name),
+		Namespace: mr.Namespace,
+	}, dep)
+	switch {
+	case errors.IsNotFound(err):
+		return false, "Deployment not yet observed", nil
+	case err != nil:
+		return false, "", err
+	}
+	desired := int32(1)
+	if dep.Spec.Replicas != nil {
+		desired = *dep.Spec.Replicas
+	}
+	if dep.Status.ReadyReplicas >= desired && desired > 0 {
+		return true, "Deployment is fully Ready", nil
+	}
+	return false, "Waiting for proxy pods to become Ready", nil
+}
+
+// summarizeBackends returns (allHealthy, message) for the per-backend
+// statuses produced by compileRouterConfig.
+func summarizeBackends(backends []inferencev1alpha1.BackendStatus) (bool, string) {
+	if len(backends) == 0 {
+		return false, "no backends declared"
+	}
+	healthy := 0
+	for _, b := range backends {
+		if b.Healthy {
+			healthy++
+		}
+	}
+	if healthy == len(backends) {
+		return true, "all backends resolved"
+	}
+	return false, "some backends unresolved (see status.backends for details)"
+}
+
+func conditionBool(ok bool) metav1.ConditionStatus {
+	if ok {
+		return metav1.ConditionTrue
+	}
+	return metav1.ConditionFalse
+}
+
+func conditionPick(ok bool, whenTrue, whenFalse string) string {
+	if ok {
+		return whenTrue
+	}
+	return whenFalse
 }
 
 // safeInt32 narrows an int to int32, clamping at math.MaxInt32 when needed,
@@ -140,12 +338,16 @@ func safeInt32(n int) int32 {
 	return int32(n) //nolint:gosec // bounds-checked above
 }
 
-// SetupWithManager wires up the ModelRouter primary watch plus a secondary
-// watch on InferenceService so a router whose backend turns Ready (or goes
-// away) is re-reconciled and re-validated.
+// SetupWithManager wires up the ModelRouter primary watch, the owned
+// child resources (Deployment, Service, ConfigMap), and the secondary
+// watch on InferenceService so a router whose backend turns Ready (or
+// goes away) is re-reconciled.
 func (r *ModelRouterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&inferencev1alpha1.ModelRouter{}).
+		Owns(&appsv1.Deployment{}).
+		Owns(&corev1.Service{}).
+		Owns(&corev1.ConfigMap{}).
 		Watches(
 			&inferencev1alpha1.InferenceService{},
 			handler.EnqueueRequestsFromMapFunc(r.findModelRoutersForInferenceService),

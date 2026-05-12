@@ -87,7 +87,7 @@ func validateBackends(spec *inferencev1alpha1.ModelRouterSpec) (
 		// Tier consistency: an InferenceServiceRef backend is by definition
 		// local. Allowing cloud tier here would let users bypass the
 		// fail-closed gate by mislabelling a local backend.
-		if b.InferenceServiceRef != nil && b.Tier == "cloud" {
+		if b.InferenceServiceRef != nil && b.Tier == backendTierCloud {
 			errs = append(errs, ModelRouterValidationError{
 				Field:   path + ".tier",
 				Message: "tier=cloud is invalid for a backend with inferenceServiceRef (use tier=local)",
@@ -217,7 +217,7 @@ func validateRuleSensitiveData(
 			// Already reported in validateRuleRoute.
 			continue
 		}
-		if b.Tier == "cloud" {
+		if b.Tier == backendTierCloud {
 			errs = append(errs, ModelRouterValidationError{
 				Field: path + ".route.backends",
 				Message: fmt.Sprintf(
