@@ -188,6 +188,55 @@ func TestCompileRouterConfigMissingSecretKey(t *testing.T) {
 	}
 }
 
+// TestCompileRouterConfigExternalNoSecretSkipsCredentials covers the
+// "auth-less external backend" path (e.g. an in-cluster OpenAI-shape
+// mock, a LiteLLM proxy that handles auth on its own side, a non-
+// LLMKube vLLM): when no credentialsSecretRef is provided, the
+// controller must NOT inject a well-known credentials env name into
+// the compiled config, or the proxy would refuse to dispatch with
+// "credentials env X is unset" even though the backend never needed
+// auth.
+func TestCompileRouterConfigExternalNoSecretSkipsCredentials(t *testing.T) {
+	mr := &inferencev1alpha1.ModelRouter{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "no-auth-router",
+			Namespace: testBuilderNs,
+		},
+		Spec: inferencev1alpha1.ModelRouterSpec{
+			Backends: []inferencev1alpha1.RouterBackend{
+				{
+					Name: "local-mock",
+					External: &inferencev1alpha1.ExternalProvider{
+						Provider: "openai",
+						Model:    "stub",
+						URL:      "http://mock.example.svc.cluster.local:8080",
+					},
+					Tier: "local",
+				},
+			},
+			DefaultRoute: "local-mock",
+		},
+	}
+	r := newRouterReconcilerForTest(t, mr)
+
+	compiled, err := r.compileRouterConfig(context.Background(), mr)
+	if err != nil {
+		t.Fatalf("compileRouterConfig: %v", err)
+	}
+
+	var cfg router.Config
+	if err := json.Unmarshal(compiled.JSON, &cfg); err != nil {
+		t.Fatalf("unmarshal compiled JSON: %v", err)
+	}
+	if got := cfg.Backends[0].CredentialsEnv; got != "" {
+		t.Errorf("external backend without secret got CredentialsEnv = %q, want empty", got)
+	}
+	if !compiled.Backends[0].Healthy {
+		t.Errorf("backend should be Healthy=true when no secret is required, Message=%q",
+			compiled.Backends[0].Message)
+	}
+}
+
 // TestRouterDeploymentBuilder pins the deployment shape this PR
 // contracts on for downstream callers (CI smoke tests, future
 // production users).

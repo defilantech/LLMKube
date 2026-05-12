@@ -139,8 +139,15 @@ func (r *ModelRouterReconciler) resolveBackend(
 		wire.Model = b.External.Model
 		wire.Address = b.External.URL
 		status.Address = b.External.URL
-		wire.CredentialsEnv = wellKnownCredEnv(b.External.Provider)
 		if b.External.CredentialsSecretRef != nil {
+			// Resolving the well-known env var only when the user
+			// declared a Secret keeps backends like LiteLLM (which
+			// proxy auth themselves) and in-cluster sidecars (a
+			// non-LLMKube vLLM, an OpenAI-shape mock) able to opt out
+			// of credential injection. Without this gate the proxy
+			// would refuse to dispatch with "credentials env X is
+			// unset" even though the backend never needed auth.
+			wire.CredentialsEnv = wellKnownCredEnv(b.External.Provider)
 			if err := r.assertCredentialsSecretExists(ctx, mr.Namespace,
 				b.External.CredentialsSecretRef.Name, wire.CredentialsEnv); err != nil {
 				status.Healthy = false
@@ -149,8 +156,6 @@ func (r *ModelRouterReconciler) resolveBackend(
 				status.Healthy = true
 			}
 		} else {
-			// LiteLLM-style external backends sometimes handle auth
-			// themselves; allow no secret.
 			status.Healthy = true
 		}
 	default:
