@@ -633,8 +633,12 @@ type TGIConfig struct {
 // InferenceServiceStatus defines the observed state of InferenceService.
 type InferenceServiceStatus struct {
 	// Phase represents the current lifecycle phase of the InferenceService.
-	// Possible values: Pending, Creating, Progressing, Ready, WaitingForGPU, Failed.
-	// +kubebuilder:validation:Enum=Pending;Creating;Progressing;Ready;WaitingForGPU;Failed
+	// Possible values: Pending, Creating, Progressing, Ready, WaitingForGPU,
+	// Stopped, Failed. Stopped is the terminal state when spec.replicas=0
+	// has caused the agent to tear down the workload; tooling polling for
+	// readiness should treat Stopped the same as Pending (the user
+	// intentionally took the service offline; this is not an error).
+	// +kubebuilder:validation:Enum=Pending;Creating;Progressing;Ready;WaitingForGPU;Stopped;Failed
 	// +optional
 	Phase string `json:"phase,omitempty"`
 

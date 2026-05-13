@@ -30,6 +30,8 @@ import (
 
 	"go.uber.org/zap"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -570,12 +572,7 @@ func (a *MetalAgent) ensureProcess(ctx context.Context, isvc *inferencev1alpha1.
 	// Without this, a user trying to take a model offline via spec edits has
 	// to fully reload the metal-agent to evict it.
 	if isvc.Spec.Replicas != nil && *isvc.Spec.Replicas == 0 {
-		if exists {
-			a.logger.Infow("replicas=0; stopping process",
-				"namespace", isvc.Namespace, "name", isvc.Name)
-			return a.deleteProcess(ctx, key)
-		}
-		return nil
+		return a.handleScaleToZero(ctx, isvc, key, exists)
 	}
 
 	if exists && existing.Healthy {
@@ -811,6 +808,91 @@ func (a *MetalAgent) deleteProcess(ctx context.Context, key string) error {
 
 	a.logger.Infow("stopped inference service", "key", key)
 	return nil
+}
+
+// Condition / reason constants for the "manually scaled to zero"
+// status patch. Kept here next to the only caller; if we grow more
+// agent-driven conditions they can move into a shared constants file.
+const (
+	conditionAvailable          = "Available"
+	reasonManuallyScaledToZero  = "ManuallyScaledToZero"
+	phaseStopped                = "Stopped"
+	messageManuallyScaledToZero = "spec.replicas=0; metal-agent has torn down the workload"
+)
+
+// handleScaleToZero stops the managed process (if any) for an
+// InferenceService with spec.replicas=0 and patches its status so
+// downstream observers see Phase=Stopped + readyReplicas=0
+// immediately. Extracted from ensureProcess to keep the parent
+// function under the gocyclo threshold.
+func (a *MetalAgent) handleScaleToZero(
+	ctx context.Context,
+	isvc *inferencev1alpha1.InferenceService,
+	key string,
+	exists bool,
+) error {
+	if exists {
+		a.logger.Infow("replicas=0; stopping process",
+			"namespace", isvc.Namespace, "name", isvc.Name)
+		if err := a.deleteProcess(ctx, key); err != nil {
+			return err
+		}
+	}
+	// Patch status whether or not we had a managed process. A user
+	// editing replicas=0 wants kubectl / dashboards / HPA-like
+	// callers to see Stopped immediately, not the stale Ready from
+	// before the stop. Without this patch the InferenceService
+	// keeps reporting readyReplicas from the prior generation. See
+	// https://github.com/defilantech/LLMKube/issues/452.
+	if err := a.markStopped(ctx, isvc); err != nil {
+		a.logger.Warnw("failed to patch InferenceService status after stop",
+			"namespace", isvc.Namespace, "name", isvc.Name, "error", err)
+	}
+	return nil
+}
+
+// markStopped patches the InferenceService status to reflect that the
+// metal-agent has stopped the managed llama-server in response to
+// spec.replicas=0. Without this patch, kubectl / dashboards / any HPA-
+// style controller keep observing the stale Phase=Ready and
+// ReadyReplicas count from before the stop. Best-effort: the caller
+// logs and continues on error rather than blocking the stop itself.
+//
+// Surfaced as https://github.com/defilantech/LLMKube/issues/452.
+func (a *MetalAgent) markStopped(ctx context.Context, isvc *inferencev1alpha1.InferenceService) error {
+	// Re-fetch to avoid a stale resource version under conflict; the
+	// watch may have delivered an older copy than what the apiserver
+	// currently has.
+	fresh := &inferencev1alpha1.InferenceService{}
+	if err := a.config.K8sClient.Get(ctx, types.NamespacedName{
+		Namespace: isvc.Namespace,
+		Name:      isvc.Name,
+	}, fresh); err != nil {
+		return fmt.Errorf("fetch InferenceService for status patch: %w", err)
+	}
+
+	// Idempotency: if we already patched to Stopped, skip the round
+	// trip. This is hit on every reconcile for a long-stopped service.
+	if fresh.Status.Phase == phaseStopped &&
+		fresh.Status.ReadyReplicas == 0 &&
+		fresh.Status.DesiredReplicas == 0 {
+		return nil
+	}
+
+	fresh.Status.Phase = phaseStopped
+	fresh.Status.ReadyReplicas = 0
+	fresh.Status.DesiredReplicas = 0
+
+	meta.SetStatusCondition(&fresh.Status.Conditions, metav1.Condition{
+		Type:               conditionAvailable,
+		Status:             metav1.ConditionFalse,
+		ObservedGeneration: fresh.Generation,
+		LastTransitionTime: metav1.Now(),
+		Reason:             reasonManuallyScaledToZero,
+		Message:            messageManuallyScaledToZero,
+	})
+
+	return a.config.K8sClient.Status().Update(ctx, fresh)
 }
 
 // scheduleRestart increments the restart counter and re-runs ensureProcess

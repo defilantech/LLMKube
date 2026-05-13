@@ -740,6 +740,170 @@ func TestEnsureProcess_ReplicasZeroNoOpWhenNoProcess(t *testing.T) {
 	}
 }
 
+// TestEnsureProcess_ReplicasZeroPatchesStatus covers the
+// scale-to-zero status update (issue #452). Without this patch the
+// agent stops the process correctly but kubectl, dashboards, and
+// HPA-style controllers all keep reporting Phase=Ready and
+// readyReplicas=1 from before the stop, which looks like a phantom
+// failure mode in operations.
+func TestEnsureProcess_ReplicasZeroPatchesStatus(t *testing.T) {
+	scheme := newTestScheme()
+	_ = corev1.AddToScheme(scheme)
+
+	zero := int32(0)
+	isvc := &inferencev1alpha1.InferenceService{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "scaled-down",
+			Namespace:  "default",
+			Generation: 7,
+		},
+		Spec: inferencev1alpha1.InferenceServiceSpec{
+			ModelRef: "any-model",
+			Replicas: &zero,
+		},
+		Status: inferencev1alpha1.InferenceServiceStatus{
+			Phase:           "Ready",
+			ReadyReplicas:   1,
+			DesiredReplicas: 1,
+		},
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&inferencev1alpha1.InferenceService{}).
+		WithRuntimeObjects(isvc).
+		Build()
+
+	agent := NewMetalAgent(MetalAgentConfig{K8sClient: k8sClient, Namespace: "default"})
+	agent.executor = NewMetalExecutor("/fake/llama-server", "/tmp/models", newNopLogger())
+	agent.registry = NewServiceRegistry(k8sClient, "", newNopLogger())
+
+	if err := agent.ensureProcess(context.Background(), isvc); err != nil {
+		t.Fatalf("ensureProcess returned unexpected error: %v", err)
+	}
+
+	got := &inferencev1alpha1.InferenceService{}
+	if err := k8sClient.Get(context.Background(),
+		types.NamespacedName{Name: "scaled-down", Namespace: "default"}, got); err != nil {
+		t.Fatalf("fetch InferenceService back: %v", err)
+	}
+
+	if got.Status.Phase != "Stopped" {
+		t.Errorf("status.phase = %q, want Stopped", got.Status.Phase)
+	}
+	if got.Status.ReadyReplicas != 0 {
+		t.Errorf("status.readyReplicas = %d, want 0", got.Status.ReadyReplicas)
+	}
+	if got.Status.DesiredReplicas != 0 {
+		t.Errorf("status.desiredReplicas = %d, want 0", got.Status.DesiredReplicas)
+	}
+
+	var foundCond bool
+	for _, c := range got.Status.Conditions {
+		if c.Type == conditionAvailable {
+			foundCond = true
+			if c.Status != metav1.ConditionFalse {
+				t.Errorf("Available condition status = %q, want False", c.Status)
+			}
+			if c.Reason != reasonManuallyScaledToZero {
+				t.Errorf("Available condition reason = %q, want %q",
+					c.Reason, reasonManuallyScaledToZero)
+			}
+			if c.ObservedGeneration != 7 {
+				t.Errorf("Available condition observedGeneration = %d, want 7",
+					c.ObservedGeneration)
+			}
+		}
+	}
+	if !foundCond {
+		t.Error("Available condition not set on scaled-down InferenceService")
+	}
+}
+
+// TestEnsureProcess_ReplicasZeroStatusPatchIdempotent verifies that
+// a second ensureProcess on an already-stopped InferenceService does
+// not churn the status (no transition timestamp updates, no spurious
+// API writes). Stops are common: every watch event re-fires the
+// reconcile while replicas=0 stays set.
+func TestEnsureProcess_ReplicasZeroStatusPatchIdempotent(t *testing.T) {
+	scheme := newTestScheme()
+	_ = corev1.AddToScheme(scheme)
+
+	zero := int32(0)
+	prev := metav1.Now().Add(-time.Hour)
+	isvc := &inferencev1alpha1.InferenceService{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "already-stopped",
+			Namespace:  "default",
+			Generation: 3,
+		},
+		Spec: inferencev1alpha1.InferenceServiceSpec{
+			ModelRef: "any-model",
+			Replicas: &zero,
+		},
+		Status: inferencev1alpha1.InferenceServiceStatus{
+			Phase:           "Stopped",
+			ReadyReplicas:   0,
+			DesiredReplicas: 0,
+			Conditions: []metav1.Condition{{
+				Type:               conditionAvailable,
+				Status:             metav1.ConditionFalse,
+				Reason:             reasonManuallyScaledToZero,
+				LastTransitionTime: metav1.NewTime(prev),
+			}},
+		},
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&inferencev1alpha1.InferenceService{}).
+		WithRuntimeObjects(isvc).
+		Build()
+
+	agent := NewMetalAgent(MetalAgentConfig{K8sClient: k8sClient, Namespace: "default"})
+	agent.executor = NewMetalExecutor("/fake/llama-server", "/tmp/models", newNopLogger())
+	agent.registry = NewServiceRegistry(k8sClient, "", newNopLogger())
+
+	// Snapshot the *seeded* transition time as the fake client stored
+	// it. The fake client serializes metav1.Time at second precision,
+	// so comparing against the test's original metav1.NewTime(prev)
+	// would mis-fire on sub-second drift that has nothing to do with
+	// the idempotency we're testing.
+	seeded := &inferencev1alpha1.InferenceService{}
+	if err := k8sClient.Get(context.Background(),
+		types.NamespacedName{Name: "already-stopped", Namespace: "default"}, seeded); err != nil {
+		t.Fatalf("fetch seeded InferenceService: %v", err)
+	}
+	var seededTransition metav1.Time
+	for _, c := range seeded.Status.Conditions {
+		if c.Type == conditionAvailable {
+			seededTransition = c.LastTransitionTime
+		}
+	}
+
+	if err := agent.ensureProcess(context.Background(), isvc); err != nil {
+		t.Fatalf("ensureProcess returned unexpected error: %v", err)
+	}
+
+	got := &inferencev1alpha1.InferenceService{}
+	if err := k8sClient.Get(context.Background(),
+		types.NamespacedName{Name: "already-stopped", Namespace: "default"}, got); err != nil {
+		t.Fatalf("fetch InferenceService back: %v", err)
+	}
+
+	// LastTransitionTime should be unchanged: a real patch would have
+	// flowed through meta.SetStatusCondition which bumps the time on
+	// any observed-state diff. Equal-at-the-stored-precision is the
+	// invariant; the idempotency short-circuit in markStopped must not
+	// have written anything.
+	for _, c := range got.Status.Conditions {
+		if c.Type == conditionAvailable && !c.LastTransitionTime.Equal(&seededTransition) {
+			t.Errorf("LastTransitionTime moved: %v -> %v (status patch wasn't idempotent)",
+				seededTransition, c.LastTransitionTime)
+		}
+	}
+}
+
 func TestEnsureProcess_HealthyAndSpecMatchesIsNoOp(t *testing.T) {
 	scheme := newTestScheme()
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()

@@ -23,24 +23,69 @@ import (
 	"time"
 )
 
+// defaultQuarantineDuration is how long a backend stays in the
+// quarantined (skip) state before the dispatcher's IsHealthy check
+// returns true again as a half-open probe. Picked to be long enough
+// that genuinely-down backends don't get hammered every request but
+// short enough that transient blips (one Metal context switch, a
+// kubelet-eviction-then-respawn cycle) self-heal quickly without ops
+// intervention.
+const defaultQuarantineDuration = 15 * time.Second
+
+// backendHealth is the dispatcher's per-backend state. It implements
+// the half-open part of a circuit breaker: when MarkUnhealthy fires,
+// the backend is skipped until quarantineUntil; the first request
+// after the window expires is allowed through as a probe, and the
+// probe's outcome either re-marks healthy (on 2xx) or extends the
+// quarantine (on 5xx / network error).
+//
+// Stored in Dispatcher.health by backend name. Concurrent reads from
+// the dispatch loop happen on every request, so the fields are
+// atomic and the struct never moves once stored.
+type backendHealth struct {
+	healthy         atomic.Bool
+	quarantineUntil atomic.Int64 // unix nano; 0 when healthy
+}
+
 // Dispatcher knows how to forward an inbound request to a chosen backend.
 // One Dispatcher instance is shared across all requests; it owns the
 // per-backend http.Client pool and health bookkeeping.
 type Dispatcher struct {
-	cfg     *Config
-	client  *http.Client
-	healthy sync.Map // backendName -> *atomic.Bool
+	cfg    *Config
+	client *http.Client
+	health sync.Map // backendName -> *backendHealth
+
+	// quarantineDuration controls how long a backend stays in the
+	// "skip" state after MarkUnhealthy. Defaults to
+	// defaultQuarantineDuration; tests can shrink it via the
+	// QuarantineDuration option.
+	quarantineDuration time.Duration
 
 	// nowFn is overridable in tests.
 	nowFn func() time.Time
 }
 
+// DispatcherOption customizes a Dispatcher at construction time.
+type DispatcherOption func(*Dispatcher)
+
+// WithQuarantineDuration overrides defaultQuarantineDuration. Useful
+// in tests that want sub-second windows so they don't have to sleep
+// for fifteen seconds to verify recovery.
+func WithQuarantineDuration(d time.Duration) DispatcherOption {
+	return func(disp *Dispatcher) { disp.quarantineDuration = d }
+}
+
+// WithNowFunc overrides the dispatcher's time source. Tests use it to
+// step time forward without a real clock.
+func WithNowFunc(fn func() time.Time) DispatcherOption {
+	return func(disp *Dispatcher) { disp.nowFn = fn }
+}
+
 // NewDispatcher returns a Dispatcher bound to the given Config. All
-// backends start in a healthy state; the proxy flips them unhealthy on
-// failed requests and back to healthy on the next successful request.
-// More sophisticated health probing (separate goroutine pinging /health)
-// lands with the production-hardening phase.
-func NewDispatcher(cfg *Config) *Dispatcher {
+// backends start in a healthy state. The proxy quarantines a backend
+// on 5xx / network error for quarantineDuration, after which the
+// next request is allowed through as a half-open probe.
+func NewDispatcher(cfg *Config, opts ...DispatcherOption) *Dispatcher {
 	d := &Dispatcher{
 		cfg: cfg,
 		client: &http.Client{
@@ -55,41 +100,62 @@ func NewDispatcher(cfg *Config) *Dispatcher {
 				ResponseHeaderTimeout: 30 * time.Second,
 			},
 		},
-		nowFn: time.Now,
+		quarantineDuration: defaultQuarantineDuration,
+		nowFn:              time.Now,
+	}
+	for _, opt := range opts {
+		opt(d)
 	}
 	for _, b := range cfg.Backends {
-		var h atomic.Bool
-		h.Store(true)
-		d.healthy.Store(b.Name, &h)
+		h := &backendHealth{}
+		h.healthy.Store(true)
+		d.health.Store(b.Name, h)
 	}
 	return d
 }
 
-// IsHealthy reports the dispatcher's current view of backend health.
+// IsHealthy reports whether the dispatcher will *consider* the backend
+// for the next dispatch. The check returns true in two cases:
+//
+//  1. The backend is currently in the healthy state.
+//  2. The backend is quarantined but the quarantine window has
+//     expired (half-open): the next dispatch probes the backend and
+//     either re-marks healthy (on success) or extends quarantine
+//     (on failure).
+//
 // Unknown backend names report unhealthy.
 func (d *Dispatcher) IsHealthy(name string) bool {
-	v, ok := d.healthy.Load(name)
+	v, ok := d.health.Load(name)
 	if !ok {
 		return false
 	}
-	return v.(*atomic.Bool).Load()
+	h := v.(*backendHealth)
+	if h.healthy.Load() {
+		return true
+	}
+	until := h.quarantineUntil.Load()
+	return until > 0 && d.nowFn().UnixNano() >= until
 }
 
-// MarkHealthy flips the backend to healthy. Called on every successful
-// dispatch; cheap when already healthy.
+// MarkHealthy flips the backend to healthy and clears any pending
+// quarantine. Called from Dispatch on a 2xx response.
 func (d *Dispatcher) MarkHealthy(name string) {
-	if v, ok := d.healthy.Load(name); ok {
-		v.(*atomic.Bool).Store(true)
+	if v, ok := d.health.Load(name); ok {
+		h := v.(*backendHealth)
+		h.healthy.Store(true)
+		h.quarantineUntil.Store(0)
 	}
 }
 
-// MarkUnhealthy flips the backend to unhealthy. The proxy calls this on
-// 5xx / network errors. Subsequent requests skip this backend during
-// primary-fallback strategy until the next successful dispatch flips it
-// back to healthy.
+// MarkUnhealthy quarantines the backend for quarantineDuration. The
+// caller (Dispatch) calls this on 5xx / network errors. Subsequent
+// IsHealthy checks return false until the window expires, at which
+// point the backend becomes eligible for a half-open probe.
 func (d *Dispatcher) MarkUnhealthy(name string) {
-	if v, ok := d.healthy.Load(name); ok {
-		v.(*atomic.Bool).Store(false)
+	if v, ok := d.health.Load(name); ok {
+		h := v.(*backendHealth)
+		h.healthy.Store(false)
+		h.quarantineUntil.Store(d.nowFn().Add(d.quarantineDuration).UnixNano())
 	}
 }
 
