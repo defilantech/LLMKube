@@ -58,7 +58,12 @@ sections:
       - label: Air-gapped install
         slug: guides/air-gapped
         file: guides/air-gapped.md
-        status: stub
+      - label: OpenShift / OKD / MicroShift install
+        slug: guides/openshift-install
+        file: guides/openshift-install.md
+      - label: macOS Metal Agent
+        slug: guides/macos-metal
+        file: guides/macos-metal.md
       - label: Multi-GPU sharding
         slug: guides/multi-gpu
         file: guides/multi-gpu.md

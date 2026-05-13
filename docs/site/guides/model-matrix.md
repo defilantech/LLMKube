@@ -16,7 +16,7 @@ A practical guide to picking a GGUF model for [LLMKube](https://llmkube.com) bas
 required memory = gguf_file_size * 1.20  +  kv_cache(ctx_length)
 ```
 
-For most chat workloads at 8K to 16K context, **add 20 to 30 percent to the file size** and you will be close. Long context windows (128K+) or fp16 KV cache push this much higher. See [KV cache headroom](#kv-cache-headroom) below and the LLMKube [KV cache types](/docs/operations/kv-cache) and [Memory-pressure protection](/docs/memory-pressure-protection) docs for the knobs.
+For most chat workloads at 8K to 16K context, **add 20 to 30 percent to the file size** and you will be close. Long context windows (128K+) or fp16 KV cache push this much higher. The KV cache headroom section below covers the math, and the LLMKube [KV cache types](/docs/operations/kv-cache) and [Memory-pressure protection](/docs/memory-pressure-protection) docs document the runtime knobs.
 
 **Quant choice.** `Q4_K_M` and `IQ4_XS` are the sweet spot for most users: good quality, smallest size that still feels like the original. `Q5_K_M` and `Q6_K` cost more memory but get closer to fp16 quality. `Q8_0` is near lossless at roughly 1 byte per parameter. The Unsloth `UD-*_XL` variants are dynamic quants that mix bit widths smartly; usually preferred when available.
 
