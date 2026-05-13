@@ -32,6 +32,17 @@ import (
 // intervention.
 const defaultQuarantineDuration = 15 * time.Second
 
+// defaultIdleConnTimeout caps how long the shared transport keeps
+// idle keep-alive connections to upstreams in its pool. The 10s value
+// is short enough that local llama-server / vLLM connections expire
+// before the upstream's own idle reaper closes them server-side
+// (which is what causes the "silent 30s stall on a healthy backend"
+// failure mode), but long enough to amortize the TCP handshake across
+// burst traffic in a typical agentic workload. Cloud-tier backends
+// bypass the pool entirely by setting `Connection: close` per request
+// in Dispatch; see the cloud-tier branch there for why.
+const defaultIdleConnTimeout = 10 * time.Second
+
 // backendHealth is the dispatcher's per-backend state. It implements
 // the half-open part of a circuit breaker: when MarkUnhealthy fires,
 // the backend is skipped until quarantineUntil; the first request
@@ -96,7 +107,7 @@ func NewDispatcher(cfg *Config, opts ...DispatcherOption) *Dispatcher {
 			Transport: &http.Transport{
 				MaxIdleConns:          100,
 				MaxIdleConnsPerHost:   10,
-				IdleConnTimeout:       90 * time.Second,
+				IdleConnTimeout:       defaultIdleConnTimeout,
 				ResponseHeaderTimeout: 30 * time.Second,
 			},
 		},
@@ -186,6 +197,23 @@ func (d *Dispatcher) Dispatch(
 	d.copyForwardedHeaders(headers, req.Header)
 	if err := d.applyCredentials(backend, req); err != nil {
 		return nil, err
+	}
+
+	// Cloud-tier backends commonly sit behind load balancers (AWS NLB,
+	// Cloudflare, Anthropic / OpenAI global LB) that aggressively
+	// recycle idle TCP connections without telling the client. Setting
+	// Connection: close on every outbound request opts that backend
+	// out of the shared keep-alive pool entirely: Go's http.Transport
+	// honors the header and closes the conn after this exchange
+	// regardless of pool capacity. The per-request handshake cost is
+	// negligible compared to typical cloud upstream latency, and we
+	// trade it for never seeing a "stale conn -> 30s silent stall"
+	// fingerprint. Local-tier backends keep the pool; their
+	// IdleConnTimeout (defaultIdleConnTimeout, 10s) is short enough
+	// that we don't see the same stale-conn failure mode.
+	if strings.EqualFold(backend.Tier, "cloud") {
+		req.Header.Set("Connection", "close")
+		req.Close = true
 	}
 
 	resp, err := d.client.Do(req)

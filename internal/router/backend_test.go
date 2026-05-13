@@ -11,6 +11,11 @@ You may obtain a copy of the License at
 package router
 
 import (
+	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/http/httptrace"
 	"testing"
 	"time"
 )
@@ -106,5 +111,148 @@ func TestDispatcherUnknownBackendIsUnhealthy(t *testing.T) {
 	disp := NewDispatcher(&Config{})
 	if disp.IsHealthy("does-not-exist") {
 		t.Error("unknown backend should be reported unhealthy")
+	}
+}
+
+// TestDispatchCloudTierClosesConnection covers the cloud-tier
+// branch added for #459. Cloud backends sit behind LBs that recycle
+// idle conns silently; the proxy opts out of keep-alive on every
+// outbound cloud request via Connection: close + req.Close=true so
+// the next request always opens a fresh TCP conn rather than
+// risking a stale-pool 30s stall.
+func TestDispatchCloudTierClosesConnection(t *testing.T) {
+	var seenConnHeader string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenConnHeader = r.Header.Get("Connection")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	cfg := &Config{Backends: []Backend{{
+		Name: "cloud-anthropic", Tier: "cloud", Address: srv.URL,
+	}}}
+	disp := NewDispatcher(cfg)
+
+	resp, err := disp.Dispatch(context.Background(),
+		&cfg.Backends[0], http.MethodPost, "/v1/chat/completions",
+		http.Header{}, []byte(`{}`))
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	// Go's http.Request.Close=true causes the transport to send
+	// Connection: close to the upstream. The server sees the literal
+	// header value.
+	if seenConnHeader != "close" {
+		t.Errorf("cloud-tier dispatch should carry Connection: close; server saw %q", seenConnHeader)
+	}
+}
+
+// TestDispatchLocalTierKeepsAlive is the inverse: local-tier backends
+// stay in the keep-alive pool to amortize the handshake. The proxy
+// must NOT send Connection: close on local dispatches.
+func TestDispatchLocalTierKeepsAlive(t *testing.T) {
+	var seenConnHeader string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenConnHeader = r.Header.Get("Connection")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	cfg := &Config{Backends: []Backend{{
+		Name: "local-qwen", Tier: "local", Address: srv.URL,
+	}}}
+	disp := NewDispatcher(cfg)
+
+	resp, err := disp.Dispatch(context.Background(),
+		&cfg.Backends[0], http.MethodPost, "/v1/chat/completions",
+		http.Header{}, []byte(`{}`))
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	if seenConnHeader == "close" {
+		t.Errorf("local-tier dispatch should reuse keep-alive; got Connection: close")
+	}
+}
+
+// TestDispatchCloudTierOpensFreshConnPerRequest verifies the
+// end-to-end pool-bypass: two back-to-back dispatches to the same
+// cloud backend establish two separate TCP connections, while two
+// to a local backend reuse one. This is the observable property
+// that closes out the "stale conn -> 30s stall" failure mode at
+// the protocol level.
+func TestDispatchCloudTierOpensFreshConnPerRequest(t *testing.T) {
+	cases := []struct {
+		tier         string
+		wantDistinct int // we expect this many *distinct* local addrs
+	}{
+		{"cloud", 2},
+		{"local", 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.tier, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{}`))
+			}))
+			defer srv.Close()
+
+			cfg := &Config{Backends: []Backend{{
+				Name: "b", Tier: tc.tier, Address: srv.URL,
+			}}}
+			disp := NewDispatcher(cfg)
+
+			localAddrs := map[string]struct{}{}
+			trace := &httptrace.ClientTrace{
+				GotConn: func(info httptrace.GotConnInfo) {
+					localAddrs[info.Conn.LocalAddr().String()] = struct{}{}
+				},
+			}
+			for i := 0; i < 2; i++ {
+				ctx := httptrace.WithClientTrace(context.Background(), trace)
+				resp, err := disp.Dispatch(ctx,
+					&cfg.Backends[0], http.MethodPost, "/x",
+					http.Header{}, []byte(`{}`))
+				if err != nil {
+					t.Fatalf("Dispatch %d: %v", i, err)
+				}
+				// Drain the body before close so Go's transport
+				// can hand the conn back to the pool. Without
+				// this the local-tier case shows two conns even
+				// though keep-alive is allowed, because the
+				// transport can't reuse a half-read body.
+				_, _ = io.Copy(io.Discard, resp.Body)
+				_ = resp.Body.Close()
+			}
+
+			if got := len(localAddrs); got != tc.wantDistinct {
+				t.Errorf("tier=%s: distinct local addrs = %d, want %d (%v)",
+					tc.tier, got, tc.wantDistinct, localAddrs)
+			}
+		})
+	}
+}
+
+// TestDispatcherUsesShortIdleConnTimeout pins the package-level
+// constant the transport uses so the "expire stale-from-upstream
+// conns before they wedge a request" behavior is observable from
+// outside the dispatcher.
+func TestDispatcherUsesShortIdleConnTimeout(t *testing.T) {
+	disp := NewDispatcher(&Config{})
+	tr, ok := disp.client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport = %T, want *http.Transport", disp.client.Transport)
+	}
+	if tr.IdleConnTimeout != defaultIdleConnTimeout {
+		t.Errorf("IdleConnTimeout = %v, want %v", tr.IdleConnTimeout, defaultIdleConnTimeout)
+	}
+	if defaultIdleConnTimeout > 15*time.Second {
+		t.Errorf("defaultIdleConnTimeout = %v; should stay tight (<= 15s) to expire stale upstream conns",
+			defaultIdleConnTimeout)
 	}
 }

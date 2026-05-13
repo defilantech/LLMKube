@@ -1229,6 +1229,40 @@ spec:
 					"expected controller to populate the Anthropic default URL")
 			}, 1*time.Minute, time.Second).Should(Succeed())
 		})
+
+		It("should send Connection: close on cloud-tier dispatch (no keep-alive pool)", func() {
+			// Regression test for #459. Cloud-tier backends bypass
+			// the proxy's keep-alive pool so a stale-from-upstream
+			// conn can never wedge a 30s wait at the dispatcher's
+			// ResponseHeaderTimeout. The stub-upstream's
+			// /__introspect__ endpoint reports every header it
+			// received per request; we POST twice and verify both
+			// requests arrived with Connection: close.
+			By("resetting cloud stub recordings")
+			resetStubs(mrcTestNs, cloudStubSvc)
+
+			By("POSTing twice via the complex-to-cloud rule")
+			for i := 0; i < 2; i++ {
+				out := chatCompletion(mrcTestNs, routerName,
+					map[string]string{"x-llmkube-task-complexity": "complex"},
+					`{"model":"claude-opus-4-7","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
+				Expect(out).To(ContainSubstring("stub-response-from-"+cloudStubSvc),
+					"cloud stub should have served request %d", i)
+			}
+
+			By("verifying every cloud-tier dispatch carried Connection: close")
+			Eventually(func(g Gomega) {
+				snap := stubSnapshot(g, mrcTestNs, cloudStubSvc)
+				g.Expect(snap.Requests).To(HaveLen(2),
+					"cloud stub should have recorded both requests")
+				for i, req := range snap.Requests {
+					// Header canonicalization in Go's net/http
+					// normalizes to "Connection" (title case).
+					g.Expect(req.Headers["Connection"]).To(ContainElement("close"),
+						"request %d arrived without Connection: close", i)
+				}
+			}, 30*time.Second, time.Second).Should(Succeed())
+		})
 	})
 
 	Context("License Check", func() {
