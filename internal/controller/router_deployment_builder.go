@@ -61,13 +61,13 @@ func (r *ModelRouterReconciler) reconcileRouterDeployment(
 	// pass through. Fixes #456.
 	existing.Spec.Replicas = desired.Spec.Replicas
 	existing.Spec.Template.Spec = desired.Spec.Template.Spec
-	existing.Spec.Template.ObjectMeta.Labels = mergePreservingExternal(
-		existing.Spec.Template.ObjectMeta.Labels,
-		desired.Spec.Template.ObjectMeta.Labels,
+	existing.Spec.Template.Labels = mergePreservingExternal(
+		existing.Spec.Template.Labels,
+		desired.Spec.Template.Labels,
 	)
-	existing.Spec.Template.ObjectMeta.Annotations = mergePreservingExternal(
-		existing.Spec.Template.ObjectMeta.Annotations,
-		desired.Spec.Template.ObjectMeta.Annotations,
+	existing.Spec.Template.Annotations = mergePreservingExternal(
+		existing.Spec.Template.Annotations,
+		desired.Spec.Template.Annotations,
 	)
 	existing.Labels = mergePreservingExternal(existing.Labels, desired.Labels)
 	if err := controllerutil.SetControllerReference(mr, existing, r.Scheme); err != nil {

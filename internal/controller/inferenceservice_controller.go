@@ -256,16 +256,16 @@ func (r *InferenceServiceReconciler) reconcileDeployment(ctx context.Context, is
 	// sync labels survive operator reconciles. Operator-owned keys
 	// still win on collision. Same fix as the router-proxy reconciler
 	// in router_deployment_builder.go; see #456.
-	existingTemplateLabels := existingDeployment.Spec.Template.ObjectMeta.Labels
-	existingTemplateAnnotations := existingDeployment.Spec.Template.ObjectMeta.Annotations
+	existingTemplateLabels := existingDeployment.Spec.Template.Labels
+	existingTemplateAnnotations := existingDeployment.Spec.Template.Annotations
 	existingDeployment.Spec = deployment.Spec
-	existingDeployment.Spec.Template.ObjectMeta.Labels = mergePreservingExternal(
+	existingDeployment.Spec.Template.Labels = mergePreservingExternal(
 		existingTemplateLabels,
-		deployment.Spec.Template.ObjectMeta.Labels,
+		deployment.Spec.Template.Labels,
 	)
-	existingDeployment.Spec.Template.ObjectMeta.Annotations = mergePreservingExternal(
+	existingDeployment.Spec.Template.Annotations = mergePreservingExternal(
 		existingTemplateAnnotations,
-		deployment.Spec.Template.ObjectMeta.Annotations,
+		deployment.Spec.Template.Annotations,
 	)
 	// When autoscaling is enabled, let the HPA manage replicas
 	if isvc.Spec.Autoscaling != nil {

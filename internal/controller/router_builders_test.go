@@ -703,12 +703,13 @@ func TestReconcileRouterDeploymentPreservesExternalAnnotations(t *testing.T) {
 	// Build the initial Deployment the way an earlier reconcile would
 	// have, then layer external metadata on top to simulate sidecar
 	// injection / kubectl rollout-restart / GitOps annotations.
+	const gitopsInstance = "coding-router-fleet"
 	r := &ModelRouterReconciler{RouterProxyImage: "ghcr.io/test/router-proxy:v1"}
 	initial := r.newRouterDeployment(mr, "oldhash")
-	initial.Spec.Template.ObjectMeta.Annotations["sidecar.istio.io/inject"] = "true"
-	initial.Spec.Template.ObjectMeta.Annotations["kubectl.kubernetes.io/restartedAt"] = "2026-05-13T20:00:00Z"
-	initial.Spec.Template.ObjectMeta.Labels["external-team-label"] = "ml-platform"
-	initial.Labels["argocd.argoproj.io/instance"] = "llmkube"
+	initial.Spec.Template.Annotations["sidecar.istio.io/inject"] = "true"
+	initial.Spec.Template.Annotations["kubectl.kubernetes.io/restartedAt"] = "2026-05-13T20:00:00Z"
+	initial.Spec.Template.Labels["external-team-label"] = "ml-platform"
+	initial.Labels["argocd.argoproj.io/instance"] = gitopsInstance
 
 	scheme := builderTestScheme(t)
 	c := fake.NewClientBuilder().
@@ -736,27 +737,27 @@ func TestReconcileRouterDeploymentPreservesExternalAnnotations(t *testing.T) {
 	}
 
 	// 1. Operator-owned annotation reflects the new hash.
-	gotHash := updated.Spec.Template.ObjectMeta.Annotations[routerProxyConfigHashAnnotation]
+	gotHash := updated.Spec.Template.Annotations[routerProxyConfigHashAnnotation]
 	if gotHash != "newhash" {
 		t.Errorf("config hash annotation = %q, want newhash", gotHash)
 	}
 
 	// 2. External pod-template annotations survive.
-	if got := updated.Spec.Template.ObjectMeta.Annotations["sidecar.istio.io/inject"]; got != "true" {
+	if got := updated.Spec.Template.Annotations["sidecar.istio.io/inject"]; got != "true" {
 		t.Errorf("sidecar.istio.io/inject = %q, want true (sidecar injector annotation must survive reconcile)", got)
 	}
-	if got := updated.Spec.Template.ObjectMeta.Annotations["kubectl.kubernetes.io/restartedAt"]; got != "2026-05-13T20:00:00Z" {
+	if got := updated.Spec.Template.Annotations["kubectl.kubernetes.io/restartedAt"]; got != "2026-05-13T20:00:00Z" {
 		t.Errorf("kubectl.kubernetes.io/restartedAt = %q, want preserved value (kubectl rollout restart must survive reconcile)", got)
 	}
 
 	// 3. External pod-template label survives.
-	if got := updated.Spec.Template.ObjectMeta.Labels["external-team-label"]; got != "ml-platform" {
+	if got := updated.Spec.Template.Labels["external-team-label"]; got != "ml-platform" {
 		t.Errorf("external-team-label = %q, want ml-platform (foreign template labels must pass through)", got)
 	}
 
 	// 4. External top-level Deployment label survives.
-	if got := updated.Labels["argocd.argoproj.io/instance"]; got != "llmkube" {
-		t.Errorf("argocd instance label = %q, want llmkube (GitOps labels must pass through)", got)
+	if got := updated.Labels["argocd.argoproj.io/instance"]; got != gitopsInstance {
+		t.Errorf("argocd instance label = %q, want %q (GitOps labels must pass through)", got, gitopsInstance)
 	}
 
 	// 5. Operator-owned selector labels remain intact (regression
@@ -764,7 +765,7 @@ func TestReconcileRouterDeploymentPreservesExternalAnnotations(t *testing.T) {
 	// template).
 	wantSelector := routerProxySelectorLabels(mr)
 	for k, v := range wantSelector {
-		if got := updated.Spec.Template.ObjectMeta.Labels[k]; got != v {
+		if got := updated.Spec.Template.Labels[k]; got != v {
 			t.Errorf("selector label %q = %q, want %q", k, got, v)
 		}
 	}
