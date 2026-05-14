@@ -195,6 +195,48 @@ When you specify `provider: anthropic` or `provider: openai` without `url`, the 
 - Inference engines. `InferenceService` already wraps llama.cpp, vLLM, TGI, oMLX. ModelRouter sits *above* them.
 - General-purpose K8s gateway. ModelRouter is scoped specifically to LLM traffic with policy.
 
+## Phase 1 limitations (v1alpha1)
+
+The Phase 1 router-proxy ships with three concrete gaps that show up
+on agentic-coding workloads. They are intentional scope for v1alpha1
+and tracked for Phase 2; calling them out so you can plan around them
+rather than discovering them mid-incident.
+
+### 1. Timeouts cap TTFT, not stream duration
+
+`rule.timeout` and `backend.timeout` apply to the **time-to-first-byte**
+(first response header from the upstream), not the total duration of
+the stream. Once the upstream starts sending SSE chunks, the proxy
+will pipe them to your client for as long as the upstream keeps
+producing, with no aggregate cap.
+
+For agentic-coding workloads this is usually what you want (large
+refactors generate 5-10 minute SSE streams that you don't want the
+proxy interrupting), but it means a *hung* stream where the upstream
+goes silent mid-response is bounded only by kernel TCP keepalive or
+your client's read deadline. **Set a client-side timeout in your
+agent runtime as the safety net for hung streams.** A stream-duration
+cap field is planned for Phase 2.
+
+### 2. Audit log is coarse
+
+The per-request audit-log line records `latencyMs`, `status`,
+`outcome`, and `timeoutMs`, but not streamed bytes, token count, or
+stream-duration breakdown. "Why did this 8-minute agent loop run
+slow?" needs upstream metrics, not the proxy log.
+
+Per-request token/byte accounting and a proxy-emitted Prometheus
+histogram are planned for Phase 2 (issue [#433](https://github.com/defilantech/LLMKube/issues/433)).
+
+### 3. Inbound request bodies are buffered
+
+Outbound responses stream chunk-by-chunk; **inbound requests are
+fully buffered** before routing (up to a 32 MiB cap, enough for
+~128K-token prompts). For 50 concurrent long-context requests that
+is around 25 MB of resident memory in the proxy pod, comfortable on
+a default 256 MiB pod but not zero. True request-side streaming is
+planned for Phase 2.
+
 ## Comparison to alternatives
 
 | | ModelRouter | LiteLLM proxy | KubeAI Model Proxy | llm-d Inference Gateway |
