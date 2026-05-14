@@ -5,6 +5,37 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.8](https://github.com/defilantech/LLMKube/compare/v0.7.7...v0.7.8) (2026-05-14)
+
+
+### Features
+
+* configurable proxy + per-route/backend timeouts (closes [#457](https://github.com/defilantech/LLMKube/issues/457), [#458](https://github.com/defilantech/LLMKube/issues/458)) ([#461](https://github.com/defilantech/LLMKube/issues/461)) ([03d222a](https://github.com/defilantech/LLMKube/commit/03d222a759e5d639278ad554425efbd4bc1bac21))
+* external provider URL defaults + cluster-wide LiteLLM URL (closes [#438](https://github.com/defilantech/LLMKube/issues/438)) ([#451](https://github.com/defilantech/LLMKube/issues/451)) ([26cd5ae](https://github.com/defilantech/LLMKube/commit/26cd5aebf517b006f9557a84051a13056ed88d82))
+* Helm packaging, sample manifest, and concept doc for ModelRouter ([#448](https://github.com/defilantech/LLMKube/issues/448)) ([a513fdc](https://github.com/defilantech/LLMKube/commit/a513fdc44a66c741fd3c5bd4a464e80ebcc91338))
+* ModelRouterReconciler skeleton with spec validation ([#445](https://github.com/defilantech/LLMKube/issues/445)) ([9b1a259](https://github.com/defilantech/LLMKube/commit/9b1a2597f6523c87f362c165626ea9a7512f2f15))
+* reconcile router-proxy Deployment, Service, and ConfigMap ([#447](https://github.com/defilantech/LLMKube/issues/447)) ([856ecc3](https://github.com/defilantech/LLMKube/commit/856ecc3bae81f3038b287f29f78f51f0096e70e1))
+* router-proxy binary with OpenAI streaming passthrough ([#446](https://github.com/defilantech/LLMKube/issues/446)) ([942d09a](https://github.com/defilantech/LLMKube/commit/942d09a6ab931dec8b92875610dc067622c3c5e6))
+* router-proxy cluster e2e + runtime fail-closed 503 (closes [#430](https://github.com/defilantech/LLMKube/issues/430)) ([#450](https://github.com/defilantech/LLMKube/issues/450)) ([75151fa](https://github.com/defilantech/LLMKube/commit/75151fa1efcfb1b2e4febc47859245d8eaae033f))
+* scaffold ModelRouter CRD types and deepcopy ([#442](https://github.com/defilantech/LLMKube/issues/442)) ([e6c60b3](https://github.com/defilantech/LLMKube/commit/e6c60b34bb0dd5167ff89fb9ae589168b7414d93))
+
+
+### Bug Fixes
+
+* close cloud-tier conns + drop local idle timeout (closes [#459](https://github.com/defilantech/LLMKube/issues/459)) ([#460](https://github.com/defilantech/LLMKube/issues/460)) ([173c26a](https://github.com/defilantech/LLMKube/commit/173c26a1c5663a0e8b4545a5a8cba7150e28e16e))
+* don't quarantine backends on per-attempt context deadline (closes [#462](https://github.com/defilantech/LLMKube/issues/462)) ([#463](https://github.com/defilantech/LLMKube/issues/463)) ([80ef9c8](https://github.com/defilantech/LLMKube/commit/80ef9c81862ffb5e9e61594fffd12ee374f0d36a))
+* **e2e:** unblock MicroShift SCC diagnostics + bump bootstrap timeout ([#466](https://github.com/defilantech/LLMKube/issues/466)) ([0c793b7](https://github.com/defilantech/LLMKube/commit/0c793b74b70a6f7baf1891f8e62cbbb59c3ff933))
+* half-open circuit breaker on proxy + scale-to-zero status (closes [#452](https://github.com/defilantech/LLMKube/issues/452), [#453](https://github.com/defilantech/LLMKube/issues/453)) ([#454](https://github.com/defilantech/LLMKube/issues/454)) ([ac9302c](https://github.com/defilantech/LLMKube/commit/ac9302cb1b5ce90201276458aaf57b85b50cca2f))
+* preserve external annotations on reconciler Deployment updates ([#468](https://github.com/defilantech/LLMKube/issues/468)) ([de580c1](https://github.com/defilantech/LLMKube/commit/de580c18f60e2239ee16027d77759ff7c729325d))
+
+
+### Documentation
+
+* add consumer-hardware model matrix guide ([#444](https://github.com/defilantech/LLMKube/issues/444)) ([dd07397](https://github.com/defilantech/LLMKube/commit/dd07397de39efd549581b5253ab2767bc442ba6c))
+* **readme:** land ModelRouter prominently for the 0.7.8 release ([#464](https://github.com/defilantech/LLMKube/issues/464)) ([deb24bb](https://github.com/defilantech/LLMKube/commit/deb24bb572d85d40422e26c764a57f195642677a))
+* **site:** air-gapped, OpenShift, macOS Metal guides + architecture refresh (Tier 1) ([#465](https://github.com/defilantech/LLMKube/issues/465)) ([5996a1e](https://github.com/defilantech/LLMKube/commit/5996a1e707df399070dcc67b3a6100b7c30cd8e5))
+* **site:** drop stale "fifteen lines" claim in openshift-install Reference ([#467](https://github.com/defilantech/LLMKube/issues/467)) ([ec52ca8](https://github.com/defilantech/LLMKube/commit/ec52ca87da0644b839cb37d7a3db9cfbd1e5e4ac))
+
 ## [0.7.7](https://github.com/defilantech/LLMKube/compare/v0.7.6...v0.7.7) (2026-05-11)
 
 
