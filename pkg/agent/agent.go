@@ -170,6 +170,15 @@ type MetalAgent struct {
 	// current level without re-patching ones already observed at it.
 	// Reset on every level transition.
 	pressureObserved map[string]MemoryPressureLevel
+
+	// starting records namespacedName keys whose ensureProcess call is
+	// in flight. The K8s watcher (handleEvent) and the health monitor
+	// (scheduleRestart) can both call ensureProcess for the same key at the
+	// same time; the model load between the processes[] check and the store
+	// is long and unlocked, so without this guard both callers pass the
+	// stale check and each spawns a runtime process — loading the model
+	// twice, enough to exhaust host memory.
+	starting map[string]bool
 }
 
 // ManagedProcess represents a running inference process (llama-server, oMLX, or Ollama model).
@@ -235,6 +244,7 @@ func NewMetalAgent(config MetalAgentConfig) *MetalAgent {
 		memoryFraction:   fraction,
 		pressureBlocked:  make(map[string]bool),
 		pressureObserved: make(map[string]MemoryPressureLevel),
+		starting:         make(map[string]bool),
 	}
 }
 
@@ -539,6 +549,27 @@ func (a *MetalAgent) ensureProcess(ctx context.Context, isvc *inferencev1alpha1.
 	}.String()
 
 	desiredHash := computeSpecHash(isvc)
+
+	// Serialize ensureProcess per service. The K8s watcher and the health
+	// monitor's scheduleRestart can both reach ensureProcess for this key
+	// concurrently; the spawn path between the processes[] check and the
+	// store is long and unlocked, so without this guard both callers would
+	// spawn a runtime process and load the model twice. A spec change that
+	// arrives mid-spawn is dropped here and reconciled by the next watch
+	// event — acceptable, where a double model load is not.
+	a.mu.Lock()
+	if a.starting[key] {
+		a.mu.Unlock()
+		a.logger.Debugw("ensureProcess already in flight; skipping", "key", key)
+		return nil
+	}
+	a.starting[key] = true
+	a.mu.Unlock()
+	defer func() {
+		a.mu.Lock()
+		delete(a.starting, key)
+		a.mu.Unlock()
+	}()
 
 	// Check if process already exists
 	a.mu.RLock()

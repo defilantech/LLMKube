@@ -19,6 +19,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -950,4 +951,113 @@ func TestEnsureProcess_SpecDriftCallsDeleteBeforeRespawn(t *testing.T) {
 		},
 	}
 	runEnsureProcessExpectingMapEviction(t, "drift-isvc", isvc)
+}
+
+// blockingExecutor is a ProcessExecutor whose StartProcess blocks until the
+// test releases it, recording how many times it was entered. It opens a wide,
+// deterministic race window for the in-flight guard test.
+type blockingExecutor struct {
+	calls   atomic.Int64
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (e *blockingExecutor) StartProcess(_ context.Context, cfg ExecutorConfig) (*ManagedProcess, error) {
+	e.calls.Add(1)
+	e.entered <- struct{}{}
+	<-e.release
+	return &ManagedProcess{
+		Name:      cfg.Name,
+		Namespace: cfg.Namespace,
+		PID:       424242,
+		Port:      9099,
+		ModelPath: "/tmp/race-model",
+		Healthy:   true,
+		StartedAt: time.Now(),
+	}, nil
+}
+
+func (e *blockingExecutor) StopProcess(_ int) error { return nil }
+
+// TestEnsureProcess_InFlightGuard is a regression test for the respawn race:
+// while one ensureProcess call is mid-spawn (blocked in StartProcess), a
+// second call for the same InferenceService must short-circuit instead of
+// spawning a second process. In production both the K8s watcher and the
+// health monitor's scheduleRestart reached StartProcess concurrently, loading
+// the model twice and exhausting host memory.
+func TestEnsureProcess_InFlightGuard(t *testing.T) {
+	scheme := newTestScheme()
+	_ = corev1.AddToScheme(scheme)
+
+	model := &inferencev1alpha1.Model{
+		ObjectMeta: metav1.ObjectMeta{Name: "race-model", Namespace: "default"},
+		Spec: inferencev1alpha1.ModelSpec{
+			Source:   "/tmp/race-model.gguf",
+			Format:   "gguf",
+			Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: "metal"},
+		},
+	}
+	isvc := &inferencev1alpha1.InferenceService{
+		ObjectMeta: metav1.ObjectMeta{Name: "race-isvc", Namespace: "default"},
+		Spec:       inferencev1alpha1.InferenceServiceSpec{ModelRef: "race-model"},
+	}
+	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "race-isvc", Namespace: "default"}}
+	//nolint:staticcheck // SA1019: Endpoints API matches production code under test
+	endpoints := &corev1.Endpoints{ObjectMeta: metav1.ObjectMeta{Name: "race-isvc", Namespace: "default"}}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&inferencev1alpha1.InferenceService{}).
+		WithRuntimeObjects(model, isvc, svc, endpoints).
+		Build()
+
+	agent := NewMetalAgent(MetalAgentConfig{
+		K8sClient:      k8sClient,
+		Namespace:      "default",
+		MemoryProvider: &mockMemoryProvider{totalBytes: 128 << 30, availableBytes: 120 << 30},
+	})
+	exec := &blockingExecutor{entered: make(chan struct{}), release: make(chan struct{})}
+	agent.executor = exec
+	agent.registry = NewServiceRegistry(k8sClient, "", newNopLogger())
+
+	// First caller proceeds and blocks inside StartProcess.
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- agent.ensureProcess(context.Background(), isvc) }()
+
+	select {
+	case <-exec.entered:
+		// first call is now mid-spawn; starting[key] is set
+	case <-time.After(10 * time.Second):
+		t.Fatal("first ensureProcess never reached StartProcess")
+	}
+
+	// Second caller (the would-be racing path) must short-circuit fast.
+	secondDone := make(chan error, 1)
+	go func() { secondDone <- agent.ensureProcess(context.Background(), isvc) }()
+	select {
+	case err := <-secondDone:
+		if err != nil {
+			t.Errorf("second ensureProcess returned error, want nil skip: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("second ensureProcess did not return — in-flight guard missing; it is racing the spawn")
+	}
+
+	if got := exec.calls.Load(); got != 1 {
+		t.Errorf("StartProcess called %d times during the in-flight window, want 1", got)
+	}
+
+	close(exec.release)
+	if err := <-firstDone; err != nil {
+		// Endpoint registration against the fake client may noop-error; the
+		// spawn-once invariant above is the assertion that matters.
+		t.Logf("first ensureProcess returned: %v", err)
+	}
+
+	agent.mu.Lock()
+	leftover := len(agent.starting)
+	agent.mu.Unlock()
+	if leftover != 0 {
+		t.Errorf("starting map not cleared after spawn, has %d entries", leftover)
+	}
 }
