@@ -154,7 +154,11 @@ spec:
 
 ```bash
 kubectl apply -f model.yaml
+
+# Scale replicas at any time — InferenceService supports the standard Kubernetes scale subresource
+kubectl scale inferenceservice/tinyllama --replicas=3
 ```
+
 </details>
 
 **Full setup guides:** [Minikube Quickstart](docs/minikube-quickstart.md) | [GKE with GPUs](docs/gpu-setup-guide.md) | [Air-Gapped Deployment](docs/air-gapped-quickstart.md) | [OpenShift](#troubleshooting)
@@ -314,7 +318,7 @@ Consistent ~53 tok/s across 3-8B models with automatic layer sharding. See [v0.4
 - Automatic model download from HuggingFace, HTTP, or PVC (S3 planned)
 - Persistent model cache, download once, deploy instantly ([guide](docs/MODEL-CACHE.md))
 - OpenAI-compatible `/v1/chat/completions` API
-- Multi-replica horizontal scaling
+- Multi-replica horizontal scaling with scale subresource support (`kubectl scale`, KEDA)
 - License compliance scanning for GGUF models
 
 **Routing & policy ([ModelRouter](#composition-modelrouter)):**
