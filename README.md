@@ -154,9 +154,6 @@ spec:
 
 ```bash
 kubectl apply -f model.yaml
-
-# Scale replicas at any time — InferenceService supports the standard Kubernetes scale subresource
-kubectl scale inferenceservice/tinyllama --replicas=3
 ```
 
 </details>

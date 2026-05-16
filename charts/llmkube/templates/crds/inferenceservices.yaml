@@ -1999,8 +1999,7 @@ spec:
                 format: int32
                 type: integer
               replicas:
-                description: Replicas is the current number of running inference pods,
-                  exposed via the scale subresource.
+                description: Replicas is the current number of running inference pods
                 format: int32
                 type: integer
               schedulingMessage:

@@ -650,7 +650,7 @@ type InferenceServiceStatus struct {
 	// +optional
 	DesiredReplicas int32 `json:"desiredReplicas,omitempty"`
 
-	// Replicas is the current number of running inference pods, exposed via the scale subresource.
+	// Replicas is the current number of running inference pods
 	// +optional
 	Replicas int32 `json:"replicas,omitempty"`
 
