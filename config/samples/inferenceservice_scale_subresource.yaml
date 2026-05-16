@@ -1,0 +1,31 @@
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: InferenceService
+metadata:
+  name: tinyllama-scalable
+  namespace: default
+spec:
+  modelRef: tinyllama
+  replicas: 0
+  image: ghcr.io/ggml-org/llama.cpp:server
+  resources:
+    cpu: "2"
+    memory: "4Gi"
+
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: tinyllama-scalable
+spec:
+  scaleTargetRef:
+    apiVersion: inference.llmkube.dev/v1alpha1
+    kind: InferenceService
+    name: tinyllama-scalable
+  minReplicaCount: 0
+  maxReplicaCount: 4
+  triggers:
+    - type: external
+      metadata:
+        scalerAddress: keda-add-ons-http-external-scaler.kube-system.svc:9090
+        host: tinyllama-scalable.default.svc.cluster.local
+        targetPendingRequests: "1"
