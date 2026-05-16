@@ -1994,6 +1994,11 @@ spec:
                 description: Replicas tracks the number of ready vs desired pods
                 format: int32
                 type: integer
+              replicas:
+                description: Replicas is the current number of running inference pods,
+                  exposed via the scale subresource.
+                format: int32
+                type: integer
               schedulingMessage:
                 description: SchedulingMessage provides details about scheduling issues
                 type: string
@@ -2012,4 +2017,7 @@ spec:
     served: true
     storage: true
     subresources:
+      scale:
+        specReplicasPath: .spec.replicas
+        statusReplicasPath: .status.replicas
       status: {}

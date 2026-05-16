@@ -650,6 +650,10 @@ type InferenceServiceStatus struct {
 	// +optional
 	DesiredReplicas int32 `json:"desiredReplicas,omitempty"`
 
+	// Replicas is the current number of running inference pods, exposed via the scale subresource.
+	// +optional
+	Replicas int32 `json:"replicas,omitempty"`
+
 	// Endpoint is the service URL where inference requests can be sent
 	// +optional
 	Endpoint string `json:"endpoint,omitempty"`
@@ -699,6 +703,7 @@ type InferenceServiceStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:subresource:scale:specpath=.spec.replicas,statuspath=.status.replicas
 // +kubebuilder:resource:shortName=isvc
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Model",type=string,JSONPath=`.spec.modelRef`
