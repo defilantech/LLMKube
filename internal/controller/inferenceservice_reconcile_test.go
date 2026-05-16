@@ -810,6 +810,68 @@ var _ = Describe("Reconcile lifecycle", func() {
 			Expect(*dep.Spec.Replicas).To(Equal(int32(1)))
 		})
 
+		It("should populate status.Replicas for the scale subresource", func() {
+			modelName := "model-scale-subresource"
+			isvcName := "isvc-scale-subresource"
+
+			model := &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source:   "https://example.com/model.gguf",
+					Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: "metal"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, model)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Delete(ctx, model)
+			}()
+			model.Status.Phase = PhaseReady
+			Expect(k8sClient.Status().Update(ctx, model)).To(Succeed())
+
+			replicas := int32(2)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{Name: isvcName, Namespace: "default"},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: modelName,
+					Replicas: &replicas,
+				},
+			}
+			Expect(k8sClient.Create(ctx, isvc)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Delete(ctx, isvc)
+			}()
+
+			// Simulate the metal-agent registering 2 ready endpoints
+			endpoints := &corev1.Endpoints{ //nolint:staticcheck // SA1019: agent + controller migrate together
+				ObjectMeta: metav1.ObjectMeta{Name: isvcName, Namespace: "default"},
+				Subsets: []corev1.EndpointSubset{{ //nolint:staticcheck
+					Addresses: []corev1.EndpointAddress{{IP: "192.0.2.10"}, {IP: "192.0.2.11"}},
+					Ports:     []corev1.EndpointPort{{Port: 8080, Protocol: corev1.ProtocolTCP}},
+				}},
+			}
+			Expect(k8sClient.Create(ctx, endpoints)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Delete(ctx, endpoints)
+			}()
+
+			reconciler := &InferenceServiceReconciler{
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
+				InitContainerImage: "docker.io/curlimages/curl:8.18.0",
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: isvcName, Namespace: "default"},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := &inferencev1alpha1.InferenceService{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, updated)).To(Succeed())
+
+			By("verifying status.Replicas mirrors ReadyReplicas so kubectl scale and KEDA can read it")
+			Expect(updated.Status.ReadyReplicas).To(Equal(int32(2)))
+			Expect(updated.Status.Replicas).To(Equal(updated.Status.ReadyReplicas))
+		})
+
 		It("should create PVC when model has CacheKey and ModelCachePath is set", func() {
 			modelName := "model-with-cache"
 			isvcName := fmt.Sprintf("isvc-pvc-test-%d", GinkgoRandomSeed())
