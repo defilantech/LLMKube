@@ -322,6 +322,53 @@ var _ = Describe("Model Controller Reconcile", func() {
 		Expect(foundCondition).To(BeTrue(), "expected Available/WorkloadResolved condition")
 	})
 
+	// A metal-accelerator model whose source is a local path lives on the
+	// Metal node's own filesystem. The in-cluster controller cannot see that
+	// path; it must not try to copy it (which wedges the Model in Copying
+	// forever) — it marks Ready and lets the host metal-agent be the source
+	// of truth.
+	It("should mark a metal local-path model Ready without copying", func() {
+		modelName := "metal-model-local"
+		tempDir, err := os.MkdirTemp("", "llmkube-test-*")
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = os.RemoveAll(tempDir) }()
+
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
+			Spec: inferencev1alpha1.ModelSpec{
+				Source:   "/models/on/the/metal/node/Qwen3.6-35B-A3B-8bit",
+				Format:   "safetensors",
+				Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: "metal"},
+			},
+		}
+		Expect(k8sClient.Create(ctx, model)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, model) }()
+
+		reconciler := &ModelReconciler{
+			Client:      k8sClient,
+			Scheme:      k8sClient.Scheme(),
+			StoragePath: tempDir,
+		}
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		updated := &inferencev1alpha1.Model{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: modelName, Namespace: "default"}, updated)).To(Succeed())
+		// The model must be Ready — not wedged in Copying.
+		Expect(updated.Status.Phase).To(Equal(PhaseReady))
+
+		var foundCondition bool
+		for _, cond := range updated.Status.Conditions {
+			if cond.Type == ConditionAvailable && cond.Reason == "MetalAgentManaged" {
+				foundCondition = true
+				Expect(cond.Message).To(ContainSubstring("metal-agent"))
+			}
+		}
+		Expect(foundCondition).To(BeTrue(), "expected Available/MetalAgentManaged condition")
+	})
+
 	It("should copy local model file and set Ready", func() {
 		tempDir, err := os.MkdirTemp("", "llmkube-test-*")
 		Expect(err).NotTo(HaveOccurred())

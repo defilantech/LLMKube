@@ -141,7 +141,7 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		}
 	}
 
-	isMetal := model.Spec.Hardware != nil && model.Spec.Hardware.Accelerator == "metal"
+	isMetal := isMetalModel(model)
 
 	if r.Recorder != nil && needsOffloadMemoryWarning(inferenceService) {
 		r.Recorder.Eventf(inferenceService, nil, corev1.EventTypeWarning, "MissingMemoryRequest", "Reconcile",

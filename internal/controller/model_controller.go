@@ -45,10 +45,13 @@ import (
 )
 
 const (
-	PhaseReady            = "Ready"
-	PhaseFailed           = "Failed"
-	PhaseCached           = "Cached"
-	PhaseCreating         = "Creating"
+	PhaseReady    = "Ready"
+	PhaseFailed   = "Failed"
+	PhaseCached   = "Cached"
+	PhaseCreating = "Creating"
+	// acceleratorMetal is the Model.Spec.Hardware.Accelerator value for the
+	// host metal-agent path.
+	acceleratorMetal      = "metal"
 	DefaultModelCachePath = "/models"
 
 	ConditionAvailable = "Available"
@@ -90,29 +93,11 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		r.StoragePath = DefaultModelCachePath
 	}
 
-	// PVC sources are handled differently: the controller validates the PVC exists
-	// and sets the model as Ready without downloading anything.
-	if isPVCSource(model.Spec.Source) {
-		return r.reconcilePVCSource(ctx, model)
-	}
-
-	// Runtime-resolved sources (e.g., HuggingFace repo IDs) are fetched by the
-	// runtime container at startup, not by the Model controller. The controller
-	// marks the model Ready immediately so referencing InferenceServices can proceed.
-	if isHFRepoSource(model.Spec.Source) {
-		return ctrl.Result{}, r.reconcileRuntimeResolvedSource(ctx, model, "")
-	}
-
-	// Remote HTTP(S) sources are downloaded by the InferenceService Pod's
-	// init container into the per-namespace model cache PVC, not by the
-	// Model controller. The controller pod's storage path lives on the
-	// operator-namespace PVC (e.g. llmkube-system/llmkube-model-cache) and
-	// PVCs cannot be cross-namespace mounted, so a controller-side download
-	// is invisible to inference Pods. Defer the fetch to the workload and
-	// populate CacheKey so the init container can land the file at the
-	// canonical /models/<cacheKey>/<basename> path the runtime expects.
-	if isRemoteHTTPSource(model.Spec.Source) {
-		return ctrl.Result{}, r.reconcileRuntimeResolvedSource(ctx, model, computeCacheKey(model.Spec.Source))
+	// Sources that need no controller-side download (PVC, HuggingFace repo,
+	// remote HTTP, Metal local-path) are dispatched here. handled=false means
+	// the source is a local path the controller must copy itself.
+	if handled, result, err := r.reconcileBySourceType(ctx, model); handled {
+		return result, err
 	}
 
 	cacheKey := computeCacheKey(model.Spec.Source)
@@ -369,6 +354,51 @@ func (r *ModelReconciler) reconcilePVCSource(ctx context.Context, model *inferen
 // IDs where the runtime resolves and stores the model on its own. A non-empty
 // cacheKey lets InferenceService.spec build the canonical
 // /models/<cacheKey>/<basename> path that the init container will populate.
+// isMetalModel reports whether the model targets the host metal-agent path.
+func isMetalModel(model *inferencev1alpha1.Model) bool {
+	return model.Spec.Hardware != nil && model.Spec.Hardware.Accelerator == acceleratorMetal
+}
+
+// reconcileBySourceType handles the model sources that need no controller-side
+// download. It returns handled=true when it owns the reconcile (so Reconcile
+// returns immediately); handled=false means the source is a local path the
+// controller must copy itself.
+func (r *ModelReconciler) reconcileBySourceType(
+	ctx context.Context, model *inferencev1alpha1.Model,
+) (handled bool, result ctrl.Result, err error) {
+	switch {
+	// PVC sources: validate the PVC exists, mark Ready, no download.
+	case isPVCSource(model.Spec.Source):
+		result, err = r.reconcilePVCSource(ctx, model)
+		return true, result, err
+
+	// HuggingFace repo IDs: the runtime container fetches at startup; the
+	// controller marks the model Ready so referencing InferenceServices can
+	// proceed.
+	case isHFRepoSource(model.Spec.Source):
+		return true, ctrl.Result{}, r.reconcileRuntimeResolvedSource(ctx, model, "")
+
+	// Remote HTTP(S): the InferenceService Pod's init container downloads
+	// into the per-namespace cache PVC. A controller-side download writes to
+	// the operator-namespace PVC, which inference Pods cannot mount, so the
+	// fetch is deferred to the workload.
+	case isRemoteHTTPSource(model.Spec.Source):
+		return true, ctrl.Result{}, r.reconcileRuntimeResolvedSource(
+			ctx, model, computeCacheKey(model.Spec.Source))
+
+	// Metal-accelerated models with a local-path source live on the Metal
+	// node's own filesystem and are loaded directly by the host metal-agent.
+	// The in-cluster controller cannot see that path, so it neither downloads
+	// nor copies — it marks the model Ready and lets the agent be the source
+	// of truth. A bad path then surfaces as the InferenceService failing to
+	// come up, not as a Model wedged in Copying forever.
+	case isMetalModel(model) && isLocalSource(model.Spec.Source):
+		return true, ctrl.Result{}, r.reconcileRuntimeResolvedSource(ctx, model, "")
+	}
+
+	return false, ctrl.Result{}, nil
+}
+
 func (r *ModelReconciler) reconcileRuntimeResolvedSource(ctx context.Context, model *inferencev1alpha1.Model, cacheKey string) error {
 	logger := log.FromContext(ctx)
 
@@ -379,11 +409,16 @@ func (r *ModelReconciler) reconcileRuntimeResolvedSource(ctx context.Context, mo
 		return nil
 	}
 
-	isMetal := model.Spec.Hardware != nil && model.Spec.Hardware.Accelerator == "metal"
+	isMetal := isMetalModel(model)
 
 	reason := "RuntimeResolved"
 	message := "Source is runtime-resolved (e.g., HuggingFace repo ID); runtime will fetch at startup"
-	if cacheKey != "" {
+	if cacheKey == "" && isMetal && isLocalSource(model.Spec.Source) {
+		// Local-path model on the Metal node: the host metal-agent loads it
+		// directly. The controller marks it Ready without copying.
+		reason = "MetalAgentManaged"
+		message = "Source is a local path on the Metal node; the host metal-agent loads the model directly"
+	} else if cacheKey != "" {
 		reason = ReasonWorkloadResolved
 		if isMetal {
 			// On the metal accelerator path there is no Pod and no init container.
