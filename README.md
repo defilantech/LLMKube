@@ -155,7 +155,6 @@ spec:
 ```bash
 kubectl apply -f model.yaml
 ```
-
 </details>
 
 **Full setup guides:** [Minikube Quickstart](docs/minikube-quickstart.md) | [GKE with GPUs](docs/gpu-setup-guide.md) | [Air-Gapped Deployment](docs/air-gapped-quickstart.md) | [OpenShift](#troubleshooting)
