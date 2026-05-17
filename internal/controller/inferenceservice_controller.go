@@ -257,6 +257,7 @@ func (r *InferenceServiceReconciler) reconcileDeployment(ctx context.Context, is
 	// in router_deployment_builder.go; see #456.
 	existingTemplateLabels := existingDeployment.Spec.Template.Labels
 	existingTemplateAnnotations := existingDeployment.Spec.Template.Annotations
+	existingReplicas := existingDeployment.Spec.Replicas
 	existingDeployment.Spec = deployment.Spec
 	existingDeployment.Spec.Template.Labels = mergePreservingExternal(
 		existingTemplateLabels,
@@ -266,9 +267,13 @@ func (r *InferenceServiceReconciler) reconcileDeployment(ctx context.Context, is
 		existingTemplateAnnotations,
 		deployment.Spec.Template.Annotations,
 	)
-	// When autoscaling is enabled, let the HPA manage replicas
+	// When autoscaling is enabled the HPA owns the replica count: preserve
+	// the live value rather than overwriting it with the operator's desired
+	// count. Setting it to nil does not work here: a plain Update with a nil
+	// replicas field is defaulted back to 1 by the API server, which fights
+	// the HPA on every reconcile.
 	if isvc.Spec.Autoscaling != nil {
-		existingDeployment.Spec.Replicas = nil
+		existingDeployment.Spec.Replicas = existingReplicas
 	}
 	if err := r.Update(ctx, existingDeployment); err != nil {
 		log.Error(err, "Failed to update Deployment")
