@@ -1,31 +1,77 @@
+# !IMPORTANT!
+# This approach of using external scalers such as KEDA is mutually exclusive with `spec.autoscaling`
+# You should use either one or the other, but not both at the same time.
+# If both are specified, the two controllers will fight each other, leading to undesired behavior.
+---
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: Model
+metadata:
+  name: gemma-4
+  namespace: default
+spec:
+  source: https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-UD-Q6_K_XL.gguf
+  format: gguf
+  quantization: Q6_K_XL
+  # ... other model fields ...
+
+---
 apiVersion: inference.llmkube.dev/v1alpha1
 kind: InferenceService
 metadata:
-  name: tinyllama-scalable
+  name: gemma-4-scale-to-zero
   namespace: default
 spec:
-  modelRef: tinyllama
+  # The modelRef field links this InferenceService to the Model defined above.
+  modelRef: gemma-4
+
+  # Set replicas to 0 to enable scale-to-zero.
+  # KEDA will scale up the replicas based on the defined triggers.
   replicas: 0
-  image: ghcr.io/ggml-org/llama.cpp:server
-  resources:
-    cpu: "2"
-    memory: "4Gi"
+
+  # ... other inference service fields ...
 
 ---
-apiVersion: keda.sh/v1alpha1
-kind: ScaledObject
+apiVersion: v1
+kind: Service
 metadata:
-  name: tinyllama-scalable
+  name: gemma-4-proxy
+  namespace: default
 spec:
+  type: ExternalName
+  ports: [{port: 8080}]
+
+  # This ExternalName service points to the KEDA HTTP interceptor,
+  # which will route traffic to the InferenceService when it's scaled up.
+  # This example assumes the interceptor is deployed in the kube-system namespace with this name.
+  externalName: keda-add-ons-http-interceptor-proxy.kube-system.svc.cluster.local
+
+---
+apiVersion: http.keda.sh/v1alpha1
+kind: HTTPScaledObject
+metadata:
+  name: gemma-4
+  namespace: default
+spec:
+  # The FQDN of the service to monitor for scaling.
+  # This should match the ExternalName service defined above.
+  hosts: ["gemma-4-proxy.default.svc.cluster.local"]
+
+  # The scaleTargetRef defines which InferenceService this scaler is associated with.
   scaleTargetRef:
     apiVersion: inference.llmkube.dev/v1alpha1
     kind: InferenceService
-    name: tinyllama-scalable
-  minReplicaCount: 0
-  maxReplicaCount: 4
-  triggers:
-    - type: external
-      metadata:
-        scalerAddress: keda-add-ons-http-external-scaler.kube-system.svc:9090
-        host: tinyllama-scalable.default.svc.cluster.local
-        targetPendingRequests: "1"
+    name: gemma-4
+    service: gemma-4
+    port: 8080
+
+  # Define the scaling behavior based on HTTP traffic.
+  # This example scales up to 1 replica when there is at least 1 request per second.
+  # Adjust the target value and type as needed for your workload.
+  # The intended use case here is to have the model scaled down to zero when idle,
+  # and automatically scale up when traffic arrives.
+  # The first request may experience cold start latency, but subsequent requests will be
+  # served with low latency as long as the model remains scaled up.
+  # Cold start times may be improved by using the local PVC cache.
+  replicas:
+    min: 0
+    max: 1
