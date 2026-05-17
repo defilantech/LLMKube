@@ -111,7 +111,7 @@ func (r *InferenceServiceReconciler) updateStatusWithSchedulingInfo(
 	isvc.Status.Phase = phase
 	isvc.Status.ModelReady = modelReady
 	isvc.Status.ReadyReplicas = readyReplicas
-	isvc.Status.Replicas = readyReplicas
+	isvc.Status.Replicas = desiredReplicas
 	isvc.Status.DesiredReplicas = desiredReplicas
 	isvc.Status.Endpoint = endpoint
 	isvc.Status.LastUpdated = &now
