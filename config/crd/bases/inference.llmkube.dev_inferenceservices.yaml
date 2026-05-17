@@ -94,7 +94,8 @@ spec:
                   metrics:
                     description: |-
                       Metrics defines the scaling metrics and target values.
-                      If empty, defaults to llamacpp:requests_processing with target average value of 2.
+                      If empty, defaults to the runtime's default metric with a target
+                      average value of 2 (llama.cpp: llamacpp:requests_deferred).
                     items:
                       description: MetricSpec defines a single metric for HPA scaling.
                       properties:

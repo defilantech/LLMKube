@@ -408,7 +408,8 @@ type AutoscalingSpec struct {
 	MaxReplicas int32 `json:"maxReplicas"`
 
 	// Metrics defines the scaling metrics and target values.
-	// If empty, defaults to llamacpp:requests_processing with target average value of 2.
+	// If empty, defaults to the runtime's default metric with a target
+	// average value of 2 (llama.cpp: llamacpp:requests_deferred).
 	// +optional
 	Metrics []MetricSpec `json:"metrics,omitempty"`
 }
