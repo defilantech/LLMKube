@@ -592,7 +592,7 @@ var _ = Describe("HPA Autoscaling", func() {
 			Expect(errors.IsNotFound(err)).To(BeTrue())
 		})
 
-		It("should set Deployment replicas to nil when autoscaling enabled", func() {
+		It("should preserve HPA-managed Deployment replicas when autoscaling enabled", func() {
 			modelName := "hpa-replicas-model"
 			isvcName := "hpa-replicas-isvc"
 
@@ -657,7 +657,7 @@ var _ = Describe("HPA Autoscaling", func() {
 				InitContainerImage: "docker.io/curlimages/curl:8.18.0",
 			}
 
-			By("first reconcile creates deployment with replicas")
+			By("first reconcile creates the deployment")
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{
 					Name: isvcName, Namespace: "default",
@@ -665,7 +665,15 @@ var _ = Describe("HPA Autoscaling", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			By("second reconcile avoids overwriting HPA-managed replicas")
+			By("the HPA scales the deployment up")
+			dep := &appsv1.Deployment{}
+			depKey := types.NamespacedName{Name: isvcName, Namespace: "default"}
+			Expect(k8sClient.Get(ctx, depKey, dep)).To(Succeed())
+			scaled := int32(5)
+			dep.Spec.Replicas = &scaled
+			Expect(k8sClient.Update(ctx, dep)).To(Succeed())
+
+			By("second reconcile preserves the HPA-managed replica count")
 			_, err = reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{
 					Name: isvcName, Namespace: "default",
@@ -673,15 +681,11 @@ var _ = Describe("HPA Autoscaling", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			dep := &appsv1.Deployment{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: isvcName, Namespace: "default",
-			}, dep)).To(Succeed())
-			// When autoscaling is enabled, the controller sets replicas to nil
-			// to let the HPA manage scaling. The API server defaults nil to 1,
-			// so we verify the controller did NOT force the isvc's configured
-			// replicas (2) onto the deployment.
-			Expect(*dep.Spec.Replicas).NotTo(Equal(int32(2)))
+			Expect(k8sClient.Get(ctx, depKey, dep)).To(Succeed())
+			// With autoscaling enabled the operator must not overwrite the
+			// replica count the HPA set; it preserves the live value rather
+			// than resetting it (sending nil would default back to 1).
+			Expect(*dep.Spec.Replicas).To(Equal(int32(5)))
 		})
 	})
 })
