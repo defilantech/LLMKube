@@ -5,6 +5,30 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.9](https://github.com/defilantech/LLMKube/compare/v0.7.8...v0.7.9) (2026-05-18)
+
+
+### Features
+
+* add mlx-server runtime to the metal-agent ([#471](https://github.com/defilantech/LLMKube/issues/471)) ([8bf9808](https://github.com/defilantech/LLMKube/commit/8bf9808edc03f6d8485b21e390b9ad6fbad092df))
+* add scale sub resource ([#474](https://github.com/defilantech/LLMKube/issues/474)) ([73419a5](https://github.com/defilantech/LLMKube/commit/73419a5efb6a2aee264a5787c1fa056d548e2137))
+
+
+### Bug Fixes
+
+* clear stale conditions when a model reaches Ready without a download ([#476](https://github.com/defilantech/LLMKube/issues/476)) ([06325b0](https://github.com/defilantech/LLMKube/commit/06325b0d72559b40625ef045840284903c897fac))
+* inference PodMonitor selector matched no pods ([#481](https://github.com/defilantech/LLMKube/issues/481)) ([31ee4d6](https://github.com/defilantech/LLMKube/commit/31ee4d675016014306e7634935c04790dcfbd052))
+* mark Metal local-path models Ready instead of stuck Copying ([#472](https://github.com/defilantech/LLMKube/issues/472)) ([c513c84](https://github.com/defilantech/LLMKube/commit/c513c84bd2a19253230b56e8d5bb11cca3778edd))
+* metal-path InferenceService status and memory pre-flight ([#488](https://github.com/defilantech/LLMKube/issues/488)) ([98ef2c4](https://github.com/defilantech/LLMKube/commit/98ef2c4fb42e0d4aa248a8c77f6c09ae8c1058ac))
+* point metal-agent mlx-server install hint at the Homebrew formula ([#477](https://github.com/defilantech/LLMKube/issues/477)) ([74b3333](https://github.com/defilantech/LLMKube/commit/74b33337f4abb5b54a1f1d9be216a4d5fc2e2c82))
+* prevent concurrent runtime respawn in metal-agent ([#469](https://github.com/defilantech/LLMKube/issues/469)) ([f34640b](https://github.com/defilantech/LLMKube/commit/f34640b118e4a043888e2eb8bb20012c6f2d5b42))
+* stop the operator fighting the HPA over Deployment replicas ([#485](https://github.com/defilantech/LLMKube/issues/485)) ([8fc70e2](https://github.com/defilantech/LLMKube/commit/8fc70e23cb6a8b699c7d853cf109d1e55561d6eb))
+
+
+### Documentation
+
+* add MAINTAINERS file and recommend private vulnerability reporting ([#479](https://github.com/defilantech/LLMKube/issues/479)) ([aaccb4d](https://github.com/defilantech/LLMKube/commit/aaccb4dea54b5cb52304b303b823a3531dfe5a4c))
+
 ## [0.7.8](https://github.com/defilantech/LLMKube/compare/v0.7.7...v0.7.8) (2026-05-14)
 
 
