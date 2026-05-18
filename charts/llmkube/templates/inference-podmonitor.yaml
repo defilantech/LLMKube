@@ -11,8 +11,9 @@ metadata:
     {{- end }}
 spec:
   selector:
-    matchLabels:
-      inference.llmkube.dev/service: ""
+    # Match every pod carrying the operator-managed service label. A
+    # matchLabels entry with an empty value would be ANDed in and match
+    # nothing, so the Exists expression is the whole selector.
     matchExpressions:
       - key: inference.llmkube.dev/service
         operator: Exists
