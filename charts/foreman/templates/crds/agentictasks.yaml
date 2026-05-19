@@ -1,0 +1,296 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.19.0
+  name: agentictasks.foreman.llmkube.dev
+spec:
+  group: foreman.llmkube.dev
+  names:
+    kind: AgenticTask
+    listKind: AgenticTaskList
+    plural: agentictasks
+    shortNames:
+    - at
+    singular: agentictask
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .spec.kind
+      name: Kind
+      type: string
+    - jsonPath: .status.assignedNode
+      name: Node
+      type: string
+    - jsonPath: .status.verdict
+      name: Verdict
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          AgenticTask is the unit of dispatchable agentic work. The Foreman scheduler
+          matches each Pending task to a FleetNode whose advertised capability
+          satisfies the task's RequiredCapability, then a FleetAgent on that node
+          picks up the task and runs the matching executor.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec is the desired task definition.
+            properties:
+              dependsOn:
+                description: |-
+                  DependsOn lists AgenticTasks (by name in the same namespace) that
+                  must reach Succeeded before this task is dispatched. v0.1 uses this
+                  only to chain verify tasks behind their parent issue-fix.
+                items:
+                  type: string
+                type: array
+              kind:
+                description: Kind selects the work type and payload shape.
+                enum:
+                - issue-fix
+                - verify
+                - freeform
+                type: string
+              modelRef:
+                description: |-
+                  ModelRef names the Model the agent should use. Optional; the
+                  scheduler can pick a default based on RequiredCapability.
+                type: string
+              payload:
+                description: Payload is the kind-discriminated work spec.
+                properties:
+                  agent:
+                    description: |-
+                      Agent is the named agent to invoke. Required for freeform; defaults
+                      to "issue-fixer" for issue-fix and "verify" for verify.
+                    type: string
+                  branch:
+                    description: Branch is the existing branch to gate. Required for
+                      verify.
+                    type: string
+                  branchPrefix:
+                    description: |-
+                      BranchPrefix overrides the branch name prefix on issue-fix tasks
+                      (default derived from the issue's labels via conventional commit
+                      prefixes: fix/, feat/, chore/, etc.).
+                    type: string
+                  issue:
+                    description: Issue is the GitHub issue number. Required for issue-fix.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  prompt:
+                    description: Prompt is the agent input. Required for freeform.
+                    type: string
+                  repo:
+                    description: Repo is the "owner/name" GitHub repo. Required for
+                      issue-fix and verify.
+                    type: string
+                type: object
+              priority:
+                description: |-
+                  Priority is a hint for the scheduler when many tasks are Pending.
+                  Higher values dispatch first. v0.1 is FIFO and ignores priority.
+                format: int32
+                type: integer
+              requiredCapability:
+                description: RequiredCapability filters which FleetNodes can serve
+                  this task.
+                properties:
+                  accelerator:
+                    default: any
+                    description: Accelerator selects an accelerator family. "any"
+                      matches any node.
+                    enum:
+                    - metal
+                    - cuda
+                    - any
+                    type: string
+                  minContextTokens:
+                    description: |-
+                      MinContextTokens is the minimum context window the node's installed
+                      model must support. Set to 0 to leave unconstrained.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  minRAMGB:
+                    description: MinRAMGB is the minimum available RAM the node must
+                      advertise.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  nodeSelector:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      NodeSelector is a hard pin: only FleetNodes whose labels match every
+                      key are eligible. Used for tasks that must run on a specific node
+                      (e.g. verify tasks targeting the gate runner).
+                    type: object
+                type: object
+              timeoutSeconds:
+                description: |-
+                  TimeoutSeconds bounds the agent's run time. Zero uses the operator's
+                  default (2700, matching the autofix pipeline's value).
+                format: int32
+                minimum: 0
+                type: integer
+            required:
+            - kind
+            - payload
+            type: object
+          status:
+            description: |-
+              status reflects the observed state, updated by the scheduler and the
+              assigned FleetAgent.
+            properties:
+              assignedNode:
+                description: AssignedNode is the FleetNode.metadata.name the scheduler
+                  routed to.
+                type: string
+              branch:
+                description: Branch is the pushed branch, set on a successful issue-fix.
+                type: string
+              claimedAt:
+                description: ClaimedAt is when the FleetAgent on AssignedNode claimed
+                  the task.
+                format: date-time
+                type: string
+              commitSHA:
+                description: CommitSHA is the head commit of Branch.
+                type: string
+              conditions:
+                description: |-
+                  Conditions represent the current state of the task. Standard types:
+                  Scheduled, Running, Completed, Failed.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              finishedAt:
+                description: FinishedAt is when the executor produced a verdict (success
+                  or fail).
+                format: date-time
+                type: string
+              phase:
+                description: Phase is the current lifecycle phase.
+                enum:
+                - Pending
+                - Scheduled
+                - Running
+                - Verifying
+                - Succeeded
+                - Failed
+                type: string
+              result:
+                description: |-
+                  Result is the structured JSON the agent emitted, validated against the
+                  foreman.v1 schema. Opaque to the API server.
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
+              startedAt:
+                description: StartedAt is when the executor began work.
+                format: date-time
+                type: string
+              transcriptRef:
+                description: |-
+                  TranscriptRef points to where the agent's full transcript was stored
+                  (typically a ConfigMap in the operator's namespace).
+                type: string
+              verdict:
+                description: Verdict is the final outcome category.
+                enum:
+                - GO
+                - NO-GO
+                - INCOMPLETE
+                - GATE-PASS
+                - GATE-FAIL
+                - GATE-ERROR
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

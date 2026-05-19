@@ -50,6 +50,17 @@ manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and Cust
 chart-crds: manifests ## Generate CRDs and sync to Helm chart templates
 	@./scripts/sync-crds.sh
 
+.PHONY: foreman-chart-crds
+foreman-chart-crds: manifests ## Sync foreman.llmkube.dev CRDs to the foreman chart.
+	@mkdir -p charts/foreman/templates/crds
+	@synced=0; for src in config/crd/bases/foreman.llmkube.dev_*.yaml; do \
+	  [ -e "$$src" ] || { echo "no foreman CRDs in config/crd/bases (did make manifests run?)"; exit 1; }; \
+	  base=$$(basename $$src); short=$${base#foreman.llmkube.dev_}; \
+	  echo "Syncing $$base -> $$short"; \
+	  cp $$src charts/foreman/templates/crds/$$short; \
+	  synced=$$((synced+1)); \
+	done; echo "Synced $$synced foreman CRD(s)"
+
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
 	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./..."

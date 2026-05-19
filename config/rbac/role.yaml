@@ -70,6 +70,38 @@ rules:
   - update
   - watch
 - apiGroups:
+  - foreman.llmkube.dev
+  resources:
+  - agentictasks
+  - fleetnodes
+  - workloads
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - foreman.llmkube.dev
+  resources:
+  - agentictasks/finalizers
+  - fleetnodes/finalizers
+  - workloads/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - foreman.llmkube.dev
+  resources:
+  - agentictasks/status
+  - fleetnodes/status
+  - workloads/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
   - inference.llmkube.dev
   resources:
   - inferenceservices
