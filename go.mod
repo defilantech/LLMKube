@@ -6,7 +6,7 @@ toolchain go1.25.10
 
 require (
 	github.com/onsi/ginkgo/v2 v2.28.3
-	github.com/onsi/gomega v1.40.0
+	github.com/onsi/gomega v1.41.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
 	github.com/spf13/cobra v1.10.2
