@@ -159,6 +159,30 @@ const (
 // +kubebuilder:validation:Enum=GO;NO-GO;INCOMPLETE;GATE-PASS;GATE-FAIL;GATE-ERROR
 type AgenticTaskVerdict string
 
+const (
+	// AgenticTaskVerdictGo signals the agent finished and produced a
+	// change it stands behind: edit applied, branch pushed, ready for
+	// downstream gating.
+	AgenticTaskVerdictGo AgenticTaskVerdict = "GO"
+	// AgenticTaskVerdictNoGo signals the agent legitimately declined to
+	// produce a change (e.g. the issue is already fixed, or the scope is
+	// out of reach for this agent kind). Distinct from Failed.
+	AgenticTaskVerdictNoGo AgenticTaskVerdict = "NO-GO"
+	// AgenticTaskVerdictIncomplete signals the agent did not produce a
+	// terminal verdict before its run ended (timeout, mid-loop crash,
+	// upstream cascade-fail).
+	AgenticTaskVerdictIncomplete AgenticTaskVerdict = "INCOMPLETE"
+	// AgenticTaskVerdictGatePass is the gate agent's positive outcome:
+	// every check (fmt/vet/lint/test) passed.
+	AgenticTaskVerdictGatePass AgenticTaskVerdict = "GATE-PASS"
+	// AgenticTaskVerdictGateFail is the gate agent's negative outcome:
+	// at least one check failed but the gate itself ran cleanly.
+	AgenticTaskVerdictGateFail AgenticTaskVerdict = "GATE-FAIL"
+	// AgenticTaskVerdictGateError signals the gate runner itself failed
+	// to execute (infrastructure issue), distinct from a check failure.
+	AgenticTaskVerdictGateError AgenticTaskVerdict = "GATE-ERROR"
+)
+
 // AgenticTaskStatus defines the observed state of an AgenticTask.
 type AgenticTaskStatus struct {
 	// Phase is the current lifecycle phase.

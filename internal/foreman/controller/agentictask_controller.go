@@ -18,33 +18,55 @@ package controller
 
 import (
 	"context"
+	"fmt"
+	"sort"
+	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	foremanv1alpha1 "github.com/defilantech/llmkube/api/foreman/v1alpha1"
 )
 
-// AgenticTaskReconciler is the scheduler: it watches AgenticTask objects,
-// matches Pending tasks to Ready FleetNodes by capability, writes the
-// assignment back onto the task, and (later) chains a verify child task
-// when an issue-fix succeeds.
+// AgenticTaskReconciler is the Foreman v0.1 scheduler. It watches
+// AgenticTask resources and routes each Pending task to the first Ready
+// FleetNode whose advertised capability satisfies the task's
+// RequiredCapability (first-fit, alphabetical-by-name for determinism).
 //
-// v0.1 / M0: this is a stub. It reads the task and logs the phase; no
-// scheduling, no node matching. The real logic lands in M2.
+// The reconciler never touches the task while the FleetAgent owns it
+// (Scheduled / Running / terminal phases). The agent owns the
+// Scheduled -> Running -> Succeeded|Failed transitions; the scheduler
+// only owns "no phase" -> Pending and Pending -> Scheduled. Cascade
+// failure from a Failed dependency is the one exception: the scheduler
+// short-circuits a downstream task with phase=Failed before it ever
+// reaches Scheduled.
 type AgenticTaskReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 }
+
+// requeueNoFit is the backoff when no FleetNode satisfies the task's
+// capability today. Long enough that a busy cluster does not get spammed,
+// short enough that a node coming Ready triggers dispatch within seconds
+// of the next reconcile (the FleetNode watch also re-enqueues directly).
+const requeueNoFit = 10 * time.Second
+
+// requeueWaitingForDeps is the backoff while at least one dependency is
+// still pre-terminal.
+const requeueWaitingForDeps = 10 * time.Second
 
 // +kubebuilder:rbac:groups=foreman.llmkube.dev,resources=agentictasks,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=foreman.llmkube.dev,resources=agentictasks/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=foreman.llmkube.dev,resources=agentictasks/finalizers,verbs=update
 // +kubebuilder:rbac:groups=foreman.llmkube.dev,resources=fleetnodes,verbs=get;list;watch
 
-// Reconcile is the entry point for AgenticTask events.
+// Reconcile drives a single AgenticTask toward Scheduled.
 func (r *AgenticTaskReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
@@ -53,20 +75,235 @@ func (r *AgenticTaskReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	log.Info("reconciling AgenticTask",
+	log.V(1).Info("reconciling AgenticTask",
 		"kind", task.Spec.Kind,
 		"phase", task.Status.Phase,
 		"assignedNode", task.Status.AssignedNode,
 	)
 
-	// M0 stub: no-op. Scheduling logic lands in M2.
+	// Normalize an empty phase to Pending. We do this on a fresh-from-
+	// the-API view, so the next reconcile sees Pending and falls into
+	// the scheduling branch.
+	if task.Status.Phase == "" {
+		return r.setInitialPending(ctx, &task)
+	}
+
+	// The scheduler only acts on Pending. Every other phase is the
+	// FleetAgent's domain.
+	if task.Status.Phase != foremanv1alpha1.AgenticTaskPhasePending {
+		return ctrl.Result{}, nil
+	}
+
+	// Cascade-fail if any dependency has Failed.
+	if cascadeMsg, err := r.cascadeFailIfDepFailed(ctx, &task); err != nil {
+		return ctrl.Result{}, err
+	} else if cascadeMsg != "" {
+		return r.failTask(ctx, &task, "UpstreamFailed", cascadeMsg)
+	}
+
+	// Wait if any dependency is still pre-terminal.
+	allSucceeded, err := r.allDepsSucceeded(ctx, &task)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if !allSucceeded {
+		return ctrl.Result{RequeueAfter: requeueWaitingForDeps}, nil
+	}
+
+	// Find a FleetNode that satisfies the task's RequiredCapability.
+	nodeName, err := r.firstFitNode(ctx, &task)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if nodeName == "" {
+		log.Info("no FleetNode matches; will retry", "task", task.Name)
+		return ctrl.Result{RequeueAfter: requeueNoFit}, nil
+	}
+
+	return r.scheduleToNode(ctx, &task, nodeName)
+}
+
+// setInitialPending writes phase=Pending the first time we see the task,
+// then requeues so the next reconcile runs the scheduling logic against
+// a Pending phase rather than racing on the same object.
+func (r *AgenticTaskReconciler) setInitialPending(ctx context.Context, task *foremanv1alpha1.AgenticTask) (ctrl.Result, error) {
+	patch := client.MergeFrom(task.DeepCopy())
+	task.Status.Phase = foremanv1alpha1.AgenticTaskPhasePending
+	if err := r.Status().Patch(ctx, task, patch); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{Requeue: true}, nil
+}
+
+// cascadeFailIfDepFailed returns a non-empty message if any dependency is
+// already Failed; the caller fails the task with that message.
+func (r *AgenticTaskReconciler) cascadeFailIfDepFailed(ctx context.Context, task *foremanv1alpha1.AgenticTask) (string, error) {
+	for _, depName := range task.Spec.DependsOn {
+		var dep foremanv1alpha1.AgenticTask
+		if err := r.Get(ctx, types.NamespacedName{Namespace: task.Namespace, Name: depName}, &dep); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			return "", err
+		}
+		if dep.Status.Phase == foremanv1alpha1.AgenticTaskPhaseFailed {
+			return fmt.Sprintf("dependency %q failed; cascade-failing", depName), nil
+		}
+	}
+	return "", nil
+}
+
+// allDepsSucceeded returns true only when every dependency exists in the
+// same namespace AND is in phase=Succeeded.
+func (r *AgenticTaskReconciler) allDepsSucceeded(ctx context.Context, task *foremanv1alpha1.AgenticTask) (bool, error) {
+	for _, depName := range task.Spec.DependsOn {
+		var dep foremanv1alpha1.AgenticTask
+		if err := r.Get(ctx, types.NamespacedName{Namespace: task.Namespace, Name: depName}, &dep); err != nil {
+			if apierrors.IsNotFound(err) {
+				return false, nil // wait for the dep to appear
+			}
+			return false, err
+		}
+		if dep.Status.Phase != foremanv1alpha1.AgenticTaskPhaseSucceeded {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// firstFitNode picks the alphabetically-first Ready FleetNode whose
+// advertised capability satisfies the task's RequiredCapability and that
+// is not already running another task.
+func (r *AgenticTaskReconciler) firstFitNode(ctx context.Context, task *foremanv1alpha1.AgenticTask) (string, error) {
+	var nodes foremanv1alpha1.FleetNodeList
+	if err := r.List(ctx, &nodes); err != nil {
+		return "", err
+	}
+	sort.Slice(nodes.Items, func(i, j int) bool {
+		return nodes.Items[i].Name < nodes.Items[j].Name
+	})
+	for i := range nodes.Items {
+		n := &nodes.Items[i]
+		if n.Status.Phase != foremanv1alpha1.FleetNodePhaseReady {
+			continue
+		}
+		if n.Status.CurrentTask != "" {
+			continue // v0.1: one task per node
+		}
+		if !capabilitySatisfies(task.Spec.RequiredCapability, n) {
+			continue
+		}
+		return n.Name, nil
+	}
+	return "", nil
+}
+
+// capabilitySatisfies returns true when the node's advertised capability
+// meets every requirement the task declares. Unset requirements are
+// unconstrained; an "any" accelerator matches everything.
+func capabilitySatisfies(req foremanv1alpha1.RequiredCapability, n *foremanv1alpha1.FleetNode) bool {
+	cap := n.Status.Capability
+
+	if req.Accelerator != "" && req.Accelerator != foremanv1alpha1.AgenticTaskAccelerator("any") {
+		if string(cap.Accelerator) != string(req.Accelerator) {
+			return false
+		}
+	}
+	if req.MinRAMGB > 0 && req.MinRAMGB > cap.AvailableRAMGB {
+		return false
+	}
+	if req.MinContextTokens > 0 && req.MinContextTokens > cap.MaxContextTokens {
+		return false
+	}
+	for k, v := range req.NodeSelector {
+		if n.Labels[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
+// scheduleToNode patches the task to phase=Scheduled with the chosen
+// FleetNode set on status.assignedNode. The FleetAgent on that node
+// picks it up via its watcher.
+func (r *AgenticTaskReconciler) scheduleToNode(ctx context.Context, task *foremanv1alpha1.AgenticTask, nodeName string) (ctrl.Result, error) {
+	patch := client.MergeFrom(task.DeepCopy())
+	now := metav1.Now()
+	task.Status.Phase = foremanv1alpha1.AgenticTaskPhaseScheduled
+	task.Status.AssignedNode = nodeName
+	setCondition(&task.Status.Conditions, metav1.Condition{
+		Type:               "Scheduled",
+		Status:             metav1.ConditionTrue,
+		Reason:             "FleetNodeAssigned",
+		Message:            fmt.Sprintf("scheduled to FleetNode %q", nodeName),
+		LastTransitionTime: now,
+	})
+	if err := r.Status().Patch(ctx, task, patch); err != nil {
+		return ctrl.Result{}, err
+	}
 	return ctrl.Result{}, nil
 }
 
-// SetupWithManager wires the reconciler into the controller-runtime manager.
+// failTask cascade-fails a Pending task before it reaches an agent.
+func (r *AgenticTaskReconciler) failTask(ctx context.Context, task *foremanv1alpha1.AgenticTask, reason, message string) (ctrl.Result, error) {
+	patch := client.MergeFrom(task.DeepCopy())
+	now := metav1.Now()
+	task.Status.Phase = foremanv1alpha1.AgenticTaskPhaseFailed
+	task.Status.Verdict = foremanv1alpha1.AgenticTaskVerdictIncomplete
+	task.Status.FinishedAt = &now
+	setCondition(&task.Status.Conditions, metav1.Condition{
+		Type:               "Failed",
+		Status:             metav1.ConditionTrue,
+		Reason:             reason,
+		Message:            message,
+		LastTransitionTime: now,
+	})
+	return ctrl.Result{}, r.Status().Patch(ctx, task, patch)
+}
+
+// setCondition upserts a condition by type. Local to the controller
+// because the watcher in pkg/foreman/agent has its own copy; promote to
+// an internal helpers package if a third writer appears.
+func setCondition(conds *[]metav1.Condition, c metav1.Condition) {
+	for i, existing := range *conds {
+		if existing.Type == c.Type {
+			(*conds)[i] = c
+			return
+		}
+	}
+	*conds = append(*conds, c)
+}
+
+// SetupWithManager wires the reconciler. We also watch FleetNode so a
+// node going Ready (or freeing up CurrentTask) re-enqueues every Pending
+// task immediately rather than waiting for the requeue-after timer.
 func (r *AgenticTaskReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&foremanv1alpha1.AgenticTask{}).
+		Watches(&foremanv1alpha1.FleetNode{}, handler.EnqueueRequestsFromMapFunc(r.fleetNodeEnqueuesPending)).
 		Named("agentictask").
 		Complete(r)
+}
+
+// fleetNodeEnqueuesPending re-enqueues every Pending AgenticTask when a
+// FleetNode event arrives. Cheap because the controller-runtime
+// workqueue dedupes; expensive in the limit only when there are many
+// Pending tasks, which is exactly when faster dispatch matters.
+func (r *AgenticTaskReconciler) fleetNodeEnqueuesPending(ctx context.Context, _ client.Object) []ctrl.Request {
+	var list foremanv1alpha1.AgenticTaskList
+	if err := r.List(ctx, &list); err != nil {
+		logf.FromContext(ctx).Error(err, "fleetnode-trigger list failed")
+		return nil
+	}
+	requests := make([]ctrl.Request, 0, len(list.Items))
+	for i := range list.Items {
+		t := &list.Items[i]
+		if t.Status.Phase != foremanv1alpha1.AgenticTaskPhasePending {
+			continue
+		}
+		requests = append(requests, ctrl.Request{
+			NamespacedName: types.NamespacedName{Namespace: t.Namespace, Name: t.Name},
+		})
+	}
+	return requests
 }

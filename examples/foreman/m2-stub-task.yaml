@@ -1,0 +1,45 @@
+# Foreman M2 demo: a synthetic AgenticTask that exercises the dispatch
+# loop end-to-end without needing the real native agent loop (which
+# lands in M3).
+#
+# Sequence:
+#   1. Apply this manifest:
+#        kubectl apply -f examples/foreman/m2-stub-task.yaml
+#   2. The AgenticTaskReconciler running inside foreman-operator picks
+#      it up, transitions empty -> Pending, then matches it against the
+#      Ready FleetNodes and writes Pending -> Scheduled with
+#      status.assignedNode set.
+#   3. The AgenticTaskWatcher inside foreman-agent on the assigned node
+#      claims it (Scheduled -> Running) and hands it to the StubExecutor.
+#   4. The StubExecutor sleeps 10s (configurable via --stub-sleep) and
+#      returns a synthetic GO-verdict Result.
+#   5. The watcher patches Running -> Succeeded with the structured
+#      Result envelope serialized into status.result.
+#
+# Observe:
+#   kubectl get agentictask m2-stub-demo -w
+#   kubectl get agentictask m2-stub-demo -o yaml | yq '.status'
+#
+# Expected end state after ~10s:
+#   status.phase=Succeeded
+#   status.verdict=GO
+#   status.assignedNode=<a Ready FleetNode whose capability satisfies the requirements>
+#   status.result.kind=stub
+#   status.conditions[type=Completed].status=True
+apiVersion: foreman.llmkube.dev/v1alpha1
+kind: AgenticTask
+metadata:
+  name: m2-stub-demo
+  namespace: default
+  labels:
+    foreman.llmkube.dev/milestone: m2
+spec:
+  kind: freeform
+  requiredCapability:
+    # Pick the M5 Max (or any Metal node with at least 32 GiB available).
+    # Drop or relax these to dispatch to any Ready node.
+    accelerator: metal
+    minRAMGB: 32
+  payload:
+    agent: stub
+    prompt: "M2 dispatch-loop validation; the stub executor ignores this prompt."

@@ -15,9 +15,18 @@ limitations under the License.
 */
 
 // foreman-agent is the Foreman node-side daemon. One instance runs on each
-// host in the fleet. In M1 it owns a single responsibility: keep the
-// FleetNode CR for this host present and current (initial upsert + 30s
-// heartbeat). M2+ adds the AgenticTaskWatcher and executors.
+// host in the fleet. It is responsible for two things:
+//
+//  1. FleetNode registration + heartbeat (M1): keep the FleetNode CR
+//     for this host present and current so the scheduler can target it.
+//  2. AgenticTask watching + execution (M2+): poll the cluster for
+//     AgenticTasks the scheduler has assigned to this node, claim them,
+//     hand them to the configured Executor, and patch the terminal
+//     status when the executor returns.
+//
+// v0.1 plugs in the StubExecutor (M2 placeholder); M3 swaps in the
+// native agent loop, and M4 adds the gate-job executor for the verifier
+// role on ShadowStack.
 //
 // Cross-platform: builds on darwin (real Metal capability) and linux/amd64
 // (stub capability for now; M4 fills it in).
@@ -35,6 +44,7 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/sync/errgroup"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -72,6 +82,9 @@ func main() {
 		acceleratorFlag  string
 		installedModels  string
 		heartbeat        time.Duration
+		taskPollInterval time.Duration
+		taskNamespace    string
+		stubSleep        time.Duration
 		maxCtx           int
 		tokensPerSec     int
 		staticTotalRAMGB int
@@ -95,6 +108,12 @@ func main() {
 		"Comma-separated Model CR names this node has cached locally.")
 	flag.DurationVar(&heartbeat, "heartbeat-interval", foremanagent.DefaultHeartbeatInterval,
 		"How often to patch FleetNode.status with a fresh heartbeat.")
+	flag.DurationVar(&taskPollInterval, "task-poll-interval", foremanagent.DefaultWatcherInterval,
+		"How often the AgenticTask watcher polls the cluster for new assignments.")
+	flag.StringVar(&taskNamespace, "task-namespace", "default",
+		"Namespace the AgenticTask watcher reads from.")
+	flag.DurationVar(&stubSleep, "stub-sleep", foremanagent.DefaultStubSleep,
+		"How long the StubExecutor blocks per task. Only used when --executor=stub (the only v0.1 option).")
 	flag.IntVar(&maxCtx, "max-context-tokens", 0,
 		"Advertised max context window in tokens (0 = unset).")
 	flag.IntVar(&tokensPerSec, "tokens-per-second", 0,
@@ -125,7 +144,9 @@ func main() {
 	}
 
 	if workspaceDir == "" && opencodeBin == "" {
-		setupLog.Info("running in M1 mode: no executor wired yet; --workspace-dir / --opencode-bin become required at M3")
+		setupLog.Info(
+			"M2 stub executor active; --workspace-dir and --opencode-bin become required at M3",
+		)
 	}
 
 	cfg, err := loadKubeconfig(kubeContext)
@@ -170,6 +191,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	// M2 executor: stub. M3 swaps in the native agent loop.
+	executor := &foremanagent.StubExecutor{SleepDuration: stubSleep}
+
+	watcher := &foremanagent.AgenticTaskWatcher{
+		Client:    kc,
+		NodeName:  fleetNodeName,
+		Namespace: taskNamespace,
+		Interval:  taskPollInterval,
+		Executor:  executor,
+	}
+
 	cap := provider.Capability()
 	setupLog.Info("foreman-agent started",
 		"fleetNode", fleetNodeName,
@@ -178,10 +210,20 @@ func main() {
 		"accelerator", cap.Accelerator,
 		"totalRAMGB", cap.TotalRAMGB,
 		"heartbeat", heartbeat.String(),
+		"taskPollInterval", taskPollInterval.String(),
+		"taskNamespace", taskNamespace,
+		"executor", executor.Kind(),
 	)
 
-	if err := reg.Run(ctx); err != nil {
-		setupLog.Error(err, "registrar exited with error")
+	// Run the registrar and watcher concurrently. errgroup cancels both
+	// if either returns an error; on clean shutdown via SIGTERM, both
+	// return nil and we exit clean.
+	g, gctx := errgroup.WithContext(ctx)
+	g.Go(func() error { return reg.Run(gctx) })
+	g.Go(func() error { return watcher.Run(gctx) })
+
+	if err := g.Wait(); err != nil {
+		setupLog.Error(err, "foreman-agent exited with error")
 		os.Exit(1)
 	}
 	setupLog.Info("foreman-agent stopped cleanly")
