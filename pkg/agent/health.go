@@ -210,7 +210,11 @@ func (s *HealthServer) Run(ctx context.Context) error {
 		MaxHeaderBytes:    1 << 15, // 32KB
 	}
 
-	go func() {
+	// G118 false positive on the shutdown goroutine below: the parent ctx
+	// is already Done when the shutdown runs (we just waited on it), so we
+	// cannot use it for the shutdown deadline. The independent 5s timeout
+	// is the correct bound.
+	go func() { //nolint:gosec // G118: see comment above
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()

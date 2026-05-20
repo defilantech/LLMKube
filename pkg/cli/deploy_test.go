@@ -250,7 +250,7 @@ func TestValidateLocalPath(t *testing.T) {
 		t.Fatalf("Failed to create temp file: %v", err)
 	}
 
-	tests := []struct {
+	tests := []struct { //nolint:prealloc // table-driven test with literal entries; prealloc misreads the pattern
 		name      string
 		source    string
 		wantError bool
