@@ -212,6 +212,13 @@ func splitCSV(s string) []string {
 		}
 		out = append(out, p)
 	}
+	if len(out) == 0 {
+		// Separator-only or whitespace-only input is functionally
+		// the same as empty input; collapse to nil so callers
+		// (FleetNodeSpec.Roles, CapabilityOptions.InstalledModels) see
+		// a single "absent" representation rather than nil vs []string{}.
+		return nil
+	}
 	return out
 }
 
