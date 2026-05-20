@@ -64,6 +64,9 @@ func TestNewCapability_Other_HonorsEmptyAccelerator(t *testing.T) {
 	p := NewCapability(CapabilityOptions{})
 	cap := p.Capability()
 	if string(cap.Accelerator) != "" {
-		t.Errorf("Accelerator = %q on non-darwin with empty options; want empty (operator must set explicitly)", cap.Accelerator)
+		t.Errorf(
+			"Accelerator = %q on non-darwin with empty options; want empty (operator must set explicitly)",
+			cap.Accelerator,
+		)
 	}
 }
