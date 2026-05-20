@@ -22,6 +22,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -173,6 +174,100 @@ var _ = Describe("AgenticTaskReconciler scheduler", func() {
 		Expect(fresh.Status.AssignedNode).To(BeEmpty())
 	})
 
+	It("schedules a task using the referenced Agent's RequiredCapability", func() {
+		agent := newAgent("ref-coder")
+		agent.Spec.RequiredCapability = foremanv1alpha1.RequiredCapability{
+			Accelerator: foremanv1alpha1.AgenticTaskAccelerator("metal"),
+			MinRAMGB:    32,
+		}
+		Expect(k8sClient.Create(ctx, agent)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, agent) })
+
+		task := newTask("ref-target")
+		task.Spec.AgentRef = &corev1.LocalObjectReference{Name: agent.Name}
+		Expect(k8sClient.Create(ctx, task)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, task) })
+		setPhase(task, foremanv1alpha1.AgenticTaskPhasePending)
+
+		node := newFleetNode("ref-target-node")
+		Expect(k8sClient.Create(ctx, node)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, node) })
+		setNodeReady(node, foremanv1alpha1.FleetNodeCapability{
+			Accelerator:    foremanv1alpha1.FleetNodeAccelerator("metal"),
+			TotalRAMGB:     128,
+			AvailableRAMGB: 96,
+		})
+
+		_, err := reconciler.Reconcile(ctx, reqFor(task))
+		Expect(err).NotTo(HaveOccurred())
+
+		var fresh foremanv1alpha1.AgenticTask
+		Expect(k8sClient.Get(ctx, nn(task), &fresh)).To(Succeed())
+		Expect(fresh.Status.Phase).To(Equal(foremanv1alpha1.AgenticTaskPhaseScheduled))
+		Expect(fresh.Status.AssignedNode).To(Equal(node.Name))
+	})
+
+	It("fails fast with AgentNotFound when AgentRef points at a missing Agent", func() {
+		task := newTask("missing-agent")
+		task.Spec.AgentRef = &corev1.LocalObjectReference{Name: "does-not-exist"}
+		Expect(k8sClient.Create(ctx, task)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, task) })
+		setPhase(task, foremanv1alpha1.AgenticTaskPhasePending)
+
+		_, err := reconciler.Reconcile(ctx, reqFor(task))
+		Expect(err).NotTo(HaveOccurred())
+
+		var fresh foremanv1alpha1.AgenticTask
+		Expect(k8sClient.Get(ctx, nn(task), &fresh)).To(Succeed())
+		Expect(fresh.Status.Phase).To(Equal(foremanv1alpha1.AgenticTaskPhaseFailed))
+		Expect(fresh.Status.Verdict).To(Equal(foremanv1alpha1.AgenticTaskVerdictIncomplete))
+		failedCond := findCondition(fresh.Status.Conditions, "Failed")
+		Expect(failedCond).NotTo(BeNil())
+		Expect(failedCond.Reason).To(Equal("AgentNotFound"))
+		Expect(failedCond.Message).To(ContainSubstring("does-not-exist"))
+	})
+
+	It("ignores the task's own RequiredCapability when AgentRef is set", func() {
+		// The task asks for an unsatisfiable RAM size; the Agent it
+		// references only requires what the test node advertises. The
+		// locked M3 contract says AgentRef wins, so the task should
+		// schedule successfully despite the task's larger RAM ask.
+		agent := newAgent("override-coder")
+		agent.Spec.RequiredCapability = foremanv1alpha1.RequiredCapability{
+			Accelerator: foremanv1alpha1.AgenticTaskAccelerator("metal"),
+			MinRAMGB:    16,
+		}
+		Expect(k8sClient.Create(ctx, agent)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, agent) })
+
+		task := newTask("override-target")
+		task.Spec.AgentRef = &corev1.LocalObjectReference{Name: agent.Name}
+		task.Spec.RequiredCapability = foremanv1alpha1.RequiredCapability{
+			Accelerator: foremanv1alpha1.AgenticTaskAccelerator("metal"),
+			MinRAMGB:    1024, // would not fit any test node
+		}
+		Expect(k8sClient.Create(ctx, task)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, task) })
+		setPhase(task, foremanv1alpha1.AgenticTaskPhasePending)
+
+		node := newFleetNode("override-target-node")
+		Expect(k8sClient.Create(ctx, node)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, node) })
+		setNodeReady(node, foremanv1alpha1.FleetNodeCapability{
+			Accelerator:    foremanv1alpha1.FleetNodeAccelerator("metal"),
+			TotalRAMGB:     32,
+			AvailableRAMGB: 24,
+		})
+
+		_, err := reconciler.Reconcile(ctx, reqFor(task))
+		Expect(err).NotTo(HaveOccurred())
+
+		var fresh foremanv1alpha1.AgenticTask
+		Expect(k8sClient.Get(ctx, nn(task), &fresh)).To(Succeed())
+		Expect(fresh.Status.Phase).To(Equal(foremanv1alpha1.AgenticTaskPhaseScheduled))
+		Expect(fresh.Status.AssignedNode).To(Equal(node.Name))
+	})
+
 	It("does not touch a task already past Pending (FleetAgent's domain)", func() {
 		task := newTask("hands-off")
 		Expect(k8sClient.Create(ctx, task)).To(Succeed())
@@ -202,6 +297,18 @@ func newTask(name string) *foremanv1alpha1.AgenticTask {
 		Spec: foremanv1alpha1.AgenticTaskSpec{
 			Kind:    foremanv1alpha1.AgenticTaskKindFreeform,
 			Payload: foremanv1alpha1.AgenticTaskPayload{Prompt: "test"},
+		},
+	}
+}
+
+func newAgent(name string) *foremanv1alpha1.Agent {
+	return &foremanv1alpha1.Agent{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+		Spec: foremanv1alpha1.AgentSpec{
+			Role:                foremanv1alpha1.AgentRoleCoder,
+			InferenceServiceRef: corev1.LocalObjectReference{Name: "any-svc"},
+			SystemPrompt:        "test system prompt",
+			Tools:               []string{"submit_result"},
 		},
 	}
 }

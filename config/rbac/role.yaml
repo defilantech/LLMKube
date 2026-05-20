@@ -73,6 +73,7 @@ rules:
   - foreman.llmkube.dev
   resources:
   - agentictasks
+  - agents
   - fleetnodes
   - workloads
   verbs:
@@ -87,6 +88,7 @@ rules:
   - foreman.llmkube.dev
   resources:
   - agentictasks/finalizers
+  - agents/finalizers
   - fleetnodes/finalizers
   - workloads/finalizers
   verbs:
@@ -95,6 +97,7 @@ rules:
   - foreman.llmkube.dev
   resources:
   - agentictasks/status
+  - agents/status
   - fleetnodes/status
   - workloads/status
   verbs:

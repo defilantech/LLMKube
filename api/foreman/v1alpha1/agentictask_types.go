@@ -17,6 +17,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
@@ -113,7 +114,16 @@ type AgenticTaskSpec struct {
 	// +optional
 	ModelRef string `json:"modelRef,omitempty"`
 
+	// AgentRef references an Agent (in the same namespace) that runs
+	// this step. When set, the scheduler resolves the Agent and uses
+	// Agent.spec.requiredCapability for capability matching, ignoring
+	// this task's own RequiredCapability. Empty preserves the M2 path
+	// in which the task's RequiredCapability is authoritative.
+	// +optional
+	AgentRef *corev1.LocalObjectReference `json:"agentRef,omitempty"`
+
 	// RequiredCapability filters which FleetNodes can serve this task.
+	// Ignored when AgentRef is set (the Agent's RequiredCapability wins).
 	// +optional
 	RequiredCapability RequiredCapability `json:"requiredCapability,omitempty"`
 

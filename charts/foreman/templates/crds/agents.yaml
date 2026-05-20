@@ -4,30 +4,27 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.19.0
-  name: agentictasks.foreman.llmkube.dev
+  name: agents.foreman.llmkube.dev
 spec:
   group: foreman.llmkube.dev
   names:
-    kind: AgenticTask
-    listKind: AgenticTaskList
-    plural: agentictasks
+    kind: Agent
+    listKind: AgentList
+    plural: agents
     shortNames:
-    - at
-    singular: agentictask
+    - ag
+    singular: agent
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .status.phase
-      name: Phase
+    - jsonPath: .spec.role
+      name: Role
       type: string
-    - jsonPath: .spec.kind
-      name: Kind
+    - jsonPath: .spec.model
+      name: Model
       type: string
-    - jsonPath: .status.assignedNode
-      name: Node
-      type: string
-    - jsonPath: .status.verdict
-      name: Verdict
+    - jsonPath: .spec.inferenceServiceRef.name
+      name: InferenceService
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
@@ -36,10 +33,15 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          AgenticTask is the unit of dispatchable agentic work. The Foreman scheduler
-          matches each Pending task to a FleetNode whose advertised capability
-          satisfies the task's RequiredCapability, then a FleetAgent on that node
-          picks up the task and runs the matching executor.
+          Agent is the reusable role definition referenced by AgenticTasks via
+          spec.agentRef. An Agent bundles the system prompt, tool whitelist,
+          model endpoint, and required host capability for one pipeline step
+          (coder, verifier, reviewer, planner). Multiple tasks can reference
+          the same Agent; the Agent itself owns no per-task state.
+
+          Namespaced: a transcript ConfigMap produced by a task referencing this
+          Agent can be owner-ref'd cleanly, and namespaces can declare their own
+          role-specialized variants without name collisions.
         properties:
           apiVersion:
             description: |-
@@ -59,15 +61,25 @@ spec:
           metadata:
             type: object
           spec:
-            description: spec is the desired task definition.
+            description: spec is the role definition.
             properties:
-              agentRef:
+              bashTimeoutSeconds:
+                default: 30
                 description: |-
-                  AgentRef references an Agent (in the same namespace) that runs
-                  this step. When set, the scheduler resolves the Agent and uses
-                  Agent.spec.requiredCapability for capability matching, ignoring
-                  this task's own RequiredCapability. Empty preserves the M2 path
-                  in which the task's RequiredCapability is authoritative.
+                  BashTimeoutSeconds bounds a single bash tool invocation. The bash
+                  tool runs under "sh -c" with cwd pinned to the workspace and a
+                  scrubbed environment; this cap stops a runaway test or grep from
+                  stalling the whole agent loop.
+                format: int32
+                minimum: 1
+                type: integer
+              inferenceServiceRef:
+                description: |-
+                  InferenceServiceRef names the LLMKube InferenceService in the same
+                  namespace that serves this Agent's model. The foreman-agent
+                  resolves it to a base URL ("http://<svc>.<ns>.svc:<port>/v1") at
+                  task time. v0.1 uses inferenceServiceRef exclusively; v0.2 may
+                  introduce an external-provider URL form.
                 properties:
                   name:
                     default: ""
@@ -80,67 +92,48 @@ spec:
                     type: string
                 type: object
                 x-kubernetes-map-type: atomic
-              dependsOn:
+              maxRetries:
+                default: 3
                 description: |-
-                  DependsOn lists AgenticTasks (by name in the same namespace) that
-                  must reach Succeeded before this task is dispatched. v0.1 uses this
-                  only to chain verify tasks behind their parent issue-fix.
-                items:
-                  type: string
-                type: array
-              kind:
-                description: Kind selects the work type and payload shape.
-                enum:
-                - issue-fix
-                - verify
-                - freeform
-                type: string
-              modelRef:
-                description: |-
-                  ModelRef names the Model the agent should use. Optional; the
-                  scheduler can pick a default based on RequiredCapability.
-                type: string
-              payload:
-                description: Payload is the kind-discriminated work spec.
-                properties:
-                  agent:
-                    description: |-
-                      Agent is the named agent to invoke. Required for freeform; defaults
-                      to "issue-fixer" for issue-fix and "verify" for verify.
-                    type: string
-                  branch:
-                    description: Branch is the existing branch to gate. Required for
-                      verify.
-                    type: string
-                  branchPrefix:
-                    description: |-
-                      BranchPrefix overrides the branch name prefix on issue-fix tasks
-                      (default derived from the issue's labels via conventional commit
-                      prefixes: fix/, feat/, chore/, etc.).
-                    type: string
-                  issue:
-                    description: Issue is the GitHub issue number. Required for issue-fix.
-                    format: int32
-                    minimum: 1
-                    type: integer
-                  prompt:
-                    description: Prompt is the agent input. Required for freeform.
-                    type: string
-                  repo:
-                    description: Repo is the "owner/name" GitHub repo. Required for
-                      issue-fix and verify.
-                    type: string
-                type: object
-              priority:
-                description: |-
-                  Priority is a hint for the scheduler when many tasks are Pending.
-                  Higher values dispatch first. v0.1 is FIFO and ignores priority.
+                  MaxRetries bounds how many times the loop retries a single turn on
+                  recoverable errors (notably llama.cpp #22072 truncated tool_call
+                  argument JSON). Bounded exponential backoff with jitter.
                 format: int32
+                maximum: 20
+                minimum: 0
+                type: integer
+              maxTurns:
+                default: 50
+                description: |-
+                  MaxTurns caps the agent loop's iterations before it gives up. Each
+                  turn is one chat-completions call plus its tool dispatches.
+                format: int32
+                maximum: 500
+                minimum: 1
+                type: integer
+              model:
+                description: |-
+                  Model is a free-form identifier for the model this Agent expects
+                  the referenced InferenceService to serve. Cosmetic in v0.1 (the
+                  runtime endpoint comes from InferenceServiceRef); v0.2 will use it
+                  to validate the InferenceService is actually serving the expected
+                  model before the agent loop dispatches.
+                type: string
+              requestTimeoutSeconds:
+                default: 600
+                description: |-
+                  RequestTimeoutSeconds bounds a single chat-completions HTTP
+                  request. Long-context decode on a local model can be slow; default
+                  is generous.
+                format: int32
+                minimum: 1
                 type: integer
               requiredCapability:
                 description: |-
-                  RequiredCapability filters which FleetNodes can serve this task.
-                  Ignored when AgentRef is set (the Agent's RequiredCapability wins).
+                  RequiredCapability filters which FleetNodes can serve this Agent.
+                  When an AgenticTask references this Agent via spec.agentRef, the
+                  scheduler uses this RequiredCapability and ignores the task's own
+                  spec.requiredCapability. Single source of truth.
                 properties:
                   accelerator:
                     default: any
@@ -173,41 +166,57 @@ spec:
                       (e.g. verify tasks targeting the gate runner).
                     type: object
                 type: object
-              timeoutSeconds:
+              role:
                 description: |-
-                  TimeoutSeconds bounds the agent's run time. Zero uses the operator's
-                  default (2700, matching the autofix pipeline's value).
-                format: int32
-                minimum: 0
-                type: integer
+                  Role discriminates the pipeline step this Agent fulfills. Currently
+                  informational (used for observability + future learning routing);
+                  the scheduler does not branch on it in v0.1.
+                enum:
+                - coder
+                - verifier
+                - reviewer
+                - planner
+                type: string
+              systemPrompt:
+                description: |-
+                  SystemPrompt is the literal system message the Agent sees on every
+                  run. Inline (no ConfigMap indirection) for v0.1; ConfigMap
+                  indirection is a non-breaking v0.2 addition. Required and non-empty.
+                minLength: 1
+                type: string
+              temperature:
+                description: |-
+                  Temperature is the sampling temperature passed verbatim on each
+                  chat-completions request. String-typed to dodge float-on-CRD
+                  complications and to allow exact roundtrip; parsed as a float at
+                  loop start. Expected range "0.0" through "2.0"; the loop rejects
+                  anything outside.
+                pattern: ^[0-2](\.[0-9]+)?$
+                type: string
+              tools:
+                description: |-
+                  Tools is the tool whitelist surfaced to the model on every turn.
+                  Unknown names are rejected at agent startup so a typo in an Agent
+                  CR fails loud rather than silently disabling a tool.
+                items:
+                  type: string
+                minItems: 1
+                type: array
             required:
-            - kind
-            - payload
+            - inferenceServiceRef
+            - role
+            - systemPrompt
+            - tools
             type: object
           status:
             description: |-
-              status reflects the observed state, updated by the scheduler and the
-              assigned FleetAgent.
+              status is the reconciler's observed view. M3 reconciler is a stub
+              and does not write to it; status fields are reserved for v0.2.
             properties:
-              assignedNode:
-                description: AssignedNode is the FleetNode.metadata.name the scheduler
-                  routed to.
-                type: string
-              branch:
-                description: Branch is the pushed branch, set on a successful issue-fix.
-                type: string
-              claimedAt:
-                description: ClaimedAt is when the FleetAgent on AssignedNode claimed
-                  the task.
-                format: date-time
-                type: string
-              commitSHA:
-                description: CommitSHA is the head commit of Branch.
-                type: string
               conditions:
                 description: |-
-                  Conditions represent the current state of the task. Standard types:
-                  Scheduled, Running, Completed, Failed.
+                  Conditions track standard signals. M3 reserves "Ready" and
+                  "Validated"; the reconciler does not write either in M3.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -266,46 +275,13 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
-              finishedAt:
-                description: FinishedAt is when the executor produced a verdict (success
-                  or fail).
-                format: date-time
-                type: string
-              phase:
-                description: Phase is the current lifecycle phase.
-                enum:
-                - Pending
-                - Scheduled
-                - Running
-                - Verifying
-                - Succeeded
-                - Failed
-                type: string
-              result:
+              observedGeneration:
                 description: |-
-                  Result is the structured JSON the agent emitted, validated against the
-                  foreman.v1 schema. Opaque to the API server.
-                type: object
-                x-kubernetes-preserve-unknown-fields: true
-              startedAt:
-                description: StartedAt is when the executor began work.
-                format: date-time
-                type: string
-              transcriptRef:
-                description: |-
-                  TranscriptRef points to where the agent's full transcript was stored
-                  (typically a ConfigMap in the operator's namespace).
-                type: string
-              verdict:
-                description: Verdict is the final outcome category.
-                enum:
-                - GO
-                - NO-GO
-                - INCOMPLETE
-                - GATE-PASS
-                - GATE-FAIL
-                - GATE-ERROR
-                type: string
+                  ObservedGeneration is the most recent .metadata.generation the
+                  reconciler has processed. Lets clients tell at a glance whether a
+                  spec edit has been observed yet.
+                format: int64
+                type: integer
             type: object
         required:
         - spec

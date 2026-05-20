@@ -65,6 +65,7 @@ const requeueWaitingForDeps = 10 * time.Second
 // +kubebuilder:rbac:groups=foreman.llmkube.dev,resources=agentictasks/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=foreman.llmkube.dev,resources=agentictasks/finalizers,verbs=update
 // +kubebuilder:rbac:groups=foreman.llmkube.dev,resources=fleetnodes,verbs=get;list;watch
+// +kubebuilder:rbac:groups=foreman.llmkube.dev,resources=agents,verbs=get;list;watch
 
 // Reconcile drives a single AgenticTask toward Scheduled.
 func (r *AgenticTaskReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -110,8 +111,21 @@ func (r *AgenticTaskReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{RequeueAfter: requeueWaitingForDeps}, nil
 	}
 
-	// Find a FleetNode that satisfies the task's RequiredCapability.
-	nodeName, err := r.firstFitNode(ctx, &task)
+	// Resolve the effective RequiredCapability. When spec.agentRef is set
+	// it wins: we look up the Agent and use its capability. The task's own
+	// spec.requiredCapability is ignored in that path; that is the locked
+	// M3 contract. An Agent that does not exist fails the task fast.
+	required, err := r.effectiveRequiredCapability(ctx, &task)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return r.failTask(ctx, &task, "AgentNotFound",
+				fmt.Sprintf("Agent %q not found in namespace %q", task.Spec.AgentRef.Name, task.Namespace))
+		}
+		return ctrl.Result{}, err
+	}
+
+	// Find a FleetNode that satisfies the effective RequiredCapability.
+	nodeName, err := r.firstFitNode(ctx, required)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -121,6 +135,22 @@ func (r *AgenticTaskReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	return r.scheduleToNode(ctx, &task, nodeName)
+}
+
+// effectiveRequiredCapability returns the capability the scheduler should
+// match against. When spec.agentRef is set the Agent's capability wins;
+// otherwise the task's own. NotFound on AgentRef is propagated so the
+// caller can fail the task with a clear reason.
+func (r *AgenticTaskReconciler) effectiveRequiredCapability(ctx context.Context, task *foremanv1alpha1.AgenticTask) (foremanv1alpha1.RequiredCapability, error) {
+	if task.Spec.AgentRef == nil || task.Spec.AgentRef.Name == "" {
+		return task.Spec.RequiredCapability, nil
+	}
+	var agent foremanv1alpha1.Agent
+	key := types.NamespacedName{Namespace: task.Namespace, Name: task.Spec.AgentRef.Name}
+	if err := r.Get(ctx, key, &agent); err != nil {
+		return foremanv1alpha1.RequiredCapability{}, err
+	}
+	return agent.Spec.RequiredCapability, nil
 }
 
 // setInitialPending writes phase=Pending the first time we see the task.
@@ -173,9 +203,9 @@ func (r *AgenticTaskReconciler) allDepsSucceeded(ctx context.Context, task *fore
 }
 
 // firstFitNode picks the alphabetically-first Ready FleetNode whose
-// advertised capability satisfies the task's RequiredCapability and that
-// is not already running another task.
-func (r *AgenticTaskReconciler) firstFitNode(ctx context.Context, task *foremanv1alpha1.AgenticTask) (string, error) {
+// advertised capability satisfies the effective RequiredCapability and
+// that is not already running another task.
+func (r *AgenticTaskReconciler) firstFitNode(ctx context.Context, required foremanv1alpha1.RequiredCapability) (string, error) {
 	var nodes foremanv1alpha1.FleetNodeList
 	if err := r.List(ctx, &nodes); err != nil {
 		return "", err
@@ -191,7 +221,7 @@ func (r *AgenticTaskReconciler) firstFitNode(ctx context.Context, task *foremanv
 		if n.Status.CurrentTask != "" {
 			continue // v0.1: one task per node
 		}
-		if !capabilitySatisfies(task.Spec.RequiredCapability, n) {
+		if !capabilitySatisfies(required, n) {
 			continue
 		}
 		return n.Name, nil
