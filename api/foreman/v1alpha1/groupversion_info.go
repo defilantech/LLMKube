@@ -34,7 +34,13 @@ var (
 	GroupVersion = schema.GroupVersion{Group: "foreman.llmkube.dev", Version: "v1alpha1"}
 
 	// SchemeBuilder is used to add go types to the GroupVersionKind scheme.
-	SchemeBuilder = &scheme.Builder{GroupVersion: GroupVersion}
+	// scheme.Builder was deprecated in controller-runtime v0.24 (the rationale
+	// is that api packages should have minimal deps, and scheme.Builder pulls
+	// controller-runtime into api/). It still works; migrating to the
+	// runtime.NewSchemeBuilder pattern is a project-wide refactor that touches
+	// both API groups and is tracked as its own follow-up. Suppress the
+	// deprecation here only.
+	SchemeBuilder = &scheme.Builder{GroupVersion: GroupVersion} //nolint:staticcheck // SA1019: see comment above
 
 	// AddToScheme adds the types in this group-version to the given scheme.
 	AddToScheme = SchemeBuilder.AddToScheme

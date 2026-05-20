@@ -79,7 +79,7 @@ flowchart TB
     subgraph HOST["Apple Silicon host (optional)"]
         direction LR
         AGENT["metal-agent"]
-        NATIVE["llama-server · oMLX · Ollama<br/>(native processes)"]
+        NATIVE["llama-server · mlx-server · vllm-swift<br/>(native processes)"]
         AGENT -- supervises --> NATIVE
     end
 
@@ -310,7 +310,7 @@ Consistent ~53 tok/s across 3-8B models with automatic layer sharding. See [v0.4
 
 **Inference:**
 - Kubernetes-native CRDs (`Model` + `InferenceService`)
-- Multiple runtimes: llama.cpp (GGUF), vLLM (HuggingFace + safetensors), TGI, Ollama
+- Multiple runtimes: llama.cpp (GGUF), vLLM (HuggingFace + safetensors), TGI in-cluster; llama-server, mlx-server, and vllm-swift natively on Apple Silicon
 - Automatic model download from HuggingFace, HTTP, or PVC (S3 planned)
 - Persistent model cache, download once, deploy instantly ([guide](docs/MODEL-CACHE.md))
 - OpenAI-compatible `/v1/chat/completions` API

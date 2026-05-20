@@ -3,7 +3,7 @@
 # distroless-static + non-root layout of the router-proxy image so the
 # proxy and the stub run under the same PodSecurityStandard restricted
 # constraints that we enforce in the test namespace.
-FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
 
 ARG TARGETOS
 ARG TARGETARCH
