@@ -47,7 +47,10 @@ var _ = Describe("AgenticTaskReconciler (M0 stub)", func() {
 			NamespacedName: types.NamespacedName{Namespace: "default", Name: "no-such-task"},
 		})
 		Expect(err).NotTo(HaveOccurred())
-		Expect(res.Requeue).To(BeFalse())
+		// RequeueAfter == 0 covers both "no immediate requeue" and "no
+		// timer requeue" since controller-runtime deprecated the
+		// boolean Requeue field in favor of the zero-RequeueAfter
+		// representation.
 		Expect(res.RequeueAfter).To(BeZero())
 	})
 
