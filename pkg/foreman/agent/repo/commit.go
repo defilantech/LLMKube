@@ -54,6 +54,21 @@ type CommitOptions struct {
 // empty branch lands on the fork.
 var ErrNothingToCommit = errors.New("repo: nothing to commit")
 
+// HasChanges returns true when `git status --porcelain` reports any
+// untracked, modified, or staged files. Callers use this to short-
+// circuit the commit path on a NO-CHANGES outcome before paying the
+// cost of stage + validate + commit.
+func HasChanges(ctx context.Context, workspace string) (bool, error) {
+	if workspace == "" {
+		return false, fmt.Errorf("HasChanges: workspace is required")
+	}
+	out, err := runGit(ctx, workspace, baseEnv(), "status", "--porcelain")
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(out) != "", nil
+}
+
 // Commit stages every change in the workspace (git add -A) and creates
 // a single DCO-signed commit. Returns the new commit SHA.
 //

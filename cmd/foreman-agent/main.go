@@ -55,7 +55,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	foremanv1alpha1 "github.com/defilantech/llmkube/api/foreman/v1alpha1"
+	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 	foremanagent "github.com/defilantech/llmkube/pkg/foreman/agent"
+	"github.com/defilantech/llmkube/pkg/foreman/agent/repo"
+	foremantools "github.com/defilantech/llmkube/pkg/foreman/agent/tools"
 )
 
 var (
@@ -66,6 +69,7 @@ var (
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(foremanv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(inferencev1alpha1.AddToScheme(scheme))
 }
 
 func main() {
@@ -88,6 +92,14 @@ func main() {
 		maxCtx           int
 		tokensPerSec     int
 		staticTotalRAMGB int
+
+		// M3 executor flags
+		agentMode            string
+		gitRemoteURL         string
+		inferenceURLOverride string
+		commitAuthorName     string
+		commitAuthorEmail    string
+		keepWorkspace        bool
 	)
 
 	flag.StringVar(&fleetNodeName, "fleet-node-name", "",
@@ -121,6 +133,25 @@ func main() {
 	flag.IntVar(&staticTotalRAMGB, "total-ram-gb", 0,
 		"Advertised total RAM on platforms without live memory probing (non-darwin only).")
 
+	// M3: native agent loop executor flags. The default mode stays
+	// "stub" so a binary built from this commit and dropped into a
+	// running M2 launchd unit keeps the same behavior; flip to
+	// --agent-mode=native to engage the native loop.
+	flag.StringVar(&agentMode, "agent-mode", "stub",
+		"Executor to dispatch to: stub | native. M3 ships native; default stays stub until Phase F flips it.")
+	flag.StringVar(&gitRemoteURL, "git-remote-url", "",
+		"git URL to clone from and push branches to. v0.1 uses the fork for both. Required when --agent-mode=native.")
+	flag.StringVar(&inferenceURLOverride, "inference-base-url-override", "",
+		"Override the inference URL the OAI client dispatches to (e.g. http://localhost:8080/v1). "+
+			"Required when foreman-agent runs outside the cluster; the in-cluster "+
+			"path resolves from InferenceService.status.endpoint.")
+	flag.StringVar(&commitAuthorName, "commit-author-name", "Foreman Bot",
+		"git author + committer name for branches produced by the native loop.")
+	flag.StringVar(&commitAuthorEmail, "commit-author-email", "",
+		"git author + committer email. Required when --agent-mode=native.")
+	flag.BoolVar(&keepWorkspace, "keep-workspace", false,
+		"Preserve the per-task clone workspace after the run. Useful for debugging; default removes it.")
+
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -143,10 +174,20 @@ func main() {
 		}
 	}
 
-	if workspaceDir == "" && opencodeBin == "" {
+	if agentMode == "stub" && workspaceDir == "" && opencodeBin == "" {
 		setupLog.Info(
-			"M2 stub executor active; --workspace-dir and --opencode-bin become required at M3",
+			"stub executor active; --workspace-dir and --git-remote-url are required when --agent-mode=native",
 		)
+	}
+	if agentMode == "native" {
+		if gitRemoteURL == "" {
+			setupLog.Error(nil, "--git-remote-url is required when --agent-mode=native")
+			os.Exit(1)
+		}
+		if commitAuthorEmail == "" {
+			setupLog.Error(nil, "--commit-author-email is required when --agent-mode=native")
+			os.Exit(1)
+		}
 	}
 
 	cfg, err := loadKubeconfig(kubeContext)
@@ -191,8 +232,30 @@ func main() {
 		os.Exit(1)
 	}
 
-	// M2 executor: stub. M3 swaps in the native agent loop.
-	executor := &foremanagent.StubExecutor{SleepDuration: stubSleep}
+	// Executor: M2 stub or M3 native. Selection via --agent-mode.
+	var executor foremanagent.Executor
+	switch agentMode {
+	case "stub":
+		executor = &foremanagent.StubExecutor{SleepDuration: stubSleep}
+	case "native":
+		executor = &foremanagent.NativeAgentLoopExecutor{
+			Client:                   kc,
+			WorkspaceRoot:            workspaceDir,
+			GitRemoteURL:             gitRemoteURL,
+			InferenceBaseURLOverride: inferenceURLOverride,
+			CommitAuthor: repo.Identity{
+				Name: commitAuthorName, Email: commitAuthorEmail,
+			},
+			CommitCommitter: repo.Identity{
+				Name: commitAuthorName, Email: commitAuthorEmail,
+			},
+			KeepWorkspace:   keepWorkspace,
+			RegistryFactory: defaultRegistryFactory,
+		}
+	default:
+		setupLog.Error(nil, "unknown --agent-mode", "value", agentMode, "valid", "stub|native")
+		os.Exit(1)
+	}
 
 	watcher := &foremanagent.AgenticTaskWatcher{
 		Client:    kc,
@@ -275,6 +338,39 @@ func clampInt32(n int) int32 {
 		return math.MaxInt32
 	}
 	return int32(n) //nolint:gosec // bounded above
+}
+
+// defaultRegistryFactory builds the production tool registry used by
+// the native loop. Constructs every tool the v0.1 surface exposes
+// (read_file, write_file, str_replace, grep, bash, submit_result),
+// then filters down to the Agent.spec.tools whitelist. Failing the
+// whitelist filter (a typo in the Agent CR's tool list) returns an
+// error so the executor surfaces a clean ToolRegistryBuildFailed
+// outcome rather than launching the loop with the wrong tools.
+func defaultRegistryFactory(workspace string, ag *foremanv1alpha1.Agent) (foremanagent.ToolRegistry, error) {
+	bashTimeout := time.Duration(ag.Spec.BashTimeoutSeconds) * time.Second
+	if bashTimeout <= 0 {
+		bashTimeout = 30 * time.Second
+	}
+	r, err := foremantools.New(
+		&foremantools.ReadFileTool{Workspace: workspace},
+		&foremantools.WriteFileTool{Workspace: workspace},
+		&foremantools.StrReplaceTool{Workspace: workspace},
+		&foremantools.GrepTool{Workspace: workspace},
+		&foremantools.BashTool{Workspace: workspace, Timeout: bashTimeout},
+		foremantools.SubmitResultTool{},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("default registry: %w", err)
+	}
+	if len(ag.Spec.Tools) > 0 {
+		filtered, err := r.Filter(ag.Spec.Tools)
+		if err != nil {
+			return nil, fmt.Errorf("agent tool whitelist: %w", err)
+		}
+		return filtered, nil
+	}
+	return r, nil
 }
 
 var dns1123Bad = regexp.MustCompile(`[^a-z0-9-]+`)
