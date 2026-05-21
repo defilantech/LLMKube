@@ -133,12 +133,12 @@ func main() {
 	flag.IntVar(&staticTotalRAMGB, "total-ram-gb", 0,
 		"Advertised total RAM on platforms without live memory probing (non-darwin only).")
 
-	// M3: native agent loop executor flags. The default mode stays
-	// "stub" so a binary built from this commit and dropped into a
-	// running M2 launchd unit keeps the same behavior; flip to
-	// --agent-mode=native to engage the native loop.
-	flag.StringVar(&agentMode, "agent-mode", "stub",
-		"Executor to dispatch to: stub | native. M3 ships native; default stays stub until Phase F flips it.")
+	// M3 Phase F: default flipped to native. The stub executor is
+	// kept around for development + tests, but production foreman-
+	// agent runs the native loop. Set --agent-mode=stub explicitly
+	// to fall back to the M2 placeholder.
+	flag.StringVar(&agentMode, "agent-mode", "native",
+		"Executor to dispatch to: native | stub. Default is native (M3 Phase F); stub is the M2 placeholder for tests.")
 	flag.StringVar(&gitRemoteURL, "git-remote-url", "",
 		"git URL to clone from and push branches to. v0.1 uses the fork for both. Required when --agent-mode=native.")
 	flag.StringVar(&inferenceURLOverride, "inference-base-url-override", "",

@@ -1,0 +1,71 @@
+# Foreman M3 end-to-end demo: a real issue-fix AgenticTask routed to the
+# Carnice coder Agent on the M5 Max via the native agent loop.
+#
+# Prerequisites:
+#   1. The InferenceService `qwen36-35b-carnice-mtp` exists in `default`
+#      and reports phase=Ready. (It is the one metal-agent already
+#      serves on the M5 Max.)
+#   2. The Agent CR is applied:
+#        kubectl apply -f config/foreman/agents/qwen36-35b-carnice-mtp-coder.yaml
+#   3. foreman-agent is running on the M5 Max with --agent-mode=native
+#      and --git-remote-url + --commit-author-email set. See
+#      docs/foreman/runbook-m3.md.
+#   4. The InferenceService scheduler sees a Ready FleetNode for the
+#      M5 Max (`kubectl get fleetnodes` confirms phase=Ready).
+#
+# Apply:
+#   kubectl apply -f examples/foreman/m3-coder-demo.yaml
+#
+# Watch:
+#   kubectl get agentictask m3-coder-demo -w
+#   kubectl get cm -l foreman.llmkube.dev/transcript-of=m3-coder-demo
+#   kubectl get agentictask m3-coder-demo -o yaml | yq '.status'
+#
+# Expected end state on a GO outcome (~3-10 min depending on the issue):
+#   status.phase=Succeeded
+#   status.verdict=GO
+#   status.result.kind=native-agent-loop
+#   status.result.extra.branch=foreman/issue-<N>
+#   status.result.extra.commitSHA=<sha>
+#   status.result.extra.transcriptRef={kind: ConfigMap, name: foreman-transcript-m3-coder-demo, ...}
+#
+# Then manually open a PR (M4 will automate this):
+#   gh pr create \
+#     --base defilantech/LLMKube:main \
+#     --head Defilan:foreman/issue-<N> \
+#     --title "<convention>: <subject from model commit message>" \
+#     --body-file - <<'BODY'
+#   ... PR template body ...
+#   BODY
+#
+# Replace ISSUE_NUMBER below with the actual open issue the demo
+# targets. The system prompt instructs the model to include `Fixes
+# #<N>` in the commit message using exactly this number.
+apiVersion: foreman.llmkube.dev/v1alpha1
+kind: AgenticTask
+metadata:
+  name: m3-coder-demo
+  namespace: default
+  labels:
+    foreman.llmkube.dev/milestone: m3
+    foreman.llmkube.dev/role: coder
+spec:
+  kind: issue-fix
+  # spec.agentRef wins over spec.requiredCapability per the M3 contract;
+  # the scheduler will use Agent.spec.requiredCapability for matching.
+  agentRef:
+    name: qwen36-35b-carnice-mtp-coder
+  timeoutSeconds: 1800
+  payload:
+    repo: defilantech/LLMKube
+    issue: REPLACE_WITH_ISSUE_NUMBER
+    # The full issue body. The system prompt reminds the model that the
+    # repo is already checked out; this payload supplies the context
+    # the model would otherwise have to fetch via the github MCP. v0.2
+    # may move this to a per-task `gh issue view` invocation inside
+    # the executor.
+    prompt: |
+      Replace this with the full body of the open issue you want the
+      coder agent to address. Include the title, the description, and
+      any acceptance criteria. The model will triage GO / NO-GO and,
+      on GO, implement the fix and call submit_result.
