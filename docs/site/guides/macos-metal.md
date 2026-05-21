@@ -138,7 +138,7 @@ apiVersion: inference.llmkube.dev/v1alpha1
 kind: Model
 metadata: { name: phi-4-mini }
 spec:
-  source: https://huggingface.co/bartowski/phi-4-mini-instruct-GGUF/resolve/main/phi-4-mini-instruct-Q4_K_M.gguf
+  source: https://huggingface.co/bartowski/microsoft_Phi-4-mini-instruct-GGUF/resolve/main/microsoft_Phi-4-mini-instruct-Q4_K_M.gguf
   format: gguf
   hardware:
     accelerator: metal
