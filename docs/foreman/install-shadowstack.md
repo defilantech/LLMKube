@@ -51,6 +51,16 @@ order.
     --version 0.8.0
   ```
 
+- **Upgrading from an M3-era cluster?** M4 widens both Foreman CRDs:
+  `Agent.spec.inferenceServiceRef` becomes optional, and
+  `AgenticTask.spec.requiredCapability.roles` is new. The chart's
+  CRD sync handles this automatically, but if you ever apply CRDs
+  outside the chart (e.g. directly from `config/crd/bases/`), the
+  M3 runbook's
+  ["re-apply all four CRDs" callout](./runbook-m3.md#prerequisites)
+  still applies: an older AgenticTask CRD silently rejects
+  `spec.requiredCapability.roles` under strict decode.
+
 ## Step 1 :: install Foreman
 
 ```sh

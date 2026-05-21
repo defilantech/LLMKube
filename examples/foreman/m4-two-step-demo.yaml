@@ -1,0 +1,82 @@
+# Foreman M4 two-step demo: coder@M5Max -> gate@ShadowStack.
+#
+# Edit the issue number + payload prompt below for the issue you want
+# to demo against, then apply:
+#
+#   kubectl apply -f examples/foreman/m4-two-step-demo.yaml
+#
+# Pre-flight: both Agents must already be applied. coder lives in M3
+# under config/foreman/agents/qwen36-35b-carnice-mtp-coder.yaml; gate
+# is sibling-applied by Phase F at
+# config/foreman/agents/shadowstack-gate.yaml.
+#
+# What happens:
+#   1. code-N reaches Pending; scheduler routes it to the M5 Max
+#      FleetNode (metal accelerator).
+#   2. gate-N reaches Pending; scheduler holds it because its
+#      dependsOn(code-N) is not Succeeded yet.
+#   3. M5 Max foreman-agent claims code-N; the Carnice coder runs;
+#      the native loop produces a branch on Defilan/LLMKube and
+#      submit_result fires.
+#   4. code-N transitions to Succeeded; gate-N's dependsOn unblocks;
+#      the scheduler routes gate-N to the ShadowStack FleetNode
+#      (verifier role).
+#   5. ShadowStack foreman-agent claims gate-N; run_gate_job submits
+#      the Job in foreman-system; the Job clones the branch, runs
+#      make fmt vet lint test, prints GATE PASS, exits 0.
+#   6. gate-N transitions to Succeeded with verdict=GATE-PASS and
+#      status.result.extra.{jobName, logTail, branch}.
+#
+# Sample inspection:
+#   kubectl get agentictasks
+#   kubectl get agentictask code-503 -o yaml | yq '.status'
+#   kubectl get agentictask gate-503 -o yaml | yq '.status.result'
+#   kubectl logs job/<status.result.extra.jobName> -n foreman-system
+
+---
+apiVersion: foreman.llmkube.dev/v1alpha1
+kind: AgenticTask
+metadata:
+  name: code-503
+  namespace: default
+spec:
+  kind: issue-fix
+  priority: 50
+  timeoutSeconds: 1800
+  agentRef:
+    name: qwen36-35b-carnice-mtp-coder
+  payload:
+    repo: defilantech/LLMKube
+    issue: 503
+    branch: foreman/issue-503
+    prompt: |
+      Fix issue #503 in the LLMKube repo. Read the issue body, make
+      the minimum change, run the local tests via the bash tool to
+      confirm green, then call submit_result with verdict=GO and a
+      commit_message that includes `Fixes #503`.
+
+---
+apiVersion: foreman.llmkube.dev/v1alpha1
+kind: AgenticTask
+metadata:
+  name: gate-503
+  namespace: default
+spec:
+  kind: verify
+  priority: 50
+  timeoutSeconds: 3900
+  agentRef:
+    name: shadowstack-gate
+  dependsOn:
+    - name: code-503
+      namespace: default
+  payload:
+    repo: defilantech/LLMKube
+    issue: 503
+    # Set this to the same branch name the coder task above produces
+    # (foreman/issue-<N> by convention). v0.1 does not propagate the
+    # upstream task's status.result.extra.branch into the downstream
+    # task's payload automatically; the user wires the two branches
+    # by setting them identically here. Cross-task status threading
+    # is a v0.2 feature.
+    branch: foreman/issue-503

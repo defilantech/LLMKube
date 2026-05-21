@@ -36,6 +36,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"os/signal"
@@ -45,8 +46,11 @@ import (
 	"time"
 
 	"golang.org/x/sync/errgroup"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -97,9 +101,12 @@ func main() {
 		agentMode            string
 		gitRemoteURL         string
 		inferenceURLOverride string
-		commitAuthorName     string
-		commitAuthorEmail    string
-		keepWorkspace        bool
+
+		// M4 gate-tool flags
+		foremanNamespace  string
+		commitAuthorName  string
+		commitAuthorEmail string
+		keepWorkspace     bool
 	)
 
 	flag.StringVar(&fleetNodeName, "fleet-node-name", "",
@@ -151,6 +158,8 @@ func main() {
 		"git author + committer email. Required when --agent-mode=native.")
 	flag.BoolVar(&keepWorkspace, "keep-workspace", false,
 		"Preserve the per-task clone workspace after the run. Useful for debugging; default removes it.")
+	flag.StringVar(&foremanNamespace, "foreman-namespace", "foreman-system",
+		"Namespace the M4 run_gate_job tool submits gate Jobs into. Defaults to foreman-system.")
 
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
@@ -202,6 +211,15 @@ func main() {
 		os.Exit(1)
 	}
 
+	// client-go Clientset just for pod-log access from the M4
+	// run_gate_job tool. controller-runtime client does not surface
+	// the pods/log subresource; this is the smallest seam that does.
+	kcs, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		setupLog.Error(err, "failed to construct kubernetes clientset")
+		os.Exit(1)
+	}
+
 	spec := foremanv1alpha1.FleetNodeSpec{
 		NodeName:      fleetNodeName,
 		TailscaleAddr: tailscaleAddr,
@@ -250,7 +268,7 @@ func main() {
 				Name: commitAuthorName, Email: commitAuthorEmail,
 			},
 			KeepWorkspace:   keepWorkspace,
-			RegistryFactory: defaultRegistryFactory,
+			RegistryFactory: makeRegistryFactory(kc, kcs, foremanNamespace),
 		}
 	default:
 		setupLog.Error(nil, "unknown --agent-mode", "value", agentMode, "valid", "stub|native")
@@ -340,37 +358,95 @@ func clampInt32(n int) int32 {
 	return int32(n) //nolint:gosec // bounded above
 }
 
-// defaultRegistryFactory builds the production tool registry used by
-// the native loop. Constructs every tool the v0.1 surface exposes
-// (read_file, write_file, str_replace, grep, bash, submit_result),
-// then filters down to the Agent.spec.tools whitelist. Failing the
-// whitelist filter (a typo in the Agent CR's tool list) returns an
-// error so the executor surfaces a clean ToolRegistryBuildFailed
-// outcome rather than launching the loop with the wrong tools.
-func defaultRegistryFactory(workspace string, ag *foremanv1alpha1.Agent) (foremanagent.ToolRegistry, error) {
-	bashTimeout := time.Duration(ag.Spec.BashTimeoutSeconds) * time.Second
-	if bashTimeout <= 0 {
-		bashTimeout = 30 * time.Second
-	}
-	r, err := foremantools.New(
-		&foremantools.ReadFileTool{Workspace: workspace},
-		&foremantools.WriteFileTool{Workspace: workspace},
-		&foremantools.StrReplaceTool{Workspace: workspace},
-		&foremantools.GrepTool{Workspace: workspace},
-		&foremantools.BashTool{Workspace: workspace, Timeout: bashTimeout},
-		foremantools.SubmitResultTool{},
-	)
-	if err != nil {
-		return nil, fmt.Errorf("default registry: %w", err)
-	}
-	if len(ag.Spec.Tools) > 0 {
-		filtered, err := r.Filter(ag.Spec.Tools)
-		if err != nil {
-			return nil, fmt.Errorf("agent tool whitelist: %w", err)
+// makeRegistryFactory returns a RegistryFactory closure that captures
+// the controller-runtime client + clientset + foreman namespace. The
+// returned closure builds every tool the v0.1 surface exposes
+// (read_file, write_file, str_replace, grep, bash, submit_result, and
+// the M4 deterministic run_gate_job) and filters down to the
+// Agent.spec.tools whitelist. Failing the whitelist filter (a typo in
+// the Agent CR's tool list) returns an error so the executor surfaces
+// a clean ToolRegistryBuildFailed outcome rather than launching the
+// loop with the wrong tools.
+func makeRegistryFactory(
+	kc client.Client, kcs kubernetes.Interface, foremanNamespace string,
+) func(workspace string, ag *foremanv1alpha1.Agent) (foremanagent.ToolRegistry, error) {
+	logTail := makePodLogTailFn(kcs)
+	return func(workspace string, ag *foremanv1alpha1.Agent) (foremanagent.ToolRegistry, error) {
+		bashTimeout := time.Duration(ag.Spec.BashTimeoutSeconds) * time.Second
+		if bashTimeout <= 0 {
+			bashTimeout = 30 * time.Second
 		}
-		return filtered, nil
+		r, err := foremantools.New(
+			&foremantools.ReadFileTool{Workspace: workspace},
+			&foremantools.WriteFileTool{Workspace: workspace},
+			&foremantools.StrReplaceTool{Workspace: workspace},
+			&foremantools.GrepTool{Workspace: workspace},
+			&foremantools.BashTool{Workspace: workspace, Timeout: bashTimeout},
+			foremantools.SubmitResultTool{},
+			&foremantools.RunGateJobTool{
+				Client: kc,
+				Cfg: foremantools.RunGateJobToolConfig{
+					Namespace: foremanNamespace,
+					LogTailFn: logTail,
+				},
+			},
+		)
+		if err != nil {
+			return nil, fmt.Errorf("default registry: %w", err)
+		}
+		if len(ag.Spec.Tools) > 0 {
+			filtered, err := r.Filter(ag.Spec.Tools)
+			if err != nil {
+				return nil, fmt.Errorf("agent tool whitelist: %w", err)
+			}
+			return filtered, nil
+		}
+		return r, nil
 	}
-	return r, nil
+}
+
+// makePodLogTailFn returns a LogTailFn that fetches the last
+// MaxLogTailBytes of the named Job's Pod log via the pods/log
+// subresource. The Job names a single Pod (backoffLimit=0); if the
+// list returns 0 or >1 we keep the empty string so Result.Extra
+// stays consistent with the no-logs case.
+//
+// Kubernetes stamps two labels onto Job-managed Pods:
+//
+//   - `batch.kubernetes.io/job-name=<job>` (modern, k8s 1.27+, the
+//     authoritative label going forward),
+//   - `job-name=<job>` (legacy, deprecated for removal in a future
+//     release).
+//
+// We try modern first and fall back to legacy. A cluster that has
+// completed the deprecation cycle and stripped `job-name` still
+// resolves through the modern selector; a pre-1.27 cluster falls
+// through. The two-call cost only applies when the modern selector
+// returns zero hits.
+func makePodLogTailFn(kcs kubernetes.Interface) func(ctx context.Context, namespace, jobName string) string {
+	return func(ctx context.Context, namespace, jobName string) string {
+		for _, selector := range []string{
+			"batch.kubernetes.io/job-name=" + jobName,
+			"job-name=" + jobName,
+		} {
+			pods, err := kcs.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+				LabelSelector: selector,
+			})
+			if err != nil || len(pods.Items) != 1 {
+				continue
+			}
+			req := kcs.CoreV1().Pods(namespace).GetLogs(pods.Items[0].Name, &corev1.PodLogOptions{})
+			stream, err := req.Stream(ctx)
+			if err != nil {
+				return ""
+			}
+			defer func() { _ = stream.Close() }()
+			buf := make([]byte, foremantools.MaxLogTailBytes)
+			n, _ := io.ReadFull(stream, buf)
+			return string(buf[:n])
+		}
+		return ""
+	}
 }
 
 var dns1123Bad = regexp.MustCompile(`[^a-z0-9-]+`)

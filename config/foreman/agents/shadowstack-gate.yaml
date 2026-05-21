@@ -1,0 +1,52 @@
+# Foreman v0.1 gate Agent for ShadowStack (the verifier role of the
+# three-step pipeline). This is the canonical M4 deterministic Agent:
+# no inferenceServiceRef (no LLM in the loop), tools whitelist names
+# the deterministic worker tool, and the executor's
+# executeDeterministic() branch dispatches it directly with the task
+# payload as JSON arguments.
+#
+# Apply this manifest into the namespace where AgenticTasks targeting
+# verification will live:
+#
+#   kubectl --context shadowstack apply -f \
+#     config/foreman/agents/shadowstack-gate.yaml
+#
+# This Agent ships with the v0.8.0 foreman chart but is NOT a chart
+# template; the chart installs the controller infrastructure, the
+# Agent CR is workload-data. Apply it once per cluster + namespace
+# where you want gate steps to run.
+apiVersion: foreman.llmkube.dev/v1alpha1
+kind: Agent
+metadata:
+  name: shadowstack-gate
+  namespace: default
+  labels:
+    app.kubernetes.io/part-of: foreman
+    foreman.llmkube.dev/role: verifier
+    foreman.llmkube.dev/milestone: m4
+spec:
+  role: verifier
+  # Deterministic Agent: no LLM dispatch. Per the M4 contract,
+  # inferenceServiceRef is omitted (not just empty-string-named); the
+  # executor reads the empty .name and routes through
+  # executeDeterministic() instead of the OAI loop.
+  # systemPrompt is similarly omitted -- there is no model to prompt.
+  tools:
+    - run_gate_job
+  requiredCapability:
+    # Roles predicate (M4 Phase A): only schedule onto FleetNodes
+    # whose .spec.roles include 'verifier'. ShadowStack's foreman-
+    # agent is installed with --roles=worker,verifier and so
+    # matches; the M5 Max coder node has --roles=worker and so does
+    # not (the scheduler skips it for gate tasks).
+    roles:
+      - verifier
+    accelerator: cuda
+  # Even though the deterministic Agent doesn't loop, MaxRetries
+  # bounds the run_gate_job tool's own retry on transient apiserver
+  # errors during Job submission.
+  maxRetries: 3
+  # Bound how long the executor waits for the gate Job to finish.
+  # run_gate_job's PollTimeout defaults to 2 * Job.activeDeadlineSeconds
+  # (= 3600s = 60 min) which sits inside this envelope.
+  requestTimeoutSeconds: 3900
