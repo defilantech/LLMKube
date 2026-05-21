@@ -164,14 +164,43 @@ The agent's log should show:
 "msg":"started inference service","name":"phi-4-mini","pid":<llama-server-pid>
 ```
 
-Query the model from this Mac (`llama-server` is already running
-natively on this host via metal-agent, so no port-forward is needed
-when you are on the same machine):
+### Find the endpoint
+
+The metal-agent picks the port `llama-server` listens on at spawn
+time and registers it as the Service's Endpoint. Unless you started
+the agent with `--llama-server-port <N>`, the port is not 8080 — it
+is allocated from the ephemeral range and changes across restarts.
+Always read the endpoint from the cluster rather than assuming a port:
 
 ```bash
-curl -sS http://localhost:8080/v1/chat/completions \
+kubectl get endpoints phi-4-mini \
+  -o jsonpath='{.subsets[0].addresses[0].ip}:{.subsets[0].ports[0].port}{"\n"}'
+# example: 192.168.1.50:63344
+```
+
+The IP is your Mac's reachable address (LAN, Tailscale, etc., set via
+`--host-ip` in Step 4). The port is whatever the agent allocated. The
+two together are how every client — including pods inside the cluster
+— reaches the model.
+
+### Query the model
+
+From the Mac that runs metal-agent, `localhost` works because
+`llama-server` is bound to `0.0.0.0` on the host. Read the port from
+the cluster and curl it:
+
+```bash
+PORT=$(kubectl get endpoints phi-4-mini -o jsonpath='{.subsets[0].ports[0].port}')
+curl -sS "http://localhost:${PORT}/v1/chat/completions" \
   -H 'content-type: application/json' \
   -d '{"model":"phi-4-mini","messages":[{"role":"user","content":"hi"}]}'
+```
+
+If your shell or paste medium strips backslash line-continuations,
+the equivalent one-liner is safer to copy:
+
+```bash
+curl -sS "http://localhost:${PORT}/v1/chat/completions" -H 'content-type: application/json' -d '{"model":"phi-4-mini","messages":[{"role":"user","content":"hi"}]}'
 ```
 
 ### Reaching the service from elsewhere
@@ -181,16 +210,25 @@ design: the metal-agent registers the host as the Endpoint, so the
 Service has no Pods to target. That means
 `kubectl port-forward svc/phi-4-mini ...` returns
 `error: cannot attach to *v1.Service: ... Service is defined without
-a selector` and cannot be used here. Two supported ways to expose
-this Service to clients on other machines:
+a selector` and cannot be used here. Two supported ways to reach the
+service from a machine that is not the Mac:
 
-1. **Set `spec.endpoint.type: NodePort` on the InferenceService.**
-   Then `curl http://<host-ip>:<node-port>/v1/...` from anywhere that
-   can route to the host.
-2. **Hit the host directly.** metal-agent binds `llama-server` to
-   `0.0.0.0` and registers `<host-ip>:<port>` as the Endpoint, so
-   `curl http://<host-ip>:8080/v1/...` works from any client on the
-   same network.
+1. **Hit the host directly.** Use the address `kubectl get endpoints`
+   printed above. From any client on the same network:
+
+   ```bash
+   curl -sS "http://192.168.1.50:63344/v1/chat/completions" \
+     -H 'content-type: application/json' \
+     -d '{"model":"phi-4-mini","messages":[{"role":"user","content":"hi"}]}'
+   ```
+
+   Substitute your own IP and port. This is the same address that
+   in-cluster pods route to via the Service's ClusterIP, so a NodePort
+   is not required for LAN clients.
+2. **Pin the agent's port + set `spec.endpoint.type: NodePort`** if
+   you want a stable, externally-advertised port that survives agent
+   restarts. Start metal-agent with `--llama-server-port 8080` (or any
+   fixed value you choose) and set the NodePort on the InferenceService.
 
 ## Memory budgets
 
