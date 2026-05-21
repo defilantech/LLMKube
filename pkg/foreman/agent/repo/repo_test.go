@@ -39,7 +39,12 @@ func gitOrSkip(t *testing.T) {
 func initBareOrigin(t *testing.T, dir string) string {
 	t.Helper()
 	bare := filepath.Join(dir, "origin.git")
-	cmd := exec.Command("git", "init", "--bare", bare)
+	// -b main pins the bare's HEAD to refs/heads/main. Without this,
+	// hosts whose `init.defaultBranch` is still `master` (most Ubuntu
+	// runners) end up with a bare whose HEAD points at a ref the seed
+	// flow never creates, and subsequent clones come up with an empty
+	// working tree because git follows the broken HEAD.
+	cmd := exec.Command("git", "init", "--bare", "-b", "main", bare)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git init --bare: %v: %s", err, out)
 	}

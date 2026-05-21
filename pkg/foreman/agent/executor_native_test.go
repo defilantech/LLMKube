@@ -56,7 +56,10 @@ func gitOrSkip(t *testing.T) {
 func initBareWithSeed(t *testing.T, root string) string {
 	t.Helper()
 	bare := filepath.Join(root, "origin.git")
-	out, err := exec.Command("git", "init", "--bare", bare).CombinedOutput()
+	// -b main pins HEAD so hosts whose init.defaultBranch is `master`
+	// (most Ubuntu CI runners) do not end up with a bare whose HEAD
+	// references a ref the seed never creates.
+	out, err := exec.Command("git", "init", "--bare", "-b", "main", bare).CombinedOutput()
 	if err != nil {
 		t.Fatalf("git init bare: %v: %s", err, out)
 	}
