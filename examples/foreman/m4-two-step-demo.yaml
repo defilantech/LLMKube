@@ -1,4 +1,4 @@
-# Foreman M4 two-step demo: coder@M5Max -> gate@ShadowStack.
+# Foreman M4 two-step demo: coder@coder-node -> gate@verifier-node.
 #
 # Edit the issue number + payload prompt below for the issue you want
 # to demo against, then apply:
@@ -8,7 +8,7 @@
 # Pre-flight: both Agents must already be applied. coder lives in M3
 # under config/foreman/agents/qwen36-35b-carnice-mtp-coder.yaml; gate
 # is sibling-applied by Phase F at
-# config/foreman/agents/shadowstack-gate.yaml.
+# config/foreman/agents/gate.yaml.
 #
 # What happens:
 #   1. code-N reaches Pending; scheduler routes it to the M5 Max
@@ -19,9 +19,9 @@
 #      the native loop produces a branch on Defilan/LLMKube and
 #      submit_result fires.
 #   4. code-N transitions to Succeeded; gate-N's dependsOn unblocks;
-#      the scheduler routes gate-N to the ShadowStack FleetNode
+#      the scheduler routes gate-N to the verifier-tagged FleetNode
 #      (verifier role).
-#   5. ShadowStack foreman-agent claims gate-N; run_gate_job submits
+#   5. the verifier-node foreman-agent claims gate-N; run_gate_job submits
 #      the Job in foreman-system; the Job clones the branch, runs
 #      make fmt vet lint test, prints GATE PASS, exits 0.
 #   6. gate-N transitions to Succeeded with verdict=GATE-PASS and
@@ -66,7 +66,7 @@ spec:
   priority: 50
   timeoutSeconds: 3900
   agentRef:
-    name: shadowstack-gate
+    name: gate
   dependsOn:
     - name: code-503
       namespace: default

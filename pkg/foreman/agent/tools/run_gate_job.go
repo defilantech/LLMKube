@@ -61,7 +61,7 @@ const MaxLogTailBytes = 32 * 1024
 
 // DefaultGateChecks is the make-target list every gate run executes
 // when the caller does not override it. Mirrors what the autofix gate
-// pipeline ran across hundreds of M5 Max -> ShadowStack runs.
+// pipeline ran across hundreds of coder-to-verifier runs.
 var DefaultGateChecks = []string{
 	"fmt", "vet", "lint", "test",
 	"manifests", "chart-crds", "foreman-chart-crds",

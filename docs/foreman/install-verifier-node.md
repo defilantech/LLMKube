@@ -1,11 +1,11 @@
-# Foreman M4 install runbook: gate-role Agent on ShadowStack
+# Foreman M4 install runbook: gate-role Agent on a verifier node
 
 This runbook walks through standing up the **verifier** role of the
-v0.1 Foreman pipeline. By the end, the ShadowStack cluster has a
+v0.1 Foreman pipeline. By the end, your cluster has a
 running `foreman-operator` + `foreman-agent`, advertises itself as a
 FleetNode with `roles=[worker,verifier]`, and is ready for the V3
 two-step demo (M4 Phase F) where a coder Agent on the M5 Max produces
-a branch and the gate Agent on ShadowStack runs `make fmt vet lint
+a branch and the gate Agent on the verifier node runs `make fmt vet lint
 test` against it in a Kubernetes Job.
 
 If you only want the coder role on the M5 Max, read
@@ -33,19 +33,19 @@ order.
 ## Prerequisites
 
 - A Kubernetes cluster you have admin on. The runbook assumes
-  ShadowStack (the in-house dual-5060Ti node) but any linux/amd64
+  a CUDA-equipped Linux Kubernetes node but any linux/amd64
   cluster works; the gate Agent is deterministic and does not need a
   GPU.
 - `kubectl` configured for the target cluster:
   ```sh
-  kubectl --context shadowstack get nodes
+  kubectl get nodes
   ```
 - `helm` v3.13 or newer.
 - LLMKube core installed at `>=0.8.0`. Foreman's chart depends on
   it for the `inference.llmkube.dev` CRDs the operator's RBAC
   references:
   ```sh
-  helm --kube-context shadowstack upgrade --install llmkube \
+  helm upgrade --install llmkube \
     defilantech/llmkube \
     --namespace llmkube-system --create-namespace \
     --version 0.8.0
@@ -69,7 +69,7 @@ Once **llmkube v0.8.0 has shipped to the chart repo**:
 helm repo add defilantech https://defilantech.github.io/llmkube
 helm repo update
 
-helm --kube-context shadowstack upgrade --install foreman \
+helm upgrade --install foreman \
   defilantech/foreman \
   --namespace foreman-system --create-namespace \
   --version 0.8.0 \
@@ -81,7 +81,7 @@ helm --kube-context shadowstack upgrade --install foreman \
 
 ```sh
 cd /path/to/LLMKube
-helm --kube-context shadowstack upgrade --install foreman \
+helm upgrade --install foreman \
   charts/foreman \
   --namespace foreman-system --create-namespace \
   --set llmkube.enabled=false \
@@ -94,14 +94,14 @@ chart declares `llmkube >=0.8.0` as a dependency, which is the locked
 "ships together" framing; until that's published, install LLMKube
 core separately and disable the subchart).
 
-For a gate-only ShadowStack node (the M4 install), nothing else is
+For a gate-only verifier node (the M4 install), nothing else is
 required: the deterministic gate Agent never clones or pushes from
 the foreman-agent Pod (the gate Job clones inside its own Pod). For
 nodes that will also run coder-role Agents (M3 + later), add the
 `agent.gitRemoteURL` + `agent.commitAuthorEmail` knobs:
 
 ```sh
-helm --kube-context shadowstack upgrade --install foreman \
+helm upgrade --install foreman \
   charts/foreman \
   --namespace foreman-system --create-namespace \
   --set llmkube.enabled=false \
@@ -128,7 +128,7 @@ What that produces:
 Watch the operator come up:
 
 ```sh
-kubectl --context shadowstack -n foreman-system \
+kubectl -n foreman-system \
   logs -l app.kubernetes.io/component=operator -f
 ```
 
@@ -139,20 +139,20 @@ healthy.
 ## Step 2 :: confirm the agent registered itself
 
 ```sh
-kubectl --context shadowstack get fleetnodes
+kubectl get fleetnodes
 ```
 
 Expected:
 
 ```
 NAME             READY   ACCELERATOR   RAM    AVAILABLE   AGE
-shadowstack-…    True    cuda          64Gi   60Gi        1m
+<verifier-node>    True    cuda          64Gi   60Gi        1m
 ```
 
 Then dig into the advertised roles:
 
 ```sh
-kubectl --context shadowstack get fleetnode -o yaml \
+kubectl get fleetnode -o yaml \
   | grep -A4 'spec:' | grep -E 'roles:|- worker|- verifier'
 ```
 
@@ -179,7 +179,7 @@ yourself the scheduler routes correctly to the new FleetNode.
 apiVersion: foreman.llmkube.dev/v1alpha1
 kind: AgenticTask
 metadata:
-  name: shadowstack-smoke
+  name: verifier-smoke
   namespace: default
 spec:
   kind: freeform
@@ -194,17 +194,17 @@ spec:
 # Temporarily flip the agent to stub mode for this smoke task --
 # the stub executor ignores the Agent CR entirely so we don't need
 # one yet.
-helm --kube-context shadowstack upgrade --reuse-values foreman \
+helm upgrade --reuse-values foreman \
   defilantech/foreman -n foreman-system --set agent.mode=stub
 
-kubectl --context shadowstack apply -f /tmp/foreman-smoke.yaml
+kubectl apply -f /tmp/foreman-smoke.yaml
 
-kubectl --context shadowstack get agentictasks -w
-# Pending -> Scheduled (assignedNode=<shadowstack node>) -> Running
+kubectl get agentictasks -w
+# Pending -> Scheduled (assignedNode=<verifier-node>) -> Running
 # -> Succeeded within ~15s.
 
 # Flip back to native mode before Phase F.
-helm --kube-context shadowstack upgrade --reuse-values foreman \
+helm upgrade --reuse-values foreman \
   defilantech/foreman -n foreman-system --set agent.mode=native
 ```
 
@@ -214,8 +214,8 @@ The actual gate Agent + the V3 two-step demo manifests land with
 Phase F. Once those merge, the workflow is:
 
 ```sh
-kubectl --context shadowstack apply -f config/foreman/agents/shadowstack-gate.yaml
-kubectl --context shadowstack apply -f examples/foreman/m4-two-step-demo.yaml
+kubectl apply -f config/foreman/agents/gate.yaml
+kubectl apply -f examples/foreman/m4-two-step-demo.yaml
 ```
 
 See [`runbook-m4.md`](./runbook-m4.md) (lands with Phase F) for the
@@ -224,7 +224,7 @@ full V3 demo.
 ## Troubleshooting
 
 **`fleetnodes` list is empty** :: the `foreman-agent` Pod has not
-registered yet. Check its log: `kubectl --context shadowstack -n
+registered yet. Check its log: `kubectl -n
 foreman-system logs -l app.kubernetes.io/component=agent`. The most
 common cause is the ServiceAccount missing `create` on
 `fleetnodes`; re-run `helm upgrade` to refresh the RBAC.

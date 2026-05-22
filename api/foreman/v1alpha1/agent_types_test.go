@@ -135,7 +135,7 @@ func TestAgenticTaskAgentRefDeepCopy(t *testing.T) {
 // fields. The gate Agent (M4) is the canonical caller.
 func TestAgentDeterministicShape(t *testing.T) {
 	orig := &Agent{
-		ObjectMeta: metav1.ObjectMeta{Name: "shadowstack-gate", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "gate", Namespace: "default"},
 		Spec: AgentSpec{
 			Role:               AgentRoleVerifier,
 			Tools:              []string{"run_gate_job"},

@@ -2,11 +2,11 @@
 
 The M4 acceptance test, end to end: a real issue-fix `AgenticTask`
 on the M5 Max produces a branch on the LLMKube fork, and an
-ordering-dependent gate `AgenticTask` on ShadowStack verifies it via
+ordering-dependent gate `AgenticTask` on a verifier node verifies it via
 `make fmt vet lint test` in a Kubernetes Job.
 
-If you have not yet installed Foreman on ShadowStack, read
-[`install-shadowstack.md`](./install-shadowstack.md) first.
+If you have not yet installed Foreman on a verifier node, read
+[`install-verifier-node.md`](./install-verifier-node.md) first.
 
 ## What this verifies
 
@@ -33,7 +33,7 @@ If you have not yet installed Foreman on ShadowStack, read
   scheduler resolves AgentRef in the task's namespace; the gate Job
   itself lands in `foreman-system` regardless):
   ```sh
-  kubectl apply -f config/foreman/agents/shadowstack-gate.yaml
+  kubectl apply -f config/foreman/agents/gate.yaml
   ```
 - Both foreman-agents up, registered, advertising the right roles:
   ```sh
@@ -42,7 +42,7 @@ If you have not yet installed Foreman on ShadowStack, read
   Expected:
   ```
   NAME             READY   ACC     ROLES
-  shadowstack-…    Ready   cuda    [worker verifier]
+  <verifier-node>    Ready   cuda    [worker verifier]
   m5max-…          Ready   metal   [worker]
   ```
 
@@ -79,7 +79,7 @@ The M5 Max's foreman-agent log streams the OAI turns during this
 window:
 
 ```sh
-kubectl --context shadowstack -n foreman-system logs \
+kubectl -n foreman-system logs \
   -l app.kubernetes.io/component=agent --tail=200 -f
 ```
 
@@ -89,7 +89,7 @@ tail `~/Library/Logs/foreman-agent.log` instead.)
 ## Step 3 :: watch gate-N pick up + the Job land
 
 The moment `code-503` reaches `Succeeded`, the controller marks
-`gate-503` schedulable. The ShadowStack foreman-agent claims it and
+`gate-503` schedulable. The the verifier-node foreman-agent claims it and
 calls `run_gate_job`; that submits a Job in `foreman-system`.
 
 ```sh
@@ -97,7 +97,7 @@ calls `run_gate_job`; that submits a Job in `foreman-system`.
 kubectl get agentictask gate-503 -o jsonpath='{.status.phase}{"\t"}{.status.assignedNode}{"\n"}'
 
 # Watch the underlying Job:
-kubectl --context shadowstack -n foreman-system get jobs -w
+kubectl -n foreman-system get jobs -w
 ```
 
 Expected:
@@ -118,7 +118,7 @@ Expected `.status` shape:
 ```yaml
 phase: Succeeded
 verdict: GATE-PASS
-assignedNode: shadowstack-…
+assignedNode: <verifier-node>
 result:
   kind: native-agent-loop
   verdict: GATE-PASS
@@ -186,10 +186,10 @@ kubectl get fleetnode -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec
 ```
 If the role list is missing, re-run the Helm install with the
 `agent.roles={worker,verifier}` override per
-[`install-shadowstack.md`](./install-shadowstack.md).
+[`install-verifier-node.md`](./install-verifier-node.md).
 
 **Job submits but never picks up** :: the gate-cache PVC is stuck
-Pending. Run `kubectl --context shadowstack -n foreman-system
+Pending. Run `kubectl -n foreman-system
 describe pvc foreman-gate-cache` for the events. Common causes:
 no default StorageClass, or no node can satisfy ReadWriteOnce.
 Workarounds: `--set agent.gateCache.storageClass=...` or disable
@@ -199,7 +199,7 @@ the cache via `--set agent.gateCache.enabled=false`.
 ServiceAccount is missing `create` on `batch/jobs` in
 `foreman-system`. Re-apply the chart's RBAC:
 ```sh
-helm --kube-context shadowstack upgrade --reuse-values foreman \
+helm upgrade --reuse-values foreman \
   defilantech/foreman -n foreman-system
 ```
 
@@ -209,7 +209,7 @@ the gate Job is genuinely slow (cold cache + 8Gi RAM ceiling can
 push past 30 min) or the apiserver is dropping watches. Pull the
 gate Pod's log directly:
 ```sh
-kubectl --context shadowstack -n foreman-system logs \
+kubectl -n foreman-system logs \
   -l job-name=foreman-gate-gate-503-…
 ```
 

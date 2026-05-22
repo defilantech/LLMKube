@@ -4,7 +4,7 @@
 # controllers for Agent / AgenticTask / FleetNode / Workload) plus
 # zero or more foreman-agent Pods (the per-node worker that claims
 # Scheduled tasks and runs them). See README and
-# docs/foreman/install-shadowstack.md for a full install walkthrough.
+# docs/foreman/install-verifier-node.md for a full install walkthrough.
 
 # Optional name overrides. Same semantics as the llmkube chart.
 nameOverride: ""
@@ -98,7 +98,7 @@ agent:
   #           visibly register without yet hosting a model.
   #   native: the M3 native agent loop. Requires an InferenceService
   #           reachable from this node when the Agent CR points at one.
-  # The shadowstack-gate Agent (M4) works fine in native mode without
+  # The gate Agent (M4) works fine in native mode without
   # an InferenceService because it's deterministic.
   mode: stub
 
@@ -126,7 +126,7 @@ agent:
   # Git remote the coder-role native executor clones from and pushes
   # branches to. Required for coder-role nodes (e.g. M5 Max running
   # the Carnice Agent); leave empty on deterministic-only nodes (e.g.
-  # ShadowStack running the M4 gate Agent) -- coder tasks scheduled
+  # the verifier-tagged node running the M4 gate Agent) -- coder tasks scheduled
   # to such a node fail with GitRemoteURLNotConfigured, deterministic
   # Agents run fine.
   gitRemoteURL: ""

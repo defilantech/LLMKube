@@ -32,7 +32,7 @@ const (
 	// commits, pushes. Currently runs on the M5 Max in v0.1.
 	AgentRoleCoder AgentRole = "coder"
 	// AgentRoleVerifier runs the project's gate (fmt/vet/lint/test). v0.1
-	// pins this to ShadowStack for cross-arch coverage. No LLM; the
+	// pins this to a verifier-tagged node for cross-arch coverage. No LLM; the
 	// run_gate_job tool drives the work end-to-end (M4).
 	AgentRoleVerifier AgentRole = "verifier"
 	// AgentRoleReviewer reads the diff + gate verdict and emits a

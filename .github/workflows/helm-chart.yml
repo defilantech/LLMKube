@@ -723,7 +723,7 @@ jobs:
           done
           echo "✅ foreman defaults render every expected kind"
 
-      - name: Template foreman with ShadowStack overrides
+      - name: Template foreman with verifier-node overrides
         # Smoke-test the canonical "gate node" install: native mode,
         # worker+verifier roles, a gateCache PVC, and a GitHub token
         # mounted from a pre-created Secret.
@@ -734,21 +734,21 @@ jobs:
             --set agent.mode=native \
             --set 'agent.roles={worker,verifier}' \
             --set agent.githubToken.secretName=foreman-github \
-            > foreman-shadowstack.yaml
+            > foreman-verifier.yaml
 
-          if ! grep -q -- "--agent-mode=native" foreman-shadowstack.yaml; then
+          if ! grep -q -- "--agent-mode=native" foreman-verifier.yaml; then
             echo "❌ agent mode override did not propagate"
             exit 1
           fi
-          if ! grep -q -- "--roles=worker,verifier" foreman-shadowstack.yaml; then
+          if ! grep -q -- "--roles=worker,verifier" foreman-verifier.yaml; then
             echo "❌ agent roles override did not propagate"
             exit 1
           fi
-          if ! grep -q "name: GITHUB_TOKEN" foreman-shadowstack.yaml; then
+          if ! grep -q "name: GITHUB_TOKEN" foreman-verifier.yaml; then
             echo "❌ GitHub token env var missing"
             exit 1
           fi
-          echo "✅ ShadowStack-style overrides render correctly"
+          echo "✅ verifier-node overrides render correctly"
 
       - name: Validate Kubernetes Manifests
         uses: docker://ghcr.io/yannh/kubeconform:v0.7.0

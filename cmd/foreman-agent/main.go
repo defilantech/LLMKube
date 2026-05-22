@@ -26,7 +26,7 @@ limitations under the License.
 //
 // v0.1 plugs in the StubExecutor (M2 placeholder); M3 swaps in the
 // native agent loop, and M4 adds the gate-job executor for the verifier
-// role on ShadowStack.
+// role on a verifier-tagged Linux node.
 //
 // Cross-platform: builds on darwin (real Metal capability) and linux/amd64
 // (stub capability for now; M4 fills it in).
@@ -190,7 +190,7 @@ func main() {
 	}
 	if agentMode == "native" {
 		// M4: relaxed from os.Exit to warnings. Deterministic Agents
-		// (e.g. the M4 shadowstack-gate) never clone or push from the
+		// (e.g. the M4 gate) never clone or push from the
 		// foreman-agent Pod, so a gate-only install legitimately has
 		// no git remote URL and no commit author. When a coder task
 		// actually arrives that needs these, the native executor

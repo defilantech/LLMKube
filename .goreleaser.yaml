@@ -95,7 +95,7 @@ builds:
     main: ./cmd/foreman-agent
     binary: foreman-agent
 
-    # Linux containers only (the foreman-agent ShadowStack pod is
+    # Linux containers only (the foreman-agent Linux Pod is
     # Linux; the M5 Max + Mac Studio run from `go install` or a
     # launchd-managed local binary, not the ghcr image).
     goos:
