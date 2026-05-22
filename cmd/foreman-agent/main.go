@@ -189,13 +189,22 @@ func main() {
 		)
 	}
 	if agentMode == "native" {
+		// M4: relaxed from os.Exit to warnings. Deterministic Agents
+		// (e.g. the M4 shadowstack-gate) never clone or push from the
+		// foreman-agent Pod, so a gate-only install legitimately has
+		// no git remote URL and no commit author. When a coder task
+		// actually arrives that needs these, the native executor
+		// fails that task with a clean reason
+		// (GitRemoteURLNotConfigured / commit identity invalid) and
+		// leaves other tasks unaffected. The flags stay required at
+		// the per-task level, not at startup.
 		if gitRemoteURL == "" {
-			setupLog.Error(nil, "--git-remote-url is required when --agent-mode=native")
-			os.Exit(1)
+			setupLog.Info("--git-remote-url is unset; coder-role tasks will fail with GitRemoteURLNotConfigured. " +
+				"Deterministic Agents (e.g. M4 gate) work fine without it.")
 		}
 		if commitAuthorEmail == "" {
-			setupLog.Error(nil, "--commit-author-email is required when --agent-mode=native")
-			os.Exit(1)
+			setupLog.Info("--commit-author-email is unset; coder-role tasks that need to commit will fail. " +
+				"Deterministic Agents work fine without it.")
 		}
 	}
 

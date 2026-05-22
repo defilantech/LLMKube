@@ -54,6 +54,15 @@ spec:
             {{- if .Values.agent.inferenceBaseURLOverride }}
             - --inference-base-url-override={{ .Values.agent.inferenceBaseURLOverride }}
             {{- end }}
+            {{- if .Values.agent.gitRemoteURL }}
+            - --git-remote-url={{ .Values.agent.gitRemoteURL }}
+            {{- end }}
+            {{- if .Values.agent.commitAuthorName }}
+            - --commit-author-name={{ .Values.agent.commitAuthorName }}
+            {{- end }}
+            {{- if .Values.agent.commitAuthorEmail }}
+            - --commit-author-email={{ .Values.agent.commitAuthorEmail }}
+            {{- end }}
           env:
             - name: FLEET_NODE_NAME
               valueFrom:

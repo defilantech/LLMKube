@@ -63,6 +63,8 @@ order.
 
 ## Step 1 :: install Foreman
 
+Once **llmkube v0.8.0 has shipped to the chart repo**:
+
 ```sh
 helm repo add defilantech https://defilantech.github.io/llmkube
 helm repo update
@@ -73,6 +75,40 @@ helm --kube-context shadowstack upgrade --install foreman \
   --version 0.8.0 \
   --set agent.mode=native \
   --set 'agent.roles={worker,verifier}'
+```
+
+**Before v0.8.0 ships** (or for dev installs from a local checkout):
+
+```sh
+cd /path/to/LLMKube
+helm --kube-context shadowstack upgrade --install foreman \
+  charts/foreman \
+  --namespace foreman-system --create-namespace \
+  --set llmkube.enabled=false \
+  --set agent.mode=native \
+  --set 'agent.roles={worker,verifier}'
+```
+
+The `llmkube.enabled=false` flag skips the subchart resolution (the
+chart declares `llmkube >=0.8.0` as a dependency, which is the locked
+"ships together" framing; until that's published, install LLMKube
+core separately and disable the subchart).
+
+For a gate-only ShadowStack node (the M4 install), nothing else is
+required: the deterministic gate Agent never clones or pushes from
+the foreman-agent Pod (the gate Job clones inside its own Pod). For
+nodes that will also run coder-role Agents (M3 + later), add the
+`agent.gitRemoteURL` + `agent.commitAuthorEmail` knobs:
+
+```sh
+helm --kube-context shadowstack upgrade --install foreman \
+  charts/foreman \
+  --namespace foreman-system --create-namespace \
+  --set llmkube.enabled=false \
+  --set agent.mode=native \
+  --set 'agent.roles={worker,verifier}' \
+  --set agent.gitRemoteURL=https://github.com/Defilan/LLMKube.git \
+  --set agent.commitAuthorEmail=foreman-bot@example.com
 ```
 
 What that produces:
@@ -205,15 +241,17 @@ ReadWriteOnce. Set `agent.gateCache.storageClass` explicitly or
 disable the PVC: `--set agent.gateCache.enabled=false` (gate runs
 will still work, just without the inter-run cache).
 
-**Agent Pod CrashLoopBackOff with `--git-remote-url is required`** ::
-the chart defaults `agent.mode` to `stub`; if you flipped to
-`native`, the agent now requires a git remote URL. For verifier-only
-nodes (no coder workload) the simplest fix is to point at the fork:
-`--set agent.env[0].name=FOREMAN_GIT_REMOTE_URL --set agent.env[0]
-.value=https://github.com/Defilan/LLMKube.git`. The agent only uses
-it for the coder path; the deterministic gate Agent does not clone
-inside the foreman-agent Pod (the gate Job clones inside its own
-Pod).
+**Agent Pod startup info-log "--git-remote-url is unset"** :: not
+an error. Foreman v0.8.0+ logs this as INFO and proceeds; coder
+tasks that actually need the URL fail per-task with reason
+`GitRemoteURLNotConfigured`. Deterministic Agents (e.g. the M4
+gate) run fine without it. To suppress the log line on a node that
+will also run coder tasks, set `--set agent.gitRemoteURL=https://github.com/Defilan/LLMKube.git`
++ `--set agent.commitAuthorEmail=...` at install time.
+
+If you are running a pre-v0.8.0 foreman-agent image where this is a
+hard `os.Exit(1)`, upgrade to v0.8.0+. The startup check was relaxed
+in the M4 phase F1 fix.
 
 ## What this does NOT cover
 

@@ -123,6 +123,20 @@ agent:
   # agent runs outside the cluster against a port-forwarded service.
   inferenceBaseURLOverride: ""
 
+  # Git remote the coder-role native executor clones from and pushes
+  # branches to. Required for coder-role nodes (e.g. M5 Max running
+  # the Carnice Agent); leave empty on deterministic-only nodes (e.g.
+  # ShadowStack running the M4 gate Agent) -- coder tasks scheduled
+  # to such a node fail with GitRemoteURLNotConfigured, deterministic
+  # Agents run fine.
+  gitRemoteURL: ""
+
+  # Git author + committer identity stamped onto commits the coder-
+  # role executor produces. Same gate-only-node guidance applies: a
+  # deterministic-only node can leave these empty.
+  commitAuthorName: ""    # defaults to "Foreman Bot" inside the binary
+  commitAuthorEmail: ""
+
   resources:
     requests:
       cpu: 200m
