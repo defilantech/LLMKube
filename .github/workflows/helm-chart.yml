@@ -85,6 +85,25 @@ jobs:
             exit 1
           fi
 
+          # Cross-check: release-please-config.json tracks every chart's
+          # Chart.yaml. This catches the class of bug where a new chart
+          # is added but its version field is not wired into release-
+          # please's extra-files, so it silently never bumps. Symptom of
+          # that drift: chart-releaser refuses to publish the chart on
+          # release because the version did not change.
+          for chart_path in charts/*/Chart.yaml; do
+            for field in version appVersion; do
+              if ! jq -e --arg p "$chart_path" --arg f "\$.${field}" \
+                '.packages."."."extra-files"[] | select(.path == $p and .jsonpath == $f)' \
+                release-please-config.json > /dev/null; then
+                echo "❌ release-please-config.json is missing tracking for $chart_path :: \$.${field}"
+                echo "   Add it to .packages.\".\".\"extra-files\" or release-please will not bump this chart."
+                exit 1
+              fi
+            done
+          done
+          echo "✅ release-please tracks every chart's version + appVersion"
+
           echo "✅ All version files consistent at $CHART_VERSION"
 
   release-pr-version-check:
@@ -675,3 +694,88 @@ jobs:
           fi
 
           echo "✅ NOTES.txt validated"
+
+  foreman-chart:
+    name: Foreman Chart Lint + Template
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v5
+        with:
+          version: v3.13.0
+
+      - name: Lint foreman chart
+        # Lint before wiring the subchart. helm lint will surface a
+        # "missing dependency: llmkube" warning we accept (the chart
+        # publishes via the gh-pages repo, not this checkout), but
+        # actual lint errors in the foreman templates still fail.
+        run: |
+          helm lint charts/foreman
+          echo "✅ foreman lint passed"
+
+      - name: Wire local llmkube subchart for foreman
+        # foreman depends on llmkube; this CI does not publish a chart
+        # repo, so we satisfy the dependency by symlinking the in-tree
+        # llmkube chart into foreman/charts/. Same trick `helm dep
+        # build` would do under the hood when published.
+        run: |
+          mkdir -p charts/foreman/charts
+          ln -sf ../../llmkube charts/foreman/charts/llmkube
+
+      - name: Template foreman with defaults (no llmkube subchart)
+        # llmkube.enabled=false skips rendering the subchart so this
+        # job stays focused on the foreman templates.
+        run: |
+          helm template foreman charts/foreman \
+            --namespace foreman-system \
+            --set llmkube.enabled=false \
+            > foreman-default.yaml
+
+          for kind in "Deployment" "ClusterRole" "ClusterRoleBinding" "ServiceAccount" "PersistentVolumeClaim" "CustomResourceDefinition"; do
+            if ! grep -q "^kind: ${kind}$" foreman-default.yaml; then
+              echo "❌ foreman default render missing ${kind}"
+              exit 1
+            fi
+          done
+          echo "✅ foreman defaults render every expected kind"
+
+      - name: Template foreman with verifier-node overrides
+        # Smoke-test the canonical "gate node" install: native mode,
+        # worker+verifier roles, a gateCache PVC, and a GitHub token
+        # mounted from a pre-created Secret.
+        run: |
+          helm template foreman charts/foreman \
+            --namespace foreman-system \
+            --set llmkube.enabled=false \
+            --set agent.mode=native \
+            --set 'agent.roles={worker,verifier}' \
+            --set agent.githubToken.secretName=foreman-github \
+            > foreman-verifier.yaml
+
+          if ! grep -q -- "--agent-mode=native" foreman-verifier.yaml; then
+            echo "❌ agent mode override did not propagate"
+            exit 1
+          fi
+          if ! grep -q -- "--roles=worker,verifier" foreman-verifier.yaml; then
+            echo "❌ agent roles override did not propagate"
+            exit 1
+          fi
+          if ! grep -q "name: GITHUB_TOKEN" foreman-verifier.yaml; then
+            echo "❌ GitHub token env var missing"
+            exit 1
+          fi
+          echo "✅ verifier-node overrides render correctly"
+
+      - name: Validate Kubernetes Manifests
+        uses: docker://ghcr.io/yannh/kubeconform:v0.7.0
+        with:
+          entrypoint: '/kubeconform'
+          args: >
+            -summary
+            -output json
+            -ignore-missing-schemas
+            -skip CustomResourceDefinition
+            /github/workspace/foreman-default.yaml

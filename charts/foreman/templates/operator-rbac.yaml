@@ -1,0 +1,73 @@
+{{- if .Values.operator.enabled }}
+{{- if .Values.operator.serviceAccount.create }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "foreman.operator.serviceAccountName" . }}
+  namespace: {{ include "foreman.namespace" . }}
+  labels:
+    {{- include "foreman.operator.labels" . | nindent 4 }}
+---
+{{- end }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "foreman.fullname" . }}-operator
+  labels:
+    {{- include "foreman.operator.labels" . | nindent 4 }}
+rules:
+  # Foreman CRs (the four kinds the four controllers reconcile).
+  - apiGroups: ["foreman.llmkube.dev"]
+    resources:
+      - workloads
+      - agentictasks
+      - agents
+      - fleetnodes
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["foreman.llmkube.dev"]
+    resources:
+      - workloads/status
+      - agentictasks/status
+      - agents/status
+      - fleetnodes/status
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["foreman.llmkube.dev"]
+    resources:
+      - workloads/finalizers
+      - agentictasks/finalizers
+      - agents/finalizers
+      - fleetnodes/finalizers
+    verbs: ["update"]
+
+  # AgentReconciler resolves Agent.spec.inferenceServiceRef against an
+  # InferenceService in the same namespace; it only needs to read.
+  - apiGroups: ["inference.llmkube.dev"]
+    resources: ["inferenceservices"]
+    verbs: ["get", "list", "watch"]
+
+  # Leader election + event reporting.
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "foreman.fullname" . }}-operator
+  labels:
+    {{- include "foreman.operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "foreman.fullname" . }}-operator
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "foreman.operator.serviceAccountName" . }}
+    namespace: {{ include "foreman.namespace" . }}
+{{- end }}

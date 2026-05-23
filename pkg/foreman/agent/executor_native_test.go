@@ -457,3 +457,92 @@ func TestNativeExecutor_ModelEmitsNoGo(t *testing.T) {
 		t.Errorf("transcript not found")
 	}
 }
+
+// --- Deterministic Agent path (M4): no LLM, single tool dispatch ----------
+
+func TestNativeExecutor_DeterministicGateAgent(t *testing.T) {
+	gitOrSkip(t)
+	root := t.TempDir()
+	bare := initBareWithSeed(t, root)
+
+	// Gate Agent: no inferenceServiceRef, no systemPrompt, tools list
+	// names the deterministic worker tool first. The executor should
+	// dispatch that tool directly without spinning up the OAI loop.
+	agent := &foremanv1alpha1.Agent{
+		ObjectMeta: metav1.ObjectMeta{Name: "coder-gate", Namespace: "default"},
+		Spec: foremanv1alpha1.AgentSpec{
+			Role:               foremanv1alpha1.AgentRoleVerifier,
+			Tools:              []string{"run_gate_job"},
+			RequiredCapability: foremanv1alpha1.RequiredCapability{Roles: []string{"verifier"}},
+		},
+	}
+	task := &foremanv1alpha1.AgenticTask{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "gate", Namespace: "default", UID: types.UID("test-uid-gate"),
+		},
+		Spec: foremanv1alpha1.AgenticTaskSpec{
+			Kind: foremanv1alpha1.AgenticTaskKindVerify,
+			Payload: foremanv1alpha1.AgenticTaskPayload{
+				Repo:   "defilantech/LLMKube",
+				Issue:  9999,
+				Branch: "foreman/issue-9999",
+			},
+			AgentRef: &corev1.LocalObjectReference{Name: agent.Name},
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(agent, task).Build()
+
+	reg := &fakeRegistry{
+		results: map[string]*foremanagent.ToolResult{
+			// Synthesizes the M4 gate tool's expected envelope.
+			"run_gate_job": {
+				Terminal: true,
+				Verdict:  "GATE-PASS",
+				Summary:  "all checks green",
+				Output:   map[string]any{"jobName": "foreman-gate-fake-001"},
+			},
+		},
+	}
+
+	dispatched := 0
+	e := &foremanagent.NativeAgentLoopExecutor{
+		Client:          c,
+		WorkspaceRoot:   filepath.Join(root, "ws"),
+		GitRemoteURL:    bare,
+		CommitAuthor:    repo.Identity{Name: "Bot", Email: "b@x"},
+		CommitCommitter: repo.Identity{Name: "Bot", Email: "b@x"},
+		RegistryFactory: func(_ string, _ *foremanv1alpha1.Agent) (foremanagent.ToolRegistry, error) {
+			dispatched++
+			return reg, nil
+		},
+		AuthFactory: fakeAuth(t),
+	}
+
+	res, err := e.Execute(context.Background(), task)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if res.Verdict != foremanv1alpha1.AgenticTaskVerdict("GATE-PASS") {
+		t.Errorf("verdict: want GATE-PASS got %s", res.Verdict)
+	}
+	if got := res.Extra["deterministic"]; got != true {
+		t.Errorf("Extra.deterministic: want true got %v", got)
+	}
+	if got := res.Extra["dispatchedTool"]; got != "run_gate_job" {
+		t.Errorf("Extra.dispatchedTool: want run_gate_job got %v", got)
+	}
+	if dispatched != 1 {
+		t.Errorf("RegistryFactory should be called once; got %d", dispatched)
+	}
+
+	// No transcript ConfigMap on the deterministic path -- there are
+	// no model turns to preserve. Assert it is NOT present.
+	var cm corev1.ConfigMap
+	cmKey := types.NamespacedName{Namespace: task.Namespace, Name: "foreman-transcript-" + task.Name}
+	getErr := c.Get(context.Background(), cmKey, &cm)
+	if getErr == nil {
+		t.Errorf("transcript ConfigMap should NOT exist on deterministic runs, but it does")
+	} else if !apierrors.IsNotFound(getErr) {
+		t.Errorf("expected NotFound for transcript cm; got %v", getErr)
+	}
+}

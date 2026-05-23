@@ -129,6 +129,38 @@ func TestAgenticTaskAgentRefDeepCopy(t *testing.T) {
 	}
 }
 
+// TestAgentDeterministicShape exercises the M4 contract for deterministic
+// Agents: InferenceServiceRef + SystemPrompt may both be empty, and a
+// DeepCopy of that shape must round-trip cleanly without inventing
+// fields. The gate Agent (M4) is the canonical caller.
+func TestAgentDeterministicShape(t *testing.T) {
+	orig := &Agent{
+		ObjectMeta: metav1.ObjectMeta{Name: "gate", Namespace: "default"},
+		Spec: AgentSpec{
+			Role:               AgentRoleVerifier,
+			Tools:              []string{"run_gate_job"},
+			RequiredCapability: RequiredCapability{Roles: []string{"verifier"}},
+			// InferenceServiceRef + SystemPrompt deliberately omitted.
+		},
+	}
+	cp := orig.DeepCopy()
+	if cp.Spec.InferenceServiceRef.Name != "" {
+		t.Errorf("DeepCopy invented an InferenceServiceRef: %q", cp.Spec.InferenceServiceRef.Name)
+	}
+	if cp.Spec.SystemPrompt != "" {
+		t.Errorf("DeepCopy invented a SystemPrompt: %q", cp.Spec.SystemPrompt)
+	}
+	// Mutating Tools / Roles on the copy must not touch the original.
+	cp.Spec.Tools[0] = "mutated"
+	if orig.Spec.Tools[0] != "run_gate_job" {
+		t.Errorf("Tools slice was shared")
+	}
+	cp.Spec.RequiredCapability.Roles[0] = "mutated"
+	if orig.Spec.RequiredCapability.Roles[0] != "verifier" {
+		t.Errorf("RequiredCapability.Roles slice was shared")
+	}
+}
+
 // TestAgentRoleConstantsMatchEnum guards against a future contributor
 // renaming a constant without updating the kubebuilder enum tag. The
 // CRD schema validation is the API server's job; this test only catches

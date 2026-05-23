@@ -1,0 +1,30 @@
+Foreman {{ .Chart.AppVersion }} installed: {{ .Release.Name }} in {{ include "foreman.namespace" . }}.
+
+Components:
+{{- if .Values.operator.enabled }}
+  - foreman-operator      Deployment {{ include "foreman.fullname" . }}-operator
+{{- else }}
+  - foreman-operator      DISABLED (operator.enabled=false)
+{{- end }}
+{{- if .Values.agent.enabled }}
+  - foreman-agent         Deployment {{ include "foreman.fullname" . }}-agent
+      mode:               {{ .Values.agent.mode }}
+      roles:              {{ join "," .Values.agent.roles }}
+  {{- if .Values.agent.gateCache.enabled }}
+      gate cache PVC:     {{ include "foreman.gateCache.pvcName" . }} ({{ .Values.agent.gateCache.size }})
+  {{- end }}
+{{- else }}
+  - foreman-agent         DISABLED (agent.enabled=false)
+{{- end }}
+
+Next steps:
+  1. Watch the operator come up:
+     kubectl -n {{ include "foreman.namespace" . }} logs -l app.kubernetes.io/component=operator -f
+{{- if .Values.agent.enabled }}
+  2. Confirm the agent registered itself as a FleetNode:
+     kubectl get fleetnodes
+{{- end }}
+  3. Apply an Agent CR and an AgenticTask referencing it (examples
+     under examples/foreman/ in the repo).
+
+The Foreman docs live at https://github.com/defilantech/LLMKube/tree/main/docs/foreman.

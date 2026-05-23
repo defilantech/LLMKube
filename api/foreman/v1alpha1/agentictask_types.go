@@ -69,6 +69,14 @@ type RequiredCapability struct {
 	// (e.g. verify tasks targeting the gate runner).
 	// +optional
 	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+
+	// Roles filters to FleetNodes whose spec.roles include every named
+	// role. Matches against FleetNodeSpec.Roles (the --roles flag on the
+	// foreman-agent). Used to route the gate Agent's tasks to nodes that
+	// advertise themselves as verifiers without coupling to per-node
+	// labels.
+	// +optional
+	Roles []string `json:"roles,omitempty"`
 }
 
 // AgenticTaskPayload is the kind-discriminated work spec. Each field is only

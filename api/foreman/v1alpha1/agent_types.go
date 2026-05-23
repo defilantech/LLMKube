@@ -32,7 +32,7 @@ const (
 	// commits, pushes. Currently runs on the M5 Max in v0.1.
 	AgentRoleCoder AgentRole = "coder"
 	// AgentRoleVerifier runs the project's gate (fmt/vet/lint/test). v0.1
-	// pins this to ShadowStack for cross-arch coverage. No LLM; the
+	// pins this to a verifier-tagged node for cross-arch coverage. No LLM; the
 	// run_gate_job tool drives the work end-to-end (M4).
 	AgentRoleVerifier AgentRole = "verifier"
 	// AgentRoleReviewer reads the diff + gate verdict and emits a
@@ -69,15 +69,24 @@ type AgentSpec struct {
 	// resolves it to a base URL ("http://<svc>.<ns>.svc:<port>/v1") at
 	// task time. v0.1 uses inferenceServiceRef exclusively; v0.2 may
 	// introduce an external-provider URL form.
-	// +kubebuilder:validation:Required
-	InferenceServiceRef corev1.LocalObjectReference `json:"inferenceServiceRef"`
+	//
+	// Optional: an Agent with an empty InferenceServiceRef is a
+	// *deterministic* Agent (no LLM in the loop). The executor skips
+	// model dispatch and runs the agent's first non-terminal tool
+	// directly. Used for the gate role (verify role), which only needs
+	// to submit a Kubernetes Job and read the verdict.
+	// +optional
+	InferenceServiceRef corev1.LocalObjectReference `json:"inferenceServiceRef,omitempty"`
 
 	// SystemPrompt is the literal system message the Agent sees on every
 	// run. Inline (no ConfigMap indirection) for v0.1; ConfigMap
-	// indirection is a non-breaking v0.2 addition. Required and non-empty.
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:MinLength=1
-	SystemPrompt string `json:"systemPrompt"`
+	// indirection is a non-breaking v0.2 addition.
+	//
+	// Optional: only meaningful when InferenceServiceRef is set. A
+	// deterministic Agent (empty InferenceServiceRef) has no LLM to
+	// read this; the executor ignores the field in that path.
+	// +optional
+	SystemPrompt string `json:"systemPrompt,omitempty"`
 
 	// Temperature is the sampling temperature passed verbatim on each
 	// chat-completions request. String-typed to dodge float-on-CRD

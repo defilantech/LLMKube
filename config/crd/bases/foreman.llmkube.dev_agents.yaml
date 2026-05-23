@@ -80,6 +80,12 @@ spec:
                   resolves it to a base URL ("http://<svc>.<ns>.svc:<port>/v1") at
                   task time. v0.1 uses inferenceServiceRef exclusively; v0.2 may
                   introduce an external-provider URL form.
+
+                  Optional: an Agent with an empty InferenceServiceRef is a
+                  *deterministic* Agent (no LLM in the loop). The executor skips
+                  model dispatch and runs the agent's first non-terminal tool
+                  directly. Used for the gate role (verify role), which only needs
+                  to submit a Kubernetes Job and read the verdict.
                 properties:
                   name:
                     default: ""
@@ -165,6 +171,16 @@ spec:
                       key are eligible. Used for tasks that must run on a specific node
                       (e.g. verify tasks targeting the gate runner).
                     type: object
+                  roles:
+                    description: |-
+                      Roles filters to FleetNodes whose spec.roles include every named
+                      role. Matches against FleetNodeSpec.Roles (the --roles flag on the
+                      foreman-agent). Used to route the gate Agent's tasks to nodes that
+                      advertise themselves as verifiers without coupling to per-node
+                      labels.
+                    items:
+                      type: string
+                    type: array
                 type: object
               role:
                 description: |-
@@ -181,8 +197,11 @@ spec:
                 description: |-
                   SystemPrompt is the literal system message the Agent sees on every
                   run. Inline (no ConfigMap indirection) for v0.1; ConfigMap
-                  indirection is a non-breaking v0.2 addition. Required and non-empty.
-                minLength: 1
+                  indirection is a non-breaking v0.2 addition.
+
+                  Optional: only meaningful when InferenceServiceRef is set. A
+                  deterministic Agent (empty InferenceServiceRef) has no LLM to
+                  read this; the executor ignores the field in that path.
                 type: string
               temperature:
                 description: |-
@@ -203,9 +222,7 @@ spec:
                 minItems: 1
                 type: array
             required:
-            - inferenceServiceRef
             - role
-            - systemPrompt
             - tools
             type: object
           status:

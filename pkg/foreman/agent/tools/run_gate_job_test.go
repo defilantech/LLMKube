@@ -1,0 +1,392 @@
+/*
+Copyright 2025.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package tools
+
+import (
+	"context"
+	"encoding/json"
+	"strings"
+	"testing"
+	"time"
+
+	batchv1 "k8s.io/api/batch/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+)
+
+// gateScheme is the scheme the fake controller-runtime client uses for
+// every gate-tool test. batchv1 is the only API the tool touches.
+func gateScheme(t *testing.T) *runtime.Scheme {
+	t.Helper()
+	s := runtime.NewScheme()
+	if err := batchv1.AddToScheme(s); err != nil {
+		t.Fatalf("add batchv1 scheme: %v", err)
+	}
+	return s
+}
+
+// pinName returns a deterministic NameFn so polling can look the Job
+// up without having to scan.
+func pinName(name string) func(string) string {
+	return func(string) string { return name }
+}
+
+// argsJSON builds a runGateJobArgs payload mirroring what
+// executor_native.go's buildDeterministicArgs produces for the gate
+// Agent. The checks field is omitted so the tool falls through to
+// DefaultGateChecks; renderGateJob is tested separately for explicit
+// check lists.
+func argsJSON(t *testing.T, repo, branch string) json.RawMessage {
+	t.Helper()
+	out, err := json.Marshal(map[string]any{
+		"repo":    repo,
+		"branch":  branch,
+		"taskRef": map[string]string{"namespace": "default", "name": "gate"},
+	})
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+	return out
+}
+
+// flipStatusOnce watches for the Job to appear, then patches the named
+// status field to the requested count and returns. Tests use it to
+// drive the fake apiserver through a Succeeded / Failed transition
+// shortly after the tool's Create call.
+func flipStatusOnce(ctx context.Context, c client.Client, key types.NamespacedName, succeeded, failed int32) {
+	for ctx.Err() == nil {
+		var job batchv1.Job
+		if err := c.Get(ctx, key, &job); err == nil {
+			job.Status.Succeeded = succeeded
+			job.Status.Failed = failed
+			_ = c.Status().Update(ctx, &job)
+			return
+		}
+		time.Sleep(1 * time.Millisecond)
+	}
+}
+
+// --- Schema / Name --------------------------------------------------------
+
+func TestRunGateJob_NameAndSchema(t *testing.T) {
+	tool := RunGateJobTool{}
+	if got := tool.Name(); got != "run_gate_job" {
+		t.Errorf("Name(): got %q", got)
+	}
+	schema := tool.Schema()
+	if schema.Name != "run_gate_job" {
+		t.Errorf("Schema.Name: got %q", schema.Name)
+	}
+	if !strings.Contains(string(schema.Parameters), "repo") ||
+		!strings.Contains(string(schema.Parameters), "branch") {
+		t.Errorf("Schema.Parameters missing repo/branch keys: %s", schema.Parameters)
+	}
+}
+
+// --- Argument validation --------------------------------------------------
+
+func TestRunGateJob_RequiresClient(t *testing.T) {
+	tool := &RunGateJobTool{}
+	_, err := tool.Execute(context.Background(), argsJSON(t, "x/y", "b"))
+	if err == nil || !strings.Contains(err.Error(), "Client") {
+		t.Errorf("expected Client-required error; got %v", err)
+	}
+}
+
+func TestRunGateJob_MissingRepo(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(gateScheme(t)).Build()
+	tool := &RunGateJobTool{Client: c}
+	_, err := tool.Execute(context.Background(), json.RawMessage(`{"branch":"b"}`))
+	if err == nil || !strings.Contains(err.Error(), "repo") {
+		t.Errorf("expected repo-required error; got %v", err)
+	}
+}
+
+func TestRunGateJob_MissingBranch(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(gateScheme(t)).Build()
+	tool := &RunGateJobTool{Client: c}
+	_, err := tool.Execute(context.Background(), json.RawMessage(`{"repo":"x/y"}`))
+	if err == nil || !strings.Contains(err.Error(), "branch") {
+		t.Errorf("expected branch-required error; got %v", err)
+	}
+}
+
+func TestRunGateJob_BadArgsJSON(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(gateScheme(t)).Build()
+	tool := &RunGateJobTool{Client: c}
+	_, err := tool.Execute(context.Background(), json.RawMessage(`{not-json`))
+	if err == nil || !strings.Contains(err.Error(), "bad args") {
+		t.Errorf("expected bad-args error; got %v", err)
+	}
+}
+
+// --- Submit + poll happy paths -------------------------------------------
+
+func TestRunGateJob_SucceededProducesGATEPASS(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	c := fake.NewClientBuilder().WithScheme(gateScheme(t)).WithStatusSubresource(&batchv1.Job{}).Build()
+	jobName := "foreman-gate-fake-pass"
+	key := types.NamespacedName{Namespace: "foreman-system", Name: jobName}
+
+	go flipStatusOnce(ctx, c, key, 1, 0)
+
+	tool := &RunGateJobTool{
+		Client: c,
+		Cfg: RunGateJobToolConfig{
+			NameFn:       pinName(jobName),
+			PollInterval: 5 * time.Millisecond,
+			PollTimeout:  2 * time.Second,
+			LogTailFn: func(_ context.Context, _, name string) string {
+				return "=== make test ===\nok  github.com/x/y\nGATE PASS\n"
+			},
+		},
+	}
+
+	res, err := tool.Execute(ctx, argsJSON(t, "defilantech/LLMKube", "foreman/issue-503"))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !res.Terminal {
+		t.Errorf("Terminal: want true")
+	}
+	if res.Verdict != VerdictGatePass {
+		t.Errorf("Verdict: want %s got %s", VerdictGatePass, res.Verdict)
+	}
+	if !strings.Contains(res.Summary, "passed") {
+		t.Errorf("Summary should announce pass; got %q", res.Summary)
+	}
+	if got, _ := res.Extra["logTail"].(string); !strings.Contains(got, "GATE PASS") {
+		t.Errorf("logTail should carry the gate output; got %q", got)
+	}
+	if got, _ := res.Extra["jobName"].(string); got != jobName {
+		t.Errorf("Extra.jobName: want %s got %s", jobName, got)
+	}
+
+	// And the Job actually got created at the apiserver with the
+	// expected name + namespace.
+	var job batchv1.Job
+	if err := c.Get(ctx, key, &job); err != nil {
+		t.Fatalf("Job should exist on apiserver: %v", err)
+	}
+	if job.Labels["app.kubernetes.io/name"] != "foreman-gate" {
+		t.Errorf("missing canonical label: %#v", job.Labels)
+	}
+}
+
+func TestRunGateJob_FailedProducesGATEFAIL(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	c := fake.NewClientBuilder().WithScheme(gateScheme(t)).WithStatusSubresource(&batchv1.Job{}).Build()
+	jobName := "foreman-gate-fake-fail"
+	key := types.NamespacedName{Namespace: "foreman-system", Name: jobName}
+
+	go flipStatusOnce(ctx, c, key, 0, 1)
+
+	tool := &RunGateJobTool{
+		Client: c,
+		Cfg: RunGateJobToolConfig{
+			NameFn:       pinName(jobName),
+			PollInterval: 5 * time.Millisecond,
+			PollTimeout:  2 * time.Second,
+			LogTailFn: func(_ context.Context, _, _ string) string {
+				return "FAIL  github.com/x/y\nGATE FAIL\n"
+			},
+		},
+	}
+
+	res, err := tool.Execute(ctx, argsJSON(t, "x/y", "b"))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if res.Verdict != VerdictGateFail {
+		t.Errorf("Verdict: want %s got %s", VerdictGateFail, res.Verdict)
+	}
+	if got, _ := res.Extra["logTail"].(string); !strings.Contains(got, "GATE FAIL") {
+		t.Errorf("logTail should carry failure marker; got %q", got)
+	}
+}
+
+// --- Error paths ----------------------------------------------------------
+
+func TestRunGateJob_PollTimeoutProducesGATEERROR(t *testing.T) {
+	// No goroutine to flip status -- the poll loop should hit PollTimeout
+	// and return GATE-ERROR with a "poll timeout" reason.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	c := fake.NewClientBuilder().WithScheme(gateScheme(t)).Build()
+	tool := &RunGateJobTool{
+		Client: c,
+		Cfg: RunGateJobToolConfig{
+			NameFn:       pinName("foreman-gate-stuck"),
+			PollInterval: 5 * time.Millisecond,
+			PollTimeout:  50 * time.Millisecond,
+			LogTailFn:    func(context.Context, string, string) string { return "(no logs)" },
+		},
+	}
+
+	res, err := tool.Execute(ctx, argsJSON(t, "x/y", "b"))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if res.Verdict != VerdictGateError {
+		t.Errorf("Verdict: want %s got %s", VerdictGateError, res.Verdict)
+	}
+	if got, _ := res.Extra["pollError"].(string); got == "" {
+		t.Errorf("pollError should be set on timeout; got empty")
+	}
+}
+
+func TestRunGateJob_DuplicateCreateProducesGATEERROR(t *testing.T) {
+	// Seed the fake apiserver with a Job at the name we will pin. The
+	// Create call inside Execute should fail with AlreadyExists; the
+	// tool maps that to a GATE-ERROR terminal result rather than a
+	// Go-level error.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	seeded := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{Name: "foreman-gate-collide", Namespace: "foreman-system"},
+	}
+	c := fake.NewClientBuilder().
+		WithScheme(gateScheme(t)).
+		WithObjects(seeded).
+		Build()
+
+	tool := &RunGateJobTool{
+		Client: c,
+		Cfg: RunGateJobToolConfig{
+			NameFn:       pinName("foreman-gate-collide"),
+			PollInterval: 5 * time.Millisecond,
+			PollTimeout:  500 * time.Millisecond,
+		},
+	}
+
+	res, err := tool.Execute(ctx, argsJSON(t, "x/y", "b"))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if res.Verdict != VerdictGateError {
+		t.Errorf("Verdict: want %s got %s", VerdictGateError, res.Verdict)
+	}
+	if got, _ := res.Extra["reason"].(string); !strings.Contains(got, "create job") {
+		t.Errorf("reason should mention create failure; got %q", got)
+	}
+	// Sanity check the AlreadyExists shape on the underlying client so
+	// we are not relying on a brittle string comparison.
+	if err := c.Create(ctx, &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{Name: "foreman-gate-collide", Namespace: "foreman-system"},
+	}); !apierrors.IsAlreadyExists(err) {
+		t.Errorf("expected AlreadyExists; got %v", err)
+	}
+}
+
+// --- Defaults + sanitization ---------------------------------------------
+
+func TestApplyConfigDefaults_FillsEveryField(t *testing.T) {
+	c := applyConfigDefaults(RunGateJobToolConfig{})
+	if c.Namespace == "" || c.PVCName == "" || c.Image == "" || c.CloneURLBase == "" {
+		t.Errorf("string defaults missing: %#v", c)
+	}
+	if c.ActiveDeadlineSeconds == 0 || c.TTLSecondsAfterFinished == 0 {
+		t.Errorf("deadline defaults missing: %#v", c)
+	}
+	if c.PollInterval == 0 || c.PollTimeout == 0 {
+		t.Errorf("poll defaults missing: %#v", c)
+	}
+	if c.NameFn == nil {
+		t.Errorf("NameFn default missing")
+	}
+
+	// PollTimeout defaults to 2 * ActiveDeadlineSeconds so the Job's
+	// own deadline always fires before ours.
+	want := 2 * time.Duration(c.ActiveDeadlineSeconds) * time.Second
+	if c.PollTimeout != want {
+		t.Errorf("PollTimeout default: want %s got %s", want, c.PollTimeout)
+	}
+}
+
+func TestSanitizeName(t *testing.T) {
+	cases := map[string]string{
+		"issue-503-foo": "issue-503-foo",
+		"Issue 503 Foo": "issue-503-foo",
+		"weird/path!!":  "weird-path",
+		"":              "task",
+		"--leading--":   "leading",
+		"BIG_CAPS_NAME": "big-caps-name",
+	}
+	for in, want := range cases {
+		if got := sanitizeName(in); got != want {
+			t.Errorf("sanitizeName(%q): want %q got %q", in, want, got)
+		}
+	}
+}
+
+// --- Template rendering ---------------------------------------------------
+
+func TestRenderGateJob_RendersChecksAndPVCMount(t *testing.T) {
+	job, err := renderGateJob(rendererInput{
+		Name:                    "foreman-gate-x",
+		Namespace:               "foreman-system",
+		Image:                   "golang:1.26",
+		Repo:                    "defilantech/LLMKube",
+		Branch:                  "foreman/issue-503",
+		Checks:                  []string{"fmt", "vet", "test"},
+		PVCName:                 "foreman-gate-cache",
+		ActiveDeadlineSeconds:   1800,
+		TTLSecondsAfterFinished: 86400,
+		CPURequest:              "2",
+		CPULimit:                "4",
+		MemRequest:              "4Gi",
+		MemLimit:                "8Gi",
+		CloneURLBase:            "https://github.com",
+		TaskNamespace:           "default",
+		TaskName:                "gate-503",
+	})
+	if err != nil {
+		t.Fatalf("renderGateJob: %v", err)
+	}
+	if job.Name != "foreman-gate-x" {
+		t.Errorf("Name: %q", job.Name)
+	}
+	if got := job.Spec.Template.Spec.Containers[0].Image; got != "golang:1.26" {
+		t.Errorf("Image: %q", got)
+	}
+	args := strings.Join(job.Spec.Template.Spec.Containers[0].Args, "\n")
+	if !strings.Contains(args, "make fmt") ||
+		!strings.Contains(args, "make vet") ||
+		!strings.Contains(args, "make test") {
+		t.Errorf("Args missing one of the requested checks:\n%s", args)
+	}
+	if !strings.Contains(args, "defilantech/LLMKube") ||
+		!strings.Contains(args, "foreman/issue-503") {
+		t.Errorf("Args missing repo/branch substitution:\n%s", args)
+	}
+	if got := job.Spec.Template.Spec.Volumes[0].PersistentVolumeClaim.ClaimName; got != "foreman-gate-cache" {
+		t.Errorf("PVC claim name: %q", got)
+	}
+	if got := job.Labels["foreman.llmkube.dev/task-name"]; got != "gate-503" {
+		t.Errorf("task-name label: %q", got)
+	}
+}

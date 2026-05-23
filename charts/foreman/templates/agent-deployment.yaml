@@ -1,0 +1,121 @@
+{{- if .Values.agent.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "foreman.fullname" . }}-agent
+  namespace: {{ include "foreman.namespace" . }}
+  labels:
+    {{- include "foreman.agent.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.agent.replicaCount }}
+  # Each foreman-agent claims one task at a time. The Recreate
+  # strategy stops a rolling update from briefly running two agents
+  # that race for the same Scheduled tasks.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "foreman.agent.labels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        kubectl.kubernetes.io/default-container: agent
+        {{- with .Values.agent.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "foreman.agent.labels" . | nindent 8 }}
+        {{- with .Values.agent.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "foreman.agent.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.agent.podSecurityContext | nindent 8 }}
+      containers:
+        - name: agent
+          image: {{ include "foreman.agent.image" . }}
+          imagePullPolicy: {{ .Values.agent.image.pullPolicy }}
+          command:
+            - /foreman-agent
+          args:
+            - --agent-mode={{ .Values.agent.mode }}
+            - --roles={{ join "," .Values.agent.roles }}
+            {{- if .Values.agent.taskNamespace }}
+            - --task-namespace={{ .Values.agent.taskNamespace }}
+            {{- end }}
+            {{- if .Values.agent.installedModels }}
+            - --installed-models={{ join "," .Values.agent.installedModels }}
+            {{- end }}
+            {{- if .Values.agent.inferenceBaseURLOverride }}
+            - --inference-base-url-override={{ .Values.agent.inferenceBaseURLOverride }}
+            {{- end }}
+            {{- if .Values.agent.gitRemoteURL }}
+            - --git-remote-url={{ .Values.agent.gitRemoteURL }}
+            {{- end }}
+            {{- if .Values.agent.commitAuthorName }}
+            - --commit-author-name={{ .Values.agent.commitAuthorName }}
+            {{- end }}
+            {{- if .Values.agent.commitAuthorEmail }}
+            - --commit-author-email={{ .Values.agent.commitAuthorEmail }}
+            {{- end }}
+          env:
+            - name: FLEET_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            {{- if .Values.agent.githubToken.secretName }}
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.agent.githubToken.secretName }}
+                  key: {{ .Values.agent.githubToken.secretKey }}
+            {{- end }}
+            {{- with .Values.agent.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          securityContext:
+            {{- toYaml .Values.agent.securityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.agent.resources | nindent 12 }}
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.agent.gateCache.enabled }}
+            - name: gate-cache
+              mountPath: /cache
+            {{- end }}
+      volumes:
+        - name: workspace
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+        {{- if .Values.agent.gateCache.enabled }}
+        - name: gate-cache
+          persistentVolumeClaim:
+            claimName: {{ include "foreman.gateCache.pvcName" . }}
+        {{- end }}
+      {{- with .Values.agent.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.agent.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.agent.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      terminationGracePeriodSeconds: 30
+{{- end }}

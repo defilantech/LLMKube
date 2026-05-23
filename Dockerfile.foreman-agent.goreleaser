@@ -1,0 +1,15 @@
+# Dockerfile for GoReleaser builds of the foreman-agent. Expects a
+# pre-built binary at the build context root.
+#
+# The foreman-agent shells out to `git` for clone / commit / push from
+# its repo helpers, so the runtime image swaps distroless static for
+# alpine + git. nonroot uid 65532 stays.
+FROM alpine:3.20
+RUN apk add --no-cache git ca-certificates \
+    && addgroup -S -g 65532 nonroot \
+    && adduser -S -u 65532 -G nonroot nonroot
+WORKDIR /
+COPY foreman-agent /foreman-agent
+USER 65532:65532
+
+ENTRYPOINT ["/foreman-agent"]

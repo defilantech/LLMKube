@@ -251,6 +251,17 @@ func capabilitySatisfies(req foremanv1alpha1.RequiredCapability, n *foremanv1alp
 			return false
 		}
 	}
+	if len(req.Roles) > 0 {
+		have := make(map[string]struct{}, len(n.Spec.Roles))
+		for _, r := range n.Spec.Roles {
+			have[r] = struct{}{}
+		}
+		for _, want := range req.Roles {
+			if _, ok := have[want]; !ok {
+				return false
+			}
+		}
+	}
 	return true
 }
 

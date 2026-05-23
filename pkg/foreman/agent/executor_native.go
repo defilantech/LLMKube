@@ -18,6 +18,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -140,12 +141,18 @@ func (e *NativeAgentLoopExecutor) Execute(ctx context.Context, task *foremanv1al
 		return nil, fmt.Errorf("resolve agent: %w", err)
 	}
 
-	// 2. Resolve the inference base URL. Override wins; otherwise read
-	// InferenceService.status.endpoint and strip the
-	// /chat/completions tail.
-	baseURL, err := e.resolveInferenceBaseURL(ctx, task.Namespace, &agent)
-	if err != nil {
-		return e.failResult(start, "InferenceServiceUnavailable", err.Error()), nil
+	// 2. Resolve the inference base URL -- but only when the Agent has
+	// an InferenceServiceRef. Deterministic Agents (M4 gate Agent: no
+	// LLM, just tool dispatch) leave InferenceServiceRef empty; their
+	// path runs every step from 3 onward except the loop.
+	deterministic := agent.Spec.InferenceServiceRef.Name == ""
+	var baseURL string
+	if !deterministic {
+		var err error
+		baseURL, err = e.resolveInferenceBaseURL(ctx, task.Namespace, &agent)
+		if err != nil {
+			return e.failResult(start, "InferenceServiceUnavailable", err.Error()), nil
+		}
 	}
 
 	// 3. Prep workspace + clone.
@@ -205,6 +212,35 @@ func (e *NativeAgentLoopExecutor) Execute(ctx context.Context, task *foremanv1al
 	if err != nil {
 		return e.failResult(start, "ToolRegistryBuildFailed", err.Error()), nil
 	}
+
+	// 5b. Deterministic Agent path: no LLM loop. Dispatch the agent's
+	// first tool directly with the task payload as JSON arguments. The
+	// gate Agent uses this; M5+ reviewer agents use the LLM path.
+	if deterministic {
+		return e.executeDeterministic(ctx, task, &agent, branch, registry, start), nil
+	}
+
+	// 6+. LLM-driven path: extracted to keep Execute below the
+	// cyclomatic-complexity threshold. runLLMPath owns OAI + loop +
+	// transcript + commit/push.
+	return e.runLLMPath(ctx, task, &agent, baseURL, workspace, branch, registry, auth, start)
+}
+
+// runLLMPath is the model-in-the-loop continuation of Execute. Called
+// only when the Agent has a non-empty InferenceServiceRef. The split
+// from Execute is purely about cyclomatic complexity, not separation
+// of concerns: nothing here should be reachable from the deterministic
+// branch.
+func (e *NativeAgentLoopExecutor) runLLMPath(
+	ctx context.Context,
+	task *foremanv1alpha1.AgenticTask,
+	agent *foremanv1alpha1.Agent,
+	baseURL, workspace, branch string,
+	registry ToolRegistry,
+	auth *repo.Auth,
+	start time.Time,
+) (*Result, error) {
+	log := logf.FromContext(ctx).WithName("native-agent-loop").WithValues("task", task.Name, "ns", task.Namespace)
 
 	// 6. Build OAI client + loop.
 	oaiClient := oai.New(
@@ -304,6 +340,102 @@ func (e *NativeAgentLoopExecutor) Execute(ctx context.Context, task *foremanv1al
 	}
 
 	return e.goResult(start, transcriptRef, loopRes, branch, sha), nil
+}
+
+// executeDeterministic is the no-LLM execution path. Used by Agents
+// whose work is a single Kubernetes Job (gate Agent: run_gate_job) or
+// any future deterministic workload. The flow:
+//
+//  1. Pick the agent's first non-terminal tool. If the Agent's tool
+//     whitelist lists `submit_result`, treat it as terminal-only and
+//     dispatch the first other tool. If exactly one tool is named
+//     (the gate case), dispatch that one.
+//  2. Build a payload-as-args JSON from the task's spec.payload.
+//  3. Dispatch the tool. If the tool itself returns Terminal=true with
+//     a Verdict, that verdict drives the AgenticTask status. Otherwise
+//     wrap a generic GO/NO-GO based on whether the tool succeeded.
+//
+// No transcript ConfigMap is written -- a deterministic run has no
+// model turns to preserve. Result.Extra captures the dispatched
+// tool's name + output for debugging.
+func (e *NativeAgentLoopExecutor) executeDeterministic(
+	ctx context.Context,
+	task *foremanv1alpha1.AgenticTask,
+	agent *foremanv1alpha1.Agent,
+	branch string,
+	registry ToolRegistry,
+	start time.Time,
+) *Result {
+	toolName := pickDeterministicTool(agent.Spec.Tools)
+	if toolName == "" {
+		return e.failResult(start, "NoDeterministicTool",
+			"deterministic Agent has no non-terminal tool in spec.tools; expected exactly one (e.g. run_gate_job)")
+	}
+
+	// The task payload becomes the tool's arguments. For the gate
+	// Agent's run_gate_job tool, this means {repo, branch, checks}
+	// surface from spec.payload via well-known fields.
+	args := buildDeterministicArgs(task, branch)
+
+	result, dispatchErr := registry.Dispatch(ctx, toolName, args)
+	if dispatchErr != nil {
+		return e.failResult(start, "ToolDispatchFailed",
+			fmt.Sprintf("%s: %s", toolName, dispatchErr.Error()))
+	}
+
+	// If the tool was self-terminal (e.g. submit_result), it carried
+	// its own Verdict. Otherwise fall back to a synthetic GO so the
+	// task at least reaches Succeeded; the operator can inspect
+	// Result.Extra.toolOutput for what happened.
+	verdict := foremanv1alpha1.AgenticTaskVerdictGo
+	if result.Terminal && result.Verdict != "" {
+		verdict = foremanv1alpha1.AgenticTaskVerdict(result.Verdict)
+	}
+
+	summary := result.Summary
+	if summary == "" {
+		summary = fmt.Sprintf("deterministic %s tool returned verdict=%s", toolName, verdict)
+	}
+
+	r := NewResult(e.Kind(), verdict, summary, time.Since(start))
+	r.Extra = map[string]any{
+		"outcome":        "",
+		"deterministic":  true,
+		"dispatchedTool": toolName,
+		"toolOutput":     result.Output,
+		"modelExtra":     result.Extra,
+		"intendedBranch": branch,
+	}
+	return r
+}
+
+// pickDeterministicTool finds the first non-terminal tool in the
+// agent's whitelist. submit_result is always terminal (the LLM-loop
+// exit tool) so we skip it here. Returns "" if no candidate found.
+func pickDeterministicTool(tools []string) string {
+	for _, t := range tools {
+		if t == "" || t == "submit_result" {
+			continue
+		}
+		return t
+	}
+	return ""
+}
+
+// buildDeterministicArgs synthesizes a JSON args blob the deterministic
+// tool receives. The gate Agent's run_gate_job tool will read
+// {repo, branch} from this; other deterministic tools can extend the
+// shape as needed.
+func buildDeterministicArgs(task *foremanv1alpha1.AgenticTask, branch string) json.RawMessage {
+	args := map[string]any{
+		"repo":    task.Spec.Payload.Repo,
+		"branch":  branch,
+		"issue":   task.Spec.Payload.Issue,
+		"prompt":  task.Spec.Payload.Prompt,
+		"taskRef": map[string]string{"namespace": task.Namespace, "name": task.Name},
+	}
+	out, _ := json.Marshal(args)
+	return out
 }
 
 // resolveInferenceBaseURL turns Agent.spec.inferenceServiceRef into a

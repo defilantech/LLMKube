@@ -1,0 +1,22 @@
+{{- if and .Values.agent.enabled .Values.agent.gateCache.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "foreman.gateCache.pvcName" . }}
+  namespace: {{ include "foreman.namespace" . }}
+  labels:
+    {{- include "foreman.agent.labels" . | nindent 4 }}
+  {{- with .Values.agent.gateCache.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  accessModes:
+    {{- toYaml .Values.agent.gateCache.accessModes | nindent 4 }}
+  resources:
+    requests:
+      storage: {{ .Values.agent.gateCache.size }}
+  {{- with .Values.agent.gateCache.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+{{- end }}

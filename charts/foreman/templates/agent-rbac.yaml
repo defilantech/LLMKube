@@ -1,0 +1,82 @@
+{{- if .Values.agent.enabled }}
+{{- if .Values.agent.serviceAccount.create }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "foreman.agent.serviceAccountName" . }}
+  namespace: {{ include "foreman.namespace" . }}
+  labels:
+    {{- include "foreman.agent.labels" . | nindent 4 }}
+---
+{{- end }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "foreman.fullname" . }}-agent
+  labels:
+    {{- include "foreman.agent.labels" . | nindent 4 }}
+rules:
+  # FleetNode self-registration + heartbeat.
+  - apiGroups: ["foreman.llmkube.dev"]
+    resources: ["fleetnodes"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: ["foreman.llmkube.dev"]
+    resources: ["fleetnodes/status"]
+    verbs: ["get", "update", "patch"]
+
+  # AgenticTask watcher: claim Scheduled tasks for this node, update
+  # status on completion.
+  - apiGroups: ["foreman.llmkube.dev"]
+    resources: ["agentictasks"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["foreman.llmkube.dev"]
+    resources: ["agentictasks/status"]
+    verbs: ["get", "update", "patch"]
+
+  # Read the referenced Agent CR + the InferenceService it points at
+  # to resolve the executor's base URL.
+  - apiGroups: ["foreman.llmkube.dev"]
+    resources: ["agents"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["inference.llmkube.dev"]
+    resources: ["inferenceservices"]
+    verbs: ["get", "list", "watch"]
+
+  # Native executor writes the per-task transcript ConfigMap, owner-
+  # ref'd to the AgenticTask.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # run_gate_job tool submits + reads Jobs in the foreman namespace.
+  # Pod log access lives on the core "pods/log" subresource.
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+
+  # Event reporting from the watcher + executor.
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "foreman.fullname" . }}-agent
+  labels:
+    {{- include "foreman.agent.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "foreman.fullname" . }}-agent
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "foreman.agent.serviceAccountName" . }}
+    namespace: {{ include "foreman.namespace" . }}
+{{- end }}

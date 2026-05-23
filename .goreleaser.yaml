@@ -76,6 +76,38 @@ builds:
     env:
       - CGO_ENABLED=0
 
+  - id: llmkube-foreman-operator
+    main: ./cmd/foreman-operator
+    binary: foreman-operator
+
+    # Linux containers only (the foreman-operator runs in-cluster).
+    goos:
+      - linux
+
+    goarch:
+      - amd64
+      - arm64
+
+    env:
+      - CGO_ENABLED=0
+
+  - id: llmkube-foreman-agent
+    main: ./cmd/foreman-agent
+    binary: foreman-agent
+
+    # Linux containers only (the foreman-agent Linux Pod is
+    # Linux; the M5 Max + Mac Studio run from `go install` or a
+    # launchd-managed local binary, not the ghcr image).
+    goos:
+      - linux
+
+    goarch:
+      - amd64
+      - arm64
+
+    env:
+      - CGO_ENABLED=0
+
 archives:
   - id: llmkube-cli
     builds:
@@ -149,11 +181,89 @@ dockers:
       - "--label=org.opencontainers.image.version={{.Version}}"
       - "--label=org.opencontainers.image.source={{.GitURL}}"
 
+  - id: foreman-operator-amd64
+    goos: linux
+    goarch: amd64
+    ids:
+      - llmkube-foreman-operator
+    image_templates:
+      - "ghcr.io/defilantech/llmkube-foreman-operator:{{ .Version }}-amd64"
+    dockerfile: Dockerfile.foreman-operator.goreleaser
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.created={{.Date}}"
+      - "--label=org.opencontainers.image.title=llmkube-foreman-operator"
+      - "--label=org.opencontainers.image.revision={{.FullCommit}}"
+      - "--label=org.opencontainers.image.version={{.Version}}"
+      - "--label=org.opencontainers.image.source={{.GitURL}}"
+
+  - id: foreman-operator-arm64
+    goos: linux
+    goarch: arm64
+    ids:
+      - llmkube-foreman-operator
+    image_templates:
+      - "ghcr.io/defilantech/llmkube-foreman-operator:{{ .Version }}-arm64"
+    dockerfile: Dockerfile.foreman-operator.goreleaser
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.created={{.Date}}"
+      - "--label=org.opencontainers.image.title=llmkube-foreman-operator"
+      - "--label=org.opencontainers.image.revision={{.FullCommit}}"
+      - "--label=org.opencontainers.image.version={{.Version}}"
+      - "--label=org.opencontainers.image.source={{.GitURL}}"
+
+  - id: foreman-agent-amd64
+    goos: linux
+    goarch: amd64
+    ids:
+      - llmkube-foreman-agent
+    image_templates:
+      - "ghcr.io/defilantech/llmkube-foreman-agent:{{ .Version }}-amd64"
+    dockerfile: Dockerfile.foreman-agent.goreleaser
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.created={{.Date}}"
+      - "--label=org.opencontainers.image.title=llmkube-foreman-agent"
+      - "--label=org.opencontainers.image.revision={{.FullCommit}}"
+      - "--label=org.opencontainers.image.version={{.Version}}"
+      - "--label=org.opencontainers.image.source={{.GitURL}}"
+
+  - id: foreman-agent-arm64
+    goos: linux
+    goarch: arm64
+    ids:
+      - llmkube-foreman-agent
+    image_templates:
+      - "ghcr.io/defilantech/llmkube-foreman-agent:{{ .Version }}-arm64"
+    dockerfile: Dockerfile.foreman-agent.goreleaser
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.created={{.Date}}"
+      - "--label=org.opencontainers.image.title=llmkube-foreman-agent"
+      - "--label=org.opencontainers.image.revision={{.FullCommit}}"
+      - "--label=org.opencontainers.image.version={{.Version}}"
+      - "--label=org.opencontainers.image.source={{.GitURL}}"
+
 docker_manifests:
   - name_template: "ghcr.io/defilantech/llmkube-controller:{{ .Version }}"
     image_templates:
       - "ghcr.io/defilantech/llmkube-controller:{{ .Version }}-amd64"
       - "ghcr.io/defilantech/llmkube-controller:{{ .Version }}-arm64"
+
+  - name_template: "ghcr.io/defilantech/llmkube-foreman-operator:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/defilantech/llmkube-foreman-operator:{{ .Version }}-amd64"
+      - "ghcr.io/defilantech/llmkube-foreman-operator:{{ .Version }}-arm64"
+
+  - name_template: "ghcr.io/defilantech/llmkube-foreman-agent:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/defilantech/llmkube-foreman-agent:{{ .Version }}-amd64"
+      - "ghcr.io/defilantech/llmkube-foreman-agent:{{ .Version }}-arm64"
 
 snapshot:
   version_template: "{{ incpatch .Version }}-next"

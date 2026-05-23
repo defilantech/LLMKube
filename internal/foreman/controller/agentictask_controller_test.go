@@ -268,6 +268,45 @@ var _ = Describe("AgenticTaskReconciler scheduler", func() {
 		Expect(fresh.Status.AssignedNode).To(Equal(node.Name))
 	})
 
+	It("filters FleetNodes by spec.roles when RequiredCapability.Roles is set", func() {
+		// Two nodes: one advertises 'verifier', one only 'worker'. A task
+		// requiring roles=[verifier] must land on the verifier node and
+		// not on the worker-only one even though both are Ready.
+		workerNode := newFleetNode("worker-only")
+		workerNode.Spec.Roles = []string{"worker"}
+		Expect(k8sClient.Create(ctx, workerNode)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, workerNode) })
+		setNodeReady(workerNode, foremanv1alpha1.FleetNodeCapability{
+			Accelerator: foremanv1alpha1.FleetNodeAccelerator("cuda"),
+			TotalRAMGB:  64, AvailableRAMGB: 48,
+		})
+
+		verifierNode := newFleetNode("verifier-node")
+		verifierNode.Spec.Roles = []string{"worker", "verifier"}
+		Expect(k8sClient.Create(ctx, verifierNode)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, verifierNode) })
+		setNodeReady(verifierNode, foremanv1alpha1.FleetNodeCapability{
+			Accelerator: foremanv1alpha1.FleetNodeAccelerator("cuda"),
+			TotalRAMGB:  64, AvailableRAMGB: 48,
+		})
+
+		task := newTask("roles-target")
+		task.Spec.RequiredCapability = foremanv1alpha1.RequiredCapability{
+			Roles: []string{"verifier"},
+		}
+		Expect(k8sClient.Create(ctx, task)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, task) })
+		setPhase(task, foremanv1alpha1.AgenticTaskPhasePending)
+
+		_, err := reconciler.Reconcile(ctx, reqFor(task))
+		Expect(err).NotTo(HaveOccurred())
+
+		var fresh foremanv1alpha1.AgenticTask
+		Expect(k8sClient.Get(ctx, nn(task), &fresh)).To(Succeed())
+		Expect(fresh.Status.Phase).To(Equal(foremanv1alpha1.AgenticTaskPhaseScheduled))
+		Expect(fresh.Status.AssignedNode).To(Equal(verifierNode.Name))
+	})
+
 	It("does not touch a task already past Pending (FleetAgent's domain)", func() {
 		task := newTask("hands-off")
 		Expect(k8sClient.Create(ctx, task)).To(Succeed())

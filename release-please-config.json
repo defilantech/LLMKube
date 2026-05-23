@@ -22,6 +22,16 @@
           "jsonpath": "$.appVersion"
         },
         {
+          "type": "yaml",
+          "path": "charts/foreman/Chart.yaml",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "yaml",
+          "path": "charts/foreman/Chart.yaml",
+          "jsonpath": "$.appVersion"
+        },
+        {
           "type": "generic",
           "path": "pkg/cli/version.go",
           "glob": "pkg/cli/version.go"

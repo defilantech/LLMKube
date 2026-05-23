@@ -1,0 +1,30 @@
+# Build stage: full Go toolchain on a small base.
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
+
+ARG TARGETOS
+ARG TARGETARCH
+
+WORKDIR /workspace
+
+# Dependency layer cache.
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY api/ api/
+COPY cmd/ cmd/
+COPY internal/ internal/
+COPY pkg/ pkg/
+
+# Static build so the resulting binary runs on distroless-static.
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags="-s -w" -o foreman-operator ./cmd/foreman-operator
+
+# Runtime stage: distroless static, non-root, no shell.
+FROM gcr.io/distroless/static:nonroot
+
+WORKDIR /
+COPY --from=builder /workspace/foreman-operator /foreman-operator
+
+USER 65532:65532
+
+ENTRYPOINT ["/foreman-operator"]

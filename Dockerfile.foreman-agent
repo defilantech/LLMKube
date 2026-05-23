@@ -1,0 +1,37 @@
+# Build stage: full Go toolchain on a small base.
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
+
+ARG TARGETOS
+ARG TARGETARCH
+
+WORKDIR /workspace
+
+# Dependency layer cache.
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY api/ api/
+COPY cmd/ cmd/
+COPY internal/ internal/
+COPY pkg/ pkg/
+
+# Static build so the resulting binary runs on alpine without libc.
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags="-s -w" -o foreman-agent ./cmd/foreman-agent
+
+# Runtime stage: alpine + git. The foreman-agent shells out to `git`
+# from its repo helpers (clone / commit / push), so we cannot use
+# distroless-static. Alpine is small (~7 MiB base + git ~5 MiB) and
+# still gives us a non-root user.
+FROM alpine:3.20
+
+RUN apk add --no-cache git ca-certificates \
+    && addgroup -S -g 65532 nonroot \
+    && adduser -S -u 65532 -G nonroot nonroot
+
+WORKDIR /
+COPY --from=builder /workspace/foreman-agent /foreman-agent
+
+USER 65532:65532
+
+ENTRYPOINT ["/foreman-agent"]
