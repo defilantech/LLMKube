@@ -5,6 +5,31 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.10](https://github.com/defilantech/LLMKube/compare/v0.7.9...v0.7.10) (2026-05-23)
+
+
+### Features
+
+* add --llama-server-port for a fixed llama-server runtime port ([#499](https://github.com/defilantech/LLMKube/issues/499)) ([cc30b0d](https://github.com/defilantech/LLMKube/commit/cc30b0dbd5cc8493547f3a251c11ad02d391aa58))
+* add make lint-all target for cross-arch linting ([#508](https://github.com/defilantech/LLMKube/issues/508)) ([f57dd5b](https://github.com/defilantech/LLMKube/commit/f57dd5b0f5178a9c5d6e284a7f1bd5e36f1b282d))
+* capability-aware scheduler + AgenticTaskWatcher + stub executor (Foreman v0.1 M2) ([#504](https://github.com/defilantech/LLMKube/issues/504)) ([74b3d6e](https://github.com/defilantech/LLMKube/commit/74b3d6e1c47915ff1b7a6ac1025acd035f28cce7))
+* **foreman:** gate-role Agent on a verifier node (M4) ([#518](https://github.com/defilantech/LLMKube/issues/518)) ([40a340e](https://github.com/defilantech/LLMKube/commit/40a340e09f3e1845b0ad5bc0b549985fd0d92ab1))
+* **foreman:** native agent loop + Agent CRD + coder role on M5 Max (M3) ([#509](https://github.com/defilantech/LLMKube/issues/509)) ([6661343](https://github.com/defilantech/LLMKube/commit/666134373653bc621bf0c411db300f61f83f447b))
+* scaffold Foreman as an opt-in add-on (M0 + M1) ([#501](https://github.com/defilantech/LLMKube/issues/501)) ([cd40491](https://github.com/defilantech/LLMKube/commit/cd404914cc443eab43e16a9dfbf32c47171d2960))
+
+
+### Bug Fixes
+
+* report Stopped phase when InferenceService.spec.replicas=0 on Metal path ([#498](https://github.com/defilantech/LLMKube/issues/498)) ([7787239](https://github.com/defilantech/LLMKube/commit/77872395deda1ec5ce89d61c12de62cedd998968))
+
+
+### Documentation
+
+* add AGENTS.md ([#496](https://github.com/defilantech/LLMKube/issues/496)) ([89d3766](https://github.com/defilantech/LLMKube/commit/89d3766ba5a43726fdf89b0fbe61caf7bacb75dc))
+* bump broken bartowski phi-4-mini URL to renamed repo ([#514](https://github.com/defilantech/LLMKube/issues/514)) ([9f15d98](https://github.com/defilantech/LLMKube/commit/9f15d9891ddc32e118f55b378f8e357e2e7e4d14))
+* **macos-metal:** derive curl port from Endpoints (follow-up to [#513](https://github.com/defilantech/LLMKube/issues/513)) ([#515](https://github.com/defilantech/LLMKube/issues/515)) ([83085c2](https://github.com/defilantech/LLMKube/commit/83085c218ff17c2e0a995110b090aca75aa9e99f))
+* **macos-metal:** replace broken port-forward step with host-localhost curl ([#513](https://github.com/defilantech/LLMKube/issues/513)) ([0f7f7a7](https://github.com/defilantech/LLMKube/commit/0f7f7a7c903660272b53d52c6f5de18838237b5e))
+
 ## [0.7.9](https://github.com/defilantech/LLMKube/compare/v0.7.8...v0.7.9) (2026-05-18)
 
 
