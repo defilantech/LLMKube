@@ -5,6 +5,13 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.11](https://github.com/defilantech/LLMKube/compare/v0.7.10...v0.7.11) (2026-05-23)
+
+
+### Bug Fixes
+
+* **foreman:** drop chart-level subchart dep on llmkube (unblock v0.7.11 chart-releaser) ([#519](https://github.com/defilantech/LLMKube/issues/519)) ([207ddc6](https://github.com/defilantech/LLMKube/commit/207ddc64f82e0243da96bdd73e1b5d949f991041))
+
 ## [0.7.10](https://github.com/defilantech/LLMKube/compare/v0.7.9...v0.7.10) (2026-05-23)
 
 
