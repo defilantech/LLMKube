@@ -6,8 +6,8 @@ description: |
   LLMKube alone does not install or require Foreman. Install Foreman after
   llmkube; foreman-operator runs alongside llmkube-operator.
 type: application
-version: 0.0.1
-appVersion: "0.0.1"
+version: 0.7.10
+appVersion: 0.7.10
 keywords:
   - llmkube
   - foreman
@@ -18,14 +18,7 @@ home: https://github.com/defilantech/LLMKube
 sources:
   - https://github.com/defilantech/LLMKube
 dependencies:
-  # Foreman rides the LLMKube release train. The chart depends on the
-  # core operator + the `inference.llmkube.dev` API group it registers.
-  # >=0.7.10 is the first published LLMKube core that has all of the
-  # InferenceService status fields Foreman's executor depends on.
-  # The "Foreman's debut" v0.8.0 release will arrive once the
-  # Workload planner (M6) lands; the dep does not need to track that
-  # tag explicitly because >=0.7.10 covers every release after.
   - name: llmkube
-    version: ">=0.7.10"
-    repository: "https://defilantech.github.io/llmkube"
+    version: '>=0.7.10'
+    repository: https://defilantech.github.io/llmkube
     condition: llmkube.enabled
