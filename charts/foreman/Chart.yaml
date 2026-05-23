@@ -3,8 +3,12 @@ name: foreman
 description: |
   Foreman is an opt-in add-on for LLMKube that schedules agentic workloads
   (Workload, AgenticTask) across a fleet of nodes (FleetNode). Installing
-  LLMKube alone does not install or require Foreman. Install Foreman after
-  llmkube; foreman-operator runs alongside llmkube-operator.
+  LLMKube alone does not install or require Foreman. Foreman is a SIBLING
+  chart to llmkube, not a subchart: install llmkube first (helm install
+  llmkube defilantech/llmkube), then install foreman alongside it. They
+  share no Helm relationship at packaging or install time; the only
+  coupling is that the foreman-operator's RBAC reads inference.llmkube.dev
+  CRDs that llmkube installs.
 type: application
 version: 0.7.10
 appVersion: 0.7.10
@@ -17,8 +21,3 @@ keywords:
 home: https://github.com/defilantech/LLMKube
 sources:
   - https://github.com/defilantech/LLMKube
-dependencies:
-  - name: llmkube
-    version: '>=0.7.10'
-    repository: https://defilantech.github.io/llmkube
-    condition: llmkube.enabled

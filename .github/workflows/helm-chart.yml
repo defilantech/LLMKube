@@ -708,30 +708,18 @@ jobs:
           version: v3.13.0
 
       - name: Lint foreman chart
-        # Lint before wiring the subchart. helm lint will surface a
-        # "missing dependency: llmkube" warning we accept (the chart
-        # publishes via the gh-pages repo, not this checkout), but
-        # actual lint errors in the foreman templates still fail.
         run: |
           helm lint charts/foreman
           echo "✅ foreman lint passed"
 
-      - name: Wire local llmkube subchart for foreman
-        # foreman depends on llmkube; this CI does not publish a chart
-        # repo, so we satisfy the dependency by symlinking the in-tree
-        # llmkube chart into foreman/charts/. Same trick `helm dep
-        # build` would do under the hood when published.
-        run: |
-          mkdir -p charts/foreman/charts
-          ln -sf ../../llmkube charts/foreman/charts/llmkube
-
-      - name: Template foreman with defaults (no llmkube subchart)
-        # llmkube.enabled=false skips rendering the subchart so this
-        # job stays focused on the foreman templates.
+      - name: Template foreman with defaults
+        # foreman is a sibling chart to llmkube (no Helm subchart
+        # relationship), so no helm-repo wiring is required to render
+        # it. Anything that would have lived in a subchart belongs to
+        # llmkube's chart and is installed separately.
         run: |
           helm template foreman charts/foreman \
             --namespace foreman-system \
-            --set llmkube.enabled=false \
             > foreman-default.yaml
 
           for kind in "Deployment" "ClusterRole" "ClusterRoleBinding" "ServiceAccount" "PersistentVolumeClaim" "CustomResourceDefinition"; do
@@ -749,7 +737,6 @@ jobs:
         run: |
           helm template foreman charts/foreman \
             --namespace foreman-system \
-            --set llmkube.enabled=false \
             --set agent.mode=native \
             --set 'agent.roles={worker,verifier}' \
             --set agent.githubToken.secretName=foreman-github \

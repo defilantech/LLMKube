@@ -84,15 +84,14 @@ cd /path/to/LLMKube
 helm upgrade --install foreman \
   charts/foreman \
   --namespace foreman-system --create-namespace \
-  --set llmkube.enabled=false \
   --set agent.mode=native \
   --set 'agent.roles={worker,verifier}'
 ```
 
-The `llmkube.enabled=false` flag skips the subchart resolution. The
-chart declares `llmkube >=0.7.10`; if you have LLMKube core
-installed separately at any current version, that dep is satisfied
-and the local-checkout install Just Works.
+Foreman is a sibling chart to llmkube, not a subchart: installing
+foreman never installs (or expects to install) llmkube. If you have
+not already installed llmkube core in the same cluster, do that
+first per the prerequisite section above.
 
 ## Foreman milestone status
 
@@ -122,7 +121,6 @@ nodes that will also run coder-role Agents (M3 + later), add the
 helm upgrade --install foreman \
   charts/foreman \
   --namespace foreman-system --create-namespace \
-  --set llmkube.enabled=false \
   --set agent.mode=native \
   --set 'agent.roles={worker,verifier}' \
   --set agent.gitRemoteURL=https://github.com/Defilan/LLMKube.git \
