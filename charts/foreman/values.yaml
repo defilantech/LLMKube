@@ -123,17 +123,39 @@ agent:
   # agent runs outside the cluster against a port-forwarded service.
   inferenceBaseURLOverride: ""
 
-  # Git remote the coder-role native executor clones from and pushes
-  # branches to. Required for coder-role nodes (e.g. M5 Max running
-  # the Carnice Agent); leave empty on deterministic-only nodes (e.g.
-  # the verifier-tagged node running the M4 gate Agent) -- coder tasks scheduled
-  # to such a node fail with GitRemoteURLNotConfigured, deterministic
-  # Agents run fine.
+  # Where the native + deterministic executors clone working copies
+  # of a repo for the duration of a task. The /workspace path is
+  # mounted as an emptyDir below; override here if you want a PVC-
+  # backed workspace (e.g. to keep go-build caches warm across runs)
+  # or a different in-Pod path. The default /workspace is the right
+  # answer on the published distroless image because the binary's
+  # home dir (/home/nonroot) is on the read-only rootfs and breaks
+  # the deterministic gate Agent's workspace prep step.
+  workspaceDir: /workspace
+
+  # Git remote the executor (both native LLM-driven coder and the
+  # deterministic gate, which clones the upstream coder's branch from
+  # the fork) reads from and pushes branches to. Required for ALL
+  # native-mode nodes including verifier-only nodes:
+  #
+  #   - coder-role nodes (M5 Max running the Carnice Agent) need it to
+  #     push the resulting branch.
+  #   - verifier-role nodes (ShadowStack running the M4 gate Agent)
+  #     need it because run_gate_job clones the branch the coder pushed
+  #     to the fork, not the upstream repo where the branch does not
+  #     yet exist.
+  #
+  # Leaving this empty puts the agent into "deterministic-only-without-
+  # network-git" mode: the M4 V3 two-step pipeline fails at the gate's
+  # clone step with "foreman-agent was not started with --git-remote-url;
+  # cannot clone". Stub-mode agents do not need it.
   gitRemoteURL: ""
 
   # Git author + committer identity stamped onto commits the coder-
-  # role executor produces. Same gate-only-node guidance applies: a
-  # deterministic-only node can leave these empty.
+  # role executor produces. Required when agent.mode=native AND the
+  # agent's roles include "worker" (i.e. it can host the coder Agent).
+  # Verifier-only nodes can leave these empty -- the gate path does not
+  # commit anything.
   commitAuthorName: ""    # defaults to "Foreman Bot" inside the binary
   commitAuthorEmail: ""
 

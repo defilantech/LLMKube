@@ -54,6 +54,7 @@ spec:
             {{- if .Values.agent.inferenceBaseURLOverride }}
             - --inference-base-url-override={{ .Values.agent.inferenceBaseURLOverride }}
             {{- end }}
+            - --workspace-dir={{ .Values.agent.workspaceDir }}
             {{- if .Values.agent.gitRemoteURL }}
             - --git-remote-url={{ .Values.agent.gitRemoteURL }}
             {{- end }}
