@@ -5,6 +5,19 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.12](https://github.com/defilantech/LLMKube/compare/v0.7.11...v0.7.12) (2026-05-24)
+
+
+### Features
+
+* **foreman/m6:** Workload reconciler with stub planner (explicit pipeline + issue-batch shortcut) ([#533](https://github.com/defilantech/LLMKube/issues/533)) ([dbdcd46](https://github.com/defilantech/LLMKube/commit/dbdcd46e5ee1578f6b0be02ac3bf270d3935d7e1))
+
+
+### Bug Fixes
+
+* **foreman/m4:** gate Job honors payload.branch + clones from --git-remote-url ([#529](https://github.com/defilantech/LLMKube/issues/529)) ([905a269](https://github.com/defilantech/LLMKube/commit/905a2698a922641a8cd64ce6bd81e18ff7ecb339))
+* **foreman:** chart wires --workspace-dir + tightens docs for native-mode required values ([#534](https://github.com/defilantech/LLMKube/issues/534)) ([1c43c69](https://github.com/defilantech/LLMKube/commit/1c43c69fa257ae1d2cb8aecada54831e815e2780))
+
 ## [0.7.11](https://github.com/defilantech/LLMKube/compare/v0.7.10...v0.7.11) (2026-05-23)
 
 
