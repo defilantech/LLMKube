@@ -373,9 +373,13 @@ func (e *NativeAgentLoopExecutor) executeDeterministic(
 	}
 
 	// The task payload becomes the tool's arguments. For the gate
-	// Agent's run_gate_job tool, this means {repo, branch, checks}
-	// surface from spec.payload via well-known fields.
-	args := buildDeterministicArgs(task, branch)
+	// Agent's run_gate_job tool, this means {repo, branch, checks,
+	// cloneURL} surface from spec.payload via well-known fields. The
+	// cloneURL override carries the executor's --git-remote-url so the
+	// gate Job clones from the fork the upstream coder pushed to,
+	// rather than the upstream payload.repo where the branch does not
+	// yet exist.
+	args := buildDeterministicArgs(task, branch, e.GitRemoteURL)
 
 	result, dispatchErr := registry.Dispatch(ctx, toolName, args)
 	if dispatchErr != nil {
@@ -424,15 +428,24 @@ func pickDeterministicTool(tools []string) string {
 
 // buildDeterministicArgs synthesizes a JSON args blob the deterministic
 // tool receives. The gate Agent's run_gate_job tool will read
-// {repo, branch} from this; other deterministic tools can extend the
-// shape as needed.
-func buildDeterministicArgs(task *foremanv1alpha1.AgenticTask, branch string) json.RawMessage {
+// {repo, branch, cloneURL} from this; other deterministic tools can
+// extend the shape as needed.
+//
+// cloneURL is the executor's --git-remote-url passed through verbatim.
+// When set, the gate Job clones from this URL instead of constructing
+// one from CloneURLBase + payload.repo. v0.1 needs this because the
+// upstream coder task pushes to a fork (the foreman-agent's
+// --git-remote-url) and the gate must verify that branch on the fork,
+// not on the upstream payload.repo where the branch does not yet
+// exist. Empty cloneURL preserves the M4 default (upstream + repo).
+func buildDeterministicArgs(task *foremanv1alpha1.AgenticTask, branch, cloneURL string) json.RawMessage {
 	args := map[string]any{
-		"repo":    task.Spec.Payload.Repo,
-		"branch":  branch,
-		"issue":   task.Spec.Payload.Issue,
-		"prompt":  task.Spec.Payload.Prompt,
-		"taskRef": map[string]string{"namespace": task.Namespace, "name": task.Name},
+		"repo":     task.Spec.Payload.Repo,
+		"branch":   branch,
+		"cloneURL": cloneURL,
+		"issue":    task.Spec.Payload.Issue,
+		"prompt":   task.Spec.Payload.Prompt,
+		"taskRef":  map[string]string{"namespace": task.Namespace, "name": task.Name},
 	}
 	out, _ := json.Marshal(args)
 	return out
@@ -602,11 +615,21 @@ func objRefAsMap(ref corev1.ObjectReference) map[string]any {
 
 // --- helpers --------------------------------------------------------------
 
-// branchNameForTask picks a branch name for the push. issue-fix tasks
-// get foreman/issue-<N>; other kinds get foreman/<task-name>. v0.1
-// keeps slugs minimal; v0.2 may take an explicit IssueTitle field on
-// AgenticTaskPayload and slug it for the branch.
+// branchNameForTask picks a branch name for the task. Precedence:
+//
+//  1. Explicit task.Spec.Payload.Branch wins. This is the documented
+//     hand-off for verify tasks (which gate a branch the upstream coder
+//     task already produced) and the escape hatch for any task that
+//     wants to pin the branch name from the caller.
+//  2. issue-fix with Payload.Issue > 0 derives foreman/issue-<N>.
+//  3. Everything else falls back to foreman/<task-name>.
+//
+// v0.1 keeps slugs minimal; v0.2 may take an explicit IssueTitle field
+// on AgenticTaskPayload and slug it for the branch.
 func branchNameForTask(task *foremanv1alpha1.AgenticTask) string {
+	if task.Spec.Payload.Branch != "" {
+		return task.Spec.Payload.Branch
+	}
 	if task.Spec.Kind == foremanv1alpha1.AgenticTaskKindIssueFix && task.Spec.Payload.Issue > 0 {
 		return fmt.Sprintf("%s/issue-%d", repo.BranchPrefix, task.Spec.Payload.Issue)
 	}

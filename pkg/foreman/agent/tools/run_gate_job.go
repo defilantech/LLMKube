@@ -148,11 +148,19 @@ type RunGateJobTool struct {
 // `taskRef` is auto-populated by executor_native.go's
 // buildDeterministicArgs and lets the tool stamp owner-ref-style
 // labels on the Job for observability.
+//
+// `cloneURL` is optional. When non-empty, the gate Job clones it
+// verbatim instead of constructing a URL from CloneURLBase + Repo. It
+// exists because v0.1 coders push to a fork (the foreman-agent's
+// --git-remote-url) while payload.repo names the upstream the fix is
+// for; the gate must verify the branch on the fork where it actually
+// lives. Empty preserves the historical CloneURLBase + Repo behavior.
 type runGateJobArgs struct {
-	Repo    string   `json:"repo"`
-	Branch  string   `json:"branch"`
-	Checks  []string `json:"checks,omitempty"`
-	TaskRef struct {
+	Repo     string   `json:"repo"`
+	Branch   string   `json:"branch"`
+	CloneURL string   `json:"cloneURL,omitempty"`
+	Checks   []string `json:"checks,omitempty"`
+	TaskRef  struct {
 		Namespace string `json:"namespace"`
 		Name      string `json:"name"`
 	} `json:"taskRef"`
@@ -231,6 +239,7 @@ func (t *RunGateJobTool) Execute(ctx context.Context, args json.RawMessage) (*ag
 		MemRequest:              cfg.MemRequest,
 		MemLimit:                cfg.MemLimit,
 		CloneURLBase:            cfg.CloneURLBase,
+		CloneURL:                a.CloneURL,
 		TaskNamespace:           a.TaskRef.Namespace,
 		TaskName:                a.TaskRef.Name,
 	})
@@ -351,6 +360,12 @@ func (t *RunGateJobTool) errorResult(jobName, msg string) *agent.ToolResult {
 // rendererInput is the struct text/template binds against. Keeping it
 // here (rather than reusing the public Config + args structs) keeps the
 // template stable across signature changes upstream.
+//
+// CloneURL, when non-empty, replaces the default `CloneURLBase/Repo.git`
+// clone target. The template renders one or the other; Repo is still
+// used in the human-readable log line either way ("=== clone <repo>
+// @ <branch> ===") so an operator scanning Pod logs sees what was
+// being verified, regardless of where the branch physically lives.
 type rendererInput struct {
 	Name                    string
 	Namespace               string
@@ -366,6 +381,7 @@ type rendererInput struct {
 	MemRequest              string
 	MemLimit                string
 	CloneURLBase            string
+	CloneURL                string
 	TaskNamespace           string
 	TaskName                string
 }

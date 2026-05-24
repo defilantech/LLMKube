@@ -19,6 +19,12 @@
 #   .CPURequest / .CPULimit / .MemRequest / .MemLimit
 #   .CloneURLBase   -- "https://github.com" (override for fork-style
 #                      hosts; the default matches autofix)
+#   .CloneURL       -- optional. When non-empty, the Job clones this
+#                      URL verbatim and ignores .CloneURLBase / .Repo
+#                      for the clone command (the log line still names
+#                      .Repo for operator readability). Used by the v0.1
+#                      gate to clone from the foreman-agent's --git-
+#                      remote-url (the fork) rather than upstream.
 #   .TaskNamespace / .TaskName -- the AgenticTask that owns this Job;
 #                                 surfaced as labels for observability.
 apiVersion: batch/v1
@@ -52,7 +58,7 @@ spec:
               set -uo pipefail
               echo "=== clone {{ .Repo }} @ {{ .Branch }} ==="
               git clone --depth 1 --branch "{{ .Branch }}" \
-                "{{ .CloneURLBase }}/{{ .Repo }}.git" /work || { echo "GATE FAIL: clone"; exit 1; }
+                "{{ if .CloneURL }}{{ .CloneURL }}{{ else }}{{ .CloneURLBase }}/{{ .Repo }}.git{{ end }}" /work || { echo "GATE FAIL: clone"; exit 1; }
               cd /work
               rc=0
               {{- range .Checks }}

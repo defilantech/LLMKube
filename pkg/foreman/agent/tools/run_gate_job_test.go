@@ -390,3 +390,76 @@ func TestRenderGateJob_RendersChecksAndPVCMount(t *testing.T) {
 		t.Errorf("task-name label: %q", got)
 	}
 }
+
+// TestRenderGateJob_CloneURLOverride asserts the template branches
+// correctly on the CloneURL field: when set, the git clone target is
+// the override URL verbatim; when empty, the historical
+// CloneURLBase + Repo + .git is preserved. The human-readable log
+// line ("=== clone <repo> @ <branch> ===") always names Repo so an
+// operator sees what was being verified regardless of where the
+// branch physically lives. Regression for #528 part 2.
+func TestRenderGateJob_CloneURLOverride(t *testing.T) {
+	cases := []struct {
+		name        string
+		cloneURL    string
+		mustHave    []string
+		mustNotHave []string
+	}{
+		{
+			name:     "override wins",
+			cloneURL: "https://github.com/Defilan/LLMKube.git",
+			mustHave: []string{
+				`"https://github.com/Defilan/LLMKube.git"`,
+				"=== clone defilantech/LLMKube @ foreman/issue-510 ===",
+			},
+			mustNotHave: []string{
+				`"https://github.com/defilantech/LLMKube.git"`,
+			},
+		},
+		{
+			name:     "empty falls back to CloneURLBase + Repo",
+			cloneURL: "",
+			mustHave: []string{
+				`"https://github.com/defilantech/LLMKube.git"`,
+				"=== clone defilantech/LLMKube @ foreman/issue-510 ===",
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			job, err := renderGateJob(rendererInput{
+				Name:                    "foreman-gate-x",
+				Namespace:               "foreman-system",
+				Image:                   "golang:1.26",
+				Repo:                    "defilantech/LLMKube",
+				Branch:                  "foreman/issue-510",
+				Checks:                  []string{"fmt"},
+				PVCName:                 "foreman-gate-cache",
+				ActiveDeadlineSeconds:   1800,
+				TTLSecondsAfterFinished: 86400,
+				CPURequest:              "2",
+				CPULimit:                "4",
+				MemRequest:              "4Gi",
+				MemLimit:                "8Gi",
+				CloneURLBase:            "https://github.com",
+				CloneURL:                tc.cloneURL,
+				TaskNamespace:           "default",
+				TaskName:                "gate-510",
+			})
+			if err != nil {
+				t.Fatalf("renderGateJob: %v", err)
+			}
+			args := strings.Join(job.Spec.Template.Spec.Containers[0].Args, "\n")
+			for _, sub := range tc.mustHave {
+				if !strings.Contains(args, sub) {
+					t.Errorf("missing %q in rendered args:\n%s", sub, args)
+				}
+			}
+			for _, sub := range tc.mustNotHave {
+				if strings.Contains(args, sub) {
+					t.Errorf("unwanted %q present in rendered args:\n%s", sub, args)
+				}
+			}
+		})
+	}
+}

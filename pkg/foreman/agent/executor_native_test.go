@@ -122,14 +122,23 @@ type fakeRegistry struct {
 	// workspace is captured at construction so touch knows where to
 	// write changes for tests that want the commit path to succeed.
 	workspace string
+	// lastName + lastArgs record the most recent Dispatch call so a
+	// test can assert that the executor passed the expected args (e.g.
+	// branch + cloneURL) into the tool layer.
+	lastName string
+	lastArgs json.RawMessage
 }
 
 func (r *fakeRegistry) Schemas() []oai.Tool { return nil }
 
-func (r *fakeRegistry) Dispatch(_ context.Context, name string, _ json.RawMessage) (*foremanagent.ToolResult, error) {
+func (r *fakeRegistry) Dispatch(
+	_ context.Context, name string, args json.RawMessage,
+) (*foremanagent.ToolResult, error) {
 	if r.touch != nil {
 		r.touch(name, r.workspace)
 	}
+	r.lastName = name
+	r.lastArgs = args
 	res, ok := r.results[name]
 	if !ok {
 		return nil, errors.New("fake registry: unknown tool " + name)
@@ -544,5 +553,24 @@ func TestNativeExecutor_DeterministicGateAgent(t *testing.T) {
 		t.Errorf("transcript ConfigMap should NOT exist on deterministic runs, but it does")
 	} else if !apierrors.IsNotFound(getErr) {
 		t.Errorf("expected NotFound for transcript cm; got %v", getErr)
+	}
+
+	// Args the registry actually saw must carry the payload's branch
+	// (not a task-name-derived one) and the executor's GitRemoteURL as
+	// cloneURL. Both are required for the gate Job to clone the right
+	// branch from the right remote in v0.1. Regression coverage for
+	// #528.
+	var got map[string]any
+	if err := json.Unmarshal(reg.lastArgs, &got); err != nil {
+		t.Fatalf("decode dispatched args: %v", err)
+	}
+	if got["branch"] != "foreman/issue-9999" {
+		t.Errorf("dispatched branch: want foreman/issue-9999 got %v", got["branch"])
+	}
+	if got["cloneURL"] != bare {
+		t.Errorf("dispatched cloneURL: want %q got %v", bare, got["cloneURL"])
+	}
+	if got["repo"] != "defilantech/LLMKube" {
+		t.Errorf("dispatched repo: want defilantech/LLMKube got %v", got["repo"])
 	}
 }
