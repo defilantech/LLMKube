@@ -37,9 +37,13 @@ spec:
       openAPIV3Schema:
         description: |-
           Workload is the v0.1 entrypoint to Foreman. A user creates a Workload with
-          a high-level intent ("fix open bugs"); the WorkloadReconciler calls a
-          frontier model to decompose it into a set of AgenticTask objects, which
-          the scheduler then dispatches across the fleet.
+          a high-level Intent plus either an explicit Pipeline (full control) or an
+          Issues list + Coder/Verifier agent refs (the common shortcut). The
+          WorkloadReconciler emits one AgenticTask per pipeline step, owner-ref'd
+          to the Workload, and the scheduler then dispatches them across the fleet.
+
+          In v0.1 the reconciler is a deterministic stub: it does not call an LLM
+          to plan. v0.2 will add an LLM-driven planner for the Intent-only mode.
         properties:
           apiVersion:
             description: |-
@@ -61,32 +65,190 @@ spec:
           spec:
             description: spec is the user-supplied intent.
             properties:
+              coderAgentRef:
+                description: |-
+                  CoderAgentRef is required when Issues is set: names the same-
+                  namespace Agent the code-<N> steps reference. Ignored in explicit
+                  Pipeline mode.
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
               intent:
                 description: |-
                   Intent is the natural-language description of what to do.
                   Example: "fix all open bugs in defilantech/LLMKube tagged size/small".
                 minLength: 1
                 type: string
+              issues:
+                description: |-
+                  Issues, when set and Pipeline is empty, drives the issue-batch
+                  shortcut. The reconciler emits one code/verify pair per issue
+                  number using CoderAgentRef + VerifierAgentRef. Repo + Branch + Issue
+                  fields are populated from the Workload's spec.repo and the issue
+                  numbers themselves; downstream verify tasks DependOn the upstream
+                  code task automatically.
+                items:
+                  format: int32
+                  type: integer
+                type: array
               maxTasks:
                 description: |-
-                  MaxTasks caps how many AgenticTasks the planner may emit. Zero means
-                  no limit; the planner picks. Use this as a safety belt on the first
-                  runs against a new repo or intent.
+                  MaxTasks caps how many AgenticTasks may be emitted. Zero means no
+                  limit. Applied after pipeline expansion: if Issues has 20 entries and
+                  MaxTasks is 10, only the first 10 issues are processed and a
+                  Truncated condition is set.
                 format: int32
                 minimum: 0
                 type: integer
+              pipeline:
+                description: |-
+                  Pipeline, when set, bypasses the planner and emits AgenticTasks
+                  verbatim from this list. Each step becomes one AgenticTask
+                  owner-ref'd to this Workload, named "<workload-name>-<step.name>".
+                  Pipeline takes precedence over Issues + agent-ref shortcuts when
+                  both are set. Used for hand-authored pipelines and re-runs.
+                items:
+                  description: |-
+                    PipelineStep is one step in an explicit Workload pipeline. Each step
+                    becomes one AgenticTask owner-ref'd to the Workload.
+
+                    Names are scoped to the Workload: the reconciler renders the resulting
+                    AgenticTask name as "<workload-name>-<step.name>" so two Workloads in
+                    the same namespace can reuse step names without colliding. DependsOn
+                    references use the step-local Name; the reconciler resolves these to
+                    absolute task names at render time.
+                  properties:
+                    agentRef:
+                      description: AgentRef names the same-namespace Agent that runs
+                        this step.
+                      properties:
+                        name:
+                          default: ""
+                          description: |-
+                            Name of the referent.
+                            This field is effectively required, but due to backwards compatibility is
+                            allowed to be empty. Instances of this type with an empty value here are
+                            almost certainly wrong.
+                            More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                          type: string
+                      type: object
+                      x-kubernetes-map-type: atomic
+                    dependsOn:
+                      description: |-
+                        DependsOn lists other PipelineStep.Name values within this Workload
+                        whose AgenticTasks must reach Succeeded before this step's task is
+                        dispatched. The reconciler rewrites these to absolute task names
+                        when rendering.
+                      items:
+                        type: string
+                      type: array
+                    kind:
+                      description: Kind selects the AgenticTask kind to emit.
+                      enum:
+                      - issue-fix
+                      - verify
+                      - freeform
+                      type: string
+                    name:
+                      description: |-
+                        Name identifies the step within this Workload's pipeline. Becomes
+                        the suffix of the rendered AgenticTask name and the target ID for
+                        other steps' DependsOn entries.
+                      minLength: 1
+                      pattern: ^[a-z0-9][a-z0-9-]*$
+                      type: string
+                    payload:
+                      description: Payload mirrors AgenticTaskSpec.Payload exactly.
+                      properties:
+                        agent:
+                          description: |-
+                            Agent is the named agent to invoke. Required for freeform; defaults
+                            to "issue-fixer" for issue-fix and "verify" for verify.
+                          type: string
+                        branch:
+                          description: Branch is the existing branch to gate. Required
+                            for verify.
+                          type: string
+                        branchPrefix:
+                          description: |-
+                            BranchPrefix overrides the branch name prefix on issue-fix tasks
+                            (default derived from the issue's labels via conventional commit
+                            prefixes: fix/, feat/, chore/, etc.).
+                          type: string
+                        issue:
+                          description: Issue is the GitHub issue number. Required
+                            for issue-fix.
+                          format: int32
+                          minimum: 1
+                          type: integer
+                        prompt:
+                          description: Prompt is the agent input. Required for freeform.
+                          type: string
+                        repo:
+                          description: Repo is the "owner/name" GitHub repo. Required
+                            for issue-fix and verify.
+                          type: string
+                      type: object
+                    priority:
+                      description: |-
+                        Priority is a scheduler hint when multiple tasks are Pending.
+                        Higher values dispatch first. v0.1 is FIFO and ignores priority.
+                      format: int32
+                      type: integer
+                    timeoutSeconds:
+                      description: |-
+                        TimeoutSeconds bounds the agent's run time on this step. Zero uses
+                        the operator's default (2700 seconds).
+                      format: int32
+                      minimum: 0
+                      type: integer
+                  required:
+                  - agentRef
+                  - kind
+                  - name
+                  - payload
+                  type: object
+                type: array
               plannerModel:
                 description: |-
                   PlannerModel selects the frontier model the planner should call.
-                  Empty uses the operator's default (Anthropic Claude). The value is
-                  a free-form identifier the planner adapter interprets, e.g.
-                  "anthropic/claude-opus-4-7", "anthropic/claude-sonnet-4-6".
+                  Empty uses the operator's default (Anthropic Claude). v0.1 stores
+                  this verbatim but does not consume it (planner is deferred to v0.2);
+                  the value round-trips through status.plannerModel for visibility.
                 type: string
               repo:
                 description: |-
                   Repo is the GitHub repo in "owner/name" form that Intent applies to.
-                  Required for issue-fix workloads; the planner reads its open issues.
+                  Required for issue-fix workloads; supplies the Payload.Repo for each
+                  generated AgenticTask in issue-batch mode. Ignored in explicit
+                  Pipeline mode (each step carries its own Payload.Repo).
                 type: string
+              verifierAgentRef:
+                description: |-
+                  VerifierAgentRef is required when Issues is set: names the same-
+                  namespace Agent the verify-<N> steps reference. Ignored in explicit
+                  Pipeline mode.
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
             required:
             - intent
             type: object

@@ -1,0 +1,52 @@
+# Foreman v0.1 M6 stub planner demo: explicit-pipeline mode. Use this
+# when you want full control over each step's Agent, payload, and ordering
+# (custom system prompts, non-issue-fix kinds, branching dependencies).
+#
+# This shape is what the v0.2 LLM planner will emit programmatically; the
+# v0.1 user authors it by hand. The Workload owner-refs every rendered
+# AgenticTask, so deleting the Workload cascade-deletes the children.
+#
+# Names are scoped to the Workload: step "code-503" renders as
+# "linter-fix-503-code-503", so two Workloads in the same namespace can
+# reuse step names without colliding. DependsOn references use the
+# step-local Name; the reconciler rewrites them to absolute task names
+# when creating the AgenticTasks.
+
+apiVersion: foreman.llmkube.dev/v1alpha1
+kind: Workload
+metadata:
+  name: linter-fix-503
+  namespace: default
+  labels:
+    app.kubernetes.io/part-of: foreman
+    foreman.llmkube.dev/milestone: m6
+spec:
+  intent: "Single explicit issue-fix pipeline against #503"
+  repo: defilantech/LLMKube
+  pipeline:
+    - name: code-503
+      kind: issue-fix
+      agentRef:
+        name: qwen36-35b-carnice-mtp-coder
+      payload:
+        repo: defilantech/LLMKube
+        issue: 503
+        branch: foreman/issue-503
+        prompt: |
+          Fix issue #503 per the body of that issue. Run the
+          verification commands from AGENTS.md before reporting.
+          Call submit_result with verdict=GO and a commit_message
+          that includes "Fixes #503".
+      timeoutSeconds: 1800
+
+    - name: verify-503
+      kind: verify
+      agentRef:
+        name: gate
+      dependsOn:
+        - code-503
+      payload:
+        repo: defilantech/LLMKube
+        issue: 503
+        branch: foreman/issue-503
+      timeoutSeconds: 3900

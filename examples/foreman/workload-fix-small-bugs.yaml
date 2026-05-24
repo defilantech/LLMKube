@@ -1,0 +1,64 @@
+# Foreman v0.1 M6 stub planner demo: drop a backlog of small issues at the
+# fleet, walk away, come back to PR-shaped branches that already passed
+# the project's `make` gate.
+#
+# This manifest exercises the issue-batch shortcut: the WorkloadReconciler
+# expands each issue number into a code/verify pair (one AgenticTask each)
+# using the named coder and verifier Agents. The shadowstack scheduler
+# routes each step to the FleetNode whose capability matches.
+#
+# What you need on the cluster before applying:
+#
+#   1. Foreman v0.8.0+ installed (operator + agent Deployments running)
+#   2. Coder Agent CR `qwen36-35b-carnice-mtp-coder` applied in the same
+#      namespace (config/foreman/agents/qwen36-35b-carnice-mtp-coder.yaml)
+#   3. Gate Agent CR `gate` applied (config/foreman/agents/gate.yaml)
+#   4. At least one Apple-Silicon FleetNode advertising
+#      accelerator=metal + the coder model installed locally
+#   5. At least one verifier FleetNode (role=verifier) for the gate Job
+#
+# What happens after `kubectl apply`:
+#
+#   1. The WorkloadReconciler expands `spec.issues` into N code/verify
+#      pairs and creates them as owner-ref'd AgenticTasks.
+#   2. The scheduler routes each `code-<N>` to the coder node (metal),
+#      each `verify-<N>` waits on `dependsOn` until its code partner
+#      succeeds, then dispatches to the verifier node.
+#   3. Each coder run produces a `foreman/issue-<N>` branch on the fork
+#      (the foreman-agent's --git-remote-url). The verifier Job clones
+#      that branch and runs the full `make` suite (fmt vet lint test
+#      manifests chart-crds foreman-chart-crds).
+#   4. The Workload status rolls up: succeededTasks / failedTasks counters,
+#      Phase Completed | Failed, and a Completed condition.
+#
+# Watch:
+#
+#   kubectl get workloads,agentictasks
+#   kubectl get workload small-bugs-batch -o yaml | yq '.status'
+#   gh api /repos/Defilan/LLMKube/branches | jq '.[] | select(.name | startswith("foreman/"))'
+#
+# The MaxTasks cap is a safety belt; bump or remove it once you're
+# confident the gate-pass rate is acceptable for your fleet.
+
+apiVersion: foreman.llmkube.dev/v1alpha1
+kind: Workload
+metadata:
+  name: small-bugs-batch
+  namespace: default
+  labels:
+    app.kubernetes.io/part-of: foreman
+    foreman.llmkube.dev/milestone: m6
+spec:
+  intent: "Fix small open documentation and chore issues in LLMKube"
+  repo: defilantech/LLMKube
+  # 8 pairs (= 16 tasks) cap; remove for unbounded batch
+  maxTasks: 16
+  # Replace these with the issue numbers you want fixed. Curate for
+  # scope: docs, single-file fixes, low-risk chores. Larger issues
+  # should ride the explicit-pipeline form with a custom prompt.
+  issues:
+    - 531   # .dockerignore re-include for the embedded gate-job YAML
+  coderAgentRef:
+    name: qwen36-35b-carnice-mtp-coder
+  verifierAgentRef:
+    name: gate
