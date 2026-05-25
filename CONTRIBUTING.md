@@ -234,6 +234,9 @@ make test-e2e
 # Lint
 make lint
 
+# Cross-arch lint (run before pushing; catches GOOS-tagged files)
+make lint-all
+
 # Verify manifests are up to date
 make manifests
 git diff --exit-code  # Should be no changes
