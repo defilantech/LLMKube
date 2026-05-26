@@ -10,6 +10,7 @@ import (
 )
 
 const (
+	acceleratorIntel       = "intel"
 	intelGPUResourceEnvVar = "LLMKUBE_INTEL_GPU_RESOURCE"
 )
 
@@ -21,11 +22,14 @@ var (
 )
 
 func resolveGPUResourceName(model *inferencev1alpha1.Model) corev1.ResourceName {
-	if model != nil &&
-		model.Spec.Hardware != nil &&
-		model.Spec.Hardware.GPU != nil &&
-		strings.EqualFold(model.Spec.Hardware.GPU.Vendor, "intel") {
-		return resolveIntelGPUResourceName()
+	if model != nil && model.Spec.Hardware != nil {
+		if strings.EqualFold(model.Spec.Hardware.Accelerator, acceleratorIntel) {
+			return resolveIntelGPUResourceName()
+		}
+
+		if model.Spec.Hardware.GPU != nil && strings.EqualFold(model.Spec.Hardware.GPU.Vendor, acceleratorIntel) {
+			return resolveIntelGPUResourceName()
+		}
 	}
 
 	return nvidiaGPUResourceName

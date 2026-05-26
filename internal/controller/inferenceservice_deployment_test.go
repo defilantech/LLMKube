@@ -591,7 +591,7 @@ var _ = Describe("Multi-GPU Deployment Construction", func() {
 					Source: "https://example.com/model.gguf",
 					Format: "gguf",
 					Hardware: &inferencev1alpha1.HardwareSpec{
-						Accelerator: "cuda",
+						Accelerator: "intel",
 						GPU: &inferencev1alpha1.GPUSpec{
 							Enabled: true,
 							Count:   1,

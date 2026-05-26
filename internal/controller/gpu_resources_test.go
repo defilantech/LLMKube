@@ -41,6 +41,20 @@ func TestResolveGPUResourceName(t *testing.T) {
 		}
 	})
 
+	t.Run("uses intel i915 resource when accelerator is intel and gpu vendor is unset", func(t *testing.T) {
+		model := &inferencev1alpha1.Model{
+			Spec: inferencev1alpha1.ModelSpec{
+				Hardware: &inferencev1alpha1.HardwareSpec{
+					Accelerator: "intel",
+				},
+			},
+		}
+
+		if got := resolveGPUResourceName(model); got != intelGPUResourceNameI915 {
+			t.Fatalf("resolveGPUResourceName() = %q, want %q", got, intelGPUResourceNameI915)
+		}
+	})
+
 	t.Run("uses configured intel resource override", func(t *testing.T) {
 		t.Setenv(intelGPUResourceEnvVar, "gpu.intel.com/xe")
 
