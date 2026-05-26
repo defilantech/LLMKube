@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -32,7 +33,9 @@ import (
 
 // scriptedOAIServer returns canned chat-completions responses in
 // sequence. Helpful for driving the loop through multi-turn flows
-// without standing up a real model.
+// without standing up a real model. The canned bodies are kept in the
+// readable ChatResponse JSON form; this helper converts each to the
+// SSE wire format the streaming client expects.
 func scriptedOAIServer(t *testing.T, bodies []string) (*httptest.Server, *atomic.Int64) {
 	t.Helper()
 	var calls atomic.Int64
@@ -43,11 +46,60 @@ func scriptedOAIServer(t *testing.T, bodies []string) (*httptest.Server, *atomic
 			http.Error(w, "script exhausted", http.StatusInternalServerError)
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(bodies[i]))
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(chatJSONToSSE(t, bodies[i])))
 	}))
 	t.Cleanup(srv.Close)
 	return srv, &calls
+}
+
+// chatJSONToSSE wraps a readable ChatResponse JSON fixture into the
+// SSE event stream the new streaming client reads. One chunk per
+// choice, then `data: [DONE]`. Tool calls collapse into a single
+// fragment per call.
+func chatJSONToSSE(t *testing.T, body string) string {
+	t.Helper()
+	var parsed oai.ChatResponse
+	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+		t.Fatalf("chatJSONToSSE: fixture is not a ChatResponse JSON: %v\nbody=%q", err, body)
+	}
+	var sb strings.Builder
+	for _, ch := range parsed.Choices {
+		chunk := oai.ChatChunk{
+			ID:     parsed.ID,
+			Object: "chat.completion.chunk",
+			Choices: []oai.ChoiceDelta{
+				{
+					Index: ch.Index,
+					Delta: oai.MessageDelta{
+						Role:    ch.Message.Role,
+						Content: ch.Message.Content,
+					},
+					FinishReason: ch.FinishReason,
+				},
+			},
+		}
+		for j, tc := range ch.Message.ToolCalls {
+			chunk.Choices[0].Delta.ToolCalls = append(
+				chunk.Choices[0].Delta.ToolCalls,
+				oai.ToolCallDelta{
+					Index:    j,
+					ID:       tc.ID,
+					Type:     tc.Type,
+					Function: oai.ToolCallFunctionDelta{Name: tc.Function.Name, Arguments: tc.Function.Arguments},
+				},
+			)
+		}
+		out, err := json.Marshal(chunk)
+		if err != nil {
+			t.Fatalf("chatJSONToSSE: marshal chunk: %v", err)
+		}
+		sb.WriteString("data: ")
+		sb.Write(out)
+		sb.WriteString("\n\n")
+	}
+	sb.WriteString("data: [DONE]\n\n")
+	return sb.String()
 }
 
 // fakeRegistry records every Dispatch call and returns canned ToolResult
@@ -249,8 +301,8 @@ func TestLoop_TranscriptPreservedOnError(t *testing.T) {
 	var n atomic.Int64
 	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
 		if n.Add(1) == 1 {
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(toolCallReadFile))
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte(chatJSONToSSE(t, toolCallReadFile)))
 			return
 		}
 		http.Error(w, "kaboom", http.StatusInternalServerError)

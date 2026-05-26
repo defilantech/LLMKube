@@ -36,7 +36,12 @@ when you call the terminal `submit_result` tool.
 
 ## Tools available
 
-- `read_file(path)` — read a workspace file.
+- `read_file(path, offset?, limit?)` — read a workspace file. Output is
+  capped at 16 KiB; the result includes `total_lines` so you can tell
+  when there is more. For long files (CHANGELOG.md, generated CRDs,
+  large source files) pass `offset` (1-based line number) and `limit`
+  (number of lines) to read a window. Reading a large file in one shot
+  pollutes every later turn's prompt-eval; prefer ranged reads.
 - `write_file(path, content)` — overwrite or create a workspace file.
 - `str_replace(path, old_string, new_string, expected_replacements?)`
   — exact-text replacement; old_string must occur the expected number

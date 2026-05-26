@@ -92,18 +92,28 @@ type ToolSchemaDef struct {
 	Parameters  json.RawMessage `json:"parameters"`
 }
 
-// ChatRequest is the request body for POST /v1/chat/completions. v0.1
-// is non-streaming; the loop pulls a complete response per turn.
+// ChatRequest is the request body for POST /v1/chat/completions.
+//
+// The client always sets Stream=true on the wire: thinking-trace models
+// like Carnice generate enormous reasoning blocks before producing the
+// actual tool call, and llama.cpp buffers the entire completion before
+// sending response headers in non-streaming mode -- which makes
+// http.Client.Timeout fire on long completions even though the model
+// is doing real work. Streaming sends headers immediately and lets the
+// caller's context.Context govern the overall lifetime.
 type ChatRequest struct {
 	Model       string    `json:"model"`
 	Messages    []Message `json:"messages"`
 	Tools       []Tool    `json:"tools,omitempty"`
 	Temperature *float64  `json:"temperature,omitempty"`
-	Stream      bool      `json:"stream"`
+	// Stream is set by the client just before the wire send; callers
+	// do not need to populate it.
+	Stream bool `json:"stream"`
 }
 
-// ChatResponse is the relevant subset of the response body. We do not
-// stream so there is only one choice in v0.1; we do not track usage.
+// ChatResponse is the relevant subset of the response body. The Client
+// always reads streamed chunks off the wire and aggregates them into
+// this shape so the rest of the loop sees a single complete response.
 type ChatResponse struct {
 	ID      string   `json:"id"`
 	Choices []Choice `json:"choices"`
@@ -114,4 +124,51 @@ type Choice struct {
 	Index        int     `json:"index"`
 	Message      Message `json:"message"`
 	FinishReason string  `json:"finish_reason"`
+}
+
+// ChatChunk is a single Server-Sent Events frame on the chat-completions
+// stream. The OpenAI SSE format wraps an unwrapped JSON object per
+// `data:` line; this struct is what the line decodes into.
+type ChatChunk struct {
+	ID      string        `json:"id"`
+	Object  string        `json:"object"`
+	Choices []ChoiceDelta `json:"choices"`
+}
+
+// ChoiceDelta is the streamed-piece counterpart to Choice. The Delta
+// field carries incremental content / tool-call fragments; FinishReason
+// is empty (omitted) until the model's final chunk for this choice.
+type ChoiceDelta struct {
+	Index        int          `json:"index"`
+	Delta        MessageDelta `json:"delta"`
+	FinishReason string       `json:"finish_reason"`
+}
+
+// MessageDelta is the streamed-piece counterpart to Message. Each field
+// arrives in pieces across chunks: Role on the first chunk, Content
+// accumulating as tokens are generated, and ToolCalls arriving with
+// their Function.Arguments streamed in fragments.
+type MessageDelta struct {
+	Role      Role            `json:"role,omitempty"`
+	Content   string          `json:"content,omitempty"`
+	ToolCalls []ToolCallDelta `json:"tool_calls,omitempty"`
+}
+
+// ToolCallDelta is the streamed-piece counterpart to ToolCall. The
+// Index field identifies which tool call this fragment belongs to
+// (the model may emit multiple parallel tool calls; aggregation keys
+// by Index). ID + Type + Function.Name arrive on the first fragment;
+// Function.Arguments arrives in pieces across subsequent fragments.
+type ToolCallDelta struct {
+	Index    int                   `json:"index"`
+	ID       string                `json:"id,omitempty"`
+	Type     string                `json:"type,omitempty"`
+	Function ToolCallFunctionDelta `json:"function"`
+}
+
+// ToolCallFunctionDelta mirrors ToolCallFunction but with all fields
+// optional / streamable.
+type ToolCallFunctionDelta struct {
+	Name      string `json:"name,omitempty"`
+	Arguments string `json:"arguments,omitempty"`
 }

@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -175,6 +176,167 @@ func TestReadFile_PathRequired(t *testing.T) {
 	rf := &ReadFileTool{Workspace: makeWorkspace(t)}
 	if _, err := rf.Execute(context.Background(), json.RawMessage(`{}`)); err == nil {
 		t.Fatal("expected error for empty path")
+	}
+}
+
+// TestReadFile_WholeReadReportsLineCounts pins the default-mode contract:
+// no offset / no limit returns raw bytes (no added trailing newline) plus
+// truthful line bookkeeping fields. The line fields exist on every
+// result -- including default-mode -- so the model has the data needed
+// to decide whether to follow up with a ranged read.
+func TestReadFile_WholeReadReportsLineCounts(t *testing.T) {
+	ws := makeWorkspace(t)
+	content := "alpha\nbeta\ngamma\n"
+	if err := os.WriteFile(filepath.Join(ws, "three.txt"), []byte(content), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	rf := &ReadFileTool{Workspace: ws, MaxBytes: 100}
+	res, err := rf.Execute(context.Background(), json.RawMessage(`{"path":"three.txt"}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	out := res.Output.(map[string]any)
+	if out["content"] != content {
+		t.Errorf("content: got %q want %q", out["content"], content)
+	}
+	if out["bytes"].(int) != len(content) {
+		t.Errorf("bytes: got %v want %d", out["bytes"], len(content))
+	}
+	if out["total_lines"].(int) != 3 {
+		t.Errorf("total_lines: got %v want 3", out["total_lines"])
+	}
+	if out["start_line"].(int) != 1 || out["end_line"].(int) != 3 {
+		t.Errorf("line range: got [%v..%v] want [1..3]", out["start_line"], out["end_line"])
+	}
+}
+
+// TestReadFile_DefaultModeTracksTotalLinesOnTruncate covers the
+// truncation case: when the default-mode read hits MaxBytes mid-file,
+// total_lines must still reflect the whole file so the caller can
+// follow up with a ranged read targeting the remaining lines.
+func TestReadFile_DefaultModeTracksTotalLinesOnTruncate(t *testing.T) {
+	ws := makeWorkspace(t)
+	// 20 lines of "line-NN\n"; each line ~8 bytes so 20 lines = 160 bytes.
+	content := ""
+	for i := 1; i <= 20; i++ {
+		content += fmt.Sprintf("line-%02d\n", i)
+	}
+	if err := os.WriteFile(filepath.Join(ws, "long.txt"), []byte(content), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	// Cap below the file size so we definitely truncate.
+	rf := &ReadFileTool{Workspace: ws, MaxBytes: 40}
+	res, err := rf.Execute(context.Background(), json.RawMessage(`{"path":"long.txt"}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	out := res.Output.(map[string]any)
+	if !out["truncated"].(bool) {
+		t.Errorf("expected truncated=true")
+	}
+	if out["total_lines"].(int) != 20 {
+		t.Errorf("total_lines after truncate: got %v want 20", out["total_lines"])
+	}
+}
+
+// TestReadFile_RangedRead exercises the offset+limit path. The model
+// reads a window of a long file without dragging the whole thing into
+// the OAI message history (the bug that motivated this tool change --
+// a single 65 KB read of CHANGELOG.md polluted every subsequent turn).
+func TestReadFile_RangedRead(t *testing.T) {
+	ws := makeWorkspace(t)
+	// 50 lines so we can pick a clear window in the middle.
+	content := ""
+	for i := 1; i <= 50; i++ {
+		content += fmt.Sprintf("L%02d\n", i)
+	}
+	if err := os.WriteFile(filepath.Join(ws, "fifty.txt"), []byte(content), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	rf := &ReadFileTool{Workspace: ws, MaxBytes: 16 * 1024}
+	res, err := rf.Execute(context.Background(),
+		json.RawMessage(`{"path":"fifty.txt","offset":11,"limit":5}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	out := res.Output.(map[string]any)
+	want := "L11\nL12\nL13\nL14\nL15\n"
+	if out["content"] != want {
+		t.Errorf("ranged content: got %q want %q", out["content"], want)
+	}
+	if out["start_line"].(int) != 11 || out["end_line"].(int) != 15 {
+		t.Errorf("ranged line span: got [%v..%v] want [11..15]", out["start_line"], out["end_line"])
+	}
+	if out["total_lines"].(int) != 50 {
+		t.Errorf("total_lines: got %v want 50", out["total_lines"])
+	}
+	if out["truncated"].(bool) {
+		t.Errorf("did not expect truncated=true on a within-cap range")
+	}
+}
+
+// TestReadFile_RangedRead_PastEOF documents the contract for an
+// offset past the end of the file: empty content, truthful total
+// lines, end_line < start_line.
+func TestReadFile_RangedRead_PastEOF(t *testing.T) {
+	ws := makeWorkspace(t)
+	if err := os.WriteFile(filepath.Join(ws, "short.txt"), []byte("a\nb\nc\n"), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	rf := &ReadFileTool{Workspace: ws}
+	res, err := rf.Execute(context.Background(),
+		json.RawMessage(`{"path":"short.txt","offset":100,"limit":10}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	out := res.Output.(map[string]any)
+	if out["content"] != "" {
+		t.Errorf("content past EOF: got %q want empty", out["content"])
+	}
+	if out["total_lines"].(int) != 3 {
+		t.Errorf("total_lines: got %v want 3", out["total_lines"])
+	}
+}
+
+// TestReadFile_RangedRead_HitsMaxBytes ensures that even in ranged
+// mode, MaxBytes is the hard ceiling -- the model cannot ask for a
+// huge limit and bypass the cap.
+func TestReadFile_RangedRead_HitsMaxBytes(t *testing.T) {
+	ws := makeWorkspace(t)
+	content := ""
+	for i := 1; i <= 200; i++ {
+		content += fmt.Sprintf("line-%03d-padding-text\n", i)
+	}
+	if err := os.WriteFile(filepath.Join(ws, "big.txt"), []byte(content), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	rf := &ReadFileTool{Workspace: ws, MaxBytes: 100}
+	res, err := rf.Execute(context.Background(),
+		json.RawMessage(`{"path":"big.txt","offset":1,"limit":200}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	out := res.Output.(map[string]any)
+	if !out["truncated"].(bool) {
+		t.Errorf("expected truncated=true at MaxBytes ceiling")
+	}
+	if out["bytes"].(int) > 100 {
+		t.Errorf("bytes exceeded cap: got %v", out["bytes"])
+	}
+}
+
+// TestReadFile_InvalidArgs covers the new arg validation: negative
+// offset / negative limit / bad JSON.
+func TestReadFile_InvalidArgs(t *testing.T) {
+	rf := &ReadFileTool{Workspace: makeWorkspace(t)}
+	cases := []string{
+		`{"path":"p.txt","offset":-1}`,
+		`{"path":"p.txt","limit":-5}`,
+	}
+	for _, c := range cases {
+		if _, err := rf.Execute(context.Background(), json.RawMessage(c)); err == nil {
+			t.Errorf("expected error for args %s", c)
+		}
 	}
 }
 

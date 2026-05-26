@@ -95,7 +95,9 @@ func initBareWithSeed(t *testing.T, root string) string {
 
 // scriptedOAI returns canned chat-completions bodies in order. After
 // the script runs out, every subsequent request returns the final body
-// (lets the loop hit MaxTurns on stuck-tools tests).
+// (lets the loop hit MaxTurns on stuck-tools tests). Fixtures stay in
+// the readable ChatResponse JSON form; the helper converts them to the
+// SSE wire format the streaming client expects.
 func scriptedOAI(t *testing.T, bodies []string) *httptest.Server {
 	t.Helper()
 	var i atomic.Int64
@@ -104,11 +106,56 @@ func scriptedOAI(t *testing.T, bodies []string) *httptest.Server {
 		if k >= len(bodies) {
 			k = len(bodies) - 1
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(bodies[k]))
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(chatJSONBodyToSSE(t, bodies[k])))
 	}))
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+// chatJSONBodyToSSE wraps a readable ChatResponse JSON fixture into the
+// SSE event stream the streaming client reads. Local to this test file
+// to keep tests isolated from the oai package's internals.
+func chatJSONBodyToSSE(t *testing.T, body string) string {
+	t.Helper()
+	var parsed oai.ChatResponse
+	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+		t.Fatalf("chatJSONBodyToSSE: fixture is not a ChatResponse JSON: %v\nbody=%q", err, body)
+	}
+	var sb strings.Builder
+	for _, ch := range parsed.Choices {
+		chunk := oai.ChatChunk{
+			ID:     parsed.ID,
+			Object: "chat.completion.chunk",
+			Choices: []oai.ChoiceDelta{
+				{
+					Index: ch.Index,
+					Delta: oai.MessageDelta{
+						Role:    ch.Message.Role,
+						Content: ch.Message.Content,
+					},
+					FinishReason: ch.FinishReason,
+				},
+			},
+		}
+		for j, tc := range ch.Message.ToolCalls {
+			chunk.Choices[0].Delta.ToolCalls = append(
+				chunk.Choices[0].Delta.ToolCalls,
+				oai.ToolCallDelta{
+					Index:    j,
+					ID:       tc.ID,
+					Type:     tc.Type,
+					Function: oai.ToolCallFunctionDelta{Name: tc.Function.Name, Arguments: tc.Function.Arguments},
+				},
+			)
+		}
+		out, _ := json.Marshal(chunk)
+		sb.WriteString("data: ")
+		sb.Write(out)
+		sb.WriteString("\n\n")
+	}
+	sb.WriteString("data: [DONE]\n\n")
+	return sb.String()
 }
 
 // fakeRegistry implements foremanagent.ToolRegistry for the executor

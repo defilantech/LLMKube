@@ -33,9 +33,17 @@ import (
 
 // Defaults are conservative enough for a hostile model and generous
 // enough for typical "go build ./..." use during a coder run.
+//
+// The output cap is per-stream (stdout and stderr each capped
+// independently), so a worst-case turn surfaces ~32 KiB total. Each
+// tool result stays in the OAI message history for every subsequent
+// turn's prompt-eval, so per-stream caps in the tens of KiB compound
+// quickly across 15+ turns. 16 KiB per stream is enough to surface
+// the tail of a `go test ./...` run or a `make lint` failure, which
+// is what the model actually needs to debug.
 const (
 	defaultBashTimeout   = 30 * time.Second
-	defaultBashOutputCap = 64 * 1024 // 64 KiB combined per stream
+	defaultBashOutputCap = 16 * 1024 // 16 KiB per stream
 )
 
 // BashTool runs a shell command in the workspace under "sh -c" with a
