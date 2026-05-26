@@ -83,7 +83,7 @@ trap cleanup EXIT
 test_deploy_gpu_model() {
     log_info "Test 1: Deploying GPU model..."
 
-cat <<EOF | kubectl apply -f -
+    cat <<EOF | kubectl apply -f -
 apiVersion: inference.llmkube.dev/v1alpha1
 kind: Model
 metadata:
