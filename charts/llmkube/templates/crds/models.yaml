@@ -168,7 +168,7 @@ spec:
                   memoryFraction:
                     description: |-
                       MemoryFraction is the fraction of total system memory to budget for
-                      this model's inference process (0.0\u20131.0). Takes precedence over the
+                      this model's inference process (0.0–1.0). Takes precedence over the
                       agent-level --memory-fraction flag but not MemoryBudget.
                     type: number
                 type: object
