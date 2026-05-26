@@ -69,6 +69,7 @@ type AgentConfig struct {
 	MemoryPressureCritical    float64
 	EvictionEnabled           bool
 	MaxWatchFailures          int
+	InferenceServiceAllowlist string
 	LlamaServerStartupTimeout time.Duration
 	OMLXStartupTimeout        time.Duration
 	VLLMSwiftStartupTimeout   time.Duration
@@ -76,6 +77,27 @@ type AgentConfig struct {
 	ApplePowerEnabled         bool
 	ApplePowerInterval        time.Duration
 	PowermetricsBin           string
+}
+
+// splitCSV parses a comma-separated string into a trimmed []string,
+// dropping empties. Returns nil for an empty input so callers can
+// `if len(...) > 0` cleanly.
+func splitCSV(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func parseLogLevel(level string) zapcore.Level {
@@ -238,6 +260,11 @@ func main() {
 	flag.IntVar(&cfg.MaxWatchFailures, "max-watch-failures", agent.DefaultMaxConsecutiveFailures,
 		"Consecutive Kubernetes list failures from the InferenceService watcher before the agent "+
 			"gives up and exits for supervisor restart. Set to 0 to use the agent default.")
+	flag.StringVar(&cfg.InferenceServiceAllowlist, "inference-service-allowlist", "",
+		"Comma-separated list of InferenceService names this agent is permitted to claim. "+
+			"Empty (default) claims every metal-accelerator InferenceService in --namespace "+
+			"(v0.1 behavior). Set on multi-Mac fleets that share one Kubernetes cluster so "+
+			"each node claims only its own InferenceServices instead of racing with peers (#524).")
 	flag.DurationVar(&cfg.LlamaServerStartupTimeout, "llama-server-startup-timeout",
 		agent.DefaultLlamaServerStartupTimeout,
 		"How long to wait for a freshly-spawned llama-server to respond on /health. "+
@@ -451,6 +478,7 @@ func main() {
 		Logger:                    logger,
 		MemoryFraction:            cfg.MemoryFraction,
 		MaxWatchFailures:          cfg.MaxWatchFailures,
+		InferenceServiceAllowlist: splitCSV(cfg.InferenceServiceAllowlist),
 		LlamaServerStartupTimeout: cfg.LlamaServerStartupTimeout,
 		OMLXStartupTimeout:        cfg.OMLXStartupTimeout,
 		VLLMSwiftStartupTimeout:   cfg.VLLMSwiftStartupTimeout,

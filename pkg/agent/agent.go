@@ -115,6 +115,14 @@ type MetalAgentConfig struct {
 	// (DefaultMaxConsecutiveFailures).
 	MaxWatchFailures int
 
+	// InferenceServiceAllowlist optionally restricts which
+	// InferenceServices this agent claims by name. Empty / nil claims
+	// every metal-accelerator InferenceService in the namespace (v0.1
+	// behavior); non-empty surfaces only the named ones to the
+	// runtime executor. v0.2 (#524): lets multi-Mac fleets share a
+	// cluster without racing for each other's InferenceServices.
+	InferenceServiceAllowlist []string
+
 	// LlamaServerStartupTimeout is how long the Metal executor waits for a
 	// freshly-spawned llama-server to respond on /health before giving up.
 	// Zero means use the executor default (DefaultLlamaServerStartupTimeout).
@@ -289,6 +297,13 @@ func (a *MetalAgent) Start(ctx context.Context) error {
 	a.watcher = NewInferenceServiceWatcher(a.config.K8sClient, a.config.Namespace, a.logger.With("subsystem", "watcher"))
 	if a.config.MaxWatchFailures > 0 {
 		a.watcher.SetMaxConsecutiveFailures(a.config.MaxWatchFailures)
+	}
+	if len(a.config.InferenceServiceAllowlist) > 0 {
+		a.watcher.SetNameAllowlist(a.config.InferenceServiceAllowlist)
+		a.logger.Infow(
+			"InferenceService name allowlist active (#524 multi-Mac partition)",
+			"allowed", a.config.InferenceServiceAllowlist,
+		)
 	}
 
 	switch a.config.Runtime {
