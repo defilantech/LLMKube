@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -519,6 +520,61 @@ func TestBash_TimeoutFlag(t *testing.T) {
 	out := res.Output.(map[string]any)
 	if !out["timed_out"].(bool) {
 		t.Errorf("expected timed_out=true; output=%v", out)
+	}
+}
+
+// TestBash_GrandchildPipeDoesNotDeadlock is the regression test for
+// defilantech/LLMKube#539. Without WaitDelay + process-group kill on
+// Cancel, a bash command that backgrounds a long-lived grandchild
+// causes Cmd.Wait to block until the grandchild exits (because the
+// grandchild inherited the shell's stdout/stderr pipes and Cmd.Wait
+// blocks in awaitGoroutines waiting for io.Copy to see EOF).
+//
+// The command `(sleep 60 &) ; echo started ; sleep 0.1`:
+//   - the subshell `(...)` runs `sleep 60 &` and exits immediately
+//   - `sleep 60` is left running in the background, holding the
+//     parent shell's pipes via inheritance
+//   - the parent echoes "started", sleeps 0.1s, and exits
+//   - without the fix, Cmd.Wait blocks for 60s waiting for the
+//     orphaned `sleep 60` to finish
+//   - with the fix, the 200ms timeout fires Cancel, which kills the
+//     entire process group (including sleep), pipes close, Wait
+//     returns within timeout + WaitDelay (200ms + 5s).
+func TestBash_GrandchildPipeDoesNotDeadlock(t *testing.T) {
+	b := &BashTool{
+		Workspace: makeWorkspace(t),
+		// Short Timeout so we hit the cancel-then-WaitDelay path
+		// quickly. The fix bounds total wall at Timeout + WaitDelay.
+		Timeout: 200 * time.Millisecond,
+	}
+	const cmd = `(sleep 60 &) ; echo started ; sleep 0.1`
+	argsJSON := json.RawMessage(`{"command":` + strconv.Quote(cmd) + `}`)
+
+	start := time.Now()
+	res, err := b.Execute(context.Background(), argsJSON)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	// Without the fix this blocks for ~60s. With it, Timeout (200ms)
+	// plus WaitDelay (5s) caps wall at ~5.2s plus a little OS slack.
+	// 15s is a generous upper bound; anything above 30s is the bug.
+	if elapsed > 15*time.Second {
+		t.Errorf("BashTool blocked for %v on a backgrounded-grandchild "+
+			"command; expected <15s; #539 regression. cmd=%q", elapsed, cmd)
+	}
+	out := res.Output.(map[string]any)
+	stdout, _ := out["stdout"].(string)
+	// The shell printed "started" before the 0.1s sleep at the end,
+	// so we should see it captured. (The 0.1s tail makes the parent
+	// shell hit the 200ms Timeout reliably even on slow CI.)
+	if !strings.Contains(stdout, "started") {
+		t.Errorf("expected 'started' in stdout; got: %q", stdout)
+	}
+	if !out["timed_out"].(bool) {
+		t.Errorf("expected timed_out=true (200ms < 0.1s sleep should "+
+			"miss, but in practice the +0.1s sleep is enough); out=%v", out)
 	}
 }
 

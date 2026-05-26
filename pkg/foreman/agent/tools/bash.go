@@ -25,6 +25,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/defilantech/llmkube/pkg/foreman/agent"
@@ -44,6 +45,20 @@ import (
 const (
 	defaultBashTimeout   = 30 * time.Second
 	defaultBashOutputCap = 16 * 1024 // 16 KiB per stream
+
+	// defaultBashWaitDelay caps the time Cmd.Wait blocks waiting for
+	// io.Copy goroutines on stdout/stderr to see EOF after the
+	// process itself exits. Without this, an LLM-issued bash command
+	// that backgrounds a grandchild (e.g. `find / -name foo &`,
+	// `docker run -d`, anything that detaches) leaves the grandchild
+	// holding the inherited stdout/stderr pipes, and Cmd.Wait blocks
+	// indefinitely in awaitGoroutines. Empirically observed in the
+	// 2026-05-25 v5 batch where `find / -maxdepth 5 -name AGENTS.md`
+	// pinned a coder run for 36+ minutes (defilantech/LLMKube#539).
+	//
+	// 5 s is generous: with the process group killed by Cancel below,
+	// kernel-level pipe drainage usually completes in <100 ms.
+	defaultBashWaitDelay = 5 * time.Second
 )
 
 // BashTool runs a shell command in the workspace under "sh -c" with a
@@ -106,6 +121,33 @@ func (t *BashTool) Execute(ctx context.Context, args json.RawMessage) (*agent.To
 	cmd := exec.CommandContext(runCtx, "sh", "-c", a.Command) //nolint:gosec // G204: bash by design
 	cmd.Dir = t.Workspace
 	cmd.Env = t.scrubbedEnv()
+
+	// Run the shell in its own process group so we can kill the entire
+	// subtree (grandchildren too) when the deadline fires. Setpgid on
+	// Unix; harmless no-op on platforms that ignore it. Without this,
+	// a backgrounded grandchild (`sleep 60 &`, `docker run -d`, etc.)
+	// outlives the shell and keeps the inherited stdout/stderr pipes
+	// open, blocking Cmd.Wait forever. See defaultBashWaitDelay for
+	// the empirical case that motivated the fix.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	// Cancel runs when runCtx fires (i.e. the BashTool deadline). The
+	// os/exec default SIGKILLs the leader; we SIGKILL the whole process
+	// group so grandchildren die with the shell. Required for WaitDelay
+	// below to be useful: if the grandchildren stay alive, the pipes
+	// stay open and io.Copy never sees EOF regardless of WaitDelay.
+	cmd.Cancel = func() error {
+		return killProcessGroup(cmd.Process)
+	}
+
+	// WaitDelay caps the time Cmd.Wait will block on stdio drainage
+	// after the process exits (or is killed by Cancel). The pipes
+	// should close almost immediately once the process group is dead;
+	// the cap is paranoid insurance against edge cases (e.g. a child
+	// that detaches into its own session via setsid). After WaitDelay
+	// elapses, the kernel-level pipe handles are force-closed and the
+	// io.Copy goroutines unblock with an io.ErrClosedPipe.
+	cmd.WaitDelay = defaultBashWaitDelay
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -188,6 +230,33 @@ func (t *BashTool) scrubbedEnv() []string {
 		}
 	}
 	return out
+}
+
+// killProcessGroup sends SIGKILL to the entire process group leader-ed
+// by p. Required because Cmd.Wait blocks on `awaitGoroutines` until
+// io.Copy sees EOF on the inherited stdout/stderr pipes, and those
+// pipes do not close until every descendant holding them exits. A
+// backgrounded grandchild (sleep, docker daemon, kubectl proxy, find
+// /, etc.) inherits the shell's pipes; killing only the shell leaves
+// the pipes open. Negative pid in syscall.Kill addresses the process
+// group, which (combined with Setpgid: true on the shell) catches the
+// whole subtree.
+//
+// nil p means the process never started; nothing to kill.
+//
+// Any error is ignored at the call site -- this runs from Cmd.Cancel
+// on context expiry, where the goal is best-effort cleanup. If
+// signaling the group fails (ESRCH because the leader already exited
+// cleanly, EPERM in some sandboxed containers), the WaitDelay timeout
+// will still force pipe closure as a fallback.
+func killProcessGroup(p *os.Process) error {
+	if p == nil {
+		return nil
+	}
+	// Negative pid in syscall.Kill targets the process group with that
+	// pgid. Combined with SysProcAttr.Setpgid: true on the leader,
+	// pgid == leader's pid.
+	return syscall.Kill(-p.Pid, syscall.SIGKILL)
 }
 
 // truncateBytes returns b as a string, capped at maxBytes with a
