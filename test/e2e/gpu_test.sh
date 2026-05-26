@@ -70,7 +70,7 @@ detect_gpu_platform() {
         return 1
     fi
 
-    log_info "✓ Detected accelerator: $GPU_ACCELERATOR"
+    log_info "\u2713 Detected accelerator: $GPU_ACCELERATOR"
     log_info "  Vendor: $GPU_VENDOR"
     log_info "  Resource key: $GPU_RESOURCE_KEY"
     log_info "  Runtime image: $GPU_IMAGE"
@@ -83,30 +83,30 @@ trap cleanup EXIT
 test_deploy_gpu_model() {
     log_info "Test 1: Deploying GPU model..."
 
-        cat <<EOF | kubectl apply -f -
+    cat <<EOF | kubectl apply -f -
 apiVersion: inference.llmkube.dev/v1alpha1
 kind: Model
 metadata:
-    name: $TEST_MODEL_NAME
-    namespace: $TEST_NAMESPACE
+  name: $TEST_MODEL_NAME
+  namespace: $TEST_NAMESPACE
 spec:
-    source: $MODEL_URL
-    format: gguf
-    quantization: Q8_0
-    hardware:
-        accelerator: $GPU_ACCELERATOR
-        gpu:
-            enabled: true
-            count: 1
-            vendor: $GPU_VENDOR
-            layers: -1
-            memory: "8Gi"
-    resources:
-        cpu: "2"
-        memory: "4Gi"
+  source: $MODEL_URL
+  format: gguf
+  quantization: Q8_0
+  hardware:
+    accelerator: $GPU_ACCELERATOR
+    gpu:
+      enabled: true
+      count: 1
+      vendor: $GPU_VENDOR
+      layers: -1
+      memory: "8Gi"
+  resources:
+    cpu: "2"
+    memory: "4Gi"
 EOF
 
-    log_info "✓ Model resource created"
+    log_info "\u2713 Model resource created"
 }
 
 # Test 2: Wait for Model to be Ready
@@ -126,7 +126,7 @@ test_model_ready() {
     MODEL_SIZE=$(kubectl get model $TEST_MODEL_NAME -n $TEST_NAMESPACE -o jsonpath='{.status.size}')
     MODEL_PHASE=$(kubectl get model $TEST_MODEL_NAME -n $TEST_NAMESPACE -o jsonpath='{.status.phase}')
 
-    log_info "✓ Model is ready"
+    log_info "\u2713 Model is ready"
     log_info "  Size: $MODEL_SIZE"
     log_info "  Phase: $MODEL_PHASE"
 }
@@ -135,32 +135,32 @@ test_model_ready() {
 test_deploy_inference_service() {
     log_info "Test 3: Deploying InferenceService..."
 
-        cat <<EOF | kubectl apply -f -
+    cat <<EOF | kubectl apply -f -
 apiVersion: inference.llmkube.dev/v1alpha1
 kind: InferenceService
 metadata:
-    name: $TEST_SERVICE_NAME
-    namespace: $TEST_NAMESPACE
+  name: $TEST_SERVICE_NAME
+  namespace: $TEST_NAMESPACE
 spec:
-    modelRef: $TEST_MODEL_NAME
-    replicas: 1
-    image: $GPU_IMAGE
-    podSecurityContext:
-        runAsUser: 0
-        runAsGroup: 0
-        fsGroup: 0
-    endpoint:
-        port: 8080
-        path: /v1/chat/completions
-        type: ClusterIP
-    resources:
-        gpu: 1
-        gpuMemory: "8Gi"
-        cpu: "2"
-        memory: "4Gi"
+  modelRef: $TEST_MODEL_NAME
+  replicas: 1
+  image: $GPU_IMAGE
+  podSecurityContext:
+    runAsUser: 0
+    runAsGroup: 0
+    fsGroup: 0
+  endpoint:
+    port: 8080
+    path: /v1/chat/completions
+    type: ClusterIP
+  resources:
+    gpu: 1
+    gpuMemory: "8Gi"
+    cpu: "2"
+    memory: "4Gi"
 EOF
 
-    log_info "✓ InferenceService resource created"
+    log_info "\u2713 InferenceService resource created"
 }
 
 # Test 4: Wait for InferenceService to be Ready
@@ -180,7 +180,7 @@ test_service_ready() {
     READY_REPLICAS=$(kubectl get inferenceservice $TEST_SERVICE_NAME -n $TEST_NAMESPACE -o jsonpath='{.status.readyReplicas}')
     ENDPOINT=$(kubectl get inferenceservice $TEST_SERVICE_NAME -n $TEST_NAMESPACE -o jsonpath='{.status.endpoint}')
 
-    log_info "✓ InferenceService is ready"
+    log_info "\u2713 InferenceService is ready"
     log_info "  Ready Replicas: $READY_REPLICAS"
     log_info "  Endpoint: $ENDPOINT"
 }
@@ -197,7 +197,7 @@ test_gpu_scheduling() {
         log_error "GPU resource request not found or incorrect: $GPU_REQUEST"
         return 1
     fi
-    log_info "✓ GPU resource request: $GPU_REQUEST"
+    log_info "\u2713 GPU resource request: $GPU_REQUEST"
 
     # Check tolerations
     HAS_GPU_TOLERATION=$(kubectl get pod $POD_NAME -n $TEST_NAMESPACE -o json | jq -r --arg key "$GPU_RESOURCE_KEY" '.spec.tolerations[]? | select(.key == $key) | .key' | head -n1)
@@ -205,14 +205,14 @@ test_gpu_scheduling() {
         log_error "GPU toleration not found"
         return 1
     fi
-    log_info "✓ GPU toleration configured"
+    log_info "\u2713 GPU toleration configured"
 
     # Check node selector
     NODE_SELECTOR=$(kubectl get pod $POD_NAME -n $TEST_NAMESPACE -o jsonpath='{.spec.nodeSelector.cloud\.google\.com/gke-nodepool}')
     if [ "$NODE_SELECTOR" != "gpu-pool" ]; then
         log_warn "Node selector: $NODE_SELECTOR (expected: gpu-pool)"
     else
-        log_info "✓ Node selector: $NODE_SELECTOR"
+        log_info "\u2713 Node selector: $NODE_SELECTOR"
     fi
 
     # Check GPU layer argument
@@ -220,7 +220,7 @@ test_gpu_scheduling() {
     if [ -z "$GPU_LAYERS" ]; then
         log_warn "GPU layers argument not explicitly set; runtime may use backend defaults"
     else
-        log_info "✓ GPU layers offloaded: $GPU_LAYERS"
+        log_info "\u2713 GPU layers offloaded: $GPU_LAYERS"
     fi
 }
 
@@ -246,7 +246,7 @@ test_inference() {
     RESPONSE=$(cat /tmp/inference_response.json | jq -r '.choices[0].message.content' 2>/dev/null || echo "Could not parse response")
     TOKENS=$(cat /tmp/inference_response.json | jq -r '.usage.total_tokens' 2>/dev/null || echo "unknown")
 
-    log_info "✓ Inference successful"
+    log_info "\u2713 Inference successful"
     log_info "  Response: $RESPONSE"
     log_info "  Total tokens: $TOKENS"
 }
@@ -275,7 +275,7 @@ test_gpu_metrics() {
         return 1
     fi
 
-    log_info "✓ GPU metrics available in Prometheus:"
+    log_info "\u2713 GPU metrics available in Prometheus:"
     echo "$METRICS" | while read -r metric; do
         log_info "    $metric"
     done
@@ -299,7 +299,7 @@ test_alert_rules() {
     # Count alert rules
     ALERT_COUNT=$(kubectl get prometheusrule llmkube-alerts -n monitoring -o jsonpath='{.spec.groups[*].rules[*].alert}' | wc -w)
 
-    log_info "✓ Alert rules configured: $ALERT_COUNT alerts"
+    log_info "\u2713 Alert rules configured: $ALERT_COUNT alerts"
 }
 
 # Main test execution
@@ -320,7 +320,7 @@ main() {
     test_alert_rules
 
     log_info "============================================"
-    log_info "✓ All GPU E2E tests passed successfully!"
+    log_info "\u2713 All GPU E2E tests passed successfully!"
 }
 
 # Run main function

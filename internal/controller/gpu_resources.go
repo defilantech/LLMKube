@@ -10,15 +10,15 @@ import (
 )
 
 const (
-	acceleratorIntel       = "intel"
-	intelGPUResourceEnvVar = "LLMKUBE_INTEL_GPU_RESOURCE"
+	acceleratorIntel           = "intel"
+	intelGPUResourceEnvVar     = "LLMKUBE_INTEL_GPU_RESOURCE"
+	defaultInsufficientGPUHint = "Insufficient "
 )
 
 var (
-	nvidiaGPUResourceName      = corev1.ResourceName("nvidia.com/gpu")
-	intelGPUResourceNameI915   = corev1.ResourceName("gpu.intel.com/i915")
-	intelGPUResourceNameXE     = corev1.ResourceName("gpu.intel.com/xe")
-	defaultInsufficientGPUHint = "Insufficient "
+	nvidiaGPUResourceName    = corev1.ResourceName("nvidia.com/gpu")
+	intelGPUResourceNameI915 = corev1.ResourceName("gpu.intel.com/i915")
+	intelGPUResourceNameXE   = corev1.ResourceName("gpu.intel.com/xe")
 )
 
 func resolveGPUResourceName(model *inferencev1alpha1.Model) corev1.ResourceName {
