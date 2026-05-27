@@ -710,3 +710,131 @@ func TestIsDeterministicAgent(t *testing.T) {
 		})
 	}
 }
+
+// TestProgressConfigFromAgent_ReviewerOverridesEditFree exercises the
+// role-aware override in progressConfigFromAgent: reviewer-role agents
+// always get EditFreeTurnsLimit=0 (signal disabled), regardless of
+// whether the Agent CR set a per-Agent stuckLoopDetection block or
+// left it nil. The other signals are unchanged.
+//
+// Empirical motivation: the rerun-7 batch (2026-05-27) had the qwen
+// reviewer correctly investigate a diff for 16 turns and get force-
+// terminated by EditFreeStreak even though it was making progress;
+// reviewers are read-only by design (their tool whitelist excludes
+// write_file / str_replace) so the edit-free signal would fire on
+// every well-behaved reviewer run that takes more than the limit to
+// finish investigating.
+func TestProgressConfigFromAgent_ReviewerOverridesEditFree(t *testing.T) {
+	cases := []struct {
+		name           string
+		agent          *foremanv1alpha1.Agent
+		wantEditFree   int
+		wantRepeatedTC int
+	}{
+		{
+			name: "coder with default config keeps EditFreeTurnsLimit",
+			agent: &foremanv1alpha1.Agent{
+				Spec: foremanv1alpha1.AgentSpec{Role: foremanv1alpha1.AgentRoleCoder},
+			},
+			wantEditFree:   DefaultProgressConfig.EditFreeTurnsLimit,
+			wantRepeatedTC: DefaultProgressConfig.RepeatedToolThreshold,
+		},
+		{
+			name: "reviewer with default config gets EditFreeTurnsLimit=0",
+			agent: &foremanv1alpha1.Agent{
+				Spec: foremanv1alpha1.AgentSpec{Role: foremanv1alpha1.AgentRoleReviewer},
+			},
+			wantEditFree:   0,
+			wantRepeatedTC: DefaultProgressConfig.RepeatedToolThreshold,
+		},
+		{
+			name: "reviewer with explicit per-Agent EditFreeTurnsLimit STILL gets 0",
+			agent: &foremanv1alpha1.Agent{
+				Spec: foremanv1alpha1.AgentSpec{
+					Role: foremanv1alpha1.AgentRoleReviewer,
+					StuckLoopDetection: &foremanv1alpha1.StuckLoopDetectionSpec{
+						EditFreeTurnsLimit:    25,
+						RepeatedToolThreshold: 7,
+					},
+				},
+			},
+			wantEditFree:   0, // role override wins
+			wantRepeatedTC: 7, // other signals respect the per-Agent override
+		},
+		{
+			name: "coder with explicit per-Agent config preserves all signals",
+			agent: &foremanv1alpha1.Agent{
+				Spec: foremanv1alpha1.AgentSpec{
+					Role: foremanv1alpha1.AgentRoleCoder,
+					StuckLoopDetection: &foremanv1alpha1.StuckLoopDetectionSpec{
+						EditFreeTurnsLimit:    12,
+						RepeatedToolThreshold: 4,
+					},
+				},
+			},
+			wantEditFree:   12,
+			wantRepeatedTC: 4,
+		},
+		{
+			name: "verifier (deterministic agent) keeps DefaultProgressConfig",
+			agent: &foremanv1alpha1.Agent{
+				Spec: foremanv1alpha1.AgentSpec{Role: foremanv1alpha1.AgentRoleVerifier},
+			},
+			wantEditFree:   DefaultProgressConfig.EditFreeTurnsLimit,
+			wantRepeatedTC: DefaultProgressConfig.RepeatedToolThreshold,
+		},
+		{
+			name:           "nil agent yields DefaultProgressConfig with no overrides",
+			agent:          nil,
+			wantEditFree:   DefaultProgressConfig.EditFreeTurnsLimit,
+			wantRepeatedTC: DefaultProgressConfig.RepeatedToolThreshold,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := progressConfigFromAgent(tc.agent)
+			if got.EditFreeTurnsLimit != tc.wantEditFree {
+				t.Errorf("EditFreeTurnsLimit: want %d got %d", tc.wantEditFree, got.EditFreeTurnsLimit)
+			}
+			if got.RepeatedToolThreshold != tc.wantRepeatedTC {
+				t.Errorf("RepeatedToolThreshold: want %d got %d", tc.wantRepeatedTC, got.RepeatedToolThreshold)
+			}
+		})
+	}
+}
+
+// TestBuildUserPrompt_ReviewerCaseProducesNonEmptyContent guards
+// against the rerun-7 review-510-1 failure: with empty
+// Payload.Prompt on AgenticTaskKindReview, the user message used to
+// fall to the default branch and emit "". Qwen tolerated empty
+// content; Devstral 24B rejected HTTP 400 with "All non-assistant
+// messages must contain 'content'". This test ensures the reviewer
+// case writes a non-empty, payload-surfacing message regardless of
+// whether Payload.Prompt is set.
+func TestBuildUserPrompt_ReviewerCaseProducesNonEmptyContent(t *testing.T) {
+	task := &foremanv1alpha1.AgenticTask{
+		Spec: foremanv1alpha1.AgenticTaskSpec{
+			Kind: foremanv1alpha1.AgenticTaskKindReview,
+			Payload: foremanv1alpha1.AgenticTaskPayload{
+				Repo:   "defilantech/LLMKube",
+				Issue:  510,
+				Branch: "foreman/v04-validation-batch-rerun-7/issue-510",
+			},
+		},
+	}
+	got := buildUserPrompt(task)
+	if got == "" {
+		t.Fatal("reviewer user prompt must not be empty (Devstral 400 fix)")
+	}
+	for _, want := range []string{
+		"reviewing the branch",
+		"defilantech/LLMKube",
+		"510",
+		"foreman/v04-validation-batch-rerun-7/issue-510",
+		"Step 1 of your system prompt",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("reviewer prompt missing %q in:\n%s", want, got)
+		}
+	}
+}

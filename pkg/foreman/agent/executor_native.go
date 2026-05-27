@@ -976,7 +976,39 @@ func buildUserPrompt(task *foremanv1alpha1.AgenticTask) string {
 		b.WriteString("Include `Fixes #")
 		fmt.Fprintf(&b, "%d", p.Issue)
 		b.WriteString("` in the commit_message trailer when verdict is GO.\n")
+	case foremanv1alpha1.AgenticTaskKindReview:
+		// Build a non-empty user message for reviewer tasks. The
+		// reviewer.md system prompt directs the model to read the
+		// repo / issue / branch from the task payload; surfacing
+		// them explicitly here gives Step 1 (navigate to the branch)
+		// something concrete to operate on without a kubectl roundtrip.
+		// gateVerdict and coderSummary are discovered by the reviewer
+		// via tools (gh CLI / git log) per the system prompt.
+		//
+		// The harness-side reason this case exists: stricter OAI
+		// upstreams (Devstral 24B / Mistral / DeepSeek) reject
+		// HTTP 400 with "All non-assistant messages must contain
+		// 'content'" when the user message has an empty Content
+		// field. Qwen and other llama.cpp-served models tolerate
+		// it, but parity across the local reviewer fleet matters.
+		// Empirical: rerun-7 review-510-1 (devstral) failed turn 1
+		// with that exact 400 before this case existed.
+		fmt.Fprintf(&b, "You are reviewing the branch the coder produced for issue #%d of %s.\n\n",
+			p.Issue, p.Repo)
+		fmt.Fprintf(&b, "- repo: %s\n", p.Repo)
+		fmt.Fprintf(&b, "- issue: %d\n", p.Issue)
+		fmt.Fprintf(&b, "- branch: %s\n", p.Branch)
+		b.WriteString("\nFollow Step 1 of your system prompt to navigate to ")
+		b.WriteString("the branch under review before forming any judgment, ")
+		b.WriteString("then apply the Step 2 review checklist, then call ")
+		b.WriteString("submit_result with your verdict and findings.\n")
 	default:
+		// Freeform / other kinds: pass payload prompt through unchanged.
+		// We guarantee a non-empty content field on the wire even when
+		// p.Prompt is empty: oai.Message.MarshalJSON emits `"content":""`
+		// for non-assistant roles (#556), but some upstreams still
+		// reject empty strings. Cases that legitimately want an empty
+		// user prompt should send a placeholder via Payload.Prompt.
 		b.WriteString(p.Prompt)
 	}
 	return b.String()
@@ -1100,16 +1132,35 @@ func fetchIssueBodyIfNeeded(
 // explicitly with `stuckLoopDetection: {}`; the nil case (the default
 // shape when no key is set) gets the conservative production defaults.
 func progressConfigFromAgent(agent *foremanv1alpha1.Agent) ProgressConfig {
+	var cfg ProgressConfig
 	if agent == nil || agent.Spec.StuckLoopDetection == nil {
-		return DefaultProgressConfig
+		cfg = DefaultProgressConfig
+	} else {
+		s := agent.Spec.StuckLoopDetection
+		cfg = ProgressConfig{
+			RepeatedToolThreshold: int(s.RepeatedToolThreshold),
+			EditFreeTurnsLimit:    int(s.EditFreeTurnsLimit),
+			ContextSoftCap:        int(s.ContextSoftCap),
+			ContextHardCap:        int(s.ContextHardCap),
+		}
 	}
-	s := agent.Spec.StuckLoopDetection
-	return ProgressConfig{
-		RepeatedToolThreshold: int(s.RepeatedToolThreshold),
-		EditFreeTurnsLimit:    int(s.EditFreeTurnsLimit),
-		ContextSoftCap:        int(s.ContextSoftCap),
-		ContextHardCap:        int(s.ContextHardCap),
+	// Role-aware override: reviewers are read-only by design (tool
+	// whitelist excludes write_file / str_replace; their entire job is
+	// to investigate and call submit_result). The edit-free streak
+	// signal in the stuck-loop detector would therefore fire on every
+	// well-behaved reviewer run that takes more than EditFreeTurnsLimit
+	// turns to investigate, regardless of how productive the trajectory
+	// is. Disabling the signal for reviewers is the right semantics:
+	// the other signals (RepeatedToolCall, ContextSoftCap, ContextHardCap)
+	// still apply and still catch genuinely-stuck reviewer trajectories.
+	// Empirical motivation: the rerun-7 batch (2026-05-27) had the
+	// qwen reviewer correctly investigate a diff for 16 turns and get
+	// force-terminated by EditFreeStreak even though it was making
+	// progress; the devstral reviewer wedged on a separate OAI issue.
+	if agent != nil && agent.Spec.Role == foremanv1alpha1.AgentRoleReviewer {
+		cfg.EditFreeTurnsLimit = 0
 	}
+	return cfg
 }
 
 // workspaceOrientationBlock renders the anchor block prepended to
