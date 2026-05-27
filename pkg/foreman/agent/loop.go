@@ -151,13 +151,15 @@ type LoopResult struct {
 // runtime failed): the loop ran cleanly, the model just gave up.
 var ErrMaxTurnsExhausted = errors.New("loop: max turns exhausted")
 
-// ErrStuckLoopDetected is the marker returned from Loop.Run when the
-// progress monitor force-terminated. LoopResult.Terminal is also set
-// to a synthetic submit_result envelope with verdict=INCOMPLETE and
-// extra.outcome=STUCK-LOOP-DETECTED so callers that key on Terminal
-// see the normal terminal shape; this error gives callers that key
-// on err the same signal.
-var ErrStuckLoopDetected = errors.New("loop: stuck-loop detector force-terminated")
+// StuckLoopOutcome is the value the progress monitor sets in
+// LoopResult.Terminal.Extra["outcome"] when it force-terminates a run.
+// Callers that want to distinguish a model-emitted terminal from a
+// detector-synthesized one check this marker (or read the Signal
+// field) rather than keying on a sentinel error. The loop returns a
+// nil error with a populated Terminal envelope so the executor's
+// normal terminal-handling path runs and the synthesized verdict
+// surfaces in AgenticTask.status.result.
+const StuckLoopOutcome = "STUCK-LOOP-DETECTED"
 
 // ErrAssistantNoToolCalls is returned when the model replies with text
 // only and no tool_calls. The loop has no way to make forward progress
@@ -248,9 +250,16 @@ func (l *Loop) Run(ctx context.Context, cfg LoopConfig) (*LoopResult, error) {
 			// transcript is left intact so the executor can persist
 			// the trajectory for review; res.Terminal carries the
 			// synthesized envelope so downstream consumers see a
-			// normal terminal shape.
+			// normal terminal shape. We return a NIL error here on
+			// purpose: a force-terminate is a clean structural outcome
+			// (not an infrastructure failure) and the executor's
+			// terminal-handling path needs to run so the synthesized
+			// verdict + Extra.outcome propagate to AgenticTask status.
+			// Callers can distinguish this case from a model-emitted
+			// terminal by checking Terminal.Extra["outcome"] for
+			// StuckLoopOutcome (see ForceTerminateEnvelope).
 			res.Terminal = ForceTerminateEnvelope(decision, turn)
-			return res, ErrStuckLoopDetected
+			return res, nil
 		}
 	}
 	return res, ErrMaxTurnsExhausted

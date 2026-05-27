@@ -351,8 +351,12 @@ func TestLoop_StuckLoopDetectorForceTerminates(t *testing.T) {
 		MaxTurns: 10,
 		Progress: ProgressConfig{RepeatedToolThreshold: 3},
 	})
-	if !errors.Is(err, ErrStuckLoopDetected) {
-		t.Fatalf("expected ErrStuckLoopDetected; got %v", err)
+	// The loop returns nil error on a clean force-terminate: it's a
+	// structural outcome (the model is stuck, harness intervened), not
+	// an infrastructure failure. Callers distinguish this from a model-
+	// emitted terminal by inspecting Terminal.Extra["outcome"].
+	if err != nil {
+		t.Fatalf("expected nil error on clean force-terminate; got %v", err)
 	}
 	if res.Terminal == nil {
 		t.Fatal("expected synthesized Terminal envelope")
@@ -360,8 +364,8 @@ func TestLoop_StuckLoopDetectorForceTerminates(t *testing.T) {
 	if res.Terminal.Verdict != "INCOMPLETE" {
 		t.Errorf("synthesized verdict: want INCOMPLETE; got %q", res.Terminal.Verdict)
 	}
-	if got := res.Terminal.Extra["outcome"]; got != "STUCK-LOOP-DETECTED" {
-		t.Errorf("Extra.outcome: want STUCK-LOOP-DETECTED; got %v", got)
+	if got := res.Terminal.Extra["outcome"]; got != StuckLoopOutcome {
+		t.Errorf("Extra.outcome: want %q; got %v", StuckLoopOutcome, got)
 	}
 	if got := res.Terminal.Extra["signal"]; got != "RepeatedToolCall" {
 		t.Errorf("Extra.signal: want RepeatedToolCall; got %v", got)
