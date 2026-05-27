@@ -185,6 +185,33 @@ type AgentSpec struct {
 	// +optional
 	MaxRetries int32 `json:"maxRetries,omitempty"`
 
+	// ContextWindowTokens is the soft token budget for the wire payload
+	// the loop sends on every turn. When the running message list
+	// approximately exceeds this size, older tool result messages are
+	// masked to a one-line header until the budget is met. The persisted
+	// transcript ConfigMap still captures the FULL (unmasked) trajectory
+	// for review. Zero uses the executor default (32768 tokens).
+	//
+	// v0.3 #558: observation masking. The token estimate is an
+	// approximation (~chars/4); precise tokenization is not required
+	// for the masking decision. Pairs with ObservationWindowTurns.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	ContextWindowTokens int32 `json:"contextWindowTokens,omitempty"`
+
+	// ObservationWindowTurns is the number of most-recent tool result
+	// messages kept in full before older ones are masked, regardless of
+	// the token budget. Acts as a floor (the model always sees this
+	// many recent tool outputs verbatim). Zero uses the executor
+	// default (3).
+	//
+	// v0.3 #558: observation masking. Pairs with ContextWindowTokens;
+	// the floor wins over the budget when they conflict.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=50
+	// +optional
+	ObservationWindowTurns int32 `json:"observationWindowTurns,omitempty"`
+
 	// RequestTimeoutSeconds bounds a single chat-completions HTTP
 	// request. Long-context decode on a local model can be slow; default
 	// is generous.

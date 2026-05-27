@@ -291,11 +291,13 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 	userPrompt := buildUserPrompt(task)
 
 	cfg := LoopConfig{
-		Model:        endpoint.modelName,
-		SystemPrompt: agent.Spec.SystemPrompt,
-		UserPrompt:   userPrompt,
-		Temperature:  parseTemperature(agent.Spec.Temperature),
-		MaxTurns:     int(agent.Spec.MaxTurns),
+		Model:                  endpoint.modelName,
+		SystemPrompt:           agent.Spec.SystemPrompt,
+		UserPrompt:             userPrompt,
+		Temperature:            parseTemperature(agent.Spec.Temperature),
+		MaxTurns:               int(agent.Spec.MaxTurns),
+		ContextWindowTokens:    int(agent.Spec.ContextWindowTokens),
+		ObservationWindowTurns: int(agent.Spec.ObservationWindowTurns),
 	}
 
 	// 8. Run the loop. Always persist the transcript afterwards,

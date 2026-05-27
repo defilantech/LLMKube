@@ -73,6 +73,21 @@ spec:
                 format: int32
                 minimum: 1
                 type: integer
+              contextWindowTokens:
+                description: |-
+                  ContextWindowTokens is the soft token budget for the wire payload
+                  the loop sends on every turn. When the running message list
+                  approximately exceeds this size, older tool result messages are
+                  masked to a one-line header until the budget is met. The persisted
+                  transcript ConfigMap still captures the FULL (unmasked) trajectory
+                  for review. Zero uses the executor default (32768 tokens).
+
+                  v0.3 #558: observation masking. The token estimate is an
+                  approximation (~chars/4); precise tokenization is not required
+                  for the masking decision. Pairs with ObservationWindowTurns.
+                format: int32
+                minimum: 0
+                type: integer
               inferenceServiceRef:
                 description: |-
                   InferenceServiceRef names the LLMKube InferenceService in the same
@@ -125,6 +140,20 @@ spec:
                   to validate the InferenceService is actually serving the expected
                   model before the agent loop dispatches.
                 type: string
+              observationWindowTurns:
+                description: |-
+                  ObservationWindowTurns is the number of most-recent tool result
+                  messages kept in full before older ones are masked, regardless of
+                  the token budget. Acts as a floor (the model always sees this
+                  many recent tool outputs verbatim). Zero uses the executor
+                  default (3).
+
+                  v0.3 #558: observation masking. Pairs with ContextWindowTokens;
+                  the floor wins over the budget when they conflict.
+                format: int32
+                maximum: 50
+                minimum: 0
+                type: integer
               provider:
                 default: local
                 description: |-
