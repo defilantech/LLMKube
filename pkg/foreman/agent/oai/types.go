@@ -60,6 +60,46 @@ type Message struct {
 	Name       string     `json:"name,omitempty"`
 }
 
+// MarshalJSON serializes a Message such that non-assistant roles always
+// carry a content field (even when the content is the empty string),
+// while assistant messages keep the existing omitempty semantics so
+// {"role":"assistant","tool_calls":[...]} stays valid (no awkward
+// "content":"" alongside tool_calls).
+//
+// The OpenAI v1 chat-completions spec requires content on system,
+// user, and tool roles. llama.cpp's OAI surface accepts the field
+// either missing or empty; that's why this never bit Foreman against
+// Carnice or other Qwen-family backends. Stricter implementations
+// (Devstral / Mistral / DeepSeek and the OpenAI API itself) reject
+// HTTP 400 with `"All non-assistant messages must contain 'content'"`
+// when the field is absent. Fixes #556.
+func (m Message) MarshalJSON() ([]byte, error) {
+	if m.Role == RoleAssistant {
+		// Assistant: content may legitimately be omitted when the
+		// message is purely tool_calls. Fall back to the default
+		// omitempty behavior by serializing through a type alias
+		// (the alias drops MarshalJSON so json.Marshal uses the
+		// struct tags directly).
+		type assistantMessage Message
+		return json.Marshal(assistantMessage(m))
+	}
+	// system / user / tool: always emit content, even when empty.
+	out := struct {
+		Role       Role       `json:"role"`
+		Content    string     `json:"content"`
+		ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+		ToolCallID string     `json:"tool_call_id,omitempty"`
+		Name       string     `json:"name,omitempty"`
+	}{
+		Role:       m.Role,
+		Content:    m.Content,
+		ToolCalls:  m.ToolCalls,
+		ToolCallID: m.ToolCallID,
+		Name:       m.Name,
+	}
+	return json.Marshal(out)
+}
+
 // ToolCall is what the model emits when it wants a tool to run. The
 // Arguments field is a JSON-encoded object that the tool itself parses;
 // the OAI spec wraps it in a string rather than nesting it as JSON so
