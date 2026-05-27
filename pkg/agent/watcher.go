@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -72,6 +73,14 @@ type InferenceServiceWatcher struct {
 	logger                 *zap.SugaredLogger
 	maxConsecutiveFailures int
 	pollInterval           time.Duration
+	// nameAllowlist optionally restricts which InferenceServices the
+	// watcher claims by name. When nil or empty the watcher claims
+	// every metal-accelerator InferenceService in its namespace
+	// (v0.1 behavior); when non-empty only InferenceServices whose
+	// name is a member are surfaced as events. Set via
+	// SetNameAllowlist; v0.2 #524 (per-node partition for multi-Mac
+	// fleets sharing one cluster).
+	nameAllowlist map[string]struct{}
 }
 
 // NewInferenceServiceWatcher creates a new watcher with the default failure
@@ -108,6 +117,36 @@ func (w *InferenceServiceWatcher) SetPollInterval(d time.Duration) {
 		return
 	}
 	w.pollInterval = d
+}
+
+// SetNameAllowlist restricts which InferenceServices the watcher
+// surfaces, by name. Empty / nil disables the filter (v0.1 behavior:
+// every metal-accelerator InferenceService in the namespace is
+// claimed). When set, only InferenceServices whose name is a member
+// produce events; everything else is silently skipped at the
+// shouldWatch gate.
+//
+// Use this on multi-Mac fleets sharing one cluster so each node
+// claims only its own InferenceServices instead of racing with peers
+// for every metal ISvc in the namespace (#524).
+func (w *InferenceServiceWatcher) SetNameAllowlist(names []string) {
+	if len(names) == 0 {
+		w.nameAllowlist = nil
+		return
+	}
+	allow := make(map[string]struct{}, len(names))
+	for _, n := range names {
+		n = strings.TrimSpace(n)
+		if n == "" {
+			continue
+		}
+		allow[n] = struct{}{}
+	}
+	if len(allow) == 0 {
+		w.nameAllowlist = nil
+		return
+	}
+	w.nameAllowlist = allow
 }
 
 // Watch starts watching for InferenceService changes. It returns nil on clean
@@ -270,10 +309,26 @@ func (w *InferenceServiceWatcher) poll(
 }
 
 // shouldWatch determines if this InferenceService should be watched by the Metal Agent.
-// It looks up the referenced Model and only returns true if the Model's accelerator is "metal".
+// It applies (in order):
+//  1. nameAllowlist filter -- cheap; skips the API call below if the
+//     InferenceService isn't on this node's list. v0.2 #524: lets
+//     multi-Mac fleets partition without colliding.
+//  2. Model.spec.hardware.accelerator check -- looks up the referenced
+//     Model and returns true only when its accelerator is "metal".
 func (w *InferenceServiceWatcher) shouldWatch(ctx context.Context, isvc *inferencev1alpha1.InferenceService) bool {
 	if isvc.Spec.ModelRef == "" {
 		return false
+	}
+
+	if w.nameAllowlist != nil {
+		if _, ok := w.nameAllowlist[isvc.Name]; !ok {
+			w.logger.Debugw(
+				"skipping inference service: not in this agent's name allowlist (#524)",
+				"namespace", isvc.Namespace,
+				"inferenceService", isvc.Name,
+			)
+			return false
+		}
 	}
 
 	model := &inferencev1alpha1.Model{}

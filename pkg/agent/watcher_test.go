@@ -177,6 +177,100 @@ func TestShouldWatch(t *testing.T) {
 	}
 }
 
+// TestSetNameAllowlist_FiltersInShouldWatch pins #524 partition behavior:
+// when an allowlist is set, only InferenceServices whose name is on the
+// list pass shouldWatch, regardless of accelerator. Empty / nil allowlist
+// preserves the v0.1 behavior of accepting every metal-accelerator
+// InferenceService.
+func TestSetNameAllowlist_FiltersInShouldWatch(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = inferencev1alpha1.AddToScheme(scheme)
+
+	metalModel := &inferencev1alpha1.Model{
+		ObjectMeta: metav1.ObjectMeta{Name: "metal-model", Namespace: "default"},
+		Spec: inferencev1alpha1.ModelSpec{
+			Source:   "https://example.com/model.gguf",
+			Format:   "gguf",
+			Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: "metal"},
+		},
+	}
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).
+		WithRuntimeObjects(metalModel).Build()
+
+	mkISvc := func(name string) *inferencev1alpha1.InferenceService {
+		return &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+			Spec:       inferencev1alpha1.InferenceServiceSpec{ModelRef: "metal-model"},
+		}
+	}
+
+	t.Run("no allowlist: every metal ISvc passes (v0.1 behavior)", func(t *testing.T) {
+		w := NewInferenceServiceWatcher(k8sClient, "default", newNopLogger())
+		for _, name := range []string{"qwen36-35b-a3b", "devstral-24b", "anything-else"} {
+			if !w.shouldWatch(context.Background(), mkISvc(name)) {
+				t.Errorf("%q: want true, got false", name)
+			}
+		}
+	})
+
+	t.Run("allowlist set: only listed names pass", func(t *testing.T) {
+		w := NewInferenceServiceWatcher(k8sClient, "default", newNopLogger())
+		w.SetNameAllowlist([]string{"qwen36-35b-a3b"})
+		if !w.shouldWatch(context.Background(), mkISvc("qwen36-35b-a3b")) {
+			t.Error("qwen36-35b-a3b: want true (on allowlist), got false")
+		}
+		if w.shouldWatch(context.Background(), mkISvc("devstral-24b")) {
+			t.Error("devstral-24b: want false (not on allowlist), got true")
+		}
+	})
+
+	t.Run("allowlist with multiple names", func(t *testing.T) {
+		w := NewInferenceServiceWatcher(k8sClient, "default", newNopLogger())
+		w.SetNameAllowlist([]string{"qwen36-35b-a3b", "devstral-24b"})
+		for _, name := range []string{"qwen36-35b-a3b", "devstral-24b"} {
+			if !w.shouldWatch(context.Background(), mkISvc(name)) {
+				t.Errorf("%q: want true (on allowlist), got false", name)
+			}
+		}
+		if w.shouldWatch(context.Background(), mkISvc("third-model")) {
+			t.Error("third-model: want false (not on allowlist), got true")
+		}
+	})
+
+	t.Run("allowlist with empty/whitespace entries gets normalized", func(t *testing.T) {
+		w := NewInferenceServiceWatcher(k8sClient, "default", newNopLogger())
+		w.SetNameAllowlist([]string{"", "  qwen36-35b-a3b  ", ""})
+		if !w.shouldWatch(context.Background(), mkISvc("qwen36-35b-a3b")) {
+			t.Error("qwen36-35b-a3b: want true after whitespace trim, got false")
+		}
+		if w.shouldWatch(context.Background(), mkISvc("other")) {
+			t.Error("other: want false (not on allowlist), got true")
+		}
+	})
+
+	t.Run("re-clearing allowlist with empty slice restores v0.1 behavior", func(t *testing.T) {
+		w := NewInferenceServiceWatcher(k8sClient, "default", newNopLogger())
+		w.SetNameAllowlist([]string{"qwen36-35b-a3b"})
+		w.SetNameAllowlist(nil)
+		if !w.shouldWatch(context.Background(), mkISvc("devstral-24b")) {
+			t.Error("devstral-24b: want true after allowlist cleared, got false")
+		}
+	})
+
+	t.Run("allowlist skips ISvc before the (more expensive) Model lookup", func(t *testing.T) {
+		// Watcher with NO model in the fake client; if the allowlist
+		// skip didn't short-circuit, shouldWatch would try (and fail)
+		// to Get the Model. Confirms ordering: allowlist filter runs
+		// before the API call.
+		emptyClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+		w := NewInferenceServiceWatcher(emptyClient, "default", newNopLogger())
+		w.SetNameAllowlist([]string{"yes"})
+		if w.shouldWatch(context.Background(), mkISvc("no")) {
+			t.Error("non-allowlisted name should return false without hitting the API")
+		}
+	})
+}
+
 func TestParseKey(t *testing.T) {
 	tests := []struct {
 		input         string
