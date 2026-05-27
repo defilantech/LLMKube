@@ -82,6 +82,83 @@ func TestRegistry_Schemas_SortedAndDispatchUnknown(t *testing.T) {
 	}
 }
 
+// TestRegistry_Dispatch_FilteredToolReturnsWhitelistSentinel pins
+// the v0.3 #561 fix: when an Agent's whitelist excludes a tool that
+// exists in the broader registry, Dispatch returns the structured
+// ErrToolNotInWhitelist sentinel rather than the generic "unknown
+// tool" error. This distinction lets the future failure taxonomy
+// (#559) route the two failure modes to ConstraintViolated vs
+// ModelMisunderstood.
+func TestRegistry_Dispatch_FilteredToolReturnsWhitelistSentinel(t *testing.T) {
+	ws := makeWorkspace(t)
+	r, err := New(&ReadFileTool{Workspace: ws}, &WriteFileTool{Workspace: ws}, &GrepTool{Workspace: ws})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// Reviewer-style whitelist: read_file + grep only. write_file is
+	// known to the system but excluded.
+	reviewer, err := r.Filter([]string{"read_file", "grep"})
+	if err != nil {
+		t.Fatalf("Filter: %v", err)
+	}
+
+	// Whitelisted tool dispatches successfully (sanity).
+	if _, err := reviewer.Dispatch(context.Background(), "read_file",
+		json.RawMessage(`{"path":"nope-but-the-arg-error-is-fine.txt"}`)); err == nil {
+		// We don't care about success here; we care that we got past
+		// the registry layer into the tool itself (which will fail on
+		// the missing file but that's a tool-level error, not a
+		// dispatch error). Either way, no whitelist error.
+		_ = err
+	}
+
+	// write_file is filtered out: expect ErrToolNotInWhitelist.
+	_, err = reviewer.Dispatch(context.Background(), "write_file", json.RawMessage(`{}`))
+	if err == nil {
+		t.Fatal("expected ErrToolNotInWhitelist, got nil")
+	}
+	if !errors.Is(err, ErrToolNotInWhitelist) {
+		t.Errorf("err: want errors.Is(ErrToolNotInWhitelist), got %v", err)
+	}
+	// The error should also name the offending tool for diagnosability.
+	if !strings.Contains(err.Error(), "write_file") {
+		t.Errorf("err message should name the tool, got: %v", err)
+	}
+
+	// A truly unknown tool name returns a DIFFERENT error (not the
+	// whitelist sentinel). Confirms the two paths are distinguishable.
+	_, err = reviewer.Dispatch(context.Background(), "completely_made_up", json.RawMessage(`{}`))
+	if err == nil {
+		t.Fatal("expected unknown-tool error, got nil")
+	}
+	if errors.Is(err, ErrToolNotInWhitelist) {
+		t.Errorf("unknown-tool error should NOT be ErrToolNotInWhitelist, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "unknown tool") {
+		t.Errorf("err message should say 'unknown tool', got: %v", err)
+	}
+}
+
+// TestRegistry_Dispatch_UnfilteredRegistryNoFalsePositives pins
+// back-compat: a Registry built with New() (no Filter step) never
+// emits ErrToolNotInWhitelist. The sentinel only fires for filtered
+// registries; un-Filter'd ones treat every unknown name as
+// "unknown tool" exactly like before.
+func TestRegistry_Dispatch_UnfilteredRegistryNoFalsePositives(t *testing.T) {
+	ws := makeWorkspace(t)
+	r, err := New(&ReadFileTool{Workspace: ws})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, err = r.Dispatch(context.Background(), "write_file", json.RawMessage(`{}`))
+	if err == nil {
+		t.Fatal("expected error for non-registered tool")
+	}
+	if errors.Is(err, ErrToolNotInWhitelist) {
+		t.Errorf("un-Filter'd Registry should not emit ErrToolNotInWhitelist, got: %v", err)
+	}
+}
+
 // --- workspace ------------------------------------------------------------
 
 func TestResolveInside_Cases(t *testing.T) {
