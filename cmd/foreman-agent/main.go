@@ -61,6 +61,7 @@ import (
 	foremanv1alpha1 "github.com/defilantech/llmkube/api/foreman/v1alpha1"
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 	foremanagent "github.com/defilantech/llmkube/pkg/foreman/agent"
+	"github.com/defilantech/llmkube/pkg/foreman/agent/githubissue"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/repo"
 	foremantools "github.com/defilantech/llmkube/pkg/foreman/agent/tools"
 )
@@ -289,6 +290,7 @@ func main() {
 			},
 			KeepWorkspace:   keepWorkspace,
 			RegistryFactory: makeRegistryFactory(kc, kcs, foremanNamespace),
+			IssueFetcher:    githubissue.NewClient(),
 		}
 	default:
 		setupLog.Error(nil, "unknown --agent-mode", "value", agentMode, "valid", "stub|native")

@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -38,6 +39,7 @@ import (
 
 	foremanv1alpha1 "github.com/defilantech/llmkube/api/foreman/v1alpha1"
 	foremanagent "github.com/defilantech/llmkube/pkg/foreman/agent"
+	"github.com/defilantech/llmkube/pkg/foreman/agent/githubissue"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/oai"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/repo"
 )
@@ -843,6 +845,184 @@ func truncForTest(s string) string {
 		return s
 	}
 	return s[:cap] + "...[truncated]"
+}
+
+// fakeIssueFetcher is a deterministic Fetcher for the executor tests.
+// Returns a canned Issue for the configured number; returns an error
+// for any other number so a test mismatch fails loudly rather than
+// silently exercising the wrong path.
+type fakeIssueFetcher struct {
+	want   int
+	issue  *githubissue.Issue
+	err    error
+	calls  int
+	lastTk string
+}
+
+func (f *fakeIssueFetcher) Fetch(_ context.Context, _, _ string, n int, token string) (*githubissue.Issue, error) {
+	f.calls++
+	f.lastTk = token
+	if n != f.want {
+		return nil, fmt.Errorf("fakeIssueFetcher: unexpected issue #%d (want %d)", n, f.want)
+	}
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.issue, nil
+}
+
+// TestNativeExecutor_FetchesIssueBodyWhenPromptEmpty exercises #571:
+// when the AgenticTask payload has no prompt body, the executor pulls
+// the issue title + body from GitHub and prepends them to the user
+// prompt so the model knows what it is being asked to fix.
+func TestNativeExecutor_FetchesIssueBodyWhenPromptEmpty(t *testing.T) {
+	gitOrSkip(t)
+	root := t.TempDir()
+	bare := initBareWithSeed(t, root)
+
+	var captured []string
+	oaiSrv := recordingOAI(t, []string{submitGoBody}, &captured)
+
+	agent, task := taskAndAgent("issuefetch")
+	// taskAndAgent ships a non-empty prompt ("test issue") so other
+	// tests do not exercise the fetch path. For this test we clear it
+	// to simulate the M6 stub planner's output (issue number set,
+	// prompt empty) which is the case the fetch is meant to handle.
+	task.Spec.Payload.Prompt = ""
+
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(agent, task).Build()
+
+	reg := &fakeRegistry{
+		results: map[string]*foremanagent.ToolResult{
+			"submit_result": {
+				Terminal: true, Verdict: "GO", Summary: "ok",
+				CommitMessage: "fix: trivial\n",
+			},
+		},
+		touch: func(name string, ws string) {
+			if name == "submit_result" {
+				_ = os.WriteFile(filepath.Join(ws, "fix.txt"), []byte("x\n"), 0o644)
+			}
+		},
+	}
+
+	fetcher := &fakeIssueFetcher{
+		want: 9999,
+		issue: &githubissue.Issue{
+			Number: 9999,
+			Title:  "[BUG] Foo widget breaks on input X",
+			Body:   "The widget panics when given X. Steps to reproduce: ...",
+			State:  "open",
+			Labels: []string{"bug", "area/foreman"},
+		},
+	}
+
+	e := &foremanagent.NativeAgentLoopExecutor{
+		Client:                   c,
+		WorkspaceRoot:            filepath.Join(root, "ws"),
+		GitRemoteURL:             bare,
+		InferenceBaseURLOverride: oaiSrv.URL + "/v1",
+		CommitAuthor:             repo.Identity{Name: "Bot", Email: "b@x"},
+		CommitCommitter:          repo.Identity{Name: "Bot", Email: "b@x"},
+		RegistryFactory: func(ws string, _ *foremanv1alpha1.Agent) (foremanagent.ToolRegistry, error) {
+			reg.workspace = ws
+			return reg, nil
+		},
+		AuthFactory:  fakeAuth(t),
+		IssueFetcher: fetcher,
+	}
+
+	if _, err := e.Execute(context.Background(), task); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	if fetcher.calls != 1 {
+		t.Errorf("fetcher should be called exactly once; got %d", fetcher.calls)
+	}
+	if fetcher.lastTk == "" {
+		t.Errorf("fetcher should receive the auth token from repo.Auth; got empty")
+	}
+
+	if len(captured) == 0 {
+		t.Fatal("no OAI requests captured")
+	}
+	first := captured[0]
+
+	// The issue title, state, labels, and body all need to be in the
+	// user message so the model has the full ask in front of it.
+	for _, want := range []string{
+		"# Issue #9999",
+		"Foo widget breaks on input X",
+		"State: open",
+		"Labels: bug, area/foreman",
+		"The widget panics when given X",
+	} {
+		if !strings.Contains(first, want) {
+			t.Errorf("OAI request body missing %q. excerpt:\n%s", want, truncForTest(first))
+		}
+	}
+}
+
+// TestNativeExecutor_NoFetcherFallsBackToEmptyBody confirms the
+// pre-#571 behavior is preserved when the executor has no fetcher
+// wired (nil) or when the fetcher fails. A failed fetch must not
+// abort the run; the loop runs with whatever buildUserPrompt produces
+// from the empty payload prompt.
+func TestNativeExecutor_NoFetcherFallsBackToEmptyBody(t *testing.T) {
+	gitOrSkip(t)
+	root := t.TempDir()
+	bare := initBareWithSeed(t, root)
+
+	var captured []string
+	oaiSrv := recordingOAI(t, []string{submitGoBody}, &captured)
+
+	agent, task := taskAndAgent("nofetcher")
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(agent, task).Build()
+
+	reg := &fakeRegistry{
+		results: map[string]*foremanagent.ToolResult{
+			"submit_result": {
+				Terminal: true, Verdict: "GO", Summary: "ok",
+				CommitMessage: "fix: trivial\n",
+			},
+		},
+		touch: func(name string, ws string) {
+			if name == "submit_result" {
+				_ = os.WriteFile(filepath.Join(ws, "fix.txt"), []byte("x\n"), 0o644)
+			}
+		},
+	}
+
+	e := &foremanagent.NativeAgentLoopExecutor{
+		Client:                   c,
+		WorkspaceRoot:            filepath.Join(root, "ws"),
+		GitRemoteURL:             bare,
+		InferenceBaseURLOverride: oaiSrv.URL + "/v1",
+		CommitAuthor:             repo.Identity{Name: "Bot", Email: "b@x"},
+		CommitCommitter:          repo.Identity{Name: "Bot", Email: "b@x"},
+		RegistryFactory: func(ws string, _ *foremanv1alpha1.Agent) (foremanagent.ToolRegistry, error) {
+			reg.workspace = ws
+			return reg, nil
+		},
+		AuthFactory: fakeAuth(t),
+		// IssueFetcher intentionally nil.
+	}
+
+	if _, err := e.Execute(context.Background(), task); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(captured) == 0 {
+		t.Fatal("no OAI requests captured")
+	}
+	first := captured[0]
+	// Expect the legacy "You are working on issue #9999" line to be
+	// present, and NO "# Issue #9999" header (since no fetch happened).
+	if !strings.Contains(first, "You are working on issue #9999") {
+		t.Errorf("legacy issue line missing. excerpt:\n%s", truncForTest(first))
+	}
+	if strings.Contains(first, "# Issue #9999") {
+		t.Errorf("issue header should NOT be present without a fetcher. excerpt:\n%s", truncForTest(first))
+	}
 }
 
 // --- Deterministic Agent path (M4): no LLM, single tool dispatch ----------

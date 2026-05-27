@@ -28,6 +28,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
@@ -36,6 +37,7 @@ import (
 
 	foremanv1alpha1 "github.com/defilantech/llmkube/api/foreman/v1alpha1"
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
+	"github.com/defilantech/llmkube/pkg/foreman/agent/githubissue"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/oai"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/repo"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/repomap"
@@ -117,6 +119,13 @@ type NativeAgentLoopExecutor struct {
 	// because the tools subpackage owns workspace containment and we
 	// do not want the executor reimplementing it.
 	RegistryFactory func(workspace string, agent *foremanv1alpha1.Agent) (ToolRegistry, error)
+
+	// IssueFetcher pulls the GitHub issue title + body so buildUserPrompt
+	// can include them. Best-effort: a nil fetcher or a failed fetch
+	// runs the loop with the empty-body behavior (pre-#571 default),
+	// preserving backward compatibility. Tests inject a fake; production
+	// wires githubissue.NewClient() in cmd/foreman-agent.
+	IssueFetcher githubissue.Fetcher
 }
 
 // Kind identifies this executor in Result.Kind and in logs.
@@ -308,6 +317,14 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 	// contract exists. The repo-map prefix (when present) sits between
 	// the two so the model reads orientation -> repo map -> task in a
 	// natural order.
+	//
+	// Before assembling, fetch the GitHub issue body when the task is
+	// an issue-fix with an empty payload prompt (#571). The M6 stub
+	// planner synthesizes AgenticTasks from issue numbers and leaves
+	// the prompt empty; without this fetch the model is asked to fix
+	// "#510" with no knowledge of what #510 is about. Best-effort: a
+	// failed fetch logs and the loop runs with the pre-#571 behavior.
+	fetchIssueBodyIfNeeded(ctx, e.IssueFetcher, task, auth, log)
 	userPrompt := buildUserPrompt(task)
 	if agent.Spec.Role == foremanv1alpha1.AgentRoleCoder {
 		issueText := repoMapQuery(task)
@@ -927,6 +944,85 @@ func buildUserPrompt(task *foremanv1alpha1.AgenticTask) string {
 		b.WriteString(p.Prompt)
 	}
 	return b.String()
+}
+
+// fetchIssueBodyIfNeeded populates task.Spec.Payload.Prompt from the
+// GitHub issue body when the task is an issue-fix with an empty
+// prompt. The M6 stub planner does not pull issue bodies at synthesis
+// time; this lazy fetch makes a coder Agent's first turn actually
+// useful instead of being told "fix #510" with no context (#571).
+//
+// Best-effort: no fetcher, no auth token, malformed repo, or HTTP
+// failure all yield a log line and leave the payload prompt empty,
+// preserving the pre-#571 behavior. The model can still grep the repo
+// for clues; the goal here is to give it a much better starting
+// point when GitHub is reachable.
+//
+// Truncation + title formatting happen inside the fetcher; the body
+// we paste includes the title prefix so the model sees what it is
+// being asked to do before reading the longer body.
+func fetchIssueBodyIfNeeded(
+	ctx context.Context,
+	fetcher githubissue.Fetcher,
+	task *foremanv1alpha1.AgenticTask,
+	auth *repo.Auth,
+	log logr.Logger,
+) {
+	if fetcher == nil {
+		return
+	}
+	if task.Spec.Kind != foremanv1alpha1.AgenticTaskKindIssueFix {
+		return
+	}
+	if task.Spec.Payload.Prompt != "" {
+		return
+	}
+	if task.Spec.Payload.Issue <= 0 {
+		return
+	}
+	owner, repoName, err := githubissue.ParseRepo(task.Spec.Payload.Repo)
+	if err != nil {
+		log.Info("issue fetch skipped: bad repo string", "repo", task.Spec.Payload.Repo, "err", err.Error())
+		return
+	}
+	token := ""
+	if auth != nil {
+		token = auth.Token
+	}
+	iss, err := fetcher.Fetch(ctx, owner, repoName, int(task.Spec.Payload.Issue), token)
+	if err != nil {
+		// Distinguish the common cases so the log line is actionable.
+		var herr *githubissue.HTTPError
+		switch {
+		case errors.As(err, &herr) && herr.IsNotFound():
+			log.Info("issue fetch: not found; continuing with empty body",
+				"issue", task.Spec.Payload.Issue, "repo", task.Spec.Payload.Repo)
+		case errors.As(err, &herr) && herr.IsUnauthorized():
+			log.Info("issue fetch: unauthorized; check GITHUB_TOKEN",
+				"issue", task.Spec.Payload.Issue, "repo", task.Spec.Payload.Repo)
+		default:
+			log.Info("issue fetch failed; continuing with empty body",
+				"err", err.Error(),
+				"issue", task.Spec.Payload.Issue, "repo", task.Spec.Payload.Repo)
+		}
+		return
+	}
+	// Compose title + state + labels + body. The model needs the title
+	// (often the entire ask, especially for small docs/CI issues), the
+	// state (closed -> probably already fixed -> NO-GO candidate), and
+	// the labels (helps with triage). Body is the longest part and
+	// goes last so the structured fields stay near the top.
+	var b strings.Builder
+	fmt.Fprintf(&b, "# Issue #%d: %s\n\n", iss.Number, iss.Title)
+	fmt.Fprintf(&b, "State: %s\n", iss.State)
+	if len(iss.Labels) > 0 {
+		fmt.Fprintf(&b, "Labels: %s\n", strings.Join(iss.Labels, ", "))
+	}
+	b.WriteString("\n")
+	b.WriteString(iss.Body)
+	task.Spec.Payload.Prompt = b.String()
+	log.Info("issue body fetched",
+		"issue", iss.Number, "state", iss.State, "bodyLen", len(iss.Body))
 }
 
 // progressConfigFromAgent maps the Agent CR's stuckLoopDetection field
