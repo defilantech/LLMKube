@@ -1,7 +1,7 @@
 # Foreman
 
 <p align="center">
-  <img src="../assets/foreman-logo-icon.svg" alt="Foreman" width="128" height="128" />
+  <img src="../images/foreman-logo-icon.svg" alt="Foreman" width="128" height="128" />
 </p>
 
 Foreman is the Kubernetes-native control plane for agentic workloads
@@ -116,8 +116,8 @@ That installs the foreman-operator (controllers for the four CRDs),
 plus a foreman-agent Deployment that registers a FleetNode for the
 gate-runner role on the Linux/K8s host. Apple Silicon coder /
 reviewer nodes run the foreman-agent binary directly via launchd;
-see [the M3 runbook](./runbook-m3.md) and
-[the M4 runbook](./runbook-m4.md) for hosts-side install.
+see [the M3 runbook](./runbook-m3) and
+[the M4 runbook](./runbook-m4) for hosts-side install.
 
 ## A minimal example
 
@@ -174,7 +174,7 @@ capabilities we know people will ask for and deliberately punted:
   past outcomes is on the roadmap; v0.1 records the data.
 - **Model-tool-protocol compatibility is implicit, not declared.**
   Foreman currently assumes every inference endpoint speaks OpenAI
-  `tool_calls`. See [model-compatibility.md](./model-compatibility.md)
+  `tool_calls`. See [model-compatibility](./model-compatibility)
   for the calibrated table.
 
 The v0.1 CRD shape was designed so each of those additions is a
@@ -183,14 +183,14 @@ non-breaking extension. Pinning the foundation is the work of
 
 ## Deep references
 
-- **[runbook-m3.md](./runbook-m3.md)**: install the foreman-agent
+- **[M3 coder runbook](./runbook-m3)**: install the foreman-agent
   on the coder host (M5 Max / Apple Silicon).
-- **[runbook-m4.md](./runbook-m4.md)**: install Foreman as a chart
+- **[M4 verifier runbook](./runbook-m4)**: install Foreman as a chart
   on the K8s cluster and stand up the gate Agent on a verifier
   node.
-- **[install-verifier-node.md](./install-verifier-node.md)**:
+- **[Verifier node install notes](./install-verifier-node)**:
   deeper notes on the ShadowStack reference verifier deployment.
-- **[model-compatibility.md](./model-compatibility.md)**: which
+- **[Model compatibility table](./model-compatibility)**: which
   models the v0.4 reviewer and coder roles have been empirically
   validated against.
 

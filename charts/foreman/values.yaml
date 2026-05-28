@@ -4,7 +4,7 @@
 # controllers for Agent / AgenticTask / FleetNode / Workload) plus
 # zero or more foreman-agent Pods (the per-node worker that claims
 # Scheduled tasks and runs them). See README and
-# docs/foreman/install-verifier-node.md for a full install walkthrough.
+# https://llmkube.com/docs/foreman/install-verifier-node for a full install walkthrough.
 
 # Optional name overrides. Same semantics as the llmkube chart.
 nameOverride: ""

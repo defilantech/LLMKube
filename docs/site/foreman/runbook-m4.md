@@ -6,7 +6,7 @@ ordering-dependent gate `AgenticTask` on a verifier node verifies it via
 `make fmt vet lint test` in a Kubernetes Job.
 
 If you have not yet installed Foreman on a verifier node, read
-[`install-verifier-node.md`](./install-verifier-node.md) first.
+[`install-verifier-node`](./install-verifier-node) first.
 
 ## What this verifies
 
@@ -186,7 +186,7 @@ kubectl get fleetnode -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec
 ```
 If the role list is missing, re-run the Helm install with the
 `agent.roles={worker,verifier}` override per
-[`install-verifier-node.md`](./install-verifier-node.md).
+[`install-verifier-node`](./install-verifier-node).
 
 **Job submits but never picks up**: the gate-cache PVC is stuck
 Pending. Run `kubectl -n foreman-system

@@ -9,7 +9,7 @@
 #        kubectl apply -f config/foreman/agents/qwen36-35b-carnice-mtp-coder.yaml
 #   3. foreman-agent is running on the M5 Max with --agent-mode=native
 #      and --git-remote-url + --commit-author-email set. See
-#      docs/foreman/runbook-m3.md.
+#      https://llmkube.com/docs/foreman/runbook-m3.
 #   4. The InferenceService scheduler sees a Ready FleetNode for the
 #      M5 Max (`kubectl get fleetnodes` confirms phase=Ready).
 #

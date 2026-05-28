@@ -9,7 +9,7 @@ a branch and the gate Agent on the verifier node runs `make fmt vet lint
 test` against it in a Kubernetes Job.
 
 If you only want the coder role on the M5 Max, read
-[`runbook-m3.md`](./runbook-m3.md) instead. The two runbooks are
+[`M3 coder runbook`](./runbook-m3) instead. The two runbooks are
 independent: install whichever roles you have hardware for, in any
 order.
 
@@ -60,7 +60,7 @@ order.
   CRD sync handles this automatically, but if you ever apply CRDs
   outside the chart (e.g. directly from `config/crd/bases/`), the
   M3 runbook's
-  ["re-apply all four CRDs" callout](./runbook-m3.md#prerequisites)
+  ["re-apply all four CRDs" callout](./runbook-m3#prerequisites)
   still applies: an older AgenticTask CRD silently rejects
   `spec.requiredCapability.roles` under strict decode.
 
@@ -234,7 +234,7 @@ kubectl apply -f config/foreman/agents/gate.yaml
 kubectl apply -f examples/foreman/m4-two-step-demo.yaml
 ```
 
-See [`runbook-m4.md`](./runbook-m4.md) (lands with Phase F) for the
+See [`M4 verifier runbook`](./runbook-m4) (lands with Phase F) for the
 full V3 demo.
 
 ## Troubleshooting

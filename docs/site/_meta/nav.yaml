@@ -91,6 +91,24 @@ sections:
         file: operations/kv-cache.md
         status: stub
 
+  - title: Foreman
+    items:
+      - label: Overview
+        slug: foreman
+        file: foreman/README.md
+      - label: M3 coder runbook
+        slug: foreman/runbook-m3
+        file: foreman/runbook-m3.md
+      - label: M4 verifier runbook
+        slug: foreman/runbook-m4
+        file: foreman/runbook-m4.md
+      - label: Verifier node install
+        slug: foreman/install-verifier-node
+        file: foreman/install-verifier-node.md
+      - label: Model compatibility
+        slug: foreman/model-compatibility
+        file: foreman/model-compatibility.md
+
   - title: Reference
     items:
       - label: CLI

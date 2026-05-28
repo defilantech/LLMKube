@@ -27,4 +27,4 @@ Next steps:
   3. Apply an Agent CR and an AgenticTask referencing it (examples
      under examples/foreman/ in the repo).
 
-The Foreman docs live at https://github.com/defilantech/LLMKube/tree/main/docs/foreman.
+The Foreman docs live at https://llmkube.com/docs/foreman.
