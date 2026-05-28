@@ -5,6 +5,52 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0](https://github.com/defilantech/LLMKube/compare/v0.7.12...v0.8.0) (2026-05-28)
+
+
+### Features
+
+* **foreman/api:** structured AgenticTaskFailureReason taxonomy ([#565](https://github.com/defilantech/LLMKube/issues/565)) ([6e72e85](https://github.com/defilantech/LLMKube/commit/6e72e8599a4e6d97e44e026cbc1194df064fc65c))
+* **foreman/loop:** observation masking for context-window management ([#563](https://github.com/defilantech/LLMKube/issues/563)) ([d17c3e0](https://github.com/defilantech/LLMKube/commit/d17c3e070416354fdfcc9b39c125f79603abea0d))
+* **foreman/loop:** stuck-loop detector with nudge-then-force protocol ([#544](https://github.com/defilantech/LLMKube/issues/544)) ([#569](https://github.com/defilantech/LLMKube/issues/569)) ([2172ece](https://github.com/defilantech/LLMKube/commit/2172ece33486c1a0a0c0b71cd4199b5d1f593854))
+* **foreman/reviewer:** fetch_issue tool replaces gh issue view subshell ([#581](https://github.com/defilantech/LLMKube/issues/581)) ([0253e43](https://github.com/defilantech/LLMKube/commit/0253e430f02a6d96a8a1ff05597dfb926aa0d411))
+* **foreman/tools:** distinguish whitelist-excluded from unknown tool calls ([#564](https://github.com/defilantech/LLMKube/issues/564)) ([089e9ca](https://github.com/defilantech/LLMKube/commit/089e9ca5dd0dcfa9513eda09634f5030d007a707))
+* **foreman/v0.2:** hybrid cloud reviewer Agent + sovereignty toggles ([#553](https://github.com/defilantech/LLMKube/issues/553)) ([65a7cb8](https://github.com/defilantech/LLMKube/commit/65a7cb874a492e9eba28888a95c600ebf6789d44))
+* **foreman/v0.2:** WorkloadSpec.reviewerAgentRefs (plural) + third pipeline stage ([#551](https://github.com/defilantech/LLMKube/issues/551)) ([831ae8c](https://github.com/defilantech/LLMKube/commit/831ae8c501e6485d234acbd0b1aab2b34af8faf5))
+* **foreman:** add repo-map localization for coder Agents ([#560](https://github.com/defilantech/LLMKube/issues/560)) ([#566](https://github.com/defilantech/LLMKube/issues/566)) ([f6bf8c0](https://github.com/defilantech/LLMKube/commit/f6bf8c08db5466bd5ed222c8bc4d009d6ddb1c3a))
+* **foreman:** AgenticTask branches include workload name ([#573](https://github.com/defilantech/LLMKube/issues/573)) ([#574](https://github.com/defilantech/LLMKube/issues/574)) ([2986906](https://github.com/defilantech/LLMKube/commit/2986906fc33b09932f03240bf0c1220b499e5a87))
+* **foreman:** executor fetches GitHub issue body when payload prompt is empty ([#571](https://github.com/defilantech/LLMKube/issues/571)) ([#572](https://github.com/defilantech/LLMKube/issues/572)) ([2b5bd31](https://github.com/defilantech/LLMKube/commit/2b5bd318ad897c90679f2ac0e378a30e07a8425f))
+* **foreman:** post-M4 stability follow-ups for v5-batch readiness ([#535](https://github.com/defilantech/LLMKube/issues/535)) ([a841612](https://github.com/defilantech/LLMKube/commit/a841612b07bc2cbc57cda2383a1846976bdfff22))
+* **foreman:** v0.4 reviewer agent — tool-using reviewer with sharpened prompt + structured findings ([#575](https://github.com/defilantech/LLMKube/issues/575)) ([#576](https://github.com/defilantech/LLMKube/issues/576)) ([06091a9](https://github.com/defilantech/LLMKube/commit/06091a9e78922ee091a8cb9063732b4515626140))
+* **foreman:** workspace-scoped bash + WORKSPACE_ROOT contract ([#567](https://github.com/defilantech/LLMKube/issues/567)) ([#568](https://github.com/defilantech/LLMKube/issues/568)) ([061eb41](https://github.com/defilantech/LLMKube/commit/061eb4100d3055d236fe04f42cb079dd08af9631))
+* **gpu:** add Intel GPU (oneAPI/SYCL) support across controller, CLI, docs, and e2e ([#557](https://github.com/defilantech/LLMKube/issues/557)) ([741ef5d](https://github.com/defilantech/LLMKube/commit/741ef5db256055a66cda0532c9272f98b96b5568))
+* **metal-agent:** InferenceService name allowlist for multi-Mac fleets ([#555](https://github.com/defilantech/LLMKube/issues/555)) ([67361f3](https://github.com/defilantech/LLMKube/commit/67361f385256766969fc65d5994e169609f597d4))
+
+
+### Bug Fixes
+
+* **foreman/build:** include gate_job_template.yaml in Docker context ([#554](https://github.com/defilantech/LLMKube/issues/554)) ([def535d](https://github.com/defilantech/LLMKube/commit/def535d3da8e28fa6d9eeba798d1885a182d176c))
+* **foreman/executor:** resolve InferenceService port from live Endpoints, not stale install-time override ([#550](https://github.com/defilantech/LLMKube/issues/550)) ([4351608](https://github.com/defilantech/LLMKube/commit/43516088c7cd3af704e51e411b9e3bd657fd307c))
+* **foreman/executor:** route reviewer-role GO through modelDecidedResult ([#545](https://github.com/defilantech/LLMKube/issues/545)) ([16943a5](https://github.com/defilantech/LLMKube/commit/16943a5814eeeb7bac897b2e816cea51f4004bc2))
+* **foreman/loop:** force-terminate returns clean Terminal envelope ([#544](https://github.com/defilantech/LLMKube/issues/544) follow-up) ([#570](https://github.com/defilantech/LLMKube/issues/570)) ([19500c9](https://github.com/defilantech/LLMKube/commit/19500c9a36fb87d390eab93204ca6a69499705a6))
+* **foreman/oai:** always emit content on non-assistant messages ([#562](https://github.com/defilantech/LLMKube/issues/562)) ([f6dc8e1](https://github.com/defilantech/LLMKube/commit/f6dc8e16f734808baa441540fa5e26f402c947bf))
+* **foreman/reviewer:** ground-truth filesTouched + bump qwen maxTurns + tighten confabulation defenses ([#584](https://github.com/defilantech/LLMKube/issues/584)) ([b3e21f0](https://github.com/defilantech/LLMKube/commit/b3e21f096fd61be674dc10b7843a56898a6e094a))
+* **foreman/reviewer:** ground-truth issueAsk + cap qwen Section D ([#587](https://github.com/defilantech/LLMKube/issues/587)) ([b66006c](https://github.com/defilantech/LLMKube/commit/b66006c8234b867fa60edbea0cc75004abcf00eb))
+* **foreman/reviewer:** role-aware stuck-loop detector + non-empty reviewer user prompt (rerun-7 follow-up) ([#577](https://github.com/defilantech/LLMKube/issues/577)) ([19590f6](https://github.com/defilantech/LLMKube/commit/19590f64c08522fb1d924e23cb934fd47e376783))
+* **foreman/tools:** cmd.WaitDelay + process-group kill so BashTool can't deadlock on grandchild-held pipes ([#547](https://github.com/defilantech/LLMKube/issues/547)) ([c12f6f8](https://github.com/defilantech/LLMKube/commit/c12f6f82674f5167fbc6022315c4b2530d3c7106))
+* **foreman:** cascade + Workload rollup gate on phase AND verdict, not phase alone ([#548](https://github.com/defilantech/LLMKube/issues/548)) ([1b72a7c](https://github.com/defilantech/LLMKube/commit/1b72a7c9d4d5545eab74a2a15b2422335cd9ead4))
+
+
+### Documentation
+
+* **foreman:** v0.8.0 release-prep docs + README Foreman section ([#591](https://github.com/defilantech/LLMKube/issues/591)) ([5e41df1](https://github.com/defilantech/LLMKube/commit/5e41df1628311a416765468bf22a28dc2e9d0790))
+* mention make lint-all in AGENTS.md and CONTRIBUTING.md ([#588](https://github.com/defilantech/LLMKube/issues/588)) ([39da983](https://github.com/defilantech/LLMKube/commit/39da983792b93a6ec13d0b44eab7ff71003115e5))
+
+
+### Miscellaneous
+
+* release Foreman debut as 0.8.0 (take 2) ([#593](https://github.com/defilantech/LLMKube/issues/593)) ([a8f0368](https://github.com/defilantech/LLMKube/commit/a8f036884c9c973af52162260315945e805f7fa2))
+
 ## [0.7.12](https://github.com/defilantech/LLMKube/compare/v0.7.11...v0.7.12) (2026-05-24)
 
 
