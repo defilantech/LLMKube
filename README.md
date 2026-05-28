@@ -35,6 +35,7 @@
   <p>
     <a href="#quick-start">Quick Start</a> &bull;
     <a href="#composition-modelrouter">ModelRouter</a> &bull;
+    <a href="#foreman">Foreman</a> &bull;
     <a href="#the-metal-agent">Metal Agent</a> &bull;
     <a href="#how-is-this-different">Why LLMKube?</a> &bull;
     <a href="#performance">Benchmarks</a> &bull;
@@ -56,7 +57,9 @@ Suddenly you're building an entire platform instead of shipping your product.
 
 **LLMKube is a Kubernetes operator that turns LLM deployment into a two-line YAML problem.** Define a `Model` and an `InferenceService`, and the operator handles downloading, caching, GPU scheduling, health checks, scaling, and exposing an OpenAI-compatible API. Add a `ModelRouter` on top and the same cluster does policy-aware routing between your local models and external providers (Anthropic / OpenAI / LiteLLM) with fail-closed semantics for regulated data.
 
-> **0.7.8 (2026-05-13)** — `ModelRouter` CRD ships: cross-engine routing with per-rule and per-backend timeout budgets, half-open circuit breaker, runtime fail-closed for PII/PHI rules, configurable response-header timeout, cloud-tier connection hygiene. See [Composition: ModelRouter](#composition-modelrouter) below.
+> **0.8.0 (2026-05-28)**: Foreman ships as an opt-in add-on. A Kubernetes-native control plane that dispatches coder, verifier, and reviewer agents across a heterogeneous fleet of locally-hosted LLM nodes. Foreman authored its own debut PRs against this repository ([#508](https://github.com/defilantech/LLMKube/pull/508), [#588](https://github.com/defilantech/LLMKube/pull/588)). Plus Intel oneAPI / SYCL GPU support from a first-time contributor. See [Foreman](#foreman) below or [docs/foreman/](docs/foreman/) for the full reference.
+>
+> **0.7.8 (2026-05-13)**: `ModelRouter` CRD ships: cross-engine routing with per-rule and per-backend timeout budgets, half-open circuit breaker, runtime fail-closed for PII/PHI rules, configurable response-header timeout, cloud-tier connection hygiene. See [Composition: ModelRouter](#composition-modelrouter) below.
 
 ---
 
@@ -253,6 +256,39 @@ Three properties worth calling out:
 - **OpenAI-compatible streaming endpoint.** Plug it into LangGraph, OpenAI Agents SDK, Anthropic SDK, Cline, Aider, or any framework that speaks the OpenAI API. The agent runtime doesn't need to know it's talking to a router.
 
 **[Full ModelRouter concept doc →](docs/site/concepts/model-router.md)** | **[Sample manifest](config/samples/inference_v1alpha1_modelrouter.yaml)**
+
+---
+
+## Foreman
+
+<img src="docs/assets/foreman-logo-icon.svg" alt="Foreman" width="80" height="80" align="right" />
+
+`Model` and `InferenceService` give you self-hosted inference. `ModelRouter` gives you policy-aware routing. **Foreman gives you an orchestrator for agentic workloads on top of both.**
+
+Foreman is an opt-in add-on that ships its own Helm chart, its own API group (`foreman.llmkube.dev`), and its own controller and node-agent binaries. It introduces four CRDs (`Workload`, `AgenticTask`, `Agent`, `FleetNode`), a capability-aware scheduler, and a native Go agent loop that runs OpenAI function-calling against your local inference endpoints. The v0.1 shape is a linear pipeline: coder agent on one node produces a branch, verifier agent (gate) on another node runs `make fmt vet lint test`, reviewer agent(s) on a third node read the diff against the issue body and score it.
+
+```yaml
+apiVersion: foreman.llmkube.dev/v1alpha1
+kind: Workload
+metadata:
+  name: fix-small-bugs
+  namespace: default
+spec:
+  intent: "Fix small open issues"
+  repo: defilantech/LLMKube
+  issues: [510, 526, 449]
+  coderAgentRef:    { name: qwen36-35b-carnice-mtp-coder }
+  verifierAgentRef: { name: shadowstack-gate }
+  reviewerAgentRefs:
+    - { name: qwen36-35b-a3b-reviewer }
+    - { name: devstral-24b-reviewer }
+```
+
+`kubectl apply` and watch the fleet land DCO-signed branches on a fork. Two such branches reached this repository as upstream PRs: [#508](https://github.com/defilantech/LLMKube/pull/508) and [#588](https://github.com/defilantech/LLMKube/pull/588).
+
+Foreman is meant for shops where on-prem hardware, sovereignty constraints, or sheer batch scale make the agentic-coding cloud-API model a poor fit. It is not a replacement for individual-developer tools like Cursor or aider; it is the control plane *below* those tools, for when you want a fleet doing the work instead of one developer.
+
+**[Full Foreman docs →](docs/foreman/)** | **[Model compatibility table](docs/foreman/model-compatibility.md)** | **[Sample manifests](examples/foreman/)**
 
 ---
 

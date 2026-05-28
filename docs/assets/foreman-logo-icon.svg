@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="128" height="128">
+  <!-- Foreman: the LLMKube cloud, with a hard hat where the lock used to be.
+       Cloud path is identical to llmkube-web/static/logo-icon.svg so the
+       family resemblance is preserved verbatim. The hard hat sits in the
+       8-17 horizontal band, 13-19.9 vertical band: same footprint the lock
+       occupied in the original mark. -->
+  <!-- Cloud shape (unchanged from LLMKube) -->
+  <path fill="#915fff" d="M 17 8 C 17 4.7 14.3 2 11 2 C 7.7 2 5 4.7 5 8 C 5 8.1 5 8.3 5 8.4 C 3.3 9.2 2 10.9 2 13 C 2 15.4 3.7 17.4 6 17.9 L 6 15.8 C 5 15.4 4.2 14.6 4 13.6 C 3.7 12 4.7 10.5 6.2 10.1 C 6.7 10 7 9.6 7 9.2 L 7 8.2 C 7 6.1 8.5 4.2 10.6 4 C 13 3.8 15 5.6 15 8 L 15 9 C 15 9.5 15.5 10 16 10 L 17 10 C 18.8 10 20.3 11.7 19.9 13.6 C 19.7 14.6 18.9 15.5 17.9 15.8 L 17.9 17.9 C 20.2 17.4 21.9 15.4 21.9 13 C 22 10.2 19.8 8 17 8 Z"/>
+  <!-- Hard hat dome -->
+  <path fill="#ffb547" d="M 7.5 17.5 Q 7.5 13 12 13 Q 16.5 13 16.5 17.5 L 16.5 18.5 L 7.5 18.5 Z"/>
+  <!-- Hard hat brim -->
+  <rect fill="#ffb547" x="6.4" y="18.3" width="11.2" height="1.6" rx="0.6"/>
+  <!-- Center ridge -->
+  <line stroke="#6e3edd" stroke-width="0.4" x1="12" y1="13.3" x2="12" y2="18.3"/>
+  <!-- Accent dot (the rivet at the brim mount) -->
+  <circle fill="#e89a30" cx="12" cy="14.5" r="0.6"/>
+</svg>
