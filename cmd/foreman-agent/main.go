@@ -412,6 +412,16 @@ func makeRegistryFactory(
 					LogTailFn: logTail,
 				},
 			},
+			// fetch_issue: read-only GitHub issue surface for the
+			// reviewer. The same token the foreman-agent already
+			// loads at startup (via repo.TokenFromEnvOrFile) reaches
+			// GitHub through one bounded Go-side call instead of
+			// being inherited by every bash subprocess via $GH_TOKEN.
+			// Closes #580.
+			&foremantools.FetchIssueTool{
+				Fetcher: githubissue.NewClient(),
+				Token:   repo.TokenFromEnvOrFile,
+			},
 		)
 		if err != nil {
 			return nil, fmt.Errorf("default registry: %w", err)

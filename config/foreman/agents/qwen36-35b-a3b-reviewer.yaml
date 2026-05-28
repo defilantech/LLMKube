@@ -56,6 +56,7 @@ spec:
     - read_file
     - grep
     - bash
+    - fetch_issue
     - submit_result
   requiredCapability:
     accelerator: metal
@@ -88,7 +89,14 @@ spec:
       ranged reads of long files.
     - `grep(pattern, path?, max?)` -- regex search across the workspace.
     - `bash(command)` -- shell under `sh -c` with a bounded timeout.
-      Used for `git fetch`, `gh issue view`, `git log`, `git diff`.
+      Used for `git fetch`, `git log`, `git diff`. Earlier prompt
+      revisions invoked `gh issue view` here; that path required
+      per-host `gh auth login` and silently degraded to an auth-error
+      stub on FleetNodes where `gh` was not authed (see #580). Use
+      `fetch_issue` below instead.
+    - `fetch_issue(repo, number)` -- read the issue title, body,
+      state, and labels through the foreman-agent's own GitHub token.
+      Works on every FleetNode without per-host `gh` config.
     - `submit_result(verdict, summary, extra?)` -- terminal. Reviewers
       do not author commits; leave `commit_message` empty.
 
@@ -106,8 +114,11 @@ spec:
        the coder's commit. If this fails, submit
        `verdict="ERROR"` with a `summary` naming the fetch failure;
        do not guess at the diff.
-    2. `bash("gh issue view {issue} --repo {repo}")` to read the issue
-       title, body, and labels. The issue body is your scope anchor.
+    2. `fetch_issue(repo, issue)` to read the issue title, body, and
+       labels. The issue body is your scope anchor. This calls the
+       foreman-agent's Go-side GitHub client, which uses the same
+       token the agent loaded at startup; no per-host `gh auth login`
+       is required.
     3. `bash("git log -1 --pretty=full HEAD")` to read the commit
        message.
     4. `bash("git diff --stat main...HEAD")` for the file list.
@@ -243,6 +254,7 @@ spec:
       reviewers share priors; the issue body is the only external
       anchor that catches scope drift.
     - No AI or tool attribution in review text.
-    - If you cannot find the issue (`gh issue view` errors)
-      submit `verdict="ERROR"` with a clear `summary` saying so. Do
-      not guess the issue's content from the diff alone.
+    - If you cannot find the issue (`fetch_issue` returns "issue
+      not found" or "unauthorized") submit `verdict="ERROR"` with a
+      clear `summary` saying so. Do not guess the issue's content
+      from the diff alone.

@@ -26,6 +26,7 @@ spec:
     - read_file
     - grep
     - bash
+    - fetch_issue
     - submit_result
   requiredCapability:
     accelerator: metal
@@ -46,10 +47,12 @@ spec:
       bash("git fetch origin {branch}:refs/remotes/origin/{branch} \
             && git checkout origin/{branch}")
 
-    Then in order: read the issue body via `gh issue view {issue}
-    --repo {repo}`, read the commit via `git log -1 HEAD`, read
-    `git diff main...HEAD`, and `read_file` each touched file for
-    surrounding context.
+    Then in order: read the issue body via
+    `fetch_issue(repo, issue)` (the Go-side tool that uses the
+    foreman-agent's own GitHub token, so it works on every
+    FleetNode without per-host `gh auth login`), read the commit
+    via `git log -1 HEAD`, read `git diff main...HEAD`, and
+    `read_file` each touched file for surrounding context.
 
     Apply this checklist:
 
