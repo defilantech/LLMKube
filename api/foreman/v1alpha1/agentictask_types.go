@@ -163,6 +163,18 @@ type RequiredCapability struct {
 	// +optional
 	MinRAMGB int32 `json:"minRAMGB,omitempty"`
 
+	// RequiresModelInstalled, when true, scopes scheduling to FleetNodes
+	// that already have this Agent's model resident (the model name,
+	// resolved from Agent.spec.model or Agent.spec.inferenceServiceRef,
+	// must appear in the node's status.capability.installedModels). In
+	// that mode the minRAMGB gate is intentionally ignored: the model is
+	// already loaded, so the agent loop needs ~0 additional RAM. This is
+	// the warm-driver path reviewer-class Agents always take; minRAMGB is
+	// correct only for the cold-load path. When false (default), minRAMGB
+	// is enforced as before.
+	// +optional
+	RequiresModelInstalled bool `json:"requiresModelInstalled,omitempty"`
+
 	// MinContextTokens is the minimum context window the node's installed
 	// model must support. Set to 0 to leave unconstrained.
 	// +kubebuilder:validation:Minimum=0

@@ -265,6 +265,18 @@ spec:
                       key are eligible. Used for tasks that must run on a specific node
                       (e.g. verify tasks targeting the gate runner).
                     type: object
+                  requiresModelInstalled:
+                    description: |-
+                      RequiresModelInstalled, when true, scopes scheduling to FleetNodes
+                      that already have this Agent's model resident (the model name,
+                      resolved from Agent.spec.model or Agent.spec.inferenceServiceRef,
+                      must appear in the node's status.capability.installedModels). In
+                      that mode the minRAMGB gate is intentionally ignored: the model is
+                      already loaded, so the agent loop needs ~0 additional RAM. This is
+                      the warm-driver path reviewer-class Agents always take; minRAMGB is
+                      correct only for the cold-load path. When false (default), minRAMGB
+                      is enforced as before.
+                    type: boolean
                   roles:
                     description: |-
                       Roles filters to FleetNodes whose spec.roles include every named
