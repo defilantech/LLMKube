@@ -291,13 +291,162 @@ func sanitizeServiceName(name string) string {
 
 // resolveHostIP returns the IP address that Kubernetes uses to reach this host.
 // If an explicit hostIP was provided via --host-ip, that value is returned.
-// Otherwise it falls back to DNS auto-detection (host.minikube.internal,
-// host.docker.internal) for co-located setups.
+// Otherwise it inspects the host's interfaces and applies selectHostIP's
+// preference order (Tailscale > primary LAN, excluding bridge/NAT ranges),
+// which a remote cluster or tailnet peer can actually route to. Only when no
+// routable interface exists does it fall back to the legacy DNS detection for
+// co-located minikube / Docker Desktop setups. Fixes defilantech/LLMKube#526.
 func (r *ServiceRegistry) resolveHostIP() string {
 	if r.hostIP != "" {
 		return r.hostIP
 	}
-	return getHostIP()
+
+	candidates := gatherHostIPCandidates()
+	chosen, ok, rejected := selectHostIP(candidates)
+	if ok {
+		r.logger.Infow("auto-detected host IP",
+			"ip", chosen.ip.String(),
+			"interface", chosen.iface,
+			"rejected", formatRejected(rejected),
+		)
+		return chosen.ip.String()
+	}
+
+	fallback := getHostIP()
+	r.logger.Warnw("no routable interface for host-IP auto-detect; using co-located DNS fallback",
+		"ip", fallback,
+		"rejected", formatRejected(rejected),
+	)
+	return fallback
+}
+
+// gatherHostIPCandidates enumerates the host's up, non-loopback interfaces
+// and returns their unicast addresses as host-IP candidates.
+func gatherHostIPCandidates() []hostIPCandidate {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+	var out []hostIPCandidate
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, a := range addrs {
+			var ip net.IP
+			switch v := a.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+			if ip == nil {
+				continue
+			}
+			out = append(out, hostIPCandidate{iface: iface.Name, ip: ip})
+		}
+	}
+	return out
+}
+
+// formatRejected renders rejected candidates as "iface=ip (reason)" strings
+// for a single structured log field.
+func formatRejected(rejected []rejectedHostIP) []string {
+	out := make([]string, 0, len(rejected))
+	for _, r := range rejected {
+		out = append(out, fmt.Sprintf("%s=%s (%s)", r.iface, r.ip, r.reason))
+	}
+	return out
+}
+
+// hostIPCandidate is a usable address discovered on a host network interface.
+type hostIPCandidate struct {
+	iface string
+	ip    net.IP
+}
+
+// rejectedHostIP records a candidate the selector skipped and why, so the
+// chosen-vs-rejected decision is visible in logs without a debug rerun.
+type rejectedHostIP struct {
+	iface  string
+	ip     string
+	reason string
+}
+
+// selectHostIP applies the host-IP preference policy to a candidate list:
+// Tailscale (100.64.0.0/10 CGNAT) first, then any other routable IPv4,
+// excluding loopback, link-local, and bridge/NAT ranges (lima/colima
+// vmnet, Docker, kind/service nets). Returns ok=false when nothing
+// routable is found so the caller can fall back. Pure for unit testing.
+func selectHostIP(candidates []hostIPCandidate) (chosen hostIPCandidate, ok bool, rejected []rejectedHostIP) {
+	var tailscale, lan *hostIPCandidate
+	for i := range candidates {
+		c := candidates[i]
+		ip4 := c.ip.To4()
+		switch {
+		case ip4 == nil:
+			rejected = append(rejected, rejectedHostIP{c.iface, c.ip.String(), "not IPv4"})
+		case c.ip.IsLoopback():
+			rejected = append(rejected, rejectedHostIP{c.iface, c.ip.String(), "loopback"})
+		case c.ip.IsLinkLocalUnicast():
+			rejected = append(rejected, rejectedHostIP{c.iface, c.ip.String(), "link-local"})
+		case inAnyNet(ip4, excludedHostNets):
+			rejected = append(rejected, rejectedHostIP{c.iface, c.ip.String(), "bridge/NAT range"})
+		case tailscaleCGNAT.Contains(ip4):
+			if tailscale == nil {
+				cc := c
+				tailscale = &cc
+			}
+		default:
+			if lan == nil {
+				cc := c
+				lan = &cc
+			}
+		}
+	}
+	switch {
+	case tailscale != nil:
+		return *tailscale, true, rejected
+	case lan != nil:
+		return *lan, true, rejected
+	default:
+		return hostIPCandidate{}, false, rejected
+	}
+}
+
+// tailscaleCGNAT is the 100.64.0.0/10 carrier-grade NAT range Tailscale
+// assigns to tailnet nodes; preferred because a remote cluster joined to
+// the same tailnet can always reach it.
+var tailscaleCGNAT = mustParseCIDR("100.64.0.0/10")
+
+// excludedHostNets are bridge / NAT / service ranges a remote cluster or
+// peer cannot route to: lima/colima/Docker-Desktop vmnet, the Docker
+// default bridge, and the kind / Kubernetes service CIDR.
+var excludedHostNets = []*net.IPNet{
+	mustParseCIDR("192.168.65.0/24"), // lima / colima / Docker Desktop vmnet
+	mustParseCIDR("172.17.0.0/16"),   // Docker default bridge
+	mustParseCIDR("10.96.0.0/12"),    // kind / Kubernetes service CIDR
+}
+
+func mustParseCIDR(s string) *net.IPNet {
+	_, n, err := net.ParseCIDR(s)
+	if err != nil {
+		panic(fmt.Sprintf("invalid CIDR %q: %v", s, err))
+	}
+	return n
+}
+
+func inAnyNet(ip net.IP, nets []*net.IPNet) bool {
+	for _, n := range nets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // getHostIP returns the auto-detected IP address that Kubernetes can use to
