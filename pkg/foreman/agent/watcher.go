@@ -104,6 +104,14 @@ func (w *AgenticTaskWatcher) Run(ctx context.Context) error {
 
 	log.Info("starting", "interval", interval.String(), "namespace", ns, "executor", w.Executor.Kind())
 
+	// Recover any tasks orphaned in phase=Running by a previous agent
+	// process (crash, OOM, launchctl bounce) before we start polling, so
+	// the scheduler can re-dispatch them. Best-effort: a failure here is
+	// logged but must not prevent the poll loop from starting.
+	if err := w.recoverOrphanedTasks(ctx, ns); err != nil {
+		log.Error(err, "orphaned task recovery failed; continuing to poll loop")
+	}
+
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -125,6 +133,63 @@ func (w *AgenticTaskWatcher) Run(ctx context.Context) error {
 			consecutiveFails = 0
 		}
 	}
+}
+
+// recoverOrphanedTasks runs once at startup, before the poll loop. It
+// resets AgenticTasks left in phase=Running on this node by a previous
+// (now-dead) agent process. The poll loop only dispatches phase=Scheduled,
+// so without this a crashed or bounced agent would orphan its in-flight
+// task forever (it stays Running with a stale claimedAt and is never
+// re-examined). Reset-to-Pending is the simplest correct recovery so the
+// scheduler re-dispatches the work; resume-from-transcript is a future
+// refinement. Fixes defilantech/LLMKube#542.
+func (w *AgenticTaskWatcher) recoverOrphanedTasks(ctx context.Context, namespace string) error {
+	log := logf.FromContext(ctx).WithName("agentictask-watcher").WithValues("node", w.NodeName)
+
+	var list foremanv1alpha1.AgenticTaskList
+	if err := w.Client.List(ctx, &list, client.InNamespace(namespace)); err != nil {
+		return fmt.Errorf("list AgenticTasks for recovery: %w", err)
+	}
+
+	recovered := 0
+	for i := range list.Items {
+		t := &list.Items[i]
+		if t.Status.AssignedNode != w.NodeName || t.Status.Phase != foremanv1alpha1.AgenticTaskPhaseRunning {
+			continue
+		}
+		if err := w.resetOrphanedTask(ctx, t); err != nil {
+			// Best-effort: log and continue. A transient patch failure
+			// should not block the poll loop from starting; the next
+			// agent restart will retry.
+			log.Error(err, "failed to recover orphaned task", "task", t.Name)
+			continue
+		}
+		recovered++
+		log.Info("reset orphaned task to Pending for re-dispatch", "task", t.Name)
+	}
+	if recovered > 0 {
+		log.Info("orphaned task recovery complete", "recovered", recovered)
+	}
+	return nil
+}
+
+// resetOrphanedTask flips an orphaned Running task back to Pending and
+// clears the dead PID's claim, so the scheduler re-dispatches it.
+func (w *AgenticTaskWatcher) resetOrphanedTask(ctx context.Context, t *foremanv1alpha1.AgenticTask) error {
+	patch := client.MergeFrom(t.DeepCopy())
+	now := metav1.Now()
+	t.Status.Phase = foremanv1alpha1.AgenticTaskPhasePending
+	t.Status.AssignedNode = ""
+	t.Status.ClaimedAt = nil
+	t.Status.StartedAt = nil
+	setCondition(&t.Status.Conditions, metav1.Condition{
+		Type:               "Running",
+		Status:             metav1.ConditionFalse,
+		Reason:             "AgentRestartRecovery",
+		Message:            fmt.Sprintf("reset to Pending: %s restarted while this task was Running", w.NodeName),
+		LastTransitionTime: now,
+	})
+	return w.Client.Status().Patch(ctx, t, patch)
 }
 
 // pollOnce runs a single List() pass and dispatches any task assigned to
