@@ -5,6 +5,36 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.1](https://github.com/defilantech/LLMKube/compare/v0.8.0...v0.8.1) (2026-06-01)
+
+
+### ⚠ BREAKING CHANGES
+
+* **foreman:** Agent.spec.requestTimeoutSeconds changes meaning from a per-request HTTP timeout to a loop-wide wall-clock budget, and its default moves from 600 to 3600. The former per-request bound is now the new Agent.spec.requestTurnTimeoutSeconds (default 120). Re-apply your Agent CRs after upgrade so existing Agents pick up explicit values.
+
+### Features
+
+* **inferenceservice:** typed spec.ropeScaling for RoPE/YaRN context extension ([#507](https://github.com/defilantech/LLMKube/issues/507)) ([#600](https://github.com/defilantech/LLMKube/issues/600)) ([a554aee](https://github.com/defilantech/LLMKube/commit/a554aeef1e8f76d3d06d00b91ac779ef563c2000))
+
+
+### Bug Fixes
+
+* **foreman:** recover orphaned phase=Running tasks on agent restart ([#542](https://github.com/defilantech/LLMKube/issues/542)) ([#598](https://github.com/defilantech/LLMKube/issues/598)) ([6dd2c44](https://github.com/defilantech/LLMKube/commit/6dd2c445fbec7d85b32dec67169de8339b6ec0e5))
+* **foreman:** split per-turn timeout from loop-wide budget ([#532](https://github.com/defilantech/LLMKube/issues/532)) ([#602](https://github.com/defilantech/LLMKube/issues/602)) ([41e7663](https://github.com/defilantech/LLMKube/commit/41e7663cb25a64a967feb56ec9de49be4ca98c9c))
+* **foreman:** warm-path reviewer scheduling on macOS ([#578](https://github.com/defilantech/LLMKube/issues/578), [#579](https://github.com/defilantech/LLMKube/issues/579)) ([#597](https://github.com/defilantech/LLMKube/issues/597)) ([a94d1ef](https://github.com/defilantech/LLMKube/commit/a94d1efec9cb796a4e985eb92964925182a20ac0))
+* **metal-agent:** prefer routable interface for host-IP auto-detect ([#526](https://github.com/defilantech/LLMKube/issues/526)) ([#599](https://github.com/defilantech/LLMKube/issues/599)) ([c780795](https://github.com/defilantech/LLMKube/commit/c78079503529538abf0c05aa283957b4e6b8d29a))
+
+
+### Documentation
+
+* **foreman:** absolute paths in overview README cross-refs (fix llmkube-web prerender) ([#596](https://github.com/defilantech/LLMKube/issues/596)) ([b5f6f94](https://github.com/defilantech/LLMKube/commit/b5f6f94b6a1cc031fc4a758ca8e2ab66b35a88e9))
+* **foreman:** move docs/foreman to docs/site/foreman + register in site nav ([#594](https://github.com/defilantech/LLMKube/issues/594)) ([9fd85bb](https://github.com/defilantech/LLMKube/commit/9fd85bbe3f4bd2ec9135f71925ba677433b8adc2))
+
+
+### Miscellaneous
+
+* pin next release to 0.8.1 (Release-As) ([#605](https://github.com/defilantech/LLMKube/issues/605)) ([a876cc6](https://github.com/defilantech/LLMKube/commit/a876cc69ee7bda878b2f916a9e2fe1a28dfd6f50))
+
 ## [0.8.0](https://github.com/defilantech/LLMKube/compare/v0.7.12...v0.8.0) (2026-05-28)
 
 
