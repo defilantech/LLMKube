@@ -179,8 +179,19 @@ var (
 	)
 )
 
+// clientProxyRequests counts host-side client-proxy requests by outcome
+// (no_backend, 2xx, 3xx, 4xx, 5xx, other). See ClientProxy / #406.
+var clientProxyRequests = prometheus.NewCounterVec(
+	prometheus.CounterOpts{
+		Name: "llmkube_metal_agent_client_proxy_requests_total",
+		Help: "Total host-side client-proxy requests, labeled by outcome.",
+	},
+	[]string{"outcome"},
+)
+
 func init() {
 	AgentRegistry.MustRegister(
+		clientProxyRequests,
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 		managedProcesses,

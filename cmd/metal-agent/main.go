@@ -61,6 +61,7 @@ type AgentConfig struct {
 	MLXServerBin              string
 	MLXServerPort             int
 	Port                      int
+	ClientPort                int
 	LogLevel                  string
 	HostIP                    string
 	MemoryFraction            float64
@@ -245,6 +246,8 @@ func main() {
 	flag.StringVar(&cfg.MLXServerBin, "mlx-server-bin", "", "Path to mlx-server binary (auto-detected if not set)")
 	flag.IntVar(&cfg.MLXServerPort, "mlx-server-port", 8080, "Fixed port for the mlx-server runtime")
 	flag.IntVar(&cfg.Port, "port", 9090, "Agent metrics/health port")
+	flag.IntVar(&cfg.ClientPort, "client-port", 9999,
+		"Stable host-side listener (127.0.0.1:<port>) that forwards /v1/* to the current inference child; 0 disables")
 	flag.StringVar(&cfg.LogLevel, "log-level", "info", "Log level (debug, info, warn, error)")
 	flag.StringVar(&cfg.HostIP, "host-ip", "", "IP address to register in Kubernetes endpoints (auto-detected if empty)")
 	flag.Float64Var(&cfg.MemoryFraction, "memory-fraction", 0,
@@ -474,6 +477,7 @@ func main() {
 		MLXServerBin:              cfg.MLXServerBin,
 		MLXServerPort:             cfg.MLXServerPort,
 		Port:                      cfg.Port,
+		ClientPort:                cfg.ClientPort,
 		HostIP:                    cfg.HostIP,
 		Logger:                    logger,
 		MemoryFraction:            cfg.MemoryFraction,

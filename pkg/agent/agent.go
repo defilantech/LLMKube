@@ -62,8 +62,13 @@ type MetalAgentConfig struct {
 	ModelStorePath string
 	LlamaServerBin string
 	Port           int
-	HostIP         string // explicit IP to register in K8s endpoints; empty = auto-detect
-	Logger         *zap.SugaredLogger
+	// ClientPort is the host-side client-proxy listener port (#406). When > 0
+	// the agent serves a stable 127.0.0.1:<ClientPort> endpoint that forwards
+	// to the current child's dynamic port, so host tools need not track it.
+	// 0 disables the proxy.
+	ClientPort int
+	HostIP     string // explicit IP to register in K8s endpoints; empty = auto-detect
+	Logger     *zap.SugaredLogger
 
 	// EventRecorder publishes Kubernetes events on managed InferenceService
 	// objects so operators can triage memory pressure / eviction / respawn
@@ -393,6 +398,19 @@ func (a *MetalAgent) Start(ctx context.Context) error {
 		}()
 	}
 
+	// Start the host-side client proxy (#406): a stable loopback listener that
+	// forwards /v1/* to whichever child is currently running, so host tools
+	// (opencode, aider, curl) target a fixed port instead of the agent's
+	// dynamic per-spawn child port. In-cluster clients are unaffected.
+	if a.config.ClientPort > 0 {
+		cp := NewClientProxy(a, a.config.ClientPort, a.logger.With("subsystem", "client-proxy"))
+		go func() {
+			if err := cp.Start(ctx); err != nil {
+				a.logger.Errorw("client proxy stopped", "err", err)
+			}
+		}()
+	}
+
 	// Start health monitor
 	monitor := NewHealthMonitor(
 		a,
@@ -606,6 +624,33 @@ func (a *MetalAgent) validateRuntimeFormat(model *inferencev1alpha1.Model) error
 // hash; if it changed, the existing process is stopped before a fresh one is
 // spawned so the new flags actually take effect. Replicas=0 stops the process
 // without restarting.
+// currentBackend returns the loopback address of the inference child the
+// host-side client proxy should forward to, satisfying backendProvider (#406).
+// The agent tracks one process per InferenceService but in practice runs one
+// at a time on a single Mac, so we return the first running child with an
+// allocated port, preferring a healthy one. ok is false when none is running.
+func (a *MetalAgent) currentBackend() (string, bool) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	var fallback string
+	for _, p := range a.processes {
+		if p == nil || p.Port <= 0 {
+			continue
+		}
+		addr := fmt.Sprintf("127.0.0.1:%d", p.Port)
+		if p.Healthy {
+			return addr, true
+		}
+		if fallback == "" {
+			fallback = addr
+		}
+	}
+	if fallback != "" {
+		return fallback, true
+	}
+	return "", false
+}
+
 func (a *MetalAgent) ensureProcess(ctx context.Context, isvc *inferencev1alpha1.InferenceService) error {
 	key := types.NamespacedName{
 		Namespace: isvc.Namespace,
