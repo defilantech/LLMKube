@@ -44,11 +44,28 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
 # already has go, make, and git for the coder's `make fmt vet lint test`.
 FROM golang:1.26
 
+# TARGETARCH is supplied by buildx; declare it so the helm fetch below can
+# pick the right release asset for the runtime platform.
+ARG TARGETARCH
+
 # make is the only gate-check dependency golang:1.26 does not already
-# ship (go and git are present in the official image).
+# ship (go and git are present in the official image). curl + ca-certs are
+# needed to fetch helm.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends make \
+    && apt-get install -y --no-install-recommends make curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+
+# helm: coder tasks that edit Helm charts verify locally with
+# `helm template` / `helm lint`. golang:1.26 does not ship helm, so without
+# this a chart-editing coder cannot run the verification its task asks for
+# (the run_gate_job gate also lints charts). Pinned for reproducibility.
+ARG HELM_VERSION=v3.16.4
+RUN curl -fsSL "https://get.helm.sh/helm-${HELM_VERSION}-linux-${TARGETARCH:-amd64}.tar.gz" \
+        | tar -xz -C /tmp \
+    && mv "/tmp/linux-${TARGETARCH:-amd64}/helm" /usr/local/bin/helm \
+    && chmod +x /usr/local/bin/helm \
+    && rm -rf /tmp/linux-* \
+    && helm version
 
 # /usr/local/bin is on PATH in the golang image, so the template's bare
 # `command: ["foreman-agent"]` resolves here.
