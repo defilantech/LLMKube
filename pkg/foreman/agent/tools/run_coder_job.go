@@ -111,6 +111,26 @@ type RunCoderJobConfig struct {
 	// a follow-up.
 	ModelAuthSecret string
 
+	// GitRemoteURL is the git URL the in-pod run-task clones from and
+	// pushes the result branch to. Passed through to the run-task
+	// container as --git-remote-url. Empty omits the flag entirely: a
+	// deterministic gate-only install has no remote, and coder tasks that
+	// need it then fail cleanly with GitRemoteNotConfigured rather than
+	// the Job receiving a bare --git-remote-url= (an empty URL). Mirrors
+	// the watcher's --git-remote-url.
+	GitRemoteURL string
+
+	// CommitAuthorName is the git author + committer name run-task stamps
+	// onto the produced branch. Passed through as --commit-author-name;
+	// omitted when empty so run-task falls back to its own default.
+	CommitAuthorName string
+
+	// CommitAuthorEmail is the git author + committer email run-task
+	// stamps onto the produced branch. Passed through as
+	// --commit-author-email; omitted when empty (coder tasks that commit
+	// then fail cleanly). Mirrors the watcher's --commit-author-email.
+	CommitAuthorEmail string
+
 	// Resources, when non-nil, overrides the coder container's resource
 	// requests + limits (from Agent.spec.execution.resources). Any field
 	// it leaves unset falls back to the gate-matching string defaults
@@ -279,6 +299,9 @@ func (r *RunCoderJob) Run(ctx context.Context, args RunCoderJobArgs) (CoderJobRe
 		GitCredentialsSecret:    cfg.GitCredentialsSecret,
 		GitCredentialsSecretKey: cfg.GitCredentialsSecretKey,
 		ModelAuthSecret:         cfg.ModelAuthSecret,
+		GitRemoteURL:            cfg.GitRemoteURL,
+		CommitAuthorName:        cfg.CommitAuthorName,
+		CommitAuthorEmail:       cfg.CommitAuthorEmail,
 		Resources:               cfg.Resources,
 	})
 	if err != nil {
@@ -445,6 +468,9 @@ type coderRendererInput struct {
 	GitCredentialsSecret    string
 	GitCredentialsSecretKey string
 	ModelAuthSecret         string
+	GitRemoteURL            string
+	CommitAuthorName        string
+	CommitAuthorEmail       string
 
 	// Resources, when non-nil, replaces the container resources the
 	// string fields above produce. Applied after the template unmarshals

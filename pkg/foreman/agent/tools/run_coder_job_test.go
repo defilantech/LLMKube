@@ -321,6 +321,119 @@ func TestRunCoderJob_CustomGitSecretFlowsThroughRun(t *testing.T) {
 	}
 }
 
+// TestRenderCoderJob_GitRemoteAndCommitAuthorArgs asserts the rendered
+// run-task args carry --git-remote-url / --commit-author-email /
+// --commit-author-name when set, so the coder Job can clone + push (#620).
+// Without these the run-task body fails with GitRemoteNotConfigured.
+func TestRenderCoderJob_GitRemoteAndCommitAuthorArgs(t *testing.T) {
+	job, err := renderCoderJob(coderRendererInput{
+		Name:                  "foreman-coder-gitremote",
+		Namespace:             "foreman-system",
+		Image:                 "img",
+		TaskName:              "gitremote",
+		TaskNamespace:         "default",
+		ActiveDeadlineSeconds: 3600,
+		CPURequest:            "2",
+		CPULimit:              "4",
+		MemRequest:            "4Gi",
+		MemLimit:              "8Gi",
+		GitCredentialsSecret:  "foreman-git-credentials",
+		GitRemoteURL:          "https://github.com/Defilan/LLMKube.git",
+		CommitAuthorName:      "Foreman Bot",
+		CommitAuthorEmail:     "foreman@defilan.tech",
+	})
+	if err != nil {
+		t.Fatalf("renderCoderJob: %v", err)
+	}
+	args := strings.Join(job.Spec.Template.Spec.Containers[0].Args, " ")
+	if !strings.Contains(args, "--git-remote-url=https://github.com/Defilan/LLMKube.git") {
+		t.Errorf("Args missing --git-remote-url:\n%s", args)
+	}
+	if !strings.Contains(args, "--commit-author-email=foreman@defilan.tech") {
+		t.Errorf("Args missing --commit-author-email:\n%s", args)
+	}
+	if !strings.Contains(args, "--commit-author-name=Foreman Bot") {
+		t.Errorf("Args missing --commit-author-name:\n%s", args)
+	}
+}
+
+// TestRenderCoderJob_GitRemoteArgsOmittedWhenEmpty asserts the optional git
+// args are NOT emitted when unset, so we never produce a bare
+// `--git-remote-url=` that the run-task FlagSet would parse as an empty URL
+// (a deterministic gate-only install legitimately has no remote).
+func TestRenderCoderJob_GitRemoteArgsOmittedWhenEmpty(t *testing.T) {
+	job, err := renderCoderJob(coderRendererInput{
+		Name:                  "foreman-coder-noremote",
+		Namespace:             "foreman-system",
+		Image:                 "img",
+		TaskName:              "noremote",
+		TaskNamespace:         "default",
+		ActiveDeadlineSeconds: 3600,
+		CPURequest:            "2",
+		CPULimit:              "4",
+		MemRequest:            "4Gi",
+		MemLimit:              "8Gi",
+		GitCredentialsSecret:  "foreman-git-credentials",
+	})
+	if err != nil {
+		t.Fatalf("renderCoderJob: %v", err)
+	}
+	args := strings.Join(job.Spec.Template.Spec.Containers[0].Args, " ")
+	if strings.Contains(args, "--git-remote-url") {
+		t.Errorf("Args should omit --git-remote-url when empty:\n%s", args)
+	}
+	if strings.Contains(args, "--commit-author-email") {
+		t.Errorf("Args should omit --commit-author-email when empty:\n%s", args)
+	}
+	if strings.Contains(args, "--commit-author-name") {
+		t.Errorf("Args should omit --commit-author-name when empty:\n%s", args)
+	}
+}
+
+// TestRunCoderJob_GitRemoteFlowsThroughRun asserts the static Cfg's
+// GitRemoteURL / CommitAuthor* reach the rendered Job's run-task args via
+// Run. This mirrors how the watcher wires its --git-remote-url /
+// --commit-author-* flag values onto Cfg (#620).
+func TestRunCoderJob_GitRemoteFlowsThroughRun(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	c := fake.NewClientBuilder().WithScheme(gateScheme(t)).WithStatusSubresource(&batchv1.Job{}).Build()
+	jobName := "foreman-coder-gitflow"
+	key := types.NamespacedName{Namespace: "foreman-system", Name: jobName}
+	go flipStatusOnce(ctx, c, key, 1, 0)
+
+	tool := &RunCoderJob{
+		Client: c,
+		Cfg: RunCoderJobConfig{
+			NameFn:            pinName(jobName),
+			PollInterval:      5 * time.Millisecond,
+			PollTimeout:       2 * time.Second,
+			GitRemoteURL:      "https://github.com/Defilan/LLMKube.git",
+			CommitAuthorName:  "Foreman Bot",
+			CommitAuthorEmail: "foreman@defilan.tech",
+			LogTailFn:         func(context.Context, string, string) string { return "" },
+		},
+	}
+	if _, err := tool.Run(ctx, RunCoderJobArgs{TaskName: "gitflow", TaskNamespace: "default"}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	var job batchv1.Job
+	if err := c.Get(ctx, key, &job); err != nil {
+		t.Fatalf("Job should exist: %v", err)
+	}
+	args := strings.Join(job.Spec.Template.Spec.Containers[0].Args, " ")
+	if !strings.Contains(args, "--git-remote-url=https://github.com/Defilan/LLMKube.git") {
+		t.Errorf("Args missing --git-remote-url:\n%s", args)
+	}
+	if !strings.Contains(args, "--commit-author-email=foreman@defilan.tech") {
+		t.Errorf("Args missing --commit-author-email:\n%s", args)
+	}
+	if !strings.Contains(args, "--commit-author-name=Foreman Bot") {
+		t.Errorf("Args missing --commit-author-name:\n%s", args)
+	}
+}
+
 // TestRenderCoderJob_AppliesResources asserts CoderJobRequest-supplied
 // resources land on the container, and that the gate-matching defaults
 // apply when the renderer input carries the default strings (#620 N1).

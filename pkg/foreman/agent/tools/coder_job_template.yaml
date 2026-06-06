@@ -40,6 +40,15 @@
 #   .ModelAuthSecret -- optional. When set, mounts a Secret at
 #                      /secrets/model for the remote model endpoint auth
 #                      (e.g. a bearer token). Omitted when empty.
+#   .GitRemoteURL    -- optional. git URL run-task clones from + pushes to,
+#                      passed as --git-remote-url. Omitted when empty so the
+#                      Job never receives a bare --git-remote-url= (coder
+#                      tasks that need it then fail with
+#                      GitRemoteNotConfigured rather than parsing an empty
+#                      URL); gate-only installs have no remote.
+#   .CommitAuthorName / .CommitAuthorEmail -- optional. git author +
+#                      committer identity, passed as --commit-author-name /
+#                      --commit-author-email. Each omitted when empty.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -77,6 +86,15 @@ spec:
             - {{ .TaskNamespace }}
             - --workspace-dir
             - /workspace
+            {{- if .GitRemoteURL }}
+            - --git-remote-url={{ .GitRemoteURL }}
+            {{- end }}
+            {{- if .CommitAuthorName }}
+            - --commit-author-name={{ .CommitAuthorName }}
+            {{- end }}
+            {{- if .CommitAuthorEmail }}
+            - --commit-author-email={{ .CommitAuthorEmail }}
+            {{- end }}
           env:
             # The run-task body resolves git auth via
             # repo.TokenFromEnvOrFile, which reads $GITHUB_TOKEN. Project

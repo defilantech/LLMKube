@@ -325,7 +325,14 @@ func main() {
 					Namespace:               foremanNamespace,
 					GitCredentialsSecret:    coderGitSecret,
 					GitCredentialsSecretKey: coderGitSecretKey,
-					LogTailFn:               makePodLogTailFn(kcs),
+					// Propagate the watcher's git remote + commit identity
+					// into the coder Job's run-task invocation so the in-pod
+					// clone + push can authenticate and commit; without these
+					// run-task fails with GitRemoteNotConfigured (#620).
+					GitRemoteURL:      gitRemoteURL,
+					CommitAuthorName:  commitAuthorName,
+					CommitAuthorEmail: commitAuthorEmail,
+					LogTailFn:         makePodLogTailFn(kcs),
 				},
 			},
 		}
