@@ -21,6 +21,9 @@ imagePullSecrets: []
 
 # Foreman-wide policy knobs that span operator + agent. Add new
 # settings here when they are not naturally scoped to one component.
+networkPolicies:
+  enabled: false
+  additionalEgressCIDRs: []
 foreman:
   # allowCloudProviders is the cluster-wide sovereignty kill switch
   # for cloud-proxy reviewer Agents (v0.2 Day 4).
