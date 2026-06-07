@@ -180,6 +180,83 @@ func TestProgressMonitor_EditResetsStreak(t *testing.T) {
 	}
 }
 
+// TestProgressMonitor_BashFileWriteResetsStreak verifies that creating
+// or editing a workspace file through the bash tool (cat heredoc, sed
+// -i, etc.) counts as an edit. Models commonly write files via the
+// shell instead of the dedicated write_file/str_replace tools; without
+// this the EditFreeStreak detector force-terminates a run that is
+// actually making changes (observed with Gemma 4 on issue #522).
+func TestProgressMonitor_BashFileWriteResetsStreak(t *testing.T) {
+	mon := NewLoopProgressMonitor(ProgressConfig{EditFreeTurnsLimit: 3})
+	transcript := []oai.Message{}
+
+	// 2 reads, then a bash heredoc that writes a new file, then 2 reads:
+	// the streak must reset on the bash write so it does NOT trip.
+	_ = mon.Observe(1, []oai.ToolCall{makeCall("a", "read_file", `{}`)}, transcript)
+	_ = mon.Observe(2, []oai.ToolCall{makeCall("b", "read_file", `{}`)}, transcript)
+	heredoc := `{"command":"cat <<EOF > charts/foreman/templates/network-policy.yaml\nkind: NetworkPolicy\nEOF"}`
+	d := mon.Observe(3, []oai.ToolCall{makeCall("c", "bash", heredoc)}, transcript)
+	if d.Action != ProgressContinue {
+		t.Fatalf("turn 3 (bash heredoc write): expected Continue; got %+v", d)
+	}
+	d = mon.Observe(4, []oai.ToolCall{makeCall("d", "read_file", `{}`)}, transcript)
+	if d.Action != ProgressContinue {
+		t.Fatalf("turn 4: expected Continue (streak reset by bash write); got %+v", d)
+	}
+	sedCmd := `{"command":"sed -i 's/a/b/' charts/foreman/values.yaml"}`
+	d = mon.Observe(5, []oai.ToolCall{makeCall("e", "bash", sedCmd)}, transcript)
+	if d.Action != ProgressContinue {
+		t.Fatalf("turn 5 (sed -i): expected Continue; got %+v", d)
+	}
+}
+
+// TestProgressMonitor_ReadOnlyBashStillTripsStreak verifies that
+// read-only bash commands (ls, helm lint, cat, redirect to /dev/null)
+// do NOT reset the streak, so a model that only inspects via the shell
+// is still caught.
+func TestProgressMonitor_ReadOnlyBashStillTripsStreak(t *testing.T) {
+	mon := NewLoopProgressMonitor(ProgressConfig{EditFreeTurnsLimit: 3})
+	transcript := []oai.Message{}
+	cmds := []string{
+		`{"command":"ls -R charts/"}`,
+		`{"command":"helm lint charts/foreman"}`,
+		`{"command":"go test ./... > /dev/null 2>&1"}`,
+	}
+	var d ProgressDecision
+	for i, c := range cmds {
+		d = mon.Observe(i+1, []oai.ToolCall{makeCall("x", "bash", c)}, transcript)
+	}
+	if d.Signal != "EditFreeStreak" {
+		t.Fatalf("read-only bash should trip EditFreeStreak; got %+v", d)
+	}
+}
+
+func TestBashLikelyMutatesWorkspace(t *testing.T) {
+	cases := []struct {
+		cmd  string
+		want bool
+	}{
+		{"cat <<EOF > foo.yaml\nx\nEOF", true},
+		{"echo hi >> notes.txt", true},
+		{"sed -i 's/a/b/' f", true},
+		{"tee f.yaml", true},
+		{"mv a b", true},
+		{"cp a b", true},
+		{"patch -p1 < x.diff", true},
+		{"ls -R charts/", false},
+		{"helm lint charts/foreman", false},
+		{"cat foo.yaml", false},
+		{"grep -r foo .", false},
+		{"go test ./... > /dev/null 2>&1", false},
+		{"echo done 2>&1", false},
+	}
+	for _, c := range cases {
+		if got := bashLikelyMutatesWorkspace(c.cmd); got != c.want {
+			t.Errorf("bashLikelyMutatesWorkspace(%q)=%v want %v", c.cmd, got, c.want)
+		}
+	}
+}
+
 // TestProgressMonitor_ContextHardCapImmediate verifies the hard cap
 // force-terminates without a nudge stage.
 func TestProgressMonitor_ContextHardCapImmediate(t *testing.T) {

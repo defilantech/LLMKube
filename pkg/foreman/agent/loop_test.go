@@ -328,13 +328,98 @@ func TestLoop_UnknownToolBecomesToolErrorMessage(t *testing.T) {
 	}
 }
 
-func TestLoop_AssistantNoToolCallsIsError(t *testing.T) {
-	srv, _ := scriptedOAIServer(t, []string{assistantNoCalls})
+func TestLoop_AssistantNoToolCalls_RetriesThenErrors(t *testing.T) {
+	// A model that replies with prose and no tool_calls cannot make
+	// forward progress, but rather than failing the whole task on the
+	// first such turn the loop appends a forceful corrective and gives the
+	// model a bounded number of chances to recover. Three consecutive
+	// no-tool-call turns (initial + 2 retries) exhausts the budget and
+	// surfaces ErrAssistantNoToolCalls.
+	srv, calls := scriptedOAIServer(t, []string{assistantNoCalls, assistantNoCalls, assistantNoCalls})
 	reg := &fakeRegistry{}
 	loop := newTestLoop(srv, reg)
-	_, err := loop.Run(context.Background(), LoopConfig{Model: "test", MaxTurns: 3})
+	res, err := loop.Run(context.Background(), LoopConfig{
+		Model: "test", MaxTurns: 10, MaxNoToolCallRetries: 2,
+	})
 	if !errors.Is(err, ErrAssistantNoToolCalls) {
-		t.Errorf("expected ErrAssistantNoToolCalls, got %v", err)
+		t.Fatalf("expected ErrAssistantNoToolCalls after retries, got %v", err)
+	}
+	if got := calls.Load(); got != 3 {
+		t.Errorf("OAI calls: want 3 (initial + 2 retries) got %d", got)
+	}
+	// The corrective nudges must be persisted so the trajectory shows the
+	// harness tried to recover before giving up.
+	var nudges int
+	for _, m := range res.Transcript {
+		if m.Role == oai.RoleUser && m.Content == NoToolCallNudgeMessage() {
+			nudges++
+		}
+	}
+	if nudges != 2 {
+		t.Errorf("expected 2 corrective nudges in transcript, got %d", nudges)
+	}
+}
+
+func TestLoop_AssistantNoToolCalls_RecoversAfterNudge(t *testing.T) {
+	// The model narrates with no tool call on turn 1, then (after the
+	// corrective nudge) calls submit_result on turn 2. The loop must
+	// recover and finish with the model's terminal rather than fail. This
+	// is the common local-model failure: the model states its conclusion
+	// as prose instead of calling submit_result.
+	srv, calls := scriptedOAIServer(t, []string{assistantNoCalls, toolCallSubmitGo})
+	reg := &fakeRegistry{
+		results: map[string]*ToolResult{
+			"submit_result": {Terminal: true, Verdict: "GO", Summary: "done"},
+		},
+	}
+	loop := newTestLoop(srv, reg)
+	res, err := loop.Run(context.Background(), LoopConfig{
+		Model: "test", MaxTurns: 10, MaxNoToolCallRetries: 2,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Terminal == nil || res.Terminal.Verdict != "GO" {
+		t.Errorf("expected GO terminal after recovery, got %+v", res.Terminal)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Errorf("OAI calls: want 2 got %d", got)
+	}
+	var sawNudge bool
+	for _, m := range res.Transcript {
+		if m.Role == oai.RoleUser && m.Content == NoToolCallNudgeMessage() {
+			sawNudge = true
+		}
+	}
+	if !sawNudge {
+		t.Errorf("expected corrective nudge in transcript before recovery")
+	}
+}
+
+func TestLoop_AssistantNoToolCalls_StreakResetsOnToolCall(t *testing.T) {
+	// A single mid-run narration followed by normal tool-calling must not
+	// accumulate toward the retry budget: the streak resets after any
+	// successful tool turn. Sequence: narrate, recover (read_file), narrate
+	// again, recover (submit_result). With a budget of 1 this would error
+	// if the streak did not reset; it must instead finish cleanly.
+	srv, _ := scriptedOAIServer(t, []string{
+		assistantNoCalls, toolCallReadFile, assistantNoCalls, toolCallSubmitGo,
+	})
+	reg := &fakeRegistry{
+		results: map[string]*ToolResult{
+			"read_file":     {Output: map[string]any{"content": "# README\n"}},
+			"submit_result": {Terminal: true, Verdict: "GO", Summary: "done"},
+		},
+	}
+	loop := newTestLoop(srv, reg)
+	res, err := loop.Run(context.Background(), LoopConfig{
+		Model: "test", MaxTurns: 10, MaxNoToolCallRetries: 1,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Terminal == nil || res.Terminal.Verdict != "GO" {
+		t.Errorf("expected GO terminal, got %+v", res.Terminal)
 	}
 }
 

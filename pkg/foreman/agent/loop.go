@@ -119,6 +119,17 @@ type LoopConfig struct {
 	// maps Agent.spec.requestTimeoutSeconds here; the per-request header
 	// timeout is the separate Agent.spec.requestTurnTimeoutSeconds.
 	LoopBudget time.Duration
+
+	// MaxNoToolCallRetries is how many consecutive no-tool-call turns the
+	// loop tolerates by appending a forceful corrective ("call a tool; if
+	// done, call submit_result") and retrying before giving up with
+	// ErrAssistantNoToolCalls. Local models sometimes narrate their
+	// conclusion as prose instead of emitting the terminal submit_result
+	// call; a single such turn should not fail the whole task. The streak
+	// resets after any successful tool-calling turn, so only sustained
+	// narration exhausts the budget. <= 0 falls back to
+	// DefaultMaxNoToolCallRetries.
+	MaxNoToolCallRetries int
 }
 
 // DefaultContextWindowTokens is the budget used when LoopConfig.ContextWindowTokens
@@ -126,6 +137,13 @@ type LoopConfig struct {
 // the system prompt, user prompt, and a handful of recent tool results
 // (which can each be ~16 KB / ~4K tokens for a verbose `bash` output).
 const DefaultContextWindowTokens = 32768
+
+// DefaultMaxNoToolCallRetries is the number of corrective retries used
+// when LoopConfig.MaxNoToolCallRetries is <= 0. Two is enough to recover
+// a model that narrated its conclusion once or twice instead of calling
+// submit_result, without letting a model that simply refuses to call
+// tools spin to MaxTurns.
+const DefaultMaxNoToolCallRetries = 2
 
 // DefaultObservationWindowTurns is the floor used when
 // LoopConfig.ObservationWindowTurns is zero. Three recent tool results
@@ -207,6 +225,21 @@ func LoopBudgetExhaustedEnvelope(turn int) *ToolResult {
 // system-prompt iterations should make it rare.
 var ErrAssistantNoToolCalls = errors.New("loop: assistant turn had no tool_calls")
 
+// NoToolCallNudgeMessage is the corrective the loop appends as a user
+// message after a turn that returned text but no tool_calls. Every agent
+// finishes through a tool (submit_result); a prose-only reply makes no
+// forward progress. The message is forceful and unambiguous so a model
+// that narrated its conclusion converts that prose into the terminal
+// tool call on the retry. Exported so tests and callers can assert on it.
+func NoToolCallNudgeMessage() string {
+	return "Your previous reply contained no tool call. You cannot finish " +
+		"or make progress by writing prose: every action, including " +
+		"finishing, happens through a tool call. If your work is complete " +
+		"and verified, you MUST call submit_result now with your verdict " +
+		"(GO or NO_GO), a summary, and the commit message. Otherwise call " +
+		"the appropriate tool to continue. Respond with a tool call, not text."
+}
+
 // Loop runs the native agent loop against a single OAI endpoint. It is
 // safe to reuse a Loop across many Run calls; each call starts a fresh
 // transcript and is self-contained.
@@ -243,6 +276,9 @@ func (l *Loop) Run(ctx context.Context, cfg LoopConfig) (*LoopResult, error) {
 	if cfg.ObservationWindowTurns <= 0 {
 		cfg.ObservationWindowTurns = DefaultObservationWindowTurns
 	}
+	if cfg.MaxNoToolCallRetries <= 0 {
+		cfg.MaxNoToolCallRetries = DefaultMaxNoToolCallRetries
+	}
 	// Loop-wide wall-clock budget (#532). Distinct from the per-request
 	// header timeout baked into the OAI client: this bounds the whole
 	// run, so one slow long-context turn can't hang past the budget, and
@@ -261,6 +297,11 @@ func (l *Loop) Run(ctx context.Context, cfg LoopConfig) (*LoopResult, error) {
 	}
 	schemas := l.registry.Schemas()
 	monitor := NewLoopProgressMonitor(cfg.Progress)
+
+	// noToolCallStreak counts consecutive turns that returned text without
+	// a tool call. It resets to zero after any successful tool-calling
+	// turn, so only sustained narration exhausts MaxNoToolCallRetries.
+	noToolCallStreak := 0
 
 	for turn := 1; turn <= cfg.MaxTurns; turn++ {
 		res.Turns = turn
@@ -285,8 +326,29 @@ func (l *Loop) Run(ctx context.Context, cfg LoopConfig) (*LoopResult, error) {
 				res.Terminal = LoopBudgetExhaustedEnvelope(turn)
 				return res, nil
 			}
+			// No-tool-call recovery: a prose-only reply makes no forward
+			// progress, but local models sometimes narrate their
+			// conclusion instead of calling submit_result. Append a
+			// forceful corrective and retry, bounded by
+			// MaxNoToolCallRetries, before surfacing the error. The
+			// failing assistant turn is already in the transcript, so the
+			// model sees its own prose followed by the correction.
+			if errors.Is(turnErr, ErrAssistantNoToolCalls) {
+				if noToolCallStreak < cfg.MaxNoToolCallRetries {
+					noToolCallStreak++
+					res.Transcript = append(res.Transcript, oai.Message{
+						Role:    oai.RoleUser,
+						Content: NoToolCallNudgeMessage(),
+					})
+					continue
+				}
+				return res, turnErr
+			}
 			return res, turnErr
 		}
+
+		// A successful tool-calling turn clears the no-tool-call streak.
+		noToolCallStreak = 0
 
 		// Consult the progress monitor. The most recent assistant
 		// message in the transcript has this turn's tool_calls.

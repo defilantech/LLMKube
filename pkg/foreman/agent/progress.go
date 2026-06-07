@@ -19,6 +19,7 @@ package agent
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -325,15 +326,89 @@ func (m *LoopProgressMonitor) recordCalls(calls []oai.ToolCall) {
 // updateEditFreeStreak increments the streak counter when the turn
 // contains zero edit-producing calls; resets it when any edit tool
 // fires (including submit_result, since that means the model is
-// converging).
+// converging). A bash call that writes a workspace file (cat heredoc,
+// sed -i, tee, etc.) also counts: models routinely edit through the
+// shell instead of the write_file/str_replace tools, and the coder
+// commits with `git add -A`, so those changes are real progress.
 func (m *LoopProgressMonitor) updateEditFreeStreak(calls []oai.ToolCall) {
 	for _, tc := range calls {
 		if _, ok := editProducingTools[tc.Function.Name]; ok {
 			m.editFreeStreak = 0
 			return
 		}
+		if tc.Function.Name == "bash" && bashCallMutatesWorkspace(tc.Function.Arguments) {
+			m.editFreeStreak = 0
+			return
+		}
 	}
 	m.editFreeStreak++
+}
+
+// fileWritingBashTokens are substrings that indicate a bash command
+// mutates files in place or writes new ones.
+var fileWritingBashTokens = []string{
+	"sed -i", "tee ", "mv ", "cp ", "patch ", "dd ", "truncate ", "install ",
+}
+
+// bashCallMutatesWorkspace parses a bash tool call's JSON arguments and
+// reports whether the command likely writes a workspace file. Malformed
+// arguments are treated as non-mutating (no reset).
+func bashCallMutatesWorkspace(arguments string) bool {
+	var args struct {
+		Command string `json:"command"`
+	}
+	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
+		return false
+	}
+	return bashLikelyMutatesWorkspace(args.Command)
+}
+
+// bashLikelyMutatesWorkspace reports whether a bash command probably
+// writes or edits a file. It is a heuristic: the EditFreeStreak signal
+// is an early warning, not a security control, so the bias is toward
+// detecting a write. A false positive merely delays the signal; a false
+// negative force-terminates a model that is legitimately editing through
+// the shell.
+func bashLikelyMutatesWorkspace(command string) bool {
+	for _, tok := range fileWritingBashTokens {
+		if strings.Contains(command, tok) {
+			return true
+		}
+	}
+	return bashRedirectsToFile(command)
+}
+
+// bashRedirectsToFile reports whether the command contains an output
+// redirection ('>' or '>>') whose target is a real file, ignoring
+// /dev/{null,stdout,stderr} and file-descriptor duplications (2>&1, >&2).
+func bashRedirectsToFile(command string) bool {
+	for i := 0; i < len(command); i++ {
+		if command[i] != '>' {
+			continue
+		}
+		j := i + 1
+		for j < len(command) && command[j] == '>' { // collapse '>>'
+			j++
+		}
+		for j < len(command) && (command[j] == ' ' || command[j] == '\t') {
+			j++
+		}
+		if j >= len(command) || command[j] == '&' {
+			// End of string or fd duplication like '>&2'; not a file write.
+			continue
+		}
+		k := j
+		for k < len(command) && !strings.ContainsRune(" \t\n;|&)", rune(command[k])) {
+			k++
+		}
+		switch command[j:k] {
+		case "/dev/null", "/dev/stdout", "/dev/stderr":
+			continue
+		default:
+			return true
+		}
+	}
+	return false
 }
 
 // findRepeatedCall scans the recentCallHashes buffer for any hash
