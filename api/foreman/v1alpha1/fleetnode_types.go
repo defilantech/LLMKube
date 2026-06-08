@@ -17,8 +17,16 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"time"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+// FleetNodeHeartbeatTimeout is how long the controller waits past the most
+// recent heartbeat before it marks a FleetNode NotReady. The FleetAgent
+// heartbeats every 30s, so 90s tolerates two missed beats before a node is
+// declared dead.
+const FleetNodeHeartbeatTimeout = 90 * time.Second
 
 // FleetNodePhase is the heartbeat-driven health state of a fleet worker.
 // +kubebuilder:validation:Enum=Ready;Draining;NotReady;Unknown
@@ -152,6 +160,17 @@ type FleetNode struct {
 	// scheduler reads it; the agent writes it.
 	// +optional
 	Status FleetNodeStatus `json:"status,omitempty"`
+}
+
+// HeartbeatStale reports whether the node's most recent heartbeat is older
+// than FleetNodeHeartbeatTimeout relative to now. A node that has never
+// heart-beat (nil LastHeartbeatTime) is treated as stale: there is no
+// evidence the FleetAgent is alive.
+func (n *FleetNode) HeartbeatStale(now time.Time) bool {
+	if n == nil || n.Status.LastHeartbeatTime == nil {
+		return true
+	}
+	return now.Sub(n.Status.LastHeartbeatTime.Time) > FleetNodeHeartbeatTimeout
 }
 
 // +kubebuilder:object:root=true

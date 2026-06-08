@@ -18,6 +18,9 @@ package controller
 
 import (
 	"testing"
+	"time"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	foremanv1alpha1 "github.com/defilantech/llmkube/api/foreman/v1alpha1"
 )
@@ -25,8 +28,50 @@ import (
 func nodeWithCapability(cap foremanv1alpha1.FleetNodeCapability) *foremanv1alpha1.FleetNode {
 	n := &foremanv1alpha1.FleetNode{}
 	n.Status.Phase = foremanv1alpha1.FleetNodePhaseReady
+	// Default to a fresh heartbeat so capability tests are not accidentally
+	// gated out by the staleness check.
+	now := metav1.Now()
+	n.Status.LastHeartbeatTime = &now
 	n.Status.Capability = cap
 	return n
+}
+
+// A node that still reads Phase=Ready but has not heart-beat within the
+// staleness window must be treated as ineligible by the scheduler: the
+// FleetAgent on it may be dead, so dispatching there is a black hole.
+// Defense-in-depth for defilantech/LLMKube#627.
+func TestNodeSchedulable_StaleHeartbeatExcludedDespiteReady(t *testing.T) {
+	now := time.Now()
+	stale := metav1.NewTime(now.Add(-2 * foremanv1alpha1.FleetNodeHeartbeatTimeout))
+	node := nodeWithCapability(foremanv1alpha1.FleetNodeCapability{Accelerator: "metal"})
+	node.Status.LastHeartbeatTime = &stale
+
+	if nodeSchedulable(node, now) {
+		t.Fatalf("expected stale-heartbeat node to be unschedulable despite Phase=Ready")
+	}
+}
+
+// A fresh Ready node is schedulable.
+func TestNodeSchedulable_FreshReadyNode(t *testing.T) {
+	now := time.Now()
+	fresh := metav1.NewTime(now.Add(-1 * time.Second))
+	node := nodeWithCapability(foremanv1alpha1.FleetNodeCapability{Accelerator: "metal"})
+	node.Status.LastHeartbeatTime = &fresh
+
+	if !nodeSchedulable(node, now) {
+		t.Fatalf("expected fresh Ready node to be schedulable")
+	}
+}
+
+// A node that has never heart-beat (nil LastHeartbeatTime) is not
+// schedulable: we have no evidence the agent is alive.
+func TestNodeSchedulable_NeverHeartbeat(t *testing.T) {
+	node := nodeWithCapability(foremanv1alpha1.FleetNodeCapability{Accelerator: "metal"})
+	node.Status.LastHeartbeatTime = nil
+
+	if nodeSchedulable(node, time.Now()) {
+		t.Fatalf("expected node with no heartbeat to be unschedulable")
+	}
 }
 
 // A reviewer Agent's model is already loaded on the node, so the loop
