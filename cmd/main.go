@@ -21,6 +21,7 @@ import (
 	"crypto/tls"
 	"flag"
 	"os"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -104,6 +105,7 @@ func main() {
 	var modelCacheSize string
 	var modelCacheClass string
 	var modelCacheAccessMode string
+	var modelRevalidateInterval time.Duration
 	var caCertConfigMap string
 	var initContainerImage string
 	var defaultFSGroup int64
@@ -117,6 +119,10 @@ func main() {
 	flag.StringVar(&modelCacheClass, "model-cache-storage-class", "",
 		"Storage class for model cache PVCs (empty for default).")
 	flag.StringVar(&modelCacheAccessMode, "model-cache-access-mode", "ReadWriteOnce", "Access mode for model cache PVCs.")
+	flag.DurationVar(&modelRevalidateInterval, "model-revalidate-interval", controller.DefaultRevalidateInterval,
+		"Minimum interval between upstream source revalidation checks for a Model. "+
+			"Bounds the HEAD traffic the controller generates; drift is surfaced via the "+
+			"SourceDrifted condition and acted on only when spec.refreshPolicy is OnChange.")
 	flag.StringVar(&caCertConfigMap, "ca-cert-configmap", "",
 		"Name of the ConfigMap containing a custom CA certificate to trust for model downloads.")
 	flag.StringVar(&initContainerImage, "init-container-image", "docker.io/curlimages/curl:8.18.0",
@@ -253,9 +259,10 @@ func main() {
 	}
 
 	if err := (&controller.ModelReconciler{
-		Client:      mgr.GetClient(),
-		Scheme:      mgr.GetScheme(),
-		StoragePath: modelCachePath,
+		Client:             mgr.GetClient(),
+		Scheme:             mgr.GetScheme(),
+		StoragePath:        modelCachePath,
+		RevalidateInterval: modelRevalidateInterval,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Model")
 		os.Exit(1)

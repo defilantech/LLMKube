@@ -61,14 +61,34 @@ const (
 	ConditionAvailable   = "Available"
 	ConditionDegraded    = "Degraded"
 	ConditionProgressing = "Progressing"
+	// ConditionSourceDrifted is set True when the upstream source bytes differ
+	// from the cached copy, regardless of RefreshPolicy, so drift is always
+	// visible even when the controller does not act on it.
+	ConditionSourceDrifted = "SourceDrifted"
 
 	ReasonWorkloadResolved = "WorkloadResolved"
+
+	// RefreshPolicyIfNotPresent downloads only when the cached file is missing
+	// (the default; preserves historical behavior).
+	RefreshPolicyIfNotPresent = "IfNotPresent"
+	// RefreshPolicyOnChange re-downloads when the upstream bytes differ from the
+	// cached copy.
+	RefreshPolicyOnChange = "OnChange"
+
+	// DefaultRevalidateInterval is the minimum time between upstream
+	// revalidation checks for a given Model. Bounds the HEAD traffic the
+	// controller generates and serves as the RequeueAfter so drift is detected
+	// without an external trigger.
+	DefaultRevalidateInterval = time.Hour
 )
 
 type ModelReconciler struct {
 	client.Client
 	Scheme      *runtime.Scheme
 	StoragePath string
+	// RevalidateInterval is the minimum time between upstream revalidation
+	// checks for a Model. Zero means DefaultRevalidateInterval.
+	RevalidateInterval time.Duration
 }
 
 // +kubebuilder:rbac:groups=inference.llmkube.dev,resources=models,verbs=get;list;watch;create;update;patch;delete
@@ -112,59 +132,64 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	// parsing, the file is migrated to canonicalModelPath(modelDir, model).
 	downloadPath := filepath.Join(modelDir, legacyModelFilename)
 
-	// Early exit: if status is Ready, file exists on disk, AND it is already at
-	// the canonical filename, skip the entire reconcile. Otherwise we fall through
-	// so legacy "model.gguf" files get migrated to a metadata-derived basename.
-	if model.Status.Phase == PhaseReady && model.Status.Path != "" {
-		if _, err := os.Stat(model.Status.Path); err == nil {
-			canonical := canonicalModelPath(filepath.Dir(model.Status.Path), model)
-			if model.Status.Path == canonical {
-				logger.Info("Model already Ready and cached at canonical path, skipping reconcile", "path", model.Status.Path)
-				llmkubemetrics.ReconcileTotal.WithLabelValues("model", "success").Inc()
-				return ctrl.Result{}, nil
-			}
-			logger.Info("Model needs filename migration", "currentPath", model.Status.Path, "canonicalPath", canonical)
-		} else {
-			logger.Info("Model marked Ready but file missing, will re-download", "path", model.Status.Path)
-		}
+	// Early exit: if status is Ready and the cached file is current, skip the
+	// rest of the reconcile (a drift check may schedule a requeue). Otherwise we
+	// fall through to (re-)download or migrate the cached file.
+	if skip, result, err := r.handleReadyCachedModel(ctx, model); skip || err != nil {
+		return result, err
 	}
 
 	logger.Info("Using cache key for model", "cacheKey", cacheKey, "dir", modelDir)
 
 	if existingPath, fileInfo, ok := findCachedModelFile(modelDir); ok {
-		logger.Info("Model found in cache, skipping download", "path", existingPath, "size", fileInfo.Size())
-
-		// Parse GGUF metadata first (non-fatal) so we have the metadata-derived
-		// name available for the rename below.
-		if model.Status.GGUF == nil {
-			if ggufMeta, err := r.parseGGUFMetadata(existingPath); err != nil {
-				logger.Info("Failed to parse GGUF metadata (non-fatal)", "error", err)
-			} else {
-				model.Status.GGUF = ggufMeta
-			}
-		}
-
-		finalPath, err := r.migrateModelFilename(existingPath, modelDir, model)
+		// Cadence-gated drift check on the cached file. Under OnChange a drifted
+		// source re-downloads (overwrites); under IfNotPresent it only records
+		// the SourceDrifted condition and keeps serving the cache. Status writes
+		// here merge into the Ready update below (same in-memory object).
+		reDownload, _, err := r.handleRevalidation(ctx, model)
 		if err != nil {
-			logger.Error(err, "Failed to migrate model filename, keeping existing")
-			finalPath = existingPath
-		}
-
-		model.Status.Phase = PhaseReady
-		model.Status.Path = finalPath
-		model.Status.Size = formatBytes(fileInfo.Size())
-		model.Status.CacheKey = cacheKey
-		model.Status.AcceleratorReady = r.checkAcceleratorAvailability(ctx, model)
-		now := metav1.Now()
-		model.Status.LastUpdated = &now
-
-		if err := r.updateStatus(ctx, model, "Available", metav1.ConditionTrue, "ModelCached", "Model found in cache"); err != nil {
 			return ctrl.Result{}, err
 		}
+		if !reDownload {
+			logger.Info("Model found in cache, skipping download", "path", existingPath, "size", fileInfo.Size())
 
-		llmkubemetrics.ModelStatus.WithLabelValues(model.Name, model.Namespace, "Cached").Set(1)
-		llmkubemetrics.ReconcileTotal.WithLabelValues("model", "success").Inc()
-		return ctrl.Result{}, nil
+			// Parse GGUF metadata first (non-fatal) so we have the metadata-derived
+			// name available for the rename below.
+			if model.Status.GGUF == nil {
+				if ggufMeta, err := r.parseGGUFMetadata(existingPath); err != nil {
+					logger.Info("Failed to parse GGUF metadata (non-fatal)", "error", err)
+				} else {
+					model.Status.GGUF = ggufMeta
+				}
+			}
+
+			finalPath, err := r.migrateModelFilename(existingPath, modelDir, model)
+			if err != nil {
+				logger.Error(err, "Failed to migrate model filename, keeping existing")
+				finalPath = existingPath
+			}
+
+			model.Status.Phase = PhaseReady
+			model.Status.Path = finalPath
+			model.Status.Size = formatBytes(fileInfo.Size())
+			model.Status.CacheKey = cacheKey
+			model.Status.AcceleratorReady = r.checkAcceleratorAvailability(ctx, model)
+			now := metav1.Now()
+			model.Status.LastUpdated = &now
+
+			if err := r.updateStatus(ctx, model, "Available", metav1.ConditionTrue, "ModelCached", "Model found in cache"); err != nil {
+				return ctrl.Result{}, err
+			}
+
+			llmkubemetrics.ModelStatus.WithLabelValues(model.Name, model.Namespace, "Cached").Set(1)
+			llmkubemetrics.ReconcileTotal.WithLabelValues("model", "success").Inc()
+			return ctrl.Result{}, nil
+		}
+
+		logger.Info("Source drifted under OnChange; re-downloading over cached file", "dir", modelDir)
+		if err := r.removeCachedFiles(ctx, modelDir); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	if err := os.MkdirAll(modelDir, 0755); err != nil {
@@ -269,6 +294,11 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	now := metav1.Now()
 	model.Status.LastUpdated = &now
 
+	// Record the upstream fingerprint so the next revalidation has a baseline,
+	// and clear any SourceDrifted condition now that the cache matches upstream.
+	r.recordSourceFingerprint(ctx, model)
+	r.setSourceDrifted(model, false)
+
 	if err := r.updateStatus(ctx, model, "Available", metav1.ConditionTrue, "ModelReady", "Model downloaded and cached"); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -277,6 +307,51 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	llmkubemetrics.ReconcileTotal.WithLabelValues("model", "success").Inc()
 	logger.Info("Model ready and cached", "path", finalPath, "size", model.Status.Size, "cacheKey", cacheKey)
 	return ctrl.Result{}, nil
+}
+
+// handleReadyCachedModel handles a Model that is already Ready with a cached
+// file on disk. It returns skip=true when the reconcile can stop here (the file
+// is current); the returned result may carry a RequeueAfter scheduling the next
+// drift revalidation. It returns skip=false to let Reconcile fall through and
+// (re-)download or migrate the file: either because the file is missing, needs
+// a filename migration, or drifted under RefreshPolicy=OnChange.
+func (r *ModelReconciler) handleReadyCachedModel(
+	ctx context.Context, model *inferencev1alpha1.Model,
+) (skip bool, result ctrl.Result, err error) {
+	logger := log.FromContext(ctx)
+
+	if model.Status.Phase != PhaseReady || model.Status.Path == "" {
+		return false, ctrl.Result{}, nil
+	}
+	if _, statErr := os.Stat(model.Status.Path); statErr != nil {
+		logger.Info("Model marked Ready but file missing, will re-download", "path", model.Status.Path)
+		return false, ctrl.Result{}, nil
+	}
+
+	canonical := canonicalModelPath(filepath.Dir(model.Status.Path), model)
+	if model.Status.Path != canonical {
+		logger.Info("Model needs filename migration", "currentPath", model.Status.Path, "canonicalPath", canonical)
+		return false, ctrl.Result{}, nil
+	}
+
+	// Cadence-gated drift check. Under OnChange a drifted source re-downloads
+	// (skip=false so Reconcile falls through); under IfNotPresent it only
+	// records the SourceDrifted condition and keeps serving the cache.
+	reDownload, requeueAfter, err := r.handleRevalidation(ctx, model)
+	if err != nil {
+		return false, ctrl.Result{}, err
+	}
+	if reDownload {
+		logger.Info("Source drifted under OnChange; re-downloading over cached file", "path", model.Status.Path)
+		if rmErr := r.removeCachedFiles(ctx, filepath.Dir(model.Status.Path)); rmErr != nil {
+			return false, ctrl.Result{}, rmErr
+		}
+		return false, ctrl.Result{}, nil
+	}
+
+	logger.Info("Model already Ready and cached at canonical path, skipping reconcile", "path", model.Status.Path)
+	llmkubemetrics.ReconcileTotal.WithLabelValues("model", "success").Inc()
+	return true, ctrl.Result{RequeueAfter: requeueAfter}, nil
 }
 
 // reconcilePVCSource handles PVC-based model sources. It validates the referenced
@@ -382,15 +457,17 @@ func (r *ModelReconciler) reconcileBySourceType(
 	// controller marks the model Ready so referencing InferenceServices can
 	// proceed.
 	case isHFRepoSource(model.Spec.Source):
-		return true, ctrl.Result{}, r.reconcileRuntimeResolvedSource(ctx, model, "")
+		result, err = r.reconcileRuntimeResolvedSource(ctx, model, "")
+		return true, result, err
 
 	// Remote HTTP(S): the InferenceService Pod's init container downloads
 	// into the per-namespace cache PVC. A controller-side download writes to
 	// the operator-namespace PVC, which inference Pods cannot mount, so the
 	// fetch is deferred to the workload.
 	case isRemoteHTTPSource(model.Spec.Source):
-		return true, ctrl.Result{}, r.reconcileRuntimeResolvedSource(
+		result, err = r.reconcileRuntimeResolvedSource(
 			ctx, model, computeCacheKey(model.Spec.Source))
+		return true, result, err
 
 	// Metal-accelerated models with a local-path source live on the Metal
 	// node's own filesystem and are loaded directly by the host metal-agent.
@@ -399,20 +476,34 @@ func (r *ModelReconciler) reconcileBySourceType(
 	// of truth. A bad path then surfaces as the InferenceService failing to
 	// come up, not as a Model wedged in Copying forever.
 	case isMetalModel(model) && isLocalSource(model.Spec.Source):
-		return true, ctrl.Result{}, r.reconcileRuntimeResolvedSource(ctx, model, "")
+		result, err = r.reconcileRuntimeResolvedSource(ctx, model, "")
+		return true, result, err
 	}
 
 	return false, ctrl.Result{}, nil
 }
 
-func (r *ModelReconciler) reconcileRuntimeResolvedSource(ctx context.Context, model *inferencev1alpha1.Model, cacheKey string) error {
+func (r *ModelReconciler) reconcileRuntimeResolvedSource(ctx context.Context, model *inferencev1alpha1.Model, cacheKey string) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
-	// Early exit if already Ready
+	// Early exit if already Ready. For sources with a controller-observable
+	// fingerprint (http/https) run a cadence-gated drift check so the
+	// SourceDrifted condition stays current even though the controller itself
+	// does not fetch these (the InferenceService init container does). Re-fetch
+	// of the workload-owned copy is out of scope here; the controller only makes
+	// drift visible and requeues so it is detected without an external trigger.
 	if model.Status.Phase == PhaseReady {
+		if isRemoteHTTPSource(model.Spec.Source) {
+			if _, requeueAfter, err := r.handleRevalidation(ctx, model); err != nil {
+				return ctrl.Result{}, err
+			} else {
+				llmkubemetrics.ReconcileTotal.WithLabelValues("model", "success").Inc()
+				return ctrl.Result{RequeueAfter: requeueAfter}, nil
+			}
+		}
 		logger.Info("Runtime-resolved model already Ready, skipping reconcile")
 		llmkubemetrics.ReconcileTotal.WithLabelValues("model", "success").Inc()
-		return nil
+		return ctrl.Result{}, nil
 	}
 
 	isMetal := isMetalModel(model)
@@ -450,16 +541,16 @@ func (r *ModelReconciler) reconcileRuntimeResolvedSource(ctx context.Context, mo
 	// Progressing/Degraded conditions from an earlier copy or download
 	// attempt; clear them so a Ready model is not also reported Degraded.
 	if err := r.clearProgressConditions(ctx, model); err != nil {
-		return err
+		return ctrl.Result{}, err
 	}
 	if err := r.updateStatus(ctx, model, "Available", metav1.ConditionTrue, reason, message); err != nil {
-		return err
+		return ctrl.Result{}, err
 	}
 
 	llmkubemetrics.ModelStatus.WithLabelValues(model.Name, model.Namespace, "ready").Set(1)
 	llmkubemetrics.ReconcileTotal.WithLabelValues("model", "success").Inc()
 	logger.Info("Runtime-resolved model ready", "source", model.Spec.Source)
-	return nil
+	return ctrl.Result{}, nil
 }
 
 // verifySHA256 computes the SHA256 hash of the file and verifies it against the

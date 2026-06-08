@@ -176,6 +176,25 @@ spec:
                 description: Quantization describes the quantization level (e.g.,
                   Q4_0, Q5_K_M, F16)
                 type: string
+              refreshPolicy:
+                default: IfNotPresent
+                description: |-
+                  RefreshPolicy controls whether a cached model file is re-fetched when the
+                  upstream source changes.
+
+                  - "IfNotPresent" (default): download only if the cached file is missing.
+                    Upstream changes are still detected and surfaced via the SourceDrifted
+                    condition, but the cached file is never re-fetched on its own. This
+                    preserves the historical behavior so an operator upgrade triggers no
+                    surprise re-pulls.
+                  - "OnChange": re-download when the upstream bytes differ from what was
+                    cached (HTTP ETag/Content-Length for remote sources, file size/mtime for
+                    local sources). The re-download overwrites the file in the existing cache
+                    directory; the cache key is unchanged.
+                enum:
+                - IfNotPresent
+                - OnChange
+                type: string
               resources:
                 description: Resources defines resource requirements for running the
                   model
@@ -241,6 +260,7 @@ spec:
                   - "Available": the model is downloaded and ready for use
                   - "Progressing": the model is being downloaded or processed
                   - "Degraded": the model download or setup failed
+                  - "SourceDrifted": the upstream source bytes differ from the cached copy
 
                   The status of each condition is one of True, False, or Unknown.
                 items:
@@ -345,6 +365,13 @@ spec:
                     format: int64
                     type: integer
                 type: object
+              lastRevalidated:
+                description: |-
+                  LastRevalidated is the timestamp of the last upstream revalidation check.
+                  Revalidation is cadence-gated so the controller does not issue a HEAD on
+                  every reconcile.
+                format: date-time
+                type: string
               lastUpdated:
                 description: LastUpdated is the timestamp of the last status update
                 format: date-time
@@ -370,6 +397,20 @@ spec:
                 type: string
               size:
                 description: Size represents the size of the downloaded model file
+                type: string
+              sourceContentLength:
+                description: |-
+                  SourceContentLength is the upstream size recorded at the last revalidation.
+                  For http/https sources it is the Content-Length reported by a HEAD request;
+                  for local sources it is the file size on disk. Used together with
+                  SourceETag (or mtime for local sources) to detect upstream changes.
+                format: int64
+                type: integer
+              sourceETag:
+                description: |-
+                  SourceETag is the HTTP ETag recorded for the upstream source at the last
+                  revalidation. Used to detect upstream changes for http/https sources
+                  (HuggingFace serves the blob SHA as the ETag, so a moved branch is caught).
                 type: string
             type: object
         required:

@@ -52,6 +52,23 @@ type ModelSpec struct {
 	// +optional
 	SHA256 string `json:"sha256,omitempty"`
 
+	// RefreshPolicy controls whether a cached model file is re-fetched when the
+	// upstream source changes.
+	//
+	// - "IfNotPresent" (default): download only if the cached file is missing.
+	//   Upstream changes are still detected and surfaced via the SourceDrifted
+	//   condition, but the cached file is never re-fetched on its own. This
+	//   preserves the historical behavior so an operator upgrade triggers no
+	//   surprise re-pulls.
+	// - "OnChange": re-download when the upstream bytes differ from what was
+	//   cached (HTTP ETag/Content-Length for remote sources, file size/mtime for
+	//   local sources). The re-download overwrites the file in the existing cache
+	//   directory; the cache key is unchanged.
+	// +kubebuilder:validation:Enum=IfNotPresent;OnChange
+	// +kubebuilder:default=IfNotPresent
+	// +optional
+	RefreshPolicy string `json:"refreshPolicy,omitempty"`
+
 	// Format specifies the model file format.
 	// "gguf" is used with the llama-server runtime; "mlx" is used with the oMLX runtime;
 	// "safetensors", "pytorch", and "custom" are used with the generic runtime.
@@ -238,6 +255,25 @@ type ModelStatus struct {
 	// +optional
 	SHA256 string `json:"sha256,omitempty"`
 
+	// SourceETag is the HTTP ETag recorded for the upstream source at the last
+	// revalidation. Used to detect upstream changes for http/https sources
+	// (HuggingFace serves the blob SHA as the ETag, so a moved branch is caught).
+	// +optional
+	SourceETag string `json:"sourceETag,omitempty"`
+
+	// SourceContentLength is the upstream size recorded at the last revalidation.
+	// For http/https sources it is the Content-Length reported by a HEAD request;
+	// for local sources it is the file size on disk. Used together with
+	// SourceETag (or mtime for local sources) to detect upstream changes.
+	// +optional
+	SourceContentLength int64 `json:"sourceContentLength,omitempty"`
+
+	// LastRevalidated is the timestamp of the last upstream revalidation check.
+	// Revalidation is cadence-gated so the controller does not issue a HEAD on
+	// every reconcile.
+	// +optional
+	LastRevalidated *metav1.Time `json:"lastRevalidated,omitempty"`
+
 	// AcceleratorReady indicates if hardware acceleration is configured and ready
 	// +optional
 	AcceleratorReady bool `json:"acceleratorReady,omitempty"`
@@ -257,6 +293,7 @@ type ModelStatus struct {
 	// - "Available": the model is downloaded and ready for use
 	// - "Progressing": the model is being downloaded or processed
 	// - "Degraded": the model download or setup failed
+	// - "SourceDrifted": the upstream source bytes differ from the cached copy
 	//
 	// The status of each condition is one of True, False, or Unknown.
 	// +listType=map

@@ -610,12 +610,15 @@ var _ = Describe("Model Controller - Cache Bug Fixes", func() {
 		Expect(os.IsNotExist(err)).To(BeTrue(), "legacy model.gguf should have been renamed away")
 		lastUpdated := updated.Status.LastUpdated.DeepCopy()
 
-		// Second reconcile should return immediately without updating status
+		// Second reconcile early-exits without re-downloading or rewriting the
+		// Ready status. It now schedules a periodic revalidation requeue so
+		// upstream drift is detected without an external trigger (#619); the
+		// cadence gate is closed within the interval, so no status write occurs.
 		result, err = reconciler.Reconcile(ctx, reconcile.Request{
 			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
 		})
 		Expect(err).NotTo(HaveOccurred())
-		Expect(result).To(Equal(reconcile.Result{}))
+		Expect(result.RequeueAfter).To(BeNumerically(">", 0), "Ready models requeue for periodic revalidation (#619)")
 
 		// Verify status was NOT updated (LastUpdated unchanged)
 		afterSecond := &inferencev1alpha1.Model{}
