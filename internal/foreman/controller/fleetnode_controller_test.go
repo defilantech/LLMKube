@@ -17,6 +17,8 @@ limitations under the License.
 package controller
 
 import (
+	"time"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -27,11 +29,13 @@ import (
 	foremanv1alpha1 "github.com/defilantech/llmkube/api/foreman/v1alpha1"
 )
 
-// M0/M1 ship the FleetNodeReconciler as a logging stub. The
-// stale-heartbeat -> NotReady logic lands in M2. These smoke tests pin
-// the no-mutation contract today.
+// The FleetNodeReconciler evaluates status.lastHeartbeatTime against
+// FleetNodeHeartbeatTimeout and drives the phase: a node that stops
+// heart-beating transitions Ready -> NotReady (with a HeartbeatStale
+// condition), and a node whose heartbeat resumes returns to Ready.
+// Regression for defilantech/LLMKube#627.
 
-var _ = Describe("FleetNodeReconciler (M0 stub)", func() {
+var _ = Describe("FleetNodeReconciler heartbeat staleness", func() {
 	var reconciler *FleetNodeReconciler
 
 	BeforeEach(func() {
@@ -48,26 +52,119 @@ var _ = Describe("FleetNodeReconciler (M0 stub)", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("reconciles an existing FleetNode without mutating status (M0 stub)", func() {
+	It("transitions a Ready node with a stale heartbeat to NotReady", func() {
 		fn := &foremanv1alpha1.FleetNode{
-			ObjectMeta: metav1.ObjectMeta{Name: "stub-fleetnode"},
+			ObjectMeta: metav1.ObjectMeta{Name: "stale-node"},
 			Spec: foremanv1alpha1.FleetNodeSpec{
-				NodeName: "stub-fleetnode",
+				NodeName: "stale-node",
 				Roles:    []string{"worker"},
 			},
 		}
 		Expect(k8sClient.Create(ctx, fn)).To(Succeed())
-		DeferCleanup(func() {
-			_ = k8sClient.Delete(ctx, fn)
-		})
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, fn) })
+
+		stale := metav1.NewTime(time.Now().Add(-2 * foremanv1alpha1.FleetNodeHeartbeatTimeout))
+		fn.Status.Phase = foremanv1alpha1.FleetNodePhaseReady
+		fn.Status.LastHeartbeatTime = &stale
+		Expect(k8sClient.Status().Update(ctx, fn)).To(Succeed())
 
 		_, err := reconciler.Reconcile(ctx, ctrl.Request{
-			NamespacedName: types.NamespacedName{Name: "stub-fleetnode"},
+			NamespacedName: types.NamespacedName{Name: "stale-node"},
 		})
 		Expect(err).NotTo(HaveOccurred())
 
 		var fresh foremanv1alpha1.FleetNode
-		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "stub-fleetnode"}, &fresh)).To(Succeed())
-		Expect(string(fresh.Status.Phase)).To(BeEmpty())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "stale-node"}, &fresh)).To(Succeed())
+		Expect(fresh.Status.Phase).To(Equal(foremanv1alpha1.FleetNodePhaseNotReady))
+
+		cond := meta(fresh.Status.Conditions, "Ready")
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		Expect(cond.Reason).To(Equal("HeartbeatStale"))
+	})
+
+	It("keeps a node with a fresh heartbeat Ready", func() {
+		fn := &foremanv1alpha1.FleetNode{
+			ObjectMeta: metav1.ObjectMeta{Name: "fresh-node"},
+			Spec: foremanv1alpha1.FleetNodeSpec{
+				NodeName: "fresh-node",
+				Roles:    []string{"worker"},
+			},
+		}
+		Expect(k8sClient.Create(ctx, fn)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, fn) })
+
+		fresh := metav1.NewTime(time.Now().Add(-1 * time.Second))
+		fn.Status.Phase = foremanv1alpha1.FleetNodePhaseReady
+		fn.Status.LastHeartbeatTime = &fresh
+		Expect(k8sClient.Status().Update(ctx, fn)).To(Succeed())
+
+		_, err := reconciler.Reconcile(ctx, ctrl.Request{
+			NamespacedName: types.NamespacedName{Name: "fresh-node"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		var got foremanv1alpha1.FleetNode
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "fresh-node"}, &got)).To(Succeed())
+		Expect(got.Status.Phase).To(Equal(foremanv1alpha1.FleetNodePhaseReady))
+	})
+
+	It("returns a node whose heartbeat resumes from NotReady to Ready", func() {
+		fn := &foremanv1alpha1.FleetNode{
+			ObjectMeta: metav1.ObjectMeta{Name: "recovered-node"},
+			Spec: foremanv1alpha1.FleetNodeSpec{
+				NodeName: "recovered-node",
+				Roles:    []string{"worker"},
+			},
+		}
+		Expect(k8sClient.Create(ctx, fn)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, fn) })
+
+		fresh := metav1.NewTime(time.Now().Add(-1 * time.Second))
+		fn.Status.Phase = foremanv1alpha1.FleetNodePhaseNotReady
+		fn.Status.LastHeartbeatTime = &fresh
+		Expect(k8sClient.Status().Update(ctx, fn)).To(Succeed())
+
+		_, err := reconciler.Reconcile(ctx, ctrl.Request{
+			NamespacedName: types.NamespacedName{Name: "recovered-node"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		var got foremanv1alpha1.FleetNode
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "recovered-node"}, &got)).To(Succeed())
+		Expect(got.Status.Phase).To(Equal(foremanv1alpha1.FleetNodePhaseReady))
+	})
+
+	It("requeues after the heartbeat timeout so staleness is detected without an external trigger", func() {
+		fn := &foremanv1alpha1.FleetNode{
+			ObjectMeta: metav1.ObjectMeta{Name: "requeue-node"},
+			Spec: foremanv1alpha1.FleetNodeSpec{
+				NodeName: "requeue-node",
+				Roles:    []string{"worker"},
+			},
+		}
+		Expect(k8sClient.Create(ctx, fn)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, fn) })
+
+		fresh := metav1.NewTime(time.Now().Add(-1 * time.Second))
+		fn.Status.Phase = foremanv1alpha1.FleetNodePhaseReady
+		fn.Status.LastHeartbeatTime = &fresh
+		Expect(k8sClient.Status().Update(ctx, fn)).To(Succeed())
+
+		res, err := reconciler.Reconcile(ctx, ctrl.Request{
+			NamespacedName: types.NamespacedName{Name: "requeue-node"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.RequeueAfter).To(BeNumerically(">", time.Duration(0)))
 	})
 })
+
+// meta finds a condition by type, or nil.
+func meta(conds []metav1.Condition, condType string) *metav1.Condition {
+	for i := range conds {
+		if conds[i].Type == condType {
+			return &conds[i]
+		}
+	}
+	return nil
+}

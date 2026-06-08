@@ -18,7 +18,10 @@ package controller
 
 import (
 	"context"
+	"fmt"
+	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -28,12 +31,9 @@ import (
 )
 
 // FleetNodeReconciler watches FleetNode objects and marks them NotReady when
-// their heartbeat goes stale. On a phase transition to NotReady it triggers
-// re-queue of any AgenticTask whose status.assignedNode points at the
-// stale node and whose phase is still Scheduled or Running.
-//
-// v0.1 / M0: stub. Heartbeat-staleness sweep lands in M1 (alongside the
-// FleetAgent that writes the heartbeats in the first place).
+// their heartbeat goes stale, returning them to Ready when the heartbeat
+// resumes. The scheduler reads status.phase (and independently re-checks
+// heartbeat freshness) to decide eligibility.
 type FleetNodeReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
@@ -52,14 +52,61 @@ func (r *FleetNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	log.Info("reconciling FleetNode",
+	log.V(1).Info("reconciling FleetNode",
 		"nodeName", node.Spec.NodeName,
 		"phase", node.Status.Phase,
 		"currentTask", node.Status.CurrentTask,
 	)
 
-	// M0 stub: no-op. Heartbeat staleness check lands in M1.
-	return ctrl.Result{}, nil
+	// A node the agent is intentionally draining is the agent's domain;
+	// the scheduler already treats Draining as ineligible. Don't fight it.
+	if node.Status.Phase == foremanv1alpha1.FleetNodePhaseDraining {
+		return ctrl.Result{RequeueAfter: foremanv1alpha1.FleetNodeHeartbeatTimeout}, nil
+	}
+
+	now := time.Now()
+	stale := node.HeartbeatStale(now)
+
+	desiredPhase := foremanv1alpha1.FleetNodePhaseReady
+	cond := metav1.Condition{
+		Type:               "Ready",
+		Status:             metav1.ConditionTrue,
+		Reason:             "HeartbeatFresh",
+		Message:            "FleetAgent heartbeat is current",
+		LastTransitionTime: metav1.NewTime(now),
+	}
+	if stale {
+		desiredPhase = foremanv1alpha1.FleetNodePhaseNotReady
+		cond.Status = metav1.ConditionFalse
+		cond.Reason = "HeartbeatStale"
+		cond.Message = fmt.Sprintf("no heartbeat within %s", foremanv1alpha1.FleetNodeHeartbeatTimeout)
+	}
+
+	if node.Status.Phase != desiredPhase || !hasCondition(node.Status.Conditions, cond) {
+		patch := client.MergeFrom(node.DeepCopy())
+		node.Status.Phase = desiredPhase
+		setCondition(&node.Status.Conditions, cond)
+		if err := r.Status().Patch(ctx, &node, patch); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	// Requeue so a node that goes stale between heartbeats is detected
+	// without waiting for an external event.
+	return ctrl.Result{RequeueAfter: foremanv1alpha1.FleetNodeHeartbeatTimeout}, nil
+}
+
+// hasCondition reports whether conds already holds a condition matching c
+// on the fields the reconciler manages (type, status, reason). Lets us skip
+// a no-op status patch when nothing meaningful changed, avoiding a churn of
+// LastTransitionTime-only updates.
+func hasCondition(conds []metav1.Condition, c metav1.Condition) bool {
+	for i := range conds {
+		if conds[i].Type == c.Type {
+			return conds[i].Status == c.Status && conds[i].Reason == c.Reason
+		}
+	}
+	return false
 }
 
 // SetupWithManager wires the reconciler into the controller-runtime manager.

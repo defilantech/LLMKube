@@ -257,9 +257,10 @@ func (r *AgenticTaskReconciler) firstFitNode(ctx context.Context, required forem
 	sort.Slice(nodes.Items, func(i, j int) bool {
 		return nodes.Items[i].Name < nodes.Items[j].Name
 	})
+	now := time.Now()
 	for i := range nodes.Items {
 		n := &nodes.Items[i]
-		if n.Status.Phase != foremanv1alpha1.FleetNodePhaseReady {
+		if !nodeSchedulable(n, now) {
 			continue
 		}
 		if n.Status.CurrentTask != "" {
@@ -271,6 +272,19 @@ func (r *AgenticTaskReconciler) firstFitNode(ctx context.Context, required forem
 		return n.Name, nil
 	}
 	return "", nil
+}
+
+// nodeSchedulable reports whether the scheduler may dispatch to a node. It
+// must read Phase=Ready AND have a fresh heartbeat: the FleetNodeReconciler
+// flips a dead node to NotReady, but that is level-triggered and may lag a
+// heartbeat. Re-checking staleness here (defense-in-depth) prevents
+// dispatching a task into a node whose agent has gone dark but whose phase
+// has not yet been reconciled. See defilantech/LLMKube#627.
+func nodeSchedulable(n *foremanv1alpha1.FleetNode, now time.Time) bool {
+	if n.Status.Phase != foremanv1alpha1.FleetNodePhaseReady {
+		return false
+	}
+	return !n.HeartbeatStale(now)
 }
 
 // capabilitySatisfies returns true when the node's advertised capability
