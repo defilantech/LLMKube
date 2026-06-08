@@ -338,6 +338,17 @@ func (w *AgenticTaskWatcher) patchTerminal(
 	// in {GO, GATE-PASS}); set on Phase=Succeeded + non-success
 	// Verdict (NO-GO, GATE-FAIL, INCOMPLETE).
 	fresh.Status.FailureReason = res.FailureReason
+	// #624: lift the produced branch + head commit out of the Result
+	// envelope onto status so downstream consumers (verify/gate auto-spawn)
+	// can key off them. Both executors stash these in Result.Extra: the
+	// in-process path (goResult) and the Job-mode path (coderJobResultToResult)
+	// set "branch"/"commitSHA" on a GO and "intendedBranch" on a non-GO, so we
+	// coalesce them the same way runTaskResultFromResult does. Before this the
+	// fields stayed empty even though the branch was pushed.
+	if res.Extra != nil {
+		fresh.Status.Branch = firstStringField(res.Extra, "branch", "intendedBranch")
+		fresh.Status.CommitSHA = stringField(res.Extra, "commitSHA")
+	}
 	raw, err := json.Marshal(res)
 	if err != nil {
 		return fmt.Errorf("marshal result: %w", err)
