@@ -303,7 +303,7 @@ var _ = Describe("ensureModelCachePVC", func() {
 
 var _ = Describe("buildModelInitCommand", func() {
 	It("should generate cached remote download command with env var references", func() {
-		cmd := buildModelInitCommand(false, true)
+		cmd := buildModelInitCommand(false, true, RefreshPolicyIfNotPresent)
 		Expect(cmd).To(ContainSubstring(`mkdir -p "$CACHE_DIR"`))
 		Expect(cmd).To(ContainSubstring(`"$MODEL_PATH"`))
 		Expect(cmd).To(ContainSubstring("curl -f -L"))
@@ -311,20 +311,20 @@ var _ = Describe("buildModelInitCommand", func() {
 	})
 
 	It("should generate cached local copy command", func() {
-		cmd := buildModelInitCommand(true, true)
+		cmd := buildModelInitCommand(true, true, RefreshPolicyIfNotPresent)
 		Expect(cmd).To(ContainSubstring(`mkdir -p "$CACHE_DIR"`))
 		Expect(cmd).To(ContainSubstring("cp /host-model/model.gguf"))
 		Expect(cmd).To(ContainSubstring(`"$MODEL_PATH"`))
 	})
 
 	It("should generate error exit for uncached local source", func() {
-		cmd := buildModelInitCommand(true, false)
+		cmd := buildModelInitCommand(true, false, RefreshPolicyIfNotPresent)
 		Expect(cmd).To(ContainSubstring("ERROR: Local model source requires model cache"))
 		Expect(cmd).To(ContainSubstring("exit 1"))
 	})
 
 	It("should generate uncached remote download command with env var references", func() {
-		cmd := buildModelInitCommand(false, false)
+		cmd := buildModelInitCommand(false, false, RefreshPolicyIfNotPresent)
 		Expect(cmd).To(ContainSubstring("curl -f -L"))
 		Expect(cmd).To(ContainSubstring(`"$MODEL_SOURCE"`))
 		Expect(cmd).To(ContainSubstring(`"$MODEL_PATH"`))
@@ -335,7 +335,7 @@ var _ = Describe("buildModelInitCommand", func() {
 		// Verify that a malicious source cannot appear in the shell script.
 		// The command is a static template with env var references only.
 		maliciousSource := `https://evil.com/$(touch /pwned).gguf`
-		cmd := buildModelInitCommand(false, true)
+		cmd := buildModelInitCommand(false, true, RefreshPolicyIfNotPresent)
 		Expect(cmd).NotTo(ContainSubstring(maliciousSource))
 		Expect(cmd).NotTo(ContainSubstring("touch"))
 		Expect(cmd).NotTo(ContainSubstring("evil.com"))
@@ -344,6 +344,85 @@ var _ = Describe("buildModelInitCommand", func() {
 		env := modelInitEnvVars(maliciousSource, "/models/abc123", "/models/abc123/model.gguf")
 		Expect(env[0].Name).To(Equal("MODEL_SOURCE"))
 		Expect(env[0].Value).To(Equal(maliciousSource))
+	})
+
+	Context("RefreshPolicy=OnChange (http/https revalidation, issue #619)", func() {
+		It("cached: emits curl conditional GET against an etag marker beside the model", func() {
+			cmd := buildModelInitCommand(false, true, RefreshPolicyOnChange)
+			// Still provisions the cache dir like IfNotPresent.
+			Expect(cmd).To(ContainSubstring(`mkdir -p "$CACHE_DIR"`))
+			// Conditional GET via curl's native ETag flags.
+			Expect(cmd).To(ContainSubstring("--etag-compare"))
+			Expect(cmd).To(ContainSubstring("--etag-save"))
+			// Marker is a dotfile sibling derived from the model path.
+			Expect(cmd).To(ContainSubstring(`.etag`))
+			Expect(cmd).To(ContainSubstring(`"$MODEL_PATH"`))
+			Expect(cmd).To(ContainSubstring(`"$MODEL_SOURCE"`))
+			// It is NOT the existence-only path.
+			Expect(cmd).NotTo(ContainSubstring("skipping download"))
+		})
+
+		It("uncached: emits the same conditional GET without the cache dir mkdir", func() {
+			cmd := buildModelInitCommand(false, false, RefreshPolicyOnChange)
+			Expect(cmd).To(ContainSubstring("--etag-compare"))
+			Expect(cmd).To(ContainSubstring("--etag-save"))
+			Expect(cmd).To(ContainSubstring(`"$MODEL_SOURCE"`))
+			Expect(cmd).NotTo(ContainSubstring("mkdir -p"))
+			Expect(cmd).NotTo(ContainSubstring("skipping download"))
+		})
+
+		It("keeps the cached file and exits 0 when revalidation is unreachable", func() {
+			cmd := buildModelInitCommand(false, true, RefreshPolicyOnChange)
+			// Robustness guard: a network blip must not take down a running
+			// InferenceService on pod restart.
+			Expect(cmd).To(ContainSubstring(`[ -f "$MODEL_PATH" ]`))
+			Expect(cmd).To(ContainSubstring("exit 0"))
+			Expect(cmd).To(ContainSubstring("kept cached copy"))
+			// A genuinely-missing file still fails the init container.
+			Expect(cmd).To(ContainSubstring("exit 1"))
+		})
+
+		It("does not change the local (file://) init path", func() {
+			// file:// sources are owned by the controller (#635); the init
+			// container path must be identical regardless of RefreshPolicy.
+			ifNotPresent := buildModelInitCommand(true, true, RefreshPolicyIfNotPresent)
+			onChange := buildModelInitCommand(true, true, RefreshPolicyOnChange)
+			Expect(onChange).To(Equal(ifNotPresent))
+			Expect(onChange).NotTo(ContainSubstring("--etag-compare"))
+		})
+
+		It("does not contain user-controlled values in the OnChange command string", func() {
+			cmd := buildModelInitCommand(false, true, RefreshPolicyOnChange)
+			Expect(cmd).NotTo(ContainSubstring("evil.com"))
+			Expect(cmd).NotTo(ContainSubstring("touch"))
+		})
+	})
+})
+
+var _ = Describe("buildCachedStorageConfig RefreshPolicy plumbing", func() {
+	It("threads Model.Spec.RefreshPolicy=OnChange into the init command", func() {
+		model := &inferencev1alpha1.Model{
+			Spec: inferencev1alpha1.ModelSpec{
+				Source:        "https://example.com/model.gguf",
+				RefreshPolicy: RefreshPolicyOnChange,
+			},
+			Status: inferencev1alpha1.ModelStatus{CacheKey: "abc123def456"},
+		}
+		config := buildCachedStorageConfig(model, nil, "", "curl:8.18.0")
+		cmd := config.initContainers[0].Command[2]
+		Expect(cmd).To(ContainSubstring("--etag-compare"))
+		Expect(cmd).To(ContainSubstring("kept cached copy"))
+	})
+
+	It("keeps existence-only behavior when RefreshPolicy is unset (IfNotPresent default)", func() {
+		model := &inferencev1alpha1.Model{
+			Spec:   inferencev1alpha1.ModelSpec{Source: "https://example.com/model.gguf"},
+			Status: inferencev1alpha1.ModelStatus{CacheKey: "abc123def456"},
+		}
+		config := buildCachedStorageConfig(model, nil, "", "curl:8.18.0")
+		cmd := config.initContainers[0].Command[2]
+		Expect(cmd).NotTo(ContainSubstring("--etag-compare"))
+		Expect(cmd).To(ContainSubstring("skipping download"))
 	})
 })
 

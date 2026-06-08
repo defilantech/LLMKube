@@ -44,10 +44,13 @@ func isLocalModelSource(source string) bool {
 	return isLocalSource(source)
 }
 
-func buildModelInitCommand(isLocal, useCache bool) string {
+func buildModelInitCommand(isLocal, useCache bool, refreshPolicy string) string {
 	if useCache {
 		if isLocal {
 			return `mkdir -p "$CACHE_DIR" && if [ ! -f "$MODEL_PATH" ]; then echo 'Copying model from local source...'; cp /host-model/model.gguf "$MODEL_PATH" && echo 'Model copied successfully'; else echo 'Model already cached, skipping copy'; fi`
+		}
+		if refreshPolicy == RefreshPolicyOnChange {
+			return "mkdir -p \"$CACHE_DIR\" && " + remoteRevalidateScript
 		}
 		return `mkdir -p "$CACHE_DIR" && if [ ! -f "$MODEL_PATH" ]; then echo 'Downloading model...'; curl -f -L -o "$MODEL_PATH" "$MODEL_SOURCE" && echo 'Model downloaded successfully'; else echo 'Model already cached, skipping download'; fi`
 	}
@@ -55,8 +58,37 @@ func buildModelInitCommand(isLocal, useCache bool) string {
 	if isLocal {
 		return `echo 'ERROR: Local model source requires model cache to be configured.'; exit 1`
 	}
+	if refreshPolicy == RefreshPolicyOnChange {
+		return remoteRevalidateScript
+	}
 	return `if [ ! -f "$MODEL_PATH" ]; then echo 'Downloading model...'; curl -f -L -o "$MODEL_PATH" "$MODEL_SOURCE" && echo 'Model downloaded successfully'; else echo 'Model already exists, skipping download'; fi`
 }
+
+// remoteRevalidateScript implements RefreshPolicy=OnChange for http/https
+// sources fetched by the init container. It uses curl's native conditional
+// GET (--etag-compare / --etag-save) against a marker file kept next to the
+// model on the PVC: on a 304 curl leaves the cached file untouched, on a 200
+// (ETag changed) it overwrites in place. The cache layout is unchanged; the
+// marker is a dotfile sibling of the model file.
+//
+// Robustness: the init container gates pod startup, so a transient network
+// failure (air-gapped, upstream 5xx, DNS) must not take down an
+// InferenceService on pod restart. If revalidation fails but a cached copy
+// already exists, the script logs and exits 0, keeping the cached file. Only a
+// genuinely-missing file (nothing cached and the fetch failed) fails the init
+// container.
+//
+// curlimages/curl 8.x supports --etag-compare/--etag-save (added in curl
+// 7.68.0), so no HEAD-compare fallback is needed for the default image.
+const remoteRevalidateScript = `ETAG_MARKER="$(dirname "$MODEL_PATH")/.$(basename "$MODEL_PATH").etag"; ` +
+	`echo 'Revalidating model against upstream (RefreshPolicy=OnChange)...'; ` +
+	`if curl -fsSL --etag-compare "$ETAG_MARKER" --etag-save "$ETAG_MARKER" -o "$MODEL_PATH" "$MODEL_SOURCE"; then ` +
+	`echo 'Model revalidated (downloaded or unchanged)'; ` +
+	`elif [ -f "$MODEL_PATH" ]; then ` +
+	`echo 'Revalidation unreachable; kept cached copy'; exit 0; ` +
+	`else ` +
+	`echo 'ERROR: model missing and revalidation failed'; exit 1; ` +
+	`fi`
 
 func modelInitEnvVars(source, cacheDir, modelPath string) []corev1.EnvVar {
 	return []corev1.EnvVar{
@@ -157,7 +189,7 @@ func buildCachedStorageConfig(model *inferencev1alpha1.Model, isvc *inferencev1a
 		})
 	}
 
-	cmd := buildModelInitCommand(isLocalModelSource(model.Spec.Source), true)
+	cmd := buildModelInitCommand(isLocalModelSource(model.Spec.Source), true, model.Spec.RefreshPolicy)
 	env := modelInitEnvVars(model.Spec.Source, cacheDir, modelPath)
 	if caCertConfigMap != "" {
 		volumes = append(volumes, corev1.Volume{
@@ -205,7 +237,7 @@ func buildEmptyDirStorageConfig(model *inferencev1alpha1.Model, isvc *inferencev
 		},
 	}
 
-	cmd := buildModelInitCommand(isLocalModelSource(model.Spec.Source), false)
+	cmd := buildModelInitCommand(isLocalModelSource(model.Spec.Source), false, model.Spec.RefreshPolicy)
 	env := modelInitEnvVars(model.Spec.Source, "", modelPath)
 	if caCertConfigMap != "" {
 		volumes = append(volumes, corev1.Volume{
