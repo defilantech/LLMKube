@@ -17,8 +17,15 @@ limitations under the License.
 package controller
 
 import (
+	"context"
 	"fmt"
 	"strings"
+
+	corev1 "k8s.io/api/core/v1"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	foremanv1alpha1 "github.com/defilantech/llmkube/api/foreman/v1alpha1"
 )
@@ -95,4 +102,148 @@ func escalationSteps(
 		escalated = append(escalated, n)
 	}
 	return steps, escalated
+}
+
+// emitEscalations is the second-pass emission hook (#546): called from
+// Reconcile's children-exist branch before rollup. Synthesizes the due
+// escalate-<N>-<j> steps, applies MaxTasks accounting and the
+// sovereignty gates, creates the tasks, and patches status (Tasks list
+// + EscalationTriggered + CloudReviewersSuppressed / Truncated as
+// applicable). Returns the refreshed children slice so rollup counts
+// the new tasks as in-flight; on a no-op it returns the input slice.
+func (r *WorkloadReconciler) emitEscalations(
+	ctx context.Context, w *foremanv1alpha1.Workload, children []foremanv1alpha1.AgenticTask,
+) ([]foremanv1alpha1.AgenticTask, error) {
+	log := logf.FromContext(ctx).WithName("workload").WithValues("workload", client.ObjectKeyFromObject(w))
+
+	if len(w.Spec.Pipeline) > 0 {
+		// Explicit Pipeline mode: the user authors their own DAG, and
+		// user-authored step names could false-match the review-<N>-*
+		// prefixes escalationSteps scans. Escalation is an issue-batch
+		// feature (see the field's CRD doc).
+		return children, nil
+	}
+
+	if len(w.Spec.EscalationReviewerAgentRefs) > 0 && len(w.Spec.ReviewerAgentRefs) == 0 {
+		// There is no base tier to escalate from; surface the
+		// misconfiguration once and continue as a no-reviewer batch.
+		if cond := apimeta.FindStatusCondition(w.Status.Conditions, conditionTypeEscalationTriggered); cond != nil &&
+			cond.Status == metav1.ConditionFalse && cond.Reason == "NoBaseReviewers" {
+			return children, nil
+		}
+		patch := client.MergeFrom(w.DeepCopy())
+		setCondition(&w.Status.Conditions, metav1.Condition{
+			Type:               conditionTypeEscalationTriggered,
+			Status:             metav1.ConditionFalse,
+			Reason:             "NoBaseReviewers",
+			Message:            "spec.escalationReviewerAgentRefs is set but spec.reviewerAgentRefs is empty; there is no base reviewer tier to escalate from",
+			LastTransitionTime: metav1.Now(),
+		})
+		if err := r.Status().Patch(ctx, w, patch); err != nil {
+			return children, fmt.Errorf("patch NoBaseReviewers condition: %w", err)
+		}
+		return children, nil
+	}
+
+	steps, escalated := escalationSteps(w, children)
+	if len(steps) == 0 {
+		return children, nil
+	}
+
+	patch := client.MergeFrom(w.DeepCopy())
+	now := metav1.Now()
+
+	if w.Spec.MaxTasks > 0 && len(children)+len(steps) > int(w.Spec.MaxTasks) {
+		// No silent cap: report why the escalation tier did not run.
+		setCondition(&w.Status.Conditions, metav1.Condition{
+			Type:               conditionTypeTruncated,
+			Status:             metav1.ConditionTrue,
+			Reason:             "MaxTasksEscalationCap",
+			Message:            fmt.Sprintf("MaxTasks=%d leaves no room for %d escalation task(s)", w.Spec.MaxTasks, len(steps)),
+			LastTransitionTime: now,
+		})
+		if err := r.Status().Patch(ctx, w, patch); err != nil {
+			return children, fmt.Errorf("patch escalation truncation condition: %w", err)
+		}
+		return children, nil
+	}
+
+	steps, suppressed, err := r.filterCloudProviders(ctx, w, steps)
+	if err != nil {
+		return children, fmt.Errorf("filter escalation providers: %w", err)
+	}
+
+	created, createErr := r.renderAndCreate(ctx, w, steps)
+	if createErr != nil {
+		log.Error(createErr, "creating escalation AgenticTasks failed mid-way", "createdSoFar", len(created))
+	}
+
+	msg := fmt.Sprintf("issues %s escalated after base reviewer NO-GO (%d task(s) created, %d suppressed)",
+		joinInt32(escalated), len(created), len(suppressed))
+
+	// Steady-state short-circuit: when nothing was created (e.g. every
+	// escalation ref is cloud-suppressed) and the condition already
+	// says exactly this, re-patching every rollup would only churn
+	// LastTransitionTime. escalationSteps re-proposes these steps on
+	// every reconcile because no escalate child ever exists.
+	if len(created) == 0 && createErr == nil {
+		if cond := apimeta.FindStatusCondition(w.Status.Conditions, conditionTypeEscalationTriggered); cond != nil &&
+			cond.Status == metav1.ConditionTrue && cond.Message == msg {
+			return children, nil
+		}
+	}
+
+	w.Status.Tasks = appendNewTaskRefs(w.Status.Tasks, created)
+	setCondition(&w.Status.Conditions, metav1.Condition{
+		Type:               conditionTypeEscalationTriggered,
+		Status:             metav1.ConditionTrue,
+		Reason:             "BaseReviewerNoGo",
+		Message:            msg,
+		LastTransitionTime: now,
+	})
+	if len(suppressed) > 0 {
+		setCondition(&w.Status.Conditions, metav1.Condition{
+			Type:               conditionTypeCloudReviewersSuppressed,
+			Status:             metav1.ConditionTrue,
+			Reason:             "SovereigntyGate",
+			Message:            fmt.Sprintf("skipped %d cloud-provider Agent(s): %s", len(suppressed), strings.Join(suppressed, "; ")),
+			LastTransitionTime: now,
+		})
+	}
+	if err := r.Status().Patch(ctx, w, patch); err != nil {
+		return children, fmt.Errorf("patch workload status after escalation emission: %w", err)
+	}
+	if createErr != nil {
+		return children, createErr
+	}
+
+	// Refresh so rollup sees the new tasks as in-flight in this same
+	// reconcile instead of waiting for the next watch event.
+	return r.listChildren(ctx, w)
+}
+
+// joinInt32 renders issue numbers as "641, 643" for condition messages.
+func joinInt32(ns []int32) string {
+	parts := make([]string, len(ns))
+	for i, n := range ns {
+		parts[i] = fmt.Sprintf("%d", n)
+	}
+	return strings.Join(parts, ", ")
+}
+
+// appendNewTaskRefs appends only refs not already present by name, so
+// a reconcile echo against a stale AgenticTask cache cannot duplicate
+// Status.Tasks bookkeeping (the tasks themselves are AlreadyExists-
+// deduped by renderAndCreate).
+func appendNewTaskRefs(existing, created []corev1.ObjectReference) []corev1.ObjectReference {
+	seen := make(map[string]struct{}, len(existing))
+	for _, ref := range existing {
+		seen[ref.Name] = struct{}{}
+	}
+	for _, ref := range created {
+		if _, dup := seen[ref.Name]; !dup {
+			existing = append(existing, ref)
+		}
+	}
+	return existing
 }

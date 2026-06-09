@@ -95,6 +95,13 @@ const conditionTypeCompleted = "Completed"
 // blocked each.
 const conditionTypeCloudReviewersSuppressed = "CloudReviewersSuppressed"
 
+// conditionTypeEscalationTriggered reports that at least one issue's
+// base reviewers all went terminal with a NO-GO among them, so the
+// escalation reviewer tier was emitted (#546). False with reason
+// NoBaseReviewers flags a spec that lists escalation reviewers
+// without any base reviewers to escalate from.
+const conditionTypeEscalationTriggered = "EscalationTriggered"
+
 // +kubebuilder:rbac:groups=foreman.llmkube.dev,resources=workloads,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=foreman.llmkube.dev,resources=workloads/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=foreman.llmkube.dev,resources=workloads/finalizers,verbs=update
@@ -119,6 +126,12 @@ func (r *WorkloadReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	if len(children) > 0 {
+		// Second-pass emission (#546): escalation reviewers fire here,
+		// after base reviewer verdicts land, before status rollup.
+		children, err = r.emitEscalations(ctx, &workload, children)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("emit escalations: %w", err)
+		}
 		// Roll up child phases into the Workload's status.
 		return r.rollup(ctx, &workload, children)
 	}

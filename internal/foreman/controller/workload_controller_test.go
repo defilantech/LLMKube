@@ -591,6 +591,103 @@ var _ = Describe("WorkloadReconciler (M6 stub planner)", func() {
 		Expect(reviewerBlocksCompleted).NotTo(BeNil())
 		Expect(reviewerBlocksCompleted.Reason).To(Equal("ChildrenIncomplete"))
 	})
+
+	It("emits escalation reviewers only after a base reviewer NO-GO, advisory verdict (#546)", func() {
+		wl := newWorkload("escalation-happy", foremanv1alpha1.WorkloadSpec{
+			Intent:           "escalate on base NO-GO",
+			Repo:             "defilantech/LLMKube",
+			Issues:           []int32{641},
+			CoderAgentRef:    &corev1.LocalObjectReference{Name: "coder"},
+			VerifierAgentRef: &corev1.LocalObjectReference{Name: "gate"},
+			ReviewerAgentRefs: []corev1.LocalObjectReference{
+				{Name: "base-reviewer"},
+			},
+			EscalationReviewerAgentRefs: []corev1.LocalObjectReference{
+				{Name: "big-reviewer"},
+			},
+		})
+		Expect(k8sClient.Create(ctx, wl)).To(Succeed())
+		DeferCleanup(func() {
+			cleanupChildren(wl)
+			_ = k8sClient.Delete(ctx, wl)
+		})
+
+		// First reconcile plans the base pipeline only: no escalate task.
+		_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(wl)})
+		Expect(err).NotTo(HaveOccurred())
+		var fresh foremanv1alpha1.Workload
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(wl), &fresh)).To(Succeed())
+		Expect(fresh.Status.Tasks).To(HaveLen(3)) // code + verify + review
+
+		// Drive the base pipeline to a reviewer NO-GO.
+		updates := []struct {
+			name    string
+			phase   foremanv1alpha1.AgenticTaskPhase
+			verdict foremanv1alpha1.AgenticTaskVerdict
+		}{
+			{"escalation-happy-code-641", foremanv1alpha1.AgenticTaskPhaseSucceeded, foremanv1alpha1.AgenticTaskVerdictGo},
+			{"escalation-happy-verify-641", foremanv1alpha1.AgenticTaskPhaseSucceeded, foremanv1alpha1.AgenticTaskVerdictGatePass},
+			{"escalation-happy-review-641-0", foremanv1alpha1.AgenticTaskPhaseSucceeded, foremanv1alpha1.AgenticTaskVerdictNoGo},
+		}
+		for _, u := range updates {
+			var task foremanv1alpha1.AgenticTask
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: u.name}, &task)).To(Succeed())
+			patch := client.MergeFrom(task.DeepCopy())
+			task.Status.Phase = u.phase
+			task.Status.Verdict = u.verdict
+			Expect(k8sClient.Status().Patch(ctx, &task, patch)).To(Succeed())
+		}
+
+		// Second reconcile (the rollup pass) must emit the escalation
+		// task and keep the Workload in flight while it runs.
+		_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(wl)})
+		Expect(err).NotTo(HaveOccurred())
+
+		var esc foremanv1alpha1.AgenticTask
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: "escalation-happy-escalate-641-0"}, &esc)).To(Succeed())
+		Expect(esc.Spec.Kind).To(Equal(foremanv1alpha1.AgenticTaskKindReview))
+		Expect(esc.Spec.AgentRef.Name).To(Equal("big-reviewer"))
+		Expect(esc.Spec.Payload.Issue).To(Equal(int32(641)))
+		Expect(esc.Spec.Payload.Branch).To(Equal("foreman/escalation-happy/issue-641"))
+		Expect(esc.Spec.DependsOn).To(BeEmpty())
+		Expect(esc.Labels[labelStep]).To(Equal("escalate-641-0"))
+		Expect(esc.OwnerReferences).To(HaveLen(1))
+		Expect(esc.OwnerReferences[0].Name).To(Equal("escalation-happy"))
+
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(wl), &fresh)).To(Succeed())
+		Expect(fresh.Status.Phase).To(Equal(foremanv1alpha1.WorkloadPhaseDispatched),
+			"workload must stay in flight while the escalation reviewer runs")
+		Expect(fresh.Status.Tasks).To(HaveLen(4))
+		escCond := findCondition(fresh.Status.Conditions, conditionTypeEscalationTriggered)
+		Expect(escCond).NotTo(BeNil())
+		Expect(escCond.Status).To(Equal(metav1.ConditionTrue))
+		Expect(escCond.Message).To(ContainSubstring("641"))
+
+		// A third reconcile must NOT double-emit (idempotency).
+		_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(wl)})
+		Expect(err).NotTo(HaveOccurred())
+		var tasks foremanv1alpha1.AgenticTaskList
+		Expect(k8sClient.List(ctx, &tasks, client.InNamespace("default"),
+			client.MatchingLabels{labelWorkload: "escalation-happy"})).To(Succeed())
+		Expect(tasks.Items).To(HaveLen(4))
+
+		// Escalation GO is advisory in v0.2: the base NO-GO still rolls
+		// the Workload to Failed for human review.
+		var escTask foremanv1alpha1.AgenticTask
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: "escalation-happy-escalate-641-0"}, &escTask)).To(Succeed())
+		patch := client.MergeFrom(escTask.DeepCopy())
+		escTask.Status.Phase = foremanv1alpha1.AgenticTaskPhaseSucceeded
+		escTask.Status.Verdict = foremanv1alpha1.AgenticTaskVerdictGo
+		Expect(k8sClient.Status().Patch(ctx, &escTask, patch)).To(Succeed())
+
+		_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(wl)})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(wl), &fresh)).To(Succeed())
+		Expect(fresh.Status.Phase).To(Equal(foremanv1alpha1.WorkloadPhaseFailed),
+			"advisory: escalation GO does not clear the base NO-GO in v0.2")
+		Expect(fresh.Status.SucceededTasks).To(Equal(int32(3)))  // code, verify, escalate
+		Expect(fresh.Status.IncompleteTasks).To(Equal(int32(1))) // base reviewer NO-GO
+	})
 })
 
 // newWorkload builds a Workload with the test-conventional shape. Lets the
