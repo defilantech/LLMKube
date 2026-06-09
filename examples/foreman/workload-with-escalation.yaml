@@ -14,10 +14,10 @@
 # cloud-proxy Agent is allowed here but stays behind both sovereignty
 # gates (operator --allow-cloud-providers AND spec.allowCloudReviewers).
 #
-# Verdicts are advisory in v0.2: the escalation verdict is recorded on
-# its AgenticTask and surfaced via the EscalationTriggered condition,
-# but the base NO-GO still rolls the Workload to Failed so a human
-# reviews both verdicts side by side:
+# Verdicts are advisory in v0.2: the EscalationTriggered condition
+# records that the tier fired, the verdict itself lives on the
+# escalation AgenticTask, and the base NO-GO still rolls the Workload
+# to Failed so a human reviews both verdicts side by side:
 #
 #   kubectl get agentictasks -l foreman.llmkube.dev/workload=batch-escalation
 apiVersion: foreman.llmkube.dev/v1alpha1

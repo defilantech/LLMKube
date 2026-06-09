@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"context"
 	"fmt"
 	"testing"
 
@@ -115,6 +116,16 @@ func TestEscalationSteps(t *testing.T) {
 				child("review-641-0", succeeded, noGo),
 				child("escalate-641-0", running, ""),
 			},
+		},
+		{
+			name: "partial create failure repaired: only the missing escalation step is re-emitted",
+			w:    escalationWorkload([]int32{641}, 1, 2),
+			children: []foremanv1alpha1.AgenticTask{
+				child("review-641-0", succeeded, noGo),
+				child("escalate-641-0", running, ""),
+			},
+			wantSteps:     []string{"escalate-641-1"},
+			wantEscalated: []int32{641},
 		},
 		{
 			name: "cascade INCOMPLETE after GATE-FAIL does not escalate",
@@ -221,5 +232,29 @@ func TestEscalationSteps(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The explicit-Pipeline guard returns before any client call, so a
+// zero-value reconciler suffices: user-authored pipeline step names
+// (here review-9-0) must never trigger escalation.
+func TestEmitEscalationsSkipsPipelineMode(t *testing.T) {
+	r := &WorkloadReconciler{}
+	w := escalationWorkload([]int32{9}, 1, 1)
+	w.Spec.Pipeline = []foremanv1alpha1.PipelineStep{{
+		Name:     "review-9-0",
+		Kind:     foremanv1alpha1.AgenticTaskKindReview,
+		AgentRef: corev1.LocalObjectReference{Name: "user-authored"},
+	}}
+	children := []foremanv1alpha1.AgenticTask{
+		child("review-9-0", foremanv1alpha1.AgenticTaskPhaseSucceeded, foremanv1alpha1.AgenticTaskVerdictNoGo),
+	}
+
+	got, err := r.emitEscalations(context.Background(), w, children)
+	if err != nil {
+		t.Fatalf("emitEscalations: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "wl-review-9-0" {
+		t.Fatalf("children mutated: %v", got)
 	}
 }

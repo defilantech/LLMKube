@@ -38,10 +38,12 @@ import (
 // Failed) AND at least one carries verdict=NO-GO. A cascade
 // INCOMPLETE after GATE-FAIL/GATE-ERROR (#548) is terminal but is
 // not a NO-GO, so a branch the gate already rejected never burns
-// escalation compute. Any existing escalate-<N>-* child suppresses
-// re-emission, which makes the rollup-driven call sites idempotent;
-// it also means an escalation reviewer's own NO-GO can never trigger
-// another round (the tier is exactly two levels deep).
+// escalation compute. Steps whose escalate-<N>-<j> child already
+// exists are skipped individually, so a partial create failure is
+// repaired on the next reconcile instead of stranding the missing
+// reviewers. Because the trigger only scans review-<N>-* children,
+// an escalation reviewer's own NO-GO can never trigger another round
+// (the tier is exactly two levels deep).
 //
 // Pure function: no API calls, no status writes. The caller owns
 // MaxTasks accounting, sovereignty filtering, and creation.
@@ -63,12 +65,13 @@ func escalationSteps(
 		basePrefix := fmt.Sprintf("review-%d-", n)
 		escPrefix := fmt.Sprintf("escalate-%d-", n)
 
-		var baseTotal, baseTerminal, baseNoGo, escExisting int
+		var baseTotal, baseTerminal, baseNoGo int
+		existingEsc := map[string]struct{}{}
 		for i := range children {
 			step := children[i].Labels[labelStep]
 			switch {
 			case strings.HasPrefix(step, escPrefix):
-				escExisting++
+				existingEsc[step] = struct{}{}
 			case strings.HasPrefix(step, basePrefix):
 				baseTotal++
 				phase := children[i].Status.Phase
@@ -82,14 +85,19 @@ func escalationSteps(
 			}
 		}
 
-		if escExisting > 0 || baseTotal == 0 || baseTerminal < baseTotal || baseNoGo == 0 {
+		if baseTotal == 0 || baseTerminal < baseTotal || baseNoGo == 0 {
 			continue
 		}
 
 		branch := fmt.Sprintf("foreman/%s/issue-%d", w.Name, n)
+		issueEscalated := false
 		for j, ref := range w.Spec.EscalationReviewerAgentRefs {
+			name := fmt.Sprintf("escalate-%d-%d", n, j)
+			if _, exists := existingEsc[name]; exists {
+				continue
+			}
 			steps = append(steps, foremanv1alpha1.PipelineStep{
-				Name:     fmt.Sprintf("escalate-%d-%d", n, j),
+				Name:     name,
 				Kind:     foremanv1alpha1.AgenticTaskKindReview,
 				AgentRef: ref,
 				Payload: foremanv1alpha1.AgenticTaskPayload{
@@ -98,8 +106,11 @@ func escalationSteps(
 					Branch: branch,
 				},
 			})
+			issueEscalated = true
 		}
-		escalated = append(escalated, n)
+		if issueEscalated {
+			escalated = append(escalated, n)
+		}
 	}
 	return steps, escalated
 }
@@ -217,9 +228,25 @@ func (r *WorkloadReconciler) emitEscalations(
 		return children, createErr
 	}
 
-	// Refresh so rollup sees the new tasks as in-flight in this same
-	// reconcile instead of waiting for the next watch event.
-	return r.listChildren(ctx, w)
+	// Rollup must see the new tasks as in-flight in this same pass. A
+	// cache-backed List here could miss tasks created microseconds ago
+	// (informer lag) and let rollup mark the Workload Failed before the
+	// create's watch event arrives, so synthesize placeholders instead:
+	// rollup buckets by Status.Phase and a zero-value phase counts as
+	// in-flight.
+	existing := make(map[string]struct{}, len(children))
+	for i := range children {
+		existing[children[i].Name] = struct{}{}
+	}
+	for _, ref := range created {
+		if _, ok := existing[ref.Name]; ok {
+			continue
+		}
+		children = append(children, foremanv1alpha1.AgenticTask{
+			ObjectMeta: metav1.ObjectMeta{Name: ref.Name, Namespace: ref.Namespace},
+		})
+	}
+	return children, nil
 }
 
 // joinInt32 renders issue numbers as "641, 643" for condition messages.

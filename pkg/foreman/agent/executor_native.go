@@ -203,7 +203,7 @@ func (e *NativeAgentLoopExecutor) Execute(ctx context.Context, task *foremanv1al
 	//     InferenceServiceRef AND provider unset / "local". The
 	//     executor runs the agent's first non-terminal tool directly
 	//     and skips the model loop entirely.
-	//   - Cloud-proxy Agent (v0.2 Day 4): provider="cloud-proxy",
+	//   - Cloud-proxy Agent (v0.2): provider="cloud-proxy",
 	//     dispatch via providerConfig.BaseURL + auth header from the
 	//     referenced Secret. No InferenceService lookup.
 	//   - Local Agent (default): resolveInferenceBaseURL reads

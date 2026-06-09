@@ -116,12 +116,16 @@ spec:
                   reviewers) to the small fraction of branches a cheap reviewer
                   already flagged.
 
-                  Escalation verdicts are advisory in v0.2: they are recorded on
-                  the task and surfaced via the EscalationTriggered condition, but
-                  the base NO-GO still rolls the Workload to Failed so a human
-                  reviews both verdicts. Escalation tasks never trigger further
-                  escalation. Requires ReviewerAgentRefs to be non-empty; ignored
-                  in explicit Pipeline mode. Counts against MaxTasks.
+                  Escalation verdicts are advisory in v0.2: the
+                  EscalationTriggered condition records that the tier fired, the
+                  verdict itself is read from the escalation AgenticTask, and the
+                  base NO-GO still rolls the Workload to Failed so a human reviews
+                  both verdicts. Note that adding escalation refs to an
+                  already-Failed issue-batch Workload re-opens it: the next
+                  reconcile emits the escalation tier against the recorded NO-GO.
+                  Escalation tasks never trigger further escalation. Requires
+                  ReviewerAgentRefs to be non-empty; ignored in explicit Pipeline
+                  mode. Counts against MaxTasks.
                 items:
                   description: |-
                     LocalObjectReference contains enough information to let you locate the
