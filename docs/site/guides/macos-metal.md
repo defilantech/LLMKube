@@ -252,6 +252,16 @@ inference machine, or `0.5` if the Mac is also your daily-driver
 workstation. Add the flag to the launchd plist's `ProgramArguments`
 the same way as `--host-ip`.
 
+If the agent cannot complete the check at all (the model is not on
+disk yet, the Model's `status.size` is not populated, and a HEAD
+probe of the source fails), it **fails closed**: the process is not
+started and the InferenceService is marked with
+`status.schedulingStatus: MemoryCheckFailed` explaining why. On
+Apple Silicon an unsized model is wired into unevictable memory, so
+admitting it blind risks a host-level stall instead of a failed pod.
+Set `--memory-check-mode warn` to restore the older log-and-proceed
+behavior if you need an escape hatch.
+
 The agent also implements **memory-pressure protection**: if
 macOS reports critical memory pressure, the agent can evict the
 lowest-priority running InferenceService and refuse to spawn new
@@ -385,6 +395,17 @@ shrink the model (use a smaller quantization), reduce the context
 size in the `InferenceService` spec, or raise
 `--memory-fraction`. If the Mac is the only Mac in the cluster and
 this is a dedicated inference machine, `0.9` is reasonable.
+
+**InferenceService stuck in `MemoryCheckFailed`**
+The agent could not size the model at all, so it refused to start
+it. `status.schedulingMessage` lists every source it tried (local
+file, Model `status.size`, HEAD probe of the source URL). The most
+common causes are a gated Hugging Face repo rejecting the HEAD
+probe (401) or a source URL that does not return `Content-Length`.
+Fix the source so it can be probed, wait for the Model controller
+to populate `status.size`, or start the agent with
+`--memory-check-mode warn` to admit unsized models at your own
+risk.
 
 **macOS firewall prompt on first run**
 The Metal Agent listens on `127.0.0.1:9090` for its own
