@@ -5,6 +5,34 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.2](https://github.com/defilantech/LLMKube/compare/v0.8.1...v0.8.2) (2026-06-10)
+
+
+### Features
+
+* **controller:** add Model refreshPolicy + upstream drift detection ([#635](https://github.com/defilantech/LLMKube/issues/635)) ([7dc5b14](https://github.com/defilantech/LLMKube/commit/7dc5b1498a691ce5473e2ff459cb8afcf01124fd))
+* **controller:** real accelerator availability check for Model status ([#230](https://github.com/defilantech/LLMKube/issues/230)) ([#610](https://github.com/defilantech/LLMKube/issues/610)) ([f8652fd](https://github.com/defilantech/LLMKube/commit/f8652fd796aae5cb5cf50556aa1fee96003fc569))
+* **foreman:** add opt-in NetworkPolicy to the Foreman Helm chart ([#625](https://github.com/defilantech/LLMKube/issues/625)) ([8872b4d](https://github.com/defilantech/LLMKube/commit/8872b4da7fd7e16672b6da4f12c750b71e166e05))
+* **foreman:** escalation-only reviewer emission on base NO-GO ([#639](https://github.com/defilantech/LLMKube/issues/639)) ([d596ce3](https://github.com/defilantech/LLMKube/commit/d596ce3ecbbbb15fbbd1589ec3b77234834f92db))
+* **foreman:** Job execution strategy for remote-model coder/reviewer Agents ([#620](https://github.com/defilantech/LLMKube/issues/620)) ([#621](https://github.com/defilantech/LLMKube/issues/621)) ([2317ac0](https://github.com/defilantech/LLMKube/commit/2317ac03689c29d4acb8cd26c745e7da17f6f57f))
+* **metal-agent:** stable host-side client proxy on a fixed port ([#406](https://github.com/defilantech/LLMKube/issues/406)) ([#608](https://github.com/defilantech/LLMKube/issues/608)) ([5b4ea34](https://github.com/defilantech/LLMKube/commit/5b4ea34acd1b4a4fbf1736aeb34c7e7b52324a5c))
+
+
+### Bug Fixes
+
+* bump Go toolchain to 1.26.4 to patch standard-library CVEs ([#626](https://github.com/defilantech/LLMKube/issues/626)) ([6d8fbb7](https://github.com/defilantech/LLMKube/commit/6d8fbb70f0b052b010856dd3ce152fd9a7f271ec))
+* **controller:** recreate InferenceService Deployment on immutable selector change ([#606](https://github.com/defilantech/LLMKube/issues/606)) ([#607](https://github.com/defilantech/LLMKube/issues/607)) ([faf9151](https://github.com/defilantech/LLMKube/commit/faf915137fe5a5f9b9ec5204c77d1c13b30292a8))
+* **controller:** revalidate http/https model sources in init container ([#636](https://github.com/defilantech/LLMKube/issues/636)) ([64812e5](https://github.com/defilantech/LLMKube/commit/64812e5a346c02b0a9c4a9581a9c745e505eea81))
+* **foreman:** detect stale FleetNodes via heartbeat window ([#633](https://github.com/defilantech/LLMKube/issues/633)) ([515bdfe](https://github.com/defilantech/LLMKube/commit/515bdfeedcdf130ff216d8fb7e573f4a8a3c453f))
+* **foreman:** harden the agent loop against false-negative INCOMPLETE terminations ([#623](https://github.com/defilantech/LLMKube/issues/623)) ([edc93e4](https://github.com/defilantech/LLMKube/commit/edc93e404c874da1e14811bed6b72ba7722b01d3))
+* **foreman:** propagate Job-mode branch + commit SHA to AgenticTask status ([#634](https://github.com/defilantech/LLMKube/issues/634)) ([3586a14](https://github.com/defilantech/LLMKube/commit/3586a14154187cf718c2bcc7b44c069e84b44d6f))
+* **metal-agent:** fail closed when memory admission check cannot complete ([#641](https://github.com/defilantech/LLMKube/issues/641)) ([cfe53aa](https://github.com/defilantech/LLMKube/commit/cfe53aa0282bc0e38f6a34dd7caeaa71de1b794e))
+
+
+### Documentation
+
+* **roadmap:** rewrite around the heterogeneous sovereign fleet thesis + milestones ([#632](https://github.com/defilantech/LLMKube/issues/632)) ([d98b257](https://github.com/defilantech/LLMKube/commit/d98b257d8ae4880448ecbb74cba566f2763b7fa8))
+
 ## [0.8.1](https://github.com/defilantech/LLMKube/compare/v0.8.0...v0.8.1) (2026-06-01)
 
 
