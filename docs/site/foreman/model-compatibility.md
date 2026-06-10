@@ -64,10 +64,28 @@ A new boolean field `issueAskVerified` signals to downstream
 consumers whether the stored value came from the model
 verbatim or from the harness rewrite.
 
-This means the *verdict* (which drives the cascade rule) is still
-based on the model's reasoning, but the *anchor fields* downstream
-tools pivot on (which file did the diff touch? what does the
-issue actually ask for?) are harness-authoritative.
+Since [#645](https://github.com/defilantech/LLMKube/pull/645) the
+verification result is *enforced*, not just recorded:
+
+- An unverified `issueAsk` on a **GO** verdict demotes the verdict
+  to **NO-GO**. A reviewer that cannot prove it read the issue
+  cannot approve a branch. Because escalation reviewers are emitted
+  on base NO-GO, the branch is automatically re-reviewed by the
+  escalation model instead of being green-lit.
+- An unverified `issueAsk` on any other verdict keeps the verdict
+  but marks it untrusted.
+- In both cases the result extra carries `verdictDemoted: true`,
+  `verdictClaimed` (the model's original verdict), and a
+  `demotionReason`, mirroring the `issueAskClaimed` convention.
+- If `issueAskVerified` is absent entirely (no `fetch_issue` body
+  in the transcript, a harness-side gap rather than model
+  dishonesty), enforcement does not fire.
+
+The *anchor fields* downstream tools pivot on (which files did the
+diff touch? what does the issue actually ask for?) remain
+harness-authoritative, and the verdict now inherits that property:
+a verdict that contradicts the harness's evidence check cannot
+drive the cascade rule on its own.
 
 ## What v0.5 changes
 
