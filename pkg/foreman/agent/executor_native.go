@@ -470,6 +470,17 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 			// issueAsk demotes a GO to NO-GO so it routes to escalation
 			// instead of approving a branch on fabricated understanding.
 			verdict = enforceReviewerIssueAsk(log, loopRes.Terminal.Extra, verdict)
+			// Computable scope-overlap check (#647): when the issue names
+			// concrete files and the diff touches none of them, demote a
+			// GO deterministically. Runs after the issueAsk enforcement
+			// so an already-demoted verdict is annotated, not re-demoted.
+			if scopeDiff, scopeErr := repo.DiffNameOnly(ctx, workspace, "main"); scopeErr == nil {
+				verdict = enforceReviewerScopeOverlap(log, loopRes.Terminal.Extra,
+					extractFetchIssueBody(loopRes.Transcript), scopeDiff, verdict)
+			} else {
+				log.Info("reviewer scope: ground-truth diff unavailable; skipping scope check",
+					"err", scopeErr.Error())
+			}
 			logReviewerFindings(log, loopRes.Terminal.Extra)
 		}
 		return e.modelDecidedResult(start, transcriptRef, loopRes, verdict), nil

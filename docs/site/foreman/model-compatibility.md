@@ -81,6 +81,15 @@ verification result is *enforced*, not just recorded:
   in the transcript, a harness-side gap rather than model
   dishonesty), enforcement does not fire.
 
+[#647](https://github.com/defilantech/LLMKube/issues/647) adds a
+second, fully computable check: when the issue body names concrete
+files (`config/rbac/role.yaml`, `AGENTS.md`) and the ground-truth
+diff touches none of them, the executor flags scope drift
+deterministically (`scopeRefs`, `scopeMatched`,
+`scopeDriftDetected` in the result extra) and demotes a GO the
+same way. No model judgment is involved; an issue that names no
+files keeps the check observe-only.
+
 The *anchor fields* downstream tools pivot on (which files did the
 diff touch? what does the issue actually ask for?) remain
 harness-authoritative, and the verdict now inherits that property:
