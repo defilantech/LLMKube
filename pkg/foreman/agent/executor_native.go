@@ -466,6 +466,10 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 			// #582/filesTouched fix: harness owns the authoritative
 			// field, model's claim is archived under issueAskClaimed.
 			reconcileReviewerIssueAsk(log, loopRes.Transcript, loopRes.Terminal.Extra)
+			// Enforce the verification result (#644): an unverifiable
+			// issueAsk demotes a GO to NO-GO so it routes to escalation
+			// instead of approving a branch on fabricated understanding.
+			verdict = enforceReviewerIssueAsk(log, loopRes.Terminal.Extra, verdict)
 			logReviewerFindings(log, loopRes.Terminal.Extra)
 		}
 		return e.modelDecidedResult(start, transcriptRef, loopRes, verdict), nil
@@ -1234,6 +1238,58 @@ func reconcileReviewerIssueAsk(log logr.Logger, msgs []oai.Message, extra map[st
 		"modelClaim", claim,
 		"rewrittenTo", replaced,
 	)
+}
+
+// enforceReviewerIssueAsk converts a failed issueAsk verification from
+// an observation into a routing decision (#644). reconcileReviewerIssueAsk
+// records whether the model's stated understanding of the issue is a
+// verbatim quote of the body it fetched; until now a `false` there was
+// archaeology while the verdict stood. The 2026-06-10 Mellum2 battery
+// showed why that is not enough: 5/5 runs failed verification, including
+// a GO on a known scope-drift branch and a NO-GO justified by a fully
+// hallucinated ask. Both confidently wrong verdicts stood.
+//
+// Policy:
+//   - verified false + GO: demote to NO-GO. A reviewer that cannot prove
+//     it read the issue must not approve a branch. Because the workload
+//     controller emits escalation reviewers on base NO-GO, demotion
+//     routes the branch to a bigger model instead of green-lighting it.
+//   - verified false + any other verdict: keep the verdict but mark it,
+//     so the escalation reviewer and operators know the base review's
+//     reasoning is untrusted.
+//   - verified absent (no fetch_issue body in the transcript, a
+//     harness-side gap rather than model dishonesty): observe-only,
+//     unchanged.
+//
+// The original verdict is archived under verdictClaimed and the
+// rewritten one flagged with verdictDemoted + demotionReason, mirroring
+// the issueAskClaimed convention.
+func enforceReviewerIssueAsk(
+	log logr.Logger,
+	extra map[string]any,
+	verdict foremanv1alpha1.AgenticTaskVerdict,
+) foremanv1alpha1.AgenticTaskVerdict {
+	if extra == nil {
+		return verdict
+	}
+	verified, present := extra["issueAskVerified"].(bool)
+	if !present || verified {
+		return verdict
+	}
+
+	extra["verdictDemoted"] = true
+	extra["verdictClaimed"] = string(verdict)
+	extra["demotionReason"] = "issueAsk could not be verified as a verbatim quote of the " +
+		"fetched issue body; review verdict is untrusted"
+
+	if verdict != foremanv1alpha1.AgenticTaskVerdictGo {
+		log.Info("reviewer integrity: unverified issueAsk on non-GO verdict; keeping verdict but marking untrusted",
+			"verdict", verdict)
+		return verdict
+	}
+	log.Info("reviewer integrity: unverified issueAsk on GO verdict; demoting to NO-GO",
+		"verdictClaimed", verdict)
+	return foremanv1alpha1.AgenticTaskVerdictNoGo
 }
 
 // extractFetchIssueBody finds the most recent fetch_issue tool result

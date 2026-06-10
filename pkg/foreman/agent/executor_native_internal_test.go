@@ -1250,3 +1250,66 @@ func TestReconcileReviewerIssueAsk_EmptyClaimFilledFromBody(t *testing.T) {
 func TestReconcileReviewerIssueAsk_NilExtraIsNoOp(t *testing.T) {
 	reconcileReviewerIssueAsk(logr.Discard(), nil, nil) // must not panic
 }
+
+func TestEnforceReviewerIssueAsk_VerifiedGoStands(t *testing.T) {
+	extra := map[string]any{"issueAskVerified": true}
+	got := enforceReviewerIssueAsk(logr.Discard(), extra, foremanv1alpha1.AgenticTaskVerdictGo)
+	if got != foremanv1alpha1.AgenticTaskVerdictGo {
+		t.Errorf("verified GO should stand; got %v", got)
+	}
+	if _, demoted := extra["verdictDemoted"]; demoted {
+		t.Errorf("verified review should not be annotated as demoted")
+	}
+}
+
+func TestEnforceReviewerIssueAsk_UnverifiedGoDemotedToNoGo(t *testing.T) {
+	extra := map[string]any{"issueAskVerified": false}
+	got := enforceReviewerIssueAsk(logr.Discard(), extra, foremanv1alpha1.AgenticTaskVerdictGo)
+	if got != foremanv1alpha1.AgenticTaskVerdictNoGo {
+		t.Errorf("unverified GO must demote to NO-GO; got %v", got)
+	}
+	if v, _ := extra["verdictDemoted"].(bool); !v {
+		t.Errorf("demotion must set verdictDemoted=true; got %v", extra["verdictDemoted"])
+	}
+	if extra["verdictClaimed"] != string(foremanv1alpha1.AgenticTaskVerdictGo) {
+		t.Errorf("verdictClaimed should archive the original GO; got %v", extra["verdictClaimed"])
+	}
+	if reason, _ := extra["demotionReason"].(string); reason == "" {
+		t.Errorf("demotionReason must explain the demotion")
+	}
+}
+
+func TestEnforceReviewerIssueAsk_UnverifiedNoGoKeptButMarked(t *testing.T) {
+	extra := map[string]any{"issueAskVerified": false}
+	got := enforceReviewerIssueAsk(logr.Discard(), extra, foremanv1alpha1.AgenticTaskVerdictNoGo)
+	if got != foremanv1alpha1.AgenticTaskVerdictNoGo {
+		t.Errorf("unverified NO-GO should stay NO-GO; got %v", got)
+	}
+	if v, _ := extra["verdictDemoted"].(bool); !v {
+		t.Errorf("unverified NO-GO must still be marked verdictDemoted=true so the escalation reviewer knows the base verdict is untrusted")
+	}
+	if extra["verdictClaimed"] != string(foremanv1alpha1.AgenticTaskVerdictNoGo) {
+		t.Errorf("verdictClaimed should archive the original NO-GO; got %v", extra["verdictClaimed"])
+	}
+}
+
+func TestEnforceReviewerIssueAsk_AbsentFieldIsObserveOnly(t *testing.T) {
+	// issueAskVerified absent means the harness had no fetch_issue body
+	// to verify against (a harness-side gap, not model dishonesty);
+	// enforcement must not fire.
+	extra := map[string]any{"issueAsk": "some claim"}
+	got := enforceReviewerIssueAsk(logr.Discard(), extra, foremanv1alpha1.AgenticTaskVerdictGo)
+	if got != foremanv1alpha1.AgenticTaskVerdictGo {
+		t.Errorf("absent issueAskVerified must not demote; got %v", got)
+	}
+	if _, demoted := extra["verdictDemoted"]; demoted {
+		t.Errorf("absent issueAskVerified should not be annotated as demoted")
+	}
+}
+
+func TestEnforceReviewerIssueAsk_NilExtraIsNoOp(t *testing.T) {
+	got := enforceReviewerIssueAsk(logr.Discard(), nil, foremanv1alpha1.AgenticTaskVerdictGo)
+	if got != foremanv1alpha1.AgenticTaskVerdictGo {
+		t.Errorf("nil extra must pass the verdict through; got %v", got)
+	}
+}
