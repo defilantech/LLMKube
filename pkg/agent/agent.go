@@ -1300,7 +1300,10 @@ func (a *MetalAgent) failMemoryCheck(
 		return nil
 	}
 
-	a.logger.Errorw("memory check incomplete, refusing to start process",
+	// Warn, not error: the watcher retries every poll interval and zap
+	// attaches stacktraces at error level, which floods the log for a
+	// condition already surfaced via status and a Kubernetes event.
+	a.logger.Warnw("memory check incomplete, refusing to start process",
 		"reason", reason, "namespace", isvc.Namespace, "name", isvc.Name)
 	isvc.Status.SchedulingStatus = "MemoryCheckFailed"
 	isvc.Status.SchedulingMessage = reason
