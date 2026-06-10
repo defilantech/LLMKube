@@ -17,14 +17,29 @@ limitations under the License.
 package agent
 
 import (
+	"context"
 	"fmt"
 	"math"
+	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"k8s.io/apimachinery/pkg/api/resource"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
+)
+
+const (
+	// MemoryCheckModeEnforce rejects an InferenceService when the pre-flight
+	// memory check cannot be completed (fail closed). This is the default.
+	MemoryCheckModeEnforce = "enforce"
+	// MemoryCheckModeWarn preserves the legacy behavior of logging a warning
+	// and starting the process anyway when the check cannot be completed.
+	// An incomplete check allowed unsized models through on 2026-06-09 and
+	// wired all 128 GB of host RAM, panicking the machine; use only as an
+	// operational escape hatch.
+	MemoryCheckModeWarn = "warn"
 )
 
 // MemoryPressureLevel represents the severity of memory pressure.
@@ -243,6 +258,36 @@ func formatMemory(bytes uint64) string {
 		return fmt.Sprintf("%.1f GB", float64(bytes)/float64(gb))
 	}
 	return fmt.Sprintf("%.0f MB", float64(bytes)/float64(mb))
+}
+
+// remoteModelSize probes an http(s) model source with a HEAD request and
+// returns its Content-Length. It is the last-resort size source for the
+// pre-flight memory check: used when the model is not on disk yet and the
+// Model CR carries no usable status size, so admission can still be decided
+// before the download begins instead of failing open.
+func remoteModelSize(ctx context.Context, source string) (uint64, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, source, nil)
+	if err != nil {
+		return 0, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("bad status: %s", resp.Status)
+	}
+	if resp.ContentLength <= 0 {
+		return 0, fmt.Errorf("no Content-Length in HEAD response")
+	}
+	return uint64(resp.ContentLength), nil
 }
 
 // parseSize parses a human-readable size string (as produced by model_controller's

@@ -19,6 +19,8 @@ package agent
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -989,10 +991,18 @@ func TestEnsureProcess_InFlightGuard(t *testing.T) {
 	scheme := newTestScheme()
 	_ = corev1.AddToScheme(scheme)
 
+	// The model file must exist on disk: ensureProcess's memory admission
+	// fails closed when the model cannot be sized, which would return before
+	// the StartProcess race this test exercises.
+	modelPath := filepath.Join(t.TempDir(), "race-model.gguf")
+	if err := os.WriteFile(modelPath, []byte("stub-weights"), 0o644); err != nil {
+		t.Fatalf("failed to write stub model file: %v", err)
+	}
+
 	model := &inferencev1alpha1.Model{
 		ObjectMeta: metav1.ObjectMeta{Name: "race-model", Namespace: "default"},
 		Spec: inferencev1alpha1.ModelSpec{
-			Source:   "/tmp/race-model.gguf",
+			Source:   modelPath,
 			Format:   "gguf",
 			Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: "metal"},
 		},

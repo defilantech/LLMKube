@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -104,6 +105,11 @@ type MetalAgentConfig struct {
 	MemoryProvider MemoryProvider
 	// MemoryFraction is the fraction of total memory to budget for models (0 = auto-detect).
 	MemoryFraction float64
+	// MemoryCheckMode controls what happens when the pre-flight memory check
+	// cannot be completed: MemoryCheckModeEnforce (default, also for "") fails
+	// closed and refuses to start the process; MemoryCheckModeWarn logs and
+	// proceeds (the legacy behavior).
+	MemoryCheckMode string
 
 	// WatchdogConfig configures the memory pressure watchdog. Nil disables it.
 	WatchdogConfig *MemoryWatchdogConfig
@@ -183,6 +189,10 @@ type MetalAgent struct {
 	mu             sync.RWMutex
 	memoryProvider MemoryProvider
 	memoryFraction float64
+	// memoryCheckWarnOnly is true when config.MemoryCheckMode resolved to
+	// MemoryCheckModeWarn; an incomplete admission check then logs and
+	// proceeds instead of failing closed.
+	memoryCheckWarnOnly bool
 
 	// pressureBlocked records namespacedName keys of processes the agent
 	// evicted under memory pressure. Subsequent ensureProcess calls for these
@@ -266,15 +276,28 @@ func NewMetalAgent(config MetalAgentConfig) *MetalAgent {
 		}
 	}
 
+	// Resolve memory check mode. Unknown values fall back to enforce: the
+	// fail-open direction is the dangerous one, so a typo must not pick it.
+	warnOnly := false
+	switch config.MemoryCheckMode {
+	case "", MemoryCheckModeEnforce:
+	case MemoryCheckModeWarn:
+		warnOnly = true
+	default:
+		logger.Warnw("unknown memory-check-mode, defaulting to enforce",
+			"mode", config.MemoryCheckMode)
+	}
+
 	return &MetalAgent{
-		config:           config,
-		processes:        make(map[string]*ManagedProcess),
-		logger:           logger.With("component", "metal-agent"),
-		memoryProvider:   provider,
-		memoryFraction:   fraction,
-		pressureBlocked:  make(map[string]bool),
-		pressureObserved: make(map[string]MemoryPressureLevel),
-		starting:         make(map[string]bool),
+		config:              config,
+		processes:           make(map[string]*ManagedProcess),
+		logger:              logger.With("component", "metal-agent"),
+		memoryProvider:      provider,
+		memoryFraction:      fraction,
+		memoryCheckWarnOnly: warnOnly,
+		pressureBlocked:     make(map[string]bool),
+		pressureObserved:    make(map[string]MemoryPressureLevel),
+		starting:            make(map[string]bool),
 	}
 }
 
@@ -283,10 +306,15 @@ func (a *MetalAgent) Start(ctx context.Context) error {
 	// Log effective memory budget and set gauge
 	if total, err := a.memoryProvider.TotalMemory(); err == nil {
 		budget := uint64(float64(total) * a.memoryFraction)
+		checkMode := MemoryCheckModeEnforce
+		if a.memoryCheckWarnOnly {
+			checkMode = MemoryCheckModeWarn
+		}
 		a.logger.Infow("memory budget",
 			"total", formatMemory(total),
 			"fraction", a.memoryFraction,
 			"budget", formatMemory(budget),
+			"checkMode", checkMode,
 		)
 		memoryBudgetBytes.Set(float64(budget))
 	} else {
@@ -762,66 +790,8 @@ func (a *MetalAgent) ensureProcess(ctx context.Context, isvc *inferencev1alpha1.
 	cacheTypeK, cacheTypeV := resolveCacheTypes(isvc)
 
 	// Pre-flight memory check
-	if estimate, err := a.estimateModelMemory(model, contextSize, cacheTypeK, cacheTypeV); err != nil {
-		a.logger.Warnw("memory estimation failed, proceeding without check", "error", err)
-	} else {
-		memoryEstimatedBytes.WithLabelValues(isvc.Name, isvc.Namespace).Set(float64(estimate.TotalBytes))
-
-		resolved, resolveErr := ResolveMemoryBudget(model.Spec.Hardware, a.memoryFraction)
-		if resolveErr != nil {
-			a.logger.Warnw("memory budget resolution failed, proceeding without check", "error", resolveErr)
-		} else {
-			a.logger.Infow("resolved memory budget",
-				"mode", resolved.Mode, "source", resolved.Source)
-
-			var budget *MemoryBudget
-			switch resolved.Mode {
-			case BudgetModeAbsolute:
-				budget = CheckMemoryBudgetAbsolute(resolved.Bytes, estimate)
-				memoryBudgetBytes.Set(float64(resolved.Bytes))
-			default: // BudgetModeFraction
-				var budgetErr error
-				budget, budgetErr = CheckMemoryBudget(a.memoryProvider, estimate, resolved.Fraction)
-				if budgetErr != nil {
-					a.logger.Warnw("memory budget check failed, proceeding without check", "error", budgetErr)
-				}
-			}
-
-			if budget != nil && !budget.Fits {
-				var msg string
-				if resolved.Mode == BudgetModeAbsolute {
-					msg = fmt.Sprintf("estimated %s required, budget %s (absolute from CRD)",
-						formatMemory(budget.EstimateBytes),
-						formatMemory(budget.BudgetBytes),
-					)
-				} else {
-					msg = fmt.Sprintf("estimated %s required, budget %s (%s total * %.0f%%)",
-						formatMemory(budget.EstimateBytes),
-						formatMemory(budget.BudgetBytes),
-						formatMemory(budget.TotalBytes),
-						resolved.Fraction*100,
-					)
-				}
-				a.logger.Warnw("model does not fit in memory budget",
-					"estimate", formatMemory(budget.EstimateBytes),
-					"budget", formatMemory(budget.BudgetBytes),
-					"source", resolved.Source,
-				)
-				isvc.Status.SchedulingStatus = "InsufficientMemory"
-				isvc.Status.SchedulingMessage = msg
-				if updateErr := a.config.K8sClient.Status().Update(ctx, isvc); updateErr != nil {
-					a.logger.Warnw("failed to update InferenceService status", "error", updateErr)
-				}
-				return fmt.Errorf("insufficient memory: %s", msg)
-			} else if budget != nil {
-				a.logger.Infow("memory check passed",
-					"estimate", formatMemory(budget.EstimateBytes),
-					"budget", formatMemory(budget.BudgetBytes),
-					"headroom", formatMemory(budget.HeadroomBytes),
-					"source", resolved.Source,
-				)
-			}
-		}
+	if err := a.checkMemoryAdmission(ctx, isvc, model, contextSize, cacheTypeK, cacheTypeV); err != nil {
+		return err
 	}
 
 	// Apple Silicon defaults: flash-attn and mlock both ON. The user can
@@ -1236,16 +1206,130 @@ func (a *MetalAgent) HealthCheck() map[string]bool {
 	return health
 }
 
-// estimateModelMemory builds a MemoryEstimate for a model using the file on disk
-// (preferred) or the Status.Size string, plus GGUF metadata when available.
-// Cache types are passed through so quantized KV caches (q8_0, turbo3, turbo4)
-// produce a realistic estimate instead of always assuming f16.
+// checkMemoryAdmission runs the pre-flight memory check for an
+// InferenceService: estimate the model's memory need, resolve the budget, and
+// reject the service when it does not fit. A check that cannot be completed
+// (unknown model size, unreadable budget, memory query failure) FAILS CLOSED
+// by default: an unsized llama-server wires its weights and KV cache into
+// unevictable memory, and admitting one blind is how the 2026-06-09 host
+// panic happened. MemoryCheckModeWarn restores the legacy log-and-proceed
+// behavior.
+func (a *MetalAgent) checkMemoryAdmission(
+	ctx context.Context,
+	isvc *inferencev1alpha1.InferenceService,
+	model *inferencev1alpha1.Model,
+	contextSize int,
+	cacheTypeK, cacheTypeV string,
+) error {
+	estimate, err := a.estimateModelMemory(ctx, model, contextSize, cacheTypeK, cacheTypeV)
+	if err != nil {
+		return a.failMemoryCheck(ctx, isvc, fmt.Sprintf("memory estimation failed: %v", err))
+	}
+	memoryEstimatedBytes.WithLabelValues(isvc.Name, isvc.Namespace).Set(float64(estimate.TotalBytes))
+
+	resolved, resolveErr := ResolveMemoryBudget(model.Spec.Hardware, a.memoryFraction)
+	if resolveErr != nil {
+		return a.failMemoryCheck(ctx, isvc, fmt.Sprintf("memory budget resolution failed: %v", resolveErr))
+	}
+	a.logger.Infow("resolved memory budget",
+		"mode", resolved.Mode, "source", resolved.Source)
+
+	var budget *MemoryBudget
+	switch resolved.Mode {
+	case BudgetModeAbsolute:
+		budget = CheckMemoryBudgetAbsolute(resolved.Bytes, estimate)
+		memoryBudgetBytes.Set(float64(resolved.Bytes))
+	default: // BudgetModeFraction
+		var budgetErr error
+		budget, budgetErr = CheckMemoryBudget(a.memoryProvider, estimate, resolved.Fraction)
+		if budgetErr != nil {
+			return a.failMemoryCheck(ctx, isvc, fmt.Sprintf("memory budget check failed: %v", budgetErr))
+		}
+	}
+
+	if !budget.Fits {
+		var msg string
+		if resolved.Mode == BudgetModeAbsolute {
+			msg = fmt.Sprintf("estimated %s required, budget %s (absolute from CRD)",
+				formatMemory(budget.EstimateBytes),
+				formatMemory(budget.BudgetBytes),
+			)
+		} else {
+			msg = fmt.Sprintf("estimated %s required, budget %s (%s total * %.0f%%)",
+				formatMemory(budget.EstimateBytes),
+				formatMemory(budget.BudgetBytes),
+				formatMemory(budget.TotalBytes),
+				resolved.Fraction*100,
+			)
+		}
+		a.logger.Warnw("model does not fit in memory budget",
+			"estimate", formatMemory(budget.EstimateBytes),
+			"budget", formatMemory(budget.BudgetBytes),
+			"source", resolved.Source,
+		)
+		isvc.Status.SchedulingStatus = "InsufficientMemory"
+		isvc.Status.SchedulingMessage = msg
+		if updateErr := a.config.K8sClient.Status().Update(ctx, isvc); updateErr != nil {
+			a.logger.Warnw("failed to update InferenceService status", "error", updateErr)
+		}
+		return fmt.Errorf("insufficient memory: %s", msg)
+	}
+
+	a.logger.Infow("memory check passed",
+		"estimate", formatMemory(budget.EstimateBytes),
+		"budget", formatMemory(budget.BudgetBytes),
+		"headroom", formatMemory(budget.HeadroomBytes),
+		"source", resolved.Source,
+	)
+	return nil
+}
+
+// failMemoryCheck handles a memory admission check that could not be
+// completed. In enforce mode (default) it records why on the
+// InferenceService status, emits a warning event, and returns an error so
+// the caller refuses to start the process. In warn mode it logs and returns
+// nil, preserving the pre-fail-closed behavior.
+func (a *MetalAgent) failMemoryCheck(
+	ctx context.Context,
+	isvc *inferencev1alpha1.InferenceService,
+	reason string,
+) error {
+	if a.memoryCheckWarnOnly {
+		a.logger.Warnw("memory check incomplete, proceeding without check (memory-check-mode=warn)",
+			"reason", reason)
+		return nil
+	}
+
+	a.logger.Errorw("memory check incomplete, refusing to start process",
+		"reason", reason, "namespace", isvc.Namespace, "name", isvc.Name)
+	isvc.Status.SchedulingStatus = "MemoryCheckFailed"
+	isvc.Status.SchedulingMessage = reason
+	if updateErr := a.config.K8sClient.Status().Update(ctx, isvc); updateErr != nil {
+		a.logger.Warnw("failed to update InferenceService status", "error", updateErr)
+	}
+	a.emitInferenceEvent(ctx, &ManagedProcess{Namespace: isvc.Namespace, Name: isvc.Name},
+		corev1.EventTypeWarning, EventReasonMemoryCheckFailed,
+		"Memory admission check could not be completed and failed closed: %s", reason,
+	)
+	return fmt.Errorf("memory admission check failed: %s", reason)
+}
+
+// estimateModelMemory builds a MemoryEstimate for a model using the file on
+// disk (preferred), the Status.Size string, or a HEAD probe of an http(s)
+// source as a last resort, plus GGUF metadata when available. Cache types are
+// passed through so quantized KV caches (q8_0, turbo3, turbo4) produce a
+// realistic estimate instead of always assuming f16. The remote fallback
+// matters on fresh hosts: with no file on disk and a not-yet-populated status
+// size ("0"), the old chain errored out and the caller started the process
+// unchecked.
 func (a *MetalAgent) estimateModelMemory(
+	ctx context.Context,
 	model *inferencev1alpha1.Model,
 	contextSize int,
 	cacheTypeK, cacheTypeV string,
 ) (MemoryEstimate, error) {
 	var fileSizeBytes uint64
+	var reasons []string
 
 	// A model with an absolute local-path source is loaded in place by the
 	// host agent (the Metal path) and is never copied into the model store,
@@ -1254,31 +1338,51 @@ func (a *MetalAgent) estimateModelMemory(
 	if filepath.IsAbs(model.Spec.Source) {
 		if size, err := localModelSize(model.Spec.Source); err == nil {
 			fileSizeBytes = size
+		} else {
+			reasons = append(reasons, fmt.Sprintf("local source not readable: %v", err))
 		}
 	}
 
 	// Try to stat the model file in the model store (downloaded models).
 	filename := filepath.Base(model.Spec.Source)
 	localPath := filepath.Join(a.config.ModelStorePath, model.Name, filename)
-	if fileSizeBytes != 0 {
-		// already sized from the local-path source above
-	} else if info, err := os.Stat(localPath); err == nil {
-		fileSizeBytes = uint64(info.Size()) //nolint:gosec // G115: os.FileInfo.Size is non-negative by contract
-	} else if model.Status.Size != "" {
-		// Fall back to parsing the human-readable size from model status
-		parsed, err := parseSize(model.Status.Size)
-		if err != nil {
-			return MemoryEstimate{}, fmt.Errorf(
-				"cannot determine model size: file not found at %s and failed to parse status size %q: %w",
-				localPath, model.Status.Size, err,
-			)
+	if fileSizeBytes == 0 {
+		if info, err := os.Stat(localPath); err == nil {
+			fileSizeBytes = uint64(info.Size()) //nolint:gosec // G115: os.FileInfo.Size is non-negative by contract
+		} else {
+			reasons = append(reasons, fmt.Sprintf("file not found at %s", localPath))
 		}
-		fileSizeBytes = parsed
-	} else {
+	}
+
+	// Fall back to parsing the human-readable size from model status. A
+	// literal "0" means the controller has not measured the model yet; treat
+	// it as absent rather than an error so the remote probe below still runs.
+	if fileSizeBytes == 0 && model.Status.Size != "" {
+		parsed, err := parseSize(model.Status.Size)
+		switch {
+		case err != nil:
+			reasons = append(reasons, fmt.Sprintf("status size %q unparseable", model.Status.Size))
+		case parsed == 0:
+			reasons = append(reasons, "status size not populated yet")
+		default:
+			fileSizeBytes = parsed
+		}
+	}
+
+	// Last resort: HEAD the source for its Content-Length.
+	if fileSizeBytes == 0 &&
+		(strings.HasPrefix(model.Spec.Source, "http://") || strings.HasPrefix(model.Spec.Source, "https://")) {
+		size, err := remoteModelSize(ctx, model.Spec.Source)
+		if err != nil {
+			reasons = append(reasons, fmt.Sprintf("remote size probe failed: %v", err))
+		} else {
+			fileSizeBytes = size
+		}
+	}
+
+	if fileSizeBytes == 0 {
 		return MemoryEstimate{}, fmt.Errorf(
-			"cannot determine model size: file not found at %s and no status size available",
-			localPath,
-		)
+			"cannot determine model size: %s", strings.Join(reasons, "; "))
 	}
 
 	var layerCount, embeddingSize uint64

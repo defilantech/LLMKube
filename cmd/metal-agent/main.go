@@ -65,6 +65,7 @@ type AgentConfig struct {
 	LogLevel                  string
 	HostIP                    string
 	MemoryFraction            float64
+	MemoryCheckMode           string
 	WatchdogInterval          time.Duration
 	MemoryPressureWarning     float64
 	MemoryPressureCritical    float64
@@ -252,6 +253,9 @@ func main() {
 	flag.StringVar(&cfg.HostIP, "host-ip", "", "IP address to register in Kubernetes endpoints (auto-detected if empty)")
 	flag.Float64Var(&cfg.MemoryFraction, "memory-fraction", 0,
 		"Fraction of system memory to budget for models (0 = auto-detect based on total RAM)")
+	flag.StringVar(&cfg.MemoryCheckMode, "memory-check-mode", agent.MemoryCheckModeEnforce,
+		"What to do when the pre-flight memory check cannot be completed: "+
+			"\"enforce\" refuses to start the process (fail closed), \"warn\" logs and starts it anyway")
 	flag.DurationVar(&cfg.WatchdogInterval, "memory-watchdog-interval", 10*time.Second,
 		"How often to check memory pressure (0 to disable)")
 	flag.Float64Var(&cfg.MemoryPressureWarning, "memory-pressure-warning", 0.20,
@@ -481,6 +485,7 @@ func main() {
 		HostIP:                    cfg.HostIP,
 		Logger:                    logger,
 		MemoryFraction:            cfg.MemoryFraction,
+		MemoryCheckMode:           cfg.MemoryCheckMode,
 		MaxWatchFailures:          cfg.MaxWatchFailures,
 		InferenceServiceAllowlist: splitCSV(cfg.InferenceServiceAllowlist),
 		LlamaServerStartupTimeout: cfg.LlamaServerStartupTimeout,

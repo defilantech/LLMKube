@@ -52,6 +52,7 @@ const (
 	EventReasonEvicted                    = "Evicted"
 	EventReasonEvictionSkipped            = "EvictionSkipped"
 	EventReasonRespawnBlocked             = "RespawnBlocked"
+	EventReasonMemoryCheckFailed          = "MemoryCheckFailed"
 )
 
 // emitInferenceEvent publishes a Kubernetes event on the InferenceService
