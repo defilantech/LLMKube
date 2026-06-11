@@ -95,8 +95,9 @@ func chatResponseToSSE(t *testing.T, body string) string {
 				{
 					Index: ch.Index,
 					Delta: MessageDelta{
-						Role:    ch.Message.Role,
-						Content: ch.Message.Content,
+						Role:             ch.Message.Role,
+						Content:          ch.Message.Content,
+						ReasoningContent: ch.Message.ReasoningContent,
 					},
 					FinishReason: ch.FinishReason,
 				},
@@ -553,5 +554,45 @@ func TestClient_Chat_AggregatesMultiChunkArguments(t *testing.T) {
 	}
 	if tcs[0].ID != "tc-x" || tcs[0].Function.Name != "read_file" {
 		t.Errorf("metadata lost in aggregation: %+v", tcs[0])
+	}
+}
+
+const okBodyReasoningOnly = `{
+  "id": "r1",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "reasoning_content": "pondering the diff before acting"
+    },
+    "finish_reason": "stop"
+  }]
+}`
+
+// A hybrid-thinking model can spend a whole turn reasoning without
+// emitting content or tool calls. That is a complete, well-formed
+// response (finish_reason=stop), not a truncated one: the client must
+// surface it with ReasoningContent aggregated, not retry it as
+// truncated output (#650).
+func TestClient_Chat_AggregatesReasoningContent(t *testing.T) {
+	var attempts atomic.Int64
+	srv := httptest.NewServer(scriptedHandler(t, &attempts,
+		[]int{http.StatusOK}, []string{okBodyReasoningOnly}))
+	defer srv.Close()
+
+	c := New(srv.URL+"/v1", time.Second, 0, WithBackoffs(noJitterBackoffs))
+	resp, err := c.Chat(context.Background(), ChatRequest{Model: "test"})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if attempts.Load() != 1 {
+		t.Errorf("reasoning-only response must not be retried as truncated; attempts: want 1 got %d", attempts.Load())
+	}
+	msg := resp.Choices[0].Message
+	if msg.ReasoningContent != "pondering the diff before acting" {
+		t.Errorf("ReasoningContent: want aggregated text, got %q", msg.ReasoningContent)
+	}
+	if msg.Content != "" {
+		t.Errorf("Content should stay empty, got %q", msg.Content)
 	}
 }

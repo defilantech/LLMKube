@@ -58,6 +58,14 @@ type Message struct {
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 	Name       string     `json:"name,omitempty"`
+
+	// ReasoningContent is the thinking trace hybrid-reasoning models
+	// emit alongside (or instead of) content when the server's
+	// reasoning-format separates it out (llama.cpp default). Preserved
+	// in transcripts for archaeology; stripped from the wire by the
+	// loop before the next request, mirroring how chat templates drop
+	// think blocks from history (#650).
+	ReasoningContent string `json:"reasoning_content,omitempty"`
 }
 
 // MarshalJSON serializes a Message such that non-assistant roles always
@@ -189,9 +197,10 @@ type ChoiceDelta struct {
 // accumulating as tokens are generated, and ToolCalls arriving with
 // their Function.Arguments streamed in fragments.
 type MessageDelta struct {
-	Role      Role            `json:"role,omitempty"`
-	Content   string          `json:"content,omitempty"`
-	ToolCalls []ToolCallDelta `json:"tool_calls,omitempty"`
+	Role             Role            `json:"role,omitempty"`
+	Content          string          `json:"content,omitempty"`
+	ReasoningContent string          `json:"reasoning_content,omitempty"`
+	ToolCalls        []ToolCallDelta `json:"tool_calls,omitempty"`
 }
 
 // ToolCallDelta is the streamed-piece counterpart to ToolCall. The

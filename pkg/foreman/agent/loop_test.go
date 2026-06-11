@@ -72,8 +72,9 @@ func chatJSONToSSE(t *testing.T, body string) string {
 				{
 					Index: ch.Index,
 					Delta: oai.MessageDelta{
-						Role:    ch.Message.Role,
-						Content: ch.Message.Content,
+						Role:             ch.Message.Role,
+						Content:          ch.Message.Content,
+						ReasoningContent: ch.Message.ReasoningContent,
 					},
 					FinishReason: ch.FinishReason,
 				},
@@ -561,4 +562,87 @@ func contains(haystack, needle string) bool {
 		}
 	}
 	return false
+}
+
+const assistantReasoningOnly = `{
+  "id": "t5",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "reasoning_content": "Let me think about which file to read next."
+    },
+    "finish_reason": "stop"
+  }]
+}`
+
+func TestLoop_ReasoningOnlyTurn_ContinuesAndRecovers(t *testing.T) {
+	// A hybrid-thinking model that spends a turn reasoning without a
+	// tool call must get a continuation nudge, not the prose corrective,
+	// and the run must recover when the next turn acts (#650).
+	srv, calls := scriptedOAIServer(t, []string{assistantReasoningOnly, toolCallSubmitGo})
+	reg := &fakeRegistry{results: map[string]*ToolResult{
+		"submit_result": {Terminal: true, Verdict: "GO"},
+	}}
+	loop := newTestLoop(srv, reg)
+
+	res, err := loop.Run(context.Background(), LoopConfig{
+		Model: "test", SystemPrompt: "sys", UserPrompt: "go", MaxTurns: 5,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Terminal == nil || res.Terminal.Verdict != "GO" {
+		t.Fatalf("expected GO terminal after recovery, got %+v", res.Terminal)
+	}
+	if calls.Load() != 2 {
+		t.Errorf("calls: want 2 got %d", calls.Load())
+	}
+	var sawNudge, sawReasoning bool
+	for _, m := range res.Transcript {
+		if m.Role == oai.RoleUser && m.Content == ReasoningOnlyNudgeMessage() {
+			sawNudge = true
+		}
+		if m.Role == oai.RoleAssistant && m.ReasoningContent != "" {
+			sawReasoning = true
+		}
+	}
+	if !sawNudge {
+		t.Errorf("transcript should contain the reasoning continuation nudge")
+	}
+	if !sawReasoning {
+		t.Errorf("transcript should preserve the model's reasoning_content")
+	}
+}
+
+func TestLoop_ReasoningOnlyExhausted(t *testing.T) {
+	srv, _ := scriptedOAIServer(t, []string{assistantReasoningOnly, assistantReasoningOnly})
+	reg := &fakeRegistry{results: map[string]*ToolResult{}}
+	loop := newTestLoop(srv, reg)
+
+	_, err := loop.Run(context.Background(), LoopConfig{
+		Model: "test", SystemPrompt: "sys", UserPrompt: "go",
+		MaxTurns: 10, MaxReasoningOnlyRetries: 1,
+	})
+	if !errors.Is(err, ErrAssistantReasoningOnly) {
+		t.Fatalf("want ErrAssistantReasoningOnly after budget exhaustion, got %v", err)
+	}
+}
+
+func TestStripReasoningForWire(t *testing.T) {
+	transcript := []oai.Message{
+		{Role: oai.RoleSystem, Content: "sys"},
+		{Role: oai.RoleAssistant, ReasoningContent: "thinking", Content: "answer"},
+		{Role: oai.RoleUser, Content: "next"},
+	}
+	wire := stripReasoningForWire(transcript)
+	if wire[1].ReasoningContent != "" {
+		t.Errorf("wire copy must strip reasoning_content, got %q", wire[1].ReasoningContent)
+	}
+	if wire[1].Content != "answer" {
+		t.Errorf("wire copy must keep content, got %q", wire[1].Content)
+	}
+	if transcript[1].ReasoningContent != "thinking" {
+		t.Errorf("original transcript must be untouched, got %q", transcript[1].ReasoningContent)
+	}
 }

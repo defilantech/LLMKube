@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -130,6 +131,15 @@ type LoopConfig struct {
 	// narration exhausts the budget. <= 0 falls back to
 	// DefaultMaxNoToolCallRetries.
 	MaxNoToolCallRetries int
+
+	// MaxReasoningOnlyRetries bounds the separate streak for turns where
+	// a hybrid-thinking model emitted reasoning_content but no tool call
+	// and no content (#650). Such a turn is a model mid-thought, not a
+	// model narrating prose, so it gets a gentler continuation nudge and
+	// a roomier budget than MaxNoToolCallRetries before the loop gives
+	// up with ErrAssistantReasoningOnly. Resets after any tool-calling
+	// turn. <= 0 falls back to DefaultMaxReasoningOnlyRetries.
+	MaxReasoningOnlyRetries int
 }
 
 // DefaultContextWindowTokens is the budget used when LoopConfig.ContextWindowTokens
@@ -144,6 +154,14 @@ const DefaultContextWindowTokens = 32768
 // submit_result, without letting a model that simply refuses to call
 // tools spin to MaxTurns.
 const DefaultMaxNoToolCallRetries = 2
+
+// DefaultMaxReasoningOnlyRetries is the budget used when
+// LoopConfig.MaxReasoningOnlyRetries is <= 0. Thinking models pause
+// mid-reasoning more often than prose models narrate, so the default is
+// roomier than DefaultMaxNoToolCallRetries; four consecutive
+// reasoning-only turns with no action means the model is circling, not
+// converging.
+const DefaultMaxReasoningOnlyRetries = 4
 
 // DefaultObservationWindowTurns is the floor used when
 // LoopConfig.ObservationWindowTurns is zero. Three recent tool results
@@ -225,6 +243,24 @@ func LoopBudgetExhaustedEnvelope(turn int) *ToolResult {
 // system-prompt iterations should make it rare.
 var ErrAssistantNoToolCalls = errors.New("loop: assistant turn had no tool_calls")
 
+// ErrAssistantReasoningOnly is returned when a hybrid-thinking model
+// exhausts MaxReasoningOnlyRetries with turns that carry
+// reasoning_content but no tool call and no content (#650). Distinct
+// from ErrAssistantNoToolCalls so the failure taxonomy can tell "the
+// model narrated prose" from "the model thought itself in circles."
+var ErrAssistantReasoningOnly = errors.New("loop: assistant turns carried only reasoning, no tool_calls")
+
+// ReasoningOnlyNudgeMessage is the continuation the loop appends after
+// a reasoning-only turn. Unlike NoToolCallNudgeMessage it does not
+// scold: the model was mid-thought, so the correction is "act on the
+// plan you just reasoned out." Exported so tests can assert on it.
+func ReasoningOnlyNudgeMessage() string {
+	return "Your previous reply contained only internal reasoning and no " +
+		"tool call. Continue from that reasoning and emit the tool call " +
+		"for your next action now. If your review or task is complete, " +
+		"call submit_result with your verdict."
+}
+
 // NoToolCallNudgeMessage is the corrective the loop appends as a user
 // message after a turn that returned text but no tool_calls. Every agent
 // finishes through a tool (submit_result); a prose-only reply makes no
@@ -279,6 +315,9 @@ func (l *Loop) Run(ctx context.Context, cfg LoopConfig) (*LoopResult, error) {
 	if cfg.MaxNoToolCallRetries <= 0 {
 		cfg.MaxNoToolCallRetries = DefaultMaxNoToolCallRetries
 	}
+	if cfg.MaxReasoningOnlyRetries <= 0 {
+		cfg.MaxReasoningOnlyRetries = DefaultMaxReasoningOnlyRetries
+	}
 	// Loop-wide wall-clock budget (#532). Distinct from the per-request
 	// header timeout baked into the OAI client: this bounds the whole
 	// run, so one slow long-context turn can't hang past the budget, and
@@ -302,6 +341,10 @@ func (l *Loop) Run(ctx context.Context, cfg LoopConfig) (*LoopResult, error) {
 	// a tool call. It resets to zero after any successful tool-calling
 	// turn, so only sustained narration exhausts MaxNoToolCallRetries.
 	noToolCallStreak := 0
+	// reasoningOnlyStreak is the sibling counter for reasoning-only
+	// turns (#650); separate so a thinking model's pauses don't consume
+	// the prose-narration budget and vice versa.
+	reasoningOnlyStreak := 0
 
 	for turn := 1; turn <= cfg.MaxTurns; turn++ {
 		res.Turns = turn
@@ -344,11 +387,27 @@ func (l *Loop) Run(ctx context.Context, cfg LoopConfig) (*LoopResult, error) {
 				}
 				return res, turnErr
 			}
+			// Reasoning-only recovery (#650): the model was mid-thought,
+			// not narrating. Continue it with a gentler nudge on its own
+			// roomier budget; the reasoning itself is already in the
+			// transcript for archaeology.
+			if errors.Is(turnErr, ErrAssistantReasoningOnly) {
+				if reasoningOnlyStreak < cfg.MaxReasoningOnlyRetries {
+					reasoningOnlyStreak++
+					res.Transcript = append(res.Transcript, oai.Message{
+						Role:    oai.RoleUser,
+						Content: ReasoningOnlyNudgeMessage(),
+					})
+					continue
+				}
+				return res, turnErr
+			}
 			return res, turnErr
 		}
 
-		// A successful tool-calling turn clears the no-tool-call streak.
+		// A successful tool-calling turn clears both streaks.
 		noToolCallStreak = 0
+		reasoningOnlyStreak = 0
 
 		// Consult the progress monitor. The most recent assistant
 		// message in the transcript has this turn's tool_calls.
@@ -385,6 +444,32 @@ func (l *Loop) Run(ctx context.Context, cfg LoopConfig) (*LoopResult, error) {
 	return res, ErrMaxTurnsExhausted
 }
 
+// stripReasoningForWire returns a wire view of the transcript with
+// reasoning_content removed from assistant messages. The transcript
+// keeps the reasoning for the persisted ConfigMap; the wire drops it,
+// mirroring how chat templates exclude think blocks from history, so
+// past reasoning never re-enters the context window or the token
+// budget (#650). Copies lazily: if no message carries reasoning, the
+// input slice is returned as-is.
+func stripReasoningForWire(msgs []oai.Message) []oai.Message {
+	needsCopy := false
+	for i := range msgs {
+		if msgs[i].ReasoningContent != "" {
+			needsCopy = true
+			break
+		}
+	}
+	if !needsCopy {
+		return msgs
+	}
+	wire := make([]oai.Message, len(msgs))
+	copy(wire, msgs)
+	for i := range wire {
+		wire[i].ReasoningContent = ""
+	}
+	return wire
+}
+
 // mostRecentAssistantToolCalls walks the transcript backwards and
 // returns the tool_calls from the latest assistant message. Empty if
 // no assistant message exists. Used by the progress monitor to inspect
@@ -413,8 +498,9 @@ func (l *Loop) runOneTurn(ctx context.Context, cfg LoopConfig, schemas []oai.Too
 	start := time.Now()
 
 	req := oai.ChatRequest{
-		Model:       cfg.Model,
-		Messages:    maskTranscriptForWire(res.Transcript, cfg.ObservationWindowTurns, cfg.ContextWindowTokens),
+		Model: cfg.Model,
+		Messages: stripReasoningForWire(
+			maskTranscriptForWire(res.Transcript, cfg.ObservationWindowTurns, cfg.ContextWindowTokens)),
 		Tools:       schemas,
 		Temperature: cfg.Temperature,
 	}
@@ -439,6 +525,14 @@ func (l *Loop) runOneTurn(ctx context.Context, cfg LoopConfig, schemas []oai.Too
 	res.Transcript = append(res.Transcript, msg)
 
 	if len(msg.ToolCalls) == 0 {
+		// Distinguish a thinking model mid-reasoning (reasoning_content
+		// present, no prose) from a model narrating its conclusion as
+		// prose. The two get different correctives and budgets (#650).
+		if msg.ReasoningContent != "" && strings.TrimSpace(msg.Content) == "" {
+			err := fmt.Errorf("turn %d: %w", res.Turns, ErrAssistantReasoningOnly)
+			span.RecordError(err)
+			return err
+		}
 		err := fmt.Errorf("turn %d: %w", res.Turns, ErrAssistantNoToolCalls)
 		span.RecordError(err)
 		return err

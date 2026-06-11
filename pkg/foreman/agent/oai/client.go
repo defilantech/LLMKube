@@ -361,6 +361,7 @@ func (a *chatAggregator) absorb(chunk ChatChunk) {
 			ch.Message.Role = cd.Delta.Role
 		}
 		ch.Message.Content += cd.Delta.Content
+		ch.Message.ReasoningContent += cd.Delta.ReasoningContent
 
 		// Tool call fragments arrive keyed by their own per-message
 		// Index (distinct from the choice index). Aggregate into the
