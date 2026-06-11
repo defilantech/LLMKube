@@ -96,6 +96,21 @@ harness-authoritative, and the verdict now inherits that property:
 a verdict that contradicts the harness's evidence check cannot
 drive the cascade rule on its own.
 
+## Hybrid-thinking models
+
+Since [#651](https://github.com/defilantech/LLMKube/pull/651) the
+loop understands `reasoning_content`: a turn a thinking model spends
+reasoning without emitting a tool call gets a continuation nudge
+(bounded by `MaxReasoningOnlyRetries`, default 4) instead of the
+prose corrective, the reasoning is preserved in the transcript
+ConfigMap, and it is stripped from the wire so past thinking never
+re-enters the context budget. Before this, thinking models (North
+Mini Code, Qwen-family with reasoning enabled, Mellum2-Thinking)
+either death-spiraled in no-tool-call nudges or had to run with
+reasoning disabled via
+`InferenceService.spec.extraArgs: ["--reasoning-budget", "0"]`,
+which degrades models trained to reason before acting.
+
 ## What v0.5 changes
 
 The current `Agent` CRD shape doesn't carry an explicit tool
