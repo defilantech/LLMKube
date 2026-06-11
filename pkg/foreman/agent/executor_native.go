@@ -404,6 +404,16 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 			return e.incompleteResult(start, transcriptRef, loopRes,
 				foremanv1alpha1.FailureModelMisunderstood,
 				"model returned text without tool_calls; loop cannot make progress"), nil
+		case errors.Is(loopErr, ErrAssistantReasoningOnly):
+			// A thinking model that exhausted its reasoning-only budget
+			// (#650/#651) is a model behavior outcome, not an
+			// infrastructure failure: record INCOMPLETE and persist the
+			// transcript (the reasoning trace is the evidence an
+			// operator needs) instead of bubbling an ExecutorError that
+			// drops both.
+			return e.incompleteResult(start, transcriptRef, loopRes,
+				foremanv1alpha1.FailureModelMisunderstood,
+				"model exhausted its reasoning-only budget without emitting a tool call"), nil
 		case errors.Is(loopErr, context.Canceled), errors.Is(loopErr, context.DeadlineExceeded):
 			return e.incompleteResult(start, transcriptRef, loopRes,
 				foremanv1alpha1.FailureTimeout,
