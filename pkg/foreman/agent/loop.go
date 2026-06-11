@@ -465,7 +465,20 @@ func stripReasoningForWire(msgs []oai.Message) []oai.Message {
 	wire := make([]oai.Message, len(msgs))
 	copy(wire, msgs)
 	for i := range wire {
+		if wire[i].ReasoningContent == "" {
+			continue
+		}
 		wire[i].ReasoningContent = ""
+		// A reasoning-only turn would become a fully empty assistant
+		// message, which llama-server rejects with 400 ("Assistant
+		// message must contain either 'content' or 'tool_calls'!"),
+		// poisoning every later turn of the conversation. Leave a
+		// placeholder so the template stays valid and the adjacent
+		// continuation nudge still reads coherently.
+		if wire[i].Role == oai.RoleAssistant &&
+			strings.TrimSpace(wire[i].Content) == "" && len(wire[i].ToolCalls) == 0 {
+			wire[i].Content = "[paused to reason internally; no action taken this turn]"
+		}
 	}
 	return wire
 }

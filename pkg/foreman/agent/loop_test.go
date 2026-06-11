@@ -646,3 +646,25 @@ func TestStripReasoningForWire(t *testing.T) {
 		t.Errorf("original transcript must be untouched, got %q", transcript[1].ReasoningContent)
 	}
 }
+
+func TestStripReasoningForWire_NeverEmptiesAssistantMessage(t *testing.T) {
+	// Stripping reasoning from a reasoning-only assistant turn must not
+	// leave an empty assistant message on the wire: llama-server rejects
+	// the request with 400 "Assistant message must contain either
+	// 'content' or 'tool_calls'!", poisoning every subsequent turn of
+	// the conversation.
+	transcript := []oai.Message{
+		{Role: oai.RoleAssistant, ReasoningContent: "thinking only, no action"},
+		{Role: oai.RoleUser, Content: ReasoningOnlyNudgeMessage()},
+	}
+	wire := stripReasoningForWire(transcript)
+	if wire[0].ReasoningContent != "" {
+		t.Errorf("reasoning must be stripped, got %q", wire[0].ReasoningContent)
+	}
+	if wire[0].Content == "" && len(wire[0].ToolCalls) == 0 {
+		t.Errorf("wire assistant message must carry content or tool_calls after stripping; got empty message")
+	}
+	if transcript[0].ReasoningContent == "" || transcript[0].Content != "" {
+		t.Errorf("original transcript must be untouched: %+v", transcript[0])
+	}
+}
