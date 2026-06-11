@@ -5,6 +5,21 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.3](https://github.com/defilantech/LLMKube/compare/v0.8.2...v0.8.3) (2026-06-11)
+
+
+### Features
+
+* **foreman/loop:** support hybrid-thinking models via reasoning_content ([#651](https://github.com/defilantech/LLMKube/issues/651)) ([b178de2](https://github.com/defilantech/LLMKube/commit/b178de2ad7aaf225ec241ef2deb291cce92b10da))
+* **foreman/reviewer:** computable scope-overlap check demotes drifted GO verdicts ([#648](https://github.com/defilantech/LLMKube/issues/648)) ([8afe0c1](https://github.com/defilantech/LLMKube/commit/8afe0c1813a3e4ffcb743b0821d54194aea9f40a))
+* **foreman/reviewer:** demote unverifiable review verdicts to NO-GO ([#645](https://github.com/defilantech/LLMKube/issues/645)) ([188dacd](https://github.com/defilantech/LLMKube/commit/188dacd04dcb13d62fee660f55efa2dd855051ca))
+
+
+### Bug Fixes
+
+* **foreman/executor:** map reasoning-only exhaustion to INCOMPLETE ([#652](https://github.com/defilantech/LLMKube/issues/652)) ([d2f453e](https://github.com/defilantech/LLMKube/commit/d2f453ea8e2fab9aff94590d7937623b85c94a0a))
+* **foreman/loop:** keep wire-stripped reasoning-only turns template-valid ([#653](https://github.com/defilantech/LLMKube/issues/653)) ([5ec14f6](https://github.com/defilantech/LLMKube/commit/5ec14f6fac87c708bf8fb94c33f96862c8740da7))
+
 ## [0.8.2](https://github.com/defilantech/LLMKube/compare/v0.8.1...v0.8.2) (2026-06-10)
 
 
