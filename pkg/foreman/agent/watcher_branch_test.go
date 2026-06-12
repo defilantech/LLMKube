@@ -26,11 +26,24 @@ import (
 	foremanv1alpha1 "github.com/defilantech/llmkube/api/foreman/v1alpha1"
 )
 
+// pendingTaskClaimedAt is a fixed second-precision timestamp used by
+// pendingTask so that the fake-client JSON round-trip (which truncates
+// sub-seconds) preserves the value and the ownership guard can compare it
+// reliably against the in-memory copy.
+var pendingTaskClaimedAt = metav1.NewTime(time.Unix(1_700_000_000, 0))
+
+// pendingTask returns an AgenticTask in phase=Running claimed by "coder".
+// The AssignedNode and ClaimedAt fields satisfy the ownership guard added in
+// #668: tests that call patchTerminal directly must present a live object
+// that matches the node name and claim timestamp on the in-memory copy.
 func pendingTask(name string) *foremanv1alpha1.AgenticTask {
+	ts := pendingTaskClaimedAt
 	return &foremanv1alpha1.AgenticTask{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
 		Status: foremanv1alpha1.AgenticTaskStatus{
-			Phase: foremanv1alpha1.AgenticTaskPhaseRunning,
+			Phase:        foremanv1alpha1.AgenticTaskPhaseRunning,
+			AssignedNode: "coder",
+			ClaimedAt:    &ts,
 		},
 	}
 }

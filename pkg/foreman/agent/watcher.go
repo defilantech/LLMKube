@@ -294,6 +294,22 @@ func (w *AgenticTaskWatcher) patchTerminal(
 	if err := w.Client.Get(ctx, key, &fresh); err != nil {
 		return fmt.Errorf("refetch %s: %w", key, err)
 	}
+
+	// Ownership guard (#668): if the controller expired this claim (#669) or
+	// another node re-claimed the task while we were partitioned, this agent
+	// no longer owns the task and must not write a terminal status over the
+	// new owner's state.
+	if fresh.Status.AssignedNode != w.NodeName ||
+		fresh.Status.ClaimedAt == nil ||
+		t.Status.ClaimedAt == nil ||
+		!fresh.Status.ClaimedAt.Equal(t.Status.ClaimedAt) {
+		logf.FromContext(ctx).WithName("agentictask-watcher").WithValues("task", t.Name).
+			Info("terminal patch skipped: task no longer owned by this agent",
+				"assignedNode", fresh.Status.AssignedNode,
+				"thisNode", w.NodeName)
+		return nil
+	}
+
 	patch := client.MergeFrom(fresh.DeepCopy())
 	now := metav1.Now()
 	fresh.Status.FinishedAt = &now
