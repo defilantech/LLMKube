@@ -29,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 )
@@ -63,82 +64,61 @@ func (r *ServiceRegistry) RegisterEndpoint(
 	// Sanitize service name (replace dots with dashes for DNS-1035 compliance)
 	serviceName := sanitizeServiceName(isvc.Name)
 
-	// Create or update Service
 	service := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      serviceName,
-			Namespace: isvc.Namespace,
-			Labels: map[string]string{
-				"app":                          isvc.Name,
-				"llmkube.ai/managed-by":        "metal-agent",
-				"llmkube.ai/inference-service": isvc.Name,
-			},
-			Annotations: map[string]string{
-				"llmkube.ai/metal-accelerated": "true",
-				"llmkube.ai/native-process":    "true",
-			},
-		},
-		Spec: corev1.ServiceSpec{
-			Type: corev1.ServiceTypeClusterIP,
-			Ports: []corev1.ServicePort{
-				{
-					Name:       "http",
-					Port:       8080,
-					TargetPort: intstr.FromInt(port),
-					Protocol:   corev1.ProtocolTCP,
-				},
-			},
-			// Note: No selector - we'll manually manage Endpoints
-		},
+		ObjectMeta: metav1.ObjectMeta{Name: serviceName, Namespace: isvc.Namespace},
 	}
-
-	if err := r.client.Create(ctx, service); err != nil {
-		// Try update if already exists
-		if err := r.client.Update(ctx, service); err != nil {
-			return fmt.Errorf("failed to create/update service: %w", err)
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.client, service, func() error {
+		service.Labels = map[string]string{
+			"app":                          isvc.Name,
+			"llmkube.ai/managed-by":        "metal-agent",
+			"llmkube.ai/inference-service": isvc.Name,
 		}
+		service.Annotations = map[string]string{
+			"llmkube.ai/metal-accelerated": "true",
+			"llmkube.ai/native-process":    "true",
+		}
+		service.Spec.Type = corev1.ServiceTypeClusterIP
+		service.Spec.Ports = []corev1.ServicePort{{
+			Name:       "http",
+			Port:       8080,
+			TargetPort: intstr.FromInt(port),
+			Protocol:   corev1.ProtocolTCP,
+		}}
+		// No selector: Endpoints are managed manually.
+		service.Spec.Selector = nil
+		return nil
+	}); err != nil {
+		return fmt.Errorf("failed to create/update service: %w", err)
 	}
 
-	// Create or update Endpoints to point to the host
 	//nolint:staticcheck // SA1019: Endpoints API is still functional and appropriate for manual endpoint management
 	endpoints := &corev1.Endpoints{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      serviceName,
-			Namespace: isvc.Namespace,
-			Labels: map[string]string{
-				"app":                          isvc.Name,
-				"llmkube.ai/managed-by":        "metal-agent",
-				"llmkube.ai/inference-service": isvc.Name,
-			},
-		},
-		//nolint:staticcheck // SA1019: EndpointSubset still functional
-		Subsets: []corev1.EndpointSubset{
-			{
-				Addresses: []corev1.EndpointAddress{
-					{
-						IP: r.resolveHostIP(),
-						TargetRef: &corev1.ObjectReference{
-							Kind: "Pod",
-							Name: fmt.Sprintf("%s-metal", isvc.Name),
-						},
-					},
-				},
-				Ports: []corev1.EndpointPort{
-					{
-						Name:     "http",
-						Port:     int32(port), //nolint:gosec // G115: TCP port numbers 0-65535 fit in int32
-						Protocol: corev1.ProtocolTCP,
-					},
-				},
-			},
-		},
+		ObjectMeta: metav1.ObjectMeta{Name: serviceName, Namespace: isvc.Namespace},
 	}
-
-	if err := r.client.Create(ctx, endpoints); err != nil {
-		// Try update if already exists
-		if err := r.client.Update(ctx, endpoints); err != nil {
-			return fmt.Errorf("failed to create/update endpoints: %w", err)
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.client, endpoints, func() error {
+		endpoints.Labels = map[string]string{
+			"app":                          isvc.Name,
+			"llmkube.ai/managed-by":        "metal-agent",
+			"llmkube.ai/inference-service": isvc.Name,
 		}
+		//nolint:staticcheck // SA1019: EndpointSubset still functional
+		endpoints.Subsets = []corev1.EndpointSubset{{
+			Addresses: []corev1.EndpointAddress{{
+				IP: r.resolveHostIP(),
+				TargetRef: &corev1.ObjectReference{
+					Kind: "Pod",
+					Name: fmt.Sprintf("%s-metal", isvc.Name),
+				},
+			}},
+			Ports: []corev1.EndpointPort{{
+				Name:     "http",
+				Port:     int32(port), //nolint:gosec // G115: TCP ports fit in int32
+				Protocol: corev1.ProtocolTCP,
+			}},
+		}}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("failed to create/update endpoints: %w", err)
 	}
 
 	r.logger.Infow("registered endpoint",

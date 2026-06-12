@@ -489,3 +489,46 @@ func TestRegisterEndpoint_ExplicitHostIP(t *testing.T) {
 		t.Errorf("Endpoint IP = %q, want %q", endpoints.Subsets[0].Addresses[0].IP, "10.0.0.42")
 	}
 }
+
+// TestRegisterEndpoint_PortChange verifies that calling RegisterEndpoint
+// twice for the same InferenceService with a new port (respawn scenario) updates
+// both the Service targetPort and the Endpoints port rather than leaving stale values.
+func TestRegisterEndpoint_PortChange(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = inferencev1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := NewServiceRegistry(k8sClient, "", newNopLogger())
+
+	isvc := &inferencev1alpha1.InferenceService{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-model", Namespace: "default"},
+		Spec:       inferencev1alpha1.InferenceServiceSpec{ModelRef: "test-model"},
+	}
+
+	if err := registry.RegisterEndpoint(context.Background(), isvc, 50051); err != nil {
+		t.Fatalf("first RegisterEndpoint: %v", err)
+	}
+	// Respawn scenario: same service, new dynamic port.
+	if err := registry.RegisterEndpoint(context.Background(), isvc, 50099); err != nil {
+		t.Fatalf("second RegisterEndpoint (port change): %v", err)
+	}
+
+	//nolint:staticcheck // SA1019: Endpoints API is still functional and matches production code under test
+	eps := &corev1.Endpoints{}
+	if err := k8sClient.Get(context.Background(),
+		types.NamespacedName{Name: "test-model", Namespace: "default"}, eps); err != nil {
+		t.Fatalf("get endpoints: %v", err)
+	}
+	if got := eps.Subsets[0].Ports[0].Port; got != 50099 {
+		t.Fatalf("endpoints port = %d, want 50099 (stale port left behind)", got)
+	}
+	svc := &corev1.Service{}
+	if err := k8sClient.Get(context.Background(),
+		types.NamespacedName{Name: "test-model", Namespace: "default"}, svc); err != nil {
+		t.Fatalf("get service: %v", err)
+	}
+	if got := svc.Spec.Ports[0].TargetPort.IntValue(); got != 50099 {
+		t.Fatalf("service targetPort = %d, want 50099", got)
+	}
+}
