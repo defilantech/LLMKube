@@ -113,7 +113,7 @@ var _ = Describe("InferenceService Deployment selector migration (#606)", func()
 		Expect(k8sClient.Get(ctx, nn, isvc)).To(Succeed())
 		model := &inferencev1alpha1.Model{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: modelName, Namespace: "default"}, model)).To(Succeed())
-		_, _, _, err := reconciler.reconcileDeployment(ctx, isvc, model, 1, true, false)
+		_, _, _, _, err := reconciler.reconcileDeployment(ctx, isvc, model, 1, true, false)
 		Expect(err).NotTo(HaveOccurred(), "controller must migrate the selector, not loop on an immutable update")
 
 		By("the Deployment now carries the current selector")

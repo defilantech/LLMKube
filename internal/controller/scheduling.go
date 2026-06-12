@@ -63,7 +63,7 @@ type SchedulingInfo struct {
 	WaitingFor string
 }
 
-func (r *InferenceServiceReconciler) determinePhase(ctx context.Context, isvc *inferencev1alpha1.InferenceService, readyReplicas, desiredReplicas int32, isMetal bool, deployment *appsv1.Deployment) (string, *SchedulingInfo) {
+func (r *InferenceServiceReconciler) determinePhase(ctx context.Context, isvc *inferencev1alpha1.InferenceService, readyReplicas, desiredReplicas int32, isMetal bool, deployment *appsv1.Deployment, snap *metalSnapshot) (string, *SchedulingInfo) {
 	log := logf.FromContext(ctx)
 
 	if readyReplicas == desiredReplicas && readyReplicas > 0 {
@@ -85,6 +85,20 @@ func (r *InferenceServiceReconciler) determinePhase(ctx context.Context, isvc *i
 		}
 	}
 	if isMetal {
+		if snap != nil {
+			switch snap.Kind {
+			case metalHBStale:
+				return PhaseCreating, &SchedulingInfo{
+					Status:  "AgentHeartbeatStale",
+					Message: fmt.Sprintf("metal-agent heartbeat stale (last seen %s); host may be offline", snap.RawHeartbeat),
+				}
+			case metalHBUnparseable:
+				return PhaseCreating, &SchedulingInfo{
+					Status:  "AgentHeartbeatStale",
+					Message: fmt.Sprintf("metal-agent heartbeat unparseable (value %q); host may be offline", snap.RawHeartbeat),
+				}
+			}
+		}
 		return PhaseCreating, &SchedulingInfo{
 			Status:  "WaitingForMetalAgent",
 			Message: "Waiting for the host metal-agent to fetch the model and register Endpoints",

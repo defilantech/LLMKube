@@ -267,7 +267,7 @@ var _ = Describe("determinePhase", func() {
 		isvc := &inferencev1alpha1.InferenceService{
 			ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
 		}
-		phase, info := reconciler.determinePhase(context.Background(), isvc, 2, 2, false, &appsv1.Deployment{})
+		phase, info := reconciler.determinePhase(context.Background(), isvc, 2, 2, false, &appsv1.Deployment{}, nil)
 		Expect(phase).To(Equal("Ready"))
 		Expect(info).To(BeNil())
 	})
@@ -276,7 +276,7 @@ var _ = Describe("determinePhase", func() {
 		isvc := &inferencev1alpha1.InferenceService{
 			ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
 		}
-		phase, info := reconciler.determinePhase(context.Background(), isvc, 1, 3, false, &appsv1.Deployment{})
+		phase, info := reconciler.determinePhase(context.Background(), isvc, 1, 3, false, &appsv1.Deployment{}, nil)
 		Expect(phase).To(Equal("Progressing"))
 		Expect(info).To(BeNil())
 	})
@@ -285,7 +285,7 @@ var _ = Describe("determinePhase", func() {
 		isvc := &inferencev1alpha1.InferenceService{
 			ObjectMeta: metav1.ObjectMeta{Name: "no-pods-test", Namespace: "default"},
 		}
-		phase, _ := reconciler.determinePhase(context.Background(), isvc, 0, 1, false, &appsv1.Deployment{})
+		phase, _ := reconciler.determinePhase(context.Background(), isvc, 0, 1, false, &appsv1.Deployment{}, nil)
 		Expect(phase).To(Equal("Creating"))
 	})
 
@@ -293,7 +293,7 @@ var _ = Describe("determinePhase", func() {
 		isvc := &inferencev1alpha1.InferenceService{
 			ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
 		}
-		phase, _ := reconciler.determinePhase(context.Background(), isvc, 0, 1, true, nil)
+		phase, _ := reconciler.determinePhase(context.Background(), isvc, 0, 1, true, nil, nil)
 		Expect(phase).To(Equal("Creating"))
 	})
 
@@ -301,7 +301,7 @@ var _ = Describe("determinePhase", func() {
 		isvc := &inferencev1alpha1.InferenceService{
 			ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
 		}
-		phase, info := reconciler.determinePhase(context.Background(), isvc, 0, 0, false, &appsv1.Deployment{})
+		phase, info := reconciler.determinePhase(context.Background(), isvc, 0, 0, false, &appsv1.Deployment{}, nil)
 		Expect(phase).To(Equal(PhaseStopped))
 		Expect(info).To(BeNil())
 	})
@@ -310,7 +310,7 @@ var _ = Describe("determinePhase", func() {
 		isvc := &inferencev1alpha1.InferenceService{
 			ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
 		}
-		phase, info := reconciler.determinePhase(context.Background(), isvc, 0, 0, true, nil)
+		phase, info := reconciler.determinePhase(context.Background(), isvc, 0, 0, true, nil, nil)
 		Expect(phase).To(Equal(PhaseStopped))
 		Expect(info).To(BeNil())
 	})

@@ -154,7 +154,7 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			"Model source is a HuggingFace repo ID (resolved by the runtime at startup); set spec.skipModelInit=true so the init container does not run")
 	}
 
-	deployment, readyReplicas, result, err := r.reconcileDeployment(ctx, inferenceService, model, desiredReplicas, modelReady, isMetal)
+	deployment, readyReplicas, metalSnap, result, err := r.reconcileDeployment(ctx, inferenceService, model, desiredReplicas, modelReady, isMetal)
 	if err != nil || result != nil {
 		if result != nil {
 			return *result, err
@@ -175,9 +175,22 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 
 	endpoint := r.constructEndpoint(inferenceService, service)
-	phase, schedulingInfo := r.determinePhase(ctx, inferenceService, readyReplicas, desiredReplicas, isMetal, deployment)
+	phase, schedulingInfo := r.determinePhase(ctx, inferenceService, readyReplicas, desiredReplicas, isMetal, deployment, metalSnap)
 
-	return r.updateStatusWithSchedulingInfo(ctx, inferenceService, phase, modelReady, readyReplicas, desiredReplicas, endpoint, "", schedulingInfo)
+	finalResult, statusErr := r.updateStatusWithSchedulingInfo(ctx, inferenceService, phase, modelReady, readyReplicas, desiredReplicas, endpoint, "", schedulingInfo)
+	if statusErr != nil {
+		return finalResult, statusErr
+	}
+
+	// On the metal path a heartbeat going stale generates no watch event, so
+	// force a periodic requeue when the Endpoints carry the annotation.
+	if isMetal {
+		if requeue := metalHeartbeatRequeueDuration(metalSnap); requeue > 0 {
+			finalResult.RequeueAfter = requeue
+		}
+	}
+
+	return finalResult, nil
 }
 
 func (r *InferenceServiceReconciler) getModelForInferenceService(ctx context.Context, isvc *inferencev1alpha1.InferenceService) (*inferencev1alpha1.Model, bool, *ctrl.Result, error) {
@@ -208,7 +221,7 @@ func (r *InferenceServiceReconciler) getModelForInferenceService(ctx context.Con
 	return model, modelReady, nil, nil
 }
 
-func (r *InferenceServiceReconciler) reconcileDeployment(ctx context.Context, isvc *inferencev1alpha1.InferenceService, model *inferencev1alpha1.Model, desiredReplicas int32, modelReady bool, isMetal bool) (*appsv1.Deployment, int32, *ctrl.Result, error) {
+func (r *InferenceServiceReconciler) reconcileDeployment(ctx context.Context, isvc *inferencev1alpha1.InferenceService, model *inferencev1alpha1.Model, desiredReplicas int32, modelReady bool, isMetal bool) (*appsv1.Deployment, int32, *metalSnapshot, *ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	if isMetal {
@@ -217,10 +230,10 @@ func (r *InferenceServiceReconciler) reconcileDeployment(ctx context.Context, is
 		// and the server is healthy. Derive readyReplicas from the Endpoints rather
 		// than blindly returning desiredReplicas, otherwise Phase reports Ready
 		// before the agent has done anything (issue #374).
-		readyReplicas := r.metalReadyEndpoints(ctx, isvc)
+		snap := r.metalEndpointSnapshot(ctx, isvc)
 		log.Info("Metal accelerator detected, skipping Deployment creation",
-			"readyEndpoints", readyReplicas, "desiredReplicas", desiredReplicas)
-		return nil, readyReplicas, nil, nil
+			"readyEndpoints", snap.ReadyReplicas, "desiredReplicas", desiredReplicas)
+		return nil, snap.ReadyReplicas, snap, nil, nil
 	}
 
 	// Surface non-fatal vLLM spec problems as a status condition before we
@@ -232,7 +245,7 @@ func (r *InferenceServiceReconciler) reconcileDeployment(ctx context.Context, is
 	deployment := r.constructDeployment(isvc, model, desiredReplicas)
 	if err := setControllerReferenceUnblocked(isvc, deployment, r.Scheme); err != nil {
 		log.Error(err, "Failed to set controller reference for Deployment")
-		return nil, 0, nil, err
+		return nil, 0, nil, nil, err
 	}
 
 	existingDeployment := &appsv1.Deployment{}
@@ -242,12 +255,12 @@ func (r *InferenceServiceReconciler) reconcileDeployment(ctx context.Context, is
 		if err := r.Create(ctx, deployment); err != nil {
 			log.Error(err, "Failed to create Deployment")
 			result, updateErr := r.updateStatusWithSchedulingInfo(ctx, isvc, PhaseFailed, modelReady, 0, desiredReplicas, "", "Failed to create Deployment", nil)
-			return nil, 0, &result, updateErr
+			return nil, 0, nil, &result, updateErr
 		}
-		return deployment, 0, nil, nil
+		return deployment, 0, nil, nil, nil
 	} else if err != nil {
 		log.Error(err, "Failed to get Deployment")
-		return nil, 0, nil, err
+		return nil, 0, nil, nil, err
 	}
 
 	// Deployment.spec.selector is immutable. A Deployment created by an older
@@ -264,18 +277,18 @@ func (r *InferenceServiceReconciler) reconcileDeployment(ctx context.Context, is
 			"newSelector", deployment.Spec.Selector)
 		if err := r.Delete(ctx, existingDeployment); err != nil && !apierrors.IsNotFound(err) {
 			log.Error(err, "Failed to delete stale Deployment for selector migration")
-			return nil, 0, nil, err
+			return nil, 0, nil, nil, err
 		}
 		if err := r.Create(ctx, deployment); err != nil {
 			if apierrors.IsAlreadyExists(err) {
 				// The old Deployment is still terminating; recreate on the
 				// next reconcile once its deletion has propagated.
-				return nil, 0, &ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+				return nil, 0, nil, &ctrl.Result{RequeueAfter: 2 * time.Second}, nil
 			}
 			log.Error(err, "Failed to recreate Deployment after selector change")
-			return nil, 0, nil, err
+			return nil, 0, nil, nil, err
 		}
-		return deployment, 0, nil, nil
+		return deployment, 0, nil, nil, nil
 	}
 
 	// Snapshot externally-set template metadata before the wholesale
@@ -306,10 +319,10 @@ func (r *InferenceServiceReconciler) reconcileDeployment(ctx context.Context, is
 	}
 	if err := r.Update(ctx, existingDeployment); err != nil {
 		log.Error(err, "Failed to update Deployment")
-		return nil, 0, nil, err
+		return nil, 0, nil, nil, err
 	}
 
-	return deployment, existingDeployment.Status.ReadyReplicas, nil, nil
+	return deployment, existingDeployment.Status.ReadyReplicas, nil, nil, nil
 }
 
 func (r *InferenceServiceReconciler) reconcileService(ctx context.Context, isvc *inferencev1alpha1.InferenceService, modelReady bool, desiredReplicas int32, isMetal bool) (*corev1.Service, *ctrl.Result, error) {
@@ -350,12 +363,42 @@ func (r *InferenceServiceReconciler) reconcileService(ctx context.Context, isvc 
 	return service, nil, nil
 }
 
-// metalReadyEndpoints returns the count of ready addresses on the Endpoints
-// object that the metal-agent is expected to populate when its host-side
-// llama-server has fetched the model and become healthy. The Endpoints object
-// shares the sanitized name of the metal stub Service (see reconcileService's
-// metal branch). Missing-or-unpopulated Endpoints return 0, which is the
-// correct readyReplicas value while we wait on the agent.
+// metalHeartbeatKind classifies the heartbeat annotation on a metal Endpoints
+// object so that callers can produce appropriately differentiated status
+// messages without re-fetching the Endpoints.
+type metalHeartbeatKind int
+
+const (
+	// metalHBNone: no Endpoints object exists yet (agent has not registered).
+	metalHBNone metalHeartbeatKind = iota
+	// metalHBLegacy: Endpoints exist but carry no heartbeat annotation (older agent).
+	metalHBLegacy
+	// metalHBFresh: Endpoints exist with a current, valid heartbeat.
+	metalHBFresh
+	// metalHBStale: Endpoints exist but the heartbeat timestamp has expired.
+	metalHBStale
+	// metalHBUnparseable: Endpoints exist but the heartbeat annotation cannot be parsed.
+	metalHBUnparseable
+)
+
+// metalSnapshot captures the result of a single Endpoints fetch for the metal
+// path. It is produced by metalEndpointSnapshot and consumed by
+// determinePhase and metalHeartbeatRequeueDuration, eliminating the second Get
+// that the old metalHeartbeatRequeue performed.
+type metalSnapshot struct {
+	ReadyReplicas int32
+	Kind          metalHeartbeatKind
+	// RawHeartbeat is the annotation value verbatim (empty when Kind == metalHBNone).
+	RawHeartbeat string
+	// ParseErr is set when Kind == metalHBUnparseable.
+	ParseErr error
+}
+
+// metalEndpointSnapshot fetches the Endpoints for isvc once and returns a
+// metalSnapshot summarising both the ready-replica count and the heartbeat
+// state. It is the single source of truth for the metal path; both
+// metalReadyEndpoints and metalHeartbeatRequeueDuration are thin wrappers
+// around it.
 //
 // We read core/v1 Endpoints (deprecated in k8s v1.33+) rather than
 // discovery/v1 EndpointSlice because pkg/agent/registry.go still creates
@@ -363,7 +406,7 @@ func (r *InferenceServiceReconciler) reconcileService(ctx context.Context, isvc 
 // as a follow-up; doing it in this PR would balloon scope.
 //
 //nolint:staticcheck // SA1019: see comment above; agent and controller migrate together
-func (r *InferenceServiceReconciler) metalReadyEndpoints(ctx context.Context, isvc *inferencev1alpha1.InferenceService) int32 {
+func (r *InferenceServiceReconciler) metalEndpointSnapshot(ctx context.Context, isvc *inferencev1alpha1.InferenceService) *metalSnapshot {
 	log := logf.FromContext(ctx)
 	endpoints := &corev1.Endpoints{}
 	name := sanitizeDNSName(isvc.Name)
@@ -372,8 +415,26 @@ func (r *InferenceServiceReconciler) metalReadyEndpoints(ctx context.Context, is
 		if !apierrors.IsNotFound(err) {
 			log.Error(err, "Failed to get Endpoints for metal accelerator", "name", name)
 		}
-		return 0
+		return &metalSnapshot{Kind: metalHBNone}
 	}
+
+	raw, hasAnnotation := endpoints.Annotations[inferencev1alpha1.AnnotationAgentHeartbeat]
+	if hasAnnotation {
+		ts, perr := time.Parse(time.RFC3339, raw)
+		if perr != nil {
+			log.Info("Metal endpoint heartbeat annotation unparseable; treating as not ready",
+				"name", name, "heartbeat", raw, "parseError", perr)
+			return &metalSnapshot{Kind: metalHBUnparseable, RawHeartbeat: raw, ParseErr: perr}
+		}
+		age := time.Since(ts)
+		if age > inferencev1alpha1.DefaultAgentHeartbeatTimeout {
+			log.Info("Metal endpoint heartbeat stale; treating as not ready",
+				"name", name, "heartbeat", raw, "age", age.Round(time.Second), "timeout", inferencev1alpha1.DefaultAgentHeartbeatTimeout)
+			return &metalSnapshot{Kind: metalHBStale, RawHeartbeat: raw}
+		}
+	}
+	// No annotation: legacy agent without heartbeats; fall through and count.
+
 	var ready int32
 	for _, subset := range endpoints.Subsets {
 		// In a kind/k8s cluster the agent typically registers a small handful
@@ -386,7 +447,40 @@ func (r *InferenceServiceReconciler) metalReadyEndpoints(ctx context.Context, is
 		}
 		ready += int32(n) //nolint:gosec // bounded above
 	}
-	return ready
+
+	kind := metalHBLegacy
+	if hasAnnotation {
+		kind = metalHBFresh
+	}
+	return &metalSnapshot{ReadyReplicas: ready, Kind: kind, RawHeartbeat: raw}
+}
+
+// metalReadyEndpoints is a convenience wrapper that returns only the
+// ready-replica count for callers that do not need the full snapshot (e.g.,
+// unit tests). Production reconcile paths use metalEndpointSnapshot directly.
+func (r *InferenceServiceReconciler) metalReadyEndpoints(ctx context.Context, isvc *inferencev1alpha1.InferenceService) int32 {
+	return r.metalEndpointSnapshot(ctx, isvc).ReadyReplicas
+}
+
+// metalHeartbeatRequeueDuration returns the RequeueAfter duration to use after
+// a successful metal reconcile. It operates on the already-fetched metalSnapshot
+// so no additional API call is needed.
+//
+// When the Endpoints carry a heartbeat annotation (fresh or stale) the
+// reconciler must periodically re-check staleness because no watch event fires
+// when a heartbeat simply ages out. We return half the timeout so we notice
+// expiry within one extra interval. Legacy agents (no annotation) and
+// not-yet-registered services (no Endpoints) need no forced requeue.
+func metalHeartbeatRequeueDuration(snap *metalSnapshot) time.Duration {
+	if snap == nil {
+		return 0
+	}
+	switch snap.Kind {
+	case metalHBFresh, metalHBStale:
+		return inferencev1alpha1.DefaultAgentHeartbeatTimeout / 2
+	default:
+		return 0
+	}
 }
 
 func needsSkipModelInit(isvc *inferencev1alpha1.InferenceService) bool {
