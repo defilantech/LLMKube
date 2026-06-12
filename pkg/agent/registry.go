@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 	corev1 "k8s.io/api/core/v1"
@@ -28,6 +29,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
@@ -40,6 +42,8 @@ type ServiceRegistry struct {
 	client client.Client
 	hostIP string // explicit host IP; if empty, auto-detect via DNS
 	logger *zap.SugaredLogger
+	// retryBackoff bounds RegisterEndpointWithRetry. Overridable in tests.
+	retryBackoff wait.Backoff
 }
 
 // NewServiceRegistry creates a new service registry.
@@ -51,6 +55,12 @@ func NewServiceRegistry(k8sClient client.Client, hostIP string, logger *zap.Suga
 		client: k8sClient,
 		hostIP: hostIP,
 		logger: logger,
+		retryBackoff: wait.Backoff{
+			Duration: 2 * time.Second,
+			Factor:   2,
+			Steps:    5,
+			Cap:      30 * time.Second,
+		},
 	}
 }
 
@@ -128,6 +138,33 @@ func (r *ServiceRegistry) RegisterEndpoint(
 		"port", port,
 	)
 
+	return nil
+}
+
+// RegisterEndpointWithRetry retries RegisterEndpoint with exponential backoff
+// so a brief API-server outage during a process respawn cannot strand stale
+// Endpoints (issue #657). All errors are treated as retriable: the agent has
+// no path to durable success other than the API server coming back.
+func (r *ServiceRegistry) RegisterEndpointWithRetry(
+	ctx context.Context,
+	isvc *inferencev1alpha1.InferenceService,
+	port int,
+) error {
+	var lastErr error
+	err := wait.ExponentialBackoffWithContext(ctx, r.retryBackoff, func(ctx context.Context) (bool, error) {
+		if lastErr = r.RegisterEndpoint(ctx, isvc, port); lastErr != nil {
+			r.logger.Warnw("endpoint registration failed; will retry",
+				"namespace", isvc.Namespace, "name", isvc.Name, "port", port, "error", lastErr)
+			return false, nil
+		}
+		return true, nil
+	})
+	if err != nil {
+		if lastErr == nil {
+			lastErr = err // ctx cancelled before the first attempt
+		}
+		return fmt.Errorf("endpoint registration failed after retries: %w", lastErr)
+	}
 	return nil
 }
 

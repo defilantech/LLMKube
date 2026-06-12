@@ -845,8 +845,8 @@ func (a *MetalAgent) ensureProcess(ctx context.Context, isvc *inferencev1alpha1.
 	processHealthy.WithLabelValues(isvc.Name, isvc.Namespace).Set(1)
 
 	// Register service endpoint in Kubernetes
-	if err := a.registry.RegisterEndpoint(ctx, isvc, process.Port); err != nil {
-		a.logger.Warnw(
+	if err := a.registry.RegisterEndpointWithRetry(ctx, isvc, process.Port); err != nil {
+		a.logger.Errorw(
 			"failed to register endpoint",
 			"namespace", isvc.Namespace,
 			"name", isvc.Name,

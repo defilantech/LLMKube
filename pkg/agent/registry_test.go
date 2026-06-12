@@ -18,13 +18,19 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 )
@@ -530,5 +536,94 @@ func TestRegisterEndpoint_PortChange(t *testing.T) {
 	}
 	if got := svc.Spec.Ports[0].TargetPort.IntValue(); got != 50099 {
 		t.Fatalf("service targetPort = %d, want 50099", got)
+	}
+}
+
+func TestRegisterEndpointWithRetry_TransientFailure(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = inferencev1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+
+	var calls int
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				calls++
+				if calls <= 2 {
+					return apierrors.NewServerTimeout(corev1.Resource("services"), "create", 1)
+				}
+				return c.Create(ctx, obj, opts...)
+			},
+		}).Build()
+	registry := NewServiceRegistry(k8sClient, "", newNopLogger())
+	registry.retryBackoff = wait.Backoff{Duration: time.Millisecond, Factor: 2, Steps: 5}
+
+	isvc := &inferencev1alpha1.InferenceService{
+		ObjectMeta: metav1.ObjectMeta{Name: "retry-model", Namespace: "default"},
+		Spec:       inferencev1alpha1.InferenceServiceSpec{ModelRef: "retry-model"},
+	}
+	if err := registry.RegisterEndpointWithRetry(context.Background(), isvc, 50051); err != nil {
+		t.Fatalf("expected retries to absorb 2 transient failures, got: %v", err)
+	}
+	// The interceptor fires on every Create call. RegisterEndpoint calls
+	// CreateOrUpdate for Service (attempt 1: fail, attempt 2: fail, attempt 3:
+	// success = 3 Create calls across 2 retry iterations + 1 success) plus one
+	// Create for Endpoints on the winning attempt, totalling 4 calls.
+	if calls != 4 {
+		t.Fatalf("expected 4 Create calls (2 service failures + 1 service success + 1 endpoints), got %d", calls)
+	}
+}
+
+func TestRegisterEndpointWithRetry_Exhausted(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = inferencev1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				return apierrors.NewServerTimeout(corev1.Resource("services"), "create", 1)
+			},
+		}).Build()
+	registry := NewServiceRegistry(k8sClient, "", newNopLogger())
+	registry.retryBackoff = wait.Backoff{Duration: time.Millisecond, Factor: 2, Steps: 3}
+
+	isvc := &inferencev1alpha1.InferenceService{
+		ObjectMeta: metav1.ObjectMeta{Name: "doomed-model", Namespace: "default"},
+		Spec:       inferencev1alpha1.InferenceServiceSpec{ModelRef: "doomed-model"},
+	}
+	err := registry.RegisterEndpointWithRetry(context.Background(), isvc, 50051)
+	if err == nil {
+		t.Fatal("expected error after exhausted retries, got nil")
+	}
+	// The underlying server-timeout cause must survive the fmt.Errorf wrap.
+	if !apierrors.IsServerTimeout(errors.Unwrap(err)) {
+		t.Fatalf("expected wrapped cause to be a server-timeout API error, got: %v", errors.Unwrap(err))
+	}
+}
+
+// TestRegisterEndpointWithRetry_ContextCancelled verifies that when the context
+// is already cancelled before the first attempt, the returned error wraps
+// context.Canceled rather than rendering as a garbled %!w(<nil>).
+func TestRegisterEndpointWithRetry_ContextCancelled(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = inferencev1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := NewServiceRegistry(k8sClient, "", newNopLogger())
+	registry.retryBackoff = wait.Backoff{Duration: time.Millisecond, Factor: 2, Steps: 5}
+
+	isvc := &inferencev1alpha1.InferenceService{
+		ObjectMeta: metav1.ObjectMeta{Name: "cancelled-model", Namespace: "default"},
+		Spec:       inferencev1alpha1.InferenceServiceSpec{ModelRef: "cancelled-model"},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel before the first attempt
+
+	err := registry.RegisterEndpointWithRetry(ctx, isvc, 50051)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("want context.Canceled in error chain, got: %v", err)
 	}
 }
