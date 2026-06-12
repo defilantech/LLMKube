@@ -179,7 +179,15 @@ func coderJobResultToResult(kind string, start time.Time, cjr CoderJobResult) *R
 		return r
 	case string(foremanv1alpha1.AgenticTaskVerdictIncomplete):
 		r := NewResult(kind, foremanv1alpha1.AgenticTaskVerdictIncomplete, cjr.Summary, time.Since(start))
-		r.FailureReason = foremanv1alpha1.FailureMaxTurnsExhausted
+		// Prefer the reason the in-pod run-task already computed (e.g.
+		// FailureModelReportedError when the model called submit_result with
+		// verdict=ERROR). Fall back to FailureMaxTurnsExhausted only when no
+		// structured reason was embedded in the FOREMAN-RESULT envelope.
+		if cjr.FailureReason != "" {
+			r.FailureReason = foremanv1alpha1.AgenticTaskFailureReason(cjr.FailureReason)
+		} else {
+			r.FailureReason = foremanv1alpha1.FailureMaxTurnsExhausted
+		}
 		r.Extra = map[string]any{
 			"outcome":        "INCOMPLETE",
 			"intendedBranch": cjr.Branch,

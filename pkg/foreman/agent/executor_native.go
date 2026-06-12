@@ -435,7 +435,7 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 			"loop returned nil error but no terminal result"), nil
 	}
 
-	verdict := foremanv1alpha1.AgenticTaskVerdict(loopRes.Terminal.Verdict)
+	verdict, normalizedReason := normalizeModelVerdict(loopRes.Terminal.Verdict)
 
 	// 9. Non-GO verdicts: no commit, no push, just record the model's
 	// stated outcome and return.
@@ -493,7 +493,18 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 			}
 			logReviewerFindings(log, loopRes.Terminal.Extra)
 		}
-		return e.modelDecidedResult(start, transcriptRef, loopRes, verdict), nil
+		r := e.modelDecidedResult(start, transcriptRef, loopRes, verdict)
+		// Attach the normalized failure reason from the model-to-CRD
+		// mapping (e.g. ERROR→INCOMPLETE + ModelReportedError for #649). Only
+		// set when the normalizer produced a reason AND the result does
+		// not already carry one. The guard is defensive: nothing between
+		// modelDecidedResult() and here sets r.FailureReason today, but
+		// future reason-setting paths (e.g. additional enforcement passes)
+		// should not be silently clobbered.
+		if normalizedReason != "" && r.FailureReason == "" {
+			r.FailureReason = normalizedReason
+		}
+		return r, nil
 	}
 
 	// 10. GO verdict: check for changes first, then commit + push. If
@@ -584,8 +595,9 @@ func (e *NativeAgentLoopExecutor) executeDeterministic(
 	// task at least reaches Succeeded; the operator can inspect
 	// Result.Extra.toolOutput for what happened.
 	verdict := foremanv1alpha1.AgenticTaskVerdictGo
+	var detNormalizedReason foremanv1alpha1.AgenticTaskFailureReason
 	if result.Terminal && result.Verdict != "" {
-		verdict = foremanv1alpha1.AgenticTaskVerdict(result.Verdict)
+		verdict, detNormalizedReason = normalizeModelVerdict(result.Verdict)
 	}
 
 	summary := result.Summary
@@ -604,6 +616,11 @@ func (e *NativeAgentLoopExecutor) executeDeterministic(
 		r.FailureReason = foremanv1alpha1.FailureGateFailed
 	case foremanv1alpha1.AgenticTaskVerdictGateError:
 		r.FailureReason = foremanv1alpha1.FailureGateError
+	}
+	// Apply the model-to-CRD normalization reason (#649) only when the
+	// switch above did not already set a more-specific gate reason.
+	if detNormalizedReason != "" && r.FailureReason == "" {
+		r.FailureReason = detNormalizedReason
 	}
 	r.Extra = map[string]any{
 		"outcome":        "",
@@ -1601,4 +1618,24 @@ func durationFromSeconds(secs int32, fallbackSecs int) time.Duration {
 		return time.Duration(fallbackSecs) * time.Second
 	}
 	return time.Duration(secs) * time.Second
+}
+
+// normalizeModelVerdict maps the model-facing verdict vocabulary onto the
+// AgenticTaskVerdict enum. The submit_result tool contract allows "ERROR"
+// (model-reported inability to complete the task: a reviewer's
+// could-not-review, a coder's unrecoverable-error), which the CRD
+// intentionally does not store as a verdict: it becomes INCOMPLETE with
+// FailureModelReportedError so callers can distinguish model-reported
+// inability from harness-detected failures (issue #649; per #644).
+//
+// For all other verdicts the raw string is cast directly to the typed enum.
+// GATE-* and INCOMPLETE also arrive via run_gate_job and loop-synthesized
+// envelopes, not only submit_result. An unknown value here is a harness bug
+// rather than a model quirk; the watcher backstop handles any remaining
+// out-of-enum strings as a follow-up (issue #649).
+func normalizeModelVerdict(raw string) (foremanv1alpha1.AgenticTaskVerdict, foremanv1alpha1.AgenticTaskFailureReason) {
+	if raw == "ERROR" {
+		return foremanv1alpha1.AgenticTaskVerdictIncomplete, foremanv1alpha1.FailureModelReportedError
+	}
+	return foremanv1alpha1.AgenticTaskVerdict(raw), ""
 }

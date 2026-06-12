@@ -1313,3 +1313,109 @@ func TestEnforceReviewerIssueAsk_NilExtraIsNoOp(t *testing.T) {
 		t.Errorf("nil extra must pass the verdict through; got %v", got)
 	}
 }
+
+// TestNormalizeModelVerdict_ErrorMapsToIncompleteWithModelReportedError pins
+// the #649 fix: the submit_result tool contract allows verdict="ERROR" (model
+// reports it cannot complete the task: a reviewer's could-not-review, a
+// coder's unrecoverable-error), but the CRD does not store ERROR as a
+// verdict. normalizeModelVerdict must convert it to INCOMPLETE with
+// FailureModelReportedError. The watcher backstop (issue #649 follow-up
+// commit) covers any remaining out-of-enum strings that reach the terminal
+// patch; normalizeModelVerdict handles only the ERROR contract case.
+//
+// All other verdicts (GO, NO-GO, GATE-PASS, GATE-FAIL, GATE-ERROR,
+// INCOMPLETE) must pass through unchanged with an empty failure reason.
+func TestNormalizeModelVerdict_ErrorMapsToIncompleteWithModelReportedError(t *testing.T) {
+	cases := []struct {
+		raw         string
+		wantVerdict foremanv1alpha1.AgenticTaskVerdict
+		wantReason  foremanv1alpha1.AgenticTaskFailureReason
+	}{
+		{
+			raw:         "ERROR",
+			wantVerdict: foremanv1alpha1.AgenticTaskVerdictIncomplete,
+			wantReason:  foremanv1alpha1.FailureModelReportedError,
+		},
+		{
+			raw:         "GO",
+			wantVerdict: foremanv1alpha1.AgenticTaskVerdictGo,
+			wantReason:  "",
+		},
+		{
+			raw:         "NO-GO",
+			wantVerdict: foremanv1alpha1.AgenticTaskVerdictNoGo,
+			wantReason:  "",
+		},
+		{
+			raw:         "INCOMPLETE",
+			wantVerdict: foremanv1alpha1.AgenticTaskVerdictIncomplete,
+			wantReason:  "",
+		},
+		{
+			raw:         "GATE-PASS",
+			wantVerdict: foremanv1alpha1.AgenticTaskVerdictGatePass,
+			wantReason:  "",
+		},
+		{
+			raw:         "GATE-FAIL",
+			wantVerdict: foremanv1alpha1.AgenticTaskVerdictGateFail,
+			wantReason:  "",
+		},
+		{
+			raw:         "GATE-ERROR",
+			wantVerdict: foremanv1alpha1.AgenticTaskVerdictGateError,
+			wantReason:  "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.raw, func(t *testing.T) {
+			gotVerdict, gotReason := normalizeModelVerdict(tc.raw)
+			if gotVerdict != tc.wantVerdict {
+				t.Errorf("verdict: want %q got %q", tc.wantVerdict, gotVerdict)
+			}
+			if gotReason != tc.wantReason {
+				t.Errorf("reason: want %q got %q", tc.wantReason, gotReason)
+			}
+		})
+	}
+}
+
+// TestCoderJobResultToResult_EmbeddedFailureReasonPreserved pins the
+// Job-mode supervisor fix: when an in-pod run-task produces an INCOMPLETE
+// verdict with FailureReason=ModelReportedError (model called submit_result
+// with ERROR), the supervisor must lift the embedded reason rather than
+// overwrite it with the generic FailureMaxTurnsExhausted.
+func TestCoderJobResultToResult_EmbeddedFailureReasonPreserved(t *testing.T) {
+	start := time.Now().Add(-time.Second)
+	cjr := CoderJobResult{
+		Verdict:       string(foremanv1alpha1.AgenticTaskVerdictIncomplete),
+		Summary:       "model reported it could not complete the task",
+		FailureReason: string(foremanv1alpha1.FailureModelReportedError),
+	}
+	r := coderJobResultToResult("issue-fix", start, cjr)
+	if r.Verdict != foremanv1alpha1.AgenticTaskVerdictIncomplete {
+		t.Errorf("verdict: want INCOMPLETE got %s", r.Verdict)
+	}
+	if r.FailureReason != foremanv1alpha1.FailureModelReportedError {
+		t.Errorf("failureReason: want ModelReportedError got %s", r.FailureReason)
+	}
+}
+
+// TestCoderJobResultToResult_NoEmbeddedReasonFallsBackToMaxTurns confirms
+// that an INCOMPLETE result with no embedded FailureReason still defaults
+// to FailureMaxTurnsExhausted (the pre-fix behavior for the common
+// max-turns case).
+func TestCoderJobResultToResult_NoEmbeddedReasonFallsBackToMaxTurns(t *testing.T) {
+	start := time.Now().Add(-time.Second)
+	cjr := CoderJobResult{
+		Verdict: string(foremanv1alpha1.AgenticTaskVerdictIncomplete),
+		Summary: "hit max turns without a verdict",
+	}
+	r := coderJobResultToResult("issue-fix", start, cjr)
+	if r.Verdict != foremanv1alpha1.AgenticTaskVerdictIncomplete {
+		t.Errorf("verdict: want INCOMPLETE got %s", r.Verdict)
+	}
+	if r.FailureReason != foremanv1alpha1.FailureMaxTurnsExhausted {
+		t.Errorf("failureReason: want MaxTurnsExhausted got %s", r.FailureReason)
+	}
+}

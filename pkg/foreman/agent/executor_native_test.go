@@ -466,6 +466,22 @@ const submitNoGoBody = `{
   }]
 }`
 
+const submitErrorBody = `{
+  "id": "t1",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "tool_calls": [{
+        "id": "tc-1",
+        "type": "function",
+        "function": {"name": "submit_result", "arguments": "{\"verdict\":\"ERROR\",\"summary\":\"could not clone\"}"}
+      }]
+    },
+    "finish_reason": "tool_calls"
+  }]
+}`
+
 func TestNativeExecutor_ModelEmitsNoGo(t *testing.T) {
 	gitOrSkip(t)
 	root := t.TempDir()
@@ -663,6 +679,54 @@ func TestNativeExecutor_ReviewerGoIsApproveNotCommit(t *testing.T) {
 	var cm corev1.ConfigMap
 	if err := c.Get(context.Background(), cmKey, &cm); err != nil {
 		t.Errorf("transcript should exist on reviewer path: %v", err)
+	}
+}
+
+// TestNativeExecutor_ReviewerERRORMapsToIncompleteWithModelReportedError checks
+// that a reviewer-role Agent emitting verdict=ERROR is correctly wired
+// through normalizeModelVerdict. The CRD has no ERROR verdict; the harness
+// converts it to INCOMPLETE and tags the result with
+// FailureModelReportedError so operators can distinguish "model reported
+// inability" from other incomplete outcomes (issue #649).
+func TestNativeExecutor_ReviewerERRORMapsToIncompleteWithModelReportedError(t *testing.T) {
+	gitOrSkip(t)
+	root := t.TempDir()
+	bare := initBareWithSeed(t, root)
+	oaiSrv := scriptedOAI(t, []string{submitErrorBody})
+
+	agent, task := reviewerTaskAndAgent("error-verdict")
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(agent, task).Build()
+
+	reg := &fakeRegistry{
+		results: map[string]*foremanagent.ToolResult{
+			"submit_result": {
+				Terminal: true,
+				Verdict:  "ERROR",
+				Summary:  "could not clone",
+			},
+		},
+	}
+	e := &foremanagent.NativeAgentLoopExecutor{
+		Client:                   c,
+		WorkspaceRoot:            filepath.Join(root, "ws"),
+		GitRemoteURL:             bare,
+		InferenceBaseURLOverride: oaiSrv.URL + "/v1",
+		CommitAuthor:             repo.Identity{Name: "B", Email: "b@x"},
+		CommitCommitter:          repo.Identity{Name: "B", Email: "b@x"},
+		RegistryFactory: func(_ string, _ *foremanv1alpha1.Agent) (foremanagent.ToolRegistry, error) {
+			return reg, nil
+		},
+		AuthFactory: fakeAuth(t),
+	}
+	res, err := e.Execute(context.Background(), task)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if res.Verdict != foremanv1alpha1.AgenticTaskVerdictIncomplete {
+		t.Errorf("verdict: want INCOMPLETE got %s", res.Verdict)
+	}
+	if res.FailureReason != foremanv1alpha1.FailureModelReportedError {
+		t.Errorf("failureReason: want ModelReportedError got %s", res.FailureReason)
 	}
 }
 

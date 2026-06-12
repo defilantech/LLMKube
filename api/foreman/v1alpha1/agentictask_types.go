@@ -65,7 +65,7 @@ const (
 // v0.3 #559 introduces the enum + emission; per-reason retry policy
 // on AgenticTaskSpec and retry-with-correction in the loop are
 // follow-up work that consumes this signal.
-// +kubebuilder:validation:Enum=AgentNotFound;InferenceServiceUnavailable;AuthUnavailable;GitRemoteNotConfigured;CloneFailed;ModelMisunderstood;ToolFailed;MaxTurnsExhausted;ConstraintViolated;Timeout;InfrastructureError;GateFailed;GateError
+// +kubebuilder:validation:Enum=AgentNotFound;InferenceServiceUnavailable;AuthUnavailable;GitRemoteNotConfigured;CloneFailed;ModelMisunderstood;ToolFailed;MaxTurnsExhausted;ConstraintViolated;Timeout;InfrastructureError;GateFailed;GateError;ModelReportedError
 type AgenticTaskFailureReason string
 
 const (
@@ -149,6 +149,17 @@ const (
 	// (image pull error, PVC issue, timeout before any check ran).
 	// Infrastructure rather than diff-quality; retryable.
 	FailureGateError AgenticTaskFailureReason = "GateError"
+
+	// FailureModelReportedError means the model itself reported it could
+	// not complete the task via verdict ERROR (a reviewer's
+	// could-not-review, a coder's unrecoverable-error). Distinguishes
+	// model-reported inability from harness-detected failures; the stored
+	// verdict is INCOMPLETE.
+	//
+	// Maps from the model-facing "ERROR" verdict in submit_result, which
+	// the CRD intentionally does not store as a verdict (issue #649;
+	// INCOMPLETE-as-could-not-review per #644).
+	FailureModelReportedError AgenticTaskFailureReason = "ModelReportedError"
 )
 
 // AgenticTaskAccelerator pins which accelerator family a task needs from the
