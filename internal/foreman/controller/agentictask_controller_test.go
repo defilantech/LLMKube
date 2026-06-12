@@ -334,6 +334,83 @@ var _ = Describe("AgenticTaskReconciler scheduler", func() {
 		Expect(fresh.Status.Phase).To(Equal(foremanv1alpha1.AgenticTaskPhaseRunning))
 		Expect(fresh.Status.AssignedNode).To(Equal(node.Name))
 	})
+
+	It("skips a stale-heartbeat Ready node and schedules to the fresh one", func() {
+		// Regression: firstFitNode must not dispatch to a node whose agent has
+		// gone dark even though Phase=Ready has not yet been reconciled to
+		// NotReady. The stale node is given an alphabetically-earlier name so
+		// it would sort first under a naive Phase-only filter, proving the
+		// heartbeat gate is active. Both nodes advertise the same metal
+		// capability so only the heartbeat check distinguishes them.
+		staleNode := newFleetNode("aaa-sched-stale-node")
+		Expect(k8sClient.Create(ctx, staleNode)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, staleNode) })
+		// Mark Phase=Ready but with a heartbeat 5 minutes in the past.
+		setStaleNodeReady(staleNode, foremanv1alpha1.FleetNodeCapability{
+			Accelerator:    foremanv1alpha1.FleetNodeAccelerator("metal"),
+			TotalRAMGB:     64,
+			AvailableRAMGB: 48,
+		})
+
+		freshNode := newFleetNode("zzz-sched-fresh-node")
+		Expect(k8sClient.Create(ctx, freshNode)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, freshNode) })
+		setNodeReady(freshNode, foremanv1alpha1.FleetNodeCapability{
+			Accelerator:    foremanv1alpha1.FleetNodeAccelerator("metal"),
+			TotalRAMGB:     64,
+			AvailableRAMGB: 48,
+		})
+
+		task := newTask("skip-stale-target")
+		task.Spec.RequiredCapability = foremanv1alpha1.RequiredCapability{
+			Accelerator: foremanv1alpha1.AgenticTaskAccelerator("metal"),
+		}
+		Expect(k8sClient.Create(ctx, task)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, task) })
+		setPhase(task, foremanv1alpha1.AgenticTaskPhasePending)
+
+		_, err := reconciler.Reconcile(ctx, reqFor(task))
+		Expect(err).NotTo(HaveOccurred())
+
+		var fresh foremanv1alpha1.AgenticTask
+		Expect(k8sClient.Get(ctx, nn(task), &fresh)).To(Succeed())
+		Expect(fresh.Status.Phase).To(Equal(foremanv1alpha1.AgenticTaskPhaseScheduled))
+		// Must land on the fresh node, not the alphabetically-first stale one.
+		Expect(fresh.Status.AssignedNode).To(Equal(freshNode.Name))
+	})
+
+	It("leaves a Pending task unscheduled when all Ready nodes have stale heartbeats", func() {
+		// Regression: if every Phase=Ready node has a stale heartbeat, the
+		// scheduler must return no-fit and requeue rather than dispatching to
+		// a dead node.
+		staleNode := newFleetNode("all-stale-only-node")
+		Expect(k8sClient.Create(ctx, staleNode)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, staleNode) })
+		setStaleNodeReady(staleNode, foremanv1alpha1.FleetNodeCapability{
+			Accelerator:    foremanv1alpha1.FleetNodeAccelerator("metal"),
+			TotalRAMGB:     64,
+			AvailableRAMGB: 48,
+		})
+
+		task := newTask("all-stale-pending-task")
+		task.Spec.RequiredCapability = foremanv1alpha1.RequiredCapability{
+			Accelerator: foremanv1alpha1.AgenticTaskAccelerator("metal"),
+		}
+		Expect(k8sClient.Create(ctx, task)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, task) })
+		setPhase(task, foremanv1alpha1.AgenticTaskPhasePending)
+
+		res, err := reconciler.Reconcile(ctx, reqFor(task))
+		Expect(err).NotTo(HaveOccurred())
+		// No fit: must requeue.
+		Expect(res.RequeueAfter).To(BeNumerically(">", time.Duration(0)))
+
+		var fresh foremanv1alpha1.AgenticTask
+		Expect(k8sClient.Get(ctx, nn(task), &fresh)).To(Succeed())
+		// Task must remain Pending with no assigned node.
+		Expect(fresh.Status.Phase).To(Equal(foremanv1alpha1.AgenticTaskPhasePending))
+		Expect(fresh.Status.AssignedNode).To(BeEmpty())
+	})
 })
 
 var _ = Describe("capabilitySatisfies jobMode", func() {
@@ -433,6 +510,19 @@ func setNodeReady(node *foremanv1alpha1.FleetNode, cap foremanv1alpha1.FleetNode
 	node.Status.Capability = cap
 	now := metav1.Now()
 	node.Status.LastHeartbeatTime = &now
+	Expect(k8sClient.Status().Patch(ctx, node, patch)).To(Succeed())
+}
+
+// setStaleNodeReady puts a node in Phase=Ready with the given capability but
+// with a LastHeartbeatTime 5 minutes in the past, making it appear alive to a
+// Phase-only check but dead to nodeSchedulable's heartbeat gate.
+func setStaleNodeReady(node *foremanv1alpha1.FleetNode, cap foremanv1alpha1.FleetNodeCapability) {
+	GinkgoHelper()
+	patch := client.MergeFrom(node.DeepCopy())
+	node.Status.Phase = foremanv1alpha1.FleetNodePhaseReady
+	node.Status.Capability = cap
+	stale := metav1.NewTime(time.Now().Add(-5 * time.Minute))
+	node.Status.LastHeartbeatTime = &stale
 	Expect(k8sClient.Status().Patch(ctx, node, patch)).To(Succeed())
 }
 
