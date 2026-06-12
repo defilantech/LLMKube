@@ -5,6 +5,22 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.4](https://github.com/defilantech/LLMKube/compare/v0.8.3...v0.8.4) (2026-06-12)
+
+
+### Features
+
+* **agent,controller:** heartbeat liveness for metal endpoint registrations ([#666](https://github.com/defilantech/LLMKube/issues/666)) ([6a8cfe8](https://github.com/defilantech/LLMKube/commit/6a8cfe8a2e8c4bbbb057e3efd9aa1d0f8e59e11c))
+
+
+### Bug Fixes
+
+* **agent:** retry endpoint registration with correct update semantics ([#664](https://github.com/defilantech/LLMKube/issues/664)) ([82cfc35](https://github.com/defilantech/LLMKube/commit/82cfc35894668600162605420c365508d135c49a))
+* **foreman:** ERROR verdicts become terminal INCOMPLETE outcomes; watcher can no longer wedge ([#667](https://github.com/defilantech/LLMKube/issues/667)) ([46405b6](https://github.com/defilantech/LLMKube/commit/46405b67ea7646f367feb2bbd143e13f13b6b80e))
+* **foreman:** expire stale claims so tasks survive agent death ([#669](https://github.com/defilantech/LLMKube/issues/669)) ([8af7ac6](https://github.com/defilantech/LLMKube/commit/8af7ac65e477967ff5f4f742409e3c434c5bfc7f))
+* **foreman:** patchTerminal stands down when the task is no longer owned ([#670](https://github.com/defilantech/LLMKube/issues/670)) ([33af907](https://github.com/defilantech/LLMKube/commit/33af90773dc2afe7f4a581274874f33ce4e268c7))
+* **foreman:** workspace reset survives read-only files from prior runs ([#671](https://github.com/defilantech/LLMKube/issues/671)) ([0a7de0d](https://github.com/defilantech/LLMKube/commit/0a7de0d1058f88a704fbb3ea28118d48e8db2345))
+
 ## [0.8.3](https://github.com/defilantech/LLMKube/compare/v0.8.2...v0.8.3) (2026-06-11)
 
 
