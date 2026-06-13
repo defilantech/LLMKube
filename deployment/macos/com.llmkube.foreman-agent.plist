@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.llmkube.foreman-agent</string>
+
+    <!--
+        ProgramArguments[0] is the stable exec path through the "current"
+        symlink laid down by `make install-foreman-agent` (and updated on
+        every self-update flip).  Edit the flags below to match your
+        environment before loading the service.
+    -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/YOUR_USERNAME/Library/Application Support/llmkube/foreman-agent/current/foreman-agent</string>
+        <string>--fleet-node-name</string>
+        <string>REPLACE_WITH_NODE_NAME</string>
+        <string>--roles</string>
+        <string>worker</string>
+        <string>--agent-mode</string>
+        <string>native</string>
+        <string>--git-remote-url</string>
+        <string>REPLACE_WITH_GIT_REMOTE_URL</string>
+        <string>--commit-author-email</string>
+        <string>REPLACE_WITH_EMAIL</string>
+        <string>--workspace-dir</string>
+        <string>/tmp/foreman-workspaces</string>
+        <string>--task-namespace</string>
+        <string>default</string>
+        <string>--foreman-namespace</string>
+        <string>foreman-system</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!--
+        KeepAlive=true: launchd relaunches on any exit, including the
+        clean exit(0) the agent uses to restart onto a self-updated binary.
+        Intentional stop is via `launchctl bootout` (see uninstall-foreman-agent),
+        which removes the job so KeepAlive does not fight it.
+    -->
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/llmkube-foreman-agent.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/llmkube-foreman-agent.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <!-- Set KUBECONFIG if your kubeconfig is not at the default location -->
+        <!-- <key>KUBECONFIG</key> -->
+        <!-- <string>/Users/YOUR_USERNAME/.kube/config</string> -->
+    </dict>
+
+    <key>WorkingDirectory</key>
+    <string>/tmp</string>
+
+    <!-- Throttle restarts to avoid a tight loop on persistent failure -->
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+</dict>
+</plist>

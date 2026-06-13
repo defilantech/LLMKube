@@ -456,9 +456,9 @@ func main() {
 	if err := g.Wait(); err != nil {
 		if errors.Is(err, foremanagent.ErrSelfUpdateRestart) {
 			// Self-update applied: exit cleanly so launchd/systemd
-			// restarts the process onto the new binary. Exit 0 satisfies
-			// KeepAlive.SuccessfulExit=false (launchd still restarts) and
-			// systemd Restart=always (always restarts regardless of code).
+			// restarts the process onto the new binary. The macOS plist
+			// uses KeepAlive=true so launchd relaunches on any exit;
+			// the systemd unit uses Restart=always (same effect).
 			setupLog.Info("foreman-agent exiting for self-update restart")
 			os.Exit(0)
 		}
