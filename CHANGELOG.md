@@ -5,6 +5,13 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.6](https://github.com/defilantech/LLMKube/compare/v0.8.5...v0.8.6) (2026-06-13)
+
+
+### Bug Fixes
+
+* **selfupdate:** resolve current symlink in managed-root detection ([#679](https://github.com/defilantech/LLMKube/issues/679)) ([a6e7223](https://github.com/defilantech/LLMKube/commit/a6e7223fabd5ee15fdf5905f803cfc90498734b1))
+
 ## [0.8.5](https://github.com/defilantech/LLMKube/compare/v0.8.4...v0.8.5) (2026-06-13)
 
 
