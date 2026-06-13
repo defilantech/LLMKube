@@ -304,6 +304,22 @@ func execUnderInstallRoot(exe, installRoot string) bool {
 	if err != nil {
 		return false
 	}
+	// Resolve symlinks on BOTH sides before comparing. The managed layout
+	// points `current` at `versions/<v>` via a symlink, and the supervisor
+	// execs the binary through current/, so os.Executable() resolves (in
+	// RunningUnderManagedRoot) to versions/<v>/<binary>. Comparing that
+	// resolved exe against the literal current/ prefix never matches, which
+	// silently disabled self-update on every real managed install. Resolving
+	// `current` here makes both sides land on the same real versions/<v> path.
+	// EvalSymlinks fails for a non-existent path (e.g. an unrelated
+	// /usr/local/bin binary in tests); in that case we keep the absolute path
+	// and the prefix check still rejects it.
+	if resolved, rerr := filepath.EvalSymlinks(absExe); rerr == nil {
+		absExe = resolved
+	}
+	if resolved, rerr := filepath.EvalSymlinks(absCurrent); rerr == nil {
+		absCurrent = resolved
+	}
 	// Ensure absCurrent has a trailing separator so HasPrefix doesn't
 	// match /foo/current-extra.
 	if !strings.HasSuffix(absCurrent, string(filepath.Separator)) {

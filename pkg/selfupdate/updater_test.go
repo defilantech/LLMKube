@@ -431,6 +431,40 @@ func TestRunningUnderManagedRoot_True(t *testing.T) {
 	}
 }
 
+// TestExecUnderInstallRoot_ResolvedCurrentSymlink reproduces the production
+// flow that the literal-path test above missed: launchd/systemd exec the
+// binary through installRoot/current/<binary>, and RunningUnderManagedRoot
+// symlink-resolves os.Executable() to its real path under versions/<v>/ before
+// the check. The detector must therefore resolve the current symlink too;
+// without that, the resolved exe never matches the literal current/ prefix and
+// self-update is silently disabled on every real managed install.
+func TestExecUnderInstallRoot_ResolvedCurrentSymlink(t *testing.T) {
+	dir := t.TempDir()
+	installRoot := filepath.Join(dir, "foreman-agent")
+
+	versionDir := filepath.Join(installRoot, "versions", "v0.9.0")
+	if err := os.MkdirAll(versionDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(versionDir, "foreman-agent"), []byte("bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(versionDir, filepath.Join(installRoot, "current")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Mimic RunningUnderManagedRoot: resolve the exe's symlinks (current ->
+	// versions/v0.9.0) exactly as os.Executable()+EvalSymlinks would in prod.
+	resolvedExe, err := filepath.EvalSymlinks(filepath.Join(installRoot, "current", "foreman-agent"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !selfupdate.ExecUnderInstallRootForTest(resolvedExe, installRoot) {
+		t.Errorf("ExecUnderInstallRootForTest(resolved exe) = false, want true; resolvedExe=%s installRoot=%s", resolvedExe, installRoot)
+	}
+}
+
 // TestResolveInstallRoot checks the platform-specific default.
 func TestResolveInstallRoot(t *testing.T) {
 	root, err := selfupdate.ResolveInstallRoot("foreman-agent")
