@@ -18,6 +18,8 @@ package agent
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -226,7 +228,7 @@ func TestRegistrar_PatchHeartbeat_WritesPhaseAndCapability(t *testing.T) {
 		Provider: &fixedCapability{cap: cap},
 	}
 	before := time.Now().Add(-time.Second)
-	if err := r.PatchHeartbeat(context.Background(), foremanv1alpha1.FleetNodePhaseReady); err != nil {
+	if _, err := r.PatchHeartbeat(context.Background(), foremanv1alpha1.FleetNodePhaseReady); err != nil {
 		t.Fatalf("PatchHeartbeat: %v", err)
 	}
 	var got foremanv1alpha1.FleetNode
@@ -269,7 +271,7 @@ func TestRegistrar_PatchHeartbeat_StampsVersionAndKind(t *testing.T) {
 		Version:  "v0.9.0",
 		Kind:     "foreman-agent",
 	}
-	if err := r.PatchHeartbeat(context.Background(), foremanv1alpha1.FleetNodePhaseReady); err != nil {
+	if _, err := r.PatchHeartbeat(context.Background(), foremanv1alpha1.FleetNodePhaseReady); err != nil {
 		t.Fatalf("PatchHeartbeat: %v", err)
 	}
 	var got foremanv1alpha1.FleetNode
@@ -298,7 +300,7 @@ func TestRegistrar_PatchHeartbeat_EmptyVersionOmitted(t *testing.T) {
 		Provider: &fixedCapability{},
 		// Version and Kind intentionally zero
 	}
-	if err := r.PatchHeartbeat(context.Background(), foremanv1alpha1.FleetNodePhaseReady); err != nil {
+	if _, err := r.PatchHeartbeat(context.Background(), foremanv1alpha1.FleetNodePhaseReady); err != nil {
 		t.Fatalf("PatchHeartbeat: %v", err)
 	}
 	var got foremanv1alpha1.FleetNode
@@ -310,6 +312,108 @@ func TestRegistrar_PatchHeartbeat_EmptyVersionOmitted(t *testing.T) {
 	}
 	if got.Status.AgentKind != "" {
 		t.Errorf("AgentKind = %q, want empty (kind not set)", got.Status.AgentKind)
+	}
+}
+
+// TestRegistrar_Run_SelfUpdateDrainsAndReturnsRestartError verifies that
+// when an UpdateApplier signals Restarting=true, Run:
+//  1. emits a final Draining heartbeat so the operator stops routing tasks,
+//  2. returns ErrSelfUpdateRestart (not nil, not a generic error).
+func TestRegistrar_Run_SelfUpdateDrainsAndReturnsRestartError(t *testing.T) {
+	existing := &foremanv1alpha1.FleetNode{
+		ObjectMeta: metav1.ObjectMeta{Name: "studio-update"},
+		Spec:       foremanv1alpha1.FleetNodeSpec{NodeName: "studio-update"},
+		Status: foremanv1alpha1.FleetNodeStatus{
+			UpdateRequest: &foremanv1alpha1.FleetNodeUpdateRequest{
+				TargetVersion: "v0.9.0",
+				URL:           "http://example.com/foreman-agent-v0.9.0",
+				SHA256:        "a" + strings.Repeat("b", 63),
+			},
+		},
+	}
+	kc := newFakeClient(t, existing)
+
+	// Fake applier: signals restarting=true on the first call.
+	applierCalled := false
+	applier := UpdateApplierFunc(func(_, _, _ string) (bool, error) {
+		applierCalled = true
+		return true, nil
+	})
+
+	r := &Registrar{
+		Client:   kc,
+		NodeName: "studio-update",
+		Provider: &fixedCapability{},
+		Interval: 20 * time.Millisecond,
+		Version:  "v0.8.4",
+		Updater:  applier,
+	}
+
+	ctx := context.Background()
+	done := make(chan error, 1)
+	go func() { done <- r.Run(ctx) }()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrSelfUpdateRestart) {
+			t.Fatalf("Run returned %v, want ErrSelfUpdateRestart", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Run did not return within 3s after self-update trigger")
+	}
+
+	if !applierCalled {
+		t.Error("UpdateApplier was never called")
+	}
+
+	// Final phase must be Draining (agent told operator it is going away).
+	var got foremanv1alpha1.FleetNode
+	if err := kc.Get(context.Background(), types.NamespacedName{Name: "studio-update"}, &got); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status.Phase != foremanv1alpha1.FleetNodePhaseDraining {
+		t.Errorf("final phase = %q, want Draining", got.Status.Phase)
+	}
+}
+
+// TestRegistrar_Run_SelfUpdateNilUpdaterNoRestart verifies that when Updater
+// is nil (pre-PR4 / disabled) Run keeps heartbeating normally.
+func TestRegistrar_Run_SelfUpdateNilUpdaterNoRestart(t *testing.T) {
+	existing := &foremanv1alpha1.FleetNode{
+		ObjectMeta: metav1.ObjectMeta{Name: "studio-noupdate"},
+		Spec:       foremanv1alpha1.FleetNodeSpec{NodeName: "studio-noupdate"},
+		Status: foremanv1alpha1.FleetNodeStatus{
+			UpdateRequest: &foremanv1alpha1.FleetNodeUpdateRequest{
+				TargetVersion: "v0.9.0",
+				URL:           "http://example.com/bin",
+				SHA256:        "a" + strings.Repeat("b", 63),
+			},
+		},
+	}
+	kc := newFakeClient(t, existing)
+	r := &Registrar{
+		Client:   kc,
+		NodeName: "studio-noupdate",
+		Provider: &fixedCapability{},
+		Interval: 20 * time.Millisecond,
+		// Updater intentionally nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- r.Run(ctx) }()
+
+	// Let a couple of ticks fire without triggering self-update.
+	time.Sleep(60 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run returned %v, want nil (Updater=nil skips update)", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after cancel")
 	}
 }
 
