@@ -5,6 +5,16 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.5](https://github.com/defilantech/LLMKube/compare/v0.8.4...v0.8.5) (2026-06-13)
+
+
+### Features
+
+* **foreman,agent:** report agent version to the cluster ([#672](https://github.com/defilantech/LLMKube/issues/672)) ([8860cb6](https://github.com/defilantech/LLMKube/commit/8860cb66f62d358e3b08351ffd9dbaf012e7fa77))
+* **foreman,selfupdate:** agent self-update so approved AgentReleases roll the fleet ([#676](https://github.com/defilantech/LLMKube/issues/676)) ([5917715](https://github.com/defilantech/LLMKube/commit/59177153c3f4569fb0a48680e364077ff46431f3))
+* **foreman:** add AgentRelease CRD (scaffold for managed fleet updates) ([#674](https://github.com/defilantech/LLMKube/issues/674)) ([55f7d9f](https://github.com/defilantech/LLMKube/commit/55f7d9f11899978fd42fadfda04b5f8530007118))
+* **foreman:** AgentRelease rollout controller (staged, health-gated, approved) ([#675](https://github.com/defilantech/LLMKube/issues/675)) ([aa6bbd0](https://github.com/defilantech/LLMKube/commit/aa6bbd05ec156a0b4414825a7f47e3cb915a86cd))
+
 ## [0.8.4](https://github.com/defilantech/LLMKube/compare/v0.8.3...v0.8.4) (2026-06-12)
 
 
