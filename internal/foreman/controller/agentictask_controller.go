@@ -584,19 +584,6 @@ func (r *AgenticTaskReconciler) terminalFailExpired(ctx context.Context, task *f
 	return ctrl.Result{}, r.Status().Patch(ctx, &current, patch)
 }
 
-// setCondition upserts a condition by type. Local to the controller
-// because the watcher in pkg/foreman/agent has its own copy; promote to
-// an internal helpers package if a third writer appears.
-func setCondition(conds *[]metav1.Condition, c metav1.Condition) {
-	for i, existing := range *conds {
-		if existing.Type == c.Type {
-			(*conds)[i] = c
-			return
-		}
-	}
-	*conds = append(*conds, c)
-}
-
 // SetupWithManager wires the reconciler. We also watch FleetNode so a
 // node going Ready (or freeing up CurrentTask) re-enqueues every Pending
 // task immediately rather than waiting for the requeue-after timer.

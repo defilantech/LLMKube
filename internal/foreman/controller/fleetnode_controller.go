@@ -96,19 +96,6 @@ func (r *FleetNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	return ctrl.Result{RequeueAfter: foremanv1alpha1.FleetNodeHeartbeatTimeout}, nil
 }
 
-// hasCondition reports whether conds already holds a condition matching c
-// on the fields the reconciler manages (type, status, reason). Lets us skip
-// a no-op status patch when nothing meaningful changed, avoiding a churn of
-// LastTransitionTime-only updates.
-func hasCondition(conds []metav1.Condition, c metav1.Condition) bool {
-	for i := range conds {
-		if conds[i].Type == c.Type {
-			return conds[i].Status == c.Status && conds[i].Reason == c.Reason
-		}
-	}
-	return false
-}
-
 // SetupWithManager wires the reconciler into the controller-runtime manager.
 func (r *FleetNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
