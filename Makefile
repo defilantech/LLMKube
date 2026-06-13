@@ -209,10 +209,15 @@ install-foreman-agent: build-foreman-agent-versioned ## Install foreman-agent in
 	mkdir -p "$(FOREMAN_INSTALL_ROOT)/versions/$(FOREMAN_AGENT_VERSION)"
 	cp bin/foreman-agent "$(FOREMAN_INSTALL_ROOT)/versions/$(FOREMAN_AGENT_VERSION)/foreman-agent"
 	chmod 0755 "$(FOREMAN_INSTALL_ROOT)/versions/$(FOREMAN_AGENT_VERSION)/foreman-agent"
-	@# Atomically flip the current symlink (write temp then rename, POSIX-atomic).
+	@# Flip the current symlink. `ln -sfn` replaces the link in place; -n keeps
+	@# it from following an existing current -> versions/<v> symlink. The old
+	@# "ln to current.tmp then mv -f current.tmp current" form was broken on
+	@# re-install: when current already points at a directory, mv descends INTO
+	@# that directory instead of replacing the link, so the flip silently no-ops
+	@# and the agent keeps running the previous version. (The self-update code
+	@# path uses os.Rename, which replaces the symlink atomically and is correct.)
 	@ln -sfn "$(FOREMAN_INSTALL_ROOT)/versions/$(FOREMAN_AGENT_VERSION)" \
-		"$(FOREMAN_INSTALL_ROOT)/current.tmp"
-	@mv -f "$(FOREMAN_INSTALL_ROOT)/current.tmp" "$(FOREMAN_INSTALL_ROOT)/current"
+		"$(FOREMAN_INSTALL_ROOT)/current"
 	@echo "Staged at $(FOREMAN_INSTALL_ROOT)/current -> versions/$(FOREMAN_AGENT_VERSION)"
 	@echo "Installing launchd service..."
 	@# Substitute YOUR_USERNAME placeholder with the real home directory path.
