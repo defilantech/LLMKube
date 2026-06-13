@@ -34,10 +34,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"math"
+	"net/http"
 	"os"
 	"os/signal"
 	"regexp"
@@ -66,6 +68,7 @@ import (
 	"github.com/defilantech/llmkube/pkg/foreman/agent/githubissue"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/repo"
 	foremantools "github.com/defilantech/llmkube/pkg/foreman/agent/tools"
+	"github.com/defilantech/llmkube/pkg/selfupdate"
 )
 
 var (
@@ -133,6 +136,10 @@ func main() {
 		// #620 coder-Job git Secret selection
 		coderGitSecret    string
 		coderGitSecretKey string
+
+		// PR4 self-update flags
+		selfUpdateEnabled bool
+		installRoot       string
 	)
 
 	flag.StringVar(&fleetNodeName, "fleet-node-name", "",
@@ -202,6 +209,16 @@ func main() {
 	flag.StringVar(&coderGitSecretKey, "coder-git-secret-key", "token",
 		"Key within --coder-git-secret that holds the token (e.g. GITHUB_TOKEN when reusing an "+
 			"existing git Secret).")
+
+	flag.BoolVar(&selfUpdateEnabled, "self-update", true,
+		"Enable self-update from FleetNode.status.updateRequest. Only engages when running from the "+
+			"managed install root (~/Library/Application Support/llmkube/foreman-agent on macOS). "+
+			"Set to false to disable entirely (e.g. for tests or manual installs outside the managed layout).")
+	flag.StringVar(&installRoot, "install-root", "",
+		"Override the managed install root path. Defaults to the platform-specific location "+
+			"(~/Library/Application Support/llmkube/foreman-agent on macOS, "+
+			"~/.local/share/llmkube/foreman-agent on Linux). "+
+			"Only used when --self-update=true.")
 
 	showVersion := flag.Bool("version", false, "Print version information and exit.")
 	opts := zap.Options{Development: true}
@@ -294,6 +311,51 @@ func main() {
 		StaticTotalRAMGB: clampInt32(staticTotalRAMGB),
 	})
 
+	// Build the self-updater. This is gated on --self-update and on whether
+	// the binary is running from the managed install root. Dev builds and
+	// direct invocations outside the managed layout skip the update path
+	// entirely so `go run` and test environments are never affected.
+	var updater foremanagent.UpdateApplier
+	if selfUpdateEnabled {
+		root := installRoot
+		if root == "" {
+			var err error
+			root, err = selfupdate.ResolveInstallRoot("foreman-agent")
+			if err != nil {
+				setupLog.Error(err, "failed to resolve self-update install root; self-update disabled")
+			}
+		}
+		if root != "" {
+			if selfupdate.RunningUnderManagedRoot(root) {
+				u := &selfupdate.Updater{
+					CurrentVersion: Version,
+					OS:             goruntime.GOOS,
+					Arch:           goruntime.GOARCH,
+					InstallRoot:    root,
+					BinaryName:     "foreman-agent",
+					Verifier:       &selfupdate.SHA256Verifier{},
+					HTTPClient:     &http.Client{Timeout: 10 * time.Minute},
+					Log:            ctrl.Log.WithName("selfupdate"),
+				}
+				updater = foremanagent.UpdateApplierFunc(func(version, url, sha256 string) (bool, error) {
+					res, err := u.MaybeApply(selfupdate.Target{
+						Version: version,
+						URL:     url,
+						SHA256:  sha256,
+					})
+					return res.Restarting, err
+				})
+				setupLog.Info("self-update enabled", "installRoot", root, "currentVersion", Version)
+			} else {
+				setupLog.Info("self-update disabled: not running from managed install root "+
+					"(dev build or direct invocation); set --self-update=false to silence this",
+					"installRoot", root)
+			}
+		}
+	} else {
+		setupLog.Info("self-update disabled via --self-update=false")
+	}
+
 	reg := &foremanagent.Registrar{
 		Client:   kc,
 		NodeName: fleetNodeName,
@@ -304,6 +366,7 @@ func main() {
 		Kind:     "foreman-agent",
 		OS:       goruntime.GOOS,
 		Arch:     goruntime.GOARCH,
+		Updater:  updater,
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -391,6 +454,14 @@ func main() {
 	g.Go(func() error { return watcher.Run(gctx) })
 
 	if err := g.Wait(); err != nil {
+		if errors.Is(err, foremanagent.ErrSelfUpdateRestart) {
+			// Self-update applied: exit cleanly so launchd/systemd
+			// restarts the process onto the new binary. The macOS plist
+			// uses KeepAlive=true so launchd relaunches on any exit;
+			// the systemd unit uses Restart=always (same effect).
+			setupLog.Info("foreman-agent exiting for self-update restart")
+			os.Exit(0)
+		}
 		setupLog.Error(err, "foreman-agent exited with error")
 		os.Exit(1)
 	}

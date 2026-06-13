@@ -46,6 +46,25 @@ type CapabilityProvider interface {
 	Capability() foremanv1alpha1.FleetNodeCapability
 }
 
+// UpdateApplier applies a binary update given a (version, url, sha256) triple.
+// The canonical implementation wraps *selfupdate.Updater.MaybeApply; tests
+// may inject a fake via UpdateApplierFunc.
+//
+// Returns (restarting, err). restarting=true means the symlink was flipped
+// and the caller should drain then exit so the supervisor can relaunch.
+type UpdateApplier interface {
+	Apply(version, url, sha256 string) (restarting bool, err error)
+}
+
+// UpdateApplierFunc is a convenience adapter so a plain function satisfies
+// UpdateApplier without a named struct.
+type UpdateApplierFunc func(version, url, sha256 string) (bool, error)
+
+// Apply implements UpdateApplier.
+func (f UpdateApplierFunc) Apply(version, url, sha256 string) (bool, error) {
+	return f(version, url, sha256)
+}
+
 // Registrar owns the FleetNode CR for this host: upserts it on startup,
 // patches its status every heartbeat, and patches phase=Draining on
 // clean shutdown so the scheduler stops routing tasks to us promptly.
@@ -74,6 +93,14 @@ type Registrar struct {
 	// Arch is the CPU architecture this agent is running on (runtime.GOARCH).
 	// Stamped on FleetNode.status.arch every heartbeat.
 	Arch string
+
+	// Updater handles self-update when an UpdateRequest appears on the
+	// FleetNode status. When nil, update requests are logged and ignored
+	// (the pre-PR4 behaviour). The caller is responsible for gating the
+	// Updater on RunningUnderManagedRoot before setting it; if the binary
+	// is not running from the managed install root the caller should leave
+	// Updater nil so dev/test builds are unaffected.
+	Updater UpdateApplier
 }
 
 // Upsert creates the FleetNode if missing, otherwise updates its Spec so
@@ -125,20 +152,27 @@ func (r *Registrar) Upsert(ctx context.Context) error {
 //
 // The field-scoped MergeFrom patch ensures each writer only touches its
 // own fields without clobbering concurrent writes from others.
-func (r *Registrar) PatchHeartbeat(ctx context.Context, phase foremanv1alpha1.FleetNodePhase) error {
+//
+// The returned *FleetNodeUpdateRequest is the value observed on the node
+// at Get time (before the status patch). Run uses this to trigger
+// self-update after a successful Ready heartbeat, ensuring the operator
+// always sees the node as Ready before the flip rather than getting a
+// stale version in a post-flip Ready heartbeat.
+func (r *Registrar) PatchHeartbeat(ctx context.Context, phase foremanv1alpha1.FleetNodePhase) (*foremanv1alpha1.FleetNodeUpdateRequest, error) { //nolint:lll
 	log := logf.FromContext(ctx)
 	var node foremanv1alpha1.FleetNode
 	if err := r.Client.Get(ctx, types.NamespacedName{Name: r.NodeName}, &node); err != nil {
-		return fmt.Errorf("get FleetNode for heartbeat: %w", err)
+		return nil, fmt.Errorf("get FleetNode for heartbeat: %w", err)
 	}
 
-	// Log any pending update request so an operator watching logs can see
-	// the dispatch. The actual self-update action is implemented in PR4;
-	// for now we surface the request without acting on it.
-	if node.Status.UpdateRequest != nil {
+	// Capture the update request BEFORE patching so we return it to the
+	// caller regardless of whether the patch succeeds. The operator owns
+	// this field; the agent never touches it.
+	updateReq := node.Status.UpdateRequest
+	if updateReq != nil {
 		log.Info("update requested",
-			"target", node.Status.UpdateRequest.TargetVersion,
-			"url", node.Status.UpdateRequest.URL,
+			"target", updateReq.TargetVersion,
+			"url", updateReq.URL,
 		)
 	}
 
@@ -160,17 +194,35 @@ func (r *Registrar) PatchHeartbeat(ctx context.Context, phase foremanv1alpha1.Fl
 		node.Status.Arch = r.Arch
 	}
 	if err := r.Client.Status().Patch(ctx, &node, patch); err != nil {
-		return fmt.Errorf("patch FleetNode status: %w", err)
+		return nil, fmt.Errorf("patch FleetNode status: %w", err)
 	}
-	return nil
+	return updateReq, nil
 }
+
+// ErrSelfUpdateRestart is returned from Run when a self-update was applied
+// and the process should exit so the supervisor can relaunch onto the new
+// binary. The errgroup in main.go propagates this return value, which
+// triggers cancellation of the sibling watcher goroutine (clean shutdown).
+var ErrSelfUpdateRestart = fmt.Errorf("self-update applied: exiting for supervisor restart")
 
 // Run blocks, heartbeating every Interval until ctx is cancelled. On
 // cancellation it makes a best-effort drain patch (phase=Draining) so
 // the scheduler stops dispatching to us before the process exits.
+//
+// Self-update flow (when r.Updater is set and the binary runs from the
+// managed install root):
+//  1. After each successful Ready heartbeat, check the observed UpdateRequest.
+//  2. If a new version is available, call r.Updater.Apply. On success:
+//     a. Emit a final Draining heartbeat (stops scheduler routing).
+//     b. Return ErrSelfUpdateRestart — the errgroup cancels the watcher.
+//  3. The process exits; launchd/systemd restarts it onto the new symlink.
+//
+// CRITICAL: between the symlink flip and the final return, no further
+// Ready heartbeat is sent. This ensures the rollout health gate never sees
+// the old version in a Ready state after the flip.
 func (r *Registrar) Run(ctx context.Context) error {
 	log := logf.FromContext(ctx)
-	if err := r.PatchHeartbeat(ctx, foremanv1alpha1.FleetNodePhaseReady); err != nil {
+	if _, err := r.PatchHeartbeat(ctx, foremanv1alpha1.FleetNodePhaseReady); err != nil {
 		return fmt.Errorf("initial heartbeat: %w", err)
 	}
 	log.Info("FleetNode Ready", "name", r.NodeName)
@@ -188,7 +240,7 @@ func (r *Registrar) Run(ctx context.Context) error {
 			// Best-effort drain. A short fresh timeout keeps us from
 			// hanging on a dead apiserver during shutdown.
 			drainCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			err := r.PatchHeartbeat(drainCtx, foremanv1alpha1.FleetNodePhaseDraining)
+			_, err := r.PatchHeartbeat(drainCtx, foremanv1alpha1.FleetNodePhaseDraining)
 			cancel()
 			if err != nil {
 				log.Error(err, "drain heartbeat failed")
@@ -197,15 +249,58 @@ func (r *Registrar) Run(ctx context.Context) error {
 			}
 			return nil
 		case <-ticker.C:
-			if err := r.PatchHeartbeat(ctx, foremanv1alpha1.FleetNodePhaseReady); err != nil {
+			updateReq, err := r.PatchHeartbeat(ctx, foremanv1alpha1.FleetNodePhaseReady)
+			if err != nil {
 				// Don't return on transient errors; the next tick can
 				// recover. A persistent failure is visible via stale
 				// LastHeartbeatTime, which is exactly the staleness
 				// signal the scheduler uses anyway.
 				log.Error(err, "heartbeat patch failed; will retry")
+				continue
+			}
+
+			// Check for a pending self-update after the heartbeat so the
+			// operator always observes at least one Ready beat with the
+			// current version before we flip.
+			if restarting := r.maybeApplySelfUpdate(ctx, updateReq); restarting {
+				// Symlink flipped. Drain before exiting so the scheduler
+				// stops routing tasks to us. A short timeout prevents
+				// blocking indefinitely on a slow apiserver.
+				drainCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				_, derr := r.PatchHeartbeat(drainCtx, foremanv1alpha1.FleetNodePhaseDraining)
+				cancel()
+				if derr != nil {
+					log.Error(derr, "self-update drain heartbeat failed; exiting anyway")
+				} else {
+					log.Info("FleetNode Draining for self-update restart", "name", r.NodeName)
+				}
+				return ErrSelfUpdateRestart
 			}
 		}
 	}
+}
+
+// maybeApplySelfUpdate checks the observed UpdateRequest and calls the
+// Updater if appropriate. Returns true when the binary was flipped and
+// the process should restart.
+//
+// Self-update is skipped when:
+//   - r.Updater is nil (PR3 / pre-PR4 deployments)
+//   - req is nil (no update request from the operator)
+//   - the binary is not running from the managed install root (dev builds)
+func (r *Registrar) maybeApplySelfUpdate(ctx context.Context, req *foremanv1alpha1.FleetNodeUpdateRequest) bool {
+	if r.Updater == nil || req == nil {
+		return false
+	}
+	log := logf.FromContext(ctx)
+
+	restarting, err := r.Updater.Apply(req.TargetVersion, req.URL, req.SHA256)
+	if err != nil {
+		log.Error(err, "self-update failed; will retry on next heartbeat",
+			"target", req.TargetVersion)
+		return false
+	}
+	return restarting
 }
 
 func specEqual(a, b foremanv1alpha1.FleetNodeSpec) bool {

@@ -151,6 +151,9 @@ build-metal-agent: fmt vet ## Build Metal agent for macOS (requires macOS).
 	GOOS=darwin GOARCH=$(shell uname -m | sed 's/x86_64/amd64/;s/arm64/arm64/') \
 		go build -o bin/llmkube-metal-agent ./cmd/metal-agent
 
+# LLMKUBE_METAL_AGENT_LABEL is the launchd service label for metal-agent.
+LLMKUBE_METAL_AGENT_LABEL ?= com.llmkube.metal-agent
+
 .PHONY: install-metal-agent
 install-metal-agent: build-metal-agent ## Install Metal agent and launchd service (macOS only).
 	@echo "Installing Metal agent..."
@@ -159,8 +162,13 @@ install-metal-agent: build-metal-agent ## Install Metal agent and launchd servic
 	mkdir -p ~/Library/LaunchAgents
 	cp deployment/macos/com.llmkube.metal-agent.plist ~/Library/LaunchAgents/
 	@echo "Starting Metal agent service..."
-	launchctl load ~/Library/LaunchAgents/com.llmkube.metal-agent.plist || true
-	@echo "✅ Metal agent installed and started"
+	@# Bootstrap the plist the first time (noop if already bootstrapped).
+	@launchctl bootstrap gui/$$(id -u) ~/Library/LaunchAgents/$(LLMKUBE_METAL_AGENT_LABEL).plist 2>/dev/null || true
+	@# kickstart -k stops the running instance (if any) and starts a fresh one,
+	@# so reinstalls always exec the new binary. Unlike `launchctl load || true`
+	@# this actually restarts a running service.
+	launchctl kickstart -k gui/$$(id -u)/$(LLMKUBE_METAL_AGENT_LABEL)
+	@echo "Metal agent installed and restarted"
 	@echo ""
 	@echo "To check status: launchctl list | grep llmkube"
 	@echo "To view logs: tail -f /tmp/llmkube-metal-agent.log"
@@ -168,11 +176,66 @@ install-metal-agent: build-metal-agent ## Install Metal agent and launchd servic
 .PHONY: uninstall-metal-agent
 uninstall-metal-agent: ## Uninstall Metal agent and launchd service.
 	@echo "Stopping Metal agent service..."
-	launchctl unload ~/Library/LaunchAgents/com.llmkube.metal-agent.plist || true
+	@launchctl bootout gui/$$(id -u)/$(LLMKUBE_METAL_AGENT_LABEL) 2>/dev/null || true
 	@echo "Removing Metal agent..."
 	sudo rm -f /usr/local/bin/llmkube-metal-agent
-	rm -f ~/Library/LaunchAgents/com.llmkube.metal-agent.plist
-	@echo "✅ Metal agent uninstalled"
+	rm -f ~/Library/LaunchAgents/$(LLMKUBE_METAL_AGENT_LABEL).plist
+	@echo "Metal agent uninstalled"
+
+##@ Foreman Agent (macOS install)
+
+# LLMKUBE_FOREMAN_AGENT_LABEL is the launchd service label for foreman-agent.
+LLMKUBE_FOREMAN_AGENT_LABEL ?= com.llmkube.foreman-agent
+
+# FOREMAN_AGENT_VERSION is stamped into the versioned install layout and the
+# ldflags Version variable. Override on the command line when releasing.
+FOREMAN_AGENT_VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+
+.PHONY: build-foreman-agent-versioned
+build-foreman-agent-versioned: fmt vet ## Build foreman-agent with ldflags version info.
+	go build \
+		-ldflags "-X main.Version=$(FOREMAN_AGENT_VERSION) -X main.GitCommit=$(shell git rev-parse --short HEAD 2>/dev/null || echo unknown) -X main.BuildDate=$(shell date -u +%Y-%m-%dT%H:%M:%SZ)" \
+		-o bin/foreman-agent \
+		./cmd/foreman-agent
+
+# FOREMAN_INSTALL_ROOT is the user-owned managed layout root for foreman-agent.
+# On macOS the default matches ResolveInstallRoot("foreman-agent").
+FOREMAN_INSTALL_ROOT ?= $(HOME)/Library/Application\ Support/llmkube/foreman-agent
+
+.PHONY: install-foreman-agent
+install-foreman-agent: build-foreman-agent-versioned ## Install foreman-agent into user-owned managed layout and start launchd service (macOS only, no sudo).
+	@echo "Installing foreman-agent $(FOREMAN_AGENT_VERSION)..."
+	@# Create the versioned directory and stage the binary.
+	mkdir -p "$(FOREMAN_INSTALL_ROOT)/versions/$(FOREMAN_AGENT_VERSION)"
+	cp bin/foreman-agent "$(FOREMAN_INSTALL_ROOT)/versions/$(FOREMAN_AGENT_VERSION)/foreman-agent"
+	chmod 0755 "$(FOREMAN_INSTALL_ROOT)/versions/$(FOREMAN_AGENT_VERSION)/foreman-agent"
+	@# Atomically flip the current symlink (write temp then rename, POSIX-atomic).
+	@ln -sfn "$(FOREMAN_INSTALL_ROOT)/versions/$(FOREMAN_AGENT_VERSION)" \
+		"$(FOREMAN_INSTALL_ROOT)/current.tmp"
+	@mv -f "$(FOREMAN_INSTALL_ROOT)/current.tmp" "$(FOREMAN_INSTALL_ROOT)/current"
+	@echo "Staged at $(FOREMAN_INSTALL_ROOT)/current -> versions/$(FOREMAN_AGENT_VERSION)"
+	@echo "Installing launchd service..."
+	@# Substitute YOUR_USERNAME placeholder with the real home directory path.
+	@sed "s|/Users/YOUR_USERNAME/Library/Application Support/llmkube/foreman-agent|$(FOREMAN_INSTALL_ROOT)|g" \
+		deployment/macos/com.llmkube.foreman-agent.plist \
+		> ~/Library/LaunchAgents/$(LLMKUBE_FOREMAN_AGENT_LABEL).plist
+	@echo "Starting foreman-agent service..."
+	@# Bootstrap the plist the first time (noop if already bootstrapped).
+	@launchctl bootstrap gui/$$(id -u) ~/Library/LaunchAgents/$(LLMKUBE_FOREMAN_AGENT_LABEL).plist 2>/dev/null || true
+	@# kickstart -k ensures a running instance picks up the new binary.
+	launchctl kickstart -k gui/$$(id -u)/$(LLMKUBE_FOREMAN_AGENT_LABEL)
+	@echo "foreman-agent installed and restarted"
+	@echo ""
+	@echo "Edit ~/Library/LaunchAgents/$(LLMKUBE_FOREMAN_AGENT_LABEL).plist to set flags, then run:"
+	@echo "  launchctl kickstart -k gui/$$(id -u)/$(LLMKUBE_FOREMAN_AGENT_LABEL)"
+	@echo "To view logs: tail -f /tmp/llmkube-foreman-agent.log"
+
+.PHONY: uninstall-foreman-agent
+uninstall-foreman-agent: ## Uninstall foreman-agent launchd service (leaves install root intact for rollback).
+	@echo "Stopping foreman-agent service..."
+	@launchctl bootout gui/$$(id -u)/$(LLMKUBE_FOREMAN_AGENT_LABEL) 2>/dev/null || true
+	rm -f ~/Library/LaunchAgents/$(LLMKUBE_FOREMAN_AGENT_LABEL).plist
+	@echo "foreman-agent service uninstalled (install root preserved at $(FOREMAN_INSTALL_ROOT))"
 
 .PHONY: install-powermetrics-sudo
 install-powermetrics-sudo: ## Install NOPASSWD sudoers entry for /usr/bin/powermetrics (required for --apple-power-enabled).
