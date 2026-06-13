@@ -461,7 +461,8 @@ func TestExecUnderInstallRoot_ResolvedCurrentSymlink(t *testing.T) {
 	}
 
 	if !selfupdate.ExecUnderInstallRootForTest(resolvedExe, installRoot) {
-		t.Errorf("ExecUnderInstallRootForTest(resolved exe) = false, want true; resolvedExe=%s installRoot=%s", resolvedExe, installRoot)
+		t.Errorf("ExecUnderInstallRootForTest(resolved exe) = false, want true; "+
+			"resolvedExe=%s installRoot=%s", resolvedExe, installRoot)
 	}
 }
 
