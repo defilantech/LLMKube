@@ -112,4 +112,29 @@ rules:
   - get
   - patch
   - update
+- apiGroups:
+  - gateway.envoyproxy.io
+  resources:
+  - backends
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - aigateway.envoyproxy.io
+  resources:
+  - aigatewayroutes
+  - aiservicebackends
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
 {{- end }}

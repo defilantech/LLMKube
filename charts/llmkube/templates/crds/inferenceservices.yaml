@@ -223,6 +223,50 @@ spec:
               endpoint:
                 description: Endpoint defines the service endpoint configuration
                 properties:
+                  gateway:
+                    description: |-
+                      Gateway opts this InferenceService into Envoy AI Gateway exposure. When
+                      set and Enabled, the operator generates the Backend / AIServiceBackend /
+                      AIGatewayRoute resources that front this service through a pre-installed
+                      Envoy AI Gateway. nil (the default) preserves today's behavior (no
+                      gateway resources). The Envoy AI Gateway stack and the referenced Gateway
+                      are a documented prerequisite; LLMKube does not install or own them.
+                    properties:
+                      enabled:
+                        description: |-
+                          Enabled is the opt-in switch. When false (or when Gateway is nil), the
+                          operator generates no gateway resources for this InferenceService.
+                        type: boolean
+                      gatewayRef:
+                        description: |-
+                          GatewayRef identifies the pre-installed Gateway (gateway.networking.k8s.io)
+                          the generated AIGatewayRoute attaches to. The Gateway typically lives in a
+                          dedicated gateway namespace; cross-namespace attachment requires the
+                          Gateway listener's allowedRoutes.namespaces to permit this
+                          InferenceService's namespace (a documented prerequisite for the MVP; the
+                          operator does not generate ReferenceGrants or touch the listener).
+                        properties:
+                          name:
+                            description: Name is the Gateway's name.
+                            type: string
+                          namespace:
+                            description: |-
+                              Namespace is the Gateway's namespace. Empty means the InferenceService's
+                              own namespace.
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      modelName:
+                        description: |-
+                          ModelName is the OpenAI "model" string clients send, matched by the
+                          generated route rule (the x-ai-eg-model header the gateway's ext_proc
+                          populates from the request body). Defaults to ModelRef, falling back to
+                          the InferenceService name when ModelRef is empty.
+                        type: string
+                    required:
+                    - gatewayRef
+                    type: object
                   path:
                     default: /v1/chat/completions
                     description: Path is the HTTP path for the inference endpoint
@@ -1998,6 +2042,25 @@ spec:
                 description: Endpoint is the service URL where inference requests
                   can be sent
                 type: string
+              gateway:
+                description: |-
+                  Gateway reports the result of Envoy AI Gateway exposure for this
+                  InferenceService. Populated only when spec.endpoint.gateway is enabled.
+                  nil means no gateway exposure was requested (or the gateway integration
+                  is disabled because the aigw CRDs are not installed; that case is also
+                  surfaced via the GatewayReady condition).
+                properties:
+                  modelName:
+                    description: |-
+                      ModelName is the resolved model-name match value clients send as the
+                      OpenAI "model" string to reach this InferenceService through the gateway.
+                    type: string
+                  routeReady:
+                    description: |-
+                      RouteReady indicates the AIGatewayRoute (and its backing Backend +
+                      AIServiceBackend) were reconciled successfully against the gateway.
+                    type: boolean
+                type: object
               lastUpdated:
                 description: LastUpdated is the timestamp of the last status update
                 format: date-time

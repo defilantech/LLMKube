@@ -396,6 +396,52 @@ type EndpointSpec struct {
 	// +kubebuilder:default=ClusterIP
 	// +optional
 	Type string `json:"type,omitempty"`
+
+	// Gateway opts this InferenceService into Envoy AI Gateway exposure. When
+	// set and Enabled, the operator generates the Backend / AIServiceBackend /
+	// AIGatewayRoute resources that front this service through a pre-installed
+	// Envoy AI Gateway. nil (the default) preserves today's behavior (no
+	// gateway resources). The Envoy AI Gateway stack and the referenced Gateway
+	// are a documented prerequisite; LLMKube does not install or own them.
+	// +optional
+	Gateway *GatewaySpec `json:"gateway,omitempty"`
+}
+
+// GatewaySpec opts an InferenceService into Envoy AI Gateway exposure.
+type GatewaySpec struct {
+	// Enabled is the opt-in switch. When false (or when Gateway is nil), the
+	// operator generates no gateway resources for this InferenceService.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// GatewayRef identifies the pre-installed Gateway (gateway.networking.k8s.io)
+	// the generated AIGatewayRoute attaches to. The Gateway typically lives in a
+	// dedicated gateway namespace; cross-namespace attachment requires the
+	// Gateway listener's allowedRoutes.namespaces to permit this
+	// InferenceService's namespace (a documented prerequisite for the MVP; the
+	// operator does not generate ReferenceGrants or touch the listener).
+	// +kubebuilder:validation:Required
+	GatewayRef GatewayReference `json:"gatewayRef"`
+
+	// ModelName is the OpenAI "model" string clients send, matched by the
+	// generated route rule (the x-ai-eg-model header the gateway's ext_proc
+	// populates from the request body). Defaults to ModelRef, falling back to
+	// the InferenceService name when ModelRef is empty.
+	// +optional
+	ModelName string `json:"modelName,omitempty"`
+}
+
+// GatewayReference references a Gateway (gateway.networking.k8s.io) by name and
+// namespace.
+type GatewayReference struct {
+	// Name is the Gateway's name.
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
+
+	// Namespace is the Gateway's namespace. Empty means the InferenceService's
+	// own namespace.
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
 }
 
 // InferenceResourceRequirements defines resource requirements for inference
@@ -723,6 +769,14 @@ type InferenceServiceStatus struct {
 	// +optional
 	EffectivePriority int32 `json:"effectivePriority,omitempty"`
 
+	// Gateway reports the result of Envoy AI Gateway exposure for this
+	// InferenceService. Populated only when spec.endpoint.gateway is enabled.
+	// nil means no gateway exposure was requested (or the gateway integration
+	// is disabled because the aigw CRDs are not installed; that case is also
+	// surfaced via the GatewayReady condition).
+	// +optional
+	Gateway *GatewayStatus `json:"gateway,omitempty"`
+
 	// conditions represent the current state of the InferenceService resource.
 	// Each condition has a unique type and reflects the status of a specific aspect of the resource.
 	//
@@ -736,6 +790,20 @@ type InferenceServiceStatus struct {
 	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// GatewayStatus reports the observed state of Envoy AI Gateway exposure for an
+// InferenceService.
+type GatewayStatus struct {
+	// RouteReady indicates the AIGatewayRoute (and its backing Backend +
+	// AIServiceBackend) were reconciled successfully against the gateway.
+	// +optional
+	RouteReady bool `json:"routeReady,omitempty"`
+
+	// ModelName is the resolved model-name match value clients send as the
+	// OpenAI "model" string to reach this InferenceService through the gateway.
+	// +optional
+	ModelName string `json:"modelName,omitempty"`
 }
 
 // +kubebuilder:object:root=true
