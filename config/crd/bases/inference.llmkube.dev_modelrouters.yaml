@@ -384,6 +384,57 @@ spec:
                         - otlp
                         type: string
                     type: object
+                  auth:
+                    description: |-
+                      Auth configures request authentication. In dataPlane: Gateway mode it
+                      compiles to an Envoy AI Gateway SecurityPolicy that validates inbound JWTs
+                      and maps a verified claim onto a trusted header before any model dispatch.
+                      nil means no authentication is enforced. Authentication only; per-team
+                      model allowlists (authorization) are a separate surface.
+                    properties:
+                      jwt:
+                        description: |-
+                          JWT enables JSON Web Token validation. When set (in dataPlane: Gateway
+                          mode) the gateway rejects requests without a valid token with HTTP 401
+                          before any model dispatch, and maps the configured claim onto a trusted
+                          header.
+                        properties:
+                          headerKey:
+                            description: |-
+                              HeaderKey is the request header the verified TeamClaim value lands in.
+                              Downstream team-scoped budgets key on this header. Defaults to
+                              "x-llmkube-team", matching the budget default.
+                            type: string
+                          issuer:
+                            description: Issuer is the OIDC issuer URL that must match
+                              the token's "iss" claim.
+                            minLength: 1
+                            type: string
+                          jwksURI:
+                            description: |-
+                              JWKSURI is the remote JWKS endpoint the gateway fetches signing keys from
+                              to verify token signatures.
+                            minLength: 1
+                            type: string
+                          provider:
+                            description: |-
+                              Provider is a short name for the JWT provider (e.g. "keycloak"). It labels
+                              the provider in the generated SecurityPolicy.
+                            minLength: 1
+                            type: string
+                          teamClaim:
+                            description: |-
+                              TeamClaim is the JWT claim that identifies the tenant (e.g. "team"). Its
+                              verified value is copied into HeaderKey.
+                            minLength: 1
+                            type: string
+                        required:
+                        - issuer
+                        - jwksURI
+                        - provider
+                        - teamClaim
+                        type: object
+                    type: object
                   budgets:
                     description: |-
                       Budgets caps token and dollar consumption per scope over a rolling
@@ -880,6 +931,12 @@ spec:
                   BackendTrafficPolicy) reconciled, and the resolved gateway endpoint. nil
                   in Proxy mode. Also surfaced via the GatewayReady condition.
                 properties:
+                  authEnabled:
+                    description: |-
+                      AuthEnabled indicates a SecurityPolicy enforcing JWT authentication was
+                      compiled for this route (ModelRouter policy.auth.jwt). Set by the
+                      ModelRouter dataPlane: Gateway path; false when no auth is configured.
+                    type: boolean
                   endpoint:
                     description: |-
                       Endpoint is the gateway address clients send OpenAI requests to. Set by

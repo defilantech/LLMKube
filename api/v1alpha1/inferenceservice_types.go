@@ -816,6 +816,12 @@ type GatewayStatus struct {
 	// Gateway); empty for the InferenceService path.
 	// +optional
 	Endpoint string `json:"endpoint,omitempty"`
+
+	// AuthEnabled indicates a SecurityPolicy enforcing JWT authentication was
+	// compiled for this route (ModelRouter policy.auth.jwt). Set by the
+	// ModelRouter dataPlane: Gateway path; false when no auth is configured.
+	// +optional
+	AuthEnabled bool `json:"authEnabled,omitempty"`
 }
 
 // +kubebuilder:object:root=true

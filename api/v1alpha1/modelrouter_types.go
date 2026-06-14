@@ -341,6 +341,62 @@ type RouterPolicy struct {
 	// this field tunes the destination and verbosity.
 	// +optional
 	AuditLog *AuditLogPolicy `json:"auditLog,omitempty"`
+
+	// Auth configures request authentication. In dataPlane: Gateway mode it
+	// compiles to an Envoy AI Gateway SecurityPolicy that validates inbound JWTs
+	// and maps a verified claim onto a trusted header before any model dispatch.
+	// nil means no authentication is enforced. Authentication only; per-team
+	// model allowlists (authorization) are a separate surface.
+	// +optional
+	Auth *RouterAuthSpec `json:"auth,omitempty"`
+}
+
+// RouterAuthSpec configures request authentication for the router. Only JWT
+// authentication is supported today; the struct leaves room for additional
+// authentication methods without a breaking change.
+type RouterAuthSpec struct {
+	// JWT enables JSON Web Token validation. When set (in dataPlane: Gateway
+	// mode) the gateway rejects requests without a valid token with HTTP 401
+	// before any model dispatch, and maps the configured claim onto a trusted
+	// header.
+	// +optional
+	JWT *JWTAuthSpec `json:"jwt,omitempty"`
+}
+
+// JWTAuthSpec configures JWT validation and claim-to-header mapping. In
+// dataPlane: Gateway mode it compiles to a SecurityPolicy jwt provider plus a
+// claimToHeaders mapping. The mapped header is the trusted tenant identity that
+// downstream budget enforcement keys on, so the gateway derives team identity
+// from a verified token rather than a client-supplied header.
+type JWTAuthSpec struct {
+	// Provider is a short name for the JWT provider (e.g. "keycloak"). It labels
+	// the provider in the generated SecurityPolicy.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Provider string `json:"provider"`
+
+	// Issuer is the OIDC issuer URL that must match the token's "iss" claim.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Issuer string `json:"issuer"`
+
+	// JWKSURI is the remote JWKS endpoint the gateway fetches signing keys from
+	// to verify token signatures.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	JWKSURI string `json:"jwksURI"`
+
+	// TeamClaim is the JWT claim that identifies the tenant (e.g. "team"). Its
+	// verified value is copied into HeaderKey.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	TeamClaim string `json:"teamClaim"`
+
+	// HeaderKey is the request header the verified TeamClaim value lands in.
+	// Downstream team-scoped budgets key on this header. Defaults to
+	// "x-llmkube-team", matching the budget default.
+	// +optional
+	HeaderKey string `json:"headerKey,omitempty"`
 }
 
 // BudgetSpec defines a token or dollar cap over a rolling window.

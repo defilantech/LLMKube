@@ -2046,6 +2046,12 @@ spec:
                   is disabled because the aigw CRDs are not installed; that case is also
                   surfaced via the GatewayReady condition).
                 properties:
+                  authEnabled:
+                    description: |-
+                      AuthEnabled indicates a SecurityPolicy enforcing JWT authentication was
+                      compiled for this route (ModelRouter policy.auth.jwt). Set by the
+                      ModelRouter dataPlane: Gateway path; false when no auth is configured.
+                    type: boolean
                   endpoint:
                     description: |-
                       Endpoint is the gateway address clients send OpenAI requests to. Set by
