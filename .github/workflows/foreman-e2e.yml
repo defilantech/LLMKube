@@ -1,0 +1,224 @@
+name: Foreman E2E (kind)
+
+# Exercises the full Foreman install path against a real apiserver:
+# helm install the chart, the foreman-operator reconciles, the
+# foreman-agent registers a Ready FleetNode, and a stub-mode freeform
+# AgenticTask flows Pending -> Scheduled -> Running -> Succeeded.
+#
+# Scoped to PRs that touch the Foreman chart or Go packages so the
+# default test-e2e + helm-chart gates stay fast for unrelated changes.
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'charts/foreman/**'
+      - 'cmd/foreman-operator/**'
+      - 'cmd/foreman-agent/**'
+      - 'internal/foreman/**'
+      - 'pkg/foreman/**'
+      - 'api/foreman/**'
+      - 'Dockerfile.foreman-operator'
+      - 'Dockerfile.foreman-agent'
+      - '.github/workflows/foreman-e2e.yml'
+  pull_request:
+    paths:
+      - 'charts/foreman/**'
+      - 'cmd/foreman-operator/**'
+      - 'cmd/foreman-agent/**'
+      - 'internal/foreman/**'
+      - 'pkg/foreman/**'
+      - 'api/foreman/**'
+      - 'Dockerfile.foreman-operator'
+      - 'Dockerfile.foreman-agent'
+      - '.github/workflows/foreman-e2e.yml'
+
+jobs:
+  foreman-e2e:
+    name: Stub task flows Pending -> Succeeded on kind
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Local tags built into the job and side-loaded into kind. Never
+      # pushed; the chart references these with pullPolicy=Never.
+      FOREMAN_OPERATOR_IMG: localhost/llmkube-foreman-operator:ci-${{ github.sha }}
+      FOREMAN_AGENT_IMG: localhost/llmkube-foreman-agent:ci-${{ github.sha }}
+      FOREMAN_NS: foreman-system
+      TASK_NS: foreman-e2e
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v5
+        with:
+          version: v3.13.0
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1.14.0
+        with:
+          cluster_name: foreman-e2e
+
+      # Build from the current code (not a published image) so the job
+      # tests exactly what the PR ships. Reuses the Makefile targets and
+      # their FOREMAN_*_IMG overrides.
+      - name: Build foreman-operator and foreman-agent images
+        run: |
+          make docker-build-foreman-operator FOREMAN_OPERATOR_IMG="${FOREMAN_OPERATOR_IMG}"
+          make docker-build-foreman-agent FOREMAN_AGENT_IMG="${FOREMAN_AGENT_IMG}"
+
+      - name: Load images into kind
+        run: |
+          kind load docker-image "${FOREMAN_OPERATOR_IMG}" --name foreman-e2e
+          kind load docker-image "${FOREMAN_AGENT_IMG}" --name foreman-e2e
+
+      # Install ONLY the foreman chart. It ships its own CRDs and has no
+      # Helm dependency on the llmkube chart; the stub executor never
+      # contacts an InferenceService, so nothing from the llmkube chart
+      # is required for a stub task to flow.
+      #
+      # Stub mode is the chart default (agent.mode=stub); it is set
+      # explicitly here so the intent is visible in the failure dump.
+      # gateCache + coder RBAC are disabled because the stub path never
+      # clones a repo or runs a coder Job.
+      - name: Install foreman chart (stub mode)
+        run: |
+          IMG_OP_REPO="${FOREMAN_OPERATOR_IMG%:*}"
+          IMG_OP_TAG="${FOREMAN_OPERATOR_IMG##*:}"
+          IMG_AG_REPO="${FOREMAN_AGENT_IMG%:*}"
+          IMG_AG_TAG="${FOREMAN_AGENT_IMG##*:}"
+
+          # Create the task namespace BEFORE install so the agent's
+          # namespace-scoped cache (pinned via agent.taskNamespace below)
+          # has it at startup. The agent watches ONLY this namespace for
+          # AgenticTasks, so it must match where we apply the task; with the
+          # chart default ("" -> omit the flag) the agent falls back to the
+          # binary default "default" and would never claim a task here.
+          kubectl create namespace "${TASK_NS}"
+
+          helm install foreman ./charts/foreman \
+            --namespace "${FOREMAN_NS}" \
+            --create-namespace \
+            --set operator.image.repository="${IMG_OP_REPO}" \
+            --set operator.image.tag="${IMG_OP_TAG}" \
+            --set operator.image.pullPolicy=Never \
+            --set agent.image.repository="${IMG_AG_REPO}" \
+            --set agent.image.tag="${IMG_AG_TAG}" \
+            --set agent.image.pullPolicy=Never \
+            --set agent.mode=stub \
+            --set agent.taskNamespace="${TASK_NS}" \
+            --set agent.gateCache.enabled=false \
+            --set coder.enabled=false \
+            --wait \
+            --timeout 5m
+
+      # Belt-and-suspenders on top of helm --wait: assert both
+      # Deployments are Available before we depend on the agent having
+      # registered anything.
+      - name: Wait for operator and agent Deployments
+        run: |
+          kubectl -n "${FOREMAN_NS}" rollout status deploy/foreman-operator --timeout=180s
+          kubectl -n "${FOREMAN_NS}" rollout status deploy/foreman-agent --timeout=180s
+          kubectl wait --for=condition=Available \
+            deploy/foreman-operator deploy/foreman-agent \
+            -n "${FOREMAN_NS}" --timeout=60s
+
+      # The agent registers a FleetNode on startup and the operator marks
+      # it Ready once the first heartbeat lands. The scheduler only
+      # dispatches to Ready nodes, so gate on this before applying a task.
+      - name: Wait for a Ready FleetNode
+        run: |
+          echo "Waiting for a FleetNode to be created..."
+          for i in $(seq 1 30); do
+            count="$(kubectl get fleetnode -A --no-headers 2>/dev/null | wc -l | tr -d ' ')"
+            if [ "${count}" != "0" ]; then
+              break
+            fi
+            sleep 2
+          done
+          kubectl get fleetnode -A
+          # FleetNodeReconciler sets .status.phase=Ready after the first
+          # heartbeat. Roles include "worker" from the chart default.
+          kubectl wait --for=jsonpath='{.status.phase}'=Ready \
+            fleetnode --all -A --timeout=90s
+
+      # A stub freeform AgenticTask with NO agentRef. agentRef-free keeps
+      # it compatible with the #520 validating webhook (which accepts
+      # such tasks). requiredCapability.roles=[worker] + accelerator=any
+      # matches the chart-default agent's FleetNode. payload.agent and
+      # payload.prompt satisfy the freeform contract; the stub executor
+      # ignores both and just sleeps, then writes Succeeded.
+      - name: Apply stub AgenticTask
+        run: |
+          # Namespace was created before install (see the install step) so the
+          # agent's namespace-scoped cache is watching it.
+          cat <<'EOF' | kubectl apply -f -
+          apiVersion: foreman.llmkube.dev/v1alpha1
+          kind: AgenticTask
+          metadata:
+            name: e2e-stub-task
+            namespace: foreman-e2e
+          spec:
+            kind: freeform
+            requiredCapability:
+              accelerator: any
+              roles:
+                - worker
+            payload:
+              agent: e2e-stub
+              prompt: "foreman e2e stub task; no external dependencies"
+          EOF
+          # Confirm the object is schema-valid as applied.
+          kubectl -n "${TASK_NS}" get agentictask e2e-stub-task -o yaml
+
+      # Best-effort observation of the intermediate phases. The stub
+      # executor sleeps ~10s, so Scheduled/Running are observable but the
+      # window is short; this is informational, not the gate.
+      - name: Observe phase transitions (best-effort)
+        continue-on-error: true
+        run: |
+          for i in $(seq 1 20); do
+            phase="$(kubectl -n "${TASK_NS}" get agentictask e2e-stub-task -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            echo "phase[$i]=${phase:-<none>}"
+            if [ "${phase}" = "Succeeded" ] || [ "${phase}" = "Failed" ]; then
+              break
+            fi
+            sleep 2
+          done
+
+      # Hard gate: the task must reach Succeeded. The stub executor's
+      # 10s sleep plus scheduling + claim overhead fit comfortably in
+      # 120s.
+      - name: Assert task reaches Succeeded
+        run: |
+          if ! kubectl -n "${TASK_NS}" wait --for=jsonpath='{.status.phase}'=Succeeded \
+              agentictask/e2e-stub-task --timeout=120s; then
+            echo "::error::AgenticTask did not reach Succeeded within timeout"
+            kubectl -n "${TASK_NS}" get agentictask e2e-stub-task -o yaml || true
+            exit 1
+          fi
+          echo "AgenticTask e2e-stub-task reached Succeeded"
+
+      # First-run CI is opaque without state. Dump everything that
+      # explains a stuck or failed task: the task itself, the fleet,
+      # both controllers' logs, and a describe of the task (events).
+      - name: Dump diagnostics on failure
+        if: failure()
+        run: |
+          echo "=== AgenticTasks (all namespaces) ==="
+          kubectl get agentictask -A -o yaml || true
+          echo "=== FleetNodes (all namespaces) ==="
+          kubectl get fleetnode -A -o yaml || true
+          echo "=== Pods in ${FOREMAN_NS} ==="
+          kubectl -n "${FOREMAN_NS}" get pods -o wide || true
+          echo "=== describe AgenticTask ==="
+          kubectl -n "${TASK_NS}" describe agentictask e2e-stub-task || true
+          echo "=== foreman-operator logs ==="
+          kubectl -n "${FOREMAN_NS}" logs deploy/foreman-operator --tail=300 || true
+          echo "=== foreman-agent logs ==="
+          kubectl -n "${FOREMAN_NS}" logs deploy/foreman-agent --tail=300 || true
