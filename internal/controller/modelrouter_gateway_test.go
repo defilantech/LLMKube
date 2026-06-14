@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -408,6 +409,358 @@ func assertBackendRefPriority(t *testing.T, ref interface{}, wantName string, wa
 	if got != wantPriority {
 		t.Errorf("backendRef %s priority = %d, want %d", wantName, got, wantPriority)
 	}
+}
+
+// TestModelRouterGateway_RouterBudgetProducesRateLimit covers 2b case (a): a
+// router-scope MaxTokens budget extends the SAME BackendTrafficPolicy 2a
+// generates so it carries BOTH the retry stanza AND a global rateLimit rule
+// (token limit + window unit), and the AIGatewayRoute carries the
+// llmRequestCosts (TotalToken) metadata that charges the limit at response
+// completion.
+func TestModelRouterGateway_RouterBudgetProducesRateLimit(t *testing.T) {
+	c, cfg, stop := startGatewayTestEnv(t, true)
+	defer stop()
+
+	makeBackendISvc(t, c, "qwen-cuda")
+
+	maxTokens := int64(5000000)
+	mr := &inferencev1alpha1.ModelRouter{
+		ObjectMeta: metav1.ObjectMeta{Name: "budget-router", Namespace: testNS},
+		Spec: inferencev1alpha1.ModelRouterSpec{
+			DataPlane:  inferencev1alpha1.ModelRouterDataPlaneGateway,
+			GatewayRef: &inferencev1alpha1.GatewayReference{Name: "ai-gateway", Namespace: "ai-gateway"},
+			Backends: []inferencev1alpha1.RouterBackend{
+				{Name: "qwen-cuda", InferenceServiceRef: corev1LocalRef("qwen-cuda")},
+			},
+			Rules: []inferencev1alpha1.RouterRule{
+				{
+					Name:  "qwen",
+					Match: &inferencev1alpha1.RuleMatch{Models: []string{"qwen35-27b"}},
+					Route: inferencev1alpha1.RuleRoute{Backends: []string{"qwen-cuda"}},
+				},
+			},
+			Policy: &inferencev1alpha1.RouterPolicy{
+				Budgets: []inferencev1alpha1.BudgetSpec{
+					{
+						Name:          "fleet-cap",
+						Scope:         "router",
+						WindowSeconds: 3600,
+						MaxTokens:     &maxTokens,
+					},
+				},
+			},
+		},
+	}
+	if err := c.Create(context.Background(), mr); err != nil {
+		t.Fatalf("create modelrouter: %v", err)
+	}
+
+	r := newModelRouterGatewayReconciler(t, cfg)
+	reconcileRouter(t, r, mr)
+
+	// The BTP keeps the 2a retry + healthCheck AND now carries a Global rateLimit.
+	btp := getUnstructured(t, c, btpGVK(), "budget-router")
+	if _, found, _ := unstructured.NestedMap(btp.Object, "spec", "retry"); !found {
+		t.Error("btp missing spec.retry (2a stanza must remain)")
+	}
+	if _, found, _ := unstructured.NestedMap(btp.Object, "spec", "healthCheck", "passive"); !found {
+		t.Error("btp missing spec.healthCheck.passive (2a stanza must remain)")
+	}
+	rlType, _, _ := unstructured.NestedString(btp.Object, "spec", "rateLimit", "type")
+	if rlType != "Global" {
+		t.Errorf("btp rateLimit.type = %q, want Global", rlType)
+	}
+	rlRules, found, _ := unstructured.NestedSlice(btp.Object, "spec", "rateLimit", "global", "rules")
+	if !found || len(rlRules) != 1 {
+		t.Fatalf("btp rateLimit.global.rules = %v (found=%v), want 1 rule", rlRules, found)
+	}
+	rule0 := rlRules[0].(map[string]interface{})
+	limit := rule0["limit"].(map[string]interface{})
+	if got, _ := limit["requests"].(int64); got != maxTokens {
+		t.Errorf("rateLimit limit.requests = %v, want %d", limit["requests"], maxTokens)
+	}
+	if unit, _ := limit["unit"].(string); unit != "Hour" {
+		t.Errorf("rateLimit limit.unit = %q, want Hour (3600s)", unit)
+	}
+	// router scope is global: no clientSelectors keyed on a header.
+	if _, hasSel := rule0["clientSelectors"]; hasSel {
+		t.Errorf("router-scope rule must not carry clientSelectors, got %+v", rule0["clientSelectors"])
+	}
+	// cost charges tokens at response completion (check-only on request path).
+	cost := rule0["cost"].(map[string]interface{})
+	reqCost := cost["request"].(map[string]interface{})
+	if n, _ := reqCost["number"].(int64); n != 0 {
+		t.Errorf("cost.request.number = %v, want 0 (check-only)", reqCost["number"])
+	}
+	respMeta := cost["response"].(map[string]interface{})["metadata"].(map[string]interface{})
+	if respMeta["namespace"] != aiGatewayMetadataNamespace || respMeta["key"] != aiGatewayTotalTokenKey() {
+		t.Errorf("cost.response.metadata = %+v, want namespace=%s key=%s", respMeta, aiGatewayMetadataNamespace, aiGatewayTotalTokenKey())
+	}
+
+	// The route carries llmRequestCosts (TotalToken) so the limit is token-denominated.
+	route := getUnstructured(t, c, aiGatewayRouteGVK(), "budget-router")
+	costs, found, _ := unstructured.NestedSlice(route.Object, "spec", "llmRequestCosts")
+	if !found || len(costs) == 0 {
+		t.Fatalf("route missing spec.llmRequestCosts")
+	}
+	hasTotalToken := false
+	for _, cst := range costs {
+		m := cst.(map[string]interface{})
+		if m["type"] == "TotalToken" && m["metadataKey"] == aiGatewayTotalTokenKey() {
+			hasTotalToken = true
+		}
+	}
+	if !hasTotalToken {
+		t.Errorf("route llmRequestCosts missing a TotalToken entry keyed on %s, got %+v", aiGatewayTotalTokenKey(), costs)
+	}
+
+	// status: ready, and the condition message mentions the compiled budget.
+	fresh := &inferencev1alpha1.ModelRouter{}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "budget-router", Namespace: testNS}, fresh); err != nil {
+		t.Fatalf("get modelrouter: %v", err)
+	}
+	cond := apimeta.FindStatusCondition(fresh.Status.Conditions, ModelRouterGatewayConditionReady)
+	if cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Fatalf("GatewayReady not True, got %+v", cond)
+	}
+}
+
+// TestModelRouterGateway_TeamBudgetKeysOnHeader covers 2b case (b): a team-scope
+// budget compiles a rateLimit rule whose clientSelector keys on the request
+// header (default x-llmkube-team), and a custom HeaderKey is honored.
+func TestModelRouterGateway_TeamBudgetKeysOnHeader(t *testing.T) {
+	tests := []struct {
+		name       string
+		headerKey  string
+		wantHeader string
+	}{
+		{name: "default header", headerKey: "", wantHeader: "x-llmkube-team"},
+		{name: "custom header", headerKey: "x-org-id", wantHeader: "x-org-id"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, cfg, stop := startGatewayTestEnv(t, true)
+			defer stop()
+
+			makeBackendISvc(t, c, "team-cuda")
+
+			maxTokens := int64(1000000)
+			mr := &inferencev1alpha1.ModelRouter{
+				ObjectMeta: metav1.ObjectMeta{Name: "team-router", Namespace: testNS},
+				Spec: inferencev1alpha1.ModelRouterSpec{
+					DataPlane:  inferencev1alpha1.ModelRouterDataPlaneGateway,
+					GatewayRef: &inferencev1alpha1.GatewayReference{Name: "ai-gateway", Namespace: "ai-gateway"},
+					Backends: []inferencev1alpha1.RouterBackend{
+						{Name: "team-cuda", InferenceServiceRef: corev1LocalRef("team-cuda")},
+					},
+					Rules: []inferencev1alpha1.RouterRule{
+						{
+							Name:  "team",
+							Match: &inferencev1alpha1.RuleMatch{Models: []string{"qwen35-27b"}},
+							Route: inferencev1alpha1.RuleRoute{Backends: []string{"team-cuda"}},
+						},
+					},
+					Policy: &inferencev1alpha1.RouterPolicy{
+						Budgets: []inferencev1alpha1.BudgetSpec{
+							{
+								Name:          "per-team",
+								Scope:         "team",
+								HeaderKey:     tt.headerKey,
+								WindowSeconds: 60,
+								MaxTokens:     &maxTokens,
+							},
+						},
+					},
+				},
+			}
+			if err := c.Create(context.Background(), mr); err != nil {
+				t.Fatalf("create modelrouter: %v", err)
+			}
+
+			r := newModelRouterGatewayReconciler(t, cfg)
+			reconcileRouter(t, r, mr)
+
+			btp := getUnstructured(t, c, btpGVK(), "team-router")
+			rlRules, found, _ := unstructured.NestedSlice(btp.Object, "spec", "rateLimit", "global", "rules")
+			if !found || len(rlRules) != 1 {
+				t.Fatalf("team rateLimit.global.rules = %v, want 1", rlRules)
+			}
+			rule0 := rlRules[0].(map[string]interface{})
+			sels, ok := rule0["clientSelectors"].([]interface{})
+			if !ok || len(sels) != 1 {
+				t.Fatalf("team rule clientSelectors = %v, want 1", rule0["clientSelectors"])
+			}
+			headers := sels[0].(map[string]interface{})["headers"].([]interface{})
+			h0 := headers[0].(map[string]interface{})
+			if h0["name"] != tt.wantHeader {
+				t.Errorf("team selector header name = %v, want %s", h0["name"], tt.wantHeader)
+			}
+			if h0["type"] != "Distinct" {
+				t.Errorf("team selector header type = %v, want Distinct (independent bucket per value)", h0["type"])
+			}
+			if unit, _ := rule0["limit"].(map[string]interface{})["unit"].(string); unit != "Minute" {
+				t.Errorf("team rateLimit unit = %q, want Minute (60s)", unit)
+			}
+		})
+	}
+}
+
+// TestModelRouterGateway_DollarBudgetFailsLoud covers 2b case (c): a MaxUSD
+// budget sets GatewayReady=False with reason UnsupportedBudgetField and
+// generates NOTHING (no partial route/BTP).
+func TestModelRouterGateway_DollarBudgetFailsLoud(t *testing.T) {
+	c, cfg, stop := startGatewayTestEnv(t, true)
+	defer stop()
+
+	makeBackendISvc(t, c, "usd-cuda")
+
+	mr := &inferencev1alpha1.ModelRouter{
+		ObjectMeta: metav1.ObjectMeta{Name: "usd-router", Namespace: testNS},
+		Spec: inferencev1alpha1.ModelRouterSpec{
+			DataPlane:  inferencev1alpha1.ModelRouterDataPlaneGateway,
+			GatewayRef: &inferencev1alpha1.GatewayReference{Name: "ai-gateway", Namespace: "ai-gateway"},
+			Backends: []inferencev1alpha1.RouterBackend{
+				{Name: "usd-cuda", InferenceServiceRef: corev1LocalRef("usd-cuda")},
+			},
+			Rules: []inferencev1alpha1.RouterRule{
+				{
+					Name:  "qwen",
+					Match: &inferencev1alpha1.RuleMatch{Models: []string{"qwen35-27b"}},
+					Route: inferencev1alpha1.RuleRoute{Backends: []string{"usd-cuda"}},
+				},
+			},
+			Policy: &inferencev1alpha1.RouterPolicy{
+				Budgets: []inferencev1alpha1.BudgetSpec{
+					{Name: "dollar-cap", Scope: "router", WindowSeconds: 3600, MaxUSD: "100.00"},
+				},
+			},
+		},
+	}
+	if err := c.Create(context.Background(), mr); err != nil {
+		t.Fatalf("create modelrouter: %v", err)
+	}
+
+	r := newModelRouterGatewayReconciler(t, cfg)
+	reconcileRouter(t, r, mr)
+
+	assertNotExists(t, c, backendGVK(), "usd-cuda")
+	assertNotExists(t, c, aiServiceBackendGVK(), "usd-cuda")
+	assertNotExists(t, c, aiGatewayRouteGVK(), "usd-router")
+	assertNotExists(t, c, btpGVK(), "usd-router")
+
+	fresh := &inferencev1alpha1.ModelRouter{}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "usd-router", Namespace: testNS}, fresh); err != nil {
+		t.Fatalf("get modelrouter: %v", err)
+	}
+	cond := apimeta.FindStatusCondition(fresh.Status.Conditions, ModelRouterGatewayConditionReady)
+	if cond == nil || cond.Status != metav1.ConditionFalse || cond.Reason != modelRouterGatewayReasonUnsupportedBudgetField {
+		t.Errorf("expected GatewayReady=False/%s, got %+v", modelRouterGatewayReasonUnsupportedBudgetField, cond)
+	}
+	if cond != nil && !contains(cond.Message, "dollar-cap") {
+		t.Errorf("condition message should name the offending budget, got %q", cond.Message)
+	}
+}
+
+// TestModelRouterGateway_RuleScopeBudgetFailsLoud covers 2b case (d): a
+// rule-scope budget sets GatewayReady=False with reason UnsupportedBudgetScope
+// and generates NOTHING.
+func TestModelRouterGateway_RuleScopeBudgetFailsLoud(t *testing.T) {
+	c, cfg, stop := startGatewayTestEnv(t, true)
+	defer stop()
+
+	makeBackendISvc(t, c, "rule-cuda")
+
+	maxTokens := int64(1000)
+	mr := &inferencev1alpha1.ModelRouter{
+		ObjectMeta: metav1.ObjectMeta{Name: "rulescope-router", Namespace: testNS},
+		Spec: inferencev1alpha1.ModelRouterSpec{
+			DataPlane:  inferencev1alpha1.ModelRouterDataPlaneGateway,
+			GatewayRef: &inferencev1alpha1.GatewayReference{Name: "ai-gateway", Namespace: "ai-gateway"},
+			Backends: []inferencev1alpha1.RouterBackend{
+				{Name: "rule-cuda", InferenceServiceRef: corev1LocalRef("rule-cuda")},
+			},
+			Rules: []inferencev1alpha1.RouterRule{
+				{
+					Name:  "qwen",
+					Match: &inferencev1alpha1.RuleMatch{Models: []string{"qwen35-27b"}},
+					Route: inferencev1alpha1.RuleRoute{Backends: []string{"rule-cuda"}},
+				},
+			},
+			Policy: &inferencev1alpha1.RouterPolicy{
+				Budgets: []inferencev1alpha1.BudgetSpec{
+					{Name: "rule-cap", Scope: "rule", RuleName: "qwen", WindowSeconds: 3600, MaxTokens: &maxTokens},
+				},
+			},
+		},
+	}
+	if err := c.Create(context.Background(), mr); err != nil {
+		t.Fatalf("create modelrouter: %v", err)
+	}
+
+	r := newModelRouterGatewayReconciler(t, cfg)
+	reconcileRouter(t, r, mr)
+
+	assertNotExists(t, c, aiGatewayRouteGVK(), "rulescope-router")
+	assertNotExists(t, c, btpGVK(), "rulescope-router")
+
+	fresh := &inferencev1alpha1.ModelRouter{}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "rulescope-router", Namespace: testNS}, fresh); err != nil {
+		t.Fatalf("get modelrouter: %v", err)
+	}
+	cond := apimeta.FindStatusCondition(fresh.Status.Conditions, ModelRouterGatewayConditionReady)
+	if cond == nil || cond.Status != metav1.ConditionFalse || cond.Reason != modelRouterGatewayReasonUnsupportedBudgetScope {
+		t.Errorf("expected GatewayReady=False/%s, got %+v", modelRouterGatewayReasonUnsupportedBudgetScope, cond)
+	}
+}
+
+// TestModelRouterGateway_NoBudgetsUnchangedFromSliceA covers 2b case (e): a
+// ModelRouter with NO budgets produces the exact 2a BTP (no rateLimit key) and
+// route (no llmRequestCosts key), guarding the #693 non-regression contract.
+func TestModelRouterGateway_NoBudgetsUnchangedFromSliceA(t *testing.T) {
+	c, cfg, stop := startGatewayTestEnv(t, true)
+	defer stop()
+
+	makeBackendISvc(t, c, "plain-cuda")
+
+	mr := &inferencev1alpha1.ModelRouter{
+		ObjectMeta: metav1.ObjectMeta{Name: "plain-router", Namespace: testNS},
+		Spec: inferencev1alpha1.ModelRouterSpec{
+			DataPlane:  inferencev1alpha1.ModelRouterDataPlaneGateway,
+			GatewayRef: &inferencev1alpha1.GatewayReference{Name: "ai-gateway", Namespace: "ai-gateway"},
+			Backends: []inferencev1alpha1.RouterBackend{
+				{Name: "plain-cuda", InferenceServiceRef: corev1LocalRef("plain-cuda")},
+			},
+			Rules: []inferencev1alpha1.RouterRule{
+				{
+					Name:  "qwen",
+					Match: &inferencev1alpha1.RuleMatch{Models: []string{"qwen35-27b"}},
+					Route: inferencev1alpha1.RuleRoute{Backends: []string{"plain-cuda"}},
+				},
+			},
+		},
+	}
+	if err := c.Create(context.Background(), mr); err != nil {
+		t.Fatalf("create modelrouter: %v", err)
+	}
+
+	r := newModelRouterGatewayReconciler(t, cfg)
+	reconcileRouter(t, r, mr)
+
+	// No budgets -> BTP carries no rateLimit key (byte-identical to 2a).
+	btp := getUnstructured(t, c, btpGVK(), "plain-router")
+	if _, found, _ := unstructured.NestedMap(btp.Object, "spec", "rateLimit"); found {
+		t.Error("no-budget BTP must NOT carry spec.rateLimit (2a non-regression)")
+	}
+	// No budgets -> route carries no llmRequestCosts key.
+	route := getUnstructured(t, c, aiGatewayRouteGVK(), "plain-router")
+	if _, found, _ := unstructured.NestedSlice(route.Object, "spec", "llmRequestCosts"); found {
+		t.Error("no-budget route must NOT carry spec.llmRequestCosts (2a non-regression)")
+	}
+}
+
+// contains is a tiny substring helper for condition-message assertions.
+func contains(s, sub string) bool {
+	return strings.Contains(s, sub)
 }
 
 // TestUnsupportedMatchMessage_GlobModel pins the fail-loud boundary for glob
