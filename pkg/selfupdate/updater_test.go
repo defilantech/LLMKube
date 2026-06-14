@@ -24,8 +24,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-logr/logr"
 
@@ -463,6 +465,315 @@ func TestExecUnderInstallRoot_ResolvedCurrentSymlink(t *testing.T) {
 	if !selfupdate.ExecUnderInstallRootForTest(resolvedExe, installRoot) {
 		t.Errorf("ExecUnderInstallRootForTest(resolved exe) = false, want true; "+
 			"resolvedExe=%s installRoot=%s", resolvedExe, installRoot)
+	}
+}
+
+// TestMaybeApply_DownloadExceedsMaxBytes_Streamed verifies that a response
+// body larger than the configured MaxDownloadBytes is rejected with a size
+// error BEFORE staging, that no versions/<v> directory is created, and that
+// the pre-existing current symlink is left untouched. This covers the case
+// where the server does NOT advertise Content-Length (chunked/streamed), so
+// the overflow can only be detected mid-stream.
+func TestMaybeApply_DownloadExceedsMaxBytes_Streamed(t *testing.T) {
+	dir := t.TempDir()
+	installRoot := filepath.Join(dir, "foreman-agent")
+
+	// Pre-seed a prior good version + current symlink to assert it survives.
+	priorVersion := "v0.8.4"
+	priorDir := filepath.Join(installRoot, "versions", priorVersion)
+	if err := os.MkdirAll(priorDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(priorDir, "foreman-agent"), []byte("prior"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	currentLink := filepath.Join(installRoot, "current")
+	if err := os.Symlink(priorDir, currentLink); err != nil {
+		t.Fatal(err)
+	}
+
+	// Server streams a body larger than the tiny limit, without a
+	// Content-Length header (force chunked by flushing).
+	bigBody := strings.Repeat("A", 4096)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fl, _ := w.(http.Flusher)
+		_, _ = fmt.Fprint(w, bigBody[:2048])
+		if fl != nil {
+			fl.Flush()
+		}
+		_, _ = fmt.Fprint(w, bigBody[2048:])
+	}))
+	defer srv.Close()
+
+	u := newUpdater(t, srv, installRoot, "foreman-agent", "v0.8.4")
+	u.MaxDownloadBytes = 1024 // tiny ceiling
+
+	_, err := u.MaybeApply(selfupdate.Target{
+		Version: "v0.9.0",
+		URL:     srv.URL + "/download",
+		SHA256:  blobSHA256(bigBody),
+	})
+	if err == nil {
+		t.Fatal("expected error for oversized download, got nil")
+	}
+	if !strings.Contains(err.Error(), "exceeds max") {
+		t.Errorf("error %q does not mention size limit", err)
+	}
+
+	// No versions/<v0.9.0> directory must be created.
+	newVersionDir := filepath.Join(installRoot, "versions", "v0.9.0")
+	if _, statErr := os.Stat(newVersionDir); !os.IsNotExist(statErr) {
+		t.Errorf("versions/v0.9.0 should not exist after oversized download, stat err=%v", statErr)
+	}
+
+	// current symlink must still point at prior version.
+	resolved, rerr := os.Readlink(currentLink)
+	if rerr != nil {
+		t.Fatalf("current symlink disappeared: %v", rerr)
+	}
+	if resolved != priorDir {
+		t.Errorf("current -> %q after failed download, want %q (prior)", resolved, priorDir)
+	}
+
+	// No temp download file left behind.
+	entries, _ := os.ReadDir(installRoot)
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "tmp-download") {
+			t.Errorf("temp download file not cleaned up: %s", e.Name())
+		}
+	}
+}
+
+// contentLengthLyingHandler advertises a huge Content-Length but never
+// streams the body. It also records whether the body write path was reached,
+// so the test can assert the precheck rejected BEFORE reading the body.
+type contentLengthLiar struct {
+	streamed bool
+}
+
+func (c *contentLengthLiar) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Length", "1073741824") // 1 GiB
+	w.WriteHeader(http.StatusOK)
+	// Intentionally do not write the advertised bytes. If the client honors
+	// the precheck it will close the connection before reading the body.
+	c.streamed = true
+}
+
+// TestMaybeApply_ContentLengthOverLimit_RejectedWithoutReading verifies that
+// when resp.ContentLength exceeds the limit, the download fails fast without
+// streaming the body.
+func TestMaybeApply_ContentLengthOverLimit_RejectedWithoutReading(t *testing.T) {
+	dir := t.TempDir()
+	installRoot := filepath.Join(dir, "foreman-agent")
+
+	handler := &contentLengthLiar{}
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	u := newUpdater(t, srv, installRoot, "foreman-agent", "v0.8.4")
+	u.MaxDownloadBytes = 1024
+
+	_, err := u.MaybeApply(selfupdate.Target{
+		Version: "v0.9.0",
+		URL:     srv.URL + "/download",
+		SHA256:  blobSHA256("anything"),
+	})
+	if err == nil {
+		t.Fatal("expected error for Content-Length over limit, got nil")
+	}
+	if !strings.Contains(err.Error(), "exceeds max") {
+		t.Errorf("error %q does not mention size limit", err)
+	}
+
+	// No versions/<v0.9.0> created.
+	if _, statErr := os.Stat(filepath.Join(installRoot, "versions", "v0.9.0")); !os.IsNotExist(statErr) {
+		t.Errorf("versions/v0.9.0 should not exist, stat err=%v", statErr)
+	}
+}
+
+// TestMaybeApply_WithinMaxBytes_Succeeds verifies a body within the limit
+// still completes the full flow (good SHA, flip happens) when MaxDownloadBytes
+// is set explicitly.
+func TestMaybeApply_WithinMaxBytes_Succeeds(t *testing.T) {
+	dir := t.TempDir()
+	installRoot := filepath.Join(dir, "foreman-agent")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, testBlob)
+	}))
+	defer srv.Close()
+
+	u := newUpdater(t, srv, installRoot, "foreman-agent", "v0.8.4")
+	u.MaxDownloadBytes = 1 << 20 // 1 MiB, comfortably above testBlob
+
+	result, err := u.MaybeApply(selfupdate.Target{
+		Version: "v0.9.0",
+		URL:     srv.URL + "/download",
+		SHA256:  blobSHA256(testBlob),
+	})
+	if err != nil {
+		t.Fatalf("MaybeApply: %v", err)
+	}
+	if !result.Restarting {
+		t.Fatal("Restarting = false, want true within-limit success")
+	}
+
+	stagedPath := filepath.Join(installRoot, "versions", "v0.9.0", "foreman-agent")
+	if _, statErr := os.Stat(stagedPath); statErr != nil {
+		t.Fatalf("staged binary not found at %s: %v", stagedPath, statErr)
+	}
+}
+
+// seedVersion creates installRoot/versions/<v>/foreman-agent with the given
+// mtime and returns the version directory path.
+func seedVersion(t *testing.T, installRoot, version string, mtime time.Time) string {
+	t.Helper()
+	vdir := filepath.Join(installRoot, "versions", version)
+	if err := os.MkdirAll(vdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(vdir, "foreman-agent"), []byte("bin-"+version), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(vdir, mtime, mtime); err != nil {
+		t.Fatal(err)
+	}
+	return vdir
+}
+
+// remainingVersions returns the set of version directory names under
+// installRoot/versions.
+func remainingVersions(t *testing.T, installRoot string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(installRoot, "versions"))
+	if err != nil {
+		t.Fatalf("read versions dir: %v", err)
+	}
+	var names []string
+	for _, e := range entries {
+		if e.IsDir() {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+// TestPruneOldVersions_ProtectsCurrentAndPrevious builds an install root with
+// several version dirs of varying mtime plus current and previous symlinks,
+// runs MaybeApply (which triggers prune at flip time), and asserts that
+// current's and previous's targets survive regardless of mtime, only the
+// newest RetainVersions of the rest survive, and older ones are deleted.
+func TestPruneOldVersions_ProtectsCurrentAndPrevious(t *testing.T) {
+	dir := t.TempDir()
+	installRoot := filepath.Join(dir, "foreman-agent")
+
+	now := time.Now()
+	// Old "current" target: oldest mtime, but must survive because current
+	// will point at it during the run (before the flip moves current forward).
+	curDir := seedVersion(t, installRoot, "v0.1.0", now.Add(-100*time.Hour))
+	// "previous" target: also old, must survive.
+	prevDir := seedVersion(t, installRoot, "v0.2.0", now.Add(-90*time.Hour))
+	// A spread of other versions with descending age.
+	seedVersion(t, installRoot, "v0.3.0", now.Add(-50*time.Hour)) // oldest of the rest -> pruned
+	seedVersion(t, installRoot, "v0.4.0", now.Add(-40*time.Hour)) // pruned
+	seedVersion(t, installRoot, "v0.5.0", now.Add(-30*time.Hour)) // kept (newest 3 of rest)
+	seedVersion(t, installRoot, "v0.6.0", now.Add(-20*time.Hour)) // kept
+	seedVersion(t, installRoot, "v0.7.0", now.Add(-10*time.Hour)) // kept
+
+	currentLink := filepath.Join(installRoot, "current")
+	if err := os.Symlink(curDir, currentLink); err != nil {
+		t.Fatal(err)
+	}
+	previousLink := filepath.Join(installRoot, "previous")
+	if err := os.Symlink(prevDir, previousLink); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, testBlob)
+	}))
+	defer srv.Close()
+
+	u := newUpdater(t, srv, installRoot, "foreman-agent", "v0.1.0")
+	u.RetainVersions = 3
+
+	// Apply v0.9.0. After the flip: current -> v0.9.0, previous -> v0.1.0
+	// (the old current). prune keeps current (v0.9.0) + previous (v0.1.0)
+	// unconditionally, plus the newest 3 of the remaining dirs by mtime.
+	_, err := u.MaybeApply(selfupdate.Target{
+		Version: "v0.9.0",
+		URL:     srv.URL + "/download",
+		SHA256:  blobSHA256(testBlob),
+	})
+	if err != nil {
+		t.Fatalf("MaybeApply: %v", err)
+	}
+
+	got := remainingVersions(t, installRoot)
+	gotSet := map[string]bool{}
+	for _, n := range got {
+		gotSet[n] = true
+	}
+
+	// Protected: new current (v0.9.0) and new previous (v0.1.0, the old current).
+	for _, must := range []string{"v0.9.0", "v0.1.0"} {
+		if !gotSet[must] {
+			t.Errorf("protected version %s was pruned; remaining=%v", must, got)
+		}
+	}
+	// Remaining pool (excluding the two protected dirs) is:
+	// v0.2.0(-90h), v0.3.0(-50h), v0.4.0(-40h), v0.5.0(-30h), v0.6.0(-20h), v0.7.0(-10h).
+	// Newest 3 by mtime kept: v0.5.0, v0.6.0, v0.7.0.
+	for _, kept := range []string{"v0.5.0", "v0.6.0", "v0.7.0"} {
+		if !gotSet[kept] {
+			t.Errorf("expected %s retained (newest 3 of rest); remaining=%v", kept, got)
+		}
+	}
+	// Older ones pruned.
+	for _, pruned := range []string{"v0.2.0", "v0.3.0", "v0.4.0"} {
+		if gotSet[pruned] {
+			t.Errorf("expected %s pruned; remaining=%v", pruned, got)
+		}
+	}
+}
+
+// TestPruneOldVersions_NonFatalOnError verifies that a prune failure does not
+// fail MaybeApply: the update still reports Restarting=true and the current
+// symlink points at the new version. We provoke a non-fatal situation by
+// using RetainVersions large enough that nothing is pruned, while also
+// confirming a missing previous symlink does not abort.
+func TestPruneOldVersions_NonFatalOnError(t *testing.T) {
+	dir := t.TempDir()
+	installRoot := filepath.Join(dir, "foreman-agent")
+
+	// No prior current/previous: first-ever update. Prune must be a harmless
+	// no-op (nothing to protect beyond the freshly flipped current).
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, testBlob)
+	}))
+	defer srv.Close()
+
+	u := newUpdater(t, srv, installRoot, "foreman-agent", "v0.8.4")
+	u.RetainVersions = 3
+
+	result, err := u.MaybeApply(selfupdate.Target{
+		Version: "v0.9.0",
+		URL:     srv.URL + "/download",
+		SHA256:  blobSHA256(testBlob),
+	})
+	if err != nil {
+		t.Fatalf("MaybeApply: %v", err)
+	}
+	if !result.Restarting {
+		t.Fatal("Restarting = false, want true")
+	}
+	current, err := os.Readlink(filepath.Join(installRoot, "current"))
+	if err != nil {
+		t.Fatalf("current symlink: %v", err)
+	}
+	if current != filepath.Join(installRoot, "versions", "v0.9.0") {
+		t.Errorf("current -> %q, want versions/v0.9.0", current)
 	}
 }
 

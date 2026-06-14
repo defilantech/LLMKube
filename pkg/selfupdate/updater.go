@@ -46,6 +46,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/go-logr/logr"
@@ -80,9 +81,33 @@ type Updater struct {
 	// http.DefaultClient when nil.
 	HTTPClient *http.Client
 
+	// MaxDownloadBytes caps the artifact download size. A malformed or
+	// malicious URL could otherwise stream an unbounded body and fill the
+	// partition before the SHA-256 verify runs. When zero, defaults to
+	// defaultMaxDownloadBytes (512 MiB). The cap is enforced two ways: a
+	// Content-Length precheck (fail before reading the body) and a
+	// LimitReader on the stream (fail mid-copy on overflow).
+	MaxDownloadBytes int64
+
+	// RetainVersions is the number of staged version directories to keep
+	// (beyond the always-retained current and previous targets) after a
+	// successful symlink flip. When zero, defaults to defaultRetainVersions
+	// (3). Older versions/<v> directories are pruned best-effort.
+	RetainVersions int
+
 	// Log is the structured logger. logr.Discard() silences all output.
 	Log logr.Logger
 }
+
+const (
+	// defaultMaxDownloadBytes is the artifact download ceiling when
+	// Updater.MaxDownloadBytes is zero: 512 MiB.
+	defaultMaxDownloadBytes int64 = 512 * 1024 * 1024
+
+	// defaultRetainVersions is the number of staged versions kept (beyond
+	// current and previous) when Updater.RetainVersions is zero.
+	defaultRetainVersions = 3
+)
 
 // Target describes the update to apply, sourced from
 // FleetNode.status.updateRequest.
@@ -172,7 +197,11 @@ func (u *Updater) MaybeApply(t Target) (ApplyResult, error) {
 		}
 	}()
 
-	if err := u.download(hc, t.URL, tmp); err != nil {
+	maxBytes := u.MaxDownloadBytes
+	if maxBytes <= 0 {
+		maxBytes = defaultMaxDownloadBytes
+	}
+	if err := u.download(hc, t.URL, tmp, maxBytes); err != nil {
 		_ = tmp.Close()
 		return ApplyResult{}, fmt.Errorf("download %s: %w", t.URL, err)
 	}
@@ -233,12 +262,91 @@ func (u *Updater) MaybeApply(t Target) (ApplyResult, error) {
 		return ApplyResult{}, fmt.Errorf("flip current symlink: %w", err)
 	}
 
+	// Prune old staged versions. Best-effort: the update already succeeded,
+	// so a prune failure must never block or revert it. current and previous
+	// (the running + rollback targets) are always retained.
+	retain := u.RetainVersions
+	if retain <= 0 {
+		retain = defaultRetainVersions
+	}
+	if err := u.pruneOldVersions(retain); err != nil {
+		log.Error(err, "self-update: pruning old versions failed (non-fatal)")
+	}
+
 	log.Info("self-update: staged and symlink flipped; will restart via supervisor")
 	return ApplyResult{Restarting: true}, nil
 }
 
-// download streams the response body from url into dst.
-func (u *Updater) download(hc *http.Client, url string, dst *os.File) error {
+// pruneOldVersions deletes stale versions/<v> directories, keeping:
+//   - the directory that "current" resolves to (the running target),
+//   - the directory that "previous" resolves to (the rollback target),
+//   - the newest `retain` of the remaining directories, by mtime.
+//
+// It is best-effort: callers treat the returned error as non-fatal. current
+// and previous are never deleted regardless of their mtime.
+func (u *Updater) pruneOldVersions(retain int) error {
+	versionsDir := filepath.Join(u.InstallRoot, "versions")
+
+	// Resolve the protected targets. A missing or dangling symlink is not an
+	// error here; it just means there is nothing to protect on that slot.
+	protected := map[string]struct{}{}
+	for _, link := range []string{"current", "previous"} {
+		if target, err := os.Readlink(filepath.Join(u.InstallRoot, link)); err == nil && target != "" {
+			// Symlinks store an absolute path to versions/<v>; normalize the
+			// base name so comparison is independent of how it was written.
+			protected[filepath.Base(target)] = struct{}{}
+		}
+	}
+
+	entries, err := os.ReadDir(versionsDir)
+	if err != nil {
+		return fmt.Errorf("read versions dir: %w", err)
+	}
+
+	type versionDir struct {
+		name  string
+		mtime int64
+	}
+	var prunable []versionDir
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		if _, ok := protected[e.Name()]; ok {
+			continue
+		}
+		info, ierr := e.Info()
+		if ierr != nil {
+			// Unreadable entry: skip it rather than abort the whole prune.
+			continue
+		}
+		prunable = append(prunable, versionDir{name: e.Name(), mtime: info.ModTime().UnixNano()})
+	}
+
+	if len(prunable) <= retain {
+		return nil
+	}
+
+	// Newest first by mtime; keep the first `retain`, delete the rest.
+	sort.Slice(prunable, func(i, j int) bool {
+		return prunable[i].mtime > prunable[j].mtime
+	})
+
+	var firstErr error
+	for _, vd := range prunable[retain:] {
+		if rmErr := os.RemoveAll(filepath.Join(versionsDir, vd.name)); rmErr != nil && firstErr == nil {
+			firstErr = fmt.Errorf("remove %s: %w", vd.name, rmErr)
+		}
+	}
+	return firstErr
+}
+
+// download streams the response body from url into dst, enforcing a maxBytes
+// ceiling. The cap is checked twice: an advertised Content-Length over the
+// limit fails before the body is read, and the stream is wrapped in an
+// io.LimitReader(maxBytes+1) so an unadvertised (chunked) overflow fails
+// mid-copy. Either overflow returns an "exceeds max" error before staging.
+func (u *Updater) download(hc *http.Client, url string, dst *os.File, maxBytes int64) error {
 	resp, err := hc.Get(url) //nolint:noctx // URL is operator-provided; no extra cancellation needed
 	if err != nil {
 		return fmt.Errorf("GET %s: %w", url, err)
@@ -247,8 +355,21 @@ func (u *Updater) download(hc *http.Client, url string, dst *os.File) error {
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("GET %s: unexpected status %d", url, resp.StatusCode)
 	}
-	if _, err := io.Copy(dst, resp.Body); err != nil {
+
+	// Precheck: a trustworthy Content-Length over the limit fails fast
+	// without reading the body at all.
+	if resp.ContentLength >= 0 && resp.ContentLength > maxBytes {
+		return fmt.Errorf("artifact size %d exceeds max %d bytes", resp.ContentLength, maxBytes)
+	}
+
+	// Stream with a hard cap. Read up to maxBytes+1 so that copying exactly
+	// maxBytes+1 bytes signals overflow (the body had more than maxBytes).
+	n, err := io.Copy(dst, io.LimitReader(resp.Body, maxBytes+1))
+	if err != nil {
 		return fmt.Errorf("copy body: %w", err)
+	}
+	if n > maxBytes {
+		return fmt.Errorf("artifact size %d exceeds max %d bytes", n, maxBytes)
 	}
 	return nil
 }
