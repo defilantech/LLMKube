@@ -24,6 +24,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -98,7 +99,7 @@ func initContainerSecurityContext(isvc *inferencev1alpha1.InferenceService) *cor
 // +kubebuilder:rbac:groups=inference.llmkube.dev,resources=models,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=core,resources=endpoints,verbs=get;list;watch
+// +kubebuilder:rbac:groups=discovery.k8s.io,resources=endpointslices,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=scheduling.k8s.io,resources=priorityclasses,verbs=get;list;watch
@@ -363,26 +364,26 @@ func (r *InferenceServiceReconciler) reconcileService(ctx context.Context, isvc 
 	return service, nil, nil
 }
 
-// metalHeartbeatKind classifies the heartbeat annotation on a metal Endpoints
-// object so that callers can produce appropriately differentiated status
-// messages without re-fetching the Endpoints.
+// metalHeartbeatKind classifies the heartbeat annotation on a metal
+// EndpointSlice so that callers can produce appropriately differentiated status
+// messages without re-listing the slices.
 type metalHeartbeatKind int
 
 const (
-	// metalHBNone: no Endpoints object exists yet (agent has not registered).
+	// metalHBNone: no EndpointSlice exists yet (agent has not registered).
 	metalHBNone metalHeartbeatKind = iota
-	// metalHBLegacy: Endpoints exist but carry no heartbeat annotation (older agent).
+	// metalHBLegacy: slices exist but carry no heartbeat annotation (older agent).
 	metalHBLegacy
-	// metalHBFresh: Endpoints exist with a current, valid heartbeat.
+	// metalHBFresh: slices exist with a current, valid heartbeat.
 	metalHBFresh
-	// metalHBStale: Endpoints exist but the heartbeat timestamp has expired.
+	// metalHBStale: slices exist but the heartbeat timestamp has expired.
 	metalHBStale
-	// metalHBUnparseable: Endpoints exist but the heartbeat annotation cannot be parsed.
+	// metalHBUnparseable: slices exist but the heartbeat annotation cannot be parsed.
 	metalHBUnparseable
 )
 
-// metalSnapshot captures the result of a single Endpoints fetch for the metal
-// path. It is produced by metalEndpointSnapshot and consumed by
+// metalSnapshot captures the result of a single EndpointSlice list for the
+// metal path. It is produced by metalEndpointSnapshot and consumed by
 // determinePhase and metalHeartbeatRequeueDuration, eliminating the second Get
 // that the old metalHeartbeatRequeue performed.
 type metalSnapshot struct {
@@ -394,65 +395,103 @@ type metalSnapshot struct {
 	ParseErr error
 }
 
-// metalEndpointSnapshot fetches the Endpoints for isvc once and returns a
+// metalEndpointSnapshot lists the EndpointSlices for isvc and returns a
 // metalSnapshot summarising both the ready-replica count and the heartbeat
 // state. It is the single source of truth for the metal path; both
 // metalReadyEndpoints and metalHeartbeatRequeueDuration are thin wrappers
 // around it.
 //
-// We read core/v1 Endpoints (deprecated in k8s v1.33+) rather than
-// discovery/v1 EndpointSlice because pkg/agent/registry.go still creates
-// Endpoints. Migrating both producer and consumer to EndpointSlice is tracked
-// as a follow-up; doing it in this PR would balloon scope.
-//
-//nolint:staticcheck // SA1019: see comment above; agent and controller migrate together
+// Slices are listed by the well-known kubernetes.io/service-name label rather
+// than fetched by name because there can be more than one: the metal-agent
+// produces one directly, and Kubernetes' EndpointSliceMirroring controller may
+// produce another from a legacy Endpoints object during a mid-upgrade window.
+// When multiple slices carry a heartbeat annotation we classify against the
+// freshest one. Mirrored slices have no heartbeat annotation, so an upgrade
+// window degrades gracefully to the legacy-exempt path.
 func (r *InferenceServiceReconciler) metalEndpointSnapshot(ctx context.Context, isvc *inferencev1alpha1.InferenceService) *metalSnapshot {
 	log := logf.FromContext(ctx)
-	endpoints := &corev1.Endpoints{}
 	name := sanitizeDNSName(isvc.Name)
-	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: isvc.Namespace}, endpoints)
+	slices := &discoveryv1.EndpointSliceList{}
+	err := r.List(ctx, slices,
+		client.InNamespace(isvc.Namespace),
+		client.MatchingLabels{"kubernetes.io/service-name": name},
+	)
 	if err != nil {
-		if !apierrors.IsNotFound(err) {
-			log.Error(err, "Failed to get Endpoints for metal accelerator", "name", name)
-		}
+		log.Error(err, "Failed to list EndpointSlices for metal accelerator", "name", name)
+		return &metalSnapshot{Kind: metalHBNone}
+	}
+	if len(slices.Items) == 0 {
 		return &metalSnapshot{Kind: metalHBNone}
 	}
 
-	raw, hasAnnotation := endpoints.Annotations[inferencev1alpha1.AnnotationAgentHeartbeat]
-	if hasAnnotation {
+	// Pick the freshest heartbeat across all slices. A slice without the
+	// annotation contributes to the count but not to heartbeat freshness.
+	var (
+		rawHeartbeat   string
+		hasAnnotation  bool
+		freshestTS     time.Time
+		freshestParsed bool
+		parseErr       error
+		parseErrRaw    string
+	)
+	for i := range slices.Items {
+		raw, ok := slices.Items[i].Annotations[inferencev1alpha1.AnnotationAgentHeartbeat]
+		if !ok {
+			continue
+		}
+		hasAnnotation = true
 		ts, perr := time.Parse(time.RFC3339, raw)
 		if perr != nil {
-			log.Info("Metal endpoint heartbeat annotation unparseable; treating as not ready",
-				"name", name, "heartbeat", raw, "parseError", perr)
-			return &metalSnapshot{Kind: metalHBUnparseable, RawHeartbeat: raw, ParseErr: perr}
+			// Remember the first unparseable value but keep scanning: a
+			// sibling slice may carry a parseable, fresher heartbeat.
+			if parseErr == nil {
+				parseErr = perr
+				parseErrRaw = raw
+			}
+			continue
 		}
-		age := time.Since(ts)
-		if age > inferencev1alpha1.DefaultAgentHeartbeatTimeout {
-			log.Info("Metal endpoint heartbeat stale; treating as not ready",
-				"name", name, "heartbeat", raw, "age", age.Round(time.Second), "timeout", inferencev1alpha1.DefaultAgentHeartbeatTimeout)
-			return &metalSnapshot{Kind: metalHBStale, RawHeartbeat: raw}
+		if !freshestParsed || ts.After(freshestTS) {
+			freshestTS = ts
+			freshestParsed = true
+			rawHeartbeat = raw
 		}
 	}
-	// No annotation: legacy agent without heartbeats; fall through and count.
+
+	switch {
+	case freshestParsed:
+		// At least one parseable heartbeat: classify against the freshest.
+		age := time.Since(freshestTS)
+		if age > inferencev1alpha1.DefaultAgentHeartbeatTimeout {
+			log.Info("Metal endpoint heartbeat stale; treating as not ready",
+				"name", name, "heartbeat", rawHeartbeat, "age", age.Round(time.Second), "timeout", inferencev1alpha1.DefaultAgentHeartbeatTimeout)
+			return &metalSnapshot{Kind: metalHBStale, RawHeartbeat: rawHeartbeat}
+		}
+	case hasAnnotation:
+		// Every heartbeat annotation present was unparseable.
+		log.Info("Metal endpoint heartbeat annotation unparseable; treating as not ready",
+			"name", name, "heartbeat", parseErrRaw, "parseError", parseErr)
+		return &metalSnapshot{Kind: metalHBUnparseable, RawHeartbeat: parseErrRaw, ParseErr: parseErr}
+	}
+	// No annotation on any slice: legacy agent without heartbeats; fall
+	// through and count.
 
 	var ready int32
-	for _, subset := range endpoints.Subsets {
-		// In a kind/k8s cluster the agent typically registers a small handful
-		// of addresses (one per host-mode replica). Cap the per-subset count
-		// well below int32 max so the conversion is guaranteed safe even if a
-		// pathological Endpoints object lands in the cache.
-		n := len(subset.Addresses)
-		if n > 1<<20 {
-			n = 1 << 20
+	for i := range slices.Items {
+		for j := range slices.Items[i].Endpoints {
+			cond := slices.Items[i].Endpoints[j].Conditions.Ready
+			if cond == nil || *cond {
+				// Ready==nil is treated as ready, matching the EndpointSlice
+				// convention that an absent condition means "ready".
+				ready += int32(len(slices.Items[i].Endpoints[j].Addresses)) //nolint:gosec // one address per metal endpoint; bounded
+			}
 		}
-		ready += int32(n) //nolint:gosec // bounded above
 	}
 
 	kind := metalHBLegacy
 	if hasAnnotation {
 		kind = metalHBFresh
 	}
-	return &metalSnapshot{ReadyReplicas: ready, Kind: kind, RawHeartbeat: raw}
+	return &metalSnapshot{ReadyReplicas: ready, Kind: kind, RawHeartbeat: rawHeartbeat}
 }
 
 // metalReadyEndpoints is a convenience wrapper that returns only the
@@ -466,11 +505,11 @@ func (r *InferenceServiceReconciler) metalReadyEndpoints(ctx context.Context, is
 // a successful metal reconcile. It operates on the already-fetched metalSnapshot
 // so no additional API call is needed.
 //
-// When the Endpoints carry a heartbeat annotation (fresh or stale) the
+// When the slices carry a heartbeat annotation (fresh or stale) the
 // reconciler must periodically re-check staleness because no watch event fires
 // when a heartbeat simply ages out. We return half the timeout so we notice
 // expiry within one extra interval. Legacy agents (no annotation) and
-// not-yet-registered services (no Endpoints) need no forced requeue.
+// not-yet-registered services (no slices) need no forced requeue.
 func metalHeartbeatRequeueDuration(snap *metalSnapshot) time.Duration {
 	if snap == nil {
 		return 0
@@ -528,28 +567,41 @@ func (r *InferenceServiceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.findInferenceServicesForModel),
 		).
 		Watches(
-			&corev1.Endpoints{}, //nolint:staticcheck // SA1019: the metal-agent registers v1 Endpoints; EndpointSlice migration is tracked separately
+			&discoveryv1.EndpointSlice{},
 			handler.EnqueueRequestsFromMapFunc(r.findInferenceServiceForEndpoints),
 		).
 		Named("inferenceservice").
 		Complete(r)
 }
 
-// findInferenceServiceForEndpoints enqueues the InferenceService that a set of
-// Endpoints belongs to. On the Metal path there is no Deployment or Pod, so
-// the Pod watch never fires; the metal-agent signals readiness by creating a
-// v1 Endpoints object named after the InferenceService. Without this watch a
-// Metal service stays Creating until the next periodic resync. Only the
-// agent's own Endpoints are considered: the Deployment path is already
-// covered by the Pod watch.
+// findInferenceServiceForEndpoints enqueues the InferenceService that an
+// EndpointSlice belongs to. On the Metal path there is no Deployment or Pod, so
+// the Pod watch never fires; the metal-agent signals readiness by creating an
+// EndpointSlice named after the InferenceService. Without this watch a Metal
+// service stays Creating until the next periodic resync.
+//
+// The InferenceService name is derived from the kubernetes.io/service-name
+// label (== sanitizeDNSName(isvc.Name)) rather than the slice's own name,
+// because a slice produced by the EndpointSliceMirroring controller during an
+// upgrade window has a generated name (<service>-<hash>) and only carries the
+// service-name label, not our managed-by label. Either of those labels is
+// enough to recognise a metal slice and route it back to its service.
 func (r *InferenceServiceReconciler) findInferenceServiceForEndpoints(ctx context.Context, obj client.Object) []reconcile.Request {
-	if obj.GetLabels()["llmkube.ai/managed-by"] != "metal-agent" {
+	labels := obj.GetLabels()
+	svcName := labels["kubernetes.io/service-name"]
+	if labels["llmkube.ai/managed-by"] != "metal-agent" && svcName == "" {
 		return nil
+	}
+	// Prefer the service-name label (covers both our own and mirrored slices);
+	// fall back to the object name for an agent slice that predates the label.
+	name := svcName
+	if name == "" {
+		name = obj.GetName()
 	}
 	return []reconcile.Request{
 		{
 			NamespacedName: types.NamespacedName{
-				Name:      obj.GetName(),
+				Name:      name,
 				Namespace: obj.GetNamespace(),
 			},
 		},

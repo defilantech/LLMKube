@@ -25,8 +25,10 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -34,6 +36,35 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
+
+// metalEndpointSliceFixture builds an EndpointSlice the metal-agent would
+// register for isvcName with the given ready addresses, labeled so the
+// controller's list-by-service-name finds it.
+func metalEndpointSliceFixture(isvcName string, addresses ...string) *discoveryv1.EndpointSlice {
+	eps := make([]discoveryv1.Endpoint, 0, len(addresses))
+	for _, a := range addresses {
+		eps = append(eps, discoveryv1.Endpoint{
+			Addresses:  []string{a},
+			Conditions: discoveryv1.EndpointConditions{Ready: ptr.To(true)},
+		})
+	}
+	return &discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      isvcName,
+			Namespace: "default",
+			Labels: map[string]string{
+				"kubernetes.io/service-name": isvcName,
+				"llmkube.ai/managed-by":      "metal-agent",
+			},
+		},
+		AddressType: discoveryv1.AddressTypeIPv4,
+		Endpoints:   eps,
+		Ports: []discoveryv1.EndpointPort{{
+			Port:     ptr.To(int32(8080)),
+			Protocol: ptr.To(corev1.ProtocolTCP),
+		}},
+	}
+}
 
 var _ = Describe("InferenceService Controller", func() {
 	Context("When reconciling a resource", func() {
@@ -593,20 +624,12 @@ var _ = Describe("Reconcile lifecycle", func() {
 				_ = k8sClient.Delete(ctx, isvc)
 			}()
 
-			// Simulate the metal-agent registering Endpoints once llama-server
-			// is healthy. core/v1 Endpoints is deprecated in k8s v1.33+, but
-			// pkg/agent/registry.go still uses it; migration to EndpointSlice
-			// is tracked as a follow-up to this PR.
-			endpoints := &corev1.Endpoints{ //nolint:staticcheck // SA1019: agent + controller migrate together
-				ObjectMeta: metav1.ObjectMeta{Name: isvcName, Namespace: "default"},
-				Subsets: []corev1.EndpointSubset{{ //nolint:staticcheck // SA1019: same
-					Addresses: []corev1.EndpointAddress{{IP: "192.0.2.10"}},
-					Ports:     []corev1.EndpointPort{{Port: 8080, Protocol: corev1.ProtocolTCP}},
-				}},
-			}
-			Expect(k8sClient.Create(ctx, endpoints)).To(Succeed())
+			// Simulate the metal-agent registering an EndpointSlice once
+			// llama-server is healthy.
+			slice := metalEndpointSliceFixture(isvcName, "192.0.2.10")
+			Expect(k8sClient.Create(ctx, slice)).To(Succeed())
 			defer func() {
-				_ = k8sClient.Delete(ctx, endpoints)
+				_ = k8sClient.Delete(ctx, slice)
 			}()
 
 			reconciler := &InferenceServiceReconciler{
@@ -858,15 +881,9 @@ var _ = Describe("Reconcile lifecycle", func() {
 			defer func() { _ = k8sClient.Delete(ctx, isvc) }()
 
 			// Simulate the metal-agent registering 2 ready endpoints
-			endpoints := &corev1.Endpoints{ //nolint:staticcheck // SA1019: agent + controller migrate together
-				ObjectMeta: metav1.ObjectMeta{Name: isvcName, Namespace: "default"},
-				Subsets: []corev1.EndpointSubset{{ //nolint:staticcheck
-					Addresses: []corev1.EndpointAddress{{IP: "192.0.2.10"}, {IP: "192.0.2.11"}},
-					Ports:     []corev1.EndpointPort{{Port: 8080, Protocol: corev1.ProtocolTCP}},
-				}},
-			}
-			Expect(k8sClient.Create(ctx, endpoints)).To(Succeed())
-			defer func() { _ = k8sClient.Delete(ctx, endpoints) }()
+			slice := metalEndpointSliceFixture(isvcName, "192.0.2.10", "192.0.2.11")
+			Expect(k8sClient.Create(ctx, slice)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, slice) }()
 
 			reconciler := &InferenceServiceReconciler{
 				Client:             k8sClient,
@@ -921,15 +938,9 @@ var _ = Describe("Reconcile lifecycle", func() {
 			Expect(k8sClient.Create(ctx, isvc)).To(Succeed())
 			defer func() { _ = k8sClient.Delete(ctx, isvc) }()
 
-			endpoints := &corev1.Endpoints{ //nolint:staticcheck
-				ObjectMeta: metav1.ObjectMeta{Name: isvcName, Namespace: "default"},
-				Subsets: []corev1.EndpointSubset{{ //nolint:staticcheck
-					Addresses: []corev1.EndpointAddress{{IP: "192.0.2.20"}},
-					Ports:     []corev1.EndpointPort{{Port: 8080, Protocol: corev1.ProtocolTCP}},
-				}},
-			}
-			Expect(k8sClient.Create(ctx, endpoints)).To(Succeed())
-			defer func() { _ = k8sClient.Delete(ctx, endpoints) }()
+			slice := metalEndpointSliceFixture(isvcName, "192.0.2.20")
+			Expect(k8sClient.Create(ctx, slice)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, slice) }()
 
 			reconciler := &InferenceServiceReconciler{
 				Client:             k8sClient,
@@ -953,7 +964,7 @@ var _ = Describe("Reconcile lifecycle", func() {
 			Expect(*updated.Spec.Replicas).To(Equal(int32(0)))
 
 			By("verifying status.replicas is 0 after reconcile with no endpoints")
-			Expect(k8sClient.Delete(ctx, endpoints)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, slice)).To(Succeed())
 			_, err = reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: isvcName, Namespace: "default"},
 			})

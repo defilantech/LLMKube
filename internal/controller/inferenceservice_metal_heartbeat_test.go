@@ -23,39 +23,48 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 )
 
-// metalEndpoints builds a corev1.Endpoints fixture for the metal-agent path.
-// name must be the sanitized InferenceService name (dots replaced by hyphens).
+// metalEndpoints builds a discovery/v1 EndpointSlice fixture for the metal-agent
+// path. name must be the sanitized InferenceService name (dots replaced by
+// hyphens); it is used both as the slice name and as the required
+// kubernetes.io/service-name label so the consumer's list-by-label finds it.
 // heartbeat is stamped as the AnnotationAgentHeartbeat annotation when non-empty.
-//
-//nolint:staticcheck // SA1019: v1 Endpoints; see metalReadyEndpoints comment
-func metalEndpoints(name, heartbeat string) *corev1.Endpoints {
-	ep := &corev1.Endpoints{
+func metalEndpoints(name, heartbeat string) *discoveryv1.EndpointSlice {
+	slice := &discoveryv1.EndpointSlice{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: "default",
 			Labels: map[string]string{
-				"llmkube.ai/managed-by": "metal-agent",
+				"kubernetes.io/service-name": name,
+				"llmkube.ai/managed-by":      "metal-agent",
 			},
 		},
-		Subsets: []corev1.EndpointSubset{{
-			Addresses: []corev1.EndpointAddress{{IP: "192.0.2.10"}},
-			Ports:     []corev1.EndpointPort{{Port: 50051, Name: "http", Protocol: corev1.ProtocolTCP}},
+		AddressType: discoveryv1.AddressTypeIPv4,
+		Endpoints: []discoveryv1.Endpoint{{
+			Addresses:  []string{"192.0.2.10"},
+			Conditions: discoveryv1.EndpointConditions{Ready: ptr.To(true)},
+		}},
+		Ports: []discoveryv1.EndpointPort{{
+			Name:     ptr.To("http"),
+			Port:     ptr.To(int32(50051)),
+			Protocol: ptr.To(corev1.ProtocolTCP),
 		}},
 	}
 	if heartbeat != "" {
-		ep.Annotations = map[string]string{
+		slice.Annotations = map[string]string{
 			inferencev1alpha1.AnnotationAgentHeartbeat: heartbeat,
 		}
 	}
-	return ep
+	return slice
 }
 
 var _ = Describe("metalReadyEndpoints heartbeat expiry", func() {
@@ -174,9 +183,9 @@ var _ = Describe("metalReadyEndpoints heartbeat expiry", func() {
 				_ = k8sClient.Delete(ctx, model)
 			}
 
-			ep := &corev1.Endpoints{} //nolint:staticcheck
-			if err := k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: namespace}, ep); err == nil {
-				_ = k8sClient.Delete(ctx, ep)
+			slice := &discoveryv1.EndpointSlice{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: namespace}, slice); err == nil {
+				_ = k8sClient.Delete(ctx, slice)
 			}
 		})
 
@@ -242,9 +251,9 @@ var _ = Describe("metalReadyEndpoints heartbeat expiry", func() {
 				_ = k8sClient.Delete(ctx, model)
 			}
 
-			ep := &corev1.Endpoints{} //nolint:staticcheck
-			if err := k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: namespace}, ep); err == nil {
-				_ = k8sClient.Delete(ctx, ep)
+			slice := &discoveryv1.EndpointSlice{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: namespace}, slice); err == nil {
+				_ = k8sClient.Delete(ctx, slice)
 			}
 		})
 
