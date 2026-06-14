@@ -27,6 +27,7 @@ import (
 
 	"go.uber.org/zap"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -425,6 +426,7 @@ func TestDeleteProcess_StopFailureStillUnregistersEndpoint(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = inferencev1alpha1.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
+	_ = discoveryv1.AddToScheme(scheme)
 
 	svc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
@@ -432,17 +434,17 @@ func TestDeleteProcess_StopFailureStillUnregistersEndpoint(t *testing.T) {
 			Namespace: "default",
 		},
 	}
-	//nolint:staticcheck // SA1019: Endpoints API is still functional and matches production code under test
-	endpoints := &corev1.Endpoints{
+	slice := &discoveryv1.EndpointSlice{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-model",
 			Namespace: "default",
 		},
+		AddressType: discoveryv1.AddressTypeIPv4,
 	}
 
 	k8sClient := fake.NewClientBuilder().
 		WithScheme(scheme).
-		WithRuntimeObjects(svc, endpoints).
+		WithRuntimeObjects(svc, slice).
 		Build()
 
 	agent := NewMetalAgent(MetalAgentConfig{K8sClient: k8sClient})
@@ -471,13 +473,12 @@ func TestDeleteProcess_StopFailureStillUnregistersEndpoint(t *testing.T) {
 		t.Fatal("service should be deleted even when StopProcess fails")
 	}
 
-	//nolint:staticcheck // SA1019: Endpoints API is still functional and matches production code under test
 	err = k8sClient.Get(context.Background(), types.NamespacedName{
 		Name:      "test-model",
 		Namespace: "default",
-	}, &corev1.Endpoints{})
+	}, &discoveryv1.EndpointSlice{})
 	if err == nil {
-		t.Fatal("endpoints should be deleted even when StopProcess fails")
+		t.Fatal("endpointslice should be deleted even when StopProcess fails")
 	}
 }
 
@@ -680,14 +681,17 @@ func runEnsureProcessExpectingMapEviction(
 	t.Helper()
 	scheme := newTestScheme()
 	_ = corev1.AddToScheme(scheme)
+	_ = discoveryv1.AddToScheme(scheme)
 
 	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"}}
-	//nolint:staticcheck // SA1019: Endpoints API matches production code under test
-	endpoints := &corev1.Endpoints{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"}}
+	slice := &discoveryv1.EndpointSlice{
+		ObjectMeta:  metav1.ObjectMeta{Name: name, Namespace: "default"},
+		AddressType: discoveryv1.AddressTypeIPv4,
+	}
 
 	k8sClient := fake.NewClientBuilder().
 		WithScheme(scheme).
-		WithRuntimeObjects(svc, endpoints).
+		WithRuntimeObjects(svc, slice).
 		Build()
 
 	agent := NewMetalAgent(MetalAgentConfig{K8sClient: k8sClient, Namespace: "default"})
@@ -753,6 +757,7 @@ func TestEnsureProcess_ReplicasZeroNoOpWhenNoProcess(t *testing.T) {
 func TestEnsureProcess_ReplicasZeroPatchesStatus(t *testing.T) {
 	scheme := newTestScheme()
 	_ = corev1.AddToScheme(scheme)
+	_ = discoveryv1.AddToScheme(scheme)
 
 	zero := int32(0)
 	isvc := &inferencev1alpha1.InferenceService{
@@ -832,6 +837,7 @@ func TestEnsureProcess_ReplicasZeroPatchesStatus(t *testing.T) {
 func TestEnsureProcess_ReplicasZeroStatusPatchIdempotent(t *testing.T) {
 	scheme := newTestScheme()
 	_ = corev1.AddToScheme(scheme)
+	_ = discoveryv1.AddToScheme(scheme)
 
 	zero := int32(0)
 	prev := metav1.Now().Add(-time.Hour)
@@ -991,6 +997,7 @@ func (e *blockingExecutor) StopProcess(_ int) error { return nil }
 func TestEnsureProcess_InFlightGuard(t *testing.T) {
 	scheme := newTestScheme()
 	_ = corev1.AddToScheme(scheme)
+	_ = discoveryv1.AddToScheme(scheme)
 
 	// The model file must exist on disk: ensureProcess's memory admission
 	// fails closed when the model cannot be sized, which would return before
@@ -1013,13 +1020,15 @@ func TestEnsureProcess_InFlightGuard(t *testing.T) {
 		Spec:       inferencev1alpha1.InferenceServiceSpec{ModelRef: "race-model"},
 	}
 	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "race-isvc", Namespace: "default"}}
-	//nolint:staticcheck // SA1019: Endpoints API matches production code under test
-	endpoints := &corev1.Endpoints{ObjectMeta: metav1.ObjectMeta{Name: "race-isvc", Namespace: "default"}}
+	slice := &discoveryv1.EndpointSlice{
+		ObjectMeta:  metav1.ObjectMeta{Name: "race-isvc", Namespace: "default"},
+		AddressType: discoveryv1.AddressTypeIPv4,
+	}
 
 	k8sClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithStatusSubresource(&inferencev1alpha1.InferenceService{}).
-		WithRuntimeObjects(model, isvc, svc, endpoints).
+		WithRuntimeObjects(model, isvc, svc, slice).
 		Build()
 
 	agent := NewMetalAgent(MetalAgentConfig{
@@ -1080,6 +1089,7 @@ func TestHeartbeatOnce(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = inferencev1alpha1.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
+	_ = discoveryv1.AddToScheme(scheme)
 
 	isvc := &inferencev1alpha1.InferenceService{
 		ObjectMeta: metav1.ObjectMeta{Name: "hb-once-model", Namespace: "default"},
@@ -1111,14 +1121,13 @@ func TestHeartbeatOnce(t *testing.T) {
 	before := time.Now().Add(-time.Second)
 	a.heartbeatOnce(context.Background())
 
-	//nolint:staticcheck // SA1019: Endpoints API is still functional and matches production code under test
-	eps := &corev1.Endpoints{}
+	slice := &discoveryv1.EndpointSlice{}
 	if err := k8sClient.Get(context.Background(),
-		types.NamespacedName{Name: "hb-once-model", Namespace: "default"}, eps); err != nil {
-		t.Fatalf("get endpoints after heartbeatOnce: %v", err)
+		types.NamespacedName{Name: "hb-once-model", Namespace: "default"}, slice); err != nil {
+		t.Fatalf("get endpointslice after heartbeatOnce: %v", err)
 	}
 
-	raw := eps.Annotations[inferencev1alpha1.AnnotationAgentHeartbeat]
+	raw := slice.Annotations[inferencev1alpha1.AnnotationAgentHeartbeat]
 	if raw == "" {
 		t.Fatalf("heartbeat annotation absent after heartbeatOnce")
 	}
@@ -1141,7 +1150,7 @@ func (nopExecutor) StartProcess(_ context.Context, _ ExecutorConfig) (*ManagedPr
 func (nopExecutor) StopProcess(_ int) error { return nil }
 
 // TestHeartbeatOnce_ScaledToZero verifies that heartbeatOnce does NOT
-// re-register the Service+Endpoints for a process whose InferenceService has
+// re-register the Service+EndpointSlice for a process whose InferenceService has
 // been scaled to zero (spec.replicas == 0). Re-asserting networking for a
 // scaled-to-zero service would recreate the ClusterIP routing that
 // handleScaleToZero / deleteProcess just removed, leaving a live routable
@@ -1150,6 +1159,7 @@ func TestHeartbeatOnce_ScaledToZero(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = inferencev1alpha1.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
+	_ = discoveryv1.AddToScheme(scheme)
 
 	zero := int32(0)
 	isvc := &inferencev1alpha1.InferenceService{
@@ -1185,17 +1195,16 @@ func TestHeartbeatOnce_ScaledToZero(t *testing.T) {
 
 	a.heartbeatOnce(context.Background())
 
-	// The heartbeat must NOT have created Service or Endpoints for the
+	// The heartbeat must NOT have created Service or EndpointSlice for the
 	// scaled-to-zero service.
-	//nolint:staticcheck // SA1019: Endpoints API is still functional and matches production code under test
-	eps := &corev1.Endpoints{}
+	slice := &discoveryv1.EndpointSlice{}
 	err := k8sClient.Get(context.Background(),
-		types.NamespacedName{Name: "scaled-zero", Namespace: "default"}, eps)
+		types.NamespacedName{Name: "scaled-zero", Namespace: "default"}, slice)
 	if err == nil {
-		t.Fatal("heartbeatOnce must not create Endpoints for a scaled-to-zero InferenceService")
+		t.Fatal("heartbeatOnce must not create EndpointSlice for a scaled-to-zero InferenceService")
 	}
 	if !apierrors.IsNotFound(err) {
-		t.Fatalf("unexpected error checking for Endpoints: %v", err)
+		t.Fatalf("unexpected error checking for EndpointSlice: %v", err)
 	}
 }
 
@@ -1203,24 +1212,26 @@ func TestHeartbeatOnce_ScaledToZero(t *testing.T) {
 // an InferenceService no longer exists in the API server (NotFound), it treats
 // the condition as a missed deletion event and tears the process down via
 // deleteProcess — the same path the watch-event handler uses. After the call
-// the process must be absent from the map and its Endpoints must be gone.
+// the process must be absent from the map and its EndpointSlice must be gone.
 func TestHeartbeatOnce_NotFound(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = inferencev1alpha1.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
+	_ = discoveryv1.AddToScheme(scheme)
 
 	// The fake client starts with NO InferenceService for "gone-model".
-	// Pre-populate the Endpoints so UnregisterEndpoint has something to delete.
-	existingEps := &corev1.Endpoints{ //nolint:staticcheck // SA1019: matches production path
+	// Pre-populate the EndpointSlice so UnregisterEndpoint has something to delete.
+	existingSlice := &discoveryv1.EndpointSlice{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "gone-model",
 			Namespace: "default",
 		},
+		AddressType: discoveryv1.AddressTypeIPv4,
 	}
 
 	k8sClient := fake.NewClientBuilder().
 		WithScheme(scheme).
-		WithRuntimeObjects(existingEps).
+		WithRuntimeObjects(existingSlice).
 		Build()
 
 	a := &MetalAgent{
@@ -1251,15 +1262,14 @@ func TestHeartbeatOnce_NotFound(t *testing.T) {
 		t.Fatal("heartbeatOnce_NotFound: process must be removed from map after teardown")
 	}
 
-	// Endpoints must be deleted by UnregisterEndpoint inside deleteProcess.
-	//nolint:staticcheck // SA1019: Endpoints API is still functional and matches production code under test
-	eps := &corev1.Endpoints{}
+	// EndpointSlice must be deleted by UnregisterEndpoint inside deleteProcess.
+	slice := &discoveryv1.EndpointSlice{}
 	err := k8sClient.Get(context.Background(),
-		types.NamespacedName{Name: "gone-model", Namespace: "default"}, eps)
+		types.NamespacedName{Name: "gone-model", Namespace: "default"}, slice)
 	if err == nil {
-		t.Fatal("heartbeatOnce_NotFound: Endpoints must be deleted after teardown")
+		t.Fatal("heartbeatOnce_NotFound: EndpointSlice must be deleted after teardown")
 	}
 	if !apierrors.IsNotFound(err) {
-		t.Fatalf("heartbeatOnce_NotFound: unexpected error checking Endpoints: %v", err)
+		t.Fatalf("heartbeatOnce_NotFound: unexpected error checking EndpointSlice: %v", err)
 	}
 }

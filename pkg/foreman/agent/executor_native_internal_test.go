@@ -35,8 +35,10 @@ import (
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -224,14 +226,18 @@ func TestBuildDeterministicArgs(t *testing.T) {
 }
 
 // resolveSchemeForTests builds a runtime scheme with the API types the
-// resolveInferenceBaseURL tests touch. corev1 covers Endpoints,
+// resolveInferenceBaseURL tests touch. discovery/v1 covers EndpointSlice,
 // inferencev1alpha1 covers InferenceService, foreman covers the
-// Agent CR field types referenced incidentally.
+// Agent CR field types referenced incidentally. corev1 is registered for
+// the incidental object references the executor builds.
 func resolveSchemeForTests(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	s := runtime.NewScheme()
 	if err := corev1.AddToScheme(s); err != nil {
 		t.Fatalf("corev1: %v", err)
+	}
+	if err := discoveryv1.AddToScheme(s); err != nil {
+		t.Fatalf("discoveryv1: %v", err)
 	}
 	if err := inferencev1alpha1.AddToScheme(s); err != nil {
 		t.Fatalf("inferencev1alpha1: %v", err)
@@ -243,12 +249,12 @@ func resolveSchemeForTests(t *testing.T) *runtime.Scheme {
 }
 
 // TestResolveInferenceBaseURL pins the precedence rules among the
-// three resolution modes (full override, host override + Endpoints,
+// three resolution modes (full override, host override + EndpointSlice,
 // status.endpoint default) and the error shapes the caller sees when
 // any prerequisite is missing. Regression for #540: the static
 // override locked the port at install time, so every metal-agent
 // respawn broke every subsequent task; the host-override path re-reads
-// the live port from Endpoints on each call.
+// the live port from the EndpointSlice on each call.
 func TestResolveInferenceBaseURL(t *testing.T) {
 	// Helpers that build the canned cluster objects each case may want
 	// the fake client seeded with.
@@ -266,16 +272,27 @@ func TestResolveInferenceBaseURL(t *testing.T) {
 			Status:     inferencev1alpha1.InferenceServiceStatus{Endpoint: endpoint},
 		}
 	}
-	//nolint:staticcheck // SA1019: matches production code path.
-	mkEndpoints := func(name string, port int32, withAddress bool) *corev1.Endpoints {
-		eps := &corev1.Endpoints{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
-			Subsets:    []corev1.EndpointSubset{{Ports: []corev1.EndpointPort{{Port: port}}}},
+	// mkEndpoints builds the EndpointSlice the metal-agent registers, labeled
+	// with the kubernetes.io/service-name the consumer lists by. name is the
+	// sanitized (hyphenated) service name. When withAddress is false the slice
+	// has a port but no ready endpoint, modelling a respawn gap.
+	mkEndpoints := func(name string, port int32, withAddress bool) *discoveryv1.EndpointSlice {
+		slice := &discoveryv1.EndpointSlice{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: "default",
+				Labels:    map[string]string{"kubernetes.io/service-name": name},
+			},
+			AddressType: discoveryv1.AddressTypeIPv4,
+			Ports:       []discoveryv1.EndpointPort{{Port: ptr.To(port)}},
 		}
 		if withAddress {
-			eps.Subsets[0].Addresses = []corev1.EndpointAddress{{IP: "10.42.0.5"}}
+			slice.Endpoints = []discoveryv1.Endpoint{{
+				Addresses:  []string{"10.42.0.5"},
+				Conditions: discoveryv1.EndpointConditions{Ready: ptr.To(true)},
+			}}
 		}
-		return eps
+		return slice
 	}
 
 	cases := []struct {
@@ -324,14 +341,14 @@ func TestResolveInferenceBaseURL(t *testing.T) {
 			want: "http://127.0.0.1:49931/v1",
 		},
 		{
-			name: "host override: dotted InferenceService name maps to hyphenated Endpoints",
+			name: "host override: dotted InferenceService name maps to hyphenated service-name label",
 			executor: NativeAgentLoopExecutor{
 				InferenceBaseURLHostOverride: "127.0.0.1",
 			},
 			seedObjects: []any{
 				// Agent references the dotted name; the operator
-				// sanitizes dots to hyphens when naming the Endpoints
-				// object the metal-agent registers.
+				// sanitizes dots to hyphens for the service-name label
+				// the metal-agent stamps on the EndpointSlice.
 				func() *foremanv1alpha1.Agent { return mkAgent("inf.svc.dotted") }(),
 				mkISvc("inf.svc.dotted", "http://inf-svc-dotted.default.svc.cluster.local:80/v1/chat/completions"),
 				mkEndpoints("inf-svc-dotted", 60177, true),
@@ -345,20 +362,20 @@ func TestResolveInferenceBaseURL(t *testing.T) {
 			},
 			seedObjects: []any{
 				mkISvc("test-svc", "http://test-svc.default.svc.cluster.local:80/v1/chat/completions"),
-				// no Endpoints object
+				// no EndpointSlice object: an empty list resolves to no ready port
 			},
-			wantErrFrag: "get Endpoints",
+			wantErrFrag: "no ready endpoint with a port",
 		},
 		{
-			name: "host override: Endpoints exists but has no ready address",
+			name: "host override: EndpointSlice exists but has no ready endpoint",
 			executor: NativeAgentLoopExecutor{
 				InferenceBaseURLHostOverride: "127.0.0.1",
 			},
 			seedObjects: []any{
 				mkISvc("test-svc", "http://test-svc.default.svc.cluster.local:80/v1/chat/completions"),
-				mkEndpoints("test-svc", 60177, false), // port present, no addresses
+				mkEndpoints("test-svc", 60177, false), // port present, no ready endpoint
 			},
-			wantErrFrag: "no ready address with a port",
+			wantErrFrag: "no ready endpoint with a port",
 		},
 		{
 			name:        "default: InferenceService not found",
@@ -390,11 +407,7 @@ func TestResolveInferenceBaseURL(t *testing.T) {
 					b = b.WithObjects(v)
 				case *inferencev1alpha1.InferenceService:
 					b = b.WithObjects(v)
-				//nolint:staticcheck // SA1019: mirrors the production
-				// resolveInferenceBaseURL path; producer + consumer
-				// migrate from v1 Endpoints to discoveryv1 EndpointSlice
-				// together.
-				case *corev1.Endpoints:
+				case *discoveryv1.EndpointSlice:
 					b = b.WithObjects(v)
 				default:
 					t.Fatalf("unhandled seed object type %T", obj)

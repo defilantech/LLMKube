@@ -44,12 +44,12 @@ rules:
 
   # When --inference-base-url-host-override is set (off-cluster,
   # same-host installs), the native executor reads the live llama-
-  # server port from the v1 Endpoints object the metal-agent maintains
-  # for each InferenceService. The controller-runtime cache backs this
-  # with a watch so a respawn-driven port roll is picked up on the
-  # next task dispatch (#540).
-  - apiGroups: [""]
-    resources: ["endpoints"]
+  # server port from the EndpointSlice the metal-agent maintains for
+  # each InferenceService. The controller-runtime cache backs this with
+  # a watch so a respawn-driven port roll is picked up on the next task
+  # dispatch (#540).
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
     verbs: ["get", "list", "watch"]
 
   # When an Agent's spec.provider is "cloud-proxy" (v0.2), the

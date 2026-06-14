@@ -24,6 +24,7 @@ import (
 
 	dto "github.com/prometheus/client_model/go"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -37,13 +38,14 @@ import (
 
 func newPressureTestAgent(t *testing.T, isvcs ...*inferencev1alpha1.InferenceService) *MetalAgent {
 	t.Helper()
-	// We need corev1 in the scheme so deleteProcess -> UnregisterEndpoint can
-	// issue Delete calls against Service/Endpoints (the fake client returns
-	// "no kind registered" instead of NotFound otherwise, and that error
-	// would be misinterpreted as a real failure).
+	// We need corev1 and discovery/v1 in the scheme so deleteProcess ->
+	// UnregisterEndpoint can issue Delete calls against Service/EndpointSlice
+	// (the fake client returns "no kind registered" instead of NotFound
+	// otherwise, and that error would be misinterpreted as a real failure).
 	scheme := runtime.NewScheme()
 	_ = inferencev1alpha1.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
+	_ = discoveryv1.AddToScheme(scheme)
 	builder := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&inferencev1alpha1.InferenceService{})
 	for _, isvc := range isvcs {
 		builder = builder.WithObjects(isvc)

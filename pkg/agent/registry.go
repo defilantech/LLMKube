@@ -25,16 +25,24 @@ import (
 
 	"go.uber.org/zap"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 )
+
+// labelServiceName is the well-known EndpointSlice label that ties a slice to
+// its Service. kube-proxy requires it for wiring, and every consumer lists
+// slices by it. Kubernetes' built-in EndpointSliceMirroring controller stamps
+// the same label on slices it mirrors from a legacy Endpoints object.
+const labelServiceName = "kubernetes.io/service-name"
 
 // ServiceRegistry manages Kubernetes Service and Endpoint resources
 // to expose native Metal processes to the cluster
@@ -55,7 +63,7 @@ type ServiceRegistry struct {
 // Kubernetes; otherwise the IP is auto-detected via DNS lookups
 // (host.minikube.internal / host.docker.internal).
 // version is the agent binary's version string (e.g. "v0.8.4") stamped on
-// every Endpoints object as AnnotationAgentVersion; pass empty to omit it.
+// every EndpointSlice as AnnotationAgentVersion; pass empty to omit it.
 func NewServiceRegistry(
 	k8sClient client.Client,
 	hostIP string,
@@ -77,7 +85,7 @@ func NewServiceRegistry(
 	}
 }
 
-// RegisterEndpoint creates/updates a Kubernetes Service and Endpoints
+// RegisterEndpoint creates/updates a Kubernetes Service and EndpointSlice
 // to expose the native process to the cluster
 func (r *ServiceRegistry) RegisterEndpoint(
 	ctx context.Context,
@@ -114,41 +122,45 @@ func (r *ServiceRegistry) RegisterEndpoint(
 		return fmt.Errorf("failed to create/update service: %w", err)
 	}
 
-	//nolint:staticcheck // SA1019: Endpoints API is still functional and appropriate for manual endpoint management
-	endpoints := &corev1.Endpoints{
+	slice := &discoveryv1.EndpointSlice{
 		ObjectMeta: metav1.ObjectMeta{Name: serviceName, Namespace: isvc.Namespace},
 	}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.client, endpoints, func() error {
-		endpoints.Labels = map[string]string{
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.client, slice, func() error {
+		slice.Labels = map[string]string{
+			labelServiceName:               serviceName,
 			"app":                          isvc.Name,
 			"llmkube.ai/managed-by":        "metal-agent",
 			"llmkube.ai/inference-service": isvc.Name,
 		}
-		if endpoints.Annotations == nil {
-			endpoints.Annotations = map[string]string{}
+		if slice.Annotations == nil {
+			slice.Annotations = map[string]string{}
 		}
-		endpoints.Annotations[inferencev1alpha1.AnnotationAgentHeartbeat] = r.now().UTC().Format(time.RFC3339)
+		slice.Annotations[inferencev1alpha1.AnnotationAgentHeartbeat] = r.now().UTC().Format(time.RFC3339)
 		if r.version != "" {
-			endpoints.Annotations[inferencev1alpha1.AnnotationAgentVersion] = r.version
+			slice.Annotations[inferencev1alpha1.AnnotationAgentVersion] = r.version
 		}
-		//nolint:staticcheck // SA1019: EndpointSubset still functional
-		endpoints.Subsets = []corev1.EndpointSubset{{
-			Addresses: []corev1.EndpointAddress{{
-				IP: r.resolveHostIP(),
-				TargetRef: &corev1.ObjectReference{
-					Kind: "Pod",
-					Name: fmt.Sprintf("%s-metal", isvc.Name),
-				},
-			}},
-			Ports: []corev1.EndpointPort{{
-				Name:     "http",
-				Port:     int32(port), //nolint:gosec // G115: TCP ports fit in int32
-				Protocol: corev1.ProtocolTCP,
-			}},
+		// resolveHostIP returns an IPv4 in every routable case and in the
+		// minikube/Docker-Desktop DNS fallback (host.minikube.internal ->
+		// 192.168.65.254). The fallback never yields a hostname, so IPv4 is a
+		// safe AddressType. If a future host-IP source could return an FQDN,
+		// this must branch on the address shape.
+		slice.AddressType = discoveryv1.AddressTypeIPv4
+		slice.Endpoints = []discoveryv1.Endpoint{{
+			Addresses:  []string{r.resolveHostIP()},
+			Conditions: discoveryv1.EndpointConditions{Ready: ptr.To(true)},
+			TargetRef: &corev1.ObjectReference{
+				Kind: "Pod",
+				Name: fmt.Sprintf("%s-metal", isvc.Name),
+			},
+		}}
+		slice.Ports = []discoveryv1.EndpointPort{{
+			Name:     ptr.To("http"),
+			Port:     ptr.To(int32(port)), //nolint:gosec // G115: TCP ports fit in int32
+			Protocol: ptr.To(corev1.ProtocolTCP),
 		}}
 		return nil
 	}); err != nil {
-		return fmt.Errorf("failed to create/update endpoints: %w", err)
+		return fmt.Errorf("failed to create/update endpointslice: %w", err)
 	}
 
 	r.logger.Infow("registered endpoint",
@@ -188,7 +200,7 @@ func (r *ServiceRegistry) RegisterEndpointWithRetry(
 	return nil
 }
 
-// UnregisterEndpoint removes the Service and Endpoints for a process
+// UnregisterEndpoint removes the Service and EndpointSlice for a process
 func (r *ServiceRegistry) UnregisterEndpoint(ctx context.Context, namespace, name string) error {
 	// Sanitize service name (replace dots with dashes for DNS-1035 compliance)
 	serviceName := sanitizeServiceName(name)
@@ -211,20 +223,19 @@ func (r *ServiceRegistry) UnregisterEndpoint(ctx context.Context, namespace, nam
 		)
 	}
 
-	// Delete Endpoints
-	//nolint:staticcheck // SA1019: Endpoints API is still functional and appropriate for manual endpoint management
-	endpoints := &corev1.Endpoints{
+	// Delete EndpointSlice
+	slice := &discoveryv1.EndpointSlice{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      serviceName,
 			Namespace: namespace,
 		},
 	}
-	if err := r.client.Delete(ctx, endpoints); err != nil {
+	if err := r.client.Delete(ctx, slice); err != nil {
 		if !apierrors.IsNotFound(err) {
-			return fmt.Errorf("failed to delete endpoints: %w", err)
+			return fmt.Errorf("failed to delete endpointslice: %w", err)
 		}
 		r.logger.Debugw(
-			"endpoints already deleted during endpoint cleanup",
+			"endpointslice already deleted during endpoint cleanup",
 			"namespace", namespace,
 			"name", serviceName,
 		)

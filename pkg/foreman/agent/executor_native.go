@@ -31,6 +31,7 @@ import (
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -815,14 +816,11 @@ func (e *NativeAgentLoopExecutor) resolveInferenceBaseURL(
 
 // rewriteHostFromEndpoints replaces the host of baseURL with the
 // configured InferenceBaseURLHostOverride and the live port from the
-// InferenceService's v1 Endpoints object. The Endpoints name mirrors
-// the operator's sanitizeDNSName (dots become hyphens; see
-// internal/controller/inferenceservice_controller.go).
-//
-// EndpointSlice migration is tracked separately and producer + consumer
-// move together.
-//
-//nolint:staticcheck // SA1019: the metal-agent registers v1 Endpoints;
+// InferenceService's EndpointSlice. Slices are listed by the well-known
+// kubernetes.io/service-name label (== sanitizeDNSName(isvcName); dots
+// become hyphens; see internal/controller/inferenceservice_controller.go)
+// because the metal-agent and the EndpointSliceMirroring controller may
+// each produce one.
 func (e *NativeAgentLoopExecutor) rewriteHostFromEndpoints(
 	ctx context.Context, namespace, isvcName, baseURL string,
 ) (string, error) {
@@ -830,41 +828,50 @@ func (e *NativeAgentLoopExecutor) rewriteHostFromEndpoints(
 	if err != nil {
 		return "", fmt.Errorf("parse status.endpoint %q: %w", baseURL, err)
 	}
-	var eps corev1.Endpoints
-	epsName := strings.ReplaceAll(isvcName, ".", "-")
-	key := types.NamespacedName{Namespace: namespace, Name: epsName}
-	if err := e.Client.Get(ctx, key, &eps); err != nil {
-		return "", fmt.Errorf("get Endpoints %s for host-override resolution: %w", key, err)
+	svcName := strings.ReplaceAll(isvcName, ".", "-")
+	var slices discoveryv1.EndpointSliceList
+	if err := e.Client.List(ctx, &slices,
+		client.InNamespace(namespace),
+		client.MatchingLabels{"kubernetes.io/service-name": svcName},
+	); err != nil {
+		return "", fmt.Errorf("list EndpointSlices for service %s/%s host-override resolution: %w", namespace, svcName, err)
 	}
-	port, err := firstReadyPort(eps)
+	port, err := firstReadyPort(slices)
 	if err != nil {
-		return "", fmt.Errorf("Endpoints %s: %w", key, err)
+		return "", fmt.Errorf("EndpointSlices for service %s/%s: %w", namespace, svcName, err)
 	}
 	u.Host = fmt.Sprintf("%s:%d", e.InferenceBaseURLHostOverride, port)
 	return strings.TrimRight(u.String(), "/"), nil
 }
 
-// firstReadyPort returns the first port advertised on a subset that
-// has at least one ready address. metal-agent registers one address +
-// one port per InferenceService today; a future multi-replica metal
-// path would need a smarter selector, but for the v0.2 same-host case
-// "the only port" is the right port.
-//
-//nolint:staticcheck // SA1019: see rewriteHostFromEndpoints note.
-func firstReadyPort(eps corev1.Endpoints) (int32, error) {
-	for _, subset := range eps.Subsets {
-		if len(subset.Addresses) == 0 {
+// firstReadyPort returns the first port advertised by a slice that has at
+// least one ready endpoint. metal-agent registers one address + one port per
+// InferenceService today; a future multi-replica metal path would need a
+// smarter selector, but for the v0.2 same-host case "the only port" is the
+// right port. An endpoint with Conditions.Ready unset is treated as ready,
+// matching the EndpointSlice convention.
+func firstReadyPort(slices discoveryv1.EndpointSliceList) (int32, error) {
+	for i := range slices.Items {
+		slice := &slices.Items[i]
+		hasReady := false
+		for j := range slice.Endpoints {
+			if cond := slice.Endpoints[j].Conditions.Ready; cond == nil || *cond {
+				hasReady = true
+				break
+			}
+		}
+		if !hasReady {
 			continue
 		}
-		for _, p := range subset.Ports {
-			if p.Port > 0 {
-				return p.Port, nil
+		for _, p := range slice.Ports {
+			if p.Port != nil && *p.Port > 0 {
+				return *p.Port, nil
 			}
 		}
 	}
 	// metal-agent has not registered llama-server yet, or just
 	// respawned and is between unregister + register.
-	return 0, errors.New("no ready address with a port on the Endpoints object")
+	return 0, errors.New("no ready endpoint with a port on the EndpointSlices")
 }
 
 // buildAuth resolves credentials via the configured AuthFactory or
