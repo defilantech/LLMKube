@@ -637,14 +637,12 @@ func (e *NativeAgentLoopExecutor) executeDeterministic(
 // pickDeterministicTool finds the first non-terminal tool in the
 // agent's whitelist. submit_result is always terminal (the LLM-loop
 // exit tool) so we skip it here. Returns "" if no candidate found.
+//
+// It delegates to the exported FirstDeterministicTool so the executor's
+// real selection behavior IS that pure helper; the admission webhook's
+// private copy is asserted equivalent against it in the webhook tests.
 func pickDeterministicTool(tools []string) string {
-	for _, t := range tools {
-		if t == "" || t == "submit_result" {
-			continue
-		}
-		return t
-	}
-	return ""
+	return FirstDeterministicTool(tools)
 }
 
 // buildDeterministicArgs synthesizes a JSON args blob the deterministic
@@ -689,11 +687,12 @@ type providerEndpoint struct {
 // (the M4 gate Agent shape). A cloud-proxy Agent is NEVER
 // deterministic; it always runs the LLM loop against its remote
 // endpoint.
+//
+// It delegates to the exported IsDeterministicAgent so the executor's
+// real branch selection IS that pure helper; the admission webhook's
+// private copy is asserted equivalent against it in the webhook tests.
 func isDeterministicAgent(agent *foremanv1alpha1.Agent) bool {
-	if agent.Spec.Provider != "" && agent.Spec.Provider != foremanv1alpha1.AgentProviderLocal {
-		return false
-	}
-	return agent.Spec.InferenceServiceRef.Name == ""
+	return IsDeterministicAgent(agent.Spec)
 }
 
 // resolveProviderEndpoint dispatches to the right resolver based on

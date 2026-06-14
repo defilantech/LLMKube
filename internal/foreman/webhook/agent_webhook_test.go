@@ -25,7 +25,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	foremanv1alpha1 "github.com/defilantech/llmkube/api/foreman/v1alpha1"
-	"github.com/defilantech/llmkube/pkg/foreman/agent/tools"
+	executoragent "github.com/defilantech/llmkube/pkg/foreman/agent"
+	"github.com/defilantech/llmkube/pkg/foreman/agent/tools/catalog"
 )
 
 // validAgent builds a baseline LLM-driven Agent that passes validation;
@@ -153,51 +154,123 @@ func TestAgentValidator_Create(t *testing.T) {
 	}
 }
 
-// TestAgentValidator_Update reuses the create branches: update applies the
-// same spec invariants.
+// TestAgentValidator_Update reuses the create branches when the spec
+// changes: a spec-changing update applies the same spec invariants.
 func TestAgentValidator_Update(t *testing.T) {
 	v := &AgentValidator{}
 	ctx := context.Background()
 
+	// A spec-changing update to an invalid spec is rejected. oldObj here
+	// is valid, so this is a genuine spec change into an invalid state.
 	bad := validLLMAgent()
 	bad.Spec.SystemPrompt = ""
 	if _, err := v.ValidateUpdate(ctx, validLLMAgent(), bad); err == nil {
-		t.Fatalf("expected update of an LLM agent with empty systemPrompt to fail")
+		t.Fatalf("expected spec-changing update of an LLM agent into empty systemPrompt to fail")
 	}
 
 	good := validLLMAgent()
+	good.Spec.SystemPrompt = "You are still a coder, now improved."
 	if _, err := v.ValidateUpdate(ctx, validLLMAgent(), good); err != nil {
-		t.Fatalf("expected update of a valid agent to pass, got %v", err)
+		t.Fatalf("expected spec-changing update to a valid spec to pass, got %v", err)
 	}
 }
 
-// TestDeterministicPredicateMatchesExecutor asserts the webhook's
-// deterministic predicate stays aligned with the executor's: any tool set
-// the webhook calls "usable for a deterministic agent" must be one the
-// executor's pickDeterministicTool can dispatch, and vice versa.
+// TestAgentValidator_Update_Grandfathering proves Fix 4: a status/metadata
+// patch that leaves the spec untouched is accepted even when the spec is
+// already invalid, so a grandfathered bad Agent cannot be wedged. A patch
+// that actually changes the (invalid) spec is still rejected.
+func TestAgentValidator_Update_Grandfathering(t *testing.T) {
+	v := &AgentValidator{}
+	ctx := context.Background()
+
+	// An Agent that would fail create-time validation (LLM-driven but no
+	// systemPrompt) is presumed to predate the webhook.
+	invalid := validLLMAgent()
+	invalid.Spec.SystemPrompt = ""
+	if _, err := v.ValidateCreate(ctx, invalid.DeepCopy()); err == nil {
+		t.Fatalf("test setup: expected the invalid agent to fail create validation")
+	}
+
+	// Status/metadata-only patch: spec unchanged -> accepted.
+	statusPatched := invalid.DeepCopy()
+	statusPatched.Labels = map[string]string{"patched": "true"}
+	statusPatched.Status.ObservedGeneration = 7
+	if _, err := v.ValidateUpdate(ctx, invalid.DeepCopy(), statusPatched); err != nil {
+		t.Fatalf("expected status-only update of a spec-invalid agent to be accepted (grandfathering), got %v", err)
+	}
+
+	// Spec-changing patch into a still-invalid state -> rejected.
+	specPatched := invalid.DeepCopy()
+	specPatched.Spec.Tools = []string{"read_file", "totally_made_up_tool", "submit_result"}
+	if _, err := v.ValidateUpdate(ctx, invalid.DeepCopy(), specPatched); err == nil {
+		t.Fatalf("expected a spec-changing update of an invalid agent to be re-validated and rejected")
+	}
+}
+
+// TestDeterministicPredicateMatchesExecutor is the real drift guard. The
+// webhook keeps a PRIVATE copy of the deterministic predicate (it must not
+// import pkg/foreman/agent into the operator binary). This test, which is
+// allowed to import the executor package, asserts that the webhook's
+// private copies produce identical results to the exported executor
+// helpers (executoragent.IsDeterministicAgent /
+// executoragent.FirstDeterministicTool) across a shared table.
+//
+// Because the executor's own isDeterministicAgent / pickDeterministicTool
+// delegate to those exported helpers, editing the executor's real behavior
+// changes the exported helpers and this test fails until the webhook's
+// private copy is brought back in line. That is the guarantee the previous
+// version of this test did not provide.
 func TestDeterministicPredicateMatchesExecutor(t *testing.T) {
-	cases := []struct {
-		toolNames  []string
-		wantUsable bool
-	}{
-		{[]string{"run_gate_job", "submit_result"}, true},
-		{[]string{"submit_result"}, false},
-		{[]string{""}, false},
-		{nil, false},
-		{[]string{"read_file"}, true},
-	}
-	for _, c := range cases {
-		if got := hasUsableDeterministicTool(c.toolNames); got != c.wantUsable {
-			t.Errorf("hasUsableDeterministicTool(%v) = %v, want %v", c.toolNames, got, c.wantUsable)
+	t.Run("IsDeterministicAgent", func(t *testing.T) {
+		specs := []foremanv1alpha1.AgentSpec{
+			// LLM-driven: inferenceServiceRef set, default provider.
+			{InferenceServiceRef: corev1.LocalObjectReference{Name: "qwen"}},
+			// Deterministic: empty provider, empty isvc.
+			{},
+			// Deterministic: explicit local provider, empty isvc.
+			{Provider: foremanv1alpha1.AgentProviderLocal},
+			// LLM-driven: local provider but isvc set.
+			{Provider: foremanv1alpha1.AgentProviderLocal, InferenceServiceRef: corev1.LocalObjectReference{Name: "qwen"}},
+			// LLM-driven: cloud-proxy is never deterministic, even with empty isvc.
+			{Provider: foremanv1alpha1.AgentProviderCloudProxy},
+			{Provider: foremanv1alpha1.AgentProviderCloudProxy, InferenceServiceRef: corev1.LocalObjectReference{Name: "remote"}},
 		}
-	}
+		for _, spec := range specs {
+			a := &foremanv1alpha1.Agent{Spec: spec}
+			want := executoragent.IsDeterministicAgent(spec)
+			if got := isDeterministicAgent(a); got != want {
+				t.Errorf("isDeterministicAgent(%+v) = %v; executor IsDeterministicAgent = %v (webhook private copy drifted from executor)", spec, got, want)
+			}
+		}
+	})
+
+	t.Run("FirstDeterministicTool vs hasUsableDeterministicTool", func(t *testing.T) {
+		toolSets := [][]string{
+			{"run_gate_job", "submit_result"},
+			{"submit_result"},
+			{""},
+			nil,
+			{"read_file"},
+			{"submit_result", "run_gate_job"},
+			{"", "submit_result", "write_file"},
+		}
+		for _, ts := range toolSets {
+			// The webhook's hasUsableDeterministicTool is true exactly
+			// when the executor would find a tool to dispatch, i.e. when
+			// FirstDeterministicTool returns a non-empty name.
+			wantUsable := executoragent.FirstDeterministicTool(ts) != ""
+			if got := hasUsableDeterministicTool(ts); got != wantUsable {
+				t.Errorf("hasUsableDeterministicTool(%v) = %v; executor FirstDeterministicTool non-empty = %v (webhook private copy drifted from executor)", ts, got, wantUsable)
+			}
+		}
+	})
 }
 
 // TestCanonicalToolNamesCoversWhitelist guards that every name the
 // validator accepts is a real registered tool (and that the canonical set
 // is non-empty so a registry refactor that empties it would fail loud).
 func TestCanonicalToolNamesCoversWhitelist(t *testing.T) {
-	names := tools.CanonicalToolNames()
+	names := catalog.CanonicalToolNames()
 	if len(names) == 0 {
 		t.Fatalf("CanonicalToolNames returned empty; webhook would reject every tool")
 	}

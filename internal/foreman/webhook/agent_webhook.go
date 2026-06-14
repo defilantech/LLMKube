@@ -28,6 +28,7 @@ package webhook
 
 import (
 	"context"
+	"reflect"
 	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -37,7 +38,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	foremanv1alpha1 "github.com/defilantech/llmkube/api/foreman/v1alpha1"
-	"github.com/defilantech/llmkube/pkg/foreman/agent/tools"
+	"github.com/defilantech/llmkube/pkg/foreman/agent/tools/catalog"
 )
 
 // +kubebuilder:webhook:path=/validate-foreman-llmkube-dev-v1alpha1-agent,mutating=false,failurePolicy=fail,sideEffects=None,groups=foreman.llmkube.dev,resources=agents,verbs=create;update,versions=v1alpha1,name=vagent.foreman.llmkube.dev,admissionReviewVersions=v1
@@ -63,11 +64,20 @@ func (v *AgentValidator) ValidateCreate(ctx context.Context, agent *foremanv1alp
 	return nil, v.validate(agent)
 }
 
-// ValidateUpdate validates an Agent on update. The same spec invariants
-// apply; we do not look at the old object because none of the checks are
-// transition-scoped.
-func (v *AgentValidator) ValidateUpdate(ctx context.Context, _, agent *foremanv1alpha1.Agent) (admission.Warnings, error) {
-	logf.FromContext(ctx).V(1).Info("validating Agent update", "name", agent.Name, "namespace", agent.Namespace)
+// ValidateUpdate validates an Agent on update. We grandfather updates that
+// do not touch the spec: a pre-existing Agent with an already-invalid spec
+// must not be rejected on an unrelated status or metadata patch, since that
+// would wedge any controller that patches it. Spec invariants are only
+// re-checked when the spec actually changes. (None of the checks are
+// transition-scoped, so when the spec changes we run the full create-time
+// validation against the new spec.)
+func (v *AgentValidator) ValidateUpdate(ctx context.Context, oldAgent, agent *foremanv1alpha1.Agent) (admission.Warnings, error) {
+	log := logf.FromContext(ctx).V(1)
+	if oldAgent != nil && reflect.DeepEqual(oldAgent.Spec, agent.Spec) {
+		log.Info("skipping Agent update validation; spec unchanged", "name", agent.Name, "namespace", agent.Namespace)
+		return nil, nil
+	}
+	log.Info("validating Agent update", "name", agent.Name, "namespace", agent.Namespace)
 	return nil, v.validate(agent)
 }
 
@@ -96,20 +106,24 @@ func (v *AgentValidator) validate(agent *foremanv1alpha1.Agent) error {
 }
 
 // validateAgentToolNames rejects any spec.tools entry that is not a
-// registered tool name. The valid set is sourced from
-// tools.CanonicalToolNames so it tracks the registry the foreman-agent
-// builds (makeRegistryFactory); this matches the runtime Filter() check
+// registered tool name. The valid set is sourced from the dependency-free
+// leaf catalog.CanonicalToolNames so it tracks the registry the
+// foreman-agent builds (makeRegistryFactory) WITHOUT pulling the
+// executor's dependency tree into the operator binary; the
+// pkg/foreman/agent/tools drift test asserts the leaf list stays in sync
+// with the real constructors. This matches the runtime Filter() check
 // that fails an Agent whose whitelist names an unknown tool.
 func validateAgentToolNames(agent *foremanv1alpha1.Agent, toolsPath *field.Path) field.ErrorList {
 	var errs field.ErrorList
-	valid := make(map[string]bool, len(tools.CanonicalToolNames()))
-	for _, name := range tools.CanonicalToolNames() {
+	canonical := catalog.CanonicalToolNames()
+	valid := make(map[string]bool, len(canonical))
+	for _, name := range canonical {
 		valid[name] = true
 	}
 	for i, name := range agent.Spec.Tools {
 		if !valid[name] {
 			errs = append(errs, field.NotSupported(
-				toolsPath.Index(i), name, tools.CanonicalToolNames()))
+				toolsPath.Index(i), name, canonical))
 		}
 	}
 	return errs
