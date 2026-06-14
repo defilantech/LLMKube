@@ -5,6 +5,18 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.7](https://github.com/defilantech/LLMKube/compare/v0.8.6...v0.8.7) (2026-06-14)
+
+
+### Features
+
+* **foreman:** validating webhook for Agent + AgenticTask CRs ([#685](https://github.com/defilantech/LLMKube/issues/685)) ([1935da7](https://github.com/defilantech/LLMKube/commit/1935da775dafcbb1ea25c3f6d763df42693163e7))
+
+
+### Bug Fixes
+
+* **foreman:** drop deprecated Result.Requeue in workload terminal test ([#688](https://github.com/defilantech/LLMKube/issues/688)) ([a97056c](https://github.com/defilantech/LLMKube/commit/a97056c89c27a14cd2fde0a63f2d4c49ce7c086b))
+
 ## [0.8.6](https://github.com/defilantech/LLMKube/compare/v0.8.5...v0.8.6) (2026-06-13)
 
 
