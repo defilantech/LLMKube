@@ -167,6 +167,18 @@ Compile `policy.budgets[]` into token-denominated rate limiting on the resources
 
 - **Status.** Surface compiled budgets and any fail-loud reason (`UnsupportedBudgetField` / `UnsupportedBudgetScope`) on the ModelRouter condition, consistent with 2a's honest-boundary handling.
 
+#### Sub-slice 2d-core (detailed design): JWT authentication
+
+Add a new auth surface to ModelRouter and compile it into a `SecurityPolicy` attached to the route 2a generates. 2d-core is **authentication only**; per-team model allowlists (authorization) are slice 2d.2 (reasoning below).
+
+- **API surface (`spec.policy.auth.jwt`).** New optional block: `provider` (a name), `issuer` (the OIDC issuer URL), `jwksURI` (the remote JWKS endpoint), and `teamClaim` (the JWT claim that identifies the tenant). Optional `headerKey` to override where the claim lands (defaults to `x-llmkube-team`, matching the 2b budget default).
+- **Compiles to a `SecurityPolicy`** (`gateway.envoyproxy.io`) with `targetRefs` -> the generated HTTPRoute (shares the AIGatewayRoute name, like the BTP), `jwt.providers[]` carrying the issuer + `remoteJWKS.uri`, and `claimToHeaders: [{claim: teamClaim, header: headerKey}]`. The JWT filter runs before the AI extproc, so an invalid token is a 401 before any model dispatch. Mirrors the spike's validated `07-security-policy.yaml`.
+- **The budget-tamper-proof integration.** The `claimToHeaders` mapping derives the team header from a VERIFIED JWT claim. This is exactly the header 2b's `team`-scoped budgets key on (`x-llmkube-team` by default), so once both land the gateway sets the team identity from the token instead of trusting a client-supplied header. 2d-core closes the loop 2b opened. (2d is independent of 2b's code: it references the same header name; the two compose at the data plane regardless of merge order.)
+- **Honest boundary (fail-loud), consistent with 2a/2b.** If `auth.jwt` is set but `issuer`, `jwksURI`, or `teamClaim` is missing, set `GatewayReady=False` (reason `InvalidAuth`) and generate nothing rather than emit a half-configured SecurityPolicy that fails open or rejects everything.
+- **Status.** Surface auth-configured / fail-loud reason on the ModelRouter condition.
+
+**Deferred to 2d.2, with reasoning:** per-team model **allowlists** (the spike's `authorization` block: default-Deny + per-claim, per-model Allow rules). Authorization is a separate design (default-deny semantics, claim-to-model mapping, how an empty allowlist behaves, status surfacing) and is meatier than authN. 2d-core ships authentication + the budget unlock first so identity and tamper-proof budgets land immediately; 2d.2 adds access control on top of the same SecurityPolicy. Authentication without authorization is still useful here: it establishes verified identity and correct budget attribution; it just does not yet restrict which teams reach which models.
+
 ### 5.3 Backend health bridging (sub-projects 3 + 4)
 metal-agent (#662) ejects/restores the address on its managed Endpoints object on health change and surfaces status. The operator (sub-project 4) compiles that health, plus pod health, into gateway `Backend` ejection/restoration, giving off-cluster Metal endpoints the event-driven detection that pods get from the EPP. This mutates the `Backend`s the MVP generates.
 
