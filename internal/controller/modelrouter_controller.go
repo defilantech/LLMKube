@@ -111,6 +111,15 @@ func (r *ModelRouterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, r.recordValidationFailure(ctx, mr, valErrors)
 	}
 
+	// dataPlane: Gateway is owned by ModelRouterGatewayReconciler, which compiles
+	// the router onto a pre-installed Envoy AI Gateway. In that mode the
+	// router-proxy is NOT provisioned, so skip the ConfigMap/Deployment/Service
+	// path here. Default (Proxy) mode is unchanged. This is the only touch to
+	// existing behavior and is back-compat since the default is Proxy.
+	if mr.Spec.DataPlane == inferencev1alpha1.ModelRouterDataPlaneGateway {
+		return ctrl.Result{}, nil
+	}
+
 	compiled, err := r.compileRouterConfig(ctx, mr)
 	if err != nil {
 		return ctrl.Result{}, r.recordCompileFailure(ctx, mr, err)

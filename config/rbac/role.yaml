@@ -141,6 +141,7 @@ rules:
   - gateway.envoyproxy.io
   resources:
   - backends
+  - backendtrafficpolicies
   verbs:
   - create
   - delete

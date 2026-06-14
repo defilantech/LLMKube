@@ -303,6 +303,18 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "InferenceServiceGateway")
 		os.Exit(1)
 	}
+	// ModelRouterGateway compiles a ModelRouter in dataPlane: Gateway mode onto a
+	// pre-installed Envoy AI Gateway (Backend / AIServiceBackend / AIGatewayRoute
+	// / BackendTrafficPolicy). Like the InferenceService gateway controller it
+	// self-gates on the aigw CRDs being present, so a cluster without the gateway
+	// stack still starts the operator cleanly and this controller no-ops.
+	if err := (&controller.ModelRouterGatewayReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "ModelRouterGateway")
+		os.Exit(1)
+	}
 	// +kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
