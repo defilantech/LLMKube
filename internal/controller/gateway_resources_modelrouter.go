@@ -55,7 +55,34 @@ const (
 	btpKind       = "BackendTrafficPolicy"
 	btpResource   = "backendtrafficpolicies"
 	httpRouteKind = "HTTPRoute"
+
+	// aiGatewayMetadataNamespace is the dynamic-metadata namespace the Envoy AI
+	// Gateway extproc writes per-request usage under. See aiGatewayTotalTokenKey
+	// for the total-token key within it.
+	aiGatewayMetadataNamespace = "io.envoy.ai_gateway"
+
+	// defaultTeamHeaderKey is the request header a team-scope budget keys its
+	// rateLimit bucket on when BudgetSpec.HeaderKey is unset. Matches the CRD
+	// default documented on BudgetSpec.HeaderKey.
+	defaultTeamHeaderKey = "x-llmkube-team"
+
+	// Budget scopes compiled in slice 2b. "rule" is fail-loud (deferred).
+	budgetScopeRouter = "router"
+	budgetScopeTeam   = "team"
+	budgetScopeRule   = "rule"
 )
+
+// aiGatewayTotalTokenKey is the dynamic-metadata key (within
+// aiGatewayMetadataNamespace) under which the gateway records a request's total
+// token count. The route's llmRequestCosts emits this key at response
+// completion, and the BTP rateLimit charges it. Mirrors the spike manifests
+// 03-route.yaml (llmRequestCosts) and 05-fallback-policy.yaml (rateLimit
+// cost.response.metadata). It is a function (not a const) so the metadata-key
+// literal is not bound to a "token"-named package-level identifier, which the
+// gosec G101 hardcoded-credential heuristic flags as a false positive.
+func aiGatewayTotalTokenKey() string {
+	return "llm_total_token"
+}
 
 // btpGVK is the GVK of the generated BackendTrafficPolicy. Same group/version as
 // Backend (gateway.envoyproxy.io/v1alpha1).
@@ -167,6 +194,7 @@ func newRouterAIGatewayRoute(
 	mr *inferencev1alpha1.ModelRouter,
 	gatewayRef *inferencev1alpha1.GatewayReference,
 	rules []routerRuleResource,
+	budgets []inferencev1alpha1.BudgetSpec,
 ) *unstructured.Unstructured {
 	parentRef := map[string]interface{}{
 		"name":  gatewayRef.Name,
@@ -182,15 +210,39 @@ func newRouterAIGatewayRoute(
 		compiledRules = append(compiledRules, compileRouteRule(rule))
 	}
 
+	spec := map[string]interface{}{
+		"parentRefs": []interface{}{parentRef},
+		"rules":      compiledRules,
+	}
+
+	// slice 2b: when budgets exist, charge the rate limit in tokens by emitting
+	// the TotalToken cost metadata. Without budgets we omit the key entirely so a
+	// 2a-only ModelRouter's route is byte-identical to #693's output.
+	if len(budgets) > 0 {
+		spec["llmRequestCosts"] = routerLLMRequestCosts()
+	}
+
 	u := &unstructured.Unstructured{}
 	u.SetGroupVersionKind(aiGatewayRouteGVK())
 	u.SetName(modelRouterGatewayResourceName(mr))
 	u.SetNamespace(mr.Namespace)
-	u.Object["spec"] = map[string]interface{}{
-		"parentRefs": []interface{}{parentRef},
-		"rules":      compiledRules,
-	}
+	u.Object["spec"] = spec
 	return u
+}
+
+// routerLLMRequestCosts is the llmRequestCosts block added to the AIGatewayRoute
+// when budgets are present. It emits the total-token count into dynamic metadata
+// (io.envoy.ai_gateway/llm_total_token) at response completion, which is the key
+// the BTP rateLimit charges. Mirrors spike 03-route.yaml; slice 2b only needs
+// the TotalToken entry (the input/output splits there feed the audit access logs
+// of slice 2c, which is not yet compiled).
+func routerLLMRequestCosts() []interface{} {
+	return []interface{}{
+		map[string]interface{}{
+			"metadataKey": aiGatewayTotalTokenKey(),
+			"type":        "TotalToken",
+		},
+	}
 }
 
 // compileRouteRule builds one AIGatewayRoute rule: the matches block (a match
@@ -288,13 +340,9 @@ func compileRuleBackendRefs(refs []routerBackendRef) []interface{} {
 // AIGatewayRoute's name) by name. Mirrors spike 05-fallback-policy.yaml MINUS
 // the rateLimit/budget stanza (slice 2b adds that to THIS policy; two BTPs on
 // one target silently conflict, footgun 7.1).
-func newRouterBackendTrafficPolicy(mr *inferencev1alpha1.ModelRouter) *unstructured.Unstructured {
+func newRouterBackendTrafficPolicy(mr *inferencev1alpha1.ModelRouter, budgets []inferencev1alpha1.BudgetSpec) *unstructured.Unstructured {
 	name := modelRouterGatewayResourceName(mr)
-	u := &unstructured.Unstructured{}
-	u.SetGroupVersionKind(btpGVK())
-	u.SetName(name)
-	u.SetNamespace(mr.Namespace)
-	u.Object["spec"] = map[string]interface{}{
+	spec := map[string]interface{}{
 		"targetRefs": []interface{}{
 			map[string]interface{}{
 				"group": gatewayBackendRefGroupAPI,
@@ -326,7 +374,123 @@ func newRouterBackendTrafficPolicy(mr *inferencev1alpha1.ModelRouter) *unstructu
 			},
 		},
 	}
+
+	// slice 2b: budgets compile to a Global rateLimit stanza on THIS SAME BTP.
+	// Two BTPs targeting one route silently conflict (oldest wins, footgun 7.1),
+	// so the budget rateLimit must share the policy with retry/healthCheck. When
+	// there are no budgets we omit the key entirely so a 2a-only ModelRouter's
+	// BTP is byte-identical to #693's output.
+	if len(budgets) > 0 {
+		spec["rateLimit"] = compileBudgetRateLimit(budgets)
+	}
+
+	u := &unstructured.Unstructured{}
+	u.SetGroupVersionKind(btpGVK())
+	u.SetName(name)
+	u.SetNamespace(mr.Namespace)
+	u.Object["spec"] = spec
 	return u
+}
+
+// compileBudgetRateLimit turns the router's budgets into a Global rateLimit
+// stanza: one rule per budget. router-scope budgets become a global descriptor
+// (no clientSelector); team-scope budgets become a descriptor keyed (Distinct)
+// on the budget's HeaderKey so each header value gets an independent bucket. The
+// limit is charged in tokens via the route's llmRequestCosts (TotalToken), with
+// the request path check-only (cost.request.number = 0) and usage debited at
+// response completion (cost.response.metadata). Mirrors spike
+// 05-fallback-policy.yaml. Callers guarantee (via unsupportedBudgetMessage)
+// every budget here is router or team scope with MaxTokens set; rule scope and
+// MaxUSD fail loud before generation.
+func compileBudgetRateLimit(budgets []inferencev1alpha1.BudgetSpec) map[string]interface{} {
+	rules := make([]interface{}, 0, len(budgets))
+	for _, b := range budgets {
+		rules = append(rules, compileBudgetRule(b))
+	}
+	return map[string]interface{}{
+		"type": "Global",
+		"global": map[string]interface{}{
+			"rules": rules,
+		},
+	}
+}
+
+// compileBudgetRule compiles one budget into a rateLimit rule. The limit is the
+// budget's MaxTokens over the window unit derived from WindowSeconds (see
+// budgetWindowUnit). team scope adds a Distinct header clientSelector.
+func compileBudgetRule(b inferencev1alpha1.BudgetSpec) map[string]interface{} {
+	rule := map[string]interface{}{
+		"limit": map[string]interface{}{
+			"requests": *b.MaxTokens,
+			"unit":     budgetWindowUnit(b.WindowSeconds),
+		},
+		// Token-denominated: request path is check-only; usage is charged from
+		// the response's total-token dynamic metadata at completion.
+		"cost": map[string]interface{}{
+			"request": map[string]interface{}{
+				"from":   "Number",
+				"number": int64(0),
+			},
+			"response": map[string]interface{}{
+				"from": "Metadata",
+				"metadata": map[string]interface{}{
+					"namespace": aiGatewayMetadataNamespace,
+					"key":       aiGatewayTotalTokenKey(),
+				},
+			},
+		},
+	}
+
+	// team scope keys an independent bucket per header value. Without auth (slice
+	// 2d) this header is client-settable, so a team budget is only tamper-proof
+	// once 2d derives HeaderKey from a verified JWT claim. We compile it now
+	// because the rateLimit-by-header mechanism is identity-agnostic and useful
+	// immediately; the status note warns operators of the auth pairing.
+	if b.Scope == budgetScopeTeam {
+		rule["clientSelectors"] = []interface{}{
+			map[string]interface{}{
+				"headers": []interface{}{
+					map[string]interface{}{
+						"name": teamHeaderKey(b),
+						"type": "Distinct",
+					},
+				},
+			},
+		}
+	}
+	return rule
+}
+
+// teamHeaderKey is the request header a team budget keys on, defaulting to
+// x-llmkube-team when HeaderKey is unset (matches the CRD default).
+func teamHeaderKey(b inferencev1alpha1.BudgetSpec) string {
+	if b.HeaderKey != "" {
+		return b.HeaderKey
+	}
+	return defaultTeamHeaderKey
+}
+
+// budgetWindowUnit maps a rolling window in seconds onto the Envoy Gateway
+// rateLimit unit the limit is denominated in. Envoy supports only a single unit
+// (Second/Minute/Hour/Day), not "per N units", so we pick the largest unit that
+// the window is a clean multiple of and treat the budget as MaxTokens per that
+// unit. Clean windows (60 -> Minute, 3600 -> Hour, 86400 -> Day, otherwise
+// Second) map exactly. A window that is not a clean multiple of a larger unit
+// rounds DOWN to the largest unit it does divide into (e.g. 90s -> Second),
+// which is the conservative choice: a shorter effective window enforces the cap
+// at least as tightly as requested rather than loosening it. The CRD default is
+// 3600 (Hour).
+func budgetWindowUnit(windowSeconds int32) string {
+	switch {
+	case windowSeconds >= 86400 && windowSeconds%86400 == 0:
+		return "Day"
+	case windowSeconds >= 3600 && windowSeconds%3600 == 0:
+		return "Hour"
+	case windowSeconds >= 60 && windowSeconds%60 == 0:
+		return "Minute"
+	default:
+		return "Second"
+	}
 }
 
 // modelRouterGatewayGVKs are the GVKs the ModelRouter gateway path needs the

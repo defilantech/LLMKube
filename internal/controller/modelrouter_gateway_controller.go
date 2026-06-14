@@ -53,6 +53,12 @@ const (
 	modelRouterGatewayReasonReconcile    = "ReconcileFailed"
 	modelRouterGatewayReasonUnsupported  = "UnsupportedMatchInGatewayMode"
 	modelRouterGatewayReasonNoGatewayRef = "GatewayRefMissing"
+
+	// slice 2b budget fail-loud reasons. Consistent with the 2a honest boundary:
+	// the whole ModelRouter generates NOTHING and GatewayReady goes False.
+	modelRouterGatewayReasonUnsupportedBudgetField = "UnsupportedBudgetField"
+	modelRouterGatewayReasonUnsupportedBudgetScope = "UnsupportedBudgetScope"
+	modelRouterGatewayReasonInvalidBudget          = "InvalidBudget"
 )
 
 // ModelRouterGatewayReconciler compiles a ModelRouter in dataPlane: Gateway mode
@@ -124,6 +130,14 @@ func (r *ModelRouterGatewayReconciler) Reconcile(ctx context.Context, req ctrl.R
 		return ctrl.Result{}, r.setGatewayNotReady(ctx, mr, modelRouterGatewayReasonUnsupported, msg)
 	}
 
+	// Fail-loud on budgets the gateway data plane cannot honor (dollar budgets,
+	// rule scope, or a budget with no cap). Same ordering as the match check:
+	// runs BEFORE any CreateOrUpdate so a rejected budget yields no partial
+	// generation (proposal 5.2 budget honest boundary).
+	if reason, msg := unsupportedBudgetMessage(mr); reason != "" {
+		return ctrl.Result{}, r.setGatewayNotReady(ctx, mr, reason, msg)
+	}
+
 	if err := r.reconcileGatewayResources(ctx, mr); err != nil {
 		_ = r.setGatewayNotReady(ctx, mr, modelRouterGatewayReasonReconcile, err.Error())
 		return ctrl.Result{}, err
@@ -149,6 +163,8 @@ func (r *ModelRouterGatewayReconciler) reconcileGatewayResources(
 		return err
 	}
 
+	budgets := routerBudgets(mr)
+
 	// Order matters for clean upserts: Backends and AIServiceBackends before the
 	// route that references them, then the BTP that targets the route.
 	desired := make([]*unstructured.Unstructured, 0, len(backends)*2+2)
@@ -156,8 +172,8 @@ func (r *ModelRouterGatewayReconciler) reconcileGatewayResources(
 		desired = append(desired, newRouterBackend(mr, b), newRouterAIServiceBackend(mr, b))
 	}
 	desired = append(desired,
-		newRouterAIGatewayRoute(mr, mr.Spec.GatewayRef, rules),
-		newRouterBackendTrafficPolicy(mr),
+		newRouterAIGatewayRoute(mr, mr.Spec.GatewayRef, rules, budgets),
+		newRouterBackendTrafficPolicy(mr, budgets),
 	)
 
 	for _, obj := range desired {
@@ -260,9 +276,36 @@ func (r *ModelRouterGatewayReconciler) setGatewayReady(
 		Type:    ModelRouterGatewayConditionReady,
 		Status:  metav1.ConditionTrue,
 		Reason:  modelRouterGatewayReasonExposed,
-		Message: fmt.Sprintf("compiled %d rule(s) onto %s", len(mr.Spec.Rules), gatewayEndpointAddress(mr.Spec.GatewayRef)),
+		Message: gatewayReadyMessage(mr),
 	})
 	return r.Status().Patch(ctx, mr, patch)
+}
+
+// gatewayReadyMessage builds the success condition message: the rule count, the
+// resolved endpoint, and a budget summary. When any team-scope budget compiled,
+// it appends the auth-pairing caveat so an operator is not misled into thinking
+// a header-keyed budget is tamper-proof on its own (it becomes so once slice 2d
+// derives the header from a verified JWT claim).
+func gatewayReadyMessage(mr *inferencev1alpha1.ModelRouter) string {
+	msg := fmt.Sprintf("compiled %d rule(s) onto %s", len(mr.Spec.Rules), gatewayEndpointAddress(mr.Spec.GatewayRef))
+
+	budgets := routerBudgets(mr)
+	if len(budgets) == 0 {
+		return msg
+	}
+
+	hasTeam := false
+	for _, b := range budgets {
+		if b.Scope == budgetScopeTeam {
+			hasTeam = true
+			break
+		}
+	}
+	msg += fmt.Sprintf("; enforced %d token budget(s)", len(budgets))
+	if hasTeam {
+		msg += " (team-scoped budgets key on a request header and are tamper-proof only once gateway auth derives that header from a verified identity)"
+	}
+	return msg
 }
 
 // setGatewayNotReady writes a False GatewayReady condition and clears any stale
@@ -372,6 +415,52 @@ func backendWeights(mr *inferencev1alpha1.ModelRouter) map[string]int64 {
 }
 
 const weightedStrategy = "weighted"
+
+// routerBudgets returns the router's compiled budgets (nil-safe). Callers use it
+// to decide whether to emit the rateLimit/llmRequestCosts stanzas; an empty
+// slice means a 2a-only router whose generated resources stay byte-identical to
+// #693's output.
+func routerBudgets(mr *inferencev1alpha1.ModelRouter) []inferencev1alpha1.BudgetSpec {
+	if mr.Spec.Policy == nil {
+		return nil
+	}
+	return mr.Spec.Policy.Budgets
+}
+
+// unsupportedBudgetMessage returns a fail-loud (reason, message) for the first
+// budget the gateway data plane cannot honor, or ("", "") when every budget
+// compiles. Like unsupportedMatchMessage it runs BEFORE generation so a rejected
+// budget yields no partial resources. The rejected cases (proposal 5.2 budget
+// boundary):
+//   - MaxUSD set: dollar budgets need a token-equivalent conversion that is
+//     undecided across heterogeneous backend costs (UnsupportedBudgetField).
+//   - Scope=rule: per-rule rateLimit clientSelectors are deferred
+//     (UnsupportedBudgetScope).
+//   - neither MaxTokens nor MaxUSD set: the CRD requires at least one; we guard
+//     anyway so a malformed budget never silently compiles to no limit
+//     (InvalidBudget).
+//
+// team scope is accepted (compiled now, tamper-proof once auth lands in 2d).
+func unsupportedBudgetMessage(mr *inferencev1alpha1.ModelRouter) (reason, message string) {
+	for _, b := range routerBudgets(mr) {
+		if b.MaxUSD != "" {
+			return modelRouterGatewayReasonUnsupportedBudgetField,
+				fmt.Sprintf("budget %q sets maxUSD; dollar budgets are not yet supported in dataPlane: Gateway "+
+					"(the gateway rate-limits on tokens, and there is no single honest token conversion across "+
+					"heterogeneous backend costs). Use maxTokens, or track maxUSD via the Proxy data plane", b.Name)
+		}
+		if b.Scope == budgetScopeRule {
+			return modelRouterGatewayReasonUnsupportedBudgetScope,
+				fmt.Sprintf("budget %q uses scope %q, which is not yet supported in dataPlane: Gateway; "+
+					"use scope router (total cap) or team (per-tenant cap)", b.Name, budgetScopeRule)
+		}
+		if b.MaxTokens == nil {
+			return modelRouterGatewayReasonInvalidBudget,
+				fmt.Sprintf("budget %q sets neither maxTokens nor maxUSD; at least one cap is required", b.Name)
+		}
+	}
+	return "", ""
+}
 
 // unsupportedMatchMessage returns a non-empty message naming the first rule
 // whose match uses a condition the gateway data plane cannot express
