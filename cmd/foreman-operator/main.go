@@ -24,6 +24,7 @@ package main
 import (
 	"flag"
 	"os"
+	"path/filepath"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC) so
 	// exec-entrypoint and run can make use of them.
@@ -36,10 +37,17 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
+	webhookserver "sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	foremanv1alpha1 "github.com/defilantech/llmkube/api/foreman/v1alpha1"
 	foremancontroller "github.com/defilantech/llmkube/internal/foreman/controller"
+	foremanwebhook "github.com/defilantech/llmkube/internal/foreman/webhook"
 )
+
+// defaultWebhookCertDir is the controller-runtime default serving-cert
+// mount path. The chart mounts the self-signed serving Secret here so the
+// webhook server finds tls.crt / tls.key without extra flags.
+const defaultWebhookCertDir = "/tmp/k8s-webhook-server/serving-certs"
 
 var (
 	scheme   = runtime.NewScheme()
@@ -56,6 +64,9 @@ func main() {
 	var probeAddr string
 	var enableLeaderElection bool
 	var allowCloudProviders bool
+	var enableWebhooks bool
+	var webhookCertDir string
+	var webhookPort int
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8081",
 		"The address the metrics endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8082",
@@ -70,11 +81,32 @@ func main() {
 			"causes the WorkloadReconciler to drop any step whose Agent has a "+
 			"non-local provider and surface a CloudReviewersSuppressed condition. "+
 			"Set false for air-gapped or compliance-restricted clusters.")
+	flag.BoolVar(&enableWebhooks, "enable-webhooks", true,
+		"Serve the Agent + AgenticTask validating admission webhooks. "+
+			"True (default) starts the webhook server when serving certs are "+
+			"present in --webhook-cert-dir; if no certs are found the server "+
+			"is skipped so the operator still runs (useful for local/dev runs "+
+			"without a cert). Set false to disable the webhooks entirely.")
+	flag.StringVar(&webhookCertDir, "webhook-cert-dir", defaultWebhookCertDir,
+		"Directory holding the webhook server's tls.crt + tls.key. The Helm "+
+			"chart mounts the self-signed serving Secret here.")
+	flag.IntVar(&webhookPort, "webhook-port", 9443,
+		"Port the webhook server listens on.")
 
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	// Serve the webhooks only when enabled AND the serving cert is
+	// actually mounted. This keeps a no-cert dev run (or a chart install
+	// with webhook.enabled=false, which omits the cert Secret + volume)
+	// from crashing the operator on a missing tls.crt.
+	serveWebhooks := enableWebhooks && webhookCertsPresent(webhookCertDir)
+	if enableWebhooks && !serveWebhooks {
+		setupLog.Info("webhooks enabled but no serving cert found; skipping webhook server",
+			"certDir", webhookCertDir)
+	}
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
@@ -82,6 +114,10 @@ func main() {
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "foreman-operator.llmkube.dev",
+		WebhookServer: webhookserver.NewServer(webhookserver.Options{
+			Port:    webhookPort,
+			CertDir: webhookCertDir,
+		}),
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
@@ -129,6 +165,18 @@ func main() {
 		os.Exit(1)
 	}
 
+	if serveWebhooks {
+		if err := foremanwebhook.SetupAgentWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "Agent")
+			os.Exit(1)
+		}
+		if err := foremanwebhook.SetupAgenticTaskWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "AgenticTask")
+			os.Exit(1)
+		}
+		setupLog.Info("validating webhooks enabled", "certDir", webhookCertDir, "port", webhookPort)
+	}
+
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up health check")
 		os.Exit(1)
@@ -143,4 +191,19 @@ func main() {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}
+}
+
+// webhookCertsPresent reports whether both tls.crt and tls.key exist in
+// certDir. The webhook server crashes the manager if it is registered but
+// the cert is missing, so the operator only wires the webhooks when the
+// serving Secret has actually been mounted (chart install with
+// webhook.enabled=true). A dev run without certs degrades to "no
+// webhooks" rather than a crash loop.
+func webhookCertsPresent(certDir string) bool {
+	for _, name := range []string{"tls.crt", "tls.key"} {
+		if _, err := os.Stat(filepath.Join(certDir, name)); err != nil {
+			return false
+		}
+	}
+	return true
 }

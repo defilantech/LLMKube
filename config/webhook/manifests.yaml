@@ -1,0 +1,45 @@
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: validating-webhook-configuration
+webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-foreman-llmkube-dev-v1alpha1-agent
+  failurePolicy: Fail
+  name: vagent.foreman.llmkube.dev
+  rules:
+  - apiGroups:
+    - foreman.llmkube.dev
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - agents
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-foreman-llmkube-dev-v1alpha1-agentictask
+  failurePolicy: Fail
+  name: vagentictask.foreman.llmkube.dev
+  rules:
+  - apiGroups:
+    - foreman.llmkube.dev
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    resources:
+    - agentictasks
+  sideEffects: None

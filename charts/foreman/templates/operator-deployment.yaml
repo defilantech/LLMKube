@@ -51,6 +51,14 @@ spec:
             # provider regardless of per-Workload opt-in (#540 sibling,
             # v0.2). Air-gapped installs set this false.
             - --allow-cloud-providers={{ .Values.foreman.allowCloudProviders }}
+            # Validating admission webhooks for Agent + AgenticTask (#520).
+            # Disabled here renders no webhook resources elsewhere; the
+            # operator skips the webhook server. Enabled mounts the
+            # self-signed serving cert at the default cert dir below.
+            - --enable-webhooks={{ .Values.webhook.enabled }}
+            {{- if .Values.webhook.enabled }}
+            - --webhook-port={{ .Values.webhook.port }}
+            {{- end }}
           ports:
             - name: health
               containerPort: {{ .Values.operator.health.port }}
@@ -58,6 +66,11 @@ spec:
             {{- if .Values.operator.metrics.enabled }}
             - name: metrics
               containerPort: {{ .Values.operator.metrics.port }}
+              protocol: TCP
+            {{- end }}
+            {{- if .Values.webhook.enabled }}
+            - name: webhook
+              containerPort: {{ .Values.webhook.port }}
               protocol: TCP
             {{- end }}
           {{- with .Values.operator.env }}
@@ -83,9 +96,22 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            {{- if .Values.webhook.enabled }}
+            # controller-runtime's default serving-cert location. The
+            # self-signed cert Secret is mounted read-only here so the
+            # webhook server finds tls.crt + tls.key without extra flags.
+            - name: webhook-certs
+              mountPath: /tmp/k8s-webhook-server/serving-certs
+              readOnly: true
+            {{- end }}
       volumes:
         - name: tmp
           emptyDir: {}
+        {{- if .Values.webhook.enabled }}
+        - name: webhook-certs
+          secret:
+            secretName: {{ include "foreman.webhook.secretName" . }}
+        {{- end }}
       {{- with .Values.operator.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

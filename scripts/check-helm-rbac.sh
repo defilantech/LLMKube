@@ -38,7 +38,15 @@ render() {
 
 CHART_RBAC="$(render "$REPO_ROOT/charts/llmkube"; echo '---'; render "$REPO_ROOT/charts/foreman")"
 
-ROLE_YAML="$ROLE" CHART_YAML="$CHART_RBAC" python3 - <<'PY'
+# Pass the rendered chart YAML to python via a temp FILE, not an env var.
+# The full render can exceed the OS env+argv size limit on Linux (E2BIG /
+# "Argument list too long"), e.g. once the foreman chart emits the webhook
+# Secret + ValidatingWebhookConfiguration with their base64 cert blobs.
+CHART_YAML_FILE="$(mktemp)"
+trap 'rm -f "$CHART_YAML_FILE"' EXIT
+printf '%s\n' "$CHART_RBAC" > "$CHART_YAML_FILE"
+
+ROLE_YAML="$ROLE" CHART_YAML="$CHART_YAML_FILE" python3 - <<'PY'
 import os, sys, yaml
 
 def triples(text):
@@ -58,7 +66,7 @@ def triples(text):
     return out
 
 need = triples(open(os.environ["ROLE_YAML"]).read())
-have = triples(os.environ["CHART_YAML"])
+have = triples(open(os.environ["CHART_YAML"]).read())
 missing = sorted(need - have)
 if missing:
     print("❌ Helm RBAC is missing rules present in config/rbac/role.yaml:")

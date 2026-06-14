@@ -92,6 +92,52 @@ operator:
   podLabels: {}
   env: []
 
+# webhook configures the validating admission webhook that fronts Agent +
+# AgenticTask CRs (#520). It surfaces invariant violations (unknown tool
+# name, missing systemPrompt, dangling agentRef) at `kubectl apply` time
+# instead of at executor-dispatch time.
+#
+# Certs are self-signed by the chart with Helm's genCA/genSignedCert and
+# stay stable across `helm upgrade` via a lookup-reuse of the existing
+# serving Secret. No cert-manager dependency: the chart installs cleanly
+# in a bare cluster.
+webhook:
+  # enabled toggles ALL webhook resources (Service, cert Secret,
+  # ValidatingWebhookConfiguration) and the operator's --enable-webhooks
+  # flag. False renders none of them and starts the operator with the
+  # webhook server off.
+  enabled: true
+
+  # failurePolicy controls what happens when the webhook is unreachable.
+  # "Fail" (default) rejects the apply, which is the safe choice for an
+  # operator that should always be running. "Ignore" admits the CR
+  # unvalidated; use only if a transient operator outage blocking applies
+  # is worse than admitting an occasional invalid CR.
+  #
+  # Operational tradeoff with a SINGLE operator replica (the default):
+  # because the webhook server runs in the operator pod, a rolling
+  # restart or upgrade leaves a brief window where the old pod is gone
+  # and the new pod is not yet Ready. During that window, with
+  # failurePolicy "Fail", EVERY Agent and AgenticTask CREATE/UPDATE
+  # clusterwide is rejected (the API server cannot reach any webhook
+  # backend), which can stall the Foreman pipeline and any controller
+  # that patches these CRs. If that window is unacceptable, either set
+  # failurePolicy to "Ignore" (accept unvalidated CRs during the gap) or
+  # run 2+ operator replicas so a Ready webhook backend always exists
+  # across a rollout. Do NOT add a namespaceSelector to dodge this: it
+  # would narrow enforcement and let unvalidated CRs through in the
+  # excluded namespaces permanently, not just during a restart.
+  failurePolicy: Fail
+
+  # port the operator's webhook server listens on (matches the container
+  # port + the Service targetPort).
+  port: 9443
+
+  # certificate validity in days. The cert is reused across upgrades, so
+  # this is effectively the rotation horizon (re-install or delete the
+  # serving Secret to force regeneration before expiry).
+  certValidityDays: 3650
+
 agent:
   # foreman-agent claims Scheduled AgenticTasks for this node and
   # executes them. Disable when only running the foreman-operator

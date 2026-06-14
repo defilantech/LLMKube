@@ -516,10 +516,23 @@ func (r *WorkloadReconciler) markPlanning(ctx context.Context, w *foremanv1alpha
 
 // markPlanned writes the post-render status: tasks list, Planned condition,
 // optional Truncated condition, optional CloudReviewersSuppressed
-// condition. If renderErr is non-nil we leave Phase at Planning and
-// surface the failure as a condition; the next reconcile retries because
-// chooseSteps is deterministic and Create with IsAlreadyExists is
-// idempotent.
+// condition.
+//
+// renderErr handling distinguishes two failure shapes:
+//
+//   - A transient render failure (cache-lag NotFound, conflict, API
+//     timeout) leaves Phase at Planning and surfaces a RenderError
+//     condition; the returned error requeues and the next reconcile
+//     retries because chooseSteps is deterministic and Create with
+//     IsAlreadyExists is idempotent.
+//   - An admission IsInvalid rejection (the validating webhook refused a
+//     child AgenticTask CREATE, e.g. its agentRef names an Agent that does
+//     not exist) is TERMINAL: retrying produces the same rejection every
+//     reconcile, so we mark the Workload Failed instead of requeuing
+//     forever. This mirrors the pre-webhook behavior where the task was
+//     created and then marked terminally Failed/AgentNotFound, driving the
+//     Workload to a terminal state. We reuse the AgentResolveFailed reason
+//     already used for the cloud-provider resolve terminal path.
 func (r *WorkloadReconciler) markPlanned(
 	ctx context.Context,
 	w *foremanv1alpha1.Workload,
@@ -528,6 +541,14 @@ func (r *WorkloadReconciler) markPlanned(
 	suppressed []string,
 	renderErr error,
 ) (ctrl.Result, error) {
+	// Terminal admission rejection: a requeue can never succeed, so fail
+	// the Workload rather than looping. NotFound / conflict / timeout
+	// render errors fall through to the requeue path below.
+	if renderErr != nil && apierrors.IsInvalid(renderErr) {
+		return r.failWorkload(ctx, w, "AgentResolveFailed",
+			fmt.Sprintf("AgenticTask creation rejected by admission webhook (terminal): %s", renderErr.Error()))
+	}
+
 	patch := client.MergeFrom(w.DeepCopy())
 	now := metav1.Now()
 
