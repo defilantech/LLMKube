@@ -173,6 +173,18 @@ type routerRuleResource struct {
 	// Headers are exact header matches (RuleMatch.Headers), ANDed into every
 	// model match (and into a header-only match when Models is empty).
 	Headers map[string]string
+	// DataClassifications are the classification values
+	// (RuleMatch.DataClassification) carried by the request header in header-only
+	// mode (slice 2e-core). Each compiles to an Exact match on
+	// ClassificationHeaderKey and cross-products with each model (an entry per
+	// (model, classification) pair). Empty when the rule declares no
+	// dataClassification or the router is not in header-only mode.
+	DataClassifications []string
+	// ClassificationHeaderKey is the request header the classification values
+	// match on (Policy.Classification.HeaderKey, defaulted to
+	// x-llmkube-classification). Only consulted when DataClassifications is
+	// non-empty.
+	ClassificationHeaderKey string
 	// BackendRefs are the ordered destinations. For primary-fallback each ref
 	// carries an ascending Priority; for weighted each carries a Weight.
 	BackendRefs []routerBackendRef
@@ -312,40 +324,75 @@ func compileRouteRule(rule routerRuleResource) map[string]interface{} {
 	}
 }
 
-// compileRuleMatches turns a rule's model names + headers into AIGatewayRoute
-// match entries. The gateway data plane copies the request body "model" field
-// into the x-ai-eg-model header, so a model match is an Exact header match on
-// that header. Multiple models become multiple match entries (ORed). Declared
-// headers are ANDed into each match entry. A rule with no models compiles to a
-// single header-only match (the catch-all / defaultRoute case).
+// compileRuleMatches turns a rule's model names + data classifications + headers
+// into AIGatewayRoute match entries. The gateway data plane copies the request
+// body "model" field into the x-ai-eg-model header, so a model match is an Exact
+// header match on that header; a data classification (header-only mode, slice
+// 2e-core) is an Exact match on the classification header key. Match semantics: a
+// rule matches if (one of Models) AND (one of DataClassifications) AND (all user
+// Headers). Match entries are ORed; conditions within an entry are ANDed. So we
+// emit one entry per (model, classification) pair, the user headers ANDed into
+// every entry. With no classifications this reduces exactly to the prior
+// model-only / header-only / catch-all behavior.
 func compileRuleMatches(rule routerRuleResource) []interface{} {
 	headerMatches := sortedHeaderMatches(rule.Headers)
 
-	if len(rule.Models) == 0 {
-		// Header-only (or fully unconditional catch-all) match.
-		match := map[string]interface{}{}
-		if len(headerMatches) > 0 {
-			match["headers"] = headerMatches
-		}
-		return []interface{}{match}
-	}
+	// modelOpts and classOpts each carry a single nil placeholder when the
+	// corresponding dimension is absent, so the cross-product always runs once and
+	// degenerates cleanly to the no-condition case.
+	modelOpts := classificationOptions(rule.Models, modelHeaderMatch)
+	classOpts := classificationOptions(rule.DataClassifications, func(value string) map[string]interface{} {
+		return exactHeaderMatch(rule.ClassificationHeaderKey, value)
+	})
 
-	matches := make([]interface{}, 0, len(rule.Models))
-	for _, model := range rule.Models {
-		headers := make([]interface{}, 0, 1+len(headerMatches))
-		headers = append(headers, modelHeaderMatch(model))
-		headers = append(headers, headerMatches...)
-		matches = append(matches, map[string]interface{}{"headers": headers})
+	matches := make([]interface{}, 0, len(modelOpts)*len(classOpts))
+	for _, modelOpt := range modelOpts {
+		for _, classOpt := range classOpts {
+			headers := make([]interface{}, 0, 2+len(headerMatches))
+			if modelOpt != nil {
+				headers = append(headers, modelOpt)
+			}
+			if classOpt != nil {
+				headers = append(headers, classOpt)
+			}
+			headers = append(headers, headerMatches...)
+			match := map[string]interface{}{}
+			if len(headers) > 0 {
+				match["headers"] = headers
+			}
+			matches = append(matches, match)
+		}
 	}
 	return matches
 }
 
+// classificationOptions builds the per-dimension match-condition options for the
+// cross-product in compileRuleMatches. Each value maps through build; an empty
+// values slice yields a single nil placeholder so the dimension contributes no
+// condition (and the cross-product still runs once).
+func classificationOptions(values []string, build func(string) map[string]interface{}) []map[string]interface{} {
+	if len(values) == 0 {
+		return []map[string]interface{}{nil}
+	}
+	opts := make([]map[string]interface{}, 0, len(values))
+	for _, v := range values {
+		opts = append(opts, build(v))
+	}
+	return opts
+}
+
 // modelHeaderMatch is the Exact x-ai-eg-model header match for one model name.
 func modelHeaderMatch(model string) map[string]interface{} {
+	return exactHeaderMatch(aiGatewayModelHeader, model)
+}
+
+// exactHeaderMatch builds an Exact header match map {name, value, type:Exact},
+// the shared shape used by model, classification, and user header matches.
+func exactHeaderMatch(name, value string) map[string]interface{} {
 	return map[string]interface{}{
 		"type":            "Exact",
-		metadataNameField: aiGatewayModelHeader,
-		"value":           model,
+		metadataNameField: name,
+		"value":           value,
 	}
 }
 
@@ -363,11 +410,7 @@ func sortedHeaderMatches(headers map[string]string) []interface{} {
 	sort.Strings(names)
 	out := make([]interface{}, 0, len(names))
 	for _, name := range names {
-		out = append(out, map[string]interface{}{
-			"type":            "Exact",
-			metadataNameField: name,
-			"value":           headers[name],
-		})
+		out = append(out, exactHeaderMatch(name, headers[name]))
 	}
 	return out
 }
