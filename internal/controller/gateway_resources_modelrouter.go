@@ -42,8 +42,9 @@ var nonDNSChar = regexp.MustCompile(`[^a-z0-9-]+`)
 //   - one multi-rule AIGatewayRoute (a rule per spec.rules entry, matching on
 //     model name + headers, routing to the rule's backends with priority for
 //     failover or weight for weighted),
-//   - one BackendTrafficPolicy (retry + passive outlier healthCheck) targeting
-//     the generated HTTPRoute, which shares the AIGatewayRoute's name.
+//   - one BackendTrafficPolicy (retry + passive outlier + active HTTP
+//     healthCheck) targeting the generated HTTPRoute, which shares the
+//     AIGatewayRoute's name.
 //
 // Shapes mirror the validated spike manifests
 // (experiments/ai-gateway-spike/manifests/): 02/04-backend-*.yaml,
@@ -91,6 +92,29 @@ const (
 	// backendRef/targetRef name fields). Extracted to a const because slice 2d
 	// pushed the package-wide occurrence count past the goconst threshold.
 	metadataNameField = "name"
+
+	// Active HTTP health-check tunables compiled onto the BTP in slice 4a (#662).
+	// Hardcoded sensible defaults for v1, mirroring how the passive healthCheck
+	// block is hardcoded; a follow-up can promote them to the ModelRouter API.
+	// The short interval favors fast detection of an abruptly-killed Metal backend
+	// behind a ClusterIP (which passive outlier detection never ejects, since a
+	// blackholed connection returns no 5xx). The path is the llama.cpp /
+	// llama-server health endpoint, served by the llama.cpp/vLLM/TGI pod runtimes
+	// and the Metal llama/mlx runtime this slice targets.
+	//
+	// CAVEAT: this hardcodes GET /health for EVERY gateway-mode backend. Runtimes
+	// that do not serve HTTP /health (the TCP-probed PersonaPlex/Generic runtimes
+	// today, and external/cloud backends once dataPlane: Gateway supports them)
+	// would fail this probe and be ejected even while healthy. Gateway mode
+	// currently rejects external backends outright (resolveBackends), and the
+	// demo/target runtimes all serve /health, so this is safe to ship; the
+	// per-runtime configurable health path is the deferred follow-up that lifts
+	// the assumption (see proposal 5.3, slice 4a "Deferred").
+	activeHealthCheckInterval           = "2s"
+	activeHealthCheckTimeout            = "1s"
+	activeHealthCheckPath               = "/health"
+	activeHealthCheckUnhealthyThreshold = int64(2)
+	activeHealthCheckHealthyThreshold   = int64(1)
 )
 
 // aiGatewayTotalTokenKey is the dynamic-metadata key (within
@@ -361,12 +385,17 @@ func compileRuleBackendRefs(refs []routerBackendRef) []interface{} {
 	return out
 }
 
-// newRouterBackendTrafficPolicy builds the retry + passive-outlier
-// BackendTrafficPolicy that makes priority failover actually retry onto the
-// secondary backend. It targets the generated HTTPRoute (which shares the
-// AIGatewayRoute's name) by name. Mirrors spike 05-fallback-policy.yaml MINUS
-// the rateLimit/budget stanza (slice 2b adds that to THIS policy; two BTPs on
-// one target silently conflict, footgun 7.1).
+// newRouterBackendTrafficPolicy builds the retry + passive-outlier + active
+// HTTP health-check BackendTrafficPolicy that makes priority failover actually
+// retry onto the secondary backend and ejects dead backends fast. It targets the
+// generated HTTPRoute (which shares the AIGatewayRoute's name) by name. Mirrors
+// spike 05-fallback-policy.yaml MINUS the rateLimit/budget stanza (slice 2b adds
+// that to THIS policy; two BTPs on one target silently conflict, footgun 7.1).
+// The active HTTP check (slice 4a, #662) probes each backend cluster's /health
+// endpoint directly at the cluster level, bypassing the route filters, and is
+// independent of the long-generation request timeout (it hits /health, not the
+// generation path), so it ejects an abruptly-killed Metal backend behind a
+// ClusterIP without waiting on the per-attempt request timeout.
 func newRouterBackendTrafficPolicy(mr *inferencev1alpha1.ModelRouter, budgets []inferencev1alpha1.BudgetSpec) *unstructured.Unstructured {
 	name := modelRouterGatewayResourceName(mr)
 	spec := map[string]interface{}{
@@ -398,6 +427,24 @@ func newRouterBackendTrafficPolicy(mr *inferencev1alpha1.ModelRouter, budgets []
 				"consecutive5XxErrors": int64(3),
 				"interval":             "5s",
 				"maxEjectionPercent":   int64(100),
+			},
+			// Active HTTP probe (slice 4a, #662): Envoy hits each backend cluster's
+			// /health directly, bypassing the route filters, so a blackholed Metal
+			// backend (abrupt Mac death behind a ClusterIP) is ejected at probe speed
+			// rather than stalling for the per-attempt request timeout. Independent of
+			// the long-generation timeout since it probes /health, not the generation
+			// path.
+			"active": map[string]interface{}{
+				"type":               "HTTP",
+				"interval":           activeHealthCheckInterval,
+				"timeout":            activeHealthCheckTimeout,
+				"unhealthyThreshold": activeHealthCheckUnhealthyThreshold,
+				"healthyThreshold":   activeHealthCheckHealthyThreshold,
+				"http": map[string]interface{}{
+					"path":             activeHealthCheckPath,
+					"method":           "GET",
+					"expectedStatuses": []interface{}{int64(200)},
+				},
 			},
 		},
 	}
