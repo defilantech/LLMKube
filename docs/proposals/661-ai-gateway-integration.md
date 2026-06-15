@@ -195,6 +195,22 @@ Add a per-team model **allowlist** surface and compile it into the `authorizatio
 
 **Deferred from 2d.2 (with reasoning):** cross-validating allowlist model names against the union of `spec.rules[].match.models` (catch a typo that silently denies) is a useful guard but couples authZ to rule/`defaultRoute` resolution (header-only rules, catch-alls) and is reversible; it is a follow-up. A validating webhook to reject these fail-loud cases at apply time (rather than status-only) is the same cross-slice follow-up noted for 2a/2d-core.
 
+#### Sub-slice 2c (detailed design): audit log via gateway access logs
+
+Deliver the audit trail as a gateway-scoped access log, NOT a per-ModelRouter compiled resource. This is a deliberate departure from the per-route compilation pattern of 2a/2b/2d, forced by how Envoy Gateway works.
+
+- **Why gateway-scoped, not per-router.** Envoy Gateway access logging is configured ONLY on the `EnvoyProxy` resource (`telemetry.accessLog.settings`, `type: Route|Listener`), which attaches to the gateway via `GatewayClass.parametersRef` or `Gateway.spec.infrastructure.parametersRef`. There is no per-`HTTPRoute` or per-`BackendTrafficPolicy` access-log API. The operator references an EXTERNAL Gateway via `gatewayRef` and does not own the GatewayClass / Gateway / EnvoyProxy, so it cannot compile a per-router resource for audit and must not fight other ModelRouters over the shared proxy.
+
+- **The fields are already on the wire.** The spike's validated access-log field set (`start_time`, `x_request_id`, `team` from `x-team`, `model` from `x-ai-eg-model`, `response_model` / `backend` / `llm_input|output|total_token` from the `io.envoy.ai_gateway` dynamic metadata, `response_code`, `duration`) is emitted with NO per-route change: 2d's `claimToHeaders` lands `x-team`, the extproc lands `x-ai-eg-model`, and 2b's `llmRequestCosts` lands the token metadata. 2c is purely the sink config; the producers already shipped.
+
+- **Deliverable: an opt-in, Helm-managed EnvoyProxy access-log template** in `charts/llmkube` (gated on a `gateway.auditLog.enabled` value, default off). It renders the proven field set to two sinks: a `File` sink to `/dev/stdout` (JSON, local fallback) and an `OpenTelemetry` sink (gRPC to a configurable collector, the Loki path), both values-driven. Because the chart cannot own external gateway infra, the chart ships the EnvoyProxy and documents that the operator references it from their GatewayClass/Gateway `parametersRef` (values let them name/namespace it to match).
+
+- **Security defaults (from the spike).** Header allowlist only (NEVER log `Authorization`); PATH and query string omitted; token fields are null on errors and non-final frames (they exist only at end-of-stream on success via `llmRequestCosts`). Request/response bodies are not loggable via access logs at all.
+
+- **Honest boundary (fail-loud), consistent with 2a/2b/2d.** `spec.policy.auditLog` is a Proxy-mode field (it names the router-proxy container and a file path). In `dataPlane: Gateway` mode it has no per-router meaning, so it is fail-loud (`UnsupportedAuditLogInGatewayMode`): set `GatewayReady=False`, generate NOTHING, and point the operator to the gateway-level config. Generate-nothing is especially defensible for audit: silently ignoring an audit directive a user believes is active is a compliance footgun, so refuse loudly. The field stays fully valid in Proxy mode (the router-proxy path is untouched).
+
+**Deferred from 2c (with reasoning):** an operator-managed singleton EnvoyProxy keyed by `gatewayRef` that merges each ModelRouter's `auditLog` into one shared access-log config. It keeps the per-router field meaningful but makes the operator mutate gateway infra it does not own, with cross-router conflict/ordering risk; rejected for v1 in favor of the honest gateway-scoped artifact.
+
 ### 5.3 Backend health bridging (sub-projects 3 + 4)
 metal-agent (#662) ejects/restores the address on its managed Endpoints object on health change and surfaces status. The operator (sub-project 4) compiles that health, plus pod health, into gateway `Backend` ejection/restoration, giving off-cluster Metal endpoints the event-driven detection that pods get from the EPP. This mutates the `Backend`s the MVP generates.
 
