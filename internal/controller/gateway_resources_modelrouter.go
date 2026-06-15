@@ -18,13 +18,20 @@ package controller
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 )
+
+// nonDNSChar matches any run of characters that are not DNS label-safe
+// ([a-z0-9-]); allowlistRuleName collapses each run to a single '-' when
+// building a human-readable rule-name fragment from a team value.
+var nonDNSChar = regexp.MustCompile(`[^a-z0-9-]+`)
 
 // This file is the ModelRouter dataPlane: Gateway compiler (proposal 5.2 slice
 // 2a). It reuses the GVK/constant helpers and resource shapes defined for the
@@ -614,8 +621,8 @@ func compileRouterAuthorization(
 	allowlists []inferencev1alpha1.TeamModelAllowlist,
 ) map[string]interface{} {
 	rules := make([]interface{}, 0, len(allowlists))
-	for _, entry := range allowlists {
-		rules = append(rules, compileAllowlistRule(jwt, entry))
+	for i, entry := range allowlists {
+		rules = append(rules, compileAllowlistRule(jwt, entry, i))
 	}
 	return map[string]interface{}{
 		// Deny is the secure default once authorization is configured: a verified
@@ -628,10 +635,11 @@ func compileRouterAuthorization(
 // compileAllowlistRule compiles one allowlist entry into an Allow authorization
 // rule. The principal always carries a jwt-claim match on the teamClaim; when the
 // entry lists models it additionally carries an x-ai-eg-model header match (ANDed
-// with the claim, since multiple principal types all must match). Duplicate teams
-// are rejected upstream (invalidAuthorizationMessage), so the sanitized rule name
-// is unique.
-func compileAllowlistRule(jwt *inferencev1alpha1.JWTAuthSpec, entry inferencev1alpha1.TeamModelAllowlist) map[string]interface{} {
+// with the claim, since multiple principal types all must match). The entry's
+// index i is folded into the rule name: the index suffix makes the name unique
+// regardless of team content, so two distinct teams that sanitize to the same
+// fragment (e.g. "team.b" and "team-b") still get distinct rule names.
+func compileAllowlistRule(jwt *inferencev1alpha1.JWTAuthSpec, entry inferencev1alpha1.TeamModelAllowlist, i int) map[string]interface{} {
 	principal := map[string]interface{}{
 		"jwt": map[string]interface{}{
 			"provider": jwt.Provider,
@@ -659,17 +667,24 @@ func compileAllowlistRule(jwt *inferencev1alpha1.JWTAuthSpec, entry inferencev1a
 	}
 
 	return map[string]interface{}{
-		metadataNameField: allowlistRuleName(entry.Team),
+		metadataNameField: allowlistRuleName(entry.Team, i),
 		"action":          "Allow",
 		"principal":       principal,
 	}
 }
 
-// allowlistRuleName is the DNS-sanitized, unique name of an allowlist's Allow
-// rule: allow-<sanitized-team>. Teams are unique (duplicate teams fail loud), so
-// the rule names are too.
-func allowlistRuleName(team string) string {
-	return "allow-" + sanitizeDNSName(team)
+// allowlistRuleName builds a unique, DNS-safe name for the Allow rule of one
+// allowlist entry. The index suffix guarantees uniqueness even when two
+// distinct team values sanitize to the same fragment (e.g. "team.b" and
+// "team-b"); the fragment is for human readability only.
+func allowlistRuleName(team string, i int) string {
+	frag := strings.ToLower(team)
+	frag = nonDNSChar.ReplaceAllString(frag, "-") // any char not [a-z0-9-] -> '-'
+	frag = strings.Trim(frag, "-")
+	if frag == "" {
+		frag = "team"
+	}
+	return fmt.Sprintf("allow-%s-%d", frag, i)
 }
 
 // stringSlice wraps a single string into the []interface{} the unstructured

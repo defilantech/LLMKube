@@ -571,10 +571,16 @@ func invalidAuthMessage(mr *inferencev1alpha1.ModelRouter) string {
 //   - allowlists set without policy.auth.jwt: authorization matches on a verified
 //     JWT claim, so it cannot stand without authentication
 //     (AuthorizationRequiresJWT).
-//   - an entry with an empty Team: a default-Deny policy with a malformed
-//     principal would not allow the intended team (InvalidAuthorization).
-//   - a duplicate Team across entries: ambiguous intent, and the compiled Allow
-//     rules would collide on name (InvalidAuthorization).
+//   - an entry with a semantically-empty Team (empty or whitespace-only): a
+//     default-Deny policy with a malformed principal would not allow the intended
+//     team (InvalidAuthorization). CRD MinLength=1 only catches the truly-empty
+//     case; " " slips through, so the reconciler trims before checking.
+//   - an entry whose Team has leading/trailing whitespace: it can never match the
+//     exact JWT claim, so it is a silent-deny footgun (InvalidAuthorization).
+//   - a duplicate Team across entries: ambiguous intent (InvalidAuthorization).
+//     Detected on the raw Team string; distinct teams that merely sanitize to the
+//     same rule-name fragment are NOT duplicates (allowlistRuleName disambiguates
+//     them with an index suffix).
 //
 // CRD validation also rejects an empty Team (Required+MinLength), but the
 // reconciler defends fail-loud so a partial authorization is never emitted.
@@ -592,10 +598,15 @@ func invalidAuthorizationMessage(mr *inferencev1alpha1.ModelRouter) (reason, mes
 
 	seen := make(map[string]struct{}, len(allowlists))
 	for i, entry := range allowlists {
-		if entry.Team == "" {
+		if strings.TrimSpace(entry.Team) == "" {
 			return modelRouterGatewayReasonInvalidAuthz,
 				fmt.Sprintf("policy.auth.allowlists[%d] has an empty team; every allowlist entry must name the "+
 					"verified team it grants access to", i)
+		}
+		if entry.Team != strings.TrimSpace(entry.Team) {
+			return modelRouterGatewayReasonInvalidAuthz,
+				fmt.Sprintf("policy.auth.allowlists team %q has leading or trailing whitespace and would never match "+
+					"the exact JWT claim; trim the team value", entry.Team)
 		}
 		if _, dup := seen[entry.Team]; dup {
 			return modelRouterGatewayReasonInvalidAuthz,
