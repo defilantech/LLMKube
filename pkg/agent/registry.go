@@ -86,11 +86,44 @@ func NewServiceRegistry(
 }
 
 // RegisterEndpoint creates/updates a Kubernetes Service and EndpointSlice
-// to expose the native process to the cluster
+// to expose the native process to the cluster, marking the endpoint Ready so
+// kube-proxy routes traffic to it.
 func (r *ServiceRegistry) RegisterEndpoint(
 	ctx context.Context,
 	isvc *inferencev1alpha1.InferenceService,
 	port int,
+) error {
+	return r.upsertEndpoint(ctx, isvc, port, true)
+}
+
+// WithdrawEndpoint keeps the Service and EndpointSlice present but flips the
+// endpoint's Conditions.Ready to false so kube-proxy stops routing traffic to
+// the host. It still refreshes the heartbeat annotation: the agent is alive,
+// only the underlying runtime is unhealthy. That combination (fresh heartbeat
+// + Ready: false) is the "alive but unhealthy" signal the operator reads,
+// distinct from a stale heartbeat (dead agent, the #663 expiry path). Use this
+// instead of UnregisterEndpoint, which deletes the Service+EndpointSlice (full
+// teardown for delete / scale-to-zero). Recovery is just the next
+// RegisterEndpoint flipping Ready back to true (#662).
+func (r *ServiceRegistry) WithdrawEndpoint(
+	ctx context.Context,
+	isvc *inferencev1alpha1.InferenceService,
+	port int,
+) error {
+	return r.upsertEndpoint(ctx, isvc, port, false)
+}
+
+// upsertEndpoint is the shared Service+EndpointSlice writer behind
+// RegisterEndpoint (ready=true) and WithdrawEndpoint (ready=false). The only
+// difference between the two is the endpoint's Conditions.Ready value; the
+// Service, labels, annotations (including the refreshed heartbeat), and port
+// wiring are identical so a withdrawal keeps the address present-but-unready
+// rather than tearing it down.
+func (r *ServiceRegistry) upsertEndpoint(
+	ctx context.Context,
+	isvc *inferencev1alpha1.InferenceService,
+	port int,
+	ready bool,
 ) error {
 	// Sanitize service name (replace dots with dashes for DNS-1035 compliance)
 	serviceName := sanitizeServiceName(isvc.Name)
@@ -147,7 +180,7 @@ func (r *ServiceRegistry) RegisterEndpoint(
 		slice.AddressType = discoveryv1.AddressTypeIPv4
 		slice.Endpoints = []discoveryv1.Endpoint{{
 			Addresses:  []string{r.resolveHostIP()},
-			Conditions: discoveryv1.EndpointConditions{Ready: ptr.To(true)},
+			Conditions: discoveryv1.EndpointConditions{Ready: ptr.To(ready)},
 			TargetRef: &corev1.ObjectReference{
 				Kind: "Pod",
 				Name: fmt.Sprintf("%s-metal", isvc.Name),
@@ -163,12 +196,21 @@ func (r *ServiceRegistry) RegisterEndpoint(
 		return fmt.Errorf("failed to create/update endpointslice: %w", err)
 	}
 
-	r.logger.Infow("registered endpoint",
-		"namespace", isvc.Namespace,
-		"name", isvc.Name,
-		"hostIP", r.resolveHostIP(),
-		"port", port,
-	)
+	if ready {
+		r.logger.Infow("registered endpoint",
+			"namespace", isvc.Namespace,
+			"name", isvc.Name,
+			"hostIP", r.resolveHostIP(),
+			"port", port,
+		)
+	} else {
+		r.logger.Infow("withdrew endpoint",
+			"namespace", isvc.Namespace,
+			"name", isvc.Name,
+			"hostIP", r.resolveHostIP(),
+			"port", port,
+		)
+	}
 
 	return nil
 }

@@ -1140,6 +1140,125 @@ func TestHeartbeatOnce(t *testing.T) {
 	}
 }
 
+// TestHeartbeatOnce_UnhealthyWithdraws verifies that heartbeatOnce withdraws
+// (Ready=false) the endpoint of a managed process the health monitor marked
+// unhealthy, instead of re-registering it Ready=true. The Service and
+// EndpointSlice must remain present so the operator observes readyReplicas: 0
+// with a still-fresh heartbeat (#662).
+func TestHeartbeatOnce_UnhealthyWithdraws(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = inferencev1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = discoveryv1.AddToScheme(scheme)
+
+	isvc := &inferencev1alpha1.InferenceService{
+		ObjectMeta: metav1.ObjectMeta{Name: "hb-unhealthy", Namespace: "default"},
+		Spec:       inferencev1alpha1.InferenceServiceSpec{ModelRef: "hb-unhealthy"},
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRuntimeObjects(isvc).
+		Build()
+
+	a := &MetalAgent{
+		config: MetalAgentConfig{
+			K8sClient: k8sClient,
+			Namespace: "default",
+		},
+		processes: map[string]*ManagedProcess{
+			"default/hb-unhealthy": {
+				Name:      "hb-unhealthy",
+				Namespace: "default",
+				Port:      50051,
+				Healthy:   false,
+			},
+		},
+		logger: newNopLogger(),
+	}
+	a.registry = NewServiceRegistry(k8sClient, "10.0.0.1", newNopLogger(), "")
+
+	a.heartbeatOnce(context.Background())
+
+	// The Service and EndpointSlice must still exist (withdrawal, not teardown).
+	if err := k8sClient.Get(context.Background(),
+		types.NamespacedName{Name: "hb-unhealthy", Namespace: "default"},
+		&corev1.Service{}); err != nil {
+		t.Fatalf("withdrawal must keep the Service: %v", err)
+	}
+
+	slice := &discoveryv1.EndpointSlice{}
+	if err := k8sClient.Get(context.Background(),
+		types.NamespacedName{Name: "hb-unhealthy", Namespace: "default"}, slice); err != nil {
+		t.Fatalf("withdrawal must keep the EndpointSlice: %v", err)
+	}
+	if len(slice.Endpoints) != 1 {
+		t.Fatalf("EndpointSlice has %d endpoints, want 1", len(slice.Endpoints))
+	}
+	if slice.Endpoints[0].Conditions.Ready == nil || *slice.Endpoints[0].Conditions.Ready {
+		t.Errorf("unhealthy process endpoint Conditions.Ready = %v, want false",
+			slice.Endpoints[0].Conditions.Ready)
+	}
+
+	// Heartbeat must still be refreshed: the agent is alive, only the runtime
+	// is unhealthy.
+	if slice.Annotations[inferencev1alpha1.AnnotationAgentHeartbeat] == "" {
+		t.Errorf("withdrawn endpoint must still carry a fresh heartbeat annotation")
+	}
+}
+
+// TestHeartbeatOnce_HealthyRegistersReady verifies that a healthy managed
+// process is still registered Ready=true by heartbeatOnce (regression guard for
+// the health-aware withdrawal added in #662).
+func TestHeartbeatOnce_HealthyRegistersReady(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = inferencev1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = discoveryv1.AddToScheme(scheme)
+
+	isvc := &inferencev1alpha1.InferenceService{
+		ObjectMeta: metav1.ObjectMeta{Name: "hb-healthy", Namespace: "default"},
+		Spec:       inferencev1alpha1.InferenceServiceSpec{ModelRef: "hb-healthy"},
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRuntimeObjects(isvc).
+		Build()
+
+	a := &MetalAgent{
+		config: MetalAgentConfig{
+			K8sClient: k8sClient,
+			Namespace: "default",
+		},
+		processes: map[string]*ManagedProcess{
+			"default/hb-healthy": {
+				Name:      "hb-healthy",
+				Namespace: "default",
+				Port:      50051,
+				Healthy:   true,
+			},
+		},
+		logger: newNopLogger(),
+	}
+	a.registry = NewServiceRegistry(k8sClient, "10.0.0.1", newNopLogger(), "")
+
+	a.heartbeatOnce(context.Background())
+
+	slice := &discoveryv1.EndpointSlice{}
+	if err := k8sClient.Get(context.Background(),
+		types.NamespacedName{Name: "hb-healthy", Namespace: "default"}, slice); err != nil {
+		t.Fatalf("get endpointslice after heartbeatOnce: %v", err)
+	}
+	if len(slice.Endpoints) != 1 {
+		t.Fatalf("EndpointSlice has %d endpoints, want 1", len(slice.Endpoints))
+	}
+	if slice.Endpoints[0].Conditions.Ready == nil || !*slice.Endpoints[0].Conditions.Ready {
+		t.Errorf("healthy process endpoint Conditions.Ready = %v, want true",
+			slice.Endpoints[0].Conditions.Ready)
+	}
+}
+
 // nopExecutor is a minimal ProcessExecutor stub for tests that exercise paths
 // that call deleteProcess but do not need a real inference runtime.
 type nopExecutor struct{}

@@ -178,6 +178,148 @@ func TestRegisterEndpoint(t *testing.T) {
 	}
 }
 
+// TestWithdrawEndpoint_FreshIsvc verifies that WithdrawEndpoint on an
+// InferenceService with no prior registration creates the Service and
+// EndpointSlice with the endpoint marked NOT Ready, and still stamps a fresh
+// heartbeat annotation (the agent is alive; only the runtime is unhealthy) (#662).
+func TestWithdrawEndpoint_FreshIsvc(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = inferencev1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = discoveryv1.AddToScheme(scheme)
+
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := NewServiceRegistry(k8sClient, "", newNopLogger(), "")
+
+	// Pin the clock so the heartbeat annotation value is deterministic.
+	frozen := time.Date(2026, 6, 14, 9, 30, 0, 0, time.UTC)
+	registry.now = func() time.Time { return frozen }
+
+	isvc := &inferencev1alpha1.InferenceService{
+		ObjectMeta: metav1.ObjectMeta{Name: "withdraw-model", Namespace: "default"},
+		Spec:       inferencev1alpha1.InferenceServiceSpec{ModelRef: "withdraw-model"},
+	}
+
+	if err := registry.WithdrawEndpoint(context.Background(), isvc, 8080); err != nil {
+		t.Fatalf("WithdrawEndpoint returned error: %v", err)
+	}
+
+	// The Service must be present (withdrawal keeps it, never deletes it).
+	if err := k8sClient.Get(context.Background(),
+		types.NamespacedName{Name: "withdraw-model", Namespace: "default"},
+		&corev1.Service{}); err != nil {
+		t.Fatalf("WithdrawEndpoint must create/keep the Service: %v", err)
+	}
+
+	slice := &discoveryv1.EndpointSlice{}
+	if err := k8sClient.Get(context.Background(),
+		types.NamespacedName{Name: "withdraw-model", Namespace: "default"}, slice); err != nil {
+		t.Fatalf("WithdrawEndpoint must create/keep the EndpointSlice: %v", err)
+	}
+
+	if len(slice.Endpoints) != 1 {
+		t.Fatalf("EndpointSlice has %d endpoints, want 1", len(slice.Endpoints))
+	}
+	if slice.Endpoints[0].Conditions.Ready == nil || *slice.Endpoints[0].Conditions.Ready {
+		t.Errorf("EndpointSlice endpoint Conditions.Ready = %v, want false",
+			slice.Endpoints[0].Conditions.Ready)
+	}
+
+	raw := slice.Annotations[inferencev1alpha1.AnnotationAgentHeartbeat]
+	if raw == "" {
+		t.Fatalf("heartbeat annotation absent on withdrawn endpoint")
+	}
+	const want = "2026-06-14T09:30:00Z"
+	if raw != want {
+		t.Fatalf("heartbeat annotation = %q, want %q (fresh heartbeat on withdrawal)", raw, want)
+	}
+}
+
+// TestWithdrawEndpoint_AfterRegister verifies that WithdrawEndpoint flips an
+// existing Ready endpoint to NotReady WITHOUT deleting the Service or
+// EndpointSlice (#662).
+func TestWithdrawEndpoint_AfterRegister(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = inferencev1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = discoveryv1.AddToScheme(scheme)
+
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := NewServiceRegistry(k8sClient, "", newNopLogger(), "")
+
+	isvc := &inferencev1alpha1.InferenceService{
+		ObjectMeta: metav1.ObjectMeta{Name: "flip-model", Namespace: "default"},
+		Spec:       inferencev1alpha1.InferenceServiceSpec{ModelRef: "flip-model"},
+	}
+
+	if err := registry.RegisterEndpoint(context.Background(), isvc, 8080); err != nil {
+		t.Fatalf("RegisterEndpoint: %v", err)
+	}
+
+	// Sanity: registration left the endpoint Ready.
+	slice := &discoveryv1.EndpointSlice{}
+	if err := k8sClient.Get(context.Background(),
+		types.NamespacedName{Name: "flip-model", Namespace: "default"}, slice); err != nil {
+		t.Fatalf("get endpointslice after register: %v", err)
+	}
+	if slice.Endpoints[0].Conditions.Ready == nil || !*slice.Endpoints[0].Conditions.Ready {
+		t.Fatalf("precondition: endpoint should be Ready after RegisterEndpoint")
+	}
+
+	if err := registry.WithdrawEndpoint(context.Background(), isvc, 8080); err != nil {
+		t.Fatalf("WithdrawEndpoint: %v", err)
+	}
+
+	// Both Service and EndpointSlice must still exist.
+	if err := k8sClient.Get(context.Background(),
+		types.NamespacedName{Name: "flip-model", Namespace: "default"},
+		&corev1.Service{}); err != nil {
+		t.Fatalf("Service must survive withdrawal: %v", err)
+	}
+	if err := k8sClient.Get(context.Background(),
+		types.NamespacedName{Name: "flip-model", Namespace: "default"}, slice); err != nil {
+		t.Fatalf("EndpointSlice must survive withdrawal: %v", err)
+	}
+	if slice.Endpoints[0].Conditions.Ready == nil || *slice.Endpoints[0].Conditions.Ready {
+		t.Errorf("EndpointSlice endpoint Conditions.Ready = %v, want false after withdrawal",
+			slice.Endpoints[0].Conditions.Ready)
+	}
+}
+
+// TestRegisterEndpoint_AfterWithdraw verifies recovery: a RegisterEndpoint
+// following a WithdrawEndpoint flips the endpoint back to Ready (#662).
+func TestRegisterEndpoint_AfterWithdraw(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = inferencev1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = discoveryv1.AddToScheme(scheme)
+
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := NewServiceRegistry(k8sClient, "", newNopLogger(), "")
+
+	isvc := &inferencev1alpha1.InferenceService{
+		ObjectMeta: metav1.ObjectMeta{Name: "recover-model", Namespace: "default"},
+		Spec:       inferencev1alpha1.InferenceServiceSpec{ModelRef: "recover-model"},
+	}
+
+	if err := registry.WithdrawEndpoint(context.Background(), isvc, 8080); err != nil {
+		t.Fatalf("WithdrawEndpoint: %v", err)
+	}
+	if err := registry.RegisterEndpoint(context.Background(), isvc, 8080); err != nil {
+		t.Fatalf("RegisterEndpoint (recovery): %v", err)
+	}
+
+	slice := &discoveryv1.EndpointSlice{}
+	if err := k8sClient.Get(context.Background(),
+		types.NamespacedName{Name: "recover-model", Namespace: "default"}, slice); err != nil {
+		t.Fatalf("get endpointslice after recovery: %v", err)
+	}
+	if slice.Endpoints[0].Conditions.Ready == nil || !*slice.Endpoints[0].Conditions.Ready {
+		t.Errorf("EndpointSlice endpoint Conditions.Ready = %v, want true after recovery",
+			slice.Endpoints[0].Conditions.Ready)
+	}
+}
+
 func TestRegisterEndpoint_SanitizedName(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = inferencev1alpha1.AddToScheme(scheme)
