@@ -23,7 +23,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
 # from its repo helpers (clone / commit / push), so we cannot use
 # distroless-static. Alpine is small (~7 MiB base + git ~5 MiB) and
 # still gives us a non-root user.
-FROM alpine:3.23
+FROM alpine:3.24
 
 RUN apk add --no-cache git ca-certificates \
     && addgroup -S -g 65532 nonroot \
