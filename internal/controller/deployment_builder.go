@@ -231,7 +231,7 @@ func (r *InferenceServiceReconciler) constructDeployment(
 	}
 
 	gpuCount := resolveGPUCount(isvc, model)
-	gpuResourceName := resolveGPUResourceName(model)
+	gpuResourceName := gpuResourceNameForSpec(model)
 
 	if gpuCount > 0 {
 		container.Resources = corev1.ResourceRequirements{
@@ -301,7 +301,7 @@ func (r *InferenceServiceReconciler) constructDeployment(
 
 		tolerations := []corev1.Toleration{
 			{
-				Key:      string(gpuResourceName),
+				Key:      gpuTolerationKeyForSpec(model),
 				Operator: corev1.TolerationOpEqual,
 				Value:    "present",
 				Effect:   corev1.TaintEffectNoSchedule,

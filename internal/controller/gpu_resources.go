@@ -22,6 +22,53 @@ var (
 	intelGPUResourceNameXE   = corev1.ResourceName("gpu.intel.com/xe")
 )
 
+// gpuResourceNameForSpec resolves the extended resource the pod requests for
+// GPU scheduling. Resolution order:
+//
+//  1. Model.Spec.Hardware.GPU.ResourceName, when set, wins over everything
+//     else. This is the escape hatch for non-default device plugins
+//     (e.g. squat/generic-device-plugin advertising squat.ai/dri-render).
+//  2. Model.Spec.Hardware.GPU.Vendor maps to the device-plugin default for
+//     that vendor (nvidia -> nvidia.com/gpu, amd -> amd.com/gpu,
+//     intel -> gpu.intel.com/i915).
+//  3. Unset / unknown -> nvidia.com/gpu (backwards-compatible default).
+//
+// Used by the deployment builder; the accelerator-aware variant
+// resolveGPUResourceName is used by the Model reconciler's readiness check
+// and intentionally stays separate so the two code paths can evolve
+// independently.
+func gpuResourceNameForSpec(model *inferencev1alpha1.Model) corev1.ResourceName {
+	if model != nil && model.Spec.Hardware != nil && model.Spec.Hardware.GPU != nil {
+		if override := strings.TrimSpace(model.Spec.Hardware.GPU.ResourceName); override != "" {
+			return corev1.ResourceName(override)
+		}
+
+		switch strings.ToLower(strings.TrimSpace(model.Spec.Hardware.GPU.Vendor)) {
+		case "amd":
+			return amdGPUResourceName
+		case "intel":
+			return intelGPUResourceNameI915
+		}
+	}
+
+	return nvidiaGPUResourceName
+}
+
+// gpuTolerationKeyForSpec returns the taint key the GPU toleration should
+// match. Defaults to the resource name (so the operator tolerates the taint
+// the device plugin typically applies to advertise its nodes), with an
+// explicit override via Model.Spec.Hardware.GPU.TolerationKey for setups
+// where the two differ.
+func gpuTolerationKeyForSpec(model *inferencev1alpha1.Model) string {
+	if model != nil && model.Spec.Hardware != nil && model.Spec.Hardware.GPU != nil {
+		if override := strings.TrimSpace(model.Spec.Hardware.GPU.TolerationKey); override != "" {
+			return override
+		}
+	}
+
+	return string(gpuResourceNameForSpec(model))
+}
+
 func resolveGPUResourceName(model *inferencev1alpha1.Model) corev1.ResourceName {
 	if model != nil && model.Spec.Hardware != nil {
 		if strings.EqualFold(model.Spec.Hardware.Accelerator, acceleratorIntel) {
