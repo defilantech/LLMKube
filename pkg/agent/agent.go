@@ -1169,18 +1169,21 @@ func (a *MetalAgent) scheduleRestart(ctx context.Context, name, namespace string
 //     handler uses), then continue to the next entry.
 func (a *MetalAgent) heartbeatOnce(ctx context.Context) {
 	a.mu.RLock()
-	// Snapshot name/namespace/port while holding the lock so we don't hold it
-	// across the API calls below.
+	// Snapshot name/namespace/port/health while holding the lock so we don't
+	// hold it across the API calls below. Capturing Healthy here lets the loop
+	// withdraw (Ready=false) an unhealthy process's endpoint instead of
+	// re-registering it (#662).
 	type entry struct {
 		namespace, name string
 		port            int
+		healthy         bool
 	}
 	entries := make([]entry, 0, len(a.processes))
 	for _, p := range a.processes {
 		if p == nil || p.Port <= 0 {
 			continue
 		}
-		entries = append(entries, entry{p.Namespace, p.Name, p.Port})
+		entries = append(entries, entry{p.Namespace, p.Name, p.Port, p.Healthy})
 	}
 	a.mu.RUnlock()
 
@@ -1212,6 +1215,20 @@ func (a *MetalAgent) heartbeatOnce(ctx context.Context) {
 		// scaled to zero. Re-asserting Service+Endpoints here would resurrect
 		// networking that deleteProcess (or handleScaleToZero) just cleaned up.
 		if isvc.DeletionTimestamp != nil || (isvc.Spec.Replicas != nil && *isvc.Spec.Replicas == 0) {
+			continue
+		}
+
+		// Health-aware: a process the health monitor marked unhealthy (agent
+		// alive, runtime down) is withdrawn (Ready=false, slice kept, heartbeat
+		// refreshed) rather than re-registered, so kube-proxy drops the address
+		// and the operator observes readyReplicas: 0 (#662).
+		if !e.healthy {
+			a.logger.Warnw("heartbeat: withdrawing endpoint; runtime unhealthy",
+				"namespace", e.namespace, "name", e.name)
+			if err := a.registry.WithdrawEndpoint(ctx, isvc, e.port); err != nil {
+				a.logger.Warnw("heartbeat: failed to withdraw endpoint",
+					"namespace", e.namespace, "name", e.name, "error", err)
+			}
 			continue
 		}
 
