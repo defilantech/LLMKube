@@ -73,6 +73,17 @@ const (
 	modelRouterGatewayReasonAuthzRequiresJWT = "AuthorizationRequiresJWT"
 	modelRouterGatewayReasonInvalidAuthz     = "InvalidAuthorization"
 
+	// slice 2e-core sensitive-route fail-loud reason. A rule whose
+	// dataClassification intersects the sensitive set MUST be failClosed and route
+	// only to local-tier backends; otherwise the whole ModelRouter generates
+	// NOTHING and GatewayReady goes False. This makes "sensitive data never
+	// egresses to a cloud tier" structural rather than advisory.
+	modelRouterGatewayReasonUnsafeSensitiveRoute = "UnsafeSensitiveRoute"
+
+	// slice 2e-core classification defaults.
+	classificationModeHeaderOnly   = "header-only"
+	defaultClassificationHeaderKey = "x-llmkube-classification"
+
 	// slice 2c audit-log fail-loud reason. policy.auditLog is a Proxy-mode-only
 	// field (it names the router-proxy container and a file path); in Gateway mode
 	// it has no per-router meaning, so it is refused loudly rather than silently
@@ -80,6 +91,12 @@ const (
 	// False and the router generates NOTHING.
 	modelRouterGatewayReasonUnsupportedAuditLog = "UnsupportedAuditLogInGatewayMode"
 )
+
+// defaultSensitiveClassifications mirrors the CRD default for
+// policy.classification.sensitiveClassifications. It is the sensitive set used
+// by the fail-closed guard when the operator did not customize the list (or when
+// policy.classification is unset entirely).
+var defaultSensitiveClassifications = []string{"pii", "phi"}
 
 // ModelRouterGatewayReconciler compiles a ModelRouter in dataPlane: Gateway mode
 // into Envoy AI Gateway resources (a Backend + AIServiceBackend per
@@ -184,6 +201,28 @@ func (r *ModelRouterGatewayReconciler) Reconcile(ctx context.Context, req ctrl.R
 	// Same ordering as the auth checks (before any CreateOrUpdate).
 	if msg := unsupportedAuditLogMessage(mr); msg != "" {
 		return ctrl.Result{}, r.setGatewayNotReady(ctx, mr, modelRouterGatewayReasonUnsupportedAuditLog, msg)
+	}
+
+	// Fail-loud on a sensitive-classification rule that is not fail-closed and
+	// local-tier only: a rule that DECLARES a pii/phi dataClassification but lacks
+	// fail-closed, or routes to a cloud-tier backend, cannot be compiled. Placed
+	// AFTER the unsupported-match check (so a rule with an inexpressible match is
+	// reported first) and BEFORE generation (so a rejected rule yields no partial
+	// resources).
+	//
+	// SCOPE: this guard is per-declaring-rule, not a global PII-egress invariant.
+	// It only inspects rules whose Match declares a sensitive class; a model-only,
+	// catch-all, or defaultRoute rule that carries pii-headed traffic to some other
+	// backend is NOT inspected here. The global "PII never reaches a cloud tier"
+	// property additionally relies on Gateway mode having NO cloud/external backends
+	// at all today (resolveBackends hard-errors on External, and CRD validation
+	// rejects tier=cloud on InferenceServiceRef backends), so no cloud egress path
+	// is currently expressible. When Gateway mode gains cloud/external backends, the
+	// non-declaring egress paths (defaultRoute, model-only rules) need their own
+	// handling; the deferred in-proxy classifier (2e-detector) is where real
+	// content-based enforcement lands.
+	if msg := unsafeSensitiveRouteMessage(mr); msg != "" {
+		return ctrl.Result{}, r.setGatewayNotReady(ctx, mr, modelRouterGatewayReasonUnsafeSensitiveRoute, msg)
 	}
 
 	ejected, err := r.reconcileGatewayResources(ctx, mr)
@@ -481,6 +520,12 @@ func (r *ModelRouterGatewayReconciler) modelRoutersForInferenceService(ctx conte
 // whether backendRefs carry priority (primary-fallback) or weight (weighted).
 func compileRouterRules(mr *inferencev1alpha1.ModelRouter) ([]routerRuleResource, error) {
 	weights := backendWeights(mr)
+	// header-only is the only mode that reaches compilation with a
+	// dataClassification match; detector/hybrid are rejected earlier by
+	// unsupportedMatchMessage. Gate on it defensively so we never emit a
+	// classification header match in a mode whose semantics differ.
+	headerOnly := classificationMode(mr) == classificationModeHeaderOnly
+	classHeaderKey := classificationHeaderKey(mr)
 
 	rules := make([]routerRuleResource, 0, len(mr.Spec.Rules)+1)
 	for _, rule := range mr.Spec.Rules {
@@ -492,6 +537,10 @@ func compileRouterRules(mr *inferencev1alpha1.ModelRouter) ([]routerRuleResource
 		if rule.Match != nil {
 			resolved.Models = rule.Match.Models
 			resolved.Headers = rule.Match.Headers
+			if headerOnly && len(rule.Match.DataClassification) > 0 {
+				resolved.DataClassifications = rule.Match.DataClassification
+				resolved.ClassificationHeaderKey = classHeaderKey
+			}
 		}
 		rules = append(rules, resolved)
 	}
@@ -591,6 +640,112 @@ func unsupportedBudgetMessage(mr *inferencev1alpha1.ModelRouter) (reason, messag
 		}
 	}
 	return "", ""
+}
+
+// classificationMode returns the router's classification mode, defaulted to
+// header-only when policy.classification (or the policy itself) is unset. It
+// decides whether a dataClassification match is expressible (header-only) or
+// fail-loud (detector/hybrid; the in-proxy classifier is not built yet).
+func classificationMode(mr *inferencev1alpha1.ModelRouter) string {
+	if mr.Spec.Policy == nil || mr.Spec.Policy.Classification == nil || mr.Spec.Policy.Classification.Mode == "" {
+		return classificationModeHeaderOnly
+	}
+	return mr.Spec.Policy.Classification.Mode
+}
+
+// classificationHeaderKey returns the request header carrying the data
+// classification, defaulted to defaultClassificationHeaderKey when unset. A
+// header-only dataClassification match compiles to an Exact match on this header.
+func classificationHeaderKey(mr *inferencev1alpha1.ModelRouter) string {
+	if mr.Spec.Policy == nil || mr.Spec.Policy.Classification == nil || mr.Spec.Policy.Classification.HeaderKey == "" {
+		return defaultClassificationHeaderKey
+	}
+	return mr.Spec.Policy.Classification.HeaderKey
+}
+
+// sensitiveClassifications returns the classification values that trigger the
+// fail-closed sensitive-route guard, defaulted to the CRD default when unset.
+// The default applies even when policy.classification is nil: a rule that
+// declares a pii/phi dataClassification is sensitive regardless of whether the
+// operator customized the list.
+func sensitiveClassifications(mr *inferencev1alpha1.ModelRouter) []string {
+	if mr.Spec.Policy != nil && mr.Spec.Policy.Classification != nil &&
+		len(mr.Spec.Policy.Classification.SensitiveClassifications) > 0 {
+		return mr.Spec.Policy.Classification.SensitiveClassifications
+	}
+	return defaultSensitiveClassifications
+}
+
+// unsafeSensitiveRouteMessage returns a non-empty message for the first rule
+// whose dataClassification intersects the sensitive set (Policy.Classification.
+// SensitiveClassifications, defaulted to ["pii","phi"]) but is not safely
+// constrained: it must have Route.FailClosed == true AND route only to local-tier
+// backends. Empty means every sensitive-DECLARING rule is safe (or no rule
+// declares a sensitive class). Like the other honest-boundary checks it runs
+// BEFORE generation so a rejected rule yields no partial resources (proposal 5.2
+// fail-closed sensitive guard).
+//
+// This is per-declaring-rule, NOT a global PII-egress invariant: a rule that does
+// not declare a sensitive dataClassification (a model-only rule, a catch-all, or
+// the defaultRoute) is not inspected, even if pii-headed traffic would match it.
+// That is sound today only because Gateway mode cannot express a cloud/external
+// backend at all (see the reconcile-site comment); when it can, the non-declaring
+// egress paths need separate handling.
+func unsafeSensitiveRouteMessage(mr *inferencev1alpha1.ModelRouter) string {
+	sensitive := make(map[string]struct{}, len(defaultSensitiveClassifications))
+	for _, c := range sensitiveClassifications(mr) {
+		sensitive[c] = struct{}{}
+	}
+
+	tiers := backendTiers(mr)
+
+	for _, rule := range mr.Spec.Rules {
+		if rule.Match == nil {
+			continue
+		}
+		hit := firstSensitiveClassification(rule.Match.DataClassification, sensitive)
+		if hit == "" {
+			continue
+		}
+		if !rule.FailClosed {
+			return fmt.Sprintf("rule %q matches sensitive classification %q but is not failClosed", rule.Name, hit)
+		}
+		for _, name := range rule.Route.Backends {
+			if tiers[name] != backendTierLocal {
+				return fmt.Sprintf("rule %q matches sensitive classification %q but routes to non-local backend %q",
+					rule.Name, hit, name)
+			}
+		}
+	}
+	return ""
+}
+
+// firstSensitiveClassification returns the first declared classification that is
+// in the sensitive set (iterating the rule's declared order for a deterministic
+// message), or "" when the rule declares none.
+func firstSensitiveClassification(declared []string, sensitive map[string]struct{}) string {
+	for _, c := range declared {
+		if _, ok := sensitive[c]; ok {
+			return c
+		}
+	}
+	return ""
+}
+
+// backendTiers maps each backend name to its tier, defaulting an unset tier to
+// "local" per the RouterBackend.Tier CRD default. A backend name not present in
+// the map (e.g. a typo in Route.Backends) resolves to "" and is treated as
+// non-local by the sensitive guard, which is the safe direction.
+func backendTiers(mr *inferencev1alpha1.ModelRouter) map[string]string {
+	tiers := make(map[string]string, len(mr.Spec.Backends))
+	for _, b := range mr.Spec.Backends {
+		tier := b.Tier
+		if tier == "" {
+			tier = backendTierLocal
+		}
+		tiers[b.Name] = tier
+	}
+	return tiers
 }
 
 // routerJWT returns the configured JWT auth block, or nil when the router
@@ -726,9 +881,10 @@ func invalidAuthorizationMessage(mr *inferencev1alpha1.ModelRouter) (reason, mes
 // compiles. Only model-name (Models) and Headers matches, with primary-fallback
 // or weighted strategies, compile (proposal 5.2 honest boundary).
 func unsupportedMatchMessage(mr *inferencev1alpha1.ModelRouter) string {
+	mode := classificationMode(mr)
 	for _, rule := range mr.Spec.Rules {
 		if rule.Match != nil {
-			if unsupported := unsupportedMatchFields(rule.Match); len(unsupported) > 0 {
+			if unsupported := unsupportedMatchFields(rule.Match, mode); len(unsupported) > 0 {
 				return fmt.Sprintf("rule %q uses %s, which the gateway data plane cannot match; only model name and headers are supported in dataPlane: Gateway",
 					rule.Name, strings.Join(unsupported, ", "))
 			}
@@ -742,11 +898,15 @@ func unsupportedMatchMessage(mr *inferencev1alpha1.ModelRouter) string {
 }
 
 // unsupportedMatchFields lists the gateway-inexpressible match fields set on a
-// RuleMatch, in a stable order.
-func unsupportedMatchFields(m *inferencev1alpha1.RuleMatch) []string {
+// RuleMatch, in a stable order. The classification mode decides whether
+// dataClassification is expressible: in header-only mode it compiles to a header
+// match on the classification header key (slice 2e-core), so it is not listed;
+// in detector/hybrid mode the in-proxy classifier is not built yet, so it stays
+// fail-loud with a message pointing at header-only mode.
+func unsupportedMatchFields(m *inferencev1alpha1.RuleMatch, classificationMode string) []string {
 	var fields []string
-	if len(m.DataClassification) > 0 {
-		fields = append(fields, "dataClassification")
+	if len(m.DataClassification) > 0 && classificationMode != classificationModeHeaderOnly {
+		fields = append(fields, "dataClassification (detector/hybrid classifier not implemented; use header-only mode)")
 	}
 	if m.TaskComplexity != "" {
 		fields = append(fields, "taskComplexity")
