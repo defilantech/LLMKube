@@ -1,0 +1,94 @@
+# Example: AMD APU / iGPU with llama.cpp Vulkan backend
+#
+# This manifest demonstrates scheduling onto an AMD integrated GPU that
+# exposes a generic render node via a community device plugin such as
+# squat/generic-device-plugin (https://github.com/squat/generic-device-plugin).
+#
+# Use case: air-gapped workstations and small-form-factor nodes where a
+# discrete NVIDIA GPU is unavailable, but the APU's integrated Radeon
+# graphics is enough to accelerate a small model (Phi-3 mini, Llama 3.2 1B/3B,
+# Qwen2.5 3B) via the Vulkan backend shipped in a custom llama.cpp build.
+#
+# Cluster prerequisites:
+#   1. The target node has an AMD APU / dGPU with /dev/dri/renderD* visible.
+#   2. squat/generic-device-plugin (or equivalent) is installed and advertising
+#      the extended resource `squat.ai/dri-render` on the node, with a matching
+#      `squat.ai/dri-render=present:NoSchedule` taint for dedicated GPU nodes.
+#   3. The container image under spec.image is a llama.cpp build with Vulkan
+#      support compiled in (e.g. a derivative of ghcr.io/ggml-org/llama.cpp
+#      built with -DGGML_VULKAN=ON). The operator does not ship a Vulkan
+#      runtime image; bring your own.
+#
+# Usage:
+#   kubectl apply -f config/samples/model_amd_vulkan_igpu.yaml
+#   kubectl get models,inferenceservices -w
+---
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: Model
+metadata:
+  name: llama-3b-amd-vulkan
+  namespace: default
+spec:
+  # Source: a small GGUF quantized for Vulkan/ROCm-friendly inference.
+  source: https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf
+  format: gguf
+  quantization: Q4_K_M
+
+  hardware:
+    # The runtime backend is selected by spec.runtime on the InferenceService;
+    # the Model only declares what GPU resource the device plugin advertises.
+    gpu:
+      enabled: true
+      count: 1
+      vendor: amd
+
+      # Escape hatch: the AMD ROCm device plugin is not the only way to expose
+      # an AMD GPU on a node. squat/generic-device-plugin advertises the
+      # generic render node under a different extended resource name, which
+      # is what this Model targets. Defaults would have produced
+      # amd.com/gpu; the override selects squat.ai/dri-render instead.
+      resourceName: squat.ai/dri-render
+
+      # The device plugin taints nodes it owns with the resource name as the
+      # key, so tolerationKey can be left unset (it falls back to
+      # resourceName). Set it explicitly only when the plugin's taint key
+      # differs from the resource it advertises.
+      # tolerationKey: squat.ai/dri-render
+
+  resources:
+    cpu: "4"
+    memory: "8Gi"
+
+---
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: InferenceService
+metadata:
+  name: llama-3b-amd-vulkan-service
+  namespace: default
+spec:
+  modelRef: llama-3b-amd-vulkan
+
+  replicas: 1
+
+  # Bring-your-own Vulkan-enabled llama.cpp image. The default
+  # ghcr.io/defilantech/llmkube-llama.cpp image is CUDA-only; swap it for
+  # a build with -DGGML_VULKAN=ON (or ROCm) when targeting AMD hardware.
+  image: ghcr.io/example/llama.cpp-vulkan:latest
+
+  resources:
+    gpu: 1
+    cpu: "2"
+    memory: "4Gi"
+
+  endpoint:
+    port: 8080
+    type: ClusterIP
+
+---
+# Optional: apply, then verify the pod scheduled onto the AMD APU node.
+#
+#   kubectl wait --for=condition=Available inferenceservice/llama-3b-amd-vulkan-service --timeout=600s
+#   POD=$(kubectl get pod -l app=llama-3b-amd-vulkan-service -o jsonpath='{.items[0].metadata.name}')
+#   kubectl describe pod $POD | grep -E 'Tolerations|Node-Selectors|squat.ai/dri-render'
+#   kubectl logs $POD -c llama-server | grep -i vulkan
+#   # Expected: "ggml_vulkan: detected" + "offloaded NN/XX layers to GPU"

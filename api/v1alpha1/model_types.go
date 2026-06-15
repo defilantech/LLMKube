@@ -140,6 +140,27 @@ type GPUSpec struct {
 	// +optional
 	Vendor string `json:"vendor,omitempty"`
 
+	// ResourceName overrides the extended resource the operator requests for
+	// this Model's pods. Defaults are derived from Vendor:
+	//   nvidia -> nvidia.com/gpu
+	//   amd    -> amd.com/gpu
+	//   intel  -> gpu.intel.com/i915
+	// Set this for non-default device plugins (e.g. squat/generic-device-plugin
+	// advertising `squat.ai/dri-render`, NVIDIA MIG slices, or DRA-backed
+	// resources). When set, this value also drives the GPU toleration unless
+	// TolerationKey is provided explicitly.
+	// +kubebuilder:validation:Pattern=`^[a-z0-9.\-]+/[a-z0-9._\-]+$`
+	// +optional
+	ResourceName string `json:"resourceName,omitempty"`
+
+	// TolerationKey overrides the taint key the operator tolerates when
+	// scheduling GPU pods. Defaults to ResourceName (or the vendor default
+	// resource name when ResourceName is unset), so in most cases this can
+	// be left empty.
+	// +kubebuilder:validation:Pattern=`^[a-z0-9.\-]+/[a-z0-9._\-]+$`
+	// +optional
+	TolerationKey string `json:"tolerationKey,omitempty"`
+
 	// Layers specifies layer offloading configuration for multi-GPU
 	// Format: number of layers to offload to GPU (e.g., 32 for full offload on 7B model)
 	// -1 means auto-detect optimal layer split
