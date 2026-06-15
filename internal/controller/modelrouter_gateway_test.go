@@ -327,9 +327,9 @@ func TestModelRouterGateway_ActiveHealthCheck(t *testing.T) {
 }
 
 // TestModelRouterGateway_UnsupportedMatchFailsLoud covers case (b): a rule using
-// dataClassification (a match the gateway data plane cannot express) sets
-// GatewayReady=False with reason UnsupportedMatchInGatewayMode and generates
-// NOTHING.
+// a match the gateway data plane cannot express (taskComplexity, a router-side
+// score with no gateway equivalent in any mode) sets GatewayReady=False with
+// reason UnsupportedMatchInGatewayMode and generates NOTHING.
 func TestModelRouterGateway_UnsupportedMatchFailsLoud(t *testing.T) {
 	c, cfg, stop := startGatewayTestEnv(t, true)
 	defer stop()
@@ -347,7 +347,7 @@ func TestModelRouterGateway_UnsupportedMatchFailsLoud(t *testing.T) {
 			Rules: []inferencev1alpha1.RouterRule{
 				{
 					Name:       "pii",
-					Match:      &inferencev1alpha1.RuleMatch{DataClassification: []string{"pii"}},
+					Match:      &inferencev1alpha1.RuleMatch{TaskComplexity: "complex"},
 					FailClosed: true,
 					Route:      inferencev1alpha1.RuleRoute{Backends: []string{"local-cuda"}},
 				},
