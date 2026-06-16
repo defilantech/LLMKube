@@ -161,6 +161,24 @@ type GPUSpec struct {
 	// +optional
 	TolerationKey string `json:"tolerationKey,omitempty"`
 
+	// Runtime selects the GPU compute backend the operator schedules for this
+	// Model, independent of the Vendor field. It exists so `vendor: amd` is not
+	// overloaded to mean both "ROCm" and "Vulkan".
+	//
+	// For the llama.cpp inference backend with `vendor: amd`:
+	//   - "vulkan": schedule LLMKube's Vulkan llama.cpp image and request the
+	//     generic-device-plugin resource `devic.es/dri-render` (unless
+	//     ResourceName overrides it). The plugin injects /dev/dri; the non-root
+	//     container still needs the host render group, supplied via
+	//     InferenceService.spec.podSecurityContext.supplementalGroups.
+	//   - "rocm": the historical behavior (amd -> amd.com/gpu, stock image).
+	//   - "" (empty): back-compatible, identical to "rocm".
+	//
+	// Ignored for non-AMD vendors and non-llama.cpp backends.
+	// +kubebuilder:validation:Enum=vulkan;rocm
+	// +optional
+	Runtime string `json:"runtime,omitempty"`
+
 	// Layers specifies layer offloading configuration for multi-GPU
 	// Format: number of layers to offload to GPU (e.g., 32 for full offload on 7B model)
 	// -1 means auto-detect optimal layer split
