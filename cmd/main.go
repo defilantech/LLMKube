@@ -107,6 +107,7 @@ func main() {
 	var modelCacheSize string
 	var modelCacheClass string
 	var modelCacheAccessMode string
+	var modelCacheMode string
 	var modelRevalidateInterval time.Duration
 	var caCertConfigMap string
 	var initContainerImage string
@@ -120,7 +121,12 @@ func main() {
 	flag.StringVar(&modelCacheSize, "model-cache-size", "100Gi", "Size of the model cache PVC created in each namespace.")
 	flag.StringVar(&modelCacheClass, "model-cache-storage-class", "",
 		"Storage class for model cache PVCs (empty for default).")
-	flag.StringVar(&modelCacheAccessMode, "model-cache-access-mode", "ReadWriteOnce", "Access mode for model cache PVCs.")
+	flag.StringVar(&modelCacheAccessMode, "model-cache-access-mode", "ReadWriteOnce",
+		"Access mode for the shared model cache PVC (only used when --model-cache-mode=shared).")
+	flag.StringVar(&modelCacheMode, "model-cache-mode", controller.ModelCacheModePerService,
+		"Model cache provisioning mode: perService (default) gives each InferenceService its own "+
+			"RWO, WaitForFirstConsumer cache PVC that binds on the serving node (multi-node correct); "+
+			"shared uses a single cluster-wide llmkube-model-cache PVC (back-compat, RWX setups).")
 	flag.DurationVar(&modelRevalidateInterval, "model-revalidate-interval", controller.DefaultRevalidateInterval,
 		"Minimum interval between upstream source revalidation checks for a Model. "+
 			"Bounds the HEAD traffic the controller generates; drift is surfaced via the "+
@@ -279,6 +285,7 @@ func main() {
 		ModelCacheSize:       modelCacheSize,
 		ModelCacheClass:      modelCacheClass,
 		ModelCacheAccessMode: modelCacheAccessMode,
+		ModelCacheMode:       modelCacheMode,
 		CACertConfigMap:      caCertConfigMap,
 		InitContainerImage:   initContainerImage,
 		DefaultFSGroup:       defaultFSGroup,

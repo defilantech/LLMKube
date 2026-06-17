@@ -47,6 +47,7 @@ spec:
         {{- end }}
         {{- if .Values.modelCache.enabled }}
         - --model-cache-path={{ .Values.modelCache.mountPath }}
+        - --model-cache-mode={{ .Values.modelCache.mode }}
         - --model-cache-size={{ .Values.modelCache.size }}
         {{- if .Values.modelCache.storageClass }}
         - --model-cache-storage-class={{ .Values.modelCache.storageClass }}

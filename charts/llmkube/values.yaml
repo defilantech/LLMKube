@@ -268,17 +268,38 @@ crds:
 
 # Model cache configuration
 modelCache:
-  # Enable persistent model cache
+  # Enable the persistent model cache. When true the operator provisions a cache
+  # PVC for each InferenceService (perService) or a single shared PVC (shared),
+  # per `mode` below.
   enabled: true
-  # Storage size for model cache
+  # Cache provisioning mode:
+  #   perService (default): each InferenceService gets its own RWO,
+  #     WaitForFirstConsumer cache PVC ("<isvc>-model-cache") that binds on the
+  #     node its serving pod schedules to. This is required for multi-node
+  #     clusters where the GPU node differs from the operator's node: the cache
+  #     co-locates with the workload instead of pinning to one node (#728). The
+  #     tradeoff is no cross-isvc dedup; each InferenceService downloads its
+  #     model on first schedule.
+  #   shared: a single cluster-wide "<release>-model-cache" PVC is created
+  #     (honoring accessMode below). Use with an RWX storage class (NFS/EFS) when
+  #     you want cross-isvc dedup. This is the pre-#728 behavior.
+  # Migration: existing deployments that relied on the single shared cache must
+  # set `mode: shared` to keep it; the default is now perService.
+  mode: perService
+  # Storage size for each model cache PVC
   size: 100Gi
-  # Storage class (leave empty for default)
+  # Storage class (leave empty for the cluster default). For perService the
+  # default class should use volumeBindingMode WaitForFirstConsumer so the PVC
+  # binds on the serving node; for shared use an RWX class.
   storageClass: ""
-  # Access mode: ReadWriteOnce (single-node) or ReadWriteMany (multi-node with NFS/EFS)
+  # Access mode for the shared cache PVC (only used when mode=shared):
+  # ReadWriteOnce (single-node) or ReadWriteMany (multi-node with NFS/EFS).
+  # perService caches are always ReadWriteOnce.
   accessMode: ReadWriteOnce
-  # Mount path inside controller pod
+  # Logical model cache path inside inference pods (passed to the operator as
+  # --model-cache-path; not an operator-pod mount).
   mountPath: /models
-  # Annotations for the PVC (e.g., for backup policies)
+  # Annotations for the shared PVC (e.g., for backup policies)
   annotations: {}
 
 # Priority classes for GPU scheduling

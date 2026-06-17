@@ -1,4 +1,10 @@
-{{- if .Values.modelCache.enabled }}
+{{- /*
+The shared, cluster-single model cache PVC is created ONLY in shared mode. In
+the default perService mode the operator provisions a per-InferenceService PVC
+at reconcile time (owner-ref'd to the InferenceService), so the chart creates no
+cluster-wide PVC. See values.yaml modelCache.mode.
+*/ -}}
+{{- if and .Values.modelCache.enabled (eq .Values.modelCache.mode "shared") }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
