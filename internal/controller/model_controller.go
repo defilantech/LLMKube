@@ -843,7 +843,14 @@ func (r *ModelReconciler) parseGGUFMetadata(path string) (*inferencev1alpha1.GGU
 // downloads the whole model. It also issues a HEAD to learn the object size for
 // Status.Size; a missing/zero Content-Length yields size 0 (the caller leaves
 // Size unchanged). The init container, not the controller, owns the full fetch.
+// remoteMetadataTimeout bounds the header-only metadata read so a hung or slow
+// model-source host cannot block a reconcile worker (controller-runtime
+// contexts carry no default deadline).
+const remoteMetadataTimeout = 30 * time.Second
+
 func (r *ModelReconciler) parseRemoteGGUFMetadata(ctx context.Context, source string) (*inferencev1alpha1.GGUFMetadata, int64, error) {
+	ctx, cancel := context.WithTimeout(ctx, remoteMetadataTimeout)
+	defer cancel()
 	parsed, err := gguf.ParseFromURL(ctx, source)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to parse remote GGUF: %w", err)
