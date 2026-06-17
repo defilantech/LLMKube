@@ -102,6 +102,10 @@ spec:
         volumeMounts:
         - name: tmp
           mountPath: /tmp
+        {{- if .Values.modelCache.enabled }}
+        - name: model-cache
+          mountPath: {{ .Values.modelCache.mountPath }}
+        {{- end }}
         {{- if .Values.webhook.enabled }}
         # controller-runtime's default serving-cert location. The self-signed
         # cert Secret is mounted read-only here so the webhook server finds
@@ -113,6 +117,18 @@ spec:
       volumes:
       - name: tmp
         emptyDir: {}
+      {{- if .Values.modelCache.enabled }}
+      - name: model-cache
+        {{- if eq .Values.modelCache.mode "shared" }}
+        persistentVolumeClaim:
+          claimName: {{ include "llmkube.fullname" . }}-model-cache
+        {{- else }}
+        # perService (default): a writable scratch for the controller's
+        # local-source (file://) copy/validation path. Pins no node (#728);
+        # inference pods download into their own per-isvc cache.
+        emptyDir: {}
+        {{- end }}
+      {{- end }}
       {{- if .Values.webhook.enabled }}
       - name: webhook-certs
         secret:

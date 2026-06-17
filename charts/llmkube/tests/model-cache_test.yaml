@@ -4,13 +4,31 @@ templates:
   - model-cache-pvc.yaml
 
 tests:
-  # Task 4: the operator pod must not mount a model cache anymore. Metadata is a
-  # header-only remote read; downloads are per-isvc init containers.
-  - it: operator deployment declares no model-cache volume
+  # #728: the operator no longer mounts the SHARED, node-pinned cache PVC.
+  # It still needs a WRITABLE /models for its local-source (file://) copy +
+  # validation path under readOnlyRootFilesystem: an emptyDir scratch in
+  # perService (pins no node), or the shared PVC in shared mode.
+  - it: operator mounts model-cache at /models (writable scratch)
     template: deployment.yaml
     set:
       modelCache.enabled: true
     asserts:
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: model-cache
+            mountPath: /models
+
+  - it: perService mode backs the operator model-cache with an emptyDir (no shared PVC)
+    template: deployment.yaml
+    set:
+      modelCache.enabled: true
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: model-cache
+            emptyDir: {}
       - notContains:
           path: spec.template.spec.volumes
           content:
@@ -18,16 +36,18 @@ tests:
             persistentVolumeClaim:
               claimName: RELEASE-NAME-llmkube-model-cache
 
-  - it: operator container declares no model-cache volumeMount
+  - it: shared mode backs the operator model-cache with the shared PVC
     template: deployment.yaml
     set:
       modelCache.enabled: true
+      modelCache.mode: shared
     asserts:
-      - notContains:
-          path: spec.template.spec.containers[0].volumeMounts
+      - contains:
+          path: spec.template.spec.volumes
           content:
             name: model-cache
-            mountPath: /models
+            persistentVolumeClaim:
+              claimName: RELEASE-NAME-llmkube-model-cache
 
   # Task 5: --model-cache-mode is wired through from the chart value.
   - it: passes perService mode to the operator by default
