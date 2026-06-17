@@ -5,6 +5,39 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.8](https://github.com/defilantech/LLMKube/compare/v0.8.7...v0.8.8) (2026-06-17)
+
+
+### Features
+
+* AMD/Vulkan runtime image selection (hardware.gpu.runtime) ([#727](https://github.com/defilantech/LLMKube/issues/727)) ([1a4544f](https://github.com/defilantech/LLMKube/commit/1a4544fe54de673bb93443dd4971c35875cef017))
+* **crd:** make GPU resource name configurable to support AMD/Vulkan/Intel scheduling ([#709](https://github.com/defilantech/LLMKube/issues/709)) ([c88becf](https://github.com/defilantech/LLMKube/commit/c88becfdd9d25a0763a16d536403c6615fcbb313))
+* **gateway:** active HTTP health checks on the ModelRouter BTP for fast backend ejection ([#662](https://github.com/defilantech/LLMKube/issues/662)) ([#704](https://github.com/defilantech/LLMKube/issues/704)) ([ba99060](https://github.com/defilantech/LLMKube/commit/ba990606b1b9cc776d491337d8e85883e2e4b8bc))
+* **gateway:** event-driven route-level ejection of unhealthy backends ([#662](https://github.com/defilantech/LLMKube/issues/662)) ([#706](https://github.com/defilantech/LLMKube/issues/706)) ([815f2bf](https://github.com/defilantech/LLMKube/commit/815f2bf9aed37e9098c23bc40941fe0b22347f1b))
+* **gateway:** gateway-scoped audit access log + fail-loud auditLog in Gateway mode (2c) ([#703](https://github.com/defilantech/LLMKube/issues/703)) ([b874b5e](https://github.com/defilantech/LLMKube/commit/b874b5e0eda49f9ee152cd2ae1bb8d8a4c923bfd))
+* **gateway:** header-only data-classification routing + fail-closed sensitive guard (2e-core) ([#707](https://github.com/defilantech/LLMKube/issues/707)) ([0249665](https://github.com/defilantech/LLMKube/commit/02496656d109fb5be33bf9ec93186b141610acca))
+* **gateway:** InferenceService Envoy AI Gateway exposure (MVP) ([#692](https://github.com/defilantech/LLMKube/issues/692)) ([3b095dc](https://github.com/defilantech/LLMKube/commit/3b095dc7b0ce6cfb50f6691db4560cb9a4a47cca))
+* **gateway:** ModelRouter dataPlane Gateway mode with cross-tier failover (2a) ([#693](https://github.com/defilantech/LLMKube/issues/693)) ([2842634](https://github.com/defilantech/LLMKube/commit/2842634b9059fbec67815f2b64c283f4c456162c))
+* **gateway:** ModelRouter JWT authentication via SecurityPolicy (2d-core) ([#695](https://github.com/defilantech/LLMKube/issues/695)) ([73a2ea9](https://github.com/defilantech/LLMKube/commit/73a2ea9493b9c261a0e91c6c610d3820f088bc03))
+* **gateway:** ModelRouter per-team model allowlists via SecurityPolicy authorization (2d.2) ([#702](https://github.com/defilantech/LLMKube/issues/702)) ([94428b4](https://github.com/defilantech/LLMKube/commit/94428b4df745e1ce1b163971a45a42be2aa92de8))
+* **gateway:** ModelRouter token budgets and 429 enforcement (2b) ([#694](https://github.com/defilantech/LLMKube/issues/694)) ([627e85a](https://github.com/defilantech/LLMKube/commit/627e85ac1e9d46a0afbd35b186ae970fe749d168))
+* **metal-agent:** withdraw endpoint when runtime is unhealthy ([#662](https://github.com/defilantech/LLMKube/issues/662)) ([#705](https://github.com/defilantech/LLMKube/issues/705)) ([5ed9395](https://github.com/defilantech/LLMKube/commit/5ed9395af9de8aa206c55a6a584d3c5a32a0b197))
+* **selfupdate:** bound download size + GC old agent versions ([#690](https://github.com/defilantech/LLMKube/issues/690)) ([5205a62](https://github.com/defilantech/LLMKube/commit/5205a62f5158725816e7a6b0e300aa988b4b6ff2))
+* **webhook:** ModelRouter validating webhook for apply-time honest-boundary rejection ([#708](https://github.com/defilantech/LLMKube/issues/708)) ([13d9321](https://github.com/defilantech/LLMKube/commit/13d93216f2c1ed7a6ce6862d359bb367d4f653c2))
+
+
+### Bug Fixes
+
+* **cache:** restore shared model cache as the default (perService becomes opt-in) ([#732](https://github.com/defilantech/LLMKube/issues/732)) ([44ab7dc](https://github.com/defilantech/LLMKube/commit/44ab7dc34687e44ca3b0ad9fdc20922b54e5cb86))
+* per-node model cache so GPU on a second node can schedule ([#728](https://github.com/defilantech/LLMKube/issues/728)) ([#729](https://github.com/defilantech/LLMKube/issues/729)) ([79bccce](https://github.com/defilantech/LLMKube/commit/79bccce3b4445914d7d62b43c2cad0115e310d0d))
+
+
+### Documentation
+
+* DGX Spark (GB10) on MicroK8s setup guide ([#717](https://github.com/defilantech/LLMKube/issues/717)) ([bf7d7a7](https://github.com/defilantech/LLMKube/commit/bf7d7a7cc456b2f0aa7641c68af016567d4289c2))
+* fix DGX Spark guide for ARM64 (GPU operator + GB10 image) ([#718](https://github.com/defilantech/LLMKube/issues/718)) ([45a4237](https://github.com/defilantech/LLMKube/commit/45a42372a763a888958c3e4a83ed188c1188c584))
+* proposal for owned AMD/Vulkan runtime image and build pipeline ([#726](https://github.com/defilantech/LLMKube/issues/726)) ([3a1a150](https://github.com/defilantech/LLMKube/commit/3a1a150a1ae844951771ff3b25a2034ea1b5fe85))
+
 ## [0.8.7](https://github.com/defilantech/LLMKube/compare/v0.8.6...v0.8.7) (2026-06-14)
 
 
