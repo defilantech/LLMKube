@@ -17,12 +17,16 @@ limitations under the License.
 package controller
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -1579,7 +1583,7 @@ var _ = Describe("Issue #363 regression — controller / workload cache disconne
 		// assert the init container's MODEL_PATH lines up with the Model's
 		// CacheKey. The init container's `if [ ! -f "$MODEL_PATH" ]` check
 		// only works when both sides agree on the path.
-		config := buildCachedStorageConfig(updated, nil, "", "curl:8.18.0")
+		config := buildCachedStorageConfig(updated, nil, "", "", "curl:8.18.0")
 		expectedPrefix := "/models/" + updated.Status.CacheKey + "/"
 		Expect(config.modelPath).To(HavePrefix(expectedPrefix),
 			"init container MODEL_PATH must live under /models/<Status.CacheKey>/")
@@ -1625,5 +1629,130 @@ var _ = Describe("Issue #363 regression — controller / workload cache disconne
 		updated := &inferencev1alpha1.Model{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: modelName, Namespace: "default"}, updated)).To(Succeed())
 		Expect(updated.Status.CacheKey).To(BeEmpty(), "HF repo IDs must not populate CacheKey — runtime resolves them internally")
+	})
+})
+
+// buildTestGGUF constructs a minimal valid GGUF v3 byte buffer with the given
+// architecture, name, and block_count, padded with trailing zero bytes to
+// simulate (much larger) tensor data. The metadata/tensor-info prefix is what a
+// header-only read consumes; the padding stands in for the model weights that a
+// remote header read must NOT pull over the wire.
+func buildTestGGUF(arch, name string, blockCount uint64, padBytes int) []byte {
+	buf := &bytes.Buffer{}
+	wLE := func(v interface{}) { _ = binary.Write(buf, binary.LittleEndian, v) }
+	wStr := func(s string) {
+		wLE(uint64(len(s)))
+		buf.WriteString(s)
+	}
+	wKVString := func(k, v string) {
+		wStr(k)
+		wLE(uint32(8)) // string type tag
+		wStr(v)
+	}
+	wKVU64 := func(k string, v uint64) {
+		wStr(k)
+		wLE(uint32(10)) // uint64 type tag
+		wLE(v)
+	}
+
+	metaCount := uint64(3)
+	// Header
+	wLE(uint32(0x46554747)) // magic GGUF
+	wLE(uint32(3))          // version
+	wLE(uint64(0))          // tensor count (none, keeps the prefix small)
+	wLE(metaCount)          // metadata kv count
+
+	wKVString("general.architecture", arch)
+	wKVString("general.name", name)
+	wKVU64(arch+".block_count", blockCount)
+
+	// Trailing padding stands in for tensor data that must not be fetched.
+	if padBytes > 0 {
+		buf.Write(make([]byte, padBytes))
+	}
+	return buf.Bytes()
+}
+
+var _ = Describe("Model Controller remote GGUF metadata (#728, Task 2)", func() {
+	ctx := context.Background()
+
+	It("populates Status.GGUF and Size from a remote header read without downloading", func() {
+		tempDir, err := os.MkdirTemp("", "llmkube-remote-meta-*")
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = os.RemoveAll(tempDir) }()
+
+		// A GGUF whose metadata prefix is tiny but whose total size is large.
+		ggufBytes := buildTestGGUF("llama", "tiny-test-model", 24, 4<<20) // 4 MiB of padding
+		var bytesServed int64
+
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Accept-Ranges", "bytes")
+			w.Header().Set("Content-Length", strconv.Itoa(len(ggufBytes)))
+			if r.Method == http.MethodHead {
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			if rng := r.Header.Get("Range"); rng != "" && strings.HasPrefix(rng, "bytes=") {
+				var start, end int
+				if _, perr := fmt.Sscanf(rng, "bytes=%d-%d", &start, &end); perr == nil {
+					if end >= len(ggufBytes) {
+						end = len(ggufBytes) - 1
+					}
+					chunk := ggufBytes[start : end+1]
+					w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(ggufBytes)))
+					w.WriteHeader(http.StatusPartialContent)
+					n, _ := w.Write(chunk)
+					bytesServed += int64(n)
+					return
+				}
+			}
+			n, _ := w.Write(ggufBytes)
+			bytesServed += int64(n)
+		}))
+		defer srv.Close()
+
+		source := srv.URL + "/tiny.gguf"
+		modelName := "remote-meta-model"
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
+			Spec:       inferencev1alpha1.ModelSpec{Source: source, Format: "gguf"},
+		}
+		Expect(k8sClient.Create(ctx, model)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, model) }()
+
+		reconciler := &ModelReconciler{
+			Client:      k8sClient,
+			Scheme:      k8sClient.Scheme(),
+			StoragePath: tempDir,
+		}
+		result, err := reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(Equal(reconcile.Result{}))
+
+		updated := &inferencev1alpha1.Model{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: modelName, Namespace: "default"}, updated)).To(Succeed())
+
+		// Ready, with a cache key for the per-isvc init container to populate.
+		Expect(updated.Status.Phase).To(Equal(PhaseReady))
+		Expect(updated.Status.CacheKey).To(HaveLen(16))
+
+		// GGUF metadata came from the remote header read.
+		Expect(updated.Status.GGUF).NotTo(BeNil())
+		Expect(updated.Status.GGUF.Architecture).To(Equal("llama"))
+		Expect(updated.Status.GGUF.ModelName).To(Equal("tiny-test-model"))
+		Expect(updated.Status.GGUF.LayerCount).To(Equal(uint64(24)))
+
+		// Size came from the HEAD Content-Length, not "0".
+		Expect(updated.Status.Size).NotTo(Equal("0"))
+		Expect(updated.Status.Size).NotTo(BeEmpty())
+
+		// The controller did not download the model to its filesystem.
+		entries, _ := os.ReadDir(tempDir)
+		Expect(entries).To(BeEmpty(), "controller must not write under StoragePath for HTTPS sources")
+
+		// And it read far fewer bytes than the full file (header-only).
+		Expect(bytesServed).To(BeNumerically("<", int64(len(ggufBytes))/2))
 	})
 })

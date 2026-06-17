@@ -533,6 +533,24 @@ func (r *ModelReconciler) reconcileRuntimeResolvedSource(ctx context.Context, mo
 	model.Status.Path = ""
 	model.Status.CacheKey = cacheKey
 	model.Status.Size = "0"
+
+	// For remote http(s) GGUF sources, read the metadata via an HTTP range
+	// (header-only) request so Status carries architecture/layers/size without
+	// the controller downloading the whole file. The full model bytes are
+	// fetched only by the per-isvc init container. Non-fatal: a metadata read
+	// failure (air-gapped, unreachable, non-GGUF) must not block the model from
+	// reaching Ready, since the workload still resolves the source itself.
+	if isRemoteHTTPSource(model.Spec.Source) && model.Status.GGUF == nil {
+		if ggufMeta, size, err := r.parseRemoteGGUFMetadata(ctx, model.Spec.Source); err != nil {
+			logger.Info("Failed to read remote GGUF metadata (non-fatal)", "source", model.Spec.Source, "error", err)
+		} else {
+			model.Status.GGUF = ggufMeta
+			if size > 0 {
+				model.Status.Size = formatBytes(size)
+			}
+		}
+	}
+
 	model.Status.AcceleratorReady = r.checkAcceleratorAvailability(ctx, model)
 	now := metav1.Now()
 	model.Status.LastUpdated = &now
@@ -818,6 +836,52 @@ func (r *ModelReconciler) parseGGUFMetadata(path string) (*inferencev1alpha1.GGU
 		FileVersion:   parsed.Header.Version,
 		License:       license.Normalize(parsed.License()),
 	}, nil
+}
+
+// parseRemoteGGUFMetadata reads GGUF metadata from a remote http(s) URL using a
+// header-only range read (pkg/gguf.ParseFromURL) so the controller never
+// downloads the whole model. It also issues a HEAD to learn the object size for
+// Status.Size; a missing/zero Content-Length yields size 0 (the caller leaves
+// Size unchanged). The init container, not the controller, owns the full fetch.
+func (r *ModelReconciler) parseRemoteGGUFMetadata(ctx context.Context, source string) (*inferencev1alpha1.GGUFMetadata, int64, error) {
+	parsed, err := gguf.ParseFromURL(ctx, source)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to parse remote GGUF: %w", err)
+	}
+
+	meta := &inferencev1alpha1.GGUFMetadata{
+		Architecture:  parsed.Architecture(),
+		ModelName:     parsed.Name(),
+		Quantization:  parsed.Quantization(),
+		ContextLength: parsed.ContextLength(),
+		EmbeddingSize: parsed.EmbeddingLength(),
+		LayerCount:    parsed.BlockCount(),
+		HeadCount:     parsed.HeadCount(),
+		TensorCount:   parsed.Header.TensorCount,
+		FileVersion:   parsed.Header.Version,
+		License:       license.Normalize(parsed.License()),
+	}
+
+	return meta, remoteContentLength(ctx, source), nil
+}
+
+// remoteContentLength returns the object size from a HEAD request, or 0 when the
+// server does not report a usable Content-Length. Best-effort: any error yields
+// 0 so the caller leaves Status.Size untouched rather than failing the reconcile.
+func remoteContentLength(ctx context.Context, source string) int64 {
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, source, nil)
+	if err != nil {
+		return 0
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK || resp.ContentLength <= 0 {
+		return 0
+	}
+	return resp.ContentLength
 }
 
 // computeFileSHA256 streams a file through SHA256 and returns the hex-encoded hash.
