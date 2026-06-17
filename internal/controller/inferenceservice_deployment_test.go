@@ -4689,12 +4689,12 @@ var _ = Describe("constructDeployment model cache PVC wiring (#728, Task 3)", fu
 		return nil
 	}
 
-	It("mounts the per-isvc cache PVC in perService mode (default)", func() {
+	It("mounts the per-isvc cache PVC in perService mode", func() {
 		reconciler := &InferenceServiceReconciler{
 			ModelCachePath:     "/tmp/llmkube/models",
 			InitContainerImage: "docker.io/curlimages/curl:8.18.0",
 			DefaultFSGroup:     102,
-			// ModelCacheMode left empty: must behave as perService.
+			ModelCacheMode:     ModelCacheModePerService,
 		}
 		deployment := reconciler.constructDeployment(newISVC(), newModel(), 1)
 		vol := findCacheVolume(deployment)
@@ -4703,7 +4703,21 @@ var _ = Describe("constructDeployment model cache PVC wiring (#728, Task 3)", fu
 		Expect(vol.PersistentVolumeClaim.ClaimName).To(Equal("cache-isvc-model-cache"))
 	})
 
-	It("mounts the shared cache PVC in shared mode", func() {
+	It("mounts the shared cache PVC in shared mode (default, empty mode)", func() {
+		reconciler := &InferenceServiceReconciler{
+			ModelCachePath:     "/tmp/llmkube/models",
+			InitContainerImage: "docker.io/curlimages/curl:8.18.0",
+			DefaultFSGroup:     102,
+			// ModelCacheMode left empty: must resolve to shared.
+		}
+		deployment := reconciler.constructDeployment(newISVC(), newModel(), 1)
+		vol := findCacheVolume(deployment)
+		Expect(vol).NotTo(BeNil())
+		Expect(vol.PersistentVolumeClaim).NotTo(BeNil())
+		Expect(vol.PersistentVolumeClaim.ClaimName).To(Equal(ModelCachePVCName))
+	})
+
+	It("mounts the shared cache PVC when shared mode is explicit", func() {
 		reconciler := &InferenceServiceReconciler{
 			ModelCachePath:     "/tmp/llmkube/models",
 			InitContainerImage: "docker.io/curlimages/curl:8.18.0",

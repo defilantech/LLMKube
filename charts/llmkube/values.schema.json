@@ -262,7 +262,8 @@
         "enabled": { "type": "boolean" },
         "mode": {
           "type": "string",
-          "enum": ["perService", "shared"]
+          "enum": ["perService", "shared"],
+          "default": "shared"
         },
         "size": { "type": "string", "minLength": 1 },
         "storageClass": { "type": "string" },

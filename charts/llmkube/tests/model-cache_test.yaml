@@ -1,13 +1,13 @@
-suite: model cache mode (perService default | shared) and operator no-mount (#728)
+suite: model cache mode (shared default | perService opt-in)
 templates:
   - deployment.yaml
   - model-cache-pvc.yaml
 
 tests:
-  # #728: the operator no longer mounts the SHARED, node-pinned cache PVC.
-  # It still needs a WRITABLE /models for its local-source (file://) copy +
-  # validation path under readOnlyRootFilesystem: an emptyDir scratch in
-  # perService (pins no node), or the shared PVC in shared mode.
+  # The operator always needs a WRITABLE /models for its local-source (file://)
+  # copy + validation path under readOnlyRootFilesystem: the shared PVC in the
+  # default shared mode, or an emptyDir scratch in perService (which pins no
+  # node, #728).
   - it: operator mounts model-cache at /models (writable scratch)
     template: deployment.yaml
     set:
@@ -19,10 +19,24 @@ tests:
             name: model-cache
             mountPath: /models
 
+  # Default (shared): the operator model-cache is backed by the shared PVC.
+  - it: shared mode (default) backs the operator model-cache with the shared PVC
+    template: deployment.yaml
+    set:
+      modelCache.enabled: true
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: model-cache
+            persistentVolumeClaim:
+              claimName: RELEASE-NAME-llmkube-model-cache
+
   - it: perService mode backs the operator model-cache with an emptyDir (no shared PVC)
     template: deployment.yaml
     set:
       modelCache.enabled: true
+      modelCache.mode: perService
     asserts:
       - contains:
           path: spec.template.spec.volumes
@@ -36,59 +50,38 @@ tests:
             persistentVolumeClaim:
               claimName: RELEASE-NAME-llmkube-model-cache
 
-  - it: shared mode backs the operator model-cache with the shared PVC
+  # --model-cache-mode is wired through from the chart value.
+  - it: passes shared mode to the operator by default
     template: deployment.yaml
-    set:
-      modelCache.enabled: true
-      modelCache.mode: shared
-    asserts:
-      - contains:
-          path: spec.template.spec.volumes
-          content:
-            name: model-cache
-            persistentVolumeClaim:
-              claimName: RELEASE-NAME-llmkube-model-cache
-
-  # Task 5: --model-cache-mode is wired through from the chart value.
-  - it: passes perService mode to the operator by default
-    template: deployment.yaml
-    asserts:
-      - contains:
-          path: spec.template.spec.containers[0].args
-          content: --model-cache-mode=perService
-
-  - it: passes shared mode to the operator when configured
-    template: deployment.yaml
-    set:
-      modelCache.mode: shared
     asserts:
       - contains:
           path: spec.template.spec.containers[0].args
           content: --model-cache-mode=shared
 
-  # Task 5: in the default perService mode the chart creates NO cluster-wide PVC;
-  # the operator provisions per-isvc PVCs at reconcile time.
-  - it: does not render the shared PVC in perService mode (default)
-    template: model-cache-pvc.yaml
-    asserts:
-      - hasDocuments:
-          count: 0
-
-  - it: does not render the shared PVC in perService mode even when explicit
-    template: model-cache-pvc.yaml
+  - it: passes perService mode to the operator when configured
+    template: deployment.yaml
     set:
-      modelCache.enabled: true
       modelCache.mode: perService
     asserts:
-      - hasDocuments:
-          count: 0
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --model-cache-mode=perService
 
-  # Task 5: shared mode keeps the single cluster-wide PVC (back-compat / RWX).
-  - it: renders the shared PVC in shared mode
+  # In the default shared mode the chart creates the single cluster-wide PVC so
+  # all InferenceServices share one cache and `cache list` can inspect it.
+  - it: renders the shared PVC in shared mode (default)
+    template: model-cache-pvc.yaml
+    asserts:
+      - hasDocuments:
+          count: 1
+      - equal:
+          path: metadata.name
+          value: RELEASE-NAME-llmkube-model-cache
+
+  - it: renders the shared PVC with the configured access mode
     template: model-cache-pvc.yaml
     set:
       modelCache.enabled: true
-      modelCache.mode: shared
       modelCache.accessMode: ReadWriteMany
     asserts:
       - hasDocuments:
@@ -100,11 +93,21 @@ tests:
           path: spec.accessModes
           content: ReadWriteMany
 
+  # In the opt-in perService mode the chart creates NO cluster-wide PVC; the
+  # operator provisions per-isvc PVCs at reconcile time.
+  - it: does not render the shared PVC in perService mode
+    template: model-cache-pvc.yaml
+    set:
+      modelCache.enabled: true
+      modelCache.mode: perService
+    asserts:
+      - hasDocuments:
+          count: 0
+
   - it: does not render the shared PVC when modelCache disabled
     template: model-cache-pvc.yaml
     set:
       modelCache.enabled: false
-      modelCache.mode: shared
     asserts:
       - hasDocuments:
           count: 0

@@ -104,10 +104,13 @@ spec:
         volumeMounts:
         - name: tmp
           mountPath: /tmp
-        # Writable scratch for the controller's local-source (file://) copy and
-        # validation path. NOT a shared model cache (#728): an emptyDir pins no
-        # node. Inference pods download into their own per-isvc cache; the
-        # operator only needs a writable /models under readOnlyRootFilesystem.
+        # Writable scratch at /models for the controller's local-source (file://)
+        # copy and validation path under readOnlyRootFilesystem. The actual model
+        # cache PVC (shared llmkube-model-cache by default, or a per-isvc PVC in
+        # perService mode) is provisioned per-namespace at reconcile time and
+        # mounted by the inference pods, not by this operator pod. An emptyDir
+        # here pins no node. The Helm chart can back this with the shared PVC when
+        # mode=shared; the kustomize manager uses emptyDir scratch in all modes.
         - name: model-cache
           mountPath: /models
       volumes:

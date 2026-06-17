@@ -38,28 +38,44 @@ import (
 // This file also owns provisioning of the shared cache PVC per namespace.
 
 // ModelCachePVCName is the name of the shared, cluster-single model cache PVC.
-// It is used only in shared mode (ModelCacheModeShared); the default
+// It is used in the default shared mode (ModelCacheModeShared); the opt-in
 // per-InferenceService mode names each cache PVC after its InferenceService
 // (see modelCachePVCName).
 const ModelCachePVCName = "llmkube-model-cache"
 
-// Model cache provisioning modes. perService (the default) gives each
-// InferenceService its own RWO, WaitForFirstConsumer cache PVC that binds on
-// the node the serving pod schedules to, so the GPU pod and its cache co-locate
-// even when the operator runs on a different node (#728). shared keeps the
-// single, cluster-wide llmkube-model-cache PVC (back-compat for RWX setups that
-// want cross-isvc dedup).
+// Model cache provisioning modes. shared (the default) keeps a single,
+// cluster-wide llmkube-model-cache PVC that the operator mounts and every
+// InferenceService init container downloads into, giving cross-isvc dedup and a
+// cache `llmkube cache list` can inspect. This is the proven default; on a
+// multi-node cluster it needs an RWX storage class so any node can reach it.
+// perService is the opt-in escape hatch for multi-node clusters WITHOUT RWX: it
+// gives each InferenceService its own RWO, WaitForFirstConsumer cache PVC that
+// binds on the node the serving pod schedules to, so the GPU pod and its cache
+// co-locate even when the operator runs on a different node (#728), at the cost
+// of cross-isvc dedup.
 const (
 	ModelCacheModePerService = "perService"
 	ModelCacheModeShared     = "shared"
 )
 
+// resolveCacheMode maps an unset mode to the default (shared). An empty string
+// reaches the reconciler when the operator is run without --model-cache-mode
+// (e.g. ad-hoc envtest), so callers must funnel through this rather than
+// comparing the raw field.
+func resolveCacheMode(mode string) string {
+	if mode == ModelCacheModePerService {
+		return ModelCacheModePerService
+	}
+	return ModelCacheModeShared
+}
+
 // modelCachePVCName returns the name of the model cache PVC for the given mode.
-// In shared mode this is the single cluster-wide PVC; otherwise it is the
-// per-InferenceService PVC "<isvc>-model-cache". A nil isvc (unit tests that
-// exercise the builder directly) falls back to the shared name.
+// In shared mode (the default, and the resolution of an empty mode) this is the
+// single cluster-wide PVC; in perService mode it is the per-InferenceService PVC
+// "<isvc>-model-cache". A nil isvc (unit tests that exercise the builder
+// directly) falls back to the shared name.
 func modelCachePVCName(isvc *inferencev1alpha1.InferenceService, mode string) string {
-	if mode == ModelCacheModeShared || isvc == nil {
+	if resolveCacheMode(mode) == ModelCacheModeShared || isvc == nil {
 		return ModelCachePVCName
 	}
 	return fmt.Sprintf("%s-model-cache", isvc.Name)
@@ -302,21 +318,24 @@ func buildEmptyDirStorageConfig(model *inferencev1alpha1.Model, isvc *inferencev
 // ensureModelCachePVC creates the model cache PVC for an InferenceService if it
 // does not already exist.
 //
-// In the default perService mode the PVC is named "<isvc>-model-cache", is RWO,
+// In the default shared mode the single cluster-wide llmkube-model-cache PVC is
+// created (no owner reference, since it outlives any one InferenceService) so
+// every InferenceService shares one cache (cross-isvc dedup) and `cache list`
+// can inspect it. On a multi-node cluster this needs an RWX storage class so any
+// node can reach it.
+//
+// In the opt-in perService mode the PVC is named "<isvc>-model-cache", is RWO,
 // uses the cluster default storage class (which is WaitForFirstConsumer in the
 // common topology-aware case) unless an explicit class is configured, and is
 // owner-ref'd to the InferenceService so it is garbage-collected with it. RWO +
-// WaitForFirstConsumer is the #728 fix: the PVC binds on the node the serving
+// WaitForFirstConsumer is the #728 path: the PVC binds on the node the serving
 // pod schedules to (the GPU node), co-locating download and serve instead of
-// pinning the cache to the operator's node.
-//
-// In shared mode the single cluster-wide llmkube-model-cache PVC is created (no
-// owner reference, since it outlives any one InferenceService) for RWX setups
-// that want cross-isvc dedup. This restores the pre-#728 behavior.
+// pinning the cache to the operator's node. Use it on multi-node clusters that
+// have no RWX storage class.
 func (r *InferenceServiceReconciler) ensureModelCachePVC(ctx context.Context, isvc *inferencev1alpha1.InferenceService) error {
 	log := logf.FromContext(ctx)
 
-	shared := r.ModelCacheMode == ModelCacheModeShared
+	shared := resolveCacheMode(r.ModelCacheMode) == ModelCacheModeShared
 	namespace := isvc.Namespace
 	pvcName := modelCachePVCName(isvc, r.ModelCacheMode)
 

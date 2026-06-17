@@ -123,10 +123,12 @@ func main() {
 		"Storage class for model cache PVCs (empty for default).")
 	flag.StringVar(&modelCacheAccessMode, "model-cache-access-mode", "ReadWriteOnce",
 		"Access mode for the shared model cache PVC (only used when --model-cache-mode=shared).")
-	flag.StringVar(&modelCacheMode, "model-cache-mode", controller.ModelCacheModePerService,
-		"Model cache provisioning mode: perService (default) gives each InferenceService its own "+
-			"RWO, WaitForFirstConsumer cache PVC that binds on the serving node (multi-node correct); "+
-			"shared uses a single cluster-wide llmkube-model-cache PVC (back-compat, RWX setups).")
+	flag.StringVar(&modelCacheMode, "model-cache-mode", controller.ModelCacheModeShared,
+		"Model cache provisioning mode: shared (default) uses a single cluster-wide "+
+			"llmkube-model-cache PVC the operator mounts and all InferenceServices share "+
+			"(cross-isvc dedup, cache list works; use an RWX class on multi-node clusters); "+
+			"perService gives each InferenceService its own RWO, WaitForFirstConsumer cache PVC "+
+			"that binds on the serving node (opt-in escape hatch for multi-node clusters without RWX).")
 	flag.DurationVar(&modelRevalidateInterval, "model-revalidate-interval", controller.DefaultRevalidateInterval,
 		"Minimum interval between upstream source revalidation checks for a Model. "+
 			"Bounds the HEAD traffic the controller generates; drift is surfaced via the "+

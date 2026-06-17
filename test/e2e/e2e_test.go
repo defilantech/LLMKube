@@ -1773,12 +1773,6 @@ spec:
 			// Longhorn; #418/#419 fsGroup regression coverage is provided by
 			// the other specs in the suite which run on Longhorn unchanged.
 			BeforeEach(func() {
-				// #731: `llmkube cache list` inspects the shared
-				// llmkube-model-cache PVC, but the perService default (#729)
-				// gives each InferenceService its own <isvc>-model-cache PVC,
-				// so the operator never creates the name this spec waits for.
-				// Re-enabled when cache inspection becomes per-isvc aware.
-				Skip("pending #731: cache list is not yet per-InferenceService-cache aware")
 				if os.Getenv("LLMKUBE_E2E_LONGHORN") == "true" {
 					Skip("cache list inspector-pod path is incompatible with Longhorn RWO; covered on default kind storage")
 				}
@@ -1883,10 +1877,6 @@ spec:
 			// Depends on PVC + cache_inspect.go inspector-pod path, both
 			// incompatible with Longhorn RWO. See sibling Context above.
 			BeforeEach(func() {
-				// #731: depends on the shared llmkube-model-cache PVC the
-				// operator no longer creates under the perService default
-				// (#729). Re-enabled when cache inspection is per-isvc aware.
-				Skip("pending #731: cache list is not yet per-InferenceService-cache aware")
 				if os.Getenv("LLMKUBE_E2E_LONGHORN") == "true" {
 					Skip("test exercises multi-RWO PVC mounts; covered on default kind storage")
 				}

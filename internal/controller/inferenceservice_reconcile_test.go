@@ -1013,11 +1013,8 @@ var _ = Describe("Reconcile lifecycle", func() {
 				if err := k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, svc); err == nil {
 					_ = k8sClient.Delete(ctx, svc)
 				}
-				// Default mode is perService: the cache PVC is named after the isvc.
-				pvc := &corev1.PersistentVolumeClaim{}
-				if err := k8sClient.Get(ctx, types.NamespacedName{Name: isvcName + "-model-cache", Namespace: "default"}, pvc); err == nil {
-					_ = k8sClient.Delete(ctx, pvc)
-				}
+				// Default mode is shared: the cluster-wide PVC is created once and
+				// may be reused by other specs, so leave it for suite teardown.
 			}()
 
 			reconciler := &InferenceServiceReconciler{
@@ -1025,19 +1022,19 @@ var _ = Describe("Reconcile lifecycle", func() {
 				Scheme:             k8sClient.Scheme(),
 				InitContainerImage: "docker.io/curlimages/curl:8.18.0",
 				ModelCachePath:     "/models",
+				// ModelCacheMode left empty: must resolve to the shared default.
 			}
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: isvcName, Namespace: "default"},
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// In the default perService mode the operator provisions a per-isvc
-			// cache PVC "<isvc>-model-cache" (owner-ref'd to the isvc), not the
-			// cluster-wide shared PVC.
+			// In the default shared mode the operator provisions the single
+			// cluster-wide "llmkube-model-cache" PVC (no owner reference, since it
+			// outlives any one InferenceService), not a per-isvc PVC.
 			pvc := &corev1.PersistentVolumeClaim{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: isvcName + "-model-cache", Namespace: "default"}, pvc)).To(Succeed())
-			Expect(pvc.OwnerReferences).To(HaveLen(1))
-			Expect(pvc.OwnerReferences[0].Name).To(Equal(isvcName))
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ModelCachePVCName, Namespace: "default"}, pvc)).To(Succeed())
+			Expect(pvc.OwnerReferences).To(BeEmpty())
 		})
 	})
 })

@@ -50,10 +50,13 @@ type InferenceServiceReconciler struct {
 	ModelCacheClass      string
 	ModelCacheAccessMode string
 	// ModelCacheMode selects how model cache PVCs are provisioned:
-	// ModelCacheModePerService (default) gives each InferenceService its own
-	// RWO, WaitForFirstConsumer PVC that binds on the serving node (#728);
-	// ModelCacheModeShared uses the single cluster-wide llmkube-model-cache PVC
-	// for RWX setups. An empty value is treated as perService.
+	// ModelCacheModeShared (default) uses the single cluster-wide
+	// llmkube-model-cache PVC that the operator mounts and all InferenceServices
+	// share (cross-isvc dedup, cache list works; needs an RWX class on multi-node
+	// clusters); ModelCacheModePerService gives each InferenceService its own RWO,
+	// WaitForFirstConsumer PVC that binds on the serving node (#728), the opt-in
+	// escape hatch for multi-node clusters without RWX. An empty value is treated
+	// as shared (see resolveCacheMode).
 	ModelCacheMode     string
 	CACertConfigMap    string
 	InitContainerImage string

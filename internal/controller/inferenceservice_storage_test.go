@@ -309,7 +309,7 @@ var _ = Describe("ensureModelCachePVC (shared mode)", func() {
 	})
 })
 
-var _ = Describe("ensureModelCachePVC (perService mode, default, #728)", func() {
+var _ = Describe("ensureModelCachePVC (perService mode, opt-in, #728)", func() {
 	var reconciler *InferenceServiceReconciler
 	var isvc *inferencev1alpha1.InferenceService
 	var pvcName string
@@ -332,6 +332,10 @@ var _ = Describe("ensureModelCachePVC (perService mode, default, #728)", func() 
 	}
 
 	BeforeEach(func() {
+		// Clear any shared PVC a sibling (shared-default) spec may have left in
+		// the namespace, so the "does not create the shared PVC" assertion below
+		// is not polluted by test ordering.
+		deletePVCForcibly(context.Background(), "default")
 		// A real InferenceService gives the PVC a valid owner UID/GVK.
 		isvc = &inferencev1alpha1.InferenceService{
 			ObjectMeta: metav1.ObjectMeta{
@@ -342,10 +346,12 @@ var _ = Describe("ensureModelCachePVC (perService mode, default, #728)", func() 
 		}
 		Expect(k8sClient.Create(context.Background(), isvc)).To(Succeed())
 		pvcName = isvc.Name + "-model-cache"
-		// Empty ModelCacheMode must behave as perService (default).
+		// perService is the opt-in mode; it must be set explicitly now that the
+		// default (empty mode) resolves to shared.
 		reconciler = &InferenceServiceReconciler{
-			Client: k8sClient,
-			Scheme: k8sClient.Scheme(),
+			Client:         k8sClient,
+			Scheme:         k8sClient.Scheme(),
+			ModelCacheMode: ModelCacheModePerService,
 		}
 	})
 
@@ -407,7 +413,7 @@ var _ = Describe("buildCachedStorageConfig cache mode selection (#728)", func() 
 		Status: inferencev1alpha1.ModelStatus{CacheKey: "abc123def456"},
 	}
 
-	It("references the per-isvc PVC in perService mode (default)", func() {
+	It("references the per-isvc PVC in perService mode", func() {
 		isvc := &inferencev1alpha1.InferenceService{
 			ObjectMeta: metav1.ObjectMeta{Name: "my-isvc"},
 		}
@@ -415,7 +421,7 @@ var _ = Describe("buildCachedStorageConfig cache mode selection (#728)", func() 
 		Expect(config.volumes[0].PersistentVolumeClaim.ClaimName).To(Equal("my-isvc-model-cache"))
 	})
 
-	It("references the shared PVC in shared mode", func() {
+	It("references the shared PVC in shared mode (default)", func() {
 		isvc := &inferencev1alpha1.InferenceService{
 			ObjectMeta: metav1.ObjectMeta{Name: "my-isvc"},
 		}
@@ -423,12 +429,30 @@ var _ = Describe("buildCachedStorageConfig cache mode selection (#728)", func() 
 		Expect(config.volumes[0].PersistentVolumeClaim.ClaimName).To(Equal(ModelCachePVCName))
 	})
 
-	It("empty mode defaults to per-isvc PVC", func() {
+	It("empty mode defaults to the shared PVC", func() {
 		isvc := &inferencev1alpha1.InferenceService{
 			ObjectMeta: metav1.ObjectMeta{Name: "my-isvc"},
 		}
 		config := buildCachedStorageConfig(model, isvc, "", "", "curl:8.18.0")
-		Expect(config.volumes[0].PersistentVolumeClaim.ClaimName).To(Equal("my-isvc-model-cache"))
+		Expect(config.volumes[0].PersistentVolumeClaim.ClaimName).To(Equal(ModelCachePVCName))
+	})
+})
+
+var _ = Describe("resolveCacheMode", func() {
+	It("maps an empty mode to the shared default", func() {
+		Expect(resolveCacheMode("")).To(Equal(ModelCacheModeShared))
+	})
+
+	It("maps an unknown mode to the shared default", func() {
+		Expect(resolveCacheMode("bogus")).To(Equal(ModelCacheModeShared))
+	})
+
+	It("preserves an explicit perService mode", func() {
+		Expect(resolveCacheMode(ModelCacheModePerService)).To(Equal(ModelCacheModePerService))
+	})
+
+	It("preserves an explicit shared mode", func() {
+		Expect(resolveCacheMode(ModelCacheModeShared)).To(Equal(ModelCacheModeShared))
 	})
 })
 
