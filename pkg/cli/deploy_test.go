@@ -34,6 +34,8 @@ func TestBuildInferenceService(t *testing.T) {
 		wantGPUMemory string
 		wantContext   bool
 		wantParallel  bool
+		wantEndpoint  string
+		wantNodePort  *int32
 	}{
 		{
 			name: "CPU defaults",
@@ -47,6 +49,7 @@ func TestBuildInferenceService(t *testing.T) {
 			},
 			wantGPU:       0,
 			wantGPUMemory: "",
+			wantEndpoint:  "ClusterIP",
 		},
 		{
 			name: "GPU with memory",
@@ -63,6 +66,7 @@ func TestBuildInferenceService(t *testing.T) {
 			},
 			wantGPU:       2,
 			wantGPUMemory: "16Gi",
+			wantEndpoint:  "ClusterIP",
 		},
 		{
 			name: "GPU without memory",
@@ -78,6 +82,7 @@ func TestBuildInferenceService(t *testing.T) {
 			},
 			wantGPU:       1,
 			wantGPUMemory: "",
+			wantEndpoint:  "ClusterIP",
 		},
 		{
 			name: "with context size",
@@ -90,7 +95,8 @@ func TestBuildInferenceService(t *testing.T) {
 				memory:      "4Gi",
 				contextSize: 8192,
 			},
-			wantContext: true,
+			wantContext:  true,
+			wantEndpoint: "ClusterIP",
 		},
 		{
 			name: "with parallel slots",
@@ -104,6 +110,7 @@ func TestBuildInferenceService(t *testing.T) {
 				parallelSlots: 4,
 			},
 			wantParallel: true,
+			wantEndpoint: "ClusterIP",
 		},
 		{
 			name: "zero context and parallel are omitted",
@@ -119,6 +126,34 @@ func TestBuildInferenceService(t *testing.T) {
 			},
 			wantContext:  false,
 			wantParallel: false,
+			wantEndpoint: "ClusterIP",
+		},
+		{
+			name: "node-port sets NodePort type and pins the port",
+			opts: &deployOptions{
+				name:      "nodeport-model",
+				namespace: testDefaultNamespace,
+				replicas:  1,
+				image:     "ghcr.io/ggml-org/llama.cpp:server",
+				cpu:       "2",
+				memory:    "4Gi",
+				nodePort:  30080,
+			},
+			wantEndpoint: "NodePort",
+			wantNodePort: ptrInt32(30080),
+		},
+		{
+			name: "no node-port defaults to ClusterIP with nil NodePort",
+			opts: &deployOptions{
+				name:      "default-model",
+				namespace: testDefaultNamespace,
+				replicas:  1,
+				image:     "ghcr.io/ggml-org/llama.cpp:server",
+				cpu:       "2",
+				memory:    "4Gi",
+			},
+			wantEndpoint: "ClusterIP",
+			wantNodePort: nil,
 		},
 	}
 
@@ -155,8 +190,19 @@ func TestBuildInferenceService(t *testing.T) {
 			if isvc.Spec.Endpoint.Path != "/v1/chat/completions" {
 				t.Errorf("Path = %q, want /v1/chat/completions", isvc.Spec.Endpoint.Path)
 			}
-			if isvc.Spec.Endpoint.Type != "ClusterIP" {
-				t.Errorf("Type = %q, want ClusterIP", isvc.Spec.Endpoint.Type)
+			if isvc.Spec.Endpoint.Type != tt.wantEndpoint {
+				t.Errorf("Type = %q, want %q", isvc.Spec.Endpoint.Type, tt.wantEndpoint)
+			}
+			if tt.wantNodePort == nil {
+				if isvc.Spec.Endpoint.NodePort != nil {
+					t.Errorf("NodePort = %d, want nil", *isvc.Spec.Endpoint.NodePort)
+				}
+			} else {
+				if isvc.Spec.Endpoint.NodePort == nil {
+					t.Error("NodePort is nil, want non-nil")
+				} else if *isvc.Spec.Endpoint.NodePort != *tt.wantNodePort {
+					t.Errorf("NodePort = %d, want %d", *isvc.Spec.Endpoint.NodePort, *tt.wantNodePort)
+				}
 			}
 
 			// GPU
@@ -650,4 +696,8 @@ func searchString(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+func ptrInt32(v int32) *int32 {
+	return &v
 }

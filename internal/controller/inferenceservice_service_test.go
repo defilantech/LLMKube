@@ -71,6 +71,49 @@ var _ = Describe("constructService", func() {
 		Expect(svc.Spec.Type).To(Equal(corev1.ServiceTypeNodePort))
 	})
 
+	It("should set ServicePort.NodePort only when endpoint.nodePort is set on a NodePort service", func() {
+		nodePort := int32(30080)
+		isvc := &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-svc", Namespace: "default"},
+			Spec: inferencev1alpha1.InferenceServiceSpec{
+				Endpoint: &inferencev1alpha1.EndpointSpec{
+					Type:     "NodePort",
+					NodePort: &nodePort,
+				},
+			},
+		}
+		svc := reconciler.constructService(isvc)
+		Expect(svc.Spec.Type).To(Equal(corev1.ServiceTypeNodePort))
+		Expect(svc.Spec.Ports[0].NodePort).To(Equal(nodePort))
+	})
+
+	It("should not set ServicePort.NodePort when endpoint.nodePort is nil on a NodePort service", func() {
+		isvc := &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-svc", Namespace: "default"},
+			Spec: inferencev1alpha1.InferenceServiceSpec{
+				Endpoint: &inferencev1alpha1.EndpointSpec{Type: "NodePort"},
+			},
+		}
+		svc := reconciler.constructService(isvc)
+		Expect(svc.Spec.Type).To(Equal(corev1.ServiceTypeNodePort))
+		Expect(svc.Spec.Ports[0].NodePort).To(Equal(int32(0)))
+	})
+
+	It("should not set ServicePort.NodePort for ClusterIP service", func() {
+		isvc := &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-svc", Namespace: "default"},
+			Spec: inferencev1alpha1.InferenceServiceSpec{
+				Endpoint: &inferencev1alpha1.EndpointSpec{
+					Type:     "ClusterIP",
+					NodePort: ptrInt32(30080),
+				},
+			},
+		}
+		svc := reconciler.constructService(isvc)
+		Expect(svc.Spec.Type).To(Equal(corev1.ServiceTypeClusterIP))
+		Expect(svc.Spec.Ports[0].NodePort).To(Equal(int32(0)))
+	})
+
 	It("should create LoadBalancer service", func() {
 		isvc := &inferencev1alpha1.InferenceService{
 			ObjectMeta: metav1.ObjectMeta{Name: "test-svc", Namespace: "default"},

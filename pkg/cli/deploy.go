@@ -149,7 +149,8 @@ Examples:
 	cmd.Flags().Int32VarP(&opts.replicas, "replicas", "r", 1, "Number of replicas")
 	cmd.Flags().Int32Var(&opts.nodePort, "node-port", 0,
 		"Pin a stable NodePort (30000-32767) for the service. "+
-			"Implies --endpoint-type NodePort. Default: auto-assign.")
+			"Sets the endpoint type to NodePort and pins this port. "+
+			"Default: auto-assign / ClusterIP.")
 	cmd.Flags().Int32Var(&opts.minReplicas, "min-replicas", 0,
 		"Minimum replicas for autoscaling (enables HPA when set with --max-replicas)")
 	cmd.Flags().Int32Var(&opts.maxReplicas, "max-replicas", 0,
