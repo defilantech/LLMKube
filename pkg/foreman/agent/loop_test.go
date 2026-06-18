@@ -329,6 +329,217 @@ func TestLoop_UnknownToolBecomesToolErrorMessage(t *testing.T) {
 	}
 }
 
+const toolCallWriteFile = `{
+  "id": "tw",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "tool_calls": [{
+        "id": "tc-wf",
+        "type": "function",
+        "function": {"name": "write_file", "arguments": "{\"path\":\"x.go\",\"content\":\"package x\"}"}
+      }]
+    },
+    "finish_reason": "tool_calls"
+  }]
+}`
+
+// sixToolSchemas returns the full production tool advertisement set so a
+// test can assert which subset the loop advertises on a given turn.
+func sixToolSchemas() []oai.Tool {
+	names := []string{"read_file", "write_file", "str_replace", "grep", "bash", "submit_result"}
+	out := make([]oai.Tool, 0, len(names))
+	for _, n := range names {
+		out = append(out, oai.Tool{Type: "function", Function: oai.ToolSchemaDef{Name: n}})
+	}
+	return out
+}
+
+// recordingScriptedServer behaves like scriptedOAIServer but also records,
+// per request, the set of tool names the loop advertised in that request's
+// `tools` array. advertised[i] is the sorted-ish slice for the i-th call.
+func recordingScriptedServer(t *testing.T, bodies []string) (*httptest.Server, *[][]string) {
+	t.Helper()
+	var calls atomic.Int64
+	advertised := make([][]string, len(bodies))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		i := int(calls.Add(1) - 1)
+		if i >= len(bodies) {
+			t.Errorf("recordingScriptedServer: %d-th call exceeds script (%d)", i+1, len(bodies))
+			http.Error(w, "script exhausted", http.StatusInternalServerError)
+			return
+		}
+		var req oai.ChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("recordingScriptedServer: decode request: %v", err)
+		}
+		names := make([]string, 0, len(req.Tools))
+		for _, tl := range req.Tools {
+			names = append(names, tl.Function.Name)
+		}
+		advertised[i] = names
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(chatJSONToSSE(t, bodies[i])))
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &advertised
+}
+
+func hasTool(names []string, want string) bool {
+	for _, n := range names {
+		if n == want {
+			return true
+		}
+	}
+	return false
+}
+
+// toolCallStrReplaceBad is a str_replace whose registry result is an error
+// (e.g. "old_string found 0 times") -- a failed edit attempt.
+const toolCallStrReplaceBad = `{
+  "id": "tsr",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "tool_calls": [{
+        "id": "tc-sr-bad",
+        "type": "function",
+        "function": {
+          "name": "str_replace",
+          "arguments": "{\"path\":\"x.go\",\"old_string\":\"nope\",\"new_string\":\"y\"}"
+        }
+      }]
+    },
+    "finish_reason": "tool_calls"
+  }]
+}`
+
+func TestLoop_EditFreeStreak_ForcingPhaseDropsExplorationKeepsRead(t *testing.T) {
+	// When EditFreeStreak nudges, the forcing phase drops grep+bash but
+	// KEEPS read_file (so the model can fetch exact text to fix an edit).
+	// The phase lifts only when an edit actually lands. Script: two reads
+	// trip EditFreeTurnsLimit=2; turn 3 (restricted) the model reads to get
+	// the text; turn 4 it writes successfully (lifting the phase); turn 5
+	// the full tool set is restored and it submits.
+	srv, advertised := recordingScriptedServer(t, []string{
+		toolCallReadFile, toolCallReadFile, toolCallReadFile, toolCallWriteFile, toolCallSubmitGo,
+	})
+	reg := &fakeRegistry{
+		schemas: sixToolSchemas(),
+		results: map[string]*ToolResult{
+			"read_file":     {Output: map[string]any{"content": "x"}},
+			"write_file":    {Output: map[string]any{"ok": true}},
+			"submit_result": {Terminal: true, Verdict: "GO", Summary: "done"},
+		},
+	}
+	loop := newTestLoop(srv, reg)
+	res, err := loop.Run(context.Background(), LoopConfig{
+		Model: "test", MaxTurns: 10,
+		Progress: ProgressConfig{EditFreeTurnsLimit: 2},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Terminal == nil || res.Terminal.Verdict != "GO" {
+		t.Fatalf("expected GO terminal, got %+v", res.Terminal)
+	}
+	adv := *advertised
+	if len(adv) < 5 {
+		t.Fatalf("expected 5 recorded requests, got %d", len(adv))
+	}
+	// Turns 1 and 2: full tool set.
+	for _, turn := range []int{0, 1} {
+		if len(adv[turn]) != 6 {
+			t.Errorf("turn %d: expected full 6-tool set, got %v", turn+1, adv[turn])
+		}
+	}
+	// Turns 3 and 4 (forcing phase): grep+bash gone, read_file kept.
+	for _, turn := range []int{2, 3} {
+		r := adv[turn]
+		if hasTool(r, "grep") || hasTool(r, "bash") {
+			t.Errorf("turn %d: expected grep/bash removed, got %v", turn+1, r)
+		}
+		if !hasTool(r, "read_file") || !hasTool(r, "write_file") ||
+			!hasTool(r, "str_replace") || !hasTool(r, "submit_result") {
+			t.Errorf("turn %d: expected read_file + edit tools present, got %v", turn+1, r)
+		}
+	}
+	// Turn 5: phase lifted after the successful write; full set restored.
+	if len(adv[4]) != 6 {
+		t.Errorf("turn 5: expected full tool set restored, got %v", adv[4])
+	}
+}
+
+func TestLoop_EditFreeStreak_FailedEditDoesNotLiftPhase(t *testing.T) {
+	// A str_replace that ERRORS ("old_string found 0 times") must not count
+	// as progress: the phase stays armed and the model gets another
+	// restricted turn to recover, instead of escaping back to exploration.
+	// Script: two reads trip the limit; then three failed str_replace
+	// attempts exhaust the 3-turn restricted budget -> force-terminate.
+	srv, _ := recordingScriptedServer(t, []string{
+		toolCallReadFile, toolCallReadFile,
+		toolCallStrReplaceBad, toolCallStrReplaceBad, toolCallStrReplaceBad,
+	})
+	reg := &fakeRegistry{
+		schemas: sixToolSchemas(),
+		results: map[string]*ToolResult{
+			"read_file": {Output: map[string]any{"content": "x"}},
+			// str_replace absent from results -> Dispatch returns an error,
+			// modeling a failed edit (wrong old_string).
+		},
+	}
+	loop := newTestLoop(srv, reg)
+	res, err := loop.Run(context.Background(), LoopConfig{
+		Model: "test", MaxTurns: 10,
+		Progress: ProgressConfig{EditFreeTurnsLimit: 2},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Terminal == nil {
+		t.Fatalf("expected force-terminate envelope, got nil")
+	}
+	if got := res.Terminal.Extra["signal"]; got != "EditFreeStreak" {
+		t.Errorf("signal: want EditFreeStreak got %v", got)
+	}
+	if got := res.Terminal.Extra["outcome"]; got != StuckLoopOutcome {
+		t.Errorf("outcome: want %q got %v", StuckLoopOutcome, got)
+	}
+}
+
+func TestLoop_EditFreeStreak_TerminatesAfterRestrictedBudget(t *testing.T) {
+	// A model that keeps reading inside the forcing phase (never editing)
+	// is force-terminated once the restricted-turn budget is spent, not on
+	// the first restricted turn. With EditFreeTurnsLimit=2 the nudge fires
+	// after turn 2; turns 3,4,5 are restricted reads; the run terminates at
+	// turn 5 (the 3rd restricted turn).
+	srv, _ := recordingScriptedServer(t, []string{
+		toolCallReadFile, toolCallReadFile, toolCallReadFile, toolCallReadFile, toolCallReadFile,
+	})
+	reg := &fakeRegistry{
+		schemas: sixToolSchemas(),
+		results: map[string]*ToolResult{
+			"read_file": {Output: map[string]any{"content": "x"}},
+		},
+	}
+	loop := newTestLoop(srv, reg)
+	res, err := loop.Run(context.Background(), LoopConfig{
+		Model: "test", MaxTurns: 10,
+		Progress: ProgressConfig{EditFreeTurnsLimit: 2},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Terminal == nil || res.Terminal.Extra["signal"] != "EditFreeStreak" {
+		t.Fatalf("expected EditFreeStreak force-terminate, got %+v", res.Terminal)
+	}
+	if res.Turns != 5 {
+		t.Errorf("expected termination at turn 5 (nudge@2 + 3 restricted turns), got %d", res.Turns)
+	}
+}
+
 func TestLoop_AssistantNoToolCalls_RetriesThenErrors(t *testing.T) {
 	// A model that replies with prose and no tool_calls cannot make
 	// forward progress, but rather than failing the whole task on the

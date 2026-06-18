@@ -168,6 +168,17 @@ func NewLoopProgressMonitor(cfg ProgressConfig) *LoopProgressMonitor {
 	return &LoopProgressMonitor{cfg: cfg}
 }
 
+// Signal names, used in ProgressDecision.Signal and matched by the loop
+// to decide whether the EditFreeStreak forcing function should arm. These
+// strings also surface in telemetry and the force-terminate envelope, so
+// their values are part of the observable contract.
+const (
+	signalRepeatedToolCall = "RepeatedToolCall"
+	signalEditFreeStreak   = "EditFreeStreak"
+	signalContextSoftCap   = "ContextSoftCap"
+	signalContextHardCap   = "ContextHardCap"
+)
+
 // editProducingTools are the tool names that count as "made progress"
 // for the EditFreeStreak signal. submit_result is included so a
 // model that immediately submits without editing (legitimate for
@@ -177,6 +188,36 @@ var editProducingTools = map[string]struct{}{
 	"write_file":    {},
 	"str_replace":   {},
 	"submit_result": {},
+}
+
+// explorationTools are the open-ended search tools removed from the
+// advertised set during the EditFreeStreak forcing phase. read_file is
+// deliberately NOT here: a model recovering from a failed str_replace must
+// re-read the target file to get the exact text, and read_file of a
+// specific file is part of a legitimate read->edit->verify cycle. The
+// pathology the forcing function kills is open-ended *searching*
+// (repo-wide grep, bash find, scanning many files), which is what these
+// two tools enable.
+var explorationTools = map[string]struct{}{
+	"grep": {},
+	"bash": {},
+}
+
+// filterForcedEditSchemas returns the advertised tool set for a turn inside
+// the EditFreeStreak forcing phase: everything EXCEPT the exploration tools
+// (grep, bash). The model keeps read_file/write_file/str_replace/
+// submit_result so it can read the specific file it is editing and then
+// land the change, but it cannot fan out into a fresh exploration sweep.
+// Order is preserved.
+func filterForcedEditSchemas(schemas []oai.Tool) []oai.Tool {
+	out := make([]oai.Tool, 0, len(schemas))
+	for _, s := range schemas {
+		if _, ok := explorationTools[s.Function.Name]; ok {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
 }
 
 // Observe records the result of one turn and returns a decision for
@@ -208,7 +249,7 @@ func (m *LoopProgressMonitor) Observe(turn int, calls []oai.ToolCall, transcript
 	if m.cfg.ContextHardCap > 0 && m.contextTokens >= m.cfg.ContextHardCap {
 		return ProgressDecision{
 			Action: ProgressForceTerminate,
-			Signal: "ContextHardCap",
+			Signal: signalContextHardCap,
 			Detail: fmt.Sprintf(
 				"approximate wire-token count %d >= hard cap %d at turn %d",
 				m.contextTokens, m.cfg.ContextHardCap, turn),
@@ -220,7 +261,7 @@ func (m *LoopProgressMonitor) Observe(turn int, calls []oai.ToolCall, transcript
 		if m.nudgedContextSoft {
 			return ProgressDecision{
 				Action: ProgressForceTerminate,
-				Signal: "ContextSoftCap",
+				Signal: signalContextSoftCap,
 				Detail: fmt.Sprintf(
 					"approximate wire-token count %d >= soft cap %d for second "+
 						"consecutive turn (turn %d); model did not call submit_result "+
@@ -231,7 +272,7 @@ func (m *LoopProgressMonitor) Observe(turn int, calls []oai.ToolCall, transcript
 		m.nudgedContextSoft = true
 		return ProgressDecision{
 			Action: ProgressNudge,
-			Signal: "ContextSoftCap",
+			Signal: signalContextSoftCap,
 			Detail: fmt.Sprintf(
 				"approximate wire-token count %d >= soft cap %d at turn %d",
 				m.contextTokens, m.cfg.ContextSoftCap, turn),
@@ -243,7 +284,7 @@ func (m *LoopProgressMonitor) Observe(turn int, calls []oai.ToolCall, transcript
 		if m.nudgedEditFree {
 			return ProgressDecision{
 				Action: ProgressForceTerminate,
-				Signal: "EditFreeStreak",
+				Signal: signalEditFreeStreak,
 				Detail: fmt.Sprintf(
 					"no write_file/str_replace/submit_result tool call in %d "+
 						"consecutive turns (turn %d); model did not change behavior "+
@@ -254,7 +295,7 @@ func (m *LoopProgressMonitor) Observe(turn int, calls []oai.ToolCall, transcript
 		m.nudgedEditFree = true
 		return ProgressDecision{
 			Action: ProgressNudge,
-			Signal: "EditFreeStreak",
+			Signal: signalEditFreeStreak,
 			Detail: fmt.Sprintf(
 				"no write_file/str_replace/submit_result tool call in %d consecutive turns (turn %d)",
 				m.editFreeStreak, turn),
@@ -273,7 +314,7 @@ func (m *LoopProgressMonitor) Observe(turn int, calls []oai.ToolCall, transcript
 				if h == m.nudgedRepeatedToolHash {
 					return ProgressDecision{
 						Action: ProgressForceTerminate,
-						Signal: "RepeatedToolCall",
+						Signal: signalRepeatedToolCall,
 						Detail: fmt.Sprintf(
 							"%s called again with identical arguments (hash %s) at turn %d after a prior nudge for the same pattern",
 							extractToolName(h), h, turn),
@@ -290,7 +331,7 @@ func (m *LoopProgressMonitor) Observe(turn int, calls []oai.ToolCall, transcript
 			m.recentCallHashes = m.recentCallHashes[:0]
 			return ProgressDecision{
 				Action: ProgressNudge,
-				Signal: "RepeatedToolCall",
+				Signal: signalRepeatedToolCall,
 				Detail: fmt.Sprintf(
 					"%s called >= %d times with identical arguments (hash %s) at turn %d",
 					name, m.cfg.RepeatedToolThreshold, hash, turn),
@@ -477,11 +518,50 @@ func NudgeMessage(d ProgressDecision) string {
 	var b strings.Builder
 	b.WriteString("PROGRESS MONITOR ALERT: ")
 	b.WriteString(d.Detail)
+
+	// EditFreeStreak is backed by a forcing function in the loop: the next
+	// few turns drop the exploration tools (grep, bash) and the run is
+	// force-terminated unless an edit lands. Tell the model so the
+	// instruction agrees with the tool set it is about to see; read_file
+	// stays available so it can fetch the exact text to edit.
+	if d.Signal == signalEditFreeStreak {
+		b.WriteString("\n\nYou have been exploring without making any change. Stop searching. " +
+			"The grep and bash tools are now DISABLED; you may use read_file to re-read " +
+			"the specific file you are changing, but your goal now is to act, not to keep " +
+			"looking. Either:\n")
+		b.WriteString("  - make the edit the issue calls for (write_file or str_replace; " +
+			"read_file first only if you need the exact current text), OR\n")
+		b.WriteString("  - if the issue is not fixable or out of scope, call " +
+			"submit_result(verdict=\"NO-GO\") with a clear summary.\n\n")
+		b.WriteString("You have only a few turns to land a successful edit or submit; " +
+			"continuing to only read will be force-terminated as a stuck loop.")
+		return b.String()
+	}
+
 	b.WriteString("\n\nThis pattern is not making progress. Stop. Either:\n")
 	b.WriteString("  - call submit_result(verdict=\"NO-GO\") with a clear summary of what is blocking you, OR\n")
 	b.WriteString("  - change your approach entirely (different tool, different arguments, different file).\n\n")
 	b.WriteString("Continuing the same pattern will be force-terminated as a stuck loop.")
 	return b.String()
+}
+
+// ForcedEditReminderMessage is the synthetic user message the loop appends
+// on each turn of the EditFreeStreak forcing phase in which the model still
+// did not land a successful edit. It restates the constraint and counts
+// down the remaining attempts so the model knows the run is about to be
+// force-terminated. turnsLeft is how many forced-edit turns remain.
+func ForcedEditReminderMessage(turnsLeft int) string {
+	plural := "turns"
+	if turnsLeft == 1 {
+		plural = "turn"
+	}
+	return fmt.Sprintf(
+		"Still no successful edit. grep and bash remain DISABLED. You have %d %s "+
+			"left to either land an edit (write_file or str_replace -- use read_file "+
+			"first to copy the exact current text if your last str_replace did not "+
+			"match) or call submit_result(verdict=\"NO-GO\"). After that the run is "+
+			"force-terminated as a stuck loop.",
+		turnsLeft, plural)
 }
 
 // ForceTerminateEnvelope builds the synthetic submit_result envelope

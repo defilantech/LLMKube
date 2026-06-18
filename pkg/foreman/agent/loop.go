@@ -335,7 +335,27 @@ func (l *Loop) Run(ctx context.Context, cfg LoopConfig) (*LoopResult, error) {
 		},
 	}
 	schemas := l.registry.Schemas()
+	restrictedSchemas := filterForcedEditSchemas(schemas)
 	monitor := NewLoopProgressMonitor(cfg.Progress)
+
+	// EditFreeStreak forcing function. A soft text nudge alone has poor
+	// recovery rates: a confused model just keeps reading (empirically,
+	// #730: a reasoning-off MoE read 16 files, ignored the nudge, and got
+	// force-terminated without ever editing). So once the monitor nudges on
+	// EditFreeStreak we enter a bounded "forcing phase": for up to
+	// maxRestrictedEditTurns turns we drop the exploration tools (grep,
+	// bash) from the advertised set -- read_file stays so the model can
+	// fetch the exact text to edit -- and the phase ends only when an edit
+	// actually lands (a successful write_file/str_replace, NOT a
+	// str_replace that errors on a wrong old_string). If no edit lands
+	// within the budget, the run is force-terminated as a stuck loop.
+	//
+	// forceEditOnly is whether we are currently in the forcing phase;
+	// restrictedTurnsUsed counts forcing-phase turns spent without a
+	// successful edit.
+	forceEditOnly := false
+	restrictedTurnsUsed := 0
+	const maxRestrictedEditTurns = 3
 
 	// noToolCallStreak counts consecutive turns that returned text without
 	// a tool call. It resets to zero after any successful tool-calling
@@ -349,13 +369,19 @@ func (l *Loop) Run(ctx context.Context, cfg LoopConfig) (*LoopResult, error) {
 	for turn := 1; turn <= cfg.MaxTurns; turn++ {
 		res.Turns = turn
 
+		// During the forcing phase, advertise the restricted set (no grep,
+		// no bash) so the model acts on what it has already read instead of
+		// launching a fresh exploration sweep.
+		activeSchemas := schemas
+		if forceEditOnly {
+			activeSchemas = restrictedSchemas
+		}
+
 		// runOneTurn appends the assistant message + tool messages to
 		// res.Transcript. It returns errTerminalReached on submit_result.
-		// We capture the assistant message's tool_calls before consulting
-		// the monitor; cleanest place to read them is after the turn
-		// returns successfully (errTerminalReached counts as success
-		// here -- submit_result is the model's chosen terminal).
-		turnErr := l.runOneTurn(ctx, cfg, schemas, res)
+		// editSucceeded reports whether a write_file/str_replace landed this
+		// turn (gates the forcing phase below).
+		editSucceeded, turnErr := l.runOneTurn(ctx, cfg, activeSchemas, res)
 		if turnErr != nil {
 			if errors.Is(turnErr, errTerminalReached) {
 				return res, nil
@@ -413,6 +439,48 @@ func (l *Loop) Run(ctx context.Context, cfg LoopConfig) (*LoopResult, error) {
 		// message in the transcript has this turn's tool_calls.
 		calls := mostRecentAssistantToolCalls(res.Transcript)
 		decision := monitor.Observe(turn, calls, res.Transcript)
+
+		// A non-EditFreeStreak force-terminate (e.g. ContextHardCap, the
+		// deadliest signal) always wins, even mid-forcing-phase.
+		if decision.Action == ProgressForceTerminate && decision.Signal != signalEditFreeStreak {
+			res.Terminal = ForceTerminateEnvelope(decision, turn)
+			return res, nil
+		}
+
+		// Forcing phase: the loop, not the monitor, owns EditFreeStreak
+		// termination here so the model gets a bounded number of restricted
+		// turns to recover (a failed str_replace often needs one re-read to
+		// fix). The monitor's own EditFreeStreak escalation is intercepted
+		// below by skipping its decision while we are in the phase.
+		if forceEditOnly {
+			if editSucceeded {
+				// The forced edit landed; leave the phase and fall through
+				// to normal handling (the decision is typically Continue
+				// because an edit resets the monitor's streak).
+				forceEditOnly = false
+				restrictedTurnsUsed = 0
+			} else {
+				// No edit this turn. Spend one restricted turn; terminate
+				// when the budget is exhausted, otherwise remind and retry.
+				restrictedTurnsUsed++
+				if restrictedTurnsUsed >= maxRestrictedEditTurns {
+					res.Terminal = ForceTerminateEnvelope(ProgressDecision{
+						Action: ProgressForceTerminate,
+						Signal: signalEditFreeStreak,
+						Detail: fmt.Sprintf(
+							"no successful edit in %d restricted turns after the "+
+								"edit-free nudge (turn %d)", restrictedTurnsUsed, turn),
+					}, turn)
+					return res, nil
+				}
+				res.Transcript = append(res.Transcript, oai.Message{
+					Role:    oai.RoleUser,
+					Content: ForcedEditReminderMessage(maxRestrictedEditTurns - restrictedTurnsUsed),
+				})
+				continue
+			}
+		}
+
 		switch decision.Action {
 		case ProgressContinue:
 			// nothing to do
@@ -424,18 +492,22 @@ func (l *Loop) Run(ctx context.Context, cfg LoopConfig) (*LoopResult, error) {
 				Role:    oai.RoleUser,
 				Content: NudgeMessage(decision),
 			})
+			// Enter the forcing phase for the EditFreeStreak signal so the
+			// nudge is a hard constraint (restricted tools + bounded turns),
+			// not just a suggestion the model can ignore.
+			if decision.Signal == signalEditFreeStreak {
+				forceEditOnly = true
+				restrictedTurnsUsed = 0
+			}
 		case ProgressForceTerminate:
-			// Synthesize a submit_result envelope and exit. The
-			// transcript is left intact so the executor can persist
-			// the trajectory for review; res.Terminal carries the
-			// synthesized envelope so downstream consumers see a
-			// normal terminal shape. We return a NIL error here on
-			// purpose: a force-terminate is a clean structural outcome
-			// (not an infrastructure failure) and the executor's
-			// terminal-handling path needs to run so the synthesized
-			// verdict + Extra.outcome propagate to AgenticTask status.
-			// Callers can distinguish this case from a model-emitted
-			// terminal by checking Terminal.Extra["outcome"] for
+			// Reachable only for EditFreeStreak while NOT in the forcing
+			// phase (other signals handled above; an active phase consumes
+			// the EditFreeStreak escalation via restrictedTurnsUsed). Treat
+			// it as a clean structural outcome: synthesize a submit_result
+			// envelope and exit with a NIL error so the executor's terminal
+			// path runs and the synthesized verdict + Extra.outcome
+			// propagate to AgenticTask status. Callers distinguish this from
+			// a model-emitted terminal via Terminal.Extra["outcome"] ==
 			// StuckLoopOutcome (see ForceTerminateEnvelope).
 			res.Terminal = ForceTerminateEnvelope(decision, turn)
 			return res, nil
@@ -503,8 +575,12 @@ var errTerminalReached = errors.New("loop: terminal tool invoked")
 
 // runOneTurn drives one chat-completions request + tool dispatch. It
 // appends to res.Transcript in place. Returns errTerminalReached when
-// the model invoked the terminal (submit_result) tool.
-func (l *Loop) runOneTurn(ctx context.Context, cfg LoopConfig, schemas []oai.Tool, res *LoopResult) error {
+// the model invoked the terminal (submit_result) tool. editSucceeded
+// reports whether a write_file/str_replace landed this turn (used by the
+// EditFreeStreak forcing function in Run).
+func (l *Loop) runOneTurn(
+	ctx context.Context, cfg LoopConfig, schemas []oai.Tool, res *LoopResult,
+) (editSucceeded bool, err error) {
 	ctx, span := l.tracer.Start(ctx, "foreman.agent.turn",
 		trace.WithAttributes(attribute.Int("turn", res.Turns)))
 	defer span.End()
@@ -520,12 +596,12 @@ func (l *Loop) runOneTurn(ctx context.Context, cfg LoopConfig, schemas []oai.Too
 	resp, err := l.client.Chat(ctx, req)
 	if err != nil {
 		span.RecordError(err)
-		return fmt.Errorf("turn %d: chat: %w", res.Turns, err)
+		return false, fmt.Errorf("turn %d: chat: %w", res.Turns, err)
 	}
 	if len(resp.Choices) == 0 {
 		err := fmt.Errorf("turn %d: %w", res.Turns, oai.ErrNoChoices)
 		span.RecordError(err)
-		return err
+		return false, err
 	}
 
 	msg := resp.Choices[0].Message
@@ -544,24 +620,25 @@ func (l *Loop) runOneTurn(ctx context.Context, cfg LoopConfig, schemas []oai.Too
 		if msg.ReasoningContent != "" && strings.TrimSpace(msg.Content) == "" {
 			err := fmt.Errorf("turn %d: %w", res.Turns, ErrAssistantReasoningOnly)
 			span.RecordError(err)
-			return err
+			return false, err
 		}
 		err := fmt.Errorf("turn %d: %w", res.Turns, ErrAssistantNoToolCalls)
 		span.RecordError(err)
-		return err
+		return false, err
 	}
 
-	terminal := l.dispatchToolCalls(ctx, msg.ToolCalls, res)
+	terminal, editSucceeded := l.dispatchToolCalls(ctx, msg.ToolCalls, res)
 	span.SetAttributes(
 		attribute.Int("tool_calls", len(msg.ToolCalls)),
 		attribute.Int64("elapsed_ms", time.Since(start).Milliseconds()),
 		attribute.Bool("terminal", terminal != nil),
+		attribute.Bool("edit_succeeded", editSucceeded),
 	)
 	if terminal != nil {
 		res.Terminal = terminal
-		return errTerminalReached
+		return editSucceeded, errTerminalReached
 	}
-	return nil
+	return editSucceeded, nil
 }
 
 // dispatchToolCalls executes every tool_call in a single assistant turn
@@ -570,9 +647,15 @@ func (l *Loop) runOneTurn(ctx context.Context, cfg LoopConfig, schemas []oai.Too
 // loop still completes the rest of the turn before exiting (the model
 // authored them as one batch).
 //
-// Returns the first terminal *ToolResult observed, or nil if none.
-func (l *Loop) dispatchToolCalls(ctx context.Context, calls []oai.ToolCall, res *LoopResult) *ToolResult {
-	var terminal *ToolResult
+// Returns the first terminal *ToolResult observed (or nil) and whether any
+// edit-producing tool (write_file, str_replace) dispatched successfully
+// this turn. editSucceeded gates the EditFreeStreak forcing function: a
+// str_replace that errors with "old_string found 0 times" must NOT count as
+// progress, or a model that guesses the wrong text escapes the forcing
+// phase without ever landing a fix.
+func (l *Loop) dispatchToolCalls(
+	ctx context.Context, calls []oai.ToolCall, res *LoopResult,
+) (terminal *ToolResult, editSucceeded bool) {
 	for _, tc := range calls {
 		argsRaw := json.RawMessage(tc.Function.Arguments)
 		if len(argsRaw) == 0 {
@@ -595,6 +678,13 @@ func (l *Loop) dispatchToolCalls(ctx context.Context, calls []oai.ToolCall, res 
 			if result.Terminal && terminal == nil {
 				terminal = result
 			}
+			// A successful write_file/str_replace is a real edit. (We
+			// reuse editProducingTools but exclude submit_result here: a
+			// successful submit short-circuits the loop before the
+			// forcing-function check, so its edit status is moot.)
+			if tc.Function.Name == "write_file" || tc.Function.Name == "str_replace" {
+				editSucceeded = true
+			}
 		}
 		res.Transcript = append(res.Transcript, oai.Message{
 			Role:       oai.RoleTool,
@@ -603,7 +693,7 @@ func (l *Loop) dispatchToolCalls(ctx context.Context, calls []oai.ToolCall, res 
 			Content:    content,
 		})
 	}
-	return terminal
+	return terminal, editSucceeded
 }
 
 // maskTranscriptForWire returns a copy of transcript with older tool
