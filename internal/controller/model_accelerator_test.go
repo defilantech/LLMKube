@@ -47,6 +47,17 @@ func modelWithAccelerator(accel string) *inferencev1alpha1.Model {
 	return m
 }
 
+func modelWithGPUResource(accel string, resourceName string) *inferencev1alpha1.Model {
+	m := &inferencev1alpha1.Model{ObjectMeta: metav1.ObjectMeta{Name: "m", Namespace: "default"}}
+	m.Spec.Hardware = &inferencev1alpha1.HardwareSpec{
+		Accelerator: accel,
+		GPU: &inferencev1alpha1.GPUSpec{
+			ResourceName: resourceName,
+		},
+	}
+	return m
+}
+
 func newModelReconcilerWithNodes(t *testing.T, nodes ...client.Object) *ModelReconciler {
 	t.Helper()
 	scheme := runtime.NewScheme()
@@ -63,35 +74,60 @@ func newModelReconcilerWithNodes(t *testing.T, nodes ...client.Object) *ModelRec
 func TestCheckAcceleratorAvailability(t *testing.T) {
 	ctx := context.Background()
 	cases := []struct {
-		name  string
-		accel string
-		nodes []client.Object
-		want  bool
+		name         string
+		accel        string
+		resourceName string
+		nodes        []client.Object
+		want         bool
 	}{
-		{"nil hardware is available", "", nil, true},
-		{"cpu is always available", "cpu", nil, true},
-		{"metal is assumed available (off-cluster agent)", "metal", nil, true},
+		{"nil hardware is available", "", "", nil, true},
+		{"cpu is always available", "cpu", "", nil, true},
+		{"metal is assumed available (off-cluster agent)", "metal", "", nil, true},
 		{
-			"cuda available when a node advertises nvidia.com/gpu", "cuda",
+			"cuda available when a node advertises nvidia.com/gpu", "cuda", "",
 			[]client.Object{nodeWithCapacity("gpu1", "nvidia.com/gpu", "1")}, true,
 		},
 		{
-			"cuda unavailable when no node has a GPU", "cuda",
+			"cuda unavailable when no node has a GPU", "cuda", "",
 			[]client.Object{nodeWithCapacity("cpu1", "cpu", "8")}, false,
 		},
 		{
-			"rocm available when a node advertises amd.com/gpu", "rocm",
+			"rocm available when a node advertises amd.com/gpu", "rocm", "",
 			[]client.Object{nodeWithCapacity("amd1", "amd.com/gpu", "1")}, true,
 		},
 		{
-			"rocm unavailable when only an nvidia node exists", "rocm",
+			"rocm unavailable when only an nvidia node exists", "rocm", "",
 			[]client.Object{nodeWithCapacity("gpu1", "nvidia.com/gpu", "1")}, false,
+		},
+		{
+			"rocm with resourceName override uses the override resource",
+			"rocm", "squat.ai/dri-render",
+			[]client.Object{nodeWithCapacity("gpu1", "squat.ai/dri-render", "1")},
+			true,
+		},
+		{
+			"rocm with resourceName override fails when override not on any node",
+			"rocm", "squat.ai/dri-render",
+			[]client.Object{nodeWithCapacity("gpu1", "nvidia.com/gpu", "1")},
+			false,
+		},
+		{
+			"cuda with resourceName override uses the override resource",
+			"cuda", "custom.gpu.io/gpu",
+			[]client.Object{nodeWithCapacity("gpu1", "custom.gpu.io/gpu", "2")},
+			true,
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newModelReconcilerWithNodes(t, tc.nodes...)
-			got := r.checkAcceleratorAvailability(ctx, modelWithAccelerator(tc.accel))
+			var model *inferencev1alpha1.Model
+			if tc.resourceName != "" {
+				model = modelWithGPUResource(tc.accel, tc.resourceName)
+			} else {
+				model = modelWithAccelerator(tc.accel)
+			}
+			got := r.checkAcceleratorAvailability(ctx, model)
 			if got != tc.want {
 				t.Errorf("accelerator %q: want %v, got %v", tc.accel, tc.want, got)
 			}

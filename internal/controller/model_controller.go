@@ -766,6 +766,14 @@ func (r *ModelReconciler) checkAcceleratorAvailability(ctx context.Context, mode
 		return true
 	}
 
+	// Honor the GPU resourceName override so the readiness check validates
+	// the same extended resource the pod will actually request.
+	if model.Spec.Hardware.GPU != nil {
+		if override := strings.TrimSpace(model.Spec.Hardware.GPU.ResourceName); override != "" {
+			return r.nodeHasResource(ctx, corev1.ResourceName(override))
+		}
+	}
+
 	var resName corev1.ResourceName
 	switch accel {
 	case acceleratorROCm:
@@ -777,17 +785,23 @@ func (r *ModelReconciler) checkAcceleratorAvailability(ctx context.Context, mode
 		resName = resolveGPUResourceName(model)
 	}
 
+	return r.nodeHasResource(ctx, resName)
+}
+
+// nodeHasResource reports whether any node in the cluster advertises the
+// given extended resource in its capacity. Returns true on a node-list error
+// (fail-open) so a transient or RBAC failure does not spuriously mark the
+// accelerator unavailable.
+func (r *ModelReconciler) nodeHasResource(ctx context.Context, res corev1.ResourceName) bool {
 	var nodes corev1.NodeList
 	if err := r.List(ctx, &nodes); err != nil {
-		// Cannot determine availability; fail open rather than spuriously
-		// reporting the accelerator unavailable on a transient or RBAC error.
 		log.FromContext(ctx).Error(err,
-			"checkAcceleratorAvailability: listing nodes failed; assuming available",
-			"accelerator", accel)
+			"nodeHasResource: listing nodes failed; assuming available",
+			"resource", res)
 		return true
 	}
 	for i := range nodes.Items {
-		if q, ok := nodes.Items[i].Status.Capacity[resName]; ok && !q.IsZero() {
+		if q, ok := nodes.Items[i].Status.Capacity[res]; ok && !q.IsZero() {
 			return true
 		}
 	}
