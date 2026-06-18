@@ -267,6 +267,16 @@ spec:
                     required:
                     - gatewayRef
                     type: object
+                  nodePort:
+                    description: |-
+                      NodePort is the specific NodePort to pin when endpoint.type is NodePort.
+                      If set, the Service will use this exact port instead of auto-assigning
+                      from the 30000-32767 range. This provides a stable external endpoint
+                      across redeployments.
+                    format: int32
+                    maximum: 32767
+                    minimum: 30000
+                    type: integer
                   path:
                     default: /v1/chat/completions
                     description: Path is the HTTP path for the inference endpoint

@@ -397,6 +397,15 @@ type EndpointSpec struct {
 	// +optional
 	Type string `json:"type,omitempty"`
 
+	// NodePort is the specific NodePort to pin when endpoint.type is NodePort.
+	// If set, the Service will use this exact port instead of auto-assigning
+	// from the 30000-32767 range. This provides a stable external endpoint
+	// across redeployments.
+	// +kubebuilder:validation:Minimum=30000
+	// +kubebuilder:validation:Maximum=32767
+	// +optional
+	NodePort *int32 `json:"nodePort,omitempty"`
+
 	// Gateway opts this InferenceService into Envoy AI Gateway exposure. When
 	// set and Enabled, the operator generates the Backend / AIServiceBackend /
 	// AIGatewayRoute resources that front this service through a pre-installed

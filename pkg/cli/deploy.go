@@ -71,6 +71,7 @@ type deployOptions struct {
 	autoscaleMetric     string
 	runtime             string
 	containerPort       int32
+	nodePort            int32
 	skipModelInit       bool
 	env                 []string
 	command             []string
@@ -146,6 +147,9 @@ Examples:
 	cmd.Flags().StringVar(&opts.sha256, "sha256", "",
 		"Expected SHA256 hash of the model file for integrity verification")
 	cmd.Flags().Int32VarP(&opts.replicas, "replicas", "r", 1, "Number of replicas")
+	cmd.Flags().Int32Var(&opts.nodePort, "node-port", 0,
+		"Pin a stable NodePort (30000-32767) for the service. "+
+			"Implies --endpoint-type NodePort. Default: auto-assign.")
 	cmd.Flags().Int32Var(&opts.minReplicas, "min-replicas", 0,
 		"Minimum replicas for autoscaling (enables HPA when set with --max-replicas)")
 	cmd.Flags().Int32Var(&opts.maxReplicas, "max-replicas", 0,
@@ -332,6 +336,11 @@ func runDeploy(opts *deployOptions) error {
 }
 
 func buildInferenceService(opts *deployOptions) *inferencev1alpha1.InferenceService {
+	endpointType := "ClusterIP"
+	if opts.nodePort > 0 {
+		endpointType = "NodePort"
+	}
+
 	isvc := &inferencev1alpha1.InferenceService{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      opts.name,
@@ -344,13 +353,17 @@ func buildInferenceService(opts *deployOptions) *inferencev1alpha1.InferenceServ
 			Endpoint: &inferencev1alpha1.EndpointSpec{
 				Port: 8080,
 				Path: "/v1/chat/completions",
-				Type: "ClusterIP",
+				Type: endpointType,
 			},
 			Resources: &inferencev1alpha1.InferenceResourceRequirements{
 				CPU:    opts.cpu,
 				Memory: opts.memory,
 			},
 		},
+	}
+
+	if opts.nodePort > 0 {
+		isvc.Spec.Endpoint.NodePort = &opts.nodePort
 	}
 
 	if opts.gpu {

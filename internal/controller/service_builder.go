@@ -53,6 +53,17 @@ func (r *InferenceServiceReconciler) constructService(isvc *inferencev1alpha1.In
 		}
 	}
 
+	servicePort := corev1.ServicePort{
+		Name:       "http",
+		Port:       port,
+		TargetPort: intstr.FromInt(int(port)),
+		Protocol:   corev1.ProtocolTCP,
+	}
+
+	if serviceType == corev1.ServiceTypeNodePort && isvc.Spec.Endpoint != nil && isvc.Spec.Endpoint.NodePort != nil {
+		servicePort.NodePort = *isvc.Spec.Endpoint.NodePort
+	}
+
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      serviceName,
@@ -62,14 +73,7 @@ func (r *InferenceServiceReconciler) constructService(isvc *inferencev1alpha1.In
 		Spec: corev1.ServiceSpec{
 			Type:     serviceType,
 			Selector: labels,
-			Ports: []corev1.ServicePort{
-				{
-					Name:       "http",
-					Port:       port,
-					TargetPort: intstr.FromInt(int(port)),
-					Protocol:   corev1.ProtocolTCP,
-				},
-			},
+			Ports:    []corev1.ServicePort{servicePort},
 		},
 	}
 }
