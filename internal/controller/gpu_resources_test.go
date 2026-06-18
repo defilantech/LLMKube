@@ -70,6 +70,35 @@ func TestResolveGPUResourceName(t *testing.T) {
 			t.Fatalf("resolveGPUResourceName() = %q, want %q", got, intelGPUResourceNameXE)
 		}
 	})
+
+	t.Run("uses vulkan resource when accelerator is vulkan", func(t *testing.T) {
+		model := &inferencev1alpha1.Model{
+			Spec: inferencev1alpha1.ModelSpec{
+				Hardware: &inferencev1alpha1.HardwareSpec{
+					Accelerator: "vulkan",
+				},
+			},
+		}
+
+		if got := resolveGPUResourceName(model); got != vulkanDRIResourceName {
+			t.Fatalf("resolveGPUResourceName() = %q, want %q", got, vulkanDRIResourceName)
+		}
+	})
+
+	t.Run("uses vulkan resource when accelerator is vulkan with amd gpu vendor", func(t *testing.T) {
+		model := &inferencev1alpha1.Model{
+			Spec: inferencev1alpha1.ModelSpec{
+				Hardware: &inferencev1alpha1.HardwareSpec{
+					Accelerator: "vulkan",
+					GPU:         &inferencev1alpha1.GPUSpec{Vendor: "amd"},
+				},
+			},
+		}
+
+		if got := resolveGPUResourceName(model); got != vulkanDRIResourceName {
+			t.Fatalf("resolveGPUResourceName() = %q, want %q", got, vulkanDRIResourceName)
+		}
+	})
 }
 
 func TestDetectInsufficientGPUResource(t *testing.T) {
@@ -115,6 +144,18 @@ func TestDetectInsufficientGPUResource(t *testing.T) {
 
 		if _, ok := detectInsufficientGPUResource(message); ok {
 			t.Fatalf("detectInsufficientGPUResource() ok = true, want false")
+		}
+	})
+
+	t.Run("detects vulkan insufficient resource", func(t *testing.T) {
+		message := "0/1 nodes are available: 1 Insufficient devic.es/dri-render."
+
+		got, ok := detectInsufficientGPUResource(message)
+		if !ok {
+			t.Fatalf("detectInsufficientGPUResource() ok = false, want true")
+		}
+		if got != vulkanDRIResourceName {
+			t.Fatalf("detectInsufficientGPUResource() = %q, want %q", got, vulkanDRIResourceName)
 		}
 	})
 }

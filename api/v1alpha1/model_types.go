@@ -92,8 +92,12 @@ type ModelSpec struct {
 
 // HardwareSpec defines hardware acceleration settings
 type HardwareSpec struct {
-	// Accelerator specifies the type of hardware acceleration
-	// +kubebuilder:validation:Enum=cpu;metal;cuda;rocm;intel
+	// Accelerator specifies the type of hardware acceleration.
+	// "vulkan" covers AMD and Intel GPUs using the Vulkan runtime
+	// (gpu.vendor: amd/intel + gpu.runtime: vulkan). When set to
+	// "vulkan" the readiness-check path uses devic.es/dri-render as
+	// the GPU resource name instead of amd.com/gpu or nvidia.com/gpu.
+	// +kubebuilder:validation:Enum=cpu;metal;cuda;rocm;intel;vulkan
 	// +kubebuilder:default=cpu
 	// +optional
 	Accelerator string `json:"accelerator,omitempty"`

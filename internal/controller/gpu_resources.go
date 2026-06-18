@@ -11,6 +11,7 @@ import (
 
 const (
 	acceleratorIntel           = "intel"
+	acceleratorVulkan          = "vulkan"
 	intelGPUResourceEnvVar     = "LLMKUBE_INTEL_GPU_RESOURCE"
 	defaultInsufficientGPUHint = "Insufficient "
 )
@@ -29,7 +30,9 @@ var (
 	// vulkanDRIResourceName is the generic-device-plugin resource that
 	// advertises /dev/dri render nodes. Requesting it makes the plugin inject
 	// the render device(s) into the container, so no hostPath device mount is
-	// required. Used as the default GPU resource for the AMD/Vulkan path.
+	// required. Used as the default GPU resource for the AMD/Vulkan path
+	// (both the scheduling path via gpuResourceNameForSpec and the
+	// readiness path via resolveGPUResourceName).
 	vulkanDRIResourceName = corev1.ResourceName("devic.es/dri-render")
 )
 
@@ -102,6 +105,10 @@ func resolveGPUResourceName(model *inferencev1alpha1.Model) corev1.ResourceName 
 		if model.Spec.Hardware.GPU != nil && strings.EqualFold(model.Spec.Hardware.GPU.Vendor, acceleratorIntel) {
 			return resolveIntelGPUResourceName()
 		}
+
+		if strings.EqualFold(model.Spec.Hardware.Accelerator, acceleratorVulkan) {
+			return vulkanDRIResourceName
+		}
 	}
 
 	return nvidiaGPUResourceName
@@ -121,6 +128,7 @@ func detectInsufficientGPUResource(message string) (corev1.ResourceName, bool) {
 		nvidiaGPUResourceName,
 		intelGPUResourceNameI915,
 		intelGPUResourceNameXE,
+		vulkanDRIResourceName,
 	}
 
 	configuredIntelResource := resolveIntelGPUResourceName()

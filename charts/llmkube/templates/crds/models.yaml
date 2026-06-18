@@ -80,13 +80,19 @@ spec:
                 properties:
                   accelerator:
                     default: cpu
-                    description: Accelerator specifies the type of hardware acceleration
+                    description: |-
+                      Accelerator specifies the type of hardware acceleration.
+                      "vulkan" covers AMD and Intel GPUs using the Vulkan runtime
+                      (gpu.vendor: amd/intel + gpu.runtime: vulkan). When set to
+                      "vulkan" the readiness-check path uses devic.es/dri-render as
+                      the GPU resource name instead of amd.com/gpu or nvidia.com/gpu.
                     enum:
                     - cpu
                     - metal
                     - cuda
                     - rocm
                     - intel
+                    - vulkan
                     type: string
                   gpu:
                     description: GPU specifies GPU device requirements
