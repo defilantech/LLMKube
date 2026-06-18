@@ -206,11 +206,41 @@ build-foreman-agent-versioned: fmt vet ## Build foreman-agent with ldflags versi
 		./cmd/foreman-agent
 
 # FOREMAN_INSTALL_ROOT is the user-owned managed layout root for foreman-agent.
-# On macOS the default matches ResolveInstallRoot("foreman-agent").
-FOREMAN_INSTALL_ROOT ?= $(HOME)/Library/Application\ Support/llmkube/foreman-agent
+# On macOS the default matches ResolveInstallRoot("foreman-agent"). Do NOT
+# backslash-escape the space: this value is always consumed inside double quotes
+# (recipe commands) or a sed replacement, where a literal backslash would be
+# kept verbatim and corrupt the path.
+FOREMAN_INSTALL_ROOT ?= $(HOME)/Library/Application Support/llmkube/foreman-agent
+
+# foreman-agent runtime configuration rendered into the launchd plist by
+# install-foreman-agent. Override on the command line, e.g.:
+#   make install-foreman-agent \
+#     FOREMAN_INSTALLED_MODELS=qwen36-35b-carnice-mtp \
+#     FOREMAN_NODE_NAME=m5max-coder \
+#     FOREMAN_KUBECONFIG=$(HOME)/.kube/shadowstack.yaml \
+#     FOREMAN_ACCELERATOR=metal
+FOREMAN_NODE_NAME        ?= $(shell hostname -s)
+FOREMAN_KUBECONFIG       ?= $(HOME)/.kube/config
+FOREMAN_ACCELERATOR      ?= metal
+FOREMAN_GIT_REMOTE_URL   ?= $(shell git remote get-url origin 2>/dev/null)
+FOREMAN_COMMIT_EMAIL     ?= $(shell git config user.email 2>/dev/null)
+# Required: comma-separated model names this node serves (used to match tasks).
+FOREMAN_INSTALLED_MODELS ?=
+
+.PHONY: check-foreman-install-vars
+check-foreman-install-vars:
+	@if [ -z "$(FOREMAN_INSTALLED_MODELS)" ]; then \
+		echo "ERROR: FOREMAN_INSTALLED_MODELS is required (comma-separated model names this node serves)."; \
+		echo "       e.g. make install-foreman-agent FOREMAN_INSTALLED_MODELS=qwen36-35b-carnice-mtp"; \
+		exit 1; \
+	fi
+	@if [ -z "$(FOREMAN_NODE_NAME)" ]; then \
+		echo "ERROR: FOREMAN_NODE_NAME is empty (hostname -s returned nothing); set it explicitly."; \
+		exit 1; \
+	fi
 
 .PHONY: install-foreman-agent
-install-foreman-agent: build-foreman-agent-versioned ## Install foreman-agent into user-owned managed layout and start launchd service (macOS only, no sudo).
+install-foreman-agent: check-foreman-install-vars build-foreman-agent-versioned ## Install foreman-agent into user-owned managed layout and start launchd service (macOS only, no sudo).
 	@echo "Installing foreman-agent $(FOREMAN_AGENT_VERSION)..."
 	@# Create the versioned directory and stage the binary.
 	mkdir -p "$(FOREMAN_INSTALL_ROOT)/versions/$(FOREMAN_AGENT_VERSION)"
@@ -227,8 +257,17 @@ install-foreman-agent: build-foreman-agent-versioned ## Install foreman-agent in
 		"$(FOREMAN_INSTALL_ROOT)/current"
 	@echo "Staged at $(FOREMAN_INSTALL_ROOT)/current -> versions/$(FOREMAN_AGENT_VERSION)"
 	@echo "Installing launchd service..."
-	@# Substitute YOUR_USERNAME placeholder with the real home directory path.
-	@sed "s|/Users/YOUR_USERNAME/Library/Application Support/llmkube/foreman-agent|$(FOREMAN_INSTALL_ROOT)|g" \
+	@# Render the launchd plist: substitute the install-root path AND every
+	@# REPLACE_WITH_* placeholder, so the installed service has a complete,
+	@# working command line with no leftover placeholders.
+	@sed \
+		-e "s|/Users/YOUR_USERNAME/Library/Application Support/llmkube/foreman-agent|$(FOREMAN_INSTALL_ROOT)|g" \
+		-e "s|REPLACE_WITH_NODE_NAME|$(FOREMAN_NODE_NAME)|g" \
+		-e "s|REPLACE_WITH_ACCELERATOR|$(FOREMAN_ACCELERATOR)|g" \
+		-e "s|REPLACE_WITH_INSTALLED_MODELS|$(FOREMAN_INSTALLED_MODELS)|g" \
+		-e "s|REPLACE_WITH_KUBECONFIG|$(FOREMAN_KUBECONFIG)|g" \
+		-e "s|REPLACE_WITH_GIT_REMOTE_URL|$(FOREMAN_GIT_REMOTE_URL)|g" \
+		-e "s|REPLACE_WITH_EMAIL|$(FOREMAN_COMMIT_EMAIL)|g" \
 		deployment/macos/com.llmkube.foreman-agent.plist \
 		> ~/Library/LaunchAgents/$(LLMKUBE_FOREMAN_AGENT_LABEL).plist
 	@echo "Starting foreman-agent service..."

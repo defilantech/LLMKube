@@ -8,8 +8,14 @@
     <!--
         ProgramArguments[0] is the stable exec path through the "current"
         symlink laid down by `make install-foreman-agent` (and updated on
-        every self-update flip).  Edit the flags below to match your
-        environment before loading the service.
+        every self-update flip).
+
+        The REPLACE_WITH_* tokens below are substituted by
+        `make install-foreman-agent` from its FOREMAN_* variables
+        (FOREMAN_NODE_NAME, FOREMAN_ACCELERATOR, FOREMAN_INSTALLED_MODELS,
+        FOREMAN_KUBECONFIG, FOREMAN_GIT_REMOTE_URL, FOREMAN_COMMIT_EMAIL).
+        If you install this plist by hand, replace every REPLACE_WITH_*
+        token yourself before loading the service.
     -->
     <key>ProgramArguments</key>
     <array>
@@ -18,6 +24,12 @@
         <string>REPLACE_WITH_NODE_NAME</string>
         <string>--roles</string>
         <string>worker</string>
+        <string>--accelerator</string>
+        <string>REPLACE_WITH_ACCELERATOR</string>
+        <string>--installed-models</string>
+        <string>REPLACE_WITH_INSTALLED_MODELS</string>
+        <string>--kubeconfig</string>
+        <string>REPLACE_WITH_KUBECONFIG</string>
         <string>--agent-mode</string>
         <string>native</string>
         <string>--git-remote-url</string>
@@ -54,9 +66,7 @@
     <dict>
         <key>PATH</key>
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
-        <!-- Set KUBECONFIG if your kubeconfig is not at the default location -->
-        <!-- <key>KUBECONFIG</key> -->
-        <!-- <string>/Users/YOUR_USERNAME/.kube/config</string> -->
+        <!-- The kubeconfig path is passed explicitly via --kubeconfig above. -->
     </dict>
 
     <key>WorkingDirectory</key>
