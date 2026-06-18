@@ -36,6 +36,7 @@ func TestNewRootCommand(t *testing.T) {
 		"deploy":    false,
 		"list":      false,
 		"delete":    false,
+		"scale":     false,
 		"status":    false,
 		"queue":     false,
 		"version":   false,
