@@ -357,6 +357,18 @@ func (l *Loop) Run(ctx context.Context, cfg LoopConfig) (*LoopResult, error) {
 	restrictedTurnsUsed := 0
 	const maxRestrictedEditTurns = 3
 
+	// Final-turns convergence guard. In the last forceSubmitFinalTurns turns
+	// before MaxTurns, an agent that still has not called submit_result is
+	// advertised submit_result ONLY (plus a one-time hard nudge), so it
+	// produces a terminal verdict instead of silently hitting
+	// ErrMaxTurnsExhausted with no result. This is the reviewer loop's
+	// convergence mechanism: reviewers have EditFreeStreak disabled (they
+	// legitimately read for many turns), so without this a non-converging
+	// reviewer just rambles to MaxTurns and yields an empty INCOMPLETE.
+	// Coders get it as a backstop behind the EditFreeStreak forcing function.
+	const forceSubmitFinalTurns = 3
+	forceSubmitAnnounced := false
+
 	// noToolCallStreak counts consecutive turns that returned text without
 	// a tool call. It resets to zero after any successful tool-calling
 	// turn, so only sustained narration exhausts MaxNoToolCallRetries.
@@ -375,6 +387,21 @@ func (l *Loop) Run(ctx context.Context, cfg LoopConfig) (*LoopResult, error) {
 		activeSchemas := schemas
 		if forceEditOnly {
 			activeSchemas = restrictedSchemas
+		}
+
+		// Final-turns convergence guard (takes precedence over the forcing
+		// phase): in the last forceSubmitFinalTurns turns, advertise
+		// submit_result only and append a one-time hard nudge, so the model
+		// must conclude rather than exhaust MaxTurns with no verdict.
+		if cfg.MaxTurns > forceSubmitFinalTurns && turn > cfg.MaxTurns-forceSubmitFinalTurns {
+			activeSchemas = filterSubmitOnlySchemas(schemas)
+			if !forceSubmitAnnounced {
+				res.Transcript = append(res.Transcript, oai.Message{
+					Role:    oai.RoleUser,
+					Content: ForceSubmitMessage(cfg.MaxTurns - turn + 1),
+				})
+				forceSubmitAnnounced = true
+			}
 		}
 
 		// runOneTurn appends the assistant message + tool messages to

@@ -220,6 +220,42 @@ func filterForcedEditSchemas(schemas []oai.Tool) []oai.Tool {
 	return out
 }
 
+// filterSubmitOnlySchemas returns ONLY the submit_result tool. Used by the
+// loop's final-turns convergence guard: in the last few turns before MaxTurns,
+// an agent that still has not concluded is advertised submit_result alone, so
+// it must produce a terminal verdict instead of silently exhausting MaxTurns
+// with no result. This is the reviewer loop's convergence mechanism (reviewers
+// have EditFreeStreak disabled by design, since they legitimately read for many
+// turns; see progressConfigFromAgent), and a safety net for coders. If
+// submit_result is somehow not advertised, the input is returned unchanged.
+func filterSubmitOnlySchemas(schemas []oai.Tool) []oai.Tool {
+	for _, s := range schemas {
+		if s.Function.Name == "submit_result" {
+			return []oai.Tool{s}
+		}
+	}
+	return schemas
+}
+
+// ForceSubmitMessage is the synthetic user message appended when the loop
+// enters the final-turns force-submit window. It tells the model it is out of
+// runway and must call submit_result now; turnsLeft is how many turns remain.
+func ForceSubmitMessage(turnsLeft int) string {
+	plural := "turns"
+	if turnsLeft == 1 {
+		plural = "turn"
+	}
+	return fmt.Sprintf(
+		"You are almost out of turns (%d %s left) and have not concluded. "+
+			"submit_result is now the ONLY tool available: you MUST call it now "+
+			"with your verdict, summary, and the required extra fields (for a "+
+			"review: reviewOutcome, findings, issueAsk, filesTouched). Do not "+
+			"attempt to read or search further; decide on the evidence you have "+
+			"and submit. If you genuinely cannot conclude, submit verdict=\"ERROR\" "+
+			"(or NO-GO for a review) with a summary of what blocked you.",
+		turnsLeft, plural)
+}
+
 // Observe records the result of one turn and returns a decision for
 // the loop to act on. The transcript argument is the full transcript
 // after the turn's tool messages were appended (i.e. what the next

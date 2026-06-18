@@ -540,6 +540,55 @@ func TestLoop_EditFreeStreak_TerminatesAfterRestrictedBudget(t *testing.T) {
 	}
 }
 
+func TestLoop_FinalTurnsForceSubmit(t *testing.T) {
+	// In the last forceSubmitFinalTurns (3) turns before MaxTurns, the loop
+	// advertises submit_result ONLY, so a non-concluding agent (e.g. a reviewer
+	// with EditFreeStreak disabled) is forced to produce a terminal verdict
+	// instead of exhausting MaxTurns with no result. MaxTurns=8 -> final window
+	// is turns 6,7,8. The model reads 5 turns, then submits on turn 6 (when only
+	// submit_result is available).
+	srv, advertised := recordingScriptedServer(t, []string{
+		toolCallReadFile, toolCallReadFile, toolCallReadFile,
+		toolCallReadFile, toolCallReadFile, toolCallSubmitGo,
+	})
+	reg := &fakeRegistry{
+		schemas: sixToolSchemas(),
+		results: map[string]*ToolResult{
+			"read_file":     {Output: map[string]any{"content": "x"}},
+			"submit_result": {Terminal: true, Verdict: "GO", Summary: "done"},
+		},
+	}
+	loop := newTestLoop(srv, reg)
+	res, err := loop.Run(context.Background(), LoopConfig{Model: "test", MaxTurns: 8})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Terminal == nil || res.Terminal.Verdict != "GO" {
+		t.Fatalf("expected GO terminal, got %+v", res.Terminal)
+	}
+	adv := *advertised
+	if len(adv) < 6 {
+		t.Fatalf("expected >=6 recorded requests, got %d", len(adv))
+	}
+	for _, turn := range []int{0, 1, 2, 3, 4} {
+		if len(adv[turn]) != 6 {
+			t.Errorf("turn %d: expected full 6-tool set, got %v", turn+1, adv[turn])
+		}
+	}
+	if len(adv[5]) != 1 || adv[5][0] != "submit_result" {
+		t.Errorf("turn 6: expected [submit_result] only, got %v", adv[5])
+	}
+	var sawNudge bool
+	for _, m := range res.Transcript {
+		if m.Role == oai.RoleUser && strings.Contains(m.Content, "ONLY tool available") {
+			sawNudge = true
+		}
+	}
+	if !sawNudge {
+		t.Errorf("expected ForceSubmitMessage in transcript")
+	}
+}
+
 func TestLoop_AssistantNoToolCalls_RetriesThenErrors(t *testing.T) {
 	// A model that replies with prose and no tool_calls cannot make
 	// forward progress, but rather than failing the whole task on the
