@@ -4902,3 +4902,105 @@ var _ = Describe("DRA Passthrough (resource.k8s.io/v1)", func() {
 		Expect(*deployment.Spec.Template.Spec.ResourceClaims[0].ResourceClaimTemplateName).To(Equal("gpu-template"))
 	})
 })
+
+var _ = Describe("constructDeployment coverage", func() {
+	var reconciler *InferenceServiceReconciler
+
+	BeforeEach(func() {
+		reconciler = &InferenceServiceReconciler{
+			Client:             k8sClient,
+			Scheme:             k8sClient.Scheme(),
+			InitContainerImage: "docker.io/curlimages/curl:8.18.0",
+			DefaultFSGroup:     102,
+		}
+	})
+
+	It("applies a custom readiness probe from ProbeOverrides", func() {
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: "probe-model", Namespace: "default"},
+			Spec: inferencev1alpha1.ModelSpec{
+				Source: "https://example.com/model.gguf",
+				Format: "gguf",
+				Hardware: &inferencev1alpha1.HardwareSpec{
+					Accelerator: "cpu",
+				},
+			},
+			Status: inferencev1alpha1.ModelStatus{Phase: "Ready", Path: "/tmp/llmkube/models/test-model.gguf"},
+		}
+		replicas := int32(1)
+		isvc := &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: "probe-svc", Namespace: "default"},
+			Spec: inferencev1alpha1.InferenceServiceSpec{
+				ModelRef: "probe-model",
+				Replicas: &replicas,
+				Image:    "ghcr.io/ggml-org/llama.cpp:server",
+				ProbeOverrides: &inferencev1alpha1.ProbeOverrides{
+					Readiness: &corev1.Probe{
+						ProbeHandler: corev1.ProbeHandler{
+							HTTPGet: &corev1.HTTPGetAction{
+								Path: "/ready",
+								Port: intstr.FromInt32(8080),
+							},
+						},
+						PeriodSeconds:    5,
+						FailureThreshold: 3,
+					},
+				},
+			},
+		}
+
+		deployment := reconciler.constructDeployment(isvc, model, 1)
+		probe := deployment.Spec.Template.Spec.Containers[0].ReadinessProbe
+		Expect(probe).NotTo(BeNil())
+		Expect(probe.HTTPGet.Path).To(Equal("/ready"))
+		Expect(probe.PeriodSeconds).To(Equal(int32(5)))
+	})
+
+	It("appends user tolerations to the device-plugin GPU toleration", func() {
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: "toleration-model", Namespace: "default"},
+			Spec: inferencev1alpha1.ModelSpec{
+				Source: "https://example.com/model.gguf",
+				Format: "gguf",
+				Hardware: &inferencev1alpha1.HardwareSpec{
+					Accelerator: "cuda",
+					GPU: &inferencev1alpha1.GPUSpec{
+						Enabled: true,
+						Count:   1,
+						Vendor:  "nvidia",
+						Layers:  99,
+					},
+				},
+			},
+			Status: inferencev1alpha1.ModelStatus{Phase: "Ready", Path: "/tmp/llmkube/models/test-model.gguf"},
+		}
+		replicas := int32(1)
+		isvc := &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: "toleration-svc", Namespace: "default"},
+			Spec: inferencev1alpha1.InferenceServiceSpec{
+				ModelRef: "toleration-model",
+				Replicas: &replicas,
+				Image:    "ghcr.io/ggml-org/llama.cpp:server-cuda13",
+				Tolerations: []corev1.Toleration{
+					{Key: "custom-taint", Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoSchedule},
+				},
+			},
+		}
+
+		deployment := reconciler.constructDeployment(isvc, model, 1)
+		tolerations := deployment.Spec.Template.Spec.Tolerations
+		Expect(tolerations).To(HaveLen(2))
+
+		var hasAuto, hasUser bool
+		for _, t := range tolerations {
+			if t.Key == "nvidia.com/gpu" {
+				hasAuto = true
+			}
+			if t.Key == "custom-taint" {
+				hasUser = true
+			}
+		}
+		Expect(hasAuto).To(BeTrue())
+		Expect(hasUser).To(BeTrue())
+	})
+})
