@@ -5,6 +5,27 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.9](https://github.com/defilantech/LLMKube/compare/v0.8.8...v0.8.9) (2026-06-19)
+
+
+### Features
+
+* add vulkan accelerator enum and make readiness-check Vulkan-aware ([#735](https://github.com/defilantech/LLMKube/issues/735)) ([76cf370](https://github.com/defilantech/LLMKube/commit/76cf3706ac50fb3ac65ef8537c923e79ac6e3aa0))
+* **cli:** add --node-port to pin a stable NodePort on InferenceService ([#737](https://github.com/defilantech/LLMKube/issues/737)) ([a6c1a03](https://github.com/defilantech/LLMKube/commit/a6c1a03002bdc8eac75c93c3ae36158a077fe9e5))
+* **cli:** add `llmkube scale` subcommand to scale InferenceService replicas ([#736](https://github.com/defilantech/LLMKube/issues/736)) ([bdb89f8](https://github.com/defilantech/LLMKube/commit/bdb89f898bc31f00b714b05b4e2b5960b7db304d))
+* **controller:** vendor-neutral DRA (resource.k8s.io/v1) scheduling for InferenceService ([#750](https://github.com/defilantech/LLMKube/issues/750)) ([6eb0f27](https://github.com/defilantech/LLMKube/commit/6eb0f27d9b2e4c06b41af5855e7135ca5d7edc02))
+* **foreman:** deterministic coder verification gate with feedback loop ([#749](https://github.com/defilantech/LLMKube/issues/749)) ([8cf3295](https://github.com/defilantech/LLMKube/commit/8cf32956b4b448bb2ae37e4ff048e532e6668663))
+* **foreman:** loop convergence forcing (EditFreeStreak + final-turns submit) ([#741](https://github.com/defilantech/LLMKube/issues/741)) ([cd3f068](https://github.com/defilantech/LLMKube/commit/cd3f068d7557a5e228696e87d7abe594ff549810))
+
+
+### Bug Fixes
+
+* **cli:** correct --node-port help text and add NodePort test coverage ([#742](https://github.com/defilantech/LLMKube/issues/742)) ([ef55900](https://github.com/defilantech/LLMKube/commit/ef55900d04002fef4999e294919428c62a6caded))
+* **controller:** honor GPU resourceName override in checkAcceleratorAvailability ([#747](https://github.com/defilantech/LLMKube/issues/747)) ([5aa3152](https://github.com/defilantech/LLMKube/commit/5aa3152b062f9a5b5e459681c46360c295e43a28))
+* **controller:** honor RouterRule.Timeout in gateway-mode AIGatewayRoute generation ([#748](https://github.com/defilantech/LLMKube/issues/748)) ([1978a72](https://github.com/defilantech/LLMKube/commit/1978a722d81be96b3f6e57bfeb7f41a2792cccf0))
+* **foreman:** make install-foreman-agent produce a working plist ([#743](https://github.com/defilantech/LLMKube/issues/743)) ([b946fef](https://github.com/defilantech/LLMKube/commit/b946fef0e7c4c910554f5459ccf7308c1eaa9600))
+* **foreman:** scope-overlap rail rescues honest paraphrase from false NO-GO ([#746](https://github.com/defilantech/LLMKube/issues/746)) ([00ae36e](https://github.com/defilantech/LLMKube/commit/00ae36e813f625b041f57c8c8a9ee90798a12d31))
+
 ## [0.8.8](https://github.com/defilantech/LLMKube/compare/v0.8.7...v0.8.8) (2026-06-17)
 
 
