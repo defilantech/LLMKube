@@ -122,7 +122,7 @@ type HardwareSpec struct {
 }
 
 // GPUSpec defines GPU-specific requirements.
-// +kubebuilder:validation:XValidation:rule="!(has(self.resourceName) && self.resourceClaims.size() > 0)",message="resourceClaims and resourceName are mutually exclusive: use one or the other for GPU scheduling"
+// +kubebuilder:validation:XValidation:rule="!(has(self.resourceName) && has(self.resourceClaims) && self.resourceClaims.size() > 0)",message="resourceClaims and resourceName are mutually exclusive: use one or the other for GPU scheduling"
 type GPUSpec struct {
 	// Enabled indicates whether GPU acceleration is enabled
 	// +optional

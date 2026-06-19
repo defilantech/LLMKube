@@ -283,8 +283,8 @@ spec:
                     x-kubernetes-validations:
                     - message: 'resourceClaims and resourceName are mutually exclusive:
                         use one or the other for GPU scheduling'
-                      rule: '!(has(self.resourceName) && self.resourceClaims.size()
-                        > 0)'
+                      rule: '!(has(self.resourceName) && has(self.resourceClaims)
+                        && self.resourceClaims.size() > 0)'
                   memoryBudget:
                     description: |-
                       MemoryBudget is an absolute memory limit for the model process
