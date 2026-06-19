@@ -47,7 +47,7 @@ func (b *LlamaCppBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, mo
 
 	gpuCount := resolveGPUCount(isvc, model)
 
-	if gpuCount > 0 {
+	if hasGPUPresent(isvc, model) {
 		layers := int32(99)
 		if model.Spec.Hardware != nil && model.Spec.Hardware.GPU != nil && model.Spec.Hardware.GPU.Layers > 0 {
 			layers = model.Spec.Hardware.GPU.Layers
@@ -91,7 +91,7 @@ func (b *LlamaCppBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, mo
 			"namespace", isvc.Namespace,
 		)
 	}
-	args = appendFlashAttentionArgs(args, isvc.Spec.FlashAttention, gpuCount)
+	args = appendFlashAttentionArgs(args, isvc.Spec.FlashAttention, hasGPUPresent(isvc, model))
 	args = appendJinjaArgs(args, isvc.Spec.Jinja)
 	args = appendCacheTypeArgs(args, resolveCacheType(isvc.Spec.CacheTypeCustomK, isvc.Spec.CacheTypeK), resolveCacheType(isvc.Spec.CacheTypeCustomV, isvc.Spec.CacheTypeV))
 	args = appendMoeCPUOffloadArgs(args, isvc.Spec.MoeCPUOffload)

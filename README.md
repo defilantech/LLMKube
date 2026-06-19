@@ -369,6 +369,7 @@ Consistent ~53 tok/s across 3-8B models with automatic layer sharding. See [v0.4
 - Multi-GPU inference for 13B-70B+ models ([guide](docs/MULTI-GPU-DEPLOYMENT.md))
 - Automatic layer offloading and tensor splitting
 - GPU queue management with priority classes
+- DRA passthrough (resource.k8s.io/v1) for CRI-based device scheduling (Kubernetes 1.34+)
 
 **Operations:**
 - Full CLI: `llmkube deploy/list/status/delete/catalog/cache/queue`

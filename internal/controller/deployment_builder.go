@@ -258,30 +258,7 @@ func (r *InferenceServiceReconciler) constructDeployment(
 	gpuCount := resolveGPUCount(isvc, model)
 	gpuResourceName := gpuResourceNameForSpec(model)
 
-	if gpuCount > 0 {
-		container.Resources = corev1.ResourceRequirements{
-			Limits: corev1.ResourceList{
-				gpuResourceName: resource.MustParse(fmt.Sprintf("%d", gpuCount)),
-			},
-		}
-	}
-
-	if isvc.Spec.Resources != nil {
-		if container.Resources.Limits == nil {
-			container.Resources.Limits = corev1.ResourceList{}
-		}
-		if container.Resources.Requests == nil {
-			container.Resources.Requests = corev1.ResourceList{}
-		}
-		if isvc.Spec.Resources.CPU != "" {
-			container.Resources.Requests[corev1.ResourceCPU] = resource.MustParse(isvc.Spec.Resources.CPU)
-		}
-		if isvc.Spec.Resources.HostMemory != "" {
-			container.Resources.Requests[corev1.ResourceMemory] = resource.MustParse(isvc.Spec.Resources.HostMemory)
-		} else if isvc.Spec.Resources.Memory != "" {
-			container.Resources.Requests[corev1.ResourceMemory] = resource.MustParse(isvc.Spec.Resources.Memory)
-		}
-	}
+	container.Resources = buildContainerResources(isvc, model, gpuCount, gpuResourceName)
 
 	deployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -311,6 +288,7 @@ func (r *InferenceServiceReconciler) constructDeployment(
 					RuntimeClassName:   isvc.Spec.RuntimeClassName,
 					ImagePullSecrets:   isvc.Spec.ImagePullSecrets,
 					EnableServiceLinks: resolveEnableServiceLinks(backend),
+					ResourceClaims:     modelResourceClaims(model),
 				},
 			},
 		},
@@ -344,5 +322,74 @@ func (r *InferenceServiceReconciler) constructDeployment(
 		}
 	}
 
+	// DRA: apply nodeSelector and tolerations (no auto GPU taint for DRA)
+	if len(modelResourceClaims(model)) > 0 {
+		applyDRAPodScheduling(deployment, isvc)
+	}
+
 	return deployment
+}
+
+// applyDRAPodScheduling configures pod-level scheduling for a DRA workload.
+// The DRA claim itself drives placement, but an explicit nodeSelector and any
+// user tolerations are still honored. Recreate strategy is used to avoid the
+// same scheduling deadlock as device-plugin GPU pods (a new pod can't get the
+// claim while the old one holds it).
+func applyDRAPodScheduling(deployment *appsv1.Deployment, isvc *inferencev1alpha1.InferenceService) {
+	deployment.Spec.Strategy = appsv1.DeploymentStrategy{
+		Type: appsv1.RecreateDeploymentStrategyType,
+	}
+	if len(isvc.Spec.NodeSelector) > 0 {
+		deployment.Spec.Template.Spec.NodeSelector = isvc.Spec.NodeSelector
+	}
+	if len(isvc.Spec.Tolerations) > 0 {
+		deployment.Spec.Template.Spec.Tolerations = isvc.Spec.Tolerations
+	}
+}
+
+// modelResourceClaims safely extracts DRA resource claims from the model spec.
+// Returns nil if the model has no GPU hardware or no resource claims configured.
+func modelResourceClaims(model *inferencev1alpha1.Model) []corev1.PodResourceClaim {
+	if model.Spec.Hardware != nil && model.Spec.Hardware.GPU != nil {
+		return model.Spec.Hardware.GPU.ResourceClaims
+	}
+	return nil
+}
+
+// buildContainerResources assembles the ResourceRequirements for the inference
+// container, handling the device-plugin GPU limit path, DRA resource claims,
+// and user-supplied CPU / memory requests.
+func buildContainerResources(isvc *inferencev1alpha1.InferenceService, model *inferencev1alpha1.Model, gpuCount int32, gpuResourceName corev1.ResourceName) corev1.ResourceRequirements {
+	var res corev1.ResourceRequirements
+
+	if gpuCount > 0 {
+		res.Limits = corev1.ResourceList{
+			gpuResourceName: resource.MustParse(fmt.Sprintf("%d", gpuCount)),
+		}
+	}
+
+	if model.Spec.Hardware != nil && model.Spec.Hardware.GPU != nil && len(model.Spec.Hardware.GPU.ResourceClaims) > 0 {
+		for _, claim := range model.Spec.Hardware.GPU.ResourceClaims {
+			res.Claims = append(res.Claims, corev1.ResourceClaim{Name: claim.Name})
+		}
+	}
+
+	if isvc.Spec.Resources != nil {
+		if res.Limits == nil {
+			res.Limits = corev1.ResourceList{}
+		}
+		if res.Requests == nil {
+			res.Requests = corev1.ResourceList{}
+		}
+		if isvc.Spec.Resources.CPU != "" {
+			res.Requests[corev1.ResourceCPU] = resource.MustParse(isvc.Spec.Resources.CPU)
+		}
+		if isvc.Spec.Resources.HostMemory != "" {
+			res.Requests[corev1.ResourceMemory] = resource.MustParse(isvc.Spec.Resources.HostMemory)
+		} else if isvc.Spec.Resources.Memory != "" {
+			res.Requests[corev1.ResourceMemory] = resource.MustParse(isvc.Spec.Resources.Memory)
+		}
+	}
+
+	return res
 }

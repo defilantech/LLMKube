@@ -97,3 +97,16 @@ func resolveGPUCount(isvc *inferencev1alpha1.InferenceService, model *inferencev
 	}
 	return 0
 }
+
+// hasGPUPresent returns true when the workload has GPU access through either
+// device-plugin (gpuCount > 0) or DRA (resourceClaims).
+// Use this instead of gpuCount > 0 for decisions about GPU-dependent runtime args.
+func hasGPUPresent(isvc *inferencev1alpha1.InferenceService, model *inferencev1alpha1.Model) bool {
+	if resolveGPUCount(isvc, model) > 0 {
+		return true
+	}
+	if model.Spec.Hardware != nil && model.Spec.Hardware.GPU != nil {
+		return len(model.Spec.Hardware.GPU.ResourceClaims) > 0
+	}
+	return false
+}

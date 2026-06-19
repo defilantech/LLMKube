@@ -17,6 +17,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -120,7 +121,8 @@ type HardwareSpec struct {
 	MemoryFraction *float64 `json:"memoryFraction,omitempty"`
 }
 
-// GPUSpec defines GPU-specific requirements
+// GPUSpec defines GPU-specific requirements.
+// +kubebuilder:validation:XValidation:rule="!(has(self.resourceName) && self.resourceClaims.size() > 0)",message="resourceClaims and resourceName are mutually exclusive: use one or the other for GPU scheduling"
 type GPUSpec struct {
 	// Enabled indicates whether GPU acceleration is enabled
 	// +optional
@@ -194,6 +196,14 @@ type GPUSpec struct {
 	// Only applicable when Count > 1
 	// +optional
 	Sharding *GPUShardingSpec `json:"sharding,omitempty"`
+
+	// ResourceClaims defines DRA (Dynamic Resource Allocation) claims for GPU devices.
+	// Uses resource.k8s.io/v1 PodResourceClaim format. Each claim must have exactly
+	// one of resourceClaimName or resourceClaimTemplateName set.
+	// Mutually exclusive with resourceName.
+	// +kubebuilder:validation:MaxItems=16
+	// +kubebuilder:validation:XValidation:rule="self.size() == 0 || self.all(c, (has(c.resourceClaimName) && !has(c.resourceClaimTemplateName)) || (!has(c.resourceClaimName) && has(c.resourceClaimTemplateName)))",message="each claim must have exactly one of resourceClaimName or resourceClaimTemplateName"
+	ResourceClaims []corev1.PodResourceClaim `json:"resourceClaims,omitempty"`
 }
 
 // GPUShardingSpec defines multi-GPU sharding strategy
