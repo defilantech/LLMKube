@@ -29,11 +29,21 @@ import (
 // swap per case. It also tracks call counts so tests can assert which
 // backend(s) were hit.
 type fakeBackend struct {
-	srv    *httptest.Server
-	calls  atomic.Int64
-	status atomic.Int64 // status code to return; defaults to 200
-	body   atomic.Pointer[string]
-	stream atomic.Bool
+	srv       *httptest.Server
+	calls     atomic.Int64
+	status    atomic.Int64 // status code to return; defaults to 200
+	body      atomic.Pointer[string]
+	stream    atomic.Bool
+	lastModel atomic.Pointer[string] // "model" field of the last received body
+}
+
+// LastModel returns the OpenAI "model" field of the most recent request
+// this backend received, or "" if it has not been called.
+func (fb *fakeBackend) LastModel() string {
+	if p := fb.lastModel.Load(); p != nil {
+		return *p
+	}
+	return ""
 }
 
 func newFakeBackend(t *testing.T) *fakeBackend {
@@ -45,6 +55,14 @@ func newFakeBackend(t *testing.T) *fakeBackend {
 
 	fb.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fb.calls.Add(1)
+		if raw, _ := io.ReadAll(r.Body); len(raw) > 0 {
+			var m struct {
+				Model string `json:"model"`
+			}
+			if json.Unmarshal(raw, &m) == nil {
+				fb.lastModel.Store(&m.Model)
+			}
+		}
 		status := int(fb.status.Load())
 		body := *fb.body.Load()
 
@@ -296,6 +314,29 @@ func TestProxyPrimaryFallbackOnUpstream5xx(t *testing.T) {
 	}
 	if h.localBack.calls.Load() != 1 {
 		t.Errorf("local should be tried as fallback, calls = %d", h.localBack.calls.Load())
+	}
+}
+
+// TestProxyDegradesModelAcrossFallback is the end-to-end proof: when the
+// primary cloud backend fails and the chain falls back, each backend
+// receives its own model — cloud gets its configured Model, the local
+// fallback gets the verbatim client alias.
+func TestProxyDegradesModelAcrossFallback(t *testing.T) {
+	h := newProxyHarness(t)
+	// Primary (cloud-opus, Model: claude-opus-4-7) 5xxs so the complex rule
+	// falls back to local-qwen (no Model).
+	h.cloudBack.status.Store(http.StatusInternalServerError)
+
+	resp := h.post(t, map[string]any{"model": "opus-alias"}, map[string]string{
+		"x-llmkube-task-complexity": "complex",
+	})
+	_ = resp.Body.Close()
+
+	if got := h.cloudBack.LastModel(); got != "claude-opus-4-7" {
+		t.Errorf("cloud backend saw model %q, want claude-opus-4-7 (external.model override)", got)
+	}
+	if got := h.localBack.LastModel(); got != "opus-alias" {
+		t.Errorf("local fallback saw model %q, want opus-alias (local backend, verbatim)", got)
 	}
 }
 

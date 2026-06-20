@@ -12,6 +12,7 @@ package router
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -399,6 +400,131 @@ func TestDispatchConnectionFailureStillQuarantines(t *testing.T) {
 	}
 	if disp.IsHealthy("dead") {
 		t.Error("backend should be marked unhealthy after a connect failure")
+	}
+}
+
+// TestApplyModelOverride is the unit-level contract: rewrite only when the
+// backend declares a Model; pass everything else through untouched.
+func TestApplyModelOverride(t *testing.T) {
+	modelOf := func(t *testing.T, body []byte) string {
+		t.Helper()
+		var m struct {
+			Model string `json:"model"`
+		}
+		if err := json.Unmarshal(body, &m); err != nil {
+			t.Fatalf("result is not JSON: %v (%s)", err, body)
+		}
+		return m.Model
+	}
+
+	t.Run("rewrites existing model", func(t *testing.T) {
+		out := applyModelOverride([]byte(`{"model":"opus","messages":[]}`), "claude-opus-4-7")
+		if got := modelOf(t, out); got != "claude-opus-4-7" {
+			t.Errorf("model = %q, want claude-opus-4-7", got)
+		}
+	})
+
+	t.Run("preserves sibling fields", func(t *testing.T) {
+		out := applyModelOverride([]byte(`{"model":"opus","temperature":0.5,"stream":true}`), "x")
+		var m struct {
+			Temperature float64 `json:"temperature"`
+			Stream      bool    `json:"stream"`
+		}
+		if err := json.Unmarshal(out, &m); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if m.Temperature != 0.5 || !m.Stream {
+			t.Errorf("sibling fields not preserved: %s", out)
+		}
+	})
+
+	t.Run("injects model when absent", func(t *testing.T) {
+		out := applyModelOverride([]byte(`{"messages":[]}`), "sonnet")
+		if got := modelOf(t, out); got != "sonnet" {
+			t.Errorf("model = %q, want sonnet (injected)", got)
+		}
+	})
+
+	t.Run("empty Model is a no-op", func(t *testing.T) {
+		in := `{"model":"opus"}`
+		if out := applyModelOverride([]byte(in), ""); string(out) != in {
+			t.Errorf("empty Model rewrote body to %q; want unchanged", out)
+		}
+	})
+
+	t.Run("non-object body is returned unchanged", func(t *testing.T) {
+		for _, in := range []string{`not json`, `[1,2,3]`, `"a string"`, ``} {
+			if out := applyModelOverride([]byte(in), "sonnet"); string(out) != in {
+				t.Errorf("body %q rewritten to %q; want unchanged", in, out)
+			}
+		}
+	})
+}
+
+// TestDispatchRewritesModelForExternalBackend proves the override reaches
+// the wire: an external backend's Model replaces the client alias upstream.
+func TestDispatchRewritesModelForExternalBackend(t *testing.T) {
+	var gotModel string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var m struct {
+			Model string `json:"model"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&m)
+		gotModel = m.Model
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	cfg := &Config{Backends: []Backend{{
+		Name: "cloud-sonnet", Tier: "cloud", Address: srv.URL,
+		Provider: "anthropic", Model: "claude-sonnet-4-6",
+	}}}
+	disp := NewDispatcher(cfg)
+
+	resp, err := disp.Dispatch(context.Background(), &cfg.Backends[0],
+		http.MethodPost, "/v1/chat/completions", http.Header{},
+		[]byte(`{"model":"ha","messages":[]}`))
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	if gotModel != "claude-sonnet-4-6" {
+		t.Errorf("upstream received model %q, want claude-sonnet-4-6 (external.model override)", gotModel)
+	}
+}
+
+// TestDispatchLeavesBodyForLocalBackend is the inverse: a local backend
+// declares no Model, so the body's model passes through verbatim.
+func TestDispatchLeavesBodyForLocalBackend(t *testing.T) {
+	var gotModel string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var m struct {
+			Model string `json:"model"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&m)
+		gotModel = m.Model
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	cfg := &Config{Backends: []Backend{{
+		Name: "local-gemma", Tier: "local", Address: srv.URL,
+	}}}
+	disp := NewDispatcher(cfg)
+
+	resp, err := disp.Dispatch(context.Background(), &cfg.Backends[0],
+		http.MethodPost, "/v1/chat/completions", http.Header{},
+		[]byte(`{"model":"gemma-4-e4b","messages":[]}`))
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	if gotModel != "gemma-4-e4b" {
+		t.Errorf("local upstream received model %q, want gemma-4-e4b (verbatim)", gotModel)
 	}
 }
 

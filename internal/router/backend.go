@@ -13,6 +13,7 @@ package router
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -212,9 +213,9 @@ func (d *Dispatcher) MarkUnhealthy(name string) {
 // upstream response. Caller is responsible for streaming the body to
 // the inbound client and closing it. On error the response is nil.
 //
-// requestBody is the already-buffered inbound body. The proxy reads the
-// body once (it needs to parse the "model" field) and reuses the bytes
-// across fallback attempts.
+// requestBody is the shared inbound body, reused across fallback attempts.
+// Dispatch rewrites the "model" field of an outbound copy (see
+// applyModelOverride) without mutating it.
 func (d *Dispatcher) Dispatch(
 	ctx context.Context,
 	backend *Backend,
@@ -227,7 +228,11 @@ func (d *Dispatcher) Dispatch(
 	}
 	url := joinURL(backend.Address, path)
 
-	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(requestBody))
+	// Send the backend's configured model, not the client-facing alias the
+	// router matched on.
+	outboundBody := applyModelOverride(requestBody, backend.Model)
+
+	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(outboundBody))
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
 	}
@@ -321,6 +326,31 @@ func (d *Dispatcher) applyCredentials(b *Backend, req *http.Request) error {
 		req.Header.Set("Authorization", "Bearer "+val)
 	}
 	return nil
+}
+
+// applyModelOverride returns a copy of body with the OpenAI "model" field
+// set to the backend's configured Model, so external providers receive an
+// identifier they recognize and a fallback chain degrades across models
+// instead of re-sending the client alias. Empty Model (all local backends)
+// and non-JSON-object bodies are returned unchanged.
+func applyModelOverride(body []byte, model string) []byte {
+	if model == "" {
+		return body
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return body
+	}
+	enc, err := json.Marshal(model)
+	if err != nil {
+		return body
+	}
+	obj["model"] = enc
+	rewritten, err := json.Marshal(obj)
+	if err != nil {
+		return body
+	}
+	return rewritten
 }
 
 func joinURL(base, p string) string {
