@@ -104,6 +104,12 @@ type LoopConfig struct {
 	// to DefaultObservationWindowTurns (3).
 	ObservationWindowTurns int
 
+	// ContextStrategy selects the wire-payload builder. "" or "window"
+	// applies observation masking (ObservationWindowTurns); "session"
+	// keeps an append-only prefix and compacts at ContextWindowTokens.
+	// See selectWireTranscript and issue #756.
+	ContextStrategy string
+
 	// Progress configures the stuck-loop detector (#544). The default
 	// value (all zeros) disables detection; callers wanting the
 	// debut-quality default should set this to DefaultProgressConfig.
@@ -183,6 +189,15 @@ const DefaultMaxReasoningOnlyRetries = 4
 // is enough for the model to chain a read -> edit -> verify sequence
 // without losing the just-observed file contents.
 const DefaultObservationWindowTurns = 3
+
+const (
+	// ContextStrategyWindow applies observation masking bounded by
+	// ObservationWindowTurns (the default strategy).
+	ContextStrategyWindow = "window"
+	// ContextStrategySession keeps a stable, append-only prefix and
+	// compacts only at the ContextWindowTokens ceiling. See issue #756.
+	ContextStrategySession = "session"
+)
 
 // charsPerTokenApprox is the rough chars-per-token ratio used for
 // budget estimation. Real tokenizers vary by model and language; for
@@ -741,7 +756,7 @@ func (l *Loop) runOneTurn(
 	req := oai.ChatRequest{
 		Model: cfg.Model,
 		Messages: stripReasoningForWire(
-			maskTranscriptForWire(res.Transcript, cfg.ObservationWindowTurns, cfg.ContextWindowTokens)),
+			selectWireTranscript(cfg, res.Transcript)),
 		Tools:       schemas,
 		Temperature: cfg.Temperature,
 	}
@@ -964,6 +979,84 @@ func maskedToolMessage(m oai.Message) oai.Message {
 			m.Name, len(m.Content),
 		),
 	}
+}
+
+// turnGroup is a half-open index range [start,end) into a transcript: a
+// leading assistant/user message plus the tool results that answer it.
+type turnGroup struct{ start, end int }
+
+// compactTranscriptForWire implements the "session" context strategy: a
+// stable, append-only prefix that lets a caching runtime reuse the prompt
+// prefix across turns. Under budget the transcript is returned unchanged
+// (cache-stable). Over budget, the oldest whole turn-groups in the middle
+// are dropped, pinning the head (leading system messages + the first user
+// task message) and the most recent turn-group, so the agent never loses
+// its instructions, its task, or its latest work. Dropping is in
+// turn-group units so a tool_call_id is never orphaned. See issue #756.
+func compactTranscriptForWire(transcript []oai.Message, ctxBudget int) []oai.Message {
+	if ctxBudget <= 0 || approxTokens(transcript) <= ctxBudget {
+		return transcript
+	}
+
+	// headEnd is the exclusive index of the pinned head: all leading
+	// system messages plus the first user message (the task).
+	headEnd := 0
+	for headEnd < len(transcript) && transcript[headEnd].Role == oai.RoleSystem {
+		headEnd++
+	}
+	if headEnd < len(transcript) && transcript[headEnd].Role == oai.RoleUser {
+		headEnd++
+	}
+
+	// Partition the tail into turn-groups: each starts at a non-tool
+	// message and absorbs the tool messages that follow it.
+	var groups []turnGroup
+	for i := headEnd; i < len(transcript); {
+		start := i
+		i++ // leading assistant/user message
+		for i < len(transcript) && transcript[i].Role == oai.RoleTool {
+			i++
+		}
+		groups = append(groups, turnGroup{start, i})
+	}
+
+	if len(groups) <= 1 {
+		return transcript // 0 or 1 groups: nothing to drop (head + at most one group is the floor)
+	}
+
+	// Drop oldest groups (after head, before the last group) until under
+	// budget or only the last group remains.
+	for dropCount := 1; dropCount < len(groups); dropCount++ {
+		kept := assembleSessionWire(transcript, headEnd, groups, dropCount)
+		if approxTokens(kept) <= ctxBudget {
+			return kept
+		}
+	}
+	// Degenerate: only head + last group remain (still possibly over budget).
+	return assembleSessionWire(transcript, headEnd, groups, len(groups)-1)
+}
+
+// selectWireTranscript routes the transcript through the configured
+// context strategy. "session" uses compactTranscriptForWire (stable
+// prefix, compact at budget); anything else (including "" and "window")
+// uses maskTranscriptForWire (observation masking).
+func selectWireTranscript(cfg LoopConfig, transcript []oai.Message) []oai.Message {
+	if cfg.ContextStrategy == ContextStrategySession {
+		return compactTranscriptForWire(transcript, cfg.ContextWindowTokens)
+	}
+	return maskTranscriptForWire(transcript, cfg.ObservationWindowTurns, cfg.ContextWindowTokens)
+}
+
+// assembleSessionWire builds the wire payload: the pinned head
+// (transcript[:headEnd]) followed by every turn-group from index
+// dropCount onward (the oldest dropCount groups are omitted).
+func assembleSessionWire(transcript []oai.Message, headEnd int, groups []turnGroup, dropCount int) []oai.Message {
+	out := make([]oai.Message, 0, len(transcript))
+	out = append(out, transcript[:headEnd]...)
+	for g := dropCount; g < len(groups); g++ {
+		out = append(out, transcript[groups[g].start:groups[g].end]...)
+	}
+	return out
 }
 
 // approxTokens returns a chars/4 approximation of the wire payload's

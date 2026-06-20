@@ -150,3 +150,29 @@ an issue or PR with:
 The table grows the same way LLMKube's hardware matrix does:
 people running real workloads on real hardware reporting what
 they actually saw.
+
+## Context strategy: window vs session
+
+Foreman builds each turn's request from the running transcript using one of
+two strategies, set per Agent via `spec.contextStrategy`.
+
+**`window` (default).** Observation masking: tool results older than
+`observationWindowTurns` are masked to a header, bounding the payload. Correct
+for small-context models. Because masking rewrites the older part of the
+prompt every turn, it defeats prompt caching on runtimes that support it.
+
+**`session`.** A stable, append-only prefix. Nothing is masked, so a caching
+runtime (for example llama.cpp's prompt cache) reuses the prefix and only
+prefills the new tokens each turn. When the payload approaches
+`contextWindowTokens`, Foreman compacts by dropping the oldest middle turns,
+always keeping the system prompt, the original task, and the most recent turn.
+
+Use `session` for large-context models on caching runtimes. Two settings
+matter:
+
+- Set `stuckLoopDetection.contextHardCap` at or above the server's context
+  size (`n_ctx`) and `contextSoftCap` proportionally, so a healthy deep
+  session is not aborted before it reaches the ceiling.
+- Tradeoff: `session` trades an occasional cold re-prefill (one per compaction
+  event, rare when the ceiling is high) for cheap, cache-hit steady-state
+  turns. `window` makes the opposite trade.

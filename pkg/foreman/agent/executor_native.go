@@ -380,6 +380,7 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 		MaxTurns:               int(agent.Spec.MaxTurns),
 		ContextWindowTokens:    int(agent.Spec.ContextWindowTokens),
 		ObservationWindowTurns: int(agent.Spec.ObservationWindowTurns),
+		ContextStrategy:        agent.Spec.ContextStrategy,
 		Progress:               progressConfigFromAgent(agent),
 		// Loop-wide wall-clock budget (#532). Repurposed from the old
 		// per-request meaning of RequestTimeoutSeconds; the per-request
