@@ -38,19 +38,60 @@ import (
 const (
 	modelCachePVCName     = "llmkube-model-cache"
 	defaultModelMountPath = "/models"
+	modelCacheLabel       = "app.kubernetes.io/component"
+	modelCacheLabelValue  = "model-cache"
 )
 
+// PVCInfo holds metadata about a discovered model cache PVC.
+type PVCInfo struct {
+	Name             string
+	InferenceService string // empty for the shared cache
+}
+
 type PVCCacheEntry struct {
-	CacheKey  string
-	SizeBytes int64
+	CacheKey         string
+	SizeBytes        int64
+	InferenceService string // empty for the shared cache
+}
+
+// discoverCachePVCs lists all model cache PVCs in the given namespace by
+// looking for PVCs with the label app.kubernetes.io/component=model-cache.
+// For each PVC it determines the owning InferenceService (empty for the
+// shared cache).
+func discoverCachePVCs(ctx context.Context, k8sClient client.Client, namespace string) ([]PVCInfo, error) {
+	pvcList := &corev1.PersistentVolumeClaimList{}
+	if err := k8sClient.List(ctx, pvcList, client.InNamespace(namespace), client.MatchingLabels{
+		modelCacheLabel: modelCacheLabelValue,
+	}); err != nil {
+		return nil, fmt.Errorf("failed to list model cache PVCs: %w", err)
+	}
+
+	var infos []PVCInfo
+	for i := range pvcList.Items {
+		pvc := &pvcList.Items[i]
+		isvcName := ""
+		for _, ref := range pvc.OwnerReferences {
+			if ref.Kind == "InferenceService" && ref.Controller != nil && *ref.Controller {
+				isvcName = ref.Name
+				break
+			}
+		}
+		infos = append(infos, PVCInfo{
+			Name:             pvc.Name,
+			InferenceService: isvcName,
+		})
+	}
+	return infos, nil
 }
 
 func inspectPVCCache(
 	ctx context.Context, cfg *rest.Config, k8sClient client.Client, namespace string,
 ) ([]PVCCacheEntry, error) {
-	pvc := &corev1.PersistentVolumeClaim{}
-	err := k8sClient.Get(ctx, client.ObjectKey{Name: modelCachePVCName, Namespace: namespace}, pvc)
+	pvcInfos, err := discoverCachePVCs(ctx, k8sClient, namespace)
 	if err != nil {
+		return nil, err
+	}
+	if len(pvcInfos) == 0 {
 		return nil, nil
 	}
 
@@ -59,16 +100,32 @@ func inspectPVCCache(
 		return nil, fmt.Errorf("failed to create clientset: %w", err)
 	}
 
-	pod, containerName, err := findPodWithCachePVC(ctx, k8sClient, namespace)
+	var allEntries []PVCCacheEntry
+	for _, pvcInfo := range pvcInfos {
+		entries, err := inspectSinglePVC(ctx, cfg, k8sClient, clientset, namespace, pvcInfo)
+		if err != nil {
+			return nil, fmt.Errorf("failed to inspect PVC %s: %w", pvcInfo.Name, err)
+		}
+		allEntries = append(allEntries, entries...)
+	}
+	return allEntries, nil
+}
+
+// inspectSinglePVC inspects the contents of one model cache PVC.
+func inspectSinglePVC(
+	ctx context.Context, cfg *rest.Config, k8sClient client.Client, clientset kubernetes.Interface,
+	namespace string, pvcInfo PVCInfo,
+) ([]PVCCacheEntry, error) {
+	pod, containerName, err := findPodWithPVC(ctx, k8sClient, namespace, pvcInfo.Name)
 	if err != nil {
-		return nil, fmt.Errorf("failed to find pod with cache PVC: %w", err)
+		return nil, fmt.Errorf("failed to find pod with cache PVC %s: %w", pvcInfo.Name, err)
 	}
 
 	createdPod := false
 	if pod == nil {
-		podName, err := createInspectorPod(ctx, clientset, namespace)
+		podName, err := createInspectorPodForPVC(ctx, clientset, namespace, pvcInfo.Name)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create inspector pod: %w", err)
+			return nil, fmt.Errorf("failed to create inspector pod for PVC %s: %w", pvcInfo.Name, err)
 		}
 		defer deleteInspectorPod(context.Background(), clientset, namespace, podName)
 		createdPod = true
@@ -88,7 +145,7 @@ func inspectPVCCache(
 
 	mountPath := defaultModelMountPath
 	if !createdPod {
-		mountPath = findMountPath(pod, containerName)
+		mountPath = findMountPathForPVC(pod, containerName, pvcInfo.Name)
 	}
 
 	output, err := execInPod(ctx, cfg, clientset, namespace, pod.Name, containerName,
@@ -97,10 +154,12 @@ func inspectPVCCache(
 		return nil, fmt.Errorf("failed to exec in pod: %w", err)
 	}
 
-	return parseDuOutput(output), nil
+	return parseDuOutput(output, pvcInfo.InferenceService), nil
 }
 
-func findPodWithCachePVC(ctx context.Context, k8sClient client.Client, namespace string) (*corev1.Pod, string, error) {
+func findPodWithPVC(
+	ctx context.Context, k8sClient client.Client, namespace, pvcName string,
+) (*corev1.Pod, string, error) {
 	podList := &corev1.PodList{}
 	if err := k8sClient.List(ctx, podList, client.InNamespace(namespace)); err != nil {
 		return nil, "", fmt.Errorf("failed to list pods: %w", err)
@@ -113,7 +172,7 @@ func findPodWithCachePVC(ctx context.Context, k8sClient client.Client, namespace
 		}
 
 		for _, vol := range pod.Spec.Volumes {
-			if vol.PersistentVolumeClaim != nil && vol.PersistentVolumeClaim.ClaimName == modelCachePVCName {
+			if vol.PersistentVolumeClaim != nil && vol.PersistentVolumeClaim.ClaimName == pvcName {
 				containerName := findContainerWithVolume(pod, vol.Name)
 				if containerName != "" {
 					return pod, containerName, nil
@@ -143,13 +202,13 @@ func findContainerWithVolume(pod *corev1.Pod, volumeName string) string {
 	return ""
 }
 
-func findMountPath(pod *corev1.Pod, containerName string) string {
+func findMountPathForPVC(pod *corev1.Pod, containerName, pvcName string) string {
 	for _, c := range pod.Spec.Containers {
 		if c.Name == containerName {
 			for _, vm := range c.VolumeMounts {
 				for _, vol := range pod.Spec.Volumes {
 					pvc := vol.PersistentVolumeClaim
-					if vol.Name == vm.Name && pvc != nil && pvc.ClaimName == modelCachePVCName {
+					if vol.Name == vm.Name && pvc != nil && pvc.ClaimName == pvcName {
 						return vm.MountPath
 					}
 				}
@@ -159,7 +218,9 @@ func findMountPath(pod *corev1.Pod, containerName string) string {
 	return defaultModelMountPath
 }
 
-func createInspectorPod(ctx context.Context, clientset kubernetes.Interface, namespace string) (string, error) {
+func createInspectorPodForPVC(
+	ctx context.Context, clientset kubernetes.Interface, namespace, pvcName string,
+) (string, error) {
 	podName := "llmkube-cache-inspector"
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -191,7 +252,7 @@ func createInspectorPod(ctx context.Context, clientset kubernetes.Interface, nam
 					Name: "model-cache",
 					VolumeSource: corev1.VolumeSource{
 						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-							ClaimName: modelCachePVCName,
+							ClaimName: pvcName,
 							ReadOnly:  true,
 						},
 					},
@@ -267,7 +328,7 @@ func execInPod(
 	return stdout.String(), nil
 }
 
-func parseDuOutput(output string) []PVCCacheEntry {
+func parseDuOutput(output string, isvcName string) []PVCCacheEntry {
 	lines := strings.Split(output, "\n")
 	entries := make([]PVCCacheEntry, 0, len(lines))
 	for _, line := range lines {
@@ -294,8 +355,9 @@ func parseDuOutput(output string) []PVCCacheEntry {
 		}
 
 		entries = append(entries, PVCCacheEntry{
-			CacheKey:  cacheKey,
-			SizeBytes: sizeBytes,
+			CacheKey:         cacheKey,
+			SizeBytes:        sizeBytes,
+			InferenceService: isvcName,
 		})
 	}
 	return entries
