@@ -5,6 +5,27 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.11](https://github.com/defilantech/LLMKube/compare/v0.8.10...v0.8.11) (2026-06-20)
+
+
+### Features
+
+* **ci:** publish Helm charts as OCI artifacts to GHCR ([#758](https://github.com/defilantech/LLMKube/issues/758)) ([da07772](https://github.com/defilantech/LLMKube/commit/da07772cdfdfb273afa3cdad6966d19763981d3f))
+* **foreman:** add unit-test tier to coder gate ([#763](https://github.com/defilantech/LLMKube/issues/763)) ([dfb3d75](https://github.com/defilantech/LLMKube/commit/dfb3d757380075c489c485298b4c2efa21954e4d))
+* **foreman:** per-Agent contextStrategy with session mode (stable cache-friendly prefix) ([#757](https://github.com/defilantech/LLMKube/issues/757)) ([3b1ea1c](https://github.com/defilantech/LLMKube/commit/3b1ea1c1e417424e76f39266501334680071eed8))
+
+
+### Bug Fixes
+
+* **ci:** pin GitHub Actions to commit SHAs in helm-chart workflow ([#751](https://github.com/defilantech/LLMKube/issues/751)) ([e1a5b9e](https://github.com/defilantech/LLMKube/commit/e1a5b9ebc47e0c4118c7a487e1a59f3fbf9739b4))
+* **foreman:** scope coder-gate golangci-lint cache per workspace ([#760](https://github.com/defilantech/LLMKube/issues/760)) ([cee04e8](https://github.com/defilantech/LLMKube/commit/cee04e8d58b4e0a6cb5c548313c07c36cb7d6050))
+* **router:** inject backend Model on dispatch so fallback chains degrade ([#766](https://github.com/defilantech/LLMKube/issues/766)) ([bee7f1c](https://github.com/defilantech/LLMKube/commit/bee7f1cf6f31526dca957937e69dcb1749715736))
+
+
+### Documentation
+
+* add Strix Halo node onboarding quickstart ([#724](https://github.com/defilantech/LLMKube/issues/724)) ([b1859f0](https://github.com/defilantech/LLMKube/commit/b1859f0e4f87d84eb3d9c79233b1aea45a24a3f7))
+
 ## [0.8.10](https://github.com/defilantech/LLMKube/compare/v0.8.9...v0.8.10) (2026-06-20)
 
 
