@@ -5,6 +5,13 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.10](https://github.com/defilantech/LLMKube/compare/v0.8.9...v0.8.10) (2026-06-20)
+
+
+### Bug Fixes
+
+* **crd:** guard GPU resourceClaims/resourceName CEL rule against absent field ([#753](https://github.com/defilantech/LLMKube/issues/753)) ([26be1aa](https://github.com/defilantech/LLMKube/commit/26be1aa3fec2a13fd001098b8df91e1b91716e5d))
+
 ## [0.8.9](https://github.com/defilantech/LLMKube/compare/v0.8.8...v0.8.9) (2026-06-19)
 
 
