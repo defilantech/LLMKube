@@ -256,6 +256,22 @@ type AgentSpec struct {
 	// +optional
 	ObservationWindowTurns int32 `json:"observationWindowTurns,omitempty"`
 
+	// ContextStrategy selects how the loop builds each request's message
+	// list. "window" (default) applies observation masking bounded by
+	// ObservationWindowTurns: older tool results are masked, keeping the
+	// payload small for small-context models but rewriting the prefix each
+	// turn (which defeats prompt caching). "session" keeps a stable,
+	// append-only prefix so a caching runtime reuses it across turns, and
+	// compacts (drops the oldest middle turns, pinning the system prompt,
+	// the task, and the most recent turn) only when the payload approaches
+	// ContextWindowTokens. Use "session" for large-context models on
+	// caching runtimes; set ContextHardCap >= the server context size so a
+	// healthy deep session is not aborted early. See issue #756.
+	// +kubebuilder:validation:Enum=window;session
+	// +kubebuilder:default=window
+	// +optional
+	ContextStrategy string `json:"contextStrategy,omitempty"`
+
 	// StuckLoopDetection configures the per-Agent stuck-loop detector
 	// (#544). When nil the executor applies a conservative default
 	// (5 repeated calls / 15 edit-free turns / 90k soft cap / 140k

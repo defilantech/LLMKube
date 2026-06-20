@@ -73,6 +73,24 @@ spec:
                 format: int32
                 minimum: 1
                 type: integer
+              contextStrategy:
+                default: window
+                description: |-
+                  ContextStrategy selects how the loop builds each request's message
+                  list. "window" (default) applies observation masking bounded by
+                  ObservationWindowTurns: older tool results are masked, keeping the
+                  payload small for small-context models but rewriting the prefix each
+                  turn (which defeats prompt caching). "session" keeps a stable,
+                  append-only prefix so a caching runtime reuses it across turns, and
+                  compacts (drops the oldest middle turns, pinning the system prompt,
+                  the task, and the most recent turn) only when the payload approaches
+                  ContextWindowTokens. Use "session" for large-context models on
+                  caching runtimes; set ContextHardCap >= the server context size so a
+                  healthy deep session is not aborted early. See issue #756.
+                enum:
+                - window
+                - session
+                type: string
               contextWindowTokens:
                 description: |-
                   ContextWindowTokens is the soft token budget for the wire payload
