@@ -19,8 +19,19 @@ package agent
 import (
 	"context"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
+
+// envtestPackagePrefixes are workspace-relative package path prefixes whose
+// tests require KUBEBUILDER_ASSETS (envtest) or a live cluster, which the
+// coder workspace does not have. The fast gate's unit-test tier skips them
+// (running them hangs); CI runs them separately.
+var envtestPackagePrefixes = []string{
+	"internal/controller/",
+	"internal/foreman/controller/",
+	"test/",
+}
 
 // maxCheckOutputBytes bounds the captured output included in the gate
 // feedback for each failing check, so a noisy compiler or linter cannot
@@ -103,11 +114,68 @@ func RunCoderGate(ctx context.Context, workspace, golangciPath string, run comma
 		failures = append(failures, checkFailure{name: golangciPath + " run ./...", output: out})
 	}
 
+	// 5. Fast unit-test tier: go test on the non-envtest packages the coder
+	// changed. The static checks above cannot catch a failing or panicking
+	// unit test, so a broken test would otherwise reach a GO and only fail
+	// in CI (#762). Envtest/integration packages are excluded (they need
+	// KUBEBUILDER_ASSETS / a cluster the workspace lacks; CI runs them).
+	if pkgs := changedTestPackages(ctx, workspace, run); len(pkgs) > 0 {
+		args := append([]string{"test", "-count=1", "-timeout=180s"}, pkgs...)
+		if out, err := run(ctx, workspace, nil, "go", args...); err != nil {
+			failures = append(failures, checkFailure{name: "go test " + strings.Join(pkgs, " "), output: out})
+		}
+	}
+
 	if len(failures) == 0 {
 		return true, ""
 	}
 
 	return false, buildFeedback(failures)
+}
+
+// changedTestPackages returns the workspace-relative Go package directories
+// (as "./<dir>/" patterns) that have uncommitted changes per
+// `git status --porcelain` and are not envtest-backed. It dedups packages
+// and ignores non-Go files and root-level (package main) changes. A git
+// error yields no packages (the tier is skipped rather than failing the
+// gate spuriously).
+func changedTestPackages(ctx context.Context, workspace string, run commandRunner) []string {
+	out, err := run(ctx, workspace, nil, "git", "status", "--porcelain")
+	if err != nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var pkgs []string
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) == 0 {
+			continue
+		}
+		// porcelain is "XY <path>" (renames end with "-> <new>"); the
+		// final field is the current path.
+		path := fields[len(fields)-1]
+		if !strings.HasSuffix(path, ".go") {
+			continue
+		}
+		dir := filepath.Dir(path)
+		if dir == "." {
+			continue // root package main; not part of the unit-test tier
+		}
+		dirKey := dir + "/"
+		excluded := false
+		for _, pfx := range envtestPackagePrefixes {
+			if strings.HasPrefix(dirKey, pfx) {
+				excluded = true
+				break
+			}
+		}
+		if excluded || seen[dirKey] {
+			continue
+		}
+		seen[dirKey] = true
+		pkgs = append(pkgs, "./"+dirKey)
+	}
+	return pkgs
 }
 
 // buildFeedback renders the directive and a per-check section for every

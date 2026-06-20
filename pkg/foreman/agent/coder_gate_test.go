@@ -180,6 +180,82 @@ func TestRunCoderGateLintEnv(t *testing.T) {
 	}
 }
 
+// TestChangedTestPackages_ExcludesEnvtestAndDedups verifies the changed
+// package set covers non-envtest packages, dedups, and excludes
+// envtest/integration packages and non-Go files (#762).
+func TestChangedTestPackages_ExcludesEnvtestAndDedups(t *testing.T) {
+	run := func(_ context.Context, _ string, _ []string, name string, _ ...string) (string, error) {
+		if name == "git" {
+			return " M pkg/cli/cache_inspect.go\n" +
+				" M pkg/cli/cache_inspect_test.go\n" +
+				"?? pkg/foreman/agent/loop_session_test.go\n" +
+				" M internal/controller/model_controller.go\n" +
+				" M internal/foreman/controller/agentictask_controller.go\n" +
+				" M test/e2e/e2e_test.go\n" +
+				" M README.md\n", nil
+		}
+		return "", nil
+	}
+	got := changedTestPackages(context.Background(), "/work", run)
+
+	want := map[string]bool{"./pkg/cli/": true, "./pkg/foreman/agent/": true}
+	if len(got) != len(want) {
+		t.Fatalf("changedTestPackages = %v, want exactly %v", got, want)
+	}
+	for _, p := range got {
+		if !want[p] {
+			t.Errorf("unexpected package %q in result %v (envtest/non-go should be excluded)", p, got)
+		}
+	}
+}
+
+// TestRunCoderGate_FailsOnChangedPackageUnitTest verifies the gate runs a
+// unit-test tier on changed non-envtest packages and fails (citing go test)
+// when one of those tests fails, even though the static checks pass (#762).
+func TestRunCoderGate_FailsOnChangedPackageUnitTest(t *testing.T) {
+	run := func(_ context.Context, _ string, _ []string, name string, args ...string) (string, error) {
+		switch {
+		case name == "gofmt":
+			return "", nil
+		case name == "git":
+			return " M pkg/cli/cache_inspect_test.go\n", nil
+		case name == "go" && len(args) > 0 && args[0] == "test":
+			out := "panic: runtime error: invalid memory address\n" +
+				"FAIL\tgithub.com/defilantech/llmkube/pkg/cli"
+			return out, errors.New("exit status 1")
+		case name == "go":
+			return "", nil // vet, build pass
+		default:
+			return "", nil // golangci-lint
+		}
+	}
+	pass, feedback := RunCoderGate(context.Background(), "/work", "./bin/golangci-lint", run)
+	if pass {
+		t.Fatal("gate should fail when a changed package's unit test fails")
+	}
+	if !strings.Contains(feedback, "go test") || !strings.Contains(feedback, "pkg/cli") {
+		t.Errorf("feedback should cite the failing go test for pkg/cli; got:\n%s", feedback)
+	}
+}
+
+// TestRunCoderGate_SkipsTestTierWhenNoChangedPackages verifies the gate does
+// not invoke go test when git reports no changed Go packages (#762).
+func TestRunCoderGate_SkipsTestTierWhenNoChangedPackages(t *testing.T) {
+	sawGoTest := false
+	run := func(_ context.Context, _ string, _ []string, name string, args ...string) (string, error) {
+		if name == "go" && len(args) > 0 && args[0] == "test" {
+			sawGoTest = true
+		}
+		return "", nil // git status empty, all checks clean
+	}
+	if pass, _ := RunCoderGate(context.Background(), "/work", "./bin/golangci-lint", run); !pass {
+		t.Fatal("gate should pass when all checks are clean and nothing changed")
+	}
+	if sawGoTest {
+		t.Error("test tier should not run go test when no packages changed")
+	}
+}
+
 // TestRunCoderGateTruncation verifies per-check output is capped and marked.
 func TestRunCoderGateTruncation(t *testing.T) {
 	const golangciPath = "./bin/golangci-lint"
