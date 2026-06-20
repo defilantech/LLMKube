@@ -101,6 +101,22 @@ jobs:
       - name: Sync Chart CRDs Before Packaging
         run: make chart-crds
 
+      - name: Log in to GHCR for Helm OCI
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GHCR_TOKEN" | helm registry login ghcr.io --username "$GHCR_USER" --password-stdin
+
+      - name: Package and push charts to GHCR (OCI)
+        env:
+          VERSION: ${{ needs.release-please.outputs.version }}
+          OCI_REPO: oci://ghcr.io/defilantech/charts
+        run: |
+          for chart in llmkube foreman; do
+            helm package "charts/$chart" --destination dist-charts
+            helm push "dist-charts/$chart-${VERSION}.tgz" "$OCI_REPO"
+          done
+
       - name: Run chart-releaser
         uses: helm/chart-releaser-action@v1.7.0
         with:

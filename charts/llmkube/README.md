@@ -27,6 +27,14 @@ helm install llmkube llmkube/llmkube \
   --create-namespace
 ```
 
+### Install from the OCI Registry
+
+```bash
+helm install llmkube oci://ghcr.io/defilantech/charts/llmkube \
+  --namespace llmkube-system \
+  --create-namespace
+```
+
 ### Install from Local Chart
 
 ```bash
