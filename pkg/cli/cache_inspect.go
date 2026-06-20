@@ -20,12 +20,14 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -67,6 +69,7 @@ func discoverCachePVCs(ctx context.Context, k8sClient client.Client, namespace s
 	}
 
 	var infos []PVCInfo
+	seen := map[string]bool{}
 	for i := range pvcList.Items {
 		pvc := &pvcList.Items[i]
 		isvcName := ""
@@ -80,7 +83,26 @@ func discoverCachePVCs(ctx context.Context, k8sClient client.Client, namespace s
 			Name:             pvc.Name,
 			InferenceService: isvcName,
 		})
+		seen[pvc.Name] = true
 	}
+
+	// Always include the well-known shared cache PVC by name, even if it was
+	// not label-discovered above: the shared cache can predate the
+	// app.kubernetes.io/component=model-cache label (the InferenceService
+	// reconciler only sets it on create and does not backfill an existing
+	// PVC), and the original cache-list behavior always inspected it. The
+	// shared cache has no owning InferenceService.
+	if !seen[modelCachePVCName] {
+		shared := &corev1.PersistentVolumeClaim{}
+		err := k8sClient.Get(ctx, client.ObjectKey{Name: modelCachePVCName, Namespace: namespace}, shared)
+		switch {
+		case err == nil:
+			infos = append(infos, PVCInfo{Name: modelCachePVCName, InferenceService: ""})
+		case !apierrors.IsNotFound(err):
+			return nil, fmt.Errorf("failed to get shared cache PVC: %w", err)
+		}
+	}
+
 	return infos, nil
 }
 
@@ -104,7 +126,11 @@ func inspectPVCCache(
 	for _, pvcInfo := range pvcInfos {
 		entries, err := inspectSinglePVC(ctx, cfg, k8sClient, clientset, namespace, pvcInfo)
 		if err != nil {
-			return nil, fmt.Errorf("failed to inspect PVC %s: %w", pvcInfo.Name, err)
+			// One PVC failing to inspect (e.g. no running pod mounts it and an
+			// inspector pod cannot start) must not blank the entire listing;
+			// skip it and surface the caches we can read.
+			fmt.Fprintf(os.Stderr, "warning: skipping cache PVC %s: %v\n", pvcInfo.Name, err)
+			continue
 		}
 		allEntries = append(allEntries, entries...)
 	}

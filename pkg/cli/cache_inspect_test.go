@@ -1203,6 +1203,71 @@ func TestDiscoverCachePVCs_SharedAndPerIsvc(t *testing.T) {
 	}
 }
 
+// TestDiscoverCachePVCs_UnlabeledSharedByName verifies the shared cache PVC is
+// discovered by its well-known name even when it lacks the model-cache label.
+// The shared cache can predate the label (the InferenceService reconciler only
+// sets it on create and does not backfill an existing PVC), so label-only
+// discovery would miss it and blank `cache list` in shared-cache mode (#731).
+func TestDiscoverCachePVCs_UnlabeledSharedByName(t *testing.T) {
+	unlabeledShared := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "llmkube-model-cache",
+			Namespace: "default",
+			// intentionally no model-cache label
+		},
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(newCoreScheme()).
+		WithObjects(unlabeledShared).
+		Build()
+
+	infos, err := discoverCachePVCs(context.Background(), k8sClient, "default")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(infos) != 1 {
+		t.Fatalf("got %d PVCs, want 1 (shared discovered by name)", len(infos))
+	}
+	if infos[0].Name != "llmkube-model-cache" {
+		t.Errorf("got PVC %q, want llmkube-model-cache", infos[0].Name)
+	}
+	if infos[0].InferenceService != "" {
+		t.Errorf("shared PVC InferenceService = %q, want empty", infos[0].InferenceService)
+	}
+}
+
+// TestDiscoverCachePVCs_SharedNotDuplicated verifies the by-name fallback does
+// not double-list the shared PVC when it is also label-discovered.
+func TestDiscoverCachePVCs_SharedNotDuplicated(t *testing.T) {
+	labeledShared := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "llmkube-model-cache",
+			Namespace: "default",
+			Labels:    map[string]string{modelCacheLabel: modelCacheLabelValue},
+		},
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(newCoreScheme()).
+		WithObjects(labeledShared).
+		Build()
+
+	infos, err := discoverCachePVCs(context.Background(), k8sClient, "default")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	count := 0
+	for _, info := range infos {
+		if info.Name == "llmkube-model-cache" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("shared PVC listed %d times, want exactly 1 (no duplication)", count)
+	}
+}
+
 func TestDiscoverCachePVCs_NoPVCs(t *testing.T) {
 	k8sClient := fake.NewClientBuilder().
 		WithScheme(newCoreScheme()).
