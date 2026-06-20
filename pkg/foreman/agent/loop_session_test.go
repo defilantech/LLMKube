@@ -96,3 +96,17 @@ func TestCompactTranscript_OverBudgetDropsOldestMiddle(t *testing.T) {
 	// No orphaned tool_call_id.
 	assertNoOrphanedToolMessages(t, wire)
 }
+
+func TestCompactTranscript_DegenerateKeepsHeadAndLastGroup(t *testing.T) {
+	tx := transcriptFixture(4, 8000) // each tool ~2000 tokens
+	wire := compactTranscriptForWire(tx, 100) // absurdly small budget
+
+	if wire[0].Role != oai.RoleSystem || wire[1].Role != oai.RoleUser {
+		t.Fatalf("head not preserved: %+v", wire[:2])
+	}
+	// Last turn-group (assistant + tool) preserved as the final two messages.
+	if wire[len(wire)-1].Role != oai.RoleTool || wire[len(wire)-2].Role != oai.RoleAssistant {
+		t.Fatalf("last turn-group not preserved: tail=%+v", wire[len(wire)-2:])
+	}
+	assertNoOrphanedToolMessages(t, wire)
+}
