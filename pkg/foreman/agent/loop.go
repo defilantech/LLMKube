@@ -1006,7 +1006,7 @@ func compactTranscriptForWire(transcript []oai.Message, ctxBudget int) []oai.Mes
 	}
 
 	if len(groups) <= 1 {
-		return transcript // nothing droppable; degenerate guard handled below
+		return transcript // 0 or 1 groups: nothing to drop (head + at most one group is the floor)
 	}
 
 	// Drop oldest groups (after head, before the last group) until under
