@@ -180,6 +180,42 @@ func TestRunCoderGateLintEnv(t *testing.T) {
 	}
 }
 
+// TestRunCoderGateLintCacheScopedToWorkspace asserts the lint check runs
+// with a GOLANGCI_LINT_CACHE scoped to a per-workspace sibling directory,
+// so stale results from another coder workspace cannot pollute this run's
+// lint (#759).
+func TestRunCoderGateLintCacheScopedToWorkspace(t *testing.T) {
+	const golangciPath = "./bin/golangci-lint"
+	run, calls := newFakeRunner(map[string]fakeCommand{
+		"gofmt":      {},
+		"go":         {},
+		golangciPath: {},
+	})
+
+	RunCoderGate(context.Background(), "/work", golangciPath, run)
+
+	var lintCall *recordedCall
+	for i := range *calls {
+		if (*calls)[i].name == golangciPath {
+			lintCall = &(*calls)[i]
+		}
+	}
+	if lintCall == nil {
+		t.Fatal("golangci-lint was never invoked")
+	}
+
+	want := "GOLANGCI_LINT_CACHE=/work.golangci-cache"
+	found := false
+	for _, e := range lintCall.extraEnv {
+		if e == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("lint extraEnv = %v, want it to include %q (workspace-scoped lint cache)", lintCall.extraEnv, want)
+	}
+}
+
 // TestRunCoderGateTruncation verifies per-check output is capped and marked.
 func TestRunCoderGateTruncation(t *testing.T) {
 	const golangciPath = "./bin/golangci-lint"

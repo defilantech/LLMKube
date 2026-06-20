@@ -98,8 +98,12 @@ func RunCoderGate(ctx context.Context, workspace, golangciPath string, run comma
 
 	// 4. golangci-lint run ./... fails with a non-nil error. GOOS=linux is
 	// required: on macOS, plain lint silently skips //go:build !darwin
-	// files and would not match CI.
-	if out, err := run(ctx, workspace, []string{"GOOS=linux"}, golangciPath, "run", "./..."); err != nil {
+	// files and would not match CI. GOLANGCI_LINT_CACHE is scoped to a
+	// per-workspace sibling directory so stale analysis results from
+	// another coder workspace cannot pollute this run's lint (#759); the
+	// sibling location keeps the cache out of the workspace git tree.
+	lintEnv := []string{"GOOS=linux", "GOLANGCI_LINT_CACHE=" + workspace + ".golangci-cache"}
+	if out, err := run(ctx, workspace, lintEnv, golangciPath, "run", "./..."); err != nil {
 		failures = append(failures, checkFailure{name: golangciPath + " run ./...", output: out})
 	}
 
