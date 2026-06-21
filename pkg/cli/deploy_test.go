@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 )
@@ -700,4 +701,83 @@ func searchString(s, substr string) bool {
 
 func ptrInt32(v int32) *int32 {
 	return &v
+}
+
+func TestShouldHeartbeat(t *testing.T) {
+	tests := []struct {
+		name          string
+		phase         string
+		lastHeartbeat time.Time
+		want          bool
+	}{
+		{
+			name:          "Downloading with no prior heartbeat",
+			phase:         "Downloading",
+			lastHeartbeat: time.Time{},
+			want:          true,
+		},
+		{
+			name:          "Downloading with recent heartbeat",
+			phase:         "Downloading",
+			lastHeartbeat: time.Now().Add(-2 * time.Second),
+			want:          false,
+		},
+		{
+			name:          "Downloading with old heartbeat",
+			phase:         "Downloading",
+			lastHeartbeat: time.Now().Add(-10 * time.Second),
+			want:          true,
+		},
+		{
+			name:          "Downloading with heartbeat exactly at interval",
+			phase:         "Downloading",
+			lastHeartbeat: time.Now().Add(-5 * time.Second),
+			want:          true,
+		},
+		{
+			name:          "Downloading with heartbeat just before interval",
+			phase:         "Downloading",
+			lastHeartbeat: time.Now().Add(-4 * time.Second),
+			want:          false,
+		},
+		{
+			name:          "Ready phase should not heartbeat",
+			phase:         "Ready",
+			lastHeartbeat: time.Time{},
+			want:          false,
+		},
+		{
+			name:          "Pending phase should not heartbeat",
+			phase:         "Pending",
+			lastHeartbeat: time.Time{},
+			want:          false,
+		},
+		{
+			name:          "Failed phase should not heartbeat",
+			phase:         "Failed",
+			lastHeartbeat: time.Time{},
+			want:          false,
+		},
+		{
+			name:          "Copying phase should not heartbeat",
+			phase:         "Copying",
+			lastHeartbeat: time.Time{},
+			want:          false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shouldHeartbeat(tt.phase, tt.lastHeartbeat)
+			if got != tt.want {
+				t.Errorf("shouldHeartbeat(%q, %v) = %v, want %v", tt.phase, tt.lastHeartbeat, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHeartbeatInterval(t *testing.T) {
+	if heartbeatInterval != 5*time.Second {
+		t.Errorf("heartbeatInterval = %v, want 5s", heartbeatInterval)
+	}
 }

@@ -39,6 +39,11 @@ import (
 
 const defaultGPUVendor = "nvidia"
 
+// heartbeatInterval is the minimum time between heartbeat lines during
+// the Downloading phase. It keeps the CLI from looking hung on large
+// model downloads.
+const heartbeatInterval = 5 * time.Second
+
 type deployOptions struct {
 	name                string
 	namespace           string
@@ -464,6 +469,7 @@ func waitForReady(ctx context.Context, k8sClient client.Client, name, namespace 
 
 	startTime := time.Now()
 	lastPhase := ""
+	lastHeartbeat := time.Time{}
 
 	for {
 		select {
@@ -487,6 +493,15 @@ func waitForReady(ctx context.Context, k8sClient client.Client, name, namespace 
 				elapsed := time.Since(startTime).Round(time.Second)
 				fmt.Printf("[%s] %s\n", elapsed, currentPhase)
 				lastPhase = currentPhase
+				lastHeartbeat = time.Time{}
+			}
+
+			// Heartbeat: during Downloading phase, print a progress line at a
+			// fixed interval so the CLI never looks hung.
+			if shouldHeartbeat(model.Status.Phase, lastHeartbeat) {
+				elapsed := time.Since(startTime).Round(time.Second)
+				fmt.Printf("[%s] ⏳ Downloading model...\n", elapsed)
+				lastHeartbeat = time.Now()
 			}
 
 			if model.Status.Phase == "Ready" && isvc.Status.Phase == "Ready" {
@@ -653,6 +668,19 @@ func applyCatalogDefaults(opts *deployOptions, catalogModel *Model) {
 	if opts.contextSize == 0 && catalogModel.ContextSize > 0 {
 		opts.contextSize = int32(catalogModel.ContextSize) //nolint:gosec // G115: catalog ContextSize positive
 	}
+}
+
+// shouldHeartbeat returns true when a heartbeat line should be printed.
+// It emits a heartbeat only during the "Downloading" phase and only after
+// heartbeatInterval has elapsed since the last heartbeat.
+func shouldHeartbeat(phase string, lastHeartbeat time.Time) bool {
+	if phase != "Downloading" {
+		return false
+	}
+	if lastHeartbeat.IsZero() {
+		return true
+	}
+	return time.Since(lastHeartbeat) >= heartbeatInterval
 }
 
 func isLocalSourcePath(source string) bool {
