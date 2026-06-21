@@ -5,6 +5,28 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.12](https://github.com/defilantech/LLMKube/compare/v0.8.11...v0.8.12) (2026-06-21)
+
+
+### Features
+
+* **cli:** download heartbeat for llmkube deploy --wait ([#719](https://github.com/defilantech/LLMKube/issues/719)) ([#780](https://github.com/defilantech/LLMKube/issues/780)) ([e6f9774](https://github.com/defilantech/LLMKube/commit/e6f9774816177a36136877dc0a31ffc63021179a))
+* **cli:** make cache list per-InferenceService cache aware ([#731](https://github.com/defilantech/LLMKube/issues/731)) ([#767](https://github.com/defilantech/LLMKube/issues/767)) ([d03c9ee](https://github.com/defilantech/LLMKube/commit/d03c9eed3727639a322d7143fe6ec993505fc66d))
+* **controller:** shield inference pods from disruption during startup ([#660](https://github.com/defilantech/LLMKube/issues/660)) ([#781](https://github.com/defilantech/LLMKube/issues/781)) ([370084a](https://github.com/defilantech/LLMKube/commit/370084a64282e848cc7238077272c354a8fa01ca))
+* **foreman:** codegen-drift check in the coder fast gate ([#775](https://github.com/defilantech/LLMKube/issues/775)) ([#778](https://github.com/defilantech/LLMKube/issues/778)) ([b04a28d](https://github.com/defilantech/LLMKube/commit/b04a28dcbd0660c4c21e36bedc17a83a0e62620b))
+* **metal-agent:** event-driven endpoint withdrawal/recovery on health transitions ([#662](https://github.com/defilantech/LLMKube/issues/662)) ([#771](https://github.com/defilantech/LLMKube/issues/771)) ([7848d18](https://github.com/defilantech/LLMKube/commit/7848d1803be8322855d2635954f2afbe4dbc3cef))
+* **metal-agent:** honor spec.runtime per-CR for multi-runtime dispatch ([#525](https://github.com/defilantech/LLMKube/issues/525)) ([#783](https://github.com/defilantech/LLMKube/issues/783)) ([aa210c3](https://github.com/defilantech/LLMKube/commit/aa210c346f8ae06742fb29f3ecc0f9d7e9247528))
+* **metrics:** TTFT histogram, request error counter, vLLM metrics flag ([#409](https://github.com/defilantech/LLMKube/issues/409)) ([#769](https://github.com/defilantech/LLMKube/issues/769)) ([563b0c9](https://github.com/defilantech/LLMKube/commit/563b0c9f96a176f471ca45d4aade64f0aa3022b6))
+
+
+### Bug Fixes
+
+* **controller:** make checkAcceleratorAvailability DRA-aware ([#754](https://github.com/defilantech/LLMKube/issues/754)) ([#776](https://github.com/defilantech/LLMKube/issues/776)) ([804063b](https://github.com/defilantech/LLMKube/commit/804063b8339b74a409fd7ee037390993b8de52a0))
+* **controller:** preserve agent-written schedulingStatus on reconcile ([#643](https://github.com/defilantech/LLMKube/issues/643)) ([#774](https://github.com/defilantech/LLMKube/issues/774)) ([4321028](https://github.com/defilantech/LLMKube/commit/4321028391b609cadcad5584d95df304150ec451))
+* **controller:** reconcileService updates existing Service on endpoint changes ([#720](https://github.com/defilantech/LLMKube/issues/720)) ([#773](https://github.com/defilantech/LLMKube/issues/773)) ([70222ae](https://github.com/defilantech/LLMKube/commit/70222aed216b38d042212f1553cac72024f8d48c))
+* **metal-agent:** clear SchedulingStatus on memory-check-pass ([#777](https://github.com/defilantech/LLMKube/issues/777)) ([#779](https://github.com/defilantech/LLMKube/issues/779)) ([ed1c4eb](https://github.com/defilantech/LLMKube/commit/ed1c4eb2dc4012d56440c8225cff950f0055d7f4))
+* **metal-agent:** prevent zero-byte stub files from failed model downloads ([#642](https://github.com/defilantech/LLMKube/issues/642)) ([#772](https://github.com/defilantech/LLMKube/issues/772)) ([d737e47](https://github.com/defilantech/LLMKube/commit/d737e47677798311754e56119e4ef570778e573e))
+
 ## [0.8.11](https://github.com/defilantech/LLMKube/compare/v0.8.10...v0.8.11) (2026-06-20)
 
 
