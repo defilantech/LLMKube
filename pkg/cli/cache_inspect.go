@@ -72,6 +72,14 @@ func discoverCachePVCs(ctx context.Context, k8sClient client.Client, namespace s
 	seen := map[string]bool{}
 	for i := range pvcList.Items {
 		pvc := &pvcList.Items[i]
+		// A Pending (unbound) PVC has no volume to read and would send the
+		// inspector down a pod-create + wait path that blocks until timeout;
+		// skip it. Its owning Model still surfaces via the Model-list
+		// cross-reference in runCacheList. (Bound PVCs are inspected; any other
+		// non-readable state is handled by the per-PVC skip in inspectPVCCache.)
+		if pvc.Status.Phase == corev1.ClaimPending {
+			continue
+		}
 		isvcName := ""
 		for _, ref := range pvc.OwnerReferences {
 			if ref.Kind == "InferenceService" && ref.Controller != nil && *ref.Controller {
@@ -97,7 +105,9 @@ func discoverCachePVCs(ctx context.Context, k8sClient client.Client, namespace s
 		err := k8sClient.Get(ctx, client.ObjectKey{Name: modelCachePVCName, Namespace: namespace}, shared)
 		switch {
 		case err == nil:
-			infos = append(infos, PVCInfo{Name: modelCachePVCName, InferenceService: ""})
+			if shared.Status.Phase != corev1.ClaimPending {
+				infos = append(infos, PVCInfo{Name: modelCachePVCName, InferenceService: ""})
+			}
 		case !apierrors.IsNotFound(err):
 			return nil, fmt.Errorf("failed to get shared cache PVC: %w", err)
 		}

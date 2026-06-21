@@ -1268,6 +1268,54 @@ func TestDiscoverCachePVCs_SharedNotDuplicated(t *testing.T) {
 	}
 }
 
+// TestDiscoverCachePVCs_SkipsPendingPVC verifies a Pending (unbound) cache
+// PVC is excluded from discovery: it has no volume to inspect and would send
+// the inspector into a pod-create + wait that blocks until timeout (the #731
+// regression that hung `cache list` in the e2e). A Bound PVC alongside it is
+// still discovered.
+func TestDiscoverCachePVCs_SkipsPendingPVC(t *testing.T) {
+	pendingPerIsvc := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "stuck-isvc-model-cache",
+			Namespace: "default",
+			Labels:    map[string]string{modelCacheLabel: modelCacheLabelValue},
+		},
+		Status: corev1.PersistentVolumeClaimStatus{Phase: corev1.ClaimPending},
+	}
+	boundPerIsvc := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "ready-isvc-model-cache",
+			Namespace: "default",
+			Labels:    map[string]string{modelCacheLabel: modelCacheLabelValue},
+		},
+		Status: corev1.PersistentVolumeClaimStatus{Phase: corev1.ClaimBound},
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(newCoreScheme()).
+		WithObjects(pendingPerIsvc, boundPerIsvc).
+		Build()
+
+	infos, err := discoverCachePVCs(context.Background(), k8sClient, "default")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, info := range infos {
+		if info.Name == "stuck-isvc-model-cache" {
+			t.Errorf("pending PVC %q must be skipped, but it was discovered", info.Name)
+		}
+	}
+	boundFound := false
+	for _, info := range infos {
+		if info.Name == "ready-isvc-model-cache" {
+			boundFound = true
+		}
+	}
+	if !boundFound {
+		t.Error("bound PVC was not discovered")
+	}
+}
+
 func TestDiscoverCachePVCs_NoPVCs(t *testing.T) {
 	k8sClient := fake.NewClientBuilder().
 		WithScheme(newCoreScheme()).
