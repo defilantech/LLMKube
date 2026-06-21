@@ -220,6 +220,34 @@ spec:
                 maximum: 2097152
                 minimum: 128
                 type: integer
+              disruption:
+                description: |-
+                  Disruption controls how the operator manages node-disruption annotations
+                  on inference pods during the vulnerable startup window (model download +
+                  load). When ProtectStartup is true (the default), the operator sets
+                  karpenter.sh/do-not-disrupt: "true" on the pod template while the
+                  InferenceService is not yet Ready, then removes it once the service
+                  reaches the Ready phase. Set ProtectAlways to true to keep the annotation
+                  permanently (equivalent to setting it via podAnnotations). User-provided
+                  podAnnotations always win on collision.
+                properties:
+                  protectAlways:
+                    description: |-
+                      ProtectAlways keeps the disruption-protection annotation on the pod
+                      template permanently, regardless of the InferenceService phase. This is
+                      equivalent to setting karpenter.sh/do-not-disrupt: "true" via
+                      podAnnotations, but managed by the operator. Defaults to false.
+                    type: boolean
+                  protectStartup:
+                    default: true
+                    description: |-
+                      ProtectStartup prevents node disruption (e.g., Karpenter consolidation,
+                      Cluster Autoscaler scale-down) while the InferenceService is starting up.
+                      When true, the operator sets karpenter.sh/do-not-disrupt: "true" on the
+                      pod template until the InferenceService reaches the Ready phase, then
+                      removes it. Defaults to true.
+                    type: boolean
+                type: object
               endpoint:
                 description: Endpoint defines the service endpoint configuration
                 properties:

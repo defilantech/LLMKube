@@ -375,6 +375,37 @@ type InferenceServiceSpec struct {
 	// SecurityContext defines container-level security attributes for the inference container.
 	// +optional
 	SecurityContext *corev1.SecurityContext `json:"securityContext,omitempty"`
+
+	// Disruption controls how the operator manages node-disruption annotations
+	// on inference pods during the vulnerable startup window (model download +
+	// load). When ProtectStartup is true (the default), the operator sets
+	// karpenter.sh/do-not-disrupt: "true" on the pod template while the
+	// InferenceService is not yet Ready, then removes it once the service
+	// reaches the Ready phase. Set ProtectAlways to true to keep the annotation
+	// permanently (equivalent to setting it via podAnnotations). User-provided
+	// podAnnotations always win on collision.
+	// +optional
+	Disruption *DisruptionSpec `json:"disruption,omitempty"`
+}
+
+// DisruptionSpec controls the operator-managed node-disruption annotations on
+// inference pods.
+type DisruptionSpec struct {
+	// ProtectStartup prevents node disruption (e.g., Karpenter consolidation,
+	// Cluster Autoscaler scale-down) while the InferenceService is starting up.
+	// When true, the operator sets karpenter.sh/do-not-disrupt: "true" on the
+	// pod template until the InferenceService reaches the Ready phase, then
+	// removes it. Defaults to true.
+	// +kubebuilder:default=true
+	// +optional
+	ProtectStartup *bool `json:"protectStartup,omitempty"`
+
+	// ProtectAlways keeps the disruption-protection annotation on the pod
+	// template permanently, regardless of the InferenceService phase. This is
+	// equivalent to setting karpenter.sh/do-not-disrupt: "true" via
+	// podAnnotations, but managed by the operator. Defaults to false.
+	// +optional
+	ProtectAlways *bool `json:"protectAlways,omitempty"`
 }
 
 // EndpointSpec defines the service endpoint configuration

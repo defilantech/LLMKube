@@ -219,6 +219,210 @@ func TestResolveRuntimeImage(t *testing.T) {
 	}
 }
 
+func TestShouldProtectFromDisruption(t *testing.T) {
+	pTrue := func() *bool { b := true; return &b }
+	pFalse := func() *bool { b := false; return &b }
+
+	cases := []struct {
+		name     string
+		isvc     *inferencev1alpha1.InferenceService
+		expected bool
+	}{
+		{
+			name: "default: not Ready → protect",
+			isvc: &inferencev1alpha1.InferenceService{
+				Status: inferencev1alpha1.InferenceServiceStatus{Phase: "Creating"},
+			},
+			expected: true,
+		},
+		{
+			name: "default: Ready → no protect",
+			isvc: &inferencev1alpha1.InferenceService{
+				Status: inferencev1alpha1.InferenceServiceStatus{Phase: PhaseReady},
+			},
+			expected: false,
+		},
+		{
+			name: "default: Failed → protect",
+			isvc: &inferencev1alpha1.InferenceService{
+				Status: inferencev1alpha1.InferenceServiceStatus{Phase: PhaseFailed},
+			},
+			expected: true,
+		},
+		{
+			name: "ProtectStartup false → never protect",
+			isvc: &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					Disruption: &inferencev1alpha1.DisruptionSpec{
+						ProtectStartup: pFalse(),
+					},
+				},
+				Status: inferencev1alpha1.InferenceServiceStatus{Phase: "Creating"},
+			},
+			expected: false,
+		},
+		{
+			name: "ProtectAlways true → always protect even when Ready",
+			isvc: &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					Disruption: &inferencev1alpha1.DisruptionSpec{
+						ProtectAlways: pTrue(),
+					},
+				},
+				Status: inferencev1alpha1.InferenceServiceStatus{Phase: PhaseReady},
+			},
+			expected: true,
+		},
+		{
+			name: "ProtectAlways true → always protect even when not Ready",
+			isvc: &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					Disruption: &inferencev1alpha1.DisruptionSpec{
+						ProtectAlways: pTrue(),
+					},
+				},
+				Status: inferencev1alpha1.InferenceServiceStatus{Phase: "Creating"},
+			},
+			expected: true,
+		},
+		{
+			name: "ProtectAlways false + ProtectStartup true + not Ready → protect",
+			isvc: &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					Disruption: &inferencev1alpha1.DisruptionSpec{
+						ProtectAlways:  pFalse(),
+						ProtectStartup: pTrue(),
+					},
+				},
+				Status: inferencev1alpha1.InferenceServiceStatus{Phase: "Creating"},
+			},
+			expected: true,
+		},
+		{
+			name: "ProtectAlways false + ProtectStartup true + Ready → no protect",
+			isvc: &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					Disruption: &inferencev1alpha1.DisruptionSpec{
+						ProtectAlways:  pFalse(),
+						ProtectStartup: pTrue(),
+					},
+				},
+				Status: inferencev1alpha1.InferenceServiceStatus{Phase: PhaseReady},
+			},
+			expected: false,
+		},
+		{
+			name: "ProtectAlways true overrides ProtectStartup false",
+			isvc: &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					Disruption: &inferencev1alpha1.DisruptionSpec{
+						ProtectAlways:  pTrue(),
+						ProtectStartup: pFalse(),
+					},
+				},
+				Status: inferencev1alpha1.InferenceServiceStatus{Phase: PhaseReady},
+			},
+			expected: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := shouldProtectFromDisruption(tc.isvc)
+			if got != tc.expected {
+				t.Fatalf("shouldProtectFromDisruption() = %v, want %v", got, tc.expected)
+			}
+		})
+	}
+}
+
+func TestBuildPodAnnotations(t *testing.T) {
+	pTrue := func() *bool { b := true; return &b }
+	pFalse := func() *bool { b := false; return &b }
+
+	cases := []struct {
+		name     string
+		isvc     *inferencev1alpha1.InferenceService
+		expected map[string]string
+	}{
+		{
+			name: "not Ready, no user annotations → add disruption annotation",
+			isvc: &inferencev1alpha1.InferenceService{
+				Status: inferencev1alpha1.InferenceServiceStatus{Phase: "Creating"},
+			},
+			expected: map[string]string{"karpenter.sh/do-not-disrupt": "true"},
+		},
+		{
+			name: "Ready, no user annotations → no disruption annotation",
+			isvc: &inferencev1alpha1.InferenceService{
+				Status: inferencev1alpha1.InferenceServiceStatus{Phase: PhaseReady},
+			},
+			expected: nil,
+		},
+		{
+			name: "not Ready, user has other annotations → merge with disruption",
+			isvc: &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					PodAnnotations: map[string]string{"foo": "bar"},
+				},
+				Status: inferencev1alpha1.InferenceServiceStatus{Phase: "Creating"},
+			},
+			expected: map[string]string{
+				"foo":                         "bar",
+				"karpenter.sh/do-not-disrupt": "true",
+			},
+		},
+		{
+			name: "user set karpenter annotation → user value wins",
+			isvc: &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					PodAnnotations: map[string]string{"karpenter.sh/do-not-disrupt": "false"},
+				},
+				Status: inferencev1alpha1.InferenceServiceStatus{Phase: "Creating"},
+			},
+			expected: map[string]string{"karpenter.sh/do-not-disrupt": "false"},
+		},
+		{
+			name: "ProtectStartup false → no disruption annotation even when not Ready",
+			isvc: &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					Disruption: &inferencev1alpha1.DisruptionSpec{
+						ProtectStartup: pFalse(),
+					},
+				},
+				Status: inferencev1alpha1.InferenceServiceStatus{Phase: "Creating"},
+			},
+			expected: nil,
+		},
+		{
+			name: "ProtectAlways true → disruption annotation even when Ready",
+			isvc: &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					Disruption: &inferencev1alpha1.DisruptionSpec{
+						ProtectAlways: pTrue(),
+					},
+				},
+				Status: inferencev1alpha1.InferenceServiceStatus{Phase: PhaseReady},
+			},
+			expected: map[string]string{"karpenter.sh/do-not-disrupt": "true"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := buildPodAnnotations(tc.isvc)
+			if len(got) != len(tc.expected) {
+				t.Fatalf("buildPodAnnotations() = %v, want %v", got, tc.expected)
+			}
+			for k, v := range tc.expected {
+				if got[k] != v {
+					t.Fatalf("buildPodAnnotations()[%q] = %q, want %q", k, got[k], v)
+				}
+			}
+		})
+	}
+}
+
 func TestGPUTolerationKeyForSpec(t *testing.T) {
 	cases := []struct {
 		name     string

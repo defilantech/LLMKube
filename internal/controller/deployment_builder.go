@@ -169,6 +169,52 @@ func copyMap(m map[string]string) map[string]string {
 	return out
 }
 
+// shouldProtectFromDisruption returns true when the operator should set the
+// karpenter.sh/do-not-disrupt annotation on the pod template. It is true
+// when ProtectStartup is enabled (default) and the InferenceService is not yet
+// Ready, or when ProtectAlways is true. If the user has already set the
+// annotation via podAnnotations, this returns false to avoid overwriting the
+// user's value (the user's value always wins).
+func shouldProtectFromDisruption(isvc *inferencev1alpha1.InferenceService) bool {
+	if isvc.Spec.Disruption == nil {
+		// Default: protect startup
+		return isvc.Status.Phase != PhaseReady
+	}
+	d := isvc.Spec.Disruption
+
+	// ProtectAlways: always set the annotation regardless of phase
+	if d.ProtectAlways != nil && *d.ProtectAlways {
+		return true
+	}
+
+	// ProtectStartup: set the annotation only while the service is not Ready
+	protectStartup := true // default
+	if d.ProtectStartup != nil {
+		protectStartup = *d.ProtectStartup
+	}
+	if !protectStartup {
+		return false
+	}
+	return isvc.Status.Phase != PhaseReady
+}
+
+// buildPodAnnotations merges the user's podAnnotations with the operator's
+// disruption-protection annotation. User-provided values always win on
+// collision.
+func buildPodAnnotations(isvc *inferencev1alpha1.InferenceService) map[string]string {
+	annotations := copyMap(isvc.Spec.PodAnnotations)
+	if shouldProtectFromDisruption(isvc) {
+		if annotations == nil {
+			annotations = make(map[string]string)
+		}
+		// Only set the annotation if the user hasn't already set it
+		if _, ok := annotations["karpenter.sh/do-not-disrupt"]; !ok {
+			annotations["karpenter.sh/do-not-disrupt"] = "true"
+		}
+	}
+	return annotations
+}
+
 func (r *InferenceServiceReconciler) constructDeployment(
 	isvc *inferencev1alpha1.InferenceService,
 	model *inferencev1alpha1.Model,
@@ -277,7 +323,7 @@ func (r *InferenceServiceReconciler) constructDeployment(
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels:      mergePodLabels(labels, isvc.Spec.PodLabels),
-					Annotations: copyMap(isvc.Spec.PodAnnotations),
+					Annotations: buildPodAnnotations(isvc),
 				},
 				Spec: corev1.PodSpec{
 					SecurityContext:    inferPodSecurityContext(isvc, r.DefaultFSGroup),
