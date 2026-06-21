@@ -249,7 +249,7 @@ func (e *MetalExecutor) ensureModel(ctx context.Context, source, name string) (s
 	filename := filepath.Base(source)
 	localPath := filepath.Join(e.modelStorePath, name, filename)
 
-	if _, err := os.Stat(localPath); err == nil {
+	if info, err := os.Stat(localPath); err == nil && info.Size() > 0 {
 		e.logger.Debugw("model already downloaded", "path", localPath)
 		return localPath, nil
 	}
@@ -268,7 +268,9 @@ func (e *MetalExecutor) ensureModel(ctx context.Context, source, name string) (s
 }
 
 func (e *MetalExecutor) downloadFile(ctx context.Context, url, filePath string) error {
-	out, err := os.Create(filePath)
+	tmpPath := filePath + ".partial"
+
+	out, err := os.Create(tmpPath)
 	if err != nil {
 		return err
 	}
@@ -280,11 +282,17 @@ func (e *MetalExecutor) downloadFile(ctx context.Context, url, filePath string) 
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
+		if rmErr := os.Remove(tmpPath); rmErr != nil {
+			e.logger.Warnw("failed to clean up partial download", "path", tmpPath, "error", rmErr)
+		}
 		return err
 	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
+		if rmErr := os.Remove(tmpPath); rmErr != nil {
+			e.logger.Warnw("failed to clean up partial download", "path", tmpPath, "error", rmErr)
+		}
 		return err
 	}
 	defer func() {
@@ -292,11 +300,34 @@ func (e *MetalExecutor) downloadFile(ctx context.Context, url, filePath string) 
 	}()
 
 	if resp.StatusCode != http.StatusOK {
+		if rmErr := os.Remove(tmpPath); rmErr != nil {
+			e.logger.Warnw("failed to clean up partial download", "path", tmpPath, "error", rmErr)
+		}
 		return fmt.Errorf("bad status: %s", resp.Status)
 	}
 
-	_, err = io.Copy(out, resp.Body)
-	return err
+	written, err := io.Copy(out, resp.Body)
+	if err != nil {
+		if rmErr := os.Remove(tmpPath); rmErr != nil {
+			e.logger.Warnw("failed to clean up partial download", "path", tmpPath, "error", rmErr)
+		}
+		return err
+	}
+
+	// Verify Content-Length against bytes written so a connection drop
+	// mid-download doesn't leave a truncated model that passes the stat
+	// check.
+	if resp.ContentLength > 0 && written != resp.ContentLength {
+		if rmErr := os.Remove(tmpPath); rmErr != nil {
+			e.logger.Warnw("failed to clean up partial download", "path", tmpPath, "error", rmErr)
+		}
+		return fmt.Errorf("download truncated: expected %d bytes, got %d", resp.ContentLength, written)
+	}
+
+	if err := os.Rename(tmpPath, filePath); err != nil {
+		return fmt.Errorf("failed to rename downloaded model: %w", err)
+	}
+	return nil
 }
 
 func (e *MetalExecutor) waitForHealthy(port int, timeout time.Duration) error {

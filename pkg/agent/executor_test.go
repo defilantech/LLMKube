@@ -17,8 +17,11 @@ limitations under the License.
 package agent
 
 import (
+	"context"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -448,5 +451,209 @@ func TestStopProcess_InvalidPID(t *testing.T) {
 	err := executor.StopProcess(-99999)
 	if err == nil {
 		t.Error("StopProcess with invalid PID should return error")
+	}
+}
+
+func TestDownloadFile_FailedDownloadLeavesNoFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	executor := NewMetalExecutor("/bin/llama-server", tmpDir, newNopLogger())
+
+	// Server that returns 401 (e.g. gated Hugging Face repo)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	modelDir := filepath.Join(tmpDir, "gated-model")
+	if err := os.MkdirAll(modelDir, 0755); err != nil {
+		t.Fatalf("Failed to create model directory: %v", err)
+	}
+	localPath := filepath.Join(modelDir, "model.gguf")
+
+	err := executor.downloadFile(t.Context(), srv.URL+"/model.gguf", localPath)
+	if err == nil {
+		t.Fatal("downloadFile should return error for 401 response")
+	}
+
+	// The final path must not exist
+	if _, err := os.Stat(localPath); !os.IsNotExist(err) {
+		t.Errorf("failed download left file at %q: %v", localPath, err)
+	}
+
+	// No .partial stub should remain either
+	partialPath := localPath + ".partial"
+	if _, err := os.Stat(partialPath); !os.IsNotExist(err) {
+		t.Errorf("failed download left partial file at %q: %v", partialPath, err)
+	}
+}
+
+func TestEnsureModel_ZeroByteFileTriggersRedownload(t *testing.T) {
+	tmpDir := t.TempDir()
+	executor := NewMetalExecutor("/bin/llama-server", tmpDir, newNopLogger())
+
+	modelDir := filepath.Join(tmpDir, "stub-model")
+	if err := os.MkdirAll(modelDir, 0755); err != nil {
+		t.Fatalf("Failed to create model directory: %v", err)
+	}
+	localPath := filepath.Join(modelDir, "model.gguf")
+
+	// Pre-create a zero-byte stub (simulates a failed download from a
+	// previous run that left an empty file).
+	if err := os.WriteFile(localPath, nil, 0644); err != nil {
+		t.Fatalf("Failed to create stub file: %v", err)
+	}
+
+	// Server that returns a small valid payload.
+	payload := []byte("fake-gguf-data")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(payload)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(payload)
+	}))
+	defer srv.Close()
+
+	_, err := executor.ensureModel(t.Context(), srv.URL+"/model.gguf", "stub-model")
+	if err != nil {
+		t.Fatalf("ensureModel should succeed when stub is zero bytes: %v", err)
+	}
+
+	// The file should now contain the downloaded data.
+	info, err := os.Stat(localPath)
+	if err != nil {
+		t.Fatalf("model file missing after download: %v", err)
+	}
+	if info.Size() == 0 {
+		t.Error("model file is still zero bytes after ensureModel")
+	}
+}
+
+func TestDownloadFile_TruncatedDownloadFails(t *testing.T) {
+	tmpDir := t.TempDir()
+	executor := NewMetalExecutor("/bin/llama-server", tmpDir, newNopLogger())
+
+	modelDir := filepath.Join(tmpDir, "trunc-model")
+	if err := os.MkdirAll(modelDir, 0755); err != nil {
+		t.Fatalf("Failed to create model directory: %v", err)
+	}
+	localPath := filepath.Join(modelDir, "model.gguf")
+
+	// Server that advertises a large Content-Length but sends fewer bytes.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "1000")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("short"))
+	}))
+	defer srv.Close()
+
+	err := executor.downloadFile(t.Context(), srv.URL+"/model.gguf", localPath)
+	if err == nil {
+		t.Fatal("downloadFile should return error for truncated download")
+	}
+
+	// The final path must not exist (truncated file should be cleaned up).
+	if _, err := os.Stat(localPath); !os.IsNotExist(err) {
+		t.Errorf("truncated download left file at %q: %v", localPath, err)
+	}
+}
+
+func TestDownloadFile_SuccessRenamesTempFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	executor := NewMetalExecutor("/bin/llama-server", tmpDir, newNopLogger())
+
+	modelDir := filepath.Join(tmpDir, "ok-model")
+	if err := os.MkdirAll(modelDir, 0755); err != nil {
+		t.Fatalf("Failed to create model directory: %v", err)
+	}
+	localPath := filepath.Join(modelDir, "model.gguf")
+
+	payload := []byte("fake-gguf-data")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(payload)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(payload)
+	}))
+	defer srv.Close()
+
+	err := executor.downloadFile(t.Context(), srv.URL+"/model.gguf", localPath)
+	if err != nil {
+		t.Fatalf("downloadFile should succeed: %v", err)
+	}
+
+	// The final path must exist and contain the data.
+	info, err := os.Stat(localPath)
+	if err != nil {
+		t.Fatalf("model file missing after download: %v", err)
+	}
+	if info.Size() != int64(len(payload)) {
+		t.Errorf("model file size = %d, want %d", info.Size(), len(payload))
+	}
+
+	// No .partial stub should remain.
+	partialPath := localPath + ".partial"
+	if _, err := os.Stat(partialPath); !os.IsNotExist(err) {
+		t.Errorf("partial file still exists at %q: %v", partialPath, err)
+	}
+}
+
+func TestDownloadFile_NoContentLength(t *testing.T) {
+	tmpDir := t.TempDir()
+	executor := NewMetalExecutor("/bin/llama-server", tmpDir, newNopLogger())
+
+	modelDir := filepath.Join(tmpDir, "no-cl-model")
+	if err := os.MkdirAll(modelDir, 0755); err != nil {
+		t.Fatalf("Failed to create model directory: %v", err)
+	}
+	localPath := filepath.Join(modelDir, "model.gguf")
+
+	payload := []byte("fake-gguf-data")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// No Content-Length header; ContentLength will be 0.
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(payload)
+	}))
+	defer srv.Close()
+
+	err := executor.downloadFile(t.Context(), srv.URL+"/model.gguf", localPath)
+	if err != nil {
+		t.Fatalf("downloadFile should succeed without Content-Length: %v", err)
+	}
+
+	info, err := os.Stat(localPath)
+	if err != nil {
+		t.Fatalf("model file missing after download: %v", err)
+	}
+	if info.Size() != int64(len(payload)) {
+		t.Errorf("model file size = %d, want %d", info.Size(), len(payload))
+	}
+}
+
+func TestDownloadFile_ContextCancellation(t *testing.T) {
+	tmpDir := t.TempDir()
+	executor := NewMetalExecutor("/bin/llama-server", tmpDir, newNopLogger())
+
+	modelDir := filepath.Join(tmpDir, "cancel-model")
+	if err := os.MkdirAll(modelDir, 0755); err != nil {
+		t.Fatalf("Failed to create model directory: %v", err)
+	}
+	localPath := filepath.Join(modelDir, "model.gguf")
+
+	// Server that blocks forever.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Never respond.
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel() // Cancel immediately.
+
+	err := executor.downloadFile(ctx, srv.URL+"/model.gguf", localPath)
+	if err == nil {
+		t.Fatal("downloadFile should return error when context is cancelled")
+	}
+
+	// No file should be left behind.
+	if _, err := os.Stat(localPath); !os.IsNotExist(err) {
+		t.Errorf("cancelled download left file at %q: %v", localPath, err)
 	}
 }
