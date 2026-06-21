@@ -18,6 +18,7 @@ package cli
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -84,7 +85,7 @@ func TestParseDuOutput(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			entries := parseDuOutput(tt.input)
+			entries := parseDuOutput(tt.input, "")
 
 			if len(entries) != len(tt.expected) {
 				t.Fatalf("got %d entries, want %d", len(entries), len(tt.expected))
@@ -272,7 +273,7 @@ func TestFindContainerWithVolume(t *testing.T) {
 	}
 }
 
-func TestFindMountPath(t *testing.T) {
+func TestFindMountPathForPVC_Basic(t *testing.T) {
 	tests := []struct {
 		name          string
 		pod           *corev1.Pod
@@ -427,9 +428,9 @@ func TestFindMountPath(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := findMountPath(tt.pod, tt.containerName)
+			got := findMountPathForPVC(tt.pod, tt.containerName, modelCachePVCName)
 			if got != tt.want {
-				t.Errorf("findMountPath() = %q, want %q", got, tt.want)
+				t.Errorf("findMountPathForPVC() = %q, want %q", got, tt.want)
 			}
 		})
 	}
@@ -441,7 +442,7 @@ func newCoreScheme() *runtime.Scheme {
 	return s
 }
 
-func TestFindPodWithCachePVC_RunningPodWithPVC(t *testing.T) {
+func TestFindPodWithPVC_RunningPodWithPVC(t *testing.T) {
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: "llm-server", Namespace: "default"},
 		Spec: corev1.PodSpec{
@@ -472,7 +473,7 @@ func TestFindPodWithCachePVC_RunningPodWithPVC(t *testing.T) {
 		WithObjects(pod).
 		Build()
 
-	foundPod, containerName, err := findPodWithCachePVC(context.Background(), k8sClient, "default")
+	foundPod, containerName, err := findPodWithPVC(context.Background(), k8sClient, "default", modelCachePVCName)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -487,7 +488,7 @@ func TestFindPodWithCachePVC_RunningPodWithPVC(t *testing.T) {
 	}
 }
 
-func TestFindPodWithCachePVC_SkipsNonRunningPods(t *testing.T) {
+func TestFindPodWithPVC_SkipsNonRunningPods(t *testing.T) {
 	pendingPod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: "pending-pod", Namespace: "default"},
 		Spec: corev1.PodSpec{
@@ -543,7 +544,7 @@ func TestFindPodWithCachePVC_SkipsNonRunningPods(t *testing.T) {
 		WithObjects(pendingPod, failedPod).
 		Build()
 
-	foundPod, containerName, err := findPodWithCachePVC(context.Background(), k8sClient, "default")
+	foundPod, containerName, err := findPodWithPVC(context.Background(), k8sClient, "default", modelCachePVCName)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -555,12 +556,12 @@ func TestFindPodWithCachePVC_SkipsNonRunningPods(t *testing.T) {
 	}
 }
 
-func TestFindPodWithCachePVC_NoPods(t *testing.T) {
+func TestFindPodWithPVC_NoPods(t *testing.T) {
 	k8sClient := fake.NewClientBuilder().
 		WithScheme(newCoreScheme()).
 		Build()
 
-	foundPod, containerName, err := findPodWithCachePVC(context.Background(), k8sClient, "default")
+	foundPod, containerName, err := findPodWithPVC(context.Background(), k8sClient, "default", modelCachePVCName)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -572,7 +573,7 @@ func TestFindPodWithCachePVC_NoPods(t *testing.T) {
 	}
 }
 
-func TestFindPodWithCachePVC_RunningPodWithoutCachePVC(t *testing.T) {
+func TestFindPodWithPVC_RunningPodWithoutCachePVC(t *testing.T) {
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: "other-pod", Namespace: "default"},
 		Spec: corev1.PodSpec{
@@ -603,7 +604,7 @@ func TestFindPodWithCachePVC_RunningPodWithoutCachePVC(t *testing.T) {
 		WithObjects(pod).
 		Build()
 
-	foundPod, containerName, err := findPodWithCachePVC(context.Background(), k8sClient, "default")
+	foundPod, containerName, err := findPodWithPVC(context.Background(), k8sClient, "default", modelCachePVCName)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -615,7 +616,7 @@ func TestFindPodWithCachePVC_RunningPodWithoutCachePVC(t *testing.T) {
 	}
 }
 
-func TestFindPodWithCachePVC_PVCMountedButNoContainerMount(t *testing.T) {
+func TestFindPodWithPVC_PVCMountedButNoContainerMount(t *testing.T) {
 	// Volume references the cache PVC but no container actually mounts it
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: "misconfigured", Namespace: "default"},
@@ -645,7 +646,7 @@ func TestFindPodWithCachePVC_PVCMountedButNoContainerMount(t *testing.T) {
 		WithObjects(pod).
 		Build()
 
-	foundPod, containerName, err := findPodWithCachePVC(context.Background(), k8sClient, "default")
+	foundPod, containerName, err := findPodWithPVC(context.Background(), k8sClient, "default", modelCachePVCName)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -657,7 +658,7 @@ func TestFindPodWithCachePVC_PVCMountedButNoContainerMount(t *testing.T) {
 	}
 }
 
-func TestFindPodWithCachePVC_NamespaceFiltering(t *testing.T) {
+func TestFindPodWithPVC_NamespaceFiltering(t *testing.T) {
 	podInDefault := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: "pod-default", Namespace: "default"},
 		Spec: corev1.PodSpec{
@@ -713,7 +714,7 @@ func TestFindPodWithCachePVC_NamespaceFiltering(t *testing.T) {
 		WithObjects(podInDefault, podInOther).
 		Build()
 
-	foundPod, _, err := findPodWithCachePVC(context.Background(), k8sClient, "other")
+	foundPod, _, err := findPodWithPVC(context.Background(), k8sClient, "other", modelCachePVCName)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -729,12 +730,12 @@ func TestCreateInspectorPod(t *testing.T) {
 	clientset := fakeclientset.NewClientset()
 	ctx := context.Background()
 
-	podName, err := createInspectorPod(ctx, clientset, "test-ns")
+	podName, err := createInspectorPodForPVC(ctx, clientset, "test-ns", modelCachePVCName)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if podName != "llmkube-cache-inspector" {
-		t.Errorf("pod name = %q, want %q", podName, "llmkube-cache-inspector")
+	if want := inspectorPodName(modelCachePVCName); podName != want {
+		t.Errorf("pod name = %q, want %q", podName, want)
 	}
 
 	pod, err := clientset.CoreV1().Pods("test-ns").Get(ctx, podName, metav1.GetOptions{})
@@ -794,13 +795,13 @@ func TestCreateInspectorPod(t *testing.T) {
 func TestCreateInspectorPod_AlreadyExists(t *testing.T) {
 	existingPod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "llmkube-cache-inspector",
+			Name:      inspectorPodName(modelCachePVCName),
 			Namespace: "default",
 		},
 	}
 	clientset := fakeclientset.NewClientset(existingPod)
 
-	_, err := createInspectorPod(context.Background(), clientset, "default")
+	_, err := createInspectorPodForPVC(context.Background(), clientset, "default", modelCachePVCName)
 	if err == nil {
 		t.Fatal("expected error when pod already exists")
 	}
@@ -1127,5 +1128,494 @@ func TestMergeOrphanedEntryHasNoModelNames(t *testing.T) {
 	}
 	if entry.SizeHuman != "9.8 KiB" {
 		t.Errorf("orphaned entry size human = %q, want %q", entry.SizeHuman, "9.8 KiB")
+	}
+}
+
+func TestDiscoverCachePVCs_SharedAndPerIsvc(t *testing.T) {
+	sharedPVC := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "llmkube-model-cache",
+			Namespace: "default",
+			Labels: map[string]string{
+				modelCacheLabel: modelCacheLabelValue,
+			},
+		},
+	}
+
+	perIsvcPVC := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "my-isvc-model-cache",
+			Namespace: "default",
+			Labels: map[string]string{
+				modelCacheLabel: modelCacheLabelValue,
+			},
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion: "inference.llmkube.dev/v1alpha1",
+					Kind:       "InferenceService",
+					Name:       "my-isvc",
+					UID:        "abc-123",
+					Controller: func() *bool { b := true; return &b }(),
+				},
+			},
+		},
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(newCoreScheme()).
+		WithObjects(sharedPVC, perIsvcPVC).
+		Build()
+
+	infos, err := discoverCachePVCs(context.Background(), k8sClient, "default")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(infos) != 2 {
+		t.Fatalf("got %d PVCs, want 2", len(infos))
+	}
+
+	// Check shared PVC
+	sharedFound := false
+	for _, info := range infos {
+		if info.Name == "llmkube-model-cache" {
+			sharedFound = true
+			if info.InferenceService != "" {
+				t.Errorf("shared PVC InferenceService = %q, want empty", info.InferenceService)
+			}
+		}
+	}
+	if !sharedFound {
+		t.Error("shared PVC not found")
+	}
+
+	// Check per-isvc PVC
+	perIsvcFound := false
+	for _, info := range infos {
+		if info.Name == "my-isvc-model-cache" {
+			perIsvcFound = true
+			if info.InferenceService != "my-isvc" {
+				t.Errorf("per-isvc PVC InferenceService = %q, want %q", info.InferenceService, "my-isvc")
+			}
+		}
+	}
+	if !perIsvcFound {
+		t.Error("per-isvc PVC not found")
+	}
+}
+
+// TestDiscoverCachePVCs_UnlabeledSharedByName verifies the shared cache PVC is
+// discovered by its well-known name even when it lacks the model-cache label.
+// The shared cache can predate the label (the InferenceService reconciler only
+// sets it on create and does not backfill an existing PVC), so label-only
+// discovery would miss it and blank `cache list` in shared-cache mode (#731).
+func TestDiscoverCachePVCs_UnlabeledSharedByName(t *testing.T) {
+	unlabeledShared := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "llmkube-model-cache",
+			Namespace: "default",
+			// intentionally no model-cache label
+		},
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(newCoreScheme()).
+		WithObjects(unlabeledShared).
+		Build()
+
+	infos, err := discoverCachePVCs(context.Background(), k8sClient, "default")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(infos) != 1 {
+		t.Fatalf("got %d PVCs, want 1 (shared discovered by name)", len(infos))
+	}
+	if infos[0].Name != "llmkube-model-cache" {
+		t.Errorf("got PVC %q, want llmkube-model-cache", infos[0].Name)
+	}
+	if infos[0].InferenceService != "" {
+		t.Errorf("shared PVC InferenceService = %q, want empty", infos[0].InferenceService)
+	}
+}
+
+// TestDiscoverCachePVCs_SharedNotDuplicated verifies the by-name fallback does
+// not double-list the shared PVC when it is also label-discovered.
+func TestDiscoverCachePVCs_SharedNotDuplicated(t *testing.T) {
+	labeledShared := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "llmkube-model-cache",
+			Namespace: "default",
+			Labels:    map[string]string{modelCacheLabel: modelCacheLabelValue},
+		},
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(newCoreScheme()).
+		WithObjects(labeledShared).
+		Build()
+
+	infos, err := discoverCachePVCs(context.Background(), k8sClient, "default")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	count := 0
+	for _, info := range infos {
+		if info.Name == "llmkube-model-cache" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("shared PVC listed %d times, want exactly 1 (no duplication)", count)
+	}
+}
+
+// TestDiscoverCachePVCs_IncludesPendingPVC verifies a Pending (unbound) cache
+// PVC IS discovered. Under a WaitForFirstConsumer storage class (kind
+// local-path, microk8s hostpath, most topology-aware CSI) the cache PVC stays
+// Pending until its first consumer is scheduled; the transient inspector pod is
+// that first consumer. Skipping Pending here would drop the STATUS column from
+// `cache list` entirely (#767 regression). A Bound PVC alongside it is also
+// discovered.
+func TestDiscoverCachePVCs_IncludesPendingPVC(t *testing.T) {
+	pendingPerIsvc := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pending-isvc-model-cache",
+			Namespace: "default",
+			Labels:    map[string]string{modelCacheLabel: modelCacheLabelValue},
+		},
+		Status: corev1.PersistentVolumeClaimStatus{Phase: corev1.ClaimPending},
+	}
+	boundPerIsvc := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "ready-isvc-model-cache",
+			Namespace: "default",
+			Labels:    map[string]string{modelCacheLabel: modelCacheLabelValue},
+		},
+		Status: corev1.PersistentVolumeClaimStatus{Phase: corev1.ClaimBound},
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(newCoreScheme()).
+		WithObjects(pendingPerIsvc, boundPerIsvc).
+		Build()
+
+	infos, err := discoverCachePVCs(context.Background(), k8sClient, "default")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := map[string]bool{}
+	for _, info := range infos {
+		got[info.Name] = true
+	}
+	if !got["pending-isvc-model-cache"] {
+		t.Error("pending PVC must be discovered (the inspector pod binds it as first consumer), but it was not")
+	}
+	if !got["ready-isvc-model-cache"] {
+		t.Error("bound PVC was not discovered")
+	}
+}
+
+// TestInspectorPodName_UniquePerPVC verifies each PVC yields a distinct,
+// non-colliding inspector pod name so that inspecting multiple PVCs in one
+// `cache list` run does not collide on a single shared pod name (#767).
+func TestInspectorPodName_UniquePerPVC(t *testing.T) {
+	a := inspectorPodName("llmkube-model-cache")
+	b := inspectorPodName("isvc-a-model-cache")
+	if a == b {
+		t.Fatalf("inspector pod names collided: both %q", a)
+	}
+	for _, name := range []string{a, b} {
+		if !strings.HasPrefix(name, "llmkube-cache-inspector-") {
+			t.Errorf("inspector pod name %q missing expected prefix", name)
+		}
+		if len(name) > 63 {
+			t.Errorf("inspector pod name %q exceeds DNS-1123 63-char limit", name)
+		}
+	}
+}
+
+func TestDiscoverCachePVCs_NoPVCs(t *testing.T) {
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(newCoreScheme()).
+		Build()
+
+	infos, err := discoverCachePVCs(context.Background(), k8sClient, "default")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(infos) != 0 {
+		t.Errorf("got %d PVCs, want 0", len(infos))
+	}
+}
+
+func TestDiscoverCachePVCs_IgnoresNonCachePVCs(t *testing.T) {
+	otherPVC := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "some-other-pvc",
+			Namespace: "default",
+			Labels: map[string]string{
+				"app.kubernetes.io/component": "other",
+			},
+		},
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(newCoreScheme()).
+		WithObjects(otherPVC).
+		Build()
+
+	infos, err := discoverCachePVCs(context.Background(), k8sClient, "default")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(infos) != 0 {
+		t.Errorf("got %d PVCs, want 0", len(infos))
+	}
+}
+
+func TestDiscoverCachePVCs_NamespaceFiltering(t *testing.T) {
+	pvcInDefault := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "llmkube-model-cache",
+			Namespace: "default",
+			Labels: map[string]string{
+				modelCacheLabel: modelCacheLabelValue,
+			},
+		},
+	}
+	pvcInOther := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "llmkube-model-cache",
+			Namespace: "other",
+			Labels: map[string]string{
+				modelCacheLabel: modelCacheLabelValue,
+			},
+		},
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(newCoreScheme()).
+		WithObjects(pvcInDefault, pvcInOther).
+		Build()
+
+	infos, err := discoverCachePVCs(context.Background(), k8sClient, "other")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(infos) != 1 {
+		t.Fatalf("got %d PVCs, want 1", len(infos))
+	}
+	if infos[0].Name != "llmkube-model-cache" {
+		t.Errorf("PVC name = %q, want %q", infos[0].Name, "llmkube-model-cache")
+	}
+}
+
+func TestParseDuOutput_WithIsvcName(t *testing.T) {
+	output := "4831838208\t/models/abc123def4567890/\n1073741824\t/models/fedcba0987654321/\n"
+	entries := parseDuOutput(output, "my-isvc")
+
+	if len(entries) != 2 {
+		t.Fatalf("got %d entries, want 2", len(entries))
+	}
+
+	for _, e := range entries {
+		if e.InferenceService != "my-isvc" {
+			t.Errorf("entry InferenceService = %q, want %q", e.InferenceService, "my-isvc")
+		}
+	}
+}
+
+func TestParseDuOutput_EmptyIsvcName(t *testing.T) {
+	output := "4831838208\t/models/abc123def4567890/\n"
+	entries := parseDuOutput(output, "")
+
+	if len(entries) != 1 {
+		t.Fatalf("got %d entries, want 1", len(entries))
+	}
+	if entries[0].InferenceService != "" {
+		t.Errorf("entry InferenceService = %q, want empty", entries[0].InferenceService)
+	}
+}
+
+func TestFindPodWithPVC_SpecificPVCName(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "llm-server", Namespace: "default"},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name: "server",
+					VolumeMounts: []corev1.VolumeMount{
+						{Name: "cache-vol", MountPath: "/models"},
+					},
+				},
+			},
+			Volumes: []corev1.Volume{
+				{
+					Name: "cache-vol",
+					VolumeSource: corev1.VolumeSource{
+						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+							ClaimName: "my-isvc-model-cache",
+						},
+					},
+				},
+			},
+		},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning},
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(newCoreScheme()).
+		WithObjects(pod).
+		Build()
+
+	foundPod, containerName, err := findPodWithPVC(context.Background(), k8sClient, "default", "my-isvc-model-cache")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if foundPod == nil {
+		t.Fatal("expected a pod, got nil")
+	}
+	if foundPod.Name != "llm-server" {
+		t.Errorf("pod name = %q, want %q", foundPod.Name, "llm-server")
+	}
+	if containerName != "server" {
+		t.Errorf("container = %q, want %q", containerName, "server")
+	}
+}
+
+func TestFindPodWithPVC_WrongPVCName(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "llm-server", Namespace: "default"},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name: "server",
+					VolumeMounts: []corev1.VolumeMount{
+						{Name: "cache-vol", MountPath: "/models"},
+					},
+				},
+			},
+			Volumes: []corev1.Volume{
+				{
+					Name: "cache-vol",
+					VolumeSource: corev1.VolumeSource{
+						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+							ClaimName: "my-isvc-model-cache",
+						},
+					},
+				},
+			},
+		},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning},
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(newCoreScheme()).
+		WithObjects(pod).
+		Build()
+
+	foundPod, containerName, err := findPodWithPVC(context.Background(), k8sClient, "default", "other-model-cache")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if foundPod != nil {
+		t.Errorf("expected nil pod, got %q", foundPod.Name)
+	}
+	if containerName != "" {
+		t.Errorf("expected empty container name, got %q", containerName)
+	}
+}
+
+func TestFindMountPathForPVC_SpecificPVCName(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "llm-server", Namespace: "default"},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name: "server",
+					VolumeMounts: []corev1.VolumeMount{
+						{Name: "cache-vol", MountPath: "/data/models"},
+					},
+				},
+			},
+			Volumes: []corev1.Volume{
+				{
+					Name: "cache-vol",
+					VolumeSource: corev1.VolumeSource{
+						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+							ClaimName: "my-isvc-model-cache",
+						},
+					},
+				},
+			},
+		},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning},
+	}
+
+	got := findMountPathForPVC(pod, "server", "my-isvc-model-cache")
+	if got != "/data/models" {
+		t.Errorf("findMountPathForPVC() = %q, want %q", got, "/data/models")
+	}
+}
+
+func TestFindMountPathForPVC_WrongPVCName(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "llm-server", Namespace: "default"},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name: "server",
+					VolumeMounts: []corev1.VolumeMount{
+						{Name: "cache-vol", MountPath: "/data/models"},
+					},
+				},
+			},
+			Volumes: []corev1.Volume{
+				{
+					Name: "cache-vol",
+					VolumeSource: corev1.VolumeSource{
+						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+							ClaimName: "my-isvc-model-cache",
+						},
+					},
+				},
+			},
+		},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning},
+	}
+
+	got := findMountPathForPVC(pod, "server", "other-model-cache")
+	if got != defaultModelMountPath {
+		t.Errorf("findMountPathForPVC() = %q, want %q", got, defaultModelMountPath)
+	}
+}
+
+func TestCreateInspectorPodForPVC_SpecificPVCName(t *testing.T) {
+	clientset := fakeclientset.NewClientset()
+	ctx := context.Background()
+
+	pvcName := "my-isvc-model-cache"
+	podName, err := createInspectorPodForPVC(ctx, clientset, "test-ns", pvcName)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := inspectorPodName(pvcName); podName != want {
+		t.Errorf("pod name = %q, want %q", podName, want)
+	}
+
+	pod, err := clientset.CoreV1().Pods("test-ns").Get(ctx, podName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("failed to get created pod: %v", err)
+	}
+
+	if len(pod.Spec.Volumes) != 1 {
+		t.Fatalf("volume count = %d, want 1", len(pod.Spec.Volumes))
+	}
+	vol := pod.Spec.Volumes[0]
+	if vol.PersistentVolumeClaim == nil {
+		t.Fatal("volume PVC source is nil")
+	}
+	if vol.PersistentVolumeClaim.ClaimName != pvcName {
+		t.Errorf("PVC claim = %q, want %q", vol.PersistentVolumeClaim.ClaimName, pvcName)
 	}
 }

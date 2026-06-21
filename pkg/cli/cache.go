@@ -42,13 +42,14 @@ const (
 
 // CacheEntry represents a cached model
 type CacheEntry struct {
-	CacheKey   string
-	Source     string
-	Size       int64
-	SizeHuman  string
-	ModTime    time.Time
-	ModelNames []string // Models using this cache entry
-	Status     string   // "active" or "orphaned"
+	CacheKey         string
+	Source           string
+	Size             int64
+	SizeHuman        string
+	ModTime          time.Time
+	ModelNames       []string // Models using this cache entry
+	Status           string   // "active" or "orphaned"
+	InferenceService string   // owning InferenceService; empty for shared cache
 }
 
 // NewCacheCommand creates the cache command
@@ -234,12 +235,14 @@ func runCacheList(namespace string, allNamespaces bool, orphanedOnly bool) error
 				if entry, exists := cacheEntries[pe.CacheKey]; exists {
 					entry.Size = pe.SizeBytes
 					entry.SizeHuman = formatBytes(pe.SizeBytes)
+					entry.InferenceService = pe.InferenceService
 				} else {
 					cacheEntries[pe.CacheKey] = &CacheEntry{
-						CacheKey:  pe.CacheKey,
-						Size:      pe.SizeBytes,
-						SizeHuman: formatBytes(pe.SizeBytes),
-						Status:    statusOrphaned,
+						CacheKey:         pe.CacheKey,
+						Size:             pe.SizeBytes,
+						SizeHuman:        formatBytes(pe.SizeBytes),
+						Status:           statusOrphaned,
+						InferenceService: pe.InferenceService,
 					}
 				}
 			}
@@ -268,7 +271,7 @@ func runCacheList(namespace string, allNamespaces bool, orphanedOnly bool) error
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	if pvcInspected {
-		_, _ = fmt.Fprintln(w, "CACHE KEY\tSTATUS\tSIZE\tMODELS\tSOURCE")
+		_, _ = fmt.Fprintln(w, "CACHE KEY\tSTATUS\tSIZE\tISVC\tMODELS\tSOURCE")
 	} else {
 		_, _ = fmt.Fprintln(w, "CACHE KEY\tSIZE\tMODELS\tSOURCE")
 	}
@@ -291,6 +294,11 @@ func runCacheList(namespace string, allNamespaces bool, orphanedOnly bool) error
 			size = "-"
 		}
 
+		isvc := entry.InferenceService
+		if isvc == "" {
+			isvc = "shared"
+		}
+
 		if entry.Status == statusOrphaned {
 			orphanedCount++
 		} else {
@@ -299,7 +307,7 @@ func runCacheList(namespace string, allNamespaces bool, orphanedOnly bool) error
 		totalBytes += entry.Size
 
 		if pvcInspected {
-			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", entry.CacheKey, entry.Status, size, models, source)
+			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", entry.CacheKey, entry.Status, size, isvc, models, source)
 		} else {
 			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", entry.CacheKey, size, models, source)
 		}
