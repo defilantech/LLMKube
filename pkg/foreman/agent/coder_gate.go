@@ -82,11 +82,11 @@ type checkFailure struct {
 // golangci-lint binary (e.g. "./bin/golangci-lint"). run is the command
 // runner (production callers pass execCommandRunner).
 //
-// The gate runs four deterministic checks in order: gofmt, go vet,
-// go build, and golangci-lint. Heavy envtest or integration tests are
-// intentionally out of scope; they run in a separate clean-room
-// Kubernetes Job. All four checks run regardless of earlier failures so
-// the feedback reports everything wrong at once.
+// The gate runs five deterministic checks in order: gofmt, go vet,
+// go build, golangci-lint, and a codegen-drift check. Heavy envtest or
+// integration tests are intentionally out of scope; they run in a
+// separate clean-room Kubernetes Job. All checks run regardless of
+// earlier failures so the feedback reports everything wrong at once.
 func RunCoderGate(ctx context.Context, workspace, golangciPath string, run commandRunner) (pass bool, feedback string) {
 	var failures []checkFailure
 
@@ -128,6 +128,15 @@ func RunCoderGate(ctx context.Context, workspace, golangciPath string, run comma
 		if out, err := run(ctx, workspace, nil, "go", args...); err != nil {
 			failures = append(failures, checkFailure{name: "go test " + strings.Join(pkgs, " "), output: out})
 		}
+	}
+
+	// 6. Codegen-drift check: regenerate manifests/CRDs and fail if the
+	// tree is dirty. This catches changes to API types, kubebuilder
+	// markers, or field doc comments that alter generated CRDs or
+	// role.yaml before they reach CI (#775). Skipped gracefully if
+	// controller-gen is unavailable.
+	if drifted, out := checkCodegenDrift(ctx, workspace, run); drifted {
+		failures = append(failures, checkFailure{name: "codegen drift", output: out})
 	}
 
 	if len(failures) == 0 {
@@ -180,6 +189,36 @@ func changedTestPackages(ctx context.Context, workspace string, run commandRunne
 		pkgs = append(pkgs, "./"+dirKey)
 	}
 	return pkgs
+}
+
+// checkCodegenDrift regenerates manifests and CRDs, then checks whether
+// the workspace tree is dirty. It returns (drifted, output) where output
+// lists the drifted files. Skipped (returns false, "") if
+// bin/controller-gen is not present in the workspace.
+func checkCodegenDrift(ctx context.Context, workspace string, run commandRunner) (drifted bool, output string) {
+	controllerGen := filepath.Join(workspace, "bin", "controller-gen")
+	if _, err := run(ctx, workspace, nil, "test", "-f", controllerGen); err != nil {
+		// controller-gen not available; skip gracefully.
+		return false, ""
+	}
+
+	// Regenerate manifests, CRDs, and sync to Helm charts.
+	if out, err := run(ctx, workspace, nil, "make", "manifests", "chart-crds", "foreman-chart-crds"); err != nil {
+		// If make itself fails, report it as a drift failure.
+		return true, "make manifests chart-crds foreman-chart-crds failed:\n" + out
+	}
+
+	// Check whether the tree is dirty after regeneration.
+	if _, err := run(ctx, workspace, nil, "git", "diff", "--quiet"); err == nil {
+		return false, ""
+	}
+
+	// Tree is dirty; collect the list of drifted files.
+	out, _ := run(ctx, workspace, nil, "git", "diff", "--name-only")
+	msg := "Generated files drifted after regeneration. " +
+		"Run 'make manifests chart-crds foreman-chart-crds' and commit the changes.\n\n" +
+		"Drifted files:\n"
+	return true, msg + out
 }
 
 // buildFeedback renders the directive and a per-check section for every

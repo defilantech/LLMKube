@@ -318,3 +318,136 @@ func TestRunCoderGateTruncation(t *testing.T) {
 		t.Errorf("output not truncated: %d x's exceed cap %d", got, maxCheckOutputBytes)
 	}
 }
+
+// TestRunCoderGate_CodegenDrift_FailsWhenDrifted verifies the gate fails
+// when regenerated manifests/CRDs differ from the committed tree (#775).
+func TestRunCoderGate_CodegenDrift_FailsWhenDrifted(t *testing.T) {
+	const golangciPath = "./bin/golangci-lint"
+	run := func(_ context.Context, _ string, _ []string, name string, args ...string) (string, error) {
+		switch {
+		case name == "gofmt":
+			return "", nil
+		case name == "go":
+			return "", nil
+		case name == golangciPath:
+			return "", nil
+		case name == "git" && len(args) > 0 && args[0] == "status":
+			return "", nil // no changed packages for test tier
+		case name == "test" && len(args) > 0 && args[0] == "-f":
+			return "", nil // controller-gen exists
+		case name == "make":
+			return "", nil // make manifests chart-crds foreman-chart-crds succeeds
+		case name == "git" && len(args) > 0 && args[0] == "diff":
+			if len(args) > 1 && args[1] == "--quiet" {
+				return "", errors.New("exit status 1") // tree is dirty
+			}
+			return "config/crd/bases/inference.llmkube.dev_models.yaml\nrole.yaml\n", nil
+		default:
+			return "", nil
+		}
+	}
+	pass, feedback := RunCoderGate(context.Background(), "/work", golangciPath, run)
+	if pass {
+		t.Fatal("gate should fail when codegen drift is detected")
+	}
+	if !strings.Contains(feedback, "codegen drift") {
+		t.Errorf("feedback should cite codegen drift; got:\n%s", feedback)
+	}
+	if !strings.Contains(feedback, "config/crd/bases/inference.llmkube.dev_models.yaml") {
+		t.Errorf("feedback should list drifted CRD file; got:\n%s", feedback)
+	}
+}
+
+// TestRunCoderGate_CodegenDrift_PassesWhenClean verifies the gate passes
+// when regenerated manifests/CRDs match the committed tree (#775).
+func TestRunCoderGate_CodegenDrift_PassesWhenClean(t *testing.T) {
+	const golangciPath = "./bin/golangci-lint"
+	run := func(_ context.Context, _ string, _ []string, name string, args ...string) (string, error) {
+		switch {
+		case name == "gofmt":
+			return "", nil
+		case name == "go":
+			return "", nil
+		case name == golangciPath:
+			return "", nil
+		case name == "git" && len(args) > 0 && args[0] == "status":
+			return "", nil // no changed packages for test tier
+		case name == "test" && len(args) > 0 && args[0] == "-f":
+			return "", nil // controller-gen exists
+		case name == "make":
+			return "", nil // make manifests chart-crds foreman-chart-crds succeeds
+		case name == "git" && len(args) > 0 && args[0] == "diff":
+			return "", nil // tree is clean
+		default:
+			return "", nil
+		}
+	}
+	pass, feedback := RunCoderGate(context.Background(), "/work", golangciPath, run)
+	if !pass {
+		t.Fatalf("gate should pass when codegen is clean; feedback:\n%s", feedback)
+	}
+	if feedback != "" {
+		t.Errorf("expected empty feedback on pass, got %q", feedback)
+	}
+}
+
+// TestRunCoderGate_CodegenDrift_SkippedWhenNoControllerGen verifies the
+// codegen-drift check is skipped gracefully when controller-gen is not
+// available in the workspace (#775).
+func TestRunCoderGate_CodegenDrift_SkippedWhenNoControllerGen(t *testing.T) {
+	const golangciPath = "./bin/golangci-lint"
+	run := func(_ context.Context, _ string, _ []string, name string, args ...string) (string, error) {
+		switch {
+		case name == "gofmt":
+			return "", nil
+		case name == "go":
+			return "", nil
+		case name == golangciPath:
+			return "", nil
+		case name == "git" && len(args) > 0 && args[0] == "status":
+			return "", nil // no changed packages for test tier
+		case name == "test" && len(args) > 0 && args[0] == "-f":
+			return "", errors.New("exit status 1") // controller-gen not found
+		default:
+			return "", nil
+		}
+	}
+	pass, feedback := RunCoderGate(context.Background(), "/work", golangciPath, run)
+	if !pass {
+		t.Fatalf("gate should pass when controller-gen is unavailable; feedback:\n%s", feedback)
+	}
+	if feedback != "" {
+		t.Errorf("expected empty feedback on pass, got %q", feedback)
+	}
+}
+
+// TestRunCoderGate_CodegenDrift_FailsWhenMakeFails verifies the gate fails
+// when make manifests chart-crds foreman-chart-crds itself errors (#775).
+func TestRunCoderGate_CodegenDrift_FailsWhenMakeFails(t *testing.T) {
+	const golangciPath = "./bin/golangci-lint"
+	run := func(_ context.Context, _ string, _ []string, name string, args ...string) (string, error) {
+		switch {
+		case name == "gofmt":
+			return "", nil
+		case name == "go":
+			return "", nil
+		case name == golangciPath:
+			return "", nil
+		case name == "git" && len(args) > 0 && args[0] == "status":
+			return "", nil // no changed packages for test tier
+		case name == "test" && len(args) > 0 && args[0] == "-f":
+			return "", nil // controller-gen exists
+		case name == "make":
+			return "Error: controller-gen: exit status 1\n", errors.New("exit status 2")
+		default:
+			return "", nil
+		}
+	}
+	pass, feedback := RunCoderGate(context.Background(), "/work", golangciPath, run)
+	if pass {
+		t.Fatal("gate should fail when make manifests fails")
+	}
+	if !strings.Contains(feedback, "codegen drift") {
+		t.Errorf("feedback should cite codegen drift; got:\n%s", feedback)
+	}
+}
