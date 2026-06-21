@@ -5,6 +5,13 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.13](https://github.com/defilantech/LLMKube/compare/v0.8.12...v0.8.13) (2026-06-21)
+
+
+### Bug Fixes
+
+* **metal-agent:** register llamacpp runtime alias for llama.cpp executor ([#785](https://github.com/defilantech/LLMKube/issues/785)) ([73b7c90](https://github.com/defilantech/LLMKube/commit/73b7c90575affde62f7564e28e97699e1ff556a1))
+
 ## [0.8.12](https://github.com/defilantech/LLMKube/compare/v0.8.11...v0.8.12) (2026-06-21)
 
 
