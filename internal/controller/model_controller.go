@@ -30,6 +30,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -766,6 +767,14 @@ func (r *ModelReconciler) checkAcceleratorAvailability(ctx context.Context, mode
 		return true
 	}
 
+	// DRA path: if the model uses resourceClaims, check that the referenced
+	// ResourceClaim or ResourceClaimTemplate exists. Return false on NotFound
+	// so AcceleratorReady reflects reality; fail-open (true) for transient or
+	// RBAC errors.
+	if model.Spec.Hardware.GPU != nil && len(model.Spec.Hardware.GPU.ResourceClaims) > 0 {
+		return r.hasDRAAvailability(ctx, model.Spec.Hardware.GPU.ResourceClaims)
+	}
+
 	// Honor the GPU resourceName override so the readiness check validates
 	// the same extended resource the pod will actually request.
 	if model.Spec.Hardware.GPU != nil {
@@ -806,6 +815,45 @@ func (r *ModelReconciler) nodeHasResource(ctx context.Context, res corev1.Resour
 		}
 	}
 	return false
+}
+
+// hasDRAAvailability checks whether the DRA ResourceClaim or ResourceClaimTemplate
+// referenced by each claim in the model's GPU spec exists. Returns false if any
+// claim is NotFound; returns true if all claims are found or on transient/RBAC
+// errors (fail-open).
+func (r *ModelReconciler) hasDRAAvailability(ctx context.Context, claims []corev1.PodResourceClaim) bool {
+	for _, claim := range claims {
+		if claim.ResourceClaimName != nil {
+			var rc resourcev1.ResourceClaim
+			if err := r.Get(ctx, types.NamespacedName{Name: *claim.ResourceClaimName, Namespace: "default"}, &rc); err != nil {
+				if errors.IsNotFound(err) {
+					log.FromContext(ctx).Info("DRA ResourceClaim not found; accelerator not ready",
+						"resourceClaim", *claim.ResourceClaimName)
+					return false
+				}
+				// Transient or RBAC error: fail-open.
+				log.FromContext(ctx).Error(err,
+					"hasDRAAvailability: getting ResourceClaim failed; assuming available",
+					"resourceClaim", *claim.ResourceClaimName)
+				return true
+			}
+		} else if claim.ResourceClaimTemplateName != nil {
+			var rct resourcev1.ResourceClaimTemplate
+			if err := r.Get(ctx, types.NamespacedName{Name: *claim.ResourceClaimTemplateName, Namespace: "default"}, &rct); err != nil {
+				if errors.IsNotFound(err) {
+					log.FromContext(ctx).Info("DRA ResourceClaimTemplate not found; accelerator not ready",
+						"resourceClaimTemplate", *claim.ResourceClaimTemplateName)
+					return false
+				}
+				// Transient or RBAC error: fail-open.
+				log.FromContext(ctx).Error(err,
+					"hasDRAAvailability: getting ResourceClaimTemplate failed; assuming available",
+					"resourceClaimTemplate", *claim.ResourceClaimTemplateName)
+				return true
+			}
+		}
+	}
+	return true
 }
 
 func formatBytes(bytes int64) string {

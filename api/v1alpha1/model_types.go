@@ -152,9 +152,9 @@ type GPUSpec struct {
 	//   amd    -> amd.com/gpu
 	//   intel  -> gpu.intel.com/i915
 	// Set this for non-default device plugins (e.g. squat/generic-device-plugin
-	// advertising `squat.ai/dri-render`, NVIDIA MIG slices, or DRA-backed
-	// resources). When set, this value also drives the GPU toleration unless
-	// TolerationKey is provided explicitly.
+	// advertising `squat.ai/dri-render`, NVIDIA MIG slices). When set, this
+	// value also drives the GPU toleration unless TolerationKey is provided
+	// explicitly.
 	// +kubebuilder:validation:Pattern=`^[a-z0-9.\-]+/[a-z0-9._\-]+$`
 	// +optional
 	ResourceName string `json:"resourceName,omitempty"`

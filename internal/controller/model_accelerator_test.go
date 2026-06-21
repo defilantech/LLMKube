@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -69,6 +70,33 @@ func newModelReconcilerWithNodes(t *testing.T, nodes ...client.Object) *ModelRec
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(nodes...).Build()
 	return &ModelReconciler{Client: c, Scheme: scheme}
+}
+
+func newModelReconcilerWithDRA(t *testing.T, objects ...client.Object) *ModelReconciler {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add corev1: %v", err)
+	}
+	if err := inferencev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add inference: %v", err)
+	}
+	if err := resourcev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add resourcev1: %v", err)
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
+	return &ModelReconciler{Client: c, Scheme: scheme}
+}
+
+func modelWithDRA(claims []corev1.PodResourceClaim) *inferencev1alpha1.Model {
+	m := &inferencev1alpha1.Model{ObjectMeta: metav1.ObjectMeta{Name: "m", Namespace: "default"}}
+	m.Spec.Hardware = &inferencev1alpha1.HardwareSpec{
+		Accelerator: "cuda",
+		GPU: &inferencev1alpha1.GPUSpec{
+			ResourceClaims: claims,
+		},
+	}
+	return m
 }
 
 func TestCheckAcceleratorAvailability(t *testing.T) {
@@ -133,4 +161,75 @@ func TestCheckAcceleratorAvailability(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCheckAcceleratorAvailability_DRA(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name    string
+		model   *inferencev1alpha1.Model
+		objects []client.Object
+		want    bool
+	}{
+		{
+			name: "DRA ResourceClaimName exists -> available",
+			model: modelWithDRA([]corev1.PodResourceClaim{
+				{Name: "gpu", ResourceClaimName: ptrTo("gpu-claim")},
+			}),
+			objects: []client.Object{
+				&resourcev1.ResourceClaim{ObjectMeta: metav1.ObjectMeta{Name: "gpu-claim", Namespace: "default"}},
+			},
+			want: true,
+		},
+		{
+			name: "DRA ResourceClaimName not found -> not available",
+			model: modelWithDRA([]corev1.PodResourceClaim{
+				{Name: "gpu", ResourceClaimName: ptrTo("gpu-claim")},
+			}),
+			objects: nil,
+			want:    false,
+		},
+		{
+			name: "DRA ResourceClaimTemplateName exists -> available",
+			model: modelWithDRA([]corev1.PodResourceClaim{
+				{Name: "gpu", ResourceClaimTemplateName: ptrTo("gpu-template")},
+			}),
+			objects: []client.Object{
+				&resourcev1.ResourceClaimTemplate{ObjectMeta: metav1.ObjectMeta{Name: "gpu-template", Namespace: "default"}},
+			},
+			want: true,
+		},
+		{
+			name: "DRA ResourceClaimTemplateName not found -> not available",
+			model: modelWithDRA([]corev1.PodResourceClaim{
+				{Name: "gpu", ResourceClaimTemplateName: ptrTo("gpu-template")},
+			}),
+			objects: nil,
+			want:    false,
+		},
+		{
+			name: "DRA takes precedence over resourceName",
+			model: modelWithDRA([]corev1.PodResourceClaim{
+				{Name: "gpu", ResourceClaimName: ptrTo("gpu-claim")},
+			}),
+			objects: []client.Object{
+				&resourcev1.ResourceClaim{ObjectMeta: metav1.ObjectMeta{Name: "gpu-claim", Namespace: "default"}},
+				nodeWithCapacity("gpu1", "nvidia.com/gpu", "1"),
+			},
+			want: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newModelReconcilerWithDRA(t, tc.objects...)
+			got := r.checkAcceleratorAvailability(ctx, tc.model)
+			if got != tc.want {
+				t.Errorf("want %v, got %v", tc.want, got)
+			}
+		})
+	}
+}
+
+func ptrTo(s string) *string {
+	return &s
 }
