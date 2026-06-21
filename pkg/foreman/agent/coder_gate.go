@@ -82,11 +82,12 @@ type checkFailure struct {
 // golangci-lint binary (e.g. "./bin/golangci-lint"). run is the command
 // runner (production callers pass execCommandRunner).
 //
-// The gate runs five deterministic checks in order: gofmt, go vet,
-// go build, golangci-lint, and a codegen-drift check. Heavy envtest or
-// integration tests are intentionally out of scope; they run in a
-// separate clean-room Kubernetes Job. All checks run regardless of
-// earlier failures so the feedback reports everything wrong at once.
+// The gate runs six deterministic checks in order: gofmt, go vet,
+// go build, golangci-lint, a fast unit-test tier on changed packages,
+// and a codegen-drift check. Heavy envtest or integration tests are
+// intentionally out of scope; they run in a separate clean-room
+// Kubernetes Job. All checks run regardless of earlier failures so the
+// feedback reports everything wrong at once.
 func RunCoderGate(ctx context.Context, workspace, golangciPath string, run commandRunner) (pass bool, feedback string) {
 	var failures []checkFailure
 
