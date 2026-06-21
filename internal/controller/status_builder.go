@@ -135,11 +135,10 @@ func (r *InferenceServiceReconciler) updateStatusWithSchedulingInfo(
 		isvc.Status.SchedulingStatus = schedulingInfo.Status
 		isvc.Status.SchedulingMessage = schedulingInfo.Message
 		isvc.Status.WaitingFor = schedulingInfo.WaitingFor
-	} else {
-		isvc.Status.SchedulingStatus = ""
-		isvc.Status.SchedulingMessage = ""
-		isvc.Status.WaitingFor = ""
 	}
+	// When schedulingInfo is nil, preserve agent-written scheduling fields
+	// (e.g. InsufficientMemory, MemoryCheckFailed) so the controller does not
+	// clobber them on its next status update (#643).
 
 	if phase == PhaseWaitingForGPU {
 		queuePos, err := r.calculateQueuePosition(ctx, isvc)
