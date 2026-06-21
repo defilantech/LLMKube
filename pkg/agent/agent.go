@@ -41,12 +41,19 @@ import (
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 )
 
-// Inference runtime identifiers used by MetalAgentConfig.Runtime.
+// Inference runtime identifiers used by MetalAgentConfig.Runtime and
+// InferenceService.Spec.Runtime. runtimeLlamaCPP ("llamacpp") is the
+// canonical llama.cpp value the CRD and the in-cluster controller emit;
+// runtimeLlamaServer ("llama-server") is the metal-agent's historical
+// key and the global --runtime default. Both map to the same llama.cpp
+// executor (#784) so CRs authored with either value resolve correctly.
 const (
-	runtimeOMLX      = "omlx"
-	runtimeOllama    = "ollama"
-	runtimeVLLMSwift = "vllm-swift"
-	runtimeMLXServer = "mlx-server"
+	runtimeLlamaServer = "llama-server"
+	runtimeLlamaCPP    = "llamacpp"
+	runtimeOMLX        = "omlx"
+	runtimeOllama      = "ollama"
+	runtimeVLLMSwift   = "vllm-swift"
+	runtimeMLXServer   = "mlx-server"
 )
 
 // Model format identifiers (Model.Spec.Format) the agent recognizes for
@@ -311,59 +318,26 @@ func NewMetalAgent(config MetalAgentConfig) *MetalAgent {
 }
 
 // Start begins watching for InferenceService resources and managing processes
-func (a *MetalAgent) Start(ctx context.Context) error {
-	// Log effective memory budget and set gauge
-	if total, err := a.memoryProvider.TotalMemory(); err == nil {
-		budget := uint64(float64(total) * a.memoryFraction)
-		checkMode := MemoryCheckModeEnforce
-		if a.memoryCheckWarnOnly {
-			checkMode = MemoryCheckModeWarn
-		}
-		a.logger.Infow("memory budget",
-			"total", formatMemory(total),
-			"fraction", a.memoryFraction,
-			"budget", formatMemory(budget),
-			"checkMode", checkMode,
-		)
-		memoryBudgetBytes.Set(float64(budget))
-	} else {
-		a.logger.Warnw("unable to query total memory", "error", err)
+// buildExecutors populates a.executors with one ProcessExecutor per runtime
+// whose binary path is configured, so each InferenceService can pick its own
+// backend via spec.runtime (#525). The llama.cpp executor is always created
+// because it is the default fallback, and it is registered under BOTH
+// runtimeLlamaServer ("llama-server", the historical key and --runtime
+// default) and runtimeLlamaCPP ("llamacpp", the CRD/controller canonical
+// value) so CRs authored with either runtime name resolve to it (#784).
+func (a *MetalAgent) buildExecutors() {
+	metalExec := NewMetalExecutor(
+		a.config.LlamaServerBin,
+		a.config.ModelStorePath,
+		a.logger.With("subsystem", "executor"),
+	)
+	if a.config.LlamaServerStartupTimeout > 0 {
+		metalExec.SetStartupTimeout(a.config.LlamaServerStartupTimeout)
 	}
+	metalExec.SetPort(a.config.LlamaServerPort)
+	a.executors[runtimeLlamaServer] = metalExec
+	a.executors[runtimeLlamaCPP] = metalExec
 
-	// fatalErrChan carries terminal failures from background subsystems
-	// (watcher, health server) up to the main select loop, so the agent can
-	// return cleanly and let the supervisor restart the process.
-	fatalErrChan := make(chan error, 2)
-
-	// Initialize components
-	a.watcher = NewInferenceServiceWatcher(a.config.K8sClient, a.config.Namespace, a.logger.With("subsystem", "watcher"))
-	if a.config.MaxWatchFailures > 0 {
-		a.watcher.SetMaxConsecutiveFailures(a.config.MaxWatchFailures)
-	}
-	if len(a.config.InferenceServiceAllowlist) > 0 {
-		a.watcher.SetNameAllowlist(a.config.InferenceServiceAllowlist)
-		a.logger.Infow(
-			"InferenceService name allowlist active (#524 multi-Mac partition)",
-			"allowed", a.config.InferenceServiceAllowlist,
-		)
-	}
-
-	// Build executors for every runtime whose binary path is configured.
-	// This lets the agent host multiple runtimes concurrently; each
-	// InferenceService picks its own backend via spec.runtime (#525).
-	// llama-server is always created because it is the default fallback.
-	{
-		metalExec := NewMetalExecutor(
-			a.config.LlamaServerBin,
-			a.config.ModelStorePath,
-			a.logger.With("subsystem", "executor"),
-		)
-		if a.config.LlamaServerStartupTimeout > 0 {
-			metalExec.SetStartupTimeout(a.config.LlamaServerStartupTimeout)
-		}
-		metalExec.SetPort(a.config.LlamaServerPort)
-		a.executors["llama-server"] = metalExec
-	}
 	if a.config.OMLXBin != "" {
 		port := a.config.OMLXPort
 		if port == 0 {
@@ -417,6 +391,46 @@ func (a *MetalAgent) Start(ctx context.Context) error {
 		}
 		a.executors[runtimeMLXServer] = mlxServerExec
 	}
+}
+
+func (a *MetalAgent) Start(ctx context.Context) error {
+	// Log effective memory budget and set gauge
+	if total, err := a.memoryProvider.TotalMemory(); err == nil {
+		budget := uint64(float64(total) * a.memoryFraction)
+		checkMode := MemoryCheckModeEnforce
+		if a.memoryCheckWarnOnly {
+			checkMode = MemoryCheckModeWarn
+		}
+		a.logger.Infow("memory budget",
+			"total", formatMemory(total),
+			"fraction", a.memoryFraction,
+			"budget", formatMemory(budget),
+			"checkMode", checkMode,
+		)
+		memoryBudgetBytes.Set(float64(budget))
+	} else {
+		a.logger.Warnw("unable to query total memory", "error", err)
+	}
+
+	// fatalErrChan carries terminal failures from background subsystems
+	// (watcher, health server) up to the main select loop, so the agent can
+	// return cleanly and let the supervisor restart the process.
+	fatalErrChan := make(chan error, 2)
+
+	// Initialize components
+	a.watcher = NewInferenceServiceWatcher(a.config.K8sClient, a.config.Namespace, a.logger.With("subsystem", "watcher"))
+	if a.config.MaxWatchFailures > 0 {
+		a.watcher.SetMaxConsecutiveFailures(a.config.MaxWatchFailures)
+	}
+	if len(a.config.InferenceServiceAllowlist) > 0 {
+		a.watcher.SetNameAllowlist(a.config.InferenceServiceAllowlist)
+		a.logger.Infow(
+			"InferenceService name allowlist active (#524 multi-Mac partition)",
+			"allowed", a.config.InferenceServiceAllowlist,
+		)
+	}
+
+	a.buildExecutors()
 
 	a.registry = NewServiceRegistry(
 		a.config.K8sClient,
@@ -642,7 +656,7 @@ func (a *MetalAgent) resolveRuntime(isvc *inferencev1alpha1.InferenceService) st
 	if a.config.Runtime != "" {
 		return a.config.Runtime
 	}
-	return "llama-server"
+	return runtimeLlamaServer
 }
 
 // validateRuntimeFormat returns an error if the model's format is incompatible
@@ -675,7 +689,7 @@ func (a *MetalAgent) validateRuntimeFormat(model *inferencev1alpha1.Model, runti
 		runtimeLabel = runtimeMLXServer
 	default:
 		bad = modelFormat == formatMLX
-		runtimeLabel = "llama-server"
+		runtimeLabel = runtimeLlamaServer
 	}
 	if !bad {
 		return nil
@@ -953,7 +967,7 @@ func (a *MetalAgent) deleteProcess(ctx context.Context, key string) error {
 	if exec == nil {
 		// Fallback to the default executor if the runtime is unknown
 		// (e.g. a process spawned before the multi-runtime refactor).
-		exec = a.executors["llama-server"]
+		exec = a.executors[runtimeLlamaServer]
 	}
 
 	// For shared-daemon runtimes (oMLX, Ollama), unload the specific model
@@ -1382,7 +1396,7 @@ func (a *MetalAgent) Shutdown(ctx context.Context) error {
 		exec := a.executors[process.Runtime]
 		if exec == nil {
 			// Fallback to the default executor if the runtime is unknown.
-			exec = a.executors["llama-server"]
+			exec = a.executors[runtimeLlamaServer]
 		}
 
 		// For shared-daemon runtimes (oMLX, Ollama), unload each model instead of

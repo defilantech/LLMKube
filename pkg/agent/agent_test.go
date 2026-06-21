@@ -87,6 +87,78 @@ func TestNewMetalAgent(t *testing.T) {
 	}
 }
 
+// TestBuildExecutors_RegistersLlamaCppAlias verifies the llama.cpp executor is
+// reachable under BOTH the canonical CRD runtime value "llamacpp" and the
+// historical "llama-server" key, and that they are the same executor (#784).
+// Before the fix only "llama-server" was registered, so a CR with
+// spec.runtime: llamacpp failed with "no executor registered".
+func TestBuildExecutors_RegistersLlamaCppAlias(t *testing.T) {
+	scheme := newTestScheme()
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	agent := NewMetalAgent(MetalAgentConfig{
+		K8sClient:      k8sClient,
+		Namespace:      "test-ns",
+		ModelStorePath: "/tmp/test-models",
+		LlamaServerBin: "/usr/local/bin/llama-server",
+	})
+
+	agent.buildExecutors()
+
+	llamaServer, ok := agent.executors[runtimeLlamaServer]
+	if !ok || llamaServer == nil {
+		t.Fatalf("executors[%q] not registered", runtimeLlamaServer)
+	}
+	llamacpp, ok := agent.executors[runtimeLlamaCPP]
+	if !ok || llamacpp == nil {
+		t.Fatalf("executors[%q] not registered (regression #784)", runtimeLlamaCPP)
+	}
+	if llamacpp != llamaServer {
+		t.Errorf("executors[%q] and executors[%q] must be the same llama.cpp executor",
+			runtimeLlamaCPP, runtimeLlamaServer)
+	}
+}
+
+// TestMetalAgentServesCRDLlamaCppRuntime is a producer->consumer contract test
+// for the #784 regression. The InferenceService CRD declares
+//
+//	+kubebuilder:validation:Enum=llamacpp;personaplex;vllm;tgi;generic
+//	+kubebuilder:default=llamacpp
+//
+// (api/v1alpha1/inferenceservice_types.go) and the in-cluster controller emits
+// "llamacpp" as the canonical llama.cpp runtime (resolveBackend's default). A
+// default metal-agent — only a llama-server binary configured, as on a real Mac
+// — must therefore resolve AND register an executor for the literal CRD value
+// "llamacpp", or every default-runtime CR fails to serve with "no executor
+// registered for runtime". The literal is intentional and must NOT be replaced
+// with the runtimeLlamaCPP constant: pinning to the CRD's external contract
+// value is what catches the agent's own constant drifting away from the CRD
+// (the exact failure mode of #784, where the agent keyed on "llama-server"
+// while every CR used "llamacpp").
+func TestMetalAgentServesCRDLlamaCppRuntime(t *testing.T) {
+	const crdDefaultRuntime = "llamacpp" // mirror of the CRD Runtime +kubebuilder:default
+
+	scheme := newTestScheme()
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	agent := NewMetalAgent(MetalAgentConfig{
+		K8sClient:      k8sClient,
+		ModelStorePath: "/tmp/test-models",
+		LlamaServerBin: "/usr/local/bin/llama-server",
+	})
+	agent.buildExecutors()
+
+	isvc := &inferencev1alpha1.InferenceService{
+		Spec: inferencev1alpha1.InferenceServiceSpec{Runtime: crdDefaultRuntime},
+	}
+	resolved := agent.resolveRuntime(isvc)
+	if resolved != crdDefaultRuntime {
+		t.Fatalf("resolveRuntime(%q) = %q, want the value unchanged", crdDefaultRuntime, resolved)
+	}
+	if _, ok := agent.executors[resolved]; !ok {
+		t.Fatalf("CRD default runtime %q does not resolve to a registered metal-agent "+
+			"executor (regression #784)", crdDefaultRuntime)
+	}
+}
+
 func TestHealthCheck_Empty(t *testing.T) {
 	scheme := newTestScheme()
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
