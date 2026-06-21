@@ -184,7 +184,7 @@ type MetalAgentConfig struct {
 type MetalAgent struct {
 	config         MetalAgentConfig
 	watcher        *InferenceServiceWatcher
-	executor       ProcessExecutor
+	executors      map[string]ProcessExecutor // runtime name -> executor
 	registry       *ServiceRegistry
 	processes      map[string]*ManagedProcess // namespacedName -> process
 	logger         *zap.SugaredLogger
@@ -251,6 +251,12 @@ type ManagedProcess struct {
 	// status condition is still patched on protected services so operators
 	// can see system pressure even when their workload is shielded from it.
 	EvictionProtection bool
+
+	// Runtime is the inference runtime that spawned this process
+	// (e.g. "llama-server", "mlx-server", "omlx"). Captured at spawn time
+	// so deleteProcess and Shutdown can pick the correct executor even
+	// when the agent hosts multiple runtimes concurrently (#525).
+	Runtime string
 }
 
 // NewMetalAgent creates a new Metal agent instance
@@ -292,6 +298,7 @@ func NewMetalAgent(config MetalAgentConfig) *MetalAgent {
 
 	return &MetalAgent{
 		config:              config,
+		executors:           make(map[string]ProcessExecutor),
 		processes:           make(map[string]*ManagedProcess),
 		logger:              logger.With("component", "metal-agent"),
 		memoryProvider:      provider,
@@ -341,8 +348,23 @@ func (a *MetalAgent) Start(ctx context.Context) error {
 		)
 	}
 
-	switch a.config.Runtime {
-	case runtimeOMLX:
+	// Build executors for every runtime whose binary path is configured.
+	// This lets the agent host multiple runtimes concurrently; each
+	// InferenceService picks its own backend via spec.runtime (#525).
+	// llama-server is always created because it is the default fallback.
+	{
+		metalExec := NewMetalExecutor(
+			a.config.LlamaServerBin,
+			a.config.ModelStorePath,
+			a.logger.With("subsystem", "executor"),
+		)
+		if a.config.LlamaServerStartupTimeout > 0 {
+			metalExec.SetStartupTimeout(a.config.LlamaServerStartupTimeout)
+		}
+		metalExec.SetPort(a.config.LlamaServerPort)
+		a.executors["llama-server"] = metalExec
+	}
+	if a.config.OMLXBin != "" {
 		port := a.config.OMLXPort
 		if port == 0 {
 			port = 8000
@@ -356,17 +378,19 @@ func (a *MetalAgent) Start(ctx context.Context) error {
 		if a.config.OMLXStartupTimeout > 0 {
 			omlxExec.SetStartupTimeout(a.config.OMLXStartupTimeout)
 		}
-		a.executor = omlxExec
-	case runtimeOllama:
+		a.executors[runtimeOMLX] = omlxExec
+	}
+	if a.config.OllamaPort != 0 || a.config.Runtime == runtimeOllama {
 		port := a.config.OllamaPort
 		if port == 0 {
 			port = 11434
 		}
-		a.executor = NewOllamaExecutor(
+		a.executors[runtimeOllama] = NewOllamaExecutor(
 			port,
 			a.logger.With("subsystem", "executor"),
 		)
-	case runtimeVLLMSwift:
+	}
+	if a.config.VLLMSwiftBin != "" {
 		vllmSwiftExec := NewVLLMSwiftExecutor(
 			a.config.VLLMSwiftBin,
 			a.config.ModelStorePath,
@@ -375,8 +399,9 @@ func (a *MetalAgent) Start(ctx context.Context) error {
 		if a.config.VLLMSwiftStartupTimeout > 0 {
 			vllmSwiftExec.SetStartupTimeout(a.config.VLLMSwiftStartupTimeout)
 		}
-		a.executor = vllmSwiftExec
-	case runtimeMLXServer:
+		a.executors[runtimeVLLMSwift] = vllmSwiftExec
+	}
+	if a.config.MLXServerBin != "" {
 		port := a.config.MLXServerPort
 		if port == 0 {
 			port = 8080
@@ -390,18 +415,7 @@ func (a *MetalAgent) Start(ctx context.Context) error {
 		if a.config.MLXServerStartupTimeout > 0 {
 			mlxServerExec.SetStartupTimeout(a.config.MLXServerStartupTimeout)
 		}
-		a.executor = mlxServerExec
-	default:
-		metalExec := NewMetalExecutor(
-			a.config.LlamaServerBin,
-			a.config.ModelStorePath,
-			a.logger.With("subsystem", "executor"),
-		)
-		if a.config.LlamaServerStartupTimeout > 0 {
-			metalExec.SetStartupTimeout(a.config.LlamaServerStartupTimeout)
-		}
-		metalExec.SetPort(a.config.LlamaServerPort)
-		a.executor = metalExec
+		a.executors[runtimeMLXServer] = mlxServerExec
 	}
 
 	a.registry = NewServiceRegistry(
@@ -615,9 +629,25 @@ func derefInt32(p *int32) int {
 	return int(*p)
 }
 
+// resolveRuntime returns the effective runtime for an InferenceService.
+// If isvc.Spec.Runtime is set, it is used directly. Otherwise the agent's
+// global --runtime flag (a.config.Runtime) is the fallback. If both are
+// empty, "llama-server" is the default. This lets each InferenceService
+// pick its own backend while preserving backward compat for CRs that omit
+// spec.runtime (#525).
+func (a *MetalAgent) resolveRuntime(isvc *inferencev1alpha1.InferenceService) string {
+	if isvc.Spec.Runtime != "" {
+		return isvc.Spec.Runtime
+	}
+	if a.config.Runtime != "" {
+		return a.config.Runtime
+	}
+	return "llama-server"
+}
+
 // validateRuntimeFormat returns an error if the model's format is incompatible
-// with the agent's configured runtime. Empty format defaults to "gguf".
-func (a *MetalAgent) validateRuntimeFormat(model *inferencev1alpha1.Model) error {
+// with the given runtime. Empty format defaults to "gguf".
+func (a *MetalAgent) validateRuntimeFormat(model *inferencev1alpha1.Model, runtime string) error {
 	modelFormat := model.Spec.Format
 	if modelFormat == "" {
 		modelFormat = formatGGUF
@@ -625,7 +655,7 @@ func (a *MetalAgent) validateRuntimeFormat(model *inferencev1alpha1.Model) error
 
 	var bad bool
 	var runtimeLabel string
-	switch a.config.Runtime {
+	switch runtime {
 	case runtimeOMLX:
 		bad = modelFormat == formatGGUF
 		runtimeLabel = runtimeOMLX
@@ -652,7 +682,7 @@ func (a *MetalAgent) validateRuntimeFormat(model *inferencev1alpha1.Model) error
 	}
 
 	a.logger.Warnw("skipping incompatible model format for runtime",
-		"model", model.Name, "format", modelFormat, "runtime", a.config.Runtime)
+		"model", model.Name, "format", modelFormat, "runtime", runtime)
 	return fmt.Errorf(
 		"model %s has format %q which is incompatible with %s runtime",
 		model.Name, modelFormat, runtimeLabel,
@@ -770,6 +800,10 @@ func (a *MetalAgent) ensureProcess(ctx context.Context, isvc *inferencev1alpha1.
 
 	a.logger.Infow("starting inference service", "namespace", isvc.Namespace, "name", isvc.Name)
 
+	// Resolve the effective runtime for this InferenceService.
+	// spec.runtime wins; the agent's --runtime flag is the fallback.
+	runtime := a.resolveRuntime(isvc)
+
 	// Get the Model resource
 	model := &inferencev1alpha1.Model{}
 	if err := a.config.K8sClient.Get(ctx, types.NamespacedName{
@@ -779,8 +813,15 @@ func (a *MetalAgent) ensureProcess(ctx context.Context, isvc *inferencev1alpha1.
 		return fmt.Errorf("failed to get model %s: %w", isvc.Spec.ModelRef, err)
 	}
 
-	if err := a.validateRuntimeFormat(model); err != nil {
+	if err := a.validateRuntimeFormat(model, runtime); err != nil {
 		return err
+	}
+
+	// Look up the executor for the resolved runtime.
+	exec, ok := a.executors[runtime]
+	if !ok {
+		return fmt.Errorf("no executor registered for runtime %q; "+
+			"ensure the corresponding binary is installed and the agent was started with the right flags", runtime)
 	}
 
 	// Get GPU layers if specified
@@ -831,8 +872,8 @@ func (a *MetalAgent) ensureProcess(ctx context.Context, isvc *inferencev1alpha1.
 		UBatchSize:     uBatchSize,
 	})
 
-	// Start the process
-	process, err := a.executor.StartProcess(ctx, cfg)
+	// Start the process using the runtime-specific executor.
+	process, err := exec.StartProcess(ctx, cfg)
 	if err != nil {
 		return fmt.Errorf("failed to start process: %w", err)
 	}
@@ -848,6 +889,9 @@ func (a *MetalAgent) ensureProcess(ctx context.Context, isvc *inferencev1alpha1.
 	if isvc.Spec.EvictionProtection != nil {
 		process.EvictionProtection = *isvc.Spec.EvictionProtection
 	}
+	// Capture the runtime so deleteProcess and Shutdown can pick the
+	// correct executor even when the agent hosts multiple runtimes (#525).
+	process.Runtime = runtime
 
 	// Store process and update metrics
 	a.mu.Lock()
@@ -878,7 +922,10 @@ func (a *MetalAgent) ensureProcess(ctx context.Context, isvc *inferencev1alpha1.
 	return nil
 }
 
-// deleteProcess stops a running llama-server process
+// deleteProcess stops a running inference process. It uses the process's
+// Runtime field to pick the correct executor from the agent's executor
+// registry, so multi-runtime agents can stop each process with its own
+// backend (#525).
 func (a *MetalAgent) deleteProcess(ctx context.Context, key string) error {
 	a.mu.Lock()
 	process, exists := a.processes[key]
@@ -901,19 +948,27 @@ func (a *MetalAgent) deleteProcess(ctx context.Context, key string) error {
 
 	var deleteErrors []error
 
+	// Pick the executor that matches the process's runtime.
+	exec := a.executors[process.Runtime]
+	if exec == nil {
+		// Fallback to the default executor if the runtime is unknown
+		// (e.g. a process spawned before the multi-runtime refactor).
+		exec = a.executors["llama-server"]
+	}
+
 	// For shared-daemon runtimes (oMLX, Ollama), unload the specific model
 	// instead of killing the shared daemon.
-	if ollama, ok := a.executor.(*OllamaExecutor); ok && process.ModelID != "" {
+	if ollama, ok := exec.(*OllamaExecutor); ok && process.ModelID != "" {
 		if err := ollama.UnloadModel(ctx, process.ModelID); err != nil {
 			deleteErrors = append(deleteErrors,
 				fmt.Errorf("failed to unload Ollama model %s: %w", process.ModelID, err))
 		}
-	} else if omlx, ok := a.executor.(*OMLXExecutor); ok && process.ModelID != "" {
+	} else if omlx, ok := exec.(*OMLXExecutor); ok && process.ModelID != "" {
 		if err := omlx.UnloadModel(ctx, process.ModelID); err != nil {
 			deleteErrors = append(deleteErrors,
 				fmt.Errorf("failed to unload oMLX model %s: %w", process.ModelID, err))
 		}
-	} else if err := a.executor.StopProcess(process.PID); err != nil {
+	} else if err := exec.StopProcess(process.PID); err != nil {
 		deleteErrors = append(deleteErrors, fmt.Errorf("failed to stop process: %w", err))
 	}
 
@@ -1311,7 +1366,9 @@ func (a *MetalAgent) runHeartbeatLoop(ctx context.Context) {
 	}
 }
 
-// Shutdown gracefully shuts down all running processes
+// Shutdown gracefully shuts down all running processes. It uses each
+// process's Runtime field to pick the correct executor from the agent's
+// executor registry (#525).
 func (a *MetalAgent) Shutdown(ctx context.Context) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -1320,24 +1377,28 @@ func (a *MetalAgent) Shutdown(ctx context.Context) error {
 
 	var shutdownErrors []error
 
-	// For shared-daemon runtimes (oMLX, Ollama), unload each model instead of
-	// killing the daemon.
-	omlx, isOMLX := a.executor.(*OMLXExecutor)
-	ollama, isOllama := a.executor.(*OllamaExecutor)
-
 	for key, process := range a.processes {
-		if isOllama && process.ModelID != "" {
+		// Pick the executor that matches the process's runtime.
+		exec := a.executors[process.Runtime]
+		if exec == nil {
+			// Fallback to the default executor if the runtime is unknown.
+			exec = a.executors["llama-server"]
+		}
+
+		// For shared-daemon runtimes (oMLX, Ollama), unload each model instead of
+		// killing the daemon.
+		if ollama, ok := exec.(*OllamaExecutor); ok && process.ModelID != "" {
 			if err := ollama.UnloadModel(ctx, process.ModelID); err != nil {
 				shutdownErrors = append(shutdownErrors,
 					fmt.Errorf("failed to unload Ollama model %s: %w", key, err))
 			}
-		} else if isOMLX && process.ModelID != "" {
+		} else if omlx, ok := exec.(*OMLXExecutor); ok && process.ModelID != "" {
 			if err := omlx.UnloadModel(ctx, process.ModelID); err != nil {
 				shutdownErrors = append(shutdownErrors,
 					fmt.Errorf("failed to unload oMLX model %s: %w", key, err))
 			}
 		} else {
-			if err := a.executor.StopProcess(process.PID); err != nil {
+			if err := exec.StopProcess(process.PID); err != nil {
 				shutdownErrors = append(shutdownErrors,
 					fmt.Errorf("failed to stop %s: %w", key, err))
 			}

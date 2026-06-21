@@ -170,7 +170,7 @@ func TestHandleMemoryPressure_EvictsLowestPriorityWhenEnabledAndAboveGuard(t *te
 	high := newPressureTestISvc("svc-high", "high")
 	a := newPressureTestAgent(t, low, high)
 	a.config.EvictionEnabled = true
-	a.executor = stubExecutor{}
+	a.executors["llama-server"] = stubExecutor{}
 	a.registry = NewServiceRegistry(a.config.K8sClient, "", newNopLogger(), "")
 
 	a.processes["default/svc-low"] = &ManagedProcess{
@@ -207,7 +207,7 @@ func TestHandleMemoryPressure_DisabledHonorsCLIFlag(t *testing.T) {
 	isvc := newPressureTestISvc("svc-low", "low")
 	a := newPressureTestAgent(t, isvc)
 	a.config.EvictionEnabled = false // explicit
-	a.executor = stubExecutor{}
+	a.executors["llama-server"] = stubExecutor{}
 	a.registry = NewServiceRegistry(a.config.K8sClient, "", newNopLogger(), "")
 
 	a.processes["default/svc-low"] = &ManagedProcess{
@@ -236,7 +236,7 @@ func TestHandleMemoryPressure_DisabledHonorsCLIFlag(t *testing.T) {
 func TestEnsureProcess_BlockedUnderCriticalSkipsRespawn(t *testing.T) {
 	isvc := newPressureTestISvc("svc-a", "low")
 	a := newPressureTestAgent(t, isvc)
-	a.executor = NewMetalExecutor("/fake/llama-server", "/tmp/models", newNopLogger())
+	a.executors["llama-server"] = NewMetalExecutor("/fake/llama-server", "/tmp/models", newNopLogger())
 
 	a.pressureBlocked["default/svc-a"] = true
 	a.lastPressureLevel = MemoryPressureCritical
@@ -431,7 +431,7 @@ func TestHandleMemoryPressure_IncrementsSkippedCounter(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			a := newPressureTestAgent(t)
 			a.config.EvictionEnabled = tc.evictionEnable
-			a.executor = stubExecutor{}
+			a.executors["llama-server"] = stubExecutor{}
 			a.registry = NewServiceRegistry(a.config.K8sClient, "", newNopLogger(), "")
 			tc.processes(a)
 
@@ -551,7 +551,7 @@ func TestHandleMemoryPressure_EmitsEvictedEvent(t *testing.T) {
 	high := newPressureTestISvc("svc-high", "high")
 	a := newPressureTestAgent(t, low, high)
 	a.config.EvictionEnabled = true
-	a.executor = stubExecutor{}
+	a.executors["llama-server"] = stubExecutor{}
 	a.registry = NewServiceRegistry(a.config.K8sClient, "", newNopLogger(), "")
 	rec := record.NewFakeRecorder(32)
 	a.config.EventRecorder = rec
@@ -596,7 +596,7 @@ func TestHandleMemoryPressure_EmitsEvictionSkippedWhenDisabled(t *testing.T) {
 	isvc := newPressureTestISvc("svc-low", "low")
 	a := newPressureTestAgent(t, isvc)
 	a.config.EvictionEnabled = false
-	a.executor = stubExecutor{}
+	a.executors["llama-server"] = stubExecutor{}
 	a.registry = NewServiceRegistry(a.config.K8sClient, "", newNopLogger(), "")
 	rec := record.NewFakeRecorder(32)
 	a.config.EventRecorder = rec
@@ -633,7 +633,7 @@ func TestHandleMemoryPressure_EmitsEvictionSkippedWhenDisabled(t *testing.T) {
 func TestEnsureProcess_EmitsRespawnBlockedEvent(t *testing.T) {
 	isvc := newPressureTestISvc("svc-a", "low")
 	a := newPressureTestAgent(t, isvc)
-	a.executor = NewMetalExecutor("/fake/llama-server", "/tmp/models", newNopLogger())
+	a.executors["llama-server"] = NewMetalExecutor("/fake/llama-server", "/tmp/models", newNopLogger())
 	rec := record.NewFakeRecorder(32)
 	a.config.EventRecorder = rec
 

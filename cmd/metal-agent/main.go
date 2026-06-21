@@ -321,9 +321,24 @@ func main() {
 	// TODO: Wire this logger into controller-runtime via ctrl.SetLogger(...) so
 	// Kubernetes client/controller-runtime logs share the same configuration.
 
-	// Resolve runtime-specific binary paths
-	switch cfg.Runtime {
-	case "omlx":
+	// Resolve runtime-specific binary paths. llama-server is always resolved
+	// because it is the default fallback runtime. Other runtimes are resolved
+	// when their binary path flag is set or when the agent's --runtime flag
+	// selects them, so the agent can host multiple runtimes concurrently
+	// (#525).
+	{
+		resolvedBin, err := resolveLlamaServerBin(llamaServerFlag)
+		if err != nil {
+			logger.Errorw("llama-server binary not found",
+				"searchPaths", defaultLlamaServerPaths,
+				"installHint", "brew install llama.cpp",
+				"error", err,
+			)
+			os.Exit(1)
+		}
+		cfg.LlamaServerBin = resolvedBin
+	}
+	if cfg.Runtime == "omlx" || cfg.OMLXBin != "" {
 		resolvedBin, err := resolveOMLXBin(cfg.OMLXBin)
 		if err != nil {
 			logger.Errorw("omlx binary not found",
@@ -334,11 +349,13 @@ func main() {
 			os.Exit(1)
 		}
 		cfg.OMLXBin = resolvedBin
-	case "ollama":
+	}
+	if cfg.Runtime == "ollama" {
 		// Ollama manages itself — no binary resolution needed.
 		// The agent will check if Ollama is running at startup via health check.
 		logger.Infow("using Ollama runtime", "port", cfg.OllamaPort)
-	case "vllm-swift":
+	}
+	if cfg.Runtime == "vllm-swift" || cfg.VLLMSwiftBin != "" {
 		resolvedBin, err := resolveVLLMSwiftBin(cfg.VLLMSwiftBin)
 		if err != nil {
 			logger.Errorw("vllm-swift binary not found",
@@ -349,7 +366,8 @@ func main() {
 			os.Exit(1)
 		}
 		cfg.VLLMSwiftBin = resolvedBin
-	case "mlx-server":
+	}
+	if cfg.Runtime == "mlx-server" || cfg.MLXServerBin != "" {
 		resolvedBin, err := resolveMLXServerBin(cfg.MLXServerBin)
 		if err != nil {
 			logger.Errorw("mlx-server binary not found",
@@ -361,18 +379,6 @@ func main() {
 			os.Exit(1)
 		}
 		cfg.MLXServerBin = resolvedBin
-	default:
-		cfg.Runtime = "llama-server"
-		resolvedBin, err := resolveLlamaServerBin(llamaServerFlag)
-		if err != nil {
-			logger.Errorw("llama-server binary not found",
-				"searchPaths", defaultLlamaServerPaths,
-				"installHint", "brew install llama.cpp",
-				"error", err,
-			)
-			os.Exit(1)
-		}
-		cfg.LlamaServerBin = resolvedBin
 	}
 
 	hostIP := cfg.HostIP
@@ -412,17 +418,21 @@ func main() {
 		logger.Errorw("failed to create model store directory", "path", cfg.ModelStorePath, "error", err)
 		os.Exit(1)
 	}
-	switch cfg.Runtime {
-	case "omlx":
+	// Log which runtimes are available. llama-server is always available
+	// (resolved above). Other runtimes are available when their binary
+	// path was resolved successfully.
+	logger.Infow("llama-server binary found", "path", cfg.LlamaServerBin)
+	if cfg.OMLXBin != "" {
 		logger.Infow("omlx binary found", "path", cfg.OMLXBin)
-	case "ollama":
+	}
+	if cfg.Runtime == "ollama" {
 		logger.Infow("using Ollama daemon", "port", cfg.OllamaPort)
-	case "vllm-swift":
+	}
+	if cfg.VLLMSwiftBin != "" {
 		logger.Infow("vllm-swift binary found", "path", cfg.VLLMSwiftBin)
-	case "mlx-server":
+	}
+	if cfg.MLXServerBin != "" {
 		logger.Infow("mlx-server binary found", "path", cfg.MLXServerBin)
-	default:
-		logger.Infow("llama-server binary found", "path", cfg.LlamaServerBin)
 	}
 
 	// Get Kubernetes client

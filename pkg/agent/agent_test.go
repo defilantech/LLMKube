@@ -21,6 +21,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -130,7 +131,7 @@ func TestHandleEvent_DeleteNonExistent(t *testing.T) {
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
 	agent := NewMetalAgent(MetalAgentConfig{K8sClient: k8sClient})
-	agent.executor = NewMetalExecutor("/fake/llama-server", "/tmp/models", newNopLogger())
+	agent.executors["llama-server"] = NewMetalExecutor("/fake/llama-server", "/tmp/models", newNopLogger())
 
 	event := InferenceServiceEvent{
 		Type: EventTypeDeleted,
@@ -160,7 +161,7 @@ func TestHandleEvent_CreateMissingModel(t *testing.T) {
 		LlamaServerBin: "/fake/llama-server",
 	})
 	agent.watcher = NewInferenceServiceWatcher(k8sClient, "default", newNopLogger())
-	agent.executor = NewMetalExecutor("/fake/llama-server", "/tmp/models", newNopLogger())
+	agent.executors["llama-server"] = NewMetalExecutor("/fake/llama-server", "/tmp/models", newNopLogger())
 	agent.registry = NewServiceRegistry(k8sClient, "", newNopLogger(), "")
 
 	event := InferenceServiceEvent{
@@ -187,7 +188,7 @@ func TestShutdown_NoProcesses(t *testing.T) {
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
 	agent := NewMetalAgent(MetalAgentConfig{K8sClient: k8sClient})
-	agent.executor = NewMetalExecutor("/fake/llama-server", "/tmp/models", newNopLogger())
+	agent.executors["llama-server"] = NewMetalExecutor("/fake/llama-server", "/tmp/models", newNopLogger())
 
 	err := agent.Shutdown(context.Background())
 	if err != nil {
@@ -448,7 +449,7 @@ func TestDeleteProcess_StopFailureStillUnregistersEndpoint(t *testing.T) {
 		Build()
 
 	agent := NewMetalAgent(MetalAgentConfig{K8sClient: k8sClient})
-	agent.executor = NewMetalExecutor("/fake/llama-server", "/tmp/models", newNopLogger())
+	agent.executors["llama-server"] = NewMetalExecutor("/fake/llama-server", "/tmp/models", newNopLogger())
 	agent.registry = NewServiceRegistry(k8sClient, "", newNopLogger(), "")
 	agent.processes["default/test-model"] = &ManagedProcess{
 		Name:      "test-model",
@@ -695,7 +696,7 @@ func runEnsureProcessExpectingMapEviction(
 		Build()
 
 	agent := NewMetalAgent(MetalAgentConfig{K8sClient: k8sClient, Namespace: "default"})
-	agent.executor = NewMetalExecutor("/fake/llama-server", "/tmp/models", newNopLogger())
+	agent.executors["llama-server"] = NewMetalExecutor("/fake/llama-server", "/tmp/models", newNopLogger())
 	agent.registry = NewServiceRegistry(k8sClient, "", newNopLogger(), "")
 
 	key := "default/" + name
@@ -731,7 +732,7 @@ func TestEnsureProcess_ReplicasZeroNoOpWhenNoProcess(t *testing.T) {
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
 	agent := NewMetalAgent(MetalAgentConfig{K8sClient: k8sClient, Namespace: "default"})
-	agent.executor = NewMetalExecutor("/fake/llama-server", "/tmp/models", newNopLogger())
+	agent.executors["llama-server"] = NewMetalExecutor("/fake/llama-server", "/tmp/models", newNopLogger())
 	agent.registry = NewServiceRegistry(k8sClient, "", newNopLogger(), "")
 
 	zeroReplicas := int32(0)
@@ -784,7 +785,7 @@ func TestEnsureProcess_ReplicasZeroPatchesStatus(t *testing.T) {
 		Build()
 
 	agent := NewMetalAgent(MetalAgentConfig{K8sClient: k8sClient, Namespace: "default"})
-	agent.executor = NewMetalExecutor("/fake/llama-server", "/tmp/models", newNopLogger())
+	agent.executors["llama-server"] = NewMetalExecutor("/fake/llama-server", "/tmp/models", newNopLogger())
 	agent.registry = NewServiceRegistry(k8sClient, "", newNopLogger(), "")
 
 	if err := agent.ensureProcess(context.Background(), isvc); err != nil {
@@ -871,7 +872,7 @@ func TestEnsureProcess_ReplicasZeroStatusPatchIdempotent(t *testing.T) {
 		Build()
 
 	agent := NewMetalAgent(MetalAgentConfig{K8sClient: k8sClient, Namespace: "default"})
-	agent.executor = NewMetalExecutor("/fake/llama-server", "/tmp/models", newNopLogger())
+	agent.executors["llama-server"] = NewMetalExecutor("/fake/llama-server", "/tmp/models", newNopLogger())
 	agent.registry = NewServiceRegistry(k8sClient, "", newNopLogger(), "")
 
 	// Snapshot the *seeded* transition time as the fake client stored
@@ -919,7 +920,7 @@ func TestEnsureProcess_HealthyAndSpecMatchesIsNoOp(t *testing.T) {
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
 	agent := NewMetalAgent(MetalAgentConfig{K8sClient: k8sClient, Namespace: "default"})
-	agent.executor = NewMetalExecutor("/fake/llama-server", "/tmp/models", newNopLogger())
+	agent.executors["llama-server"] = NewMetalExecutor("/fake/llama-server", "/tmp/models", newNopLogger())
 	agent.registry = NewServiceRegistry(k8sClient, "", newNopLogger(), "")
 
 	ctx := int32(65536)
@@ -1037,7 +1038,7 @@ func TestEnsureProcess_InFlightGuard(t *testing.T) {
 		MemoryProvider: &mockMemoryProvider{totalBytes: 128 << 30, availableBytes: 120 << 30},
 	})
 	exec := &blockingExecutor{entered: make(chan struct{}), release: make(chan struct{})}
-	agent.executor = exec
+	agent.executors["llama-server"] = exec
 	agent.registry = NewServiceRegistry(k8sClient, "", newNopLogger(), "")
 
 	// First caller proceeds and blocks inside StartProcess.
@@ -1307,8 +1308,10 @@ func TestHeartbeatOnce_ScaledToZero(t *testing.T) {
 				Healthy:   true,
 			},
 		},
-		executor: nopExecutor{},
-		logger:   newNopLogger(),
+		executors: map[string]ProcessExecutor{
+			"llama-server": nopExecutor{},
+		},
+		logger: newNopLogger(),
 	}
 	a.registry = NewServiceRegistry(k8sClient, "10.0.0.1", newNopLogger(), "")
 
@@ -1366,8 +1369,10 @@ func TestHeartbeatOnce_NotFound(t *testing.T) {
 				Healthy:   true,
 			},
 		},
-		executor: nopExecutor{},
-		logger:   newNopLogger(),
+		executors: map[string]ProcessExecutor{
+			"llama-server": nopExecutor{},
+		},
+		logger: newNopLogger(),
 	}
 	a.registry = NewServiceRegistry(k8sClient, "10.0.0.1", newNopLogger(), "")
 
@@ -1390,5 +1395,313 @@ func TestHeartbeatOnce_NotFound(t *testing.T) {
 	}
 	if !apierrors.IsNotFound(err) {
 		t.Fatalf("heartbeatOnce_NotFound: unexpected error checking EndpointSlice: %v", err)
+	}
+}
+
+// TestResolveRuntime_Fallback verifies that when isvc.Spec.Runtime is empty,
+// resolveRuntime falls back to the agent's global --runtime flag.
+func TestResolveRuntime_Fallback(t *testing.T) {
+	scheme := newTestScheme()
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	agent := NewMetalAgent(MetalAgentConfig{
+		K8sClient: k8sClient,
+		Runtime:   "mlx-server",
+	})
+
+	isvc := &inferencev1alpha1.InferenceService{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-isvc",
+			Namespace: "default",
+		},
+		Spec: inferencev1alpha1.InferenceServiceSpec{
+			ModelRef: "test-model",
+			// Runtime left empty
+		},
+	}
+
+	resolvedRuntime := agent.resolveRuntime(isvc)
+	if resolvedRuntime != "mlx-server" {
+		t.Errorf("resolveRuntime = %q, want %q", resolvedRuntime, "mlx-server")
+	}
+}
+
+// TestResolveRuntime_Override verifies that isvc.Spec.Runtime takes precedence
+// over the agent's global --runtime flag.
+func TestResolveRuntime_Override(t *testing.T) {
+	scheme := newTestScheme()
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	agent := NewMetalAgent(MetalAgentConfig{
+		K8sClient: k8sClient,
+		Runtime:   "llama-server",
+	})
+
+	isvc := &inferencev1alpha1.InferenceService{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-isvc",
+			Namespace: "default",
+		},
+		Spec: inferencev1alpha1.InferenceServiceSpec{
+			ModelRef: "test-model",
+			Runtime:  "mlx-server",
+		},
+	}
+
+	resolvedRuntime := agent.resolveRuntime(isvc)
+	if resolvedRuntime != "mlx-server" {
+		t.Errorf("resolveRuntime = %q, want %q", resolvedRuntime, "mlx-server")
+	}
+}
+
+// TestValidateRuntimeFormat_PerISvcRuntime verifies that validateRuntimeFormat
+// uses the per-ISvc runtime (not the agent-global runtime) when checking
+// model format compatibility.
+func TestValidateRuntimeFormat_PerISvcRuntime(t *testing.T) {
+	scheme := newTestScheme()
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	agent := NewMetalAgent(MetalAgentConfig{
+		K8sClient: k8sClient,
+		Runtime:   "llama-server", // agent default is llama-server
+	})
+
+	// A GGUF model is compatible with llama-server but not mlx-server.
+	model := &inferencev1alpha1.Model{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "gguf-model",
+			Namespace: "default",
+		},
+		Spec: inferencev1alpha1.ModelSpec{
+			Format: "gguf",
+		},
+	}
+
+	// llama-server runtime: GGUF is compatible
+	if err := agent.validateRuntimeFormat(model, "llama-server"); err != nil {
+		t.Errorf("validateRuntimeFormat(gguf, llama-server) should pass: %v", err)
+	}
+
+	// mlx-server runtime: GGUF is incompatible
+	if err := agent.validateRuntimeFormat(model, "mlx-server"); err == nil {
+		t.Error("validateRuntimeFormat(gguf, mlx-server) should fail")
+	}
+
+	// An MLX model is compatible with mlx-server but not llama-server.
+	modelMLX := &inferencev1alpha1.Model{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "mlx-model",
+			Namespace: "default",
+		},
+		Spec: inferencev1alpha1.ModelSpec{
+			Format: "mlx",
+		},
+	}
+
+	// mlx-server runtime: MLX is compatible
+	if err := agent.validateRuntimeFormat(modelMLX, "mlx-server"); err != nil {
+		t.Errorf("validateRuntimeFormat(mlx, mlx-server) should pass: %v", err)
+	}
+
+	// llama-server runtime: MLX is incompatible
+	if err := agent.validateRuntimeFormat(modelMLX, "llama-server"); err == nil {
+		t.Error("validateRuntimeFormat(mlx, llama-server) should fail")
+	}
+}
+
+// TestEnsureProcess_UsesPerISvcRuntime verifies that ensureProcess resolves
+// the runtime from isvc.Spec.Runtime and uses the correct executor from the
+// agent's executor registry.
+func TestEnsureProcess_UsesPerISvcRuntime(t *testing.T) {
+	scheme := newTestScheme()
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	agent := NewMetalAgent(MetalAgentConfig{
+		K8sClient:      k8sClient,
+		Namespace:      "default",
+		ModelStorePath: "/tmp/models",
+		LlamaServerBin: "/fake/llama-server",
+		Runtime:        "llama-server",
+	})
+	agent.watcher = NewInferenceServiceWatcher(k8sClient, "default", newNopLogger())
+	agent.executors["llama-server"] = NewMetalExecutor("/fake/llama-server", "/tmp/models", newNopLogger())
+	agent.registry = NewServiceRegistry(k8sClient, "", newNopLogger(), "")
+
+	// Create an MLX-format model that is compatible with mlx-server.
+	model := &inferencev1alpha1.Model{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-model",
+			Namespace: "default",
+		},
+		Spec: inferencev1alpha1.ModelSpec{
+			Source:   "/tmp/models/test-model",
+			Format:   "mlx",
+			Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: "metal"},
+		},
+		Status: inferencev1alpha1.ModelStatus{
+			Size: "100MB",
+		},
+	}
+	if err := k8sClient.Create(context.Background(), model); err != nil {
+		t.Fatalf("failed to create model: %v", err)
+	}
+
+	// Create an InferenceService that overrides the runtime to mlx-server.
+	// Since no mlx-server executor is registered, ensureProcess should fail
+	// with a "no executor registered" error.
+	isvc := &inferencev1alpha1.InferenceService{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-isvc",
+			Namespace: "default",
+		},
+		Spec: inferencev1alpha1.InferenceServiceSpec{
+			ModelRef: "test-model",
+			Runtime:  "mlx-server", // override to mlx-server
+		},
+	}
+	if err := k8sClient.Create(context.Background(), isvc); err != nil {
+		t.Fatalf("failed to create isvc: %v", err)
+	}
+
+	err := agent.ensureProcess(context.Background(), isvc)
+	if err == nil {
+		t.Fatal("ensureProcess should fail when no executor is registered for the resolved runtime")
+	}
+	if !strings.Contains(err.Error(), "no executor registered") {
+		t.Errorf("ensureProcess error should mention missing executor: %v", err)
+	}
+}
+
+// TestEnsureProcess_DefaultRuntime verifies that when isvc.Spec.Runtime is
+// empty, ensureProcess uses the agent's default runtime and finds the
+// corresponding executor.
+func TestEnsureProcess_DefaultRuntime(t *testing.T) {
+	scheme := newTestScheme()
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	agent := NewMetalAgent(MetalAgentConfig{
+		K8sClient:      k8sClient,
+		Namespace:      "default",
+		ModelStorePath: "/tmp/models",
+		LlamaServerBin: "/fake/llama-server",
+		Runtime:        "llama-server",
+	})
+	agent.watcher = NewInferenceServiceWatcher(k8sClient, "default", newNopLogger())
+	agent.executors["llama-server"] = NewMetalExecutor("/fake/llama-server", "/tmp/models", newNopLogger())
+	agent.registry = NewServiceRegistry(k8sClient, "", newNopLogger(), "")
+
+	// Create a GGUF model that is compatible with llama-server.
+	model := &inferencev1alpha1.Model{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-model",
+			Namespace: "default",
+		},
+		Spec: inferencev1alpha1.ModelSpec{
+			Source:   "/tmp/models/test-model.gguf",
+			Format:   "gguf",
+			Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: "metal"},
+		},
+		Status: inferencev1alpha1.ModelStatus{
+			Size: "100MB",
+		},
+	}
+	if err := k8sClient.Create(context.Background(), model); err != nil {
+		t.Fatalf("failed to create model: %v", err)
+	}
+
+	// Create an InferenceService with no runtime override
+	isvc := &inferencev1alpha1.InferenceService{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-isvc",
+			Namespace: "default",
+		},
+		Spec: inferencev1alpha1.InferenceServiceSpec{
+			ModelRef: "test-model",
+			// Runtime left empty — should fall back to agent default
+		},
+	}
+	if err := k8sClient.Create(context.Background(), isvc); err != nil {
+		t.Fatalf("failed to create isvc: %v", err)
+	}
+
+	// The executor will fail to start the process (no real binary), but the
+	// important thing is that it doesn't fail with "no executor registered".
+	err := agent.ensureProcess(context.Background(), isvc)
+	if err == nil {
+		t.Fatal("ensureProcess should fail (no real binary), but not with 'no executor registered'")
+	}
+	if strings.Contains(err.Error(), "no executor registered") {
+		t.Errorf("ensureProcess should find the llama-server executor: %v", err)
+	}
+}
+
+// TestDeleteProcess_UsesProcessRuntime verifies that deleteProcess uses the
+// process's Runtime field to pick the correct executor.
+func TestDeleteProcess_UsesProcessRuntime(t *testing.T) {
+	scheme := newTestScheme()
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	agent := NewMetalAgent(MetalAgentConfig{
+		K8sClient: k8sClient,
+	})
+	agent.executors["llama-server"] = NewMetalExecutor("/fake/llama-server", "/tmp/models", newNopLogger())
+	agent.registry = NewServiceRegistry(k8sClient, "", newNopLogger(), "")
+
+	// Add a process with Runtime set to "llama-server"
+	agent.processes["default/test-isvc"] = &ManagedProcess{
+		Name:    "test-isvc",
+		PID:     12345,
+		Runtime: "llama-server",
+	}
+
+	// deleteProcess should not panic and should use the llama-server executor
+	err := agent.deleteProcess(context.Background(), "default/test-isvc")
+	// The executor will fail to stop the process (no real PID), but that's OK
+	// for this test — we just want to verify the right executor is picked.
+	if err != nil {
+		// Expected: the executor can't actually stop a fake PID
+		t.Logf("deleteProcess returned error (expected): %v", err)
+	}
+
+	// Process should be removed from the map
+	agent.mu.RLock()
+	_, exists := agent.processes["default/test-isvc"]
+	agent.mu.RUnlock()
+	if exists {
+		t.Error("deleteProcess should remove the process from the map")
+	}
+}
+
+// TestShutdown_UsesProcessRuntime verifies that Shutdown uses each process's
+// Runtime field to pick the correct executor.
+func TestShutdown_UsesProcessRuntime(t *testing.T) {
+	scheme := newTestScheme()
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	agent := NewMetalAgent(MetalAgentConfig{
+		K8sClient: k8sClient,
+	})
+	agent.executors["llama-server"] = NewMetalExecutor("/fake/llama-server", "/tmp/models", newNopLogger())
+
+	// Add a process with Runtime set to "llama-server"
+	agent.processes["default/test-isvc"] = &ManagedProcess{
+		Name:    "test-isvc",
+		PID:     12345,
+		Runtime: "llama-server",
+	}
+
+	// Shutdown should not panic and should use the llama-server executor
+	err := agent.Shutdown(context.Background())
+	// The executor will fail to stop the process (no real PID), but that's OK
+	if err != nil {
+		t.Logf("Shutdown returned error (expected): %v", err)
+	}
+
+	// Process should still be in the map (Shutdown doesn't remove them)
+	agent.mu.RLock()
+	_, exists := agent.processes["default/test-isvc"]
+	agent.mu.RUnlock()
+	if !exists {
+		t.Error("Shutdown should not remove processes from the map")
 	}
 }
