@@ -2844,7 +2844,7 @@ var _ = Describe("Context Size Configuration", func() {
 			Expect(selector).To(HaveKeyWithValue("inference.llmkube.dev/service", "selector-stability-service"))
 		})
 
-		It("should leave annotations nil and pod labels operator-only when both fields are unset", func() {
+		It("should set only the operator disruption annotation and operator-only pod labels when both fields are unset", func() {
 			replicas := int32(1)
 			isvc := &inferencev1alpha1.InferenceService{
 				ObjectMeta: metav1.ObjectMeta{
@@ -2861,7 +2861,11 @@ var _ = Describe("Context Size Configuration", func() {
 
 			deployment := reconciler.constructDeployment(isvc, model, 1)
 
-			Expect(deployment.Spec.Template.Annotations).To(BeNil())
+			// Startup disruption protection is on by default (#660): a not-yet-Ready
+			// service gets only the karpenter.sh/do-not-disrupt annotation, with no
+			// user annotations bleeding in.
+			Expect(deployment.Spec.Template.Annotations).To(HaveLen(1))
+			Expect(deployment.Spec.Template.Annotations).To(HaveKeyWithValue("karpenter.sh/do-not-disrupt", "true"))
 			podLabels := deployment.Spec.Template.Labels
 			Expect(podLabels).To(HaveLen(4))
 			Expect(podLabels).To(HaveKey("app"))
