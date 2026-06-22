@@ -70,6 +70,8 @@ LLMs are increasingly composed: an agent does some work on a fast local model, h
 
 The controller compiles `ModelRouter.spec` into a JSON config, writes it to a `ConfigMap`, and reconciles a `Deployment` plus `Service` that mounts the ConfigMap and runs the [router-proxy binary](https://github.com/defilantech/LLMKube/blob/main/cmd/router-proxy). The ConfigMap content is hashed and the hash lands on the pod template annotation, so any spec change triggers a clean rollout.
 
+Since every spec change re-rolls the pods, set `spec.proxy.revisionHistoryLimit` to cap how many old `ReplicaSet`s are kept (`0` keeps none); unset uses the Kubernetes default of 10. `InferenceService` has the same knob at `spec.revisionHistoryLimit`.
+
 ## The fail-closed gate
 
 The headline differentiator. A rule that matches sensitive classifications (default: `pii`, `phi`) and is marked `failClosed: true` has two guarantees:

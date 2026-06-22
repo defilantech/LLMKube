@@ -453,6 +453,33 @@ func TestRouterDeploymentBuilderRespectsOverrides(t *testing.T) {
 	}
 }
 
+// TestRouterDeploymentBuilderRevisionHistoryLimit checks that
+// spec.proxy.revisionHistoryLimit reaches the Deployment, and that
+// omitting it leaves the field nil (apiserver default).
+func TestRouterDeploymentBuilderRevisionHistoryLimit(t *testing.T) {
+	r := &ModelRouterReconciler{RouterProxyImage: "ghcr.io/test/router-proxy:v1"}
+
+	depDefault := r.newRouterDeployment(canonicalModelRouter(), "hash")
+	if depDefault.Spec.RevisionHistoryLimit != nil {
+		t.Errorf("revisionHistoryLimit = %v, want nil when unset",
+			*depDefault.Spec.RevisionHistoryLimit)
+	}
+
+	for _, want := range []int32{0, 3} {
+		mr := canonicalModelRouter()
+		mr.Spec.Proxy = &inferencev1alpha1.RouterProxySpec{
+			RevisionHistoryLimit: ptrInt32B(want),
+		}
+		dep := r.newRouterDeployment(mr, "hash")
+		if dep.Spec.RevisionHistoryLimit == nil {
+			t.Fatalf("revisionHistoryLimit = nil, want %d", want)
+		}
+		if got := *dep.Spec.RevisionHistoryLimit; got != want {
+			t.Errorf("revisionHistoryLimit = %d, want %d", got, want)
+		}
+	}
+}
+
 // TestRouterDeploymentBuilderQuarantineDuration covers the
 // spec.proxy.quarantineDuration plumbing: the controller has to
 // render the value as a --quarantine-duration flag on the proxy

@@ -1408,6 +1408,14 @@ spec:
                     description: Memory requests (e.g., "4Gi")
                     type: string
                 type: object
+              revisionHistoryLimit:
+                description: |-
+                  RevisionHistoryLimit caps how many old ReplicaSets the inference
+                  Deployment keeps for rollback. Unset uses the Kubernetes default (10);
+                  0 keeps none.
+                format: int32
+                minimum: 0
+                type: integer
               ropeScaling:
                 description: |-
                   RopeScaling configures RoPE-based context extension so a model can be

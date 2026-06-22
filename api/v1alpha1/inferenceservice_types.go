@@ -73,6 +73,13 @@ type InferenceServiceSpec struct {
 	// +optional
 	Replicas *int32 `json:"replicas,omitempty"`
 
+	// RevisionHistoryLimit caps how many old ReplicaSets the inference
+	// Deployment keeps for rollback. Unset uses the Kubernetes default (10);
+	// 0 keeps none.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	RevisionHistoryLimit *int32 `json:"revisionHistoryLimit,omitempty"`
+
 	// Autoscaling configures horizontal pod autoscaling for the inference service.
 	// When set, the controller creates and manages an HPA resource targeting the
 	// inference Deployment. Requires Prometheus Adapter for custom metrics.

@@ -59,6 +59,7 @@ func (r *ModelRouterReconciler) reconcileRouterDeployment(
 	// labels). Operator-owned keys win on collision; foreign keys
 	// pass through. Fixes #456.
 	existing.Spec.Replicas = desired.Spec.Replicas
+	existing.Spec.RevisionHistoryLimit = desired.Spec.RevisionHistoryLimit
 	existing.Spec.Template.Spec = desired.Spec.Template.Spec
 	existing.Spec.Template.Labels = mergePreservingExternal(
 		existing.Spec.Template.Labels,
@@ -87,11 +88,13 @@ func (r *ModelRouterReconciler) newRouterDeployment(
 	image := r.routerProxyImage()
 	var resources corev1.ResourceRequirements
 	var imagePullSecrets []corev1.LocalObjectReference
+	var revisionHistoryLimit *int32
 
 	if mr.Spec.Proxy != nil {
 		if mr.Spec.Proxy.Replicas != nil {
 			replicas = *mr.Spec.Proxy.Replicas
 		}
+		revisionHistoryLimit = mr.Spec.Proxy.RevisionHistoryLimit
 		if mr.Spec.Proxy.Image != "" {
 			image = mr.Spec.Proxy.Image
 		}
@@ -121,8 +124,9 @@ func (r *ModelRouterReconciler) newRouterDeployment(
 			Labels:    routerProxyLabels(mr),
 		},
 		Spec: appsv1.DeploymentSpec{
-			Replicas: &replicas,
-			Selector: &metav1.LabelSelector{MatchLabels: podLabels},
+			Replicas:             &replicas,
+			RevisionHistoryLimit: revisionHistoryLimit,
+			Selector:             &metav1.LabelSelector{MatchLabels: podLabels},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels:      podLabels,

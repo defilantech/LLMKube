@@ -512,6 +512,64 @@ var _ = Describe("Multi-GPU Deployment Construction", func() {
 		})
 	})
 
+	Context("when verifying revisionHistoryLimit configuration", func() {
+		var (
+			reconciler *InferenceServiceReconciler
+			model      *inferencev1alpha1.Model
+		)
+
+		BeforeEach(func() {
+			reconciler = &InferenceServiceReconciler{
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
+				InitContainerImage: "docker.io/curlimages/curl:8.18.0",
+				DefaultFSGroup:     102,
+			}
+			model = &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "rhl-model",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source:       "https://example.com/model.gguf",
+					Format:       "gguf",
+					Quantization: "Q4_K_M",
+					Hardware:     &inferencev1alpha1.HardwareSpec{Accelerator: "cpu"},
+				},
+				Status: inferencev1alpha1.ModelStatus{Phase: "Ready"},
+			}
+		})
+
+		newISVC := func(limit *int32) *inferencev1alpha1.InferenceService {
+			replicas := int32(1)
+			return &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "rhl-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef:             "rhl-model",
+					Replicas:             &replicas,
+					Image:                "ghcr.io/ggml-org/llama.cpp:server",
+					RevisionHistoryLimit: limit,
+				},
+			}
+		}
+
+		It("should leave the field nil when unset (apiserver default applies)", func() {
+			deployment := reconciler.constructDeployment(newISVC(nil), model, 1)
+			Expect(deployment.Spec.RevisionHistoryLimit).To(BeNil())
+		})
+
+		It("should plumb an explicit value (including 0) onto the Deployment", func() {
+			for _, want := range []int32{0, 5} {
+				deployment := reconciler.constructDeployment(newISVC(&want), model, 1)
+				Expect(deployment.Spec.RevisionHistoryLimit).NotTo(BeNil())
+				Expect(*deployment.Spec.RevisionHistoryLimit).To(Equal(want))
+			}
+		})
+	})
+
 	Context("when verifying tolerations and node selectors", func() {
 		var (
 			reconciler *InferenceServiceReconciler

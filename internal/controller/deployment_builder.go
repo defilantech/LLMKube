@@ -267,7 +267,8 @@ func (r *InferenceServiceReconciler) constructDeployment(
 			Labels:    labels,
 		},
 		Spec: appsv1.DeploymentSpec{
-			Replicas: &replicas,
+			Replicas:             &replicas,
+			RevisionHistoryLimit: isvc.Spec.RevisionHistoryLimit,
 			Selector: &metav1.LabelSelector{
 				// Selector uses the immutable subset only; the model label
 				// is allowed to change when the user edits spec.modelRef
