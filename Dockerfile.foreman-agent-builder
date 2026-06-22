@@ -1,4 +1,5 @@
-# Foreman coder-Job builder image (#620).
+# Foreman coder-Job builder image (#620) and in-cluster foreman-agent
+# toolchain image (#797).
 #
 # The coder Job (pkg/foreman/agent/tools/coder_job_template.yaml) runs
 # `foreman-agent run-task`, whose `bash` tool shells out to
@@ -6,6 +7,10 @@
 # full toolchain (go + make + git), which the published, intentionally
 # minimal Dockerfile.foreman-agent (alpine + git, no go/make) does not
 # carry. This image bundles the foreman-agent binary with that toolchain.
+#
+# #797: the in-cluster foreman-agent also needs golangci-lint and
+# controller-gen so its fast gate can run gofmt / go vet / go build /
+# golangci-lint / go test without submitting a separate gate Job.
 #
 # Two stages:
 #   1. builder -- compile the static foreman-agent binary, identical to
@@ -66,6 +71,20 @@ RUN curl -fsSL "https://get.helm.sh/helm-${HELM_VERSION}-linux-${TARGETARCH:-amd
     && chmod +x /usr/local/bin/helm \
     && rm -rf /tmp/linux-* \
     && helm version
+
+# golangci-lint: the in-cluster foreman-agent fast gate runs
+# `golangci-lint run` as part of its verification. Pinned to the same
+# version the Makefile uses (GOLANGCI_LINT_VERSION).
+ARG GOLANGCI_LINT_VERSION=v2.12.2
+RUN go install "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION}" \
+    && golangci-lint version
+
+# controller-gen: the in-cluster foreman-agent fast gate may need to
+# regenerate CRDs / DeepCopy methods as part of its verification. Pinned
+# to the same version the Makefile uses (CONTROLLER_TOOLS_VERSION).
+ARG CONTROLLER_TOOLS_VERSION=v0.19.0
+RUN go install "sigs.k8s.io/controller-tools/cmd/controller-gen@${CONTROLLER_TOOLS_VERSION}" \
+    && controller-gen --version
 
 # /usr/local/bin is on PATH in the golang image, so the template's bare
 # `command: ["foreman-agent"]` resolves here.

@@ -344,9 +344,11 @@ build-router-proxy: fmt vet ## Build router-proxy binary into bin/.
 # cluster and for the helm-chart CI's smoke install.
 FOREMAN_OPERATOR_IMG     ?= ghcr.io/defilantech/llmkube-foreman-operator:dev
 FOREMAN_AGENT_IMG        ?= ghcr.io/defilantech/llmkube-foreman-agent:dev
-# Coder-Job builder image (#620): foreman-agent binary + go/make/git
-# toolchain on the gate's golang:1.26 base, so the in-Job coder can run
-# `make fmt vet lint test`. Referenced by Agent.spec.execution.image.
+# Coder-Job builder image (#620) and in-cluster foreman-agent toolchain
+# image (#797): foreman-agent binary + go/make/git/golangci-lint/
+# controller-gen on the gate's golang:1.26 base, so the in-Job coder
+# and the in-cluster foreman-agent fast gate can run `make fmt vet lint
+# test`. Referenced by Agent.spec.execution.image.
 FOREMAN_AGENT_BUILDER_IMG ?= ghcr.io/defilantech/llmkube-foreman-agent-builder:dev
 
 .PHONY: docker-build-foreman-operator
@@ -358,7 +360,7 @@ docker-build-foreman-agent: ## Build docker image for the foreman-agent.
 	$(CONTAINER_TOOL) build -f Dockerfile.foreman-agent -t ${FOREMAN_AGENT_IMG} .
 
 .PHONY: docker-build-foreman-agent-builder
-docker-build-foreman-agent-builder: ## Build the coder-Job builder image (foreman-agent + go/make/git).
+docker-build-foreman-agent-builder: ## Build the coder-Job builder image (foreman-agent + go/make/git/golangci-lint/controller-gen).
 	$(CONTAINER_TOOL) build -f Dockerfile.foreman-agent-builder -t ${FOREMAN_AGENT_BUILDER_IMG} .
 
 .PHONY: docker-push-foreman-operator
