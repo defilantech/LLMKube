@@ -53,6 +53,9 @@ spec:
         - --model-cache-storage-class={{ .Values.modelCache.storageClass }}
         {{- end }}
         - --model-cache-access-mode={{ .Values.modelCache.accessMode }}
+        {{- else }}
+        # Empty path disables caching (the flag defaults to /models otherwise).
+        - --model-cache-path=
         {{- end }}
         - --init-container-image={{ include "llmkube.initContainerImage" . }}
         # The default value is set in values.yaml. We do NOT use `| default 102`

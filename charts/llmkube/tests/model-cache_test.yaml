@@ -67,6 +67,23 @@ tests:
           path: spec.template.spec.containers[0].args
           content: --model-cache-mode=perService
 
+  - it: passes an empty model-cache-path to disable caching when disabled
+    template: deployment.yaml
+    set:
+      modelCache.enabled: false
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: "--model-cache-path="
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --model-cache-path=/models
+      - notContains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: model-cache
+            mountPath: /models
+
   # In the default shared mode the chart creates the single cluster-wide PVC so
   # all InferenceServices share one cache and `cache list` can inspect it.
   - it: renders the shared PVC in shared mode (default)
