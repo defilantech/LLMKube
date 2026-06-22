@@ -133,6 +133,19 @@ Point any OpenAI-compatible client at that URL and it just works. Headers that c
 | `x-llmkube-task-complexity: complex` | Matches `complex-to-cloud` rule; tries Opus first, falls back to Qwen on 5xx. |
 | (no headers) | Falls through to `defaultRoute: local-qwen`. |
 
+## Default-route strategy
+
+`defaultRouteStrategy` controls what happens to a request that matches no rule, before the `defaultRoute` fallback applies:
+
+- **`Static`** (default) routes every unmatched request to `defaultRoute`.
+- **`BackendNameMatch`** first checks whether the request's `model` field exactly equals a backend `name`; if so, it routes straight to that backend. Only when no backend name matches does it fall back to `defaultRoute`. This lets clients address a backend directly (`{"model": "cloud-opus"}`) without writing a pass-through rule for each one.
+
+The lookup is against backend `name` — the identifier you publish to clients — never the upstream provider `model`, so the proxied API surface stays on its own side of the boundary. Explicit rules always win: name matching only fires when no rule accepted the request, and it never bypasses a `failClosed` rule.
+
+`BackendNameMatch` widens the trust boundary deliberately: every backend, including cloud-tier ones, becomes directly addressable by any client that names it. That is the point — it lets a single flag replace a per-backend passthrough rule for each model you want clients to reach by name. It does not weaken the fail-closed gate, because `failClosed` rules are ordinary rules and are evaluated first: a sensitive request that matches such a rule never reaches the name-match step. The same caveat as `defaultRoute` applies, though — a sensitive request that matches *no* rule will fall through to name matching (and then `defaultRoute`) exactly as it would fall through to `defaultRoute` under `Static`. Per-rule fail-closed protection is not a global PII-egress invariant; if you route sensitive classifications, gate them with an explicit `failClosed` rule.
+
+A request whose model names a backend that is currently unhealthy fails fast (HTTP 502/503) rather than silently rerouting to `defaultRoute` — naming a backend is a request for *that* backend, and answering from a different model the client did not ask for would be worse than an honest error. This matches how an explicit single-backend rule behaves on backend outage.
+
 ## Composition with LiteLLM
 
 LLMKube does not replace [LiteLLM](https://github.com/BerriAI/litellm). For organizations already running a LiteLLM proxy as their cloud-provider abstraction, point a `ModelRouter` external backend at it:

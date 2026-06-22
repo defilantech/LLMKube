@@ -64,9 +64,10 @@ func (r *ModelRouterReconciler) compileRouterConfig(
 	mr *inferencev1alpha1.ModelRouter,
 ) (*compiledConfig, error) {
 	out := &router.Config{
-		DefaultRoute: mr.Spec.DefaultRoute,
-		Backends:     make([]router.Backend, 0, len(mr.Spec.Backends)),
-		Rules:        make([]router.Rule, 0, len(mr.Spec.Rules)),
+		DefaultRoute:         mr.Spec.DefaultRoute,
+		DefaultRouteStrategy: string(mr.Spec.DefaultRouteStrategy),
+		Backends:             make([]router.Backend, 0, len(mr.Spec.Backends)),
+		Rules:                make([]router.Rule, 0, len(mr.Spec.Rules)),
 	}
 	statuses := make([]inferencev1alpha1.BackendStatus, 0, len(mr.Spec.Backends))
 	var warnings []string

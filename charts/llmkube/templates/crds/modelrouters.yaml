@@ -251,6 +251,20 @@ spec:
                   DefaultRoute names a backend used when no rule matches.
                   Must reference the Name of an entry in Backends.
                 type: string
+              defaultRouteStrategy:
+                default: Static
+                description: |-
+                  DefaultRouteStrategy decides what happens when no rule matches.
+                  "Static" (default) routes to DefaultRoute. "BackendNameMatch" first
+                  tries to match the request's model to a backend Name, falling back to
+                  DefaultRoute only if none matches. BackendNameMatch makes every backend,
+                  including cloud-tier ones, directly addressable by name; sensitive-data
+                  protection still relies on a matching failClosed rule, which is evaluated
+                  first and therefore continues to gate before any name match.
+                enum:
+                - Static
+                - BackendNameMatch
+                type: string
               endpoint:
                 description: |-
                   Endpoint defines the Kubernetes Service the router-proxy is exposed
@@ -714,8 +728,9 @@ spec:
               rules:
                 description: |-
                   Rules are evaluated in declaration order. The first matching rule wins.
-                  If no rule matches, DefaultRoute is used. If neither a matching rule
-                  nor DefaultRoute is set, the request is rejected with HTTP 503.
+                  If no rule matches, the fallback is governed by DefaultRouteStrategy,
+                  ending at DefaultRoute. If nothing resolves, the request is rejected
+                  with HTTP 503.
                 items:
                   description: RouterRule pairs a match expression with a routing
                     action.

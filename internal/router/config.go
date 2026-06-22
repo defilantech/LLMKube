@@ -30,6 +30,18 @@ import (
 	"time"
 )
 
+// Default-route strategies. These mirror the CRD enum and decide what the
+// matcher does for a request that no rule accepted.
+const (
+	// DefaultRouteStrategyStatic routes unmatched requests straight to
+	// DefaultRoute. The zero value, so an absent field behaves this way.
+	DefaultRouteStrategyStatic = "Static"
+
+	// DefaultRouteStrategyBackendNameMatch tries to match the request model
+	// to a backend Name before falling back to DefaultRoute.
+	DefaultRouteStrategyBackendNameMatch = "BackendNameMatch"
+)
+
 // Config is the on-disk representation read by the router-proxy. The
 // controller produces this from a ModelRouter spec; the wire shape is a
 // stable contract between the two components.
@@ -43,6 +55,12 @@ type Config struct {
 
 	// DefaultRoute names the backend used when no rule matches.
 	DefaultRoute string `json:"defaultRoute,omitempty"`
+
+	// DefaultRouteStrategy decides how unmatched requests resolve before
+	// DefaultRoute. Empty or "Static" routes straight to DefaultRoute;
+	// "BackendNameMatch" first tries to match the request model to a backend
+	// Name. See the DefaultRouteStrategy* constants.
+	DefaultRouteStrategy string `json:"defaultRouteStrategy,omitempty"`
 
 	// Policy holds cross-cutting controls (classification, audit). Budget
 	// enforcement and persistence land in #434 / #440.
@@ -217,6 +235,12 @@ func (c *Config) Validate() error {
 	}
 	if c.DefaultRoute != "" && !names[c.DefaultRoute] {
 		return fmt.Errorf("defaultRoute %q does not name an existing backend", c.DefaultRoute)
+	}
+	switch c.DefaultRouteStrategy {
+	case "", DefaultRouteStrategyStatic, DefaultRouteStrategyBackendNameMatch:
+	default:
+		return fmt.Errorf("defaultRouteStrategy %q must be %q or %q",
+			c.DefaultRouteStrategy, DefaultRouteStrategyStatic, DefaultRouteStrategyBackendNameMatch)
 	}
 	for i, r := range c.Rules {
 		if r.Name == "" {

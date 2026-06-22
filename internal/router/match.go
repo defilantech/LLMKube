@@ -77,9 +77,11 @@ func NewMatcher(cfg *Config) *Matcher {
 }
 
 // Match evaluates the rule set against the request features and returns
-// the routing decision. If no rule matches and DefaultRoute is empty,
-// returns a MatchResult with nil Backends, which the proxy translates to
-// HTTP 503.
+// the routing decision. If no rule matches, the fallback depends on
+// DefaultRouteStrategy: BackendNameMatch first tries to resolve the request
+// model to a backend Name, then both strategies fall back to DefaultRoute.
+// If nothing resolves, returns a MatchResult with nil Backends, which the
+// proxy translates to HTTP 503.
 func (m *Matcher) Match(features *RequestFeatures) MatchResult {
 	for i := range m.cfg.Rules {
 		rule := &m.cfg.Rules[i]
@@ -91,6 +93,19 @@ func (m *Matcher) Match(features *RequestFeatures) MatchResult {
 			Backends:   rule.Route.Backends,
 			Strategy:   strategyOrDefault(rule.Route.Strategy),
 			FailClosed: rule.FailClosed,
+		}
+	}
+
+	// No rule matched. Under BackendNameMatch, try to address a backend
+	// directly by Name using the request model before falling back to
+	// DefaultRoute. The lookup is against backend Name (our client-facing
+	// identifier), never the upstream provider Model.
+	if m.cfg.DefaultRouteStrategy == DefaultRouteStrategyBackendNameMatch && features.Model != "" {
+		if b := m.backendsByName[features.Model]; b != nil {
+			return MatchResult{
+				Backends: []string{b.Name},
+				Strategy: strategyPrimaryFallback,
+			}
 		}
 	}
 

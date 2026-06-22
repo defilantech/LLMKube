@@ -143,3 +143,77 @@ func TestMatchFirstRuleWins(t *testing.T) {
 		t.Errorf("expected first rule to win, got %v", got.Rule)
 	}
 }
+
+func TestMatchBackendNameMatchAddressesBackendByName(t *testing.T) {
+	cfg := validConfig()
+	cfg.DefaultRouteStrategy = DefaultRouteStrategyBackendNameMatch
+	// "public" classification matches no rule; model names a backend, so
+	// BackendNameMatch routes there instead of falling back to DefaultRoute.
+	got := NewMatcher(cfg).Match(&RequestFeatures{Classification: "public", Model: "cloud-opus"})
+	if got.Rule != nil {
+		t.Errorf("expected no rule match, got %q", got.Rule.Name)
+	}
+	if len(got.Backends) != 1 || got.Backends[0] != "cloud-opus" {
+		t.Errorf("expected name match to cloud-opus, got %v", got.Backends)
+	}
+	if got.Strategy != strategyPrimaryFallback {
+		t.Errorf("strategy = %q, want primary-fallback", got.Strategy)
+	}
+}
+
+func TestMatchBackendNameMatchFallsBackToDefault(t *testing.T) {
+	cfg := validConfig()
+	cfg.DefaultRouteStrategy = DefaultRouteStrategyBackendNameMatch
+	// Model names no backend, so it falls through to DefaultRoute.
+	got := NewMatcher(cfg).Match(&RequestFeatures{Classification: "public", Model: "ghost-model"})
+	if len(got.Backends) != 1 || got.Backends[0] != "local-qwen" {
+		t.Errorf("expected fallback to default local-qwen, got %v", got.Backends)
+	}
+}
+
+func TestMatchBackendNameMatchDoesNotOverrideRules(t *testing.T) {
+	cfg := validConfig()
+	cfg.DefaultRouteStrategy = DefaultRouteStrategyBackendNameMatch
+	// A matching rule wins even when the model also names a backend; name
+	// matching only fires when no rule accepts the request.
+	got := NewMatcher(cfg).Match(&RequestFeatures{Classification: "pii", Model: "cloud-opus"})
+	if got.Rule == nil || got.Rule.Name != "pii-stays-local" {
+		t.Errorf("expected pii rule to win over name match, got %v", got.Rule)
+	}
+}
+
+func TestMatchStaticIgnoresBackendName(t *testing.T) {
+	cfg := validConfig()
+	cfg.DefaultRouteStrategy = DefaultRouteStrategyStatic
+	// Under Static, a model that names a backend is irrelevant; unmatched
+	// requests go straight to DefaultRoute.
+	got := NewMatcher(cfg).Match(&RequestFeatures{Classification: "public", Model: "cloud-opus"})
+	if len(got.Backends) != 1 || got.Backends[0] != "local-qwen" {
+		t.Errorf("expected static default to local-qwen, got %v", got.Backends)
+	}
+}
+
+func TestMatchBackendNameMatchNoDefaultReturns503(t *testing.T) {
+	cfg := validConfig()
+	cfg.Rules = nil
+	cfg.DefaultRoute = ""
+	cfg.DefaultRouteStrategy = DefaultRouteStrategyBackendNameMatch
+	// No rule, no name match, no DefaultRoute: nothing resolves, which the
+	// proxy surfaces as HTTP 503.
+	got := NewMatcher(cfg).Match(&RequestFeatures{Model: "ghost-model"})
+	if len(got.Backends) != 0 {
+		t.Errorf("expected no backends (503), got %v", got.Backends)
+	}
+}
+
+func TestMatchBackendNameMatchEmptyModelFallsBack(t *testing.T) {
+	cfg := validConfig()
+	cfg.Rules = nil
+	cfg.DefaultRouteStrategy = DefaultRouteStrategyBackendNameMatch
+	// An empty model skips the name lookup entirely (no map[""] probe) and
+	// falls through to DefaultRoute.
+	got := NewMatcher(cfg).Match(&RequestFeatures{Model: ""})
+	if len(got.Backends) != 1 || got.Backends[0] != "local-qwen" {
+		t.Errorf("expected empty model to fall back to local-qwen, got %v", got.Backends)
+	}
+}

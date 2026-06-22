@@ -115,6 +115,13 @@ func TestConfigValidateRejections(t *testing.T) {
 			},
 			wantSubstr: `does not name an existing backend`,
 		},
+		{
+			name: "unknown default-route strategy",
+			mutate: func(c *Config) {
+				c.DefaultRouteStrategy = "Whatever"
+			},
+			wantSubstr: `defaultRouteStrategy "Whatever" must be`,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -149,6 +156,9 @@ func TestLoadConfigRoundTrip(t *testing.T) {
 	}
 	if cfg.DefaultRoute != "local-qwen" {
 		t.Errorf("DefaultRoute = %q, want local-qwen", cfg.DefaultRoute)
+	}
+	if cfg.DefaultRouteStrategy != DefaultRouteStrategyBackendNameMatch {
+		t.Errorf("DefaultRouteStrategy = %q, want BackendNameMatch", cfg.DefaultRouteStrategy)
 	}
 	if !cfg.Rules[0].FailClosed {
 		t.Error("expected FailClosed=true on pii rule")
@@ -238,6 +248,7 @@ const canonicalJSON = `{
      "failClosed": true}
   ],
   "defaultRoute": "local-qwen",
+  "defaultRouteStrategy": "BackendNameMatch",
   "policy": {
     "classification": {"mode": "header-only"},
     "auditLog": {"sink": "stdout"}

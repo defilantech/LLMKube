@@ -527,7 +527,7 @@ func compileRouterRules(mr *inferencev1alpha1.ModelRouter) ([]routerRuleResource
 	headerOnly := classificationMode(mr) == classificationModeHeaderOnly
 	classHeaderKey := classificationHeaderKey(mr)
 
-	rules := make([]routerRuleResource, 0, len(mr.Spec.Rules)+1)
+	rules := make([]routerRuleResource, 0, len(mr.Spec.Rules)+len(mr.Spec.Backends)+1)
 	for _, rule := range mr.Spec.Rules {
 		refs, err := compileBackendRefs(rule.Name, rule.Route, weights)
 		if err != nil {
@@ -543,6 +543,19 @@ func compileRouterRules(mr *inferencev1alpha1.ModelRouter) ([]routerRuleResource
 			}
 		}
 		rules = append(rules, resolved)
+	}
+
+	// BackendNameMatch compiles to one model-match rule per backend (model ==
+	// backend Name) inserted ahead of the defaultRoute catch-all. First-match
+	// ordering mirrors the proxy: explicit rules win, then a request whose
+	// model names a backend routes straight to it, then defaultRoute.
+	if mr.Spec.DefaultRouteStrategy == inferencev1alpha1.DefaultRouteStrategyBackendNameMatch {
+		for _, b := range mr.Spec.Backends {
+			rules = append(rules, routerRuleResource{
+				Models:      []string{b.Name},
+				BackendRefs: []routerBackendRef{{Name: b.Name}},
+			})
+		}
 	}
 
 	// defaultRoute compiles to a trailing catch-all rule (no model/header match)

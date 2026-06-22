@@ -34,6 +34,20 @@ const (
 	ModelRouterDataPlaneGateway ModelRouterDataPlane = "Gateway"
 )
 
+// DefaultRouteStrategy selects what the router does when no rule matches a
+// request, before falling back to DefaultRoute.
+type DefaultRouteStrategy string
+
+const (
+	// DefaultRouteStrategyStatic always routes unmatched requests to the named
+	// DefaultRoute. This is the default.
+	DefaultRouteStrategyStatic DefaultRouteStrategy = "Static"
+
+	// DefaultRouteStrategyBackendNameMatch matches an unmatched request to a
+	// backend whose Name equals the request "model" field before DefaultRoute.
+	DefaultRouteStrategyBackendNameMatch DefaultRouteStrategy = "BackendNameMatch"
+)
+
 // ModelRouterSpec defines the desired state of a ModelRouter.
 //
 // A ModelRouter exposes a single OpenAI-compatible HTTP endpoint that
@@ -77,8 +91,9 @@ type ModelRouterSpec struct {
 	Backends []RouterBackend `json:"backends"`
 
 	// Rules are evaluated in declaration order. The first matching rule wins.
-	// If no rule matches, DefaultRoute is used. If neither a matching rule
-	// nor DefaultRoute is set, the request is rejected with HTTP 503.
+	// If no rule matches, the fallback is governed by DefaultRouteStrategy,
+	// ending at DefaultRoute. If nothing resolves, the request is rejected
+	// with HTTP 503.
 	// +optional
 	Rules []RouterRule `json:"rules,omitempty"`
 
@@ -86,6 +101,18 @@ type ModelRouterSpec struct {
 	// Must reference the Name of an entry in Backends.
 	// +optional
 	DefaultRoute string `json:"defaultRoute,omitempty"`
+
+	// DefaultRouteStrategy decides what happens when no rule matches.
+	// "Static" (default) routes to DefaultRoute. "BackendNameMatch" first
+	// tries to match the request's model to a backend Name, falling back to
+	// DefaultRoute only if none matches. BackendNameMatch makes every backend,
+	// including cloud-tier ones, directly addressable by name; sensitive-data
+	// protection still relies on a matching failClosed rule, which is evaluated
+	// first and therefore continues to gate before any name match.
+	// +kubebuilder:validation:Enum=Static;BackendNameMatch
+	// +kubebuilder:default=Static
+	// +optional
+	DefaultRouteStrategy DefaultRouteStrategy `json:"defaultRouteStrategy,omitempty"`
 
 	// Policy holds cross-cutting controls (budgets, classification, audit).
 	// +optional
