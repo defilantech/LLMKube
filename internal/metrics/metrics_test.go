@@ -52,8 +52,6 @@ func TestMetricsRegistered(t *testing.T) {
 		{"llmkube_inferenceservice_phase", InferenceServicePhase},
 		{"llmkube_gpu_queue_depth", GPUQueueDepth},
 		{"llmkube_gpu_queue_wait_duration_seconds", GPUQueueWaitDuration},
-		{"llmkube_inference_ttft_seconds", InferenceTTFT},
-		{"llmkube_inference_request_errors_total", InferenceRequestErrors},
 		{"llmkube_reconcile_total", ReconcileTotal},
 		{"llmkube_reconcile_duration_seconds", ReconcileDuration},
 	}
@@ -189,7 +187,6 @@ func TestHistogramBuckets(t *testing.T) {
 		{"InferenceServiceReadyDuration", InferenceServiceReadyDuration, []string{"bkt-test", "default"}, 10},
 		{"GPUQueueWaitDuration", GPUQueueWaitDuration, []string{"bkt-test", "default"}, 10},
 		{"ReconcileDuration", ReconcileDuration, []string{"bkt-test-ctrl"}, 11},
-		{"InferenceTTFT", InferenceTTFT, []string{"ttft-svc", "default", "vllm"}, 14},
 	}
 
 	for _, tt := range tests {
@@ -200,37 +197,5 @@ func TestHistogramBuckets(t *testing.T) {
 				t.Errorf("expected at least %d buckets, got %d", tt.minBkts, bucketCount)
 			}
 		})
-	}
-}
-
-func TestInferenceTTFT(t *testing.T) {
-	m := getHistogramMetric(t, InferenceTTFT, []string{"ttft-svc", "default", "vllm"}, 0.25)
-
-	if m.GetHistogram().GetSampleCount() == 0 {
-		t.Error("expected sample count > 0 after observation")
-	}
-	if m.GetHistogram().GetSampleSum() < 0.25 {
-		t.Errorf("expected sample sum >= 0.25, got %f", m.GetHistogram().GetSampleSum())
-	}
-}
-
-func TestInferenceRequestErrors(t *testing.T) {
-	InferenceRequestErrors.WithLabelValues("err-svc", "default", "vllm", "4xx").Inc()
-	InferenceRequestErrors.WithLabelValues("err-svc", "default", "vllm", "4xx").Inc()
-	InferenceRequestErrors.WithLabelValues("err-svc", "default", "vllm", "5xx").Inc()
-
-	var m dto.Metric
-	if err := InferenceRequestErrors.WithLabelValues("err-svc", "default", "vllm", "4xx").Write(&m); err != nil {
-		t.Fatalf("failed to write metric: %v", err)
-	}
-	if m.GetCounter().GetValue() < 2 {
-		t.Errorf("expected 4xx counter >= 2, got %f", m.GetCounter().GetValue())
-	}
-
-	if err := InferenceRequestErrors.WithLabelValues("err-svc", "default", "vllm", "5xx").Write(&m); err != nil {
-		t.Fatalf("failed to write metric: %v", err)
-	}
-	if m.GetCounter().GetValue() < 1 {
-		t.Errorf("expected 5xx counter >= 1, got %f", m.GetCounter().GetValue())
 	}
 }

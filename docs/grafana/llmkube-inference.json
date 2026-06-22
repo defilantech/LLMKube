@@ -61,34 +61,6 @@
       "type": "timeseries"
     },
     {
-      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-      "fieldConfig": {
-        "defaults": {
-          "color": {"mode": "palette-classic"},
-          "custom": {"axisLabel": "seconds", "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true},
-          "noValue": "no data (vLLM only)",
-          "unit": "s"
-        },
-        "overrides": []
-      },
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 1},
-      "id": 2,
-      "options": {
-        "legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom"},
-        "tooltip": {"mode": "multi", "sort": "desc"}
-      },
-      "targets": [
-        {
-          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-          "expr": "llmkube:inference:ttft:p95_5m",
-          "legendFormat": "{{service}} ({{runtime}})",
-          "refId": "A"
-        }
-      ],
-      "title": "Time-to-first-token p95 (5m, vLLM only)",
-      "type": "timeseries"
-    },
-    {
       "collapsed": false,
       "gridPos": {"h": 1, "w": 24, "x": 0, "y": 9},
       "id": 101,
@@ -149,34 +121,6 @@
         }
       ],
       "title": "Inference container restart rate (5m)",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-      "fieldConfig": {
-        "defaults": {
-          "color": {"mode": "palette-classic"},
-          "custom": {"axisLabel": "errors/s", "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true},
-          "noValue": "0",
-          "unit": "ops"
-        },
-        "overrides": []
-      },
-      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 18},
-      "id": 5,
-      "options": {
-        "legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom"},
-        "tooltip": {"mode": "multi", "sort": "desc"}
-      },
-      "targets": [
-        {
-          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-          "expr": "llmkube:inference:request_errors:rate5m",
-          "legendFormat": "{{service}} ({{runtime}}, {{status_class}})",
-          "refId": "A"
-        }
-      ],
-      "title": "Request error rate by status class (5m)",
       "type": "timeseries"
     }
   ],

@@ -104,15 +104,6 @@ spec:
         )
       labels:
         latency_kind: end_to_end
-    - record: llmkube:inference:ttft:p95_5m
-      expr: |
-        histogram_quantile(0.95,
-          sum by (service, namespace, runtime, le) (
-            rate(vllm:time_to_first_token_seconds_bucket[5m])
-          )
-        )
-      labels:
-        latency_kind: ttft
     - record: llmkube:inference:llamacpp_request:p95_5m
       expr: |
         histogram_quantile(0.95,
@@ -122,14 +113,6 @@ spec:
         )
       labels:
         latency_kind: end_to_end
-
-    # Per-request error rate by status class, sourced from the controller's
-    # llmkube_inference_request_errors_total counter.
-    - record: llmkube:inference:request_errors:rate5m
-      expr: |
-        sum by (service, namespace, runtime, status_class) (
-          rate(llmkube_inference_request_errors_total[5m])
-        )
 
     # Inference pod restart rate as a coarse error proxy. Per-request
     # 4xx/5xx counters are tracked in #409 and will replace this once the

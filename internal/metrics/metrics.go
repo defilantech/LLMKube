@@ -76,25 +76,6 @@ var (
 		[]string{"inferenceservice", "namespace"},
 	)
 
-	// Inference request metrics
-
-	InferenceTTFT = prometheus.NewHistogramVec(
-		prometheus.HistogramOpts{
-			Name:    "llmkube_inference_ttft_seconds",
-			Help:    "Time to first token for inference requests.",
-			Buckets: prometheus.ExponentialBuckets(0.01, 2, 14), // 10ms to ~131s
-		},
-		[]string{"service", "namespace", "runtime"},
-	)
-
-	InferenceRequestErrors = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "llmkube_inference_request_errors_total",
-			Help: "Total number of inference request errors by status class.",
-		},
-		[]string{"service", "namespace", "runtime", "status_class"},
-	)
-
 	// Reconcile metrics
 
 	ReconcileTotal = prometheus.NewCounterVec(
@@ -123,8 +104,6 @@ func init() {
 		InferenceServicePhase,
 		GPUQueueDepth,
 		GPUQueueWaitDuration,
-		InferenceTTFT,
-		InferenceRequestErrors,
 		ReconcileTotal,
 		ReconcileDuration,
 	)
