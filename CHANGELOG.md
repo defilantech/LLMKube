@@ -5,6 +5,21 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.14](https://github.com/defilantech/LLMKube/compare/v0.8.13...v0.8.14) (2026-06-22)
+
+
+### Features
+
+* add defaultRouteStrategy with BackendNameMatch to ModelRouter ([#791](https://github.com/defilantech/LLMKube/issues/791)) ([b7da779](https://github.com/defilantech/LLMKube/commit/b7da779b3eac8ba76a376ef3e49596759831ffbe))
+* add topologySpreadConstraints and affinity to InferenceService ([#793](https://github.com/defilantech/LLMKube/issues/793)) ([#794](https://github.com/defilantech/LLMKube/issues/794)) ([0a24fed](https://github.com/defilantech/LLMKube/commit/0a24fed918bda02198ff0fa2a7181a9935043bbb))
+* **foreman:** bite check in the verify-gate Job (reject non-biting tests) ([#803](https://github.com/defilantech/LLMKube/issues/803)) ([6f14b43](https://github.com/defilantech/LLMKube/commit/6f14b432f34c73f341dfc08ddcb0f5d6f7de8537))
+* **foreman:** reviewer rubric checks for test/prod fidelity (real values + wired-up) ([#802](https://github.com/defilantech/LLMKube/issues/802)) ([4353f3a](https://github.com/defilantech/LLMKube/commit/4353f3adf9492e43b2e4684830cc466ffd2046af))
+
+
+### Bug Fixes
+
+* **chart:** disable model cache when modelCache.enabled is false ([#801](https://github.com/defilantech/LLMKube/issues/801)) ([638663b](https://github.com/defilantech/LLMKube/commit/638663bb396001d5bcef1529afe3d980fb85b7af))
+
 ## [0.8.13](https://github.com/defilantech/LLMKube/compare/v0.8.12...v0.8.13) (2026-06-21)
 
 
