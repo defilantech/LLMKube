@@ -156,11 +156,12 @@ type RunGateJobTool struct {
 // for; the gate must verify the branch on the fork where it actually
 // lives. Empty preserves the historical CloneURLBase + Repo behavior.
 type runGateJobArgs struct {
-	Repo     string   `json:"repo"`
-	Branch   string   `json:"branch"`
-	CloneURL string   `json:"cloneURL,omitempty"`
-	Checks   []string `json:"checks,omitempty"`
-	TaskRef  struct {
+	Repo      string   `json:"repo"`
+	Branch    string   `json:"branch"`
+	CloneURL  string   `json:"cloneURL,omitempty"`
+	Checks    []string `json:"checks,omitempty"`
+	BiteCheck bool     `json:"biteCheck,omitempty"`
+	TaskRef   struct {
 		Namespace string `json:"namespace"`
 		Name      string `json:"name"`
 	} `json:"taskRef"`
@@ -184,10 +185,12 @@ func (RunGateJobTool) Schema() oai.ToolSchemaDef {
 		Parameters: json.RawMessage(`{
 "type": "object",
 "properties": {
-  "repo":   {"type": "string", "description": "owner/name slug of the repo (e.g. defilantech/LLMKube)"},
-  "branch": {"type": "string", "description": "branch on the fork to verify, e.g. foreman/issue-503"},
-  "checks": {"type": "array", "items": {"type": "string"},
-    "description": "ordered list of make targets to run; defaults to the foreman gate suite"}
+  "repo":      {"type": "string", "description": "owner/name slug of the repo (e.g. defilantech/LLMKube)"},
+  "branch":    {"type": "string", "description": "branch on the fork to verify, e.g. foreman/issue-503"},
+  "checks":    {"type": "array", "items": {"type": "string"},
+    "description": "ordered list of make targets to run; defaults to the foreman gate suite"},
+  "biteCheck": {"type": "boolean",
+    "description": "when true, run the bite check after standard checks"}
 },
 "required": ["repo", "branch"]
 }`),
@@ -231,6 +234,7 @@ func (t *RunGateJobTool) Execute(ctx context.Context, args json.RawMessage) (*ag
 		Repo:                    a.Repo,
 		Branch:                  a.Branch,
 		Checks:                  a.Checks,
+		BiteCheck:               a.BiteCheck,
 		PVCName:                 cfg.PVCName,
 		ActiveDeadlineSeconds:   cfg.ActiveDeadlineSeconds,
 		TTLSecondsAfterFinished: cfg.TTLSecondsAfterFinished,
@@ -373,6 +377,7 @@ type rendererInput struct {
 	Repo                    string
 	Branch                  string
 	Checks                  []string
+	BiteCheck               bool
 	PVCName                 string
 	ActiveDeadlineSeconds   int32
 	TTLSecondsAfterFinished int32

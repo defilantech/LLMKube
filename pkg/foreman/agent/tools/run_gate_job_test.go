@@ -463,3 +463,197 @@ func TestRenderGateJob_CloneURLOverride(t *testing.T) {
 		})
 	}
 }
+
+// TestRenderGateJob_BiteCheck_Enabled asserts the bite check phase is
+// rendered when BiteCheck is true, and that it contains the key logic
+// for detecting test files, reverting production, and checking test
+// results. Regression for #799.
+func TestRenderGateJob_BiteCheck_Enabled(t *testing.T) {
+	job, err := renderGateJob(rendererInput{
+		Name:                    "foreman-gate-bite",
+		Namespace:               "foreman-system",
+		Image:                   "golang:1.26",
+		Repo:                    "defilantech/LLMKube",
+		Branch:                  "foreman/issue-799",
+		Checks:                  []string{"fmt", "test"},
+		BiteCheck:               true,
+		PVCName:                 "foreman-gate-cache",
+		ActiveDeadlineSeconds:   1800,
+		TTLSecondsAfterFinished: 86400,
+		CPURequest:              "2",
+		CPULimit:                "4",
+		MemRequest:              "4Gi",
+		MemLimit:                "8Gi",
+		CloneURLBase:            "https://github.com",
+		TaskNamespace:           "default",
+		TaskName:                "gate-799",
+	})
+	if err != nil {
+		t.Fatalf("renderGateJob: %v", err)
+	}
+	args := strings.Join(job.Spec.Template.Spec.Containers[0].Args, "\n")
+
+	// The bite check phase must be present.
+	if !strings.Contains(args, "bite check") {
+		t.Errorf("bite check phase missing from rendered args:\\n%s", args)
+	}
+	// Must detect test files.
+	if !strings.Contains(args, "_test\\.go") {
+		t.Errorf("bite check must detect test files:\\n%s", args)
+	}
+	// Must handle added (untracked) production files by removing them.
+	if !strings.Contains(args, "rm -f") {
+		t.Errorf("bite check must remove untracked prod files:\\n%s", args)
+	}
+	// Must revert tracked production files.
+	if !strings.Contains(args, "git checkout HEAD") {
+		t.Errorf("bite check must revert tracked prod files:\\n%s", args)
+	}
+	// Must surface errors as GATE-ERROR.
+	if !strings.Contains(args, "GATE-ERROR") {
+		t.Errorf("bite check must surface errors as GATE-ERROR:\\n%s", args)
+	}
+	// Must report non-biting tests as GATE FAIL.
+	if !strings.Contains(args, "non-biting") {
+		t.Errorf("bite check must report non-biting tests:\\n%s", args)
+	}
+}
+
+// TestRenderGateJob_BiteCheck_Disabled asserts the bite check phase is
+// absent when BiteCheck is false (the default). Regression for #799.
+func TestRenderGateJob_BiteCheck_Disabled(t *testing.T) {
+	job, err := renderGateJob(rendererInput{
+		Name:                    "foreman-gate-no-bite",
+		Namespace:               "foreman-system",
+		Image:                   "golang:1.26",
+		Repo:                    "defilantech/LLMKube",
+		Branch:                  "foreman/issue-799",
+		Checks:                  []string{"fmt", "test"},
+		BiteCheck:               false,
+		PVCName:                 "foreman-gate-cache",
+		ActiveDeadlineSeconds:   1800,
+		TTLSecondsAfterFinished: 86400,
+		CPURequest:              "2",
+		CPULimit:                "4",
+		MemRequest:              "4Gi",
+		MemLimit:                "8Gi",
+		CloneURLBase:            "https://github.com",
+		TaskNamespace:           "default",
+		TaskName:                "gate-799",
+	})
+	if err != nil {
+		t.Fatalf("renderGateJob: %v", err)
+	}
+	args := strings.Join(job.Spec.Template.Spec.Containers[0].Args, "\n")
+
+	// The bite check phase must NOT be present.
+	if strings.Contains(args, "bite check") {
+		t.Errorf("bite check phase should not be present when BiteCheck is false:\\n%s", args)
+	}
+}
+
+// TestRenderGateJob_BiteCheck_SkipsWhenNoTestFiles asserts the bite check
+// phase includes logic to skip when no test files changed, preventing
+// false rejections of PRs that add/modify no test files. Regression for #799.
+func TestRenderGateJob_BiteCheck_SkipsWhenNoTestFiles(t *testing.T) {
+	job, err := renderGateJob(rendererInput{
+		Name:                    "foreman-gate-skip",
+		Namespace:               "foreman-system",
+		Image:                   "golang:1.26",
+		Repo:                    "defilantech/LLMKube",
+		Branch:                  "foreman/issue-799",
+		Checks:                  []string{"fmt", "test"},
+		BiteCheck:               true,
+		PVCName:                 "foreman-gate-cache",
+		ActiveDeadlineSeconds:   1800,
+		TTLSecondsAfterFinished: 86400,
+		CPURequest:              "2",
+		CPULimit:                "4",
+		MemRequest:              "4Gi",
+		MemLimit:                "8Gi",
+		CloneURLBase:            "https://github.com",
+		TaskNamespace:           "default",
+		TaskName:                "gate-799",
+	})
+	if err != nil {
+		t.Fatalf("renderGateJob: %v", err)
+	}
+	args := strings.Join(job.Spec.Template.Spec.Containers[0].Args, "\n")
+
+	// Must have the skip logic for no test files.
+	if !strings.Contains(args, "no test files changed, skipping") {
+		t.Errorf("bite check must skip when no test files changed:\\n%s", args)
+	}
+}
+
+// TestRenderGateJob_BiteCheck_SkipsWhenNoProdFiles asserts the bite check
+// phase includes logic to skip when no production files changed, preventing
+// false rejections of PRs that only add tests. Regression for #799.
+func TestRenderGateJob_BiteCheck_SkipsWhenNoProdFiles(t *testing.T) {
+	job, err := renderGateJob(rendererInput{
+		Name:                    "foreman-gate-skip-prod",
+		Namespace:               "foreman-system",
+		Image:                   "golang:1.26",
+		Repo:                    "defilantech/LLMKube",
+		Branch:                  "foreman/issue-799",
+		Checks:                  []string{"fmt", "test"},
+		BiteCheck:               true,
+		PVCName:                 "foreman-gate-cache",
+		ActiveDeadlineSeconds:   1800,
+		TTLSecondsAfterFinished: 86400,
+		CPURequest:              "2",
+		CPULimit:                "4",
+		MemRequest:              "4Gi",
+		MemLimit:                "8Gi",
+		CloneURLBase:            "https://github.com",
+		TaskNamespace:           "default",
+		TaskName:                "gate-799",
+	})
+	if err != nil {
+		t.Fatalf("renderGateJob: %v", err)
+	}
+	args := strings.Join(job.Spec.Template.Spec.Containers[0].Args, "\n")
+
+	// Must have the skip logic for no production files.
+	if !strings.Contains(args, "no production files changed, skipping") {
+		t.Errorf("bite check must skip when no production files changed:\\n%s", args)
+	}
+}
+
+// TestRenderGateJob_BiteCheck_UsesStashForRestore asserts the bite check
+// uses git stash to save and restore state, ensuring the workspace is
+// clean after the check regardless of outcome. Regression for #799.
+func TestRenderGateJob_BiteCheck_UsesStashForRestore(t *testing.T) {
+	job, err := renderGateJob(rendererInput{
+		Name:                    "foreman-gate-stash",
+		Namespace:               "foreman-system",
+		Image:                   "golang:1.26",
+		Repo:                    "defilantech/LLMKube",
+		Branch:                  "foreman/issue-799",
+		Checks:                  []string{"fmt", "test"},
+		BiteCheck:               true,
+		PVCName:                 "foreman-gate-cache",
+		ActiveDeadlineSeconds:   1800,
+		TTLSecondsAfterFinished: 86400,
+		CPURequest:              "2",
+		CPULimit:                "4",
+		MemRequest:              "4Gi",
+		MemLimit:                "8Gi",
+		CloneURLBase:            "https://github.com",
+		TaskNamespace:           "default",
+		TaskName:                "gate-799",
+	})
+	if err != nil {
+		t.Fatalf("renderGateJob: %v", err)
+	}
+	args := strings.Join(job.Spec.Template.Spec.Containers[0].Args, "\n")
+
+	// Must use git stash to save state.
+	if !strings.Contains(args, "git stash save") {
+		t.Errorf("bite check must use git stash to save state:\\n%s", args)
+	}
+	// Must use git stash pop to restore state.
+	if !strings.Contains(args, "git stash pop") {
+		t.Errorf("bite check must use git stash pop to restore state:\\n%s", args)
+	}
+}

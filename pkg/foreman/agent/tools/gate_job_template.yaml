@@ -12,6 +12,7 @@
 #   .Repo           -- "owner/name", inlined verbatim into the clone URL
 #   .Branch         -- branch on the fork to clone shallowly
 #   .Checks         -- list of make targets to run, in order
+#   .BiteCheck      -- when true, run the bite check after standard checks
 #   .PVCName        -- "foreman-gate-cache" PVC for GOMODCACHE/GOCACHE/XDG
 #   .ActiveDeadlineSeconds -- max wall-clock for the Job
 #   .TTLSecondsAfterFinished -- how long the Job's resources linger so
@@ -69,6 +70,52 @@ spec:
                 git diff --stat
                 rc=1
               fi
+              {{- if .BiteCheck }}
+              # Bite check: verify new/changed tests actually fail against
+              # pre-change production code. Skipped if no test files changed.
+              # Errors surface as GATE-ERROR (fail loud).
+              echo "=== bite check ==="
+              test_files=$(git status --porcelain | grep '_test\.go$' | awk '{print $NF}')
+              if [ -z "$test_files" ]; then
+                echo "bite check: no test files changed, skipping"
+              else
+                # Identify production .go files that are added (untracked) or modified.
+                # Added files must be removed; modified files must be reverted.
+                prod_files=$(git status --porcelain | grep '\.go$' | grep -v '_test\.go$' | awk '{print $NF}')
+                if [ -z "$prod_files" ]; then
+                  echo "bite check: no production files changed, skipping"
+                else
+                  # Save the current state so we can restore on error.
+                  git stash save "bite-check-snapshot" || { echo "GATE-ERROR: bite check stash failed"; exit 1; }
+                  # Revert production files: for added (untracked) files, remove them;
+                  # for modified files, checkout the original version.
+                  for f in $prod_files; do
+                    if git ls-files --error-unmatch "$f" >/dev/null 2>&1; then
+                      # Tracked file: revert to HEAD
+                      git checkout HEAD -- "$f" || { echo "GATE-ERROR: bite check revert failed for $f"; exit 1; }
+                    else
+                      # Untracked (newly added) file: remove it
+                      rm -f "$f" || { echo "GATE-ERROR: bite check remove failed for $f"; exit 1; }
+                    fi
+                  done
+                  # Rebuild and run tests against reverted production code.
+                  echo "bite check: running tests against reverted production code"
+                  if ! go build ./...; then
+                    echo "bite check: build failed against reverted production (expected for some changes)"
+                  fi
+                  bite_rc=0
+                  go test -count=1 -timeout=180s ./... || bite_rc=1
+                  if [ "$bite_rc" -eq 0 ]; then
+                    echo "GATE FAIL: bite check: tests pass against pre-change production (non-biting test)"
+                    rc=1
+                  else
+                    echo "bite check: tests fail against pre-change production (biting test, good)"
+                  fi
+                  # Restore the original state.
+                  git stash pop || { echo "GATE-ERROR: bite check restore failed"; exit 1; }
+                fi
+              fi
+              {{- end }}
               [ "$rc" -eq 0 ] && echo "GATE PASS" || echo "GATE FAIL"
               exit "$rc"
           env:
