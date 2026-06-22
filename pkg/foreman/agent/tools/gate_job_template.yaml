@@ -79,25 +79,21 @@ spec:
               if [ -z "$test_files" ]; then
                 echo "bite check: no test files changed, skipping"
               else
-                # Identify production .go files that are added (untracked) or modified.
-                # Added files must be removed; modified files must be reverted.
+                # Identify production .go files that changed (added or modified).
+                # Both are handled by the scoped stash below.
                 prod_files=$(git status --porcelain | grep '\.go$' | grep -v '_test\.go$' | awk '{print $NF}')
                 if [ -z "$prod_files" ]; then
                   echo "bite check: no production files changed, skipping"
                 else
-                  # Save the current state so we can restore on error.
-                  git stash save "bite-check-snapshot" || { echo "GATE-ERROR: bite check stash failed"; exit 1; }
-                  # Revert production files: for added (untracked) files, remove them;
-                  # for modified files, checkout the original version.
-                  for f in $prod_files; do
-                    if git ls-files --error-unmatch "$f" >/dev/null 2>&1; then
-                      # Tracked file: revert to HEAD
-                      git checkout HEAD -- "$f" || { echo "GATE-ERROR: bite check revert failed for $f"; exit 1; }
-                    else
-                      # Untracked (newly added) file: remove it
-                      rm -f "$f" || { echo "GATE-ERROR: bite check remove failed for $f"; exit 1; }
-                    fi
-                  done
+                  # Revert ONLY the production files, keeping the coder's new
+                  # test changes in the working tree. A scoped stash push
+                  # reverts tracked prod to HEAD and removes untracked/added
+                  # prod (via -u), but leaves the changed _test.go files alone,
+                  # so the tests run below are the NEW tests against pre-change
+                  # production (the whole point). Stashing everything would
+                  # revert the new tests too and falsely flag them non-biting.
+                  # git stash pop restores production afterward.
+                  git stash push -u -- $prod_files || { echo "GATE-ERROR: bite check stash failed"; exit 1; }
                   # Rebuild and run tests against reverted production code.
                   echo "bite check: running tests against reverted production code"
                   if ! go build ./...; then

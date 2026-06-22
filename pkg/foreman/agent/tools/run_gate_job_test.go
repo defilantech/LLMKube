@@ -501,13 +501,15 @@ func TestRenderGateJob_BiteCheck_Enabled(t *testing.T) {
 	if !strings.Contains(args, "_test\\.go") {
 		t.Errorf("bite check must detect test files:\\n%s", args)
 	}
-	// Must handle added (untracked) production files by removing them.
-	if !strings.Contains(args, "rm -f") {
-		t.Errorf("bite check must remove untracked prod files:\\n%s", args)
+	// Must revert ONLY production files via a scoped stash, keeping the new
+	// test changes so they run against pre-change production.
+	if !strings.Contains(args, "git stash push -u -- $prod_files") {
+		t.Errorf("bite check must revert only production files via scoped stash:\\n%s", args)
 	}
-	// Must revert tracked production files.
-	if !strings.Contains(args, "git checkout HEAD") {
-		t.Errorf("bite check must revert tracked prod files:\\n%s", args)
+	// Must NOT stash all changes (that reverts the new tests too and would
+	// falsely flag a biting test as non-biting).
+	if strings.Contains(args, "git stash save") {
+		t.Errorf("bite check must not stash all changes (reverts the new tests):\\n%s", args)
 	}
 	// Must surface errors as GATE-ERROR.
 	if !strings.Contains(args, "GATE-ERROR") {
@@ -648,9 +650,9 @@ func TestRenderGateJob_BiteCheck_UsesStashForRestore(t *testing.T) {
 	}
 	args := strings.Join(job.Spec.Template.Spec.Containers[0].Args, "\n")
 
-	// Must use git stash to save state.
-	if !strings.Contains(args, "git stash save") {
-		t.Errorf("bite check must use git stash to save state:\\n%s", args)
+	// Must use a scoped git stash push to save (and revert) only production.
+	if !strings.Contains(args, "git stash push -u --") {
+		t.Errorf("bite check must use a scoped git stash push for production:\\n%s", args)
 	}
 	// Must use git stash pop to restore state.
 	if !strings.Contains(args, "git stash pop") {
