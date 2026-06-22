@@ -725,6 +725,11 @@ func buildDeterministicArgs(task *foremanv1alpha1.AgenticTask, branch, cloneURL 
 		// The gate Job skips it safely when no test or no production files
 		// changed, so default-on costs nothing when there is nothing to check.
 		"biteCheck": true,
+		// baseBranch is the ref the bite check diffs the coder branch against
+		// and reverts production to. The clone is shallow + single-branch, so
+		// the bite check fetches this ref explicitly. LLMKube branches off
+		// main; the tool also defaults to main when empty.
+		"baseBranch": "main",
 	}
 	out, _ := json.Marshal(args)
 	return out
