@@ -120,6 +120,20 @@ type InferenceServiceSpec struct {
 	// +optional
 	PodLabels map[string]string `json:"podLabels,omitempty"`
 
+	// TopologySpreadConstraints control how inference Pods are spread across
+	// topology domains (e.g. one model server per GPU node). Passthrough to the
+	// Pod spec; combine with PodLabels so the constraint's labelSelector can
+	// match sibling GPU workloads for a soft, cross-app spread.
+	// +optional
+	TopologySpreadConstraints []corev1.TopologySpreadConstraint `json:"topologySpreadConstraints,omitempty"`
+
+	// Affinity constrains inference Pod placement (node/pod affinity and
+	// anti-affinity). Passthrough to the Pod spec, for finer control than
+	// NodeSelector — e.g. preferring or avoiding nodes already running other
+	// GPU workloads.
+	// +optional
+	Affinity *corev1.Affinity `json:"affinity,omitempty"`
+
 	// RuntimeClassName selects a Kubernetes RuntimeClass for the inference Pod.
 	// Most commonly set to "nvidia" on clusters where the NVIDIA Container
 	// Runtime is not configured as the cluster default. Without it, GPU pods

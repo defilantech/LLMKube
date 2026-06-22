@@ -485,6 +485,18 @@ func (in *InferenceServiceSpec) DeepCopyInto(out *InferenceServiceSpec) {
 			(*out)[key] = val
 		}
 	}
+	if in.TopologySpreadConstraints != nil {
+		in, out := &in.TopologySpreadConstraints, &out.TopologySpreadConstraints
+		*out = make([]v1.TopologySpreadConstraint, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
+	}
+	if in.Affinity != nil {
+		in, out := &in.Affinity, &out.Affinity
+		*out = new(v1.Affinity)
+		(*in).DeepCopyInto(*out)
+	}
 	if in.RuntimeClassName != nil {
 		in, out := &in.RuntimeClassName, &out.RuntimeClassName
 		*out = new(string)

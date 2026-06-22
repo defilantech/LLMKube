@@ -686,6 +686,84 @@ var _ = Describe("Multi-GPU Deployment Construction", func() {
 			Expect(nodeSelector).To(HaveKeyWithValue("cloud.google.com/gke-nodepool", "gpu-pool"))
 			Expect(nodeSelector).To(HaveKeyWithValue("nvidia.com/gpu.product", "NVIDIA-L4"))
 		})
+
+		It("should apply topologySpreadConstraints and affinity from InferenceService spec", func() {
+			model := &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "placement-test-model",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source: "https://example.com/model.gguf",
+					Format: "gguf",
+					Hardware: &inferencev1alpha1.HardwareSpec{
+						Accelerator: "cuda",
+						GPU: &inferencev1alpha1.GPUSpec{
+							Enabled: true,
+							Count:   1,
+							Vendor:  "nvidia",
+						},
+					},
+				},
+				Status: inferencev1alpha1.ModelStatus{
+					Phase: "Ready",
+					Path:  "/tmp/llmkube/models/test-model.gguf",
+				},
+			}
+
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "placement-test-service",
+					Namespace: "default",
+				},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: "placement-test-model",
+					Replicas: &replicas,
+					Image:    "ghcr.io/ggml-org/llama.cpp:server-cuda13",
+					TopologySpreadConstraints: []corev1.TopologySpreadConstraint{
+						{
+							MaxSkew:           1,
+							TopologyKey:       "kubernetes.io/hostname",
+							WhenUnsatisfiable: corev1.ScheduleAnyway,
+							LabelSelector: &metav1.LabelSelector{
+								MatchLabels: map[string]string{"gpu-workload": "true"},
+							},
+						},
+					},
+					Affinity: &corev1.Affinity{
+						NodeAffinity: &corev1.NodeAffinity{
+							RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+								NodeSelectorTerms: []corev1.NodeSelectorTerm{
+									{
+										MatchExpressions: []corev1.NodeSelectorRequirement{
+											{
+												Key:      "gpu.intel.com/device",
+												Operator: corev1.NodeSelectorOpExists,
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			}
+
+			deployment := reconciler.constructDeployment(isvc, model, 1)
+
+			By("verifying topologySpreadConstraints pass through to the pod spec")
+			tsc := deployment.Spec.Template.Spec.TopologySpreadConstraints
+			Expect(tsc).To(HaveLen(1))
+			Expect(tsc[0].MaxSkew).To(Equal(int32(1)))
+			Expect(tsc[0].TopologyKey).To(Equal("kubernetes.io/hostname"))
+			Expect(tsc[0].WhenUnsatisfiable).To(Equal(corev1.ScheduleAnyway))
+			Expect(tsc[0].LabelSelector.MatchLabels).To(HaveKeyWithValue("gpu-workload", "true"))
+
+			By("verifying affinity passes through to the pod spec")
+			Expect(deployment.Spec.Template.Spec.Affinity).NotTo(BeNil())
+			Expect(deployment.Spec.Template.Spec.Affinity.NodeAffinity).NotTo(BeNil())
+		})
 	})
 })
 

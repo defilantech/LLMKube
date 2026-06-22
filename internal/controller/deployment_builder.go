@@ -373,6 +373,16 @@ func (r *InferenceServiceReconciler) constructDeployment(
 		applyDRAPodScheduling(deployment, isvc)
 	}
 
+	// TopologySpreadConstraints and Affinity are general pod-scheduling
+	// passthrough (not GPU-specific), so apply them regardless of the GPU/DRA
+	// path above — e.g. soft-spreading model servers one-per-node.
+	if len(isvc.Spec.TopologySpreadConstraints) > 0 {
+		deployment.Spec.Template.Spec.TopologySpreadConstraints = isvc.Spec.TopologySpreadConstraints
+	}
+	if isvc.Spec.Affinity != nil {
+		deployment.Spec.Template.Spec.Affinity = isvc.Spec.Affinity
+	}
+
 	return deployment
 }
 
