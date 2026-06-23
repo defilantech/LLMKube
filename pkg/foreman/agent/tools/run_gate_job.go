@@ -156,12 +156,16 @@ type RunGateJobTool struct {
 // for; the gate must verify the branch on the fork where it actually
 // lives. Empty preserves the historical CloneURLBase + Repo behavior.
 type runGateJobArgs struct {
-	Repo      string   `json:"repo"`
-	Branch    string   `json:"branch"`
-	CloneURL  string   `json:"cloneURL,omitempty"`
-	Checks    []string `json:"checks,omitempty"`
-	BiteCheck bool     `json:"biteCheck,omitempty"`
-	TaskRef   struct {
+	Repo   string `json:"repo"`
+	Branch string `json:"branch"`
+	// BaseBranch is the branch the coder branch was cut from. The bite
+	// check diffs the coder branch against it and reverts production to it
+	// to verify new tests bite. Defaults to "main" when empty.
+	BaseBranch string   `json:"baseBranch,omitempty"`
+	CloneURL   string   `json:"cloneURL,omitempty"`
+	Checks     []string `json:"checks,omitempty"`
+	BiteCheck  bool     `json:"biteCheck,omitempty"`
+	TaskRef    struct {
 		Namespace string `json:"namespace"`
 		Name      string `json:"name"`
 	} `json:"taskRef"`
@@ -187,6 +191,7 @@ func (RunGateJobTool) Schema() oai.ToolSchemaDef {
 "properties": {
   "repo":      {"type": "string", "description": "owner/name slug of the repo (e.g. defilantech/LLMKube)"},
   "branch":    {"type": "string", "description": "branch on the fork to verify, e.g. foreman/issue-503"},
+  "baseBranch": {"type": "string", "description": "base branch the bite check diffs against (default main)"},
   "checks":    {"type": "array", "items": {"type": "string"},
     "description": "ordered list of make targets to run; defaults to the foreman gate suite"},
   "biteCheck": {"type": "boolean",
@@ -217,6 +222,9 @@ func (t *RunGateJobTool) Execute(ctx context.Context, args json.RawMessage) (*ag
 	if len(a.Checks) == 0 {
 		a.Checks = DefaultGateChecks
 	}
+	if a.BaseBranch == "" {
+		a.BaseBranch = "main"
+	}
 
 	cfg := applyConfigDefaults(t.Cfg)
 
@@ -233,6 +241,7 @@ func (t *RunGateJobTool) Execute(ctx context.Context, args json.RawMessage) (*ag
 		Image:                   cfg.Image,
 		Repo:                    a.Repo,
 		Branch:                  a.Branch,
+		BaseBranch:              a.BaseBranch,
 		Checks:                  a.Checks,
 		BiteCheck:               a.BiteCheck,
 		PVCName:                 cfg.PVCName,
@@ -376,6 +385,7 @@ type rendererInput struct {
 	Image                   string
 	Repo                    string
 	Branch                  string
+	BaseBranch              string
 	Checks                  []string
 	BiteCheck               bool
 	PVCName                 string
@@ -397,6 +407,9 @@ func renderGateJob(in rendererInput) (*batchv1.Job, error) {
 	}
 	if in.TaskName == "" {
 		in.TaskName = "unknown"
+	}
+	if in.BaseBranch == "" {
+		in.BaseBranch = "main"
 	}
 	tmpl, err := template.New("gate-job").Parse(gateJobTemplate)
 	if err != nil {

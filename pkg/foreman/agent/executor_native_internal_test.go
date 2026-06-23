@@ -211,6 +211,12 @@ func TestBuildDeterministicArgs(t *testing.T) {
 		if ref["namespace"] != "default" || ref["name"] != "gate-510" {
 			t.Errorf("taskRef: want default/gate-510 got %v/%v", ref["namespace"], ref["name"])
 		}
+		// Bite check defaults on for the verify gate (#787/#799): the gate
+		// must reject self-confirming tests without anyone remembering to
+		// opt in. A gate you have to enable is a gate that is usually off.
+		if got["biteCheck"] != true {
+			t.Errorf("biteCheck: want true (default-on for verify gate) got %v", got["biteCheck"])
+		}
 	})
 
 	t.Run("cloneURL empty preserves M4 default", func(t *testing.T) {

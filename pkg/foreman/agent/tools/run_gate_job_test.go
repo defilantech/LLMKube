@@ -497,19 +497,41 @@ func TestRenderGateJob_BiteCheck_Enabled(t *testing.T) {
 	if !strings.Contains(args, "bite check") {
 		t.Errorf("bite check phase missing from rendered args:\\n%s", args)
 	}
-	// Must detect test files.
+	// Must detect changes by committed diff against the base branch, NOT by
+	// git status: the gate Job clones a committed branch, so the working tree
+	// is clean and git status would always be empty (the round-3 fix).
+	if !strings.Contains(args, `git diff --name-only "origin/$BASE" HEAD`) {
+		t.Errorf("bite check must detect changes via committed diff against base:\\n%s", args)
+	}
+	if strings.Contains(args, "git status --porcelain") {
+		t.Errorf("bite check must NOT use git status (clean tree on a committed clone):\\n%s", args)
+	}
+	// Must detect test files among the diff.
 	if !strings.Contains(args, "_test\\.go") {
 		t.Errorf("bite check must detect test files:\\n%s", args)
 	}
-	// Must revert ONLY production files via a scoped stash, keeping the new
+	// Must revert ONLY production files to their base version, keeping the new
 	// test changes so they run against pre-change production.
-	if !strings.Contains(args, "git stash push -u -- $prod_files") {
-		t.Errorf("bite check must revert only production files via scoped stash:\\n%s", args)
+	if !strings.Contains(args, `git checkout "origin/$BASE" -- "$f"`) {
+		t.Errorf("bite check must revert production files to the base version:\\n%s", args)
 	}
-	// Must NOT stash all changes (that reverts the new tests too and would
-	// falsely flag a biting test as non-biting).
-	if strings.Contains(args, "git stash save") {
-		t.Errorf("bite check must not stash all changes (reverts the new tests):\\n%s", args)
+	// Must NOT use the removed stash mechanism (no-op on a clean committed tree).
+	if strings.Contains(args, "git stash") {
+		t.Errorf("bite check must not use git stash (the round-3 fix removed it):\\n%s", args)
+	}
+	// Must restore branch state after the check.
+	if !strings.Contains(args, "git checkout HEAD -- $prod_files") {
+		t.Errorf("bite check must restore branch state via git checkout HEAD:\\n%s", args)
+	}
+	// Must run ONLY the changed test packages, never the whole module: a
+	// module-wide `go test ./...` fails on unrelated packages (controller
+	// envtest needs KUBEBUILDER_ASSETS, absent in the gate image) and the bite
+	// check would misread that as biting -> false pass.
+	if !strings.Contains(args, "test_pkgs=$(echo \"$test_files\" | xargs -n1 dirname | sort -u") {
+		t.Errorf("bite check must scope tests to the changed packages:\\n%s", args)
+	}
+	if strings.Contains(args, "go test -count=1 -timeout=180s ./...") {
+		t.Errorf("bite check must NOT run the whole module (./...); unrelated failures mask the signal:\\n%s", args)
 	}
 	// Must surface errors as GATE-ERROR.
 	if !strings.Contains(args, "GATE-ERROR") {
@@ -622,16 +644,18 @@ func TestRenderGateJob_BiteCheck_SkipsWhenNoProdFiles(t *testing.T) {
 	}
 }
 
-// TestRenderGateJob_BiteCheck_UsesStashForRestore asserts the bite check
-// uses git stash to save and restore state, ensuring the workspace is
-// clean after the check regardless of outcome. Regression for #799.
-func TestRenderGateJob_BiteCheck_UsesStashForRestore(t *testing.T) {
+// TestRenderGateJob_BiteCheck_FetchesBaseRef asserts the bite check fetches
+// the base ref with an explicit refspec (the clone is shallow + single-
+// branch, so a plain fetch would not create origin/$BASE) and fails loud
+// when the base ref cannot be established. Regression for the round-3 fix.
+func TestRenderGateJob_BiteCheck_FetchesBaseRef(t *testing.T) {
 	job, err := renderGateJob(rendererInput{
-		Name:                    "foreman-gate-stash",
+		Name:                    "foreman-gate-base",
 		Namespace:               "foreman-system",
 		Image:                   "golang:1.26",
 		Repo:                    "defilantech/LLMKube",
 		Branch:                  "foreman/issue-799",
+		BaseBranch:              "main",
 		Checks:                  []string{"fmt", "test"},
 		BiteCheck:               true,
 		PVCName:                 "foreman-gate-cache",
@@ -650,12 +674,68 @@ func TestRenderGateJob_BiteCheck_UsesStashForRestore(t *testing.T) {
 	}
 	args := strings.Join(job.Spec.Template.Spec.Containers[0].Args, "\n")
 
-	// Must use a scoped git stash push to save (and revert) only production.
-	if !strings.Contains(args, "git stash push -u --") {
-		t.Errorf("bite check must use a scoped git stash push for production:\\n%s", args)
+	// Must fetch the base ref with an explicit refspec so origin/$BASE resolves.
+	if !strings.Contains(args, `git fetch --depth 1 origin "+refs/heads/$BASE:refs/remotes/origin/$BASE"`) {
+		t.Errorf("bite check must fetch base with an explicit refspec:\\n%s", args)
 	}
-	// Must use git stash pop to restore state.
-	if !strings.Contains(args, "git stash pop") {
-		t.Errorf("bite check must use git stash pop to restore state:\\n%s", args)
+	// Must verify the ref resolved and fail loud otherwise.
+	if !strings.Contains(args, `git rev-parse --verify --quiet "origin/$BASE"`) {
+		t.Errorf("bite check must verify the base ref resolved:\\n%s", args)
+	}
+	if !strings.Contains(args, "could not fetch base ref") {
+		t.Errorf("bite check must fail loud when the base ref cannot be fetched:\\n%s", args)
+	}
+}
+
+// TestRenderGateJob_BaseBranchEnv asserts the BASE_BRANCH env var is rendered
+// from the BaseBranch field and that an empty BaseBranch defaults to main.
+func TestRenderGateJob_BaseBranchEnv(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"explicit", "release-1.0", "release-1.0"},
+		{"defaults to main", "", "main"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			job, err := renderGateJob(rendererInput{
+				Name:                    "foreman-gate-baseenv",
+				Namespace:               "foreman-system",
+				Image:                   "golang:1.26",
+				Repo:                    "defilantech/LLMKube",
+				Branch:                  "foreman/issue-799",
+				BaseBranch:              tc.in,
+				Checks:                  []string{"fmt", "test"},
+				BiteCheck:               true,
+				PVCName:                 "foreman-gate-cache",
+				ActiveDeadlineSeconds:   1800,
+				TTLSecondsAfterFinished: 86400,
+				CPURequest:              "2",
+				CPULimit:                "4",
+				MemRequest:              "4Gi",
+				MemLimit:                "8Gi",
+				CloneURLBase:            "https://github.com",
+				TaskNamespace:           "default",
+				TaskName:                "gate-799",
+			})
+			if err != nil {
+				t.Fatalf("renderGateJob: %v", err)
+			}
+			var got string
+			found := false
+			for _, e := range job.Spec.Template.Spec.Containers[0].Env {
+				if e.Name == "BASE_BRANCH" {
+					got = e.Value
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("BASE_BRANCH env var not rendered")
+			}
+			if got != tc.want {
+				t.Errorf("BASE_BRANCH = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
