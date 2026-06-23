@@ -5,7 +5,9 @@
 
   ### The Kubernetes operator for self-hosted LLM inference
 
-  **Your models. Your hardware. Your rules.**
+  **Run models across NVIDIA, Apple Silicon, and AMD from one spec. Your models. Your hardware. Your rules.**
+
+  *Plus [Foreman](#foreman): an agentic harness that runs coding agents on your own fleet. It has shipped real fixes to this repo.*
 
   <p>
     <a href="https://github.com/defilantech/LLMKube/actions/workflows/test.yml">
@@ -299,7 +301,8 @@ Foreman is meant for shops where on-prem hardware, sovereignty constraints, or s
 | **Kubernetes-native CRDs** | Yes | No (manual Deployments) | No | Yes | No |
 | **Apple Silicon Metal GPU** | Native (Metal Agent) | No | Local only | No | CPU only |
 | **NVIDIA GPU** | Yes | Yes | Limited | Yes | Yes |
-| **Heterogeneous clusters** (NVIDIA + Metal) | Yes | No | No | No | No |
+| **AMD GPU** (Vulkan, incl. Strix Halo) | Yes | No | Limited | No | Limited |
+| **Heterogeneous clusters** (NVIDIA + Apple Silicon + AMD) | Yes | No | No | No | No |
 | **Hybrid local + cloud routing with policy** | `ModelRouter` CRD | No | No | No | No |
 | **Fail-closed for regulated data (PII/PHI)** | Static + runtime, K8s-enforced | No | No | No | No |
 | **Per-rule / per-backend timeout budgets** | Yes (`spec.rules[].timeout`) | No | No | No | No |
