@@ -65,6 +65,14 @@ foreman-chart-crds: manifests ## Sync foreman.llmkube.dev CRDs to the foreman ch
 check-helm-rbac: manifests ## Verify the Helm charts' RBAC covers every kubebuilder-generated rule (#379).
 	@./scripts/check-helm-rbac.sh
 
+.PHONY: sync-reviewer-prompts
+sync-reviewer-prompts: ## Sync reviewer.md into spec.systemPrompt of every reviewer Agent manifest (#804).
+	@go run ./cmd/sync-reviewer-prompts
+
+.PHONY: check-reviewer-prompts
+check-reviewer-prompts: ## Drift-check: fail if any reviewer Agent's systemPrompt diverges from reviewer.md (#804).
+	@go run ./cmd/sync-reviewer-prompts --check
+
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
 	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./..."
