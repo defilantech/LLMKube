@@ -10,8 +10,8 @@ description: |
   coupling is that the foreman-operator's RBAC reads inference.llmkube.dev
   CRDs that llmkube installs.
 type: application
-version: 0.8.14
-appVersion: 0.8.14
+version: 0.8.15
+appVersion: 0.8.15
 keywords:
   - llmkube
   - foreman

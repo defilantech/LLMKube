@@ -5,6 +5,19 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.15](https://github.com/defilantech/LLMKube/compare/v0.8.14...v0.8.15) (2026-06-23)
+
+
+### Features
+
+* **foreman:** reviewer.md single source of truth for reviewer prompts ([#804](https://github.com/defilantech/LLMKube/issues/804)) ([#812](https://github.com/defilantech/LLMKube/issues/812)) ([7b62b17](https://github.com/defilantech/LLMKube/commit/7b62b1766eb46693d122b6f3d753a94c9fb35ac5))
+
+
+### Bug Fixes
+
+* **foreman:** make the verify-gate bite check actually run, enable by default ([#805](https://github.com/defilantech/LLMKube/issues/805)) ([acbe631](https://github.com/defilantech/LLMKube/commit/acbe631b5ba28982ba6e08a526cfe64c53095797))
+* **metrics:** remove inert InferenceTTFT and InferenceRequestErrors metrics ([#786](https://github.com/defilantech/LLMKube/issues/786)) ([#810](https://github.com/defilantech/LLMKube/issues/810)) ([9e42217](https://github.com/defilantech/LLMKube/commit/9e42217fe612946c6479d90988b7909c69f1dfaf))
+
 ## [0.8.14](https://github.com/defilantech/LLMKube/compare/v0.8.13...v0.8.14) (2026-06-22)
 
 
