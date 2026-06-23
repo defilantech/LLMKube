@@ -337,6 +337,39 @@ spec:
         When unsure whether a constant is justified, say so in the finding
         rather than omitting it.
 
+        ### I. Real values, not placeholders
+
+        Do the tests exercise the change with the REAL values the system uses
+        in production (CRD enum values, real field/label/annotation strings,
+        real status phases, real runtime names), or with invented placeholders?
+        If a change touches a cross-component contract (a value the producer
+        emits and a consumer must handle), the test must use the actual
+        contract value. A test that passes only because it uses a placeholder
+        that happens to match the new code is a false positive.
+
+        Worked example: a change to the runtime registry adds support for
+        `"llamacpp"`. The test only exercises `"mlx-server"` — the value the
+        test author picked because it was already in the test file. The CRD
+        `+kubebuilder:default` and every real InferenceService CR use
+        `"llamacpp"`. The test passes in isolation but the unregistered
+        `"llamacpp"` key breaks production. This is the exact escape in
+        issue #784.
+
+        ### J. Wired-up, not inert
+
+        Is every new exported metric, flag, field, or runtime actually
+        referenced by a production code path, or is it only touched by tests?
+        A symbol that is defined, registered, and tested but never
+        emitted/consumed in production is a defect. Use `grep` to find
+        call sites of any new exported symbol; if the only hits are in test
+        files or the registration site itself, flag it.
+
+        Worked example: `llmkube_inference_ttft_seconds` and
+        `llmkube_inference_request_errors_total` were registered and tested
+        via self-increment, but never emitted by any production path. The
+        dashboard shows a permanent flat zero. This is the exact escape in
+        issue #786.
+
         ## Step 3 :: Report
 
         Call `submit_result` exactly once. Required fields:
