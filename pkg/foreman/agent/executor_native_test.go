@@ -1326,6 +1326,7 @@ func TestNativeExecutor_JobModeWithoutSubmitterRunsInProcess(t *testing.T) {
 	// failure path, never a JOB-* outcome.
 	if res == nil {
 		t.Fatalf("expected an in-process failure result, got nil")
+		return
 	}
 	if got, _ := res.Extra["executionMode"].(string); got == "Job" {
 		t.Errorf("must NOT take Job path without a submitter; got executionMode=Job")

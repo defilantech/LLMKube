@@ -47,6 +47,7 @@ func TestGet(t *testing.T) {
 			}
 			if got == nil {
 				t.Fatalf("Get(%q) = nil, want non-nil", tt.id)
+				return
 			}
 			if got.Name != tt.wantName {
 				t.Errorf("Get(%q).Name = %q, want %q", tt.id, got.Name, tt.wantName)
