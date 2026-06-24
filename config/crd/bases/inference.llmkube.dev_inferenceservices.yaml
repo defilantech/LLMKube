@@ -2616,6 +2616,34 @@ spec:
                   Use when the model is baked into the image or downloaded by the
                   container itself (e.g., via HF_TOKEN).
                 type: boolean
+              speculativeDecoding:
+                description: |-
+                  SpeculativeDecoding configures speculative decoding for the llama.cpp
+                  runtime using MTP (Multi-Token Prediction) or draft-model decoding.
+                  Maps to llama.cpp --spec-type and --draft-n-max flags. Only the
+                  "llamacpp" runtime supports this field; other runtimes must not set it.
+                properties:
+                  nDraftMax:
+                    description: |-
+                      NDraftMax is the maximum number of draft tokens to propose per step
+                      (--draft-n-max). Only emitted when set; llama.cpp uses its own default
+                      otherwise.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  type:
+                    description: |-
+                      Type is the speculative decoding method (--spec-type). "mtp" maps to
+                      draft-mtp, "draft" maps to draft, and "disabled" (or omitting the
+                      entire SpeculativeDecoding block) means no speculative decoding.
+                    enum:
+                    - mtp
+                    - draft
+                    - disabled
+                    type: string
+                required:
+                - type
+                type: object
               tensorOverrides:
                 description: |-
                   TensorOverrides provides fine-grained tensor placement overrides for power users.

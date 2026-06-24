@@ -50,6 +50,29 @@ type RopeScalingSpec struct {
 	OriginalContext *int32 `json:"originalContext,omitempty"`
 }
 
+// SpeculativeDecodingType selects the speculative decoding method for
+// llama.cpp MTP/draft decoding.
+// +kubebuilder:validation:Enum=mtp;draft;disabled
+type SpeculativeDecodingType string
+
+// SpeculativeDecodingSpec configures speculative decoding for the llama.cpp
+// runtime. It maps to --spec-type (Type) and --draft-n-max (NDraftMax).
+// Only the "llamacpp" runtime supports this field; other runtimes must not
+// set it.
+type SpeculativeDecodingSpec struct {
+	// Type is the speculative decoding method (--spec-type). "mtp" maps to
+	// draft-mtp, "draft" maps to draft, and "disabled" (or omitting the
+	// entire SpeculativeDecoding block) means no speculative decoding.
+	Type SpeculativeDecodingType `json:"type"`
+
+	// NDraftMax is the maximum number of draft tokens to propose per step
+	// (--draft-n-max). Only emitted when set; llama.cpp uses its own default
+	// otherwise.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	NDraftMax *int32 `json:"nDraftMax,omitempty"`
+}
+
 type InferenceServiceSpec struct {
 	// ModelRef references the Model CR that contains the model to serve
 	// +kubebuilder:validation:Required
@@ -257,6 +280,13 @@ type InferenceServiceSpec struct {
 	// Maps to llama.cpp --no-warmup flag.
 	// +optional
 	NoWarmup *bool `json:"noWarmup,omitempty"`
+
+	// SpeculativeDecoding configures speculative decoding for the llama.cpp
+	// runtime using MTP (Multi-Token Prediction) or draft-model decoding.
+	// Maps to llama.cpp --spec-type and --draft-n-max flags. Only the
+	// "llamacpp" runtime supports this field; other runtimes must not set it.
+	// +optional
+	SpeculativeDecoding *SpeculativeDecodingSpec `json:"speculativeDecoding,omitempty"`
 
 	// ReasoningBudget caps the number of reasoning tokens the model is allowed to
 	// emit per response. Zero disables visible thinking output entirely; the model

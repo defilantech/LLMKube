@@ -468,6 +468,92 @@ func TestLlamaCppBuildArgs(t *testing.T) {
 				{"--ubatch-size", "2"},
 			},
 		},
+		{
+			model: model,
+			name:  "speculativeDecoding mtp emits --spec-type draft-mtp",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime:  "llama",
+				ModelRef: "test-model",
+				SpeculativeDecoding: &inferencev1alpha1.SpeculativeDecodingSpec{
+					Type: "mtp",
+				},
+			},
+			contains: []FlagCheck{{"--spec-type", "draft-mtp"}},
+		},
+		{
+			model: model,
+			name:  "speculativeDecoding draft emits --spec-type draft",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime:  "llama",
+				ModelRef: "test-model",
+				SpeculativeDecoding: &inferencev1alpha1.SpeculativeDecodingSpec{
+					Type: "draft",
+				},
+			},
+			contains: []FlagCheck{{"--spec-type", "draft"}},
+		},
+		{
+			model: model,
+			name:  "speculativeDecoding mtp with nDraftMax emits both flags",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime:  "llama",
+				ModelRef: "test-model",
+				SpeculativeDecoding: &inferencev1alpha1.SpeculativeDecodingSpec{
+					Type:      "mtp",
+					NDraftMax: ptrInt32(5),
+				},
+			},
+			contains: []FlagCheck{
+				{"--spec-type", "draft-mtp"},
+				{"--draft-n-max", "5"},
+			},
+		},
+		{
+			model: model,
+			name:  "speculativeDecoding disabled does not emit flags",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime:  "llama",
+				ModelRef: "test-model",
+				SpeculativeDecoding: &inferencev1alpha1.SpeculativeDecodingSpec{
+					Type: "disabled",
+				},
+			},
+			notContains: []string{"--spec-type", "--draft-n-max"},
+		},
+		{
+			model: model,
+			name:  "speculativeDecoding nil does not emit flags",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime:  "llama",
+				ModelRef: "test-model",
+			},
+			notContains: []string{"--spec-type", "--draft-n-max"},
+		},
+		{
+			model: model,
+			name:  "speculativeDecoding empty type does not emit flags",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime:  "llama",
+				ModelRef: "test-model",
+				SpeculativeDecoding: &inferencev1alpha1.SpeculativeDecodingSpec{
+					Type: "",
+				},
+			},
+			notContains: []string{"--spec-type", "--draft-n-max"},
+		},
+		{
+			model: model,
+			name:  "speculativeDecoding mtp without nDraftMax does not emit --draft-n-max",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime:  "llama",
+				ModelRef: "test-model",
+				SpeculativeDecoding: &inferencev1alpha1.SpeculativeDecodingSpec{
+					Type: "mtp",
+				},
+			},
+			contains:    []FlagCheck{{"--spec-type", "draft-mtp"}},
+			notContains: []string{"--draft-n-max"},
+		},
 	}
 
 	for _, tc := range cases {
