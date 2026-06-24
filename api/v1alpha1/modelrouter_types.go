@@ -144,6 +144,15 @@ type RouterBackend struct {
 	// +kubebuilder:validation:Pattern=`^[a-z0-9][a-z0-9-]{0,62}$`
 	Name string `json:"name"`
 
+	// DisplayName is an optional freeform label published as the model id
+	// on /v1/models and used by BackendNameMatch to resolve a request's
+	// model field to a backend. When unset, Name is used for both
+	// purposes (current behavior). This lets the k8s-safe Name differ
+	// from the user-facing model identifier (e.g. Name "claude-opus-4"
+	// with DisplayName "claude-opus-4-20250514").
+	// +optional
+	DisplayName string `json:"displayName,omitempty"`
+
 	// InferenceServiceRef references an in-cluster InferenceService.
 	// Mutually exclusive with External.
 	// +optional

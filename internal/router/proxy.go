@@ -86,7 +86,8 @@ func (p *Proxy) handleHealth(w http.ResponseWriter, _ *http.Request) {
 
 // handleModels returns an OpenAI-compatible /v1/models payload listing
 // every backend in the config. Cloud backends report their upstream
-// Model field; local backends report their backend name.
+// Model field; local backends report their backend name. When a backend
+// has a DisplayName, that is published as the model id instead of Name.
 func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
 	type model struct {
 		ID      string `json:"id"`
@@ -98,7 +99,9 @@ func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
 	models := make([]model, 0, len(p.cfg.Backends))
 	for _, b := range p.cfg.Backends {
 		id := b.Name
-		if b.Model != "" {
+		if b.DisplayName != "" {
+			id = b.DisplayName
+		} else if b.Model != "" {
 			id = b.Model
 		}
 		owned := "llmkube"

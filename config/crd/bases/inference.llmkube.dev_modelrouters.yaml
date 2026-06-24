@@ -93,6 +93,15 @@ spec:
                           pattern: ^[0-9]+(\.[0-9]+)?$
                           type: string
                       type: object
+                    displayName:
+                      description: |-
+                        DisplayName is an optional freeform label published as the model id
+                        on /v1/models and used by BackendNameMatch to resolve a request's
+                        model field to a backend. When unset, Name is used for both
+                        purposes (current behavior). This lets the k8s-safe Name differ
+                        from the user-facing model identifier (e.g. Name "claude-opus-4"
+                        with DisplayName "claude-opus-4-20250514").
+                      type: string
                     external:
                       description: |-
                         External describes an out-of-cluster provider (Anthropic, OpenAI,

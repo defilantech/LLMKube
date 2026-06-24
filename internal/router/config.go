@@ -73,6 +73,11 @@ type Config struct {
 type Backend struct {
 	Name string `json:"name"`
 
+	// DisplayName is the user-facing model id published on /v1/models
+	// and used by BackendNameMatch to resolve a request's model field.
+	// When empty, Name is used for both purposes (current behavior).
+	DisplayName string `json:"displayName,omitempty"`
+
 	// Tier is "local" or "cloud". Used by the fail-closed gate: sensitive-
 	// data rules cannot route to cloud-tier backends.
 	Tier string `json:"tier"`

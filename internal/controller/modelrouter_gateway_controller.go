@@ -546,13 +546,18 @@ func compileRouterRules(mr *inferencev1alpha1.ModelRouter) ([]routerRuleResource
 	}
 
 	// BackendNameMatch compiles to one model-match rule per backend (model ==
-	// backend Name) inserted ahead of the defaultRoute catch-all. First-match
-	// ordering mirrors the proxy: explicit rules win, then a request whose
-	// model names a backend routes straight to it, then defaultRoute.
+	// backend published id: DisplayName or Name) inserted ahead of the
+	// defaultRoute catch-all. First-match ordering mirrors the proxy:
+	// explicit rules win, then a request whose model names a backend routes
+	// straight to it, then defaultRoute.
 	if mr.Spec.DefaultRouteStrategy == inferencev1alpha1.DefaultRouteStrategyBackendNameMatch {
 		for _, b := range mr.Spec.Backends {
+			modelID := b.Name
+			if b.DisplayName != "" {
+				modelID = b.DisplayName
+			}
 			rules = append(rules, routerRuleResource{
-				Models:      []string{b.Name},
+				Models:      []string{modelID},
 				BackendRefs: []routerBackendRef{{Name: b.Name}},
 			})
 		}

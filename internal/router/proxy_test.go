@@ -214,6 +214,31 @@ func TestProxyModels(t *testing.T) {
 	}
 }
 
+func TestProxyModelsDisplayName(t *testing.T) {
+	h := newProxyHarness(t)
+	// Give the local backend a DisplayName that differs from its Name.
+	h.cfg.Backends[0].DisplayName = "qwen3-coder-30b"
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	rec := httptest.NewRecorder()
+	h.handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/v1/models = %d, want 200", rec.Code)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode /v1/models: %v", err)
+	}
+	data, _ := got["data"].([]any)
+	// First model should use DisplayName, second should use Model (cloud backend).
+	if len(data) != 2 {
+		t.Fatalf("expected 2 models, got %d", len(data))
+	}
+	first, _ := data[0].(map[string]any)
+	if first["id"] != "qwen3-coder-30b" {
+		t.Errorf("first model id = %v, want qwen3-coder-30b", first["id"])
+	}
+}
+
 func TestProxyRoutesPIIToLocal(t *testing.T) {
 	h := newProxyHarness(t)
 	resp := h.post(t, map[string]any{"model": "any"}, map[string]string{

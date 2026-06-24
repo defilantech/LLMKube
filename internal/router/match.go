@@ -76,6 +76,16 @@ func NewMatcher(cfg *Config) *Matcher {
 	return &Matcher{cfg: cfg, backendsByName: byName}
 }
 
+// publishedID returns the user-facing model id for a backend: DisplayName
+// when set, otherwise Name. This is the identifier published on /v1/models
+// and used by BackendNameMatch to resolve a request's model field.
+func publishedID(b *Backend) string {
+	if b.DisplayName != "" {
+		return b.DisplayName
+	}
+	return b.Name
+}
+
 // Match evaluates the rule set against the request features and returns
 // the routing decision. If no rule matches, the fallback depends on
 // DefaultRouteStrategy: BackendNameMatch first tries to resolve the request
@@ -97,11 +107,11 @@ func (m *Matcher) Match(features *RequestFeatures) MatchResult {
 	}
 
 	// No rule matched. Under BackendNameMatch, try to address a backend
-	// directly by Name using the request model before falling back to
-	// DefaultRoute. The lookup is against backend Name (our client-facing
-	// identifier), never the upstream provider Model.
+	// directly by its published id (DisplayName or Name) using the
+	// request model before falling back to DefaultRoute. The lookup is
+	// against the published id, never the upstream provider Model.
 	if m.cfg.DefaultRouteStrategy == DefaultRouteStrategyBackendNameMatch && features.Model != "" {
-		if b := m.backendsByName[features.Model]; b != nil {
+		if b := m.backendByPublishedID(features.Model); b != nil {
 			return MatchResult{
 				Backends: []string{b.Name},
 				Strategy: strategyPrimaryFallback,
@@ -122,6 +132,19 @@ func (m *Matcher) Match(features *RequestFeatures) MatchResult {
 // so the per-request lookup is O(1).
 func (m *Matcher) BackendByName(name string) *Backend {
 	return m.backendsByName[name]
+}
+
+// backendByPublishedID returns the backend whose published id (DisplayName
+// or Name) matches the given string, or nil. It scans the config because
+// DisplayName is not unique-keyed in the map; the scan is over typical
+// config sizes (10s of backends).
+func (m *Matcher) backendByPublishedID(id string) *Backend {
+	for i := range m.cfg.Backends {
+		if publishedID(&m.cfg.Backends[i]) == id {
+			return &m.cfg.Backends[i]
+		}
+	}
+	return nil
 }
 
 const (

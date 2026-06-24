@@ -1746,6 +1746,138 @@ func TestCompileBudgetRule_WindowScaling(t *testing.T) {
 	}
 }
 
+// TestCompileRouterRules_BackendNameMatch confirms that the BackendNameMatch
+// default-route strategy compiles to one model==name rule per backend, inserted
+// after the explicit rules and before the defaultRoute catch-all so first-match
+// ordering mirrors the proxy.
+func TestCompileRouterRules_BackendNameMatch(t *testing.T) {
+	mr := &inferencev1alpha1.ModelRouter{
+		Spec: inferencev1alpha1.ModelRouterSpec{
+			Backends: []inferencev1alpha1.RouterBackend{
+				{Name: "local-a"},
+				{Name: "local-b"},
+			},
+			Rules: []inferencev1alpha1.RouterRule{{
+				Name:  "explicit",
+				Match: &inferencev1alpha1.RuleMatch{Models: []string{"foo-*"}},
+				Route: inferencev1alpha1.RuleRoute{Backends: []string{"local-a"}},
+			}},
+			DefaultRoute:         "local-a",
+			DefaultRouteStrategy: inferencev1alpha1.DefaultRouteStrategyBackendNameMatch,
+		},
+	}
+
+	rules, err := compileRouterRules(mr)
+	if err != nil {
+		t.Fatalf("compileRouterRules: %v", err)
+	}
+	// explicit rule, one name rule per backend, then the defaultRoute catch-all.
+	if len(rules) != 4 {
+		t.Fatalf("expected 4 rules, got %d: %+v", len(rules), rules)
+	}
+	if got := rules[0].Models; len(got) != 1 || got[0] != "foo-*" {
+		t.Errorf("rules[0] should be the explicit rule, got models %v", got)
+	}
+	for i, wantBackend := range []string{"local-a", "local-b"} {
+		r := rules[i+1]
+		if len(r.Models) != 1 || r.Models[0] != wantBackend {
+			t.Errorf("rules[%d] models = %v, want [%s]", i+1, r.Models, wantBackend)
+		}
+		if len(r.BackendRefs) != 1 || r.BackendRefs[0].Name != wantBackend {
+			t.Errorf("rules[%d] backendRefs = %+v, want single %s", i+1, r.BackendRefs, wantBackend)
+		}
+	}
+	// The catch-all is last and matches on nothing.
+	last := rules[len(rules)-1]
+	if len(last.Models) != 0 {
+		t.Errorf("catch-all should have no model match, got %v", last.Models)
+	}
+	if len(last.BackendRefs) != 1 || last.BackendRefs[0].Name != "local-a" {
+		t.Errorf("catch-all backendRefs = %+v, want single local-a", last.BackendRefs)
+	}
+}
+
+// TestCompileRouterRules_StaticOmitsNameRules confirms the default Static
+// strategy compiles no per-backend name rules: only the explicit rules plus the
+// defaultRoute catch-all.
+func TestCompileRouterRules_StaticOmitsNameRules(t *testing.T) {
+	mr := &inferencev1alpha1.ModelRouter{
+		Spec: inferencev1alpha1.ModelRouterSpec{
+			Backends: []inferencev1alpha1.RouterBackend{
+				{Name: "local-a"},
+				{Name: "local-b"},
+			},
+			Rules: []inferencev1alpha1.RouterRule{{
+				Name:  "explicit",
+				Match: &inferencev1alpha1.RuleMatch{Models: []string{"foo-*"}},
+				Route: inferencev1alpha1.RuleRoute{Backends: []string{"local-a"}},
+			}},
+			DefaultRoute:         "local-a",
+			DefaultRouteStrategy: inferencev1alpha1.DefaultRouteStrategyStatic,
+		},
+	}
+
+	rules, err := compileRouterRules(mr)
+	if err != nil {
+		t.Fatalf("compileRouterRules: %v", err)
+	}
+	if len(rules) != 2 {
+		t.Fatalf("expected explicit rule + catch-all only, got %d: %+v", len(rules), rules)
+	}
+	// rules[0] is the explicit rule; rules[1] is the defaultRoute catch-all
+	// (no model match) — and crucially no per-backend name rule sits between.
+	if got := rules[0].Models; len(got) != 1 || got[0] != "foo-*" {
+		t.Errorf("rules[0] should be the explicit rule, got models %v", got)
+	}
+	catchAll := rules[1]
+	if len(catchAll.Models) != 0 {
+		t.Errorf("rules[1] should be the catch-all with no model match, got %v", catchAll.Models)
+	}
+	if len(catchAll.BackendRefs) != 1 || catchAll.BackendRefs[0].Name != "local-a" {
+		t.Errorf("catch-all backendRefs = %+v, want single local-a", catchAll.BackendRefs)
+	}
+}
+
+// TestCompileRouterRules_BackendNameMatchDisplayName confirms that when a
+// backend has a DisplayName, the compiled model-match rule uses the
+// DisplayName (not the Name) so the gateway route matches the published id.
+func TestCompileRouterRules_BackendNameMatchDisplayName(t *testing.T) {
+	mr := &inferencev1alpha1.ModelRouter{
+		Spec: inferencev1alpha1.ModelRouterSpec{
+			Backends: []inferencev1alpha1.RouterBackend{
+				{Name: "local-a", DisplayName: "qwen3-coder-30b"},
+				{Name: "local-b"},
+			},
+			DefaultRoute:         "local-a",
+			DefaultRouteStrategy: inferencev1alpha1.DefaultRouteStrategyBackendNameMatch,
+		},
+	}
+
+	rules, err := compileRouterRules(mr)
+	if err != nil {
+		t.Fatalf("compileRouterRules: %v", err)
+	}
+	// Two name-match rules (one per backend) plus the catch-all.
+	if len(rules) != 3 {
+		t.Fatalf("expected 3 rules, got %d: %+v", len(rules), rules)
+	}
+	// First backend has DisplayName; its model match should be the DisplayName.
+	if len(rules[0].Models) != 1 || rules[0].Models[0] != "qwen3-coder-30b" {
+		t.Errorf("rules[0] models = %v, want [qwen3-coder-30b]", rules[0].Models)
+	}
+	// Second backend has no DisplayName; its model match should be the Name.
+	if len(rules[1].Models) != 1 || rules[1].Models[0] != "local-b" {
+		t.Errorf("rules[1] models = %v, want [local-b]", rules[1].Models)
+	}
+	// Both backendRefs still use the k8s-safe Name.
+	if rules[0].BackendRefs[0].Name != "local-a" {
+		t.Errorf("rules[0] backendRef = %s, want local-a", rules[0].BackendRefs[0].Name)
+	}
+	if rules[1].BackendRefs[0].Name != "local-b" {
+		t.Errorf("rules[1] backendRef = %s, want local-b", rules[1].BackendRefs[0].Name)
+	}
+}
+
 // TestModelRouterGateway_AuditLogFailsLoud covers the 2c honest boundary: a
 // dataPlane: Gateway router with policy.auditLog set is refused loudly
 // (GatewayReady=False, reason UnsupportedAuditLogInGatewayMode) and generates

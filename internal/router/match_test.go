@@ -217,3 +217,33 @@ func TestMatchBackendNameMatchEmptyModelFallsBack(t *testing.T) {
 		t.Errorf("expected empty model to fall back to local-qwen, got %v", got.Backends)
 	}
 }
+
+func TestMatchBackendNameMatchResolvesDisplayName(t *testing.T) {
+	cfg := validConfig()
+	cfg.Rules = nil
+	cfg.DefaultRouteStrategy = DefaultRouteStrategyBackendNameMatch
+	// Give the cloud backend a DisplayName that differs from its Name.
+	cfg.Backends[1].DisplayName = "claude-opus-4-20250514"
+	// A request whose model matches the DisplayName should resolve to the
+	// backend (returning the backend Name, not the DisplayName).
+	got := NewMatcher(cfg).Match(&RequestFeatures{Model: "claude-opus-4-20250514"})
+	if len(got.Backends) != 1 || got.Backends[0] != "cloud-opus" {
+		t.Errorf("expected name match to cloud-opus via DisplayName, got %v", got.Backends)
+	}
+	// The old Name should no longer match (DisplayName takes precedence).
+	got2 := NewMatcher(cfg).Match(&RequestFeatures{Model: "cloud-opus"})
+	if len(got2.Backends) != 1 || got2.Backends[0] != "local-qwen" {
+		t.Errorf("expected old Name to fall through to default, got %v", got2.Backends)
+	}
+}
+
+func TestMatchBackendNameMatchDisplayNameUnsetUsesName(t *testing.T) {
+	cfg := validConfig()
+	cfg.Rules = nil
+	cfg.DefaultRouteStrategy = DefaultRouteStrategyBackendNameMatch
+	// No DisplayName set; Name is used as the published id.
+	got := NewMatcher(cfg).Match(&RequestFeatures{Model: "cloud-opus"})
+	if len(got.Backends) != 1 || got.Backends[0] != "cloud-opus" {
+		t.Errorf("expected name match to cloud-opus, got %v", got.Backends)
+	}
+}
