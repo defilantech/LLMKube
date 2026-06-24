@@ -5,6 +5,19 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.16](https://github.com/defilantech/LLMKube/compare/v0.8.15...v0.8.16) (2026-06-24)
+
+
+### Bug Fixes
+
+* derive BTP perRetry timeout from configured router timeout (Fixes [#817](https://github.com/defilantech/LLMKube/issues/817)) ([#818](https://github.com/defilantech/LLMKube/issues/818)) ([5c41d1e](https://github.com/defilantech/LLMKube/commit/5c41d1e42406df3c3942cb8697e67a7be7ae6b32))
+* **foreman:** retry transient SSE/transport errors in the OAI client ([#815](https://github.com/defilantech/LLMKube/issues/815)) ([#816](https://github.com/defilantech/LLMKube/issues/816)) ([1bf8d3d](https://github.com/defilantech/LLMKube/commit/1bf8d3dabcfee3d78d2d19cae19bf3cac84f233f))
+
+
+### Documentation
+
+* **readme:** lead hero with heterogeneous hardware + Foreman; add AMD to comparison ([#820](https://github.com/defilantech/LLMKube/issues/820)) ([1439ae5](https://github.com/defilantech/LLMKube/commit/1439ae546b82a6635e35b32c959ac3952a801e3d))
+
 ## [0.8.15](https://github.com/defilantech/LLMKube/compare/v0.8.14...v0.8.15) (2026-06-23)
 
 
