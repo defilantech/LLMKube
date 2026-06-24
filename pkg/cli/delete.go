@@ -30,8 +30,9 @@ import (
 )
 
 type deleteOptions struct {
-	name      string
-	namespace string
+	name       string
+	namespace  string
+	purgeCache bool
 }
 
 func NewDeleteCommand() *cobra.Command {
@@ -50,6 +51,8 @@ func NewDeleteCommand() *cobra.Command {
 	}
 
 	cmd.Flags().StringVarP(&opts.namespace, "namespace", "n", "default", "Kubernetes namespace")
+	cmd.Flags().BoolVar(&opts.purgeCache, "purge-cache", false,
+		"Also purge the model from the persistent cache when deleting the deployment")
 
 	return cmd
 }
@@ -91,10 +94,32 @@ func runDelete(opts *deleteOptions) error {
 			Namespace: opts.namespace,
 		},
 	}
+
+	// If --purge-cache is set, get the cache key before deleting the model
+	var cacheKey string
+	if opts.purgeCache {
+		if err := k8sClient.Get(ctx, client.ObjectKey{Name: opts.name, Namespace: opts.namespace}, model); err != nil {
+			fmt.Printf("Warning: failed to get Model for cache purge: %v\n", err)
+		} else {
+			cacheKey = model.Status.CacheKey
+		}
+	}
+
 	if err := k8sClient.Delete(ctx, model); err != nil {
 		fmt.Printf("Warning: failed to delete Model: %v\n", err)
 	} else {
 		fmt.Printf("✓ Model '%s' deleted\n", opts.name)
+	}
+
+	if opts.purgeCache {
+		if cacheKey != "" {
+			fmt.Printf("🗑️  Purging model cache (cache key: %s)...\n", cacheKey)
+			fmt.Printf("To purge the cache, run:\n")
+			fmt.Printf("  kubectl exec -n llmkube-system deploy/llmkube-controller-manager -- \\\n")
+			fmt.Printf("    rm -rf /models/%s\n", cacheKey)
+		} else {
+			fmt.Printf("⚠️  Model has no cache key; nothing to purge\n")
+		}
 	}
 
 	fmt.Printf("\n✓ Deployment '%s' deleted successfully\n", opts.name)

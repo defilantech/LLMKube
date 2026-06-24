@@ -158,3 +158,45 @@ func TestNewCachePreloadCommand(t *testing.T) {
 		t.Error("Missing --namespace flag")
 	}
 }
+
+func TestComputeCacheKeyForDeploySources(t *testing.T) {
+	// Verify computeCacheKey works with all source types used by deploy
+	tests := []struct {
+		name   string
+		source string
+	}{
+		{"HTTPS URL", "https://huggingface.co/TheBloke/model.gguf"},
+		{"HTTP URL", "http://example.com/model.gguf"},
+		{"file URL", "file:///mnt/models/model.gguf"},
+		{"absolute path", "/mnt/models/model.gguf"},
+		{"empty string", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			key := computeCacheKey(tt.source)
+			if len(key) != 16 {
+				t.Errorf("computeCacheKey(%q) length = %d, want 16", tt.source, len(key))
+			}
+		})
+	}
+}
+
+func TestComputeCacheKeySameSourceSameKey(t *testing.T) {
+	// Same source should always produce the same cache key
+	source := "https://huggingface.co/model.gguf"
+	key1 := computeCacheKey(source)
+	key2 := computeCacheKey(source)
+	if key1 != key2 {
+		t.Errorf("Same source produced different keys: %q != %q", key1, key2)
+	}
+}
+
+func TestComputeCacheKeyDifferentSourceDifferentKey(t *testing.T) {
+	// Different sources should produce different cache keys
+	key1 := computeCacheKey("https://huggingface.co/model-a.gguf")
+	key2 := computeCacheKey("https://huggingface.co/model-b.gguf")
+	if key1 == key2 {
+		t.Errorf("Different sources produced same key: %q", key1)
+	}
+}

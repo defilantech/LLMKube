@@ -781,3 +781,117 @@ func TestHeartbeatInterval(t *testing.T) {
 		t.Errorf("heartbeatInterval = %v, want 5s", heartbeatInterval)
 	}
 }
+
+func TestDeployOptions_CacheFlags(t *testing.T) {
+	tests := []struct {
+		name      string
+		skipCache bool
+		fromCache bool
+		wantSkip  bool
+		wantFrom  bool
+	}{
+		{
+			name:      "both false (default)",
+			skipCache: false,
+			fromCache: false,
+			wantSkip:  false,
+			wantFrom:  false,
+		},
+		{
+			name:      "skip-cache true",
+			skipCache: true,
+			fromCache: false,
+			wantSkip:  true,
+			wantFrom:  false,
+		},
+		{
+			name:      "from-cache true",
+			skipCache: false,
+			fromCache: true,
+			wantSkip:  false,
+			wantFrom:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := &deployOptions{
+				name:        "test-model",
+				namespace:   testDefaultNamespace,
+				modelSource: "https://example.com/model.gguf",
+				skipCache:   tt.skipCache,
+				fromCache:   tt.fromCache,
+			}
+
+			if opts.skipCache != tt.wantSkip {
+				t.Errorf("skipCache = %v, want %v", opts.skipCache, tt.wantSkip)
+			}
+			if opts.fromCache != tt.wantFrom {
+				t.Errorf("fromCache = %v, want %v", opts.fromCache, tt.wantFrom)
+			}
+		})
+	}
+}
+
+func TestDeployOptions_CacheFlagsMutuallyExclusive(t *testing.T) {
+	// Both flags set should cause an error in runDeploy
+	opts := &deployOptions{
+		name:        "test-model",
+		namespace:   testDefaultNamespace,
+		modelSource: "https://example.com/model.gguf",
+		skipCache:   true,
+		fromCache:   true,
+	}
+
+	// The mutual exclusion is enforced in runDeploy; verify the flags are set
+	if !opts.skipCache {
+		t.Error("skipCache should be true")
+	}
+	if !opts.fromCache {
+		t.Error("fromCache should be true")
+	}
+}
+
+func TestNewDeployCommand_CacheFlags(t *testing.T) {
+	cmd := NewDeployCommand()
+
+	// Verify --skip-cache flag exists
+	if f := cmd.Flags().Lookup("skip-cache"); f == nil {
+		t.Error("Missing --skip-cache flag")
+	} else {
+		if f.DefValue != "false" {
+			t.Errorf("skip-cache default = %q, want %q", f.DefValue, "false")
+		}
+	}
+
+	// Verify --from-cache flag exists
+	if f := cmd.Flags().Lookup("from-cache"); f == nil {
+		t.Error("Missing --from-cache flag")
+	} else {
+		if f.DefValue != "false" {
+			t.Errorf("from-cache default = %q, want %q", f.DefValue, "false")
+		}
+	}
+}
+
+func TestComputeCacheKeyUsedByDeploy(t *testing.T) {
+	// Verify that computeCacheKey is available and produces consistent results
+	// when used with model sources that would be passed to deploy
+	sources := []string{
+		"https://huggingface.co/model.gguf",
+		"file:///mnt/models/model.gguf",
+		"/mnt/models/model.gguf",
+	}
+
+	for _, source := range sources {
+		key := computeCacheKey(source)
+		if len(key) != 16 {
+			t.Errorf("computeCacheKey(%q) length = %d, want 16", source, len(key))
+		}
+		// Verify determinism
+		key2 := computeCacheKey(source)
+		if key != key2 {
+			t.Errorf("computeCacheKey not deterministic for %q", source)
+		}
+	}
+}

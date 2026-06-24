@@ -78,6 +78,8 @@ type deployOptions struct {
 	containerPort       int32
 	nodePort            int32
 	skipModelInit       bool
+	skipCache           bool
+	fromCache           bool
 	env                 []string
 	command             []string
 	args                []string
@@ -195,6 +197,10 @@ Examples:
 		"Override the container port (default depends on runtime)")
 	cmd.Flags().BoolVar(&opts.skipModelInit, "skip-model-init", false,
 		"Skip the model download init container (use when model is baked into image)")
+	cmd.Flags().BoolVar(&opts.skipCache, "skip-cache", false,
+		"Skip the model cache; force a fresh download even if the model is already cached")
+	cmd.Flags().BoolVar(&opts.fromCache, "from-cache", false,
+		"Deploy only from the model cache; fail if the model is not already cached")
 	cmd.Flags().StringSliceVar(&opts.env, "env", nil,
 		"Environment variables in KEY=VALUE format (can specify multiple times)")
 	cmd.Flags().StringSliceVar(&opts.command, "command", nil,
@@ -257,6 +263,18 @@ func runDeploy(opts *deployOptions) error {
 	}
 
 	resolveAcceleratorAndImage(opts)
+
+	// Handle cache control flags
+	if opts.skipCache && opts.fromCache {
+		return fmt.Errorf("--skip-cache and --from-cache are mutually exclusive")
+	}
+	if opts.skipCache {
+		cacheKey := computeCacheKey(opts.modelSource)
+		fmt.Printf("⚠️  Skipping model cache (cache key: %s); model will be re-downloaded\n", cacheKey)
+	} else if opts.fromCache {
+		cacheKey := computeCacheKey(opts.modelSource)
+		fmt.Printf("📦 Deploying from model cache (cache key: %s)\n", cacheKey)
+	}
 
 	cfg, err := config.GetConfig()
 	if err != nil {

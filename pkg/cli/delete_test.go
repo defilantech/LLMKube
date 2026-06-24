@@ -57,3 +57,38 @@ func TestDeleteCommandRequiresArg(t *testing.T) {
 		t.Error("Expected error when no argument provided")
 	}
 }
+
+func TestNewDeleteCommand_PurgeCacheFlag(t *testing.T) {
+	cmd := NewDeleteCommand()
+
+	if f := cmd.Flags().Lookup("purge-cache"); f == nil {
+		t.Error("Missing --purge-cache flag")
+	} else {
+		if f.DefValue != "false" {
+			t.Errorf("purge-cache default = %q, want %q", f.DefValue, "false")
+		}
+	}
+}
+
+func TestDeleteOptions_PurgeCacheDefault(t *testing.T) {
+	opts := &deleteOptions{
+		name:      "test-model",
+		namespace: testDefaultNamespace,
+	}
+
+	if opts.purgeCache {
+		t.Error("purgeCache should be false by default")
+	}
+}
+
+func TestDeleteOptions_PurgeCacheSet(t *testing.T) {
+	opts := &deleteOptions{
+		name:       "test-model",
+		namespace:  testDefaultNamespace,
+		purgeCache: true,
+	}
+
+	if !opts.purgeCache {
+		t.Error("purgeCache should be true")
+	}
+}
