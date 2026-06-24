@@ -64,6 +64,26 @@ func TestNewLicenseCheckCommand(t *testing.T) {
 	}
 }
 
+func TestFormatBool(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    bool
+		expected string
+	}{
+		{"true", true, "Yes"},
+		{"false", false, "No"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := formatBool(tt.input)
+			if result != tt.expected {
+				t.Errorf("formatBool(%v) = %q, want %q", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
 func TestRunLicenseList(t *testing.T) {
 	old := os.Stdout
 	r, w, _ := os.Pipe()
