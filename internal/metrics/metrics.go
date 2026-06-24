@@ -94,6 +94,49 @@ var (
 		},
 		[]string{"controller"},
 	)
+
+	// Router-proxy metrics
+
+	RouterRequestsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llmkube_router_requests_total",
+			Help: "Total number of router-proxy requests.",
+		},
+		[]string{"router", "rule", "backend", "classification", "outcome"},
+	)
+
+	RouterRequestDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "llmkube_router_request_duration_seconds",
+			Help:    "Duration of router-proxy requests.",
+			Buckets: prometheus.DefBuckets,
+		},
+		[]string{"router", "rule", "backend"},
+	)
+
+	RouterFailClosedTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llmkube_router_fail_closed_total",
+			Help: "Total number of requests rejected by the fail-closed gate.",
+		},
+		[]string{"router", "rule", "classification"},
+	)
+
+	RouterActiveBackends = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "llmkube_router_active_backends",
+			Help: "Number of active backends per tier.",
+		},
+		[]string{"router", "tier"},
+	)
+
+	RouterBackendHealth = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "llmkube_router_backend_health",
+			Help: "Health status of a backend (1=healthy, 0=unhealthy).",
+		},
+		[]string{"router", "backend"},
+	)
 )
 
 func init() {
@@ -106,5 +149,10 @@ func init() {
 		GPUQueueWaitDuration,
 		ReconcileTotal,
 		ReconcileDuration,
+		RouterRequestsTotal,
+		RouterRequestDuration,
+		RouterFailClosedTotal,
+		RouterActiveBackends,
+		RouterBackendHealth,
 	)
 }

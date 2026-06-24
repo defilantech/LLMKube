@@ -20,15 +20,22 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/otel"
+	otelattribute "go.opentelemetry.io/otel/attribute"
+	oteltrace "go.opentelemetry.io/otel/trace"
+
+	prommetrics "github.com/defilantech/llmkube/internal/metrics"
 )
 
 // Proxy is the router-proxy HTTP application. Construct via NewProxy and
 // register handlers with Mount; the proxy is safe for concurrent use.
 type Proxy struct {
-	cfg     *Config
-	matcher *Matcher
-	disp    *Dispatcher
-	logger  *slog.Logger
+	cfg        *Config
+	matcher    *Matcher
+	disp       *Dispatcher
+	logger     *slog.Logger
+	routerName string
 }
 
 // ProxyOption customizes a Proxy at construction time. The proxy
@@ -50,16 +57,23 @@ func WithDispatcherOptions(opts ...DispatcherOption) ProxyOption {
 	}
 }
 
+// WithRouterName sets the router name used in metric labels and OTel
+// span attributes. Defaults to "default" when omitted.
+func WithRouterName(name string) ProxyOption {
+	return func(p *Proxy) { p.routerName = name }
+}
+
 // NewProxy constructs a Proxy from a loaded Config.
 func NewProxy(cfg *Config, logger *slog.Logger, opts ...ProxyOption) *Proxy {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	p := &Proxy{
-		cfg:     cfg,
-		matcher: NewMatcher(cfg),
-		disp:    NewDispatcher(cfg),
-		logger:  logger,
+		cfg:        cfg,
+		matcher:    NewMatcher(cfg),
+		disp:       NewDispatcher(cfg),
+		logger:     logger,
+		routerName: "default",
 	}
 	for _, opt := range opts {
 		opt(p)
@@ -138,11 +152,23 @@ func (p *Proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if err := p.enforceFailClosed(&features, &decision); err != nil {
 		writeError(w, http.StatusServiceUnavailable, err.Error())
 		p.audit(features, decision, nil, http.StatusServiceUnavailable, "fail_closed", 0)
+		p.observeFailClosed(&features, &decision)
 		return
 	}
 
+	tracer := otel.Tracer("model_router.dispatch")
+	attrs := []otelattribute.KeyValue{
+		otelattribute.String("routing.classification", features.Classification),
+	}
+	if decision.Rule != nil {
+		attrs = append(attrs, otelattribute.String("routing.rule.matched", decision.Rule.Name))
+		attrs = append(attrs, otelattribute.String("routing.strategy", decision.Rule.Route.Strategy))
+	}
+	ctx, span := tracer.Start(r.Context(), "model_router.dispatch", oteltrace.WithAttributes(attrs...))
+	defer span.End()
+
 	start := time.Now()
-	chosen, resp, err := p.dispatchWithFallback(r.Context(), &decision, r.Header, body, "/v1/chat/completions")
+	chosen, resp, err := p.dispatchWithFallback(ctx, &decision, r.Header, body, "/v1/chat/completions")
 	elapsed := time.Since(start)
 	if err != nil {
 		// Runtime fail-closed: when every backend in a fail-closed
@@ -159,6 +185,7 @@ func (p *Proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				"fail-closed: all rule backends unhealthy: "+err.Error())
 			p.audit(features, decision, nil, http.StatusServiceUnavailable,
 				"fail_closed_runtime", elapsed)
+			p.observeFailClosed(&features, &decision)
 			return
 		}
 		writeError(w, http.StatusBadGateway, "all backends failed: "+err.Error())
@@ -167,8 +194,15 @@ func (p *Proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	span.SetAttributes(
+		otelattribute.String("routing.backend.selected", chosen.Name),
+		otelattribute.String("routing.backend.tier", chosen.Tier),
+	)
+
 	streamed := streamResponse(w, resp, isStream)
-	p.audit(features, decision, chosen, resp.StatusCode, streamedReason(streamed), elapsed)
+	outcome := streamedReason(streamed)
+	p.audit(features, decision, chosen, resp.StatusCode, outcome, elapsed)
+	p.observeRequest(&features, &decision, chosen, outcome, elapsed)
 }
 
 const maxRequestBodyBytes = 32 << 20 // 32 MiB, generous for long prompts
@@ -247,7 +281,8 @@ func (p *Proxy) dispatchWithFallback(
 	path string,
 ) (*Backend, *http.Response, error) {
 	var lastErr error
-	for _, name := range dec.Backends {
+	tracer := otel.Tracer("model_router.dispatch")
+	for i, name := range dec.Backends {
 		b := p.matcher.BackendByName(name)
 		if b == nil {
 			lastErr = fmt.Errorf("backend %q not configured", name)
@@ -259,8 +294,16 @@ func (p *Proxy) dispatchWithFallback(
 		}
 		attemptCtx, cancel := context.WithTimeout(ctx,
 			resolveDispatchTimeout(dec, b, p.disp.ResponseHeaderTimeout()))
+		_, span := tracer.Start(attemptCtx, "backend.request",
+			oteltrace.WithAttributes(
+				otelattribute.String("routing.backend.selected", b.Name),
+				otelattribute.String("routing.backend.tier", b.Tier),
+				otelattribute.Int("routing.fallback.depth", i),
+			),
+		)
 		resp, err := p.disp.Dispatch(attemptCtx, b, http.MethodPost, path, headers, body)
 		if err != nil {
+			span.End()
 			cancel()
 			lastErr = err
 			continue
@@ -269,6 +312,7 @@ func (p *Proxy) dispatchWithFallback(
 			// Drain and close so the connection is reusable.
 			_, _ = io.Copy(io.Discard, resp.Body)
 			_ = resp.Body.Close()
+			span.End()
 			cancel()
 			lastErr = fmt.Errorf("%s returned %d", name, resp.StatusCode)
 			continue
@@ -279,6 +323,7 @@ func (p *Proxy) dispatchWithFallback(
 		// plumbing needed, and streaming dispatches keep the
 		// deadline alive until the client finishes reading.
 		resp.Body = &cancelOnClose{ReadCloser: resp.Body, cancel: cancel}
+		span.End()
 		return b, resp, nil
 	}
 	if lastErr == nil {
@@ -388,6 +433,64 @@ func (p *Proxy) audit(
 	attrs = append(attrs, "timeoutMs",
 		resolveDispatchTimeout(&dec, chosen, p.disp.ResponseHeaderTimeout()).Milliseconds())
 	p.logger.Info("router.dispatch", attrs...)
+}
+
+// observeRequest records the llmkube_router_requests_total counter and
+// llmkube_router_request_duration_seconds histogram for a completed
+// dispatch.
+func (p *Proxy) observeRequest(f *RequestFeatures, dec *MatchResult, chosen *Backend, outcome string, elapsed time.Duration) {
+	ruleName := ""
+	if dec.Rule != nil {
+		ruleName = dec.Rule.Name
+	}
+	backendName := ""
+	if chosen != nil {
+		backendName = chosen.Name
+	}
+	prommetrics.RouterRequestsTotal.WithLabelValues(
+		p.routerName, ruleName, backendName, f.Classification, outcome,
+	).Inc()
+	prommetrics.RouterRequestDuration.WithLabelValues(
+		p.routerName, ruleName, backendName,
+	).Observe(elapsed.Seconds())
+	p.updateActiveBackendsMetrics()
+}
+
+// observeFailClosed records the llmkube_router_fail_closed_total counter
+// when a request is rejected by the fail-closed gate.
+func (p *Proxy) observeFailClosed(f *RequestFeatures, dec *MatchResult) {
+	ruleName := ""
+	if dec.Rule != nil {
+		ruleName = dec.Rule.Name
+	}
+	prommetrics.RouterFailClosedTotal.WithLabelValues(
+		p.routerName, ruleName, f.Classification,
+	).Inc()
+}
+
+// updateBackendHealthMetrics sets the llmkube_router_backend_health gauge
+// for the named backend to 1 (healthy) or 0 (unhealthy).
+func (p *Proxy) updateBackendHealthMetrics(name string, healthy bool) {
+	val := 0.0
+	if healthy {
+		val = 1.0
+	}
+	prommetrics.RouterBackendHealth.WithLabelValues(p.routerName, name).Set(val)
+}
+
+// updateActiveBackendsMetrics sets the llmkube_router_active_backends
+// gauge for each tier based on the current health of backends in that
+// tier.
+func (p *Proxy) updateActiveBackendsMetrics() {
+	tierCount := map[string]int{}
+	for _, b := range p.cfg.Backends {
+		if p.disp.IsHealthy(b.Name) {
+			tierCount[b.Tier]++
+		}
+	}
+	for tier, count := range tierCount {
+		prommetrics.RouterActiveBackends.WithLabelValues(p.routerName, tier).Set(float64(count))
+	}
 }
 
 func writeError(w http.ResponseWriter, code int, msg string) {
