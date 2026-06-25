@@ -119,6 +119,7 @@ func (r *ModelRouterReconciler) resolveBackend(
 	}
 	wire := router.Backend{
 		Name:         b.Name,
+		DisplayName:  b.DisplayName,
 		Tier:         b.Tier,
 		Capabilities: append([]string(nil), b.Capabilities...),
 	}

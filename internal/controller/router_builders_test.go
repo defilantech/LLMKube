@@ -624,6 +624,41 @@ func TestCompileRouterConfigCopiesBackendTimeout(t *testing.T) {
 	}
 }
 
+// TestCompileRouterConfigCopiesDisplayName guards the controller half of
+// the per-backend displayName feature (#826): the CRD stores DisplayName
+// and the proxy publishes/matches on it, but only if the controller
+// actually emits it into config.json. resolveBackend used to drop it, so
+// the published id silently fell back to Name. A backend with a
+// DisplayName must surface it in the compiled config; one without keeps
+// it empty (the proxy then uses Name).
+func TestCompileRouterConfigCopiesDisplayName(t *testing.T) {
+	mr := canonicalModelRouter()
+	mr.Spec.Backends[1].DisplayName = "cloud/opus"
+
+	isvc := &inferencev1alpha1.InferenceService{
+		ObjectMeta: metav1.ObjectMeta{Name: "qwen3-coder", Namespace: testBuilderNs},
+	}
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "anthropic-key", Namespace: testBuilderNs},
+		Data:       map[string][]byte{"ANTHROPIC_API_KEY": []byte("test")},
+	}
+	r := newRouterReconcilerForTest(t, mr, isvc, secret)
+	compiled, err := r.compileRouterConfig(context.Background(), mr)
+	if err != nil {
+		t.Fatalf("compileRouterConfig: %v", err)
+	}
+	var cfg router.Config
+	if err := json.Unmarshal(compiled.JSON, &cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if cfg.Backends[1].DisplayName != "cloud/opus" {
+		t.Errorf("backend displayName = %q, want cloud/opus", cfg.Backends[1].DisplayName)
+	}
+	if cfg.Backends[0].DisplayName != "" {
+		t.Errorf("backend without displayName = %q, want empty", cfg.Backends[0].DisplayName)
+	}
+}
+
 // TestRouterServiceBuilder confirms ClusterIP default and the
 // canonical selector label.
 func TestRouterServiceBuilder(t *testing.T) {
