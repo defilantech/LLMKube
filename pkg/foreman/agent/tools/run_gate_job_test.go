@@ -739,3 +739,88 @@ func TestRenderGateJob_BaseBranchEnv(t *testing.T) {
 		})
 	}
 }
+
+// TestRunGateJob_ImageOverride asserts that a non-empty per-call image
+// in the args overrides cfg.Image in the rendered Job, and that an
+// empty per-call image falls back to cfg.Image. Regression for #839.
+func TestRunGateJob_ImageOverride(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	cases := []struct {
+		name    string
+		argsImg string
+		cfgImg  string
+		wantImg string
+	}{
+		{
+			name:    "args image overrides cfg image",
+			argsImg: "python:3.13",
+			cfgImg:  "golang:1.26",
+			wantImg: "python:3.13",
+		},
+		{
+			name:    "empty args image falls back to cfg image",
+			argsImg: "",
+			cfgImg:  "golang:1.26",
+			wantImg: "golang:1.26",
+		},
+		{
+			name:    "empty args image falls back to cfg custom image",
+			argsImg: "",
+			cfgImg:  "rust:1",
+			wantImg: "rust:1",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := fake.NewClientBuilder().WithScheme(gateScheme(t)).WithStatusSubresource(&batchv1.Job{}).Build()
+			jobName := "foreman-gate-img-" + tc.name
+			key := types.NamespacedName{Namespace: "foreman-system", Name: jobName}
+
+			go flipStatusOnce(ctx, c, key, 1, 0)
+
+			args := map[string]any{
+				"repo":   "defilantech/LLMKube",
+				"branch": "foreman/issue-839",
+				"image":  tc.argsImg,
+				"taskRef": map[string]string{
+					"namespace": "default",
+					"name":      "gate-839",
+				},
+			}
+			argsJSON, err := json.Marshal(args)
+			if err != nil {
+				t.Fatalf("marshal args: %v", err)
+			}
+
+			tool := &RunGateJobTool{
+				Client: c,
+				Cfg: RunGateJobToolConfig{
+					Image:        tc.cfgImg,
+					NameFn:       pinName(jobName),
+					PollInterval: 5 * time.Millisecond,
+					PollTimeout:  2 * time.Second,
+				},
+			}
+
+			res, err := tool.Execute(ctx, argsJSON)
+			if err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			if res.Verdict != VerdictGatePass {
+				t.Fatalf("Verdict: want %s got %s", VerdictGatePass, res.Verdict)
+			}
+
+			// Verify the Job was created with the expected image.
+			var job batchv1.Job
+			if err := c.Get(ctx, key, &job); err != nil {
+				t.Fatalf("Job should exist: %v", err)
+			}
+			if got := job.Spec.Template.Spec.Containers[0].Image; got != tc.wantImg {
+				t.Errorf("Image: want %q got %q", tc.wantImg, got)
+			}
+		})
+	}
+}

@@ -742,6 +742,11 @@ func buildDeterministicArgs(task *foremanv1alpha1.AgenticTask, branch, cloneURL 
 		// the bite check fetches this ref explicitly. LLMKube branches off
 		// main; the tool also defaults to main when empty.
 		"baseBranch": "main",
+		// image is the container image the gate Job runs. Resolve() is
+		// nil-safe: a nil GateProfile returns the go preset whose Image
+		// is "golang:1.26", preserving byte-identical behavior for Go
+		// tasks.
+		"image": task.Spec.GateProfile.Resolve().Image,
 	}
 	out, _ := json.Marshal(args)
 	return out

@@ -163,6 +163,7 @@ type runGateJobArgs struct {
 	// to verify new tests bite. Defaults to "main" when empty.
 	BaseBranch string   `json:"baseBranch,omitempty"`
 	CloneURL   string   `json:"cloneURL,omitempty"`
+	Image      string   `json:"image,omitempty"`
 	Checks     []string `json:"checks,omitempty"`
 	BiteCheck  bool     `json:"biteCheck,omitempty"`
 	TaskRef    struct {
@@ -228,6 +229,13 @@ func (t *RunGateJobTool) Execute(ctx context.Context, args json.RawMessage) (*ag
 
 	cfg := applyConfigDefaults(t.Cfg)
 
+	// Use the per-call image if provided; otherwise fall back to the
+	// config default (golang:1.26).
+	image := a.Image
+	if image == "" {
+		image = cfg.Image
+	}
+
 	taskName := a.TaskRef.Name
 	if taskName == "" {
 		taskName = "task"
@@ -238,7 +246,7 @@ func (t *RunGateJobTool) Execute(ctx context.Context, args json.RawMessage) (*ag
 	rendered, err := renderGateJob(rendererInput{
 		Name:                    jobName,
 		Namespace:               cfg.Namespace,
-		Image:                   cfg.Image,
+		Image:                   image,
 		Repo:                    a.Repo,
 		Branch:                  a.Branch,
 		BaseBranch:              a.BaseBranch,

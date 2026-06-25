@@ -229,6 +229,41 @@ func TestBuildDeterministicArgs(t *testing.T) {
 			t.Errorf("cloneURL: want empty (so tool falls back to CloneURLBase+Repo) got %v", got["cloneURL"])
 		}
 	})
+
+	t.Run("nil GateProfile resolves to golang image", func(t *testing.T) {
+		raw := buildDeterministicArgs(task, "foreman/issue-510", "")
+		var got map[string]any
+		if err := json.Unmarshal(raw, &got); err != nil {
+			t.Fatalf("decode args: %v", err)
+		}
+		if got["image"] != "golang:1.26" {
+			t.Errorf("image: want golang:1.26 (nil GateProfile default) got %v", got["image"])
+		}
+	})
+
+	t.Run("python GateProfile resolves to python image", func(t *testing.T) {
+		pyTask := &foremanv1alpha1.AgenticTask{
+			ObjectMeta: metav1.ObjectMeta{Name: "gate-py", Namespace: "default"},
+			Spec: foremanv1alpha1.AgenticTaskSpec{
+				Kind: foremanv1alpha1.AgenticTaskKindVerify,
+				Payload: foremanv1alpha1.AgenticTaskPayload{
+					Repo:  "defilantech/LLMKube",
+					Issue: 839,
+				},
+				GateProfile: &foremanv1alpha1.GateProfile{
+					Language: foremanv1alpha1.GateLanguagePython,
+				},
+			},
+		}
+		raw := buildDeterministicArgs(pyTask, "foreman/issue-839", "")
+		var got map[string]any
+		if err := json.Unmarshal(raw, &got); err != nil {
+			t.Fatalf("decode args: %v", err)
+		}
+		if got["image"] != "python:3.13" {
+			t.Errorf("image: want python:3.13 got %v", got["image"])
+		}
+	})
 }
 
 // resolveSchemeForTests builds a runtime scheme with the API types the
