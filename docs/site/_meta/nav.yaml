@@ -111,6 +111,9 @@ sections:
       - label: Model compatibility
         slug: foreman/model-compatibility
         file: foreman/model-compatibility.md
+      - label: Non-Go projects (language gates)
+        slug: foreman/language-gates
+        file: foreman/language-gates.md
 
   - title: Reference
     items:
