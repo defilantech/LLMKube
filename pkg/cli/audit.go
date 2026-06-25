@@ -52,7 +52,7 @@ func newAuditExportCommand() *cobra.Command {
 				if ferr != nil {
 					return fmt.Errorf("create %s: %w", output, ferr)
 				}
-				defer f.Close()
+				defer func() { _ = f.Close() }()
 				out = f
 			}
 			return exportAuditRecords(cmd.Context(), c, namespace, repo, since, out)

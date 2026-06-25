@@ -115,8 +115,13 @@ type resultPayload struct {
 // fabricated values. RecordedAt is the run's FinishedAt (deterministic).
 func BuildRecord(task *foremanv1alpha1.AgenticTask, agent *foremanv1alpha1.Agent) Record {
 	rec := Record{
-		SchemaVersion:     SchemaVersion,
-		Task:              TaskRef{Name: task.Name, Namespace: task.Namespace, UID: string(task.UID), Kind: string(task.Spec.Kind)},
+		SchemaVersion: SchemaVersion,
+		Task: TaskRef{
+			Name:      task.Name,
+			Namespace: task.Namespace,
+			UID:       string(task.UID),
+			Kind:      string(task.Spec.Kind),
+		},
 		Repo:              task.Spec.Payload.Repo,
 		Issue:             int(task.Spec.Payload.Issue),
 		AssignedNode:      task.Status.AssignedNode,

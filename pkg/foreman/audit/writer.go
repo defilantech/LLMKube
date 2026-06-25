@@ -96,7 +96,13 @@ func WriteRecord(ctx context.Context, c client.Client, namespace string, rec Rec
 // referenced Agent is fetched best-effort (a missing Agent yields a record
 // with no agent block, not an error). On success it stamps AuditedAnnotation
 // so subsequent reconciles skip the write.
-func RecordTerminal(ctx context.Context, c client.Client, task *foremanv1alpha1.AgenticTask, auditNamespace string, log logr.Logger) error {
+func RecordTerminal(
+	ctx context.Context,
+	c client.Client,
+	task *foremanv1alpha1.AgenticTask,
+	auditNamespace string,
+	log logr.Logger,
+) error {
 	if task.Annotations[AuditedAnnotation] == "true" {
 		return nil
 	}

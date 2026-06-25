@@ -72,7 +72,8 @@ func TestBuildRecordCoder(t *testing.T) {
 	if rec.Repo != "defilantech/LLMKube" || rec.Issue != 89 {
 		t.Errorf("repo/issue wrong: %q #%d", rec.Repo, rec.Issue)
 	}
-	if rec.Agent == nil || rec.Agent.Model != "coder-amd" || rec.Agent.Endpoint != "http://gw/v1" || rec.Agent.Role != "coder" {
+	if rec.Agent == nil || rec.Agent.Model != "coder-amd" ||
+		rec.Agent.Endpoint != "http://gw/v1" || rec.Agent.Role != "coder" {
 		t.Errorf("agent ref wrong: %+v", rec.Agent)
 	}
 	if rec.Verdict != "GO" || !rec.SucceededOnTarget {
