@@ -155,5 +155,5 @@ fails buggy code, which is the whole point.
 ## See also
 
 - [`defilantech/foreman-python-example`](https://github.com/defilantech/foreman-python-example): clone-and-run sample project for this page.
-- [Foreman overview](./foreman): the CRDs and the coder / verifier / reviewer pipeline.
+- [Foreman overview](/docs/foreman): the CRDs and the coder / verifier / reviewer pipeline.
 - [M4 verifier runbook](./runbook-m4): standing up the verify gate on a node.
