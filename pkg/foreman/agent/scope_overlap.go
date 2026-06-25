@@ -69,11 +69,18 @@ func extractIssuePathRefs(body string) []string {
 	return refs
 }
 
-// hasGoFile reports whether any path in paths ends with ".go".
-func hasGoFile(paths []string) bool {
+// hasSourceFile reports whether any path in paths ends with one of the
+// extensions in exts. If exts is empty, it defaults to [".go"] so
+// existing behavior is preserved.
+func hasSourceFile(paths []string, exts []string) bool {
+	if len(exts) == 0 {
+		exts = []string{".go"}
+	}
 	for _, p := range paths {
-		if strings.HasSuffix(p, ".go") {
-			return true
+		for _, ext := range exts {
+			if strings.HasSuffix(p, ext) {
+				return true
+			}
 		}
 	}
 	return false
@@ -122,6 +129,7 @@ func enforceReviewerScopeOverlap(
 	issueBody string,
 	diffFiles []string,
 	verdict foremanv1alpha1.AgenticTaskVerdict,
+	sourceExtensions []string,
 ) foremanv1alpha1.AgenticTaskVerdict {
 	if extra == nil || issueBody == "" || len(diffFiles) == 0 {
 		return verdict
@@ -152,10 +160,10 @@ func enforceReviewerScopeOverlap(
 		return verdict
 	}
 
-	// A diff with zero indexable Go files is not scope drift — it is a
+	// A diff with zero indexable source files is not scope drift — it is a
 	// legitimate docs- or YAML-only change (#800). Skip the scope check
 	// so the run proceeds.
-	if !hasGoFile(diffFiles) {
+	if !hasSourceFile(diffFiles, sourceExtensions) {
 		return verdict
 	}
 

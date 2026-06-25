@@ -106,7 +106,7 @@ func TestEnforceReviewerScopeOverlap_Issue379DriftDemotesGo(t *testing.T) {
 	}
 	extra := map[string]any{}
 	got := enforceReviewerScopeOverlap(logr.Discard(), extra, issue379Body, diff,
-		foremanv1alpha1.AgenticTaskVerdictGo)
+		foremanv1alpha1.AgenticTaskVerdictGo, nil)
 	if got != foremanv1alpha1.AgenticTaskVerdictNoGo {
 		t.Fatalf("zero scope overlap on GO must demote to NO-GO; got %v", got)
 	}
@@ -136,7 +136,7 @@ func TestEnforceReviewerScopeOverlap_MatchedRefStands(t *testing.T) {
 	diff := []string{"AGENTS.md"}
 	extra := map[string]any{}
 	got := enforceReviewerScopeOverlap(logr.Discard(), extra, issue510Body, diff,
-		foremanv1alpha1.AgenticTaskVerdictGo)
+		foremanv1alpha1.AgenticTaskVerdictGo, nil)
 	if got != foremanv1alpha1.AgenticTaskVerdictGo {
 		t.Fatalf("a diff touching a referenced file must not demote; got %v", got)
 	}
@@ -156,7 +156,7 @@ func TestEnforceReviewerScopeOverlap_BasenameMatch(t *testing.T) {
 	diff := []string{"config/rbac/role.yaml"}
 	extra := map[string]any{}
 	got := enforceReviewerScopeOverlap(logr.Discard(), extra, body, diff,
-		foremanv1alpha1.AgenticTaskVerdictGo)
+		foremanv1alpha1.AgenticTaskVerdictGo, nil)
 	if got != foremanv1alpha1.AgenticTaskVerdictGo {
 		t.Fatalf("basename match must not demote; got %v", got)
 	}
@@ -167,7 +167,7 @@ func TestEnforceReviewerScopeOverlap_NoRefsObserveOnly(t *testing.T) {
 	diff := []string{"pkg/agent/agent.go"}
 	extra := map[string]any{}
 	got := enforceReviewerScopeOverlap(logr.Discard(), extra, body, diff,
-		foremanv1alpha1.AgenticTaskVerdictGo)
+		foremanv1alpha1.AgenticTaskVerdictGo, nil)
 	if got != foremanv1alpha1.AgenticTaskVerdictGo {
 		t.Fatalf("no path refs in issue must not demote; got %v", got)
 	}
@@ -180,7 +180,7 @@ func TestEnforceReviewerScopeOverlap_DriftOnNoGoAnnotatesOnly(t *testing.T) {
 	diff := []string{"internal/foreman/controller/agentictask_controller.go"}
 	extra := map[string]any{}
 	got := enforceReviewerScopeOverlap(logr.Discard(), extra, issue379Body, diff,
-		foremanv1alpha1.AgenticTaskVerdictNoGo)
+		foremanv1alpha1.AgenticTaskVerdictNoGo, nil)
 	if got != foremanv1alpha1.AgenticTaskVerdictNoGo {
 		t.Fatalf("NO-GO must stay NO-GO; got %v", got)
 	}
@@ -200,7 +200,7 @@ func TestEnforceReviewerScopeOverlap_ZeroGoFilesSkipsScopeCheck(t *testing.T) {
 	diff := []string{"README.md", "config/crd/bases/inference.llmkube.dev_models.yaml"}
 	extra := map[string]any{}
 	got := enforceReviewerScopeOverlap(logr.Discard(), extra, issue379Body, diff,
-		foremanv1alpha1.AgenticTaskVerdictGo)
+		foremanv1alpha1.AgenticTaskVerdictGo, nil)
 	if got != foremanv1alpha1.AgenticTaskVerdictGo {
 		t.Fatalf("zero-Go-file diff must not demote GO; got %v", got)
 	}
@@ -217,7 +217,7 @@ func TestEnforceReviewerScopeOverlap_RealDriftStillBites(t *testing.T) {
 	diff := []string{"internal/foreman/controller/agentictask_controller.go"}
 	extra := map[string]any{}
 	got := enforceReviewerScopeOverlap(logr.Discard(), extra, issue379Body, diff,
-		foremanv1alpha1.AgenticTaskVerdictGo)
+		foremanv1alpha1.AgenticTaskVerdictGo, nil)
 	if got != foremanv1alpha1.AgenticTaskVerdictNoGo {
 		t.Fatalf("real drift with Go files must still demote GO; got %v", got)
 	}
@@ -228,12 +228,84 @@ func TestEnforceReviewerScopeOverlap_RealDriftStillBites(t *testing.T) {
 
 func TestEnforceReviewerScopeOverlap_NilOrEmptyInputsPassThrough(t *testing.T) {
 	if got := enforceReviewerScopeOverlap(logr.Discard(), nil, issue379Body,
-		[]string{"x.go"}, foremanv1alpha1.AgenticTaskVerdictGo); got != foremanv1alpha1.AgenticTaskVerdictGo {
+		[]string{"x.go"}, foremanv1alpha1.AgenticTaskVerdictGo, nil); got != foremanv1alpha1.AgenticTaskVerdictGo {
 		t.Errorf("nil extra must pass through; got %v", got)
 	}
 	extra := map[string]any{}
 	if got := enforceReviewerScopeOverlap(logr.Discard(), extra, "", nil,
-		foremanv1alpha1.AgenticTaskVerdictGo); got != foremanv1alpha1.AgenticTaskVerdictGo {
+		foremanv1alpha1.AgenticTaskVerdictGo, nil); got != foremanv1alpha1.AgenticTaskVerdictGo {
 		t.Errorf("empty body and diff must pass through; got %v", got)
+	}
+}
+
+func TestHasSourceFile(t *testing.T) {
+	tests := []struct {
+		name  string
+		paths []string
+		exts  []string
+		want  bool
+	}{
+		{
+			name:  "matches .go",
+			paths: []string{"pkg/foo.go"},
+			exts:  []string{".go"},
+			want:  true,
+		},
+		{
+			name:  "matches .py",
+			paths: []string{"src/main.py"},
+			exts:  []string{".py"},
+			want:  true,
+		},
+		{
+			name:  "no match for unrelated files",
+			paths: []string{"README.md", "config/crd/bases/model.yaml"},
+			exts:  []string{".go"},
+			want:  false,
+		},
+		{
+			name:  "empty exts defaults to .go",
+			paths: []string{"pkg/foo.go"},
+			exts:  nil,
+			want:  true,
+		},
+		{
+			name:  "empty exts defaults to .go - no match",
+			paths: []string{"src/main.py"},
+			exts:  nil,
+			want:  false,
+		},
+		{
+			name:  "multiple extensions",
+			paths: []string{"src/main.py"},
+			exts:  []string{".go", ".py"},
+			want:  true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := hasSourceFile(tt.paths, tt.exts); got != tt.want {
+				t.Errorf("hasSourceFile(%v, %v) = %v, want %v", tt.paths, tt.exts, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestEnforceReviewerScopeOverlap_PythonExtensions verifies that with
+// sourceExtensions=[".py"], a diff of only non-.py files (e.g. .md)
+// whose paths do NOT match the issue refs skips the scope check
+// (returns the input verdict unchanged), because hasSourceFile returns
+// false for a diff with no .py files.
+func TestEnforceReviewerScopeOverlap_PythonExtensions(t *testing.T) {
+	// Issue references Go files; diff contains only .md files (no .py).
+	diff := []string{"README.md", "docs/guide.md"}
+	extra := map[string]any{}
+	got := enforceReviewerScopeOverlap(logr.Discard(), extra, issue379Body, diff,
+		foremanv1alpha1.AgenticTaskVerdictGo, []string{".py"})
+	if got != foremanv1alpha1.AgenticTaskVerdictGo {
+		t.Fatalf("with .py extensions and no .py diff, scope check should skip; got %v", got)
+	}
+	if _, demoted := extra["verdictDemoted"]; demoted {
+		t.Error("should not claim demotion when no source files of configured type changed")
 	}
 }

@@ -497,7 +497,8 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 			var scopeMatched []string
 			if scopeDiff, scopeErr := repo.DiffNameOnly(ctx, workspace, "main"); scopeErr == nil {
 				verdict = enforceReviewerScopeOverlap(log, loopRes.Terminal.Extra,
-					extractFetchIssueBody(loopRes.Transcript), scopeDiff, verdict)
+					extractFetchIssueBody(loopRes.Transcript), scopeDiff, verdict,
+					task.Spec.GateProfile.Resolve().SourceExtensions)
 				scopeDriftDetected, _ = loopRes.Terminal.Extra["scopeDriftDetected"].(bool)
 				scopeMatched, _ = loopRes.Terminal.Extra["scopeMatched"].([]string)
 			} else {
