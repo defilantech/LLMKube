@@ -5,6 +5,33 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.17](https://github.com/defilantech/LLMKube/compare/v0.8.16...v0.8.17) (2026-06-25)
+
+
+### Features
+
+* **cli:** explicit model-cache control flags on deploy/delete (Fixes [#722](https://github.com/defilantech/LLMKube/issues/722)) ([#830](https://github.com/defilantech/LLMKube/issues/830)) ([9fc4187](https://github.com/defilantech/LLMKube/commit/9fc41876649a15f03d3121cd6a7bda07458b53af))
+* **foreman:** durable audit-log record + llmkube audit export ([#837](https://github.com/defilantech/LLMKube/issues/837)) ([#838](https://github.com/defilantech/LLMKube/issues/838)) ([57d2ad0](https://github.com/defilantech/LLMKube/commit/57d2ad08ce24cf690ce9fd9e99adce0bce8f145e))
+* **foreman:** GateProfile API type + language presets + resolver (Addresses [#839](https://github.com/defilantech/LLMKube/issues/839)) ([#840](https://github.com/defilantech/LLMKube/issues/840)) ([165a375](https://github.com/defilantech/LLMKube/commit/165a375ec52a2e9a786e2d0eca67853f3be0e9a8))
+* **foreman:** run the fast gate from the resolved GateProfile (Addresses [#839](https://github.com/defilantech/LLMKube/issues/839)) ([#841](https://github.com/defilantech/LLMKube/issues/841)) ([4225da4](https://github.com/defilantech/LLMKube/commit/4225da46950ef467693300369480f69d89f57ec5))
+* **foreman:** scope guard reads source extensions from GateProfile (Addresses [#839](https://github.com/defilantech/LLMKube/issues/839)) ([#842](https://github.com/defilantech/LLMKube/issues/842)) ([c36ac87](https://github.com/defilantech/LLMKube/commit/c36ac8795588f43a2560f5a0e0f375052c52817d))
+* **foreman:** verify-gate Job image from GateProfile (Addresses [#839](https://github.com/defilantech/LLMKube/issues/839)) ([#843](https://github.com/defilantech/LLMKube/issues/843)) ([327dd88](https://github.com/defilantech/LLMKube/commit/327dd88e8f7f547a46f3f1ce656aa87477c73132))
+* **foreman:** verify-gate Job runs resolved commands for non-Go profiles (Addresses [#839](https://github.com/defilantech/LLMKube/issues/839)) ([#844](https://github.com/defilantech/LLMKube/issues/844)) ([84994fd](https://github.com/defilantech/LLMKube/commit/84994fd0283a92faf182b0761f66e83ad3735eea))
+* **inferenceservice:** speculativeDecoding for llama.cpp MTP/draft (Fixes [#502](https://github.com/defilantech/LLMKube/issues/502)) ([#827](https://github.com/defilantech/LLMKube/issues/827)) ([564726a](https://github.com/defilantech/LLMKube/commit/564726a773e06a2eab8fb2951836ca2891dd7a50))
+* **router:** optional backend displayName for /v1/models id (Fixes [#792](https://github.com/defilantech/LLMKube/issues/792)) ([#826](https://github.com/defilantech/LLMKube/issues/826)) ([7090f83](https://github.com/defilantech/LLMKube/commit/7090f832557e9c520cb5e3a25a92276f026add2f))
+* **router:** Prometheus metrics + OTel spans for routing decisions (Addresses [#433](https://github.com/defilantech/LLMKube/issues/433)) ([#834](https://github.com/defilantech/LLMKube/issues/834)) ([b8fa96d](https://github.com/defilantech/LLMKube/commit/b8fa96d52e5cd73e3d3b9a8dfa210be8b3f5f5dd))
+
+
+### Bug Fixes
+
+* **foreman:** scope guard skips check on zero-Go-file diffs; NUL-safe git status (Fixes [#800](https://github.com/defilantech/LLMKube/issues/800)) ([#823](https://github.com/defilantech/LLMKube/issues/823)) ([92e5501](https://github.com/defilantech/LLMKube/commit/92e5501b0faaf85d348f7dcfcb2bab17f5269e4e))
+
+
+### Documentation
+
+* **examples:** spot-capacity GPU NodePool for Foreman gate Jobs (Fixes [#659](https://github.com/defilantech/LLMKube/issues/659)) ([#824](https://github.com/defilantech/LLMKube/issues/824)) ([9fa4846](https://github.com/defilantech/LLMKube/commit/9fa4846338ac6bd84c0f7ae57bb1da2d6cb49231))
+* Karpenter GPU autoscaling guide (Fixes [#658](https://github.com/defilantech/LLMKube/issues/658)) ([#825](https://github.com/defilantech/LLMKube/issues/825)) ([2d586ef](https://github.com/defilantech/LLMKube/commit/2d586efecb539e236b387609974e73f270cea18e))
+
 ## [0.8.16](https://github.com/defilantech/LLMKube/compare/v0.8.15...v0.8.16) (2026-06-24)
 
 
