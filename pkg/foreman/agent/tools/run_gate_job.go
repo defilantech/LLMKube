@@ -166,7 +166,14 @@ type runGateJobArgs struct {
 	Image      string   `json:"image,omitempty"`
 	Checks     []string `json:"checks,omitempty"`
 	BiteCheck  bool     `json:"biteCheck,omitempty"`
-	TaskRef    struct {
+	// Generic switches the Job from the Go path (make-target Checks plus the
+	// bite check) to running Commands directly. Set for non-Go GateProfiles.
+	Generic bool `json:"generic,omitempty"`
+	// Commands are the resolved shell commands the generic path runs in
+	// order; each is a check and a non-zero exit fails the gate. Ignored
+	// unless Generic is true.
+	Commands []string `json:"commands,omitempty"`
+	TaskRef  struct {
 		Namespace string `json:"namespace"`
 		Name      string `json:"name"`
 	} `json:"taskRef"`
@@ -220,7 +227,7 @@ func (t *RunGateJobTool) Execute(ctx context.Context, args json.RawMessage) (*ag
 	if a.Branch == "" {
 		return nil, errors.New("run_gate_job: branch is required")
 	}
-	if len(a.Checks) == 0 {
+	if !a.Generic && len(a.Checks) == 0 {
 		a.Checks = DefaultGateChecks
 	}
 	if a.BaseBranch == "" {
@@ -252,6 +259,8 @@ func (t *RunGateJobTool) Execute(ctx context.Context, args json.RawMessage) (*ag
 		BaseBranch:              a.BaseBranch,
 		Checks:                  a.Checks,
 		BiteCheck:               a.BiteCheck,
+		Generic:                 a.Generic,
+		Commands:                a.Commands,
 		PVCName:                 cfg.PVCName,
 		ActiveDeadlineSeconds:   cfg.ActiveDeadlineSeconds,
 		TTLSecondsAfterFinished: cfg.TTLSecondsAfterFinished,
@@ -396,6 +405,8 @@ type rendererInput struct {
 	BaseBranch              string
 	Checks                  []string
 	BiteCheck               bool
+	Generic                 bool
+	Commands                []string
 	PVCName                 string
 	ActiveDeadlineSeconds   int32
 	TTLSecondsAfterFinished int32

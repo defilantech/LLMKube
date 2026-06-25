@@ -391,6 +391,45 @@ func TestRenderGateJob_RendersChecksAndPVCMount(t *testing.T) {
 	}
 }
 
+func TestRenderGateJob_GenericRunsCommandsNotMakeOrBiteCheck(t *testing.T) {
+	job, err := renderGateJob(rendererInput{
+		Name:                    "foreman-gate-py",
+		Namespace:               "foreman-system",
+		Image:                   "python:3.13",
+		Repo:                    "acme/widgets",
+		Branch:                  "foreman/issue-1",
+		BiteCheck:               true, // must be ignored on the generic path
+		Generic:                 true,
+		Commands:                []string{"ruff check .", "pytest -q"},
+		PVCName:                 "foreman-gate-cache",
+		ActiveDeadlineSeconds:   1800,
+		TTLSecondsAfterFinished: 86400,
+		CPURequest:              "2",
+		CPULimit:                "4",
+		MemRequest:              "4Gi",
+		MemLimit:                "8Gi",
+		CloneURLBase:            "https://github.com",
+		TaskNamespace:           "default",
+		TaskName:                "gate-1",
+	})
+	if err != nil {
+		t.Fatalf("renderGateJob: %v", err)
+	}
+	if got := job.Spec.Template.Spec.Containers[0].Image; got != "python:3.13" {
+		t.Errorf("Image: %q", got)
+	}
+	args := strings.Join(job.Spec.Template.Spec.Containers[0].Args, "\n")
+	if !strings.Contains(args, "( ruff check . )") || !strings.Contains(args, "( pytest -q )") {
+		t.Errorf("generic args missing the resolved commands:\n%s", args)
+	}
+	if strings.Contains(args, "make ") {
+		t.Errorf("generic path must not run make targets:\n%s", args)
+	}
+	if strings.Contains(args, "bite check") {
+		t.Errorf("generic path must not run the Go-specific bite check:\n%s", args)
+	}
+}
+
 // TestRenderGateJob_CloneURLOverride asserts the template branches
 // correctly on the CloneURL field: when set, the git clone target is
 // the override URL verbatim; when empty, the historical

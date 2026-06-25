@@ -239,6 +239,9 @@ func TestBuildDeterministicArgs(t *testing.T) {
 		if got["image"] != "golang:1.26" {
 			t.Errorf("image: want golang:1.26 (nil GateProfile default) got %v", got["image"])
 		}
+		if _, ok := got["generic"]; ok {
+			t.Errorf("nil GateProfile must keep the Go gate path (no generic key); got %v", got["generic"])
+		}
 	})
 
 	t.Run("python GateProfile resolves to python image", func(t *testing.T) {
@@ -262,6 +265,20 @@ func TestBuildDeterministicArgs(t *testing.T) {
 		}
 		if got["image"] != "python:3.13" {
 			t.Errorf("image: want python:3.13 got %v", got["image"])
+		}
+		if got["generic"] != true {
+			t.Errorf("python GateProfile must set generic=true; got %v", got["generic"])
+		}
+		cmds, ok := got["commands"].([]any)
+		if !ok || len(cmds) == 0 {
+			t.Fatalf("python GateProfile must set non-empty commands; got %v", got["commands"])
+		}
+		joined := ""
+		for _, c := range cmds {
+			joined += c.(string) + "\n"
+		}
+		if !strings.Contains(joined, "pytest") || !strings.Contains(joined, "ruff") {
+			t.Errorf("commands should be the python preset (ruff/pytest); got %v", cmds)
 		}
 	})
 }

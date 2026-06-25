@@ -724,6 +724,10 @@ func pickDeterministicTool(tools []string) string {
 // not on the upstream payload.repo where the branch does not yet
 // exist. Empty cloneURL preserves the M4 default (upstream + repo).
 func buildDeterministicArgs(task *foremanv1alpha1.AgenticTask, branch, cloneURL string) json.RawMessage {
+	// Resolve once. Resolve() is nil-safe: a nil GateProfile yields the go
+	// preset (image golang:1.26, the make-target checks), so a Go task stays
+	// byte-identical to before this field existed.
+	resolved := task.Spec.GateProfile.Resolve()
 	args := map[string]any{
 		"repo":     task.Spec.Payload.Repo,
 		"branch":   branch,
@@ -742,12 +746,26 @@ func buildDeterministicArgs(task *foremanv1alpha1.AgenticTask, branch, cloneURL 
 		// the bite check fetches this ref explicitly. LLMKube branches off
 		// main; the tool also defaults to main when empty.
 		"baseBranch": "main",
-		// image is the container image the gate Job runs. Resolve() is
-		// nil-safe: a nil GateProfile returns the go preset whose Image
-		// is "golang:1.26", preserving byte-identical behavior for Go
-		// tasks.
-		"image": task.Spec.GateProfile.Resolve().Image,
+		// image is the container image the gate Job runs.
+		"image": resolved.Image,
 	}
+
+	// Non-Go GateProfiles switch the verify gate off the Go path (make
+	// targets + bite check) and onto the resolved commands, run in order.
+	// The bite check is Go-specific and intentionally not run on the generic
+	// path in this slice. A nil or "go" profile leaves args without
+	// "generic"/"commands", so the Go gate is byte-identical.
+	if usesGenericGate(task.Spec.GateProfile) {
+		var cmds []string
+		for _, c := range []string{resolved.Format, resolved.Lint, resolved.Build, resolved.Test, resolved.CodegenCheck} {
+			if strings.TrimSpace(c) != "" {
+				cmds = append(cmds, c)
+			}
+		}
+		args["generic"] = true
+		args["commands"] = cmds
+	}
+
 	out, _ := json.Marshal(args)
 	return out
 }

@@ -65,6 +65,11 @@ spec:
                 "{{ if .CloneURL }}{{ .CloneURL }}{{ else }}{{ .CloneURLBase }}/{{ .Repo }}.git{{ end }}" /work || { echo "GATE FAIL: clone"; exit 1; }
               cd /work
               rc=0
+              {{- if .Generic }}
+              {{- range .Commands }}
+              echo "=== {{ . }} ==="; ( {{ . }} ) || rc=1
+              {{- end }}
+              {{- else }}
               {{- range .Checks }}
               echo "=== make {{ . }} ==="; make {{ . }} || rc=1
               {{- end }}
@@ -146,6 +151,7 @@ spec:
                   fi
                 fi
               fi
+              {{- end }}
               {{- end }}
               [ "$rc" -eq 0 ] && echo "GATE PASS" || echo "GATE FAIL"
               exit "$rc"
