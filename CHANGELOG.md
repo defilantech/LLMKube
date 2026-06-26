@@ -5,6 +5,25 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.18](https://github.com/defilantech/LLMKube/compare/v0.8.17...v0.8.18) (2026-06-26)
+
+
+### Features
+
+* **model:** stage multi-file artifacts ([#853](https://github.com/defilantech/LLMKube/issues/853)) ([ca22b84](https://github.com/defilantech/LLMKube/commit/ca22b84f508219269d4c6ca3df32b254bf70163c))
+* **router:** TTFT + budget-utilization metrics, backend.provider span attr, Grafana dashboard ([#852](https://github.com/defilantech/LLMKube/issues/852)) ([b82cde1](https://github.com/defilantech/LLMKube/commit/b82cde1408adb33843c15f4d6bff7996d91ffcb3))
+
+
+### Bug Fixes
+
+* **controller:** propagate backend displayName into router-proxy config ([#849](https://github.com/defilantech/LLMKube/issues/849)) ([9f3b360](https://github.com/defilantech/LLMKube/commit/9f3b360b167034c5a898d1a506674df8ad5bb430))
+
+
+### Documentation
+
+* **foreman:** fix overview link that 404s the site build ([#848](https://github.com/defilantech/LLMKube/issues/848)) ([2f9b82b](https://github.com/defilantech/LLMKube/commit/2f9b82b3f84ccc3564f201a1574bd9133b0c41b3))
+* **foreman:** non-Go projects (language gates) page ([#845](https://github.com/defilantech/LLMKube/issues/845)) ([d48cf6d](https://github.com/defilantech/LLMKube/commit/d48cf6d8fe2e942e204eec6686b62a64c3da5bdc))
+
 ## [0.8.17](https://github.com/defilantech/LLMKube/compare/v0.8.16...v0.8.17) (2026-06-25)
 
 
