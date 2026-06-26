@@ -44,6 +44,7 @@ func TestLlamaCppBuildArgs(t *testing.T) {
 		// notContains is just a list of flags that must NOT appear anywhere in args.
 		notContains []string
 		model       *inferencev1alpha1.Model
+		modelPath   string
 		name        string
 		spec        *inferencev1alpha1.InferenceServiceSpec
 	}{
@@ -54,7 +55,7 @@ func TestLlamaCppBuildArgs(t *testing.T) {
 				Runtime:  "llama",
 				ModelRef: "test-model",
 			},
-			notContains: []string{"--ctx-size", "--parallel", "--flash-attn", "--jinja", "--cache-type-k", "--cpu-moe", "--n-cpu-moe", "--no-kv-offload", "--override-tensor", "--override-kv", "--batch-size", "--ubatch-size", "--no-warmup", "--reasoning-budget", "--reasoning-budget-message"},
+			notContains: []string{"--ctx-size", "--parallel", "--flash-attn", "--jinja", "--cache-type-k", "--cpu-moe", "--n-cpu-moe", "--no-kv-offload", "--override-tensor", "--override-kv", "--batch-size", "--ubatch-size", "--no-warmup", "--reasoning-budget", "--reasoning-budget-message", "--mmproj"},
 		},
 		{
 			model: model,
@@ -554,6 +555,98 @@ func TestLlamaCppBuildArgs(t *testing.T) {
 			contains:    []FlagCheck{{"--spec-type", "draft-mtp"}},
 			notContains: []string{"--draft-n-max"},
 		},
+		{
+			model: &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-model", Namespace: "default"},
+				Spec: inferencev1alpha1.ModelSpec{
+					Mmproj: "mmproj-F16.gguf",
+				},
+			},
+			name: "mmproj without files does not emit managed flag",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime:  "llama",
+				ModelRef: "test-model",
+			},
+			notContains: []string{"--mmproj", "/models/mmproj-F16.gguf"},
+		},
+		{
+			model: &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-model", Namespace: "default"},
+				Spec: inferencev1alpha1.ModelSpec{
+					Files:  []string{"model.gguf"},
+					Mmproj: "mmproj-F16.gguf",
+				},
+			},
+			name: "mmproj with files emits flag",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime:  "llama",
+				ModelRef: "test-model",
+			},
+			contains: []FlagCheck{{"--mmproj", "/models/mmproj-F16.gguf"}},
+		},
+		{
+			model: &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-model", Namespace: "default"},
+				Spec: inferencev1alpha1.ModelSpec{
+					Mmproj: "mmproj-F16.gguf",
+				},
+			},
+			name: "mmproj skipped when extraArgs already sets flag",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime:   "llama",
+				ModelRef:  "test-model",
+				ExtraArgs: []string{"--mmproj", "/custom/mmproj.gguf"},
+			},
+			contains:    []FlagCheck{{"--mmproj", "/custom/mmproj.gguf"}},
+			notContains: []string{"/models/mmproj-F16.gguf"},
+		},
+		{
+			model: &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-model", Namespace: "default"},
+				Spec: inferencev1alpha1.ModelSpec{
+					Mmproj: "mmproj-F16.gguf",
+				},
+			},
+			name: "mmproj skipped when extraArgs sets inline flag",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime:   "llama",
+				ModelRef:  "test-model",
+				ExtraArgs: []string{"--mmproj=/custom/mmproj.gguf"},
+			},
+			contains:    []FlagCheck{{"--mmproj=/custom/mmproj.gguf", ""}},
+			notContains: []string{"/models/mmproj-F16.gguf"},
+		},
+		{
+			model: &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-model", Namespace: "default"},
+				Spec: inferencev1alpha1.ModelSpec{
+					Files:  []string{"subdir/model.gguf"},
+					Mmproj: "mmproj-F16.gguf",
+				},
+			},
+			modelPath: "/models/cache/subdir/model.gguf",
+			name:      "mmproj path uses cache root when model in subdirectory",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime:  "llama",
+				ModelRef: "test-model",
+			},
+			contains: []FlagCheck{{"--mmproj", "/models/cache/mmproj-F16.gguf"}},
+		},
+		{
+			model: &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-model", Namespace: "default"},
+				Spec: inferencev1alpha1.ModelSpec{
+					Files:  []string{"../escape.gguf"},
+					Mmproj: "mmproj-F16.gguf",
+				},
+			},
+			name: "mmproj not emitted when ResolveFileSet errors due to invalid files",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime:  "llama",
+				ModelRef: "test-model",
+			},
+			notContains: []string{"--mmproj"},
+		},
 	}
 
 	for _, tc := range cases {
@@ -562,7 +655,11 @@ func TestLlamaCppBuildArgs(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{Name: "isvc-" + strings.ReplaceAll(tc.name, " ", "-"), Namespace: "default"},
 				Spec:       *tc.spec,
 			}
-			args := backend.BuildArgs(isvc, tc.model, modelPath, port)
+			mp := tc.modelPath
+			if mp == "" {
+				mp = modelPath
+			}
+			args := backend.BuildArgs(isvc, tc.model, mp, port)
 			for _, fc := range tc.contains {
 				if !containsArg(args, fc.flag, fc.value) {
 					t.Errorf("expected %q %q in args, got: %v", fc.flag, fc.value, args)

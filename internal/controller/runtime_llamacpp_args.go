@@ -199,3 +199,13 @@ func appendReasoningBudgetArgs(args []string, budget *int32, message string) []s
 	}
 	return args
 }
+
+func appendMmprojArgs(args []string, mmprojPath string, extraArgs []string) []string {
+	if mmprojPath == "" {
+		return args
+	}
+	if hasMatchingExtraArg(extraArgs, "mmproj") {
+		return args
+	}
+	return append(args, "--mmproj", mmprojPath)
+}

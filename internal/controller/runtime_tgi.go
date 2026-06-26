@@ -22,7 +22,7 @@ func (b *TGIBackend) DefaultHPAMetric() string { return "tgi:queue_size" }
 func (b *TGIBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, model *inferencev1alpha1.Model, modelPath string, port int32) []string {
 	source := modelPath
 	if source == "" {
-		source = model.Spec.Source
+		source = normalizeHFSource(model.Spec.Source)
 	}
 
 	args := []string{

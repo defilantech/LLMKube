@@ -64,6 +64,8 @@ func fullyPopulatedModel() *Model {
 				CPU:    "4",
 				Memory: "32Gi",
 			},
+			Files:  []string{"model.gguf", "MTP/weights.gguf"},
+			Mmproj: "mmproj-F16.gguf",
 		},
 		Status: ModelStatus{
 			Phase:               "Ready",
@@ -71,6 +73,7 @@ func fullyPopulatedModel() *Model {
 			Path:                "/mnt/models/qwen3-coder.gguf",
 			CacheKey:            "a1b2c3",
 			SHA256:              "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+			StagedFiles:         []string{"model.gguf", "MTP/weights.gguf", "mmproj-F16.gguf"},
 			SourceETag:          `"abc123"`,
 			SourceContentLength: 4509715660,
 			AcceleratorReady:    true,
@@ -493,6 +496,49 @@ func TestResourceRequirementsRoundTrip(t *testing.T) {
 	}
 	if !reflect.DeepEqual(res, got) {
 		t.Fatalf("round-trip mismatch.\noriginal: %#v\ndecoded:  %#v", res, got)
+	}
+}
+
+// TestModelFilesAndMmprojRoundTrip verifies the multi-file staging fields
+// round-trip through JSON correctly.
+func TestModelFilesAndMmprojRoundTrip(t *testing.T) {
+	model := &Model{
+		Spec: ModelSpec{
+			Source: "hf://unsloth/gemma-4-31B-it-GGUF",
+			Files: []string{
+				"gemma-4-31B-it-UD-Q4_K_XL.gguf",
+				"MTP/gemma-4-31B-it-Q8_0-MTP.gguf",
+			},
+			Mmproj: "mmproj-F16.gguf",
+			Format: "gguf",
+		},
+		Status: ModelStatus{
+			StagedFiles: []string{
+				"gemma-4-31B-it-UD-Q4_K_XL.gguf",
+				"MTP/gemma-4-31B-it-Q8_0-MTP.gguf",
+				"mmproj-F16.gguf",
+			},
+		},
+	}
+
+	data, err := json.Marshal(model)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+
+	var got Model
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+
+	if !reflect.DeepEqual(got.Spec.Files, model.Spec.Files) {
+		t.Fatalf("Spec.Files = %#v; want %#v", got.Spec.Files, model.Spec.Files)
+	}
+	if got.Spec.Mmproj != model.Spec.Mmproj {
+		t.Fatalf("Spec.Mmproj = %q; want %q", got.Spec.Mmproj, model.Spec.Mmproj)
+	}
+	if !reflect.DeepEqual(got.Status.StagedFiles, model.Status.StagedFiles) {
+		t.Fatalf("Status.StagedFiles = %#v; want %#v", got.Status.StagedFiles, model.Status.StagedFiles)
 	}
 }
 

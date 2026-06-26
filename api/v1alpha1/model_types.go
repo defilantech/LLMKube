@@ -44,7 +44,7 @@ type ModelSpec struct {
 	// equivalent https://huggingface.co/.../<filename>.gguf URL which
 	// the runtime/init container resolves at deploy time.
 	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:Pattern=`^(https?|file|pvc)://.*|^/[^\s]+$|^[a-zA-Z0-9][\w\-\.\/]+$`
+	// +kubebuilder:validation:Pattern=`^(https?|file|pvc|hf)://.*|^/[^\s]+$|^[a-zA-Z0-9][\w\-\.\/]+$`
 	Source string `json:"source"`
 
 	// SHA256 is the expected SHA256 hash of the model file for integrity verification.
@@ -89,6 +89,17 @@ type ModelSpec struct {
 	// Resources defines resource requirements for running the model
 	// +optional
 	Resources *ResourceRequirements `json:"resources,omitempty"`
+
+	// Files lists model weight artifacts to stage from Source. Entries are
+	// repo-relative for repository sources. The first entry is the primary model
+	// file passed to the runtime.
+	// +optional
+	Files []string `json:"files,omitempty"`
+
+	// Mmproj is an optional multimodal projector file to stage from Source and
+	// pass to runtimes that support projector arguments.
+	// +optional
+	Mmproj string `json:"mmproj,omitempty"`
 }
 
 // HardwareSpec defines hardware acceleration settings
@@ -307,6 +318,11 @@ type ModelStatus struct {
 	// Populated after download/copy for integrity tracking.
 	// +optional
 	SHA256 string `json:"sha256,omitempty"`
+
+	// StagedFiles lists the repo-relative paths staged in the model cache.
+	// Populated when spec.files or spec.mmproj are set.
+	// +optional
+	StagedFiles []string `json:"stagedFiles,omitempty"`
 
 	// SourceETag is the HTTP ETag recorded for the upstream source at the last
 	// revalidation. Used to detect upstream changes for http/https sources

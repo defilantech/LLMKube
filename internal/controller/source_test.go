@@ -134,6 +134,12 @@ var _ = Describe("isHFRepoSource (source.go)", func() {
 	It("should return true for bartowski repo ID", func() {
 		Expect(isHFRepoSource("bartowski/Qwen_Qwen3.6-35B-A3B-GGUF")).To(BeTrue())
 	})
+	It("should return true for hf:// prefixed repo ID", func() {
+		Expect(isHFRepoSource("hf://unsloth/gemma-4-31B-it-GGUF")).To(BeTrue())
+	})
+	It("should return true for hf:// with multi-part path", func() {
+		Expect(isHFRepoSource("hf://org/deep/nested/repo")).To(BeTrue())
+	})
 	It("should return false for https URL", func() {
 		Expect(isHFRepoSource("https://example.com/model.gguf")).To(BeFalse())
 	})
@@ -152,11 +158,45 @@ var _ = Describe("isHFRepoSource (source.go)", func() {
 	It("should return false for filename without slash", func() {
 		Expect(isHFRepoSource("just-a-filename")).To(BeFalse())
 	})
+	It("should return false for hf:// without slash (bare name)", func() {
+		Expect(isHFRepoSource("hf://just-a-name")).To(BeFalse())
+	})
 	It("should return false for empty string", func() {
 		Expect(isHFRepoSource("")).To(BeFalse())
 	})
 	It("should return true for multi-part nested path", func() {
 		Expect(isHFRepoSource("multi/part/path/thing")).To(BeTrue())
+	})
+})
+
+var _ = Describe("validateHFRepoSource (source.go)", func() {
+	It("should return nil for valid bare repo ID", func() {
+		Expect(validateHFRepoSource("org/repo")).To(Succeed())
+	})
+	It("should return nil for valid hf:// prefixed repo ID", func() {
+		Expect(validateHFRepoSource("hf://org/repo")).To(Succeed())
+	})
+	It("should return error for hf:// with @rev", func() {
+		err := validateHFRepoSource("hf://org/repo@main")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("@rev"))
+	})
+	It("should return error for bare repo ID with @rev", func() {
+		err := validateHFRepoSource("org/repo@v1.0")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("@rev"))
+	})
+})
+
+var _ = Describe("normalizeHFSource (source.go)", func() {
+	It("should strip hf:// prefix", func() {
+		Expect(normalizeHFSource("hf://org/repo")).To(Equal("org/repo"))
+	})
+	It("should leave bare repo ID unchanged", func() {
+		Expect(normalizeHFSource("org/repo")).To(Equal("org/repo"))
+	})
+	It("should leave non-hf source unchanged", func() {
+		Expect(normalizeHFSource("https://example.com/model.gguf")).To(Equal("https://example.com/model.gguf"))
 	})
 })
 
@@ -201,6 +241,7 @@ var _ = Describe("isRemoteHTTPSource (source.go)", func() {
 			"https://huggingface.co/org/repo/resolve/main/m.gguf",
 			"http://mirror.local/m.gguf",
 			"Qwen/Qwen3.6-35B-A3B",
+			"hf://org/repo",
 			"file:///mnt/models/m.gguf",
 			"/mnt/models/m.gguf",
 			"pvc://my-claim/path/m.gguf",

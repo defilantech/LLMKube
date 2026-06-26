@@ -120,6 +120,10 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		r.StoragePath = DefaultModelCachePath
 	}
 
+	if handled, result := r.validateMultiFileStagingSource(ctx, model); handled {
+		return result, nil
+	}
+
 	// Sources that need no controller-side download (PVC, HuggingFace repo,
 	// remote HTTP, Metal local-path) are dispatched here. handled=false means
 	// the source is a local path the controller must copy itself.
@@ -308,6 +312,31 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	llmkubemetrics.ReconcileTotal.WithLabelValues("model", "success").Inc()
 	logger.Info("Model ready and cached", "path", finalPath, "size", model.Status.Size, "cacheKey", cacheKey)
 	return ctrl.Result{}, nil
+}
+
+func (r *ModelReconciler) validateMultiFileStagingSource(ctx context.Context, model *inferencev1alpha1.Model) (bool, ctrl.Result) {
+	if !hasMultiFileStaging(model) {
+		return false, ctrl.Result{}
+	}
+	if valErr := validateHFRepoSource(model.Spec.Source); valErr != nil {
+		return true, r.failInvalidFileSet(ctx, model, valErr.Error())
+	}
+	if !isHFRepoSource(model.Spec.Source) {
+		msg := fmt.Sprintf("multi-file staging requires a HuggingFace repo source, but got: %s", model.Spec.Source)
+		return true, r.failInvalidFileSet(ctx, model, msg)
+	}
+	return false, ctrl.Result{}
+}
+
+func (r *ModelReconciler) failInvalidFileSet(ctx context.Context, model *inferencev1alpha1.Model, message string) ctrl.Result {
+	logger := log.FromContext(ctx)
+	model.Status.Phase = PhaseFailed
+	if updateErr := r.updateStatus(ctx, model, ConditionDegraded, metav1.ConditionTrue, "InvalidFileSet", message); updateErr != nil {
+		logger.Error(updateErr, "Failed to update status after invalid file set")
+	}
+	llmkubemetrics.ReconcileTotal.WithLabelValues("model", "error").Inc()
+	llmkubemetrics.ModelStatus.WithLabelValues(model.Name, model.Namespace, PhaseFailed).Set(1)
+	return ctrl.Result{RequeueAfter: 5 * time.Minute}
 }
 
 // handleReadyCachedModel handles a Model that is already Ready with a cached
@@ -530,6 +559,23 @@ func (r *ModelReconciler) reconcileRuntimeResolvedSource(ctx context.Context, mo
 
 	logger.Info("Source is runtime-resolved, skipping controller-side download", "source", model.Spec.Source, "cacheKey", cacheKey)
 
+	// Validate multi-file staging before marking Ready.
+	if hasMultiFileStaging(model) {
+		plan, err := ResolveFileSet(model.Spec.Files, model.Spec.Mmproj, nil)
+		if err != nil {
+			model.Status.Phase = PhaseFailed
+			if updateErr := r.updateStatus(ctx, model, ConditionDegraded, metav1.ConditionTrue, "InvalidFileSet", err.Error()); updateErr != nil {
+				logger.Error(updateErr, "Failed to update status after invalid file set")
+			}
+			llmkubemetrics.ReconcileTotal.WithLabelValues("model", "error").Inc()
+			llmkubemetrics.ModelStatus.WithLabelValues(model.Name, model.Namespace, PhaseFailed).Set(1)
+			return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
+		}
+		model.Status.StagedFiles = plan.Files
+	} else {
+		model.Status.StagedFiles = nil
+	}
+
 	model.Status.Phase = PhaseReady
 	model.Status.Path = ""
 	model.Status.CacheKey = cacheKey
@@ -566,7 +612,7 @@ func (r *ModelReconciler) reconcileRuntimeResolvedSource(ctx context.Context, mo
 		return ctrl.Result{}, err
 	}
 
-	llmkubemetrics.ModelStatus.WithLabelValues(model.Name, model.Namespace, "ready").Set(1)
+	llmkubemetrics.ModelStatus.WithLabelValues(model.Name, model.Namespace, "Ready").Set(1)
 	llmkubemetrics.ReconcileTotal.WithLabelValues("model", "success").Inc()
 	logger.Info("Runtime-resolved model ready", "source", model.Spec.Source)
 	return ctrl.Result{}, nil
