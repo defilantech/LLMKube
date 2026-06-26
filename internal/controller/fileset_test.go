@@ -139,6 +139,27 @@ func TestResolveFileSet(t *testing.T) {
 			repoFiles: []string{"model.gguf"},
 			want:      &StagingPlan{Primary: "model.gguf", Files: []string{"model.gguf"}},
 		},
+		{
+			name:    "glob rejected when repoFileList is nil (production path)",
+			files:   []string{"*.gguf"},
+			wantErr: true,
+		},
+		{
+			name:    "glob bracket rejected when repoFileList is nil",
+			files:   []string{"model-[0-9].gguf"},
+			wantErr: true,
+		},
+		{
+			name:    "glob question mark rejected when repoFileList is nil",
+			files:   []string{"model-?.gguf"},
+			wantErr: true,
+		},
+		{
+			name:      "glob expands when repoFileList is provided",
+			files:     []string{"model-??.gguf"},
+			repoFiles: []string{"model-01.gguf", "mmproj.gguf"},
+			want:      &StagingPlan{Primary: "model-01.gguf", Files: []string{"model-01.gguf"}},
+		},
 	}
 
 	for _, tc := range cases {

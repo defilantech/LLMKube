@@ -118,6 +118,18 @@ func normalizeHFSource(source string) string {
 	return strings.TrimPrefix(source, "hf://")
 }
 
+// validateHFRepoSource checks for common HF source mistakes and returns an
+// error if the source is malformed. Currently rejects @rev syntax, which
+// users sometimes add from Git or HF CLI habits but which the operator does
+// not support.
+func validateHFRepoSource(source string) error {
+	normalized := normalizeHFSource(source)
+	if strings.Contains(normalized, "@") {
+		return fmt.Errorf("hf repo source must not contain @rev syntax: %s", source)
+	}
+	return nil
+}
+
 // isHFRepoSource reports whether source looks like a HuggingFace repo ID
 // (e.g., "TinyLlama/TinyLlama-1.1B-Chat-v1.0", "Qwen/Qwen3.6-35B-A3B")
 // or an hf://-prefixed repo ID (e.g., "hf://org/repo").

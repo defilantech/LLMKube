@@ -1429,6 +1429,166 @@ var _ = Describe("Multi-File Staging Reconcile", func() {
 		}
 		Expect(hasInvalidFileSet).To(BeTrue())
 	})
+
+	It("should fail with InvalidFileSet when files contains directory escape", func() {
+		modelName := "model-files-escape"
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
+			Spec: inferencev1alpha1.ModelSpec{
+				Source: "hf://unsloth/gemma-4-31B-it-GGUF",
+				Files:  []string{"../escape.gguf"},
+			},
+		}
+		Expect(k8sClient.Create(ctx, model)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, model) }()
+
+		tempDir, err := os.MkdirTemp("", "llmkube-test-*")
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = os.RemoveAll(tempDir) }()
+
+		reconciler := &ModelReconciler{
+			Client:      k8sClient,
+			Scheme:      k8sClient.Scheme(),
+			StoragePath: tempDir,
+		}
+		result, err := reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.RequeueAfter).To(Equal(5 * time.Minute))
+
+		updated := &inferencev1alpha1.Model{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: modelName, Namespace: "default"}, updated)).To(Succeed())
+		Expect(updated.Status.Phase).To(Equal(PhaseFailed))
+
+		var hasInvalidFileSet bool
+		for _, cond := range updated.Status.Conditions {
+			if cond.Type == ConditionDegraded && cond.Reason == "InvalidFileSet" {
+				hasInvalidFileSet = true
+			}
+		}
+		Expect(hasInvalidFileSet).To(BeTrue())
+	})
+
+	It("should fail with InvalidFileSet when files contains empty string", func() {
+		modelName := "model-files-empty"
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
+			Spec: inferencev1alpha1.ModelSpec{
+				Source: "hf://unsloth/gemma-4-31B-it-GGUF",
+				Files:  []string{""},
+			},
+		}
+		Expect(k8sClient.Create(ctx, model)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, model) }()
+
+		tempDir, err := os.MkdirTemp("", "llmkube-test-*")
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = os.RemoveAll(tempDir) }()
+
+		reconciler := &ModelReconciler{
+			Client:      k8sClient,
+			Scheme:      k8sClient.Scheme(),
+			StoragePath: tempDir,
+		}
+		result, err := reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.RequeueAfter).To(Equal(5 * time.Minute))
+
+		updated := &inferencev1alpha1.Model{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: modelName, Namespace: "default"}, updated)).To(Succeed())
+		Expect(updated.Status.Phase).To(Equal(PhaseFailed))
+
+		var hasInvalidFileSet bool
+		for _, cond := range updated.Status.Conditions {
+			if cond.Type == ConditionDegraded && cond.Reason == "InvalidFileSet" {
+				hasInvalidFileSet = true
+			}
+		}
+		Expect(hasInvalidFileSet).To(BeTrue())
+	})
+
+	It("should fail with InvalidFileSet when pvc source has files set", func() {
+		modelName := "model-pvc-files"
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
+			Spec: inferencev1alpha1.ModelSpec{
+				Source: "pvc://my-claim/model.gguf",
+				Files:  []string{"model-00001-of-00003.gguf"},
+			},
+		}
+		Expect(k8sClient.Create(ctx, model)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, model) }()
+
+		tempDir, err := os.MkdirTemp("", "llmkube-test-*")
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = os.RemoveAll(tempDir) }()
+
+		reconciler := &ModelReconciler{
+			Client:      k8sClient,
+			Scheme:      k8sClient.Scheme(),
+			StoragePath: tempDir,
+		}
+		result, err := reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.RequeueAfter).To(Equal(5 * time.Minute))
+
+		updated := &inferencev1alpha1.Model{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: modelName, Namespace: "default"}, updated)).To(Succeed())
+		Expect(updated.Status.Phase).To(Equal(PhaseFailed))
+
+		var hasInvalidFileSet bool
+		for _, cond := range updated.Status.Conditions {
+			if cond.Type == ConditionDegraded && cond.Reason == "InvalidFileSet" {
+				hasInvalidFileSet = true
+			}
+		}
+		Expect(hasInvalidFileSet).To(BeTrue())
+	})
+
+	It("should fail with InvalidFileSet when hf source contains @rev", func() {
+		modelName := "model-hf-at-rev"
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
+			Spec: inferencev1alpha1.ModelSpec{
+				Source: "hf://unsloth/gemma-4-31B-it-GGUF@main",
+				Files:  []string{"gemma-4-31B-it-Q8_0.gguf"},
+			},
+		}
+		Expect(k8sClient.Create(ctx, model)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, model) }()
+
+		tempDir, err := os.MkdirTemp("", "llmkube-test-*")
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = os.RemoveAll(tempDir) }()
+
+		reconciler := &ModelReconciler{
+			Client:      k8sClient,
+			Scheme:      k8sClient.Scheme(),
+			StoragePath: tempDir,
+		}
+		result, err := reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.RequeueAfter).To(Equal(5 * time.Minute))
+
+		updated := &inferencev1alpha1.Model{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: modelName, Namespace: "default"}, updated)).To(Succeed())
+		Expect(updated.Status.Phase).To(Equal(PhaseFailed))
+
+		var hasInvalidFileSet bool
+		for _, cond := range updated.Status.Conditions {
+			if cond.Type == ConditionDegraded && cond.Reason == "InvalidFileSet" {
+				hasInvalidFileSet = true
+			}
+		}
+		Expect(hasInvalidFileSet).To(BeTrue())
+	})
 })
 
 var _ = Describe("SHA256 Verification", func() {

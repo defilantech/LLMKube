@@ -562,7 +562,22 @@ func TestLlamaCppBuildArgs(t *testing.T) {
 					Mmproj: "mmproj-F16.gguf",
 				},
 			},
-			name: "mmproj set emits flag",
+			name: "mmproj without files does not emit managed flag",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime:  "llama",
+				ModelRef: "test-model",
+			},
+			notContains: []string{"--mmproj", "/models/mmproj-F16.gguf"},
+		},
+		{
+			model: &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-model", Namespace: "default"},
+				Spec: inferencev1alpha1.ModelSpec{
+					Files:  []string{"model.gguf"},
+					Mmproj: "mmproj-F16.gguf",
+				},
+			},
+			name: "mmproj with files emits flag",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:  "llama",
 				ModelRef: "test-model",
@@ -616,6 +631,21 @@ func TestLlamaCppBuildArgs(t *testing.T) {
 				ModelRef: "test-model",
 			},
 			contains: []FlagCheck{{"--mmproj", "/models/cache/mmproj-F16.gguf"}},
+		},
+		{
+			model: &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-model", Namespace: "default"},
+				Spec: inferencev1alpha1.ModelSpec{
+					Files:  []string{"../escape.gguf"},
+					Mmproj: "mmproj-F16.gguf",
+				},
+			},
+			name: "mmproj not emitted when ResolveFileSet errors due to invalid files",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime:  "llama",
+				ModelRef: "test-model",
+			},
+			notContains: []string{"--mmproj"},
 		},
 	}
 

@@ -181,16 +181,32 @@ func hasMultiFileStaging(model *inferencev1alpha1.Model) bool {
 }
 
 // modelStagingPlan resolves the model's declared files into a staging plan.
-// Returns nil when there is no multi-file staging or resolution fails.
-func modelStagingPlan(model *inferencev1alpha1.Model) *StagingPlan {
+// Returns nil when there is no multi-file staging. Returns an error when
+// multi-file fields are set but resolution fails (fail-closed).
+func modelStagingPlan(model *inferencev1alpha1.Model) (*StagingPlan, error) {
 	if !hasMultiFileStaging(model) {
-		return nil
+		return nil, nil
 	}
 	plan, err := ResolveFileSet(model.Spec.Files, model.Spec.Mmproj, nil)
-	if err != nil || plan == nil {
-		return nil
+	if err != nil {
+		return nil, fmt.Errorf("invalid fileset: %w", err)
 	}
-	return plan
+	if plan == nil || plan.Primary == "" {
+		return nil, nil
+	}
+	return plan, nil
+}
+
+// invalidFileSetInitContainer returns an init container that immediately exits
+// with a clear error message when multi-file staging is requested but
+// ResolveFileSet fails. This prevents silent fallback to legacy single-file
+// mode when the user's config is wrong.
+func invalidFileSetInitContainer(initImage string) corev1.Container {
+	return corev1.Container{
+		Name:    "model-downloader",
+		Image:   initImage,
+		Command: []string{"sh", "-c", `echo "ERROR: InvalidFileSet - model spec.files/spec.mmproj configuration is invalid. Check file paths, directory escapes, and glob patterns."; exit 1`},
+	}
 }
 
 // multiFileInitEnvVars returns env vars for a multi-file init container.
@@ -298,7 +314,28 @@ func buildCachedStorageConfig(model *inferencev1alpha1.Model, isvc *inferencev1a
 
 	// Multi-file staging branch: when spec.files or spec.mmproj are set, use
 	// the staging plan to download all artifacts. Returns early.
-	if plan := modelStagingPlan(model); plan != nil {
+	plan, err := modelStagingPlan(model)
+	if err != nil {
+		return modelStorageConfig{
+			modelPath: stagedCachePath(cacheDir, "model.gguf"),
+			initContainers: []corev1.Container{
+				invalidFileSetInitContainer(initContainerImage),
+			},
+			volumes: []corev1.Volume{
+				{
+					Name: "model-cache",
+					VolumeSource: corev1.VolumeSource{
+						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+							ClaimName: modelCachePVCName(isvc, cacheMode),
+							ReadOnly:  false,
+						},
+					},
+				},
+			},
+			volumeMounts: []corev1.VolumeMount{{Name: "model-cache", MountPath: "/models", ReadOnly: true}},
+		}
+	}
+	if plan != nil {
 		modelPath := stagedCachePath(cacheDir, plan.Primary)
 		cmd := buildMultiFileInitCommand(true, model.Spec.RefreshPolicy)
 		env := multiFileInitEnvVars(model.Spec.Source, cacheDir, plan.Files)
@@ -404,7 +441,20 @@ func buildCachedStorageConfig(model *inferencev1alpha1.Model, isvc *inferencev1a
 
 func buildEmptyDirStorageConfig(model *inferencev1alpha1.Model, isvc *inferencev1alpha1.InferenceService, namespace string, caCertConfigMap string, initContainerImage string) modelStorageConfig {
 	// Multi-file staging branch for emptyDir storage.
-	if plan := modelStagingPlan(model); plan != nil {
+	plan, err := modelStagingPlan(model)
+	if err != nil {
+		return modelStorageConfig{
+			modelPath: fmt.Sprintf("/models/%s-%s/model.gguf", namespace, model.Name),
+			initContainers: []corev1.Container{
+				invalidFileSetInitContainer(initContainerImage),
+			},
+			volumes: []corev1.Volume{
+				{Name: "model-storage", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+			},
+			volumeMounts: []corev1.VolumeMount{{Name: "model-storage", MountPath: "/models", ReadOnly: true}},
+		}
+	}
+	if plan != nil {
 		modelPath := fmt.Sprintf("/models/%s-%s/%s", namespace, model.Name, plan.Primary)
 		cmd := buildMultiFileInitCommand(false, model.Spec.RefreshPolicy)
 		env := multiFileInitEnvVars(model.Spec.Source, fmt.Sprintf("/models/%s-%s", namespace, model.Name), plan.Files)

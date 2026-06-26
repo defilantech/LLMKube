@@ -169,6 +169,25 @@ var _ = Describe("isHFRepoSource (source.go)", func() {
 	})
 })
 
+var _ = Describe("validateHFRepoSource (source.go)", func() {
+	It("should return nil for valid bare repo ID", func() {
+		Expect(validateHFRepoSource("org/repo")).To(Succeed())
+	})
+	It("should return nil for valid hf:// prefixed repo ID", func() {
+		Expect(validateHFRepoSource("hf://org/repo")).To(Succeed())
+	})
+	It("should return error for hf:// with @rev", func() {
+		err := validateHFRepoSource("hf://org/repo@main")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("@rev"))
+	})
+	It("should return error for bare repo ID with @rev", func() {
+		err := validateHFRepoSource("org/repo@v1.0")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("@rev"))
+	})
+})
+
 var _ = Describe("normalizeHFSource (source.go)", func() {
 	It("should strip hf:// prefix", func() {
 		Expect(normalizeHFSource("hf://org/repo")).To(Equal("org/repo"))

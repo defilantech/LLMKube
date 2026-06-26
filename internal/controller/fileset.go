@@ -106,6 +106,10 @@ func expandFilePattern(entry string, repoFileList []string) ([]string, error) {
 		return []string{entry}, nil
 	}
 
+	if repoFileList == nil {
+		return nil, fmt.Errorf("glob pattern %q requires repository file listing, which is unavailable in production: use explicit file paths", entry)
+	}
+
 	matches := make([]string, 0)
 	for _, candidate := range repoFileList {
 		matched, err := path.Match(entry, candidate)
@@ -116,9 +120,9 @@ func expandFilePattern(entry string, repoFileList []string) ([]string, error) {
 			matches = append(matches, candidate)
 		}
 	}
-	// A secondary glob that matches zero files is not an error. The user may
-	// declare a pattern that applies only to certain repos, and the controller
-	// may validate without a full HF file listing.
+	// A secondary glob that matches zero files is not an error when a repository
+	// file listing is available. Without a listing, globs are rejected above so
+	// production reconcile does not silently skip typoed patterns.
 	return matches, nil
 }
 
