@@ -247,10 +247,10 @@ var _ = Describe("buildEmptyDirStorageConfig multi-file staging", func() {
 		config := buildEmptyDirStorageConfig(model, nil, "default", "", "curl:8.18.0")
 
 		Expect(config.modelPath).To(Equal("/models/default-empty-model/model.gguf"))
-		cmd := config.initContainers[1].Command[2]
+		cmd := config.initContainers[0].Command[2]
 		Expect(cmd).To(ContainSubstring("MODEL_FILES"))
 
-		env := config.initContainers[1].Env
+		env := config.initContainers[0].Env
 		modelFiles := getEnvVar(env, "MODEL_FILES")
 		Expect(modelFiles).To(ContainSubstring("extra.gguf"))
 	})
@@ -266,7 +266,7 @@ var _ = Describe("buildEmptyDirStorageConfig multi-file staging", func() {
 		}
 
 		config := buildEmptyDirStorageConfig(model, nil, "default", "", "curl:8.18.0")
-		cmd := config.initContainers[1].Command[2]
+		cmd := config.initContainers[0].Command[2]
 		Expect(cmd).To(ContainSubstring("--etag-compare"))
 		Expect(cmd).To(ContainSubstring("--etag-save"))
 		Expect(cmd).To(ContainSubstring("kept cached copy"))
@@ -389,13 +389,13 @@ var _ = Describe("buildEmptyDirStorageConfig", func() {
 		Expect(config.volumes[0].EmptyDir).NotTo(BeNil())
 
 		// Verify env vars are set on the init container
-		env := config.initContainers[1].Env
+		env := config.initContainers[0].Env
 		Expect(getEnvVar(env, "MODEL_SOURCE")).To(Equal("https://example.com/model.gguf"))
 		Expect(getEnvVar(env, "CACHE_DIR")).To(Equal(""))
 		Expect(getEnvVar(env, "MODEL_PATH")).To(Equal("/models/default-my-model.gguf"))
 
 		// Verify the command does not contain the raw source URL
-		Expect(config.initContainers[1].Command[2]).NotTo(ContainSubstring("example.com"))
+		Expect(config.initContainers[0].Command[2]).NotTo(ContainSubstring("example.com"))
 	})
 
 	It("should add CA cert volume when caCertConfigMap is set", func() {
@@ -413,7 +413,7 @@ var _ = Describe("buildEmptyDirStorageConfig", func() {
 			}
 		}
 		Expect(found).To(BeTrue())
-		Expect(config.initContainers[1].Command[2]).To(ContainSubstring("CURL_CA_BUNDLE=/custom-certs/"))
+		Expect(config.initContainers[0].Command[2]).To(ContainSubstring("CURL_CA_BUNDLE=/custom-certs/"))
 	})
 
 	It("should inherit runAsUser/runAsGroup in emptyDir storage", func() {
@@ -434,7 +434,7 @@ var _ = Describe("buildEmptyDirStorageConfig", func() {
 		}
 		config := buildEmptyDirStorageConfig(model, isvc, "default", "", "curl:8.18.0")
 
-		initSecCtx := config.initContainers[1].SecurityContext
+		initSecCtx := config.initContainers[0].SecurityContext
 		Expect(initSecCtx).NotTo(BeNil())
 		Expect(initSecCtx.RunAsUser).NotTo(BeNil())
 		Expect(*initSecCtx.RunAsUser).To(Equal(int64(2000)))
@@ -928,9 +928,9 @@ var _ = Describe("cache prep init container (#855)", func() {
 		Expect(*sc.ReadOnlyRootFilesystem).To(BeTrue())
 
 		Expect(sc.Capabilities).NotTo(BeNil())
-		Expect(sc.Capabilities.Drop).To(ContainElement("ALL"))
-		Expect(sc.Capabilities.Add).To(ContainElement("CHOWN"))
-		Expect(sc.Capabilities.Add).To(ContainElement("FOWNER"))
+		Expect(sc.Capabilities.Drop).To(ContainElement(corev1.Capability("ALL")))
+		Expect(sc.Capabilities.Add).To(ContainElement(corev1.Capability("CHOWN")))
+		Expect(sc.Capabilities.Add).To(ContainElement(corev1.Capability("FOWNER")))
 
 		Expect(sc.SeccompProfile).NotTo(BeNil())
 		Expect(sc.SeccompProfile.Type).To(Equal(corev1.SeccompProfileTypeRuntimeDefault))

@@ -3388,8 +3388,8 @@ var _ = Describe("Security Context Configuration", func() {
 
 			deployment := reconciler.constructDeployment(isvc, cachedModel, 1)
 
-			Expect(deployment.Spec.Template.Spec.InitContainers).To(HaveLen(1))
-			initSecCtx := deployment.Spec.Template.Spec.InitContainers[0].SecurityContext
+			Expect(deployment.Spec.Template.Spec.InitContainers).To(HaveLen(2))
+			initSecCtx := deployment.Spec.Template.Spec.InitContainers[1].SecurityContext
 			Expect(initSecCtx).NotTo(BeNil())
 			Expect(*initSecCtx.AllowPrivilegeEscalation).To(BeFalse())
 			Expect(initSecCtx.Capabilities.Drop).To(ContainElement(corev1.Capability("ALL")))
@@ -3420,7 +3420,7 @@ var _ = Describe("Security Context Configuration", func() {
 
 			deployment := reconciler.constructDeployment(isvc, cachedModel, 1)
 
-			initSecCtx := deployment.Spec.Template.Spec.InitContainers[0].SecurityContext
+			initSecCtx := deployment.Spec.Template.Spec.InitContainers[1].SecurityContext
 			Expect(initSecCtx).NotTo(BeNil())
 			Expect(initSecCtx.RunAsNonRoot).To(BeNil())
 			Expect(initSecCtx.RunAsUser).To(BeNil())
@@ -3458,7 +3458,7 @@ var _ = Describe("Security Context Configuration", func() {
 
 			deployment := reconciler.constructDeployment(isvc, cachedModel, 1)
 
-			initSecCtx := deployment.Spec.Template.Spec.InitContainers[0].SecurityContext
+			initSecCtx := deployment.Spec.Template.Spec.InitContainers[1].SecurityContext
 			Expect(initSecCtx).NotTo(BeNil())
 			Expect(initSecCtx.RunAsUser).NotTo(BeNil())
 			Expect(*initSecCtx.RunAsUser).To(Equal(int64(2000)))
