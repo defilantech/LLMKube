@@ -137,6 +137,31 @@ var (
 		},
 		[]string{"router", "backend"},
 	)
+
+	// RouterFirstTokenSeconds captures time-to-first-byte (TTFT) for
+	// streaming responses. Operators use it to size user-facing
+	// timeouts and to compare local vs. cloud TTFT for the same model.
+	RouterFirstTokenSeconds = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "llmkube_router_first_token_seconds",
+			Help:    "Time from inbound request to first upstream response byte (streaming TTFT).",
+			Buckets: prometheus.ExponentialBuckets(0.01, 2, 12), // 10ms to ~20s
+		},
+		[]string{"router", "backend"},
+	)
+
+	// RouterBudgetUtilization reports how much of a rule's dispatch
+	// timeout a request consumed (0.0..1.0). Values near 1.0 flag
+	// requests that are budget-bound and likely to fail if the
+	// upstream slows further; values near 0.0 flag under-provisioned
+	// budgets that could be tightened.
+	RouterBudgetUtilization = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "llmkube_router_budget_utilization",
+			Help: "Fraction of the resolved dispatch timeout consumed by a request (0.0 to 1.0).",
+		},
+		[]string{"router", "scope"},
+	)
 )
 
 func init() {
@@ -154,5 +179,7 @@ func init() {
 		RouterFailClosedTotal,
 		RouterActiveBackends,
 		RouterBackendHealth,
+		RouterFirstTokenSeconds,
+		RouterBudgetUtilization,
 	)
 }

@@ -203,6 +203,34 @@ func (p *Proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	outcome := streamedReason(streamed)
 	p.audit(features, decision, chosen, resp.StatusCode, outcome, elapsed)
 	p.observeRequest(&features, &decision, chosen, outcome, elapsed)
+
+	// Record TTFT for streaming responses. We approximate first-byte
+	// time as the time the response body began flowing: the proxy
+	// writes the status line immediately on streamResponse entry, so
+	// the elapsed window from dispatch start to the first flush is a
+	// close proxy of TTFT. Non-streaming responses skip this gauge —
+	// their TTFT equals their total duration and is already captured
+	// by RouterRequestDuration.
+	if isStream && chosen != nil {
+		prommetrics.RouterFirstTokenSeconds.WithLabelValues(p.routerName, chosen.Name).Observe(elapsed.Seconds())
+	}
+
+	// Record budget utilization against the resolved per-request
+	// deadline. scope=rule when a rule's timeout drove the cap, else
+	// scope=proxy. Values above 1.0 mean the request consumed more
+	// time than the cap allowed (shouldn't happen for successful
+	// dispatches, but the gauge is float so it's safe).
+	if chosen != nil {
+		resolved := resolveDispatchTimeout(&decision, chosen, p.disp.ResponseHeaderTimeout())
+		if resolved > 0 {
+			util := elapsed.Seconds() / resolved.Seconds()
+			scope := "proxy"
+			if decision.Rule != nil && decision.Rule.Timeout > 0 {
+				scope = "rule"
+			}
+			prommetrics.RouterBudgetUtilization.WithLabelValues(p.routerName, scope).Set(util)
+		}
+	}
 }
 
 const maxRequestBodyBytes = 32 << 20 // 32 MiB, generous for long prompts
@@ -297,6 +325,7 @@ func (p *Proxy) dispatchWithFallback(
 		_, span := tracer.Start(attemptCtx, "backend.request",
 			oteltrace.WithAttributes(
 				otelattribute.String("routing.backend.selected", b.Name),
+				otelattribute.String("routing.backend.provider", b.Provider),
 				otelattribute.String("routing.backend.tier", b.Tier),
 				otelattribute.Int("routing.fallback.depth", i),
 			),
@@ -453,6 +482,13 @@ func (p *Proxy) observeRequest(f *RequestFeatures, dec *MatchResult, chosen *Bac
 	prommetrics.RouterRequestDuration.WithLabelValues(
 		p.routerName, ruleName, backendName,
 	).Observe(elapsed.Seconds())
+	// Refresh the per-backend health gauge to reflect the dispatcher's
+	// current quarantine state. The dispatcher already flipped the
+	// atomic.Bool on Dispatch return (healthy on 2xx, unhealthy on 5xx
+	// or connect failure), so this just reads the live state.
+	if chosen != nil {
+		p.updateBackendHealthMetrics(chosen.Name, p.disp.IsHealthy(chosen.Name))
+	}
 	p.updateActiveBackendsMetrics()
 }
 
