@@ -2,6 +2,8 @@ package controller
 
 import (
 	"fmt"
+	"path"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -103,6 +105,16 @@ func (b *LlamaCppBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, mo
 	args = appendNoWarmupArgs(args, isvc.Spec.NoWarmup)
 	args = appendSpeculativeDecodingArgs(args, isvc.Spec.SpeculativeDecoding)
 	args = appendReasoningBudgetArgs(args, isvc.Spec.ReasoningBudget, isvc.Spec.ReasoningBudgetMessage)
+	if model != nil && model.Spec.Mmproj != "" && modelPath != "" {
+		mmprojDir := path.Dir(modelPath) // fallback
+		if plan, err := ResolveFileSet(model.Spec.Files, model.Spec.Mmproj, nil); err == nil && plan != nil && plan.Primary != "" {
+			suffix := "/" + plan.Primary
+			if strings.HasSuffix(modelPath, suffix) {
+				mmprojDir = modelPath[:len(modelPath)-len(suffix)]
+			}
+		}
+		args = appendMmprojArgs(args, stagedCachePath(mmprojDir, model.Spec.Mmproj), isvc.Spec.ExtraArgs)
+	}
 	args = appendMetadataOverrideArgs(args, isvc.Spec.MetadataOverrides)
 	if len(isvc.Spec.ExtraArgs) > 0 {
 		args = append(args, isvc.Spec.ExtraArgs...)

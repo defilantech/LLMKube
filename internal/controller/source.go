@@ -112,14 +112,21 @@ func isRemoteHTTPSource(source string) bool {
 	return strings.HasPrefix(source, "https://") || strings.HasPrefix(source, "http://")
 }
 
+// normalizeHFSource strips the hf:// scheme prefix if present, returning the
+// bare repo ID (e.g., "hf://org/repo" -> "org/repo", "org/repo" -> "org/repo").
+func normalizeHFSource(source string) string {
+	return strings.TrimPrefix(source, "hf://")
+}
+
 // isHFRepoSource reports whether source looks like a HuggingFace repo ID
-// (e.g., "TinyLlama/TinyLlama-1.1B-Chat-v1.0", "Qwen/Qwen3.6-35B-A3B").
+// (e.g., "TinyLlama/TinyLlama-1.1B-Chat-v1.0", "Qwen/Qwen3.6-35B-A3B")
+// or an hf://-prefixed repo ID (e.g., "hf://org/repo").
 // These sources are downloaded by the runtime (vLLM) at startup, not by
 // the Model controller.
 //
 // Criteria:
 //
-//	Not a URL (no "://" scheme)
+//	Not a URL (no "://" scheme other than hf://)
 //	Not an absolute path (doesn't start with "/")
 //	Not a PVC source (handled separately)
 //	Contains at least one "/" separator (HF convention: owner/repo)
@@ -134,15 +141,16 @@ func isHFRepoSource(source string) bool {
 	if isLocalSource(source) {
 		return false
 	}
-	if strings.Contains(source, "://") {
+	if isRemoteHTTPSource(source) {
 		return false
 	}
-	if !strings.Contains(source, "/") {
+	normalized := normalizeHFSource(source)
+	if !strings.Contains(normalized, "/") {
 		return false
 	}
 	// Match HF's permitted character set: alphanumeric, hyphens, underscores,
 	// dots, and forward slashes. Must start with alphanumeric.
-	for i, c := range source {
+	for i, c := range normalized {
 		if i == 0 {
 			if !isAlphaNum(c) {
 				return false

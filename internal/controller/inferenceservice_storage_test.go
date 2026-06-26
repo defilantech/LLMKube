@@ -54,10 +54,9 @@ var _ = Describe("buildCachedStorageConfig", func() {
 
 		// Verify env vars are set on the init container
 		env := config.initContainers[0].Env
-		Expect(env).To(HaveLen(3))
-		Expect(env[0]).To(Equal(corev1.EnvVar{Name: "MODEL_SOURCE", Value: "https://example.com/model.gguf"}))
-		Expect(env[1]).To(Equal(corev1.EnvVar{Name: "CACHE_DIR", Value: "/models/abc123def456"}))
-		Expect(env[2]).To(Equal(corev1.EnvVar{Name: "MODEL_PATH", Value: "/models/abc123def456/model.gguf"}))
+		Expect(getEnvVar(env, "MODEL_SOURCE")).To(Equal("https://example.com/model.gguf"))
+		Expect(getEnvVar(env, "CACHE_DIR")).To(Equal("/models/abc123def456"))
+		Expect(getEnvVar(env, "MODEL_PATH")).To(Equal("/models/abc123def456/model.gguf"))
 
 		// Verify the command does not contain the raw source URL
 		Expect(config.initContainers[0].Command[2]).NotTo(ContainSubstring("example.com"))
@@ -80,8 +79,7 @@ var _ = Describe("buildCachedStorageConfig", func() {
 
 		// Verify env vars are set
 		env := config.initContainers[0].Env
-		Expect(env).To(HaveLen(3))
-		Expect(env[0]).To(Equal(corev1.EnvVar{Name: "MODEL_SOURCE", Value: "file:///mnt/models/test.gguf"}))
+		Expect(getEnvVar(env, "MODEL_SOURCE")).To(Equal("file:///mnt/models/test.gguf"))
 	})
 
 	It("should add CA cert volume when caCertConfigMap is set", func() {
@@ -107,6 +105,275 @@ var _ = Describe("buildCachedStorageConfig", func() {
 	})
 })
 
+var _ = Describe("buildCachedStorageConfig multi-file staging", func() {
+	It("uses primary staged path and MODEL_FILES env for multi-file model", func() {
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: "gemma", Namespace: "default"},
+			Spec: inferencev1alpha1.ModelSpec{
+				Source: "hf://unsloth/gemma-4-31B-it-GGUF",
+				Files: []string{
+					"gemma-4-31B-it-UD-Q4_K_XL.gguf",
+					"MTP/gemma-4-31B-it-Q8_0-MTP.gguf",
+				},
+				Mmproj: "mmproj-F16.gguf",
+			},
+			Status: inferencev1alpha1.ModelStatus{CacheKey: "abc123"},
+		}
+
+		config := buildCachedStorageConfig(model, nil, "", "", "curl:8.18.0")
+
+		Expect(config.modelPath).To(Equal("/models/abc123/gemma-4-31B-it-UD-Q4_K_XL.gguf"))
+		cmd := config.initContainers[0].Command[2]
+		Expect(cmd).To(ContainSubstring("MODEL_FILES"))
+		Expect(cmd).To(ContainSubstring(`printf '%s\n'`))
+
+		env := config.initContainers[0].Env
+		modelFiles := getEnvVar(env, "MODEL_FILES")
+		Expect(modelFiles).NotTo(BeEmpty())
+		Expect(modelFiles).To(ContainSubstring("gemma-4-31B-it-UD-Q4_K_XL.gguf"))
+		Expect(modelFiles).To(ContainSubstring("MTP/gemma-4-31B-it-Q8_0-MTP.gguf"))
+		Expect(modelFiles).To(ContainSubstring("mmproj-F16.gguf"))
+	})
+
+	It("preserves subdirectories in multi-file staging", func() {
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: "multi", Namespace: "default"},
+			Spec: inferencev1alpha1.ModelSpec{
+				Source: "hf://org/multi-repo",
+				Files: []string{
+					"model.gguf",
+					"MTP/weights.gguf",
+				},
+			},
+			Status: inferencev1alpha1.ModelStatus{CacheKey: "key1"},
+		}
+
+		config := buildCachedStorageConfig(model, nil, "", "", "curl:8.18.0")
+		cmd := config.initContainers[0].Command[2]
+		Expect(cmd).To(ContainSubstring(`mkdir -p "$(dirname "$dest")"`))
+
+		env := config.initContainers[0].Env
+		modelFiles := getEnvVar(env, "MODEL_FILES")
+		Expect(modelFiles).To(ContainSubstring("MTP/weights.gguf"))
+	})
+
+	It("normalizes hf:// source to huggingface.co URL in multi-file command", func() {
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: "hf-model", Namespace: "default"},
+			Spec: inferencev1alpha1.ModelSpec{
+				Source: "hf://unsloth/gemma-4-31B-it-GGUF",
+				Files:  []string{"model.gguf"},
+			},
+			Status: inferencev1alpha1.ModelStatus{CacheKey: "key2"},
+		}
+
+		config := buildCachedStorageConfig(model, nil, "", "", "curl:8.18.0")
+		env := config.initContainers[0].Env
+		source := getEnvVar(env, "MODEL_SOURCE")
+		Expect(source).To(Equal("https://huggingface.co/unsloth/gemma-4-31B-it-GGUF"))
+	})
+
+	It("includes custom CA cert volume in multi-file cached storage", func() {
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: "ca-model", Namespace: "default"},
+			Spec: inferencev1alpha1.ModelSpec{
+				Source: "hf://org/repo",
+				Files:  []string{"model.gguf"},
+			},
+			Status: inferencev1alpha1.ModelStatus{CacheKey: "key3"},
+		}
+
+		config := buildCachedStorageConfig(model, nil, "", "my-ca-certs", "curl:8.18.0")
+
+		var foundCA bool
+		for _, v := range config.volumes {
+			if v.Name == "custom-ca-cert" {
+				foundCA = true
+				Expect(v.ConfigMap.Name).To(Equal("my-ca-certs"))
+			}
+		}
+		Expect(foundCA).To(BeTrue())
+		Expect(config.initContainers[0].Command[2]).To(ContainSubstring("CURL_CA_BUNDLE=/custom-certs/"))
+	})
+
+	It("uses OnChange per-file etag revalidation for multi-file model", func() {
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: "refresh-model", Namespace: "default"},
+			Spec: inferencev1alpha1.ModelSpec{
+				Source:        "hf://org/repo",
+				Files:         []string{"model.gguf", "extra.gguf"},
+				RefreshPolicy: RefreshPolicyOnChange,
+			},
+			Status: inferencev1alpha1.ModelStatus{CacheKey: "key4"},
+		}
+
+		config := buildCachedStorageConfig(model, nil, "", "", "curl:8.18.0")
+		cmd := config.initContainers[0].Command[2]
+		Expect(cmd).To(ContainSubstring("--etag-compare"))
+		Expect(cmd).To(ContainSubstring("--etag-save"))
+		Expect(cmd).To(ContainSubstring("kept cached copy"))
+	})
+
+	It("preserves legacy single-file behavior when no files/mmproj", func() {
+		model := &inferencev1alpha1.Model{
+			Spec: inferencev1alpha1.ModelSpec{
+				Source: "https://example.com/model.gguf",
+			},
+			Status: inferencev1alpha1.ModelStatus{CacheKey: "abc123def456"},
+		}
+		config := buildCachedStorageConfig(model, nil, "", "", "curl:8.18.0")
+
+		Expect(config.modelPath).To(Equal("/models/abc123def456/model.gguf"))
+		env := config.initContainers[0].Env
+		Expect(getEnvVar(env, "MODEL_PATH")).To(Equal("/models/abc123def456/model.gguf"))
+		Expect(getEnvVar(env, "MODEL_FILES")).To(BeEmpty())
+		cmd := config.initContainers[0].Command[2]
+		Expect(cmd).NotTo(ContainSubstring("MODEL_FILES"))
+		Expect(cmd).To(ContainSubstring(`"$MODEL_PATH"`))
+	})
+})
+
+var _ = Describe("buildEmptyDirStorageConfig multi-file staging", func() {
+	It("stages multiple files in emptyDir storage", func() {
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: "empty-model", Namespace: "default"},
+			Spec: inferencev1alpha1.ModelSpec{
+				Source: "hf://org/repo",
+				Files:  []string{"model.gguf", "extra.gguf"},
+			},
+		}
+
+		config := buildEmptyDirStorageConfig(model, nil, "default", "", "curl:8.18.0")
+
+		Expect(config.modelPath).To(Equal("/models/default-empty-model/model.gguf"))
+		cmd := config.initContainers[0].Command[2]
+		Expect(cmd).To(ContainSubstring("MODEL_FILES"))
+
+		env := config.initContainers[0].Env
+		modelFiles := getEnvVar(env, "MODEL_FILES")
+		Expect(modelFiles).To(ContainSubstring("extra.gguf"))
+	})
+
+	It("uses OnChange per-file etag revalidation in emptyDir storage", func() {
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: "empty-refresh", Namespace: "default"},
+			Spec: inferencev1alpha1.ModelSpec{
+				Source:        "hf://org/repo",
+				Files:         []string{"model.gguf", "extra.gguf"},
+				RefreshPolicy: RefreshPolicyOnChange,
+			},
+		}
+
+		config := buildEmptyDirStorageConfig(model, nil, "default", "", "curl:8.18.0")
+		cmd := config.initContainers[0].Command[2]
+		Expect(cmd).To(ContainSubstring("--etag-compare"))
+		Expect(cmd).To(ContainSubstring("--etag-save"))
+		Expect(cmd).To(ContainSubstring("kept cached copy"))
+	})
+})
+
+var _ = Describe("buildMultiFileInitCommand", func() {
+	It("generates download loop for IfNotPresent policy", func() {
+		cmd := buildMultiFileInitCommand(true, RefreshPolicyIfNotPresent)
+		Expect(cmd).To(ContainSubstring(`mkdir -p "$CACHE_DIR"`))
+		Expect(cmd).To(ContainSubstring("printf '%s\\n' \"$MODEL_FILES\""))
+		Expect(cmd).To(ContainSubstring(`mkdir -p "$(dirname "$dest")"`))
+		Expect(cmd).To(ContainSubstring(`curl -f -L -o "$dest" "$url"`))
+		Expect(cmd).To(ContainSubstring("already cached, skipping download"))
+	})
+
+	It("fails init container if any curl fails in IfNotPresent policy", func() {
+		cmd := buildMultiFileInitCommand(true, RefreshPolicyIfNotPresent)
+		Expect(cmd).To(ContainSubstring(`exit 1`))
+		Expect(cmd).To(ContainSubstring("failed to download"))
+	})
+
+	It("generates etag revalidation for OnChange policy", func() {
+		cmd := buildMultiFileInitCommand(true, RefreshPolicyOnChange)
+		Expect(cmd).To(ContainSubstring(`mkdir -p "$CACHE_DIR"`))
+		Expect(cmd).To(ContainSubstring("--etag-compare"))
+		Expect(cmd).To(ContainSubstring("--etag-save"))
+		Expect(cmd).To(ContainSubstring("kept cached copy"))
+	})
+
+	It("uses emptyDir prefix without cache dir for non-cached storage", func() {
+		cmd := buildMultiFileInitCommand(false, RefreshPolicyIfNotPresent)
+		Expect(cmd).To(ContainSubstring(`mkdir -p /models`))
+		Expect(cmd).NotTo(ContainSubstring(`"$CACHE_DIR"`))
+	})
+
+	It("normalizes hf:// URLs via MODEL_SOURCE in the generated command", func() {
+		cmd := buildMultiFileInitCommand(true, RefreshPolicyIfNotPresent)
+		Expect(cmd).To(ContainSubstring("normalize_hf_source"))
+	})
+
+	It("uses POSIX-compatible shell (no bashisms)", func() {
+		cmd := buildMultiFileInitCommand(true, RefreshPolicyIfNotPresent)
+		Expect(cmd).NotTo(ContainSubstring("[["))
+		Expect(cmd).To(ContainSubstring("case"))
+		Expect(cmd).To(ContainSubstring("esac"))
+	})
+})
+
+var _ = Describe("multiFileInitEnvVars", func() {
+	It("sets MODEL_FILES as newline-delimited list", func() {
+		env := multiFileInitEnvVars("hf://org/repo", "/models/abc", []string{"a.gguf", "b.gguf"})
+		Expect(getEnvVar(env, "MODEL_SOURCE")).To(Equal("https://huggingface.co/org/repo"))
+		Expect(getEnvVar(env, "CACHE_DIR")).To(Equal("/models/abc"))
+		Expect(getEnvVar(env, "MODEL_FILES")).To(Equal("a.gguf\nb.gguf"))
+	})
+
+	It("passes through https sources unchanged", func() {
+		env := multiFileInitEnvVars("https://example.com/model.gguf", "/models/abc", []string{"model.gguf"})
+		Expect(getEnvVar(env, "MODEL_SOURCE")).To(Equal("https://example.com/model.gguf"))
+	})
+})
+
+var _ = Describe("hasMultiFileStaging", func() {
+	It("returns false for nil model", func() {
+		Expect(hasMultiFileStaging(nil)).To(BeFalse())
+	})
+
+	It("returns false when no files and no mmproj", func() {
+		model := &inferencev1alpha1.Model{
+			Spec: inferencev1alpha1.ModelSpec{Source: "https://example.com/model.gguf"},
+		}
+		Expect(hasMultiFileStaging(model)).To(BeFalse())
+	})
+
+	It("returns true when files are set", func() {
+		model := &inferencev1alpha1.Model{
+			Spec: inferencev1alpha1.ModelSpec{Files: []string{"model.gguf"}},
+		}
+		Expect(hasMultiFileStaging(model)).To(BeTrue())
+	})
+
+	It("returns true when only mmproj is set", func() {
+		model := &inferencev1alpha1.Model{
+			Spec: inferencev1alpha1.ModelSpec{Mmproj: "mmproj.gguf"},
+		}
+		Expect(hasMultiFileStaging(model)).To(BeTrue())
+	})
+})
+
+var _ = Describe("resolveHFSourceURL", func() {
+	It("converts hf:// to https://huggingface.co/", func() {
+		Expect(resolveHFSourceURL("hf://unsloth/gemma-4-31B-it-GGUF")).To(Equal("https://huggingface.co/unsloth/gemma-4-31B-it-GGUF"))
+	})
+
+	It("passes through https URLs unchanged", func() {
+		Expect(resolveHFSourceURL("https://example.com/model.gguf")).To(Equal("https://example.com/model.gguf"))
+	})
+
+	It("passes through http URLs unchanged", func() {
+		Expect(resolveHFSourceURL("http://example.com/model.gguf")).To(Equal("http://example.com/model.gguf"))
+	})
+
+	It("passes through file:// URLs unchanged", func() {
+		Expect(resolveHFSourceURL("file:///mnt/model.gguf")).To(Equal("file:///mnt/model.gguf"))
+	})
+})
+
 var _ = Describe("buildEmptyDirStorageConfig", func() {
 	It("should configure emptyDir volume for remote model", func() {
 		model := &inferencev1alpha1.Model{
@@ -122,10 +389,9 @@ var _ = Describe("buildEmptyDirStorageConfig", func() {
 
 		// Verify env vars are set on the init container
 		env := config.initContainers[0].Env
-		Expect(env).To(HaveLen(3))
-		Expect(env[0]).To(Equal(corev1.EnvVar{Name: "MODEL_SOURCE", Value: "https://example.com/model.gguf"}))
-		Expect(env[1]).To(Equal(corev1.EnvVar{Name: "CACHE_DIR", Value: ""}))
-		Expect(env[2]).To(Equal(corev1.EnvVar{Name: "MODEL_PATH", Value: "/models/default-my-model.gguf"}))
+		Expect(getEnvVar(env, "MODEL_SOURCE")).To(Equal("https://example.com/model.gguf"))
+		Expect(getEnvVar(env, "CACHE_DIR")).To(Equal(""))
+		Expect(getEnvVar(env, "MODEL_PATH")).To(Equal("/models/default-my-model.gguf"))
 
 		// Verify the command does not contain the raw source URL
 		Expect(config.initContainers[0].Command[2]).NotTo(ContainSubstring("example.com"))
@@ -620,3 +886,12 @@ var _ = Describe("shouldWarnMissingSkipModelInit", func() {
 		Expect(tt("Downloading", "Qwen/Qwen3.6-35B-A3B", nil)).To(BeFalse())
 	})
 })
+
+func getEnvVar(env []corev1.EnvVar, name string) string {
+	for _, e := range env {
+		if e.Name == name {
+			return e.Value
+		}
+	}
+	return ""
+}

@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -86,6 +87,29 @@ func isLocalModelSource(source string) bool {
 	return isLocalSource(source)
 }
 
+// addCACertVolume appends the custom CA cert volume and volume mount to the
+// given slices, and prefixes the command with the CURL_CA_BUNDLE export.
+// No-op when caCertConfigMap is empty.
+func addCACertVolume(volumes *[]corev1.Volume, mounts *[]corev1.VolumeMount, cmd *string, caCertConfigMap string) {
+	if caCertConfigMap == "" {
+		return
+	}
+	*volumes = append(*volumes, corev1.Volume{
+		Name: "custom-ca-cert",
+		VolumeSource: corev1.VolumeSource{
+			ConfigMap: &corev1.ConfigMapVolumeSource{
+				LocalObjectReference: corev1.LocalObjectReference{Name: caCertConfigMap},
+			},
+		},
+	})
+	*mounts = append(*mounts, corev1.VolumeMount{
+		Name:      "custom-ca-cert",
+		MountPath: "/custom-certs",
+		ReadOnly:  true,
+	})
+	*cmd = fmt.Sprintf("export CURL_CA_BUNDLE=/custom-certs/$(ls /custom-certs | grep -v '^\\.' | head -n 1) && %s", *cmd)
+}
+
 func buildModelInitCommand(isLocal, useCache bool, refreshPolicy string) string {
 	if useCache {
 		if isLocal {
@@ -140,6 +164,92 @@ func modelInitEnvVars(source, cacheDir, modelPath string) []corev1.EnvVar {
 	}
 }
 
+// resolveHFSourceURL converts hf://repo-id sources to their huggingface.co
+// HTTPS equivalent for init container env vars. Non-hf:// sources pass through unchanged.
+func resolveHFSourceURL(source string) string {
+	if strings.HasPrefix(source, "hf://") {
+		repo := strings.TrimPrefix(source, "hf://")
+		return "https://huggingface.co/" + repo
+	}
+	return source
+}
+
+// hasMultiFileStaging reports whether the model uses multi-file staging via
+// spec.files or spec.mmproj.
+func hasMultiFileStaging(model *inferencev1alpha1.Model) bool {
+	return model != nil && (len(model.Spec.Files) > 0 || model.Spec.Mmproj != "")
+}
+
+// modelStagingPlan resolves the model's declared files into a staging plan.
+// Returns nil when there is no multi-file staging or resolution fails.
+func modelStagingPlan(model *inferencev1alpha1.Model) *StagingPlan {
+	if !hasMultiFileStaging(model) {
+		return nil
+	}
+	plan, err := ResolveFileSet(model.Spec.Files, model.Spec.Mmproj, nil)
+	if err != nil || plan == nil {
+		return nil
+	}
+	return plan
+}
+
+// multiFileInitEnvVars returns env vars for a multi-file init container.
+// MODEL_SOURCE is normalized (hf:// -> https://huggingface.co/), and
+// MODEL_FILES is newline-delimited.
+func multiFileInitEnvVars(source, cacheDir string, files []string) []corev1.EnvVar {
+	normalized := resolveHFSourceURL(source)
+	return []corev1.EnvVar{
+		{Name: "MODEL_SOURCE", Value: normalized},
+		{Name: "CACHE_DIR", Value: cacheDir},
+		{Name: "MODEL_FILES", Value: strings.Join(files, "\n")},
+	}
+}
+
+// buildMultiFileInitCommand returns a shell command that downloads each file
+// listed in $MODEL_FILES from the normalized $MODEL_SOURCE. For cached storage
+// (useCache=true), it creates $CACHE_DIR first. For emptyDir (useCache=false),
+// it creates /models. The command uses env vars only, never embedding user
+// values directly in the script.
+func buildMultiFileInitCommand(useCache bool, refreshPolicy string) string {
+	prefix := `mkdir -p "$CACHE_DIR" && `
+	if !useCache {
+		prefix = `mkdir -p /models && `
+	}
+
+	normalizeFn := `normalize_hf_source() { case "$1" in hf://*) echo "https://huggingface.co/${1#hf://}" ;; *) echo "$1" ;; esac; }` + " && "
+
+	if refreshPolicy == RefreshPolicyOnChange {
+		body := normalizeFn +
+			`SOURCE="$(normalize_hf_source "$MODEL_SOURCE")" && ` +
+			`printf '%s\n' "$MODEL_FILES" | while IFS= read -r rel; do ` +
+			`[ -n "$rel" ] || continue; ` +
+			`dest="$CACHE_DIR/$rel"; ` +
+			`mkdir -p "$(dirname "$dest")"; ` +
+			`url="${SOURCE%/}/resolve/main/$rel"; ` +
+			`etag="$(dirname "$dest")/.$(basename "$dest").etag"; ` +
+			`if curl -fsSL --etag-compare "$etag" --etag-save "$etag" -o "$dest" "$url"; then ` +
+			`echo "Model artifact $rel revalidated"; ` +
+			`elif [ -f "$dest" ]; then echo "Revalidation unreachable for $rel; kept cached copy"; ` +
+			`else echo "ERROR: model artifact $rel missing and revalidation failed"; exit 1; fi; ` +
+			`done`
+		return prefix + body
+	}
+
+	body := normalizeFn +
+		`SOURCE="$(normalize_hf_source "$MODEL_SOURCE")" && ` +
+		`printf '%s\n' "$MODEL_FILES" | while IFS= read -r rel; do ` +
+		`[ -n "$rel" ] || continue; ` +
+		`dest="$CACHE_DIR/$rel"; ` +
+		`mkdir -p "$(dirname "$dest")"; ` +
+		`url="${SOURCE%/}/resolve/main/$rel"; ` +
+		`if [ ! -f "$dest" ]; then ` +
+		`echo "Downloading model artifact $rel..."; ` +
+		`curl -f -L -o "$dest" "$url" || { echo "ERROR: failed to download $rel"; exit 1; }; ` +
+		`else echo "Model artifact $rel already cached, skipping download"; fi; ` +
+		`done`
+	return prefix + body
+}
+
 type modelStorageConfig struct {
 	modelPath      string
 	initContainers []corev1.Container
@@ -185,6 +295,46 @@ func buildPVCStorageConfig(model *inferencev1alpha1.Model) modelStorageConfig {
 
 func buildCachedStorageConfig(model *inferencev1alpha1.Model, isvc *inferencev1alpha1.InferenceService, cacheMode string, caCertConfigMap string, initContainerImage string) modelStorageConfig {
 	cacheDir := fmt.Sprintf("/models/%s", model.Status.CacheKey)
+
+	// Multi-file staging branch: when spec.files or spec.mmproj are set, use
+	// the staging plan to download all artifacts. Returns early.
+	if plan := modelStagingPlan(model); plan != nil {
+		modelPath := stagedCachePath(cacheDir, plan.Primary)
+		cmd := buildMultiFileInitCommand(true, model.Spec.RefreshPolicy)
+		env := multiFileInitEnvVars(model.Spec.Source, cacheDir, plan.Files)
+
+		initVolumeMounts := []corev1.VolumeMount{
+			{Name: "model-cache", MountPath: "/models"},
+		}
+		volumes := []corev1.Volume{
+			{
+				Name: "model-cache",
+				VolumeSource: corev1.VolumeSource{
+					PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+						ClaimName: modelCachePVCName(isvc, cacheMode),
+						ReadOnly:  false,
+					},
+				},
+			},
+		}
+
+		addCACertVolume(&volumes, &initVolumeMounts, &cmd, caCertConfigMap)
+
+		return modelStorageConfig{
+			modelPath: modelPath,
+			initContainers: []corev1.Container{{
+				Name:            "model-downloader",
+				Image:           initContainerImage,
+				Command:         []string{"sh", "-c", cmd},
+				Env:             env,
+				VolumeMounts:    initVolumeMounts,
+				SecurityContext: initContainerSecurityContext(isvc),
+			}},
+			volumes:      volumes,
+			volumeMounts: []corev1.VolumeMount{{Name: "model-cache", MountPath: "/models", ReadOnly: true}},
+		}
+	}
+
 	// Match the basename the Model controller renames the file to after
 	// parsing GGUF metadata. If the controller has already populated
 	// Status.Path, use that basename verbatim so the init container's cache
@@ -233,22 +383,7 @@ func buildCachedStorageConfig(model *inferencev1alpha1.Model, isvc *inferencev1a
 
 	cmd := buildModelInitCommand(isLocalModelSource(model.Spec.Source), true, model.Spec.RefreshPolicy)
 	env := modelInitEnvVars(model.Spec.Source, cacheDir, modelPath)
-	if caCertConfigMap != "" {
-		volumes = append(volumes, corev1.Volume{
-			Name: "custom-ca-cert",
-			VolumeSource: corev1.VolumeSource{
-				ConfigMap: &corev1.ConfigMapVolumeSource{
-					LocalObjectReference: corev1.LocalObjectReference{Name: caCertConfigMap},
-				},
-			},
-		})
-		initVolumeMounts = append(initVolumeMounts, corev1.VolumeMount{
-			Name:      "custom-ca-cert",
-			MountPath: "/custom-certs",
-			ReadOnly:  true,
-		})
-		cmd = fmt.Sprintf("export CURL_CA_BUNDLE=/custom-certs/$(ls /custom-certs | grep -v '^\\.' | head -n 1) && %s", cmd)
-	}
+	addCACertVolume(&volumes, &initVolumeMounts, &cmd, caCertConfigMap)
 
 	return modelStorageConfig{
 		modelPath: modelPath,
@@ -268,6 +403,37 @@ func buildCachedStorageConfig(model *inferencev1alpha1.Model, isvc *inferencev1a
 }
 
 func buildEmptyDirStorageConfig(model *inferencev1alpha1.Model, isvc *inferencev1alpha1.InferenceService, namespace string, caCertConfigMap string, initContainerImage string) modelStorageConfig {
+	// Multi-file staging branch for emptyDir storage.
+	if plan := modelStagingPlan(model); plan != nil {
+		modelPath := fmt.Sprintf("/models/%s-%s/%s", namespace, model.Name, plan.Primary)
+		cmd := buildMultiFileInitCommand(false, model.Spec.RefreshPolicy)
+		env := multiFileInitEnvVars(model.Spec.Source, fmt.Sprintf("/models/%s-%s", namespace, model.Name), plan.Files)
+
+		initVolumeMounts := []corev1.VolumeMount{{Name: "model-storage", MountPath: "/models"}}
+		volumes := []corev1.Volume{
+			{
+				Name:         "model-storage",
+				VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+			},
+		}
+
+		addCACertVolume(&volumes, &initVolumeMounts, &cmd, caCertConfigMap)
+
+		return modelStorageConfig{
+			modelPath: modelPath,
+			initContainers: []corev1.Container{{
+				Name:            "model-downloader",
+				Image:           initContainerImage,
+				Command:         []string{"sh", "-c", cmd},
+				Env:             env,
+				VolumeMounts:    initVolumeMounts,
+				SecurityContext: initContainerSecurityContext(isvc),
+			}},
+			volumes:      volumes,
+			volumeMounts: []corev1.VolumeMount{{Name: "model-storage", MountPath: "/models", ReadOnly: true}},
+		}
+	}
+
 	modelFileName := fmt.Sprintf("%s-%s.gguf", namespace, model.Name)
 	modelPath := fmt.Sprintf("/models/%s", modelFileName)
 
@@ -281,22 +447,7 @@ func buildEmptyDirStorageConfig(model *inferencev1alpha1.Model, isvc *inferencev
 
 	cmd := buildModelInitCommand(isLocalModelSource(model.Spec.Source), false, model.Spec.RefreshPolicy)
 	env := modelInitEnvVars(model.Spec.Source, "", modelPath)
-	if caCertConfigMap != "" {
-		volumes = append(volumes, corev1.Volume{
-			Name: "custom-ca-cert",
-			VolumeSource: corev1.VolumeSource{
-				ConfigMap: &corev1.ConfigMapVolumeSource{
-					LocalObjectReference: corev1.LocalObjectReference{Name: caCertConfigMap},
-				},
-			},
-		})
-		initVolumeMounts = append(initVolumeMounts, corev1.VolumeMount{
-			Name:      "custom-ca-cert",
-			MountPath: "/custom-certs",
-			ReadOnly:  true,
-		})
-		cmd = fmt.Sprintf("export CURL_CA_BUNDLE=/custom-certs/$(ls /custom-certs | grep -v '^\\.' | head -n 1) && %s", cmd)
-	}
+	addCACertVolume(&volumes, &initVolumeMounts, &cmd, caCertConfigMap)
 
 	return modelStorageConfig{
 		modelPath: modelPath,

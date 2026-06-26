@@ -58,6 +58,14 @@ spec:
           spec:
             description: spec defines the desired state of Model
             properties:
+              files:
+                description: |-
+                  Files lists model weight artifacts to stage from Source. Entries are
+                  repo-relative for repository sources. The first entry is the primary model
+                  file passed to the runtime.
+                items:
+                  type: string
+                type: array
               format:
                 default: gguf
                 description: |-
@@ -295,6 +303,11 @@ spec:
                       agent-level --memory-fraction flag but not MemoryBudget.
                     type: number
                 type: object
+              mmproj:
+                description: |-
+                  Mmproj is an optional multimodal projector file to stage from Source and
+                  pass to runtimes that support projector arguments.
+                type: string
               quantization:
                 description: Quantization describes the quantization level (e.g.,
                   Q4_0, Q5_K_M, F16)
@@ -357,7 +370,7 @@ spec:
                   tightly (#405). Workaround: pre-stage on a pvc://, or use the
                   equivalent https://huggingface.co/.../<filename>.gguf URL which
                   the runtime/init container resolves at deploy time.
-                pattern: ^(https?|file|pvc)://.*|^/[^\s]+$|^[a-zA-Z0-9][\w\-\.\/]+$
+                pattern: ^(https?|file|pvc|hf)://.*|^/[^\s]+$|^[a-zA-Z0-9][\w\-\.\/]+$
                 type: string
             required:
             - source
@@ -535,6 +548,13 @@ spec:
                   revalidation. Used to detect upstream changes for http/https sources
                   (HuggingFace serves the blob SHA as the ETag, so a moved branch is caught).
                 type: string
+              stagedFiles:
+                description: |-
+                  StagedFiles lists the repo-relative paths staged in the model cache.
+                  Populated when spec.files or spec.mmproj are set.
+                items:
+                  type: string
+                type: array
             type: object
         required:
         - spec

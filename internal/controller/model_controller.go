@@ -530,6 +530,23 @@ func (r *ModelReconciler) reconcileRuntimeResolvedSource(ctx context.Context, mo
 
 	logger.Info("Source is runtime-resolved, skipping controller-side download", "source", model.Spec.Source, "cacheKey", cacheKey)
 
+	// Validate multi-file staging before marking Ready.
+	if hasMultiFileStaging(model) {
+		plan, err := ResolveFileSet(model.Spec.Files, model.Spec.Mmproj, nil)
+		if err != nil {
+			model.Status.Phase = PhaseFailed
+			if updateErr := r.updateStatus(ctx, model, ConditionDegraded, metav1.ConditionTrue, "InvalidFileSet", err.Error()); updateErr != nil {
+				logger.Error(updateErr, "Failed to update status after invalid file set")
+			}
+			llmkubemetrics.ReconcileTotal.WithLabelValues("model", "error").Inc()
+			llmkubemetrics.ModelStatus.WithLabelValues(model.Name, model.Namespace, PhaseFailed).Set(1)
+			return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
+		}
+		model.Status.StagedFiles = plan.Files
+	} else {
+		model.Status.StagedFiles = nil
+	}
+
 	model.Status.Phase = PhaseReady
 	model.Status.Path = ""
 	model.Status.CacheKey = cacheKey
@@ -566,7 +583,7 @@ func (r *ModelReconciler) reconcileRuntimeResolvedSource(ctx context.Context, mo
 		return ctrl.Result{}, err
 	}
 
-	llmkubemetrics.ModelStatus.WithLabelValues(model.Name, model.Namespace, "ready").Set(1)
+	llmkubemetrics.ModelStatus.WithLabelValues(model.Name, model.Namespace, "Ready").Set(1)
 	llmkubemetrics.ReconcileTotal.WithLabelValues("model", "success").Inc()
 	logger.Info("Runtime-resolved model ready", "source", model.Spec.Source)
 	return ctrl.Result{}, nil
