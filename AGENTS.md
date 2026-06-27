@@ -90,9 +90,14 @@ changelogs and version bumps. Every commit needs one:
 
 Use `feat!:` / `fix!:` for breaking changes.
 
-- Sign off every commit: `git commit -s` (DCO is enforced by CI).
+- Sign off every commit: `git commit -s`. A human is accountable for every
+  commit, however it was produced (DCO is enforced by CI; bot-only sign-offs
+  are not accepted).
 - Subject says *what* changed; body says *why*. No implementation play-by-play.
-- Do not add `Co-Authored-By` trailers or AI/tool attribution to commit messages.
+- Keep commit messages free of attribution trailers (`Co-Authored-By`,
+  `AI-Agent`, `Assisted-by`, etc.). Disclose AI assistance in the PR
+  description instead, per [CONTRIBUTING.md](CONTRIBUTING.md) ("AI-Assisted and
+  Agent Contributions").
 - One logical change per commit.
 
 ## Branches and pull requests
