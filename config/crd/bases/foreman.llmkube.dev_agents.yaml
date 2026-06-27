@@ -246,6 +246,15 @@ spec:
                   to validate the InferenceService is actually serving the expected
                   model before the agent loop dispatches.
                 type: string
+              modelProfileRef:
+                description: |-
+                  ModelProfileRef names a cluster-scoped ModelProfile whose tuning
+                  (system-prompt addendum, stuck-loop overrides, forcing-phase read
+                  restriction) is layered onto this Agent at dispatch. Empty = none.
+                  The profile is additive: it appends to SystemPrompt and overrides
+                  stuck-loop knobs only when this Agent does not set its own
+                  stuckLoopDetection.
+                type: string
               observationWindowTurns:
                 description: |-
                   ObservationWindowTurns is the number of most-recent tool result

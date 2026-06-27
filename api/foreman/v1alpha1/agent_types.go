@@ -282,6 +282,15 @@ type AgentSpec struct {
 	// +optional
 	StuckLoopDetection *StuckLoopDetectionSpec `json:"stuckLoopDetection,omitempty"`
 
+	// ModelProfileRef names a cluster-scoped ModelProfile whose tuning
+	// (system-prompt addendum, stuck-loop overrides, forcing-phase read
+	// restriction) is layered onto this Agent at dispatch. Empty = none.
+	// The profile is additive: it appends to SystemPrompt and overrides
+	// stuck-loop knobs only when this Agent does not set its own
+	// stuckLoopDetection.
+	// +optional
+	ModelProfileRef string `json:"modelProfileRef,omitempty"`
+
 	// RequestTimeoutSeconds is the loop-wide wall-clock budget for the
 	// whole agent run (#532). When the budget is exhausted mid-turn the
 	// loop exits gracefully with an INCOMPLETE verdict and the partial
