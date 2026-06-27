@@ -49,6 +49,19 @@ type commandRunner func(
 	args ...string,
 ) (output string, err error)
 
+// envtestJobRunner is the seam between the coder gate and the clean-room
+// gate Job machinery. When changed envtest packages exist, the gate
+// delegates their verification to a Kubernetes Job that runs `make test`
+// under envtest (with KUBEBUILDER_ASSETS). The Job's outcome is folded
+// into the gate's pass/fail result.
+//
+// The dependency direction is the reason it lives here: the tools package
+// imports the agent package (for ToolResult), so the agent package cannot
+// import tools without a cycle. cmd/foreman-agent wires a closure over
+// the gate Job submitter into the executor, which then passes it to the
+// gate via RunCoderGateConfig.
+type envtestJobRunner func(ctx context.Context) (pass bool, feedback string)
+
 // execCommandRunner is the production commandRunner backed by os/exec. It
 // appends extraEnv to the inherited process environment and captures
 // combined stdout+stderr. Wired into the coder agent loop via
@@ -88,7 +101,17 @@ type checkFailure struct {
 // intentionally out of scope; they run in a separate clean-room
 // Kubernetes Job. All checks run regardless of earlier failures so the
 // feedback reports everything wrong at once.
-func RunCoderGate(ctx context.Context, workspace, golangciPath string, run commandRunner) (pass bool, feedback string) {
+//
+// When envtestJobRunner is non-nil and changed envtest packages exist,
+// the gate delegates verification of those packages to a clean-room
+// gate Job after the in-workspace checks pass. A Job failure folds into
+// the gate's not-pass result with feedback.
+func RunCoderGate(
+	ctx context.Context,
+	workspace, golangciPath string,
+	run commandRunner,
+	envtestJobRunner envtestJobRunner,
+) (pass bool, feedback string) {
 	var failures []checkFailure
 
 	// 1. gofmt -l . lists misformatted files on stdout and exits 0 even
@@ -140,6 +163,20 @@ func RunCoderGate(ctx context.Context, workspace, golangciPath string, run comma
 		failures = append(failures, checkFailure{name: "codegen drift", output: out})
 	}
 
+	// 7. Envtest package verification: when changed envtest packages exist
+	// and the in-workspace checks otherwise pass, delegate verification
+	// of those packages to a clean-room gate Job that runs `make test`
+	// under envtest (with KUBEBUILDER_ASSETS). A Job failure folds into
+	// the gate's not-pass result with feedback.
+	if len(failures) == 0 && envtestJobRunner != nil {
+		if pkgs := changedEnvtestPackages(ctx, workspace, run); len(pkgs) > 0 {
+			pass, fb := envtestJobRunner(ctx)
+			if !pass {
+				failures = append(failures, checkFailure{name: "envtest gate job", output: fb})
+			}
+		}
+	}
+
 	if len(failures) == 0 {
 		return true, ""
 	}
@@ -147,14 +184,14 @@ func RunCoderGate(ctx context.Context, workspace, golangciPath string, run comma
 	return false, buildFeedback(failures)
 }
 
-// changedTestPackages returns the workspace-relative Go package directories
+// changedPackages returns the workspace-relative Go package directories
 // (as "./<dir>/" patterns) that have uncommitted changes per
-// `git status -z` and are not envtest-backed. It dedups packages and
-// ignores non-Go files and root-level (package main) changes. A git
-// error yields no packages (the tier is skipped rather than failing the
-// gate spuriously). NUL-terminated output is used so filenames with
-// embedded newlines are handled correctly.
-func changedTestPackages(ctx context.Context, workspace string, run commandRunner) []string {
+// `git status -z`. It dedups packages and ignores non-Go files and
+// root-level (package main) changes. A git error yields no packages
+// (the tier is skipped rather than failing the gate spuriously).
+// NUL-terminated output is used so filenames with embedded newlines
+// are handled correctly.
+func changedPackages(ctx context.Context, workspace string, run commandRunner) []string {
 	out, err := run(ctx, workspace, nil, "git", "status", "-z")
 	if err != nil {
 		return nil
@@ -177,20 +214,60 @@ func changedTestPackages(ctx context.Context, workspace string, run commandRunne
 			continue // root package main; not part of the unit-test tier
 		}
 		dirKey := dir + "/"
-		excluded := false
-		for _, pfx := range envtestPackagePrefixes {
-			if strings.HasPrefix(dirKey, pfx) {
-				excluded = true
-				break
-			}
-		}
-		if excluded || seen[dirKey] {
+		if seen[dirKey] {
 			continue
 		}
 		seen[dirKey] = true
 		pkgs = append(pkgs, "./"+dirKey)
 	}
 	return pkgs
+}
+
+// changedTestPackages returns the workspace-relative Go package directories
+// (as "./<dir>/" patterns) that have uncommitted changes per
+// `git status -z` and are not envtest-backed. It dedups packages and
+// ignores non-Go files and root-level (package main) changes. A git
+// error yields no packages (the tier is skipped rather than failing the
+// gate spuriously). NUL-terminated output is used so filenames with
+// embedded newlines are handled correctly.
+func changedTestPackages(ctx context.Context, workspace string, run commandRunner) []string {
+	all := changedPackages(ctx, workspace, run)
+	var pkgs []string
+	for _, p := range all {
+		if isEnvtestPackage(p) {
+			continue
+		}
+		pkgs = append(pkgs, p)
+	}
+	return pkgs
+}
+
+// changedEnvtestPackages returns the workspace-relative Go package
+// directories (as "./<dir>/" patterns) that have uncommitted changes
+// per `git status -z` and DO match envtestPackagePrefixes. These are
+// the packages whose tests require KUBEBUILDER_ASSETS and must be
+// verified in a clean-room gate Job.
+func changedEnvtestPackages(ctx context.Context, workspace string, run commandRunner) []string {
+	all := changedPackages(ctx, workspace, run)
+	var pkgs []string
+	for _, p := range all {
+		if !isEnvtestPackage(p) {
+			continue
+		}
+		pkgs = append(pkgs, p)
+	}
+	return pkgs
+}
+
+// isEnvtestPackage reports whether the given package path (e.g.
+// "./internal/controller/") matches any envtestPackagePrefix.
+func isEnvtestPackage(pkg string) bool {
+	for _, pfx := range envtestPackagePrefixes {
+		if strings.HasPrefix(pkg, "./"+pfx) {
+			return true
+		}
+	}
+	return false
 }
 
 // checkCodegenDrift regenerates manifests and CRDs, then checks whether
