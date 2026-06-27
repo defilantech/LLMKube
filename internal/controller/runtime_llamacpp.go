@@ -116,6 +116,7 @@ func (b *LlamaCppBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, mo
 		}
 	}
 	args = appendMetadataOverrideArgs(args, isvc.Spec.MetadataOverrides)
+	args = appendModeArgs(args, isvc.Spec.Mode, isvc.Spec.ExtraArgs)
 	if len(isvc.Spec.ExtraArgs) > 0 {
 		args = append(args, isvc.Spec.ExtraArgs...)
 	}

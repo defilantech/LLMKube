@@ -169,6 +169,33 @@ func appendNoWarmupArgs(args []string, noWarmup *bool) []string {
 	return args
 }
 
+// appendModeArgs wires the llama.cpp flags for embedding and rerank serving.
+// A reranker needs both --reranking and --embedding. Flags already in extraArgs
+// win and are not duplicated, so hand-wired manifests are left untouched; chat
+// (or empty) adds nothing.
+func appendModeArgs(args []string, mode string, extraArgs []string) []string {
+	switch mode {
+	case servingModeRerank:
+		if !hasMatchingExtraArg(extraArgs, "reranking") {
+			args = append(args, "--reranking")
+		}
+		if !hasMatchingExtraArg(extraArgs, "embedding") {
+			args = append(args, "--embedding")
+		}
+		if !hasMatchingExtraArg(extraArgs, "pooling") {
+			args = append(args, "--pooling", "rank")
+		}
+	case servingModeEmbedding:
+		if !hasMatchingExtraArg(extraArgs, "embedding") {
+			args = append(args, "--embedding")
+		}
+		if !hasMatchingExtraArg(extraArgs, "pooling") {
+			args = append(args, "--pooling", "last")
+		}
+	}
+	return args
+}
+
 func appendSpeculativeDecodingArgs(args []string, spec *inferencev1alpha1.SpeculativeDecodingSpec) []string {
 	if spec == nil || spec.Type == "" || spec.Type == "disabled" {
 		return args

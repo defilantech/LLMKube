@@ -21,6 +21,13 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// Serving modes for InferenceService spec.mode and status.mode.
+const (
+	ServingModeChat      = "chat"
+	ServingModeEmbedding = "embedding"
+	ServingModeRerank    = "rerank"
+)
+
 // InferenceServiceSpec defines the desired state of InferenceService
 // RopeScalingType selects the RoPE context-extension method. Mirrors
 // llama.cpp's --rope-scaling values.
@@ -88,6 +95,17 @@ type InferenceServiceSpec struct {
 	// +kubebuilder:default=llamacpp
 	// +optional
 	Runtime string `json:"runtime,omitempty"`
+
+	// Mode selects how the model is served: "chat" (default) for
+	// chat/completion, "embedding" for /v1/embeddings, "rerank" for /v1/rerank.
+	// For the llamacpp runtime it auto-appends the required flags (embedding ->
+	// --embedding --pooling last; rerank -> --reranking --embedding --pooling
+	// rank); any flag already set in spec.extraArgs wins. When unset, the mode is
+	// inferred from spec.extraArgs / spec.endpoint.path. The resolved value is
+	// always reported in status.mode.
+	// +kubebuilder:validation:Enum=chat;embedding;rerank
+	// +optional
+	Mode string `json:"mode,omitempty"`
 
 	// Replicas is the desired number of inference pods
 	// +kubebuilder:validation:Minimum=0
@@ -815,6 +833,11 @@ type InferenceServiceStatus struct {
 	// +kubebuilder:validation:Enum=Pending;Creating;Progressing;Ready;WaitingForGPU;Stopped;Failed
 	// +optional
 	Phase string `json:"phase,omitempty"`
+
+	// Mode is the resolved serving mode (chat, embedding, or rerank): spec.mode
+	// when set, otherwise inferred from the runtime flags and endpoint path.
+	// +optional
+	Mode string `json:"mode,omitempty"`
 
 	// Replicas tracks the number of ready vs desired pods
 	// +optional

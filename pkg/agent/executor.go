@@ -25,10 +25,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
 	"go.uber.org/zap"
+
+	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 )
 
 type ExecutorConfig struct {
@@ -107,6 +110,10 @@ type ExecutorConfig struct {
 	// ReasoningBudgetMessage maps to --reasoning-budget-message. Ignored
 	// unless ReasoningBudget > 0.
 	ReasoningBudgetMessage string
+
+	// Mode is the serving mode (chat, embedding, rerank) resolved from
+	// InferenceService.spec.mode. Empty defaults to chat (no extra flags).
+	Mode string
 
 	// ExtraArgs are appended to the command line as-is, last, so they can
 	// override any earlier flag llama-server emitted (last-wins).
@@ -356,6 +363,47 @@ func (e *MetalExecutor) waitForHealthy(port int, timeout time.Duration) error {
 	}
 }
 
+// hasMatchingExtraArg reports whether extraArgs already carries argName in
+// either the "--name" or "--name=value" form. Mirrors the controller helper so
+// the agent path does not duplicate flags the user set explicitly.
+func hasMatchingExtraArg(extraArgs []string, argName string) bool {
+	arg := fmt.Sprintf("--%s", argName)
+	inlineArg := fmt.Sprintf("--%s=", argName)
+	for _, v := range extraArgs {
+		if v == arg || strings.HasPrefix(v, inlineArg) {
+			return true
+		}
+	}
+	return false
+}
+
+// appendModeArgs wires the llama.cpp flags for embedding and rerank serving,
+// mirroring the controller's runtime_llamacpp arg builder. A reranker needs
+// both --reranking and --embedding; flags already in extraArgs win and are not
+// duplicated. Chat (or empty) adds nothing.
+func appendModeArgs(args []string, mode string, extraArgs []string) []string {
+	switch mode {
+	case inferencev1alpha1.ServingModeRerank:
+		if !hasMatchingExtraArg(extraArgs, "reranking") {
+			args = append(args, "--reranking")
+		}
+		if !hasMatchingExtraArg(extraArgs, "embedding") {
+			args = append(args, "--embedding")
+		}
+		if !hasMatchingExtraArg(extraArgs, "pooling") {
+			args = append(args, "--pooling", "rank")
+		}
+	case inferencev1alpha1.ServingModeEmbedding:
+		if !hasMatchingExtraArg(extraArgs, "embedding") {
+			args = append(args, "--embedding")
+		}
+		if !hasMatchingExtraArg(extraArgs, "pooling") {
+			args = append(args, "--pooling", "last")
+		}
+	}
+	return args
+}
+
 // buildLlamaServerArgs constructs the command-line argument vector for the
 // llama-server child process. It is split out from StartProcess so it can be
 // unit tested without spawning a real process and so the Apple-Silicon-specific
@@ -454,6 +502,8 @@ func buildLlamaServerArgs(modelPath string, port int, config ExecutorConfig) []s
 	if config.Jinja {
 		args = append(args, "--jinja")
 	}
+
+	args = appendModeArgs(args, config.Mode, config.ExtraArgs)
 
 	// ExtraArgs comes last so user-provided overrides actually override.
 	if len(config.ExtraArgs) > 0 {
