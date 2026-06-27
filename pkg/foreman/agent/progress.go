@@ -203,17 +203,28 @@ var explorationTools = map[string]struct{}{
 	"bash": {},
 }
 
+// readOnlyFileTools are dropped from the forcing-phase set ONLY when a
+// model profile sets restrictReadsInForcingPhase. By default read_file
+// stays (a model recovering from a failed str_replace re-reads the target);
+// thrash-prone models that re-read instead of editing opt in to dropping it.
+var readOnlyFileTools = map[string]struct{}{
+	"read_file": {},
+}
+
 // filterForcedEditSchemas returns the advertised tool set for a turn inside
 // the EditFreeStreak forcing phase: everything EXCEPT the exploration tools
-// (grep, bash). The model keeps read_file/write_file/str_replace/
-// submit_result so it can read the specific file it is editing and then
-// land the change, but it cannot fan out into a fresh exploration sweep.
+// (grep, bash), and -- when restrictReads is true -- also except read_file.
 // Order is preserved.
-func filterForcedEditSchemas(schemas []oai.Tool) []oai.Tool {
+func filterForcedEditSchemas(schemas []oai.Tool, restrictReads bool) []oai.Tool {
 	out := make([]oai.Tool, 0, len(schemas))
 	for _, s := range schemas {
 		if _, ok := explorationTools[s.Function.Name]; ok {
 			continue
+		}
+		if restrictReads {
+			if _, ok := readOnlyFileTools[s.Function.Name]; ok {
+				continue
+			}
 		}
 		out = append(out, s)
 	}
