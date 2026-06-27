@@ -5,6 +5,20 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.19](https://github.com/defilantech/LLMKube/compare/v0.8.18...v0.8.19) (2026-06-27)
+
+
+### Features
+
+* **foreman:** detect changed envtest packages + gate-job delegation seam (part 1 of [#859](https://github.com/defilantech/LLMKube/issues/859)) ([#860](https://github.com/defilantech/LLMKube/issues/860)) ([c745127](https://github.com/defilantech/LLMKube/commit/c7451274e4c47ffb2c1c481ea7ba33f67ddc4a84))
+* **foreman:** ModelProfile CRD for per-model harness tuning ([#862](https://github.com/defilantech/LLMKube/issues/862)) ([#863](https://github.com/defilantech/LLMKube/issues/863)) ([90ad28b](https://github.com/defilantech/LLMKube/commit/90ad28bca52fcb04128fdf6f44bef8bbc4698203))
+* **foreman:** post-push envtest gate (closes the in-loop timing flaw) ([#859](https://github.com/defilantech/LLMKube/issues/859)) ([#864](https://github.com/defilantech/LLMKube/issues/864)) ([71da4e2](https://github.com/defilantech/LLMKube/commit/71da4e2ed383a064377be6252f3d8577418478b3))
+
+
+### Bug Fixes
+
+* **controller:** make model cache writable on fsGroupPolicy=None CSIs ([#855](https://github.com/defilantech/LLMKube/issues/855)) ([#858](https://github.com/defilantech/LLMKube/issues/858)) ([8e1a30d](https://github.com/defilantech/LLMKube/commit/8e1a30d1ab3a734c54ca2379ecaaaf431372bc76))
+
 ## [0.8.18](https://github.com/defilantech/LLMKube/compare/v0.8.17...v0.8.18) (2026-06-26)
 
 
