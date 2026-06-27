@@ -8,6 +8,7 @@ Thank you for your interest in contributing to LLMKube! This project aims to mak
 - [How Can I Contribute?](#how-can-i-contribute)
 - [Development Setup](#development-setup)
 - [Making Changes](#making-changes)
+- [AI-Assisted and Agent Contributions](#ai-assisted-and-agent-contributions)
 - [Pull Request Process](#pull-request-process)
 - [Coding Standards](#coding-standards)
 - [Community](#community)
@@ -257,6 +258,52 @@ make fmt
 make vet
 make test
 ```
+
+## AI-Assisted and Agent Contributions
+
+LLMKube is built by people who use AI coding agents heavily: our own Foreman
+harness opens PRs against this project. So we welcome AI-assisted
+contributions. We hold them to one standard, the same one we hold our own
+agent to: human accountability, not where the code came from.
+
+If any part of your contribution (code, tests, commit messages, PR text) was
+generated or substantially assisted by an AI tool, the following apply.
+
+**A human is accountable.**
+
+- A human signs off every commit with the DCO (`git commit -s`). The sign-off
+  means a person takes responsibility for understanding, testing, and
+  maintaining the change, however it was produced. Bot-only sign-offs are not
+  accepted.
+- A human, not an agent, owns the review conversation. Replies to review
+  feedback come from you, not from an autonomous agent posting on your behalf.
+
+**Disclose the assistance.**
+
+- State in the PR description which tool was used, what it generated, and what
+  you verified before submitting. One line is enough, for example:
+  `Assisted-by: <tool> (generated the tests; I reviewed and ran make test)`.
+- Put the disclosure in the PR body, not the commit message. We keep commit
+  messages free of attribution trailers (see `AGENTS.md`).
+
+**Same bar as any other PR.**
+
+- Tests must exercise real behavior. A test that still passes when the code
+  under test is broken is not coverage.
+- The change must match the scope of the issue it claims to fix: no unrelated
+  edits, no placeholder or fabricated content.
+- Run the gate locally first: `make test`, `make lint`.
+
+**Unsolicited and drive-by PRs.**
+
+- We may close unsolicited AI-generated PRs that were not preceded by an issue
+  or discussion, especially low-effort ones targeting `good-first-issue`
+  labels. To work an issue, comment on it first so a human can confirm it is a
+  good fit and not already in progress.
+
+This is not an anti-AI policy. It is a "stand behind your work" policy. We
+dogfood agentic contribution daily; we just require that a person stay in the
+loop and on the hook.
 
 ## Pull Request Process
 
