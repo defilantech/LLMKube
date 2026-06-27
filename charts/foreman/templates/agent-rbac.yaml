@@ -38,6 +38,10 @@ rules:
   - apiGroups: ["foreman.llmkube.dev"]
     resources: ["agents"]
     verbs: ["get", "list", "watch"]
+  # Read the optional ModelProfile a given Agent may reference.
+  - apiGroups: ["foreman.llmkube.dev"]
+    resources: ["modelprofiles"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: ["inference.llmkube.dev"]
     resources: ["inferenceservices"]
     verbs: ["get", "list", "watch"]

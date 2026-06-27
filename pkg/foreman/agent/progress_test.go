@@ -17,6 +17,7 @@ limitations under the License.
 package agent
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -397,5 +398,35 @@ func TestForceTerminateEnvelope(t *testing.T) {
 	}
 	if env.Extra["terminateTurn"] != 7 {
 		t.Errorf("Extra.terminateTurn: want 7; got %v", env.Extra["terminateTurn"])
+	}
+}
+
+func TestFilterForcedEditSchemas_RestrictReads(t *testing.T) {
+	mk := func(names ...string) []oai.Tool {
+		out := make([]oai.Tool, 0, len(names))
+		for _, n := range names {
+			out = append(out, oai.Tool{Function: oai.ToolSchemaDef{Name: n}})
+		}
+		return out
+	}
+	names := func(ts []oai.Tool) []string {
+		out := make([]string, 0, len(ts))
+		for _, tt := range ts {
+			out = append(out, tt.Function.Name)
+		}
+		return out
+	}
+	schemas := mk("read_file", "grep", "bash", "str_replace", "submit_result")
+
+	got := names(filterForcedEditSchemas(schemas, false))
+	want := []string{"read_file", "str_replace", "submit_result"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("restrictReads=false: got %v want %v", got, want)
+	}
+
+	got = names(filterForcedEditSchemas(schemas, true))
+	want = []string{"str_replace", "submit_result"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("restrictReads=true: got %v want %v", got, want)
 	}
 }

@@ -1,0 +1,39 @@
+# Curated ModelProfile for Ornith-1.0 coders.
+#
+# Apply after the foreman chart (which installs the ModelProfile CRD) is
+# installed and its CRD is established:
+#
+#   kubectl apply -f examples/foreman/modelprofile-ornith.yaml
+#
+# Then reference it from a coder Agent:
+#
+#   spec:
+#     modelProfileRef: ornith
+#
+# It damps Ornith's two harness-addressable artifacts: over-gating fully
+# authorized work (the addendum) and thrashing in tight read-loops (the
+# tightened edit-free limit + dropping read_file during the forcing phase).
+#
+# Shipped as an example rather than a chart template on purpose: a seed
+# custom resource of a chart-defined CRD races the CRD's establishment on a
+# fresh `helm install`. The CRD + RBAC ship in the chart; profiles are
+# applied (by an operator or by GitOps) once the CRD exists.
+apiVersion: foreman.llmkube.dev/v1alpha1
+kind: ModelProfile
+metadata:
+  name: ornith
+  labels:
+    foreman.llmkube.dev/profile-source: shipped
+spec:
+  systemPromptAddendum: |
+    OPERATING MODE:
+    - This task is fully authorized and self-contained. Do not ask for access,
+      credentials, prerequisites, or setup. If a precondition seems missing, state
+      one assumption in a single line and proceed.
+    - Act over deliberate. If you have already read a file or determined a root
+      cause, do not re-read or re-derive it; trust your prior finding and make the
+      edit. Re-reading the same code repeatedly is a failure mode.
+  stuckLoopDetection:
+    editFreeTurnsLimit: 4
+    repeatedToolThreshold: 6
+  restrictReadsInForcingPhase: true

@@ -83,6 +83,7 @@ const requeueWaitingForDeps = 10 * time.Second
 // +kubebuilder:rbac:groups=foreman.llmkube.dev,resources=agentictasks/finalizers,verbs=update
 // +kubebuilder:rbac:groups=foreman.llmkube.dev,resources=fleetnodes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=foreman.llmkube.dev,resources=agents,verbs=get;list;watch
+// +kubebuilder:rbac:groups=foreman.llmkube.dev,resources=modelprofiles,verbs=get;list;watch
 
 // Reconcile drives a single AgenticTask toward Scheduled.
 func (r *AgenticTaskReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

@@ -379,6 +379,22 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 	}
 	userPrompt = workspaceOrientationBlock(workspace) + "\n" + userPrompt
 
+	// Resolve an optional ModelProfile and layer it onto the loop config
+	// below. Cluster-scoped; a dangling ref degrades gracefully (run without
+	// the profile) rather than failing the task.
+	var modelProfile *foremanv1alpha1.ModelProfile
+	if ref := agent.Spec.ModelProfileRef; ref != "" {
+		var mp foremanv1alpha1.ModelProfile
+		switch err := e.Client.Get(ctx, types.NamespacedName{Name: ref}, &mp); {
+		case err == nil:
+			modelProfile = &mp
+		case apierrors.IsNotFound(err):
+			log.Info("modelProfileRef not found; running without profile", "profile", ref)
+		default:
+			return nil, fmt.Errorf("resolve model profile %q: %w", ref, err)
+		}
+	}
+
 	cfg := LoopConfig{
 		Model:                  endpoint.modelName,
 		SystemPrompt:           agent.Spec.SystemPrompt,
@@ -404,6 +420,10 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 		cfg.MaxVerifyRetries = coderGateMaxRetries
 		cfg.VerifyTerminal = makeCoderGateVerifier(workspace, log, task.Spec.GateProfile)
 	}
+
+	// Layer the model profile onto the resolved config (addendum + stuck-loop
+	// overrides + forcing-phase read restriction). No-op when modelProfile is nil.
+	applyModelProfile(&cfg, agent, modelProfile)
 
 	// 8. Run the loop. Always persist the transcript afterwards,
 	// even on error, so the executor's terminal status carries a

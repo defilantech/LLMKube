@@ -161,6 +161,12 @@ type LoopConfig struct {
 	// set. <= 0 with a non-nil VerifyTerminal means "verify once, never
 	// retry": a failing gate immediately downgrades to INCOMPLETE.
 	MaxVerifyRetries int
+
+	// RestrictReadsInForcingPhase, when true, drops read_file from the
+	// advertised tool set during the EditFreeStreak forcing phase (in
+	// addition to grep/bash), forcing a thrash-prone model to edit instead
+	// of re-reading. Set from the resolved ModelProfile. Default false.
+	RestrictReadsInForcingPhase bool
 }
 
 // DefaultContextWindowTokens is the budget used when LoopConfig.ContextWindowTokens
@@ -429,7 +435,7 @@ func (l *Loop) Run(ctx context.Context, cfg LoopConfig) (*LoopResult, error) {
 		},
 	}
 	schemas := l.registry.Schemas()
-	restrictedSchemas := filterForcedEditSchemas(schemas)
+	restrictedSchemas := filterForcedEditSchemas(schemas, cfg.RestrictReadsInForcingPhase)
 	monitor := NewLoopProgressMonitor(cfg.Progress)
 
 	// EditFreeStreak forcing function. A soft text nudge alone has poor

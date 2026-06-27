@@ -58,6 +58,12 @@ rules:
     resources: ["inferenceservices"]
     verbs: ["get", "list", "watch"]
 
+  # WorkloadReconciler + AgenticTaskReconciler look up ModelProfile CRs
+  # to resolve an Agent's optional spec.modelProfileRef.
+  - apiGroups: ["foreman.llmkube.dev"]
+    resources: ["modelprofiles"]
+    verbs: ["get", "list", "watch"]
+
   # Leader election + event reporting.
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]

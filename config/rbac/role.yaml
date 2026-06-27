@@ -138,6 +138,14 @@ rules:
   - update
   - watch
 - apiGroups:
+  - foreman.llmkube.dev
+  resources:
+  - modelprofiles
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - gateway.envoyproxy.io
   resources:
   - backends
