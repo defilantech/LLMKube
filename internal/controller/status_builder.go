@@ -109,6 +109,7 @@ func (r *InferenceServiceReconciler) updateStatusWithSchedulingInfo(
 	now := metav1.Now()
 	previousPhase := isvc.Status.Phase
 	isvc.Status.Phase = phase
+	isvc.Status.Mode = resolveServingMode(isvc)
 	isvc.Status.ModelReady = modelReady
 	isvc.Status.ReadyReplicas = readyReplicas
 	isvc.Status.Replicas = desiredReplicas

@@ -625,6 +625,7 @@ func buildExecutorConfig(
 		NoWarmup:               derefBool(isvc.Spec.NoWarmup),
 		ReasoningBudget:        derefInt32(isvc.Spec.ReasoningBudget),
 		ReasoningBudgetMessage: isvc.Spec.ReasoningBudgetMessage,
+		Mode:                   isvc.Spec.Mode,
 		ExtraArgs:              isvc.Spec.ExtraArgs,
 	}
 }
@@ -1722,6 +1723,7 @@ func computeSpecHash(isvc *inferencev1alpha1.InferenceService) string {
 		ExtraArgs              []string
 		ReasoningBudget        *int32
 		ReasoningBudgetMessage string
+		Mode                   string
 		Replicas               *int32
 		Runtime                string
 	}{
@@ -1745,6 +1747,7 @@ func computeSpecHash(isvc *inferencev1alpha1.InferenceService) string {
 		ExtraArgs:              isvc.Spec.ExtraArgs,
 		ReasoningBudget:        isvc.Spec.ReasoningBudget,
 		ReasoningBudgetMessage: isvc.Spec.ReasoningBudgetMessage,
+		Mode:                   isvc.Spec.Mode,
 		Replicas:               isvc.Spec.Replicas,
 		Runtime:                isvc.Spec.Runtime,
 	}
