@@ -49,19 +49,6 @@ type commandRunner func(
 	args ...string,
 ) (output string, err error)
 
-// envtestJobRunner is the seam between the coder gate and the clean-room
-// gate Job machinery. When changed envtest packages exist, the gate
-// delegates their verification to a Kubernetes Job that runs `make test`
-// under envtest (with KUBEBUILDER_ASSETS). The Job's outcome is folded
-// into the gate's pass/fail result.
-//
-// The dependency direction is the reason it lives here: the tools package
-// imports the agent package (for ToolResult), so the agent package cannot
-// import tools without a cycle. cmd/foreman-agent wires a closure over
-// the gate Job submitter into the executor, which then passes it to the
-// gate via RunCoderGateConfig.
-type envtestJobRunner func(ctx context.Context) (pass bool, feedback string)
-
 // execCommandRunner is the production commandRunner backed by os/exec. It
 // appends extraEnv to the inherited process environment and captures
 // combined stdout+stderr. Wired into the coder agent loop via
@@ -98,19 +85,13 @@ type checkFailure struct {
 // The gate runs six deterministic checks in order: gofmt, go vet,
 // go build, golangci-lint, a fast unit-test tier on changed packages,
 // and a codegen-drift check. Heavy envtest or integration tests are
-// intentionally out of scope; they run in a separate clean-room
-// Kubernetes Job. All checks run regardless of earlier failures so the
-// feedback reports everything wrong at once.
-//
-// When envtestJobRunner is non-nil and changed envtest packages exist,
-// the gate delegates verification of those packages to a clean-room
-// gate Job after the in-workspace checks pass. A Job failure folds into
-// the gate's not-pass result with feedback.
+// intentionally out of scope; they run in a separate post-push gate Job.
+// All checks run regardless of earlier failures so the feedback reports
+// everything wrong at once.
 func RunCoderGate(
 	ctx context.Context,
 	workspace, golangciPath string,
 	run commandRunner,
-	envtestJobRunner envtestJobRunner,
 ) (pass bool, feedback string) {
 	var failures []checkFailure
 
@@ -161,20 +142,6 @@ func RunCoderGate(
 	// controller-gen is unavailable.
 	if drifted, out := checkCodegenDrift(ctx, workspace, run); drifted {
 		failures = append(failures, checkFailure{name: "codegen drift", output: out})
-	}
-
-	// 7. Envtest package verification: when changed envtest packages exist
-	// and the in-workspace checks otherwise pass, delegate verification
-	// of those packages to a clean-room gate Job that runs `make test`
-	// under envtest (with KUBEBUILDER_ASSETS). A Job failure folds into
-	// the gate's not-pass result with feedback.
-	if len(failures) == 0 && envtestJobRunner != nil {
-		if pkgs := changedEnvtestPackages(ctx, workspace, run); len(pkgs) > 0 {
-			pass, fb := envtestJobRunner(ctx)
-			if !pass {
-				failures = append(failures, checkFailure{name: "envtest gate job", output: fb})
-			}
-		}
 	}
 
 	if len(failures) == 0 {

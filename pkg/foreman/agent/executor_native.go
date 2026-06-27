@@ -144,6 +144,13 @@ type NativeAgentLoopExecutor struct {
 	// Job IS the execution; only the watcher's executor (the one this
 	// field is set on) ever submits a Job. See executor_coderjob.go.
 	CoderJobSubmitter CoderJobSubmitter
+
+	// EnvtestJobRunner, when non-nil, verifies envtest-backed packages in a
+	// clean-room Job (`make test`) on the pushed branch after a coder GO
+	// (#859). cmd/foreman-agent wires a closure over tools.RunGateJobTool
+	// here. Nil skips the post-push envtest gate (e.g. the in-process
+	// run-task path, where the clean-room gate Job is the backstop).
+	EnvtestJobRunner EnvtestJobRunner
 }
 
 // Kind identifies this executor in Result.Kind and in logs.
@@ -539,6 +546,10 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 		return e.noChangesResult(start, transcriptRef, loopRes, branch), nil
 	}
 
+	// Whether the change touches an envtest-backed package, captured before
+	// the commit clears the working-tree status. Used for the post-push gate.
+	envtestTouched := len(changedEnvtestPackages(ctx, workspace, execCommandRunner)) > 0
+
 	sha, commitErr := repo.Commit(ctx, repo.CommitOptions{
 		Workspace: workspace,
 		Message:   loopRes.Terminal.CommitMessage,
@@ -561,6 +572,16 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 		Auth:      auth,
 	}); err != nil {
 		return e.pushFailedResult(start, transcriptRef, loopRes, branch, sha, err), nil
+	}
+
+	// Post-push envtest gate (#859): verify envtest-backed packages in a
+	// clean-room Job on the now-pushed branch. A real failure downgrades the
+	// GO to INCOMPLETE; a could-not-run leaves the GO standing.
+	if failed, feedback := evaluatePostPushEnvtest(
+		ctx, envtestTouched, e.EnvtestJobRunner,
+		task.Spec.Payload.Repo, branch, e.GitRemoteURL,
+	); failed {
+		return e.envtestGateFailedResult(start, transcriptRef, loopRes, branch, sha, feedback), nil
 	}
 
 	return e.goResult(start, transcriptRef, loopRes, branch, sha), nil
@@ -604,7 +625,7 @@ func makeCoderGateVerifier(workspace string, log logr.Logger, profile *foremanv1
 				return true, "", err
 			}
 		}
-		pass, feedback := RunCoderGate(ctx, workspace, lintPath, execCommandRunner, nil)
+		pass, feedback := RunCoderGate(ctx, workspace, lintPath, execCommandRunner)
 		if !pass {
 			log.Info("coder gate: fast checks failed; returning feedback to the loop for a fix")
 		}
@@ -1057,6 +1078,26 @@ func (e *NativeAgentLoopExecutor) commitRejectedResult(
 		"error":          cause.Error(),
 		"transcriptRef":  objRefAsMap(tref),
 		"turnCount":      lr.Turns,
+	}
+	return r
+}
+
+// envtestGateFailedResult downgrades a pushed GO to INCOMPLETE when the
+// post-push envtest gate Job (`make test`) failed on the pushed branch
+// (#859). The commit is already pushed (sha); a re-run or a human fixes
+// the failing envtest packages. feedback is the Job's log tail.
+func (e *NativeAgentLoopExecutor) envtestGateFailedResult(
+	start time.Time, tref corev1.ObjectReference, lr *LoopResult, branch, sha, feedback string,
+) *Result {
+	r := NewResult(e.Kind(), foremanv1alpha1.AgenticTaskVerdictIncomplete,
+		"post-push envtest gate failed", time.Since(start))
+	r.Extra = map[string]any{
+		"outcome":       "ENVTEST-GATE-FAILED",
+		"branch":        branch,
+		"commitSHA":     sha,
+		"feedback":      feedback,
+		"transcriptRef": objRefAsMap(tref),
+		"turnCount":     lr.Turns,
 	}
 	return r
 }

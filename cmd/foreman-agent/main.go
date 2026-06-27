@@ -34,6 +34,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -419,6 +420,9 @@ func main() {
 					LogTailFn:         makePodLogTailFn(kcs),
 				},
 			},
+			// EnvtestJobRunner verifies envtest-backed packages post-push in a
+			// clean-room Job (#859).
+			EnvtestJobRunner: makeEnvtestJobRunner(kc, foremanNamespace, makePodLogTailFn(kcs)),
 		}
 	default:
 		setupLog.Error(nil, "unknown --agent-mode", "value", agentMode, "valid", "stub|native")
@@ -733,4 +737,74 @@ func sanitizeName(s string) string {
 		s = strings.TrimRight(s[:63], "-")
 	}
 	return s
+}
+
+// mapGateVerdict maps a RunGateJobTool verdict onto (pass, ran). Only
+// GATE-PASS passes; GATE-ERROR and an empty/unknown verdict mean the Job
+// could not be judged (ran=false -> could-not-verify), so a GO stands.
+func mapGateVerdict(verdict string) (pass bool, ran bool) {
+	switch verdict {
+	case foremantools.VerdictGatePass:
+		return true, true
+	case foremantools.VerdictGateFail:
+		return false, true
+	default: // VerdictGateError, "", unknown
+		return false, false
+	}
+}
+
+// makeEnvtestJobRunner returns an EnvtestJobRunner that submits a clean-room
+// gate Job running `make test` (envtest) for repository@branch, reusing
+// RunGateJobTool scoped to the `test` make target (the fast tier already ran
+// fmt/vet/lint/build).
+func makeEnvtestJobRunner(
+	kc client.Client, foremanNamespace string,
+	logTailFn func(ctx context.Context, namespace, jobName string) string,
+) foremanagent.EnvtestJobRunner {
+	return &envtestJobRunnerImpl{
+		tool: &foremantools.RunGateJobTool{
+			Client: kc,
+			Cfg: foremantools.RunGateJobToolConfig{
+				Namespace:    foremanNamespace,
+				LogTailFn:    logTailFn,
+				PollInterval: 5 * time.Second,
+				PollTimeout:  10 * time.Minute,
+			},
+		},
+	}
+}
+
+type envtestJobRunnerImpl struct {
+	tool *foremantools.RunGateJobTool
+}
+
+func (e *envtestJobRunnerImpl) Run(
+	ctx context.Context, repository, branch, cloneURL string,
+) (pass bool, ran bool, feedback string) {
+	args, err := json.Marshal(map[string]any{
+		"repo":     repository,
+		"branch":   branch,
+		"checks":   []string{"test"},
+		"cloneURL": cloneURL,
+	})
+	if err != nil {
+		return false, false, "envtest gate: marshal args: " + err.Error()
+	}
+	result, err := e.tool.Execute(ctx, args)
+	if err != nil || result == nil {
+		msg := "nil result"
+		if err != nil {
+			msg = err.Error()
+		}
+		return false, false, "envtest gate: " + msg
+	}
+	pass, ran = mapGateVerdict(result.Verdict)
+	if pass {
+		return true, true, ""
+	}
+	fb := result.Summary
+	if lt, ok := result.Extra["logTail"].(string); ok && lt != "" {
+		fb += "\n" + lt
+	}
+	return pass, ran, fb
 }

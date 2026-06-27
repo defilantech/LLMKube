@@ -112,7 +112,7 @@ func TestRunCoderGate(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			run, _ := newFakeRunner(tt.responses)
-			pass, feedback := RunCoderGate(context.Background(), "/work", golangciPath, run, nil)
+			pass, feedback := RunCoderGate(context.Background(), "/work", golangciPath, run)
 
 			if pass != tt.wantPass {
 				t.Fatalf("pass = %v, want %v (feedback: %q)", pass, tt.wantPass, feedback)
@@ -144,7 +144,7 @@ func TestRunCoderGateLintEnv(t *testing.T) {
 		golangciPath: {},
 	})
 
-	RunCoderGate(context.Background(), "/work", golangciPath, run, nil)
+	RunCoderGate(context.Background(), "/work", golangciPath, run)
 
 	var lintCall *recordedCall
 	for i := range *calls {
@@ -192,7 +192,7 @@ func TestRunCoderGateLintCacheScopedToWorkspace(t *testing.T) {
 		golangciPath: {},
 	})
 
-	RunCoderGate(context.Background(), "/work", golangciPath, run, nil)
+	RunCoderGate(context.Background(), "/work", golangciPath, run)
 
 	var lintCall *recordedCall
 	for i := range *calls {
@@ -266,7 +266,7 @@ func TestRunCoderGate_FailsOnChangedPackageUnitTest(t *testing.T) {
 			return "", nil // golangci-lint
 		}
 	}
-	pass, feedback := RunCoderGate(context.Background(), "/work", "./bin/golangci-lint", run, nil)
+	pass, feedback := RunCoderGate(context.Background(), "/work", "./bin/golangci-lint", run)
 	if pass {
 		t.Fatal("gate should fail when a changed package's unit test fails")
 	}
@@ -285,7 +285,7 @@ func TestRunCoderGate_SkipsTestTierWhenNoChangedPackages(t *testing.T) {
 		}
 		return "", nil // git status empty, all checks clean
 	}
-	if pass, _ := RunCoderGate(context.Background(), "/work", "./bin/golangci-lint", run, nil); !pass {
+	if pass, _ := RunCoderGate(context.Background(), "/work", "./bin/golangci-lint", run); !pass {
 		t.Fatal("gate should pass when all checks are clean and nothing changed")
 	}
 	if sawGoTest {
@@ -303,7 +303,7 @@ func TestRunCoderGateTruncation(t *testing.T) {
 		golangciPath: {output: huge, err: errors.New("boom")},
 	})
 
-	_, feedback := RunCoderGate(context.Background(), "/work", golangciPath, run, nil)
+	_, feedback := RunCoderGate(context.Background(), "/work", golangciPath, run)
 
 	if !strings.Contains(feedback, "...(truncated)...") {
 		t.Error("expected truncation marker in feedback")
@@ -347,7 +347,7 @@ func TestRunCoderGate_CodegenDrift_FailsWhenDrifted(t *testing.T) {
 			return "", nil
 		}
 	}
-	pass, feedback := RunCoderGate(context.Background(), "/work", golangciPath, run, nil)
+	pass, feedback := RunCoderGate(context.Background(), "/work", golangciPath, run)
 	if pass {
 		t.Fatal("gate should fail when codegen drift is detected")
 	}
@@ -383,7 +383,7 @@ func TestRunCoderGate_CodegenDrift_PassesWhenClean(t *testing.T) {
 			return "", nil
 		}
 	}
-	pass, feedback := RunCoderGate(context.Background(), "/work", golangciPath, run, nil)
+	pass, feedback := RunCoderGate(context.Background(), "/work", golangciPath, run)
 	if !pass {
 		t.Fatalf("gate should pass when codegen is clean; feedback:\n%s", feedback)
 	}
@@ -413,7 +413,7 @@ func TestRunCoderGate_CodegenDrift_SkippedWhenNoControllerGen(t *testing.T) {
 			return "", nil
 		}
 	}
-	pass, feedback := RunCoderGate(context.Background(), "/work", golangciPath, run, nil)
+	pass, feedback := RunCoderGate(context.Background(), "/work", golangciPath, run)
 	if !pass {
 		t.Fatalf("gate should pass when controller-gen is unavailable; feedback:\n%s", feedback)
 	}
@@ -444,7 +444,7 @@ func TestRunCoderGate_CodegenDrift_FailsWhenMakeFails(t *testing.T) {
 			return "", nil
 		}
 	}
-	pass, feedback := RunCoderGate(context.Background(), "/work", golangciPath, run, nil)
+	pass, feedback := RunCoderGate(context.Background(), "/work", golangciPath, run)
 	if pass {
 		t.Fatal("gate should fail when make manifests fails")
 	}
@@ -528,176 +528,5 @@ func TestIsEnvtestPackage(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("isEnvtestPackage(%q) = %v, want %v", tt.pkg, got, tt.want)
 		}
-	}
-}
-
-// TestRunCoderGate_EnvtestJobRunnerInvokedWhenEnvtestPackagesChanged
-// verifies the gate invokes the injected envtestJobRunner when changed
-// envtest packages are present and the in-workspace checks pass.
-func TestRunCoderGate_EnvtestJobRunnerInvokedWhenEnvtestPackagesChanged(t *testing.T) {
-	const golangciPath = "./bin/golangci-lint"
-	jobInvoked := false
-	jobPass := true
-	jobFeedback := ""
-
-	envtestRunner := func(_ context.Context) (bool, string) {
-		jobInvoked = true
-		return jobPass, jobFeedback
-	}
-
-	run := func(_ context.Context, _ string, _ []string, name string, args ...string) (string, error) {
-		switch {
-		case name == "gofmt":
-			return "", nil
-		case name == "go":
-			return "", nil
-		case name == golangciPath:
-			return "", nil
-		case name == "git" && len(args) > 0 && args[0] == "status":
-			return " M internal/controller/model_controller.go\x00", nil
-		case name == "test" && len(args) > 0 && args[0] == "-f":
-			return "", nil // controller-gen exists
-		case name == "make":
-			return "", nil
-		case name == "git" && len(args) > 0 && args[0] == "diff":
-			return "", nil // tree is clean
-		default:
-			return "", nil
-		}
-	}
-
-	pass, feedback := RunCoderGate(context.Background(), "/work", golangciPath, run, envtestRunner)
-	if !jobInvoked {
-		t.Fatal("envtestJobRunner should have been invoked when envtest packages changed")
-	}
-	if !pass {
-		t.Fatalf("gate should pass when envtest job passes; feedback:\n%s", feedback)
-	}
-}
-
-// TestRunCoderGate_EnvtestJobRunnerFailureFoldsIntoGateFailure verifies
-// a Job failure from the envtestJobRunner folds into the gate's not-pass
-// result with feedback.
-func TestRunCoderGate_EnvtestJobRunnerFailureFoldsIntoGateFailure(t *testing.T) {
-	const golangciPath = "./bin/golangci-lint"
-	jobFeedback := "make test failed: internal/controller/model_controller_test.go:42: panic"
-
-	envtestRunner := func(_ context.Context) (bool, string) {
-		return false, jobFeedback
-	}
-
-	run := func(_ context.Context, _ string, _ []string, name string, args ...string) (string, error) {
-		switch {
-		case name == "gofmt":
-			return "", nil
-		case name == "go":
-			return "", nil
-		case name == golangciPath:
-			return "", nil
-		case name == "git" && len(args) > 0 && args[0] == "status":
-			return " M internal/controller/model_controller.go\x00", nil
-		case name == "test" && len(args) > 0 && args[0] == "-f":
-			return "", nil
-		case name == "make":
-			return "", nil
-		case name == "git" && len(args) > 0 && args[0] == "diff":
-			return "", nil
-		default:
-			return "", nil
-		}
-	}
-
-	pass, feedback := RunCoderGate(context.Background(), "/work", golangciPath, run, envtestRunner)
-	if pass {
-		t.Fatal("gate should fail when envtest job fails")
-	}
-	if !strings.Contains(feedback, "envtest gate job") {
-		t.Errorf("feedback should cite envtest gate job; got:\n%s", feedback)
-	}
-	if !strings.Contains(feedback, jobFeedback) {
-		t.Errorf("feedback should include job feedback; got:\n%s", feedback)
-	}
-}
-
-// TestRunCoderGate_EnvtestJobRunnerNotInvokedWhenNoEnvtestPackagesChanged
-// verifies the Job runner is NOT invoked when no envtest packages changed.
-func TestRunCoderGate_EnvtestJobRunnerNotInvokedWhenNoEnvtestPackagesChanged(t *testing.T) {
-	const golangciPath = "./bin/golangci-lint"
-	jobInvoked := false
-
-	envtestRunner := func(_ context.Context) (bool, string) {
-		jobInvoked = true
-		return true, ""
-	}
-
-	run := func(_ context.Context, _ string, _ []string, name string, args ...string) (string, error) {
-		switch {
-		case name == "gofmt":
-			return "", nil
-		case name == "go":
-			return "", nil
-		case name == golangciPath:
-			return "", nil
-		case name == "git" && len(args) > 0 && args[0] == "status":
-			return " M pkg/cli/cache_inspect.go\x00", nil // non-envtest only
-		case name == "test" && len(args) > 0 && args[0] == "-f":
-			return "", nil
-		case name == "make":
-			return "", nil
-		case name == "git" && len(args) > 0 && args[0] == "diff":
-			return "", nil
-		default:
-			return "", nil
-		}
-	}
-
-	pass, feedback := RunCoderGate(context.Background(), "/work", golangciPath, run, envtestRunner)
-	if jobInvoked {
-		t.Fatal("envtestJobRunner should NOT have been invoked when no envtest packages changed")
-	}
-	if !pass {
-		t.Fatalf("gate should pass; feedback:\n%s", feedback)
-	}
-}
-
-// TestRunCoderGate_EnvtestJobRunnerNotInvokedWhenInWorkspaceChecksFail
-// verifies the Job runner is NOT invoked when in-workspace checks fail,
-// since the gate already failed and the model needs to fix those first.
-func TestRunCoderGate_EnvtestJobRunnerNotInvokedWhenInWorkspaceChecksFail(t *testing.T) {
-	const golangciPath = "./bin/golangci-lint"
-	jobInvoked := false
-
-	envtestRunner := func(_ context.Context) (bool, string) {
-		jobInvoked = true
-		return true, ""
-	}
-
-	run := func(_ context.Context, _ string, _ []string, name string, args ...string) (string, error) {
-		switch {
-		case name == "gofmt":
-			return "pkg/cli/cache_inspect.go\n", nil // gofmt failure
-		case name == "go":
-			return "", nil
-		case name == golangciPath:
-			return "", nil
-		case name == "git" && len(args) > 0 && args[0] == "status":
-			return " M internal/controller/model_controller.go\x00", nil
-		case name == "test" && len(args) > 0 && args[0] == "-f":
-			return "", nil
-		case name == "make":
-			return "", nil
-		case name == "git" && len(args) > 0 && args[0] == "diff":
-			return "", nil
-		default:
-			return "", nil
-		}
-	}
-
-	pass, _ := RunCoderGate(context.Background(), "/work", golangciPath, run, envtestRunner)
-	if jobInvoked {
-		t.Fatal("envtestJobRunner should NOT have been invoked when in-workspace checks fail")
-	}
-	if pass {
-		t.Fatal("gate should fail due to gofmt failure")
 	}
 }
