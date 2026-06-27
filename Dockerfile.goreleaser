@@ -1,10 +1,11 @@
 # Dockerfile for GoReleaser builds
-# This Dockerfile expects a pre-built binary in the build context
-# and simply packages it into a distroless container image.
+# dockers_v2 stages the pre-built binary per platform under
+# $TARGETPLATFORM in the build context; package it into a distroless image.
 
 FROM gcr.io/distroless/static:nonroot
+ARG TARGETPLATFORM
 WORKDIR /
-COPY manager .
+COPY $TARGETPLATFORM/manager .
 USER 65532:65532
 
 ENTRYPOINT ["/manager"]

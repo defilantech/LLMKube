@@ -1,11 +1,12 @@
-# Dockerfile for GoReleaser builds of the router-proxy. Expects a pre-built
-# binary at the build context root; GoReleaser stages one per (goos, goarch)
-# into the docker build directory. Mirrors Dockerfile.router-proxy's runtime
-# (distroless, non-root, port 8080) but skips the in-image Go build since
-# GoReleaser already produced the binary.
+# Dockerfile for GoReleaser builds of the router-proxy. dockers_v2 stages
+# the pre-built binary per platform under $TARGETPLATFORM in the build
+# context. Mirrors Dockerfile.router-proxy's runtime (distroless, non-root,
+# port 8080) but skips the in-image Go build since GoReleaser already
+# produced the binary.
 FROM gcr.io/distroless/static:nonroot
+ARG TARGETPLATFORM
 WORKDIR /
-COPY router-proxy /usr/local/bin/router-proxy
+COPY $TARGETPLATFORM/router-proxy /usr/local/bin/router-proxy
 
 # Default HTTP port; the binary's --listen flag overrides.
 EXPOSE 8080

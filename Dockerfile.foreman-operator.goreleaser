@@ -1,9 +1,10 @@
-# Dockerfile for GoReleaser builds of the foreman-operator. Expects a
-# pre-built binary at the build context root; GoReleaser stages one
-# per (goos, goarch) into the docker build directory.
+# Dockerfile for GoReleaser builds of the foreman-operator. dockers_v2
+# stages the pre-built binary per platform under $TARGETPLATFORM in the
+# build context.
 FROM gcr.io/distroless/static:nonroot
+ARG TARGETPLATFORM
 WORKDIR /
-COPY foreman-operator /foreman-operator
+COPY $TARGETPLATFORM/foreman-operator /foreman-operator
 USER 65532:65532
 
 ENTRYPOINT ["/foreman-operator"]
