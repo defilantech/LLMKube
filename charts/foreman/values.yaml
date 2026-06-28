@@ -147,6 +147,11 @@ agent:
 
   image:
     # registry: ghcr.io
+    # Default: the lean runtime image (alpine + git). To run a coder-enabled
+    # in-cluster agent, point this at the coder image
+    # (ghcr.io/defilantech/llmkube-foreman-agent-coder, same tag), which ships
+    # the Go toolchain + golangci-lint/controller-gen/make/helm the coder's
+    # fast self-gate needs, and add "coder" to agent.roles below (#835).
     repository: ghcr.io/defilantech/llmkube-foreman-agent
     tag: ""
     digest: ""
@@ -169,7 +174,11 @@ agent:
   # --roles flag passed to the foreman-agent. The scheduler matches
   # AgenticTask.spec.requiredCapability.roles against this set.
   # Conventions: "worker" = "this node can run user-facing
-  # AgenticTasks"; "verifier" = "this node can host the gate Agent".
+  # AgenticTasks"; "verifier" = "this node can host the gate Agent";
+  # "coder" = "this node can run a coder loop end-to-end". Only advertise
+  # "coder" on an agent running the coder image (see agent.image above) and
+  # with coder.gitCredentialsSecret set, so its fast self-gate has the Go
+  # toolchain and it can push the branch (#835).
   roles:
     - worker
 
