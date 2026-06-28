@@ -232,13 +232,20 @@ agent:
   commitAuthorName: ""    # defaults to "Foreman Bot" inside the binary
   commitAuthorEmail: ""
 
+  # The memory LIMIT is a cap, not a reservation (requests stays lean), so a
+  # reviewer/scheduler/worker agent still uses ~256Mi -- the high cap only
+  # matters for a coder-role agent. A coder's in-workspace self-gate runs
+  # golangci-lint + go build + go test over the whole target module, which
+  # spikes well past 2Gi and OOMKills the pod at the old default (#880). 8Gi
+  # gives that gate headroom while costing non-coder agents nothing. Lower the
+  # limit if you only run reviewer/scheduler roles on memory-tight nodes.
   resources:
     requests:
       cpu: 200m
       memory: 256Mi
     limits:
       cpu: "2"
-      memory: 2Gi
+      memory: 8Gi
 
   podSecurityContext:
     runAsNonRoot: true
