@@ -209,7 +209,7 @@ func invalidFileSetInitContainer(initImage string) corev1.Container {
 	}
 }
 
-// cachePrepInitContainer returns the non-root prep init container that runs
+// cachePrepInitContainer returns the root-run prep init container that runs
 // BEFORE model-downloader in the cache-backed path. CSI drivers with
 // fsGroupPolicy=None (CephFS, NFS) never apply the pod fsGroup to the volume,
 // so the PVC root stays root:root 0755 and the non-root downloader (uid 100)
@@ -221,14 +221,17 @@ func invalidFileSetInitContainer(initImage string) corev1.Container {
 // (fsGroup disabled, e.g. OpenShift) the prep chowns to 100:100 (the
 // downloader's UID/GID) and sets 770 so only the downloader can write.
 //
-// Security: the prep runs as the non-root curl_user (uid 100), drops ALL
-// capabilities, and adds back only CHOWN+FOWNER. CHOWN lets a non-root
-// process change ownership of the root-owned mount arbitrarily, and FOWNER
-// lets it chmod a file it does not own, so the chown/chmod above succeed
-// without running as root. This satisfies Pod Security Admission "baseline"
-// (non-root, no privilege escalation, minimal caps). It cannot satisfy
-// "restricted", which forbids adding any capability except NET_BIND_SERVICE:
-// the chown of an unowned mount fundamentally needs CHOWN. See
+// Security: the prep runs as root (uid 0) with ALL capabilities dropped and
+// only CHOWN+FOWNER added, and is NOT privileged. Root is required, not
+// optional: the container runs `sh -c "chown ... && chmod ..."`, and in
+// containerd a non-root process clears its capabilities across execve (there
+// are no ambient capabilities in the Kubernetes securityContext), so the
+// `chown` the shell execs would run with an empty effective set and fail with
+// EPERM. Root retains its capabilities across exec, so chown/chmod succeed.
+// Running this init non-root broke model-cache-prep on fsGroupPolicy=None CSIs
+// in 0.8.20; see the regression note below. It still cannot satisfy PSA
+// "restricted" (which forbids adding any capability except NET_BIND_SERVICE,
+// and the chown of an unowned mount fundamentally needs CHOWN); see
 // docs/MODEL-CACHE.md "Security Considerations" for the restricted-PSA
 // alternatives (fsGroupPolicy=File CSI, emptyDir store, or a laxer policy).
 //
@@ -249,10 +252,12 @@ func cachePrepInitContainer(initImage string, resolvedFSGroup int64) corev1.Cont
 			{Name: "model-cache", MountPath: "/models"},
 		},
 		SecurityContext: &corev1.SecurityContext{
-			// Non-root (curl_user). CHOWN+FOWNER are sufficient to chown/chmod
-			// the root-owned mount without uid 0; see the doc comment above.
-			RunAsUser:                int64Ptr(100),
-			RunAsNonRoot:             boolPtr(true),
+			// Root (uid 0), required for the exec'd chown to keep CAP_CHOWN.
+			// Non-root + capabilities.add does NOT work here: containerd does
+			// not set ambient caps, so caps are cleared when sh execs chown
+			// (EPERM). Not privileged: ALL caps dropped, only CHOWN+FOWNER
+			// added, no privilege escalation. See the doc comment above.
+			RunAsUser:                int64Ptr(0),
 			AllowPrivilegeEscalation: boolPtr(false),
 			ReadOnlyRootFilesystem:   boolPtr(true),
 			Capabilities: &corev1.Capabilities{

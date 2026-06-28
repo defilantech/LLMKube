@@ -317,7 +317,7 @@ This will revert to the legacy behavior where each pod downloads the model via i
 
 ### PSA `restricted` incompatibility
 
-The model cache init container cannot satisfy Pod Security Admission (PSA) `restricted` policy. PSA `restricted` forbids both running as root and adding any capability except `NET_BIND_SERVICE`. Chowning a root-owned mount (which the cache-prep init container does on CSIs with `fsGroupPolicy: None`) requires either root or `CAP_CHOWN`/`CAP_FOWNER`, so the cache-prep init container cannot satisfy `restricted` no matter how it is tuned.
+The model cache init container cannot satisfy Pod Security Admission (PSA) `restricted` policy. PSA `restricted` forbids both running as root and adding any capability except `NET_BIND_SERVICE`. Chowning a root-owned mount (which the cache-prep init container does on CSIs with `fsGroupPolicy: None`) requires `CAP_CHOWN`/`CAP_FOWNER`, and the init must run as **root (uid 0)** to use them: it shells out to `chown`, and a non-root process clears its capabilities across `execve` (Kubernetes has no ambient-capability field, and containerd does not set them), so the exec'd `chown` would fail with `EPERM`. The init therefore runs as non-privileged root with only `CHOWN`+`FOWNER`, which cannot satisfy `restricted` no matter how it is tuned. (Running it non-root broke the cache prep in 0.8.20; reverted in 0.8.21.)
 
 This is inherent to the problem: the cache-prep init container exists precisely because `fsGroup` is not applied on `fsGroupPolicy: None` CSIs. On such a CSI in a PSA-`restricted` namespace, the shared cache path is not available. Alternatives:
 

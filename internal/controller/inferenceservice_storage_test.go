@@ -918,13 +918,17 @@ var _ = Describe("cache prep init container (#855)", func() {
 		Expect(dl.Image).To(Equal("my-registry.io/init:v1.2.3"))
 	})
 
-	It("prep SecurityContext: RunAsUser=100 (non-root), RunAsNonRoot=true, AllowPrivilegeEscalation=false, Capabilities.Drop=[ALL], Capabilities.Add has CHOWN and FOWNER, ReadOnlyRootFilesystem=true, SeccompProfile.Type=RuntimeDefault", func() {
+	It("prep SecurityContext: RunAsUser=0, AllowPrivilegeEscalation=false, Capabilities.Drop=[ALL], Capabilities.Add has CHOWN and FOWNER, ReadOnlyRootFilesystem=true, SeccompProfile.Type=RuntimeDefault", func() {
 		config := buildCachedStorageConfig(cacheModel(), nil, "", "", "curl:8.18.0", 102)
 		prep := config.initContainers[0]
 		sc := prep.SecurityContext
 		Expect(sc).NotTo(BeNil())
-		Expect(*sc.RunAsUser).To(Equal(int64(100)))
-		Expect(*sc.RunAsNonRoot).To(BeTrue())
+		// Regression guard (0.8.20): the prep MUST run as root. Non-root with
+		// capabilities.add does not work -- containerd clears caps when sh
+		// execs chown (no ambient caps), so chown fails EPERM and the init
+		// container errors out on fsGroupPolicy=None CSIs. Do not flip to
+		// non-root without ambient-capability support.
+		Expect(*sc.RunAsUser).To(Equal(int64(0)))
 		Expect(*sc.AllowPrivilegeEscalation).To(BeFalse())
 		Expect(*sc.ReadOnlyRootFilesystem).To(BeTrue())
 
