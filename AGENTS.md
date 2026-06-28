@@ -129,3 +129,16 @@ deployment config).
   and `charts/`). Change the source and regenerate.
 - Do not commit secrets, kubeconfigs, or `.env` files.
 - Do not skip the pre-commit checks or the CRD sync step.
+- Do not run an init/main container that performs a privileged syscall (`chown`,
+  `chmod` of an unowned file, `mount`, etc.) non-root with `capabilities.add`
+  when the syscall runs in an exec'd child (`command: ["sh", "-c", "chown ..."]`).
+  A non-root process loses its capabilities across `execve` unless the runtime
+  sets ambient capabilities, which is runtime-dependent (it works on kind but
+  not on every cluster, so envtest and CI will pass while real users hit
+  `EPERM`). Either run the container as root (uid 0, still `Drop: [ALL]` + the
+  minimal caps + no privilege escalation), or do the syscall directly in the
+  container's entrypoint (a small helper binary) so the caps are not cleared.
+  This caused the 0.8.20 `model-cache-prep` regression (#887). Any change to an
+  init/main container `securityContext`, `command`, `image`, or user that affects
+  a privileged syscall must be reasoned about at the runtime level, not just by
+  the rendered-spec envtest.

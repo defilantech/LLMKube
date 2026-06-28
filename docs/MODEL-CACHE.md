@@ -315,15 +315,19 @@ This will revert to the legacy behavior where each pod downloads the model via i
 
 ## Security Considerations
 
-### PSA `restricted` incompatibility
+### Automatic shared cache on `fsGroupPolicy: None` backends (CephFS, NFS)
 
-The model cache init container cannot satisfy Pod Security Admission (PSA) `restricted` policy. PSA `restricted` forbids both running as root and adding any capability except `NET_BIND_SERVICE`. Chowning a root-owned mount (which the cache-prep init container does on CSIs with `fsGroupPolicy: None`) requires `CAP_CHOWN`/`CAP_FOWNER`, and the init must run as **root (uid 0)** to use them: it shells out to `chown`, and a non-root process clears its capabilities across `execve` (Kubernetes has no ambient-capability field, and containerd does not set them), so the exec'd `chown` would fail with `EPERM`. The init therefore runs as non-privileged root with only `CHOWN`+`FOWNER`, which cannot satisfy `restricted` no matter how it is tuned. (Running it non-root broke the cache prep in 0.8.20; reverted in 0.8.21.)
+The automatic shared-model-cache workflow is a first-class supported path, **including** on `fsGroupPolicy: None` CSIs such as CephFS and NFS. On those backends Kubernetes does not apply the pod `fsGroup` to the volume, so the PVC root stays `root:root` and the non-root model downloader cannot write to it. The `model-cache-prep` init container fixes the ownership for you so the cache just works. You do not need to pre-stage models or hand-manage a PVC.
 
-This is inherent to the problem: the cache-prep init container exists precisely because `fsGroup` is not applied on `fsGroupPolicy: None` CSIs. On such a CSI in a PSA-`restricted` namespace, the shared cache path is not available. Alternatives:
+The prep is the **compatibility implementation** for these backends, and it runs as **non-privileged root (uid 0)** with `ALL` capabilities dropped and only `CHOWN`+`FOWNER` added (no privilege escalation, read-only rootfs, seccomp `RuntimeDefault`). Root here is a backend-driven requirement, not an avoidable misconfiguration: chowning a root-owned mount needs `CAP_CHOWN`, the prep shells out to `chown`, and a non-root process loses its capabilities across `execve` (Kubernetes has no ambient-capability field), so the exec'd `chown` would fail `EPERM`. Root retains its capabilities across exec. (Running the prep non-root broke the shared cache on these backends in 0.8.20; reverted in 0.8.21. A future change may move the chown into a small dedicated helper that performs the syscall in its own entrypoint, which would let the prep run non-root again without the exec capability loss.)
 
-- Use an `fsGroupPolicy: File` CSI (the default on most clusters) so Kubernetes handles the ownership automatically.
-- Use an `emptyDir` model store (disable the persistent cache).
-- Use a less-strict PSA policy (e.g., `baseline` or `privileged`).
+### PSA `restricted`
+
+Because the prep needs root plus `CHOWN`/`FOWNER`, it cannot satisfy Pod Security Admission `restricted` (which forbids running as root and adding any capability except `NET_BIND_SERVICE`). This is a property of the storage backend, not of the cache feature: it applies only in the narrow intersection of an `fsGroupPolicy: None` backend AND a namespace that enforces `restricted`. If you are in exactly that case, the options are:
+
+- Use an `fsGroupPolicy: File` CSI so Kubernetes applies ownership itself and no prep is needed.
+- Use an `emptyDir` model store (no shared persistent cache).
+- Relax the namespace policy to `baseline`.
 
 ### Shared-cache group-write multi-tenancy
 
