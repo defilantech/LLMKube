@@ -5,6 +5,18 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.21](https://github.com/defilantech/LLMKube/compare/v0.8.20...v0.8.21) (2026-06-28)
+
+
+### Bug Fixes
+
+* **controller:** run model-cache-prep init as root again (0.8.20 regression) ([#888](https://github.com/defilantech/LLMKube/issues/888)) ([8e98e50](https://github.com/defilantech/LLMKube/commit/8e98e500960bdbdf005b61e21ca2396132f1e141))
+
+
+### Documentation
+
+* **strix:** document amdgpu.lockup_timeout for device-lost resets ([#886](https://github.com/defilantech/LLMKube/issues/886)) ([4468d62](https://github.com/defilantech/LLMKube/commit/4468d6286f6d31d85337041d58e074f2ff66e7e9))
+
 ## [0.8.20](https://github.com/defilantech/LLMKube/compare/v0.8.19...v0.8.20) (2026-06-28)
 
 
