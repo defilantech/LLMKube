@@ -5,6 +5,32 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.20](https://github.com/defilantech/LLMKube/compare/v0.8.19...v0.8.20) (2026-06-28)
+
+
+### Features
+
+* add spec.mode to auto-serve embedding and rerank models ([#866](https://github.com/defilantech/LLMKube/issues/866)) ([a7fa09f](https://github.com/defilantech/LLMKube/commit/a7fa09f295039ae7d3328f9155e745935931e9af))
+* **cli:** add `llmkube foreman dispatch` to fan issues across coder agents ([#879](https://github.com/defilantech/LLMKube/issues/879)) ([1530754](https://github.com/defilantech/LLMKube/commit/1530754dbff1a1e6e47a187bbbcd71515d2ce4ef))
+* **controller:** run model-cache-prep init non-root + document PSA/multi-tenancy caveats ([#883](https://github.com/defilantech/LLMKube/issues/883)) ([a8049f1](https://github.com/defilantech/LLMKube/commit/a8049f1c5de258efb54c32167114cae1143ef34a))
+* **foreman:** add a goreleaser-config check to the coder gate ([#882](https://github.com/defilantech/LLMKube/issues/882)) ([c8535a7](https://github.com/defilantech/LLMKube/commit/c8535a7c14a3d50eb9e1bbd3d7da464bd8424767))
+* **foreman:** add vulkan to the accelerator routing enum ([#878](https://github.com/defilantech/LLMKube/issues/878)) ([315dadc](https://github.com/defilantech/LLMKube/commit/315dadc53286c88f50bd50a4a2093403899488d5))
+* **foreman:** branch the coder off upstream/main, not the stale fork base ([#875](https://github.com/defilantech/LLMKube/issues/875)) ([f4c382c](https://github.com/defilantech/LLMKube/commit/f4c382c168dc9acb989f5d9518492cd9f73763a5))
+* **foreman:** deterministically resolve codegen drift in the coder gate ([#874](https://github.com/defilantech/LLMKube/issues/874)) ([332f7eb](https://github.com/defilantech/LLMKube/commit/332f7eb6b14fa01156ff4226622e429e852309bb))
+* **foreman:** durable FleetNode labels via --node-labels (survive pod restart) ([#885](https://github.com/defilantech/LLMKube/issues/885)) ([fdda5a8](https://github.com/defilantech/LLMKube/commit/fdda5a8f0b99fe1da528659ea54cfece091983d7))
+* **foreman:** scope-overlap guard catches wrong-subsystem coder drift ([#876](https://github.com/defilantech/LLMKube/issues/876)) ([795bf23](https://github.com/defilantech/LLMKube/commit/795bf2380168d0351b3259205f6644b59a581bfe))
+
+
+### Bug Fixes
+
+* **foreman:** raise coder agent memory limit default to 8Gi ([#884](https://github.com/defilantech/LLMKube/issues/884)) ([8b3ee32](https://github.com/defilantech/LLMKube/commit/8b3ee321fb12597394782e1691989d84f05bd625))
+
+
+### Documentation
+
+* add AI-assisted contribution policy ([#872](https://github.com/defilantech/LLMKube/issues/872)) ([e65f2fa](https://github.com/defilantech/LLMKube/commit/e65f2fa90f88982390e83e905b123a9d7e114579))
+* **foreman:** enable a coder-capable in-cluster agent (image in llmkube-runtimes) ([#877](https://github.com/defilantech/LLMKube/issues/877)) ([9bc3d2c](https://github.com/defilantech/LLMKube/commit/9bc3d2cd280f87449c62d672c70c745bb85d36a3))
+
 ## [0.8.19](https://github.com/defilantech/LLMKube/compare/v0.8.18...v0.8.19) (2026-06-27)
 
 
