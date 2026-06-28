@@ -88,12 +88,13 @@ type checkFailure struct {
 // query the scope-overlap check ranks files against; an empty string
 // disables that check (backward compatible).
 //
-// The gate runs seven deterministic checks in order: gofmt, go vet,
+// The gate runs eight deterministic checks in order: gofmt, go vet,
 // go build, golangci-lint, a fast unit-test tier on changed packages,
-// a codegen-drift check, and a scope-overlap check. Heavy envtest or
-// integration tests are intentionally out of scope; they run in a separate
-// post-push gate Job. All checks run regardless of earlier failures so the
-// feedback reports everything wrong at once.
+// a codegen-drift check, a goreleaser-config check (path-scoped), and
+// a scope-overlap check. Heavy envtest or integration tests are
+// intentionally out of scope; they run in a separate post-push gate
+// Job. All checks run regardless of earlier failures so the feedback
+// reports everything wrong at once.
 func RunCoderGate(
 	ctx context.Context,
 	workspace, golangciPath string,
@@ -153,7 +154,17 @@ func RunCoderGate(
 		failures = append(failures, checkFailure{name: "codegen drift", output: out})
 	}
 
-	// 7. Scope-overlap check: flag a coder whose changed Go files have zero
+	// 7. Goreleaser config check: when .goreleaser.yaml or any
+	// Dockerfile*.goreleaser is changed, run `goreleaser check` to
+	// validate the release config schema. This catches broken release
+	// configs before they reach a GO (see #854 / #868). Path-scoped so
+	// it adds no latency to the common (Go-only) change. Skipped
+	// gracefully if goreleaser is not available.
+	if failed, out := checkGoreleaserConfig(ctx, workspace, run); failed {
+		failures = append(failures, checkFailure{name: "goreleaser check", output: out})
+	}
+
+	// 8. Scope-overlap check: flag a coder whose changed Go files have zero
 	// overlap with the files the issue implies are relevant, which catches a
 	// drift to an unrelated subsystem that every other check happily
 	// green-lights (e.g. refactoring pkg/cli/cache.go for a pkg/agent issue).
@@ -368,6 +379,41 @@ func isGeneratedArtifact(path string) bool {
 		return true
 	}
 	return false
+}
+
+// releaseConfigChanged reports whether any release-config file is in the
+// dirty set: .goreleaser.yaml or any Dockerfile*.goreleaser.
+func releaseConfigChanged(dirty map[string]bool) bool {
+	for path := range dirty {
+		if path == ".goreleaser.yaml" {
+			return true
+		}
+		if strings.HasPrefix(path, "Dockerfile.") && strings.HasSuffix(path, ".goreleaser") {
+			return true
+		}
+	}
+	return false
+}
+
+// checkGoreleaserConfig runs `goreleaser check` when release-config files
+// are changed, returning (failed, output). It is skipped gracefully if
+// goreleaser is not available (command not found).
+func checkGoreleaserConfig(ctx context.Context, workspace string, run commandRunner) (failed bool, output string) {
+	dirty := dirtyPathSet(ctx, workspace, run)
+	if !releaseConfigChanged(dirty) {
+		return false, ""
+	}
+
+	// Check if goreleaser is available; skip gracefully if not.
+	if _, err := run(ctx, workspace, nil, "which", "goreleaser"); err != nil {
+		return false, ""
+	}
+
+	out, err := run(ctx, workspace, nil, "goreleaser", "check")
+	if err != nil {
+		return true, "goreleaser check failed:\n" + out
+	}
+	return false, ""
 }
 
 // buildFeedback renders the directive and a per-check section for every

@@ -730,3 +730,172 @@ func TestRunCoderGate_ScopeDisabledWhenIssueTextEmpty(t *testing.T) {
 		t.Fatalf("empty issueText should disable the scope check; gate should pass. feedback:\n%s", fb)
 	}
 }
+
+func TestReleaseConfigChanged(t *testing.T) {
+	tests := []struct {
+		name  string
+		dirty map[string]bool
+		want  bool
+	}{
+		{
+			name:  "no release config changed",
+			dirty: map[string]bool{"pkg/cli/cache.go": true},
+			want:  false,
+		},
+		{
+			name:  ".goreleaser.yaml changed",
+			dirty: map[string]bool{".goreleaser.yaml": true},
+			want:  true,
+		},
+		{
+			name:  "Dockerfile.goreleaser changed",
+			dirty: map[string]bool{"Dockerfile.goreleaser": true},
+			want:  true,
+		},
+		{
+			name:  "Dockerfile.foreman-agent.goreleaser changed",
+			dirty: map[string]bool{"Dockerfile.foreman-agent.goreleaser": true},
+			want:  true,
+		},
+		{
+			name:  "Dockerfile.router-proxy.goreleaser changed",
+			dirty: map[string]bool{"Dockerfile.router-proxy.goreleaser": true},
+			want:  true,
+		},
+		{
+			name:  "Dockerfile.goreleaser and .goreleaser.yaml both changed",
+			dirty: map[string]bool{".goreleaser.yaml": true, "Dockerfile.goreleaser": true},
+			want:  true,
+		},
+		{
+			name:  "Dockerfile.goreleaser not matched by plain Dockerfile",
+			dirty: map[string]bool{"Dockerfile": true},
+			want:  false,
+		},
+		{
+			name:  "Dockerfile.goreleaser not matched by Dockerfile with other suffix",
+			dirty: map[string]bool{"Dockerfile.manager": true},
+			want:  false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := releaseConfigChanged(tt.dirty); got != tt.want {
+				t.Errorf("releaseConfigChanged(%v) = %v, want %v", tt.dirty, got, tt.want)
+			}
+		})
+	}
+}
+
+// goreleaserFake builds a commandRunner for the goreleaser-config tier.
+// All other gate checks pass. The goreleaserAvailable flag controls whether
+// `which goreleaser` succeeds. goreleaserCheckErr controls the result of
+// `goreleaser check`. goreleaserPorcelain controls the dirty set for the
+// goreleaser check (the codegen tier is skipped by returning an error from
+// `test -f`).
+func goreleaserFake(
+	goreleaserAvailable bool,
+	goreleaserCheckErr error,
+	goreleaserCheckOutput string,
+	goreleaserPorcelain string,
+) commandRunner {
+	return func(_ context.Context, _ string, _ []string, name string, args ...string) (string, error) {
+		switch {
+		case name == "gofmt", name == "go", name == gateLintPath:
+			return "", nil
+		case name == "test" && len(args) > 0 && args[0] == "-f":
+			return "", errors.New("no controller-gen") // skip codegen tier
+		case name == "git" && len(args) >= 2 && args[0] == "status" && args[1] == "-z":
+			return "", nil // no changed test packages
+		case name == "git" && len(args) >= 2 && args[0] == "status" && args[1] == "--porcelain":
+			return goreleaserPorcelain, nil
+		case name == "which" && len(args) > 0 && args[0] == "goreleaser":
+			if goreleaserAvailable {
+				return "/usr/local/bin/goreleaser", nil
+			}
+			return "", errors.New("exit status 1")
+		case name == "goreleaser" && len(args) > 0 && args[0] == "check":
+			return goreleaserCheckOutput, goreleaserCheckErr
+		default:
+			return "", nil
+		}
+	}
+}
+
+func TestCheckGoreleaserConfig_SkippedWhenNoReleaseConfigChanged(t *testing.T) {
+	run := goreleaserFake(true, nil, "", "")
+	failed, out := checkGoreleaserConfig(context.Background(), "/work", run)
+	if failed {
+		t.Fatal("should not fail when no release config files changed")
+	}
+	if out != "" {
+		t.Errorf("expected empty output, got %q", out)
+	}
+}
+
+func TestCheckGoreleaserConfig_SkippedWhenGoreleaserNotAvailable(t *testing.T) {
+	run := goreleaserFake(false, nil, "", " M .goreleaser.yaml\n")
+	failed, out := checkGoreleaserConfig(context.Background(), "/work", run)
+	if failed {
+		t.Fatal("should not fail when goreleaser is not available")
+	}
+	if out != "" {
+		t.Errorf("expected empty output, got %q", out)
+	}
+}
+
+func TestCheckGoreleaserConfig_PassesWhenCheckSucceeds(t *testing.T) {
+	run := goreleaserFake(true, nil, "", " M .goreleaser.yaml\n")
+	failed, out := checkGoreleaserConfig(context.Background(), "/work", run)
+	if failed {
+		t.Fatalf("should not fail when goreleaser check passes; output: %q", out)
+	}
+}
+
+func TestCheckGoreleaserConfig_FailsWhenCheckFails(t *testing.T) {
+	checkErr := errors.New("exit status 1")
+	checkOutput := "error: invalid key 'dockers_v2'\n"
+	run := goreleaserFake(true, checkErr, checkOutput, " M .goreleaser.yaml\n")
+	failed, out := checkGoreleaserConfig(context.Background(), "/work", run)
+	if !failed {
+		t.Fatal("should fail when goreleaser check fails")
+	}
+	if !strings.Contains(out, "goreleaser check failed") {
+		t.Errorf("output should mention 'goreleaser check failed'; got: %q", out)
+	}
+	if !strings.Contains(out, "invalid key") {
+		t.Errorf("output should include goreleaser error; got: %q", out)
+	}
+}
+
+func TestRunCoderGate_GoreleaserCheckFailsGate(t *testing.T) {
+	checkErr := errors.New("exit status 1")
+	checkOutput := "error: invalid key 'dockers_v2'\n"
+	run := goreleaserFake(true, checkErr, checkOutput, " M .goreleaser.yaml\n")
+	pass, fb := RunCoderGate(context.Background(), "/work", gateLintPath, run, "")
+	if pass {
+		t.Fatal("gate should fail when goreleaser check fails")
+	}
+	if !strings.Contains(fb, "goreleaser check") {
+		t.Errorf("feedback should cite 'goreleaser check'; got:\n%s", fb)
+	}
+}
+
+func TestRunCoderGate_GoreleaserCheckPassesGate(t *testing.T) {
+	run := goreleaserFake(true, nil, "", " M .goreleaser.yaml\n")
+	pass, fb := RunCoderGate(context.Background(), "/work", gateLintPath, run, "")
+	if !pass {
+		t.Fatalf("gate should pass when goreleaser check passes; feedback:\n%s", fb)
+	}
+	if fb != "" {
+		t.Errorf("expected empty feedback, got %q", fb)
+	}
+}
+
+func TestRunCoderGate_GoreleaserCheckSkippedWhenNoReleaseConfigChanged(t *testing.T) {
+	run := goreleaserFake(true, nil, "", "")
+	pass, fb := RunCoderGate(context.Background(), "/work", gateLintPath, run, "")
+	if !pass {
+		t.Fatalf("gate should pass when no release config changed; feedback:\n%s", fb)
+	}
+}
