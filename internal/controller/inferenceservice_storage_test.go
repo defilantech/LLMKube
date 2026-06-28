@@ -918,12 +918,13 @@ var _ = Describe("cache prep init container (#855)", func() {
 		Expect(dl.Image).To(Equal("my-registry.io/init:v1.2.3"))
 	})
 
-	It("prep SecurityContext: RunAsUser=0, AllowPrivilegeEscalation=false, Capabilities.Drop=[ALL], Capabilities.Add has CHOWN and FOWNER, ReadOnlyRootFilesystem=true, SeccompProfile.Type=RuntimeDefault", func() {
+	It("prep SecurityContext: RunAsUser=100 (non-root), RunAsNonRoot=true, AllowPrivilegeEscalation=false, Capabilities.Drop=[ALL], Capabilities.Add has CHOWN and FOWNER, ReadOnlyRootFilesystem=true, SeccompProfile.Type=RuntimeDefault", func() {
 		config := buildCachedStorageConfig(cacheModel(), nil, "", "", "curl:8.18.0", 102)
 		prep := config.initContainers[0]
 		sc := prep.SecurityContext
 		Expect(sc).NotTo(BeNil())
-		Expect(*sc.RunAsUser).To(Equal(int64(0)))
+		Expect(*sc.RunAsUser).To(Equal(int64(100)))
+		Expect(*sc.RunAsNonRoot).To(BeTrue())
 		Expect(*sc.AllowPrivilegeEscalation).To(BeFalse())
 		Expect(*sc.ReadOnlyRootFilesystem).To(BeTrue())
 

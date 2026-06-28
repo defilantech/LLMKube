@@ -209,7 +209,7 @@ func invalidFileSetInitContainer(initImage string) corev1.Container {
 	}
 }
 
-// cachePrepInitContainer returns the root-run prep init container that runs
+// cachePrepInitContainer returns the non-root prep init container that runs
 // BEFORE model-downloader in the cache-backed path. CSI drivers with
 // fsGroupPolicy=None (CephFS, NFS) never apply the pod fsGroup to the volume,
 // so the PVC root stays root:root 0755 and the non-root downloader (uid 100)
@@ -220,6 +220,17 @@ func invalidFileSetInitContainer(initImage string) corev1.Container {
 // rw on existing and future files/dirs (g+rwX). When resolvedFSGroup <= 0
 // (fsGroup disabled, e.g. OpenShift) the prep chowns to 100:100 (the
 // downloader's UID/GID) and sets 770 so only the downloader can write.
+//
+// Security: the prep runs as the non-root curl_user (uid 100), drops ALL
+// capabilities, and adds back only CHOWN+FOWNER. CHOWN lets a non-root
+// process change ownership of the root-owned mount arbitrarily, and FOWNER
+// lets it chmod a file it does not own, so the chown/chmod above succeed
+// without running as root. This satisfies Pod Security Admission "baseline"
+// (non-root, no privilege escalation, minimal caps). It cannot satisfy
+// "restricted", which forbids adding any capability except NET_BIND_SERVICE:
+// the chown of an unowned mount fundamentally needs CHOWN. See
+// docs/MODEL-CACHE.md "Security Considerations" for the restricted-PSA
+// alternatives (fsGroupPolicy=File CSI, emptyDir store, or a laxer policy).
 //
 // The prep reuses the configurable initContainerImage (no hardcoded busybox)
 // so air-gapped clusters that mirror initContainerImage are covered.
@@ -238,7 +249,10 @@ func cachePrepInitContainer(initImage string, resolvedFSGroup int64) corev1.Cont
 			{Name: "model-cache", MountPath: "/models"},
 		},
 		SecurityContext: &corev1.SecurityContext{
-			RunAsUser:                int64Ptr(0),
+			// Non-root (curl_user). CHOWN+FOWNER are sufficient to chown/chmod
+			// the root-owned mount without uid 0; see the doc comment above.
+			RunAsUser:                int64Ptr(100),
+			RunAsNonRoot:             boolPtr(true),
 			AllowPrivilegeEscalation: boolPtr(false),
 			ReadOnlyRootFilesystem:   boolPtr(true),
 			Capabilities: &corev1.Capabilities{
