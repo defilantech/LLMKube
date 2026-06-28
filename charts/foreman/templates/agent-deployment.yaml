@@ -45,6 +45,11 @@ spec:
           args:
             - --agent-mode={{ .Values.agent.mode }}
             - --roles={{ join "," .Values.agent.roles }}
+            {{- if .Values.agent.nodeLabels }}
+            {{- $pairs := list }}
+            {{- range $k, $v := .Values.agent.nodeLabels }}{{ $pairs = append $pairs (printf "%s=%s" $k $v) }}{{- end }}
+            - --node-labels={{ join "," $pairs }}
+            {{- end }}
             {{- if .Values.agent.taskNamespace }}
             - --task-namespace={{ .Values.agent.taskNamespace }}
             {{- end }}

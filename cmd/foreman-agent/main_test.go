@@ -102,3 +102,29 @@ func TestSplitCSV(t *testing.T) {
 		})
 	}
 }
+
+func TestParseKeyValueCSV(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want map[string]string
+	}{
+		{"empty_returns_nil", "", nil},
+		{"single_pair", "coder-pool=amd", map[string]string{"coder-pool": "amd"}},
+		{"two_pairs", "coder-pool=amd,zone=lab", map[string]string{"coder-pool": "amd", "zone": "lab"}},
+		{"whitespace_trimmed", " coder-pool = amd , zone = lab ", map[string]string{"coder-pool": "amd", "zone": "lab"}},
+		{"trailing_comma_tolerated", "coder-pool=amd,", map[string]string{"coder-pool": "amd"}},
+		{"malformed_segment_skipped", "coder-pool=amd,garbage", map[string]string{"coder-pool": "amd"}},
+		{"empty_key_skipped", "=amd,zone=lab", map[string]string{"zone": "lab"}},
+		{"empty_value_allowed", "coder-pool=", map[string]string{"coder-pool": ""}},
+		{"only_separators_returns_nil", ",,,", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseKeyValueCSV(tc.in)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("parseKeyValueCSV(%q) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}

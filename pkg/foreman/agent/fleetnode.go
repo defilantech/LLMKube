@@ -73,6 +73,14 @@ type Registrar struct {
 	NodeName string
 	Spec     foremanv1alpha1.FleetNodeSpec
 	Provider CapabilityProvider
+
+	// Labels are operator-managed labels (from the agent's --node-labels
+	// flag) stamped onto the FleetNode's metadata on every Upsert. A new
+	// agent pod creates a fresh FleetNode named for the pod, so labels set
+	// here survive pod restarts / rollouts without manual re-labeling, which
+	// a hand-applied `kubectl label fleetnode` does not (#881). Only these
+	// keys are managed; labels added by others are left untouched.
+	Labels   map[string]string
 	Interval time.Duration // zero defaults to DefaultHeartbeatInterval
 
 	// Version is the agent binary's version string (e.g. "v0.8.4").
@@ -103,8 +111,9 @@ type Registrar struct {
 	Updater UpdateApplier
 }
 
-// Upsert creates the FleetNode if missing, otherwise updates its Spec so
-// flag changes between agent restarts take effect immediately.
+// Upsert creates the FleetNode if missing, otherwise updates its Spec and
+// managed Labels so flag changes between agent restarts take effect
+// immediately.
 func (r *Registrar) Upsert(ctx context.Context) error {
 	log := logf.FromContext(ctx)
 	key := types.NamespacedName{Name: r.NodeName}
@@ -114,7 +123,7 @@ func (r *Registrar) Upsert(ctx context.Context) error {
 	switch {
 	case apierrors.IsNotFound(err):
 		node := &foremanv1alpha1.FleetNode{
-			ObjectMeta: metav1.ObjectMeta{Name: r.NodeName},
+			ObjectMeta: metav1.ObjectMeta{Name: r.NodeName, Labels: cloneLabels(r.Labels)},
 			Spec:       r.Spec,
 		}
 		if err := r.Client.Create(ctx, node); err != nil {
@@ -126,18 +135,60 @@ func (r *Registrar) Upsert(ctx context.Context) error {
 		return fmt.Errorf("get FleetNode %q: %w", r.NodeName, err)
 	}
 
-	// Update spec only if it actually changed; avoids touch noise on
-	// every restart with identical flags.
-	if specEqual(existing.Spec, r.Spec) {
-		log.Info("FleetNode spec unchanged", "name", r.NodeName)
+	// Reconcile spec and our managed labels. A new agent pod gets a new
+	// FleetNode (named for the pod) via the create path above; this branch
+	// handles in-place container restarts and flag/label changes on an
+	// existing node. Update only when something actually changed to avoid
+	// touch noise on every restart with identical flags.
+	mergedLabels, labelsChanged := mergeManagedLabels(existing.Labels, r.Labels)
+	specChanged := !specEqual(existing.Spec, r.Spec)
+	if !specChanged && !labelsChanged {
+		log.Info("FleetNode spec and labels unchanged", "name", r.NodeName)
 		return nil
 	}
 	existing.Spec = r.Spec
+	existing.Labels = mergedLabels
 	if err := r.Client.Update(ctx, &existing); err != nil {
-		return fmt.Errorf("update FleetNode %q spec: %w", r.NodeName, err)
+		return fmt.Errorf("update FleetNode %q: %w", r.NodeName, err)
 	}
-	log.Info("updated FleetNode spec", "name", r.NodeName)
+	log.Info("updated FleetNode", "name", r.NodeName,
+		"specChanged", specChanged, "labelsChanged", labelsChanged)
 	return nil
+}
+
+// cloneLabels returns a shallow copy of m, or nil when m is empty, so the
+// FleetNode does not alias the Registrar's map.
+func cloneLabels(m map[string]string) map[string]string {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
+// mergeManagedLabels returns existing with every key from managed added or
+// overwritten, plus whether anything changed. Labels not in managed are left
+// untouched: the agent owns only the keys it sets, never the whole label map,
+// so labels added by an operator (or other controllers) survive.
+func mergeManagedLabels(existing, managed map[string]string) (map[string]string, bool) {
+	if len(managed) == 0 {
+		return existing, false
+	}
+	out := make(map[string]string, len(existing)+len(managed))
+	for k, v := range existing {
+		out[k] = v
+	}
+	changed := false
+	for k, v := range managed {
+		if cur, ok := out[k]; !ok || cur != v {
+			out[k] = v
+			changed = true
+		}
+	}
+	return out, changed
 }
 
 // PatchHeartbeat patches the FleetNode's status with a fresh heartbeat
