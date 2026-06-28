@@ -30,12 +30,20 @@ amdgpu.gttsize=126976
 ttm.pages_limit=32505856
 ttm.page_pool_size=25165824
 amdgpu.vm_fragment_size=8
+amdgpu.lockup_timeout=20000
 ```
+
+The first five tune the GTT/UMA memory ceiling. `amdgpu.lockup_timeout=20000`
+raises the GPU lockup/reset timeout to 20s (from the ~10s default): under
+sustained heavy inference on gfx1151 (long-context coder runs, draft/MTP
+decode) the default timeout can trip a spurious GPU reset ("device lost") that
+kills the llama-server backend mid-run. 20s avoids the false positive without
+masking a genuine hang.
 
 Reboot after applying. Confirm they're live:
 
 ```bash
-cat /proc/cmdline | tr ' ' '\n' | grep -E 'gttsize|ttm|amd_iommu'
+cat /proc/cmdline | tr ' ' '\n' | grep -E 'gttsize|ttm|amd_iommu|lockup_timeout'
 ```
 
 For Talos nodes, set these in the machine config `customization.extraKernelArgs` and include the `siderolabs/amdgpu` and `siderolabs/amd-ucode` system extensions. See the [Talos AMD GPU guide](https://docs.siderolabs.com/talos/v1.13/configure-your-talos-cluster/hardware-and-drivers/amd-gpu) for the full Talos recipe.
@@ -308,6 +316,16 @@ cat /proc/cmdline | tr ' ' '\n' | grep -E 'gttsize|ttm|amd_iommu'
 ### OOM under load
 
 The amdgpu GTT pins system RAM the kernel OOM-killer can't reclaim. On UMA nodes running multiple GPU pods, the heaviest pod can deadlock the node under sustained memory pressure. Configure a userspace OOM manager to kill the largest pod (by current memory usage) under sustained memory PSI pressure, while keeping system and runtime classes (kubelet, containerd) protected.
+
+### GPU reset / "device lost" under sustained load
+
+A spurious amdgpu reset (ring timeout, "device lost") kills the inference backend mid-run on long or draft/MTP-heavy workloads. Raise the GPU lockup timeout with `amdgpu.lockup_timeout=20000` (see [Step 1](#step-1-verify-host-prerequisites)) and reboot. Confirm it's live:
+
+```bash
+cat /proc/cmdline | tr ' ' '\n' | grep lockup_timeout
+```
+
+If resets persist after the bump, the workload is genuinely hanging the GPU rather than hitting a false timeout; check `dmesg | grep -i amdgpu` for the failing ring and reduce context length or draft depth.
 
 ## See also
 
