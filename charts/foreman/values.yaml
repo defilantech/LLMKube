@@ -182,6 +182,16 @@ agent:
   roles:
     - worker
 
+  # Labels stamped onto this agent's FleetNode metadata on every
+  # registration (via --node-labels), so capability-routing nodeSelectors
+  # (an Agent's requiredCapability.nodeSelector) keep matching across pod
+  # restarts. A hand-applied `kubectl label fleetnode` is lost when the pod
+  # (and its FleetNode, named for the pod) is recreated; these are not (#881).
+  # Example:
+  #   nodeLabels:
+  #     coder-pool: amd
+  nodeLabels: {}
+
   # --task-namespace flag. Empty = watch all namespaces. Pin to a
   # namespace when a single Foreman install serves multiple
   # tenants that should not see each other's tasks.

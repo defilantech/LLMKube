@@ -209,6 +209,116 @@ func TestRegistrar_Upsert_NoopIfSpecUnchanged(t *testing.T) {
 	}
 }
 
+func TestMergeManagedLabels(t *testing.T) {
+	cases := []struct {
+		name        string
+		existing    map[string]string
+		managed     map[string]string
+		wantChanged bool
+		wantKV      map[string]string // subset that must be present
+	}{
+		{
+			name: "no managed labels", existing: map[string]string{"a": "b"},
+			managed: nil, wantChanged: false, wantKV: map[string]string{"a": "b"},
+		},
+		{
+			name: "add to nil existing", existing: nil,
+			managed: map[string]string{"coder-pool": "amd"}, wantChanged: true,
+			wantKV: map[string]string{"coder-pool": "amd"},
+		},
+		{
+			name: "add missing key", existing: map[string]string{"a": "b"},
+			managed: map[string]string{"coder-pool": "amd"}, wantChanged: true,
+			wantKV: map[string]string{"a": "b", "coder-pool": "amd"},
+		},
+		{
+			name: "overwrite changed value", existing: map[string]string{"coder-pool": "metal"},
+			managed: map[string]string{"coder-pool": "amd"}, wantChanged: true,
+			wantKV: map[string]string{"coder-pool": "amd"},
+		},
+		{
+			name: "no change when present+equal", existing: map[string]string{"coder-pool": "amd"},
+			managed: map[string]string{"coder-pool": "amd"}, wantChanged: false,
+			wantKV: map[string]string{"coder-pool": "amd"},
+		},
+		{
+			name: "preserve unmanaged labels", existing: map[string]string{"keep": "me"},
+			managed: map[string]string{"coder-pool": "amd"}, wantChanged: true,
+			wantKV: map[string]string{"keep": "me", "coder-pool": "amd"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, changed := mergeManagedLabels(tc.existing, tc.managed)
+			if changed != tc.wantChanged {
+				t.Errorf("changed = %v, want %v", changed, tc.wantChanged)
+			}
+			for k, v := range tc.wantKV {
+				if got[k] != v {
+					t.Errorf("result[%q] = %q, want %q (full: %v)", k, got[k], v, got)
+				}
+			}
+		})
+	}
+}
+
+func TestRegistrar_Upsert_SetsLabelsOnCreate(t *testing.T) {
+	kc := newFakeClient(t)
+	r := &Registrar{
+		Client:   kc,
+		NodeName: "incluster-agent",
+		Spec:     foremanv1alpha1.FleetNodeSpec{NodeName: "incluster-agent", Roles: []string{"worker", "coder"}},
+		Labels:   map[string]string{"coder-pool": "amd"},
+		Provider: &fixedCapability{},
+	}
+	if err := r.Upsert(context.Background()); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	var got foremanv1alpha1.FleetNode
+	if err := kc.Get(context.Background(), types.NamespacedName{Name: "incluster-agent"}, &got); err != nil {
+		t.Fatalf("Get after create: %v", err)
+	}
+	if got.Labels["coder-pool"] != "amd" {
+		t.Errorf("Labels = %v, want coder-pool=amd", got.Labels)
+	}
+}
+
+func TestRegistrar_Upsert_ReappliesLabelsOnExisting(t *testing.T) {
+	// Simulate a FleetNode that lost its managed label (e.g. a hand-applied
+	// label dropped on pod recreate) while carrying an unrelated label. Upsert
+	// must re-add the managed label without disturbing the unmanaged one, even
+	// though the spec is unchanged.
+	existing := &foremanv1alpha1.FleetNode{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "incluster-agent",
+			ResourceVersion: "1",
+			Labels:          map[string]string{"unmanaged": "keep"},
+		},
+		Spec: foremanv1alpha1.FleetNodeSpec{NodeName: "incluster-agent", Roles: []string{"worker", "coder"}},
+	}
+	kc := newFakeClient(t, existing)
+	r := &Registrar{
+		Client:   kc,
+		NodeName: "incluster-agent",
+		Spec:     foremanv1alpha1.FleetNodeSpec{NodeName: "incluster-agent", Roles: []string{"worker", "coder"}},
+		Labels:   map[string]string{"coder-pool": "amd"},
+		Provider: &fixedCapability{},
+	}
+	if err := r.Upsert(context.Background()); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	var got foremanv1alpha1.FleetNode
+	if err := kc.Get(context.Background(), types.NamespacedName{Name: "incluster-agent"}, &got); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Labels["coder-pool"] != "amd" {
+		t.Errorf("managed label not re-applied: %v", got.Labels)
+	}
+	if got.Labels["unmanaged"] != "keep" {
+		t.Errorf("unmanaged label not preserved: %v", got.Labels)
+	}
+}
+
 func TestRegistrar_PatchHeartbeat_WritesPhaseAndCapability(t *testing.T) {
 	existing := &foremanv1alpha1.FleetNode{
 		ObjectMeta: metav1.ObjectMeta{Name: "m5-max"},

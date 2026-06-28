@@ -112,6 +112,7 @@ func main() {
 		workspaceDir     string
 		opencodeBin      string
 		rolesFlag        string
+		nodeLabelsFlag   string
 		acceleratorFlag  string
 		installedModels  string
 		heartbeat        time.Duration
@@ -155,6 +156,10 @@ func main() {
 		"Path to the opencode binary. Required for M3+; unused in M1.")
 	flag.StringVar(&rolesFlag, "roles", "worker",
 		"Comma-separated roles this node serves (worker, verifier).")
+	flag.StringVar(&nodeLabelsFlag, "node-labels", "",
+		"Comma-separated key=value labels stamped on this node's FleetNode "+
+			"metadata on every (re)registration (e.g. coder-pool=amd). Survives "+
+			"pod restarts; used for capability-routing nodeSelectors.")
 	flag.StringVar(&acceleratorFlag, "accelerator", "",
 		"Accelerator label override. Defaults to metal on darwin; required on linux in v0.1.")
 	flag.StringVar(&installedModels, "installed-models", "",
@@ -361,6 +366,7 @@ func main() {
 		Client:   kc,
 		NodeName: fleetNodeName,
 		Spec:     spec,
+		Labels:   parseKeyValueCSV(nodeLabelsFlag),
 		Provider: provider,
 		Interval: heartbeat,
 		Version:  Version,
@@ -605,6 +611,29 @@ func splitCSV(s string) []string {
 		// the same as empty input; collapse to nil so callers
 		// (FleetNodeSpec.Roles, CapabilityOptions.InstalledModels) see
 		// a single "absent" representation rather than nil vs []string{}.
+		return nil
+	}
+	return out
+}
+
+// parseKeyValueCSV parses a comma-separated list of key=value pairs (e.g.
+// "coder-pool=amd,zone=lab") into a map. Empty/whitespace keys and malformed
+// segments (no "=") are skipped; empty input returns nil. A bare trailing
+// comma is tolerated.
+func parseKeyValueCSV(s string) map[string]string {
+	out := map[string]string{}
+	for _, pair := range strings.Split(s, ",") {
+		k, v, ok := strings.Cut(strings.TrimSpace(pair), "=")
+		if !ok {
+			continue
+		}
+		k = strings.TrimSpace(k)
+		if k == "" {
+			continue
+		}
+		out[k] = strings.TrimSpace(v)
+	}
+	if len(out) == 0 {
 		return nil
 	}
 	return out
