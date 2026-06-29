@@ -216,7 +216,8 @@ func TestNeuterAndTestPackage_RealGoTest(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(ws, "weak/calc.go"), neutered, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := execCommandRunner(context.Background(), filepath.Join(ws, "weak"), nil, "go", "test", "./..."); err != nil {
+	weakDir := filepath.Join(ws, "weak")
+	if _, err := execCommandRunner(context.Background(), weakDir, nil, "go", "test", "./..."); err != nil {
 		t.Fatalf("weak test should PASS under neuter (survivor), got err: %v", err)
 	}
 }

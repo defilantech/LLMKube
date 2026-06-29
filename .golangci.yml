@@ -64,6 +64,8 @@ linters:
         - G301  # dir permissions ≤0750 (0755 is correct for shared caches)
         - G304  # file inclusion via variable (design intent: read user files)
         - G306  # file permissions ≤0600 (0644 is correct for cache/reports)
+        - G703  # path traversal via taint (taint-analysis sibling of G304; the
+        #         coder gate reads/writes git-reported files in its own workspace)
   exclusions:
     generated: lax
     rules:

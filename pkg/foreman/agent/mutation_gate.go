@@ -368,7 +368,9 @@ func checkMutationSurvival(ctx context.Context, workspace string, run commandRun
 // files, runs the package's tests, and restores the files (always). It returns
 // the neutered func names IF the tests passed under neuter (survivors), else
 // nil. A read/write error returns that error so the caller skips the package.
-func neuterAndTestPackage(ctx context.Context, workspace, pkgDir string, files []string, run commandRunner) ([]string, error) {
+func neuterAndTestPackage(
+	ctx context.Context, workspace, pkgDir string, files []string, run commandRunner,
+) ([]string, error) {
 	type backup struct {
 		path string
 		data []byte
