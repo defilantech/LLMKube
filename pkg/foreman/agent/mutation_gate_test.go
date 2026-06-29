@@ -196,3 +196,48 @@ func TestCheckMutationSurvival_PassesWhenTestsBite(t *testing.T) {
 		t.Fatalf("x.go not restored; got:\n%s", got)
 	}
 }
+
+// TestNeuterAndTestPackage_RealGoTest exercises the AST rewrite + a real
+// `go test`: it copies the weak-test fixture module into a temp dir, neuters
+// Add's body, and confirms the weak test still passes (a true survivor),
+// proving the neutered source compiles and the survival signal is real.
+func TestNeuterAndTestPackage_RealGoTest(t *testing.T) {
+	ws := t.TempDir()
+	copyTree(t, "testdata/mutation/weak", filepath.Join(ws, "weak"))
+
+	orig, err := os.ReadFile(filepath.Join(ws, "weak/calc.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	neutered, names, err := neuterFuncsInSource("calc.go", orig, map[int]bool{3: true})
+	if err != nil || len(names) != 1 || names[0] != "Add" {
+		t.Fatalf("neuter failed: err=%v names=%v", err, names)
+	}
+	if err := os.WriteFile(filepath.Join(ws, "weak/calc.go"), neutered, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := execCommandRunner(context.Background(), filepath.Join(ws, "weak"), nil, "go", "test", "./..."); err != nil {
+		t.Fatalf("weak test should PASS under neuter (survivor), got err: %v", err)
+	}
+}
+
+// copyTree copies a flat directory of files (test helper).
+func copyTree(t *testing.T, src, dst string) {
+	t.Helper()
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		data, err := os.ReadFile(filepath.Join(src, e.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dst, e.Name()), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}

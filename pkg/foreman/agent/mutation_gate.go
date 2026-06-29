@@ -251,6 +251,13 @@ func changedNewLines(ctx context.Context, workspace, file string, run commandRun
 // whose line span intersects changedLines with `panic("mutation-gate: ...")`.
 // Returns the rewritten source and the names of the funcs it neutered. A
 // declaration with no body (interface methods, externals) is skipped.
+//
+// Panic semantics: a test that EXECUTES a neutered function panics and fails
+// (the mutant is "killed"); a test that never executes it still passes (the
+// mutant "survives"). So the survival signal is precisely "the changed function
+// is not exercised by any test" -- a coverage gap on the new logic. The
+// stronger "executed but result not asserted" case (return-value mutation) is a
+// v1.1 refinement.
 func neuterFuncsInSource(filename string, src []byte, changedLines map[int]bool) ([]byte, []string, error) {
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, filename, src, parser.ParseComments)
