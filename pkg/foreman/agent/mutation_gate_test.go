@@ -138,3 +138,61 @@ func TestNeuterChangedFuncs(t *testing.T) {
 		t.Errorf("Untouched func must be preserved; got:\n%s", s)
 	}
 }
+
+func TestCheckMutationSurvival_FlagsSurvivor(t *testing.T) {
+	ws := t.TempDir()
+	pkg := filepath.Join(ws, "pkg/x")
+	_ = os.MkdirAll(pkg, 0o755)
+	_ = os.WriteFile(filepath.Join(pkg, "x.go"),
+		[]byte("package x\n\nfunc Add(a, b int) int { return a + b }\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(pkg, "x_test.go"),
+		[]byte("package x\n\nimport \"testing\"\n\nfunc TestAdd(t *testing.T){ _ = Add }\n"), 0o644)
+
+	runner := func(_ context.Context, _ string, _ []string, name string, args ...string) (string, error) {
+		switch {
+		case name == "git" && args[0] == "status":
+			return " M pkg/x/x.go\x00 M pkg/x/x_test.go\x00", nil
+		case name == "git" && args[0] == "diff":
+			return "@@ -0,0 +3 @@\n+func Add(a, b int) int { return a + b }\n", nil
+		case name == "go" && args[0] == "test":
+			return "ok", nil // weak test passes even with the body neutered -> SURVIVOR
+		}
+		return "", nil
+	}
+	failed, out := checkMutationSurvival(context.Background(), ws, runner)
+	if !failed {
+		t.Fatal("expected a survivor: weak test passes against neutered Add")
+	}
+	if !strings.Contains(out, "pkg/x") || !strings.Contains(out, "Add") {
+		t.Errorf("feedback must name the package and surviving func; got:\n%s", out)
+	}
+}
+
+func TestCheckMutationSurvival_PassesWhenTestsBite(t *testing.T) {
+	ws := t.TempDir()
+	pkg := filepath.Join(ws, "pkg/x")
+	_ = os.MkdirAll(pkg, 0o755)
+	orig := "package x\n\nfunc Add(a, b int) int { return a + b }\n"
+	_ = os.WriteFile(filepath.Join(pkg, "x.go"), []byte(orig), 0o644)
+	_ = os.WriteFile(filepath.Join(pkg, "x_test.go"), []byte("package x\n"), 0o644)
+
+	runner := func(_ context.Context, _ string, _ []string, name string, args ...string) (string, error) {
+		switch {
+		case name == "git" && args[0] == "status":
+			return " M pkg/x/x.go\x00 M pkg/x/x_test.go\x00", nil
+		case name == "git" && args[0] == "diff":
+			return "@@ -0,0 +3 @@\n+func Add(a, b int) int { return a + b }\n", nil
+		case name == "go" && args[0] == "test":
+			return "FAIL", context.DeadlineExceeded // non-nil -> tests failed under neuter -> they bite
+		}
+		return "", nil
+	}
+	failed, _ := checkMutationSurvival(context.Background(), ws, runner)
+	if failed {
+		t.Fatal("must pass: tests fail under neuter (they bite)")
+	}
+	got, _ := os.ReadFile(filepath.Join(pkg, "x.go"))
+	if string(got) != orig {
+		t.Fatalf("x.go not restored; got:\n%s", got)
+	}
+}

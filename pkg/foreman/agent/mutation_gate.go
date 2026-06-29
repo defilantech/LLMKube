@@ -292,3 +292,120 @@ func rangeIntersects(lines map[int]bool, start, end int) bool {
 	}
 	return false
 }
+
+// maxNeuterPackages bounds how many packages the neuter check will mutate in
+// one gate run, so a sprawling change cannot blow the loop's time budget.
+const maxNeuterPackages = 5
+
+// checkMutationSurvival neuters the changed functions in each non-envtest
+// changed package that has a changed _test.go, re-runs that package's tests on
+// an in-memory-backed-up copy, and flags any package whose tests still PASS
+// (the change is unconstrained). Files are always restored. Returns
+// (failed, feedback).
+//
+// Safety/conservatism: if the neutered package fails to compile or its tests
+// fail, that is treated as "tests bite" (no survivor) -- the check never fails
+// the coder on its own mutation noise. Layer 1 already covers packages with no
+// test at all. Controller/envtest packages are skipped here; their
+// neuter-survival runs in the post-push gate Job (v1.1).
+func checkMutationSurvival(ctx context.Context, workspace string, run commandRunner) (bool, string) {
+	if mutationGateDisabled() {
+		return false, ""
+	}
+	changed := changedNonTestGoFiles(ctx, workspace, run)
+	if len(changed) == 0 {
+		return false, ""
+	}
+	testedPkgs := changedTestFilePackages(ctx, workspace, run)
+
+	byPkg := map[string][]string{}
+	for _, f := range changed {
+		dir := filepath.Dir(f)
+		if !testedPkgs[dir] {
+			continue // Layer 1 owns "no test"
+		}
+		if isEnvtestPackage("./" + dir + "/") {
+			continue // v1.1 handles these in the gate Job
+		}
+		byPkg[dir] = append(byPkg[dir], f)
+	}
+
+	var dirs []string
+	for d := range byPkg {
+		dirs = append(dirs, d)
+	}
+	sort.Strings(dirs)
+	if len(dirs) > maxNeuterPackages {
+		dirs = dirs[:maxNeuterPackages]
+	}
+
+	var b strings.Builder
+	var failed bool
+	for _, dir := range dirs {
+		survivors, err := neuterAndTestPackage(ctx, workspace, dir, byPkg[dir], run)
+		if err != nil || len(survivors) == 0 {
+			continue
+		}
+		failed = true
+		fmt.Fprintf(&b, "Package %s/: its tests still PASS when the bodies of %s are removed, "+
+			"so they do not actually test the new logic. Add or strengthen a test that fails "+
+			"without the real implementation.\n", dir, strings.Join(dedupSorted(survivors), ", "))
+	}
+	if !failed {
+		return false, ""
+	}
+	return true, b.String()
+}
+
+// neuterAndTestPackage backs up and neuters the changed funcs in the given
+// files, runs the package's tests, and restores the files (always). It returns
+// the neutered func names IF the tests passed under neuter (survivors), else
+// nil. A read/write error returns that error so the caller skips the package.
+func neuterAndTestPackage(ctx context.Context, workspace, pkgDir string, files []string, run commandRunner) ([]string, error) {
+	type backup struct {
+		path string
+		data []byte
+	}
+	var backups []backup
+	var allNeutered []string
+
+	restore := func() {
+		for _, bk := range backups {
+			_ = os.WriteFile(filepath.Join(workspace, bk.path), bk.data, 0o644)
+		}
+	}
+	defer restore()
+
+	for _, f := range files {
+		full := filepath.Join(workspace, f)
+		orig, err := os.ReadFile(full)
+		if err != nil {
+			return nil, err
+		}
+		backups = append(backups, backup{path: f, data: orig})
+		lines := changedNewLines(ctx, workspace, f, run)
+		if len(lines) == 0 {
+			continue
+		}
+		out, neutered, err := neuterFuncsInSource(f, orig, lines)
+		if err != nil || len(neutered) == 0 {
+			continue
+		}
+		if err := os.WriteFile(full, out, 0o644); err != nil {
+			return nil, err
+		}
+		allNeutered = append(allNeutered, neutered...)
+	}
+	if len(allNeutered) == 0 {
+		return nil, nil
+	}
+
+	// Run the package's tests under neuter. A nil error means they PASSED with
+	// the logic removed -> survivors. A non-nil error (build break or failing
+	// test) means the tests bit -> no survivor.
+	_, err := run(ctx, workspace, nil, "go", "test", "-count=1", "-timeout=180s", "./"+pkgDir+"/")
+	if err != nil {
+		return nil, nil
+	}
+	return allNeutered, nil
+}
