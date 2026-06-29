@@ -5,6 +5,20 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.22](https://github.com/defilantech/LLMKube/compare/v0.8.21...v0.8.22) (2026-06-29)
+
+
+### Features
+
+* **foreman:** coder gate mutation checks (test-presence + neuter-survival) ([#899](https://github.com/defilantech/LLMKube/issues/899)) ([b235932](https://github.com/defilantech/LLMKube/commit/b235932461106ac887d77223e48f79163db15f15))
+
+
+### Bug Fixes
+
+* **foreman:** don't force-terminate a coder mid-verification after it has edited ([#896](https://github.com/defilantech/LLMKube/issues/896)) ([#898](https://github.com/defilantech/LLMKube/issues/898)) ([b097c29](https://github.com/defilantech/LLMKube/commit/b097c29963ec1c1588ac53b0ca7e4ce477630566))
+* **foreman:** stamp real AgenticTask name on the post-push gate Job (not 'unknown') ([#894](https://github.com/defilantech/LLMKube/issues/894)) ([f8096d4](https://github.com/defilantech/LLMKube/commit/f8096d465ee030b3685cefc9563bdf5e04bb10ac))
+* **metal-agent:** reap orphaned legacy Endpoints so mirror slices stop blackholing traffic ([#895](https://github.com/defilantech/LLMKube/issues/895)) ([6274fc5](https://github.com/defilantech/LLMKube/commit/6274fc5135c44eb635f0cd6289a3fd10dcdb1d2d))
+
 ## [0.8.21](https://github.com/defilantech/LLMKube/compare/v0.8.20...v0.8.21) (2026-06-28)
 
 
