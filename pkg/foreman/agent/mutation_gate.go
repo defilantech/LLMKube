@@ -31,12 +31,18 @@ limitations under the License.
 package agent
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"go/ast"
+	"go/format"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -213,4 +219,76 @@ func checkTestPresence(ctx context.Context, workspace string, run commandRunner)
 		return false, ""
 	}
 	return true, b.String()
+}
+
+// hunkHeaderRe captures the new-file start line and length from a unified-diff
+// hunk header: "@@ -a,b +c,d @@".
+var hunkHeaderRe = regexp.MustCompile(`^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@`)
+
+// changedNewLines parses `git diff -U0 -- <file>` and returns the set of
+// new-file line numbers touched by added lines.
+func changedNewLines(ctx context.Context, workspace, file string, run commandRunner) map[int]bool {
+	out, err := run(ctx, workspace, nil, "git", "diff", "-U0", "--", file)
+	if err != nil {
+		return nil
+	}
+	lines := map[int]bool{}
+	cur := 0
+	for _, ln := range strings.Split(out, "\n") {
+		if m := hunkHeaderRe.FindStringSubmatch(ln); m != nil {
+			cur, _ = strconv.Atoi(m[1])
+			continue
+		}
+		if strings.HasPrefix(ln, "+") && !strings.HasPrefix(ln, "+++") {
+			lines[cur] = true
+			cur++
+		}
+	}
+	return lines
+}
+
+// neuterFuncsInSource parses Go source and replaces the body of every function
+// whose line span intersects changedLines with `panic("mutation-gate: ...")`.
+// Returns the rewritten source and the names of the funcs it neutered. A
+// declaration with no body (interface methods, externals) is skipped.
+func neuterFuncsInSource(filename string, src []byte, changedLines map[int]bool) ([]byte, []string, error) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, filename, src, parser.ParseComments)
+	if err != nil {
+		return nil, nil, err
+	}
+	var neutered []string
+	for _, decl := range f.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Body == nil {
+			continue
+		}
+		start := fset.Position(fn.Body.Lbrace).Line
+		end := fset.Position(fn.Body.Rbrace).Line
+		if !rangeIntersects(changedLines, start, end) {
+			continue
+		}
+		fn.Body.List = []ast.Stmt{
+			&ast.ExprStmt{X: &ast.CallExpr{
+				Fun:  ast.NewIdent("panic"),
+				Args: []ast.Expr{&ast.BasicLit{Kind: token.STRING, Value: `"mutation-gate: neutered"`}},
+			}},
+		}
+		neutered = append(neutered, fn.Name.Name)
+	}
+	var buf bytes.Buffer
+	if err := format.Node(&buf, fset, f); err != nil {
+		return nil, nil, err
+	}
+	return buf.Bytes(), neutered, nil
+}
+
+// rangeIntersects reports whether any line in [start,end] is in the set.
+func rangeIntersects(lines map[int]bool, start, end int) bool {
+	for l := start; l <= end; l++ {
+		if lines[l] {
+			return true
+		}
+	}
+	return false
 }

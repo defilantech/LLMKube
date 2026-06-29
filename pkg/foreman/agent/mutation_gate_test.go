@@ -115,3 +115,26 @@ func TestCheckTestPresence_PassesWhenTestChanged(t *testing.T) {
 		t.Fatal("presence must pass when the package has a changed _test.go")
 	}
 }
+
+func TestNeuterChangedFuncs(t *testing.T) {
+	src := "package x\n\n" +
+		"import \"errors\"\n\n" +
+		"func Untouched() error { return errors.New(\"keep\") }\n\n" +
+		"func Changed() int { return 41 }\n"
+	// pretend the diff changed only the Changed() func (line 7 of the new file)
+	changedLines := map[int]bool{7: true}
+	out, neutered, err := neuterFuncsInSource("x.go", []byte(src), changedLines)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(neutered) != 1 || neutered[0] != "Changed" {
+		t.Fatalf("neutered funcs = %v, want [Changed]", neutered)
+	}
+	s := string(out)
+	if !strings.Contains(s, `panic("mutation-gate`) {
+		t.Errorf("Changed body should be replaced with a panic; got:\n%s", s)
+	}
+	if !strings.Contains(s, `errors.New("keep")`) {
+		t.Errorf("Untouched func must be preserved; got:\n%s", s)
+	}
+}
