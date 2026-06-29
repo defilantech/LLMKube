@@ -56,6 +56,19 @@ rules:
     resources: ["endpointslices"]
     verbs: ["get", "list", "watch"]
 
+  # The metal-agent registers endpoints as discovery.k8s.io EndpointSlices.
+  # Older agents published a legacy core/v1 Endpoints object instead. On
+  # upgrade across that change the stale Endpoints object is orphaned and the
+  # built-in EndpointSliceMirroring controller keeps regenerating a mirror
+  # slice from it, blackholing a share of traffic on the selector-less Service
+  # (#891). RegisterEndpoint best-effort reaps that legacy object, which needs
+  # get + delete on core/endpoints. Scope is intentionally narrow: the agent
+  # only ever touches the Endpoints whose name matches a Service it manages and
+  # that carries its own managed-by label.
+  - apiGroups: [""]
+    resources: ["endpoints"]
+    verbs: ["get", "delete"]
+
   # When an Agent's spec.provider is "cloud-proxy" (v0.2), the
   # native executor reads providerConfig.apiKeySecretRef and dispatches
   # to the upstream HTTP endpoint with a Bearer token from the named

@@ -920,3 +920,135 @@ func TestRegisterEndpointWithRetry_ContextCancelled(t *testing.T) {
 		t.Fatalf("want context.Canceled in error chain, got: %v", err)
 	}
 }
+
+// TestRegisterEndpoint_ReapsLegacyEndpoints verifies that a legacy core/v1
+// Endpoints object the agent (or a prior version) left behind is deleted on
+// registration, so the built-in EndpointSliceMirroring controller stops
+// regenerating a stale mirror slice that blackholes traffic (issue #891).
+func TestRegisterEndpoint_ReapsLegacyEndpoints(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = inferencev1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = discoveryv1.AddToScheme(scheme)
+
+	// A legacy Endpoints object carrying the agent's own managed-by label,
+	// same name as the Service the agent manages.
+	legacy := &corev1.Endpoints{ //nolint:staticcheck // SA1019: simulating a legacy artifact under test
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-model",
+			Namespace: "default",
+			Labels: map[string]string{
+				"llmkube.ai/managed-by":        "metal-agent",
+				"llmkube.ai/inference-service": "test-model",
+			},
+		},
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRuntimeObjects(legacy).
+		Build()
+	registry := NewServiceRegistry(k8sClient, "", newNopLogger(), "")
+
+	isvc := &inferencev1alpha1.InferenceService{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-model", Namespace: "default"},
+		Spec:       inferencev1alpha1.InferenceServiceSpec{ModelRef: "test-model"},
+	}
+
+	if err := registry.RegisterEndpoint(context.Background(), isvc, 8080); err != nil {
+		t.Fatalf("RegisterEndpoint returned error: %v", err)
+	}
+
+	// The legacy Endpoints object must be gone.
+	err := k8sClient.Get(context.Background(), types.NamespacedName{
+		Name:      "test-model",
+		Namespace: "default",
+	}, &corev1.Endpoints{}) //nolint:staticcheck // SA1019: asserting the legacy artifact is deleted
+	if !apierrors.IsNotFound(err) {
+		t.Errorf("legacy Endpoints should have been deleted; Get returned err=%v", err)
+	}
+
+	// The live EndpointSlice must still be present.
+	slice := &discoveryv1.EndpointSlice{}
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{
+		Name:      "test-model",
+		Namespace: "default",
+	}, slice); err != nil {
+		t.Fatalf("EndpointSlice should be present after registration: %v", err)
+	}
+}
+
+// TestRegisterEndpoint_LeavesUnrelatedEndpoints verifies the reaper only
+// deletes the agent's own legacy artifact: an Endpoints object that does not
+// carry the agent's managed-by label (e.g. a user's own selector-less Service
+// endpoints that happens to share the name) must be left untouched.
+func TestRegisterEndpoint_LeavesUnrelatedEndpoints(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = inferencev1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = discoveryv1.AddToScheme(scheme)
+
+	// An Endpoints object NOT managed by the agent.
+	unrelated := &corev1.Endpoints{ //nolint:staticcheck // SA1019: simulating a user-owned object under test
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-model",
+			Namespace: "default",
+			Labels: map[string]string{
+				"app.kubernetes.io/managed-by": "someone-else",
+			},
+		},
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRuntimeObjects(unrelated).
+		Build()
+	registry := NewServiceRegistry(k8sClient, "", newNopLogger(), "")
+
+	isvc := &inferencev1alpha1.InferenceService{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-model", Namespace: "default"},
+		Spec:       inferencev1alpha1.InferenceServiceSpec{ModelRef: "test-model"},
+	}
+
+	if err := registry.RegisterEndpoint(context.Background(), isvc, 8080); err != nil {
+		t.Fatalf("RegisterEndpoint returned error: %v", err)
+	}
+
+	// The unrelated Endpoints object must still exist.
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{
+		Name:      "test-model",
+		Namespace: "default",
+	}, &corev1.Endpoints{}); err != nil { //nolint:staticcheck // SA1019: asserting the user object survived
+		t.Errorf("unrelated Endpoints should NOT have been deleted; Get returned err=%v", err)
+	}
+}
+
+// TestRegisterEndpoint_NoLegacyEndpoints verifies that registration with no
+// pre-existing legacy Endpoints object succeeds: a NotFound from the reaper's
+// lookup must be swallowed and never fail registration.
+func TestRegisterEndpoint_NoLegacyEndpoints(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = inferencev1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = discoveryv1.AddToScheme(scheme)
+
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	registry := NewServiceRegistry(k8sClient, "", newNopLogger(), "")
+
+	isvc := &inferencev1alpha1.InferenceService{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-model", Namespace: "default"},
+		Spec:       inferencev1alpha1.InferenceServiceSpec{ModelRef: "test-model"},
+	}
+
+	if err := registry.RegisterEndpoint(context.Background(), isvc, 8080); err != nil {
+		t.Fatalf("RegisterEndpoint with no legacy Endpoints returned error: %v", err)
+	}
+
+	// The EndpointSlice must still be created.
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{
+		Name:      "test-model",
+		Namespace: "default",
+	}, &discoveryv1.EndpointSlice{}); err != nil {
+		t.Fatalf("EndpointSlice should be present after registration: %v", err)
+	}
+}

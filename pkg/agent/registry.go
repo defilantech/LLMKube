@@ -196,6 +196,12 @@ func (r *ServiceRegistry) upsertEndpoint(
 		return fmt.Errorf("failed to create/update endpointslice: %w", err)
 	}
 
+	// Best-effort reap of a legacy core/v1 Endpoints object this agent (or a
+	// prior version that predates the EndpointSlice migration, #684) may have
+	// left behind under the same name. Done after the live slice is written so
+	// there is no window where neither the slice nor the legacy object exists.
+	r.reapLegacyEndpoints(ctx, isvc.Namespace, serviceName)
+
 	if ready {
 		r.logger.Infow("registered endpoint",
 			"namespace", isvc.Namespace,
@@ -213,6 +219,55 @@ func (r *ServiceRegistry) upsertEndpoint(
 	}
 
 	return nil
+}
+
+// reapLegacyEndpoints best-effort deletes a legacy core/v1 Endpoints object
+// this agent (or an older version) created before the EndpointSlice migration
+// (#684). When an agent is upgraded across that change the old Endpoints object
+// is orphaned, and Kubernetes' built-in EndpointSliceMirroring controller keeps
+// generating a mirror EndpointSlice from it. On a selector-less Service that
+// stale mirror unions with the agent's live slice, blackholing a share of
+// traffic to a dead host:port and wedging the InferenceService in Progressing
+// (issue #891).
+//
+// The operation is deliberately:
+//   - Idempotent: a NotFound is the normal steady state and is ignored.
+//   - Non-fatal: any error (NotFound, forbidden, transient) is logged at most
+//     as a warning and never propagated, so it cannot fail registration.
+//   - Conservative: only an Endpoints object carrying this agent's own
+//     managed-by label is deleted. A user's unrelated Endpoints that happens to
+//     share the name is left untouched, because the discriminator is the
+//     llmkube.ai/managed-by=metal-agent label that only the agent ever stamps.
+func (r *ServiceRegistry) reapLegacyEndpoints(ctx context.Context, namespace, serviceName string) {
+	//nolint:staticcheck // SA1019: deliberately operating on the legacy core/v1 Endpoints API to reap it.
+	legacy := &corev1.Endpoints{}
+	err := r.client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: serviceName}, legacy)
+	if err != nil {
+		if !apierrors.IsNotFound(err) {
+			r.logger.Warnw("failed to look up legacy Endpoints for reaping; skipping",
+				"namespace", namespace, "name", serviceName, "error", err)
+		}
+		return
+	}
+
+	// Only reap the agent's own legacy artifact. Anything else is left alone.
+	if legacy.Labels["llmkube.ai/managed-by"] != "metal-agent" {
+		r.logger.Debugw("Endpoints exists but is not agent-managed; leaving untouched",
+			"namespace", namespace, "name", serviceName,
+			"managed-by", legacy.Labels["llmkube.ai/managed-by"])
+		return
+	}
+
+	if err := r.client.Delete(ctx, legacy); err != nil {
+		if apierrors.IsNotFound(err) {
+			return // raced with another deleter; nothing to do
+		}
+		r.logger.Warnw("failed to delete legacy Endpoints; mirror slice may persist",
+			"namespace", namespace, "name", serviceName, "error", err)
+		return
+	}
+	r.logger.Infow("reaped legacy Endpoints to stop stale mirror EndpointSlice",
+		"namespace", namespace, "name", serviceName)
 }
 
 // RegisterEndpointWithRetry retries RegisterEndpoint with exponential backoff
