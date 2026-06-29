@@ -32,9 +32,11 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -88,4 +90,127 @@ func changedNonTestGoFiles(ctx context.Context, workspace string, run commandRun
 		files = append(files, path)
 	}
 	return files
+}
+
+// mutationGateDisabled reports whether the mutation gate (presence + neuter) is
+// turned off via FOREMAN_MUTATION_GATE=0. Default (unset) is enabled.
+func mutationGateDisabled() bool {
+	return os.Getenv("FOREMAN_MUTATION_GATE") == "0"
+}
+
+// addedFuncRe matches an added unified-diff line introducing a Go function or
+// method declaration, e.g. "+func (r *R) Foo(" or "+func Bar(".
+var addedFuncRe = regexp.MustCompile(`^\+\s*func\b[^/]*\(`)
+
+// addedFuncNames returns the names of functions/methods introduced by added
+// lines in `git diff` for the given file. Heuristic and intentionally simple:
+// it keys the presence check on NET-NEW functions so behavior-preserving edits
+// to existing funcs do not require a new test.
+func addedFuncNames(ctx context.Context, workspace, file string, run commandRunner) []string {
+	out, err := run(ctx, workspace, nil, "git", "diff", "--", file)
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, line := range strings.Split(out, "\n") {
+		if !addedFuncRe.MatchString(line) {
+			continue
+		}
+		names = append(names, funcNameFromDecl(strings.TrimPrefix(line, "+")))
+	}
+	return names
+}
+
+// funcNameFromDecl extracts the identifier from a "func ..." declaration line,
+// handling both "func Name(" and "func (recv T) Name(".
+func funcNameFromDecl(decl string) string {
+	s := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(decl), "func"))
+	if strings.HasPrefix(s, "(") { // method: skip the receiver
+		if i := strings.Index(s, ")"); i >= 0 {
+			s = strings.TrimSpace(s[i+1:])
+		}
+	}
+	if i := strings.IndexAny(s, "([ "); i >= 0 {
+		s = s[:i]
+	}
+	return s
+}
+
+// changedTestFilePackages returns the set of package dirs that have a changed
+// _test.go file.
+func changedTestFilePackages(ctx context.Context, workspace string, run commandRunner) map[string]bool {
+	out, err := run(ctx, workspace, nil, "git", "status", "-z")
+	if err != nil {
+		return map[string]bool{}
+	}
+	set := map[string]bool{}
+	for _, entry := range strings.Split(out, "\x00") {
+		fields := strings.Fields(strings.TrimSpace(entry))
+		if len(fields) == 0 {
+			continue
+		}
+		path := fields[len(fields)-1]
+		if strings.HasSuffix(path, "_test.go") {
+			set[filepath.Dir(path)] = true
+		}
+	}
+	return set
+}
+
+func dedupSorted(in []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, s := range in {
+		if s == "" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// checkTestPresence fails when a changed package introduces net-new functions
+// in hand-written, non-test Go but has no changed _test.go in that package.
+// Pure inspection -- no test execution -- so it covers envtest/controller
+// packages the fast unit-test tier cannot run. Returns (failed, feedback).
+func checkTestPresence(ctx context.Context, workspace string, run commandRunner) (bool, string) {
+	changed := changedNonTestGoFiles(ctx, workspace, run)
+	if len(changed) == 0 {
+		return false, ""
+	}
+	testedPkgs := changedTestFilePackages(ctx, workspace, run)
+
+	newFuncs := map[string][]string{} // pkgDir -> new func names
+	for _, f := range changed {
+		names := addedFuncNames(ctx, workspace, f, run)
+		if len(names) == 0 {
+			continue
+		}
+		dir := filepath.Dir(f)
+		newFuncs[dir] = append(newFuncs[dir], names...)
+	}
+
+	var dirs []string
+	for d := range newFuncs {
+		dirs = append(dirs, d)
+	}
+	sort.Strings(dirs)
+
+	var b strings.Builder
+	var failed bool
+	for _, dir := range dirs {
+		if testedPkgs[dir] {
+			continue
+		}
+		failed = true
+		fmt.Fprintf(&b, "Package %s/ adds new functions (%s) but has no changed _test.go. "+
+			"Add a test that exercises the new behavior and fails without it.\n",
+			dir, strings.Join(dedupSorted(newFuncs[dir]), ", "))
+	}
+	if !failed {
+		return false, ""
+	}
+	return true, b.String()
 }

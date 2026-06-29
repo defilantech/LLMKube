@@ -175,6 +175,16 @@ func RunCoderGate(
 		failures = append(failures, checkFailure{name: "scope overlap", output: out})
 	}
 
+	// 9. Test-presence: a change that adds new functions must come with a test
+	// in their package. Pure diff inspection, so it covers controller/envtest
+	// packages the unit-test tier above cannot run (catches the #856 class:
+	// new logic, zero tests). Disabled by FOREMAN_MUTATION_GATE=0.
+	if !mutationGateDisabled() {
+		if failed, out := checkTestPresence(ctx, workspace, run); failed {
+			failures = append(failures, checkFailure{name: "test presence", output: out})
+		}
+	}
+
 	if len(failures) == 0 {
 		return true, ""
 	}

@@ -20,6 +20,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -63,5 +64,54 @@ func TestChangedNonTestGoFiles(t *testing.T) {
 	got := changedNonTestGoFiles(context.Background(), ws, runner)
 	if len(got) != 1 || got[0] != "pkg/x/hand.go" {
 		t.Fatalf("changedNonTestGoFiles = %v, want [pkg/x/hand.go]", got)
+	}
+}
+
+func TestCheckTestPresence(t *testing.T) {
+	ws := t.TempDir()
+	full := filepath.Join(ws, "internal/controller/x.go")
+	_ = os.MkdirAll(filepath.Dir(full), 0o755)
+	_ = os.WriteFile(full, []byte("package controller\n\nfunc waitForIdle() {}\n"), 0o644)
+
+	statusOut := " M internal/controller/x.go\x00"
+	diffOut := "diff --git a/internal/controller/x.go b/internal/controller/x.go\n" +
+		"@@ -0,0 +1,3 @@\n+package controller\n+\n+func waitForIdle() {}\n"
+	runner := func(_ context.Context, _ string, _ []string, name string, args ...string) (string, error) {
+		if name == "git" && len(args) > 0 && args[0] == "status" {
+			return statusOut, nil
+		}
+		if name == "git" && len(args) > 0 && args[0] == "diff" {
+			return diffOut, nil
+		}
+		return "", nil
+	}
+
+	failed, out := checkTestPresence(context.Background(), ws, runner)
+	if !failed {
+		t.Fatal("expected presence failure for new func with no test")
+	}
+	if !strings.Contains(out, "internal/controller") || !strings.Contains(out, "waitForIdle") {
+		t.Errorf("feedback should name the package and the new func; got:\n%s", out)
+	}
+}
+
+func TestCheckTestPresence_PassesWhenTestChanged(t *testing.T) {
+	ws := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(ws, "pkg/x"), 0o755)
+	_ = os.WriteFile(filepath.Join(ws, "pkg/x/x.go"), []byte("package x\nfunc New(){}\n"), 0o644)
+	statusOut := " M pkg/x/x.go\x00 M pkg/x/x_test.go\x00"
+	diffOut := "@@ -0,0 +1,1 @@\n+func New() {}\n"
+	runner := func(_ context.Context, _ string, _ []string, name string, args ...string) (string, error) {
+		switch {
+		case name == "git" && args[0] == "status":
+			return statusOut, nil
+		case name == "git" && args[0] == "diff":
+			return diffOut, nil
+		}
+		return "", nil
+	}
+	failed, _ := checkTestPresence(context.Background(), ws, runner)
+	if failed {
+		t.Fatal("presence must pass when the package has a changed _test.go")
 	}
 }
