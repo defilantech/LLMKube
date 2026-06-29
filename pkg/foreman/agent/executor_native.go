@@ -633,6 +633,7 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 	// GO to INCOMPLETE; a could-not-run leaves the GO standing.
 	if failed, feedback := evaluatePostPushEnvtest(
 		ctx, envtestTouched, e.EnvtestJobRunner,
+		task.Namespace, task.Name,
 		task.Spec.Payload.Repo, branch, e.GitRemoteURL,
 	); failed {
 		return e.envtestGateFailedResult(start, transcriptRef, loopRes, branch, sha, feedback), nil

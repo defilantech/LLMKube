@@ -808,13 +808,21 @@ type envtestJobRunnerImpl struct {
 }
 
 func (e *envtestJobRunnerImpl) Run(
-	ctx context.Context, repository, branch, cloneURL string,
+	ctx context.Context, taskNamespace, taskName, repository, branch, cloneURL string,
 ) (pass bool, ran bool, feedback string) {
 	args, err := json.Marshal(map[string]any{
 		"repo":     repository,
 		"branch":   branch,
 		"checks":   []string{"test"},
 		"cloneURL": cloneURL,
+		// taskRef stamps the gate Job + pod with the originating AgenticTask
+		// identity (foreman.llmkube.dev/task-{namespace,name} labels) so a
+		// gate Job/pod can be traced back to its task (#893). Without it the
+		// renderer falls back to "unknown".
+		"taskRef": map[string]string{
+			"namespace": taskNamespace,
+			"name":      taskName,
+		},
 	})
 	if err != nil {
 		return false, false, "envtest gate: marshal args: " + err.Error()

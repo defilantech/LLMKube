@@ -15,7 +15,15 @@ type EnvtestJobRunner interface {
 	// caller treats that as could-not-verify (GO stands). When ran is true,
 	// pass reflects the gate verdict and feedback carries the log tail on
 	// failure.
-	Run(ctx context.Context, repository, branch, cloneURL string) (pass bool, ran bool, feedback string)
+	//
+	// taskNamespace/taskName identify the originating AgenticTask so the
+	// submitted gate Job carries the foreman.llmkube.dev/task-{namespace,name}
+	// labels and a Job/pod can be traced back to its task (#893). They mirror
+	// the coder Job path's TaskNamespace/TaskName.
+	Run(
+		ctx context.Context,
+		taskNamespace, taskName, repository, branch, cloneURL string,
+	) (pass bool, ran bool, feedback string)
 }
 
 // evaluatePostPushEnvtest decides whether a pushed GO should be downgraded
@@ -27,12 +35,12 @@ func evaluatePostPushEnvtest(
 	ctx context.Context,
 	envtestTouched bool,
 	runner EnvtestJobRunner,
-	repository, branch, cloneURL string,
+	taskNamespace, taskName, repository, branch, cloneURL string,
 ) (failed bool, feedback string) {
 	if !envtestTouched || runner == nil {
 		return false, ""
 	}
-	pass, ran, fb := runner.Run(ctx, repository, branch, cloneURL)
+	pass, ran, fb := runner.Run(ctx, taskNamespace, taskName, repository, branch, cloneURL)
 	if !ran {
 		return false, ""
 	}
