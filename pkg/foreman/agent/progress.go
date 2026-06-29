@@ -421,15 +421,29 @@ func (m *LoopProgressMonitor) recordCalls(calls []oai.ToolCall) {
 func (m *LoopProgressMonitor) updateEditFreeStreak(calls []oai.ToolCall) {
 	for _, tc := range calls {
 		if _, ok := editProducingTools[tc.Function.Name]; ok {
-			m.editFreeStreak = 0
+			m.resetEditFreeStreak()
 			return
 		}
 		if tc.Function.Name == "bash" && bashCallMutatesWorkspace(tc.Function.Arguments) {
-			m.editFreeStreak = 0
+			m.resetEditFreeStreak()
 			return
 		}
 	}
 	m.editFreeStreak++
+}
+
+// resetEditFreeStreak clears the edit-free streak AND the escalation flag when
+// a real edit lands. Resetting nudgedEditFree is what fixes #896: a productive
+// edit proves the model is not stuck, so a later edit-free streak (e.g. the
+// post-edit go build / go test / git diff verification turns) must earn a fresh
+// nudge -> forcing-phase recovery instead of jumping straight to force-terminate
+// off a stale nudge from earlier exploration. Without this reset, one early
+// explore-nudge poisons the rest of the run: every subsequent streak that hits
+// the limit terminates empty-handed even though edits were made and the branch
+// was never pushed.
+func (m *LoopProgressMonitor) resetEditFreeStreak() {
+	m.editFreeStreak = 0
+	m.nudgedEditFree = false
 }
 
 // fileWritingBashTokens are substrings that indicate a bash command
@@ -459,11 +473,42 @@ func bashCallMutatesWorkspace(arguments string) bool {
 // the shell.
 func bashLikelyMutatesWorkspace(command string) bool {
 	for _, tok := range fileWritingBashTokens {
-		if strings.Contains(command, tok) {
+		if containsTokenAtWordBoundary(command, tok) {
 			return true
 		}
 	}
 	return bashRedirectsToFile(command)
+}
+
+// containsTokenAtWordBoundary reports whether tok occurs in command at a word
+// boundary: either at the start of the string or immediately after a non-word
+// character. Every token in fileWritingBashTokens begins with the command name
+// (dd, mv, cp, tee, ...), so a boundary check on the leading char prevents
+// matching a token embedded inside an unrelated word. Without it, "git add "
+// matches "dd " and "scp x" matches "cp " (#896 secondary).
+func containsTokenAtWordBoundary(command, tok string) bool {
+	from := 0
+	for {
+		i := strings.Index(command[from:], tok)
+		if i < 0 {
+			return false
+		}
+		abs := from + i
+		if abs == 0 || !isWordByte(command[abs-1]) {
+			return true
+		}
+		from = abs + 1
+	}
+}
+
+// isWordByte reports whether b is an ASCII letter, digit, or underscore, i.e.
+// part of a shell word. The boundary check treats anything else (space, &, |,
+// ;, /, quotes, start-of-string) as a separator.
+func isWordByte(b byte) bool {
+	return b == '_' ||
+		(b >= 'a' && b <= 'z') ||
+		(b >= 'A' && b <= 'Z') ||
+		(b >= '0' && b <= '9')
 }
 
 // bashRedirectsToFile reports whether the command contains an output

@@ -250,6 +250,16 @@ func TestBashLikelyMutatesWorkspace(t *testing.T) {
 		{"grep -r foo .", false},
 		{"go test ./... > /dev/null 2>&1", false},
 		{"echo done 2>&1", false},
+		// #896 secondary: tokens must match at a word boundary, not as a
+		// substring inside another word. "git add " contains "dd " (the dd
+		// command token); a coder runs `git add` constantly, and a false reset
+		// of the edit-free streak here masks genuine stuck loops.
+		{"git add -A", false},
+		{"git add -A && git commit -m fix", false},
+		{"go build ./cmd/...", false}, // "cmd" must not trip "dd "/"cp "/etc.
+		// True positives at a real word boundary must still match.
+		{"dd if=/dev/zero of=out.bin", true},
+		{"rm -rf x && tee y.txt", true},
 	}
 	for _, c := range cases {
 		if got := bashLikelyMutatesWorkspace(c.cmd); got != c.want {
