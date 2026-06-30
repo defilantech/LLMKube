@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"net/http"
 	"strings"
 	"time"
 
@@ -27,6 +28,7 @@ import (
 	discoveryv1 "k8s.io/api/discovery/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -65,6 +67,15 @@ type InferenceServiceReconciler struct {
 	// on OpenShift, where the restricted-v2 SCC injects fsGroup from the
 	// namespace's allocated range). Set via --default-fsgroup; default 102.
 	DefaultFSGroup int64
+	// HTTPClient overrides the HTTP client used for idle checks. When nil, a
+	// default client with a 5-second timeout is created per request. Primarily
+	// useful in tests to capture requests or control timeouts.
+	HTTPClient *http.Client
+	// RolloutIdleBaseURL overrides the base URL used for idle endpoint checks.
+	// When non-empty, this URL is used directly instead of constructing a
+	// cluster-local service DNS name. Primarily useful in tests where cluster
+	// DNS is unavailable.
+	RolloutIdleBaseURL string
 }
 
 func sanitizeDNSName(name string) string {
@@ -269,6 +280,12 @@ func (r *InferenceServiceReconciler) reconcileDeployment(ctx context.Context, is
 	err := r.Get(ctx, types.NamespacedName{Name: deployment.Name, Namespace: deployment.Namespace}, existingDeployment)
 	if err != nil && apierrors.IsNotFound(err) {
 		log.Info("Creating new Deployment", "name", deployment.Name)
+		// Stamp desired-template hash on new deployment for change detection.
+		if deployment.Annotations == nil {
+			deployment.Annotations = make(map[string]string)
+		}
+		tmplHash := desiredTemplateHash(deployment.Spec.Template)
+		deployment.Annotations[AnnotationDesiredTemplateHash] = tmplHash
 		if err := r.Create(ctx, deployment); err != nil {
 			log.Error(err, "Failed to create Deployment")
 			result, updateErr := r.updateStatusWithSchedulingInfo(ctx, isvc, PhaseFailed, modelReady, 0, desiredReplicas, "", "Failed to create Deployment", nil)
@@ -317,15 +334,76 @@ func (r *InferenceServiceReconciler) reconcileDeployment(ctx context.Context, is
 	existingTemplateLabels := existingDeployment.Spec.Template.Labels
 	existingTemplateAnnotations := existingDeployment.Spec.Template.Annotations
 	existingReplicas := existingDeployment.Spec.Replicas
-	existingDeployment.Spec = deployment.Spec
-	existingDeployment.Spec.Template.Labels = mergePreservingExternal(
+
+	// Compute the desired merged template so we can compare against the
+	// live Deployment before gating on idle checks.
+	desiredTemplateLabels := mergePreservingExternal(
 		existingTemplateLabels,
 		deployment.Spec.Template.Labels,
 	)
-	existingDeployment.Spec.Template.Annotations = mergePreservingExternal(
+	desiredTemplateAnnotations := mergePreservingExternal(
 		existingTemplateAnnotations,
 		deployment.Spec.Template.Annotations,
 	)
+
+	// Check RolloutPolicy before applying pod-template update. Only gate
+	// when the pod template (including merged labels/annotations) actually
+	// differs from the live Deployment — otherwise we'd block every reconcile
+	// on a service with waitForIdle even though nothing needs updating.
+	desiredPodTemplate := corev1.PodTemplateSpec{
+		ObjectMeta: metav1.ObjectMeta{
+			Labels:      desiredTemplateLabels,
+			Annotations: desiredTemplateAnnotations,
+		},
+		Spec: deployment.Spec.Template.Spec,
+	}
+
+	// Use annotation-based hash comparison to avoid false positives from
+	// API-server-applied defaults that differ between in-memory and persisted objects.
+	desiredHash := desiredTemplateHash(desiredPodTemplate)
+	storedHash := ""
+	if existingDeployment.Annotations != nil {
+		storedHash = existingDeployment.Annotations[AnnotationDesiredTemplateHash]
+	}
+	templateChanged := podTemplatesDiffer(existingDeployment.Spec.Template, desiredPodTemplate)
+	if storedHash != "" {
+		templateChanged = desiredHash != storedHash
+	}
+
+	if !isMetal && templateChanged {
+		svcName := sanitizeDNSName(isvc.Name)
+		svc := &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      svcName,
+				Namespace: isvc.Namespace,
+			},
+		}
+		if rollResult, err := r.reconcileRolloutPolicy(ctx, isvc, svc); err != nil {
+			log.Error(err, "Failed to reconcile rollout policy")
+			return nil, 0, nil, nil, err
+		} else if rollResult.RequeueAfter > 0 {
+			return existingDeployment, existingDeployment.Status.ReadyReplicas, nil, &rollResult, nil
+		}
+	} else if !isMetal && !templateChanged {
+		// Template no longer differs — clear any stale RolloutDeferred condition.
+		if meta.FindStatusCondition(isvc.Status.Conditions, ConditionRolloutDeferred) != nil {
+			meta.RemoveStatusCondition(&isvc.Status.Conditions, ConditionRolloutDeferred)
+			if updateErr := r.Status().Update(ctx, isvc); updateErr != nil {
+				log.Error(updateErr, "Failed to clear stale RolloutDeferred condition")
+				return nil, 0, nil, nil, updateErr
+			}
+		}
+	}
+
+	existingDeployment.Spec = deployment.Spec
+	existingDeployment.Spec.Template.Labels = desiredTemplateLabels
+	existingDeployment.Spec.Template.Annotations = desiredTemplateAnnotations
+	// Stamp the desired-template hash so subsequent reconciles can detect
+	// real changes without false positives from API-server defaulting.
+	if existingDeployment.Annotations == nil {
+		existingDeployment.Annotations = make(map[string]string)
+	}
+	existingDeployment.Annotations[AnnotationDesiredTemplateHash] = desiredHash
 	// When autoscaling is enabled the HPA owns the replica count: preserve
 	// the live value rather than overwriting it with the operator's desired
 	// count. Setting it to nil does not work here: a plain Update with a nil

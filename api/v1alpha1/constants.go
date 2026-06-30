@@ -41,3 +41,23 @@ const (
 	// controller stops counting the registration as ready (6 intervals).
 	DefaultAgentHeartbeatTimeout = 3 * time.Minute
 )
+
+const (
+	// ConditionRolloutDeferred indicates whether a rollout is being deferred
+	// because the InferenceService has waitForIdle enabled and pods are not yet
+	// idle. When True, the Deployment pod-template update is held until all
+	// backend slots report idle or the idleTimeoutSeconds expires.
+	ConditionRolloutDeferred string = "RolloutDeferred"
+
+	// ReasonPodsBusy is set when RolloutDeferred=True because one or more
+	// backend slots are currently processing requests.
+	ReasonPodsBusy string = "PodsBusy"
+
+	// ReasonIdleTimeoutExceeded is set when RolloutDeferred=False after the
+	// idle timeout expired and the rollout proceeded despite busy pods.
+	ReasonIdleTimeoutExceeded string = "IdleTimeoutExceeded"
+
+	// DefaultIdleCheckInterval is how often the controller re-checks pod
+	// idleness when waiting for idle before rollout.
+	DefaultIdleCheckInterval = 5 * time.Second
+)
