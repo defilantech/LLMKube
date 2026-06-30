@@ -3,6 +3,7 @@ package grounding
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -15,6 +16,40 @@ type GroundTruth struct {
 	SpecFields map[string]map[string]bool // kind -> set of spec.<field> names
 	Metrics    map[string]bool            // metric names, e.g. "llmkube_inferenceservice_phase"
 	CLICmds    map[string]bool            // llmkube subcommands, e.g. "deploy"
+}
+
+var (
+	metricNameRe = regexp.MustCompile(`"(llmkube_[a-z0-9_]+)"`)
+	cobraUseRe   = regexp.MustCompile(`Use:\s*"([a-zA-Z][a-zA-Z0-9_-]*)`)
+)
+
+// scanMetrics walks dir for Go files and records llmkube_* metric-name string
+// literals. Best-effort: an unreadable file is skipped.
+func scanMetrics(dir string, gt *GroundTruth) {
+	_ = filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(p, ".go") {
+			return nil
+		}
+		b, _ := os.ReadFile(p)
+		for _, m := range metricNameRe.FindAllStringSubmatch(string(b), -1) {
+			gt.Metrics[m[1]] = true
+		}
+		return nil
+	})
+}
+
+// scanCLICommands walks dir for cobra `Use: "<verb>"` declarations.
+func scanCLICommands(dir string, gt *GroundTruth) {
+	_ = filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(p, ".go") {
+			return nil
+		}
+		b, _ := os.ReadFile(p)
+		for _, m := range cobraUseRe.FindAllStringSubmatch(string(b), -1) {
+			gt.CLICmds[m[1]] = true
+		}
+		return nil
+	})
 }
 
 // crdDoc is the minimal CRD shape we parse.
@@ -77,6 +112,12 @@ func LoadGroundTruth(crdBasesDir, metricsDir, cmdDir string) (*GroundTruth, erro
 				fields[name] = true
 			}
 		}
+	}
+	if metricsDir != "" {
+		scanMetrics(metricsDir, gt)
+	}
+	if cmdDir != "" {
+		scanCLICommands(cmdDir, gt)
 	}
 	return gt, nil
 }

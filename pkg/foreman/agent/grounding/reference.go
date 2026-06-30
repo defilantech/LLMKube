@@ -9,6 +9,32 @@ import (
 var llmkubeGroup = regexp.MustCompile(`\b([a-z0-9.-]*llmkube\.(?:dev|io))(?:/v[0-9a-z]+)?\b`)
 
 var (
+	metricTokenRe = regexp.MustCompile(`\bllmkube_[a-z0-9_]+\b`)
+	cliTokenRe    = regexp.MustCompile("llmkube\\s+([a-z][a-z0-9-]*)")
+)
+
+// checkMetricAndCLITokens appends findings for llmkube_* metric tokens and
+// `llmkube <subcmd>` references in al that do not resolve. Runs on every added
+// line regardless of YAML block context. Each set is consulted only when
+// populated (empty => that scanner was disabled => skip, fail-open).
+func checkMetricAndCLITokens(al AddedLine, gt *GroundTruth, out *[]Finding) {
+	if len(gt.Metrics) > 0 {
+		for _, m := range metricTokenRe.FindAllString(al.Text, -1) {
+			if !gt.Metrics[m] {
+				*out = append(*out, Finding{Severity: "blocker", Area: "doc-consistency", File: al.File, Line: al.Line, Message: "unknown metric " + m})
+			}
+		}
+	}
+	if len(gt.CLICmds) > 0 {
+		for _, m := range cliTokenRe.FindAllStringSubmatch(al.Text, -1) {
+			if !gt.CLICmds[m[1]] {
+				*out = append(*out, Finding{Severity: "blocker", Area: "doc-consistency", File: al.File, Line: al.Line, Message: "unknown llmkube subcommand " + m[1]})
+			}
+		}
+	}
+}
+
+var (
 	apiVersionLine = regexp.MustCompile(`^\s*apiVersion:\s*(\S+)`)
 	kindLine       = regexp.MustCompile(`^\s*kind:\s*(\S+)`)
 	// fieldLine captures leading indent (group 1) and the key (group 2).
@@ -37,6 +63,7 @@ func DetectUngroundedReferences(added []AddedLine, gt *GroundTruth) []Finding {
 	specChildIndent := -1 // indent of spec's direct children; -1 = unknown
 
 	for _, al := range added {
+		checkMetricAndCLITokens(al, gt, &findings)
 		if m := apiVersionLine.FindStringSubmatch(al.Text); m != nil {
 			llmkubeBlock = false
 			curKind = ""

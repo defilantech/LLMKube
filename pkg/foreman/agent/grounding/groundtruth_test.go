@@ -2,6 +2,19 @@ package grounding
 
 import "testing"
 
+func TestLoadGroundTruth_MetricsAndCLI(t *testing.T) {
+	gt, err := LoadGroundTruth("testdata/crd-bases", "testdata/metrics", "testdata/cmd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !gt.Metrics["llmkube_inferenceservice_phase"] {
+		t.Errorf("missing metric; have %v", gt.Metrics)
+	}
+	if !gt.CLICmds["deploy"] {
+		t.Errorf("missing cli command; have %v", gt.CLICmds)
+	}
+}
+
 func TestLoadGroundTruth_FromCRDBases(t *testing.T) {
 	gt, err := LoadGroundTruth("testdata/crd-bases", "", "")
 	if err != nil {
