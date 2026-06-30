@@ -114,6 +114,9 @@ sections:
       - label: Non-Go projects (language gates)
         slug: foreman/language-gates
         file: foreman/language-gates.md
+      - label: Grounding checks
+        slug: foreman/grounding-checks
+        file: foreman/grounding-checks.md
 
   - title: Reference
     items:

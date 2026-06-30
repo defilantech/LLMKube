@@ -66,6 +66,7 @@ linters:
         - G306  # file permissions ≤0600 (0644 is correct for cache/reports)
         - G703  # path traversal via taint (taint-analysis sibling of G304; the
         #         coder gate reads/writes git-reported files in its own workspace)
+        - G122  # WalkDir file read (taint sibling of G304/G703; scanners read trusted repo dirs)
   exclusions:
     generated: lax
     rules:

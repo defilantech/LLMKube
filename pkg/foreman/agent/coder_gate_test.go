@@ -19,6 +19,8 @@ package agent
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -897,5 +899,40 @@ func TestRunCoderGate_GoreleaserCheckSkippedWhenNoReleaseConfigChanged(t *testin
 	pass, fb := RunCoderGate(context.Background(), "/work", gateLintPath, run, "")
 	if !pass {
 		t.Fatalf("gate should pass when no release config changed; feedback:\n%s", fb)
+	}
+}
+
+// TestRunCoderGate_FailsOnUngroundedReference verifies that check #11 hard-fails
+// the gate when an added doc references an LLMKube API group that does not exist
+// in the repo's CRDs. All other gate checks must pass with this fake runner.
+func TestRunCoderGate_FailsOnUngroundedReference(t *testing.T) {
+	ws := t.TempDir()
+	crd := "apiVersion: apiextensions.k8s.io/v1\nkind: CustomResourceDefinition\n" +
+		"spec:\n  group: inference.llmkube.dev\n  names:\n    kind: InferenceService\n" +
+		"  versions:\n    - name: v1alpha1\n      schema:\n        openAPIV3Schema:\n" +
+		"          properties:\n            spec:\n              properties:\n" +
+		"                modelRef:\n                  type: string\n"
+	if err := os.MkdirAll(filepath.Join(ws, "config/crd/bases"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws, "config/crd/bases/is.yaml"), []byte(crd), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run := func(ctx context.Context, dir string, env []string, name string, args ...string) (string, error) {
+		// Check #11 diffs the staged working tree: git diff --cached --unified=0
+		// --src-prefix=a/ --dst-prefix=b/ HEAD -- *.md *.yaml *.yml
+		if name == "git" && len(args) >= 2 && args[0] == "diff" && args[1] == "--cached" {
+			return "+++ b/docs/x.md\n@@ -0,0 +1,1 @@\n+apiVersion: llmkube.io/v1alpha1\n", nil
+		}
+		// All other commands pass silently (gofmt empty, go/lint success,
+		// git add/status no-ops).
+		return "", nil
+	}
+	pass, feedback := RunCoderGate(context.Background(), ws, "./bin/golangci-lint", run, "")
+	if pass {
+		t.Fatalf("expected gate to fail on ungrounded reference; feedback=%q", feedback)
+	}
+	if !strings.Contains(feedback, "reference grounding") {
+		t.Errorf("feedback should name the check: %q", feedback)
 	}
 }

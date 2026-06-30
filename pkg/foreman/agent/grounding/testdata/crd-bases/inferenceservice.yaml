@@ -1,0 +1,21 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: inferenceservices.inference.llmkube.dev
+spec:
+  group: inference.llmkube.dev
+  names:
+    kind: InferenceService
+  versions:
+    - name: v1alpha1
+      schema:
+        openAPIV3Schema:
+          properties:
+            spec:
+              properties:
+                modelRef:
+                  type: string
+                contextSize:
+                  type: integer
+                turboQuantBits:
+                  type: integer

@@ -24,6 +24,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/defilantech/llmkube/pkg/foreman/agent/grounding"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/repomap"
 )
 
@@ -88,13 +89,14 @@ type checkFailure struct {
 // query the scope-overlap check ranks files against; an empty string
 // disables that check (backward compatible).
 //
-// The gate runs eight deterministic checks in order: gofmt, go vet,
+// The gate runs eleven deterministic checks in order: gofmt, go vet,
 // go build, golangci-lint, a fast unit-test tier on changed packages,
-// a codegen-drift check, a goreleaser-config check (path-scoped), and
-// a scope-overlap check. Heavy envtest or integration tests are
-// intentionally out of scope; they run in a separate post-push gate
-// Job. All checks run regardless of earlier failures so the feedback
-// reports everything wrong at once.
+// a codegen-drift check, a goreleaser-config check (path-scoped),
+// a scope-overlap check, a test-presence check, a mutation-survival check,
+// and a reference-grounding check on added docs. Heavy envtest or
+// integration tests are intentionally out of scope; they run in a separate
+// post-push gate Job. All checks run regardless of earlier failures so the
+// feedback reports everything wrong at once.
 func RunCoderGate(
 	ctx context.Context,
 	workspace, golangciPath string,
@@ -194,6 +196,17 @@ func RunCoderGate(
 		if failed, out := checkMutationSurvival(ctx, workspace, run); failed {
 			failures = append(failures, checkFailure{name: "mutation survival", output: out})
 		}
+	}
+
+	// 11. Reference grounding: every LLMKube-owned API group / CRD kind /
+	// spec field / metric / CLI command referenced in ADDED doc or example
+	// YAML lines must resolve to a real symbol in the repo. Catches the
+	// "confabulated reference" class (invented API group, field, metric, or
+	// CLI command) that no compiler or linter touches because docs are never
+	// built. LLMKube-owned symbols only; external APIs are never judged.
+	// Fail-open: a ground-truth load or diff error skips the check.
+	if failed, out := checkReferenceGrounding(ctx, workspace, run); failed {
+		failures = append(failures, checkFailure{name: "reference grounding", output: out})
 	}
 
 	if len(failures) == 0 {
@@ -553,6 +566,39 @@ func checkScopeOverlap(
 	}
 	if len(relevantPaths) > len(shown) {
 		b.WriteString(fmt.Sprintf("  ... and %d more\n", len(relevantPaths)-len(shown)))
+	}
+	return true, b.String()
+}
+
+// checkReferenceGrounding loads LLMKube ground truth from the workspace and
+// flags any ungrounded LLMKube-owned reference in added .md/.yaml lines.
+// Fail-open on any load/diff error so the grounding net never blocks a coder
+// on its own failure.
+func checkReferenceGrounding(ctx context.Context, workspace string, run commandRunner) (failed bool, output string) {
+	gt, err := grounding.LoadGroundTruth(
+		filepath.Join(workspace, "config/crd/bases"),
+		workspace, // scan the whole repo for llmkube_* metric literals: the
+		//            metal-agent metrics live in pkg/agent, not internal/metrics.
+		"", // CLI command validation disabled in v1 (prose false-positive risk).
+	)
+	if err != nil {
+		return false, ""
+	}
+	added, err := grounding.AddedLines(
+		ctx, workspace, grounding.CommandRunner(run), "HEAD", []string{"*.md", "*.yaml", "*.yml"},
+	)
+	if err != nil {
+		return false, ""
+	}
+	findings := grounding.DetectUngroundedReferences(added, gt)
+	if len(findings) == 0 {
+		return false, ""
+	}
+	var b strings.Builder
+	b.WriteString("These docs reference LLMKube symbols that do not exist." +
+		" Fix the reference (or the code) so it resolves:\n")
+	for _, f := range findings {
+		fmt.Fprintf(&b, "  - %s\n", f.String())
 	}
 	return true, b.String()
 }
