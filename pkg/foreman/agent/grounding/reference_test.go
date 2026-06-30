@@ -59,6 +59,29 @@ func TestDetectUngroundedReferences_MetricAndCLI(t *testing.T) {
 	}
 }
 
+func TestDetectUngroundedReferences_NoCrossHunkLeak(t *testing.T) {
+	gt := &GroundTruth{
+		Groups:     map[string]bool{"inference.llmkube.dev": true},
+		Kinds:      map[string]bool{"InferenceService": true},
+		SpecFields: map[string]map[string]bool{"InferenceService": {"modelRef": true}},
+	}
+	// A freshly-added llmkube example (consecutive lines 1-4), then a line from a
+	// DIFFERENT example added far away (line 80) whose own apiVersion: apps/v1 is
+	// unchanged context (absent under --unified=0). The non-consecutive line must
+	// reset block state so the external field is NOT judged.
+	added := []AddedLine{
+		{File: "x.md", Line: 1, Text: "apiVersion: inference.llmkube.dev/v1alpha1"},
+		{File: "x.md", Line: 2, Text: "kind: InferenceService"},
+		{File: "x.md", Line: 3, Text: "spec:"},
+		{File: "x.md", Line: 4, Text: "  modelRef: foo"},
+		{File: "x.md", Line: 80, Text: "  replicas: 3"},
+	}
+	got := DetectUngroundedReferences(added, gt)
+	if len(got) != 0 {
+		t.Fatalf("expected no findings (line 80 is an unrelated block), got %v", got)
+	}
+}
+
 func TestDetectUngroundedReferences_478Fixture(t *testing.T) {
 	gt := &GroundTruth{
 		Groups: map[string]bool{"inference.llmkube.dev": true},

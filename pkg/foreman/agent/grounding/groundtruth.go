@@ -23,11 +23,30 @@ var (
 	cobraUseRe   = regexp.MustCompile(`Use:\s*"([a-zA-Z][a-zA-Z0-9_-]*)`)
 )
 
+// skipScanDir skips version-control, vendored, build, and fixture directories
+// so a repo-wide scan stays fast and does not ingest testdata or tool binaries.
+func skipScanDir(name string) bool {
+	switch name {
+	case ".git", "vendor", "node_modules", "testdata", "bin":
+		return true
+	}
+	return false
+}
+
 // scanMetrics walks dir for Go files and records llmkube_* metric-name string
 // literals. Best-effort: an unreadable file is skipped.
 func scanMetrics(dir string, gt *GroundTruth) {
 	_ = filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !strings.HasSuffix(p, ".go") {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if skipScanDir(d.Name()) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(p, ".go") {
 			return nil
 		}
 		b, _ := os.ReadFile(p)
@@ -41,7 +60,16 @@ func scanMetrics(dir string, gt *GroundTruth) {
 // scanCLICommands walks dir for cobra `Use: "<verb>"` declarations.
 func scanCLICommands(dir string, gt *GroundTruth) {
 	_ = filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !strings.HasSuffix(p, ".go") {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if skipScanDir(d.Name()) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(p, ".go") {
 			return nil
 		}
 		b, _ := os.ReadFile(p)

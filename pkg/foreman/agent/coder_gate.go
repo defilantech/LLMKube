@@ -577,8 +577,9 @@ func checkScopeOverlap(
 func checkReferenceGrounding(ctx context.Context, workspace string, run commandRunner) (failed bool, output string) {
 	gt, err := grounding.LoadGroundTruth(
 		filepath.Join(workspace, "config/crd/bases"),
-		filepath.Join(workspace, "internal/metrics"),
-		filepath.Join(workspace, "cmd"),
+		workspace, // scan the whole repo for llmkube_* metric literals: the
+		//            metal-agent metrics live in pkg/agent, not internal/metrics.
+		"", // CLI command validation disabled in v1 (prose false-positive risk).
 	)
 	if err != nil {
 		return false, ""

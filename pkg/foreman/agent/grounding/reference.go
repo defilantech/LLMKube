@@ -29,6 +29,11 @@ func checkMetricAndCLITokens(al AddedLine, gt *GroundTruth, out *[]Finding) {
 			}
 		}
 	}
+	// WARNING: cliTokenRe also matches ordinary prose ("the llmkube operator",
+	// "each llmkube deployment"). CLI validation is therefore DISABLED in
+	// production (the gate passes cmdDir="" so gt.CLICmds is empty and this block
+	// is inert). Before enabling it, anchor the match to a code context
+	// (backticks, or a following flag/arg).
 	if len(gt.CLICmds) > 0 {
 		for _, m := range cliTokenRe.FindAllStringSubmatch(al.Text, -1) {
 			if !gt.CLICmds[m[1]] {
@@ -69,8 +74,22 @@ func DetectUngroundedReferences(added []AddedLine, gt *GroundTruth) []Finding {
 	curKind := ""
 	specIndent := -1      // indent of the active spec: line; -1 = not in spec subtree
 	specChildIndent := -1 // indent of spec's direct children; -1 = unknown
+	prevFile := ""
+	prevLine := 0
 
 	for _, al := range added {
+		// --unified=0 strips unchanged context, so an apiVersion:/spec: anchor may
+		// be absent from the diff. Trust block context only across CONSECUTIVE
+		// added lines in the same file; a file change or a line-number gap means
+		// suppressed context intervened, so reset rather than judge an unrelated
+		// (possibly external) block against a stale kind.
+		if al.File != prevFile || al.Line != prevLine+1 {
+			llmkubeBlock = false
+			curKind = ""
+			specIndent, specChildIndent = -1, -1
+		}
+		prevFile = al.File
+		prevLine = al.Line
 		checkMetricAndCLITokens(al, gt, &findings)
 		if m := apiVersionLine.FindStringSubmatch(al.Text); m != nil {
 			llmkubeBlock = false
