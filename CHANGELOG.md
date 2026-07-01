@@ -5,6 +5,18 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.24](https://github.com/defilantech/LLMKube/compare/v0.8.23...v0.8.24) (2026-07-01)
+
+
+### Bug Fixes
+
+* preserve init-container SecurityContext in podTemplatesDiffer ([#922](https://github.com/defilantech/LLMKube/issues/922)) ([#923](https://github.com/defilantech/LLMKube/issues/923)) ([859841e](https://github.com/defilantech/LLMKube/commit/859841e7026c7c65ef850af89a3639851c2ca98b))
+
+
+### Documentation
+
+* add Jory Irving as Foreman area maintainer ([#926](https://github.com/defilantech/LLMKube/issues/926)) ([7513176](https://github.com/defilantech/LLMKube/commit/751317688dae26eb01b6931d648c23bb05169fe5))
+
 ## [0.8.23](https://github.com/defilantech/LLMKube/compare/v0.8.22...v0.8.23) (2026-07-01)
 
 
