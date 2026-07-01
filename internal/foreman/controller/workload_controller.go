@@ -355,6 +355,7 @@ func (r *WorkloadReconciler) renderAndCreate(ctx context.Context, w *foremanv1al
 				DependsOn:      deps,
 				TimeoutSeconds: step.TimeoutSeconds,
 				Priority:       step.Priority,
+				GateProfile:    effectiveGateProfile(step, w).DeepCopy(),
 			},
 		}
 		if err := controllerutil.SetControllerReference(w, task, r.Scheme); err != nil {
@@ -391,6 +392,17 @@ func absoluteTaskName(workloadName, stepName string) string {
 		return stepName
 	}
 	return prefix + stepName
+}
+
+// effectiveGateProfile resolves the gate profile for a rendered task: the
+// step's own profile when set, otherwise the Workload-level default. A nil
+// result (both unset) leaves AgenticTaskSpec.GateProfile nil, which resolves
+// to the "go" preset — the behavior before Workloads carried a profile.
+func effectiveGateProfile(step foremanv1alpha1.PipelineStep, w *foremanv1alpha1.Workload) *foremanv1alpha1.GateProfile {
+	if step.GateProfile != nil {
+		return step.GateProfile
+	}
+	return w.Spec.GateProfile
 }
 
 // listChildren returns the AgenticTasks already owner-ref'd to this

@@ -161,6 +161,40 @@ var _ = Describe("WorkloadReconciler (M6 stub planner)", func() {
 		Expect(verify531.Spec.AgentRef.Name).To(Equal("gate"))
 	})
 
+	It("propagates a Workload-level GateProfile to every decomposed task", func() {
+		wl := newWorkload("batch-node-gate", foremanv1alpha1.WorkloadSpec{
+			Intent:           "batch on a node repo",
+			Repo:             "misospace/miso-chat",
+			Issues:           []int32{42},
+			CoderAgentRef:    &corev1.LocalObjectReference{Name: "coder"},
+			VerifierAgentRef: &corev1.LocalObjectReference{Name: "gate"},
+			GateProfile: &foremanv1alpha1.GateProfile{
+				Language: foremanv1alpha1.GateLanguageNode,
+			},
+		})
+		Expect(k8sClient.Create(ctx, wl)).To(Succeed())
+		DeferCleanup(func() {
+			cleanupChildren(wl)
+			_ = k8sClient.Delete(ctx, wl)
+		})
+
+		_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(wl)})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Both the coder task (drives the in-loop self-gate) and the verify
+		// task (the clean-room gate Job) must carry the node profile, or the
+		// pipeline falls back to the Go gate on a non-Go repo.
+		var code42 foremanv1alpha1.AgenticTask
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: "batch-node-gate-code-42"}, &code42)).To(Succeed())
+		Expect(code42.Spec.GateProfile).NotTo(BeNil())
+		Expect(code42.Spec.GateProfile.Language).To(Equal(foremanv1alpha1.GateLanguageNode))
+
+		var verify42 foremanv1alpha1.AgenticTask
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: "batch-node-gate-verify-42"}, &verify42)).To(Succeed())
+		Expect(verify42.Spec.GateProfile).NotTo(BeNil())
+		Expect(verify42.Spec.GateProfile.Language).To(Equal(foremanv1alpha1.GateLanguageNode))
+	})
+
 	It("fans out one review task per ReviewerAgentRef, each depending on the verify task (v0.2)", func() {
 		wl := newWorkload("batch-with-reviewers", foremanv1alpha1.WorkloadSpec{
 			Intent:           "batch + reviewers",

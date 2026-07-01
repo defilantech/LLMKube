@@ -44,6 +44,30 @@ language preset, so you only specify what differs. An omitted or empty
 `gateProfile` resolves to the Go preset, byte-for-byte identical to the gate
 that shipped before this field existed.
 
+### Setting it from a Workload
+
+You rarely author `AgenticTask`s by hand — a `Workload` decomposes into them.
+`Workload.spec.gateProfile` is the workload-wide default: the reconciler copies
+it onto every task it renders (issue-batch, explicit pipeline, and escalation
+steps alike), so a Workload-driven source (a work-queue bridge) can gate a
+non-Go repo without hand-authoring tasks.
+
+```yaml
+apiVersion: foreman.llmkube.dev/v1alpha1
+kind: Workload
+spec:
+  repo: your-org/your-node-app
+  issues: [42]
+  coderAgentRef: { name: coder }
+  verifierAgentRef: { name: gate }
+  gateProfile:
+    language: node          # every decomposed task inherits this
+```
+
+For a mixed-language pipeline, `pipeline[].gateProfile` overrides the
+workload-level default for that step only. Resolution is step → workload →
+Go preset.
+
 ### Built-in presets
 
 `language` selects one of these presets. Each sets a default image, the source
