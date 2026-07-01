@@ -629,14 +629,23 @@ func checkReferenceGrounding(ctx context.Context, workspace string, run commandR
 	if err != nil {
 		return false, ""
 	}
-	findings := grounding.DetectUngroundedReferences(added, gt)
-	if len(findings) == 0 {
+	// Defense-in-depth: only block on non-minor findings. The block tier loads
+	// ground truth with ExporterMetricPrefixes nil (so checkExporterMetricTokens
+	// is inert and emits no minor findings), but this filter makes confinement
+	// hold even if that invariant were ever violated accidentally.
+	var blockFindings []grounding.Finding
+	for _, f := range grounding.DetectUngroundedReferences(added, gt) {
+		if f.Severity != grounding.SeverityMinor {
+			blockFindings = append(blockFindings, f)
+		}
+	}
+	if len(blockFindings) == 0 {
 		return false, ""
 	}
 	var b strings.Builder
 	b.WriteString("These docs reference LLMKube symbols that do not exist." +
 		" Fix the reference (or the code) so it resolves:\n")
-	for _, f := range findings {
+	for _, f := range blockFindings {
 		fmt.Fprintf(&b, "  - %s\n", f.String())
 	}
 	return true, b.String()

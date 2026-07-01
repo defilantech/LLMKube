@@ -87,7 +87,7 @@ func DetectUngroundedReferences(added []AddedLine, gt *GroundTruth) []Finding {
 		group := strings.SplitN(g[0], "/", 2)[0]
 		if !gt.Groups[group] {
 			findings = append(findings, Finding{
-				Severity: "blocker", Area: "doc-consistency", File: al.File, Line: al.Line,
+				Severity: SeverityBlocker, Area: "doc-consistency", File: al.File, Line: al.Line,
 				Message: "unknown LLMKube API group " + group,
 			})
 		}
@@ -104,7 +104,7 @@ func checkMetricAndCLITokens(al AddedLine, gt *GroundTruth, out *[]Finding) {
 		for _, m := range metricTokenRe.FindAllString(al.Text, -1) {
 			if !gt.Metrics[m] {
 				*out = append(*out, Finding{
-					Severity: "blocker", Area: "doc-consistency",
+					Severity: SeverityBlocker, Area: "doc-consistency",
 					File: al.File, Line: al.Line, Message: "unknown metric " + m,
 				})
 			}
@@ -119,7 +119,7 @@ func checkMetricAndCLITokens(al AddedLine, gt *GroundTruth, out *[]Finding) {
 		for _, m := range cliTokenRe.FindAllStringSubmatch(al.Text, -1) {
 			if !gt.CLICmds[m[1]] {
 				*out = append(*out, Finding{
-					Severity: "blocker", Area: "doc-consistency",
+					Severity: SeverityBlocker, Area: "doc-consistency",
 					File: al.File, Line: al.Line, Message: "unknown llmkube subcommand " + m[1],
 				})
 			}
@@ -171,7 +171,7 @@ func checkExporterMetricTokens(al AddedLine, gt *GroundTruth, out *[]Finding) {
 			continue
 		}
 		*out = append(*out, Finding{
-			Severity: "minor", Area: "doc-consistency",
+			Severity: SeverityMinor, Area: "doc-consistency",
 			File: al.File, Line: al.Line,
 			Message: "possible hallucinated metric or resource name: " + m +
 				" (not found in known exporter prefixes or chart resources; verify)",

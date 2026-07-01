@@ -18,11 +18,18 @@ import (
 // straight through.
 type CommandRunner func(ctx context.Context, dir string, extraEnv []string, name string, args ...string) (string, error)
 
+// Severity values for Finding.Severity.
+const (
+	SeverityBlocker = "blocker"
+	SeverityMajor   = "major"
+	SeverityMinor   = "minor"
+)
+
 // Finding is one grounding defect. It mirrors the reviewer.Finding shape
 // (severity/area/file/line/message) so Plan 2 can surface gate findings and
 // reviewer findings as one schema on the task status.
 type Finding struct {
-	Severity string // "blocker" | "major" | "minor"
+	Severity string // SeverityBlocker | SeverityMajor | SeverityMinor
 	Area     string // "doc-consistency" | "wired-up"
 	File     string
 	Line     int

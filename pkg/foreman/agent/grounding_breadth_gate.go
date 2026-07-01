@@ -66,7 +66,7 @@ func checkGroundingBreadth(ctx context.Context, workspace string, run commandRun
 	// checkReferenceGrounding in the block tier.
 	var advisoryFindings []grounding.Finding
 	for _, f := range findings {
-		if f.Severity == "minor" {
+		if f.Severity == grounding.SeverityMinor {
 			advisoryFindings = append(advisoryFindings, f)
 		}
 	}

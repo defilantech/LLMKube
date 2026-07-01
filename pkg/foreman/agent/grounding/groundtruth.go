@@ -99,6 +99,10 @@ func scanCLICommands(dir string, gt *GroundTruth) {
 // scanChartResources walks chartsDir recursively for *.yaml and *.yml files
 // and captures every plain (non-templated) metadata.name value. Names that
 // contain "{{" (Helm template syntax) are skipped.
+// Note: the flat-manifest heuristic captures metadata.name values but does not
+// distinguish nested metadata blocks (e.g. spec.template.metadata), so it may
+// over-capture names from inner resources; this only widens the advisory
+// exclusion set and never causes a block.
 func scanChartResources(chartsDir string, gt *GroundTruth) {
 	_ = filepath.WalkDir(chartsDir, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
