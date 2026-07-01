@@ -24,6 +24,7 @@ import (
 	"sort"
 	"strings"
 
+	foremanv1alpha1 "github.com/defilantech/llmkube/api/foreman/v1alpha1"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/grounding"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/repomap"
 )
@@ -224,10 +225,17 @@ func RunCoderGate(
 }
 
 // gateCheckRegistry returns the tiered checks added by the gate-check suite.
-// issueText is threaded for checks that need it. Empty until later tasks append.
+// issueText is threaded for checks that need it.
 func gateCheckRegistry(issueText string) []gateCheck {
 	_ = issueText // used by later tasks
-	return nil
+	return []gateCheck{
+		{
+			name: "rbac-use",
+			tier: tierBlock,
+			lang: foremanv1alpha1.GateLanguageGo,
+			fn:   checkRBACUse,
+		},
+	}
 }
 
 // changedPackages returns the workspace-relative Go package directories
