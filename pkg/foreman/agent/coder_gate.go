@@ -241,6 +241,11 @@ func gateCheckRegistry(issueText string) []gateCheck {
 			lang: foremanv1alpha1.GateLanguageGo,
 			fn:   checkImportGraph,
 		},
+		{
+			name: "embedded-artifact",
+			tier: tierBlock,
+			fn:   checkEmbeddedArtifacts,
+		},
 	}
 }
 
