@@ -405,6 +405,113 @@ func TestNativeExecutor_HappyPathPushesBranch(t *testing.T) {
 	}
 }
 
+// --- #915: no static remote -> clone+push the task's own repo -----------
+
+// TestNativeExecutor_MultiRepoClonesTaskRepoWhenNoStaticRemote proves the
+// #915 path: with no static --git-remote-url, the coder clones and pushes
+// the task's own payload.repo, so one agent can serve many repos. Mirrors
+// the happy path but leaves GitRemoteURL empty; the branch must still land
+// on the repo the task names (here, the bare the override resolves to).
+func TestNativeExecutor_MultiRepoClonesTaskRepoWhenNoStaticRemote(t *testing.T) {
+	gitOrSkip(t)
+	root := t.TempDir()
+	bare := initBareWithSeed(t, root)
+	oaiSrv := scriptedOAI(t, []string{submitGoBody})
+
+	agent, task := taskAndAgent("multirepo")
+	c := fake.NewClientBuilder().
+		WithScheme(newScheme(t)).
+		WithObjects(agent, task).
+		Build()
+
+	reg := &fakeRegistry{
+		results: map[string]*foremanagent.ToolResult{
+			"submit_result": {
+				Terminal: true, Verdict: "GO", Summary: "fixed",
+				CommitMessage: "fix: trivial change\n",
+			},
+		},
+		touch: func(name string, ws string) {
+			if name == "submit_result" {
+				_ = os.WriteFile(filepath.Join(ws, "fix.txt"), []byte("foreman touched this\n"), 0o644)
+			}
+		},
+	}
+
+	e := &foremanagent.NativeAgentLoopExecutor{
+		Client:        c,
+		WorkspaceRoot: filepath.Join(root, "ws"),
+		// No static fork remote: payload.repo drives clone + push.
+		GitRemoteURL:             "",
+		UpstreamURLForRepo:       func(string) string { return bare },
+		InferenceBaseURLOverride: oaiSrv.URL + "/v1",
+		CommitAuthor:             repo.Identity{Name: "Foreman Bot", Email: "bot@foreman.test"},
+		CommitCommitter:          repo.Identity{Name: "Foreman Bot", Email: "bot@foreman.test"},
+		RegistryFactory: func(ws string, _ *foremanv1alpha1.Agent) (foremanagent.ToolRegistry, error) {
+			reg.workspace = ws
+			return reg, nil
+		},
+		AuthFactory: fakeAuth(t),
+	}
+
+	res, err := e.Execute(context.Background(), task)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if res.Verdict != foremanv1alpha1.AgenticTaskVerdictGo {
+		t.Fatalf("verdict: want GO got %s; result=%+v", res.Verdict, res)
+	}
+	// Branch pushed to the task's repo (the override target), proving the
+	// clone+push used payload.repo rather than a static --git-remote-url.
+	out, err := exec.Command("git", "-C", bare, "branch", "--list", "foreman/issue-9999").CombinedOutput()
+	if err != nil {
+		t.Fatalf("post-push branch list: %v: %s", err, out)
+	}
+	if !strings.Contains(string(out), "foreman/issue-9999") {
+		t.Errorf("branch not pushed to task repo: %s", out)
+	}
+}
+
+// TestNativeExecutor_NoStaticRemoteAndNoRepoIsHardError covers the #915
+// precondition: no --git-remote-url and no usable payload.repo leaves
+// nothing to clone, so the task fails cleanly with GitRemoteNotConfigured
+// (not a system error).
+func TestNativeExecutor_NoStaticRemoteAndNoRepoIsHardError(t *testing.T) {
+	root := t.TempDir()
+
+	agent, task := taskAndAgent("norepo")
+	task.Spec.Payload.Repo = "" // no slug to derive a remote from
+	c := fake.NewClientBuilder().
+		WithScheme(newScheme(t)).
+		WithObjects(agent, task).
+		Build()
+
+	e := &foremanagent.NativeAgentLoopExecutor{
+		Client:        c,
+		WorkspaceRoot: filepath.Join(root, "ws"),
+		GitRemoteURL:  "", // and no repo -> cannot clone
+		// Bypass InferenceService lookup so execution reaches the clone
+		// precondition (endpoint resolution runs before the clone step).
+		InferenceBaseURLOverride: "http://127.0.0.1:1/v1",
+		AuthFactory:              fakeAuth(t),
+		// Required precondition; never exercised — the clone fails first.
+		RegistryFactory: func(string, *foremanv1alpha1.Agent) (foremanagent.ToolRegistry, error) {
+			return &fakeRegistry{}, nil
+		},
+	}
+
+	res, err := e.Execute(context.Background(), task)
+	if err != nil {
+		t.Fatalf("Execute returned a system error, want a data-shaped fail: %v", err)
+	}
+	if res == nil || res.Verdict != foremanv1alpha1.AgenticTaskVerdictIncomplete {
+		t.Fatalf("verdict: want INCOMPLETE got %+v", res)
+	}
+	if res.FailureReason != foremanv1alpha1.FailureGitRemoteNotConfigured {
+		t.Errorf("FailureReason: want %q got %q", foremanv1alpha1.FailureGitRemoteNotConfigured, res.FailureReason)
+	}
+}
+
 // --- Loop returns no-change GO -> reported as NO-GO/NO-CHANGES -----------
 
 func TestNativeExecutor_ModelEmitsGoButNoChanges(t *testing.T) {

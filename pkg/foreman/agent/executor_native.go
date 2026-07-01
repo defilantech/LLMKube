@@ -269,10 +269,28 @@ func (e *NativeAgentLoopExecutor) Execute(ctx context.Context, task *foremanv1al
 	}
 	defer func() { _ = auth.Close() }()
 
+	// resolveUpstream derives a repo's git URL from its payload.repo
+	// "owner/name" slug. It picks the clone target when no static fork
+	// remote is configured (#915) and cuts the task branch from the
+	// upstream base below (#813). The test override lets envtest inject a
+	// local remote.
+	resolveUpstream := upstreamURLForRepo
+	if e.UpstreamURLForRepo != nil {
+		resolveUpstream = e.UpstreamURLForRepo
+	}
+
+	// Clone target: the statically configured fork remote when set,
+	// otherwise the task's own repo (#915). Deriving the clone+push target
+	// from payload.repo lets a single agent serve many repos instead of
+	// being pinned to one --git-remote-url; the branch still pushes to this
+	// clone's origin, which in that case is the task's repo itself.
 	cloneURL := e.GitRemoteURL
 	if cloneURL == "" {
+		cloneURL = resolveUpstream(task.Spec.Payload.Repo)
+	}
+	if cloneURL == "" {
 		return e.failResult(start, foremanv1alpha1.FailureGitRemoteNotConfigured,
-			"foreman-agent was not started with --git-remote-url; cannot clone"), nil
+			"no --git-remote-url configured and task payload.repo is empty or invalid; cannot clone"), nil
 	}
 	if err := repo.Clone(ctx, repo.CloneOptions{
 		RemoteURL: cloneURL,
@@ -288,13 +306,12 @@ func (e *NativeAgentLoopExecutor) Execute(ctx context.Context, task *foremanv1al
 	// upstream. When the task carries an upstream repo slug (payload.repo),
 	// fetch its base ref and branch from that instead. Origin stays the fork,
 	// so the branch still pushes there for the PR. Freeform tasks without a
-	// repo slug fall back to branching from the cloned fork HEAD.
+	// repo slug fall back to branching from the cloned fork HEAD. When the
+	// clone target was itself derived from payload.repo (#915), origin and
+	// upstream resolve to the same URL — branching off the base is then a
+	// no-op-equivalent that still yields a current-base branch.
 	branch := branchNameForTask(task)
 	baseBranch := baseBranchOrDefault(task.Spec.Payload.BaseBranch)
-	resolveUpstream := upstreamURLForRepo
-	if e.UpstreamURLForRepo != nil {
-		resolveUpstream = e.UpstreamURLForRepo
-	}
 	if upstreamURL := resolveUpstream(task.Spec.Payload.Repo); upstreamURL != "" {
 		if err := repo.CreateBranchFromUpstream(ctx, repo.UpstreamBranchOptions{
 			Workspace:   workspace,

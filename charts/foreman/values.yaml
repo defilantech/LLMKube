@@ -216,22 +216,20 @@ agent:
   # the deterministic gate Agent's workspace prep step.
   workspaceDir: /workspace
 
-  # Git remote the executor (both native LLM-driven coder and the
-  # deterministic gate, which clones the upstream coder's branch from
-  # the fork) reads from and pushes branches to. Required for ALL
-  # native-mode nodes including verifier-only nodes:
+  # Git remote the executor reads from and pushes branches to. OPTIONAL
+  # as of #915:
   #
-  #   - coder-role nodes (M5 Max running the Carnice Agent) need it to
-  #     push the resulting branch.
-  #   - verifier-role nodes (ShadowStack running the M4 gate Agent)
-  #     need it because run_gate_job clones the branch the coder pushed
-  #     to the fork, not the upstream repo where the branch does not
-  #     yet exist.
+  #   - Set: pins every coder task to this one fork/repo (the single-repo
+  #     fork-PR model). The coder pushes the branch here and the gate
+  #     clones it from here.
+  #   - Empty: each coder task clones and pushes its OWN payload.repo
+  #     (github.com/<owner>/<name>), so a single agent serves many repos.
+  #     The gate then constructs the same clone URL from payload.repo, so
+  #     it still finds the branch the coder pushed.
   #
-  # Leaving this empty puts the agent into "deterministic-only-without-
-  # network-git" mode: the M4 V3 two-step pipeline fails at the gate's
-  # clone step with "foreman-agent was not started with --git-remote-url;
-  # cannot clone". Stub-mode agents do not need it.
+  # Set this only to force every task onto one remote (a shared fork).
+  # A coder task with neither this NOR a payload.repo fails at the clone
+  # step with GitRemoteNotConfigured. Stub-mode agents ignore it.
   gitRemoteURL: ""
 
   # Git author + committer identity stamped onto commits the coder-

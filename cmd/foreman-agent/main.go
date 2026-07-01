@@ -273,8 +273,9 @@ func main() {
 		// leaves other tasks unaffected. The flags stay required at
 		// the per-task level, not at startup.
 		if gitRemoteURL == "" {
-			setupLog.Info("--git-remote-url is unset; coder-role tasks will fail with GitRemoteURLNotConfigured. " +
-				"Deterministic Agents (e.g. M4 gate) work fine without it.")
+			setupLog.Info("--git-remote-url is unset; coder-role tasks clone and push " +
+				"each task's own payload.repo (#915). Tasks with no payload.repo fail " +
+				"with GitRemoteURLNotConfigured; deterministic Agents work fine without it.")
 		}
 		if commitAuthorEmail == "" {
 			setupLog.Info("--commit-author-email is unset; coder-role tasks that need to commit will fail. " +

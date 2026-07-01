@@ -100,8 +100,10 @@ pkill -f 'llmkube-foreman-agent --agent-mode=stub' || true
 
 Why each native-mode flag:
 
-- `--git-remote-url`: v0.1 clones from and pushes to the same URL (the
-  fork). v0.2 will split clone-from-upstream from push-to-fork.
+- `--git-remote-url`: clones from and pushes to the same URL (the fork).
+  Optional as of #915: leave it unset and each coder task clones and
+  pushes its own `payload.repo` instead, so one agent serves many repos.
+  Set it only to pin every task to a single shared remote.
 - `--inference-base-url-host-override`: required when foreman-agent
   runs on the host (where `*.svc.cluster.local` does not resolve).
   The executor still reads `InferenceService.status.endpoint` for the
