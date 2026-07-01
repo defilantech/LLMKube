@@ -97,12 +97,15 @@ type checkFailure struct {
 // integration tests are intentionally out of scope; they run in a separate
 // post-push gate Job. All checks run regardless of earlier failures so the
 // feedback reports everything wrong at once.
+//
+// advisories is a slice of non-blocking findings from the tiered registry.
+// It is empty until later tasks add checks to gateCheckRegistry.
 func RunCoderGate(
 	ctx context.Context,
 	workspace, golangciPath string,
 	run commandRunner,
 	issueText string,
-) (pass bool, feedback string) {
+) (pass bool, feedback string, advisories []advisory) {
 	var failures []checkFailure
 
 	// 1. gofmt -l . lists misformatted files on stdout and exits 0 even
@@ -209,11 +212,22 @@ func RunCoderGate(
 		failures = append(failures, checkFailure{name: "reference grounding", output: out})
 	}
 
+	blocking, adv := runGateChecks(ctx, workspace, run, gateCheckRegistry(issueText))
+	failures = append(failures, blocking...)
+	advisories = adv
+
 	if len(failures) == 0 {
-		return true, ""
+		return true, "", advisories
 	}
 
-	return false, buildFeedback(failures)
+	return false, buildFeedback(failures), advisories
+}
+
+// gateCheckRegistry returns the tiered checks added by the gate-check suite.
+// issueText is threaded for checks that need it. Empty until later tasks append.
+func gateCheckRegistry(issueText string) []gateCheck {
+	_ = issueText // used by later tasks
+	return nil
 }
 
 // changedPackages returns the workspace-relative Go package directories

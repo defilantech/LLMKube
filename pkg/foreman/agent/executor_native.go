@@ -699,7 +699,7 @@ func makeCoderGateVerifier(
 				return true, "", err
 			}
 		}
-		pass, feedback := RunCoderGate(ctx, workspace, lintPath, execCommandRunner, issueText)
+		pass, feedback, _ := RunCoderGate(ctx, workspace, lintPath, execCommandRunner, issueText)
 		if !pass {
 			log.Info("coder gate: fast checks failed; returning feedback to the loop for a fix")
 		}
