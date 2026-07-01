@@ -153,7 +153,7 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		desiredReplicas = *inferenceService.Spec.Replicas
 	}
 
-	if model.Status.CacheKey != "" && r.ModelCachePath != "" {
+	if effectiveModelCacheKey(model) != "" && r.ModelCachePath != "" {
 		if err := r.ensureModelCachePVC(ctx, inferenceService); err != nil {
 			log.Error(err, "Failed to ensure model cache PVC exists", "namespace", inferenceService.Namespace)
 			return r.updateStatusWithSchedulingInfo(ctx, inferenceService, PhaseFailed, modelReady, 0, desiredReplicas, "", "Failed to create model cache PVC", nil)

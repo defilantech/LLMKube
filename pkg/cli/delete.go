@@ -102,6 +102,14 @@ func runDelete(opts *deleteOptions) error {
 			fmt.Printf("Warning: failed to get Model for cache purge: %v\n", err)
 		} else {
 			cacheKey = model.Status.CacheKey
+			if cacheKey == "" {
+				// hf:// multi-file models are cached under a key derived from
+				// the source even though the controller leaves Status.CacheKey
+				// empty (see effectiveModelCacheKey). Mirror `cache list`'s
+				// fallback so --purge-cache targets the same dir the serving
+				// pod uses, instead of skipping it and orphaning the cache.
+				cacheKey = computeCacheKey(model.Spec.Source)
+			}
 		}
 	}
 

@@ -357,6 +357,68 @@ var _ = Describe("hasMultiFileStaging", func() {
 	})
 })
 
+var _ = Describe("effectiveModelCacheKey", func() {
+	It("returns the controller-set Status.CacheKey when present", func() {
+		model := &inferencev1alpha1.Model{
+			Spec:   inferencev1alpha1.ModelSpec{Source: "https://example.com/model.gguf"},
+			Status: inferencev1alpha1.ModelStatus{CacheKey: "controllerkey"},
+		}
+		Expect(effectiveModelCacheKey(model)).To(Equal("controllerkey"))
+	})
+
+	It("returns empty for a runtime-resolved single-file model with no cache key", func() {
+		model := &inferencev1alpha1.Model{
+			Spec: inferencev1alpha1.ModelSpec{Source: "hf://unsloth/gemma-4-31B-it-GGUF"},
+		}
+		Expect(effectiveModelCacheKey(model)).To(BeEmpty())
+	})
+
+	It("derives a stable key from the source for an hf:// multi-file model (#909)", func() {
+		// The runtime-resolved path leaves Status.CacheKey empty for hf://
+		// sources, but multi-file staging must still land in the cache PVC.
+		source := "hf://unsloth/gemma-4-31B-it-GGUF"
+		model := &inferencev1alpha1.Model{
+			Spec: inferencev1alpha1.ModelSpec{
+				Source: source,
+				Files:  []string{"a.gguf", "MTP/b.gguf"},
+				Mmproj: "mmproj-F16.gguf",
+			},
+		}
+		Expect(effectiveModelCacheKey(model)).To(Equal(computeCacheKey(source)))
+	})
+
+	It("does not cache a metal multi-file model (no init container / cache PVC)", func() {
+		model := &inferencev1alpha1.Model{
+			Spec: inferencev1alpha1.ModelSpec{
+				Source:   "hf://unsloth/gemma-4-31B-it-GGUF",
+				Files:    []string{"a.gguf"},
+				Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: acceleratorMetal},
+			},
+		}
+		Expect(effectiveModelCacheKey(model)).To(BeEmpty())
+	})
+})
+
+var _ = Describe("buildCachedStorageConfig cache key fallback", func() {
+	It("uses the derived key in the cache dir for an hf:// multi-file model with no Status.CacheKey (#909)", func() {
+		source := "hf://unsloth/gemma-4-31B-it-GGUF"
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: "hf-multi"},
+			Spec: inferencev1alpha1.ModelSpec{
+				Source: source,
+				Files:  []string{"model.gguf"},
+			},
+		}
+		config := buildCachedStorageConfig(model, nil, ModelCacheModeShared, "", "curl:8.18.0", 102)
+
+		// The staged primary must land under the key derived from the source,
+		// never a bare /models/ which would collide across every keyless model.
+		key := computeCacheKey(source)
+		Expect(key).NotTo(BeEmpty())
+		Expect(config.modelPath).To(Equal("/models/" + key + "/model.gguf"))
+	})
+})
+
 var _ = Describe("resolveHFSourceURL", func() {
 	It("converts hf:// to https://huggingface.co/", func() {
 		Expect(resolveHFSourceURL("hf://unsloth/gemma-4-31B-it-GGUF")).To(Equal("https://huggingface.co/unsloth/gemma-4-31B-it-GGUF"))

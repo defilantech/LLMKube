@@ -180,6 +180,33 @@ func hasMultiFileStaging(model *inferencev1alpha1.Model) bool {
 	return model != nil && (len(model.Spec.Files) > 0 || model.Spec.Mmproj != "")
 }
 
+// effectiveModelCacheKey returns the key used to namespace a model's files
+// inside the cache PVC, and serves as the single source of truth for whether
+// the in-cluster serving pod should use the cache (non-empty) or an emptyDir
+// (empty). Both the PVC-ensure gate (InferenceService reconcile) and the
+// storage builder MUST consult this so they never disagree about caching.
+//
+// For sources the controller fingerprints (http/https) this is the
+// controller-set Status.CacheKey. The runtime-resolved path (hf:// repo IDs)
+// deliberately leaves Status.CacheKey empty and keeps the Available condition
+// reason "RuntimeResolved", but an hf:// model with multi-file staging still
+// needs the cache PVC: otherwise every file re-downloads into an emptyDir on
+// each pod restart (#909). Derive a stable key from the source in that case.
+// Metal models have no init container and no cache PVC (the host metal-agent
+// loads the files directly), so they never cache here.
+func effectiveModelCacheKey(model *inferencev1alpha1.Model) string {
+	if model == nil {
+		return ""
+	}
+	if model.Status.CacheKey != "" {
+		return model.Status.CacheKey
+	}
+	if hasMultiFileStaging(model) && !isMetalModel(model) {
+		return computeCacheKey(model.Spec.Source)
+	}
+	return ""
+}
+
 // modelStagingPlan resolves the model's declared files into a staging plan.
 // Returns nil when there is no multi-file staging. Returns an error when
 // multi-file fields are set but resolution fails (fail-closed).
@@ -372,7 +399,7 @@ func buildPVCStorageConfig(model *inferencev1alpha1.Model) modelStorageConfig {
 }
 
 func buildCachedStorageConfig(model *inferencev1alpha1.Model, isvc *inferencev1alpha1.InferenceService, cacheMode string, caCertConfigMap string, initContainerImage string, defaultFSGroup int64) modelStorageConfig {
-	cacheDir := fmt.Sprintf("/models/%s", model.Status.CacheKey)
+	cacheDir := fmt.Sprintf("/models/%s", effectiveModelCacheKey(model))
 
 	// Resolve the fsGroup that the CSI will actually apply to the volume.
 	// When the InferenceService sets its own FSGroup, that wins over the
