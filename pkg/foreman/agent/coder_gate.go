@@ -227,7 +227,6 @@ func RunCoderGate(
 // gateCheckRegistry returns the tiered checks added by the gate-check suite.
 // issueText is threaded for checks that need it.
 func gateCheckRegistry(issueText string) []gateCheck {
-	_ = issueText // used by later tasks
 	return []gateCheck{
 		{
 			name: "rbac-use",
@@ -257,6 +256,13 @@ func gateCheckRegistry(issueText string) []gateCheck {
 			tier: tierAdvisory,
 			lang: foremanv1alpha1.GateLanguageGo,
 			fn:   checkCallerImpact,
+		},
+		{
+			name: "issue-example",
+			tier: tierAdvisory,
+			fn: func(ctx context.Context, ws string, run commandRunner) (bool, string) {
+				return checkIssueExample(issueText)(ctx, ws, run)
+			},
 		},
 	}
 }
