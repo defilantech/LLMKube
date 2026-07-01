@@ -5,6 +5,24 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.23](https://github.com/defilantech/LLMKube/compare/v0.8.22...v0.8.23) (2026-07-01)
+
+
+### Features
+
+* **controller:** defer rollouts until idle ([#913](https://github.com/defilantech/LLMKube/issues/913)) ([aa404ff](https://github.com/defilantech/LLMKube/commit/aa404ff0dd49e376bd4c50bffbc553a39db33791))
+* expose oMLX TurboQuant KV cache quantization settings ([#905](https://github.com/defilantech/LLMKube/issues/905)) ([68e0291](https://github.com/defilantech/LLMKube/commit/68e02916ab594625c33daa008b1d1b025362594c))
+* **foreman:** controller/metal-agent runtime-arg parity guard ([#918](https://github.com/defilantech/LLMKube/issues/918)) ([92d3c1b](https://github.com/defilantech/LLMKube/commit/92d3c1ba649ff3d11d3ab009cef6fe1788e3a363))
+* **foreman:** propagate gateProfile from Workload to decomposed tasks ([#920](https://github.com/defilantech/LLMKube/issues/920)) ([270b2fa](https://github.com/defilantech/LLMKube/commit/270b2facc0bfdb706fba7be5daebc55a9f29ae2f))
+* **foreman:** reference-grounding check in the coder gate ([#906](https://github.com/defilantech/LLMKube/issues/906)) ([6296496](https://github.com/defilantech/LLMKube/commit/62964966b514c1bed0705f74086dc56d4089edba))
+
+
+### Bug Fixes
+
+* cache hf:// multi-file models instead of emptyDir ([#912](https://github.com/defilantech/LLMKube/issues/912)) ([8e69d74](https://github.com/defilantech/LLMKube/commit/8e69d74a63d0f3ebb3dec3c4c95214130f9b2580))
+* **foreman:** recover str_replace from near-miss old_string ([#917](https://github.com/defilantech/LLMKube/issues/917)) ([4ce29e8](https://github.com/defilantech/LLMKube/commit/4ce29e85f8c3945d17acb50e3b140225b0fe3863))
+* grant events.k8s.io to the operator event recorder ([#914](https://github.com/defilantech/LLMKube/issues/914)) ([5b23c4b](https://github.com/defilantech/LLMKube/commit/5b23c4bc2b1ce77271f42456e2c90afb78d2b655))
+
 ## [0.8.22](https://github.com/defilantech/LLMKube/compare/v0.8.21...v0.8.22) (2026-06-29)
 
 
