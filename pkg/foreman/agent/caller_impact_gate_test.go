@@ -139,6 +139,79 @@ func TestCheckCallerImpact_FailOpenOnNoChanges(t *testing.T) {
 	}
 }
 
+// TestCheckCallerImpact_SameFileRecursiveCallNoAdvisory verifies that a
+// function whose only grep hits are the definition line and a same-file
+// recursive call does NOT produce an advisory. Before the fix, the recursive
+// call site was treated as an external caller because it was not the
+// definition line; after the fix the entire definition file is excluded.
+func TestCheckCallerImpact_SameFileRecursiveCallNoAdvisory(t *testing.T) {
+	changedFiles := " M pkg/x/a.go"
+	// hunk inside recurse body
+	diffOutput := "@@ -10,3 +10,4 @@ func recurse(n int) int {\n+\tif n == 0 { return 0 }\n"
+
+	// grep returns: the definition line + a same-file recursive call site
+	grepOutputs := map[string]string{
+		"recurse": "./pkg/x/a.go:10:func recurse(n int) int {\n" +
+			"./pkg/x/a.go:20:\treturn recurse(n-1)\n",
+	}
+
+	run := callerImpactRunner(changedFiles, diffOutput, grepOutputs)
+
+	failed, out := checkCallerImpact(context.Background(), "/ws", run)
+	if failed {
+		t.Fatalf("same-file recursive call must not produce an advisory; got failed=true out=%q", out)
+	}
+}
+
+// TestCheckCallerImpact_AddedFuncWithExternalCaller verifies the addedFuncNames
+// path: when a new function is introduced ("+func" in the diff) and a
+// cross-file grep hit is found, an advisory is emitted.
+func TestCheckCallerImpact_AddedFuncWithExternalCaller(t *testing.T) {
+	changedFiles := " M pkg/x/b.go"
+	// diff shows an added function signature (no leading -U0 hunk header needed
+	// because addedFuncNames matches lines starting with "+func")
+	diffOutput := "+func NewThing() {\n"
+
+	// grep returns: the definition line in b.go + a caller in another file
+	grepOutputs := map[string]string{
+		"NewThing": "./pkg/x/b.go:5:func NewThing() {\n" +
+			"./pkg/y/consumer.go:42:\tNewThing()\n",
+	}
+
+	// addedFuncNames uses "git diff -- <file>" (without -U0); the fake runner
+	// above answers args[0]=="diff" && args[1]=="-U0" for modifiedFuncNames.
+	// We need a separate branch for the plain "git diff -- <file>" call used by
+	// addedFuncNames.  Extend the runner to handle both.
+	run := func(_ context.Context, _ string, _ []string, name string, args ...string) (string, error) {
+		switch name {
+		case "git":
+			if len(args) >= 2 && args[0] == "status" && args[1] == "-z" {
+				return changedFiles, nil
+			}
+			if len(args) >= 2 && args[0] == "diff" {
+				// Both -U0 (modifiedFuncNames) and plain (addedFuncNames) paths
+				// return the same diff; addedFuncNames only cares about "+func" lines.
+				return diffOutput, nil
+			}
+		case "grep":
+			if len(args) >= 3 {
+				if out, ok := grepOutputs[args[2]]; ok {
+					return out, nil
+				}
+			}
+		}
+		return "", nil
+	}
+
+	failed, out := checkCallerImpact(context.Background(), "/ws", run)
+	if !failed {
+		t.Fatalf("want advisory for added func with external caller, got failed=false")
+	}
+	if !strings.Contains(out, "consumer.go:42") {
+		t.Fatalf("want advisory listing consumer.go:42, got out=%q", out)
+	}
+}
+
 // TestCheckCallerImpact_TruncatesLargeCallerLists verifies that when a
 // function has many callers the output is capped and a "(+N more)" note
 // is appended.

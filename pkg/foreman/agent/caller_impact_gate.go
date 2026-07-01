@@ -116,9 +116,9 @@ func checkCallerImpact(ctx context.Context, workspace string, run commandRunner)
 
 // externalCallers greps the working tree for call sites of funcName, then
 // filters to lines that (a) contain `funcName(` (a call, not just a comment
-// or import name) and (b) are not in defFile at the function definition line.
-// It returns distinct "file:line" strings for the external callers. Returns
-// nil on grep error (fail-open).
+// or import name) and (b) are in a file other than defFile. This excludes the
+// declaration line AND any same-file recursive or chained calls; only
+// cross-file callers remain. Returns nil on grep error (fail-open).
 func externalCallers(ctx context.Context, workspace, funcName, defFile string, run commandRunner) []string {
 	grepOut, err := run(ctx, workspace, nil, "grep", "-rn", "--include=*.go", funcName, ".")
 	if err != nil {
@@ -149,8 +149,9 @@ func externalCallers(ctx context.Context, workspace, funcName, defFile string, r
 		}
 		site := filePart + ":" + lineNum
 
-		// Exclude the function definition line in defFile.
-		if normalizeGrepPath(filePart) == defFileNorm && strings.Contains(text, "func "+funcName) {
+		// Exclude all lines in the definition file (declaration + same-file
+		// recursive/chained calls). Only cross-file callers are external.
+		if normalizeGrepPath(filePart) == defFileNorm {
 			continue
 		}
 
