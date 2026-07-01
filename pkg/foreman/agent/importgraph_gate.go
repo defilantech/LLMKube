@@ -15,18 +15,18 @@ limitations under the License.
 */
 
 // checkImportGraph is a gate check that detects NEW cross-layer import edges
-// introduced by a change. It compares the import set in the INDEX (staged/working
-// tree) against the HEAD import set for each changed non-test Go file and flags
+// introduced by a change. It compares the import set in the WORKING TREE (disk)
+// against the HEAD import set for each changed non-test Go file and flags
 // any import that was not present on HEAD and violates the layering rules.
 //
 // The only rule today: a package under pkg/ must not newly import a package
 // under internal/. Pre-existing edges are not flagged. External and stdlib
 // imports are never judged.
 //
-// The check is fail-open: a parse error on the INDEX version is silently
-// skipped (the build check covers compile errors; we must not block WIP that
-// is not yet parseable). A missing HEAD version (new file) is treated as an
-// empty import set, so all its imports are considered "new".
+// The check is fail-open: a disk read or parse error on the current version is
+// silently skipped (the build check covers compile errors; we must not block
+// WIP that is not yet parseable). A missing HEAD version (new file) is treated
+// as an empty import set, so all its imports are considered "new".
 package agent
 
 import (
@@ -34,6 +34,7 @@ import (
 	"fmt"
 	"go/parser"
 	"go/token"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -101,13 +102,15 @@ func checkImportGraph(ctx context.Context, workspace string, run commandRunner) 
 	var findings []string
 
 	for _, path := range changed {
-		// Read the INDEX (staged/working) version of the file.
-		indexSrc, err := run(ctx, workspace, nil, "git", "show", ":"+path)
+		// Read the WORKING TREE (disk) version of the file. The gate runs
+		// before the executor commits, so the index is STALE (== HEAD). Reading
+		// from disk is the only way to see the coder's edits.
+		diskBytes, err := os.ReadFile(filepath.Join(workspace, path))
 		if err != nil {
-			// Cannot read index copy; skip this file (fail-open).
+			// Cannot read disk copy; skip this file (fail-open).
 			continue
 		}
-		indexImports, ok := parseImports(path, indexSrc)
+		diskImports, ok := parseImports(path, string(diskBytes))
 		if !ok {
 			// Unparseable WIP; build check will catch it; skip here.
 			continue
@@ -129,7 +132,7 @@ func checkImportGraph(ctx context.Context, workspace string, run commandRunner) 
 		importerModRel := importerDir // module-relative (no module prefix)
 
 		// Evaluate layering rules only for new imports within this module.
-		for imp := range indexImports {
+		for imp := range diskImports {
 			if headImports[imp] {
 				continue // pre-existing edge; not a new violation
 			}
