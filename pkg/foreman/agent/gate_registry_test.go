@@ -52,3 +52,31 @@ func TestGateCheckEnabled_Toggle(t *testing.T) {
 		t.Fatal("unset toggle should default enabled")
 	}
 }
+
+func TestGateCheckRegistry_TiersAndNames(t *testing.T) {
+	got := map[string]gateTier{}
+	for _, c := range gateCheckRegistry("issue text") {
+		if c.fn == nil {
+			t.Errorf("check %q has nil fn", c.name)
+		}
+		got[c.name] = c.tier
+	}
+	wantBlock := []string{"rbac-use", "import-graph", "embedded-artifact"}
+	wantAdvisory := []string{"grounding-breadth", "caller-impact", "issue-example"}
+	for _, n := range wantBlock {
+		tier, ok := got[n]
+		if !ok {
+			t.Errorf("missing block check %q", n)
+		} else if tier != tierBlock {
+			t.Errorf("%s should be block tier, got %v", n, tier)
+		}
+	}
+	for _, n := range wantAdvisory {
+		tier, ok := got[n]
+		if !ok {
+			t.Errorf("missing advisory check %q", n)
+		} else if tier != tierAdvisory {
+			t.Errorf("%s should be advisory tier, got %v", n, tier)
+		}
+	}
+}
