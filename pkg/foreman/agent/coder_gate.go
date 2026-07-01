@@ -235,6 +235,12 @@ func gateCheckRegistry(issueText string) []gateCheck {
 			lang: foremanv1alpha1.GateLanguageGo,
 			fn:   checkRBACUse,
 		},
+		{
+			name: "import-graph",
+			tier: tierBlock,
+			lang: foremanv1alpha1.GateLanguageGo,
+			fn:   checkImportGraph,
+		},
 	}
 }
 
