@@ -67,7 +67,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 )
 
-// +kubebuilder:rbac:groups=core,resources=pods,verbs=get
+// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get
 
 func (r *R) Do(ctx context.Context) error {
 	return r.Create(ctx, &batchv1.Job{})
@@ -191,6 +191,60 @@ func (r *R) Do(ctx context.Context) error {
 	}
 
 	// Case 2: marker absent — MUST fail (proves the test is meaningful).
+	const srcNoMarker = `package controller
+
+import (
+	"context"
+
+	corev1 "k8s.io/api/core/v1"
+)
+
+func (r *R) Do(ctx context.Context) error {
+	return r.Create(ctx, &corev1.Service{})
+}
+`
+	dir2 := t.TempDir()
+	mustWrite(t, dir2, "internal/controller/x.go", srcNoMarker)
+	run2 := changedGoFilesRunner("internal/controller/x.go")
+	failed2, out2 := checkRBACUse(context.Background(), dir2, run2)
+	if !failed2 {
+		t.Fatalf("missing marker should produce a failure, got passed; out=%q", out2)
+	}
+	if !strings.Contains(out2, "services") || !strings.Contains(out2, "create") {
+		t.Fatalf("failure message should mention services/create, got: %s", out2)
+	}
+}
+
+// TestCheckRBACUse_CoreGroupSpellingMarkerPasses verifies that the alternative
+// kubebuilder spelling groups=core (without quotes) is treated as equivalent to
+// groups="" when checking a core-API-group type. Without normalizeGroup, a
+// marker using groups=core would not match a used group of "" (the value stored
+// in rbacGroupResource for Pod, Service, etc.), causing a false-positive block.
+func TestCheckRBACUse_CoreGroupSpellingMarkerPasses(t *testing.T) {
+	const src = `package controller
+
+import (
+	"context"
+
+	corev1 "k8s.io/api/core/v1"
+)
+
+// +kubebuilder:rbac:groups=core,resources=services,verbs=create
+
+func (r *R) Do(ctx context.Context) error {
+	return r.Create(ctx, &corev1.Service{})
+}
+`
+	// Case 1: marker present using groups=core — must NOT fail.
+	dir := t.TempDir()
+	mustWrite(t, dir, "internal/controller/x.go", src)
+	run := changedGoFilesRunner("internal/controller/x.go")
+	failed, out := checkRBACUse(context.Background(), dir, run)
+	if failed {
+		t.Fatalf("groups=core marker should satisfy core/services/create, got failure: %s", out)
+	}
+
+	// Case 2: marker absent — MUST fail (proves the test would catch regressions).
 	const srcNoMarker = `package controller
 
 import (

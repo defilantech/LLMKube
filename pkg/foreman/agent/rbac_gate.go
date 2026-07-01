@@ -226,7 +226,9 @@ func isClientReceiver(expr ast.Expr) bool {
 		// Bare receiver like `r`
 		return true
 	case *ast.SelectorExpr:
-		// r.Client, r.SomeField, etc.
+		// r.Client, r.SomeField, etc. The loose ident.field match is intentional
+		// and safe: unknown object types are not in rbacGroupResource and are
+		// silently skipped (fail-open), so no false positives arise.
 		_, lhsIsIdent := x.X.(*ast.Ident)
 		return lhsIsIdent
 	case *ast.CallExpr:
@@ -401,13 +403,34 @@ func splitListValue(v string) []string {
 	return out
 }
 
+// normalizeGroup canonicalises the Kubernetes API group so that "core" and ""
+// are treated as identical. kubebuilder markers accept both spellings for the
+// core group (groups="" and groups=core); the static type table uses "".
+func normalizeGroup(g string) string {
+	if g == "core" {
+		return ""
+	}
+	return g
+}
+
 // markerCovers reports whether any of the collected markers grants the
 // combination (group, resource, verb). A marker covers when its groups list
 // contains group (or "*"), its resources list contains resource (or "*"), and
 // its verbs list contains verb (or "*").
+//
+// Both the used group and each marker group are passed through normalizeGroup
+// so that "core" and "" are treated as equivalent.
 func markerCovers(markers []rbacMarker, group, resource, verb string) bool {
+	normGroup := normalizeGroup(group)
 	for _, m := range markers {
-		if listContains(m.groups, group) &&
+		groupMatch := false
+		for _, mg := range m.groups {
+			if normalizeGroup(mg) == normGroup || mg == "*" {
+				groupMatch = true
+				break
+			}
+		}
+		if groupMatch &&
 			listContains(m.resources, resource) &&
 			listContains(m.verbs, verb) {
 			return true
