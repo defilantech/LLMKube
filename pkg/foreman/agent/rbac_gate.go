@@ -384,9 +384,19 @@ func splitListValue(v string) []string {
 	var out []string
 	for _, tok := range strings.Split(v, ",") {
 		tok = strings.TrimSpace(tok)
-		if tok != "" {
-			out = append(out, tok)
+		// Strip surrounding double-quotes before the emptiness check. This
+		// handles the kubebuilder convention of writing the core API group as
+		// groups="" (quoted empty string). After stripping, a token that was
+		// originally "" becomes the empty string, which is the correct group
+		// value for the Kubernetes core API group. We only skip tokens that
+		// were empty BEFORE stripping (i.e. they were whitespace-only or
+		// produced by a trailing comma), distinguished here by checking whether
+		// the pre-strip token was non-empty.
+		stripped := strings.Trim(tok, "\"")
+		if tok == "" {
+			continue // skip genuinely-empty / whitespace-only tokens
 		}
+		out = append(out, stripped)
 	}
 	return out
 }
