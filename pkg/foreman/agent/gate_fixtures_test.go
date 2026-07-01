@@ -456,4 +456,53 @@ func TestNewHelper(t *testing.T) {
 			t.Errorf("test-presence: function covered by changed test should not fire; got: %s", out)
 		}
 	})
+
+	t.Run("caller-impact: body-modified function with no external callers -> no fire", func(t *testing.T) {
+		// Base: pkg/x/a.go defines Solo() which is only used within the same file.
+		// Current: body of Solo() changes ("a" -> "b"). modifiedFuncNames will pick
+		// up Solo; externalCallers will grep the workspace and find only the
+		// definition line in pkg/x/a.go (no cross-file caller) -> no advisory.
+		baseSrc := `package x
+
+// Solo does the original thing.
+func Solo() string {
+	return "a"
+}
+`
+		currentSrc := `package x
+
+// Solo does the updated thing.
+func Solo() string {
+	return "b"
+}
+`
+		ws, run := materializeFixture(t, []fixtureFile{
+			{relPath: "pkg/x/a.go", base: baseSrc, current: currentSrc},
+		})
+
+		failed, out := checkCallerImpact(context.Background(), ws, run)
+		if failed {
+			t.Errorf("caller-impact: no external callers of Solo should not fire; got: %s", out)
+		}
+	})
+
+	t.Run("grounding-breadth: doc token grounded by exporter prefix -> no fire", func(t *testing.T) {
+		// Current: docs/x.md cites node_memory_working_set_bytes. The token starts
+		// with "node_" which is in ExporterMetricPrefixes, so checkGroundingBreadth
+		// must NOT flag it. Include yaml/yml stubs so `git add -A -- *.md *.yaml
+		// *.yml` in AddedLines finds at least one file per pathspec and staging does
+		// not abort with exit 128 (leaving the cached diff empty).
+		mdContent := "# Metrics\n\nWatch node_memory_working_set_bytes to track container RSS on each node.\n"
+		yamlStub := "# placeholder\nkind: stub\n"
+		ws, run := materializeFixture(t, []fixtureFile{
+			{relPath: "docs/x.md", base: "", current: mdContent},
+			{relPath: "docs/stub.yaml", base: "", current: yamlStub},
+			{relPath: "docs/stub.yml", base: "", current: yamlStub},
+		})
+
+		failed, out := checkGroundingBreadth(context.Background(), ws, run)
+		if failed {
+			t.Errorf("grounding-breadth: node_memory_working_set_bytes is grounded by node_ prefix; should not fire; got: %s", out)
+		}
+	})
 }
