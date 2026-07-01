@@ -24,9 +24,9 @@ These checks fail the gate and block a GO.
 
 | Check | Kill switch | Description |
 |---|---|---|
-| `rbac-use` | `FOREMAN_RBAC_USE_GATE=0` | Flags new calls to Kubernetes RBAC-bearing APIs (e.g. `SubjectAccessReview`, `TokenReview`) without a corresponding marker or documented rationale. Prevents privilege escalation by an unreviewed coder. |
-| `import-graph` | `FOREMAN_IMPORT_GRAPH_GATE=0` | Detects imports that introduce a forbidden dependency cycle or pull a heavy external package into a lightweight core package. Keeps the import topology clean without relying on the linter's limited cycle detection. |
-| `embedded-artifact` | `FOREMAN_EMBEDDED_ARTIFACT_GATE=0` | Catches binary blobs or pre-built artifacts accidentally committed alongside source (e.g. a compiled binary checked into `cmd/`, a `.zip` dropped into `charts/`). These pass every text-based check and can hide supply-chain issues. |
+| `rbac-use` | `FOREMAN_RBAC_USE_GATE=0` | Flags a changed controller file that calls a controller-runtime client verb (Create/Get/List/Update/Patch/Delete/Watch) on a known typed object without a matching `+kubebuilder:rbac` marker in the same package. Unknown types are silently skipped (fail-open); only files under `internal/controller/` or `internal/foreman/controller/` are inspected. |
+| `import-graph` | `FOREMAN_IMPORT_GRAPH_GATE=0` | Flags a new import edge in a changed Go file that violates the layering rule: a `pkg/` package must not import an `internal/` package. Pre-existing edges are not flagged; external and stdlib imports are never judged. This is a layering check, not a cycle detector. |
+| `embedded-artifact` | `FOREMAN_EMBEDDED_ARTIFACT_GATE=0` | Extracts fenced `yaml`/`yml` code blocks from changed `*.md` files and validates each block as YAML. For blocks that have both `apiVersion` and `kind`, runs `kubectl --dry-run=client` if kubectl is on PATH. Fails on invalid YAML or a failed manifest dry-run; non-YAML blocks are not examined. |
 
 ### Advisory tier
 
@@ -34,26 +34,22 @@ These checks surface findings to the reviewer without blocking the coder.
 
 | Check | Kill switch | Description |
 |---|---|---|
-| `grounding-breadth` | `FOREMAN_GROUNDING_BREADTH_GATE=0` | Reports when the set of files the coder read during its loop is narrow relative to the scope of changes made. A coder that edits three packages but only ever read files from one may have missed context. |
-| `caller-impact` | `FOREMAN_CALLER_IMPACT_GATE=0` | Detects exported function or type signature changes that have callers elsewhere in the repo, so the reviewer knows to check that downstream call sites are consistent with the new contract. |
-| `issue-example` | `FOREMAN_ISSUE_EXAMPLE_GATE=0` | Verifies that any example YAML or shell snippet in the issue description that is also reproduced in the coder's output is structurally coherent (not just copied verbatim with no adjustment). |
+| `grounding-breadth` | `FOREMAN_GROUNDING_BREADTH_GATE=0` | Flags doc tokens shaped like an external metric name or chart resource name (e.g. a `DCGM_FI_*` prefix or a `kube_*` counter) that do not resolve to a known `llmkube_*` symbol, chart resource, or recognised exporter-metric prefix. Surfaces "minor" severity findings only; the "blocker" findings from the same grounding library are handled by the block-tier reference-grounding check in the command tier. |
+| `caller-impact` | `FOREMAN_CALLER_IMPACT_GATE=0` | For each function added or body-modified in a changed Go file, lists the external call sites (callers in other files) so the reviewer can check the blast radius. Functions with no cross-file callers produce no advisory. |
+| `issue-example` | `FOREMAN_ISSUE_EXAMPLE_GATE=0` | Harvests a concrete example, repro, or expected-output block from the issue body and surfaces it as an advisory so the reviewer can verify the diff satisfies it. Operates purely on the issue text; does not access the workspace. |
 
 ## Disabling a check
 
 Each check has an environment variable kill switch of the form
-`FOREMAN_<UPPER_SNAKE_NAME>_GATE=0`. Set it on the gate Job's pod (via
-`AgenticTask.spec.gateEnv` or the node's environment) to skip that check for
-a specific task or globally on that node.
+`FOREMAN_<UPPER_SNAKE_NAME>_GATE=0`. The gate process reads these from its
+OS environment, so the variable must be present in the environment of the
+process that runs the gate checks (e.g. injected into the gate Job's pod
+environment or set on the node). Setting it to `"0"` disables the check;
+any other value, or absence of the variable, leaves the check enabled.
 
 Example: to suppress the `caller-impact` advisory on a refactoring task where
-widespread caller churn is expected and reviewed by hand:
-
-```yaml
-spec:
-  gateEnv:
-    - name: FOREMAN_CALLER_IMPACT_GATE
-      value: "0"
-```
+widespread caller churn is expected and reviewed by hand, set
+`FOREMAN_CALLER_IMPACT_GATE=0` in the gate Job's pod environment.
 
 Checks default to **enabled** when the variable is unset or set to any value
 other than `"0"`.
