@@ -5,6 +5,13 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.25](https://github.com/defilantech/LLMKube/compare/v0.8.24...v0.8.25) (2026-07-01)
+
+
+### Features
+
+* **foreman:** coder clones/pushes each task's own repo when no static remote ([#924](https://github.com/defilantech/LLMKube/issues/924)) ([88c334d](https://github.com/defilantech/LLMKube/commit/88c334df23d694b3db0779f94ef04ba2b203992a))
+
 ## [0.8.24](https://github.com/defilantech/LLMKube/compare/v0.8.23...v0.8.24) (2026-07-01)
 
 
