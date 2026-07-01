@@ -183,6 +183,19 @@ type WorkloadSpec struct {
 	// must allow for a cloud reviewer to dispatch.
 	// +optional
 	AllowCloudReviewers *bool `json:"allowCloudReviewers,omitempty"`
+
+	// GateProfile is the default gate profile applied to every AgenticTask
+	// this Workload decomposes into (issue-batch, explicit pipeline, and
+	// escalation steps alike). It sets the verify gate's language, image,
+	// and commands, and drives the coder's in-loop self-gate. A PipelineStep
+	// may override it per step (see PipelineStep.GateProfile); an unset
+	// profile on both resolves to the "go" preset, i.e. current behavior.
+	//
+	// Without this field, every Workload-decomposed task falls back to the
+	// Go gate, so a Workload-driven source (a work-queue bridge) cannot run
+	// Foreman on non-Go repositories even though the language presets exist.
+	// +optional
+	GateProfile *GateProfile `json:"gateProfile,omitempty"`
 }
 
 // PipelineStep is one step in an explicit Workload pipeline. Each step
@@ -231,6 +244,12 @@ type PipelineStep struct {
 	// Higher values dispatch first. v0.1 is FIFO and ignores priority.
 	// +optional
 	Priority int32 `json:"priority,omitempty"`
+
+	// GateProfile overrides the Workload-level GateProfile for this step
+	// only, so a mixed-language pipeline can gate each step differently.
+	// Unset falls back to WorkloadSpec.GateProfile, then to the "go" preset.
+	// +optional
+	GateProfile *GateProfile `json:"gateProfile,omitempty"`
 }
 
 // WorkloadStatus reflects the observed state of the workload.

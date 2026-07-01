@@ -143,6 +143,64 @@ spec:
                   type: object
                   x-kubernetes-map-type: atomic
                 type: array
+              gateProfile:
+                description: |-
+                  GateProfile is the default gate profile applied to every AgenticTask
+                  this Workload decomposes into (issue-batch, explicit pipeline, and
+                  escalation steps alike). It sets the verify gate's language, image,
+                  and commands, and drives the coder's in-loop self-gate. A PipelineStep
+                  may override it per step (see PipelineStep.GateProfile); an unset
+                  profile on both resolves to the "go" preset, i.e. current behavior.
+
+                  Without this field, every Workload-decomposed task falls back to the
+                  Go gate, so a Workload-driven source (a work-queue bridge) cannot run
+                  Foreman on non-Go repositories even though the language presets exist.
+                properties:
+                  commands:
+                    description: |-
+                      Commands overrides the preset commands. Only non-empty fields
+                      replace the preset; empty fields keep the preset value.
+                    properties:
+                      build:
+                        description: Build is the command that compiles the project.
+                        type: string
+                      codegenCheck:
+                        description: |-
+                          CodegenCheck is the command that verifies generated files are
+                          in sync with their sources. Empty means no codegen check.
+                        type: string
+                      format:
+                        description: Format is the command that checks source formatting.
+                        type: string
+                      lint:
+                        description: Lint is the command that runs the linter.
+                        type: string
+                      test:
+                        description: Test is the command that runs the test suite.
+                        type: string
+                    type: object
+                  image:
+                    description: Image is the container image used to run the gate
+                      checks.
+                    type: string
+                  language:
+                    description: Language selects the built-in preset. Defaults to
+                      "go" when empty.
+                    enum:
+                    - go
+                    - python
+                    - rust
+                    - node
+                    - generic
+                    type: string
+                  sourceExtensions:
+                    description: |-
+                      SourceExtensions lists the file extensions the gate should
+                      consider as source files (e.g. ".go", ".py").
+                    items:
+                      type: string
+                    type: array
+                type: object
               intent:
                 description: |-
                   Intent is the natural-language description of what to do.
@@ -212,6 +270,60 @@ spec:
                       items:
                         type: string
                       type: array
+                    gateProfile:
+                      description: |-
+                        GateProfile overrides the Workload-level GateProfile for this step
+                        only, so a mixed-language pipeline can gate each step differently.
+                        Unset falls back to WorkloadSpec.GateProfile, then to the "go" preset.
+                      properties:
+                        commands:
+                          description: |-
+                            Commands overrides the preset commands. Only non-empty fields
+                            replace the preset; empty fields keep the preset value.
+                          properties:
+                            build:
+                              description: Build is the command that compiles the
+                                project.
+                              type: string
+                            codegenCheck:
+                              description: |-
+                                CodegenCheck is the command that verifies generated files are
+                                in sync with their sources. Empty means no codegen check.
+                              type: string
+                            format:
+                              description: Format is the command that checks source
+                                formatting.
+                              type: string
+                            lint:
+                              description: Lint is the command that runs the linter.
+                              type: string
+                            test:
+                              description: Test is the command that runs the test
+                                suite.
+                              type: string
+                          type: object
+                        image:
+                          description: Image is the container image used to run the
+                            gate checks.
+                          type: string
+                        language:
+                          description: Language selects the built-in preset. Defaults
+                            to "go" when empty.
+                          enum:
+                          - go
+                          - python
+                          - rust
+                          - node
+                          - generic
+                          type: string
+                        sourceExtensions:
+                          description: |-
+                            SourceExtensions lists the file extensions the gate should
+                            consider as source files (e.g. ".go", ".py").
+                          items:
+                            type: string
+                          type: array
+                      type: object
                     kind:
                       description: Kind selects the AgenticTask kind to emit.
                       enum:
