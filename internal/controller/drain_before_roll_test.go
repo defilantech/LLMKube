@@ -798,6 +798,49 @@ var _ = Describe("RolloutPolicy drain-before-rollout", func() {
 	})
 })
 
+var _ = Describe("podTemplatesDiffer input immutability (#922)", func() {
+	newPrepTemplate := func() corev1.PodTemplateSpec {
+		root := int64(0)
+		return corev1.PodTemplateSpec{
+			Spec: corev1.PodSpec{
+				InitContainers: []corev1.Container{{
+					Name:  "model-cache-prep",
+					Image: "curl:8.18.0",
+					SecurityContext: &corev1.SecurityContext{
+						RunAsUser: &root,
+						Capabilities: &corev1.Capabilities{
+							Add:  []corev1.Capability{"CHOWN", "FOWNER"},
+							Drop: []corev1.Capability{"ALL"},
+						},
+					},
+				}},
+			},
+		}
+	}
+
+	It("does not mutate the desired template's init container SecurityContext", func() {
+		desired := newPrepTemplate()
+		existing := newPrepTemplate()
+		// A rollout-worthy difference so the function runs its full
+		// normalization path before returning.
+		existing.Spec.InitContainers[0].Image = "curl:8.17.0"
+
+		changed := podTemplatesDiffer(existing, desired)
+
+		Expect(changed).To(BeTrue(), "an image change should still be detected")
+		sc := desired.Spec.InitContainers[0].SecurityContext
+		Expect(sc).NotTo(BeNil())
+		Expect(sc.RunAsUser).NotTo(BeNil(), "RunAsUser must survive the diff (see #922)")
+		Expect(*sc.RunAsUser).To(Equal(int64(0)))
+		Expect(sc.Capabilities).NotTo(BeNil())
+		Expect(sc.Capabilities.Add).To(ContainElement(corev1.Capability("CHOWN")))
+	})
+
+	It("reports no difference for identical templates", func() {
+		Expect(podTemplatesDiffer(newPrepTemplate(), newPrepTemplate())).To(BeFalse())
+	})
+})
+
 var _ = Describe("checkServerIdle", func() {
 	var reconciler *InferenceServiceReconciler
 
