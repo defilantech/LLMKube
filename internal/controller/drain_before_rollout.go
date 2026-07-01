@@ -267,6 +267,15 @@ func computePodTemplateForComparison(t corev1.PodTemplateSpec) corev1.PodTemplat
 // scheduling fields) while ignoring API-server-applied defaults like
 // TerminationGracePeriodSeconds that cause false positives on full DeepEqual.
 func podTemplatesDiffer(existing, desired corev1.PodTemplateSpec) bool {
+	// Deep-copy both templates up front. The normalization below mutates
+	// container SecurityContexts and other fields in place, and a shallow
+	// struct copy still shares the underlying slices and pointers with the
+	// caller's templates. Without this, normalizing `desired` for comparison
+	// nils out the real desired template's SecurityContext (e.g. the
+	// model-cache-prep init container's RunAsUser/Capabilities), which then
+	// gets applied to the Deployment. See #922.
+	existing = *existing.DeepCopy()
+	desired = *desired.DeepCopy()
 	if !apiequality.Semantic.DeepEqual(existing.Labels, desired.Labels) {
 		return true
 	}
