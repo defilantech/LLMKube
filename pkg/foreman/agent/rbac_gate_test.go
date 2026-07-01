@@ -103,6 +103,54 @@ func (r *R) Do(ctx context.Context) error {
 	}
 }
 
+func TestCheckRBACUse_GetMissingMarkerFails(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, dir, "internal/controller/x.go", `package controller
+
+import (
+	"context"
+
+	batchv1 "k8s.io/api/batch/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+)
+
+// +kubebuilder:rbac:groups=core,resources=pods,verbs=get
+
+func (r *R) Do(ctx context.Context) error {
+	return r.Get(ctx, client.ObjectKey{}, &batchv1.Job{})
+}
+`)
+	run := changedGoFilesRunner("internal/controller/x.go")
+	failed, out := checkRBACUse(context.Background(), dir, run)
+	if !failed || !strings.Contains(out, "batch") || !strings.Contains(out, "jobs") || !strings.Contains(out, "get") {
+		t.Fatalf("want failure for missing batch/jobs/get marker, got failed=%v out=%q", failed, out)
+	}
+}
+
+func TestCheckRBACUse_GetMarkerPresentPasses(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, dir, "internal/controller/x.go", `package controller
+
+import (
+	"context"
+
+	batchv1 "k8s.io/api/batch/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+)
+
+// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get
+
+func (r *R) Do(ctx context.Context) error {
+	return r.Get(ctx, client.ObjectKey{}, &batchv1.Job{})
+}
+`)
+	run := changedGoFilesRunner("internal/controller/x.go")
+	failed, _ := checkRBACUse(context.Background(), dir, run)
+	if failed {
+		t.Fatal("present get marker should pass")
+	}
+}
+
 func TestCheckRBACUse_NonControllerFileSkipped(t *testing.T) {
 	dir := t.TempDir()
 	mustWrite(t, dir, "pkg/cli/x.go", "package cli\n")

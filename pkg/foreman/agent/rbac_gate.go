@@ -194,20 +194,24 @@ func extractClientCall(call *ast.CallExpr) (verb, typeName string, ok bool) {
 		return "", "", false
 	}
 
-	// The object is the LAST argument (controller-runtime: Create(ctx, obj, opts...)
-	// Get(ctx, key, obj, opts...), List(ctx, list, opts...), etc.).
-	if len(call.Args) < 2 {
-		return "", "", false
-	}
-	lastArg := call.Args[len(call.Args)-1]
-	// Opts variadic can be there; the object is always in position 1 for Create/Get/List/Update/Patch/Delete,
-	// or position 1 for Watch. For most verbs args are (ctx, obj [,opts...]).
-	// Use index 1 (second arg) as the object, not last, to handle opts.
-	if len(call.Args) >= 2 {
-		lastArg = call.Args[1]
+	// Extract the object argument. controller-runtime signatures differ by verb:
+	//   Create/Update/Patch/Delete/List/Watch: (ctx, obj, opts...) -> object at index 1
+	//   Get:                                   (ctx, key, obj, opts...) -> object at index 2
+	var objArg ast.Expr
+	if verb == "get" {
+		// Get requires at least 3 args: ctx, key, obj.
+		if len(call.Args) < 3 {
+			return "", "", false
+		}
+		objArg = call.Args[2]
+	} else {
+		if len(call.Args) < 2 {
+			return "", "", false
+		}
+		objArg = call.Args[1]
 	}
 
-	typeName, ok = extractObjectTypeName(lastArg)
+	typeName, ok = extractObjectTypeName(objArg)
 	if !ok {
 		return "", "", false
 	}
