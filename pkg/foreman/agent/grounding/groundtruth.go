@@ -16,11 +16,27 @@ type GroundTruth struct {
 	SpecFields map[string]map[string]bool // kind -> set of spec.<field> names
 	Metrics    map[string]bool            // metric names, e.g. "llmkube_inferenceservice_phase"
 	CLICmds    map[string]bool            // llmkube subcommands, e.g. "deploy"
+
+	// ChartResourceNames holds plain metadata.name values scraped from Helm
+	// chart templates (non-templated literals only). Used by the advisory
+	// grounding-breadth check to validate resource names in docs.
+	ChartResourceNames map[string]bool
+
+	// ExporterMetricPrefixes is the set of metric-name prefixes from external
+	// Prometheus exporters that are deployed alongside LLMKube (e.g. "DCGM_FI_",
+	// "node_"). When non-empty, the advisory grounding-breadth check flags any
+	// token that looks like a metric name but does not start with a known prefix.
+	ExporterMetricPrefixes []string
 }
 
 var (
 	metricNameRe = regexp.MustCompile(`"(llmkube_[a-z0-9_]+)"`)
 	cobraUseRe   = regexp.MustCompile(`Use:\s*"([a-zA-Z][a-zA-Z0-9_-]*)`)
+
+	// chartMetaNameRe matches a plain (non-templated) metadata.name value in a
+	// Helm chart YAML template. Values containing "{{" are skipped (they are
+	// Go-template expressions, not literal names).
+	chartMetaNameRe = regexp.MustCompile(`^\s*name:\s*(\S+)\s*$`)
 )
 
 // skipScanDir skips version-control, vendored, build, and fixture directories
@@ -80,6 +96,52 @@ func scanCLICommands(dir string, gt *GroundTruth) {
 	})
 }
 
+// scanChartResources walks chartsDir recursively for *.yaml and *.yml files
+// and captures every plain (non-templated) metadata.name value. Names that
+// contain "{{" (Helm template syntax) are skipped.
+func scanChartResources(chartsDir string, gt *GroundTruth) {
+	_ = filepath.WalkDir(chartsDir, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if skipScanDir(d.Name()) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		name := d.Name()
+		if !strings.HasSuffix(name, ".yaml") && !strings.HasSuffix(name, ".yml") {
+			return nil
+		}
+		b, _ := os.ReadFile(p)
+		inMetadata := false
+		for _, line := range strings.Split(string(b), "\n") {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "metadata:" {
+				inMetadata = true
+				continue
+			}
+			// A new top-level or same-level key resets the metadata context.
+			// We use a simple heuristic: if the line is not indented and is a
+			// key (contains ':'), leave metadata scope.
+			if inMetadata {
+				if len(line) > 0 && line[0] != ' ' && line[0] != '\t' && strings.Contains(line, ":") {
+					inMetadata = false
+				}
+				if m := chartMetaNameRe.FindStringSubmatch(line); m != nil {
+					val := m[1]
+					if !strings.Contains(val, "{{") {
+						gt.ChartResourceNames[val] = true
+					}
+					inMetadata = false // name seen; no need to stay in metadata block
+				}
+			}
+		}
+		return nil
+	})
+}
+
 // crdDoc is the minimal CRD shape we parse.
 type crdDoc struct {
 	Spec struct {
@@ -108,10 +170,39 @@ func LoadGroundTruth(crdBasesDir, metricsDir, cmdDir string) (*GroundTruth, erro
 		Groups: map[string]bool{}, Kinds: map[string]bool{},
 		SpecFields: map[string]map[string]bool{},
 		Metrics:    map[string]bool{}, CLICmds: map[string]bool{},
+		ChartResourceNames: map[string]bool{},
+		ExporterMetricPrefixes: []string{
+			"DCGM_FI_", "node_", "container_", "kube_", "go_", "process_",
+		},
+	}
+	if err := loadCRDBases(crdBasesDir, gt); err != nil {
+		return nil, err
+	}
+	if metricsDir != "" {
+		scanMetrics(metricsDir, gt)
+		scanChartResources(filepath.Join(metricsDir, "charts"), gt)
+	}
+	if cmdDir != "" {
+		scanCLICommands(cmdDir, gt)
+	}
+	return gt, nil
+}
+
+// loadCRDBases reads *.yaml files from crdBasesDir and populates gt with CRD
+// groups, kinds, and spec field names. An empty or missing dir string is a no-op.
+func loadCRDBases(crdBasesDir string, gt *GroundTruth) error {
+	if crdBasesDir == "" {
+		return nil
 	}
 	entries, err := os.ReadDir(crdBasesDir)
 	if err != nil {
-		return nil, err
+		// Missing dir is not an error: the advisory check runs without CRD
+		// context when the workspace lacks a config/crd/bases tree (e.g. in
+		// tests or on first-time clones).
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
 	}
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
@@ -119,7 +210,7 @@ func LoadGroundTruth(crdBasesDir, metricsDir, cmdDir string) (*GroundTruth, erro
 		}
 		b, err := os.ReadFile(filepath.Join(crdBasesDir, e.Name()))
 		if err != nil {
-			return nil, err
+			return err
 		}
 		var doc crdDoc
 		if err := yaml.Unmarshal(b, &doc); err != nil {
@@ -141,11 +232,5 @@ func LoadGroundTruth(crdBasesDir, metricsDir, cmdDir string) (*GroundTruth, erro
 			}
 		}
 	}
-	if metricsDir != "" {
-		scanMetrics(metricsDir, gt)
-	}
-	if cmdDir != "" {
-		scanCLICommands(cmdDir, gt)
-	}
-	return gt, nil
+	return nil
 }

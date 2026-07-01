@@ -52,3 +52,19 @@ func TestDetectUngroundedReferences_MetricAndCLI(t *testing.T) {
 		t.Fatalf("want 2 (bad metric + bad cli), got %d: %v", len(got), got)
 	}
 }
+
+func TestDetectUngrounded_FlagsUnknownDCGMMetric(t *testing.T) {
+	gt := &GroundTruth{ExporterMetricPrefixes: []string{"DCGM_FI_"}}
+	added := []AddedLine{{File: "docs/x.md", Line: 3, Text: "scrape dcgm_gpu_utilization from the exporter"}}
+	if len(DetectUngroundedReferences(added, gt)) == 0 {
+		t.Fatal("dcgm_gpu_utilization should be flagged (not a DCGM_FI_ metric, not llmkube_)")
+	}
+}
+
+func TestDetectUngrounded_AcceptsRealDCGMMetric(t *testing.T) {
+	gt := &GroundTruth{ExporterMetricPrefixes: []string{"DCGM_FI_"}}
+	added := []AddedLine{{File: "docs/x.md", Line: 3, Text: "scrape DCGM_FI_DEV_GPU_UTIL now"}}
+	if f := DetectUngroundedReferences(added, gt); len(f) != 0 {
+		t.Fatalf("real DCGM metric should not be flagged, got %v", f)
+	}
+}

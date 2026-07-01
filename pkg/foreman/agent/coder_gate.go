@@ -246,6 +246,12 @@ func gateCheckRegistry(issueText string) []gateCheck {
 			tier: tierBlock,
 			fn:   checkEmbeddedArtifacts,
 		},
+		{
+			name: "grounding-breadth",
+			tier: tierAdvisory,
+			lang: foremanv1alpha1.GateLanguageGo,
+			fn:   checkGroundingBreadth,
+		},
 	}
 }
 
