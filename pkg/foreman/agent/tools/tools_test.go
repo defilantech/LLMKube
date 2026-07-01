@@ -457,6 +457,59 @@ func TestStrReplace_HappyPath_ExactlyOnce(t *testing.T) {
 	}
 }
 
+func TestStrReplace_RecoversFromWhitespaceMismatch(t *testing.T) {
+	ws := makeWorkspace(t)
+	// Real file is tab-indented (as Go source is).
+	src := "func f() {\n\treturn 1\n}\n"
+	if err := os.WriteFile(filepath.Join(ws, "f.go"), []byte(src), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	tool := &StrReplaceTool{Workspace: ws}
+	// Model reproduces the body with SPACES instead of the tab. Exact match
+	// fails, but the whitespace-normalized fallback should locate it and apply
+	// the replacement against the real byte span.
+	wsArgs := map[string]string{
+		"path":       "f.go",
+		"old_string": "func f() {\n    return 1\n}", // spaces, not the file's tab
+		"new_string": "func f() {\n\treturn 2\n}",
+	}
+	wsBuf, _ := json.Marshal(wsArgs)
+	_, err := tool.Execute(context.Background(), wsBuf)
+	if err != nil {
+		t.Fatalf("expected whitespace-normalized recovery, got error: %v", err)
+	}
+	got, _ := os.ReadFile(filepath.Join(ws, "f.go"))
+	if !strings.Contains(string(got), "return 2") {
+		t.Errorf("replacement not applied: %q", string(got))
+	}
+}
+
+func TestStrReplace_ReturnsActualContentOnFabricatedOldString(t *testing.T) {
+	ws := makeWorkspace(t)
+	// Real file: a plain hyphen in the comment, a specific body.
+	src := "// keep this comment - a plain hyphen here\n" +
+		"func compute() string {\n\treturn hash()\n}\n"
+	if err := os.WriteFile(filepath.Join(ws, "f.go"), []byte(src), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	tool := &StrReplaceTool{Workspace: ws}
+	// Model fabricates old_string (em dash + wrong wording + wrong body) but
+	// anchors on the real, verbatim func signature line. The tool must not
+	// match, and must surface the ACTUAL current content so the model can retry
+	// against truth instead of re-hallucinating.
+	old := "// keep this comment — an EM dash and wrong words\n" +
+		"func compute() string {\n\treturn somethingElse()\n}"
+	args := map[string]string{"path": "f.go", "old_string": old, "new_string": "x"}
+	buf, _ := json.Marshal(args)
+	_, err := tool.Execute(context.Background(), buf)
+	if err == nil {
+		t.Fatal("expected error for fabricated old_string")
+	}
+	if !strings.Contains(err.Error(), "a plain hyphen here") || !strings.Contains(err.Error(), "return hash()") {
+		t.Errorf("error should surface real file content near the anchor, got: %v", err)
+	}
+}
+
 func TestStrReplace_CountMismatchIsError(t *testing.T) {
 	ws := makeWorkspace(t)
 	src := "x x x\n"
