@@ -252,6 +252,12 @@ func gateCheckRegistry(issueText string) []gateCheck {
 			lang: foremanv1alpha1.GateLanguageGo,
 			fn:   checkGroundingBreadth,
 		},
+		{
+			name: "caller-impact",
+			tier: tierAdvisory,
+			lang: foremanv1alpha1.GateLanguageGo,
+			fn:   checkCallerImpact,
+		},
 	}
 }
 
