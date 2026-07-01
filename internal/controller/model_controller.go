@@ -67,6 +67,16 @@ const (
 	// visible even when the controller does not act on it.
 	ConditionSourceDrifted = "SourceDrifted"
 
+	// ConditionRolloutDeferred indicates whether a rollout is being deferred
+	// because the InferenceService has waitForIdle enabled and pods are not yet
+	// idle. When True, the Deployment pod-template update is held until all
+	// backend slots report idle or the idleTimeoutSeconds expires.
+	ConditionRolloutDeferred = inferencev1alpha1.ConditionRolloutDeferred
+
+	ReasonPodsBusy            = inferencev1alpha1.ReasonPodsBusy
+	ReasonIdleCheckFailed     = inferencev1alpha1.ReasonIdleCheckFailed
+	ReasonIdleTimeoutExceeded = inferencev1alpha1.ReasonIdleTimeoutExceeded
+
 	ReasonWorkloadResolved = "WorkloadResolved"
 
 	// RefreshPolicyIfNotPresent downloads only when the cached file is missing

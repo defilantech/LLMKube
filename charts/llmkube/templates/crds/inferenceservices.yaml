@@ -2374,6 +2374,37 @@ spec:
                 format: int32
                 minimum: 0
                 type: integer
+              rolloutPolicy:
+                description: |-
+                  RolloutPolicy controls how deployment updates are applied. When waitForIdle
+                  is true, the controller will check backend slot idleness before updating
+                  the Deployment pod-template. Requires llama.cpp server-compatible backends
+                  that expose a /slots endpoint.
+                properties:
+                  force:
+                    description: |-
+                      Force bypasses the idle check and proceeds with the rollout immediately.
+                      When true, WaitForIdle is ignored. Useful for emergency rollouts or when
+                      slots are stuck in a non-idle state.
+                    type: boolean
+                  idleTimeoutSeconds:
+                    default: 300
+                    description: |-
+                      IdleTimeoutSeconds is the maximum time to wait for slots to become idle before
+                      proceeding with the rollout regardless of slot state. Defaults to 300 (5 minutes)
+                      when omitted or set to 0.
+                    minimum: 0
+                    type: integer
+                  waitForIdle:
+                    description: |-
+                      WaitForIdle indicates whether to wait for all backend slots to report idle
+                      before applying a Deployment pod-template update. When true, the controller
+                      polls the /slots endpoint on each replica and defers the rollout until all
+                      slots are idle or the idleTimeoutSeconds expires. Requires the backend to
+                      expose a llama.cpp-style /slots endpoint (llama.cpp enables it by default
+                      with --slots); other runtimes are tracked in #911.
+                    type: boolean
+                type: object
               ropeScaling:
                 description: |-
                   RopeScaling configures RoPE-based context extension so a model can be

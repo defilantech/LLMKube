@@ -466,6 +466,39 @@ type InferenceServiceSpec struct {
 	// podAnnotations always win on collision.
 	// +optional
 	Disruption *DisruptionSpec `json:"disruption,omitempty"`
+
+	// RolloutPolicy controls how deployment updates are applied. When waitForIdle
+	// is true, the controller will check backend slot idleness before updating
+	// the Deployment pod-template. Requires llama.cpp server-compatible backends
+	// that expose a /slots endpoint.
+	// +optional
+	RolloutPolicy *RolloutPolicySpec `json:"rolloutPolicy,omitempty"`
+}
+
+// RolloutPolicySpec defines how deployment updates should be gated on backend idleness.
+type RolloutPolicySpec struct {
+	// WaitForIdle indicates whether to wait for all backend slots to report idle
+	// before applying a Deployment pod-template update. When true, the controller
+	// polls the /slots endpoint on each replica and defers the rollout until all
+	// slots are idle or the idleTimeoutSeconds expires. Requires the backend to
+	// expose a llama.cpp-style /slots endpoint (llama.cpp enables it by default
+	// with --slots); other runtimes are tracked in #911.
+	// +optional
+	WaitForIdle bool `json:"waitForIdle,omitempty"`
+
+	// IdleTimeoutSeconds is the maximum time to wait for slots to become idle before
+	// proceeding with the rollout regardless of slot state. Defaults to 300 (5 minutes)
+	// when omitted or set to 0.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:default:=300
+	// +optional
+	IdleTimeoutSeconds int `json:"idleTimeoutSeconds,omitempty"`
+
+	// Force bypasses the idle check and proceeds with the rollout immediately.
+	// When true, WaitForIdle is ignored. Useful for emergency rollouts or when
+	// slots are stuck in a non-idle state.
+	// +optional
+	Force bool `json:"force,omitempty"`
 }
 
 // DisruptionSpec controls the operator-managed node-disruption annotations on
@@ -990,4 +1023,21 @@ type InferenceServiceList struct {
 
 func init() {
 	SchemeBuilder.Register(&InferenceService{}, &InferenceServiceList{})
+}
+
+// RolloutPolicyEnabled returns true when the InferenceService has a RolloutPolicy
+// configured with waitForIdle=true. This indicates the controller should check
+// backend idleness before applying deployment updates.
+func (in *InferenceService) RolloutPolicyEnabled() bool {
+	return in.Spec.RolloutPolicy != nil && in.Spec.RolloutPolicy.WaitForIdle
+}
+
+// ShouldDeferRollout returns true when the rollout should be deferred pending
+// idle slot checks. Returns false if RolloutPolicy is not configured, force=true,
+// or waitForIdle=false.
+func (in *InferenceService) ShouldDeferRollout() bool {
+	if in.Spec.RolloutPolicy == nil || !in.Spec.RolloutPolicy.WaitForIdle {
+		return false
+	}
+	return !in.Spec.RolloutPolicy.Force
 }
