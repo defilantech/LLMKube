@@ -33,6 +33,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	sigsyaml "sigs.k8s.io/yaml"
@@ -49,11 +50,11 @@ func checkEmbeddedArtifacts(ctx context.Context, workspace string, run commandRu
 
 	var findings []string
 	for _, path := range changed {
-		content, err := run(ctx, workspace, nil, "git", "show", ":"+path)
+		data, err := os.ReadFile(filepath.Join(workspace, path))
 		if err != nil {
 			continue // fail-open: skip files we cannot read
 		}
-		findings = append(findings, validateMarkdownYAML(ctx, workspace, path, content, run)...)
+		findings = append(findings, validateMarkdownYAML(ctx, workspace, path, string(data), run)...)
 	}
 
 	if len(findings) == 0 {
@@ -63,20 +64,25 @@ func checkEmbeddedArtifacts(ctx context.Context, workspace string, run commandRu
 }
 
 // changedMarkdownFiles returns the workspace-relative paths of changed *.md
-// files using `git diff --name-only --diff-filter=d HEAD -- *.md`. The
-// --diff-filter=d excludes deleted files (their content is gone; no point
-// parsing them). Returns nil on git error (fail-open).
+// files using `git status -z`, which includes both modified and newly untracked
+// files. Mirrors changedNonTestGoFiles' parsing approach so new/untracked docs
+// are included. Returns nil on git error (fail-open).
 func changedMarkdownFiles(ctx context.Context, workspace string, run commandRunner) ([]string, error) {
-	out, err := run(ctx, workspace, nil, "git", "diff", "--name-only", "--diff-filter=d", "HEAD", "--", "*.md")
+	out, err := run(ctx, workspace, nil, "git", "status", "-z")
 	if err != nil {
 		return nil, err
 	}
 	var paths []string
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		line = strings.TrimSpace(line)
-		if line != "" && strings.HasSuffix(line, ".md") {
-			paths = append(paths, line)
+	for _, entry := range strings.Split(out, "\x00") {
+		fields := strings.Fields(strings.TrimSpace(entry))
+		if len(fields) == 0 {
+			continue
 		}
+		path := fields[len(fields)-1] // rename "old -> new" leaves the new path last
+		if !strings.EqualFold(filepath.Ext(path), ".md") {
+			continue
+		}
+		paths = append(paths, path)
 	}
 	return paths, nil
 }
@@ -89,20 +95,42 @@ func validateMarkdownYAML(ctx context.Context, workspace, path, content string, 
 	// Track the current line as we scan through the content.
 	lines := strings.Split(content, "\n")
 
-	// We need to find fenced blocks AND record their start line numbers.
-	// Walk line-by-line to capture start positions accurately.
+	// Walk line-by-line to capture start positions and fence open/close state.
+	inFence := false
 	for i := 0; i < len(lines); i++ {
 		trimmed := strings.TrimSpace(lines[i])
-		infoString := ""
-		if strings.HasPrefix(trimmed, "```yaml") {
-			infoString = "yaml"
-		} else if strings.HasPrefix(trimmed, "```yml") {
-			infoString = "yml"
-		}
-		if infoString == "" {
+
+		// A plain closing ``` closes an open block.
+		if inFence {
+			if trimmed == "```" {
+				inFence = false
+			}
+			// Still inside a block we are NOT collecting (non-yaml fence) — skip.
 			continue
 		}
-		// Found an opening fence. Collect body until closing ```.
+
+		if !strings.HasPrefix(trimmed, "```") {
+			continue
+		}
+		// Determine whether this opens a yaml/yml fence.
+		// Take the first whitespace-delimited token after the backticks to
+		// avoid matching ```yamldoc, ```yaml-example, etc.
+		rest := strings.TrimPrefix(trimmed, "```")
+		fields := strings.Fields(rest)
+		isYAML := len(fields) > 0 && (fields[0] == "yaml" || fields[0] == "yml")
+
+		if !isYAML {
+			if len(fields) > 0 {
+				// Non-yaml info-string fence: mark as inside so the closing
+				// ``` is recognised and we do not mis-parse nested content.
+				inFence = true
+			}
+			// A bare ``` with no info-string is a closing fence for an outer
+			// block, but since inFence is false here we just skip it.
+			continue
+		}
+
+		// Found an opening yaml/yml fence. Collect body until closing ```.
 		startLine := i + 1 // 1-based line number of the opening fence
 		i++
 		var bodyLines []string
@@ -132,7 +160,7 @@ func validateMarkdownYAML(ctx context.Context, workspace, path, content string, 
 			// For k8s manifests: if both "apiVersion" and "kind" are present,
 			// run kubectl --dry-run=client if kubectl is available.
 			if isK8sManifest(doc) {
-				if kubectlPath, err := exec.LookPath("kubectl"); err == nil && kubectlPath != "" {
+				if _, err := exec.LookPath("kubectl"); err == nil {
 					findings = append(findings, kubectlDryRun(ctx, workspace, path, startLine, doc, run)...)
 				}
 			}
@@ -191,7 +219,7 @@ func isK8sManifest(doc string) bool {
 // kubectlDryRun writes the YAML block to a temp file and runs
 // `kubectl --dry-run=client -f <file>`. Returns any findings.
 func kubectlDryRun(ctx context.Context, workspace, path string, startLine int, doc string, run commandRunner) []string {
-	tmp, err := os.CreateTemp(os.TempDir(), "artifact-gate-*.yaml")
+	tmp, err := os.CreateTemp("", "artifact-gate-*.yaml")
 	if err != nil {
 		return nil // fail-open
 	}
