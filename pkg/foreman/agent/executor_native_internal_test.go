@@ -1732,3 +1732,47 @@ func TestRemoveAllResilient_SymlinkToExternal(t *testing.T) {
 		t.Errorf("external victim mode changed: got %04o, want %04o", gotMode, wantMode)
 	}
 }
+
+func TestGateAdvisories_LandInResultExtra(t *testing.T) {
+	acc := &[]advisory{}
+	*acc = append(*acc, advisory{Check: "grounding-breadth", Detail: "cites dcgm_gpu_utilization (unknown)"})
+	extra := map[string]any{"branch": "b", "commitSHA": "s"}
+	attachGateAdvisories(extra, acc)
+	got, ok := extra["gateAdvisories"].([]advisory)
+	if !ok || len(got) != 1 || got[0].Check != "grounding-breadth" {
+		t.Fatalf("want gateAdvisories with grounding-breadth, got %#v", extra["gateAdvisories"])
+	}
+}
+
+func TestAttachGateAdvisories_OmitsWhenEmpty(t *testing.T) {
+	extra := map[string]any{"branch": "b"}
+	attachGateAdvisories(extra, &[]advisory{})
+	if _, present := extra["gateAdvisories"]; present {
+		t.Fatal("empty advisories should not add the key")
+	}
+}
+
+func TestRenderGateAdvisories_RendersWhenPresent(t *testing.T) {
+	advs := []advisory{
+		{Check: "grounding-breadth", Detail: "cites dcgm_gpu_utilization (unknown)"},
+		{Check: "scope-overlap", Detail: "diff touches files not mentioned in the issue"},
+	}
+	got := renderGateAdvisories(advs)
+	if got == "" {
+		t.Fatal("want non-empty output for non-empty advisories")
+	}
+	for _, want := range []string{"grounding-breadth", "scope-overlap", "dcgm_gpu_utilization"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("rendered advisories missing %q in:\n%s", want, got)
+		}
+	}
+}
+
+func TestRenderGateAdvisories_OmittedWhenEmpty(t *testing.T) {
+	if got := renderGateAdvisories(nil); got != "" {
+		t.Errorf("nil advisories: want empty string, got %q", got)
+	}
+	if got := renderGateAdvisories([]advisory{}); got != "" {
+		t.Errorf("empty advisories: want empty string, got %q", got)
+	}
+}
