@@ -74,6 +74,7 @@ const (
 	ConditionRolloutDeferred = inferencev1alpha1.ConditionRolloutDeferred
 
 	ReasonPodsBusy            = inferencev1alpha1.ReasonPodsBusy
+	ReasonIdleCheckFailed     = inferencev1alpha1.ReasonIdleCheckFailed
 	ReasonIdleTimeoutExceeded = inferencev1alpha1.ReasonIdleTimeoutExceeded
 
 	ReasonWorkloadResolved = "WorkloadResolved"

@@ -112,7 +112,7 @@ var _ = Describe("RolloutPolicy drain-before-rollout", func() {
 				if r.URL.Path == "/slots" {
 					w.Header().Set("Content-Type", "application/json")
 					w.WriteHeader(http.StatusOK)
-					_, _ = w.Write([]byte(`[{"slot_id":0,"processing_mode":"idle","current_user":null}]`))
+					_, _ = w.Write([]byte(`[{"id":0,"is_processing":false}]`))
 					return
 				}
 				w.WriteHeader(http.StatusNotFound)
@@ -324,7 +324,7 @@ var _ = Describe("RolloutPolicy drain-before-rollout", func() {
 				if r.URL.Path == "/slots" {
 					w.Header().Set("Content-Type", "application/json")
 					w.WriteHeader(http.StatusOK)
-					_, _ = w.Write([]byte(`[{"slot_id":0,"processing_mode":"idle","current_user":null}]`))
+					_, _ = w.Write([]byte(`[{"id":0,"is_processing":false}]`))
 					return
 				}
 				w.WriteHeader(http.StatusNotFound)
@@ -495,9 +495,9 @@ var _ = Describe("RolloutPolicy drain-before-rollout", func() {
 					w.WriteHeader(http.StatusOK)
 					switch state {
 					case "busy":
-						_, _ = w.Write([]byte(`[{"slot_id":0,"processing_mode":"inferencing","current_user":{"name":"test"}}]`))
+						_, _ = w.Write([]byte(`[{"id":0,"is_processing":true}]`))
 					default:
-						_, _ = w.Write([]byte(`[{"slot_id":0,"processing_mode":"idle","current_user":null}]`))
+						_, _ = w.Write([]byte(`[{"id":0,"is_processing":false}]`))
 					}
 					return
 				}
@@ -811,7 +811,7 @@ var _ = Describe("checkServerIdle", func() {
 	It("should return true when all slots are idle", func() {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`[{"slot_id":0,"processing_mode":"idle","current_user":null},{"slot_id":1,"processing_mode":"idle","current_user":null}]`))
+			_, _ = w.Write([]byte(`[{"id":0,"is_processing":false},{"id":1,"is_processing":false}]`))
 		}))
 		defer server.Close()
 
@@ -823,7 +823,7 @@ var _ = Describe("checkServerIdle", func() {
 	It("should return false when any slot is busy", func() {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`[{"slot_id":0,"processing_mode":"inferencing","current_user":{"name":"test"}}]`))
+			_, _ = w.Write([]byte(`[{"id":0,"is_processing":true}]`))
 		}))
 		defer server.Close()
 
@@ -832,10 +832,10 @@ var _ = Describe("checkServerIdle", func() {
 		Expect(idle).To(BeFalse())
 	})
 
-	It("should return false when slot is in loading mode", func() {
+	It("should return false when a slot is processing", func() {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`[{"slot_id":0,"processing_mode":"loading"}]`))
+			_, _ = w.Write([]byte(`[{"id":0,"is_processing":true}]`))
 		}))
 		defer server.Close()
 
@@ -861,12 +861,23 @@ var _ = Describe("checkServerIdle", func() {
 		Expect(idle).To(BeFalse())
 	})
 
+	It("should defer (return error) when /slots 404s", func() {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer server.Close()
+
+		idle, err := reconciler.checkServerIdle(context.Background(), server.URL)
+		Expect(err).To(HaveOccurred())
+		Expect(idle).To(BeFalse())
+	})
+
 	It("should use injected HTTPClient when set", func() {
 		var requestCaptured bool
 		customTransport := &captureRoundTripper{
 			capture: func(req *http.Request) *http.Response {
 				requestCaptured = true
-				body := `[{"slot_id":0,"processing_mode":"idle","current_user":null}]`
+				body := `[{"id":0,"is_processing":false}]`
 				return &http.Response{
 					StatusCode: http.StatusOK,
 					Body:       io.NopCloser(strings.NewReader(body)),
@@ -899,9 +910,9 @@ var _ = Describe("checkServerIdle", func() {
 var _ = Describe("RolloutPolicy envtest integration", func() {
 	ctx := context.Background()
 
-	It("should proceed with rollout when idle check fails (no live backend)", func() {
-		modelName := "model-deferred"
-		isvcName := "isvc-deferred"
+	It("should defer rollout (fail-closed) when the idle check fails", func() {
+		modelName := "model-fail-closed"
+		isvcName := "isvc-fail-closed"
 
 		model := &inferencev1alpha1.Model{
 			ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
@@ -949,18 +960,38 @@ var _ = Describe("RolloutPolicy envtest integration", func() {
 			InitContainerImage: "docker.io/curlimages/curl:8.18.0",
 		}
 
-		result, err := reconciler.Reconcile(ctx, reconcile.Request{
+		// First reconcile: creates the deployment (no update needed), so no idle check.
+		result1, err := reconciler.Reconcile(ctx, reconcile.Request{
 			NamespacedName: types.NamespacedName{Name: isvcName, Namespace: "default"},
 		})
 		Expect(err).NotTo(HaveOccurred())
+		Expect(result1.RequeueAfter).To(BeZero())
 
-		// On first reconcile, deployment is created (no update needed), so no idle check
 		dep := &appsv1.Deployment{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, dep)).To(Succeed())
 
+		// Update the image to trigger a template change so the idle check runs.
 		updated := &inferencev1alpha1.InferenceService{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, updated)).To(Succeed())
-		Expect(result.RequeueAfter).To(BeZero())
+		updated.Spec.Image = "ghcr.io/ggml-org/llama.cpp:server-v2"
+		Expect(k8sClient.Update(ctx, updated)).To(Succeed())
+
+		// Second reconcile: template changed, idle check runs against unreachable
+		// cluster-DNS URL (no /slots endpoint in envtest) -> error -> fail-closed.
+		// A failing /slots probe must NOT roll; it must defer until idle or timeout.
+		result2, err := reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: isvcName, Namespace: "default"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result2.RequeueAfter).To(BeNumerically(">", 0))
+
+		// Verify RolloutDeferred condition with IdleCheckFailed reason.
+		deferredISVC := &inferencev1alpha1.InferenceService{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, deferredISVC)).To(Succeed())
+		cond := findRolloutDeferredCondition(deferredISVC.Status.Conditions)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+		Expect(cond.Reason).To(Equal(ReasonIdleCheckFailed))
 	})
 })
 

@@ -53,6 +53,13 @@ const (
 	// backend slots are currently processing requests.
 	ReasonPodsBusy string = "PodsBusy"
 
+	// ReasonIdleCheckFailed is set when RolloutDeferred=True because the
+	// controller could not determine idleness (e.g. /slots unreachable,
+	// non-200, or the backend was started with --no-slots). The rollout is
+	// still deferred (fail-closed) until the idleTimeoutSeconds budget is
+	// spent.
+	ReasonIdleCheckFailed string = "IdleCheckFailed"
+
 	// ReasonIdleTimeoutExceeded is set when RolloutDeferred=False after the
 	// idle timeout expired and the rollout proceeded despite busy pods.
 	ReasonIdleTimeoutExceeded string = "IdleTimeoutExceeded"

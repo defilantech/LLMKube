@@ -469,7 +469,9 @@ type RolloutPolicySpec struct {
 	// WaitForIdle indicates whether to wait for all backend slots to report idle
 	// before applying a Deployment pod-template update. When true, the controller
 	// polls the /slots endpoint on each replica and defers the rollout until all
-	// slots are idle or the idleTimeoutSeconds expires.
+	// slots are idle or the idleTimeoutSeconds expires. Requires the backend to
+	// expose a llama.cpp-style /slots endpoint (llama.cpp enables it by default
+	// with --slots); other runtimes are tracked in #911.
 	// +optional
 	WaitForIdle bool `json:"waitForIdle,omitempty"`
 

@@ -210,6 +210,15 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return finalResult, statusErr
 	}
 
+	// When a rollout is deferred pending idle, reconcileRolloutPolicy set
+	// RolloutDeferred=True (persisted by the status update above). Drive a
+	// recheck so the controller notices when the backend goes idle or the
+	// idleTimeoutSeconds budget is spent. Metal-backed services never defer
+	// (no Deployment), so this does not conflict with the metal requeue below.
+	if cond := meta.FindStatusCondition(inferenceService.Status.Conditions, ConditionRolloutDeferred); cond != nil && cond.Status == metav1.ConditionTrue {
+		finalResult.RequeueAfter = inferencev1alpha1.DefaultIdleCheckInterval
+	}
+
 	// On the metal path a heartbeat going stale generates no watch event, so
 	// force a periodic requeue when the Endpoints carry the annotation.
 	if isMetal {
@@ -378,11 +387,18 @@ func (r *InferenceServiceReconciler) reconcileDeployment(ctx context.Context, is
 				Namespace: isvc.Namespace,
 			},
 		}
-		if rollResult, err := r.reconcileRolloutPolicy(ctx, isvc, svc); err != nil {
+		rollResult, err := r.reconcileRolloutPolicy(ctx, isvc, svc)
+		if err != nil {
 			log.Error(err, "Failed to reconcile rollout policy")
 			return nil, 0, nil, nil, err
-		} else if rollResult.RequeueAfter > 0 {
-			return existingDeployment, existingDeployment.Status.ReadyReplicas, nil, &rollResult, nil
+		}
+		if rollResult.RequeueAfter > 0 {
+			// Rollout deferred until idle: hold the pod-template Update so the
+			// live Deployment keeps serving the old template, but fall through
+			// to Service/HPA/status by returning without a result. The
+			// RolloutDeferred=True condition (set by reconcileRolloutPolicy)
+			// drives a requeue in Reconcile.
+			return existingDeployment, existingDeployment.Status.ReadyReplicas, nil, nil, nil
 		}
 	} else if !isMetal && !templateChanged {
 		// Template no longer differs — clear any stale RolloutDeferred condition.

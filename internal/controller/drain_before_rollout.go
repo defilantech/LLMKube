@@ -54,17 +54,17 @@ func desiredTemplateHash(template corev1.PodTemplateSpec) string {
 
 // llamaCPUSlot represents a single slot from the llama.cpp /slots endpoint.
 type llamaCPUSlot struct {
-	SlotID         int    `json:"slot_id"`
-	ProcessingMode string `json:"processing_mode"`
-	CurrentUser    *struct {
-		Name string `json:"name"`
-	} `json:"current_user"`
+	ID int `json:"id"`
+	// IsProcessing is true while the slot is handling a request (prompt
+	// evaluation or generation). A slot is idle when this is false.
+	IsProcessing bool `json:"is_processing"`
 }
 
 // checkServerIdle checks whether all slots on a llama.cpp server are idle.
-// It queries the /slots endpoint and returns true if all slots report
-// processing_mode as "idle". Returns false if any slot is busy or if the
-// server is unreachable.
+// It queries the /slots endpoint and returns true only if every slot reports
+// is_processing == false. A server error (unreachable, non-200, unparseable
+// body) is surfaced as an error to the caller, which treats it as fail-closed
+// (defer the rollout) — see reconcileRolloutPolicy.
 // baseURL should include the port (e.g., "http://svc.ns.svc.cluster.local:8080").
 func (r *InferenceServiceReconciler) checkServerIdle(ctx context.Context, baseURL string) (bool, error) {
 	url := fmt.Sprintf("%s/slots", baseURL)
@@ -98,7 +98,7 @@ func (r *InferenceServiceReconciler) checkServerIdle(ctx context.Context, baseUR
 	}
 
 	for _, slot := range slots {
-		if slot.ProcessingMode != "idle" {
+		if slot.IsProcessing {
 			return false, nil
 		}
 	}
@@ -173,19 +173,9 @@ func (r *InferenceServiceReconciler) reconcileRolloutPolicy(
 	existingCond := meta.FindStatusCondition(isvc.Status.Conditions, ConditionRolloutDeferred)
 	now := metav1.Now()
 
-	idle, err := r.checkServiceIdle(ctx, isvc, svc)
-	if err != nil {
-		log.Info("Could not check idle status, proceeding with rollout", "error", err)
-		if existingCond != nil {
-			meta.RemoveStatusCondition(&isvc.Status.Conditions, ConditionRolloutDeferred)
-			if updateErr := r.Status().Update(ctx, isvc); updateErr != nil {
-				return ctrl.Result{}, fmt.Errorf("failed to clear RolloutDeferred condition: %w", updateErr)
-			}
-		}
-		return ctrl.Result{}, nil
-	}
+	idle, checkErr := r.checkServiceIdle(ctx, isvc, svc)
 
-	if idle {
+	if checkErr == nil && idle {
 		if existingCond != nil {
 			meta.RemoveStatusCondition(&isvc.Status.Conditions, ConditionRolloutDeferred)
 			if updateErr := r.Status().Update(ctx, isvc); updateErr != nil {
@@ -194,6 +184,21 @@ func (r *InferenceServiceReconciler) reconcileRolloutPolicy(
 		}
 		log.Info("All slots idle, proceeding with rollout")
 		return ctrl.Result{}, nil
+	}
+
+	// Not idle, or the idle check itself failed. Fail closed: defer the
+	// rollout until the backend is idle or the idleTimeoutSeconds budget is
+	// spent. A failing /slots probe (server unreachable, non-200, --slots
+	// disabled so it 404s) must not silently roll and drop in-flight
+	// generations — that is exactly what waitForIdle is meant to prevent.
+	reason := ReasonPodsBusy
+	message := "Backend slots are busy, waiting for idle before rollout"
+	if checkErr != nil {
+		log.Info("Idle check failed; deferring rollout (fail-closed)", "error", checkErr)
+		reason = ReasonIdleCheckFailed
+		message = fmt.Sprintf("Idle check failed (%v); deferring rollout until idle or timeout", checkErr)
+	} else {
+		log.Info("Backend slots are busy, deferring rollout")
 	}
 
 	timeout := time.Duration(isvc.Spec.RolloutPolicy.IdleTimeoutSeconds) * time.Second
@@ -229,8 +234,8 @@ func (r *InferenceServiceReconciler) reconcileRolloutPolicy(
 		Status:             metav1.ConditionTrue,
 		ObservedGeneration: isvc.Generation,
 		LastTransitionTime: now,
-		Reason:             ReasonPodsBusy,
-		Message:            "Backend slots are busy, waiting for idle before rollout",
+		Reason:             reason,
+		Message:            message,
 	})
 	if updateErr := r.Status().Update(ctx, isvc); updateErr != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to set RolloutDeferred condition: %w", updateErr)
