@@ -18,9 +18,11 @@ limitations under the License.
 // changes which pass the syntactic checks (gofmt/vet/build/lint) but are not
 // actually constrained by a test (the #856 class).
 //
-//   - Layer 1 (checkTestPresence): a changed package that adds net-new
-//     functions in hand-written, non-test Go but has no changed _test.go fails.
-//     Pure diff inspection, so it covers envtest/controller packages too.
+//   - Layer 1 (checkTestPresence): for each changed package, every new or
+//     body-modified function in hand-written, non-test Go must be referenced
+//     by name in a changed _test.go in that package; unreferenced functions
+//     fail. Pure diff/text inspection, so it covers envtest/controller
+//     packages too.
 //   - Layer 2 (checkMutationSurvival): for non-envtest changed packages that DO
 //     have a changed test, blank the changed function bodies on an in-memory
 //     backup, re-run the package tests, and flag any package whose tests still
@@ -233,6 +235,9 @@ func modifiedFuncNames(ctx context.Context, workspace, file string, run commandR
 // non-identifier runes (or at a line boundary) so it avoids false positives
 // from names that are prefixes of longer identifiers.
 func testFileReferencesFunc(workspace, path, funcName string) bool {
+	if funcName == "" {
+		return false
+	}
 	data, err := os.ReadFile(filepath.Join(workspace, path))
 	if err != nil {
 		return false
