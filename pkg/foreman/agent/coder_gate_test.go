@@ -936,3 +936,55 @@ func TestRunCoderGate_FailsOnUngroundedReference(t *testing.T) {
 		t.Errorf("feedback should name the check: %q", feedback)
 	}
 }
+
+// TestCheckReferenceGrounding_IgnoresExporterMetricTokens is the contamination
+// regression test. Before the fix, LoadGroundTruth seeded ExporterMetricPrefixes
+// unconditionally; the block-tier checkReferenceGrounding did not filter by
+// severity, so "minor" exporter-metric findings would cause the gate to false-block
+// a coder whose doc contained a legitimate snake_case token (n_ctx, executor_native,
+// node_selector, Q4_K_M, ...).
+//
+// After the fix: LoadGroundTruth leaves ExporterMetricPrefixes nil, so
+// checkExporterMetricTokens is inert in the block tier. This test proves that
+// adding a doc line with several legitimate snake_case tokens does NOT cause
+// checkReferenceGrounding to fail.
+func TestCheckReferenceGrounding_IgnoresExporterMetricTokens(t *testing.T) {
+	ws := t.TempDir()
+
+	// Write a minimal CRD so the ground-truth load succeeds.
+	crd := "apiVersion: apiextensions.k8s.io/v1\nkind: CustomResourceDefinition\n" +
+		"spec:\n  group: inference.llmkube.dev\n  names:\n    kind: InferenceService\n" +
+		"  versions: []\n"
+	if err := os.MkdirAll(filepath.Join(ws, "config/crd/bases"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws, "config/crd/bases/is.yaml"), []byte(crd), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// The fake git diff adds a doc line containing several legitimate
+	// snake_case tokens that are NOT LLMKube-owned API groups or metrics.
+	// These should pass the block-tier check without any findings.
+	run := func(_ context.Context, _ string, _ []string, name string, args ...string) (string, error) {
+		if name == "git" && len(args) >= 2 && args[0] == "diff" && args[1] == "--cached" {
+			return "+++ b/docs/inference.md\n@@ -0,0 +1,3 @@\n" +
+				"+Set n_ctx=4096 and executor_native handles Q4_K_M quants via node_selector.\n" +
+				"+The llama_model_load path resolves llmkube_inferenceservice_phase for monitoring.\n" +
+				"+Use node_affinity or gpu_layers to tune scheduling.\n", nil
+		}
+		return "", nil
+	}
+
+	// checkReferenceGrounding must not fail on these lines. The only LLMKube
+	// metric on line 2 (llmkube_inferenceservice_phase) is registered in the
+	// real ground truth only when metricsDir is provided; here we call the
+	// function directly with an empty workspace so metrics scanning is a no-op
+	// and the llmkube_* check is also inert (empty gt.Metrics). The key
+	// assertion is that snake_case non-llmkube tokens do NOT block.
+	failed, output := checkReferenceGrounding(context.Background(), ws, run)
+	if failed {
+		t.Fatalf("block-tier reference grounding must not fail on snake_case tokens "+
+			"(n_ctx, executor_native, Q4_K_M, node_selector, llama_model_load); "+
+			"got failed=true output=%q", output)
+	}
+}

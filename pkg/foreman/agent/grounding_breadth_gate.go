@@ -44,6 +44,14 @@ func checkGroundingBreadth(ctx context.Context, workspace string, run commandRun
 		return false, ""
 	}
 
+	// Enable broadened exporter-metric detection ONLY for this advisory path.
+	// LoadGroundTruth intentionally leaves ExporterMetricPrefixes nil so the
+	// block-tier checkReferenceGrounding is not contaminated by minor-severity
+	// findings on legitimate snake_case tokens (n_ctx, executor_native, etc.).
+	gt.ExporterMetricPrefixes = []string{
+		"DCGM_FI_", "node_", "container_", "kube_", "go_", "process_",
+	}
+
 	added, err := grounding.AddedLines(
 		ctx, workspace, grounding.CommandRunner(run), "HEAD", []string{"*.md", "*.yaml", "*.yml"},
 	)

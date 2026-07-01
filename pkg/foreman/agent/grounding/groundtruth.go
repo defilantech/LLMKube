@@ -171,9 +171,15 @@ func LoadGroundTruth(crdBasesDir, metricsDir, cmdDir string) (*GroundTruth, erro
 		SpecFields: map[string]map[string]bool{},
 		Metrics:    map[string]bool{}, CLICmds: map[string]bool{},
 		ChartResourceNames: map[string]bool{},
-		ExporterMetricPrefixes: []string{
-			"DCGM_FI_", "node_", "container_", "kube_", "go_", "process_",
-		},
+		// ExporterMetricPrefixes is intentionally NOT seeded here.
+		// LoadGroundTruth is called by both the block-tier checkReferenceGrounding
+		// and the advisory-tier checkGroundingBreadth. The exporter-metric check
+		// in DetectUngroundedReferences is gated on len(ExporterMetricPrefixes)>0,
+		// so leaving it nil/empty keeps the block tier inert (no false-blocking on
+		// legitimate snake_case tokens such as n_ctx, executor_native, etc.).
+		// checkGroundingBreadth sets ExporterMetricPrefixes explicitly after
+		// LoadGroundTruth returns, enabling broadened detection only for the
+		// advisory path.
 	}
 	if err := loadCRDBases(crdBasesDir, gt); err != nil {
 		return nil, err

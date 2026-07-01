@@ -46,17 +46,11 @@ func TestCheckGroundingBreadth_FlagsHallucinatedMetric(t *testing.T) {
 		return "", nil
 	}
 
-	// LoadGroundTruth expects a valid crdBasesDir; use a non-existent path so
-	// loadCRDBases returns an error... wait, it returns nil for empty string
-	// but not for missing dirs. Use empty string for crdBasesDir so the CRD
-	// scan is skipped. The metricsDir also needs to be empty or a real dir so
-	// chart scanning is skipped. We rely on the static ExporterMetricPrefixes
-	// seeded by LoadGroundTruth.
-	//
-	// checkGroundingBreadth uses workspace as metricsDir for scanMetrics and
-	// filepath.Join(workspace,"charts") for scanChartResources. With a
-	// non-existent workspace the scans are no-ops (fail-open); the static
-	// ExporterMetricPrefixes are still seeded.
+	// checkGroundingBreadth sets ExporterMetricPrefixes on the ground truth
+	// after calling LoadGroundTruth (LoadGroundTruth intentionally leaves them
+	// nil so the block-tier is not contaminated). An empty TempDir workspace is
+	// fine: no CRDs/Go files/charts are present, so the scans are no-ops, but
+	// the advisory prefixes set by checkGroundingBreadth are still active.
 	workspace := t.TempDir() // empty dir: no CRDs, no Go files, no charts
 
 	failed, output := checkGroundingBreadth(context.Background(), workspace, run)
