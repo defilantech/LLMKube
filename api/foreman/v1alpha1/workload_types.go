@@ -164,6 +164,16 @@ type WorkloadSpec struct {
 	// +optional
 	EscalationReviewerAgentRefs []corev1.LocalObjectReference `json:"escalationReviewerAgentRefs,omitempty"`
 
+	// AllowOverwrite lets this Workload's coder replace a stale remote
+	// ref for its own foreman/* branch (force-with-lease compare-and-swap)
+	// instead of failing non-fast-forward. Opt-in — #573 deliberately
+	// rejected force-on-collision as a default; retry systems that
+	// re-run Workloads under the same name set this on the re-run, where
+	// the stale ref is their own previous attempt. Copied onto every
+	// synthesized issue-batch task payload.
+	// +optional
+	AllowOverwrite bool `json:"allowOverwrite,omitempty"`
+
 	// AllowCloudReviewers gates whether reviewer Agents whose
 	// spec.provider is "cloud-proxy" (or any non-"local" value) may be
 	// dispatched for this Workload. Three-valued via the *bool:

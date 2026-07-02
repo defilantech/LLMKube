@@ -645,6 +645,13 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 		Workspace: workspace,
 		Branch:    branch,
 		Auth:      auth,
+		// Opt-in via Workload.spec.allowOverwrite (stamped onto the task
+		// payload): replace a stale ref for this task's own branch
+		// (compare-and-swap via force-with-lease) instead of failing the
+		// re-run non-fast-forward (#934). Off by default per #573 — a
+		// replaced ref can carry a previously-GO'd audit artifact, so
+		// the caller that re-runs Workloads makes that call explicitly.
+		ReplaceOnReject: task.Spec.Payload.AllowOverwrite,
 	}); err != nil {
 		return e.pushFailedResult(start, transcriptRef, loopRes, branch, sha, err), nil
 	}

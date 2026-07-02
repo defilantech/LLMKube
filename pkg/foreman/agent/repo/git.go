@@ -51,8 +51,11 @@ func runGit(ctx context.Context, workdir string, extraEnv []string, args ...stri
 		if len(errOut) > 4096 {
 			errOut = errOut[:4096] + "...[truncated]"
 		}
-		return "", fmt.Errorf("git %s: %w: %s",
-			strings.Join(args, " "), err, strings.TrimSpace(errOut))
+		return "", &gitError{
+			args:   strings.Join(args, " "),
+			err:    err,
+			stderr: strings.TrimSpace(errOut),
+		}
 	}
 	return strings.TrimRight(stdout.String(), "\n"), nil
 }
@@ -64,3 +67,21 @@ func envOr(key, fallback string) string {
 	}
 	return fallback
 }
+
+// gitError preserves the structured pieces of a failed git invocation.
+// The message keeps the old "git <args>: <err>: <stderr>" shape for
+// logs, while callers that need to classify the failure (e.g. push
+// rejection sniffing) can inspect stderr alone — matching on the full
+// message would also match the ARGS, and branch names embed
+// caller-controlled Workload names.
+type gitError struct {
+	args   string
+	err    error
+	stderr string
+}
+
+func (e *gitError) Error() string {
+	return fmt.Sprintf("git %s: %v: %s", e.args, e.err, e.stderr)
+}
+
+func (e *gitError) Unwrap() error { return e.err }
