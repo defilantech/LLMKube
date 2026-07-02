@@ -986,7 +986,97 @@ func TestStripReasoningForWire(t *testing.T) {
 	}
 }
 
-func TestStripReasoningForWire_NeverEmptiesAssistantMessage(t *testing.T) {
+// emptyAssistantReply is a chat-completions body where the model returns
+// an assistant message with neither content nor tool_calls — the shape
+// that triggers #935: the loop appends it to history, the next turn's
+// request is rejected with 400 "Assistant message must contain either
+// 'content' or 'tool_calls'", and the task cascade-fails.
+const emptyAssistantReply = `{"choices":[{"index":0,"message":{"role":"assistant"},"finish_reason":"stop"}]}`
+
+// TestLoop_EmptyAssistantReply_SubstitutesPlaceholder covers #935: when
+// the model returns an assistant message with no content and no
+// tool_calls, the loop must not append it verbatim to the transcript.
+// Instead it substitutes a placeholder so the next turn's request stays
+// valid against strict backends (llama.cpp, Devstral, OpenAI). The loop
+// should then treat the turn as a no-tool-call and apply its existing
+// corrective-nudge path.
+func TestLoop_EmptyAssistantReply_SubstitutesPlaceholder(t *testing.T) {
+	// Turn 1: empty assistant reply. Turn 2: a real submit_result so the
+	// loop can finish cleanly (proving the empty reply did not poison
+	// history).
+	srv, calls := scriptedOAIServer(t, []string{emptyAssistantReply, toolCallSubmitGo})
+	reg := &fakeRegistry{
+		results: map[string]*ToolResult{
+			"submit_result": {Terminal: true, Verdict: "GO", Summary: "ok"},
+		},
+	}
+	loop := newTestLoop(srv, reg)
+	res, err := loop.Run(context.Background(), LoopConfig{
+		Model: "test", SystemPrompt: "sys", UserPrompt: "go", MaxTurns: 5,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Terminal == nil || res.Terminal.Verdict != "GO" {
+		t.Errorf("expected GO terminal after recovery, got %+v", res.Terminal)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Errorf("OAI calls: want 2 (empty reply + submit) got %d", got)
+	}
+	// The empty assistant message must have been replaced with a
+	// placeholder, not left empty.
+	var sawPlaceholder bool
+	for _, m := range res.Transcript {
+		if m.Role == oai.RoleAssistant && m.Content != "" {
+			if strings.Contains(m.Content, "empty response from model") {
+				sawPlaceholder = true
+			}
+		}
+	}
+	if !sawPlaceholder {
+		t.Errorf(
+			"expected placeholder content on the assistant message "+
+				"that was originally empty; transcript=%+v", res.Transcript)
+	}
+}
+
+// TestRunOneTurn_EmptyAssistantReply_SubstitutesPlaceholder exercises
+// runOneTurn directly (the gate requires a test referencing the changed
+// function by name) and asserts the same #935 behavior as the
+// end-to-end TestLoop_EmptyAssistantReply_SubstitutesPlaceholder.
+func TestRunOneTurn_EmptyAssistantReply_SubstitutesPlaceholder(t *testing.T) {
+	srv, _ := scriptedOAIServer(t, []string{emptyAssistantReply})
+	loop := newTestLoop(srv, &fakeRegistry{results: map[string]*ToolResult{}})
+	res := &LoopResult{
+		Transcript: []oai.Message{
+			{Role: oai.RoleSystem, Content: "sys"},
+			{Role: oai.RoleUser, Content: "go"},
+		},
+	}
+	_, err := loop.runOneTurn(context.Background(), LoopConfig{Model: "test"}, sixToolSchemas(), res)
+	// The placeholder makes the message non-empty, so runOneTurn treats
+	// it as a no-tool-call turn and returns ErrAssistantNoToolCalls.
+	if !errors.Is(err, ErrAssistantNoToolCalls) {
+		t.Fatalf("runOneTurn: expected ErrAssistantNoToolCalls, got %v", err)
+	}
+	// The assistant message appended by runOneTurn must carry the
+	// placeholder, not be empty (the #935 guard).
+	last := res.Transcript[len(res.Transcript)-1]
+	if last.Role != oai.RoleAssistant {
+		t.Fatalf("last message role: want assistant got %q", last.Role)
+	}
+	if strings.TrimSpace(last.Content) == "" {
+		t.Errorf("runOneTurn must substitute placeholder for empty assistant reply; got empty content")
+	}
+	if !strings.Contains(last.Content, "empty response from model") {
+		t.Errorf("placeholder content not found in: %q", last.Content)
+	}
+}
+
+// TestLoop_StrippedReasoningDoesNotProduceEmptyAssistant covers the
+// sibling case: stripReasoningForWire must not leave an empty assistant
+// message on the wire.
+func TestLoop_StrippedReasoningDoesNotProduceEmptyAssistant(t *testing.T) {
 	// Stripping reasoning from a reasoning-only assistant turn must not
 	// leave an empty assistant message on the wire: llama-server rejects
 	// the request with 400 "Assistant message must contain either
