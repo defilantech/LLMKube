@@ -1251,8 +1251,10 @@ func attachGateAdvisories(extra map[string]any, acc *[]advisory) {
 
 // renderGateAdvisories formats a slice of coder-gate advisories as a
 // reviewer-prompt section. Returns an empty string when the slice is empty
-// so callers can append unconditionally without adding noise.
-func renderGateAdvisories(advisories []advisory) string {
+// so callers can append unconditionally without adding noise. Accepts the
+// public CRD type so it can be called from both the coder-gate write side
+// (via advisoriesToCRD) and from buildUserPrompt for the reviewer role.
+func renderGateAdvisories(advisories []foremanv1alpha1.GateAdvisory) string {
 	if len(advisories) == 0 {
 		return ""
 	}
@@ -1262,6 +1264,21 @@ func renderGateAdvisories(advisories []advisory) string {
 		fmt.Fprintf(&b, "- [%s] %s\n", a.Check, a.Detail)
 	}
 	return b.String()
+}
+
+// advisoriesToCRD converts the unexported gate-registry advisory slice into
+// the public GateAdvisory CRD slice so attachGateAdvisories and
+// renderGateAdvisories share one implementation. The two types are
+// structurally identical; this avoids duplicating the render logic.
+func advisoriesToCRD(in []advisory) []foremanv1alpha1.GateAdvisory {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]foremanv1alpha1.GateAdvisory, len(in))
+	for i, a := range in {
+		out[i] = foremanv1alpha1.GateAdvisory{Check: a.Check, Detail: a.Detail}
+	}
+	return out
 }
 
 // --- helpers --------------------------------------------------------------
@@ -1384,6 +1401,14 @@ func buildUserPrompt(task *foremanv1alpha1.AgenticTask) string {
 		b.WriteString("the branch under review before forming any judgment, ")
 		b.WriteString("then apply the Step 2 review checklist, then call ")
 		b.WriteString("submit_result with your verdict and findings.\n")
+		// Append gate advisories when the reconciler has wired them in
+		// from the upstream coder task's result. The reviewer is asked to
+		// confirm or dismiss each mechanical suspicion so they are not
+		// silently ignored.
+		if block := renderGateAdvisories(p.GateAdvisories); block != "" {
+			b.WriteString("\n")
+			b.WriteString(block)
+		}
 	default:
 		// Freeform / other kinds: pass payload prompt through unchanged.
 		// We guarantee a non-empty content field on the wire even when

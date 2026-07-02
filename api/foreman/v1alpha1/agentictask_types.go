@@ -215,6 +215,21 @@ type RequiredCapability struct {
 	Roles []string `json:"roles,omitempty"`
 }
 
+// GateAdvisory is a non-blocking finding from the coder-side gate that the
+// reviewer should confirm or dismiss. It records which check raised the
+// suspicion and a human-readable explanation of what was found.
+type GateAdvisory struct {
+	// Check is the name of the gate check that produced the finding
+	// (e.g. "grounding-breadth", "scope-overlap").
+	// +optional
+	Check string `json:"check,omitempty"`
+
+	// Detail is the human-readable description of the advisory
+	// (e.g. "cites dcgm_gpu_utilization (unknown symbol)").
+	// +optional
+	Detail string `json:"detail,omitempty"`
+}
+
 // AgenticTaskPayload is the kind-discriminated work spec. Each field is only
 // meaningful for the kinds named in its description.
 type AgenticTaskPayload struct {
@@ -253,6 +268,15 @@ type AgenticTaskPayload struct {
 	// to "issue-fixer" for issue-fix and "verify" for verify.
 	// +optional
 	Agent string `json:"agent,omitempty"`
+
+	// GateAdvisories holds non-blocking findings copied from the upstream
+	// coder task's result, surfaced to a reviewer for confirmation or
+	// dismissal. The WorkloadReconciler populates this field on review-kind
+	// tasks once the coder task has a terminal result with advisories in
+	// status.result.extra["gateAdvisories"]. Empty when the coder task
+	// produced no advisories or has not yet completed.
+	// +optional
+	GateAdvisories []GateAdvisory `json:"gateAdvisories,omitempty"`
 }
 
 // AgenticTaskSpec defines the desired state of an AgenticTask.

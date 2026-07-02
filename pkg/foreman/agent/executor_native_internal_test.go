@@ -1753,7 +1753,7 @@ func TestAttachGateAdvisories_OmitsWhenEmpty(t *testing.T) {
 }
 
 func TestRenderGateAdvisories_RendersWhenPresent(t *testing.T) {
-	advs := []advisory{
+	advs := []foremanv1alpha1.GateAdvisory{
 		{Check: "grounding-breadth", Detail: "cites dcgm_gpu_utilization (unknown)"},
 		{Check: "scope-overlap", Detail: "diff touches files not mentioned in the issue"},
 	}
@@ -1772,7 +1772,92 @@ func TestRenderGateAdvisories_OmittedWhenEmpty(t *testing.T) {
 	if got := renderGateAdvisories(nil); got != "" {
 		t.Errorf("nil advisories: want empty string, got %q", got)
 	}
-	if got := renderGateAdvisories([]advisory{}); got != "" {
+	if got := renderGateAdvisories([]foremanv1alpha1.GateAdvisory{}); got != "" {
 		t.Errorf("empty advisories: want empty string, got %q", got)
+	}
+}
+
+// TestAdvisoriesToCRD verifies the internal->CRD converter preserves Check
+// and Detail, and returns nil for an empty input.
+func TestAdvisoriesToCRD(t *testing.T) {
+	t.Run("converts fields", func(t *testing.T) {
+		in := []advisory{
+			{Check: "grounding-breadth", Detail: "cites unknown symbol"},
+			{Check: "scope-overlap", Detail: "touches unrelated files"},
+		}
+		got := advisoriesToCRD(in)
+		if len(got) != 2 {
+			t.Fatalf("want 2 advisories, got %d", len(got))
+		}
+		if got[0].Check != "grounding-breadth" || got[0].Detail != "cites unknown symbol" {
+			t.Errorf("first advisory mismatch: %+v", got[0])
+		}
+		if got[1].Check != "scope-overlap" || got[1].Detail != "touches unrelated files" {
+			t.Errorf("second advisory mismatch: %+v", got[1])
+		}
+	})
+	t.Run("nil for empty", func(t *testing.T) {
+		if got := advisoriesToCRD([]advisory{}); got != nil {
+			t.Errorf("want nil for empty slice, got %v", got)
+		}
+		if got := advisoriesToCRD(nil); got != nil {
+			t.Errorf("want nil for nil input, got %v", got)
+		}
+	})
+}
+
+// TestBuildUserPrompt_ReviewerAppendsAdvisories verifies that gate advisories
+// wired into the payload by the reconciler are included in the reviewer's
+// first user message so the model is prompted to confirm or dismiss each one.
+func TestBuildUserPrompt_ReviewerAppendsAdvisories(t *testing.T) {
+	task := &foremanv1alpha1.AgenticTask{
+		Spec: foremanv1alpha1.AgenticTaskSpec{
+			Kind: foremanv1alpha1.AgenticTaskKindReview,
+			Payload: foremanv1alpha1.AgenticTaskPayload{
+				Repo:   "defilantech/LLMKube",
+				Issue:  510,
+				Branch: "foreman/wl/issue-510",
+				GateAdvisories: []foremanv1alpha1.GateAdvisory{
+					{Check: "grounding-breadth", Detail: "cites dcgm_gpu_utilization (unknown)"},
+					{Check: "scope-overlap", Detail: "diff touches api/foreman/v1alpha1/types.go not in the issue"},
+				},
+			},
+		},
+	}
+	got := buildUserPrompt(task)
+	for _, want := range []string{
+		"reviewing the branch",
+		"Gate advisories to verify",
+		"grounding-breadth",
+		"dcgm_gpu_utilization",
+		"scope-overlap",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("reviewer prompt with advisories missing %q in:\n%s", want, got)
+		}
+	}
+}
+
+// TestBuildUserPrompt_ReviewerOmitsAdvisoryBlockWhenNone verifies that the
+// advisory block is silently absent when the payload carries no advisories,
+// so the prompt stays clean for tasks where the coder gate found nothing.
+func TestBuildUserPrompt_ReviewerOmitsAdvisoryBlockWhenNone(t *testing.T) {
+	task := &foremanv1alpha1.AgenticTask{
+		Spec: foremanv1alpha1.AgenticTaskSpec{
+			Kind: foremanv1alpha1.AgenticTaskKindReview,
+			Payload: foremanv1alpha1.AgenticTaskPayload{
+				Repo:   "defilantech/LLMKube",
+				Issue:  510,
+				Branch: "foreman/wl/issue-510",
+			},
+		},
+	}
+	got := buildUserPrompt(task)
+	if strings.Contains(got, "Gate advisories") {
+		t.Errorf("reviewer prompt without advisories must not contain advisory block; got:\n%s", got)
+	}
+	// Must still produce a non-empty, useful prompt.
+	if !strings.Contains(got, "reviewing the branch") {
+		t.Errorf("reviewer prompt missing base content; got:\n%s", got)
 	}
 }
