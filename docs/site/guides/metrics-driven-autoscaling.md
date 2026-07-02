@@ -82,7 +82,7 @@ to the colon-form names the HPA expects. Add these rules to your
 
 ```yaml
 rules:
-  - seriesQuery: 'llamacpp_requests_processing{namespace!="",pod!=""}'
+  - seriesQuery: '{__name__=~"llamacpp_.+",namespace!="",pod!=""}'
     resources:
       overrides:
         namespace: {resource: namespace}
@@ -189,14 +189,15 @@ spec:
     - type: Pods
       pods:
         metric:
-          name: llamacpp_kv_cache_usage_ratio
+          name: llamacpp:kv_cache_usage_ratio
         target:
           type: AverageValue
           averageValue: "0.8"   # scale up when avg KV cache usage > 80%
 ```
 
 Use this when your prompts vary in length and you want to avoid
-cache thrash. The HPA controller reads the gauge directly.
+cache thrash. Like Option A, this metric is served to the HPA through
+the custom-metrics API by prometheus-adapter (see the adapter rule above).
 
 ### Option C: GPU utilization (hardware-driven)
 
@@ -226,7 +227,9 @@ spec:
 ```
 
 `prometheus-adapter` exposes DCGM metrics as custom metrics the HPA
-can read. The NVIDIA DCGM exporter must be running on each GPU node.
+can read; like the llamacpp gauges above, `DCGM_FI_DEV_GPU_UTIL` needs
+its own adapter rule before the HPA can resolve it. The NVIDIA DCGM
+exporter must be running on each GPU node.
 See the [NVIDIA GPU Operator docs](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/index.html)
 for setup.
 
@@ -323,7 +326,7 @@ changes. The HPA reconciles every 15 seconds by default.
       - type: Pods
         pods:
           metric:
-            name: llamacpp_kv_cache_usage_ratio
+            name: llamacpp:kv_cache_usage_ratio
           target:
             type: AverageValue
             averageValue: "0.8"
