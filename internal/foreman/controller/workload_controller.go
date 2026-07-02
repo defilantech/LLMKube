@@ -118,6 +118,16 @@ func (r *WorkloadReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
+	// A deleting Workload must not be reconciled: with foreground
+	// deletion, GC removes the child AgenticTasks while the parent
+	// lingers behind its finalizer — reconciling then takes the
+	// "no children yet" path and re-renders the whole pipeline, GC
+	// deletes it again, and the Workload can never finish terminating
+	// (#949). Let GC do its job.
+	if !workload.DeletionTimestamp.IsZero() {
+		return ctrl.Result{}, nil
+	}
+
 	// List children we already own. The label index keeps this fast and
 	// scoped; child status changes re-queue us via Owns().
 	children, err := r.listChildren(ctx, &workload)
