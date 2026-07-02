@@ -239,3 +239,23 @@ func TestCheckCallerImpact_TruncatesLargeCallerLists(t *testing.T) {
 		t.Errorf("want truncation note in output, got %q", out)
 	}
 }
+
+func TestContainsCall_IdentifierBoundary(t *testing.T) {
+	cases := []struct {
+		text, fn string
+		want     bool
+	}{
+		{"x := New()", "New", true},
+		{"return Renew()", "New", false}, // suffix match must be rejected
+		{"foo.New(ctx)", "New", true},    // selector dot is a boundary
+		{"prevNew(ctx)", "New", false},   // identifier-prefixed, rejected
+		{"aRun(); Run()", "Run", true},   // second occurrence is a real call
+		{"reRun()", "Run", false},        // only a suffix occurrence
+		{"New (x)", "New", false},        // space before paren is not a call token
+	}
+	for _, c := range cases {
+		if got := containsCall(c.text, c.fn); got != c.want {
+			t.Errorf("containsCall(%q, %q) = %v, want %v", c.text, c.fn, got, c.want)
+		}
+	}
+}

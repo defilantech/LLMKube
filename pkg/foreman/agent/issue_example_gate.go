@@ -29,6 +29,7 @@ package agent
 import (
 	"context"
 	"strings"
+	"unicode/utf8"
 )
 
 // maxExampleBytes caps the harvested example at ~2 KB so the advisory stays
@@ -123,12 +124,18 @@ func containsMarker(s string) bool {
 	return false
 }
 
-// capBytes caps s at maxExampleBytes, keeping the leading portion.
+// capBytes caps s at maxExampleBytes, keeping the leading portion and never
+// splitting a multi-byte UTF-8 rune at the boundary.
 func capBytes(s string) string {
 	if len(s) <= maxExampleBytes {
 		return s
 	}
-	return s[:maxExampleBytes]
+	trunc := s[:maxExampleBytes]
+	// Back off any trailing bytes that form an incomplete final rune.
+	for len(trunc) > 0 && !utf8.ValidString(trunc) {
+		trunc = trunc[:len(trunc)-1]
+	}
+	return trunc
 }
 
 // checkIssueExample returns a gate-check closure that harvests a concrete

@@ -143,8 +143,9 @@ func externalCallers(ctx context.Context, workspace, funcName, defFile string, r
 		if !ok {
 			continue
 		}
-		// Must be an actual call site (text contains `<funcName>(`)
-		if !strings.Contains(text, funcName+"(") {
+		// Must be an actual call site (a `<funcName>(` token with an identifier
+		// boundary on the left, so `New(` does not match inside `Renew(`).
+		if !containsCall(text, funcName) {
 			continue
 		}
 		site := filePart + ":" + lineNum
@@ -188,4 +189,32 @@ func parseGrepLine(line string) (file, linenum, text string, ok bool) {
 // "./pkg/x/y.go" and "pkg/x/y.go" compare equal.
 func normalizeGrepPath(p string) string {
 	return filepath.Clean(p)
+}
+
+// containsCall reports whether text contains a call token `<funcName>(` with an
+// identifier boundary on the left, so a short name like `New` is not matched
+// inside a longer identifier such as `Renew(`. It scans every occurrence of
+// `<funcName>(` and accepts the first one whose preceding byte (if any) is not
+// an identifier character.
+func containsCall(text, funcName string) bool {
+	needle := funcName + "("
+	for off := 0; ; {
+		idx := strings.Index(text[off:], needle)
+		if idx < 0 {
+			return false
+		}
+		start := off + idx
+		if start == 0 || !isIdentByte(text[start-1]) {
+			return true
+		}
+		off = start + 1 // keep scanning past this (rejected) occurrence
+	}
+}
+
+// isIdentByte reports whether b can appear inside a Go identifier.
+func isIdentByte(b byte) bool {
+	return b == '_' ||
+		(b >= 'a' && b <= 'z') ||
+		(b >= 'A' && b <= 'Z') ||
+		(b >= '0' && b <= '9')
 }
