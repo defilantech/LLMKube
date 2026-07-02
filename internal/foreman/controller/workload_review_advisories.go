@@ -97,8 +97,8 @@ func (r *WorkloadReconciler) patchReviewAdvisories(
 			patch := client.MergeFrom(reviewTask.DeepCopy())
 			reviewTask.Spec.Payload.GateAdvisories = advisories
 			if err := r.Patch(ctx, reviewTask, patch); err != nil {
-				log.Info("could not patch review task advisories; skipping",
-					"task", reviewTask.Name, "err", err.Error())
+				log.Error(err, "could not patch review task advisories; skipping",
+					"task", reviewTask.Name)
 			}
 		}
 	}

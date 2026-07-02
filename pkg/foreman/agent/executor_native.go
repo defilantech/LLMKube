@@ -1251,9 +1251,8 @@ func attachGateAdvisories(extra map[string]any, acc *[]advisory) {
 
 // renderGateAdvisories formats a slice of coder-gate advisories as a
 // reviewer-prompt section. Returns an empty string when the slice is empty
-// so callers can append unconditionally without adding noise. Accepts the
-// public CRD type so it can be called from both the coder-gate write side
-// (via advisoriesToCRD) and from buildUserPrompt for the reviewer role.
+// so callers can append unconditionally without adding noise. Called from
+// buildUserPrompt when rendering advisories into a reviewer task's prompt.
 func renderGateAdvisories(advisories []foremanv1alpha1.GateAdvisory) string {
 	if len(advisories) == 0 {
 		return ""
@@ -1264,21 +1263,6 @@ func renderGateAdvisories(advisories []foremanv1alpha1.GateAdvisory) string {
 		fmt.Fprintf(&b, "- [%s] %s\n", a.Check, a.Detail)
 	}
 	return b.String()
-}
-
-// advisoriesToCRD converts the unexported gate-registry advisory slice into
-// the public GateAdvisory CRD slice so attachGateAdvisories and
-// renderGateAdvisories share one implementation. The two types are
-// structurally identical; this avoids duplicating the render logic.
-func advisoriesToCRD(in []advisory) []foremanv1alpha1.GateAdvisory {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make([]foremanv1alpha1.GateAdvisory, len(in))
-	for i, a := range in {
-		out[i] = foremanv1alpha1.GateAdvisory{Check: a.Check, Detail: a.Detail}
-	}
-	return out
 }
 
 // --- helpers --------------------------------------------------------------

@@ -1777,35 +1777,6 @@ func TestRenderGateAdvisories_OmittedWhenEmpty(t *testing.T) {
 	}
 }
 
-// TestAdvisoriesToCRD verifies the internal->CRD converter preserves Check
-// and Detail, and returns nil for an empty input.
-func TestAdvisoriesToCRD(t *testing.T) {
-	t.Run("converts fields", func(t *testing.T) {
-		in := []advisory{
-			{Check: "grounding-breadth", Detail: "cites unknown symbol"},
-			{Check: "scope-overlap", Detail: "touches unrelated files"},
-		}
-		got := advisoriesToCRD(in)
-		if len(got) != 2 {
-			t.Fatalf("want 2 advisories, got %d", len(got))
-		}
-		if got[0].Check != "grounding-breadth" || got[0].Detail != "cites unknown symbol" {
-			t.Errorf("first advisory mismatch: %+v", got[0])
-		}
-		if got[1].Check != "scope-overlap" || got[1].Detail != "touches unrelated files" {
-			t.Errorf("second advisory mismatch: %+v", got[1])
-		}
-	})
-	t.Run("nil for empty", func(t *testing.T) {
-		if got := advisoriesToCRD([]advisory{}); got != nil {
-			t.Errorf("want nil for empty slice, got %v", got)
-		}
-		if got := advisoriesToCRD(nil); got != nil {
-			t.Errorf("want nil for nil input, got %v", got)
-		}
-	})
-}
-
 // TestBuildUserPrompt_ReviewerAppendsAdvisories verifies that gate advisories
 // wired into the payload by the reconciler are included in the reviewer's
 // first user message so the model is prompted to confirm or dismiss each one.
