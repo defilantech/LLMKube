@@ -645,6 +645,11 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 		Workspace: workspace,
 		Branch:    branch,
 		Auth:      auth,
+		// The task's branch lives in the agent-owned foreman/* namespace;
+		// a stale remote ref is a previous run of this same Workload, so
+		// replace it (compare-and-swap via force-with-lease) instead of
+		// failing every re-run with non-fast-forward (#934).
+		ReplaceOnReject: strings.HasPrefix(branch, "foreman/"),
 	}); err != nil {
 		return e.pushFailedResult(start, transcriptRef, loopRes, branch, sha, err), nil
 	}

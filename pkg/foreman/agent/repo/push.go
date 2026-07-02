@@ -39,6 +39,16 @@ type PushOptions struct {
 	// Auth provides the GIT_ASKPASS scaffolding. Required for
 	// authenticated pushes (which is every realistic case).
 	Auth *Auth
+
+	// ReplaceOnReject retries a rejected push with --force-with-lease
+	// pinned to the remote SHA observed via ls-remote — a compare-and-
+	// swap that replaces exactly the ref we saw, and still fails if a
+	// concurrent writer moves it in between. Callers set this ONLY for
+	// branches the agent owns outright (the foreman/<workload>/...
+	// namespace), where the stale ref is a previous run of the same
+	// Workload: without it, every re-run after a delete-and-recreate
+	// retry dies NO-GO / PUSH-FAILED on non-fast-forward (#934).
+	ReplaceOnReject bool
 }
 
 // ErrPushRejected wraps a non-fast-forward / pre-receive rejection
@@ -76,9 +86,43 @@ func Push(ctx context.Context, opts PushOptions) error {
 	// Heuristic: git push prints "[remote rejected]" or "[rejected]"
 	// in stderr on a non-fast-forward / pre-receive rejection. We
 	// captured stderr inside the wrapped error message in runGit.
-	if isPushRejection(err.Error()) {
-		return fmt.Errorf("%w: %w", ErrPushRejected, err)
+	if !isPushRejection(err.Error()) {
+		return err
 	}
+	if opts.ReplaceOnReject {
+		if replaceErr := replaceRemoteBranch(ctx, opts.Workspace, env, remote, opts.Branch); replaceErr == nil {
+			return nil
+		} else if isPushRejection(replaceErr.Error()) {
+			// The lease failed: someone moved the ref between our
+			// ls-remote and the push. Surface the original rejection
+			// semantics so the caller's PUSH-FAILED handling applies.
+			return fmt.Errorf("%w: force-with-lease retry also rejected: %w", ErrPushRejected, replaceErr)
+		} else {
+			return replaceErr
+		}
+	}
+	return fmt.Errorf("%w: %w", ErrPushRejected, err)
+}
+
+// replaceRemoteBranch re-pushes Branch with --force-with-lease pinned to
+// the remote SHA read via ls-remote: replace exactly the ref we observed,
+// fail if it moves concurrently. Used only for agent-owned branch
+// namespaces (see PushOptions.ReplaceOnReject).
+func replaceRemoteBranch(ctx context.Context, workspace string, env []string, remote, branch string) error {
+	ref := "refs/heads/" + branch
+	out, err := runGit(ctx, workspace, env, "ls-remote", remote, ref)
+	if err != nil {
+		return fmt.Errorf("ls-remote before force-with-lease: %w", err)
+	}
+	fields := strings.Fields(out)
+	if len(fields) == 0 {
+		// The branch vanished between the rejected push and now (e.g. a
+		// human deleted it). A plain push should succeed; keep the lease
+		// against an empty expectation to stay race-safe.
+		fields = []string{""}
+	}
+	lease := fmt.Sprintf("--force-with-lease=%s:%s", ref, fields[0])
+	_, err = runGit(ctx, workspace, env, "push", lease, "--set-upstream", remote, branch)
 	return err
 }
 
