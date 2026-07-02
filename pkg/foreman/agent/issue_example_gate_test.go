@@ -44,9 +44,15 @@ func TestHarvestIssueExample_NoneWhenNoFence(t *testing.T) {
 	}
 }
 
+// noopRunner is a commandRunner that always returns ("", nil), used in tests
+// that exercise the text-analysis path and do not need real command execution.
+var noopRunner = func(_ context.Context, _ string, _ []string, _ string, _ ...string) (string, error) {
+	return "", nil
+}
+
 func TestCheckIssueExample_AdvisoryWhenExamplePresent(t *testing.T) {
 	fn := checkIssueExample("## Repro\n```\ndo the thing\n```\n")
-	failed, out := fn(context.Background(), "/ws", func(context.Context, string, []string, string, ...string) (string, error) { return "", nil })
+	failed, out := fn(context.Background(), "/ws", noopRunner)
 	if !failed || !strings.Contains(out, "do the thing") {
 		t.Fatalf("want advisory containing the example, got failed=%v out=%q", failed, out)
 	}
@@ -54,7 +60,7 @@ func TestCheckIssueExample_AdvisoryWhenExamplePresent(t *testing.T) {
 
 func TestCheckIssueExample_NoAdvisoryWhenNoExample(t *testing.T) {
 	fn := checkIssueExample("no code blocks here")
-	failed, _ := fn(context.Background(), "/ws", func(context.Context, string, []string, string, ...string) (string, error) { return "", nil })
+	failed, _ := fn(context.Background(), "/ws", noopRunner)
 	if failed {
 		t.Fatal("no example -> no advisory")
 	}

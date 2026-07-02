@@ -317,9 +317,7 @@ func Use() string {
 		// checkIssueExample is purely text-based: no workspace / git needed.
 		issueBody := "## Repro\n```\ndo the thing\n```\n"
 		fn := checkIssueExample(issueBody)
-		failed, out := fn(context.Background(), "/unused", func(context.Context, string, []string, string, ...string) (string, error) {
-			return "", nil
-		})
+		failed, out := fn(context.Background(), "/unused", noopRunner)
 		if !failed {
 			t.Fatalf("issue-example: expected advisory for fenced block near 'Repro', got passed; out=%q", out)
 		}
@@ -418,9 +416,7 @@ func computeCacheKey(s string) string { return s }
 
 	t.Run("issue-example: no fenced block in issue -> no fire", func(t *testing.T) {
 		fn := checkIssueExample("This is a bug. No code fences here. Please fix it.")
-		failed, _ := fn(context.Background(), "/unused", func(context.Context, string, []string, string, ...string) (string, error) {
-			return "", nil
-		})
+		failed, _ := fn(context.Background(), "/unused", noopRunner)
 		if failed {
 			t.Error("issue-example: issue with no example should not fire")
 		}
@@ -502,7 +498,9 @@ func Solo() string {
 
 		failed, out := checkGroundingBreadth(context.Background(), ws, run)
 		if failed {
-			t.Errorf("grounding-breadth: node_memory_working_set_bytes is grounded by node_ prefix; should not fire; got: %s", out)
+			t.Errorf(
+				"grounding-breadth: node_memory_working_set_bytes is grounded by node_ prefix; "+
+					"should not fire; got: %s", out)
 		}
 	})
 }

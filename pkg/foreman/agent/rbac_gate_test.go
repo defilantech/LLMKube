@@ -43,7 +43,7 @@ func mustWrite(t *testing.T, workspace, relPath, content string) {
 func changedGoFilesRunner(paths ...string) commandRunner {
 	// changedNonTestGoFiles calls: run(ctx, workspace, nil, "git", "status", "-z")
 	// Each entry is " M <path>", NUL-terminated as a sequence.
-	var entries []string
+	entries := make([]string, 0, len(paths))
 	for _, p := range paths {
 		entries = append(entries, " M "+p)
 	}

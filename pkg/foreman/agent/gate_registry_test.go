@@ -22,12 +22,20 @@ import (
 )
 
 func TestRunGateChecks_SplitsByTier(t *testing.T) {
-	block := gateCheck{name: "always-block", tier: tierBlock, fn: func(context.Context, string, commandRunner) (bool, string) {
-		return true, "blocked"
-	}}
-	adv := gateCheck{name: "always-advise", tier: tierAdvisory, fn: func(context.Context, string, commandRunner) (bool, string) {
-		return true, "noted"
-	}}
+	block := gateCheck{
+		name: "always-block",
+		tier: tierBlock,
+		fn: func(context.Context, string, commandRunner) (bool, string) {
+			return true, "blocked"
+		},
+	}
+	adv := gateCheck{
+		name: "always-advise",
+		tier: tierAdvisory,
+		fn: func(context.Context, string, commandRunner) (bool, string) {
+			return true, "noted"
+		},
+	}
 	clean := gateCheck{name: "clean", tier: tierBlock, fn: func(context.Context, string, commandRunner) (bool, string) {
 		return false, ""
 	}}

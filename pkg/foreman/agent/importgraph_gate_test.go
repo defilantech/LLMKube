@@ -45,7 +45,7 @@ func importGraphFakeRunner(responses map[string]string, errKeys map[string]bool)
 // changedFilesStatus returns a git status -z output string for the given
 // workspace-relative file paths, formatted as changedNonTestGoFiles expects.
 func changedFilesStatus(paths ...string) string {
-	var entries []string
+	entries := make([]string, 0, len(paths))
 	for _, p := range paths {
 		entries = append(entries, " M "+p)
 	}
@@ -70,7 +70,9 @@ func TestCheckImportGraph_NewCLIToControllerEdgeFails(t *testing.T) {
 	dir := t.TempDir()
 
 	// Disk (working tree): the coder added the internal/controller import.
-	diskSrc := "package cli\n\nimport \"github.com/defilantech/llmkube/internal/controller\"\n\nvar _ = controller.ModelCacheKey\n"
+	diskSrc := "package cli\n\n" +
+		"import \"github.com/defilantech/llmkube/internal/controller\"\n\n" +
+		"var _ = controller.ModelCacheKey\n"
 	writeGoFile(t, dir, "pkg/cli/cache.go", diskSrc)
 
 	// HEAD: no such import existed before.

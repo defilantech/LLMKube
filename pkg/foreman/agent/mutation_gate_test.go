@@ -101,7 +101,7 @@ func TestCheckTestPresence(t *testing.T) {
 // _test.go passes") encoded the loosened per-package behavior we are
 // deliberately tightening, so we now write the test file's content to disk so
 // the per-symbol check can read it and find the reference.
-func TestCheckTestPresence_PassesWhenTestChanged(t *testing.T) {
+func TestCheckTestPresence_PassesWhenTestChanged(t *testing.T) { //nolint:dupl
 	ws := t.TempDir()
 	_ = os.MkdirAll(filepath.Join(ws, "pkg/x"), 0o755)
 	_ = os.WriteFile(filepath.Join(ws, "pkg/x/x.go"), []byte("package x\nfunc New(){}\n"), 0o644)
@@ -169,7 +169,7 @@ func TestCheckTestPresence_UnrelatedTestDoesNotExempt(t *testing.T) {
 
 // TestCheckTestPresence_ReferencingTestPasses verifies that a changed _test.go
 // that references the added func Foo by name satisfies the per-symbol check.
-func TestCheckTestPresence_ReferencingTestPasses(t *testing.T) {
+func TestCheckTestPresence_ReferencingTestPasses(t *testing.T) { //nolint:dupl
 	ws := t.TempDir()
 	_ = os.MkdirAll(filepath.Join(ws, "pkg/x"), 0o755)
 	_ = os.WriteFile(filepath.Join(ws, "pkg/x/x.go"),

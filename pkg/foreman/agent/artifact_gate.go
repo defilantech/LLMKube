@@ -224,7 +224,7 @@ func kubectlDryRun(ctx context.Context, workspace, path string, startLine int, d
 		return nil // fail-open
 	}
 	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
+	defer func() { _ = os.Remove(tmpPath) }() // best-effort cleanup; ignore error
 	if _, err := tmp.WriteString(doc); err != nil {
 		_ = tmp.Close()
 		return nil

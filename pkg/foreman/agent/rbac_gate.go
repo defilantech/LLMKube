@@ -38,6 +38,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -105,16 +106,33 @@ func checkRBACUse(ctx context.Context, workspace string, run commandRunner) (fai
 
 	for dir, changedInDir := range byDir {
 		absDir := filepath.Join(workspace, filepath.FromSlash(dir))
-		fset := token.NewFileSet()
-		pkgs, err := parser.ParseDir(fset, absDir, nil, parser.ParseComments)
+
+		// List all .go files in the directory (no build-tag filtering needed;
+		// we are doing a syntactic, fail-open scan). os.ReadDir replaces the
+		// deprecated parser.ParseDir API.
+		dirEntries, err := os.ReadDir(absDir)
 		if err != nil {
 			// Fail-open: skip this directory rather than blocking the coder.
 			continue
 		}
 
+		fset := token.NewFileSet()
+		var allFiles []*ast.File
+		for _, de := range dirEntries {
+			name := de.Name()
+			if de.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+				continue
+			}
+			f, parseErr := parser.ParseFile(fset, filepath.Join(absDir, name), nil, parser.ParseComments)
+			if parseErr != nil {
+				continue // fail-open on individual parse errors
+			}
+			allFiles = append(allFiles, f)
+		}
+
 		// Collect all +kubebuilder:rbac markers from ALL files in the package
 		// (markers may live in a sibling file, e.g. <kind>_controller.go).
-		markers := collectRBACMarkers(pkgs)
+		markers := collectRBACMarkers(allFiles)
 
 		// Build a set of changed file base-names for quick lookup.
 		changedBase := map[string]bool{}
@@ -123,46 +141,45 @@ func checkRBACUse(ctx context.Context, workspace string, run commandRunner) (fai
 		}
 
 		// Walk only the changed files' ASTs for client verb calls.
-		for _, pkg := range pkgs {
-			for filename, file := range pkg.Files {
-				if !changedBase[filepath.Base(filename)] {
-					continue
-				}
-				// Walk the AST for CallExpr nodes.
-				ast.Inspect(file, func(n ast.Node) bool {
-					call, ok := n.(*ast.CallExpr)
-					if !ok {
-						return true
-					}
-					verb, typeName, ok := extractClientCall(call)
-					if !ok {
-						return true
-					}
-					// Strip trailing "List" for List/Watch calls.
-					lookupName := typeName
-					if (verb == "list" || verb == "watch") && strings.HasSuffix(lookupName, "List") {
-						lookupName = strings.TrimSuffix(lookupName, "List")
-					}
-					gr, known := rbacGroupResource[lookupName]
-					if !known {
-						return true // unknown type: skip, no false positive
-					}
-					group, resource := gr[0], gr[1]
-					if !markerCovers(markers, group, resource, verb) {
-						relFile := filepath.Join(dir, filepath.Base(filename))
-						// Choose friendly display of the group for the error message.
-						displayGroup := group
-						if displayGroup == "" {
-							displayGroup = "core"
-						}
-						findings = append(findings, fmt.Sprintf(
-							"%s: r.%s(&%s{}) needs a marker: // +kubebuilder:rbac:groups=%s,resources=%s,verbs=%s",
-							relFile, capitalizeFirst(verb), typeName, displayGroup, resource, verb,
-						))
-					}
-					return true
-				})
+		for _, file := range allFiles {
+			filename := fset.File(file.Pos()).Name()
+			if !changedBase[filepath.Base(filename)] {
+				continue
 			}
+			// Walk the AST for CallExpr nodes.
+			ast.Inspect(file, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				verb, typeName, ok := extractClientCall(call)
+				if !ok {
+					return true
+				}
+				// Strip trailing "List" for List/Watch calls.
+				lookupName := typeName
+				if (verb == "list" || verb == "watch") && strings.HasSuffix(lookupName, "List") {
+					lookupName = strings.TrimSuffix(lookupName, "List")
+				}
+				gr, known := rbacGroupResource[lookupName]
+				if !known {
+					return true // unknown type: skip, no false positive
+				}
+				group, resource := gr[0], gr[1]
+				if !markerCovers(markers, group, resource, verb) {
+					relFile := filepath.Join(dir, filepath.Base(filename))
+					// Choose friendly display of the group for the error message.
+					displayGroup := group
+					if displayGroup == "" {
+						displayGroup = "core"
+					}
+					findings = append(findings, fmt.Sprintf(
+						"%s: r.%s(&%s{}) needs a marker: // +kubebuilder:rbac:groups=%s,resources=%s,verbs=%s",
+						relFile, capitalizeFirst(verb), typeName, displayGroup, resource, verb,
+					))
+				}
+				return true
+			})
 		}
 	}
 
@@ -281,22 +298,20 @@ type rbacMarker struct {
 	verbs     []string
 }
 
-// collectRBACMarkers scans every comment group in all files of a parsed package
-// set and returns the parsed markers.
-func collectRBACMarkers(pkgs map[string]*ast.Package) []rbacMarker {
+// collectRBACMarkers scans every comment group in the provided files and
+// returns the parsed markers.
+func collectRBACMarkers(files []*ast.File) []rbacMarker {
 	var markers []rbacMarker
-	for _, pkg := range pkgs {
-		for _, file := range pkg.Files {
-			for _, cg := range file.Comments {
-				for _, c := range cg.List {
-					text := strings.TrimPrefix(c.Text, "//")
-					text = strings.TrimSpace(text)
-					if !strings.HasPrefix(text, "+kubebuilder:rbac:") {
-						continue
-					}
-					if m, ok := parseRBACMarker(text); ok {
-						markers = append(markers, m)
-					}
+	for _, file := range files {
+		for _, cg := range file.Comments {
+			for _, c := range cg.List {
+				text := strings.TrimPrefix(c.Text, "//")
+				text = strings.TrimSpace(text)
+				if !strings.HasPrefix(text, "+kubebuilder:rbac:") {
+					continue
+				}
+				if m, ok := parseRBACMarker(text); ok {
+					markers = append(markers, m)
 				}
 			}
 		}
