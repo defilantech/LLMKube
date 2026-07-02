@@ -19,6 +19,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -218,6 +219,52 @@ func TestStrReplace_FuzzyRefusesLongLineAliasing(t *testing.T) {
 	}
 	if got := readBack(t, ws, "f.go"); got != src {
 		t.Errorf("file must be unchanged, got %q", got)
+	}
+}
+
+// --- write_file steering (#942 Part B) --------------------------------------
+
+// A failed match on a small file appends the write_file steering hint: the
+// model may actually be trying to create or rewrite the file (#478).
+func TestStrReplace_WriteFileHintOnSmallFile(t *testing.T) {
+	ws := makeWorkspace(t)
+	seedFile(t, ws, "stub.go", "package main\n")
+	err := execStrReplace(t, ws, "stub.go", "func main() {\n\tprintln(1)\n}", "x")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "write_file") {
+		t.Errorf("expected write_file steering hint on a small file, got: %v", err)
+	}
+}
+
+// The hint must NOT fire on large files, where a failed match means drift,
+// not wrong-tool choice, and the anchor hint alone is the right feedback.
+func TestStrReplace_NoWriteFileHintOnLargeFile(t *testing.T) {
+	ws := makeWorkspace(t)
+	var b strings.Builder
+	b.WriteString("package main\n\n")
+	for i := 0; i < 60; i++ {
+		fmt.Fprintf(&b, "// filler line %d keeps this file over the hint threshold\n", i)
+	}
+	b.WriteString("func compute() int {\n\treturn userCount\n}\n")
+	seedFile(t, ws, "big.go", b.String())
+	// A block that matches nothing, fuzzy or otherwise.
+	err := execStrReplace(t, ws, "big.go", "class Widget:\n    def render(self):\n        pass", "x")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if strings.Contains(err.Error(), "write_file") {
+		t.Errorf("write_file hint must not fire on a large file, got: %v", err)
+	}
+}
+
+// The tool advertisement itself must steer new-file work to write_file.
+func TestStrReplace_SchemaSteersToWriteFile(t *testing.T) {
+	tool := &StrReplaceTool{}
+	if !strings.Contains(tool.Schema().Description, "write_file") {
+		t.Errorf("schema description should mention write_file for new files, got: %q",
+			tool.Schema().Description)
 	}
 }
 

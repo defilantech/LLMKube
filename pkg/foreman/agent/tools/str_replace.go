@@ -55,7 +55,9 @@ func (t *StrReplaceTool) Schema() oai.ToolSchemaDef {
 			"Copy old_string VERBATIM from a recent read_file; prefer the shortest " +
 			"unique snippet (1-3 lines). Do not retype it from memory. If it does not " +
 			"match, the error shows the file's actual current text near your edit; " +
-			"copy that exactly and retry.",
+			"copy that exactly and retry. For a NEW file or a full-file rewrite, use " +
+			"write_file instead: str_replace requires old_string to already exist in " +
+			"the file.",
 		Parameters: json.RawMessage(`{
 "type": "object",
 "properties": {
@@ -127,10 +129,11 @@ func (t *StrReplaceTool) Execute(_ context.Context, args json.RawMessage) (*agen
 			if actual, ok := anchorContext(content, a.OldString); ok {
 				return nil, fmt.Errorf("str_replace: old_string not found in %q. "+
 					"The file's actual current text near your edit is below - copy it "+
-					"VERBATIM into old_string and retry:\n%s", a.Path, actual)
+					"VERBATIM into old_string and retry:\n%s%s", a.Path, actual, writeFileHint(content))
 			}
 		}
-		return nil, fmt.Errorf("str_replace: old_string found %d times in %q, want %d", occurrences, a.Path, want)
+		return nil, fmt.Errorf("str_replace: old_string found %d times in %q, want %d%s",
+			occurrences, a.Path, want, writeFileHint(content))
 	}
 	next := strings.ReplaceAll(content, a.OldString, a.NewString)
 	if err := os.WriteFile(full, []byte(next), 0o644); err != nil { //nolint:gosec // G306: workspace file
@@ -303,6 +306,22 @@ func windowWithinFuzzyBudget(normWindow, normOld []string) bool {
 		return false
 	}
 	return true
+}
+
+// writeFileHintMaxLines bounds the "did you mean write_file?" steering hint
+// to small files. On a large file a failed match means old_string drift and
+// the anchor hint is the right feedback; on a small (often brand-new or stub)
+// file it frequently means the model picked the wrong tool for creating or
+// rewriting the file outright (#478).
+const writeFileHintMaxLines = 40
+
+// writeFileHint returns the steering line appended to a failed-recovery
+// error for small files, or "" for larger ones.
+func writeFileHint(content string) string {
+	if strings.Count(content, "\n")+1 <= writeFileHintMaxLines {
+		return "\nIf you are creating or rewriting this file, call write_file with the full contents instead."
+	}
+	return ""
 }
 
 // anchorContext finds the most distinctive line of old_string that appears
