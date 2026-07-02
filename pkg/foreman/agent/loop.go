@@ -792,11 +792,21 @@ func (l *Loop) runOneTurn(
 	// every subsequent turn (#935). Substitute a placeholder so the
 	// transcript stays valid and the loop can recover with a corrective
 	// nudge rather than burning turns until MaxTurns.
+	//
+	// The placeholder is a NEUTRAL factual marker, not an instruction: it
+	// is replayed as assistant content on every later turn, and a
+	// self-addressed "please call a tool" reads to smaller models as the
+	// model instructing itself. The corrective instruction lives in the
+	// user-role NoToolCallNudgeMessage() the no-tool-call path appends
+	// below, which is the right voice for it.
 	if msg.Role == oai.RoleAssistant &&
 		strings.TrimSpace(msg.Content) == "" &&
 		len(msg.ToolCalls) == 0 &&
 		msg.ReasoningContent == "" {
-		msg.Content = "(empty response from model; please call a tool or submit_result to finish)"
+		msg.Content = "(empty response from model)"
+		// Surface chronic empty replies (a backend or chat-template
+		// problem) on the turn span instead of silently absorbing them.
+		span.SetAttributes(attribute.Bool("empty_assistant_reply", true))
 	}
 	res.Transcript = append(res.Transcript, msg)
 
