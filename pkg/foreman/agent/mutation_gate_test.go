@@ -95,16 +95,30 @@ func TestCheckTestPresence(t *testing.T) {
 	}
 }
 
-func TestCheckTestPresence_PassesWhenTestChanged(t *testing.T) {
+// TestCheckTestPresence_PassesWhenTestChanged is updated to reflect the new
+// per-symbol requirement: the changed _test.go must reference the added func by
+// name (here "New") for the package to pass. The old assertion ("any changed
+// _test.go passes") encoded the loosened per-package behavior we are
+// deliberately tightening, so we now write the test file's content to disk so
+// the per-symbol check can read it and find the reference.
+func TestCheckTestPresence_PassesWhenTestChanged(t *testing.T) { //nolint:dupl
 	ws := t.TempDir()
 	_ = os.MkdirAll(filepath.Join(ws, "pkg/x"), 0o755)
 	_ = os.WriteFile(filepath.Join(ws, "pkg/x/x.go"), []byte("package x\nfunc New(){}\n"), 0o644)
+	// The test file references "New" so the per-symbol check is satisfied.
+	_ = os.WriteFile(filepath.Join(ws, "pkg/x/x_test.go"),
+		[]byte("package x\nimport \"testing\"\nfunc TestNew(t *testing.T) { New() }\n"), 0o644)
 	statusOut := " M pkg/x/x.go\x00 M pkg/x/x_test.go\x00"
+	// git diff -- file: plain diff (no -U0 flag) — used by addedFuncNames
 	diffOut := "@@ -0,0 +1,1 @@\n+func New() {}\n"
+	// git diff -U0 -- file: used by modifiedFuncNames (no hunk-context func here)
+	diffU0Out := "@@ -0,0 +1,1 @@\n+func New() {}\n"
 	runner := func(_ context.Context, _ string, _ []string, name string, args ...string) (string, error) {
 		switch {
 		case name == "git" && args[0] == "status":
 			return statusOut, nil
+		case name == "git" && args[0] == "diff" && len(args) > 1 && args[1] == "-U0":
+			return diffU0Out, nil
 		case name == "git" && args[0] == "diff":
 			return diffOut, nil
 		}
@@ -112,7 +126,112 @@ func TestCheckTestPresence_PassesWhenTestChanged(t *testing.T) {
 	}
 	failed, _ := checkTestPresence(context.Background(), ws, runner)
 	if failed {
-		t.Fatal("presence must pass when the package has a changed _test.go")
+		t.Fatal("presence must pass when the package has a changed _test.go referencing New")
+	}
+}
+
+// TestCheckTestPresence_UnrelatedTestDoesNotExempt verifies that a changed
+// _test.go that references only an unrelated symbol (Bar) does not exempt an
+// added func (Foo) from the per-symbol presence check.
+func TestCheckTestPresence_UnrelatedTestDoesNotExempt(t *testing.T) {
+	ws := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(ws, "internal/controller"), 0o755)
+	_ = os.WriteFile(filepath.Join(ws, "internal/controller/x.go"),
+		[]byte("package controller\nfunc Foo() {}\n"), 0o644)
+	// y_test.go references Bar only — Foo is unreferenced.
+	_ = os.WriteFile(filepath.Join(ws, "internal/controller/y_test.go"),
+		[]byte("package controller\nfunc TestBar(t interface{}) { _ = Bar }\n"), 0o644)
+
+	statusOut := " M internal/controller/x.go\x00 M internal/controller/y_test.go\x00"
+	// git diff -- x.go: plain diff, adds func Foo
+	diffOut := "diff --git a/internal/controller/x.go b/internal/controller/x.go\n" +
+		"@@ -0,0 +1,2 @@\n+package controller\n+func Foo() {}\n"
+	// git diff -U0 -- x.go: -U0 diff, no trailing func context on this hunk
+	diffU0Out := "@@ -0,0 +1,2 @@\n+package controller\n+func Foo() {}\n"
+
+	runner := func(_ context.Context, _ string, _ []string, name string, args ...string) (string, error) {
+		switch {
+		case name == "git" && args[0] == "status":
+			return statusOut, nil
+		case name == "git" && args[0] == "diff" && len(args) > 1 && args[1] == "-U0":
+			return diffU0Out, nil
+		case name == "git" && args[0] == "diff":
+			return diffOut, nil
+		}
+		return "", nil
+	}
+
+	failed, out := checkTestPresence(context.Background(), ws, runner)
+	if !failed || !strings.Contains(out, "Foo") {
+		t.Fatalf("want failure naming Foo, got failed=%v out=%q", failed, out)
+	}
+}
+
+// TestCheckTestPresence_ReferencingTestPasses verifies that a changed _test.go
+// that references the added func Foo by name satisfies the per-symbol check.
+func TestCheckTestPresence_ReferencingTestPasses(t *testing.T) { //nolint:dupl
+	ws := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(ws, "pkg/x"), 0o755)
+	_ = os.WriteFile(filepath.Join(ws, "pkg/x/x.go"),
+		[]byte("package x\nfunc Foo() {}\n"), 0o644)
+	// x_test.go references Foo — presence is satisfied.
+	_ = os.WriteFile(filepath.Join(ws, "pkg/x/x_test.go"),
+		[]byte("package x\nfunc TestFoo(t interface{}) { Foo() }\n"), 0o644)
+
+	statusOut := " M pkg/x/x.go\x00 M pkg/x/x_test.go\x00"
+	diffOut := "@@ -0,0 +1,2 @@\n+package x\n+func Foo() {}\n"
+	diffU0Out := "@@ -0,0 +1,2 @@\n+package x\n+func Foo() {}\n"
+
+	runner := func(_ context.Context, _ string, _ []string, name string, args ...string) (string, error) {
+		switch {
+		case name == "git" && args[0] == "status":
+			return statusOut, nil
+		case name == "git" && args[0] == "diff" && len(args) > 1 && args[1] == "-U0":
+			return diffU0Out, nil
+		case name == "git" && args[0] == "diff":
+			return diffOut, nil
+		}
+		return "", nil
+	}
+
+	failed, _ := checkTestPresence(context.Background(), ws, runner)
+	if failed {
+		t.Fatal("a test referencing Foo should satisfy presence")
+	}
+}
+
+// TestCheckTestPresence_ModifiedFuncNeedsTest verifies that a body-modified
+// function (no net-new +func line) is flagged when no changed test references
+// it by name.
+func TestCheckTestPresence_ModifiedFuncNeedsTest(t *testing.T) {
+	ws := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(ws, "pkg/diff"), 0o755)
+	_ = os.WriteFile(filepath.Join(ws, "pkg/diff/diff.go"),
+		[]byte("package diff\nfunc DiffNameOnly() string { return \"new\" }\n"), 0o644)
+	// No changed _test.go at all.
+
+	statusOut := " M pkg/diff/diff.go\x00"
+	// git diff -- diff.go: body changed but no +func line
+	diffOut := "diff --git a/pkg/diff/diff.go b/pkg/diff/diff.go\n" +
+		"@@ -1,2 +1,2 @@ func DiffNameOnly() string {\n-\treturn \"old\"\n+\treturn \"new\"\n"
+	// git diff -U0 -- diff.go: hunk header carries the enclosing func name
+	diffU0Out := "@@ -1,1 +1,1 @@ func DiffNameOnly() string {\n-\treturn \"old\"\n+\treturn \"new\"\n"
+
+	runner := func(_ context.Context, _ string, _ []string, name string, args ...string) (string, error) {
+		switch {
+		case name == "git" && args[0] == "status":
+			return statusOut, nil
+		case name == "git" && args[0] == "diff" && len(args) > 1 && args[1] == "-U0":
+			return diffU0Out, nil
+		case name == "git" && args[0] == "diff":
+			return diffOut, nil
+		}
+		return "", nil
+	}
+
+	failed, out := checkTestPresence(context.Background(), ws, runner)
+	if !failed || !strings.Contains(out, "DiffNameOnly") {
+		t.Fatalf("want failure naming DiffNameOnly, got failed=%v out=%q", failed, out)
 	}
 }
 

@@ -126,6 +126,10 @@ func (r *WorkloadReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	if len(children) > 0 {
+		// Wire gate advisories from completed coder tasks into pending
+		// review tasks so the reviewer's prompt can surface them.
+		r.patchReviewAdvisories(ctx, &workload, children)
+
 		// Second-pass emission (#546): escalation reviewers fire here,
 		// after base reviewer verdicts land, before status rollup.
 		children, err = r.emitEscalations(ctx, &workload, children)

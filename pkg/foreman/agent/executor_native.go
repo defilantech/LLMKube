@@ -467,9 +467,13 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 	// hand-running tests (which on a Mac workspace cannot run the envtest
 	// suite and spiral the loop). Wire the verifier so a GO that fails the
 	// fast checks is sent back for a fix instead of landing dirty.
+	//
+	// gateAdvisories accumulates non-blocking findings from the gate that
+	// survive to the GO result's Extra map so the reviewer can act on them.
+	gateAdvisories := &[]advisory{}
 	if agent.Spec.Role == foremanv1alpha1.AgentRoleCoder {
 		cfg.MaxVerifyRetries = coderGateMaxRetries
-		cfg.VerifyTerminal = makeCoderGateVerifier(workspace, issueText, log, task.Spec.GateProfile)
+		cfg.VerifyTerminal = makeCoderGateVerifier(workspace, issueText, log, task.Spec.GateProfile, gateAdvisories)
 	}
 
 	// Layer the model profile onto the resolved config (addendum + stuck-loop
@@ -653,10 +657,14 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 		task.Namespace, task.Name,
 		task.Spec.Payload.Repo, branch, e.GitRemoteURL,
 	); failed {
-		return e.envtestGateFailedResult(start, transcriptRef, loopRes, branch, sha, feedback), nil
+		r := e.envtestGateFailedResult(start, transcriptRef, loopRes, branch, sha, feedback)
+		attachGateAdvisories(r.Extra, gateAdvisories)
+		return r, nil
 	}
 
-	return e.goResult(start, transcriptRef, loopRes, branch, sha), nil
+	r := e.goResult(start, transcriptRef, loopRes, branch, sha)
+	attachGateAdvisories(r.Extra, gateAdvisories)
+	return r, nil
 }
 
 // coderGateMaxRetries bounds the coder gate fix attempts (#749): a GO whose
@@ -670,8 +678,10 @@ const coderGateMaxRetries = 3
 // use; a bootstrap or run error is reported as could-not-verify so the
 // terminal stands and the clean-room gate Job remains the authoritative
 // backstop. issueText is passed to the gate's scope-overlap check (#782).
+// acc accumulates non-blocking advisory findings for the reviewer; it may
+// be nil (advisory collection disabled).
 func makeCoderGateVerifier(
-	workspace, issueText string, log logr.Logger, profile *foremanv1alpha1.GateProfile,
+	workspace, issueText string, log logr.Logger, profile *foremanv1alpha1.GateProfile, acc *[]advisory,
 ) TerminalVerifier {
 	return func(ctx context.Context, terminal *ToolResult, _ []oai.Message) (bool, string, error) {
 		if terminal == nil {
@@ -699,7 +709,10 @@ func makeCoderGateVerifier(
 				return true, "", err
 			}
 		}
-		pass, feedback := RunCoderGate(ctx, workspace, lintPath, execCommandRunner, issueText)
+		pass, feedback, advisories := RunCoderGate(ctx, workspace, lintPath, execCommandRunner, issueText)
+		if acc != nil {
+			*acc = append(*acc, advisories...)
+		}
 		if !pass {
 			log.Info("coder gate: fast checks failed; returning feedback to the loop for a fix")
 		}
@@ -1226,6 +1239,32 @@ func objRefAsMap(ref corev1.ObjectReference) map[string]any {
 	}
 }
 
+// attachGateAdvisories adds the collected coder-gate advisories to a GO
+// result's Extra map under "gateAdvisories" so the reviewer and audit record
+// see the gate's non-blocking findings. No key is added when there are none.
+func attachGateAdvisories(extra map[string]any, acc *[]advisory) {
+	if acc == nil || len(*acc) == 0 {
+		return
+	}
+	extra["gateAdvisories"] = *acc
+}
+
+// renderGateAdvisories formats a slice of coder-gate advisories as a
+// reviewer-prompt section. Returns an empty string when the slice is empty
+// so callers can append unconditionally without adding noise. Called from
+// buildUserPrompt when rendering advisories into a reviewer task's prompt.
+func renderGateAdvisories(advisories []foremanv1alpha1.GateAdvisory) string {
+	if len(advisories) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("Gate advisories to verify (mechanical suspicions, confirm or dismiss each):\n")
+	for _, a := range advisories {
+		fmt.Fprintf(&b, "- [%s] %s\n", a.Check, a.Detail)
+	}
+	return b.String()
+}
+
 // --- helpers --------------------------------------------------------------
 
 // branchNameForTask picks a branch name for the task. Precedence:
@@ -1346,6 +1385,14 @@ func buildUserPrompt(task *foremanv1alpha1.AgenticTask) string {
 		b.WriteString("the branch under review before forming any judgment, ")
 		b.WriteString("then apply the Step 2 review checklist, then call ")
 		b.WriteString("submit_result with your verdict and findings.\n")
+		// Append gate advisories when the reconciler has wired them in
+		// from the upstream coder task's result. The reviewer is asked to
+		// confirm or dismiss each mechanical suspicion so they are not
+		// silently ignored.
+		if block := renderGateAdvisories(p.GateAdvisories); block != "" {
+			b.WriteString("\n")
+			b.WriteString(block)
+		}
 	default:
 		// Freeform / other kinds: pass payload prompt through unchanged.
 		// We guarantee a non-empty content field on the wire even when

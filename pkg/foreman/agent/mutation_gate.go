@@ -18,9 +18,11 @@ limitations under the License.
 // changes which pass the syntactic checks (gofmt/vet/build/lint) but are not
 // actually constrained by a test (the #856 class).
 //
-//   - Layer 1 (checkTestPresence): a changed package that adds net-new
-//     functions in hand-written, non-test Go but has no changed _test.go fails.
-//     Pure diff inspection, so it covers envtest/controller packages too.
+//   - Layer 1 (checkTestPresence): for each changed package, every new or
+//     body-modified function in hand-written, non-test Go must be referenced
+//     by name in a changed _test.go in that package; unreferenced functions
+//     fail. Pure diff/text inspection, so it covers envtest/controller
+//     packages too.
 //   - Layer 2 (checkMutationSurvival): for non-envtest changed packages that DO
 //     have a changed test, blank the changed function bodies on an in-memory
 //     backup, re-run the package tests, and flag any package whose tests still
@@ -163,6 +165,89 @@ func changedTestFilePackages(ctx context.Context, workspace string, run commandR
 	return set
 }
 
+// changedTestFilesInDir returns workspace-relative paths of changed _test.go
+// files in the given package directory.
+func changedTestFilesInDir(ctx context.Context, workspace, dir string, run commandRunner) []string {
+	out, err := run(ctx, workspace, nil, "git", "status", "-z")
+	if err != nil {
+		return nil
+	}
+	var files []string
+	for _, entry := range strings.Split(out, "\x00") {
+		fields := strings.Fields(strings.TrimSpace(entry))
+		if len(fields) == 0 {
+			continue
+		}
+		path := fields[len(fields)-1]
+		if strings.HasSuffix(path, "_test.go") && filepath.Dir(path) == dir {
+			files = append(files, path)
+		}
+	}
+	return files
+}
+
+// hunkFuncRe matches the trailing function context in a unified-diff hunk
+// header: "@@ ... @@ func Name(" or "@@ ... @@ func (recv T) Name(".
+var hunkFuncRe = regexp.MustCompile(`@@[^@]*@@\s+func\b.*`)
+
+// modifiedFuncNames returns the names of functions whose bodies were touched
+// (but not necessarily introduced) by the diff of the given file. It parses
+// `git diff -U0 -- <file>` and extracts the enclosing function name from the
+// hunk header trailing context that Go emits when the hunk falls inside a
+// function. Functions already captured by addedFuncNames (net-new +func lines)
+// are included here too; the caller deduplicates via a union set.
+func modifiedFuncNames(ctx context.Context, workspace, file string, run commandRunner) []string {
+	out, err := run(ctx, workspace, nil, "git", "diff", "-U0", "--", file)
+	if err != nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var names []string
+	for _, line := range strings.Split(out, "\n") {
+		if !strings.HasPrefix(line, "@@") {
+			continue
+		}
+		if !hunkFuncRe.MatchString(line) {
+			continue
+		}
+		// Extract the func declaration that follows the final "@@".
+		idx := strings.LastIndex(line, "@@")
+		if idx < 0 {
+			continue
+		}
+		decl := strings.TrimSpace(line[idx+2:])
+		if !strings.HasPrefix(decl, "func") {
+			continue
+		}
+		name := funcNameFromDecl(decl)
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		names = append(names, name)
+	}
+	return names
+}
+
+// testFileReferencesFunc reports whether the _test.go file at the given
+// workspace-relative path contains the identifier funcName as a bare word.
+// The check is a simple substring scan for the identifier surrounded by
+// non-identifier runes (or at a line boundary) so it avoids false positives
+// from names that are prefixes of longer identifiers.
+func testFileReferencesFunc(workspace, path, funcName string) bool {
+	if funcName == "" {
+		return false
+	}
+	data, err := os.ReadFile(filepath.Join(workspace, path))
+	if err != nil {
+		return false
+	}
+	// Use a word-boundary regex: the func name must not be immediately preceded
+	// or followed by a letter, digit or underscore.
+	re := regexp.MustCompile(`(?m)(^|[^a-zA-Z0-9_])` + regexp.QuoteMeta(funcName) + `([^a-zA-Z0-9_]|$)`)
+	return re.Match(data)
+}
+
 func dedupSorted(in []string) []string {
 	seen := map[string]bool{}
 	var out []string
@@ -177,29 +262,43 @@ func dedupSorted(in []string) []string {
 	return out
 }
 
-// checkTestPresence fails when a changed package introduces net-new functions
-// in hand-written, non-test Go but has no changed _test.go in that package.
-// Pure inspection -- no test execution -- so it covers envtest/controller
-// packages the fast unit-test tier cannot run. Returns (failed, feedback).
+// checkTestPresence fails when a changed package has new or body-modified
+// functions in hand-written, non-test Go that are not referenced by name in
+// any changed _test.go in that package. Pure inspection -- no test execution
+// -- so it covers envtest/controller packages the fast unit-test tier cannot
+// run. Returns (failed, feedback).
 func checkTestPresence(ctx context.Context, workspace string, run commandRunner) (bool, string) {
 	changed := changedNonTestGoFiles(ctx, workspace, run)
 	if len(changed) == 0 {
 		return false, ""
 	}
-	testedPkgs := changedTestFilePackages(ctx, workspace, run)
 
-	newFuncs := map[string][]string{} // pkgDir -> new func names
+	// changedFuncs maps pkgDir -> deduplicated set of function names that are
+	// either net-new (+func line) or body-modified (hunk inside an existing
+	// func, captured via the hunk-header trailing context).
+	changedFuncs := map[string]map[string]bool{}
 	for _, f := range changed {
-		names := addedFuncNames(ctx, workspace, f, run)
-		if len(names) == 0 {
-			continue
-		}
 		dir := filepath.Dir(f)
-		newFuncs[dir] = append(newFuncs[dir], names...)
+		added := addedFuncNames(ctx, workspace, f, run)
+		modified := modifiedFuncNames(ctx, workspace, f, run)
+		all := append(added, modified...) //nolint:gocritic // intentional extend
+		for _, name := range all {
+			if name == "" {
+				continue
+			}
+			if changedFuncs[dir] == nil {
+				changedFuncs[dir] = map[string]bool{}
+			}
+			changedFuncs[dir][name] = true
+		}
+	}
+
+	if len(changedFuncs) == 0 {
+		return false, ""
 	}
 
 	var dirs []string
-	for d := range newFuncs {
+	for d := range changedFuncs {
 		dirs = append(dirs, d)
 	}
 	sort.Strings(dirs)
@@ -207,13 +306,30 @@ func checkTestPresence(ctx context.Context, workspace string, run commandRunner)
 	var b strings.Builder
 	var failed bool
 	for _, dir := range dirs {
-		if testedPkgs[dir] {
+		funcSet := changedFuncs[dir]
+		testFiles := changedTestFilesInDir(ctx, workspace, dir, run)
+
+		var unreferenced []string
+		for name := range funcSet {
+			referenced := false
+			for _, tf := range testFiles {
+				if testFileReferencesFunc(workspace, tf, name) {
+					referenced = true
+					break
+				}
+			}
+			if !referenced {
+				unreferenced = append(unreferenced, name)
+			}
+		}
+		if len(unreferenced) == 0 {
 			continue
 		}
 		failed = true
-		fmt.Fprintf(&b, "Package %s/ adds new functions (%s) but has no changed _test.go. "+
+		sort.Strings(unreferenced)
+		fmt.Fprintf(&b, "Package %s/ changed functions (%s) have no test referencing them by name. "+
 			"Add a test that exercises the new behavior and fails without it.\n",
-			dir, strings.Join(dedupSorted(newFuncs[dir]), ", "))
+			dir, strings.Join(unreferenced, ", "))
 	}
 	if !failed {
 		return false, ""

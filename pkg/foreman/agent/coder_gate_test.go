@@ -114,7 +114,7 @@ func TestRunCoderGate(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			run, _ := newFakeRunner(tt.responses)
-			pass, feedback := RunCoderGate(context.Background(), "/work", golangciPath, run, "")
+			pass, feedback, _ := RunCoderGate(context.Background(), "/work", golangciPath, run, "")
 
 			if pass != tt.wantPass {
 				t.Fatalf("pass = %v, want %v (feedback: %q)", pass, tt.wantPass, feedback)
@@ -268,7 +268,7 @@ func TestRunCoderGate_FailsOnChangedPackageUnitTest(t *testing.T) {
 			return "", nil // golangci-lint
 		}
 	}
-	pass, feedback := RunCoderGate(context.Background(), "/work", "./bin/golangci-lint", run, "")
+	pass, feedback, _ := RunCoderGate(context.Background(), "/work", "./bin/golangci-lint", run, "")
 	if pass {
 		t.Fatal("gate should fail when a changed package's unit test fails")
 	}
@@ -287,7 +287,7 @@ func TestRunCoderGate_SkipsTestTierWhenNoChangedPackages(t *testing.T) {
 		}
 		return "", nil // git status empty, all checks clean
 	}
-	if pass, _ := RunCoderGate(context.Background(), "/work", "./bin/golangci-lint", run, ""); !pass {
+	if pass, _, _ := RunCoderGate(context.Background(), "/work", "./bin/golangci-lint", run, ""); !pass {
 		t.Fatal("gate should pass when all checks are clean and nothing changed")
 	}
 	if sawGoTest {
@@ -305,7 +305,7 @@ func TestRunCoderGateTruncation(t *testing.T) {
 		golangciPath: {output: huge, err: errors.New("boom")},
 	})
 
-	_, feedback := RunCoderGate(context.Background(), "/work", golangciPath, run, "")
+	_, feedback, _ := RunCoderGate(context.Background(), "/work", golangciPath, run, "")
 
 	if !strings.Contains(feedback, "...(truncated)...") {
 		t.Error("expected truncation marker in feedback")
@@ -375,7 +375,7 @@ func TestRunCoderGate_Codegen_AutoResolvesGeneratedDrift(t *testing.T) {
 		" M charts/foreman/templates/crds/agentictasks.yaml\n" +
 		" M api/foreman/v1alpha1/zz_generated.deepcopy.go\n"
 	run := codegenFake("", after, nil, false)
-	pass, feedback := RunCoderGate(context.Background(), "/work", golangciPath, run, "")
+	pass, feedback, _ := RunCoderGate(context.Background(), "/work", golangciPath, run, "")
 	if !pass {
 		t.Fatalf("gate should auto-resolve generated-only drift; feedback:\n%s", feedback)
 	}
@@ -398,7 +398,7 @@ func TestRunCoderGate_Codegen_IgnoresCoderEdits(t *testing.T) {
 		" M charts/foreman/templates/crds/agentictasks.yaml\n" +
 		" M api/foreman/v1alpha1/zz_generated.deepcopy.go\n"
 	run := codegenFake(before, after, nil, false)
-	pass, feedback := RunCoderGate(context.Background(), "/work", golangciPath, run, "")
+	pass, feedback, _ := RunCoderGate(context.Background(), "/work", golangciPath, run, "")
 	if !pass {
 		t.Fatalf("gate should ignore the coder's own edits and resolve generated drift; feedback:\n%s", feedback)
 	}
@@ -416,7 +416,7 @@ func TestRunCoderGate_Codegen_FailsWhenRegenTouchesNonGenerated(t *testing.T) {
 	after := " M charts/foreman/templates/crds/agentictasks.yaml\n" +
 		" M internal/controller/inferenceservice_controller.go\n"
 	run := codegenFake("", after, nil, false)
-	pass, feedback := RunCoderGate(context.Background(), "/work", golangciPath, run, "")
+	pass, feedback, _ := RunCoderGate(context.Background(), "/work", golangciPath, run, "")
 	if pass {
 		t.Fatal("gate should fail when regeneration touches a non-generated file")
 	}
@@ -436,7 +436,7 @@ func TestRunCoderGate_Codegen_FailsWhenRegenTouchesNonGenerated(t *testing.T) {
 func TestRunCoderGate_Codegen_PassesWhenClean(t *testing.T) {
 	const golangciPath = "./bin/golangci-lint"
 	run := codegenFake("", "", nil, false)
-	pass, feedback := RunCoderGate(context.Background(), "/work", golangciPath, run, "")
+	pass, feedback, _ := RunCoderGate(context.Background(), "/work", golangciPath, run, "")
 	if !pass {
 		t.Fatalf("gate should pass when codegen is clean; feedback:\n%s", feedback)
 	}
@@ -450,7 +450,7 @@ func TestRunCoderGate_Codegen_PassesWhenClean(t *testing.T) {
 func TestRunCoderGate_Codegen_SkippedWhenNoControllerGen(t *testing.T) {
 	const golangciPath = "./bin/golangci-lint"
 	run := codegenFake("", "", nil, true)
-	pass, feedback := RunCoderGate(context.Background(), "/work", golangciPath, run, "")
+	pass, feedback, _ := RunCoderGate(context.Background(), "/work", golangciPath, run, "")
 	if !pass {
 		t.Fatalf("gate should pass when controller-gen is unavailable; feedback:\n%s", feedback)
 	}
@@ -464,7 +464,7 @@ func TestRunCoderGate_Codegen_SkippedWhenNoControllerGen(t *testing.T) {
 func TestRunCoderGate_Codegen_FailsWhenMakeFails(t *testing.T) {
 	const golangciPath = "./bin/golangci-lint"
 	run := codegenFake("", "", errors.New("exit status 2"), false)
-	pass, feedback := RunCoderGate(context.Background(), "/work", golangciPath, run, "")
+	pass, feedback, _ := RunCoderGate(context.Background(), "/work", golangciPath, run, "")
 	if pass {
 		t.Fatal("gate should fail when the regeneration make target fails")
 	}
@@ -714,7 +714,7 @@ func TestRunCoderGate_ScopeDriftFailsTheGate(t *testing.T) {
 	withScopeRelevant(t, []string{"pkg/agent/endpoint.go"})
 	const golangciPath = "./bin/golangci-lint"
 	run := gateRunnerScope(golangciPath, " M pkg/cli/cache.go\n")
-	pass, fb := RunCoderGate(context.Background(), "/work", golangciPath, run, "metal-agent endpoint")
+	pass, fb, _ := RunCoderGate(context.Background(), "/work", golangciPath, run, "metal-agent endpoint")
 	if pass {
 		t.Fatal("gate should fail when the coder drifts to an unrelated subsystem")
 	}
@@ -727,7 +727,7 @@ func TestRunCoderGate_ScopeDisabledWhenIssueTextEmpty(t *testing.T) {
 	withScopeRelevant(t, []string{"pkg/agent/endpoint.go"})
 	const golangciPath = "./bin/golangci-lint"
 	run := gateRunnerScope(golangciPath, " M pkg/cli/cache.go\n")
-	pass, fb := RunCoderGate(context.Background(), "/work", golangciPath, run, "")
+	pass, fb, _ := RunCoderGate(context.Background(), "/work", golangciPath, run, "")
 	if !pass {
 		t.Fatalf("empty issueText should disable the scope check; gate should pass. feedback:\n%s", fb)
 	}
@@ -874,7 +874,7 @@ func TestRunCoderGate_GoreleaserCheckFailsGate(t *testing.T) {
 	checkErr := errors.New("exit status 1")
 	checkOutput := "error: invalid key 'dockers_v2'\n"
 	run := goreleaserFake(true, checkErr, checkOutput, " M .goreleaser.yaml\n")
-	pass, fb := RunCoderGate(context.Background(), "/work", gateLintPath, run, "")
+	pass, fb, _ := RunCoderGate(context.Background(), "/work", gateLintPath, run, "")
 	if pass {
 		t.Fatal("gate should fail when goreleaser check fails")
 	}
@@ -885,7 +885,7 @@ func TestRunCoderGate_GoreleaserCheckFailsGate(t *testing.T) {
 
 func TestRunCoderGate_GoreleaserCheckPassesGate(t *testing.T) {
 	run := goreleaserFake(true, nil, "", " M .goreleaser.yaml\n")
-	pass, fb := RunCoderGate(context.Background(), "/work", gateLintPath, run, "")
+	pass, fb, _ := RunCoderGate(context.Background(), "/work", gateLintPath, run, "")
 	if !pass {
 		t.Fatalf("gate should pass when goreleaser check passes; feedback:\n%s", fb)
 	}
@@ -896,7 +896,7 @@ func TestRunCoderGate_GoreleaserCheckPassesGate(t *testing.T) {
 
 func TestRunCoderGate_GoreleaserCheckSkippedWhenNoReleaseConfigChanged(t *testing.T) {
 	run := goreleaserFake(true, nil, "", "")
-	pass, fb := RunCoderGate(context.Background(), "/work", gateLintPath, run, "")
+	pass, fb, _ := RunCoderGate(context.Background(), "/work", gateLintPath, run, "")
 	if !pass {
 		t.Fatalf("gate should pass when no release config changed; feedback:\n%s", fb)
 	}
@@ -928,11 +928,63 @@ func TestRunCoderGate_FailsOnUngroundedReference(t *testing.T) {
 		// git add/status no-ops).
 		return "", nil
 	}
-	pass, feedback := RunCoderGate(context.Background(), ws, "./bin/golangci-lint", run, "")
+	pass, feedback, _ := RunCoderGate(context.Background(), ws, "./bin/golangci-lint", run, "")
 	if pass {
 		t.Fatalf("expected gate to fail on ungrounded reference; feedback=%q", feedback)
 	}
 	if !strings.Contains(feedback, "reference grounding") {
 		t.Errorf("feedback should name the check: %q", feedback)
+	}
+}
+
+// TestCheckReferenceGrounding_IgnoresExporterMetricTokens is the contamination
+// regression test. Before the fix, LoadGroundTruth seeded ExporterMetricPrefixes
+// unconditionally; the block-tier checkReferenceGrounding did not filter by
+// severity, so "minor" exporter-metric findings would cause the gate to false-block
+// a coder whose doc contained a legitimate snake_case token (n_ctx, executor_native,
+// node_selector, Q4_K_M, ...).
+//
+// After the fix: LoadGroundTruth leaves ExporterMetricPrefixes nil, so
+// checkExporterMetricTokens is inert in the block tier. This test proves that
+// adding a doc line with several legitimate snake_case tokens does NOT cause
+// checkReferenceGrounding to fail.
+func TestCheckReferenceGrounding_IgnoresExporterMetricTokens(t *testing.T) {
+	ws := t.TempDir()
+
+	// Write a minimal CRD so the ground-truth load succeeds.
+	crd := "apiVersion: apiextensions.k8s.io/v1\nkind: CustomResourceDefinition\n" +
+		"spec:\n  group: inference.llmkube.dev\n  names:\n    kind: InferenceService\n" +
+		"  versions: []\n"
+	if err := os.MkdirAll(filepath.Join(ws, "config/crd/bases"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws, "config/crd/bases/is.yaml"), []byte(crd), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// The fake git diff adds a doc line containing several legitimate
+	// snake_case tokens that are NOT LLMKube-owned API groups or metrics.
+	// These should pass the block-tier check without any findings.
+	run := func(_ context.Context, _ string, _ []string, name string, args ...string) (string, error) {
+		if name == "git" && len(args) >= 2 && args[0] == "diff" && args[1] == "--cached" {
+			return "+++ b/docs/inference.md\n@@ -0,0 +1,3 @@\n" +
+				"+Set n_ctx=4096 and executor_native handles Q4_K_M quants via node_selector.\n" +
+				"+The llama_model_load path resolves llmkube_inferenceservice_phase for monitoring.\n" +
+				"+Use node_affinity or gpu_layers to tune scheduling.\n", nil
+		}
+		return "", nil
+	}
+
+	// checkReferenceGrounding must not fail on these lines. The only LLMKube
+	// metric on line 2 (llmkube_inferenceservice_phase) is registered in the
+	// real ground truth only when metricsDir is provided; here we call the
+	// function directly with an empty workspace so metrics scanning is a no-op
+	// and the llmkube_* check is also inert (empty gt.Metrics). The key
+	// assertion is that snake_case non-llmkube tokens do NOT block.
+	failed, output := checkReferenceGrounding(context.Background(), ws, run)
+	if failed {
+		t.Fatalf("block-tier reference grounding must not fail on snake_case tokens "+
+			"(n_ctx, executor_native, Q4_K_M, node_selector, llama_model_load); "+
+			"got failed=true output=%q", output)
 	}
 }

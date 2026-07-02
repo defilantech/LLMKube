@@ -1732,3 +1732,103 @@ func TestRemoveAllResilient_SymlinkToExternal(t *testing.T) {
 		t.Errorf("external victim mode changed: got %04o, want %04o", gotMode, wantMode)
 	}
 }
+
+func TestGateAdvisories_LandInResultExtra(t *testing.T) {
+	acc := &[]advisory{}
+	*acc = append(*acc, advisory{Check: "grounding-breadth", Detail: "cites dcgm_gpu_utilization (unknown)"})
+	extra := map[string]any{"branch": "b", "commitSHA": "s"}
+	attachGateAdvisories(extra, acc)
+	got, ok := extra["gateAdvisories"].([]advisory)
+	if !ok || len(got) != 1 || got[0].Check != "grounding-breadth" {
+		t.Fatalf("want gateAdvisories with grounding-breadth, got %#v", extra["gateAdvisories"])
+	}
+}
+
+func TestAttachGateAdvisories_OmitsWhenEmpty(t *testing.T) {
+	extra := map[string]any{"branch": "b"}
+	attachGateAdvisories(extra, &[]advisory{})
+	if _, present := extra["gateAdvisories"]; present {
+		t.Fatal("empty advisories should not add the key")
+	}
+}
+
+func TestRenderGateAdvisories_RendersWhenPresent(t *testing.T) {
+	advs := []foremanv1alpha1.GateAdvisory{
+		{Check: "grounding-breadth", Detail: "cites dcgm_gpu_utilization (unknown)"},
+		{Check: "scope-overlap", Detail: "diff touches files not mentioned in the issue"},
+	}
+	got := renderGateAdvisories(advs)
+	if got == "" {
+		t.Fatal("want non-empty output for non-empty advisories")
+	}
+	for _, want := range []string{"grounding-breadth", "scope-overlap", "dcgm_gpu_utilization"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("rendered advisories missing %q in:\n%s", want, got)
+		}
+	}
+}
+
+func TestRenderGateAdvisories_OmittedWhenEmpty(t *testing.T) {
+	if got := renderGateAdvisories(nil); got != "" {
+		t.Errorf("nil advisories: want empty string, got %q", got)
+	}
+	if got := renderGateAdvisories([]foremanv1alpha1.GateAdvisory{}); got != "" {
+		t.Errorf("empty advisories: want empty string, got %q", got)
+	}
+}
+
+// TestBuildUserPrompt_ReviewerAppendsAdvisories verifies that gate advisories
+// wired into the payload by the reconciler are included in the reviewer's
+// first user message so the model is prompted to confirm or dismiss each one.
+func TestBuildUserPrompt_ReviewerAppendsAdvisories(t *testing.T) {
+	task := &foremanv1alpha1.AgenticTask{
+		Spec: foremanv1alpha1.AgenticTaskSpec{
+			Kind: foremanv1alpha1.AgenticTaskKindReview,
+			Payload: foremanv1alpha1.AgenticTaskPayload{
+				Repo:   "defilantech/LLMKube",
+				Issue:  510,
+				Branch: "foreman/wl/issue-510",
+				GateAdvisories: []foremanv1alpha1.GateAdvisory{
+					{Check: "grounding-breadth", Detail: "cites dcgm_gpu_utilization (unknown)"},
+					{Check: "scope-overlap", Detail: "diff touches api/foreman/v1alpha1/types.go not in the issue"},
+				},
+			},
+		},
+	}
+	got := buildUserPrompt(task)
+	for _, want := range []string{
+		"reviewing the branch",
+		"Gate advisories to verify",
+		"grounding-breadth",
+		"dcgm_gpu_utilization",
+		"scope-overlap",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("reviewer prompt with advisories missing %q in:\n%s", want, got)
+		}
+	}
+}
+
+// TestBuildUserPrompt_ReviewerOmitsAdvisoryBlockWhenNone verifies that the
+// advisory block is silently absent when the payload carries no advisories,
+// so the prompt stays clean for tasks where the coder gate found nothing.
+func TestBuildUserPrompt_ReviewerOmitsAdvisoryBlockWhenNone(t *testing.T) {
+	task := &foremanv1alpha1.AgenticTask{
+		Spec: foremanv1alpha1.AgenticTaskSpec{
+			Kind: foremanv1alpha1.AgenticTaskKindReview,
+			Payload: foremanv1alpha1.AgenticTaskPayload{
+				Repo:   "defilantech/LLMKube",
+				Issue:  510,
+				Branch: "foreman/wl/issue-510",
+			},
+		},
+	}
+	got := buildUserPrompt(task)
+	if strings.Contains(got, "Gate advisories") {
+		t.Errorf("reviewer prompt without advisories must not contain advisory block; got:\n%s", got)
+	}
+	// Must still produce a non-empty, useful prompt.
+	if !strings.Contains(got, "reviewing the branch") {
+		t.Errorf("reviewer prompt missing base content; got:\n%s", got)
+	}
+}

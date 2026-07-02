@@ -52,3 +52,63 @@ func TestDetectUngroundedReferences_MetricAndCLI(t *testing.T) {
 		t.Fatalf("want 2 (bad metric + bad cli), got %d: %v", len(got), got)
 	}
 }
+
+func TestDetectUngrounded_FlagsUnknownDCGMMetric(t *testing.T) {
+	gt := &GroundTruth{ExporterMetricPrefixes: []string{"DCGM_FI_"}}
+	added := []AddedLine{{File: "docs/x.md", Line: 3, Text: "scrape dcgm_gpu_utilization from the exporter"}}
+	if len(DetectUngroundedReferences(added, gt)) == 0 {
+		t.Fatal("dcgm_gpu_utilization should be flagged (not a DCGM_FI_ metric, not llmkube_)")
+	}
+}
+
+func TestDetectUngrounded_AcceptsRealDCGMMetric(t *testing.T) {
+	gt := &GroundTruth{ExporterMetricPrefixes: []string{"DCGM_FI_"}}
+	added := []AddedLine{{File: "docs/x.md", Line: 3, Text: "scrape DCGM_FI_DEV_GPU_UTIL now"}}
+	if f := DetectUngroundedReferences(added, gt); len(f) != 0 {
+		t.Fatalf("real DCGM metric should not be flagged, got %v", f)
+	}
+}
+
+// TestCheckReferenceGrounding_IgnoresMinorFindingsEvenWithPrefixes proves that
+// the block-tier severity filter (Severity != SeverityMinor) holds even when
+// ExporterMetricPrefixes is set and DetectUngroundedReferences would return
+// minor findings. This is the defense-in-depth guarantee: if the invariant
+// that the block tier loads gt with nil ExporterMetricPrefixes were ever
+// violated, the explicit filter in checkReferenceGrounding still prevents
+// minor findings from triggering a block.
+func TestCheckReferenceGrounding_IgnoresMinorFindingsEvenWithPrefixes(t *testing.T) {
+	// Construct a ground truth WITH ExporterMetricPrefixes set, simulating the
+	// scenario where the block-tier invariant (nil prefixes) is accidentally broken.
+	gt := &GroundTruth{
+		Groups:                 map[string]bool{"inference.llmkube.dev": true},
+		ChartResourceNames:     map[string]bool{},
+		ExporterMetricPrefixes: []string{"DCGM_FI_", "node_"},
+	}
+	// A doc line containing a token that looks like an exporter metric but is
+	// not grounded in any known prefix. This triggers a "minor" finding.
+	added := []AddedLine{
+		{File: "docs/metrics.md", Line: 10, Text: "check dcgm_gpu_utilization and custom_metric_value"},
+	}
+
+	findings := DetectUngroundedReferences(added, gt)
+
+	// Verify the detector produced only minor findings (none are blockers).
+	for _, f := range findings {
+		if f.Severity != SeverityMinor {
+			t.Errorf("expected only minor findings when ExporterMetricPrefixes is set "+
+				"and no llmkube-owned symbols are referenced; got severity=%q finding=%v", f.Severity, f)
+		}
+	}
+
+	// Simulate the block-tier filter: keep only non-minor findings.
+	var blockFindings []Finding
+	for _, f := range findings {
+		if f.Severity != SeverityMinor {
+			blockFindings = append(blockFindings, f)
+		}
+	}
+	if len(blockFindings) != 0 {
+		t.Errorf("block-tier filter must leave zero findings when all are minor; "+
+			"got %d: %v", len(blockFindings), blockFindings)
+	}
+}

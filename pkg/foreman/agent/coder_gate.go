@@ -24,6 +24,7 @@ import (
 	"sort"
 	"strings"
 
+	foremanv1alpha1 "github.com/defilantech/llmkube/api/foreman/v1alpha1"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/grounding"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/repomap"
 )
@@ -97,12 +98,15 @@ type checkFailure struct {
 // integration tests are intentionally out of scope; they run in a separate
 // post-push gate Job. All checks run regardless of earlier failures so the
 // feedback reports everything wrong at once.
+//
+// advisories is a slice of non-blocking findings from the tiered registry.
+// It is empty until later tasks add checks to gateCheckRegistry.
 func RunCoderGate(
 	ctx context.Context,
 	workspace, golangciPath string,
 	run commandRunner,
 	issueText string,
-) (pass bool, feedback string) {
+) (pass bool, feedback string, advisories []advisory) {
 	var failures []checkFailure
 
 	// 1. gofmt -l . lists misformatted files on stdout and exits 0 even
@@ -209,11 +213,58 @@ func RunCoderGate(
 		failures = append(failures, checkFailure{name: "reference grounding", output: out})
 	}
 
+	blocking, adv := runGateChecks(ctx, workspace, run, gateCheckRegistry(issueText))
+	failures = append(failures, blocking...)
+	advisories = adv
+
 	if len(failures) == 0 {
-		return true, ""
+		return true, "", advisories
 	}
 
-	return false, buildFeedback(failures)
+	return false, buildFeedback(failures), advisories
+}
+
+// gateCheckRegistry returns the tiered checks added by the gate-check suite.
+// issueText is threaded for checks that need it.
+func gateCheckRegistry(issueText string) []gateCheck {
+	return []gateCheck{
+		{
+			name: "rbac-use",
+			tier: tierBlock,
+			lang: foremanv1alpha1.GateLanguageGo,
+			fn:   checkRBACUse,
+		},
+		{
+			name: "import-graph",
+			tier: tierBlock,
+			lang: foremanv1alpha1.GateLanguageGo,
+			fn:   checkImportGraph,
+		},
+		{
+			name: "embedded-artifact",
+			tier: tierBlock,
+			fn:   checkEmbeddedArtifacts,
+		},
+		{
+			name: "grounding-breadth",
+			tier: tierAdvisory,
+			lang: foremanv1alpha1.GateLanguageGo,
+			fn:   checkGroundingBreadth,
+		},
+		{
+			name: "caller-impact",
+			tier: tierAdvisory,
+			lang: foremanv1alpha1.GateLanguageGo,
+			fn:   checkCallerImpact,
+		},
+		{
+			name: "issue-example",
+			tier: tierAdvisory,
+			fn: func(ctx context.Context, ws string, run commandRunner) (bool, string) {
+				return checkIssueExample(issueText)(ctx, ws, run)
+			},
+		},
+	}
 }
 
 // changedPackages returns the workspace-relative Go package directories
@@ -590,14 +641,23 @@ func checkReferenceGrounding(ctx context.Context, workspace string, run commandR
 	if err != nil {
 		return false, ""
 	}
-	findings := grounding.DetectUngroundedReferences(added, gt)
-	if len(findings) == 0 {
+	// Defense-in-depth: only block on non-minor findings. The block tier loads
+	// ground truth with ExporterMetricPrefixes nil (so checkExporterMetricTokens
+	// is inert and emits no minor findings), but this filter makes confinement
+	// hold even if that invariant were ever violated accidentally.
+	var blockFindings []grounding.Finding
+	for _, f := range grounding.DetectUngroundedReferences(added, gt) {
+		if f.Severity != grounding.SeverityMinor {
+			blockFindings = append(blockFindings, f)
+		}
+	}
+	if len(blockFindings) == 0 {
 		return false, ""
 	}
 	var b strings.Builder
 	b.WriteString("These docs reference LLMKube symbols that do not exist." +
 		" Fix the reference (or the code) so it resolves:\n")
-	for _, f := range findings {
+	for _, f := range blockFindings {
 		fmt.Fprintf(&b, "  - %s\n", f.String())
 	}
 	return true, b.String()

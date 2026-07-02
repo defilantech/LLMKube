@@ -6,6 +6,17 @@ import (
 	"testing"
 )
 
+// writeFile creates parent dirs then writes content to path. Fails the test on error.
+func writeFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("writeFile mkdir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("writeFile write: %v", err)
+	}
+}
+
 func TestLoadGroundTruth_MetricsAndCLI(t *testing.T) {
 	gt, err := LoadGroundTruth("testdata/crd-bases", "testdata/metrics", "testdata/cmd")
 	if err != nil {
@@ -59,5 +70,19 @@ func TestLoadGroundTruth_FromCRDBases(t *testing.T) {
 	}
 	if gt.SpecFields["InferenceService"]["bogusField"] {
 		t.Errorf("invented field should not be present")
+	}
+}
+
+func TestLoadGroundTruth_ScansChartResourceNames(t *testing.T) {
+	dir := t.TempDir()
+	// write a chart template with a Service metadata.name
+	writeFile(t, filepath.Join(dir, "charts/llmkube/templates/metrics-service.yaml"),
+		"apiVersion: v1\nkind: Service\nmetadata:\n  name: llmkube-controller-manager-metrics-service\n")
+	gt, err := LoadGroundTruth("", dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !gt.ChartResourceNames["llmkube-controller-manager-metrics-service"] {
+		t.Fatal("chart Service name should be in ground truth")
 	}
 }
