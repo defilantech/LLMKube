@@ -32,6 +32,7 @@ func TestBoundedLevenshtein(t *testing.T) {
 		{"over cap returns cap+1", "abc", "xyz", 1, 2},
 		{"length screen over cap", "abcdefgh", "a", 3, 4},
 		{"exact at cap", "kitten", "sitting", 3, 3},
+		{"unequal at cap 0", "abc", "abd", 0, 1},
 		{"multibyte runes", "héllo", "hello", 2, 1},
 		{"empty vs nonempty", "abc", "", 5, 3},
 	}

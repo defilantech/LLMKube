@@ -21,7 +21,9 @@ package tools
 // distance is greater than maxDist it returns maxDist+1; callers only need
 // "over budget", not the exact value. The two-row DP abandons a row as soon
 // as its minimum exceeds maxDist, so clearly-mismatched inputs are rejected
-// in O(len x maxDist) instead of O(len^2).
+// in O(len x maxDist) instead of O(len^2). maxDist must be >= 0; a negative
+// cap still reports over-budget for unequal inputs but the returned value is
+// meaningless as a distance.
 func boundedLevenshtein(a, b string, maxDist int) int {
 	if a == b {
 		return 0
