@@ -1073,6 +1073,82 @@ func TestRunOneTurn_EmptyAssistantReply_SubstitutesPlaceholder(t *testing.T) {
 	}
 }
 
+// toolCallWithEmptyContent is a chat-completions body where the model
+// returns an assistant message with tool_calls but explicitly empty
+// content — the normal pattern for a tool-calling turn. The guard added
+// in #935 must NOT fire here: the message is structurally valid (it has
+// tool_calls), and clobbering its content with a placeholder would be
+// incorrect.
+const toolCallWithEmptyContent = `{
+  "id": "t6",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [{
+        "id": "tc-rf2",
+        "type": "function",
+        "function": {"name": "read_file", "arguments": "{\"path\":\"README.md\"}"}
+      }]
+    },
+    "finish_reason": "tool_calls"
+  }]
+}`
+
+// TestRunOneTurn_ToolCallTurnNotClobbered proves the #935 empty-content
+// guard does NOT fire when the assistant message carries tool_calls.
+// A tool-call turn with empty content is structurally valid per the OAI
+// spec ("content optional when tool_calls are present"); substituting the
+// placeholder would corrupt the tool_call_id chain and break strict
+// backends. The test mirrors TestRunOneTurn_EmptyAssistantReply_SubstitutesPlaceholder
+// exactly, swapping the fixture for one that includes tool_calls.
+func TestRunOneTurn_ToolCallTurnNotClobbered(t *testing.T) {
+	srv, _ := scriptedOAIServer(t, []string{toolCallWithEmptyContent})
+	reg := &fakeRegistry{
+		results: map[string]*ToolResult{
+			"read_file": {Output: map[string]any{"content": "# README\n"}},
+		},
+	}
+	loop := newTestLoop(srv, reg)
+	res := &LoopResult{
+		Transcript: []oai.Message{
+			{Role: oai.RoleSystem, Content: "sys"},
+			{Role: oai.RoleUser, Content: "go"},
+		},
+	}
+	_, err := loop.runOneTurn(context.Background(), LoopConfig{Model: "test"}, sixToolSchemas(), res)
+	// A tool-call turn is a normal, successful turn: no error expected.
+	if err != nil {
+		t.Fatalf("runOneTurn: expected nil error for a tool-call turn with empty content, got %v", err)
+	}
+	// Find the assistant message that runOneTurn appended.
+	var assistantMsg *oai.Message
+	for i := range res.Transcript {
+		if res.Transcript[i].Role == oai.RoleAssistant {
+			assistantMsg = &res.Transcript[i]
+		}
+	}
+	if assistantMsg == nil {
+		t.Fatalf("no assistant message found in transcript: %+v", res.Transcript)
+	}
+	// The tool_calls must be preserved intact.
+	if len(assistantMsg.ToolCalls) == 0 {
+		t.Errorf("tool_calls must not be stripped; got empty ToolCalls on assistant message")
+	}
+	// The placeholder must NOT have been injected: content must still be
+	// empty (or at least must not contain the guard's sentinel string).
+	if strings.Contains(assistantMsg.Content, "empty response from model") {
+		t.Errorf(
+			"guard must not fire for a tool-call turn; placeholder was injected: %q",
+			assistantMsg.Content)
+	}
+	// read_file should have been dispatched, confirming the tool call ran.
+	if len(reg.dispatched) == 0 || reg.dispatched[0] != "read_file" {
+		t.Errorf("expected read_file to be dispatched; got %v", reg.dispatched)
+	}
+}
+
 // TestLoop_StrippedReasoningDoesNotProduceEmptyAssistant covers the
 // sibling case: stripReasoningForWire must not leave an empty assistant
 // message on the wire.
