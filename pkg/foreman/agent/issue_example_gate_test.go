@@ -65,3 +65,14 @@ func TestCheckIssueExample_NoAdvisoryWhenNoExample(t *testing.T) {
 		t.Fatal("no example -> no advisory")
 	}
 }
+
+// TestHarvestIssueExample_MarkerImmediatelyAboveFence guards the case where the
+// marker heading sits directly above the opening fence with no blank line
+// between them. The fence-lookback must inspect the line ABOVE the opening
+// fence (not the fence line itself), so the block is correctly marked.
+func TestHarvestIssueExample_MarkerImmediatelyAboveFence(t *testing.T) {
+	got := harvestIssueExample("## Example\n```\ncode\n```")
+	if got != "code" {
+		t.Fatalf("marker directly above fence: want %q, got %q", "code", got)
+	}
+}

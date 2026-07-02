@@ -70,10 +70,9 @@ func harvestIssueExample(body string) string {
 	for i < len(lines) {
 		line := lines[i]
 		if strings.HasPrefix(line, "```") {
-			// Opening fence found; collect until closing fence.
-			closing := strings.TrimLeft(line, "`")
-			// The info string follows the backticks; closing fence is "```" alone.
-			_ = closing
+			// Opening fence found; collect until the closing fence. Any info
+			// string on the opening fence is ignored; the closing fence is any
+			// later line that also starts with "```".
 			var buf []string
 			i++
 			for i < len(lines) && !strings.HasPrefix(lines[i], "```") {

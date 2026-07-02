@@ -26,6 +26,14 @@ type GroundTruth struct {
 	// Prometheus exporters that are deployed alongside LLMKube (e.g. "DCGM_FI_",
 	// "node_"). When non-empty, the advisory grounding-breadth check flags any
 	// token that looks like a metric name but does not start with a known prefix.
+	//
+	// CONTRACT: LoadGroundTruth intentionally leaves this nil (see the comment
+	// at its return). The exporter-metric detection in DetectUngroundedReferences
+	// is gated on len(ExporterMetricPrefixes)>0, so a nil value makes that
+	// detection inert. Only the advisory-tier checkGroundingBreadth sets it (to
+	// enable broadened detection); the block tier must NOT, or it would flag
+	// legitimate snake_case tokens. A new caller wanting exporter-metric grounding
+	// must set this explicitly AND must not be on a hard-fail path.
 	ExporterMetricPrefixes []string
 }
 
