@@ -53,6 +53,7 @@ spec:
             {{- if .Values.agent.taskNamespace }}
             - --task-namespace={{ .Values.agent.taskNamespace }}
             {{- end }}
+            - --foreman-namespace={{ .Values.agent.foremanNamespace | default (include "foreman.namespace" .) }}
             {{- if .Values.agent.installedModels }}
             - --installed-models={{ join "," .Values.agent.installedModels }}
             {{- end }}
