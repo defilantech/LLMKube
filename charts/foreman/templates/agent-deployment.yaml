@@ -53,6 +53,7 @@ spec:
             {{- if .Values.agent.taskNamespace }}
             - --task-namespace={{ .Values.agent.taskNamespace }}
             {{- end }}
+            {{- /* Always set: the binary default is "foreman-system", a namespace the chart never creates, so gate Jobs would land where the cache PVC does not exist. */}}
             - --foreman-namespace={{ .Values.agent.foremanNamespace | default (include "foreman.namespace" .) }}
             {{- if .Values.agent.installedModels }}
             - --installed-models={{ join "," .Values.agent.installedModels }}
