@@ -131,3 +131,32 @@ func TestCheckEmbeddedArtifacts_YamldocFenceNotMatched(t *testing.T) {
 		t.Fatalf("yamldoc fence should NOT be treated as yaml, but got failure: %s", out)
 	}
 }
+
+// Regression for the live false-block found by the #943 validation run: a
+// changed doc embedding a VALID manifest (here a third-party CRD kind) must
+// pass on structural validation alone, and kubectl must never be invoked.
+// The old kubectl step was doubly broken: its argv lacked a subcommand
+// (kubectl has no global --dry-run flag, so EVERY manifest failed "unknown
+// flag"), and even corrected, client dry-run needs kind discovery, which
+// false-blocks any doc whose CRDs are not installed on the reachable cluster
+// (karpenter NodePool in the #478 run; LLMKube's own CRs in docs elsewhere).
+func TestCheckEmbeddedArtifacts_ManifestValidatedWithoutKubectl(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "docs/site/guides/autoscale.md",
+		"# Guide\n\n```yaml\napiVersion: karpenter.sh/v1\nkind: NodePool\n"+
+			"metadata:\n  name: gpu\nspec:\n  limits:\n    cpu: \"64\"\n```\n")
+
+	gitOnly := fakeMdRunner(map[string]string{
+		"docs/site/guides/autoscale.md": " M",
+	})
+	run := func(ctx context.Context, dir2 string, env []string, name string, args ...string) (string, error) {
+		if name == "kubectl" {
+			t.Fatalf("kubectl must not be invoked by the artifact gate, got args %v", args)
+		}
+		return gitOnly(ctx, dir2, env, name, args...)
+	}
+	failed, out := checkEmbeddedArtifacts(context.Background(), dir, run)
+	if failed {
+		t.Fatalf("valid manifest must pass structural validation, got: %s", out)
+	}
+}

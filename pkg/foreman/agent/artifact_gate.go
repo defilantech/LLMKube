@@ -19,9 +19,16 @@ limitations under the License.
 //  1. Parses every ```yaml / ```yml fenced block.
 //  2. Validates each block body with sigs.k8s.io/yaml (unmarshal into
 //     map[string]any or []any; only a dual-failure is a real parse error).
-//  3. For blocks that are Kubernetes manifests (have both "apiVersion" and
-//     "kind"), runs `kubectl --dry-run=client -f <tmpfile>` if kubectl is
-//     on PATH.
+//
+// Validation is deliberately structural only. An earlier revision also ran
+// `kubectl --dry-run=client` on blocks that looked like Kubernetes manifests;
+// that was removed after a live batch false-blocked on it. The argv lacked a
+// subcommand (kubectl has no global --dry-run flag, so every manifest failed
+// with "unknown flag"), and even the corrected form cannot work here: client
+// dry-run resolves kinds via discovery, so any doc embedding a CRD that is
+// not installed on whatever cluster the agent's kubeconfig reaches (a
+// karpenter NodePool, or LLMKube's own CRs on a bare cluster) fails with "no
+// matches for kind". Offline, kubectl adds nothing beyond the YAML parse.
 //
 // The check is conservative: only yaml/yml-fenced blocks are examined; no
 // other content is judged. It is fail-open (a git or read error skips the
@@ -32,7 +39,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -54,7 +60,7 @@ func checkEmbeddedArtifacts(ctx context.Context, workspace string, run commandRu
 		if err != nil {
 			continue // fail-open: skip files we cannot read
 		}
-		findings = append(findings, validateMarkdownYAML(ctx, workspace, path, string(data), run)...)
+		findings = append(findings, validateMarkdownYAML(path, string(data))...)
 	}
 
 	if len(findings) == 0 {
@@ -88,8 +94,9 @@ func changedMarkdownFiles(ctx context.Context, workspace string, run commandRunn
 }
 
 // validateMarkdownYAML extracts and validates every yaml/yml fenced block in
-// content. Each finding is a "file:line - reason" string.
-func validateMarkdownYAML(ctx context.Context, workspace, path, content string, run commandRunner) []string {
+// content. Each finding is a "file:line - reason" string. Purely local: it
+// shells out to nothing (see the package comment on why kubectl is not used).
+func validateMarkdownYAML(path, content string) []string {
 	var findings []string
 
 	// Track the current line as we scan through the content.
@@ -155,14 +162,6 @@ func validateMarkdownYAML(ctx context.Context, workspace, path, content string, 
 				findings = append(findings, fmt.Sprintf(
 					"%s:%d - invalid YAML: %s", path, startLine, parseErr.Error(),
 				))
-				continue
-			}
-			// For k8s manifests: if both "apiVersion" and "kind" are present,
-			// run kubectl --dry-run=client if kubectl is available.
-			if isK8sManifest(doc) {
-				if _, err := exec.LookPath("kubectl"); err == nil {
-					findings = append(findings, kubectlDryRun(ctx, workspace, path, startLine, doc, run)...)
-				}
 			}
 		}
 	}
@@ -199,43 +198,6 @@ func validateYAMLDoc(doc string) error {
 	var l []any
 	if err := sigsyaml.Unmarshal([]byte(doc), &l); err != nil {
 		return err
-	}
-	return nil
-}
-
-// isK8sManifest reports whether the YAML document (already validated) looks
-// like a Kubernetes manifest by checking for both "apiVersion" and "kind"
-// keys at the top level.
-func isK8sManifest(doc string) bool {
-	var m map[string]any
-	if err := sigsyaml.Unmarshal([]byte(doc), &m); err != nil {
-		return false
-	}
-	_, hasAPI := m["apiVersion"]
-	_, hasKind := m["kind"]
-	return hasAPI && hasKind
-}
-
-// kubectlDryRun writes the YAML block to a temp file and runs
-// `kubectl --dry-run=client -f <file>`. Returns any findings.
-func kubectlDryRun(ctx context.Context, workspace, path string, startLine int, doc string, run commandRunner) []string {
-	tmp, err := os.CreateTemp("", "artifact-gate-*.yaml")
-	if err != nil {
-		return nil // fail-open
-	}
-	tmpPath := tmp.Name()
-	defer func() { _ = os.Remove(tmpPath) }() // best-effort cleanup; ignore error
-	if _, err := tmp.WriteString(doc); err != nil {
-		_ = tmp.Close()
-		return nil
-	}
-	_ = tmp.Close()
-
-	out, err := run(ctx, workspace, nil, "kubectl", "--dry-run=client", "-f", tmpPath)
-	if err != nil {
-		return []string{fmt.Sprintf(
-			"%s:%d - kubectl client validation failed: %s", path, startLine, strings.TrimSpace(out),
-		)}
 	}
 	return nil
 }

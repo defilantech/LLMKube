@@ -55,7 +55,9 @@ func (t *StrReplaceTool) Schema() oai.ToolSchemaDef {
 			"Copy old_string VERBATIM from a recent read_file; prefer the shortest " +
 			"unique snippet (1-3 lines). Do not retype it from memory. If it does not " +
 			"match, the error shows the file's actual current text near your edit; " +
-			"copy that exactly and retry.",
+			"copy that exactly and retry. For a NEW file or a full-file rewrite, use " +
+			"write_file instead: str_replace requires old_string to already exist in " +
+			"the file.",
 		Parameters: json.RawMessage(`{
 "type": "object",
 "properties": {
@@ -85,6 +87,14 @@ func (t *StrReplaceTool) Execute(_ context.Context, args json.RawMessage) (*agen
 	}
 	raw, err := os.ReadFile(full) //nolint:gosec // G304: path is resolveInside-validated
 	if err != nil {
+		// The most literal wrong-tool case: editing a file that does not
+		// exist. Seen live burning a coder's whole restricted-edit budget on
+		// bare ENOENT retries against a hallucinated path; steer to
+		// write_file instead (#942 Part B).
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("str_replace: %q does not exist. "+
+				"To create a new file, call write_file with the full contents instead", a.Path)
+		}
 		return nil, fmt.Errorf("str_replace: read %q: %w", a.Path, err)
 	}
 	content := string(raw)
@@ -107,16 +117,31 @@ func (t *StrReplaceTool) Execute(_ context.Context, args json.RawMessage) (*agen
 					Output: map[string]any{"path": a.Path, "replacements": 1, "note": note},
 				}, nil
 			}
+			// Whitespace normalization only equalizes whitespace; a drifted
+			// TOKEN (renamed identifier, paraphrased comment) falls through to
+			// here. The fuzzy window recovers the unique near-miss case that
+			// otherwise stalls local coder models into EditFreeStreak (#942).
+			if fuzzyEnabled() {
+				if recovered, note, ok := t.applyFuzzyMatch(content, a.OldString, a.NewString); ok {
+					if err := os.WriteFile(full, []byte(recovered), 0o644); err != nil { //nolint:gosec // G306: workspace file
+						return nil, fmt.Errorf("str_replace: write %q: %w", a.Path, err)
+					}
+					return &agent.ToolResult{
+						Output: map[string]any{"path": a.Path, "replacements": 1, "note": note},
+					}, nil
+				}
+			}
 			// Could not safely locate the edit. Surface the file's ACTUAL current
 			// text near the model's intended anchor so it can retry against
 			// truth instead of re-hallucinating old_string.
 			if actual, ok := anchorContext(content, a.OldString); ok {
 				return nil, fmt.Errorf("str_replace: old_string not found in %q. "+
 					"The file's actual current text near your edit is below - copy it "+
-					"VERBATIM into old_string and retry:\n%s", a.Path, actual)
+					"VERBATIM into old_string and retry:\n%s%s", a.Path, actual, writeFileHint(content))
 			}
 		}
-		return nil, fmt.Errorf("str_replace: old_string found %d times in %q, want %d", occurrences, a.Path, want)
+		return nil, fmt.Errorf("str_replace: old_string found %d times in %q, want %d%s",
+			occurrences, a.Path, want, writeFileHint(content))
 	}
 	next := strings.ReplaceAll(content, a.OldString, a.NewString)
 	if err := os.WriteFile(full, []byte(next), 0o644); err != nil { //nolint:gosec // G306: workspace file
@@ -172,6 +197,139 @@ func (t *StrReplaceTool) applyWhitespaceMatch(content, oldString, newString stri
 	merged = append(merged, strings.Split(newString, "\n")...)
 	merged = append(merged, contentLines[start+len(oldLines):]...)
 	return strings.Join(merged, "\n"), "matched via whitespace-normalized fallback", true
+}
+
+// Fuzzy thresholds (see the #942 design doc). A candidate window must have
+// every line within fuzzyPerLineThreshold normalized edit distance of the
+// corresponding old_string line; windows of 2+ lines must additionally keep
+// their aggregate drift under fuzzyWindowThreshold. The aggregate bound is
+// deliberately NOT applied to single-line windows: there the aggregate ratio
+// equals the per-line ratio, and stacking both would silently tighten the
+// effective threshold to 0.15 and reject the primary drift case (one small
+// token typo on one line).
+const (
+	fuzzyPerLineThreshold = 0.25
+	fuzzyWindowThreshold  = 0.15
+)
+
+// fuzzyPerLineMaxDist caps the per-line budget in absolute terms. The
+// percentage threshold alone lets long lines (120+ runes) absorb 30+ edits,
+// enough to alias two genuinely different logger.Info calls; real old_string
+// drift is a token or two, never dozens of runes.
+const fuzzyPerLineMaxDist = 6
+
+// fuzzyMaxOldLines bounds the window scan. The tool's schema tells models to
+// use 1-3 line snippets; a huge old_string against a large file is O(minutes)
+// of CPU in a single tool call and is never legitimate drift recovery.
+const fuzzyMaxOldLines = 40
+
+// fuzzyEnabled reports whether the fuzzy line-window fallback is active.
+// FOREMAN_STRREPLACE_FUZZY=0 reverts str_replace to the pre-#942 behavior
+// (whitespace fallback + anchor hint only), mirroring the per-check
+// FOREMAN_<NAME>_GATE kill-switch convention.
+func fuzzyEnabled() bool { return os.Getenv("FOREMAN_STRREPLACE_FUZZY") != "0" }
+
+// applyFuzzyMatch handles the drift case applyWhitespaceMatch cannot: the
+// model reproduced the right block but mutated a token (renamed identifier,
+// paraphrased comment). It scores every old_string-sized line window under
+// whitespace normalization plus bounded per-line edit distance, and applies
+// only when exactly one window qualifies. Zero or 2+ candidates return
+// ok=false so the caller falls through to the anchorContext truth hint. The
+// unique-window requirement guarantees it never edits an AMBIGUOUS location;
+// a unique near-miss can still be an unintended target (a semantic twin
+// within threshold), which is why the note reports exactly what was replaced
+// and where, so the model and transcript reader can catch a wrong-target
+// edit.
+func (t *StrReplaceTool) applyFuzzyMatch(content, oldString, newString string) (result, note string, ok bool) {
+	contentLines := strings.Split(content, "\n")
+	oldLines := strings.Split(oldString, "\n")
+	if len(oldLines) == 0 || len(oldLines) > fuzzyMaxOldLines || len(oldLines) > len(contentLines) {
+		return "", "", false
+	}
+	normOld := make([]string, len(oldLines))
+	for i, l := range oldLines {
+		normOld[i] = normWS(l)
+	}
+	normContent := make([]string, len(contentLines))
+	for i, l := range contentLines {
+		normContent[i] = normWS(l)
+	}
+	start, matches := -1, 0
+	for i := 0; i+len(oldLines) <= len(contentLines); i++ {
+		if windowWithinFuzzyBudget(normContent[i:i+len(oldLines)], normOld) {
+			start = i
+			matches++
+			if matches > 1 {
+				return "", "", false
+			}
+		}
+	}
+	if matches != 1 {
+		return "", "", false
+	}
+	merged := make([]string, 0, len(contentLines))
+	merged = append(merged, contentLines[:start]...)
+	merged = append(merged, strings.Split(newString, "\n")...)
+	merged = append(merged, contentLines[start+len(oldLines):]...)
+	original := strings.Join(contentLines[start:start+len(oldLines)], "\n")
+	note = fmt.Sprintf(
+		"matched via fuzzy line-window fallback at line %d (old_string drifted from the file's actual text); replaced: %q",
+		start+1, original)
+	return strings.Join(merged, "\n"), note, true
+}
+
+// windowWithinFuzzyBudget scores one candidate window (already
+// whitespace-normalized by the caller) against the whitespace-normalized
+// old_string lines. Every line must clear the per-line budget; multi-line
+// windows must also clear the aggregate budget so drift cannot accumulate
+// across many near-threshold lines. An all-blank window is never a match (it
+// would otherwise match everywhere).
+func windowWithinFuzzyBudget(normWindow, normOld []string) bool {
+	totalDist, totalLen := 0, 0
+	for j, ol := range normOld {
+		cl := normWindow[j]
+		maxLen := len([]rune(cl))
+		if l := len([]rune(ol)); l > maxLen {
+			maxLen = l
+		}
+		if maxLen == 0 {
+			continue // both blank after normalization: identical
+		}
+		budget := int(fuzzyPerLineThreshold * float64(maxLen))
+		if budget > fuzzyPerLineMaxDist {
+			budget = fuzzyPerLineMaxDist
+		}
+		d := boundedLevenshtein(cl, ol, budget)
+		if d > budget {
+			return false
+		}
+		totalDist += d
+		totalLen += maxLen
+	}
+	if totalLen == 0 {
+		return false
+	}
+	if len(normOld) > 1 &&
+		float64(totalDist)/float64(totalLen) > fuzzyWindowThreshold {
+		return false
+	}
+	return true
+}
+
+// writeFileHintMaxLines bounds the "did you mean write_file?" steering hint
+// to small files. On a large file a failed match means old_string drift and
+// the anchor hint is the right feedback; on a small (often brand-new or stub)
+// file it frequently means the model picked the wrong tool for creating or
+// rewriting the file outright (#478).
+const writeFileHintMaxLines = 40
+
+// writeFileHint returns the steering line appended to a failed-recovery
+// error for small files, or "" for larger ones.
+func writeFileHint(content string) string {
+	if strings.Count(content, "\n")+1 <= writeFileHintMaxLines {
+		return "\nIf you are creating or rewriting this file, call write_file with the full contents instead."
+	}
+	return ""
 }
 
 // anchorContext finds the most distinctive line of old_string that appears
