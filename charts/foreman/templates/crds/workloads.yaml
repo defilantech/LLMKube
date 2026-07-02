@@ -85,6 +85,16 @@ spec:
                   air-gapped or compliance-restricted environments. Both gates
                   must allow for a cloud reviewer to dispatch.
                 type: boolean
+              allowOverwrite:
+                description: |-
+                  AllowOverwrite lets this Workload's coder replace a stale remote
+                  ref for its own foreman/* branch (force-with-lease compare-and-swap)
+                  instead of failing non-fast-forward. Opt-in — #573 deliberately
+                  rejected force-on-collision as a default; retry systems that
+                  re-run Workloads under the same name set this on the re-run, where
+                  the stale ref is their own previous attempt. Copied onto every
+                  synthesized issue-batch task payload.
+                type: boolean
               coderAgentRef:
                 description: |-
                   CoderAgentRef is required when Issues is set: names the same-
@@ -348,6 +358,19 @@ spec:
                             Agent is the named agent to invoke. Required for freeform; defaults
                             to "issue-fixer" for issue-fix and "verify" for verify.
                           type: string
+                        allowOverwrite:
+                          description: |-
+                            AllowOverwrite permits the coder to replace a stale remote ref for
+                            its own branch (force-with-lease pinned to the observed SHA) when a
+                            plain push is rejected non-fast-forward. Opt-in, per the design
+                            decision in #573: silently overwriting published branches is the
+                            wrong default for a system that leaves an audit trail, but
+                            automated retry systems that delete-and-recreate Workloads derive
+                            the same branch name every run and are otherwise permanently
+                            wedged by their predecessor's ref (#934). Stamped from
+                            Workload.spec.allowOverwrite in issue-batch mode; explicit
+                            pipelines set it per step.
+                          type: boolean
                         baseBranch:
                           description: |-
                             BaseBranch is the upstream base ref the coder branch is cut from

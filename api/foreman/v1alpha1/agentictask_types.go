@@ -254,6 +254,19 @@ type AgenticTaskPayload struct {
 	// +optional
 	BaseBranch string `json:"baseBranch,omitempty"`
 
+	// AllowOverwrite permits the coder to replace a stale remote ref for
+	// its own branch (force-with-lease pinned to the observed SHA) when a
+	// plain push is rejected non-fast-forward. Opt-in, per the design
+	// decision in #573: silently overwriting published branches is the
+	// wrong default for a system that leaves an audit trail, but
+	// automated retry systems that delete-and-recreate Workloads derive
+	// the same branch name every run and are otherwise permanently
+	// wedged by their predecessor's ref (#934). Stamped from
+	// Workload.spec.allowOverwrite in issue-batch mode; explicit
+	// pipelines set it per step.
+	// +optional
+	AllowOverwrite bool `json:"allowOverwrite,omitempty"`
+
 	// BranchPrefix overrides the branch name prefix on issue-fix tasks
 	// (default derived from the issue's labels via conventional commit
 	// prefixes: fix/, feat/, chore/, etc.).

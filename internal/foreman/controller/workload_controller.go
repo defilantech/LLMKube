@@ -292,9 +292,10 @@ func synthesizeIssueBatch(w *foremanv1alpha1.Workload) []foremanv1alpha1.Pipelin
 				Kind:     foremanv1alpha1.AgenticTaskKindIssueFix,
 				AgentRef: *w.Spec.CoderAgentRef,
 				Payload: foremanv1alpha1.AgenticTaskPayload{
-					Repo:   w.Spec.Repo,
-					Issue:  n,
-					Branch: branch,
+					Repo:           w.Spec.Repo,
+					Issue:          n,
+					Branch:         branch,
+					AllowOverwrite: w.Spec.AllowOverwrite,
 				},
 			},
 			foremanv1alpha1.PipelineStep{

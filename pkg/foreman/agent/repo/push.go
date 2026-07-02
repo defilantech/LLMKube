@@ -86,13 +86,13 @@ func Push(ctx context.Context, opts PushOptions) error {
 	// Heuristic: git push prints "[remote rejected]" or "[rejected]"
 	// in stderr on a non-fast-forward / pre-receive rejection. We
 	// captured stderr inside the wrapped error message in runGit.
-	if !isPushRejection(err.Error()) {
+	if !isPushRejection(err) {
 		return err
 	}
 	if opts.ReplaceOnReject {
 		if replaceErr := replaceRemoteBranch(ctx, opts.Workspace, env, remote, opts.Branch); replaceErr == nil {
 			return nil
-		} else if isPushRejection(replaceErr.Error()) {
+		} else if isPushRejection(replaceErr) {
 			// The lease failed: someone moved the ref between our
 			// ls-remote and the push. Surface the original rejection
 			// semantics so the caller's PUSH-FAILED handling applies.
@@ -142,11 +142,19 @@ func SetRemote(ctx context.Context, workspace, name, url string) error {
 	return err
 }
 
-// isPushRejection sniffs git's stderr for the canonical rejection
-// markers. Brittle in principle (string-matching on git output) but
-// stable across modern git versions for this specific case.
-func isPushRejection(msg string) bool {
-	lower := strings.ToLower(msg)
+// isPushRejection sniffs the failed invocation's STDERR for the
+// canonical rejection markers. Brittle in principle (string-matching on
+// git output) but stable across modern git versions for this specific
+// case. Only stderr is examined — the full error message also embeds
+// the git args, and branch names carry caller-controlled Workload names
+// (a workload literally named "non-fast-forward" must not classify
+// every push failure as a rejection).
+func isPushRejection(err error) bool {
+	var ge *gitError
+	if !errors.As(err, &ge) {
+		return false
+	}
+	lower := strings.ToLower(ge.stderr)
 	return strings.Contains(lower, "[rejected]") ||
 		strings.Contains(lower, "remote rejected") ||
 		strings.Contains(lower, "non-fast-forward")
