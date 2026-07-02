@@ -107,6 +107,20 @@ func (t *StrReplaceTool) Execute(_ context.Context, args json.RawMessage) (*agen
 					Output: map[string]any{"path": a.Path, "replacements": 1, "note": note},
 				}, nil
 			}
+			// Whitespace normalization only equalizes whitespace; a drifted
+			// TOKEN (renamed identifier, paraphrased comment) falls through to
+			// here. The fuzzy window recovers the unique near-miss case that
+			// otherwise stalls local coder models into EditFreeStreak (#942).
+			if fuzzyEnabled() {
+				if recovered, note, ok := t.applyFuzzyMatch(content, a.OldString, a.NewString); ok {
+					if err := os.WriteFile(full, []byte(recovered), 0o644); err != nil { //nolint:gosec // G306: workspace file
+						return nil, fmt.Errorf("str_replace: write %q: %w", a.Path, err)
+					}
+					return &agent.ToolResult{
+						Output: map[string]any{"path": a.Path, "replacements": 1, "note": note},
+					}, nil
+				}
+			}
 			// Could not safely locate the edit. Surface the file's ACTUAL current
 			// text near the model's intended anchor so it can retry against
 			// truth instead of re-hallucinating old_string.
@@ -172,6 +186,98 @@ func (t *StrReplaceTool) applyWhitespaceMatch(content, oldString, newString stri
 	merged = append(merged, strings.Split(newString, "\n")...)
 	merged = append(merged, contentLines[start+len(oldLines):]...)
 	return strings.Join(merged, "\n"), "matched via whitespace-normalized fallback", true
+}
+
+// Fuzzy thresholds (see the #942 design doc). A candidate window must have
+// every line within fuzzyPerLineThreshold normalized edit distance of the
+// corresponding old_string line; windows of 2+ lines must additionally keep
+// their aggregate drift under fuzzyWindowThreshold. The aggregate bound is
+// deliberately NOT applied to single-line windows: there the aggregate ratio
+// equals the per-line ratio, and stacking both would silently tighten the
+// effective threshold to 0.15 and reject the primary drift case (one small
+// token typo on one line).
+const (
+	fuzzyPerLineThreshold = 0.25
+	fuzzyWindowThreshold  = 0.15
+)
+
+// fuzzyEnabled reports whether the fuzzy line-window fallback is active.
+// FOREMAN_STRREPLACE_FUZZY=0 reverts str_replace to the pre-#942 behavior
+// (whitespace fallback + anchor hint only), mirroring the per-check
+// FOREMAN_<NAME>_GATE kill-switch convention.
+func fuzzyEnabled() bool { return os.Getenv("FOREMAN_STRREPLACE_FUZZY") != "0" }
+
+// applyFuzzyMatch handles the drift case applyWhitespaceMatch cannot: the
+// model reproduced the right block but mutated a token (renamed identifier,
+// paraphrased comment). It scores every old_string-sized line window under
+// whitespace normalization plus bounded per-line edit distance, and applies
+// only when exactly one window qualifies. Zero or 2+ candidates return
+// ok=false so the caller falls through to the anchorContext truth hint; the
+// unique-window requirement means this can never edit the wrong location.
+func (t *StrReplaceTool) applyFuzzyMatch(content, oldString, newString string) (result, note string, ok bool) {
+	contentLines := strings.Split(content, "\n")
+	oldLines := strings.Split(oldString, "\n")
+	if len(oldLines) == 0 || len(oldLines) > len(contentLines) {
+		return "", "", false
+	}
+	normOld := make([]string, len(oldLines))
+	for i, l := range oldLines {
+		normOld[i] = normWS(l)
+	}
+	start, matches := -1, 0
+	for i := 0; i+len(oldLines) <= len(contentLines); i++ {
+		if windowWithinFuzzyBudget(contentLines[i:i+len(oldLines)], normOld) {
+			start = i
+			matches++
+			if matches > 1 {
+				return "", "", false
+			}
+		}
+	}
+	if matches != 1 {
+		return "", "", false
+	}
+	merged := make([]string, 0, len(contentLines))
+	merged = append(merged, contentLines[:start]...)
+	merged = append(merged, strings.Split(newString, "\n")...)
+	merged = append(merged, contentLines[start+len(oldLines):]...)
+	return strings.Join(merged, "\n"),
+		"matched via fuzzy line-window fallback (old_string drifted from the file's actual text)",
+		true
+}
+
+// windowWithinFuzzyBudget scores one candidate window against the
+// whitespace-normalized old_string lines. Every line must clear the per-line
+// budget; multi-line windows must also clear the aggregate budget so drift
+// cannot accumulate across many near-threshold lines. An all-blank window is
+// never a match (it would otherwise match everywhere).
+func windowWithinFuzzyBudget(window, normOld []string) bool {
+	totalDist, totalLen := 0, 0
+	for j, ol := range normOld {
+		cl := normWS(window[j])
+		maxLen := len([]rune(cl))
+		if l := len([]rune(ol)); l > maxLen {
+			maxLen = l
+		}
+		if maxLen == 0 {
+			continue // both blank after normalization: identical
+		}
+		budget := int(fuzzyPerLineThreshold * float64(maxLen))
+		d := boundedLevenshtein(cl, ol, budget)
+		if d > budget {
+			return false
+		}
+		totalDist += d
+		totalLen += maxLen
+	}
+	if totalLen == 0 {
+		return false
+	}
+	if len(normOld) > 1 &&
+		float64(totalDist)/float64(totalLen) > fuzzyWindowThreshold {
+		return false
+	}
+	return true
 }
 
 // anchorContext finds the most distinctive line of old_string that appears
