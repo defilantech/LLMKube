@@ -197,6 +197,12 @@ agent:
   # tenants that should not see each other's tasks.
   taskNamespace: ""
 
+  # --foreman-namespace flag. Namespace the agent submits gate Jobs
+  # into. Defaults to the release namespace, which is where the chart
+  # creates the foreman-gate-cache PVC. Override only when the PVC
+  # and the agent live in different namespaces.
+  foremanNamespace: ""
+
   # Models the foreman-agent advertises in its FleetNode.spec
   # heartbeat. Use kebab-case slugs (e.g. "qwen36-35b-carnice-mtp").
   installedModels: []
