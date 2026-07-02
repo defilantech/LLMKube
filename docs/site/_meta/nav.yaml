@@ -76,6 +76,9 @@ sections:
         slug: guides/model-cache
         file: guides/model-cache.md
         status: stub
+      - label: Metrics-driven autoscaling
+        slug: guides/metrics-driven-autoscaling
+        file: guides/metrics-driven-autoscaling.md
 
   - title: Operations
     items:

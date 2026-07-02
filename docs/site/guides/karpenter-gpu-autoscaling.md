@@ -302,3 +302,5 @@ kubectl get pods -o wide --field-selector spec.nodeName=<gpu-node-name>
   clusters
 - [Memory-pressure protection](/docs/memory-pressure-protection)
   for eviction tuning on GPU nodes
+- [Metrics-driven autoscaling tutorial](/docs/guides/metrics-driven-autoscaling)
+  for HPA-based replica scaling driven by LLMKube and DCGM metrics
