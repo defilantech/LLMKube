@@ -89,7 +89,11 @@ func TestPollOnce_ClaimsReviewBeforeOlderIssueFix(t *testing.T) {
 	w := &AgenticTaskWatcher{
 		Client:   c,
 		NodeName: "node-1",
-		Executor: &StubExecutor{SleepDuration: time.Millisecond},
+		// A long sleep keeps the claimed task deterministically in
+		// phase=Running for the assertions below (a short sleep lets the
+		// executor goroutine patch it terminal on a loaded runner). The
+		// goroutine is abandoned when the test ends.
+		Executor: &StubExecutor{SleepDuration: time.Hour},
 	}
 
 	if err := w.pollOnce(context.Background(), "default"); err != nil {
