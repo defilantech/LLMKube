@@ -5,6 +5,13 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.26](https://github.com/defilantech/LLMKube/compare/v0.8.25...v0.8.26) (2026-07-02)
+
+
+### Features
+
+* **foreman:** two-tier gate-check suite for the coder gate ([#931](https://github.com/defilantech/LLMKube/issues/931)) ([f7f469e](https://github.com/defilantech/LLMKube/commit/f7f469e60b9e46466e8125936cdea39257344147))
+
 ## [0.8.25](https://github.com/defilantech/LLMKube/compare/v0.8.24...v0.8.25) (2026-07-01)
 
 
