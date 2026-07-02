@@ -784,6 +784,20 @@ func (l *Loop) runOneTurn(
 	if msg.Role == "" {
 		msg.Role = oai.RoleAssistant
 	}
+	// Guard against a completely empty assistant reply (no content, no
+	// tool_calls, no reasoning_content). Stricter backends (llama.cpp via
+	// litellm, Devstral, OpenAI) reject a history that contains such a
+	// message on the next turn with "Assistant message must contain
+	// either 'content' or 'tool_calls'", poisoning the conversation for
+	// every subsequent turn (#935). Substitute a placeholder so the
+	// transcript stays valid and the loop can recover with a corrective
+	// nudge rather than burning turns until MaxTurns.
+	if msg.Role == oai.RoleAssistant &&
+		strings.TrimSpace(msg.Content) == "" &&
+		len(msg.ToolCalls) == 0 &&
+		msg.ReasoningContent == "" {
+		msg.Content = "(empty response from model; please call a tool or submit_result to finish)"
+	}
 	res.Transcript = append(res.Transcript, msg)
 
 	if len(msg.ToolCalls) == 0 {
