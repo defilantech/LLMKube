@@ -309,3 +309,18 @@ func TestStrReplace_FuzzyNeverFiresForMultiReplace(t *testing.T) {
 		t.Errorf("file must be unchanged, got %q", got)
 	}
 }
+
+// The most literal wrong-tool case, hit live in the #478 rerun: str_replace
+// against a file that does not exist burned the model's whole restricted-edit
+// budget on bare ENOENT errors. The read error must steer to write_file.
+func TestStrReplace_NonexistentFileSteersToWriteFile(t *testing.T) {
+	ws := makeWorkspace(t)
+	err := execStrReplace(t, ws, "missing.go", "old text", "new text")
+	if err == nil {
+		t.Fatal("expected error for nonexistent file, got nil")
+	}
+	if !strings.Contains(err.Error(), "does not exist") ||
+		!strings.Contains(err.Error(), "write_file") {
+		t.Errorf("expected existence + write_file steering in the error, got: %v", err)
+	}
+}

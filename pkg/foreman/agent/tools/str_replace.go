@@ -87,6 +87,14 @@ func (t *StrReplaceTool) Execute(_ context.Context, args json.RawMessage) (*agen
 	}
 	raw, err := os.ReadFile(full) //nolint:gosec // G304: path is resolveInside-validated
 	if err != nil {
+		// The most literal wrong-tool case: editing a file that does not
+		// exist. Seen live burning a coder's whole restricted-edit budget on
+		// bare ENOENT retries against a hallucinated path; steer to
+		// write_file instead (#942 Part B).
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("str_replace: %q does not exist. "+
+				"To create a new file, call write_file with the full contents instead", a.Path)
+		}
 		return nil, fmt.Errorf("str_replace: read %q: %w", a.Path, err)
 	}
 	content := string(raw)
