@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -193,8 +194,39 @@ func (w *AgenticTaskWatcher) resetOrphanedTask(ctx context.Context, t *foremanv1
 	return w.Client.Status().Patch(ctx, t, patch)
 }
 
+// kindClaimPriority orders candidate tasks depth-first by pipeline
+// position: finish in-flight Workloads (review, then verify) before
+// starting new coder work. Claiming in List order instead maximizes
+// WIP — with a deep issue-fix backlog on a one-task-per-node agent,
+// verify/review tasks starve and no Workload ever completes (#936).
+func kindClaimPriority(kind foremanv1alpha1.AgenticTaskKind) int {
+	switch kind {
+	case foremanv1alpha1.AgenticTaskKindReview:
+		return 0
+	case foremanv1alpha1.AgenticTaskKindVerify:
+		return 1
+	case foremanv1alpha1.AgenticTaskKindIssueFix:
+		return 2
+	default:
+		return 3
+	}
+}
+
+// sortTasksDepthFirst orders claim candidates by kindClaimPriority,
+// breaking ties oldest-first so no task starves within its kind.
+func sortTasksDepthFirst(tasks []*foremanv1alpha1.AgenticTask) {
+	sort.SliceStable(tasks, func(i, j int) bool {
+		pi, pj := kindClaimPriority(tasks[i].Spec.Kind), kindClaimPriority(tasks[j].Spec.Kind)
+		if pi != pj {
+			return pi < pj
+		}
+		return tasks[i].CreationTimestamp.Before(&tasks[j].CreationTimestamp)
+	})
+}
+
 // pollOnce runs a single List() pass and dispatches any task assigned to
-// this node that is in phase=Scheduled.
+// this node that is in phase=Scheduled, preferring downstream tasks
+// (review, verify) over new issue-fix work — see sortTasksDepthFirst.
 func (w *AgenticTaskWatcher) pollOnce(ctx context.Context, namespace string) error {
 	// If a task is already in flight, skip until it completes; v0.1 is
 	// one-task-per-node.
@@ -210,6 +242,7 @@ func (w *AgenticTaskWatcher) pollOnce(ctx context.Context, namespace string) err
 		return fmt.Errorf("list AgenticTasks: %w", err)
 	}
 
+	candidates := make([]*foremanv1alpha1.AgenticTask, 0, len(list.Items))
 	for i := range list.Items {
 		t := &list.Items[i]
 		if t.Status.AssignedNode != w.NodeName {
@@ -218,6 +251,11 @@ func (w *AgenticTaskWatcher) pollOnce(ctx context.Context, namespace string) err
 		if t.Status.Phase != foremanv1alpha1.AgenticTaskPhaseScheduled {
 			continue
 		}
+		candidates = append(candidates, t)
+	}
+	sortTasksDepthFirst(candidates)
+
+	for _, t := range candidates {
 		if err := w.claim(ctx, t); err != nil {
 			// Patch race or transient apiserver error; let the next
 			// poll retry. Do not count toward the stall threshold
