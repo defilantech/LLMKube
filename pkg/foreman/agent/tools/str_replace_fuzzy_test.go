@@ -259,6 +259,28 @@ func TestStrReplace_NoWriteFileHintOnLargeFile(t *testing.T) {
 	}
 }
 
+// When a unique anchor line exists on a small file, the error must carry
+// BOTH feedback channels: the anchorContext truth snippet (so the model can
+// copy real bytes) and the write_file steering hint (in case it is actually
+// trying to rewrite the file).
+func TestStrReplace_WriteFileHintRidesAnchorContext(t *testing.T) {
+	ws := makeWorkspace(t)
+	src := "package main\n\nfunc computeTotals() int {\n\treturn 42\n}\n"
+	seedFile(t, ws, "small.go", src)
+	// Line 1 anchors verbatim; line 2 is beyond any fuzzy budget.
+	old := "func computeTotals() int {\n\treturn somethingCompletelyDifferentHere()"
+	err := execStrReplace(t, ws, "small.go", old, "x")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "return 42") {
+		t.Errorf("expected anchorContext to surface the real file text, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "write_file") {
+		t.Errorf("expected write_file hint alongside the anchor snippet, got: %v", err)
+	}
+}
+
 // The tool advertisement itself must steer new-file work to write_file.
 func TestStrReplace_SchemaSteersToWriteFile(t *testing.T) {
 	tool := &StrReplaceTool{}
