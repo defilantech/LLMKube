@@ -201,6 +201,17 @@ const (
 	fuzzyWindowThreshold  = 0.15
 )
 
+// fuzzyPerLineMaxDist caps the per-line budget in absolute terms. The
+// percentage threshold alone lets long lines (120+ runes) absorb 30+ edits,
+// enough to alias two genuinely different logger.Info calls; real old_string
+// drift is a token or two, never dozens of runes.
+const fuzzyPerLineMaxDist = 6
+
+// fuzzyMaxOldLines bounds the window scan. The tool's schema tells models to
+// use 1-3 line snippets; a huge old_string against a large file is O(minutes)
+// of CPU in a single tool call and is never legitimate drift recovery.
+const fuzzyMaxOldLines = 40
+
 // fuzzyEnabled reports whether the fuzzy line-window fallback is active.
 // FOREMAN_STRREPLACE_FUZZY=0 reverts str_replace to the pre-#942 behavior
 // (whitespace fallback + anchor hint only), mirroring the per-check
@@ -212,21 +223,29 @@ func fuzzyEnabled() bool { return os.Getenv("FOREMAN_STRREPLACE_FUZZY") != "0" }
 // paraphrased comment). It scores every old_string-sized line window under
 // whitespace normalization plus bounded per-line edit distance, and applies
 // only when exactly one window qualifies. Zero or 2+ candidates return
-// ok=false so the caller falls through to the anchorContext truth hint; the
-// unique-window requirement means this can never edit the wrong location.
+// ok=false so the caller falls through to the anchorContext truth hint. The
+// unique-window requirement guarantees it never edits an AMBIGUOUS location;
+// a unique near-miss can still be an unintended target (a semantic twin
+// within threshold), which is why the note reports exactly what was replaced
+// and where, so the model and transcript reader can catch a wrong-target
+// edit.
 func (t *StrReplaceTool) applyFuzzyMatch(content, oldString, newString string) (result, note string, ok bool) {
 	contentLines := strings.Split(content, "\n")
 	oldLines := strings.Split(oldString, "\n")
-	if len(oldLines) == 0 || len(oldLines) > len(contentLines) {
+	if len(oldLines) == 0 || len(oldLines) > fuzzyMaxOldLines || len(oldLines) > len(contentLines) {
 		return "", "", false
 	}
 	normOld := make([]string, len(oldLines))
 	for i, l := range oldLines {
 		normOld[i] = normWS(l)
 	}
+	normContent := make([]string, len(contentLines))
+	for i, l := range contentLines {
+		normContent[i] = normWS(l)
+	}
 	start, matches := -1, 0
 	for i := 0; i+len(oldLines) <= len(contentLines); i++ {
-		if windowWithinFuzzyBudget(contentLines[i:i+len(oldLines)], normOld) {
+		if windowWithinFuzzyBudget(normContent[i:i+len(oldLines)], normOld) {
 			start = i
 			matches++
 			if matches > 1 {
@@ -241,20 +260,23 @@ func (t *StrReplaceTool) applyFuzzyMatch(content, oldString, newString string) (
 	merged = append(merged, contentLines[:start]...)
 	merged = append(merged, strings.Split(newString, "\n")...)
 	merged = append(merged, contentLines[start+len(oldLines):]...)
-	return strings.Join(merged, "\n"),
-		"matched via fuzzy line-window fallback (old_string drifted from the file's actual text)",
-		true
+	original := strings.Join(contentLines[start:start+len(oldLines)], "\n")
+	note = fmt.Sprintf(
+		"matched via fuzzy line-window fallback at line %d (old_string drifted from the file's actual text); replaced: %q",
+		start+1, original)
+	return strings.Join(merged, "\n"), note, true
 }
 
-// windowWithinFuzzyBudget scores one candidate window against the
-// whitespace-normalized old_string lines. Every line must clear the per-line
-// budget; multi-line windows must also clear the aggregate budget so drift
-// cannot accumulate across many near-threshold lines. An all-blank window is
-// never a match (it would otherwise match everywhere).
-func windowWithinFuzzyBudget(window, normOld []string) bool {
+// windowWithinFuzzyBudget scores one candidate window (already
+// whitespace-normalized by the caller) against the whitespace-normalized
+// old_string lines. Every line must clear the per-line budget; multi-line
+// windows must also clear the aggregate budget so drift cannot accumulate
+// across many near-threshold lines. An all-blank window is never a match (it
+// would otherwise match everywhere).
+func windowWithinFuzzyBudget(normWindow, normOld []string) bool {
 	totalDist, totalLen := 0, 0
 	for j, ol := range normOld {
-		cl := normWS(window[j])
+		cl := normWindow[j]
 		maxLen := len([]rune(cl))
 		if l := len([]rune(ol)); l > maxLen {
 			maxLen = l
@@ -263,6 +285,9 @@ func windowWithinFuzzyBudget(window, normOld []string) bool {
 			continue // both blank after normalization: identical
 		}
 		budget := int(fuzzyPerLineThreshold * float64(maxLen))
+		if budget > fuzzyPerLineMaxDist {
+			budget = fuzzyPerLineMaxDist
+		}
 		d := boundedLevenshtein(cl, ol, budget)
 		if d > budget {
 			return false

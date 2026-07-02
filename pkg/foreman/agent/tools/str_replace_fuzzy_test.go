@@ -162,12 +162,12 @@ func TestStrReplace_FuzzyKillSwitch(t *testing.T) {
 	t.Setenv("FOREMAN_STRREPLACE_FUZZY", "0")
 	ws := makeWorkspace(t)
 	src := "func compute() int {\n\treturn userCount\n}\n"
-	seedFile(t, ws, "f.go", src)
-	err := execStrReplace(t, ws, "f.go", "\treturn usrCount", "\treturn userCount + 1")
+	seedFile(t, ws, "g.go", src)
+	err := execStrReplace(t, ws, "g.go", "\treturn usrCount", "\treturn userCount + 1")
 	if err == nil {
 		t.Fatal("expected error with fuzzy disabled, got nil")
 	}
-	if got := readBack(t, ws, "f.go"); got != src {
+	if got := readBack(t, ws, "g.go"); got != src {
 		t.Errorf("file must be unchanged with fuzzy disabled, got %q", got)
 	}
 }
@@ -192,5 +192,51 @@ func TestStrReplace_FuzzyReportsNote(t *testing.T) {
 	note, _ := out["note"].(string)
 	if !strings.Contains(note, "fuzzy") {
 		t.Errorf("expected fuzzy recovery note, got %q", note)
+	}
+	if !strings.Contains(note, "at line 2") {
+		t.Errorf("expected note to report the applied line, got %q", note)
+	}
+	if !strings.Contains(note, "return userCount") {
+		t.Errorf("expected note to report the replaced text, got %q", note)
+	}
+}
+
+// Regression for the uncapped-budget wrong-line rewrite: two genuinely
+// different logger.Info calls are 25 edits apart, within 25% of a 120-rune
+// line but far beyond any real old_string drift. The absolute per-line cap
+// must refuse.
+func TestStrReplace_FuzzyRefusesLongLineAliasing(t *testing.T) {
+	ws := makeWorkspace(t)
+	src := "func reconcile() {\n" +
+		"\tlogger.Info(\"reconciling inference service\", \"name\", svc.Name, \"generation\", svc.Generation)\n" +
+		"}\n"
+	seedFile(t, ws, "f.go", src)
+	old := "\tlogger.Info(\"reconciling model download\", \"name\", mod.Name, \"revision\", mod.Generation)"
+	err := execStrReplace(t, ws, "f.go", old, "\tlogger.Info(\"x\")")
+	if err == nil {
+		t.Fatal("expected refusal: a genuinely different long line must not fuzzy-match")
+	}
+	if got := readBack(t, ws, "f.go"); got != src {
+		t.Errorf("file must be unchanged, got %q", got)
+	}
+}
+
+// The recovery gate is want==1 only: expected_replacements > 1 with zero
+// occurrences must never invoke fuzzy recovery.
+func TestStrReplace_FuzzyNeverFiresForMultiReplace(t *testing.T) {
+	ws := makeWorkspace(t)
+	src := "func compute() int {\n\treturn userCount\n}\n"
+	seedFile(t, ws, "f.go", src)
+	tool := &StrReplaceTool{Workspace: ws}
+	buf, _ := json.Marshal(map[string]any{
+		"path": "f.go", "old_string": "\treturn usrCount", "new_string": "x",
+		"expected_replacements": 2,
+	})
+	_, err := tool.Execute(context.Background(), buf)
+	if err == nil {
+		t.Fatal("expected count-mismatch error for multi-replace, got nil")
+	}
+	if got := readBack(t, ws, "f.go"); got != src {
+		t.Errorf("file must be unchanged, got %q", got)
 	}
 }
