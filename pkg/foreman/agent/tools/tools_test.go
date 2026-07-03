@@ -177,8 +177,19 @@ func TestResolveInside_Cases(t *testing.T) {
 		}
 	})
 
-	t.Run("absolute rejected", func(t *testing.T) {
-		_, err := resolveInside(ws, filepath.Join(ws, "ok.txt"))
+	t.Run("absolute inside workspace accepted", func(t *testing.T) {
+		abs := filepath.Join(ws, "ok.txt")
+		got, err := resolveInside(ws, abs)
+		if err != nil {
+			t.Fatalf("resolveInside absolute inside: %v", err)
+		}
+		if got != abs {
+			t.Errorf("absolute inside: got %q want %q", got, abs)
+		}
+	})
+
+	t.Run("absolute outside workspace rejected", func(t *testing.T) {
+		_, err := resolveInside(ws, "/etc/passwd")
 		if !errors.Is(err, ErrPathEscapesWorkspace) {
 			t.Errorf("expected ErrPathEscapesWorkspace, got %v", err)
 		}
