@@ -79,6 +79,9 @@ sections:
       - label: Metrics-driven autoscaling
         slug: guides/metrics-driven-autoscaling
         file: guides/metrics-driven-autoscaling.md
+      - label: Karpenter GPU autoscaling
+        slug: guides/karpenter-gpu-autoscaling
+        file: guides/karpenter-gpu-autoscaling.md
 
   - title: Operations
     items:
