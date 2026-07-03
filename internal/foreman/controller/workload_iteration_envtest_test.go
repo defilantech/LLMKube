@@ -136,6 +136,8 @@ var _ = Describe("WorkloadReconciler review fix iteration (#946)", func() {
 		var review foremanv1alpha1.AgenticTask
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: "iterate-happy-review-750-0-r1"}, &review)).To(Succeed())
 		Expect(review.Spec.DependsOn).To(ConsistOf("iterate-happy-verify-750-r1"))
+		Expect(review.Spec.Payload.OpenPullRequest).To(BeTrue(),
+			"iteration review steps must carry the base-round openPullRequest stamp (#937)")
 
 		var fresh foremanv1alpha1.Workload
 		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(wl), &fresh)).To(Succeed())

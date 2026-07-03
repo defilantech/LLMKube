@@ -268,6 +268,9 @@ func reviewIterationSteps(
 				})
 				issueIterated = true
 			}
+			// Mirrors the base-round stamp (#937): an iterated-then-approved
+			// issue must still open its PR.
+			openPR := w.Spec.OpenPullRequest == nil || *w.Spec.OpenPullRequest
 			for i, reviewerRef := range w.Spec.ReviewerAgentRefs {
 				name := reviewStepName(n, i, k)
 				if _, ok := existing[name]; ok {
@@ -279,9 +282,10 @@ func reviewIterationSteps(
 					AgentRef:  reviewerRef,
 					DependsOn: []string{verifyName},
 					Payload: foremanv1alpha1.AgenticTaskPayload{
-						Repo:   w.Spec.Repo,
-						Issue:  n,
-						Branch: branch,
+						Repo:            w.Spec.Repo,
+						Issue:           n,
+						Branch:          branch,
+						OpenPullRequest: openPR,
 					},
 				})
 				issueIterated = true
