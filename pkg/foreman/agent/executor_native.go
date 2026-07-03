@@ -701,7 +701,16 @@ func makeCoderGateVerifier(
 		// resolved commands. The Go path below is left byte-identical: a nil,
 		// empty-language, or explicit-"go" profile takes it unchanged.
 		if usesGenericGate(profile) {
-			pass, feedback := RunGenericGate(ctx, workspace, profile.Resolve(), execCommandRunner)
+			pass, feedback, advisories := RunGenericGate(ctx, workspace, profile.Resolve(), execCommandRunner)
+			if acc != nil {
+				*acc = append(*acc, advisories...)
+			}
+			for _, a := range advisories {
+				// A missing runtime in the coder image (#929) defers the check
+				// to the clean-room verify Job instead of failing the GO.
+				log.Info("coder gate (generic): check deferred; verify Job is the backstop",
+					"language", string(profile.Language), "check", a.Check, "detail", a.Detail)
+			}
 			if !pass {
 				log.Info("coder gate (generic): fast checks failed; returning feedback to the loop for a fix",
 					"language", string(profile.Language))
