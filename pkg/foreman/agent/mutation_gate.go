@@ -111,11 +111,19 @@ func mutationGateDisabled() bool {
 var addedFuncRe = regexp.MustCompile(`^\+\s*func\b[^/]*\(`)
 
 // addedFuncNames returns the names of functions/methods introduced by added
-// lines in `git diff` for the given file. Heuristic and intentionally simple:
-// it keys the presence check on NET-NEW functions so behavior-preserving edits
-// to existing funcs do not require a new test.
+// lines in `git diff HEAD` for the given file. Heuristic and intentionally
+// simple: it keys the presence check on NET-NEW functions so behavior-preserving
+// edits to existing funcs do not require a new test.
+//
+// The diff is taken against HEAD (not the plain working-tree diff) so it is
+// independent of whether an earlier gate staged the tree. checkScopeOverlap
+// runs `git add -A` before this check (#906/#962); a plain `git diff` would then
+// see an empty (working-tree == index) diff and report zero new funcs, silently
+// blinding checkTestPresence/checkMutationSurvival on the GO path (#907). Since
+// the coder's work is uncommitted, HEAD is the pre-work base, so `git diff HEAD`
+// is exactly "the coder's changes" whether or not they are staged.
 func addedFuncNames(ctx context.Context, workspace, file string, run commandRunner) []string {
-	out, err := run(ctx, workspace, nil, "git", "diff", "--", file)
+	out, err := run(ctx, workspace, nil, "git", "diff", "HEAD", "--", file)
 	if err != nil {
 		return nil
 	}
@@ -192,12 +200,18 @@ var hunkFuncRe = regexp.MustCompile(`@@[^@]*@@\s+func\b.*`)
 
 // modifiedFuncNames returns the names of functions whose bodies were touched
 // (but not necessarily introduced) by the diff of the given file. It parses
-// `git diff -U0 -- <file>` and extracts the enclosing function name from the
+// `git diff -U0 HEAD -- <file>` and extracts the enclosing function name from the
 // hunk header trailing context that Go emits when the hunk falls inside a
 // function. Functions already captured by addedFuncNames (net-new +func lines)
 // are included here too; the caller deduplicates via a union set.
+//
+// The diff is taken against HEAD (not the plain working-tree diff) so it is
+// independent of whether an earlier gate staged the tree: checkScopeOverlap runs
+// `git add -A` before this check (#906/#962), which would make a plain
+// `git diff` empty and blind checkTestPresence/checkMutationSurvival (#907).
+// The coder's work is uncommitted, so HEAD is the pre-work base.
 func modifiedFuncNames(ctx context.Context, workspace, file string, run commandRunner) []string {
-	out, err := run(ctx, workspace, nil, "git", "diff", "-U0", "--", file)
+	out, err := run(ctx, workspace, nil, "git", "diff", "-U0", "HEAD", "--", file)
 	if err != nil {
 		return nil
 	}
@@ -341,10 +355,16 @@ func checkTestPresence(ctx context.Context, workspace string, run commandRunner)
 // hunk header: "@@ -a,b +c,d @@".
 var hunkHeaderRe = regexp.MustCompile(`^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@`)
 
-// changedNewLines parses `git diff -U0 -- <file>` and returns the set of
+// changedNewLines parses `git diff -U0 HEAD -- <file>` and returns the set of
 // new-file line numbers touched by added lines.
+//
+// The diff is taken against HEAD (not the plain working-tree diff) so it is
+// independent of whether an earlier gate staged the tree: checkScopeOverlap runs
+// `git add -A` before checkMutationSurvival (#906/#962), which would make a plain
+// `git diff` empty and leave nothing to neuter, auto-passing the survival check
+// (#907). The coder's work is uncommitted, so HEAD is the pre-work base.
 func changedNewLines(ctx context.Context, workspace, file string, run commandRunner) map[int]bool {
-	out, err := run(ctx, workspace, nil, "git", "diff", "-U0", "--", file)
+	out, err := run(ctx, workspace, nil, "git", "diff", "-U0", "HEAD", "--", file)
 	if err != nil {
 		return nil
 	}

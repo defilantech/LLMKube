@@ -25,7 +25,7 @@ import (
 // callerImpactRunner builds a fake commandRunner keyed on argv patterns for
 // checkCallerImpact tests. It answers three call types:
 //  1. git status -z  -> returns the changedFiles NUL-separated list
-//  2. git diff -U0 -- <file>  -> returns diffOutput for that file
+//  2. git diff -U0 HEAD -- <file>  -> returns diffOutput for that file
 //  3. grep -rn --include=*.go <name> .  -> returns grepOutput for that name
 func callerImpactRunner(changedFiles, diffOutput string, grepOutputs map[string]string) commandRunner {
 	return func(_ context.Context, _ string, _ []string, name string, args ...string) (string, error) {
@@ -34,8 +34,8 @@ func callerImpactRunner(changedFiles, diffOutput string, grepOutputs map[string]
 			if len(args) >= 2 && args[0] == "status" && args[1] == "-z" {
 				return changedFiles, nil
 			}
-			if len(args) >= 3 && args[0] == "diff" && args[1] == "-U0" {
-				// args[2] is "--", args[3] is the file
+			if len(args) >= 4 && args[0] == "diff" && args[1] == "-U0" && args[2] == "HEAD" {
+				// args[3] is "--", args[4] is the file
 				return diffOutput, nil
 			}
 		case "grep":
@@ -178,19 +178,21 @@ func TestCheckCallerImpact_AddedFuncWithExternalCaller(t *testing.T) {
 			"./pkg/y/consumer.go:42:\tNewThing()\n",
 	}
 
-	// addedFuncNames uses "git diff -- <file>" (without -U0); the fake runner
-	// above answers args[0]=="diff" && args[1]=="-U0" for modifiedFuncNames.
-	// We need a separate branch for the plain "git diff -- <file>" call used by
-	// addedFuncNames.  Extend the runner to handle both.
+	// addedFuncNames uses "git diff HEAD -- <file>" (without -U0); the fake runner
+	// above answers args[0]=="diff" && args[1]=="-U0" && args[2]=="HEAD" for
+	// modifiedFuncNames. Both diff forms now carry HEAD (#907/#962) so the coder's
+	// changes survive an earlier gate's `git add -A` staging; this branch matches
+	// either shape and returns the same diff (addedFuncNames only reads "+func").
 	run := func(_ context.Context, _ string, _ []string, name string, args ...string) (string, error) {
 		switch name {
 		case "git":
 			if len(args) >= 2 && args[0] == "status" && args[1] == "-z" {
 				return changedFiles, nil
 			}
-			if len(args) >= 2 && args[0] == "diff" {
-				// Both -U0 (modifiedFuncNames) and plain (addedFuncNames) paths
-				// return the same diff; addedFuncNames only cares about "+func" lines.
+			if len(args) >= 3 && args[0] == "diff" &&
+				(args[1] == "HEAD" || (args[1] == "-U0" && args[2] == "HEAD")) {
+				// Both -U0 HEAD (modifiedFuncNames) and plain HEAD (addedFuncNames)
+				// paths return the same diff; addedFuncNames only cares about "+func".
 				return diffOutput, nil
 			}
 		case "grep":
