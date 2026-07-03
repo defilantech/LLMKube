@@ -324,3 +324,26 @@ func TestStrReplace_NonexistentFileSteersToWriteFile(t *testing.T) {
 		t.Errorf("expected existence + write_file steering in the error, got: %v", err)
 	}
 }
+
+// Regression for #968: str_replace with old_string == new_string is a no-op.
+// Before the guard the match logic would "find and replace" the string with
+// itself and report replacements:1 -- a phantom success. Models that see
+// success on an unchanged file re-issue the identical call and get killed by
+// the RepeatedToolCall stuck-loop detector. It must be rejected instead.
+func TestStrReplace_IdenticalOldNewRejected(t *testing.T) {
+	ws := makeWorkspace(t)
+	src := "func compute() int {\n\treturn userCount\n}\n"
+	seedFile(t, ws, "f.go", src)
+	// old_string exists in the file, but new_string is identical to it.
+	err := execStrReplace(t, ws, "f.go", "\treturn userCount", "\treturn userCount")
+	if err == nil {
+		t.Fatal("expected an error for identical old_string/new_string, got nil (phantom success)")
+	}
+	if !strings.Contains(err.Error(), "identical") {
+		t.Errorf("expected an 'identical' no-op error, got: %v", err)
+	}
+	// The file must be untouched.
+	if got := readBack(t, ws, "f.go"); got != src {
+		t.Errorf("file must be unchanged, got %q", got)
+	}
+}
