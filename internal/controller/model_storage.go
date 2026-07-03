@@ -70,12 +70,28 @@ func resolveCacheMode(mode string) string {
 	return ModelCacheModeShared
 }
 
+// userModelCacheClaimName returns the user-supplied cache PVC name from
+// spec.modelCache.claimName, or "" when the InferenceService does not override
+// the operator-global cache mode.
+func userModelCacheClaimName(isvc *inferencev1alpha1.InferenceService) string {
+	if isvc == nil || isvc.Spec.ModelCache == nil {
+		return ""
+	}
+	return isvc.Spec.ModelCache.ClaimName
+}
+
 // modelCachePVCName returns the name of the model cache PVC for the given mode.
-// In shared mode (the default, and the resolution of an empty mode) this is the
-// single cluster-wide PVC; in perService mode it is the per-InferenceService PVC
-// "<isvc>-model-cache". A nil isvc (unit tests that exercise the builder
-// directly) falls back to the shared name.
+// A per-InferenceService spec.modelCache.claimName override (#928) wins over
+// the operator-global mode: that user-owned PVC becomes the cache volume for
+// this workload only. Otherwise, in shared mode (the default, and the
+// resolution of an empty mode) this is the single cluster-wide PVC; in
+// perService mode it is the per-InferenceService PVC "<isvc>-model-cache". A
+// nil isvc (unit tests that exercise the builder directly) falls back to the
+// shared name.
 func modelCachePVCName(isvc *inferencev1alpha1.InferenceService, mode string) string {
+	if claim := userModelCacheClaimName(isvc); claim != "" {
+		return claim
+	}
 	if resolveCacheMode(mode) == ModelCacheModeShared || isvc == nil {
 		return ModelCachePVCName
 	}
@@ -643,6 +659,30 @@ func buildEmptyDirStorageConfig(model *inferencev1alpha1.Model, isvc *inferencev
 // have no RWX storage class.
 func (r *InferenceServiceReconciler) ensureModelCachePVC(ctx context.Context, isvc *inferencev1alpha1.InferenceService) error {
 	log := logf.FromContext(ctx)
+
+	// Bring-your-own cache PVC (#928): spec.modelCache.claimName names a
+	// user-owned claim, so the operator never creates, mutates, or deletes
+	// it — it only verifies the claim exists. A missing claim is surfaced as
+	// an error (-> Degraded condition + event) rather than silently falling
+	// back to the shared cache.
+	if claim := userModelCacheClaimName(isvc); claim != "" {
+		pvc := &corev1.PersistentVolumeClaim{}
+		err := r.Get(ctx, types.NamespacedName{Name: claim, Namespace: isvc.Namespace}, pvc)
+		if err == nil {
+			return nil
+		}
+		if apierrors.IsNotFound(err) {
+			if r.Recorder != nil {
+				r.Recorder.Eventf(isvc, nil, corev1.EventTypeWarning, "ModelCachePVCNotFound", "Reconcile",
+					"spec.modelCache.claimName %q does not exist in namespace %q; create the PVC or remove the field",
+					claim, isvc.Namespace)
+			}
+			return fmt.Errorf(
+				"model cache PVC %q (spec.modelCache.claimName) not found in namespace %q: the claim is user-owned and must be created before use",
+				claim, isvc.Namespace)
+		}
+		return fmt.Errorf("failed to check user model cache PVC %q: %w", claim, err)
+	}
 
 	shared := resolveCacheMode(r.ModelCacheMode) == ModelCacheModeShared
 	namespace := isvc.Namespace

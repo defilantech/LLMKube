@@ -23,6 +23,7 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -764,6 +765,166 @@ var _ = Describe("buildCachedStorageConfig cache mode selection (#728)", func() 
 		}
 		config := buildCachedStorageConfig(model, isvc, "", "", "curl:8.18.0", 102)
 		Expect(config.volumes[0].PersistentVolumeClaim.ClaimName).To(Equal(ModelCachePVCName))
+	})
+})
+
+var _ = Describe("buildCachedStorageConfig user claimName override (#928)", func() {
+	model := &inferencev1alpha1.Model{
+		Spec:   inferencev1alpha1.ModelSpec{Source: "https://example.com/model.gguf"},
+		Status: inferencev1alpha1.ModelStatus{CacheKey: "abc123def456"},
+	}
+	isvcWithClaim := func() *inferencev1alpha1.InferenceService {
+		return &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: "byo-isvc"},
+			Spec: inferencev1alpha1.InferenceServiceSpec{
+				ModelCache: &inferencev1alpha1.ModelCacheSpec{ClaimName: "my-model-cache"},
+			},
+		}
+	}
+
+	It("mounts the user PVC instead of the shared PVC in shared mode", func() {
+		config := buildCachedStorageConfig(model, isvcWithClaim(), ModelCacheModeShared, "", "curl:8.18.0", 102)
+		Expect(config.volumes[0].PersistentVolumeClaim.ClaimName).To(Equal("my-model-cache"))
+	})
+
+	It("mounts the user PVC instead of the per-isvc PVC in perService mode", func() {
+		config := buildCachedStorageConfig(model, isvcWithClaim(), ModelCacheModePerService, "", "curl:8.18.0", 102)
+		Expect(config.volumes[0].PersistentVolumeClaim.ClaimName).To(Equal("my-model-cache"))
+	})
+
+	It("keeps the cache layout and init containers identical to the built-in cache path", func() {
+		config := buildCachedStorageConfig(model, isvcWithClaim(), "", "", "curl:8.18.0", 102)
+
+		// Weights still land under <cacheKey>/, not the PVC root.
+		Expect(config.modelPath).To(Equal("/models/abc123def456/model.gguf"))
+		// Same prep + downloader init containers, mounted read-write.
+		Expect(config.initContainers).To(HaveLen(2))
+		Expect(config.initContainers[0].Name).To(Equal("model-cache-prep"))
+		Expect(config.initContainers[1].Name).To(Equal("model-downloader"))
+		Expect(config.initContainers[1].VolumeMounts[0].ReadOnly).To(BeFalse())
+		// The main container mounts the user PVC read-only.
+		Expect(config.volumeMounts[0].MountPath).To(Equal("/models"))
+		Expect(config.volumeMounts[0].ReadOnly).To(BeTrue())
+	})
+
+	It("uses the user PVC for multi-file staged models too", func() {
+		staged := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: "staged", Namespace: "default"},
+			Spec: inferencev1alpha1.ModelSpec{
+				Source: "hf://org/repo-GGUF",
+				Files:  []string{"model-Q4_K_M.gguf"},
+			},
+		}
+		config := buildCachedStorageConfig(staged, isvcWithClaim(), "", "", "curl:8.18.0", 102)
+		Expect(config.volumes[0].PersistentVolumeClaim.ClaimName).To(Equal("my-model-cache"))
+	})
+
+	It("does not affect an InferenceService without modelCache (shared PVC as before)", func() {
+		isvc := &inferencev1alpha1.InferenceService{ObjectMeta: metav1.ObjectMeta{Name: "plain-isvc"}}
+		config := buildCachedStorageConfig(model, isvc, ModelCacheModeShared, "", "curl:8.18.0", 102)
+		Expect(config.volumes[0].PersistentVolumeClaim.ClaimName).To(Equal(ModelCachePVCName))
+	})
+})
+
+var _ = Describe("ensureModelCachePVC (user claimName, #928)", func() {
+	var reconciler *InferenceServiceReconciler
+	var isvc *inferencev1alpha1.InferenceService
+	const userClaim = "byo-model-cache"
+
+	forceDeletePVC := func(name string) {
+		ctx := context.Background()
+		pvc := &corev1.PersistentVolumeClaim{}
+		key := types.NamespacedName{Name: name, Namespace: "default"}
+		if err := k8sClient.Get(ctx, key, pvc); err != nil {
+			return
+		}
+		if len(pvc.Finalizers) > 0 {
+			pvc.Finalizers = nil
+			_ = k8sClient.Update(ctx, pvc)
+		}
+		_ = k8sClient.Delete(ctx, pvc)
+		Eventually(func() bool {
+			return errors.IsNotFound(k8sClient.Get(ctx, key, &corev1.PersistentVolumeClaim{}))
+		}, "5s", "100ms").Should(BeTrue())
+	}
+
+	createUserPVC := func() {
+		pvc := &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: userClaim, Namespace: "default"},
+			Spec: corev1.PersistentVolumeClaimSpec{
+				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+				Resources: corev1.VolumeResourceRequirements{
+					Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("10Gi")},
+				},
+			},
+		}
+		Expect(k8sClient.Create(context.Background(), pvc)).To(Succeed())
+	}
+
+	BeforeEach(func() {
+		forceDeletePVC(ModelCachePVCName)
+		forceDeletePVC(userClaim)
+		reconciler = &InferenceServiceReconciler{
+			Client:         k8sClient,
+			Scheme:         k8sClient.Scheme(),
+			ModelCacheMode: ModelCacheModeShared,
+		}
+		isvc = &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: "byo-cache-isvc", Namespace: "default"},
+			Spec: inferencev1alpha1.InferenceServiceSpec{
+				ModelRef:   "some-model",
+				ModelCache: &inferencev1alpha1.ModelCacheSpec{ClaimName: userClaim},
+			},
+		}
+	})
+
+	AfterEach(func() {
+		forceDeletePVC(ModelCachePVCName)
+		forceDeletePVC(userClaim)
+	})
+
+	It("succeeds without creating any operator PVC when the user PVC exists", func() {
+		createUserPVC()
+		Expect(reconciler.ensureModelCachePVC(context.Background(), isvc)).To(Succeed())
+
+		// Neither the shared nor a per-isvc cache PVC is created.
+		shared := &corev1.PersistentVolumeClaim{}
+		err := k8sClient.Get(context.Background(), types.NamespacedName{Name: ModelCachePVCName, Namespace: "default"}, shared)
+		Expect(errors.IsNotFound(err)).To(BeTrue())
+		perISVC := &corev1.PersistentVolumeClaim{}
+		err = k8sClient.Get(context.Background(), types.NamespacedName{Name: isvc.Name + "-model-cache", Namespace: "default"}, perISVC)
+		Expect(errors.IsNotFound(err)).To(BeTrue())
+	})
+
+	It("never adopts or mutates the user PVC (no owner refs, no operator labels)", func() {
+		createUserPVC()
+		Expect(reconciler.ensureModelCachePVC(context.Background(), isvc)).To(Succeed())
+
+		pvc := &corev1.PersistentVolumeClaim{}
+		Expect(k8sClient.Get(context.Background(), types.NamespacedName{Name: userClaim, Namespace: "default"}, pvc)).To(Succeed())
+		Expect(pvc.OwnerReferences).To(BeEmpty())
+		Expect(pvc.Labels).NotTo(HaveKey("app.kubernetes.io/managed-by"))
+	})
+
+	It("does not create the user PVC and errors clearly when it is missing", func() {
+		err := reconciler.ensureModelCachePVC(context.Background(), isvc)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring(userClaim))
+		Expect(err.Error()).To(ContainSubstring("spec.modelCache.claimName"))
+
+		pvc := &corev1.PersistentVolumeClaim{}
+		getErr := k8sClient.Get(context.Background(), types.NamespacedName{Name: userClaim, Namespace: "default"}, pvc)
+		Expect(errors.IsNotFound(getErr)).To(BeTrue())
+	})
+
+	It("overrides perService mode as well (no <isvc>-model-cache created)", func() {
+		reconciler.ModelCacheMode = ModelCacheModePerService
+		createUserPVC()
+		Expect(reconciler.ensureModelCachePVC(context.Background(), isvc)).To(Succeed())
+
+		perISVC := &corev1.PersistentVolumeClaim{}
+		err := k8sClient.Get(context.Background(), types.NamespacedName{Name: isvc.Name + "-model-cache", Namespace: "default"}, perISVC)
+		Expect(errors.IsNotFound(err)).To(BeTrue())
 	})
 })
 

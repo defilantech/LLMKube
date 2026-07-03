@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -167,8 +168,19 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	if effectiveModelCacheKey(model) != "" && r.ModelCachePath != "" {
 		if err := r.ensureModelCachePVC(ctx, inferenceService); err != nil {
 			log.Error(err, "Failed to ensure model cache PVC exists", "namespace", inferenceService.Namespace)
-			return r.updateStatusWithSchedulingInfo(ctx, inferenceService, PhaseFailed, modelReady, 0, desiredReplicas, "", "Failed to create model cache PVC", nil)
+			return r.updateStatusWithSchedulingInfo(ctx, inferenceService, PhaseFailed, modelReady, 0, desiredReplicas, "",
+				fmt.Sprintf("Failed to ensure model cache PVC: %v", err), nil)
 		}
+	}
+
+	// spec.modelCache.claimName targets the download path, so it is meaningless
+	// for a pre-staged pvc:// source (mounted read-only, no download). The
+	// claimName is ignored in that case; surface a Warning so the conflict is
+	// visible instead of silently dropped.
+	if r.Recorder != nil && userModelCacheClaimName(inferenceService) != "" && isPVCSource(model.Spec.Source) {
+		r.Recorder.Eventf(inferenceService, nil, corev1.EventTypeWarning, "ModelCacheClaimIgnored", "Reconcile",
+			"spec.modelCache.claimName is ignored: model source %q is a pre-staged pvc:// volume (read-only, no download)",
+			model.Spec.Source)
 	}
 
 	isMetal := isMetalModel(model)
