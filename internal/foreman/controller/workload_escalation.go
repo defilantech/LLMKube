@@ -64,6 +64,13 @@ func escalationSteps(
 		// The trailing dash keeps issue 64 from matching review-641-0.
 		basePrefix := fmt.Sprintf("review-%d-", n)
 		escPrefix := fmt.Sprintf("escalate-%d-", n)
+		// The coder-escalation tier emits its own reviews (review-<N>-esc-<i>)
+		// which also carry basePrefix but belong to the escalated attempt, not
+		// the base reviewer set this tier escalates. Exclude them so the two
+		// tiers compose (they only coexist when both EscalationReviewerAgentRefs
+		// and EscalationCoderAgentRef are set); otherwise their NO-GO would fan
+		// out escalate steps against the wrong (base) branch.
+		coderEscReviewPrefix := fmt.Sprintf("review-%d-esc-", n)
 
 		var baseTotal, baseTerminal, baseNoGo int
 		existingEsc := map[string]struct{}{}
@@ -72,6 +79,8 @@ func escalationSteps(
 			switch {
 			case strings.HasPrefix(step, escPrefix):
 				existingEsc[step] = struct{}{}
+			case strings.HasPrefix(step, coderEscReviewPrefix):
+				// coder-escalation branch review; not part of the base set
 			case strings.HasPrefix(step, basePrefix):
 				baseTotal++
 				phase := children[i].Status.Phase
