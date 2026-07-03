@@ -27,6 +27,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -54,6 +55,12 @@ import (
 type WorkloadReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+
+	// Recorder feeds operator-facing Kubernetes events on Workloads
+	// (e.g. Warning RevisionUnderIssueFixProfile when a fix iteration
+	// falls back to the issue-fix coder profile, #951). Optional: nil
+	// (as in most tests) disables event emission.
+	Recorder events.EventRecorder
 
 	// AllowCloudProviders is the operator-level sovereignty kill
 	// switch. True (default) lets reviewer Agents with
@@ -107,6 +114,8 @@ const conditionTypeEscalationTriggered = "EscalationTriggered"
 // +kubebuilder:rbac:groups=foreman.llmkube.dev,resources=workloads/finalizers,verbs=update
 // +kubebuilder:rbac:groups=foreman.llmkube.dev,resources=agentictasks,verbs=create;get;list;watch
 // +kubebuilder:rbac:groups=foreman.llmkube.dev,resources=agents,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 // Reconcile drives a Workload through Planning -> Planned -> Dispatched ->
 // Completed | Failed.
@@ -139,6 +148,22 @@ func (r *WorkloadReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		// Wire gate advisories from completed coder tasks into pending
 		// review tasks so the reviewer's prompt can surface them.
 		r.patchReviewAdvisories(ctx, &workload, children)
+
+		// Fix-iteration emission (#946): a reviewer NO-GO re-dispatches
+		// the coder with the review feedback instead of failing the
+		// Workload, bounded by spec.maxReviewIterations. Runs before
+		// escalation so a fresh round defers the escalation tier until
+		// the iterations settle.
+		children, err = r.emitReviewIterations(ctx, &workload, children)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("emit review iterations: %w", err)
+		}
+
+		// Downstream consumers judge each issue by its LATEST fix
+		// iteration: a superseded round's terminal NO-GO must neither
+		// re-fire escalation nor pin the rollup at Failed after a later
+		// round converged.
+		children = activeChildren(&workload, children)
 
 		// Second-pass emission (#546): escalation reviewers fire here,
 		// after base reviewer verdicts land, before status rollup.

@@ -229,6 +229,31 @@ spec:
                   format: int32
                   type: integer
                 type: array
+              maxReviewIterations:
+                description: |-
+                  MaxReviewIterations bounds how many fix iterations the
+                  WorkloadReconciler may append per issue after a reviewer NO-GO
+                  (#946). On a NO-GO, instead of failing the Workload, the
+                  reconciler emits a new coder task ("code-<N>-r<k>", using
+                  RevisionCoderAgentRef when set and CoderAgentRef otherwise, same
+                  branch, payload.reviseFromBranch naming that branch so the
+                  executor restores the prior attempt (#951), and
+                  payload.allowOverwrite=true) whose payload.prompt carries the
+                  reviewer's structured findings and summary, then chains a fresh
+                  verify + reviewer fan-out behind it ("verify-<N>-r<k>",
+                  "review-<N>-<i>-r<k>"). Superseded
+                  iterations stop counting toward the rollup; the Workload
+                  completes when the final iteration's reviewers say GO and
+                  fails (today's behavior) when the last allowed iteration is
+                  still NO-GO.
+
+                  nil (unset) defaults to 1 iteration. An explicit 0 disables
+                  iteration and restores the fail-on-first-NO-GO behavior.
+                  Issue-batch mode only; ignored in explicit Pipeline mode.
+                  Iteration tasks count against MaxTasks.
+                format: int32
+                minimum: 0
+                type: integer
               maxTasks:
                 description: |-
                   MaxTasks caps how many AgenticTasks may be emitted. Zero means no
@@ -541,6 +566,31 @@ spec:
                   type: object
                   x-kubernetes-map-type: atomic
                 type: array
+              revisionCoderAgentRef:
+                description: |-
+                  RevisionCoderAgentRef optionally names the same-namespace Agent
+                  the fix-iteration coder steps ("code-<N>-r<k>") reference instead
+                  of CoderAgentRef. A revision task amends its restored prior
+                  attempt (payload.reviseFromBranch, #951) rather than building a
+                  fix from scratch, and the issue-fix Agent's forcing profile is
+                  tuned for the latter — #951's live validation showed a revision
+                  task collapsing under the issue-fix profile's forcing windows.
+                  When unset, iteration coder steps fall back to CoderAgentRef and
+                  the reconciler emits a Warning event on the Workload (reason
+                  RevisionUnderIssueFixProfile). Issue-batch mode only; ignored in
+                  explicit Pipeline mode.
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
               verifierAgentRef:
                 description: |-
                   VerifierAgentRef is required when Issues is set: names the same-
@@ -653,6 +703,16 @@ spec:
                   PlannerModel records which frontier model the planner actually used
                   for this workload. Set after the planner runs.
                 type: string
+              reviewIterations:
+                description: |-
+                  ReviewIterations counts the fix iterations the reconciler has
+                  emitted after reviewer NO-GO verdicts (#946), summed across
+                  issues. Zero (or absent) means no reviewer ever bounced a
+                  branch back to the coder; operators watch this to distinguish
+                  convergence (small counts) from thrash (counts near
+                  issues * maxReviewIterations).
+                format: int32
+                type: integer
               succeededTasks:
                 description: |-
                   SucceededTasks counts child tasks that reached a positive terminal
