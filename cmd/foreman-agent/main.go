@@ -67,6 +67,7 @@ import (
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 	foremanagent "github.com/defilantech/llmkube/pkg/foreman/agent"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/githubissue"
+	"github.com/defilantech/llmkube/pkg/foreman/agent/githubpr"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/repo"
 	foremantools "github.com/defilantech/llmkube/pkg/foreman/agent/tools"
 	"github.com/defilantech/llmkube/pkg/selfupdate"
@@ -406,6 +407,7 @@ func main() {
 			KeepWorkspace:   keepWorkspace,
 			RegistryFactory: makeRegistryFactory(kc, kcs, foremanNamespace),
 			IssueFetcher:    githubissue.NewClient(),
+			PREnsurer:       githubpr.NewClient(),
 			// CoderJobSubmitter routes Job-mode Agents to an ephemeral
 			// per-task Job (#620). Wired ONLY on the watcher executor: the
 			// run-task path (which the Job itself runs) builds its executor
@@ -569,6 +571,7 @@ func runTaskCommand(args []string) {
 		KeepWorkspace:                keepWorkspace,
 		RegistryFactory:              makeRegistryFactory(kc, kcs, foremanNamespace),
 		IssueFetcher:                 githubissue.NewClient(),
+		PREnsurer:                    githubpr.NewClient(),
 	})
 	if err != nil {
 		// System / execution failure: the result line + ERROR sentinel

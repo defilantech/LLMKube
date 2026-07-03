@@ -222,6 +222,16 @@ spec:
                     format: int32
                     minimum: 1
                     type: integer
+                  openPullRequest:
+                    description: |-
+                      OpenPullRequest instructs the reviewer-role executor to open a
+                      pull request for the task's branch when its review verdict is GO
+                      (idempotent: an existing PR for the branch is reused). Stamped
+                      from Workload.spec.openPullRequest onto review steps in
+                      issue-batch mode; explicit pipelines set it per step. The PR is
+                      the Workload's artifact — without this the pipeline ends at a
+                      reviewed-but-unopened branch (#937).
+                    type: boolean
                   prompt:
                     description: Prompt is the agent input. Required for freeform.
                     type: string

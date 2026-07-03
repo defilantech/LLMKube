@@ -254,6 +254,16 @@ type AgenticTaskPayload struct {
 	// +optional
 	BaseBranch string `json:"baseBranch,omitempty"`
 
+	// OpenPullRequest instructs the reviewer-role executor to open a
+	// pull request for the task's branch when its review verdict is GO
+	// (idempotent: an existing PR for the branch is reused). Stamped
+	// from Workload.spec.openPullRequest onto review steps in
+	// issue-batch mode; explicit pipelines set it per step. The PR is
+	// the Workload's artifact — without this the pipeline ends at a
+	// reviewed-but-unopened branch (#937).
+	// +optional
+	OpenPullRequest bool `json:"openPullRequest,omitempty"`
+
 	// AllowOverwrite permits the coder to replace a stale remote ref for
 	// its own branch (force-with-lease pinned to the observed SHA) when a
 	// plain push is rejected non-fast-forward. Opt-in, per the design

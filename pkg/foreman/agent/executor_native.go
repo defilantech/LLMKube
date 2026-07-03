@@ -41,6 +41,7 @@ import (
 	foremanv1alpha1 "github.com/defilantech/llmkube/api/foreman/v1alpha1"
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/githubissue"
+	"github.com/defilantech/llmkube/pkg/foreman/agent/githubpr"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/oai"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/repo"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/repomap"
@@ -138,6 +139,12 @@ type NativeAgentLoopExecutor struct {
 	// preserving backward compatibility. Tests inject a fake; production
 	// wires githubissue.NewClient() in cmd/foreman-agent.
 	IssueFetcher githubissue.Fetcher
+
+	// PREnsurer opens (idempotently) the pull request for a branch whose
+	// review verdict is GO, when the task payload carries
+	// openPullRequest (#937). nil disables PR opening entirely;
+	// cmd/foreman-agent wires githubpr.NewClient().
+	PREnsurer githubpr.Ensurer
 
 	// CoderJobSubmitter, when non-nil, routes Job-mode Agents
 	// (spec.execution.mode == Job) to an ephemeral per-task Kubernetes Job
@@ -597,6 +604,7 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 			logReviewerFindings(log, loopRes.Terminal.Extra)
 		}
 		r := e.modelDecidedResult(start, transcriptRef, loopRes, verdict)
+		e.maybeOpenPullRequest(ctx, log, task, auth, verdict, r)
 		// Attach the normalized failure reason from the model-to-CRD
 		// mapping (e.g. ERROR→INCOMPLETE + ModelReportedError for #649). Only
 		// set when the normalizer produced a reason AND the result does
@@ -1130,6 +1138,64 @@ func (e *NativeAgentLoopExecutor) incompleteResult(
 		"turnCount":     lr.Turns,
 	}
 	return r
+}
+
+// maybeOpenPullRequest opens the Workload's PR after a reviewer GO
+// (#937). A reviewer GO is APPROVE — the Workload's artifact is a pull
+// request. Best-effort: the approval stands even if GitHub is down; the
+// failure is surfaced in result extra for operators. Idempotent at the
+// client, so multiple reviewer tasks GOing on the same branch cannot
+// duplicate the PR.
+func (e *NativeAgentLoopExecutor) maybeOpenPullRequest(
+	ctx context.Context, log logr.Logger,
+	task *foremanv1alpha1.AgenticTask, auth *repo.Auth,
+	verdict foremanv1alpha1.AgenticTaskVerdict, r *Result,
+) {
+	if verdict != foremanv1alpha1.AgenticTaskVerdictGo ||
+		task.Spec.Kind != foremanv1alpha1.AgenticTaskKindReview ||
+		!task.Spec.Payload.OpenPullRequest ||
+		e.PREnsurer == nil {
+		return
+	}
+	if prURL, prErr := e.openPullRequest(ctx, task, auth); prErr != nil {
+		log.Error(prErr, "review GO: opening pull request failed",
+			"repo", task.Spec.Payload.Repo, "branch", task.Spec.Payload.Branch)
+		r.Extra["pullRequestError"] = prErr.Error()
+	} else {
+		log.Info("review GO: pull request ensured",
+			"repo", task.Spec.Payload.Repo, "pr", prURL)
+		r.Extra["pullRequestURL"] = prURL
+	}
+}
+
+// openPullRequest ensures the PR for the task's branch exists: title
+// from the branch head's commit subject (fallback "Fix #<n>"), base
+// from payload.baseBranch (default main), body linking the issue. The
+// same token the coder pushed with authenticates the API calls.
+func (e *NativeAgentLoopExecutor) openPullRequest(
+	ctx context.Context, task *foremanv1alpha1.AgenticTask, auth *repo.Auth,
+) (string, error) {
+	p := task.Spec.Payload
+	owner, name, ok := strings.Cut(p.Repo, "/")
+	if !ok || owner == "" || name == "" {
+		return "", fmt.Errorf("openPullRequest: payload.repo %q is not owner/name", p.Repo)
+	}
+	token := ""
+	if auth != nil {
+		token = auth.Token
+	}
+	title := e.PREnsurer.HeadCommitSubject(ctx, owner, name, p.Branch, token)
+	if title == "" {
+		title = fmt.Sprintf("Fix #%d", p.Issue)
+	}
+	body := fmt.Sprintf("Fixes #%d\n\nOpened by foreman on review GO (workload %s).",
+		p.Issue, task.Labels["foreman.llmkube.dev/workload"])
+	res, err := e.PREnsurer.EnsurePR(ctx, owner, name, p.Branch,
+		baseBranchOrDefault(p.BaseBranch), title, body, token)
+	if err != nil {
+		return "", err
+	}
+	return res.URL, nil
 }
 
 func (e *NativeAgentLoopExecutor) modelDecidedResult(

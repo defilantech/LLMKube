@@ -238,6 +238,17 @@ spec:
                 format: int32
                 minimum: 0
                 type: integer
+              openPullRequest:
+                description: |-
+                  OpenPullRequest controls whether a review-GO opens a pull request
+                  for the Workload's branch (the pipeline's end artifact). Three-
+                  valued via the *bool: nil (unset) means true in issue-batch mode —
+                  a Workload built from Issues exists to produce a PR — while *false
+                  opts a Workload out (branch-only consumers). Explicit pipelines
+                  carry the flag per step and ignore this field. Idempotent at the
+                  executor: an existing PR for the branch is reused, never
+                  duplicated (#937).
+                type: boolean
               pipeline:
                 description: |-
                   Pipeline, when set, bypasses the planner and emits AgenticTasks
@@ -421,6 +432,16 @@ spec:
                           format: int32
                           minimum: 1
                           type: integer
+                        openPullRequest:
+                          description: |-
+                            OpenPullRequest instructs the reviewer-role executor to open a
+                            pull request for the task's branch when its review verdict is GO
+                            (idempotent: an existing PR for the branch is reused). Stamped
+                            from Workload.spec.openPullRequest onto review steps in
+                            issue-batch mode; explicit pipelines set it per step. The PR is
+                            the Workload's artifact — without this the pipeline ends at a
+                            reviewed-but-unopened branch (#937).
+                          type: boolean
                         prompt:
                           description: Prompt is the agent input. Required for freeform.
                           type: string
