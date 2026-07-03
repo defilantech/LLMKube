@@ -218,6 +218,46 @@ func TestResolveInside_Cases(t *testing.T) {
 		}
 	})
 
+	// Prefix-collision: a sibling directory whose name has the workspace path
+	// as a string prefix (ws + "-evil") must NOT be treated as inside. This
+	// pins the guarantee that containment uses filepath.Rel (a real path
+	// relationship), not a naive strings.HasPrefix on the cleaned path.
+	t.Run("absolute prefix-collision sibling rejected", func(t *testing.T) {
+		evil := ws + "-evil"
+		if err := os.MkdirAll(evil, 0o755); err != nil {
+			t.Fatalf("mkdir sibling: %v", err)
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(evil) })
+		secret := filepath.Join(evil, "secret.txt")
+		if err := os.WriteFile(secret, []byte("x"), 0o644); err != nil {
+			t.Fatalf("seed sibling secret: %v", err)
+		}
+		if _, err := resolveInside(ws, secret); !errors.Is(err, ErrPathEscapesWorkspace) {
+			t.Errorf("prefix-collision sibling must be rejected, got %v", err)
+		}
+	})
+
+	// Absolute + symlink escape: the new absolute-path branch must still be
+	// caught by the terminal symlink-resolution check. An in-workspace symlink
+	// to an outside dir, referenced by its ABSOLUTE path, must be rejected.
+	t.Run("absolute path through escaping symlink rejected", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("symlink semantics differ on windows")
+		}
+		outside := t.TempDir()
+		if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("x"), 0o644); err != nil {
+			t.Fatalf("seed outside secret: %v", err)
+		}
+		link := filepath.Join(ws, "abs-escape-link")
+		if err := os.Symlink(outside, link); err != nil {
+			t.Fatalf("symlink: %v", err)
+		}
+		abs := filepath.Join(ws, "abs-escape-link", "secret.txt")
+		if _, err := resolveInside(ws, abs); !errors.Is(err, ErrPathEscapesWorkspace) {
+			t.Errorf("absolute path through escaping symlink must be rejected, got %v", err)
+		}
+	})
+
 	t.Run("nonexistent path ok for write_file", func(t *testing.T) {
 		_, err := resolveInside(ws, "subdir/new.txt")
 		if err != nil {
