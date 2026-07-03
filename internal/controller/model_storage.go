@@ -80,6 +80,42 @@ func userModelCacheClaimName(isvc *inferencev1alpha1.InferenceService) string {
 	return isvc.Spec.ModelCache.ClaimName
 }
 
+// warnIgnoredModelCacheClaim emits a ModelCacheClaimIgnored warning event when
+// spec.modelCache.claimName is set but has no effect. The field targets the
+// download-into-cache path, so it is meaningless whenever that path is
+// inactive; warn in each such case instead of silently dropping the field:
+//   - pvc:// sources are pre-staged (mounted read-only, no download);
+//   - with caching disabled on the operator, or a model without an effective
+//     cache key (local file:// source, or a remote model whose fingerprint has
+//     not landed in Status.CacheKey yet), the pod falls back to an ephemeral
+//     emptyDir and re-downloads on every restart (this mirrors the useCache
+//     gate in constructDeployment).
+func (r *InferenceServiceReconciler) warnIgnoredModelCacheClaim(
+	isvc *inferencev1alpha1.InferenceService,
+	model *inferencev1alpha1.Model,
+) {
+	if r.Recorder == nil || userModelCacheClaimName(isvc) == "" {
+		return
+	}
+	switch {
+	case isPVCSource(model.Spec.Source):
+		r.Recorder.Eventf(isvc, nil, corev1.EventTypeWarning, "ModelCacheClaimIgnored", "Reconcile",
+			"spec.modelCache.claimName is ignored: model source %q is a pre-staged pvc:// volume (read-only, no download)",
+			model.Spec.Source)
+	case r.ModelCachePath == "":
+		r.Recorder.Eventf(isvc, nil, corev1.EventTypeWarning, "ModelCacheClaimIgnored", "Reconcile",
+			"spec.modelCache.claimName is ignored: model caching is disabled on the operator "+
+				"(--model-cache-path unset / chart modelCache.enabled=false); "+
+				"the model downloads into an ephemeral emptyDir and re-downloads on every pod restart")
+	case effectiveModelCacheKey(model) == "":
+		r.Recorder.Eventf(isvc, nil, corev1.EventTypeWarning, "ModelCacheClaimIgnored", "Reconcile",
+			"spec.modelCache.claimName is ignored: model %q has no cache key "+
+				"(local source, or fingerprinting has not completed yet); "+
+				"the model downloads into an ephemeral emptyDir and re-downloads on every pod restart",
+			model.Name)
+	}
+}
+
 // modelCachePVCName returns the name of the model cache PVC for the given mode.
 // A per-InferenceService spec.modelCache.claimName override (#928) wins over
 // the operator-global mode: that user-owned PVC becomes the cache volume for

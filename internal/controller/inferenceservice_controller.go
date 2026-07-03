@@ -173,15 +173,7 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		}
 	}
 
-	// spec.modelCache.claimName targets the download path, so it is meaningless
-	// for a pre-staged pvc:// source (mounted read-only, no download). The
-	// claimName is ignored in that case; surface a Warning so the conflict is
-	// visible instead of silently dropped.
-	if r.Recorder != nil && userModelCacheClaimName(inferenceService) != "" && isPVCSource(model.Spec.Source) {
-		r.Recorder.Eventf(inferenceService, nil, corev1.EventTypeWarning, "ModelCacheClaimIgnored", "Reconcile",
-			"spec.modelCache.claimName is ignored: model source %q is a pre-staged pvc:// volume (read-only, no download)",
-			model.Spec.Source)
-	}
+	r.warnIgnoredModelCacheClaim(inferenceService, model)
 
 	isMetal := isMetalModel(model)
 

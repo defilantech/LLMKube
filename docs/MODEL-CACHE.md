@@ -175,9 +175,15 @@ Behavior:
   garbage-collects `<isvc>-model-cache`). If the claim does not exist, the
   InferenceService is marked `Degraded` with a `ModelCachePVCNotFound` event
   instead of silently falling back to the shared cache.
-- `claimName` targets the download path, so it is ignored for pre-staged
-  `pvc://` model sources (mounted read-only, no download); a warning event is
-  emitted if both are set.
+- `claimName` targets the download path, so it is ignored — with a
+  `ModelCacheClaimIgnored` warning event — for pre-staged `pvc://` model
+  sources (mounted read-only, no download), and whenever caching is inactive
+  (chart `modelCache.enabled: false`, a local `file://` source, or a remote
+  model not yet fingerprinted); in the inactive-caching cases the pod falls
+  back to an ephemeral emptyDir and re-downloads on every restart.
+- `claimName` is mutable: changing it rolls the Deployment onto the new claim,
+  but the old claim (and the weights on it) is **not** garbage-collected —
+  clean it up yourself if it is no longer needed.
 - Node alignment is your responsibility: for an RWO or node-local claim, use
   `nodeSelector` so the pod lands where the PVC binds (a
   `WaitForFirstConsumer` local class binds on the first consumer; a pre-bound

@@ -25,10 +25,14 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/rand"
+	"k8s.io/client-go/tools/events"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
 var _ = Describe("buildCachedStorageConfig", func() {
@@ -925,6 +929,162 @@ var _ = Describe("ensureModelCachePVC (user claimName, #928)", func() {
 		perISVC := &corev1.PersistentVolumeClaim{}
 		err := k8sClient.Get(context.Background(), types.NamespacedName{Name: isvc.Name + "-model-cache", Namespace: "default"}, perISVC)
 		Expect(errors.IsNotFound(err)).To(BeTrue())
+	})
+})
+
+var _ = Describe("ModelCacheClaimIgnored warning events (#928)", func() {
+	const namespace = "default"
+	const userClaim = "byo-event-cache"
+
+	var recorder *events.FakeRecorder
+	var modelName, isvcName string
+
+	// drainEvents empties the FakeRecorder channel into a slice.
+	drainEvents := func() []string {
+		var out []string
+		for {
+			select {
+			case e := <-recorder.Events:
+				out = append(out, e)
+			default:
+				return out
+			}
+		}
+	}
+
+	newReconciler := func(cachePath string) *InferenceServiceReconciler {
+		return &InferenceServiceReconciler{
+			Client:             k8sClient,
+			Scheme:             k8sClient.Scheme(),
+			Recorder:           recorder,
+			ModelCachePath:     cachePath,
+			InitContainerImage: "docker.io/curlimages/curl:8.18.0",
+		}
+	}
+
+	// createModel creates a Model and marks it Ready (with the given cache
+	// key, possibly empty) so Reconcile proceeds past the model-ready gate.
+	createModel := func(source, cacheKey string) *inferencev1alpha1.Model {
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: namespace},
+			Spec: inferencev1alpha1.ModelSpec{
+				Source:       source,
+				Format:       "gguf",
+				Quantization: "Q4_K_M",
+				Hardware:     &inferencev1alpha1.HardwareSpec{Accelerator: "cpu"},
+				Resources:    &inferencev1alpha1.ResourceRequirements{CPU: "1", Memory: "1Gi"},
+			},
+		}
+		Expect(k8sClient.Create(context.Background(), model)).To(Succeed())
+		model.Status.Phase = PhaseReady
+		model.Status.CacheKey = cacheKey
+		Expect(k8sClient.Status().Update(context.Background(), model)).To(Succeed())
+		return model
+	}
+
+	createISVC := func() {
+		replicas := int32(1)
+		isvc := &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: isvcName, Namespace: namespace},
+			Spec: inferencev1alpha1.InferenceServiceSpec{
+				ModelRef:   modelName,
+				Replicas:   &replicas,
+				Image:      "ghcr.io/ggml-org/llama.cpp:server",
+				ModelCache: &inferencev1alpha1.ModelCacheSpec{ClaimName: userClaim},
+			},
+		}
+		Expect(k8sClient.Create(context.Background(), isvc)).To(Succeed())
+	}
+
+	reconcileOnce := func(r *InferenceServiceReconciler) {
+		_, err := r.Reconcile(context.Background(), reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: isvcName, Namespace: namespace},
+		})
+		Expect(err).NotTo(HaveOccurred())
+	}
+
+	deleteIfExists := func(obj client.Object) {
+		err := k8sClient.Delete(context.Background(), obj)
+		if err != nil {
+			Expect(errors.IsNotFound(err)).To(BeTrue())
+		}
+	}
+
+	BeforeEach(func() {
+		recorder = events.NewFakeRecorder(20)
+		suffix := rand.String(5)
+		modelName = "claim-ignored-model-" + suffix
+		isvcName = "claim-ignored-isvc-" + suffix
+	})
+
+	AfterEach(func() {
+		deleteIfExists(&inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: isvcName, Namespace: namespace}})
+		deleteIfExists(&inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: namespace}})
+		deleteIfExists(&corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: userClaim, Namespace: namespace}})
+	})
+
+	It("warns when claimName is set but the model source is a pre-staged pvc:// volume", func() {
+		createModel("pvc://staged-models/llama/model.gguf", "")
+		createISVC()
+
+		reconcileOnce(newReconciler("/models"))
+
+		Expect(drainEvents()).To(ContainElement(SatisfyAll(
+			ContainSubstring("ModelCacheClaimIgnored"),
+			ContainSubstring("pre-staged pvc:// volume"),
+		)))
+	})
+
+	It("warns when claimName is set but caching is disabled on the operator", func() {
+		createModel("https://example.com/model.gguf", "abc123def456")
+		createISVC()
+
+		// ModelCachePath == "" is how the chart's modelCache.enabled=false
+		// reaches the reconciler.
+		reconcileOnce(newReconciler(""))
+
+		Expect(drainEvents()).To(ContainElement(SatisfyAll(
+			ContainSubstring("ModelCacheClaimIgnored"),
+			ContainSubstring("caching is disabled"),
+			ContainSubstring("emptyDir"),
+		)))
+	})
+
+	It("warns when claimName is set but the model has no effective cache key", func() {
+		// Remote source whose fingerprint has not landed in Status.CacheKey yet.
+		createModel("https://example.com/model.gguf", "")
+		createISVC()
+
+		reconcileOnce(newReconciler("/models"))
+
+		Expect(drainEvents()).To(ContainElement(SatisfyAll(
+			ContainSubstring("ModelCacheClaimIgnored"),
+			ContainSubstring("no cache key"),
+			ContainSubstring("emptyDir"),
+		)))
+	})
+
+	It("does not warn when the cache path is active and the user PVC exists", func() {
+		createModel("https://example.com/model.gguf", "abc123def456")
+		createISVC()
+
+		pvc := &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: userClaim, Namespace: namespace},
+			Spec: corev1.PersistentVolumeClaimSpec{
+				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+				Resources: corev1.VolumeResourceRequirements{
+					Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("10Gi")},
+				},
+			},
+		}
+		Expect(k8sClient.Create(context.Background(), pvc)).To(Succeed())
+
+		reconcileOnce(newReconciler("/models"))
+
+		Expect(drainEvents()).NotTo(ContainElement(ContainSubstring("ModelCacheClaimIgnored")))
 	})
 })
 
