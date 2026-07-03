@@ -385,13 +385,25 @@ func reviewFeedbackSection(t *foremanv1alpha1.AgenticTask) string {
 	return b.String()
 }
 
-// activeChildren filters out children that a later fix iteration
-// superseded, so rollup and the escalation trigger judge each issue by
-// its LATEST attempt only. Without this, iteration 0's terminal NO-GO
-// review would keep IncompleteTasks non-zero forever and a converged
-// r1 round could never complete the Workload. A superseded iteration
-// is by construction fully terminal (the k+1 trigger requires it), so
-// nothing in flight is ever hidden from rollup. Escalation steps and
+// activeChildren filters out children that a later attempt superseded,
+// so rollup and the escalation trigger judge each issue by its LATEST
+// attempt only. Two supersession rules apply:
+//
+//   - Fix iteration (#946/#959): a later code-<n>-r<k> round supersedes
+//     earlier synthesized steps for issue n. Without this, iteration 0's
+//     terminal NO-GO review would keep IncompleteTasks non-zero forever
+//     and a converged r1 round could never complete the Workload.
+//   - Coder escalation (#963): once a code-<n>-esc task exists, the base
+//     attempt's steps (code-<n>, verify-<n>, review-<n>-<i>, and any
+//     iteration rounds) are dropped so the base coder's terminal NO-GO
+//     and the cascade-failed verify/review it stranded do not pin the
+//     Workload at Failed. The issue is then judged by the ESC attempt.
+//
+// A superseded iteration round is by construction fully terminal (the
+// k+1 trigger requires it); an escalated base attempt is likewise
+// terminal (the escalation trigger requires a terminal base code task),
+// so nothing in flight is ever hidden from rollup. The escalation steps
+// themselves (suffix -esc, which do not parse as base issue steps) and
 // anything else that does not parse as a synthesized issue step are
 // always kept. Issue-batch only; explicit Pipeline mode returns the
 // input unchanged.
@@ -403,9 +415,14 @@ func activeChildren(
 	}
 
 	latest := make(map[int32]int, len(w.Spec.Issues))
+	escalated := make(map[int32]bool, len(w.Spec.Issues))
 	for i := range children {
 		step := children[i].Labels[labelStep]
 		for _, n := range w.Spec.Issues {
+			if step == fmt.Sprintf("code-%d-esc", n) {
+				escalated[n] = true
+				break
+			}
 			if k, ok := issueStepIteration(step, n); ok {
 				if k > latest[n] {
 					latest[n] = k
@@ -421,7 +438,11 @@ func activeChildren(
 		superseded := false
 		for _, n := range w.Spec.Issues {
 			if k, ok := issueStepIteration(step, n); ok {
-				superseded = k < latest[n]
+				// A later fix iteration, or a successful escalation on this
+				// issue, supersedes the base/earlier synthesized attempt.
+				// issueStepIteration never matches the -esc steps, so the
+				// escalation attempt is never dropped by its own rule.
+				superseded = k < latest[n] || escalated[n]
 				break
 			}
 		}

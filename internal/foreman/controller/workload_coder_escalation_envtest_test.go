@@ -23,6 +23,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -123,6 +124,90 @@ var _ = Describe("WorkloadReconciler coder escalation (#963)", func() {
 		Expect(k8sClient.List(ctx, &tasks, client.InNamespace("default"),
 			client.MatchingLabels{labelWorkload: "coder-esc-happy", labelStep: "code-944-esc"})).To(Succeed())
 		Expect(tasks.Items).To(HaveLen(1))
+	})
+
+	It("fans reviewers out on the escalated branch and lets a successful escalation supersede the failed base attempt", func() {
+		wl := newWorkload("coder-esc-rev", foremanv1alpha1.WorkloadSpec{
+			Intent:                  "escalate then review the escalated branch",
+			Repo:                    "defilantech/LLMKube",
+			Issues:                  []int32{944},
+			CoderAgentRef:           &corev1.LocalObjectReference{Name: "coder"},
+			VerifierAgentRef:        &corev1.LocalObjectReference{Name: "gate"},
+			EscalationCoderAgentRef: &corev1.LocalObjectReference{Name: "coder-qwopus"},
+			ReviewerAgentRefs:       []corev1.LocalObjectReference{{Name: "reviewer"}},
+		})
+		Expect(k8sClient.Create(ctx, wl)).To(Succeed())
+		DeferCleanup(func() {
+			cleanupChildren(wl)
+			_ = k8sClient.Delete(ctx, wl)
+		})
+
+		// First reconcile plans the base pipeline: code + verify + one
+		// reviewer per issue.
+		_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(wl)})
+		Expect(err).NotTo(HaveOccurred())
+		var fresh foremanv1alpha1.Workload
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(wl), &fresh)).To(Succeed())
+		Expect(fresh.Status.Tasks).To(HaveLen(3)) // code + verify + review
+
+		// Base code-944 terminates NO-GO / MODEL-DECIDED (a capability
+		// failure that must escalate), and its verify + review cascade to
+		// a terminal Failed phase (the branch the coder never produced).
+		setTerminal := func(name string, phase foremanv1alpha1.AgenticTaskPhase, verdict foremanv1alpha1.AgenticTaskVerdict, result func() *runtime.RawExtension) {
+			var t foremanv1alpha1.AgenticTask
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: name}, &t)).To(Succeed())
+			p := client.MergeFrom(t.DeepCopy())
+			t.Status.Phase = phase
+			t.Status.Verdict = verdict
+			if result != nil {
+				t.Status.Result = result()
+			}
+			Expect(k8sClient.Status().Patch(ctx, &t, p)).To(Succeed())
+		}
+		setTerminal("coder-esc-rev-code-944", foremanv1alpha1.AgenticTaskPhaseSucceeded,
+			foremanv1alpha1.AgenticTaskVerdictNoGo, func() *runtime.RawExtension { return resultRaw("MODEL-DECIDED", "", "fuzzy front-runs anchor") })
+		setTerminal("coder-esc-rev-verify-944", foremanv1alpha1.AgenticTaskPhaseFailed,
+			foremanv1alpha1.AgenticTaskVerdictIncomplete, nil)
+		setTerminal("coder-esc-rev-review-944-0", foremanv1alpha1.AgenticTaskPhaseFailed,
+			foremanv1alpha1.AgenticTaskVerdictIncomplete, nil)
+
+		// Second reconcile runs the coder-escalation hook: it emits the
+		// esc code + verify AND the reviewer fan-out on the esc branch.
+		_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(wl)})
+		Expect(err).NotTo(HaveOccurred())
+
+		// (1) the reviewer step exists on the escalated branch.
+		var escReview foremanv1alpha1.AgenticTask
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: "coder-esc-rev-review-944-esc-0"}, &escReview)).To(Succeed())
+		Expect(escReview.Spec.Kind).To(Equal(foremanv1alpha1.AgenticTaskKindReview))
+		Expect(escReview.Spec.AgentRef.Name).To(Equal("reviewer"))
+		Expect(escReview.Spec.DependsOn).To(ContainElement("coder-esc-rev-verify-944-esc"))
+		Expect(escReview.Spec.Payload.Branch).To(Equal("foreman/coder-esc-rev/issue-944-esc"))
+		Expect(escReview.Spec.Payload.OpenPullRequest).To(BeTrue())
+		Expect(escReview.Labels[labelStep]).To(Equal("review-944-esc-0"))
+
+		// (2) with the escalation in flight the Workload must NOT report
+		//     Failed: the failed base verify/review are superseded, and the
+		//     three in-flight esc tasks hold the rollup at Dispatched.
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(wl), &fresh)).To(Succeed())
+		Expect(fresh.Status.Phase).To(Equal(foremanv1alpha1.WorkloadPhaseDispatched),
+			"a failed base attempt must not pin the rollup while its escalation is in flight")
+
+		// (3) drive the whole esc attempt to a terminal on-target success;
+		//     the issue is now judged by the esc attempt and the Workload
+		//     rolls up Completed (the superseded base failures are gone).
+		setTerminal("coder-esc-rev-code-944-esc", foremanv1alpha1.AgenticTaskPhaseSucceeded,
+			foremanv1alpha1.AgenticTaskVerdictGo, nil)
+		setTerminal("coder-esc-rev-verify-944-esc", foremanv1alpha1.AgenticTaskPhaseSucceeded,
+			foremanv1alpha1.AgenticTaskVerdictGatePass, nil)
+		setTerminal("coder-esc-rev-review-944-esc-0", foremanv1alpha1.AgenticTaskPhaseSucceeded,
+			foremanv1alpha1.AgenticTaskVerdictGo, nil)
+
+		_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(wl)})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(wl), &fresh)).To(Succeed())
+		Expect(fresh.Status.Phase).To(Equal(foremanv1alpha1.WorkloadPhaseCompleted),
+			"a successful escalation must roll the issue up Succeeded despite the superseded base failures")
 	})
 
 	It("does not escalate when EscalationCoderAgentRef is unset", func() {

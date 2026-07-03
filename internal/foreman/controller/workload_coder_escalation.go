@@ -315,9 +315,12 @@ func (r *WorkloadReconciler) emitCoderEscalations(
 		return children, createErr
 	}
 
-	// Rollup must see the new tasks as in-flight in this same pass; a
-	// cache-backed List could miss tasks created microseconds ago, so
-	// synthesize placeholders (a zero-value phase counts as in-flight).
+	// Rollup and activeChildren must see the new tasks as in-flight in
+	// this same pass; a cache-backed List could miss tasks created
+	// microseconds ago, so synthesize labeled placeholders (a zero-value
+	// phase counts as in-flight). The step label lets activeChildren
+	// recognize the escalation immediately and supersede the failed base
+	// attempt in the same reconcile (#963), matching emitReviewIterations.
 	existing := make(map[string]struct{}, len(children))
 	for i := range children {
 		existing[children[i].Name] = struct{}{}
@@ -327,7 +330,14 @@ func (r *WorkloadReconciler) emitCoderEscalations(
 			continue
 		}
 		children = append(children, foremanv1alpha1.AgenticTask{
-			ObjectMeta: metav1.ObjectMeta{Name: ref.Name, Namespace: ref.Namespace},
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      ref.Name,
+				Namespace: ref.Namespace,
+				Labels: map[string]string{
+					labelWorkload: w.Name,
+					labelStep:     strings.TrimPrefix(ref.Name, w.Name+"-"),
+				},
+			},
 		})
 	}
 	return children, nil

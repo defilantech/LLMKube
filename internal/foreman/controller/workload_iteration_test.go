@@ -362,3 +362,58 @@ func TestActiveChildren(t *testing.T) {
 		t.Fatalf("pipeline mode must not filter, got %d of %d", len(got), len(children))
 	}
 }
+
+// TestActiveChildren_EscalationSupersedesBase proves the #963 rule: once
+// a code-<n>-esc task exists, the failed base attempt (code/verify/review
+// -<n>) is dropped from the active slice so its cascade-failure does not
+// pin the rollup at Failed, while the -esc attempt and unescalated issues
+// are untouched.
+func TestActiveChildren_EscalationSupersedesBase(t *testing.T) {
+	succeeded := foremanv1alpha1.AgenticTaskPhaseSucceeded
+	failed := foremanv1alpha1.AgenticTaskPhaseFailed
+	noGo := foremanv1alpha1.AgenticTaskVerdictNoGo
+	gatePass := foremanv1alpha1.AgenticTaskVerdictGatePass
+	goVerdict := foremanv1alpha1.AgenticTaskVerdictGo
+
+	w := iterationWorkload([]int32{944, 921}, 1, nil)
+
+	children := []foremanv1alpha1.AgenticTask{
+		// Issue 944: base coder NO-GO, verify/review cascade-failed, then
+		// escalated. The base triple must be superseded.
+		child("code-944", succeeded, noGo),
+		child("verify-944", failed, ""),
+		child("review-944-0", failed, ""),
+		child("code-944-esc", succeeded, goVerdict),
+		child("verify-944-esc", succeeded, gatePass),
+		child("review-944-esc-0", succeeded, goVerdict),
+		// Issue 921: not escalated, must pass through untouched.
+		child("code-921", succeeded, goVerdict),
+		child("verify-921", succeeded, gatePass),
+		child("review-921-0", succeeded, goVerdict),
+	}
+
+	active := activeChildren(w, children)
+	got := make(map[string]bool, len(active))
+	for i := range active {
+		got[active[i].Labels[labelStep]] = true
+	}
+
+	dropped := []string{"code-944", "verify-944", "review-944-0"}
+	for _, name := range dropped {
+		if got[name] {
+			t.Errorf("base step %q must be superseded by the escalation, but it is still active", name)
+		}
+	}
+	kept := []string{
+		"code-944-esc", "verify-944-esc", "review-944-esc-0",
+		"code-921", "verify-921", "review-921-0",
+	}
+	for _, name := range kept {
+		if !got[name] {
+			t.Errorf("step %q must remain active, but it was filtered", name)
+		}
+	}
+	if len(active) != len(kept) {
+		t.Fatalf("active = %d steps, want %d (%v)", len(active), len(kept), kept)
+	}
+}
