@@ -33,7 +33,10 @@ var ErrPathEscapesWorkspace = errors.New("path escapes workspace")
 // resolveInside returns the absolute path of p resolved against the
 // workspace dir, after enforcing:
 //
-//  1. p is not absolute.
+//  1. If p is absolute, it must resolve inside the workspace (an
+//     absolute path pointing outside is rejected); it is then treated as
+//     the equivalent workspace-relative path. Relative paths are used
+//     as-is.
 //  2. After Clean+Join, the result is still under the workspace.
 //  3. Following symlinks (if the path exists) does not escape the
 //     workspace.
@@ -43,10 +46,6 @@ var ErrPathEscapesWorkspace = errors.New("path escapes workspace")
 // is skipped. The workspace itself is EvalSymlinks-resolved so a
 // symlinked workspace is treated as its real path.
 func resolveInside(workspace, p string) (string, error) {
-	if filepath.IsAbs(p) {
-		return "", fmt.Errorf("%w: %q is absolute", ErrPathEscapesWorkspace, p)
-	}
-
 	wsAbs, err := filepath.Abs(workspace)
 	if err != nil {
 		return "", fmt.Errorf("workspace abs(%s): %w", workspace, err)
@@ -56,13 +55,29 @@ func resolveInside(workspace, p string) (string, error) {
 		return "", fmt.Errorf("workspace evalsymlinks(%s): %w", wsAbs, err)
 	}
 
+	// Accept absolute paths that live under the workspace root. Strip the
+	// workspace prefix and continue with the same containment checks as
+	// for a relative path. Absolute paths outside the workspace are still
+	// rejected so the model learns the rule.
+	if filepath.IsAbs(p) {
+		cleaned := filepath.Clean(p)
+		rel, relErr := filepath.Rel(wsResolved, cleaned)
+		if relErr != nil {
+			return "", fmt.Errorf("rel(%s,%s): %w", wsResolved, cleaned, relErr)
+		}
+		if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return "", fmt.Errorf("%w: absolute paths must be inside the workspace", ErrPathEscapesWorkspace)
+		}
+		p = rel
+	}
+
 	joined := filepath.Clean(filepath.Join(wsResolved, p))
 	rel, err := filepath.Rel(wsResolved, joined)
 	if err != nil {
 		return "", fmt.Errorf("rel(%s,%s): %w", wsResolved, joined, err)
 	}
 	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("%w: %q", ErrPathEscapesWorkspace, p)
+		return "", fmt.Errorf("%w: %q resolves outside workspace", ErrPathEscapesWorkspace, p)
 	}
 
 	// Only check symlink escape if the path actually exists. Unborn paths
