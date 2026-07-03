@@ -28,6 +28,7 @@ import (
 
 // resultRaw builds a status.result RawExtension with the given top-level
 // and nested modelExtra outcome, matching the executor's envelope shape.
+// nolint:unparam // topOutcome is parameterized to mirror the envelope shape even though current tests all pass "MODEL-DECIDED"
 func resultRaw(topOutcome, modelOutcome, summary string) *runtime.RawExtension {
 	me := ""
 	if modelOutcome != "" {
