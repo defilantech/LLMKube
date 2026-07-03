@@ -85,6 +85,18 @@ func TestEscalationSteps(t *testing.T) {
 			wantEscalated: []int32{641},
 		},
 		{
+			// The coder-escalation tier's own reviews (review-N-esc-i) carry
+			// the review-N- prefix but belong to the escalated attempt; a NO-GO
+			// on one must NOT fan base reviewer escalation onto the base branch.
+			// (activeChildren has already dropped the superseded base reviews,
+			// so only the esc review remains in the slice.)
+			name: "coder-escalation branch reviews are excluded from base escalation",
+			w:    escalationWorkload([]int32{641}, 1, 1),
+			children: []foremanv1alpha1.AgenticTask{
+				child("review-641-esc-0", succeeded, noGo),
+			},
+		},
+		{
 			name: "all base reviewers GO emits nothing",
 			w:    escalationWorkload([]int32{641}, 1, 1),
 			children: []foremanv1alpha1.AgenticTask{

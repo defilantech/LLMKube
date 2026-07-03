@@ -997,6 +997,16 @@ func (in *WorkloadSpec) DeepCopyInto(out *WorkloadSpec) {
 		*out = make([]v1.LocalObjectReference, len(*in))
 		copy(*out, *in)
 	}
+	if in.OpenPullRequest != nil {
+		in, out := &in.OpenPullRequest, &out.OpenPullRequest
+		*out = new(bool)
+		**out = **in
+	}
+	if in.EscalationCoderAgentRef != nil {
+		in, out := &in.EscalationCoderAgentRef, &out.EscalationCoderAgentRef
+		*out = new(v1.LocalObjectReference)
+		**out = **in
+	}
 	if in.MaxReviewIterations != nil {
 		in, out := &in.MaxReviewIterations, &out.MaxReviewIterations
 		*out = new(int32)

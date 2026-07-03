@@ -112,6 +112,39 @@ spec:
                     type: string
                 type: object
                 x-kubernetes-map-type: atomic
+              escalationCoderAgentRef:
+                description: |-
+                  EscalationCoderAgentRef is the optional coder escalation tier: a
+                  single, typically larger/denser coder Agent that re-attempts an
+                  issue when the base CoderAgentRef fails at its model's ceiling.
+                  Issue-batch mode only. For each issue N, if the base code-<N> task
+                  is terminal with a capability failure (verdict NO-GO from the
+                  model, or outcome CODER-GATE-FAILED), the WorkloadReconciler emits
+                  an escalation code+verify(+review) set (code-<N>-esc /
+                  verify-<N>-esc / review-<N>-esc-<i>) against this Agent, on a fresh
+                  branch foreman/<w>/issue-<N>-esc, with the failed model's summary
+                  passed as a prompt hint.
+
+                  Singular (unlike EscalationReviewerAgentRefs, which fans out N
+                  reviewers in parallel): coders are sequential, so N parallel
+                  escalation coders would produce N competing branches. Exactly one
+                  escalation tier; an escalation task that itself fails is terminal.
+
+                  Does NOT trigger on STUCK-LOOP-DETECTED, a model-decided
+                  INCOMPLETE, or ERROR: those are scope/harness failures a larger,
+                  slower model will not fix. Leave unset to disable escalation.
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
               escalationReviewerAgentRefs:
                 description: |-
                   EscalationReviewerAgentRefs is the optional second reviewer tier
@@ -469,6 +502,15 @@ spec:
                           type: boolean
                         prompt:
                           description: Prompt is the agent input. Required for freeform.
+                          type: string
+                        promptPrefix:
+                          description: |-
+                            PromptPrefix is prepended to the assembled user prompt for an
+                            issue-fix task, BEFORE the fetched issue body. Unlike Prompt
+                            (which, when set, suppresses the issue-body fetch), PromptPrefix
+                            leaves the issue-body fetch intact, so the agent sees both this
+                            hint and the issue's acceptance criteria. Used by the coder
+                            escalation tier to carry the prior model's diagnosis.
                           type: string
                         repo:
                           description: Repo is the "owner/name" GitHub repo. Required

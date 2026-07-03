@@ -109,6 +109,11 @@ const conditionTypeCloudReviewersSuppressed = "CloudReviewersSuppressed"
 // without any base reviewers to escalate from.
 const conditionTypeEscalationTriggered = "EscalationTriggered"
 
+// conditionTypeCoderEscalationTriggered reports that at least one issue's
+// base coder failed with a capability failure and was re-dispatched to
+// the escalation coder tier (EscalationCoderAgentRef).
+const conditionTypeCoderEscalationTriggered = "CoderEscalationTriggered"
+
 // +kubebuilder:rbac:groups=foreman.llmkube.dev,resources=workloads,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=foreman.llmkube.dev,resources=workloads/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=foreman.llmkube.dev,resources=workloads/finalizers,verbs=update
@@ -149,11 +154,20 @@ func (r *WorkloadReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		// review tasks so the reviewer's prompt can surface them.
 		r.patchReviewAdvisories(ctx, &workload, children)
 
+		// Coder escalation (before iteration and reviewer escalation): a
+		// base coder that failed at its ceiling has no branch to review or
+		// iterate, so it is retried on a larger model first. Mutually
+		// exclusive with fix-iteration by construction — this fires on a
+		// coder-terminal NO-GO (reviews never ran); iteration fires on a
+		// reviewer NO-GO (the coder GO'd).
+		children, err = r.emitCoderEscalations(ctx, &workload, children)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("emit coder escalations: %w", err)
+		}
+
 		// Fix-iteration emission (#946): a reviewer NO-GO re-dispatches
 		// the coder with the review feedback instead of failing the
-		// Workload, bounded by spec.maxReviewIterations. Runs before
-		// escalation so a fresh round defers the escalation tier until
-		// the iterations settle.
+		// Workload, bounded by spec.maxReviewIterations.
 		children, err = r.emitReviewIterations(ctx, &workload, children)
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("emit review iterations: %w", err)
