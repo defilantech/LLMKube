@@ -156,6 +156,69 @@ upstream PR or queue more issues into the Workload.
 For the full reviewer-ensemble shape:
 `examples/foreman/workload-v04-default.yaml` in this repo.
 
+## Coder escalation tier
+
+Setting `Workload.spec.escalationCoderAgentRef` opts the Workload
+into a coder escalation tier. When the base coder fails an issue at
+its model's ceiling, Foreman re-runs that one issue on the named
+larger-model coder Agent, carrying the failed model's own diagnosis
+forward as a prompt hint. The idea is a routing hop, not a retry
+storm: a fast, capable model takes the first pass, and only the
+issues it genuinely can't close get a second, heavier attempt.
+
+Escalation fires **only on capability failures**, where a bigger
+model plausibly helps:
+
+- a model-decided **NO-GO** (the coder concluded it could not solve
+  the issue), or
+- a **coder-gate failure** (`CODER-GATE-FAILED`).
+
+It deliberately does **not** fire on:
+
+- a model-decided **INCOMPLETE** (the model gave up or ran out of
+  turns),
+- a **stuck-loop** detection, or
+- an **error**.
+
+A larger, slower model won't fix a give-up or a loop and is more
+likely to blow the turn budget, so those outcomes are left as-is.
+
+`escalationCoderAgentRef` is a singular field: one escalation tier,
+run sequentially after the base coder. It applies to issue-batch
+mode only, alongside `coderAgentRef` and `verifierAgentRef`, and is
+ignored for explicit Pipeline-mode Workloads. Unset (the default)
+means the tier is disabled.
+
+**Recommended deployment.** Run the base and escalation coders as a
+dual-box pair with both models hot, for example a fast MoE coder on
+one accelerator and a larger dense coder on another, so escalation
+is a routing hop rather than a cold model load. The operator is
+responsible for ensuring the escalation Agent's model is reachable;
+the controller schedules against it but does not manage serving.
+
+```yaml
+apiVersion: foreman.llmkube.dev/v1alpha1
+kind: Workload
+metadata:
+  name: fix-a-batch
+  namespace: default
+spec:
+  intent: "Clear the edit-fidelity backlog"
+  repo: defilantech/LLMKube
+  issues: [944, 911, 921]
+  coderAgentRef:
+    name: qwen36-35b-carnice-mtp-coder
+  verifierAgentRef:
+    name: shadowstack-gate
+  escalationCoderAgentRef:
+    name: qwopus-27b-dense-coder
+```
+
+Issues that the base coder closes never touch the escalation Agent.
+An issue whose base coder returns NO-GO or trips the coder gate is
+re-dispatched once to `qwopus-27b-dense-coder`, with the base
+model's failure summary threaded into the prompt.
+
 ## What v0.1 deliberately doesn't ship
 
 Foreman v0.1 is the foundation, not the finished platform. A few
