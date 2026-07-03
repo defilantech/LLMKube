@@ -695,16 +695,20 @@ func TestCheckScopeOverlap_SkipsWhenIssueTextEmpty(t *testing.T) {
 	}
 }
 
-func TestCheckScopeOverlap_CatchesUntrackedNewFile(t *testing.T) {
-	// Regression for #907: the scope-overlap check must see untracked new
-	// files (which `git diff ...HEAD` would miss because they are not in
-	// committed history). `git add -A` stages them; `git diff --cached` shows
-	// them.
+func TestCheckScopeOverlap_CatchesGoFileInNewDirectory(t *testing.T) {
+	// Regression for #907. The prior `git status --porcelain` path already
+	// listed untracked files in *tracked* directories, but collapsed a
+	// brand-new untracked directory to a single "newdir/" entry, which fails
+	// the .go suffix filter -- so an out-of-scope Go file created in a new
+	// directory slipped past scope-overlap. Staging (`git add -A`) then
+	// `git diff --name-only --cached HEAD` lists each new file individually,
+	// closing that gap. This test guards the working-tree-diff command seam:
+	// the mocked diff reports a Go file in a new directory, which must drift.
 	withScopeRelevant(t, []string{"pkg/agent/endpoint.go"})
-	run := diffRunner("pkg/agent/new_thing.go\n")
+	run := diffRunner("newpkg/thing.go\n")
 	drift, _ := checkScopeOverlap(context.Background(), "/work", run, "metal-agent endpoint health")
 	if !drift {
-		t.Error("expected drift when an untracked new Go file is outside the relevant set")
+		t.Error("expected drift when an out-of-scope Go file in a new directory is changed")
 	}
 }
 

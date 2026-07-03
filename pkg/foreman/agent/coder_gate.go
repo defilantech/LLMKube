@@ -676,16 +676,13 @@ func checkReferenceGrounding(ctx context.Context, workspace string, run commandR
 // uncommitted edits rather than committed history (the gate runs before any
 // commit, so `...HEAD` would see nothing). A git error yields nil (the caller
 // treats that as "no changed files" and skips the check).
-//
-// `--src-prefix=a/ --dst-prefix=b/` is forced so the output is a clean path
-// list, not unified-diff path-prefix output (the `c/`/`i/` gotcha).
 func changedWorkingTreeGoFiles(ctx context.Context, workspace string, run commandRunner) ([]string, error) {
 	// Stage everything so untracked new files appear in the diff.
 	if _, err := run(ctx, workspace, nil, "git", "add", "-A"); err != nil {
 		return nil, err
 	}
 	out, err := run(ctx, workspace, nil, "git", "diff", "--name-only",
-		"--cached", "--src-prefix=a/", "--dst-prefix=b/", "HEAD")
+		"--cached", "HEAD")
 	if err != nil {
 		return nil, err
 	}
