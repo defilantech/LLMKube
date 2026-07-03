@@ -626,12 +626,17 @@ func withScopeRelevant(t *testing.T, paths []string) {
 	t.Cleanup(func() { scopeRelevantFiles = orig })
 }
 
-// scopeRunner returns a commandRunner whose `git status --porcelain` reports
-// the given porcelain output; all other commands succeed silently.
-func scopeRunner(porcelain string) commandRunner {
+// diffRunner returns a commandRunner that mocks `git add -A` as a no-op and
+// returns the given name-only diff output for `git diff --name-only --cached`.
+// All other commands succeed silently. This is the seam used by
+// changedWorkingTreeGoFiles (the scope-overlap check's working-tree diff).
+func diffRunner(diffOutput string) commandRunner {
 	return func(_ context.Context, _ string, _ []string, name string, args ...string) (string, error) {
-		if name == "git" && len(args) >= 2 && args[0] == "status" && args[1] == "--porcelain" {
-			return porcelain, nil
+		if name == "git" && len(args) >= 1 && args[0] == "add" && len(args) >= 2 && args[1] == "-A" {
+			return "", nil
+		}
+		if name == "git" && len(args) >= 2 && args[0] == "diff" && args[1] == "--name-only" && args[2] == "--cached" {
+			return diffOutput, nil
 		}
 		return "", nil
 	}
@@ -639,7 +644,7 @@ func scopeRunner(porcelain string) commandRunner {
 
 func TestCheckScopeOverlap_DriftFlagged(t *testing.T) {
 	withScopeRelevant(t, []string{"pkg/agent/endpoint.go", "pkg/agent/health.go"})
-	run := scopeRunner(" M pkg/cli/cache.go\n")
+	run := diffRunner("pkg/cli/cache.go\n")
 	drift, fb := checkScopeOverlap(context.Background(), "/work", run, "metal-agent endpoint health")
 	if !drift {
 		t.Fatal("expected drift when the changed Go file is outside the relevant set")
@@ -652,7 +657,7 @@ func TestCheckScopeOverlap_DriftFlagged(t *testing.T) {
 func TestCheckScopeOverlap_InScopePasses(t *testing.T) {
 	withScopeRelevant(t, []string{"pkg/agent/endpoint.go"})
 	// Touches a relevant file plus an unrelated one: any overlap is in scope.
-	run := scopeRunner(" M pkg/agent/endpoint.go\n M pkg/cli/cache.go\n")
+	run := diffRunner("pkg/agent/endpoint.go\npkg/cli/cache.go\n")
 	if drift, _ := checkScopeOverlap(context.Background(), "/work", run, "x"); drift {
 		t.Error("expected no drift when a changed file is in the relevant set")
 	}
@@ -660,7 +665,7 @@ func TestCheckScopeOverlap_InScopePasses(t *testing.T) {
 
 func TestCheckScopeOverlap_SkipsNonGoOnlyChanges(t *testing.T) {
 	withScopeRelevant(t, []string{"pkg/agent/endpoint.go"})
-	run := scopeRunner(" M charts/foreman/x.yaml\n M docs/readme.md\n")
+	run := diffRunner("charts/foreman/x.yaml\ndocs/readme.md\n")
 	if drift, _ := checkScopeOverlap(context.Background(), "/work", run, "x"); drift {
 		t.Error("a yaml/docs-only change must not be flagged by the Go-aware guard")
 	}
@@ -668,7 +673,7 @@ func TestCheckScopeOverlap_SkipsNonGoOnlyChanges(t *testing.T) {
 
 func TestCheckScopeOverlap_SkipsTestOnlyChanges(t *testing.T) {
 	withScopeRelevant(t, []string{"pkg/agent/endpoint.go"})
-	run := scopeRunner(" M pkg/cli/cache_test.go\n")
+	run := diffRunner("pkg/cli/cache_test.go\n")
 	if drift, _ := checkScopeOverlap(context.Background(), "/work", run, "x"); drift {
 		t.Error("a test-only change must not be judged")
 	}
@@ -676,7 +681,7 @@ func TestCheckScopeOverlap_SkipsTestOnlyChanges(t *testing.T) {
 
 func TestCheckScopeOverlap_SkipsWhenNoGoSignal(t *testing.T) {
 	withScopeRelevant(t, nil) // issue produces no positively-scored Go files
-	run := scopeRunner(" M pkg/cli/cache.go\n")
+	run := diffRunner("pkg/cli/cache.go\n")
 	if drift, _ := checkScopeOverlap(context.Background(), "/work", run, "x"); drift {
 		t.Error("no Go signal -> observe-only, no flag")
 	}
@@ -684,15 +689,30 @@ func TestCheckScopeOverlap_SkipsWhenNoGoSignal(t *testing.T) {
 
 func TestCheckScopeOverlap_SkipsWhenIssueTextEmpty(t *testing.T) {
 	withScopeRelevant(t, []string{"pkg/agent/endpoint.go"})
-	run := scopeRunner(" M pkg/cli/cache.go\n")
+	run := diffRunner("pkg/cli/cache.go\n")
 	if drift, _ := checkScopeOverlap(context.Background(), "/work", run, ""); drift {
 		t.Error("empty issueText must disable the scope check")
 	}
 }
 
+func TestCheckScopeOverlap_CatchesUntrackedNewFile(t *testing.T) {
+	// Regression for #907: the scope-overlap check must see untracked new
+	// files (which `git diff ...HEAD` would miss because they are not in
+	// committed history). `git add -A` stages them; `git diff --cached` shows
+	// them.
+	withScopeRelevant(t, []string{"pkg/agent/endpoint.go"})
+	run := diffRunner("pkg/agent/new_thing.go\n")
+	drift, _ := checkScopeOverlap(context.Background(), "/work", run, "metal-agent endpoint health")
+	if !drift {
+		t.Error("expected drift when an untracked new Go file is outside the relevant set")
+	}
+}
+
 // gateRunnerAllPassExcept builds a runner where gofmt/vet/build/lint pass,
 // codegen is skipped (no controller-gen), no changed test packages, and
-// `git status --porcelain` reports porcelain (for the scope tier).
+// `git add -A` + `git diff --name-only --cached` report the given porcelain
+// (for the scope tier). The porcelain string is a newline-separated list of
+// workspace-relative paths, matching `git diff --name-only` output.
 func gateRunnerScope(golangciPath, porcelain string) commandRunner {
 	return func(_ context.Context, _ string, _ []string, name string, args ...string) (string, error) {
 		switch {
@@ -702,7 +722,9 @@ func gateRunnerScope(golangciPath, porcelain string) commandRunner {
 			return "", errors.New("no controller-gen") // skip codegen tier
 		case name == "git" && len(args) >= 2 && args[0] == "status" && args[1] == "-z":
 			return "", nil // no changed test packages
-		case name == "git" && len(args) >= 2 && args[0] == "status" && args[1] == "--porcelain":
+		case name == "git" && len(args) >= 1 && args[0] == "add" && len(args) >= 2 && args[1] == "-A":
+			return "", nil // stage everything (no-op in tests)
+		case name == "git" && len(args) >= 2 && args[0] == "diff" && args[1] == "--name-only" && args[2] == "--cached":
 			return porcelain, nil
 		default:
 			return "", nil
