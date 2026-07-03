@@ -29,6 +29,7 @@ import (
 
 	foremanv1alpha1 "github.com/defilantech/llmkube/api/foreman/v1alpha1"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/githubissue"
+	"github.com/defilantech/llmkube/pkg/foreman/agent/githubpr"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/repo"
 )
 
@@ -130,6 +131,9 @@ type RunTaskConfig struct {
 	// default (env / file token lookup).
 	AuthFactory func() (*repo.Auth, error)
 
+	// PREnsurer opens the PR on a review GO (#937). nil disables.
+	PREnsurer githubpr.Ensurer
+
 	// IssueFetcher pulls the GitHub issue body for issue-fix tasks with
 	// an empty payload prompt. Optional; nil preserves the empty-body
 	// behavior.
@@ -206,6 +210,7 @@ func RunTask(ctx context.Context, cfg RunTaskConfig) (RunTaskResult, error) {
 		RegistryFactory:              cfg.RegistryFactory,
 		AuthFactory:                  cfg.AuthFactory,
 		IssueFetcher:                 cfg.IssueFetcher,
+		PREnsurer:                    cfg.PREnsurer,
 	}
 
 	res, execErr := exec.Execute(ctx, &task)

@@ -164,6 +164,17 @@ type WorkloadSpec struct {
 	// +optional
 	EscalationReviewerAgentRefs []corev1.LocalObjectReference `json:"escalationReviewerAgentRefs,omitempty"`
 
+	// OpenPullRequest controls whether a review-GO opens a pull request
+	// for the Workload's branch (the pipeline's end artifact). Three-
+	// valued via the *bool: nil (unset) means true in issue-batch mode —
+	// a Workload built from Issues exists to produce a PR — while *false
+	// opts a Workload out (branch-only consumers). Explicit pipelines
+	// carry the flag per step and ignore this field. Idempotent at the
+	// executor: an existing PR for the branch is reused, never
+	// duplicated (#937).
+	// +optional
+	OpenPullRequest *bool `json:"openPullRequest,omitempty"`
+
 	// AllowOverwrite lets this Workload's coder replace a stale remote
 	// ref for its own foreman/* branch (force-with-lease compare-and-swap)
 	// instead of failing non-fast-forward. Opt-in — #573 deliberately

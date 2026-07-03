@@ -83,3 +83,63 @@ var _ = Describe("WorkloadReconciler allowOverwrite stamping", func() {
 		Expect(task.Spec.Payload.AllowOverwrite).To(BeFalse())
 	})
 })
+
+// Pins #937's default: an issue-batch Workload opens a PR on review GO
+// unless spec.openPullRequest is explicitly false.
+var _ = Describe("WorkloadReconciler openPullRequest stamping", func() {
+	var reconciler *WorkloadReconciler
+
+	BeforeEach(func() {
+		reconciler = &WorkloadReconciler{
+			Client:              k8sClient,
+			Scheme:              k8sClient.Scheme(),
+			AllowCloudProviders: true,
+		}
+	})
+
+	reviewTask := func(name string) foremanv1alpha1.AgenticTask {
+		var t foremanv1alpha1.AgenticTask
+		Expect(k8sClient.Get(ctx, client.ObjectKey{Namespace: "default", Name: name}, &t)).To(Succeed())
+		return t
+	}
+
+	makeWL := func(name string, openPR *bool, issue int32) *foremanv1alpha1.Workload {
+		return newWorkload(name, foremanv1alpha1.WorkloadSpec{
+			Intent:            "fix",
+			Repo:              "defilantech/LLMKube",
+			Issues:            []int32{issue},
+			OpenPullRequest:   openPR,
+			CoderAgentRef:     &corev1.LocalObjectReference{Name: "coder"},
+			VerifierAgentRef:  &corev1.LocalObjectReference{Name: "gate"},
+			ReviewerAgentRefs: []corev1.LocalObjectReference{{Name: "reviewer"}},
+		})
+	}
+
+	run := func(wl *foremanv1alpha1.Workload) {
+		Expect(k8sClient.Create(ctx, wl)).To(Succeed())
+		DeferCleanup(func() {
+			cleanupChildren(wl)
+			_ = k8sClient.Delete(ctx, wl)
+		})
+		_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(wl)})
+		Expect(err).NotTo(HaveOccurred())
+	}
+
+	It("defaults to true (nil) on review payloads", func() {
+		run(makeWL("openpr-default", nil, 21))
+		Expect(reviewTask("openpr-default-review-21-0").Spec.Payload.OpenPullRequest).To(BeTrue())
+	})
+
+	It("false opts out", func() {
+		f := false
+		run(makeWL("openpr-off", &f, 22))
+		Expect(reviewTask("openpr-off-review-22-0").Spec.Payload.OpenPullRequest).To(BeFalse())
+	})
+
+	It("does not stamp code or verify payloads", func() {
+		run(makeWL("openpr-scope", nil, 23))
+		var t foremanv1alpha1.AgenticTask
+		Expect(k8sClient.Get(ctx, client.ObjectKey{Namespace: "default", Name: "openpr-scope-code-23"}, &t)).To(Succeed())
+		Expect(t.Spec.Payload.OpenPullRequest).To(BeFalse())
+	})
+})

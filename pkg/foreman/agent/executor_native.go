@@ -41,6 +41,7 @@ import (
 	foremanv1alpha1 "github.com/defilantech/llmkube/api/foreman/v1alpha1"
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/githubissue"
+	"github.com/defilantech/llmkube/pkg/foreman/agent/githubpr"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/oai"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/repo"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/repomap"
@@ -138,6 +139,12 @@ type NativeAgentLoopExecutor struct {
 	// preserving backward compatibility. Tests inject a fake; production
 	// wires githubissue.NewClient() in cmd/foreman-agent.
 	IssueFetcher githubissue.Fetcher
+
+	// PREnsurer opens (idempotently) the pull request for a branch whose
+	// review verdict is GO, when the task payload carries
+	// openPullRequest (#937). nil disables PR opening entirely;
+	// cmd/foreman-agent wires githubpr.NewClient().
+	PREnsurer githubpr.Ensurer
 
 	// CoderJobSubmitter, when non-nil, routes Job-mode Agents
 	// (spec.execution.mode == Job) to an ephemeral per-task Kubernetes Job
@@ -597,6 +604,7 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 			logReviewerFindings(log, loopRes.Terminal.Extra)
 		}
 		r := e.modelDecidedResult(start, transcriptRef, loopRes, verdict)
+		e.maybeOpenPullRequest(ctx, log, task, auth, verdict, r)
 		// Attach the normalized failure reason from the model-to-CRD
 		// mapping (e.g. ERROR→INCOMPLETE + ModelReportedError for #649). Only
 		// set when the normalizer produced a reason AND the result does
@@ -1141,6 +1149,80 @@ func (e *NativeAgentLoopExecutor) incompleteResult(
 	return r
 }
 
+// maybeOpenPullRequest opens the Workload's PR after a reviewer GO
+// (#937). A reviewer GO is APPROVE — the Workload's artifact is a pull
+// request. Best-effort: the approval stands even if GitHub is down; the
+// failure is surfaced in result extra for operators. Idempotent at the
+// client, so multiple reviewer tasks GOing on the same branch cannot
+// duplicate the PR.
+func (e *NativeAgentLoopExecutor) maybeOpenPullRequest(
+	ctx context.Context, log logr.Logger,
+	task *foremanv1alpha1.AgenticTask, auth *repo.Auth,
+	verdict foremanv1alpha1.AgenticTaskVerdict, r *Result,
+) {
+	if verdict != foremanv1alpha1.AgenticTaskVerdictGo ||
+		task.Spec.Kind != foremanv1alpha1.AgenticTaskKindReview ||
+		!task.Spec.Payload.OpenPullRequest ||
+		e.PREnsurer == nil {
+		return
+	}
+	if prURL, prErr := e.openPullRequest(ctx, task, auth); prErr != nil {
+		log.Error(prErr, "review GO: opening pull request failed",
+			"repo", task.Spec.Payload.Repo, "branch", task.Spec.Payload.Branch)
+		r.Extra["pullRequestError"] = prErr.Error()
+	} else {
+		log.Info("review GO: pull request ensured",
+			"repo", task.Spec.Payload.Repo, "pr", prURL)
+		r.Extra["pullRequestURL"] = prURL
+	}
+}
+
+// openPullRequest ensures the PR for the task's branch exists: title
+// from the branch head's commit subject (fallback "Fix #<n>"), base
+// from payload.baseBranch (default main), body linking the issue. The
+// same token the coder pushed with authenticates the API calls.
+//
+// The coder pushed the branch to the configured git remote, which may be
+// a fork of payload.repo (--git-remote-url names the fork while
+// payload.repo names the upstream the PR targets). When the remote's
+// owner differs from payload.repo's owner, the PR is cross-fork: the
+// head must be qualified "forkOwner:branch" and the head commit read
+// from the fork, where the ref actually exists. A remote with the same
+// owner — or one that is not an owner/repo-shaped URL at all (local
+// paths in tests) — keeps the same-repo shape.
+func (e *NativeAgentLoopExecutor) openPullRequest(
+	ctx context.Context, task *foremanv1alpha1.AgenticTask, auth *repo.Auth,
+) (string, error) {
+	p := task.Spec.Payload
+	owner, name, ok := strings.Cut(p.Repo, "/")
+	if !ok || owner == "" || name == "" {
+		return "", fmt.Errorf("openPullRequest: payload.repo %q is not owner/name", p.Repo)
+	}
+	token := ""
+	if auth != nil {
+		token = auth.Token
+	}
+	head := p.Branch
+	headOwner, headRepo := owner, name
+	if forkOwner, forkRepo := gitRemoteOwnerRepo(e.GitRemoteURL); forkOwner != "" &&
+		!strings.EqualFold(forkOwner, owner) {
+		head = forkOwner + ":" + p.Branch
+		headOwner, headRepo = forkOwner, forkRepo
+	}
+	title := e.PREnsurer.HeadCommitSubject(ctx, headOwner, headRepo, p.Branch, token)
+	if title == "" {
+		title = fmt.Sprintf("Fix #%d", p.Issue)
+	}
+	body := fmt.Sprintf("Fixes #%d\n\nOpened by foreman on review GO (workload %s).",
+		p.Issue, task.Labels["foreman.llmkube.dev/workload"])
+	res, err := e.PREnsurer.EnsurePR(ctx, owner, name, head,
+		baseBranchOrDefault(p.BaseBranch), title, body, token)
+	if err != nil {
+		return "", err
+	}
+	return res.URL, nil
+}
+
 func (e *NativeAgentLoopExecutor) modelDecidedResult(
 	start time.Time, tref corev1.ObjectReference, lr *LoopResult,
 	verdict foremanv1alpha1.AgenticTaskVerdict,
@@ -1324,6 +1406,41 @@ func upstreamURLForRepo(repoSlug string) string {
 // limited to git/GitHub-safe characters and exactly one slash is allowed, so
 // "..", multiple path segments, and whitespace are rejected.
 var repoSlugPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$`)
+
+// gitRemoteOwnerRepo extracts the owner and repository name from a git
+// remote URL, so openPullRequest can tell whether --git-remote-url is a
+// fork of payload.repo. Understood forms: http(s)://host/owner/repo,
+// ssh://git@host/owner/repo, and scp-like git@host:owner/repo — each
+// with or without the .git suffix. Anything else (local paths, file://
+// remotes used in tests, bare hosts) yields "", "" so callers fall back
+// to same-repo behavior.
+func gitRemoteOwnerRepo(remoteURL string) (owner, name string) {
+	remoteURL = strings.TrimSpace(remoteURL)
+	var path string
+	switch {
+	case strings.HasPrefix(remoteURL, "https://"),
+		strings.HasPrefix(remoteURL, "http://"),
+		strings.HasPrefix(remoteURL, "ssh://"):
+		u, err := url.Parse(remoteURL)
+		if err != nil {
+			return "", ""
+		}
+		path = strings.Trim(u.Path, "/")
+	case strings.Contains(remoteURL, "@") && strings.Contains(remoteURL, ":") &&
+		!strings.Contains(remoteURL, "://"):
+		// scp-like syntax: git@github.com:owner/repo.git
+		_, after, _ := strings.Cut(remoteURL, ":")
+		path = strings.Trim(after, "/")
+	default:
+		return "", ""
+	}
+	path = strings.TrimSuffix(path, ".git")
+	if !repoSlugPattern.MatchString(path) {
+		return "", ""
+	}
+	o, n, _ := strings.Cut(path, "/")
+	return o, n
+}
 
 // 4. Everything else falls back to foreman/<task-name>.
 func branchNameForTask(task *foremanv1alpha1.AgenticTask) string {

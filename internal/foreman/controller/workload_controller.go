@@ -320,6 +320,9 @@ func synthesizeIssueBatch(w *foremanv1alpha1.Workload) []foremanv1alpha1.Pipelin
 				},
 			},
 		)
+		// nil defaults to true: an issue-batch Workload exists to produce
+		// a PR; spec.openPullRequest=false opts out (#937).
+		openPR := w.Spec.OpenPullRequest == nil || *w.Spec.OpenPullRequest
 		for i, reviewerRef := range w.Spec.ReviewerAgentRefs {
 			steps = append(steps, foremanv1alpha1.PipelineStep{
 				Name:      fmt.Sprintf("review-%d-%d", n, i),
@@ -327,9 +330,10 @@ func synthesizeIssueBatch(w *foremanv1alpha1.Workload) []foremanv1alpha1.Pipelin
 				AgentRef:  reviewerRef,
 				DependsOn: []string{verifyName},
 				Payload: foremanv1alpha1.AgenticTaskPayload{
-					Repo:   w.Spec.Repo,
-					Issue:  n,
-					Branch: branch,
+					Repo:            w.Spec.Repo,
+					Issue:           n,
+					Branch:          branch,
+					OpenPullRequest: openPR,
 				},
 			})
 		}
