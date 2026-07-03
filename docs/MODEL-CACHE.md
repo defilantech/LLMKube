@@ -145,6 +145,46 @@ modelCache:
   accessMode: ReadWriteMany
 ```
 
+### Per-InferenceService Cache PVC (Bring Your Own)
+
+The cache backend above is an operator-global choice. To point a *single*
+InferenceService at its own pre-existing, user-owned PVC — for example a
+node-local volume for a large model pinned to one node, while everything else
+rides the shared cache — set `spec.modelCache.claimName`:
+
+```yaml
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: InferenceService
+metadata:
+  name: llama-3.1-70b
+spec:
+  modelRef: llama-3.1-70b
+  modelCache:
+    claimName: my-model-cache   # pre-existing PVC in the same namespace
+```
+
+Behavior:
+
+- The named PVC becomes the writable model cache for this workload only: the
+  same `model-cache-prep` and `model-downloader` init containers run against
+  it, weights land under the usual `<cacheKey>/` subdirectory, and the serving
+  container mounts it read-only. `RefreshPolicy` and cache-key semantics are
+  unchanged, so multiple models can safely share one claim.
+- The operator **never creates or deletes** the claim — you own it end-to-end
+  (unlike `perService` mode, where the operator provisions and
+  garbage-collects `<isvc>-model-cache`). If the claim does not exist, the
+  InferenceService is marked `Degraded` with a `ModelCachePVCNotFound` event
+  instead of silently falling back to the shared cache.
+- `claimName` targets the download path, so it is ignored for pre-staged
+  `pvc://` model sources (mounted read-only, no download); a warning event is
+  emitted if both are set.
+- Node alignment is your responsibility: for an RWO or node-local claim, use
+  `nodeSelector` so the pod lands where the PVC binds (a
+  `WaitForFirstConsumer` local class binds on the first consumer; a pre-bound
+  RWO PVC pins the pod).
+- `llmkube cache list` / `cache clear` inspect the shared cache only; they do
+  not see bring-your-own cache PVCs.
+
 ## CLI Commands
 
 ### List Cached Models

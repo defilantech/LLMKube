@@ -80,6 +80,27 @@ type SpeculativeDecodingSpec struct {
 	NDraftMax *int32 `json:"nDraftMax,omitempty"`
 }
 
+// ModelCacheSpec points this InferenceService's model cache at a user-managed
+// PVC instead of the operator's shared/perService cache PVC. The operator
+// mounts and populates the claim through the same prep + download init
+// containers as the built-in cache, but never creates, mutates, or deletes it;
+// the user owns the PVC end-to-end.
+type ModelCacheSpec struct {
+	// ClaimName names a pre-existing PersistentVolumeClaim in the
+	// InferenceService's namespace to use as the writable model cache volume.
+	// Weights land under the usual <cacheKey>/ subdirectory of the claim, so
+	// RefreshPolicy and cache-key semantics are unchanged and multiple models
+	// can share one claim without colliding. The claim must already exist:
+	// when it is missing the InferenceService is marked Degraded rather than
+	// silently falling back to the shared cache. Ignored for pvc:// model
+	// sources (already staged, read-only, no download). Node alignment of
+	// RWO/local claims (via nodeSelector) is the user's responsibility.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +optional
+	ClaimName string `json:"claimName,omitempty"`
+}
+
 type InferenceServiceSpec struct {
 	// ModelRef references the Model CR that contains the model to serve
 	// +kubebuilder:validation:Required
@@ -402,6 +423,14 @@ type InferenceServiceSpec struct {
 	// container itself (e.g., via HF_TOKEN).
 	// +optional
 	SkipModelInit *bool `json:"skipModelInit,omitempty"`
+
+	// ModelCache overrides where this InferenceService caches model weights:
+	// when claimName is set, the named user-owned PVC is mounted as the
+	// writable model cache (prep + download init containers run against it)
+	// instead of the operator's shared/perService cache PVC. When unset, the
+	// operator-global cache mode applies unchanged.
+	// +optional
+	ModelCache *ModelCacheSpec `json:"modelCache,omitempty"`
 
 	// PersonaPlexConfig holds configuration for the PersonaPlex (Moshi) runtime.
 	// Only used when Runtime is "personaplex".
