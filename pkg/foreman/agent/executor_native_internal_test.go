@@ -1778,6 +1778,33 @@ func TestRenderGateAdvisories_OmittedWhenEmpty(t *testing.T) {
 	}
 }
 
+// TestBuildUserPrompt_IssueFix_RendersPromptPrefix verifies that a
+// PromptPrefix set on an issue-fix payload is rendered before the fetched
+// issue body, so an escalation-tier diagnosis hint coexists with the issue
+// context rather than replacing it.
+func TestBuildUserPrompt_IssueFix_RendersPromptPrefix(t *testing.T) {
+	task := &foremanv1alpha1.AgenticTask{
+		Spec: foremanv1alpha1.AgenticTaskSpec{
+			Kind: foremanv1alpha1.AgenticTaskKindIssueFix,
+			Payload: foremanv1alpha1.AgenticTaskPayload{
+				Repo:         "defilantech/LLMKube",
+				Issue:        944,
+				Prompt:       "The issue body.",
+				PromptPrefix: "A previous smaller-model attempt could not resolve this.",
+			},
+		},
+	}
+	got := buildUserPrompt(task)
+	pi := strings.Index(got, "previous smaller-model attempt")
+	bi := strings.Index(got, "The issue body.")
+	if pi < 0 {
+		t.Fatalf("prompt prefix missing from: %q", got)
+	}
+	if bi >= 0 && pi > bi {
+		t.Errorf("prompt prefix must precede the issue body; got prefix@%d body@%d", pi, bi)
+	}
+}
+
 // TestBuildUserPrompt_ReviewerAppendsAdvisories verifies that gate advisories
 // wired into the payload by the reconciler are included in the reviewer's
 // first user message so the model is prompted to confirm or dismiss each one.

@@ -1522,6 +1522,9 @@ func buildUserPrompt(task *foremanv1alpha1.AgenticTask) string {
 	switch task.Spec.Kind {
 	case foremanv1alpha1.AgenticTaskKindIssueFix:
 		fmt.Fprintf(&b, "You are working on issue #%d of repository %s.\n\n", p.Issue, p.Repo)
+		if p.PromptPrefix != "" {
+			fmt.Fprintf(&b, "%s\n\n", p.PromptPrefix)
+		}
 		if p.Prompt != "" {
 			fmt.Fprintf(&b, "Issue context:\n%s\n\n", p.Prompt)
 		}
