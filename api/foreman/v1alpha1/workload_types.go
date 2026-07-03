@@ -175,6 +175,28 @@ type WorkloadSpec struct {
 	// +optional
 	OpenPullRequest *bool `json:"openPullRequest,omitempty"`
 
+	// EscalationCoderAgentRef is the optional coder escalation tier: a
+	// single, typically larger/denser coder Agent that re-attempts an
+	// issue when the base CoderAgentRef fails at its model's ceiling.
+	// Issue-batch mode only. For each issue N, if the base code-<N> task
+	// is terminal with a capability failure (verdict NO-GO from the
+	// model, or outcome CODER-GATE-FAILED), the WorkloadReconciler emits
+	// an escalation code+verify(+review) set (code-<N>-esc /
+	// verify-<N>-esc / review-<N>-esc-<i>) against this Agent, on a fresh
+	// branch foreman/<w>/issue-<N>-esc, with the failed model's summary
+	// passed as a prompt hint.
+	//
+	// Singular (unlike EscalationReviewerAgentRefs, which fans out N
+	// reviewers in parallel): coders are sequential, so N parallel
+	// escalation coders would produce N competing branches. Exactly one
+	// escalation tier; an escalation task that itself fails is terminal.
+	//
+	// Does NOT trigger on STUCK-LOOP-DETECTED, a model-decided
+	// INCOMPLETE, or ERROR: those are scope/harness failures a larger,
+	// slower model will not fix. Leave unset to disable escalation.
+	// +optional
+	EscalationCoderAgentRef *corev1.LocalObjectReference `json:"escalationCoderAgentRef,omitempty"`
+
 	// AllowOverwrite lets this Workload's coder replace a stale remote
 	// ref for its own foreman/* branch (force-with-lease compare-and-swap)
 	// instead of failing non-fast-forward. Opt-in — #573 deliberately

@@ -300,6 +300,15 @@ type AgenticTaskPayload struct {
 	// +optional
 	Prompt string `json:"prompt,omitempty"`
 
+	// PromptPrefix is prepended to the assembled user prompt for an
+	// issue-fix task, BEFORE the fetched issue body. Unlike Prompt
+	// (which, when set, suppresses the issue-body fetch), PromptPrefix
+	// leaves the issue-body fetch intact, so the agent sees both this
+	// hint and the issue's acceptance criteria. Used by the coder
+	// escalation tier to carry the prior model's diagnosis.
+	// +optional
+	PromptPrefix string `json:"promptPrefix,omitempty"`
+
 	// Agent is the named agent to invoke. Required for freeform; defaults
 	// to "issue-fixer" for issue-fix and "verify" for verify.
 	// +optional
