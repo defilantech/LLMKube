@@ -997,6 +997,11 @@ func (in *WorkloadSpec) DeepCopyInto(out *WorkloadSpec) {
 		*out = make([]v1.LocalObjectReference, len(*in))
 		copy(*out, *in)
 	}
+	if in.MaxReviewIterations != nil {
+		in, out := &in.MaxReviewIterations, &out.MaxReviewIterations
+		*out = new(int32)
+		**out = **in
+	}
 	if in.AllowCloudReviewers != nil {
 		in, out := &in.AllowCloudReviewers, &out.AllowCloudReviewers
 		*out = new(bool)

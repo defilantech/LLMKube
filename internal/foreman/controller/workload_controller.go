@@ -140,6 +140,22 @@ func (r *WorkloadReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		// review tasks so the reviewer's prompt can surface them.
 		r.patchReviewAdvisories(ctx, &workload, children)
 
+		// Fix-iteration emission (#946): a reviewer NO-GO re-dispatches
+		// the coder with the review feedback instead of failing the
+		// Workload, bounded by spec.maxReviewIterations. Runs before
+		// escalation so a fresh round defers the escalation tier until
+		// the iterations settle.
+		children, err = r.emitReviewIterations(ctx, &workload, children)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("emit review iterations: %w", err)
+		}
+
+		// Downstream consumers judge each issue by its LATEST fix
+		// iteration: a superseded round's terminal NO-GO must neither
+		// re-fire escalation nor pin the rollup at Failed after a later
+		// round converged.
+		children = activeChildren(&workload, children)
+
 		// Second-pass emission (#546): escalation reviewers fire here,
 		// after base reviewer verdicts land, before status rollup.
 		children, err = r.emitEscalations(ctx, &workload, children)

@@ -185,6 +185,27 @@ type WorkloadSpec struct {
 	// +optional
 	AllowOverwrite bool `json:"allowOverwrite,omitempty"`
 
+	// MaxReviewIterations bounds how many fix iterations the
+	// WorkloadReconciler may append per issue after a reviewer NO-GO
+	// (#946). On a NO-GO, instead of failing the Workload, the
+	// reconciler emits a new coder task ("code-<N>-r<k>", same
+	// CoderAgentRef, same branch, payload.allowOverwrite=true) whose
+	// payload.prompt carries the reviewer's structured findings and
+	// summary, then chains a fresh verify + reviewer fan-out behind
+	// it ("verify-<N>-r<k>", "review-<N>-<i>-r<k>"). Superseded
+	// iterations stop counting toward the rollup; the Workload
+	// completes when the final iteration's reviewers say GO and
+	// fails (today's behavior) when the last allowed iteration is
+	// still NO-GO.
+	//
+	// nil (unset) defaults to 1 iteration. An explicit 0 disables
+	// iteration and restores the fail-on-first-NO-GO behavior.
+	// Issue-batch mode only; ignored in explicit Pipeline mode.
+	// Iteration tasks count against MaxTasks.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	MaxReviewIterations *int32 `json:"maxReviewIterations,omitempty"`
+
 	// AllowCloudReviewers gates whether reviewer Agents whose
 	// spec.provider is "cloud-proxy" (or any non-"local" value) may be
 	// dispatched for this Workload. Three-valued via the *bool:
@@ -303,6 +324,15 @@ type WorkloadStatus struct {
 	// branch didn't pass the checks."
 	// +optional
 	IncompleteTasks int32 `json:"incompleteTasks,omitempty"`
+
+	// ReviewIterations counts the fix iterations the reconciler has
+	// emitted after reviewer NO-GO verdicts (#946), summed across
+	// issues. Zero (or absent) means no reviewer ever bounced a
+	// branch back to the coder; operators watch this to distinguish
+	// convergence (small counts) from thrash (counts near
+	// issues * maxReviewIterations).
+	// +optional
+	ReviewIterations int32 `json:"reviewIterations,omitempty"`
 
 	// PlannerModel records which frontier model the planner actually used
 	// for this workload. Set after the planner runs.

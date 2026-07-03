@@ -24,6 +24,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -579,6 +580,9 @@ var _ = Describe("WorkloadReconciler (M6 stub planner)", func() {
 			ReviewerAgentRefs: []corev1.LocalObjectReference{
 				{Name: "reviewer"},
 			},
+			// Explicit 0 opts out of the #946 fix iteration so this
+			// test keeps pinning the immediate fail-on-NO-GO terminal.
+			MaxReviewIterations: ptr.To(int32(0)),
 		})
 		Expect(k8sClient.Create(ctx, wl)).To(Succeed())
 		DeferCleanup(func() {
@@ -640,6 +644,9 @@ var _ = Describe("WorkloadReconciler (M6 stub planner)", func() {
 			EscalationReviewerAgentRefs: []corev1.LocalObjectReference{
 				{Name: "big-reviewer"},
 			},
+			// Opt out of the #946 fix iteration: this test pins the
+			// #546 escalate-on-first-NO-GO semantics in isolation.
+			MaxReviewIterations: ptr.To(int32(0)),
 		})
 		Expect(k8sClient.Create(ctx, wl)).To(Succeed())
 		DeferCleanup(func() {
@@ -770,6 +777,9 @@ var _ = Describe("WorkloadReconciler (M6 stub planner)", func() {
 			EscalationReviewerAgentRefs: []corev1.LocalObjectReference{
 				{Name: "esc-cloud-big"},
 			},
+			// Opt out of the #946 fix iteration: this test pins the
+			// #546 escalate-on-first-NO-GO semantics in isolation.
+			MaxReviewIterations: ptr.To(int32(0)),
 		})
 		Expect(k8sClient.Create(ctx, wl)).To(Succeed())
 		DeferCleanup(func() {
@@ -832,6 +842,9 @@ var _ = Describe("WorkloadReconciler (M6 stub planner)", func() {
 			EscalationReviewerAgentRefs: []corev1.LocalObjectReference{
 				{Name: "big-reviewer"},
 			},
+			// Opt out of the #946 fix iteration: this test pins the
+			// #546 escalate-on-first-NO-GO semantics in isolation.
+			MaxReviewIterations: ptr.To(int32(0)),
 		})
 		Expect(k8sClient.Create(ctx, wl)).To(Succeed())
 		DeferCleanup(func() {

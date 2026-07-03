@@ -34,10 +34,15 @@ import (
 // task's GateAdvisories field is non-empty the patch is skipped.
 //
 // For each issue N in the issue-batch pipeline:
-//  1. Find the "code-N" child whose status.result carries gateAdvisories.
+//  1. Find the coder child whose status.result carries gateAdvisories.
+//     A base-round review ("review-N-<i>") reads "code-N"; a fix
+//     iteration's review ("review-N-<i>-r<k>", #946) reads its own
+//     round's coder ("code-N-r<k>"); an escalation review
+//     ("escalate-N-*") reads the LATEST coder iteration, since it
+//     judges the branch's final state.
 //  2. Unmarshal the JSON array into []foremanv1alpha1.GateAdvisory.
-//  3. For every "review-N-*" or "escalate-N-*" child that is still Pending
-//     and has no GateAdvisories set, patch spec.payload.gateAdvisories.
+//  3. For every such child that is still Pending and has no
+//     GateAdvisories set, patch spec.payload.gateAdvisories.
 //
 // Non-fatal: a single patch failure logs a warning and continues so the
 // remaining review tasks still receive their advisories. This mirrors the
@@ -64,26 +69,35 @@ func (r *WorkloadReconciler) patchReviewAdvisories(
 	}
 
 	for _, n := range w.Spec.Issues {
-		codeStep := fmt.Sprintf("code-%d", n)
-		codeTask, ok := byStep[codeStep]
-		if !ok {
-			continue
+		// The escalation tier reviews the branch's final state, so its
+		// advisories come from the latest fix iteration's coder task.
+		latestCode := 0
+		for step := range byStep {
+			if k, ok := parseIterationTail(step, fmt.Sprintf("code-%d", n)); ok && k > latestCode {
+				latestCode = k
+			}
 		}
 
-		advisories := extractGateAdvisories(codeTask)
-		if len(advisories) == 0 {
-			continue
-		}
-
-		// Patch every review/escalation task for this issue that is still
-		// Pending and does not yet carry advisories.
-		reviewPrefix := fmt.Sprintf("review-%d-", n)
 		escalatePrefix := fmt.Sprintf("escalate-%d-", n)
 		for i := range children {
 			step := children[i].Labels[labelStep]
-			if !strings.HasPrefix(step, reviewPrefix) && !strings.HasPrefix(step, escalatePrefix) {
+			var codeStep string
+			if k, ok := reviewIterationOf(step, n); ok {
+				codeStep = codeStepName(n, k)
+			} else if strings.HasPrefix(step, escalatePrefix) {
+				codeStep = codeStepName(n, latestCode)
+			} else {
 				continue
 			}
+			codeTask, ok := byStep[codeStep]
+			if !ok {
+				continue
+			}
+			advisories := extractGateAdvisories(codeTask)
+			if len(advisories) == 0 {
+				continue
+			}
+
 			reviewTask := &children[i]
 			if reviewTask.Status.Phase != foremanv1alpha1.AgenticTaskPhasePending &&
 				reviewTask.Status.Phase != "" {
