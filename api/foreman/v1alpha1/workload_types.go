@@ -188,11 +188,14 @@ type WorkloadSpec struct {
 	// MaxReviewIterations bounds how many fix iterations the
 	// WorkloadReconciler may append per issue after a reviewer NO-GO
 	// (#946). On a NO-GO, instead of failing the Workload, the
-	// reconciler emits a new coder task ("code-<N>-r<k>", same
-	// CoderAgentRef, same branch, payload.allowOverwrite=true) whose
-	// payload.prompt carries the reviewer's structured findings and
-	// summary, then chains a fresh verify + reviewer fan-out behind
-	// it ("verify-<N>-r<k>", "review-<N>-<i>-r<k>"). Superseded
+	// reconciler emits a new coder task ("code-<N>-r<k>", using
+	// RevisionCoderAgentRef when set and CoderAgentRef otherwise, same
+	// branch, payload.reviseFromBranch naming that branch so the
+	// executor restores the prior attempt (#951), and
+	// payload.allowOverwrite=true) whose payload.prompt carries the
+	// reviewer's structured findings and summary, then chains a fresh
+	// verify + reviewer fan-out behind it ("verify-<N>-r<k>",
+	// "review-<N>-<i>-r<k>"). Superseded
 	// iterations stop counting toward the rollup; the Workload
 	// completes when the final iteration's reviewers say GO and
 	// fails (today's behavior) when the last allowed iteration is
@@ -205,6 +208,20 @@ type WorkloadSpec struct {
 	// +kubebuilder:validation:Minimum=0
 	// +optional
 	MaxReviewIterations *int32 `json:"maxReviewIterations,omitempty"`
+
+	// RevisionCoderAgentRef optionally names the same-namespace Agent
+	// the fix-iteration coder steps ("code-<N>-r<k>") reference instead
+	// of CoderAgentRef. A revision task amends its restored prior
+	// attempt (payload.reviseFromBranch, #951) rather than building a
+	// fix from scratch, and the issue-fix Agent's forcing profile is
+	// tuned for the latter — #951's live validation showed a revision
+	// task collapsing under the issue-fix profile's forcing windows.
+	// When unset, iteration coder steps fall back to CoderAgentRef and
+	// the reconciler emits a Warning event on the Workload (reason
+	// RevisionUnderIssueFixProfile). Issue-batch mode only; ignored in
+	// explicit Pipeline mode.
+	// +optional
+	RevisionCoderAgentRef *corev1.LocalObjectReference `json:"revisionCoderAgentRef,omitempty"`
 
 	// AllowCloudReviewers gates whether reviewer Agents whose
 	// spec.provider is "cloud-proxy" (or any non-"local" value) may be

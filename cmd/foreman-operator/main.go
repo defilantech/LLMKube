@@ -127,6 +127,7 @@ func main() {
 	if err := (&foremancontroller.WorkloadReconciler{
 		Client:              mgr.GetClient(),
 		Scheme:              mgr.GetScheme(),
+		Recorder:            mgr.GetEventRecorder("workload-controller"),
 		AllowCloudProviders: allowCloudProviders,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Workload")

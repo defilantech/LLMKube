@@ -25,6 +25,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -38,11 +39,14 @@ import (
 // spec.maxReviewIterations is exhausted.
 var _ = Describe("WorkloadReconciler review fix iteration (#946)", func() {
 	var reconciler *WorkloadReconciler
+	var recorder *events.FakeRecorder
 
 	BeforeEach(func() {
+		recorder = &events.FakeRecorder{Events: make(chan string, 16)}
 		reconciler = &WorkloadReconciler{
 			Client:              k8sClient,
 			Scheme:              k8sClient.Scheme(),
+			Recorder:            recorder,
 			AllowCloudProviders: true,
 		}
 	})
@@ -101,16 +105,29 @@ var _ = Describe("WorkloadReconciler review fix iteration (#946)", func() {
 		var code foremanv1alpha1.AgenticTask
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: "iterate-happy-code-750-r1"}, &code)).To(Succeed())
 		Expect(code.Spec.Kind).To(Equal(foremanv1alpha1.AgenticTaskKindIssueFix))
-		Expect(code.Spec.AgentRef.Name).To(Equal("coder"), "iteration reuses the same coder Agent")
+		Expect(code.Spec.AgentRef.Name).To(Equal("coder"),
+			"no revisionCoderAgentRef: iteration falls back to the issue-fix coder Agent")
 		Expect(code.Spec.Payload.Issue).To(Equal(int32(750)))
 		Expect(code.Spec.Payload.Branch).To(Equal("foreman/iterate-happy/issue-750"),
 			"the retry amends the SAME branch, not a fresh one")
 		Expect(code.Spec.Payload.AllowOverwrite).To(BeTrue(),
 			"amending its own prior attempt needs the force-with-lease push")
+		Expect(code.Spec.Payload.ReviseFromBranch).To(Equal("foreman/iterate-happy/issue-750"),
+			"the executor must restore the prior attempt from the push remote (#951)")
 		Expect(code.Spec.Payload.Prompt).To(ContainSubstring("NO-GO"))
+		Expect(code.Spec.Payload.Prompt).To(ContainSubstring("Do not rebuild the fix from scratch"),
+			"the prompt must direct a delta on the restored attempt")
 		Expect(code.Spec.Payload.Prompt).To(ContainSubstring("scope creep beyond the issue ask"))
 		Expect(code.Spec.Payload.Prompt).To(ContainSubstring("reduces ACCESS_TOKEN_EXPIRE_MINUTES from 10080 to 30"))
 		Expect(code.Spec.DependsOn).To(BeEmpty())
+
+		// No revisionCoderAgentRef: the fallback to the issue-fix coder
+		// profile is the documented #951 failure mode, so it must warn.
+		Expect(recorder.Events).To(Receive(And(
+			ContainSubstring("Warning"),
+			ContainSubstring("RevisionUnderIssueFixProfile"),
+			ContainSubstring("revisionCoderAgentRef"),
+		)))
 
 		var verify foremanv1alpha1.AgenticTask
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: "iterate-happy-verify-750-r1"}, &verify)).To(Succeed())
@@ -152,6 +169,54 @@ var _ = Describe("WorkloadReconciler review fix iteration (#946)", func() {
 		Expect(fresh.Status.SucceededTasks).To(Equal(int32(3)), "only the latest round is counted")
 		Expect(fresh.Status.IncompleteTasks).To(Equal(int32(0)))
 		Expect(fresh.Status.ReviewIterations).To(Equal(int32(1)))
+	})
+
+	It("pairs iteration coder tasks with the revision coder Agent when configured (#951)", func() {
+		wl := newWorkload("iterate-revision", foremanv1alpha1.WorkloadSpec{
+			Intent:                "revision profile pairing",
+			Repo:                  "defilantech/LLMKube",
+			Issues:                []int32{753},
+			CoderAgentRef:         &corev1.LocalObjectReference{Name: "coder"},
+			RevisionCoderAgentRef: &corev1.LocalObjectReference{Name: "revision-coder"},
+			VerifierAgentRef:      &corev1.LocalObjectReference{Name: "gate"},
+			ReviewerAgentRefs: []corev1.LocalObjectReference{
+				{Name: "reviewer"},
+			},
+		})
+		Expect(k8sClient.Create(ctx, wl)).To(Succeed())
+		DeferCleanup(func() {
+			cleanupChildren(wl)
+			_ = k8sClient.Delete(ctx, wl)
+		})
+
+		reconcile(wl)
+
+		// The base round still uses the issue-fix coder profile.
+		var base foremanv1alpha1.AgenticTask
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: "iterate-revision-code-753"}, &base)).To(Succeed())
+		Expect(base.Spec.AgentRef.Name).To(Equal("coder"))
+		Expect(base.Spec.Payload.ReviseFromBranch).To(BeEmpty(),
+			"the base attempt has nothing to restore")
+
+		markTerminal("iterate-revision-code-753", foremanv1alpha1.AgenticTaskVerdictGo, "")
+		markTerminal("iterate-revision-verify-753", foremanv1alpha1.AgenticTaskVerdictGatePass, "")
+		markTerminal("iterate-revision-review-753-0", foremanv1alpha1.AgenticTaskVerdictNoGo, noGoResult)
+		reconcile(wl)
+
+		var code foremanv1alpha1.AgenticTask
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: "iterate-revision-code-753-r1"}, &code)).To(Succeed())
+		Expect(code.Spec.AgentRef.Name).To(Equal("revision-coder"),
+			"the fix iteration must run under the revision-tuned profile")
+		Expect(code.Spec.Payload.ReviseFromBranch).To(Equal("foreman/iterate-revision/issue-753"))
+
+		// Verify + review keep their own refs.
+		var verify foremanv1alpha1.AgenticTask
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: "iterate-revision-verify-753-r1"}, &verify)).To(Succeed())
+		Expect(verify.Spec.AgentRef.Name).To(Equal("gate"))
+
+		// A configured revision profile is the intended pairing: no
+		// RevisionUnderIssueFixProfile warning.
+		Expect(recorder.Events).NotTo(Receive())
 	})
 
 	It("fails the Workload once the iteration budget is exhausted (today's terminal behavior)", func() {

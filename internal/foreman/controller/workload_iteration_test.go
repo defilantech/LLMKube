@@ -214,6 +214,10 @@ func TestReviewIterationSteps(t *testing.T) {
 					if !s.Payload.AllowOverwrite {
 						t.Errorf("step %s must set allowOverwrite to amend its own branch", s.Name)
 					}
+					if s.Payload.ReviseFromBranch != s.Payload.Branch {
+						t.Errorf("step %s reviseFromBranch = %q, want %q so the executor restores the prior attempt (#951)",
+							s.Name, s.Payload.ReviseFromBranch, s.Payload.Branch)
+					}
 					if !strings.Contains(s.Payload.Prompt, "NO-GO") {
 						t.Errorf("step %s prompt must carry the review feedback, got %q", s.Name, s.Payload.Prompt)
 					}
@@ -230,6 +234,49 @@ func TestReviewIterationSteps(t *testing.T) {
 	}
 }
 
+// TestReviewIterationCoderRef covers the revision profile pairing
+// (#951): iteration coder steps reference spec.revisionCoderAgentRef
+// when set (a revision amends restored work and wants a revision-tuned
+// profile) and fall back to spec.coderAgentRef otherwise. Verify and
+// review steps keep their own refs either way.
+func TestReviewIterationCoderRef(t *testing.T) {
+	noGoRound := []foremanv1alpha1.AgenticTask{
+		child("code-641", foremanv1alpha1.AgenticTaskPhaseSucceeded, foremanv1alpha1.AgenticTaskVerdictGo),
+		child("verify-641", foremanv1alpha1.AgenticTaskPhaseSucceeded, foremanv1alpha1.AgenticTaskVerdictGatePass),
+		child("review-641-0", foremanv1alpha1.AgenticTaskPhaseSucceeded, foremanv1alpha1.AgenticTaskVerdictNoGo),
+	}
+
+	cases := []struct {
+		name          string
+		revisionRef   *corev1.LocalObjectReference
+		wantCoderName string
+	}{
+		{"revisionCoderAgentRef set selects the revision coder", &corev1.LocalObjectReference{Name: "revision-coder"}, "revision-coder"},
+		{"unset falls back to coderAgentRef", nil, "coder"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := iterationWorkload([]int32{641}, 1, nil)
+			w.Spec.RevisionCoderAgentRef = tc.revisionRef
+
+			steps, _ := reviewIterationSteps(w, noGoRound)
+			refs := map[string]string{}
+			for _, s := range steps {
+				refs[s.Name] = s.AgentRef.Name
+			}
+			if got := refs["code-641-r1"]; got != tc.wantCoderName {
+				t.Errorf("code-641-r1 agentRef = %q, want %q", got, tc.wantCoderName)
+			}
+			if got := refs["verify-641-r1"]; got != "gate" {
+				t.Errorf("verify-641-r1 agentRef = %q, want %q", got, "gate")
+			}
+			if got := refs["review-641-0-r1"]; got != "reviewer" {
+				t.Errorf("review-641-0-r1 agentRef = %q, want %q", got, "reviewer")
+			}
+		})
+	}
+}
+
 func TestReviewFeedbackPrompt(t *testing.T) {
 	structured := noGoChild("review-641-0", "scope creep beyond the issue ask",
 		`[{"severity":"blocker","area":"scope","message":"reduces ACCESS_TOKEN_EXPIRE_MINUTES from 10080 to 30, unrelated to the issue","file":"config/auth.py","line":12,"suggestion":"revert the unrelated change"}]`)
@@ -237,6 +284,12 @@ func TestReviewFeedbackPrompt(t *testing.T) {
 	for _, want := range []string{
 		"rejected the previous attempt",
 		"NO-GO",
+		// The executor's revise-from-branch restore (#951) means the
+		// workspace really does start from the prior attempt; the prompt
+		// must direct a delta, not a rebuild.
+		"restored from this task's branch",
+		"Do not rebuild the fix from scratch",
+		"Amend the existing work",
 		"scope creep beyond the issue ask",
 		"[blocker/scope] reduces ACCESS_TOKEN_EXPIRE_MINUTES from 10080 to 30",
 		"config/auth.py:12",

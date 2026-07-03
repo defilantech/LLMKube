@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 
+	corev1 "k8s.io/api/core/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -186,9 +187,15 @@ func noGoReviewRound(
 // as before #946.
 //
 // The iteration's coder step re-targets the SAME branch: the payload
-// sets allowOverwrite so the coder can replace its own prior attempt
+// sets reviseFromBranch to the task's own branch name so the executor
+// restores the prior attempt from the push remote before the model
+// runs (#951), allowOverwrite so the coder can replace that attempt
 // (force-with-lease push, #573/#934), and payload.prompt carries the
-// distilled review feedback so the retry is not blind.
+// distilled review feedback so the retry is not blind. The coder step
+// references spec.revisionCoderAgentRef when set — a revision amends
+// existing work and wants a revision-tuned profile, not the issue-fix
+// forcing profile — and falls back to spec.coderAgentRef otherwise
+// (the caller emits the RevisionUnderIssueFixProfile warning).
 //
 // Pure function: no API calls, no status writes. The caller owns
 // MaxTasks accounting, sovereignty filtering, and creation, and must
@@ -213,6 +220,11 @@ func reviewIterationSteps(
 		}
 	}
 
+	coderRef := w.Spec.CoderAgentRef
+	if w.Spec.RevisionCoderAgentRef != nil {
+		coderRef = w.Spec.RevisionCoderAgentRef
+	}
+
 	for _, n := range w.Spec.Issues {
 		branch := fmt.Sprintf("foreman/%s/issue-%d", w.Name, n)
 		issueIterated := false
@@ -227,13 +239,17 @@ func reviewIterationSteps(
 				steps = append(steps, foremanv1alpha1.PipelineStep{
 					Name:     codeName,
 					Kind:     foremanv1alpha1.AgenticTaskKindIssueFix,
-					AgentRef: *w.Spec.CoderAgentRef,
+					AgentRef: *coderRef,
 					Payload: foremanv1alpha1.AgenticTaskPayload{
-						Repo:           w.Spec.Repo,
-						Issue:          n,
-						Branch:         branch,
-						AllowOverwrite: true,
-						Prompt:         reviewFeedbackPrompt(noGo),
+						Repo:   w.Spec.Repo,
+						Issue:  n,
+						Branch: branch,
+						// The prior attempt lives at the task's own
+						// branch name on the push remote; the executor
+						// restores it before the model runs (#951).
+						ReviseFromBranch: branch,
+						AllowOverwrite:   true,
+						Prompt:           reviewFeedbackPrompt(noGo),
 					},
 				})
 				issueIterated = true
@@ -284,11 +300,19 @@ func reviewIterationSteps(
 // issue-fix template, so the retry runs with the rejection in front of
 // it instead of blind (#946: 4 production issues burned 3 attempts
 // each reproducing the same rejected patch).
+//
+// The wording matches the executor's revise-from-branch restore
+// (#951): because the step's payload stamps reviseFromBranch, the
+// workspace really does start from the prior attempt's files, so the
+// prompt directs the model to amend that work as a delta rather than
+// rebuild the fix from scratch.
 func reviewFeedbackPrompt(noGo []*foremanv1alpha1.AgenticTask) string {
 	var b strings.Builder
 	b.WriteString("The reviewer rejected the previous attempt on this issue (verdict NO-GO).\n")
-	b.WriteString("Your previous attempt is already pushed on this task's branch; produce a corrected\n")
-	b.WriteString("fix that addresses every point below, then push to the same branch.\n")
+	b.WriteString("Your workspace already contains that previous attempt: the working branch was\n")
+	b.WriteString("restored from this task's branch on the remote, so its files and history are\n")
+	b.WriteString("present. Do not rebuild the fix from scratch. Amend the existing work with the\n")
+	b.WriteString("smallest changes that address every point below, then push to the same branch.\n")
 	for _, t := range noGo {
 		b.WriteString("\n")
 		b.WriteString(reviewFeedbackSection(t))
@@ -470,6 +494,24 @@ func (r *WorkloadReconciler) emitReviewIterations(
 	steps, suppressed, err := r.filterCloudProviders(ctx, w, steps)
 	if err != nil {
 		return children, fmt.Errorf("filter iteration providers: %w", err)
+	}
+
+	// Revision-vs-profile pairing (#951): a fix-iteration coder task
+	// amends its restored prior attempt, and the issue-fix Agent's
+	// forcing profile is tuned for building a fix from scratch — the
+	// documented #951 failure mode is a revision task collapsing under
+	// it. Warn (once per emission pass) when the fallback is in play so
+	// the operator knows to set spec.revisionCoderAgentRef.
+	if r.Recorder != nil && w.Spec.RevisionCoderAgentRef == nil {
+		for _, s := range steps {
+			if s.Kind != foremanv1alpha1.AgenticTaskKindIssueFix {
+				continue
+			}
+			r.Recorder.Eventf(w, nil, corev1.EventTypeWarning, "RevisionUnderIssueFixProfile", "Reconcile",
+				"fix-iteration coder step %s falls back to the issue-fix Agent %q; a revision task amends its restored prior attempt and can collapse under the issue-fix forcing profile (#951) — set spec.revisionCoderAgentRef to pair iterations with a revision-tuned profile",
+				s.Name, w.Spec.CoderAgentRef.Name)
+			break
+		}
 	}
 
 	created, createErr := r.renderAndCreate(ctx, w, steps)
