@@ -81,6 +81,18 @@ func (t *StrReplaceTool) Execute(_ context.Context, args json.RawMessage) (*agen
 	if a.Path == "" || a.OldString == "" {
 		return nil, fmt.Errorf("str_replace: path and old_string are required")
 	}
+	// A no-op edit (old_string == new_string) changes nothing, but the match
+	// logic below would still "replace" the string with itself and report
+	// replacements:1 -- a phantom success. A model that sees success on an
+	// unchanged file re-issues the identical call and gets killed by the
+	// RepeatedToolCall stuck-loop detector (#968). Reject it explicitly so the
+	// model corrects new_string or moves on.
+	if a.OldString == a.NewString {
+		return nil, fmt.Errorf("str_replace: old_string and new_string are identical, " +
+			"so this edit would change nothing. If the file already contains the text " +
+			"you want, move on to the next step; otherwise set new_string to the " +
+			"replacement text you intend")
+	}
 	full, err := resolveInside(t.Workspace, a.Path)
 	if err != nil {
 		return nil, fmt.Errorf("str_replace: %w", err)
