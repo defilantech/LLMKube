@@ -17,9 +17,15 @@ limitations under the License.
 package controller
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	foremanv1alpha1 "github.com/defilantech/llmkube/api/foreman/v1alpha1"
 )
@@ -192,4 +198,113 @@ func coderEscalationSteps(
 		escalated = append(escalated, n)
 	}
 	return steps, escalated
+}
+
+// emitCoderEscalations is the coder-side second-pass emission hook,
+// called from Reconcile's children-exist branch BEFORE emitEscalations
+// (a coder that did not GO has no branch for reviewers to escalate on).
+// Mirrors emitEscalations: synthesize due code-<N>-esc/verify-<N>-esc
+// steps, apply MaxTasks + sovereignty gates, create, patch status, and
+// synthesize placeholders so rollup counts the new tasks as in-flight.
+// Returns the refreshed children slice; a no-op returns the input.
+func (r *WorkloadReconciler) emitCoderEscalations(
+	ctx context.Context, w *foremanv1alpha1.Workload, children []foremanv1alpha1.AgenticTask,
+) ([]foremanv1alpha1.AgenticTask, error) {
+	log := logf.FromContext(ctx).WithName("workload").WithValues("workload", client.ObjectKeyFromObject(w))
+
+	if len(w.Spec.Pipeline) > 0 {
+		// Explicit Pipeline mode: escalation is an issue-batch feature.
+		return children, nil
+	}
+	if w.Spec.EscalationCoderAgentRef == nil {
+		return children, nil
+	}
+
+	steps, escalated := coderEscalationSteps(w, children)
+	if len(steps) == 0 {
+		return children, nil
+	}
+
+	patch := client.MergeFrom(w.DeepCopy())
+	now := metav1.Now()
+
+	if w.Spec.MaxTasks > 0 && len(children)+len(steps) > int(w.Spec.MaxTasks) {
+		// No silent cap: report why the coder escalation tier did not run.
+		setCondition(&w.Status.Conditions, metav1.Condition{
+			Type:               conditionTypeTruncated,
+			Status:             metav1.ConditionTrue,
+			Reason:             "MaxTasksCoderEscalationCap",
+			Message:            fmt.Sprintf("MaxTasks=%d leaves no room for %d coder escalation task(s)", w.Spec.MaxTasks, len(steps)),
+			LastTransitionTime: now,
+		})
+		if err := r.Status().Patch(ctx, w, patch); err != nil {
+			return children, fmt.Errorf("patch coder-escalation truncation condition: %w", err)
+		}
+		return children, nil
+	}
+
+	steps, suppressed, err := r.filterCloudProviders(ctx, w, steps)
+	if err != nil {
+		return children, fmt.Errorf("filter coder-escalation providers: %w", err)
+	}
+
+	created, createErr := r.renderAndCreate(ctx, w, steps)
+	if createErr != nil {
+		log.Error(createErr, "creating coder escalation AgenticTasks failed mid-way", "createdSoFar", len(created))
+	}
+
+	msg := fmt.Sprintf("issues %s re-dispatched to the escalation coder after a capability failure (%d task(s) created, %d suppressed)",
+		joinInt32(escalated), len(created), len(suppressed))
+
+	// Steady-state short-circuit: coderEscalationSteps re-proposes these
+	// steps until the -esc child exists in cache, so when nothing was
+	// created and the condition already says exactly this, re-patching
+	// would only churn LastTransitionTime.
+	if len(created) == 0 && createErr == nil {
+		if cond := apimeta.FindStatusCondition(w.Status.Conditions, conditionTypeCoderEscalationTriggered); cond != nil &&
+			cond.Status == metav1.ConditionTrue && cond.Message == msg {
+			return children, nil
+		}
+	}
+
+	w.Status.Tasks = appendNewTaskRefs(w.Status.Tasks, created)
+	setCondition(&w.Status.Conditions, metav1.Condition{
+		Type:               conditionTypeCoderEscalationTriggered,
+		Status:             metav1.ConditionTrue,
+		Reason:             "BaseCoderCapabilityFailure",
+		Message:            msg,
+		LastTransitionTime: now,
+	})
+	if len(suppressed) > 0 {
+		setCondition(&w.Status.Conditions, metav1.Condition{
+			Type:               conditionTypeCloudReviewersSuppressed,
+			Status:             metav1.ConditionTrue,
+			Reason:             "SovereigntyGate",
+			Message:            fmt.Sprintf("skipped %d cloud-provider Agent(s): %s", len(suppressed), strings.Join(suppressed, "; ")),
+			LastTransitionTime: now,
+		})
+	}
+	if err := r.Status().Patch(ctx, w, patch); err != nil {
+		return children, fmt.Errorf("patch workload status after coder escalation: %w", err)
+	}
+	if createErr != nil {
+		return children, createErr
+	}
+
+	// Rollup must see the new tasks as in-flight in this same pass; a
+	// cache-backed List could miss tasks created microseconds ago, so
+	// synthesize placeholders (a zero-value phase counts as in-flight).
+	existing := make(map[string]struct{}, len(children))
+	for i := range children {
+		existing[children[i].Name] = struct{}{}
+	}
+	for _, ref := range created {
+		if _, ok := existing[ref.Name]; ok {
+			continue
+		}
+		children = append(children, foremanv1alpha1.AgenticTask{
+			ObjectMeta: metav1.ObjectMeta{Name: ref.Name, Namespace: ref.Namespace},
+		})
+	}
+	return children, nil
 }
