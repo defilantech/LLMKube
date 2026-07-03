@@ -300,33 +300,12 @@ func (e *NativeAgentLoopExecutor) Execute(ctx context.Context, task *foremanv1al
 		return e.failResult(start, foremanv1alpha1.FailureCloneFailed, err.Error()), nil
 	}
 
-	// 4. Branch off the CURRENT upstream base (#813). The clone above is the
-	// fork (origin = push target); cutting the task branch from the fork's
-	// default branch produces a stale-base branch whenever the fork lags
-	// upstream. When the task carries an upstream repo slug (payload.repo),
-	// fetch its base ref and branch from that instead. Origin stays the fork,
-	// so the branch still pushes there for the PR. Freeform tasks without a
-	// repo slug fall back to branching from the cloned fork HEAD. When the
-	// clone target was itself derived from payload.repo (#915), origin and
-	// upstream resolve to the same URL — branching off the base is then a
-	// no-op-equivalent that still yields a current-base branch.
+	// 4. Cut the task branch (see setupTaskBranch: revise-from-branch
+	// restore (#951), then upstream base fetch (#813), then clone-HEAD
+	// fallback). Failures bucket with CloneFailed for the retry policy.
 	branch := branchNameForTask(task)
 	baseBranch := baseBranchOrDefault(task.Spec.Payload.BaseBranch)
-	if upstreamURL := resolveUpstream(task.Spec.Payload.Repo); upstreamURL != "" {
-		if err := repo.CreateBranchFromUpstream(ctx, repo.UpstreamBranchOptions{
-			Workspace:   workspace,
-			Branch:      branch,
-			UpstreamURL: upstreamURL,
-			BaseBranch:  baseBranch,
-			Auth:        auth,
-		}); err != nil {
-			// Fail loud rather than silently branching from the stale fork
-			// base; bucket with CloneFailed for the retry policy.
-			return e.failResult(start, foremanv1alpha1.FailureCloneFailed, err.Error()), nil
-		}
-	} else if err := repo.CreateAndCheckoutBranch(ctx, workspace, branch); err != nil {
-		// Branch checkout is part of workspace prep; bucket with
-		// CloneFailed so downstream retry policy treats them the same.
+	if err := setupTaskBranch(ctx, task, workspace, branch, baseBranch, resolveUpstream, auth, log); err != nil {
 		return e.failResult(start, foremanv1alpha1.FailureCloneFailed, err.Error()), nil
 	}
 
@@ -352,6 +331,65 @@ func (e *NativeAgentLoopExecutor) Execute(ctx context.Context, task *foremanv1al
 	// cyclomatic-complexity threshold. runLLMPath owns OAI + loop +
 	// transcript + commit/push.
 	return e.runLLMPath(ctx, task, &agent, endpoint, workspace, branch, registry, auth, start)
+}
+
+// setupTaskBranch cuts the task's working branch in the freshly cloned
+// workspace. Precedence:
+//
+//  1. payload.reviseFromBranch on an issue-fix task (#951): restore the
+//     prior attempt by fetching that ref from the push remote ("origin",
+//     the clone the branch pushes back to) and branching from it, so a
+//     revision task starts with its prior attempt's files present. The
+//     executor owns this restore — prompt-driven git proved fragile
+//     under stuck-loop forcing windows. When the ref is gone from the
+//     remote (pruned, or the prior attempt never pushed) it logs and
+//     falls through to (2) rather than failing.
+//  2. Upstream base fetch (#813): when the task carries a repo slug,
+//     fetch the base ref from the upstream project and branch from
+//     that, so a stale fork default branch cannot produce a stale-base
+//     branch. Origin stays the fork; the branch still pushes there.
+//  3. Clone-HEAD checkout for freeform tasks without a repo slug.
+func setupTaskBranch(
+	ctx context.Context,
+	task *foremanv1alpha1.AgenticTask,
+	workspace, branch, baseBranch string,
+	resolveUpstream func(string) string,
+	auth *repo.Auth,
+	log logr.Logger,
+) error {
+	if ref := task.Spec.Payload.ReviseFromBranch; ref != "" &&
+		task.Spec.Kind == foremanv1alpha1.AgenticTaskKindIssueFix {
+		found, err := repo.CreateBranchFromRemoteRef(ctx, repo.RemoteRefBranchOptions{
+			Workspace: workspace,
+			Branch:    branch,
+			Remote:    "origin",
+			Ref:       ref,
+			Auth:      auth,
+		})
+		if err != nil {
+			// Transport/auth failure: fail loud rather than silently
+			// rebuilding from base and force-overwriting the prior attempt.
+			return err
+		}
+		if found {
+			log.Info("restored prior attempt for revision",
+				"reviseFromBranch", ref, "branch", branch)
+			return nil
+		}
+		log.Info("reviseFromBranch ref not found on push remote; falling back to base branch",
+			"reviseFromBranch", ref, "baseBranch", baseBranch)
+	}
+
+	if upstreamURL := resolveUpstream(task.Spec.Payload.Repo); upstreamURL != "" {
+		return repo.CreateBranchFromUpstream(ctx, repo.UpstreamBranchOptions{
+			Workspace:   workspace,
+			Branch:      branch,
+			UpstreamURL: upstreamURL,
+			BaseBranch:  baseBranch,
+			Auth:        auth,
+		})
+	}
+	return repo.CreateAndCheckoutBranch(ctx, workspace, branch)
 }
 
 // runLLMPath is the model-in-the-loop continuation of Execute. Called
@@ -1770,13 +1808,21 @@ func logReviewerFindings(log logr.Logger, extra map[string]any) {
 }
 
 // fetchIssueBodyIfNeeded populates task.Spec.Payload.Prompt from the
-// GitHub issue body when the task is an issue-fix with an empty
-// prompt. The M6 stub planner does not pull issue bodies at synthesis
+// GitHub issue body when the task is an issue-fix that names an
+// issue. The M6 stub planner does not pull issue bodies at synthesis
 // time; this lazy fetch makes a coder Agent's first turn actually
 // useful instead of being told "fix #510" with no context (#571).
 //
+// Revision tasks (payload.reviseFromBranch set, #951) are the
+// exception to the "non-empty prompt suppresses the fetch" rule: their
+// prompt is the review feedback, and a retry handed only the feedback
+// loses the original ask and acceptance criteria. For those, the issue
+// body is APPENDED under an "## Original issue (#N)" heading. Non-
+// revision tasks with a prompt (bridge-composed, hand-authored
+// pipelines) stay untouched, as before.
+//
 // Best-effort: no fetcher, no auth token, malformed repo, or HTTP
-// failure all yield a log line and leave the payload prompt empty,
+// failure all yield a log line and leave the payload prompt as-is,
 // preserving the pre-#571 behavior. The model can still grep the repo
 // for clues; the goal here is to give it a much better starting
 // point when GitHub is reachable.
@@ -1797,7 +1843,9 @@ func fetchIssueBodyIfNeeded(
 	if task.Spec.Kind != foremanv1alpha1.AgenticTaskKindIssueFix {
 		return
 	}
-	if task.Spec.Payload.Prompt != "" {
+	if task.Spec.Payload.Prompt != "" && task.Spec.Payload.ReviseFromBranch == "" {
+		// Pre-#951 contract: a composed prompt owns the task context.
+		// Only revision tasks append the issue behind their feedback.
 		return
 	}
 	if task.Spec.Payload.Issue <= 0 {
@@ -1818,13 +1866,13 @@ func fetchIssueBodyIfNeeded(
 		var herr *githubissue.HTTPError
 		switch {
 		case errors.As(err, &herr) && herr.IsNotFound():
-			log.Info("issue fetch: not found; continuing with empty body",
+			log.Info("issue fetch: not found; continuing without issue body",
 				"issue", task.Spec.Payload.Issue, "repo", task.Spec.Payload.Repo)
 		case errors.As(err, &herr) && herr.IsUnauthorized():
 			log.Info("issue fetch: unauthorized; check GITHUB_TOKEN",
 				"issue", task.Spec.Payload.Issue, "repo", task.Spec.Payload.Repo)
 		default:
-			log.Info("issue fetch failed; continuing with empty body",
+			log.Info("issue fetch failed; continuing without issue body",
 				"err", err.Error(),
 				"issue", task.Spec.Payload.Issue, "repo", task.Spec.Payload.Repo)
 		}
@@ -1836,7 +1884,16 @@ func fetchIssueBodyIfNeeded(
 	// the labels (helps with triage). Body is the longest part and
 	// goes last so the structured fields stay near the top.
 	var b strings.Builder
-	fmt.Fprintf(&b, "# Issue #%d: %s\n\n", iss.Number, iss.Title)
+	appended := task.Spec.Payload.Prompt != ""
+	if appended {
+		// Revision task: the review-feedback prompt stays first; the
+		// issue rides behind it under its own heading so the model sees
+		// both the retry context and the original ask.
+		b.WriteString(task.Spec.Payload.Prompt)
+		fmt.Fprintf(&b, "\n\n## Original issue (#%d): %s\n\n", iss.Number, iss.Title)
+	} else {
+		fmt.Fprintf(&b, "# Issue #%d: %s\n\n", iss.Number, iss.Title)
+	}
 	fmt.Fprintf(&b, "State: %s\n", iss.State)
 	if len(iss.Labels) > 0 {
 		fmt.Fprintf(&b, "Labels: %s\n", strings.Join(iss.Labels, ", "))
@@ -1845,7 +1902,7 @@ func fetchIssueBodyIfNeeded(
 	b.WriteString(iss.Body)
 	task.Spec.Payload.Prompt = b.String()
 	log.Info("issue body fetched",
-		"issue", iss.Number, "state", iss.State, "bodyLen", len(iss.Body))
+		"issue", iss.Number, "state", iss.State, "bodyLen", len(iss.Body), "appended", appended)
 }
 
 // progressConfigFromAgent maps the Agent CR's stuckLoopDetection field

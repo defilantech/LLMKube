@@ -167,6 +167,70 @@ func CreateBranchFromUpstream(ctx context.Context, opts UpstreamBranchOptions) e
 	return nil
 }
 
+// RemoteRefBranchOptions configures CreateBranchFromRemoteRef.
+type RemoteRefBranchOptions struct {
+	// Workspace is the cloned working tree to create the branch in.
+	Workspace string
+	// Branch is the new task branch name.
+	Branch string
+	// Remote is the remote the ref is fetched from — the push remote
+	// ("origin" in executor workspaces), where the prior attempt lives.
+	Remote string
+	// Ref is the branch name on Remote to restore from (the prior
+	// attempt's branch).
+	Ref string
+	// Auth, when non-nil, provides the GIT_ASKPASS scaffolding for the
+	// probe + fetch. A public remote can leave it nil.
+	Auth *Auth
+}
+
+// CreateBranchFromRemoteRef fetches Ref from Remote and creates Branch
+// at the fetched tip, so a revision task's workspace starts with the
+// prior attempt's files present (#951: the executor owns git; the
+// restore must not be prompt-driven). Returns found=false with a nil
+// error when Remote has no such ref (prior attempt pruned or never
+// pushed) so the caller can fall back to the base-branch path;
+// transport/auth failures return an error.
+func CreateBranchFromRemoteRef(ctx context.Context, opts RemoteRefBranchOptions) (found bool, err error) {
+	if opts.Workspace == "" {
+		return false, fmt.Errorf("CreateBranchFromRemoteRef: Workspace is required")
+	}
+	if !gitRefSafe(opts.Branch) {
+		return false, fmt.Errorf("CreateBranchFromRemoteRef: invalid branch name %q", opts.Branch)
+	}
+	if !gitRefSafe(opts.Remote) {
+		return false, fmt.Errorf("CreateBranchFromRemoteRef: invalid remote %q", opts.Remote)
+	}
+	if !gitRefSafe(opts.Ref) {
+		return false, fmt.Errorf("CreateBranchFromRemoteRef: invalid ref %q", opts.Ref)
+	}
+
+	env := baseEnv()
+	if opts.Auth != nil {
+		env = append(env, opts.Auth.Env()...)
+	}
+
+	// Probe first: ls-remote exits 0 with empty output for a missing
+	// ref, which cleanly separates "fall back to base" from transport
+	// failures (which error out and should fail the task loudly).
+	out, err := runGit(ctx, opts.Workspace, env, "ls-remote", opts.Remote, "refs/heads/"+opts.Ref)
+	if err != nil {
+		return false, fmt.Errorf("CreateBranchFromRemoteRef: ls-remote %s %s: %w", opts.Remote, opts.Ref, err)
+	}
+	if strings.TrimSpace(out) == "" {
+		return false, nil
+	}
+
+	if _, err := runGit(ctx, opts.Workspace, env, "fetch", opts.Remote, opts.Ref); err != nil {
+		return false, fmt.Errorf("CreateBranchFromRemoteRef: fetch %s %s: %w", opts.Remote, opts.Ref, err)
+	}
+	// -B for idempotency, mirroring CreateBranchFromUpstream.
+	if _, err := runGit(ctx, opts.Workspace, baseEnv(), "checkout", "-B", opts.Branch, "FETCH_HEAD"); err != nil {
+		return false, fmt.Errorf("CreateBranchFromRemoteRef: checkout -B %s FETCH_HEAD: %w", opts.Branch, err)
+	}
+	return true, nil
+}
+
 // baseEnv is the minimal env for read/local-only git ops that do not
 // need GIT_ASKPASS (branch, status, log). HOME is carried through so
 // git can read ~/.gitconfig if present.
