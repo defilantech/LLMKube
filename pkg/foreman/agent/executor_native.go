@@ -1172,6 +1172,15 @@ func (e *NativeAgentLoopExecutor) maybeOpenPullRequest(
 // from the branch head's commit subject (fallback "Fix #<n>"), base
 // from payload.baseBranch (default main), body linking the issue. The
 // same token the coder pushed with authenticates the API calls.
+//
+// The coder pushed the branch to the configured git remote, which may be
+// a fork of payload.repo (--git-remote-url names the fork while
+// payload.repo names the upstream the PR targets). When the remote's
+// owner differs from payload.repo's owner, the PR is cross-fork: the
+// head must be qualified "forkOwner:branch" and the head commit read
+// from the fork, where the ref actually exists. A remote with the same
+// owner — or one that is not an owner/repo-shaped URL at all (local
+// paths in tests) — keeps the same-repo shape.
 func (e *NativeAgentLoopExecutor) openPullRequest(
 	ctx context.Context, task *foremanv1alpha1.AgenticTask, auth *repo.Auth,
 ) (string, error) {
@@ -1184,13 +1193,20 @@ func (e *NativeAgentLoopExecutor) openPullRequest(
 	if auth != nil {
 		token = auth.Token
 	}
-	title := e.PREnsurer.HeadCommitSubject(ctx, owner, name, p.Branch, token)
+	head := p.Branch
+	headOwner, headRepo := owner, name
+	if forkOwner, forkRepo := gitRemoteOwnerRepo(e.GitRemoteURL); forkOwner != "" &&
+		!strings.EqualFold(forkOwner, owner) {
+		head = forkOwner + ":" + p.Branch
+		headOwner, headRepo = forkOwner, forkRepo
+	}
+	title := e.PREnsurer.HeadCommitSubject(ctx, headOwner, headRepo, p.Branch, token)
 	if title == "" {
 		title = fmt.Sprintf("Fix #%d", p.Issue)
 	}
 	body := fmt.Sprintf("Fixes #%d\n\nOpened by foreman on review GO (workload %s).",
 		p.Issue, task.Labels["foreman.llmkube.dev/workload"])
-	res, err := e.PREnsurer.EnsurePR(ctx, owner, name, p.Branch,
+	res, err := e.PREnsurer.EnsurePR(ctx, owner, name, head,
 		baseBranchOrDefault(p.BaseBranch), title, body, token)
 	if err != nil {
 		return "", err
@@ -1381,6 +1397,41 @@ func upstreamURLForRepo(repoSlug string) string {
 // limited to git/GitHub-safe characters and exactly one slash is allowed, so
 // "..", multiple path segments, and whitespace are rejected.
 var repoSlugPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$`)
+
+// gitRemoteOwnerRepo extracts the owner and repository name from a git
+// remote URL, so openPullRequest can tell whether --git-remote-url is a
+// fork of payload.repo. Understood forms: http(s)://host/owner/repo,
+// ssh://git@host/owner/repo, and scp-like git@host:owner/repo — each
+// with or without the .git suffix. Anything else (local paths, file://
+// remotes used in tests, bare hosts) yields "", "" so callers fall back
+// to same-repo behavior.
+func gitRemoteOwnerRepo(remoteURL string) (owner, name string) {
+	remoteURL = strings.TrimSpace(remoteURL)
+	var path string
+	switch {
+	case strings.HasPrefix(remoteURL, "https://"),
+		strings.HasPrefix(remoteURL, "http://"),
+		strings.HasPrefix(remoteURL, "ssh://"):
+		u, err := url.Parse(remoteURL)
+		if err != nil {
+			return "", ""
+		}
+		path = strings.Trim(u.Path, "/")
+	case strings.Contains(remoteURL, "@") && strings.Contains(remoteURL, ":") &&
+		!strings.Contains(remoteURL, "://"):
+		// scp-like syntax: git@github.com:owner/repo.git
+		_, after, _ := strings.Cut(remoteURL, ":")
+		path = strings.Trim(after, "/")
+	default:
+		return "", ""
+	}
+	path = strings.TrimSuffix(path, ".git")
+	if !repoSlugPattern.MatchString(path) {
+		return "", ""
+	}
+	o, n, _ := strings.Cut(path, "/")
+	return o, n
+}
 
 // 4. Everything else falls back to foreman/<task-name>.
 func branchNameForTask(task *foremanv1alpha1.AgenticTask) string {

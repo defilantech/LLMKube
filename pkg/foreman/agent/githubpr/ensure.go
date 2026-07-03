@@ -46,6 +46,9 @@ type Result struct {
 
 // Ensurer is the interface the executor consumes; tests substitute it.
 type Ensurer interface {
+	// EnsurePR's head is a bare branch name for a same-repo PR, or a
+	// "forkOwner:branch" qualified head for a cross-fork PR (the coder
+	// pushed to a fork of owner/repo). owner/repo always name the base.
 	EnsurePR(ctx context.Context, owner, repo, head, base, title, body, token string) (*Result, error)
 	// HeadCommitSubject returns the branch head's commit subject for use
 	// as the PR title; "" on any failure (callers fall back).
@@ -126,13 +129,28 @@ func (c *Client) base() string {
 }
 
 func (c *Client) findByHead(ctx context.Context, owner, repo, head, token string) (string, error) {
+	// A cross-fork head arrives pre-qualified ("forkOwner:branch") and is
+	// used verbatim; a same-repo head is qualified with the base owner so
+	// the filter cannot match another fork's identically-named branch.
+	filter := head
+	if !strings.Contains(head, ":") {
+		filter = owner + ":" + head
+	}
 	target := fmt.Sprintf("%s/repos/%s/%s/pulls?state=all&head=%s",
-		c.base(), owner, repo, url.QueryEscape(owner+":"+head))
+		c.base(), owner, repo, url.QueryEscape(filter))
 	var prs []struct {
 		HTMLURL string `json:"html_url"`
+		State   string `json:"state"`
 	}
 	if err := c.getJSON(ctx, target, token, &prs); err != nil {
 		return "", fmt.Errorf("githubpr: list by head: %w", err)
+	}
+	// state=all carries no open-first ordering guarantee; when a closed
+	// PR and an open one share the head, the open one is the artifact.
+	for _, pr := range prs {
+		if pr.State == "open" {
+			return pr.HTMLURL, nil
+		}
 	}
 	if len(prs) == 0 {
 		return "", nil
