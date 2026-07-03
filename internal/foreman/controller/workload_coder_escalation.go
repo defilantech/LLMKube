@@ -114,8 +114,11 @@ func escalationHintPrompt(priorSummary string) string {
 	return b.String()
 }
 
-// coderEscalationSteps decides which code-<N>-esc / verify-<N>-esc steps
-// to emit NOW (mirrors escalationSteps for reviewers, #546). For each
+// coderEscalationSteps decides which code-<N>-esc / verify-<N>-esc /
+// review-<N>-esc-<i> steps to emit NOW (mirrors escalationSteps for
+// reviewers, #546). The reviewer fan-out is emitted only when the
+// Workload sets ReviewerAgentRefs, so the escalated branch gets a
+// verdict and a PR carrier rather than ending unreviewed. For each
 // issue N the trigger is: the base code-<N> task is terminal (Phase
 // Succeeded or Failed) AND shouldEscalateCoder is true for it. Steps
 // whose code-<N>-esc child already exists are skipped, so a partial
@@ -195,6 +198,27 @@ func coderEscalationSteps(
 				},
 			},
 		)
+		// Reviewer fan-out on the escalated branch: without it the
+		// escalated coder can GO and gate-pass but nothing produces a
+		// verdict or (post-#956) the openPullRequest carrier, so the
+		// fix ends as a pushed, unreviewed branch with no PR. Mirrors
+		// the base review-<N>-<i> emission in synthesizeIssueBatch. No
+		// reviewers configured means code+verify only (unchanged).
+		openPR := w.Spec.OpenPullRequest == nil || *w.Spec.OpenPullRequest
+		for i, reviewerRef := range w.Spec.ReviewerAgentRefs {
+			steps = append(steps, foremanv1alpha1.PipelineStep{
+				Name:      fmt.Sprintf("review-%d-esc-%d", n, i),
+				Kind:      foremanv1alpha1.AgenticTaskKindReview,
+				AgentRef:  reviewerRef,
+				DependsOn: []string{escVerifyStep},
+				Payload: foremanv1alpha1.AgenticTaskPayload{
+					Repo:            w.Spec.Repo,
+					Issue:           n,
+					Branch:          branch,
+					OpenPullRequest: openPR,
+				},
+			})
+		}
 		escalated = append(escalated, n)
 	}
 	return steps, escalated

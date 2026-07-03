@@ -112,6 +112,100 @@ func TestCoderEscalationSteps_EmitsOnNoGo(t *testing.T) {
 	}
 }
 
+func TestCoderEscalationSteps_EmitsReviewerStepsOnEscBranch(t *testing.T) {
+	newBase := func() foremanv1alpha1.AgenticTask {
+		code := foremanv1alpha1.AgenticTask{}
+		code.Name = "wl-code-944"
+		code.Labels = map[string]string{labelStep: "code-944"}
+		code.Status.Phase = foremanv1alpha1.AgenticTaskPhaseSucceeded
+		code.Status.Verdict = foremanv1alpha1.AgenticTaskVerdictNoGo
+		code.Status.Result = resultRaw("MODEL-DECIDED", "", "bailed")
+		return code
+	}
+
+	// findStep returns the emitted step by name, or a zero step if absent.
+	findStep := func(steps []foremanv1alpha1.PipelineStep, name string) (foremanv1alpha1.PipelineStep, bool) {
+		for _, s := range steps {
+			if s.Name == name {
+				return s, true
+			}
+		}
+		return foremanv1alpha1.PipelineStep{}, false
+	}
+
+	newWorkload := func() *foremanv1alpha1.Workload {
+		w := &foremanv1alpha1.Workload{}
+		w.Name = "wl"
+		w.Spec.Repo = "defilantech/LLMKube"
+		w.Spec.Issues = []int32{944}
+		w.Spec.CoderAgentRef = &corev1.LocalObjectReference{Name: "coder-metal"}
+		w.Spec.VerifierAgentRef = &corev1.LocalObjectReference{Name: "gate"}
+		w.Spec.EscalationCoderAgentRef = &corev1.LocalObjectReference{Name: "coder-qwopus"}
+		return w
+	}
+
+	t.Run("reviewer set, openPullRequest nil -> review-esc step with openPR true", func(t *testing.T) {
+		w := newWorkload()
+		w.Spec.ReviewerAgentRefs = []corev1.LocalObjectReference{{Name: "reviewer-a"}}
+
+		steps, _ := coderEscalationSteps(w, []foremanv1alpha1.AgenticTask{newBase()})
+		// code-esc + verify-esc + one review-esc.
+		if len(steps) != 3 {
+			t.Fatalf("want 3 steps (code+verify+review esc), got %d: %+v", len(steps), steps)
+		}
+		rev, ok := findStep(steps, "review-944-esc-0")
+		if !ok {
+			t.Fatalf("review-944-esc-0 not emitted: %+v", steps)
+		}
+		if rev.Kind != foremanv1alpha1.AgenticTaskKindReview {
+			t.Errorf("review-esc kind wrong: %q", rev.Kind)
+		}
+		if rev.AgentRef.Name != "reviewer-a" {
+			t.Errorf("review-esc agentRef wrong: %q", rev.AgentRef.Name)
+		}
+		if len(rev.DependsOn) != 1 || rev.DependsOn[0] != "verify-944-esc" {
+			t.Errorf("review-esc dependsOn wrong: %v", rev.DependsOn)
+		}
+		if rev.Payload.Branch != "foreman/wl/issue-944-esc" {
+			t.Errorf("review-esc branch wrong: %q", rev.Payload.Branch)
+		}
+		if rev.Payload.Issue != 944 {
+			t.Errorf("review-esc issue wrong: %d", rev.Payload.Issue)
+		}
+		if !rev.Payload.OpenPullRequest {
+			t.Errorf("review-esc openPullRequest must default true when spec.openPullRequest is nil")
+		}
+	})
+
+	t.Run("openPullRequest explicit false -> review-esc carries false", func(t *testing.T) {
+		w := newWorkload()
+		w.Spec.ReviewerAgentRefs = []corev1.LocalObjectReference{{Name: "reviewer-a"}}
+		no := false
+		w.Spec.OpenPullRequest = &no
+
+		steps, _ := coderEscalationSteps(w, []foremanv1alpha1.AgenticTask{newBase()})
+		rev, ok := findStep(steps, "review-944-esc-0")
+		if !ok {
+			t.Fatalf("review-944-esc-0 not emitted: %+v", steps)
+		}
+		if rev.Payload.OpenPullRequest {
+			t.Errorf("review-esc openPullRequest must honor spec.openPullRequest=false")
+		}
+	})
+
+	t.Run("no reviewers -> code+verify only (backward-compat)", func(t *testing.T) {
+		w := newWorkload() // ReviewerAgentRefs left nil
+
+		steps, _ := coderEscalationSteps(w, []foremanv1alpha1.AgenticTask{newBase()})
+		if len(steps) != 2 {
+			t.Fatalf("want 2 steps (code+verify only), got %d: %+v", len(steps), steps)
+		}
+		if _, ok := findStep(steps, "review-944-esc-0"); ok {
+			t.Errorf("no reviewers configured must emit no review-esc step: %+v", steps)
+		}
+	})
+}
+
 func TestCoderEscalationSteps_SkipsStuckLoopAndExisting(t *testing.T) {
 	ref := corev1.LocalObjectReference{Name: "coder-qwopus"}
 	w := &foremanv1alpha1.Workload{}
