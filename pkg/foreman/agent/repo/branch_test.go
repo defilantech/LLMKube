@@ -167,3 +167,108 @@ func TestCreateBranchFromUpstream_FetchFailureErrors(t *testing.T) {
 		t.Fatal("expected error when the upstream fetch fails")
 	}
 }
+
+// pushPriorAttempt clones bare, commits fname on branch, and pushes the
+// branch — simulating a prior coder attempt living on the push remote.
+// Returns the attempt's tip SHA.
+func pushPriorAttempt(t *testing.T, bare, dir, branch, fname string) string {
+	t.Helper()
+	work := mustClone(t, bare, dir)
+	mustGit(t, work, "checkout", "-b", branch)
+	if err := os.WriteFile(filepath.Join(work, fname), []byte("attempt 1\n"), 0o644); err != nil {
+		t.Fatalf("write %s: %v", fname, err)
+	}
+	mustGit(t, work, "-c", "user.email=u@x", "-c", "user.name=u", "add", fname)
+	mustGit(t, work, "-c", "user.email=u@x", "-c", "user.name=u", "commit", "-m", "attempt 1")
+	mustGit(t, work, "push", "origin", branch)
+	return gitOut(t, work, "rev-parse", "HEAD")
+}
+
+// TestCreateBranchFromRemoteRef verifies the #951 revision restore: the
+// task branch is cut from the prior attempt's ref on the push remote,
+// so the prior attempt's files are simply present in the workspace.
+func TestCreateBranchFromRemoteRef(t *testing.T) {
+	gitOrSkip(t)
+	dir := t.TempDir()
+
+	bare := initBareOrigin(t, filepath.Join(dir, "fork"))
+	seedOrigin(t, bare)
+	const branch = "foreman/wl/issue-641"
+	priorSHA := pushPriorAttempt(t, bare, filepath.Join(dir, "prior"), branch, "fix.txt")
+
+	// Revision workspace: a fresh clone, like the executor makes.
+	workspace := mustClone(t, bare, filepath.Join(dir, "workspace"))
+
+	found, err := CreateBranchFromRemoteRef(context.Background(), RemoteRefBranchOptions{
+		Workspace: workspace,
+		Branch:    branch,
+		Remote:    "origin",
+		Ref:       branch,
+	})
+	if err != nil {
+		t.Fatalf("CreateBranchFromRemoteRef: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want true (the ref exists on the remote)")
+	}
+	if got := gitOut(t, workspace, "rev-parse", "HEAD"); got != priorSHA {
+		t.Errorf("HEAD = %s, want the prior attempt tip %s", got, priorSHA)
+	}
+	if got := gitOut(t, workspace, "branch", "--show-current"); got != branch {
+		t.Errorf("current branch = %q, want %q", got, branch)
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "fix.txt")); err != nil {
+		t.Errorf("prior attempt's file must be present in the workspace: %v", err)
+	}
+}
+
+// TestCreateBranchFromRemoteRef_MissingRef verifies the fallback
+// contract: a ref absent from the remote (pruned, or the prior attempt
+// never pushed) returns found=false WITHOUT an error and leaves the
+// workspace untouched, so the caller can branch from base instead.
+func TestCreateBranchFromRemoteRef_MissingRef(t *testing.T) {
+	gitOrSkip(t)
+	dir := t.TempDir()
+	bare := initBareOrigin(t, filepath.Join(dir, "fork"))
+	seedOrigin(t, bare)
+	workspace := mustClone(t, bare, filepath.Join(dir, "workspace"))
+
+	found, err := CreateBranchFromRemoteRef(context.Background(), RemoteRefBranchOptions{
+		Workspace: workspace,
+		Branch:    "foreman/wl/issue-999",
+		Remote:    "origin",
+		Ref:       "foreman/wl/issue-999",
+	})
+	if err != nil {
+		t.Fatalf("missing ref must not error: %v", err)
+	}
+	if found {
+		t.Fatal("found = true, want false for a ref the remote does not have")
+	}
+	if got := gitOut(t, workspace, "branch", "--show-current"); got != "main" {
+		t.Errorf("workspace must be untouched on a miss; current branch = %q", got)
+	}
+}
+
+// TestCreateBranchFromRemoteRef_Validation pins the argv-safety guards:
+// option-shaped and traversal-shaped values must be rejected before
+// they reach git.
+func TestCreateBranchFromRemoteRef_Validation(t *testing.T) {
+	cases := []struct {
+		name string
+		opts RemoteRefBranchOptions
+	}{
+		{"empty workspace", RemoteRefBranchOptions{Branch: "b", Remote: "origin", Ref: "r"}},
+		{"option-shaped ref", RemoteRefBranchOptions{Workspace: "w", Branch: "b", Remote: "origin", Ref: "--upload-pack=/x"}},
+		{"traversal ref", RemoteRefBranchOptions{Workspace: "w", Branch: "b", Remote: "origin", Ref: "a..b"}},
+		{"option-shaped remote", RemoteRefBranchOptions{Workspace: "w", Branch: "b", Remote: "--mirror", Ref: "r"}},
+		{"empty branch", RemoteRefBranchOptions{Workspace: "w", Remote: "origin", Ref: "r"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := CreateBranchFromRemoteRef(context.Background(), tc.opts); err == nil {
+				t.Fatalf("expected validation error for %+v", tc.opts)
+			}
+		})
+	}
+}

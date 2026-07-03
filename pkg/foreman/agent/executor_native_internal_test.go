@@ -44,6 +44,7 @@ import (
 
 	foremanv1alpha1 "github.com/defilantech/llmkube/api/foreman/v1alpha1"
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
+	"github.com/defilantech/llmkube/pkg/foreman/agent/githubissue"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/oai"
 )
 
@@ -1830,5 +1831,248 @@ func TestBuildUserPrompt_ReviewerOmitsAdvisoryBlockWhenNone(t *testing.T) {
 	// Must still produce a non-empty, useful prompt.
 	if !strings.Contains(got, "reviewing the branch") {
 		t.Errorf("reviewer prompt missing base content; got:\n%s", got)
+	}
+}
+
+// stubIssueFetcher is a minimal whitebox Fetcher: it returns the
+// canned issue and counts calls. The blackbox fakeIssueFetcher in
+// executor_native_test.go drives the end-to-end path; this one pins
+// fetchIssueBodyIfNeeded's prompt-composition logic in isolation.
+type stubIssueFetcher struct {
+	issue *githubissue.Issue
+	calls int
+}
+
+func (s *stubIssueFetcher) Fetch(context.Context, string, string, int, string) (*githubissue.Issue, error) {
+	s.calls++
+	return s.issue, nil
+}
+
+// TestFetchIssueBodyIfNeeded_AppendsIssueOnRevisionTask covers the
+// revision path (#951): on a task with reviseFromBranch set, the
+// review-feedback prompt must not suppress the issue fetch — the
+// original ask is APPENDED under an "## Original issue" heading so the
+// retry sees both the feedback and what it is actually fixing.
+func TestFetchIssueBodyIfNeeded_AppendsIssueOnRevisionTask(t *testing.T) {
+	fetcher := &stubIssueFetcher{issue: &githubissue.Issue{
+		Number: 641,
+		Title:  "Widget breaks on input X",
+		Body:   "The widget panics when given X. Acceptance: no panic.",
+		State:  "open",
+		Labels: []string{"bug"},
+	}}
+	const feedback = "The reviewer rejected your previous attempt at issue #641 (verdict NO-GO)."
+	task := &foremanv1alpha1.AgenticTask{
+		Spec: foremanv1alpha1.AgenticTaskSpec{
+			Kind: foremanv1alpha1.AgenticTaskKindIssueFix,
+			Payload: foremanv1alpha1.AgenticTaskPayload{
+				Repo:             "defilantech/LLMKube",
+				Issue:            641,
+				Branch:           "foreman/wl/issue-641",
+				ReviseFromBranch: "foreman/wl/issue-641",
+				Prompt:           feedback,
+			},
+		},
+	}
+
+	fetchIssueBodyIfNeeded(context.Background(), fetcher, task, nil, logr.Discard())
+
+	if fetcher.calls != 1 {
+		t.Fatalf("fetcher calls = %d, want 1", fetcher.calls)
+	}
+	got := task.Spec.Payload.Prompt
+	if !strings.HasPrefix(got, feedback) {
+		t.Errorf("existing prompt must stay first; got:\n%s", got)
+	}
+	for _, want := range []string{
+		"## Original issue (#641): Widget breaks on input X",
+		"State: open",
+		"Labels: bug",
+		"The widget panics when given X. Acceptance: no panic.",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("appended prompt missing %q in:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "# Issue #641:") {
+		t.Errorf("append path must use the Original-issue heading, not the empty-prompt H1; got:\n%s", got)
+	}
+}
+
+// TestFetchIssueBodyIfNeeded_NoIssueNumberIsNoOp pins the Issue==0
+// contract: without an issue number there is nothing to fetch, and an
+// existing prompt must pass through untouched.
+func TestFetchIssueBodyIfNeeded_NoIssueNumberIsNoOp(t *testing.T) {
+	fetcher := &stubIssueFetcher{issue: &githubissue.Issue{Number: 1, Title: "unused"}}
+	const prompt = "hand-authored task prompt with no issue reference"
+	task := &foremanv1alpha1.AgenticTask{
+		Spec: foremanv1alpha1.AgenticTaskSpec{
+			Kind: foremanv1alpha1.AgenticTaskKindIssueFix,
+			Payload: foremanv1alpha1.AgenticTaskPayload{
+				Repo:   "defilantech/LLMKube",
+				Prompt: prompt,
+			},
+		},
+	}
+
+	fetchIssueBodyIfNeeded(context.Background(), fetcher, task, nil, logr.Discard())
+
+	if fetcher.calls != 0 {
+		t.Errorf("fetcher must not be called when Issue is 0; calls = %d", fetcher.calls)
+	}
+	if task.Spec.Payload.Prompt != prompt {
+		t.Errorf("prompt must be untouched; got %q", task.Spec.Payload.Prompt)
+	}
+}
+
+// TestFetchIssueBodyIfNeeded_ComposedPromptWithoutRevisionUntouched
+// pins the pre-#951 contract for NON-revision tasks: a composed prompt
+// (bridge- or hand-authored) owns the task context, so the fetch is
+// suppressed even though an issue number is present.
+func TestFetchIssueBodyIfNeeded_ComposedPromptWithoutRevisionUntouched(t *testing.T) {
+	fetcher := &stubIssueFetcher{issue: &githubissue.Issue{Number: 641, Title: "unused"}}
+	const prompt = "bridge-composed prompt that already embeds the issue text"
+	task := &foremanv1alpha1.AgenticTask{
+		Spec: foremanv1alpha1.AgenticTaskSpec{
+			Kind: foremanv1alpha1.AgenticTaskKindIssueFix,
+			Payload: foremanv1alpha1.AgenticTaskPayload{
+				Repo:   "defilantech/LLMKube",
+				Issue:  641,
+				Prompt: prompt,
+			},
+		},
+	}
+
+	fetchIssueBodyIfNeeded(context.Background(), fetcher, task, nil, logr.Discard())
+
+	if fetcher.calls != 0 {
+		t.Errorf("fetcher must not be called for a composed prompt without reviseFromBranch; calls = %d", fetcher.calls)
+	}
+	if task.Spec.Payload.Prompt != prompt {
+		t.Errorf("prompt must be untouched; got %q", task.Spec.Payload.Prompt)
+	}
+}
+
+// ---- setupTaskBranch (#951 revise-from-branch restore) ----
+
+// gitIn runs git in dir with a hermetic identity, failing the test on
+// error and returning trimmed stdout.
+func gitIn(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@example.com",
+		"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@example.com",
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// seededRemote creates a bare remote with one commit on main and
+// returns its path plus the main tip SHA.
+func seededRemote(t *testing.T, dir string) (bare, mainSHA string) {
+	t.Helper()
+	bare = filepath.Join(dir, "origin.git")
+	gitIn(t, "", "init", "--bare", "-b", "main", bare)
+	seed := filepath.Join(dir, "seed")
+	gitIn(t, "", "clone", bare, seed)
+	if err := os.WriteFile(filepath.Join(seed, "README.md"), []byte("# seed\n"), 0o644); err != nil {
+		t.Fatalf("seed write: %v", err)
+	}
+	gitIn(t, seed, "add", "README.md")
+	gitIn(t, seed, "commit", "-m", "seed")
+	gitIn(t, seed, "push", "origin", "main")
+	return bare, gitIn(t, seed, "rev-parse", "HEAD")
+}
+
+func revisionTask(branch string) *foremanv1alpha1.AgenticTask {
+	return &foremanv1alpha1.AgenticTask{
+		Spec: foremanv1alpha1.AgenticTaskSpec{
+			Kind: foremanv1alpha1.AgenticTaskKindIssueFix,
+			Payload: foremanv1alpha1.AgenticTaskPayload{
+				Repo:             "defilantech/LLMKube",
+				Issue:            641,
+				Branch:           branch,
+				ReviseFromBranch: branch,
+			},
+		},
+	}
+}
+
+// TestSetupTaskBranch_RestoresPriorAttempt drives the executor-owned
+// restore (#951): with reviseFromBranch set and the ref present on the
+// push remote, the working branch starts at the prior attempt's tip
+// (files present), NOT at a fresh fetch of the base branch.
+func TestSetupTaskBranch_RestoresPriorAttempt(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	dir := t.TempDir()
+	bare, _ := seededRemote(t, dir)
+	const branch = "foreman/wl/issue-641"
+
+	// Prior attempt pushed to the remote.
+	prior := filepath.Join(dir, "prior")
+	gitIn(t, "", "clone", bare, prior)
+	gitIn(t, prior, "checkout", "-b", branch)
+	if err := os.WriteFile(filepath.Join(prior, "fix.txt"), []byte("attempt 1\n"), 0o644); err != nil {
+		t.Fatalf("write fix.txt: %v", err)
+	}
+	gitIn(t, prior, "add", "fix.txt")
+	gitIn(t, prior, "commit", "-m", "attempt 1")
+	gitIn(t, prior, "push", "origin", branch)
+	priorSHA := gitIn(t, prior, "rev-parse", "HEAD")
+
+	// Fresh executor-style workspace clone.
+	ws := filepath.Join(dir, "ws")
+	gitIn(t, "", "clone", bare, ws)
+
+	err := setupTaskBranch(context.Background(), revisionTask(branch), ws, branch, "main",
+		func(string) string { return bare }, nil, logr.Discard())
+	if err != nil {
+		t.Fatalf("setupTaskBranch: %v", err)
+	}
+	if got := gitIn(t, ws, "rev-parse", "HEAD"); got != priorSHA {
+		t.Errorf("HEAD = %s, want prior attempt tip %s (restore must not rebuild from base)", got, priorSHA)
+	}
+	if _, err := os.Stat(filepath.Join(ws, "fix.txt")); err != nil {
+		t.Errorf("prior attempt's file must be present: %v", err)
+	}
+	if got := gitIn(t, ws, "branch", "--show-current"); got != branch {
+		t.Errorf("current branch = %q, want %q", got, branch)
+	}
+}
+
+// TestSetupTaskBranch_MissingRefFallsBackToBase pins the degradation
+// contract: when the reviseFromBranch ref is gone from the remote the
+// task still runs — branched from the upstream base — instead of
+// failing.
+func TestSetupTaskBranch_MissingRefFallsBackToBase(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	dir := t.TempDir()
+	bare, mainSHA := seededRemote(t, dir)
+	const branch = "foreman/wl/issue-641"
+
+	ws := filepath.Join(dir, "ws")
+	gitIn(t, "", "clone", bare, ws)
+
+	err := setupTaskBranch(context.Background(), revisionTask(branch), ws, branch, "main",
+		func(string) string { return bare }, nil, logr.Discard())
+	if err != nil {
+		t.Fatalf("setupTaskBranch must fall back, not fail: %v", err)
+	}
+	if got := gitIn(t, ws, "rev-parse", "HEAD"); got != mainSHA {
+		t.Errorf("HEAD = %s, want base tip %s (fallback branches from base)", got, mainSHA)
+	}
+	if got := gitIn(t, ws, "branch", "--show-current"); got != branch {
+		t.Errorf("current branch = %q, want %q", got, branch)
 	}
 }

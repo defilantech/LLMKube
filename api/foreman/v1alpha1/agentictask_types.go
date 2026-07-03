@@ -283,6 +283,19 @@ type AgenticTaskPayload struct {
 	// +optional
 	BranchPrefix string `json:"branchPrefix,omitempty"`
 
+	// ReviseFromBranch names a ref on the push remote that the executor
+	// cuts the working branch FROM instead of from BaseBranch, so a
+	// revision task starts with its prior attempt's files present
+	// (#951). Issue-fix only. The WorkloadReconciler stamps this on fix-
+	// iteration coder tasks (the prior attempt lives at the task's own
+	// branch name on the push remote). The executor owns the git restore
+	// — no prompt-driven fetch/checkout. If the ref does not exist on
+	// the remote (e.g. pruned, or the prior attempt never pushed), the
+	// executor logs and falls back to branching from BaseBranch rather
+	// than failing.
+	// +optional
+	ReviseFromBranch string `json:"reviseFromBranch,omitempty"`
+
 	// Prompt is the agent input. Required for freeform.
 	// +optional
 	Prompt string `json:"prompt,omitempty"`
