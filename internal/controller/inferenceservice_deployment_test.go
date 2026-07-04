@@ -4206,7 +4206,7 @@ var _ = Describe("constructDeployment Regression Tests", func() {
 			Expect(container.Ports[0].Name).To(Equal("http"))
 
 			By("verifying base args")
-			Expect(container.Args).To(ContainElements("--model", "--host", "0.0.0.0", "--port", "8080"))
+			Expect(container.Args).To(ContainElements("--model", "--host", "::", "--port", "8080"))
 			Expect(container.Args).To(ContainElement("--metrics"))
 
 			By("verifying no GPU args")
