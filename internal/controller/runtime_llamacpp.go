@@ -43,7 +43,12 @@ func (b *LlamaCppBackend) DefaultHPAMetric() string { return "llamacpp:requests_
 func (b *LlamaCppBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, model *inferencev1alpha1.Model, modelPath string, port int32) []string {
 	args := []string{
 		"--model", modelPath,
-		"--host", "0.0.0.0",
+		// Bind the dual-stack wildcard so pods are reachable on IPv6-only
+		// clusters (#972). With the default net.ipv6.bindv6only=0, :: also
+		// accepts IPv4, so IPv4-only and dual-stack clusters keep working.
+		// On IPv6-disabled nodes, override via extraArgs ("--host", "0.0.0.0");
+		// llama.cpp keeps the last occurrence of a repeated flag.
+		"--host", "::",
 		"--port", fmt.Sprintf("%d", port),
 	}
 

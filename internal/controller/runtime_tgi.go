@@ -27,7 +27,10 @@ func (b *TGIBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, model *
 
 	args := []string{
 		"--model-id", source,
-		"--hostname", "0.0.0.0",
+		// Bind the dual-stack wildcard so pods are reachable on IPv6-only
+		// clusters (#972). With the default net.ipv6.bindv6only=0, :: also
+		// accepts IPv4, so IPv4-only and dual-stack clusters keep working.
+		"--hostname", "::",
 		"--port", fmt.Sprintf("%d", port),
 	}
 

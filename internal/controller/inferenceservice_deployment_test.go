@@ -3660,12 +3660,12 @@ var _ = Describe("RuntimeBackend interface", func() {
 			// deprecated and intentionally omitted.
 			Expect(args[0]).To(Equal("/models/llama3"))
 			Expect(args).NotTo(ContainElement("--model"))
-			Expect(args).To(ContainElements("--host", "0.0.0.0"))
+			Expect(args).To(ContainElements("--host", "::"))
 			Expect(args).To(ContainElements("--port", "8000"))
 			// --enable-metrics is always set so vLLM pods expose /metrics for
 			// PodMonitor scraping (#409).
 			Expect(args).To(ContainElement("--enable-metrics"))
-			// Six elements: <model> --host 0.0.0.0 --port 8000 --enable-metrics.
+			// Six elements: <model> --host :: --port 8000 --enable-metrics.
 			Expect(args).To(HaveLen(6))
 		})
 
