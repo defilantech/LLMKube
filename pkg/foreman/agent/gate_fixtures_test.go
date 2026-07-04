@@ -504,3 +504,65 @@ func Solo() string {
 		}
 	})
 }
+
+// TestGateFixtures_StagingDoesNotBlindDownstream is the #907/#962 regression.
+//
+// RunCoderGate runs checkScopeOverlap (step 8) BEFORE checkTestPresence (step 9)
+// and checkMutationSurvival (step 10). #962 changed checkScopeOverlap to stage
+// the whole working tree with `git add -A` (so Go files in NEW directories show
+// up in its name-only diff). But the downstream mutation gates read the coder's
+// changes via `git diff` for a file. Before this fix that diff had no revision
+// argument, so after step 8 staged everything (working tree == index) it
+// returned EMPTY: checkTestPresence saw zero net-new funcs and could not flag a
+// missing test, silently going green on the GO path. The per-check unit tests
+// mock `run` in isolation, so none caught the staging leaking across checks.
+//
+// This test drives the two checks in the real gate order against a REAL git
+// repo (execCommandRunner via materializeFixture, no mocked runner) and asserts
+// test-presence still FIRES after checkScopeOverlap stages. It FAILS on the old
+// `git diff -- <file>` helper (blinded by staging) and PASSES on the
+// `git diff HEAD -- <file>` fix.
+func TestGateFixtures_StagingDoesNotBlindDownstream(t *testing.T) {
+	// Simulate the coder: a NEW exported func in a NEW directory, with NO test.
+	newSrc := `package newthing
+
+// DoNewThing is new, exported, and shipped without a test.
+func DoNewThing() string {
+	return "new"
+}
+`
+	ws, run := materializeFixture(t, []fixtureFile{
+		{relPath: "pkg/newthing/newthing.go", base: "", current: newSrc},
+	})
+
+	ctx := context.Background()
+
+	// Baseline: before any staging, test-presence already fires for the
+	// untested new func (proves the fixture is set up correctly).
+	if failed, _ := checkTestPresence(ctx, ws, run); !failed {
+		t.Fatal("baseline: test-presence should fire for an untested new func")
+	}
+
+	// Step 8: checkScopeOverlap stages the entire tree via `git add -A`. A
+	// non-empty issueText is required so the check reaches the staging step
+	// (it early-returns on empty issueText before staging).
+	_, _ = checkScopeOverlap(ctx, ws, run, "add DoNewThing to pkg/newthing")
+
+	// Precondition that used to blind the downstream gates: with everything
+	// staged, a plain (unstaged) `git diff` is now empty.
+	if plain, _ := run(ctx, ws, nil, "git", "diff"); strings.TrimSpace(plain) != "" {
+		t.Fatalf("precondition: expected an empty unstaged diff after `git add -A`, got:\n%s", plain)
+	}
+
+	// Step 9: test-presence must STILL fire against the staged tree. On the
+	// pre-fix `git diff -- <file>` helper this returned passed=false (the bug),
+	// because the unstaged diff was empty and no net-new func was seen.
+	failed, out := checkTestPresence(ctx, ws, run)
+	if !failed {
+		t.Fatal("regression #907: test-presence was blinded by checkScopeOverlap's " +
+			"`git add -A` staging; the downstream diff must be taken against HEAD")
+	}
+	if !strings.Contains(out, "DoNewThing") {
+		t.Errorf("test-presence output should name DoNewThing; got: %s", out)
+	}
+}

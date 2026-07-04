@@ -80,7 +80,7 @@ func TestCheckTestPresence(t *testing.T) {
 		if name == "git" && len(args) > 0 && args[0] == "status" {
 			return statusOut, nil
 		}
-		if name == "git" && len(args) > 0 && args[0] == "diff" {
+		if name == "git" && len(args) > 1 && args[0] == "diff" && (args[1] == "HEAD" || args[1] == "-U0") {
 			return diffOut, nil
 		}
 		return "", nil
@@ -109,17 +109,17 @@ func TestCheckTestPresence_PassesWhenTestChanged(t *testing.T) { //nolint:dupl
 	_ = os.WriteFile(filepath.Join(ws, "pkg/x/x_test.go"),
 		[]byte("package x\nimport \"testing\"\nfunc TestNew(t *testing.T) { New() }\n"), 0o644)
 	statusOut := " M pkg/x/x.go\x00 M pkg/x/x_test.go\x00"
-	// git diff -- file: plain diff (no -U0 flag) — used by addedFuncNames
+	// git diff HEAD -- file: plain diff (no -U0 flag) — used by addedFuncNames
 	diffOut := "@@ -0,0 +1,1 @@\n+func New() {}\n"
-	// git diff -U0 -- file: used by modifiedFuncNames (no hunk-context func here)
+	// git diff -U0 HEAD -- file: used by modifiedFuncNames (no hunk-context func here)
 	diffU0Out := "@@ -0,0 +1,1 @@\n+func New() {}\n"
 	runner := func(_ context.Context, _ string, _ []string, name string, args ...string) (string, error) {
 		switch {
 		case name == "git" && args[0] == "status":
 			return statusOut, nil
-		case name == "git" && args[0] == "diff" && len(args) > 1 && args[1] == "-U0":
+		case name == "git" && args[0] == "diff" && len(args) > 2 && args[1] == "-U0" && args[2] == "HEAD":
 			return diffU0Out, nil
-		case name == "git" && args[0] == "diff":
+		case name == "git" && args[0] == "diff" && len(args) > 1 && args[1] == "HEAD":
 			return diffOut, nil
 		}
 		return "", nil
@@ -143,19 +143,19 @@ func TestCheckTestPresence_UnrelatedTestDoesNotExempt(t *testing.T) {
 		[]byte("package controller\nfunc TestBar(t interface{}) { _ = Bar }\n"), 0o644)
 
 	statusOut := " M internal/controller/x.go\x00 M internal/controller/y_test.go\x00"
-	// git diff -- x.go: plain diff, adds func Foo
+	// git diff HEAD -- x.go: plain diff, adds func Foo
 	diffOut := "diff --git a/internal/controller/x.go b/internal/controller/x.go\n" +
 		"@@ -0,0 +1,2 @@\n+package controller\n+func Foo() {}\n"
-	// git diff -U0 -- x.go: -U0 diff, no trailing func context on this hunk
+	// git diff -U0 HEAD -- x.go: -U0 diff, no trailing func context on this hunk
 	diffU0Out := "@@ -0,0 +1,2 @@\n+package controller\n+func Foo() {}\n"
 
 	runner := func(_ context.Context, _ string, _ []string, name string, args ...string) (string, error) {
 		switch {
 		case name == "git" && args[0] == "status":
 			return statusOut, nil
-		case name == "git" && args[0] == "diff" && len(args) > 1 && args[1] == "-U0":
+		case name == "git" && args[0] == "diff" && len(args) > 2 && args[1] == "-U0" && args[2] == "HEAD":
 			return diffU0Out, nil
-		case name == "git" && args[0] == "diff":
+		case name == "git" && args[0] == "diff" && len(args) > 1 && args[1] == "HEAD":
 			return diffOut, nil
 		}
 		return "", nil
@@ -186,9 +186,9 @@ func TestCheckTestPresence_ReferencingTestPasses(t *testing.T) { //nolint:dupl
 		switch {
 		case name == "git" && args[0] == "status":
 			return statusOut, nil
-		case name == "git" && args[0] == "diff" && len(args) > 1 && args[1] == "-U0":
+		case name == "git" && args[0] == "diff" && len(args) > 2 && args[1] == "-U0" && args[2] == "HEAD":
 			return diffU0Out, nil
-		case name == "git" && args[0] == "diff":
+		case name == "git" && args[0] == "diff" && len(args) > 1 && args[1] == "HEAD":
 			return diffOut, nil
 		}
 		return "", nil
@@ -211,19 +211,19 @@ func TestCheckTestPresence_ModifiedFuncNeedsTest(t *testing.T) {
 	// No changed _test.go at all.
 
 	statusOut := " M pkg/diff/diff.go\x00"
-	// git diff -- diff.go: body changed but no +func line
+	// git diff HEAD -- diff.go: body changed but no +func line
 	diffOut := "diff --git a/pkg/diff/diff.go b/pkg/diff/diff.go\n" +
 		"@@ -1,2 +1,2 @@ func DiffNameOnly() string {\n-\treturn \"old\"\n+\treturn \"new\"\n"
-	// git diff -U0 -- diff.go: hunk header carries the enclosing func name
+	// git diff -U0 HEAD -- diff.go: hunk header carries the enclosing func name
 	diffU0Out := "@@ -1,1 +1,1 @@ func DiffNameOnly() string {\n-\treturn \"old\"\n+\treturn \"new\"\n"
 
 	runner := func(_ context.Context, _ string, _ []string, name string, args ...string) (string, error) {
 		switch {
 		case name == "git" && args[0] == "status":
 			return statusOut, nil
-		case name == "git" && args[0] == "diff" && len(args) > 1 && args[1] == "-U0":
+		case name == "git" && args[0] == "diff" && len(args) > 2 && args[1] == "-U0" && args[2] == "HEAD":
 			return diffU0Out, nil
-		case name == "git" && args[0] == "diff":
+		case name == "git" && args[0] == "diff" && len(args) > 1 && args[1] == "HEAD":
 			return diffOut, nil
 		}
 		return "", nil
@@ -271,7 +271,7 @@ func TestCheckMutationSurvival_FlagsSurvivor(t *testing.T) {
 		switch {
 		case name == "git" && args[0] == "status":
 			return " M pkg/x/x.go\x00 M pkg/x/x_test.go\x00", nil
-		case name == "git" && args[0] == "diff":
+		case name == "git" && args[0] == "diff" && len(args) > 2 && args[1] == "-U0" && args[2] == "HEAD":
 			return "@@ -0,0 +3 @@\n+func Add(a, b int) int { return a + b }\n", nil
 		case name == "go" && args[0] == "test":
 			return "ok", nil // weak test passes even with the body neutered -> SURVIVOR
@@ -299,7 +299,7 @@ func TestCheckMutationSurvival_PassesWhenTestsBite(t *testing.T) {
 		switch {
 		case name == "git" && args[0] == "status":
 			return " M pkg/x/x.go\x00 M pkg/x/x_test.go\x00", nil
-		case name == "git" && args[0] == "diff":
+		case name == "git" && args[0] == "diff" && len(args) > 2 && args[1] == "-U0" && args[2] == "HEAD":
 			return "@@ -0,0 +3 @@\n+func Add(a, b int) int { return a + b }\n", nil
 		case name == "go" && args[0] == "test":
 			return "FAIL", context.DeadlineExceeded // non-nil -> tests failed under neuter -> they bite

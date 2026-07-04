@@ -571,6 +571,13 @@ var scopeRelevantFiles = func(workspace, issueText string) (paths []string, set 
 // Only when there is a real Go signal AND the changed Go files miss it
 // entirely is the submit flagged, with feedback naming what changed vs. what
 // the issue points at.
+//
+// The check inspects the coder's actual (uncommitted) working-tree changes by
+// staging them (`git add -A`) and diffing against HEAD with `git diff --name-only
+// --cached`. This is necessary because the gate runs as VerifyTerminal before
+// the executor commits, so `git diff base...HEAD` would see no changes (the
+// coder's edits are uncommitted/untracked). Mirrors the fix applied to the
+// reference-grounding check in #906.
 func checkScopeOverlap(
 	ctx context.Context, workspace string, run commandRunner, issueText string,
 ) (drift bool, feedback string) {
@@ -578,11 +585,10 @@ func checkScopeOverlap(
 		return false, ""
 	}
 
-	var changedGo []string
-	for path := range dirtyPathSet(ctx, workspace, run) {
-		if strings.HasSuffix(path, ".go") && !strings.HasSuffix(path, "_test.go") {
-			changedGo = append(changedGo, path)
-		}
+	changedGo, err := changedWorkingTreeGoFiles(ctx, workspace, run)
+	if err != nil {
+		// Fail-open: a git error here is not a drift signal.
+		return false, ""
 	}
 	if len(changedGo) == 0 {
 		return false, ""
@@ -661,4 +667,34 @@ func checkReferenceGrounding(ctx context.Context, workspace string, run commandR
 		fmt.Fprintf(&b, "  - %s\n", f.String())
 	}
 	return true, b.String()
+}
+
+// changedWorkingTreeGoFiles returns the workspace-relative Go file paths that
+// differ from HEAD in the coder's working tree (staged + unstaged), excluding
+// test files. It stages everything with `git add -A` and then runs
+// `git diff --name-only --cached HEAD` so the result reflects the coder's
+// uncommitted edits rather than committed history (the gate runs before any
+// commit, so `...HEAD` would see nothing). A git error yields nil (the caller
+// treats that as "no changed files" and skips the check).
+func changedWorkingTreeGoFiles(ctx context.Context, workspace string, run commandRunner) ([]string, error) {
+	// Stage everything so untracked new files appear in the diff.
+	if _, err := run(ctx, workspace, nil, "git", "add", "-A"); err != nil {
+		return nil, err
+	}
+	out, err := run(ctx, workspace, nil, "git", "diff", "--name-only",
+		"--cached", "HEAD")
+	if err != nil {
+		return nil, err
+	}
+	var paths []string
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if strings.HasSuffix(line, ".go") && !strings.HasSuffix(line, "_test.go") {
+			paths = append(paths, line)
+		}
+	}
+	return paths, nil
 }
