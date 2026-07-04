@@ -5,6 +5,31 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.28](https://github.com/defilantech/LLMKube/compare/v0.8.27...v0.8.28) (2026-07-04)
+
+
+### Features
+
+* **foreman:** bounded fix iteration on reviewer NO-GO instead of terminal failure ([#959](https://github.com/defilantech/LLMKube/issues/959)) ([d820fff](https://github.com/defilantech/LLMKube/commit/d820fffa8839a591d448f5368bee9f1c9e3d58a2))
+* **foreman:** coder-tier escalation, re-dispatch a failed coder to a larger model ([#964](https://github.com/defilantech/LLMKube/issues/964)) ([ce8f655](https://github.com/defilantech/LLMKube/commit/ce8f6555115602c3bcc7b116a6bf63471ec3638d))
+* **foreman:** executor-owned revise-from-branch restore for revision tasks ([#967](https://github.com/defilantech/LLMKube/issues/967)) ([b76051c](https://github.com/defilantech/LLMKube/commit/b76051c77ab352a7d2585af87b0fa53cc5a11522))
+* **foreman:** open the pull request on review GO ([#956](https://github.com/defilantech/LLMKube/issues/956)) ([fd852e1](https://github.com/defilantech/LLMKube/commit/fd852e1957874fda837e5d96dc4b2c28f4116d38))
+* **inference:** add spec.modelCache.claimName for user-owned cache PVCs ([#960](https://github.com/defilantech/LLMKube/issues/960)) ([aab5a58](https://github.com/defilantech/LLMKube/commit/aab5a58bf70b4752ab94a53d0f5175e877327172))
+
+
+### Bug Fixes
+
+* **foreman:** accept workspace-internal absolute paths in resolveInside ([#957](https://github.com/defilantech/LLMKube/issues/957)) ([34b126c](https://github.com/defilantech/LLMKube/commit/34b126c27465471bac0b89c9f9f32824e56aa0c4))
+* **foreman:** defer generic self-gate when runtime is missing from coder image ([#958](https://github.com/defilantech/LLMKube/issues/958)) ([df185ec](https://github.com/defilantech/LLMKube/commit/df185ec9d3538c9e524fbc54d5fbef2ecbaaf2e9))
+* **foreman:** reject no-op str_replace where old_string equals new_string ([#969](https://github.com/defilantech/LLMKube/issues/969)) ([c71f38b](https://github.com/defilantech/LLMKube/commit/c71f38b2d0818e26311dbfed39204195adbcd60d))
+* **foreman:** scope-overlap check catches Go files in new directories ([#962](https://github.com/defilantech/LLMKube/issues/962)) ([486a944](https://github.com/defilantech/LLMKube/commit/486a944cb4630a8da1fe6126ed267469ab271bbf))
+* **inference:** warn when modelCache.claimName is silently ignored ([#966](https://github.com/defilantech/LLMKube/issues/966)) ([d49cd22](https://github.com/defilantech/LLMKube/commit/d49cd2202a74d92de3d188c7439b1d69d69362ad))
+
+
+### Documentation
+
+* register the Karpenter GPU autoscaling guide in nav.yaml ([#954](https://github.com/defilantech/LLMKube/issues/954)) ([88b9c7d](https://github.com/defilantech/LLMKube/commit/88b9c7d17d1565193cd8c4be9d1f85482b070aa5))
+
 ## [0.8.27](https://github.com/defilantech/LLMKube/compare/v0.8.26...v0.8.27) (2026-07-02)
 
 
