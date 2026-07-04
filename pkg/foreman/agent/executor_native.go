@@ -1204,7 +1204,7 @@ func (e *NativeAgentLoopExecutor) maybeOpenPullRequest(
 		e.PREnsurer == nil {
 		return
 	}
-	if prURL, prErr := e.openPullRequest(ctx, task, auth); prErr != nil {
+	if prURL, prErr := e.openPullRequest(ctx, task, auth, r.Summary); prErr != nil {
 		log.Error(prErr, "review GO: opening pull request failed",
 			"repo", task.Spec.Payload.Repo, "branch", task.Spec.Payload.Branch)
 		r.Extra["pullRequestError"] = prErr.Error()
@@ -1229,7 +1229,7 @@ func (e *NativeAgentLoopExecutor) maybeOpenPullRequest(
 // owner — or one that is not an owner/repo-shaped URL at all (local
 // paths in tests) — keeps the same-repo shape.
 func (e *NativeAgentLoopExecutor) openPullRequest(
-	ctx context.Context, task *foremanv1alpha1.AgenticTask, auth *repo.Auth,
+	ctx context.Context, task *foremanv1alpha1.AgenticTask, auth *repo.Auth, reviewSummary string,
 ) (string, error) {
 	p := task.Spec.Payload
 	owner, name, ok := strings.Cut(p.Repo, "/")
@@ -1251,8 +1251,17 @@ func (e *NativeAgentLoopExecutor) openPullRequest(
 	if title == "" {
 		title = fmt.Sprintf("Fix #%d", p.Issue)
 	}
-	body := fmt.Sprintf("Fixes #%d\n\nOpened by foreman on review GO (workload %s).",
+	// Body: the reviewer's own summary of the change (it read the full diff
+	// against the issue to reach GO), then the issue link and provenance. Falls
+	// back to just the link when the reviewer returned no summary.
+	var bodyB strings.Builder
+	if s := strings.TrimSpace(reviewSummary); s != "" {
+		bodyB.WriteString(s)
+		bodyB.WriteString("\n\n")
+	}
+	fmt.Fprintf(&bodyB, "Fixes #%d\n\n_Opened by foreman on review GO (workload %s)._",
 		p.Issue, task.Labels["foreman.llmkube.dev/workload"])
+	body := bodyB.String()
 	res, err := e.PREnsurer.EnsurePR(ctx, owner, name, head,
 		baseBranchOrDefault(p.BaseBranch), title, body, token)
 	if err != nil {

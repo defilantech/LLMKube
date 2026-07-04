@@ -18,6 +18,7 @@ package agent
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/go-logr/logr"
@@ -29,7 +30,7 @@ import (
 
 // prEnsureCall records one EnsurePR invocation on the fake.
 type prEnsureCall struct {
-	owner, repo, head, base, title string
+	owner, repo, head, base, title, body string
 }
 
 // prSubjectCall records one HeadCommitSubject invocation on the fake.
@@ -49,9 +50,9 @@ type fakePREnsurer struct {
 }
 
 func (f *fakePREnsurer) EnsurePR(
-	_ context.Context, owner, repo, head, base, title, _, _ string,
+	_ context.Context, owner, repo, head, base, title, body, _ string,
 ) (*githubpr.Result, error) {
-	f.ensures = append(f.ensures, prEnsureCall{owner, repo, head, base, title})
+	f.ensures = append(f.ensures, prEnsureCall{owner, repo, head, base, title, body})
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -135,6 +136,33 @@ func TestMaybeOpenPullRequest_NilEnsurerIsDisabled(t *testing.T) {
 	}
 }
 
+// TestMaybeOpenPullRequest_BodyCarriesReviewSummary: the PR body leads with
+// the reviewer's summary of the change (it read the diff to reach GO), then
+// the issue link; an empty summary falls back to just the link.
+func TestMaybeOpenPullRequest_BodyCarriesReviewSummary(t *testing.T) {
+	fe := &fakePREnsurer{subject: "fix: the thing", url: "https://example/pr/1"}
+	e := &NativeAgentLoopExecutor{PREnsurer: fe}
+	task := reviewTaskForPR(foremanv1alpha1.AgenticTaskKindReview, true)
+	r := &Result{
+		Summary: "Adds provider details to the SSO error path so failures are diagnosable.",
+		Extra:   map[string]any{},
+	}
+
+	e.maybeOpenPullRequest(context.Background(), logr.Discard(), task, nil,
+		foremanv1alpha1.AgenticTaskVerdictGo, r)
+
+	if len(fe.ensures) != 1 {
+		t.Fatalf("want 1 EnsurePR call, got %+v", fe.ensures)
+	}
+	body := fe.ensures[0].body
+	if !strings.Contains(body, r.Summary) {
+		t.Errorf("body must lead with the reviewer summary; got %q", body)
+	}
+	if !strings.Contains(body, "Fixes #") {
+		t.Errorf("body must still link the issue; got %q", body)
+	}
+}
+
 // TestMaybeOpenPullRequest_ForkRemoteQualifiesHead is the #956 review
 // fix: the coder pushes to the fork named by --git-remote-url while
 // payload.repo names the upstream, so the PR must be cross-fork — head
@@ -159,6 +187,7 @@ func TestMaybeOpenPullRequest_ForkRemoteQualifiesHead(t *testing.T) {
 		t.Fatalf("want 1 EnsurePR call, got %+v", fe.ensures)
 	}
 	got := fe.ensures[0]
+	got.body = "" // body content is covered by TestMaybeOpenPullRequest_BodyCarriesReviewSummary
 	want := prEnsureCall{
 		owner: "defilantech", repo: "LLMKube",
 		head: "Defilan:foreman/wl-x/issue-7", base: "main", title: "fix: the thing",
