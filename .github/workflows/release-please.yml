@@ -166,3 +166,69 @@ jobs:
           mark_as_latest: false
         env:
           CR_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+
+  publish-coder-image:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      # The coder image (llmkube-foreman-agent-coder) is built in the separate
+      # llmkube-runtimes repo, triggered by a coder-v<version> tag. Create that
+      # tag on every release so its coder image publishes automatically, then
+      # verify it lands (#932). Requires RUNTIMES_TOKEN: a PAT or GitHub App
+      # token with contents:write on llmkube-runtimes (needed both to push the
+      # tag and to trigger the downstream workflow — the default GITHUB_TOKEN
+      # cannot do cross-repo writes and would not fire the tag-triggered build).
+      # Without the secret this job is a warning-only no-op, so releases still
+      # succeed until it is provisioned.
+      - name: Gate on cross-repo token
+        id: gate
+        env:
+          RUNTIMES_TOKEN: ${{ secrets.RUNTIMES_TOKEN }}
+        run: |
+          if [ -z "$RUNTIMES_TOKEN" ]; then
+            echo "::warning::RUNTIMES_TOKEN not set; skipping automatic coder-image publish for v${{ needs.release-please.outputs.version }}. Add the secret (contents:write on llmkube-runtimes) to automate, or push coder-v${{ needs.release-please.outputs.version }} manually (#932)."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Tag llmkube-runtimes to build the coder image
+        if: ${{ steps.gate.outputs.enabled == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.RUNTIMES_TOKEN }}
+          VERSION: ${{ needs.release-please.outputs.version }}
+        run: |
+          set -euo pipefail
+          repo=defilantech/llmkube-runtimes
+          tag="coder-v${VERSION}"
+          if gh api "repos/${repo}/git/ref/tags/${tag}" >/dev/null 2>&1; then
+            echo "tag ${tag} already exists in ${repo}; not recreating"
+          else
+            sha=$(gh api "repos/${repo}/commits/main" --jq .sha)
+            gh api "repos/${repo}/git/refs" -f ref="refs/tags/${tag}" -f sha="${sha}"
+            echo "created ${repo}@${tag} -> ${sha}"
+          fi
+
+      - name: Verify coder image published
+        if: ${{ steps.gate.outputs.enabled == 'true' }}
+        env:
+          VERSION: ${{ needs.release-please.outputs.version }}
+        run: |
+          set -euo pipefail
+          image=defilantech/llmkube-foreman-agent-coder
+          for i in $(seq 1 45); do
+            token=$(curl -sSf "https://ghcr.io/token?scope=repository:${image}:pull" | jq -r .token)
+            code=$(curl -sS -o /dev/null -w '%{http_code}' \
+              -H "Authorization: Bearer ${token}" \
+              -H 'Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.docker.distribution.manifest.v2+json' \
+              "https://ghcr.io/v2/${image}/manifests/${VERSION}")
+            if [ "${code}" = "200" ]; then
+              echo "coder image ${image}:${VERSION} is published"
+              exit 0
+            fi
+            echo "waiting for ${image}:${VERSION} (attempt ${i}/45, http ${code})"
+            sleep 40
+          done
+          echo "::error::coder image ${image}:${VERSION} not published within ~30m; check the build-coder run in llmkube-runtimes (#932)"
+          exit 1
