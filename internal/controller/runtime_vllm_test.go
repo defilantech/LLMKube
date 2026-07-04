@@ -68,7 +68,7 @@ func TestVLLMBuildArgs(t *testing.T) {
 			},
 			// vLLM v0.20+ deprecated --model in favor of a positional argument.
 			// The bare model path appears as args[0]; --model itself must NOT appear.
-			contains: []FlagCheck{{"--host", "0.0.0.0"}, {"--port", "8000"}},
+			contains: []FlagCheck{{"--host", "::"}, {"--port", "8000"}},
 			notContains: []string{
 				"--attention-backend",
 				"--cpu-offload-gb",

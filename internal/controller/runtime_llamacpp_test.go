@@ -58,6 +58,19 @@ func TestLlamaCppBuildArgs(t *testing.T) {
 			notContains: []string{"--ctx-size", "--parallel", "--flash-attn", "--jinja", "--cache-type-k", "--cpu-moe", "--n-cpu-moe", "--no-kv-offload", "--override-tensor", "--override-kv", "--batch-size", "--ubatch-size", "--no-warmup", "--reasoning-budget", "--reasoning-budget-message", "--mmproj"},
 		},
 		{
+			// #972: bind the dual-stack wildcard (::), not 0.0.0.0, so pods are
+			// reachable on IPv6-only clusters. :: still accepts IPv4 (default
+			// bindv6only=0), so IPv4-only clusters are unaffected.
+			model: model,
+			name:  "binds dual-stack wildcard :: for IPv6-only clusters",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime:  "llama",
+				ModelRef: "test-model",
+			},
+			contains:    []FlagCheck{{"--host", "::"}},
+			notContains: []string{"0.0.0.0"},
+		},
+		{
 			model: model,
 			name:  "contextSize set emits flag",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
