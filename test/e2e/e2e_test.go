@@ -634,14 +634,16 @@ spec:
 			Eventually(verifyServiceGone, 1*time.Minute).Should(Succeed())
 		})
 
-		It("should report Failed for Model with unreachable file:// source", func() {
+		It("should report Failed with SourceNotAllowed for a disallowed file:// source", func() {
 			// HTTP(S) sources are validated by the InferenceService Pod's init
 			// container, not by the Model controller (issue #363), so a 404
-			// HTTP source no longer surfaces a Failed Model phase. file://
-			// sources still flow through the controller's in-process path
-			// and surface broken sources as Model.status.phase=Failed with
-			// reason=CopyFailed, which is the controller-side failure
-			// surface we want to keep covered here.
+			// HTTP source no longer surfaces a Failed Model phase. As of the
+			// host-path allowlist (GHSA-jw3m-8q7m-f35r), a local/file:// source
+			// outside modelSource.allowedHostPathRoots (empty by default, and
+			// unset in this e2e deploy) is rejected before the copy runs,
+			// surfacing as Model.status.phase=Failed with
+			// reason=SourceNotAllowed. This is the controller-side failure
+			// surface we keep covered here.
 			By("applying a Model CR with a file:// path that does not exist on the controller pod")
 			cmd := exec.Command("kubectl", "apply", "-f", "-")
 			cmd.Stdin = strings.NewReader(fmt.Sprintf(`apiVersion: inference.llmkube.dev/v1alpha1
@@ -665,13 +667,13 @@ spec:
 			}
 			Eventually(verifyModelFailed, 2*time.Minute).Should(Succeed())
 
-			By("verifying Degraded condition with CopyFailed reason")
+			By("verifying Degraded condition with SourceNotAllowed reason")
 			cmd = exec.Command("kubectl", "get", "model", "test-model-bad-source",
 				"-n", crTestNs, "-o",
 				`jsonpath={.status.conditions[?(@.type=="Degraded")].reason}`)
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(output).To(Equal("CopyFailed"))
+			Expect(output).To(Equal("SourceNotAllowed"))
 		})
 	})
 
