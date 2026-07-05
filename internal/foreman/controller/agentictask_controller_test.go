@@ -345,6 +345,158 @@ var _ = Describe("AgenticTaskReconciler scheduler", func() {
 		Expect(fresh.Status.AssignedNode).To(Equal(vulkanNode.Name))
 	})
 
+	It("spreads two Pending tasks across two Ready nodes (one task per node)", func() {
+		// Regression for defilantech/LLMKube#977: the scheduler must not funnel
+		// every task onto the alphabetically-first node. With two idle nodes,
+		// two Pending tasks must land on different nodes, each node advertising
+		// its reserved task via Status.CurrentTask.
+		nodeA := newFleetNode("spread-a")
+		Expect(k8sClient.Create(ctx, nodeA)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, nodeA) })
+		setNodeReady(nodeA, foremanv1alpha1.FleetNodeCapability{
+			Accelerator: foremanv1alpha1.FleetNodeAccelerator("metal"),
+		})
+		nodeB := newFleetNode("spread-b")
+		Expect(k8sClient.Create(ctx, nodeB)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, nodeB) })
+		setNodeReady(nodeB, foremanv1alpha1.FleetNodeCapability{
+			Accelerator: foremanv1alpha1.FleetNodeAccelerator("metal"),
+		})
+
+		t1 := newTask("spread-t1")
+		Expect(k8sClient.Create(ctx, t1)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, t1) })
+		setPhase(t1, foremanv1alpha1.AgenticTaskPhasePending)
+		t2 := newTask("spread-t2")
+		Expect(k8sClient.Create(ctx, t2)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, t2) })
+		setPhase(t2, foremanv1alpha1.AgenticTaskPhasePending)
+
+		_, err := reconciler.Reconcile(ctx, reqFor(t1))
+		Expect(err).NotTo(HaveOccurred())
+		_, err = reconciler.Reconcile(ctx, reqFor(t2))
+		Expect(err).NotTo(HaveOccurred())
+
+		var f1, f2 foremanv1alpha1.AgenticTask
+		Expect(k8sClient.Get(ctx, nn(t1), &f1)).To(Succeed())
+		Expect(k8sClient.Get(ctx, nn(t2), &f2)).To(Succeed())
+		Expect(f1.Status.Phase).To(Equal(foremanv1alpha1.AgenticTaskPhaseScheduled))
+		Expect(f2.Status.Phase).To(Equal(foremanv1alpha1.AgenticTaskPhaseScheduled))
+		Expect(f1.Status.AssignedNode).NotTo(BeEmpty())
+		Expect(f2.Status.AssignedNode).NotTo(BeEmpty())
+		Expect(f1.Status.AssignedNode).NotTo(Equal(f2.Status.AssignedNode))
+
+		var na, nb foremanv1alpha1.FleetNode
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeA.Name}, &na)).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeB.Name}, &nb)).To(Succeed())
+		Expect([]string{na.Status.CurrentTask, nb.Status.CurrentTask}).
+			To(ConsistOf("default/spread-t1", "default/spread-t2"))
+	})
+
+	It("leaves a second task Pending when the only matching node is busy", func() {
+		// One node, two tasks: the second must wait (requeue) rather than
+		// double-book the node.
+		node := newFleetNode("solo-node")
+		Expect(k8sClient.Create(ctx, node)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, node) })
+		setNodeReady(node, foremanv1alpha1.FleetNodeCapability{
+			Accelerator: foremanv1alpha1.FleetNodeAccelerator("metal"),
+		})
+
+		t1 := newTask("solo-t1")
+		Expect(k8sClient.Create(ctx, t1)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, t1) })
+		setPhase(t1, foremanv1alpha1.AgenticTaskPhasePending)
+		t2 := newTask("solo-t2")
+		Expect(k8sClient.Create(ctx, t2)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, t2) })
+		setPhase(t2, foremanv1alpha1.AgenticTaskPhasePending)
+
+		_, err := reconciler.Reconcile(ctx, reqFor(t1))
+		Expect(err).NotTo(HaveOccurred())
+		res, err := reconciler.Reconcile(ctx, reqFor(t2))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.RequeueAfter).To(BeNumerically(">", 0))
+
+		var f2 foremanv1alpha1.AgenticTask
+		Expect(k8sClient.Get(ctx, nn(t2), &f2)).To(Succeed())
+		Expect(f2.Status.Phase).To(Equal(foremanv1alpha1.AgenticTaskPhasePending))
+		Expect(f2.Status.AssignedNode).To(BeEmpty())
+	})
+
+	It("frees the node when its task terminates, letting the next task schedule there", func() {
+		// The reservation must be released on a terminal task so the freed node
+		// becomes available again.
+		node := newFleetNode("recycle-node")
+		Expect(k8sClient.Create(ctx, node)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, node) })
+		setNodeReady(node, foremanv1alpha1.FleetNodeCapability{
+			Accelerator: foremanv1alpha1.FleetNodeAccelerator("metal"),
+		})
+
+		t1 := newTask("recycle-t1")
+		Expect(k8sClient.Create(ctx, t1)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, t1) })
+		setPhase(t1, foremanv1alpha1.AgenticTaskPhasePending)
+		_, err := reconciler.Reconcile(ctx, reqFor(t1))
+		Expect(err).NotTo(HaveOccurred())
+
+		var busy foremanv1alpha1.FleetNode
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: node.Name}, &busy)).To(Succeed())
+		Expect(busy.Status.CurrentTask).To(Equal("default/recycle-t1"))
+
+		// Agent finishes the task; the controller reconcile of the terminal
+		// task must release the node.
+		setPhase(t1, foremanv1alpha1.AgenticTaskPhaseSucceeded)
+		_, err = reconciler.Reconcile(ctx, reqFor(t1))
+		Expect(err).NotTo(HaveOccurred())
+
+		var freed foremanv1alpha1.FleetNode
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: node.Name}, &freed)).To(Succeed())
+		Expect(freed.Status.CurrentTask).To(BeEmpty())
+
+		// A new task now schedules onto the recycled node.
+		t2 := newTask("recycle-t2")
+		Expect(k8sClient.Create(ctx, t2)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, t2) })
+		setPhase(t2, foremanv1alpha1.AgenticTaskPhasePending)
+		_, err = reconciler.Reconcile(ctx, reqFor(t2))
+		Expect(err).NotTo(HaveOccurred())
+
+		var f2 foremanv1alpha1.AgenticTask
+		Expect(k8sClient.Get(ctx, nn(t2), &f2)).To(Succeed())
+		Expect(f2.Status.AssignedNode).To(Equal(node.Name))
+	})
+
+	It("reclaims a node whose CurrentTask points at a task that no longer exists", func() {
+		// Defense against a leaked reservation (a task deleted mid-flight): a
+		// node's stale CurrentTask must not wedge it busy forever.
+		node := newFleetNode("stale-res-node")
+		Expect(k8sClient.Create(ctx, node)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, node) })
+		setNodeReady(node, foremanv1alpha1.FleetNodeCapability{
+			Accelerator: foremanv1alpha1.FleetNodeAccelerator("metal"),
+		})
+		patch := client.MergeFrom(node.DeepCopy())
+		node.Status.CurrentTask = "default/ghost-task-that-never-existed"
+		Expect(k8sClient.Status().Patch(ctx, node, patch)).To(Succeed())
+
+		task := newTask("reclaim-task")
+		Expect(k8sClient.Create(ctx, task)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, task) })
+		setPhase(task, foremanv1alpha1.AgenticTaskPhasePending)
+		_, err := reconciler.Reconcile(ctx, reqFor(task))
+		Expect(err).NotTo(HaveOccurred())
+
+		var fresh foremanv1alpha1.AgenticTask
+		Expect(k8sClient.Get(ctx, nn(task), &fresh)).To(Succeed())
+		Expect(fresh.Status.AssignedNode).To(Equal(node.Name))
+
+		var reclaimed foremanv1alpha1.FleetNode
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: node.Name}, &reclaimed)).To(Succeed())
+		Expect(reclaimed.Status.CurrentTask).To(Equal("default/reclaim-task"))
+	})
+
 	It("does not reschedule a Running task whose assigned node is fresh", func() {
 		// The scheduler must leave Running tasks alone when the FleetNode is
 		// healthy; only claim expiry (stale/absent node) may alter them.
