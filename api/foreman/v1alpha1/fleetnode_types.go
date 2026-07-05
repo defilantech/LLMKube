@@ -28,6 +28,16 @@ import (
 // declared dead.
 const FleetNodeHeartbeatTimeout = 90 * time.Second
 
+// FleetNodeDrainReapTimeout is how long a node may stay Draining without a
+// heartbeat before the controller deletes it. A live agent keeps heartbeating
+// while it finishes its in-flight task, so this only fires for a node whose
+// agent set Draining and then went away (rollout, scale-down, crash) — which
+// otherwise leaks a FleetNode per restart, since the reconciler leaves
+// Draining nodes alone and there is no ownerReference for garbage collection.
+// Set well above the heartbeat timeout so a genuinely draining agent is never
+// reaped out from under an in-flight task.
+const FleetNodeDrainReapTimeout = 10 * time.Minute
+
 // FleetNodePhase is the heartbeat-driven health state of a fleet worker.
 // +kubebuilder:validation:Enum=Ready;Draining;NotReady;Unknown
 type FleetNodePhase string
@@ -227,6 +237,25 @@ func (n *FleetNode) HeartbeatStale(now time.Time) bool {
 		return true
 	}
 	return now.Sub(n.Status.LastHeartbeatTime.Time) > FleetNodeHeartbeatTimeout
+}
+
+// DrainReapable reports whether a Draining node has been silent long enough
+// (past FleetNodeDrainReapTimeout) that its agent is gone and the drain will
+// never complete, so the node may be deleted. The caller is responsible for
+// checking that the node is actually in the Draining phase.
+//
+// A node with no heartbeat at all falls back to its creation time, so even a
+// hand-crafted Draining object gets the same grace window rather than being
+// reaped on first sight (the agent always stamps LastHeartbeatTime in the same
+// patch that sets Draining, so this branch is unreachable via the agent).
+func (n *FleetNode) DrainReapable(now time.Time) bool {
+	if n == nil {
+		return false
+	}
+	if n.Status.LastHeartbeatTime == nil {
+		return now.Sub(n.CreationTimestamp.Time) > FleetNodeDrainReapTimeout
+	}
+	return now.Sub(n.Status.LastHeartbeatTime.Time) > FleetNodeDrainReapTimeout
 }
 
 // +kubebuilder:object:root=true

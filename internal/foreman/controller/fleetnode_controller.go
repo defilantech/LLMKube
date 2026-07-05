@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -58,9 +59,40 @@ func (r *FleetNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		"currentTask", node.Status.CurrentTask,
 	)
 
-	// A node the agent is intentionally draining is the agent's domain;
-	// the scheduler already treats Draining as ineligible. Don't fight it.
+	// A node the agent is intentionally draining is the agent's domain; the
+	// scheduler already treats Draining as ineligible, so while the agent is
+	// alive (still heart-beating) don't fight it. But an agent that set
+	// Draining and then went away — rollout, scale-down, crash — leaves the
+	// node Draining forever: nothing here transitions it and there is no
+	// ownerReference for garbage collection, so one FleetNode leaks per agent
+	// restart. Reap a Draining node whose heartbeat has been silent past the
+	// drain grace; its drain will never complete.
 	if node.Status.Phase == foremanv1alpha1.FleetNodePhaseDraining {
+		if node.DrainReapable(time.Now()) {
+			log.Info("reaping orphaned Draining FleetNode (agent gone)",
+				"nodeName", node.Spec.NodeName, "lastHeartbeat", node.Status.LastHeartbeatTime)
+			// Delete under UID + ResourceVersion preconditions to close the
+			// revival race: a stable-named (launchd) agent that was down > the
+			// reap window and then restarts revives the node with a Ready
+			// heartbeat, but this reconcile reads from a cache that can lag that
+			// write. Without preconditions we would delete the freshly revived
+			// node; the agent only Upserts at startup, so it would then fail
+			// every heartbeat (Get -> NotFound) and never recreate it. With
+			// preconditions, any write since our read makes the delete 409, and
+			// we requeue to re-evaluate on a fresh view (a truly dead node's
+			// ResourceVersion never advances, so the reap still converges).
+			err := r.Delete(ctx, &node, client.Preconditions{
+				UID:             &node.UID,
+				ResourceVersion: &node.ResourceVersion,
+			})
+			if apierrors.IsConflict(err) {
+				return ctrl.Result{RequeueAfter: foremanv1alpha1.FleetNodeHeartbeatTimeout}, nil
+			}
+			if err != nil {
+				return ctrl.Result{}, client.IgnoreNotFound(err)
+			}
+			return ctrl.Result{}, nil
+		}
 		return ctrl.Result{RequeueAfter: foremanv1alpha1.FleetNodeHeartbeatTimeout}, nil
 	}
 
