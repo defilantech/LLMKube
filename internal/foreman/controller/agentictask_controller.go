@@ -22,6 +22,7 @@ import (
 	"slices"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -115,6 +116,13 @@ func (r *AgenticTaskReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		if err := audit.RecordTerminal(ctx, r.Client, &task, r.AuditNamespace, log); err != nil {
 			log.Error(err, "audit: failed to record terminal run (continuing)")
 		}
+		// Release the node reservation so the scheduler can dispatch the next
+		// task there. Guarded on taskKey, so a node already reserved for a
+		// different task is untouched.
+		if err := r.clearNodeCurrentTask(ctx, task.Status.AssignedNode, taskKey(&task)); err != nil {
+			log.Error(err, "failed to release node reservation on terminal task",
+				"node", task.Status.AssignedNode, "task", task.Name)
+		}
 		return ctrl.Result{}, nil
 	}
 
@@ -161,17 +169,29 @@ func (r *AgenticTaskReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, err
 	}
 
-	// Find a FleetNode that satisfies the effective RequiredCapability.
-	nodeName, err := r.firstFitNode(ctx, required, requiredModel, jobMode)
+	// Find a Ready FleetNode that satisfies the effective RequiredCapability
+	// and atomically reserve it. The reservation (stamping the node's
+	// CurrentTask) is what enforces one-task-per-node and spreads work across
+	// the fleet; without it every task funnels onto the first node. See #977.
+	nodeName, err := r.reserveFirstFitNode(ctx, &task, required, requiredModel, jobMode)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 	if nodeName == "" {
-		log.Info("no FleetNode matches; will retry", "task", task.Name)
+		log.Info("no free FleetNode matches; will retry", "task", task.Name)
 		return ctrl.Result{RequeueAfter: requeueNoFit}, nil
 	}
 
-	return r.scheduleToNode(ctx, &task, nodeName)
+	if err := r.scheduleToNode(ctx, &task, nodeName); err != nil {
+		// The node is reserved but the task never reached Scheduled. Release the
+		// reservation so the node is not wedged busy with a task it never ran.
+		if clearErr := r.clearNodeCurrentTask(ctx, nodeName, taskKey(&task)); clearErr != nil {
+			log.Error(clearErr, "failed to release reservation after schedule error",
+				"node", nodeName, "task", task.Name)
+		}
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{}, nil
 }
 
 // effectiveRequiredCapability returns the capability the scheduler should
@@ -282,10 +302,19 @@ func (r *AgenticTaskReconciler) allDepsSucceeded(ctx context.Context, task *fore
 	return true, nil
 }
 
-// firstFitNode picks the alphabetically-first Ready FleetNode whose
-// advertised capability satisfies the effective RequiredCapability and
-// that is not already running another task.
-func (r *AgenticTaskReconciler) firstFitNode(ctx context.Context, required foremanv1alpha1.RequiredCapability, requiredModel string, jobMode bool) (string, error) {
+// reserveFirstFitNode picks the alphabetically-first Ready FleetNode whose
+// advertised capability satisfies the effective RequiredCapability and that is
+// not already running another task, and atomically reserves it by stamping the
+// node's Status.CurrentTask. It returns the reserved node's name, or "" when no
+// eligible node is currently free.
+//
+// Reservation is what makes one-task-per-node spread work across the fleet. The
+// node scan reads FleetNodes from a cache that lags writes, so two back-to-back
+// scheduling reconciles can both observe the same node as free. The reservation
+// is an optimistic-lock status patch, so at most one wins; the loser (Conflict,
+// or a node already reserved for a live task) falls through to the next
+// candidate. Without this, every task funnels onto one node. See #977.
+func (r *AgenticTaskReconciler) reserveFirstFitNode(ctx context.Context, task *foremanv1alpha1.AgenticTask, required foremanv1alpha1.RequiredCapability, requiredModel string, jobMode bool) (string, error) {
 	var nodes foremanv1alpha1.FleetNodeList
 	if err := r.List(ctx, &nodes); err != nil {
 		return "", err
@@ -294,20 +323,129 @@ func (r *AgenticTaskReconciler) firstFitNode(ctx context.Context, required forem
 		return nodes.Items[i].Name < nodes.Items[j].Name
 	})
 	now := time.Now()
+	key := taskKey(task)
 	for i := range nodes.Items {
 		n := &nodes.Items[i]
 		if !nodeSchedulable(n, now) {
 			continue
 		}
-		if n.Status.CurrentTask != "" {
-			continue // v0.1: one task per node
-		}
 		if !capabilitySatisfies(required, requiredModel, n, jobMode) {
 			continue
 		}
-		return n.Name, nil
+		reserved, err := r.reserveNode(ctx, n, key)
+		if err != nil {
+			return "", err
+		}
+		if reserved {
+			return n.Name, nil
+		}
+		// Node was busy with a live task, or another reconcile reserved it
+		// first; try the next candidate.
 	}
 	return "", nil
+}
+
+// reserveNode stamps node.Status.CurrentTask with taskKey via an optimistic-
+// lock status patch, claiming the node for a single task. It returns false
+// (try the next node) when the node is already running another live task or
+// when a concurrent writer won the node first (Conflict).
+//
+// A CurrentTask that points at a task which no longer exists or has reached a
+// terminal phase is stale: the node is treated as free and re-reserved. That
+// self-heals a reservation leaked by a task deleted mid-flight, so a missed
+// clear cannot wedge a node busy forever.
+func (r *AgenticTaskReconciler) reserveNode(ctx context.Context, node *foremanv1alpha1.FleetNode, taskKey string) (bool, error) {
+	if cur := node.Status.CurrentTask; cur != "" && cur != taskKey {
+		live, err := r.taskIsLive(ctx, cur, node.Name)
+		if err != nil {
+			return false, err
+		}
+		if live {
+			return false, nil // genuinely busy
+		}
+	}
+	patch := client.MergeFromWithOptions(node.DeepCopy(), client.MergeFromWithOptimisticLock{})
+	node.Status.CurrentTask = taskKey
+	if err := r.Status().Patch(ctx, node, patch); err != nil {
+		// Lost the race: another reconcile reserved it first (Conflict), or the
+		// node was deleted between the List and here (NotFound — e.g. the
+		// Draining-node reaper, #980/#979). Either way, fall through to the next
+		// candidate rather than erroring the whole reconcile.
+		if apierrors.IsConflict(err) || apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+// taskIsLive reports whether the namespaced-name key still occupies nodeName:
+// the task exists, has not reached a terminal phase, and has not been assigned
+// to a different node. A missing, terminal, or reassigned task is not live, so
+// a node whose CurrentTask points at it may be reclaimed. An empty AssignedNode
+// counts as live — that is the legitimate window between reserveNode and
+// scheduleToNode, which must not be stolen.
+func (r *AgenticTaskReconciler) taskIsLive(ctx context.Context, key, nodeName string) (bool, error) {
+	ns, name, ok := splitNamespacedName(key)
+	if !ok {
+		return false, nil // unparseable key: treat as not live so the node frees
+	}
+	var t foremanv1alpha1.AgenticTask
+	if err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: name}, &t); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	if t.Status.Phase == foremanv1alpha1.AgenticTaskPhaseSucceeded ||
+		t.Status.Phase == foremanv1alpha1.AgenticTaskPhaseFailed {
+		return false, nil
+	}
+	// A live task that has been scheduled onto a different node no longer holds
+	// this one; the reservation is stale (e.g. a clear that failed log-and-
+	// continue while the task rescheduled elsewhere). Reclaim it.
+	if an := t.Status.AssignedNode; an != "" && an != nodeName {
+		return false, nil
+	}
+	return true, nil
+}
+
+// clearNodeCurrentTask releases the named FleetNode's reservation, but only if
+// it still points at taskKey, so a node already re-reserved for a different
+// task is left untouched. A missing node (or empty name) is a no-op.
+func (r *AgenticTaskReconciler) clearNodeCurrentTask(ctx context.Context, nodeName, taskKey string) error {
+	if nodeName == "" {
+		return nil
+	}
+	var node foremanv1alpha1.FleetNode
+	if err := r.Get(ctx, types.NamespacedName{Name: nodeName}, &node); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if node.Status.CurrentTask != taskKey {
+		return nil
+	}
+	// Optimistic lock for symmetry with reserveNode: between the Get above and
+	// this patch a concurrent reserve for a different task could land, and an
+	// unlocked merge would stomp that fresh reservation (the double-book class
+	// this fix exists to prevent). On Conflict the caller logs-and-continues and
+	// the stale-reclaim path in reserveNode self-heals.
+	patch := client.MergeFromWithOptions(node.DeepCopy(), client.MergeFromWithOptimisticLock{})
+	node.Status.CurrentTask = ""
+	return r.Status().Patch(ctx, &node, patch)
+}
+
+// taskKey is the "namespace/name" string stored in FleetNode.Status.CurrentTask.
+func taskKey(task *foremanv1alpha1.AgenticTask) string {
+	return types.NamespacedName{Namespace: task.Namespace, Name: task.Name}.String()
+}
+
+// splitNamespacedName parses the "namespace/name" form written by taskKey.
+func splitNamespacedName(key string) (namespace, name string, ok bool) {
+	i := strings.IndexByte(key, '/')
+	if i < 0 {
+		return "", "", false
+	}
+	return key[:i], key[i+1:], true
 }
 
 // nodeSchedulable reports whether the scheduler may dispatch to a node. It
@@ -381,7 +519,7 @@ func capabilitySatisfies(req foremanv1alpha1.RequiredCapability, requiredModel s
 // scheduleToNode patches the task to phase=Scheduled with the chosen
 // FleetNode set on status.assignedNode. The FleetAgent on that node
 // picks it up via its watcher.
-func (r *AgenticTaskReconciler) scheduleToNode(ctx context.Context, task *foremanv1alpha1.AgenticTask, nodeName string) (ctrl.Result, error) {
+func (r *AgenticTaskReconciler) scheduleToNode(ctx context.Context, task *foremanv1alpha1.AgenticTask, nodeName string) error {
 	patch := client.MergeFrom(task.DeepCopy())
 	now := metav1.Now()
 	task.Status.Phase = foremanv1alpha1.AgenticTaskPhaseScheduled
@@ -393,10 +531,7 @@ func (r *AgenticTaskReconciler) scheduleToNode(ctx context.Context, task *forema
 		Message:            fmt.Sprintf("scheduled to FleetNode %q", nodeName),
 		LastTransitionTime: now,
 	})
-	if err := r.Status().Patch(ctx, task, patch); err != nil {
-		return ctrl.Result{}, err
-	}
-	return ctrl.Result{}, nil
+	return r.Status().Patch(ctx, task, patch)
 }
 
 // failTask cascade-fails a Pending task before it reaches an agent.
@@ -555,7 +690,15 @@ func (r *AgenticTaskReconciler) releaseExpiredClaim(ctx context.Context, task *f
 		Message:            fmt.Sprintf("released from node %q: %s", nodeName, heartbeatMsg),
 		LastTransitionTime: now,
 	})
-	return ctrl.Result{}, r.Status().Patch(ctx, &current, patch)
+	if err := r.Status().Patch(ctx, &current, patch); err != nil {
+		return ctrl.Result{}, err
+	}
+	// Free the node so the released task (or another) can be dispatched there.
+	if err := r.clearNodeCurrentTask(ctx, nodeName, taskKey(&current)); err != nil {
+		log.Error(err, "failed to release node reservation on claim expiry",
+			"node", nodeName, "task", current.Name)
+	}
+	return ctrl.Result{}, nil
 }
 
 // terminalFailExpired marks a task Failed after it has exhausted the
@@ -592,7 +735,15 @@ func (r *AgenticTaskReconciler) terminalFailExpired(ctx context.Context, task *f
 			nodeName, priorExpiries+1),
 		LastTransitionTime: now,
 	})
-	return ctrl.Result{}, r.Status().Patch(ctx, &current, patch)
+	if err := r.Status().Patch(ctx, &current, patch); err != nil {
+		return ctrl.Result{}, err
+	}
+	// The task is terminal-failed on this node; release the reservation.
+	if err := r.clearNodeCurrentTask(ctx, nodeName, taskKey(&current)); err != nil {
+		log.Error(err, "failed to release node reservation on expiry terminal-fail",
+			"node", nodeName, "task", current.Name)
+	}
+	return ctrl.Result{}, nil
 }
 
 // SetupWithManager wires the reconciler. We also watch FleetNode so a
