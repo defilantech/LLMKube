@@ -5,6 +5,25 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0](https://github.com/defilantech/LLMKube/compare/v0.8.28...v0.9.0) (2026-07-05)
+
+
+### ⚠ BREAKING CHANGES
+
+* **security:** gate local/hostPath model sources + block controller SSRF (GHSA-jw3m-8q7m-f35r) ([#981](https://github.com/defilantech/LLMKube/issues/981))
+
+### Features
+
+* **foreman:** use the reviewer's summary as the opened-PR body ([#975](https://github.com/defilantech/LLMKube/issues/975)) ([e031ff5](https://github.com/defilantech/LLMKube/commit/e031ff56c892f1cde0908f7939ba9818278abcfd))
+
+
+### Bug Fixes
+
+* **foreman:** populate FleetNode.Status.CurrentTask so the scheduler spreads work ([#978](https://github.com/defilantech/LLMKube/issues/978)) ([d731a90](https://github.com/defilantech/LLMKube/commit/d731a9020c5f01cc7a03d2ff562549731c8a08d9))
+* **foreman:** reap orphaned Draining FleetNodes so they stop leaking ([#980](https://github.com/defilantech/LLMKube/issues/980)) ([241ac4a](https://github.com/defilantech/LLMKube/commit/241ac4a036a9338203691f6789eeddb0cab1171b))
+* **runtime:** bind inference servers to :: for IPv6-only clusters ([#973](https://github.com/defilantech/LLMKube/issues/973)) ([398d5c1](https://github.com/defilantech/LLMKube/commit/398d5c1582266cae66f50e5bbd4e5df84023e361))
+* **security:** gate local/hostPath model sources + block controller SSRF (GHSA-jw3m-8q7m-f35r) ([#981](https://github.com/defilantech/LLMKube/issues/981)) ([ec2647f](https://github.com/defilantech/LLMKube/commit/ec2647fd4557962a971a1bc9435790b8e77ce961))
+
 ## [0.8.28](https://github.com/defilantech/LLMKube/compare/v0.8.27...v0.8.28) (2026-07-04)
 
 
