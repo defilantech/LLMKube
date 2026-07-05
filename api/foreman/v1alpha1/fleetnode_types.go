@@ -240,15 +240,20 @@ func (n *FleetNode) HeartbeatStale(now time.Time) bool {
 }
 
 // DrainReapable reports whether a Draining node has been silent long enough
-// (past FleetNodeDrainReapTimeout, or never heart-beat) that its agent is gone
-// and the drain will never complete, so the node may be deleted. The caller is
-// responsible for checking that the node is actually in the Draining phase.
+// (past FleetNodeDrainReapTimeout) that its agent is gone and the drain will
+// never complete, so the node may be deleted. The caller is responsible for
+// checking that the node is actually in the Draining phase.
+//
+// A node with no heartbeat at all falls back to its creation time, so even a
+// hand-crafted Draining object gets the same grace window rather than being
+// reaped on first sight (the agent always stamps LastHeartbeatTime in the same
+// patch that sets Draining, so this branch is unreachable via the agent).
 func (n *FleetNode) DrainReapable(now time.Time) bool {
 	if n == nil {
 		return false
 	}
 	if n.Status.LastHeartbeatTime == nil {
-		return true
+		return now.Sub(n.CreationTimestamp.Time) > FleetNodeDrainReapTimeout
 	}
 	return now.Sub(n.Status.LastHeartbeatTime.Time) > FleetNodeDrainReapTimeout
 }
