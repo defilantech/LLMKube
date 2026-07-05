@@ -356,7 +356,7 @@ func (r *AgenticTaskReconciler) reserveFirstFitNode(ctx context.Context, task *f
 // clear cannot wedge a node busy forever.
 func (r *AgenticTaskReconciler) reserveNode(ctx context.Context, node *foremanv1alpha1.FleetNode, taskKey string) (bool, error) {
 	if cur := node.Status.CurrentTask; cur != "" && cur != taskKey {
-		live, err := r.taskIsLive(ctx, cur)
+		live, err := r.taskIsLive(ctx, cur, node.Name)
 		if err != nil {
 			return false, err
 		}
@@ -367,18 +367,25 @@ func (r *AgenticTaskReconciler) reserveNode(ctx context.Context, node *foremanv1
 	patch := client.MergeFromWithOptions(node.DeepCopy(), client.MergeFromWithOptimisticLock{})
 	node.Status.CurrentTask = taskKey
 	if err := r.Status().Patch(ctx, node, patch); err != nil {
-		if apierrors.IsConflict(err) {
-			return false, nil // another reconcile reserved it first
+		// Lost the race: another reconcile reserved it first (Conflict), or the
+		// node was deleted between the List and here (NotFound — e.g. the
+		// Draining-node reaper, #980/#979). Either way, fall through to the next
+		// candidate rather than erroring the whole reconcile.
+		if apierrors.IsConflict(err) || apierrors.IsNotFound(err) {
+			return false, nil
 		}
 		return false, err
 	}
 	return true, nil
 }
 
-// taskIsLive reports whether the namespaced-name key refers to an AgenticTask
-// that still exists and has not reached a terminal phase. A missing or terminal
-// task is not live, so a node whose CurrentTask points at it may be reclaimed.
-func (r *AgenticTaskReconciler) taskIsLive(ctx context.Context, key string) (bool, error) {
+// taskIsLive reports whether the namespaced-name key still occupies nodeName:
+// the task exists, has not reached a terminal phase, and has not been assigned
+// to a different node. A missing, terminal, or reassigned task is not live, so
+// a node whose CurrentTask points at it may be reclaimed. An empty AssignedNode
+// counts as live — that is the legitimate window between reserveNode and
+// scheduleToNode, which must not be stolen.
+func (r *AgenticTaskReconciler) taskIsLive(ctx context.Context, key, nodeName string) (bool, error) {
 	ns, name, ok := splitNamespacedName(key)
 	if !ok {
 		return false, nil // unparseable key: treat as not live so the node frees
@@ -390,8 +397,17 @@ func (r *AgenticTaskReconciler) taskIsLive(ctx context.Context, key string) (boo
 		}
 		return false, err
 	}
-	return t.Status.Phase != foremanv1alpha1.AgenticTaskPhaseSucceeded &&
-		t.Status.Phase != foremanv1alpha1.AgenticTaskPhaseFailed, nil
+	if t.Status.Phase == foremanv1alpha1.AgenticTaskPhaseSucceeded ||
+		t.Status.Phase == foremanv1alpha1.AgenticTaskPhaseFailed {
+		return false, nil
+	}
+	// A live task that has been scheduled onto a different node no longer holds
+	// this one; the reservation is stale (e.g. a clear that failed log-and-
+	// continue while the task rescheduled elsewhere). Reclaim it.
+	if an := t.Status.AssignedNode; an != "" && an != nodeName {
+		return false, nil
+	}
+	return true, nil
 }
 
 // clearNodeCurrentTask releases the named FleetNode's reservation, but only if
@@ -408,7 +424,12 @@ func (r *AgenticTaskReconciler) clearNodeCurrentTask(ctx context.Context, nodeNa
 	if node.Status.CurrentTask != taskKey {
 		return nil
 	}
-	patch := client.MergeFrom(node.DeepCopy())
+	// Optimistic lock for symmetry with reserveNode: between the Get above and
+	// this patch a concurrent reserve for a different task could land, and an
+	// unlocked merge would stomp that fresh reservation (the double-book class
+	// this fix exists to prevent). On Conflict the caller logs-and-continues and
+	// the stale-reclaim path in reserveNode self-heals.
+	patch := client.MergeFromWithOptions(node.DeepCopy(), client.MergeFromWithOptimisticLock{})
 	node.Status.CurrentTask = ""
 	return r.Status().Patch(ctx, &node, patch)
 }

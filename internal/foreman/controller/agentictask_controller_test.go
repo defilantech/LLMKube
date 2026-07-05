@@ -414,6 +414,13 @@ var _ = Describe("AgenticTaskReconciler scheduler", func() {
 
 		_, err := reconciler.Reconcile(ctx, reqFor(t1))
 		Expect(err).NotTo(HaveOccurred())
+
+		// Anchor the precondition: t1 must actually hold the node, otherwise
+		// this spec passes vacuously when nothing schedules at all.
+		var busy foremanv1alpha1.FleetNode
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: node.Name}, &busy)).To(Succeed())
+		Expect(busy.Status.CurrentTask).To(Equal("default/solo-t1"))
+
 		res, err := reconciler.Reconcile(ctx, reqFor(t2))
 		Expect(err).NotTo(HaveOccurred())
 		Expect(res.RequeueAfter).To(BeNumerically(">", 0))
