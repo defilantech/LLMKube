@@ -22,6 +22,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -133,6 +134,65 @@ var _ = Describe("FleetNodeReconciler heartbeat staleness", func() {
 		var got foremanv1alpha1.FleetNode
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "recovered-node"}, &got)).To(Succeed())
 		Expect(got.Status.Phase).To(Equal(foremanv1alpha1.FleetNodePhaseReady))
+	})
+
+	It("reaps a Draining node whose agent heartbeat is long stale", func() {
+		// Regression for the FleetNode leak: an agent that sets Draining and
+		// then dies (rollout/scale-down) leaves the node Draining forever —
+		// nothing transitions it and there is no ownerReference GC. The
+		// reconciler must delete such an orphan.
+		fn := &foremanv1alpha1.FleetNode{
+			ObjectMeta: metav1.ObjectMeta{Name: "orphan-draining"},
+			Spec: foremanv1alpha1.FleetNodeSpec{
+				NodeName: "orphan-draining",
+				Roles:    []string{"worker"},
+			},
+		}
+		Expect(k8sClient.Create(ctx, fn)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, fn) })
+
+		gone := metav1.NewTime(time.Now().Add(-2 * foremanv1alpha1.FleetNodeDrainReapTimeout))
+		fn.Status.Phase = foremanv1alpha1.FleetNodePhaseDraining
+		fn.Status.LastHeartbeatTime = &gone
+		Expect(k8sClient.Status().Update(ctx, fn)).To(Succeed())
+
+		_, err := reconciler.Reconcile(ctx, ctrl.Request{
+			NamespacedName: types.NamespacedName{Name: "orphan-draining"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		var got foremanv1alpha1.FleetNode
+		err = k8sClient.Get(ctx, types.NamespacedName{Name: "orphan-draining"}, &got)
+		Expect(apierrors.IsNotFound(err)).To(BeTrue(), "orphaned Draining node should be deleted")
+	})
+
+	It("leaves a Draining node with a fresh heartbeat alone", func() {
+		// A live agent draining its in-flight task keeps heartbeating; the
+		// reconciler must not reap it out from under the task.
+		fn := &foremanv1alpha1.FleetNode{
+			ObjectMeta: metav1.ObjectMeta{Name: "active-draining"},
+			Spec: foremanv1alpha1.FleetNodeSpec{
+				NodeName: "active-draining",
+				Roles:    []string{"worker"},
+			},
+		}
+		Expect(k8sClient.Create(ctx, fn)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, fn) })
+
+		fresh := metav1.NewTime(time.Now().Add(-1 * time.Second))
+		fn.Status.Phase = foremanv1alpha1.FleetNodePhaseDraining
+		fn.Status.LastHeartbeatTime = &fresh
+		Expect(k8sClient.Status().Update(ctx, fn)).To(Succeed())
+
+		res, err := reconciler.Reconcile(ctx, ctrl.Request{
+			NamespacedName: types.NamespacedName{Name: "active-draining"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.RequeueAfter).To(BeNumerically(">", time.Duration(0)))
+
+		var got foremanv1alpha1.FleetNode
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "active-draining"}, &got)).To(Succeed())
+		Expect(got.Status.Phase).To(Equal(foremanv1alpha1.FleetNodePhaseDraining))
 	})
 
 	It("requeues after the heartbeat timeout so staleness is detected without an external trigger", func() {
