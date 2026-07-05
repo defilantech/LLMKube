@@ -63,6 +63,12 @@ type InferenceServiceReconciler struct {
 	ModelCacheMode     string
 	CACertConfigMap    string
 	InitContainerImage string
+	// AllowedHostPathRoots is the operator-configured allowlist of absolute
+	// path prefixes under which local (/abs and file://) model sources — and
+	// therefore the HostPathVolumeSource they generate — are permitted. Empty
+	// (the secure default) disables all local/hostPath sources; see
+	// validateLocalSourceAllowed and GHSA-jw3m-8q7m-f35r.
+	AllowedHostPathRoots []string
 	// DefaultFSGroup is applied to the rendered PodSecurityContext when the
 	// user has not supplied one. Values <= 0 disable the default (recommended
 	// on OpenShift, where the restricted-v2 SCC injects fsGroup from the
@@ -158,6 +164,19 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			return *result, err
 		}
 		return ctrl.Result{}, err
+	}
+
+	// Host-path allowlist gate (GHSA-jw3m-8q7m-f35r): a local model source
+	// outside the operator-configured roots must never produce a
+	// HostPathVolumeSource in a generated pod. Block the InferenceService
+	// before any Deployment is built. This guards independently of the Model
+	// controller's own gate because a Model may carry a sticky Ready status
+	// from before the allowlist was introduced (or tightened).
+	if valErr := validateLocalSourceAllowed(model.Spec.Source, r.AllowedHostPathRoots); valErr != nil {
+		log.Error(valErr, "rejected local model source by host-path allowlist", "model", model.Name, "source", model.Spec.Source)
+		blockResult, updateErr := r.updateStatusWithSchedulingInfo(ctx, inferenceService, PhaseFailed, modelReady, 0, 0, "",
+			valErr.Error(), nil)
+		return blockResult, updateErr
 	}
 
 	desiredReplicas := int32(1)

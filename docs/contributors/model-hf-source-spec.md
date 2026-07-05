@@ -10,6 +10,8 @@ The Model CRD's `source` field regex accepts bare HuggingFace repo IDs like `Tin
 - Local sources (`file://...` or `/absolute/path`) → copy via `io.Copy`
 - Everything else → HTTP download via `http.Get`
 
+Note (post-spec, as of v0.9.0): local sources are additionally gated by the operator's host-path allowlist (`--allowed-host-path-roots` flag, chart value `modelSource.allowedHostPathRoots`, empty by default). A local source outside the allowlist is rejected before the copy path runs; the Model goes to `Failed` with a `SourceNotAllowed` condition (GHSA-jw3m-8q7m-f35r). This gate does not apply to HF repo sources, which are runtime-resolved, nor to `pvc://` or HTTP(S) sources.
+
 When a HuggingFace repo ID falls into "everything else," `http.Get("TinyLlama/TinyLlama-1.1B-Chat-v1.0")` fails with `unsupported protocol scheme ""`. The model phase goes to `Failed` and any referencing InferenceService stays `Pending` forever.
 
 This blocks the intended vLLM workflow: user creates a Model with a bare repo ID, sets `skipModelInit: true` on the InferenceService, vLLM receives the repo ID as `--model` and downloads the weights itself using `HF_TOKEN` at runtime.

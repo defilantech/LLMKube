@@ -57,6 +57,19 @@ spec:
         # Empty path disables caching (the flag defaults to /models otherwise).
         - --model-cache-path=
         {{- end }}
+        {{- with .Values.modelSource.allowedHostPathRoots }}
+        # SECURITY (GHSA-jw3m-8q7m-f35r): absolute path roots under which local
+        # (/abs and file://) and hostPath model sources are permitted. Rendered
+        # only when non-empty; the flag's empty default disables such sources.
+        - --allowed-host-path-roots={{ join "," . }}
+        {{- end }}
+        {{- with .Values.modelSource.allowedRemoteHosts }}
+        # SECURITY (GHSA-jw3m-8q7m-f35r): hostnames/CIDRs the controller-side
+        # SSRF guard re-permits as remote (http/https) model sources despite
+        # resolving to private/link-local/loopback ranges. Rendered only when
+        # non-empty; the flag's empty default blocks all such ranges.
+        - --allowed-remote-hosts={{ join "," . }}
+        {{- end }}
         - --init-container-image={{ include "llmkube.initContainerImage" . }}
         # The default value is set in values.yaml. We do NOT use `| default 102`
         # here because Go template's default treats 0 as missing, which would

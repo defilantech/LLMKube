@@ -2,6 +2,8 @@
 
 The LLMKube controller-manager pod is consuming an entire CPU core continuously and emitting the same error log line every few milliseconds. Running this for hours can pin a kind/k3s cluster's only CPU at 200-300% (multiple cores), trigger liveness probe failures, and starve other reconcilers.
 
+**Scope as of v0.9.0**: local sources are gated by the host-path allowlist (`modelSource.allowedHostPathRoots` / `--allowed-host-path-roots`, GHSA-jw3m-8q7m-f35r). A local source that is NOT inside an allowlisted root never reaches the fetch path; it fails fast with phase `Failed` and a `SourceNotAllowed` Degraded condition, and cannot hot-spin. On v0.9.0+ this runbook therefore only applies to a source that IS allowlisted but points at a file the controller pod cannot see.
+
 ## Trigger
 
 One or more of:
@@ -37,16 +39,26 @@ One or more of:
 
    Look at `spec.source`. The hot-spin reproduces specifically when:
    - `spec.source` is a `file://` URL OR an absolute path
+   - On v0.9.0+: the path is inside a root listed in `modelSource.allowedHostPathRoots` (a non-allowlisted source is rejected up front and cannot hot-spin)
    - The path exists on the **host** that runs the metal-agent (or wherever you want it to run)
    - The path does NOT exist inside the controller-manager pod's filesystem
 
    This is the canonical Mac kind / k3s + out-of-cluster metal-agent topology.
 
+   If instead the Model shows phase `Failed` with a `SourceNotAllowed` Degraded condition, the allowlist rejected the source and there is no hot-spin; this runbook does not apply. Either add the source's root to `modelSource.allowedHostPathRoots` (only if you trust its contents) or fix `spec.source`:
+
+   ```bash
+   kubectl --context <ctx> get model <model-name> \
+     -o jsonpath='{.status.phase} {.status.conditions[?(@.type=="Degraded")].reason}{"\n"}'
+   ```
+
 3. **Confirm fix #405 is deployed.** Run `kubectl --context <ctx> -n llmkube-system get pods -o jsonpath='{.items[*].spec.containers[*].image}'` and confirm the controller image tag is at or after the version in which [PR #412](https://github.com/defilantech/LLMKube/pull/412) merged. If the image predates that PR, the fix is missing and the runbook below applies as historical context only; upgrade the chart instead.
 
 ## Mitigate (immediate, gets CPU off the floor)
 
-1. **Edit `spec.source` to remove the unreachable `file://` reference.** Two safe options:
+1. **(v0.9.0+) Reconsider the allowlist entry.** The spinning source is by definition inside an allowlisted root that the controller pod cannot actually read; the allowlist entry may be wrong or overly broad. If the controller was never meant to serve this path, remove the root from `modelSource.allowedHostPathRoots` (or narrow it) and upgrade the Helm release: the Model then fails fast with `SourceNotAllowed` and stops retrying, which also gets CPU off the floor.
+
+2. **Edit `spec.source` to remove the unreachable `file://` reference.** Two safe options:
    - Replace with the equivalent `https://huggingface.co/.../<file>.gguf` URL. The metal-agent uses `filepath.Base(source)` to compute the local path, so a HTTPS URL with the same filename results in the same on-disk lookup; no re-download.
    - Replace with a `pvc://<claim>/<path>.gguf` source backed by a PVC the controller pod CAN mount.
 
@@ -54,7 +66,7 @@ One or more of:
    kubectl --context <ctx> edit model <model-name>
    ```
 
-2. **Verify CPU drops within 1-2 minutes.**
+3. **Verify CPU drops within 1-2 minutes.**
 
    ```bash
    kubectl --context <ctx> -n llmkube-system top pod \
@@ -66,6 +78,8 @@ One or more of:
 ## Resolve (structural)
 
 The fix landed in [PR #412](https://github.com/defilantech/LLMKube/pull/412): the Model controller now detects `fs.ErrNotExist` and `fs.ErrPermission` and returns `RequeueAfter: 5*time.Minute, nil` instead of an error. This stops the rate-limited workqueue from tight-retrying.
+
+Since v0.9.0 the protection is two-layered: the host-path allowlist rejects non-allowlisted local sources outright (immediate `Failed` / `SourceNotAllowed`, no fetch attempt), and the #412 backoff covers the remaining case of an allowlisted source whose file is missing or unreadable from the controller pod.
 
 If you are observing this on a controller image that includes the fix (post-#412):
 
@@ -98,7 +112,7 @@ If you are observing this on a controller image that includes the fix (post-#412
      -o jsonpath='{.status.phase} {.status.conditions[?(@.type=="Degraded")].reason}{"\n"}'
    ```
 
-   Either `Ready` (if you fixed the source) or `Failed CopyFailed` with `RequeueAfter` showing 5 minutes between reconciles (if you left the Model in its broken state intentionally).
+   Either `Ready` (if you fixed the source), `Failed CopyFailed` with `RequeueAfter` showing 5 minutes between reconciles (if you left the Model in its broken state intentionally), or `Failed SourceNotAllowed` (if you removed the root from the allowlist; this state is stable and does not consume reconcile cycles).
 
 3. **Controller CPU is sane.**
 
@@ -113,5 +127,6 @@ If you are observing this on a controller image that includes the fix (post-#412
 
 - Issue: [#405](https://github.com/defilantech/LLMKube/issues/405) (the bug report from a real-world incident)
 - Fix: [PR #412](https://github.com/defilantech/LLMKube/pull/412)
+- Allowlist: GHSA-jw3m-8q7m-f35r (v0.9.0) added `modelSource.allowedHostPathRoots` / `--allowed-host-path-roots`; empty by default, which disables local/hostPath sources entirely
 - Companion runbook: `model-fetch-failure.md` (HTTPS source failures), `pvc-source-not-bound.md` (PVC source missing)
 - Documentation: `Model.spec.source` GoDoc has the file:// caveat for hybrid topologies

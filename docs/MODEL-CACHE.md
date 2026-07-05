@@ -361,6 +361,23 @@ This will revert to the legacy behavior where each pod downloads the model via i
 
 ## Security Considerations
 
+### Local and hostPath model sources (host-path allowlist)
+
+Besides remote downloads, the model storage machinery can serve node-local sources: a Model whose `spec.source` is an absolute path (`/srv/models/model.gguf`) or a `file://` URL is mounted into the inference pod via a hostPath volume. As of v0.9.0, these sources are gated by an operator-configured allowlist ([GHSA-jw3m-8q7m-f35r](https://github.com/defilantech/LLMKube/security/advisories/GHSA-jw3m-8q7m-f35r)).
+
+The allowlist is **empty by default**, which disables local and hostPath sources entirely. With the default configuration, a Model with a local source is rejected: it goes to phase `Failed` with a `SourceNotAllowed` condition, nothing is fetched, and no hostPath volume is created. Remote sources (`https://`, `pvc://`, `hf://`) are unaffected.
+
+To keep serving models from node-local disk, list the absolute directory roots you trust:
+
+```yaml
+# values.yaml
+modelSource:
+  allowedHostPathRoots:
+    - /srv/models
+```
+
+The equivalent controller flag is `--allowed-host-path-roots` (comma-separated). A source is permitted only when its cleaned path is within one of the configured roots; `..` escapes are rejected. The check is lexical and does not resolve symlinks, so only allowlist roots whose contents you control.
+
 ### Automatic shared cache on `fsGroupPolicy: None` backends (CephFS, NFS)
 
 The automatic shared-model-cache workflow is a first-class supported path, **including** on `fsGroupPolicy: None` CSIs such as CephFS and NFS. On those backends Kubernetes does not apply the pod `fsGroup` to the volume, so the PVC root stays `root:root` and the non-root model downloader cannot write to it. The `model-cache-prep` init container fixes the ownership for you so the cache just works. You do not need to pre-stage models or hand-manage a PVC.

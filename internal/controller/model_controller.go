@@ -27,6 +27,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -100,6 +101,34 @@ type ModelReconciler struct {
 	// RevalidateInterval is the minimum time between upstream revalidation
 	// checks for a Model. Zero means DefaultRevalidateInterval.
 	RevalidateInterval time.Duration
+	// AllowedHostPathRoots is the operator-configured allowlist of absolute
+	// path prefixes under which local (/abs and file://) model sources are
+	// permitted. Empty (the secure default) disables all local sources; see
+	// validateLocalSourceAllowed and GHSA-jw3m-8q7m-f35r.
+	AllowedHostPathRoots []string
+	// AllowedRemoteHosts is the operator-configured allowlist of hostnames
+	// and CIDRs that remote (http/https) Model sources may target even when
+	// they resolve to private/link-local/loopback ranges. Empty (the secure
+	// default) blocks all such ranges; public hosts are always allowed. See
+	// newGuardedHTTPClient and GHSA-jw3m-8q7m-f35r.
+	AllowedRemoteHosts []string
+
+	// metadataHTTPClient is the SSRF-guarded client used for all controller-
+	// side requests to Model.spec.source (metadata reads and revalidation
+	// probes). Built lazily from AllowedRemoteHosts; never use
+	// http.DefaultClient for source-derived URLs.
+	metadataHTTPClient     *http.Client
+	metadataHTTPClientOnce sync.Once
+}
+
+// metadataClient returns the SSRF-guarded HTTP client for source-derived
+// requests, building it on first use.
+func (r *ModelReconciler) metadataClient() *http.Client {
+	r.metadataHTTPClientOnce.Do(func() {
+		r.metadataHTTPClient = newGuardedHTTPClient(
+			parseRemoteHostAllowlist(r.AllowedRemoteHosts), remoteMetadataTimeout)
+	})
+	return r.metadataHTTPClient
 }
 
 // +kubebuilder:rbac:groups=inference.llmkube.dev,resources=models,verbs=get;list;watch;create;update;patch;delete
@@ -128,6 +157,14 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 
 	if r.StoragePath == "" {
 		r.StoragePath = DefaultModelCachePath
+	}
+
+	// Host-path allowlist gate (GHSA-jw3m-8q7m-f35r): a local source outside
+	// the operator-configured roots must never reach copyLocalModel/os.Open —
+	// including the metal local-path branch in reconcileBySourceType, so this
+	// runs before any source-type dispatch.
+	if handled, err := r.rejectDisallowedLocalSource(ctx, model); handled {
+		return ctrl.Result{}, err
 	}
 
 	if handled, result := r.validateMultiFileStagingSource(ctx, model); handled {
@@ -322,6 +359,31 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	llmkubemetrics.ReconcileTotal.WithLabelValues("model", "success").Inc()
 	logger.Info("Model ready and cached", "path", finalPath, "size", model.Status.Size, "cacheKey", cacheKey)
 	return ctrl.Result{}, nil
+}
+
+// rejectDisallowedLocalSource enforces the host-path allowlist for local
+// model sources (GHSA-jw3m-8q7m-f35r). handled=true means the source was
+// rejected: the Model is marked Failed with a SourceNotAllowed Degraded
+// condition and the reconcile must return an empty result with the returned
+// error. The rejection itself yields a nil error (not the validation error):
+// the failure is unrecoverable without a spec or operator-config change, and
+// a spec change re-triggers reconcile, so there is nothing to tight-loop on.
+func (r *ModelReconciler) rejectDisallowedLocalSource(ctx context.Context, model *inferencev1alpha1.Model) (handled bool, err error) {
+	logger := log.FromContext(ctx)
+
+	valErr := validateLocalSourceAllowed(model.Spec.Source, r.AllowedHostPathRoots)
+	if valErr == nil {
+		return false, nil
+	}
+
+	logger.Error(valErr, "rejected local model source by host-path allowlist", "source", model.Spec.Source)
+	llmkubemetrics.ReconcileTotal.WithLabelValues("model", "error").Inc()
+	llmkubemetrics.ModelStatus.WithLabelValues(model.Name, model.Namespace, PhaseFailed).Set(1)
+	model.Status.Phase = PhaseFailed
+	if statusErr := r.updateStatus(ctx, model, ConditionDegraded, metav1.ConditionTrue, "SourceNotAllowed", valErr.Error()); statusErr != nil {
+		return true, statusErr
+	}
+	return true, nil
 }
 
 func (r *ModelReconciler) validateMultiFileStagingSource(ctx context.Context, model *inferencev1alpha1.Model) (bool, ctrl.Result) {
@@ -712,7 +774,15 @@ func (r *ModelReconciler) downloadModel(ctx context.Context, source, dest string
 	logger := log.FromContext(ctx)
 
 	logger.Info("Downloading model", "source", source, "dest", dest)
-	resp, err := http.Get(source)
+	// Fetch through the SSRF-guarded client, never http.DefaultClient: remote
+	// sources are normally runtime-resolved and do not reach this sink today,
+	// but if a future routing change lets one through, the download must obey
+	// the same private-range guard as the metadata reads (GHSA-jw3m-8q7m-f35r).
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, source, nil)
+	if err != nil {
+		return 0, fmt.Errorf("failed to download: %w", err)
+	}
+	resp, err := r.metadataClient().Do(req)
 	if err != nil {
 		return 0, fmt.Errorf("failed to download: %w", err)
 	}
@@ -969,7 +1039,7 @@ const remoteMetadataTimeout = 30 * time.Second
 func (r *ModelReconciler) parseRemoteGGUFMetadata(ctx context.Context, source string) (*inferencev1alpha1.GGUFMetadata, int64, error) {
 	ctx, cancel := context.WithTimeout(ctx, remoteMetadataTimeout)
 	defer cancel()
-	parsed, err := gguf.ParseFromURL(ctx, source)
+	parsed, err := gguf.ParseFromURLWithClient(ctx, r.metadataClient(), source)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to parse remote GGUF: %w", err)
 	}
@@ -987,18 +1057,19 @@ func (r *ModelReconciler) parseRemoteGGUFMetadata(ctx context.Context, source st
 		License:       license.Normalize(parsed.License()),
 	}
 
-	return meta, remoteContentLength(ctx, source), nil
+	return meta, r.remoteContentLength(ctx, source), nil
 }
 
 // remoteContentLength returns the object size from a HEAD request, or 0 when the
 // server does not report a usable Content-Length. Best-effort: any error yields
 // 0 so the caller leaves Status.Size untouched rather than failing the reconcile.
-func remoteContentLength(ctx context.Context, source string) int64 {
+// The request goes through the SSRF-guarded client (GHSA-jw3m-8q7m-f35r).
+func (r *ModelReconciler) remoteContentLength(ctx context.Context, source string) int64 {
 	req, err := http.NewRequestWithContext(ctx, http.MethodHead, source, nil)
 	if err != nil {
 		return 0
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := r.metadataClient().Do(req)
 	if err != nil {
 		return 0
 	}

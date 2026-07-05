@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"path/filepath"
 	"strings"
 )
 
@@ -89,17 +90,84 @@ func parsePVCSource(source string) (claimName, path string, err error) {
 	return claimName, path, nil
 }
 
-// isLocalSource returns true if the source is a local file (file:// URL or absolute path).
-func isLocalSource(source string) bool {
-	return strings.HasPrefix(source, "file://") || strings.HasPrefix(source, "/")
+// hasSchemeFold reports whether source starts with the given scheme prefix
+// (e.g. "http://"), matching case-insensitively. URL schemes are
+// case-insensitive per RFC 3986 §3.1 and url.Parse lowercases them, so the
+// source classifiers must agree with the URL parser: a case-sensitive match
+// would let a case-variant scheme ("HTTP://...") dodge its classifier and
+// fall through to a differently-guarded code path (GHSA-jw3m-8q7m-f35r).
+func hasSchemeFold(source, prefix string) bool {
+	return len(source) >= len(prefix) && strings.EqualFold(source[:len(prefix)], prefix)
 }
 
-// getLocalPath extracts the filesystem path from a local source.
+// isLocalSource returns true if the source is a local file (file:// URL or
+// absolute path). The file:// scheme matches case-insensitively so a
+// case-variant local source cannot bypass the hostPath allowlist check in
+// validateLocalSourceAllowed by dodging classification.
+func isLocalSource(source string) bool {
+	return hasSchemeFold(source, "file://") || strings.HasPrefix(source, "/")
+}
+
+// getLocalPath extracts the filesystem path from a local source. The scheme
+// strip is case-insensitive to stay in agreement with isLocalSource.
 func getLocalPath(source string) string {
-	if strings.HasPrefix(source, "file://") {
-		return strings.TrimPrefix(source, "file://")
+	if hasSchemeFold(source, "file://") {
+		return source[len("file://"):]
 	}
 	return source
+}
+
+// validateLocalSourceAllowed enforces the host-path allowlist for local model
+// sources. Non-local sources (https, pvc, hf) are validated elsewhere and pass
+// through as nil here. A local source (absolute path or file:// URI) is allowed
+// only when its cleaned absolute path lies within one of allowedRoots. An empty
+// allowedRoots disables local/hostPath sources entirely, which is the secure
+// default (see GHSA-jw3m-8q7m-f35r).
+//
+// The check is lexical (filepath.Clean), so ".." escapes are rejected; it does
+// NOT resolve symlinks, so an operator who allowlists a root is trusting the
+// contents of that root not to symlink elsewhere. Roots that are empty or not
+// absolute are ignored.
+func validateLocalSourceAllowed(source string, allowedRoots []string) error {
+	if !isLocalSource(source) {
+		return nil
+	}
+	p := getLocalPath(source)
+	if !filepath.IsAbs(p) {
+		return fmt.Errorf("local model source must be an absolute path: %q", source)
+	}
+	clean := filepath.Clean(p)
+	allowed := false
+	for _, root := range allowedRoots {
+		if root == "" || !filepath.IsAbs(root) {
+			continue
+		}
+		r := filepath.Clean(root)
+		if clean == r || strings.HasPrefix(clean, r+string(filepath.Separator)) {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		if hasNoUsableRoot(allowedRoots) {
+			return fmt.Errorf("local/hostPath model sources are disabled: no allowed roots configured "+
+				"(set modelSource.allowedHostPathRoots); refusing source %q (GHSA-jw3m-8q7m-f35r)", source)
+		}
+		return fmt.Errorf("local model source %q is not within any allowed root %v (GHSA-jw3m-8q7m-f35r)", source, allowedRoots)
+	}
+	return nil
+}
+
+// hasNoUsableRoot reports whether allowedRoots contains no usable (non-empty,
+// absolute) entry, so the error message can distinguish "feature disabled" from
+// "path outside configured roots".
+func hasNoUsableRoot(allowedRoots []string) bool {
+	for _, root := range allowedRoots {
+		if root != "" && filepath.IsAbs(root) {
+			return false
+		}
+	}
+	return true
 }
 
 // isRemoteHTTPSource reports whether source is an http:// or https:// URL.
@@ -108,8 +176,13 @@ func getLocalPath(source string) string {
 // the controller's pod writes to the operator-namespace PVC, which is not
 // visible to Pods in user namespaces (PVCs cannot be cross-namespace mounted),
 // so the controller defers the actual fetch to the workload.
+//
+// The scheme matches case-insensitively ("HTTP://..." is remote): url.Parse
+// lowercases schemes, so http.Client would happily fetch a case-variant URL
+// that a case-sensitive classifier had failed to route to the guarded
+// remote-source path (GHSA-jw3m-8q7m-f35r).
 func isRemoteHTTPSource(source string) bool {
-	return strings.HasPrefix(source, "https://") || strings.HasPrefix(source, "http://")
+	return hasSchemeFold(source, "https://") || hasSchemeFold(source, "http://")
 }
 
 // normalizeHFSource strips the hf:// scheme prefix if present, returning the
