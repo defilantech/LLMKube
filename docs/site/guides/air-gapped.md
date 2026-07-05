@@ -242,6 +242,32 @@ spec:
   format: gguf
 ```
 
+**Breaking change in v0.9.0**: local sources (`file://` and
+absolute paths) are disabled unless the path sits inside an
+operator-configured allowlist of trusted directory roots
+(GHSA-jw3m-8q7m-f35r). The allowlist is empty by default; with a
+default install this option is rejected outright, and the Model
+goes to phase `Failed` with a `SourceNotAllowed` condition (no
+fetch, no hostPath volume). Add the model root to your Helm
+values before using this option:
+
+```yaml
+modelSource:
+  allowedHostPathRoots:
+    - /mnt/models
+```
+
+or at install time with
+`--set 'modelSource.allowedHostPathRoots[0]=/mnt/models'` (the
+underlying controller flag is `--allowed-host-path-roots`,
+comma-separated). The check is lexical: `..` escapes are
+rejected, symlinks are not resolved, so only allowlist roots
+whose contents you control. `https://`, `pvc://`, and `hf://`
+sources are unaffected. If you upgrade with local-source
+workloads already running, delete any InferenceService whose
+source now falls outside the allowlist: a pod created before the
+upgrade keeps its hostPath mount until it is deleted.
+
 Pin the workload to nodes that have the file (via Deployment node
 selector, taint/toleration, or affinity). The operator does not
 distribute the file across nodes; that's the operator's
@@ -348,6 +374,13 @@ the InferenceService's namespace. View the init log:
 The cluster's egress policy is blocking the connection. Confirm
 your `NetworkPolicy` permits the runtime namespace to reach
 `model-server.internal.corp` on port 443.
+
+**Model `Failed` with a `SourceNotAllowed` condition**
+The `file://` or absolute-path source is outside the operator's
+host-path allowlist, which is empty by default as of v0.9.0. Add
+the model root to `modelSource.allowedHostPathRoots` (see Option C
+above) and upgrade the Helm release, or switch the Model to a
+`pvc://` source.
 
 **`pvc://` source reports `PVC <name> not Bound`**
 The PVC exists but no PV satisfies it. Check

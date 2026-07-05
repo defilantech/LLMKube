@@ -17,6 +17,24 @@ Deploy LLMKube in environments without internet access. This guide covers deploy
 - Pre-downloaded GGUF model file(s)
 - `llmkube` CLI installed on a workstation with cluster access
 
+## Breaking Change in 0.9.0: Host-Path Allowlist for Local Sources
+
+As of v0.9.0, local model sources (absolute paths and `file://` URLs) are gated by an operator-configured allowlist (GHSA-jw3m-8q7m-f35r). The allowlist is **empty by default**, so with a default install every local source in this guide is rejected: the Model goes to phase `Failed` with a `SourceNotAllowed` condition, nothing is fetched, and no hostPath volume is created. Remote sources (`https://`, `pvc://`, `hf://`) are unaffected.
+
+Before following the local-path examples below, add the directory roots you stage models under to your Helm values:
+
+```yaml
+# values.yaml
+modelSource:
+  allowedHostPathRoots:
+    - /mnt/models
+    - /mnt/nfs/models
+```
+
+Or pass the controller flag directly: `--allowed-host-path-roots=/mnt/models,/mnt/nfs/models`. A source is permitted only when its cleaned path is within a configured root; `..` escapes are rejected. The check is lexical and does not resolve symlinks, so only allowlist roots whose contents you control.
+
+**Upgrading from an earlier release**: a local source that previously caused the controller to hot-spin now fails cleanly with `SourceNotAllowed`. After upgrading, also delete any existing InferenceService whose source now falls outside the allowlist; a pod created before the upgrade keeps its hostPath mount until it is deleted.
+
 ## Quick Start: Deploy from Local Path
 
 ### Step 1: Pre-download the Model
@@ -102,6 +120,7 @@ spec:
 ```
 
 **Requirements:**
+- The path must be inside a root listed in `modelSource.allowedHostPathRoots` (required as of 0.9.0; see the breaking-change section above)
 - Model file must exist at the same path on all nodes where pods may run
 - Use a DaemonSet or node affinity to ensure pods land on nodes with the model
 
@@ -118,6 +137,8 @@ spec:
   source: file:///mnt/models/llama-3.1-8b-q4_k_m.gguf
   format: gguf
 ```
+
+Like absolute paths, `file://` sources require the path to be inside an allowlisted root as of 0.9.0.
 
 ### Option 3: PVC Source (Recommended for Air-Gapped)
 
@@ -303,6 +324,9 @@ spec:
 kubectl describe model my-model
 
 # Common issues:
+# - "SourceNotAllowed" condition - the local source is outside
+#   modelSource.allowedHostPathRoots (empty by default as of 0.9.0;
+#   see the breaking-change section above)
 # - "file does not exist" - Model path is incorrect or not accessible
 # - "permission denied" - File permissions issue
 # - "copy incomplete" - Disk space or I/O error
@@ -372,9 +396,10 @@ kubectl get model my-model -o jsonpath='{.status.sha256}'
 ## Security Considerations
 
 1. **Model Integrity**: Use the `sha256` field to verify model checksums automatically
-2. **File Permissions**: Restrict model file access to necessary users/groups
-3. **Network Segmentation**: Ensure internal model servers are properly firewalled
-4. **Audit Logging**: Track model deployments and access events through the controller's structured logs and Prometheus metrics. For SOC 2 / HIPAA / FedRAMP environments, forward operator logs to your SIEM via Vector, Fluent Bit, or your existing logging stack.
+2. **Host-Path Allowlist**: Keep `modelSource.allowedHostPathRoots` as narrow as possible (dedicated model directories, not `/` or `/mnt`); the allowlist is what stops a Model spec from mounting arbitrary node files into an inference pod
+3. **File Permissions**: Restrict model file access to necessary users/groups
+4. **Network Segmentation**: Ensure internal model servers are properly firewalled
+5. **Audit Logging**: Track model deployments and access events through the controller's structured logs and Prometheus metrics. For SOC 2 / HIPAA / FedRAMP environments, forward operator logs to your SIEM via Vector, Fluent Bit, or your existing logging stack.
 
 ## Next Steps
 
