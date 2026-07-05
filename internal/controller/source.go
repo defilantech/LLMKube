@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"path/filepath"
 	"strings"
 )
 
@@ -100,6 +101,59 @@ func getLocalPath(source string) string {
 		return strings.TrimPrefix(source, "file://")
 	}
 	return source
+}
+
+// validateLocalSourceAllowed enforces the host-path allowlist for local model
+// sources. Non-local sources (https, pvc, hf) are validated elsewhere and pass
+// through as nil here. A local source (absolute path or file:// URI) is allowed
+// only when its cleaned absolute path lies within one of allowedRoots. An empty
+// allowedRoots disables local/hostPath sources entirely, which is the secure
+// default (see GHSA-jw3m-8q7m-f35r).
+//
+// The check is lexical (filepath.Clean), so ".." escapes are rejected; it does
+// NOT resolve symlinks, so an operator who allowlists a root is trusting the
+// contents of that root not to symlink elsewhere. Roots that are empty or not
+// absolute are ignored.
+func validateLocalSourceAllowed(source string, allowedRoots []string) error {
+	if !isLocalSource(source) {
+		return nil
+	}
+	p := getLocalPath(source)
+	if !filepath.IsAbs(p) {
+		return fmt.Errorf("local model source must be an absolute path: %q", source)
+	}
+	clean := filepath.Clean(p)
+	allowed := false
+	for _, root := range allowedRoots {
+		if root == "" || !filepath.IsAbs(root) {
+			continue
+		}
+		r := filepath.Clean(root)
+		if clean == r || strings.HasPrefix(clean, r+string(filepath.Separator)) {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		if hasNoUsableRoot(allowedRoots) {
+			return fmt.Errorf("local/hostPath model sources are disabled: no allowed roots configured "+
+				"(set modelSource.allowedHostPathRoots); refusing source %q (GHSA-jw3m-8q7m-f35r)", source)
+		}
+		return fmt.Errorf("local model source %q is not within any allowed root %v (GHSA-jw3m-8q7m-f35r)", source, allowedRoots)
+	}
+	return nil
+}
+
+// hasNoUsableRoot reports whether allowedRoots contains no usable (non-empty,
+// absolute) entry, so the error message can distinguish "feature disabled" from
+// "path outside configured roots".
+func hasNoUsableRoot(allowedRoots []string) bool {
+	for _, root := range allowedRoots {
+		if root != "" && filepath.IsAbs(root) {
+			return false
+		}
+	}
+	return true
 }
 
 // isRemoteHTTPSource reports whether source is an http:// or https:// URL.

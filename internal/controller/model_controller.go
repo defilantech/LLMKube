@@ -100,6 +100,11 @@ type ModelReconciler struct {
 	// RevalidateInterval is the minimum time between upstream revalidation
 	// checks for a Model. Zero means DefaultRevalidateInterval.
 	RevalidateInterval time.Duration
+	// AllowedHostPathRoots is the operator-configured allowlist of absolute
+	// path prefixes under which local (/abs and file://) model sources are
+	// permitted. Empty (the secure default) disables all local sources; see
+	// validateLocalSourceAllowed and GHSA-jw3m-8q7m-f35r.
+	AllowedHostPathRoots []string
 }
 
 // +kubebuilder:rbac:groups=inference.llmkube.dev,resources=models,verbs=get;list;watch;create;update;patch;delete
@@ -128,6 +133,14 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 
 	if r.StoragePath == "" {
 		r.StoragePath = DefaultModelCachePath
+	}
+
+	// Host-path allowlist gate (GHSA-jw3m-8q7m-f35r): a local source outside
+	// the operator-configured roots must never reach copyLocalModel/os.Open —
+	// including the metal local-path branch in reconcileBySourceType, so this
+	// runs before any source-type dispatch.
+	if handled, err := r.rejectDisallowedLocalSource(ctx, model); handled {
+		return ctrl.Result{}, err
 	}
 
 	if handled, result := r.validateMultiFileStagingSource(ctx, model); handled {
@@ -322,6 +335,31 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	llmkubemetrics.ReconcileTotal.WithLabelValues("model", "success").Inc()
 	logger.Info("Model ready and cached", "path", finalPath, "size", model.Status.Size, "cacheKey", cacheKey)
 	return ctrl.Result{}, nil
+}
+
+// rejectDisallowedLocalSource enforces the host-path allowlist for local
+// model sources (GHSA-jw3m-8q7m-f35r). handled=true means the source was
+// rejected: the Model is marked Failed with a SourceNotAllowed Degraded
+// condition and the reconcile must return an empty result with the returned
+// error. The rejection itself yields a nil error (not the validation error):
+// the failure is unrecoverable without a spec or operator-config change, and
+// a spec change re-triggers reconcile, so there is nothing to tight-loop on.
+func (r *ModelReconciler) rejectDisallowedLocalSource(ctx context.Context, model *inferencev1alpha1.Model) (handled bool, err error) {
+	logger := log.FromContext(ctx)
+
+	valErr := validateLocalSourceAllowed(model.Spec.Source, r.AllowedHostPathRoots)
+	if valErr == nil {
+		return false, nil
+	}
+
+	logger.Error(valErr, "rejected local model source by host-path allowlist", "source", model.Spec.Source)
+	llmkubemetrics.ReconcileTotal.WithLabelValues("model", "error").Inc()
+	llmkubemetrics.ModelStatus.WithLabelValues(model.Name, model.Namespace, PhaseFailed).Set(1)
+	model.Status.Phase = PhaseFailed
+	if statusErr := r.updateStatus(ctx, model, ConditionDegraded, metav1.ConditionTrue, "SourceNotAllowed", valErr.Error()); statusErr != nil {
+		return true, statusErr
+	}
+	return true, nil
 }
 
 func (r *ModelReconciler) validateMultiFileStagingSource(ctx context.Context, model *inferencev1alpha1.Model) (bool, ctrl.Result) {

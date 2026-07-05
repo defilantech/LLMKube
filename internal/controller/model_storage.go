@@ -414,7 +414,15 @@ type modelStorageConfig struct {
 	volumeMounts   []corev1.VolumeMount
 }
 
-func buildModelStorageConfig(model *inferencev1alpha1.Model, isvc *inferencev1alpha1.InferenceService, namespace string, useCache bool, cacheMode string, caCertConfigMap string, initContainerImage string, defaultFSGroup int64) modelStorageConfig {
+func buildModelStorageConfig(model *inferencev1alpha1.Model, isvc *inferencev1alpha1.InferenceService, namespace string, useCache bool, cacheMode string, caCertConfigMap string, initContainerImage string, defaultFSGroup int64, allowedHostPathRoots []string) modelStorageConfig {
+	// Host-path allowlist gate (GHSA-jw3m-8q7m-f35r), belt-and-suspenders to
+	// the upfront check in the InferenceService reconcile: a local source
+	// outside the allowed roots must never yield a HostPathVolumeSource, even
+	// if a future caller forgets the reconcile-time validation. Fail loudly
+	// with an init container that exits instead of silently serving nothing.
+	if err := validateLocalSourceAllowed(model.Spec.Source, allowedHostPathRoots); err != nil {
+		return disallowedLocalSourceStorageConfig(initContainerImage)
+	}
 	if isPVCSource(model.Spec.Source) {
 		return buildPVCStorageConfig(model)
 	}
@@ -422,6 +430,29 @@ func buildModelStorageConfig(model *inferencev1alpha1.Model, isvc *inferencev1al
 		return buildCachedStorageConfig(model, isvc, cacheMode, caCertConfigMap, initContainerImage, defaultFSGroup)
 	}
 	return buildEmptyDirStorageConfig(model, isvc, namespace, caCertConfigMap, initContainerImage)
+}
+
+// disallowedLocalSourceStorageConfig returns a storage config whose init
+// container immediately exits with a clear error, and which mounts no volumes
+// beyond an ephemeral emptyDir. Used when the model's local source fails the
+// host-path allowlist (GHSA-jw3m-8q7m-f35r) so that no HostPathVolumeSource is
+// ever emitted for a disallowed source.
+func disallowedLocalSourceStorageConfig(initImage string) modelStorageConfig {
+	return modelStorageConfig{
+		modelPath: "/models/model.gguf",
+		initContainers: []corev1.Container{
+			{
+				Name:  "model-downloader",
+				Image: initImage,
+				Command: []string{"sh", "-c",
+					`echo "ERROR: SourceNotAllowed - the model's local/hostPath source is not within the operator's --allowed-host-path-roots (GHSA-jw3m-8q7m-f35r)."; exit 1`},
+			},
+		},
+		volumes: []corev1.Volume{
+			{Name: "model-storage", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+		},
+		volumeMounts: []corev1.VolumeMount{{Name: "model-storage", MountPath: "/models", ReadOnly: true}},
+	}
 }
 
 // buildPVCStorageConfig mounts the user's PVC directly as a read-only volume.

@@ -111,6 +111,81 @@ var _ = Describe("buildCachedStorageConfig", func() {
 	})
 })
 
+var _ = Describe("buildModelStorageConfig host-path allowlist (GHSA-jw3m-8q7m-f35r)", func() {
+	newLocalModel := func() *inferencev1alpha1.Model {
+		return &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: "local-model", Namespace: "default"},
+			Spec: inferencev1alpha1.ModelSpec{
+				Source: "file:///mnt/models/test.gguf",
+			},
+			Status: inferencev1alpha1.ModelStatus{
+				CacheKey: "abc123",
+			},
+		}
+	}
+
+	expectNoHostPath := func(config modelStorageConfig) {
+		GinkgoHelper()
+		for _, v := range config.volumes {
+			Expect(v.HostPath).To(BeNil(),
+				"a disallowed local source must never produce a HostPathVolumeSource (volume %q)", v.Name)
+		}
+	}
+
+	It("emits no hostPath volume when no roots are configured (secure default)", func() {
+		config := buildModelStorageConfig(newLocalModel(), nil, "default", true, "", "", "curl:8.18.0", 102, nil)
+
+		expectNoHostPath(config)
+		Expect(config.initContainers).To(HaveLen(1))
+		Expect(config.initContainers[0].Command[2]).To(ContainSubstring("SourceNotAllowed"))
+	})
+
+	It("emits no hostPath volume when the source is outside the allowed roots", func() {
+		config := buildModelStorageConfig(newLocalModel(), nil, "default", true, "", "", "curl:8.18.0", 102,
+			[]string{"/srv/models"})
+
+		expectNoHostPath(config)
+		Expect(config.initContainers).To(HaveLen(1))
+		Expect(config.initContainers[0].Command[2]).To(ContainSubstring("SourceNotAllowed"))
+	})
+
+	It("emits no hostPath volume on the emptyDir (useCache=false) path either", func() {
+		config := buildModelStorageConfig(newLocalModel(), nil, "default", false, "", "", "curl:8.18.0", 102, nil)
+
+		expectNoHostPath(config)
+		Expect(config.initContainers).To(HaveLen(1))
+		Expect(config.initContainers[0].Command[2]).To(ContainSubstring("SourceNotAllowed"))
+	})
+
+	It("emits the host-model hostPath volume for a local source under an allowed root", func() {
+		config := buildModelStorageConfig(newLocalModel(), nil, "default", true, "", "", "curl:8.18.0", 102,
+			[]string{"/mnt/models"})
+
+		var hostPath *corev1.HostPathVolumeSource
+		for _, v := range config.volumes {
+			if v.Name == "host-model" {
+				hostPath = v.HostPath
+			}
+		}
+		Expect(hostPath).NotTo(BeNil(), "an allowed local source keeps the host-model hostPath volume")
+		Expect(hostPath.Path).To(Equal("/mnt/models/test.gguf"))
+	})
+
+	It("leaves non-local sources untouched regardless of roots", func() {
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: "remote-model", Namespace: "default"},
+			Spec:       inferencev1alpha1.ModelSpec{Source: "https://example.com/model.gguf"},
+			Status:     inferencev1alpha1.ModelStatus{CacheKey: "abc123"},
+		}
+		config := buildModelStorageConfig(model, nil, "default", true, "", "", "curl:8.18.0", 102, nil)
+
+		expectNoHostPath(config)
+		Expect(config.initContainers).To(HaveLen(2))
+		Expect(config.initContainers[1].Name).To(Equal("model-downloader"))
+		Expect(config.initContainers[1].Command[2]).NotTo(ContainSubstring("SourceNotAllowed"))
+	})
+})
+
 var _ = Describe("buildCachedStorageConfig multi-file staging", func() {
 	It("uses primary staged path and MODEL_FILES env for multi-file model", func() {
 		model := &inferencev1alpha1.Model{
@@ -550,7 +625,7 @@ var _ = Describe("buildModelStorageConfig PVC dispatch", func() {
 			Spec:       inferencev1alpha1.ModelSpec{Source: "pvc://my-claim/model.gguf"},
 			Status:     inferencev1alpha1.ModelStatus{CacheKey: "abc123"},
 		}
-		config := buildModelStorageConfig(model, nil, "default", true, "", "", "curl:8.18.0", 102)
+		config := buildModelStorageConfig(model, nil, "default", true, "", "", "curl:8.18.0", 102, nil)
 
 		// Should use PVC config, not cached config
 		Expect(config.volumes[0].Name).To(Equal("model-source"))

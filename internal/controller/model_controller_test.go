@@ -90,9 +90,10 @@ var _ = Describe("Model Controller", func() {
 			defer func() { _ = os.RemoveAll(tempDir) }()
 
 			controllerReconciler := &ModelReconciler{
-				Client:      k8sClient,
-				Scheme:      k8sClient.Scheme(),
-				StoragePath: tempDir,
+				Client:               k8sClient,
+				Scheme:               k8sClient.Scheme(),
+				StoragePath:          tempDir,
+				AllowedHostPathRoots: testLocalRoots,
 			}
 
 			// HTTPS sources are downloaded by the InferenceService Pod's init
@@ -126,9 +127,10 @@ var _ = Describe("Model Controller Reconcile", func() {
 		defer func() { _ = os.RemoveAll(tempDir) }()
 
 		reconciler := &ModelReconciler{
-			Client:      k8sClient,
-			Scheme:      k8sClient.Scheme(),
-			StoragePath: tempDir,
+			Client:               k8sClient,
+			Scheme:               k8sClient.Scheme(),
+			StoragePath:          tempDir,
+			AllowedHostPathRoots: testLocalRoots,
 		}
 		result, err := reconciler.Reconcile(ctx, reconcile.Request{
 			NamespacedName: types.NamespacedName{Name: "nonexistent", Namespace: "default"},
@@ -195,9 +197,10 @@ var _ = Describe("Model Controller Reconcile", func() {
 		}()
 
 		reconciler := &ModelReconciler{
-			Client:      k8sClient,
-			Scheme:      k8sClient.Scheme(),
-			StoragePath: tempDir,
+			Client:               k8sClient,
+			Scheme:               k8sClient.Scheme(),
+			StoragePath:          tempDir,
+			AllowedHostPathRoots: testLocalRoots,
 		}
 		result, err := reconciler.Reconcile(ctx, reconcile.Request{
 			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
@@ -239,9 +242,10 @@ var _ = Describe("Model Controller Reconcile", func() {
 		defer func() { _ = k8sClient.Delete(ctx, model) }()
 
 		reconciler := &ModelReconciler{
-			Client:      k8sClient,
-			Scheme:      k8sClient.Scheme(),
-			StoragePath: tempDir,
+			Client:               k8sClient,
+			Scheme:               k8sClient.Scheme(),
+			StoragePath:          tempDir,
+			AllowedHostPathRoots: testLocalRoots,
 		}
 		result, err := reconciler.Reconcile(ctx, reconcile.Request{
 			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
@@ -301,9 +305,10 @@ var _ = Describe("Model Controller Reconcile", func() {
 		defer func() { _ = k8sClient.Delete(ctx, model) }()
 
 		reconciler := &ModelReconciler{
-			Client:      k8sClient,
-			Scheme:      k8sClient.Scheme(),
-			StoragePath: tempDir,
+			Client:               k8sClient,
+			Scheme:               k8sClient.Scheme(),
+			StoragePath:          tempDir,
+			AllowedHostPathRoots: testLocalRoots,
 		}
 		_, err = reconciler.Reconcile(ctx, reconcile.Request{
 			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
@@ -349,9 +354,10 @@ var _ = Describe("Model Controller Reconcile", func() {
 		defer func() { _ = k8sClient.Delete(ctx, model) }()
 
 		reconciler := &ModelReconciler{
-			Client:      k8sClient,
-			Scheme:      k8sClient.Scheme(),
-			StoragePath: tempDir,
+			Client:               k8sClient,
+			Scheme:               k8sClient.Scheme(),
+			StoragePath:          tempDir,
+			AllowedHostPathRoots: testLocalRoots,
 		}
 		_, err = reconciler.Reconcile(ctx, reconcile.Request{
 			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
@@ -409,9 +415,10 @@ var _ = Describe("Model Controller Reconcile", func() {
 		Expect(k8sClient.Status().Update(ctx, model)).To(Succeed())
 
 		reconciler := &ModelReconciler{
-			Client:      k8sClient,
-			Scheme:      k8sClient.Scheme(),
-			StoragePath: tempDir,
+			Client:               k8sClient,
+			Scheme:               k8sClient.Scheme(),
+			StoragePath:          tempDir,
+			AllowedHostPathRoots: testLocalRoots,
 		}
 		_, err = reconciler.Reconcile(ctx, reconcile.Request{
 			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
@@ -456,9 +463,10 @@ var _ = Describe("Model Controller Reconcile", func() {
 		}()
 
 		reconciler := &ModelReconciler{
-			Client:      k8sClient,
-			Scheme:      k8sClient.Scheme(),
-			StoragePath: tempDir,
+			Client:               k8sClient,
+			Scheme:               k8sClient.Scheme(),
+			StoragePath:          tempDir,
+			AllowedHostPathRoots: testLocalRoots,
 		}
 		result, err := reconciler.Reconcile(ctx, reconcile.Request{
 			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
@@ -497,9 +505,10 @@ var _ = Describe("Model Controller Reconcile", func() {
 		}()
 
 		reconciler := &ModelReconciler{
-			Client:      k8sClient,
-			Scheme:      k8sClient.Scheme(),
-			StoragePath: tempDir,
+			Client:               k8sClient,
+			Scheme:               k8sClient.Scheme(),
+			StoragePath:          tempDir,
+			AllowedHostPathRoots: testLocalRoots,
 		}
 		result, err := reconciler.Reconcile(ctx, reconcile.Request{
 			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
@@ -543,9 +552,10 @@ var _ = Describe("Model Controller Reconcile", func() {
 		defer func() { _ = k8sClient.Delete(ctx, model) }()
 
 		reconciler := &ModelReconciler{
-			Client:      k8sClient,
-			Scheme:      k8sClient.Scheme(),
-			StoragePath: tempDir,
+			Client:               k8sClient,
+			Scheme:               k8sClient.Scheme(),
+			StoragePath:          tempDir,
+			AllowedHostPathRoots: testLocalRoots,
 		}
 		req := reconcile.Request{
 			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
@@ -592,9 +602,10 @@ var _ = Describe("Model Controller - Cache Bug Fixes", func() {
 		// (fake) GGUF metadata (which fails non-fatally), and migrates the file
 		// to the canonical filename derived from Model.Name.
 		reconciler := &ModelReconciler{
-			Client:      k8sClient,
-			Scheme:      k8sClient.Scheme(),
-			StoragePath: tempDir,
+			Client:               k8sClient,
+			Scheme:               k8sClient.Scheme(),
+			StoragePath:          tempDir,
+			AllowedHostPathRoots: testLocalRoots,
 		}
 		result, err := reconciler.Reconcile(ctx, reconcile.Request{
 			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
@@ -656,9 +667,10 @@ var _ = Describe("Model Controller - Cache Bug Fixes", func() {
 		defer func() { _ = k8sClient.Delete(ctx, model) }()
 
 		reconciler := &ModelReconciler{
-			Client:      k8sClient,
-			Scheme:      k8sClient.Scheme(),
-			StoragePath: tempDir,
+			Client:               k8sClient,
+			Scheme:               k8sClient.Scheme(),
+			StoragePath:          tempDir,
+			AllowedHostPathRoots: testLocalRoots,
 		}
 
 		// First reconcile: controller downloads the model and marks it Ready.
@@ -721,9 +733,10 @@ var _ = Describe("Model Controller - Cache Bug Fixes", func() {
 		defer func() { _ = k8sClient.Delete(ctx, model) }()
 
 		reconciler := &ModelReconciler{
-			Client:      k8sClient,
-			Scheme:      k8sClient.Scheme(),
-			StoragePath: tempDir,
+			Client:               k8sClient,
+			Scheme:               k8sClient.Scheme(),
+			StoragePath:          tempDir,
+			AllowedHostPathRoots: testLocalRoots,
 		}
 		_, err = reconciler.Reconcile(ctx, reconcile.Request{
 			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
@@ -1005,9 +1018,10 @@ var _ = Describe("Model Controller - GGUF Filename Migration", func() {
 		defer func() { _ = k8sClient.Delete(ctx, model) }()
 
 		reconciler := &ModelReconciler{
-			Client:      k8sClient,
-			Scheme:      k8sClient.Scheme(),
-			StoragePath: tempDir,
+			Client:               k8sClient,
+			Scheme:               k8sClient.Scheme(),
+			StoragePath:          tempDir,
+			AllowedHostPathRoots: testLocalRoots,
 		}
 		_, err = reconciler.Reconcile(ctx, reconcile.Request{
 			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
@@ -1053,9 +1067,10 @@ var _ = Describe("Model Controller - GGUF Filename Migration", func() {
 		defer func() { _ = k8sClient.Delete(ctx, model) }()
 
 		reconciler := &ModelReconciler{
-			Client:      k8sClient,
-			Scheme:      k8sClient.Scheme(),
-			StoragePath: tempDir,
+			Client:               k8sClient,
+			Scheme:               k8sClient.Scheme(),
+			StoragePath:          tempDir,
+			AllowedHostPathRoots: testLocalRoots,
 		}
 		_, err = reconciler.Reconcile(ctx, reconcile.Request{
 			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
@@ -1092,9 +1107,10 @@ var _ = Describe("Model Controller - GGUF Filename Migration", func() {
 		defer func() { _ = k8sClient.Delete(ctx, model) }()
 
 		reconciler := &ModelReconciler{
-			Client:      k8sClient,
-			Scheme:      k8sClient.Scheme(),
-			StoragePath: tempDir,
+			Client:               k8sClient,
+			Scheme:               k8sClient.Scheme(),
+			StoragePath:          tempDir,
+			AllowedHostPathRoots: testLocalRoots,
 		}
 		_, err = reconciler.Reconcile(ctx, reconcile.Request{
 			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
@@ -1142,9 +1158,10 @@ var _ = Describe("Model Controller - GGUF Filename Migration", func() {
 		defer func() { _ = k8sClient.Delete(ctx, model) }()
 
 		reconciler := &ModelReconciler{
-			Client:      k8sClient,
-			Scheme:      k8sClient.Scheme(),
-			StoragePath: tempDir,
+			Client:               k8sClient,
+			Scheme:               k8sClient.Scheme(),
+			StoragePath:          tempDir,
+			AllowedHostPathRoots: testLocalRoots,
 		}
 		_, err = reconciler.Reconcile(ctx, reconcile.Request{
 			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
@@ -1193,9 +1210,10 @@ var _ = Describe("Model Controller - GGUF Filename Migration", func() {
 		Expect(k8sClient.Status().Update(ctx, model)).To(Succeed())
 
 		reconciler := &ModelReconciler{
-			Client:      k8sClient,
-			Scheme:      k8sClient.Scheme(),
-			StoragePath: tempDir,
+			Client:               k8sClient,
+			Scheme:               k8sClient.Scheme(),
+			StoragePath:          tempDir,
+			AllowedHostPathRoots: testLocalRoots,
 		}
 		_, err = reconciler.Reconcile(ctx, reconcile.Request{
 			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
@@ -1233,9 +1251,10 @@ var _ = Describe("Runtime-Resolved Source Reconcile", func() {
 		defer func() { _ = os.RemoveAll(tempDir) }()
 
 		reconciler := &ModelReconciler{
-			Client:      k8sClient,
-			Scheme:      k8sClient.Scheme(),
-			StoragePath: tempDir,
+			Client:               k8sClient,
+			Scheme:               k8sClient.Scheme(),
+			StoragePath:          tempDir,
+			AllowedHostPathRoots: testLocalRoots,
 		}
 		result, err := reconciler.Reconcile(ctx, reconcile.Request{
 			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
@@ -1277,9 +1296,10 @@ var _ = Describe("Runtime-Resolved Source Reconcile", func() {
 		defer func() { _ = os.RemoveAll(tempDir) }()
 
 		reconciler := &ModelReconciler{
-			Client:      k8sClient,
-			Scheme:      k8sClient.Scheme(),
-			StoragePath: tempDir,
+			Client:               k8sClient,
+			Scheme:               k8sClient.Scheme(),
+			StoragePath:          tempDir,
+			AllowedHostPathRoots: testLocalRoots,
 		}
 		// First reconcile to set Ready
 		_, err = reconciler.Reconcile(ctx, reconcile.Request{
@@ -1322,9 +1342,10 @@ var _ = Describe("Runtime-Resolved Source Reconcile", func() {
 		defer func() { _ = os.RemoveAll(tempDir) }()
 
 		reconciler := &ModelReconciler{
-			Client:      k8sClient,
-			Scheme:      k8sClient.Scheme(),
-			StoragePath: tempDir,
+			Client:               k8sClient,
+			Scheme:               k8sClient.Scheme(),
+			StoragePath:          tempDir,
+			AllowedHostPathRoots: testLocalRoots,
 		}
 		_, err = reconciler.Reconcile(ctx, reconcile.Request{
 			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
@@ -1362,9 +1383,10 @@ var _ = Describe("Multi-File Staging Reconcile", func() {
 		defer func() { _ = os.RemoveAll(tempDir) }()
 
 		reconciler := &ModelReconciler{
-			Client:      k8sClient,
-			Scheme:      k8sClient.Scheme(),
-			StoragePath: tempDir,
+			Client:               k8sClient,
+			Scheme:               k8sClient.Scheme(),
+			StoragePath:          tempDir,
+			AllowedHostPathRoots: testLocalRoots,
 		}
 		result, err := reconciler.Reconcile(ctx, reconcile.Request{
 			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
@@ -1407,9 +1429,10 @@ var _ = Describe("Multi-File Staging Reconcile", func() {
 		defer func() { _ = os.RemoveAll(tempDir) }()
 
 		reconciler := &ModelReconciler{
-			Client:      k8sClient,
-			Scheme:      k8sClient.Scheme(),
-			StoragePath: tempDir,
+			Client:               k8sClient,
+			Scheme:               k8sClient.Scheme(),
+			StoragePath:          tempDir,
+			AllowedHostPathRoots: testLocalRoots,
 		}
 		result, err := reconciler.Reconcile(ctx, reconcile.Request{
 			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
@@ -1447,9 +1470,10 @@ var _ = Describe("Multi-File Staging Reconcile", func() {
 		defer func() { _ = os.RemoveAll(tempDir) }()
 
 		reconciler := &ModelReconciler{
-			Client:      k8sClient,
-			Scheme:      k8sClient.Scheme(),
-			StoragePath: tempDir,
+			Client:               k8sClient,
+			Scheme:               k8sClient.Scheme(),
+			StoragePath:          tempDir,
+			AllowedHostPathRoots: testLocalRoots,
 		}
 		result, err := reconciler.Reconcile(ctx, reconcile.Request{
 			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
@@ -1487,9 +1511,10 @@ var _ = Describe("Multi-File Staging Reconcile", func() {
 		defer func() { _ = os.RemoveAll(tempDir) }()
 
 		reconciler := &ModelReconciler{
-			Client:      k8sClient,
-			Scheme:      k8sClient.Scheme(),
-			StoragePath: tempDir,
+			Client:               k8sClient,
+			Scheme:               k8sClient.Scheme(),
+			StoragePath:          tempDir,
+			AllowedHostPathRoots: testLocalRoots,
 		}
 		result, err := reconciler.Reconcile(ctx, reconcile.Request{
 			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
@@ -1527,9 +1552,10 @@ var _ = Describe("Multi-File Staging Reconcile", func() {
 		defer func() { _ = os.RemoveAll(tempDir) }()
 
 		reconciler := &ModelReconciler{
-			Client:      k8sClient,
-			Scheme:      k8sClient.Scheme(),
-			StoragePath: tempDir,
+			Client:               k8sClient,
+			Scheme:               k8sClient.Scheme(),
+			StoragePath:          tempDir,
+			AllowedHostPathRoots: testLocalRoots,
 		}
 		result, err := reconciler.Reconcile(ctx, reconcile.Request{
 			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
@@ -1567,9 +1593,10 @@ var _ = Describe("Multi-File Staging Reconcile", func() {
 		defer func() { _ = os.RemoveAll(tempDir) }()
 
 		reconciler := &ModelReconciler{
-			Client:      k8sClient,
-			Scheme:      k8sClient.Scheme(),
-			StoragePath: tempDir,
+			Client:               k8sClient,
+			Scheme:               k8sClient.Scheme(),
+			StoragePath:          tempDir,
+			AllowedHostPathRoots: testLocalRoots,
 		}
 		result, err := reconciler.Reconcile(ctx, reconcile.Request{
 			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
@@ -1629,9 +1656,10 @@ var _ = Describe("SHA256 Verification", func() {
 		defer func() { _ = k8sClient.Delete(ctx, model) }()
 
 		reconciler := &ModelReconciler{
-			Client:      k8sClient,
-			Scheme:      k8sClient.Scheme(),
-			StoragePath: tempDir,
+			Client:               k8sClient,
+			Scheme:               k8sClient.Scheme(),
+			StoragePath:          tempDir,
+			AllowedHostPathRoots: testLocalRoots,
 		}
 		result, err := reconciler.Reconcile(ctx, reconcile.Request{
 			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
@@ -1669,9 +1697,10 @@ var _ = Describe("SHA256 Verification", func() {
 		defer func() { _ = k8sClient.Delete(ctx, model) }()
 
 		reconciler := &ModelReconciler{
-			Client:      k8sClient,
-			Scheme:      k8sClient.Scheme(),
-			StoragePath: tempDir,
+			Client:               k8sClient,
+			Scheme:               k8sClient.Scheme(),
+			StoragePath:          tempDir,
+			AllowedHostPathRoots: testLocalRoots,
 		}
 		result, err := reconciler.Reconcile(ctx, reconcile.Request{
 			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
@@ -1723,9 +1752,10 @@ var _ = Describe("SHA256 Verification", func() {
 		defer func() { _ = k8sClient.Delete(ctx, model) }()
 
 		reconciler := &ModelReconciler{
-			Client:      k8sClient,
-			Scheme:      k8sClient.Scheme(),
-			StoragePath: tempDir,
+			Client:               k8sClient,
+			Scheme:               k8sClient.Scheme(),
+			StoragePath:          tempDir,
+			AllowedHostPathRoots: testLocalRoots,
 		}
 		result, err := reconciler.Reconcile(ctx, reconcile.Request{
 			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
@@ -1800,9 +1830,10 @@ var _ = Describe("Issue #363 regression — controller / workload cache disconne
 		defer func() { _ = k8sClient.Delete(ctx, model) }()
 
 		reconciler := &ModelReconciler{
-			Client:      k8sClient,
-			Scheme:      k8sClient.Scheme(),
-			StoragePath: tempDir,
+			Client:               k8sClient,
+			Scheme:               k8sClient.Scheme(),
+			StoragePath:          tempDir,
+			AllowedHostPathRoots: testLocalRoots,
 		}
 		_, err = reconciler.Reconcile(ctx, reconcile.Request{
 			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
@@ -1832,9 +1863,10 @@ var _ = Describe("Issue #363 regression — controller / workload cache disconne
 		defer func() { _ = k8sClient.Delete(ctx, model) }()
 
 		reconciler := &ModelReconciler{
-			Client:      k8sClient,
-			Scheme:      k8sClient.Scheme(),
-			StoragePath: tempDir,
+			Client:               k8sClient,
+			Scheme:               k8sClient.Scheme(),
+			StoragePath:          tempDir,
+			AllowedHostPathRoots: testLocalRoots,
 		}
 		_, err = reconciler.Reconcile(ctx, reconcile.Request{
 			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
@@ -1885,9 +1917,10 @@ var _ = Describe("Issue #363 regression — controller / workload cache disconne
 		defer func() { _ = k8sClient.Delete(ctx, model) }()
 
 		reconciler := &ModelReconciler{
-			Client:      k8sClient,
-			Scheme:      k8sClient.Scheme(),
-			StoragePath: tempDir,
+			Client:               k8sClient,
+			Scheme:               k8sClient.Scheme(),
+			StoragePath:          tempDir,
+			AllowedHostPathRoots: testLocalRoots,
 		}
 		_, err = reconciler.Reconcile(ctx, reconcile.Request{
 			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
@@ -1989,9 +2022,10 @@ var _ = Describe("Model Controller remote GGUF metadata (#728, Task 2)", func() 
 		defer func() { _ = k8sClient.Delete(ctx, model) }()
 
 		reconciler := &ModelReconciler{
-			Client:      k8sClient,
-			Scheme:      k8sClient.Scheme(),
-			StoragePath: tempDir,
+			Client:               k8sClient,
+			Scheme:               k8sClient.Scheme(),
+			StoragePath:          tempDir,
+			AllowedHostPathRoots: testLocalRoots,
 		}
 		result, err := reconciler.Reconcile(ctx, reconcile.Request{
 			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},

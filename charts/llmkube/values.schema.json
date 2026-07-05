@@ -278,6 +278,17 @@
         }
       }
     },
+    "modelSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allowedHostPathRoots": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^/" },
+          "default": []
+        }
+      }
+    },
     "priorityClasses": {
       "type": "object",
       "additionalProperties": false,

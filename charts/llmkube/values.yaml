@@ -305,6 +305,14 @@ modelCache:
   # Annotations for the shared PVC (e.g., for backup policies)
   annotations: {}
 
+# Host-path allowlist for local (/abs and file://) and hostPath model sources.
+# SECURITY (GHSA-jw3m-8q7m-f35r): empty list disables all such sources. To serve
+# a model from node-local disk, list the absolute directory roots you trust, e.g.
+#   allowedHostPathRoots:
+#     - /srv/models
+modelSource:
+  allowedHostPathRoots: []
+
 # Priority classes for GPU scheduling
 priorityClasses:
   # Create LLMKube priority classes (critical, high, normal, low, batch)
