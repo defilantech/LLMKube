@@ -164,7 +164,7 @@ func (r *ModelReconciler) probeHTTPSource(ctx context.Context, source string) (s
 		return sourceFingerprint{}, false
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := r.metadataClient().Do(req)
 	if err != nil {
 		logger.Info("HEAD request failed for revalidation (non-fatal)", "source", source, "error", err.Error())
 		return sourceFingerprint{}, false

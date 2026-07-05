@@ -113,6 +113,13 @@ var _ = Describe("isLocalSource (source.go)", func() {
 	It("should return false for empty string", func() {
 		Expect(isLocalSource("")).To(BeFalse())
 	})
+	// URL schemes are case-insensitive (RFC 3986); a case-variant file://
+	// must still classify as local so it cannot dodge the hostPath
+	// allowlist check (GHSA-jw3m-8q7m-f35r).
+	It("should return true for case-variant FILE:// prefix", func() {
+		Expect(isLocalSource("FILE:///mnt/models/test.gguf")).To(BeTrue())
+		Expect(isLocalSource("File:///mnt/models/test.gguf")).To(BeTrue())
+	})
 })
 
 var _ = Describe("getLocalPath (source.go)", func() {
@@ -121,6 +128,9 @@ var _ = Describe("getLocalPath (source.go)", func() {
 	})
 	It("should return absolute path as-is", func() {
 		Expect(getLocalPath("/mnt/models/test.gguf")).To(Equal("/mnt/models/test.gguf"))
+	})
+	It("should strip a case-variant FILE:// prefix, agreeing with isLocalSource", func() {
+		Expect(getLocalPath("FILE:///mnt/models/test.gguf")).To(Equal("/mnt/models/test.gguf"))
 	})
 })
 
@@ -232,6 +242,16 @@ var _ = Describe("isRemoteHTTPSource (source.go)", func() {
 	})
 	It("should return false for ftp:// URL (out of scope for the workload init container)", func() {
 		Expect(isRemoteHTTPSource("ftp://example.com/model.gguf")).To(BeFalse())
+	})
+	// URL schemes are case-insensitive (RFC 3986) and url.Parse lowercases
+	// them, so http.Client happily fetches "HTTP://..." URLs. The classifier
+	// must agree or a case-variant scheme dodges the guarded remote-source
+	// routing (GHSA-jw3m-8q7m-f35r).
+	It("should return true for case-variant HTTP:// scheme", func() {
+		Expect(isRemoteHTTPSource("HTTP://x")).To(BeTrue())
+	})
+	It("should return true for case-variant HtTpS:// scheme", func() {
+		Expect(isRemoteHTTPSource("HtTpS://x")).To(BeTrue())
 	})
 	It("source-type matchers must be mutually exclusive", func() {
 		// Architectural invariant: every reachable source falls into exactly

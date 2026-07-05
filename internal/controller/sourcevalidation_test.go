@@ -29,6 +29,13 @@ import (
 // while production defaults stay locked down (GHSA-jw3m-8q7m-f35r).
 var testLocalRoots = []string{os.TempDir(), "/nonexistent", "/still", "/models"}
 
+// testRemoteHosts is the remote-host allowlist handed to envtest reconcilers
+// whose fixtures serve http sources from loopback httptest servers. The SSRF
+// guard (GHSA-jw3m-8q7m-f35r) blocks loopback by default, so tests that need
+// to reach their fixture server opt loopback back in, mirroring how an
+// operator would allowlist a trusted internal model host.
+var testRemoteHosts = []string{"127.0.0.1", "::1"}
+
 // TestValidateLocalSourceAllowed locks down the host-path allowlist for local
 // model sources (GHSA-jw3m-8q7m-f35r). A local source (absolute path or
 // file:// URI) must be rejected unless it lies within an operator-configured

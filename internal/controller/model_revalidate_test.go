@@ -75,6 +75,7 @@ var _ = Describe("Model source revalidation", func() {
 				Client: k8sClient, Scheme: k8sClient.Scheme(),
 				StoragePath: tempDir, RevalidateInterval: time.Nanosecond,
 				AllowedHostPathRoots: testLocalRoots,
+				AllowedRemoteHosts:   testRemoteHosts,
 			}
 			req := reconcile.Request{NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"}}
 
@@ -130,6 +131,7 @@ var _ = Describe("Model source revalidation", func() {
 				Client: k8sClient, Scheme: k8sClient.Scheme(),
 				StoragePath: tempDir, RevalidateInterval: time.Nanosecond,
 				AllowedHostPathRoots: testLocalRoots,
+				AllowedRemoteHosts:   testRemoteHosts,
 			}
 			req := reconcile.Request{NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"}}
 
@@ -193,6 +195,7 @@ var _ = Describe("Model source revalidation", func() {
 				Client: k8sClient, Scheme: k8sClient.Scheme(),
 				StoragePath: tempDir, RevalidateInterval: time.Nanosecond,
 				AllowedHostPathRoots: testLocalRoots,
+				AllowedRemoteHosts:   testRemoteHosts,
 			}
 			req := reconcile.Request{NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"}}
 
@@ -240,6 +243,7 @@ var _ = Describe("Model source revalidation", func() {
 				Client: k8sClient, Scheme: k8sClient.Scheme(),
 				StoragePath: tempDir, RevalidateInterval: time.Nanosecond,
 				AllowedHostPathRoots: testLocalRoots,
+				AllowedRemoteHosts:   testRemoteHosts,
 			}
 			req := reconcile.Request{NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"}}
 
@@ -306,6 +310,7 @@ var _ = Describe("Model source revalidation", func() {
 				Client: k8sClient, Scheme: k8sClient.Scheme(),
 				StoragePath: tempDir, RevalidateInterval: time.Hour,
 				AllowedHostPathRoots: testLocalRoots,
+				AllowedRemoteHosts:   testRemoteHosts,
 			}
 			req := reconcile.Request{NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"}}
 			_, err = reconciler.Reconcile(ctx, req)

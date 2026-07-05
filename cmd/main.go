@@ -110,6 +110,7 @@ func main() {
 	var modelCacheAccessMode string
 	var modelCacheMode string
 	var allowedHostPathRoots string
+	var allowedRemoteHosts string
 	var modelRevalidateInterval time.Duration
 	var caCertConfigMap string
 	var initContainerImage string
@@ -134,6 +135,10 @@ func main() {
 	flag.StringVar(&allowedHostPathRoots, "allowed-host-path-roots", "",
 		"Comma-separated absolute path prefixes under which local/file:// and hostPath model "+
 			"sources are permitted. Empty (default) disables all local/hostPath sources (GHSA-jw3m-8q7m-f35r).")
+	flag.StringVar(&allowedRemoteHosts, "allowed-remote-hosts", "",
+		"Comma-separated hostnames/CIDRs permitted as remote (http/https) Model sources even if "+
+			"they resolve to private/link-local/loopback ranges. Public hosts are always allowed; "+
+			"this only re-permits internal hosts blocked by the SSRF guard (GHSA-jw3m-8q7m-f35r).")
 	flag.DurationVar(&modelRevalidateInterval, "model-revalidate-interval", controller.DefaultRevalidateInterval,
 		"Minimum interval between upstream source revalidation checks for a Model. "+
 			"Bounds the HEAD traffic the controller generates; drift is surfaced via the "+
@@ -189,6 +194,16 @@ func main() {
 	for _, root := range strings.Split(allowedHostPathRoots, ",") {
 		if root = strings.TrimSpace(root); root != "" {
 			allowedHostPathRootList = append(allowedHostPathRootList, root)
+		}
+	}
+
+	// Parse the remote-host allowlist for the controller-side SSRF guard the
+	// same way: split on comma, trim spaces, drop empties. Empty (the default)
+	// blocks every private/link-local/loopback destination (GHSA-jw3m-8q7m-f35r).
+	var allowedRemoteHostList []string
+	for _, host := range strings.Split(allowedRemoteHosts, ",") {
+		if host = strings.TrimSpace(host); host != "" {
+			allowedRemoteHostList = append(allowedRemoteHostList, host)
 		}
 	}
 
@@ -291,6 +306,7 @@ func main() {
 		StoragePath:          modelCachePath,
 		RevalidateInterval:   modelRevalidateInterval,
 		AllowedHostPathRoots: allowedHostPathRootList,
+		AllowedRemoteHosts:   allowedRemoteHostList,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Model")
 		os.Exit(1)

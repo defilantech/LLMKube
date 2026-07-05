@@ -312,6 +312,15 @@ modelCache:
 #     - /srv/models
 modelSource:
   allowedHostPathRoots: []
+  # Remote-host allowlist for the controller-side SSRF guard on http/https
+  # model sources. SECURITY (GHSA-jw3m-8q7m-f35r): the controller's metadata
+  # and revalidation requests refuse to connect to private, link-local,
+  # loopback, or unspecified addresses. Public hosts are always allowed; list
+  # hostnames and/or CIDRs here only to re-permit trusted internal hosts, e.g.
+  #   allowedRemoteHosts:
+  #     - models.corp.internal
+  #     - 10.20.0.0/16
+  allowedRemoteHosts: []
 
 # Priority classes for GPU scheduling
 priorityClasses:

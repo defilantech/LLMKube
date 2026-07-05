@@ -52,6 +52,14 @@ func ParseFromURL(ctx context.Context, url string) (*GGUFFile, error) {
 	return parseFromURL(ctx, http.DefaultClient, url)
 }
 
+// ParseFromURLWithClient is ParseFromURL with a caller-supplied *http.Client.
+// Callers that fetch attacker-influenced URLs (e.g. the LLMKube controller
+// reading Model.spec.source) use this to route every request — HEAD probe,
+// Range GETs, and the streaming fallback — through an SSRF-guarded client.
+func ParseFromURLWithClient(ctx context.Context, client *http.Client, url string) (*GGUFFile, error) {
+	return parseFromURL(ctx, client, url)
+}
+
 func parseFromURL(ctx context.Context, client *http.Client, url string) (*GGUFFile, error) {
 	size, rangeOK, err := probeURL(ctx, client, url)
 	if err != nil {
