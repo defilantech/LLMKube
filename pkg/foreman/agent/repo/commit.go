@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -67,6 +68,51 @@ func HasChanges(ctx context.Context, workspace string) (bool, error) {
 		return false, err
 	}
 	return strings.TrimSpace(out) != "", nil
+}
+
+// CommitsAheadOfBase returns the number of commits reachable from HEAD
+// but not from base. Uses `git rev-list --count base..HEAD`. Returns 0
+// with no error when base == HEAD.
+func CommitsAheadOfBase(ctx context.Context, workspace string, base string) (int, error) {
+	if workspace == "" {
+		return 0, fmt.Errorf("CommitsAheadOfBase: workspace is required")
+	}
+	if base == "" {
+		return 0, fmt.Errorf("CommitsAheadOfBase: base ref is required")
+	}
+	out, err := runGit(ctx, workspace, baseEnv(), "rev-list", "--count", base+"..HEAD")
+	if err != nil {
+		return 0, err
+	}
+	count, err := strconv.Atoi(strings.TrimSpace(out))
+	if err != nil {
+		return 0, fmt.Errorf("CommitsAheadOfBase: invalid rev-list output %q: %w", out, err)
+	}
+	return count, nil
+}
+
+// SoftResetToBase moves commits from HEAD back into the working tree
+// without touching the index, relative to base. Used when a model
+// self-committed its work and the executor wants to re-apply it with
+// DCO sign-off and executor-owned author identity.
+func SoftResetToBase(ctx context.Context, workspace string, base string) error {
+	if workspace == "" {
+		return fmt.Errorf("SoftResetToBase: workspace is required")
+	}
+	if base == "" {
+		return fmt.Errorf("SoftResetToBase: base ref is required")
+	}
+	count, err := CommitsAheadOfBase(ctx, workspace, base)
+	if err != nil {
+		return fmt.Errorf("SoftResetToBase: %w", err)
+	}
+	if count == 0 {
+		return ErrNothingToCommit
+	}
+	if _, err := runGit(ctx, workspace, baseEnv(), "reset", "--soft", base); err != nil {
+		return fmt.Errorf("SoftResetToBase: reset: %w", err)
+	}
+	return nil
 }
 
 // Commit stages every change in the workspace (git add -A) and creates

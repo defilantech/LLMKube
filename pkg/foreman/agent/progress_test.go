@@ -268,6 +268,48 @@ func TestBashLikelyMutatesWorkspace(t *testing.T) {
 	}
 }
 
+// TestBashLikelyMutatesWorkspace_GitApplyAdded verifies that git apply commands
+// are now detected as workspace mutations by bashLikelyMutatesWorkspace. This
+// closes a gap identified in #982 where models editing via `git apply` would
+// never reset the EditFreeStreak counter, causing force-terminate mid-edit.
+func TestBashLikelyMutatesWorkspace_GitApplyAdded(t *testing.T) {
+	tests := []struct {
+		name     string
+		command  string
+		expected bool
+	}{
+		// New: git apply patterns that were previously undetected.
+		{"git apply patch", "git apply path/to/patch.diff", true},
+		{"git apply --check then apply", "git apply --check && git apply path.patch", true},
+
+		// Existing patterns (regression: must still work).
+		{"sed -i in-place edit", "sed -i 's/foo/bar/g' file.txt", true},
+		{"mv rename file", "mv old.go new.go", true},
+		{"cp copy template", "cp templates/main.go pkg/agent/main.go", true},
+		{"patch command", "patch -p1 < fix.patch", true},
+
+		// Non-mutating: verification commands must NOT trigger.
+		{"go build", "go build ./...", false},
+		{"go vet package", "go vet ./pkg/agent/", false},
+		{"git diff stat", "git diff --stat HEAD", false},
+		{"echo to stdout (no redirect)", "echo hello world", false},
+
+		// Edge cases handled by redirect check.
+		{"cat heredoc with redirect", "cat <<EOF > file.go\npackage agent\nEOF", true},
+		{"echo append to file", "echo 'new line' >> config.yaml", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := bashLikelyMutatesWorkspace(tt.command)
+			if result != tt.expected {
+				t.Errorf("bashLikelyMutatesWorkspace(%q) = %v, want %v",
+					tt.command, result, tt.expected)
+			}
+		})
+	}
+}
+
 // TestProgressMonitor_ContextHardCapImmediate verifies the hard cap
 // force-terminates without a nudge stage.
 func TestProgressMonitor_ContextHardCapImmediate(t *testing.T) {

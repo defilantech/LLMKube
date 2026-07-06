@@ -659,11 +659,19 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 	// 10. GO verdict: check for changes first, then commit + push. If
 	// the model emitted GO but never edited a file, NO-CHANGES is the
 	// honest outcome regardless of whether commit_message was set.
+	baseBranch := baseBranchOrDefault(task.Spec.Payload.BaseBranch)
 	hasChanges, hcErr := repo.HasChanges(ctx, workspace)
 	if hcErr != nil {
 		return e.commitRejectedResult(start, transcriptRef, loopRes, branch, hcErr), nil
 	}
-	if !hasChanges {
+
+	// #982: tolerate a model that self-committed its work. If the working tree
+	// is clean but there are commits ahead of base on this branch, recover them
+	// by soft-resetting into the working tree so repo.Commit can re-apply with
+	// DCO sign-off and executor-owned author identity. This prevents false
+	// NO-GO ("no diff") outcomes when a model runs git commit before calling
+	// submit_result instead of leaving changes uncommitted for the executor.
+	if e.shouldNoChange(ctx, log, hasChanges, workspace, baseBranch) {
 		return e.noChangesResult(start, transcriptRef, loopRes, branch), nil
 	}
 
@@ -1332,6 +1340,29 @@ func (e *NativeAgentLoopExecutor) envtestGateFailedResult(
 		"turnCount":     lr.Turns,
 	}
 	return r
+}
+
+// shouldNoChange returns true when the executor should emit a NO-CHANGES
+// result: either the working tree is genuinely clean, or a model self-
+// committed its work and soft-reset failed to recover changes. When it
+// returns false and hasChanges was initially false, the caller should
+// proceed to commit (the model's self-committed edits are now in the
+// working tree after a successful soft reset).
+func (e *NativeAgentLoopExecutor) shouldNoChange(
+	ctx context.Context, log logr.Logger, hasChanges bool, workspace, baseBranch string,
+) bool {
+	if hasChanges {
+		return false
+	}
+	err := repo.SoftResetToBase(ctx, workspace, baseBranch)
+	if errors.Is(err, repo.ErrNothingToCommit) {
+		return true // truly no changes
+	}
+	if err != nil {
+		return true // detection or reset failed — degrade gracefully
+	}
+	log.Info("model self-committed; recovering changes via soft reset", "baseBranch", baseBranch)
+	return false
 }
 
 func (e *NativeAgentLoopExecutor) pushFailedResult(
