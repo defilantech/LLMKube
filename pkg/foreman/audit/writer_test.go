@@ -11,10 +11,12 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -106,5 +108,109 @@ func TestRecordTerminalWritesOnceAndSetsAnnotation(t *testing.T) {
 	err := c.Get(ctx, types.NamespacedName{Namespace: "default", Name: "foreman-audit-coder-89"}, &corev1.ConfigMap{})
 	if !apierrors.IsNotFound(err) {
 		t.Errorf("already-audited task must not re-write the record; got err=%v", err)
+	}
+}
+
+func TestReapOldRecordsDeletesExpiredConfigMaps(t *testing.T) {
+	c := fake.NewClientBuilder().Build()
+	ctx := context.Background()
+
+	// Create an expired audit ConfigMap (TTL=1s, created 10s ago).
+	expired := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "foreman-audit-expired-task",
+			Namespace: "default",
+			Labels: map[string]string{
+				AuditLabel:     "true",
+				AuditTaskLabel: "expired-task",
+			},
+			Annotations: map[string]string{
+				TTLAnnotationKey: "1",
+			},
+			CreationTimestamp: metav1.NewTime(time.Now().Add(-10 * time.Second)),
+		},
+		Data: map[string]string{auditDataKey: "{}"},
+	}
+	if err := c.Create(ctx, expired); err != nil {
+		t.Fatalf("create expired CM: %v", err)
+	}
+
+	// Create a fresh audit ConfigMap (TTL=3600s, created just now).
+	fresh := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "foreman-audit-fresh-task",
+			Namespace: "default",
+			Labels: map[string]string{
+				AuditLabel:     "true",
+				AuditTaskLabel: "fresh-task",
+			},
+			Annotations: map[string]string{
+				TTLAnnotationKey: "3600",
+			},
+			CreationTimestamp: metav1.NewTime(time.Now()),
+		},
+		Data: map[string]string{auditDataKey: "{}"},
+	}
+	if err := c.Create(ctx, fresh); err != nil {
+		t.Fatalf("create fresh CM: %v", err)
+	}
+
+	// Create an audit ConfigMap without TTL annotation (should be skipped).
+	noTTL := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "foreman-audit-nottl-task",
+			Namespace: "default",
+			Labels: map[string]string{
+				AuditLabel:     "true",
+				AuditTaskLabel: "nottl-task",
+			},
+			CreationTimestamp: metav1.NewTime(time.Now().Add(-10 * time.Second)),
+		},
+		Data: map[string]string{auditDataKey: "{}"},
+	}
+	if err := c.Create(ctx, noTTL); err != nil {
+		t.Fatalf("create no-TTL CM: %v", err)
+	}
+
+	deleted, err := ReapOldRecords(ctx, c, "default", logr.Discard())
+	if err != nil {
+		t.Fatalf("ReapOldRecords: %v", err)
+	}
+	if deleted != 1 {
+		t.Errorf("expected 1 deleted, got %d", deleted)
+	}
+
+	// Expired CM should be gone.
+	expKey := types.NamespacedName{Namespace: "default", Name: "foreman-audit-expired-task"}
+	if err := c.Get(ctx, expKey, &corev1.ConfigMap{}); !apierrors.IsNotFound(err) {
+		t.Errorf("expired CM should have been deleted, got err=%v", err)
+	}
+	// Fresh CM should still exist.
+	freshKey := types.NamespacedName{Namespace: "default", Name: "foreman-audit-fresh-task"}
+	if err := c.Get(ctx, freshKey, &corev1.ConfigMap{}); err != nil {
+		t.Errorf("fresh CM should still exist: %v", err)
+	}
+	// No-TTL CM should still exist.
+	noTTLKey := types.NamespacedName{Namespace: "default", Name: "foreman-audit-nottl-task"}
+	if err := c.Get(ctx, noTTLKey, &corev1.ConfigMap{}); err != nil {
+		t.Errorf("no-TTL CM should still exist: %v", err)
+	}
+}
+
+func TestWriteRecordSetsTTLAnnotation(t *testing.T) {
+	c := fake.NewClientBuilder().Build()
+	rec := Record{SchemaVersion: SchemaVersion, Task: TaskRef{Name: "coder-89", Namespace: "default"}, Verdict: "GO"}
+
+	if err := WriteRecord(context.Background(), c, "default", rec, logr.Discard()); err != nil {
+		t.Fatalf("WriteRecord: %v", err)
+	}
+
+	var cm corev1.ConfigMap
+	key := types.NamespacedName{Namespace: "default", Name: "foreman-audit-coder-89"}
+	if err := c.Get(context.Background(), key, &cm); err != nil {
+		t.Fatalf("audit ConfigMap not created: %v", err)
+	}
+	if cm.Annotations[TTLAnnotationKey] != "2592000" {
+		t.Errorf("TTL annotation not set correctly, got %q", cm.Annotations[TTLAnnotationKey])
 	}
 }
