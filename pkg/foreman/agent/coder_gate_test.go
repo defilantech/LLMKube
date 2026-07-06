@@ -1014,3 +1014,59 @@ func TestCheckReferenceGrounding_IgnoresExporterMetricTokens(t *testing.T) {
 			"got failed=true output=%q", output)
 	}
 }
+
+// TestBuildFeedback_GocycloAdvisory pins the steer appended when golangci-lint
+// reports gocyclo. The raw dump alone burned all three gate attempts on the
+// #982 run: the model re-submitted the same over-complex function each time.
+func TestBuildFeedback_GocycloAdvisory(t *testing.T) {
+	out := buildFeedback([]checkFailure{{
+		name: "golangci-lint run ./...",
+		output: "pkg/foreman/agent/executor_native.go:407:1: cyclomatic complexity 31 " +
+			"of func `(*NativeAgentLoopExecutor).runLLMPath` is high (> 30) (gocyclo)",
+	}})
+	want := "Do not add more branches to `(*NativeAgentLoopExecutor).runLLMPath`."
+	if !strings.Contains(out, want) {
+		t.Fatalf("feedback missing gocyclo steer %q; got:\n%s", want, out)
+	}
+	if !strings.Contains(out, "helper function") {
+		t.Fatalf("steer should tell the model to extract a helper; got:\n%s", out)
+	}
+}
+
+func TestBuildFeedback_NoAdvisoryForUnknownFailure(t *testing.T) {
+	out := buildFeedback([]checkFailure{{
+		name:   "test presence",
+		output: "Package pkg/x/ changed functions (Foo) have no test referencing them by name.",
+	}})
+	if strings.Contains(out, "Advice:") {
+		t.Fatalf("non-structural failure must get no advisory; got:\n%s", out)
+	}
+}
+
+func TestLintAdvisories_DuplAndFunlen(t *testing.T) {
+	steers := lintAdvisories("a.go:1: 20-40 lines are duplicate of `b.go:5-25` (dupl)\n" +
+		"c.go:9: Function 'bigOne' is too long (75 > 60) (funlen)\n")
+	if len(steers) != 2 {
+		t.Fatalf("want 2 steers (dupl + funlen), got %d: %v", len(steers), steers)
+	}
+	if !strings.Contains(steers[0], "duplicated block") || !strings.Contains(steers[1], "too long") {
+		t.Fatalf("unexpected steer content: %v", steers)
+	}
+}
+
+func TestLintAdvisories_DedupesAndCaps(t *testing.T) {
+	line := "x.go:1:1: cyclomatic complexity 31 of func `Alpha` is high (> 30) (gocyclo)\n"
+	// Same func twice -> one steer; four distinct funcs -> capped at 3.
+	steers := lintAdvisories(line + line)
+	if len(steers) != 1 {
+		t.Fatalf("duplicate gocyclo func must dedupe to 1 steer, got %d", len(steers))
+	}
+	many := "x.go:1:1: cyclomatic complexity 31 of func `A` is high (> 30) (gocyclo)\n" +
+		"x.go:2:1: cyclomatic complexity 31 of func `B` is high (> 30) (gocyclo)\n" +
+		"x.go:3:1: cyclomatic complexity 31 of func `C` is high (> 30) (gocyclo)\n" +
+		"x.go:4:1: cyclomatic complexity 31 of func `D` is high (> 30) (gocyclo)\n"
+	steers = lintAdvisories(many)
+	if len(steers) != maxLintAdvisories {
+		t.Fatalf("advisories must cap at %d, got %d", maxLintAdvisories, len(steers))
+	}
+}
