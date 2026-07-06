@@ -64,6 +64,11 @@ func EffectiveKey(model *inferencev1alpha1.Model) string {
 		return model.Status.CacheKey
 	}
 	multiFile := len(model.Spec.Files) > 0 || model.Spec.Mmproj != ""
+	// The "metal" literal mirrors internal/controller.acceleratorMetal; it is
+	// duplicated here rather than imported because cachekey is a low-level
+	// utility that must not depend on the controller package. Keep the two in
+	// sync: if the accelerator value is ever renamed, update this literal too,
+	// or metal models will silently start deriving (and caching under) a key.
 	metal := model.Spec.Hardware != nil && model.Spec.Hardware.Accelerator == "metal"
 	if multiFile && !metal {
 		return Compute(model.Spec.Source)
