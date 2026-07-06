@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -503,6 +504,10 @@ func checkGoreleaserConfig(ctx context.Context, workspace string, run commandRun
 
 // buildFeedback renders the directive and a per-check section for every
 // failing check, truncating each check's output to maxCheckOutputBytes.
+// Structural-lint failures additionally get a one-line steer (see
+// lintAdvisories): the raw linter dump alone is not actionable for
+// mid-size coders, which re-submit the same shape until the attempt
+// budget is gone (#982 run: gocyclo 31 > 30, three identical attempts).
 func buildFeedback(failures []checkFailure) string {
 	var b strings.Builder
 	b.WriteString("The verification gate failed. Fix the issues below and resubmit.\n")
@@ -512,8 +517,51 @@ func buildFeedback(failures []checkFailure) string {
 		b.WriteString("\n")
 		b.WriteString(truncateOutput(f.output))
 		b.WriteString("\n")
+		for _, steer := range lintAdvisories(f.output) {
+			b.WriteString(steer)
+			b.WriteString("\n")
+		}
 	}
 	return b.String()
+}
+
+// maxLintAdvisories caps the steers appended per failing check so a
+// sprawling lint report cannot bloat the feedback prompt.
+const maxLintAdvisories = 3
+
+// gocycloFuncRe captures the backticked function name from a gocyclo
+// failure line, e.g.
+// "cyclomatic complexity 31 of func `(*T).runLLMPath` is high (> 30) (gocyclo)".
+var gocycloFuncRe = regexp.MustCompile("cyclomatic complexity \\d+ of func `([^`]+)`")
+
+// lintAdvisories maps structural-lint failure output to one-line steers a
+// coder model can follow mechanically. Deterministic string inspection, no
+// LLM involved; unknown failure classes yield no advisory. Every steer is
+// prefixed "Advice:" so tests and readers can tell steers from raw output.
+func lintAdvisories(output string) []string {
+	var steers []string
+	seen := map[string]bool{}
+	for _, m := range gocycloFuncRe.FindAllStringSubmatch(output, -1) {
+		fn := m[1]
+		if seen[fn] {
+			continue
+		}
+		seen[fn] = true
+		steers = append(steers, fmt.Sprintf(
+			"Advice: Do not add more branches to `%s`. Extract your new logic into a small "+
+				"named helper function and call it from `%s`.",
+			fn, fn))
+	}
+	if strings.Contains(output, "(dupl)") {
+		steers = append(steers, "Advice: Extract the duplicated block into one shared helper instead of copying it.")
+	}
+	if strings.Contains(output, "(funlen)") {
+		steers = append(steers, "Advice: The function is too long. Move your addition into a new helper function.")
+	}
+	if len(steers) > maxLintAdvisories {
+		steers = steers[:maxLintAdvisories]
+	}
+	return steers
 }
 
 // truncateOutput caps output at maxCheckOutputBytes, keeping the tail
