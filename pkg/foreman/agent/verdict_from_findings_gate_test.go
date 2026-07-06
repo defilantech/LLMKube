@@ -115,3 +115,38 @@ func TestVerdictFromFindings_GitUnavailableDegradesOpen(t *testing.T) {
 		t.Fatalf("nil changedLines must leave verdict untouched, got %s", got)
 	}
 }
+
+// TestGroundingRailsComposition runs the demote rail then the promote rail in
+// executor order and asserts the net invariant: after both, verdict == NO-GO
+// iff at least one grounded blocking finding is present, regardless of the
+// model's stated verdict. This guards the two-rail composition against future
+// reordering (the per-rail tests cover each rail in isolation).
+func TestGroundingRailsComposition(t *testing.T) {
+	gogo := foremanv1alpha1.AgenticTaskVerdictGo
+	nogo := foremanv1alpha1.AgenticTaskVerdictNoGo
+	changed := vffChanged(map[string]map[int]bool{"a.go": {10: true}})
+	blk := func() map[string]any { return vffExtra("blocker", "a.go", 10) } // grounded blocker
+	non := func() map[string]any { return vffExtra("minor", "a.go", 10) }   // not blocking
+
+	cases := []struct {
+		name  string
+		model foremanv1alpha1.AgenticTaskVerdict
+		extra map[string]any
+		want  foremanv1alpha1.AgenticTaskVerdict
+	}{
+		{"GO+blocker->NoGo", gogo, blk(), nogo},
+		{"NoGo+blocker->NoGo", nogo, blk(), nogo},
+		{"GO+none->GO", gogo, non(), gogo},
+		{"NoGo+none->GO", nogo, non(), gogo},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			v := tc.model
+			v = enforceReviewerGroundedFindings(logr.Discard(), tc.extra, v, changed)
+			v = enforceReviewerVerdictFromFindings(logr.Discard(), tc.extra, v, changed)
+			if v != tc.want {
+				t.Fatalf("net verdict = %s, want %s", v, tc.want)
+			}
+		})
+	}
+}
