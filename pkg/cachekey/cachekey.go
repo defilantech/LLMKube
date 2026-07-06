@@ -19,9 +19,11 @@ limitations under the License.
 // package so `serve`, `cache list`, and `delete --purge-cache` can never
 // disagree about which directory on the cache PVC owns a given model.
 //
-// The controller's effectiveModelCacheKey() additionally scopes the fallback
-// to non-metal multi-file models; that scoping lives in the controller package
-// and delegates to Compute() for the unconditional SHA256 fingerprint.
+// The scoped decision (Status.CacheKey wins; otherwise only a non-metal
+// multi-file model derives a key from its source) lives in EffectiveKey here,
+// so the controller's effectiveModelCacheKey() and the CLI's cache list /
+// delete --purge-cache paths all resolve a model's key the same way. Compute()
+// is the unconditional SHA256 fingerprint the derivation is built on.
 package cachekey
 
 import (
