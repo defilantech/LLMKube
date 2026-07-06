@@ -23,6 +23,7 @@ import (
 	"time"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
+	"github.com/defilantech/llmkube/pkg/cachekey"
 )
 
 const testDefaultNamespace = "default"
@@ -875,7 +876,7 @@ func TestNewDeployCommand_CacheFlags(t *testing.T) {
 }
 
 func TestComputeCacheKeyUsedByDeploy(t *testing.T) {
-	// Verify that computeCacheKey is available and produces consistent results
+	// Verify that cachekey.Compute produces consistent results
 	// when used with model sources that would be passed to deploy
 	sources := []string{
 		"https://huggingface.co/model.gguf",
@@ -884,14 +885,14 @@ func TestComputeCacheKeyUsedByDeploy(t *testing.T) {
 	}
 
 	for _, source := range sources {
-		key := computeCacheKey(source)
+		key := cachekey.Compute(source)
 		if len(key) != 16 {
-			t.Errorf("computeCacheKey(%q) length = %d, want 16", source, len(key))
+			t.Errorf("cachekey.Compute(%q) length = %d, want 16", source, len(key))
 		}
 		// Verify determinism
-		key2 := computeCacheKey(source)
+		key2 := cachekey.Compute(source)
 		if key != key2 {
-			t.Errorf("computeCacheKey not deterministic for %q", source)
+			t.Errorf("cachekey.Compute not deterministic for %q", source)
 		}
 	}
 }

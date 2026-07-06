@@ -30,6 +30,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
+	"github.com/defilantech/llmkube/pkg/cachekey"
 )
 
 // Model storage wiring. The controller has three paths for making a model
@@ -232,31 +233,13 @@ func hasMultiFileStaging(model *inferencev1alpha1.Model) bool {
 	return model != nil && (len(model.Spec.Files) > 0 || model.Spec.Mmproj != "")
 }
 
-// effectiveModelCacheKey returns the key used to namespace a model's files
-// inside the cache PVC, and serves as the single source of truth for whether
-// the in-cluster serving pod should use the cache (non-empty) or an emptyDir
-// (empty). Both the PVC-ensure gate (InferenceService reconcile) and the
-// storage builder MUST consult this so they never disagree about caching.
-//
-// For sources the controller fingerprints (http/https) this is the
-// controller-set Status.CacheKey. The runtime-resolved path (hf:// repo IDs)
-// deliberately leaves Status.CacheKey empty and keeps the Available condition
-// reason "RuntimeResolved", but an hf:// model with multi-file staging still
-// needs the cache PVC: otherwise every file re-downloads into an emptyDir on
-// each pod restart (#909). Derive a stable key from the source in that case.
-// Metal models have no init container and no cache PVC (the host metal-agent
-// loads the files directly), so they never cache here.
+// effectiveModelCacheKey returns the key used to namespace a model's
+// files inside the cache PVC, and is the single source of truth for
+// whether the in-cluster serving pod should use the cache (non-empty)
+// or an emptyDir (empty). It delegates to cachekey.EffectiveKey so the
+// controller and the CLI can never disagree about caching.
 func effectiveModelCacheKey(model *inferencev1alpha1.Model) string {
-	if model == nil {
-		return ""
-	}
-	if model.Status.CacheKey != "" {
-		return model.Status.CacheKey
-	}
-	if hasMultiFileStaging(model) && !isMetalModel(model) {
-		return computeCacheKey(model.Spec.Source)
-	}
-	return ""
+	return cachekey.EffectiveKey(model)
 }
 
 // modelStagingPlan resolves the model's declared files into a staging plan.

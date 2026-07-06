@@ -18,8 +18,6 @@ package cli
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"strings"
@@ -33,6 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
+	"github.com/defilantech/llmkube/pkg/cachekey"
 )
 
 const (
@@ -196,9 +195,12 @@ func runCacheList(namespace string, allNamespaces bool, orphanedOnly bool) error
 
 	cacheEntries := make(map[string]*CacheEntry)
 	for _, model := range modelList.Items {
-		cacheKey := model.Status.CacheKey
+		cacheKey := cachekey.EffectiveKey(&model)
 		if cacheKey == "" {
-			cacheKey = computeCacheKey(model.Spec.Source)
+			// metal / single-file runtime-resolved models are never cached
+			// under a derived key; skip them so they do not show up as
+			// phantom entries.
+			continue
 		}
 
 		entry, exists := cacheEntries[cacheKey]
@@ -500,10 +502,4 @@ func runCachePreload(modelID, namespace string) error {
 			}
 		}
 	}
-}
-
-// computeCacheKey generates a SHA256 hash of the source URL (same as controller)
-func computeCacheKey(source string) string {
-	hash := sha256.Sum256([]byte(source))
-	return hex.EncodeToString(hash[:])[:16]
 }
