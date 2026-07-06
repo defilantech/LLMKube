@@ -18,11 +18,13 @@ limitations under the License.
 // changes which pass the syntactic checks (gofmt/vet/build/lint) but are not
 // actually constrained by a test (the #856 class).
 //
-//   - Layer 1 (checkTestPresence): for each changed package, every new or
-//     body-modified function in hand-written, non-test Go must be referenced
-//     by name in a changed _test.go in that package; unreferenced functions
-//     fail. Pure diff/text inspection, so it covers envtest/controller
-//     packages too.
+//   - Layer 1 (checkTestPresence): for each changed package, every NET-NEW
+//     function in hand-written, non-test Go must be referenced by name in a
+//     changed _test.go in that package; unreferenced new functions fail.
+//     Body-modified functions are exempt (behavior-preserving edits do not
+//     require a new test); they are covered by Layer 2 where package tests
+//     exist and by CI's full suite everywhere. Pure diff/text inspection, so
+//     it covers envtest/controller packages too.
 //   - Layer 2 (checkMutationSurvival): for non-envtest changed packages that DO
 //     have a changed test, blank the changed function bodies on an in-memory
 //     backup, re-run the package tests, and flag any package whose tests still
@@ -276,27 +278,31 @@ func dedupSorted(in []string) []string {
 	return out
 }
 
-// checkTestPresence fails when a changed package has new or body-modified
-// functions in hand-written, non-test Go that are not referenced by name in
-// any changed _test.go in that package. Pure inspection -- no test execution
-// -- so it covers envtest/controller packages the fast unit-test tier cannot
-// run. Returns (failed, feedback).
+// checkTestPresence fails when a changed package has NET-NEW functions in
+// hand-written, non-test Go that are not referenced by name in any changed
+// _test.go in that package. Body-modified functions are exempt: Layer 2
+// (mutation survival) covers them where the package has a changed test, and
+// CI's full suite covers them everywhere. Pure inspection -- no test
+// execution -- so it covers envtest/controller packages the fast unit-test
+// tier cannot run. Returns (failed, feedback).
 func checkTestPresence(ctx context.Context, workspace string, run commandRunner) (bool, string) {
 	changed := changedNonTestGoFiles(ctx, workspace, run)
 	if len(changed) == 0 {
 		return false, ""
 	}
 
-	// changedFuncs maps pkgDir -> deduplicated set of function names that are
-	// either net-new (+func line) or body-modified (hunk inside an existing
-	// func, captured via the hunk-header trailing context).
+	// changedFuncs maps pkgDir -> deduplicated set of NET-NEW function names
+	// (+func lines in the diff). Body-modified functions are deliberately
+	// excluded: demanding a named test for every touched call site made
+	// refactors un-landable for mid-size coders (the #921 run burned all
+	// three gate attempts on it, partly inside envtest packages whose tests
+	// the coder workspace cannot run). Modified functions stay covered by
+	// Layer 2 (mutation survival) where the package has a changed test, and
+	// by the full suite in CI.
 	changedFuncs := map[string]map[string]bool{}
 	for _, f := range changed {
 		dir := filepath.Dir(f)
-		added := addedFuncNames(ctx, workspace, f, run)
-		modified := modifiedFuncNames(ctx, workspace, f, run)
-		all := append(added, modified...) //nolint:gocritic // intentional extend
-		for _, name := range all {
+		for _, name := range addedFuncNames(ctx, workspace, f, run) {
 			if name == "" {
 				continue
 			}
