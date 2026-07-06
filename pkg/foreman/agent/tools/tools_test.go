@@ -927,8 +927,75 @@ func TestSubmitResult_SummaryTooLong(t *testing.T) {
 	tool := SubmitResultTool{}
 	long := strings.Repeat("x", MaxSubmitSummaryLen+1)
 	body, _ := json.Marshal(map[string]any{"verdict": "GO", "summary": long})
-	_, err := tool.Execute(context.Background(), body)
-	if err == nil || !strings.Contains(err.Error(), "chars or fewer") {
-		t.Errorf("expected summary-too-long error, got %v", err)
+	res, err := tool.Execute(context.Background(), body)
+	if err != nil {
+		t.Fatalf("Execute should succeed after truncation: %v", err)
+	}
+	if len(res.Summary) > MaxSubmitSummaryLen {
+		t.Errorf("summary not truncated: got %d bytes", len(res.Summary))
+	}
+	if !strings.HasSuffix(res.Summary, "…") {
+		t.Errorf("truncated summary should end with ellipsis, got %q", res.Summary)
+	}
+}
+
+func TestSubmitResult_SummaryTruncationRuneSafe(t *testing.T) {
+	tool := SubmitResultTool{}
+	// Build a summary that is exactly MaxSubmitSummaryLen bytes, then
+	// append a multi-byte rune so the byte limit falls inside it.
+	base := strings.Repeat("x", MaxSubmitSummaryLen-3) // 3 bytes for "…"
+	summary := base + "🔥"                              // 4-byte rune; total > MaxSubmitSummaryLen
+	body, _ := json.Marshal(map[string]any{"verdict": "GO", "summary": summary})
+	res, err := tool.Execute(context.Background(), body)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(res.Summary) > MaxSubmitSummaryLen {
+		t.Errorf("summary exceeds cap: got %d bytes", len(res.Summary))
+	}
+	// The emoji should be dropped entirely, not split.
+	if strings.Contains(res.Summary, "🔥") {
+		t.Errorf("multi-byte rune should be dropped, not split")
+	}
+}
+
+func TestTruncateRuneSafe(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		maxLen int
+	}{
+		{
+			name:   "short string unchanged",
+			input:  "hello",
+			maxLen: 10,
+		},
+		{
+			name:   "exact length unchanged",
+			input:  strings.Repeat("x", 10),
+			maxLen: 10,
+		},
+		{
+			name:   "truncate with ellipsis",
+			input:  strings.Repeat("x", 15),
+			maxLen: 10,
+		},
+		{
+			name:   "multi-byte rune dropped not split",
+			input:  strings.Repeat("x", 9) + "🔥",
+			maxLen: 10,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := truncateRuneSafe(tt.input, tt.maxLen)
+			if len(result) > tt.maxLen {
+				t.Errorf("truncateRuneSafe(%q, %d) = %d bytes, want <= %d",
+					tt.input, tt.maxLen, len(result), tt.maxLen)
+			}
+			if len(tt.input) > tt.maxLen && !strings.HasSuffix(result, "…") {
+				t.Errorf("truncated result should end with ellipsis, got %q", result)
+			}
+		})
 	}
 }

@@ -30,6 +30,30 @@ import (
 // forcing a one-sentence outcome rather than a wall of text.
 const MaxSubmitSummaryLen = 280
 
+// truncateRuneSafe truncates s to at most maxLen bytes, appending an
+// ellipsis if truncation occurred. It never splits a multi-byte rune:
+// if the byte limit falls inside a rune, the rune is dropped entirely.
+func truncateRuneSafe(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	ellipsis := "…"
+	// Reserve space for the ellipsis.
+	avail := maxLen - len(ellipsis)
+	// Walk runes until we would exceed avail.
+	var b []rune
+	byteLen := 0
+	for _, r := range s {
+		runeBytes := len(string(r))
+		if byteLen+runeBytes > avail {
+			break
+		}
+		b = append(b, r)
+		byteLen += runeBytes
+	}
+	return string(b) + ellipsis
+}
+
 // SubmitResultTool is the terminal tool. When the model calls it, the
 // loop captures the envelope and exits. The fields map directly onto
 // AgenticTaskStatus.Verdict + Status.Result + the commit message the
@@ -84,8 +108,7 @@ func (SubmitResultTool) Execute(_ context.Context, args json.RawMessage) (*agent
 		return nil, fmt.Errorf("submit_result: summary is required")
 	}
 	if len(a.Summary) > MaxSubmitSummaryLen {
-		return nil, fmt.Errorf("submit_result: summary must be %d chars or fewer (got %d)",
-			MaxSubmitSummaryLen, len(a.Summary))
+		a.Summary = truncateRuneSafe(a.Summary, MaxSubmitSummaryLen)
 	}
 	return &agent.ToolResult{
 		Terminal:      true,
