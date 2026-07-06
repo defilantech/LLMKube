@@ -10,12 +10,18 @@ metadata:
 ---
 {{- end }}
 # Least-privilege Role for the coder Job pods. A Job-mode coder runs
-# `foreman-agent run-task`, which READS the AgenticTask, the referenced
-# Agent, and the Agent's InferenceService from the API to resolve the
-# executor's base URL, then runs the native loop in-process. It never
-# writes task status (the foreman-agent watcher polls the Job's log tail
-# and patches status), so this Role is read-only and namespaced to where
-# the chart (and the tasks) live.
+# `foreman-agent run-task`, which:
+#   - READS the AgenticTask, the referenced Agent, and the Agent's
+#     InferenceService from the API to resolve the executor's base URL.
+#   - For cloud-proxy providers, READS the Secret referenced by
+#     `providerConfig.apiKeySecretRef` to resolve the API key.
+#   - WRITES a per-task transcript ConfigMap (foreman-transcript-<task>)
+#     during the run so failing runs can be diagnosed post-hoc; without
+#     this the turn-by-turn transcript is lost and only the summary
+#     audit ConfigMap survives.
+# The foreman-agent watcher (separate process) patches AgenticTask
+# status — the in-Job run-task never writes task status itself. The
+# Role is namespaced to where the chart (and the tasks) live.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -30,6 +36,17 @@ rules:
   - apiGroups: ["inference.llmkube.dev"]
     resources: ["inferenceservices"]
     verbs: ["get", "list", "watch"]
+  # Resolves providerConfig.apiKeySecretRef for cloud-proxy providers.
+  # `get` only — the agent does not list/watch secrets.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+  # Per-task transcript write. `get` + `create`/`update` mirror the
+  # transcript writer's read-then-upsert flow; the writer targets a
+  # single ConfigMap (foreman-transcript-<task-name>) per run.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "create", "update"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
