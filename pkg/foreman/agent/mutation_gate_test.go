@@ -200,10 +200,15 @@ func TestCheckTestPresence_ReferencingTestPasses(t *testing.T) { //nolint:dupl
 	}
 }
 
-// TestCheckTestPresence_ModifiedFuncNeedsTest verifies that a body-modified
-// function (no net-new +func line) is flagged when no changed test references
-// it by name.
-func TestCheckTestPresence_ModifiedFuncNeedsTest(t *testing.T) {
+// TestCheckTestPresence_ModifiedFuncDoesNotNeedTest verifies that a
+// body-modified function (no net-new +func line) does NOT demand a named
+// test. Behavior-preserving edits to existing functions are covered by
+// Layer 2 (mutation survival) where package tests exist, and by CI's full
+// suite everywhere; demanding a fresh named test for every touched call
+// site made refactors un-landable for mid-size coders (the #921 run burned
+// all three gate attempts on envtest-package tests the coder workspace
+// cannot even run).
+func TestCheckTestPresence_ModifiedFuncDoesNotNeedTest(t *testing.T) {
 	ws := t.TempDir()
 	_ = os.MkdirAll(filepath.Join(ws, "pkg/diff"), 0o755)
 	_ = os.WriteFile(filepath.Join(ws, "pkg/diff/diff.go"),
@@ -211,27 +216,27 @@ func TestCheckTestPresence_ModifiedFuncNeedsTest(t *testing.T) {
 	// No changed _test.go at all.
 
 	statusOut := " M pkg/diff/diff.go\x00"
-	// git diff HEAD -- diff.go: body changed but no +func line
+	// git diff -- diff.go: body changed but no +func line
 	diffOut := "diff --git a/pkg/diff/diff.go b/pkg/diff/diff.go\n" +
 		"@@ -1,2 +1,2 @@ func DiffNameOnly() string {\n-\treturn \"old\"\n+\treturn \"new\"\n"
-	// git diff -U0 HEAD -- diff.go: hunk header carries the enclosing func name
+	// git diff -U0 -- diff.go: hunk header carries the enclosing func name
 	diffU0Out := "@@ -1,1 +1,1 @@ func DiffNameOnly() string {\n-\treturn \"old\"\n+\treturn \"new\"\n"
 
 	runner := func(_ context.Context, _ string, _ []string, name string, args ...string) (string, error) {
 		switch {
 		case name == "git" && args[0] == "status":
 			return statusOut, nil
-		case name == "git" && args[0] == "diff" && len(args) > 2 && args[1] == "-U0" && args[2] == "HEAD":
+		case name == "git" && args[0] == "diff" && len(args) > 1 && args[1] == "-U0":
 			return diffU0Out, nil
-		case name == "git" && args[0] == "diff" && len(args) > 1 && args[1] == "HEAD":
+		case name == "git" && args[0] == "diff":
 			return diffOut, nil
 		}
 		return "", nil
 	}
 
 	failed, out := checkTestPresence(context.Background(), ws, runner)
-	if !failed || !strings.Contains(out, "DiffNameOnly") {
-		t.Fatalf("want failure naming DiffNameOnly, got failed=%v out=%q", failed, out)
+	if failed {
+		t.Fatalf("body-modified func must not demand a test; got failure:\n%s", out)
 	}
 }
 
