@@ -317,11 +317,21 @@ Call `submit_result` exactly once. Required fields:
                          identification.)
   - `findings`        :: `[]` of `{severity: "blocker" | "major" |
                          "minor", area: "scope" | "tests" | "style"
-                         | "side-effects" | "docs", message: "..."}`
-                         . Each finding must include enough specifics
-                         (file path, line number, quoted issue text)
-                         that a maintainer can act on it without
-                         re-deriving your reasoning.
+                         | "side-effects" | "docs", message: "...",
+                         file: "path", line: N}`. Each finding must
+                         include enough specifics (file path, line
+                         number, quoted issue text) that a maintainer
+                         can act on it without re-deriving your
+                         reasoning.
+
+                         Every BLOCKING finding (severity `blocker`
+                         or `major`) MUST set `file` and `line` to a
+                         line THIS diff changed (a line inside a
+                         `git diff main...HEAD` hunk). A blocking
+                         finding without a `file` + `line` on changed
+                         code is IGNORED by the harness and cannot
+                         sustain a REQUEST-CHANGES verdict; minor
+                         findings may omit `file`/`line`.
   - `issueAsk`        :: a short quote (≤200 chars) capturing the
                          operative ask of the issue body, taken from
                          the `fetch_issue` result as closely as you
