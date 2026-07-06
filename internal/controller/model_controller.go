@@ -42,6 +42,7 @@ import (
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 	llmkubemetrics "github.com/defilantech/llmkube/internal/metrics"
+	"github.com/defilantech/llmkube/pkg/cachekey"
 	"github.com/defilantech/llmkube/pkg/gguf"
 	"github.com/defilantech/llmkube/pkg/license"
 )
@@ -995,9 +996,13 @@ func formatBytes(bytes int64) string {
 	return fmt.Sprintf("%.1f %ciB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }
 
+// computeCacheKey is retained as a thin wrapper around cachekey.Compute for
+// call sites that pre-date the shared package; it exists so the controller
+// package compiles without touching the many `computeCacheKey(source)` sites
+// that only need an unconditional fingerprint. New code should import
+// github.com/defilantech/llmkube/pkg/cachekey directly.
 func computeCacheKey(source string) string {
-	hash := sha256.Sum256([]byte(source))
-	return hex.EncodeToString(hash[:])[:16]
+	return cachekey.Compute(source)
 }
 
 func (r *ModelReconciler) parseGGUFMetadata(path string) (*inferencev1alpha1.GGUFMetadata, error) {

@@ -18,6 +18,8 @@ package cli
 
 import (
 	"testing"
+
+	"github.com/defilantech/llmkube/pkg/cachekey"
 )
 
 func TestComputeCacheKey(t *testing.T) {
@@ -33,17 +35,17 @@ func TestComputeCacheKey(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			key := computeCacheKey(tt.source)
+			key := cachekey.Compute(tt.source)
 
 			// Must be exactly 16 hex characters
 			if len(key) != 16 {
-				t.Errorf("computeCacheKey(%q) length = %d, want 16", tt.source, len(key))
+				t.Errorf("cachekey.Compute(%q) length = %d, want 16", tt.source, len(key))
 			}
 
 			// Must contain only hex characters
 			for _, c := range key {
 				if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
-					t.Errorf("computeCacheKey(%q) contains non-hex char %q", tt.source, string(c))
+					t.Errorf("cachekey.Compute(%q) contains non-hex char %q", tt.source, string(c))
 				}
 			}
 		})
@@ -52,8 +54,8 @@ func TestComputeCacheKey(t *testing.T) {
 
 func TestComputeCacheKeyDeterministic(t *testing.T) {
 	source := "https://huggingface.co/TheBloke/model.gguf"
-	key1 := computeCacheKey(source)
-	key2 := computeCacheKey(source)
+	key1 := cachekey.Compute(source)
+	key2 := cachekey.Compute(source)
 
 	if key1 != key2 {
 		t.Errorf("computeCacheKey is not deterministic: %q != %q", key1, key2)
@@ -70,7 +72,7 @@ func TestComputeCacheKeyUniqueness(t *testing.T) {
 
 	keys := make(map[string]string)
 	for _, source := range sources {
-		key := computeCacheKey(source)
+		key := cachekey.Compute(source)
 		if prev, exists := keys[key]; exists {
 			t.Errorf("Cache key collision: %q and %q both produce %q", prev, source, key)
 		}
@@ -82,10 +84,10 @@ func TestComputeCacheKeyMatchesController(t *testing.T) {
 	// The controller uses the same algorithm: SHA256(source)[:16]
 	// Verify known hash values to catch algorithm drift
 	source := "https://huggingface.co/TheBloke/Llama-2-7B-GGUF/resolve/main/llama-2-7b.Q4_K_M.gguf"
-	key := computeCacheKey(source)
+	key := cachekey.Compute(source)
 
 	// Re-compute with the same algorithm to verify
-	expected := computeCacheKey(source)
+	expected := cachekey.Compute(source)
 	if key != expected {
 		t.Errorf("computeCacheKey result changed between calls: %q != %q", key, expected)
 	}
@@ -174,9 +176,9 @@ func TestComputeCacheKeyForDeploySources(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			key := computeCacheKey(tt.source)
+			key := cachekey.Compute(tt.source)
 			if len(key) != 16 {
-				t.Errorf("computeCacheKey(%q) length = %d, want 16", tt.source, len(key))
+				t.Errorf("cachekey.Compute(%q) length = %d, want 16", tt.source, len(key))
 			}
 		})
 	}
@@ -185,8 +187,8 @@ func TestComputeCacheKeyForDeploySources(t *testing.T) {
 func TestComputeCacheKeySameSourceSameKey(t *testing.T) {
 	// Same source should always produce the same cache key
 	source := "https://huggingface.co/model.gguf"
-	key1 := computeCacheKey(source)
-	key2 := computeCacheKey(source)
+	key1 := cachekey.Compute(source)
+	key2 := cachekey.Compute(source)
 	if key1 != key2 {
 		t.Errorf("Same source produced different keys: %q != %q", key1, key2)
 	}
@@ -194,8 +196,8 @@ func TestComputeCacheKeySameSourceSameKey(t *testing.T) {
 
 func TestComputeCacheKeyDifferentSourceDifferentKey(t *testing.T) {
 	// Different sources should produce different cache keys
-	key1 := computeCacheKey("https://huggingface.co/model-a.gguf")
-	key2 := computeCacheKey("https://huggingface.co/model-b.gguf")
+	key1 := cachekey.Compute("https://huggingface.co/model-a.gguf")
+	key2 := cachekey.Compute("https://huggingface.co/model-b.gguf")
 	if key1 == key2 {
 		t.Errorf("Different sources produced same key: %q", key1)
 	}

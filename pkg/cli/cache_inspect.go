@@ -34,6 +34,7 @@ import (
 	"k8s.io/client-go/tools/remotecommand"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/defilantech/llmkube/pkg/cachekey"
 	k8sscheme "k8s.io/client-go/kubernetes/scheme"
 )
 
@@ -266,10 +267,10 @@ func findMountPathForPVC(pod *corev1.Pod, containerName, pvcName string) string 
 // may inspect several PVCs in sequence; a single shared pod name would collide
 // (AlreadyExists) with the previous inspector while it is still terminating,
 // causing every PVC after the first to be skipped. Deriving the name from the
-// PVC keeps it unique per PVC and DNS-1123 safe (computeCacheKey is a 16-char
+// PVC keeps it unique per PVC and DNS-1123 safe (cachekey.Compute is a 16-char
 // hex digest).
 func inspectorPodName(pvcName string) string {
-	return "llmkube-cache-inspector-" + computeCacheKey(pvcName)
+	return "llmkube-cache-inspector-" + cachekey.Compute(pvcName)
 }
 
 func createInspectorPodForPVC(

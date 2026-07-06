@@ -35,6 +35,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
+	"github.com/defilantech/llmkube/pkg/cachekey"
 )
 
 const defaultGPUVendor = "nvidia"
@@ -269,10 +270,10 @@ func runDeploy(opts *deployOptions) error {
 		return fmt.Errorf("--skip-cache and --from-cache are mutually exclusive")
 	}
 	if opts.skipCache {
-		cacheKey := computeCacheKey(opts.modelSource)
+		cacheKey := cachekey.Compute(opts.modelSource)
 		fmt.Printf("⚠️  Skipping model cache (cache key: %s); model will be re-downloaded\n", cacheKey)
 	} else if opts.fromCache {
-		cacheKey := computeCacheKey(opts.modelSource)
+		cacheKey := cachekey.Compute(opts.modelSource)
 		fmt.Printf("📦 Deploying from model cache (cache key: %s)\n", cacheKey)
 	}
 
