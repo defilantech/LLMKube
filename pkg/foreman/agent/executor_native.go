@@ -616,21 +616,32 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 			// #582/filesTouched fix: harness owns the authoritative
 			// field, model's claim is archived under issueAskClaimed.
 			reconcileReviewerIssueAsk(log, loopRes.Transcript, loopRes.Terminal.Extra)
+			// Ground-truth the branch diff ONCE for the two computable rails
+			// below (grounded-finding + scope-overlap).
+			reviewDiff, reviewDiffErr := repo.DiffNameOnly(ctx, workspace, "main")
+			// Grounded-finding rail: a NO-GO must be earned by >=1 blocking
+			// finding citing a line the diff changed; otherwise demote it to GO
+			// and archive the rejected findings. Mirror of scope-overlap, in the
+			// NO-GO->GO direction. Runs BEFORE the GO->NO-GO rails so an
+			// ungrounded rejection becomes GO and then scope-overlap / issueAsk
+			// still get their turn to re-flag it for a real, computed reason.
+			verdict = enforceReviewerGroundedFindings(log, loopRes.Terminal.Extra, verdict,
+				reviewerGroundedChangedLines(ctx, log, workspace, reviewDiffErr))
 			// Computable scope-overlap check (#647): when the issue names
 			// concrete files and the diff touches none of them, demote a
 			// GO deterministically. Runs before issueAsk enforcement so
 			// the scope signal can rescue an honest paraphrase (#744).
 			var scopeDriftDetected bool
 			var scopeMatched []string
-			if scopeDiff, scopeErr := repo.DiffNameOnly(ctx, workspace, "main"); scopeErr == nil {
+			if reviewDiffErr == nil {
 				verdict = enforceReviewerScopeOverlap(log, loopRes.Terminal.Extra,
-					extractFetchIssueBody(loopRes.Transcript), scopeDiff, verdict,
+					extractFetchIssueBody(loopRes.Transcript), reviewDiff, verdict,
 					task.Spec.GateProfile.Resolve().SourceExtensions)
 				scopeDriftDetected, _ = loopRes.Terminal.Extra["scopeDriftDetected"].(bool)
 				scopeMatched, _ = loopRes.Terminal.Extra["scopeMatched"].([]string)
 			} else {
 				log.Info("reviewer scope: ground-truth diff unavailable; skipping scope check",
-					"err", scopeErr.Error())
+					"err", reviewDiffErr.Error())
 			}
 			// Enforce the verification result (#644): an unverifiable
 			// issueAsk demotes a GO to NO-GO so it routes to escalation
@@ -718,6 +729,24 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 	r := e.goResult(start, transcriptRef, loopRes, branch, sha)
 	attachGateAdvisories(r.Extra, gateAdvisories)
 	return r, nil
+}
+
+// reviewerGroundedChangedLines builds the changedLines callback the
+// grounded-finding rail (enforceReviewerGroundedFindings) uses to check
+// whether a reviewer finding cites a line the branch diff actually changed.
+// Returns nil (rail becomes a no-op / degrades open) when the ground-truth
+// diff was unavailable, logging why.
+func reviewerGroundedChangedLines(
+	ctx context.Context, log logr.Logger, workspace string, reviewDiffErr error,
+) func(string) map[int]bool {
+	if reviewDiffErr != nil {
+		log.Info("reviewer grounded-finding: ground-truth diff unavailable; skipping",
+			"err", reviewDiffErr.Error())
+		return nil
+	}
+	return func(file string) map[int]bool {
+		return changedNewLines(ctx, workspace, file, execCommandRunner)
+	}
 }
 
 // coderGateMaxRetries bounds the coder gate fix attempts (#749): a GO whose
