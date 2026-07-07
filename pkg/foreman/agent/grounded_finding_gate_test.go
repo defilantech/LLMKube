@@ -170,7 +170,8 @@ func TestReviewerGroundedChangedLines_UsesCommittedBranchDiff(t *testing.T) {
 		t.Fatalf("precondition: working tree must be clean, got %q", out)
 	}
 
-	changed := reviewerGroundedChangedLines(context.Background(), logr.Discard(), ws, nil)
+	// The caller passes the ground-truth diff file list (non-empty here).
+	changed := reviewerGroundedChangedLines(context.Background(), logr.Discard(), ws, []string{"foo.go"}, nil)
 	if changed == nil {
 		t.Fatal("closure must be non-nil when the ground-truth diff is available")
 	}
@@ -182,5 +183,23 @@ func TestReviewerGroundedChangedLines_UsesCommittedBranchDiff(t *testing.T) {
 	// `func B() {}` is added at new-file line 5.
 	if !got[5] {
 		t.Errorf("expected added line 5 (func B) in the grounded set, got %v", got)
+	}
+}
+
+// TestReviewerGroundedChangedLines_EmptyBranchDiffDegradesClosed guards the
+// asymmetric-degrade fail-open: a successful-but-empty branch diff (nil error,
+// zero changed files) means the reviewer never established the coder's changes
+// against the base (e.g. it skipped the Step 1 fetch+checkout). The rail must
+// step aside (nil closure) so a NO-GO is not demoted to GO and its PR opened.
+// This must match the git-error degrade, not the happy path.
+func TestReviewerGroundedChangedLines_EmptyBranchDiffDegradesClosed(t *testing.T) {
+	ctx, log := context.Background(), logr.Discard()
+	// Empty diff, no error: must degrade closed (nil closure).
+	if got := reviewerGroundedChangedLines(ctx, log, t.TempDir(), nil, nil); got != nil {
+		t.Fatal("empty branch diff must yield a nil closure (degrade closed), got non-nil")
+	}
+	// Non-empty diff: a real closure is returned.
+	if got := reviewerGroundedChangedLines(ctx, log, t.TempDir(), []string{"a.go"}, nil); got == nil {
+		t.Fatal("non-empty branch diff must yield a real closure")
 	}
 }

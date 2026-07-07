@@ -626,7 +626,7 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 			// ungrounded rejection becomes GO and then scope-overlap / issueAsk
 			// still get their turn to re-flag it for a real, computed reason.
 			verdict = enforceReviewerGroundedFindings(log, loopRes.Terminal.Extra, verdict,
-				reviewerGroundedChangedLines(ctx, log, workspace, reviewDiffErr))
+				reviewerGroundedChangedLines(ctx, log, workspace, reviewDiff, reviewDiffErr))
 			// Computable scope-overlap check (#647): when the issue names
 			// concrete files and the diff touches none of them, demote a
 			// GO deterministically. Runs before issueAsk enforcement so
@@ -734,8 +734,8 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 // reviewerGroundedChangedLines builds the changedLines callback the
 // grounded-finding rail (enforceReviewerGroundedFindings) uses to check
 // whether a reviewer finding cites a line the branch diff actually changed.
-// Returns nil (rail becomes a no-op / degrades open) when the ground-truth
-// diff was unavailable, logging why.
+// Returns nil (rail steps aside, verdict left as-is) when the ground-truth
+// branch diff is unavailable (git error) OR empty, logging why.
 //
 // It uses the committed-branch diff (changedBranchLines: git diff main...HEAD),
 // not the working-tree diff (changedNewLines: git diff HEAD). The reviewer
@@ -743,12 +743,23 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 // HEAD and a `git diff HEAD` would be empty, grounding nothing and demoting
 // every NO-GO. The three-dot base matches the scope-overlap check on the line
 // above (repo.DiffNameOnly(ctx, workspace, "main")).
+//
+// An EMPTY-but-successful diff (reviewDiff has zero files, reviewDiffErr nil)
+// must degrade CLOSED, exactly like the git-error case: it means the reviewer
+// never established the coder's changes against the base (e.g. it skipped the
+// mandatory Step 1 fetch+checkout, leaving HEAD at main). Returning a live
+// closure there would ground every finding as "unchanged" and demote every
+// NO-GO to GO, opening the PR the reviewer meant to block.
 func reviewerGroundedChangedLines(
-	ctx context.Context, log logr.Logger, workspace string, reviewDiffErr error,
+	ctx context.Context, log logr.Logger, workspace string, reviewDiff []string, reviewDiffErr error,
 ) func(string) map[int]bool {
 	if reviewDiffErr != nil {
 		log.Info("reviewer grounded-finding: ground-truth diff unavailable; skipping",
 			"err", reviewDiffErr.Error())
+		return nil
+	}
+	if len(reviewDiff) == 0 {
+		log.Info("reviewer grounded-finding: branch diff empty; skipping (degrade closed)")
 		return nil
 	}
 	return func(file string) map[int]bool {
