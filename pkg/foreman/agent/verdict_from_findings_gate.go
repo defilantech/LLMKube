@@ -41,6 +41,11 @@ import (
 
 // verdictFromFindingsDisabled reports whether the promote rail is off via
 // FOREMAN_VERDICT_FROM_FINDINGS=0. Default (unset) is enabled.
+//
+// This toggle is independent of the grounded (demote) rail's
+// FOREMAN_GROUNDED_FINDINGS: disabling one leaves the other active. The joint
+// invariant (verdict == NO-GO iff a grounded blocking finding exists) therefore
+// holds only when both rails are enabled, which is the default.
 func verdictFromFindingsDisabled() bool {
 	return os.Getenv("FOREMAN_VERDICT_FROM_FINDINGS") == "0"
 }

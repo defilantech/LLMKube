@@ -125,8 +125,9 @@ func TestGroundingRailsComposition(t *testing.T) {
 	gogo := foremanv1alpha1.AgenticTaskVerdictGo
 	nogo := foremanv1alpha1.AgenticTaskVerdictNoGo
 	changed := vffChanged(map[string]map[int]bool{"a.go": {10: true}})
-	blk := func() map[string]any { return vffExtra("blocker", "a.go", 10) } // grounded blocker
-	non := func() map[string]any { return vffExtra("minor", "a.go", 10) }   // not blocking
+	blk := func() map[string]any { return vffExtra("blocker", "a.go", 10) }  // grounded blocker
+	ublk := func() map[string]any { return vffExtra("blocker", "a.go", 99) } // ungrounded blocker (line unchanged)
+	non := func() map[string]any { return vffExtra("minor", "a.go", 10) }    // not blocking (severity)
 
 	cases := []struct {
 		name  string
@@ -136,6 +137,10 @@ func TestGroundingRailsComposition(t *testing.T) {
 	}{
 		{"GO+blocker->NoGo", gogo, blk(), nogo},
 		{"NoGo+blocker->NoGo", nogo, blk(), nogo},
+		// Ungrounded BLOCKER (the #526-style false NO-GO the demote rail exists
+		// for): the blocker cites an unchanged line, so it is not grounded.
+		{"GO+ungrounded-blocker->GO", gogo, ublk(), gogo},
+		{"NoGo+ungrounded-blocker->GO", nogo, ublk(), gogo},
 		{"GO+none->GO", gogo, non(), gogo},
 		{"NoGo+none->GO", nogo, non(), gogo},
 	}
