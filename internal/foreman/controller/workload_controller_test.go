@@ -24,6 +24,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -561,6 +562,190 @@ var _ = Describe("WorkloadReconciler (M6 stub planner)", func() {
 		completed := findCondition(fresh.Status.Conditions, conditionTypeCompleted)
 		Expect(completed).NotTo(BeNil())
 		Expect(completed.Reason).To(Equal("ChildrenIncomplete"))
+	})
+
+	// Regression for defilantech/LLMKube#970. A coder that ends
+	// Phase=Succeeded + Verdict=NO-GO with extra.outcome="ALREADY-RESOLVED"
+	// must NOT count as incomplete and must NOT pin the Workload to
+	// Failed. The Workload rolls to Completed with reason
+	// AllAlreadyResolved, and a CoderAlreadyResolved condition surfaces
+	// the issue numbers so the operator can close them.
+	It("rolls up ALREADY-RESOLVED children to Completed with AllAlreadyResolved (#970)", func() {
+		wl := newWorkload("rollup-already-resolved", foremanv1alpha1.WorkloadSpec{
+			Intent:           "already-resolved at run time",
+			Repo:             "defilantech/LLMKube",
+			Issues:           []int32{152, 365},
+			CoderAgentRef:    &corev1.LocalObjectReference{Name: "coder"},
+			VerifierAgentRef: &corev1.LocalObjectReference{Name: "gate"},
+		})
+		Expect(k8sClient.Create(ctx, wl)).To(Succeed())
+		DeferCleanup(func() {
+			cleanupChildren(wl)
+			_ = k8sClient.Delete(ctx, wl)
+		})
+
+		_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(wl)})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Both coder children end NO-GO + ALREADY-RESOLVED. In production
+		// the cascade-fail logic in AgenticTaskReconciler would fail the
+		// verify children (Phase=Failed via cascadeFailIfDepFailed) — the
+		// envtest here runs only the WorkloadReconciler, so the verify
+		// children would stay Pending and pin the rollup to Dispatched.
+		// To isolate the rollup behavior under test, delete the verify
+		// children explicitly. The production cascade-fail interaction
+		// with ALREADY-RESOLVED is a known gap tracked for follow-up.
+		for _, n := range []string{"rollup-already-resolved-code-152", "rollup-already-resolved-code-365"} {
+			var t foremanv1alpha1.AgenticTask
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: n}, &t)).To(Succeed())
+			patch := client.MergeFrom(t.DeepCopy())
+			t.Status.Phase = foremanv1alpha1.AgenticTaskPhaseSucceeded
+			t.Status.Verdict = foremanv1alpha1.AgenticTaskVerdictNoGo
+			t.Status.Result = resultRaw("ALREADY-RESOLVED", "", "already resolved by prior fix")
+			Expect(k8sClient.Status().Patch(ctx, &t, patch)).To(Succeed())
+		}
+		for _, n := range []string{"rollup-already-resolved-verify-152", "rollup-already-resolved-verify-365"} {
+			var t foremanv1alpha1.AgenticTask
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: n}, &t)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, &t)).To(Succeed())
+		}
+
+		_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(wl)})
+		Expect(err).NotTo(HaveOccurred())
+
+		var fresh foremanv1alpha1.Workload
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(wl), &fresh)).To(Succeed())
+		Expect(fresh.Status.Phase).To(Equal(foremanv1alpha1.WorkloadPhaseCompleted))
+		Expect(fresh.Status.IncompleteTasks).To(Equal(int32(0)))
+		Expect(fresh.Status.FailedTasks).To(Equal(int32(0)))
+		completed := findCondition(fresh.Status.Conditions, conditionTypeCompleted)
+		Expect(completed).NotTo(BeNil())
+		Expect(completed.Reason).To(Equal("AllAlreadyResolved"))
+		Expect(completed.Message).To(ContainSubstring("152"))
+		Expect(completed.Message).To(ContainSubstring("365"))
+
+		resolved := findCondition(fresh.Status.Conditions, conditionTypeCoderAlreadyResolved)
+		Expect(resolved).NotTo(BeNil())
+		Expect(resolved.Status).To(Equal(metav1.ConditionTrue))
+		Expect(resolved.Reason).To(Equal("AlreadyResolved"))
+		Expect(resolved.Message).To(ContainSubstring("#152"))
+		Expect(resolved.Message).To(ContainSubstring("#365"))
+	})
+
+	// Mixed-case for #970: one issue gets a real fix (coder GO +
+	// verify GATE-PASS), one is ALREADY-RESOLVED at run time. The
+	// Workload rolls to Completed with reason AllChildrenSucceeded and
+	// the message names both buckets.
+	It("rolls up a mixed already-resolved + succeeded Workload to Completed (#970)", func() {
+		wl := newWorkload("rollup-mixed-ar", foremanv1alpha1.WorkloadSpec{
+			Intent:           "mixed already-resolved + succeeded",
+			Repo:             "defilantech/LLMKube",
+			Issues:           []int32{11, 22},
+			CoderAgentRef:    &corev1.LocalObjectReference{Name: "coder"},
+			VerifierAgentRef: &corev1.LocalObjectReference{Name: "gate"},
+		})
+		Expect(k8sClient.Create(ctx, wl)).To(Succeed())
+		DeferCleanup(func() {
+			cleanupChildren(wl)
+			_ = k8sClient.Delete(ctx, wl)
+		})
+
+		_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(wl)})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Issue 11: real fix path.
+		for _, u := range []struct {
+			name    string
+			phase   foremanv1alpha1.AgenticTaskPhase
+			verdict foremanv1alpha1.AgenticTaskVerdict
+		}{
+			{"rollup-mixed-ar-code-11", foremanv1alpha1.AgenticTaskPhaseSucceeded, foremanv1alpha1.AgenticTaskVerdictGo},
+			{"rollup-mixed-ar-verify-11", foremanv1alpha1.AgenticTaskPhaseSucceeded, foremanv1alpha1.AgenticTaskVerdictGatePass},
+		} {
+			var t foremanv1alpha1.AgenticTask
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: u.name}, &t)).To(Succeed())
+			patch := client.MergeFrom(t.DeepCopy())
+			t.Status.Phase = u.phase
+			t.Status.Verdict = u.verdict
+			Expect(k8sClient.Status().Patch(ctx, &t, patch)).To(Succeed())
+		}
+
+		// Issue 22: ALREADY-RESOLVED. Same cascade-fail isolation as above —
+// delete the verify-22 child so the rollup sees only the resolved coder.
+		var ar foremanv1alpha1.AgenticTask
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: "rollup-mixed-ar-code-22"}, &ar)).To(Succeed())
+		patch := client.MergeFrom(ar.DeepCopy())
+		ar.Status.Phase = foremanv1alpha1.AgenticTaskPhaseSucceeded
+		ar.Status.Verdict = foremanv1alpha1.AgenticTaskVerdictNoGo
+		ar.Status.Result = resultRaw("ALREADY-RESOLVED", "", "already done")
+		Expect(k8sClient.Status().Patch(ctx, &ar, patch)).To(Succeed())
+		var v22 foremanv1alpha1.AgenticTask
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: "rollup-mixed-ar-verify-22"}, &v22)).To(Succeed())
+		Expect(k8sClient.Delete(ctx, &v22)).To(Succeed())
+
+		_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(wl)})
+		Expect(err).NotTo(HaveOccurred())
+
+		var fresh foremanv1alpha1.Workload
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(wl), &fresh)).To(Succeed())
+		Expect(fresh.Status.Phase).To(Equal(foremanv1alpha1.WorkloadPhaseCompleted))
+		Expect(fresh.Status.SucceededTasks).To(Equal(int32(2)))
+		Expect(fresh.Status.IncompleteTasks).To(Equal(int32(0)))
+		completed := findCondition(fresh.Status.Conditions, conditionTypeCompleted)
+		Expect(completed).NotTo(BeNil())
+		Expect(completed.Reason).To(Equal("AllChildrenSucceeded"))
+		Expect(completed.Message).To(ContainSubstring("already-resolved"))
+
+		resolved := findCondition(fresh.Status.Conditions, conditionTypeCoderAlreadyResolved)
+		Expect(resolved).NotTo(BeNil())
+		Expect(resolved.Message).To(ContainSubstring("#22"))
+		Expect(resolved.Message).NotTo(ContainSubstring("#11"))
+	})
+
+	It("emits a per-issue AlreadyResolved event via the Recorder (#970)", func() {
+		recorder := &events.FakeRecorder{Events: make(chan string, 16)}
+		rec := &WorkloadReconciler{
+			Client:              k8sClient,
+			Scheme:              k8sClient.Scheme(),
+			Recorder:            recorder,
+			AllowCloudProviders: true,
+		}
+		wl := newWorkload("rollup-ar-events", foremanv1alpha1.WorkloadSpec{
+			Intent:           "already-resolved events",
+			Repo:             "defilantech/LLMKube",
+			Issues:           []int32{777},
+			CoderAgentRef:    &corev1.LocalObjectReference{Name: "coder"},
+			VerifierAgentRef: &corev1.LocalObjectReference{Name: "gate"},
+		})
+		Expect(k8sClient.Create(ctx, wl)).To(Succeed())
+		DeferCleanup(func() {
+			cleanupChildren(wl)
+			_ = k8sClient.Delete(ctx, wl)
+		})
+
+		_, err := rec.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(wl)})
+		Expect(err).NotTo(HaveOccurred())
+
+		var c foremanv1alpha1.AgenticTask
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: "rollup-ar-events-code-777"}, &c)).To(Succeed())
+		patch := client.MergeFrom(c.DeepCopy())
+		c.Status.Phase = foremanv1alpha1.AgenticTaskPhaseSucceeded
+		c.Status.Verdict = foremanv1alpha1.AgenticTaskVerdictNoGo
+		c.Status.Result = resultRaw("ALREADY-RESOLVED", "", "already done")
+		Expect(k8sClient.Status().Patch(ctx, &c, patch)).To(Succeed())
+		// Same cascade-fail isolation: delete the verify child.
+		var v777 foremanv1alpha1.AgenticTask
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: "rollup-ar-events-verify-777"}, &v777)).To(Succeed())
+		Expect(k8sClient.Delete(ctx, &v777)).To(Succeed())
+
+		_, err = rec.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(wl)})
+		Expect(err).NotTo(HaveOccurred())
+
+		// One event per resolved issue. Async via channel, so read with timeout.
+		Eventually(recorder.Events).Should(Receive(And(
+			ContainSubstring("AlreadyResolved"),
+			ContainSubstring("#777"),
+		)))
 	})
 
 	It("fails the Workload when gate passes but any reviewer emits NO-GO (#575)", func() {

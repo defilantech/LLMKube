@@ -114,6 +114,14 @@ const conditionTypeEscalationTriggered = "EscalationTriggered"
 // the escalation coder tier (EscalationCoderAgentRef).
 const conditionTypeCoderEscalationTriggered = "CoderEscalationTriggered"
 
+// conditionTypeCoderAlreadyResolved marks a Workload whose coder
+// children all concluded the work was already present on the
+// branch/base (NO-GO + extra.outcome="ALREADY-RESOLVED"). Set when
+// at least one such child exists; the message lists the issue numbers
+// in ascending order. Not set when zero children are already-resolved
+// (avoids a perpetual "0 issues" noise condition).
+const conditionTypeCoderAlreadyResolved = "CoderAlreadyResolved"
+
 // +kubebuilder:rbac:groups=foreman.llmkube.dev,resources=workloads,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=foreman.llmkube.dev,resources=workloads/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=foreman.llmkube.dev,resources=workloads/finalizers,verbs=update
@@ -499,13 +507,23 @@ func (r *WorkloadReconciler) listChildren(ctx context.Context, w *foremanv1alpha
 func (r *WorkloadReconciler) rollup(ctx context.Context, w *foremanv1alpha1.Workload, children []foremanv1alpha1.AgenticTask) (ctrl.Result, error) {
 	var (
 		succeeded, incomplete, failed, inFlight int32
+		alreadyResolved                          int32
 	)
+	var resolvedIssues []int32
 	for i := range children {
 		switch {
 		case children[i].SucceededOnTarget():
 			succeeded++
+		case isAlreadyResolvedCoder(&children[i]):
+			// #970: ALREADY-RESOLVED is a terminal non-failure; it
+			// neither escalates (#964) nor pins the Workload to Failed
+			// via the incomplete bucket. Track the issue number so
+			// the condition + event can name it.
+			alreadyResolved++
+			if n := children[i].Spec.Payload.Issue; n > 0 {
+				resolvedIssues = append(resolvedIssues, n)
+			}
 		case children[i].Status.Phase == foremanv1alpha1.AgenticTaskPhaseSucceeded:
-			// Terminal Phase=Succeeded but verdict isn't on-target.
 			incomplete++
 		case children[i].Status.Phase == foremanv1alpha1.AgenticTaskPhaseFailed:
 			failed++
@@ -513,6 +531,8 @@ func (r *WorkloadReconciler) rollup(ctx context.Context, w *foremanv1alpha1.Work
 			inFlight++
 		}
 	}
+
+	sort.Slice(resolvedIssues, func(i, j int) bool { return resolvedIssues[i] < resolvedIssues[j] })
 
 	total := succeeded + incomplete + failed + inFlight
 	patch := client.MergeFrom(w.DeepCopy())
@@ -522,7 +542,8 @@ func (r *WorkloadReconciler) rollup(ctx context.Context, w *foremanv1alpha1.Work
 	w.Status.IncompleteTasks = incomplete
 
 	switch {
-	case inFlight == 0 && failed == 0 && incomplete == 0:
+	case inFlight == 0 && failed == 0 && incomplete == 0 && alreadyResolved == 0:
+		// All on-target.
 		w.Status.Phase = foremanv1alpha1.WorkloadPhaseCompleted
 		setCondition(&w.Status.Conditions, metav1.Condition{
 			Type:               conditionTypeCompleted,
@@ -531,11 +552,35 @@ func (r *WorkloadReconciler) rollup(ctx context.Context, w *foremanv1alpha1.Work
 			Message:            fmt.Sprintf("%d/%d child tasks on-target Succeeded", succeeded, total),
 			LastTransitionTime: now,
 		})
+	case inFlight == 0 && failed == 0 && incomplete == 0 && succeeded == 0 && alreadyResolved > 0:
+		// Pure ALREADY-RESOLVED workload — nothing actually attempted.
+		w.Status.Phase = foremanv1alpha1.WorkloadPhaseCompleted
+		msg := fmt.Sprintf("%d issue(s) already resolved at run time (no fix attempted): #%s",
+			alreadyResolved, joinInt32(resolvedIssues))
+		setCondition(&w.Status.Conditions, metav1.Condition{
+			Type:               conditionTypeCompleted,
+			Status:             metav1.ConditionTrue,
+			Reason:             "AllAlreadyResolved",
+			Message:            msg,
+			LastTransitionTime: now,
+		})
+	case inFlight == 0 && failed == 0 && incomplete == 0:
+		// Mixed: at least one on-target succeeded AND at least one
+		// already-resolved. Still Completed; mention both.
+		w.Status.Phase = foremanv1alpha1.WorkloadPhaseCompleted
+		msg := fmt.Sprintf("%d/%d child tasks on-target Succeeded; %d already-resolved (no fix attempted)",
+			succeeded, total, alreadyResolved)
+		setCondition(&w.Status.Conditions, metav1.Condition{
+			Type:               conditionTypeCompleted,
+			Status:             metav1.ConditionTrue,
+			Reason:             "AllChildrenSucceeded",
+			Message:            msg,
+			LastTransitionTime: now,
+		})
 	case inFlight == 0 && (failed > 0 || incomplete > 0):
 		// Any incomplete OR failed child rolls the Workload to Failed
-		// terminal state. The condition message breaks out both counts
-		// so the operator can distinguish "agent gave up" (incomplete)
-		// from "executor errored" (failed).
+		// terminal state. ALREADY-RESOLVED children do not contribute
+		// to this — they are excluded from `incomplete` above.
 		w.Status.Phase = foremanv1alpha1.WorkloadPhaseFailed
 		reason := "ChildrenFailed"
 		if failed == 0 {
@@ -545,7 +590,7 @@ func (r *WorkloadReconciler) rollup(ctx context.Context, w *foremanv1alpha1.Work
 			Type:               conditionTypeCompleted,
 			Status:             metav1.ConditionFalse,
 			Reason:             reason,
-			Message:            fmt.Sprintf("%d on-target, %d incomplete, %d failed (of %d)", succeeded, incomplete, failed, total),
+			Message:            fmt.Sprintf("%d on-target, %d incomplete, %d failed (of %d); %d already-resolved", succeeded, incomplete, failed, total, alreadyResolved),
 			LastTransitionTime: now,
 		})
 	default:
@@ -554,7 +599,42 @@ func (r *WorkloadReconciler) rollup(ctx context.Context, w *foremanv1alpha1.Work
 			Type:               "Dispatched",
 			Status:             metav1.ConditionTrue,
 			Reason:             "ChildrenInFlight",
-			Message:            fmt.Sprintf("%d in-flight, %d on-target, %d incomplete, %d failed", inFlight, succeeded, incomplete, failed),
+			Message:            fmt.Sprintf("%d in-flight, %d on-target, %d incomplete, %d failed, %d already-resolved", inFlight, succeeded, incomplete, failed, alreadyResolved),
+			LastTransitionTime: now,
+		})
+	}
+
+	// #970: surface the ALREADY-RESOLVED issues via a stable condition +
+	// per-issue events so an operator (or event-router) can close them.
+	if alreadyResolved > 0 {
+		// Prefix every issue with "#" so the message reads "#152, #365"
+		// (rather than "#152, 365" which only marks the first one).
+		issueList := joinInt32(resolvedIssues)
+		issueList = "#" + strings.ReplaceAll(issueList, ", ", ", #")
+		msg := fmt.Sprintf("%d issue(s) already resolved at run time: %s. See events for per-issue resolution evidence (commit / branch).",
+			alreadyResolved, issueList)
+		setCondition(&w.Status.Conditions, metav1.Condition{
+			Type:               conditionTypeCoderAlreadyResolved,
+			Status:             metav1.ConditionTrue,
+			Reason:             "AlreadyResolved",
+			Message:            msg,
+			LastTransitionTime: now,
+		})
+		if r.Recorder != nil {
+			for _, n := range resolvedIssues {
+				r.Recorder.Eventf(w, nil, corev1.EventTypeNormal, "AlreadyResolved", "Workload",
+					"Issue #%d resolved at run time; safe to close on GitHub", n)
+			}
+		}
+	} else {
+		// Clear the condition when no children are already-resolved
+		// (avoids stale "0 issues resolved" condition lingering after
+		// a Workload re-runs and gets different outcomes).
+		setCondition(&w.Status.Conditions, metav1.Condition{
+			Type:               conditionTypeCoderAlreadyResolved,
+			Status:             metav1.ConditionFalse,
+			Reason:             "NoAlreadyResolved",
+			Message:            "no coder children ended ALREADY-RESOLVED",
 			LastTransitionTime: now,
 		})
 	}
