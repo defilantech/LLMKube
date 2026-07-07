@@ -80,7 +80,7 @@ func TestParseFindings_DropsInvalidLenient(t *testing.T) {
 	extra := jsonExtra(t, `{
 		"findings": [
 			{"severity":"BLOCKER","area":"SCOPE","message":"loud caps still ok"},
-			{"severity":"critical","area":"scope","message":"unknown severity dropped"},
+			{"severity":"bogus","area":"scope","message":"unknown severity dropped"},
 			{"severity":"major","area":"security","message":"unknown area dropped"},
 			{"severity":"minor","area":"docs","message":""},
 			{"severity":"major","area":"tests","message":"valid one"}
@@ -96,6 +96,36 @@ func TestParseFindings_DropsInvalidLenient(t *testing.T) {
 	// Loud-caps row was normalized successfully.
 	if got[0].Severity != SeverityBlocker || got[0].Area != AreaScope {
 		t.Errorf("normalize did not lowercase: %+v", got[0])
+	}
+}
+
+// TestParseFindings_SeveritySynonymsNormalized verifies that common
+// non-canonical severity labels (critical/high/warning) are mapped onto the
+// canonical set instead of being dropped, so a real blocker labeled "critical"
+// still reaches the grounded-finding rail as a blocking finding.
+func TestParseFindings_SeveritySynonymsNormalized(t *testing.T) {
+	extra := jsonExtra(t, `{
+		"findings": [
+			{"severity":"critical","area":"scope","message":"crit -> blocker"},
+			{"severity":"HIGH","area":"tests","message":"high -> major"},
+			{"severity":"warning","area":"style","message":"warning -> minor"}
+		]
+	}`)
+	got, warnings := ParseFindings(extra)
+	if len(warnings) != 0 {
+		t.Fatalf("synonyms must not warn/drop; got %d: %v", len(warnings), warnings)
+	}
+	if len(got) != 3 {
+		t.Fatalf("want 3 findings; got %d (%+v)", len(got), got)
+	}
+	if got[0].Severity != SeverityBlocker {
+		t.Errorf("critical must map to blocker, got %q", got[0].Severity)
+	}
+	if got[1].Severity != SeverityMajor {
+		t.Errorf("high must map to major, got %q", got[1].Severity)
+	}
+	if got[2].Severity != SeverityMinor {
+		t.Errorf("warning must map to minor, got %q", got[2].Severity)
 	}
 }
 
