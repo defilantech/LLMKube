@@ -2103,3 +2103,120 @@ func TestSetupTaskBranch_MissingRefFallsBackToBase(t *testing.T) {
 		t.Errorf("current branch = %q, want %q", got, branch)
 	}
 }
+
+// TestRecoverSelfCommitsOrNoChange_StaleForkBaseIsNotCountedAsCommitsAhead
+// reproduces the #982/#813 scenario where the fork clone's local "main"
+// lags the upstream tip the task branch was actually cut from. If the
+// helper recovered against a possibly-stale local literal ref instead
+// of a freshly-resolved upstream SHA, it would over-count and the soft
+// reset would re-stage the intervening upstream commits, polluting the
+// recovered commit with upstream delta.
+//
+// Setup mirrors the production workflow: a bare upstream, a fork clone
+// whose local "main" lags by one commit (created before the upstream
+// advance), and a task branch cut FROM THE UPSTREAM TIP at the fresh
+// FETCH_HEAD (mirroring CreateBranchFromUpstream — the #813 fix). The
+// helper must see exactly 1 commit ahead (the model's self-commit),
+// not 2 (self-commit + the lagging upstream delta). The exact regression
+// a previous iteration of this code introduced.
+func TestRecoverSelfCommitsOrNoChange_StaleForkBaseIsNotCountedAsCommitsAhead(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	dir := t.TempDir()
+	bare, _ := seededRemote(t, dir) // upstream tip at SHA-A
+
+	// Fork clone taken BEFORE upstream advances. Local "main" stays at SHA-A.
+	fork := filepath.Join(dir, "fork")
+	gitIn(t, "", "clone", bare, fork)
+
+	// Upstream advances by one commit AFTER the fork was cloned.
+	advancer := filepath.Join(dir, "adv")
+	gitIn(t, "", "clone", bare, advancer)
+	if err := os.WriteFile(filepath.Join(advancer, "UPSTREAM.md"), []byte("intervening upstream delta\n"), 0o644); err != nil {
+		t.Fatalf("write UPSTREAM.md: %v", err)
+	}
+	gitIn(t, advancer, "add", "UPSTREAM.md")
+	gitIn(t, advancer, "commit", "-m", "intervening upstream commit")
+	gitIn(t, advancer, "push", "origin", "main")
+	upstreamTip := gitIn(t, advancer, "rev-parse", "HEAD")
+	forkLag := gitIn(t, fork, "rev-parse", "main")
+	if forkLag == upstreamTip {
+		t.Fatalf("test setup failed: fork's local main (%s) should lag upstream tip (%s)", forkLag, upstreamTip)
+	}
+
+	// Mirrors CreateBranchFromUpstream: fetch upstream tip into FETCH_HEAD
+	// and cut the task branch there so the branch point is upstreamTip,
+	// not the lagging forkLag.
+	gitIn(t, fork, "fetch", bare, "main")
+	gitIn(t, fork, "checkout", "-b", "fix/issue-982", "FETCH_HEAD")
+	if got := gitIn(t, fork, "rev-parse", "HEAD"); got != upstreamTip {
+		t.Fatalf("branch not at upstream tip: branch=%s upstream=%s", got, upstreamTip)
+	}
+
+	// Model self-commits. ONE commit ahead of upstream tip, not two.
+	fixDir := filepath.Join(fork, "pkg", "agent")
+	if err := os.MkdirAll(fixDir, 0o755); err != nil {
+		t.Fatalf("mkdir fixDir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(fixDir, "fix.go"), []byte("// fix\npackage agent\n\nfunc Fix() {}\n"), 0o644); err != nil {
+		t.Fatalf("write fix.go: %v", err)
+	}
+	gitIn(t, fork, "add", "-A")
+	gitIn(t, fork, "commit", "-m", "fix: self-committed model work")
+
+	// Sanity: against local "main" (the OLD base), commits ahead = 2
+	// (self-commit + UPSTREAM.md delta). Against the resolved upstream
+	// tip, it must be exactly 1.
+	if got := gitIn(t, fork, "rev-list", "--count", "main..HEAD"); got != "2" {
+		t.Fatalf("pre-condition wrong: against local main, expected 2 commits ahead (the regression case), got %s", got)
+	}
+
+	// The recovery must use the resolved upstream tip, not local "main".
+	e := &NativeAgentLoopExecutor{}
+	if e.recoverSelfCommitsOrNoChange(context.Background(), logr.Discard(), false, fork, bare, "main") {
+		t.Fatal("recoverSelfCommitsOrNoChange returned true (no-change); self-commit should have been recovered")
+	}
+
+	// Post-recovery invariants:
+	//  - HEAD is now at the upstream tip (soft reset succeeded).
+	//  - Working tree contains the SELF-COMMIT's diff.
+	//  - Diff does NOT contain UPSTREAM.md (the source of the prior bug).
+	if got := gitIn(t, fork, "rev-parse", "HEAD"); got != upstreamTip {
+		t.Errorf("HEAD = %s, want upstream tip %s (soft reset must move to upstream base, not fork main)", got, upstreamTip)
+	}
+	staged := gitIn(t, fork, "diff", "--cached", "--name-only")
+	if !strings.Contains(staged, "pkg/agent/fix.go") {
+		t.Errorf("staged changes should include model fix, got: %q", staged)
+	}
+	if strings.Contains(staged, "UPSTREAM.md") {
+		t.Errorf("BUG (regression): soft reset re-staged UPSTREAM.md — base resolution fell back to local main. staged: %q", staged)
+	}
+}
+
+// TestRecoverSelfCommitsOrNoChange_GenuinelyNothingToRecover covers the
+// NO-CHANGES branch: the model said GO but never edited anything AND
+// did not self-commit. The helper must return true (no-change) without
+// making any mutations and without logging errors — a true outcome,
+// not a silent degrade.
+func TestRecoverSelfCommitsOrNoChange_GenuinelyNothingToRecover(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	dir := t.TempDir()
+	bare, mainSHA := seededRemote(t, dir)
+
+	ws := filepath.Join(dir, "ws")
+	gitIn(t, "", "clone", bare, ws)
+	gitIn(t, ws, "checkout", "-b", "feat/empty")
+
+	e := &NativeAgentLoopExecutor{}
+	log := logr.Discard()
+	if !e.recoverSelfCommitsOrNoChange(context.Background(), log, false, ws, bare, "main") {
+		t.Fatal("expected no-change recovery to return true for a clean branch with no commits ahead")
+	}
+	// HEAD must still be at the upstream tip — no mutation occurred.
+	if got := gitIn(t, ws, "rev-parse", "HEAD"); got != mainSHA {
+		t.Errorf("HEAD = %s, want %s (no-change path must not move HEAD)", got, mainSHA)
+	}
+}

@@ -247,10 +247,10 @@ func TestSoftResetToBase(t *testing.T) {
 		t.Errorf("expected 'workspace is required' error, got: %v", err)
 	}
 
-	// Test: base ref required guard.
+	// Test: base required guard (resolved SHA, see BaseBranchSHA).
 	err = SoftResetToBase(context.Background(), tmp, "")
-	if err == nil || !strings.Contains(err.Error(), "base ref is required") {
-		t.Errorf("expected 'base ref is required' error, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "base is required") {
+		t.Errorf("expected 'base is required' error, got: %v", err)
 	}
 }
 
@@ -267,4 +267,94 @@ func runGitOrFatal(t *testing.T, workspace string, env []string, args ...string)
 	if err != nil {
 		t.Fatalf("runGit %v: %v (output: %s)", strings.Join(args, " "), err, out)
 	}
+}
+
+// TestBaseBranchSHA verifies the helper returns the upstream tip SHA
+// (the #982/#813 invariant): the executor must recover against the
+// actual upstream tip, not a possibly-stale local fork ref. Setup:
+// upstream advances by one commit after the fork clone, and
+// BaseBranchSHA(fetch upstream main) must return the upstream tip.
+func TestBaseBranchSHA(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	env := []string{
+		"GIT_AUTHOR_NAME=Test", "GIT_AUTHOR_EMAIL=test@test.com",
+		"GIT_COMMITTER_NAME=Test", "GIT_COMMITTER_EMAIL=test@test.com",
+	}
+	tmp := t.TempDir()
+
+	// Bare upstream with one commit.
+	upstream := tmp + "/upstream.git"
+	runGitOrFatal(t, "", env, "init", "--bare", "-b", "main", upstream)
+	seed := tmp + "/seed"
+	runGitOrFatal(t, "", env, "clone", upstream, seed)
+	writeFileTemp(t, seed, "README.md", "seed\n")
+	runGitOrFatal(t, seed, env, "add", "-A")
+	runGitOrFatal(t, seed, env, "commit", "-m", "seed")
+	runGitOrFatal(t, seed, env, "push", "-u", "origin", "main")
+	seedSHA := strings.TrimSpace(gitStdout(t, "", env, seed, "rev-parse", "HEAD"))
+
+	// Fork clone taken before upstream advance.
+	fork := tmp + "/fork"
+	runGitOrFatal(t, "", env, "clone", upstream, fork)
+	forkMain := strings.TrimSpace(gitStdout(t, "", env, fork, "rev-parse", "main"))
+
+	// Upstream advances by one commit.
+	adv := tmp + "/adv"
+	runGitOrFatal(t, "", env, "clone", upstream, adv)
+	writeFileTemp(t, adv, "UPSTREAM.md", "delta\n")
+	runGitOrFatal(t, adv, env, "add", "-A")
+	runGitOrFatal(t, adv, env, "commit", "-m", "delta")
+	runGitOrFatal(t, adv, env, "push", "origin", "main")
+	upstreamTip := strings.TrimSpace(gitStdout(t, "", env, adv, "rev-parse", "HEAD"))
+
+	if forkMain != seedSHA || forkMain == upstreamTip {
+		t.Fatalf("test setup wrong: fork main=%s seed=%s upstreamTip=%s", forkMain, seedSHA, upstreamTip)
+	}
+
+	// BaseBranchSHA must return the upstream tip, not the lagging fork "main".
+	got, err := BaseBranchSHA(context.Background(), fork, "file://"+upstream, "main")
+	if err != nil {
+		t.Fatalf("BaseBranchSHA: %v", err)
+	}
+	if got != upstreamTip {
+		t.Errorf("BaseBranchSHA = %s, want upstream tip %s", got, upstreamTip)
+	}
+
+	// Empty workspace guard.
+	if _, err := BaseBranchSHA(context.Background(), "", "file://"+upstream, "main"); err == nil ||
+		!strings.Contains(err.Error(), "workspace is required") {
+		t.Errorf("expected 'workspace is required' guard, got: %v", err)
+	}
+	// Empty baseBranch guard.
+	if _, err := BaseBranchSHA(context.Background(), fork, "file://"+upstream, ""); err == nil ||
+		!strings.Contains(err.Error(), "baseBranch is required") {
+		t.Errorf("expected 'baseBranch is required' guard, got: %v", err)
+	}
+	// Empty upstreamURL guard: must refuse to fall back to a possibly-stale local ref.
+	if _, err := BaseBranchSHA(context.Background(), fork, "", "main"); err == nil ||
+		!strings.Contains(err.Error(), "upstreamURL is required") {
+		t.Errorf("expected 'upstreamURL is required' guard, got: %v", err)
+	}
+	// Invalid baseBranch guard (smuggling attempt via leading dash).
+	if _, err := BaseBranchSHA(context.Background(), fork, "file://"+upstream, "--upload-pack=evil"); err == nil {
+		t.Errorf("expected invalid-base-branch guard for '--upload-pack=evil', got nil error")
+	}
+}
+
+// gitStdout runs a git command from the given cwd (may be empty for
+// the host CWD) and returns stdout, failing the test on error.
+func gitStdout(t *testing.T, _ string, env []string, cwd string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	if cwd != "" {
+		cmd.Dir = cwd
+	}
+	cmd.Env = append(os.Environ(), env...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return string(out)
 }

@@ -454,6 +454,10 @@ var fileWritingBashTokens = []string{
 	// needs an explicit token — the redirect parser in bashRedirectsToFile won't
 	// catch it. Added for #982: models editing via `git apply` were not resetting
 	// the EditFreeStreak counter, causing force-terminate mid-edit.
+	// NOTE: substring match — also matches `git apply --check/--stat/--numstat`,
+	// which are read-only but still safely counted as "edits here" for streak
+	// purposes (false positives reset the streak; the only failure mode is a
+	// false force-terminate, which this over-match biases away from).
 	"git apply",
 }
 
