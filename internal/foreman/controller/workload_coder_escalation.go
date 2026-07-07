@@ -42,6 +42,7 @@ type coderResultEnvelope struct {
 		ModelExtra struct {
 			Outcome string `json:"outcome"`
 		} `json:"modelExtra"`
+		ResolvedBy string `json:"resolvedBy,omitempty"`
 	} `json:"extra"`
 }
 
@@ -74,6 +75,22 @@ func coderSummary(task *foremanv1alpha1.AgenticTask) string {
 		return ""
 	}
 	return env.Summary
+}
+
+// coderResolvedBy returns the resolvedBy evidence string from the result
+// envelope (commit SHA or branch). Mirrors coderTerminalOutcome but only
+// extracts Extra.ResolvedBy. Empty string when Result is nil/unparseable
+// or ResolvedBy is unset. Used by rollup to surface evidence in per-issue
+// AlreadyResolved events.
+func coderResolvedBy(task *foremanv1alpha1.AgenticTask) string {
+	if task.Status.Result == nil || len(task.Status.Result.Raw) == 0 {
+		return ""
+	}
+	var env coderResultEnvelope
+	if err := json.Unmarshal(task.Status.Result.Raw, &env); err != nil {
+		return ""
+	}
+	return env.Extra.ResolvedBy
 }
 
 // isAlreadyResolvedCoder reports whether the task ended in the

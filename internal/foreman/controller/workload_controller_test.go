@@ -601,7 +601,7 @@ var _ = Describe("WorkloadReconciler (M6 stub planner)", func() {
 			patch := client.MergeFrom(t.DeepCopy())
 			t.Status.Phase = foremanv1alpha1.AgenticTaskPhaseSucceeded
 			t.Status.Verdict = foremanv1alpha1.AgenticTaskVerdictNoGo
-			t.Status.Result = resultRaw("ALREADY-RESOLVED", "", "already resolved by prior fix")
+			t.Status.Result = resultRaw("ALREADY-RESOLVED", "", "already resolved by prior fix", "")
 			Expect(k8sClient.Status().Patch(ctx, &t, patch)).To(Succeed())
 		}
 		for _, n := range []string{"rollup-already-resolved-verify-152", "rollup-already-resolved-verify-365"} {
@@ -677,7 +677,7 @@ var _ = Describe("WorkloadReconciler (M6 stub planner)", func() {
 		patch := client.MergeFrom(ar.DeepCopy())
 		ar.Status.Phase = foremanv1alpha1.AgenticTaskPhaseSucceeded
 		ar.Status.Verdict = foremanv1alpha1.AgenticTaskVerdictNoGo
-		ar.Status.Result = resultRaw("ALREADY-RESOLVED", "", "already done")
+		ar.Status.Result = resultRaw("ALREADY-RESOLVED", "", "already done", "")
 		Expect(k8sClient.Status().Patch(ctx, &ar, patch)).To(Succeed())
 		var v22 foremanv1alpha1.AgenticTask
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: "rollup-mixed-ar-verify-22"}, &v22)).To(Succeed())
@@ -731,7 +731,7 @@ var _ = Describe("WorkloadReconciler (M6 stub planner)", func() {
 		patch := client.MergeFrom(c.DeepCopy())
 		c.Status.Phase = foremanv1alpha1.AgenticTaskPhaseSucceeded
 		c.Status.Verdict = foremanv1alpha1.AgenticTaskVerdictNoGo
-		c.Status.Result = resultRaw("ALREADY-RESOLVED", "", "already done")
+		c.Status.Result = resultRaw("ALREADY-RESOLVED", "", "already done", "abc123def")
 		Expect(k8sClient.Status().Patch(ctx, &c, patch)).To(Succeed())
 		// Same cascade-fail isolation: delete the verify child.
 		var v777 foremanv1alpha1.AgenticTask
@@ -745,6 +745,52 @@ var _ = Describe("WorkloadReconciler (M6 stub planner)", func() {
 		Eventually(recorder.Events).Should(Receive(And(
 			ContainSubstring("AlreadyResolved"),
 			ContainSubstring("#777"),
+			ContainSubstring("abc123def"),
+		)))
+	})
+
+	It("emits AlreadyResolved event without resolvedBy when field is empty (#970)", func() {
+		recorder := &events.FakeRecorder{Events: make(chan string, 16)}
+		rec := &WorkloadReconciler{
+			Client:              k8sClient,
+			Scheme:              k8sClient.Scheme(),
+			Recorder:            recorder,
+			AllowCloudProviders: true,
+		}
+		wl := newWorkload("rollup-ar-events-no-rb", foremanv1alpha1.WorkloadSpec{
+			Intent:           "already-resolved events no resolvedBy",
+			Repo:             "defilantech/LLMKube",
+			Issues:           []int32{888},
+			CoderAgentRef:    &corev1.LocalObjectReference{Name: "coder"},
+			VerifierAgentRef: &corev1.LocalObjectReference{Name: "gate"},
+		})
+		Expect(k8sClient.Create(ctx, wl)).To(Succeed())
+		DeferCleanup(func() {
+			cleanupChildren(wl)
+			_ = k8sClient.Delete(ctx, wl)
+		})
+
+		_, err := rec.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(wl)})
+		Expect(err).NotTo(HaveOccurred())
+
+		var c foremanv1alpha1.AgenticTask
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: "rollup-ar-events-no-rb-code-888"}, &c)).To(Succeed())
+		patch := client.MergeFrom(c.DeepCopy())
+		c.Status.Phase = foremanv1alpha1.AgenticTaskPhaseSucceeded
+		c.Status.Verdict = foremanv1alpha1.AgenticTaskVerdictNoGo
+		c.Status.Result = resultRaw("ALREADY-RESOLVED", "", "already done", "")
+		Expect(k8sClient.Status().Patch(ctx, &c, patch)).To(Succeed())
+		var v888 foremanv1alpha1.AgenticTask
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: "rollup-ar-events-no-rb-verify-888"}, &v888)).To(Succeed())
+		Expect(k8sClient.Delete(ctx, &v888)).To(Succeed())
+
+		_, err = rec.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(wl)})
+		Expect(err).NotTo(HaveOccurred())
+
+		Eventually(recorder.Events).Should(Receive(And(
+			ContainSubstring("AlreadyResolved"),
+			ContainSubstring("#888"),
+			ContainSubstring("resolved at run time"),
 		)))
 	})
 

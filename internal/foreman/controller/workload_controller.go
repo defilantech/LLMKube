@@ -510,6 +510,7 @@ func (r *WorkloadReconciler) rollup(ctx context.Context, w *foremanv1alpha1.Work
 		alreadyResolved                         int32
 	)
 	var resolvedIssues []int32
+	var resolvedByList []string // parallel to resolvedIssues; evidence per issue
 	for i := range children {
 		switch {
 		case children[i].SucceededOnTarget():
@@ -522,6 +523,9 @@ func (r *WorkloadReconciler) rollup(ctx context.Context, w *foremanv1alpha1.Work
 			alreadyResolved++
 			if n := children[i].Spec.Payload.Issue; n > 0 {
 				resolvedIssues = append(resolvedIssues, n)
+				resolvedByList = append(resolvedByList, coderResolvedBy(&children[i]))
+			} else {
+				resolvedByList = append(resolvedByList, "")
 			}
 		case children[i].Status.Phase == foremanv1alpha1.AgenticTaskPhaseSucceeded:
 			incomplete++
@@ -532,7 +536,12 @@ func (r *WorkloadReconciler) rollup(ctx context.Context, w *foremanv1alpha1.Work
 		}
 	}
 
-	sort.Slice(resolvedIssues, func(i, j int) bool { return resolvedIssues[i] < resolvedIssues[j] })
+	sort.Slice(resolvedIssues, func(i, j int) bool {
+		if resolvedIssues[i] != resolvedIssues[j] {
+			return resolvedIssues[i] < resolvedIssues[j]
+		}
+		return resolvedByList[i] < resolvedByList[j]
+	})
 
 	total := succeeded + incomplete + failed + inFlight
 	patch := client.MergeFrom(w.DeepCopy())
@@ -621,9 +630,14 @@ func (r *WorkloadReconciler) rollup(ctx context.Context, w *foremanv1alpha1.Work
 			LastTransitionTime: now,
 		})
 		if r.Recorder != nil {
-			for _, n := range resolvedIssues {
-				r.Recorder.Eventf(w, nil, corev1.EventTypeNormal, "AlreadyResolved", "Workload",
-					"Issue #%d resolved at run time; safe to close on GitHub", n)
+			for idx, n := range resolvedIssues {
+				if resolvedByList[idx] != "" {
+					r.Recorder.Eventf(w, nil, corev1.EventTypeNormal, "AlreadyResolved", "Workload",
+						"Issue #%d resolved by %s; safe to close on GitHub", n, resolvedByList[idx])
+				} else {
+					r.Recorder.Eventf(w, nil, corev1.EventTypeNormal, "AlreadyResolved", "Workload",
+						"Issue #%d resolved at run time; safe to close on GitHub", n)
+				}
 			}
 		}
 	} else {

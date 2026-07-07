@@ -75,7 +75,7 @@ var _ = Describe("WorkloadReconciler coder escalation (#963)", func() {
 		p944 := client.MergeFrom(set944.DeepCopy())
 		set944.Status.Phase = foremanv1alpha1.AgenticTaskPhaseSucceeded
 		set944.Status.Verdict = foremanv1alpha1.AgenticTaskVerdictNoGo
-		set944.Status.Result = resultRaw("MODEL-DECIDED", "", "fuzzy front-runs anchor")
+		set944.Status.Result = resultRaw("MODEL-DECIDED", "", "fuzzy front-runs anchor", "")
 		Expect(k8sClient.Status().Patch(ctx, &set944, p944)).To(Succeed())
 
 		// (B) code-921 terminates INCOMPLETE / MODEL-DECIDED (no gate
@@ -85,7 +85,7 @@ var _ = Describe("WorkloadReconciler coder escalation (#963)", func() {
 		p921 := client.MergeFrom(set921.DeepCopy())
 		set921.Status.Phase = foremanv1alpha1.AgenticTaskPhaseSucceeded
 		set921.Status.Verdict = foremanv1alpha1.AgenticTaskVerdictIncomplete
-		set921.Status.Result = resultRaw("MODEL-DECIDED", "", "ran out of turns")
+		set921.Status.Result = resultRaw("MODEL-DECIDED", "", "ran out of turns", "")
 		Expect(k8sClient.Status().Patch(ctx, &set921, p921)).To(Succeed())
 
 		// Second reconcile runs the coder-escalation hook.
@@ -165,7 +165,7 @@ var _ = Describe("WorkloadReconciler coder escalation (#963)", func() {
 			Expect(k8sClient.Status().Patch(ctx, &t, p)).To(Succeed())
 		}
 		setTerminal("coder-esc-rev-code-944", foremanv1alpha1.AgenticTaskPhaseSucceeded,
-			foremanv1alpha1.AgenticTaskVerdictNoGo, func() *runtime.RawExtension { return resultRaw("MODEL-DECIDED", "", "fuzzy front-runs anchor") })
+			foremanv1alpha1.AgenticTaskVerdictNoGo, func() *runtime.RawExtension { return resultRaw("MODEL-DECIDED", "", "fuzzy front-runs anchor", "") })
 		setTerminal("coder-esc-rev-verify-944", foremanv1alpha1.AgenticTaskPhaseFailed,
 			foremanv1alpha1.AgenticTaskVerdictIncomplete, nil)
 		setTerminal("coder-esc-rev-review-944-0", foremanv1alpha1.AgenticTaskPhaseFailed,
@@ -232,7 +232,7 @@ var _ = Describe("WorkloadReconciler coder escalation (#963)", func() {
 		patch := client.MergeFrom(base.DeepCopy())
 		base.Status.Phase = foremanv1alpha1.AgenticTaskPhaseSucceeded
 		base.Status.Verdict = foremanv1alpha1.AgenticTaskVerdictNoGo
-		base.Status.Result = resultRaw("MODEL-DECIDED", "", "bailed")
+		base.Status.Result = resultRaw("MODEL-DECIDED", "", "bailed", "")
 		Expect(k8sClient.Status().Patch(ctx, &base, patch)).To(Succeed())
 
 		_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(wl)})
@@ -279,7 +279,7 @@ var _ = Describe("WorkloadReconciler coder escalation (#963)", func() {
 		patch := client.MergeFrom(code.DeepCopy())
 		code.Status.Phase = foremanv1alpha1.AgenticTaskPhaseSucceeded
 		code.Status.Verdict = foremanv1alpha1.AgenticTaskVerdictNoGo
-		code.Status.Result = resultRaw("ALREADY-RESOLVED", "", "Issue #42 already resolved by commit abc1234")
+		code.Status.Result = resultRaw("ALREADY-RESOLVED", "", "Issue #42 already resolved by commit abc1234", "")
 		Expect(k8sClient.Status().Patch(ctx, &code, patch)).To(Succeed())
 
 		// Delete the verify child so the rollup doesn't pin on Pending.
