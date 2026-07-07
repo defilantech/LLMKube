@@ -128,5 +128,11 @@ spec:
             container=~"llamacpp|vllm|tgi|personaplex|llm-server"
           }[5m])
         )
+
+    # TTFT p95 over 5m. vLLM-only; llama.cpp has no first-token histogram.
+    - record: llmkube:inference:ttft_seconds:p95_5m
+      expr: histogram_quantile(0.95, sum by (service, namespace, runtime, le) (rate(vllm:time_to_first_token_seconds_bucket[5m])))
+      labels:
+        latency_kind: ttft
   {{- end }}
 {{- end }}
