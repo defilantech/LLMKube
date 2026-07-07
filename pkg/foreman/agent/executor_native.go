@@ -736,6 +736,13 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 // whether a reviewer finding cites a line the branch diff actually changed.
 // Returns nil (rail becomes a no-op / degrades open) when the ground-truth
 // diff was unavailable, logging why.
+//
+// It uses the committed-branch diff (changedBranchLines: git diff main...HEAD),
+// not the working-tree diff (changedNewLines: git diff HEAD). The reviewer
+// checks out the coder's already-committed branch, so the working tree equals
+// HEAD and a `git diff HEAD` would be empty, grounding nothing and demoting
+// every NO-GO. The three-dot base matches the scope-overlap check on the line
+// above (repo.DiffNameOnly(ctx, workspace, "main")).
 func reviewerGroundedChangedLines(
 	ctx context.Context, log logr.Logger, workspace string, reviewDiffErr error,
 ) func(string) map[int]bool {
@@ -745,7 +752,7 @@ func reviewerGroundedChangedLines(
 		return nil
 	}
 	return func(file string) map[int]bool {
-		return changedNewLines(ctx, workspace, file, execCommandRunner)
+		return changedBranchLines(ctx, workspace, "main", file, execCommandRunner)
 	}
 }
 

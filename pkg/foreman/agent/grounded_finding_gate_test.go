@@ -17,6 +17,10 @@ limitations under the License.
 package agent
 
 import (
+	"context"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 
 	"github.com/go-logr/logr"
@@ -128,5 +132,55 @@ func TestGroundedFindings_GitUnavailableDegradesOpen(t *testing.T) {
 	got := enforceReviewerGroundedFindings(logr.Discard(), extra, foremanv1alpha1.AgenticTaskVerdictNoGo, nil)
 	if got != foremanv1alpha1.AgenticTaskVerdictNoGo {
 		t.Fatalf("nil changedLines must leave verdict untouched, got %s", got)
+	}
+}
+
+// TestReviewerGroundedChangedLines_UsesCommittedBranchDiff is the integration
+// guard the synthetic-closure unit tests above miss: it drives the real git
+// wiring in a reviewer-shaped workspace, where the coder's work is already
+// committed and the working tree is clean. `git diff HEAD` is empty there, so
+// the rail must diff the branch against its merge-base with main (main...HEAD).
+// Otherwise every blocking finding is classified ungrounded and every NO-GO is
+// demoted to GO unconditionally.
+func TestReviewerGroundedChangedLines_UsesCommittedBranchDiff(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	ws := t.TempDir()
+	foo := filepath.Join(ws, "foo.go")
+	gitIn(t, "", "init", "-b", "main", ws)
+	if err := os.WriteFile(foo, []byte("package p\n\nfunc A() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, ws, "add", "-A")
+	gitIn(t, ws, "commit", "-m", "base")
+
+	// The coder's work: a committed change on a branch, then checked out so the
+	// working tree is clean, exactly what the reviewer sees after checkout.
+	gitIn(t, ws, "checkout", "-b", "fix/x")
+	if err := os.WriteFile(foo, []byte("package p\n\nfunc A() {}\n\nfunc B() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, ws, "add", "-A")
+	gitIn(t, ws, "commit", "-m", "add B")
+
+	// Precondition: the work is committed, so `git diff HEAD` (the old base) is
+	// empty. This is the exact condition that made the rail a no-op.
+	if out := gitIn(t, ws, "diff", "--name-only", "HEAD"); out != "" {
+		t.Fatalf("precondition: working tree must be clean, got %q", out)
+	}
+
+	changed := reviewerGroundedChangedLines(context.Background(), logr.Discard(), ws, nil)
+	if changed == nil {
+		t.Fatal("closure must be non-nil when the ground-truth diff is available")
+	}
+	got := changed("foo.go")
+	if len(got) == 0 {
+		t.Fatal("no changed lines for a committed branch: the rail is a no-op " +
+			"(git diff HEAD is empty when work is committed); must diff main...HEAD")
+	}
+	// `func B() {}` is added at new-file line 5.
+	if !got[5] {
+		t.Errorf("expected added line 5 (func B) in the grounded set, got %v", got)
 	}
 }

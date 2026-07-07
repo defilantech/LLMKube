@@ -368,6 +368,29 @@ func changedNewLines(ctx context.Context, workspace, file string, run commandRun
 	if err != nil {
 		return nil
 	}
+	return parseAddedLines(out)
+}
+
+// changedBranchLines parses `git diff -U0 <base>...HEAD -- <file>` and returns
+// the set of new-file line numbers touched by added lines relative to the
+// branch's merge-base with base.
+//
+// This is the committed-branch view the reviewer grounded-finding rail needs:
+// the reviewer checks out the coder's already-committed branch, so the working
+// tree equals HEAD and the `git diff HEAD` view (changedNewLines) is empty and
+// would ground nothing. The three-dot base mirrors the scope-overlap check
+// (repo.DiffNameOnly), so both reviewer rails agree on what the branch changed.
+func changedBranchLines(ctx context.Context, workspace, base, file string, run commandRunner) map[int]bool {
+	out, err := run(ctx, workspace, nil, "git", "diff", "-U0", base+"...HEAD", "--", file)
+	if err != nil {
+		return nil
+	}
+	return parseAddedLines(out)
+}
+
+// parseAddedLines extracts the set of added new-file line numbers from a
+// `git diff -U0` output by tracking each hunk header's new-file start line.
+func parseAddedLines(out string) map[int]bool {
 	lines := map[int]bool{}
 	cur := 0
 	for _, ln := range strings.Split(out, "\n") {
