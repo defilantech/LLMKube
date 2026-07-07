@@ -172,7 +172,7 @@ func TestReviewerGroundedChangedLines_UsesCommittedBranchDiff(t *testing.T) {
 	}
 
 	// The caller passes the ground-truth diff file list (non-empty here).
-	changed := reviewerGroundedChangedLines(context.Background(), logr.Discard(), ws, []string{"foo.go"}, nil)
+	changed := reviewerGroundedChangedLines(context.Background(), logr.Discard(), ws, "main", []string{"foo.go"}, nil)
 	if changed == nil {
 		t.Fatal("closure must be non-nil when the ground-truth diff is available")
 	}
@@ -196,11 +196,11 @@ func TestReviewerGroundedChangedLines_UsesCommittedBranchDiff(t *testing.T) {
 func TestReviewerGroundedChangedLines_EmptyBranchDiffDegradesClosed(t *testing.T) {
 	ctx, log := context.Background(), logr.Discard()
 	// Empty diff, no error: must degrade closed (nil closure).
-	if got := reviewerGroundedChangedLines(ctx, log, t.TempDir(), nil, nil); got != nil {
+	if got := reviewerGroundedChangedLines(ctx, log, t.TempDir(), "main", nil, nil); got != nil {
 		t.Fatal("empty branch diff must yield a nil closure (degrade closed), got non-nil")
 	}
 	// Non-empty diff: a real closure is returned.
-	if got := reviewerGroundedChangedLines(ctx, log, t.TempDir(), []string{"a.go"}, nil); got == nil {
+	if got := reviewerGroundedChangedLines(ctx, log, t.TempDir(), "main", []string{"a.go"}, nil); got == nil {
 		t.Fatal("non-empty branch diff must yield a real closure")
 	}
 }

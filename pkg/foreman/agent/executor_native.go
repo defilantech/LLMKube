@@ -606,7 +606,13 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 			// calls returned correct data; the server-side rewrite makes
 			// the model's claim a debugging artifact and the diff the
 			// authoritative answer.
-			reconcileReviewerFilesTouched(ctx, log, workspace, loopRes.Terminal.Extra)
+			// Resolve the branch's true base ONCE for every reviewer diff below:
+			// the upstream base tip it was cut from (#813), freshly fetched. The
+			// reviewer clones the fork, whose local `main` lags upstream, so
+			// diffing against local `main` sweeps in the whole intervening
+			// upstream delta and neuters every rail (#1005).
+			reviewBase := e.reviewerDiffBase(ctx, log, task, workspace)
+			reconcileReviewerFilesTouched(ctx, log, workspace, reviewBase, loopRes.Terminal.Extra)
 			// Ground-truth issueAsk against the fetch_issue tool result
 			// the model already had in its context. Devstral on the same
 			// post-#584 batch confabulated issueAsk on every multi-file
@@ -618,7 +624,7 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 			reconcileReviewerIssueAsk(log, loopRes.Transcript, loopRes.Terminal.Extra)
 			// Ground-truth the branch diff ONCE for the two computable rails
 			// below (grounded-finding + scope-overlap).
-			reviewDiff, reviewDiffErr := repo.DiffNameOnly(ctx, workspace, "main")
+			reviewDiff, reviewDiffErr := repo.DiffNameOnly(ctx, workspace, reviewBase)
 			// Grounded-finding rail: a NO-GO must be earned by >=1 blocking
 			// finding citing a line the diff changed; otherwise demote it to GO
 			// and archive the rejected findings. Mirror of scope-overlap, in the
@@ -626,7 +632,7 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 			// ungrounded rejection becomes GO and then scope-overlap / issueAsk
 			// still get their turn to re-flag it for a real, computed reason.
 			verdict = enforceReviewerGroundedFindings(log, loopRes.Terminal.Extra, verdict,
-				reviewerGroundedChangedLines(ctx, log, workspace, reviewDiff, reviewDiffErr))
+				reviewerGroundedChangedLines(ctx, log, workspace, reviewBase, reviewDiff, reviewDiffErr))
 			// Verdict-from-findings rail: the mirror of the demote rail. A GO
 			// carrying a grounded blocking finding is a found-it-but-approved
 			// inconsistency; promote it to NO-GO so it routes to escalation
@@ -634,7 +640,7 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 			// scope-overlap, so the two grounding rails jointly make the
 			// verdict NO-GO iff a grounded blocking finding exists.
 			verdict = enforceReviewerVerdictFromFindings(log, loopRes.Terminal.Extra, verdict,
-				reviewerGroundedChangedLines(ctx, log, workspace, reviewDiff, reviewDiffErr))
+				reviewerGroundedChangedLines(ctx, log, workspace, reviewBase, reviewDiff, reviewDiffErr))
 			// Computable scope-overlap check (#647): when the issue names
 			// concrete files and the diff touches none of them, demote a
 			// GO deterministically. Runs before issueAsk enforcement so
@@ -773,7 +779,7 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 // closure there would ground every finding as "unchanged" and demote every
 // NO-GO to GO, opening the PR the reviewer meant to block.
 func reviewerGroundedChangedLines(
-	ctx context.Context, log logr.Logger, workspace string, reviewDiff []string, reviewDiffErr error,
+	ctx context.Context, log logr.Logger, workspace, base string, reviewDiff []string, reviewDiffErr error,
 ) func(string) map[int]bool {
 	if reviewDiffErr != nil {
 		log.Info("reviewer grounded-finding: ground-truth diff unavailable; skipping",
@@ -785,7 +791,7 @@ func reviewerGroundedChangedLines(
 		return nil
 	}
 	return func(file string) map[int]bool {
-		return changedBranchLines(ctx, workspace, "main", file, execCommandRunner)
+		return changedBranchLines(ctx, workspace, base, file, execCommandRunner)
 	}
 }
 
@@ -1747,12 +1753,12 @@ func buildUserPrompt(task *foremanv1alpha1.AgenticTask) string {
 // with main).
 func reconcileReviewerFilesTouched(
 	ctx context.Context, log logr.Logger,
-	workspace string, extra map[string]any,
+	workspace, base string, extra map[string]any,
 ) {
 	if extra == nil || workspace == "" {
 		return
 	}
-	groundTruth, err := repo.DiffNameOnly(ctx, workspace, "main")
+	groundTruth, err := repo.DiffNameOnly(ctx, workspace, base)
 	if err != nil {
 		log.Info("reviewer filesTouched: ground-truth diff failed; preserving model claim",
 			"err", err.Error())
@@ -1771,6 +1777,29 @@ func reconcileReviewerFilesTouched(
 		)
 	}
 	extra["filesTouched"] = groundTruth
+}
+
+// reviewerDiffBase resolves the ref the reviewer diffs HEAD against: the coder
+// branch's upstream base tip, freshly fetched (repo.BaseBranchSHA, #995). The
+// reviewer clones the contributor's fork, whose local `main` lags the upstream
+// base the branch was cut from (#813), so diffing against local `main` sweeps
+// in the whole intervening upstream delta and neuters every reviewer rail
+// (#1005). Falls back to the local "main" ref only when no upstream is
+// resolvable (freeform tasks), matching the pre-#1005 degrade posture.
+func (e *NativeAgentLoopExecutor) reviewerDiffBase(
+	ctx context.Context, log logr.Logger, task *foremanv1alpha1.AgenticTask, workspace string,
+) string {
+	upstreamURL := e.resolveUpstreamForRun(task)
+	if upstreamURL == "" {
+		return "main"
+	}
+	base, err := repo.BaseBranchSHA(ctx, workspace, upstreamURL, baseBranchOrDefault(task.Spec.Payload.BaseBranch))
+	if err != nil {
+		log.Info("reviewer diff base: upstream base unavailable; falling back to local main",
+			"err", err.Error())
+		return "main"
+	}
+	return base
 }
 
 // fileListsEqual returns true when prev (which is `any` because it

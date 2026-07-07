@@ -978,7 +978,7 @@ func TestReconcileReviewerFilesTouched_OverwritesAndPreservesClaim(t *testing.T)
 		"findings":      []any{},
 	}
 
-	reconcileReviewerFilesTouched(context.Background(), logr.Discard(), ws, extra)
+	reconcileReviewerFilesTouched(context.Background(), logr.Discard(), ws, "main", extra)
 
 	got, ok := extra["filesTouched"].([]string)
 	if !ok {
@@ -1020,7 +1020,7 @@ func TestReconcileReviewerFilesTouched_HonestClaimNoClaimedFieldAdded(t *testing
 
 	honestClaim := []any{"a.go", "c.go"}
 	extra := map[string]any{"filesTouched": honestClaim}
-	reconcileReviewerFilesTouched(context.Background(), logr.Discard(), ws, extra)
+	reconcileReviewerFilesTouched(context.Background(), logr.Discard(), ws, "main", extra)
 
 	if _, present := extra["filesTouchedClaimed"]; present {
 		t.Errorf("filesTouchedClaimed should NOT be set when claim matched; got %v",
@@ -1037,8 +1037,8 @@ func TestReconcileReviewerFilesTouched_HonestClaimNoClaimedFieldAdded(t *testing
 }
 
 func TestReconcileReviewerFilesTouched_NilExtraIsNoOp(t *testing.T) {
-	reconcileReviewerFilesTouched(context.Background(), logr.Discard(), "/tmp", nil)
-	reconcileReviewerFilesTouched(context.Background(), logr.Discard(), "", map[string]any{"x": 1})
+	reconcileReviewerFilesTouched(context.Background(), logr.Discard(), "/tmp", "main", nil)
+	reconcileReviewerFilesTouched(context.Background(), logr.Discard(), "", "main", map[string]any{"x": 1})
 }
 
 func TestReconcileReviewerFilesTouched_GitFailurePreservesClaim(t *testing.T) {
@@ -1052,7 +1052,7 @@ func TestReconcileReviewerFilesTouched_GitFailurePreservesClaim(t *testing.T) {
 
 	originalClaim := []any{"some-file.go"}
 	extra := map[string]any{"filesTouched": originalClaim}
-	reconcileReviewerFilesTouched(context.Background(), logr.Discard(), ws, extra)
+	reconcileReviewerFilesTouched(context.Background(), logr.Discard(), ws, "main", extra)
 
 	got, ok := extra["filesTouched"].([]any)
 	if !ok {
@@ -2016,6 +2016,74 @@ func seededRemote(t *testing.T, dir string) (bare, mainSHA string) {
 	gitIn(t, seed, "commit", "-m", "seed")
 	gitIn(t, seed, "push", "origin", "main")
 	return bare, gitIn(t, seed, "rev-parse", "HEAD")
+}
+
+// TestReviewerDiffBase_ResolvesUpstreamNotStaleForkMain guards #1005: the
+// reviewer clones the fork, whose local `main` lags the upstream base the
+// coder branch was cut from. Diffing against local `main` sweeps in the whole
+// intervening upstream delta; reviewerDiffBase must instead resolve the fresh
+// upstream base so the diff isolates the coder's change.
+func TestReviewerDiffBase_ResolvesUpstreamNotStaleForkMain(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	dir := t.TempDir()
+	bare, _ := seededRemote(t, dir) // upstream main at A
+
+	// Fork clone taken BEFORE upstream advances: local "main" stays at A.
+	fork := filepath.Join(dir, "fork")
+	gitIn(t, "", "clone", bare, fork)
+
+	// Upstream advances by one unrelated commit AFTER the fork was cloned.
+	adv := filepath.Join(dir, "adv")
+	gitIn(t, "", "clone", bare, adv)
+	if err := os.WriteFile(filepath.Join(adv, "UPSTREAM.md"), []byte("intervening upstream delta\n"), 0o644); err != nil {
+		t.Fatalf("write UPSTREAM.md: %v", err)
+	}
+	gitIn(t, adv, "add", "UPSTREAM.md")
+	gitIn(t, adv, "commit", "-m", "intervening upstream commit")
+	gitIn(t, adv, "push", "origin", "main")
+
+	// Coder branch: cut from the CURRENT upstream tip, plus a one-file fix.
+	gitIn(t, fork, "fetch", bare, "main")
+	gitIn(t, fork, "checkout", "-b", "fix/issue-1005", "FETCH_HEAD")
+	fixDir := filepath.Join(fork, "pkg", "agent")
+	if err := os.MkdirAll(fixDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(fixDir, "fix.go"), []byte("// fix\npackage agent\n"), 0o644); err != nil {
+		t.Fatalf("write fix.go: %v", err)
+	}
+	gitIn(t, fork, "add", "-A")
+	gitIn(t, fork, "commit", "-m", "fix: the coder change under review")
+
+	// Pre-condition: against the STALE local main, the diff wrongly includes
+	// the upstream delta (the bug this fix removes).
+	if stale := gitIn(t, fork, "diff", "--name-only", "main...HEAD"); !strings.Contains(stale, "UPSTREAM.md") {
+		t.Fatalf("pre-condition wrong: local-main diff should include the upstream delta, got %q", stale)
+	}
+
+	// reviewerDiffBase resolves the fresh upstream base instead of local main.
+	e := &NativeAgentLoopExecutor{UpstreamURLForRepo: func(string) string { return bare }}
+	task := &foremanv1alpha1.AgenticTask{
+		Spec: foremanv1alpha1.AgenticTaskSpec{
+			Kind:    foremanv1alpha1.AgenticTaskKindReview,
+			Payload: foremanv1alpha1.AgenticTaskPayload{Repo: "defilantech/LLMKube", BaseBranch: "main"},
+		},
+	}
+	base := e.reviewerDiffBase(context.Background(), logr.Discard(), task, fork)
+	if base == "main" {
+		t.Fatal("reviewerDiffBase fell back to local main; expected the resolved upstream base SHA")
+	}
+
+	// Diffing against the resolved base isolates the coder's change.
+	got := gitIn(t, fork, "diff", "--name-only", base+"...HEAD")
+	if !strings.Contains(got, "pkg/agent/fix.go") {
+		t.Errorf("diff should include the coder fix, got %q", got)
+	}
+	if strings.Contains(got, "UPSTREAM.md") {
+		t.Errorf("BUG #1005: reviewer diff base still sweeps in the upstream delta, got %q", got)
+	}
 }
 
 func revisionTask(branch string) *foremanv1alpha1.AgenticTask {
