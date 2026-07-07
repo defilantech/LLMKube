@@ -49,6 +49,39 @@ func groundedFindingsDisabled() bool {
 	return os.Getenv("FOREMAN_GROUNDED_FINDINGS") == "0"
 }
 
+// groundedBlockingFindings partitions the blocking findings (severity blocker
+// or major; minor is advisory and excluded) into those grounded in a changed
+// line and those not. A finding is grounded iff File is non-empty, Line > 0,
+// and Line is in changedLines(File) (a new-file line inside a diff hunk).
+// changedLines results are cached per file since it may shell out to git.
+// Both the grounded-finding demote rail and the verdict-from-findings promote
+// rail key on this partition, so they share one grounding definition.
+func groundedBlockingFindings(
+	findings []reviewer.Finding,
+	changedLines func(file string) map[int]bool,
+) (grounded, ungrounded []reviewer.Finding) {
+	cache := map[string]map[int]bool{}
+	lines := func(f string) map[int]bool {
+		if m, ok := cache[f]; ok {
+			return m
+		}
+		m := changedLines(f)
+		cache[f] = m
+		return m
+	}
+	for _, f := range findings {
+		if f.Severity != reviewer.SeverityBlocker && f.Severity != reviewer.SeverityMajor {
+			continue // minor is advisory, never blocking
+		}
+		if f.File != "" && f.Line > 0 && lines(f.File)[f.Line] {
+			grounded = append(grounded, f)
+		} else {
+			ungrounded = append(ungrounded, f)
+		}
+	}
+	return grounded, ungrounded
+}
+
 // enforceReviewerGroundedFindings demotes a model NO-GO to GO when none of its
 // blocking findings cite a changed line. Returns the (possibly demoted)
 // verdict. It is a no-op on any non-NO-GO verdict, when disabled, or when
@@ -72,31 +105,7 @@ func enforceReviewerGroundedFindings(
 	}
 
 	findings, _ := reviewer.ParseFindings(extra)
-
-	// Cache per-file changed lines: a NO-GO can carry several findings on the
-	// same file, and changedLines() may shell out to git per call.
-	cache := map[string]map[int]bool{}
-	lines := func(f string) map[int]bool {
-		if m, ok := cache[f]; ok {
-			return m
-		}
-		m := changedLines(f)
-		cache[f] = m
-		return m
-	}
-
-	var blocking, grounded, ungrounded []reviewer.Finding
-	for _, f := range findings {
-		if f.Severity != reviewer.SeverityBlocker && f.Severity != reviewer.SeverityMajor {
-			continue // minor is advisory, never sustains a NO-GO
-		}
-		blocking = append(blocking, f)
-		if f.File != "" && f.Line > 0 && lines(f.File)[f.Line] {
-			grounded = append(grounded, f)
-		} else {
-			ungrounded = append(ungrounded, f)
-		}
-	}
+	grounded, ungrounded := groundedBlockingFindings(findings, changedLines)
 
 	if len(grounded) >= 1 {
 		return verdict // rejection earned; NO-GO stands
@@ -104,11 +113,12 @@ func enforceReviewerGroundedFindings(
 
 	// Zero grounded blocking findings: the rejection is ungrounded. Demote to
 	// GO and archive, mirroring the filesTouchedClaimed transparency pattern.
+	blockingCount := len(grounded) + len(ungrounded)
 	extra["groundedFindingDemotion"] = true
 	extra["ungroundedFindings"] = ungrounded
 	extra["groundedFindingReason"] = fmt.Sprintf(
-		"NO-GO demoted to GO: 0 of %d blocking finding(s) cite a changed line", len(blocking))
+		"NO-GO demoted to GO: 0 of %d blocking finding(s) cite a changed line", blockingCount)
 	log.Info("reviewer grounded-finding: NO-GO demoted to GO; no blocking finding cites a changed line",
-		"blockingCount", len(blocking))
+		"blockingCount", blockingCount)
 	return foremanv1alpha1.AgenticTaskVerdictGo
 }

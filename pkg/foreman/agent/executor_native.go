@@ -627,6 +627,14 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 			// still get their turn to re-flag it for a real, computed reason.
 			verdict = enforceReviewerGroundedFindings(log, loopRes.Terminal.Extra, verdict,
 				reviewerGroundedChangedLines(ctx, log, workspace, reviewDiff, reviewDiffErr))
+			// Verdict-from-findings rail: the mirror of the demote rail. A GO
+			// carrying a grounded blocking finding is a found-it-but-approved
+			// inconsistency; promote it to NO-GO so it routes to escalation
+			// instead of opening a PR. Runs after the demote rail and before
+			// scope-overlap, so the two grounding rails jointly make the
+			// verdict NO-GO iff a grounded blocking finding exists.
+			verdict = enforceReviewerVerdictFromFindings(log, loopRes.Terminal.Extra, verdict,
+				reviewerGroundedChangedLines(ctx, log, workspace, reviewDiff, reviewDiffErr))
 			// Computable scope-overlap check (#647): when the issue names
 			// concrete files and the diff touches none of them, demote a
 			// GO deterministically. Runs before issueAsk enforcement so

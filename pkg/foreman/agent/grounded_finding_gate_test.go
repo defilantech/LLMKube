@@ -26,6 +26,7 @@ import (
 	"github.com/go-logr/logr"
 
 	foremanv1alpha1 "github.com/defilantech/llmkube/api/foreman/v1alpha1"
+	"github.com/defilantech/llmkube/pkg/foreman/agent/reviewer"
 )
 
 // blockerFinding builds a findings extra map with one finding.
@@ -201,5 +202,28 @@ func TestReviewerGroundedChangedLines_EmptyBranchDiffDegradesClosed(t *testing.T
 	// Non-empty diff: a real closure is returned.
 	if got := reviewerGroundedChangedLines(ctx, log, t.TempDir(), []string{"a.go"}, nil); got == nil {
 		t.Fatal("non-empty branch diff must yield a real closure")
+	}
+}
+
+func TestGroundedBlockingFindings_Partition(t *testing.T) {
+	findings := []reviewer.Finding{
+		// grounded
+		{Severity: reviewer.SeverityBlocker, Area: "scope", Message: "m", File: "a.go", Line: 10},
+		// ungrounded: line not changed
+		{Severity: reviewer.SeverityMajor, Area: "scope", Message: "m", File: "b.go", Line: 99},
+		// ungrounded: no line
+		{Severity: reviewer.SeverityMajor, Area: "scope", Message: "m", File: "c.go", Line: 0},
+		// excluded: minor
+		{Severity: reviewer.SeverityMinor, Area: "style", Message: "m", File: "a.go", Line: 10},
+	}
+	changed := func(f string) map[int]bool {
+		return map[string]map[int]bool{"a.go": {10: true}, "b.go": {5: true}}[f]
+	}
+	grounded, ungrounded := groundedBlockingFindings(findings, changed)
+	if len(grounded) != 1 || grounded[0].File != "a.go" {
+		t.Fatalf("grounded = %+v, want [a.go:10]", grounded)
+	}
+	if len(ungrounded) != 2 {
+		t.Fatalf("ungrounded = %d, want 2 (b.go unchanged line + c.go no line)", len(ungrounded))
 	}
 }
