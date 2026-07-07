@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -67,6 +68,88 @@ func HasChanges(ctx context.Context, workspace string) (bool, error) {
 		return false, err
 	}
 	return strings.TrimSpace(out) != "", nil
+}
+
+// CommitsAheadOfBase returns the number of commits reachable from HEAD
+// but not from base. Uses `git rev-list --count base..HEAD`. Returns 0
+// with no error when base == HEAD.
+func CommitsAheadOfBase(ctx context.Context, workspace string, base string) (int, error) {
+	if workspace == "" {
+		return 0, fmt.Errorf("CommitsAheadOfBase: workspace is required")
+	}
+	if base == "" {
+		return 0, fmt.Errorf("CommitsAheadOfBase: base ref is required")
+	}
+	out, err := runGit(ctx, workspace, baseEnv(), "rev-list", "--count", base+"..HEAD")
+	if err != nil {
+		return 0, err
+	}
+	count, err := strconv.Atoi(strings.TrimSpace(out))
+	if err != nil {
+		return 0, fmt.Errorf("CommitsAheadOfBase: invalid rev-list output %q: %w", out, err)
+	}
+	return count, nil
+}
+
+// BaseBranchSHA returns the resolved commit SHA that the task branch
+// should be considered "cut from". It re-fetches BaseBranch from
+// UpstreamURL into FETCH_HEAD (mirroring CreateBranchFromUpstream) and
+// returns the SHA git resolved there. This is the base to use for
+// commit-ahead counting and soft-reset recovery — NOT the local
+// "<baseBranch>" ref, which lags the upstream tip on a stale fork
+// (the original #813 failure mode that AddBranchFromUpstream was
+// introduced to fix). Callers who cloned from a remote with no
+// upstream fork (a self-hosted-only repo) can pass an empty UpstreamURL
+// to resolve against the local ref; otherwise an empty UpstreamURL
+// returns an error so the caller cannot silently fall back.
+func BaseBranchSHA(ctx context.Context, workspace, upstreamURL, baseBranch string) (string, error) {
+	if workspace == "" {
+		return "", fmt.Errorf("BaseBranchSHA: workspace is required")
+	}
+	if baseBranch == "" {
+		return "", fmt.Errorf("BaseBranchSHA: baseBranch is required")
+	}
+	if upstreamURL == "" {
+		// Refuse to fall back to a possibly-stale local ref — see #813.
+		return "", fmt.Errorf("BaseBranchSHA: upstreamURL is required (refusing to resolve against a local ref)")
+	}
+	if !gitRefSafe(baseBranch) {
+		return "", fmt.Errorf("BaseBranchSHA: invalid base branch %q", baseBranch)
+	}
+	if _, err := runGit(ctx, workspace, baseEnv(), "fetch", upstreamURL, baseBranch); err != nil {
+		return "", fmt.Errorf("BaseBranchSHA: fetch %s %s: %w", upstreamURL, baseBranch, err)
+	}
+	out, err := runGit(ctx, workspace, baseEnv(), "rev-parse", "FETCH_HEAD")
+	if err != nil {
+		return "", fmt.Errorf("BaseBranchSHA: rev-parse FETCH_HEAD: %w", err)
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// SoftResetToBase moves commits from HEAD back into the working tree
+// without touching the index, relative to base. Used when a model
+// self-committed its work and the executor wants to re-apply it with
+// DCO sign-off and executor-owned author identity. base should be a
+// commit SHA (resolved via BaseBranchSHA), not a ref name, so a stale
+// local branch cannot drag upstream commits into the recovered commit.
+func SoftResetToBase(ctx context.Context, workspace string, base string) error {
+	if workspace == "" {
+		return fmt.Errorf("SoftResetToBase: workspace is required")
+	}
+	if base == "" {
+		return fmt.Errorf("SoftResetToBase: base is required")
+	}
+	count, err := CommitsAheadOfBase(ctx, workspace, base)
+	if err != nil {
+		return fmt.Errorf("SoftResetToBase: %w", err)
+	}
+	if count == 0 {
+		return ErrNothingToCommit
+	}
+	if _, err := runGit(ctx, workspace, baseEnv(), "reset", "--soft", base); err != nil {
+		return fmt.Errorf("SoftResetToBase: reset: %w", err)
+	}
+	return nil
 }
 
 // Commit stages every change in the workspace (git add -A) and creates

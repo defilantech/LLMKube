@@ -659,11 +659,25 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 	// 10. GO verdict: check for changes first, then commit + push. If
 	// the model emitted GO but never edited a file, NO-CHANGES is the
 	// honest outcome regardless of whether commit_message was set.
+	baseBranch := baseBranchOrDefault(task.Spec.Payload.BaseBranch)
 	hasChanges, hcErr := repo.HasChanges(ctx, workspace)
 	if hcErr != nil {
 		return e.commitRejectedResult(start, transcriptRef, loopRes, branch, hcErr), nil
 	}
-	if !hasChanges {
+
+	// #982: tolerate a model that self-committed its work. If the working tree
+	// is clean but there are commits ahead of the resolved upstream base on
+	// this branch, recover them by soft-resetting into the working tree so
+	// repo.Commit can re-apply with DCO sign-off and executor-owned author
+	// identity. This prevents false NO-GO ("no diff") outcomes when a model
+	// runs git commit before calling submit_result instead of leaving changes
+	// uncommitted for the executor. The base is the upstream tip at the time
+	// the branch was cut (per #813), not a possibly-stale local ref, so we
+	// don't accidentally re-stage intervening upstream commits.
+	if e.recoverSelfCommitsOrNoChange(
+		ctx, log, hasChanges, workspace,
+		e.resolveUpstreamForRun(task), baseBranch,
+	) {
 		return e.noChangesResult(start, transcriptRef, loopRes, branch), nil
 	}
 
@@ -1332,6 +1346,59 @@ func (e *NativeAgentLoopExecutor) envtestGateFailedResult(
 		"turnCount":     lr.Turns,
 	}
 	return r
+}
+
+// resolveUpstreamForRun mirrors the resolveUpstream selection used at
+// the top of Execute (test override vs. package default), so the
+// self-commit recovery path uses the same upstream URL the branch was
+// originally cut from. Pulled out as a method so runLLMPath stays
+// under the gocyclo ceiling.
+func (e *NativeAgentLoopExecutor) resolveUpstreamForRun(task *foremanv1alpha1.AgenticTask) string {
+	if e.UpstreamURLForRepo != nil {
+		return e.UpstreamURLForRepo(task.Spec.Payload.Repo)
+	}
+	return upstreamURLForRepo(task.Spec.Payload.Repo)
+}
+
+// recoverSelfCommitsOrNoChange returns true when the executor should
+// emit a NO-CHANGES result; false (proceed to commit) when the model's
+// self-committed work has been recovered into the working tree via
+// soft-reset. Side effect: when the working tree is initially clean,
+// the function re-fetches the upstream base, computes HEAD's commit
+// count against the resolved upstream tip (NOT a possibly-stale local
+// ref per #813/#982), and soft-resets if there are commits ahead —
+// re-staging them as uncommitted changes so the subsequent repo.Commit
+// path produces a single DCO-signed commit containing only the model's
+// edits. A true NO-CHANGES outcome is reported (a) when no commits are
+// ahead of the resolved upstream base, or (b) when the upstream-base
+// resolution or soft-reset fails. In case (b), the caller cannot tell
+// whether the model truly edited nothing or recovery broke, so we log
+// the error and degrade to NO-CHANGES with diagnostics in the event
+// stream rather than over-claim success.
+func (e *NativeAgentLoopExecutor) recoverSelfCommitsOrNoChange(
+	ctx context.Context, log logr.Logger, hasChanges bool, workspace, upstreamURL, baseBranch string,
+) bool {
+	if hasChanges {
+		return false
+	}
+	baseSHA, err := repo.BaseBranchSHA(ctx, workspace, upstreamURL, baseBranch)
+	if err != nil {
+		log.Error(err, "self-commit recovery: cannot resolve upstream base; treating as no-change",
+			"baseBranch", baseBranch)
+		return true
+	}
+	err = repo.SoftResetToBase(ctx, workspace, baseSHA)
+	if errors.Is(err, repo.ErrNothingToCommit) {
+		return true // truly no changes — no commits ahead of upstream tip
+	}
+	if err != nil {
+		log.Error(err, "self-commit recovery: soft reset failed; treating as no-change",
+			"baseBranch", baseBranch, "baseSHA", baseSHA)
+		return true
+	}
+	log.Info("model self-committed; recovered changes via soft reset",
+		"baseBranch", baseBranch, "baseSHA", baseSHA)
+	return false
 }
 
 func (e *NativeAgentLoopExecutor) pushFailedResult(

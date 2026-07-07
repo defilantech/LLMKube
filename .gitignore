@@ -59,3 +59,10 @@ CLAUDE.md
 # Root-level screenshots and session artifacts (kept docs/images/*.png)
 /*.png
 /home-snapshot.md
+
+# Superpowers agent working state (specs/plans/ledger live outside the repo).
+# New files under these paths are agent scratch; existing tracked files
+# (e.g. shared design docs in docs/superpowers/) remain unaffected.
+.superpowers/
+/docs/superpowers/plans/
+/docs/superpowers/specs/

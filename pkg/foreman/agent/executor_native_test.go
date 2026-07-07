@@ -1449,3 +1449,124 @@ func TestNativeExecutor_JobModeWithoutSubmitterRunsInProcess(t *testing.T) {
 	}
 	_ = registryCalled // registry may or may not be reached depending on resolve order
 }
+
+// TestExecutorNative_SelfCommittedWorkIsRecovered verifies that when a model
+// self-commits its edits (runs git commit before submit_result), the executor
+// detects those commits ahead of base and recovers them by soft-resetting into
+// the working tree, then re-committing with DCO sign-off. This is the #982 fix
+// for false NO-GO outcomes on self-committed work (~64% of non-GO fleet).
+func TestExecutorNative_SelfCommittedWorkIsRecovered(t *testing.T) {
+	gitOrSkip(t)
+	tmp := t.TempDir()
+
+	env := []string{
+		"GIT_AUTHOR_NAME=Test", "GIT_AUTHOR_EMAIL=test@test.com",
+		"GIT_COMMITTER_NAME=Test", "GIT_COMMITTER_EMAIL=test@test.com",
+	}
+
+	// 1. Create initial repo state (main branch, one commit).
+	gitRun(t, tmp, env, "init", "-b", "main")
+	gitWriteFile(t, tmp, "README.md", "# Test\n")
+	gitRun(t, tmp, env, "add", "-A")
+	gitRun(t, tmp, env, "commit", "-m", "initial commit")
+
+	// 2. Clone it (simulates what executor does).
+	clone := t.TempDir()
+	gitRun(t, clone, nil, "clone", tmp, clone)
+	gitRun(t, clone, env, "checkout", "-b", "fix/issue-982")
+
+	// 3. Model self-commits a change (this is the bug scenario).
+	gitWriteFile(t, clone, "pkg/agent/foo.go", "// fixed\npackage agent\n\nfunc Foo() {}\n")
+	gitRun(t, clone, env, "add", "-A")
+	gitRun(t, clone, env, "commit", "-m", "fix: resolve issue #982\n\nFixes #982")
+
+	// 4. Verify CommitsAheadOfBase sees the self-commit.
+	count, err := repo.CommitsAheadOfBase(context.Background(), clone, "main")
+	if err != nil {
+		t.Fatalf("CommitsAheadOfBase error: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected 1 commit ahead of main (model self-committed), got %d", count)
+	}
+
+	// 5. Verify SoftResetToBase recovers changes into working tree.
+	err = repo.SoftResetToBase(context.Background(), clone, "main")
+	if err != nil {
+		t.Fatalf("SoftResetToBase error: %v", err)
+	}
+
+	hasChanges, _ := repo.HasChanges(context.Background(), clone)
+	if !hasChanges {
+		t.Fatal("after soft reset, HasChanges should be true (model's edits recovered)")
+	}
+
+	// 6. Verify HEAD is back at main after soft reset (the self-commit was undone).
+	commitsAhead, _ := repo.CommitsAheadOfBase(context.Background(), clone, "main")
+	if commitsAhead != 0 {
+		t.Errorf("expected 0 commits ahead after soft reset, got %d", commitsAhead)
+	}
+
+	// 7. Verify repo.Commit re-commits the recovered changes with DCO sign-off.
+	sha, err := repo.Commit(context.Background(), repo.CommitOptions{
+		Workspace: clone,
+		Message:   "fix: resolve issue #982",
+		Author:    repo.Identity{Name: "foreman", Email: "foreman@test.com"},
+		Committer: repo.Identity{Name: "foreman", Email: "foreman@test.com"},
+	})
+	if err != nil {
+		t.Fatalf("repo.Commit after soft reset failed: %v", err)
+	}
+	if sha == "" {
+		t.Fatal("expected non-empty commit SHA")
+	}
+
+	// Verify the resulting commit has DCO sign-off.
+	logMsg, _ := gitRunOut(t, clone, env, "log", "--format=%B", "-1")
+	if !strings.Contains(logMsg, "Signed-off-by:") {
+		t.Errorf("expected DCO sign-off in re-committed message, got: %q", logMsg)
+	}
+
+	// 8. Verify the branch has 1 commit ahead of main (the re-committed work).
+	count, _ = repo.CommitsAheadOfBase(context.Background(), clone, "main")
+	if count != 1 {
+		t.Errorf("expected 1 commit ahead after re-commit, got %d", count)
+	}
+}
+
+// gitRun runs a git command and fails the test on error.
+func gitRun(t *testing.T, workspace string, env []string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	if workspace != "" {
+		cmd.Dir = workspace
+	}
+	cmd.Env = append(os.Environ(), env...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\noutput:\n%s", strings.Join(args, " "), err, string(out))
+	}
+}
+
+// gitRunOut runs a git command and returns stdout.
+func gitRunOut(t *testing.T, workspace string, env []string, args ...string) (string, error) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	if workspace != "" {
+		cmd.Dir = workspace
+	}
+	cmd.Env = append(os.Environ(), env...)
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+// gitWriteFile writes a file to the workspace, creating parent dirs.
+func gitWriteFile(t *testing.T, dir, path, content string) {
+	t.Helper()
+	fullPath := filepath.Join(dir, path)
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(fullPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("gitWriteFile: %v", err)
+	}
+}
