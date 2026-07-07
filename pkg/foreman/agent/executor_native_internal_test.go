@@ -2220,3 +2220,112 @@ func TestRecoverSelfCommitsOrNoChange_GenuinelyNothingToRecover(t *testing.T) {
 		t.Errorf("HEAD = %s, want %s (no-change path must not move HEAD)", got, mainSHA)
 	}
 }
+
+func TestIsAlreadyResolved(t *testing.T) {
+	cases := []struct {
+		name     string
+		verdict  foremanv1alpha1.AgenticTaskVerdict
+		terminal *ToolResult
+		want     bool
+	}{
+		{
+			name:     "GO verdict always false",
+			verdict:  foremanv1alpha1.AgenticTaskVerdictGo,
+			terminal: &ToolResult{Extra: map[string]any{"already_resolved": true}},
+			want:     false,
+		},
+		{
+			name:    "NO-GO with explicit already_resolved true",
+			verdict: foremanv1alpha1.AgenticTaskVerdictNoGo,
+			terminal: &ToolResult{
+				Summary: "could not apply the fix",
+				Extra:   map[string]any{"already_resolved": true},
+			},
+			want: true,
+		},
+		{
+			name:    "NO-GO with already_resolved false",
+			verdict: foremanv1alpha1.AgenticTaskVerdictNoGo,
+			terminal: &ToolResult{
+				Summary: "could not apply the fix",
+				Extra:   map[string]any{"already_resolved": false},
+			},
+			want: false,
+		},
+		{
+			name:    "NO-GO with no extra field",
+			verdict: foremanv1alpha1.AgenticTaskVerdictNoGo,
+			terminal: &ToolResult{
+				Summary: "could not apply the fix",
+				Extra:   map[string]any{},
+			},
+			want: false,
+		},
+		{
+			name:    "NO-GO summary already resolved heuristic",
+			verdict: foremanv1alpha1.AgenticTaskVerdictNoGo,
+			terminal: &ToolResult{
+				Summary: "Issue #152 is already resolved by prior fix e97d0ca",
+				Extra:   map[string]any{},
+			},
+			want: true,
+		},
+		{
+			name:    "NO-GO summary already fixed heuristic",
+			verdict: foremanv1alpha1.AgenticTaskVerdictNoGo,
+			terminal: &ToolResult{
+				Summary: "This was already fixed in commit abc123",
+				Extra:   map[string]any{},
+			},
+			want: true,
+		},
+		{
+			name:    "NO-GO summary already done heuristic",
+			verdict: foremanv1alpha1.AgenticTaskVerdictNoGo,
+			terminal: &ToolResult{
+				Summary: "This is already done on main",
+				Extra:   map[string]any{},
+			},
+			want: true,
+		},
+		{
+			name:    "NO-GO summary already merged heuristic",
+			verdict: foremanv1alpha1.AgenticTaskVerdictNoGo,
+			terminal: &ToolResult{
+				Summary: "PR was already merged upstream",
+				Extra:   map[string]any{},
+			},
+			want: true,
+		},
+		{
+			name:    "NO-GO summary has already but no resolution keyword",
+			verdict: foremanv1alpha1.AgenticTaskVerdictNoGo,
+			terminal: &ToolResult{
+				Summary: "I already tried three approaches and none worked",
+				Extra:   map[string]any{},
+			},
+			want: false,
+		},
+		{
+			name:     "NO-GO nil terminal",
+			verdict:  foremanv1alpha1.AgenticTaskVerdictNoGo,
+			terminal: nil,
+			want:     false,
+		},
+		{
+			name:     "INCOMPLETE verdict always false",
+			verdict:  foremanv1alpha1.AgenticTaskVerdictIncomplete,
+			terminal: &ToolResult{Extra: map[string]any{"already_resolved": true}},
+			want:     false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isAlreadyResolved(tc.verdict, tc.terminal)
+			if got != tc.want {
+				t.Errorf("isAlreadyResolved(%s, %+v) = %v, want %v", tc.verdict, tc.terminal, got, tc.want)
+			}
+		})
+	}
+}

@@ -258,6 +258,13 @@ const LoopBudgetOutcome = "LOOP-BUDGET-EXHAUSTED"
 // build / lint) still fail never lands as a clean GO.
 const CoderGateFailedOutcome = "CODER-GATE-FAILED"
 
+// AlreadyResolvedOutcome is the value set in LoopResult.Terminal.Extra["outcome"]
+// when the coder determines the issue is already resolved on the branch/base
+// before any fix attempt. This is an honest-bail distinct from MODEL-DECIDED
+// capability failure: the work exists, there is nothing for a larger model to
+// do on escalation. See defilantech/LLMKube#970.
+const AlreadyResolvedOutcome = "ALREADY-RESOLVED"
+
 // outcomeKey is the Terminal.Extra map key the loop stamps with the
 // machine-readable outcome string (LoopBudgetOutcome, CoderGateFailedOutcome,
 // StuckLoopOutcome, ...).

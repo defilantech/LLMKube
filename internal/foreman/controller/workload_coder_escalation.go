@@ -81,10 +81,13 @@ func coderSummary(task *foremanv1alpha1.AgenticTask) string {
 // solve this" bail) or a coder-gate failure (wrote code, could not pass
 // the gate) escalate; a model-decided INCOMPLETE (gave up / ran out of
 // turns), a harness STUCK-LOOP-DETECTED, a trivial NO-CHANGES NO-GO, an
-// ERROR, or a GO do not.
+// ALREADY-RESOLVED (issue already fixed), an ERROR, or a GO do not.
 func shouldEscalateCoder(
 	verdict foremanv1alpha1.AgenticTaskVerdict, topOutcome, modelOutcome string,
 ) bool {
+	if topOutcome == "ALREADY-RESOLVED" {
+		return false
+	}
 	if verdict == foremanv1alpha1.AgenticTaskVerdictNoGo && topOutcome == "MODEL-DECIDED" {
 		return true
 	}

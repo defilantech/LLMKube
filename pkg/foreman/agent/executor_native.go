@@ -660,7 +660,12 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 				scopeDriftDetected, scopeMatched)
 			logReviewerFindings(log, loopRes.Terminal.Extra)
 		}
-		r := e.modelDecidedResult(start, transcriptRef, loopRes, verdict)
+		var r *Result
+		if isAlreadyResolved(verdict, loopRes.Terminal) {
+			r = e.alreadyResolvedResult(start, transcriptRef, loopRes, verdict)
+		} else {
+			r = e.modelDecidedResult(start, transcriptRef, loopRes, verdict)
+		}
 		e.maybeOpenPullRequest(ctx, log, task, auth, verdict, r)
 		// Attach the normalized failure reason from the model-to-CRD
 		// mapping (e.g. ERROR→INCOMPLETE + ModelReportedError for #649). Only
@@ -1346,6 +1351,49 @@ func (e *NativeAgentLoopExecutor) modelDecidedResult(
 	r := NewResult(e.Kind(), verdict, lr.Terminal.Summary, time.Since(start))
 	r.Extra = map[string]any{
 		"outcome":       "MODEL-DECIDED",
+		"transcriptRef": objRefAsMap(tref),
+		"turnCount":     lr.Turns,
+		"modelExtra":    lr.Terminal.Extra,
+	}
+	return r
+}
+
+// isAlreadyResolved checks if the model signaled that the issue is already
+// resolved via submit_result.extra.already_resolved=true, or via summary
+// keywords as a fallback heuristic. Only returns true for NO-GO verdicts.
+func isAlreadyResolved(verdict foremanv1alpha1.AgenticTaskVerdict, terminal *ToolResult) bool {
+	if verdict != foremanv1alpha1.AgenticTaskVerdictNoGo {
+		return false
+	}
+	if terminal == nil || terminal.Extra == nil {
+		return false
+	}
+	// Explicit signal from the model via already_resolved field.
+	if v, ok := terminal.Extra["already_resolved"]; ok {
+		if b, ok := v.(bool); ok && b {
+			return true
+		}
+	}
+	// Fallback heuristic: summary contains "already" + resolution keyword.
+	summary := strings.ToLower(terminal.Summary)
+	if !strings.Contains(summary, "already") {
+		return false
+	}
+	for _, kw := range []string{"resolved", "fixed", "done", "merged"} {
+		if strings.Contains(summary, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+func (e *NativeAgentLoopExecutor) alreadyResolvedResult(
+	start time.Time, tref corev1.ObjectReference, lr *LoopResult,
+	verdict foremanv1alpha1.AgenticTaskVerdict,
+) *Result {
+	r := NewResult(e.Kind(), verdict, lr.Terminal.Summary, time.Since(start))
+	r.Extra = map[string]any{
+		"outcome":       "ALREADY-RESOLVED",
 		"transcriptRef": objRefAsMap(tref),
 		"turnCount":     lr.Turns,
 		"modelExtra":    lr.Terminal.Extra,

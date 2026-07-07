@@ -656,6 +656,15 @@ spec:
           status:
             description: status is the planner's and scheduler's observed view.
             properties:
+              alreadyResolvedTasks:
+                description: |-
+                  AlreadyResolvedTasks counts child tasks that terminated with the
+                  ALREADY-RESOLVED outcome: the coder determined the issue was already
+                  fixed on the branch/base before any fix attempt. These are terminal
+                  non-failures — not counted as incomplete, and they do not roll the
+                  workload to Failed. The operator can close the issue based on this.
+                format: int32
+                type: integer
               conditions:
                 description: 'Conditions track standard signals: Planned, Dispatched,
                   Completed.'

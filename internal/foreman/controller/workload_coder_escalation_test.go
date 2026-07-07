@@ -52,6 +52,8 @@ func TestShouldEscalateCoder(t *testing.T) {
 		{"stuck-loop detected", foremanv1alpha1.AgenticTaskVerdictIncomplete, "STUCK-LOOP-DETECTED", "", false},
 		{"NO-GO but no-changes (trivial)", foremanv1alpha1.AgenticTaskVerdictNoGo, "NO-CHANGES", "", false},
 		{"GO", foremanv1alpha1.AgenticTaskVerdictGo, "", "", false},
+		{"already resolved (like #970)", foremanv1alpha1.AgenticTaskVerdictNoGo, "ALREADY-RESOLVED", "", false},
+		{"already resolved + gate-failed (resolved wins)", foremanv1alpha1.AgenticTaskVerdictNoGo, "ALREADY-RESOLVED", "CODER-GATE-FAILED", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -256,5 +258,31 @@ func TestCoderEscalationSteps_OffWhenUnset(t *testing.T) {
 	steps, _ := coderEscalationSteps(w, []foremanv1alpha1.AgenticTask{c})
 	if len(steps) != 0 {
 		t.Errorf("feature must be off when EscalationCoderAgentRef is nil, got %d steps", len(steps))
+	}
+}
+
+func TestCoderEscalationSteps_SkipsAlreadyResolved(t *testing.T) {
+	ref := corev1.LocalObjectReference{Name: "coder-qwopus"}
+	w := &foremanv1alpha1.Workload{}
+	w.Name = "wl"
+	w.Spec.Repo = "defilantech/LLMKube"
+	w.Spec.Issues = []int32{970}
+	w.Spec.CoderAgentRef = &corev1.LocalObjectReference{Name: "coder-metal"}
+	w.Spec.VerifierAgentRef = &corev1.LocalObjectReference{Name: "gate"}
+	w.Spec.EscalationCoderAgentRef = &ref
+
+	code := foremanv1alpha1.AgenticTask{}
+	code.Name = "wl-code-970"
+	code.Labels = map[string]string{labelStep: "code-970"}
+	code.Status.Phase = foremanv1alpha1.AgenticTaskPhaseSucceeded
+	code.Status.Verdict = foremanv1alpha1.AgenticTaskVerdictNoGo
+	code.Status.Result = resultRaw("ALREADY-RESOLVED", "", "Issue #970 is already resolved by prior fix")
+
+	steps, escalated := coderEscalationSteps(w, []foremanv1alpha1.AgenticTask{code})
+	if len(steps) != 0 {
+		t.Errorf("want no steps for ALREADY-RESOLVED, got %d: %+v", len(steps), steps)
+	}
+	if len(escalated) != 0 {
+		t.Errorf("want none escalated for ALREADY-RESOLVED, got %v", escalated)
 	}
 }

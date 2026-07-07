@@ -364,6 +364,14 @@ type WorkloadStatus struct {
 	// +optional
 	IncompleteTasks int32 `json:"incompleteTasks,omitempty"`
 
+	// AlreadyResolvedTasks counts child tasks that terminated with the
+	// ALREADY-RESOLVED outcome: the coder determined the issue was already
+	// fixed on the branch/base before any fix attempt. These are terminal
+	// non-failures — not counted as incomplete, and they do not roll the
+	// workload to Failed. The operator can close the issue based on this.
+	// +optional
+	AlreadyResolvedTasks int32 `json:"alreadyResolvedTasks,omitempty"`
+
 	// ReviewIterations counts the fix iterations the reconciler has
 	// emitted after reviewer NO-GO verdicts (#946), summed across
 	// issues. Zero (or absent) means no reviewer ever bounced a

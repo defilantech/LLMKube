@@ -23,6 +23,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -887,6 +888,62 @@ var _ = Describe("WorkloadReconciler (M6 stub planner)", func() {
 		Expect(trunc.Reason).To(Equal("MaxTasksEscalationCap"))
 		// And the workload still terminates Failed on the base NO-GO.
 		Expect(fresh.Status.Phase).To(Equal(foremanv1alpha1.WorkloadPhaseFailed))
+	})
+
+	It("rolls up ALREADY-RESOLVED tasks separately and completes when all children are succeeded or already resolved", func() {
+		wl := newWorkload("rollup-already-resolved", foremanv1alpha1.WorkloadSpec{
+			Intent:           "rollup-already-resolved",
+			Repo:             "defilantech/LLMKube",
+			Issues:           []int32{970},
+			CoderAgentRef:    &corev1.LocalObjectReference{Name: "coder"},
+			VerifierAgentRef: &corev1.LocalObjectReference{Name: "gate"},
+		})
+		Expect(k8sClient.Create(ctx, wl)).To(Succeed())
+		DeferCleanup(func() {
+			cleanupChildren(wl)
+			_ = k8sClient.Delete(ctx, wl)
+		})
+
+		_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(wl)})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Coder succeeded on target (GO), verifier Phase=Succeeded with
+		// verdict=NO-GO and ALREADY-RESOLVED outcome (issue was already
+		// fixed before the agent ran).
+		updates := []struct {
+			name    string
+			phase   foremanv1alpha1.AgenticTaskPhase
+			verdict foremanv1alpha1.AgenticTaskVerdict
+			result  *runtime.RawExtension
+		}{
+			{"rollup-already-resolved-code-970", foremanv1alpha1.AgenticTaskPhaseSucceeded, foremanv1alpha1.AgenticTaskVerdictGo, nil},
+			{"rollup-already-resolved-verify-970", foremanv1alpha1.AgenticTaskPhaseSucceeded, foremanv1alpha1.AgenticTaskVerdictNoGo, resultRaw("ALREADY-RESOLVED", "", "already fixed")},
+		}
+		for _, u := range updates {
+			var t foremanv1alpha1.AgenticTask
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: u.name}, &t)).To(Succeed())
+			patch := client.MergeFrom(t.DeepCopy())
+			t.Status.Phase = u.phase
+			t.Status.Verdict = u.verdict
+			t.Status.Result = u.result
+			Expect(k8sClient.Status().Patch(ctx, &t, patch)).To(Succeed())
+		}
+
+		_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(wl)})
+		Expect(err).NotTo(HaveOccurred())
+
+		var fresh foremanv1alpha1.Workload
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(wl), &fresh)).To(Succeed())
+		Expect(fresh.Status.Phase).To(Equal(foremanv1alpha1.WorkloadPhaseCompleted),
+			"workload must complete when all children are succeeded or already resolved")
+		Expect(fresh.Status.SucceededTasks).To(Equal(int32(1)))
+		Expect(fresh.Status.AlreadyResolvedTasks).To(Equal(int32(1)))
+		Expect(fresh.Status.IncompleteTasks).To(Equal(int32(0)))
+		Expect(fresh.Status.FailedTasks).To(Equal(int32(0)))
+		completed := findCondition(fresh.Status.Conditions, conditionTypeCompleted)
+		Expect(completed).NotTo(BeNil())
+		Expect(completed.Reason).To(Equal("AllChildrenSucceeded"))
+		Expect(completed.Message).To(ContainSubstring("already resolved"))
 	})
 
 	It("flags escalation refs without base reviewers via EscalationTriggered=False (#546)", func() {

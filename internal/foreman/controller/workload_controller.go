@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -480,13 +481,28 @@ func (r *WorkloadReconciler) listChildren(ctx context.Context, w *foremanv1alpha
 	return list.Items, nil
 }
 
+// isAlreadyResolvedTask checks if a terminal task carries the ALREADY-RESOLVED
+// outcome in its status.result envelope.
+func isAlreadyResolvedTask(task *foremanv1alpha1.AgenticTask) bool {
+	if task.Status.Result == nil || len(task.Status.Result.Raw) == 0 {
+		return false
+	}
+	var env coderResultEnvelope
+	if err := json.Unmarshal(task.Status.Result.Raw, &env); err != nil {
+		return false
+	}
+	return env.Extra.Outcome == "ALREADY-RESOLVED"
+}
+
 // rollup computes the Workload's terminal-or-in-flight state from its
 // children's phases AND verdicts and patches status. Triggered on every
 // child phase change via the Owns() watch.
 //
-// Counts children in four buckets:
+// Counts children in five buckets:
 //   - succeeded: SucceededOnTarget() (Phase=Succeeded AND verdict in
 //     {GO, GATE-PASS}) — produced a usable artifact
+//   - alreadyResolved: Phase=Succeeded with ALREADY-RESOLVED outcome —
+//     terminal non-failure, issue was already fixed
 //   - incomplete: Phase=Succeeded but verdict in {INCOMPLETE, NO-GO,
 //     GATE-FAIL, GATE-ERROR} — terminal without usable output
 //   - failed: Phase=Failed
@@ -498,12 +514,15 @@ func (r *WorkloadReconciler) listChildren(ctx context.Context, w *foremanv1alpha
 // Fixes defilantech/LLMKube#541.
 func (r *WorkloadReconciler) rollup(ctx context.Context, w *foremanv1alpha1.Workload, children []foremanv1alpha1.AgenticTask) (ctrl.Result, error) {
 	var (
-		succeeded, incomplete, failed, inFlight int32
+		succeeded, incomplete, failed, inFlight, alreadyResolved int32
 	)
 	for i := range children {
 		switch {
 		case children[i].SucceededOnTarget():
 			succeeded++
+		case children[i].Status.Phase == foremanv1alpha1.AgenticTaskPhaseSucceeded &&
+			isAlreadyResolvedTask(&children[i]):
+			alreadyResolved++
 		case children[i].Status.Phase == foremanv1alpha1.AgenticTaskPhaseSucceeded:
 			// Terminal Phase=Succeeded but verdict isn't on-target.
 			incomplete++
@@ -514,12 +533,13 @@ func (r *WorkloadReconciler) rollup(ctx context.Context, w *foremanv1alpha1.Work
 		}
 	}
 
-	total := succeeded + incomplete + failed + inFlight
+	total := succeeded + incomplete + failed + inFlight + alreadyResolved
 	patch := client.MergeFrom(w.DeepCopy())
 	now := metav1.Now()
 	w.Status.SucceededTasks = succeeded
 	w.Status.FailedTasks = failed
 	w.Status.IncompleteTasks = incomplete
+	w.Status.AlreadyResolvedTasks = alreadyResolved
 
 	switch {
 	case inFlight == 0 && failed == 0 && incomplete == 0:
@@ -528,7 +548,7 @@ func (r *WorkloadReconciler) rollup(ctx context.Context, w *foremanv1alpha1.Work
 			Type:               conditionTypeCompleted,
 			Status:             metav1.ConditionTrue,
 			Reason:             "AllChildrenSucceeded",
-			Message:            fmt.Sprintf("%d/%d child tasks on-target Succeeded", succeeded, total),
+			Message:            fmt.Sprintf("%d on-target, %d already resolved (of %d)", succeeded, alreadyResolved, total),
 			LastTransitionTime: now,
 		})
 	case inFlight == 0 && (failed > 0 || incomplete > 0):
@@ -545,7 +565,7 @@ func (r *WorkloadReconciler) rollup(ctx context.Context, w *foremanv1alpha1.Work
 			Type:               conditionTypeCompleted,
 			Status:             metav1.ConditionFalse,
 			Reason:             reason,
-			Message:            fmt.Sprintf("%d on-target, %d incomplete, %d failed (of %d)", succeeded, incomplete, failed, total),
+			Message:            fmt.Sprintf("%d on-target, %d already resolved, %d incomplete, %d failed (of %d)", succeeded, alreadyResolved, incomplete, failed, total),
 			LastTransitionTime: now,
 		})
 	default:
@@ -554,7 +574,7 @@ func (r *WorkloadReconciler) rollup(ctx context.Context, w *foremanv1alpha1.Work
 			Type:               "Dispatched",
 			Status:             metav1.ConditionTrue,
 			Reason:             "ChildrenInFlight",
-			Message:            fmt.Sprintf("%d in-flight, %d on-target, %d incomplete, %d failed", inFlight, succeeded, incomplete, failed),
+			Message:            fmt.Sprintf("%d in-flight, %d on-target, %d already resolved, %d incomplete, %d failed", inFlight, succeeded, alreadyResolved, incomplete, failed),
 			LastTransitionTime: now,
 		})
 	}

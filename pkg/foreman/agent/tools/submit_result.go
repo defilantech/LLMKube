@@ -61,10 +61,11 @@ func truncateRuneSafe(s string, maxLen int) string {
 type SubmitResultTool struct{}
 
 type submitResultArgs struct {
-	Verdict       string         `json:"verdict"`
-	Summary       string         `json:"summary"`
-	CommitMessage string         `json:"commit_message"`
-	Extra         map[string]any `json:"extra"`
+	Verdict         string         `json:"verdict"`
+	Summary         string         `json:"summary"`
+	CommitMessage   string         `json:"commit_message"`
+	AlreadyResolved bool           `json:"already_resolved"`
+	Extra           map[string]any `json:"extra"`
 }
 
 // Name returns the tool name as advertised to the model.
@@ -82,6 +83,8 @@ func (SubmitResultTool) Schema() oai.ToolSchemaDef {
   "summary":        {"type": "string", "description": "One-sentence outcome summary (1-280 chars)."},
   "commit_message": {"type": "string",
     "description": "Full commit message including subject, body, and Fixes #N if applicable."},
+  "already_resolved": {"type": "boolean",
+    "description": "Set true if the issue is already resolved on the branch/base. Distinct from capability failure."},
   "extra": {"type": "object",
     "description": "Structured extra fields the executor may surface in status.result.extra."}
 },
@@ -110,12 +113,17 @@ func (SubmitResultTool) Execute(_ context.Context, args json.RawMessage) (*agent
 	if len(a.Summary) > MaxSubmitSummaryLen {
 		a.Summary = truncateRuneSafe(a.Summary, MaxSubmitSummaryLen)
 	}
+	extra := a.Extra
+	if extra == nil {
+		extra = make(map[string]any)
+	}
+	extra["already_resolved"] = a.AlreadyResolved
 	return &agent.ToolResult{
 		Terminal:      true,
 		Verdict:       a.Verdict,
 		Summary:       a.Summary,
 		CommitMessage: a.CommitMessage,
-		Extra:         a.Extra,
+		Extra:         extra,
 		Output: map[string]any{
 			"accepted": true,
 			"verdict":  a.Verdict,
