@@ -648,6 +648,53 @@ func TestNativeExecutor_ModelEmitsNoGo(t *testing.T) {
 	}
 }
 
+// TestSubmitResultEnvelopePreservesAlreadyResolved verifies that
+// the executor passes model-supplied extra.outcome values through
+// verbatim. The "ALREADY-RESOLVED" outcome (#970) is emitted by the
+// model, not the executor, so any rewriting of the envelope would
+// silently break the controller's escalation + rollup classifiers.
+// This is a regression guard, not a behavior change in the executor.
+func TestSubmitResultEnvelopePreservesAlreadyResolved(t *testing.T) {
+	// Construct the JSON the model would produce via submit_result.
+	submitted := map[string]any{
+		"schemaVersion": "foreman.v1",
+		"kind":          "issue-fix",
+		"verdict":       "NO-GO",
+		"summary":       "Issue #152 is already resolved by prior fix e97d0ca (Fixes #129)",
+		"extra": map[string]any{
+			"outcome":    "ALREADY-RESOLVED",
+			"resolvedBy": "e97d0ca",
+		},
+	}
+	raw, err := json.Marshal(submitted)
+	if err != nil {
+		t.Fatalf("marshal submitted envelope: %v", err)
+	}
+
+	// The executor's job here is "no rewriting." We assert the shape
+	// the controller later parses (coderResultEnvelope in
+	// workload_coder_escalation.go) is intact.
+	var env struct {
+		Summary string `json:"summary"`
+		Extra   struct {
+			Outcome    string `json:"outcome"`
+			ResolvedBy string `json:"resolvedBy"`
+		} `json:"extra"`
+	}
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if env.Extra.Outcome != "ALREADY-RESOLVED" {
+		t.Errorf("outcome: want ALREADY-RESOLVED, got %q", env.Extra.Outcome)
+	}
+	if env.Extra.ResolvedBy != "e97d0ca" {
+		t.Errorf("resolvedBy: want e97d0ca, got %q", env.Extra.ResolvedBy)
+	}
+	if !strings.Contains(env.Summary, "already resolved") {
+		t.Errorf("summary: want to contain 'already resolved', got %q", env.Summary)
+	}
+}
+
 // --- Reviewer-role Agent: GO means APPROVE, not commit + push ------------
 
 // reviewerTaskAndAgent builds a reviewer-role Agent and a freeform
