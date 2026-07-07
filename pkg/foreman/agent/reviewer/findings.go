@@ -63,6 +63,28 @@ var validSeverities = map[Severity]struct{}{
 	SeverityMinor:   {},
 }
 
+// severitySynonyms maps common non-canonical severity labels local reviewer
+// models emit onto the canonical set. Without this, a real blocker labeled
+// e.g. "critical" or "high" fails validSeverities and is dropped by
+// normalize(); the grounded-finding rail then sees zero blocking findings and
+// demotes a genuine NO-GO to GO. Only unambiguous synonyms are mapped;
+// genuinely ambiguous labels (e.g. "medium") still fail validation.
+var severitySynonyms = map[Severity]Severity{
+	"critical": SeverityBlocker,
+	"crit":     SeverityBlocker,
+	"fatal":    SeverityBlocker,
+	"severe":   SeverityBlocker,
+	"blocking": SeverityBlocker,
+	"high":     SeverityMajor,
+	"error":    SeverityMajor,
+	"warning":  SeverityMinor,
+	"warn":     SeverityMinor,
+	"low":      SeverityMinor,
+	"info":     SeverityMinor,
+	"nit":      SeverityMinor,
+	"trivial":  SeverityMinor,
+}
+
 // Area names the review-checklist section the finding belongs to.
 // Tracks the section headers in reviewer.md (A. Scope alignment, B.
 // Change is minimal and idiomatic, etc.) so downstream filtering /
@@ -174,6 +196,9 @@ func ParseFindings(extra map[string]any) ([]Finding, []string) {
 // indicate the model did not understand the schema.
 func (f *Finding) normalize() (ok bool, reason string) {
 	f.Severity = Severity(strings.ToLower(strings.TrimSpace(string(f.Severity))))
+	if canon, ok := severitySynonyms[f.Severity]; ok {
+		f.Severity = canon
+	}
 	f.Area = Area(strings.ToLower(strings.TrimSpace(string(f.Area))))
 	f.Message = strings.TrimSpace(f.Message)
 
