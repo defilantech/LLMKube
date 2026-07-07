@@ -507,7 +507,7 @@ func (r *WorkloadReconciler) listChildren(ctx context.Context, w *foremanv1alpha
 func (r *WorkloadReconciler) rollup(ctx context.Context, w *foremanv1alpha1.Workload, children []foremanv1alpha1.AgenticTask) (ctrl.Result, error) {
 	var (
 		succeeded, incomplete, failed, inFlight int32
-		alreadyResolved                          int32
+		alreadyResolved                         int32
 	)
 	var resolvedIssues []int32
 	for i := range children {

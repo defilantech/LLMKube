@@ -219,6 +219,26 @@ An issue whose base coder returns NO-GO or trips the coder gate is
 re-dispatched once to `qwopus-27b-dense-coder`, with the base
 model's failure summary threaded into the prompt.
 
+### `ALREADY-RESOLVED` — honest "already done" bail (#970)
+
+When a coder concludes the work is already present on the branch or
+upstream base (e.g. a `Fixes #N` commit since `BaseBranch`, or an
+existing pushed `foreman/.../issue-N` branch), it emits
+`verdict="NO-GO"` with `extra.outcome="ALREADY-RESOLVED"` and cites
+the resolution in `extra.resolvedBy`. This is distinct from a
+capability failure (`MODEL-DECIDED`):
+
+- `shouldEscalateCoder` excludes it. The Workload does not pay for
+  a larger-model re-run that would re-derive "nothing to do."
+- The Workload rolls to `Phase=Completed` (not `Failed`) with
+  reason `AllAlreadyResolved` (pure case) or `AllChildrenSucceeded`
+  (mixed case).
+- A `CoderAlreadyResolved` condition names the issue numbers so the
+  operator can close them on GitHub.
+- A Kubernetes event per resolved issue (`Reason=AlreadyResolved`)
+  gives an event-router / GitHub-app integration point without
+  forcing auto-close.
+
 ## What v0.1 deliberately doesn't ship
 
 Foreman v0.1 is the foundation, not the finished platform. A few

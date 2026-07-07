@@ -671,7 +671,7 @@ var _ = Describe("WorkloadReconciler (M6 stub planner)", func() {
 		}
 
 		// Issue 22: ALREADY-RESOLVED. Same cascade-fail isolation as above —
-// delete the verify-22 child so the rollup sees only the resolved coder.
+		// delete the verify-22 child so the rollup sees only the resolved coder.
 		var ar foremanv1alpha1.AgenticTask
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: "rollup-mixed-ar-code-22"}, &ar)).To(Succeed())
 		patch := client.MergeFrom(ar.DeepCopy())
