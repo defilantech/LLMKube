@@ -205,6 +205,45 @@ func TestReviewerGroundedChangedLines_EmptyBranchDiffDegradesClosed(t *testing.T
 	}
 }
 
+func TestGroundedFindings_REJECTExemptFromDemotion(t *testing.T) {
+	// REJECT (do-not-retry) must not be demoted even when no blocking finding
+	// cites a changed line. A wrong-issue rejection typically cannot cite a
+	// changed line (the defect is what is absent), so it would be demoted to
+	// GO unless scope-overlap or issueAsk independently re-flag it.
+	extra := findingExtra("blocker", "docs/MODEL-CACHE.md", 10) // ungrounded
+	extra["reviewOutcome"] = "REJECT"
+	fix := map[string]map[int]bool{} // no changed lines
+	got := enforceReviewerGroundedFindings(logr.Discard(), extra, foremanv1alpha1.AgenticTaskVerdictNoGo, changed(fix))
+	if got != foremanv1alpha1.AgenticTaskVerdictNoGo {
+		t.Fatalf("REJECT must not be demoted to GO, got %s", got)
+	}
+	if _, demoted := extra["groundedFindingDemotion"]; demoted {
+		t.Fatal("REJECT must not be marked demoted")
+	}
+}
+
+func TestGroundedFindings_REJECTExemptWithGroundedFindings(t *testing.T) {
+	// REJECT with grounded findings still stays NO-GO (no demotion either way).
+	extra := findingExtra("blocker", "pkg/cli/cache.go", 42)
+	extra["reviewOutcome"] = "REJECT"
+	fix := map[string]map[int]bool{"pkg/cli/cache.go": {42: true}}
+	got := enforceReviewerGroundedFindings(logr.Discard(), extra, foremanv1alpha1.AgenticTaskVerdictNoGo, changed(fix))
+	if got != foremanv1alpha1.AgenticTaskVerdictNoGo {
+		t.Fatalf("REJECT with grounded findings must stay NO-GO, got %s", got)
+	}
+}
+
+func TestGroundedFindings_RequestChangesDemotesWhenUngrounded(t *testing.T) {
+	// REQUEST-CHANGES is NOT REJECT; it should still be subject to demotion.
+	extra := findingExtra("blocker", "docs/MODEL-CACHE.md", 10) // ungrounded
+	extra["reviewOutcome"] = "REQUEST-CHANGES"
+	fix := map[string]map[int]bool{} // no changed lines
+	got := enforceReviewerGroundedFindings(logr.Discard(), extra, foremanv1alpha1.AgenticTaskVerdictNoGo, changed(fix))
+	if got != foremanv1alpha1.AgenticTaskVerdictGo {
+		t.Fatalf("REQUEST-CHANGES with ungrounded findings must demote to GO, got %s", got)
+	}
+}
+
 func TestGroundedBlockingFindings_Partition(t *testing.T) {
 	findings := []reviewer.Finding{
 		// grounded

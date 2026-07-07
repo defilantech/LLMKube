@@ -92,6 +92,12 @@ func groundedBlockingFindings(
 // Because an unchanged file yields an empty set, the single membership test
 // (line in changedLines(file)) subsumes both the fabricated-file case and the
 // unchanged-line-in-a-changed-file case.
+//
+// REJECT (do-not-retry) is exempt from demotion: a wrong-issue rejection
+// typically cannot cite a changed line (the defect is what is absent), so
+// it would be demoted to GO unless scope-overlap or issueAsk independently
+// re-flag it. A do-not-retry rejection should not be overturnable by the
+// absence of a line-grounded finding.
 func enforceReviewerGroundedFindings(
 	log logr.Logger,
 	extra map[string]any,
@@ -101,6 +107,11 @@ func enforceReviewerGroundedFindings(
 	if groundedFindingsDisabled() ||
 		verdict != foremanv1alpha1.AgenticTaskVerdictNoGo ||
 		extra == nil || changedLines == nil {
+		return verdict
+	}
+
+	// REJECT (do-not-retry) is exempt from grounded demotion.
+	if reviewOutcome, ok := extra["reviewOutcome"].(string); ok && reviewOutcome == "REJECT" {
 		return verdict
 	}
 
