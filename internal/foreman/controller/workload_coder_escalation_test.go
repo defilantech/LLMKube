@@ -242,6 +242,40 @@ func TestCoderEscalationSteps_SkipsStuckLoopAndExisting(t *testing.T) {
 	}
 }
 
+// TestIsAlreadyResolvedCoder verifies the helper that downstream
+// classifiers (shouldEscalateCoder exclusion, rollup exclusion) use
+// to identify a model-decided "already done" NO-GO (#970).
+func TestIsAlreadyResolvedCoder(t *testing.T) {
+	cases := []struct {
+		name        string
+		verdict     foremanv1alpha1.AgenticTaskVerdict
+		topOutcome  string
+		want        bool
+	}{
+		{"NO-GO + ALREADY-RESOLVED", foremanv1alpha1.AgenticTaskVerdictNoGo, "ALREADY-RESOLVED", true},
+		{"NO-GO + MODEL-DECIDED (capability failure)", foremanv1alpha1.AgenticTaskVerdictNoGo, "MODEL-DECIDED", false},
+		{"NO-GO + empty outcome (legacy)", foremanv1alpha1.AgenticTaskVerdictNoGo, "", false},
+		{"INCOMPLETE + ALREADY-RESOLVED (not a NO-GO, not classified)", foremanv1alpha1.AgenticTaskVerdictIncomplete, "ALREADY-RESOLVED", false},
+		{"GO + ALREADY-RESOLVED (impossible combo, defensive)", foremanv1alpha1.AgenticTaskVerdictGo, "ALREADY-RESOLVED", false},
+		{"nil result envelope", foremanv1alpha1.AgenticTaskVerdictNoGo, "", false}, // task without Status.Result
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			task := &foremanv1alpha1.AgenticTask{}
+			task.Status.Verdict = tc.verdict
+			// Skip setting Result when topOutcome is "" AND verdict alone
+			// would make the case ambiguous; rely on coderTerminalOutcome's
+			// nil/empty Result handling.
+			if tc.topOutcome != "" {
+				task.Status.Result = resultRaw(tc.topOutcome, "", "")
+			}
+			if got := isAlreadyResolvedCoder(task); got != tc.want {
+				t.Errorf("isAlreadyResolvedCoder() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCoderEscalationSteps_OffWhenUnset(t *testing.T) {
 	w := &foremanv1alpha1.Workload{}
 	w.Name = "wl"

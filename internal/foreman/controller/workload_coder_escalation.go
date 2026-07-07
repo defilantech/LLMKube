@@ -76,6 +76,19 @@ func coderSummary(task *foremanv1alpha1.AgenticTask) string {
 	return env.Summary
 }
 
+// isAlreadyResolvedCoder reports whether the task ended in the
+// machine outcome for "work is already on the branch/base". Used by
+// shouldEscalateCoder (to skip escalation) and rollup (to keep the
+// task out of the incomplete bucket). The signal lives at
+// extra.outcome == "ALREADY-RESOLVED" with verdict == NO-GO (#970).
+func isAlreadyResolvedCoder(task *foremanv1alpha1.AgenticTask) bool {
+	if task == nil {
+		return false
+	}
+	verdict, topOutcome, _ := coderTerminalOutcome(task)
+	return verdict == foremanv1alpha1.AgenticTaskVerdictNoGo && topOutcome == "ALREADY-RESOLVED"
+}
+
 // shouldEscalateCoder is the escalation trigger: escalate only on
 // capability failures. A model-decided NO-GO (the honest "I could not
 // solve this" bail) or a coder-gate failure (wrote code, could not pass
