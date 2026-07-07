@@ -47,6 +47,7 @@ func TestShouldEscalateCoder(t *testing.T) {
 		want         bool
 	}{
 		{"model NO-GO (like #944)", foremanv1alpha1.AgenticTaskVerdictNoGo, "MODEL-DECIDED", "", true},
+		{"NO-GO + ALREADY-RESOLVED (already done, #970)", foremanv1alpha1.AgenticTaskVerdictNoGo, "ALREADY-RESOLVED", "", false},
 		{"gate-failed (like #911)", foremanv1alpha1.AgenticTaskVerdictIncomplete, "MODEL-DECIDED", "CODER-GATE-FAILED", true},
 		{"model gave up / stuck (like #921)", foremanv1alpha1.AgenticTaskVerdictIncomplete, "MODEL-DECIDED", "", false},
 		{"stuck-loop detected", foremanv1alpha1.AgenticTaskVerdictIncomplete, "STUCK-LOOP-DETECTED", "", false},
@@ -247,10 +248,10 @@ func TestCoderEscalationSteps_SkipsStuckLoopAndExisting(t *testing.T) {
 // to identify a model-decided "already done" NO-GO (#970).
 func TestIsAlreadyResolvedCoder(t *testing.T) {
 	cases := []struct {
-		name        string
-		verdict     foremanv1alpha1.AgenticTaskVerdict
-		topOutcome  string
-		want        bool
+		name       string
+		verdict    foremanv1alpha1.AgenticTaskVerdict
+		topOutcome string
+		want       bool
 	}{
 		{"NO-GO + ALREADY-RESOLVED", foremanv1alpha1.AgenticTaskVerdictNoGo, "ALREADY-RESOLVED", true},
 		{"NO-GO + MODEL-DECIDED (capability failure)", foremanv1alpha1.AgenticTaskVerdictNoGo, "MODEL-DECIDED", false},
