@@ -19,6 +19,12 @@ namespace: ""
 # Deployments when set.
 imagePullSecrets: []
 
+# CRD installation toggle. Set to false when installing a secondary
+# agent-only release alongside a primary release that already owns
+# the CRDs (e.g., operator.enabled: false, webhook.enabled: false).
+crds:
+  install: true
+
 # Foreman-wide policy knobs that span operator + agent. Add new
 # settings here when they are not naturally scoped to one component.
 networkPolicies:

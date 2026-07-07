@@ -57,7 +57,10 @@ foreman-chart-crds: manifests ## Sync foreman.llmkube.dev CRDs to the foreman ch
 	  [ -e "$$src" ] || { echo "no foreman CRDs in config/crd/bases (did make manifests run?)"; exit 1; }; \
 	  base=$$(basename $$src); short=$${base#foreman.llmkube.dev_}; \
 	  echo "Syncing $$base -> $$short"; \
-	  cp $$src charts/foreman/templates/crds/$$short; \
+	  echo '{{- if .Values.crds.install }}' > charts/foreman/templates/crds/$$short; \
+	  cat $$src >> charts/foreman/templates/crds/$$short; \
+	  echo '' >> charts/foreman/templates/crds/$$short; \
+	  echo '{{- end }}' >> charts/foreman/templates/crds/$$short; \
 	  synced=$$((synced+1)); \
 	done; echo "Synced $$synced foreman CRD(s)"
 
