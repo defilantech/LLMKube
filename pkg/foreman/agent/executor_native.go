@@ -791,8 +791,53 @@ func reviewerGroundedChangedLines(
 		return nil
 	}
 	return func(file string) map[int]bool {
-		return changedBranchLines(ctx, workspace, base, file, execCommandRunner)
+		normalized := normalizeFilePath(file)
+		// If the normalized path is in the diff, use it directly. Diff
+		// against the resolved upstream base (#1006), not a hardcoded
+		// "main" which would be the stale local fork tip.
+		if inDiff(normalized, reviewDiff) {
+			return changedBranchLines(ctx, workspace, base, normalized, execCommandRunner)
+		}
+		// Resolve bare basenames and absolute paths against the diff file
+		// list by unique suffix match (#1004). If exactly one diff file
+		// equals or ends with "/"+basename, use that file; if zero or
+		// more than one match (ambiguous), leave the finding ungrounded.
+		if resolved := resolveAgainstDiff(normalized, reviewDiff); resolved != "" {
+			return changedBranchLines(ctx, workspace, base, resolved, execCommandRunner)
+		}
+		return nil
 	}
+}
+
+// inDiff reports whether f is in the diff file list.
+func inDiff(f string, diff []string) bool {
+	for _, d := range diff {
+		if d == f {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveAgainstDiff resolves a bare basename or absolute path against the
+// diff file list by unique suffix match. If exactly one diff file equals or
+// ends with "/"+basename, that file is returned. If zero or more than one
+// match (ambiguous), "" is returned to leave the finding ungrounded.
+func resolveAgainstDiff(f string, diff []string) string {
+	if f == "" {
+		return ""
+	}
+	basename := filepath.Base(f)
+	var matches []string
+	for _, d := range diff {
+		if d == f || strings.HasSuffix(d, "/"+basename) {
+			matches = append(matches, d)
+		}
+	}
+	if len(matches) == 1 {
+		return matches[0]
+	}
+	return "" // zero or ambiguous
 }
 
 // coderGateMaxRetries bounds the coder gate fix attempts (#749): a GO whose

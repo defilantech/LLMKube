@@ -266,3 +266,218 @@ func TestGroundedBlockingFindings_Partition(t *testing.T) {
 		t.Fatalf("ungrounded = %d, want 2 (b.go unchanged line + c.go no line)", len(ungrounded))
 	}
 }
+
+func TestNormalizeFilePath(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"pkg/cli/cache.go", "pkg/cli/cache.go"},
+		{"./pkg/cli/cache.go", "pkg/cli/cache.go"},
+		{"/workspace/pkg/cli/cache.go", "workspace/pkg/cli/cache.go"},
+		{"pkg//cli/cache.go", "pkg/cli/cache.go"},
+		{"./", ""},
+		{"", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.input, func(t *testing.T) {
+			got := normalizeFilePath(tc.input)
+			if got != tc.expected {
+				t.Errorf("normalizeFilePath(%q) = %q, want %q", tc.input, got, tc.expected)
+			}
+		})
+	}
+}
+
+// TestGroundedBlockingFindings_EmptyFileDoesNotGround asserts that a
+// blocking finding with File="" and Line=N does NOT ground (stays
+// ungrounded), so the promote rail cannot falsely promote a GO to NO-GO
+// on a file-less finding (#1004).
+func TestGroundedBlockingFindings_EmptyFileDoesNotGround(t *testing.T) {
+	changed := func(f string) map[int]bool {
+		return map[string]map[int]bool{"pkg/cli/cache.go": {42: true}}[f]
+	}
+	findings := []reviewer.Finding{
+		{Severity: reviewer.SeverityBlocker, Area: "scope", Message: "m", File: "", Line: 42},
+	}
+	grounded, ungrounded := groundedBlockingFindings(findings, changed)
+	if len(grounded) != 0 {
+		t.Fatalf("file-less finding must not ground, got %d grounded", len(grounded))
+	}
+	if len(ungrounded) != 1 {
+		t.Fatalf("file-less finding must be ungrounded, got %d ungrounded", len(ungrounded))
+	}
+}
+
+// TestResolveAgainstDiff asserts that bare basenames and absolute paths
+// resolve against the diff file list by unique suffix match (#1004).
+func TestResolveAgainstDiff(t *testing.T) {
+	tests := []struct {
+		name     string
+		file     string
+		diff     []string
+		expected string
+	}{
+		{
+			name:     "bare basename unique match",
+			file:     "cache.go",
+			diff:     []string{"pkg/cli/cache.go"},
+			expected: "pkg/cli/cache.go",
+		},
+		{
+			name:     "absolute path resolves",
+			file:     "/workspace/pkg/cli/cache.go",
+			diff:     []string{"pkg/cli/cache.go"},
+			expected: "pkg/cli/cache.go",
+		},
+		{
+			name:     "ambiguous basename stays ungrounded",
+			file:     "cache.go",
+			diff:     []string{"pkg/cli/cache.go", "pkg/foreman/agent/cache.go"},
+			expected: "",
+		},
+		{
+			name:     "no match stays ungrounded",
+			file:     "missing.go",
+			diff:     []string{"pkg/cli/cache.go"},
+			expected: "",
+		},
+		{
+			name:     "empty file stays ungrounded",
+			file:     "",
+			diff:     []string{"pkg/cli/cache.go"},
+			expected: "",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := resolveAgainstDiff(tc.file, tc.diff)
+			if got != tc.expected {
+				t.Errorf("resolveAgainstDiff(%q, %v) = %q, want %q", tc.file, tc.diff, got, tc.expected)
+			}
+		})
+	}
+}
+
+// TestInDiff asserts the inDiff helper (#1004).
+func TestInDiff(t *testing.T) {
+	diff := []string{"pkg/cli/cache.go", "pkg/foreman/agent/cache.go"}
+	if !inDiff("pkg/cli/cache.go", diff) {
+		t.Error("expected pkg/cli/cache.go in diff")
+	}
+	if inDiff("missing.go", diff) {
+		t.Error("expected missing.go not in diff")
+	}
+}
+
+// TestGroundedBlockingFindings_BareBasenameGrounds asserts that a bare
+// basename in a subdir grounds to the right file when the changedLines
+// callback resolves it (#1004).
+func TestGroundedBlockingFindings_BareBasenameGrounds(t *testing.T) {
+	diff := []string{"pkg/cli/cache.go"}
+	changed := func(f string) map[int]bool {
+		normalized := normalizeFilePath(f)
+		if inDiff(normalized, diff) {
+			return map[string]map[int]bool{"pkg/cli/cache.go": {42: true}}[normalized]
+		}
+		if resolved := resolveAgainstDiff(normalized, diff); resolved != "" {
+			return map[string]map[int]bool{"pkg/cli/cache.go": {42: true}}[resolved]
+		}
+		return nil
+	}
+	findings := []reviewer.Finding{
+		{Severity: reviewer.SeverityBlocker, Area: "scope", Message: "m", File: "cache.go", Line: 42},
+	}
+	grounded, _ := groundedBlockingFindings(findings, changed)
+	if len(grounded) != 1 {
+		t.Fatalf("bare basename must ground when unique, got %d grounded", len(grounded))
+	}
+}
+
+// TestGroundedBlockingFindings_AbsolutePathGrounds asserts that an
+// absolute path grounds when the changedLines callback resolves it (#1004).
+func TestGroundedBlockingFindings_AbsolutePathGrounds(t *testing.T) {
+	diff := []string{"pkg/cli/cache.go"}
+	changed := func(f string) map[int]bool {
+		normalized := normalizeFilePath(f)
+		if inDiff(normalized, diff) {
+			return map[string]map[int]bool{"pkg/cli/cache.go": {42: true}}[normalized]
+		}
+		if resolved := resolveAgainstDiff(normalized, diff); resolved != "" {
+			return map[string]map[int]bool{"pkg/cli/cache.go": {42: true}}[resolved]
+		}
+		return nil
+	}
+	findings := []reviewer.Finding{
+		{Severity: reviewer.SeverityBlocker, Area: "scope", Message: "m", File: "/workspace/pkg/cli/cache.go", Line: 42},
+	}
+	grounded, _ := groundedBlockingFindings(findings, changed)
+	if len(grounded) != 1 {
+		t.Fatalf("absolute path must ground when it resolves, got %d grounded", len(grounded))
+	}
+}
+
+// TestGroundedBlockingFindings_AmbiguousBasenameStaysUngrounded asserts
+// that a bare basename that matches multiple diff files stays ungrounded
+// (#1004).
+func TestGroundedBlockingFindings_AmbiguousBasenameStaysUngrounded(t *testing.T) {
+	diff := []string{"pkg/cli/cache.go", "pkg/foreman/agent/cache.go"}
+	changed := func(f string) map[int]bool {
+		normalized := normalizeFilePath(f)
+		if inDiff(normalized, diff) {
+			return map[string]map[int]bool{
+				"pkg/cli/cache.go":           {42: true},
+				"pkg/foreman/agent/cache.go": {42: true},
+			}[normalized]
+		}
+		if resolved := resolveAgainstDiff(normalized, diff); resolved != "" {
+			return map[string]map[int]bool{
+				"pkg/cli/cache.go":           {42: true},
+				"pkg/foreman/agent/cache.go": {42: true},
+			}[resolved]
+		}
+		return nil
+	}
+	findings := []reviewer.Finding{
+		{Severity: reviewer.SeverityBlocker, Area: "scope", Message: "m", File: "cache.go", Line: 42},
+	}
+	grounded, _ := groundedBlockingFindings(findings, changed)
+	if len(grounded) != 0 {
+		t.Fatalf("ambiguous basename must stay ungrounded, got %d grounded", len(grounded))
+	}
+}
+
+func TestGroundedBlockingFindings_PathNormalization(t *testing.T) {
+	// The diff map only has repo-root-relative paths. A reviewer may emit
+	// "./"-prefixed, absolute, or bare-basename paths. All must normalize
+	// to the same repo-root-relative key (#1004).
+	changed := func(f string) map[int]bool {
+		return map[string]map[int]bool{"pkg/cli/cache.go": {42: true}}[f]
+	}
+
+	tests := []struct {
+		name     string
+		file     string
+		grounded bool
+	}{
+		{"repo-root-relative", "pkg/cli/cache.go", true},
+		{"dot-slash prefix", "./pkg/cli/cache.go", true},
+		{"double slash", "pkg//cli/cache.go", true},
+		{"wrong file", "pkg/cli/other.go", false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			findings := []reviewer.Finding{
+				{Severity: reviewer.SeverityBlocker, Area: "scope", Message: "m", File: tc.file, Line: 42},
+			}
+			grounded, _ := groundedBlockingFindings(findings, changed)
+			if tc.grounded && len(grounded) != 1 {
+				t.Errorf("expected grounded, got %d grounded findings", len(grounded))
+			}
+			if !tc.grounded && len(grounded) != 0 {
+				t.Errorf("expected ungrounded, got %d grounded findings", len(grounded))
+			}
+		})
+	}
+}
