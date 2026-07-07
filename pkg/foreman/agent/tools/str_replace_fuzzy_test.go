@@ -347,3 +347,35 @@ func TestStrReplace_IdenticalOldNewRejected(t *testing.T) {
 		t.Errorf("file must be unchanged, got %q", got)
 	}
 }
+
+// When anchorContext finds no unique verbatim anchor (every old_string line
+// appears 0 or 2+ times in the file), the error must still carry real file
+// content via the closestLineContext fallback (#944). The bare count error
+// gives the model nothing to re-anchor on.
+func TestStrReplace_ClosestLineFallbackWhenNoUniqueAnchor(t *testing.T) {
+	ws := makeWorkspace(t)
+	// Build a file where every line of old_string appears 0 or 2+ times,
+	// so anchorContext cannot find a unique verbatim anchor. The old_string
+	// must have 0 occurrences to trigger the recovery ladder.
+	src := "func alpha() int {\n\treturn count\n}\n" +
+		"func alpha() int {\n\treturn count\n}\n"
+	seedFile(t, ws, "g.go", src)
+	// old_string has 0 occurrences (drifted), and every line it contains
+	// appears 2+ times in the file, so anchorContext finds no unique anchor.
+	old := "func alpha() int {\n\treturn total\n}"
+	err := execStrReplace(t, ws, "g.go", old, "x")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	// Must NOT be the bare count error; must contain real file content.
+	if !strings.Contains(err.Error(), "closest") {
+		t.Errorf("expected closest-line fallback message, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "return count") {
+		t.Errorf("expected real file content in the error, got: %v", err)
+	}
+	// File must be untouched.
+	if got := readBack(t, ws, "g.go"); got != src {
+		t.Errorf("file must be unchanged, got %q", got)
+	}
+}

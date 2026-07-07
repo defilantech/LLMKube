@@ -151,6 +151,15 @@ func (t *StrReplaceTool) Execute(_ context.Context, args json.RawMessage) (*agen
 					"The file's actual current text near your edit is below - copy it "+
 					"VERBATIM into old_string and retry:\n%s%s", a.Path, actual, writeFileHint(content))
 			}
+			// No unique verbatim anchor exists. Fall back to the closest line
+			// match so the model always gets real file content to re-anchor on
+			// instead of the bare count error (#944).
+			if closest := closestLineContext(content, a.OldString); closest != "" {
+				return nil, fmt.Errorf("str_replace: old_string not found in %q. "+
+					"No unique anchor line exists; the closest approximate match "+
+					"in the file is below (not verbatim). Copy the actual bytes "+
+					"VERBATIM into old_string and retry:\n%s%s", a.Path, closest, writeFileHint(content))
+			}
 		}
 		return nil, fmt.Errorf("str_replace: old_string found %d times in %q, want %d%s",
 			occurrences, a.Path, want, writeFileHint(content))
@@ -381,4 +390,54 @@ func anchorContext(content, oldString string) (string, bool) {
 		hi = len(contentLines)
 	}
 	return strings.Join(contentLines[lo:hi], "\n"), true
+}
+
+// closestLineContext is the best-effort fallback when anchorContext finds no
+// unique verbatim anchor. It scores every file line against the most
+// distinctive old_string line (longest trimmed line, skipping trivial lines)
+// using boundedLevenshtein and returns the surrounding real lines of the
+// single lowest-distance hit, clearly labeled as approximate. This gives the
+// model actual file bytes to re-anchor on instead of the bare count error.
+func closestLineContext(content, oldString string) string {
+	contentLines := strings.Split(content, "\n")
+	oldLines := strings.Split(oldString, "\n")
+
+	// Pick the most distinctive old_string line (longest trimmed, skip trivial).
+	bestIdx, bestLen := -1, 0
+	for i, ol := range oldLines {
+		trimmed := strings.TrimSpace(ol)
+		if len(trimmed) < 8 {
+			continue
+		}
+		if len(trimmed) > bestLen {
+			bestLen = len(trimmed)
+			bestIdx = i
+		}
+	}
+	if bestIdx < 0 {
+		return ""
+	}
+	probe := strings.TrimSpace(oldLines[bestIdx])
+
+	// Score every content line against the probe; keep the closest hit.
+	minDist := len(probe) + 1 // worse than any real distance
+	closestIdx := 0
+	for i, cl := range contentLines {
+		d := boundedLevenshtein(strings.TrimSpace(cl), probe, minDist)
+		if d < minDist {
+			minDist = d
+			closestIdx = i
+		}
+	}
+
+	span := strings.Count(oldString, "\n") + 1
+	lo := closestIdx - 2
+	if lo < 0 {
+		lo = 0
+	}
+	hi := closestIdx + span + 2
+	if hi > len(contentLines) {
+		hi = len(contentLines)
+	}
+	return strings.Join(contentLines[lo:hi], "\n")
 }
