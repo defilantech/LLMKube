@@ -5,6 +5,31 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.1](https://github.com/defilantech/LLMKube/compare/v0.9.0...v0.9.1) (2026-07-07)
+
+
+### Features
+
+* **chart:** gate CRD installation behind crds.enabled toggle ([#998](https://github.com/defilantech/LLMKube/issues/998)) ([acf2e6a](https://github.com/defilantech/LLMKube/commit/acf2e6a23de8072ddd62ff129be7300ec8c12bf1))
+* **foreman:** append actionable steers to structural-lint gate feedback ([#984](https://github.com/defilantech/LLMKube/issues/984)) ([4d496c6](https://github.com/defilantech/LLMKube/commit/4d496c6b0a01365ecfbbe6a80ad6ff392fe91f61))
+* **foreman:** closest-line fallback when str_replace has no unique anchor ([#1000](https://github.com/defilantech/LLMKube/issues/1000)) ([02ec677](https://github.com/defilantech/LLMKube/commit/02ec6776634ee6732b2c238f0921d691c67e1264))
+* **foreman:** grounded-finding rail for reviewer NO-GO verdicts ([#988](https://github.com/defilantech/LLMKube/issues/988)) ([cadbd30](https://github.com/defilantech/LLMKube/commit/cadbd3035253886accb37a5ded49291be5bda512))
+* **foreman:** verdict-from-findings rail (promote GO with a grounded blocker) ([#992](https://github.com/defilantech/LLMKube/issues/992)) ([b82fcca](https://github.com/defilantech/LLMKube/commit/b82fccab3f8408583df6c70ec4a625b1d1f6bfa7))
+
+
+### Bug Fixes
+
+* **cachekey:** unify model cache-key derivation across controller and CLI ([#985](https://github.com/defilantech/LLMKube/issues/985)) ([1fb122c](https://github.com/defilantech/LLMKube/commit/1fb122c77a88b3acce1e335645354f618ef2ae24))
+* **foreman:** grant coder Job pods get on secrets for cloud-proxy auth ([#987](https://github.com/defilantech/LLMKube/issues/987)) ([ffe45d7](https://github.com/defilantech/LLMKube/commit/ffe45d7e661d4a02a3525a8b20564eff0b472fb3))
+* **foreman:** key test-presence gate on net-new functions only ([#983](https://github.com/defilantech/LLMKube/issues/983)) ([0236630](https://github.com/defilantech/LLMKube/commit/0236630ec16cbb9ef6108adfc443e405834ea348))
+* **foreman:** tolerate self-committed model work and detect git apply edits ([#995](https://github.com/defilantech/LLMKube/issues/995)) ([730d1cd](https://github.com/defilantech/LLMKube/commit/730d1cd17c4d2fa4c9ec39e3eeaf86fecafb9b3c))
+* **foreman:** truncate over-length submit_result summaries instead of rejecting ([#999](https://github.com/defilantech/LLMKube/issues/999)) ([8c36edd](https://github.com/defilantech/LLMKube/commit/8c36edd734ed200bbee6bb89f7fe7c03ff56e527))
+
+
+### Documentation
+
+* **cachekey:** note the metal literal mirrors acceleratorMetal ([#993](https://github.com/defilantech/LLMKube/issues/993)) ([ae9e20d](https://github.com/defilantech/LLMKube/commit/ae9e20d800b5a6ad486d7e2cce5fc4dc40178c91))
+
 ## [0.9.0](https://github.com/defilantech/LLMKube/compare/v0.8.28...v0.9.0) (2026-07-05)
 
 
