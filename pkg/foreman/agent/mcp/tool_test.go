@@ -22,7 +22,10 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
+
+	"github.com/defilantech/llmkube/pkg/foreman/agent"
 )
 
 // fakeCaller is a test double for the caller interface. It lets
@@ -227,6 +230,67 @@ func TestMcpTool_Execute_SoftErrorOnCallToolFailure(t *testing.T) {
 	}
 	if records[0].Server != "fake" || records[0].Tool != "echo" {
 		t.Fatalf("record.Server/Tool = %q/%q, want fake/echo", records[0].Server, records[0].Tool)
+	}
+}
+
+// blockingCaller is a caller double that never returns on its own: it
+// blocks until the ctx Execute hands it is cancelled, then reports the
+// ctx error, mimicking a slow/black-hole MCP server. It exists to prove
+// Execute bounds callTool with Options.CallTimeout rather than the raw
+// run ctx (which in production may stay live for the whole agent run).
+type blockingCaller struct{}
+
+func (blockingCaller) callTool(ctx context.Context, _ string, _ json.RawMessage) (string, bool, error) {
+	<-ctx.Done()
+	return "", false, ctx.Err()
+}
+
+// TestMcpTool_Execute_CallTimeout guards the finding that
+// Options.CallTimeout (defaulted to 30s, and the CRD's documented safety
+// knob) was threaded onto every mcpTool but never applied: Execute called
+// t.caller.callTool with the raw run ctx, so a stalled MCP server could
+// block a tool call for as long as the whole run allowed. With a 20ms
+// CallTimeout and a caller that only unblocks when its ctx is cancelled,
+// Execute must return well before a real hang would ever be noticed, and
+// must still fold the timeout into the soft-error path like any other
+// callTool failure (nil Go error, "MCP error: ..." Output, recorded
+// mcpCallRecord.Error).
+func TestMcpTool_Execute_CallTimeout(t *testing.T) {
+	var records []mcpCallRecord
+	mt := newTool(blockingCaller{}, "fake", "echo", Options{CallTimeout: 20 * time.Millisecond}, func(r mcpCallRecord) {
+		records = append(records, r)
+	})
+
+	type execOutcome struct {
+		res *agent.ToolResult
+		err error
+	}
+	done := make(chan execOutcome, 1)
+	go func() {
+		res, err := mt.Execute(context.Background(), json.RawMessage(`{}`))
+		done <- execOutcome{res, err}
+	}()
+
+	var outcome execOutcome
+	select {
+	case outcome = <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Execute did not return within 500ms of a 20ms CallTimeout; timeout is not being applied to callTool")
+	}
+
+	if outcome.err != nil {
+		t.Fatalf("Execute returned Go error %v, want nil (timeout is a soft error)", outcome.err)
+	}
+	out, ok := outcome.res.Output.(string)
+	if !ok || !strings.Contains(out, "MCP error") {
+		t.Fatalf("Output = %v, want it to contain %q", outcome.res.Output, "MCP error")
+	}
+
+	if len(records) != 1 {
+		t.Fatalf("records = %d, want 1", len(records))
+	}
+	if records[0].Error == "" {
+		t.Fatalf("record.Error = %q, want non-empty (timeout should be recorded)", records[0].Error)
 	}
 }
 

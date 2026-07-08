@@ -125,9 +125,17 @@ func (t *mcpTool) Schema() oai.ToolSchemaDef {
 // error and a tool-level error result (isError=true, but nil Go error)
 // flow back as Output text rather than as a Go error, which the loop
 // would otherwise surface as an infra failure.
+//
+// The call is bounded by Options.CallTimeout rather than the raw run
+// ctx: without this, a slow or black-hole MCP server would stall a
+// single tool call for as long as the whole run allows, instead of the
+// configured per-call timeout.
 func (t *mcpTool) Execute(ctx context.Context, args json.RawMessage) (*agent.ToolResult, error) {
 	start := time.Now()
-	text, _, err := t.caller.callTool(ctx, t.toolName, args)
+	to := t.opts.withDefaults().CallTimeout
+	cctx, cancel := context.WithTimeout(ctx, to)
+	defer cancel()
+	text, _, err := t.caller.callTool(cctx, t.toolName, args)
 	latency := time.Since(start).Milliseconds()
 
 	if err != nil {

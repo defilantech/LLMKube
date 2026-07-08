@@ -15,9 +15,26 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+// dialTimeout bounds the initial MCP handshake (transport connect plus
+// the initialize/initialized exchange) so a server that accepts a TCP
+// connection but never completes the handshake cannot hang registry
+// build indefinitely. It is deliberately not derived from
+// Options.CallTimeout and not applied anywhere past Connect: the go-sdk
+// (github.com/modelcontextprotocol/go-sdk@v1.6.1/mcp) hands the
+// connect-time ctx only to the transport connect and the initialize
+// calls, and internally wraps it in a notDone{} context (see
+// internal/jsonrpc2/conn.go's NewConnection) specifically so the
+// connection's background read loop is immune to that ctx's
+// cancellation. Every later ClientSession.ListTools/CallTool call takes
+// its own fresh ctx argument (see Session.listTools/callTool below), so
+// bounding only the handshake here cannot cut short a later long-running
+// tool call.
+const dialTimeout = 15 * time.Second
 
 // Session is a live connection to a single remote MCP server.
 type Session struct {
@@ -76,7 +93,9 @@ func dial(ctx context.Context, cfg ServerConfig) (*Session, error) {
 		Version: "0.1.0",
 	}, nil)
 
-	cs, err := client.Connect(ctx, transport, nil)
+	dctx, cancel := context.WithTimeout(ctx, dialTimeout)
+	defer cancel()
+	cs, err := client.Connect(dctx, transport, nil)
 	if err != nil {
 		return nil, fmt.Errorf("mcp: dial %q (%s): %w", cfg.Name, cfg.URL, err)
 	}
