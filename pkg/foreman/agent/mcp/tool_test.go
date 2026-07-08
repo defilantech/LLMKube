@@ -22,6 +22,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // fakeCaller is a test double for the caller interface. It lets
@@ -164,6 +165,18 @@ func TestMcpTool_Execute_TruncatesOnRuneBoundary(t *testing.T) {
 	}
 	if len(body) > 11 {
 		t.Fatalf("truncated body is %d bytes, want <= 11", len(body))
+	}
+
+	// Assert that the truncated body contains only valid UTF-8 sequences.
+	if !utf8.ValidString(body) {
+		t.Fatalf("truncated body contains invalid UTF-8: %q", body)
+	}
+
+	// The body should be the largest whole-rune prefix that fits in MaxResultBytes.
+	// Each "é" is 2 bytes, so 11 / 2 = 5 whole runes.
+	expectedBody := strings.Repeat("é", 5)
+	if body != expectedBody {
+		t.Fatalf("truncated body = %q, want %q (exact whole-rune prefix)", body, expectedBody)
 	}
 }
 
