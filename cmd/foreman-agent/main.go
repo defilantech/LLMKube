@@ -751,6 +751,15 @@ func makeRegistryFactory(
 		}
 
 		var mcpTools []foremantools.Tool
+		// Gate-decision log (fires for EVERY run, both kinds) so we can see
+		// exactly which input decides whether MCP registers. logf.FromContext
+		// carries the executor's task/ns values, so this line correlates to the
+		// AgenticTask. Diagnostic for the freeform-works / issue-fix-silent gap.
+		logf.FromContext(ctx).Info("mcp registry gate",
+			"agent", ag.Name,
+			"mcpConfigPresent", ag.Spec.MCP != nil,
+			"mcpEnabled", ag.Spec.MCP != nil && ag.Spec.MCP.Enabled,
+			"workloadMCPEnabled", workloadMCPEnabled)
 		if ag.Spec.MCP != nil && ag.Spec.MCP.Enabled && workloadMCPEnabled {
 			log := logf.FromContext(ctx)
 			// MCP header secrets resolve from the AGENT's own namespace,
@@ -772,6 +781,8 @@ func makeRegistryFactory(
 			}
 			servers, opts := mcp.BuildServers(ag.Spec.MCP, resolve, log)
 			all, closer := mcp.Register(ctx, log, nil, servers, opts, true)
+			log.Info("mcp registry result",
+				"serversConfigured", len(servers), "toolsAdded", len(all))
 			// Tie MCP session teardown to the run's context: the loop
 			// never calls closer directly, so the sessions opened here
 			// must close themselves when the run ends (success,
