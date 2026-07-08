@@ -49,6 +49,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/go-logr/logr"
 	"golang.org/x/sync/errgroup"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -658,20 +659,55 @@ func clampInt32(n int) int32 {
 	return int32(n) //nolint:gosec // bounded above
 }
 
+// assembleAgentRegistry builds an agent's tool registry: native tools
+// filtered by the agent's spec.tools whitelist, then MCP tools appended.
+// MCP tools bypass the whitelist by design (they are already gated by their
+// per-server allowedTools). MCP-add failures are logged and skipped
+// (best-effort), never fatal.
+//
+// Ordering matters: Filter is an allow-list intersection, and MCP tools
+// are named dynamically (mcp/<server>/<tool>), so no real Agent's
+// spec.tools whitelist ever names one. Filtering the MCP tools alongside
+// the native ones (the pre-fix behavior) silently dropped every MCP tool
+// for every agent -- the feature was inert. Filtering native first, then
+// adding MCP tools to the already-filtered registry, is what makes the
+// bypass actually work.
+func assembleAgentRegistry(
+	log logr.Logger, native []foremantools.Tool, whitelist []string, mcpTools []foremantools.Tool,
+) (foremanagent.ToolRegistry, error) {
+	r, err := foremantools.New(native...)
+	if err != nil {
+		return nil, fmt.Errorf("default registry: %w", err)
+	}
+	if len(whitelist) > 0 {
+		r, err = r.Filter(whitelist)
+		if err != nil {
+			return nil, fmt.Errorf("agent tool whitelist: %w", err)
+		}
+	}
+	if len(mcpTools) > 0 {
+		if err := r.Add(mcpTools...); err != nil {
+			log.Error(err, "adding MCP tools to registry; continuing without the duplicates")
+		}
+	}
+	return r, nil
+}
+
 // makeRegistryFactory returns a RegistryFactory closure that captures
 // the controller-runtime client + clientset + foreman namespace. The
 // returned closure builds every tool the v0.1 surface exposes
 // (read_file, write_file, str_replace, grep, bash, submit_result, and
-// the M4 deterministic run_gate_job), then registers the agent's MCP
-// tools when it opts in, and finally filters down to the
-// Agent.spec.tools whitelist. Failing the whitelist filter (a typo in
-// the Agent CR's tool list) returns an error so the executor surfaces
-// a clean ToolRegistryBuildFailed outcome rather than launching the
-// loop with the wrong tools.
+// the M4 deterministic run_gate_job), filters that native set down to
+// the Agent.spec.tools whitelist, then appends the agent's MCP tools
+// (which bypass the whitelist -- see assembleAgentRegistry) when MCP is
+// opted in. Failing the whitelist filter (a typo in the Agent CR's tool
+// list) returns an error so the executor surfaces a clean
+// ToolRegistryBuildFailed outcome rather than launching the loop with
+// the wrong tools.
 //
 // The closure accepts ctx + workloadMCPEnabled (the effective
 // Workload.Spec.MCPEnabled benchmark opt-out, threaded from the
-// executor via mcpEnabledForTask). MCP tools are registered only when
+// executor via mcpEnabledForTask). MCP tools are resolved only when
 // ag.Spec.MCP is set and enabled AND workloadMCPEnabled is true: either
 // gate being closed runs the loop with native tools only, exactly like
 // before MCP existed.
@@ -688,7 +724,7 @@ func makeRegistryFactory(
 		if bashTimeout <= 0 {
 			bashTimeout = 30 * time.Second
 		}
-		base := []foremantools.Tool{
+		native := []foremantools.Tool{
 			&foremantools.ReadFileTool{Workspace: workspace},
 			&foremantools.WriteFileTool{Workspace: workspace},
 			&foremantools.StrReplaceTool{Workspace: workspace},
@@ -714,6 +750,7 @@ func makeRegistryFactory(
 			},
 		}
 
+		var mcpTools []foremantools.Tool
 		if ag.Spec.MCP != nil && ag.Spec.MCP.Enabled && workloadMCPEnabled {
 			log := logf.FromContext(ctx)
 			resolve := func(ref *corev1.SecretKeySelector) (string, error) {
@@ -728,7 +765,7 @@ func makeRegistryFactory(
 				return strings.TrimSpace(string(b)), nil
 			}
 			servers, opts := mcp.BuildServers(ag.Spec.MCP, resolve, log)
-			all, closer := mcp.Register(ctx, log, base, servers, opts, true)
+			all, closer := mcp.Register(ctx, log, nil, servers, opts, true)
 			// Tie MCP session teardown to the run's context: the loop
 			// never calls closer directly, so the sessions opened here
 			// must close themselves when the run ends (success,
@@ -737,21 +774,10 @@ func makeRegistryFactory(
 				<-ctx.Done()
 				_ = closer()
 			}()
-			base = all
+			mcpTools = all
 		}
 
-		r, err := foremantools.New(base...)
-		if err != nil {
-			return nil, fmt.Errorf("default registry: %w", err)
-		}
-		if len(ag.Spec.Tools) > 0 {
-			filtered, err := r.Filter(ag.Spec.Tools)
-			if err != nil {
-				return nil, fmt.Errorf("agent tool whitelist: %w", err)
-			}
-			return filtered, nil
-		}
-		return r, nil
+		return assembleAgentRegistry(logf.FromContext(ctx), native, ag.Spec.Tools, mcpTools)
 	}
 }
 

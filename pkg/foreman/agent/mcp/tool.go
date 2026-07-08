@@ -32,6 +32,14 @@ import (
 // distinct from real tool output when a model scans the transcript.
 const truncationMarker = "\n…[truncated]"
 
+// toolErrorMarker prefixes the model-visible Output when the remote
+// server reports a tool-level failure (isError=true, nil Go error) --
+// e.g. a bad lookup or an argument the server itself rejected. Without
+// this, a failed call and a successful one both flow back as plain
+// Output text and the model (and the transcript reader) cannot tell them
+// apart.
+const toolErrorMarker = "[mcp tool error] "
+
 // mcpCallRecord is a single observation of an MCP tool call, handed to
 // the record callback newTools/newTool are given. It exists so callers
 // (Task 4's server manager) can log or trace every call without mcpTool
@@ -44,6 +52,12 @@ type mcpCallRecord struct {
 	Truncated   bool
 	LatencyMs   int64
 	Error       string // "" on success; the callTool error string otherwise
+	// IsError reflects the remote server's tool-level isError flag: the
+	// call itself succeeded (no Go error, Error is "") but the tool
+	// reported its own failure (e.g. a bad lookup, an invalid argument
+	// the server validated itself). Distinct from Error, which is a
+	// transport/protocol failure.
+	IsError bool
 }
 
 // caller is the subset of *Session that mcpTool depends on. Extracting
@@ -135,7 +149,7 @@ func (t *mcpTool) Execute(ctx context.Context, args json.RawMessage) (*agent.Too
 	to := t.opts.withDefaults().CallTimeout
 	cctx, cancel := context.WithTimeout(ctx, to)
 	defer cancel()
-	text, _, err := t.caller.callTool(cctx, t.toolName, args)
+	text, isErr, err := t.caller.callTool(cctx, t.toolName, args)
 	latency := time.Since(start).Milliseconds()
 
 	if err != nil {
@@ -152,11 +166,15 @@ func (t *mcpTool) Execute(ctx context.Context, args json.RawMessage) (*agent.Too
 		text = truncateUTF8(text, t.opts.MaxResultBytes) + truncationMarker
 		truncated = true
 	}
+	if isErr {
+		text = toolErrorMarker + text
+	}
 
 	t.recordCall(args, mcpCallRecord{
 		ResultBytes: original,
 		Truncated:   truncated,
 		LatencyMs:   latency,
+		IsError:     isErr,
 	})
 	return &agent.ToolResult{Output: text}, nil
 }

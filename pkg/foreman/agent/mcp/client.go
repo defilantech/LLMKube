@@ -74,11 +74,38 @@ func (h *headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 	return base.RoundTrip(req)
 }
 
+// refuseCrossHostRedirect is http.Client.CheckRedirect for the MCP
+// dial client. Go's net/http only strips sensitive headers (Authorization,
+// Cookie, etc.) on cross-domain redirects when those headers were set on
+// the ORIGINAL request -- headers injected by a custom RoundTripper (our
+// headerRoundTripper, which carries the secret-sourced ServerConfig.Headers
+// auth) are re-applied on every hop regardless of host. A 3xx response
+// from the configured endpoint (or a MITM'd/compromised one) to a
+// different host would therefore replay the auth token to that host. This
+// refuses any redirect that changes host, so the header can never leak
+// cross-origin.
+//
+// via[0] is always the original request (net/http guarantees via is
+// non-empty and in redirect order when CheckRedirect is called), so
+// via[0].URL.Host is the host the caller intended to talk to.
+func refuseCrossHostRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) > 0 && req.URL.Host != via[0].URL.Host {
+		return fmt.Errorf("mcp: refusing cross-host redirect to %q (auth header would leak)", req.URL.Host)
+	}
+	return nil
+}
+
 // dial connects to the MCP server described by cfg over the streamable
 // HTTP transport and returns a live Session. It never panics: all
 // failures are returned as errors.
 func dial(ctx context.Context, cfg ServerConfig) (*Session, error) {
-	httpClient := &http.Client{}
+	// Deliberately no Timeout set here: the MCP session is a long-lived
+	// stream (SSE/streamable HTTP), and http.Client.Timeout would cut
+	// that stream off after the configured duration regardless of
+	// activity. Per-call bounds are applied at the CallTool layer
+	// (Options.CallTimeout / mcpTool.Execute), and the handshake itself
+	// is bounded by dialTimeout below.
+	httpClient := &http.Client{CheckRedirect: refuseCrossHostRedirect}
 	if len(cfg.Headers) > 0 {
 		httpClient.Transport = &headerRoundTripper{headers: cfg.Headers}
 	}

@@ -42,10 +42,18 @@ func Register(
 	record := func(r mcpCallRecord) {
 		log.V(1).Info("mcp tool call", "server", r.Server, "tool", r.Tool,
 			"resultBytes", r.ResultBytes, "truncated", r.Truncated,
-			"latencyMs", r.LatencyMs, "callError", r.Error)
+			"latencyMs", r.LatencyMs, "callError", r.Error, "isError", r.IsError)
 	}
 
 	mcpTools, c, _ := Connect(ctx, log, servers, opts, record) // Connect never returns a server-failure error
+	if c == nil {
+		// Connect only returns a nil closer alongside a non-nil err (a
+		// programmer error, e.g. a nil ctx); guard here too so a caller
+		// that (like Connect's own doc warns) ignores that error can
+		// still call closer() unconditionally without a nil-pointer
+		// panic.
+		c = func() error { return nil }
+	}
 	return append(append([]tools.Tool{}, base...), mcpTools...), c
 }
 

@@ -294,6 +294,75 @@ func TestMcpTool_Execute_CallTimeout(t *testing.T) {
 	}
 }
 
+// TestMcpTool_Execute_ToolLevelErrorSetsIsErrorAndPrefixesOutput pins the
+// fix for the discarded isError flag: before the fix, callTool's isError
+// bool was thrown away (`text, _, err := ...`), so a tool-level failure
+// (isError=true, nil Go error -- e.g. the remote tool ran but reported its
+// own failure) recorded as an ordinary success with no way for the model
+// or the transcript reader to tell it apart from a good result. Execute
+// must now (a) set mcpCallRecord.IsError, and (b) prefix the model-visible
+// Output with the toolErrorMarker so the model can see the call failed.
+func TestMcpTool_Execute_ToolLevelErrorSetsIsErrorAndPrefixesOutput(t *testing.T) {
+	c := &fakeCaller{text: "no docs found for that symbol", isError: true}
+
+	var records []mcpCallRecord
+	mt := newTool(c, "fake", "get-docs", Options{}, func(r mcpCallRecord) {
+		records = append(records, r)
+	})
+
+	res, err := mt.Execute(context.Background(), json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("Execute returned Go error %v, want nil (tool-level error is a soft error)", err)
+	}
+	out, ok := res.Output.(string)
+	if !ok {
+		t.Fatalf("Output is %T, want string", res.Output)
+	}
+	if !strings.HasPrefix(out, "[mcp tool error] ") {
+		t.Fatalf("Output = %q, want it prefixed with the tool-error marker", out)
+	}
+	if !strings.Contains(out, "no docs found for that symbol") {
+		t.Fatalf("Output = %q, want it to still contain the original tool text", out)
+	}
+
+	if len(records) != 1 {
+		t.Fatalf("records = %d, want 1", len(records))
+	}
+	if !records[0].IsError {
+		t.Fatalf("record.IsError = false, want true")
+	}
+	if records[0].Error != "" {
+		t.Fatalf("record.Error = %q, want empty (isError is not a Go/transport error)", records[0].Error)
+	}
+}
+
+// TestMcpTool_Execute_SuccessLeavesIsErrorFalse is the success-path
+// counterpart: IsError must default to false and the Output must be
+// unprefixed when the remote tool reports success.
+func TestMcpTool_Execute_SuccessLeavesIsErrorFalse(t *testing.T) {
+	c := &fakeCaller{text: "hi", isError: false}
+
+	var records []mcpCallRecord
+	mt := newTool(c, "fake", "echo", Options{}, func(r mcpCallRecord) {
+		records = append(records, r)
+	})
+
+	res, err := mt.Execute(context.Background(), json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("Execute returned Go error: %v", err)
+	}
+	if res.Output != "hi" {
+		t.Fatalf("Output = %v, want unprefixed %q", res.Output, "hi")
+	}
+
+	if len(records) != 1 {
+		t.Fatalf("records = %d, want 1", len(records))
+	}
+	if records[0].IsError {
+		t.Fatalf("record.IsError = true, want false")
+	}
+}
+
 func TestMcpTool_Execute_NilRecordIsNoop(t *testing.T) {
 	mt := newTool(&fakeCaller{text: "ok"}, "fake", "echo", Options{}, nil)
 

@@ -121,6 +121,31 @@ func TestRegister_DisabledReturnsBase(t *testing.T) {
 	})
 }
 
+// TestRegister_NilCtxReturnsNoopCloserNotNil guards against a nil-pointer
+// panic: Connect returns a nil closer alongside a non-nil error when ctx
+// is nil (a programmer error), and Register discards that error
+// (`mcpTools, c, _ := Connect(...)` -- "Connect never returns a
+// server-failure error"). Without a guard, Register would hand the
+// caller back a nil closer, and `closer()` would panic. Register must
+// substitute a safe no-op instead.
+func TestRegister_NilCtxReturnsNoopCloserNotNil(t *testing.T) {
+	base := []tools.Tool{&fakeNativeTool{name: "native_tool"}}
+	servers := []ServerConfig{{Name: "fake", URL: "http://127.0.0.1:1/unreachable"}}
+
+	//nolint:staticcheck // SA1012: intentionally passing nil ctx to exercise Connect's programmer-error path
+	all, closer := Register(nil, logr.Discard(), base, servers, Options{}, true)
+
+	if closer == nil {
+		t.Fatal("Register returned a nil closer; closer() would panic")
+	}
+	if err := closer(); err != nil {
+		t.Fatalf("closer() = %v, want nil no-op", err)
+	}
+	if len(all) != 1 || all[0].Name() != "native_tool" {
+		t.Fatalf("Register result = %v, want exactly base (nil ctx means Connect contributes zero tools)", toolNames(all))
+	}
+}
+
 // TestBuildServers_ResolvesAndSkips exercises the CRD -> ServerConfig
 // mapping: a server whose header secret resolves is kept with the
 // resolved value; a server whose header secret fails to resolve is
