@@ -131,7 +131,7 @@ func TestWorkloadSpecMCPEnabledDeepCopy(t *testing.T) {
 		t.Fatalf("DeepCopy is not value-equal to original:\norig=%+v\ncp=%+v", orig, cp)
 	}
 
-	cp.Spec.MCPEnabled = ptr.To(true)
+	*cp.Spec.MCPEnabled = true
 	if orig.Spec.MCPEnabled == nil || *orig.Spec.MCPEnabled != false {
 		t.Errorf("MCPEnabled pointer was aliased; orig=%v", orig.Spec.MCPEnabled)
 	}
@@ -154,7 +154,7 @@ func TestAgenticTaskSpecMCPEnabledDeepCopy(t *testing.T) {
 		t.Fatalf("DeepCopy is not value-equal to original:\norig=%+v\ncp=%+v", orig, cp)
 	}
 
-	cp.Spec.MCPEnabled = ptr.To(false)
+	*cp.Spec.MCPEnabled = false
 	if orig.Spec.MCPEnabled == nil || *orig.Spec.MCPEnabled != true {
 		t.Errorf("MCPEnabled pointer was aliased; orig=%v", orig.Spec.MCPEnabled)
 	}
