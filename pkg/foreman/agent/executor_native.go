@@ -132,9 +132,12 @@ type NativeAgentLoopExecutor struct {
 	// because the tools subpackage owns workspace containment and we
 	// do not want the executor reimplementing it. ctx is the run's
 	// context (a cancelled or deadline-exceeded run should not start
-	// new tool-registry work); workloadMCPEnabled carries the effective
-	// Workload.Spec.MCPEnabled benchmark opt-out (see
-	// mcpEnabledForTask) so the wiring layer can gate MCP tool
+	// new tool-registry work); it also bounds any background resources
+	// the factory opens for the run, e.g. an MCP client's server
+	// sessions, which the wiring layer closes when ctx is Done rather
+	// than when the registry itself is discarded. workloadMCPEnabled
+	// carries the effective Workload.Spec.MCPEnabled benchmark opt-out
+	// (see mcpEnabledForTask) so the wiring layer can gate MCP tool
 	// registration per-task without the agent package importing mcp.
 	RegistryFactory func(
 		ctx context.Context, workspace string, agent *foremanv1alpha1.Agent, workloadMCPEnabled bool,

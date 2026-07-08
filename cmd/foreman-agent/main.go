@@ -61,6 +61,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	clientconfig "sigs.k8s.io/controller-runtime/pkg/client/config"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	foremanv1alpha1 "github.com/defilantech/llmkube/api/foreman/v1alpha1"
@@ -68,6 +69,7 @@ import (
 	foremanagent "github.com/defilantech/llmkube/pkg/foreman/agent"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/githubissue"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/githubpr"
+	"github.com/defilantech/llmkube/pkg/foreman/agent/mcp"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/repo"
 	foremantools "github.com/defilantech/llmkube/pkg/foreman/agent/tools"
 	"github.com/defilantech/llmkube/pkg/selfupdate"
@@ -660,7 +662,8 @@ func clampInt32(n int) int32 {
 // the controller-runtime client + clientset + foreman namespace. The
 // returned closure builds every tool the v0.1 surface exposes
 // (read_file, write_file, str_replace, grep, bash, submit_result, and
-// the M4 deterministic run_gate_job) and filters down to the
+// the M4 deterministic run_gate_job), then registers the agent's MCP
+// tools when it opts in, and finally filters down to the
 // Agent.spec.tools whitelist. Failing the whitelist filter (a typo in
 // the Agent CR's tool list) returns an error so the executor surfaces
 // a clean ToolRegistryBuildFailed outcome rather than launching the
@@ -668,10 +671,10 @@ func clampInt32(n int) int32 {
 //
 // The closure accepts ctx + workloadMCPEnabled (the effective
 // Workload.Spec.MCPEnabled benchmark opt-out, threaded from the
-// executor via mcpEnabledForTask) but ignores both this task: MCP tool
-// registration is wired in a follow-up that adds the mcp-package
-// import here; the agent package cannot take that import itself
-// (mcp imports agent for agent.ToolResult).
+// executor via mcpEnabledForTask). MCP tools are registered only when
+// ag.Spec.MCP is set and enabled AND workloadMCPEnabled is true: either
+// gate being closed runs the loop with native tools only, exactly like
+// before MCP existed.
 func makeRegistryFactory(
 	kc client.Client, kcs kubernetes.Interface, foremanNamespace string,
 ) func(
@@ -679,13 +682,13 @@ func makeRegistryFactory(
 ) (foremanagent.ToolRegistry, error) {
 	logTail := makePodLogTailFn(kcs)
 	return func(
-		_ context.Context, workspace string, ag *foremanv1alpha1.Agent, _ bool,
+		ctx context.Context, workspace string, ag *foremanv1alpha1.Agent, workloadMCPEnabled bool,
 	) (foremanagent.ToolRegistry, error) {
 		bashTimeout := time.Duration(ag.Spec.BashTimeoutSeconds) * time.Second
 		if bashTimeout <= 0 {
 			bashTimeout = 30 * time.Second
 		}
-		r, err := foremantools.New(
+		base := []foremantools.Tool{
 			&foremantools.ReadFileTool{Workspace: workspace},
 			&foremantools.WriteFileTool{Workspace: workspace},
 			&foremantools.StrReplaceTool{Workspace: workspace},
@@ -709,7 +712,35 @@ func makeRegistryFactory(
 				Fetcher: githubissue.NewClient(),
 				Token:   repo.TokenFromEnvOrFile,
 			},
-		)
+		}
+
+		if ag.Spec.MCP != nil && ag.Spec.MCP.Enabled && workloadMCPEnabled {
+			log := logf.FromContext(ctx)
+			resolve := func(ref *corev1.SecretKeySelector) (string, error) {
+				var s corev1.Secret
+				if err := kc.Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: foremanNamespace}, &s); err != nil {
+					return "", err
+				}
+				b, ok := s.Data[ref.Key]
+				if !ok || len(b) == 0 {
+					return "", fmt.Errorf("secret %s/%s has no key %q", foremanNamespace, ref.Name, ref.Key)
+				}
+				return strings.TrimSpace(string(b)), nil
+			}
+			servers, opts := mcp.BuildServers(ag.Spec.MCP, resolve, log)
+			all, closer := mcp.Register(ctx, log, base, servers, opts, true)
+			// Tie MCP session teardown to the run's context: the loop
+			// never calls closer directly, so the sessions opened here
+			// must close themselves when the run ends (success,
+			// failure, or ctx cancellation) rather than leak.
+			go func() {
+				<-ctx.Done()
+				_ = closer()
+			}()
+			base = all
+		}
+
+		r, err := foremantools.New(base...)
 		if err != nil {
 			return nil, fmt.Errorf("default registry: %w", err)
 		}
