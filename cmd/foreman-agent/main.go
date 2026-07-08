@@ -753,14 +753,20 @@ func makeRegistryFactory(
 		var mcpTools []foremantools.Tool
 		if ag.Spec.MCP != nil && ag.Spec.MCP.Enabled && workloadMCPEnabled {
 			log := logf.FromContext(ctx)
+			// MCP header secrets resolve from the AGENT's own namespace,
+			// like provider auth (apiKeySecretRef) does — not foremanNamespace
+			// (the operator's namespace, which defaults to foreman-system). The
+			// Agent CR and its secrets live together (e.g. default/gateway-token),
+			// so an mcp-context7 secret sits beside the Agent, not by the operator.
+			secretNS := ag.Namespace
 			resolve := func(ref *corev1.SecretKeySelector) (string, error) {
 				var s corev1.Secret
-				if err := kc.Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: foremanNamespace}, &s); err != nil {
+				if err := kc.Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: secretNS}, &s); err != nil {
 					return "", err
 				}
 				b, ok := s.Data[ref.Key]
 				if !ok || len(b) == 0 {
-					return "", fmt.Errorf("secret %s/%s has no key %q", foremanNamespace, ref.Name, ref.Key)
+					return "", fmt.Errorf("secret %s/%s has no key %q", secretNS, ref.Name, ref.Key)
 				}
 				return strings.TrimSpace(string(b)), nil
 			}
