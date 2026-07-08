@@ -1,6 +1,9 @@
 package mcp
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestAllowed(t *testing.T) {
 	cases := []struct {
@@ -20,7 +23,10 @@ func TestAllowed(t *testing.T) {
 
 func TestOptionsDefaults(t *testing.T) {
 	o := Options{}.withDefaults()
-	if o.CallTimeout <= 0 || o.MaxResultBytes <= 0 {
-		t.Fatalf("defaults not applied: %+v", o)
+	if o.CallTimeout != 30*time.Second {
+		t.Errorf("CallTimeout default = %v, want 30s", o.CallTimeout)
+	}
+	if o.MaxResultBytes != 32768 {
+		t.Errorf("MaxResultBytes default = %d, want 32768", o.MaxResultBytes)
 	}
 }
