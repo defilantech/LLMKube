@@ -24,6 +24,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -151,6 +152,57 @@ var _ = Describe("AgenticTaskReconciler scheduler", func() {
 		failedCond := findCondition(fresh.Status.Conditions, "Failed")
 		Expect(failedCond).NotTo(BeNil())
 		Expect(failedCond.Reason).To(Equal("UpstreamFailed"))
+	})
+
+	// Regression for defilantech/LLMKube#970. A Pending task whose
+	// dependency ended ALREADY-RESOLVED (Phase=Succeeded +
+	// Verdict=NO-GO + extra.outcome="ALREADY-RESOLVED") must NOT be
+	// cascade-failed. The dependent is transitioned to
+	// Phase=Succeeded + Verdict=Skipped with a Skipped condition
+	// (Reason=UpstreamAlreadyResolved) so the Workload rollup
+	// excludes it from every bucket (it doesn't pin the Workload to
+	// Failed). Cascade-skip runs BEFORE cascade-fail in Reconcile so
+	// an ALREADY-RESOLVED dep never trips the "terminal without
+	// success" branch.
+	It("cascade-skips a Pending task when its dependency ended ALREADY-RESOLVED (#970)", func() {
+		dep := newTask("cascade-skip-dep")
+		Expect(k8sClient.Create(ctx, dep)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, dep) })
+		// Mark the dep as ALREADY-RESOLVED via Phase=Succeeded +
+		// Verdict=NO-GO + Status.Result envelope. The cascade path
+		// inspects all three (via isAlreadyResolvedCoder).
+		setPhase(dep, foremanv1alpha1.AgenticTaskPhaseSucceeded)
+		patch := client.MergeFrom(dep.DeepCopy())
+		dep.Status.Verdict = foremanv1alpha1.AgenticTaskVerdictNoGo
+		dep.Status.Result = &runtime.RawExtension{
+			Raw: []byte(`{"summary":"already done","extra":{"outcome":"ALREADY-RESOLVED","resolvedBy":"sha-deadbeef"}}`),
+		}
+		Expect(k8sClient.Status().Patch(ctx, dep, patch)).To(Succeed())
+
+		target := newTask("cascade-skip-target")
+		target.Spec.DependsOn = []string{dep.Name}
+		Expect(k8sClient.Create(ctx, target)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, target) })
+		setPhase(target, foremanv1alpha1.AgenticTaskPhasePending)
+
+		_, err := reconciler.Reconcile(ctx, reqFor(target))
+		Expect(err).NotTo(HaveOccurred())
+
+		var fresh foremanv1alpha1.AgenticTask
+		Expect(k8sClient.Get(ctx, nn(target), &fresh)).To(Succeed())
+		Expect(fresh.Status.Phase).To(Equal(foremanv1alpha1.AgenticTaskPhaseSucceeded))
+		Expect(fresh.Status.Verdict).To(Equal(foremanv1alpha1.AgenticTaskVerdictSkipped))
+		Expect(fresh.Status.FinishedAt).NotTo(BeNil())
+
+		skippedCond := findCondition(fresh.Status.Conditions, "Skipped")
+		Expect(skippedCond).NotTo(BeNil())
+		Expect(skippedCond.Reason).To(Equal("UpstreamAlreadyResolved"))
+		Expect(skippedCond.Message).To(ContainSubstring(dep.Name))
+
+		// Skipped must NOT trigger the Failed condition — that's the
+		// whole point of the skip path.
+		failedCond := findCondition(fresh.Status.Conditions, "Failed")
+		Expect(failedCond).To(BeNil(), "a Skipped dependent must not carry a Failed condition")
 	})
 
 	It("waits with requeue when a dependency is still pre-terminal", func() {

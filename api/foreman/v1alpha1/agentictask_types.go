@@ -393,7 +393,7 @@ const (
 // A task can be Succeeded with a NO-GO verdict (the agent legitimately
 // declined to fix the issue) or Failed with no verdict at all (the run
 // timed out before producing a verdict).
-// +kubebuilder:validation:Enum=GO;NO-GO;INCOMPLETE;GATE-PASS;GATE-FAIL;GATE-ERROR
+// +kubebuilder:validation:Enum=GO;NO-GO;INCOMPLETE;GATE-PASS;GATE-FAIL;GATE-ERROR;Skipped
 type AgenticTaskVerdict string
 
 const (
@@ -418,6 +418,17 @@ const (
 	// AgenticTaskVerdictGateError signals the gate runner itself failed
 	// to execute (infrastructure issue), distinct from a check failure.
 	AgenticTaskVerdictGateError AgenticTaskVerdict = "GATE-ERROR"
+	// AgenticTaskVerdictSkipped marks a task the executor never ran
+	// because its dependency terminated as a terminal non-failure the
+	// downstream work couldn't meaningfully act on — currently: the dep
+	// ended NO-GO + extra.outcome="ALREADY-RESOLVED" (#970). Set by the
+	// cascade-fail path in agentictask_controller.go when
+	// cascadeSkipIfDepAlreadyResolved sees an ALREADY-RESOLVED dep; the
+	// rollup excludes Skipped tasks from all five buckets
+	// (succeeded, incomplete, failed, inFlight, alreadyResolved) so
+	// they don't pin the Workload to Failed. Phase=Succeeded with
+	// Skipped is the only terminal shape the cascade path writes.
+	AgenticTaskVerdictSkipped AgenticTaskVerdict = "Skipped"
 )
 
 // SucceededOnTarget reports whether the task is in a terminal Succeeded

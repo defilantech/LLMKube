@@ -282,12 +282,16 @@ var _ = Describe("WorkloadReconciler coder escalation (#963)", func() {
 		code.Status.Result = resultRaw("ALREADY-RESOLVED", "", "Issue #42 already resolved by commit abc1234", "")
 		Expect(k8sClient.Status().Patch(ctx, &code, patch)).To(Succeed())
 
-		// Delete the verify child so the rollup doesn't pin on Pending.
-		// In production this would be cascade-failed by the reconciler; in
-		// envtest we isolate the coder-escalation hook under test.
+		// Cascade-skip the verify child (production path: the
+		// AgenticTaskReconciler would mark it Skipped because the coder
+		// ended ALREADY-RESOLVED). The envtest runs only the
+		// WorkloadReconciler, so we stamp the terminal shape directly.
 		var verifyTask foremanv1alpha1.AgenticTask
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: "coder-esc-already-resolved-verify-42"}, &verifyTask)).To(Succeed())
-		Expect(k8sClient.Delete(ctx, &verifyTask)).To(Succeed())
+		patchVerify := client.MergeFrom(verifyTask.DeepCopy())
+		verifyTask.Status.Phase = foremanv1alpha1.AgenticTaskPhaseSucceeded
+		verifyTask.Status.Verdict = foremanv1alpha1.AgenticTaskVerdictSkipped
+		Expect(k8sClient.Status().Patch(ctx, &verifyTask, patchVerify)).To(Succeed())
 
 		// Second reconcile runs the coder-escalation hook + rollup.
 		_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(wl)})

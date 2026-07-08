@@ -93,17 +93,39 @@ func coderResolvedBy(task *foremanv1alpha1.AgenticTask) string {
 	return env.Extra.ResolvedBy
 }
 
+// alreadyResolvedOutcome is the string value the model emits at
+// extra.outcome when the coder concludes the work is already on the
+// branch/base (#970). Distinct from MODEL-DECIDED (a capability
+// failure). Centralized here so the string can't drift between
+// isAlreadyResolvedCoder and shouldEscalateCoder.
+const alreadyResolvedOutcome = "ALREADY-RESOLVED"
+
 // isAlreadyResolvedCoder reports whether the task ended in the
 // machine outcome for "work is already on the branch/base". Used by
 // shouldEscalateCoder (to skip escalation) and rollup (to keep the
 // task out of the incomplete bucket). The signal lives at
-// extra.outcome == "ALREADY-RESOLVED" with verdict == NO-GO (#970).
+// extra.outcome == alreadyResolvedOutcome with verdict == NO-GO.
 func isAlreadyResolvedCoder(task *foremanv1alpha1.AgenticTask) bool {
 	if task == nil {
 		return false
 	}
 	verdict, topOutcome, _ := coderTerminalOutcome(task)
-	return verdict == foremanv1alpha1.AgenticTaskVerdictNoGo && topOutcome == "ALREADY-RESOLVED"
+	return verdict == foremanv1alpha1.AgenticTaskVerdictNoGo && topOutcome == alreadyResolvedOutcome
+}
+
+// isSkippedTask reports whether the task was skipped because its
+// dependency ended ALREADY-RESOLVED (#970). The cascade path in
+// agentictask_controller.transitionToSkippedIfDepAlreadyResolved
+// stamps Phase=Succeeded + Verdict=Skipped on the dependent; the
+// rollup excludes Skipped tasks from every bucket (succeeded,
+// incomplete, failed, inFlight, alreadyResolved) so they don't pin
+// the Workload to Failed.
+func isSkippedTask(task *foremanv1alpha1.AgenticTask) bool {
+	if task == nil {
+		return false
+	}
+	return task.Status.Phase == foremanv1alpha1.AgenticTaskPhaseSucceeded &&
+		task.Status.Verdict == foremanv1alpha1.AgenticTaskVerdictSkipped
 }
 
 // shouldEscalateCoder is the escalation trigger: escalate only on
@@ -115,7 +137,7 @@ func isAlreadyResolvedCoder(task *foremanv1alpha1.AgenticTask) bool {
 func shouldEscalateCoder(
 	verdict foremanv1alpha1.AgenticTaskVerdict, topOutcome, modelOutcome string,
 ) bool {
-	if verdict == foremanv1alpha1.AgenticTaskVerdictNoGo && topOutcome == "ALREADY-RESOLVED" {
+	if verdict == foremanv1alpha1.AgenticTaskVerdictNoGo && topOutcome == alreadyResolvedOutcome {
 		return false // #970: already-resolved is not a capability failure
 	}
 	if verdict == foremanv1alpha1.AgenticTaskVerdictNoGo && topOutcome == "MODEL-DECIDED" {

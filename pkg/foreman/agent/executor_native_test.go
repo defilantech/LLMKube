@@ -648,13 +648,28 @@ func TestNativeExecutor_ModelEmitsNoGo(t *testing.T) {
 	}
 }
 
-// TestSubmitResultEnvelopePreservesAlreadyResolved verifies that
-// the executor passes model-supplied extra.outcome values through
-// verbatim. The "ALREADY-RESOLVED" outcome (#970) is emitted by the
-// model, not the executor, so any rewriting of the envelope would
-// silently break the controller's escalation + rollup classifiers.
-// This is a regression guard, not a behavior change in the executor.
-func TestSubmitResultEnvelopePreservesAlreadyResolved(t *testing.T) {
+// TestAlreadyResolvedEnvelopeShape is a schema-shape regression guard
+// for the #970 ALREADY-RESOLVED machine outcome. The model emits a
+// submit_result envelope with `extra.outcome="ALREADY-RESOLVED"` and
+// (optionally) `extra.resolvedBy=<sha|branch>`. The controller's
+// coderResultEnvelope parser in
+// internal/foreman/controller/workload_coder_escalation.go reads
+// exactly these fields. This test locks the JSON contract: any change
+// to the field names or nesting would break the parser.
+//
+// What this test does NOT cover: the executor's actual pass-through
+// behavior (model JSON in → Status.Result.Raw out). A future change
+// to the executor that rewrites the envelope mid-pipeline would
+// silently break the controller's classifier and this test would
+// still pass. The real pass-through is exercised by the existing
+// TestNativeExecutor_ModelEmitsNoGo and the other ModelEmits* tests
+// in this file (which drive the executor end-to-end with a scripted
+// OAI server). For #970 specifically, no new executor behavior is
+// introduced; the executor passes the model's extra map through
+// verbatim, and the controller does the rest. If a future PR adds
+// executor-side ALREADY-RESOLVED detection or rewriting, add a new
+// TestNativeExecutor_<that-behavior> test here.
+func TestAlreadyResolvedEnvelopeShape(t *testing.T) {
 	// Construct the JSON the model would produce via submit_result.
 	submitted := map[string]any{
 		"schemaVersion": "foreman.v1",
@@ -671,9 +686,9 @@ func TestSubmitResultEnvelopePreservesAlreadyResolved(t *testing.T) {
 		t.Fatalf("marshal submitted envelope: %v", err)
 	}
 
-	// The executor's job here is "no rewriting." We assert the shape
-	// the controller later parses (coderResultEnvelope in
-	// workload_coder_escalation.go) is intact.
+	// Parse the shape the controller later reads (mirrors
+	// coderResultEnvelope.Extra in
+	// internal/foreman/controller/workload_coder_escalation.go).
 	var env struct {
 		Summary string `json:"summary"`
 		Extra   struct {
