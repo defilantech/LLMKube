@@ -120,17 +120,17 @@ func (s *Session) listTools(ctx context.Context) ([]toolDesc, error) {
 func (s *Session) callTool(ctx context.Context, name string, args json.RawMessage) (
 	text string, isError bool, err error,
 ) {
-	var arguments any
+	// Pass args through as raw JSON rather than unmarshaling into an `any`:
+	// encoding/json decodes all JSON numbers as float64, which silently
+	// loses precision on integers outside float64's 53-bit safe range.
+	// json.RawMessage implements MarshalJSON, so the SDK marshals it back
+	// out byte-for-byte.
+	params := &sdkmcp.CallToolParams{Name: name}
 	if len(args) > 0 {
-		if err := json.Unmarshal(args, &arguments); err != nil {
-			return "", false, fmt.Errorf("mcp: unmarshal arguments for tool %q on %q: %w", name, s.name, err)
-		}
+		params.Arguments = args
 	}
 
-	res, err := s.cs.CallTool(ctx, &sdkmcp.CallToolParams{
-		Name:      name,
-		Arguments: arguments,
-	})
+	res, err := s.cs.CallTool(ctx, params)
 	if err != nil {
 		return "", false, fmt.Errorf("mcp: call tool %q on %q: %w", name, s.name, err)
 	}

@@ -15,9 +15,10 @@ type echoArgs struct {
 }
 
 // startFakeMCP starts an in-process MCP server, speaking the real
-// streamable-HTTP protocol, with a single tool "echo" that returns its
-// "msg" argument as text content. It returns the server's base URL and
-// registers cleanup via t.Cleanup.
+// streamable-HTTP protocol, with an "echo" tool that returns its "msg"
+// argument as text content, and a "boom" tool that always returns a
+// tool-level error result. It returns the server's base URL and registers
+// cleanup via t.Cleanup.
 func startFakeMCP(t *testing.T) string {
 	t.Helper()
 
@@ -28,6 +29,15 @@ func startFakeMCP(t *testing.T) string {
 	}, func(_ context.Context, _ *sdkmcp.CallToolRequest, args echoArgs) (*sdkmcp.CallToolResult, any, error) {
 		return &sdkmcp.CallToolResult{
 			Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: args.Msg}},
+		}, nil, nil
+	})
+	sdkmcp.AddTool(server, &sdkmcp.Tool{
+		Name:        "boom",
+		Description: "always returns a tool-level error result",
+	}, func(_ context.Context, _ *sdkmcp.CallToolRequest, _ struct{}) (*sdkmcp.CallToolResult, any, error) {
+		return &sdkmcp.CallToolResult{
+			IsError: true,
+			Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: "kaboom"}},
 		}, nil, nil
 	})
 
