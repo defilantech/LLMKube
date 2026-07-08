@@ -238,6 +238,101 @@ spec:
                 maximum: 500
                 minimum: 1
                 type: integer
+              mcp:
+                description: |-
+                  MCP configures the agent's MCP (Model Context Protocol) client.
+                  Nil or Enabled=false runs the agent with no MCP tools (v0.1
+                  behavior, unchanged).
+                properties:
+                  callTimeout:
+                    description: CallTimeout bounds a single MCP tool call. Defaults
+                      to 30s when zero.
+                    type: string
+                  enabled:
+                    description: Enabled turns the MCP client on for this agent (opt-in;
+                      default off).
+                    type: boolean
+                  maxResultBytes:
+                    description: |-
+                      MaxResultBytes caps an MCP tool result before truncation. Defaults to
+                      32768 when zero.
+                    type: integer
+                  servers:
+                    description: Servers is the set of MCP servers to connect to.
+                    items:
+                      description: |-
+                        MCPServer configures one MCP server the agent connects to. Its tools
+                        are namespaced as mcp/<name>/<tool> so identically-named tools across
+                        servers do not collide in the model-facing tool whitelist.
+                      properties:
+                        allowedTools:
+                          description: |-
+                            AllowedTools whitelists tool names this server may expose ("*" or
+                            empty = all).
+                          items:
+                            type: string
+                          type: array
+                        headers:
+                          description: Headers are extra HTTP headers (e.g. auth),
+                            sourced from secrets.
+                          items:
+                            description: |-
+                              MCPHeader is one HTTP header attached to every request an MCPServer
+                              receives, with its value sourced from a Secret key so credentials never
+                              live in the CR spec.
+                            properties:
+                              name:
+                                description: Name is the HTTP header name.
+                                type: string
+                              valueFrom:
+                                description: ValueFrom sources the header value from
+                                  a Secret key.
+                                properties:
+                                  key:
+                                    description: The key of the secret to select from.  Must
+                                      be a valid secret key.
+                                    type: string
+                                  name:
+                                    default: ""
+                                    description: |-
+                                      Name of the referent.
+                                      This field is effectively required, but due to backwards compatibility is
+                                      allowed to be empty. Instances of this type with an empty value here are
+                                      almost certainly wrong.
+                                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                    type: string
+                                  optional:
+                                    description: Specify whether the Secret or its
+                                      key must be defined
+                                    type: boolean
+                                required:
+                                - key
+                                type: object
+                                x-kubernetes-map-type: atomic
+                            required:
+                            - name
+                            type: object
+                          type: array
+                        name:
+                          description: Name namespaces this server's tools as mcp/<name>/<tool>.
+                          type: string
+                        transport:
+                          description: Transport is the MCP transport. Phase 1 supports
+                            "http" only.
+                          enum:
+                          - http
+                          type: string
+                        url:
+                          description: URL is the MCP server endpoint (streamable
+                            HTTP).
+                          type: string
+                      required:
+                      - name
+                      - transport
+                      - url
+                      type: object
+                    type: array
+                type: object
               model:
                 description: |-
                   Model is a free-form identifier for the model this Agent expects

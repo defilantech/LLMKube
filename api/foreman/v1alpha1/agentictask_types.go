@@ -374,6 +374,17 @@ type AgenticTaskSpec struct {
 	// by the gate executor; unset means the "go" preset (current behavior).
 	// +optional
 	GateProfile *GateProfile `json:"gateProfile,omitempty"`
+
+	// MCPEnabled is the reconciler-propagated effective Workload opt-out
+	// that reaches the executor without a live Workload GET. Three-valued
+	// via the *bool: nil or true means MCP is allowed (subject to the
+	// referenced Agent's own spec.mcp config); false disables MCP for
+	// this run, for benchmark control runs that must be comparable to a
+	// no-MCP baseline. The WorkloadReconciler stamps this from
+	// Workload.spec.mcpEnabled onto every child task it emits; hand-
+	// authored AgenticTasks may set it directly.
+	// +optional
+	MCPEnabled *bool `json:"mcpEnabled,omitempty"`
 }
 
 // AgenticTaskPhase is the lifecycle state of a task.
