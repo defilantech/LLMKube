@@ -76,7 +76,9 @@ func TestRunTask_HappyPathPushesAndEmitsResult(t *testing.T) {
 		InferenceBaseURLOverride: oaiSrv.URL + "/v1",
 		CommitAuthor:             repo.Identity{Name: "Foreman Bot", Email: "bot@foreman.test"},
 		CommitCommitter:          repo.Identity{Name: "Foreman Bot", Email: "bot@foreman.test"},
-		RegistryFactory: func(ws string, _ *foremanv1alpha1.Agent) (foremanagent.ToolRegistry, error) {
+		RegistryFactory: func(
+			_ context.Context, ws string, _ *foremanv1alpha1.Agent, _ bool,
+		) (foremanagent.ToolRegistry, error) {
 			reg.workspace = ws
 			return reg, nil
 		},
@@ -143,7 +145,9 @@ func TestRunTask_TaskNotFound(t *testing.T) {
 	cfg := foremanagent.RunTaskConfig{
 		Client: c,
 		Task:   types.NamespacedName{Namespace: "default", Name: "ghost"},
-		RegistryFactory: func(string, *foremanv1alpha1.Agent) (foremanagent.ToolRegistry, error) {
+		RegistryFactory: func(
+			_ context.Context, _ string, _ *foremanv1alpha1.Agent, _ bool,
+		) (foremanagent.ToolRegistry, error) {
 			return &fakeRegistry{}, nil
 		},
 	}

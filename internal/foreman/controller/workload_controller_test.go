@@ -128,6 +128,62 @@ var _ = Describe("WorkloadReconciler (M6 stub planner)", func() {
 		Expect(*stepB.OwnerReferences[0].Controller).To(BeTrue())
 	})
 
+	It("propagates Workload.Spec.MCPEnabled=false verbatim onto rendered AgenticTasks", func() {
+		wl := newWorkload("pipeline-mcp-disabled", foremanv1alpha1.WorkloadSpec{
+			Intent:     "explicit",
+			Repo:       "defilantech/LLMKube",
+			MCPEnabled: ptr.To(false),
+			Pipeline: []foremanv1alpha1.PipelineStep{
+				{
+					Name:     "step-a",
+					Kind:     foremanv1alpha1.AgenticTaskKindIssueFix,
+					AgentRef: corev1.LocalObjectReference{Name: "coder"},
+					Payload:  foremanv1alpha1.AgenticTaskPayload{Repo: "defilantech/LLMKube", Issue: 1234},
+				},
+			},
+		})
+		Expect(k8sClient.Create(ctx, wl)).To(Succeed())
+		DeferCleanup(func() {
+			cleanupChildren(wl)
+			_ = k8sClient.Delete(ctx, wl)
+		})
+
+		_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(wl)})
+		Expect(err).NotTo(HaveOccurred())
+
+		var stepA foremanv1alpha1.AgenticTask
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: "pipeline-mcp-disabled-step-a"}, &stepA)).To(Succeed())
+		Expect(stepA.Spec.MCPEnabled).NotTo(BeNil())
+		Expect(*stepA.Spec.MCPEnabled).To(BeFalse())
+	})
+
+	It("leaves rendered AgenticTasks' MCPEnabled nil when Workload.Spec.MCPEnabled is unset", func() {
+		wl := newWorkload("pipeline-mcp-unset", foremanv1alpha1.WorkloadSpec{
+			Intent: "explicit",
+			Repo:   "defilantech/LLMKube",
+			Pipeline: []foremanv1alpha1.PipelineStep{
+				{
+					Name:     "step-a",
+					Kind:     foremanv1alpha1.AgenticTaskKindIssueFix,
+					AgentRef: corev1.LocalObjectReference{Name: "coder"},
+					Payload:  foremanv1alpha1.AgenticTaskPayload{Repo: "defilantech/LLMKube", Issue: 1234},
+				},
+			},
+		})
+		Expect(k8sClient.Create(ctx, wl)).To(Succeed())
+		DeferCleanup(func() {
+			cleanupChildren(wl)
+			_ = k8sClient.Delete(ctx, wl)
+		})
+
+		_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(wl)})
+		Expect(err).NotTo(HaveOccurred())
+
+		var stepA foremanv1alpha1.AgenticTask
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: "pipeline-mcp-unset-step-a"}, &stepA)).To(Succeed())
+		Expect(stepA.Spec.MCPEnabled).To(BeNil())
+	})
+
 	It("expands Issues into code+verify pairs in issue-batch mode", func() {
 		wl := newWorkload("batch-shortcut", foremanv1alpha1.WorkloadSpec{
 			Intent:           "batch",

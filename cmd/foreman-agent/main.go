@@ -665,11 +665,22 @@ func clampInt32(n int) int32 {
 // the Agent CR's tool list) returns an error so the executor surfaces
 // a clean ToolRegistryBuildFailed outcome rather than launching the
 // loop with the wrong tools.
+//
+// The closure accepts ctx + workloadMCPEnabled (the effective
+// Workload.Spec.MCPEnabled benchmark opt-out, threaded from the
+// executor via mcpEnabledForTask) but ignores both this task: MCP tool
+// registration is wired in a follow-up that adds the mcp-package
+// import here; the agent package cannot take that import itself
+// (mcp imports agent for agent.ToolResult).
 func makeRegistryFactory(
 	kc client.Client, kcs kubernetes.Interface, foremanNamespace string,
-) func(workspace string, ag *foremanv1alpha1.Agent) (foremanagent.ToolRegistry, error) {
+) func(
+	ctx context.Context, workspace string, ag *foremanv1alpha1.Agent, workloadMCPEnabled bool,
+) (foremanagent.ToolRegistry, error) {
 	logTail := makePodLogTailFn(kcs)
-	return func(workspace string, ag *foremanv1alpha1.Agent) (foremanagent.ToolRegistry, error) {
+	return func(
+		_ context.Context, workspace string, ag *foremanv1alpha1.Agent, _ bool,
+	) (foremanagent.ToolRegistry, error) {
 		bashTimeout := time.Duration(ag.Spec.BashTimeoutSeconds) * time.Second
 		if bashTimeout <= 0 {
 			bashTimeout = 30 * time.Second

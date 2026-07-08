@@ -789,6 +789,53 @@ func TestIsDeterministicAgent(t *testing.T) {
 	}
 }
 
+// TestMCPEnabledForTask pins the default-allow gate the executor passes
+// to RegistryFactory: MCP tool access is permitted unless the task
+// explicitly opts out via Spec.MCPEnabled=false (the benchmark control
+// run case propagated from Workload.Spec.MCPEnabled). A nil task or a
+// nil MCPEnabled pointer must NOT disable MCP.
+func TestMCPEnabledForTask(t *testing.T) {
+	cases := []struct {
+		name string
+		task *foremanv1alpha1.AgenticTask
+		want bool
+	}{
+		{
+			name: "nil task -> enabled",
+			task: nil,
+			want: true,
+		},
+		{
+			name: "nil MCPEnabled (default) -> enabled",
+			task: &foremanv1alpha1.AgenticTask{
+				Spec: foremanv1alpha1.AgenticTaskSpec{MCPEnabled: nil},
+			},
+			want: true,
+		},
+		{
+			name: "MCPEnabled=true -> enabled",
+			task: &foremanv1alpha1.AgenticTask{
+				Spec: foremanv1alpha1.AgenticTaskSpec{MCPEnabled: ptr.To(true)},
+			},
+			want: true,
+		},
+		{
+			name: "MCPEnabled=false -> disabled (benchmark control run)",
+			task: &foremanv1alpha1.AgenticTask{
+				Spec: foremanv1alpha1.AgenticTaskSpec{MCPEnabled: ptr.To(false)},
+			},
+			want: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := mcpEnabledForTask(tc.task); got != tc.want {
+				t.Errorf("want %v got %v", tc.want, got)
+			}
+		})
+	}
+}
+
 // TestProgressConfigFromAgent_ReviewerOverridesEditFree exercises the
 // role-aware override in progressConfigFromAgent: reviewer-role agents
 // always get EditFreeTurnsLimit=0 (signal disabled), regardless of
