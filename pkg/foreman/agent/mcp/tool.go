@@ -192,27 +192,30 @@ func (t *mcpTool) recordCall(args json.RawMessage, r mcpCallRecord) {
 }
 
 // truncateUTF8 cuts s to at most max bytes without splitting a
-// multibyte rune. It trims from the end of a byte-cap slice back to the
-// last full rune boundary rather than decoding the whole string, since
-// MCP results are typically small enough that this scan is cheap either
-// way.
+// multibyte rune. When the byte cap already lands on a rune boundary the
+// slice is kept as-is; only when the cap splits a trailing multibyte rune
+// do we walk back and drop that partial rune. MCP results are typically
+// small enough that the utf8.Valid scan is cheap either way.
 func truncateUTF8(s string, max int) string {
 	if max <= 0 || len(s) <= max {
 		return s
 	}
 	cut := s[:max]
+	// If the cap lands on a rune boundary, every rune in cut is complete
+	// (including one that fits exactly on the last byte). Keep it. Walking
+	// back here would wrongly discard that fully-fitting trailing rune,
+	// because its final byte is a continuation byte, not a RuneStart.
+	if utf8.ValidString(cut) {
+		return cut
+	}
+	// The cap split the trailing rune: walk back over its continuation
+	// bytes to the lead byte that begins it, then drop that lead byte too
+	// so cut ends on the previous complete rune.
 	for len(cut) > 0 && !utf8.RuneStart(cut[len(cut)-1]) {
 		cut = cut[:len(cut)-1]
 	}
-	// cut now ends either on a complete rune or (if the very start of a
-	// multibyte rune was itself the byte we trimmed to) an incomplete
-	// leading byte; utf8.RuneStart only confirms the byte *begins* a
-	// rune, so verify the full rune actually fits before keeping it.
 	if len(cut) > 0 {
-		r, size := utf8.DecodeLastRuneInString(cut)
-		if r == utf8.RuneError && size == 1 {
-			cut = cut[:len(cut)-1]
-		}
+		cut = cut[:len(cut)-1]
 	}
 	return cut
 }

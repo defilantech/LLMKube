@@ -370,3 +370,43 @@ func TestMcpTool_Execute_NilRecordIsNoop(t *testing.T) {
 		t.Fatalf("Execute returned Go error: %v", err)
 	}
 }
+
+// TestTruncateUTF8_RuneBoundaries covers the case Jory flagged on #1014: when
+// the byte cap lands exactly on the last byte of a complete multibyte rune,
+// that rune fits and must be kept, not walked back past. The earlier
+// implementation dropped it (and then a second byte via DecodeLastRune),
+// silently losing data whenever an MCP result truncated on a rune boundary.
+func TestTruncateUTF8_RuneBoundaries(t *testing.T) {
+	tests := []struct {
+		name string
+		s    string
+		max  int
+		want string
+	}{
+		{"cap on 2-byte boundary keeps both runes", "ééé", 4, "éé"},
+		{"cap on 2-byte boundary keeps one rune", "ééé", 2, "é"},
+		{"cap on 4-byte boundary keeps the rune", "𐍈𐍈", 4, "𐍈"},
+		{"cap splits a 2-byte rune drops the partial", "ééé", 3, "é"},
+		{"cap splits a 4-byte rune drops the partial", "é𐍈", 3, "é"},
+		{"cap smaller than first rune yields empty", "é", 1, ""},
+		{"ascii cut mid-string", "hello", 3, "hel"},
+		{"max >= len returns whole string", "éé", 99, "éé"},
+		{"max <= 0 returns whole string", "éé", 0, "éé"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := truncateUTF8(tc.s, tc.max)
+			if got != tc.want {
+				t.Fatalf("truncateUTF8(%q, %d) = %q (%d bytes), want %q (%d bytes)",
+					tc.s, tc.max, got, len(got), tc.want, len(tc.want))
+			}
+			if !utf8.ValidString(got) {
+				t.Fatalf("truncateUTF8(%q, %d) = %q is not valid UTF-8", tc.s, tc.max, got)
+			}
+			if len(got) > tc.max && tc.max > 0 {
+				t.Fatalf("truncateUTF8(%q, %d) = %q exceeds cap (%d > %d)",
+					tc.s, tc.max, got, len(got), tc.max)
+			}
+		})
+	}
+}
