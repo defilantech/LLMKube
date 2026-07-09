@@ -747,6 +747,13 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 	// never changes the verdict.
 	applyCoderGroundingRailForTask(ctx, log, task, workspace, loopRes)
 
+	// No-functional-change advisory (non-blocking): flag a GO whose committed
+	// diff is docs/comments/tests only, so a "fix" that changes no production
+	// code (and whose prose may claim unimplemented behavior, #850/#1022) does
+	// not read as a clean functional GATE-PASS. Same after-commit requirement
+	// as the grounding rail; records-and-logs, never changes the verdict.
+	applyNoFunctionalChangeForTask(ctx, log, task, workspace, loopRes)
+
 	if err := repo.Push(ctx, repo.PushOptions{
 		Workspace: workspace,
 		Branch:    branch,
