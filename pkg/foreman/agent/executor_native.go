@@ -736,6 +736,17 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 		return e.commitRejectedResult(start, transcriptRef, loopRes, branch, commitErr), nil
 	}
 
+	// Coder grounding rail (v1, non-blocking): flag any external metric
+	// identifier the coder wrote that contradicts the context7 docs it
+	// retrieved this run. MUST run after repo.Commit: the rail reads the
+	// committed diff (base...HEAD), and until the commit above the coder's
+	// edits are uncommitted (the #982 self-commit recovery soft-resets them
+	// into the working tree), so a pre-commit base...HEAD is empty and the
+	// rail sees nothing. Records-and-logs onto loopRes.Terminal.Extra (which
+	// goResult/the downgrade results serialize into status extra.modelExtra);
+	// never changes the verdict.
+	applyCoderGroundingRailForTask(ctx, log, task, workspace, loopRes)
+
 	if err := repo.Push(ctx, repo.PushOptions{
 		Workspace: workspace,
 		Branch:    branch,
