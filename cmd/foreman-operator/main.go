@@ -25,6 +25,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC) so
 	// exec-entrypoint and run can make use of them.
@@ -42,6 +43,7 @@ import (
 	foremanv1alpha1 "github.com/defilantech/llmkube/api/foreman/v1alpha1"
 	foremancontroller "github.com/defilantech/llmkube/internal/foreman/controller"
 	foremanwebhook "github.com/defilantech/llmkube/internal/foreman/webhook"
+	"github.com/defilantech/llmkube/pkg/foreman/audit"
 )
 
 // defaultWebhookCertDir is the controller-runtime default serving-cert
@@ -67,6 +69,8 @@ func main() {
 	var enableWebhooks bool
 	var webhookCertDir string
 	var webhookPort int
+	var auditRetention time.Duration
+	var auditRetentionInterval time.Duration
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8081",
 		"The address the metrics endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8082",
@@ -92,7 +96,15 @@ func main() {
 			"chart mounts the self-signed serving Secret here.")
 	flag.IntVar(&webhookPort, "webhook-port", 9443,
 		"Port the webhook server listens on.")
-
+	flag.DurationVar(&auditRetention, "audit-retention", 7*24*time.Hour,
+		"Maximum age before an audit-record ConfigMap is reaped. "+
+			"Audit CMs are intentionally owner-unbound so they outlive the "+
+			"AgenticTask for compliance; without this reaper they accumulate "+
+			"unbounded (#990). Set to 0 to disable the reaper.")
+	flag.DurationVar(&auditRetentionInterval, "audit-retention-interval", time.Hour,
+		"How often the audit reaper sweeps. Defaults to 1h. Lower values are "+
+			"only useful in tests; raising it past a few hours delays the "+
+			"first cleanup pass proportionally.")
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -185,6 +197,31 @@ func main() {
 	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up ready check")
 		os.Exit(1)
+	}
+
+	// Audit reaper (#990): the writer stamps audit ConfigMaps without
+	// ownerReferences by design (they must outlive the AgenticTask for
+	// compliance) — see pkg/foreman/audit/writer.go. Without a periodic
+	// reaper they accumulate unbounded, so we register one here. The
+	// reaper's NeedLeaderElection makes it a no-op on standby replicas
+	// when --leader-elect is enabled; with retention=0 it just waits
+	// on ctx.Done() and does nothing, so the registration is always
+	// safe.
+	if err := mgr.Add(&audit.Reaper{
+		Client:    mgr.GetClient(),
+		Retention: auditRetention,
+		Interval:  auditRetentionInterval,
+		Log:       ctrl.Log.WithName("audit-reaper"),
+	}); err != nil {
+		setupLog.Error(err, "unable to register audit reaper")
+		os.Exit(1)
+	}
+	if auditRetention > 0 {
+		setupLog.Info("audit reaper enabled",
+			"retention", auditRetention.String(),
+			"interval", auditRetentionInterval.String())
+	} else {
+		setupLog.Info("audit reaper disabled (retention=0)")
 	}
 
 	setupLog.Info("starting foreman-operator")

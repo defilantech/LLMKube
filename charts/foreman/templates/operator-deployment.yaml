@@ -59,6 +59,12 @@ spec:
             {{- if .Values.webhook.enabled }}
             - --webhook-port={{ .Values.webhook.port }}
             {{- end }}
+            # Audit reaper (#990): the writer stamps audit-record CMs
+            # owner-unbound by design, so they accumulate unless a
+            # reaper trims them. --audit-retention=0s disables the
+            # reaper entirely without redeploying.
+            - --audit-retention={{ .Values.operator.audit.retention }}
+            - --audit-retention-interval={{ .Values.operator.audit.interval }}
           ports:
             - name: health
               containerPort: {{ .Values.operator.health.port }}
