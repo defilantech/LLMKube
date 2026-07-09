@@ -52,6 +52,14 @@ func Sweep(ctx context.Context, c client.Client, retention time.Duration) (int, 
 	// AuditNamespace, if the operator was configured with one), which
 	// the reaper has no upfront knowledge of. The audit-label selector
 	// keeps the blast radius to CMs the reaper actually owns.
+	//
+	// The List is intentionally NOT paginated: the label filter scopes
+	// to audit CMs only and the reaper itself self-bounds the count
+	// by deleting the aged-out ones each tick, so the un-paginated
+	// result stays small in practice. If audit volume ever grows past
+	// the apiserver's --max-objects-per-list (default 500) this single
+	// call would start to truncate; if that ever happens, switch to
+	// client.List with a Continue loop and a per-page list limit.
 	if err := c.List(ctx, &list, client.MatchingLabels{AuditLabel: "true"}); err != nil {
 		return 0, fmt.Errorf("audit reaper: list: %w", err)
 	}

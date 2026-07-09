@@ -77,6 +77,12 @@ rules:
     resources: ["events"]
     verbs: ["create", "patch"]
   - apiGroups: [""]
+    # The audit reaper (#990) only needs list + delete, but Kubernetes
+    # RBAC verbs are per-resource, not per-label-selector, so the full
+    # CRUD set is granted and the blast radius is enforced in code by
+    # client.MatchingLabels{AuditLabel: "true"} inside the reaper's
+    # Sweep (pkg/foreman/audit/reaper.go). get/list/watch are also used
+    # by the live audit writer and the transcript helpers.
     resources: ["configmaps"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 ---
