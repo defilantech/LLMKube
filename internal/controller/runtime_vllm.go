@@ -73,8 +73,11 @@ func (b *VLLMBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, model 
 		// which are appended last so the user flag wins.
 		"--host", "::",
 		"--port", fmt.Sprintf("%d", port),
-		"--enable-metrics",
 	}
+	// NOTE: vLLM has no --enable-metrics flag. Its OpenAI server always exposes
+	// Prometheus metrics at /metrics, so there is nothing to enable; passing the
+	// flag makes vLLM's argument parser reject the whole command and the pod
+	// never starts (#1030). The PodMonitor scrapes /metrics unconditionally.
 
 	var err error
 
