@@ -756,10 +756,25 @@ jobs:
           echo "✅ foreman lint passed"
 
       - name: Install helm-unittest
-        # Pin to a tag whose release tarball the runner can fetch without
-        # auth; same source the local developer install uses.
+        # Helm v3.13's `helm plugin install` will not skip signature
+        # verification (no --verify flag in 3.x), and the runner has no
+        # GPG keyring to verify the upstream release signature against.
+        # Pull the v1.1.1 plugin tarball directly and unpack into
+        # $(helm env HELM_PLUGINS) — the plugin.yaml ships every platform
+        # binary and the plugin runs without a post-install download.
         run: |
-          helm plugin install https://github.com/helm-unittest/helm-unittest.git --verify=false
+          set -euo pipefail
+          HELM_PLUGINS_DIR="$(helm env HELM_PLUGINS)"
+          PLUGIN_DIR="${HELM_PLUGINS_DIR}/unittest"
+          rm -rf "${PLUGIN_DIR}"
+          mkdir -p "${PLUGIN_DIR}"
+          curl -fsSL \
+            https://github.com/helm-unittest/helm-unittest/releases/download/v1.1.1/unittest-1.1.1.tgz \
+            | tar -xz -C "${PLUGIN_DIR}" --strip-components=1
+          chmod +x "${PLUGIN_DIR}"/untt-*
+          # Trigger Helm's plugin discovery by listing once; HELM_PLUGINS
+          # is read on every invocation, so this picks the plugin up.
+          helm plugin list > /dev/null
           helm unittest --help > /dev/null
           echo "✅ helm-unittest installed"
 
