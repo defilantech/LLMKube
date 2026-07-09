@@ -65,6 +65,31 @@ operator:
   # debug only when debugging a bad reconcile cycle.
   logLevel: info
 
+  # Audit reaper (#990). The audit writer stamps audit-record
+  # ConfigMaps WITHOUT ownerReferences by design — the record must
+  # outlive the AgenticTask so it remains a compliance trail after
+  # task GC. That design choice leaves the records to accumulate
+  # unbounded in the task namespace over time, so the operator runs
+  # a periodic reaper that deletes any audit CM older than
+  # `audit.retention`. Set retention to a zero-duration (e.g. "0s",
+  # "0m", "0") to disable the reaper entirely.
+  #
+  # With leader election enabled (the default), the reaper only runs
+  # on the elected leader — so a HA deployment (replicaCount > 1)
+  # cannot double-sweep, and a standalone (replicaCount=1) deployment
+  # runs it on the only replica.
+  audit:
+    # Maximum age before an audit-record ConfigMap is deleted.
+    # Default: 7 days. Override shorter for tighter retention
+    # (e.g. "24h"); override longer for compliance-driven horizons.
+    # Set to "0s" / "0m" / "0" to disable the reaper.
+    retention: 168h
+    # How often the reaper sweeps. Default 1h; only useful to lower
+    # for tests. The first sweep runs immediately on operator start,
+    # so a fresh install with a backlog of stale audit CMs does not
+    # wait for the first tick.
+    interval: 1h
+
   # Metrics + health endpoints on the operator pod. Match the
   # llmkube core operator's defaults for symmetry.
   metrics:
