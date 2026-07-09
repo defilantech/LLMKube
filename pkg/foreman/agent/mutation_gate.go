@@ -394,6 +394,24 @@ func changedBranchLines(ctx context.Context, workspace, base, file string, run c
 	return parseAddedLines(out)
 }
 
+// addedDiffLines returns the text of every added line in the coder's branch
+// diff against base (git diff -U0 base...HEAD), excluding the "+++" file
+// headers. Used by the coder grounding rail to scan what the coder wrote for
+// hallucinated external identifiers. Degrades open: any git error -> nil.
+func addedDiffLines(ctx context.Context, workspace, base string, run commandRunner) []string {
+	out, err := run(ctx, workspace, nil, "git", "diff", "-U0", base+"...HEAD")
+	if err != nil {
+		return nil
+	}
+	var lines []string
+	for _, l := range strings.Split(out, "\n") {
+		if strings.HasPrefix(l, "+") && !strings.HasPrefix(l, "+++") {
+			lines = append(lines, l[1:])
+		}
+	}
+	return lines
+}
+
 // parseAddedLines extracts the set of added new-file line numbers from a
 // `git diff -U0` output by tracking each hunk header's new-file start line.
 func parseAddedLines(out string) map[int]bool {

@@ -18,8 +18,10 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -343,6 +345,82 @@ func TestNeuterAndTestPackage_RealGoTest(t *testing.T) {
 	weakDir := filepath.Join(ws, "weak")
 	if _, err := execCommandRunner(context.Background(), weakDir, nil, "go", "test", "./..."); err != nil {
 		t.Fatalf("weak test should PASS under neuter (survivor), got err: %v", err)
+	}
+}
+
+func TestAddedDiffLines_ReturnsAddedContentExcludingHeaders(t *testing.T) {
+	diff := "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1,0 +2,2 @@\n" +
+		"+  expr: rate(vllm:request_failure_total[5m])\n" +
+		"+  labels: {}\n"
+	run := func(_ context.Context, _ string, _ []string, name string, args ...string) (string, error) {
+		return diff, nil
+	}
+	got := addedDiffLines(context.Background(), "/ws", "main", run)
+	want := []string{"  expr: rate(vllm:request_failure_total[5m])", "  labels: {}"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("addedDiffLines = %#v, want %#v", got, want)
+	}
+}
+
+func TestAddedDiffLines_NilOnGitError(t *testing.T) {
+	run := func(_ context.Context, _ string, _ []string, name string, args ...string) (string, error) {
+		return "", errors.New("boom")
+	}
+	if got := addedDiffLines(context.Background(), "/ws", "main", run); got != nil {
+		t.Fatalf("want nil on git error, got %#v", got)
+	}
+}
+
+// TestAddedDiffLines_CommittedVsUncommitted is the regression test for the
+// coder grounding rail's placement bug: addedDiffLines reads the committed
+// diff (base...HEAD), so a NEW file the coder wrote is invisible until it is
+// committed. The rail therefore MUST run after repo.Commit in runLLMPath, not
+// before it (where the earlier no-op-forever bug lived). This exercises real
+// git rather than a stubbed runner, since the stub is what let the bug hide.
+func TestAddedDiffLines_CommittedVsUncommitted(t *testing.T) {
+	ws := t.TempDir()
+	git := func(args ...string) string {
+		t.Helper()
+		out, err := execCommandRunner(context.Background(), ws, nil, "git", args...)
+		if err != nil {
+			t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, out)
+		}
+		return out
+	}
+	git("init", "-q")
+	git("config", "user.email", "t@t.io")
+	git("config", "user.name", "t")
+	if err := os.WriteFile(filepath.Join(ws, "base.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("add", "-A")
+	git("commit", "-q", "-m", "base")
+	git("branch", "-M", "main")
+	git("checkout", "-q", "-b", "feature")
+
+	// The coder writes a NEW file containing a hallucinated metric identifier.
+	metricLine := "  expr: rate(vllm:request_failure_total[5m])"
+	if err := os.WriteFile(filepath.Join(ws, "alerts.yaml"), []byte(metricLine+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Uncommitted: base...HEAD sees nothing (this is the bug the fix avoids).
+	if got := addedDiffLines(context.Background(), ws, "main", execCommandRunner); len(got) != 0 {
+		t.Fatalf("pre-commit addedDiffLines should be empty (new file untracked), got %#v", got)
+	}
+
+	// After commit: the new file's added line is visible to base...HEAD.
+	git("add", "-A")
+	git("commit", "-q", "-m", "add alerts")
+	got := addedDiffLines(context.Background(), ws, "main", execCommandRunner)
+	found := false
+	for _, l := range got {
+		if strings.Contains(l, "vllm:request_failure_total") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("post-commit addedDiffLines should include the new file's metric line, got %#v", got)
 	}
 }
 
