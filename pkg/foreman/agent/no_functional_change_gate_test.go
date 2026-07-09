@@ -78,16 +78,20 @@ func TestFunctionalChangeInDiff(t *testing.T) {
 			want:  false,
 		},
 		{
-			name:    "comment-only production go",
-			names:   "internal/controller/model_storage.go",
-			perFile: map[string]string{"internal/controller/model_storage.go": "@@ -55,0 +56,3 @@\n+// On a tainted node...\n+// pre-stage the GGUF...\n"},
-			want:    false,
+			name:  "comment-only production go",
+			names: "internal/controller/model_storage.go",
+			perFile: map[string]string{
+				"internal/controller/model_storage.go": "@@ -55,0 +56,1 @@\n+// a comment\n",
+			},
+			want: false,
 		},
 		{
-			name:    "real production go change",
-			names:   "internal/controller/model_storage.go",
-			perFile: map[string]string{"internal/controller/model_storage.go": "@@ -55,0 +56,1 @@\n+recorder.Eventf(obj, \"Warning\", \"Tainted\", msg)\n"},
-			want:    true,
+			name:  "real production go change",
+			names: "internal/controller/model_storage.go",
+			perFile: map[string]string{
+				"internal/controller/model_storage.go": "@@ -55,0 +56,1 @@\n+recorder.Eventf(o, m)\n",
+			},
+			want: true,
 		},
 		{
 			name:    "docs plus comment-only go",
