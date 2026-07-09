@@ -19,6 +19,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -34,6 +35,73 @@ import (
 // N occurrences" and the tool enforces the count.
 type StrReplaceTool struct {
 	Workspace string
+
+	// failures counts consecutive str_replace match-failures per file path
+	// within one run (StrReplaceTool is instantiated per workspace). Once a
+	// file crosses strReplaceEscalateAfter, the failure result escalates to
+	// dumping the full file and ordering a write_file, so a model that keeps
+	// re-hallucinating old_string gets a deterministic escape instead of
+	// looping into RepeatedToolCall (#1025). Reset on a successful edit.
+	failures map[string]int
+}
+
+const (
+	// strReplaceEscalateAfter is the consecutive per-file failure count at
+	// which str_replace stops handing back an anchor snippet and instead
+	// dumps the whole file with a write_file directive.
+	strReplaceEscalateAfter = 2
+	// strReplaceEscalateMaxLines caps how large a file we will inline in the
+	// escalated hint; above it, the model is told to write_file from a fresh
+	// read rather than dumping the whole thing into the transcript.
+	strReplaceEscalateMaxLines = 400
+)
+
+// noteFailure records a match-failure for path and returns the new consecutive
+// count. clearFailures resets it after any successful edit to that path.
+func (t *StrReplaceTool) noteFailure(path string) int {
+	if t.failures == nil {
+		t.failures = map[string]int{}
+	}
+	t.failures[path]++
+	return t.failures[path]
+}
+
+func (t *StrReplaceTool) clearFailures(path string) { delete(t.failures, path) }
+
+// failureResult records a failure for path and returns either the caller's
+// normal hint (early failures) or, once the file has failed
+// strReplaceEscalateAfter times in a row, the escalated write_file hint.
+func (t *StrReplaceTool) failureResult(path, content, normalHint string) error {
+	if n := t.noteFailure(path); n >= strReplaceEscalateAfter {
+		return errors.New(escalatedEditHint(path, content, n))
+	}
+	return errors.New(normalHint)
+}
+
+// escalatedEditHint tells the model to stop retrying str_replace on a file it
+// cannot match and to rewrite it wholesale, inlining the full numbered content
+// for small files so write_file needs no further reads.
+func escalatedEditHint(path, content string, n int) string {
+	head := fmt.Sprintf(
+		"str_replace has failed %d times in a row on %q: your old_string is not matching the "+
+			"actual bytes. STOP calling str_replace on this file. ", n, path)
+	if strings.Count(content, "\n")+1 <= strReplaceEscalateMaxLines {
+		return head + fmt.Sprintf(
+			"Call write_file on %q with the full corrected file. Its complete current content is "+
+				"below, line-numbered for reference (do NOT include the numbers in write_file):\n%s",
+			path, numberLines(content))
+	}
+	return head + "The file is large: do a fresh read_file of the exact region and copy the bytes " +
+		"VERBATIM, or call write_file with the full corrected content. Do not retype old_string from memory."
+}
+
+// numberLines prefixes each line of content with its 1-based number and a tab.
+func numberLines(content string) string {
+	var b strings.Builder
+	for i, l := range strings.Split(content, "\n") {
+		fmt.Fprintf(&b, "%d\t%s\n", i+1, l)
+	}
+	return b.String()
 }
 
 type strReplaceArgs struct {
@@ -125,6 +193,7 @@ func (t *StrReplaceTool) Execute(_ context.Context, args json.RawMessage) (*agen
 				if err := os.WriteFile(full, []byte(recovered), 0o644); err != nil { //nolint:gosec // G306: workspace file
 					return nil, fmt.Errorf("str_replace: write %q: %w", a.Path, err)
 				}
+				t.clearFailures(a.Path)
 				return &agent.ToolResult{
 					Output: map[string]any{"path": a.Path, "replacements": 1, "note": note},
 				}, nil
@@ -138,6 +207,7 @@ func (t *StrReplaceTool) Execute(_ context.Context, args json.RawMessage) (*agen
 					if err := os.WriteFile(full, []byte(recovered), 0o644); err != nil { //nolint:gosec // G306: workspace file
 						return nil, fmt.Errorf("str_replace: write %q: %w", a.Path, err)
 					}
+					t.clearFailures(a.Path)
 					return &agent.ToolResult{
 						Output: map[string]any{"path": a.Path, "replacements": 1, "note": note},
 					}, nil
@@ -147,27 +217,31 @@ func (t *StrReplaceTool) Execute(_ context.Context, args json.RawMessage) (*agen
 			// text near the model's intended anchor so it can retry against
 			// truth instead of re-hallucinating old_string.
 			if actual, ok := anchorContext(content, a.OldString); ok {
-				return nil, fmt.Errorf("str_replace: old_string not found in %q. "+
-					"The file's actual current text near your edit is below - copy it "+
-					"VERBATIM into old_string and retry:\n%s%s", a.Path, actual, writeFileHint(content))
+				return nil, t.failureResult(a.Path, content, fmt.Sprintf(
+					"str_replace: old_string not found in %q. "+
+						"The file's actual current text near your edit is below - copy it "+
+						"VERBATIM into old_string and retry:\n%s%s", a.Path, actual, writeFileHint(content)))
 			}
 			// No unique verbatim anchor exists. Fall back to the closest line
 			// match so the model always gets real file content to re-anchor on
 			// instead of the bare count error (#944).
 			if closest := closestLineContext(content, a.OldString); closest != "" {
-				return nil, fmt.Errorf("str_replace: old_string not found in %q. "+
-					"No unique anchor line exists; the closest approximate match "+
-					"in the file is below (not verbatim). Copy the actual bytes "+
-					"VERBATIM into old_string and retry:\n%s%s", a.Path, closest, writeFileHint(content))
+				return nil, t.failureResult(a.Path, content, fmt.Sprintf(
+					"str_replace: old_string not found in %q. "+
+						"No unique anchor line exists; the closest approximate match "+
+						"in the file is below (not verbatim). Copy the actual bytes "+
+						"VERBATIM into old_string and retry:\n%s%s", a.Path, closest, writeFileHint(content)))
 			}
 		}
-		return nil, fmt.Errorf("str_replace: old_string found %d times in %q, want %d%s",
-			occurrences, a.Path, want, writeFileHint(content))
+		return nil, t.failureResult(a.Path, content, fmt.Sprintf(
+			"str_replace: old_string found %d times in %q, want %d%s",
+			occurrences, a.Path, want, writeFileHint(content)))
 	}
 	next := strings.ReplaceAll(content, a.OldString, a.NewString)
 	if err := os.WriteFile(full, []byte(next), 0o644); err != nil { //nolint:gosec // G306: workspace file
 		return nil, fmt.Errorf("str_replace: write %q: %w", a.Path, err)
 	}
+	t.clearFailures(a.Path)
 	return &agent.ToolResult{
 		Output: map[string]any{
 			"path":         a.Path,
