@@ -3662,11 +3662,12 @@ var _ = Describe("RuntimeBackend interface", func() {
 			Expect(args).NotTo(ContainElement("--model"))
 			Expect(args).To(ContainElements("--host", "::"))
 			Expect(args).To(ContainElements("--port", "8000"))
-			// --enable-metrics is always set so vLLM pods expose /metrics for
-			// PodMonitor scraping (#409).
-			Expect(args).To(ContainElement("--enable-metrics"))
-			// Six elements: <model> --host :: --port 8000 --enable-metrics.
-			Expect(args).To(HaveLen(6))
+			// vLLM has no --enable-metrics flag; it always exposes /metrics.
+			// Emitting the flag makes vLLM reject the command and the pod never
+			// starts (#1030), so it must never appear.
+			Expect(args).NotTo(ContainElement("--enable-metrics"))
+			// Five elements: <model> --host :: --port 8000.
+			Expect(args).To(HaveLen(5))
 		})
 
 		It("should append extraArgs after typed flags", func() {
