@@ -160,6 +160,14 @@ spec:
               value: "{{ .Branch }}"
             - name: BASE_BRANCH
               value: "{{ .BaseBranch }}"
+            # The base image (golang:1.26) bakes GOTOOLCHAIN=local, which
+            # refuses to run when go.mod's toolchain floor is newer than the
+            # image's Go (e.g. go.mod requires 1.26.5 but the cached
+            # golang:1.26 tag is still 1.26.4). Force `auto` so the gate
+            # downloads whatever toolchain go.mod requires into the persistent
+            # GOMODCACHE below, keeping the gate immune to go.mod patch bumps.
+            - name: GOTOOLCHAIN
+              value: auto
             - name: GOMODCACHE
               value: /cache/gomod
             - name: GOCACHE
