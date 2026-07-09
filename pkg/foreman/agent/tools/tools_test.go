@@ -28,7 +28,27 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/defilantech/llmkube/pkg/foreman/agent"
+	"github.com/defilantech/llmkube/pkg/foreman/agent/oai"
 )
+
+// fakeMCPTool is a minimal Tool double standing in for a dynamically
+// discovered MCP tool (mcp/<server>/<tool>) in registry tests that
+// exercise Add() without dialing a real MCP server.
+type fakeMCPTool struct {
+	name string
+}
+
+func (f *fakeMCPTool) Name() string { return f.name }
+
+func (f *fakeMCPTool) Schema() oai.ToolSchemaDef {
+	return oai.ToolSchemaDef{Name: f.name, Parameters: json.RawMessage(`{"type":"object"}`)}
+}
+
+func (f *fakeMCPTool) Execute(_ context.Context, _ json.RawMessage) (*agent.ToolResult, error) {
+	return &agent.ToolResult{Output: "fake mcp result"}, nil
+}
 
 // makeWorkspace returns a tmp dir auto-cleaned at test end.
 func makeWorkspace(t *testing.T) string {
@@ -156,6 +176,124 @@ func TestRegistry_Dispatch_UnfilteredRegistryNoFalsePositives(t *testing.T) {
 	}
 	if errors.Is(err, ErrToolNotInWhitelist) {
 		t.Errorf("un-Filter'd Registry should not emit ErrToolNotInWhitelist, got: %v", err)
+	}
+}
+
+// TestRegistry_FilterThenAdd pins the v0.3 Foreman MCP fix: MCP tools
+// must be appended AFTER the Agent.spec.tools whitelist Filter, not
+// before it. Filter is an allow-list intersection, and MCP tools are
+// named dynamically (mcp/<server>/<tool>), so no real Agent's
+// spec.tools whitelist ever names one -- filtering them would silently
+// drop every MCP tool for every agent. Add() is the bypass: it's called
+// on the already-filtered registry, so MCP tools reach the model
+// regardless of the native-tool whitelist.
+func TestRegistry_FilterThenAdd(t *testing.T) {
+	ws := makeWorkspace(t)
+	r, err := New(&ReadFileTool{Workspace: ws}, &BashTool{Workspace: ws, Timeout: time.Second}, SubmitResultTool{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Whitelist drops bash.
+	filtered, err := r.Filter([]string{"read_file", "submit_result"})
+	if err != nil {
+		t.Fatalf("Filter: %v", err)
+	}
+
+	// MCP tool is added AFTER Filter, so it bypasses the whitelist.
+	mcpTool := &fakeMCPTool{name: "mcp/context7/get-docs"}
+	if err := filtered.Add(mcpTool); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	got := filtered.Names()
+	want := []string{"mcp/context7/get-docs", "read_file", "submit_result"}
+	if len(got) != len(want) {
+		t.Fatalf("Names() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("Names() = %v, want %v", got, want)
+		}
+	}
+
+	// bash was filtered out and must stay gone.
+	for _, n := range got {
+		if n == "bash" {
+			t.Fatalf("bash should have been dropped by the whitelist, got Names() = %v", got)
+		}
+	}
+
+	// The mcp tool must actually be dispatchable, not just visible in
+	// Names() -- Add wires it into the same tools map Dispatch reads.
+	res, err := filtered.Dispatch(context.Background(), "mcp/context7/get-docs", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("Dispatch(mcp tool): %v", err)
+	}
+	if res.Output != "fake mcp result" {
+		t.Fatalf("Dispatch(mcp tool).Output = %q, want %q", res.Output, "fake mcp result")
+	}
+}
+
+// TestRegistry_Add_SkipsDuplicatesReportsError verifies Add's
+// best-effort contract: a name collision is reported via the returned
+// error, but every non-duplicate tool in the call is still added -- a
+// single collision must never drop the rest of the batch.
+func TestRegistry_Add_SkipsDuplicatesReportsError(t *testing.T) {
+	ws := makeWorkspace(t)
+	r, err := New(&ReadFileTool{Workspace: ws})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	dup := &fakeMCPTool{name: "read_file"} // collides with the native tool
+	fresh := &fakeMCPTool{name: "mcp/context7/get-docs"}
+
+	err = r.Add(dup, fresh)
+	if err == nil {
+		t.Fatal("expected error reporting the duplicate, got nil")
+	}
+	if !strings.Contains(err.Error(), "read_file") {
+		t.Errorf("err should name the duplicate tool, got: %v", err)
+	}
+
+	names := r.Names()
+	foundFresh := false
+	for _, n := range names {
+		if n == "mcp/context7/get-docs" {
+			foundFresh = true
+		}
+	}
+	if !foundFresh {
+		t.Fatalf("non-duplicate tool should still be added despite the collision; Names() = %v", names)
+	}
+
+	// The original read_file tool must be untouched (not overwritten by
+	// the duplicate).
+	res, err := r.Dispatch(context.Background(), "read_file", json.RawMessage(`{"path":"nope.txt"}`))
+	_ = res
+	if err == nil {
+		t.Fatal("expected read_file to still be the real ReadFileTool (missing file error), got nil error")
+	}
+	if strings.Contains(err.Error(), "fake mcp result") {
+		t.Fatalf("read_file was overwritten by the duplicate fake tool")
+	}
+}
+
+// TestRegistry_Add_SkipsNilTools verifies Add tolerates nil entries
+// (defensive; a nil MCP tool slice element should never panic the
+// registry build).
+func TestRegistry_Add_SkipsNilTools(t *testing.T) {
+	ws := makeWorkspace(t)
+	r, err := New(&ReadFileTool{Workspace: ws})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := r.Add(nil); err != nil {
+		t.Fatalf("Add(nil): %v", err)
+	}
+	if len(r.Names()) != 1 {
+		t.Fatalf("Add(nil) should not change the registry, got Names() = %v", r.Names())
 	}
 }
 

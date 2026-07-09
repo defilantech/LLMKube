@@ -49,6 +49,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/go-logr/logr"
 	"golang.org/x/sync/errgroup"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -61,6 +62,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	clientconfig "sigs.k8s.io/controller-runtime/pkg/client/config"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	foremanv1alpha1 "github.com/defilantech/llmkube/api/foreman/v1alpha1"
@@ -68,6 +70,7 @@ import (
 	foremanagent "github.com/defilantech/llmkube/pkg/foreman/agent"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/githubissue"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/githubpr"
+	"github.com/defilantech/llmkube/pkg/foreman/agent/mcp"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/repo"
 	foremantools "github.com/defilantech/llmkube/pkg/foreman/agent/tools"
 	"github.com/defilantech/llmkube/pkg/selfupdate"
@@ -656,25 +659,72 @@ func clampInt32(n int) int32 {
 	return int32(n) //nolint:gosec // bounded above
 }
 
+// assembleAgentRegistry builds an agent's tool registry: native tools
+// filtered by the agent's spec.tools whitelist, then MCP tools appended.
+// MCP tools bypass the whitelist by design (they are already gated by their
+// per-server allowedTools). MCP-add failures are logged and skipped
+// (best-effort), never fatal.
+//
+// Ordering matters: Filter is an allow-list intersection, and MCP tools
+// are named dynamically (mcp/<server>/<tool>), so no real Agent's
+// spec.tools whitelist ever names one. Filtering the MCP tools alongside
+// the native ones (the pre-fix behavior) silently dropped every MCP tool
+// for every agent -- the feature was inert. Filtering native first, then
+// adding MCP tools to the already-filtered registry, is what makes the
+// bypass actually work.
+func assembleAgentRegistry(
+	log logr.Logger, native []foremantools.Tool, whitelist []string, mcpTools []foremantools.Tool,
+) (foremanagent.ToolRegistry, error) {
+	r, err := foremantools.New(native...)
+	if err != nil {
+		return nil, fmt.Errorf("default registry: %w", err)
+	}
+	if len(whitelist) > 0 {
+		r, err = r.Filter(whitelist)
+		if err != nil {
+			return nil, fmt.Errorf("agent tool whitelist: %w", err)
+		}
+	}
+	if len(mcpTools) > 0 {
+		if err := r.Add(mcpTools...); err != nil {
+			log.Error(err, "adding MCP tools to registry; continuing without the duplicates")
+		}
+	}
+	return r, nil
+}
+
 // makeRegistryFactory returns a RegistryFactory closure that captures
 // the controller-runtime client + clientset + foreman namespace. The
 // returned closure builds every tool the v0.1 surface exposes
 // (read_file, write_file, str_replace, grep, bash, submit_result, and
-// the M4 deterministic run_gate_job) and filters down to the
-// Agent.spec.tools whitelist. Failing the whitelist filter (a typo in
-// the Agent CR's tool list) returns an error so the executor surfaces
-// a clean ToolRegistryBuildFailed outcome rather than launching the
-// loop with the wrong tools.
+// the M4 deterministic run_gate_job), filters that native set down to
+// the Agent.spec.tools whitelist, then appends the agent's MCP tools
+// (which bypass the whitelist -- see assembleAgentRegistry) when MCP is
+// opted in. Failing the whitelist filter (a typo in the Agent CR's tool
+// list) returns an error so the executor surfaces a clean
+// ToolRegistryBuildFailed outcome rather than launching the loop with
+// the wrong tools.
+//
+// The closure accepts ctx + workloadMCPEnabled (the effective
+// Workload.Spec.MCPEnabled benchmark opt-out, threaded from the
+// executor via mcpEnabledForTask). MCP tools are resolved only when
+// ag.Spec.MCP is set and enabled AND workloadMCPEnabled is true: either
+// gate being closed runs the loop with native tools only, exactly like
+// before MCP existed.
 func makeRegistryFactory(
 	kc client.Client, kcs kubernetes.Interface, foremanNamespace string,
-) func(workspace string, ag *foremanv1alpha1.Agent) (foremanagent.ToolRegistry, error) {
+) func(
+	ctx context.Context, workspace string, ag *foremanv1alpha1.Agent, workloadMCPEnabled bool,
+) (foremanagent.ToolRegistry, error) {
 	logTail := makePodLogTailFn(kcs)
-	return func(workspace string, ag *foremanv1alpha1.Agent) (foremanagent.ToolRegistry, error) {
+	return func(
+		ctx context.Context, workspace string, ag *foremanv1alpha1.Agent, workloadMCPEnabled bool,
+	) (foremanagent.ToolRegistry, error) {
 		bashTimeout := time.Duration(ag.Spec.BashTimeoutSeconds) * time.Second
 		if bashTimeout <= 0 {
 			bashTimeout = 30 * time.Second
 		}
-		r, err := foremantools.New(
+		native := []foremantools.Tool{
 			&foremantools.ReadFileTool{Workspace: workspace},
 			&foremantools.WriteFileTool{Workspace: workspace},
 			&foremantools.StrReplaceTool{Workspace: workspace},
@@ -698,18 +748,53 @@ func makeRegistryFactory(
 				Fetcher: githubissue.NewClient(),
 				Token:   repo.TokenFromEnvOrFile,
 			},
-		)
-		if err != nil {
-			return nil, fmt.Errorf("default registry: %w", err)
 		}
-		if len(ag.Spec.Tools) > 0 {
-			filtered, err := r.Filter(ag.Spec.Tools)
-			if err != nil {
-				return nil, fmt.Errorf("agent tool whitelist: %w", err)
+
+		var mcpTools []foremantools.Tool
+		// Gate-decision log (fires for EVERY run, both kinds) so we can see
+		// exactly which input decides whether MCP registers. logf.FromContext
+		// carries the executor's task/ns values, so this line correlates to the
+		// AgenticTask. Diagnostic for the freeform-works / issue-fix-silent gap.
+		logf.FromContext(ctx).Info("mcp registry gate",
+			"agent", ag.Name,
+			"mcpConfigPresent", ag.Spec.MCP != nil,
+			"mcpEnabled", ag.Spec.MCP != nil && ag.Spec.MCP.Enabled,
+			"workloadMCPEnabled", workloadMCPEnabled)
+		if ag.Spec.MCP != nil && ag.Spec.MCP.Enabled && workloadMCPEnabled {
+			log := logf.FromContext(ctx)
+			// MCP header secrets resolve from the AGENT's own namespace,
+			// like provider auth (apiKeySecretRef) does — not foremanNamespace
+			// (the operator's namespace, which defaults to foreman-system). The
+			// Agent CR and its secrets live together (e.g. default/gateway-token),
+			// so an mcp-context7 secret sits beside the Agent, not by the operator.
+			secretNS := ag.Namespace
+			resolve := func(ref *corev1.SecretKeySelector) (string, error) {
+				var s corev1.Secret
+				if err := kc.Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: secretNS}, &s); err != nil {
+					return "", err
+				}
+				b, ok := s.Data[ref.Key]
+				if !ok || len(b) == 0 {
+					return "", fmt.Errorf("secret %s/%s has no key %q", secretNS, ref.Name, ref.Key)
+				}
+				return strings.TrimSpace(string(b)), nil
 			}
-			return filtered, nil
+			servers, opts := mcp.BuildServers(ag.Spec.MCP, resolve, log)
+			all, closer := mcp.Register(ctx, log, nil, servers, opts, true)
+			log.Info("mcp registry result",
+				"serversConfigured", len(servers), "toolsAdded", len(all))
+			// Tie MCP session teardown to the run's context: the loop
+			// never calls closer directly, so the sessions opened here
+			// must close themselves when the run ends (success,
+			// failure, or ctx cancellation) rather than leak.
+			go func() {
+				<-ctx.Done()
+				_ = closer()
+			}()
+			mcpTools = all
 		}
-		return r, nil
+
+		return assembleAgentRegistry(logf.FromContext(ctx), native, ag.Spec.Tools, mcpTools)
 	}
 }
 

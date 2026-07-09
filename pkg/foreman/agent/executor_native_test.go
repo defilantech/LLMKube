@@ -258,7 +258,9 @@ func TestNativeExecutor_AgentNotFound(t *testing.T) {
 	e := &foremanagent.NativeAgentLoopExecutor{
 		Client:       c,
 		GitRemoteURL: "file:///nope",
-		RegistryFactory: func(string, *foremanv1alpha1.Agent) (foremanagent.ToolRegistry, error) {
+		RegistryFactory: func(
+			_ context.Context, _ string, _ *foremanv1alpha1.Agent, _ bool,
+		) (foremanagent.ToolRegistry, error) {
 			return &fakeRegistry{}, nil
 		},
 		AuthFactory: fakeAuth(t),
@@ -290,7 +292,9 @@ func TestNativeExecutor_NoAgentRefIsHardError(t *testing.T) {
 
 	e := &foremanagent.NativeAgentLoopExecutor{
 		Client: c,
-		RegistryFactory: func(string, *foremanv1alpha1.Agent) (foremanagent.ToolRegistry, error) {
+		RegistryFactory: func(
+			_ context.Context, _ string, _ *foremanv1alpha1.Agent, _ bool,
+		) (foremanagent.ToolRegistry, error) {
 			return &fakeRegistry{}, nil
 		},
 	}
@@ -354,7 +358,9 @@ func TestNativeExecutor_HappyPathPushesBranch(t *testing.T) {
 		InferenceBaseURLOverride: oaiSrv.URL + "/v1",
 		CommitAuthor:             repo.Identity{Name: "Foreman Bot", Email: "bot@foreman.test"},
 		CommitCommitter:          repo.Identity{Name: "Foreman Bot", Email: "bot@foreman.test"},
-		RegistryFactory: func(ws string, _ *foremanv1alpha1.Agent) (foremanagent.ToolRegistry, error) {
+		RegistryFactory: func(
+			_ context.Context, ws string, _ *foremanv1alpha1.Agent, _ bool,
+		) (foremanagent.ToolRegistry, error) {
 			reg.workspace = ws
 			return reg, nil
 		},
@@ -447,7 +453,9 @@ func TestNativeExecutor_MultiRepoClonesTaskRepoWhenNoStaticRemote(t *testing.T) 
 		InferenceBaseURLOverride: oaiSrv.URL + "/v1",
 		CommitAuthor:             repo.Identity{Name: "Foreman Bot", Email: "bot@foreman.test"},
 		CommitCommitter:          repo.Identity{Name: "Foreman Bot", Email: "bot@foreman.test"},
-		RegistryFactory: func(ws string, _ *foremanv1alpha1.Agent) (foremanagent.ToolRegistry, error) {
+		RegistryFactory: func(
+			_ context.Context, ws string, _ *foremanv1alpha1.Agent, _ bool,
+		) (foremanagent.ToolRegistry, error) {
 			reg.workspace = ws
 			return reg, nil
 		},
@@ -495,7 +503,9 @@ func TestNativeExecutor_NoStaticRemoteAndNoRepoIsHardError(t *testing.T) {
 		InferenceBaseURLOverride: "http://127.0.0.1:1/v1",
 		AuthFactory:              fakeAuth(t),
 		// Required precondition; never exercised — the clone fails first.
-		RegistryFactory: func(string, *foremanv1alpha1.Agent) (foremanagent.ToolRegistry, error) {
+		RegistryFactory: func(
+			_ context.Context, _ string, _ *foremanv1alpha1.Agent, _ bool,
+		) (foremanagent.ToolRegistry, error) {
 			return &fakeRegistry{}, nil
 		},
 	}
@@ -539,7 +549,9 @@ func TestNativeExecutor_ModelEmitsGoButNoChanges(t *testing.T) {
 		InferenceBaseURLOverride: oaiSrv.URL + "/v1",
 		CommitAuthor:             repo.Identity{Name: "Bot", Email: "b@x"},
 		CommitCommitter:          repo.Identity{Name: "Bot", Email: "b@x"},
-		RegistryFactory: func(ws string, _ *foremanv1alpha1.Agent) (foremanagent.ToolRegistry, error) {
+		RegistryFactory: func(
+			_ context.Context, ws string, _ *foremanv1alpha1.Agent, _ bool,
+		) (foremanagent.ToolRegistry, error) {
 			reg.workspace = ws
 			return reg, nil
 		},
@@ -615,7 +627,9 @@ func TestNativeExecutor_ModelEmitsNoGo(t *testing.T) {
 		InferenceBaseURLOverride: oaiSrv.URL + "/v1",
 		CommitAuthor:             repo.Identity{Name: "B", Email: "b@x"},
 		CommitCommitter:          repo.Identity{Name: "B", Email: "b@x"},
-		RegistryFactory: func(_ string, _ *foremanv1alpha1.Agent) (foremanagent.ToolRegistry, error) {
+		RegistryFactory: func(
+			_ context.Context, _ string, _ *foremanv1alpha1.Agent, _ bool,
+		) (foremanagent.ToolRegistry, error) {
 			return reg, nil
 		},
 		AuthFactory: fakeAuth(t),
@@ -807,7 +821,9 @@ func TestNativeExecutor_ReviewerGoIsApproveNotCommit(t *testing.T) {
 		InferenceBaseURLOverride: oaiSrv.URL + "/v1",
 		CommitAuthor:             repo.Identity{Name: "Bot", Email: "b@x"},
 		CommitCommitter:          repo.Identity{Name: "Bot", Email: "b@x"},
-		RegistryFactory: func(_ string, _ *foremanv1alpha1.Agent) (foremanagent.ToolRegistry, error) {
+		RegistryFactory: func(
+			_ context.Context, _ string, _ *foremanv1alpha1.Agent, _ bool,
+		) (foremanagent.ToolRegistry, error) {
 			return reg, nil
 		},
 		AuthFactory: fakeAuth(t),
@@ -887,7 +903,9 @@ func TestNativeExecutor_ReviewerERRORMapsToIncompleteWithModelReportedError(t *t
 		InferenceBaseURLOverride: oaiSrv.URL + "/v1",
 		CommitAuthor:             repo.Identity{Name: "B", Email: "b@x"},
 		CommitCommitter:          repo.Identity{Name: "B", Email: "b@x"},
-		RegistryFactory: func(_ string, _ *foremanv1alpha1.Agent) (foremanagent.ToolRegistry, error) {
+		RegistryFactory: func(
+			_ context.Context, _ string, _ *foremanv1alpha1.Agent, _ bool,
+		) (foremanagent.ToolRegistry, error) {
 			return reg, nil
 		},
 		AuthFactory: fakeAuth(t),
@@ -1040,7 +1058,9 @@ func TestNativeExecutor_CoderPromptHasRepoMapPrefix(t *testing.T) {
 		InferenceBaseURLOverride: oaiSrv.URL + "/v1",
 		CommitAuthor:             repo.Identity{Name: "Bot", Email: "b@x"},
 		CommitCommitter:          repo.Identity{Name: "Bot", Email: "b@x"},
-		RegistryFactory: func(ws string, _ *foremanv1alpha1.Agent) (foremanagent.ToolRegistry, error) {
+		RegistryFactory: func(
+			_ context.Context, ws string, _ *foremanv1alpha1.Agent, _ bool,
+		) (foremanagent.ToolRegistry, error) {
 			reg.workspace = ws
 			return reg, nil
 		},
@@ -1164,7 +1184,9 @@ func TestNativeExecutor_FetchesIssueBodyWhenPromptEmpty(t *testing.T) {
 		InferenceBaseURLOverride: oaiSrv.URL + "/v1",
 		CommitAuthor:             repo.Identity{Name: "Bot", Email: "b@x"},
 		CommitCommitter:          repo.Identity{Name: "Bot", Email: "b@x"},
-		RegistryFactory: func(ws string, _ *foremanv1alpha1.Agent) (foremanagent.ToolRegistry, error) {
+		RegistryFactory: func(
+			_ context.Context, ws string, _ *foremanv1alpha1.Agent, _ bool,
+		) (foremanagent.ToolRegistry, error) {
 			reg.workspace = ws
 			return reg, nil
 		},
@@ -1241,7 +1263,9 @@ func TestNativeExecutor_NoFetcherFallsBackToEmptyBody(t *testing.T) {
 		InferenceBaseURLOverride: oaiSrv.URL + "/v1",
 		CommitAuthor:             repo.Identity{Name: "Bot", Email: "b@x"},
 		CommitCommitter:          repo.Identity{Name: "Bot", Email: "b@x"},
-		RegistryFactory: func(ws string, _ *foremanv1alpha1.Agent) (foremanagent.ToolRegistry, error) {
+		RegistryFactory: func(
+			_ context.Context, ws string, _ *foremanv1alpha1.Agent, _ bool,
+		) (foremanagent.ToolRegistry, error) {
 			reg.workspace = ws
 			return reg, nil
 		},
@@ -1320,7 +1344,9 @@ func TestNativeExecutor_DeterministicGateAgent(t *testing.T) {
 		UpstreamURLForRepo: func(string) string { return bare },
 		CommitAuthor:       repo.Identity{Name: "Bot", Email: "b@x"},
 		CommitCommitter:    repo.Identity{Name: "Bot", Email: "b@x"},
-		RegistryFactory: func(_ string, _ *foremanv1alpha1.Agent) (foremanagent.ToolRegistry, error) {
+		RegistryFactory: func(
+			_ context.Context, _ string, _ *foremanv1alpha1.Agent, _ bool,
+		) (foremanagent.ToolRegistry, error) {
 			dispatched++
 			return reg, nil
 		},
@@ -1425,7 +1451,9 @@ func TestNativeExecutor_JobModeDispatchesToCoderJob(t *testing.T) {
 	// a t.Fatal here proves the in-process path was not taken.
 	e := &foremanagent.NativeAgentLoopExecutor{
 		Client: c,
-		RegistryFactory: func(string, *foremanv1alpha1.Agent) (foremanagent.ToolRegistry, error) {
+		RegistryFactory: func(
+			_ context.Context, _ string, _ *foremanv1alpha1.Agent, _ bool,
+		) (foremanagent.ToolRegistry, error) {
 			t.Fatalf("RegistryFactory must NOT be called on the Job path")
 			return nil, nil
 		},
@@ -1484,7 +1512,9 @@ func TestNativeExecutor_JobModeWithoutSubmitterRunsInProcess(t *testing.T) {
 	e := &foremanagent.NativeAgentLoopExecutor{
 		Client:       c,
 		GitRemoteURL: "file:///nope",
-		RegistryFactory: func(string, *foremanv1alpha1.Agent) (foremanagent.ToolRegistry, error) {
+		RegistryFactory: func(
+			_ context.Context, _ string, _ *foremanv1alpha1.Agent, _ bool,
+		) (foremanagent.ToolRegistry, error) {
 			registryCalled = true
 			return &fakeRegistry{}, nil
 		},

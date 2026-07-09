@@ -297,6 +297,16 @@ spec:
                 format: int32
                 minimum: 0
                 type: integer
+              mcpEnabled:
+                description: |-
+                  MCPEnabled is a benchmark opt-out for MCP tool access. Three-valued
+                  via the *bool: nil or true means MCP is allowed for Agents in this
+                  Workload that have spec.mcp configured; false disables MCP for
+                  every child task regardless of the referenced Agent's own MCP
+                  config, for control runs that must be comparable to a no-MCP
+                  baseline. The WorkloadReconciler propagates this value onto each
+                  child AgenticTask.spec.mcpEnabled.
+                type: boolean
               openPullRequest:
                 description: |-
                   OpenPullRequest controls whether a review-GO opens a pull request

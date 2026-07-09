@@ -335,6 +335,12 @@ type AgentSpec struct {
 	// spec.requiredCapability. Single source of truth.
 	// +optional
 	RequiredCapability RequiredCapability `json:"requiredCapability,omitempty"`
+
+	// MCP configures the agent's MCP (Model Context Protocol) client.
+	// Nil or Enabled=false runs the agent with no MCP tools (v0.1
+	// behavior, unchanged).
+	// +optional
+	MCP *MCPConfig `json:"mcp,omitempty"`
 }
 
 // StuckLoopDetectionSpec tunes the per-Agent stuck-loop detector (#544).

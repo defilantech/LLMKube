@@ -277,6 +277,16 @@ type WorkloadSpec struct {
 	// Foreman on non-Go repositories even though the language presets exist.
 	// +optional
 	GateProfile *GateProfile `json:"gateProfile,omitempty"`
+
+	// MCPEnabled is a benchmark opt-out for MCP tool access. Three-valued
+	// via the *bool: nil or true means MCP is allowed for Agents in this
+	// Workload that have spec.mcp configured; false disables MCP for
+	// every child task regardless of the referenced Agent's own MCP
+	// config, for control runs that must be comparable to a no-MCP
+	// baseline. The WorkloadReconciler propagates this value onto each
+	// child AgenticTask.spec.mcpEnabled.
+	// +optional
+	MCPEnabled *bool `json:"mcpEnabled,omitempty"`
 }
 
 // PipelineStep is one step in an explicit Workload pipeline. Each step

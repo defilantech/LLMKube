@@ -130,8 +130,18 @@ type NativeAgentLoopExecutor struct {
 	// RegistryFactory builds the tool registry for a given workspace +
 	// agent. Required; the executor refuses to start without one
 	// because the tools subpackage owns workspace containment and we
-	// do not want the executor reimplementing it.
-	RegistryFactory func(workspace string, agent *foremanv1alpha1.Agent) (ToolRegistry, error)
+	// do not want the executor reimplementing it. ctx is the run's
+	// context (a cancelled or deadline-exceeded run should not start
+	// new tool-registry work); it also bounds any background resources
+	// the factory opens for the run, e.g. an MCP client's server
+	// sessions, which the wiring layer closes when ctx is Done rather
+	// than when the registry itself is discarded. workloadMCPEnabled
+	// carries the effective Workload.Spec.MCPEnabled benchmark opt-out
+	// (see mcpEnabledForTask) so the wiring layer can gate MCP tool
+	// registration per-task without the agent package importing mcp.
+	RegistryFactory func(
+		ctx context.Context, workspace string, agent *foremanv1alpha1.Agent, workloadMCPEnabled bool,
+	) (ToolRegistry, error)
 
 	// IssueFetcher pulls the GitHub issue title + body so buildUserPrompt
 	// can include them. Best-effort: a nil fetcher or a failed fetch
@@ -318,7 +328,7 @@ func (e *NativeAgentLoopExecutor) Execute(ctx context.Context, task *foremanv1al
 
 	// 5. Build tool registry pinned to this workspace + filtered by the
 	// Agent's tool whitelist.
-	registry, err := e.RegistryFactory(workspace, &agent)
+	registry, err := e.RegistryFactory(ctx, workspace, &agent, mcpEnabledForTask(task))
 	if err != nil {
 		// Registry build failure is an operator config issue (bad
 		// whitelist name, duplicate tool); not a runtime model
@@ -1083,6 +1093,13 @@ type providerEndpoint struct {
 // private copy is asserted equivalent against it in the webhook tests.
 func isDeterministicAgent(agent *foremanv1alpha1.Agent) bool {
 	return IsDeterministicAgent(agent.Spec)
+}
+
+// mcpEnabledForTask reports whether MCP is permitted for this run. A nil
+// AgenticTaskSpec.MCPEnabled (the default) means allowed; an explicit false
+// (a benchmark control run) disables it.
+func mcpEnabledForTask(task *foremanv1alpha1.AgenticTask) bool {
+	return task == nil || task.Spec.MCPEnabled == nil || *task.Spec.MCPEnabled
 }
 
 // resolveProviderEndpoint dispatches to the right resolver based on

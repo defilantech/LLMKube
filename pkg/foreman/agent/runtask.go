@@ -124,8 +124,12 @@ type RunTaskConfig struct {
 	KeepWorkspace bool
 
 	// RegistryFactory builds the tool registry for the workspace +
-	// Agent. Required (the executor refuses to run without one).
-	RegistryFactory func(workspace string, agent *foremanv1alpha1.Agent) (ToolRegistry, error)
+	// Agent. Required (the executor refuses to run without one). See
+	// NativeAgentLoopExecutor.RegistryFactory for the ctx +
+	// workloadMCPEnabled params this mirrors.
+	RegistryFactory func(
+		ctx context.Context, workspace string, agent *foremanv1alpha1.Agent, workloadMCPEnabled bool,
+	) (ToolRegistry, error)
 
 	// AuthFactory builds GitHub auth. nil falls back to the executor's
 	// default (env / file token lookup).

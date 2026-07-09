@@ -119,6 +119,31 @@ func (r *Registry) Filter(whitelist []string) (*Registry, error) {
 	return out, nil
 }
 
+// Add inserts additional tools into an existing registry after
+// construction (e.g. dynamically-discovered MCP tools that intentionally
+// bypass the Agent.spec.tools whitelist because they carry their own
+// per-server allowedTools gate). Nil tools are skipped. Duplicate names are
+// skipped (not overwritten) and reported via the returned error, but every
+// non-duplicate tool is still added -- so a single collision never drops the
+// rest.
+func (r *Registry) Add(tools ...Tool) error {
+	var dups []string
+	for _, t := range tools {
+		if t == nil {
+			continue
+		}
+		if _, ok := r.tools[t.Name()]; ok {
+			dups = append(dups, t.Name())
+			continue
+		}
+		r.tools[t.Name()] = t
+	}
+	if len(dups) > 0 {
+		return fmt.Errorf("tools.Add: skipped duplicate tool(s): %v", dups)
+	}
+	return nil
+}
+
 // Names returns the registered tool names in sorted order. Useful for
 // log lines and for asserting against a whitelist in tests.
 func (r *Registry) Names() []string {
