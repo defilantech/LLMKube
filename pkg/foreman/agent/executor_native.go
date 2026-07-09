@@ -1923,11 +1923,13 @@ func fileListsEqual(prev any, groundTruth []string) bool {
 // reconcileReviewerIssueAsk grounds the reviewer's
 // `submit_result.extra.issueAsk` field against the real issue body
 // that came back from the reviewer's `fetch_issue` tool call. The
-// claim has to be a literal substring of that body; if it is not,
-// the harness archives the model's claim under `issueAskClaimed`
-// and rewrites `issueAsk` with the first useful prose paragraph of
-// the body (skipping markdown headers). Pairs with #582's filesTouched
-// fix: same shape, different field.
+// claim must semantically cover the issue: a verbatim substring is
+// accepted immediately, otherwise a key-requirement overlap check
+// decides whether the reviewer paraphrased correctly or confabulated.
+// The harness archives the model's claim under `issueAskClaimed` and
+// rewrites `issueAsk` with the first useful prose paragraph of the
+// body (skipping markdown headers) when the claim is ungrounded.
+// Pairs with #582's filesTouched fix: same shape, different field.
 //
 // Why this is structural rather than a prompt-tightening fix: the
 // post-#584 rereview showed devstral on the Mac Studio confabulating
@@ -1969,17 +1971,146 @@ func reconcileReviewerIssueAsk(log logr.Logger, msgs []oai.Message, extra map[st
 		extra["issueAskVerified"] = true
 		return
 	}
+	// Verbatim miss: check whether the claim semantically covers the
+	// issue by requiring sufficient overlap with the issue's key
+	// nouns/requirements. A faithful paraphrase passes; a hallucination
+	// does not.
+	if issueAskSemanticallyCovers(claim, body) {
+		extra["issueAskVerified"] = true
+		extra["issueAskMethod"] = "semantic"
+		log.Info("reviewer issueAsk: claim verified via semantic coverage",
+			"modelClaim", claim)
+		return
+	}
 	// Confabulation: claim is not a substring of the body the model
-	// itself fetched. Archive it and rewrite issueAsk with a real
-	// excerpt from the body.
+	// itself fetched, and does not semantically cover it either. Archive
+	// it and rewrite issueAsk with a real excerpt from the body.
 	extra["issueAskClaimed"] = claim
 	replaced := firstBodyParagraph(body, 200)
 	extra["issueAsk"] = replaced
 	extra["issueAskVerified"] = false
+	extra["issueAskMethod"] = "rewritten"
 	log.Info("reviewer issueAsk: model claim not a substring of fetch_issue body; rewriting from body",
 		"modelClaim", claim,
 		"rewrittenTo", replaced,
 	)
+}
+
+// issueAskSemanticallyCovers reports whether the reviewer's stated ask
+// (claim) semantically covers the fetched issue body. The check is
+// keyword-overlap based: extract the issue's salient nouns/requirements
+// (nouns and verbs from the title + first two paragraphs) and require
+// the claim to reference a sufficient fraction of them. This is more
+// explainable than raw similarity and does not require an embedding
+// model.
+//
+// The verbatim path is handled by the caller; this function is only
+// invoked when the claim is not a substring of the body.
+func issueAskSemanticallyCovers(claim, body string) bool {
+	keywords := extractIssueKeywords(body)
+	if len(keywords) == 0 {
+		return false
+	}
+	claimLower := strings.ToLower(claim)
+	covered := 0
+	for _, kw := range keywords {
+		if strings.Contains(claimLower, kw) {
+			covered++
+		}
+	}
+	// Require at least 40% coverage, minimum 2 keywords, to avoid
+	// false positives on very short claims.
+	threshold := len(keywords) * 2 / 5
+	if threshold < 2 {
+		threshold = 2
+	}
+	return covered >= threshold
+}
+
+// extractIssueKeywords pulls salient nouns and verbs from the issue
+// title and first two paragraphs. It lowercases, strips punctuation,
+// removes common English stop words, and returns unique tokens longer
+// than 2 characters.
+func extractIssueKeywords(body string) []string {
+	stopWords := map[string]bool{
+		"a": true, "an": true, "the": true, "and": true, "or": true,
+		"but": true, "in": true, "on": true, "at": true, "to": true,
+		"for": true, "of": true, "with": true, "by": true, "from": true,
+		"is": true, "are": true, "was": true, "were": true, "be": true,
+		"been": true, "being": true, "have": true, "has": true, "had": true,
+		"do": true, "does": true, "did": true, "will": true, "would": true,
+		"could": true, "should": true, "may": true, "might": true,
+		"can": true, "shall": true, "it": true, "its": true, "this": true,
+		"that": true, "these": true, "those": true, "i": true, "we": true,
+		"they": true, "he": true, "she": true, "you": true, "me": true,
+		"my": true, "your": true, "his": true, "her": true, "our": true,
+		"their": true, "what": true, "which": true, "who": true, "whom": true,
+		"where": true, "when": true, "why": true, "how": true, "not": true,
+		"no": true, "nor": true, "so": true, "yet": true, "both": true,
+		"each": true, "few": true, "more": true, "most": true, "other": true,
+		"some": true, "such": true, "than": true, "too": true, "very": true,
+		"just": true, "also": true, "now": true, "here": true, "there": true,
+		"then": true, "once": true, "if": true, "as": true, "into": true,
+		"about": true, "up": true, "out": true, "off": true, "over": true,
+		"under": true, "again": true, "further": true, "all": true, "any": true,
+	}
+	// Take title + first two paragraphs.
+	lines := strings.Split(body, "\n")
+	var textParts []string
+	for _, l := range lines {
+		stripped := strings.TrimSpace(l)
+		if stripped == "" {
+			continue
+		}
+		if strings.HasPrefix(stripped, "#") {
+			textParts = append(textParts, stripped)
+			continue
+		}
+		textParts = append(textParts, stripped)
+		if len(textParts) >= 3 {
+			break
+		}
+	}
+	text := strings.Join(textParts, " ")
+	// Strip markdown formatting.
+	text = strings.ReplaceAll(text, "**", "")
+	text = strings.ReplaceAll(text, "*", "")
+	text = strings.ReplaceAll(text, "`", "")
+	text = strings.ReplaceAll(text, "_", "")
+	// Lowercase and split on non-alphanumeric.
+	text = strings.ToLower(text)
+	var tokens []string
+	var current strings.Builder
+	for _, r := range text {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+			current.WriteRune(r)
+		} else {
+			if current.Len() > 0 {
+				tokens = append(tokens, current.String())
+				current.Reset()
+			}
+		}
+	}
+	if current.Len() > 0 {
+		tokens = append(tokens, current.String())
+	}
+	// Filter: length > 2, not a stop word, unique.
+	seen := map[string]bool{}
+	var keywords []string
+	for _, t := range tokens {
+		if len(t) <= 2 {
+			continue
+		}
+		if stopWords[t] {
+			continue
+		}
+		if seen[t] {
+			continue
+		}
+		seen[t] = true
+		keywords = append(keywords, t)
+	}
+	return keywords
 }
 
 // enforceReviewerIssueAsk converts a failed issueAsk verification from
@@ -2030,7 +2161,7 @@ func enforceReviewerIssueAsk(
 	extra["verdictClaimed"] = string(verdict)
 
 	if verdict != foremanv1alpha1.AgenticTaskVerdictGo {
-		extra["demotionReason"] = "issueAsk could not be verified as a verbatim quote of the " +
+		extra["demotionReason"] = "issueAsk could not be verified as covering the " +
 			"fetched issue body; review verdict is untrusted"
 		log.Info("reviewer integrity: unverified issueAsk on non-GO verdict; keeping verdict but marking untrusted",
 			"verdict", verdict)
@@ -2045,14 +2176,14 @@ func enforceReviewerIssueAsk(
 	if scopeVouches {
 		extra["issueAskVerified"] = false
 		extra["scopeVouched"] = true
-		extra["demotionReason"] = "issueAsk could not be verified as a verbatim quote of the " +
+		extra["demotionReason"] = "issueAsk could not be verified as covering the " +
 			"fetched issue body; scope-overlap confirms in-scope review"
 		log.Info("reviewer integrity: unverified issueAsk on GO verdict; scope-overlap vouches, keeping GO",
 			"scopeMatched", scopeMatched)
 		return verdict
 	}
 
-	extra["demotionReason"] = "issueAsk could not be verified as a verbatim quote of the " +
+	extra["demotionReason"] = "issueAsk could not be verified as covering the " +
 		"fetched issue body; review verdict is untrusted"
 	log.Info("reviewer integrity: unverified issueAsk on GO verdict; demoting to NO-GO",
 		"verdictClaimed", verdict)

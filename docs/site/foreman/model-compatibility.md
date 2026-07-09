@@ -54,11 +54,14 @@ before the result is stored:
   Shipped in
   [#584](https://github.com/defilantech/LLMKube/pull/584).
 - **`issueAsk`** is checked against the body the model fetched via
-  the `fetch_issue` tool. If the claim is a literal substring of
-  the body it's marked verified; otherwise it's archived at
-  `issueAskClaimed` and rewritten with the first useful paragraph
-  of the body. Shipped in
-  [#587](https://github.com/defilantech/LLMKube/pull/587).
+  the `fetch_issue` tool. A verbatim substring is marked verified
+  immediately; otherwise a keyword-overlap check decides whether the
+  claim semantically covers the issue (faithful paraphrase) or is a
+  hallucination. Verified claims land at `issueAskMethod=semantic`;
+  unverified claims are archived at `issueAskClaimed` and rewritten
+  with the first useful paragraph of the body. Shipped in
+  [#587](https://github.com/defilantech/LLMKube/pull/587), enhanced
+  in [#809](https://github.com/defilantech/LLMKube/issues/809).
 
 A new boolean field `issueAskVerified` signals to downstream
 consumers whether the stored value came from the model

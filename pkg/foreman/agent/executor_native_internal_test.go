@@ -1370,6 +1370,95 @@ func TestReconcileReviewerIssueAsk_NilExtraIsNoOp(t *testing.T) {
 	reconcileReviewerIssueAsk(logr.Discard(), nil, nil) // must not panic
 }
 
+func TestReconcileReviewerIssueAsk_ParaphraseVerified(t *testing.T) {
+	body := "## Feature Description\n\nUpdate the toolchain image to v2 in the agent-builder Dockerfile so golangci-lint and controller-gen are available at build time."
+	content, _ := json.Marshal(map[string]string{"body": body})
+	msgs := []oai.Message{
+		{Role: oai.RoleAssistant, ToolCalls: []oai.ToolCall{{
+			ID: "tc-1", Type: "function",
+			Function: oai.ToolCallFunction{Name: "fetch_issue"},
+		}}},
+		{Role: oai.RoleTool, ToolCallID: "tc-1", Content: string(content)},
+	}
+	// Faithful paraphrase: mentions the key nouns (toolchain, image, v2, agent-builder, golangci-lint, controller-gen).
+	claim := "Update the toolchain image to v2 in the agent-builder so golangci-lint and controller-gen are available."
+	extra := map[string]any{"issueAsk": claim}
+	reconcileReviewerIssueAsk(logr.Discard(), msgs, extra)
+	if v, _ := extra["issueAskVerified"].(bool); !v {
+		t.Errorf("faithful paraphrase should be verified via semantic coverage; got %v", extra["issueAskVerified"])
+	}
+	if extra["issueAsk"] != claim {
+		t.Errorf("paraphrase should be preserved unchanged; got %v", extra["issueAsk"])
+	}
+	if extra["issueAskMethod"] != "semantic" {
+		t.Errorf("semantic verification should set issueAskMethod=semantic; got %v", extra["issueAskMethod"])
+	}
+}
+
+func TestReconcileReviewerIssueAsk_HallucinationRewritten(t *testing.T) {
+	body := "## Feature Description\n\nUpdate the toolchain image to v2 in the agent-builder Dockerfile so golangci-lint and controller-gen are available at build time."
+	content, _ := json.Marshal(map[string]string{"body": body})
+	msgs := []oai.Message{
+		{Role: oai.RoleAssistant, ToolCalls: []oai.ToolCall{{
+			ID: "tc-1", Type: "function",
+			Function: oai.ToolCallFunction{Name: "fetch_issue"},
+		}}},
+		{Role: oai.RoleTool, ToolCallID: "tc-1", Content: string(content)},
+	}
+	// Confabulation: mentions unrelated nouns (cache, list, CLI).
+	claim := "enhance `llmkube cache list` to show cached model digests."
+	extra := map[string]any{"issueAsk": claim}
+	reconcileReviewerIssueAsk(logr.Discard(), msgs, extra)
+	if v, _ := extra["issueAskVerified"].(bool); v {
+		t.Errorf("hallucinated claim should not be verified; got %v", extra["issueAskVerified"])
+	}
+	if extra["issueAsk"] == claim {
+		t.Errorf("hallucinated claim should be rewritten; got %v", extra["issueAsk"])
+	}
+	if extra["issueAskClaimed"] != claim {
+		t.Errorf("issueAskClaimed should preserve original claim; got %v", extra["issueAskClaimed"])
+	}
+}
+
+func TestExtractIssueKeywords_Basic(t *testing.T) {
+	body := "## Feature Description\n\nUpdate the toolchain image to v2 in the agent-builder Dockerfile so golangci-lint and controller-gen are available at build time."
+	kw := extractIssueKeywords(body)
+	if len(kw) == 0 {
+		t.Fatalf("expected non-empty keywords")
+	}
+	// Should include salient nouns.
+	found := map[string]bool{}
+	for _, k := range kw {
+		found[k] = true
+	}
+	for _, want := range []string{"toolchain", "image", "agent-builder", "golangci-lint", "controller-gen"} {
+		if !found[want] {
+			t.Errorf("expected keyword %q in %v", want, kw)
+		}
+	}
+}
+
+func TestExtractIssueKeywords_StopsFiltered(t *testing.T) {
+	body := "the a an the feature is implemented with the new tool"
+	kw := extractIssueKeywords(body)
+	for _, k := range kw {
+		if k == "the" || k == "a" || k == "an" || k == "is" || k == "with" {
+			t.Errorf("stop word %q should be filtered; got %v", k, kw)
+		}
+	}
+}
+
+func TestIssueAskSemanticallyCovers_ShortClaim(t *testing.T) {
+	// Short claim with enough keyword coverage should pass.
+	body := "## Feature\n\nUpdate the toolchain image to v2 in the agent-builder Dockerfile so golangci-lint and controller-gen are available at build time."
+	if !issueAskSemanticallyCovers("update toolchain image agent-builder golangci-lint controller-gen", body) {
+		t.Errorf("claim covering enough keywords should pass")
+	}
+	if issueAskSemanticallyCovers("xyz abc def ghi jkl", body) {
+		t.Errorf("irrelevant claim should fail")
+	}
+}
+
 func TestEnforceReviewerIssueAsk_VerifiedGoStands(t *testing.T) {
 	extra := map[string]any{"issueAskVerified": true}
 	got := enforceReviewerIssueAsk(logr.Discard(), extra, foremanv1alpha1.AgenticTaskVerdictGo, false, nil)
