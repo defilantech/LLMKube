@@ -648,6 +648,68 @@ func TestNativeExecutor_ModelEmitsNoGo(t *testing.T) {
 	}
 }
 
+// TestAlreadyResolvedEnvelopeShape is a schema-shape regression guard
+// for the #970 ALREADY-RESOLVED machine outcome. The model emits a
+// submit_result envelope with `extra.outcome="ALREADY-RESOLVED"` and
+// (optionally) `extra.resolvedBy=<sha|branch>`. The controller's
+// coderResultEnvelope parser in
+// internal/foreman/controller/workload_coder_escalation.go reads
+// exactly these fields. This test locks the JSON contract: any change
+// to the field names or nesting would break the parser.
+//
+// What this test does NOT cover: the executor's actual pass-through
+// behavior (model JSON in → Status.Result.Raw out). A future change
+// to the executor that rewrites the envelope mid-pipeline would
+// silently break the controller's classifier and this test would
+// still pass. The real pass-through is exercised by the existing
+// TestNativeExecutor_ModelEmitsNoGo and the other ModelEmits* tests
+// in this file (which drive the executor end-to-end with a scripted
+// OAI server). For #970 specifically, no new executor behavior is
+// introduced; the executor passes the model's extra map through
+// verbatim, and the controller does the rest. If a future PR adds
+// executor-side ALREADY-RESOLVED detection or rewriting, add a new
+// TestNativeExecutor_<that-behavior> test here.
+func TestAlreadyResolvedEnvelopeShape(t *testing.T) {
+	// Construct the JSON the model would produce via submit_result.
+	submitted := map[string]any{
+		"schemaVersion": "foreman.v1",
+		"kind":          "issue-fix",
+		"verdict":       "NO-GO",
+		"summary":       "Issue #152 is already resolved by prior fix e97d0ca (Fixes #129)",
+		"extra": map[string]any{
+			"outcome":    "ALREADY-RESOLVED",
+			"resolvedBy": "e97d0ca",
+		},
+	}
+	raw, err := json.Marshal(submitted)
+	if err != nil {
+		t.Fatalf("marshal submitted envelope: %v", err)
+	}
+
+	// Parse the shape the controller later reads (mirrors
+	// coderResultEnvelope.Extra in
+	// internal/foreman/controller/workload_coder_escalation.go).
+	var env struct {
+		Summary string `json:"summary"`
+		Extra   struct {
+			Outcome    string `json:"outcome"`
+			ResolvedBy string `json:"resolvedBy"`
+		} `json:"extra"`
+	}
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if env.Extra.Outcome != "ALREADY-RESOLVED" {
+		t.Errorf("outcome: want ALREADY-RESOLVED, got %q", env.Extra.Outcome)
+	}
+	if env.Extra.ResolvedBy != "e97d0ca" {
+		t.Errorf("resolvedBy: want e97d0ca, got %q", env.Extra.ResolvedBy)
+	}
+	if !strings.Contains(env.Summary, "already resolved") {
+		t.Errorf("summary: want to contain 'already resolved', got %q", env.Summary)
+	}
+}
+
 // --- Reviewer-role Agent: GO means APPROVE, not commit + push ------------
 
 // reviewerTaskAndAgent builds a reviewer-role Agent and a freeform

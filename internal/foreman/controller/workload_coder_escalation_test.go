@@ -28,13 +28,18 @@ import (
 
 // resultRaw builds a status.result RawExtension with the given top-level
 // and nested modelExtra outcome, matching the executor's envelope shape.
+// The resolvedBy field is optional (empty string omits it).
 // nolint:unparam // topOutcome is parameterized to mirror the envelope shape even though current tests all pass "MODEL-DECIDED"
-func resultRaw(topOutcome, modelOutcome, summary string) *runtime.RawExtension {
+func resultRaw(topOutcome, modelOutcome, summary, resolvedBy string) *runtime.RawExtension {
 	me := ""
 	if modelOutcome != "" {
 		me = `,"modelExtra":{"outcome":"` + modelOutcome + `"}`
 	}
-	j := `{"summary":"` + summary + `","extra":{"outcome":"` + topOutcome + `"` + me + `}}`
+	rb := ""
+	if resolvedBy != "" {
+		rb = `,"resolvedBy":"` + resolvedBy + `"`
+	}
+	j := `{"summary":"` + summary + `","extra":{"outcome":"` + topOutcome + `"` + me + rb + `}}`
 	return &runtime.RawExtension{Raw: []byte(j)}
 }
 
@@ -47,6 +52,7 @@ func TestShouldEscalateCoder(t *testing.T) {
 		want         bool
 	}{
 		{"model NO-GO (like #944)", foremanv1alpha1.AgenticTaskVerdictNoGo, "MODEL-DECIDED", "", true},
+		{"NO-GO + ALREADY-RESOLVED (already done, #970)", foremanv1alpha1.AgenticTaskVerdictNoGo, "ALREADY-RESOLVED", "", false},
 		{"gate-failed (like #911)", foremanv1alpha1.AgenticTaskVerdictIncomplete, "MODEL-DECIDED", "CODER-GATE-FAILED", true},
 		{"model gave up / stuck (like #921)", foremanv1alpha1.AgenticTaskVerdictIncomplete, "MODEL-DECIDED", "", false},
 		{"stuck-loop detected", foremanv1alpha1.AgenticTaskVerdictIncomplete, "STUCK-LOOP-DETECTED", "", false},
@@ -66,7 +72,7 @@ func TestShouldEscalateCoder(t *testing.T) {
 func TestCoderTerminalOutcome_ReadsNestedGateOutcome(t *testing.T) {
 	task := &foremanv1alpha1.AgenticTask{}
 	task.Status.Verdict = foremanv1alpha1.AgenticTaskVerdictIncomplete
-	task.Status.Result = resultRaw("MODEL-DECIDED", "CODER-GATE-FAILED", "gate failed")
+	task.Status.Result = resultRaw("MODEL-DECIDED", "CODER-GATE-FAILED", "gate failed", "")
 	v, top, model := coderTerminalOutcome(task)
 	if v != foremanv1alpha1.AgenticTaskVerdictIncomplete || top != "MODEL-DECIDED" || model != "CODER-GATE-FAILED" {
 		t.Errorf("got (%s,%q,%q)", v, top, model)
@@ -89,7 +95,7 @@ func TestCoderEscalationSteps_EmitsOnNoGo(t *testing.T) {
 	code.Labels = map[string]string{labelStep: "code-944"}
 	code.Status.Phase = foremanv1alpha1.AgenticTaskPhaseSucceeded
 	code.Status.Verdict = foremanv1alpha1.AgenticTaskVerdictNoGo
-	code.Status.Result = resultRaw("MODEL-DECIDED", "", "could not solve: fuzzy front-runs anchor")
+	code.Status.Result = resultRaw("MODEL-DECIDED", "", "could not solve: fuzzy front-runs anchor", "")
 
 	steps, escalated := coderEscalationSteps(w, []foremanv1alpha1.AgenticTask{code})
 	if len(steps) != 2 {
@@ -119,7 +125,7 @@ func TestCoderEscalationSteps_EmitsReviewerStepsOnEscBranch(t *testing.T) {
 		code.Labels = map[string]string{labelStep: "code-944"}
 		code.Status.Phase = foremanv1alpha1.AgenticTaskPhaseSucceeded
 		code.Status.Verdict = foremanv1alpha1.AgenticTaskVerdictNoGo
-		code.Status.Result = resultRaw("MODEL-DECIDED", "", "bailed")
+		code.Status.Result = resultRaw("MODEL-DECIDED", "", "bailed", "")
 		return code
 	}
 
@@ -220,14 +226,14 @@ func TestCoderEscalationSteps_SkipsStuckLoopAndExisting(t *testing.T) {
 	c921.Labels = map[string]string{labelStep: "code-921"}
 	c921.Status.Phase = foremanv1alpha1.AgenticTaskPhaseSucceeded
 	c921.Status.Verdict = foremanv1alpha1.AgenticTaskVerdictIncomplete
-	c921.Status.Result = resultRaw("MODEL-DECIDED", "", "ran out of turns")
+	c921.Status.Result = resultRaw("MODEL-DECIDED", "", "ran out of turns", "")
 
 	c944 := foremanv1alpha1.AgenticTask{}
 	c944.Name = "wl-code-944"
 	c944.Labels = map[string]string{labelStep: "code-944"}
 	c944.Status.Phase = foremanv1alpha1.AgenticTaskPhaseSucceeded
 	c944.Status.Verdict = foremanv1alpha1.AgenticTaskVerdictNoGo
-	c944.Status.Result = resultRaw("MODEL-DECIDED", "", "bailed")
+	c944.Status.Result = resultRaw("MODEL-DECIDED", "", "bailed", "")
 	esc944 := foremanv1alpha1.AgenticTask{}
 	esc944.Name = "wl-code-944-esc"
 	esc944.Labels = map[string]string{labelStep: "code-944-esc"}
@@ -242,6 +248,40 @@ func TestCoderEscalationSteps_SkipsStuckLoopAndExisting(t *testing.T) {
 	}
 }
 
+// TestIsAlreadyResolvedCoder verifies the helper that downstream
+// classifiers (shouldEscalateCoder exclusion, rollup exclusion) use
+// to identify a model-decided "already done" NO-GO (#970).
+func TestIsAlreadyResolvedCoder(t *testing.T) {
+	cases := []struct {
+		name       string
+		verdict    foremanv1alpha1.AgenticTaskVerdict
+		topOutcome string
+		want       bool
+	}{
+		{"NO-GO + ALREADY-RESOLVED", foremanv1alpha1.AgenticTaskVerdictNoGo, "ALREADY-RESOLVED", true},
+		{"NO-GO + MODEL-DECIDED (capability failure)", foremanv1alpha1.AgenticTaskVerdictNoGo, "MODEL-DECIDED", false},
+		{"NO-GO + empty outcome (legacy)", foremanv1alpha1.AgenticTaskVerdictNoGo, "", false},
+		{"INCOMPLETE + ALREADY-RESOLVED (not a NO-GO, not classified)", foremanv1alpha1.AgenticTaskVerdictIncomplete, "ALREADY-RESOLVED", false},
+		{"GO + ALREADY-RESOLVED (impossible combo, defensive)", foremanv1alpha1.AgenticTaskVerdictGo, "ALREADY-RESOLVED", false},
+		{"nil result envelope", foremanv1alpha1.AgenticTaskVerdictNoGo, "", false}, // task without Status.Result
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			task := &foremanv1alpha1.AgenticTask{}
+			task.Status.Verdict = tc.verdict
+			// Skip setting Result when topOutcome is "" AND verdict alone
+			// would make the case ambiguous; rely on coderTerminalOutcome's
+			// nil/empty Result handling.
+			if tc.topOutcome != "" {
+				task.Status.Result = resultRaw(tc.topOutcome, "", "", "")
+			}
+			if got := isAlreadyResolvedCoder(task); got != tc.want {
+				t.Errorf("isAlreadyResolvedCoder() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCoderEscalationSteps_OffWhenUnset(t *testing.T) {
 	w := &foremanv1alpha1.Workload{}
 	w.Name = "wl"
@@ -252,7 +292,7 @@ func TestCoderEscalationSteps_OffWhenUnset(t *testing.T) {
 	c.Labels = map[string]string{labelStep: "code-944"}
 	c.Status.Phase = foremanv1alpha1.AgenticTaskPhaseSucceeded
 	c.Status.Verdict = foremanv1alpha1.AgenticTaskVerdictNoGo
-	c.Status.Result = resultRaw("MODEL-DECIDED", "", "bailed")
+	c.Status.Result = resultRaw("MODEL-DECIDED", "", "bailed", "")
 	steps, _ := coderEscalationSteps(w, []foremanv1alpha1.AgenticTask{c})
 	if len(steps) != 0 {
 		t.Errorf("feature must be off when EscalationCoderAgentRef is nil, got %d steps", len(steps))

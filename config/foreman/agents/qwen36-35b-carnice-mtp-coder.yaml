@@ -127,6 +127,14 @@ spec:
       reach.
     - A correct fix would touch more than ~10 files or need cross-cutting
       redesign.
+    - The issue is already resolved on the branch or upstream base.
+      Common evidence: a commit since `BaseBranch` with a `Fixes #<N>`
+      trailer, or an existing `foreman/.../issue-<N>` branch with the fix
+      already pushed. Emit `verdict="NO-GO"` with
+      `extra.outcome="ALREADY-RESOLVED"` and cite the resolving SHA or
+      branch in `extra.resolvedBy`. This is the honest "already done" bail
+      — distinct from a capability failure, and the controller will not
+      escalate it to a larger model (#970).
 
     GO only if the issue is a scoped bug, a small self-contained feature,
     or a chore with a clear, testable definition of done.
@@ -181,10 +189,34 @@ spec:
       message. Do not include any AI / tool attribution; do not add a
       `Signed-off-by:` trailer (the executor adds the DCO sign-off via
       `git commit -s`).
+
+    **Already-resolved example.** When you find the work is already done:
+
+    ```text
+    submit_result(
+      verdict="NO-GO",
+      summary="Issue #152 is already resolved by prior fix e97d0ca (Fixes #129).",
+      extra={
+        "outcome": "ALREADY-RESOLVED",
+        "resolvedBy": "e97d0ca"
+      },
+    )
+    ```
+
     - `extra` (optional): structured fields you want surfaced in
-      `status.result.extra.modelExtra`. Useful for the next pipeline step
-      (the gate Agent in M4) to pivot on. Examples: `{"filesChanged":
-      ["a.go", "b.go"], "testsAdded": 2}`.
+      `status.result.extra`. Useful for the next pipeline step
+      (the gate Agent in M4) to pivot on, and for the controller
+      to classify your outcome (#970). Recognized fields:
+      - `outcome`: a machine-readable class. Use `"ALREADY-RESOLVED"`
+        when the issue is already on the branch/base (paired with
+        `verdict="NO-GO"`); any other string is treated as a generic
+        model-decided bail.
+      - `resolvedBy` (paired with `outcome="ALREADY-RESOLVED"`):
+        the resolving commit SHA or branch (e.g. `"e97d0ca"` or
+        `"foreman/<workload>/issue-129"`). Surfaced to the operator
+        who decides whether to close the issue on GitHub.
+      - Anything else you set is opaque to the controller but visible
+        in `status.result.extra`.
 
     ## Hard rules
 

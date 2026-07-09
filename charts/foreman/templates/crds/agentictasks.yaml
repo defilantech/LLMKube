@@ -487,6 +487,7 @@ spec:
                 - GATE-PASS
                 - GATE-FAIL
                 - GATE-ERROR
+                - Skipped
                 type: string
             type: object
         required:

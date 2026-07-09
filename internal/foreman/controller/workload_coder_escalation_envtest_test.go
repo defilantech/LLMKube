@@ -75,7 +75,7 @@ var _ = Describe("WorkloadReconciler coder escalation (#963)", func() {
 		p944 := client.MergeFrom(set944.DeepCopy())
 		set944.Status.Phase = foremanv1alpha1.AgenticTaskPhaseSucceeded
 		set944.Status.Verdict = foremanv1alpha1.AgenticTaskVerdictNoGo
-		set944.Status.Result = resultRaw("MODEL-DECIDED", "", "fuzzy front-runs anchor")
+		set944.Status.Result = resultRaw("MODEL-DECIDED", "", "fuzzy front-runs anchor", "")
 		Expect(k8sClient.Status().Patch(ctx, &set944, p944)).To(Succeed())
 
 		// (B) code-921 terminates INCOMPLETE / MODEL-DECIDED (no gate
@@ -85,7 +85,7 @@ var _ = Describe("WorkloadReconciler coder escalation (#963)", func() {
 		p921 := client.MergeFrom(set921.DeepCopy())
 		set921.Status.Phase = foremanv1alpha1.AgenticTaskPhaseSucceeded
 		set921.Status.Verdict = foremanv1alpha1.AgenticTaskVerdictIncomplete
-		set921.Status.Result = resultRaw("MODEL-DECIDED", "", "ran out of turns")
+		set921.Status.Result = resultRaw("MODEL-DECIDED", "", "ran out of turns", "")
 		Expect(k8sClient.Status().Patch(ctx, &set921, p921)).To(Succeed())
 
 		// Second reconcile runs the coder-escalation hook.
@@ -165,7 +165,7 @@ var _ = Describe("WorkloadReconciler coder escalation (#963)", func() {
 			Expect(k8sClient.Status().Patch(ctx, &t, p)).To(Succeed())
 		}
 		setTerminal("coder-esc-rev-code-944", foremanv1alpha1.AgenticTaskPhaseSucceeded,
-			foremanv1alpha1.AgenticTaskVerdictNoGo, func() *runtime.RawExtension { return resultRaw("MODEL-DECIDED", "", "fuzzy front-runs anchor") })
+			foremanv1alpha1.AgenticTaskVerdictNoGo, func() *runtime.RawExtension { return resultRaw("MODEL-DECIDED", "", "fuzzy front-runs anchor", "") })
 		setTerminal("coder-esc-rev-verify-944", foremanv1alpha1.AgenticTaskPhaseFailed,
 			foremanv1alpha1.AgenticTaskVerdictIncomplete, nil)
 		setTerminal("coder-esc-rev-review-944-0", foremanv1alpha1.AgenticTaskPhaseFailed,
@@ -232,7 +232,7 @@ var _ = Describe("WorkloadReconciler coder escalation (#963)", func() {
 		patch := client.MergeFrom(base.DeepCopy())
 		base.Status.Phase = foremanv1alpha1.AgenticTaskPhaseSucceeded
 		base.Status.Verdict = foremanv1alpha1.AgenticTaskVerdictNoGo
-		base.Status.Result = resultRaw("MODEL-DECIDED", "", "bailed")
+		base.Status.Result = resultRaw("MODEL-DECIDED", "", "bailed", "")
 		Expect(k8sClient.Status().Patch(ctx, &base, patch)).To(Succeed())
 
 		_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(wl)})
@@ -245,5 +245,70 @@ var _ = Describe("WorkloadReconciler coder escalation (#963)", func() {
 		var fresh foremanv1alpha1.Workload
 		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(wl), &fresh)).To(Succeed())
 		Expect(findCondition(fresh.Status.Conditions, conditionTypeCoderEscalationTriggered)).To(BeNil())
+	})
+
+	// Regression for defilantech/LLMKube#970. A base coder that ends
+	// NO-GO + extra.outcome="ALREADY-RESOLVED" must NOT escalate (it is
+	// not a capability failure), and the Workload must reach a terminal
+	// state without pinning to Failed.
+	It("does not escalate or pin Failed on a base coder NO-GO + ALREADY-RESOLVED (#970)", func() {
+		wl := newWorkload("coder-esc-already-resolved", foremanv1alpha1.WorkloadSpec{
+			Intent:                  "already-resolved must skip escalation and roll to Completed",
+			Repo:                    "defilantech/LLMKube",
+			Issues:                  []int32{42},
+			CoderAgentRef:           &corev1.LocalObjectReference{Name: "coder"},
+			VerifierAgentRef:        &corev1.LocalObjectReference{Name: "gate"},
+			EscalationCoderAgentRef: &corev1.LocalObjectReference{Name: "coder-qwopus"},
+		})
+		Expect(k8sClient.Create(ctx, wl)).To(Succeed())
+		DeferCleanup(func() {
+			cleanupChildren(wl)
+			_ = k8sClient.Delete(ctx, wl)
+		})
+
+		// First reconcile plans the base pipeline.
+		_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(wl)})
+		Expect(err).NotTo(HaveOccurred())
+		var fresh foremanv1alpha1.Workload
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(wl), &fresh)).To(Succeed())
+		Expect(fresh.Status.Tasks).To(HaveLen(2)) // code-42 + verify-42
+
+		// Mark the coder task NO-GO + ALREADY-RESOLVED.
+		var code foremanv1alpha1.AgenticTask
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: "coder-esc-already-resolved-code-42"}, &code)).To(Succeed())
+		patch := client.MergeFrom(code.DeepCopy())
+		code.Status.Phase = foremanv1alpha1.AgenticTaskPhaseSucceeded
+		code.Status.Verdict = foremanv1alpha1.AgenticTaskVerdictNoGo
+		code.Status.Result = resultRaw("ALREADY-RESOLVED", "", "Issue #42 already resolved by commit abc1234", "")
+		Expect(k8sClient.Status().Patch(ctx, &code, patch)).To(Succeed())
+
+		// Cascade-skip the verify child (production path: the
+		// AgenticTaskReconciler would mark it Skipped because the coder
+		// ended ALREADY-RESOLVED). The envtest runs only the
+		// WorkloadReconciler, so we stamp the terminal shape directly.
+		var verifyTask foremanv1alpha1.AgenticTask
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: "coder-esc-already-resolved-verify-42"}, &verifyTask)).To(Succeed())
+		patchVerify := client.MergeFrom(verifyTask.DeepCopy())
+		verifyTask.Status.Phase = foremanv1alpha1.AgenticTaskPhaseSucceeded
+		verifyTask.Status.Verdict = foremanv1alpha1.AgenticTaskVerdictSkipped
+		Expect(k8sClient.Status().Patch(ctx, &verifyTask, patchVerify)).To(Succeed())
+
+		// Second reconcile runs the coder-escalation hook + rollup.
+		_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(wl)})
+		Expect(err).NotTo(HaveOccurred())
+
+		// (1) No -esc child emitted.
+		var escCode foremanv1alpha1.AgenticTask
+		err = k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: "coder-esc-already-resolved-code-42-esc"}, &escCode)
+		Expect(apierrors.IsNotFound(err)).To(BeTrue(), "an ALREADY-RESOLVED coder must not escalate")
+
+		// (2) No CoderEscalationTriggered condition set.
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(wl), &fresh)).To(Succeed())
+		cond := findCondition(fresh.Status.Conditions, conditionTypeCoderEscalationTriggered)
+		Expect(cond).To(BeNil(), "ALREADY-RESOLVED must not produce a CoderEscalationTriggered condition")
+
+		// (3) Workload terminal state is Completed (not Failed).
+		Expect(fresh.Status.Phase).To(Equal(foremanv1alpha1.WorkloadPhaseCompleted))
+		Expect(fresh.Status.IncompleteTasks).To(Equal(int32(0)))
 	})
 })

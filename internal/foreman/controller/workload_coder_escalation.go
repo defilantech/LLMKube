@@ -42,6 +42,7 @@ type coderResultEnvelope struct {
 		ModelExtra struct {
 			Outcome string `json:"outcome"`
 		} `json:"modelExtra"`
+		ResolvedBy string `json:"resolvedBy,omitempty"`
 	} `json:"extra"`
 }
 
@@ -76,15 +77,69 @@ func coderSummary(task *foremanv1alpha1.AgenticTask) string {
 	return env.Summary
 }
 
+// coderResolvedBy returns the resolvedBy evidence string from the result
+// envelope (commit SHA or branch). Mirrors coderTerminalOutcome but only
+// extracts Extra.ResolvedBy. Empty string when Result is nil/unparseable
+// or ResolvedBy is unset. Used by rollup to surface evidence in per-issue
+// AlreadyResolved events.
+func coderResolvedBy(task *foremanv1alpha1.AgenticTask) string {
+	if task.Status.Result == nil || len(task.Status.Result.Raw) == 0 {
+		return ""
+	}
+	var env coderResultEnvelope
+	if err := json.Unmarshal(task.Status.Result.Raw, &env); err != nil {
+		return ""
+	}
+	return env.Extra.ResolvedBy
+}
+
+// alreadyResolvedOutcome is the string value the model emits at
+// extra.outcome when the coder concludes the work is already on the
+// branch/base (#970). Distinct from MODEL-DECIDED (a capability
+// failure). Centralized here so the string can't drift between
+// isAlreadyResolvedCoder and shouldEscalateCoder.
+const alreadyResolvedOutcome = "ALREADY-RESOLVED"
+
+// isAlreadyResolvedCoder reports whether the task ended in the
+// machine outcome for "work is already on the branch/base". Used by
+// shouldEscalateCoder (to skip escalation) and rollup (to keep the
+// task out of the incomplete bucket). The signal lives at
+// extra.outcome == alreadyResolvedOutcome with verdict == NO-GO.
+func isAlreadyResolvedCoder(task *foremanv1alpha1.AgenticTask) bool {
+	if task == nil {
+		return false
+	}
+	verdict, topOutcome, _ := coderTerminalOutcome(task)
+	return verdict == foremanv1alpha1.AgenticTaskVerdictNoGo && topOutcome == alreadyResolvedOutcome
+}
+
+// isSkippedTask reports whether the task was skipped because its
+// dependency ended ALREADY-RESOLVED (#970). The cascade path in
+// agentictask_controller.transitionToSkippedIfDepAlreadyResolved
+// stamps Phase=Succeeded + Verdict=Skipped on the dependent; the
+// rollup excludes Skipped tasks from every bucket (succeeded,
+// incomplete, failed, inFlight, alreadyResolved) so they don't pin
+// the Workload to Failed.
+func isSkippedTask(task *foremanv1alpha1.AgenticTask) bool {
+	if task == nil {
+		return false
+	}
+	return task.Status.Phase == foremanv1alpha1.AgenticTaskPhaseSucceeded &&
+		task.Status.Verdict == foremanv1alpha1.AgenticTaskVerdictSkipped
+}
+
 // shouldEscalateCoder is the escalation trigger: escalate only on
 // capability failures. A model-decided NO-GO (the honest "I could not
 // solve this" bail) or a coder-gate failure (wrote code, could not pass
 // the gate) escalate; a model-decided INCOMPLETE (gave up / ran out of
 // turns), a harness STUCK-LOOP-DETECTED, a trivial NO-CHANGES NO-GO, an
-// ERROR, or a GO do not.
+// already-resolved NO-GO (#970), an ERROR, or a GO do not.
 func shouldEscalateCoder(
 	verdict foremanv1alpha1.AgenticTaskVerdict, topOutcome, modelOutcome string,
 ) bool {
+	if verdict == foremanv1alpha1.AgenticTaskVerdictNoGo && topOutcome == alreadyResolvedOutcome {
+		return false // #970: already-resolved is not a capability failure
+	}
 	if verdict == foremanv1alpha1.AgenticTaskVerdictNoGo && topOutcome == "MODEL-DECIDED" {
 		return true
 	}
