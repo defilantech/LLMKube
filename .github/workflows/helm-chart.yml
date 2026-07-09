@@ -190,16 +190,36 @@ jobs:
           fi
           echo "✅ Template rendering successful"
 
-      - name: Validate Kubernetes Manifests
-        uses: docker://ghcr.io/yannh/kubeconform:v0.7.0
+      - name: Cache kubeconform schemas
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
-          entrypoint: '/kubeconform'
-          args: >
-            -summary
-            -output json
-            -ignore-missing-schemas
-            -skip CustomResourceDefinition
-            /github/workspace/manifests.yaml
+          path: .cache/kubeconform
+          key: kubeconform-schemas-v1
+
+      - name: Validate Kubernetes Manifests
+        # kubeconform fetches JSON schemas from raw.githubusercontent.com on
+        # demand. Schema-heavy renders trip GitHub-raw rate limits and the job
+        # hard-fails on a transient download error even though the templates
+        # are valid ("invalid": 0). Persist fetched schemas across runs
+        # (actions/cache + -cache) so steady state needs no network, and retry
+        # with backoff to ride out first-population and transient limits.
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/.cache/kubeconform"
+          n=0
+          until [ "$n" -ge 3 ]; do
+            docker run --rm \
+              -v "$GITHUB_WORKSPACE:/github/workspace" \
+              ghcr.io/yannh/kubeconform:v0.7.0 \
+              -summary -output json \
+              -ignore-missing-schemas -skip CustomResourceDefinition \
+              -cache /github/workspace/.cache/kubeconform \
+              /github/workspace/manifests.yaml && exit 0
+            n=$((n + 1))
+            echo "::warning::kubeconform schema fetch failed (attempt ${n}/3); backing off"
+            sleep $((n * 20))
+          done
+          echo "::error::kubeconform failed after 3 attempts (schema download)"
+          exit 1
 
   prometheus-integration:
     name: Test Prometheus Integration
@@ -779,13 +799,30 @@ jobs:
           fi
           echo "✅ verifier-node overrides render correctly"
 
-      - name: Validate Kubernetes Manifests
-        uses: docker://ghcr.io/yannh/kubeconform:v0.7.0
+      - name: Cache kubeconform schemas
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
-          entrypoint: '/kubeconform'
-          args: >
-            -summary
-            -output json
-            -ignore-missing-schemas
-            -skip CustomResourceDefinition
-            /github/workspace/foreman-default.yaml
+          path: .cache/kubeconform
+          key: kubeconform-schemas-v1
+
+      - name: Validate Kubernetes Manifests
+        # See the Template Validation job above: cache fetched schemas and
+        # retry with backoff so a transient raw.githubusercontent.com rate
+        # limit does not hard-fail a render whose templates are valid.
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/.cache/kubeconform"
+          n=0
+          until [ "$n" -ge 3 ]; do
+            docker run --rm \
+              -v "$GITHUB_WORKSPACE:/github/workspace" \
+              ghcr.io/yannh/kubeconform:v0.7.0 \
+              -summary -output json \
+              -ignore-missing-schemas -skip CustomResourceDefinition \
+              -cache /github/workspace/.cache/kubeconform \
+              /github/workspace/foreman-default.yaml && exit 0
+            n=$((n + 1))
+            echo "::warning::kubeconform schema fetch failed (attempt ${n}/3); backing off"
+            sleep $((n * 20))
+          done
+          echo "::error::kubeconform failed after 3 attempts (schema download)"
+          exit 1
