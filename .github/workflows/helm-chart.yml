@@ -755,6 +755,22 @@ jobs:
           helm lint charts/foreman
           echo "✅ foreman lint passed"
 
+      - name: Install helm-unittest
+        # Pin to a tag whose release tarball the runner can fetch without
+        # auth; same source the local developer install uses.
+        run: |
+          helm plugin install https://github.com/helm-unittest/helm-unittest.git --verify=false
+          helm unittest --help > /dev/null
+          echo "✅ helm-unittest installed"
+
+      - name: Run foreman chart unit tests
+        # Covers the agents: map multi-fleet (#994) shape plus the legacy
+        # single-agent backward-compat path. Fails CI on any drift in the
+        # expected resource names, suffixes, or per-agent field flow.
+        run: |
+          helm unittest charts/foreman
+          echo "✅ foreman chart unit tests passed"
+
       - name: Template foreman with defaults
         # foreman is a sibling chart to llmkube (no Helm subchart
         # relationship), so no helm-repo wiring is required to render

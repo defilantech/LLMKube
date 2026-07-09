@@ -1,0 +1,210 @@
+suite: agents map multi-fleet (#994)
+templates:
+  - agent-deployment.yaml
+  - agent-rbac.yaml
+  - gate-cache-pvc.yaml
+  - operator-deployment.yaml
+  - operator-rbac.yaml
+  - coder-rbac.yaml
+  - webhook.yaml
+
+tests:
+  # ---- Backward compat: legacy agent: block ----
+
+  - it: legacy agent renders exactly one deployment with the unsuffixed name
+    template: agent-deployment.yaml
+    set:
+      agent.enabled: true
+    asserts:
+      - hasDocuments:
+          count: 1
+      - equal:
+          path: metadata.name
+          value: RELEASE-NAME-foreman-agent
+      - equal:
+          path: spec.replicas
+          value: 1
+
+  - it: legacy agent renders SA plus ClusterRole plus ClusterRoleBinding
+    template: agent-rbac.yaml
+    set:
+      agent.enabled: true
+    asserts:
+      - hasDocuments:
+          count: 3
+      - equal:
+          path: metadata.name
+          value: RELEASE-NAME-foreman-agent
+
+  - it: legacy agent renders exactly one gate-cache PVC with the unsuffixed name
+    template: gate-cache-pvc.yaml
+    set:
+      agent.enabled: true
+      agent.gateCache.enabled: true
+    asserts:
+      - hasDocuments:
+          count: 1
+      - equal:
+          path: metadata.name
+          value: RELEASE-NAME-foreman-gate-cache
+
+  # ---- Multi-fleet: agents: map ----
+
+  - it: one deployment is rendered per explicit agents entry
+    template: agent-deployment.yaml
+    values:
+      - ./values-multi.yaml
+    documentSelector:
+      path: metadata.name
+      value: RELEASE-NAME-foreman-default-agent
+      matchMany: false
+    asserts:
+      - equal:
+          path: metadata.name
+          value: RELEASE-NAME-foreman-default-agent
+
+  - it: llmkube-fork agent gets its own suffixed deployment
+    template: agent-deployment.yaml
+    values:
+      - ./values-multi.yaml
+    documentSelector:
+      path: metadata.name
+      value: RELEASE-NAME-foreman-llmkube-fork-agent
+      matchMany: false
+    asserts:
+      - equal:
+          path: metadata.name
+          value: RELEASE-NAME-foreman-llmkube-fork-agent
+
+  - it: SA plus ClusterRole plus ClusterRoleBinding per agent (six docs total)
+    template: agent-rbac.yaml
+    values:
+      - ./values-multi.yaml
+    asserts:
+      - hasDocuments:
+          count: 6
+
+  - it: gate-cache PVC per agent whose gateCache.enabled is true (default keeps, fork disables)
+    template: gate-cache-pvc.yaml
+    values:
+      - ./values-multi.yaml
+    asserts:
+      - hasDocuments:
+          count: 1
+      - equal:
+          path: metadata.name
+          value: RELEASE-NAME-foreman-default-gate-cache
+
+  # ---- Per-agent field propagation ----
+
+  - it: per-agent replicaCount plus roles flow through to args
+    template: agent-deployment.yaml
+    values:
+      - ./values-multi.yaml
+    documentSelector:
+      path: metadata.name
+      value: RELEASE-NAME-foreman-llmkube-fork-agent
+      matchMany: false
+    asserts:
+      - equal:
+          path: spec.replicas
+          value: 1
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --roles=coder-fork
+
+  - it: per-agent gitRemoteURL and commit-author flow through to args
+    template: agent-deployment.yaml
+    values:
+      - ./values-multi.yaml
+    documentSelector:
+      path: metadata.name
+      value: RELEASE-NAME-foreman-llmkube-fork-agent
+      matchMany: false
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --git-remote-url=https://github.com/joryirving/LLMKube
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --commit-author-name=Jory Dogfood
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --commit-author-email=jory-dogfood@example.com
+
+  - it: per-agent coderGitSecret overrides the chart-level coder.gitCredentialsSecret
+    template: agent-deployment.yaml
+    values:
+      - ./values-multi.yaml
+    documentSelector:
+      path: metadata.name
+      value: RELEASE-NAME-foreman-llmkube-fork-agent
+      matchMany: false
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --coder-git-secret=foreman-fork-credentials
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --coder-git-secret-key=token
+
+  - it: per-agent githubToken secret flows through to env
+    template: agent-deployment.yaml
+    values:
+      - ./values-multi.yaml
+    documentSelector:
+      path: metadata.name
+      value: RELEASE-NAME-foreman-llmkube-fork-agent
+      matchMany: false
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: GITHUB_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: foreman-agent-fork
+                key: GITHUB_TOKEN
+
+  - it: agent without per-agent githubToken does NOT render a GITHUB_TOKEN env
+    template: agent-deployment.yaml
+    values:
+      - ./values-multi.yaml
+    documentSelector:
+      path: metadata.name
+      value: RELEASE-NAME-foreman-default-agent
+      matchMany: false
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: GITHUB_TOKEN
+
+  # ---- agent.enabled: false skips that agent ----
+
+  - it: agents entry with enabled false is omitted from the deployment list
+    template: agent-deployment.yaml
+    values:
+      - ./values-multi.yaml
+    asserts:
+      # only 2 enabled agents out of 3 entries
+      - hasDocuments:
+          count: 2
+
+  # ---- Singletons stay singleton ----
+
+  - it: operator Deployment renders once even with multiple agents
+    template: operator-deployment.yaml
+    values:
+      - ./values-multi.yaml
+    asserts:
+      - hasDocuments:
+          count: 1
+
+  - it: coder SA plus Role plus RoleBinding render once even with multiple agents
+    template: coder-rbac.yaml
+    values:
+      - ./values-multi.yaml
+    asserts:
+      - hasDocuments:
+          count: 3

@@ -1,0 +1,30 @@
+# Test fixture for agents_test.yaml — exercises the multi-fleet shape
+# documented in the issue #994 design. The default agent carries the
+# legacy gateCache settings (and gets the chart-level coder secret);
+# the llmkube-fork agent overrides gitRemoteURL, commit author, the
+# coder secret, and disables gateCache so its PVC is not rendered;
+# the disabled agent is a smoke-test for the enabled: false path.
+agents:
+  default:
+    enabled: true
+    replicaCount: 3
+    roles: [worker, coder, verifier]
+    gitRemoteURL: ""
+  llmkube-fork:
+    enabled: true
+    replicaCount: 1
+    roles: [coder-fork]
+    gitRemoteURL: https://github.com/joryirving/LLMKube
+    commitAuthorName: "Jory Dogfood"
+    commitAuthorEmail: "jory-dogfood@example.com"
+    githubToken:
+      secretName: foreman-agent-fork
+      secretKey: GITHUB_TOKEN
+    coderGitSecret: foreman-fork-credentials
+    coderGitSecretKey: token
+    gateCache:
+      enabled: false
+  disabled-agent:
+    enabled: false
+    replicaCount: 1
+    roles: [worker]

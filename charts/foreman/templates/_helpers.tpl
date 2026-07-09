@@ -86,13 +86,54 @@ ServiceAccount name for the foreman-operator.
 {{- end }}
 
 {{/*
-ServiceAccount name for the foreman-agent.
+ServiceAccount name for the foreman-agent. Expects a context dict with
+"agentName" (the entry from .Values.agents, or the legacy sentinel
+"_implicit_" when .Values.agent: is used unchanged) and "agentConfig"
+(the per-agent values dict). When the sentinel is passed, the legacy
+"<fullname>-agent" name is preserved so an existing install's SA is not
+renamed on upgrade; an explicit agents.<name> entry always suffixes the
+agent key so multiple agents never collide.
 */}}
 {{- define "foreman.agent.serviceAccountName" -}}
-{{- if .Values.agent.serviceAccount.create }}
-{{- default (printf "%s-agent" (include "foreman.fullname" .)) .Values.agent.serviceAccount.name }}
+{{- if .agentConfig.serviceAccount.create }}
+{{- if eq .agentName "_implicit_" }}
+{{- default (printf "%s-agent" (include "foreman.fullname" .)) .agentConfig.serviceAccount.name }}
 {{- else }}
-{{- default "default" .Values.agent.serviceAccount.name }}
+{{- default (printf "%s-%s-agent" (include "foreman.fullname" .) .agentName | trunc 63 | trimSuffix "-") .agentConfig.serviceAccount.name }}
+{{- end }}
+{{- else }}
+{{- default "default" .agentConfig.serviceAccount.name }}
+{{- end }}
+{{- end }}
+
+{{/*
+Default resource name for one foreman-agent (Deployment / ClusterRole /
+ClusterRoleBinding). Same shape as the SA default — "<fullname>-agent"
+for the legacy sentinel and "<fullname>-<agentName>-agent" for an
+explicit agents.<name> entry — but with no per-agent override since the
+SA already carries that escape hatch.
+*/}}
+{{- define "foreman.agent.resourceName" -}}
+{{- if eq .agentName "_implicit_" }}
+{{- printf "%s-agent" (include "foreman.fullname" .) }}
+{{- else }}
+{{- printf "%s-%s-agent" (include "foreman.fullname" .) .agentName | trunc 63 | trimSuffix "-" }}
+{{- end }}
+{{- end }}
+
+{{/*
+The agents map to render. When the user opts into the multi-fleet form
+(.Values.agents is set) the map is returned verbatim. Otherwise the
+legacy top-level .Values.agent: block is wrapped under a sentinel key
+("_implicit_") so a single template path can render both shapes and the
+legacy install's resource names are preserved on upgrade (#994). Callers
+must not pass "_implicit_" as an explicit agents.* key.
+*/}}
+{{- define "foreman.agents" -}}
+{{- if .Values.agents }}
+{{- .Values.agents | toYaml }}
+{{- else }}
+{{- dict "_implicit_" .Values.agent | toYaml }}
 {{- end }}
 {{- end }}
 
@@ -135,10 +176,12 @@ Foreman operator image (registry/repo:tag or registry/repo@digest).
 {{- end }}
 
 {{/*
-Foreman agent image (registry/repo:tag or registry/repo@digest).
+Foreman agent image (registry/repo:tag or registry/repo@digest). Expects
+the per-agent context dict with "agentConfig" (.Values.agents.<name> or
+.Values.agent) and the chart context (Release/Values/Chart) at the root.
 */}}
 {{- define "foreman.agent.image" -}}
-{{- $img := .Values.agent.image -}}
+{{- $img := .agentConfig.image -}}
 {{- $repo := $img.repository -}}
 {{- if $img.registry -}}
 {{- $repo = printf "%s/%s" $img.registry $img.repository -}}
@@ -152,10 +195,18 @@ Foreman agent image (registry/repo:tag or registry/repo@digest).
 {{- end }}
 
 {{/*
-Gate cache PVC name.
+Gate cache PVC name for a single agent. Expects the per-agent context
+dict; the legacy install (sentinel "_implicit_") keeps "<fullname>-gate-cache"
+so an upgrade does not rename an in-use PVC. Explicit agents.<name>
+entries get "<fullname>-<agentName>-gate-cache" so multiple agents each
+own a distinct PVC. Users can still override via .agentConfig.gateCache.name.
 */}}
 {{- define "foreman.gateCache.pvcName" -}}
-{{- default (printf "%s-gate-cache" (include "foreman.fullname" .)) .Values.agent.gateCache.name }}
+{{- $suffix := "" -}}
+{{- if ne .agentName "_implicit_" -}}
+{{- $suffix = printf "-%s" .agentName -}}
+{{- end -}}
+{{- default (printf "%s%s-gate-cache" (include "foreman.fullname" .) $suffix) .agentConfig.gateCache.name }}
 {{- end }}
 
 {{/*
