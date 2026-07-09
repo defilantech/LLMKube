@@ -5,6 +5,28 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.2](https://github.com/defilantech/LLMKube/compare/v0.9.1...v0.9.2) (2026-07-09)
+
+
+### Features
+
+* **foreman:** coder grounding rail (flag doc-contradicting metric writes) ([#1017](https://github.com/defilantech/LLMKube/issues/1017)) ([aa969ed](https://github.com/defilantech/LLMKube/commit/aa969ed6c490ef075aeb4ec0f5cabdd71c384c7e))
+* **foreman:** distinct ALREADY-RESOLVED coder outcome ([#970](https://github.com/defilantech/LLMKube/issues/970)) ([#1011](https://github.com/defilantech/LLMKube/issues/1011)) ([8e041e0](https://github.com/defilantech/LLMKube/commit/8e041e0d56b2b0f0649d87954f97c6ebeb7a8198))
+* **foreman:** flag a GO that changes no functional production code ([#1024](https://github.com/defilantech/LLMKube/issues/1024)) ([3e1a6fb](https://github.com/defilantech/LLMKube/commit/3e1a6fb32bcdb7156eec17ea5fdf07823b40108e))
+* **foreman:** MCP client for agents (Phase 1: HTTP transport, context7) ([#1014](https://github.com/defilantech/LLMKube/issues/1014)) ([d34343f](https://github.com/defilantech/LLMKube/commit/d34343fb8a53cec4bf7caa41380fcf2dfd253835))
+* **foreman:** semantic issueAsk verification instead of verbatim substring ([#1020](https://github.com/defilantech/LLMKube/issues/1020)) ([85d92ee](https://github.com/defilantech/LLMKube/commit/85d92eebaab65aa902675ef2d70f1d97283901c6))
+* **foreman:** str_replace escalates to write_file after repeated failures ([#1026](https://github.com/defilantech/LLMKube/issues/1026)) ([de1b8cb](https://github.com/defilantech/LLMKube/commit/de1b8cbc89d1a9da6de123156b7563b2a5ae513b))
+
+
+### Bug Fixes
+
+* **foreman:** exempt REJECT from grounded-finding demotion ([#1008](https://github.com/defilantech/LLMKube/issues/1008)) ([18098cb](https://github.com/defilantech/LLMKube/commit/18098cb3b98d4a947da8ffc76b03ac706fa8d832))
+* **foreman:** gate Job downloads the go.mod toolchain (GOTOOLCHAIN=auto) ([#1019](https://github.com/defilantech/LLMKube/issues/1019)) ([5f4c51c](https://github.com/defilantech/LLMKube/commit/5f4c51cf04d1755dcf666c35ae35d03fe5b57f53))
+* **foreman:** guard file-less findings + resolve bare/absolute paths in grounding rail ([#1009](https://github.com/defilantech/LLMKube/issues/1009)) ([304a2b8](https://github.com/defilantech/LLMKube/commit/304a2b851e7ae1135ecc9ca5dc2ff1627696917f))
+* **foreman:** reap audit ConfigMaps older than retention ([#990](https://github.com/defilantech/LLMKube/issues/990)) ([#1027](https://github.com/defilantech/LLMKube/issues/1027)) ([08d06d6](https://github.com/defilantech/LLMKube/commit/08d06d6bd3595af114cc21ae9c492202c1184893))
+* **foreman:** reviewer diffs against the upstream base, not stale local fork main ([#1006](https://github.com/defilantech/LLMKube/issues/1006)) ([6ef7278](https://github.com/defilantech/LLMKube/commit/6ef72781ad1f74e4f703a53b57df46dde5ee9d09))
+* **metrics:** remove dead metrics + phantom PrometheusRule error-rate rule ([#1010](https://github.com/defilantech/LLMKube/issues/1010)) ([7c92f3f](https://github.com/defilantech/LLMKube/commit/7c92f3fa6d1b6f9a7b9f1ea8a9e13efe9d77262a))
+
 ## [0.9.1](https://github.com/defilantech/LLMKube/compare/v0.9.0...v0.9.1) (2026-07-07)
 
 
