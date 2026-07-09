@@ -36,6 +36,8 @@ package agent
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/go-logr/logr"
 
@@ -49,6 +51,21 @@ func groundedFindingsDisabled() bool {
 	return os.Getenv("FOREMAN_GROUNDED_FINDINGS") == "0"
 }
 
+// normalizeFilePath strips leading "./" and leading "/" from a file path so
+// that reviewer-supplied paths (which may be basenames, "./"-prefixed, or
+// absolute) match the repo-root-relative paths used by the git diff.
+// An empty or "." result is returned as "" (no file) so that file-less
+// findings cannot falsely ground against the entire repo diff (#1004).
+func normalizeFilePath(p string) string {
+	p = strings.TrimPrefix(p, "./")
+	p = strings.TrimPrefix(p, "/")
+	p = filepath.Clean(p) // also collapses any redundant separators
+	if p == "" || p == "." {
+		return ""
+	}
+	return p
+}
+
 // groundedBlockingFindings partitions the blocking findings (severity blocker
 // or major; minor is advisory and excluded) into those grounded in a changed
 // line and those not. A finding is grounded iff File is non-empty, Line > 0,
@@ -56,6 +73,10 @@ func groundedFindingsDisabled() bool {
 // changedLines results are cached per file since it may shell out to git.
 // Both the grounded-finding demote rail and the verdict-from-findings promote
 // rail key on this partition, so they share one grounding definition.
+//
+// The finding's File path is normalized (strip "./", strip leading "/",
+// collapse separators) before lookup so that reviewer-supplied paths that are
+// not repo-root-relative still match the diff file list (#1004).
 func groundedBlockingFindings(
 	findings []reviewer.Finding,
 	changedLines func(file string) map[int]bool,
@@ -73,7 +94,8 @@ func groundedBlockingFindings(
 		if f.Severity != reviewer.SeverityBlocker && f.Severity != reviewer.SeverityMajor {
 			continue // minor is advisory, never blocking
 		}
-		if f.File != "" && f.Line > 0 && lines(f.File)[f.Line] {
+		normalizedFile := normalizeFilePath(f.File)
+		if normalizedFile != "" && f.Line > 0 && lines(normalizedFile)[f.Line] {
 			grounded = append(grounded, f)
 		} else {
 			ungrounded = append(ungrounded, f)
