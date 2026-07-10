@@ -2231,6 +2231,10 @@ func revisionTask(branch string) *foremanv1alpha1.AgenticTask {
 				Issue:            641,
 				Branch:           branch,
 				ReviseFromBranch: branch,
+				// The in-review revision path restores the prior attempt and
+				// rebases it onto the current base (#1029). Under the default
+				// reset strategy the restore is skipped entirely.
+				BranchStrategy: foremanv1alpha1.BranchStrategyRebase,
 			},
 		},
 	}
@@ -2302,6 +2306,52 @@ func TestSetupTaskBranch_MissingRefFallsBackToBase(t *testing.T) {
 	}
 	if got := gitIn(t, ws, "rev-parse", "HEAD"); got != mainSHA {
 		t.Errorf("HEAD = %s, want base tip %s (fallback branches from base)", got, mainSHA)
+	}
+	if got := gitIn(t, ws, "branch", "--show-current"); got != branch {
+		t.Errorf("current branch = %q, want %q", got, branch)
+	}
+}
+
+// TestSetupTaskBranch_ResetSkipsPriorAttempt pins the #1029 contract: under the
+// default "reset" strategy a task carrying reviseFromBranch is NOT restored —
+// the branch is cut fresh from the current base — so a retry or repair
+// re-dispatch cannot carry a stale prior branch that reverts merged work.
+func TestSetupTaskBranch_ResetSkipsPriorAttempt(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	dir := t.TempDir()
+	bare, mainSHA := seededRemote(t, dir)
+	const branch = "foreman/wl/issue-641"
+
+	// A prior attempt exists on the remote — it WOULD be restored under rebase.
+	prior := filepath.Join(dir, "prior")
+	gitIn(t, "", "clone", bare, prior)
+	gitIn(t, prior, "checkout", "-b", branch)
+	if err := os.WriteFile(filepath.Join(prior, "fix.txt"), []byte("attempt 1\n"), 0o644); err != nil {
+		t.Fatalf("write fix.txt: %v", err)
+	}
+	gitIn(t, prior, "add", "fix.txt")
+	gitIn(t, prior, "commit", "-m", "attempt 1")
+	gitIn(t, prior, "push", "origin", branch)
+
+	ws := filepath.Join(dir, "ws")
+	gitIn(t, "", "clone", bare, ws)
+
+	// reset strategy despite reviseFromBranch being set.
+	task := revisionTask(branch)
+	task.Spec.Payload.BranchStrategy = foremanv1alpha1.BranchStrategyReset
+
+	err := setupTaskBranch(context.Background(), task, ws, branch, "main",
+		func(string) string { return bare }, nil, logr.Discard())
+	if err != nil {
+		t.Fatalf("setupTaskBranch: %v", err)
+	}
+	if got := gitIn(t, ws, "rev-parse", "HEAD"); got != mainSHA {
+		t.Errorf("HEAD = %s, want base tip %s (reset cuts fresh, ignores prior attempt)", got, mainSHA)
+	}
+	if _, err := os.Stat(filepath.Join(ws, "fix.txt")); err == nil {
+		t.Error("prior attempt's fix.txt must NOT be present under reset strategy")
 	}
 	if got := gitIn(t, ws, "branch", "--show-current"); got != branch {
 		t.Errorf("current branch = %q, want %q", got, branch)

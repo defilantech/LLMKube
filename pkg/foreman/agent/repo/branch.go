@@ -231,6 +231,70 @@ func CreateBranchFromRemoteRef(ctx context.Context, opts RemoteRefBranchOptions)
 	return true, nil
 }
 
+// RebaseOntoBaseOptions configures RebaseOntoBase.
+type RebaseOntoBaseOptions struct {
+	// Workspace is the working tree whose current branch is rebased.
+	Workspace string
+	// BaseBranch is the ref to rebase onto. Empty defaults to "main".
+	BaseBranch string
+	// UpstreamURL is the git URL the base ref is fetched from (the task's
+	// upstream/own repo). When empty there is no base source (e.g. a freeform
+	// task) and the rebase is a no-op.
+	UpstreamURL string
+	// Auth, when non-nil, provides the GIT_ASKPASS scaffolding for the fetch.
+	Auth *Auth
+}
+
+// RebaseOntoBase fetches BaseBranch from UpstreamURL and rebases the current
+// branch onto that fetched tip, so a restored prior attempt (see
+// CreateBranchFromRemoteRef) replays its commits ON TOP of the CURRENT base.
+// Any work merged into base since the prior attempt is preserved rather than
+// reverted — the bug that made a stale revision branch delete already-merged
+// files. A rebase conflict aborts the half-applied rebase and returns an error
+// so the task fails loud instead of pushing a branch that reverts merged work.
+// When UpstreamURL is empty there is no base to rebase onto and it is a no-op.
+func RebaseOntoBase(ctx context.Context, opts RebaseOntoBaseOptions) error {
+	if opts.Workspace == "" {
+		return fmt.Errorf("RebaseOntoBase: Workspace is required")
+	}
+	if opts.UpstreamURL == "" {
+		return nil
+	}
+	base := opts.BaseBranch
+	if base == "" {
+		base = "main"
+	}
+	if !gitRefSafe(base) {
+		return fmt.Errorf("RebaseOntoBase: invalid base branch %q", base)
+	}
+	if strings.HasPrefix(opts.UpstreamURL, "-") {
+		return fmt.Errorf("RebaseOntoBase: invalid upstream url %q", opts.UpstreamURL)
+	}
+
+	env := baseEnv()
+	if opts.Auth != nil {
+		env = append(env, opts.Auth.Env()...)
+	}
+	if _, err := runGit(ctx, opts.Workspace, env, "fetch", opts.UpstreamURL, base); err != nil {
+		return fmt.Errorf("RebaseOntoBase: fetch %s %s: %w", opts.UpstreamURL, base, err)
+	}
+	// git rebase re-commits the replayed commits, so it needs a committer
+	// identity even though each commit's original author is preserved. Supply a
+	// stable foreman identity so the rebase never fails on a freshly-cloned
+	// workspace with no user.name/email configured.
+	rebaseEnv := append(baseEnv(),
+		"GIT_COMMITTER_NAME=foreman",
+		"GIT_COMMITTER_EMAIL=foreman@llmkube.dev",
+	)
+	if _, err := runGit(ctx, opts.Workspace, rebaseEnv, "rebase", "FETCH_HEAD"); err != nil {
+		// Leave the workspace clean: a conflict means the revision genuinely
+		// clashes with merged work and must fail loud, not silently revert it.
+		_, _ = runGit(ctx, opts.Workspace, baseEnv(), "rebase", "--abort")
+		return fmt.Errorf("RebaseOntoBase: rebase onto %s: %w", base, err)
+	}
+	return nil
+}
+
 // baseEnv is the minimal env for read/local-only git ops that do not
 // need GIT_ASKPASS (branch, status, log). HOME is carried through so
 // git can read ~/.gitconfig if present.
