@@ -1108,6 +1108,18 @@ func buildDeterministicArgs(task *foremanv1alpha1.AgenticTask, branch, cloneURL 
 		args["commands"] = cmds
 	}
 
+	// Sliced-workload steps (#1033) carry the slice plan for the integrate /
+	// reconcile tools: the slices to union or check, the upstream source of the
+	// base, and (for reconcile) the pinned identifiers + contract. Added only
+	// for those kinds so the gate's args stay byte-identical.
+	if task.Spec.Kind == foremanv1alpha1.AgenticTaskKindIntegrate ||
+		task.Spec.Kind == foremanv1alpha1.AgenticTaskKindReconcile {
+		args["slices"] = task.Spec.Payload.Slices
+		args["upstreamURL"] = upstreamURLForRepo(task.Spec.Payload.Repo)
+		args["sharedIdentifiers"] = task.Spec.Payload.SharedIdentifiers
+		args["contract"] = task.Spec.Payload.Contract
+	}
+
 	out, _ := json.Marshal(args)
 	return out
 }
