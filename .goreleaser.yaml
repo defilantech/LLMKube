@@ -365,31 +365,11 @@ release:
 
     **Full Changelog**: [CHANGELOG.md](https://github.com/defilantech/LLMKube/blob/main/CHANGELOG.md)
 
-# Homebrew tap. brews/formulas were deprecated in GoReleaser v2.16 in favor
-# of homebrew_casks, which uses cask stanzas (binaries) rather than the
-# formula install/test DSL.
-homebrew_casks:
-  - name: llmkube
-    # Only include the CLI archive (not Metal agent)
-    ids:
-      - llmkube-cli
-    binaries:
-      - llmkube
-    repository:
-      owner: defilantech
-      name: homebrew-tap
-      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
-    directory: Casks
-    description: "GPU-accelerated Kubernetes operator for local LLM inference"
-    homepage: "https://github.com/defilantech/LLMKube"
-    # The released CLI binary is not notarized; strip the quarantine xattr so
-    # Gatekeeper does not block it on first run.
-    hooks:
-      post:
-        install: |
-          if OS.mac?
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/llmkube"]
-          end
+# Homebrew tap: NOT configured here. GoReleaser removed `brews` (formulae) in
+# v2.16 and its only replacement, `homebrew_casks`, produces macOS-only casks,
+# which drops Linux Homebrew for a cross-platform CLI (see #1039 / #1040). The
+# release workflow instead runs hack/publish-homebrew-formula.sh to publish a
+# cross-platform binary formula from dist/checksums.txt.
 
 # Metadata
 metadata:

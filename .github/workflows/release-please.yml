@@ -67,6 +67,16 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
 
+      - name: Publish Homebrew formula
+        # GoReleaser no longer manages the tap (its cask replacement is
+        # macOS-only). Publish a cross-platform binary formula from the
+        # release checksums so `brew install defilantech/tap/llmkube` works on
+        # macOS and Linux and tracks every release (#1039 / #1040).
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ needs.release-please.outputs.version }}
+        run: ./hack/publish-homebrew-formula.sh "$VERSION" dist/checksums.txt
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
