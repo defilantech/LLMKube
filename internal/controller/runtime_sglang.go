@@ -45,11 +45,11 @@ const ConditionSGLangSpecValid = "SGLangSpecValid"
 
 // sglangCUDAImage is the pinned default CUDA image. Tag verified at PR time
 // against Docker Hub; bump in a follow-up if a newer SGLang release is required.
-const sglangCUDAImage = "lmsysorg/sglang:v0.4.10.post2-cu126"
+const sglangCUDAImage = "lmsysorg/sglang:v0.5.15-cu129"
 
 // sglangROCmImage is the AMD ROCm variant. Selected by resolveRuntimeImage
 // when model.Spec.Hardware.GPU.Vendor == "amd".
-const sglangROCmImage = "lmsysorg/sglang:v0.4.10.post2-rocm630"
+const sglangROCmImage = "lmsysorg/sglang:v0.5.15-rocm720-mi30x"
 
 // SGLangBackend generates container configuration for the SGLang inference
 // server (https://github.com/sgl-project/sglang).

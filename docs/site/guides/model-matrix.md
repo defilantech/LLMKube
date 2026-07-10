@@ -275,7 +275,7 @@ GPU-only. Choose when:
   parsers that vLLM doesn't ship with first-class CRD fields.
 
 Unlike llama.cpp, there's no meaningful CPU path — even small embedding models
-require a GPU. AMD is supported via the ROCm image (`lmsysorg/sglang:...-rocm630`),
+require a GPU. AMD is supported via the ROCm image (`lmsysorg/sglang:...-rocm720-mi30x`),
 picked automatically by the controller when `model.spec.hardware.gpu.vendor`
 is `amd`.
 
