@@ -244,10 +244,13 @@ func reviewIterationSteps(
 						Repo:   w.Spec.Repo,
 						Issue:  n,
 						Branch: branch,
-						// The prior attempt lives at the task's own
-						// branch name on the push remote; the executor
-						// restores it before the model runs (#951).
+						// The prior attempt lives at the task's own branch name on
+						// the push remote; the executor restores it (#951) and, under
+						// the rebase strategy, replays it onto the current base so
+						// this in-review revision does not revert work merged since
+						// the prior attempt (#1029).
 						ReviseFromBranch: branch,
+						BranchStrategy:   foremanv1alpha1.BranchStrategyRebase,
 						AllowOverwrite:   true,
 						Prompt:           reviewFeedbackPrompt(noGo),
 					},

@@ -222,6 +222,72 @@ func TestCreateBranchFromRemoteRef(t *testing.T) {
 	}
 }
 
+// TestRebaseOntoBase verifies a restored prior attempt is replayed ON TOP of
+// the CURRENT base, so work merged into base since the prior attempt is
+// preserved rather than reverted (the stale-revision-branch bug, LLMKube#1029).
+func TestRebaseOntoBase(t *testing.T) {
+	gitOrSkip(t)
+	dir := t.TempDir()
+
+	bare := initBareOrigin(t, filepath.Join(dir, "origin"))
+	seedOrigin(t, bare)
+
+	// Prior attempt: a branch cut from the seed base, adding fix.txt.
+	const branch = "foreman/wl/issue-1029"
+	pushPriorAttempt(t, bare, filepath.Join(dir, "prior"), branch, "fix.txt")
+
+	// Base advances AFTER the prior attempt: main gains merged.txt.
+	mainWork := mustClone(t, bare, filepath.Join(dir, "main-work"))
+	commitFile(t, mainWork, "merged.txt", "merged since the prior attempt\n")
+
+	// Revision workspace: restore the prior attempt. It is based on the OLD
+	// base, so merged.txt is absent — a PR of this branch as-is would revert it.
+	workspace := mustClone(t, bare, filepath.Join(dir, "workspace"))
+	found, err := CreateBranchFromRemoteRef(context.Background(), RemoteRefBranchOptions{
+		Workspace: workspace, Branch: branch, Remote: "origin", Ref: branch,
+	})
+	if err != nil || !found {
+		t.Fatalf("restore prior attempt: found=%v err=%v", found, err)
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "merged.txt")); err == nil {
+		t.Fatal("test setup: merged.txt should be absent on the restored prior attempt")
+	}
+
+	// Rebase the prior attempt onto the current base.
+	if err := RebaseOntoBase(context.Background(), RebaseOntoBaseOptions{
+		Workspace: workspace, BaseBranch: "main", UpstreamURL: bare,
+	}); err != nil {
+		t.Fatalf("RebaseOntoBase: %v", err)
+	}
+
+	// Both files present: merged work preserved, prior attempt replayed on top.
+	if _, err := os.Stat(filepath.Join(workspace, "merged.txt")); err != nil {
+		t.Errorf("merged.txt must be preserved after rebase (not reverted): %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "fix.txt")); err != nil {
+		t.Errorf("prior attempt's fix.txt must be carried forward: %v", err)
+	}
+}
+
+// TestRebaseOntoBase_NoUpstreamIsNoop verifies an empty UpstreamURL (no base
+// source, e.g. a freeform task) is a no-op rather than an error.
+func TestRebaseOntoBase_NoUpstreamIsNoop(t *testing.T) {
+	gitOrSkip(t)
+	dir := t.TempDir()
+	bare := initBareOrigin(t, filepath.Join(dir, "origin"))
+	seedOrigin(t, bare)
+	workspace := mustClone(t, bare, filepath.Join(dir, "workspace"))
+	before := gitOut(t, workspace, "rev-parse", "HEAD")
+	if err := RebaseOntoBase(context.Background(), RebaseOntoBaseOptions{
+		Workspace: workspace, BaseBranch: "main", UpstreamURL: "",
+	}); err != nil {
+		t.Fatalf("RebaseOntoBase no-op: %v", err)
+	}
+	if after := gitOut(t, workspace, "rev-parse", "HEAD"); after != before {
+		t.Errorf("HEAD moved on no-op rebase: %s -> %s", before, after)
+	}
+}
+
 // TestCreateBranchFromRemoteRef_MissingRef verifies the fallback
 // contract: a ref absent from the remote (pruned, or the prior attempt
 // never pushed) returns found=false WITHOUT an error and leaves the

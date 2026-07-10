@@ -49,6 +49,25 @@ const (
 	AgenticTaskKindFreeform AgenticTaskKind = "freeform"
 )
 
+// BranchStrategy controls how the executor cuts an issue-fix task's working
+// branch relative to the current base, so a re-dispatch of the same issue can
+// never revert already-merged work.
+// +kubebuilder:validation:Enum=reset;rebase
+type BranchStrategy string
+
+const (
+	// BranchStrategyReset cuts the working branch fresh from the CURRENT base
+	// tip, ignoring any prior attempt (payload.reviseFromBranch). This is the
+	// default: a fresh issue-fix, retry, or repair re-dispatch redoes the work
+	// against latest base, so a stale prior branch can never drift from base and
+	// revert merged commits.
+	BranchStrategyReset BranchStrategy = "reset"
+	// BranchStrategyRebase restores the prior attempt (payload.reviseFromBranch)
+	// and rebases it onto the CURRENT base, so an in-review PR revision carries
+	// its earlier commits forward on top of merged work instead of reverting it.
+	BranchStrategyRebase BranchStrategy = "rebase"
+)
+
 // AgenticTaskFailureReason categorizes WHY a task did not reach a
 // "succeeded-on-target" outcome. Distinct from AgenticTaskVerdict
 // (which carries the externally-meaningful WHAT: GO / NO-GO /
@@ -295,6 +314,16 @@ type AgenticTaskPayload struct {
 	// than failing.
 	// +optional
 	ReviseFromBranch string `json:"reviseFromBranch,omitempty"`
+
+	// BranchStrategy selects how the working branch is cut relative to the
+	// current base (see BranchStrategy). Defaults to "reset": cut fresh from the
+	// current base and ignore any prior attempt (reviseFromBranch), so a retry
+	// or repair re-dispatch cannot revert merged work. Set "rebase" for the
+	// in-review PR revision path, where the prior attempt is restored and
+	// rebased onto the current base. Issue-fix only.
+	// +kubebuilder:default=reset
+	// +optional
+	BranchStrategy BranchStrategy `json:"branchStrategy,omitempty"`
 
 	// Prompt is the agent input. Required for freeform.
 	// +optional

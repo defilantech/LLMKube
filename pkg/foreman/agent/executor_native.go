@@ -351,20 +351,22 @@ func (e *NativeAgentLoopExecutor) Execute(ctx context.Context, task *foremanv1al
 }
 
 // setupTaskBranch cuts the task's working branch in the freshly cloned
-// workspace. Precedence:
+// workspace, honoring payload.branchStrategy (default "reset"). Precedence:
 //
-//  1. payload.reviseFromBranch on an issue-fix task (#951): restore the
-//     prior attempt by fetching that ref from the push remote ("origin",
-//     the clone the branch pushes back to) and branching from it, so a
-//     revision task starts with its prior attempt's files present. The
-//     executor owns this restore — prompt-driven git proved fragile
-//     under stuck-loop forcing windows. When the ref is gone from the
-//     remote (pruned, or the prior attempt never pushed) it logs and
-//     falls through to (2) rather than failing.
-//  2. Upstream base fetch (#813): when the task carries a repo slug,
-//     fetch the base ref from the upstream project and branch from
-//     that, so a stale fork default branch cannot produce a stale-base
-//     branch. Origin stays the fork; the branch still pushes there.
+//  1. rebase strategy + payload.reviseFromBranch on an issue-fix task (#951,
+//     #1029): restore the prior attempt from the push remote ("origin") and
+//     rebase it onto the CURRENT base, so an in-review revision carries its
+//     earlier commits forward on top of work merged since instead of reverting
+//     it. The executor owns this restore+rebase — prompt-driven git proved
+//     fragile under stuck-loop forcing windows. When the ref is gone from the
+//     remote (pruned, or the prior attempt never pushed) it logs and falls
+//     through to (2). Under the default "reset" strategy the restore is skipped
+//     entirely: a retry or repair re-dispatch redoes the work fresh from base,
+//     so a stale prior branch can never drift from base and revert merged work.
+//  2. Upstream base fetch (#813): when the task carries a repo slug, fetch the
+//     base ref from the upstream project and branch from that (the reset path),
+//     so a stale fork default branch cannot produce a stale-base branch. Origin
+//     stays the fork; the branch still pushes there.
 //  3. Clone-HEAD checkout for freeform tasks without a repo slug.
 func setupTaskBranch(
 	ctx context.Context,
@@ -374,8 +376,20 @@ func setupTaskBranch(
 	auth *repo.Auth,
 	log logr.Logger,
 ) error {
-	if ref := task.Spec.Payload.ReviseFromBranch; ref != "" &&
+	strategy := task.Spec.Payload.BranchStrategy
+	if strategy == "" {
+		strategy = foremanv1alpha1.BranchStrategyReset
+	}
+
+	// rebase (in-review revision): restore the prior attempt AND rebase it onto
+	// the current base, so its commits replay on top of work merged since rather
+	// than reverting it. reset (the default) skips the restore entirely and cuts
+	// fresh from the current base below, so a retry or repair re-dispatch can
+	// never carry a stale branch that drifts from base.
+	if strategy == foremanv1alpha1.BranchStrategyRebase &&
+		task.Spec.Payload.ReviseFromBranch != "" &&
 		task.Spec.Kind == foremanv1alpha1.AgenticTaskKindIssueFix {
+		ref := task.Spec.Payload.ReviseFromBranch
 		found, err := repo.CreateBranchFromRemoteRef(ctx, repo.RemoteRefBranchOptions{
 			Workspace: workspace,
 			Branch:    branch,
@@ -389,8 +403,18 @@ func setupTaskBranch(
 			return err
 		}
 		if found {
-			log.Info("restored prior attempt for revision",
-				"reviseFromBranch", ref, "branch", branch)
+			// Replay the restored prior attempt onto the current base. A
+			// conflict fails the task loud rather than reverting merged work.
+			if err := repo.RebaseOntoBase(ctx, repo.RebaseOntoBaseOptions{
+				Workspace:   workspace,
+				BaseBranch:  baseBranch,
+				UpstreamURL: resolveUpstream(task.Spec.Payload.Repo),
+				Auth:        auth,
+			}); err != nil {
+				return err
+			}
+			log.Info("restored prior attempt and rebased onto base for revision",
+				"reviseFromBranch", ref, "branch", branch, "baseBranch", baseBranch)
 			return nil
 		}
 		log.Info("reviseFromBranch ref not found on push remote; falling back to base branch",
