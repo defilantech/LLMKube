@@ -24,7 +24,7 @@ import (
 
 // AgenticTaskKind is the unit of work the task performs. Each kind has a
 // payload shape, scheduler routing, and lifecycle.
-// +kubebuilder:validation:Enum=issue-fix;verify;review;freeform
+// +kubebuilder:validation:Enum=issue-fix;verify;review;freeform;integrate;reconcile
 type AgenticTaskKind string
 
 const (
@@ -47,6 +47,19 @@ const (
 	AgenticTaskKindReview AgenticTaskKind = "review"
 	// AgenticTaskKindFreeform passes an arbitrary prompt to a named agent.
 	AgenticTaskKindFreeform AgenticTaskKind = "freeform"
+	// AgenticTaskKindIntegrate unions the disjoint slice branches of a sliced
+	// Workload onto the current base on a fresh integration branch, gated by a
+	// build. Scheduled after all slice issue-fix tasks Succeed; its payload
+	// carries the slice branches (payload.slices[].branch) and the base
+	// (payload.baseBranch). Part of Sliced Workloads (#1033).
+	AgenticTaskKindIntegrate AgenticTaskKind = "integrate"
+	// AgenticTaskKindReconcile checks the integrated union against the slice
+	// plan's pinned shared identifiers, catching cross-slice interface drift a
+	// build cannot see. A pinned-missing drift is authoritative (GATE-FAIL); an
+	// llm-flagged-only drift is advisory. Its payload carries the pins
+	// (payload.sharedIdentifiers), the slices' files (payload.slices[].files),
+	// and the contract (payload.contract). Part of Sliced Workloads (#1033).
+	AgenticTaskKindReconcile AgenticTaskKind = "reconcile"
 )
 
 // BranchStrategy controls how the executor cuts an issue-fix task's working
@@ -351,6 +364,63 @@ type AgenticTaskPayload struct {
 	// produced no advisories or has not yet completed.
 	// +optional
 	GateAdvisories []GateAdvisory `json:"gateAdvisories,omitempty"`
+
+	// Slices are the disjoint slices of a sliced Workload. The integrate task
+	// unions their branches; the reconcile task checks pins against their
+	// files. Set on integrate and reconcile tasks. Part of #1033.
+	// +optional
+	Slices []SliceRef `json:"slices,omitempty"`
+
+	// Contract is the slice plan's prose contract, handed to a reconcile
+	// task's LLM sweep as the description of the intended shared interfaces.
+	// Reconcile only. Part of #1033.
+	// +optional
+	Contract string `json:"contract,omitempty"`
+
+	// SharedIdentifiers pins the exact cross-slice strings a reconcile task
+	// verifies against the integrated union. Reconcile only. Part of #1033.
+	// +optional
+	SharedIdentifiers []SharedIdentifier `json:"sharedIdentifiers,omitempty"`
+}
+
+// SliceRef describes one disjoint slice of a sliced Workload. The integrate
+// task unions each slice's Branch; the reconcile task verifies pinned
+// identifiers appear in each slice's Files. Part of Sliced Workloads (#1033).
+type SliceRef struct {
+	// Name is the slice's name within the plan.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+
+	// Branch is the git ref the slice's coder pushed. Required for the
+	// integrate task, which applies each slice branch's diff onto the base.
+	// +optional
+	Branch string `json:"branch,omitempty"`
+
+	// Files are the repo-relative paths this slice owns, so a reconcile task
+	// looks for each pinned identifier in the right slice.
+	// +optional
+	Files []string `json:"files,omitempty"`
+}
+
+// SharedIdentifier pins one exact string that crosses a slice boundary (a
+// metric name, config key, or CRD field). The reconcile task asserts the ID
+// appears verbatim in the DefinedBy slice and every ReferencedBy slice; a
+// missing pin is an authoritative drift. Part of Sliced Workloads (#1033).
+type SharedIdentifier struct {
+	// ID is the exact string every listed slice must contain verbatim.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	ID string `json:"id"`
+
+	// DefinedBy is the slice name that must produce the identifier.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	DefinedBy string `json:"definedBy"`
+
+	// ReferencedBy are the slice names that must consume the identifier.
+	// +optional
+	ReferencedBy []string `json:"referencedBy,omitempty"`
 }
 
 // AgenticTaskSpec defines the desired state of an AgenticTask.
