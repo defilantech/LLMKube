@@ -221,6 +221,3 @@ func (b *SGLangBackend) BuildEnv(isvc *inferencev1alpha1.InferenceService) []cor
 	}
 	return nil
 }
-
-// Forward-declared for later tasks; silenced to satisfy unused linter.
-var _ = sglangROCmImage

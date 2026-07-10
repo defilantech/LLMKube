@@ -44,16 +44,30 @@ import (
 // it for vLLM where the v0.20+ env-var validator turns it into log noise.
 // resolveRuntimeImage returns the container image for the runtime, making the
 // otherwise vendor-blind backend.DefaultImage() vendor- and runtime-aware where
-// it matters. Today the only divergence is the llama.cpp backend with an
-// AMD/Vulkan Model: it uses LLMKube's pinned Vulkan image instead of the stock
-// upstream image. Every other backend/vendor/runtime combination falls through
-// to backend.DefaultImage(). An explicit InferenceService.spec.image still wins
+// it matters. Today there are two divergences:
+//   - LlamaCppBackend with AMD + Vulkan Model → LLMKube's pinned Vulkan image
+//   - SGLangBackend with AMD (ROCm) Model → SGLang ROCm image
+//
+// Every other backend/vendor/runtime combination falls through to
+// backend.DefaultImage(). An explicit InferenceService.spec.image still wins
 // over whatever this returns (handled by the caller).
 func resolveRuntimeImage(backend RuntimeBackend, model *inferencev1alpha1.Model) string {
 	if _, ok := backend.(*LlamaCppBackend); ok && isVulkanAMDModel(model) {
 		return llamaCppVulkanImage
 	}
+	if _, ok := backend.(*SGLangBackend); ok && isAMDROCmModel(model) {
+		return sglangROCmImage
+	}
 	return backend.DefaultImage()
+}
+
+// isAMDROCmModel reports whether the Model requests the AMD vendor. ROCm vs
+// Vulkan is not distinguished here — SGLang ships ROCm images, not Vulkan.
+func isAMDROCmModel(model *inferencev1alpha1.Model) bool {
+	if model == nil || model.Spec.Hardware == nil || model.Spec.Hardware.GPU == nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(model.Spec.Hardware.GPU.Vendor), "amd")
 }
 
 // isVulkanAMDModel reports whether the Model requests the AMD vendor with the
