@@ -57,16 +57,17 @@ func fprint(w io.Writer, a ...any)                 { _, _ = fmt.Fprint(w, a...) 
 
 // dispatchOptions holds the resolved flags for one `foreman dispatch` run.
 type dispatchOptions struct {
-	repo         string
-	agents       []string
-	namespace    string
-	timeoutSecs  int32
-	baseBranch   string
-	branchPrefix string
-	promptFiles  []string
-	noWait       bool
-	pollInterval time.Duration
-	dryRun       bool
+	repo             string
+	agents           []string
+	namespace        string
+	timeoutSecs      int32
+	baseBranch       string
+	branchPrefix     string
+	reviseFromBranch string
+	promptFiles      []string
+	noWait           bool
+	pollInterval     time.Duration
+	dryRun           bool
 }
 
 // taskAssignment pairs an issue with the coder Agent that will run it.
@@ -124,7 +125,12 @@ Examples:
 
   # Override one issue's prompt; create and detach:
   llmkube foreman dispatch --repo defilantech/LLMKube --agents coder-metal \
-    --prompt-file 813=/tmp/813.md --no-wait 813 854`,
+    --prompt-file 813=/tmp/813.md --no-wait 813 854
+
+  # In-place PR refresh: restore an existing branch and push an update on top:
+  llmkube foreman dispatch --repo defilantech/LLMKube --agents coder-go \
+    --revise-from-branch foreman/adhoc/issue-991 \
+    --prompt-file 991=feedback.md 991`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDispatch(cmd.Context(), cmd.OutOrStdout(), args, opts)
@@ -137,6 +143,9 @@ Examples:
 	f.Int32Var(&opts.timeoutSecs, "timeout", 1800, "Per-task timeout in seconds")
 	f.StringVar(&opts.baseBranch, "base-branch", "", "Base branch the coder branches from (payload.baseBranch)")
 	f.StringVar(&opts.branchPrefix, "branch-prefix", "", "Prefix for the coder's working branch (payload.branchPrefix)")
+	f.StringVar(&opts.reviseFromBranch, "revise-from-branch", "",
+		"Restore this ref as the coder's working branch and push an update to the existing PR "+
+			"(sets payload.branch and payload.reviseFromBranch; requires exactly one issue)")
 	f.StringArrayVar(&opts.promptFiles, "prompt-file", nil, "Override an issue's prompt: ISSUE=PATH (repeatable)")
 	f.BoolVar(&opts.noWait, "no-wait", false, "Create the tasks and exit without watching")
 	f.DurationVar(&opts.pollInterval, "poll-interval", 5*time.Second, "How often to poll task status while watching")
@@ -160,6 +169,9 @@ func runDispatch(ctx context.Context, out io.Writer, args []string, opts *dispat
 	}
 	issues, err := parseIssues(args)
 	if err != nil {
+		return err
+	}
+	if err := validateReviseFromBranch(issues, opts.reviseFromBranch); err != nil {
 		return err
 	}
 	overrides, err := parsePromptOverrides(opts.promptFiles)
@@ -259,6 +271,30 @@ func assignAgents(issues []int, agents []string) []taskAssignment {
 	return out
 }
 
+// validateReviseFromBranch enforces the single-issue rule for the
+// --revise-from-branch flag (#996): a revision targets exactly one branch,
+// and the executor path will create one AgenticTask for it. Empty flag is
+// a no-op (fresh-branch path).
+func validateReviseFromBranch(issues []int, flag string) error {
+	if flag == "" {
+		return nil
+	}
+	if len(issues) != 1 {
+		return fmt.Errorf("--revise-from-branch requires exactly one issue, got %d", len(issues))
+	}
+	return nil
+}
+
+// branchStrategyIfRevision pairs BranchStrategy with ReviseFromBranch: the
+// rebase strategy is what makes the executor actually restore the prior
+// attempt (#1042), so the two must move together.
+func branchStrategyIfRevision(ref string) foremanv1alpha1.BranchStrategy {
+	if ref == "" {
+		return ""
+	}
+	return foremanv1alpha1.BranchStrategyRebase
+}
+
 // parsePromptOverrides reads each ISSUE=PATH spec into a map of issue ->
 // file contents.
 func parsePromptOverrides(specs []string) (map[int]string, error) {
@@ -321,6 +357,17 @@ func buildTask(
 				BaseBranch:   opts.baseBranch,
 				BranchPrefix: opts.branchPrefix,
 				Agent:        a.Agent,
+				// Issue-fix revision (#996): stamp Branch and ReviseFromBranch
+				// to the same ref so the executor restores the prior attempt
+				// and force-with-lease pushes an update, refreshing the open
+				// PR in place. BranchStrategy must be "rebase" — under the
+				// default "reset" (#1042), setupTaskBranch skips the
+				// ReviseFromBranch restore and the revision becomes a no-op
+				// fresh cut from base. Both revision fields stay empty on the
+				// fresh-branch path.
+				Branch:           opts.reviseFromBranch,
+				ReviseFromBranch: opts.reviseFromBranch,
+				BranchStrategy:   branchStrategyIfRevision(opts.reviseFromBranch),
 			},
 		},
 	}
