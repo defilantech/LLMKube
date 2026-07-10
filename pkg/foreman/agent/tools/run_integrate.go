@@ -102,6 +102,32 @@ func (RunIntegrateTool) Schema() oai.ToolSchemaDef {
 
 var localRefUnsafe = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
 
+var refAllowed = regexp.MustCompile(`^[A-Za-z0-9._/-]+$`)
+
+// refSafe reports whether s is safe to pass to git as a ref/positional
+// argument: non-empty, not an option (no leading '-'), no ".." traversal, and
+// only git-ref-safe characters. Mirrors repo.gitRefSafe so a value beginning
+// with '-' cannot be smuggled in as a git flag (argv injection, e.g.
+// --upload-pack=<cmd>). Shared with run_reconcile.
+func refSafe(s string) bool {
+	return s != "" && !strings.HasPrefix(s, "-") &&
+		!strings.Contains(s, "..") && refAllowed.MatchString(s)
+}
+
+// gitURLSafe reports whether s is a safe git remote URL: not an option and a
+// known scheme, so it cannot be read as a git flag.
+func gitURLSafe(s string) bool {
+	if s == "" || strings.HasPrefix(s, "-") {
+		return false
+	}
+	for _, scheme := range []string{"https://", "http://", "ssh://", "git://", "git@", "file://", "/"} {
+		if strings.HasPrefix(s, scheme) {
+			return true
+		}
+	}
+	return false
+}
+
 // Execute fetches the base + each slice into local refs, unions them via
 // slicer.Integrate, and pushes the integration branch. It never returns a
 // non-nil error for a content/transport failure: those map to a Terminal
@@ -114,9 +140,20 @@ func (t *RunIntegrateTool) Execute(ctx context.Context, raw json.RawMessage) (*a
 	if a.Branch == "" || len(a.Slices) == 0 {
 		return t.gateError("run_integrate requires branch and at least one slice"), nil
 	}
+	// Validate every user-influenced value before it reaches git argv, so a
+	// value beginning with '-' cannot be smuggled in as a git flag.
+	if !refSafe(a.Branch) {
+		return t.gateError(fmt.Sprintf("unsafe integration branch %q", a.Branch)), nil
+	}
 	base := a.BaseBranch
 	if base == "" {
 		base = "main"
+	}
+	if !refSafe(base) {
+		return t.gateError(fmt.Sprintf("unsafe base branch %q", base)), nil
+	}
+	if a.UpstreamURL != "" && !gitURLSafe(a.UpstreamURL) {
+		return t.gateError(fmt.Sprintf("unsafe upstream url %q", a.UpstreamURL)), nil
 	}
 
 	var authEnv []string
@@ -142,8 +179,8 @@ func (t *RunIntegrateTool) Execute(ctx context.Context, raw json.RawMessage) (*a
 	// 2. Fetch each slice branch from origin into a local ref.
 	sliceRefs := make([]string, 0, len(a.Slices))
 	for _, s := range a.Slices {
-		if s.Branch == "" {
-			return t.gateError(fmt.Sprintf("slice %q has no branch to integrate", s.Name)), nil
+		if !refSafe(s.Branch) {
+			return t.gateError(fmt.Sprintf("slice %q has an unsafe or empty branch %q", s.Name, s.Branch)), nil
 		}
 		local := "_slicer_slice_" + localRefUnsafe.ReplaceAllString(s.Name, "-")
 		if v := t.fetchToLocal(ctx, authEnv, "origin", s.Branch, local); v != nil {
@@ -175,7 +212,7 @@ func (t *RunIntegrateTool) Execute(ctx context.Context, raw json.RawMessage) (*a
 	}
 
 	// 4. Push the integration branch to origin for the reconcile step + PR.
-	if err := t.runGit(ctx, authEnv, "push", "--force-with-lease", "origin", a.Branch); err != nil {
+	if err := t.runGit(ctx, authEnv, "push", "--force-with-lease", "--end-of-options", "origin", a.Branch); err != nil {
 		return t.gateError("push integration branch: " + err.Error()), nil
 	}
 
@@ -195,7 +232,9 @@ func (t *RunIntegrateTool) Execute(ctx context.Context, raw json.RawMessage) (*a
 func (t *RunIntegrateTool) fetchToLocal(
 	ctx context.Context, env []string, remote, remoteRef, localBranch string,
 ) *agent.ToolResult {
-	if err := t.runGit(ctx, env, "fetch", remote, remoteRef); err != nil {
+	// --end-of-options is defense in depth on top of the refSafe/gitURLSafe
+	// validation in Execute: even a validated value is treated as positional.
+	if err := t.runGit(ctx, env, "fetch", "--end-of-options", remote, remoteRef); err != nil {
 		return t.gateError(fmt.Sprintf("fetch %s %s: %s", remote, remoteRef, err.Error()))
 	}
 	if err := t.runGit(ctx, env, "branch", "-f", localBranch, "FETCH_HEAD"); err != nil {

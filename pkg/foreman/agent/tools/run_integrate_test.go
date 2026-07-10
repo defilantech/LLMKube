@@ -150,3 +150,21 @@ func TestRunIntegrate_BadArgsIsGateError(t *testing.T) {
 		t.Fatalf("verdict = %q, want GATE-ERROR for missing slices", res.Verdict)
 	}
 }
+
+// A branch/ref that begins with '-' (or an option-looking URL) must be rejected
+// before it reaches git argv, closing the flag-smuggling vector.
+func TestRunIntegrate_ArgvInjectionRejected(t *testing.T) {
+	tool := &RunIntegrateTool{Workspace: t.TempDir()}
+	cases := []string{
+		`{"branch":"--upload-pack=touch /tmp/pwn","slices":[{"name":"a","branch":"foreman/s/a"}]}`,
+		`{"branch":"integ","slices":[{"name":"a","branch":"--output=/etc/x"}]}`,
+		`{"branch":"integ","baseBranch":"-x","slices":[{"name":"a","branch":"foreman/s/a"}]}`,
+		`{"branch":"integ","upstreamURL":"--upload-pack=x","slices":[{"name":"a","branch":"foreman/s/a"}]}`,
+	}
+	for _, c := range cases {
+		res, _ := tool.Execute(context.Background(), json.RawMessage(c))
+		if res.Verdict != VerdictGateError {
+			t.Fatalf("verdict = %q for %s, want GATE-ERROR", res.Verdict, c)
+		}
+	}
+}
