@@ -18,6 +18,7 @@ package cli
 
 import (
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -302,6 +303,90 @@ func TestWatchTasks_ContextCancelledReturnsPartial(t *testing.T) {
 	}
 	if len(results) != 1 || results[0].Phase != phRunning {
 		t.Fatalf("expected partial running result, got %+v", results)
+	}
+}
+
+func TestBuildTask_ReviseFromBranch(t *testing.T) {
+	cases := []struct {
+		name               string
+		flag               string
+		wantBranch         string
+		wantReviseFrom     string
+		wantBranchStrategy foremanv1alpha1.BranchStrategy
+	}{
+		{"unset leaves revision fields empty", "", "", "", ""},
+		{
+			"set stamps branch, reviseFromBranch, and rebase strategy",
+			"foreman/adhoc/issue-991",
+			"foreman/adhoc/issue-991",
+			"foreman/adhoc/issue-991",
+			foremanv1alpha1.BranchStrategyRebase,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := &dispatchOptions{reviseFromBranch: tc.flag}
+			task := buildTask("default", "run1", "defilantech/LLMKube",
+				taskAssignment{Issue: 991, Agent: "coder-go"}, "feedback", opts)
+			p := task.Spec.Payload
+			if p.Branch != tc.wantBranch {
+				t.Errorf("Branch = %q, want %q", p.Branch, tc.wantBranch)
+			}
+			if p.ReviseFromBranch != tc.wantReviseFrom {
+				t.Errorf("ReviseFromBranch = %q, want %q", p.ReviseFromBranch, tc.wantReviseFrom)
+			}
+			if p.BranchStrategy != tc.wantBranchStrategy {
+				t.Errorf("BranchStrategy = %q, want %q (rebase required to restore; #1042 setupTaskBranch gates on this)",
+					p.BranchStrategy, tc.wantBranchStrategy)
+			}
+		})
+	}
+}
+
+func TestValidateReviseFromBranch(t *testing.T) {
+	cases := []struct {
+		name    string
+		issues  []int
+		flag    string
+		wantErr bool
+	}{
+		{"unset, many issues", []int{1, 2}, "", false},
+		{"unset, no issues", nil, "", false},
+		{"set, one issue", []int{991}, "foreman/issue-991", false},
+		{"set, two issues", []int{991, 992}, "foreman/issue-991", true},
+		{"set, no issues", nil, "foreman/issue-991", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateReviseFromBranch(tc.issues, tc.flag)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, wantErr = %v", err, tc.wantErr)
+			}
+			if tc.wantErr && err != nil && !strings.Contains(err.Error(), "exactly one issue") {
+				t.Errorf("expected error to mention 'exactly one issue', got %q", err)
+			}
+		})
+	}
+}
+
+// runDispatch exercises its input-validation rules by passing an unset
+// GITHUB_TOKEN (forcing the prompt-fetch step to fail late). The point of
+// these cases is that the --revise-from-branch rule fires before any
+// network call, so a multi-issue + flag invocation errors with the rule
+// message, not a fetch error.
+func TestRunDispatch_ReviseFromBranchFiresBeforeFetch(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	opts := &dispatchOptions{
+		repo:             "defilantech/LLMKube",
+		agents:           []string{"coder-go"},
+		reviseFromBranch: "foreman/adhoc/issue-991",
+	}
+	err := runDispatch(context.Background(), io.Discard, []string{"991", "992"}, opts)
+	if err == nil {
+		t.Fatal("expected validation error, got nil")
+	}
+	if !strings.Contains(err.Error(), "--revise-from-branch requires exactly one issue") {
+		t.Errorf("expected validation message, got %q", err)
 	}
 }
 
