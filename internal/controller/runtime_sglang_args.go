@@ -144,8 +144,7 @@ func sglangAppendChatTemplate(args []string, tmpl string) []string {
 }
 
 // sglangAppendSpeculative: enabled+algorithm+draft-model required. Silent-skip with
-// a log line when misconfigured; ValidateSGLangConfig (Task 7) also surfaces
-// a status condition.
+// a log line when misconfigured; ValidateSGLangConfig surfaces a status condition.
 func sglangAppendSpeculative(args []string, cfg *inferencev1alpha1.SGLangSpeculativeConfig) []string {
 	if cfg == nil || cfg.Enabled == nil || !*cfg.Enabled {
 		return args

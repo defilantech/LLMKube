@@ -699,3 +699,107 @@ func TestValidateSGLangConfig(t *testing.T) {
 		})
 	}
 }
+
+func TestReconcileSGLangSpecCondition(t *testing.T) {
+	cases := []struct {
+		name           string
+		isvc           *inferencev1alpha1.InferenceService
+		existingConds  []metav1.Condition
+		wantTypeExists bool
+		wantStatus     metav1.ConditionStatus
+		wantReason     string
+	}{
+		{
+			name: "non-sglang runtime removes condition",
+			isvc: &inferencev1alpha1.InferenceService{
+				Spec:       inferencev1alpha1.InferenceServiceSpec{Runtime: "vllm"},
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Generation: 1},
+				Status: inferencev1alpha1.InferenceServiceStatus{
+					Conditions: []metav1.Condition{{
+						Type:   ConditionSGLangSpecValid,
+						Status: metav1.ConditionFalse,
+					}},
+				},
+			},
+			wantTypeExists: false,
+		},
+		{
+			name: "valid config with no prior condition does nothing",
+			isvc: &inferencev1alpha1.InferenceService{
+				Spec:       inferencev1alpha1.InferenceServiceSpec{Runtime: "sglang"},
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Generation: 1},
+			},
+			wantTypeExists: false,
+		},
+		{
+			name: "valid config clears prior False condition",
+			isvc: &inferencev1alpha1.InferenceService{
+				Spec:       inferencev1alpha1.InferenceServiceSpec{Runtime: "sglang"},
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Generation: 1},
+				Status: inferencev1alpha1.InferenceServiceStatus{
+					Conditions: []metav1.Condition{{
+						Type:   ConditionSGLangSpecValid,
+						Status: metav1.ConditionFalse,
+					}},
+				},
+			},
+			existingConds: []metav1.Condition{{
+				Type:   ConditionSGLangSpecValid,
+				Status: metav1.ConditionFalse,
+			}},
+			wantTypeExists: true,
+			wantStatus:     metav1.ConditionTrue,
+			wantReason:     "ConfigValid",
+		},
+		{
+			name: "invalid speculative config sets False condition",
+			isvc: &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					Runtime: "sglang",
+					SGLangConfig: &inferencev1alpha1.SGLangConfig{
+						Speculative: &inferencev1alpha1.SGLangSpeculativeConfig{
+							Enabled: ptrBool(true),
+						},
+					},
+				},
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Generation: 2},
+			},
+			wantTypeExists: true,
+			wantStatus:     metav1.ConditionFalse,
+			wantReason:     "SpeculativeMissingConfig",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &InferenceServiceReconciler{}
+			r.reconcileSGLangSpecCondition(tc.isvc)
+
+			cond := findCondition(tc.isvc.Status.Conditions, ConditionSGLangSpecValid)
+			if tc.wantTypeExists {
+				if cond == nil {
+					t.Fatalf("expected condition %q to exist", ConditionSGLangSpecValid)
+				}
+				if cond.Status != tc.wantStatus {
+					t.Errorf("status: got %q want %q", cond.Status, tc.wantStatus)
+				}
+				if cond.Reason != tc.wantReason {
+					t.Errorf("reason: got %q want %q", cond.Reason, tc.wantReason)
+				}
+			} else {
+				if cond != nil {
+					t.Errorf("expected condition %q to not exist, got status=%q reason=%q", ConditionSGLangSpecValid, cond.Status, cond.Reason)
+				}
+			}
+		})
+	}
+}
+
+func findCondition(conds []metav1.Condition, ctype string) *metav1.Condition {
+	for i := range conds {
+		if conds[i].Type == ctype {
+			return &conds[i]
+		}
+	}
+	return nil
+}
