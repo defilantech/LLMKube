@@ -100,6 +100,25 @@ func coderResolvedBy(task *foremanv1alpha1.AgenticTask) string {
 // isAlreadyResolvedCoder and shouldEscalateCoder.
 const alreadyResolvedOutcome = "ALREADY-RESOLVED"
 
+// needsVerificationOutcome is the string the coder emits at extra.outcome
+// when a load-bearing external fact cannot be grounded from the workspace,
+// so a correct fix is not possible here (anti-confabulation, #1033). Like
+// ALREADY-RESOLVED it is a terminal non-failure NO-GO: escalating to a
+// larger model cannot help, because the larger model cannot reach the
+// ground truth (hardware, a live system's output) either.
+const needsVerificationOutcome = "NEEDS-VERIFICATION"
+
+// isNeedsVerificationCoder reports whether the task ended NO-GO because the
+// coder could not ground a load-bearing external fact (extra.outcome ==
+// needsVerificationOutcome). Used by shouldEscalateCoder to skip escalation.
+func isNeedsVerificationCoder(task *foremanv1alpha1.AgenticTask) bool {
+	if task == nil {
+		return false
+	}
+	verdict, topOutcome, _ := coderTerminalOutcome(task)
+	return verdict == foremanv1alpha1.AgenticTaskVerdictNoGo && topOutcome == needsVerificationOutcome
+}
+
 // isAlreadyResolvedCoder reports whether the task ended in the
 // machine outcome for "work is already on the branch/base". Used by
 // shouldEscalateCoder (to skip escalation) and rollup (to keep the
@@ -139,6 +158,9 @@ func shouldEscalateCoder(
 ) bool {
 	if verdict == foremanv1alpha1.AgenticTaskVerdictNoGo && topOutcome == alreadyResolvedOutcome {
 		return false // #970: already-resolved is not a capability failure
+	}
+	if verdict == foremanv1alpha1.AgenticTaskVerdictNoGo && topOutcome == needsVerificationOutcome {
+		return false // #1033: a larger model can't reach the ground truth either
 	}
 	if verdict == foremanv1alpha1.AgenticTaskVerdictNoGo && topOutcome == "MODEL-DECIDED" {
 		return true

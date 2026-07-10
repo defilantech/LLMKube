@@ -53,6 +53,7 @@ func TestShouldEscalateCoder(t *testing.T) {
 	}{
 		{"model NO-GO (like #944)", foremanv1alpha1.AgenticTaskVerdictNoGo, "MODEL-DECIDED", "", true},
 		{"NO-GO + ALREADY-RESOLVED (already done, #970)", foremanv1alpha1.AgenticTaskVerdictNoGo, "ALREADY-RESOLVED", "", false},
+		{"NO-GO + NEEDS-VERIFICATION (ungroundable fact, #1033)", foremanv1alpha1.AgenticTaskVerdictNoGo, "NEEDS-VERIFICATION", "", false},
 		{"gate-failed (like #911)", foremanv1alpha1.AgenticTaskVerdictIncomplete, "MODEL-DECIDED", "CODER-GATE-FAILED", true},
 		{"model gave up / stuck (like #921)", foremanv1alpha1.AgenticTaskVerdictIncomplete, "MODEL-DECIDED", "", false},
 		{"stuck-loop detected", foremanv1alpha1.AgenticTaskVerdictIncomplete, "STUCK-LOOP-DETECTED", "", false},
@@ -277,6 +278,34 @@ func TestIsAlreadyResolvedCoder(t *testing.T) {
 			}
 			if got := isAlreadyResolvedCoder(task); got != tc.want {
 				t.Errorf("isAlreadyResolvedCoder() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestIsNeedsVerificationCoder(t *testing.T) {
+	cases := []struct {
+		name       string
+		verdict    foremanv1alpha1.AgenticTaskVerdict
+		topOutcome string
+		want       bool
+	}{
+		{"NO-GO + NEEDS-VERIFICATION", foremanv1alpha1.AgenticTaskVerdictNoGo, "NEEDS-VERIFICATION", true},
+		{"NO-GO + MODEL-DECIDED (capability failure)", foremanv1alpha1.AgenticTaskVerdictNoGo, "MODEL-DECIDED", false},
+		{"NO-GO + ALREADY-RESOLVED (different outcome)", foremanv1alpha1.AgenticTaskVerdictNoGo, "ALREADY-RESOLVED", false},
+		{"NO-GO + empty outcome (legacy)", foremanv1alpha1.AgenticTaskVerdictNoGo, "", false},
+		{"INCOMPLETE + NEEDS-VERIFICATION (not a NO-GO)", foremanv1alpha1.AgenticTaskVerdictIncomplete, "NEEDS-VERIFICATION", false},
+		{"GO + NEEDS-VERIFICATION (impossible combo, defensive)", foremanv1alpha1.AgenticTaskVerdictGo, "NEEDS-VERIFICATION", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			task := &foremanv1alpha1.AgenticTask{}
+			task.Status.Verdict = tc.verdict
+			if tc.topOutcome != "" {
+				task.Status.Result = resultRaw(tc.topOutcome, "", "", "")
+			}
+			if got := isNeedsVerificationCoder(task); got != tc.want {
+				t.Errorf("isNeedsVerificationCoder() = %v, want %v", got, tc.want)
 			}
 		})
 	}
