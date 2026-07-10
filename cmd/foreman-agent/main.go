@@ -748,6 +748,13 @@ func makeRegistryFactory(
 				Fetcher: githubissue.NewClient(),
 				Token:   repo.TokenFromEnvOrFile,
 			},
+			// run_integrate: deterministic tool for a sliced Workload's
+			// integrate step. Unions the disjoint slice branches onto the
+			// current base and pushes the integration branch (#1033).
+			&foremantools.RunIntegrateTool{
+				Workspace: workspace,
+				Token:     repo.TokenFromEnvOrFile,
+			},
 		}
 
 		var mcpTools []foremantools.Tool
