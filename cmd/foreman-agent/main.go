@@ -755,6 +755,13 @@ func makeRegistryFactory(
 				Workspace: workspace,
 				Token:     repo.TokenFromEnvOrFile,
 			},
+			// run_reconcile: deterministic tool for a sliced Workload's
+			// reconcile step. Checks the integrated union against the pinned
+			// shared identifiers for cross-slice interface drift (#1033).
+			&foremantools.RunReconcileTool{
+				Workspace: workspace,
+				Token:     repo.TokenFromEnvOrFile,
+			},
 		}
 
 		var mcpTools []foremantools.Tool
