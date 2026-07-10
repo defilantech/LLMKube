@@ -609,3 +609,93 @@ func TestSGLangBuildEnv(t *testing.T) {
 		t.Errorf("env[0].ValueFrom = nil, want SecretKeyRef")
 	}
 }
+
+func TestValidateSGLangConfig(t *testing.T) {
+	cases := []struct {
+		name       string
+		isvc       *inferencev1alpha1.InferenceService
+		wantReason string
+	}{
+		{
+			name:       "nil isvc is valid",
+			isvc:       nil,
+			wantReason: "",
+		},
+		{
+			name: "nil sglang config is valid",
+			isvc: &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{Runtime: "sglang"},
+			},
+			wantReason: "",
+		},
+		{
+			name: "speculative disabled is valid",
+			isvc: &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					Runtime: "sglang",
+					SGLangConfig: &inferencev1alpha1.SGLangConfig{
+						Speculative: &inferencev1alpha1.SGLangSpeculativeConfig{Enabled: ptrBool(false)},
+					},
+				},
+			},
+			wantReason: "",
+		},
+		{
+			name: "speculative enabled+configured is valid",
+			isvc: &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					Runtime: "sglang",
+					SGLangConfig: &inferencev1alpha1.SGLangConfig{
+						Speculative: &inferencev1alpha1.SGLangSpeculativeConfig{
+							Enabled:        ptrBool(true),
+							Algorithm:      "EAGLE3",
+							DraftModelPath: "/models/draft",
+						},
+					},
+				},
+			},
+			wantReason: "",
+		},
+		{
+			name: "speculative enabled without algorithm reports SpeculativeMissingConfig",
+			isvc: &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					Runtime: "sglang",
+					SGLangConfig: &inferencev1alpha1.SGLangConfig{
+						Speculative: &inferencev1alpha1.SGLangSpeculativeConfig{
+							Enabled:        ptrBool(true),
+							DraftModelPath: "/models/draft",
+						},
+					},
+				},
+			},
+			wantReason: "SpeculativeMissingConfig",
+		},
+		{
+			name: "speculative enabled without draft-model-path reports SpeculativeMissingConfig",
+			isvc: &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					Runtime: "sglang",
+					SGLangConfig: &inferencev1alpha1.SGLangConfig{
+						Speculative: &inferencev1alpha1.SGLangSpeculativeConfig{
+							Enabled:   ptrBool(true),
+							Algorithm: "EAGLE3",
+						},
+					},
+				},
+			},
+			wantReason: "SpeculativeMissingConfig",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reason, message := ValidateSGLangConfig(tc.isvc)
+			if reason != tc.wantReason {
+				t.Errorf("reason: got %q want %q (message=%q)", reason, tc.wantReason, message)
+			}
+			if reason != "" && message == "" {
+				t.Errorf("expected non-empty message when reason is set, got empty")
+			}
+		})
+	}
+}

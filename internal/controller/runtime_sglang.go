@@ -143,10 +143,20 @@ func (b *SGLangBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, mode
 }
 
 // ValidateSGLangConfig checks the SGLangConfig for structurally invalid
-// combinations. Returns (reason, message) when invalid; empty strings when
-// fine. Caller translates into a metav1.Condition. Implemented in Task 7.
+// combinations that are non-fatal to reconciliation but should be surfaced
+// as a status condition. Returns (reason, message) when invalid; empty
+// strings when fine.
 func ValidateSGLangConfig(isvc *inferencev1alpha1.InferenceService) (reason, message string) {
-	_ = isvc
+	if isvc == nil || isvc.Spec.SGLangConfig == nil {
+		return "", ""
+	}
+	cfg := isvc.Spec.SGLangConfig
+	if cfg.Speculative != nil && cfg.Speculative.Enabled != nil && *cfg.Speculative.Enabled {
+		if cfg.Speculative.Algorithm == "" || cfg.Speculative.DraftModelPath == "" {
+			return "SpeculativeMissingConfig",
+				"spec.sglangConfig.speculative.enabled is true but algorithm/draftModelPath is empty; speculative decoding flags will be skipped"
+		}
+	}
 	return "", ""
 }
 
