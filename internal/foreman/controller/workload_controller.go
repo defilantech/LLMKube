@@ -567,6 +567,12 @@ type childCounts struct {
 //   - failed: Phase=Failed
 //   - inFlight: everything else (Pending / Scheduled / Running)
 //
+// Classification is verdict-based, not kind-based: a sliced Workload's
+// integrate / reconcile steps (#1033) land here like any other kind, so a
+// GATE-FAIL reconcile (pinned interface drift) or integrate (overlap /
+// stale-base apply) counts as incomplete and keeps the Workload out of
+// Completed with no slicer-specific rollup wiring.
+//
 // Skipped matches BEFORE the generic "Phase=Succeeded not on-target"
 // case so its body (empty) is selected; otherwise the generic case
 // would catch it. The empty body is intentional — Skipped children are
