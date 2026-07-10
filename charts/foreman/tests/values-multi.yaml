@@ -3,7 +3,11 @@
 # legacy gateCache settings (and gets the chart-level coder secret);
 # the llmkube-fork agent overrides gitRemoteURL, commit author, the
 # coder secret, and disables gateCache so its PVC is not rendered;
-# the disabled agent is a smoke-test for the enabled: false path.
+# the omitted-enabled agent omits the `enabled` field entirely to
+# regression-test that the gate evaluates the merged $agent.enabled
+# (not the raw $cfg.enabled) — otherwise the entry would silently
+# render nothing (#994 review feedback); the disabled agent is a
+# smoke-test for the enabled: false path.
 agents:
   default:
     enabled: true
@@ -24,6 +28,9 @@ agents:
     coderGitSecretKey: token
     gateCache:
       enabled: false
+  omitted-enabled:
+    replicaCount: 5
+    roles: [worker]
   disabled-agent:
     enabled: false
     replicaCount: 1

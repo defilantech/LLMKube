@@ -1,15 +1,18 @@
 {{- range $name, $cfg := include "foreman.agents" . | fromYaml }}
-{{- if $cfg.enabled }}
 ---
 {{- /* Deep-merge the legacy top-level .Values.agent as the per-agent
        defaults so users opting into agents: do not have to restate
        replicaCount/resources/image/etc. for each entry. A nil .Values.agent
-       degrades to an empty dict (mustMergeOverwrite rejects nil). */}}
+       degrades to an empty dict (mustMergeOverwrite rejects nil). The merge
+       runs BEFORE the enabled gate so a per-agent entry that omits
+       `enabled` still inherits it from .Values.agent — the gate would
+       otherwise drop the entry silently (#994 review feedback). */}}
 {{- $defaults := dict }}
 {{- if $.Values.agent }}
   {{- $defaults = deepCopy $.Values.agent }}
 {{- end }}
 {{- $agent := mustMergeOverwrite $defaults $cfg }}
+{{- if $agent.enabled }}
 {{- /* Per-agent context: chart root (Release/Values/Chart) + the agent's
        name and its resolved (merged) config dict. Passed to helpers that read
        .agentConfig / .agentName instead of the legacy .Values.agent.* */}}

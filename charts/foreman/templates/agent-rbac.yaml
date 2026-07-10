@@ -1,11 +1,14 @@
 {{- range $name, $cfg := include "foreman.agents" . | fromYaml }}
-{{- if $cfg.enabled }}
 ---
+{{- /* Merge defaults BEFORE the enabled gate so a per-agent entry that
+       omits `enabled` inherits it from .Values.agent instead of being
+       dropped silently (#994 review feedback). */}}
 {{- $defaults := dict }}
 {{- if $.Values.agent }}
   {{- $defaults = deepCopy $.Values.agent }}
 {{- end }}
 {{- $agent := mustMergeOverwrite $defaults $cfg }}
+{{- if $agent.enabled }}
 {{- $ctx := dict "Release" $.Release "Values" $.Values "Chart" $.Chart "agentName" $name "agentConfig" $agent }}
 {{- if $agent.serviceAccount.create }}
 apiVersion: v1

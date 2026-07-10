@@ -76,24 +76,52 @@ tests:
           path: metadata.name
           value: RELEASE-NAME-foreman-llmkube-fork-agent
 
-  - it: SA plus ClusterRole plus ClusterRoleBinding per agent (six docs total)
+  - it: SA plus ClusterRole plus ClusterRoleBinding per agent (nine docs total)
     template: agent-rbac.yaml
     values:
       - ./values-multi.yaml
     asserts:
+      # default + llmkube-fork + omitted-enabled each render 3 docs
+      # (SA + ClusterRole + ClusterRoleBinding); disabled-agent skips.
       - hasDocuments:
-          count: 6
+          count: 9
 
-  - it: gate-cache PVC per agent whose gateCache.enabled is true (default keeps, fork disables)
+  - it: gate-cache PVC per agent whose gateCache.enabled is true
     template: gate-cache-pvc.yaml
     values:
       - ./values-multi.yaml
     asserts:
+      # default + omitted-enabled both keep gateCache enabled
+      # (omitted-enabled inherits from .Values.agent); llmkube-fork
+      # disables it explicitly. Two PVCs expected.
       - hasDocuments:
-          count: 1
+          count: 2
+
+  - it: default agent renders its own gate-cache PVC
+    template: gate-cache-pvc.yaml
+    values:
+      - ./values-multi.yaml
+    documentSelector:
+      path: metadata.name
+      value: RELEASE-NAME-foreman-default-gate-cache
+      matchMany: false
+    asserts:
       - equal:
           path: metadata.name
           value: RELEASE-NAME-foreman-default-gate-cache
+
+  - it: omitted-enabled agent inherits gateCache from defaults and renders its PVC
+    template: gate-cache-pvc.yaml
+    values:
+      - ./values-multi.yaml
+    documentSelector:
+      path: metadata.name
+      value: RELEASE-NAME-foreman-omitted-enabled-gate-cache
+      matchMany: false
+    asserts:
+      - equal:
+          path: metadata.name
+          value: RELEASE-NAME-foreman-omitted-enabled-gate-cache
 
   # ---- Per-agent field propagation ----
 
@@ -187,9 +215,31 @@ tests:
     values:
       - ./values-multi.yaml
     asserts:
-      # only 2 enabled agents out of 3 entries
+      # only 3 enabled agents out of 4 entries (default, llmkube-fork,
+      # omitted-enabled; disabled-agent is skipped)
       - hasDocuments:
-          count: 2
+          count: 3
+
+  # ---- omitted enabled field inherits from .Values.agent ----
+
+  - it: an agent entry that omits enabled still renders resources via the legacy default
+    template: agent-deployment.yaml
+    values:
+      - ./values-multi.yaml
+    documentSelector:
+      path: metadata.name
+      value: RELEASE-NAME-foreman-omitted-enabled-agent
+      matchMany: false
+    asserts:
+      # The merged $agent.enabled inherits true from .Values.agent,
+      # so the entry renders. Its explicit replicaCount override also
+      # survives the merge.
+      - equal:
+          path: metadata.name
+          value: RELEASE-NAME-foreman-omitted-enabled-agent
+      - equal:
+          path: spec.replicas
+          value: 5
 
   # ---- Singletons stay singleton ----
 
