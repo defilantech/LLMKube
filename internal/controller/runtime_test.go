@@ -51,6 +51,7 @@ func TestRuntimeNameLabel(t *testing.T) {
 		// untouched: the label is the user-declared identifier, not a
 		// validated enum, so new backends do not need to update this map.
 		{name: "unknown runtime passes through verbatim", runtime: "future-thing", expected: "future-thing"},
+		{name: "sglang passes through", runtime: "sglang", expected: "sglang"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -137,5 +138,15 @@ func TestResolveGPUCount(t *testing.T) {
 				t.Errorf("expected %d GPU count, got: %d", tc.expected, actual)
 			}
 		})
+	}
+}
+
+func TestResolveBackend_SGLang(t *testing.T) {
+	isvc := &inferencev1alpha1.InferenceService{
+		Spec: inferencev1alpha1.InferenceServiceSpec{Runtime: "sglang"},
+	}
+	backend := resolveBackend(isvc)
+	if _, ok := backend.(*SGLangBackend); !ok {
+		t.Errorf("resolveBackend(sglang) = %T, want *SGLangBackend", backend)
 	}
 }
