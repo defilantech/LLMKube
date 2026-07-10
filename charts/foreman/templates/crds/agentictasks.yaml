@@ -203,6 +203,19 @@ spec:
                       (default derived from the issue's labels via conventional commit
                       prefixes: fix/, feat/, chore/, etc.).
                     type: string
+                  branchStrategy:
+                    default: reset
+                    description: |-
+                      BranchStrategy selects how the working branch is cut relative to the
+                      current base (see BranchStrategy). Defaults to "reset": cut fresh from the
+                      current base and ignore any prior attempt (reviseFromBranch), so a retry
+                      or repair re-dispatch cannot revert merged work. Set "rebase" for the
+                      in-review PR revision path, where the prior attempt is restored and
+                      rebased onto the current base. Issue-fix only.
+                    enum:
+                    - reset
+                    - rebase
+                    type: string
                   gateAdvisories:
                     description: |-
                       GateAdvisories holds non-blocking findings copied from the upstream
