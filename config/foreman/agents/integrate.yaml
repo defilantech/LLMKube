@@ -1,0 +1,38 @@
+# Foreman integrate Agent: the integrate step of a Sliced Workload (#1033).
+# Deterministic (no inferenceServiceRef, no LLM in the loop); the executor's
+# executeDeterministic() branch dispatches its single tool, run_integrate,
+# with the task payload as JSON arguments. run_integrate unions the disjoint
+# slice branches onto the current base and pushes the integration branch.
+#
+# Apply into the namespace where sliced Workloads run:
+#
+#   kubectl apply -f config/foreman/agents/integrate.yaml
+#
+# Like config/foreman/agents/gate.yaml, this ships with the foreman chart but
+# is NOT a chart template; the chart installs the controller, the Agent CR is
+# workload-data. Apply once per cluster + namespace.
+apiVersion: foreman.llmkube.dev/v1alpha1
+kind: Agent
+metadata:
+  name: integrate
+  namespace: default
+  labels:
+    app.kubernetes.io/part-of: foreman
+    foreman.llmkube.dev/role: verifier
+spec:
+  role: verifier
+  # Deterministic: inferenceServiceRef and systemPrompt are omitted (there is
+  # no model to prompt); the empty .name routes through executeDeterministic().
+  tools:
+    - run_integrate
+  requiredCapability:
+    # run_integrate does a LOCAL git clone/union in the agent workspace, so it
+    # must schedule onto a node whose foreman-agent has --git-remote-url set
+    # (the coder-capable nodes), not the verifier node that runs remote Jobs.
+    # Adjust to match your fleet's FleetNode roles.
+    roles:
+      - coder
+  # Bounds run_integrate's own retry on transient git/apiserver errors.
+  maxRetries: 3
+  # The union + fetch/push are quick; bound the whole step.
+  requestTimeoutSeconds: 900
