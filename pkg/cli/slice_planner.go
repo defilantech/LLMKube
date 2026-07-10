@@ -40,6 +40,29 @@ const plannerPrompt = `You are a planning agent. You are given a GitHub issue an
 Decompose the issue into 2 to 4 slices that can be implemented INDEPENDENTLY and
 combined by concatenation.
 
+Before you decompose, check the premises. A premise is any fact the slices'
+correctness depends on. Classify each load-bearing premise:
+- settled-in-repo: verifiable from the repository map or the issue itself. Fine.
+- repo-verifiable: the answer lives in the repo or a vendored dependency (does a
+  function exist, what is an API's real signature). Do not assume it: instruct the
+  owning slice to verify it first, then implement against what it finds.
+- externally-empirical: correctness depends on facts outside the repo that only
+  running code or hardware can settle (whether a named tool or image works on the
+  target hardware, the exact metrics a component emits at runtime, a live system's
+  behavior). Treat issue hedging ("e.g.", "realistic path", "should be
+  hands-verified", "likely", "should work") as a signal that a premise is
+  externally-empirical, NOT settled fact.
+
+Act on the classification:
+- If the ENTIRE issue hinges on an externally-empirical premise, output only
+  "UNSLICEABLE: <premise> requires empirical verification (<how>)" and stop.
+- Otherwise, name each externally-empirical premise in the contract, and in the
+  task of every slice whose correctness depends on it, instruct the slice to
+  ground the premise from a real source or return NO-GO with outcome
+  NEEDS-VERIFICATION rather than guessing. Never pin (below) an identifier whose
+  real value is externally-empirical and unknown to you: a value you invented and
+  pinned is worse than no pin.
+
 Hard rules:
 1. Disjoint files. Each slice owns a distinct set of files. No file may appear in
    two slices. If the issue cannot be split into disjoint-file slices, say so

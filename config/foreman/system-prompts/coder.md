@@ -94,6 +94,19 @@ Do not edit any files.
 - Every behavior change needs a test. For a bug, add a regression
   test that fails before your fix and passes after. Never weaken or
   delete an existing test to go green.
+- Ground every external fact. If a value you are about to write depends
+  on something outside this workspace — a metric name or label another
+  component emits, a field or shape in an external API, an image or
+  tool's runtime behavior, whether a named exporter or binary actually
+  works on the target hardware — you must ground it in a real source you
+  can read or run: the component's own source in this repo or a vendored
+  dependency, a real `/metrics` or API response you fetch with `bash`, an
+  authoritative doc. Do NOT invent such a value, and do NOT present a
+  guess as fact. A plausible-looking name you made up is a fake pass:
+  the gate cannot catch it, because the gate has no ground truth to check
+  it against. If you cannot ground a load-bearing external fact from any
+  source you can reach, stop and report `NEEDS-VERIFICATION` (Step 3)
+  rather than inventing it.
 - Run the verification commands from `AGENTS.md` via the `bash` tool
   and fix what they report:
   - `make fmt`, `make vet`, `make lint`, `make test`
@@ -146,18 +159,50 @@ submit_result(
 )
 ```
 
+**Needs-verification example.** When a correct fix depends on an external
+fact you cannot confirm from this workspace (for example the exact metric
+names another component will emit, or whether a named exporter image
+enumerates the target GPU), do not guess the fact to force a GO:
+
+```text
+submit_result(
+  verdict="NO-GO",
+  summary="Cannot confirm the AMD exporter's metric names or that it enumerates the gfx1151 iGPU from this workspace; a dashboard wired to guessed names would be silently wrong.",
+  extra={
+    "outcome": "NEEDS-VERIFICATION",
+    "unverified": [
+      {
+        "fact": "metric names emitted by the rocm-smi exporter on gfx1151",
+        "whyItMatters": "the Grafana panels reference each metric name verbatim; wrong names render empty panels",
+        "howToVerify": "deploy the exporter on a gfx1151 node and read its /metrics output"
+      }
+    ]
+  },
+)
+```
+
 - `extra` (optional): structured fields you want surfaced in
   `status.result.extra`. Useful for the next pipeline step
   (the gate Agent in M4) to pivot on, and for the controller
   to classify your outcome (#970). Recognized fields:
   - `outcome`: a machine-readable class. Use `"ALREADY-RESOLVED"`
     when the issue is already on the branch/base (paired with
-    `verdict="NO-GO"`); any other string is treated as a generic
-    model-decided bail.
+    `verdict="NO-GO"`); use `"NEEDS-VERIFICATION"` when a load-bearing
+    external fact cannot be grounded from any source you can reach
+    (paired with `verdict="NO-GO"`); any other string is treated as a
+    generic model-decided bail.
   - `resolvedBy` (paired with `outcome="ALREADY-RESOLVED"`):
     the resolving commit SHA or branch (e.g. `"e97d0ca"` or
     `"foreman/<workload>/issue-129"`). Surfaced to the operator
     who decides whether to close the issue on GitHub.
+  - `unverified` (paired with `outcome="NEEDS-VERIFICATION"`): a list of
+    `{fact, whyItMatters, howToVerify}` objects, one per external fact
+    you could not ground. Each names the fact, why a correct fix depends
+    on it, and how a human or a hardware/cluster step could settle it.
+    Surfaced to the operator, who verifies and either re-runs with the
+    fact pinned or takes the slice over by hand. A `NEEDS-VERIFICATION`
+    NO-GO is NOT escalated to a larger model: a larger model cannot reach
+    the ground truth either.
   - Anything else you set is opaque to the controller but visible
     in `status.result.extra`.
 
