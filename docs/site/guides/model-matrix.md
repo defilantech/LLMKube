@@ -260,3 +260,24 @@ The local LLM ecosystem is one of the fastest-moving spaces in software. Between
 - License terms occasionally change (especially Llama and Gemma).
 
 Use this as a structured starting point. **Always click through to the upstream HuggingFace model card before downloading a large file.** If you find this doc is meaningfully wrong, a PR with the corrected row is appreciated, but please do not assume any single number here is current the day you read it.
+
+## Runtime backends
+
+### sglang
+
+GPU-only. Choose when:
+
+- Your workload re-sends a large shared prefix every turn (foreman tool loops,
+  multi-turn chat with a stable system prompt + tool definitions). SGLang's
+  RadixAttention (`--enable-prefix-caching`) serves the shared prefix from a
+  tree-structured cache rather than reprocessing it.
+- You want speculative decoding (EAGLE / EAGLE3) or tool-call / reasoning
+  parsers that vLLM doesn't ship with first-class CRD fields.
+
+Unlike llama.cpp, there's no meaningful CPU path — even small embedding models
+require a GPU. AMD is supported via the ROCm image (`lmsysorg/sglang:...-rocm630`),
+picked automatically by the controller when `model.spec.hardware.gpu.vendor`
+is `amd`.
+
+Defaults to the OpenAI-compatible `/v1` surface, so downstream tooling
+(litellm, the foreman agents) needs no change.
