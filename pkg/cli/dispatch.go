@@ -100,6 +100,7 @@ Foreman runs coder and reviewer agents as AgenticTasks against a fleet of
 heterogeneous executors. These subcommands create and watch those tasks.`,
 	}
 	cmd.AddCommand(newDispatchCommand())
+	cmd.AddCommand(newSliceCommand())
 	return cmd
 }
 
