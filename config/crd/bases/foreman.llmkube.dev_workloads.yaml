@@ -420,6 +420,8 @@ spec:
                       - verify
                       - review
                       - freeform
+                      - integrate
+                      - reconcile
                       type: string
                     name:
                       description: |-
@@ -480,6 +482,12 @@ spec:
                           enum:
                           - reset
                           - rebase
+                          type: string
+                        contract:
+                          description: |-
+                            Contract is the slice plan's prose contract, handed to a reconcile
+                            task's LLM sweep as the description of the intended shared interfaces.
+                            Reconcile only. Part of #1033.
                           type: string
                         gateAdvisories:
                           description: |-
@@ -552,6 +560,69 @@ spec:
                             executor logs and falls back to branching from BaseBranch rather
                             than failing.
                           type: string
+                        sharedIdentifiers:
+                          description: |-
+                            SharedIdentifiers pins the exact cross-slice strings a reconcile task
+                            verifies against the integrated union. Reconcile only. Part of #1033.
+                          items:
+                            description: |-
+                              SharedIdentifier pins one exact string that crosses a slice boundary (a
+                              metric name, config key, or CRD field). The reconcile task asserts the ID
+                              appears verbatim in the DefinedBy slice and every ReferencedBy slice; a
+                              missing pin is an authoritative drift. Part of Sliced Workloads (#1033).
+                            properties:
+                              definedBy:
+                                description: DefinedBy is the slice name that must
+                                  produce the identifier.
+                                minLength: 1
+                                type: string
+                              id:
+                                description: ID is the exact string every listed slice
+                                  must contain verbatim.
+                                minLength: 1
+                                type: string
+                              referencedBy:
+                                description: ReferencedBy are the slice names that
+                                  must consume the identifier.
+                                items:
+                                  type: string
+                                type: array
+                            required:
+                            - definedBy
+                            - id
+                            type: object
+                          type: array
+                        slices:
+                          description: |-
+                            Slices are the disjoint slices of a sliced Workload. The integrate task
+                            unions their branches; the reconcile task checks pins against their
+                            files. Set on integrate and reconcile tasks. Part of #1033.
+                          items:
+                            description: |-
+                              SliceRef describes one disjoint slice of a sliced Workload. The integrate
+                              task unions each slice's Branch; the reconcile task verifies pinned
+                              identifiers appear in each slice's Files. Part of Sliced Workloads (#1033).
+                            properties:
+                              branch:
+                                description: |-
+                                  Branch is the git ref the slice's coder pushed. Required for the
+                                  integrate task, which applies each slice branch's diff onto the base.
+                                type: string
+                              files:
+                                description: |-
+                                  Files are the repo-relative paths this slice owns, so a reconcile task
+                                  looks for each pinned identifier in the right slice.
+                                items:
+                                  type: string
+                                type: array
+                              name:
+                                description: Name is the slice's name within the plan.
+                                minLength: 1
+                                type: string
+                            required:
+                            - name
+                            type: object
+                          type: array
                       type: object
                     priority:
                       description: |-
