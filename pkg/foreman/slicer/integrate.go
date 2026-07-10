@@ -154,9 +154,16 @@ func Integrate(ctx context.Context, opts IntegrateOptions) (*IntegrateResult, er
 		}
 	}
 
-	// 4. Commit the union.
+	// 4. Commit the union. Pass the foreman bot identity explicitly via -c:
+	// the integrate agent runs in a pod whose clone has no user.name/
+	// user.email in any git config scope, where a bare `git commit` dies with
+	// "Author identity unknown" (exit 128). This mirrors repo/branch.go, which
+	// sets the same identity for the coder's commits.
 	msg := "integrate: union of " + strings.Join(opts.Slices, " ")
-	if out, err := run(ctx, opts.RepoDir, "commit", "-m", msg); err != nil {
+	if out, err := run(ctx, opts.RepoDir,
+		"-c", "user.name=foreman",
+		"-c", "user.email=foreman@llmkube.dev",
+		"commit", "-m", msg); err != nil {
 		return nil, fmt.Errorf("integrate: commit union: %w: %s", err, strings.TrimSpace(out))
 	}
 
