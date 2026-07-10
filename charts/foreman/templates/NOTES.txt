@@ -6,25 +6,41 @@ Components:
 {{- else }}
   - foreman-operator      DISABLED (operator.enabled=false)
 {{- end }}
-{{- if .Values.agent.enabled }}
-  - foreman-agent         Deployment {{ include "foreman.fullname" . }}-agent
-      mode:               {{ .Values.agent.mode }}
-      roles:              {{ join "," .Values.agent.roles }}
-  {{- if .Values.agent.gateCache.enabled }}
-      gate cache PVC:     {{ include "foreman.gateCache.pvcName" . }} ({{ .Values.agent.gateCache.size }})
+{{- if or .Values.agents (and .Values.agent .Values.agent.enabled) }}
+  - foreman-agents ({{ len (include "foreman.agents" . | fromYaml) }} fleet{{ if gt (len (include "foreman.agents" . | fromYaml)) 1 }}s{{ end }}):
+{{- range $name, $cfg := include "foreman.agents" . | fromYaml }}
+{{- if $cfg.enabled }}
+{{- $defaults := dict }}
+{{- if $.Values.agent }}{{ $defaults = deepCopy $.Values.agent }}{{ end }}
+{{- $agent := mustMergeOverwrite $defaults $cfg }}
+{{- $ctx := dict "Release" $.Release "Values" $.Values "Chart" $.Chart "agentName" $name "agentConfig" $agent }}
+      - {{ include "foreman.agent.resourceName" $ctx }}   mode: {{ $agent.mode }}   roles: {{ join "," $agent.roles }}
+  {{- if $agent.gateCache.enabled }}
+        gate cache PVC:   {{ include "foreman.gateCache.pvcName" $ctx }} ({{ $agent.gateCache.size }})
   {{- end }}
+{{- end }}
+{{- end }}
 {{- else }}
   - foreman-agent         DISABLED (agent.enabled=false)
 {{- end }}
 
 Next steps:
   1. Watch the operator come up:
-     kubectl -n {{ include "foreman.namespace" . }} logs -l app.kubernetes.io/component=operator -f
-{{- if .Values.agent.enabled }}
-  2. Confirm the agent registered itself as a FleetNode:
-     kubectl get fleetnodes
+      kubectl -n {{ include "foreman.namespace" . }} logs -l app.kubernetes.io/component=operator -f
+{{- if or .Values.agents (and .Values.agent .Values.agent.enabled) }}
+  2. Confirm the agent(s) registered themselves as FleetNodes:
+      kubectl get fleetnodes
 {{- end }}
   3. Apply an Agent CR and an AgenticTask referencing it (examples
-     under examples/foreman/ in the repo).
+      under examples/foreman/ in the repo).
+
+{{- if .Values.agents }}
+
+You installed foreman in multi-fleet mode (agents: map, #994). To add
+another fleet — e.g. a fork-pinned dogfood agent or a per-language
+coder pool — extend the agents: map and re-run `helm upgrade`. Each
+agent gets its own Deployment, ServiceAccount, ClusterRole, and gate
+cache PVC, suffixed with the agent key, so they never collide.
+{{- end }}
 
 The Foreman docs live at https://llmkube.com/docs/foreman.

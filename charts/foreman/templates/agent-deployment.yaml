@@ -1,13 +1,31 @@
-{{- if .Values.agent.enabled }}
+{{- range $name, $cfg := include "foreman.agents" . | fromYaml }}
+---
+{{- /* Deep-merge the legacy top-level .Values.agent as the per-agent
+       defaults so users opting into agents: do not have to restate
+       replicaCount/resources/image/etc. for each entry. A nil .Values.agent
+       degrades to an empty dict (mustMergeOverwrite rejects nil). The merge
+       runs BEFORE the enabled gate so a per-agent entry that omits
+       `enabled` still inherits it from .Values.agent — the gate would
+       otherwise drop the entry silently (#994 review feedback). */}}
+{{- $defaults := dict }}
+{{- if $.Values.agent }}
+  {{- $defaults = deepCopy $.Values.agent }}
+{{- end }}
+{{- $agent := mustMergeOverwrite $defaults $cfg }}
+{{- if $agent.enabled }}
+{{- /* Per-agent context: chart root (Release/Values/Chart) + the agent's
+       name and its resolved (merged) config dict. Passed to helpers that read
+       .agentConfig / .agentName instead of the legacy .Values.agent.* */}}
+{{- $ctx := dict "Release" $.Release "Values" $.Values "Chart" $.Chart "agentName" $name "agentConfig" $agent }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "foreman.fullname" . }}-agent
-  namespace: {{ include "foreman.namespace" . }}
+  name: {{ include "foreman.agent.resourceName" $ctx }}
+  namespace: {{ include "foreman.namespace" $ }}
   labels:
-    {{- include "foreman.agent.labels" . | nindent 4 }}
+    {{- include "foreman.agent.labels" $ | nindent 4 }}
 spec:
-  replicas: {{ .Values.agent.replicaCount }}
+  replicas: {{ $agent.replicaCount }}
   # Each foreman-agent claims one task at a time. The Recreate
   # strategy stops a rolling update from briefly running two agents
   # that race for the same Scheduled tasks.
@@ -15,67 +33,70 @@ spec:
     type: Recreate
   selector:
     matchLabels:
-      {{- include "foreman.agent.labels" . | nindent 6 }}
+      {{- include "foreman.agent.labels" $ | nindent 6 }}
   template:
     metadata:
       annotations:
         kubectl.kubernetes.io/default-container: agent
-        {{- with .Values.agent.podAnnotations }}
+        {{- with $agent.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
       labels:
-        {{- include "foreman.agent.labels" . | nindent 8 }}
-        {{- with .Values.agent.podLabels }}
+        {{- include "foreman.agent.labels" $ | nindent 8 }}
+        {{- with $agent.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
-      {{- with .Values.imagePullSecrets }}
+      {{- with $.Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      serviceAccountName: {{ include "foreman.agent.serviceAccountName" . }}
+      serviceAccountName: {{ include "foreman.agent.serviceAccountName" $ctx }}
       securityContext:
-        {{- toYaml .Values.agent.podSecurityContext | nindent 8 }}
+        {{- toYaml $agent.podSecurityContext | nindent 8 }}
       containers:
         - name: agent
-          image: {{ include "foreman.agent.image" . }}
-          imagePullPolicy: {{ .Values.agent.image.pullPolicy }}
+          image: {{ include "foreman.agent.image" $ctx }}
+          imagePullPolicy: {{ $agent.image.pullPolicy }}
           command:
             - /foreman-agent
           args:
-            - --agent-mode={{ .Values.agent.mode }}
-            - --roles={{ join "," .Values.agent.roles }}
-            {{- if .Values.agent.nodeLabels }}
+            - --agent-mode={{ $agent.mode }}
+            - --roles={{ join "," $agent.roles }}
+            {{- if $agent.nodeLabels }}
             {{- $pairs := list }}
-            {{- range $k, $v := .Values.agent.nodeLabels }}{{ $pairs = append $pairs (printf "%s=%s" $k $v) }}{{- end }}
+            {{- range $k, $v := $agent.nodeLabels }}{{ $pairs = append $pairs (printf "%s=%s" $k $v) }}{{- end }}
             - --node-labels={{ join "," $pairs }}
             {{- end }}
-            {{- if .Values.agent.taskNamespace }}
-            - --task-namespace={{ .Values.agent.taskNamespace }}
+            {{- if $agent.taskNamespace }}
+            - --task-namespace={{ $agent.taskNamespace }}
             {{- end }}
             {{- /* Always set: the binary default is "foreman-system", a namespace the chart never creates, so gate Jobs would land where the cache PVC does not exist. */}}
-            - --foreman-namespace={{ .Values.agent.foremanNamespace | default (include "foreman.namespace" .) }}
-            {{- if .Values.agent.installedModels }}
-            - --installed-models={{ join "," .Values.agent.installedModels }}
+            - --foreman-namespace={{ $agent.foremanNamespace | default (include "foreman.namespace" $) }}
+            {{- if $agent.installedModels }}
+            - --installed-models={{ join "," $agent.installedModels }}
             {{- end }}
-            {{- if .Values.agent.inferenceBaseURLOverride }}
-            - --inference-base-url-override={{ .Values.agent.inferenceBaseURLOverride }}
+            {{- if $agent.inferenceBaseURLOverride }}
+            - --inference-base-url-override={{ $agent.inferenceBaseURLOverride }}
             {{- end }}
-            - --workspace-dir={{ .Values.agent.workspaceDir }}
-            {{- if .Values.agent.gitRemoteURL }}
-            - --git-remote-url={{ .Values.agent.gitRemoteURL }}
+            - --workspace-dir={{ $agent.workspaceDir }}
+            {{- if $agent.gitRemoteURL }}
+            - --git-remote-url={{ $agent.gitRemoteURL }}
             {{- end }}
-            {{- if .Values.agent.commitAuthorName }}
-            - --commit-author-name={{ .Values.agent.commitAuthorName }}
+            {{- if $agent.commitAuthorName }}
+            - --commit-author-name={{ $agent.commitAuthorName }}
             {{- end }}
-            {{- if .Values.agent.commitAuthorEmail }}
-            - --commit-author-email={{ .Values.agent.commitAuthorEmail }}
+            {{- if $agent.commitAuthorEmail }}
+            - --commit-author-email={{ $agent.commitAuthorEmail }}
             {{- end }}
-            {{- if .Values.coder.gitCredentialsSecret }}
-            - --coder-git-secret={{ .Values.coder.gitCredentialsSecret }}
+            {{- /* Per-agent override of the coder git secret (#994). Falls back to the chart-level coder.gitCredentialsSecret so existing installs are unchanged. */}}
+            {{- $coderSecret := dig "coderGitSecret" "" $agent | default $.Values.coder.gitCredentialsSecret }}
+            {{- $coderKey := dig "coderGitSecretKey" "" $agent | default $.Values.coder.gitCredentialsSecretKey }}
+            {{- if $coderSecret }}
+            - --coder-git-secret={{ $coderSecret }}
             {{- end }}
-            {{- if .Values.coder.gitCredentialsSecretKey }}
-            - --coder-git-secret-key={{ .Values.coder.gitCredentialsSecretKey }}
+            {{- if $coderKey }}
+            - --coder-git-secret-key={{ $coderKey }}
             {{- end }}
           env:
             - name: FLEET_NODE_NAME
@@ -86,26 +107,26 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
-            {{- if .Values.agent.githubToken.secretName }}
+            {{- if $agent.githubToken.secretName }}
             - name: GITHUB_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.agent.githubToken.secretName }}
-                  key: {{ .Values.agent.githubToken.secretKey }}
+                  name: {{ $agent.githubToken.secretName }}
+                  key: {{ $agent.githubToken.secretKey }}
             {{- end }}
-            {{- with .Values.agent.env }}
+            {{- with $agent.env }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
           securityContext:
-            {{- toYaml .Values.agent.securityContext | nindent 12 }}
+            {{- toYaml $agent.securityContext | nindent 12 }}
           resources:
-            {{- toYaml .Values.agent.resources | nindent 12 }}
+            {{- toYaml $agent.resources | nindent 12 }}
           volumeMounts:
             - name: workspace
               mountPath: /workspace
             - name: tmp
               mountPath: /tmp
-            {{- if .Values.agent.gateCache.enabled }}
+            {{- if $agent.gateCache.enabled }}
             - name: gate-cache
               mountPath: /cache
             {{- end }}
@@ -114,22 +135,23 @@ spec:
           emptyDir: {}
         - name: tmp
           emptyDir: {}
-        {{- if .Values.agent.gateCache.enabled }}
+        {{- if $agent.gateCache.enabled }}
         - name: gate-cache
           persistentVolumeClaim:
-            claimName: {{ include "foreman.gateCache.pvcName" . }}
+            claimName: {{ include "foreman.gateCache.pvcName" $ctx }}
         {{- end }}
-      {{- with .Values.agent.nodeSelector }}
+      {{- with $agent.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.agent.affinity }}
+      {{- with $agent.affinity }}
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.agent.tolerations }}
+      {{- with $agent.tolerations }}
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       terminationGracePeriodSeconds: 30
+{{- end }}
 {{- end }}

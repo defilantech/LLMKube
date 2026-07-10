@@ -328,6 +328,51 @@ agent:
   podLabels: {}
   env: []
 
+  # Per-agent override of the chart-level coder.gitCredentialsSecret
+  # passed through as --coder-git-secret. Empty falls back to
+  # .Values.coder.gitCredentialsSecret so existing installs that only
+  # set the chart-level value are unchanged. (#994)
+  coderGitSecret: ""
+  coderGitSecretKey: ""
+
+# agents is the multi-fleet map (#994). Leave it UNSET for a single
+# agent (the legacy `agent:` block above is used as-is and renders
+# exactly the resources it always has, so an existing install is
+# unchanged on upgrade). Set it to render one Deployment +
+# ServiceAccount + ClusterRole/ClusterRoleBinding + gate-cache PVC PER
+# entry, each suffixed with the agent key, so multiple heterogeneous
+# agent fleets coexist in one release instead of needing a second
+# chart install (which would collide on the chart's singletons).
+#
+# Real-world use cases:
+#
+#   agents:
+#     default:                  # the primary multi-repo worker/coder pool
+#       replicaCount: 3
+#       roles: [worker, coder, verifier]
+#     llmkube-fork:             # a fork-pinned dogfood agent for upstream PRs
+#       replicaCount: 1
+#       roles: [coder-fork]
+#       gitRemoteURL: https://github.com/<you>/LLMKube
+#       githubToken: { secretName: foreman-agent-fork, secretKey: GITHUB_TOKEN }
+#       commitAuthorName: "<you>"
+#       commitAuthorEmail: "<you>@users.noreply.github.com"
+#       coderGitSecret: foreman-fork-credentials     # per-agent coder PAT
+#       gateCache: { enabled: false }                  # fork agents don't gate
+#
+# Each entry's fields DEEP-MERGE with the legacy `agent:` block above
+# (which serves as the defaults) so you only have to specify what
+# differs. Naming convention: per-agent resources are
+# `<fullname>-<agentKey>-agent` (Deployment / SA / ClusterRole /
+# ClusterRoleBinding) and `<fullname>-<agentKey>-gate-cache` (PVC), so
+# agents never collide. The shared components — operator Deployment,
+# webhook, CRDs, coder SA/Role/RoleBinding — remain single per release.
+#
+# Setting `agents:` opts you OUT of the implicit legacy agent: render
+# path; if you need a "default" fleet alongside custom ones, list it
+# explicitly under `agents:` with the name `default` (or any other key).
+agents: {}
+
 # coder gates the ServiceAccount + namespaced Role the Job-mode coder
 # pods run under (#620). A Job-mode Agent (spec.execution.mode=Job) runs
 # `foreman-agent run-task` in an ephemeral Job whose pod uses this SA.

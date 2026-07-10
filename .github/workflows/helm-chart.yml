@@ -755,6 +755,53 @@ jobs:
           helm lint charts/foreman
           echo "✅ foreman lint passed"
 
+      - name: Install helm-unittest
+        # Helm v3.13's `helm plugin install` will not skip signature
+        # verification (no --verify flag in 3.x), and the runner has no
+        # GPG keyring to verify the upstream release signature against.
+        # Pull the v1.1.1 plugin tarball directly, unpack into
+        # $(helm env HELM_PLUGINS), and strip `platformHooks` from
+        # plugin.yaml — that field was added after 3.13 and v3.13's
+        # plugin loader rejects unknown YAML keys, so the install hard-
+        # fails on the next `helm plugin list`.
+        run: |
+          set -euo pipefail
+          HELM_PLUGINS_DIR="$(helm env HELM_PLUGINS)"
+          PLUGIN_DIR="${HELM_PLUGINS_DIR}/unittest"
+          rm -rf "${PLUGIN_DIR}"
+          mkdir -p "${PLUGIN_DIR}"
+          curl -fsSL \
+            https://github.com/helm-unittest/helm-unittest/releases/download/v1.1.1/unittest-1.1.1.tgz \
+            | tar -xz -C "${PLUGIN_DIR}" --strip-components=1
+          chmod +x "${PLUGIN_DIR}"/untt-*
+          # Helm 3.13 strict-decodes plugin.yaml and rejects unknown
+          # keys; v1.1.1 added `platformHooks` (post-install hook map),
+          # which Helm 3.x's loader has never heard of. Drop the block
+          # with awk — it lives at the end of the file, indented under
+          # `platformHooks:`. The `platformCommand` map still picks the
+          # right binary per OS/arch, so the plugin runs without the
+          # post-install download hook.
+          awk '
+            /^platformHooks:/  { skip = 1; next }
+            skip && /^[^ ]/     { skip = 0 }
+            skip                { next }
+            { print }
+          ' "${PLUGIN_DIR}/plugin.yaml" > "${PLUGIN_DIR}/plugin.yaml.tmp"
+          mv "${PLUGIN_DIR}/plugin.yaml.tmp" "${PLUGIN_DIR}/plugin.yaml"
+          # Trigger Helm's plugin discovery by listing once; HELM_PLUGINS
+          # is read on every invocation, so this picks the plugin up.
+          helm plugin list > /dev/null
+          helm unittest --help > /dev/null
+          echo "✅ helm-unittest installed"
+
+      - name: Run foreman chart unit tests
+        # Covers the agents: map multi-fleet (#994) shape plus the legacy
+        # single-agent backward-compat path. Fails CI on any drift in the
+        # expected resource names, suffixes, or per-agent field flow.
+        run: |
+          helm unittest charts/foreman
+          echo "✅ foreman chart unit tests passed"
+
       - name: Template foreman with defaults
         # foreman is a sibling chart to llmkube (no Helm subchart
         # relationship), so no helm-repo wiring is required to render
