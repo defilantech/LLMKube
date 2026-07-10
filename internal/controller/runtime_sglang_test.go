@@ -17,8 +17,10 @@ limitations under the License.
 package controller
 
 import (
+	"reflect"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
@@ -536,5 +538,74 @@ func TestSGLangBuildArgsDeterministic(t *testing.T) {
 				t.Fatalf("iteration %d pos %d: %q != %q", i, j, got[j], first[j])
 			}
 		}
+	}
+}
+
+func TestSGLangBuildCommand(t *testing.T) {
+	b := &SGLangBackend{}
+	want := []string{"python3", "-m", "sglang.launch_server"}
+	got := b.BuildCommand()
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("BuildCommand() = %v, want %v", got, want)
+	}
+}
+
+func TestSGLangProbes(t *testing.T) {
+	b := &SGLangBackend{}
+	startup, liveness, readiness := b.BuildProbes(30000)
+
+	if startup == nil || startup.HTTPGet == nil || startup.HTTPGet.Path != "/health_generate" {
+		t.Errorf("startup probe should hit /health_generate, got %+v", startup)
+	}
+	if startup.FailureThreshold != 180 {
+		t.Errorf("startup FailureThreshold = %d, want 180 (cold-start tolerance)", startup.FailureThreshold)
+	}
+
+	if liveness == nil || liveness.HTTPGet == nil || liveness.HTTPGet.Path != "/health" {
+		t.Errorf("liveness probe should hit /health, got %+v", liveness)
+	}
+	if liveness.FailureThreshold != 3 {
+		t.Errorf("liveness FailureThreshold = %d, want 3", liveness.FailureThreshold)
+	}
+
+	if readiness == nil || readiness.HTTPGet == nil || readiness.HTTPGet.Path != "/health_generate" {
+		t.Errorf("readiness probe should hit /health_generate, got %+v", readiness)
+	}
+	if readiness.FailureThreshold != 3 {
+		t.Errorf("readiness FailureThreshold = %d, want 3", readiness.FailureThreshold)
+	}
+}
+
+func TestSGLangBuildEnv(t *testing.T) {
+	b := &SGLangBackend{}
+
+	// nil when no HFTokenSecretRef.
+	if got := b.BuildEnv(&inferencev1alpha1.InferenceService{
+		Spec: inferencev1alpha1.InferenceServiceSpec{Runtime: "sglang"},
+	}); got != nil {
+		t.Errorf("BuildEnv() with no HFTokenSecretRef = %v, want nil", got)
+	}
+
+	// HF_TOKEN env when SecretRef is set.
+	isvc := &inferencev1alpha1.InferenceService{
+		Spec: inferencev1alpha1.InferenceServiceSpec{
+			Runtime: "sglang",
+			SGLangConfig: &inferencev1alpha1.SGLangConfig{
+				HFTokenSecretRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "hf-secret"},
+					Key:                  "HF_TOKEN",
+				},
+			},
+		},
+	}
+	got := b.BuildEnv(isvc)
+	if len(got) != 1 {
+		t.Fatalf("BuildEnv() = %v, want one env var", got)
+	}
+	if got[0].Name != "HF_TOKEN" {
+		t.Errorf("env[0].Name = %q, want %q", got[0].Name, "HF_TOKEN")
+	}
+	if got[0].ValueFrom == nil || got[0].ValueFrom.SecretKeyRef == nil {
+		t.Errorf("env[0].ValueFrom = nil, want SecretKeyRef")
 	}
 }

@@ -26,6 +26,7 @@ import (
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
@@ -150,22 +151,64 @@ func ValidateSGLangConfig(isvc *inferencev1alpha1.InferenceService) (reason, mes
 }
 
 // BuildCommand returns the entrypoint for the SGLang container. SGLang
-// launches via a Python module rather than a bare binary. Implemented in
-// Task 4.
-func (b *SGLangBackend) BuildCommand() []string { return nil }
-
-// BuildProbes returns startup, liveness, and readiness probes. SGLang exposes
-// /health (cheap liveness) and /health_generate (runs a token, accurate
-// readiness but slow on cold start). Implemented in Task 5.
-func (b *SGLangBackend) BuildProbes(port int32) (*corev1.Probe, *corev1.Probe, *corev1.Probe) {
-	_ = port
-	return nil, nil, nil
+// launches via a Python module rather than a bare binary, mirroring
+// PersonaPlexBackend.
+func (b *SGLangBackend) BuildCommand() []string {
+	return []string{"python3", "-m", "sglang.launch_server"}
 }
 
-// BuildEnv returns HF_TOKEN from a Secret ref when configured. Implemented
-// in Task 6.
+// BuildProbes returns startup, liveness, and readiness probes. SGLang
+// exposes /health (cheap liveness) and /health_generate (runs a token,
+// accurate readiness but slow on cold start). Startup tolerates 180
+// failures (~30 minutes at 10s period) to cover model load + warmup.
+func (b *SGLangBackend) BuildProbes(port int32) (*corev1.Probe, *corev1.Probe, *corev1.Probe) {
+	startup := &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{
+			HTTPGet: &corev1.HTTPGetAction{
+				Path: "/health_generate",
+				Port: intstr.FromInt32(port),
+			},
+		},
+		PeriodSeconds:    10,
+		TimeoutSeconds:   5,
+		FailureThreshold: 180,
+	}
+	liveness := &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{
+			HTTPGet: &corev1.HTTPGetAction{
+				Path: "/health",
+				Port: intstr.FromInt32(port),
+			},
+		},
+		PeriodSeconds:    15,
+		TimeoutSeconds:   5,
+		FailureThreshold: 3,
+	}
+	readiness := &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{
+			HTTPGet: &corev1.HTTPGetAction{
+				Path: "/health_generate",
+				Port: intstr.FromInt32(port),
+			},
+		},
+		PeriodSeconds:    10,
+		TimeoutSeconds:   5,
+		FailureThreshold: 3,
+	}
+	return startup, liveness, readiness
+}
+
+// BuildEnv returns HF_TOKEN from SGLangConfig.HFTokenSecretRef when set.
+// SGLang reads HF_TOKEN from the environment to authenticate gated-model
+// downloads from HuggingFace Hub.
 func (b *SGLangBackend) BuildEnv(isvc *inferencev1alpha1.InferenceService) []corev1.EnvVar {
-	_ = isvc
+	cfg := isvc.Spec.SGLangConfig
+	if cfg != nil && cfg.HFTokenSecretRef != nil {
+		return []corev1.EnvVar{{
+			Name:      "HF_TOKEN",
+			ValueFrom: &corev1.EnvVarSource{SecretKeyRef: cfg.HFTokenSecretRef},
+		}}
+	}
 	return nil
 }
 
