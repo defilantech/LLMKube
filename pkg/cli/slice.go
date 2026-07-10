@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 
 	"github.com/spf13/cobra"
 	corev1 "k8s.io/api/core/v1"
@@ -55,6 +56,10 @@ type planSlice struct {
 
 type sliceOptions struct {
 	planFile       string
+	repo           string
+	plannerURL     string
+	plannerModel   string
+	repomapFile    string
 	namespace      string
 	coderAgent     string
 	integrateAgent string
@@ -67,40 +72,51 @@ type sliceOptions struct {
 func newSliceCommand() *cobra.Command {
 	opts := &sliceOptions{}
 	cmd := &cobra.Command{
-		Use:   "slice --plan FILE",
-		Short: "Render a sliced Workload from a slice plan and apply it",
-		Long: `Render a Workload from a slice plan (the planner's output) and apply it.
+		Use:   "slice [ISSUE]",
+		Short: "Plan an issue into disjoint slices and render a sliced Workload",
+		Long: `Render a sliced Workload and apply it, from either a pre-made plan or by
+planning an issue.
 
-The plan decomposes one issue into disjoint-file slices. This command renders a
-Workload whose pipeline is: one issue-fix step per slice, then an integrate step
+The pipeline is one issue-fix step per disjoint slice, then an integrate step
 that unions the slice branches, then a reconcile step that checks the union
 against the plan's pinned shared identifiers.
 
+Two input modes:
+  --plan FILE          render from a slice plan the planner already produced.
+  ISSUE --planner-url  plan the issue with a model, then render.
+
 Examples:
 
-  # Dry-run: print the rendered Workload without applying it:
+  # Render a pre-made plan, dry-run:
   llmkube foreman slice --plan slice-plan-700.yaml --dry-run
 
-  # Apply against a cluster:
-  llmkube foreman slice --plan slice-plan-700.yaml --coder-agent coder-metal`,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runSlice(cmd.Context(), cmd.OutOrStdout(), opts)
+  # Plan issue 700 with a local model, then apply:
+  llmkube foreman slice 700 --repo defilantech/LLMKube \
+    --planner-url http://localhost:18080 --planner-model ornith-35b \
+    --repomap /tmp/repomap.txt --coder-agent coder-metal`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runSlice(cmd.Context(), cmd.OutOrStdout(), args, opts)
 		},
 	}
 	f := cmd.Flags()
-	f.StringVar(&opts.planFile, "plan", "", "Path to the slice plan YAML (required)")
+	f.StringVar(&opts.planFile, "plan", "", "Path to a slice plan YAML (skips planning)")
+	f.StringVar(&opts.repo, "repo", "", "Target repo as owner/name (required when planning an issue)")
+	f.StringVar(&opts.plannerURL, "planner-url", "",
+		"OpenAI-compatible base URL of the planner model (required when planning an issue)")
+	f.StringVar(&opts.plannerModel, "planner-model", "", "Planner model name to send in the request")
+	f.StringVar(&opts.repomapFile, "repomap", "", "Path to a repository map file to give the planner")
 	f.StringVar(&opts.namespace, "namespace", "default", "Namespace to create the Workload in")
 	f.StringVar(&opts.coderAgent, "coder-agent", "coder-metal", "Agent that runs each slice's issue-fix step")
 	f.StringVar(&opts.integrateAgent, "integrate-agent", "integrate", "Deterministic agent that runs the integrate step")
 	f.StringVar(&opts.reconcileAgent, "reconcile-agent", "reconcile", "Deterministic agent that runs the reconcile step")
 	f.StringVar(&opts.baseBranch, "base-branch", "main", "Base branch the slices are cut from and unioned onto")
 	f.BoolVar(&opts.dryRun, "dry-run", false, "Print the rendered Workload without applying it")
-	_ = cmd.MarkFlagRequired("plan")
 	return cmd
 }
 
-func runSlice(ctx context.Context, out io.Writer, opts *sliceOptions) error {
-	plan, err := loadSlicePlan(opts.planFile)
+func runSlice(ctx context.Context, out io.Writer, args []string, opts *sliceOptions) error {
+	plan, err := resolveSlicePlan(ctx, args, opts)
 	if err != nil {
 		return err
 	}
@@ -127,6 +143,25 @@ func runSlice(ctx context.Context, out io.Writer, opts *sliceOptions) error {
 	}
 	_, _ = fmt.Fprintf(out, "created Workload %s/%s (%d slices)\n", wl.Namespace, wl.Name, len(plan.Slices))
 	return nil
+}
+
+// resolveSlicePlan produces the plan from either --plan FILE or by planning an
+// ISSUE argument with the planner model.
+func resolveSlicePlan(ctx context.Context, args []string, opts *sliceOptions) (slicePlan, error) {
+	if opts.planFile != "" {
+		return loadSlicePlan(opts.planFile)
+	}
+	if len(args) == 1 {
+		issue, err := strconv.ParseInt(args[0], 10, 32)
+		if err != nil || issue <= 0 {
+			return slicePlan{}, fmt.Errorf("ISSUE must be a positive integer, got %q", args[0])
+		}
+		if opts.repo == "" || opts.plannerURL == "" {
+			return slicePlan{}, fmt.Errorf("planning an issue requires --repo and --planner-url")
+		}
+		return planIssue(ctx, int32(issue), opts, httpPlannerCall(opts.plannerURL, opts.plannerModel))
+	}
+	return slicePlan{}, fmt.Errorf("provide --plan FILE or an ISSUE with --repo and --planner-url")
 }
 
 func loadSlicePlan(path string) (slicePlan, error) {

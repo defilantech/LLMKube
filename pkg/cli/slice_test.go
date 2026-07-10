@@ -161,7 +161,7 @@ slices:
 	opts.dryRun = true
 
 	var buf bytes.Buffer
-	if err := runSlice(context.Background(), &buf, opts); err != nil {
+	if err := runSlice(context.Background(), &buf, nil, opts); err != nil {
 		t.Fatalf("runSlice: %v", err)
 	}
 	out := buf.String()
