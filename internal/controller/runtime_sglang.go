@@ -82,9 +82,62 @@ func (b *SGLangBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, mode
 		"--host", "::",
 		"--port", fmt.Sprintf("%d", port),
 	}
-	// Mode handling and typed SGLangConfig flags land here in Task 3.
-	_ = isvc
-	_ = model
+
+	// --served-model-name: skip if user already set it in extraArgs.
+	servedName := isvc.Spec.ModelRef
+	if servedName == "" && model != nil {
+		servedName = model.Name
+	}
+	if servedName != "" && !hasMatchingExtraArg(isvc.Spec.ExtraArgs, "served-model-name") {
+		args = append(args, "--served-model-name", servedName)
+	}
+
+	cfg := isvc.Spec.SGLangConfig
+	gpuCount := resolveGPUCount(isvc, model)
+	if cfg != nil {
+		args = sglangAppendTensorParallelSize(args, cfg.TensorParallelSize)
+		args = sglangAppendExpertParallelSize(args, cfg.ExpertParallelSize)
+		args = sglangAppendDataParallelSize(args, cfg.DataParallelSize)
+		args = sglangAppendContextLength(args, cfg.ContextLength)
+		if cfg.MemFractionStatic != nil && gpuCount == 0 {
+			sglangLog.Info(
+				"spec.sglangConfig.memFractionStatic is defined with no GPU hardware; skipping --mem-fraction-static",
+				"inferenceService", isvc.Name,
+				"namespace", isvc.Namespace,
+			)
+		} else {
+			args = sglangAppendMemFractionStatic(args, cfg.MemFractionStatic)
+		}
+		args = sglangAppendChunkedPrefillSize(args, cfg.ChunkedPrefillSize)
+		args = sglangAppendMaxRunningRequests(args, cfg.MaxRunningRequests)
+		args = sglangAppendQuantization(args, cfg.Quantization)
+		args = sglangAppendKVCacheDtype(args, cfg.KVCacheDtype, cfg.KVCacheCustomDtype)
+		args = sglangAppendAttentionBackend(args, cfg.AttentionBackend)
+		args = sglangAppendEnablePrefixCaching(args, cfg.EnablePrefixCaching)
+		args = sglangAppendToolCallParser(args, cfg.ToolCallParser)
+		args = sglangAppendReasoningParser(args, cfg.ReasoningParser)
+		args = sglangAppendChatTemplate(args, cfg.ChatTemplate)
+		args = sglangAppendSpeculative(args, cfg.Speculative)
+		args = sglangAppendLoraModules(args, cfg.LoraModules)
+		args = sglangAppendMaxLoraRank(args, cfg.MaxLoraRank)
+		args = sglangAppendLoraTargetModules(args, cfg.LoraTargetModules)
+	}
+
+	// Auto-derive --tp when user didn't set it.
+	if gpuCount > 1 && (cfg == nil || cfg.TensorParallelSize == nil) {
+		args = append(args, "--tp", fmt.Sprintf("%d", gpuCount))
+	}
+
+	// Mode handling: --is-embedding (skip if user already set it).
+	if isvc.Spec.Mode == "embedding" && !hasMatchingExtraArg(isvc.Spec.ExtraArgs, "is-embedding") {
+		args = append(args, "--is-embedding")
+	}
+
+	// ExtraArgs last (user wins).
+	if len(isvc.Spec.ExtraArgs) > 0 {
+		args = append(args, isvc.Spec.ExtraArgs...)
+	}
+
 	return args
 }
 
@@ -117,7 +170,4 @@ func (b *SGLangBackend) BuildEnv(isvc *inferencev1alpha1.InferenceService) []cor
 }
 
 // Forward-declared for later tasks; silenced to satisfy unused linter.
-var (
-	_ = sglangLog
-	_ = sglangROCmImage
-)
+var _ = sglangROCmImage
