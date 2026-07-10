@@ -174,12 +174,8 @@ func sglangAppendLoraModules(args []string, modules []string) []string {
 	if len(modules) == 0 {
 		return args
 	}
-	// SGLang accepts a JSON string for --lora-modules; the user provides the
-	// JSON themselves in spec.sglangConfig.loraModules. When the user
-	// supplies multiple entries they need to be wrapped into a single JSON
-	// array externally; pass them through as the single value or comma-joined
-	// is unsafe. Use the first entry as the value and let extraArgs carry
-	// the rest. Document this in the CRD comment.
+	// SGLang's --lora-modules accepts a comma-separated list of
+	// <name>=<path> or JSON entries. Join the CRD slice into a single string.
 	return append(args, "--lora-modules", strings.Join(modules, ","))
 }
 

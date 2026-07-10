@@ -384,6 +384,21 @@ func TestSGLangBuildArgs(t *testing.T) {
 		},
 		{
 			model: &inferencev1alpha1.Model{ObjectMeta: metav1.ObjectMeta{Name: "m"}},
+			name:  "speculative enabled without algorithm skips all speculative flags",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime: "sglang",
+				SGLangConfig: &inferencev1alpha1.SGLangConfig{
+					Speculative: &inferencev1alpha1.SGLangSpeculativeConfig{
+						Enabled:        ptrBool(true),
+						Algorithm:      "",
+						DraftModelPath: "/models/draft",
+					},
+				},
+			},
+			notContains: []string{"--speculative-algorithm", "--speculative-draft-model-path", "--speculative-num-steps", "--speculative-eagle-topk", "--speculative-num-draft-tokens"},
+		},
+		{
+			model: &inferencev1alpha1.Model{ObjectMeta: metav1.ObjectMeta{Name: "m"}},
 			name:  "speculative enabled+configured emits all flags",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime: "sglang",
