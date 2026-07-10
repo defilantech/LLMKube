@@ -127,11 +127,18 @@ func BaseBranchSHA(ctx context.Context, workspace, upstreamURL, baseBranch strin
 }
 
 // SoftResetToBase moves commits from HEAD back into the working tree
-// without touching the index, relative to base. Used when a model
-// self-committed its work and the executor wants to re-apply it with
-// DCO sign-off and executor-owned author identity. base should be a
-// commit SHA (resolved via BaseBranchSHA), not a ref name, so a stale
-// local branch cannot drag upstream commits into the recovered commit.
+// without touching the index, relative to the branch point. Used when a
+// model self-committed its work and the executor wants to re-apply it with
+// DCO sign-off and executor-owned author identity. base should be a commit
+// SHA (resolved via BaseBranchSHA), not a ref name, so a stale local branch
+// cannot drag upstream commits into the recovered commit.
+//
+// base is the CURRENT upstream tip, which may be AHEAD of the point the task
+// branch was actually cut from when upstream advanced mid-run. The reset
+// anchors at the TRUE branch point — merge-base(base, HEAD) — not at base, so
+// only the model's own commits are re-staged; the intervening upstream delta
+// between the branch point and the current tip is never squashed into the
+// recovered commit (#1002).
 func SoftResetToBase(ctx context.Context, workspace string, base string) error {
 	if workspace == "" {
 		return fmt.Errorf("SoftResetToBase: workspace is required")
@@ -139,14 +146,22 @@ func SoftResetToBase(ctx context.Context, workspace string, base string) error {
 	if base == "" {
 		return fmt.Errorf("SoftResetToBase: base is required")
 	}
-	count, err := CommitsAheadOfBase(ctx, workspace, base)
+	out, err := runGit(ctx, workspace, baseEnv(), "merge-base", base, "HEAD")
+	if err != nil {
+		return fmt.Errorf("SoftResetToBase: merge-base %s HEAD: %w", base, err)
+	}
+	branchPoint := strings.TrimSpace(out)
+	if branchPoint == "" {
+		return fmt.Errorf("SoftResetToBase: empty merge-base for %s..HEAD", base)
+	}
+	count, err := CommitsAheadOfBase(ctx, workspace, branchPoint)
 	if err != nil {
 		return fmt.Errorf("SoftResetToBase: %w", err)
 	}
 	if count == 0 {
 		return ErrNothingToCommit
 	}
-	if _, err := runGit(ctx, workspace, baseEnv(), "reset", "--soft", base); err != nil {
+	if _, err := runGit(ctx, workspace, baseEnv(), "reset", "--soft", branchPoint); err != nil {
 		return fmt.Errorf("SoftResetToBase: reset: %w", err)
 	}
 	return nil
