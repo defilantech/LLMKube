@@ -53,6 +53,14 @@ spec:
         foreman.llmkube.dev/task-name: {{ .TaskName }}
     spec:
       restartPolicy: Never
+      # fsGroup makes the RWX gate-cache PVC group-writable so non-root
+      # gate images (e.g. USER 65534) can write under XDG_DATA_HOME=/cache/xdg.
+      # Without it the PVC mounts root:root and any XDG-aware tool crashes
+      # before the real checks run (#1055). 100 matches the gate image's
+      # typical build-group GID; operators pinning a different group should
+      # override via the gate's image build.
+      securityContext:
+        fsGroup: 100
       containers:
         - name: gate
           image: {{ .Image }}
