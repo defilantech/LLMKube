@@ -17,6 +17,7 @@ limitations under the License.
 package agent
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -156,6 +157,90 @@ func TestProgressMonitor_EditFreeTurnsTriggers(t *testing.T) {
 	d = mon.Observe(6, []oai.ToolCall{makeCall("x", "grep", `{"pattern":"foo"}`)}, transcript)
 	if d.Action != ProgressForceTerminate {
 		t.Fatalf("turn 6: expected ForceTerminate; got %+v", d)
+	}
+}
+
+// TestProgressMonitor_GroundingReadsExtendEditFreeLimit pins #1066: reading
+// DISTINCT files to ground the next edit (the anti-confab rule, #1062) raises
+// the effective edit-free limit, so grounding is not force-terminated like an
+// open-ended search loop. At the base limit (turn 3) the guard must not fire
+// because the distinct reads bought tolerance; the nudge comes later, once a
+// no-new-file streak catches up to the extended limit.
+func TestProgressMonitor_GroundingReadsExtendEditFreeLimit(t *testing.T) {
+	mon := NewLoopProgressMonitor(ProgressConfig{EditFreeTurnsLimit: 3})
+	tr := []oai.Message{}
+
+	for i, f := range []string{"a.go", "b.go", "c.go", "d.go", "e.go"} {
+		d := mon.Observe(i+1, []oai.ToolCall{makeCall("t", "read_file", fmt.Sprintf(`{"path":%q}`, f))}, tr)
+		if d.Action != ProgressContinue {
+			t.Fatalf("turn %d (distinct read %s): grounding should extend the limit, got %+v", i+1, f, d)
+		}
+	}
+
+	// No new files now: the effective limit stops growing and the streak
+	// catches up, so it nudges -- but later than the base limit of 3.
+	nudged := 0
+	for turn := 6; turn <= 14; turn++ {
+		d := mon.Observe(turn, []oai.ToolCall{makeCall("t", "grep", `{"pattern":"x"}`)}, tr)
+		if d.Action == ProgressNudge && d.Signal == signalEditFreeStreak {
+			nudged = turn
+			break
+		}
+	}
+	if nudged == 0 {
+		t.Fatal("expected an EditFreeStreak nudge once the streak caught up to the extended limit")
+	}
+	if nudged <= 3 {
+		t.Fatalf("nudge at turn %d; grounding should have pushed it past the base limit of 3", nudged)
+	}
+}
+
+// TestProgressMonitor_GroundingBonusIsCapped pins #1066: the tolerance earned
+// by distinct reads is bounded, so a pure-read loop still terminates rather
+// than reading forever. Reading one distinct file per turn, the nudge lands at
+// base + groundingReadBonusCap.
+func TestProgressMonitor_GroundingBonusIsCapped(t *testing.T) {
+	mon := NewLoopProgressMonitor(ProgressConfig{EditFreeTurnsLimit: 3})
+	tr := []oai.Message{}
+	nudged := 0
+	for turn := 1; turn <= 30; turn++ {
+		d := mon.Observe(turn, []oai.ToolCall{makeCall("t", "read_file", fmt.Sprintf(`{"path":"f%d.go"}`, turn))}, tr)
+		if d.Action == ProgressNudge {
+			nudged = turn
+			break
+		}
+	}
+	if want := 3 + groundingReadBonusCap; nudged != want {
+		t.Fatalf("nudge at turn %d; want %d (base 3 + cap %d)", nudged, want, groundingReadBonusCap)
+	}
+}
+
+// TestProgressMonitor_EditResetsGroundingBonus pins #1066: an edit clears the
+// grounded-file set along with the streak, so a prior run of grounding reads
+// does not carry tolerance into a later, unrelated stuck phase.
+func TestProgressMonitor_EditResetsGroundingBonus(t *testing.T) {
+	mon := NewLoopProgressMonitor(ProgressConfig{EditFreeTurnsLimit: 3})
+	tr := []oai.Message{}
+
+	for i, f := range []string{"a.go", "b.go", "c.go", "d.go"} {
+		mon.Observe(i+1, []oai.ToolCall{makeCall("t", "read_file", fmt.Sprintf(`{"path":%q}`, f))}, tr)
+	}
+	// An edit resets the streak AND the grounded-file set.
+	mon.Observe(5, []oai.ToolCall{makeCall("t", "write_file", `{"path":"a.go","content":"x"}`)}, tr)
+
+	// A grep loop with no new grounding now trips at the BASE limit: streak
+	// restarts at turn 6, so the nudge is at turn 8 (3 consecutive no-edit
+	// turns), with no carried-over bonus.
+	nudged := 0
+	for turn := 6; turn <= 14; turn++ {
+		d := mon.Observe(turn, []oai.ToolCall{makeCall("t", "grep", `{"pattern":"x"}`)}, tr)
+		if d.Action == ProgressNudge {
+			nudged = turn
+			break
+		}
+	}
+	if nudged != 8 {
+		t.Fatalf("nudge at turn %d; want 8 (base limit 3 from the post-edit restart, no carried bonus)", nudged)
 	}
 }
 
