@@ -82,6 +82,10 @@ func (b *SGLangBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, mode
 		// flag, so users can override via extraArgs ("--host", "0.0.0.0").
 		"--host", "::",
 		"--port", fmt.Sprintf("%d", port),
+		// SGLang requires --enable-metrics to expose /metrics (unlike vLLM which
+		// always exposes it, and llama.cpp which always passes --metrics). Without
+		// this flag, PodMonitor scrapes fail and HPA cannot read the custom metric.
+		"--enable-metrics",
 	}
 
 	// --served-model-name: skip if user already set it in extraArgs.
@@ -101,6 +105,10 @@ func (b *SGLangBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, mode
 		args = sglangAppendDataParallelSize(args, cfg.DataParallelSize)
 		args = sglangAppendContextLength(args, cfg.ContextLength)
 		if cfg.MemFractionStatic != nil && gpuCount == 0 {
+			// TODO: This guard uses resolveGPUCount (device-plugin only). DRA-only
+			// models (resourceClaims > 0, gpuCount == 0) will spuriously skip
+			// --mem-fraction-static here. Switch to hasGPUPresent(isvc, model) when
+			// the shared vLLM guard is also updated. See #1060.
 			sglangLog.Info(
 				"spec.sglangConfig.memFractionStatic is defined with no GPU hardware; skipping --mem-fraction-static",
 				"inferenceService", isvc.Name,
@@ -130,7 +138,7 @@ func (b *SGLangBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, mode
 	}
 
 	// Mode handling: --is-embedding (skip if user already set it).
-	if isvc.Spec.Mode == "embedding" && !hasMatchingExtraArg(isvc.Spec.ExtraArgs, "is-embedding") {
+	if resolveServingMode(isvc) == servingModeEmbedding && !hasMatchingExtraArg(isvc.Spec.ExtraArgs, "is-embedding") {
 		args = append(args, "--is-embedding")
 	}
 

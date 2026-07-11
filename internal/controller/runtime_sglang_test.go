@@ -80,6 +80,7 @@ func TestSGLangBuildArgs_NilConfig(t *testing.T) {
 		{"--model-path", "/models/test"},
 		{"--host", "::"},
 		{"--port", "30000"},
+		{"--enable-metrics", ""},
 	}
 	for _, fc := range mustContain {
 		if !containsArg(args, fc.flag, fc.value) {
@@ -110,7 +111,7 @@ func TestSGLangBuildArgs_EmptyConfig(t *testing.T) {
 	}
 	args := backend.BuildArgs(isvc, model, "/models/test", 30000)
 
-	for _, fc := range []FlagCheck{{"--model-path", "/models/test"}, {"--host", "::"}, {"--port", "30000"}} {
+	for _, fc := range []FlagCheck{{"--model-path", "/models/test"}, {"--host", "::"}, {"--port", "30000"}, {"--enable-metrics", ""}} {
 		if !containsArg(args, fc.flag, fc.value) {
 			t.Errorf("expected %q %q in args, got: %v", fc.flag, fc.value, args)
 		}
@@ -193,6 +194,17 @@ func TestSGLangBuildArgs(t *testing.T) {
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime: "sglang",
 				Mode:    "embedding",
+			},
+			contains: []FlagCheck{{"--is-embedding", ""}},
+		},
+		{
+			model: &inferencev1alpha1.Model{ObjectMeta: metav1.ObjectMeta{Name: "m"}},
+			name:  "endpoint-path /embeddings infers embedding mode, emits --is-embedding",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime: "sglang",
+				Endpoint: &inferencev1alpha1.EndpointSpec{
+					Path: "/v1/embeddings",
+				},
 			},
 			contains: []FlagCheck{{"--is-embedding", ""}},
 		},
