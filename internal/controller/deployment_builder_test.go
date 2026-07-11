@@ -208,6 +208,48 @@ func TestResolveRuntimeImage(t *testing.T) {
 			model:    &inferencev1alpha1.Model{},
 			expected: stockLlamaCpp,
 		},
+		{
+			name:     "sglang no GPU vendor falls back to CUDA image",
+			backend:  &SGLangBackend{},
+			model:    &inferencev1alpha1.Model{},
+			expected: sglangCUDAImage,
+		},
+		{
+			name:    "sglang NVIDIA vendor picks CUDA image",
+			backend: &SGLangBackend{},
+			model: &inferencev1alpha1.Model{
+				Spec: inferencev1alpha1.ModelSpec{
+					Hardware: &inferencev1alpha1.HardwareSpec{
+						GPU: &inferencev1alpha1.GPUSpec{Vendor: "nvidia"},
+					},
+				},
+			},
+			expected: sglangCUDAImage,
+		},
+		{
+			name:    "sglang AMD vendor picks ROCm image",
+			backend: &SGLangBackend{},
+			model: &inferencev1alpha1.Model{
+				Spec: inferencev1alpha1.ModelSpec{
+					Hardware: &inferencev1alpha1.HardwareSpec{
+						GPU: &inferencev1alpha1.GPUSpec{Vendor: "amd"},
+					},
+				},
+			},
+			expected: sglangROCmImage,
+		},
+		{
+			name:    "sglang AMD vendor uppercase maps to ROCm image",
+			backend: &SGLangBackend{},
+			model: &inferencev1alpha1.Model{
+				Spec: inferencev1alpha1.ModelSpec{
+					Hardware: &inferencev1alpha1.HardwareSpec{
+						GPU: &inferencev1alpha1.GPUSpec{Vendor: "AMD"},
+					},
+				},
+			},
+			expected: sglangROCmImage,
+		},
 	}
 
 	for _, tc := range cases {

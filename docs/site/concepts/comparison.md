@@ -18,6 +18,8 @@ Honest comparison, not a sales pitch. We use vLLM, llama.cpp, and TGI as runtime
 
 **Inference engines** ([vLLM](https://github.com/vllm-project/vllm), [llama.cpp](https://github.com/ggerganov/llama.cpp), [TGI](https://github.com/huggingface/text-generation-inference), [SGLang](https://github.com/sgl-project/sglang), [MLX](https://github.com/ml-explore/mlx)) run a single model behind an HTTP server. They're the substrate; LLMKube wraps them.
 
+- **LLMKube runtimes:** `llamacpp`, `vllm`, `tgi`, `sglang`, `personaplex`, `generic`. SGLang landed as a first-class runtime in v0.9.x ([#974](https://github.com/defilantech/LLMKube/issues/974)).
+
 **Single-node runners** ([Ollama](https://ollama.com/), LM Studio) are best-in-class for "run a model on your laptop." Not a fit when you need Kubernetes-native scheduling, NetworkPolicy, HPA, multi-tenant namespaces, or a fleet of GPU nodes.
 
 **Kubernetes operators and platforms** ([KubeAI](https://www.kubeai.org/), [llm-d](https://llm-d.ai/), [NVIDIA NIM Operator](https://docs.nvidia.com/nim-operator/latest/)) are the actual peers. The table below focuses here.

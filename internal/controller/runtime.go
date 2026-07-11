@@ -68,6 +68,8 @@ func resolveBackend(isvc *inferencev1alpha1.InferenceService) RuntimeBackend {
 		return &VLLMBackend{}
 	case "tgi":
 		return &TGIBackend{}
+	case RuntimeSGLANG:
+		return &SGLangBackend{}
 	case "generic":
 		return &GenericBackend{}
 	default:

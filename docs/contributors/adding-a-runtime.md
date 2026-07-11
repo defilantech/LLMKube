@@ -104,4 +104,5 @@ Add `--runtime yourengine` handling in `pkg/cli/deploy.go`.
 | `personaplex` | PersonaPlex/Moshi | 8998 | TCP socket | No | — |
 | `vllm` | vLLM | 8000 | HTTP /health | Yes | vllm:num_requests_running |
 | `tgi` | TGI | 80 | HTTP /health | No (HF download) | tgi:queue_size |
+| `sglang` | SGLang | 30000 | HTTP /health_generate | Yes (curl) | sglang:num_requests_running |
 | `generic` | Any container | 8080 | TCP socket | No | — |

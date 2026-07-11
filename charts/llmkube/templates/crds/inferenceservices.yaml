@@ -2472,11 +2472,13 @@ spec:
                   "personaplex": NVIDIA PersonaPlex (Moshi) speech-to-speech server.
                   "vllm": vLLM OpenAI-compatible server with PagedAttention.
                   "tgi": HuggingFace Text Generation Inference server.
+                  "sglang": SGLang OpenAI-compatible server with RadixAttention prefix caching.
                 enum:
                 - llamacpp
                 - personaplex
                 - vllm
                 - tgi
+                - sglang
                 - generic
                 type: string
               runtimeClassName:
@@ -2681,6 +2683,227 @@ spec:
                           PodSecurityContext, the value specified in SecurityContext takes precedence.
                         type: string
                     type: object
+                type: object
+              sglangConfig:
+                description: |-
+                  SGLangConfig holds configuration for the SGLang runtime.
+                  Only used when Runtime is "sglang".
+                properties:
+                  attentionBackend:
+                    description: |-
+                      Attention
+                      AttentionBackend selects the attention implementation. flashinfer is
+                      fastest on recent NVIDIA GPUs; flash_attn is portable; torch_native is
+                      the fallback. Maps to SGLang --attention-backend flag.
+                    enum:
+                    - flashinfer
+                    - flash_attn
+                    - torch_native
+                    type: string
+                  chatTemplate:
+                    description: |-
+                      ChatTemplate overrides the model's bundled chat template. Maps to
+                      SGLang --chat-template flag.
+                    type: string
+                  chunkedPrefillSize:
+                    description: |-
+                      Batching
+                      ChunkedPrefillSize sets the chunk size for chunked prefill (tokens).
+                      Maps to SGLang --chunked-prefill-size flag.
+                    format: int32
+                    minimum: 512
+                    type: integer
+                  contextLength:
+                    description: |-
+                      Memory & context
+                      ContextLength sets the maximum model context length.
+                      Maps to SGLang --context-length flag.
+                    format: int32
+                    minimum: 128
+                    type: integer
+                  dataParallelSize:
+                    description: |-
+                      DataParallelSize sets the number of data-parallel replicas (SGLang-side controller).
+                      Maps to SGLang --dp flag. Not auto-derived; set explicitly.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  enablePrefixCaching:
+                    description: |-
+                      EnablePrefixCaching turns on RadixAttention automatic prefix caching.
+                      Headline feature for agentic workloads with shared system-prompt +
+                      tool-definition + repo-context prefixes. Maps to SGLang --enable-prefix-caching.
+                    type: boolean
+                  expertParallelSize:
+                    description: |-
+                      ExpertParallelSize sets the number of GPUs for expert parallelism (MoE models).
+                      Maps to SGLang --ep flag. Not auto-derived; set explicitly.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  hfTokenSecretRef:
+                    description: |-
+                      HFTokenSecretRef references a Secret containing the HuggingFace token.
+                      Injected as HF_TOKEN env var.
+                    properties:
+                      key:
+                        description: The key of the secret to select from.  Must be
+                          a valid secret key.
+                        type: string
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                      optional:
+                        description: Specify whether the Secret or its key must be
+                          defined
+                        type: boolean
+                    required:
+                    - key
+                    type: object
+                    x-kubernetes-map-type: atomic
+                  kvCacheCustomDtype:
+                    description: |-
+                      KVCacheCustomDtype sets a custom SGLang KV cache type not in the standard
+                      enum. Maps to SGLang --kv-cache-dtype flag. Takes precedence over
+                      KVCacheDtype when both are set. LLMKube does not validate the string.
+                    type: string
+                  kvCacheDtype:
+                    default: auto
+                    description: |-
+                      KVCacheDtype selects the KV cache element type. auto follows dtype.
+                      fp8_e5m2 / fp8_e4m3 cut KV memory roughly in half. Custom values not
+                      in the enum (e.g., TurboQuant) go in KVCacheCustomDtype.
+                      Maps to SGLang --kv-cache-dtype flag.
+                    enum:
+                    - auto
+                    - fp8_e5m2
+                    - fp8_e4m3
+                    type: string
+                  loraModules:
+                    description: |-
+                      LoRA (basic)
+                      LoraModules is a JSON array of LoRA specs (model_id -> path). Maps to
+                      SGLang --lora-modules flag.
+                    items:
+                      type: string
+                    type: array
+                  loraTargetModules:
+                    description: |-
+                      LoraTargetModules lists the modules LoRA adapters may target (e.g.,
+                      "q_proj", "k_proj"). Maps to SGLang --lora-target-modules flag.
+                    items:
+                      type: string
+                    type: array
+                  maxLoraRank:
+                    description: |-
+                      MaxLoraRank sets the maximum LoRA rank accepted at load time. Maps to
+                      SGLang --max-lora-rank flag.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  maxRunningRequests:
+                    description: |-
+                      MaxRunningRequests caps concurrent in-flight requests. Maps to SGLang
+                      --max-running-requests flag. Spec.parallelSlots on the llama.cpp runtime
+                      is the analog; SGLang uses its own name.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  memFractionStatic:
+                    description: |-
+                      MemFractionStatic sets the fraction of GPU memory used for static state
+                      (model weights + KV cache). Range 0.1-0.99. Requires GPU.
+                      Maps to SGLang --mem-fraction-static flag.
+                    maximum: 0.99
+                    minimum: 0.1
+                    type: number
+                  quantization:
+                    description: |-
+                      Quantization & KV cache
+                      Quantization sets the quantization method. SGLang accepts fp8/awq/gptq/modelopt.
+                      Maps to SGLang --quantization flag.
+                    type: string
+                  reasoningParser:
+                    description: |-
+                      ReasoningParser selects the reasoning-content extraction format. For
+                      thinking models (qwen3, deepseek-r1). Maps to SGLang --reasoning-parser.
+                    enum:
+                    - qwen3
+                    - deepseek-r1
+                    type: string
+                  speculative:
+                    description: Speculative configures speculative decoding (EAGLE
+                      / EAGLE3 / Medusa).
+                    properties:
+                      algorithm:
+                        description: |-
+                          Algorithm selects the speculative algorithm (EAGLE, EAGLE3, Medusa).
+                          Maps to SGLang --speculative-algorithm flag.
+                        enum:
+                        - EAGLE
+                        - EAGLE3
+                        - Medusa
+                        type: string
+                      draftModelPath:
+                        description: |-
+                          DraftModelPath is the path to the draft model weights (for EAGLE).
+                          Maps to SGLang --speculative-draft-model-path flag. Required when Enabled.
+                        type: string
+                      eagleTopK:
+                        description: |-
+                          EagleTopK is the top-k sampling for EAGLE draft tokens.
+                          Maps to SGLang --speculative-eagle-topk flag.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      enabled:
+                        description: |-
+                          Enabled toggles speculative decoding on. When false or nil, no flags
+                          are emitted regardless of other fields.
+                        type: boolean
+                      numDraftTokens:
+                        default: 4
+                        description: |-
+                          NumDraftTokens is the number of draft tokens proposed per step.
+                          Maps to SGLang --speculative-num-draft-tokens flag.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      numSteps:
+                        description: |-
+                          NumSteps is the number of draft steps per forward pass.
+                          Maps to SGLang --speculative-num-steps flag.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                    type: object
+                  tensorParallelSize:
+                    description: |-
+                      Sharding
+                      TensorParallelSize sets the number of GPUs for tensor parallelism.
+                      Maps to SGLang --tp flag.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  toolCallParser:
+                    description: |-
+                      Agentic glue
+                      ToolCallParser selects the tool-call extraction format. For foreman
+                      tool-loop workloads. Maps to SGLang --tool-call-parser flag.
+                    enum:
+                    - llama3
+                    - qwen3
+                    - qwen25
+                    - hermes
+                    - functionary
+                    - mistral
+                    type: string
                 type: object
               skipModelInit:
                 description: |-

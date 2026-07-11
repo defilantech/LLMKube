@@ -297,11 +297,12 @@ func (r *InferenceServiceReconciler) reconcileDeployment(ctx context.Context, is
 		return nil, snap.ReadyReplicas, snap, nil, nil
 	}
 
-	// Surface non-fatal vLLM spec problems as a status condition before we
+	// Surface non-fatal runtime spec problems as a status condition before we
 	// build the Deployment. A failure here never blocks reconciliation — the
 	// Deployment is still produced with the offending flags silently skipped
-	// (see VLLMBackend.BuildArgs).
+	// (see VLLMBackend.BuildArgs, SGLangBackend.BuildArgs).
 	r.reconcileVLLMSpecCondition(isvc)
+	r.reconcileSGLangSpecCondition(isvc)
 
 	deployment := r.constructDeployment(isvc, model, desiredReplicas)
 	if err := setControllerReferenceUnblocked(isvc, deployment, r.Scheme); err != nil {

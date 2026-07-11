@@ -33,7 +33,7 @@ import (
 
 // Status-subresource writes. This file owns the path from an in-memory
 // phase/condition decision to the actual Status().Update call, including:
-//   - VLLMSpecValid condition maintenance (informational)
+//   - VLLMSpecValid and SGLangSpecValid condition maintenance (informational)
 //   - cluster-local endpoint URL construction
 //   - the omnibus updateStatusWithSchedulingInfo that writes phase,
 //     replica counts, endpoint, scheduling diagnostics, priority,
@@ -68,6 +68,40 @@ func (r *InferenceServiceReconciler) reconcileVLLMSpecCondition(isvc *inferencev
 	}
 	meta.SetStatusCondition(&isvc.Status.Conditions, metav1.Condition{
 		Type:               ConditionVLLMSpecValid,
+		Status:             metav1.ConditionFalse,
+		ObservedGeneration: isvc.Generation,
+		LastTransitionTime: now,
+		Reason:             reason,
+		Message:            message,
+	})
+}
+
+// reconcileSGLangSpecCondition sets or clears the SGLangSpecValid status condition
+// based on ValidateSGLangConfig. This is informational only — it does not block
+// Deployment creation. The controller's main Status().Update at the end of
+// reconcile persists the condition.
+func (r *InferenceServiceReconciler) reconcileSGLangSpecCondition(isvc *inferencev1alpha1.InferenceService) {
+	if isvc.Spec.Runtime != RuntimeSGLANG {
+		meta.RemoveStatusCondition(&isvc.Status.Conditions, ConditionSGLangSpecValid)
+		return
+	}
+	reason, message := ValidateSGLangConfig(isvc)
+	now := metav1.NewTime(time.Now())
+	if reason == "" {
+		if existing := meta.FindStatusCondition(isvc.Status.Conditions, ConditionSGLangSpecValid); existing != nil {
+			meta.SetStatusCondition(&isvc.Status.Conditions, metav1.Condition{
+				Type:               ConditionSGLangSpecValid,
+				Status:             metav1.ConditionTrue,
+				ObservedGeneration: isvc.Generation,
+				LastTransitionTime: now,
+				Reason:             "ConfigValid",
+				Message:            "SGLang configuration is valid",
+			})
+		}
+		return
+	}
+	meta.SetStatusCondition(&isvc.Status.Conditions, metav1.Condition{
+		Type:               ConditionSGLangSpecValid,
 		Status:             metav1.ConditionFalse,
 		ObservedGeneration: isvc.Generation,
 		LastTransitionTime: now,

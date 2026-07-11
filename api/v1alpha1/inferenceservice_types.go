@@ -112,7 +112,8 @@ type InferenceServiceSpec struct {
 	// "personaplex": NVIDIA PersonaPlex (Moshi) speech-to-speech server.
 	// "vllm": vLLM OpenAI-compatible server with PagedAttention.
 	// "tgi": HuggingFace Text Generation Inference server.
-	// +kubebuilder:validation:Enum=llamacpp;personaplex;vllm;tgi;generic
+	// "sglang": SGLang OpenAI-compatible server with RadixAttention prefix caching.
+	// +kubebuilder:validation:Enum=llamacpp;personaplex;vllm;tgi;sglang;generic
 	// +kubebuilder:default=llamacpp
 	// +optional
 	Runtime string `json:"runtime,omitempty"`
@@ -446,6 +447,11 @@ type InferenceServiceSpec struct {
 	// Only used when Runtime is "tgi".
 	// +optional
 	TGIConfig *TGIConfig `json:"tgiConfig,omitempty"`
+
+	// SGLangConfig holds configuration for the SGLang runtime.
+	// Only used when Runtime is "sglang".
+	// +optional
+	SGLangConfig *SGLangConfig `json:"sglangConfig,omitempty"`
 
 	// ImagePullSecrets for pulling container images from private registries.
 	// +optional
@@ -1048,6 +1054,174 @@ type InferenceServiceList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []InferenceService `json:"items"`
+}
+
+// SGLangConfig holds configuration for the SGLang inference server.
+type SGLangConfig struct {
+	// Sharding
+	// TensorParallelSize sets the number of GPUs for tensor parallelism.
+	// Maps to SGLang --tp flag.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	TensorParallelSize *int32 `json:"tensorParallelSize,omitempty"`
+
+	// ExpertParallelSize sets the number of GPUs for expert parallelism (MoE models).
+	// Maps to SGLang --ep flag. Not auto-derived; set explicitly.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	ExpertParallelSize *int32 `json:"expertParallelSize,omitempty"`
+
+	// DataParallelSize sets the number of data-parallel replicas (SGLang-side controller).
+	// Maps to SGLang --dp flag. Not auto-derived; set explicitly.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	DataParallelSize *int32 `json:"dataParallelSize,omitempty"`
+
+	// Memory & context
+	// ContextLength sets the maximum model context length.
+	// Maps to SGLang --context-length flag.
+	// +kubebuilder:validation:Minimum=128
+	// +optional
+	ContextLength *int32 `json:"contextLength,omitempty"`
+
+	// MemFractionStatic sets the fraction of GPU memory used for static state
+	// (model weights + KV cache). Range 0.1-0.99. Requires GPU.
+	// Maps to SGLang --mem-fraction-static flag.
+	// +kubebuilder:validation:Minimum=0.1
+	// +kubebuilder:validation:Maximum=0.99
+	// +optional
+	MemFractionStatic *float64 `json:"memFractionStatic,omitempty"`
+
+	// Batching
+	// ChunkedPrefillSize sets the chunk size for chunked prefill (tokens).
+	// Maps to SGLang --chunked-prefill-size flag.
+	// +kubebuilder:validation:Minimum=512
+	// +optional
+	ChunkedPrefillSize *int32 `json:"chunkedPrefillSize,omitempty"`
+
+	// MaxRunningRequests caps concurrent in-flight requests. Maps to SGLang
+	// --max-running-requests flag. Spec.parallelSlots on the llama.cpp runtime
+	// is the analog; SGLang uses its own name.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	MaxRunningRequests *int32 `json:"maxRunningRequests,omitempty"`
+
+	// Quantization & KV cache
+	// Quantization sets the quantization method. SGLang accepts fp8/awq/gptq/modelopt.
+	// Maps to SGLang --quantization flag.
+	// +optional
+	Quantization string `json:"quantization,omitempty"`
+
+	// KVCacheDtype selects the KV cache element type. auto follows dtype.
+	// fp8_e5m2 / fp8_e4m3 cut KV memory roughly in half. Custom values not
+	// in the enum (e.g., TurboQuant) go in KVCacheCustomDtype.
+	// Maps to SGLang --kv-cache-dtype flag.
+	// +kubebuilder:validation:Enum=auto;fp8_e5m2;fp8_e4m3
+	// +kubebuilder:default=auto
+	// +optional
+	KVCacheDtype *string `json:"kvCacheDtype,omitempty"`
+
+	// KVCacheCustomDtype sets a custom SGLang KV cache type not in the standard
+	// enum. Maps to SGLang --kv-cache-dtype flag. Takes precedence over
+	// KVCacheDtype when both are set. LLMKube does not validate the string.
+	// +optional
+	KVCacheCustomDtype string `json:"kvCacheCustomDtype,omitempty"`
+
+	// Attention
+	// AttentionBackend selects the attention implementation. flashinfer is
+	// fastest on recent NVIDIA GPUs; flash_attn is portable; torch_native is
+	// the fallback. Maps to SGLang --attention-backend flag.
+	// +kubebuilder:validation:Enum=flashinfer;flash_attn;torch_native
+	// +optional
+	AttentionBackend string `json:"attentionBackend,omitempty"`
+
+	// EnablePrefixCaching turns on RadixAttention automatic prefix caching.
+	// Headline feature for agentic workloads with shared system-prompt +
+	// tool-definition + repo-context prefixes. Maps to SGLang --enable-prefix-caching.
+	// +optional
+	EnablePrefixCaching *bool `json:"enablePrefixCaching,omitempty"`
+
+	// Agentic glue
+	// ToolCallParser selects the tool-call extraction format. For foreman
+	// tool-loop workloads. Maps to SGLang --tool-call-parser flag.
+	// +kubebuilder:validation:Enum=llama3;qwen3;qwen25;hermes;functionary;mistral
+	// +optional
+	ToolCallParser string `json:"toolCallParser,omitempty"`
+
+	// ReasoningParser selects the reasoning-content extraction format. For
+	// thinking models (qwen3, deepseek-r1). Maps to SGLang --reasoning-parser.
+	// +kubebuilder:validation:Enum=qwen3;deepseek-r1
+	// +optional
+	ReasoningParser string `json:"reasoningParser,omitempty"`
+
+	// ChatTemplate overrides the model's bundled chat template. Maps to
+	// SGLang --chat-template flag.
+	// +optional
+	ChatTemplate string `json:"chatTemplate,omitempty"`
+
+	// Speculative configures speculative decoding (EAGLE / EAGLE3 / Medusa).
+	// +optional
+	Speculative *SGLangSpeculativeConfig `json:"speculative,omitempty"`
+
+	// LoRA (basic)
+	// LoraModules is a JSON array of LoRA specs (model_id -> path). Maps to
+	// SGLang --lora-modules flag.
+	// +optional
+	LoraModules []string `json:"loraModules,omitempty"`
+
+	// MaxLoraRank sets the maximum LoRA rank accepted at load time. Maps to
+	// SGLang --max-lora-rank flag.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	MaxLoraRank *int32 `json:"maxLoraRank,omitempty"`
+
+	// LoraTargetModules lists the modules LoRA adapters may target (e.g.,
+	// "q_proj", "k_proj"). Maps to SGLang --lora-target-modules flag.
+	// +optional
+	LoraTargetModules []string `json:"loraTargetModules,omitempty"`
+
+	// HFTokenSecretRef references a Secret containing the HuggingFace token.
+	// Injected as HF_TOKEN env var.
+	// +optional
+	HFTokenSecretRef *corev1.SecretKeySelector `json:"hfTokenSecretRef,omitempty"`
+}
+
+// SGLangSpeculativeConfig configures speculative decoding for SGLang.
+type SGLangSpeculativeConfig struct {
+	// Enabled toggles speculative decoding on. When false or nil, no flags
+	// are emitted regardless of other fields.
+	// +optional
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// Algorithm selects the speculative algorithm (EAGLE, EAGLE3, Medusa).
+	// Maps to SGLang --speculative-algorithm flag.
+	// +kubebuilder:validation:Enum=EAGLE;EAGLE3;Medusa
+	// +optional
+	Algorithm string `json:"algorithm,omitempty"`
+
+	// DraftModelPath is the path to the draft model weights (for EAGLE).
+	// Maps to SGLang --speculative-draft-model-path flag. Required when Enabled.
+	// +optional
+	DraftModelPath string `json:"draftModelPath,omitempty"`
+
+	// NumSteps is the number of draft steps per forward pass.
+	// Maps to SGLang --speculative-num-steps flag.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	NumSteps *int32 `json:"numSteps,omitempty"`
+
+	// EagleTopK is the top-k sampling for EAGLE draft tokens.
+	// Maps to SGLang --speculative-eagle-topk flag.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	EagleTopK *int32 `json:"eagleTopK,omitempty"`
+
+	// NumDraftTokens is the number of draft tokens proposed per step.
+	// Maps to SGLang --speculative-num-draft-tokens flag.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:default=4
+	// +optional
+	NumDraftTokens *int32 `json:"numDraftTokens,omitempty"`
 }
 
 func init() {
