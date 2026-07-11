@@ -2358,6 +2358,61 @@ func TestSetupTaskBranch_ResetSkipsPriorAttempt(t *testing.T) {
 	}
 }
 
+// TestSetupTaskBranch_ReviseFromBranchDefaultsToRebase pins #1047: when
+// reviseFromBranch is set but branchStrategy is left empty (the common
+// caller mistake that produced the silent no-op), the effective strategy
+// must be rebase so the prior attempt is restored instead of silently
+// discarded. An explicit reset still wins.
+func TestSetupTaskBranch_ReviseFromBranchDefaultsToRebase(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	dir := t.TempDir()
+	bare, _ := seededRemote(t, dir)
+	const branch = "foreman/wl/issue-641"
+
+	// Prior attempt pushed to the remote.
+	prior := filepath.Join(dir, "prior")
+	gitIn(t, "", "clone", bare, prior)
+	gitIn(t, prior, "checkout", "-b", branch)
+	if err := os.WriteFile(filepath.Join(prior, "fix.txt"), []byte("attempt 1\n"), 0o644); err != nil {
+		t.Fatalf("write fix.txt: %v", err)
+	}
+	gitIn(t, prior, "add", "fix.txt")
+	gitIn(t, prior, "commit", "-m", "attempt 1")
+	gitIn(t, prior, "push", "origin", branch)
+	priorSHA := gitIn(t, prior, "rev-parse", "HEAD")
+
+	ws := filepath.Join(dir, "ws")
+	gitIn(t, "", "clone", bare, ws)
+
+	// reviseFromBranch set, branchStrategy left empty — the #1047 footgun.
+	task := &foremanv1alpha1.AgenticTask{
+		Spec: foremanv1alpha1.AgenticTaskSpec{
+			Kind: foremanv1alpha1.AgenticTaskKindIssueFix,
+			Payload: foremanv1alpha1.AgenticTaskPayload{
+				Repo:             "defilantech/LLMKube",
+				Branch:           branch,
+				ReviseFromBranch: branch,
+				// BranchStrategy intentionally left empty — this is the bug we're
+				// guarding against.
+			},
+		},
+	}
+
+	err := setupTaskBranch(context.Background(), task, ws, branch, "main",
+		func(string) string { return bare }, nil, logr.Discard())
+	if err != nil {
+		t.Fatalf("setupTaskBranch: %v", err)
+	}
+	if got := gitIn(t, ws, "rev-parse", "HEAD"); got != priorSHA {
+		t.Errorf("HEAD = %s, want prior attempt tip %s (empty branchStrategy + reviseFromBranch must default to rebase)", got, priorSHA)
+	}
+	if _, err := os.Stat(filepath.Join(ws, "fix.txt")); err != nil {
+		t.Errorf("prior attempt's file must be present: %v", err)
+	}
+}
+
 // TestRecoverSelfCommitsOrNoChange_StaleForkBaseIsNotCountedAsCommitsAhead
 // reproduces the #982/#813 scenario where the fork clone's local "main"
 // lags the upstream tip the task branch was actually cut from. If the
