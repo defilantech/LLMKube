@@ -378,7 +378,16 @@ func setupTaskBranch(
 ) error {
 	strategy := task.Spec.Payload.BranchStrategy
 	if strategy == "" {
-		strategy = foremanv1alpha1.BranchStrategyReset
+		// #1047: reviseFromBranch without branchStrategy used to silently no-op
+		// (defaulted to reset, which skips the restore). When reviseFromBranch is
+		// set and the caller did not explicitly choose reset, treat the effective
+		// strategy as rebase — restore-and-rebase is the only sensible intent
+		// when a prior attempt is named. An explicit "reset" still wins.
+		if task.Spec.Payload.ReviseFromBranch != "" {
+			strategy = foremanv1alpha1.BranchStrategyRebase
+		} else {
+			strategy = foremanv1alpha1.BranchStrategyReset
+		}
 	}
 
 	// rebase (in-review revision): restore the prior attempt AND rebase it onto
