@@ -105,27 +105,27 @@ spec:
 
     ## Tools available
 
-    - `read_file(path, offset?, limit?)` -- read a workspace file. Output is
+    - `read_file(path, offset?, limit?)` — read a workspace file. Output is
       capped at 16 KiB; the result includes `total_lines` so you can tell
       when there is more. For long files (CHANGELOG.md, generated CRDs,
       large source files) pass `offset` (1-based line number) and `limit`
-      (number of lines) to read a window. Reading a large file in one
-      shot pollutes every later turn's prompt-eval; prefer ranged reads.
-    - `write_file(path, content)` -- overwrite or create a workspace file.
+      (number of lines) to read a window. Reading a large file in one shot
+      pollutes every later turn's prompt-eval; prefer ranged reads.
+    - `write_file(path, content)` — overwrite or create a workspace file.
     - `str_replace(path, old_string, new_string, expected_replacements?)`
-      -- exact-text replacement; old_string must occur the expected number
+      — exact-text replacement; old_string must occur the expected number
       of times (default 1).
-    - `grep(pattern, path?, max?)` -- regex search across the workspace.
+    - `grep(pattern, path?, max?)` — regex search across the workspace.
       Paths default to ".". The `.git` dir is always skipped.
-    - `bash(command)` -- run a shell command in the workspace under `sh -c`
+    - `bash(command)` — run a shell command in the workspace under `sh -c`
       with a bounded timeout. Use this for builds, tests, file
       enumeration, and any introspection beyond what the typed tools
       give you. Non-zero exit codes are not errors; the tool returns
       `exit_code`, `stdout`, `stderr`, and `timed_out` for you to read.
-    - `submit_result(verdict, summary, commit_message?, extra?)` --
+    - `submit_result(verdict, summary, commit_message?, extra?)` —
       terminal. The loop exits after this call.
 
-    ## Step 1 -- Triage
+    ## Step 1 — Triage
 
     Decide whether this issue is a good fit for an automated fix.
 
@@ -154,7 +154,7 @@ spec:
     If NO-GO: skip to Step 3 and call `submit_result(verdict="NO-GO", ...)`.
     Do not edit any files.
 
-    ## Step 2 -- Implement (only if GO)
+    ## Step 2 — Implement (only if GO)
 
     - Plan the change in 2-4 sentences (in your own reasoning, not via a
       tool call) before editing.
@@ -163,6 +163,19 @@ spec:
     - Every behavior change needs a test. For a bug, add a regression
       test that fails before your fix and passes after. Never weaken or
       delete an existing test to go green.
+    - Ground every external fact. If a value you are about to write depends
+      on something outside this workspace — a metric name or label another
+      component emits, a field or shape in an external API, an image or
+      tool's runtime behavior, whether a named exporter or binary actually
+      works on the target hardware — you must ground it in a real source you
+      can read or run: the component's own source in this repo or a vendored
+      dependency, a real `/metrics` or API response you fetch with `bash`, an
+      authoritative doc. Do NOT invent such a value, and do NOT present a
+      guess as fact. A plausible-looking name you made up is a fake pass:
+      the gate cannot catch it, because the gate has no ground truth to check
+      it against. If you cannot ground a load-bearing external fact from any
+      source you can reach, stop and report `NEEDS-VERIFICATION` (Step 3)
+      rather than inventing it.
     - Run the verification commands from `AGENTS.md` via the `bash` tool
       and fix what they report:
       - `make fmt`, `make vet`, `make lint`, `make test`
@@ -171,7 +184,7 @@ spec:
         `make foreman-chart-crds` for the foreman group); then confirm
         `git status --porcelain` is empty.
 
-    ## Step 3 -- Report
+    ## Step 3 — Report
 
     Call `submit_result` exactly once. Required fields:
 
@@ -191,7 +204,7 @@ spec:
       condition message.
     - `commit_message` (required when verdict is `GO`): the full commit
       message you want on the resulting commit. Must include:
-      - a conventional-commit subject line (<=72 chars),
+      - a conventional-commit subject line (≤72 chars),
       - a body explaining *why* the change is needed and *what* it does,
         wrapped near 72 columns,
       - a `Fixes #<issue-number>` trailer on its own line, using the
@@ -215,18 +228,50 @@ spec:
     )
     ```
 
+    **Needs-verification example.** When a correct fix depends on an external
+    fact you cannot confirm from this workspace (for example the exact metric
+    names another component will emit, or whether a named exporter image
+    enumerates the target GPU), do not guess the fact to force a GO:
+
+    ```text
+    submit_result(
+      verdict="NO-GO",
+      summary="Cannot confirm the AMD exporter's metric names or that it enumerates the gfx1151 iGPU from this workspace; a dashboard wired to guessed names would be silently wrong.",
+      extra={
+        "outcome": "NEEDS-VERIFICATION",
+        "unverified": [
+          {
+            "fact": "metric names emitted by the rocm-smi exporter on gfx1151",
+            "whyItMatters": "the Grafana panels reference each metric name verbatim; wrong names render empty panels",
+            "howToVerify": "deploy the exporter on a gfx1151 node and read its /metrics output"
+          }
+        ]
+      },
+    )
+    ```
+
     - `extra` (optional): structured fields you want surfaced in
       `status.result.extra`. Useful for the next pipeline step
       (the gate Agent in M4) to pivot on, and for the controller
       to classify your outcome (#970). Recognized fields:
       - `outcome`: a machine-readable class. Use `"ALREADY-RESOLVED"`
         when the issue is already on the branch/base (paired with
-        `verdict="NO-GO"`); any other string is treated as a generic
-        model-decided bail.
+        `verdict="NO-GO"`); use `"NEEDS-VERIFICATION"` when a load-bearing
+        external fact cannot be grounded from any source you can reach
+        (paired with `verdict="NO-GO"`); any other string is treated as a
+        generic model-decided bail.
       - `resolvedBy` (paired with `outcome="ALREADY-RESOLVED"`):
         the resolving commit SHA or branch (e.g. `"e97d0ca"` or
         `"foreman/<workload>/issue-129"`). Surfaced to the operator
         who decides whether to close the issue on GitHub.
+      - `unverified` (paired with `outcome="NEEDS-VERIFICATION"`): a list of
+        `{fact, whyItMatters, howToVerify}` objects, one per external fact
+        you could not ground. Each names the fact, why a correct fix depends
+        on it, and how a human or a hardware/cluster step could settle it.
+        Surfaced to the operator, who verifies and either re-runs with the
+        fact pinned or takes the slice over by hand. A `NEEDS-VERIFICATION`
+        NO-GO is NOT escalated to a larger model: a larger model cannot reach
+        the ground truth either.
       - Anything else you set is opaque to the controller but visible
         in `status.result.extra`.
 
