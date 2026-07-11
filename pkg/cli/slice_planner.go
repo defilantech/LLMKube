@@ -40,7 +40,12 @@ const plannerPrompt = `You are a planning agent. You are given a GitHub issue an
 Decompose the issue into 2 to 4 slices that can be implemented INDEPENDENTLY and
 combined by concatenation.
 
-Before you decompose, check the premises. A premise is any fact the slices'
+Reason SILENTLY. Do ALL of the analysis below in your own head. Your entire
+reply is the single YAML document specified at the end and NOTHING else: no
+preamble, no prose, no premise analysis, no "Now I'll create the slices",
+nothing before the first YAML key or after the last line.
+
+First, classify the premises (silently). A premise is any fact the slices'
 correctness depends on. Classify each load-bearing premise:
 - settled-in-repo: verifiable from the repository map or the issue itself. Fine.
 - repo-verifiable: the answer lives in the repo or a vendored dependency (does a
@@ -74,7 +79,10 @@ Hard rules:
    (metric name, config key, CRD field, function signature), pin the EXACT string
    in a shared_identifiers list with which slice defines it and which reference
    it. In each slice's task, name the exact identifiers that slice uses, VERBATIM.
-5. Output VALID YAML in exactly this shape and nothing else:
+5. Keep the contract field as plain prose lines only: no markdown headers,
+   bold, or nested bullets, so the YAML block scalar always parses cleanly.
+6. Your whole reply is ONLY this YAML document, nothing before the first key
+   or after the last line, in exactly this shape:
 
 issue: <number>
 repo: <owner/name>
@@ -150,9 +158,14 @@ func parseSlicePlan(raw string) (slicePlan, error) {
 	if m := fenceRE.FindStringSubmatch(body); m != nil {
 		body = strings.TrimSpace(m[1])
 	}
-	if strings.HasPrefix(strings.ToUpper(body), "UNSLICEABLE") {
-		return slicePlan{}, fmt.Errorf("planner refused: %s", firstLine(body))
+	// A chatty local planner can wrap the YAML in prose despite the prompt
+	// (premise analysis, a "Now I'll create the slices:" lead-in, etc).
+	// Surface an UNSLICEABLE refusal on whatever line it lands, then strip any
+	// preamble before the first top-level `issue:` key so the YAML parses.
+	if line, ok := unsliceableLine(body); ok {
+		return slicePlan{}, fmt.Errorf("planner refused: %s", line)
 	}
+	body = stripToYAMLStart(body)
 	var p slicePlan
 	if err := yaml.Unmarshal([]byte(body), &p); err != nil {
 		return slicePlan{}, fmt.Errorf("parse planner output as a slice plan: %w", err)
@@ -206,9 +219,28 @@ func httpPlannerCall(url, model string) PlannerCaller {
 	}
 }
 
-func firstLine(s string) string {
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		return s[:i]
+// unsliceableLine returns the first line whose trimmed text begins with
+// "UNSLICEABLE" (case-insensitive), so the planner's refusal is surfaced even
+// when a chatty model prefixes it with prose.
+func unsliceableLine(body string) (string, bool) {
+	for _, l := range strings.Split(body, "\n") {
+		t := strings.TrimSpace(l)
+		if strings.HasPrefix(strings.ToUpper(t), "UNSLICEABLE") {
+			return t, true
+		}
 	}
-	return s
+	return "", false
+}
+
+// stripToYAMLStart drops any preamble before the first line that begins the
+// plan document (a top-level `issue:` key). If the body already starts there,
+// or no such line exists, it is returned unchanged.
+func stripToYAMLStart(body string) string {
+	lines := strings.Split(body, "\n")
+	for i, l := range lines {
+		if strings.HasPrefix(l, "issue:") {
+			return strings.Join(lines[i:], "\n")
+		}
+	}
+	return body
 }
