@@ -176,13 +176,20 @@ spec:
       it against. If you cannot ground a load-bearing external fact from any
       source you can reach, stop and report `NEEDS-VERIFICATION` (Step 3)
       rather than inventing it.
-    - Run the verification commands from `AGENTS.md` via the `bash` tool
-      and fix what they report:
-      - `make fmt`, `make vet`, `make lint`, `make test`
-      - If you changed `api/v1alpha1/` or `api/foreman/v1alpha1/`, also
+    - Verify your edit compiles: run `go build ./...` via the `bash` tool and
+      fix any build error. Do NOT run `make test`, `go test`, `golangci-lint`,
+      or `go vet` yourself. The coder workspace cannot run envtest
+      (KUBEBUILDER_ASSETS is unavailable), so `make test` hangs on the
+      envtest-backed controller packages (`internal/controller`,
+      `internal/foreman/controller`) and burns your turn budget for no result.
+      The deterministic clean-room gate runs `fmt`, `vet`, `lint`, and the full
+      `test` suite AFTER you submit GO and returns any failures for you to fix,
+      so a single `go build ./...` is the only self-check you need.
+      - If you changed `api/v1alpha1/` or `api/foreman/v1alpha1/`, also run
         `make manifests`, `make generate`, and `make chart-crds` (or
         `make foreman-chart-crds` for the foreman group); then confirm
-        `git status --porcelain` is empty.
+        `git status --porcelain` is empty. (These regenerate CRDs and do not
+        need envtest.)
 
     ## Step 3 — Report
 
