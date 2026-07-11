@@ -430,6 +430,44 @@ func TestRenderGateJob_GenericRunsCommandsNotMakeOrBiteCheck(t *testing.T) {
 	}
 }
 
+// TestRenderGateJob_PodSecurityContextFSGroup asserts the rendered gate Job
+// carries a PodSecurityContext with fsGroup=100 so non-root gate images
+// (e.g. USER 65534) can write under XDG_DATA_HOME=/cache/xdg on the RWX
+// gate-cache PVC. Regression for #1055.
+func TestRenderGateJob_PodSecurityContextFSGroup(t *testing.T) {
+	job, err := renderGateJob(rendererInput{
+		Name:                    "foreman-gate-fsgroup",
+		Namespace:               "foreman-system",
+		Image:                   "golang:1.26",
+		Repo:                    "defilantech/LLMKube",
+		Branch:                  "foreman/issue-1055",
+		Checks:                  []string{"fmt"},
+		PVCName:                 "foreman-gate-cache",
+		ActiveDeadlineSeconds:   1800,
+		TTLSecondsAfterFinished: 86400,
+		CPURequest:              "2",
+		CPULimit:                "4",
+		MemRequest:              "4Gi",
+		MemLimit:                "8Gi",
+		CloneURLBase:            "https://github.com",
+		TaskNamespace:           "default",
+		TaskName:                "gate-1055",
+	})
+	if err != nil {
+		t.Fatalf("renderGateJob: %v", err)
+	}
+	psc := job.Spec.Template.Spec.SecurityContext
+	if psc == nil {
+		t.Fatalf("PodSecurityContext must be set on the gate pod")
+	}
+	if psc.FSGroup == nil {
+		t.Fatalf("PodSecurityContext.FSGroup must be set for non-root gate images to write XDG_DATA_HOME on the RWX PVC")
+	}
+	if *psc.FSGroup != 100 {
+		t.Errorf("PodSecurityContext.FSGroup: want 100 got %d", *psc.FSGroup)
+	}
+}
+
 // TestRenderGateJob_CloneURLOverride asserts the template branches
 // correctly on the CloneURL field: when set, the git clone target is
 // the override URL verbatim; when empty, the historical
