@@ -136,7 +136,13 @@ type LoopProgressMonitor struct {
 	// observing a wide-enough window to detect the pattern.
 	recentCallHashes []string
 	editFreeStreak   int // turns since last edit/submit
-	contextTokens    int // approximate wire token count after most recent turn
+	// groundedFiles is the set of distinct files read_file'd since the last
+	// edit. Each distinct file beyond the first raises the effective edit-free
+	// limit (grounding-aware guard, #1066): reading real source to ground the
+	// next edit (the anti-confab rule, #1062) earns tolerance, while a search
+	// loop or a re-read of the same file reads no NEW file and earns none.
+	groundedFiles map[string]struct{}
+	contextTokens int // approximate wire token count after most recent turn
 
 	// Nudge state. Once a signal has fired, the next-turn trigger
 	// escalates to ForceTerminate. For RepeatedToolCall we track the
@@ -188,6 +194,43 @@ var editProducingTools = map[string]struct{}{
 	"write_file":    {},
 	"str_replace":   {},
 	"submit_result": {},
+}
+
+// groundingReadBonusCap bounds the edit-free tolerance a model earns by reading
+// real source to ground its next edit (#1066). Each distinct file read since the
+// last edit, beyond the first, adds one turn to the effective EditFreeTurnsLimit,
+// up to this cap, so grounding is rewarded but a pure-read loop still terminates
+// at base+cap rather than reading forever.
+const groundingReadBonusCap = 8
+
+// editFreeLimit is the effective edit-free trip threshold: the base limit plus
+// one turn of tolerance per distinct file the model read to ground its next edit
+// since the last edit, beyond the first, capped at groundingReadBonusCap. The
+// first distinct read is the file the model is about to edit (base behavior);
+// additional distinct files are grounding. A grep/bash search loop or a re-read
+// of the same file reads no new file, earns no bonus, and still trips at the base
+// limit (#1066).
+func (m *LoopProgressMonitor) editFreeLimit() int {
+	bonus := len(m.groundedFiles) - 1
+	if bonus < 0 {
+		bonus = 0
+	}
+	if bonus > groundingReadBonusCap {
+		bonus = groundingReadBonusCap
+	}
+	return m.cfg.EditFreeTurnsLimit + bonus
+}
+
+// readFilePath extracts the path argument from a read_file tool call's JSON
+// arguments, or "" if the argument is absent or unparseable.
+func readFilePath(arguments string) string {
+	var args struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(args.Path)
 }
 
 // explorationTools are the open-ended search tools removed from the
@@ -326,8 +369,10 @@ func (m *LoopProgressMonitor) Observe(turn int, calls []oai.ToolCall, transcript
 		}
 	}
 
-	// 2c. EditFreeStreak.
-	if m.cfg.EditFreeTurnsLimit > 0 && m.editFreeStreak >= m.cfg.EditFreeTurnsLimit {
+	// 2c. EditFreeStreak. The threshold is the base limit extended by grounding
+	// reads (editFreeLimit, #1066), so reading real source to ground the next
+	// edit is not force-terminated like an open-ended search loop.
+	if m.cfg.EditFreeTurnsLimit > 0 && m.editFreeStreak >= m.editFreeLimit() {
 		if m.nudgedEditFree {
 			return ProgressDecision{
 				Action: ProgressForceTerminate,
@@ -429,6 +474,19 @@ func (m *LoopProgressMonitor) updateEditFreeStreak(calls []oai.ToolCall) {
 			return
 		}
 	}
+	// No edit this turn. Record any distinct files the model read so grounding
+	// reads raise the effective edit-free limit (see editFreeLimit, #1066).
+	for _, tc := range calls {
+		if tc.Function.Name != "read_file" {
+			continue
+		}
+		if p := readFilePath(tc.Function.Arguments); p != "" {
+			if m.groundedFiles == nil {
+				m.groundedFiles = make(map[string]struct{})
+			}
+			m.groundedFiles[p] = struct{}{}
+		}
+	}
 	m.editFreeStreak++
 }
 
@@ -444,6 +502,9 @@ func (m *LoopProgressMonitor) updateEditFreeStreak(calls []oai.ToolCall) {
 func (m *LoopProgressMonitor) resetEditFreeStreak() {
 	m.editFreeStreak = 0
 	m.nudgedEditFree = false
+	// A landed edit ends the current grounding window; the tolerance earned by
+	// reads before it must not carry into a later stuck phase (#1066).
+	m.groundedFiles = nil
 }
 
 // fileWritingBashTokens are substrings that indicate a bash command
