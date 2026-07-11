@@ -157,3 +157,41 @@ func TestIntegrate_MissingOptions(t *testing.T) {
 		t.Fatal("want error for missing RepoDir")
 	}
 }
+
+// TestIntegrate_NoAmbientGitIdentity reproduces the in-cluster foreman-agent
+// pod, where git has no user.name/user.email in any config scope. The slice
+// branches were committed by the coder (with an identity), but the pod that
+// runs Integrate has none, so the union commit must supply its own or it dies
+// with "Author identity unknown" (exit 128). The package's own fixture masks
+// this because initRepo sets a LOCAL identity; here we neutralize global and
+// system config and strip the local identity before the union commit.
+func TestIntegrate_NoAmbientGitIdentity(t *testing.T) {
+	// Point git's global/system config at nonexistent files so no ambient
+	// identity from the dev's ~/.gitconfig can leak in and hide the bug.
+	// t.Setenv makes these process-wide for the test and restores after.
+	empty := t.TempDir()
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(empty, "no-global"))
+	t.Setenv("GIT_CONFIG_SYSTEM", filepath.Join(empty, "no-system"))
+
+	dir := initRepo(t)
+	sliceBranch(t, dir, "slice-a", map[string]string{"a/new.txt": "AAA\n"})
+	// Drop the local identity: now the repo has NO identity from any scope,
+	// exactly like the integrate pod's fresh clone.
+	git(t, dir, "config", "--unset", "user.email")
+	git(t, dir, "config", "--unset", "user.name")
+
+	res, err := Integrate(context.Background(), IntegrateOptions{
+		RepoDir: dir, Base: "main", Branch: "integ", Slices: []string{"slice-a"},
+	})
+	if err != nil {
+		t.Fatalf("integrate without ambient git identity: %v", err)
+	}
+	// The union commit landed, authored by the foreman bot identity.
+	got := strings.TrimSpace(git(t, dir, "log", "-1", "--format=%an <%ae>", "integ"))
+	if !strings.Contains(got, "foreman@llmkube.dev") {
+		t.Fatalf("union commit author = %q, want the foreman bot identity", got)
+	}
+	if res.Branch != "integ" {
+		t.Fatalf("branch = %q, want integ", res.Branch)
+	}
+}
