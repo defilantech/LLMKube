@@ -70,6 +70,27 @@ func TestParseSlicePlan(t *testing.T) {
 		}
 	})
 
+	t.Run("prose preamble before yaml", func(t *testing.T) {
+		// A chatty local planner prints its reasoning before the document.
+		chatty := "Looking at this issue, let me classify the premises first.\n\n" +
+			"**Premises:**\n1. foo is settled-in-repo\n\nNow I'll create the slices:\n\n" +
+			planYAMLBody
+		p, err := parseSlicePlan(chatty)
+		if err != nil {
+			t.Fatalf("parse with preamble: %v", err)
+		}
+		if len(p.Slices) != 2 {
+			t.Fatalf("preamble parse wrong: %+v", p)
+		}
+	})
+
+	t.Run("unsliceable behind preamble", func(t *testing.T) {
+		_, err := parseSlicePlan("Let me analyze.\n\nUNSLICEABLE: hardware verification required")
+		if err == nil || !strings.Contains(err.Error(), "refused") {
+			t.Fatalf("want refusal error surfaced from a non-prefix line, got %v", err)
+		}
+	})
+
 	t.Run("no slices", func(t *testing.T) {
 		if _, err := parseSlicePlan("issue: 1\nrepo: a/b\n"); err == nil {
 			t.Fatal("want error for a plan with no slices")
