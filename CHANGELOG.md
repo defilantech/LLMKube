@@ -5,6 +5,37 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.4](https://github.com/defilantech/LLMKube/compare/v0.9.3...v0.9.4) (2026-07-11)
+
+
+### Features
+
+* **chart:** support multiple agent fleets in one release ([#1028](https://github.com/defilantech/LLMKube/issues/1028)) ([a9a6c6b](https://github.com/defilantech/LLMKube/commit/a9a6c6bf2e40efddb16df80ac0ba4bdc7f7a71bb))
+* **cli:** --revise-from-branch on foreman dispatch for in-place PR refresh ([#1043](https://github.com/defilantech/LLMKube/issues/1043)) ([26f807b](https://github.com/defilantech/LLMKube/commit/26f807bfe28652ae628ab9e5eca1a9ba33781ede))
+* **cli:** llmkube foreman slice renders a sliced Workload from a plan ([#1049](https://github.com/defilantech/LLMKube/issues/1049)) ([ce586ed](https://github.com/defilantech/LLMKube/commit/ce586ed73b5b51a6509273c0b08adf183db195a3))
+* **cli:** plan an issue into slices in llmkube foreman slice ([#1050](https://github.com/defilantech/LLMKube/issues/1050)) ([c4a967c](https://github.com/defilantech/LLMKube/commit/c4a967c89735836980ea04e4666d69c9f2ca89c7))
+* **foreman:** flag unverifiable facts instead of inventing them (slicer anti-confabulation) ([#1062](https://github.com/defilantech/LLMKube/issues/1062)) ([81bbfe9](https://github.com/defilantech/LLMKube/commit/81bbfe9f03fd10018dfce4e2fa2944c779b17fbe))
+* **foreman:** integrate + reconcile AgenticTask kinds + slice payload ([#1037](https://github.com/defilantech/LLMKube/issues/1037)) ([0899e9f](https://github.com/defilantech/LLMKube/commit/0899e9f9651747df5837d46b229bca6de80b9cc3))
+* **foreman:** integrate library for disjoint slice union ([#1036](https://github.com/defilantech/LLMKube/issues/1036)) ([39131f6](https://github.com/defilantech/LLMKube/commit/39131f6d707b9190385175c89fa8d4f718a9726e))
+* **foreman:** make the EditFreeStreak guard grounding-aware ([#1067](https://github.com/defilantech/LLMKube/issues/1067)) ([63a71ae](https://github.com/defilantech/LLMKube/commit/63a71ae5e3278cf927f3f0e9c1c7e3781b77d36e))
+* **foreman:** reconcile library for sliced-workload interface drift ([#1034](https://github.com/defilantech/LLMKube/issues/1034)) ([b14f687](https://github.com/defilantech/LLMKube/commit/b14f687b07c6afb88c9902f9a7812627cf8a4346))
+* **foreman:** run_integrate tool for sliced-workload union ([#1045](https://github.com/defilantech/LLMKube/issues/1045)) ([5098b4e](https://github.com/defilantech/LLMKube/commit/5098b4ec86f11414f3e4de0df9040d0f0dd2853e))
+* **foreman:** run_reconcile tool for sliced-workload drift check ([#1046](https://github.com/defilantech/LLMKube/issues/1046)) ([6bde143](https://github.com/defilantech/LLMKube/commit/6bde14346aee1acd53753688e9f8b016a5048874))
+* **foreman:** ship default integrate/reconcile Agents for sliced workloads ([#1052](https://github.com/defilantech/LLMKube/issues/1052)) ([00dd7c0](https://github.com/defilantech/LLMKube/commit/00dd7c003a393698a467b2a19d0ea3f646b02684))
+* **runtime:** add SGLang runtime backend ([#974](https://github.com/defilantech/LLMKube/issues/974)) ([#1059](https://github.com/defilantech/LLMKube/issues/1059)) ([9daa186](https://github.com/defilantech/LLMKube/commit/9daa186ae9ed6ff2b53c8f7d4c193daa19343047))
+
+
+### Bug Fixes
+
+* **cli:** keep the slicer planner output to YAML only (fixes [#1062](https://github.com/defilantech/LLMKube/issues/1062) regression) ([#1064](https://github.com/defilantech/LLMKube/issues/1064)) ([5d0eb9c](https://github.com/defilantech/LLMKube/commit/5d0eb9c67e85450e40c73095d52408f50091f9cd))
+* **foreman:** add payload.branchStrategy to stop stale revisions reverting merged work ([#1042](https://github.com/defilantech/LLMKube/issues/1042)) ([9f806d4](https://github.com/defilantech/LLMKube/commit/9f806d476befe91d10afda0d682115720d6abc55))
+* **foreman:** anchor recovery soft-reset at merge-base branch point ([#1044](https://github.com/defilantech/LLMKube/issues/1044)) ([2492d15](https://github.com/defilantech/LLMKube/commit/2492d15b1b7f8245f043bf22dbd62c52f3b5ad53))
+* **foreman:** default to rebase when reviseFromBranch is set without branchStrategy ([#1065](https://github.com/defilantech/LLMKube/issues/1065)) ([2792634](https://github.com/defilantech/LLMKube/commit/27926347e67f4042f0b73f6f7452ac4318ce0c1d))
+* **foreman:** set fsGroup on the gate pod so non-root gates can write XDG_DATA_HOME ([#1068](https://github.com/defilantech/LLMKube/issues/1068)) ([7465e2b](https://github.com/defilantech/LLMKube/commit/7465e2bbb0764ad3ff2d5f12a7cce3db3202ea32))
+* **foreman:** stop the coder from running envtest it cannot run ([#1070](https://github.com/defilantech/LLMKube/issues/1070)) ([bf203fe](https://github.com/defilantech/LLMKube/commit/bf203fe04ba3452b5ffc167cbab3b4578a09c5d6))
+* **release:** publish a cross-platform Homebrew formula, not a macOS-only cask ([#1041](https://github.com/defilantech/LLMKube/issues/1041)) ([32dcfea](https://github.com/defilantech/LLMKube/commit/32dcfea7d90c73d1cf333bafe61a1bac0abd6fcf))
+* **slicer:** give the union commit an explicit git identity ([#1057](https://github.com/defilantech/LLMKube/issues/1057)) ([15d906f](https://github.com/defilantech/LLMKube/commit/15d906fe58b6edeb69837833ab7927add3ae69cd))
+
 ## [0.9.3](https://github.com/defilantech/LLMKube/compare/v0.9.2...v0.9.3) (2026-07-09)
 
 
