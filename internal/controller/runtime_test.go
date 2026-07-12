@@ -3,9 +3,12 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -384,4 +387,207 @@ func TestIdleDetectorConformance(t *testing.T) {
 			t.Error("PersonaPlexBackend must NOT implement IdleDetector")
 		}
 	})
+}
+
+// errorRoundTripper always returns a transport error.
+type errorRoundTripper struct{}
+
+func (e *errorRoundTripper) RoundTrip(_ *http.Request) (*http.Response, error) {
+	return nil, fmt.Errorf("simulated transport failure")
+}
+
+// errorReadCloser implements io.ReadCloser that always fails on Read.
+type errorReadCloser struct{}
+
+func (e *errorReadCloser) Read(_ []byte) (int, error) {
+	return 0, fmt.Errorf("simulated read failure")
+}
+
+func (e *errorReadCloser) Close() error { return nil }
+
+// errorBodyRoundTripper returns a 200 response whose Body fails on Read.
+type errorBodyRoundTripper struct{}
+
+func (e *errorBodyRoundTripper) RoundTrip(_ *http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(&errorReadCloser{}),
+	}, nil
+}
+
+// malformedJSONRoundTripper returns a 200 response with non-JSON body.
+type malformedJSONRoundTripper struct{}
+
+func (m *malformedJSONRoundTripper) RoundTrip(_ *http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader("not json")),
+	}, nil
+}
+
+func TestVLLMIdleProbeTransportError(t *testing.T) {
+	backend := &VLLMBackend{}
+	client := &http.Client{
+		Transport: &errorRoundTripper{},
+		Timeout:   5 * time.Second,
+	}
+	probe := backend.IdleProbe(nil, client)
+	idle, err := probe(context.Background(), "http://10.0.0.1:8000")
+	if err == nil {
+		t.Fatal("expected transport error, got nil")
+	}
+	if idle {
+		t.Errorf("expected idle=false on error")
+	}
+}
+
+func TestVLLMIdleProbeBodyReadError(t *testing.T) {
+	backend := &VLLMBackend{}
+	client := &http.Client{
+		Transport: &errorBodyRoundTripper{},
+		Timeout:   5 * time.Second,
+	}
+	probe := backend.IdleProbe(nil, client)
+	idle, err := probe(context.Background(), "http://10.0.0.1:8000")
+	if err == nil {
+		t.Fatal("expected body read error, got nil")
+	}
+	if idle {
+		t.Errorf("expected idle=false on error")
+	}
+}
+
+func TestTGIIdleProbeTransportError(t *testing.T) {
+	backend := &TGIBackend{}
+	client := &http.Client{
+		Transport: &errorRoundTripper{},
+		Timeout:   5 * time.Second,
+	}
+	probe := backend.IdleProbe(nil, client)
+	idle, err := probe(context.Background(), "http://10.0.0.1:8000")
+	if err == nil {
+		t.Fatal("expected transport error, got nil")
+	}
+	if idle {
+		t.Errorf("expected idle=false on error")
+	}
+}
+
+func TestTGIIdleProbeBodyReadError(t *testing.T) {
+	backend := &TGIBackend{}
+	client := &http.Client{
+		Transport: &errorBodyRoundTripper{},
+		Timeout:   5 * time.Second,
+	}
+	probe := backend.IdleProbe(nil, client)
+	idle, err := probe(context.Background(), "http://10.0.0.1:8000")
+	if err == nil {
+		t.Fatal("expected body read error, got nil")
+	}
+	if idle {
+		t.Errorf("expected idle=false on error")
+	}
+}
+
+func TestSGLangIdleProbeTransportError(t *testing.T) {
+	backend := &SGLangBackend{}
+	client := &http.Client{
+		Transport: &errorRoundTripper{},
+		Timeout:   5 * time.Second,
+	}
+	probe := backend.IdleProbe(nil, client)
+	idle, err := probe(context.Background(), "http://10.0.0.1:8000")
+	if err == nil {
+		t.Fatal("expected transport error, got nil")
+	}
+	if idle {
+		t.Errorf("expected idle=false on error")
+	}
+}
+
+func TestSGLangIdleProbeBodyReadError(t *testing.T) {
+	backend := &SGLangBackend{}
+	client := &http.Client{
+		Transport: &errorBodyRoundTripper{},
+		Timeout:   5 * time.Second,
+	}
+	probe := backend.IdleProbe(nil, client)
+	idle, err := probe(context.Background(), "http://10.0.0.1:8000")
+	if err == nil {
+		t.Fatal("expected body read error, got nil")
+	}
+	if idle {
+		t.Errorf("expected idle=false on error")
+	}
+}
+
+func TestLlamaCppIdleProbeTransportError(t *testing.T) {
+	backend := &LlamaCppBackend{}
+	client := &http.Client{
+		Transport: &errorRoundTripper{},
+		Timeout:   5 * time.Second,
+	}
+	probe := backend.IdleProbe(nil, client)
+	idle, err := probe(context.Background(), "http://10.0.0.1:8000")
+	if err == nil {
+		t.Fatal("expected transport error, got nil")
+	}
+	if idle {
+		t.Errorf("expected idle=false on error")
+	}
+}
+
+func TestLlamaCppIdleProbeBodyReadError(t *testing.T) {
+	backend := &LlamaCppBackend{}
+	client := &http.Client{
+		Transport: &errorBodyRoundTripper{},
+		Timeout:   5 * time.Second,
+	}
+	probe := backend.IdleProbe(nil, client)
+	idle, err := probe(context.Background(), "http://10.0.0.1:8000")
+	if err == nil {
+		t.Fatal("expected body read error, got nil")
+	}
+	if idle {
+		t.Errorf("expected idle=false on error")
+	}
+}
+
+func TestLlamaCppIdleProbeJSONUnmarshalError(t *testing.T) {
+	backend := &LlamaCppBackend{}
+	client := &http.Client{
+		Transport: &malformedJSONRoundTripper{},
+		Timeout:   5 * time.Second,
+	}
+	probe := backend.IdleProbe(nil, client)
+	idle, err := probe(context.Background(), "http://10.0.0.1:8000")
+	if err == nil {
+		t.Fatal("expected JSON unmarshal error, got nil")
+	}
+	if idle {
+		t.Errorf("expected idle=false on error")
+	}
+}
+
+func TestGenericIdleProbeTransportError(t *testing.T) {
+	backend := &GenericBackend{}
+	isvc := &inferencev1alpha1.InferenceService{
+		ObjectMeta: metav1.ObjectMeta{
+			Annotations: map[string]string{
+				inferencev1alpha1.AnnotationIdleEndpoint: "/health",
+			},
+		},
+	}
+	client := &http.Client{
+		Transport: &errorRoundTripper{},
+		Timeout:   5 * time.Second,
+	}
+	probe := backend.IdleProbe(isvc, client)
+	idle, err := probe(context.Background(), "http://10.0.0.1:8080")
+	if err == nil {
+		t.Fatal("expected transport error, got nil")
+	}
+	if idle {
+		t.Errorf("expected idle=false on error")
+	}
 }
