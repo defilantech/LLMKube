@@ -407,6 +407,20 @@ type InferenceServiceSpec struct {
 	// +optional
 	Env []corev1.EnvVar `json:"env,omitempty"`
 
+	// ExtraVolumes adds additional Volumes to the inference Pod, appended
+	// after the model-storage volumes built from ModelRef. Useful for a
+	// runtime-owned cache (e.g. a JIT kernel cache) that is unrelated to
+	// model weights and doesn't fit ModelCache's model-scoped PVC path.
+	// Pair with ExtraVolumeMounts to actually mount it into the container.
+	// +optional
+	ExtraVolumes []corev1.Volume `json:"extraVolumes,omitempty"`
+
+	// ExtraVolumeMounts mounts ExtraVolumes into the inference container,
+	// appended after the model-storage mounts. Names must match an entry in
+	// ExtraVolumes (or a volume from another passthrough field).
+	// +optional
+	ExtraVolumeMounts []corev1.VolumeMount `json:"extraVolumeMounts,omitempty"`
+
 	// ContainerPort overrides the primary container port.
 	// Each runtime has its own default (llamacpp: 8080).
 	// +kubebuilder:validation:Minimum=1

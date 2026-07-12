@@ -296,6 +296,7 @@ func (r *InferenceServiceReconciler) constructDeployment(
 		LivenessProbe:  livenessProbe,
 		ReadinessProbe: readinessProbe,
 	}
+	container.VolumeMounts = append(container.VolumeMounts, isvc.Spec.ExtraVolumeMounts...)
 
 	// Set command/args based on runtime
 	if len(isvc.Spec.Command) > 0 {
@@ -354,6 +355,7 @@ func (r *InferenceServiceReconciler) constructDeployment(
 			},
 		},
 	}
+	deployment.Spec.Template.Spec.Volumes = append(deployment.Spec.Template.Spec.Volumes, isvc.Spec.ExtraVolumes...)
 
 	if gpuCount > 0 {
 		// Use Recreate strategy for GPU workloads to prevent deadlock:

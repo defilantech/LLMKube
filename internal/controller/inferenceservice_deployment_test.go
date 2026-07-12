@@ -3140,6 +3140,44 @@ var _ = Describe("constructDeployment additional cases", func() {
 		Expect(hasPVC).To(BeTrue())
 		Expect(deployment.Spec.Template.Spec.Containers[0].Args).To(ContainElement(ContainSubstring("abc123")))
 	})
+
+	It("should append ExtraVolumes/ExtraVolumeMounts after model-storage volumes", func() {
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: "m", Namespace: "default"},
+			Spec:       inferencev1alpha1.ModelSpec{Source: "https://example.com/model.gguf"},
+			Status:     inferencev1alpha1.ModelStatus{Phase: "Ready"},
+		}
+		isvc := &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "default"},
+			Spec: inferencev1alpha1.InferenceServiceSpec{
+				ModelRef: "m",
+				ExtraVolumes: []corev1.Volume{
+					{
+						Name: "triton-cache",
+						VolumeSource: corev1.VolumeSource{
+							PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "sglang-triton-cache"},
+						},
+					},
+				},
+				ExtraVolumeMounts: []corev1.VolumeMount{
+					{Name: "triton-cache", MountPath: "/cache/sglang/triton"},
+				},
+			},
+		}
+		deployment := reconciler.constructDeployment(isvc, model, 1)
+
+		volumes := deployment.Spec.Template.Spec.Volumes
+		Expect(volumes).To(HaveLen(2))
+		Expect(volumes[0].Name).To(Equal("model-storage"))
+		Expect(volumes[len(volumes)-1].Name).To(Equal("triton-cache"))
+		Expect(volumes[len(volumes)-1].PersistentVolumeClaim.ClaimName).To(Equal("sglang-triton-cache"))
+
+		mounts := deployment.Spec.Template.Spec.Containers[0].VolumeMounts
+		Expect(mounts).To(HaveLen(2))
+		Expect(mounts[0].Name).To(Equal("model-storage"))
+		Expect(mounts[len(mounts)-1].Name).To(Equal("triton-cache"))
+		Expect(mounts[len(mounts)-1].MountPath).To(Equal("/cache/sglang/triton"))
+	})
 })
 
 var _ = Describe("Security Context Configuration", func() {
