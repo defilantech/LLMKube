@@ -18,6 +18,8 @@ package cli
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -209,9 +211,12 @@ func validateSlicePlan(p slicePlan) error {
 // buildSliceWorkload renders the Workload: one issue-fix step per slice, then an
 // integrate step (dependsOn every slice), then a reconcile step (dependsOn
 // integrate). The integration branch and each slice branch follow the
-// foreman/slicer-<issue>/<name> convention.
+// foreman/slicer-<issue>-<runid>/<name> convention, where <runid> is a
+// per-Workload hex segment that makes re-runs of the same issue never collide
+// with branches left on the fork by an earlier run.
 func buildSliceWorkload(p slicePlan, opts *sliceOptions) *foremanv1alpha1.Workload {
-	integBranch := fmt.Sprintf("foreman/slicer-%d/integ", p.Issue)
+	runID := sliceRunID()
+	integBranch := fmt.Sprintf("foreman/slicer-%d-%s/integ", p.Issue, runID)
 
 	steps := make([]foremanv1alpha1.PipelineStep, 0, len(p.Slices)+2)
 	sliceNames := make([]string, 0, len(p.Slices))
@@ -219,7 +224,7 @@ func buildSliceWorkload(p slicePlan, opts *sliceOptions) *foremanv1alpha1.Worklo
 	reconSlices := make([]foremanv1alpha1.SliceRef, 0, len(p.Slices))
 
 	for _, s := range p.Slices {
-		branch := fmt.Sprintf("foreman/slicer-%d/%s", p.Issue, s.Name)
+		branch := fmt.Sprintf("foreman/slicer-%d-%s/%s", p.Issue, runID, s.Name)
 		steps = append(steps, foremanv1alpha1.PipelineStep{
 			Name:     s.Name,
 			Kind:     foremanv1alpha1.AgenticTaskKindIssueFix,
@@ -304,4 +309,18 @@ func buildSlicePrompt(p slicePlan, s planSlice) string {
 			"When your slice's files are done and verified once, submit_result GO.",
 		p.Issue, files, p.Contract, s.Task,
 	)
+}
+
+// sliceRunID returns an 8-char hex segment unique per invocation. It scopes
+// slicer branches so re-runs of the same issue never collide with branches
+// left on the fork by an earlier run. Stable across slices of one Workload so
+// integrate/reconcile resolve the same refs.
+func sliceRunID() string {
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// crypto/rand failure is essentially impossible; surface it loudly
+		// rather than silently degrading to a collision-prone fallback.
+		panic(fmt.Sprintf("crypto/rand: %v", err))
+	}
+	return hex.EncodeToString(b[:])
 }
