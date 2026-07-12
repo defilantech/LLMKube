@@ -19,6 +19,17 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: pip3 install jsonschema pyyaml
+
+      - name: Validate samples against CRD schemas
+        run: make validate-samples
+
       - name: Running Tests
         run: |
           go mod tidy

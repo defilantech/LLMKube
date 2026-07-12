@@ -140,6 +140,12 @@ lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
 lint-config: golangci-lint ## Verify golangci-lint linter configuration
 	$(GOLANGCI_LINT) config verify
 
+.PHONY: validate-samples
+validate-samples: ## Validate config/samples against CRD schemas (catch hallucinated manifests).
+	@command -v python3 >/dev/null 2>&1 || { echo "ERROR: python3 is required for validate-samples"; exit 1; }
+	@python3 -c "import jsonschema" 2>/dev/null || { echo "ERROR: python3 jsonschema package required (pip3 install jsonschema pyyaml)"; exit 1; }
+	@python3 scripts/validate-samples.py
+
 ##@ Build
 
 .PHONY: build
