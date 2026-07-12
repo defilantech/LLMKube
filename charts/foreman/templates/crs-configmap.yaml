@@ -1,0 +1,195 @@
+{{- if .Values.foreman.crs.enabled }}
+# Custom Resource State config for Foreman CRDs.
+#
+# Wired into the kube-state-metrics deployment (or the
+# kube-prometheus-stack `kube-state-metrics.customResourceState` values path)
+# so Foreman Workload / AgenticTask / FleetNode status fields land as
+# Prometheus gauges. See charts/foreman/values.yaml under `foreman.crs` for
+# the toggle and the alert rules that ship alongside this ConfigMap.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "foreman.fullname" . }}-crs
+  namespace: {{ include "foreman.namespace" . }}
+  labels:
+    {{- include "foreman.labels" . | nindent 4 }}
+data:
+  {{ .Values.foreman.crs.configMapKey }}: |
+    resources:
+      # -- AgenticTask -------------------------------------------------------
+      - groupVersionKind:
+          group: foreman.llmkube.dev
+          version: v1alpha1
+          kind: AgenticTask
+        metricNamePrefix: foreman_agentictask
+        metrics:
+          # foreman_agentictask_info{namespace,name,workload,agent,phase,verdict}
+          - name: info
+            help: "AgenticTask phase and verdict"
+            each:
+              type: Info
+              info:
+                labelsFromPath:
+                  phase: [status, phase]
+                  verdict: [status, verdict]
+                  workload: [metadata, labels, "foreman.llmkube.dev/workload"]
+                  agent: [spec, agentRef, name]
+
+          # Enum-style gauges: one series per state, value=1 on the active
+          # state. Easy to alert on (e.g. sum by (namespace) of the Pending
+          # series = pending task count).
+          - name: phase
+            help: "AgenticTask phase (1 = active)"
+            each:
+              type: Gauge
+              gauge:
+                valueFrom:
+                  path: [status, phase]
+                labelsMapping:
+                  Pending: pending
+                  Scheduled: scheduled
+                  Running: running
+                  Verifying: verifying
+                  Succeeded: succeeded
+                  Failed: failed
+
+          - name: verdict
+            help: "AgenticTask verdict (1 = active)"
+            each:
+              type: Gauge
+              gauge:
+                valueFrom:
+                  path: [status, verdict]
+                labelsMapping:
+                  GO: go
+                  "NO-GO": no-go
+                  INCOMPLETE: incomplete
+                  "GATE-PASS": gate-pass
+                  "GATE-FAIL": gate-fail
+                  "GATE-ERROR": gate-error
+                  Skipped: skipped
+
+          # Counter for failed children, derived from the AgenticTask's own
+          # phase (a task is either failed or it isn't).
+          - name: tasks_failed
+            help: "AgenticTasks in Failed phase (gauge=1 per failed task)"
+            each:
+              type: Gauge
+              gauge:
+                valueFrom:
+                  path: [status, phase]
+                labelsMapping:
+                  Failed: failed
+
+      # -- Workload ----------------------------------------------------------
+      - groupVersionKind:
+          group: foreman.llmkube.dev
+          version: v1alpha1
+          kind: Workload
+        metricNamePrefix: foreman_workload
+        metrics:
+          # foreman_workload_info{namespace,name,phase,repo}
+          - name: info
+            help: "Workload phase and repo"
+            each:
+              type: Info
+              info:
+                labelsFromPath:
+                  phase: [status, phase]
+                  repo: [spec, repo]
+
+          # foreman_workload_succeeded_tasks / _failed_tasks / _incomplete_tasks
+          # (integer gauges = status.<field>)
+          - name: succeeded_tasks
+            help: "Succeeded child AgenticTasks for this Workload"
+            each:
+              type: Gauge
+              gauge:
+                valueFrom:
+                  path: [status, succeededTasks]
+
+          - name: failed_tasks
+            help: "Failed child AgenticTasks for this Workload"
+            each:
+              type: Gauge
+              gauge:
+                valueFrom:
+                  path: [status, failedTasks]
+
+          - name: incomplete_tasks
+            help: "Incomplete child AgenticTasks for this Workload"
+            each:
+              type: Gauge
+              gauge:
+                valueFrom:
+                  path: [status, incompleteTasks]
+
+          # Enum-style phase gauges for Workload (Planning / Planned /
+          # Dispatched / Completed / Failed).
+          - name: phase
+            help: "Workload phase (1 = active)"
+            each:
+              type: Gauge
+              gauge:
+                valueFrom:
+                  path: [status, phase]
+                labelsMapping:
+                  Planning: planning
+                  Planned: planned
+                  Dispatched: dispatched
+                  Completed: completed
+                  Failed: failed
+
+      # -- FleetNode ---------------------------------------------------------
+      - groupVersionKind:
+          group: foreman.llmkube.dev
+          version: v1alpha1
+          kind: FleetNode
+        metricNamePrefix: foreman_fleetnode
+        metrics:
+          # foreman_fleetnode_info{node,accelerator,os,arch}
+          - name: info
+            help: "FleetNode identity and capability"
+            each:
+              type: Info
+              info:
+                labelsFromPath:
+                  node: [spec, nodeName]
+                  accelerator: [status, capability, accelerator]
+                  os: [status, os]
+                  arch: [status, arch]
+
+          # foreman_fleetnode_heartbeat_timestamp_seconds (gauge = unix seconds
+          # of LastHeartbeatTime, 0 when absent).
+          - name: heartbeat_timestamp_seconds
+            help: "FleetNode last heartbeat unix timestamp (0 = no heartbeat)"
+            each:
+              type: Gauge
+              gauge:
+                valueFrom:
+                  path: [status, lastHeartbeatTime]
+
+          # foreman_fleetnode_ram_gigabytes (gauge = status.capability.totalRAMGB)
+          - name: ram_gigabytes
+            help: "FleetNode total RAM in GiB"
+            each:
+              type: Gauge
+              gauge:
+                valueFrom:
+                  path: [status, capability, totalRAMGB]
+
+          # Enum-style phase gauges (Ready / Draining / NotReady / Unknown).
+          - name: phase
+            help: "FleetNode phase (1 = active)"
+            each:
+              type: Gauge
+              gauge:
+                valueFrom:
+                  path: [status, phase]
+                labelsMapping:
+                  Ready: ready
+                  Draining: draining
+                  NotReady: not-ready
+                  Unknown: unknown
+---
+{{- end }}

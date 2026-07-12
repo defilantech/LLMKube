@@ -7,6 +7,9 @@ templates:
   - operator-rbac.yaml
   - coder-rbac.yaml
   - webhook.yaml
+  - crs-configmap.yaml
+  - prometheusrule.yaml
+  - grafana-dashboard.yaml
 
 tests:
   # ---- Backward compat: legacy agent: block ----
@@ -258,3 +261,115 @@ tests:
     asserts:
       - hasDocuments:
           count: 3
+
+  # ---- CRS: disabled by default ----
+
+  - it: CRS ConfigMap is omitted when foreman.crs.enabled is false
+    template: crs-configmap.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: CRS ConfigMap renders when foreman.crs.enabled is true
+    template: crs-configmap.yaml
+    set:
+      foreman.crs.enabled: true
+    asserts:
+      - hasDocuments:
+          count: 1
+      - equal:
+          path: metadata.name
+          value: RELEASE-NAME-foreman-crs
+      - isKind:
+          of: ConfigMap
+
+  - it: CRS ConfigMap contains the AgenticTask mapping
+    template: crs-configmap.yaml
+    set:
+      foreman.crs.enabled: true
+    asserts:
+      - matchRegex:
+          path: data["foreman-crs.yaml"]
+          pattern: "AgenticTask"
+
+  - it: CRS ConfigMap contains the Workload mapping
+    template: crs-configmap.yaml
+    set:
+      foreman.crs.enabled: true
+    asserts:
+      - matchRegex:
+          path: data["foreman-crs.yaml"]
+          pattern: "Workload"
+
+  - it: CRS ConfigMap contains the FleetNode mapping
+    template: crs-configmap.yaml
+    set:
+      foreman.crs.enabled: true
+    asserts:
+      - matchRegex:
+          path: data["foreman-crs.yaml"]
+          pattern: "FleetNode"
+
+  # ---- PrometheusRule: disabled by default ----
+
+  - it: PrometheusRule is omitted when foreman.crs.alerts.enabled is false
+    template: prometheusrule.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: PrometheusRule renders when foreman.crs.alerts.enabled is true
+    template: prometheusrule.yaml
+    set:
+      foreman.crs.enabled: true
+      foreman.crs.alerts.enabled: true
+    asserts:
+      - hasDocuments:
+          count: 1
+      - equal:
+          path: metadata.name
+          value: RELEASE-NAME-foreman-alerts
+      - isKind:
+          of: PrometheusRule
+
+  - it: PrometheusRule contains the stuck-pending alert
+    template: prometheusrule.yaml
+    set:
+      foreman.crs.enabled: true
+      foreman.crs.alerts.enabled: true
+    asserts:
+      - matchRegex:
+          path: spec.groups[0].rules[0].alert
+          pattern: "ForemanWorkloadStuckPending"
+
+  - it: PrometheusRule contains the stale-heartbeat alert
+    template: prometheusrule.yaml
+    set:
+      foreman.crs.enabled: true
+      foreman.crs.alerts.enabled: true
+    asserts:
+      - matchRegex:
+          path: spec.groups[1].rules[0].alert
+          pattern: "ForemanFleetNodeHeartbeatStale"
+
+  # ---- Grafana dashboard: disabled by default ----
+
+  - it: Grafana dashboard ConfigMap is omitted when foreman.crs.enabled is false
+    template: grafana-dashboard.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: Grafana dashboard ConfigMap renders when foreman.crs.enabled is true
+    template: grafana-dashboard.yaml
+    set:
+      foreman.crs.enabled: true
+    asserts:
+      - hasDocuments:
+          count: 1
+      - equal:
+          path: metadata.name
+          value: RELEASE-NAME-foreman-grafana-dashboard
+      - equal:
+          path: metadata.labels.grafana_dashboard
+          value: "true"

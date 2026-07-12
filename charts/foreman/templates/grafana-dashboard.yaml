@@ -1,0 +1,365 @@
+{{- if .Values.foreman.crs.enabled }}
+# Starter Grafana dashboard for Foreman CRD status metrics.
+#
+# Drop this ConfigMap into a namespace that the Grafana datasource plugin
+# can mount (the kube-prometheus-stack `grafana.sidecar.dashboards` config,
+# or a Grafana dashboard-provider ConfigMap). The dashboard covers:
+#
+#   - Foreman fleet overview (FleetNode count by phase, RAM, accelerator)
+#   - Workload lifecycle (phases, task counts)
+#   - AgenticTask pipeline (phase/verdict distribution, stuck tasks)
+#
+# The metric series referenced here are emitted by the CRS ConfigMap
+# (charts/foreman/templates/crs-configmap.yaml).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "foreman.fullname" . }}-grafana-dashboard
+  namespace: {{ include "foreman.namespace" . }}
+  labels:
+    {{- include "foreman.labels" . | nindent 4 }}
+    grafana_dashboard: "true"
+data:
+  foreman.json: |
+    {
+      "annotations": { "list": [] },
+      "editable": true,
+      "fiscalYearStartMonth": 0,
+      "graphTooltip": 1,
+      "id": null,
+      "links": [],
+      "panels": [
+        {
+          "collapsed": false,
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+          "id": 1,
+          "panels": [],
+          "title": "Fleet Overview",
+          "type": "row"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "thresholds" },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "red", "value": null },
+                  { "color": "yellow", "value": 1 },
+                  { "color": "green", "value": 2 }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
+          "id": 2,
+          "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
+          "title": "Ready Nodes",
+          "type": "stat",
+          "targets": [
+            { "expr": "sum(foreman_fleetnode_phase{phase=\"ready\"})", "refId": "A" }
+          ]
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "thresholds" },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 1 }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": { "h": 4, "w": 4, "x": 4, "y": 1 },
+          "id": 3,
+          "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
+          "title": "Draining Nodes",
+          "type": "stat",
+          "targets": [
+            { "expr": "sum(foreman_fleetnode_phase{phase=\"draining\"})", "refId": "A" }
+          ]
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "thresholds" },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "red", "value": null }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": { "h": 4, "w": 4, "x": 8, "y": 1 },
+          "id": 4,
+          "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
+          "title": "NotReady Nodes",
+          "type": "stat",
+          "targets": [
+            { "expr": "sum(foreman_fleetnode_phase{phase=\"not-ready\"})", "refId": "A" }
+          ]
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": { "axisLabel": "", "drawStyle": "bars", "fillOpacity": 80, "lineWidth": 0 },
+              "mappings": [],
+              "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+            },
+            "overrides": []
+          },
+          "gridPos": { "h": 8, "w": 8, "x": 12, "y": 1 },
+          "id": 5,
+          "options": { "barRadius": 0, "orientation": "auto", "showValue": "auto", "stacking": { "group": "A", "mode": "none" } },
+          "title": "Nodes by Accelerator",
+          "type": "barchart",
+          "targets": [
+            { "expr": "sum by (accelerator) (foreman_fleetnode_info)", "refId": "A" }
+          ]
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": { "axisLabel": "", "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1 },
+              "mappings": [],
+              "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+            },
+            "overrides": []
+          },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 9 },
+          "id": 6,
+          "options": { "tooltip": { "mode": "multi" } },
+          "title": "FleetNode Heartbeat Timestamp",
+          "type": "timeseries",
+          "targets": [
+            { "expr": "foreman_fleetnode_heartbeat_timestamp_seconds", "refId": "A" }
+          ]
+        },
+        {
+          "collapsed": false,
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 17 },
+          "id": 7,
+          "panels": [],
+          "title": "Workloads",
+          "type": "row"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": { "axisLabel": "", "drawStyle": "bars", "fillOpacity": 80, "lineWidth": 0 },
+              "mappings": [],
+              "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+            },
+            "overrides": []
+          },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 18 },
+          "id": 8,
+          "options": { "barRadius": 0, "orientation": "auto", "showValue": "auto", "stacking": { "group": "A", "mode": "normal" } },
+          "title": "Workloads by Phase",
+          "type": "barchart",
+          "targets": [
+            { "expr": "sum by (phase) (foreman_workload_phase)", "refId": "A" }
+          ]
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": { "axisLabel": "", "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1 },
+              "mappings": [],
+              "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+            },
+            "overrides": []
+          },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 18 },
+          "id": 9,
+          "options": { "tooltip": { "mode": "multi" } },
+          "title": "Workload Task Counts",
+          "type": "timeseries",
+          "targets": [
+            { "expr": "foreman_workload_succeeded_tasks", "refId": "A" },
+            { "expr": "foreman_workload_failed_tasks", "refId": "B" },
+            { "expr": "foreman_workload_incomplete_tasks", "refId": "C" }
+          ]
+        },
+        {
+          "collapsed": false,
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 26 },
+          "id": 10,
+          "panels": [],
+          "title": "AgenticTasks",
+          "type": "row"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": { "axisLabel": "", "drawStyle": "bars", "fillOpacity": 80, "lineWidth": 0 },
+              "mappings": [],
+              "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+            },
+            "overrides": []
+          },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 27 },
+          "id": 11,
+          "options": { "barRadius": 0, "orientation": "auto", "showValue": "auto", "stacking": { "group": "A", "mode": "normal" } },
+          "title": "Tasks by Phase",
+          "type": "barchart",
+          "targets": [
+            { "expr": "sum by (phase) (foreman_agentictask_phase)", "refId": "A" }
+          ]
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": { "axisLabel": "", "drawStyle": "bars", "fillOpacity": 80, "lineWidth": 0 },
+              "mappings": [],
+              "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+            },
+            "overrides": []
+          },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 27 },
+          "id": 12,
+          "options": { "barRadius": 0, "orientation": "auto", "showValue": "auto", "stacking": { "group": "A", "mode": "normal" } },
+          "title": "Tasks by Verdict",
+          "type": "barchart",
+          "targets": [
+            { "expr": "sum by (verdict) (foreman_agentictask_verdict)", "refId": "A" }
+          ]
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "thresholds" },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "red", "value": null },
+                  { "color": "yellow", "value": 1 }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": { "h": 4, "w": 6, "x": 0, "y": 35 },
+          "id": 13,
+          "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
+          "title": "Stuck Tasks (Running > 1h)",
+          "type": "stat",
+          "targets": [
+            { "expr": "count(foreman_agentictask_phase{phase=\"running\"}) > 0", "refId": "A" }
+          ]
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "thresholds" },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 1 }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": { "h": 4, "w": 6, "x": 6, "y": 35 },
+          "id": 14,
+          "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
+          "title": "Succeeded Tasks",
+          "type": "stat",
+          "targets": [
+            { "expr": "sum(foreman_agentictask_phase{phase=\"succeeded\"})", "refId": "A" }
+          ]
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "thresholds" },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "red", "value": null }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": { "h": 4, "w": 6, "x": 12, "y": 35 },
+          "id": 15,
+          "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
+          "title": "Failed Tasks",
+          "type": "stat",
+          "targets": [
+            { "expr": "sum(foreman_agentictask_phase{phase=\"failed\"})", "refId": "A" }
+          ]
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "thresholds" },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "yellow", "value": null }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": { "h": 4, "w": 6, "x": 18, "y": 35 },
+          "id": 16,
+          "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
+          "title": "Incomplete Tasks",
+          "type": "stat",
+          "targets": [
+            { "expr": "sum(foreman_agentictask_verdict{verdict=\"incomplete\"})", "refId": "A" }
+          ]
+        }
+      ],
+      "schemaVersion": 38,
+      "tags": ["foreman", "llmkube"],
+      "templating": { "list": [
+        { "current": {}, "hide": 0, "includeAll": false, "label": "Datasource", "multi": false, "name": "datasource", "options": [], "query": "prometheus", "refresh": 1, "regex": "", "skipUrlSync": false, "type": "datasource" }
+      ]},
+      "time": { "from": "now-6h", "to": "now" },
+      "timepicker": {},
+      "timezone": "browser",
+      "title": "Foreman Fleet & Tasks",
+      "uid": "foreman-fleet-tasks",
+      "version": 1
+    }
+---
+{{- end }}
