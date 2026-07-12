@@ -1128,9 +1128,8 @@ sglang:num_requests_running 3.0
 			wantFound: true,
 		},
 		{
-			name: "no value field skipped",
-			body: `vllm:num_requests_running
-`,
+			name:      "no value field skipped",
+			body:      "vllm:num_requests_running{}\n",
 			metric:    "vllm:num_requests_running",
 			wantSum:   0,
 			wantFound: false,

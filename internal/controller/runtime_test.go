@@ -591,3 +591,38 @@ func TestGenericIdleProbeTransportError(t *testing.T) {
 		t.Errorf("expected idle=false on error")
 	}
 }
+
+// TestIdleProbeRequestCreationError exercises the defensive error-handling
+// branch after http.NewRequestWithContext in each backend's IdleProbe. A URL
+// with a null byte causes request construction to fail.
+func TestIdleProbeRequestCreationError(t *testing.T) {
+	cases := []struct {
+		name    string
+		backend IdleDetector
+		isvc    *inferencev1alpha1.InferenceService
+	}{
+		{"llamacpp", &LlamaCppBackend{}, nil},
+		{"vllm", &VLLMBackend{}, nil},
+		{"tgi", &TGIBackend{}, nil},
+		{"sglang", &SGLangBackend{}, nil},
+		{"generic", &GenericBackend{}, &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{
+				Annotations: map[string]string{
+					inferencev1alpha1.AnnotationIdleEndpoint: "/health",
+				},
+			},
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			probe := tc.backend.IdleProbe(tc.isvc, &http.Client{Timeout: 5 * time.Second})
+			idle, err := probe(context.Background(), "http://\x00bad")
+			if err == nil {
+				t.Fatal("expected request creation error, got nil")
+			}
+			if idle {
+				t.Errorf("expected idle=false on error")
+			}
+		})
+	}
+}
