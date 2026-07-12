@@ -3167,10 +3167,14 @@ var _ = Describe("constructDeployment additional cases", func() {
 		deployment := reconciler.constructDeployment(isvc, model, 1)
 
 		volumes := deployment.Spec.Template.Spec.Volumes
+		Expect(volumes).To(HaveLen(2))
+		Expect(volumes[0].Name).To(Equal("model-storage"))
 		Expect(volumes[len(volumes)-1].Name).To(Equal("triton-cache"))
 		Expect(volumes[len(volumes)-1].PersistentVolumeClaim.ClaimName).To(Equal("sglang-triton-cache"))
 
 		mounts := deployment.Spec.Template.Spec.Containers[0].VolumeMounts
+		Expect(mounts).To(HaveLen(2))
+		Expect(mounts[0].Name).To(Equal("model-storage"))
 		Expect(mounts[len(mounts)-1].Name).To(Equal("triton-cache"))
 		Expect(mounts[len(mounts)-1].MountPath).To(Equal("/cache/sglang/triton"))
 	})

@@ -291,11 +291,12 @@ func (r *InferenceServiceReconciler) constructDeployment(
 				Protocol:      corev1.ProtocolTCP,
 			},
 		},
-		VolumeMounts:   append(storageConfig.volumeMounts, isvc.Spec.ExtraVolumeMounts...),
+		VolumeMounts:   storageConfig.volumeMounts,
 		StartupProbe:   startupProbe,
 		LivenessProbe:  livenessProbe,
 		ReadinessProbe: readinessProbe,
 	}
+	container.VolumeMounts = append(container.VolumeMounts, isvc.Spec.ExtraVolumeMounts...)
 
 	// Set command/args based on runtime
 	if len(isvc.Spec.Command) > 0 {
@@ -344,7 +345,7 @@ func (r *InferenceServiceReconciler) constructDeployment(
 					SecurityContext:    inferPodSecurityContext(isvc, r.DefaultFSGroup),
 					InitContainers:     storageConfig.initContainers,
 					Containers:         []corev1.Container{container},
-					Volumes:            append(storageConfig.volumes, isvc.Spec.ExtraVolumes...),
+					Volumes:            storageConfig.volumes,
 					PriorityClassName:  r.resolvePriorityClassName(isvc),
 					RuntimeClassName:   isvc.Spec.RuntimeClassName,
 					ImagePullSecrets:   isvc.Spec.ImagePullSecrets,
@@ -354,6 +355,7 @@ func (r *InferenceServiceReconciler) constructDeployment(
 			},
 		},
 	}
+	deployment.Spec.Template.Spec.Volumes = append(deployment.Spec.Template.Spec.Volumes, isvc.Spec.ExtraVolumes...)
 
 	if gpuCount > 0 {
 		// Use Recreate strategy for GPU workloads to prevent deadlock:
