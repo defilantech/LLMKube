@@ -240,9 +240,9 @@ func (r *InferenceServiceReconciler) reconcileRolloutPolicy(
 
 	// Not idle, or the idle check itself failed. Fail closed: defer the
 	// rollout until the backend is idle or the idleTimeoutSeconds budget is
-	// spent. A failing /slots probe (server unreachable, non-200, --slots
-	// disabled so it 404s) must not silently roll and drop in-flight
-	// generations — that is exactly what waitForIdle is meant to prevent.
+	// spent. A failing idle probe (server unreachable, non-200, unparseable
+	// metrics, or unsupported runtime) must not silently roll and drop
+	// in-flight generations — that is exactly what waitForIdle is meant to prevent.
 	reason := ReasonPodsBusy
 	message := "Backend slots are busy, waiting for idle before rollout"
 	if checkErr != nil {

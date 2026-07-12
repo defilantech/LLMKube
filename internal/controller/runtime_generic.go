@@ -75,8 +75,7 @@ func (b *GenericBackend) BuildProbes(port int32) (startup, liveness, readiness *
 // IdleProbe returns a probe closure that reads the
 // AnnotationIdleEndpoint annotation from the InferenceService. If absent,
 // returns (false, errIdleUnsupported). If present, GETs the annotated path and
-// returns true on 2xx (idle), false on non-2xx (busy). Mirrors the metal-agent
-// idle check in pkg/agent/executor.go.
+// returns true on 2xx (idle), false on non-2xx (busy).
 func (b *GenericBackend) IdleProbe(isvc *inferencev1alpha1.InferenceService, client *http.Client) func(ctx context.Context, baseURL string) (bool, error) {
 	path, ok := isvc.Annotations[inferencev1alpha1.AnnotationIdleEndpoint]
 	if !ok {

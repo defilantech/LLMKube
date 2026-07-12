@@ -184,8 +184,7 @@ type llamaCPUSlot struct {
 
 // IdleProbe returns a probe closure that checks llama.cpp /slots endpoint for
 // idle status. All slots must report is_processing == false for the probe to
-// return true. Mirrors the metal-agent's checkServerIdle logic in
-// pkg/agent/agent.go for runtime-arg parity.
+// return true. Lifted from the original checkServerIdle in drain_before_rollout.go.
 func (b *LlamaCppBackend) IdleProbe(_ *inferencev1alpha1.InferenceService, client *http.Client) func(ctx context.Context, baseURL string) (bool, error) {
 	return func(ctx context.Context, baseURL string) (bool, error) {
 		url := fmt.Sprintf("%s/slots", baseURL)

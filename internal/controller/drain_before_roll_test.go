@@ -1083,11 +1083,11 @@ func TestParsePrometheusGaugeSum(t *testing.T) {
 			name: "sum across labels",
 			body: `# HELP vllm:num_requests_running Number of requests currently running on GPU.
 # TYPE vllm:num_requests_running gauge
-vllm:num_requests_running{gpu_id="0"} 0.0
-vllm:num_requests_running{gpu_id="1"} 0.0
+vllm:num_requests_running{model_name="a"} 2.0
+vllm:num_requests_running{model_name="b"} 3.0
 `,
 			metric:    "vllm:num_requests_running",
-			wantSum:   0,
+			wantSum:   5,
 			wantFound: true,
 		},
 		{
@@ -1145,9 +1145,10 @@ sglang:num_requests_running 3.0
 func TestResolveIdlePort(t *testing.T) {
 	port8080 := int32(8080)
 	tests := []struct {
-		name string
-		isvc *inferencev1alpha1.InferenceService
-		want int32
+		name    string
+		isvc    *inferencev1alpha1.InferenceService
+		backend RuntimeBackend
+		want    int32
 	}{
 		{
 			name: "endpoint port takes priority",
@@ -1157,7 +1158,8 @@ func TestResolveIdlePort(t *testing.T) {
 					ContainerPort: &port8080,
 				},
 			},
-			want: 9999,
+			backend: &LlamaCppBackend{},
+			want:    9999,
 		},
 		{
 			name: "container port when endpoint nil",
@@ -1166,14 +1168,20 @@ func TestResolveIdlePort(t *testing.T) {
 					ContainerPort: &port8080,
 				},
 			},
-			want: 8080,
+			backend: &LlamaCppBackend{},
+			want:    8080,
+		},
+		{
+			name:    "backend default port when neither set",
+			isvc:    &inferencev1alpha1.InferenceService{},
+			backend: &VLLMBackend{},
+			want:    8000,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			backend := &LlamaCppBackend{}
-			got := resolveIdlePort(tc.isvc, backend)
+			got := resolveIdlePort(tc.isvc, tc.backend)
 			if got != tc.want {
 				t.Errorf("port = %d, want %d", got, tc.want)
 			}
@@ -1566,5 +1574,220 @@ var _ = Describe("Multi-replica drain-before-roll", func() {
 		cond := findRolloutDeferredCondition(deferredISVC.Status.Conditions)
 		Expect(cond).NotTo(BeNil())
 		Expect(cond.Reason).To(Equal(ReasonIdleCheckUnsupported))
+	})
+
+	It("should defer when one vLLM replica is idle and one is unreachable", func() {
+		modelName := "model-multi-idle-unreachable"
+		isvcName := "isvc-multi-idle-unreachable"
+
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
+			Spec: inferencev1alpha1.ModelSpec{
+				Source:   "https://example.com/model.gguf",
+				Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: "cpu"},
+			},
+		}
+		Expect(k8sClient.Create(ctx, model)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, model) }()
+
+		model.Status.Phase = PhaseReady
+		Expect(k8sClient.Status().Update(ctx, model)).To(Succeed())
+
+		replicas := int32(2)
+		isvc := &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: isvcName, Namespace: "default"},
+			Spec: inferencev1alpha1.InferenceServiceSpec{
+				ModelRef: modelName,
+				Replicas: &replicas,
+				Image:    "vllm/vllm-openai:v0.20.0",
+				Runtime:  "vllm",
+				RolloutPolicy: &inferencev1alpha1.RolloutPolicySpec{
+					WaitForIdle:        true,
+					IdleTimeoutSeconds: 30,
+					Force:              false,
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, isvc)).To(Succeed())
+		defer func() {
+			_ = k8sClient.Delete(ctx, isvc)
+			dep := &appsv1.Deployment{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, dep); err == nil {
+				_ = k8sClient.Delete(ctx, dep)
+			}
+			svc := &corev1.Service{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, svc); err == nil {
+				_ = k8sClient.Delete(ctx, svc)
+			}
+		}()
+
+		reconciler := &InferenceServiceReconciler{
+			Client:             k8sClient,
+			Scheme:             k8sClient.Scheme(),
+			InitContainerImage: "docker.io/curlimages/curl:8.18.0",
+		}
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: isvcName, Namespace: "default"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		dep := &appsv1.Deployment{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, dep)).To(Succeed())
+
+		ready := true
+		svcLabel := sanitizeDNSName(isvcName)
+		for _, addr := range []string{"10.0.0.1", "10.0.0.2"} {
+			eslice := &discoveryv1.EndpointSlice{
+				ObjectMeta: metav1.ObjectMeta{
+					GenerateName: "eslice-",
+					Namespace:    "default",
+					Labels: map[string]string{
+						"kubernetes.io/service-name": svcLabel,
+					},
+				},
+				AddressType: discoveryv1.AddressTypeIPv4,
+				Endpoints: []discoveryv1.Endpoint{{
+					Addresses:  []string{addr},
+					Conditions: discoveryv1.EndpointConditions{Ready: &ready},
+				}},
+			}
+			Expect(k8sClient.Create(ctx, eslice)).To(Succeed())
+		}
+
+		reconciler.HTTPClient = &http.Client{
+			Transport: &addressAwareRoundTripper{
+				responses: map[string]string{
+					"10.0.0.1:8000": "vllm:num_requests_running 0\n",
+					// 10.0.0.2:8000 is NOT in the map — gets 404 (error from probe)
+				},
+			},
+			Timeout: 5 * time.Second,
+		}
+
+		updated := &inferencev1alpha1.InferenceService{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, updated)).To(Succeed())
+		updated.Spec.Image = "vllm/vllm-openai:v0.21.0"
+		Expect(k8sClient.Update(ctx, updated)).To(Succeed())
+
+		result, err := reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: isvcName, Namespace: "default"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.RequeueAfter).To(BeNumerically(">", 0))
+
+		deferredISVC := &inferencev1alpha1.InferenceService{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, deferredISVC)).To(Succeed())
+		cond := findRolloutDeferredCondition(deferredISVC.Status.Conditions)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+		Expect(cond.Reason).To(Equal(ReasonIdleCheckFailed))
+	})
+
+	It("should proceed when generic runtime has idle-endpoint annotation and endpoint returns 2xx", func() {
+		modelName := "model-generic-annotated"
+		isvcName := "isvc-generic-annotated"
+
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
+			Spec: inferencev1alpha1.ModelSpec{
+				Source:   "https://example.com/model.gguf",
+				Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: "cpu"},
+			},
+		}
+		Expect(k8sClient.Create(ctx, model)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, model) }()
+
+		model.Status.Phase = PhaseReady
+		Expect(k8sClient.Status().Update(ctx, model)).To(Succeed())
+
+		replicas := int32(1)
+		isvc := &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      isvcName,
+				Namespace: "default",
+				Annotations: map[string]string{
+					inferencev1alpha1.AnnotationIdleEndpoint: "/health",
+				},
+			},
+			Spec: inferencev1alpha1.InferenceServiceSpec{
+				ModelRef: modelName,
+				Replicas: &replicas,
+				Image:    "custom/inference:latest",
+				Runtime:  "generic",
+				RolloutPolicy: &inferencev1alpha1.RolloutPolicySpec{
+					WaitForIdle:        true,
+					IdleTimeoutSeconds: 30,
+					Force:              false,
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, isvc)).To(Succeed())
+		defer func() {
+			_ = k8sClient.Delete(ctx, isvc)
+			dep := &appsv1.Deployment{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, dep); err == nil {
+				_ = k8sClient.Delete(ctx, dep)
+			}
+			svc := &corev1.Service{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, svc); err == nil {
+				_ = k8sClient.Delete(ctx, svc)
+			}
+		}()
+
+		reconciler := &InferenceServiceReconciler{
+			Client:             k8sClient,
+			Scheme:             k8sClient.Scheme(),
+			InitContainerImage: "docker.io/curlimages/curl:8.18.0",
+		}
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: isvcName, Namespace: "default"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		dep := &appsv1.Deployment{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, dep)).To(Succeed())
+
+		ready := true
+		svcLabel := sanitizeDNSName(isvcName)
+		eslice := &discoveryv1.EndpointSlice{
+			ObjectMeta: metav1.ObjectMeta{
+				GenerateName: "eslice-",
+				Namespace:    "default",
+				Labels: map[string]string{
+					"kubernetes.io/service-name": svcLabel,
+				},
+			},
+			AddressType: discoveryv1.AddressTypeIPv4,
+			Endpoints: []discoveryv1.Endpoint{{
+				Addresses:  []string{"10.0.0.1"},
+				Conditions: discoveryv1.EndpointConditions{Ready: &ready},
+			}},
+		}
+		Expect(k8sClient.Create(ctx, eslice)).To(Succeed())
+
+		reconciler.HTTPClient = &http.Client{
+			Transport: &addressAwareRoundTripper{
+				responses: map[string]string{
+					"10.0.0.1:8080": "ok",
+				},
+			},
+			Timeout: 5 * time.Second,
+		}
+
+		updated := &inferencev1alpha1.InferenceService{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, updated)).To(Succeed())
+		updated.Spec.Image = "custom/inference:v2"
+		Expect(k8sClient.Update(ctx, updated)).To(Succeed())
+
+		result, err := reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: isvcName, Namespace: "default"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.RequeueAfter).To(BeZero())
+
+		finalISVC := &inferencev1alpha1.InferenceService{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, finalISVC)).To(Succeed())
+		cond := findRolloutDeferredCondition(finalISVC.Status.Conditions)
+		Expect(cond).To(BeNil())
 	})
 })

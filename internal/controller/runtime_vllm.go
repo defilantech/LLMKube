@@ -204,8 +204,7 @@ func (b *VLLMBackend) BuildProbes(port int32) (*corev1.Probe, *corev1.Probe, *co
 
 // IdleProbe returns a probe closure that checks vLLM /metrics for
 // `vllm:num_requests_running` gauge sum. Idle when sum == 0. Absent metric
-// returns (false, nil) — fail-closed, treats unknown as busy. Mirrors the
-// metal-agent's buildLlamaServerArgs idle check in pkg/agent/executor.go.
+// returns (false, nil) — fail-closed, treats unknown as busy.
 func (b *VLLMBackend) IdleProbe(_ *inferencev1alpha1.InferenceService, client *http.Client) func(ctx context.Context, baseURL string) (bool, error) {
 	return func(ctx context.Context, baseURL string) (bool, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/metrics", nil)

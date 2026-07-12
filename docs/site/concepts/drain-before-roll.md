@@ -32,7 +32,7 @@ With this enabled, the controller checks each replica before applying a pod-temp
 | `tgi` | `GET /metrics` — Prometheus gauge `tgi_batch_current_size` | value equals 0 |
 | `sglang` | `GET /metrics` — Prometheus gauge `sglang:num_requests_running` | sum across all label sets equals 0 |
 | `generic` | Annotation-driven custom endpoint (see below) | HTTP 2xx response |
-| `personaplex` | — | Not supported; proceeds immediately with `IdleCheckUnsupported` |
+| `personaplex` | — | Not supported; defers the rollout (fail-closed) until `idleTimeoutSeconds` expires |
 
 For vLLM and SGLang, the gauge is summed across all label combinations because both runtimes emit one series per model or request class. An absent metric is treated as **busy** (fail-closed), not idle.
 
@@ -53,7 +53,7 @@ spec:
     waitForIdle: true
 ```
 
-The controller appends the annotation value to each replica's base URL. A 2xx response means idle; anything else (non-2xx, network error, timeout) is treated as busy or fail-closed. Without this annotation, the generic runtime is unsupported and the rollout proceeds immediately with `ReasonIdleCheckUnsupported`.
+The controller appends the annotation value to each replica's base URL. A 2xx response means idle; anything else (non-2xx, network error, timeout) is treated as busy or fail-closed. Without this annotation, the generic runtime is unsupported and the rollout defers (fail-closed) until `idleTimeoutSeconds` expires.
 
 ## Multi-replica behavior
 
