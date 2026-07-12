@@ -23,12 +23,14 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"testing"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	"k8s.io/apimachinery/pkg/types"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -1065,4 +1067,189 @@ func findRolloutDeferredCondition(conditions []metav1.Condition) *metav1.Conditi
 		}
 	}
 	return nil
+}
+
+func TestParsePrometheusGaugeSum(t *testing.T) {
+	tests := []struct {
+		name      string
+		body      string
+		metric    string
+		wantSum   float64
+		wantFound bool
+	}{
+		{
+			name: "sum across labels",
+			body: `# HELP vllm:num_requests_running Number of requests currently running on GPU.
+# TYPE vllm:num_requests_running gauge
+vllm:num_requests_running{gpu_id="0"} 0.0
+vllm:num_requests_running{gpu_id="1"} 0.0
+`,
+			metric:    "vllm:num_requests_running",
+			wantSum:   0,
+			wantFound: true,
+		},
+		{
+			name: "absent metric returns found false",
+			body: `# HELP some_other_metric A metric.
+some_other_metric 1.0
+`,
+			metric:    "vllm:num_requests_running",
+			wantSum:   0,
+			wantFound: false,
+		},
+		{
+			name: "bare gauge without labels",
+			body: `# HELP tgi_loading Loading state.
+tgi_loading 0.0
+`,
+			metric:    "tgi_loading",
+			wantSum:   0,
+			wantFound: true,
+		},
+		{
+			name: "name prefix no false match",
+			body: `# HELP http_requests_total Total requests.
+http_requests_total{method="GET"} 42.0
+`,
+			metric:    "http_requests",
+			wantSum:   0,
+			wantFound: false,
+		},
+		{
+			name: "skips comments",
+			body: `# HELP sglang:num_running_reqs Running requests.
+# TYPE sglang:num_running_reqs gauge
+sglang:num_running_reqs 3.0
+`,
+			metric:    "sglang:num_running_reqs",
+			wantSum:   3,
+			wantFound: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, found := parsePrometheusGaugeSum(tc.body, tc.metric)
+			if got != tc.wantSum {
+				t.Errorf("sum = %f, want %f", got, tc.wantSum)
+			}
+			if found != tc.wantFound {
+				t.Errorf("found = %v, want %v", found, tc.wantFound)
+			}
+		})
+	}
+}
+
+func TestResolveIdlePort(t *testing.T) {
+	port8080 := int32(8080)
+	tests := []struct {
+		name string
+		isvc *inferencev1alpha1.InferenceService
+		want int32
+	}{
+		{
+			name: "endpoint port takes priority",
+			isvc: &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					Endpoint:      &inferencev1alpha1.EndpointSpec{Port: 9999},
+					ContainerPort: &port8080,
+				},
+			},
+			want: 9999,
+		},
+		{
+			name: "container port when endpoint nil",
+			isvc: &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ContainerPort: &port8080,
+				},
+			},
+			want: 8080,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			backend := &LlamaCppBackend{}
+			got := resolveIdlePort(tc.isvc, backend)
+			if got != tc.want {
+				t.Errorf("port = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCollectReadyReplicaURLs(t *testing.T) {
+	trueVal := true
+	falseVal := false
+	tests := []struct {
+		name string
+		list *discoveryv1.EndpointSliceList
+		port int32
+		want []string
+	}{
+		{
+			name: "ready endpoints",
+			list: &discoveryv1.EndpointSliceList{
+				Items: []discoveryv1.EndpointSlice{{
+					Endpoints: []discoveryv1.Endpoint{{
+						Addresses:  []string{"10.0.0.1"},
+						Conditions: discoveryv1.EndpointConditions{Ready: &trueVal},
+					}},
+				}},
+			},
+			port: 8080,
+			want: []string{"http://10.0.0.1:8080"},
+		},
+		{
+			name: "nil ready treated as ready",
+			list: &discoveryv1.EndpointSliceList{
+				Items: []discoveryv1.EndpointSlice{{
+					Endpoints: []discoveryv1.Endpoint{{
+						Addresses:  []string{"10.0.0.2"},
+						Conditions: discoveryv1.EndpointConditions{Ready: nil},
+					}},
+				}},
+			},
+			port: 8080,
+			want: []string{"http://10.0.0.2:8080"},
+		},
+		{
+			name: "not ready skipped",
+			list: &discoveryv1.EndpointSliceList{
+				Items: []discoveryv1.EndpointSlice{{
+					Endpoints: []discoveryv1.Endpoint{{
+						Addresses:  []string{"10.0.0.3"},
+						Conditions: discoveryv1.EndpointConditions{Ready: &falseVal},
+					}},
+				}},
+			},
+			port: 8080,
+			want: nil,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := collectReadyReplicaURLs(tc.list, tc.port)
+			if len(got) != len(tc.want) {
+				t.Errorf("got %d URLs, want %d: %v", len(got), len(tc.want), got)
+				return
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("url[%d] = %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestErrIdleUnsupported(t *testing.T) {
+	if errIdleUnsupported == nil {
+		t.Error("errIdleUnsupported must not be nil")
+	}
+	if !strings.Contains(errIdleUnsupported.Error(), "idle detection") {
+		t.Errorf("unexpected error message: %q", errIdleUnsupported.Error())
+	}
 }

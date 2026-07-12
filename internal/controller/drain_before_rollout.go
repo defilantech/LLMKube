@@ -20,12 +20,16 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -41,6 +45,8 @@ import (
 // in-memory object and the persisted object.
 const AnnotationDesiredTemplateHash = "llmkube.ai/desired-template-hash"
 
+var errIdleUnsupported = errors.New("runtime does not implement idle detection")
+
 // desiredTemplateHash computes a deterministic hash of the pod template for the
 // purpose of detecting operator-driven changes. It serializes the normalized
 // template to JSON and hashes it, so API-server defaulting differences don't
@@ -50,6 +56,70 @@ func desiredTemplateHash(template corev1.PodTemplateSpec) string {
 	data, _ := json.Marshal(normalized)
 	h := sha256.Sum256(data)
 	return fmt.Sprintf("%x", h[:8])
+}
+
+// parsePrometheusGaugeSum scans Prometheus exposition text for lines matching
+// metricName (with optional labels in curly braces or bare gauge), sums the
+// numeric values, and returns (sum, found). Lines starting with '#' are skipped.
+func parsePrometheusGaugeSum(body, metricName string) (float64, bool) {
+	var sum float64
+	found := false
+	for _, raw := range strings.Split(body, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" || line[0] == '#' {
+			continue
+		}
+		if !strings.HasPrefix(line, metricName) {
+			continue
+		}
+		rest := line[len(metricName):]
+		if len(rest) == 0 || (rest[0] != '{' && rest[0] != ' ') {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		val, err := strconv.ParseFloat(fields[len(fields)-1], 64)
+		if err != nil {
+			continue
+		}
+		sum += val
+		found = true
+	}
+	return sum, found
+}
+
+// resolveIdlePort returns the port to use for idle-check HTTP probes. It
+// follows the same priority as the existing checkServiceIdle: Endpoint.Port >
+// ContainerPort > backend.DefaultPort().
+func resolveIdlePort(isvc *inferencev1alpha1.InferenceService, backend RuntimeBackend) int32 {
+	if isvc.Spec.Endpoint != nil && isvc.Spec.Endpoint.Port > 0 {
+		return isvc.Spec.Endpoint.Port
+	}
+	if isvc.Spec.ContainerPort != nil {
+		return *isvc.Spec.ContainerPort
+	}
+	return backend.DefaultPort()
+}
+
+// collectReadyReplicaURLs builds a list of "http://<addr>:<port>" URLs from
+// the ready endpoints in the given EndpointSliceList. Per Kubernetes convention,
+// an endpoint with Conditions.Ready == nil is treated as ready.
+func collectReadyReplicaURLs(slices *discoveryv1.EndpointSliceList, port int32) []string {
+	var urls []string
+	for i := range slices.Items {
+		for j := range slices.Items[i].Endpoints {
+			ep := &slices.Items[i].Endpoints[j]
+			if ep.Conditions.Ready != nil && !*ep.Conditions.Ready {
+				continue
+			}
+			for _, addr := range ep.Addresses {
+				urls = append(urls, fmt.Sprintf("http://%s:%d", addr, port))
+			}
+		}
+	}
+	return urls
 }
 
 // llamaCPUSlot represents a single slot from the llama.cpp /slots endpoint.

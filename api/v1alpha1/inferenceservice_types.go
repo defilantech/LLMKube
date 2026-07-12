@@ -504,8 +504,12 @@ type InferenceServiceSpec struct {
 
 	// RolloutPolicy controls how deployment updates are applied. When waitForIdle
 	// is true, the controller will check backend slot idleness before updating
-	// the Deployment pod-template. Requires llama.cpp server-compatible backends
-	// that expose a /slots endpoint.
+	// the Deployment pod-template. Idle detection support by runtime:
+	//   - llama.cpp: native /slots endpoint (default)
+	//   - vLLM: Prometheus metrics scrape (vllm:num_requests_running)
+	//   - TGI: Prometheus metrics scrape (tgi_loading)
+	//   - SGLang: Prometheus metrics scrape (sglang:num_running_reqs)
+	//   - generic: optional AnnotationIdleEndpoint annotation for custom probe
 	// +optional
 	RolloutPolicy *RolloutPolicySpec `json:"rolloutPolicy,omitempty"`
 }
@@ -514,10 +518,11 @@ type InferenceServiceSpec struct {
 type RolloutPolicySpec struct {
 	// WaitForIdle indicates whether to wait for all backend slots to report idle
 	// before applying a Deployment pod-template update. When true, the controller
-	// polls the /slots endpoint on each replica and defers the rollout until all
-	// slots are idle or the idleTimeoutSeconds expires. Requires the backend to
-	// expose a llama.cpp-style /slots endpoint (llama.cpp enables it by default
-	// with --slots); other runtimes are tracked in #911.
+	// probes each replica and defers the rollout until all replicas are idle or the
+	// idleTimeoutSeconds expires. Idle detection is runtime-specific: llama.cpp uses
+	// /slots, vLLM/TGI/SGLang scrape Prometheus gauges, and generic runtimes may set
+	// AnnotationIdleEndpoint for a custom HTTP probe. Runtimes without idle detection
+	// support proceed immediately with ReasonIdleCheckUnsupported.
 	// +optional
 	WaitForIdle bool `json:"waitForIdle,omitempty"`
 

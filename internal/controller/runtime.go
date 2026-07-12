@@ -1,6 +1,9 @@
 package controller
 
 import (
+	"context"
+	"net/http"
+
 	corev1 "k8s.io/api/core/v1"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
@@ -57,6 +60,17 @@ type HPAMetricProvider interface {
 // discovery is unaffected.
 type ServiceLinksOptOut interface {
 	DisableServiceLinks() bool
+}
+
+// IdleDetector is optionally implemented by backends that can probe replica
+// idleness for drain-before-roll. The returned probe function is called with
+// the base URL of a single replica (scheme + host:port) and returns true when
+// the replica has no in-flight requests. The isvc parameter carries annotations
+// such as AnnotationIdleEndpoint for generic runtimes; the client is reused
+// across probes. Backends that do not implement this interface cause the
+// reconciler to skip idle detection and immediately proceed with the rollout.
+type IdleDetector interface {
+	IdleProbe(isvc *inferencev1alpha1.InferenceService, client *http.Client) func(ctx context.Context, baseURL string) (bool, error)
 }
 
 // resolveBackend returns the RuntimeBackend for the given InferenceService.
