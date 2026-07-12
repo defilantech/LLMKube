@@ -74,6 +74,13 @@ func claimSatisfied(
 }
 
 func sourceProves(ctx context.Context, workspace string, run CommandRunner, base, source string, c Claim) bool {
+	if strings.TrimSpace(base) == "" {
+		// An empty base would make `git show :path` read the staging index
+		// instead of a real commit, letting a coder-staged (fabricated)
+		// file self-certify its own claim. Refuse rather than let git
+		// resolve an ambiguous ref.
+		return false
+	}
 	i := strings.LastIndex(source, ":")
 	if i <= 0 {
 		return false // NONE, empty, URL, or bare path: not verifiable in slice 1

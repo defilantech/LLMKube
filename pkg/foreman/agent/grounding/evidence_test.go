@@ -122,6 +122,31 @@ func TestMatchClaims(t *testing.T) {
 	}
 }
 
+// TestMatchClaims_EmptyBaseRefusesToProve pins the Task 3 review hardening:
+// an empty base must never reach `git show`, because `git show :path` (no
+// ref before the colon) reads the staging index rather than a commit. A
+// coder that `write_file`s a fabricated benchmark and stages it could
+// otherwise self-certify its own claim if a caller ever passed base="".
+func TestMatchClaims_EmptyBaseRefusesToProve(t *testing.T) {
+	llamaClaim := Claim{
+		File: "examples/README.md", Line: 10, Number: "87", Unit: "tok/s",
+		Subjects: []string{"Llama-3.2-3B"},
+		Text:     "| Llama-3.2-3B (Q4_K_M) | ~87 tok/s |",
+	}
+	var calls []string
+	run := fakeGitShow(&calls)
+	// Otherwise-valid evidence: a real path:line pair that fakeGitShow would
+	// happily prove against a non-empty base.
+	evidence := []Evidence{{Claim: "~87 tok/s Llama-3.2-3B", Source: "docs/proposals/697.md:3"}}
+	findings := MatchClaims(context.Background(), "/ws", run, "", []Claim{llamaClaim}, evidence)
+	if len(findings) == 0 {
+		t.Fatal("empty base must not let evidence prove the claim; want a finding")
+	}
+	if len(calls) != 0 {
+		t.Errorf("empty base must never invoke git; got calls: %v", calls)
+	}
+}
+
 func TestParseEvidence(t *testing.T) {
 	extra := map[string]any{"evidence": []any{
 		map[string]any{"claim": "~87 tok/s", "source": "docs/x.md:3"},

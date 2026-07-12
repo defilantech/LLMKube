@@ -143,6 +143,14 @@ type RunTaskConfig struct {
 	// behavior.
 	IssueFetcher githubissue.Fetcher
 
+	// UpstreamURLForRepo overrides how the task's payload.repo slug
+	// resolves to the upstream project's git URL (mirrors
+	// NativeAgentLoopExecutor.UpstreamURLForRepo). nil falls back to the
+	// executor's default (github.com/<repo slug>.git). Tests use this to
+	// point the base-branch fetch at a local fixture repo instead of a
+	// real network host.
+	UpstreamURLForRepo func(repoSlug string) string
+
 	// Stdout is where the result JSON + sentinel line are written.
 	// Defaults to os.Stdout when nil so the Job's Pod log carries them.
 	Stdout io.Writer
@@ -215,6 +223,7 @@ func RunTask(ctx context.Context, cfg RunTaskConfig) (RunTaskResult, error) {
 		AuthFactory:                  cfg.AuthFactory,
 		IssueFetcher:                 cfg.IssueFetcher,
 		PREnsurer:                    cfg.PREnsurer,
+		UpstreamURLForRepo:           cfg.UpstreamURLForRepo,
 	}
 
 	res, execErr := exec.Execute(ctx, &task)

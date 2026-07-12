@@ -69,10 +69,19 @@ func TestRunTask_HappyPathPushesAndEmitsResult(t *testing.T) {
 
 	var out bytes.Buffer
 	cfg := foremanagent.RunTaskConfig{
-		Client:                   c,
-		Task:                     types.NamespacedName{Namespace: task.Namespace, Name: task.Name},
-		WorkspaceDir:             filepath.Join(root, "ws"),
-		GitRemoteURL:             bare,
+		Client:       c,
+		Task:         types.NamespacedName{Namespace: task.Namespace, Name: task.Name},
+		WorkspaceDir: filepath.Join(root, "ws"),
+		GitRemoteURL: bare,
+		// task carries payload.repo "defilantech/LLMKube" (see taskAndAgent),
+		// which would otherwise resolve to the real github.com upstream: a
+		// live network fetch this test does not need. Point the base-branch
+		// fetch at the SAME local bare fixture used as the clone/push
+		// remote, so origin/<base> and the fetched upstream base share
+		// identical history (required since #1075: the claim-evidence gate
+		// anchors evidence provenance to their merge-base, which needs a
+		// real common ancestor to resolve to anything meaningful).
+		UpstreamURLForRepo:       func(string) string { return bare },
 		InferenceBaseURLOverride: oaiSrv.URL + "/v1",
 		CommitAuthor:             repo.Identity{Name: "Foreman Bot", Email: "bot@foreman.test"},
 		CommitCommitter:          repo.Identity{Name: "Foreman Bot", Email: "bot@foreman.test"},

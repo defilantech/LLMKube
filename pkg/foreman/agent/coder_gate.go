@@ -89,7 +89,15 @@ type checkFailure struct {
 // golangci-lint binary (e.g. "./bin/golangci-lint"). run is the command
 // runner (production callers pass execCommandRunner). issueText is the
 // query the scope-overlap check ranks files against; an empty string
-// disables that check (backward compatible).
+// disables that check (backward compatible). evidenceBaseSHA is the
+// literal upstream base tip commit the executor resolved before this
+// task's gate retries began (see runLLMPath in executor_native.go); it may
+// be empty if that resolution failed. evidence is the coder's declared
+// evidence ledger (grounding.ParseEvidence(terminal.Extra)). Both are
+// threaded to the claim-evidence check, which anchors evidence provenance
+// to git merge-base(HEAD, evidenceBaseSHA) rather than the coder-movable
+// "HEAD" or an in-workspace origin/<baseBranch> ref (see
+// resolveClaimGateAnchor in claim_gate.go).
 //
 // The gate runs eleven deterministic checks in order: gofmt, go vet,
 // go build, golangci-lint, a fast unit-test tier on changed packages,
@@ -106,7 +114,8 @@ func RunCoderGate(
 	ctx context.Context,
 	workspace, golangciPath string,
 	run commandRunner,
-	issueText string,
+	issueText, evidenceBaseSHA string,
+	evidence []grounding.Evidence,
 ) (pass bool, feedback string, advisories []advisory) {
 	var failures []checkFailure
 
@@ -214,7 +223,7 @@ func RunCoderGate(
 		failures = append(failures, checkFailure{name: "reference grounding", output: out})
 	}
 
-	blocking, adv := runGateChecks(ctx, workspace, run, gateCheckRegistry(issueText))
+	blocking, adv := runGateChecks(ctx, workspace, run, gateCheckRegistry(issueText, evidenceBaseSHA, evidence))
 	failures = append(failures, blocking...)
 	advisories = adv
 
@@ -226,8 +235,9 @@ func RunCoderGate(
 }
 
 // gateCheckRegistry returns the tiered checks added by the gate-check suite.
-// issueText is threaded for checks that need it.
-func gateCheckRegistry(issueText string) []gateCheck {
+// issueText, evidenceBaseSHA, and evidence are threaded for checks that need
+// them.
+func gateCheckRegistry(issueText, evidenceBaseSHA string, evidence []grounding.Evidence) []gateCheck {
 	return []gateCheck{
 		{
 			name: "rbac-use",
@@ -245,6 +255,14 @@ func gateCheckRegistry(issueText string) []gateCheck {
 			name: "embedded-artifact",
 			tier: tierBlock,
 			fn:   checkEmbeddedArtifacts,
+		},
+		{
+			// No lang: runs for every language, like embedded-artifact.
+			// The claim-evidence contract (proposal 1075) is about honest
+			// docs, not Go-specific code shape.
+			name: "claim-evidence",
+			tier: tierBlock,
+			fn:   checkClaimEvidence(evidence, evidenceBaseSHA),
 		},
 		{
 			name: "grounding-breadth",
