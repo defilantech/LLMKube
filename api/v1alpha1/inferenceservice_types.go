@@ -507,8 +507,8 @@ type InferenceServiceSpec struct {
 	// the Deployment pod-template. Idle detection support by runtime:
 	//   - llama.cpp: native /slots endpoint (default)
 	//   - vLLM: Prometheus metrics scrape (vllm:num_requests_running)
-	//   - TGI: Prometheus metrics scrape (tgi_loading)
-	//   - SGLang: Prometheus metrics scrape (sglang:num_running_reqs)
+	//   - TGI: Prometheus metrics scrape (tgi_batch_current_size)
+	//   - SGLang: Prometheus metrics scrape (sglang:num_requests_running)
 	//   - generic: optional AnnotationIdleEndpoint annotation for custom probe
 	// +optional
 	RolloutPolicy *RolloutPolicySpec `json:"rolloutPolicy,omitempty"`

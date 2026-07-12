@@ -1101,10 +1101,10 @@ some_other_metric 1.0
 		},
 		{
 			name: "bare gauge without labels",
-			body: `# HELP tgi_loading Loading state.
-tgi_loading 0.0
+			body: `# HELP tgi_batch_current_size Current batch size.
+tgi_batch_current_size 0.0
 `,
-			metric:    "tgi_loading",
+			metric:    "tgi_batch_current_size",
 			wantSum:   0,
 			wantFound: true,
 		},
@@ -1119,11 +1119,11 @@ http_requests_total{method="GET"} 42.0
 		},
 		{
 			name: "skips comments",
-			body: `# HELP sglang:num_running_reqs Running requests.
-# TYPE sglang:num_running_reqs gauge
-sglang:num_running_reqs 3.0
+			body: `# HELP sglang:num_requests_running Running requests.
+# TYPE sglang:num_requests_running gauge
+sglang:num_requests_running 3.0
 `,
-			metric:    "sglang:num_running_reqs",
+			metric:    "sglang:num_requests_running",
 			wantSum:   3,
 			wantFound: true,
 		},
