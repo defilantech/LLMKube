@@ -13,7 +13,7 @@ type Claim struct {
 	File     string
 	Line     int
 	Text     string
-	Number   string   // digits only, separators stripped ("1200")
+	Number   string   // thousands separators stripped, decimal point preserved ("1200", "2.5")
 	Unit     string   // normalized unit ("tok/s")
 	Subjects []string // capitalized identifier-ish tokens from the line
 }
