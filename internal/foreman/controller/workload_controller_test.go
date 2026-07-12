@@ -184,6 +184,95 @@ var _ = Describe("WorkloadReconciler (M6 stub planner)", func() {
 		Expect(stepA.Spec.MCPEnabled).To(BeNil())
 	})
 
+	It("propagates Workload.Spec.VerdictPolicy verbatim onto rendered AgenticTasks in explicit-pipeline mode", func() {
+		wl := newWorkload("pipeline-verdict-policy", foremanv1alpha1.WorkloadSpec{
+			Intent: "explicit",
+			Repo:   "defilantech/LLMKube",
+			VerdictPolicy: &foremanv1alpha1.VerdictPolicy{
+				SelfGO: []string{"code-fix", "ci-policy"},
+			},
+			Pipeline: []foremanv1alpha1.PipelineStep{
+				{
+					Name:     "step-a",
+					Kind:     foremanv1alpha1.AgenticTaskKindIssueFix,
+					AgentRef: corev1.LocalObjectReference{Name: "coder"},
+					Payload:  foremanv1alpha1.AgenticTaskPayload{Repo: "defilantech/LLMKube", Issue: 1234},
+				},
+			},
+		})
+		Expect(k8sClient.Create(ctx, wl)).To(Succeed())
+		DeferCleanup(func() {
+			cleanupChildren(wl)
+			_ = k8sClient.Delete(ctx, wl)
+		})
+
+		_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(wl)})
+		Expect(err).NotTo(HaveOccurred())
+
+		var stepA foremanv1alpha1.AgenticTask
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: "pipeline-verdict-policy-step-a"}, &stepA)).To(Succeed())
+		Expect(stepA.Spec.VerdictPolicy).NotTo(BeNil())
+		Expect(stepA.Spec.VerdictPolicy.SelfGO).To(ConsistOf("code-fix", "ci-policy"))
+	})
+
+	It("leaves rendered AgenticTasks' VerdictPolicy nil when Workload.Spec.VerdictPolicy is unset", func() {
+		wl := newWorkload("pipeline-verdict-policy-unset", foremanv1alpha1.WorkloadSpec{
+			Intent: "explicit",
+			Repo:   "defilantech/LLMKube",
+			Pipeline: []foremanv1alpha1.PipelineStep{
+				{
+					Name:     "step-a",
+					Kind:     foremanv1alpha1.AgenticTaskKindIssueFix,
+					AgentRef: corev1.LocalObjectReference{Name: "coder"},
+					Payload:  foremanv1alpha1.AgenticTaskPayload{Repo: "defilantech/LLMKube", Issue: 1234},
+				},
+			},
+		})
+		Expect(k8sClient.Create(ctx, wl)).To(Succeed())
+		DeferCleanup(func() {
+			cleanupChildren(wl)
+			_ = k8sClient.Delete(ctx, wl)
+		})
+
+		_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(wl)})
+		Expect(err).NotTo(HaveOccurred())
+
+		var stepA foremanv1alpha1.AgenticTask
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: "pipeline-verdict-policy-unset-step-a"}, &stepA)).To(Succeed())
+		Expect(stepA.Spec.VerdictPolicy).To(BeNil())
+	})
+
+	It("propagates Workload.Spec.VerdictPolicy verbatim onto rendered AgenticTasks in issue-batch mode", func() {
+		wl := newWorkload("batch-verdict-policy", foremanv1alpha1.WorkloadSpec{
+			Intent: "batch",
+			Repo:   "defilantech/LLMKube",
+			Issues: []int32{531},
+			VerdictPolicy: &foremanv1alpha1.VerdictPolicy{
+				SelfGO: []string{"code-fix", "ci-policy"},
+			},
+			CoderAgentRef:    &corev1.LocalObjectReference{Name: "coder"},
+			VerifierAgentRef: &corev1.LocalObjectReference{Name: "gate"},
+		})
+		Expect(k8sClient.Create(ctx, wl)).To(Succeed())
+		DeferCleanup(func() {
+			cleanupChildren(wl)
+			_ = k8sClient.Delete(ctx, wl)
+		})
+
+		_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(wl)})
+		Expect(err).NotTo(HaveOccurred())
+
+		var code531 foremanv1alpha1.AgenticTask
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: "batch-verdict-policy-code-531"}, &code531)).To(Succeed())
+		Expect(code531.Spec.VerdictPolicy).NotTo(BeNil())
+		Expect(code531.Spec.VerdictPolicy.SelfGO).To(ConsistOf("code-fix", "ci-policy"))
+
+		var verify531 foremanv1alpha1.AgenticTask
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: "batch-verdict-policy-verify-531"}, &verify531)).To(Succeed())
+		Expect(verify531.Spec.VerdictPolicy).NotTo(BeNil())
+		Expect(verify531.Spec.VerdictPolicy.SelfGO).To(ConsistOf("code-fix", "ci-policy"))
+	})
+
 	It("expands Issues into code+verify pairs in issue-batch mode", func() {
 		wl := newWorkload("batch-shortcut", foremanv1alpha1.WorkloadSpec{
 			Intent:           "batch",

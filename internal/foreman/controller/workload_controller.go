@@ -423,6 +423,7 @@ func (r *WorkloadReconciler) renderAndCreate(ctx context.Context, w *foremanv1al
 				Priority:       step.Priority,
 				GateProfile:    effectiveGateProfile(step, w).DeepCopy(),
 				MCPEnabled:     w.Spec.MCPEnabled,
+				VerdictPolicy:  w.Spec.VerdictPolicy,
 			},
 		}
 		if err := controllerutil.SetControllerReference(w, task, r.Scheme); err != nil {

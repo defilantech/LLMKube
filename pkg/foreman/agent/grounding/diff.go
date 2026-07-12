@@ -35,8 +35,22 @@ func AddedLines(
 	// reliably shown by `git diff <base>`, so stage for real with `git add -A`.
 	// The executor's later `git add -A` supersedes this, and the workspace is
 	// discarded after the run, so the staging is harmless.
-	addArgs := append([]string{"add", "-A", "--"}, pathspec...)
-	_, _ = run(ctx, workspace, nil, "git", addArgs...) // best-effort
+	//
+	// Each pathspec is staged with its OWN `git add -A --` call rather than
+	// one call carrying every pathspec at once: `git add` treats a
+	// multi-pathspec invocation as atomic, so ONE pathspec matching no files
+	// (e.g. "docs" or "examples" in a repo that has no docs/ or examples/
+	// directory, an entirely normal repo shape, not an error) makes git exit
+	// 128 and stage NOTHING AT ALL, silently dropping files matched by the
+	// OTHER pathspecs too (e.g. "*.md"). That defeated every AddedLines-based
+	// check on any repo missing one of these directories, including the
+	// claim-evidence check this scopes for (#1075 round-2 finding B).
+	// Iterating isolates the failure to the one pathspec that legitimately
+	// matched nothing; each call stays best-effort so a pathspec matching
+	// nothing can never block the ones that do.
+	for _, p := range pathspec {
+		_, _ = run(ctx, workspace, nil, "git", "add", "-A", "--", p) // best-effort, per-pathspec
+	}
 
 	// Diff the staged changes against base (--cached): new files show as full
 	// additions, modified files show their changes. base="HEAD" yields exactly

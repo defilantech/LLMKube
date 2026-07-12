@@ -678,11 +678,11 @@ func TestNativeExecutor_ModelEmitsNoGo(t *testing.T) {
 // still pass. The real pass-through is exercised by the existing
 // TestNativeExecutor_ModelEmitsNoGo and the other ModelEmits* tests
 // in this file (which drive the executor end-to-end with a scripted
-// OAI server). For #970 specifically, no new executor behavior is
-// introduced; the executor passes the model's extra map through
-// verbatim, and the controller does the rest. If a future PR adds
-// executor-side ALREADY-RESOLVED detection or rewriting, add a new
-// TestNativeExecutor_<that-behavior> test here.
+// OAI server). Since #1075 Task 5 the executor also PROMOTES the
+// nested ALREADY-RESOLVED / NEEDS-VERIFICATION outcome to the
+// top-level Extra["outcome"] the controller reads; that behavior is
+// covered end-to-end by TestNativeExecutor_PromotesAlreadyResolvedOutcome
+// and TestNativeExecutor_PromotesNeedsVerificationOutcome below.
 func TestAlreadyResolvedEnvelopeShape(t *testing.T) {
 	// Construct the JSON the model would produce via submit_result.
 	submitted := map[string]any{
@@ -721,6 +721,277 @@ func TestAlreadyResolvedEnvelopeShape(t *testing.T) {
 	}
 	if !strings.Contains(env.Summary, "already resolved") {
 		t.Errorf("summary: want to contain 'already resolved', got %q", env.Summary)
+	}
+}
+
+// executeCoderTask drives the real executor end-to-end against a seeded
+// bare repo and a scripted OAI server, mirroring the happy-path
+// arrangement. noUpstream makes UpstreamURLForRepo resolve nothing (the
+// clone still works via GitRemoteURL), which is how a run with an
+// unresolvable evidence base is produced. Returns the executor Result.
+func executeCoderTask(
+	t *testing.T,
+	agent *foremanv1alpha1.Agent,
+	task *foremanv1alpha1.AgenticTask,
+	reg *fakeRegistry,
+	oaiBody string,
+	noUpstream bool,
+) *foremanagent.Result {
+	t.Helper()
+	gitOrSkip(t)
+	root := t.TempDir()
+	bare := initBareWithSeed(t, root)
+	oaiSrv := scriptedOAI(t, []string{oaiBody})
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(agent, task).Build()
+
+	upstreamFor := func(string) string { return bare }
+	if noUpstream {
+		upstreamFor = func(string) string { return "" }
+	}
+	e := &foremanagent.NativeAgentLoopExecutor{
+		Client:                   c,
+		WorkspaceRoot:            filepath.Join(root, "ws"),
+		GitRemoteURL:             bare,
+		UpstreamURLForRepo:       upstreamFor,
+		InferenceBaseURLOverride: oaiSrv.URL + "/v1",
+		CommitAuthor:             repo.Identity{Name: "Bot", Email: "b@x"},
+		CommitCommitter:          repo.Identity{Name: "Bot", Email: "b@x"},
+		RegistryFactory: func(
+			_ context.Context, ws string, _ *foremanv1alpha1.Agent, _ bool,
+		) (foremanagent.ToolRegistry, error) {
+			reg.workspace = ws
+			return reg, nil
+		},
+		AuthFactory: fakeAuth(t),
+	}
+	res, err := e.Execute(context.Background(), task)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	return res
+}
+
+// --- #1075 Task 5: terminal non-escalating outcomes promote to top level --
+
+// TestNativeExecutor_PromotesNeedsVerificationOutcome drives the real
+// executor with a model-emitted NO-GO whose terminal extra carries
+// outcome=NEEDS-VERIFICATION (#1033) plus an unverified list, and asserts
+// the executor promotes both to the TOP-LEVEL Result.Extra, where the
+// controller's isNeedsVerificationCoder (see coderTerminalOutcome in
+// internal/foreman/controller/workload_coder_escalation.go, not imported
+// here) reads them to skip escalation. Without the promotion the outcome
+// stayed buried under modelExtra and the task classified as a generic
+// MODEL-DECIDED NO-GO, which escalates.
+func TestNativeExecutor_PromotesNeedsVerificationOutcome(t *testing.T) {
+	agent, task := taskAndAgent("needs-verify")
+	unverified := []map[string]string{{
+		"fact":         "claims 87 tok/s on M5 Max",
+		"whyItMatters": "the change presents this as a validated/measured fact",
+		"howToVerify":  "measure on the target hardware or cite an existing in-repo source",
+	}}
+	reg := &fakeRegistry{
+		results: map[string]*foremanagent.ToolResult{
+			"submit_result": {
+				Terminal: true, Verdict: "NO-GO", Summary: "cannot ground the claimed throughput",
+				Extra: map[string]any{
+					"outcome":    "NEEDS-VERIFICATION",
+					"unverified": unverified,
+				},
+			},
+		},
+	}
+	res := executeCoderTask(t, agent, task, reg, submitNoGoBody, false)
+
+	if res.Verdict != foremanv1alpha1.AgenticTaskVerdictNoGo {
+		t.Fatalf("verdict: want NO-GO got %s", res.Verdict)
+	}
+	if got := res.Extra["outcome"]; got != "NEEDS-VERIFICATION" {
+		t.Errorf("top-level outcome: want NEEDS-VERIFICATION got %v", got)
+	}
+	if res.Extra["unverified"] == nil {
+		t.Errorf("top-level unverified missing: %+v", res.Extra)
+	}
+	// The full nesting stays for observability.
+	me, ok := res.Extra["modelExtra"].(map[string]any)
+	if !ok || me["outcome"] != "NEEDS-VERIFICATION" || me["unverified"] == nil {
+		t.Errorf("modelExtra nesting lost: %v", res.Extra["modelExtra"])
+	}
+}
+
+// TestNativeExecutor_PromotesAlreadyResolvedOutcome is the #970 twin of
+// the needs-verification promotion test: a model-emitted NO-GO with
+// outcome=ALREADY-RESOLVED and resolvedBy evidence must surface both at
+// the top level for isAlreadyResolvedCoder and the Workload rollup.
+func TestNativeExecutor_PromotesAlreadyResolvedOutcome(t *testing.T) {
+	agent, task := taskAndAgent("already-resolved")
+	reg := &fakeRegistry{
+		results: map[string]*foremanagent.ToolResult{
+			"submit_result": {
+				Terminal: true, Verdict: "NO-GO", Summary: "already resolved by prior fix e97d0ca",
+				Extra: map[string]any{
+					"outcome":    "ALREADY-RESOLVED",
+					"resolvedBy": "e97d0ca",
+				},
+			},
+		},
+	}
+	res := executeCoderTask(t, agent, task, reg, submitNoGoBody, false)
+
+	if res.Verdict != foremanv1alpha1.AgenticTaskVerdictNoGo {
+		t.Fatalf("verdict: want NO-GO got %s", res.Verdict)
+	}
+	if got := res.Extra["outcome"]; got != "ALREADY-RESOLVED" {
+		t.Errorf("top-level outcome: want ALREADY-RESOLVED got %v", got)
+	}
+	if got := res.Extra["resolvedBy"]; got != "e97d0ca" {
+		t.Errorf("top-level resolvedBy: want e97d0ca got %v", got)
+	}
+	me, ok := res.Extra["modelExtra"].(map[string]any)
+	if !ok || me["outcome"] != "ALREADY-RESOLVED" {
+		t.Errorf("modelExtra nesting lost: %v", res.Extra["modelExtra"])
+	}
+}
+
+// --- #1075 Task 5: work-class policy wiring in the executor ---------------
+
+// submitGoWithChange returns a fakeRegistry whose submit_result GO writes
+// file (relative to the workspace) so the commit+push path has a diff,
+// with the given terminal extra.
+func submitGoWithChange(file string, extra map[string]any) *fakeRegistry {
+	return &fakeRegistry{
+		results: map[string]*foremanagent.ToolResult{
+			"submit_result": {
+				Terminal: true, Verdict: "GO", Summary: "fixed",
+				CommitMessage: "fix: change\n",
+				Extra:         extra,
+			},
+		},
+		touch: func(name string, ws string) {
+			if name == "submit_result" {
+				path := filepath.Join(ws, file)
+				_ = os.MkdirAll(filepath.Dir(path), 0o755)
+				_ = os.WriteFile(path, []byte("changed by test\nline two\n"), 0o644)
+			}
+		},
+	}
+}
+
+// TestNativeExecutor_WorkClassPolicy_GoStandsAndRecordsClasses: a
+// coder/issue-fix GO whose footprint is code-fix (a bare source file)
+// stands, and both the actual and the coder-declared class are recorded.
+func TestNativeExecutor_WorkClassPolicy_GoStandsAndRecordsClasses(t *testing.T) {
+	agent, task := taskAndAgent("wc-stands")
+	reg := submitGoWithChange("fix.go", map[string]any{"workClass": "code-fix"})
+	res := executeCoderTask(t, agent, task, reg, submitGoBody, false)
+
+	if res.Verdict != foremanv1alpha1.AgenticTaskVerdictGo {
+		t.Fatalf("verdict: want GO got %s; result=%+v", res.Verdict, res)
+	}
+	if got := res.Extra["actualWorkClass"]; got != "code-fix" {
+		t.Errorf("actualWorkClass: want code-fix got %v", got)
+	}
+	if got := res.Extra["declaredWorkClass"]; got != "code-fix" {
+		t.Errorf("declaredWorkClass: want code-fix got %v", got)
+	}
+	if _, ok := res.Extra["workClassUnknown"]; ok {
+		t.Errorf("workClassUnknown must not be set on a successful footprint read")
+	}
+}
+
+// TestNativeExecutor_WorkClassPolicy_CIPolicyFootprintDowngrades: a
+// coder/issue-fix GO whose whole diff is a GitHub Actions workflow is
+// rewritten to NO-GO + NEEDS-VERIFICATION by the work-class policy.
+func TestNativeExecutor_WorkClassPolicy_CIPolicyFootprintDowngrades(t *testing.T) {
+	agent, task := taskAndAgent("wc-ci")
+	reg := submitGoWithChange(".github/workflows/release.yml", nil)
+	res := executeCoderTask(t, agent, task, reg, submitGoBody, false)
+
+	if res.Verdict != foremanv1alpha1.AgenticTaskVerdictNoGo {
+		t.Fatalf("verdict: want NO-GO downgrade got %s; result=%+v", res.Verdict, res)
+	}
+	if got := res.Extra["outcome"]; got != "NEEDS-VERIFICATION" {
+		t.Errorf("outcome: want NEEDS-VERIFICATION got %v", got)
+	}
+	if got := res.Extra["actualWorkClass"]; got != "ci-policy" {
+		t.Errorf("actualWorkClass: want ci-policy got %v", got)
+	}
+	unverified, ok := res.Extra["unverified"].([]map[string]string)
+	if !ok || len(unverified) == 0 {
+		t.Errorf("unverified: want a non-empty list, got %v (%T)",
+			res.Extra["unverified"], res.Extra["unverified"])
+	}
+}
+
+// TestNativeExecutor_WorkClassPolicy_SkipsNonIssueFixKind: the policy is
+// scoped to the coder/issue-fix flow. The same ci-policy diff on a
+// freeform task (which reaches the same commit+push path) is not
+// classified and not downgraded.
+func TestNativeExecutor_WorkClassPolicy_SkipsNonIssueFixKind(t *testing.T) {
+	agent, task := taskAndAgent("wc-freeform")
+	task.Spec.Kind = foremanv1alpha1.AgenticTaskKindFreeform
+	reg := submitGoWithChange(".github/workflows/release.yml", nil)
+	res := executeCoderTask(t, agent, task, reg, submitGoBody, false)
+
+	if res.Verdict != foremanv1alpha1.AgenticTaskVerdictGo {
+		t.Fatalf("verdict: want GO (policy must not fire) got %s; result=%+v", res.Verdict, res)
+	}
+	if _, ok := res.Extra["actualWorkClass"]; ok {
+		t.Errorf("actualWorkClass must not be set on a non-issue-fix kind: %v", res.Extra["actualWorkClass"])
+	}
+	if _, ok := res.Extra["workClassUnknown"]; ok {
+		t.Errorf("workClassUnknown must not be set on a non-issue-fix kind")
+	}
+}
+
+// TestNativeExecutor_WorkClassPolicy_FailsOpenWhenBaseUnresolved: with no
+// resolvable upstream the evidence base SHA is empty, the footprint read
+// fails, and the policy fails open: the GO stands and the run is marked
+// workClassUnknown instead of blocking the verdict.
+func TestNativeExecutor_WorkClassPolicy_FailsOpenWhenBaseUnresolved(t *testing.T) {
+	agent, task := taskAndAgent("wc-failopen")
+	reg := submitGoWithChange(".github/workflows/release.yml", nil)
+	res := executeCoderTask(t, agent, task, reg, submitGoBody, true)
+
+	if res.Verdict != foremanv1alpha1.AgenticTaskVerdictGo {
+		t.Fatalf("verdict: want GO (fail open) got %s; result=%+v", res.Verdict, res)
+	}
+	if got := res.Extra["workClassUnknown"]; got != true {
+		t.Errorf("workClassUnknown: want true got %v", got)
+	}
+	if _, ok := res.Extra["actualWorkClass"]; ok {
+		t.Errorf("actualWorkClass must not be set when the footprint read failed: %v",
+			res.Extra["actualWorkClass"])
+	}
+}
+
+// TestNativeExecutor_WorkClassPolicy_TaskVerdictPolicyOptsInCIPolicy:
+// #1075 Task 6 threads task.Spec.VerdictPolicy.Resolve() into the
+// work-class check instead of the package-level defaultSelfGO. A task
+// carrying an explicit VerdictPolicy that opts ci-policy in must let a
+// ci-policy footprint GO stand, where
+// TestNativeExecutor_WorkClassPolicy_CIPolicyFootprintDowngrades (no
+// VerdictPolicy on the task, so the default applies) downgrades the
+// identical footprint to NO-GO.
+func TestNativeExecutor_WorkClassPolicy_TaskVerdictPolicyOptsInCIPolicy(t *testing.T) {
+	agent, task := taskAndAgent("wc-ci-optin")
+	task.Spec.VerdictPolicy = &foremanv1alpha1.VerdictPolicy{
+		SelfGO: []string{"code-fix", "ci-policy"},
+	}
+	reg := submitGoWithChange(".github/workflows/release.yml", nil)
+	res := executeCoderTask(t, agent, task, reg, submitGoBody, false)
+
+	if res.Verdict != foremanv1alpha1.AgenticTaskVerdictGo {
+		t.Fatalf("verdict: want GO (task VerdictPolicy opts ci-policy in) got %s; result=%+v",
+			res.Verdict, res)
+	}
+	if got := res.Extra["actualWorkClass"]; got != "ci-policy" {
+		t.Errorf("actualWorkClass: want ci-policy got %v", got)
+	}
+	// goResult seeds Extra["outcome"] = "" for every GO; applyVerdictPolicy
+	// only overwrites it (to needsVerificationOutcome) on a downgrade, so a
+	// GO that stands must leave it at the seeded empty string.
+	if got := res.Extra["outcome"]; got != "" {
+		t.Errorf("outcome: want empty (GO stands) got %v", got)
 	}
 }
 

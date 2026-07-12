@@ -42,6 +42,7 @@ import (
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/githubissue"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/githubpr"
+	"github.com/defilantech/llmkube/pkg/foreman/agent/grounding"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/oai"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/repo"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/repomap"
@@ -559,9 +560,17 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 	// gateAdvisories accumulates non-blocking findings from the gate that
 	// survive to the GO result's Extra map so the reviewer can act on them.
 	gateAdvisories := &[]advisory{}
+	// evidenceBaseSHA is resolved once here (coder-role Agents only) and
+	// reused below by the work-class policy footprint read
+	// (diffFootprint), after the loop completes, so the claim-evidence
+	// gate and the footprint policy always anchor to the identical
+	// commit (#1075 Task 5).
+	var evidenceBaseSHA string
 	if agent.Spec.Role == foremanv1alpha1.AgentRoleCoder {
 		cfg.MaxVerifyRetries = coderGateMaxRetries
-		cfg.VerifyTerminal = makeCoderGateVerifier(workspace, issueText, log, task.Spec.GateProfile, gateAdvisories)
+		evidenceBaseSHA = e.resolveEvidenceBaseSHA(ctx, task, workspace, log)
+		cfg.VerifyTerminal = makeCoderGateVerifier(
+			workspace, issueText, evidenceBaseSHA, log, task.Spec.GateProfile, gateAdvisories)
 	}
 
 	// Layer the model profile onto the resolved config (addendum + stuck-loop
@@ -817,7 +826,52 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 
 	r := e.goResult(start, transcriptRef, loopRes, branch, sha)
 	attachGateAdvisories(r.Extra, gateAdvisories)
+	r = e.applyWorkClassPolicyForTask(ctx, log, task, agent, workspace, evidenceBaseSHA, loopRes, r)
 	return r, nil
+}
+
+// applyWorkClassPolicyForTask applies the work-class GO/NEEDS-VERIFICATION
+// downgrade policy (#1075 Task 5a) to a coder task's GO result. Pulled out
+// as a method so runLLMPath stays under the gocyclo ceiling, mirroring
+// resolveEvidenceBaseSHA above. Scoped to the mainline coder/issue-fix
+// flow: every other role/kind combination (a freeform/integrate/reconcile
+// task assigned to a coder-role Agent, for instance) returns r unchanged,
+// since the caller's commit+push path is not limited to issue-fix and
+// those kinds are not yet this policy's audience.
+//
+// evidenceBaseSHA is the SAME executor-resolved upstream base tip Task 4
+// threads to the claim-evidence check (resolveEvidenceBaseSHA above); the
+// footprint read (diffFootprint) anchors to it via the identical
+// resolveClaimGateAnchor helper claim_gate.go uses, so the two checks are
+// never computed against different commits.
+//
+// selfGO comes from task.Spec.VerdictPolicy.Resolve() (#1075 Task 6):
+// the reconciler propagates Workload.spec.verdictPolicy onto every child
+// task at build time (workload_controller.go, same pattern as
+// MCPEnabled), so operators opt classes like ci-policy in or out per
+// Workload without the executor needing a live Workload GET. A nil
+// VerdictPolicy (hand-authored task, or a Workload that never set one)
+// resolves to defaultSelfGO via VerdictPolicy.Resolve's nil-safe receiver.
+func (e *NativeAgentLoopExecutor) applyWorkClassPolicyForTask(
+	ctx context.Context, log logr.Logger, task *foremanv1alpha1.AgenticTask,
+	agent *foremanv1alpha1.Agent, workspace, evidenceBaseSHA string,
+	loopRes *LoopResult, r *Result,
+) *Result {
+	if agent.Spec.Role != foremanv1alpha1.AgentRoleCoder ||
+		task.Spec.Kind != foremanv1alpha1.AgenticTaskKindIssueFix {
+		return r
+	}
+	if declared, ok := loopRes.Terminal.Extra["workClass"].(string); ok && declared != "" {
+		r.Extra["workClass"] = declared
+	}
+	changed, footprintErr := diffFootprint(ctx, workspace, execCommandRunner, evidenceBaseSHA)
+	if footprintErr != nil {
+		log.Info("verdict policy: diff footprint unavailable; skipping the work-class policy",
+			"err", footprintErr.Error())
+		r.Extra["workClassUnknown"] = true
+		return r
+	}
+	return applyVerdictPolicy(r, changed, task.Spec.VerdictPolicy.Resolve())
 }
 
 // reviewerGroundedChangedLines builds the changedLines callback the
@@ -912,10 +966,20 @@ const coderGateMaxRetries = 3
 // use; a bootstrap or run error is reported as could-not-verify so the
 // terminal stands and the clean-room gate Job remains the authoritative
 // backstop. issueText is passed to the gate's scope-overlap check (#782).
-// acc accumulates non-blocking advisory findings for the reviewer; it may
-// be nil (advisory collection disabled).
+// evidenceBaseSHA is the literal upstream base tip commit the executor
+// resolved before this task's gate retries began (see the runLLMPath call
+// site below); it is passed to the claim-evidence check so its evidence
+// anchor resolves via git merge-base(HEAD, evidenceBaseSHA) rather than the
+// coder-movable "HEAD" or an in-workspace origin/<baseBranch> ref (#1075
+// finding 1; round-2 findings A/C/D corrected the ref-based derivation to
+// this literal-SHA design). It may be empty when the executor could not
+// resolve it; checkClaimEvidence degrades to a HEAD-only scan in that case
+// rather than blocking on the infrastructure failure alone. acc accumulates
+// non-blocking advisory findings for the reviewer; it may be nil (advisory
+// collection disabled).
 func makeCoderGateVerifier(
-	workspace, issueText string, log logr.Logger, profile *foremanv1alpha1.GateProfile, acc *[]advisory,
+	workspace, issueText, evidenceBaseSHA string,
+	log logr.Logger, profile *foremanv1alpha1.GateProfile, acc *[]advisory,
 ) TerminalVerifier {
 	return func(ctx context.Context, terminal *ToolResult, _ []oai.Message) (bool, string, error) {
 		if terminal == nil {
@@ -924,6 +988,10 @@ func makeCoderGateVerifier(
 		if v, _ := normalizeModelVerdict(terminal.Verdict); v != foremanv1alpha1.AgenticTaskVerdictGo {
 			return true, "", nil
 		}
+		// The coder's declared evidence ledger for the claim-evidence check,
+		// parsed once here and threaded to both gate paths below so a
+		// non-Go repo gets the same claim enforcement a Go repo does.
+		evidence := grounding.ParseEvidence(terminal.Extra)
 		// Non-Go GateProfiles run the language-agnostic generic gate from the
 		// resolved commands. The Go path below is left byte-identical: a nil,
 		// empty-language, or explicit-"go" profile takes it unchanged.
@@ -937,6 +1005,15 @@ func makeCoderGateVerifier(
 				// to the clean-room verify Job instead of failing the GO.
 				log.Info("coder gate (generic): check deferred; verify Job is the backstop",
 					"language", string(profile.Language), "check", a.Check, "detail", a.Detail)
+			}
+			// RunGenericGate does not know about claim-evidence (it is not one
+			// of the resolved gate commands); run it separately and merge its
+			// failure into the same pass/feedback result so non-Go repos get
+			// claim enforcement too (#1075).
+			claimFailed, claimOut := checkClaimEvidence(evidence, evidenceBaseSHA)(ctx, workspace, execCommandRunner)
+			if claimFailed {
+				pass = false
+				feedback = appendClaimEvidenceFailure(feedback, claimOut)
 			}
 			if !pass {
 				log.Info("coder gate (generic): fast checks failed; returning feedback to the loop for a fix",
@@ -952,7 +1029,8 @@ func makeCoderGateVerifier(
 				return true, "", err
 			}
 		}
-		pass, feedback, advisories := RunCoderGate(ctx, workspace, lintPath, execCommandRunner, issueText)
+		pass, feedback, advisories := RunCoderGate(
+			ctx, workspace, lintPath, execCommandRunner, issueText, evidenceBaseSHA, evidence)
 		if acc != nil {
 			*acc = append(*acc, advisories...)
 		}
@@ -1481,7 +1559,44 @@ func (e *NativeAgentLoopExecutor) modelDecidedResult(
 		"turnCount":     lr.Turns,
 		"modelExtra":    lr.Terminal.Extra,
 	}
+	promoteTerminalOutcome(r.Extra, lr.Terminal.Extra)
 	return r
+}
+
+// promoteTerminalOutcome lifts a terminal, non-escalating machine outcome
+// from the loop terminal's Extra (nested under "modelExtra" in the Result)
+// to the Result's top-level Extra["outcome"]. The controller's
+// isNeedsVerificationCoder and isAlreadyResolvedCoder (see
+// internal/foreman/controller/workload_coder_escalation.go; NOT imported
+// here, per the needsVerificationOutcome doc comment in verdict_policy.go)
+// read the TOP-LEVEL outcome to decide whether to skip escalation, so a
+// NEEDS-VERIFICATION or ALREADY-RESOLVED terminal buried under modelExtra
+// would still classify as a generic MODEL-DECIDED NO-GO and escalate; that
+// gap predates #1075 Task 5 (#970/#1033 shipped with the model-emitted
+// outcome nested-only) and became load-bearing once the loop itself began
+// synthesizing NEEDS-VERIFICATION terminals (ClaimEvidenceExhaustedEnvelope,
+// loop.go).
+//
+// Only the two known terminal non-failure outcomes are promoted; every
+// other terminal keeps the top-level "MODEL-DECIDED". The paired fields
+// the controller and the Workload rollup read alongside each outcome are
+// promoted with it: "unverified" (needs-verification) and "resolvedBy"
+// (already-resolved). The full modelExtra nesting is left untouched for
+// observability (terminalExtra is the same map referenced there).
+func promoteTerminalOutcome(extra, terminalExtra map[string]any) {
+	outcome, _ := terminalExtra["outcome"].(string)
+	switch outcome {
+	case needsVerificationOutcome:
+		extra["outcome"] = needsVerificationOutcome
+		if v, ok := terminalExtra["unverified"]; ok {
+			extra["unverified"] = v
+		}
+	case alreadyResolvedOutcome:
+		extra["outcome"] = alreadyResolvedOutcome
+		if v, ok := terminalExtra["resolvedBy"]; ok {
+			extra["resolvedBy"] = v
+		}
+	}
 }
 
 func (e *NativeAgentLoopExecutor) noChangesResult(
@@ -1544,6 +1659,56 @@ func (e *NativeAgentLoopExecutor) resolveUpstreamForRun(task *foremanv1alpha1.Ag
 		return e.UpstreamURLForRepo(task.Spec.Payload.Repo)
 	}
 	return upstreamURLForRepo(task.Spec.Payload.Repo)
+}
+
+// resolveEvidenceBaseSHA resolves evidenceBaseSHA for the claim-evidence
+// gate check: the LITERAL upstream base tip commit this task's branch was
+// cut from, fetched HERE (once, before the gate's fix-retry loop starts)
+// via the same repo.BaseBranchSHA helper reviewerDiffBase and
+// recoverSelfCommitsOrNoChange already call (the #995 precedent).
+// setupTaskBranch (in Execute, above runLLMPath) does not itself return or
+// record the SHA it fetched (repo.CreateBranchFromUpstream resolves the
+// upstream tip via FETCH_HEAD internally and discards it), so this is a
+// second, deliberate fetch, not a reuse of a value already in scope;
+// recoverSelfCommitsOrNoChange already re-fetches for the exact same
+// reason. Pulled out as a method so runLLMPath stays under the gocyclo
+// ceiling, mirroring resolveUpstreamForRun above.
+//
+// Round-2 review findings A/C/D replaced an earlier design that derived
+// the claim-evidence anchor at GATE TIME as `git merge-base HEAD
+// origin/<baseBranch>` inside the workspace: in a fork-based deployment
+// origin can lag the upstream project the branch was actually cut from by
+// an arbitrary amount (setupTaskBranch always cuts from the CURRENT
+// upstream tip, #813), so that derivation swept the whole upstream lag
+// delta into the diff as unproven "claims," and failed closed outright
+// when origin/<baseBranch> was absent (an unsynced release branch).
+// Resolving the literal SHA here, once, from a real fetch against the
+// upstream project (not the fork), and holding it in memory removes both
+// failure modes: gate time now runs `git merge-base HEAD <this literal
+// SHA>` (see resolveClaimGateAnchor in claim_gate.go), never an origin/*
+// ref lookup.
+//
+// Returns "" when there is no upstream to resolve against (a freeform task
+// with no repo slug) or when the fetch itself fails (e.g. baseBranch does
+// not exist upstream); either is logged, not treated as fatal.
+// checkClaimEvidence degrades to a HEAD-only scan to decide fail-open vs.
+// fail-closed rather than block the gate on this infrastructure trouble
+// alone.
+func (e *NativeAgentLoopExecutor) resolveEvidenceBaseSHA(
+	ctx context.Context, task *foremanv1alpha1.AgenticTask, workspace string, log logr.Logger,
+) string {
+	upstreamURL := e.resolveUpstreamForRun(task)
+	if upstreamURL == "" {
+		return ""
+	}
+	baseBranch := baseBranchOrDefault(task.Spec.Payload.BaseBranch)
+	sha, err := repo.BaseBranchSHA(ctx, workspace, upstreamURL, baseBranch)
+	if err != nil {
+		log.Info("claim-evidence: could not resolve the evidence base SHA; gate will run a degraded scan",
+			"baseBranch", baseBranch, "err", err.Error())
+		return ""
+	}
+	return sha
 }
 
 // recoverSelfCommitsOrNoChange returns true when the executor should

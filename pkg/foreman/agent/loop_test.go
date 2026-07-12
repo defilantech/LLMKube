@@ -356,6 +356,58 @@ func TestLoop_VerifyTerminal_BudgetExhaustedDowngrades(t *testing.T) {
 	}
 }
 
+// TestLoop_VerifyTerminal_ClaimEvidenceExhaustionDowngradesToNeedsVerification
+// covers the second downgrade path from proposal 1075 (Task 5b): when gate
+// retries exhaust AND the final gate feedback carries the claim-evidence
+// marker (checkClaimEvidence, claim_gate.go), the terminal is
+// NEEDS-VERIFICATION (NO-GO), not the generic CODER-GATE-FAILED
+// (INCOMPLETE) every other exhausted check produces. Mirrors
+// TestLoop_VerifyTerminal_BudgetExhaustedDowngrades's arrangement.
+func TestLoop_VerifyTerminal_ClaimEvidenceExhaustionDowngradesToNeedsVerification(t *testing.T) {
+	srv, _ := scriptedOAIServer(t, []string{toolCallSubmitGo, toolCallSubmitGo, toolCallSubmitGo})
+	reg := &fakeRegistry{
+		results: map[string]*ToolResult{
+			"submit_result": {Terminal: true, Verdict: "GO", Summary: "ok"},
+		},
+	}
+	loop := newTestLoop(srv, reg)
+	const feedback = "[claim-evidence] These added docs lines assert a number with no verifiable " +
+		"source. For each, cite the real source (file:line whose text at the base commit backs " +
+		"the claim), delete the claim, or mark it illustrative and unmeasured:\n" +
+		"  - README.md:12 measured 87 tok/s with no evidence entry citing it\n"
+	res, err := loop.Run(context.Background(), LoopConfig{
+		Model: "test", UserPrompt: "go", MaxTurns: 5, MaxVerifyRetries: 2,
+		VerifyTerminal: func(_ context.Context, _ *ToolResult, _ []oai.Message) (bool, string, error) {
+			return false, feedback, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Terminal == nil || res.Terminal.Verdict != "NO-GO" {
+		t.Fatalf("want NO-GO downgrade, got %+v", res.Terminal)
+	}
+	if res.Terminal.Extra["outcome"] != needsVerificationOutcome {
+		t.Errorf("want outcome %s, got %v", needsVerificationOutcome, res.Terminal.Extra["outcome"])
+	}
+	unverified, ok := res.Terminal.Extra["unverified"].([]map[string]string)
+	if !ok || len(unverified) == 0 {
+		t.Fatalf("want a non-empty unverified list, got %v (%T)",
+			res.Terminal.Extra["unverified"], res.Terminal.Extra["unverified"])
+	}
+	for _, u := range unverified {
+		if u["fact"] == "" || u["whyItMatters"] == "" || u["howToVerify"] == "" {
+			t.Errorf("unverified entry missing a field: %+v", u)
+		}
+	}
+	if got, want := unverified[0]["fact"], "README.md:12 measured 87 tok/s with no evidence entry citing it"; got != want {
+		t.Errorf("fact = %q, want the finding text without the bullet prefix (%q)", got, want)
+	}
+	if res.Terminal.Extra["gateAttempts"] != 2 {
+		t.Errorf("want gateAttempts 2, got %v", res.Terminal.Extra["gateAttempts"])
+	}
+}
+
 func TestLoop_MaxTurnsExhausted(t *testing.T) {
 	// Three calls all return read_file. With MaxTurns=3 the loop should
 	// hit the limit and return ErrMaxTurnsExhausted, transcript intact.

@@ -2529,3 +2529,87 @@ func TestRecoverSelfCommitsOrNoChange_GenuinelyNothingToRecover(t *testing.T) {
 		t.Errorf("HEAD = %s, want %s (no-change path must not move HEAD)", got, mainSHA)
 	}
 }
+
+// ---- makeCoderGateVerifier: generic-gate + claim-evidence merge (#1075) ----
+
+// TestMakeCoderGateVerifier_GenericGate_ClaimEvidenceMergedIntoFeedback
+// covers finding 4: the non-Go (generic-gate) merge path in
+// makeCoderGateVerifier had zero tests. This exercises it end to end with a
+// fake execCommandRunner (the generic-gate path is not injectable via a
+// commandRunner parameter, so the package-level var is swapped for the
+// duration of the test, mirroring the existing execCommandRunner-swap seam
+// in coder_grounding_gate_test.go): a Python GateProfile whose resolved
+// format/lint/build/test commands all pass (RunGenericGate alone would
+// report a clean GO), but the terminal's docs diff adds an unsourced
+// benchmark claim with no declared evidence. The merged result must reject
+// the GO and carry the claim-evidence marker alongside the synthesized
+// gate-failed header.
+func TestMakeCoderGateVerifier_GenericGate_ClaimEvidenceMergedIntoFeedback(t *testing.T) {
+	orig := execCommandRunner
+	t.Cleanup(func() { execCommandRunner = orig })
+	execCommandRunner = func(_ context.Context, _ string, _ []string, name string, args ...string) (string, error) {
+		if name == "git" && len(args) > 0 {
+			switch args[0] {
+			case "merge-base":
+				return fakeForkPointSHA, nil
+			case "diff":
+				return unsourcedBenchmarkPatch, nil
+			}
+		}
+		// Every `sh -c <format/lint/build/test command>` call from
+		// RunGenericGate, plus `git add`/`git show`, succeeds silently.
+		return "", nil
+	}
+
+	profile := &foremanv1alpha1.GateProfile{Language: foremanv1alpha1.GateLanguagePython}
+	verifier := makeCoderGateVerifier("/ws", "", fakeEvidenceBaseSHA, logr.Discard(), profile, nil)
+
+	terminal := &ToolResult{Verdict: "GO", Extra: map[string]any{}}
+	accept, feedback, err := verifier(context.Background(), terminal, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if accept {
+		t.Fatalf("expected the merged generic gate to reject a GO with an unsourced claim; feedback:\n%s", feedback)
+	}
+	if strings.Count(feedback, "The verification gate failed") != 1 {
+		t.Errorf("want the gate-failed header exactly once (synthesized since RunGenericGate itself "+
+			"passed clean); got:\n%s", feedback)
+	}
+	if !strings.Contains(feedback, "## claim-evidence") {
+		t.Errorf("feedback should carry the claim-evidence section header; got:\n%s", feedback)
+	}
+	if !strings.Contains(feedback, "[claim-evidence]") {
+		t.Errorf("feedback should carry the claim-evidence marker; got:\n%s", feedback)
+	}
+}
+
+// TestMakeCoderGateVerifier_GenericGate_CleanPassesWithNoClaims is the
+// counterpart: the same Python profile and passing commands, but no docs
+// diff at all, so the merged claim-evidence check has nothing to flag and
+// the GO stands.
+func TestMakeCoderGateVerifier_GenericGate_CleanPassesWithNoClaims(t *testing.T) {
+	orig := execCommandRunner
+	t.Cleanup(func() { execCommandRunner = orig })
+	execCommandRunner = func(_ context.Context, _ string, _ []string, name string, args ...string) (string, error) {
+		if name == "git" && len(args) > 0 && args[0] == "merge-base" {
+			return fakeForkPointSHA, nil
+		}
+		return "", nil // sh -c commands pass; empty git diff, no claims
+	}
+
+	profile := &foremanv1alpha1.GateProfile{Language: foremanv1alpha1.GateLanguagePython}
+	verifier := makeCoderGateVerifier("/ws", "", fakeEvidenceBaseSHA, logr.Discard(), profile, nil)
+
+	terminal := &ToolResult{Verdict: "GO", Extra: map[string]any{}}
+	accept, feedback, err := verifier(context.Background(), terminal, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !accept {
+		t.Fatalf("expected a clean GO with no claims to stand; feedback:\n%s", feedback)
+	}
+	if feedback != "" {
+		t.Errorf("expected empty feedback on accept, got: %q", feedback)
+	}
+}

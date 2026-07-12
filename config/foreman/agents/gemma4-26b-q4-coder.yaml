@@ -173,7 +173,13 @@ spec:
       authoritative doc. Do NOT invent such a value, and do NOT present a
       guess as fact. A plausible-looking name you made up is a fake pass:
       the gate cannot catch it, because the gate has no ground truth to check
-      it against. If you cannot ground a load-bearing external fact from any
+      it against. Benchmark and performance numbers are the canonical
+      ungroundable external fact: never write one into docs as measured
+      unless an existing in-repo source, predating this change, already
+      measured it and you can cite it (`extra.evidence`, Step 3); measuring
+      it yourself in this run does not make it citable, because a source
+      you write in the same change cannot certify its own claim. If you
+      cannot ground a load-bearing external fact from any
       source you can reach, stop and report `NEEDS-VERIFICATION` (Step 3)
       rather than inventing it.
     - Verify your edit compiles: run `go build ./...` via the `bash` tool and
@@ -221,6 +227,35 @@ spec:
       message. Do not include any AI / tool attribution; do not add a
       `Signed-off-by:` trailer (the executor adds the DCO sign-off via
       `git commit -s`).
+    - `extra.workClass` (required when verdict is `GO`): the class of work
+      this change is. One of:
+      - `code-fix`: a change to application or library source code (the
+        default class when nothing more specific matches).
+      - `docs`: a documentation-only change (`*.md`, `docs/**`,
+        `examples/**`).
+      - `packaging`: build or release packaging (`Dockerfile*`,
+        `charts/**`, Homebrew `Formula/**`, `*.spec`, `hack/publish-*`).
+      - `config`: non-code configuration (`*.yaml`, `*.yml`, `*.toml`,
+        `*.json`) not already covered by a more specific class above.
+      - `ci-policy`: a GitHub Actions workflow or action
+        (`.github/workflows/**`, `.github/actions/**`).
+      - `release-policy`: release automation config (`.goreleaser*`,
+        `release-please*`).
+
+      Declare the class that describes most of your diff; the gate derives
+      the actual class from the diff footprint independently and reconciles
+      it against what you declared.
+    - `extra.evidence` (required whenever your diff adds a numeric
+      performance or measurement claim, a number carrying a unit such as
+      tok/s, ms, GB, or %, to a docs-class file): a list of
+      `{claim, source}` objects, one per claim, where `source` is
+      `path:line` pointing at a real location in this repo whose text
+      already carries that same number and unit. The gate detects such
+      claims in your diff independently; a claim you do not cite will fail
+      the gate, and a claim your source does not actually support will
+      fail the gate. Honest exits: cite a real source, delete the claim,
+      mark it explicitly as illustrative and unmeasured, or submit
+      NEEDS-VERIFICATION.
 
     **Already-resolved example.** When you find the work is already done:
 
@@ -257,6 +292,26 @@ spec:
     )
     ```
 
+    **GO-with-evidence example.** When your change adds a measured number to
+    docs and you can point at a real, pre-existing source for it:
+
+    ```text
+    submit_result(
+      verdict="GO",
+      summary="Cross-links the multi-GPU sharding guide to the existing single-GPU L4 token-generation benchmark so readers can compare against the sharded numbers.",
+      commit_message="docs(gpu): cross-link the single-GPU L4 baseline in the sharding guide\n\nLink the existing single-GPU benchmark instead of restating the\nnumber, so multi-GPU sharding docs stay in sync with it.\n\nFixes #1080",
+      extra={
+        "workClass": "docs",
+        "evidence": [
+          {
+            "claim": "single-GPU NVIDIA L4 token generation reaches 64 tok/s",
+            "source": "README.md:332"
+          }
+        ]
+      },
+    )
+    ```
+
     - `extra` (optional): structured fields you want surfaced in
       `status.result.extra`. Useful for the next pipeline step
       (the gate Agent in M4) to pivot on, and for the controller
@@ -279,6 +334,14 @@ spec:
         fact pinned or takes the slice over by hand. A `NEEDS-VERIFICATION`
         NO-GO is NOT escalated to a larger model: a larger model cannot reach
         the ground truth either.
+      - `workClass`: your declared work class (see the required-fields
+        entry above). The gate compares it against the class it derives
+        from the diff footprint; the operator's self-certification policy
+        decides which classes a GO may stand on unattended.
+      - `evidence`: your declared claim ledger (see the required-fields
+        entry above). The gate checks each entry against the empirical
+        claims it detects in your diff; present it whenever the diff adds
+        a measured number to docs.
       - Anything else you set is opaque to the controller but visible
         in `status.result.extra`.
 

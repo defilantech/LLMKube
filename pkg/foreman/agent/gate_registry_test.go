@@ -19,6 +19,8 @@ package agent
 import (
 	"context"
 	"testing"
+
+	foremanv1alpha1 "github.com/defilantech/llmkube/api/foreman/v1alpha1"
 )
 
 func TestRunGateChecks_SplitsByTier(t *testing.T) {
@@ -63,13 +65,15 @@ func TestGateCheckEnabled_Toggle(t *testing.T) {
 
 func TestGateCheckRegistry_TiersAndNames(t *testing.T) {
 	got := map[string]gateTier{}
-	for _, c := range gateCheckRegistry("issue text") {
+	langs := map[string]foremanv1alpha1.GateLanguage{}
+	for _, c := range gateCheckRegistry("issue text", "main", nil) {
 		if c.fn == nil {
 			t.Errorf("check %q has nil fn", c.name)
 		}
 		got[c.name] = c.tier
+		langs[c.name] = c.lang
 	}
-	wantBlock := []string{"rbac-use", "import-graph", "embedded-artifact"}
+	wantBlock := []string{"rbac-use", "import-graph", "embedded-artifact", "claim-evidence"}
 	wantAdvisory := []string{"grounding-breadth", "caller-impact", "issue-example"}
 	for _, n := range wantBlock {
 		tier, ok := got[n]
@@ -86,5 +90,8 @@ func TestGateCheckRegistry_TiersAndNames(t *testing.T) {
 		} else if tier != tierAdvisory {
 			t.Errorf("%s should be advisory tier, got %v", n, tier)
 		}
+	}
+	if lang := langs["claim-evidence"]; lang != "" {
+		t.Errorf("claim-evidence should have no lang scope (runs for every language), got %q", lang)
 	}
 }
