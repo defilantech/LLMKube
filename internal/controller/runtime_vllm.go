@@ -1,7 +1,10 @@
 package controller
 
 import (
+	"context"
 	"fmt"
+	"io"
+	"net/http"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -197,6 +200,40 @@ func (b *VLLMBackend) BuildProbes(port int32) (*corev1.Probe, *corev1.Probe, *co
 		FailureThreshold: 3,
 	}
 	return startup, liveness, readiness
+}
+
+// IdleProbe returns a probe closure that checks vLLM /metrics for
+// `vllm:num_requests_running` gauge sum. Idle when sum == 0. Absent metric
+// returns (false, nil) — fail-closed, treats unknown as busy. Mirrors the
+// metal-agent's buildLlamaServerArgs idle check in pkg/agent/executor.go.
+func (b *VLLMBackend) IdleProbe(_ *inferencev1alpha1.InferenceService, client *http.Client) func(ctx context.Context, baseURL string) (bool, error) {
+	return func(ctx context.Context, baseURL string) (bool, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/metrics", nil)
+		if err != nil {
+			return false, fmt.Errorf("failed to create request: %w", err)
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			return false, fmt.Errorf("failed to query /metrics: %w", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+
+		if resp.StatusCode != http.StatusOK {
+			return false, fmt.Errorf("/metrics returned status %d", resp.StatusCode)
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return false, fmt.Errorf("failed to read /metrics response: %w", err)
+		}
+
+		sum, found := parsePrometheusGaugeSum(string(body), "vllm:num_requests_running")
+		if !found {
+			return false, nil
+		}
+		return sum == 0, nil
+	}
 }
 
 func (b *VLLMBackend) BuildEnv(isvc *inferencev1alpha1.InferenceService) []corev1.EnvVar {

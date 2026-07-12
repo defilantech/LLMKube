@@ -843,14 +843,13 @@ var _ = Describe("podTemplatesDiffer input immutability (#922)", func() {
 	})
 })
 
-var _ = Describe("checkServerIdle", func() {
-	var reconciler *InferenceServiceReconciler
+var _ = Describe("LlamaCppBackend.IdleProbe", func() {
+	var backend *LlamaCppBackend
+	var client *http.Client
 
 	BeforeEach(func() {
-		reconciler = &InferenceServiceReconciler{
-			Client: k8sClient,
-			Scheme: k8sClient.Scheme(),
-		}
+		backend = &LlamaCppBackend{}
+		client = &http.Client{Timeout: 5 * time.Second}
 	})
 
 	It("should return true when all slots are idle", func() {
@@ -860,7 +859,8 @@ var _ = Describe("checkServerIdle", func() {
 		}))
 		defer server.Close()
 
-		idle, err := reconciler.checkServerIdle(context.Background(), server.URL)
+		probe := backend.IdleProbe(nil, client)
+		idle, err := probe(context.Background(), server.URL)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(idle).To(BeTrue())
 	})
@@ -872,7 +872,8 @@ var _ = Describe("checkServerIdle", func() {
 		}))
 		defer server.Close()
 
-		idle, err := reconciler.checkServerIdle(context.Background(), server.URL)
+		probe := backend.IdleProbe(nil, client)
+		idle, err := probe(context.Background(), server.URL)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(idle).To(BeFalse())
 	})
@@ -884,13 +885,15 @@ var _ = Describe("checkServerIdle", func() {
 		}))
 		defer server.Close()
 
-		idle, err := reconciler.checkServerIdle(context.Background(), server.URL)
+		probe := backend.IdleProbe(nil, client)
+		idle, err := probe(context.Background(), server.URL)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(idle).To(BeFalse())
 	})
 
 	It("should return error when server is unreachable", func() {
-		idle, err := reconciler.checkServerIdle(context.Background(), "http://192.0.2.1:9999")
+		probe := backend.IdleProbe(nil, client)
+		idle, err := probe(context.Background(), "http://192.0.2.1:9999")
 		Expect(err).To(HaveOccurred())
 		Expect(idle).To(BeFalse())
 	})
@@ -901,7 +904,8 @@ var _ = Describe("checkServerIdle", func() {
 		}))
 		defer server.Close()
 
-		idle, err := reconciler.checkServerIdle(context.Background(), server.URL)
+		probe := backend.IdleProbe(nil, client)
+		idle, err := probe(context.Background(), server.URL)
 		Expect(err).To(HaveOccurred())
 		Expect(idle).To(BeFalse())
 	})
@@ -912,12 +916,13 @@ var _ = Describe("checkServerIdle", func() {
 		}))
 		defer server.Close()
 
-		idle, err := reconciler.checkServerIdle(context.Background(), server.URL)
+		probe := backend.IdleProbe(nil, client)
+		idle, err := probe(context.Background(), server.URL)
 		Expect(err).To(HaveOccurred())
 		Expect(idle).To(BeFalse())
 	})
 
-	It("should use injected HTTPClient when set", func() {
+	It("should use injected HTTPClient", func() {
 		var requestCaptured bool
 		customTransport := &captureRoundTripper{
 			capture: func(req *http.Request) *http.Response {
@@ -931,13 +936,9 @@ var _ = Describe("checkServerIdle", func() {
 			},
 		}
 
-		reconcilerWithClient := &InferenceServiceReconciler{
-			Client: k8sClient,
-			Scheme: k8sClient.Scheme(),
-			HTTPClient: &http.Client{
-				Transport: customTransport,
-				Timeout:   5 * time.Second,
-			},
+		customClient := &http.Client{
+			Transport: customTransport,
+			Timeout:   5 * time.Second,
 		}
 
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -945,7 +946,8 @@ var _ = Describe("checkServerIdle", func() {
 		}))
 		defer server.Close()
 
-		idle, err := reconcilerWithClient.checkServerIdle(context.Background(), server.URL)
+		probe := backend.IdleProbe(nil, customClient)
+		idle, err := probe(context.Background(), server.URL)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(idle).To(BeTrue())
 		Expect(requestCaptured).To(BeTrue())

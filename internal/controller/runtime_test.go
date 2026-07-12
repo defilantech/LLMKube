@@ -1,7 +1,15 @@
 package controller
 
 import (
+	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
 	"testing"
+	"time"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 )
@@ -149,4 +157,231 @@ func TestResolveBackend_SGLang(t *testing.T) {
 	if _, ok := backend.(*SGLangBackend); !ok {
 		t.Errorf("resolveBackend(sglang) = %T, want *SGLangBackend", backend)
 	}
+}
+
+func TestVLLMIdleProbe(t *testing.T) {
+	backend := &VLLMBackend{}
+	client := &http.Client{Timeout: 5 * time.Second}
+	cases := []struct {
+		name     string
+		body     string
+		status   int
+		wantErr  bool
+		wantIdle bool
+	}{
+		{"idle when sum is 0", "vllm:num_requests_running{m=\"a\"} 0\n", 200, false, true},
+		{"busy when sum > 0", "vllm:num_requests_running 3\n", 200, false, false},
+		{"busy when absent", "other_metric 5\n", 200, false, false},
+		{"error on non-200", "", 500, true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+
+			probe := backend.IdleProbe(nil, client)
+			idle, err := probe(context.Background(), server.URL)
+			if tc.wantErr {
+				if err == nil {
+					t.Error("expected error, got nil")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+			}
+			if idle != tc.wantIdle {
+				t.Errorf("idle = %v, want %v", idle, tc.wantIdle)
+			}
+		})
+	}
+}
+
+func TestTGIIdleProbe(t *testing.T) {
+	backend := &TGIBackend{}
+	client := &http.Client{Timeout: 5 * time.Second}
+	cases := []struct {
+		name     string
+		body     string
+		status   int
+		wantErr  bool
+		wantIdle bool
+	}{
+		{"idle when value is 0", "tgi_batch_current_size 0\n", 200, false, true},
+		{"busy when value > 0", "tgi_batch_current_size 3\n", 200, false, false},
+		{"busy when absent", "other_metric 5\n", 200, false, false},
+		{"error on non-200", "", 500, true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+
+			probe := backend.IdleProbe(nil, client)
+			idle, err := probe(context.Background(), server.URL)
+			if tc.wantErr {
+				if err == nil {
+					t.Error("expected error, got nil")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+			}
+			if idle != tc.wantIdle {
+				t.Errorf("idle = %v, want %v", idle, tc.wantIdle)
+			}
+		})
+	}
+}
+
+func TestSGLangIdleProbe(t *testing.T) {
+	backend := &SGLangBackend{}
+	client := &http.Client{Timeout: 5 * time.Second}
+	cases := []struct {
+		name     string
+		body     string
+		status   int
+		wantErr  bool
+		wantIdle bool
+	}{
+		{"idle when sum is 0", "sglang:num_requests_running{m=\"a\"} 0\n", 200, false, true},
+		{"busy when sum > 0", "sglang:num_requests_running 3\n", 200, false, false},
+		{"busy when absent", "other_metric 5\n", 200, false, false},
+		{"error on non-200", "", 500, true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+
+			probe := backend.IdleProbe(nil, client)
+			idle, err := probe(context.Background(), server.URL)
+			if tc.wantErr {
+				if err == nil {
+					t.Error("expected error, got nil")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+			}
+			if idle != tc.wantIdle {
+				t.Errorf("idle = %v, want %v", idle, tc.wantIdle)
+			}
+		})
+	}
+}
+
+func TestGenericIdleProbe(t *testing.T) {
+	client := &http.Client{Timeout: 5 * time.Second}
+	cases := []struct {
+		name            string
+		isvc            *inferencev1alpha1.InferenceService
+		status          int
+		wantErr         bool
+		wantUnsupported bool
+		wantIdle        bool
+	}{
+		{
+			name: "idle on 200 with annotation",
+			isvc: &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						inferencev1alpha1.AnnotationIdleEndpoint: "/health",
+					},
+				},
+			},
+			status: 200, wantErr: false, wantIdle: true,
+		},
+		{
+			name: "busy on 404 with annotation",
+			isvc: &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						inferencev1alpha1.AnnotationIdleEndpoint: "/health",
+					},
+				},
+			},
+			status: 404, wantErr: false, wantIdle: false,
+		},
+		{
+			name:    "unsupported when annotation absent",
+			isvc:    &inferencev1alpha1.InferenceService{},
+			wantErr: true, wantUnsupported: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			backend := &GenericBackend{}
+			var server *httptest.Server
+			if tc.status != 0 {
+				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.WriteHeader(tc.status)
+				}))
+				defer server.Close()
+			}
+
+			probe := backend.IdleProbe(tc.isvc, client)
+			var idle bool
+			var err error
+			if server != nil {
+				idle, err = probe(context.Background(), server.URL)
+			} else {
+				idle, err = probe(context.Background(), "http://example.com")
+			}
+
+			if tc.wantUnsupported {
+				if !errors.Is(err, errIdleUnsupported) {
+					t.Errorf("expected errIdleUnsupported, got: %v", err)
+				}
+			} else if tc.wantErr {
+				if err == nil {
+					t.Error("expected error, got nil")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+			}
+			if idle != tc.wantIdle {
+				t.Errorf("idle = %v, want %v", idle, tc.wantIdle)
+			}
+		})
+	}
+}
+
+func TestIdleDetectorConformance(t *testing.T) {
+	backends := []struct {
+		name    string
+		backend RuntimeBackend
+	}{
+		{"llamacpp", &LlamaCppBackend{}},
+		{"vllm", &VLLMBackend{}},
+		{"tgi", &TGIBackend{}},
+		{"sglang", &SGLangBackend{}},
+		{"generic", &GenericBackend{}},
+	}
+	for _, tc := range backends {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, ok := tc.backend.(IdleDetector); !ok {
+				t.Errorf("%T does not implement IdleDetector", tc.backend)
+			}
+		})
+	}
+
+	t.Run("personaplex must NOT implement IdleDetector", func(t *testing.T) {
+		if reflect.TypeOf(&PersonaPlexBackend{}).Implements(reflect.TypeOf((*IdleDetector)(nil)).Elem()) {
+			t.Error("PersonaPlexBackend must NOT implement IdleDetector")
+		}
+	})
 }

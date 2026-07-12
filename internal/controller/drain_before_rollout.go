@@ -22,7 +22,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -34,6 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
@@ -122,91 +122,73 @@ func collectReadyReplicaURLs(slices *discoveryv1.EndpointSliceList, port int32) 
 	return urls
 }
 
-// llamaCPUSlot represents a single slot from the llama.cpp /slots endpoint.
-type llamaCPUSlot struct {
-	ID int `json:"id"`
-	// IsProcessing is true while the slot is handling a request (prompt
-	// evaluation or generation). A slot is idle when this is false.
-	IsProcessing bool `json:"is_processing"`
-}
+// checkServiceIdle checks whether the InferenceService Service currently routes
+// to idle backends. It resolves the backend for the given InferenceService,
+// type-asserts to IdleDetector, and probes each Ready replica via EndpointSlices
+// (or falls back to a single Service URL when no EndpointSlices exist).
+func (r *InferenceServiceReconciler) checkServiceIdle(ctx context.Context, isvc *inferencev1alpha1.InferenceService, svc *corev1.Service) (bool, error) {
+	log := logf.FromContext(ctx)
 
-// checkServerIdle checks whether all slots on a llama.cpp server are idle.
-// It queries the /slots endpoint and returns true only if every slot reports
-// is_processing == false. A server error (unreachable, non-200, unparseable
-// body) is surfaced as an error to the caller, which treats it as fail-closed
-// (defer the rollout) — see reconcileRolloutPolicy.
-// baseURL should include the port (e.g., "http://svc.ns.svc.cluster.local:8080").
-func (r *InferenceServiceReconciler) checkServerIdle(ctx context.Context, baseURL string) (bool, error) {
-	url := fmt.Sprintf("%s/slots", baseURL)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return false, fmt.Errorf("failed to create request: %w", err)
+	backend := resolveBackend(isvc)
+	detector, ok := backend.(IdleDetector)
+	if !ok {
+		return false, errIdleUnsupported
 	}
 
 	httpClient := r.HTTPClient
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 5 * time.Second}
 	}
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return false, fmt.Errorf("failed to query /slots: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
+	probe := detector.IdleProbe(isvc, httpClient)
 
-	if resp.StatusCode != http.StatusOK {
-		return false, fmt.Errorf("/slots returned status %d", resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return false, fmt.Errorf("failed to read /slots response: %w", err)
-	}
-
-	var slots []llamaCPUSlot
-	if err := json.Unmarshal(body, &slots); err != nil {
-		return false, fmt.Errorf("failed to parse /slots response: %w", err)
-	}
-
-	for _, slot := range slots {
-		if slot.IsProcessing {
-			return false, nil
-		}
-	}
-
-	return true, nil
-}
-
-// checkServiceIdle checks whether the InferenceService Service currently routes
-// to an idle backend. This targets the single-replica local-model case from
-// #856; multi-replica per-pod draining can be layered on later.
-func (r *InferenceServiceReconciler) checkServiceIdle(ctx context.Context, isvc *inferencev1alpha1.InferenceService, svc *corev1.Service) (bool, error) {
-	log := logf.FromContext(ctx)
+	port := resolveIdlePort(isvc, backend)
 
 	var svcURL string
 	if r.RolloutIdleBaseURL != "" {
 		svcURL = r.RolloutIdleBaseURL
 	} else {
-		port := int32(8080)
-		if isvc.Spec.Endpoint != nil && isvc.Spec.Endpoint.Port > 0 {
-			port = isvc.Spec.Endpoint.Port
-		} else if isvc.Spec.ContainerPort != nil {
-			port = *isvc.Spec.ContainerPort
-		}
 		svcURL = fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", svc.Name, svc.Namespace, port)
 	}
-	idle, err := r.checkServerIdle(ctx, svcURL)
-	if err != nil {
-		log.Info("Failed to check server idle status", "error", err)
-		return false, err
+
+	slices := &discoveryv1.EndpointSliceList{}
+	svcName := sanitizeDNSName(svc.Name)
+	if err := r.List(ctx, slices, client.InNamespace(isvc.Namespace), client.MatchingLabels{"kubernetes.io/service-name": svcName}); err != nil {
+		log.Info("Failed to list EndpointSlices, falling back to Service URL", "error", err)
 	}
 
-	if !idle {
-		log.Info("Backend slots are busy, deferring rollout")
-	} else {
-		log.Info("All backend slots are idle, proceeding with rollout")
+	if len(slices.Items) == 0 {
+		idle, err := probe(ctx, svcURL)
+		if err != nil {
+			log.Info("Failed to check server idle status via Service URL", "error", err)
+			return false, err
+		}
+		if !idle {
+			log.Info("Backend is busy (Service URL fallback), deferring rollout")
+		} else {
+			log.Info("Backend is idle (Service URL fallback), proceeding with rollout")
+		}
+		return idle, nil
 	}
 
-	return idle, nil
+	replicaURLs := collectReadyReplicaURLs(slices, port)
+	if len(replicaURLs) == 0 {
+		return false, nil
+	}
+
+	for _, url := range replicaURLs {
+		idle, err := probe(ctx, url)
+		if err != nil {
+			log.Info("Failed to check replica idle status", "url", url, "error", err)
+			return false, err
+		}
+		if !idle {
+			log.Info("Replica is busy, deferring rollout", "url", url)
+			return false, nil
+		}
+	}
+
+	log.Info("All replicas are idle, proceeding with rollout")
+	return true, nil
 }
 
 // reconcileRolloutPolicy checks whether the rollout should be deferred based on
@@ -265,8 +247,13 @@ func (r *InferenceServiceReconciler) reconcileRolloutPolicy(
 	message := "Backend slots are busy, waiting for idle before rollout"
 	if checkErr != nil {
 		log.Info("Idle check failed; deferring rollout (fail-closed)", "error", checkErr)
-		reason = ReasonIdleCheckFailed
-		message = fmt.Sprintf("Idle check failed (%v); deferring rollout until idle or timeout", checkErr)
+		if errors.Is(checkErr, errIdleUnsupported) {
+			reason = ReasonIdleCheckUnsupported
+			message = fmt.Sprintf("Runtime does not support idle detection (%v); deferring rollout until idle or timeout", checkErr)
+		} else {
+			reason = ReasonIdleCheckFailed
+			message = fmt.Sprintf("Idle check failed (%v); deferring rollout until idle or timeout", checkErr)
+		}
 	} else {
 		log.Info("Backend slots are busy, deferring rollout")
 	}

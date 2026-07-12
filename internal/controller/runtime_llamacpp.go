@@ -1,7 +1,11 @@
 package controller
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"path"
 	"strings"
 
@@ -170,4 +174,52 @@ func (b *LlamaCppBackend) BuildProbes(port int32) (startup, liveness, readiness 
 	}
 
 	return startup, liveness, readiness
+}
+
+// llamaCPUSlot represents a single slot from the llama.cpp /slots endpoint.
+type llamaCPUSlot struct {
+	ID           int  `json:"id"`
+	IsProcessing bool `json:"is_processing"`
+}
+
+// IdleProbe returns a probe closure that checks llama.cpp /slots endpoint for
+// idle status. All slots must report is_processing == false for the probe to
+// return true. Mirrors the metal-agent's checkServerIdle logic in
+// pkg/agent/agent.go for runtime-arg parity.
+func (b *LlamaCppBackend) IdleProbe(_ *inferencev1alpha1.InferenceService, client *http.Client) func(ctx context.Context, baseURL string) (bool, error) {
+	return func(ctx context.Context, baseURL string) (bool, error) {
+		url := fmt.Sprintf("%s/slots", baseURL)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return false, fmt.Errorf("failed to create request: %w", err)
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			return false, fmt.Errorf("failed to query /slots: %w", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+
+		if resp.StatusCode != http.StatusOK {
+			return false, fmt.Errorf("/slots returned status %d", resp.StatusCode)
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return false, fmt.Errorf("failed to read /slots response: %w", err)
+		}
+
+		var slots []llamaCPUSlot
+		if err := json.Unmarshal(body, &slots); err != nil {
+			return false, fmt.Errorf("failed to parse /slots response: %w", err)
+		}
+
+		for _, slot := range slots {
+			if slot.IsProcessing {
+				return false, nil
+			}
+		}
+
+		return true, nil
+	}
 }
