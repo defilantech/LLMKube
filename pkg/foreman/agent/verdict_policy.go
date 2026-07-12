@@ -57,12 +57,18 @@ const alreadyResolvedOutcome = "ALREADY-RESOLVED"
 // a real, checked source; a docs change that passed that gate is not
 // "unverified" the way an uninspected ci-policy/release-policy change
 // is.
-var defaultSelfGO = []string{
-	string(workClassCodeFix),
-	string(workClassDocs),
-	string(workClassPackaging),
-	string(workClassConfig),
-}
+//
+// Declared as a direct reference to foremanv1alpha1.DefaultSelfGO rather
+// than its own literal (which is what this var held before #1075 Task 6):
+// api/foreman/v1alpha1 owns the canonical list because
+// VerdictPolicy.Resolve must return it without importing this package
+// (this package already imports api/foreman/v1alpha1 for every CRD type,
+// so the reverse import would cycle). Task 6's executor wiring
+// (applyWorkClassPolicyForTask below) reaches this only through
+// task.Spec.VerdictPolicy.Resolve(), which falls back to the same value
+// when a Workload never set spec.verdictPolicy; this var remains for the
+// tests in this package that exercise applyVerdictPolicy directly.
+var defaultSelfGO = foremanv1alpha1.DefaultSelfGO
 
 // unverifiedClaimReason and unverifiedClaimHowTo are the fixed
 // whyItMatters/howToVerify strings attached to every claim-evidence
@@ -112,9 +118,10 @@ func unverifiedPolicyEntry(class workClass) map[string]string {
 // classifyFootprint (Task 1) into a single dominant workClass (or
 // "mixed" when no class reaches footprintDominance). selfGO is the
 // operator-controlled allowlist of classes a GO may stand for
-// unattended; callers pass defaultSelfGO for now (see the TODO(#1075) at
-// this function's call site in executor_native.go -- Task 6 threads
-// Workload.spec.verdictPolicy here instead).
+// unattended; the executor's call site (applyWorkClassPolicyForTask in
+// executor_native.go) passes task.Spec.VerdictPolicy.Resolve() (#1075
+// Task 6), which falls back to defaultSelfGO when the task carries no
+// explicit policy.
 //
 // Non-GO results pass through completely untouched (res is returned as
 // given, Extra untouched): the policy only ever demotes a GO, never

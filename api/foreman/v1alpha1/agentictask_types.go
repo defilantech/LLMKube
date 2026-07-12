@@ -484,6 +484,17 @@ type AgenticTaskSpec struct {
 	// authored AgenticTasks may set it directly.
 	// +optional
 	MCPEnabled *bool `json:"mcpEnabled,omitempty"`
+
+	// VerdictPolicy is the reconciler-propagated effective Workload
+	// work-class self-certification policy (proposal 1075, section 3.2)
+	// that reaches the executor without a live Workload GET. A nil
+	// policy, or one with an empty SelfGO, resolves to
+	// VerdictPolicy.Resolve's default. The WorkloadReconciler stamps
+	// this from Workload.spec.verdictPolicy onto every child task it
+	// emits, the same way it propagates MCPEnabled; hand-authored
+	// AgenticTasks may set it directly.
+	// +optional
+	VerdictPolicy *VerdictPolicy `json:"verdictPolicy,omitempty"`
 }
 
 // AgenticTaskPhase is the lifecycle state of a task.

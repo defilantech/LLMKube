@@ -964,6 +964,37 @@ func TestNativeExecutor_WorkClassPolicy_FailsOpenWhenBaseUnresolved(t *testing.T
 	}
 }
 
+// TestNativeExecutor_WorkClassPolicy_TaskVerdictPolicyOptsInCIPolicy:
+// #1075 Task 6 threads task.Spec.VerdictPolicy.Resolve() into the
+// work-class check instead of the package-level defaultSelfGO. A task
+// carrying an explicit VerdictPolicy that opts ci-policy in must let a
+// ci-policy footprint GO stand, where
+// TestNativeExecutor_WorkClassPolicy_CIPolicyFootprintDowngrades (no
+// VerdictPolicy on the task, so the default applies) downgrades the
+// identical footprint to NO-GO.
+func TestNativeExecutor_WorkClassPolicy_TaskVerdictPolicyOptsInCIPolicy(t *testing.T) {
+	agent, task := taskAndAgent("wc-ci-optin")
+	task.Spec.VerdictPolicy = &foremanv1alpha1.VerdictPolicy{
+		SelfGO: []string{"code-fix", "ci-policy"},
+	}
+	reg := submitGoWithChange(".github/workflows/release.yml", nil)
+	res := executeCoderTask(t, agent, task, reg, submitGoBody, false)
+
+	if res.Verdict != foremanv1alpha1.AgenticTaskVerdictGo {
+		t.Fatalf("verdict: want GO (task VerdictPolicy opts ci-policy in) got %s; result=%+v",
+			res.Verdict, res)
+	}
+	if got := res.Extra["actualWorkClass"]; got != "ci-policy" {
+		t.Errorf("actualWorkClass: want ci-policy got %v", got)
+	}
+	// goResult seeds Extra["outcome"] = "" for every GO; applyVerdictPolicy
+	// only overwrites it (to needsVerificationOutcome) on a downgrade, so a
+	// GO that stands must leave it at the seeded empty string.
+	if got := res.Extra["outcome"]; got != "" {
+		t.Errorf("outcome: want empty (GO stands) got %v", got)
+	}
+}
+
 // --- Reviewer-role Agent: GO means APPROVE, not commit + push ------------
 
 // reviewerTaskAndAgent builds a reviewer-role Agent and a freeform

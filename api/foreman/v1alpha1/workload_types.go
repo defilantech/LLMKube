@@ -287,6 +287,18 @@ type WorkloadSpec struct {
 	// child AgenticTask.spec.mcpEnabled.
 	// +optional
 	MCPEnabled *bool `json:"mcpEnabled,omitempty"`
+
+	// VerdictPolicy controls which work classes a coder GO may
+	// self-certify for every AgenticTask this Workload decomposes into
+	// (proposal 1075, section 3.2). Unset resolves to
+	// VerdictPolicy.Resolve's default (code-fix, docs, packaging,
+	// config); ci-policy and release-policy stay human-sign-off-only
+	// unless an operator opts them in here. The WorkloadReconciler
+	// propagates this value onto each child AgenticTask.spec.verdictPolicy
+	// the same way it propagates MCPEnabled, so the executor reads the
+	// policy without a live Workload GET.
+	// +optional
+	VerdictPolicy *VerdictPolicy `json:"verdictPolicy,omitempty"`
 }
 
 // PipelineStep is one step in an explicit Workload pipeline. Each step

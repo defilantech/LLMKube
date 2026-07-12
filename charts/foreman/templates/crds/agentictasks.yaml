@@ -430,6 +430,34 @@ spec:
                 format: int32
                 minimum: 0
                 type: integer
+              verdictPolicy:
+                description: |-
+                  VerdictPolicy is the reconciler-propagated effective Workload
+                  work-class self-certification policy (proposal 1075, section 3.2)
+                  that reaches the executor without a live Workload GET. A nil
+                  policy, or one with an empty SelfGO, resolves to
+                  VerdictPolicy.Resolve's default. The WorkloadReconciler stamps
+                  this from Workload.spec.verdictPolicy onto every child task it
+                  emits, the same way it propagates MCPEnabled; hand-authored
+                  AgenticTasks may set it directly.
+                properties:
+                  selfGO:
+                    description: |-
+                      SelfGO lists work classes allowed to self-certify GO. Classes:
+                      code-fix, docs, packaging, config, ci-policy, release-policy.
+                      Default (nil): [code-fix, docs, packaging, config]; ci-policy and
+                      release-policy always require human sign-off unless listed here.
+                    items:
+                      enum:
+                      - code-fix
+                      - docs
+                      - packaging
+                      - config
+                      - ci-policy
+                      - release-policy
+                      type: string
+                    type: array
+                type: object
             required:
             - kind
             - payload

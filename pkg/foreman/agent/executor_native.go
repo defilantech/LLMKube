@@ -845,9 +845,13 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 // resolveClaimGateAnchor helper claim_gate.go uses, so the two checks are
 // never computed against different commits.
 //
-// TODO(#1075): selfGO is defaultSelfGO for now; Task 6 threads
-// Workload.spec.verdictPolicy here so operators can opt classes like
-// ci-policy in or out per Workload.
+// selfGO comes from task.Spec.VerdictPolicy.Resolve() (#1075 Task 6):
+// the reconciler propagates Workload.spec.verdictPolicy onto every child
+// task at build time (workload_controller.go, same pattern as
+// MCPEnabled), so operators opt classes like ci-policy in or out per
+// Workload without the executor needing a live Workload GET. A nil
+// VerdictPolicy (hand-authored task, or a Workload that never set one)
+// resolves to defaultSelfGO via VerdictPolicy.Resolve's nil-safe receiver.
 func (e *NativeAgentLoopExecutor) applyWorkClassPolicyForTask(
 	ctx context.Context, log logr.Logger, task *foremanv1alpha1.AgenticTask,
 	agent *foremanv1alpha1.Agent, workspace, evidenceBaseSHA string,
@@ -867,7 +871,7 @@ func (e *NativeAgentLoopExecutor) applyWorkClassPolicyForTask(
 		r.Extra["workClassUnknown"] = true
 		return r
 	}
-	return applyVerdictPolicy(r, changed, defaultSelfGO)
+	return applyVerdictPolicy(r, changed, task.Spec.VerdictPolicy.Resolve())
 }
 
 // reviewerGroundedChangedLines builds the changedLines callback the
