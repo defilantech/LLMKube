@@ -310,6 +310,109 @@ func CoderGateFailedEnvelope(turn, attempts int, lastFeedback string) *ToolResul
 	}
 }
 
+// claimEvidenceMarker is the leading tag every checkClaimEvidence failure
+// message carries (see formatClaimFindings / formatClaimAnchorUnresolved
+// in claim_gate.go). applyTerminalGate keys on its presence in the final
+// gate feedback to tell a claim-evidence exhaustion apart from every
+// other coder-gate check (fmt/vet/build/lint/scope-overlap/...), which
+// still downgrade to the generic CoderGateFailedOutcome.
+const claimEvidenceMarker = "[claim-evidence]"
+
+// ClaimEvidenceExhaustedEnvelope synthesizes the NO-GO terminal the loop
+// returns when gate retries exhaust AND the final gate feedback carries
+// the claim-evidence marker: the coder kept resubmitting a docs change
+// asserting an empirical claim checkClaimEvidence (Task 4, claim_gate.go)
+// could not match to declared evidence. Unlike CoderGateFailedEnvelope (a
+// generic "still failing" INCOMPLETE, which routes to escalation), this
+// is a terminal non-failure NO-GO mirroring needsVerificationOutcome
+// (see that constant's doc comment in verdict_policy.go): a bigger model
+// cannot ground the claim any better than this one could from the same
+// workspace, so escalating would not help. attempts is how many gate
+// cycles ran; lastFeedback is the final gate output, truncated for the
+// status field and parsed into Extra["unverified"] via
+// parseUnverifiedClaims.
+func ClaimEvidenceExhaustedEnvelope(turn, attempts int, lastFeedback string) *ToolResult {
+	summary := fmt.Sprintf(
+		"claim-evidence check did not pass after %d fix attempt(s); the change asserts a fact "+
+			"that could not be verified from the workspace", attempts)
+	return &ToolResult{
+		Terminal:      true,
+		Verdict:       "NO-GO",
+		Summary:       summary,
+		CommitMessage: "",
+		Output: map[string]any{
+			"verdict": "NO-GO",
+			"summary": summary,
+		},
+		Extra: map[string]any{
+			outcomeKey:      needsVerificationOutcome,
+			"terminateTurn": turn,
+			"gateAttempts":  attempts,
+			"gateOutput":    truncateGateOutput(lastFeedback),
+			"unverified":    parseUnverifiedClaims(lastFeedback),
+		},
+	}
+}
+
+// unverifiedClaimLinePrefix matches the finding-line format
+// formatClaimFindings writes ("  - %s:%d %s\n" in claim_gate.go).
+const unverifiedClaimLinePrefix = "  - "
+
+// parseUnverifiedClaims extracts the individual claim-evidence findings
+// from gate feedback (see formatClaimFindings / formatClaimAnchorUnresolved
+// in claim_gate.go) into the {fact, whyItMatters, howToVerify} entries
+// ClaimEvidenceExhaustedEnvelope attaches at Extra["unverified"]. Only the
+// claim-evidence section of feedback (from the first claimEvidenceMarker
+// onward) is scanned, so an unrelated check's output earlier in the same
+// feedback blob can never be mistaken for a claim finding.
+//
+// formatClaimFindings emits one "  - " line per finding, which becomes
+// one fact each. formatClaimAnchorUnresolved instead emits a single
+// sentence with no bulleted lines (the evidence base itself could not be
+// resolved, so there is nothing to enumerate); when no "  - " line is
+// found, that whole marker line is used as the one fact, so exhaustion
+// always reports at least one entry whenever the marker is present.
+func parseUnverifiedClaims(feedback string) []map[string]string {
+	idx := strings.Index(feedback, claimEvidenceMarker)
+	if idx < 0 {
+		return nil
+	}
+	section := feedback[idx:]
+
+	var facts []string
+	for _, line := range strings.Split(section, "\n") {
+		if strings.HasPrefix(line, unverifiedClaimLinePrefix) {
+			// Strip the whole "  - " bullet prefix, not just surrounding
+			// whitespace, so the fact reads as the finding text alone.
+			facts = append(facts, strings.TrimSpace(line[len(unverifiedClaimLinePrefix):]))
+		}
+	}
+	if len(facts) == 0 {
+		if marker := firstLine(section); strings.TrimSpace(marker) != "" {
+			facts = append(facts, strings.TrimSpace(marker))
+		}
+	}
+
+	unverified := make([]map[string]string, 0, len(facts))
+	for _, f := range facts {
+		unverified = append(unverified, map[string]string{
+			"fact":         f,
+			"whyItMatters": unverifiedClaimReason,
+			"howToVerify":  unverifiedClaimHowTo,
+		})
+	}
+	return unverified
+}
+
+// firstLine returns s up to (not including) its first newline, or s
+// itself when s has none.
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
+}
+
 // maxGateOutputBytes bounds the gate output stored in the terminal Extra
 // (status visibility), mirroring the gate-Job runbook's 32 KiB cap.
 const maxGateOutputBytes = 32 * 1024
@@ -741,7 +844,16 @@ func (l *Loop) applyTerminalGate(
 		res.Terminal = nil
 		return true
 	}
-	// Budget spent and the gate still fails: do not land a failing GO.
+	// Budget spent and the gate still fails: do not land a failing GO. A
+	// claim-evidence failure (Task 4) that survived every fix attempt is
+	// not a generic "still broken" outcome: the coder kept asserting an
+	// empirical claim it could not ground, which a bigger model cannot
+	// fix either (see ClaimEvidenceExhaustedEnvelope). Every other check
+	// still downgrades to the generic CoderGateFailedEnvelope.
+	if strings.Contains(feedback, claimEvidenceMarker) {
+		res.Terminal = ClaimEvidenceExhaustedEnvelope(turn, *verifyRetries, feedback)
+		return false
+	}
 	res.Terminal = CoderGateFailedEnvelope(turn, *verifyRetries, feedback)
 	return false
 }

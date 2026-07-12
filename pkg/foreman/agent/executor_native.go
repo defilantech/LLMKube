@@ -560,9 +560,15 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 	// gateAdvisories accumulates non-blocking findings from the gate that
 	// survive to the GO result's Extra map so the reviewer can act on them.
 	gateAdvisories := &[]advisory{}
+	// evidenceBaseSHA is resolved once here (coder-role Agents only) and
+	// reused below by the work-class policy footprint read
+	// (diffFootprint), after the loop completes, so the claim-evidence
+	// gate and the footprint policy always anchor to the identical
+	// commit (#1075 Task 5).
+	var evidenceBaseSHA string
 	if agent.Spec.Role == foremanv1alpha1.AgentRoleCoder {
 		cfg.MaxVerifyRetries = coderGateMaxRetries
-		evidenceBaseSHA := e.resolveEvidenceBaseSHA(ctx, task, workspace, log)
+		evidenceBaseSHA = e.resolveEvidenceBaseSHA(ctx, task, workspace, log)
 		cfg.VerifyTerminal = makeCoderGateVerifier(
 			workspace, issueText, evidenceBaseSHA, log, task.Spec.GateProfile, gateAdvisories)
 	}
@@ -820,7 +826,48 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 
 	r := e.goResult(start, transcriptRef, loopRes, branch, sha)
 	attachGateAdvisories(r.Extra, gateAdvisories)
+	r = e.applyWorkClassPolicyForTask(ctx, log, task, agent, workspace, evidenceBaseSHA, loopRes, r)
 	return r, nil
+}
+
+// applyWorkClassPolicyForTask applies the work-class GO/NEEDS-VERIFICATION
+// downgrade policy (#1075 Task 5a) to a coder task's GO result. Pulled out
+// as a method so runLLMPath stays under the gocyclo ceiling, mirroring
+// resolveEvidenceBaseSHA above. Scoped to the mainline coder/issue-fix
+// flow: every other role/kind combination (a freeform/integrate/reconcile
+// task assigned to a coder-role Agent, for instance) returns r unchanged,
+// since the caller's commit+push path is not limited to issue-fix and
+// those kinds are not yet this policy's audience.
+//
+// evidenceBaseSHA is the SAME executor-resolved upstream base tip Task 4
+// threads to the claim-evidence check (resolveEvidenceBaseSHA above); the
+// footprint read (diffFootprint) anchors to it via the identical
+// resolveClaimGateAnchor helper claim_gate.go uses, so the two checks are
+// never computed against different commits.
+//
+// TODO(#1075): selfGO is defaultSelfGO for now; Task 6 threads
+// Workload.spec.verdictPolicy here so operators can opt classes like
+// ci-policy in or out per Workload.
+func (e *NativeAgentLoopExecutor) applyWorkClassPolicyForTask(
+	ctx context.Context, log logr.Logger, task *foremanv1alpha1.AgenticTask,
+	agent *foremanv1alpha1.Agent, workspace, evidenceBaseSHA string,
+	loopRes *LoopResult, r *Result,
+) *Result {
+	if agent.Spec.Role != foremanv1alpha1.AgentRoleCoder ||
+		task.Spec.Kind != foremanv1alpha1.AgenticTaskKindIssueFix {
+		return r
+	}
+	if declared, ok := loopRes.Terminal.Extra["workClass"].(string); ok && declared != "" {
+		r.Extra["workClass"] = declared
+	}
+	changed, footprintErr := diffFootprint(ctx, workspace, execCommandRunner, evidenceBaseSHA)
+	if footprintErr != nil {
+		log.Info("verdict policy: diff footprint unavailable; skipping the work-class policy",
+			"err", footprintErr.Error())
+		r.Extra["workClassUnknown"] = true
+		return r
+	}
+	return applyVerdictPolicy(r, changed, defaultSelfGO)
 }
 
 // reviewerGroundedChangedLines builds the changedLines callback the
@@ -1508,7 +1555,44 @@ func (e *NativeAgentLoopExecutor) modelDecidedResult(
 		"turnCount":     lr.Turns,
 		"modelExtra":    lr.Terminal.Extra,
 	}
+	promoteTerminalOutcome(r.Extra, lr.Terminal.Extra)
 	return r
+}
+
+// promoteTerminalOutcome lifts a terminal, non-escalating machine outcome
+// from the loop terminal's Extra (nested under "modelExtra" in the Result)
+// to the Result's top-level Extra["outcome"]. The controller's
+// isNeedsVerificationCoder and isAlreadyResolvedCoder (see
+// internal/foreman/controller/workload_coder_escalation.go; NOT imported
+// here, per the needsVerificationOutcome doc comment in verdict_policy.go)
+// read the TOP-LEVEL outcome to decide whether to skip escalation, so a
+// NEEDS-VERIFICATION or ALREADY-RESOLVED terminal buried under modelExtra
+// would still classify as a generic MODEL-DECIDED NO-GO and escalate; that
+// gap predates #1075 Task 5 (#970/#1033 shipped with the model-emitted
+// outcome nested-only) and became load-bearing once the loop itself began
+// synthesizing NEEDS-VERIFICATION terminals (ClaimEvidenceExhaustedEnvelope,
+// loop.go).
+//
+// Only the two known terminal non-failure outcomes are promoted; every
+// other terminal keeps the top-level "MODEL-DECIDED". The paired fields
+// the controller and the Workload rollup read alongside each outcome are
+// promoted with it: "unverified" (needs-verification) and "resolvedBy"
+// (already-resolved). The full modelExtra nesting is left untouched for
+// observability (terminalExtra is the same map referenced there).
+func promoteTerminalOutcome(extra, terminalExtra map[string]any) {
+	outcome, _ := terminalExtra["outcome"].(string)
+	switch outcome {
+	case needsVerificationOutcome:
+		extra["outcome"] = needsVerificationOutcome
+		if v, ok := terminalExtra["unverified"]; ok {
+			extra["unverified"] = v
+		}
+	case alreadyResolvedOutcome:
+		extra["outcome"] = alreadyResolvedOutcome
+		if v, ok := terminalExtra["resolvedBy"]; ok {
+			extra["resolvedBy"] = v
+		}
+	}
 }
 
 func (e *NativeAgentLoopExecutor) noChangesResult(
