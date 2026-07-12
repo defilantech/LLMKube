@@ -1,6 +1,6 @@
 # Proposal: Honest-verdict harness (declare-then-verify contract for repo-agnostic coder gates)
 
-**Status:** Proposed (design)
+**Status:** Slice 1 implemented ([PR #1078](https://github.com/defilantech/LLMKube/pull/1078)) and validated on the lab fleet: the section 8 acceptance A/B ran two stages (old prompt, then the declaration contract) against the six-issue baseline batch with zero hollow GOs; both baseline failure classes (#233 policy self-certification, #699 fabricated benchmarks) are structurally closed. Slice 2 (path-scoped checkers, `.foreman/verify.yaml`, coverage) remains proposed.
 **Umbrella issue:** [#1075](https://github.com/defilantech/LLMKube/issues/1075)
 **Related:** [#1072](https://github.com/defilantech/LLMKube/issues/1072) (gate blind to non-Go changes), [#1073](https://github.com/defilantech/LLMKube/issues/1073) (fabricated benchmark numbers survive the grounding rail), [#1061](https://github.com/defilantech/LLMKube/issues/1061)/[#1062](https://github.com/defilantech/LLMKube/issues/1062) (anti-confabulation rule and `NEEDS-VERIFICATION` outcome)
 **Evidence:** Foreman workload `run-20260711-182721` (issues 850/233/822/440/699/631); three GO verdicts, zero mergeable.
@@ -144,6 +144,14 @@ With this table, #233 is mechanical: declared class irrelevant, footprint is
 `NEEDS-VERIFICATION` ("policy change requires human sign-off; footprint:
 .github/workflows/release-please.yml, 100% of changed lines").
 
+A policy downgrade is a **handoff, not a refusal**: the executor commits and
+pushes the candidate branch before the policy check runs, so a downgraded
+`ci-policy` GO still lands as a reviewable branch carrying an honest
+"requires human sign-off" verdict. The human gets a patch plus the truth.
+This is also why the coder prompt does not tell the model to decline policy
+work at triage: a triage bail forfeits the candidate patch, and prompt-level
+self-triage is exactly the mechanism section 1 shows the model walking past.
+
 ## 4. Evidence contract for empirical claims
 
 ### 4.1 Gate-side claim detection
@@ -158,6 +166,13 @@ A new detector in `pkg/foreman/agent/grounding`, symmetric with the existing
   "measured", "benchmarked", "tested on", "documented" adjacent to numbers
   or hardware names.
 
+One claim is emitted **per number+unit occurrence**, not per line: a
+benchmark row asserting three figures produces three independently-checked
+claims. (As implemented: citing a real source for a row's first column must
+not smuggle fabricated siblings past the gate.) Number normalization strips
+thousands separators only and preserves the decimal point, so a fabricated
+`9.9` cannot validate against an unrelated `99`.
+
 Scope: blocking for `docs`-class files (Markdown, `examples/**`); advisory
 for comments in code and YAML (a wrong number in a comment misleads, but it
 does not present itself as a validated deliverable). The detector is
@@ -169,11 +184,23 @@ deliberately narrow and lexical: it does not judge truth, it identifies
 Every detected load-bearing claim must be matched by an `evidence` entry
 whose `source` the gate validates:
 
-- **In-repo `file:line`**: the file exists and the cited line (±2 for drift)
-  contains the same number and unit. This is the strong check, and it is the
-  one #699 fails three ways: the real line pairs 87 tok/s with Llama-3.2-3B,
-  so attributing it to Qwen3 30B does not match; 95 tok/s appears nowhere;
-  the Mixtral row has no source at all.
+- **In-repo `file:line`, read at the base commit**: the cited line (±2 for
+  drift) must contain the same number, the same unit, and, when the claim
+  names a subject, a matching subject token, **as the file existed at the
+  branch point**. Evidence must pre-date the change under review: the gate
+  reads the cited blob via `git show <anchor>:path`, where the anchor is a
+  merge-base against an executor-resolved upstream-tip SHA that no workspace
+  git operation can move. A file the coder created, edited, committed
+  mid-loop, or pushed in a prior revise cycle cannot certify its own claims;
+  paths containing `..` or leading `/` are rejected before git runs. (This
+  is stronger than the original working-tree wording of this section:
+  adversarial review during implementation showed a working-tree read lets
+  the coder write a fake benchmark file and cite it, and a ref-based anchor
+  is movable by the coder's own `git commit`. See PR #1078 for the full
+  hardening arc.) This is the strong check, and it is the one #699 fails
+  three ways: the real line pairs 87 tok/s with Llama-3.2-3B, so attributing
+  it to Qwen3 30B does not match; 95 tok/s appears nowhere; the Mixtral row
+  has no source at all.
 - **URL**: the gate records it as declared-but-unfetched by default
   (air-gapped clusters cannot fetch); a gate flag can enable a HEAD/GET
   probe on connected clusters. Unfetched URL evidence marks the claim
