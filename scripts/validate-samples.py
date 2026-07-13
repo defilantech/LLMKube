@@ -27,8 +27,10 @@ def add_additional_properties(schema):
     """
     if isinstance(schema, dict):
         if schema.get("type") == "object" and "additionalProperties" not in schema:
-            # Check if this is a metadata object (marked during extraction)
-            if not schema.get("_is_metadata"):
+            # Skip nodes marked to hold opaque JSON — forcing
+            # additionalProperties: false would reject legitimate
+            # preserve-unknown-fields payloads (#1085, follow-up to #1021).
+            if not schema.get("_is_metadata") and not schema.get("x-kubernetes-preserve-unknown-fields"):
                 schema["additionalProperties"] = False
         for v in schema.values():
             add_additional_properties(v)
