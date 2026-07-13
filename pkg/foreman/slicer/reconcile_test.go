@@ -92,6 +92,23 @@ func TestPinnedCheck_SuperstringIsNotAMatch(t *testing.T) {
 
 // rocm_smi_gpu_temp must not be satisfied by rocm_smi_gpu_temp_degC (a
 // different metric); the exact token IS a match.
+// A pin that is itself a prefix (e.g. "rocm_smi_") can never match as a whole
+// token because the trailing underscore is an identifier-continuation byte:
+// "rocm_smi_sensor_temperature" contains the prefix as a substring but never as
+// a whole token. This is the bug from #1058 — the planner pinned "rocm_smi_"
+// and reconcile reported a spurious pinned-missing GATE-FAIL.
+func TestPinnedCheck_PrefixPinNeverMatchesWholeToken(t *testing.T) {
+	repo := writeRepo(t, map[string]string{
+		"config/monitoring/exp.yaml": "emits rocm_smi_sensor_temperature here",
+	})
+	ids := []SharedIdentifier{{ID: "rocm_smi_", DefinedBy: "exp"}}
+	sf := map[string][]string{"exp": {"config/monitoring/exp.yaml"}}
+	drifts := PinnedCheck(ids, repo, sf)
+	if len(drifts) != 1 || drifts[0].Identifier != "rocm_smi_" {
+		t.Fatalf("prefix pin must be reported missing, got %+v", drifts)
+	}
+}
+
 func TestPinnedCheck_SuffixedTokenIsNotAMatch(t *testing.T) {
 	ids := []SharedIdentifier{{ID: "rocm_smi_gpu_temp", DefinedBy: "a"}}
 	sf := map[string][]string{"a": {"a.yaml"}}

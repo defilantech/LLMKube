@@ -79,6 +79,14 @@ Hard rules:
    (metric name, config key, CRD field, function signature), pin the EXACT string
    in a shared_identifiers list with which slice defines it and which reference
    it. In each slice's task, name the exact identifiers that slice uses, VERBATIM.
+   The reconcile check matches pins as WHOLE TOKENS (bounded on both sides by a
+   non-identifier character). A pin like "rocm_smi_" will NEVER match anything
+   because the trailing underscore is an identifier-continuation byte: the text
+   "rocm_smi_sensor_temperature" contains the prefix as a substring but never as
+   a whole token, so the pin is unsatisfiable and will always produce a
+   pinned-missing GATE-FAIL. Never pin a prefix, a partial token, or anything
+   that ends on an identifier-continuation byte (letter, digit, underscore).
+   Pin only complete, standalone identifiers.
 5. Keep the contract field as plain prose lines only: no markdown headers,
    bold, or nested bullets, so the YAML block scalar always parses cleanly.
 6. Your whole reply is ONLY this YAML document, nothing before the first key

@@ -183,6 +183,13 @@ func loadSlicePlan(path string) (slicePlan, error) {
 
 // validateSlicePlan enforces the invariants the render relies on: an issue, a
 // repo, at least one slice, and DISJOINT files (no file owned by two slices).
+// It also rejects a pinned identifier that ends with a trailing underscore,
+// because the reconcile check matches pins as whole tokens and a trailing
+// underscore can never be a token boundary, so such a pin can never be
+// satisfied. Catching this at plan-validation time surfaces a clear planner
+// error instead of a misleading pinned-missing GATE-FAIL later. (The broader
+// prefix-pin case, which needs the file content the reconcile step has, is
+// tracked in a follow-up.)
 func validateSlicePlan(p slicePlan) error {
 	if p.Issue <= 0 {
 		return fmt.Errorf("plan has no issue number")
@@ -203,6 +210,20 @@ func validateSlicePlan(p slicePlan) error {
 				return fmt.Errorf("file %q is owned by both slices %q and %q (slices must be disjoint)", f, prev, s.Name)
 			}
 			owner[f] = s.Name
+		}
+	}
+	for _, id := range p.SharedIdentifiers {
+		if id.ID == "" {
+			return fmt.Errorf("a shared identifier has no id")
+		}
+		if len(id.ID) > 0 && id.ID[len(id.ID)-1] == '_' {
+			return fmt.Errorf(
+				"shared identifier %q ends with a trailing underscore; "+
+					"the reconcile check matches whole tokens and a trailing "+
+					"underscore can never be a token boundary, so this pin can "+
+					"never be satisfied",
+				id.ID,
+			)
 		}
 	}
 	return nil
