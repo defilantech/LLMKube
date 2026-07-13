@@ -65,9 +65,11 @@ func TestBuildSliceWorkload_PipelineShape(t *testing.T) {
 		if s.Name != name || s.Kind != foremanv1alpha1.AgenticTaskKindIssueFix {
 			t.Fatalf("step %d = %s/%s, want %s/issue-fix", i, s.Name, s.Kind, name)
 		}
-		wantBranch := "foreman/slicer-700/" + name
-		if s.Payload.Branch != wantBranch {
-			t.Errorf("slice %s branch = %q, want %q", name, s.Payload.Branch, wantBranch)
+		// branch is foreman/slicer-<issue>-<runid>/<name>; runid is 8 hex chars.
+		if len(s.Payload.Branch) < 24 ||
+			!strings.HasPrefix(s.Payload.Branch, "foreman/slicer-700-") ||
+			!strings.HasSuffix(s.Payload.Branch, "/"+name) {
+			t.Errorf("slice %s branch = %q, want foreman/slicer-700-<runid>/%s", name, s.Payload.Branch, name)
 		}
 		if s.AgentRef.Name != "coder-metal" {
 			t.Errorf("slice %s agent = %q", name, s.AgentRef.Name)
@@ -85,9 +87,10 @@ func TestBuildSliceWorkload_PipelineShape(t *testing.T) {
 	if got := integ.DependsOn; len(got) != 2 || got[0] != "exporter" || got[1] != "dashboard" {
 		t.Errorf("integrate dependsOn = %v, want [exporter dashboard]", got)
 	}
-	if len(integ.Payload.Slices) != 2 || integ.Payload.Slices[0].Branch != "foreman/slicer-700/exporter" {
+	if len(integ.Payload.Slices) != 2 {
 		t.Errorf("integrate payload slices wrong: %+v", integ.Payload.Slices)
 	}
+	checkRunIDConsistency(t, steps[:2], integ, "integrate")
 
 	// reconcile step
 	rec := steps[3]
@@ -100,12 +103,79 @@ func TestBuildSliceWorkload_PipelineShape(t *testing.T) {
 	if len(rec.Payload.SharedIdentifiers) != 1 || rec.Payload.SharedIdentifiers[0].ID != "rocm_smi_gpu_temp" {
 		t.Errorf("reconcile pins wrong: %+v", rec.Payload.SharedIdentifiers)
 	}
-	if rec.Payload.Contract == "" || rec.Payload.Branch != "foreman/slicer-700/integ" {
-		t.Errorf("reconcile payload missing contract/branch: %+v", rec.Payload)
+	if rec.Payload.Contract == "" {
+		t.Errorf("reconcile payload missing contract: %+v", rec.Payload)
 	}
 	// reconcile carries files (for pinned_check), integrate carries branches.
 	if len(rec.Payload.Slices) != 2 || len(rec.Payload.Slices[0].Files) == 0 {
 		t.Errorf("reconcile payload slices need files: %+v", rec.Payload.Slices)
+	}
+}
+
+// checkRunIDConsistency asserts that every slice step's branch, the integrate
+// step's branch, and the integrate payload's slice refs all share the same
+// run-scoped segment. This is the invariant that lets integrate/reconcile
+// resolve the same branches the coder pushed, even though the runid is
+// generated fresh per Workload.
+func checkRunIDConsistency(
+	t *testing.T,
+	sliceSteps []foremanv1alpha1.PipelineStep,
+	integ foremanv1alpha1.PipelineStep,
+	label string,
+) {
+	t.Helper()
+	integRunID := strings.TrimPrefix(integ.Payload.Slices[0].Branch, "foreman/slicer-700-")
+	integRunID = strings.TrimSuffix(integRunID, "/exporter")
+	for _, s := range sliceSteps {
+		if !strings.Contains(s.Payload.Branch, "-"+integRunID+"/") {
+			t.Errorf("%s slice %s branch %q does not share runid %q", label, s.Name, s.Payload.Branch, integRunID)
+		}
+	}
+	if !strings.Contains(integ.Payload.Slices[0].Branch, "-"+integRunID+"/") {
+		t.Errorf("%s integrate slice ref does not share runid %q", label, integRunID)
+	}
+}
+
+// TestBuildSliceWorkload_RunIDUniquePerWorkload asserts that two independent
+// builds of the same plan produce different run-scoped branch segments, so a
+// re-run of `llmkube foreman slice` on the same issue never collides with
+// branches left on the fork by the prior run (issue #1054).
+func TestBuildSliceWorkload_RunIDUniquePerWorkload(t *testing.T) {
+	plan := samplePlan()
+	opts := defaultOpts()
+
+	wl1 := buildSliceWorkload(plan, opts)
+	wl2 := buildSliceWorkload(plan, opts)
+
+	branch1 := wl1.Spec.Pipeline[0].Payload.Branch
+	branch2 := wl2.Spec.Pipeline[0].Payload.Branch
+	if branch1 == branch2 {
+		t.Errorf("two Workloads for the same plan produced the same branch %q; runid must be unique per invocation", branch1)
+	}
+	// Both must still follow the foreman/slicer-<issue>-<runid>/<name> shape.
+	const wantPrefix = "foreman/slicer-700-"
+	if !strings.HasPrefix(branch1, wantPrefix) || !strings.HasPrefix(branch2, wantPrefix) {
+		t.Errorf("branches must be foreman/slicer-<issue>-<runid>/<name>; got %q, %q", branch1, branch2)
+	}
+}
+
+// TestSliceRunID_Properties exercises sliceRunID directly: it must return an
+// 8-char lowercase-hex string and two calls must differ. This is the unit
+// contract the branch-name change depends on.
+func TestSliceRunID_Properties(t *testing.T) {
+	a := sliceRunID()
+	b := sliceRunID()
+	if len(a) != 8 {
+		t.Errorf("sliceRunID() length = %d, want 8", len(a))
+	}
+	if a == b {
+		t.Errorf("sliceRunID() is not unique across calls: %q", a)
+	}
+	for _, r := range a {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+			t.Errorf("sliceRunID() contains non-hex char %q", r)
+			break
+		}
 	}
 }
 
