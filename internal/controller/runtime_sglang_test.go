@@ -34,8 +34,12 @@ var sglangFlagsNeverInBase = []string{
 	"--chunked-prefill-size", "--max-running-requests", "--quantization",
 	"--kv-cache-dtype", "--attention-backend", "--enable-prefix-caching",
 	"--tool-call-parser", "--reasoning-parser", "--chat-template",
-	"--speculative-algorithm", "--lora-modules", "--max-lora-rank",
-	"--lora-target-modules", "--is-embedding",
+	"--speculative-algorithm", "--speculative-accept-threshold-single",
+	"--speculative-accept-threshold-acc",
+	"--lora-modules", "--max-lora-rank", "--lora-target-modules",
+	"--model", "--reasoning-content", "--return-logprob", "--log-level",
+	"--trust-remote-code", "--skip-tokenizer-init",
+	"--is-embedding",
 }
 
 // TestSGLangBackendDefaults locks in the trivial-method contracts that every
@@ -444,7 +448,7 @@ func TestSGLangBuildArgs(t *testing.T) {
 					LoraModules: []string{`{"name":"loraA","path":"/loras/a"}`},
 				},
 			},
-			contains: []FlagCheck{{"--lora-modules", `{"name":"loraA","path":"/loras/a"}`}},
+			contains: []FlagCheck{{"--lora-modules", "loraA=/loras/a"}},
 		},
 		{
 			model: &inferencev1alpha1.Model{ObjectMeta: metav1.ObjectMeta{Name: "m"}},
@@ -465,6 +469,128 @@ func TestSGLangBuildArgs(t *testing.T) {
 				},
 			},
 			contains: []FlagCheck{{"--lora-target-modules", "q_proj,k_proj"}},
+		},
+		{
+			model: &inferencev1alpha1.Model{ObjectMeta: metav1.ObjectMeta{Name: "m"}},
+			name:  "model override emits --model",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime: "sglang",
+				SGLangConfig: &inferencev1alpha1.SGLangConfig{
+					Model: "openai/gpt-oss-120b",
+				},
+			},
+			contains: []FlagCheck{{"--model", "openai/gpt-oss-120b"}},
+		},
+		{
+			model: &inferencev1alpha1.Model{ObjectMeta: metav1.ObjectMeta{Name: "m"}},
+			name:  "reasoning-content enabled emits --reasoning-content enabled",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime: "sglang",
+				SGLangConfig: &inferencev1alpha1.SGLangConfig{
+					ReasoningContent: ptrString("enabled"),
+				},
+			},
+			contains: []FlagCheck{{"--reasoning-content", "enabled"}},
+		},
+		{
+			model: &inferencev1alpha1.Model{ObjectMeta: metav1.ObjectMeta{Name: "m"}},
+			name:  "return-logprob emits --return-logprob",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime: "sglang",
+				SGLangConfig: &inferencev1alpha1.SGLangConfig{
+					ReturnLogprob: ptrBool(true),
+				},
+			},
+			contains: []FlagCheck{{"--return-logprob", ""}},
+		},
+		{
+			model: &inferencev1alpha1.Model{ObjectMeta: metav1.ObjectMeta{Name: "m"}},
+			name:  "log-level emits --log-level",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime: "sglang",
+				SGLangConfig: &inferencev1alpha1.SGLangConfig{
+					LogLevel: "warning",
+				},
+			},
+			contains: []FlagCheck{{"--log-level", "warning"}},
+		},
+		{
+			model: &inferencev1alpha1.Model{ObjectMeta: metav1.ObjectMeta{Name: "m"}},
+			name:  "trust-remote-code true emits --trust-remote-code",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime: "sglang",
+				SGLangConfig: &inferencev1alpha1.SGLangConfig{
+					TrustRemoteCode: ptrBool(true),
+				},
+			},
+			contains: []FlagCheck{{"--trust-remote-code", ""}},
+		},
+		{
+			model: &inferencev1alpha1.Model{ObjectMeta: metav1.ObjectMeta{Name: "m"}},
+			name:  "skip-tokenizer-init true emits --skip-tokenizer-init",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime: "sglang",
+				SGLangConfig: &inferencev1alpha1.SGLangConfig{
+					SkipTokenizerInit: ptrBool(true),
+				},
+			},
+			contains: []FlagCheck{{"--skip-tokenizer-init", ""}},
+		},
+		{
+			model: &inferencev1alpha1.Model{ObjectMeta: metav1.ObjectMeta{Name: "m"}},
+			name:  "speculative accept thresholds emit --speculative-accept-threshold-*",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime: "sglang",
+				SGLangConfig: &inferencev1alpha1.SGLangConfig{
+					Speculative: &inferencev1alpha1.SGLangSpeculativeConfig{
+						Enabled:               ptrBool(true),
+						Algorithm:             "EAGLE",
+						DraftModelPath:        "/models/draft",
+						AcceptThresholdSingle: ptrFloat64(0.9),
+						AcceptThresholdAcc:    ptrFloat64(0.8),
+					},
+				},
+			},
+			contains: []FlagCheck{
+				{"--speculative-algorithm", "EAGLE"},
+				{"--speculative-draft-model-path", "/models/draft"},
+				{"--speculative-accept-threshold-single", "0.9"},
+				{"--speculative-accept-threshold-acc", "0.8"},
+			},
+		},
+		{
+			model: &inferencev1alpha1.Model{ObjectMeta: metav1.ObjectMeta{Name: "m"}},
+			name:  "typed loraAdapters emits --lora-modules name=path pairs",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime: "sglang",
+				SGLangConfig: &inferencev1alpha1.SGLangConfig{
+					LoraAdapters: []inferencev1alpha1.SGLangLoRAAdapter{
+						{Name: "loraA", Path: "/loras/a"},
+						{Name: "loraB", Path: "/loras/b"},
+					},
+				},
+			},
+			contains: []FlagCheck{{"--lora-modules", "loraA=/loras/a,loraB=/loras/b"}},
+		},
+		{
+			model: &inferencev1alpha1.Model{ObjectMeta: metav1.ObjectMeta{Name: "m"}},
+			name:  "typed and legacy LoRA merge with typed winning on name collision",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime: "sglang",
+				SGLangConfig: &inferencev1alpha1.SGLangConfig{
+					LoraAdapters: []inferencev1alpha1.SGLangLoRAAdapter{
+						{Name: "loraA", Path: "/loras/typed-a"},
+					},
+					LoraModules: []string{
+						`{"name":"loraA","path":"/loras/legacy-a"}`,
+						`{"name":"loraB","path":"/loras/legacy-b"}`,
+					},
+				},
+			},
+			contains: []FlagCheck{
+				{"--lora-modules", "loraA=/loras/typed-a,loraB=/loras/legacy-b"},
+			},
+			notContains: []string{"/loras/legacy-a"},
 		},
 		{
 			model: sglangGPUModel(),
@@ -697,6 +823,41 @@ func TestValidateSGLangConfig(t *testing.T) {
 				},
 			},
 			wantReason: "SpeculativeMissingConfig",
+		},
+		{
+			name: "accept threshold without speculative enabled is invalid",
+			isvc: &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					Runtime: "sglang",
+					SGLangConfig: &inferencev1alpha1.SGLangConfig{
+						Speculative: &inferencev1alpha1.SGLangSpeculativeConfig{
+							Enabled:               ptrBool(false),
+							Algorithm:             "EAGLE",
+							DraftModelPath:        "/models/draft",
+							AcceptThresholdSingle: ptrFloat64(0.9),
+						},
+					},
+				},
+			},
+			wantReason: "SpeculativeAcceptThresholdUnused",
+		},
+		{
+			name: "accept threshold with speculative enabled+configured is valid",
+			isvc: &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					Runtime: "sglang",
+					SGLangConfig: &inferencev1alpha1.SGLangConfig{
+						Speculative: &inferencev1alpha1.SGLangSpeculativeConfig{
+							Enabled:               ptrBool(true),
+							Algorithm:             "EAGLE",
+							DraftModelPath:        "/models/draft",
+							AcceptThresholdSingle: ptrFloat64(0.9),
+							AcceptThresholdAcc:    ptrFloat64(0.8),
+						},
+					},
+				},
+			},
+			wantReason: "",
 		},
 	}
 	for _, tc := range cases {

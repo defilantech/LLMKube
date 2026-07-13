@@ -4759,11 +4759,55 @@ spec:
                     - fp8_e5m2
                     - fp8_e4m3
                     type: string
+                  logLevel:
+                    description: |-
+                      LogLevel sets the SGLang server log level. SGLang accepts
+                      "debug"/"info"/"warning"/"error". Maps to SGLang --log-level flag.
+                    enum:
+                    - debug
+                    - info
+                    - warning
+                    - error
+                    type: string
+                  loraAdapters:
+                    description: |-
+                      LoraAdapters is a typed replacement for LoraModules. Each adapter has
+                      a stable Name (SGLang-side handle) and Path (file mount). When both
+                      LoraAdapters and LoraModules are set, LoraAdapters wins on name
+                      collisions. Maps to SGLang --lora-modules flag.
+                    items:
+                      description: |-
+                        SGLangLoRAAdapter names a single LoRA adapter for SGLang's --lora-modules
+                        flag. Name is the SGLang-side adapter handle; Path is the file mount where
+                        adapter weights live (typically backed by a PVC created via
+                        LoRAAdapter resources). Prefer this typed shape over the legacy
+                        LoraModules []string; both are merged with the typed form winning on name
+                        collision.
+                      properties:
+                        name:
+                          description: Name is the SGLang-side adapter handle used
+                            in inference requests.
+                          minLength: 1
+                          type: string
+                        path:
+                          description: |-
+                            Path is the path on disk inside the SGLang container where the
+                            adapter weights are mounted.
+                          minLength: 1
+                          type: string
+                      required:
+                      - name
+                      - path
+                      type: object
+                    type: array
                   loraModules:
                     description: |-
                       LoRA (basic)
-                      LoraModules is a JSON array of LoRA specs (model_id -> path). Maps to
-                      SGLang --lora-modules flag.
+                      LoraModules is the legacy JSON-array form of --lora-modules. Each
+                      element is a JSON object {"name":"x","path":"/p"}. New callers
+                      should prefer the typed LoraAdapters field; the controller merges
+                      both, with LoraAdapters winning on name collision. Deprecated: use
+                      LoraAdapters instead.
                     items:
                       type: string
                     type: array
@@ -4797,11 +4841,27 @@ spec:
                     maximum: 0.99
                     minimum: 0.1
                     type: number
+                  model:
+                    description: |-
+                      Model overrides the model name served from --model-path. Useful when
+                      --model-path points at a directory containing multiple weights files
+                      and the operator wants a specific model identifier exposed via the
+                      OpenAI-compatible API. Maps to SGLang --model flag.
+                    type: string
                   quantization:
                     description: |-
                       Quantization & KV cache
                       Quantization sets the quantization method. SGLang accepts fp8/awq/gptq/modelopt.
                       Maps to SGLang --quantization flag.
+                    type: string
+                  reasoningContent:
+                    description: |-
+                      ReasoningContent controls whether reasoning content is exposed in
+                      responses. Valid values: "enabled", "disabled". Maps to SGLang
+                      --reasoning-content flag. Omit to leave SGLang's default behavior.
+                    enum:
+                    - enabled
+                    - disabled
                     type: string
                   reasoningParser:
                     description: |-
@@ -4811,10 +4871,41 @@ spec:
                     - qwen3
                     - deepseek-r1
                     type: string
+                  returnLogprob:
+                    description: |-
+                      ReturnLogprob enables returning token log probabilities in responses.
+                      Maps to SGLang --return-logprob flag. Omit to leave SGLang's default.
+                    type: boolean
+                  skipTokenizerInit:
+                    description: |-
+                      SkipTokenizerInit skips tokenizer initialization at startup. Useful
+                      for prefill-only disaggregation deployments. Maps to SGLang
+                      --skip-tokenizer-init flag. Omit to leave SGLang's default.
+                    type: boolean
                   speculative:
                     description: Speculative configures speculative decoding (EAGLE
                       / EAGLE3 / Medusa).
                     properties:
+                      acceptThresholdAcc:
+                        description: |-
+                          AcceptThresholdAcc sets the acceptance threshold for the bonus token
+                          in accepted-token-sequence verification (an accepted draft token's
+                          probability must exceed p * accept_threshold_acc). Valid only when
+                          Enabled is true; surface a status condition when set otherwise.
+                          Maps to SGLang --speculative-accept-threshold-acc flag.
+                        maximum: 1
+                        minimum: 0
+                        type: number
+                      acceptThresholdSingle:
+                        description: |-
+                          AcceptThresholdSingle sets the acceptance threshold for non-matched
+                          tokens in single-sequence decoding (a draft token is accepted when
+                          its probability exceeds p * accept_threshold_single). Valid only
+                          when Enabled is true; surface a status condition when set otherwise.
+                          Maps to SGLang --speculative-accept-threshold-single flag.
+                        maximum: 1
+                        minimum: 0
+                        type: number
                       algorithm:
                         description: |-
                           Algorithm selects the speculative algorithm (EAGLE, EAGLE3, Medusa).
@@ -4878,6 +4969,12 @@ spec:
                     - functionary
                     - mistral
                     type: string
+                  trustRemoteCode:
+                    description: |-
+                      TrustRemoteCode allows loading remote code from the HuggingFace Hub
+                      model repo. Mirrors the flag on other runtimes. Maps to SGLang
+                      --trust-remote-code flag. Omit to leave SGLang's default.
+                    type: boolean
                 type: object
               skipModelInit:
                 description: |-

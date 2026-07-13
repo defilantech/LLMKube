@@ -1183,8 +1183,11 @@ type SGLangConfig struct {
 	Speculative *SGLangSpeculativeConfig `json:"speculative,omitempty"`
 
 	// LoRA (basic)
-	// LoraModules is a JSON array of LoRA specs (model_id -> path). Maps to
-	// SGLang --lora-modules flag.
+	// LoraModules is the legacy JSON-array form of --lora-modules. Each
+	// element is a JSON object {"name":"x","path":"/p"}. New callers
+	// should prefer the typed LoraAdapters field; the controller merges
+	// both, with LoraAdapters winning on name collision. Deprecated: use
+	// LoraAdapters instead.
 	// +optional
 	LoraModules []string `json:"loraModules,omitempty"`
 
@@ -1199,10 +1202,73 @@ type SGLangConfig struct {
 	// +optional
 	LoraTargetModules []string `json:"loraTargetModules,omitempty"`
 
+	// LoraAdapters is a typed replacement for LoraModules. Each adapter has
+	// a stable Name (SGLang-side handle) and Path (file mount). When both
+	// LoraAdapters and LoraModules are set, LoraAdapters wins on name
+	// collisions. Maps to SGLang --lora-modules flag.
+	// +optional
+	LoraAdapters []SGLangLoRAAdapter `json:"loraAdapters,omitempty"`
+
+	// Model overrides the model name served from --model-path. Useful when
+	// --model-path points at a directory containing multiple weights files
+	// and the operator wants a specific model identifier exposed via the
+	// OpenAI-compatible API. Maps to SGLang --model flag.
+	// +optional
+	Model string `json:"model,omitempty"`
+
+	// ReasoningContent controls whether reasoning content is exposed in
+	// responses. Valid values: "enabled", "disabled". Maps to SGLang
+	// --reasoning-content flag. Omit to leave SGLang's default behavior.
+	// +kubebuilder:validation:Enum=enabled;disabled
+	// +optional
+	ReasoningContent *string `json:"reasoningContent,omitempty"`
+
+	// ReturnLogprob enables returning token log probabilities in responses.
+	// Maps to SGLang --return-logprob flag. Omit to leave SGLang's default.
+	// +optional
+	ReturnLogprob *bool `json:"returnLogprob,omitempty"`
+
+	// LogLevel sets the SGLang server log level. SGLang accepts
+	// "debug"/"info"/"warning"/"error". Maps to SGLang --log-level flag.
+	// +kubebuilder:validation:Enum=debug;info;warning;error
+	// +optional
+	LogLevel string `json:"logLevel,omitempty"`
+
+	// TrustRemoteCode allows loading remote code from the HuggingFace Hub
+	// model repo. Mirrors the flag on other runtimes. Maps to SGLang
+	// --trust-remote-code flag. Omit to leave SGLang's default.
+	// +optional
+	TrustRemoteCode *bool `json:"trustRemoteCode,omitempty"`
+
+	// SkipTokenizerInit skips tokenizer initialization at startup. Useful
+	// for prefill-only disaggregation deployments. Maps to SGLang
+	// --skip-tokenizer-init flag. Omit to leave SGLang's default.
+	// +optional
+	SkipTokenizerInit *bool `json:"skipTokenizerInit,omitempty"`
+
 	// HFTokenSecretRef references a Secret containing the HuggingFace token.
 	// Injected as HF_TOKEN env var.
 	// +optional
 	HFTokenSecretRef *corev1.SecretKeySelector `json:"hfTokenSecretRef,omitempty"`
+}
+
+// SGLangLoRAAdapter names a single LoRA adapter for SGLang's --lora-modules
+// flag. Name is the SGLang-side adapter handle; Path is the file mount where
+// adapter weights live (typically backed by a PVC created via
+// LoRAAdapter resources). Prefer this typed shape over the legacy
+// LoraModules []string; both are merged with the typed form winning on name
+// collision.
+type SGLangLoRAAdapter struct {
+	// Name is the SGLang-side adapter handle used in inference requests.
+	// +kubebuilder:validation:MinLength=1
+	// +required
+	Name string `json:"name"`
+
+	// Path is the path on disk inside the SGLang container where the
+	// adapter weights are mounted.
+	// +kubebuilder:validation:MinLength=1
+	// +required
+	Path string `json:"path"`
 }
 
 // SGLangSpeculativeConfig configures speculative decoding for SGLang.
@@ -1241,6 +1307,26 @@ type SGLangSpeculativeConfig struct {
 	// +kubebuilder:default=4
 	// +optional
 	NumDraftTokens *int32 `json:"numDraftTokens,omitempty"`
+
+	// AcceptThresholdSingle sets the acceptance threshold for non-matched
+	// tokens in single-sequence decoding (a draft token is accepted when
+	// its probability exceeds p * accept_threshold_single). Valid only
+	// when Enabled is true; surface a status condition when set otherwise.
+	// Maps to SGLang --speculative-accept-threshold-single flag.
+	// +kubebuilder:validation:Minimum=0.0
+	// +kubebuilder:validation:Maximum=1.0
+	// +optional
+	AcceptThresholdSingle *float64 `json:"acceptThresholdSingle,omitempty"`
+
+	// AcceptThresholdAcc sets the acceptance threshold for the bonus token
+	// in accepted-token-sequence verification (an accepted draft token's
+	// probability must exceed p * accept_threshold_acc). Valid only when
+	// Enabled is true; surface a status condition when set otherwise.
+	// Maps to SGLang --speculative-accept-threshold-acc flag.
+	// +kubebuilder:validation:Minimum=0.0
+	// +kubebuilder:validation:Maximum=1.0
+	// +optional
+	AcceptThresholdAcc *float64 `json:"acceptThresholdAcc,omitempty"`
 }
 
 func init() {

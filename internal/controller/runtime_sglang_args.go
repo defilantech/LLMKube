@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -166,16 +167,119 @@ func sglangAppendSpeculative(args []string, cfg *inferencev1alpha1.SGLangSpecula
 	if cfg.NumDraftTokens != nil {
 		args = append(args, "--speculative-num-draft-tokens", fmt.Sprintf("%d", *cfg.NumDraftTokens))
 	}
+	if cfg.AcceptThresholdSingle != nil {
+		args = append(args, "--speculative-accept-threshold-single",
+			strconv.FormatFloat(*cfg.AcceptThresholdSingle, 'f', -1, 64))
+	}
+	if cfg.AcceptThresholdAcc != nil {
+		args = append(args, "--speculative-accept-threshold-acc",
+			strconv.FormatFloat(*cfg.AcceptThresholdAcc, 'f', -1, 64))
+	}
 	return args
 }
 
-func sglangAppendLoraModules(args []string, modules []string) []string {
-	if len(modules) == 0 {
+// sglangBuildLoraModulePairs merges typed LoraAdapters with the legacy
+// LoraModules []string. The typed list wins on name collision. Each legacy
+// string is expected to be a JSON object like {"name":"x","path":"/p"}; if
+// parsing fails the entry is silently skipped (the validator path catches
+// this upstream). Returns the merged name=path pairs joined by comma.
+func sglangBuildLoraModulePairs(adapters []inferencev1alpha1.SGLangLoRAAdapter, legacy []string) []string {
+	if len(adapters) == 0 && len(legacy) == 0 {
+		return nil
+	}
+	seen := make(map[string]string, len(adapters)+len(legacy))
+	for _, a := range adapters {
+		if a.Name == "" {
+			continue
+		}
+		seen[a.Name] = a.Path
+	}
+	for _, raw := range legacy {
+		var parsed struct {
+			Name string `json:"name"`
+			Path string `json:"path"`
+		}
+		if err := json.Unmarshal([]byte(raw), &parsed); err != nil || parsed.Name == "" {
+			continue
+		}
+		if _, ok := seen[parsed.Name]; ok {
+			continue // typed entry wins on collision
+		}
+		seen[parsed.Name] = parsed.Path
+	}
+	// Stable order: typed adapters first in declared order, then legacy in
+	// parsed order. This keeps Deployment .spec diffs deterministic.
+	pairs := make([]string, 0, len(seen))
+	seenAfter := make(map[string]struct{}, len(seen))
+	for _, a := range adapters {
+		if a.Name == "" {
+			continue
+		}
+		pairs = append(pairs, a.Name+"="+a.Path)
+		seenAfter[a.Name] = struct{}{}
+	}
+	for name, path := range seen {
+		if _, ok := seenAfter[name]; ok {
+			continue
+		}
+		pairs = append(pairs, name+"="+path)
+	}
+	return pairs
+}
+
+func sglangAppendLoraModulesUnified(args []string, adapters []inferencev1alpha1.SGLangLoRAAdapter, legacy []string) []string {
+	pairs := sglangBuildLoraModulePairs(adapters, legacy)
+	if len(pairs) == 0 {
 		return args
 	}
-	// SGLang's --lora-modules accepts a comma-separated list of
-	// <name>=<path> or JSON entries. Join the CRD slice into a single string.
-	return append(args, "--lora-modules", strings.Join(modules, ","))
+	return append(args, "--lora-modules", strings.Join(pairs, ","))
+}
+
+func sglangAppendModel(args []string, model string) []string {
+	if model != "" {
+		return append(args, "--model", model)
+	}
+	return args
+}
+
+// sglangAppendReasoningContent: only emit when user chose enabled or
+// disabled. SGLang's --reasoning-content takes a string arg.
+func sglangAppendReasoningContent(args []string, value *string) []string {
+	if value == nil {
+		return args
+	}
+	return append(args, "--reasoning-content", *value)
+}
+
+// sglangAppendReturnLogprob: emit only when user opted in (true).
+func sglangAppendReturnLogprob(args []string, enabled *bool) []string {
+	if enabled != nil && *enabled {
+		return append(args, "--return-logprob")
+	}
+	return args
+}
+
+func sglangAppendLogLevel(args []string, level string) []string {
+	if level != "" {
+		return append(args, "--log-level", level)
+	}
+	return args
+}
+
+// sglangAppendTrustRemoteCode: emit only when user opted in (true).
+func sglangAppendTrustRemoteCode(args []string, enabled *bool) []string {
+	if enabled != nil && *enabled {
+		return append(args, "--trust-remote-code")
+	}
+	return args
+}
+
+// sglangAppendSkipTokenizerInit: emit only when user opted in (true).
+func sglangAppendSkipTokenizerInit(args []string, enabled *bool) []string {
+	if enabled != nil && *enabled {
+		return append(args, "--skip-tokenizer-init")
+	}
+	return args
 }
 
 func sglangAppendMaxLoraRank(args []string, rank *int32) []string {
