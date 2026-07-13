@@ -38,6 +38,11 @@ const (
 	// absent from a slice that must define or reference it. Deterministic and
 	// authoritative.
 	DriftPinnedMissing = "pinned-missing"
+	// DriftPinnedPrefix is emitted by PinnedCheck: the pin is a strict prefix
+	// of an in-file token (e.g. pin "rocm_smi" against "rocm_smi_sensor").
+	// The planner needs to extend the pin past the identifier boundary.
+	// Deterministic and authoritative.
+	DriftPinnedPrefix = "pinned-prefix"
 	// DriftLLMFlagged is emitted by LLMSweep: the model flagged unpinned drift.
 	// Advisory; it can be a false positive and is adjudicated by human review.
 	DriftLLMFlagged = "llm-flagged"
@@ -92,7 +97,10 @@ type Result struct {
 // PinnedCheck deterministically verifies that each pinned identifier appears,
 // as a WHOLE TOKEN (not a substring), in at least one file of every slice that
 // defines or references it. Absence yields one pinned-missing Drift for that
-// (identifier, slice). Unpinned strings are ignored.
+// (identifier, slice). If the pin is a strict prefix of an in-file token
+// (e.g. pin "rocm_smi" against "rocm_smi_sensor_temperature"), a
+// pinned-prefix Drift is emitted instead, so the planner knows to extend the
+// pin past the identifier boundary. Unpinned strings are ignored.
 func PinnedCheck(ids []SharedIdentifier, repoDir string, sliceFiles map[string][]string) []Drift {
 	var drifts []Drift
 	for _, si := range ids {
@@ -100,18 +108,27 @@ func PinnedCheck(ids []SharedIdentifier, repoDir string, sliceFiles map[string][
 		for _, sl := range slices {
 			files := sliceFiles[sl]
 			found := false
+			prefix := false
 			for _, f := range files {
-				if present(si.ID, readFile(repoDir, f)) {
+				text := readFile(repoDir, f)
+				if present(si.ID, text) {
 					found = true
 					break
 				}
+				if !prefix && isPrefixOfToken(si.ID, text) {
+					prefix = true
+				}
 			}
 			if !found {
+				kind := DriftPinnedMissing
+				if prefix {
+					kind = DriftPinnedPrefix
+				}
 				drifts = append(drifts, Drift{
 					Identifier: si.ID,
 					Slice:      sl,
 					File:       strings.Join(files, ","),
-					Kind:       DriftPinnedMissing,
+					Kind:       kind,
 				})
 			}
 		}
@@ -220,6 +237,35 @@ func present(id, text string) bool {
 		beforeOK := start == 0 || !isIdentByte(text[start-1])
 		afterOK := end == len(text) || !isIdentByte(text[end])
 		if beforeOK && afterOK {
+			return true
+		}
+		i = start + 1
+	}
+}
+
+// isPrefixOfToken reports whether id occurs at the start of a token in text
+// (bounded on the left by a non-identifier character or string edge, but
+// followed by an identifier character). This catches the case where the pin
+// is a strict prefix of an in-file identifier, e.g. pin "rocm_smi" against
+// "rocm_smi_sensor_temperature": the pin is not a whole token, but the
+// planner can fix it by extending the pin past the identifier boundary.
+func isPrefixOfToken(id, text string) bool {
+	if id == "" {
+		return false
+	}
+	for i := 0; ; {
+		j := strings.Index(text[i:], id)
+		if j < 0 {
+			return false
+		}
+		start := i + j
+		end := start + len(id)
+		beforeOK := start == 0 || !isIdentByte(text[start-1])
+		if !beforeOK {
+			i = start + 1
+			continue
+		}
+		if end < len(text) && isIdentByte(text[end]) {
 			return true
 		}
 		i = start + 1
