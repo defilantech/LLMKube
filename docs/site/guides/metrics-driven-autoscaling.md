@@ -134,6 +134,25 @@ spec:
 
 The right metric depends on what "load" means for your workload.
 
+### Runtime default metrics
+
+When `spec.autoscaling.metrics` is empty, the controller picks a sensible
+default for each runtime backend:
+
+| Runtime   | Default HPA metric           | Notes                                              |
+|-----------|------------------------------|----------------------------------------------------|
+| `llamacpp`| `llamacpp:requests_processing`| Requests currently in flight on the llama.cpp pod. |
+| `vllm`    | `vllm:num_requests_running`   | Requests currently in flight on the vLLM pod.      |
+| `tgi`     | `tgi_batch_current_size`      | Tokens currently in the TGI batch.                 |
+| `sglang`  | `sglang:num_running_reqs`     | Requests currently in flight on the SGLang pod.    |
+
+For SGLang, the controller also emits `--enable-metrics` and the
+inference-pod template's port is named `http`, so the chart's
+`inferencePodMonitor` scrapes `sglang:*` gauges out of the box (enable
+with `prometheus.inferencePodMonitor.enabled=true`). Custom metrics work
+the same way: write them into `spec.autoscaling.metrics` with `type:
+Pods` and target the inferred Deployment.
+
 ### Option A: Requests being processed (simplest)
 
 `llamacpp:requests_processing` is a gauge of how many requests the

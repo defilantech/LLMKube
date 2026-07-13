@@ -281,3 +281,13 @@ is `amd`.
 
 Defaults to the OpenAI-compatible `/v1` surface, so downstream tooling
 (litellm, the foreman agents) needs no change.
+
+**Observability and autoscaling:** the controller emits
+`--enable-metrics` automatically, and the SGLang container port is named
+`http`, so the chart's `inferencePodMonitor` scrapes `sglang:*` gauges out
+of the box (enable with `prometheus.inferencePodMonitor.enabled=true`).
+For `spec.autoscaling`, the controller picks
+`sglang:num_running_reqs` as the default managed HPA metric — same
+`spec.autoscaling` flow as llama.cpp, no extra wiring required. See the
+[metrics-driven autoscaling guide](/docs/guides/metrics-driven-autoscaling)
+for the full picture.
