@@ -33,6 +33,11 @@ const (
 	// agents that predate this annotation.
 	AnnotationAgentVersion = "llmkube.ai/agent-version"
 
+	// AnnotationIdleEndpoint lets operators declare a custom HTTP path that
+	// returns 2xx when a replica is idle. Used by the generic runtime to opt
+	// in to drain-before-roll. Set on InferenceService metadata.annotations.
+	AnnotationIdleEndpoint = "inference.llmkube.dev/idle-endpoint"
+
 	// DefaultAgentHeartbeatInterval is how often the metal-agent re-asserts
 	// its registrations (which also self-heals any missed update, #657).
 	DefaultAgentHeartbeatInterval = 30 * time.Second
@@ -63,6 +68,10 @@ const (
 	// ReasonIdleTimeoutExceeded is set when RolloutDeferred=False after the
 	// idle timeout expired and the rollout proceeded despite busy pods.
 	ReasonIdleTimeoutExceeded string = "IdleTimeoutExceeded"
+
+	// ReasonIdleCheckUnsupported is set when the runtime backend does not
+	// implement IdleDetector, so drain-before-roll cannot probe idleness.
+	ReasonIdleCheckUnsupported string = "IdleCheckUnsupported"
 
 	// DefaultIdleCheckInterval is how often the controller re-checks pod
 	// idleness when waiting for idle before rollout.

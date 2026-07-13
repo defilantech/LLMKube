@@ -1,6 +1,10 @@
 package controller
 
 import (
+	"context"
+	"fmt"
+	"net/http"
+
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
@@ -66,4 +70,35 @@ func (b *GenericBackend) BuildProbes(port int32) (startup, liveness, readiness *
 	}
 
 	return startup, liveness, readiness
+}
+
+// IdleProbe returns a probe closure that reads the
+// AnnotationIdleEndpoint annotation from the InferenceService. If absent,
+// returns (false, errIdleUnsupported). If present, GETs the annotated path and
+// returns true on 2xx (idle), false on non-2xx (busy).
+func (b *GenericBackend) IdleProbe(isvc *inferencev1alpha1.InferenceService, client *http.Client) func(ctx context.Context, baseURL string) (bool, error) {
+	path, ok := isvc.Annotations[inferencev1alpha1.AnnotationIdleEndpoint]
+	if !ok {
+		return func(ctx context.Context, baseURL string) (bool, error) {
+			return false, errIdleUnsupported
+		}
+	}
+
+	return func(ctx context.Context, baseURL string) (bool, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+path, nil)
+		if err != nil {
+			return false, fmt.Errorf("failed to create request: %w", err)
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			return false, fmt.Errorf("idle endpoint probe failed: %w", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			return true, nil
+		}
+		return false, nil
+	}
 }

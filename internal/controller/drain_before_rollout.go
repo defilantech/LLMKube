@@ -20,16 +20,20 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
@@ -40,6 +44,8 @@ import (
 // without being fooled by API-server-applied defaults that differ between the
 // in-memory object and the persisted object.
 const AnnotationDesiredTemplateHash = "llmkube.ai/desired-template-hash"
+
+var errIdleUnsupported = errors.New("runtime does not implement idle detection")
 
 // desiredTemplateHash computes a deterministic hash of the pod template for the
 // purpose of detecting operator-driven changes. It serializes the normalized
@@ -52,91 +58,137 @@ func desiredTemplateHash(template corev1.PodTemplateSpec) string {
 	return fmt.Sprintf("%x", h[:8])
 }
 
-// llamaCPUSlot represents a single slot from the llama.cpp /slots endpoint.
-type llamaCPUSlot struct {
-	ID int `json:"id"`
-	// IsProcessing is true while the slot is handling a request (prompt
-	// evaluation or generation). A slot is idle when this is false.
-	IsProcessing bool `json:"is_processing"`
+// parsePrometheusGaugeSum scans Prometheus exposition text for lines matching
+// metricName (with optional labels in curly braces or bare gauge), sums the
+// numeric values, and returns (sum, found). Lines starting with '#' are skipped.
+func parsePrometheusGaugeSum(body, metricName string) (float64, bool) {
+	var sum float64
+	found := false
+	for _, raw := range strings.Split(body, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" || line[0] == '#' {
+			continue
+		}
+		if !strings.HasPrefix(line, metricName) {
+			continue
+		}
+		rest := line[len(metricName):]
+		if len(rest) == 0 || (rest[0] != '{' && rest[0] != ' ') {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		val, err := strconv.ParseFloat(fields[len(fields)-1], 64)
+		if err != nil {
+			continue
+		}
+		sum += val
+		found = true
+	}
+	return sum, found
 }
 
-// checkServerIdle checks whether all slots on a llama.cpp server are idle.
-// It queries the /slots endpoint and returns true only if every slot reports
-// is_processing == false. A server error (unreachable, non-200, unparseable
-// body) is surfaced as an error to the caller, which treats it as fail-closed
-// (defer the rollout) — see reconcileRolloutPolicy.
-// baseURL should include the port (e.g., "http://svc.ns.svc.cluster.local:8080").
-func (r *InferenceServiceReconciler) checkServerIdle(ctx context.Context, baseURL string) (bool, error) {
-	url := fmt.Sprintf("%s/slots", baseURL)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return false, fmt.Errorf("failed to create request: %w", err)
+// resolveIdlePort returns the port to use for idle-check HTTP probes. It
+// follows the same priority as the existing checkServiceIdle: Endpoint.Port >
+// ContainerPort > backend.DefaultPort().
+func resolveIdlePort(isvc *inferencev1alpha1.InferenceService, backend RuntimeBackend) int32 {
+	if isvc.Spec.Endpoint != nil && isvc.Spec.Endpoint.Port > 0 {
+		return isvc.Spec.Endpoint.Port
+	}
+	if isvc.Spec.ContainerPort != nil {
+		return *isvc.Spec.ContainerPort
+	}
+	return backend.DefaultPort()
+}
+
+// collectReadyReplicaURLs builds a list of "http://<addr>:<port>" URLs from
+// the ready endpoints in the given EndpointSliceList. Per Kubernetes convention,
+// an endpoint with Conditions.Ready == nil is treated as ready.
+func collectReadyReplicaURLs(slices *discoveryv1.EndpointSliceList, port int32) []string {
+	var urls []string
+	for i := range slices.Items {
+		for j := range slices.Items[i].Endpoints {
+			ep := &slices.Items[i].Endpoints[j]
+			if ep.Conditions.Ready != nil && !*ep.Conditions.Ready {
+				continue
+			}
+			for _, addr := range ep.Addresses {
+				urls = append(urls, fmt.Sprintf("http://%s:%d", addr, port))
+			}
+		}
+	}
+	return urls
+}
+
+// checkServiceIdle checks whether the InferenceService Service currently routes
+// to idle backends. It resolves the backend for the given InferenceService,
+// type-asserts to IdleDetector, and probes each Ready replica via EndpointSlices
+// (or falls back to a single Service URL when no EndpointSlices exist).
+func (r *InferenceServiceReconciler) checkServiceIdle(ctx context.Context, isvc *inferencev1alpha1.InferenceService, svc *corev1.Service) (bool, error) {
+	log := logf.FromContext(ctx)
+
+	backend := resolveBackend(isvc)
+	detector, ok := backend.(IdleDetector)
+	if !ok {
+		return false, errIdleUnsupported
 	}
 
 	httpClient := r.HTTPClient
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 5 * time.Second}
 	}
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return false, fmt.Errorf("failed to query /slots: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
+	probe := detector.IdleProbe(isvc, httpClient)
 
-	if resp.StatusCode != http.StatusOK {
-		return false, fmt.Errorf("/slots returned status %d", resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return false, fmt.Errorf("failed to read /slots response: %w", err)
-	}
-
-	var slots []llamaCPUSlot
-	if err := json.Unmarshal(body, &slots); err != nil {
-		return false, fmt.Errorf("failed to parse /slots response: %w", err)
-	}
-
-	for _, slot := range slots {
-		if slot.IsProcessing {
-			return false, nil
-		}
-	}
-
-	return true, nil
-}
-
-// checkServiceIdle checks whether the InferenceService Service currently routes
-// to an idle backend. This targets the single-replica local-model case from
-// #856; multi-replica per-pod draining can be layered on later.
-func (r *InferenceServiceReconciler) checkServiceIdle(ctx context.Context, isvc *inferencev1alpha1.InferenceService, svc *corev1.Service) (bool, error) {
-	log := logf.FromContext(ctx)
+	port := resolveIdlePort(isvc, backend)
 
 	var svcURL string
 	if r.RolloutIdleBaseURL != "" {
 		svcURL = r.RolloutIdleBaseURL
 	} else {
-		port := int32(8080)
-		if isvc.Spec.Endpoint != nil && isvc.Spec.Endpoint.Port > 0 {
-			port = isvc.Spec.Endpoint.Port
-		} else if isvc.Spec.ContainerPort != nil {
-			port = *isvc.Spec.ContainerPort
-		}
 		svcURL = fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", svc.Name, svc.Namespace, port)
 	}
-	idle, err := r.checkServerIdle(ctx, svcURL)
-	if err != nil {
-		log.Info("Failed to check server idle status", "error", err)
-		return false, err
+
+	slices := &discoveryv1.EndpointSliceList{}
+	svcName := sanitizeDNSName(svc.Name)
+	if err := r.List(ctx, slices, client.InNamespace(isvc.Namespace), client.MatchingLabels{"kubernetes.io/service-name": svcName}); err != nil {
+		log.Info("Failed to list EndpointSlices, falling back to Service URL", "error", err)
 	}
 
-	if !idle {
-		log.Info("Backend slots are busy, deferring rollout")
-	} else {
-		log.Info("All backend slots are idle, proceeding with rollout")
+	if len(slices.Items) == 0 {
+		idle, err := probe(ctx, svcURL)
+		if err != nil {
+			log.Info("Failed to check server idle status via Service URL", "error", err)
+			return false, err
+		}
+		if !idle {
+			log.Info("Backend is busy (Service URL fallback), deferring rollout")
+		} else {
+			log.Info("Backend is idle (Service URL fallback), proceeding with rollout")
+		}
+		return idle, nil
 	}
 
-	return idle, nil
+	replicaURLs := collectReadyReplicaURLs(slices, port)
+	if len(replicaURLs) == 0 {
+		return false, nil
+	}
+
+	for _, url := range replicaURLs {
+		idle, err := probe(ctx, url)
+		if err != nil {
+			log.Info("Failed to check replica idle status", "url", url, "error", err)
+			return false, err
+		}
+		if !idle {
+			log.Info("Replica is busy, deferring rollout", "url", url)
+			return false, nil
+		}
+	}
+
+	log.Info("All replicas are idle, proceeding with rollout")
+	return true, nil
 }
 
 // reconcileRolloutPolicy checks whether the rollout should be deferred based on
@@ -188,15 +240,20 @@ func (r *InferenceServiceReconciler) reconcileRolloutPolicy(
 
 	// Not idle, or the idle check itself failed. Fail closed: defer the
 	// rollout until the backend is idle or the idleTimeoutSeconds budget is
-	// spent. A failing /slots probe (server unreachable, non-200, --slots
-	// disabled so it 404s) must not silently roll and drop in-flight
-	// generations — that is exactly what waitForIdle is meant to prevent.
+	// spent. A failing idle probe (server unreachable, non-200, unparseable
+	// metrics, or unsupported runtime) must not silently roll and drop
+	// in-flight generations — that is exactly what waitForIdle is meant to prevent.
 	reason := ReasonPodsBusy
 	message := "Backend slots are busy, waiting for idle before rollout"
 	if checkErr != nil {
 		log.Info("Idle check failed; deferring rollout (fail-closed)", "error", checkErr)
-		reason = ReasonIdleCheckFailed
-		message = fmt.Sprintf("Idle check failed (%v); deferring rollout until idle or timeout", checkErr)
+		if errors.Is(checkErr, errIdleUnsupported) {
+			reason = ReasonIdleCheckUnsupported
+			message = fmt.Sprintf("Runtime does not support idle detection (%v); deferring rollout until idle or timeout", checkErr)
+		} else {
+			reason = ReasonIdleCheckFailed
+			message = fmt.Sprintf("Idle check failed (%v); deferring rollout until idle or timeout", checkErr)
+		}
 	} else {
 		log.Info("Backend slots are busy, deferring rollout")
 	}

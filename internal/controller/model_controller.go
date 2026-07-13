@@ -75,9 +75,10 @@ const (
 	// backend slots report idle or the idleTimeoutSeconds expires.
 	ConditionRolloutDeferred = inferencev1alpha1.ConditionRolloutDeferred
 
-	ReasonPodsBusy            = inferencev1alpha1.ReasonPodsBusy
-	ReasonIdleCheckFailed     = inferencev1alpha1.ReasonIdleCheckFailed
-	ReasonIdleTimeoutExceeded = inferencev1alpha1.ReasonIdleTimeoutExceeded
+	ReasonPodsBusy             = inferencev1alpha1.ReasonPodsBusy
+	ReasonIdleCheckFailed      = inferencev1alpha1.ReasonIdleCheckFailed
+	ReasonIdleTimeoutExceeded  = inferencev1alpha1.ReasonIdleTimeoutExceeded
+	ReasonIdleCheckUnsupported = inferencev1alpha1.ReasonIdleCheckUnsupported
 
 	ReasonWorkloadResolved = "WorkloadResolved"
 

@@ -55,8 +55,8 @@ func TestSGLangBackendDefaults(t *testing.T) {
 	if !b.NeedsModelInit() {
 		t.Error("NeedsModelInit() = false, want true")
 	}
-	if got := b.DefaultHPAMetric(); got != "sglang:num_requests_running" {
-		t.Errorf("DefaultHPAMetric() = %q, want %q", got, "sglang:num_requests_running")
+	if got := b.DefaultHPAMetric(); got != "sglang:num_running_reqs" {
+		t.Errorf("DefaultHPAMetric() = %q, want %q", got, "sglang:num_running_reqs")
 	}
 }
 
