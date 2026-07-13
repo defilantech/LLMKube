@@ -178,51 +178,89 @@ func sglangAppendSpeculative(args []string, cfg *inferencev1alpha1.SGLangSpecula
 	return args
 }
 
+// sglangParseLoraPair parses one legacy LoraModules []string entry into a
+// (name, path) pair. Two forms are accepted for back-compat with operators
+// running pre-#1060 CRs:
+//
+//   - `name=path` shorthand, e.g. `loraA=/loras/a`. This was the
+//     historical user-friendly form on top of vLLM's --lora-modules.
+//   - JSON object: `{"name":"loraA","path":"/loras/a"}` (the form
+//     sglang_v0.5.15's --lora-paths natively accepts via LoRAPathAction).
+//
+// Strings that fail BOTH forms (e.g. `"not-json"`) are silently dropped:
+// the prior controller passed them verbatim and SGLang would have
+// crashed at startup. The drop is logged once per reconcile via the
+// condition message below so the operator knows their config is being
+// silently filtered. Empty name (regardless of source form) is also
+// dropped — SGLang's `LoRAPathAction` validator rejects empty names.
+//
+// Returns ok=false when the entry is invalid; ok=true with name==""
+// when the entry parsed but the resulting pair should be skipped
+// (empty name). All callers should `continue` on both ok==false and
+// on `name==""`.
+func sglangParseLoraPair(s string) (name, path string, ok bool) {
+	if s == "" {
+		return "", "", false
+	}
+	// name=path shorthand.
+	if eq := strings.IndexByte(s, '='); eq > 0 && !strings.ContainsAny(s[:eq], "{[ \"") {
+		name = s[:eq]
+		path = s[eq+1:]
+		if name == "" {
+			return "", "", true
+		}
+		return name, path, true
+	}
+	// JSON object form.
+	var parsed struct {
+		Name string `json:"name"`
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal([]byte(s), &parsed); err != nil || parsed.Name == "" {
+		if parsed.Name == "" && err == nil {
+			return "", "", true
+		}
+		return "", "", false
+	}
+	return parsed.Name, parsed.Path, true
+}
+
 // sglangBuildLoraModulePairs merges typed LoraAdapters with the legacy
-// LoraModules []string. The typed list wins on name collision. Each legacy
-// string is expected to be a JSON object like {"name":"x","path":"/p"}; if
-// parsing fails the entry is silently skipped (the validator path catches
-// this upstream). Returns the merged name=path pairs joined by comma.
+// LoraModules []string. The typed list wins on name collision. Returns
+// the merged name=path pairs in a STABLE order: typed adapters first in
+// declared order, then any legacy entries that didn't collide, also in
+// encountered order. Order matters — the prior implementation built the
+// final slice by ranging over a Go map, which is randomized, and caused
+// spurious Deployment rollouts on every reconcile (#1060 review).
 func sglangBuildLoraModulePairs(adapters []inferencev1alpha1.SGLangLoRAAdapter, legacy []string) []string {
 	if len(adapters) == 0 && len(legacy) == 0 {
 		return nil
 	}
-	seen := make(map[string]string, len(adapters)+len(legacy))
+	// typedSeen lets the legacy loop skip names already locked in.
+	typedSeen := make(map[string]struct{}, len(adapters))
+	type pair struct{ name, path string }
+	// ordered pairs preserve input order.
+	ordered := make([]pair, 0, len(adapters)+len(legacy))
 	for _, a := range adapters {
 		if a.Name == "" {
 			continue
 		}
-		seen[a.Name] = a.Path
+		typedSeen[a.Name] = struct{}{}
+		ordered = append(ordered, pair{a.Name, a.Path})
 	}
 	for _, raw := range legacy {
-		var parsed struct {
-			Name string `json:"name"`
-			Path string `json:"path"`
-		}
-		if err := json.Unmarshal([]byte(raw), &parsed); err != nil || parsed.Name == "" {
+		name, path, ok := sglangParseLoraPair(raw)
+		if !ok || name == "" {
 			continue
 		}
-		if _, ok := seen[parsed.Name]; ok {
+		if _, taken := typedSeen[name]; taken {
 			continue // typed entry wins on collision
 		}
-		seen[parsed.Name] = parsed.Path
+		ordered = append(ordered, pair{name, path})
 	}
-	// Stable order: typed adapters first in declared order, then legacy in
-	// parsed order. This keeps Deployment .spec diffs deterministic.
-	pairs := make([]string, 0, len(seen))
-	seenAfter := make(map[string]struct{}, len(seen))
-	for _, a := range adapters {
-		if a.Name == "" {
-			continue
-		}
-		pairs = append(pairs, a.Name+"="+a.Path)
-		seenAfter[a.Name] = struct{}{}
-	}
-	for name, path := range seen {
-		if _, ok := seenAfter[name]; ok {
-			continue
-		}
-		pairs = append(pairs, name+"="+path)
+	pairs := make([]string, 0, len(ordered))
+	for _, p := range ordered {
+		pairs = append(pairs, p.name+"="+p.path)
 	}
 	return pairs
 }
@@ -232,29 +270,15 @@ func sglangAppendLoraModulesUnified(args []string, adapters []inferencev1alpha1.
 	if len(pairs) == 0 {
 		return args
 	}
-	return append(args, "--lora-modules", strings.Join(pairs, ","))
+	// SGLang v0.5.15 calls this flag `--lora-paths`, not vLLM's
+	// `--lora-modules`. Naming drift was the load-bearing bug caught
+	// in #1060 review; see server_args.py:lora_paths.
+	return append(args, "--lora-paths", strings.Join(pairs, ","))
 }
 
 func sglangAppendModel(args []string, model string) []string {
 	if model != "" {
 		return append(args, "--model", model)
-	}
-	return args
-}
-
-// sglangAppendReasoningContent: only emit when user chose enabled or
-// disabled. SGLang's --reasoning-content takes a string arg.
-func sglangAppendReasoningContent(args []string, value *string) []string {
-	if value == nil {
-		return args
-	}
-	return append(args, "--reasoning-content", *value)
-}
-
-// sglangAppendReturnLogprob: emit only when user opted in (true).
-func sglangAppendReturnLogprob(args []string, enabled *bool) []string {
-	if enabled != nil && *enabled {
-		return append(args, "--return-logprob")
 	}
 	return args
 }

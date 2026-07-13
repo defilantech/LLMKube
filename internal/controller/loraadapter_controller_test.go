@@ -119,7 +119,11 @@ func newRecordingSGLang(t *testing.T, statuses sglangStatuses) *recordingSGLang 
 	t.Helper()
 	r := &recordingSGLang{}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/lora_adapters/load", func(w http.ResponseWriter, req *http.Request) {
+	// SGLang v0.5.15 routes: POST /load_lora_adapter and
+	// POST /unload_lora_adapter (singular `lora_adapter`, no /v1
+	// prefix). See
+	// https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/entrypoints/http_server.py
+	mux.HandleFunc("/load_lora_adapter", func(w http.ResponseWriter, req *http.Request) {
 		body, _ := io.ReadAll(req.Body)
 		r.loadReqs = append(r.loadReqs, string(body))
 		if statuses.load >= 400 {
@@ -128,7 +132,7 @@ func newRecordingSGLang(t *testing.T, statuses sglangStatuses) *recordingSGLang 
 		}
 		w.WriteHeader(statuses.load)
 	})
-	mux.HandleFunc("/v1/lora_adapters/unload", func(w http.ResponseWriter, req *http.Request) {
+	mux.HandleFunc("/unload_lora_adapter", func(w http.ResponseWriter, req *http.Request) {
 		body, _ := io.ReadAll(req.Body)
 		r.unloadReqs = append(r.unloadReqs, string(body))
 		if statuses.unload >= 400 {
@@ -155,7 +159,7 @@ func newLoRARecnScheme(t *testing.T) *runtime.Scheme {
 
 // TestLoRAAdapterController_LoadsAgainstSGLang is the happy path: a
 // LoRAAdapter referencing an existing sglang InferenceService causes a
-// POST /v1/lora_adapters/load with the right body, and the status
+// POST /load_lora_adapter with the right body, and the status
 // condition Loaded=True reflects it.
 func TestLoRAAdapterController_LoadsAgainstSGLang(t *testing.T) {
 	const isvcName = "isvc-sglang"
@@ -506,6 +510,122 @@ func TestLoRAAdapterController_DeleteUnloads(t *testing.T) {
 	// finalizers drop and DeletionTimestamp is set; the fake client
 	// mirrors that, so we don't re-Get the adapter. The unload having
 	// arrived at the recording server is the contract we asserted.
+}
+
+// TestLoRAAdapterController_SkipsLoadWhenAlreadyLoaded asserts that a
+// second reconcile of an unchanged adapter does NOT re-issue the HTTP
+// load against SGLang. SGLang's load_lora_adapter would otherwise
+// re-load the adapter on every controller-side change (status patch,
+// finalizer update, metadata touch — anything that triggers a watch
+// event), which would flap served traffic for no reason. The skip
+// requires (a) LoadedPath matches spec.Path and (b) LastLoadedAt is
+// recent (within the safety window). Out-of-window or path-mismatch
+// adapters must still be reloaded.
+func TestLoRAAdapterController_SkipsLoadWhenAlreadyLoaded(t *testing.T) {
+	sg := newRecordingSGLang(t, sglangStatuses{})
+	scheme := newLoRARecnScheme(t)
+	const adapterName = "loraA"
+	const path = "/loras/a"
+	isvc := &inferencev1alpha1.InferenceService{
+		ObjectMeta: metav1.ObjectMeta{Name: "isvc-sglang", Namespace: "default"},
+		Spec: inferencev1alpha1.InferenceServiceSpec{
+			Runtime:  RuntimeSGLANG,
+			Endpoint: &inferencev1alpha1.EndpointSpec{Port: 30000},
+		},
+		Status: inferencev1alpha1.InferenceServiceStatus{Endpoint: "http://placeholder:30000"},
+	}
+	now := metav1.NewTime(time.Unix(1700000000, 0).UTC())
+	adapter := &inferencev1alpha1.LoRAAdapter{
+		ObjectMeta: metav1.ObjectMeta{Name: "adapter-a", Namespace: "default", Generation: 1, Finalizers: []string{loraAdapterFinalizer}},
+		Spec: inferencev1alpha1.LoRAAdapterSpec{
+			InferenceServiceRef: inferencev1alpha1.LocalInferenceServiceReference{Name: "isvc-sglang"},
+			Name:                adapterName,
+			Path:                path,
+		},
+		Status: inferencev1alpha1.LoRAAdapterStatus{
+			LoadedPath:   path,
+			LastLoadedAt: &now,
+			Conditions: []metav1.Condition{
+				{Type: LoRAConditionLoaded, Status: metav1.ConditionTrue, Reason: LoRAReasonReconcileSuccess},
+			},
+		},
+	}
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(isvc, adapter).WithStatusSubresource(&inferencev1alpha1.LoRAAdapter{}).Build()
+	fakec := &fakeAdapterClient{}
+	r := &LoRAAdapterReconciler{
+		Client:        cl,
+		Scheme:        scheme,
+		AdapterClient: fakec,
+		URLResolver:   func(_ context.Context, _ *inferencev1alpha1.InferenceService) (string, error) { return sg.URL, nil },
+		Now: func() time.Time {
+			// Same instant as LastLoadedAt — safely within the window.
+			return now.Time
+		},
+	}
+
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: adapter.Name, Namespace: adapter.Namespace}}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if len(sg.loadReqs) != 0 {
+		t.Errorf("expected 0 SGLang load requests when already loaded; got %d (%v)", len(sg.loadReqs), sg.loadReqs)
+	}
+	if len(fakec.loadCalls) != 0 {
+		t.Errorf("expected 0 fake load calls when already loaded; got %d", len(fakec.loadCalls))
+	}
+}
+
+// TestLoRAAdapterController_ReloadsWhenPathChanged asserts the inverse:
+// the second reconcile re-loads because LoadedPath != spec.Path (the
+// operator moved the adapter mount to a new in-pod location).
+func TestLoRAAdapterController_ReloadsWhenPathChanged(t *testing.T) {
+	sg := newRecordingSGLang(t, sglangStatuses{})
+	scheme := newLoRARecnScheme(t)
+	isvc := &inferencev1alpha1.InferenceService{
+		ObjectMeta: metav1.ObjectMeta{Name: "isvc-sglang", Namespace: "default"},
+		Spec: inferencev1alpha1.InferenceServiceSpec{
+			Runtime:  RuntimeSGLANG,
+			Endpoint: &inferencev1alpha1.EndpointSpec{Port: 30000},
+		},
+		Status: inferencev1alpha1.InferenceServiceStatus{Endpoint: "http://placeholder:30000"},
+	}
+	now := metav1.NewTime(time.Unix(1700000000, 0).UTC())
+	adapter := &inferencev1alpha1.LoRAAdapter{
+		ObjectMeta: metav1.ObjectMeta{Name: "adapter-a", Namespace: "default", Generation: 2, Finalizers: []string{loraAdapterFinalizer}},
+		Spec: inferencev1alpha1.LoRAAdapterSpec{
+			InferenceServiceRef: inferencev1alpha1.LocalInferenceServiceReference{Name: "isvc-sglang"},
+			Name:                "loraA",
+			Path:                "/loras/a-v2", // changed
+		},
+		Status: inferencev1alpha1.LoRAAdapterStatus{
+			LoadedPath:   "/loras/a",
+			LastLoadedAt: &now,
+			Conditions: []metav1.Condition{
+				{Type: LoRAConditionLoaded, Status: metav1.ConditionTrue, Reason: LoRAReasonReconcileSuccess},
+			},
+		},
+	}
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(isvc, adapter).WithStatusSubresource(&inferencev1alpha1.LoRAAdapter{}).Build()
+	r := &LoRAAdapterReconciler{
+		Client:        cl,
+		Scheme:        scheme,
+		AdapterClient: NewSGLangAdapterClient(sg.Client()),
+		URLResolver:   func(_ context.Context, _ *inferencev1alpha1.InferenceService) (string, error) { return sg.URL, nil },
+		Now:           func() time.Time { return now.Time },
+	}
+
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: adapter.Name, Namespace: adapter.Namespace}}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if len(sg.loadReqs) != 1 {
+		t.Errorf("expected 1 SGLang load request after path change; got %d", len(sg.loadReqs))
+	}
+	var body map[string]string
+	if err := json.Unmarshal([]byte(sg.loadReqs[0]), &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body["lora_path"] != "/loras/a-v2" {
+		t.Errorf("reloaded with lora_path=%q, want /loras/a-v2", body["lora_path"])
+	}
 }
 
 // TestLoRAAdapterController_AdoptsOnFirstReconcile verifies the
@@ -885,6 +1005,39 @@ func TestDefaultLoRAAdapterURLResolver_ErrorPaths(t *testing.T) {
 	}
 }
 
+// TestDefaultLoRAAdapterURLResolver_SanitizesDNSName asserts the
+// production resolver uses sanitizeDNSName (dots → dashes) the same way
+// the InferenceService controller does when it builds the cluster-local
+// Service. An ISVC named "llama-3.1-8b" creates a Service named
+// "llama-3-1-8b" — the resolver must point at that, not at the raw name.
+func TestDefaultLoRAAdapterURLResolver_SanitizesDNSName(t *testing.T) {
+	isvc := &inferencev1alpha1.InferenceService{
+		ObjectMeta: metav1.ObjectMeta{Name: "llama-3.1-8b", Namespace: "default"},
+		Spec: inferencev1alpha1.InferenceServiceSpec{
+			Runtime:  RuntimeSGLANG,
+			Endpoint: &inferencev1alpha1.EndpointSpec{Port: 30000},
+		},
+	}
+	got, err := defaultLoRAAdapterURLResolver(context.Background(), isvc)
+	if err != nil {
+		t.Fatalf("resolver: %v", err)
+	}
+	want := "http://llama-3-1-8b.default.svc:30000"
+	if got != want {
+		t.Errorf("resolver = %q, want %q (must use sanitizeDNSName, dots -> dashes)", got, want)
+	}
+
+	// Plain alphanumeric names (no dots) should be unchanged.
+	isvc.Name = "llama3-8b"
+	got, err = defaultLoRAAdapterURLResolver(context.Background(), isvc)
+	if err != nil {
+		t.Fatalf("resolver: %v", err)
+	}
+	if got != "http://llama3-8b.default.svc:30000" {
+		t.Errorf("resolver = %q, want no sanitization for plain name", got)
+	}
+}
+
 // TestLoRAAdapterController_DeleteISVCGetError covers the early-return
 // in reconcileDelete when the ISVC Get fails with a non-NotFound error
 // (e.g. RBAC denies it). The reconciler should surface the error and
@@ -937,7 +1090,7 @@ func TestSGLangAdapterClient_BadURLError(t *testing.T) {
 	c := NewSGLangAdapterClient(http.DefaultClient)
 	// Control characters are invalid in URL paths and trip
 	// url.Parse / NewRequestWithContext.
-	err := c.LoadAdapter(context.Background(), "http://bad\x00host/v1/lora_adapters/load", "loraA", "/loras/a")
+	err := c.LoadAdapter(context.Background(), "http://bad\x00host/load_lora_adapter", "loraA", "/loras/a")
 	if err == nil {
 		t.Fatal("expected error for URL with control character")
 	}

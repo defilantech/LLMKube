@@ -26,7 +26,6 @@ import (
 	"net/http"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -56,7 +55,19 @@ const (
 	LoRAReasonReconcilerError    = "ReconcilerError"
 	LoRAReasonReconcileSuccess   = "ReconcileSuccess"
 	LoRAReasonFinalizerAdded     = "FinalizerAdded"
+	LoRAReasonAlreadyLoaded      = "AlreadyLoaded"
 )
+
+// loadSkipWindow is the idempotency guard for shouldSkipLoad. If the
+// last successful load happened within this window AND the LoadedPath
+// matches spec.Path, the reconciler skips re-issuing the HTTP call —
+// otherwise every controller-side patch (status update, finalizer
+// touch, annotation change) would flap the served adapter set on
+// SGLang. The window is intentionally short: long enough to swallow the
+// quick reconciles a single user action produces, short enough that
+// stale controller state recovers within a few minutes even if the
+// guard ever mistakenly under-counts.
+const loadSkipWindow = 2 * time.Minute
 
 // loraAdapterFinalizer is removed once SGLang has acknowledged the
 // unload; until then, the resource stays in the API to give the
@@ -64,8 +75,11 @@ const (
 const loraAdapterFinalizer = "loraadapter.inference.llmkube.dev/finalizer"
 
 // SGLangAdapterClient is the surface LoRAAdapterReconciler uses to talk
-// to SGLang's /v1/lora_adapters/{load,unload} HTTP endpoints. The
-// production wiring builds one with NewSGLangAdapterClient over an
+// to SGLang's /load_lora_adapter and /unload_lora_adapter HTTP
+// endpoints (no /v1 prefix, singular `lora_adapter`, as of SGLang
+// v0.5.15 — see
+// https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/entrypoints/http_server.py).
+// The production wiring builds one with NewSGLangAdapterClient over an
 // http.Client; tests inject a fake in package-internal _test.go files.
 type SGLangAdapterClient interface {
 	LoadAdapter(ctx context.Context, baseURL, name, path string) error
@@ -86,12 +100,12 @@ func NewSGLangAdapterClient(c *http.Client) SGLangAdapterClient {
 }
 
 func (c *sglangAdapterClient) LoadAdapter(ctx context.Context, baseURL, name, path string) error {
-	return c.postJSON(ctx, baseURL+"/v1/lora_adapters/load",
+	return c.postJSON(ctx, baseURL+"/load_lora_adapter",
 		map[string]string{"lora_name": name, "lora_path": path})
 }
 
 func (c *sglangAdapterClient) UnloadAdapter(ctx context.Context, baseURL, name string) error {
-	return c.postJSON(ctx, baseURL+"/v1/lora_adapters/unload",
+	return c.postJSON(ctx, baseURL+"/unload_lora_adapter",
 		map[string]string{"lora_name": name})
 }
 
@@ -132,28 +146,32 @@ type LoRAAdapterURLResolver func(ctx context.Context, isvc *inferencev1alpha1.In
 // defaultLoRAAdapterURLResolver is the production resolver. It mirrors
 // how the InferenceService controller builds its cluster-local Service
 // (so the LoRAAdapter controller and the SGLang pod agree on the
-// endpoint).
+// endpoint). Service names are sanitized via the shared sanitizeDNSName
+// helper — dots become dashes, otherwise an ISVC named "llama-3.1-8b"
+// would resolve to a host that does not exist (#1060 review).
 func defaultLoRAAdapterURLResolver(_ context.Context, isvc *inferencev1alpha1.InferenceService) (string, error) {
 	if isvc == nil {
 		return "", errors.New("nil InferenceService")
 	}
+	svcName := sanitizeDNSName(isvc.Name)
 	if isvc.Spec.Endpoint != nil && isvc.Spec.Endpoint.Port > 0 {
-		return fmt.Sprintf("http://%s.%s.svc:%d", isvc.Name, isvc.Namespace, isvc.Spec.Endpoint.Port), nil
+		return fmt.Sprintf("http://%s.%s.svc:%d", svcName, isvc.Namespace, isvc.Spec.Endpoint.Port), nil
 	}
 	if isvc.Spec.ContainerPort != nil {
-		return fmt.Sprintf("http://%s.%s.svc:%d", isvc.Name, isvc.Namespace, *isvc.Spec.ContainerPort), nil
+		return fmt.Sprintf("http://%s.%s.svc:%d", svcName, isvc.Namespace, *isvc.Spec.ContainerPort), nil
 	}
 	if isvc.Spec.Runtime == RuntimeSGLANG {
-		return fmt.Sprintf("http://%s.%s.svc:%d", isvc.Name, isvc.Namespace, 30000), nil
+		return fmt.Sprintf("http://%s.%s.svc:%d", svcName, isvc.Namespace, 30000), nil
 	}
 	return "", fmt.Errorf("cannot resolve port for %s/%s runtime=%q", isvc.Namespace, isvc.Name, isvc.Spec.Runtime)
 }
 
 // LoRAAdapterReconciler reconciles LoRAAdapter resources by issuing
-// /v1/lora_adapters/{load,unload} on the target SGLang inference
-// service. The reconciler is idempotent: repeated reconciles are safe
-// and re-issue the appropriate HTTP call (load on add/update, unload
-// during finalizer removal).
+// /load_lora_adapter and /unload_lora_adapter against the target SGLang
+// inference service. The reconciler is idempotent: a second reconcile
+// of an unchanged adapter (same LoadedPath, recent LastLoadedAt) skips
+// the HTTP call, so a status patch or finalizer touch does not flap
+// SGLang's served adapter set.
 //
 // +kubebuilder:rbac:groups=inference.llmkube.dev,resources=loraadapters,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=inference.llmkube.dev,resources=loraadapters/status,verbs=get;update;patch
@@ -258,7 +276,9 @@ func (r *LoRAAdapterReconciler) reconcileLoad(ctx context.Context, logc ctrlLog,
 			LoRAReasonRuntimeMismatch, "skipped: target runtime is not sglang")
 		r.setCondition(adapter, LoRAConditionError, metav1.ConditionTrue,
 			LoRAReasonRuntimeMismatch, "load cannot proceed against a non-sglang runtime")
-		return ctrl.Result{}, r.Status().Update(ctx, adapter)
+		// Backoff the same way the NotFound branch does: the spec is
+		// not actionable until the operator changes something.
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, r.Status().Update(ctx, adapter)
 	}
 
 	baseURL, err := r.URLResolver(ctx, isvc)
@@ -269,11 +289,26 @@ func (r *LoRAAdapterReconciler) reconcileLoad(ctx context.Context, logc ctrlLog,
 			LoRAReasonInvalidPort, err.Error())
 		r.setCondition(adapter, LoRAConditionError, metav1.ConditionTrue,
 			LoRAReasonInvalidPort, err.Error())
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, r.Status().Update(ctx, adapter)
+	}
+
+	// Idempotency guard: if the adapter is already loaded at the same
+	// path within the safety window, skip the HTTP call. Without this
+	// every spec patch (status update, finalizer touch, metadata) would
+	// re-load and flap SGLang's served adapter set. Out-of-window or
+	// path-mismatch always re-loads.
+	if r.shouldSkipLoad(adapter) {
+		r.setCondition(adapter, LoRAConditionAvailable, metav1.ConditionTrue,
+			LoRAReasonReconcileSuccess, "InferenceService exists and is sglang")
+		r.setCondition(adapter, LoRAConditionLoaded, metav1.ConditionTrue,
+			LoRAReasonAlreadyLoaded, "skip: already loaded within safety window")
+		r.setCondition(adapter, LoRAConditionError, metav1.ConditionFalse,
+			LoRAReasonReconcileSuccess, "no error")
 		return ctrl.Result{}, r.Status().Update(ctx, adapter)
 	}
 
 	if err := r.AdapterClient.LoadAdapter(ctx, baseURL, adapter.Spec.Name, adapter.Spec.Path); err != nil {
-		logc.Error(err, "sglang /v1/lora_adapters/load failed")
+		logc.Error(err, "sglang /load_lora_adapter failed")
 		r.setCondition(adapter, LoRAConditionAvailable, metav1.ConditionTrue,
 			LoRAReasonReconcileSuccess, "InferenceService exists and is sglang")
 		r.setCondition(adapter, LoRAConditionLoaded, metav1.ConditionFalse,
@@ -319,7 +354,7 @@ func (r *LoRAAdapterReconciler) reconcileDelete(ctx context.Context, logc ctrlLo
 		if err == nil {
 			if unloadErr := r.AdapterClient.UnloadAdapter(ctx, baseURL, adapter.Spec.Name); unloadErr != nil {
 				// best-effort: log and drop the finalizer anyway.
-				logc.Error(unloadErr, "sglang /v1/lora_adapters/unload failed; dropping finalizer",
+				logc.Error(unloadErr, "sglang /unload_lora_adapter failed; dropping finalizer",
 					"loraAdapter", adapter.Name)
 				r.setCondition(adapter, LoRAConditionLoaded, metav1.ConditionFalse,
 					LoRAReasonUnloadUnsuccessful, unloadErr.Error())
@@ -352,6 +387,26 @@ func (r *LoRAAdapterReconciler) resolveInferenceService(ctx context.Context, ada
 		return nil, err
 	}
 	return isvc, nil
+}
+
+// shouldSkipLoad reports whether the reconciler can skip the HTTP
+// load against SGLang. Returns true when the spec's Path matches the
+// already-recorded LoadedPath AND the LastLoadedAt is within the
+// safety window (loadSkipWindow). Path mismatch or stale load means
+// we need to reload — adapter moved, or the previous load is too old
+// to trust.
+func (r *LoRAAdapterReconciler) shouldSkipLoad(adapter *inferencev1alpha1.LoRAAdapter) bool {
+	if adapter.Status.LoadedPath == "" || adapter.Status.LastLoadedAt == nil {
+		return false
+	}
+	if adapter.Status.LoadedPath != adapter.Spec.Path {
+		return false
+	}
+	now := r.Now()
+	if now.IsZero() {
+		now = time.Now()
+	}
+	return now.Sub(adapter.Status.LastLoadedAt.Time) < loadSkipWindow
 }
 
 func (r *LoRAAdapterReconciler) addFinalizer(ctx context.Context, adapter *inferencev1alpha1.LoRAAdapter) error {
@@ -399,10 +454,3 @@ type ctrlLogger interface {
 	Error(err error, msg string, keysAndValues ...any)
 	Info(msg string, keysAndValues ...any)
 }
-
-// Compile-time check that corev1 is used (avoids an "unused import" in
-// the file when only the package-level registration matters; keeping
-// the explicit reference documents that LoRAAdapter reconcilers
-// implicitly act on the Service / Pod resources that the InferenceService
-// controller creates).
-var _ = corev1.SchemeGroupVersion

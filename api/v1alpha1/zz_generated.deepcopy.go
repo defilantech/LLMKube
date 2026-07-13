@@ -1740,16 +1740,6 @@ func (in *SGLangConfig) DeepCopyInto(out *SGLangConfig) {
 		*out = make([]SGLangLoRAAdapter, len(*in))
 		copy(*out, *in)
 	}
-	if in.ReasoningContent != nil {
-		in, out := &in.ReasoningContent, &out.ReasoningContent
-		*out = new(string)
-		**out = **in
-	}
-	if in.ReturnLogprob != nil {
-		in, out := &in.ReturnLogprob, &out.ReturnLogprob
-		*out = new(bool)
-		**out = **in
-	}
 	if in.TrustRemoteCode != nil {
 		in, out := &in.TrustRemoteCode, &out.TrustRemoteCode
 		*out = new(bool)

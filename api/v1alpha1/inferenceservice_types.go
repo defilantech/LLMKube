@@ -1192,10 +1192,11 @@ type SGLangConfig struct {
 	Speculative *SGLangSpeculativeConfig `json:"speculative,omitempty"`
 
 	// LoRA (basic)
-	// LoraModules is the legacy JSON-array form of --lora-modules. Each
-	// element is a JSON object {"name":"x","path":"/p"}. New callers
-	// should prefer the typed LoraAdapters field; the controller merges
-	// both, with LoraAdapters winning on name collision. Deprecated: use
+	// LoraModules is the legacy form of --lora-paths entries. Each
+	// element is either `name=path` shorthand or a JSON object
+	// {"name":"x","path":"/p"}. New callers should prefer the typed
+	// LoraAdapters field; the controller merges both, with
+	// LoraAdapters winning on name collision. Deprecated: use
 	// LoraAdapters instead.
 	// +optional
 	LoraModules []string `json:"loraModules,omitempty"`
@@ -1214,7 +1215,9 @@ type SGLangConfig struct {
 	// LoraAdapters is a typed replacement for LoraModules. Each adapter has
 	// a stable Name (SGLang-side handle) and Path (file mount). When both
 	// LoraAdapters and LoraModules are set, LoraAdapters wins on name
-	// collisions. Maps to SGLang --lora-modules flag.
+	// collision. Maps to SGLang --lora-paths flag (singular `lora_paths`,
+	// not vLLM's --lora-modules — see
+	// https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/server_args.py).
 	// +optional
 	LoraAdapters []SGLangLoRAAdapter `json:"loraAdapters,omitempty"`
 
@@ -1224,18 +1227,6 @@ type SGLangConfig struct {
 	// OpenAI-compatible API. Maps to SGLang --model flag.
 	// +optional
 	Model string `json:"model,omitempty"`
-
-	// ReasoningContent controls whether reasoning content is exposed in
-	// responses. Valid values: "enabled", "disabled". Maps to SGLang
-	// --reasoning-content flag. Omit to leave SGLang's default behavior.
-	// +kubebuilder:validation:Enum=enabled;disabled
-	// +optional
-	ReasoningContent *string `json:"reasoningContent,omitempty"`
-
-	// ReturnLogprob enables returning token log probabilities in responses.
-	// Maps to SGLang --return-logprob flag. Omit to leave SGLang's default.
-	// +optional
-	ReturnLogprob *bool `json:"returnLogprob,omitempty"`
 
 	// LogLevel sets the SGLang server log level. SGLang accepts
 	// "debug"/"info"/"warning"/"error". Maps to SGLang --log-level flag.
