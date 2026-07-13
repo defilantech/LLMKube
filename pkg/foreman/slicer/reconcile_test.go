@@ -109,6 +109,70 @@ func TestPinnedCheck_PrefixPinNeverMatchesWholeToken(t *testing.T) {
 	}
 }
 
+// A prefix pin that stops on a letter/digit boundary (e.g. "rocm_smi" against
+// "rocm_smi_sensor_temperature") is not detectable at plan-validation time
+// without file content: it passes validation and still triggers the
+// pinned-missing false-fail-and-skip at reconcile. The fix is to detect this
+// case in PinnedCheck and surface a distinct, actionable drift kind
+// (pinned-prefix) instead of generic pinned-missing. Regression for #1084.
+func TestPinnedCheck_PrefixPinStopsOnLetterBoundary(t *testing.T) {
+	repo := writeRepo(t, map[string]string{
+		"config/monitoring/exp.yaml": "emits rocm_smi_sensor_temperature here",
+	})
+	ids := []SharedIdentifier{{ID: "rocm_smi", DefinedBy: "exp"}}
+	sf := map[string][]string{"exp": {"config/monitoring/exp.yaml"}}
+	drifts := PinnedCheck(ids, repo, sf)
+	if len(drifts) != 1 {
+		t.Fatalf("want 1 drift, got %+v", drifts)
+	}
+	got := drifts[0]
+	if got.Kind != DriftPinnedPrefix {
+		t.Fatalf("want pinned-prefix drift kind, got %q", got.Kind)
+	}
+	if got.Identifier != "rocm_smi" {
+		t.Fatalf("want identifier rocm_smi, got %q", got.Identifier)
+	}
+}
+
+// A pin that is a prefix of a token but separated by a non-identifier char
+// (e.g. "rocm" against "rocm_smi_sensor_temperature") should NOT be flagged as
+// a prefix match, because the pin is not at a token boundary on the left.
+func TestPinnedCheck_PrefixMustBeAtTokenStart(t *testing.T) {
+	repo := writeRepo(t, map[string]string{
+		"config/monitoring/exp.yaml": "emits my_rocm_sensor_temperature here",
+	})
+	ids := []SharedIdentifier{{ID: "rocm", DefinedBy: "exp"}}
+	sf := map[string][]string{"exp": {"config/monitoring/exp.yaml"}}
+	drifts := PinnedCheck(ids, repo, sf)
+	if len(drifts) != 1 || drifts[0].Kind != DriftPinnedMissing {
+		t.Fatalf("want pinned-missing (not prefix), got %+v", drifts)
+	}
+}
+
+func TestIsPrefixOfToken_Detected(t *testing.T) {
+	cases := []struct {
+		name string
+		id   string
+		text string
+		want bool
+	}{
+		{"at-start-of-token", "rocm_smi", "emits rocm_smi_sensor_temperature here", true},
+		{"mid-token-no-match", "rocm", "emits my_rocm_sensor_temperature here", false},
+		{"whole-token-no-match", "rocm_smi_sensor_temperature", "emits rocm_smi_sensor_temperature here", false},
+		{"not-in-text", "rocm_smi", "emits cpu_temp here", false},
+		{"empty-id", "", "emits rocm_smi_sensor_temperature here", false},
+		{"pin-equals-text", "rocm_smi", "rocm_smi", false},
+		{"pin-at-end-of-text-with-ident-following", "foo", "bar fooX", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isPrefixOfToken(tc.id, tc.text); got != tc.want {
+				t.Fatalf("isPrefixOfToken(%q, %q) = %v, want %v", tc.id, tc.text, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestPinnedCheck_SuffixedTokenIsNotAMatch(t *testing.T) {
 	ids := []SharedIdentifier{{ID: "rocm_smi_gpu_temp", DefinedBy: "a"}}
 	sf := map[string][]string{"a": {"a.yaml"}}
