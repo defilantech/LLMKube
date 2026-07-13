@@ -1,0 +1,76 @@
+{{- if and .Values.foreman.crs.enabled .Values.foreman.crs.alerts.enabled }}
+# Starter PrometheusRule alerts for Foreman CRD status metrics.
+#
+# These alert on the two axes that matter most to an SRE running Foreman:
+# a Workload stuck in Pending (scheduling or capability mismatch) and a
+# FleetNode whose heartbeat has gone stale (agent crash or network partition).
+#
+# The metric series these rules reference are emitted by the CRS ConfigMap
+# (charts/foreman/templates/crs-configmap.yaml). Disable with
+# `foreman.crs.alerts.enabled: false` if you prefer to author your own
+# rules against the same series.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "foreman.fullname" . }}-alerts
+  namespace: {{ include "foreman.namespace" . }}
+  labels:
+    {{- include "foreman.labels" . | nindent 4 }}
+    {{- with .Values.foreman.crs.alerts.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+  - name: foreman-workload
+    interval: 30s
+    rules:
+    # A Workload stuck in Planning/Planned/Pending for longer than the
+    # alert threshold. The WorkloadReconciler transitions Planning ->
+    # Planned -> Dispatched as it emits AgenticTasks; if it lingers in
+    # Planning the planner is blocked (missing CoderAgentRef, invalid
+    # Intent, etc.) and a human should investigate.
+    - alert: ForemanWorkloadStuckPending
+      expr: foreman_workload_phase{phase="planning"} == 1 or foreman_workload_phase{phase="planned"} == 1
+      for: {{ .Values.foreman.crs.alerts.stuckPendingDuration }}
+      labels:
+        severity: warning
+        component: foreman
+      annotations:
+        summary: "Workload {{`{{ $labels.namespace }}/{{ $labels.name }}`}} stuck in {{`{{ $labels.phase }}`}}"
+        description: "Workload {{`{{ $labels.namespace }}/{{ $labels.name }}`}} has been in phase {{`{{ $labels.phase }}`}} for more than {{ .Values.foreman.crs.alerts.stuckPendingDuration }}. Check the Workload's conditions and the CoderAgentRef it references."
+
+  - name: foreman-fleetnode
+    interval: 30s
+    rules:
+    # A FleetNode whose heartbeat has gone stale. The foreman-agent
+    # heartbeats every 30s; FleetNodeHeartbeatTimeout is 90s. This alert
+    # fires after `staleHeartbeatDuration` of silence, which must be >
+    # 90s to avoid flapping on a single missed beat.
+    - alert: ForemanFleetNodeHeartbeatStale
+      expr: foreman_fleetnode_heartbeat_timestamp_seconds > 0 and (time_seconds() - foreman_fleetnode_heartbeat_timestamp_seconds) > {{ .Values.foreman.crs.alerts.staleHeartbeatSeconds }}
+      for: {{ .Values.foreman.crs.alerts.staleHeartbeatDuration }}
+      labels:
+        severity: critical
+        component: foreman
+      annotations:
+        summary: "FleetNode {{`{{ $labels.node }}`}} heartbeat stale"
+        description: "FleetNode {{`{{ $labels.node }}`}} has not heartbeated in more than {{ .Values.foreman.crs.alerts.staleHeartbeatDuration }}. The foreman-agent on this node may be crashed or the network partitioned."
+
+  - name: foreman-agentictask
+    interval: 30s
+    rules:
+    # A task in Running phase for an unreasonably long time. Most
+    # issue-fix tasks complete in under 10 minutes; a task running for
+    # over an hour is likely stuck in the model loop (max-turns
+    # misconfigured, model unresponsive) and needs human intervention.
+    - alert: ForemanAgenticTaskRunningTooLong
+      expr: foreman_agentictask_phase{phase="running"} == 1
+      for: 1h
+      labels:
+        severity: warning
+        component: foreman
+      annotations:
+        summary: "AgenticTask {{`{{ $labels.namespace }}/{{ $labels.name }}`}} running for over 1 hour"
+        description: "AgenticTask {{`{{ $labels.namespace }}/{{ $labels.name }}`}} (kind={{`{{ $labels.agent }}`}}) has been in Running phase for over 1 hour. Check the agent's transcript ConfigMap for signs of a stuck loop."
+---
+{{- end }}

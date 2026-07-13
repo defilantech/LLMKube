@@ -43,6 +43,85 @@ foreman:
   # should set this false.
   allowCloudProviders: true
 
+  # Foreman CRD status metrics via kube-state-metrics Custom Resource State.
+  #
+  # Maps the Foreman CRD status fields (Workload, AgenticTask, FleetNode) to
+  # Prometheus gauges so job and fleet state is scrapable and alertable in the
+  # Prometheus + Grafana stack operators already run. Pure configuration
+  # against the kube-state-metrics already deployed in most clusters: no new
+  # operator code.
+  #
+  # The CRS config is rendered as a ConfigMap in the Foreman release namespace.
+  # The kube-state-metrics deployment (or the kube-prometheus-stack
+  # `kube-state-metrics.customResourceState` values path) must be pointed at
+  # this ConfigMap for the metrics to land in the existing scrape pipeline.
+  #
+  # Set `enabled: false` to opt out (e.g. when the cluster does not run
+  # kube-state-metrics, or when a different observability stack is in use).
+  crs:
+    enabled: false
+    # Metrics path the CRS ConfigMap is served at inside the ConfigMap.
+    # Matches the kube-prometheus-stack default (`/etc/ksm-cmaps/...`) so
+    # the stack picks it up without extra wiring.
+    configMapKey: foreman-crs.yaml
+    # Example PrometheusRule alerts shipped alongside the CRS config.
+    # Disable when you prefer to author your own alerts against the same
+    # metric series.
+    alerts:
+      enabled: false
+      # How long a Workload may sit in Pending before the alert fires.
+      stuckPendingDuration: 15m
+      # How long a FleetNode's heartbeat must be stale before the alert
+      # fires. Must be > FleetNodeHeartbeatTimeout (90s) to avoid flapping.
+      staleHeartbeatDuration: 5m
+      # Numeric threshold in seconds used for the `> N` comparison in the
+      # ForemanFleetNodeHeartbeatStale expr. Defaults to 300 (5 minutes).
+      # The `staleHeartbeatDuration` duration string is used for the `for:`
+      # field and the alert description instead.
+      staleHeartbeatSeconds: 300
+      # Labels applied to the PrometheusRule metadata so a Prometheus
+      # instance that restricts ruleSelector (e.g. the default
+      # kube-prometheus-stack) will adopt these rules.
+      additionalLabels:
+        prometheus: kube-prometheus-stack-prometheus
+
+# agents is the multi-fleet map (#994). Leave it UNSET for a single
+# agent (the legacy `agent:` block above is used as-is and renders
+# exactly the resources it always has, so an existing install is
+# unchanged on upgrade). Set it to render one Deployment +
+# ServiceAccount + ClusterRole/ClusterRoleBinding + gate-cache PVC PER
+# entry, each suffixed with the agent key, so multiple heterogeneous
+# agent fleets coexist in one release instead of needing a second
+# chart install (which would collide on the chart's singletons).
+#
+# Real-world use cases:
+#
+#   agents:
+#     default:                  # the primary multi-repo worker/coder pool
+#       replicaCount: 3
+#       roles: [worker, coder, verifier]
+#     llmkube-fork:             # a fork-pinned dogfood agent for upstream PRs
+#       replicaCount: 1
+#       roles: [coder-fork]
+#       gitRemoteURL: https://github.com/<you>/LLMKube
+#       githubToken: { secretName: foreman-agent-fork, secretKey: GITHUB_TOKEN }
+#       commitAuthorName: "<you>"
+#       commitAuthorEmail: "<you>@users.noreply.github.com"
+#       coderGitSecret: foreman-fork-credentials     # per-agent coder PAT
+#       gateCache: { enabled: false }                  # fork agents don't gate
+#
+# Each entry's fields DEEP-MERGE with the legacy `agent:` block above
+# (which serves as the defaults) so you only have to specify what
+# differs. Naming convention: per-agent resources are
+# `<fullname>-<agentKey>-agent` (Deployment / SA / ClusterRole /
+# ClusterRoleBinding) and `<fullname>-<agentKey>-gate-cache` (PVC), so
+# agents never collide. The shared components — operator Deployment,
+# webhook, CRDs, coder SA/Role/RoleBinding — remain single per release.
+#
+# Setting `agents:` opts you OUT of the implicit legacy agent: render
+# path; if you need a "default" fleet alongside custom ones, list it
+# explicitly under `agents:` with the name `default` (or any other key).
+
 operator:
   enabled: true
   replicaCount: 1
@@ -335,42 +414,6 @@ agent:
   coderGitSecret: ""
   coderGitSecretKey: ""
 
-# agents is the multi-fleet map (#994). Leave it UNSET for a single
-# agent (the legacy `agent:` block above is used as-is and renders
-# exactly the resources it always has, so an existing install is
-# unchanged on upgrade). Set it to render one Deployment +
-# ServiceAccount + ClusterRole/ClusterRoleBinding + gate-cache PVC PER
-# entry, each suffixed with the agent key, so multiple heterogeneous
-# agent fleets coexist in one release instead of needing a second
-# chart install (which would collide on the chart's singletons).
-#
-# Real-world use cases:
-#
-#   agents:
-#     default:                  # the primary multi-repo worker/coder pool
-#       replicaCount: 3
-#       roles: [worker, coder, verifier]
-#     llmkube-fork:             # a fork-pinned dogfood agent for upstream PRs
-#       replicaCount: 1
-#       roles: [coder-fork]
-#       gitRemoteURL: https://github.com/<you>/LLMKube
-#       githubToken: { secretName: foreman-agent-fork, secretKey: GITHUB_TOKEN }
-#       commitAuthorName: "<you>"
-#       commitAuthorEmail: "<you>@users.noreply.github.com"
-#       coderGitSecret: foreman-fork-credentials     # per-agent coder PAT
-#       gateCache: { enabled: false }                  # fork agents don't gate
-#
-# Each entry's fields DEEP-MERGE with the legacy `agent:` block above
-# (which serves as the defaults) so you only have to specify what
-# differs. Naming convention: per-agent resources are
-# `<fullname>-<agentKey>-agent` (Deployment / SA / ClusterRole /
-# ClusterRoleBinding) and `<fullname>-<agentKey>-gate-cache` (PVC), so
-# agents never collide. The shared components — operator Deployment,
-# webhook, CRDs, coder SA/Role/RoleBinding — remain single per release.
-#
-# Setting `agents:` opts you OUT of the implicit legacy agent: render
-# path; if you need a "default" fleet alongside custom ones, list it
-# explicitly under `agents:` with the name `default` (or any other key).
 agents: {}
 
 # coder gates the ServiceAccount + namespaced Role the Job-mode coder
