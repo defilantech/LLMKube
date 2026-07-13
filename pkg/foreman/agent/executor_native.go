@@ -351,6 +351,33 @@ func (e *NativeAgentLoopExecutor) Execute(ctx context.Context, task *foremanv1al
 	return e.runLLMPath(ctx, task, &agent, endpoint, workspace, branch, registry, auth, start)
 }
 
+// effectiveBranchStrategy resolves the branch strategy the executor acts on:
+// an explicit payload.branchStrategy wins; otherwise a task naming a prior
+// attempt (payload.reviseFromBranch) defaults to rebase (#1047 — restore-and-
+// rebase is the only sensible intent when a prior attempt is named), and
+// everything else defaults to reset.
+func effectiveBranchStrategy(p foremanv1alpha1.AgenticTaskPayload) foremanv1alpha1.BranchStrategy {
+	if p.BranchStrategy != "" {
+		return p.BranchStrategy
+	}
+	if p.ReviseFromBranch != "" {
+		return foremanv1alpha1.BranchStrategyRebase
+	}
+	return foremanv1alpha1.BranchStrategyReset
+}
+
+// replaceStaleOwnBranch reports whether Push may force-with-lease over the
+// task's OWN branch when a plain push is rejected non-fast-forward. True when
+// the caller opted in (allowOverwrite, #934) OR the effective strategy is reset
+// (#1105): a reset is a fresh retry cut from the current base, so any prior
+// attempt still on the task's branch is stale and safe to overwrite — without
+// this a reset re-dispatch PUSH-FAILs on the diverged remote branch, wedging the
+// retry until the branch is deleted by hand. force-with-lease keeps the
+// compare-and-swap guard against an unexpected concurrent push.
+func replaceStaleOwnBranch(p foremanv1alpha1.AgenticTaskPayload) bool {
+	return p.AllowOverwrite || effectiveBranchStrategy(p) == foremanv1alpha1.BranchStrategyReset
+}
+
 // setupTaskBranch cuts the task's working branch in the freshly cloned
 // workspace, honoring payload.branchStrategy (default "reset"). Precedence:
 //
@@ -377,19 +404,7 @@ func setupTaskBranch(
 	auth *repo.Auth,
 	log logr.Logger,
 ) error {
-	strategy := task.Spec.Payload.BranchStrategy
-	if strategy == "" {
-		// #1047: reviseFromBranch without branchStrategy used to silently no-op
-		// (defaulted to reset, which skips the restore). When reviseFromBranch is
-		// set and the caller did not explicitly choose reset, treat the effective
-		// strategy as rebase — restore-and-rebase is the only sensible intent
-		// when a prior attempt is named. An explicit "reset" still wins.
-		if task.Spec.Payload.ReviseFromBranch != "" {
-			strategy = foremanv1alpha1.BranchStrategyRebase
-		} else {
-			strategy = foremanv1alpha1.BranchStrategyReset
-		}
-	}
+	strategy := effectiveBranchStrategy(task.Spec.Payload)
 
 	// rebase (in-review revision): restore the prior attempt AND rebase it onto
 	// the current base, so its commits replay on top of work merged since rather
@@ -800,13 +815,14 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 		Workspace: workspace,
 		Branch:    branch,
 		Auth:      auth,
-		// Opt-in via Workload.spec.allowOverwrite (stamped onto the task
-		// payload): replace a stale ref for this task's own branch
-		// (compare-and-swap via force-with-lease) instead of failing the
-		// re-run non-fast-forward (#934). Off by default per #573 — a
-		// replaced ref can carry a previously-GO'd audit artifact, so
-		// the caller that re-runs Workloads makes that call explicitly.
-		ReplaceOnReject: task.Spec.Payload.AllowOverwrite,
+		// Replace a stale ref for this task's own branch (compare-and-swap via
+		// force-with-lease) instead of failing the re-run non-fast-forward: when
+		// the caller opts in via allowOverwrite (#934), OR under the reset
+		// strategy (#1105) — a fresh retry cut from base owns its branch, so a
+		// stale prior attempt on it must be overwritten or the re-dispatch
+		// PUSH-FAILs. force-with-lease still guards against an unexpected
+		// concurrent push (the #573 no-blind-clobber intent).
+		ReplaceOnReject: replaceStaleOwnBranch(task.Spec.Payload),
 	}); err != nil {
 		return e.pushFailedResult(start, transcriptRef, loopRes, branch, sha, err), nil
 	}

@@ -2613,3 +2613,46 @@ func TestMakeCoderGateVerifier_GenericGate_CleanPassesWithNoClaims(t *testing.T)
 		t.Errorf("expected empty feedback on accept, got: %q", feedback)
 	}
 }
+
+// TestEffectiveBranchStrategy pins the strategy resolution: explicit wins,
+// reviseFromBranch defaults to rebase (#1047), everything else to reset.
+func TestEffectiveBranchStrategy(t *testing.T) {
+	reset := foremanv1alpha1.BranchStrategyReset
+	rebase := foremanv1alpha1.BranchStrategyRebase
+	cases := []struct {
+		name string
+		p    foremanv1alpha1.AgenticTaskPayload
+		want foremanv1alpha1.BranchStrategy
+	}{
+		{"empty defaults reset", foremanv1alpha1.AgenticTaskPayload{}, reset},
+		{"reviseFromBranch defaults rebase", foremanv1alpha1.AgenticTaskPayload{ReviseFromBranch: "b"}, rebase},
+		{"explicit reset wins over reviseFromBranch", foremanv1alpha1.AgenticTaskPayload{BranchStrategy: reset, ReviseFromBranch: "b"}, reset},
+		{"explicit rebase", foremanv1alpha1.AgenticTaskPayload{BranchStrategy: rebase}, rebase},
+	}
+	for _, c := range cases {
+		if got := effectiveBranchStrategy(c.p); got != c.want {
+			t.Errorf("%s: effectiveBranchStrategy = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// TestReplaceStaleOwnBranch pins the #1105 push decision: reset force-pushes the
+// task's own (stale) branch; rebase/revision only forces via allowOverwrite.
+func TestReplaceStaleOwnBranch(t *testing.T) {
+	cases := []struct {
+		name string
+		p    foremanv1alpha1.AgenticTaskPayload
+		want bool
+	}{
+		{"reset (default) force-pushes own branch", foremanv1alpha1.AgenticTaskPayload{}, true},
+		{"explicit reset", foremanv1alpha1.AgenticTaskPayload{BranchStrategy: foremanv1alpha1.BranchStrategyReset}, true},
+		{"allowOverwrite forces regardless of strategy", foremanv1alpha1.AgenticTaskPayload{BranchStrategy: foremanv1alpha1.BranchStrategyRebase, AllowOverwrite: true}, true},
+		{"revision (reviseFromBranch->rebase) without allowOverwrite does not force", foremanv1alpha1.AgenticTaskPayload{ReviseFromBranch: "b"}, false},
+		{"explicit rebase without allowOverwrite does not force", foremanv1alpha1.AgenticTaskPayload{BranchStrategy: foremanv1alpha1.BranchStrategyRebase}, false},
+	}
+	for _, c := range cases {
+		if got := replaceStaleOwnBranch(c.p); got != c.want {
+			t.Errorf("%s: replaceStaleOwnBranch = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
