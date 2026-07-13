@@ -61,6 +61,7 @@ type sliceOptions struct {
 	repo           string
 	plannerURL     string
 	plannerModel   string
+	plannerToken   string
 	repomapFile    string
 	namespace      string
 	coderAgent     string
@@ -107,6 +108,8 @@ Examples:
 	f.StringVar(&opts.plannerURL, "planner-url", "",
 		"OpenAI-compatible base URL of the planner model (required when planning an issue)")
 	f.StringVar(&opts.plannerModel, "planner-model", "", "Planner model name to send in the request")
+	f.StringVar(&opts.plannerToken, "planner-token", "",
+		"Bearer token sent to --planner-url; falls back to PLANNER_TOKEN env. Omit for direct InferenceService")
 	f.StringVar(&opts.repomapFile, "repomap", "", "Path to a repository map file to give the planner")
 	f.StringVar(&opts.namespace, "namespace", "default", "Namespace to create the Workload in")
 	f.StringVar(&opts.coderAgent, "coder-agent", "coder-metal", "Agent that runs each slice's issue-fix step")
@@ -161,7 +164,10 @@ func resolveSlicePlan(ctx context.Context, args []string, opts *sliceOptions) (s
 		if opts.repo == "" || opts.plannerURL == "" {
 			return slicePlan{}, fmt.Errorf("planning an issue requires --repo and --planner-url")
 		}
-		return planIssue(ctx, int32(issue), opts, httpPlannerCall(opts.plannerURL, opts.plannerModel))
+		if opts.plannerToken == "" {
+			opts.plannerToken = os.Getenv("PLANNER_TOKEN")
+		}
+		return planIssue(ctx, int32(issue), opts, httpPlannerCall(opts.plannerURL, opts.plannerModel, opts.plannerToken))
 	}
 	return slicePlan{}, fmt.Errorf("provide --plan FILE or an ISSUE with --repo and --planner-url")
 }
