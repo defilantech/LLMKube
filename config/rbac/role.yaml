@@ -20,6 +20,7 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - namespaces
   - nodes
   - pods
   - secrets
@@ -163,6 +164,27 @@ rules:
 - apiGroups:
   - inference.llmkube.dev
   resources:
+  - gpuquotas
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - inference.llmkube.dev
+  resources:
+  - gpuquotas/status
+  - inferenceservices/status
+  - modelrouters/status
+  - models/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - inference.llmkube.dev
+  resources:
   - inferenceservices
   - modelrouters
   - models
@@ -181,16 +203,6 @@ rules:
   - modelrouters/finalizers
   - models/finalizers
   verbs:
-  - update
-- apiGroups:
-  - inference.llmkube.dev
-  resources:
-  - inferenceservices/status
-  - modelrouters/status
-  - models/status
-  verbs:
-  - get
-  - patch
   - update
 - apiGroups:
   - resource.k8s.io

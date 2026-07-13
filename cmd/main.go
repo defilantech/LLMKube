@@ -361,6 +361,16 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "ModelRouterGateway")
 		os.Exit(1)
 	}
+	// GPUQuota reconciles the status-only aggregation of GPU usage from
+	// InferenceServices in the quota's scope. It never rejects anything or
+	// owns external resources.
+	if err := (&controller.GPUQuotaReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "GPUQuota")
+		os.Exit(1)
+	}
 
 	// Register the ModelRouter validating webhook ONLY when the serving cert is
 	// actually present in the configured cert dir. The webhook server crashes the
