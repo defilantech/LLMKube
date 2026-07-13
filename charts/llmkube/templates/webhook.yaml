@@ -59,4 +59,30 @@ webhooks:
         operations: ["CREATE", "UPDATE"]
         resources: ["modelrouters"]
         scope: Namespaced
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: {{ include "llmkube.webhook.configName" . }}-mutating
+  labels:
+    {{- include "llmkube.labels" . | nindent 4 }}
+webhooks:
+  - name: mmodel.inference.llmkube.dev
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    # Ignore: accelerator normalization is cosmetic (#1074); a Model apply must
+    # never be blocked because the defaulter is unreachable.
+    failurePolicy: Ignore
+    clientConfig:
+      service:
+        name: {{ include "llmkube.webhook.serviceName" . }}
+        namespace: {{ include "llmkube.namespace" . }}
+        path: /mutate-inference-llmkube-dev-v1alpha1-model
+      caBundle: {{ $certs.ca }}
+    rules:
+      - apiGroups: ["inference.llmkube.dev"]
+        apiVersions: ["v1alpha1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["models"]
+        scope: Namespaced
 {{- end }}
