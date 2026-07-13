@@ -1119,11 +1119,11 @@ http_requests_total{method="GET"} 42.0
 		},
 		{
 			name: "skips comments",
-			body: `# HELP sglang:num_requests_running Running requests.
-# TYPE sglang:num_requests_running gauge
-sglang:num_requests_running 3.0
+			body: `# HELP sglang:num_running_reqs The number of running requests
+# TYPE sglang:num_running_reqs gauge
+sglang:num_running_reqs{model_name="llama"} 3.0
 `,
-			metric:    "sglang:num_requests_running",
+			metric:    "sglang:num_running_reqs",
 			wantSum:   3,
 			wantFound: true,
 		},

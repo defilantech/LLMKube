@@ -254,8 +254,8 @@ func TestSGLangIdleProbe(t *testing.T) {
 		wantErr  bool
 		wantIdle bool
 	}{
-		{"idle when sum is 0", "sglang:num_requests_running{m=\"a\"} 0\n", 200, false, true},
-		{"busy when sum > 0", "sglang:num_requests_running 3\n", 200, false, false},
+		{"idle when sum is 0", "sglang:num_running_reqs{model_name=\"llama\"} 0\n", 200, false, true},
+		{"busy when sum > 0", "sglang:num_running_reqs{model_name=\"llama\"} 3\n", 200, false, false},
 		{"busy when absent", "other_metric 5\n", 200, false, false},
 		{"error on non-200", "", 500, true, false},
 	}

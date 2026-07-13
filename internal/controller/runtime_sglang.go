@@ -62,7 +62,7 @@ func (b *SGLangBackend) ContainerName() string    { return "sglang" }
 func (b *SGLangBackend) DefaultImage() string     { return sglangCUDAImage }
 func (b *SGLangBackend) DefaultPort() int32       { return 30000 }
 func (b *SGLangBackend) NeedsModelInit() bool     { return true }
-func (b *SGLangBackend) DefaultHPAMetric() string { return "sglang:num_requests_running" }
+func (b *SGLangBackend) DefaultHPAMetric() string { return "sglang:num_running_reqs" }
 
 // BuildArgs generates the SGLang server CLI arguments. Order:
 //  1. --model-path, --host, --port (always)
@@ -220,7 +220,7 @@ func (b *SGLangBackend) BuildProbes(port int32) (*corev1.Probe, *corev1.Probe, *
 }
 
 // IdleProbe returns a probe closure that checks SGLang /metrics for
-// `sglang:num_requests_running` gauge sum. Idle when sum == 0. Absent metric
+// `sglang:num_running_reqs` gauge sum. Idle when sum == 0. Absent metric
 // returns (false, nil) — fail-closed, treats unknown as busy.
 func (b *SGLangBackend) IdleProbe(_ *inferencev1alpha1.InferenceService, client *http.Client) func(ctx context.Context, baseURL string) (bool, error) {
 	return func(ctx context.Context, baseURL string) (bool, error) {
@@ -244,7 +244,7 @@ func (b *SGLangBackend) IdleProbe(_ *inferencev1alpha1.InferenceService, client 
 			return false, fmt.Errorf("failed to read /metrics response: %w", err)
 		}
 
-		sum, found := parsePrometheusGaugeSum(string(body), "sglang:num_requests_running")
+		sum, found := parsePrometheusGaugeSum(string(body), "sglang:num_running_reqs")
 		if !found {
 			return false, nil
 		}

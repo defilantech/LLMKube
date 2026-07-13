@@ -30,11 +30,13 @@ With this enabled, the controller checks each replica before applying a pod-temp
 | `llamacpp` | `GET /slots` — JSON array of `{id, is_processing}` | every slot has `is_processing: false` |
 | `vllm` | `GET /metrics` — Prometheus gauge `vllm:num_requests_running` | sum across all label sets equals 0 |
 | `tgi` | `GET /metrics` — Prometheus gauge `tgi_batch_current_size` | value equals 0 |
-| `sglang` | `GET /metrics` — Prometheus gauge `sglang:num_requests_running` | sum across all label sets equals 0 |
+| `sglang` | `GET /metrics` — Prometheus gauge `sglang:num_running_reqs` | sum across all label sets equals 0 |
 | `generic` | Annotation-driven custom endpoint (see below) | HTTP 2xx response |
 | `personaplex` | — | Not supported; defers the rollout (fail-closed) until `idleTimeoutSeconds` expires |
 
 For vLLM and SGLang, the gauge is summed across all label combinations because both runtimes emit one series per model or request class. An absent metric is treated as **busy** (fail-closed), not idle.
+
+> **Note on queued requests:** The idle check reads the *running* gauge only (`vllm:num_requests_running`, `sglang:num_running_reqs`, `tgi_batch_current_size`), not the *waiting/queued* gauge. A request that has been accepted but is still queued during a momentary `running == 0` window could be dropped on restart. This is a deliberate trade-off for v1: checking the queue gauge would mean the drain never completes while any request is waiting, which could indefinitely block rollouts on busy services. The `idleTimeoutSeconds` safety valve ensures the rollout eventually proceeds. If queue-aware draining is needed, it can be layered on as a future `RolloutPolicySpec` field.
 
 ## Generic runtime fallback
 
