@@ -976,3 +976,58 @@ func findCondition(conds []metav1.Condition, ctype string) *metav1.Condition {
 	}
 	return nil
 }
+
+// TestSGLangBuildLoraModulePairs_SkipEmptyAndBadInputs exercises the
+// defensive branches of the typed/legacy LoRA merge: empty-Name typed
+// entries are skipped, and legacy entries that don't parse as JSON
+// (or parse to an empty Name) are skipped silently. Without these
+// coverage hooks the helper's branches drift unobserved.
+func TestSGLangBuildLoraModulePairs_SkipEmptyAndBadInputs(t *testing.T) {
+	t.Run("typed empty Name is skipped", func(t *testing.T) {
+		got := sglangBuildLoraModulePairs(
+			[]inferencev1alpha1.SGLangLoRAAdapter{
+				{Name: "", Path: "/loras/empty"},
+				{Name: "loraA", Path: "/loras/a"},
+			},
+			nil,
+		)
+		if len(got) != 1 || got[0] != "loraA=/loras/a" {
+			t.Errorf("pairs = %v, want [loraA=/loras/a]", got)
+		}
+	})
+
+	t.Run("legacy JSON parse failure is skipped", func(t *testing.T) {
+		got := sglangBuildLoraModulePairs(
+			[]inferencev1alpha1.SGLangLoRAAdapter{{Name: "loraA", Path: "/loras/a"}},
+			[]string{"not-json", `{"no_name_field": true}`, `{"name":"","path":"/loras/empty"}`},
+		)
+		// Only the typed entry survives; the three malformed/empty
+		// legacy entries are dropped, not surfaced in --lora-modules.
+		if len(got) != 1 || got[0] != "loraA=/loras/a" {
+			t.Errorf("pairs = %v, want [loraA=/loras/a]", got)
+		}
+	})
+
+	t.Run("typed-wins-on-collision with legacy", func(t *testing.T) {
+		got := sglangBuildLoraModulePairs(
+			[]inferencev1alpha1.SGLangLoRAAdapter{{Name: "loraA", Path: "/loras/TYPED"}},
+			[]string{`{"name":"loraA","path":"/loras/LEGACY"}`, `{"name":"loraB","path":"/loras/legacy-b"}`},
+		)
+		// typed loraA wins, legacy loraB is preserved.
+		want := []string{"loraA=/loras/TYPED", "loraB=/loras/legacy-b"}
+		if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+			t.Errorf("pairs = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("legacy-only survives merge", func(t *testing.T) {
+		got := sglangBuildLoraModulePairs(
+			nil,
+			[]string{`{"name":"loraA","path":"/loras/a"}`, `{"name":"loraB","path":"/loras/b"}`},
+		)
+		want := []string{"loraA=/loras/a", "loraB=/loras/b"}
+		if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+			t.Errorf("pairs = %v, want %v", got, want)
+		}
+	})
+}

@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -31,6 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
@@ -340,6 +342,65 @@ func TestLoRAAdapterController_InferenceNotFound(t *testing.T) {
 	}
 }
 
+// isvcGetErrorClient returns a configurable error for any Get of an
+// InferenceService, and delegates everything else to the wrapped
+// client. Used by Reconcile-failure tests where we want to simulate
+// RBAC denial / API outage without standing up a fake API server.
+type isvcGetErrorClient struct {
+	client.Client
+	err error
+}
+
+func (c *isvcGetErrorClient) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if _, ok := obj.(*inferencev1alpha1.InferenceService); ok {
+		return c.err
+	}
+	return c.Client.Get(ctx, key, obj, opts...)
+}
+
+// client is imported by the isvcGetErrorClient wrapper; alias here so
+// a future refactor that drops the wrapper doesn't strand an unused
+// import.
+var _ client.Client
+
+// TestLoRAAdapterController_ResolveInferenceServiceError covers the
+// non-NotFound error branch in resolveInferenceService during the load
+// path (e.g. RBAC denies the lookup or the API server is unreachable).
+// The reconciler should surface the error and not attempt any HTTP call
+// against SGLang.
+func TestLoRAAdapterController_ResolveInferenceServiceError(t *testing.T) {
+	scheme := newLoRARecnScheme(t)
+	adapter := &inferencev1alpha1.LoRAAdapter{
+		ObjectMeta: metav1.ObjectMeta{Name: "adapter-a", Namespace: "default", Finalizers: []string{loraAdapterFinalizer}},
+		Spec: inferencev1alpha1.LoRAAdapterSpec{
+			InferenceServiceRef: inferencev1alpha1.LocalInferenceServiceReference{Name: "isvc-blocked"},
+			Name:                "loraA",
+			Path:                "/loras/a",
+		},
+	}
+	base := fake.NewClientBuilder().WithScheme(scheme).WithObjects(adapter).WithStatusSubresource(&inferencev1alpha1.LoRAAdapter{}).Build()
+	wrapped := &isvcGetErrorClient{Client: base, err: errors.New("is forbidden: InferenceService get")}
+	fakec := &fakeAdapterClient{}
+	r := &LoRAAdapterReconciler{
+		Client:        wrapped,
+		Scheme:        scheme,
+		AdapterClient: fakec,
+		URLResolver:   defaultLoRAAdapterURLResolver,
+		Now:           func() time.Time { return time.Unix(1700000000, 0).UTC() },
+	}
+
+	_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: adapter.Name, Namespace: adapter.Namespace}})
+	if err == nil {
+		t.Fatal("expected reconciler to surface the ISVC-get error")
+	}
+	if !strings.Contains(err.Error(), "is forbidden") {
+		t.Errorf("error %q does not include underlying ISVC-get error", err.Error())
+	}
+	if len(fakec.loadCalls) != 0 {
+		t.Errorf("expected 0 SGLang load attempts on ISVC-get error; got %d", len(fakec.loadCalls))
+	}
+}
+
 // TestLoRAAdapterController_LoadFailure verifies that a non-2xx from
 // SGLang surfaces as Loaded=False/LoadUnsuccessful, Error=True, and
 // the controller requeues (so an intermittent SGLang recovers without
@@ -598,3 +659,289 @@ func TestDefaultLoRAAdapterURLResolver_PicksSpecPort(t *testing.T) {
 // imported only for these tests.
 
 // findCondition is provided by runtime_test.go (same package).
+
+// TestLoRAAdapterController_IsNotFound covers the early-return in
+// Reconcile when the adapter is gone between watch and reconcile.
+func TestLoRAAdapterController_IsNotFound(t *testing.T) {
+	scheme := newLoRARecnScheme(t)
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&inferencev1alpha1.LoRAAdapter{}).Build()
+	r := &LoRAAdapterReconciler{
+		Client:        cl,
+		Scheme:        scheme,
+		AdapterClient: &fakeAdapterClient{},
+		URLResolver:   defaultLoRAAdapterURLResolver,
+		Now:           func() time.Time { return time.Unix(1700000000, 0).UTC() },
+	}
+
+	res, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "nope", Namespace: "default"}})
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if res.RequeueAfter != 0 {
+		t.Errorf("expected no requeue on IsNotFound; got %+v", res)
+	}
+}
+
+// TestLoRAAdapterController_URLResolverError covers the path where the
+// ISVC is fine but the URL resolver returns an error (e.g. non-sglang
+// runtime with no port fields). Should set Loaded=False/InvalidPort and
+// Error=True, no SGLang HTTP call.
+func TestLoRAAdapterController_URLResolverError(t *testing.T) {
+	sg := newRecordingSGLang(t, sglangStatuses{})
+	scheme := newLoRARecnScheme(t)
+	// non-sglang runtime + no ports → resolver returns the "cannot
+	// resolve port" error.
+	isvc := &inferencev1alpha1.InferenceService{
+		ObjectMeta: metav1.ObjectMeta{Name: "isvc-vllm", Namespace: "default"},
+		Spec:       inferencev1alpha1.InferenceServiceSpec{Runtime: "vllm"},
+	}
+	// but the controller should bail on RuntimeMismatch before even
+	// asking the resolver. Force the resolver path with a custom
+	// resolver that returns an error and a runtime that is sglang.
+	isvc.Spec.Runtime = RuntimeSGLANG
+
+	adapter := &inferencev1alpha1.LoRAAdapter{
+		ObjectMeta: metav1.ObjectMeta{Name: "adapter-a", Namespace: "default", Finalizers: []string{loraAdapterFinalizer}},
+		Spec: inferencev1alpha1.LoRAAdapterSpec{
+			InferenceServiceRef: inferencev1alpha1.LocalInferenceServiceReference{Name: "isvc-vllm"},
+			Name:                "loraA",
+			Path:                "/loras/a",
+		},
+	}
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(isvc, adapter).WithStatusSubresource(&inferencev1alpha1.LoRAAdapter{}).Build()
+	fakec := &fakeAdapterClient{}
+	r := &LoRAAdapterReconciler{
+		Client:        cl,
+		Scheme:        scheme,
+		AdapterClient: fakec,
+		URLResolver: func(_ context.Context, _ *inferencev1alpha1.InferenceService) (string, error) {
+			return "", errors.New("synthetic resolver boom")
+		},
+		Now: func() time.Time { return time.Unix(1700000000, 0).UTC() },
+	}
+
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: adapter.Name, Namespace: adapter.Namespace}}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	var got inferencev1alpha1.LoRAAdapter
+	if err := cl.Get(context.Background(), types.NamespacedName{Name: adapter.Name, Namespace: adapter.Namespace}, &got); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	loaded := findCondition(got.Status.Conditions, LoRAConditionLoaded)
+	if loaded == nil || loaded.Status != metav1.ConditionFalse || loaded.Reason != LoRAReasonInvalidPort {
+		t.Fatalf("Loaded = %+v, want False/%s", loaded, LoRAReasonInvalidPort)
+	}
+	errCond := findCondition(got.Status.Conditions, LoRAConditionError)
+	if errCond == nil || errCond.Status != metav1.ConditionTrue || errCond.Reason != LoRAReasonInvalidPort {
+		t.Fatalf("Error = %+v, want True/%s", errCond, LoRAReasonInvalidPort)
+	}
+	if len(sg.loadReqs) != 0 {
+		t.Errorf("expected 0 SGLang calls; got %d", len(sg.loadReqs))
+	}
+	if len(fakec.loadCalls) != 0 {
+		t.Errorf("expected 0 fake load calls; got %d", len(fakec.loadCalls))
+	}
+}
+
+// TestLoRAAdapterController_DeleteUnloadError covers the best-effort
+// unload-on-delete path: when SGLang returns a non-2xx, the
+// reconciler still drops the finalizer (so K8s can GC), records the
+// failure via conditions, and the post-delete Get must be a NotFound
+// (finalizer-less + DeletionTimestamp → GC'd by the fake client).
+func TestLoRAAdapterController_DeleteUnloadError(t *testing.T) {
+	sg := newRecordingSGLang(t, sglangStatuses{unload: http.StatusInternalServerError})
+	scheme := newLoRARecnScheme(t)
+	isvc := &inferencev1alpha1.InferenceService{
+		ObjectMeta: metav1.ObjectMeta{Name: "isvc-sglang", Namespace: "default"},
+		Spec: inferencev1alpha1.InferenceServiceSpec{
+			Runtime:  RuntimeSGLANG,
+			Endpoint: &inferencev1alpha1.EndpointSpec{Port: 30000},
+		},
+		Status: inferencev1alpha1.InferenceServiceStatus{Endpoint: "http://placeholder:30000"},
+	}
+	now := metav1.NewTime(time.Unix(1700000000, 0).UTC())
+	adapter := &inferencev1alpha1.LoRAAdapter{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "adapter-a",
+			Namespace:         "default",
+			Finalizers:        []string{loraAdapterFinalizer},
+			DeletionTimestamp: &now,
+		},
+		Spec: inferencev1alpha1.LoRAAdapterSpec{
+			InferenceServiceRef: inferencev1alpha1.LocalInferenceServiceReference{Name: "isvc-sglang"},
+			Name:                "loraA",
+			Path:                "/loras/a",
+		},
+	}
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(isvc, adapter).WithStatusSubresource(&inferencev1alpha1.LoRAAdapter{}).Build()
+	r := &LoRAAdapterReconciler{
+		Client:        cl,
+		Scheme:        scheme,
+		AdapterClient: NewSGLangAdapterClient(sg.Client()),
+		URLResolver:   func(_ context.Context, _ *inferencev1alpha1.InferenceService) (string, error) { return sg.URL, nil },
+		Now:           func() time.Time { return time.Unix(1700000000, 0).UTC() },
+	}
+
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: adapter.Name, Namespace: adapter.Namespace}}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	// The unload still hit the wire (best-effort, not short-circuited).
+	if len(sg.unloadReqs) != 1 {
+		t.Fatalf("expected 1 unload attempt, got %d", len(sg.unloadReqs))
+	}
+	// The object was GC'd: fake client removes it once finalizers drop on a
+	// DeletionTimestamp-marked object. Mirrors production K8s behavior.
+	var got inferencev1alpha1.LoRAAdapter
+	if err := cl.Get(context.Background(), types.NamespacedName{Name: adapter.Name, Namespace: adapter.Namespace}, &got); err == nil {
+		t.Errorf("expected NotFound after delete reconcile; got the adapter back: %+v", got)
+	}
+}
+
+// TestLoRAAdapterController_DeleteURLResolverError covers the
+// finalizer-drop path when the URLResolver fails: drop the finalizer
+// anyway so the resource can be garbage-collected.
+func TestLoRAAdapterController_DeleteURLResolverError(t *testing.T) {
+	scheme := newLoRARecnScheme(t)
+	isvc := &inferencev1alpha1.InferenceService{
+		ObjectMeta: metav1.ObjectMeta{Name: "isvc-sglang", Namespace: "default"},
+		Spec: inferencev1alpha1.InferenceServiceSpec{
+			Runtime:  RuntimeSGLANG,
+			Endpoint: &inferencev1alpha1.EndpointSpec{Port: 30000},
+		},
+		Status: inferencev1alpha1.InferenceServiceStatus{Endpoint: "http://placeholder:30000"},
+	}
+	now := metav1.NewTime(time.Unix(1700000000, 0).UTC())
+	adapter := &inferencev1alpha1.LoRAAdapter{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "adapter-a",
+			Namespace:         "default",
+			Finalizers:        []string{loraAdapterFinalizer},
+			DeletionTimestamp: &now,
+		},
+		Spec: inferencev1alpha1.LoRAAdapterSpec{
+			InferenceServiceRef: inferencev1alpha1.LocalInferenceServiceReference{Name: "isvc-sglang"},
+			Name:                "loraA",
+			Path:                "/loras/a",
+		},
+	}
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(isvc, adapter).WithStatusSubresource(&inferencev1alpha1.LoRAAdapter{}).Build()
+	fakec := &fakeAdapterClient{}
+	r := &LoRAAdapterReconciler{
+		Client:        cl,
+		Scheme:        scheme,
+		AdapterClient: fakec,
+		URLResolver: func(_ context.Context, _ *inferencev1alpha1.InferenceService) (string, error) {
+			return "", errors.New("synthetic resolver boom")
+		},
+		Now: func() time.Time { return time.Unix(1700000000, 0).UTC() },
+	}
+
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: adapter.Name, Namespace: adapter.Namespace}}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if len(fakec.unloadCalls) != 0 {
+		t.Errorf("expected no unload attempts when resolver errors; got %d", len(fakec.unloadCalls))
+	}
+	var got inferencev1alpha1.LoRAAdapter
+	if err := cl.Get(context.Background(), types.NamespacedName{Name: adapter.Name, Namespace: adapter.Namespace}, &got); err == nil {
+		t.Errorf("expected NotFound after delete reconcile; got the adapter back: %+v", got)
+	}
+}
+
+// TestDefaultLoRAAdapterURLResolver_ErrorPaths covers the failure
+// branches of the production resolver: nil ISVC and "no port + non-sglang".
+func TestDefaultLoRAAdapterURLResolver_ErrorPaths(t *testing.T) {
+	if _, err := defaultLoRAAdapterURLResolver(context.Background(), nil); err == nil {
+		t.Error("expected error for nil ISVC")
+	}
+	isvc := &inferencev1alpha1.InferenceService{
+		ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "ns"},
+		Spec:       inferencev1alpha1.InferenceServiceSpec{Runtime: "vllm"},
+	}
+	if _, err := defaultLoRAAdapterURLResolver(context.Background(), isvc); err == nil {
+		t.Error("expected error for non-sglang with no port")
+	}
+	// sglang without explicit port succeeds (30000 default).
+	isvc.Spec.Runtime = RuntimeSGLANG
+	got, err := defaultLoRAAdapterURLResolver(context.Background(), isvc)
+	if err != nil {
+		t.Fatalf("resolver (sglang default): %v", err)
+	}
+	if got != "http://svc.ns.svc:30000" {
+		t.Errorf("resolver = %q, want http://svc.ns.svc:30000", got)
+	}
+	// Endpoint with Port == 0 should fall through to ContainerPort.
+	zero := int32(0)
+	isvc.Spec.Endpoint = &inferencev1alpha1.EndpointSpec{Port: zero}
+	isvc.Spec.ContainerPort = ptrInt32(31001)
+	got, err = defaultLoRAAdapterURLResolver(context.Background(), isvc)
+	if err != nil {
+		t.Fatalf("resolver (zero Endpoint port): %v", err)
+	}
+	if got != "http://svc.ns.svc:31001" {
+		t.Errorf("resolver = %q, want http://svc.ns.svc:31001", got)
+	}
+}
+
+// TestLoRAAdapterController_DeleteISVCGetError covers the early-return
+// in reconcileDelete when the ISVC Get fails with a non-NotFound error
+// (e.g. RBAC denies it). The reconciler should surface the error and
+// leave the finalizer in place so a future reconcile can retry.
+func TestLoRAAdapterController_DeleteISVCGetError(t *testing.T) {
+	scheme := newLoRARecnScheme(t)
+	now := metav1.NewTime(time.Unix(1700000000, 0).UTC())
+	adapter := &inferencev1alpha1.LoRAAdapter{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "adapter-a",
+			Namespace:         "default",
+			Finalizers:        []string{loraAdapterFinalizer},
+			DeletionTimestamp: &now,
+		},
+		Spec: inferencev1alpha1.LoRAAdapterSpec{
+			InferenceServiceRef: inferencev1alpha1.LocalInferenceServiceReference{Name: "isvc-gone"},
+			Name:                "loraA",
+			Path:                "/loras/a",
+		},
+	}
+	// Wrap the fake client so any Get of an InferenceService returns a
+	// synthetic non-NotFound error (no admission webhooks here, so we
+	// simulate RBAC denial).
+	base := fake.NewClientBuilder().WithScheme(scheme).WithObjects(adapter).WithStatusSubresource(&inferencev1alpha1.LoRAAdapter{}).Build()
+	wrapped := &isvcGetErrorClient{Client: base, err: errors.New("is forbidden: InferenceService get")}
+	fakec := &fakeAdapterClient{}
+	r := &LoRAAdapterReconciler{
+		Client:        wrapped,
+		Scheme:        scheme,
+		AdapterClient: fakec,
+		URLResolver:   defaultLoRAAdapterURLResolver,
+		Now:           func() time.Time { return time.Unix(1700000000, 0).UTC() },
+	}
+
+	_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: adapter.Name, Namespace: adapter.Namespace}})
+	if err == nil {
+		t.Fatal("expected error from reconciler; got nil")
+	}
+	if !strings.Contains(err.Error(), "is forbidden") {
+		t.Errorf("error %q does not include the underlying ISVC-get error", err.Error())
+	}
+	if len(fakec.unloadCalls) != 0 {
+		t.Errorf("expected no unload attempts on early-return; got %d", len(fakec.unloadCalls))
+	}
+}
+
+// TestSGLangAdapterClient_BadURLError covers the postJSON request-build
+// error path (URL parse failure on a control character).
+func TestSGLangAdapterClient_BadURLError(t *testing.T) {
+	c := NewSGLangAdapterClient(http.DefaultClient)
+	// Control characters are invalid in URL paths and trip
+	// url.Parse / NewRequestWithContext.
+	err := c.LoadAdapter(context.Background(), "http://bad\x00host/v1/lora_adapters/load", "loraA", "/loras/a")
+	if err == nil {
+		t.Fatal("expected error for URL with control character")
+	}
+	if !strings.Contains(err.Error(), "build request") {
+		t.Errorf("error %q does not mention request build", err.Error())
+	}
+}
