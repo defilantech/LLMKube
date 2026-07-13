@@ -111,7 +111,7 @@ func TestHTTPPlannerCall(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	out, err := httpPlannerCall(srv.URL, "planner")(context.Background(), "prompt")
+	out, err := httpPlannerCall(srv.URL, "planner", "")(context.Background(), "prompt")
 	if err != nil {
 		t.Fatalf("call: %v", err)
 	}
@@ -124,8 +124,40 @@ func TestHTTPPlannerCall(t *testing.T) {
 		http.Error(w, "boom", http.StatusInternalServerError)
 	}))
 	defer bad.Close()
-	if _, err := httpPlannerCall(bad.URL, "m")(context.Background(), "p"); err == nil {
+	if _, err := httpPlannerCall(bad.URL, "m", "")(context.Background(), "p"); err == nil {
 		t.Fatal("want error on non-200")
+	}
+}
+
+func TestHTTPPlannerCall_AuthHeader(t *testing.T) {
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{
+				{"message": map[string]string{"content": "issue: 1\nrepo: a/b\nslices: []"}},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	// No token → no Authorization header.
+	caller := httpPlannerCall(srv.URL, "m", "")
+	if _, err := caller(context.Background(), "p"); err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if gotAuth != "" {
+		t.Fatalf("no token: Authorization = %q, want empty", gotAuth)
+	}
+
+	// Token set → Bearer header is sent verbatim.
+	caller = httpPlannerCall(srv.URL, "m", "eyJhbGciOiJIUzI1NiJ9.fake")
+	if _, err := caller(context.Background(), "p"); err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	want := "Bearer eyJhbGciOiJIUzI1NiJ9.fake"
+	if gotAuth != want {
+		t.Fatalf("with token: Authorization = %q, want %q", gotAuth, want)
 	}
 }
 

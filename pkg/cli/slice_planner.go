@@ -185,8 +185,10 @@ func parseSlicePlan(raw string) (slicePlan, error) {
 }
 
 // httpPlannerCall posts the prompt to an OpenAI-compatible /v1/chat/completions
-// endpoint and returns the assistant message content.
-func httpPlannerCall(url, model string) PlannerCaller {
+// endpoint and returns the assistant message content. When token is non-empty
+// it is sent as an Authorization: Bearer header so the call can route through
+// a ModelRouter / Envoy AI Gateway that requires JWT auth.
+func httpPlannerCall(url, model, token string) PlannerCaller {
 	return func(ctx context.Context, prompt string) (string, error) {
 		reqBody, _ := json.Marshal(map[string]any{
 			"model":       model,
@@ -200,6 +202,9 @@ func httpPlannerCall(url, model string) PlannerCaller {
 			return "", err
 		}
 		req.Header.Set("Content-Type", "application/json")
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
 		client := &http.Client{Timeout: 10 * time.Minute}
 		resp, err := client.Do(req)
 		if err != nil {
