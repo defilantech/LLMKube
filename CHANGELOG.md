@@ -5,6 +5,32 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.5](https://github.com/defilantech/LLMKube/compare/v0.9.4...v0.9.5) (2026-07-13)
+
+
+### Features
+
+* **ci:** validate config/samples against CRD schemas (Fixes [#1021](https://github.com/defilantech/LLMKube/issues/1021)) ([#1083](https://github.com/defilantech/LLMKube/issues/1083)) ([b3ae847](https://github.com/defilantech/LLMKube/commit/b3ae84711c8447e6e33c02ef3c55d9c1dc7d3741))
+* **cli:** add --planner-token for gateway-routed planner (Fixes [#1053](https://github.com/defilantech/LLMKube/issues/1053)) ([#1090](https://github.com/defilantech/LLMKube/issues/1090)) ([f71d2cc](https://github.com/defilantech/LLMKube/commit/f71d2cc425aefa093c08acd696896ba9ad6a7170))
+* **controller:** add extraVolumes/extraVolumeMounts passthrough on InferenceService ([#1079](https://github.com/defilantech/LLMKube/issues/1079)) ([80e004c](https://github.com/defilantech/LLMKube/commit/80e004c3716c58f900ac9c43d2b5cd94ba25d896))
+* **controller:** extend drain-before-roll idle checks to vLLM, TGI, SGLang, and multi-replica services ([#1088](https://github.com/defilantech/LLMKube/issues/1088)) ([1d884df](https://github.com/defilantech/LLMKube/commit/1d884dfa13627d2064e970727b5ae78cc52f2f10))
+* **foreman:** expose CRD status as Prometheus metrics via CRS (Fixes [#1001](https://github.com/defilantech/LLMKube/issues/1001)) ([#1086](https://github.com/defilantech/LLMKube/issues/1086)) ([a459748](https://github.com/defilantech/LLMKube/commit/a45974879ed135c49bb38e525c8281e40de53c55))
+* **foreman:** honest-verdict slice 1 (claim evidence + work-class policy) ([#1078](https://github.com/defilantech/LLMKube/issues/1078)) ([6f2c216](https://github.com/defilantech/LLMKube/commit/6f2c2167747c546d72476691bf371b410690008c))
+
+
+### Bug Fixes
+
+* **ci:** honor x-kubernetes-preserve-unknown-fields in validate-samples (Fixes [#1085](https://github.com/defilantech/LLMKube/issues/1085)) ([#1091](https://github.com/defilantech/LLMKube/issues/1091)) ([5447e88](https://github.com/defilantech/LLMKube/commit/5447e883983640e6718c6a5bce355e8ea77dd1d4))
+* **cli:** scope slicer branch names by run id (Fixes [#1054](https://github.com/defilantech/LLMKube/issues/1054)) ([#1081](https://github.com/defilantech/LLMKube/issues/1081)) ([9288401](https://github.com/defilantech/LLMKube/commit/92884013ebf1140ece46971c960fe27f378025b2))
+* **controller:** default Model accelerator from gpu.runtime (Fixes [#1074](https://github.com/defilantech/LLMKube/issues/1074)) ([#1087](https://github.com/defilantech/LLMKube/issues/1087)) ([0390c0f](https://github.com/defilantech/LLMKube/commit/0390c0f2248b04ab316a7183ad9108936ba819d3))
+* **slicer:** reject trailing-underscore pins at plan validation (Fixes [#1058](https://github.com/defilantech/LLMKube/issues/1058)) ([#1082](https://github.com/defilantech/LLMKube/issues/1082)) ([d4118d3](https://github.com/defilantech/LLMKube/commit/d4118d3e090d243fe49e7be9f373468d02a08de8))
+* **slicer:** surface pinned-prefix drift (Fixes [#1084](https://github.com/defilantech/LLMKube/issues/1084)) ([#1089](https://github.com/defilantech/LLMKube/issues/1089)) ([0f6edd2](https://github.com/defilantech/LLMKube/commit/0f6edd23b9852f0abdb08105ac80f8fdb4ac711c))
+
+
+### Documentation
+
+* **proposals:** honest-verdict harness design (declare-then-verify coder gates) ([#1076](https://github.com/defilantech/LLMKube/issues/1076)) ([630de33](https://github.com/defilantech/LLMKube/commit/630de33b069c2c52a2824666a77aa9963d1f0696))
+
 ## [0.9.4](https://github.com/defilantech/LLMKube/compare/v0.9.3...v0.9.4) (2026-07-11)
 
 
