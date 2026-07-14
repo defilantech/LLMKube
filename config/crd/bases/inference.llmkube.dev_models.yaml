@@ -353,12 +353,13 @@ spec:
                   Source defines where to obtain the model.
                   For GGUF models: URL or path to a .gguf file.
                   For MLX models: local directory path containing the model (config.json, weights).
-                  Supported schemes: http://, https://, file://, pvc://, or absolute paths.
+                  Supported schemes: http://, https://, file://, pvc://, hf://, s3://, or absolute paths.
                   Examples:
                     - https://huggingface.co/org/repo/resolve/main/model.gguf
                     - file:///mnt/models/model.gguf
                     - /mnt/models/model.gguf (air-gapped deployments)
                     - pvc://my-models-pvc/path/to/model.gguf (pre-staged on a PersistentVolumeClaim)
+                    - s3://my-bucket/models/llama-3.1-8b-q4_k_m.gguf (S3-compatible object store)
                     - /mnt/models/Llama-3.2-3B-Instruct-4bit (MLX model directory)
 
                   file:// caveat for hybrid topologies: the controller pod must be
@@ -370,8 +371,27 @@ spec:
                   tightly (#405). Workaround: pre-stage on a pvc://, or use the
                   equivalent https://huggingface.co/.../<filename>.gguf URL which
                   the runtime/init container resolves at deploy time.
-                pattern: ^(https?|file|pvc|hf)://.*|^/[^\s]+$|^[a-zA-Z0-9][\w\-\.\/]+$
+                pattern: ^(https?|file|pvc|hf|s3)://.*|^/[^\s]+$|^[a-zA-Z0-9][\w\-\.\/]+$
                 type: string
+              sourceSecretRef:
+                description: |-
+                  SourceSecretRef names a Secret (in the Model's namespace) whose keys are
+                  wired as env into the model-downloader init container. Used by s3://
+                  sources for S3-compatible credentials/endpoint: AWS_ACCESS_KEY_ID,
+                  AWS_SECRET_ACCESS_KEY, AWS_REGION, AWS_ENDPOINT_URL (path-style, e.g.
+                  https://minio.internal:9000 or https://s3.us-east-1.amazonaws.com).
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
             required:
             - source
             type: object

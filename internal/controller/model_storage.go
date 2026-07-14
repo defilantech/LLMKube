@@ -163,10 +163,13 @@ func addCACertVolume(volumes *[]corev1.Volume, mounts *[]corev1.VolumeMount, cmd
 	*cmd = fmt.Sprintf("export CURL_CA_BUNDLE=/custom-certs/$(ls /custom-certs | grep -v '^\\.' | head -n 1) && %s", *cmd)
 }
 
-func buildModelInitCommand(isLocal, useCache bool, refreshPolicy string) string {
+func buildModelInitCommand(isLocal, isS3, useCache bool, refreshPolicy string) string {
 	if useCache {
 		if isLocal {
 			return `mkdir -p "$CACHE_DIR" && if [ ! -f "$MODEL_PATH" ]; then echo 'Copying model from local source...'; cp /host-model/model.gguf "$MODEL_PATH" && echo 'Model copied successfully'; else echo 'Model already cached, skipping copy'; fi`
+		}
+		if isS3 {
+			return `mkdir -p "$CACHE_DIR" && if [ ! -f "$MODEL_PATH" ]; then echo 'Downloading model from S3...'; curl --aws-sigv4 "aws:amz:${AWS_REGION}:s3" -u "${AWS_ACCESS_KEY_ID}:${AWS_SECRET_ACCESS_KEY}" -f -L -o "$MODEL_PATH" "${AWS_ENDPOINT_URL}/${S3_BUCKET}/${S3_KEY}" && echo 'Model downloaded successfully'; else echo 'Model already cached, skipping download'; fi`
 		}
 		if refreshPolicy == RefreshPolicyOnChange {
 			return "mkdir -p \"$CACHE_DIR\" && " + remoteRevalidateScript
@@ -176,6 +179,9 @@ func buildModelInitCommand(isLocal, useCache bool, refreshPolicy string) string 
 
 	if isLocal {
 		return `echo 'ERROR: Local model source requires model cache to be configured.'; exit 1`
+	}
+	if isS3 {
+		return `if [ ! -f "$MODEL_PATH" ]; then echo 'Downloading model from S3...'; curl --aws-sigv4 "aws:amz:${AWS_REGION}:s3" -u "${AWS_ACCESS_KEY_ID}:${AWS_SECRET_ACCESS_KEY}" -f -L -o "$MODEL_PATH" "${AWS_ENDPOINT_URL}/${S3_BUCKET}/${S3_KEY}" && echo 'Model downloaded successfully'; else echo 'Model already exists, skipping download'; fi`
 	}
 	if refreshPolicy == RefreshPolicyOnChange {
 		return remoteRevalidateScript
@@ -210,10 +216,34 @@ const remoteRevalidateScript = `ETAG_MARKER="$(dirname "$MODEL_PATH")/.$(basenam
 	`fi`
 
 func modelInitEnvVars(source, cacheDir, modelPath string) []corev1.EnvVar {
-	return []corev1.EnvVar{
+	envs := []corev1.EnvVar{
 		{Name: "MODEL_SOURCE", Value: source},
 		{Name: "CACHE_DIR", Value: cacheDir},
 		{Name: "MODEL_PATH", Value: modelPath},
+	}
+	if isS3Source(source) {
+		bucket, key, err := parseS3Source(source)
+		if err == nil {
+			envs = append(envs, corev1.EnvVar{Name: "S3_BUCKET", Value: bucket}, corev1.EnvVar{Name: "S3_KEY", Value: key})
+		}
+	}
+	return envs
+}
+
+// modelEnvFrom returns EnvFrom entries for the model-downloader init container.
+// When the model has a SourceSecretRef, it pulls AWS_* env vars (credentials,
+// endpoint, region) from the referenced Secret. Returns nil when no secret ref
+// is configured.
+func modelEnvFrom(model *inferencev1alpha1.Model) []corev1.EnvFromSource {
+	if model.Spec.SourceSecretRef == nil {
+		return nil
+	}
+	return []corev1.EnvFromSource{
+		{
+			SecretRef: &corev1.SecretEnvSource{
+				LocalObjectReference: *model.Spec.SourceSecretRef,
+			},
+		},
 	}
 }
 
@@ -589,7 +619,7 @@ func buildCachedStorageConfig(model *inferencev1alpha1.Model, isvc *inferencev1a
 		})
 	}
 
-	cmd := buildModelInitCommand(isLocalModelSource(model.Spec.Source), true, model.Spec.RefreshPolicy)
+	cmd := buildModelInitCommand(isLocalModelSource(model.Spec.Source), isS3Source(model.Spec.Source), true, model.Spec.RefreshPolicy)
 	env := modelInitEnvVars(model.Spec.Source, cacheDir, modelPath)
 	addCACertVolume(&volumes, &initVolumeMounts, &cmd, caCertConfigMap)
 
@@ -600,6 +630,7 @@ func buildCachedStorageConfig(model *inferencev1alpha1.Model, isvc *inferencev1a
 			Image:           initContainerImage,
 			Command:         []string{"sh", "-c", cmd},
 			Env:             env,
+			EnvFrom:         modelEnvFrom(model),
 			VolumeMounts:    initVolumeMounts,
 			SecurityContext: initContainerSecurityContext(isvc),
 		},
@@ -669,7 +700,7 @@ func buildEmptyDirStorageConfig(model *inferencev1alpha1.Model, isvc *inferencev
 		},
 	}
 
-	cmd := buildModelInitCommand(isLocalModelSource(model.Spec.Source), false, model.Spec.RefreshPolicy)
+	cmd := buildModelInitCommand(isLocalModelSource(model.Spec.Source), isS3Source(model.Spec.Source), false, model.Spec.RefreshPolicy)
 	env := modelInitEnvVars(model.Spec.Source, "", modelPath)
 	addCACertVolume(&volumes, &initVolumeMounts, &cmd, caCertConfigMap)
 
@@ -681,6 +712,7 @@ func buildEmptyDirStorageConfig(model *inferencev1alpha1.Model, isvc *inferencev
 				Image:           initContainerImage,
 				Command:         []string{"sh", "-c", cmd},
 				Env:             env,
+				EnvFrom:         modelEnvFrom(model),
 				VolumeMounts:    initVolumeMounts,
 				SecurityContext: initContainerSecurityContext(isvc),
 			},
