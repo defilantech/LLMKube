@@ -5,6 +5,30 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.6](https://github.com/defilantech/LLMKube/compare/v0.9.5...v0.9.6) (2026-07-14)
+
+
+### Features
+
+* **api:** add GPUQuota CRD types for multi-tenant GPU governance ([#1101](https://github.com/defilantech/LLMKube/issues/1101)) ([5dd867a](https://github.com/defilantech/LLMKube/commit/5dd867a5118dccdbb38a14e44a159d7cbcaf8727))
+* **controller:** add GPUQuota status reconciler ([#1117](https://github.com/defilantech/LLMKube/issues/1117)) ([1d583e4](https://github.com/defilantech/LLMKube/commit/1d583e4cd611b5a5b19d2a73e254267c3f6464e1))
+* **controller:** add GPUQuota validating webhook for InferenceService ([#1118](https://github.com/defilantech/LLMKube/issues/1118)) ([26804bd](https://github.com/defilantech/LLMKube/commit/26804bd8debe7c5884b50dcb5a2fafef69975926))
+* **controller:** add s3:// model source via curl --aws-sigv4 ([#1098](https://github.com/defilantech/LLMKube/issues/1098)) ([#1125](https://github.com/defilantech/LLMKube/issues/1125)) ([ed35142](https://github.com/defilantech/LLMKube/commit/ed3514269a668328c571e8e7d6583251ed58f81d))
+* **foreman:** preserve a coder's gate-failed branch instead of discarding it ([#1115](https://github.com/defilantech/LLMKube/issues/1115)) ([bc39c77](https://github.com/defilantech/LLMKube/commit/bc39c77fec4707b553d4925ebe7e7ea0304f680e))
+* **helm:** gate InferenceService quota webhook and tenant RBAC behind multitenancy toggle ([#1122](https://github.com/defilantech/LLMKube/issues/1122)) ([26a994e](https://github.com/defilantech/LLMKube/commit/26a994ef54f71d84614abd9db8b789f0b57e4d2f))
+* **quota:** add GPUQuota admission decision function ([#1107](https://github.com/defilantech/LLMKube/issues/1107)) ([4897093](https://github.com/defilantech/LLMKube/commit/4897093b557b589e0382c40832f0070eb00e2ef5))
+* **runtime:** close out the SGLang kitchen-sink ([#1060](https://github.com/defilantech/LLMKube/issues/1060)): minor flags, accept thresholds, typed LoRA adapters, LoRAAdapter CRD ([#1103](https://github.com/defilantech/LLMKube/issues/1103)) ([8edf8bd](https://github.com/defilantech/LLMKube/commit/8edf8bdbcb49d7541c187bc750f673dc05581b12))
+
+
+### Bug Fixes
+
+* **foreman:** honor GateProfile source extensions in scope-overlap issue-ref extraction ([#1120](https://github.com/defilantech/LLMKube/issues/1120)) ([0c20431](https://github.com/defilantech/LLMKube/commit/0c20431fe280c56d542c17cf101fa5a168d1145d))
+
+
+### Documentation
+
+* **samples:** add air-gapped local file-path model source example ([#1099](https://github.com/defilantech/LLMKube/issues/1099)) ([#1124](https://github.com/defilantech/LLMKube/issues/1124)) ([913ff3d](https://github.com/defilantech/LLMKube/commit/913ff3d05b8e52266952d727361adaddd8ff501b))
+
 ## [0.9.5](https://github.com/defilantech/LLMKube/compare/v0.9.4...v0.9.5) (2026-07-13)
 
 
