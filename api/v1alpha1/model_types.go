@@ -26,12 +26,13 @@ type ModelSpec struct {
 	// Source defines where to obtain the model.
 	// For GGUF models: URL or path to a .gguf file.
 	// For MLX models: local directory path containing the model (config.json, weights).
-	// Supported schemes: http://, https://, file://, pvc://, or absolute paths.
+	// Supported schemes: http://, https://, file://, pvc://, hf://, s3://, or absolute paths.
 	// Examples:
 	//   - https://huggingface.co/org/repo/resolve/main/model.gguf
 	//   - file:///mnt/models/model.gguf
 	//   - /mnt/models/model.gguf (air-gapped deployments)
 	//   - pvc://my-models-pvc/path/to/model.gguf (pre-staged on a PersistentVolumeClaim)
+	//   - s3://my-bucket/models/llama-3.1-8b-q4_k_m.gguf (S3-compatible object store)
 	//   - /mnt/models/Llama-3.2-3B-Instruct-4bit (MLX model directory)
 	//
 	// file:// caveat for hybrid topologies: the controller pod must be
@@ -44,7 +45,7 @@ type ModelSpec struct {
 	// equivalent https://huggingface.co/.../<filename>.gguf URL which
 	// the runtime/init container resolves at deploy time.
 	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:Pattern=`^(https?|file|pvc|hf)://.*|^/[^\s]+$|^[a-zA-Z0-9][\w\-\.\/]+$`
+	// +kubebuilder:validation:Pattern=`^(https?|file|pvc|hf|s3)://.*|^/[^\s]+$|^[a-zA-Z0-9][\w\-\.\/]+$`
 	Source string `json:"source"`
 
 	// SHA256 is the expected SHA256 hash of the model file for integrity verification.
@@ -52,6 +53,14 @@ type ModelSpec struct {
 	// +kubebuilder:validation:Pattern=`^[a-fA-F0-9]{64}$`
 	// +optional
 	SHA256 string `json:"sha256,omitempty"`
+
+	// SourceSecretRef names a Secret (in the Model's namespace) whose keys are
+	// wired as env into the model-downloader init container. Used by s3://
+	// sources for S3-compatible credentials/endpoint: AWS_ACCESS_KEY_ID,
+	// AWS_SECRET_ACCESS_KEY, AWS_REGION, AWS_ENDPOINT_URL (path-style, e.g.
+	// https://minio.internal:9000 or https://s3.us-east-1.amazonaws.com).
+	// +optional
+	SourceSecretRef *corev1.LocalObjectReference `json:"sourceSecretRef,omitempty"`
 
 	// RefreshPolicy controls whether a cached model file is re-fetched when the
 	// upstream source changes.

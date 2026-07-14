@@ -325,3 +325,79 @@ var _ = Describe("isUnrecoverableFetchError (source.go)", func() {
 		Expect(isUnrecoverableFetchError(outer)).To(BeTrue())
 	})
 })
+
+var _ = Describe("isS3Source (source.go)", func() {
+	It("should return true for s3:// prefix", func() {
+		Expect(isS3Source("s3://my-bucket/model.gguf")).To(BeTrue())
+	})
+	It("should return true for case-variant S3:// prefix", func() {
+		Expect(isS3Source("S3://my-bucket/model.gguf")).To(BeTrue())
+	})
+	It("should return true for nested key", func() {
+		Expect(isS3Source("s3://bucket/deep/path/model.gguf")).To(BeTrue())
+	})
+	It("should return false for http://", func() {
+		Expect(isS3Source("http://example.com/model.gguf")).To(BeFalse())
+	})
+	It("should return false for https://", func() {
+		Expect(isS3Source("https://example.com/model.gguf")).To(BeFalse())
+	})
+	It("should return false for empty string", func() {
+		Expect(isS3Source("")).To(BeFalse())
+	})
+})
+
+var _ = Describe("parseS3Source (source.go)", func() {
+	It("should parse simple s3 source", func() {
+		bucket, key, err := parseS3Source("s3://my-bucket/model.gguf")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(bucket).To(Equal("my-bucket"))
+		Expect(key).To(Equal("model.gguf"))
+	})
+
+	It("should parse nested key", func() {
+		bucket, key, err := parseS3Source("s3://shared-bucket/models/llama/7b/model.gguf")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(bucket).To(Equal("shared-bucket"))
+		Expect(key).To(Equal("models/llama/7b/model.gguf"))
+	})
+
+	It("should error on non-S3 source", func() {
+		_, _, err := parseS3Source("http://example.com/model.gguf")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("not an S3 source"))
+	})
+
+	It("should error on empty S3 source", func() {
+		_, _, err := parseS3Source("s3://")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("empty S3 source"))
+	})
+
+	It("should error on missing key", func() {
+		_, _, err := parseS3Source("s3://my-bucket")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("must include a key"))
+	})
+
+	It("should error on empty bucket", func() {
+		_, _, err := parseS3Source("s3:///model.gguf")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("empty bucket"))
+	})
+
+	It("should error on trailing slash only (empty key)", func() {
+		_, _, err := parseS3Source("s3://my-bucket/")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("empty key"))
+	})
+})
+
+var _ = Describe("isHFRepoSource rejects s3:// (source.go)", func() {
+	It("should return false for s3:// source", func() {
+		Expect(isHFRepoSource("s3://my-bucket/model.gguf")).To(BeFalse())
+	})
+	It("should return false for case-variant S3:// source", func() {
+		Expect(isHFRepoSource("S3://my-bucket/model.gguf")).To(BeFalse())
+	})
+})

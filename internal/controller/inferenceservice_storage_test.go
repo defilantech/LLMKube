@@ -1183,7 +1183,7 @@ var _ = Describe("resolveCacheMode", func() {
 
 var _ = Describe("buildModelInitCommand", func() {
 	It("should generate cached remote download command with env var references", func() {
-		cmd := buildModelInitCommand(false, true, RefreshPolicyIfNotPresent)
+		cmd := buildModelInitCommand(false, false, true, RefreshPolicyIfNotPresent)
 		Expect(cmd).To(ContainSubstring(`mkdir -p "$CACHE_DIR"`))
 		Expect(cmd).To(ContainSubstring(`"$MODEL_PATH"`))
 		Expect(cmd).To(ContainSubstring("curl -f -L"))
@@ -1191,20 +1191,20 @@ var _ = Describe("buildModelInitCommand", func() {
 	})
 
 	It("should generate cached local copy command", func() {
-		cmd := buildModelInitCommand(true, true, RefreshPolicyIfNotPresent)
+		cmd := buildModelInitCommand(true, false, true, RefreshPolicyIfNotPresent)
 		Expect(cmd).To(ContainSubstring(`mkdir -p "$CACHE_DIR"`))
 		Expect(cmd).To(ContainSubstring("cp /host-model/model.gguf"))
 		Expect(cmd).To(ContainSubstring(`"$MODEL_PATH"`))
 	})
 
 	It("should generate error exit for uncached local source", func() {
-		cmd := buildModelInitCommand(true, false, RefreshPolicyIfNotPresent)
+		cmd := buildModelInitCommand(true, false, false, RefreshPolicyIfNotPresent)
 		Expect(cmd).To(ContainSubstring("ERROR: Local model source requires model cache"))
 		Expect(cmd).To(ContainSubstring("exit 1"))
 	})
 
 	It("should generate uncached remote download command with env var references", func() {
-		cmd := buildModelInitCommand(false, false, RefreshPolicyIfNotPresent)
+		cmd := buildModelInitCommand(false, false, false, RefreshPolicyIfNotPresent)
 		Expect(cmd).To(ContainSubstring("curl -f -L"))
 		Expect(cmd).To(ContainSubstring(`"$MODEL_SOURCE"`))
 		Expect(cmd).To(ContainSubstring(`"$MODEL_PATH"`))
@@ -1215,7 +1215,7 @@ var _ = Describe("buildModelInitCommand", func() {
 		// Verify that a malicious source cannot appear in the shell script.
 		// The command is a static template with env var references only.
 		maliciousSource := `https://evil.com/$(touch /pwned).gguf`
-		cmd := buildModelInitCommand(false, true, RefreshPolicyIfNotPresent)
+		cmd := buildModelInitCommand(false, false, true, RefreshPolicyIfNotPresent)
 		Expect(cmd).NotTo(ContainSubstring(maliciousSource))
 		Expect(cmd).NotTo(ContainSubstring("touch"))
 		Expect(cmd).NotTo(ContainSubstring("evil.com"))
@@ -1228,7 +1228,7 @@ var _ = Describe("buildModelInitCommand", func() {
 
 	Context("RefreshPolicy=OnChange (http/https revalidation, issue #619)", func() {
 		It("cached: emits curl conditional GET against an etag marker beside the model", func() {
-			cmd := buildModelInitCommand(false, true, RefreshPolicyOnChange)
+			cmd := buildModelInitCommand(false, false, true, RefreshPolicyOnChange)
 			// Still provisions the cache dir like IfNotPresent.
 			Expect(cmd).To(ContainSubstring(`mkdir -p "$CACHE_DIR"`))
 			// Conditional GET via curl's native ETag flags.
@@ -1243,7 +1243,7 @@ var _ = Describe("buildModelInitCommand", func() {
 		})
 
 		It("uncached: emits the same conditional GET without the cache dir mkdir", func() {
-			cmd := buildModelInitCommand(false, false, RefreshPolicyOnChange)
+			cmd := buildModelInitCommand(false, false, false, RefreshPolicyOnChange)
 			Expect(cmd).To(ContainSubstring("--etag-compare"))
 			Expect(cmd).To(ContainSubstring("--etag-save"))
 			Expect(cmd).To(ContainSubstring(`"$MODEL_SOURCE"`))
@@ -1252,7 +1252,7 @@ var _ = Describe("buildModelInitCommand", func() {
 		})
 
 		It("keeps the cached file and exits 0 when revalidation is unreachable", func() {
-			cmd := buildModelInitCommand(false, true, RefreshPolicyOnChange)
+			cmd := buildModelInitCommand(false, false, true, RefreshPolicyOnChange)
 			// Robustness guard: a network blip must not take down a running
 			// InferenceService on pod restart.
 			Expect(cmd).To(ContainSubstring(`[ -f "$MODEL_PATH" ]`))
@@ -1265,14 +1265,14 @@ var _ = Describe("buildModelInitCommand", func() {
 		It("does not change the local (file://) init path", func() {
 			// file:// sources are owned by the controller (#635); the init
 			// container path must be identical regardless of RefreshPolicy.
-			ifNotPresent := buildModelInitCommand(true, true, RefreshPolicyIfNotPresent)
-			onChange := buildModelInitCommand(true, true, RefreshPolicyOnChange)
+			ifNotPresent := buildModelInitCommand(true, false, true, RefreshPolicyIfNotPresent)
+			onChange := buildModelInitCommand(true, false, true, RefreshPolicyOnChange)
 			Expect(onChange).To(Equal(ifNotPresent))
 			Expect(onChange).NotTo(ContainSubstring("--etag-compare"))
 		})
 
 		It("does not contain user-controlled values in the OnChange command string", func() {
-			cmd := buildModelInitCommand(false, true, RefreshPolicyOnChange)
+			cmd := buildModelInitCommand(false, false, true, RefreshPolicyOnChange)
 			Expect(cmd).NotTo(ContainSubstring("evil.com"))
 			Expect(cmd).NotTo(ContainSubstring("touch"))
 		})

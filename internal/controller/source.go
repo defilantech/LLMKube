@@ -58,6 +58,46 @@ func isPVCSource(source string) bool {
 	return strings.HasPrefix(source, "pvc://")
 }
 
+// isS3Source reports whether source is an s3:// URL. Case-folded to agree
+// with the other scheme classifiers (GHSA-jw3m-8q7m-f35r).
+func isS3Source(source string) bool {
+	return hasSchemeFold(source, "s3://")
+}
+
+// parseS3Source splits s3://bucket/key into bucket and key. Endpoint,
+// region, and credentials are NOT in the URL; they come from the
+// sourceSecretRef env (AWS_ENDPOINT_URL, AWS_REGION, AWS_ACCESS_KEY_ID,
+// AWS_SECRET_ACCESS_KEY). Mirrors parsePVCSource error handling.
+func parseS3Source(source string) (bucket, key string, err error) {
+	if !isS3Source(source) {
+		return "", "", fmt.Errorf("not an S3 source: %s", source)
+	}
+
+	// Strip the s3:// prefix
+	rest := strings.TrimPrefix(source, "s3://")
+	if rest == "" {
+		return "", "", fmt.Errorf("empty S3 source: %s", source)
+	}
+
+	// Split into bucket and key
+	slashIdx := strings.Index(rest, "/")
+	if slashIdx < 0 {
+		return "", "", fmt.Errorf("S3 source must include a key: %s (expected s3://bucket/key)", source)
+	}
+
+	bucket = rest[:slashIdx]
+	key = rest[slashIdx+1:]
+
+	if bucket == "" {
+		return "", "", fmt.Errorf("S3 source has empty bucket: %s", source)
+	}
+	if key == "" {
+		return "", "", fmt.Errorf("S3 source has empty key: %s", source)
+	}
+
+	return bucket, key, nil
+}
+
 // parsePVCSource extracts the PVC claim name and file path from a pvc:// source.
 // Format: pvc://claim-name/path/to/model.gguf
 func parsePVCSource(source string) (claimName, path string, err error) {
@@ -221,6 +261,9 @@ func isHFRepoSource(source string) bool {
 		return false
 	}
 	if isPVCSource(source) {
+		return false
+	}
+	if isS3Source(source) {
 		return false
 	}
 	if isLocalSource(source) {
