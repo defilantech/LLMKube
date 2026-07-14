@@ -1092,6 +1092,15 @@ type SGLangConfig struct {
 
 	// DataParallelSize sets the number of data-parallel replicas (SGLang-side controller).
 	// Maps to SGLang --dp flag. Not auto-derived; set explicitly.
+	//
+	// NOTE: at present this only sets the in-process SGLang `--dp` flag.
+	// Multi-replica rendezvous (SGLang's --dist-init-addr + a stable
+	// network identity per pod, e.g. headless service + StatefulSet) is
+	// not yet wired into the InferenceService controller and is tracked
+	// at https://github.com/defilantech/LLMKube/issues/1102. Setting
+	// this on an InferenceService with replicas > 1 will leave each
+	// replica starting as its own DP-1 group; operators wanting true
+	// DP coordination should hold off on this flag until #1102 lands.
 	// +kubebuilder:validation:Minimum=1
 	// +optional
 	DataParallelSize *int32 `json:"dataParallelSize,omitempty"`
@@ -1183,8 +1192,12 @@ type SGLangConfig struct {
 	Speculative *SGLangSpeculativeConfig `json:"speculative,omitempty"`
 
 	// LoRA (basic)
-	// LoraModules is a JSON array of LoRA specs (model_id -> path). Maps to
-	// SGLang --lora-modules flag.
+	// LoraModules is the legacy form of --lora-paths entries. Each
+	// element is either `name=path` shorthand or a JSON object
+	// {"name":"x","path":"/p"}. New callers should prefer the typed
+	// LoraAdapters field; the controller merges both, with
+	// LoraAdapters winning on name collision. Deprecated: use
+	// LoraAdapters instead.
 	// +optional
 	LoraModules []string `json:"loraModules,omitempty"`
 
@@ -1199,10 +1212,58 @@ type SGLangConfig struct {
 	// +optional
 	LoraTargetModules []string `json:"loraTargetModules,omitempty"`
 
+	// LoraAdapters is a typed replacement for LoraModules. Each adapter has
+	// a stable Name (SGLang-side handle) and Path (file mount). When both
+	// LoraAdapters and LoraModules are set, LoraAdapters wins on name
+	// collision. Maps to SGLang --lora-paths flag (singular `lora_paths`,
+	// not vLLM's --lora-modules — see
+	// https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/server_args.py).
+	// +optional
+	LoraAdapters []SGLangLoRAAdapter `json:"loraAdapters,omitempty"`
+
+	// LogLevel sets the SGLang server log level. SGLang accepts
+	// "debug"/"info"/"warning"/"error". Maps to SGLang --log-level flag.
+	// +kubebuilder:validation:Enum=debug;info;warning;error
+	// +optional
+	LogLevel string `json:"logLevel,omitempty"`
+
+	// TrustRemoteCode allows loading remote code from the HuggingFace Hub
+	// model repo. Mirrors the flag on other runtimes. Maps to SGLang
+	// --trust-remote-code flag. Omit to leave SGLang's default.
+	// +optional
+	TrustRemoteCode *bool `json:"trustRemoteCode,omitempty"`
+
+	// SkipTokenizerInit skips tokenizer initialization at startup. Useful
+	// for prefill-only disaggregation deployments. Maps to SGLang
+	// --skip-tokenizer-init flag. Omit to leave SGLang's default.
+	// +optional
+	SkipTokenizerInit *bool `json:"skipTokenizerInit,omitempty"`
+
 	// HFTokenSecretRef references a Secret containing the HuggingFace token.
 	// Injected as HF_TOKEN env var.
 	// +optional
 	HFTokenSecretRef *corev1.SecretKeySelector `json:"hfTokenSecretRef,omitempty"`
+}
+
+// SGLangLoRAAdapter names a single LoRA adapter for SGLang's --lora-paths
+// flag (NOT vLLM's --lora-modules — see
+// https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/server_args.py).
+// Name is the SGLang-side adapter handle; Path is the file mount where
+// adapter weights live (typically backed by a PVC created via
+// LoRAAdapter resources). Prefer this typed shape over the legacy
+// LoraModules []string; both are merged with the typed form winning on name
+// collision.
+type SGLangLoRAAdapter struct {
+	// Name is the SGLang-side adapter handle used in inference requests.
+	// +kubebuilder:validation:MinLength=1
+	// +required
+	Name string `json:"name"`
+
+	// Path is the path on disk inside the SGLang container where the
+	// adapter weights are mounted.
+	// +kubebuilder:validation:MinLength=1
+	// +required
+	Path string `json:"path"`
 }
 
 // SGLangSpeculativeConfig configures speculative decoding for SGLang.
@@ -1241,6 +1302,26 @@ type SGLangSpeculativeConfig struct {
 	// +kubebuilder:default=4
 	// +optional
 	NumDraftTokens *int32 `json:"numDraftTokens,omitempty"`
+
+	// AcceptThresholdSingle sets the acceptance threshold for non-matched
+	// tokens in single-sequence decoding (a draft token is accepted when
+	// its probability exceeds p * accept_threshold_single). Valid only
+	// when Enabled is true; surface a status condition when set otherwise.
+	// Maps to SGLang --speculative-accept-threshold-single flag.
+	// +kubebuilder:validation:Minimum=0.0
+	// +kubebuilder:validation:Maximum=1.0
+	// +optional
+	AcceptThresholdSingle *float64 `json:"acceptThresholdSingle,omitempty"`
+
+	// AcceptThresholdAcc sets the acceptance threshold for the bonus token
+	// in accepted-token-sequence verification (an accepted draft token's
+	// probability must exceed p * accept_threshold_acc). Valid only when
+	// Enabled is true; surface a status condition when set otherwise.
+	// Maps to SGLang --speculative-accept-threshold-acc flag.
+	// +kubebuilder:validation:Minimum=0.0
+	// +kubebuilder:validation:Maximum=1.0
+	// +optional
+	AcceptThresholdAcc *float64 `json:"acceptThresholdAcc,omitempty"`
 }
 
 func init() {

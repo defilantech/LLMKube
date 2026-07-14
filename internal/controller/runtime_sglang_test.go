@@ -34,8 +34,14 @@ var sglangFlagsNeverInBase = []string{
 	"--chunked-prefill-size", "--max-running-requests", "--quantization",
 	"--kv-cache-dtype", "--attention-backend", "--enable-prefix-caching",
 	"--tool-call-parser", "--reasoning-parser", "--chat-template",
-	"--speculative-algorithm", "--lora-modules", "--max-lora-rank",
-	"--lora-target-modules", "--is-embedding",
+	"--speculative-algorithm", "--speculative-accept-threshold-single",
+	"--speculative-accept-threshold-acc",
+	// SGLang v0.5.15 calls the flag `--lora-paths`, NOT vLLM's
+	// `--lora-modules` — see https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/server_args.py
+	"--lora-paths", "--max-lora-rank", "--lora-target-modules",
+	"--log-level",
+	"--trust-remote-code", "--skip-tokenizer-init",
+	"--is-embedding",
 }
 
 // TestSGLangBackendDefaults locks in the trivial-method contracts that every
@@ -155,6 +161,7 @@ func TestSGLangBuildArgs(t *testing.T) {
 
 	cases := []struct {
 		contains    []FlagCheck
+		containsAll []string // every entry must appear in args (order-insensitive); used for nargs="*" forms like --lora-paths
 		notContains []string
 		model       *inferencev1alpha1.Model
 		name        string
@@ -437,14 +444,27 @@ func TestSGLangBuildArgs(t *testing.T) {
 		},
 		{
 			model: &inferencev1alpha1.Model{ObjectMeta: metav1.ObjectMeta{Name: "m"}},
-			name:  "loraModules emits --lora-modules",
+			name:  "loraModules JSON-form emits --lora-paths name=path as separate argv entry",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime: "sglang",
 				SGLangConfig: &inferencev1alpha1.SGLangConfig{
 					LoraModules: []string{`{"name":"loraA","path":"/loras/a"}`},
 				},
 			},
-			contains: []FlagCheck{{"--lora-modules", `{"name":"loraA","path":"/loras/a"}`}},
+			contains:    []FlagCheck{{"--lora-paths", ""}},
+			containsAll: []string{"--lora-paths", "loraA=/loras/a"},
+		},
+		{
+			model: &inferencev1alpha1.Model{ObjectMeta: metav1.ObjectMeta{Name: "m"}},
+			name:  "loraModules name=path shorthand is preserved as separate argv entries",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime: "sglang",
+				SGLangConfig: &inferencev1alpha1.SGLangConfig{
+					LoraModules: []string{"loraA=/loras/a", "loraB=/loras/b"},
+				},
+			},
+			contains:    []FlagCheck{{"--lora-paths", ""}},
+			containsAll: []string{"--lora-paths", "loraA=/loras/a", "loraB=/loras/b"},
 		},
 		{
 			model: &inferencev1alpha1.Model{ObjectMeta: metav1.ObjectMeta{Name: "m"}},
@@ -464,7 +484,110 @@ func TestSGLangBuildArgs(t *testing.T) {
 					LoraTargetModules: []string{"q_proj", "k_proj"},
 				},
 			},
-			contains: []FlagCheck{{"--lora-target-modules", "q_proj,k_proj"}},
+			contains:    []FlagCheck{{"--lora-target-modules", ""}},
+			containsAll: []string{"--lora-target-modules", "q_proj", "k_proj"},
+		},
+		// Note: the previous "model override emits --model" case was
+		// removed in 0bab701 — SGLang v0.5.15 declares `model_path`
+		// with `aliases=["--model"]`, so a separately emitted `--model`
+		// after `--model-path` overwrites the real weights path. The
+		// `--served-model-name` flag (auto-emitted above from
+		// modelRef/model.Name) is the supported way to override the
+		// friendly name exposed via the OpenAI-compatible API.
+		{
+			model: &inferencev1alpha1.Model{ObjectMeta: metav1.ObjectMeta{Name: "m"}},
+			name:  "log-level emits --log-level",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime: "sglang",
+				SGLangConfig: &inferencev1alpha1.SGLangConfig{
+					LogLevel: "warning",
+				},
+			},
+			contains: []FlagCheck{{"--log-level", "warning"}},
+		},
+		{
+			model: &inferencev1alpha1.Model{ObjectMeta: metav1.ObjectMeta{Name: "m"}},
+			name:  "trust-remote-code true emits --trust-remote-code",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime: "sglang",
+				SGLangConfig: &inferencev1alpha1.SGLangConfig{
+					TrustRemoteCode: ptrBool(true),
+				},
+			},
+			contains: []FlagCheck{{"--trust-remote-code", ""}},
+		},
+		{
+			model: &inferencev1alpha1.Model{ObjectMeta: metav1.ObjectMeta{Name: "m"}},
+			name:  "skip-tokenizer-init true emits --skip-tokenizer-init",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime: "sglang",
+				SGLangConfig: &inferencev1alpha1.SGLangConfig{
+					SkipTokenizerInit: ptrBool(true),
+				},
+			},
+			contains: []FlagCheck{{"--skip-tokenizer-init", ""}},
+		},
+		{
+			model: &inferencev1alpha1.Model{ObjectMeta: metav1.ObjectMeta{Name: "m"}},
+			name:  "speculative accept thresholds emit --speculative-accept-threshold-*",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime: "sglang",
+				SGLangConfig: &inferencev1alpha1.SGLangConfig{
+					Speculative: &inferencev1alpha1.SGLangSpeculativeConfig{
+						Enabled:               ptrBool(true),
+						Algorithm:             "EAGLE",
+						DraftModelPath:        "/models/draft",
+						AcceptThresholdSingle: ptrFloat64(0.9),
+						AcceptThresholdAcc:    ptrFloat64(0.8),
+					},
+				},
+			},
+			contains: []FlagCheck{
+				{"--speculative-algorithm", "EAGLE"},
+				{"--speculative-draft-model-path", "/models/draft"},
+				{"--speculative-accept-threshold-single", "0.9"},
+				{"--speculative-accept-threshold-acc", "0.8"},
+			},
+		},
+		{
+			model: &inferencev1alpha1.Model{ObjectMeta: metav1.ObjectMeta{Name: "m"}},
+			name:  "typed loraAdapters emits --lora-paths name=path as separate argv entries",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime: "sglang",
+				SGLangConfig: &inferencev1alpha1.SGLangConfig{
+					LoraAdapters: []inferencev1alpha1.SGLangLoRAAdapter{
+						{Name: "loraA", Path: "/loras/a"},
+						{Name: "loraB", Path: "/loras/b"},
+					},
+				},
+			},
+			contains:    []FlagCheck{{"--lora-paths", ""}},
+			containsAll: []string{"--lora-paths", "loraA=/loras/a", "loraB=/loras/b"},
+		},
+		{
+			model: &inferencev1alpha1.Model{ObjectMeta: metav1.ObjectMeta{Name: "m"}},
+			name:  "typed and legacy LoRA merge with typed winning on name collision",
+			spec: &inferencev1alpha1.InferenceServiceSpec{
+				Runtime: "sglang",
+				SGLangConfig: &inferencev1alpha1.SGLangConfig{
+					LoraAdapters: []inferencev1alpha1.SGLangLoRAAdapter{
+						{Name: "loraA", Path: "/loras/typed-a"},
+					},
+					LoraModules: []string{
+						`{"name":"loraA","path":"/loras/legacy-a"}`,
+						`{"name":"loraB","path":"/loras/legacy-b"}`,
+					},
+				},
+			},
+			contains: []FlagCheck{
+				{"--lora-paths", ""},
+			},
+			containsAll: []string{
+				"--lora-paths",
+				"loraA=/loras/typed-a",
+				"loraB=/loras/legacy-b",
+			},
+			notContains: []string{"/loras/legacy-a"},
 		},
 		{
 			model: sglangGPUModel(),
@@ -498,6 +621,7 @@ func TestSGLangBuildArgs(t *testing.T) {
 				{"--tool-call-parser", "qwen3"},
 				{"--reasoning-parser", "qwen3"},
 			},
+			notContains: []string{"--model"},
 		},
 	}
 
@@ -512,6 +636,9 @@ func TestSGLangBuildArgs(t *testing.T) {
 				if !containsArg(args, fc.flag, fc.value) {
 					t.Errorf("expected %q %q in args, got: %v", fc.flag, fc.value, args)
 				}
+			}
+			if !containsEach(args, tc.containsAll) {
+				t.Errorf("expected each of %v in args (order-insensitive), got: %v", tc.containsAll, args)
 			}
 			for _, f := range tc.notContains {
 				if containsArg(args, f, "") {
@@ -698,6 +825,41 @@ func TestValidateSGLangConfig(t *testing.T) {
 			},
 			wantReason: "SpeculativeMissingConfig",
 		},
+		{
+			name: "accept threshold without speculative enabled is invalid",
+			isvc: &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					Runtime: "sglang",
+					SGLangConfig: &inferencev1alpha1.SGLangConfig{
+						Speculative: &inferencev1alpha1.SGLangSpeculativeConfig{
+							Enabled:               ptrBool(false),
+							Algorithm:             "EAGLE",
+							DraftModelPath:        "/models/draft",
+							AcceptThresholdSingle: ptrFloat64(0.9),
+						},
+					},
+				},
+			},
+			wantReason: "SpeculativeAcceptThresholdUnused",
+		},
+		{
+			name: "accept threshold with speculative enabled+configured is valid",
+			isvc: &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					Runtime: "sglang",
+					SGLangConfig: &inferencev1alpha1.SGLangConfig{
+						Speculative: &inferencev1alpha1.SGLangSpeculativeConfig{
+							Enabled:               ptrBool(true),
+							Algorithm:             "EAGLE",
+							DraftModelPath:        "/models/draft",
+							AcceptThresholdSingle: ptrFloat64(0.9),
+							AcceptThresholdAcc:    ptrFloat64(0.8),
+						},
+					},
+				},
+			},
+			wantReason: "",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -814,4 +976,135 @@ func findCondition(conds []metav1.Condition, ctype string) *metav1.Condition {
 		}
 	}
 	return nil
+}
+
+// containsEach reports whether every element in needles appears in
+// haystack at least once (order-insensitive). Used to assert
+// SGLang's `--lora-paths` nargs="*" form, where each adapter is a
+// separate argv entry rather than a comma-joined string. The previous
+// helper, containsArg, requires flag and value to be adjacent, which
+// would lock in the broken form that SGLang's LoRAPathAction rejects.
+func containsEach(haystack, needles []string) bool {
+	used := make(map[int]bool, len(haystack))
+	for _, n := range needles {
+		found := false
+		for i, h := range haystack {
+			if !used[i] && h == n {
+				used[i] = true
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+// TestSGLangBuildLoraModulePairs_Coverage exercises the typed/legacy
+// LoRA merge: empty-Name typed entries are skipped, the legacy
+// `name=path` shorthand is preserved (no silent drop), JSON-legacy
+// entries parse correctly, name collisions resolve typed-first, and
+// output ordering is stable across calls (the final slice must not
+// rely on Go map iteration).
+func TestSGLangBuildLoraModulePairs_Coverage(t *testing.T) {
+	t.Run("typed empty Name is skipped", func(t *testing.T) {
+		got := sglangBuildLoraModulePairs(
+			[]inferencev1alpha1.SGLangLoRAAdapter{
+				{Name: "", Path: "/loras/empty"},
+				{Name: "loraA", Path: "/loras/a"},
+			},
+			nil,
+		)
+		if len(got) != 1 || got[0] != "loraA=/loras/a" {
+			t.Errorf("pairs = %v, want [loraA=/loras/a]", got)
+		}
+	})
+
+	// back-compat: the prior controller shipped a []string field where
+	// operators wrote either name=path shorthand or JSON objects.
+	// Both forms must survive intact — silent drops are a real
+	// regression because `ValidateSGLangConfig` only checks speculative
+	// fields, so the operator gets no signal.
+	t.Run("legacy name=path shorthand is preserved", func(t *testing.T) {
+		got := sglangBuildLoraModulePairs(
+			nil,
+			[]string{"loraA=/loras/a", "loraB=/loras/b"},
+		)
+		want := []string{"loraA=/loras/a", "loraB=/loras/b"}
+		if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+			t.Errorf("pairs = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("legacy JSON parse failure is dropped (sloppy operator input)", func(t *testing.T) {
+		got := sglangBuildLoraModulePairs(
+			[]inferencev1alpha1.SGLangLoRAAdapter{{Name: "loraA", Path: "/loras/a"}},
+			[]string{"not-json", `{"no_name_field": true}`, `{"name":"","path":"/loras/empty"}`},
+		)
+		// Only the typed entry survives; the malformed JSON
+		// entries are intentionally dropped (the operator fed us
+		// garbage; an unparseable string is not a useable
+		// adapter). Note: name=path shorthand on the same line
+		// (e.g. `not-json`) does NOT parse as name=path because
+		// there's no `=` sign, but the previous name=path
+		// sub-test shows that does work.
+		if len(got) != 1 || got[0] != "loraA=/loras/a" {
+			t.Errorf("pairs = %v, want [loraA=/loras/a]", got)
+		}
+	})
+
+	t.Run("typed-wins-on-collision with JSON legacy", func(t *testing.T) {
+		got := sglangBuildLoraModulePairs(
+			[]inferencev1alpha1.SGLangLoRAAdapter{{Name: "loraA", Path: "/loras/TYPED"}},
+			[]string{`{"name":"loraA","path":"/loras/LEGACY"}`, `{"name":"loraB","path":"/loras/legacy-b"}`},
+		)
+		// typed loraA wins, legacy loraB is preserved.
+		want := []string{"loraA=/loras/TYPED", "loraB=/loras/legacy-b"}
+		if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+			t.Errorf("pairs = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("legacy-only JSON survives merge", func(t *testing.T) {
+		got := sglangBuildLoraModulePairs(
+			nil,
+			[]string{`{"name":"loraA","path":"/loras/a"}`, `{"name":"loraB","path":"/loras/b"}`},
+		)
+		want := []string{"loraA=/loras/a", "loraB=/loras/b"}
+		if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+			t.Errorf("pairs = %v, want %v", got, want)
+		}
+	})
+
+	// Stability property: the function's own comment promises that
+	// the output keeps Deployment .spec diffs deterministic. Map
+	// iteration order in Go is randomized, so the implementation must
+	// NOT rely on a `for ... range map` loop to assemble the final
+	// slice. Drive the merge many times with the same input and
+	// assert the output is byte-identical on every call.
+	t.Run("ordering is stable across many runs (legacy-only)", func(t *testing.T) {
+		const numEntries = 16
+		legacy := make([]string, numEntries)
+		for i := 0; i < numEntries; i++ {
+			legacy[i] = "lora" + string(rune('A'+i)) + "=/loras/" + string(rune('a'+i))
+		}
+		var previous []string
+		for iter := 0; iter < 64; iter++ {
+			got := sglangBuildLoraModulePairs(nil, legacy)
+			if previous == nil {
+				previous = got
+				continue
+			}
+			if len(got) != len(previous) {
+				t.Fatalf("iter %d: length changed %d -> %d", iter, len(previous), len(got))
+			}
+			for i := range got {
+				if got[i] != previous[i] {
+					t.Fatalf("iter %d: order diverged at %d: %v vs %v", iter, i, previous, got)
+				}
+			}
+		}
+	})
 }

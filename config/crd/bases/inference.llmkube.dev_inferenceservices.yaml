@@ -4699,6 +4699,15 @@ spec:
                     description: |-
                       DataParallelSize sets the number of data-parallel replicas (SGLang-side controller).
                       Maps to SGLang --dp flag. Not auto-derived; set explicitly.
+
+                      NOTE: at present this only sets the in-process SGLang `--dp` flag.
+                      Multi-replica rendezvous (SGLang's --dist-init-addr + a stable
+                      network identity per pod, e.g. headless service + StatefulSet) is
+                      not yet wired into the InferenceService controller and is tracked
+                      at https://github.com/defilantech/LLMKube/issues/1102. Setting
+                      this on an InferenceService with replicas > 1 will leave each
+                      replica starting as its own DP-1 group; operators wanting true
+                      DP coordination should hold off on this flag until #1102 lands.
                     format: int32
                     minimum: 1
                     type: integer
@@ -4759,11 +4768,60 @@ spec:
                     - fp8_e5m2
                     - fp8_e4m3
                     type: string
+                  logLevel:
+                    description: |-
+                      LogLevel sets the SGLang server log level. SGLang accepts
+                      "debug"/"info"/"warning"/"error". Maps to SGLang --log-level flag.
+                    enum:
+                    - debug
+                    - info
+                    - warning
+                    - error
+                    type: string
+                  loraAdapters:
+                    description: |-
+                      LoraAdapters is a typed replacement for LoraModules. Each adapter has
+                      a stable Name (SGLang-side handle) and Path (file mount). When both
+                      LoraAdapters and LoraModules are set, LoraAdapters wins on name
+                      collision. Maps to SGLang --lora-paths flag (singular `lora_paths`,
+                      not vLLM's --lora-modules — see
+                      https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/server_args.py).
+                    items:
+                      description: |-
+                        SGLangLoRAAdapter names a single LoRA adapter for SGLang's --lora-paths
+                        flag (NOT vLLM's --lora-modules — see
+                        https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/server_args.py).
+                        Name is the SGLang-side adapter handle; Path is the file mount where
+                        adapter weights live (typically backed by a PVC created via
+                        LoRAAdapter resources). Prefer this typed shape over the legacy
+                        LoraModules []string; both are merged with the typed form winning on name
+                        collision.
+                      properties:
+                        name:
+                          description: Name is the SGLang-side adapter handle used
+                            in inference requests.
+                          minLength: 1
+                          type: string
+                        path:
+                          description: |-
+                            Path is the path on disk inside the SGLang container where the
+                            adapter weights are mounted.
+                          minLength: 1
+                          type: string
+                      required:
+                      - name
+                      - path
+                      type: object
+                    type: array
                   loraModules:
                     description: |-
                       LoRA (basic)
-                      LoraModules is a JSON array of LoRA specs (model_id -> path). Maps to
-                      SGLang --lora-modules flag.
+                      LoraModules is the legacy form of --lora-paths entries. Each
+                      element is either `name=path` shorthand or a JSON object
+                      {"name":"x","path":"/p"}. New callers should prefer the typed
+                      LoraAdapters field; the controller merges both, with
+                      LoraAdapters winning on name collision. Deprecated: use
+                      LoraAdapters instead.
                     items:
                       type: string
                     type: array
@@ -4811,10 +4869,36 @@ spec:
                     - qwen3
                     - deepseek-r1
                     type: string
+                  skipTokenizerInit:
+                    description: |-
+                      SkipTokenizerInit skips tokenizer initialization at startup. Useful
+                      for prefill-only disaggregation deployments. Maps to SGLang
+                      --skip-tokenizer-init flag. Omit to leave SGLang's default.
+                    type: boolean
                   speculative:
                     description: Speculative configures speculative decoding (EAGLE
                       / EAGLE3 / Medusa).
                     properties:
+                      acceptThresholdAcc:
+                        description: |-
+                          AcceptThresholdAcc sets the acceptance threshold for the bonus token
+                          in accepted-token-sequence verification (an accepted draft token's
+                          probability must exceed p * accept_threshold_acc). Valid only when
+                          Enabled is true; surface a status condition when set otherwise.
+                          Maps to SGLang --speculative-accept-threshold-acc flag.
+                        maximum: 1
+                        minimum: 0
+                        type: number
+                      acceptThresholdSingle:
+                        description: |-
+                          AcceptThresholdSingle sets the acceptance threshold for non-matched
+                          tokens in single-sequence decoding (a draft token is accepted when
+                          its probability exceeds p * accept_threshold_single). Valid only
+                          when Enabled is true; surface a status condition when set otherwise.
+                          Maps to SGLang --speculative-accept-threshold-single flag.
+                        maximum: 1
+                        minimum: 0
+                        type: number
                       algorithm:
                         description: |-
                           Algorithm selects the speculative algorithm (EAGLE, EAGLE3, Medusa).
@@ -4878,6 +4962,12 @@ spec:
                     - functionary
                     - mistral
                     type: string
+                  trustRemoteCode:
+                    description: |-
+                      TrustRemoteCode allows loading remote code from the HuggingFace Hub
+                      model repo. Mirrors the flag on other runtimes. Maps to SGLang
+                      --trust-remote-code flag. Omit to leave SGLang's default.
+                    type: boolean
                 type: object
               skipModelInit:
                 description: |-

@@ -176,6 +176,7 @@ rules:
   resources:
   - gpuquotas/status
   - inferenceservices/status
+  - loraadapters/status
   - modelrouters/status
   - models/status
   verbs:
@@ -186,6 +187,7 @@ rules:
   - inference.llmkube.dev
   resources:
   - inferenceservices
+  - loraadapters
   - modelrouters
   - models
   verbs:
@@ -200,6 +202,7 @@ rules:
   - inference.llmkube.dev
   resources:
   - inferenceservices/finalizers
+  - loraadapters/finalizers
   - modelrouters/finalizers
   - models/finalizers
   verbs:

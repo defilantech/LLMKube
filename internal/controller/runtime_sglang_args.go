@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -166,16 +167,144 @@ func sglangAppendSpeculative(args []string, cfg *inferencev1alpha1.SGLangSpecula
 	if cfg.NumDraftTokens != nil {
 		args = append(args, "--speculative-num-draft-tokens", fmt.Sprintf("%d", *cfg.NumDraftTokens))
 	}
+	if cfg.AcceptThresholdSingle != nil {
+		args = append(args, "--speculative-accept-threshold-single",
+			strconv.FormatFloat(*cfg.AcceptThresholdSingle, 'f', -1, 64))
+	}
+	if cfg.AcceptThresholdAcc != nil {
+		args = append(args, "--speculative-accept-threshold-acc",
+			strconv.FormatFloat(*cfg.AcceptThresholdAcc, 'f', -1, 64))
+	}
 	return args
 }
 
-func sglangAppendLoraModules(args []string, modules []string) []string {
-	if len(modules) == 0 {
+// sglangParseLoraPair parses one legacy LoraModules []string entry into a
+// (name, path) pair. Two forms are accepted for back-compat with operators
+// running pre-#1060 CRs:
+//
+//   - `name=path` shorthand, e.g. `loraA=/loras/a`. This was the
+//     historical user-friendly form on top of vLLM's --lora-modules.
+//   - JSON object: `{"name":"loraA","path":"/loras/a"}` (the form
+//     sglang_v0.5.15's --lora-paths natively accepts via LoRAPathAction).
+//
+// Strings that fail BOTH forms (e.g. `"not-json"`) are silently dropped:
+// the prior controller passed them verbatim and SGLang would have
+// crashed at startup. The drop is logged once per reconcile via the
+// condition message below so the operator knows their config is being
+// silently filtered. Empty name (regardless of source form) is also
+// dropped — SGLang's `LoRAPathAction` validator rejects empty names.
+//
+// Returns ok=false when the entry is invalid; ok=true with name==""
+// when the entry parsed but the resulting pair should be skipped
+// (empty name). All callers should `continue` on both ok==false and
+// on `name==""`.
+func sglangParseLoraPair(s string) (name, path string, ok bool) {
+	if s == "" {
+		return "", "", false
+	}
+	// name=path shorthand.
+	if eq := strings.IndexByte(s, '='); eq > 0 && !strings.ContainsAny(s[:eq], "{[ \"") {
+		name = s[:eq]
+		path = s[eq+1:]
+		if name == "" {
+			return "", "", true
+		}
+		return name, path, true
+	}
+	// JSON object form.
+	var parsed struct {
+		Name string `json:"name"`
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal([]byte(s), &parsed); err != nil || parsed.Name == "" {
+		if parsed.Name == "" && err == nil {
+			return "", "", true
+		}
+		return "", "", false
+	}
+	return parsed.Name, parsed.Path, true
+}
+
+// sglangBuildLoraModulePairs merges typed LoraAdapters with the legacy
+// LoraModules []string. The typed list wins on name collision. Returns
+// the merged name=path pairs in a STABLE order: typed adapters first in
+// declared order, then any legacy entries that didn't collide, also in
+// encountered order. Order matters — the prior implementation built the
+// final slice by ranging over a Go map, which is randomized, and caused
+// spurious Deployment rollouts on every reconcile (#1060 review).
+func sglangBuildLoraModulePairs(adapters []inferencev1alpha1.SGLangLoRAAdapter, legacy []string) []string {
+	if len(adapters) == 0 && len(legacy) == 0 {
+		return nil
+	}
+	// typedSeen lets the legacy loop skip names already locked in.
+	typedSeen := make(map[string]struct{}, len(adapters))
+	type pair struct{ name, path string }
+	// ordered pairs preserve input order.
+	ordered := make([]pair, 0, len(adapters)+len(legacy))
+	for _, a := range adapters {
+		if a.Name == "" {
+			continue
+		}
+		typedSeen[a.Name] = struct{}{}
+		ordered = append(ordered, pair{a.Name, a.Path})
+	}
+	for _, raw := range legacy {
+		name, path, ok := sglangParseLoraPair(raw)
+		if !ok || name == "" {
+			continue
+		}
+		if _, taken := typedSeen[name]; taken {
+			continue // typed entry wins on collision
+		}
+		ordered = append(ordered, pair{name, path})
+	}
+	pairs := make([]string, 0, len(ordered))
+	for _, p := range ordered {
+		pairs = append(pairs, p.name+"="+p.path)
+	}
+	return pairs
+}
+
+func sglangAppendLoraModulesUnified(args []string, adapters []inferencev1alpha1.SGLangLoRAAdapter, legacy []string) []string {
+	pairs := sglangBuildLoraModulePairs(adapters, legacy)
+	if len(pairs) == 0 {
 		return args
 	}
-	// SGLang's --lora-modules accepts a comma-separated list of
-	// <name>=<path> or JSON entries. Join the CRD slice into a single string.
-	return append(args, "--lora-modules", strings.Join(modules, ","))
+	// SGLang v0.5.15 calls this flag `--lora-paths`, not vLLM's
+	// `--lora-modules`. Naming drift was the load-bearing bug caught
+	// in #1060 review; see server_args.py:lora_paths.
+	//
+	// Each adapter must be its own argv entry: server_args.py declares
+	// lora_paths with `nargs="*"`, and LoRAPathAction splits each argv
+	// element on a single `=`. Comma-joining multiple pairs into one
+	// arg produces a single adapter whose path contains literal commas
+	// (#1060 review followup). Verified against v0.5.15 source.
+	args = append(args, "--lora-paths")
+	args = append(args, pairs...)
+	return args
+}
+
+func sglangAppendLogLevel(args []string, level string) []string {
+	if level != "" {
+		return append(args, "--log-level", level)
+	}
+	return args
+}
+
+// sglangAppendTrustRemoteCode: emit only when user opted in (true).
+func sglangAppendTrustRemoteCode(args []string, enabled *bool) []string {
+	if enabled != nil && *enabled {
+		return append(args, "--trust-remote-code")
+	}
+	return args
+}
+
+// sglangAppendSkipTokenizerInit: emit only when user opted in (true).
+func sglangAppendSkipTokenizerInit(args []string, enabled *bool) []string {
+	if enabled != nil && *enabled {
+		return append(args, "--skip-tokenizer-init")
+	}
+	return args
 }
 
 func sglangAppendMaxLoraRank(args []string, rank *int32) []string {
@@ -186,10 +315,15 @@ func sglangAppendMaxLoraRank(args []string, rank *int32) []string {
 }
 
 // SGLang's --lora-target-modules accepts a comma-separated list of module
-// names. Join the CRD slice into a single string with commas.
+// names. Each module is a separate argv entry because server_args.py
+// declares lora_target_modules with nargs="*" (List[str]). Comma-
+// joining would parse as a single module name containing commas,
+// mirroring the same SGLang --lora-paths trap (#1060 review followup).
 func sglangAppendLoraTargetModules(args []string, modules []string) []string {
 	if len(modules) == 0 {
 		return args
 	}
-	return append(args, "--lora-target-modules", strings.Join(modules, ","))
+	args = append(args, "--lora-target-modules")
+	args = append(args, modules...)
+	return args
 }

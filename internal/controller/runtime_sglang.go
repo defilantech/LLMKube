@@ -130,9 +130,12 @@ func (b *SGLangBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, mode
 		args = sglangAppendReasoningParser(args, cfg.ReasoningParser)
 		args = sglangAppendChatTemplate(args, cfg.ChatTemplate)
 		args = sglangAppendSpeculative(args, cfg.Speculative)
-		args = sglangAppendLoraModules(args, cfg.LoraModules)
+		args = sglangAppendLoraModulesUnified(args, cfg.LoraAdapters, cfg.LoraModules)
 		args = sglangAppendMaxLoraRank(args, cfg.MaxLoraRank)
 		args = sglangAppendLoraTargetModules(args, cfg.LoraTargetModules)
+		args = sglangAppendLogLevel(args, cfg.LogLevel)
+		args = sglangAppendTrustRemoteCode(args, cfg.TrustRemoteCode)
+		args = sglangAppendSkipTokenizerInit(args, cfg.SkipTokenizerInit)
 	}
 
 	// Auto-derive --tp when user didn't set it.
@@ -166,6 +169,12 @@ func ValidateSGLangConfig(isvc *inferencev1alpha1.InferenceService) (reason, mes
 		if cfg.Speculative.Algorithm == "" || cfg.Speculative.DraftModelPath == "" {
 			return "SpeculativeMissingConfig",
 				"spec.sglangConfig.speculative.enabled is true but algorithm/draftModelPath is empty; speculative decoding flags will be skipped"
+		}
+	}
+	if cfg.Speculative != nil && (cfg.Speculative.Enabled == nil || !*cfg.Speculative.Enabled) {
+		if cfg.Speculative.AcceptThresholdSingle != nil || cfg.Speculative.AcceptThresholdAcc != nil {
+			return "SpeculativeAcceptThresholdUnused",
+				"spec.sglangConfig.speculative.acceptThreshold* requires speculative.enabled=true; thresholds will be ignored"
 		}
 	}
 	return "", ""
