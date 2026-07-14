@@ -387,7 +387,11 @@ func main() {
 			setupLog.Error(err, "unable to create webhook", "webhook", "Model")
 			os.Exit(1)
 		}
-		setupLog.Info("webhooks enabled", "webhooks", "ModelRouter,Model", "certDir", webhookCertPath)
+		if err := controller.SetupInferenceServiceQuotaWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "InferenceServiceQuota")
+			os.Exit(1)
+		}
+		setupLog.Info("webhooks enabled", "webhooks", "ModelRouter,Model,InferenceServiceQuota", "certDir", webhookCertPath)
 	} else if webhookCertPath != "" {
 		setupLog.Info("webhook cert path set but no serving cert found; skipping ModelRouter webhook",
 			"certDir", webhookCertPath)

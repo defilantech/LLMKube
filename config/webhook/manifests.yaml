@@ -36,6 +36,26 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
+      path: /validate-inference-llmkube-dev-v1alpha1-inferenceservice-quota
+  failurePolicy: Fail
+  name: vinferenceservicequota.inference.llmkube.dev
+  rules:
+  - apiGroups:
+    - inference.llmkube.dev
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - inferenceservices
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
       path: /validate-inference-llmkube-dev-v1alpha1-modelrouter
   failurePolicy: Fail
   name: vmodelrouter.inference.llmkube.dev
