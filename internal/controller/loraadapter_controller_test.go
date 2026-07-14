@@ -28,15 +28,48 @@ import (
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 )
+
+// callDefaultResolver invokes the production
+// defaultLoRAAdapterURLResolver with a fake client populated by the
+// supplied objects plus a default InferenceService-shaped Service
+// (port 8080, targetPort 8080) — matching service_builder.go's
+// behavior when neither spec.endpoint.port nor spec.containerPort is
+// set. Tests that want a non-default Service port should use the
+// real three-argument signature directly (see
+// TestDefaultLoRAAdapterURLResolver_UsesServicePort).
+func callDefaultResolver(t *testing.T, isvc *inferencev1alpha1.InferenceService, objs ...client.Object) (string, error) {
+	t.Helper()
+	if isvc == nil {
+		// Helper is a convenience for the happy-path Service lookup;
+		// the nil ISVC and resolver-error cases call the production
+		// function directly without going through here.
+		cl := fake.NewClientBuilder().WithScheme(newLoRARecnScheme(t)).Build()
+		return defaultLoRAAdapterURLResolver(context.Background(), cl, nil)
+	}
+	svcName := sanitizeDNSName(isvc.Name)
+	defaultSvc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: svcName, Namespace: isvc.Namespace},
+		Spec: corev1.ServiceSpec{
+			Ports: []corev1.ServicePort{{
+				Name: "http", Port: 8080, TargetPort: intstr.FromInt32(8080), Protocol: corev1.ProtocolTCP,
+			}},
+		},
+	}
+	all := append(objs, defaultSvc)
+	cl := fake.NewClientBuilder().WithScheme(newLoRARecnScheme(t)).WithObjects(all...).Build()
+	return defaultLoRAAdapterURLResolver(context.Background(), cl, isvc)
+}
 
 // fakeAdapterClient captures the requests SGLang's adapter HTTP API
 // would have received and lets the test answer back with a chosen
@@ -146,13 +179,18 @@ func newRecordingSGLang(t *testing.T, statuses sglangStatuses) *recordingSGLang 
 	return r
 }
 
-// newLoRARecnScheme builds a runtime.Scheme with only the types the
-// LoRAAdapter reconciler touches. Mirrors builderTestScheme.
+// newLoRARecnScheme builds a runtime.Scheme with the types the
+// LoRAAdapter reconciler touches (InferenceService, LoRAAdapter) plus
+// corev1.Service so the defaultLoRAAdapterURLResolver can look the
+// cluster-local Service up at reconcile time. Mirrors builderTestScheme.
 func newLoRARecnScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	s := runtime.NewScheme()
 	if err := inferencev1alpha1.AddToScheme(s); err != nil {
 		t.Fatalf("add v1alpha1: %v", err)
+	}
+	if err := corev1.AddToScheme(s); err != nil {
+		t.Fatalf("add corev1: %v", err)
 	}
 	return s
 }
@@ -200,7 +238,7 @@ func TestLoRAAdapterController_LoadsAgainstSGLang(t *testing.T) {
 		Client:        cl,
 		Scheme:        scheme,
 		AdapterClient: NewSGLangAdapterClient(sg.Client()),
-		URLResolver: func(_ context.Context, _ *inferencev1alpha1.InferenceService) (string, error) {
+		URLResolver: func(_ context.Context, _ client.Client, _ *inferencev1alpha1.InferenceService) (string, error) {
 			return fixedURL, nil
 		},
 		Now: func() time.Time { return time.Unix(1700000000, 0).UTC() },
@@ -272,7 +310,7 @@ func TestLoRAAdapterController_RuntimeMismatch(t *testing.T) {
 		Client:        cl,
 		Scheme:        scheme,
 		AdapterClient: fakec,
-		URLResolver: func(_ context.Context, _ *inferencev1alpha1.InferenceService) (string, error) {
+		URLResolver: func(_ context.Context, _ client.Client, _ *inferencev1alpha1.InferenceService) (string, error) {
 			return sg.URL, nil
 		},
 		Now: func() time.Time { return time.Unix(1700000000, 0).UTC() },
@@ -433,8 +471,10 @@ func TestLoRAAdapterController_LoadFailure(t *testing.T) {
 		Client:        cl,
 		Scheme:        scheme,
 		AdapterClient: NewSGLangAdapterClient(sg.Client()),
-		URLResolver:   func(_ context.Context, _ *inferencev1alpha1.InferenceService) (string, error) { return sg.URL, nil },
-		Now:           func() time.Time { return time.Unix(1700000000, 0).UTC() },
+		URLResolver: func(_ context.Context, _ client.Client, _ *inferencev1alpha1.InferenceService) (string, error) {
+			return sg.URL, nil
+		},
+		Now: func() time.Time { return time.Unix(1700000000, 0).UTC() },
 	}
 
 	res, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: adapter.Name, Namespace: adapter.Namespace}})
@@ -495,8 +535,10 @@ func TestLoRAAdapterController_DeleteUnloads(t *testing.T) {
 		Client:        cl,
 		Scheme:        scheme,
 		AdapterClient: NewSGLangAdapterClient(sg.Client()),
-		URLResolver:   func(_ context.Context, _ *inferencev1alpha1.InferenceService) (string, error) { return fixedURL, nil },
-		Now:           func() time.Time { return time.Unix(1700000000, 0).UTC() },
+		URLResolver: func(_ context.Context, _ client.Client, _ *inferencev1alpha1.InferenceService) (string, error) {
+			return fixedURL, nil
+		},
+		Now: func() time.Time { return time.Unix(1700000000, 0).UTC() },
 	}
 
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: adapter.Name, Namespace: adapter.Namespace}}); err != nil {
@@ -556,7 +598,9 @@ func TestLoRAAdapterController_SkipsLoadWhenAlreadyLoaded(t *testing.T) {
 		Client:        cl,
 		Scheme:        scheme,
 		AdapterClient: fakec,
-		URLResolver:   func(_ context.Context, _ *inferencev1alpha1.InferenceService) (string, error) { return sg.URL, nil },
+		URLResolver: func(_ context.Context, _ client.Client, _ *inferencev1alpha1.InferenceService) (string, error) {
+			return sg.URL, nil
+		},
 		Now: func() time.Time {
 			// Same instant as LastLoadedAt — safely within the window.
 			return now.Time
@@ -609,8 +653,10 @@ func TestLoRAAdapterController_ReloadsWhenPathChanged(t *testing.T) {
 		Client:        cl,
 		Scheme:        scheme,
 		AdapterClient: NewSGLangAdapterClient(sg.Client()),
-		URLResolver:   func(_ context.Context, _ *inferencev1alpha1.InferenceService) (string, error) { return sg.URL, nil },
-		Now:           func() time.Time { return now.Time },
+		URLResolver: func(_ context.Context, _ client.Client, _ *inferencev1alpha1.InferenceService) (string, error) {
+			return sg.URL, nil
+		},
+		Now: func() time.Time { return now.Time },
 	}
 
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: adapter.Name, Namespace: adapter.Namespace}}); err != nil {
@@ -743,34 +789,46 @@ func TestSGLangAdapterClient_JSONContentType(t *testing.T) {
 	}
 }
 
-// TestDefaultLoRAAdapterURLResolver_PicksSpecPort verifies the URL
-// resolver walks the precedence order correctly: Endpoint.Port >
-// ContainerPort > runtime default.
-func TestDefaultLoRAAdapterURLResolver_PicksSpecPort(t *testing.T) {
-	port := int32(31000)
+// TestDefaultLoRAAdapterURLResolver_UsesServicePort overrides the
+// default Service injected by callDefaultResolver to assert the
+// resolver honors a non-default Service port. Mirrors the
+// TestDefaultLoRAAdapterURLResolver_UsesServicePort case below; this
+// variant exists so the older "spec-port precedence" intent
+// (Endpoint.Port > ContainerPort) has a parallel case under the new
+// design where the source of truth is the live Service.
+func TestDefaultLoRAAdapterURLResolver_PicksServicePort(t *testing.T) {
+	cases := []struct {
+		name    string
+		svcPort int32
+		want    string
+	}{
+		{"Service port 30000 wins", 30000, "http://svc.ns.svc:30000"},
+		{"Service port 8080 (llama.cpp default)", 8080, "http://svc.ns.svc:8080"},
+		{"Service port 32000 (operator override)", 32000, "http://svc.ns.svc:32000"},
+	}
 	isvc := &inferencev1alpha1.InferenceService{
 		ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "ns"},
-		Spec: inferencev1alpha1.InferenceServiceSpec{
-			Runtime:       RuntimeSGLANG,
-			ContainerPort: &port,
-		},
+		Spec:       inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeSGLANG},
 	}
-	got, err := defaultLoRAAdapterURLResolver(context.Background(), isvc)
-	if err != nil {
-		t.Fatalf("resolver: %v", err)
-	}
-	if got != "http://svc.ns.svc:31000" {
-		t.Errorf("resolver = %q, want http://svc.ns.svc:31000", got)
-	}
-
-	port2 := int32(32000)
-	isvc.Spec.Endpoint = &inferencev1alpha1.EndpointSpec{Port: port2}
-	got, err = defaultLoRAAdapterURLResolver(context.Background(), isvc)
-	if err != nil {
-		t.Fatalf("resolver: %v", err)
-	}
-	if got != "http://svc.ns.svc:32000" {
-		t.Errorf("resolver with Endpoint.Port = %q, want http://svc.ns.svc:32000", got)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "ns"},
+				Spec: corev1.ServiceSpec{
+					Ports: []corev1.ServicePort{{
+						Name: "http", Port: tc.svcPort, TargetPort: intstr.FromInt32(tc.svcPort), Protocol: corev1.ProtocolTCP,
+					}},
+				},
+			}
+			cl := fake.NewClientBuilder().WithScheme(newLoRARecnScheme(t)).WithObjects(isvc, svc).Build()
+			got, err := defaultLoRAAdapterURLResolver(context.Background(), cl, isvc)
+			if err != nil {
+				t.Fatalf("resolver: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("resolver = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -834,7 +892,7 @@ func TestLoRAAdapterController_URLResolverError(t *testing.T) {
 		Client:        cl,
 		Scheme:        scheme,
 		AdapterClient: fakec,
-		URLResolver: func(_ context.Context, _ *inferencev1alpha1.InferenceService) (string, error) {
+		URLResolver: func(_ context.Context, _ client.Client, _ *inferencev1alpha1.InferenceService) (string, error) {
 			return "", errors.New("synthetic resolver boom")
 		},
 		Now: func() time.Time { return time.Unix(1700000000, 0).UTC() },
@@ -899,8 +957,10 @@ func TestLoRAAdapterController_DeleteUnloadError(t *testing.T) {
 		Client:        cl,
 		Scheme:        scheme,
 		AdapterClient: NewSGLangAdapterClient(sg.Client()),
-		URLResolver:   func(_ context.Context, _ *inferencev1alpha1.InferenceService) (string, error) { return sg.URL, nil },
-		Now:           func() time.Time { return time.Unix(1700000000, 0).UTC() },
+		URLResolver: func(_ context.Context, _ client.Client, _ *inferencev1alpha1.InferenceService) (string, error) {
+			return sg.URL, nil
+		},
+		Now: func() time.Time { return time.Unix(1700000000, 0).UTC() },
 	}
 
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: adapter.Name, Namespace: adapter.Namespace}}); err != nil {
@@ -952,7 +1012,7 @@ func TestLoRAAdapterController_DeleteURLResolverError(t *testing.T) {
 		Client:        cl,
 		Scheme:        scheme,
 		AdapterClient: fakec,
-		URLResolver: func(_ context.Context, _ *inferencev1alpha1.InferenceService) (string, error) {
+		URLResolver: func(_ context.Context, _ client.Client, _ *inferencev1alpha1.InferenceService) (string, error) {
 			return "", errors.New("synthetic resolver boom")
 		},
 		Now: func() time.Time { return time.Unix(1700000000, 0).UTC() },
@@ -971,38 +1031,67 @@ func TestLoRAAdapterController_DeleteURLResolverError(t *testing.T) {
 }
 
 // TestDefaultLoRAAdapterURLResolver_ErrorPaths covers the failure
-// branches of the production resolver: nil ISVC and "no port + non-sglang".
+// branches of the production resolver: nil ISVC, Service not found,
+// Service with no ports, and zero-port Service.
 func TestDefaultLoRAAdapterURLResolver_ErrorPaths(t *testing.T) {
-	if _, err := defaultLoRAAdapterURLResolver(context.Background(), nil); err == nil {
-		t.Error("expected error for nil ISVC")
-	}
-	isvc := &inferencev1alpha1.InferenceService{
-		ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "ns"},
-		Spec:       inferencev1alpha1.InferenceServiceSpec{Runtime: "vllm"},
-	}
-	if _, err := defaultLoRAAdapterURLResolver(context.Background(), isvc); err == nil {
-		t.Error("expected error for non-sglang with no port")
-	}
-	// sglang without explicit port succeeds (30000 default).
-	isvc.Spec.Runtime = RuntimeSGLANG
-	got, err := defaultLoRAAdapterURLResolver(context.Background(), isvc)
-	if err != nil {
-		t.Fatalf("resolver (sglang default): %v", err)
-	}
-	if got != "http://svc.ns.svc:30000" {
-		t.Errorf("resolver = %q, want http://svc.ns.svc:30000", got)
-	}
-	// Endpoint with Port == 0 should fall through to ContainerPort.
-	zero := int32(0)
-	isvc.Spec.Endpoint = &inferencev1alpha1.EndpointSpec{Port: zero}
-	isvc.Spec.ContainerPort = ptrInt32(31001)
-	got, err = defaultLoRAAdapterURLResolver(context.Background(), isvc)
-	if err != nil {
-		t.Fatalf("resolver (zero Endpoint port): %v", err)
-	}
-	if got != "http://svc.ns.svc:31001" {
-		t.Errorf("resolver = %q, want http://svc.ns.svc:31001", got)
-	}
+	t.Run("nil ISVC returns error", func(t *testing.T) {
+		cl := fake.NewClientBuilder().WithScheme(newLoRARecnScheme(t)).Build()
+		if _, err := defaultLoRAAdapterURLResolver(context.Background(), cl, nil); err == nil {
+			t.Error("expected error for nil ISVC")
+		}
+	})
+
+	t.Run("Service not found returns error", func(t *testing.T) {
+		isvc := &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: "missing", Namespace: "ns"},
+			Spec:       inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeSGLANG},
+		}
+		cl := fake.NewClientBuilder().WithScheme(newLoRARecnScheme(t)).WithObjects(isvc).Build()
+		_, err := defaultLoRAAdapterURLResolver(context.Background(), cl, isvc)
+		if err == nil {
+			t.Fatal("expected NotFound-style error when Service is absent")
+		}
+		if !strings.Contains(err.Error(), "not found") {
+			t.Errorf("error %q does not mention not-found", err.Error())
+		}
+	})
+
+	t.Run("Service with no ports returns error", func(t *testing.T) {
+		isvc := &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "ns"},
+			Spec:       inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeSGLANG},
+		}
+		emptySvc := &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "ns"},
+		}
+		cl := fake.NewClientBuilder().WithScheme(newLoRARecnScheme(t)).WithObjects(isvc, emptySvc).Build()
+		_, err := defaultLoRAAdapterURLResolver(context.Background(), cl, isvc)
+		if err == nil {
+			t.Fatal("expected error when Service has no ports")
+		}
+		if !strings.Contains(err.Error(), "no ports") {
+			t.Errorf("error %q does not mention 'no ports'", err.Error())
+		}
+	})
+
+	// callDefaultResolver falls through: with no Service override it
+	// resolves to the default Service port 8080 — the same default
+	// service_builder.go uses when neither spec.endpoint.port nor
+	// spec.containerPort is set. This is the implicit "trust the
+	// service default" contract the new resolver now enforces.
+	t.Run("default Service port (8080) when nothing is overridden", func(t *testing.T) {
+		isvc := &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "ns"},
+			Spec:       inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeSGLANG},
+		}
+		got, err := callDefaultResolver(t, isvc)
+		if err != nil {
+			t.Fatalf("resolver: %v", err)
+		}
+		if got != "http://svc.ns.svc:8080" {
+			t.Errorf("resolver = %q, want http://svc.ns.svc:8080 (default service port)", got)
+		}
+	})
 }
 
 // TestDefaultLoRAAdapterURLResolver_SanitizesDNSName asserts the
@@ -1011,30 +1100,39 @@ func TestDefaultLoRAAdapterURLResolver_ErrorPaths(t *testing.T) {
 // Service. An ISVC named "llama-3.1-8b" creates a Service named
 // "llama-3-1-8b" — the resolver must point at that, not at the raw name.
 func TestDefaultLoRAAdapterURLResolver_SanitizesDNSName(t *testing.T) {
-	isvc := &inferencev1alpha1.InferenceService{
-		ObjectMeta: metav1.ObjectMeta{Name: "llama-3.1-8b", Namespace: "default"},
-		Spec: inferencev1alpha1.InferenceServiceSpec{
-			Runtime:  RuntimeSGLANG,
-			Endpoint: &inferencev1alpha1.EndpointSpec{Port: 30000},
-		},
+	cases := []struct {
+		name     string
+		isvcName string
+		svcPort  int32
+		want     string
+	}{
+		{"dots become dashes", "llama-3.1-8b", 30000, "http://llama-3-1-8b.default.svc:30000"},
+		{"plain name unchanged", "llama3-8b", 8080, "http://llama3-8b.default.svc:8080"},
 	}
-	got, err := defaultLoRAAdapterURLResolver(context.Background(), isvc)
-	if err != nil {
-		t.Fatalf("resolver: %v", err)
-	}
-	want := "http://llama-3-1-8b.default.svc:30000"
-	if got != want {
-		t.Errorf("resolver = %q, want %q (must use sanitizeDNSName, dots -> dashes)", got, want)
-	}
-
-	// Plain alphanumeric names (no dots) should be unchanged.
-	isvc.Name = "llama3-8b"
-	got, err = defaultLoRAAdapterURLResolver(context.Background(), isvc)
-	if err != nil {
-		t.Fatalf("resolver: %v", err)
-	}
-	if got != "http://llama3-8b.default.svc:30000" {
-		t.Errorf("resolver = %q, want no sanitization for plain name", got)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{Name: tc.isvcName, Namespace: "default"},
+				Spec:       inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeSGLANG},
+			}
+			svcName := sanitizeDNSName(tc.isvcName)
+			svc := &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{Name: svcName, Namespace: "default"},
+				Spec: corev1.ServiceSpec{
+					Ports: []corev1.ServicePort{{
+						Name: "http", Port: tc.svcPort, TargetPort: intstr.FromInt32(tc.svcPort), Protocol: corev1.ProtocolTCP,
+					}},
+				},
+			}
+			cl := fake.NewClientBuilder().WithScheme(newLoRARecnScheme(t)).WithObjects(isvc, svc).Build()
+			got, err := defaultLoRAAdapterURLResolver(context.Background(), cl, isvc)
+			if err != nil {
+				t.Fatalf("resolver: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("resolver = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -1097,4 +1195,85 @@ func TestSGLangAdapterClient_BadURLError(t *testing.T) {
 	if !strings.Contains(err.Error(), "build request") {
 		t.Errorf("error %q does not mention request build", err.Error())
 	}
+}
+
+// TestDefaultLoRAAdapterURLResolver_UsesServicePort is the regression
+// test for the #1060 review followup: the URL resolver must use the
+// port the cluster-local Service actually exposes, not the runtime's
+// DefaultPort (30000 for SGLang). The InferenceService controller's
+// service_builder.go defaults Service.port to 8080 (with TargetPort
+// matching), so a resolver that returns :30000 sends load/unload
+// requests to a port the Service isn't listening on. The fix is to
+// Get the Service and use Spec.Ports[0].Port — same shape every other
+// runtime in this repo expects via drain_before_rollout.go.
+func TestDefaultLoRAAdapterURLResolver_UsesServicePort(t *testing.T) {
+	const svcName = "isvc-sglang"
+	cases := []struct {
+		name       string
+		port       int32
+		portName   string
+		targetPort intstr.IntOrString
+		want       string
+	}{
+		{
+			name:       "operator set endpoint.port=30000 -> service port 30000",
+			port:       30000,
+			portName:   "http",
+			targetPort: intstr.FromInt32(30000),
+			want:       "http://isvc-sglang.default.svc:30000",
+		},
+		{
+			name:       "default service port 8080 when nothing set",
+			port:       8080,
+			portName:   "http",
+			targetPort: intstr.FromInt32(8080),
+			want:       "http://isvc-sglang.default.svc:8080",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{Name: svcName, Namespace: "default"},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					Runtime: RuntimeSGLANG,
+				},
+			}
+			svc := &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{Name: "isvc-sglang", Namespace: "default"},
+				Spec: corev1.ServiceSpec{
+					Ports: []corev1.ServicePort{
+						{
+							Name:       tc.portName,
+							Port:       tc.port,
+							TargetPort: tc.targetPort,
+							Protocol:   corev1.ProtocolTCP,
+						},
+					},
+				},
+			}
+			cl := fake.NewClientBuilder().WithScheme(newLoRARecnScheme(t)).WithObjects(isvc, svc).Build()
+			got, err := defaultLoRAAdapterURLResolver(context.Background(), cl, isvc)
+			if err != nil {
+				t.Fatalf("resolver: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("resolver = %q, want %q", got, tc.want)
+			}
+		})
+	}
+
+	// The resolver must surface a clear error when the Service does not
+	// exist yet (operator ordering) so the reconciler requeues rather
+	// than guessing a port.
+	t.Run("Service not found returns error", func(t *testing.T) {
+		isvc := &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: "isvc-sglang", Namespace: "default"},
+			Spec:       inferencev1alpha1.InferenceServiceSpec{Runtime: RuntimeSGLANG},
+		}
+		cl := fake.NewClientBuilder().WithScheme(newLoRARecnScheme(t)).WithObjects(isvc).Build()
+		_, err := defaultLoRAAdapterURLResolver(context.Background(), cl, isvc)
+		if err == nil {
+			t.Fatal("expected error when Service does not exist")
+		}
+	})
 }

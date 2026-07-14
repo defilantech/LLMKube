@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -139,9 +140,11 @@ func (c *sglangAdapterClient) postJSON(ctx context.Context, url string, body map
 //
 //	http://<isvc-name>.<isvc-namespace>.svc:<port>
 //
-// where <port> is Spec.Endpoint.Port, then Spec.ContainerPort, then the
-// runtime's DefaultPort. Tests override this to point at httptest.URL.
-type LoRAAdapterURLResolver func(ctx context.Context, isvc *inferencev1alpha1.InferenceService) (string, error)
+// where <port> comes from the actual Service's Spec.Ports[0].Port. The
+// reconciler passes its client so the resolver can look the Service up
+// at reconcile time. Tests override this with a closure that returns
+// httptest.URL directly.
+type LoRAAdapterURLResolver func(ctx context.Context, c client.Client, isvc *inferencev1alpha1.InferenceService) (string, error)
 
 // defaultLoRAAdapterURLResolver is the production resolver. It mirrors
 // how the InferenceService controller builds its cluster-local Service
@@ -149,21 +152,36 @@ type LoRAAdapterURLResolver func(ctx context.Context, isvc *inferencev1alpha1.In
 // endpoint). Service names are sanitized via the shared sanitizeDNSName
 // helper — dots become dashes, otherwise an ISVC named "llama-3.1-8b"
 // would resolve to a host that does not exist (#1060 review).
-func defaultLoRAAdapterURLResolver(_ context.Context, isvc *inferencev1alpha1.InferenceService) (string, error) {
+//
+// Port resolution: look up the Service the InferenceService
+// controller creates and use its Spec.Ports[0].Port. Falling back to a
+// hardcoded runtime DefaultPort here would silently target a port the
+// Service doesn't expose (service_builder.go defaults to 8080 for every
+// runtime unless spec.endpoint.port is set), so load/unload would fail
+// for SGLang when the operator hasn't set endpoint.port. The Service
+// lookup is the only source of truth — when the Service doesn't exist
+// yet (operator ordering), the reconciler gets a clear error and
+// requeues (#1060 review followup).
+func defaultLoRAAdapterURLResolver(ctx context.Context, c client.Client, isvc *inferencev1alpha1.InferenceService) (string, error) {
 	if isvc == nil {
 		return "", errors.New("nil InferenceService")
 	}
 	svcName := sanitizeDNSName(isvc.Name)
-	if isvc.Spec.Endpoint != nil && isvc.Spec.Endpoint.Port > 0 {
-		return fmt.Sprintf("http://%s.%s.svc:%d", svcName, isvc.Namespace, isvc.Spec.Endpoint.Port), nil
+	svc := &corev1.Service{}
+	if err := c.Get(ctx, types.NamespacedName{Name: svcName, Namespace: isvc.Namespace}, svc); err != nil {
+		if apierrors.IsNotFound(err) {
+			return "", fmt.Errorf("service %s/%s not found yet (operator ordering); will retry: %w", isvc.Namespace, svcName, err)
+		}
+		return "", fmt.Errorf("get service %s/%s: %w", isvc.Namespace, svcName, err)
 	}
-	if isvc.Spec.ContainerPort != nil {
-		return fmt.Sprintf("http://%s.%s.svc:%d", svcName, isvc.Namespace, *isvc.Spec.ContainerPort), nil
+	if len(svc.Spec.Ports) == 0 {
+		return "", fmt.Errorf("service %s/%s has no ports exposed", isvc.Namespace, svcName)
 	}
-	if isvc.Spec.Runtime == RuntimeSGLANG {
-		return fmt.Sprintf("http://%s.%s.svc:%d", svcName, isvc.Namespace, 30000), nil
+	port := svc.Spec.Ports[0].Port
+	if port <= 0 {
+		return "", fmt.Errorf("service %s/%s port %d is not a valid positive integer", isvc.Namespace, svcName, port)
 	}
-	return "", fmt.Errorf("cannot resolve port for %s/%s runtime=%q", isvc.Namespace, isvc.Name, isvc.Spec.Runtime)
+	return fmt.Sprintf("http://%s.%s.svc:%d", svcName, isvc.Namespace, port), nil
 }
 
 // LoRAAdapterReconciler reconciles LoRAAdapter resources by issuing
@@ -281,7 +299,7 @@ func (r *LoRAAdapterReconciler) reconcileLoad(ctx context.Context, logc ctrlLog,
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, r.Status().Update(ctx, adapter)
 	}
 
-	baseURL, err := r.URLResolver(ctx, isvc)
+	baseURL, err := r.URLResolver(ctx, r.Client, isvc)
 	if err != nil {
 		r.setCondition(adapter, LoRAConditionAvailable, metav1.ConditionTrue,
 			LoRAReasonReconcilerError, "spec is well-formed but port resolution failed")
@@ -350,7 +368,7 @@ func (r *LoRAAdapterReconciler) reconcileDelete(ctx context.Context, logc ctrlLo
 	}
 
 	if isvc.Spec.Runtime == RuntimeSGLANG && isvc.Status.Endpoint != "" {
-		baseURL, err := r.URLResolver(ctx, isvc)
+		baseURL, err := r.URLResolver(ctx, r.Client, isvc)
 		if err == nil {
 			if unloadErr := r.AdapterClient.UnloadAdapter(ctx, baseURL, adapter.Spec.Name); unloadErr != nil {
 				// best-effort: log and drop the finalizer anyway.

@@ -133,7 +133,6 @@ func (b *SGLangBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, mode
 		args = sglangAppendLoraModulesUnified(args, cfg.LoraAdapters, cfg.LoraModules)
 		args = sglangAppendMaxLoraRank(args, cfg.MaxLoraRank)
 		args = sglangAppendLoraTargetModules(args, cfg.LoraTargetModules)
-		args = sglangAppendModel(args, cfg.Model)
 		args = sglangAppendLogLevel(args, cfg.LogLevel)
 		args = sglangAppendTrustRemoteCode(args, cfg.TrustRemoteCode)
 		args = sglangAppendSkipTokenizerInit(args, cfg.SkipTokenizerInit)

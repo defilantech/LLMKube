@@ -4788,8 +4788,10 @@ spec:
                       https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/server_args.py).
                     items:
                       description: |-
-                        SGLangLoRAAdapter names a single LoRA adapter for SGLang's --lora-modules
-                        flag. Name is the SGLang-side adapter handle; Path is the file mount where
+                        SGLangLoRAAdapter names a single LoRA adapter for SGLang's --lora-paths
+                        flag (NOT vLLM's --lora-modules — see
+                        https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/server_args.py).
+                        Name is the SGLang-side adapter handle; Path is the file mount where
                         adapter weights live (typically backed by a PVC created via
                         LoRAAdapter resources). Prefer this typed shape over the legacy
                         LoraModules []string; both are merged with the typed form winning on name
@@ -4853,13 +4855,6 @@ spec:
                     maximum: 0.99
                     minimum: 0.1
                     type: number
-                  model:
-                    description: |-
-                      Model overrides the model name served from --model-path. Useful when
-                      --model-path points at a directory containing multiple weights files
-                      and the operator wants a specific model identifier exposed via the
-                      OpenAI-compatible API. Maps to SGLang --model flag.
-                    type: string
                   quantization:
                     description: |-
                       Quantization & KV cache

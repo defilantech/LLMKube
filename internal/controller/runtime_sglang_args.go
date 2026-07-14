@@ -273,13 +273,14 @@ func sglangAppendLoraModulesUnified(args []string, adapters []inferencev1alpha1.
 	// SGLang v0.5.15 calls this flag `--lora-paths`, not vLLM's
 	// `--lora-modules`. Naming drift was the load-bearing bug caught
 	// in #1060 review; see server_args.py:lora_paths.
-	return append(args, "--lora-paths", strings.Join(pairs, ","))
-}
-
-func sglangAppendModel(args []string, model string) []string {
-	if model != "" {
-		return append(args, "--model", model)
-	}
+	//
+	// Each adapter must be its own argv entry: server_args.py declares
+	// lora_paths with `nargs="*"`, and LoRAPathAction splits each argv
+	// element on a single `=`. Comma-joining multiple pairs into one
+	// arg produces a single adapter whose path contains literal commas
+	// (#1060 review followup). Verified against v0.5.15 source.
+	args = append(args, "--lora-paths")
+	args = append(args, pairs...)
 	return args
 }
 
@@ -314,10 +315,15 @@ func sglangAppendMaxLoraRank(args []string, rank *int32) []string {
 }
 
 // SGLang's --lora-target-modules accepts a comma-separated list of module
-// names. Join the CRD slice into a single string with commas.
+// names. Each module is a separate argv entry because server_args.py
+// declares lora_target_modules with nargs="*" (List[str]). Comma-
+// joining would parse as a single module name containing commas,
+// mirroring the same SGLang --lora-paths trap (#1060 review followup).
 func sglangAppendLoraTargetModules(args []string, modules []string) []string {
 	if len(modules) == 0 {
 		return args
 	}
-	return append(args, "--lora-target-modules", strings.Join(modules, ","))
+	args = append(args, "--lora-target-modules")
+	args = append(args, modules...)
+	return args
 }

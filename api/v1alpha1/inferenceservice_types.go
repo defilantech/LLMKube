@@ -1221,13 +1221,6 @@ type SGLangConfig struct {
 	// +optional
 	LoraAdapters []SGLangLoRAAdapter `json:"loraAdapters,omitempty"`
 
-	// Model overrides the model name served from --model-path. Useful when
-	// --model-path points at a directory containing multiple weights files
-	// and the operator wants a specific model identifier exposed via the
-	// OpenAI-compatible API. Maps to SGLang --model flag.
-	// +optional
-	Model string `json:"model,omitempty"`
-
 	// LogLevel sets the SGLang server log level. SGLang accepts
 	// "debug"/"info"/"warning"/"error". Maps to SGLang --log-level flag.
 	// +kubebuilder:validation:Enum=debug;info;warning;error
@@ -1252,8 +1245,10 @@ type SGLangConfig struct {
 	HFTokenSecretRef *corev1.SecretKeySelector `json:"hfTokenSecretRef,omitempty"`
 }
 
-// SGLangLoRAAdapter names a single LoRA adapter for SGLang's --lora-modules
-// flag. Name is the SGLang-side adapter handle; Path is the file mount where
+// SGLangLoRAAdapter names a single LoRA adapter for SGLang's --lora-paths
+// flag (NOT vLLM's --lora-modules — see
+// https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/server_args.py).
+// Name is the SGLang-side adapter handle; Path is the file mount where
 // adapter weights live (typically backed by a PVC created via
 // LoRAAdapter resources). Prefer this typed shape over the legacy
 // LoraModules []string; both are merged with the typed form winning on name

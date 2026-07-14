@@ -39,7 +39,7 @@ var sglangFlagsNeverInBase = []string{
 	// SGLang v0.5.15 calls the flag `--lora-paths`, NOT vLLM's
 	// `--lora-modules` — see https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/server_args.py
 	"--lora-paths", "--max-lora-rank", "--lora-target-modules",
-	"--model", "--log-level",
+	"--log-level",
 	"--trust-remote-code", "--skip-tokenizer-init",
 	"--is-embedding",
 }
@@ -161,6 +161,7 @@ func TestSGLangBuildArgs(t *testing.T) {
 
 	cases := []struct {
 		contains    []FlagCheck
+		containsAll []string // every entry must appear in args (order-insensitive); used for nargs="*" forms like --lora-paths
 		notContains []string
 		model       *inferencev1alpha1.Model
 		name        string
@@ -443,25 +444,27 @@ func TestSGLangBuildArgs(t *testing.T) {
 		},
 		{
 			model: &inferencev1alpha1.Model{ObjectMeta: metav1.ObjectMeta{Name: "m"}},
-			name:  "loraModules JSON-form emits --lora-paths name=path",
+			name:  "loraModules JSON-form emits --lora-paths name=path as separate argv entry",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime: "sglang",
 				SGLangConfig: &inferencev1alpha1.SGLangConfig{
 					LoraModules: []string{`{"name":"loraA","path":"/loras/a"}`},
 				},
 			},
-			contains: []FlagCheck{{"--lora-paths", "loraA=/loras/a"}},
+			contains:    []FlagCheck{{"--lora-paths", ""}},
+			containsAll: []string{"--lora-paths", "loraA=/loras/a"},
 		},
 		{
 			model: &inferencev1alpha1.Model{ObjectMeta: metav1.ObjectMeta{Name: "m"}},
-			name:  "loraModules name=path shorthand is preserved",
+			name:  "loraModules name=path shorthand is preserved as separate argv entries",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime: "sglang",
 				SGLangConfig: &inferencev1alpha1.SGLangConfig{
 					LoraModules: []string{"loraA=/loras/a", "loraB=/loras/b"},
 				},
 			},
-			contains: []FlagCheck{{"--lora-paths", "loraA=/loras/a,loraB=/loras/b"}},
+			contains:    []FlagCheck{{"--lora-paths", ""}},
+			containsAll: []string{"--lora-paths", "loraA=/loras/a", "loraB=/loras/b"},
 		},
 		{
 			model: &inferencev1alpha1.Model{ObjectMeta: metav1.ObjectMeta{Name: "m"}},
@@ -481,19 +484,16 @@ func TestSGLangBuildArgs(t *testing.T) {
 					LoraTargetModules: []string{"q_proj", "k_proj"},
 				},
 			},
-			contains: []FlagCheck{{"--lora-target-modules", "q_proj,k_proj"}},
+			contains:    []FlagCheck{{"--lora-target-modules", ""}},
+			containsAll: []string{"--lora-target-modules", "q_proj", "k_proj"},
 		},
-		{
-			model: &inferencev1alpha1.Model{ObjectMeta: metav1.ObjectMeta{Name: "m"}},
-			name:  "model override emits --model",
-			spec: &inferencev1alpha1.InferenceServiceSpec{
-				Runtime: "sglang",
-				SGLangConfig: &inferencev1alpha1.SGLangConfig{
-					Model: "openai/gpt-oss-120b",
-				},
-			},
-			contains: []FlagCheck{{"--model", "openai/gpt-oss-120b"}},
-		},
+		// Note: the previous "model override emits --model" case was
+		// removed in 0bab701 — SGLang v0.5.15 declares `model_path`
+		// with `aliases=["--model"]`, so a separately emitted `--model`
+		// after `--model-path` overwrites the real weights path. The
+		// `--served-model-name` flag (auto-emitted above from
+		// modelRef/model.Name) is the supported way to override the
+		// friendly name exposed via the OpenAI-compatible API.
 		{
 			model: &inferencev1alpha1.Model{ObjectMeta: metav1.ObjectMeta{Name: "m"}},
 			name:  "log-level emits --log-level",
@@ -551,7 +551,7 @@ func TestSGLangBuildArgs(t *testing.T) {
 		},
 		{
 			model: &inferencev1alpha1.Model{ObjectMeta: metav1.ObjectMeta{Name: "m"}},
-			name:  "typed loraAdapters emits --lora-paths name=path pairs",
+			name:  "typed loraAdapters emits --lora-paths name=path as separate argv entries",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime: "sglang",
 				SGLangConfig: &inferencev1alpha1.SGLangConfig{
@@ -561,7 +561,8 @@ func TestSGLangBuildArgs(t *testing.T) {
 					},
 				},
 			},
-			contains: []FlagCheck{{"--lora-paths", "loraA=/loras/a,loraB=/loras/b"}},
+			contains:    []FlagCheck{{"--lora-paths", ""}},
+			containsAll: []string{"--lora-paths", "loraA=/loras/a", "loraB=/loras/b"},
 		},
 		{
 			model: &inferencev1alpha1.Model{ObjectMeta: metav1.ObjectMeta{Name: "m"}},
@@ -579,7 +580,12 @@ func TestSGLangBuildArgs(t *testing.T) {
 				},
 			},
 			contains: []FlagCheck{
-				{"--lora-paths", "loraA=/loras/typed-a,loraB=/loras/legacy-b"},
+				{"--lora-paths", ""},
+			},
+			containsAll: []string{
+				"--lora-paths",
+				"loraA=/loras/typed-a",
+				"loraB=/loras/legacy-b",
 			},
 			notContains: []string{"/loras/legacy-a"},
 		},
@@ -615,6 +621,7 @@ func TestSGLangBuildArgs(t *testing.T) {
 				{"--tool-call-parser", "qwen3"},
 				{"--reasoning-parser", "qwen3"},
 			},
+			notContains: []string{"--model"},
 		},
 	}
 
@@ -629,6 +636,9 @@ func TestSGLangBuildArgs(t *testing.T) {
 				if !containsArg(args, fc.flag, fc.value) {
 					t.Errorf("expected %q %q in args, got: %v", fc.flag, fc.value, args)
 				}
+			}
+			if !containsEach(args, tc.containsAll) {
+				t.Errorf("expected each of %v in args (order-insensitive), got: %v", tc.containsAll, args)
 			}
 			for _, f := range tc.notContains {
 				if containsArg(args, f, "") {
@@ -966,6 +976,30 @@ func findCondition(conds []metav1.Condition, ctype string) *metav1.Condition {
 		}
 	}
 	return nil
+}
+
+// containsEach reports whether every element in needles appears in
+// haystack at least once (order-insensitive). Used to assert
+// SGLang's `--lora-paths` nargs="*" form, where each adapter is a
+// separate argv entry rather than a comma-joined string. The previous
+// helper, containsArg, requires flag and value to be adjacent, which
+// would lock in the broken form that SGLang's LoRAPathAction rejects.
+func containsEach(haystack, needles []string) bool {
+	used := make(map[int]bool, len(haystack))
+	for _, n := range needles {
+		found := false
+		for i, h := range haystack {
+			if !used[i] && h == n {
+				used[i] = true
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }
 
 // TestSGLangBuildLoraModulePairs_Coverage exercises the typed/legacy
