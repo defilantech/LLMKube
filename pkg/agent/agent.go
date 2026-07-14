@@ -628,6 +628,9 @@ func buildExecutorConfig(
 		Mode:                   isvc.Spec.Mode,
 		ExtraArgs:              isvc.Spec.ExtraArgs,
 		TurboQuantBits:         derefInt32(isvc.Spec.TurboQuantBits),
+		PagedSSDCacheDir:       derefString(isvc.Spec.PagedSSDCacheDir),
+		HotCacheMaxSize:        derefString(isvc.Spec.HotCacheMaxSize),
+		PagedSSDCacheMaxSize:   derefString(isvc.Spec.PagedSSDCacheMaxSize),
 	}
 }
 
@@ -643,6 +646,13 @@ func derefInt32(p *int32) int {
 		return 0
 	}
 	return int(*p)
+}
+
+func derefString(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
 }
 
 // resolveRuntime returns the effective runtime for an InferenceService.
@@ -1733,6 +1743,10 @@ func computeSpecHash(isvc *inferencev1alpha1.InferenceService) string {
 		Mode                   string
 		Replicas               *int32
 		Runtime                string
+		TurboQuantBits         *int32
+		PagedSSDCacheDir       *string
+		HotCacheMaxSize        *string
+		PagedSSDCacheMaxSize   *string
 	}{
 		ModelRef:               isvc.Spec.ModelRef,
 		ContextSize:            isvc.Spec.ContextSize,
@@ -1757,6 +1771,10 @@ func computeSpecHash(isvc *inferencev1alpha1.InferenceService) string {
 		Mode:                   isvc.Spec.Mode,
 		Replicas:               isvc.Spec.Replicas,
 		Runtime:                isvc.Spec.Runtime,
+		TurboQuantBits:         isvc.Spec.TurboQuantBits,
+		PagedSSDCacheDir:       isvc.Spec.PagedSSDCacheDir,
+		HotCacheMaxSize:        isvc.Spec.HotCacheMaxSize,
+		PagedSSDCacheMaxSize:   isvc.Spec.PagedSSDCacheMaxSize,
 	}
 	b, err := json.Marshal(relevant)
 	if err != nil {

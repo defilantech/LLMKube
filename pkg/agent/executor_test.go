@@ -838,3 +838,165 @@ func buildExecutorConfigForTest(isvc *inferencev1alpha1.InferenceService) Execut
 		Mode:                   isvc.Spec.Mode,
 	}
 }
+
+// TestDerefString verifies the derefString helper used in buildExecutorConfig.
+func TestDerefString(t *testing.T) {
+	// Nil pointer returns empty string.
+	if got := derefString(nil); got != "" {
+		t.Errorf("derefString(nil) = %q, want %q", got, "")
+	}
+
+	// Non-nil pointer returns the pointed value.
+	s := "hello"
+	if got := derefString(&s); got != "hello" {
+		t.Errorf("derefString(&s) = %q, want %q", got, "hello")
+	}
+}
+
+// TestBuildOMLXServeArgs_Defaults verifies the base arg vector for the oMLX
+// daemon serve subcommand.
+func TestBuildOMLXServeArgs_Defaults(t *testing.T) {
+	cfg := omlxServeConfig{
+		turboQuantBits:       0,
+		pagedSSDCacheDir:     "",
+		hotCacheMaxSize:      "",
+		pagedSSDCacheMaxSize: "",
+	}
+	args := buildOMLXServeArgs("/models/test", 8000, cfg)
+
+	want := map[string]string{
+		"--model-dir": "/models/test",
+		"--port":      "8000",
+		"--host":      "0.0.0.0",
+	}
+	for flag, expected := range want {
+		if got := flagValue(args, flag); got != expected {
+			t.Errorf("%s = %q, want %q (full args: %v)", flag, got, expected, args)
+		}
+	}
+
+	// No optional flags should be present.
+	unwantedFlags := []string{
+		"--kv-cache-quant",
+		"--paged-ssd-cache-dir",
+		"--hot-cache-max-size",
+		"--paged-ssd-cache-max-size",
+	}
+	for _, unwanted := range unwantedFlags {
+		if hasFlag(args, unwanted) {
+			t.Errorf("unexpected flag %q in default args: %v", unwanted, args)
+		}
+	}
+}
+
+// TestBuildOMLXServeArgs_TurboQuant verifies the --kv-cache-quant flag is
+// emitted when turboQuantBits is set.
+func TestBuildOMLXServeArgs_TurboQuant(t *testing.T) {
+	cfg := omlxServeConfig{turboQuantBits: 3}
+	args := buildOMLXServeArgs("/models/test", 8000, cfg)
+
+	if got := flagValue(args, "--kv-cache-quant"); got != "3" {
+		t.Errorf("--kv-cache-quant = %q, want %q (full args: %v)", got, "3", args)
+	}
+}
+
+// TestBuildOMLXServeArgs_TurboQuantOmittedWhenZero verifies the flag is
+// omitted when turboQuantBits is zero.
+func TestBuildOMLXServeArgs_TurboQuantOmittedWhenZero(t *testing.T) {
+	cfg := omlxServeConfig{turboQuantBits: 0}
+	args := buildOMLXServeArgs("/models/test", 8000, cfg)
+
+	if hasFlag(args, "--kv-cache-quant") {
+		t.Errorf("--kv-cache-quant must be omitted when turboQuantBits=0 (full args: %v)", args)
+	}
+}
+
+// TestBuildOMLXServeArgs_PagedSSDCacheDir verifies the --paged-ssd-cache-dir
+// flag is emitted when the directory is set.
+func TestBuildOMLXServeArgs_PagedSSDCacheDir(t *testing.T) {
+	cfg := omlxServeConfig{pagedSSDCacheDir: "/mnt/ssd-cache"}
+	args := buildOMLXServeArgs("/models/test", 8000, cfg)
+
+	if got := flagValue(args, "--paged-ssd-cache-dir"); got != "/mnt/ssd-cache" {
+		t.Errorf("--paged-ssd-cache-dir = %q, want %q (full args: %v)", got, "/mnt/ssd-cache", args)
+	}
+}
+
+// TestBuildOMLXServeArgs_PagedSSDCacheDirOmittedWhenEmpty verifies the flag
+// is omitted when the directory is empty.
+func TestBuildOMLXServeArgs_PagedSSDCacheDirOmittedWhenEmpty(t *testing.T) {
+	cfg := omlxServeConfig{pagedSSDCacheDir: ""}
+	args := buildOMLXServeArgs("/models/test", 8000, cfg)
+
+	if hasFlag(args, "--paged-ssd-cache-dir") {
+		t.Errorf("--paged-ssd-cache-dir must be omitted when pagedSSDCacheDir is empty (full args: %v)", args)
+	}
+}
+
+// TestBuildOMLXServeArgs_HotCacheMaxSize verifies the --hot-cache-max-size
+// flag is emitted when the size is set.
+func TestBuildOMLXServeArgs_HotCacheMaxSize(t *testing.T) {
+	cfg := omlxServeConfig{hotCacheMaxSize: "100GB"}
+	args := buildOMLXServeArgs("/models/test", 8000, cfg)
+
+	if got := flagValue(args, "--hot-cache-max-size"); got != "100GB" {
+		t.Errorf("--hot-cache-max-size = %q, want %q (full args: %v)", got, "100GB", args)
+	}
+}
+
+// TestBuildOMLXServeArgs_HotCacheMaxSizeOmittedWhenEmpty verifies the flag
+// is omitted when the size is empty.
+func TestBuildOMLXServeArgs_HotCacheMaxSizeOmittedWhenEmpty(t *testing.T) {
+	cfg := omlxServeConfig{hotCacheMaxSize: ""}
+	args := buildOMLXServeArgs("/models/test", 8000, cfg)
+
+	if hasFlag(args, "--hot-cache-max-size") {
+		t.Errorf("--hot-cache-max-size must be omitted when hotCacheMaxSize is empty (full args: %v)", args)
+	}
+}
+
+// TestBuildOMLXServeArgs_PagedSSDCacheMaxSize verifies the
+// --paged-ssd-cache-max-size flag is emitted when the size is set.
+func TestBuildOMLXServeArgs_PagedSSDCacheMaxSize(t *testing.T) {
+	cfg := omlxServeConfig{pagedSSDCacheMaxSize: "200GB"}
+	args := buildOMLXServeArgs("/models/test", 8000, cfg)
+
+	if got := flagValue(args, "--paged-ssd-cache-max-size"); got != "200GB" {
+		t.Errorf("--paged-ssd-cache-max-size = %q, want %q (full args: %v)", got, "200GB", args)
+	}
+}
+
+// TestBuildOMLXServeArgs_PagedSSDCacheMaxSizeOmittedWhenEmpty verifies the
+// flag is omitted when the size is empty.
+func TestBuildOMLXServeArgs_PagedSSDCacheMaxSizeOmittedWhenEmpty(t *testing.T) {
+	cfg := omlxServeConfig{pagedSSDCacheMaxSize: ""}
+	args := buildOMLXServeArgs("/models/test", 8000, cfg)
+
+	if hasFlag(args, "--paged-ssd-cache-max-size") {
+		t.Errorf("--paged-ssd-cache-max-size must be omitted when pagedSSDCacheMaxSize is empty (full args: %v)", args)
+	}
+}
+
+// TestBuildOMLXServeArgs_AllFlags verifies all flags are emitted together
+// when all config fields are set.
+func TestBuildOMLXServeArgs_AllFlags(t *testing.T) {
+	cfg := omlxServeConfig{
+		turboQuantBits:       6,
+		pagedSSDCacheDir:     "/mnt/ssd",
+		hotCacheMaxSize:      "100GB",
+		pagedSSDCacheMaxSize: "500GB",
+	}
+	args := buildOMLXServeArgs("/models/test", 8000, cfg)
+
+	want := map[string]string{
+		"--kv-cache-quant":           "6",
+		"--paged-ssd-cache-dir":      "/mnt/ssd",
+		"--hot-cache-max-size":       "100GB",
+		"--paged-ssd-cache-max-size": "500GB",
+	}
+	for flag, expected := range want {
+		if got := flagValue(args, flag); got != expected {
+			t.Errorf("%s = %q, want %q (full args: %v)", flag, got, expected, args)
+		}
+	}
+}

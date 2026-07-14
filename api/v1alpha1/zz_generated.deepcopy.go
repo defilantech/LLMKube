@@ -690,6 +690,21 @@ func (in *InferenceServiceSpec) DeepCopyInto(out *InferenceServiceSpec) {
 		*out = new(int32)
 		**out = **in
 	}
+	if in.PagedSSDCacheDir != nil {
+		in, out := &in.PagedSSDCacheDir, &out.PagedSSDCacheDir
+		*out = new(string)
+		**out = **in
+	}
+	if in.HotCacheMaxSize != nil {
+		in, out := &in.HotCacheMaxSize, &out.HotCacheMaxSize
+		*out = new(string)
+		**out = **in
+	}
+	if in.PagedSSDCacheMaxSize != nil {
+		in, out := &in.PagedSSDCacheMaxSize, &out.PagedSSDCacheMaxSize
+		*out = new(string)
+		**out = **in
+	}
 	if in.Command != nil {
 		in, out := &in.Command, &out.Command
 		*out = make([]string, len(*in))
