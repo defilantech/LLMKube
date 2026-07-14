@@ -70,6 +70,33 @@ func TestShouldEscalateCoder(t *testing.T) {
 	}
 }
 
+func TestShouldEscalateCoderOnFailure(t *testing.T) {
+	cases := []struct {
+		name         string
+		verdict      foremanv1alpha1.AgenticTaskVerdict
+		topOutcome   string
+		modelOutcome string
+		want         bool
+	}{
+		{"STUCK-LOOP-DETECTED", foremanv1alpha1.AgenticTaskVerdictIncomplete, "STUCK-LOOP-DETECTED", "", true},
+		{"ERROR", foremanv1alpha1.AgenticTaskVerdictIncomplete, "ERROR", "", true},
+		{"INCOMPLETE (model gave up)", foremanv1alpha1.AgenticTaskVerdictIncomplete, "MODEL-DECIDED", "", true},
+		{"NO-GO + ALREADY-RESOLVED (never escalate)", foremanv1alpha1.AgenticTaskVerdictNoGo, "ALREADY-RESOLVED", "", false},
+		{"NO-GO + NEEDS-VERIFICATION (never escalate)", foremanv1alpha1.AgenticTaskVerdictNoGo, "NEEDS-VERIFICATION", "", false},
+		{"NO-GO + MODEL-DECIDED (capability failure, not opt-in)", foremanv1alpha1.AgenticTaskVerdictNoGo, "MODEL-DECIDED", "", false},
+		{"GO", foremanv1alpha1.AgenticTaskVerdictGo, "", "", false},
+		{"NO-CHANGES", foremanv1alpha1.AgenticTaskVerdictNoGo, "NO-CHANGES", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldEscalateCoderOnFailure(tc.verdict, tc.topOutcome); got != tc.want {
+				t.Errorf("shouldEscalateCoderOnFailure(%s,%q)=%v want %v",
+					tc.verdict, tc.topOutcome, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCoderTerminalOutcome_ReadsNestedGateOutcome(t *testing.T) {
 	task := &foremanv1alpha1.AgenticTask{}
 	task.Status.Verdict = foremanv1alpha1.AgenticTaskVerdictIncomplete
@@ -98,7 +125,7 @@ func TestCoderEscalationSteps_EmitsOnNoGo(t *testing.T) {
 	code.Status.Verdict = foremanv1alpha1.AgenticTaskVerdictNoGo
 	code.Status.Result = resultRaw("MODEL-DECIDED", "", "could not solve: fuzzy front-runs anchor", "")
 
-	steps, escalated := coderEscalationSteps(w, []foremanv1alpha1.AgenticTask{code})
+	steps, escalated, _ := coderEscalationSteps(w, []foremanv1alpha1.AgenticTask{code})
 	if len(steps) != 2 {
 		t.Fatalf("want 2 steps (code-esc+verify-esc), got %d", len(steps))
 	}
@@ -155,7 +182,7 @@ func TestCoderEscalationSteps_EmitsReviewerStepsOnEscBranch(t *testing.T) {
 		w := newWorkload()
 		w.Spec.ReviewerAgentRefs = []corev1.LocalObjectReference{{Name: "reviewer-a"}}
 
-		steps, _ := coderEscalationSteps(w, []foremanv1alpha1.AgenticTask{newBase()})
+		steps, _, _ := coderEscalationSteps(w, []foremanv1alpha1.AgenticTask{newBase()})
 		// code-esc + verify-esc + one review-esc.
 		if len(steps) != 3 {
 			t.Fatalf("want 3 steps (code+verify+review esc), got %d: %+v", len(steps), steps)
@@ -190,7 +217,7 @@ func TestCoderEscalationSteps_EmitsReviewerStepsOnEscBranch(t *testing.T) {
 		no := false
 		w.Spec.OpenPullRequest = &no
 
-		steps, _ := coderEscalationSteps(w, []foremanv1alpha1.AgenticTask{newBase()})
+		steps, _, _ := coderEscalationSteps(w, []foremanv1alpha1.AgenticTask{newBase()})
 		rev, ok := findStep(steps, "review-944-esc-0")
 		if !ok {
 			t.Fatalf("review-944-esc-0 not emitted: %+v", steps)
@@ -200,10 +227,10 @@ func TestCoderEscalationSteps_EmitsReviewerStepsOnEscBranch(t *testing.T) {
 		}
 	})
 
-	t.Run("no reviewers -> code+verify only (backward-compat)", func(t *testing.T) {
+	t.Run("no reviewers -\u003e code+verify only (backward-compat)", func(t *testing.T) {
 		w := newWorkload() // ReviewerAgentRefs left nil
 
-		steps, _ := coderEscalationSteps(w, []foremanv1alpha1.AgenticTask{newBase()})
+		steps, _, _ := coderEscalationSteps(w, []foremanv1alpha1.AgenticTask{newBase()})
 		if len(steps) != 2 {
 			t.Fatalf("want 2 steps (code+verify only), got %d: %+v", len(steps), steps)
 		}
@@ -239,13 +266,183 @@ func TestCoderEscalationSteps_SkipsStuckLoopAndExisting(t *testing.T) {
 	esc944.Name = "wl-code-944-esc"
 	esc944.Labels = map[string]string{labelStep: "code-944-esc"}
 
-	steps, escalated := coderEscalationSteps(w,
+	steps, escalated, reason := coderEscalationSteps(w,
 		[]foremanv1alpha1.AgenticTask{c921, c944, esc944})
 	if len(steps) != 0 {
 		t.Errorf("want no steps (921 not eligible, 944 already escalated), got %d: %+v", len(steps), steps)
 	}
 	if len(escalated) != 0 {
 		t.Errorf("want none escalated, got %v", escalated)
+	}
+	if reason != "" {
+		t.Errorf("want empty reason when no escalation, got %q", reason)
+	}
+}
+
+// TestCoderEscalationSteps_EscalateOnFailure_True tests that when
+// EscalateOnFailure is set to true, STUCK-LOOP-DETECTED, INCOMPLETE,
+// and ERROR outcomes also trigger escalation.
+func TestCoderEscalationSteps_EscalateOnFailure_True(t *testing.T) {
+	ref := corev1.LocalObjectReference{Name: "coder-qwopus"}
+	w := &foremanv1alpha1.Workload{}
+	w.Name = "wl"
+	w.Spec.Repo = "defilantech/LLMKube"
+	w.Spec.Issues = []int32{921, 944}
+	w.Spec.VerifierAgentRef = &corev1.LocalObjectReference{Name: "gate"}
+	w.Spec.EscalationCoderAgentRef = &ref
+	trueVal := true
+	w.Spec.EscalateOnFailure = &trueVal
+
+	c921 := foremanv1alpha1.AgenticTask{}
+	c921.Name = "wl-code-921"
+	c921.Labels = map[string]string{labelStep: "code-921"}
+	c921.Status.Phase = foremanv1alpha1.AgenticTaskPhaseSucceeded
+	c921.Status.Verdict = foremanv1alpha1.AgenticTaskVerdictIncomplete
+	c921.Status.Result = resultRaw("STUCK-LOOP-DETECTED", "", "stuck in loop", "")
+
+	c944 := foremanv1alpha1.AgenticTask{}
+	c944.Name = "wl-code-944"
+	c944.Labels = map[string]string{labelStep: "code-944"}
+	c944.Status.Phase = foremanv1alpha1.AgenticTaskPhaseSucceeded
+	c944.Status.Verdict = foremanv1alpha1.AgenticTaskVerdictIncomplete
+	c944.Status.Result = resultRaw("ERROR", "", "harness error", "")
+
+	steps, escalated, reason := coderEscalationSteps(w,
+		[]foremanv1alpha1.AgenticTask{c921, c944})
+	if len(steps) != 4 {
+		t.Errorf("want 4 steps (2 code-esc + 2 verify-esc), got %d: %+v", len(steps), steps)
+	}
+	if len(escalated) != 2 || escalated[0] != 921 || escalated[1] != 944 {
+		t.Errorf("want 2 issues escalated, got %v", escalated)
+	}
+	if reason != "BaseCoderFailureEscalation" {
+		t.Errorf("want reason %q, got %q", "BaseCoderFailureEscalation", reason)
+	}
+}
+
+// TestCoderEscalationSteps_EscalateOnFailure_False tests that when
+// EscalateOnFailure is explicitly false, STUCK-LOOP-DETECTED,
+// INCOMPLETE, and ERROR outcomes do NOT trigger escalation.
+func TestCoderEscalationSteps_EscalateOnFailure_False(t *testing.T) {
+	ref := corev1.LocalObjectReference{Name: "coder-qwopus"}
+	w := &foremanv1alpha1.Workload{}
+	w.Name = "wl"
+	w.Spec.Repo = "defilantech/LLMKube"
+	w.Spec.Issues = []int32{921, 944}
+	w.Spec.VerifierAgentRef = &corev1.LocalObjectReference{Name: "gate"}
+	w.Spec.EscalationCoderAgentRef = &ref
+	falseVal := false
+	w.Spec.EscalateOnFailure = &falseVal
+
+	c921 := foremanv1alpha1.AgenticTask{}
+	c921.Name = "wl-code-921"
+	c921.Labels = map[string]string{labelStep: "code-921"}
+	c921.Status.Phase = foremanv1alpha1.AgenticTaskPhaseSucceeded
+	c921.Status.Verdict = foremanv1alpha1.AgenticTaskVerdictIncomplete
+	c921.Status.Result = resultRaw("STUCK-LOOP-DETECTED", "", "stuck in loop", "")
+
+	c944 := foremanv1alpha1.AgenticTask{}
+	c944.Name = "wl-code-944"
+	c944.Labels = map[string]string{labelStep: "code-944"}
+	c944.Status.Phase = foremanv1alpha1.AgenticTaskPhaseSucceeded
+	c944.Status.Verdict = foremanv1alpha1.AgenticTaskVerdictIncomplete
+	c944.Status.Result = resultRaw("ERROR", "", "harness error", "")
+
+	steps, escalated, reason := coderEscalationSteps(w,
+		[]foremanv1alpha1.AgenticTask{c921, c944})
+	if len(steps) != 0 {
+		t.Errorf("want no steps (EscalateOnFailure=false), got %d: %+v", len(steps), steps)
+	}
+	if len(escalated) != 0 {
+		t.Errorf("want none escalated, got %v", escalated)
+	}
+	if reason != "" {
+		t.Errorf("want empty reason when no escalation, got %q", reason)
+	}
+}
+
+// TestCoderEscalationSteps_EscalateOnFailure_NeverEscalate tests that
+// ALREADY-RESOLVED and NEEDS-VERIFICATION never escalate even when
+// EscalateOnFailure is true.
+func TestCoderEscalationSteps_EscalateOnFailure_NeverEscalate(t *testing.T) {
+	ref := corev1.LocalObjectReference{Name: "coder-qwopus"}
+	w := &foremanv1alpha1.Workload{}
+	w.Name = "wl"
+	w.Spec.Repo = "defilantech/LLMKube"
+	w.Spec.Issues = []int32{921, 944}
+	w.Spec.VerifierAgentRef = &corev1.LocalObjectReference{Name: "gate"}
+	w.Spec.EscalationCoderAgentRef = &ref
+	trueVal := true
+	w.Spec.EscalateOnFailure = &trueVal
+
+	c921 := foremanv1alpha1.AgenticTask{}
+	c921.Name = "wl-code-921"
+	c921.Labels = map[string]string{labelStep: "code-921"}
+	c921.Status.Phase = foremanv1alpha1.AgenticTaskPhaseSucceeded
+	c921.Status.Verdict = foremanv1alpha1.AgenticTaskVerdictNoGo
+	c921.Status.Result = resultRaw("ALREADY-RESOLVED", "", "already done", "")
+
+	c944 := foremanv1alpha1.AgenticTask{}
+	c944.Name = "wl-code-944"
+	c944.Labels = map[string]string{labelStep: "code-944"}
+	c944.Status.Phase = foremanv1alpha1.AgenticTaskPhaseSucceeded
+	c944.Status.Verdict = foremanv1alpha1.AgenticTaskVerdictNoGo
+	c944.Status.Result = resultRaw("NEEDS-VERIFICATION", "", "ungroundable fact", "")
+
+	steps, escalated, reason := coderEscalationSteps(w,
+		[]foremanv1alpha1.AgenticTask{c921, c944})
+	if len(steps) != 0 {
+		t.Errorf("want no steps (ALREADY-RESOLVED and NEEDS-VERIFICATION never escalate), got %d: %+v", len(steps), steps)
+	}
+	if len(escalated) != 0 {
+		t.Errorf("want none escalated, got %v", escalated)
+	}
+	if reason != "" {
+		t.Errorf("want empty reason when no escalation, got %q", reason)
+	}
+}
+
+// TestCoderEscalationSteps_EscalateOnFailure_Mixed tests that when
+// EscalateOnFailure is true, a mix of capability failures and
+// opt-in failures all escalate with the correct reason.
+func TestCoderEscalationSteps_EscalateOnFailure_Mixed(t *testing.T) {
+	ref := corev1.LocalObjectReference{Name: "coder-qwopus"}
+	w := &foremanv1alpha1.Workload{}
+	w.Name = "wl"
+	w.Spec.Repo = "defilantech/LLMKube"
+	w.Spec.Issues = []int32{921, 944}
+	w.Spec.VerifierAgentRef = &corev1.LocalObjectReference{Name: "gate"}
+	w.Spec.EscalationCoderAgentRef = &ref
+	trueVal := true
+	w.Spec.EscalateOnFailure = &trueVal
+
+	// Issue 921: capability failure (should use BaseCoderCapabilityFailure)
+	c921 := foremanv1alpha1.AgenticTask{}
+	c921.Name = "wl-code-921"
+	c921.Labels = map[string]string{labelStep: "code-921"}
+	c921.Status.Phase = foremanv1alpha1.AgenticTaskPhaseSucceeded
+	c921.Status.Verdict = foremanv1alpha1.AgenticTaskVerdictNoGo
+	c921.Status.Result = resultRaw("MODEL-DECIDED", "", "could not solve", "")
+
+	// Issue 944: opt-in failure (should use BaseCoderFailureEscalation)
+	c944 := foremanv1alpha1.AgenticTask{}
+	c944.Name = "wl-code-944"
+	c944.Labels = map[string]string{labelStep: "code-944"}
+	c944.Status.Phase = foremanv1alpha1.AgenticTaskPhaseSucceeded
+	c944.Status.Verdict = foremanv1alpha1.AgenticTaskVerdictIncomplete
+	c944.Status.Result = resultRaw("STUCK-LOOP-DETECTED", "", "stuck in loop", "")
+
+	steps, escalated, reason := coderEscalationSteps(w,
+		[]foremanv1alpha1.AgenticTask{c921, c944})
+	if len(steps) != 4 {
+		t.Errorf("want 4 steps (2 code-esc + 2 verify-esc), got %d: %+v", len(steps), steps)
+	}
+	if len(escalated) != 2 || escalated[0] != 921 || escalated[1] != 944 {
+		t.Errorf("want 2 issues escalated, got %v", escalated)
+	}
+	// The reason is the last seen escalation reason (opt-in path)
+	if reason != "BaseCoderFailureEscalation" {
+		t.Errorf("want reason %q, got %q", "BaseCoderFailureEscalation", reason)
 	}
 }
 
@@ -322,7 +519,7 @@ func TestCoderEscalationSteps_OffWhenUnset(t *testing.T) {
 	c.Status.Phase = foremanv1alpha1.AgenticTaskPhaseSucceeded
 	c.Status.Verdict = foremanv1alpha1.AgenticTaskVerdictNoGo
 	c.Status.Result = resultRaw("MODEL-DECIDED", "", "bailed", "")
-	steps, _ := coderEscalationSteps(w, []foremanv1alpha1.AgenticTask{c})
+	steps, _, _ := coderEscalationSteps(w, []foremanv1alpha1.AgenticTask{c})
 	if len(steps) != 0 {
 		t.Errorf("feature must be off when EscalationCoderAgentRef is nil, got %d steps", len(steps))
 	}
