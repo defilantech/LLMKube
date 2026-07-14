@@ -59,6 +59,24 @@ webhooks:
         operations: ["CREATE", "UPDATE"]
         resources: ["modelrouters"]
         scope: Namespaced
+  {{- if .Values.multitenancy.enabled }}
+  - name: vinferenceservicequota.inference.llmkube.dev
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    failurePolicy: {{ .Values.webhook.failurePolicy }}
+    clientConfig:
+      service:
+        name: {{ include "llmkube.webhook.serviceName" . }}
+        namespace: {{ include "llmkube.namespace" . }}
+        path: /validate-inference-llmkube-dev-v1alpha1-inferenceservice-quota
+      caBundle: {{ $certs.ca }}
+    rules:
+      - apiGroups: ["inference.llmkube.dev"]
+        apiVersions: ["v1alpha1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["inferenceservices"]
+        scope: Namespaced
+  {{- end }}
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: MutatingWebhookConfiguration

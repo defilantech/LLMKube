@@ -1,0 +1,17 @@
+{{- if .Values.multitenancy.enabled }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "llmkube.fullname" . }}-tenant
+  labels:
+    {{- include "llmkube.labels" . | nindent 4 }}
+rules:
+- apiGroups: ["inference.llmkube.dev"]
+  resources: ["models", "inferenceservices"]
+  verbs: ["get", "list", "watch", "create", "update", "patch"]
+# UsageReport/TokenBudget CRDs land in a later story; RBAC on not-yet-installed
+# resources is valid and simply inert until those CRDs exist.
+- apiGroups: ["inference.llmkube.dev"]
+  resources: ["usagereports", "tokenbudgets"]
+  verbs: ["get", "list", "watch"]
+{{- end }}

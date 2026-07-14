@@ -391,6 +391,13 @@
           "minimum": 1
         }
       }
+    },
+    "multitenancy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" }
+      }
     }
   }
 }
