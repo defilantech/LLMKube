@@ -23,8 +23,11 @@ import (
 // LoRAAdapterSpec defines a single SGLang LoRA adapter that should be
 // loaded into a target InferenceService without restarting its pod. The
 // controller translates this resource into a POST against SGLang's
-// /v1/lora_adapters/load HTTP endpoint and a finalizer-driven
-// /v1/lora_adapters/unload on delete.
+// /load_lora_adapter HTTP endpoint (singular `lora_adapter`, no /v1
+// prefix, as of SGLang v0.5.15) and a finalizer-driven
+// /unload_lora_adapter on delete. See
+// https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/entrypoints/http_server.py
+// for the wire format.
 type LoRAAdapterSpec struct {
 	// InferenceServiceRef names the InferenceService this adapter should
 	// be loaded into. The reconciler resolves it; if it points at a
@@ -44,8 +47,8 @@ type LoRAAdapterSpec struct {
 
 	// Path is the path on disk inside the SGLang container where the
 	// adapter weights are mounted. SGLang reads from this path when
-	// /v1/lora_adapters/load is invoked, so it must be reachable from
-	// the inference pod (typically via a PVC exposed in
+	// /load_lora_adapter is invoked, so it must be reachable from the
+	// inference pod (typically via a PVC exposed in
 	// InferenceService.spec.extraVolumes) at the path the operator
 	// chose. The controller does not auto-mount.
 	// +kubebuilder:validation:MinLength=1
@@ -74,8 +77,8 @@ type LocalInferenceServiceReference struct {
 // LoRAAdapterStatus reports observed load state for an adapter.
 type LoRAAdapterStatus struct {
 	// LoadedPath is the path SGLang has accepted for this adapter. Set
-	// after a successful POST /v1/lora_adapters/load response. Empty
-	// before the first successful load.
+	// after a successful POST /load_lora_adapter response. Empty before
+	// the first successful load.
 	// +optional
 	LoadedPath string `json:"loadedPath,omitempty"`
 

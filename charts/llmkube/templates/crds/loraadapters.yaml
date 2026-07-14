@@ -93,8 +93,8 @@ spec:
                 description: |-
                   Path is the path on disk inside the SGLang container where the
                   adapter weights are mounted. SGLang reads from this path when
-                  /v1/lora_adapters/load is invoked, so it must be reachable from
-                  the inference pod (typically via a PVC exposed in
+                  /load_lora_adapter is invoked, so it must be reachable from the
+                  inference pod (typically via a PVC exposed in
                   InferenceService.spec.extraVolumes) at the path the operator
                   chose. The controller does not auto-mount.
                 minLength: 1
@@ -189,8 +189,8 @@ spec:
               loadedPath:
                 description: |-
                   LoadedPath is the path SGLang has accepted for this adapter. Set
-                  after a successful POST /v1/lora_adapters/load response. Empty
-                  before the first successful load.
+                  after a successful POST /load_lora_adapter response. Empty before
+                  the first successful load.
                 type: string
             type: object
         required:
