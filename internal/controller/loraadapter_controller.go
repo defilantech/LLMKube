@@ -172,11 +172,6 @@ func defaultLoRAAdapterURLResolver(_ context.Context, isvc *inferencev1alpha1.In
 // of an unchanged adapter (same LoadedPath, recent LastLoadedAt) skips
 // the HTTP call, so a status patch or finalizer touch does not flap
 // SGLang's served adapter set.
-//
-// +kubebuilder:rbac:groups=inference.llmkube.dev,resources=loraadapters,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=inference.llmkube.dev,resources=loraadapters/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=inference.llmkube.dev,resources=loraadapters/finalizers,verbs=update
-// +kubebuilder:rbac:groups=inference.llmkube.dev,resources=inferenceservices,verbs=get;list;watch
 type LoRAAdapterReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
@@ -190,6 +185,11 @@ type LoRAAdapterReconciler struct {
 	// Now is injectable for tests; production uses time.Now.
 	Now func() time.Time
 }
+
+// +kubebuilder:rbac:groups=inference.llmkube.dev,resources=loraadapters,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=inference.llmkube.dev,resources=loraadapters/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=inference.llmkube.dev,resources=loraadapters/finalizers,verbs=update
+// +kubebuilder:rbac:groups=inference.llmkube.dev,resources=inferenceservices,verbs=get;list;watch
 
 // SetupWithManager wires this reconciler into mgr. It watches LoRAAdapter
 // primary resources; the controller-runtime-built index reconciliations
