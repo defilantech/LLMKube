@@ -384,6 +384,15 @@ webhook:
   # force regeneration before expiry).
   certValidityDays: 3650
 
+# multitenancy gates the opt-in multi-tenant admission + RBAC surface (#416).
+# Default off: the InferenceService quota ValidatingWebhookConfiguration entry is
+# NOT rendered (so InferenceService admission is never intercepted) and no tenant
+# ClusterRoles are installed. Enabling it also requires webhook.enabled=true (the
+# quota webhook reuses the same serving cert + Service). It does not change any
+# existing (ModelRouter/Model) webhook.
+multitenancy:
+  enabled: false
+
 # Network policies for the controller manager pod
 networkPolicies:
   enabled: false
