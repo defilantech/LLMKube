@@ -30,6 +30,7 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - namespaces
   - nodes
   - pods
   - secrets
@@ -91,6 +92,7 @@ rules:
 - apiGroups:
   - inference.llmkube.dev
   resources:
+  - gpuquotas
   - inferenceservices
   - modelrouters
   - models
@@ -113,6 +115,7 @@ rules:
 - apiGroups:
   - inference.llmkube.dev
   resources:
+  - gpuquotas/status
   - inferenceservices/status
   - modelrouters/status
   - models/status
