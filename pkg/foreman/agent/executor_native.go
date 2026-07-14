@@ -719,6 +719,13 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 			logReviewerFindings(log, loopRes.Terminal.Extra)
 		}
 		r := e.modelDecidedResult(start, transcriptRef, loopRes, verdict)
+		// #1109: preserve a coder's near-complete work when its in-loop
+		// verification gate never passed. A CODER-GATE-FAILED terminal builds
+		// and only trips the fast gate (fmt/vet/build/lint); without this the
+		// branch is discarded and the work is unrecoverable. The verdict stays
+		// INCOMPLETE (this is NOT a GO); we only commit + push the branch and
+		// record it under r.Extra. Coder-role only (reviewers are read-only).
+		e.maybePreserveGateFailedBranch(ctx, log, agent, task, workspace, branch, auth, loopRes, r)
 		e.maybeOpenPullRequest(ctx, log, task, auth, verdict, r)
 		// Attach the normalized failure reason from the model-to-CRD
 		// mapping (e.g. ERROR→INCOMPLETE + ModelReportedError for #649). Only
@@ -1546,6 +1553,83 @@ func (e *NativeAgentLoopExecutor) openPullRequest(
 		return "", err
 	}
 	return res.URL, nil
+}
+
+// maybePreserveGateFailedBranch commits and pushes a coder's branch when its
+// in-loop verification gate never passed (#749/#1109). Without it, a
+// CODER-GATE-FAILED terminal is INCOMPLETE with no push, so a change that
+// builds and only fails the fast gate (fmt / vet / build / lint) is discarded
+// and the work is unrecoverable. This does NOT change the verdict: it stays
+// INCOMPLETE, not a GO. It only preserves the branch and records it under
+// r.Extra ("gateFailedBranch" / "commitSHA") so a human can finish the fix.
+//
+// Coder-role only: reviewers are read-only (no write_file / str_replace), so
+// they never have changes to preserve. Only the CODER-GATE-FAILED outcome
+// qualifies; NO-GO, ERROR, and every other INCOMPLETE outcome (stuck-loop,
+// loop-budget, no-tool-call) are genuine "do not land" and are left untouched.
+// Best-effort: any failure (no changes, commit, or push) leaves the original
+// INCOMPLETE result as-is.
+func (e *NativeAgentLoopExecutor) maybePreserveGateFailedBranch(
+	ctx context.Context, log logr.Logger,
+	agent *foremanv1alpha1.Agent, task *foremanv1alpha1.AgenticTask,
+	workspace, branch string, auth *repo.Auth, lr *LoopResult, r *Result,
+) {
+	if agent.Spec.Role == foremanv1alpha1.AgentRoleReviewer {
+		return
+	}
+	if lr == nil || lr.Terminal == nil {
+		return
+	}
+	if outcome, _ := lr.Terminal.Extra[outcomeKey].(string); outcome != CoderGateFailedOutcome {
+		return
+	}
+
+	hasChanges, err := repo.HasChanges(ctx, workspace)
+	if err != nil {
+		log.Error(err, "gate-failed preserve: HasChanges failed; not preserving branch")
+		return
+	}
+	if !hasChanges {
+		// Nothing to preserve (the coder left no uncommitted work); keep the
+		// plain INCOMPLETE result.
+		return
+	}
+
+	// The gate-failed envelope carries no model commit message (the coder never
+	// reached a GO), so synthesize a WIP subject that flags the branch as
+	// unfinished. Refs (not Fixes) the issue so merging this branch alone does
+	// not auto-close it.
+	msg := fmt.Sprintf(
+		"wip(gate-failed): preserve coder attempt for issue #%d\n\n"+
+			"The in-workspace verification gate did not pass after its retry "+
+			"budget, so this branch is preserved (verdict INCOMPLETE, not a GO) "+
+			"for a human to finish. Do not merge as-is.\n\nRefs #%d",
+		task.Spec.Payload.Issue, task.Spec.Payload.Issue)
+	sha, err := repo.Commit(ctx, repo.CommitOptions{
+		Workspace: workspace,
+		Message:   msg,
+		Author:    e.CommitAuthor,
+		Committer: e.CommitCommitter,
+	})
+	if err != nil {
+		log.Error(err, "gate-failed preserve: commit failed; not preserving branch")
+		return
+	}
+	if err := repo.Push(ctx, repo.PushOptions{
+		Workspace:       workspace,
+		Branch:          branch,
+		Auth:            auth,
+		ReplaceOnReject: task.Spec.Payload.AllowOverwrite,
+	}); err != nil {
+		log.Error(err, "gate-failed preserve: push failed; branch not preserved",
+			"branch", branch)
+		return
+	}
+
+	r.Extra["gateFailedBranch"] = branch
+	r.Extra["commitSHA"] = sha
+	log.Info("gate-failed preserve: pushed branch for human finish",
+		"branch", branch, "sha", sha, "issue", task.Spec.Payload.Issue)
 }
 
 func (e *NativeAgentLoopExecutor) modelDecidedResult(
