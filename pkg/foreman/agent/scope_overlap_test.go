@@ -63,7 +63,7 @@ const issue510Body = "## Feature Description\n\n" +
 	"doc costs almost nothing and saves a CI round\n"
 
 func TestExtractIssuePathRefs_Issue379(t *testing.T) {
-	got := extractIssuePathRefs(issue379Body)
+	got := extractIssuePathRefs(issue379Body, nil)
 	want := []string{
 		"config/rbac/role.yaml",
 		"charts/llmkube/templates/clusterrole.yaml",
@@ -77,7 +77,7 @@ func TestExtractIssuePathRefs_Issue379(t *testing.T) {
 }
 
 func TestExtractIssuePathRefs_Issue510BareFilenames(t *testing.T) {
-	got := extractIssuePathRefs(issue510Body)
+	got := extractIssuePathRefs(issue510Body, nil)
 	want := []string{"AGENTS.md", "CONTRIBUTING.md"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("extractIssuePathRefs(#510) = %v, want %v", got, want)
@@ -87,14 +87,96 @@ func TestExtractIssuePathRefs_Issue510BareFilenames(t *testing.T) {
 func TestExtractIssuePathRefs_IgnoresCommandsAndAPIGroups(t *testing.T) {
 	body := "Run `make manifests` then check `core/endpoints` and `kubebuilder:rbac` " +
 		"plus `discovery.k8s.io/v1.EndpointSlice` and plain words."
-	if got := extractIssuePathRefs(body); len(got) != 0 {
+	if got := extractIssuePathRefs(body, nil); len(got) != 0 {
 		t.Errorf("commands, API groups, and identifiers must not extract as path refs; got %v", got)
 	}
 }
 
 func TestExtractIssuePathRefs_EmptyBody(t *testing.T) {
-	if got := extractIssuePathRefs(""); len(got) != 0 {
+	if got := extractIssuePathRefs("", nil); len(got) != 0 {
 		t.Errorf("empty body should yield no refs; got %v", got)
+	}
+}
+
+// godotIssueBody mirrors misospace/windowstead#234: a Godot issue that
+// names `.gd` source files. `.gd` is not in the language-agnostic base
+// set, so extraction depends entirely on the task declaring its source
+// language via GateProfile.SourceExtensions.
+const godotIssueBody = "## Problem\n\n" +
+	"`_on_tick()` in `scripts/main.gd` (line 1360) fires before the world is\n" +
+	"ready, so the first tick reads an empty reservation table.\n\n" +
+	"## Fix\n\n" +
+	"Guard the early call and add coverage in `tests/test_tick_integration.gd`\n" +
+	"alongside the existing `tests/test_e2e.gd` suite.\n"
+
+// TestExtractIssuePathRefs_GodotExtensionsFromGateProfile is the
+// windowstead-234 regression: without the task's source extensions the
+// extractor is blind to `.gd`, so the scope-overlap vouch never fires
+// and an honest GO gets demoted by the stochastic issueAsk rail. With
+// sourceExtensions=[".gd"] the named files extract as refs.
+func TestExtractIssuePathRefs_GodotExtensionsFromGateProfile(t *testing.T) {
+	if got := extractIssuePathRefs(godotIssueBody, nil); len(got) != 0 {
+		t.Errorf("without .gd in the source extensions, no .gd refs should extract; got %v", got)
+	}
+	got := extractIssuePathRefs(godotIssueBody, []string{".gd"})
+	want := []string{
+		"scripts/main.gd",
+		"tests/test_tick_integration.gd",
+		"tests/test_e2e.gd",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("extractIssuePathRefs(godot, [.gd]) = %v, want %v", got, want)
+	}
+}
+
+// TestExtractIssuePathRefs_SourceExtensionsUnionWithBase verifies the
+// declared extensions are unioned with, not substituted for, the
+// language-agnostic base: a Godot issue that also names a `.md` doc
+// yields both once `.gd` is declared.
+func TestExtractIssuePathRefs_SourceExtensionsUnionWithBase(t *testing.T) {
+	body := "See `scripts/main.gd` and update `README.md` accordingly."
+	got := extractIssuePathRefs(body, []string{".gd"})
+	want := []string{"scripts/main.gd", "README.md"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("union extraction = %v, want %v", got, want)
+	}
+}
+
+// TestEnforceReviewerScopeOverlap_GodotRefMatchVouches is the end-to-end
+// windowstead-234 case: the diff touches two files the issue names, so
+// scope overlap is non-empty, drift is false, the GO stands, and
+// scopeMatched is populated for the issueAsk vouch to consume.
+func TestEnforceReviewerScopeOverlap_GodotRefMatchVouches(t *testing.T) {
+	diff := []string{"scripts/main.gd", "tests/test_tick_integration.gd"}
+	extra := map[string]any{}
+	got := enforceReviewerScopeOverlap(logr.Discard(), extra, godotIssueBody, diff,
+		foremanv1alpha1.AgenticTaskVerdictGo, []string{".gd"})
+	if got != foremanv1alpha1.AgenticTaskVerdictGo {
+		t.Fatalf("a diff touching issue-named .gd files must not demote; got %v", got)
+	}
+	if v, _ := extra["scopeDriftDetected"].(bool); v {
+		t.Errorf("scopeDriftDetected should be false when .gd refs match")
+	}
+	matched, _ := extra["scopeMatched"].([]string)
+	if !reflect.DeepEqual(matched, []string{"scripts/main.gd", "tests/test_tick_integration.gd"}) {
+		t.Errorf("scopeMatched = %v, want the two touched .gd files", matched)
+	}
+}
+
+// TestEnforceReviewerScopeOverlap_GodotBlindWithoutExtensions locks in
+// the pre-fix failure mode: with no declared extensions the same Godot
+// diff produces zero refs, so the check stays observe-only and writes
+// no scope annotations — leaving the issueAsk vouch nothing to consume.
+func TestEnforceReviewerScopeOverlap_GodotBlindWithoutExtensions(t *testing.T) {
+	diff := []string{"scripts/main.gd", "tests/test_tick_integration.gd"}
+	extra := map[string]any{}
+	got := enforceReviewerScopeOverlap(logr.Discard(), extra, godotIssueBody, diff,
+		foremanv1alpha1.AgenticTaskVerdictGo, nil)
+	if got != foremanv1alpha1.AgenticTaskVerdictGo {
+		t.Fatalf("no refs must pass through; got %v", got)
+	}
+	if _, present := extra["scopeMatched"]; present {
+		t.Errorf("no refs should add no scope annotations; got %v", extra)
 	}
 }
 

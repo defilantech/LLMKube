@@ -31,10 +31,35 @@ import (
 // small: under-extracting is safe (no refs means the scope check stays
 // observe-only) while over-extracting risks false drift flags, so
 // identifiers, commands, and API groups must not slip through.
+//
+// This is the language-agnostic base: docs, config, and Go's own source
+// extension (LLMKube's home turf). A repo's PRIMARY source language is
+// declared per-task via GateProfile.SourceExtensions and unioned in at
+// extraction time (see extractIssuePathRefs), so a Godot repo's `.gd`
+// files or a Rust repo's `.rs` files are recognized as issue refs
+// exactly as the diff-side hasSourceFile guard already recognizes them.
+// Without that union the extractor was blind to every non-Go language,
+// so the scope-overlap vouch (#744) never fired for the polyglot fleet.
 var pathRefExtensions = map[string]bool{
 	"go": true, "md": true, "yaml": true, "yml": true, "sh": true,
 	"json": true, "mod": true, "sum": true, "tmpl": true, "proto": true,
 	"toml": true, "mk": true,
+}
+
+// extensionSet normalizes a GateProfile SourceExtensions list (".gd",
+// ".TS") into the dotless-lowercase keys isPathRef compares against.
+// Returns nil for an empty list so callers can cheaply skip the union.
+func extensionSet(exts []string) map[string]bool {
+	if len(exts) == 0 {
+		return nil
+	}
+	m := make(map[string]bool, len(exts))
+	for _, e := range exts {
+		if e = strings.ToLower(strings.TrimPrefix(e, ".")); e != "" {
+			m[e] = true
+		}
+	}
+	return m
 }
 
 // extractIssuePathRefs pulls concrete file references out of an issue
@@ -46,10 +71,16 @@ var pathRefExtensions = map[string]bool{
 // Escaped backticks (as returned by the GitHub API) are normalized
 // away before tokenizing. Results are deduplicated in first-occurrence
 // order.
-func extractIssuePathRefs(body string) []string {
+//
+// sourceExtensions is the task's declared GateProfile source language
+// (e.g. [".gd"] for Godot); those extensions are unioned with the
+// language-agnostic pathRefExtensions so the extractor sees the repo's
+// primary source files, not only Go and docs.
+func extractIssuePathRefs(body string, sourceExtensions []string) []string {
 	if body == "" {
 		return nil
 	}
+	extraExts := extensionSet(sourceExtensions)
 	normalized := strings.ReplaceAll(body, "\\`", "`")
 	normalized = strings.NewReplacer("`", " ", "(", " ", ")", " ", "[", " ", "]", " ",
 		"{", " ", "}", " ", "\"", " ", "'", " ", ",", " ", ";", " ").Replace(normalized)
@@ -61,7 +92,7 @@ func extractIssuePathRefs(body string) []string {
 		if tok == "" || seen[tok] {
 			continue
 		}
-		if isPathRef(tok) {
+		if isPathRef(tok, extraExts) {
 			seen[tok] = true
 			refs = append(refs, tok)
 		}
@@ -87,10 +118,13 @@ func hasSourceFile(paths []string, exts []string) bool {
 }
 
 // isPathRef reports whether a single cleaned token is a concrete file
-// reference per the rules documented on extractIssuePathRefs.
-func isPathRef(tok string) bool {
+// reference per the rules documented on extractIssuePathRefs. extraExts
+// carries the task's declared source extensions (dotless-lowercase, via
+// extensionSet) so a repo's primary language is recognized alongside the
+// language-agnostic pathRefExtensions base.
+func isPathRef(tok string, extraExts map[string]bool) bool {
 	ext := strings.ToLower(strings.TrimPrefix(path.Ext(tok), "."))
-	if !pathRefExtensions[ext] {
+	if !pathRefExtensions[ext] && !extraExts[ext] {
 		return false
 	}
 	for _, seg := range strings.Split(tok, "/") {
@@ -134,7 +168,7 @@ func enforceReviewerScopeOverlap(
 	if extra == nil || issueBody == "" || len(diffFiles) == 0 {
 		return verdict
 	}
-	refs := extractIssuePathRefs(issueBody)
+	refs := extractIssuePathRefs(issueBody, sourceExtensions)
 	if len(refs) == 0 {
 		return verdict
 	}
