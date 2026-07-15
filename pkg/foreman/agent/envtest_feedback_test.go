@@ -39,9 +39,9 @@ func TestEnvtestFeedbackPrompt(t *testing.T) {
 	got := envtestFeedbackPrompt("controller_test.go:42 Expected true got false")
 	for _, want := range []string{
 		"envtest gate failed",
-		"already contains",           // points the coder at its prior work
-		"go build ./...",             // the only self-check allowed here
-		"controller_test.go:42",      // the gate output is embedded
+		"already contains",      // points the coder at its prior work
+		"go build ./...",        // the only self-check allowed here
+		"controller_test.go:42", // the gate output is embedded
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("prompt missing %q; got:\n%s", want, got)
