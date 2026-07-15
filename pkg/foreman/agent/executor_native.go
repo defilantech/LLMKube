@@ -586,37 +586,8 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 		log.Error(twErr, "transcript write failed; continuing")
 	}
 
-	if loopErr != nil {
-		switch {
-		case errors.Is(loopErr, ErrMaxTurnsExhausted):
-			return e.incompleteResult(start, transcriptRef, loopRes,
-				foremanv1alpha1.FailureMaxTurnsExhausted,
-				"model did not call submit_result within max_turns"), nil
-		case errors.Is(loopErr, ErrAssistantNoToolCalls):
-			return e.incompleteResult(start, transcriptRef, loopRes,
-				foremanv1alpha1.FailureModelMisunderstood,
-				"model returned text without tool_calls; loop cannot make progress"), nil
-		case errors.Is(loopErr, ErrAssistantReasoningOnly):
-			// A thinking model that exhausted its reasoning-only budget
-			// (#650/#651) is a model behavior outcome, not an
-			// infrastructure failure: record INCOMPLETE and persist the
-			// transcript (the reasoning trace is the evidence an
-			// operator needs) instead of bubbling an ExecutorError that
-			// drops both.
-			return e.incompleteResult(start, transcriptRef, loopRes,
-				foremanv1alpha1.FailureModelMisunderstood,
-				"model exhausted its reasoning-only budget without emitting a tool call"), nil
-		case errors.Is(loopErr, context.Canceled), errors.Is(loopErr, context.DeadlineExceeded):
-			return e.incompleteResult(start, transcriptRef, loopRes,
-				foremanv1alpha1.FailureTimeout,
-				loopErr.Error()), nil
-		default:
-			// Anything else is a system / transport failure: bubble up
-			// as an error so the watcher records ExecutorError. The
-			// watcher's execErr path tags this as InfrastructureError
-			// via the FailureReason mapping in patchTerminal.
-			return nil, loopErr
-		}
+	if r, err := e.mapLoopError(start, transcriptRef, loopRes, loopErr); r != nil || err != nil {
+		return r, err
 	}
 
 	if loopRes.Terminal == nil {
@@ -1731,6 +1702,48 @@ func (e *NativeAgentLoopExecutor) envtestGateFailedResult(
 		"turnCount":     lr.Turns,
 	}
 	return r
+}
+
+// mapLoopError converts a loop.Run error into the Result the initial and
+// retry paths both return. It returns (nil, nil) when loopErr is nil (the
+// caller proceeds to inspect the terminal); (result, nil) for a
+// model-behavior outcome recorded as INCOMPLETE; and (nil, loopErr) for a
+// system/transport failure the caller must bubble so the watcher records
+// ExecutorError.
+func (e *NativeAgentLoopExecutor) mapLoopError(
+	start time.Time, tref corev1.ObjectReference, lr *LoopResult, loopErr error,
+) (*Result, error) {
+	if loopErr == nil {
+		return nil, nil
+	}
+	switch {
+	case errors.Is(loopErr, ErrMaxTurnsExhausted):
+		return e.incompleteResult(start, tref, lr,
+			foremanv1alpha1.FailureMaxTurnsExhausted,
+			"model did not call submit_result within max_turns"), nil
+	case errors.Is(loopErr, ErrAssistantNoToolCalls):
+		return e.incompleteResult(start, tref, lr,
+			foremanv1alpha1.FailureModelMisunderstood,
+			"model returned text without tool_calls; loop cannot make progress"), nil
+	case errors.Is(loopErr, ErrAssistantReasoningOnly):
+		// A thinking model that exhausted its reasoning-only budget
+		// (#650/#651) is a model behavior outcome, not an infrastructure
+		// failure: record INCOMPLETE and persist the transcript (the
+		// reasoning trace is the evidence an operator needs) instead of
+		// bubbling an ExecutorError that drops both.
+		return e.incompleteResult(start, tref, lr,
+			foremanv1alpha1.FailureModelMisunderstood,
+			"model exhausted its reasoning-only budget without emitting a tool call"), nil
+	case errors.Is(loopErr, context.Canceled), errors.Is(loopErr, context.DeadlineExceeded):
+		return e.incompleteResult(start, tref, lr,
+			foremanv1alpha1.FailureTimeout, loopErr.Error()), nil
+	default:
+		// Anything else is a system / transport failure: bubble up as an
+		// error so the watcher records ExecutorError. The watcher's execErr
+		// path tags this as InfrastructureError via the FailureReason
+		// mapping in patchTerminal.
+		return nil, loopErr
+	}
 }
 
 // resolveUpstreamForRun mirrors the resolveUpstream selection used at
