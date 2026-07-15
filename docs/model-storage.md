@@ -30,6 +30,7 @@ For multi-node clusters **without** an RWX storage class. Each InferenceService 
 - **RWO**, no explicit StorageClass, so it binds `WaitForFirstConsumer` — on whatever node the inference pod is scheduled to.
 - The pod's **init container downloads the model into that PVC**, so the download and the server land on the same node by construction.
 - Owner-referenced to the InferenceService, so it is garbage-collected when the service is deleted.
+- This mode requires the external provisioner to schedule its helper path on the selected node. On a strictly tainted node where the helper cannot tolerate the taint, use `spec.modelCache.claimName` with a pre-provisioned claim instead (see below).
 
 This makes **heterogeneous, multi-node clusters work without RWX**: an InferenceService whose accelerator is on node B (e.g. an AMD/Vulkan node distinct from the operator's node) schedules on node B and caches its model there (see #728).
 
@@ -38,7 +39,15 @@ modelCache:
   mode: perService
 ```
 
-Trade-offs: models are **not deduplicated across InferenceServices** (each service downloads and stores its own copy), and `llmkube cache list` is not per-isvc cache aware yet. Prefer `shared` + an RWX storage class on multi-node clusters that have one.
+Trade-offs: models are **not deduplicated across InferenceServices** (each service downloads and stores its own copy). Prefer `shared` + an RWX storage class on multi-node clusters that have one.
+
+### Pre-provisioned claim (`spec.modelCache.claimName`)
+
+Strict-taint users can use `spec.modelCache.claimName` with a pre-provisioned, node-aligned PVC. This path does not depend on dynamic helper scheduling: the claim already exists and is bound, so no external provisioner helper pod needs to land on the tainted node. The inference pod's init containers handle the download into the existing claim.
+
+### Cache inspection
+
+`llmkube cache list` discovers the shared cache and operator-managed per-service cache PVCs. A user-managed `spec.modelCache.claimName` PVC is outside the operator's cache label/discovery contract and may not appear in the listing.
 
 ## Choosing a mode
 

@@ -285,15 +285,18 @@ modelCache:
   #     schedules to. Use this as the opt-in escape hatch for multi-node clusters
   #     that do NOT have an RWX storage class: the cache co-locates with the
   #     workload instead of pinning to one node (#728). The tradeoff is no
-  #     cross-isvc dedup (each InferenceService downloads its own copy) and
-  #     `cache list` is not per-isvc aware yet.
+  #     cross-isvc dedup (each InferenceService downloads its own copy).
+  #     `llmkube cache list` discovers operator-managed per-service cache PVCs;
+  #     user-managed `spec.modelCache.claimName` PVCs are outside that discovery
+  #     contract.
   mode: shared
   # Storage size for each model cache PVC
   size: 100Gi
   # Storage class (leave empty for the cluster default). For shared on a
   # multi-node cluster use an RWX class; for perService the default class should
   # use volumeBindingMode WaitForFirstConsumer so the PVC binds on the serving
-  # node.
+  # node. On a hard-tainted node, the storage provisioner's helper path must also
+  # tolerate the taint; otherwise use a pre-provisioned claim.
   storageClass: ""
   # Access mode for the shared cache PVC (only used when mode=shared):
   # ReadWriteOnce (single-node) or ReadWriteMany (multi-node with NFS/EFS).
