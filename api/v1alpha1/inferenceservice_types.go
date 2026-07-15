@@ -392,6 +392,31 @@ type InferenceServiceSpec struct {
 	// +optional
 	TurboQuantBits *int32 `json:"turboQuantBits,omitempty"`
 
+	// PagedSSDCacheDir sets the directory for the oMLX paged SSD cache.
+	// Maps to oMLX --paged-ssd-cache-dir. When set, the oMLX daemon uses
+	// a paged cache backed by the specified directory, allowing models to
+	// exceed available RAM by paging KV cache blocks to SSD. The directory
+	// must exist and be writable by the oMLX process. Only meaningful for
+	// the omlx runtime; ignored by llamacpp and other runtimes.
+	// +optional
+	PagedSSDCacheDir *string `json:"pagedSSDCacheDir,omitempty"`
+
+	// HotCacheMaxSize sets the maximum size of the oMLX hot cache.
+	// Maps to oMLX --hot-cache-max-size. The hot cache holds recently used
+	// KV cache blocks in RAM for fast access. A string value like "100GB"
+	// or "50GB". Only meaningful for the omlx runtime; ignored by llamacpp
+	// and other runtimes.
+	// +optional
+	HotCacheMaxSize *string `json:"hotCacheMaxSize,omitempty"`
+
+	// PagedSSDCacheMaxSize sets the maximum size of the oMLX paged SSD cache.
+	// Maps to oMLX --paged-ssd-cache-max-size. The paged cache holds KV cache
+	// blocks that have been evicted from RAM to SSD. A string value like
+	// "200GB" or "500GB". Only meaningful for the omlx runtime; ignored by
+	// llamacpp and other runtimes.
+	// +optional
+	PagedSSDCacheMaxSize *string `json:"pagedSSDCacheMaxSize,omitempty"`
+
 	// Command overrides the container entrypoint.
 	// Only used when Runtime is "generic" or for advanced customization.
 	// +optional

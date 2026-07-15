@@ -128,6 +128,23 @@ type ExecutorConfig struct {
 	// dev build (6-bit and 8-bit options).
 	// +optional
 	TurboQuantBits int
+
+	// PagedSSDCacheDir maps to oMLX --paged-ssd-cache-dir. When non-empty,
+	// the oMLX daemon uses a paged cache backed by the specified directory,
+	// allowing models to exceed available RAM by paging KV cache blocks to
+	// SSD. Only meaningful for the omlx runtime; ignored by llamacpp and
+	// other runtimes.
+	PagedSSDCacheDir string
+
+	// HotCacheMaxSize maps to oMLX --hot-cache-max-size. A string value like
+	// "100GB" or "50GB". Only meaningful for the omlx runtime; ignored by
+	// llamacpp and other runtimes.
+	HotCacheMaxSize string
+
+	// PagedSSDCacheMaxSize maps to oMLX --paged-ssd-cache-max-size. A string
+	// value like "200GB" or "500GB". Only meaningful for the omlx runtime;
+	// ignored by llamacpp and other runtimes.
+	PagedSSDCacheMaxSize string
 }
 
 // ProcessExecutor is the interface that both llama-server and oMLX executors

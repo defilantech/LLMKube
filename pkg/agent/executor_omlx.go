@@ -55,6 +55,18 @@ type OMLXExecutor struct {
 	// daemon (--kv-cache-quant). Set once when the daemon starts; shared
 	// across all models served by this daemon. Zero means no TurboQuant.
 	turboQuantBits int
+	// pagedSSDCacheDir is the directory for the oMLX paged SSD cache
+	// (--paged-ssd-cache-dir). Set once when the daemon starts; shared
+	// across all models served by this daemon. Empty means no paged SSD cache.
+	pagedSSDCacheDir string
+	// hotCacheMaxSize is the maximum size of the oMLX hot cache
+	// (--hot-cache-max-size). Set once when the daemon starts; shared
+	// across all models served by this daemon. Empty means no limit.
+	hotCacheMaxSize string
+	// pagedSSDCacheMaxSize is the maximum size of the oMLX paged SSD cache
+	// (--paged-ssd-cache-max-size). Set once when the daemon starts; shared
+	// across all models served by this daemon. Empty means no limit.
+	pagedSSDCacheMaxSize string
 }
 
 // NewOMLXExecutor creates an executor that manages models via the oMLX daemon.
@@ -116,6 +128,9 @@ func (e *OMLXExecutor) StartProcess(ctx context.Context, config ExecutorConfig) 
 	// setting applied once when the daemon starts; shared across all models.
 	e.mu.Lock()
 	e.turboQuantBits = config.TurboQuantBits
+	e.pagedSSDCacheDir = config.PagedSSDCacheDir
+	e.hotCacheMaxSize = config.HotCacheMaxSize
+	e.pagedSSDCacheMaxSize = config.PagedSSDCacheMaxSize
 	e.mu.Unlock()
 
 	// Ensure the oMLX daemon is running
@@ -202,6 +217,61 @@ func (e *OMLXExecutor) UnloadModel(ctx context.Context, modelID string) error {
 	return nil
 }
 
+// buildOMLXServeArgs constructs the command-line argument vector for the
+// oMLX daemon serve subcommand. It is split out from ensureOMLXRunning so it
+// can be unit tested without spawning a real process. The function is pure:
+// it takes the model directory, port, and a config struct and returns the
+// full arg slice. Conditional flags are emitted only when their corresponding
+// config field is set (non-empty for strings, > 0 for turboQuantBits).
+func buildOMLXServeArgs(modelDir string, port int, cfg omlxServeConfig) []string {
+	args := []string{
+		"serve",
+		"--model-dir", modelDir,
+		"--port", fmt.Sprint(port),
+		"--host", "0.0.0.0",
+	}
+
+	// TurboQuant KV cache quantization (oMLX v0.3.4+). Maps to --kv-cache-quant
+	// flag. The bits value (3, 6, or 8) is set via StartProcess before this
+	// call. When turboQuantBits is set, the flag is emitted; when omitted,
+	// oMLX uses its default (unquantized).
+	if cfg.turboQuantBits > 0 {
+		args = append(args, "--kv-cache-quant", fmt.Sprint(cfg.turboQuantBits))
+	}
+
+	// Paged SSD cache directory. Maps to --paged-ssd-cache-dir. When set,
+	// the oMLX daemon uses a paged cache backed by the specified directory,
+	// allowing models to exceed available RAM by paging KV cache blocks to SSD.
+	if cfg.pagedSSDCacheDir != "" {
+		args = append(args, "--paged-ssd-cache-dir", cfg.pagedSSDCacheDir)
+	}
+
+	// Hot cache max size. Maps to --hot-cache-max-size. A string value like
+	// "100GB" or "50GB". When set, limits the size of the hot cache in RAM.
+	if cfg.hotCacheMaxSize != "" {
+		args = append(args, "--hot-cache-max-size", cfg.hotCacheMaxSize)
+	}
+
+	// Paged SSD cache max size. Maps to --paged-ssd-cache-max-size. A string
+	// value like "200GB" or "500GB". When set, limits the size of the paged
+	// cache on SSD.
+	if cfg.pagedSSDCacheMaxSize != "" {
+		args = append(args, "--paged-ssd-cache-max-size", cfg.pagedSSDCacheMaxSize)
+	}
+
+	return args
+}
+
+// omlxServeConfig holds the daemon-level configuration for the oMLX serve
+// subcommand. It mirrors the fields on OMLXExecutor that are set once when
+// the daemon starts and shared across all models.
+type omlxServeConfig struct {
+	turboQuantBits       int
+	pagedSSDCacheDir     string
+	hotCacheMaxSize      string
+	pagedSSDCacheMaxSize string
+}
+
 // ensureOMLXRunning starts the oMLX daemon if it is not already responding.
 func (e *OMLXExecutor) ensureOMLXRunning(ctx context.Context) error {
 	e.mu.Lock()
@@ -215,19 +285,13 @@ func (e *OMLXExecutor) ensureOMLXRunning(ctx context.Context) error {
 
 	e.logger.Infow("starting oMLX daemon", "bin", e.omlxBin, "modelDir", e.modelDir, "port", e.port)
 
-	cmd := exec.Command(e.omlxBin, "serve",
-		"--model-dir", e.modelDir,
-		"--port", fmt.Sprint(e.port),
-		"--host", "0.0.0.0",
-	)
-
-	// TurboQuant KV cache quantization (oMLX v0.3.4+). Maps to --kv-cache-quant
-	// flag. The bits value (3, 6, or 8) is set via StartProcess before this
-	// call. When turboQuantBits is set, the flag is emitted; when omitted,
-	// oMLX uses its default (unquantized).
-	if e.turboQuantBits > 0 {
-		cmd.Args = append(cmd.Args, "--kv-cache-quant", fmt.Sprint(e.turboQuantBits))
+	cfg := omlxServeConfig{
+		turboQuantBits:       e.turboQuantBits,
+		pagedSSDCacheDir:     e.pagedSSDCacheDir,
+		hotCacheMaxSize:      e.hotCacheMaxSize,
+		pagedSSDCacheMaxSize: e.pagedSSDCacheMaxSize,
 	}
+	cmd := exec.Command(e.omlxBin, buildOMLXServeArgs(e.modelDir, e.port, cfg)...)
 	cmd.Env = os.Environ()
 
 	if err := cmd.Start(); err != nil {
