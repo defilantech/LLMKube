@@ -120,11 +120,11 @@ until it returns), so each retry amends the prior attempt's files in place.
   prompt, `VerifyTerminal` fast gate, model profile, budgets) is unchanged, so
   the retry still runs behind the fast gate and the coder is not blind.
 
-- **`runLoop` seam.** A field on `NativeAgentLoopExecutor`,
-  `runLoop func(context.Context, LoopConfig) (*LoopResult, error)`, defaulting to
-  `loop.Run`. The initial call at line ~583 and the retry call both route through
-  it. This is the only loop-adjacent change and exists purely so tests can inject
-  a fake loop. No behavior change to `loop.Run` itself.
+- **Retry implementation and testing.** The retry re-uses the same per-task `loop`
+  instance and calls `loop.Run` directly at both the initial and retry call sites;
+  no new production seam. The retry is tested end-to-end through the existing
+  `scriptedOAI` (scripted chat-completions) + `RegistryFactory`/fake `EnvtestJobRunner`
+  harness, which serves successive responses across the initial and retry `loop.Run` calls.
 
 ## Data flow
 

@@ -758,7 +758,10 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 		// that does not GO its own fix surfaces that terminal without pushing.
 		var loopErr error
 		loopRes, loopErr = loop.Run(ctx, retryCfg(cfg, feedback))
-		transcriptRef, _ = WriteTranscript(ctx, e.Client, task, loopRes)
+		transcriptRef, twErr := WriteTranscript(ctx, e.Client, task, loopRes)
+		if twErr != nil {
+			log.Error(twErr, "transcript write failed; continuing")
+		}
 		if r, err := e.mapLoopError(start, transcriptRef, loopRes, loopErr); r != nil || err != nil {
 			return r, err
 		}
