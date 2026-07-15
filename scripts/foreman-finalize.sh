@@ -167,6 +167,19 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# regen runs the repo's codegen targets. foreman-chart-crds regenerates the
+# Foreman chart CRDs via a SEPARATE target that only exists in repos shipping
+# Foreman; guard on its presence so this stays portable and so a Foreman-CRD
+# change does not silently drift (the chart copy is not covered by chart-crds).
+regen() {
+	make manifests >/dev/null
+	make generate >/dev/null
+	make chart-crds >/dev/null
+	if make -n foreman-chart-crds >/dev/null 2>&1; then
+		make foreman-chart-crds >/dev/null
+	fi
+}
+
 # ---------------------------------------------------------------------------
 # 1. preflight
 # ---------------------------------------------------------------------------
@@ -176,8 +189,11 @@ ORIG_REF="$(git rev-parse --abbrev-ref HEAD)"
 command -v gh >/dev/null || die "gh (GitHub CLI) is required"
 gh auth status >/dev/null 2>&1 || die "gh is not authenticated (run: gh auth login)"
 
-[[ -z "$(git status --porcelain --untracked-files=no)" ]] ||
-	die "working tree has uncommitted changes to tracked files; commit or stash first"
+# A fully clean tree is required: the assemble step below stages with `git add -A`,
+# so a stray untracked file would otherwise be swept into the finalize commit.
+# (Gitignored build artifacts are not reported by --porcelain and are fine.)
+[[ -z "$(git status --porcelain)" ]] ||
+	die "working tree is not clean (uncommitted or untracked files present); commit, stash, or remove them first — untracked files would otherwise be swept into the finalize commit"
 
 info "fetching base ($BASE) and fork branch ($FORK/$BRANCH)"
 git fetch --quiet "$BASE_REMOTE" "$BASE_BRANCH"
@@ -288,10 +304,8 @@ for f in "${SOURCE[@]}"; do
 	fi
 done
 
-info "regenerating derived artifacts (make manifests generate chart-crds)"
-make manifests >/dev/null
-make generate >/dev/null
-make chart-crds >/dev/null
+info "regenerating derived artifacts"
+regen
 
 # ---------------------------------------------------------------------------
 # 5. verify (hard stops)
@@ -299,9 +313,7 @@ make chart-crds >/dev/null
 git add -A
 
 info "checking codegen idempotency"
-make manifests >/dev/null
-make generate >/dev/null
-make chart-crds >/dev/null
+regen
 git diff --quiet || die "codegen is not idempotent (a second regen produced changes); investigate before finalizing"
 
 info "go build ./..."
@@ -338,6 +350,11 @@ git commit --quiet -s -F "$msg_file"
 rm -f "$msg_file"
 git log -1 --format=%b | grep -q '^Signed-off-by:' || die "commit is missing a Signed-off-by trailer"
 
+# PR title tracks the ACTUAL commit subject, so --message-file drives both the
+# commit and the PR title (a partial slice can say "engine" / use Refs, not the
+# derived full-issue subject).
+PR_TITLE="$(git log -1 --format=%s HEAD)"
+
 # ---------------------------------------------------------------------------
 # 7. PR body
 # ---------------------------------------------------------------------------
@@ -357,7 +374,7 @@ else
 		echo "## Testing"
 		echo
 		echo "- \`go build\` / \`go vet\` clean; \`make validate-samples\` passes."
-		echo "- \`make manifests && make generate && make chart-crds\` produce no drift."
+		echo "- CRD/codegen regeneration (manifests, generate, chart-crds, foreman-chart-crds) produces no drift."
 		if [[ "$FULL_TEST" == "1" ]]; then
 			echo "- \`make test\` (envtest) passes locally."
 		else
@@ -382,7 +399,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
 	info "DRY RUN — nothing pushed. Planned actions:"
 	echo "  git push -u $FORK $FINAL_BRANCH"
 	echo "  gh pr create --repo $REPO --base $BASE_BRANCH --head ${FORK_OWNER}:${FINAL_BRANCH} \\"
-	echo "    --title \"$SUBJECT\" --body-file <generated>"
+	echo "    --title \"$PR_TITLE\" --body-file <generated>"
 	echo
 	echo "----- commit message -----"
 	git log -1 --format='%B' HEAD
@@ -398,7 +415,7 @@ git push --quiet -u "$FORK" "$FINAL_BRANCH"
 info "opening PR into $REPO ($BASE_BRANCH)"
 pr_url="$(gh pr create --repo "$REPO" --base "$BASE_BRANCH" \
 	--head "${FORK_OWNER}:${FINAL_BRANCH}" \
-	--title "$SUBJECT" --body-file "$pr_body_file")"
+	--title "$PR_TITLE" --body-file "$pr_body_file")"
 rm -f "$pr_body_file"
 
 echo
