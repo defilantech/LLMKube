@@ -276,6 +276,11 @@ func (in *AgentSpec) DeepCopyInto(out *AgentSpec) {
 		*out = new(string)
 		**out = **in
 	}
+	if in.MaxEnvtestIterations != nil {
+		in, out := &in.MaxEnvtestIterations, &out.MaxEnvtestIterations
+		*out = new(int32)
+		**out = **in
+	}
 	if in.StuckLoopDetection != nil {
 		in, out := &in.StuckLoopDetection, &out.StuckLoopDetection
 		*out = new(StuckLoopDetectionSpec)
