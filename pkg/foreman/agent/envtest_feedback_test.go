@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"strings"
 	"testing"
 
 	foremanv1alpha1 "github.com/defilantech/llmkube/api/foreman/v1alpha1"
@@ -32,4 +33,42 @@ func TestEffectiveMaxEnvtestIterations(t *testing.T) {
 			t.Fatalf("got %d want 1", got)
 		}
 	})
+}
+
+func TestEnvtestFeedbackPrompt(t *testing.T) {
+	got := envtestFeedbackPrompt("controller_test.go:42 Expected true got false")
+	for _, want := range []string{
+		"envtest gate failed",
+		"already contains",           // points the coder at its prior work
+		"go build ./...",             // the only self-check allowed here
+		"controller_test.go:42",      // the gate output is embedded
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("prompt missing %q; got:\n%s", want, got)
+		}
+	}
+}
+
+func TestRetryCfgAppendsFeedbackAndPreservesFields(t *testing.T) {
+	base := LoopConfig{
+		SystemPrompt:     "sys",
+		UserPrompt:       "ORIGINAL ISSUE CONTEXT",
+		MaxTurns:         50,
+		MaxVerifyRetries: 3,
+	}
+	out := retryCfg(base, "GATE OUTPUT HERE")
+
+	if !strings.HasPrefix(out.UserPrompt, "ORIGINAL ISSUE CONTEXT") {
+		t.Fatalf("retry prompt dropped the original issue context: %q", out.UserPrompt)
+	}
+	if !strings.Contains(out.UserPrompt, "GATE OUTPUT HERE") {
+		t.Fatalf("retry prompt missing the gate feedback")
+	}
+	if out.SystemPrompt != base.SystemPrompt || out.MaxTurns != base.MaxTurns ||
+		out.MaxVerifyRetries != base.MaxVerifyRetries {
+		t.Fatalf("retryCfg mutated a non-prompt field: %+v", out)
+	}
+	if base.UserPrompt != "ORIGINAL ISSUE CONTEXT" {
+		t.Fatalf("retryCfg mutated the base config in place")
+	}
 }
