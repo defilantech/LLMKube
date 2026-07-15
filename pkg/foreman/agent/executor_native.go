@@ -733,22 +733,18 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 		}
 		sha = attemptSHA
 
-		// Post-push envtest gate (#859): verify envtest-backed packages in a
-		// clean-room Job on the now-pushed branch. A gate green, a could-not-run
-		// (ran=false), or an untouched change all leave the GO standing.
-		failed, feedback := evaluatePostPushEnvtest(
-			ctx, envtestTouched, e.EnvtestJobRunner,
-			task.Namespace, task.Name,
-			task.Spec.Payload.Repo, branch, e.GitRemoteURL,
-		)
-		if !failed {
+		// Post-push envtest gate (#859/#768): run the gate and classify this
+		// attempt. settled -> the GO stands; done != nil -> a terminal downgrade
+		// (an unverifiable retry or the bound exhausted); otherwise retry the
+		// coder with feedback.
+		settled, done, feedback := e.postPushGateDecision(
+			ctx, envtestTouched, task, branch, sha, attempt, maxEnvtestIters,
+			start, transcriptRef, loopRes, gateAdvisories)
+		if settled {
 			break
 		}
-		if attempt >= maxEnvtestIters {
-			// Bound exhausted: fall back to the pre-#768 downgrade (#859).
-			r := e.envtestGateFailedResult(start, transcriptRef, loopRes, branch, sha, feedback)
-			attachGateAdvisories(r.Extra, gateAdvisories)
-			return r, nil
+		if done != nil {
+			return done, nil
 		}
 
 		// Retry (#768): re-run the coder against the same workspace with the
@@ -801,6 +797,59 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 	attachGateAdvisories(r.Extra, gateAdvisories)
 	r = e.applyWorkClassPolicyForTask(ctx, log, task, agent, workspace, evidenceBaseSHA, loopRes, r)
 	return r, nil
+}
+
+// postPushGateDecision runs the post-push envtest gate for one attempt and
+// classifies the result into exactly one of three outcomes for the #768 retry
+// loop: settle as GO (settled=true), terminate with a downgrade Result
+// (done != nil), or retry the coder (settled=false, done=nil, feedback carries
+// the gate output). Extracted from runLLMPath so it stays under the gocyclo
+// ceiling and the two downgrade sites share one construction.
+//
+// A gate that passed, was skipped (untouched change / no runner), or -- on the
+// FIRST attempt only -- could not be verified settles as GO (attempt 0 is the
+// pre-#768 could-not-verify behavior, byte-identical). A could-not-verify gate
+// on a RETRY does NOT settle: a prior attempt already failed the gate and the
+// coder cannot fix an infra/collision failure, so it downgrades rather than
+// emit a false GO (the #768 validation caught a retry gate Job name collision
+// landing a failing branch as GO). A failed gate retries until the bound, then
+// downgrades.
+func (e *NativeAgentLoopExecutor) postPushGateDecision(
+	ctx context.Context, envtestTouched bool, task *foremanv1alpha1.AgenticTask,
+	branch, sha string, attempt, maxEnvtestIters int,
+	start time.Time, transcriptRef corev1.ObjectReference, loopRes *LoopResult,
+	gateAdvisories *[]advisory,
+) (settled bool, done *Result, feedback string) {
+	gate, fb := evaluatePostPushEnvtest(
+		ctx, envtestTouched, e.EnvtestJobRunner,
+		task.Namespace, task.Name,
+		task.Spec.Payload.Repo, branch, e.GitRemoteURL,
+	)
+	if gate == envtestGateOK || (gate == envtestGateUnverified && attempt == 0) {
+		return true, nil, ""
+	}
+	if gate == envtestGateUnverified {
+		return false, e.envtestGateDowngrade(start, transcriptRef, loopRes, branch, sha,
+			"envtest re-gate could not be run to a verdict; not landing an unverified retry",
+			gateAdvisories), ""
+	}
+	// gate == envtestGateFailed.
+	if attempt >= maxEnvtestIters {
+		return false, e.envtestGateDowngrade(start, transcriptRef, loopRes, branch, sha, fb, gateAdvisories), ""
+	}
+	return false, nil, fb
+}
+
+// envtestGateDowngrade builds the INCOMPLETE / ENVTEST-GATE-FAILED result with
+// gate advisories attached, shared by the unverified-retry and bound-exhausted
+// downgrade sites in postPushGateDecision.
+func (e *NativeAgentLoopExecutor) envtestGateDowngrade(
+	start time.Time, transcriptRef corev1.ObjectReference, loopRes *LoopResult,
+	branch, sha, feedback string, gateAdvisories *[]advisory,
+) *Result {
+	r := e.envtestGateFailedResult(start, transcriptRef, loopRes, branch, sha, feedback)
+	attachGateAdvisories(r.Extra, gateAdvisories)
+	return r
 }
 
 // commitPushAttempt settles the working tree, commits the current terminal's

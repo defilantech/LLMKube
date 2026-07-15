@@ -150,35 +150,76 @@ func envtestLoopExecutor(
 	}
 }
 
-// The gate fails on attempt 0; with the default bound (1) the executor
-// re-runs the coder against the same workspace and re-gates, which passes,
-// so the task settles GO after exactly two gate calls.
-func TestNativeExecutor_EnvtestLoop_ConvergesAfterOneRetry(t *testing.T) {
+// envtestLoopCase configures one end-to-end envtest-loop scenario. run drives
+// it to a terminal Result so each test body is just its inputs and assertions.
+type envtestLoopCase struct {
+	name        string
+	maxEnvtest  *int32   // nil -> default bound (1 retry)
+	oaiBodies   []string // scripted chat-completions, in order
+	regVerdicts []string // submit_result verdict per coder pass
+	gate        []envtestGateResult
+}
+
+func (tc envtestLoopCase) run(t *testing.T) (*foremanagent.Result, int) {
+	t.Helper()
 	gitOrSkip(t)
 	root := t.TempDir()
 	bare := initBareWithSeed(t, root)
-	oaiSrv := scriptedOAI(t, []string{submitGoBody}) // GO on every turn
-	agent, task := taskAndAgent("envtest-converge")
-
+	oaiSrv := scriptedOAI(t, tc.oaiBodies)
+	agent, task := taskAndAgent(tc.name)
+	agent.Spec.MaxEnvtestIterations = tc.maxEnvtest
 	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
 		WithObjects(agent, task).Build()
-
-	reg := &seqEnvtestRegistry{verdicts: []string{"GO"}}
-	runner := &scriptedEnvtestRunner{results: []envtestGateResult{
-		{pass: false, ran: true, feedback: "controller_test.go:1 boom"}, // attempt 0 fails
-		{pass: true, ran: true}, // retry passes
-	}}
-
+	reg := &seqEnvtestRegistry{verdicts: tc.regVerdicts}
+	runner := &scriptedEnvtestRunner{results: tc.gate}
 	e := envtestLoopExecutor(t, root, bare, oaiSrv.URL, c, runner, reg)
 	res, err := e.Execute(context.Background(), task)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
+	return res, runner.calls
+}
+
+// The gate fails on attempt 0; with the default bound (1) the executor
+// re-runs the coder against the same workspace and re-gates, which passes,
+// so the task settles GO after exactly two gate calls.
+func TestNativeExecutor_EnvtestLoop_ConvergesAfterOneRetry(t *testing.T) {
+	res, calls := envtestLoopCase{
+		name: "envtest-converge", oaiBodies: []string{submitGoBody},
+		regVerdicts: []string{"GO"},
+		gate: []envtestGateResult{
+			{pass: false, ran: true, feedback: "controller_test.go:1 boom"}, // attempt 0 fails
+			{pass: true, ran: true}, // retry passes
+		},
+	}.run(t)
 	if res.Verdict != foremanv1alpha1.AgenticTaskVerdictGo {
 		t.Fatalf("verdict: want GO got %s (result=%+v)", res.Verdict, res)
 	}
-	if runner.calls != 2 {
-		t.Fatalf("gate calls: want 2 got %d", runner.calls)
+	if calls != 2 {
+		t.Fatalf("gate calls: want 2 got %d", calls)
+	}
+}
+
+// A retry whose re-gate cannot be run to a verdict (ran=false: e.g. a gate
+// Job name collision with the still-present attempt-0 Job) must NOT land as
+// GO. A prior attempt already failed the gate, so the executor downgrades to
+// INCOMPLETE rather than let an unverified branch through. Regression for the
+// #768 validation false-GO: the pre-fix loop treated could-not-run as "GO
+// stands" on every attempt, so a failing branch landed GO.
+func TestNativeExecutor_EnvtestLoop_UnverifiedRetryDoesNotFalseGo(t *testing.T) {
+	res, calls := envtestLoopCase{
+		name: "envtest-unverified", oaiBodies: []string{submitGoBody},
+		regVerdicts: []string{"GO"},
+		gate: []envtestGateResult{
+			{pass: false, ran: true, feedback: "attempt 0 fails"}, // attempt 0: real gate failure -> retry
+			{pass: false, ran: false},                             // retry: could-not-run (collision/infra)
+		},
+	}.run(t)
+	if res.Verdict != foremanv1alpha1.AgenticTaskVerdictIncomplete {
+		t.Fatalf("verdict: want INCOMPLETE (unverified retry must not GO) got %s (result=%+v)", res.Verdict, res)
+	}
+	if calls != 2 {
+		t.Fatalf("gate calls: want 2 got %d", calls)
 	}
 }
 
@@ -186,32 +227,17 @@ func TestNativeExecutor_EnvtestLoop_ConvergesAfterOneRetry(t *testing.T) {
 // falls back to the pre-#768 ENVTEST-GATE-FAILED / INCOMPLETE outcome and
 // never re-runs the coder.
 func TestNativeExecutor_EnvtestLoop_IncompleteAfterCapExhausted(t *testing.T) {
-	gitOrSkip(t)
-	root := t.TempDir()
-	bare := initBareWithSeed(t, root)
-	oaiSrv := scriptedOAI(t, []string{submitGoBody})
-	agent, task := taskAndAgent("envtest-cap")
 	zero := int32(0)
-	agent.Spec.MaxEnvtestIterations = &zero // no retries: fail on first gate failure
-
-	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
-		WithObjects(agent, task).Build()
-
-	reg := &seqEnvtestRegistry{verdicts: []string{"GO"}}
-	runner := &scriptedEnvtestRunner{results: []envtestGateResult{
-		{pass: false, ran: true, feedback: "still broken"},
-	}}
-
-	e := envtestLoopExecutor(t, root, bare, oaiSrv.URL, c, runner, reg)
-	res, err := e.Execute(context.Background(), task)
-	if err != nil {
-		t.Fatalf("Execute: %v", err)
-	}
+	res, calls := envtestLoopCase{
+		name: "envtest-cap", maxEnvtest: &zero, oaiBodies: []string{submitGoBody},
+		regVerdicts: []string{"GO"},
+		gate:        []envtestGateResult{{pass: false, ran: true, feedback: "still broken"}},
+	}.run(t)
 	if res.Verdict != foremanv1alpha1.AgenticTaskVerdictIncomplete {
 		t.Fatalf("verdict: want INCOMPLETE got %s", res.Verdict)
 	}
-	if runner.calls != 1 {
-		t.Fatalf("gate calls with cap 0: want 1 got %d", runner.calls)
+	if calls != 1 {
+		t.Fatalf("gate calls with cap 0: want 1 got %d", calls)
 	}
 	if got, _ := res.Extra["outcome"].(string); got != "ENVTEST-GATE-FAILED" {
 		t.Fatalf("outcome: want ENVTEST-GATE-FAILED got %q", got)
@@ -221,26 +247,12 @@ func TestNativeExecutor_EnvtestLoop_IncompleteAfterCapExhausted(t *testing.T) {
 // The retry coder returns NO-GO: the executor surfaces that terminal rather
 // than pushing work the coder did not stand behind.
 func TestNativeExecutor_EnvtestLoop_NoGoOnRetrySurfaces(t *testing.T) {
-	gitOrSkip(t)
-	root := t.TempDir()
-	bare := initBareWithSeed(t, root)
-	oaiSrv := scriptedOAI(t, []string{submitGoBody}) // OAI only needs to call submit_result each turn
-	agent, task := taskAndAgent("envtest-nogo")
-
-	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
-		WithObjects(agent, task).Build()
-
-	// GO on attempt 0 (edits committed + pushed), NO-GO on the retry.
-	reg := &seqEnvtestRegistry{verdicts: []string{"GO", "NO-GO"}}
-	runner := &scriptedEnvtestRunner{results: []envtestGateResult{
-		{pass: false, ran: true, feedback: "boom"},
-	}}
-
-	e := envtestLoopExecutor(t, root, bare, oaiSrv.URL, c, runner, reg)
-	res, err := e.Execute(context.Background(), task)
-	if err != nil {
-		t.Fatalf("Execute: %v", err)
-	}
+	res, _ := envtestLoopCase{
+		name: "envtest-nogo", oaiBodies: []string{submitGoBody},
+		// GO on attempt 0 (edits committed + pushed), NO-GO on the retry.
+		regVerdicts: []string{"GO", "NO-GO"},
+		gate:        []envtestGateResult{{pass: false, ran: true, feedback: "boom"}},
+	}.run(t)
 	if res.Verdict != foremanv1alpha1.AgenticTaskVerdictNoGo {
 		t.Fatalf("verdict: want NO-GO got %s", res.Verdict)
 	}

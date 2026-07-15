@@ -26,26 +26,46 @@ type EnvtestJobRunner interface {
 	) (pass bool, ran bool, feedback string)
 }
 
-// evaluatePostPushEnvtest decides whether a pushed GO should be downgraded
-// because its envtest packages fail in the clean-room gate Job. It returns
-// (failed, feedback): failed is true ONLY when the change touched an envtest
-// package, the Job ran, and it did not pass. A nil runner, an untouched
-// change, or a could-not-run (ran=false) never downgrades.
+// envtestGateVerdict is the outcome of one post-push envtest gate attempt.
+type envtestGateVerdict int
+
+const (
+	// envtestGateOK: the gate passed, the change touched no envtest package,
+	// or no runner is wired. The GO may stand.
+	envtestGateOK envtestGateVerdict = iota
+	// envtestGateFailed: the gate ran and at least one check failed. Feed the
+	// output back and retry, or downgrade at the iteration bound.
+	envtestGateFailed
+	// envtestGateUnverified: the change touched an envtest package and a runner
+	// is wired, but the gate could not be run to a verdict (Job submit/poll
+	// error, name collision, timeout). On the FIRST attempt the GO stands (the
+	// pre-#768 could-not-verify behavior). On a retry it must NOT: a prior
+	// attempt already failed the gate, so an unverifiable re-gate cannot confirm
+	// the fix, and letting it stand emits a false GO (#768 validation).
+	envtestGateUnverified
+)
+
+// evaluatePostPushEnvtest classifies the post-push envtest gate for one
+// attempt. It returns (verdict, feedback): envtestGateFailed carries the log
+// tail; envtestGateOK covers pass / untouched / nil-runner; envtestGateUnverified
+// means the gate could not be run to a verdict. The caller decides what an
+// unverified gate means by attempt number (GO stands on attempt 0, not on a
+// retry).
 func evaluatePostPushEnvtest(
 	ctx context.Context,
 	envtestTouched bool,
 	runner EnvtestJobRunner,
 	taskNamespace, taskName, repository, branch, cloneURL string,
-) (failed bool, feedback string) {
+) (envtestGateVerdict, string) {
 	if !envtestTouched || runner == nil {
-		return false, ""
+		return envtestGateOK, ""
 	}
 	pass, ran, fb := runner.Run(ctx, taskNamespace, taskName, repository, branch, cloneURL)
 	if !ran {
-		return false, ""
+		return envtestGateUnverified, ""
 	}
 	if !pass {
-		return true, fb
+		return envtestGateFailed, fb
 	}
-	return false, ""
+	return envtestGateOK, ""
 }

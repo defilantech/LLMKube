@@ -478,17 +478,32 @@ func applyConfigDefaults(c RunGateJobToolConfig) RunGateJobToolConfig {
 	}
 	if c.NameFn == nil {
 		c.NameFn = func(taskName string) string {
-			// foreman-gate-<task>-<unix-ms>; the timestamp suffix is
-			// enough collision avoidance for the 1-job-at-a-time-per-
-			// foreman-agent invariant. Trim to k8s name limits.
-			name := fmt.Sprintf("foreman-gate-%s-%d", sanitizeName(taskName), time.Now().UnixMilli())
-			if len(name) > 63 {
-				name = name[:63]
-			}
-			return name
+			return gateJobName(taskName, time.Now().UnixMilli())
 		}
 	}
 	return c
+}
+
+// gateJobName builds the gate Job name "foreman-gate-<task>-<unix-ms>",
+// trimmed to the 63-char k8s object-name limit by truncating the TASK
+// portion, never the trailing <unix-ms> disambiguator. The #768 retry loop
+// submits a second gate Job for the same task while the prior attempt's Job
+// still exists; the old code trimmed the whole name from the right, cutting
+// off the timestamp for long task names, so the retry's Create collided with
+// the prior Job (AlreadyExists -> GATE-ERROR -> could-not-verify -> GO). Keeping
+// the suffix guarantees each submission gets a distinct name.
+func gateJobName(taskName string, unixMilli int64) string {
+	const prefix = "foreman-gate-"
+	suffix := fmt.Sprintf("-%d", unixMilli)
+	budget := 63 - len(prefix) - len(suffix)
+	if budget < 0 {
+		budget = 0
+	}
+	task := sanitizeName(taskName)
+	if len(task) > budget {
+		task = task[:budget]
+	}
+	return prefix + task + suffix
 }
 
 // defaultJobResources fills in the gate-matching container resource

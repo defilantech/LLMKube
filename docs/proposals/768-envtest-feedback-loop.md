@@ -140,8 +140,19 @@ next focused loop. On cap exhaustion the final `feedback` still flows into
 - **Coder NO-GO / MaxTurns on a retry:** return that terminal directly. The
   executor never pushes work the coder itself did not GO. Bounded by the cap and
   by each loop's own MaxTurns, so no unbounded spin.
-- **Gate could-not-run (`ran=false`):** unchanged. `evaluatePostPushEnvtest`
-  returns `failed=false`, the GO stands, no retry is spent on an infra hiccup.
+- **Gate could-not-run (`ran=false`):** attempt-dependent. On attempt 0 the GO
+  stands (the pre-#768 could-not-verify behavior, no prior evidence of failure).
+  On a **retry** it does NOT: a prior attempt already failed the gate, so an
+  unverifiable re-gate cannot confirm the fix and the executor downgrades to
+  INCOMPLETE rather than emit a false GO. `evaluatePostPushEnvtest` returns a
+  tri-state (`envtestGateOK` / `envtestGateFailed` / `envtestGateUnverified`) so
+  the loop can distinguish "passed" from "could-not-verify" by attempt number.
+  (Cluster validation caught the original single-state version landing a failing
+  branch as GO: the retry's gate Job name collided with the prior attempt's
+  because the trailing `-<unix-ms>` disambiguator was truncated past the 63-char
+  k8s limit for a long task name, so the re-gate could not run. Fixed jointly by
+  the semantic guard above and a `gateJobName` helper that truncates the task
+  portion, never the uniqueness suffix.)
 - **Non-coder / non-issue-fix tasks:** `maxEnvtestIterations` is consulted only
   where the envtest gate already runs (coder role, envtest-touched change).
   Every other role/kind path is untouched.
@@ -161,8 +172,13 @@ Unit tests inject a fake `runLoop` and a fake `EnvtestJobRunner`:
    after exactly `maxEnvtestIterations` retries, and no more.
 3. **NO-GO on retry:** the retry loop returns NO-GO -> that terminal surfaces,
    no further push.
-4. **Could-not-run:** `ran=false` -> GO stands, zero retries.
-5. **Cap resolution:** nil -> 1, explicit 0 -> no retry, N honored.
+4. **Could-not-run on attempt 0:** `ran=false` -> GO stands, zero retries.
+5. **Could-not-run on a retry:** attempt 0 fails, the re-gate returns
+   `ran=false` -> INCOMPLETE, never a false GO (regression for the cluster
+   validation finding).
+6. **Gate Job naming:** a long task name keeps the `-<unix-ms>` suffix within
+   the 63-char limit so a retry's gate Job does not collide with the prior one.
+7. **Cap resolution:** nil -> 1, explicit 0 -> no retry, N honored.
 
 Existing envtest-gate and executor tests must continue to pass unchanged for the
 attempt-0 path.

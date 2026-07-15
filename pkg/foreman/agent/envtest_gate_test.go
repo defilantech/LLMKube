@@ -24,38 +24,38 @@ func (f *fakeEnvtestJobRunner) Run(_ context.Context, taskNamespace, taskName, _
 }
 
 func TestEvaluatePostPushEnvtest(t *testing.T) {
-	t.Run("not touched: runner not called, no downgrade", func(t *testing.T) {
+	t.Run("not touched: runner not called, verdict OK", func(t *testing.T) {
 		r := &fakeEnvtestJobRunner{}
-		failed, fb := evaluatePostPushEnvtest(context.Background(), false, r, "ns", "task", "repo", "br", "url")
-		if failed || fb != "" || r.called {
-			t.Fatalf("got failed=%v fb=%q called=%v", failed, fb, r.called)
+		v, fb := evaluatePostPushEnvtest(context.Background(), false, r, "ns", "task", "repo", "br", "url")
+		if v != envtestGateOK || fb != "" || r.called {
+			t.Fatalf("got verdict=%v fb=%q called=%v", v, fb, r.called)
 		}
 	})
-	t.Run("nil runner: no downgrade", func(t *testing.T) {
-		failed, fb := evaluatePostPushEnvtest(context.Background(), true, nil, "ns", "task", "repo", "br", "url")
-		if failed || fb != "" {
-			t.Fatalf("got failed=%v fb=%q", failed, fb)
+	t.Run("nil runner: verdict OK", func(t *testing.T) {
+		v, fb := evaluatePostPushEnvtest(context.Background(), true, nil, "ns", "task", "repo", "br", "url")
+		if v != envtestGateOK || fb != "" {
+			t.Fatalf("got verdict=%v fb=%q", v, fb)
 		}
 	})
-	t.Run("touched + pass: no downgrade", func(t *testing.T) {
+	t.Run("touched + pass: verdict OK", func(t *testing.T) {
 		r := &fakeEnvtestJobRunner{pass: true, ran: true}
-		failed, _ := evaluatePostPushEnvtest(context.Background(), true, r, "ns", "task", "repo", "br", "url")
-		if failed || !r.called {
-			t.Fatalf("got failed=%v called=%v", failed, r.called)
+		v, _ := evaluatePostPushEnvtest(context.Background(), true, r, "ns", "task", "repo", "br", "url")
+		if v != envtestGateOK || !r.called {
+			t.Fatalf("got verdict=%v called=%v", v, r.called)
 		}
 	})
-	t.Run("touched + ran + fail: downgrade with feedback", func(t *testing.T) {
+	t.Run("touched + ran + fail: verdict Failed with feedback", func(t *testing.T) {
 		r := &fakeEnvtestJobRunner{pass: false, ran: true, feedback: "envtest broke"}
-		failed, fb := evaluatePostPushEnvtest(context.Background(), true, r, "ns", "task", "repo", "br", "url")
-		if !failed || fb != "envtest broke" {
-			t.Fatalf("got failed=%v fb=%q", failed, fb)
+		v, fb := evaluatePostPushEnvtest(context.Background(), true, r, "ns", "task", "repo", "br", "url")
+		if v != envtestGateFailed || fb != "envtest broke" {
+			t.Fatalf("got verdict=%v fb=%q", v, fb)
 		}
 	})
-	t.Run("touched + could-not-run: no downgrade (GO stands)", func(t *testing.T) {
+	t.Run("touched + could-not-run: verdict Unverified (caller decides by attempt)", func(t *testing.T) {
 		r := &fakeEnvtestJobRunner{pass: false, ran: false, feedback: "infra"}
-		failed, _ := evaluatePostPushEnvtest(context.Background(), true, r, "ns", "task", "repo", "br", "url")
-		if failed {
-			t.Fatalf("could-not-run should not downgrade; got failed=%v", failed)
+		v, _ := evaluatePostPushEnvtest(context.Background(), true, r, "ns", "task", "repo", "br", "url")
+		if v != envtestGateUnverified {
+			t.Fatalf("could-not-run should be Unverified; got verdict=%v", v)
 		}
 	})
 	t.Run("task identity is threaded to the runner (#893)", func(t *testing.T) {
