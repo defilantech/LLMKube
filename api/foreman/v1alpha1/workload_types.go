@@ -194,8 +194,21 @@ type WorkloadSpec struct {
 	// Does NOT trigger on STUCK-LOOP-DETECTED, a model-decided
 	// INCOMPLETE, or ERROR: those are scope/harness failures a larger,
 	// slower model will not fix. Leave unset to disable escalation.
+	// When EscalateOnFailure is set to true, the escalation coder also
+	// triggers on STUCK-LOOP-DETECTED, INCOMPLETE, and ERROR outcomes
+	// from the base coder (in addition to the default NO-GO capability
+	// failures).
 	// +optional
 	EscalationCoderAgentRef *corev1.LocalObjectReference `json:"escalationCoderAgentRef,omitempty"`
+
+	// EscalateOnFailure, when true, additionally re-attempts the issue on
+	// EscalationCoderAgentRef for a terminal STUCK-LOOP-DETECTED, INCOMPLETE,
+	// or ERROR from the base coder (not just a capability NO-GO). Requires
+	// EscalationCoderAgentRef to be set. Default false preserves the
+	// NO-GO-only behavior. ALREADY-RESOLVED and NEEDS-VERIFICATION never
+	// escalate.
+	// +optional
+	EscalateOnFailure *bool `json:"escalateOnFailure,omitempty"`
 
 	// AllowOverwrite lets this Workload's coder replace a stale remote
 	// ref for its own foreman/* branch (force-with-lease compare-and-swap)

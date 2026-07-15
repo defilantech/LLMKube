@@ -1166,6 +1166,11 @@ func (in *WorkloadSpec) DeepCopyInto(out *WorkloadSpec) {
 		*out = new(v1.LocalObjectReference)
 		**out = **in
 	}
+	if in.EscalateOnFailure != nil {
+		in, out := &in.EscalateOnFailure, &out.EscalateOnFailure
+		*out = new(bool)
+		**out = **in
+	}
 	if in.MaxReviewIterations != nil {
 		in, out := &in.MaxReviewIterations, &out.MaxReviewIterations
 		*out = new(int32)

@@ -171,6 +171,34 @@ func shouldEscalateCoder(
 	return false
 }
 
+// shouldEscalateCoderOnFailure is the opt-in escalation trigger for
+// capability-wall failures that are NOT pure capability NO-GOs. When
+// EscalateOnFailure is set on the Workload, these outcomes also
+// escalate to the escalation coder: STUCK-LOOP-DETECTED (harness
+// detected a stuck loop), INCOMPLETE (model gave up / ran out of turns),
+// and ERROR (harness error). ALREADY-RESOLVED and NEEDS-VERIFICATION
+// never escalate even when the flag is set.
+func shouldEscalateCoderOnFailure(
+	verdict foremanv1alpha1.AgenticTaskVerdict, topOutcome string,
+) bool {
+	if verdict == foremanv1alpha1.AgenticTaskVerdictNoGo && topOutcome == alreadyResolvedOutcome {
+		return false // #970: already-resolved is not a failure
+	}
+	if verdict == foremanv1alpha1.AgenticTaskVerdictNoGo && topOutcome == needsVerificationOutcome {
+		return false // #1033: a larger model can't reach the ground truth either
+	}
+	if topOutcome == "STUCK-LOOP-DETECTED" {
+		return true
+	}
+	if topOutcome == "ERROR" {
+		return true
+	}
+	if verdict == foremanv1alpha1.AgenticTaskVerdictIncomplete && topOutcome == "MODEL-DECIDED" {
+		return true
+	}
+	return false
+}
+
 // escalationHintPrompt renders the PromptPrefix given to the escalation
 // coder. It carries the prior model's summary as a hint, framed so the
 // larger model does not treat the failed attempt's conclusions as
@@ -206,13 +234,15 @@ func escalationHintPrompt(priorSummary string) string {
 // Pure: no API calls, no status writes. The caller owns MaxTasks
 // accounting, sovereignty filtering, and creation. Issue-batch mode
 // only (the caller guards against explicit Pipeline mode).
+// Returns a reason string ("BaseCoderCapabilityFailure" or
+// "BaseCoderFailureEscalation") for the condition Reason field.
 func coderEscalationSteps(
 	w *foremanv1alpha1.Workload, children []foremanv1alpha1.AgenticTask,
-) (steps []foremanv1alpha1.PipelineStep, escalated []int32) {
+) (steps []foremanv1alpha1.PipelineStep, escalated []int32, reason string) {
 	if w.Spec.EscalationCoderAgentRef == nil ||
 		w.Spec.VerifierAgentRef == nil ||
 		len(w.Spec.Issues) == 0 {
-		return nil, nil
+		return nil, nil, ""
 	}
 
 	// Index base code tasks and existing -esc tasks by step label.
@@ -243,11 +273,21 @@ func coderEscalationSteps(
 			continue // not terminal yet
 		}
 		verdict, topOutcome, modelOutcome := coderTerminalOutcome(base)
-		if !shouldEscalateCoder(verdict, topOutcome, modelOutcome) {
+		if !shouldEscalateCoder(verdict, topOutcome, modelOutcome) &&
+			!(w.Spec.EscalateOnFailure != nil && *w.Spec.EscalateOnFailure &&
+				shouldEscalateCoderOnFailure(verdict, topOutcome)) {
 			continue
 		}
 		if _, exists := existingEsc[escCodeStep]; exists {
 			continue // already escalated this issue
+		}
+
+		// Determine the reason for this escalation.
+		escReason := "BaseCoderCapabilityFailure"
+		if !shouldEscalateCoder(verdict, topOutcome, modelOutcome) &&
+			w.Spec.EscalateOnFailure != nil && *w.Spec.EscalateOnFailure &&
+			shouldEscalateCoderOnFailure(verdict, topOutcome) {
+			escReason = "BaseCoderFailureEscalation"
 		}
 
 		branch := fmt.Sprintf("foreman/%s/issue-%d-esc", w.Name, n)
@@ -297,8 +337,11 @@ func coderEscalationSteps(
 			})
 		}
 		escalated = append(escalated, n)
+		// Use the last seen reason (all issues in one pass share the
+		// same escalation mode; the reason is uniform across the batch).
+		reason = escReason
 	}
-	return steps, escalated
+	return steps, escalated, reason
 }
 
 // emitCoderEscalations is the coder-side second-pass emission hook,
@@ -321,7 +364,7 @@ func (r *WorkloadReconciler) emitCoderEscalations(
 		return children, nil
 	}
 
-	steps, escalated := coderEscalationSteps(w, children)
+	steps, escalated, escReason := coderEscalationSteps(w, children)
 	if len(steps) == 0 {
 		return children, nil
 	}
@@ -372,7 +415,7 @@ func (r *WorkloadReconciler) emitCoderEscalations(
 	setCondition(&w.Status.Conditions, metav1.Condition{
 		Type:               conditionTypeCoderEscalationTriggered,
 		Status:             metav1.ConditionTrue,
-		Reason:             "BaseCoderCapabilityFailure",
+		Reason:             escReason,
 		Message:            msg,
 		LastTransitionTime: now,
 	})

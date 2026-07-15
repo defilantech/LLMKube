@@ -112,6 +112,15 @@ spec:
                     type: string
                 type: object
                 x-kubernetes-map-type: atomic
+              escalateOnFailure:
+                description: |-
+                  EscalateOnFailure, when true, additionally re-attempts the issue on
+                  EscalationCoderAgentRef for a terminal STUCK-LOOP-DETECTED, INCOMPLETE,
+                  or ERROR from the base coder (not just a capability NO-GO). Requires
+                  EscalationCoderAgentRef to be set. Default false preserves the
+                  NO-GO-only behavior. ALREADY-RESOLVED and NEEDS-VERIFICATION never
+                  escalate.
+                type: boolean
               escalationCoderAgentRef:
                 description: |-
                   EscalationCoderAgentRef is the optional coder escalation tier: a
@@ -133,6 +142,10 @@ spec:
                   Does NOT trigger on STUCK-LOOP-DETECTED, a model-decided
                   INCOMPLETE, or ERROR: those are scope/harness failures a larger,
                   slower model will not fix. Leave unset to disable escalation.
+                  When EscalateOnFailure is set to true, the escalation coder also
+                  triggers on STUCK-LOOP-DETECTED, INCOMPLETE, and ERROR outcomes
+                  from the base coder (in addition to the default NO-GO capability
+                  failures).
                 properties:
                   name:
                     default: ""
