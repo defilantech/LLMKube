@@ -44,7 +44,8 @@ func samplePlan() slicePlan {
 func defaultOpts() *sliceOptions {
 	return &sliceOptions{
 		namespace: "default", coderAgent: "coder-metal",
-		integrateAgent: "integrate", reconcileAgent: "reconcile", baseBranch: "main",
+		integrateAgent: "integrate", reconcileAgent: "reconcile",
+		verifyAgent: "gate", baseBranch: "main",
 	}
 }
 
@@ -55,8 +56,8 @@ func TestBuildSliceWorkload_PipelineShape(t *testing.T) {
 		t.Fatalf("meta = %s/%s", wl.Namespace, wl.Name)
 	}
 	steps := wl.Spec.Pipeline
-	if len(steps) != 4 {
-		t.Fatalf("want 4 steps (2 slices + integrate + reconcile), got %d", len(steps))
+	if len(steps) != 5 {
+		t.Fatalf("want 5 steps (2 slices + integrate + reconcile + verify), got %d", len(steps))
 	}
 
 	// slice steps
@@ -109,6 +110,52 @@ func TestBuildSliceWorkload_PipelineShape(t *testing.T) {
 	// reconcile carries files (for pinned_check), integrate carries branches.
 	if len(rec.Payload.Slices) != 2 || len(rec.Payload.Slices[0].Files) == 0 {
 		t.Errorf("reconcile payload slices need files: %+v", rec.Payload.Slices)
+	}
+
+	// verify step: envtest gate on the integrated branch (#1137). It runs
+	// after reconcile and targets the SAME integration branch reconcile does,
+	// so a build/envtest failure of the merged union blocks terminal PASS.
+	assertVerifyStep(t, steps[4], rec)
+}
+
+// assertVerifyStep checks the slicer's trailing verify step: it gates the same
+// integration branch reconcile targets, depends on reconcile, uses the verify
+// agent, and carries a bare make-target payload (no slice refs / pins / contract).
+func assertVerifyStep(t *testing.T, ver, rec foremanv1alpha1.PipelineStep) {
+	t.Helper()
+	if ver.Name != "verify" || ver.Kind != foremanv1alpha1.AgenticTaskKindVerify {
+		t.Fatalf("verify step = %s/%s, want verify/verify", ver.Name, ver.Kind)
+	}
+	if len(ver.DependsOn) != 1 || ver.DependsOn[0] != "reconcile" {
+		t.Errorf("verify dependsOn = %v, want [reconcile]", ver.DependsOn)
+	}
+	if ver.AgentRef.Name != "gate" {
+		t.Errorf("verify agent = %q, want gate", ver.AgentRef.Name)
+	}
+	if ver.Payload.Branch != rec.Payload.Branch {
+		t.Errorf("verify branch %q != reconcile/integ branch %q", ver.Payload.Branch, rec.Payload.Branch)
+	}
+	if ver.Payload.BaseBranch != "main" {
+		t.Errorf("verify baseBranch = %q, want main", ver.Payload.BaseBranch)
+	}
+	if len(ver.Payload.Slices) != 0 || len(ver.Payload.SharedIdentifiers) != 0 || ver.Payload.Contract != "" {
+		t.Errorf("verify payload should be bare (repo/issue/branch/base only): %+v", ver.Payload)
+	}
+}
+
+// TestBuildSliceWorkload_VerifyOptOut: an empty --verify-agent drops the
+// verify step, leaving the legacy 4-step pipeline for non-code slicing.
+func TestBuildSliceWorkload_VerifyOptOut(t *testing.T) {
+	opts := defaultOpts()
+	opts.verifyAgent = ""
+	steps := buildSliceWorkload(samplePlan(), opts).Spec.Pipeline
+	if len(steps) != 4 {
+		t.Fatalf("opt-out want 4 steps (no verify), got %d", len(steps))
+	}
+	for _, s := range steps {
+		if s.Kind == foremanv1alpha1.AgenticTaskKindVerify {
+			t.Errorf("verify step present despite empty --verify-agent: %+v", s)
+		}
 	}
 }
 
@@ -253,7 +300,10 @@ slices:
 		t.Fatalf("runSlice: %v", err)
 	}
 	out := buf.String()
-	wants := []string{"kind: Workload", "name: slicer-700", "kind: integrate", "kind: reconcile", "rocm_smi_gpu_temp"}
+	wants := []string{
+		"kind: Workload", "name: slicer-700", "kind: integrate",
+		"kind: reconcile", "kind: verify", "rocm_smi_gpu_temp",
+	}
 	for _, want := range wants {
 		if !strings.Contains(out, want) {
 			t.Errorf("dry-run output missing %q:\n%s", want, out)
