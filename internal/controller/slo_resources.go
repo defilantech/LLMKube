@@ -96,9 +96,10 @@ func sloSelector(isvc *inferencev1alpha1.InferenceService) string {
 }
 
 // newServiceLevelObjective renders the Pyrra resource for the
-// InferenceService's spec.slo. Callers must have checked
-// sloIndicatorSupported first; an unsupported combination panics via the nil
-// map entry being formatted, which the unit tests make unreachable.
+// InferenceService's spec.slo. Callers must have verified non-nil spec.SLO
+// and checked sloIndicatorSupported first. Programmer errors (violating these
+// contracts) panic with descriptive messages; API errors are impossible due to
+// the enum validation on the CRD.
 func newServiceLevelObjective(isvc *inferencev1alpha1.InferenceService) *unstructured.Unstructured {
 	slo := isvc.Spec.SLO
 	sel := sloSelector(isvc)
@@ -106,7 +107,10 @@ func newServiceLevelObjective(isvc *inferencev1alpha1.InferenceService) *unstruc
 	var indicator map[string]interface{}
 	switch slo.Indicator {
 	case "latency":
-		m := sloLatencyMetrics[isvc.Spec.Runtime]
+		m, ok := sloLatencyMetrics[isvc.Spec.Runtime]
+		if !ok {
+			panic(fmt.Sprintf("newServiceLevelObjective: no latency metrics for runtime %q; caller must check sloIndicatorSupported", isvc.Spec.Runtime))
+		}
 		indicator = map[string]interface{}{
 			"latency": map[string]interface{}{
 				"success": map[string]interface{}{
@@ -117,12 +121,14 @@ func newServiceLevelObjective(isvc *inferencev1alpha1.InferenceService) *unstruc
 				},
 			},
 		}
-	default: // availability
+	case "availability":
 		indicator = map[string]interface{}{
 			"bool_gauge": map[string]interface{}{
 				"metric": fmt.Sprintf(`up{%s}`, sel),
 			},
 		}
+	default:
+		panic(fmt.Sprintf("newServiceLevelObjective: unknown indicator %q; caller must check sloIndicatorSupported", slo.Indicator))
 	}
 
 	u := &unstructured.Unstructured{}

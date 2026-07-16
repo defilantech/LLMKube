@@ -6,6 +6,17 @@ import (
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 )
 
+// assertPanics verifies that f panics and returns true if it does.
+func assertPanics(t *testing.T, name string, f func()) {
+	t.Helper()
+	defer func() {
+		if r := recover(); r == nil {
+			t.Errorf("%s: expected panic but none occurred", name)
+		}
+	}()
+	f()
+}
+
 func sloTestISvc(slo *inferencev1alpha1.SLOSpec, runtime string) *inferencev1alpha1.InferenceService {
 	isvc := &inferencev1alpha1.InferenceService{}
 	isvc.Name = "tinyllama"
@@ -87,4 +98,18 @@ func TestNewServiceLevelObjective_LatencyVLLM(t *testing.T) {
 	if total != wantTotal {
 		t.Fatalf("total:\n got  %v\n want %v", total, wantTotal)
 	}
+}
+
+func TestNewServiceLevelObjective_PanicsOnUnsupportedRuntimeLatency(t *testing.T) {
+	isvc := sloTestISvc(&inferencev1alpha1.SLOSpec{Objective: "99.5", Window: "28d", Indicator: "latency", LatencyThreshold: "2"}, "llamacpp")
+	assertPanics(t, "latency+llamacpp", func() {
+		newServiceLevelObjective(isvc)
+	})
+}
+
+func TestNewServiceLevelObjective_PanicsOnUnknownIndicator(t *testing.T) {
+	isvc := sloTestISvc(&inferencev1alpha1.SLOSpec{Objective: "99.5", Window: "28d", Indicator: "bogus"}, "llamacpp")
+	assertPanics(t, "bogus indicator", func() {
+		newServiceLevelObjective(isvc)
+	})
 }
