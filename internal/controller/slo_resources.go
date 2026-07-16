@@ -44,7 +44,6 @@ func pyrraSLOGVK() schema.GroupVersionKind {
 	return schema.GroupVersionKind{Group: pyrraGroup, Version: pyrraVersion, Kind: pyrraSLOKind}
 }
 
-// nolint:unused // Called by Task 5 reconciler
 func pyrraSLOListGVK() schema.GroupVersionKind {
 	return schema.GroupVersionKind{Group: pyrraGroup, Version: pyrraVersion, Kind: pyrraSLOKind + "List"}
 }
