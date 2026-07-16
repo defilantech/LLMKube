@@ -208,6 +208,18 @@ rules:
   verbs:
   - update
 - apiGroups:
+  - pyrra.dev
+  resources:
+  - servicelevelobjectives
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
   - resource.k8s.io
   resources:
   - resourceclaims
