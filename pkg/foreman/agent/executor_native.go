@@ -2473,7 +2473,19 @@ func enforceReviewerIssueAsk(
 	// diff touches at least one of them, the deterministic scope rail
 	// confirms the reviewer was in-scope even though it paraphrased the
 	// issue ask. Keep GO and annotate the outcome (#744).
-	scopeVouches := !scopeDriftDetected && len(scopeMatched) > 0
+	//
+	// The matched ref must include a non-doc file. A GO whose only
+	// in-scope evidence is a touched documentation file is too weak to
+	// override a failed issueAsk verification: when the issue names a
+	// source/config deliverable alongside a doc, a diff touching only the
+	// doc still "matches" scope, yet that match does not confirm the
+	// substantive change was made. Pairing an unverifiable ask with a
+	// doc-only scope match is a low-confidence review that should route to
+	// escalation for a human or stronger reviewer rather than be silently
+	// vouched. Requiring a non-doc match keeps the honest-paraphrase
+	// rescue (#744/#1120) while closing that gap.
+	scopeVouches := !scopeDriftDetected && len(scopeMatched) > 0 &&
+		scopeMatchHasNonDoc(scopeMatched)
 	if scopeVouches {
 		extra["issueAskVerified"] = false
 		extra["scopeVouched"] = true

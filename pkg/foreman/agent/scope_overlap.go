@@ -100,6 +100,30 @@ func extractIssuePathRefs(body string, sourceExtensions []string) []string {
 	return refs
 }
 
+// docRefExtensions are the extensions treated as documentation for the
+// scope-overlap vouch (enforceReviewerIssueAsk). A review whose ONLY
+// in-scope evidence is a touched doc file is too weak to override a failed
+// issueAsk verification: the substantive named deliverable (source/config)
+// was left untouched. The set is intentionally narrow — prose docs only.
+var docRefExtensions = map[string]bool{
+	"md": true, "markdown": true, "rst": true, "txt": true, "adoc": true,
+}
+
+// scopeMatchHasNonDoc reports whether any matched scope ref is something
+// other than a documentation file. The scope vouch requires this so that
+// matching only a doc the issue happens to mention — while the primary
+// source/config file the issue is actually about goes untouched — does not
+// rescue an otherwise unverifiable GO.
+func scopeMatchHasNonDoc(matched []string) bool {
+	for _, m := range matched {
+		ext := strings.ToLower(strings.TrimPrefix(path.Ext(m), "."))
+		if !docRefExtensions[ext] {
+			return true
+		}
+	}
+	return false
+}
+
 // hasSourceFile reports whether any path in paths ends with one of the
 // extensions in exts. If exts is empty, it defaults to [".go"] so
 // existing behavior is preserved.

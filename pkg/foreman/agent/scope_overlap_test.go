@@ -320,6 +320,29 @@ func TestEnforceReviewerScopeOverlap_NilOrEmptyInputsPassThrough(t *testing.T) {
 	}
 }
 
+func TestScopeMatchHasNonDoc(t *testing.T) {
+	tests := []struct {
+		name    string
+		matched []string
+		want    bool
+	}{
+		{"empty", nil, false},
+		{"doc only (md)", []string{"SECURITY_REVIEW.md"}, false},
+		{"docs only (mixed doc exts)", []string{"README.md", "notes.rst", "changes.txt"}, false},
+		{"source file", []string{"scripts/main.gd"}, true},
+		{"config file", []string{"package.json"}, true},
+		{"mixed doc + source", []string{"README.md", "pkg/foo.go"}, true},
+		{"no extension treated as non-doc", []string{"Makefile"}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := scopeMatchHasNonDoc(tt.matched); got != tt.want {
+				t.Errorf("scopeMatchHasNonDoc(%v) = %v, want %v", tt.matched, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestHasSourceFile(t *testing.T) {
 	tests := []struct {
 		name  string

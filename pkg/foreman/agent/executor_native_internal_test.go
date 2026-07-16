@@ -1568,6 +1568,43 @@ func TestEnforceReviewerIssueAsk_UnverifiedGoNoScopeVouchDemotes(t *testing.T) {
 	}
 }
 
+// TestEnforceReviewerIssueAsk_DocOnlyScopeMatchDemotes covers the
+// misospace/miso-chat#687 shape: the issue named a config file
+// (package.json) AND a doc (SECURITY_REVIEW.md), the diff touched only the
+// doc, and issueAsk verification failed. Scope-overlap "matched" the doc, so
+// the vouch used to keep the GO. A documentation-only scope match is too weak
+// to rescue an unverifiable GO — demote to NO-GO so it escalates for
+// confirmation.
+func TestEnforceReviewerIssueAsk_DocOnlyScopeMatchDemotes(t *testing.T) {
+	extra := map[string]any{"issueAskVerified": false}
+	got := enforceReviewerIssueAsk(logr.Discard(), extra,
+		foremanv1alpha1.AgenticTaskVerdictGo, false, []string{"SECURITY_REVIEW.md"})
+	if got != foremanv1alpha1.AgenticTaskVerdictNoGo {
+		t.Errorf("doc-only scope match must not vouch; want NO-GO, got %v", got)
+	}
+	if _, vouched := extra["scopeVouched"]; vouched {
+		t.Errorf("doc-only scope match must not set scopeVouched")
+	}
+	if v, _ := extra["verdictDemoted"].(bool); !v {
+		t.Errorf("demotion must set verdictDemoted=true; got %v", extra["verdictDemoted"])
+	}
+}
+
+// TestEnforceReviewerIssueAsk_MixedScopeMatchVouches verifies the non-doc
+// requirement is "any", not "all": a matched set carrying at least one
+// non-doc file still vouches even alongside a matched doc.
+func TestEnforceReviewerIssueAsk_MixedScopeMatchVouches(t *testing.T) {
+	extra := map[string]any{"issueAskVerified": false}
+	got := enforceReviewerIssueAsk(logr.Discard(), extra,
+		foremanv1alpha1.AgenticTaskVerdictGo, false, []string{"README.md", "pkg/foo.go"})
+	if got != foremanv1alpha1.AgenticTaskVerdictGo {
+		t.Errorf("a non-doc match should vouch even alongside docs; want GO, got %v", got)
+	}
+	if v, _ := extra["scopeVouched"].(bool); !v {
+		t.Errorf("scopeVouched should be true when a non-doc file matched")
+	}
+}
+
 // TestEnforceReviewerIssueAsk_UnverifiedGoNoRefsNoVouchDemotes covers the
 // case where the issue has no concrete file refs (scope observe-only) and
 // the model paraphrased the ask. Without scope vouch, must demote.
