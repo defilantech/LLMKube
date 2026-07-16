@@ -1,0 +1,363 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {"type": "datasource", "uid": "grafana"},
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "Error budget and burn-rate dashboard for LLMKube InferenceServices with spec.slo set. Reads the recording rules Pyrra's kubernetes operator (pyrra.dev/v1alpha1 ServiceLevelObjective) writes as a PrometheusRule per SLO. Two assumptions baked into these queries, both worth checking before trusting a panel: (1) rule names carry a window-derived suffix (Pyrra names the default 28d window's rules with a `4w` suffix, e.g. `up:count4w`); a non-default spec.slo.window renders different suffixes and needs the queries edited to match. (2) Pyrra v0.10.1's kubernetes operator does not emit the objective/target as a queryable Prometheus series, so the `objective` dashboard variable is a manually-entered percentage (matching the selected SLO's spec.slo.objective) used only to compute error-budget-remaining locally; it is not read from Prometheus and will silently mismatch if left at its default while viewing a different SLO.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0},
+      "id": 100,
+      "panels": [],
+      "title": "Error budget remaining",
+      "type": "row"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "description": "1 - ((1 - actual availability over the SLO's window) / (1 - objective)), using Pyrra's up:count4w / up:sum4w recording rules (bool_gauge indicator). Set the `objective` variable to this SLO's spec.slo.objective first.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "red", "value": null},
+              {"color": "orange", "value": 0},
+              {"color": "green", "value": 0.25}
+            ]
+          },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 4, "w": 12, "x": 0, "y": 1},
+      "id": 1,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "expr": "1 - ((1 - (up:sum4w{slo=~\"$slo\"} / up:count4w{slo=~\"$slo\"})) / (1 - $objective/100))",
+          "legendFormat": "{{slo}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Availability error budget remaining (28d)",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "description": "1 - ((1 - actual on-time fraction over the SLO's window) / (1 - objective)), using Pyrra's vllm:e2e_request_latency_seconds:increase4w recording rule (latency indicator; the le=\"2\" series is the fast/good count, the le=\"\" series is the total count). Set the `objective` variable to this SLO's spec.slo.objective first. Latency SLOs are vllm-runtime only.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "red", "value": null},
+              {"color": "orange", "value": 0},
+              {"color": "green", "value": 0.25}
+            ]
+          },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 4, "w": 12, "x": 12, "y": 1},
+      "id": 2,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "expr": "1 - ((1 - (vllm:e2e_request_latency_seconds:increase4w{slo=~\"$slo\", le=\"2\"} / ignoring(le) vllm:e2e_request_latency_seconds:increase4w{slo=~\"$slo\", le=\"\"})) / (1 - $objective/100))",
+          "legendFormat": "{{slo}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Latency error budget remaining (28d)",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"axisLabel": "budget remaining", "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true},
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 5},
+      "id": 3,
+      "options": {
+        "legend": {"calcs": ["mean", "min"], "displayMode": "table", "placement": "bottom"},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "expr": "1 - ((1 - (up:sum4w{slo=~\"$slo\"} / up:count4w{slo=~\"$slo\"})) / (1 - $objective/100))",
+          "legendFormat": "{{slo}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Availability error budget remaining over time",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"axisLabel": "budget remaining", "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true},
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 5},
+      "id": 4,
+      "options": {
+        "legend": {"calcs": ["mean", "min"], "displayMode": "table", "placement": "bottom"},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "expr": "1 - ((1 - (vllm:e2e_request_latency_seconds:increase4w{slo=~\"$slo\", le=\"2\"} / ignoring(le) vllm:e2e_request_latency_seconds:increase4w{slo=~\"$slo\", le=\"\"})) / (1 - $objective/100))",
+          "legendFormat": "{{slo}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Latency error budget remaining over time",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 13},
+      "id": 101,
+      "panels": [],
+      "title": "Burn rate (multi-window)",
+      "type": "row"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "description": "Pyrra's up:burnrate<window> recording rules (bool_gauge indicator) plus reference lines at the ErrorBudgetBurn alert factors (14x/7x critical, 2x/1x warning), computed from the `objective` variable. A line crossing its paired-window threshold for the alert's `for:` duration is what actually pages; see docs/observability/slo.md.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"axisLabel": "burn rate", "drawStyle": "line", "fillOpacity": 5, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true},
+          "unit": "percentunit"
+        },
+        "overrides": [
+          {
+            "matcher": {"id": "byRegexp", "options": "/threshold/"},
+            "properties": [
+              {"id": "custom.lineStyle", "value": {"dash": [10, 10], "fill": "dash"}},
+              {"id": "custom.fillOpacity", "value": 0}
+            ]
+          }
+        ]
+      },
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 14},
+      "id": 5,
+      "options": {
+        "legend": {"calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom"},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "targets": [
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "up:burnrate5m{slo=~\"$slo\"}", "legendFormat": "{{slo}} 5m", "refId": "A"},
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "up:burnrate30m{slo=~\"$slo\"}", "legendFormat": "{{slo}} 30m", "refId": "B"},
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "up:burnrate1h{slo=~\"$slo\"}", "legendFormat": "{{slo}} 1h", "refId": "C"},
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "up:burnrate2h{slo=~\"$slo\"}", "legendFormat": "{{slo}} 2h", "refId": "D"},
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "up:burnrate6h{slo=~\"$slo\"}", "legendFormat": "{{slo}} 6h", "refId": "E"},
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "up:burnrate1d{slo=~\"$slo\"}", "legendFormat": "{{slo}} 1d", "refId": "F"},
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "up:burnrate4d{slo=~\"$slo\"}", "legendFormat": "{{slo}} 4d", "refId": "G"},
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "14 * (1 - $objective/100)", "legendFormat": "threshold: critical (5m/1h, 14x)", "refId": "H"},
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "7 * (1 - $objective/100)", "legendFormat": "threshold: critical (30m/6h, 7x)", "refId": "I"},
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "2 * (1 - $objective/100)", "legendFormat": "threshold: warning (2h/1d, 2x)", "refId": "J"},
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "1 * (1 - $objective/100)", "legendFormat": "threshold: warning (6h/4d, 1x)", "refId": "K"}
+      ],
+      "title": "Availability burn rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "description": "Pyrra's vllm:e2e_request_latency_seconds:burnrate<window> recording rules (latency indicator) plus reference lines at the ErrorBudgetBurn alert factors (14x/7x critical, 2x/1x warning), computed from the `objective` variable.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"axisLabel": "burn rate", "drawStyle": "line", "fillOpacity": 5, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true},
+          "unit": "percentunit"
+        },
+        "overrides": [
+          {
+            "matcher": {"id": "byRegexp", "options": "/threshold/"},
+            "properties": [
+              {"id": "custom.lineStyle", "value": {"dash": [10, 10], "fill": "dash"}},
+              {"id": "custom.fillOpacity", "value": 0}
+            ]
+          }
+        ]
+      },
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 14},
+      "id": 6,
+      "options": {
+        "legend": {"calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom"},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "targets": [
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "vllm:e2e_request_latency_seconds:burnrate5m{slo=~\"$slo\"}", "legendFormat": "{{slo}} 5m", "refId": "A"},
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "vllm:e2e_request_latency_seconds:burnrate30m{slo=~\"$slo\"}", "legendFormat": "{{slo}} 30m", "refId": "B"},
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "vllm:e2e_request_latency_seconds:burnrate1h{slo=~\"$slo\"}", "legendFormat": "{{slo}} 1h", "refId": "C"},
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "vllm:e2e_request_latency_seconds:burnrate2h{slo=~\"$slo\"}", "legendFormat": "{{slo}} 2h", "refId": "D"},
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "vllm:e2e_request_latency_seconds:burnrate6h{slo=~\"$slo\"}", "legendFormat": "{{slo}} 6h", "refId": "E"},
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "vllm:e2e_request_latency_seconds:burnrate1d{slo=~\"$slo\"}", "legendFormat": "{{slo}} 1d", "refId": "F"},
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "vllm:e2e_request_latency_seconds:burnrate4d{slo=~\"$slo\"}", "legendFormat": "{{slo}} 4d", "refId": "G"},
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "14 * (1 - $objective/100)", "legendFormat": "threshold: critical (5m/1h, 14x)", "refId": "H"},
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "7 * (1 - $objective/100)", "legendFormat": "threshold: critical (30m/6h, 7x)", "refId": "I"},
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "2 * (1 - $objective/100)", "legendFormat": "threshold: warning (2h/1d, 2x)", "refId": "J"},
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "1 * (1 - $objective/100)", "legendFormat": "threshold: warning (6h/4d, 1x)", "refId": "K"}
+      ],
+      "title": "Latency burn rate",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 23},
+      "id": 102,
+      "panels": [],
+      "title": "SLO overview",
+      "type": "row"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "description": "Current compliance (actual good-fraction over the SLO's 28d window) per SLO, both indicators merged into one table. Objective and window are not queryable Prometheus series in Pyrra v0.10.1; cross-check them against the InferenceService's spec.slo instead of expecting a column here.",
+      "fieldConfig": {
+        "defaults": {"custom": {"align": "auto", "cellOptions": {"type": "auto"}}, "unit": "percentunit"},
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "Time"}, "properties": [{"id": "custom.hidden", "value": true}]},
+          {"matcher": {"id": "byName", "options": "Value"}, "properties": [{"id": "displayName", "value": "Compliance (28d)"}]}
+        ]
+      },
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 24},
+      "id": 7,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {"countRows": false, "fields": "", "reducer": ["sum"], "show": false},
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "expr": "up:sum4w{slo=~\"$slo\"} / up:count4w{slo=~\"$slo\"}",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "refId": "A"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "expr": "vllm:e2e_request_latency_seconds:increase4w{slo=~\"$slo\", le=\"2\"} / ignoring(le) vllm:e2e_request_latency_seconds:increase4w{slo=~\"$slo\", le=\"\"}",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "refId": "B"
+        }
+      ],
+      "transformations": [
+        {"id": "merge", "options": {}},
+        {"id": "organize", "options": {"excludeByName": {"Time": true, "le": true, "namespace": true, "service": true}, "indexByName": {}, "renameByName": {"Value": "Compliance (28d)"}}}
+      ],
+      "title": "SLO overview (availability + latency)",
+      "type": "table"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "style": "dark",
+  "tags": ["llmkube", "slo", "pyrra"],
+  "templating": {
+    "list": [
+      {
+        "current": {"selected": false, "text": "Prometheus", "value": "prometheus"},
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource",
+        "multi": false,
+        "name": "DS_PROMETHEUS",
+        "options": [],
+        "query": "prometheus",
+        "queryValue": "",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      },
+      {
+        "current": {"selected": true, "text": "All", "value": "$__all"},
+        "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+        "definition": "label_values(slo)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "SLO",
+        "multi": true,
+        "name": "slo",
+        "options": [],
+        "query": {"query": "label_values(slo)", "refId": "StandardVariableQuery"},
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "current": {"selected": false, "text": "99.5", "value": "99.5"},
+        "description": "Manually set to the selected SLO's spec.slo.objective (percentage). Pyrra does not expose the target as a Prometheus series, so this is not auto-populated and will not track a different SLO's objective automatically.",
+        "hide": 0,
+        "label": "Objective %",
+        "name": "objective",
+        "options": [{"selected": true, "text": "99.5", "value": "99.5"}],
+        "query": "99.5",
+        "skipUrlSync": false,
+        "type": "textbox"
+      }
+    ]
+  },
+  "time": {"from": "now-6h", "to": "now"},
+  "timepicker": {},
+  "timezone": "",
+  "title": "LLMKube SLO / Error Budgets",
+  "uid": "llmkube-slo",
+  "version": 1,
+  "weekStart": ""
+}
