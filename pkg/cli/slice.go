@@ -67,6 +67,7 @@ type sliceOptions struct {
 	coderAgent     string
 	integrateAgent string
 	reconcileAgent string
+	verifyAgent    string
 	baseBranch     string
 	dryRun         bool
 }
@@ -82,7 +83,9 @@ planning an issue.
 
 The pipeline is one issue-fix step per disjoint slice, then an integrate step
 that unions the slice branches, then a reconcile step that checks the union
-against the plan's pinned shared identifiers.
+against the plan's pinned shared identifiers, then a verify step that runs the
+clean-room build+envtest gate on the integrated branch (skip with
+--verify-agent "" for non-code slicing).
 
 Two input modes:
   --plan FILE          render from a slice plan the planner already produced.
@@ -115,6 +118,9 @@ Examples:
 	f.StringVar(&opts.coderAgent, "coder-agent", "coder-metal", "Agent that runs each slice's issue-fix step")
 	f.StringVar(&opts.integrateAgent, "integrate-agent", "integrate", "Deterministic agent that runs the integrate step")
 	f.StringVar(&opts.reconcileAgent, "reconcile-agent", "reconcile", "Deterministic agent that runs the reconcile step")
+	f.StringVar(&opts.verifyAgent, "verify-agent", "gate",
+		"Deterministic gate Agent that build+envtest-verifies the integrated branch after reconcile "+
+			"(must exist in the target namespace); empty string skips verify for non-code slicing")
 	f.StringVar(&opts.baseBranch, "base-branch", "main", "Base branch the slices are cut from and unioned onto")
 	f.BoolVar(&opts.dryRun, "dry-run", false, "Print the rendered Workload without applying it")
 	return cmd
@@ -237,7 +243,9 @@ func validateSlicePlan(p slicePlan) error {
 
 // buildSliceWorkload renders the Workload: one issue-fix step per slice, then an
 // integrate step (dependsOn every slice), then a reconcile step (dependsOn
-// integrate). The integration branch and each slice branch follow the
+// integrate), then (unless --verify-agent is empty) a verify step (dependsOn
+// reconcile) that build+envtest-gates the integrated branch (#1137). The
+// integration branch and each slice branch follow the
 // foreman/slicer-<issue>-<runid>/<name> convention, where <runid> is a
 // per-Workload hex segment that makes re-runs of the same issue never collide
 // with branches left on the fork by an earlier run.
@@ -245,7 +253,7 @@ func buildSliceWorkload(p slicePlan, opts *sliceOptions) *foremanv1alpha1.Worklo
 	runID := sliceRunID()
 	integBranch := fmt.Sprintf("foreman/slicer-%d-%s/integ", p.Issue, runID)
 
-	steps := make([]foremanv1alpha1.PipelineStep, 0, len(p.Slices)+2)
+	steps := make([]foremanv1alpha1.PipelineStep, 0, len(p.Slices)+3)
 	sliceNames := make([]string, 0, len(p.Slices))
 	integSlices := make([]foremanv1alpha1.SliceRef, 0, len(p.Slices))
 	reconSlices := make([]foremanv1alpha1.SliceRef, 0, len(p.Slices))
@@ -303,6 +311,30 @@ func buildSliceWorkload(p slicePlan, opts *sliceOptions) *foremanv1alpha1.Worklo
 		},
 		DependsOn: []string{"integrate"},
 	})
+
+	// verify step: a clean-room build + envtest gate on the integrated branch,
+	// so a sliced Workload cannot reach terminal PASS while the merged union
+	// fails to build or fails envtest (#1137). integrate (git union) and
+	// reconcile (static pinned-identifier check) validate the merge and the
+	// interface, but neither compiles the code; per-slice envtest is no
+	// substitute because coupled slices cannot build in isolation, so the
+	// union is the only meaningful thing to test. dependsOn reconcile so it
+	// runs only after the merge and pins check out. An empty --verify-agent
+	// opts out (non-code slicing has nothing to build).
+	if opts.verifyAgent != "" {
+		steps = append(steps, foremanv1alpha1.PipelineStep{
+			Name:     "verify",
+			Kind:     foremanv1alpha1.AgenticTaskKindVerify,
+			AgentRef: corev1.LocalObjectReference{Name: opts.verifyAgent},
+			Payload: foremanv1alpha1.AgenticTaskPayload{
+				Repo:       p.Repo,
+				Issue:      p.Issue,
+				Branch:     integBranch,
+				BaseBranch: opts.baseBranch,
+			},
+			DependsOn: []string{"reconcile"},
+		})
+	}
 
 	return &foremanv1alpha1.Workload{
 		TypeMeta: metav1.TypeMeta{
