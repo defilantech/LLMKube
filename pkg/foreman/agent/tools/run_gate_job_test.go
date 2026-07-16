@@ -901,3 +901,27 @@ func TestRunGateJob_ImageOverride(t *testing.T) {
 		})
 	}
 }
+
+func TestGateJobNamePreservesUniquenessSuffixWhenTruncated(t *testing.T) {
+	// A long task name whose "foreman-gate-<task>" already exceeds the 63-char
+	// k8s object-name limit. The #768 validation caught a retry's gate Job
+	// colliding with the prior attempt's because the trailing unix-ms
+	// disambiguator was truncated away, so the retry could not re-gate and a
+	// failing branch landed as GO. The suffix must survive truncation.
+	long := "validate-1110-envtestloop-validate-1110-envtestloop"
+	n1 := gateJobName(long, 1784157000000)
+	n2 := gateJobName(long, 1784157000001)
+
+	if len(n1) > 63 {
+		t.Fatalf("name exceeds the 63-char k8s limit: len=%d %q", len(n1), n1)
+	}
+	if !strings.HasPrefix(n1, "foreman-gate-") {
+		t.Fatalf("lost the foreman-gate- prefix: %q", n1)
+	}
+	if !strings.HasSuffix(n1, "-1784157000000") {
+		t.Fatalf("uniqueness suffix was truncated away: %q", n1)
+	}
+	if n1 == n2 {
+		t.Fatalf("two submissions of the same long task name collide: %q", n1)
+	}
+}

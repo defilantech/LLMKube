@@ -220,6 +220,19 @@ spec:
                     type: string
                 type: object
                 x-kubernetes-map-type: atomic
+              maxEnvtestIterations:
+                description: |-
+                  MaxEnvtestIterations bounds how many times the executor re-runs a
+                  coder after the post-push envtest gate fails, feeding the gate
+                  output back so the coder fixes the failure and the branch is
+                  re-gated (#768). Three-valued: nil defaults to 1; an explicit 0
+                  restores the pre-#768 behavior (a failing gate downgrades to
+                  INCOMPLETE on the first failure); N allows up to N retries before
+                  the downgrade. Applies only to coder issue-fix tasks whose change
+                  touches an envtest-backed package and whose gate runner is wired.
+                format: int32
+                minimum: 0
+                type: integer
               maxRetries:
                 default: 3
                 description: |-

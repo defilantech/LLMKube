@@ -586,37 +586,8 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 		log.Error(twErr, "transcript write failed; continuing")
 	}
 
-	if loopErr != nil {
-		switch {
-		case errors.Is(loopErr, ErrMaxTurnsExhausted):
-			return e.incompleteResult(start, transcriptRef, loopRes,
-				foremanv1alpha1.FailureMaxTurnsExhausted,
-				"model did not call submit_result within max_turns"), nil
-		case errors.Is(loopErr, ErrAssistantNoToolCalls):
-			return e.incompleteResult(start, transcriptRef, loopRes,
-				foremanv1alpha1.FailureModelMisunderstood,
-				"model returned text without tool_calls; loop cannot make progress"), nil
-		case errors.Is(loopErr, ErrAssistantReasoningOnly):
-			// A thinking model that exhausted its reasoning-only budget
-			// (#650/#651) is a model behavior outcome, not an
-			// infrastructure failure: record INCOMPLETE and persist the
-			// transcript (the reasoning trace is the evidence an
-			// operator needs) instead of bubbling an ExecutorError that
-			// drops both.
-			return e.incompleteResult(start, transcriptRef, loopRes,
-				foremanv1alpha1.FailureModelMisunderstood,
-				"model exhausted its reasoning-only budget without emitting a tool call"), nil
-		case errors.Is(loopErr, context.Canceled), errors.Is(loopErr, context.DeadlineExceeded):
-			return e.incompleteResult(start, transcriptRef, loopRes,
-				foremanv1alpha1.FailureTimeout,
-				loopErr.Error()), nil
-		default:
-			// Anything else is a system / transport failure: bubble up
-			// as an error so the watcher records ExecutorError. The
-			// watcher's execErr path tags this as InfrastructureError
-			// via the FailureReason mapping in patchTerminal.
-			return nil, loopErr
-		}
+	if r, err := e.mapLoopError(start, transcriptRef, loopRes, loopErr); r != nil || err != nil {
+		return r, err
 	}
 
 	if loopRes.Terminal == nil {
@@ -740,60 +711,79 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 		return r, nil
 	}
 
-	// 10. GO verdict: check for changes first, then commit + push. If
-	// the model emitted GO but never edited a file, NO-CHANGES is the
-	// honest outcome regardless of whether commit_message was set.
+	// 10. GO verdict: settle the working tree, then commit -> push -> envtest
+	// gate. On a gate failure, re-run the coder against the same live
+	// workspace with the gate output injected and re-commit / re-push /
+	// re-gate, bounded by the resolved iteration count (#768). Attempt 0 is
+	// the pre-#768 behavior byte-for-byte; exhausting the bound falls back to
+	// the pre-#768 ENVTEST-GATE-FAILED downgrade.
 	baseBranch := baseBranchOrDefault(task.Spec.Payload.BaseBranch)
-	hasChanges, hcErr := repo.HasChanges(ctx, workspace)
-	if hcErr != nil {
-		return e.commitRejectedResult(start, transcriptRef, loopRes, branch, hcErr), nil
+	maxEnvtestIters := effectiveMaxEnvtestIterations(agent)
+	var sha string
+	for attempt := 0; ; attempt++ {
+		// Settle the working tree and commit -> push this attempt. A non-nil
+		// done ends the task with the pre-#768 outcome (no-change, commit
+		// rejected, or push failed); it is byte-identical to the linear path
+		// on attempt 0.
+		attemptSHA, envtestTouched, done := e.commitPushAttempt(
+			ctx, log, task, workspace, branch, baseBranch, auth,
+			attempt, task.Spec.Payload.AllowOverwrite, start, transcriptRef, loopRes)
+		if done != nil {
+			return done, nil
+		}
+		sha = attemptSHA
+
+		// Post-push envtest gate (#859/#768): run the gate and classify this
+		// attempt. settled -> the GO stands; done != nil -> a terminal downgrade
+		// (an unverifiable retry or the bound exhausted); otherwise retry the
+		// coder with feedback.
+		settled, done, feedback := e.postPushGateDecision(
+			ctx, envtestTouched, task, branch, sha, attempt, maxEnvtestIters,
+			start, transcriptRef, loopRes, gateAdvisories)
+		if settled {
+			break
+		}
+		if done != nil {
+			return done, nil
+		}
+
+		// Retry (#768): re-run the coder against the same workspace with the
+		// gate output injected, persist the new transcript, then loop back to
+		// re-commit / re-push / re-gate. A retry loop that fails structurally
+		// (max turns, no tool call, timeout) surfaces via mapLoopError; a retry
+		// that does not GO its own fix surfaces that terminal without pushing.
+		var loopErr error
+		loopRes, loopErr = loop.Run(ctx, retryCfg(cfg, feedback))
+		transcriptRef, twErr := WriteTranscript(ctx, e.Client, task, loopRes)
+		if twErr != nil {
+			log.Error(twErr, "transcript write failed; continuing")
+		}
+		if r, err := e.mapLoopError(start, transcriptRef, loopRes, loopErr); r != nil || err != nil {
+			return r, err
+		}
+		if loopRes.Terminal == nil {
+			return e.incompleteResult(start, transcriptRef, loopRes,
+				foremanv1alpha1.FailureInfrastructureError,
+				"retry loop returned nil error but no terminal result"), nil
+		}
+		verdict, normReason := normalizeModelVerdict(loopRes.Terminal.Verdict)
+		if verdict != foremanv1alpha1.AgenticTaskVerdictGo {
+			return e.retryCoderTerminalResult(ctx, log, agent, task,
+				workspace, branch, auth, start, transcriptRef, loopRes, verdict, normReason), nil
+		}
 	}
 
-	// #982: tolerate a model that self-committed its work. If the working tree
-	// is clean but there are commits ahead of the resolved upstream base on
-	// this branch, recover them by soft-resetting into the working tree so
-	// repo.Commit can re-apply with DCO sign-off and executor-owned author
-	// identity. This prevents false NO-GO ("no diff") outcomes when a model
-	// runs git commit before calling submit_result instead of leaving changes
-	// uncommitted for the executor. The base is the upstream tip at the time
-	// the branch was cut (per #813), not a possibly-stale local ref, so we
-	// don't accidentally re-stage intervening upstream commits.
-	if e.recoverSelfCommitsOrNoChange(
-		ctx, log, hasChanges, workspace,
-		e.resolveUpstreamForRun(task), baseBranch,
-	) {
-		return e.noChangesResult(start, transcriptRef, loopRes, branch), nil
-	}
-
-	// Whether the change touches an envtest-backed package, captured before
-	// the commit clears the working-tree status. Used for the post-push gate.
-	envtestTouched := len(changedEnvtestPackages(ctx, workspace, execCommandRunner)) > 0
-
-	sha, commitErr := repo.Commit(ctx, repo.CommitOptions{
-		Workspace: workspace,
-		Message:   loopRes.Terminal.CommitMessage,
-		Author:    e.CommitAuthor,
-		Committer: e.CommitCommitter,
-	})
-	if errors.Is(commitErr, repo.ErrNothingToCommit) {
-		// Model said GO but never edited anything. Honest report: this
-		// is a NO-CHANGES outcome, NOT a GO. The autofix pipeline saw
-		// this often enough to deserve a distinct outcome string.
-		return e.noChangesResult(start, transcriptRef, loopRes, branch), nil
-	}
-	if commitErr != nil {
-		return e.commitRejectedResult(start, transcriptRef, loopRes, branch, commitErr), nil
-	}
-
+	// Loop settled on a GO. The grounding + no-functional-change advisories
+	// and the work-class policy run once against the final committed attempt.
+	//
 	// Coder grounding rail (v1, non-blocking): flag any external metric
 	// identifier the coder wrote that contradicts the context7 docs it
 	// retrieved this run. MUST run after repo.Commit: the rail reads the
-	// committed diff (base...HEAD), and until the commit above the coder's
-	// edits are uncommitted (the #982 self-commit recovery soft-resets them
-	// into the working tree), so a pre-commit base...HEAD is empty and the
-	// rail sees nothing. Records-and-logs onto loopRes.Terminal.Extra (which
-	// goResult/the downgrade results serialize into status extra.modelExtra);
-	// never changes the verdict.
+	// committed diff (base...HEAD); before the commit the coder's edits are
+	// uncommitted (the #982 self-commit recovery soft-resets them into the
+	// working tree), so a pre-commit base...HEAD is empty and the rail sees
+	// nothing. Records-and-logs onto loopRes.Terminal.Extra (which goResult
+	// serializes into status extra.modelExtra); never changes the verdict.
 	applyCoderGroundingRailForTask(ctx, log, task, workspace, loopRes)
 
 	// No-functional-change advisory (non-blocking): flag a GO whose committed
@@ -803,38 +793,164 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 	// as the grounding rail; records-and-logs, never changes the verdict.
 	applyNoFunctionalChangeForTask(ctx, log, task, workspace, loopRes)
 
-	if err := repo.Push(ctx, repo.PushOptions{
-		Workspace: workspace,
-		Branch:    branch,
-		Auth:      auth,
-		// Opt-in via Workload.spec.allowOverwrite (stamped onto the task
-		// payload): replace a stale ref for this task's own branch
-		// (compare-and-swap via force-with-lease) instead of failing the
-		// re-run non-fast-forward (#934). Off by default per #573 — a
-		// replaced ref can carry a previously-GO'd audit artifact, so
-		// the caller that re-runs Workloads makes that call explicitly.
-		ReplaceOnReject: task.Spec.Payload.AllowOverwrite,
-	}); err != nil {
-		return e.pushFailedResult(start, transcriptRef, loopRes, branch, sha, err), nil
-	}
-
-	// Post-push envtest gate (#859): verify envtest-backed packages in a
-	// clean-room Job on the now-pushed branch. A real failure downgrades the
-	// GO to INCOMPLETE; a could-not-run leaves the GO standing.
-	if failed, feedback := evaluatePostPushEnvtest(
-		ctx, envtestTouched, e.EnvtestJobRunner,
-		task.Namespace, task.Name,
-		task.Spec.Payload.Repo, branch, e.GitRemoteURL,
-	); failed {
-		r := e.envtestGateFailedResult(start, transcriptRef, loopRes, branch, sha, feedback)
-		attachGateAdvisories(r.Extra, gateAdvisories)
-		return r, nil
-	}
-
 	r := e.goResult(start, transcriptRef, loopRes, branch, sha)
 	attachGateAdvisories(r.Extra, gateAdvisories)
 	r = e.applyWorkClassPolicyForTask(ctx, log, task, agent, workspace, evidenceBaseSHA, loopRes, r)
 	return r, nil
+}
+
+// postPushGateDecision runs the post-push envtest gate for one attempt and
+// classifies the result into exactly one of three outcomes for the #768 retry
+// loop: settle as GO (settled=true), terminate with a downgrade Result
+// (done != nil), or retry the coder (settled=false, done=nil, feedback carries
+// the gate output). Extracted from runLLMPath so it stays under the gocyclo
+// ceiling and the two downgrade sites share one construction.
+//
+// A gate that passed, was skipped (untouched change / no runner), or -- on the
+// FIRST attempt only -- could not be verified settles as GO (attempt 0 is the
+// pre-#768 could-not-verify behavior, byte-identical). A could-not-verify gate
+// on a RETRY does NOT settle: a prior attempt already failed the gate and the
+// coder cannot fix an infra/collision failure, so it downgrades rather than
+// emit a false GO (the #768 validation caught a retry gate Job name collision
+// landing a failing branch as GO). A failed gate retries until the bound, then
+// downgrades.
+func (e *NativeAgentLoopExecutor) postPushGateDecision(
+	ctx context.Context, envtestTouched bool, task *foremanv1alpha1.AgenticTask,
+	branch, sha string, attempt, maxEnvtestIters int,
+	start time.Time, transcriptRef corev1.ObjectReference, loopRes *LoopResult,
+	gateAdvisories *[]advisory,
+) (settled bool, done *Result, feedback string) {
+	gate, fb := evaluatePostPushEnvtest(
+		ctx, envtestTouched, e.EnvtestJobRunner,
+		task.Namespace, task.Name,
+		task.Spec.Payload.Repo, branch, e.GitRemoteURL,
+	)
+	if gate == envtestGateOK || (gate == envtestGateUnverified && attempt == 0) {
+		return true, nil, ""
+	}
+	if gate == envtestGateUnverified {
+		return false, e.envtestGateDowngrade(start, transcriptRef, loopRes, branch, sha,
+			"envtest re-gate could not be run to a verdict; not landing an unverified retry",
+			gateAdvisories), ""
+	}
+	// gate == envtestGateFailed.
+	if attempt >= maxEnvtestIters {
+		return false, e.envtestGateDowngrade(start, transcriptRef, loopRes, branch, sha, fb, gateAdvisories), ""
+	}
+	return false, nil, fb
+}
+
+// envtestGateDowngrade builds the INCOMPLETE / ENVTEST-GATE-FAILED result with
+// gate advisories attached, shared by the unverified-retry and bound-exhausted
+// downgrade sites in postPushGateDecision.
+func (e *NativeAgentLoopExecutor) envtestGateDowngrade(
+	start time.Time, transcriptRef corev1.ObjectReference, loopRes *LoopResult,
+	branch, sha, feedback string, gateAdvisories *[]advisory,
+) *Result {
+	r := e.envtestGateFailedResult(start, transcriptRef, loopRes, branch, sha, feedback)
+	attachGateAdvisories(r.Extra, gateAdvisories)
+	return r
+}
+
+// commitPushAttempt settles the working tree, commits the current terminal's
+// change with the executor's identity + DCO sign-off, and pushes the branch.
+// It returns the commit SHA, whether the change touched an envtest-backed
+// package (captured before the commit clears the working-tree status), and a
+// non-nil done Result when the attempt terminates the task early (no diff,
+// commit rejected, or push failed). Extracted from runLLMPath so the #768
+// retry loop stays under the gocyclo ceiling; attempt 0 is byte-identical to
+// the pre-#768 linear commit -> push path (the only new input is attempt,
+// which flips ReplaceOnReject on for a retry that supersedes its predecessor).
+func (e *NativeAgentLoopExecutor) commitPushAttempt(
+	ctx context.Context, log logr.Logger, task *foremanv1alpha1.AgenticTask,
+	workspace, branch, baseBranch string, auth *repo.Auth,
+	attempt int, allowOverwrite bool,
+	start time.Time, tref corev1.ObjectReference, lr *LoopResult,
+) (sha string, envtestTouched bool, done *Result) {
+	// If the model emitted GO but never edited a file, NO-CHANGES is the
+	// honest outcome regardless of whether commit_message was set.
+	hasChanges, hcErr := repo.HasChanges(ctx, workspace)
+	if hcErr != nil {
+		return "", false, e.commitRejectedResult(start, tref, lr, branch, hcErr)
+	}
+
+	// #982: tolerate a model that self-committed its work. If the working
+	// tree is clean but there are commits ahead of the resolved upstream base
+	// on this branch, recover them by soft-resetting into the working tree so
+	// repo.Commit can re-apply with DCO sign-off and executor-owned author
+	// identity. This prevents false NO-GO ("no diff") outcomes when a model
+	// runs git commit before calling submit_result instead of leaving changes
+	// uncommitted for the executor. The base is the upstream tip at the time
+	// the branch was cut (per #813), not a possibly-stale local ref, so we
+	// don't accidentally re-stage intervening upstream commits. On a retry it
+	// also folds the prior attempt's already-committed change back into the
+	// working tree so the re-commit below re-applies it alongside the coder's
+	// amendment.
+	if e.recoverSelfCommitsOrNoChange(
+		ctx, log, hasChanges, workspace,
+		e.resolveUpstreamForRun(task), baseBranch,
+	) {
+		return "", false, e.noChangesResult(start, tref, lr, branch)
+	}
+
+	envtestTouched = len(changedEnvtestPackages(ctx, workspace, execCommandRunner)) > 0
+
+	sha, commitErr := repo.Commit(ctx, repo.CommitOptions{
+		Workspace: workspace,
+		Message:   lr.Terminal.CommitMessage,
+		Author:    e.CommitAuthor,
+		Committer: e.CommitCommitter,
+	})
+	if errors.Is(commitErr, repo.ErrNothingToCommit) {
+		// Model said GO but never edited anything. Honest report: this is a
+		// NO-CHANGES outcome, NOT a GO. The autofix pipeline saw this often
+		// enough to deserve a distinct outcome string.
+		return "", envtestTouched, e.noChangesResult(start, tref, lr, branch)
+	}
+	if commitErr != nil {
+		return "", envtestTouched, e.commitRejectedResult(start, tref, lr, branch, commitErr)
+	}
+
+	if err := repo.Push(ctx, repo.PushOptions{
+		Workspace: workspace,
+		Branch:    branch,
+		Auth:      auth,
+		// A retry replaces this task's own branch (compare-and-swap via
+		// force-with-lease) because it supersedes the attempt it just
+		// re-gated. Attempt 0 honors the caller's opt-in as before: opt-in via
+		// Workload.spec.allowOverwrite (#934), off by default per #573 since a
+		// replaced ref can carry a previously-GO'd audit artifact.
+		ReplaceOnReject: attempt > 0 || allowOverwrite,
+	}); err != nil {
+		return sha, envtestTouched, e.pushFailedResult(start, tref, lr, branch, sha, err)
+	}
+
+	return sha, envtestTouched, nil
+}
+
+// retryCoderTerminalResult builds the Result for a #768 envtest retry whose
+// coder loop did not GO its fix (a NO-GO / INCOMPLETE / ERROR terminal). It
+// never pushes work the coder did not stand behind: it records the model's
+// terminal, preserves a gate-failed branch and (for the reviewer-only PR
+// case) opens a PR under the same rules the initial non-GO path uses, and
+// carries the normalized failure reason through. Coder-role only in
+// practice (the retry loop is unreachable for read-only reviewers), so no
+// reviewer rails run here. Pulled out as a method so runLLMPath stays under
+// the gocyclo ceiling, mirroring applyWorkClassPolicyForTask above.
+func (e *NativeAgentLoopExecutor) retryCoderTerminalResult(
+	ctx context.Context, log logr.Logger,
+	agent *foremanv1alpha1.Agent, task *foremanv1alpha1.AgenticTask,
+	workspace, branch string, auth *repo.Auth,
+	start time.Time, tref corev1.ObjectReference, lr *LoopResult,
+	verdict foremanv1alpha1.AgenticTaskVerdict, normReason foremanv1alpha1.AgenticTaskFailureReason,
+) *Result {
+	r := e.modelDecidedResult(start, tref, lr, verdict)
+	e.maybePreserveGateFailedBranch(ctx, log, agent, task, workspace, branch, auth, lr, r)
+	e.maybeOpenPullRequest(ctx, log, task, auth, verdict, r)
+	if normReason != "" && r.FailureReason == "" {
+		r.FailureReason = normReason
+	}
+	return r
 }
 
 // applyWorkClassPolicyForTask applies the work-class GO/NEEDS-VERIFICATION
@@ -1731,6 +1847,48 @@ func (e *NativeAgentLoopExecutor) envtestGateFailedResult(
 		"turnCount":     lr.Turns,
 	}
 	return r
+}
+
+// mapLoopError converts a loop.Run error into the Result the initial and
+// retry paths both return. It returns (nil, nil) when loopErr is nil (the
+// caller proceeds to inspect the terminal); (result, nil) for a
+// model-behavior outcome recorded as INCOMPLETE; and (nil, loopErr) for a
+// system/transport failure the caller must bubble so the watcher records
+// ExecutorError.
+func (e *NativeAgentLoopExecutor) mapLoopError(
+	start time.Time, tref corev1.ObjectReference, lr *LoopResult, loopErr error,
+) (*Result, error) {
+	if loopErr == nil {
+		return nil, nil
+	}
+	switch {
+	case errors.Is(loopErr, ErrMaxTurnsExhausted):
+		return e.incompleteResult(start, tref, lr,
+			foremanv1alpha1.FailureMaxTurnsExhausted,
+			"model did not call submit_result within max_turns"), nil
+	case errors.Is(loopErr, ErrAssistantNoToolCalls):
+		return e.incompleteResult(start, tref, lr,
+			foremanv1alpha1.FailureModelMisunderstood,
+			"model returned text without tool_calls; loop cannot make progress"), nil
+	case errors.Is(loopErr, ErrAssistantReasoningOnly):
+		// A thinking model that exhausted its reasoning-only budget
+		// (#650/#651) is a model behavior outcome, not an infrastructure
+		// failure: record INCOMPLETE and persist the transcript (the
+		// reasoning trace is the evidence an operator needs) instead of
+		// bubbling an ExecutorError that drops both.
+		return e.incompleteResult(start, tref, lr,
+			foremanv1alpha1.FailureModelMisunderstood,
+			"model exhausted its reasoning-only budget without emitting a tool call"), nil
+	case errors.Is(loopErr, context.Canceled), errors.Is(loopErr, context.DeadlineExceeded):
+		return e.incompleteResult(start, tref, lr,
+			foremanv1alpha1.FailureTimeout, loopErr.Error()), nil
+	default:
+		// Anything else is a system / transport failure: bubble up as an
+		// error so the watcher records ExecutorError. The watcher's execErr
+		// path tags this as InfrastructureError via the FailureReason
+		// mapping in patchTerminal.
+		return nil, loopErr
+	}
 }
 
 // resolveUpstreamForRun mirrors the resolveUpstream selection used at

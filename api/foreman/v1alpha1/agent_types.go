@@ -220,6 +220,18 @@ type AgentSpec struct {
 	// +optional
 	MaxTurns int32 `json:"maxTurns,omitempty"`
 
+	// MaxEnvtestIterations bounds how many times the executor re-runs a
+	// coder after the post-push envtest gate fails, feeding the gate
+	// output back so the coder fixes the failure and the branch is
+	// re-gated (#768). Three-valued: nil defaults to 1; an explicit 0
+	// restores the pre-#768 behavior (a failing gate downgrades to
+	// INCOMPLETE on the first failure); N allows up to N retries before
+	// the downgrade. Applies only to coder issue-fix tasks whose change
+	// touches an envtest-backed package and whose gate runner is wired.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	MaxEnvtestIterations *int32 `json:"maxEnvtestIterations,omitempty"`
+
 	// MaxRetries bounds how many times the loop retries a single turn on
 	// recoverable errors (notably llama.cpp #22072 truncated tool_call
 	// argument JSON). Bounded exponential backoff with jitter.
