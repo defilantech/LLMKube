@@ -155,6 +155,67 @@ func TestSLOReconcile_UnsetDeletesResource(t *testing.T) {
 	if _, err := getSLO(t, c, "default", "unset-isvc-availability"); err == nil {
 		t.Fatalf("SLO resource should be deleted after spec.slo removal")
 	}
+
+	afterUnset := &inferencev1alpha1.InferenceService{}
+	_ = c.Get(context.Background(), client.ObjectKeyFromObject(isvc), afterUnset)
+	if cond := apimeta.FindStatusCondition(afterUnset.Status.Conditions, SLOConditionReady); cond != nil {
+		t.Errorf("expected SLOReady condition to be removed after spec.slo removal, got %+v", cond)
+	}
+	if cond := apimeta.FindStatusCondition(afterUnset.Status.Conditions, SLOConditionDataSource); cond != nil {
+		t.Errorf("expected SLODataSourceAvailable condition to be removed after spec.slo removal, got %+v", cond)
+	}
+}
+
+// TestSLOReconcile_CleanupPreservesUnmanagedSLO covers the cleanup scoping
+// fix: cleanupStaleSLOs must only delete ServiceLevelObjectives it rendered
+// (app.kubernetes.io/managed-by=llmkube), not a hand-authored one that merely
+// happens to carry the same InferenceService label.
+func TestSLOReconcile_CleanupPreservesUnmanagedSLO(t *testing.T) {
+	c, cfg, stop := startSLOTestEnv(t, true)
+	defer stop()
+	isvc := createSLOISvc(t, c, "handwritten-isvc", "llamacpp", &inferencev1alpha1.SLOSpec{Objective: "99"})
+
+	handAuthored := &unstructured.Unstructured{}
+	handAuthored.SetGroupVersionKind(pyrraSLOGVK())
+	handAuthored.SetName("hand-authored-slo")
+	handAuthored.SetNamespace("default")
+	// Only the InferenceService label, deliberately no managed-by label: this
+	// simulates an operator hand-writing an SLO for the same service outside
+	// the llmkube reconciler.
+	handAuthored.SetLabels(map[string]string{sloISvcLabel: isvc.Name})
+	handAuthored.Object["spec"] = map[string]interface{}{
+		"target": "99.9",
+		"window": "28d",
+		"indicator": map[string]interface{}{
+			"bool_gauge": map[string]interface{}{
+				"metric": `up{namespace="default",service="handwritten-isvc"}`,
+			},
+		},
+	}
+	if err := c.Create(context.Background(), handAuthored); err != nil {
+		t.Fatalf("create hand-authored SLO: %v", err)
+	}
+
+	r := newSLOReconciler(t, cfg, true)
+	reconcileSLO(t, r, isvc)
+	if _, err := getSLO(t, c, "default", "handwritten-isvc-availability"); err != nil {
+		t.Fatalf("precondition: rendered SLO should exist: %v", err)
+	}
+
+	fresh := &inferencev1alpha1.InferenceService{}
+	_ = c.Get(context.Background(), client.ObjectKeyFromObject(isvc), fresh)
+	fresh.Spec.SLO = nil
+	if err := c.Update(context.Background(), fresh); err != nil {
+		t.Fatalf("unset slo: %v", err)
+	}
+	reconcileSLO(t, r, fresh)
+
+	if _, err := getSLO(t, c, "default", "handwritten-isvc-availability"); err == nil {
+		t.Fatalf("rendered SLO should be deleted after spec.slo removal")
+	}
+	if _, err := getSLO(t, c, "default", "hand-authored-slo"); err != nil {
+		t.Fatalf("hand-authored SLO should survive cleanup: %v", err)
+	}
 }
 
 func TestSLOReconcile_RenameDeletesStale(t *testing.T) {

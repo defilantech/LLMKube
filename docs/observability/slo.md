@@ -59,7 +59,7 @@ spec:
     objective: "99.5"        # 99.5% of scrapes healthy over 28d
 ```
 
-`indicator` defaults to `availability`, measured as Prometheus scrape success (the `up` series) for the serving pod: every failed scrape counts against the error budget. `window` defaults to `28d`. `name` defaults to `<inferenceservice-name>-<indicator>` (here, `tinyllama-availability`); set it explicitly if you want a specific name in Pyrra and Grafana.
+`indicator` defaults to `availability`, measured as Prometheus scrape success (the `up` series) for the serving pod: every failed scrape counts against the error budget. `objective` must be a number between 50 and 99.999 (a percentage); values outside that range are rejected at admission. `window` defaults to `28d`. `name` defaults to `<inferenceservice-name>-<indicator>` (here, `tinyllama-availability`); set it explicitly if you want a specific name in Pyrra and Grafana.
 
 ## Latency SLO
 

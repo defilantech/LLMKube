@@ -371,7 +371,7 @@ func (r *ModelRouterGatewayReconciler) applyResource(
 // registered, delegating to the shared crdDetector.
 func (r *ModelRouterGatewayReconciler) gatewayCRDsPresent(log logr.Logger) (bool, error) {
 	r.detectorOnce.Do(func() {
-		r.detector = newCRDDetector(modelRouterGatewayGVKs())
+		r.detector = newCRDDetector("gateway", modelRouterGatewayGVKs())
 	})
 	return r.detector.Present(r.Client, log)
 }

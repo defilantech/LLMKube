@@ -102,7 +102,10 @@ func (r *InferenceServiceSLOReconciler) Reconcile(ctx context.Context, req ctrl.
 	if isvc.Spec.SLO == nil {
 		// spec.slo removed (or never set): delete anything we rendered
 		// earlier. Owner refs only GC on ISvc deletion, not field removal.
-		return ctrl.Result{}, r.cleanupStaleSLOs(ctx, isvc, "" /* keep nothing */, log)
+		if err := r.cleanupStaleSLOs(ctx, isvc, "" /* keep nothing */, log); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, r.clearSLOConditions(ctx, isvc)
 	}
 
 	if !r.Enabled {
@@ -167,10 +170,14 @@ func (r *InferenceServiceSLOReconciler) applySLO(
 	return err
 }
 
-// cleanupStaleSLOs deletes every SLO labeled for this InferenceService except
-// keep (empty keep deletes all). Handles spec.slo removal, renames, and
-// indicator switches. No-ops when the pyrra.dev CRD is absent (nothing could
-// have been created, or the CRD deletion already cascaded).
+// cleanupStaleSLOs deletes every operator-managed SLO labeled for this
+// InferenceService except keep (empty keep deletes all). The managed-by label
+// scopes deletion candidates to resources this reconciler rendered (see
+// newServiceLevelObjective), so a hand-authored ServiceLevelObjective that
+// only happens to carry the InferenceService label is never a deletion
+// candidate. Handles spec.slo removal, renames, and indicator switches.
+// No-ops when the pyrra.dev CRD is absent (nothing could have been created,
+// or the CRD deletion already cascaded).
 func (r *InferenceServiceSLOReconciler) cleanupStaleSLOs(
 	ctx context.Context,
 	isvc *inferencev1alpha1.InferenceService,
@@ -185,7 +192,10 @@ func (r *InferenceServiceSLOReconciler) cleanupStaleSLOs(
 	list.SetGroupVersionKind(pyrraSLOListGVK())
 	if err := r.List(ctx, list,
 		client.InNamespace(isvc.Namespace),
-		client.MatchingLabels{sloISvcLabel: isvc.Name}); err != nil {
+		client.MatchingLabels{
+			"app.kubernetes.io/managed-by": "llmkube",
+			sloISvcLabel:                   isvc.Name,
+		}); err != nil {
 		return err
 	}
 	for i := range list.Items {
@@ -206,7 +216,7 @@ func (r *InferenceServiceSLOReconciler) cleanupStaleSLOs(
 // while absent so Pyrra installed after operator startup is picked up).
 func (r *InferenceServiceSLOReconciler) pyrraCRDPresent(log logr.Logger) (bool, error) {
 	r.detectorOnce.Do(func() {
-		r.detector = newCRDDetector([]schema.GroupVersionKind{pyrraSLOGVK()})
+		r.detector = newCRDDetector("pyrra-slo", []schema.GroupVersionKind{pyrraSLOGVK()})
 	})
 	return r.detector.Present(r.Client, log)
 }
@@ -245,7 +255,10 @@ func (r *InferenceServiceSLOReconciler) setSLOReady(
 	return r.Status().Patch(ctx, isvc, patch)
 }
 
-// setSLOCondition writes a non-ready SLOReady condition.
+// setSLOCondition writes a non-ready SLOReady condition. SLODataSourceAvailable
+// is dropped in the same patch: it is only meaningful alongside a reconciled
+// SLO, so a verdict left over from a prior successful reconcile would
+// otherwise linger and read as still-current.
 // nolint:unparam // status is parameterized to mirror setSLOReady's Condition shape even though every current call site passes metav1.ConditionFalse
 func (r *InferenceServiceSLOReconciler) setSLOCondition(
 	ctx context.Context,
@@ -260,6 +273,24 @@ func (r *InferenceServiceSLOReconciler) setSLOCondition(
 		Reason:  reason,
 		Message: message,
 	})
+	apimeta.RemoveStatusCondition(&isvc.Status.Conditions, SLOConditionDataSource)
+	return r.Status().Patch(ctx, isvc, patch)
+}
+
+// clearSLOConditions removes both SLO conditions after spec.slo is unset,
+// patching status only if a condition was actually present so a reconcile of
+// an SLO-less InferenceService (the common steady state) does not issue a
+// no-op status patch every time.
+func (r *InferenceServiceSLOReconciler) clearSLOConditions(
+	ctx context.Context,
+	isvc *inferencev1alpha1.InferenceService,
+) error {
+	patch := client.MergeFrom(isvc.DeepCopy())
+	removedReady := apimeta.RemoveStatusCondition(&isvc.Status.Conditions, SLOConditionReady)
+	removedDataSource := apimeta.RemoveStatusCondition(&isvc.Status.Conditions, SLOConditionDataSource)
+	if !removedReady && !removedDataSource {
+		return nil
+	}
 	return r.Status().Patch(ctx, isvc, patch)
 }
 

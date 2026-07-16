@@ -58,6 +58,16 @@ import (
 // note in e2e_suite_test.go) so unrelated CI jobs stay fast: it side-loads the
 // Pyrra CRD/operator and a prometheus-operator CRD, and pays for a second
 // full controller-manager deploy/undeploy cycle.
+
+// pyrraCreatedMonitoringNS tracks whether this suite's BeforeAll created the
+// "monitoring" namespace, so AfterAll only deletes it when it did. This suite
+// assumes a throwaway Kind cluster; a pre-existing monitoring namespace
+// almost certainly belongs to something else (a real kube-prometheus-stack
+// install, a prior manual test run), and deleting it out from under that
+// owner on teardown would be a nasty surprise. BeforeAll fails fast instead
+// of silently adopting it.
+var pyrraCreatedMonitoringNS bool
+
 var _ = Describe("Pyrra SLO Integration", Ordered, func() {
 	const (
 		sloTestNs    = "e2e-slo-test"
@@ -110,10 +120,23 @@ var _ = Describe("Pyrra SLO Integration", Ordered, func() {
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to apply the PrometheusRule CRD")
 
+		By("checking the monitoring namespace does not already exist")
+		// This suite expects a throwaway Kind cluster. A pre-existing
+		// "monitoring" namespace means either a real monitoring stack is
+		// installed here or a previous run of this suite did not tear down
+		// cleanly; either way, this suite must not adopt (and later delete)
+		// a namespace it did not create.
+		cmd = exec.Command("kubectl", "get", "ns", monitoringNs)
+		if _, err = utils.Run(cmd); err == nil {
+			Fail(fmt.Sprintf("namespace %q already exists; this suite requires a throwaway "+
+				"Kind cluster and refuses to adopt a pre-existing monitoring namespace", monitoringNs))
+		}
+
 		By("creating the monitoring namespace for the Pyrra kubernetes operator")
 		cmd = exec.Command("kubectl", "create", "ns", monitoringNs)
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to create the monitoring namespace")
+		pyrraCreatedMonitoringNS = true
 
 		By("deploying the Pyrra kubernetes operator (v0.10.1 example manifests)")
 		for _, m := range pyrraKubernetesManifests {
@@ -226,8 +249,10 @@ spec:
 			cmd = exec.Command("kubectl", "delete", "-f", pyrraManifestBaseURL+m, "--ignore-not-found")
 			_, _ = utils.Run(cmd)
 		}
-		cmd = exec.Command("kubectl", "delete", "ns", monitoringNs, "--ignore-not-found")
-		_, _ = utils.Run(cmd)
+		if pyrraCreatedMonitoringNS {
+			cmd = exec.Command("kubectl", "delete", "ns", monitoringNs, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+		}
 
 		By("removing the PrometheusRule and Pyrra SLO CRDs")
 		cmd = exec.Command("kubectl", "delete", "-f", prometheusRuleCRDURL, "--ignore-not-found")

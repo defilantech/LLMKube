@@ -180,7 +180,7 @@ func (r *InferenceServiceGatewayReconciler) applyResource(
 // false negative. The disabled message is logged once.
 func (r *InferenceServiceGatewayReconciler) gatewayCRDsPresent(log logr.Logger) (bool, error) {
 	r.detectorOnce.Do(func() {
-		r.detector = newCRDDetector([]schema.GroupVersionKind{
+		r.detector = newCRDDetector("gateway", []schema.GroupVersionKind{
 			backendGVK(), aiServiceBackendGVK(), aiGatewayRouteGVK(),
 		})
 	})
