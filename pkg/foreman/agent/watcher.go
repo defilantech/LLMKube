@@ -45,6 +45,18 @@ const DefaultWatcherInterval = 5 * time.Second
 // watcher returns ErrWatcherStalled. Matches the metal-agent's pattern.
 const DefaultMaxConsecutiveWatcherFailures = 3
 
+// DefaultTaskLivenessInterval is the poll cadence of the per-run watchdog
+// that aborts a run when its AgenticTask is deleted out from under the agent
+// (#1136). 10s bounds the wasted generation past a deletion to ~one interval
+// (vs. up to LoopBudget/8h today) without adding meaningful apiserver load.
+const DefaultTaskLivenessInterval = 10 * time.Second
+
+// maxTaskLivenessMisses is how many consecutive NON-NotFound Get errors the
+// liveness watchdog tolerates before giving up (fail-open: the run continues
+// under its LoopBudget). This keeps a transient apiserver blip or a network
+// partition from being mistaken for a deletion and killing a healthy run.
+const maxTaskLivenessMisses = 3
+
 // ErrWatcherStalled is returned from Run when consecutive List() failures
 // exceed the configured threshold; the supervisor (launchd / systemd /
 // the harness) is expected to recycle the process to rebuild the client.
@@ -79,6 +91,11 @@ type AgenticTaskWatcher struct {
 
 	// Executor runs claimed tasks. Required.
 	Executor Executor
+
+	// TaskLivenessInterval is the poll cadence of the per-run watchdog that
+	// aborts a run whose AgenticTask was deleted (#1136). Zero defaults to
+	// DefaultTaskLivenessInterval.
+	TaskLivenessInterval time.Duration
 
 	// inflightMu guards inflight. Exactly one task at a time in v0.1.
 	inflightMu sync.Mutex
@@ -312,11 +329,87 @@ func (w *AgenticTaskWatcher) launchExecutor(ctx context.Context, t *foremanv1alp
 		execCtx, cancel := context.WithCancel(ctx)
 		defer cancel()
 
+		// Abort the run if its AgenticTask is deleted out from under us
+		// (e.g. `kubectl delete workload` GC-ing the child task): otherwise
+		// the loop runs on to LoopBudget with no backing task (#1136). The
+		// watchdog shares execCtx, so it exits when the run finishes.
+		go w.watchTaskLiveness(execCtx, cancel, t)
+
 		res, execErr := w.Executor.Execute(execCtx, t)
 		if patchErr := w.patchTerminal(ctx, t, res, execErr); patchErr != nil {
 			log.Error(patchErr, "patching terminal status failed")
 		}
 	}()
+}
+
+// watchTaskLiveness cancels an in-flight run when its AgenticTask is deleted
+// out from under the agent (#1136). Nothing in the run path re-reads the task
+// after it is claimed, and the poll loop goes dormant while a run is inflight,
+// so a `kubectl delete workload` (owner-ref GC-ing the child task) would
+// otherwise leave the loop generating tokens to LoopBudget with no backing
+// task. This watchdog GETs the task on an interval and calls cancel() on a
+// definitive deletion; the cancellation propagates through the already
+// ctx-aware plumbing (the gateway request is bound to the run context, so the
+// model slot is released, and the executor tears down its workspace on
+// return).
+//
+// It fails OPEN: only a definitive NotFound (or a set DeletionTimestamp)
+// aborts. Non-NotFound errors are transient (apiserver blip, partition) and
+// must never be mistaken for a deletion, so they are tolerated up to
+// maxTaskLivenessMisses, after which the watchdog gives up without cancelling
+// and the run continues under its LoopBudget as before.
+func (w *AgenticTaskWatcher) watchTaskLiveness(
+	ctx context.Context,
+	cancel context.CancelFunc,
+	t *foremanv1alpha1.AgenticTask,
+) {
+	log := logf.FromContext(ctx).WithName("task-liveness").WithValues("task", t.Name)
+	key := types.NamespacedName{Namespace: t.Namespace, Name: t.Name}
+
+	interval := w.TaskLivenessInterval
+	if interval <= 0 {
+		interval = DefaultTaskLivenessInterval
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	misses := 0
+	for {
+		select {
+		case <-ctx.Done():
+			// Run finished (or was already cancelled): nothing to watch.
+			return
+		case <-ticker.C:
+			var cur foremanv1alpha1.AgenticTask
+			err := w.Client.Get(ctx, key, &cur)
+			switch {
+			case err == nil:
+				misses = 0
+				if cur.DeletionTimestamp != nil {
+					log.Info("inflight task is terminating; cancelling run (#1136)")
+					cancel()
+					return
+				}
+			case apierrors.IsNotFound(err):
+				log.Info("inflight task deleted; cancelling run (#1136)")
+				cancel()
+				return
+			case ctx.Err() != nil:
+				// The Get failed because the run finished and cancelled ctx;
+				// not a task deletion. Exit quietly.
+				return
+			default:
+				misses++
+				log.Error(err, "task liveness probe failed (transient); not cancelling", "misses", misses)
+				if misses >= maxTaskLivenessMisses {
+					// Fail open: a partition must not look like a deletion.
+					// Stop probing; the run continues under its LoopBudget.
+					log.Info("task liveness probe giving up after transient errors; run continues")
+					return
+				}
+			}
+		}
+	}
 }
 
 // patchTerminal re-fetches the task and writes its final phase, verdict,
@@ -330,6 +423,11 @@ func (w *AgenticTaskWatcher) patchTerminal(
 	var fresh foremanv1alpha1.AgenticTask
 	key := types.NamespacedName{Namespace: t.Namespace, Name: t.Name}
 	if err := w.Client.Get(ctx, key, &fresh); err != nil {
+		if apierrors.IsNotFound(err) {
+			// The task was deleted (e.g. the #1136 abort-on-delete path):
+			// there is nothing to write a terminal status onto.
+			return nil
+		}
 		return fmt.Errorf("refetch %s: %w", key, err)
 	}
 
