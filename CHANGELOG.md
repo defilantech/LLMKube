@@ -5,6 +5,25 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.7](https://github.com/defilantech/LLMKube/compare/v0.9.6...v0.9.7) (2026-07-16)
+
+
+### Features
+
+* **cli:** envtest-verify the slicer's integrated branch (Fixes [#1137](https://github.com/defilantech/LLMKube/issues/1137)) ([#1141](https://github.com/defilantech/LLMKube/issues/1141)) ([a7622c2](https://github.com/defilantech/LLMKube/commit/a7622c2a988fe8f1479d2411a21d27ffd7a18405))
+* **foreman:** guide coders to verify volatile external facts via MCP research tools ([#1134](https://github.com/defilantech/LLMKube/issues/1134)) ([390c945](https://github.com/defilantech/LLMKube/commit/390c945cf5d64beb46863fe974ba4c8e039a99cd))
+* **foreman:** opt-in coder escalation on capability-wall failures ([#1108](https://github.com/defilantech/LLMKube/issues/1108)) ([#1128](https://github.com/defilantech/LLMKube/issues/1128)) ([68e2211](https://github.com/defilantech/LLMKube/commit/68e221129cbd3e512614faeca5ca8f6ad9e496d1))
+* **metal-agent:** expose oMLX paged SSD cache configuration ([#278](https://github.com/defilantech/LLMKube/issues/278)) ([#1129](https://github.com/defilantech/LLMKube/issues/1129)) ([095e4a2](https://github.com/defilantech/LLMKube/commit/095e4a21733a2873d2282645c6d1337fc7a9e00f))
+* **router:** in-memory rolling-window budget accounting engine ([#434](https://github.com/defilantech/LLMKube/issues/434)) ([#1130](https://github.com/defilantech/LLMKube/issues/1130)) ([c6ba850](https://github.com/defilantech/LLMKube/commit/c6ba8504a6135ea457290803c85416994356e0de))
+* **scripts:** add foreman-finalize.sh post-GO branch finalizer ([#1126](https://github.com/defilantech/LLMKube/issues/1126)) ([8d17e25](https://github.com/defilantech/LLMKube/commit/8d17e251f9babb9534e273e34303a5edf6d1c8a7))
+* Support pinned multi-file Hugging Face models ([#1110](https://github.com/defilantech/LLMKube/issues/1110)) ([#1138](https://github.com/defilantech/LLMKube/issues/1138)) ([e2d3441](https://github.com/defilantech/LLMKube/commit/e2d34410950d1ec91819bb7049d811f56852a1de))
+
+
+### Bug Fixes
+
+* **foreman:** abort orphaned agent loop when its AgenticTask is deleted (Fixes [#1136](https://github.com/defilantech/LLMKube/issues/1136)) ([#1140](https://github.com/defilantech/LLMKube/issues/1140)) ([471a00c](https://github.com/defilantech/LLMKube/commit/471a00c4811405fc251b9bd69a927d3e1c817637))
+* **scripts:** foreman-finalize handles Foreman CRDs, clean-tree, and title override ([#1131](https://github.com/defilantech/LLMKube/issues/1131)) ([db3eeaf](https://github.com/defilantech/LLMKube/commit/db3eeafb3b5933591f7a796a99a41bb020cce77a))
+
 ## [0.9.6](https://github.com/defilantech/LLMKube/compare/v0.9.5...v0.9.6) (2026-07-14)
 
 
