@@ -45,6 +45,9 @@ spec:
         - --metrics-bind-address=:{{ .Values.metrics.service.port }}
         - --metrics-secure={{ .Values.metrics.secure }}
         {{- end }}
+        {{- if .Values.pyrra.enabled }}
+        - --enable-pyrra-slo
+        {{- end }}
         {{- if .Values.modelCache.enabled }}
         - --model-cache-path={{ .Values.modelCache.mountPath }}
         - --model-cache-mode={{ .Values.modelCache.mode }}

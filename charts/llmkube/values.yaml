@@ -259,6 +259,15 @@ prometheus:
       inference:
         enabled: true
 
+# Pyrra SLO integration. When enabled, the operator renders a Pyrra
+# ServiceLevelObjective for every InferenceService that declares spec.slo,
+# and Pyrra generates the Prometheus recording/alert rules and error-budget
+# math. Pyrra itself is NOT installed by this chart; install it alongside
+# kube-prometheus-stack first: https://github.com/pyrra-dev/pyrra
+# See docs/observability/slo.md.
+pyrra:
+  enabled: false
+
 # Custom Resource Definitions
 crds:
   # Install CRDs as part of chart installation

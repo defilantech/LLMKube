@@ -77,6 +77,13 @@ GETTING STARTED:
    takes effect once that parametersRef is wired.
 {{- end }}
 
+{{- if .Values.pyrra.enabled }}
+
+Pyrra SLO integration is enabled. InferenceServices with spec.slo will get a
+Pyrra ServiceLevelObjective. Pyrra must be installed separately:
+  https://github.com/pyrra-dev/pyrra (tested with v0.10.1)
+{{- end }}
+
 ---
 DOCUMENTATION:
 

@@ -247,6 +247,13 @@
         }
       }
     },
+    "pyrra": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" }
+      }
+    },
     "crds": {
       "type": "object",
       "additionalProperties": false,
