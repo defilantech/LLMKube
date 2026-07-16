@@ -5004,6 +5004,62 @@ spec:
                   Use when the model is baked into the image or downloaded by the
                   container itself (e.g., via HF_TOKEN).
                 type: boolean
+              slo:
+                description: |-
+                  SLO declares a service-level objective for this inference service.
+                  When set (and the operator runs with --enable-pyrra-slo), the
+                  controller creates a Pyrra ServiceLevelObjective in the same
+                  namespace; Pyrra generates the recording and alert rules. Requires
+                  Pyrra installed in the cluster (https://github.com/pyrra-dev/pyrra).
+                properties:
+                  indicator:
+                    default: availability
+                    description: |-
+                      Indicator selects the measured signal. "availability" is scrape
+                      success of the serving pod (Prometheus `up`); "latency" is the
+                      fraction of requests completing under latencyThreshold. Latency is
+                      currently supported on the vllm runtime only (llama.cpp exports no
+                      request-latency histogram).
+                    enum:
+                    - availability
+                    - latency
+                    type: string
+                  latencyThreshold:
+                    description: |-
+                      LatencyThreshold is the request-duration bound in seconds (e.g. "2"
+                      or "0.5") a request must beat to count as good. Required when
+                      indicator is latency. Must match a histogram bucket boundary of the
+                      runtime's latency metric (see docs/observability/slo.md).
+                    pattern: ^[0-9]+(\.[0-9]+)?$
+                    type: string
+                  name:
+                    description: |-
+                      Name is the SLO identifier shown in Pyrra and Grafana. Defaults to
+                      "<inferenceservice-name>-<indicator>".
+                    type: string
+                  objective:
+                    description: |-
+                      Objective is the target as a percentage string between 50 and
+                      99.999, e.g. "99.5". A string because CRD validation cannot express
+                      float64 (controller-tools #245); Pyrra's own target field has the
+                      same shape and this value passes through unchanged.
+                    pattern: ^[0-9]+(\.[0-9]+)?$
+                    type: string
+                    x-kubernetes-validations:
+                    - message: objective must be a number between 50 and 99.999
+                      rule: double(self) >= 50.0 && double(self) <= 99.999
+                  window:
+                    default: 28d
+                    description: Window is the rolling window the objective is measured
+                      over.
+                    pattern: ^[0-9]+[mhdw]$
+                    type: string
+                required:
+                - objective
+                type: object
+                x-kubernetes-validations:
+                - message: latencyThreshold is required when indicator is latency
+                  rule: self.indicator != 'latency' || has(self.latencyThreshold)
               speculativeDecoding:
                 description: |-
                   SpeculativeDecoding configures speculative decoding for the llama.cpp

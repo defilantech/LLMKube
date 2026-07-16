@@ -551,6 +551,14 @@ type InferenceServiceSpec struct {
 	//   - generic: optional AnnotationIdleEndpoint annotation for custom probe
 	// +optional
 	RolloutPolicy *RolloutPolicySpec `json:"rolloutPolicy,omitempty"`
+
+	// SLO declares a service-level objective for this inference service.
+	// When set (and the operator runs with --enable-pyrra-slo), the
+	// controller creates a Pyrra ServiceLevelObjective in the same
+	// namespace; Pyrra generates the recording and alert rules. Requires
+	// Pyrra installed in the cluster (https://github.com/pyrra-dev/pyrra).
+	// +optional
+	SLO *SLOSpec `json:"slo,omitempty"`
 }
 
 // RolloutPolicySpec defines how deployment updates should be gated on backend idleness.
@@ -674,6 +682,48 @@ type GatewayReference struct {
 	// own namespace.
 	// +optional
 	Namespace string `json:"namespace,omitempty"`
+}
+
+// SLOSpec declares a service-level objective rendered as a Pyrra
+// ServiceLevelObjective. See docs/observability/slo.md.
+// +kubebuilder:validation:XValidation:rule="self.indicator != 'latency' || has(self.latencyThreshold)",message="latencyThreshold is required when indicator is latency"
+type SLOSpec struct {
+	// Name is the SLO identifier shown in Pyrra and Grafana. Defaults to
+	// "<inferenceservice-name>-<indicator>".
+	// +optional
+	Name string `json:"name,omitempty"`
+
+	// Objective is the target as a percentage string between 50 and
+	// 99.999, e.g. "99.5". A string because CRD validation cannot express
+	// float64 (controller-tools #245); Pyrra's own target field has the
+	// same shape and this value passes through unchanged.
+	// +kubebuilder:validation:Pattern=`^[0-9]+(\.[0-9]+)?$`
+	// +kubebuilder:validation:XValidation:rule="double(self) >= 50.0 && double(self) <= 99.999",message="objective must be a number between 50 and 99.999"
+	Objective string `json:"objective"`
+
+	// Window is the rolling window the objective is measured over.
+	// +kubebuilder:validation:Pattern=`^[0-9]+[mhdw]$`
+	// +kubebuilder:default="28d"
+	// +optional
+	Window string `json:"window,omitempty"`
+
+	// Indicator selects the measured signal. "availability" is scrape
+	// success of the serving pod (Prometheus `up`); "latency" is the
+	// fraction of requests completing under latencyThreshold. Latency is
+	// currently supported on the vllm runtime only (llama.cpp exports no
+	// request-latency histogram).
+	// +kubebuilder:validation:Enum=availability;latency
+	// +kubebuilder:default=availability
+	// +optional
+	Indicator string `json:"indicator,omitempty"`
+
+	// LatencyThreshold is the request-duration bound in seconds (e.g. "2"
+	// or "0.5") a request must beat to count as good. Required when
+	// indicator is latency. Must match a histogram bucket boundary of the
+	// runtime's latency metric (see docs/observability/slo.md).
+	// +kubebuilder:validation:Pattern=`^[0-9]+(\.[0-9]+)?$`
+	// +optional
+	LatencyThreshold string `json:"latencyThreshold,omitempty"`
 }
 
 // InferenceResourceRequirements defines resource requirements for inference
