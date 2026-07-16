@@ -1582,7 +1582,7 @@ var _ = Describe("Multi-File Staging Reconcile", func() {
 		Expect(hasInvalidFileSet).To(BeTrue())
 	})
 
-	It("should fail with InvalidFileSet when hf source contains @rev", func() {
+	It("should accept hf source with @rev for multi-file staging", func() {
 		modelName := "model-hf-at-rev"
 		model := &inferencev1alpha1.Model{
 			ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
@@ -1608,11 +1608,11 @@ var _ = Describe("Multi-File Staging Reconcile", func() {
 			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
 		})
 		Expect(err).NotTo(HaveOccurred())
-		Expect(result.RequeueAfter).To(Equal(5 * time.Minute))
+		Expect(result).To(Equal(reconcile.Result{}))
 
 		updated := &inferencev1alpha1.Model{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: modelName, Namespace: "default"}, updated)).To(Succeed())
-		Expect(updated.Status.Phase).To(Equal(PhaseFailed))
+		Expect(updated.Status.Phase).To(Equal(PhaseReady))
 
 		var hasInvalidFileSet bool
 		for _, cond := range updated.Status.Conditions {
@@ -1620,7 +1620,7 @@ var _ = Describe("Multi-File Staging Reconcile", func() {
 				hasInvalidFileSet = true
 			}
 		}
-		Expect(hasInvalidFileSet).To(BeTrue())
+		Expect(hasInvalidFileSet).To(BeFalse(), "hf source with @rev should be accepted")
 	})
 })
 

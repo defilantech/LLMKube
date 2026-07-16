@@ -251,7 +251,7 @@ var _ = Describe("buildCachedStorageConfig multi-file staging", func() {
 		config := buildCachedStorageConfig(model, nil, "", "", "curl:8.18.0", 102)
 		env := config.initContainers[1].Env
 		source := getEnvVar(env, "MODEL_SOURCE")
-		Expect(source).To(Equal("https://huggingface.co/unsloth/gemma-4-31B-it-GGUF"))
+		Expect(source).To(Equal("https://huggingface.co/unsloth/gemma-4-31B-it-GGUF/resolve/main/"))
 	})
 
 	It("includes custom CA cert volume in multi-file cached storage", func() {
@@ -394,12 +394,25 @@ var _ = Describe("buildMultiFileInitCommand", func() {
 		Expect(cmd).To(ContainSubstring("case"))
 		Expect(cmd).To(ContainSubstring("esac"))
 	})
+
+	It("preserves slash between resolve base and filename in per-file URL (regression test for #1110)", func() {
+		// The bug: url="${SOURCE%/}$rel" strips trailing slash from SOURCE (which ends in /)
+		// and glues filename directly, producing ".../resolve/main" + "a.gguf" = ".../resolve/maina.gguf"
+		// The fix: url="${SOURCE%/}/$rel" adds the slash back, producing ".../resolve/main/a.gguf"
+		cmd := buildMultiFileInitCommand(true, RefreshPolicyIfNotPresent)
+		Expect(cmd).To(ContainSubstring(`url="${SOURCE%/}/$rel"`))
+	})
+
+	It("preserves slash between resolve base and filename in OnChange policy (regression test for #1110)", func() {
+		cmd := buildMultiFileInitCommand(true, RefreshPolicyOnChange)
+		Expect(cmd).To(ContainSubstring(`url="${SOURCE%/}/$rel"`))
+	})
 })
 
 var _ = Describe("multiFileInitEnvVars", func() {
 	It("sets MODEL_FILES as newline-delimited list", func() {
 		env := multiFileInitEnvVars("hf://org/repo", "/models/abc", []string{"a.gguf", "b.gguf"})
-		Expect(getEnvVar(env, "MODEL_SOURCE")).To(Equal("https://huggingface.co/org/repo"))
+		Expect(getEnvVar(env, "MODEL_SOURCE")).To(Equal("https://huggingface.co/org/repo/resolve/main/"))
 		Expect(getEnvVar(env, "CACHE_DIR")).To(Equal("/models/abc"))
 		Expect(getEnvVar(env, "MODEL_FILES")).To(Equal("a.gguf\nb.gguf"))
 	})
@@ -501,7 +514,7 @@ var _ = Describe("buildCachedStorageConfig cache key fallback", func() {
 
 var _ = Describe("resolveHFSourceURL", func() {
 	It("converts hf:// to https://huggingface.co/", func() {
-		Expect(resolveHFSourceURL("hf://unsloth/gemma-4-31B-it-GGUF")).To(Equal("https://huggingface.co/unsloth/gemma-4-31B-it-GGUF"))
+		Expect(resolveHFSourceURL("hf://unsloth/gemma-4-31B-it-GGUF")).To(Equal("https://huggingface.co/unsloth/gemma-4-31B-it-GGUF/resolve/main/"))
 	})
 
 	It("passes through https URLs unchanged", func() {
