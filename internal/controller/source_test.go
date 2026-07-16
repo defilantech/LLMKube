@@ -179,6 +179,59 @@ var _ = Describe("isHFRepoSource (source.go)", func() {
 	})
 })
 
+var _ = Describe("parseHFSource (source.go)", func() {
+	It("should parse hf://org/repo without revision", func() {
+		repoID, revision, err := parseHFSource("hf://org/repo")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(repoID).To(Equal("org/repo"))
+		Expect(revision).To(Equal(""))
+	})
+	It("should parse bare org/repo without revision", func() {
+		repoID, revision, err := parseHFSource("org/repo")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(repoID).To(Equal("org/repo"))
+		Expect(revision).To(Equal(""))
+	})
+	It("should parse hf://org/repo@main with revision", func() {
+		repoID, revision, err := parseHFSource("hf://org/repo@main")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(repoID).To(Equal("org/repo"))
+		Expect(revision).To(Equal("main"))
+	})
+	It("should parse bare org/repo@v1.0 with revision", func() {
+		repoID, revision, err := parseHFSource("org/repo@v1.0")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(repoID).To(Equal("org/repo"))
+		Expect(revision).To(Equal("v1.0"))
+	})
+	It("should parse with commit hash revision", func() {
+		repoID, revision, err := parseHFSource("hf://org/repo@abc123def456")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(repoID).To(Equal("org/repo"))
+		Expect(revision).To(Equal("abc123def456"))
+	})
+	It("should error on empty hf source", func() {
+		_, _, err := parseHFSource("hf://")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("empty hf repo source"))
+	})
+	It("should error on empty repo ID", func() {
+		_, _, err := parseHFSource("hf://@main")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("empty repo ID"))
+	})
+	It("should error on empty revision", func() {
+		_, _, err := parseHFSource("hf://org/repo@")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("empty revision"))
+	})
+	It("should error on whitespace in revision", func() {
+		_, _, err := parseHFSource("hf://org/repo@main branch")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("whitespace"))
+	})
+})
+
 var _ = Describe("validateHFRepoSource (source.go)", func() {
 	It("should return nil for valid bare repo ID", func() {
 		Expect(validateHFRepoSource("org/repo")).To(Succeed())
@@ -186,24 +239,41 @@ var _ = Describe("validateHFRepoSource (source.go)", func() {
 	It("should return nil for valid hf:// prefixed repo ID", func() {
 		Expect(validateHFRepoSource("hf://org/repo")).To(Succeed())
 	})
-	It("should return error for hf:// with @rev", func() {
-		err := validateHFRepoSource("hf://org/repo@main")
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("@rev"))
+	It("should accept hf:// with @rev", func() {
+		Expect(validateHFRepoSource("hf://org/repo@main")).To(Succeed())
 	})
-	It("should return error for bare repo ID with @rev", func() {
-		err := validateHFRepoSource("org/repo@v1.0")
+	It("should accept bare repo ID with @rev", func() {
+		Expect(validateHFRepoSource("org/repo@v1.0")).To(Succeed())
+	})
+	It("should error on empty hf source", func() {
+		err := validateHFRepoSource("hf://")
 		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("@rev"))
+		Expect(err.Error()).To(ContainSubstring("empty"))
+	})
+	It("should error on empty repo ID", func() {
+		err := validateHFRepoSource("hf://@main")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("empty repo ID"))
+	})
+	It("should error on whitespace in revision", func() {
+		err := validateHFRepoSource("hf://org/repo@main branch")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("whitespace"))
 	})
 })
 
 var _ = Describe("normalizeHFSource (source.go)", func() {
-	It("should strip hf:// prefix", func() {
-		Expect(normalizeHFSource("hf://org/repo")).To(Equal("org/repo"))
+	It("should convert hf://org/repo to resolve URL with main", func() {
+		Expect(normalizeHFSource("hf://org/repo")).To(Equal("https://huggingface.co/org/repo/resolve/main/"))
 	})
-	It("should leave bare repo ID unchanged", func() {
+	It("should convert bare org/repo unchanged (non-hf)", func() {
 		Expect(normalizeHFSource("org/repo")).To(Equal("org/repo"))
+	})
+	It("should convert hf://org/repo@main to resolve URL with revision", func() {
+		Expect(normalizeHFSource("hf://org/repo@main")).To(Equal("https://huggingface.co/org/repo/resolve/main/"))
+	})
+	It("should convert hf://org/repo@v1.0 to resolve URL with revision", func() {
+		Expect(normalizeHFSource("hf://org/repo@v1.0")).To(Equal("https://huggingface.co/org/repo/resolve/v1.0/"))
 	})
 	It("should leave non-hf source unchanged", func() {
 		Expect(normalizeHFSource("https://example.com/model.gguf")).To(Equal("https://example.com/model.gguf"))

@@ -249,12 +249,9 @@ func modelEnvFrom(model *inferencev1alpha1.Model) []corev1.EnvFromSource {
 
 // resolveHFSourceURL converts hf://repo-id sources to their huggingface.co
 // HTTPS equivalent for init container env vars. Non-hf:// sources pass through unchanged.
+// This is now a thin wrapper around normalizeHFSource for backward compatibility.
 func resolveHFSourceURL(source string) string {
-	if strings.HasPrefix(source, "hf://") {
-		repo := strings.TrimPrefix(source, "hf://")
-		return "https://huggingface.co/" + repo
-	}
-	return source
+	return normalizeHFSource(source)
 }
 
 // hasMultiFileStaging reports whether the model uses multi-file staging via
@@ -386,7 +383,7 @@ func buildMultiFileInitCommand(useCache bool, refreshPolicy string) string {
 		prefix = `mkdir -p /models && `
 	}
 
-	normalizeFn := `normalize_hf_source() { case "$1" in hf://*) echo "https://huggingface.co/${1#hf://}" ;; *) echo "$1" ;; esac; }` + " && "
+	normalizeFn := `normalize_hf_source() { case "$1" in hf://*) src="${1#hf://}"; rev="${src#*@}"; if [ "$rev" != "$src" ]; then echo "https://huggingface.co/${src%%@*}/resolve/$rev/"; else echo "https://huggingface.co/$src/resolve/main/"; fi ;; *) echo "$1" ;; esac; }` + " && "
 
 	if refreshPolicy == RefreshPolicyOnChange {
 		body := normalizeFn +
@@ -395,7 +392,7 @@ func buildMultiFileInitCommand(useCache bool, refreshPolicy string) string {
 			`[ -n "$rel" ] || continue; ` +
 			`dest="$CACHE_DIR/$rel"; ` +
 			`mkdir -p "$(dirname "$dest")"; ` +
-			`url="${SOURCE%/}/resolve/main/$rel"; ` +
+			`url="${SOURCE%/}/$rel"; ` +
 			`etag="$(dirname "$dest")/.$(basename "$dest").etag"; ` +
 			`if curl -fsSL --etag-compare "$etag" --etag-save "$etag" -o "$dest" "$url"; then ` +
 			`echo "Model artifact $rel revalidated"; ` +
@@ -411,7 +408,7 @@ func buildMultiFileInitCommand(useCache bool, refreshPolicy string) string {
 		`[ -n "$rel" ] || continue; ` +
 		`dest="$CACHE_DIR/$rel"; ` +
 		`mkdir -p "$(dirname "$dest")"; ` +
-		`url="${SOURCE%/}/resolve/main/$rel"; ` +
+		`url="${SOURCE%/}/$rel"; ` +
 		`if [ ! -f "$dest" ]; then ` +
 		`echo "Downloading model artifact $rel..."; ` +
 		`curl -f -L -o "$dest" "$url" || { echo "ERROR: failed to download $rel"; exit 1; }; ` +
