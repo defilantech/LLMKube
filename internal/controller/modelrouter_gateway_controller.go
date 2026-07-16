@@ -113,7 +113,7 @@ type ModelRouterGatewayReconciler struct {
 	// reconcile and reused thereafter. It requires slice 1's three kinds plus
 	// the BackendTrafficPolicy this slice adds.
 	detectorOnce sync.Once
-	detector     *gatewayCRDDetector
+	detector     *crdDetector
 }
 
 // +kubebuilder:rbac:groups=gateway.envoyproxy.io,resources=backendtrafficpolicies,verbs=get;list;watch;create;update;patch;delete
@@ -368,10 +368,10 @@ func (r *ModelRouterGatewayReconciler) applyResource(
 }
 
 // gatewayCRDsPresent reports whether all gateway CRDs this slice needs are
-// registered, delegating to the shared gatewayCRDDetector.
+// registered, delegating to the shared crdDetector.
 func (r *ModelRouterGatewayReconciler) gatewayCRDsPresent(log logr.Logger) (bool, error) {
 	r.detectorOnce.Do(func() {
-		r.detector = newGatewayCRDDetector(modelRouterGatewayGVKs())
+		r.detector = newCRDDetector(modelRouterGatewayGVKs())
 	})
 	return r.detector.Present(r.Client, log)
 }

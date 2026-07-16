@@ -67,7 +67,7 @@ type InferenceServiceGatewayReconciler struct {
 	// absent so a gateway installed after startup is picked up without a
 	// restart.
 	detectorOnce sync.Once
-	detector     *gatewayCRDDetector
+	detector     *crdDetector
 }
 
 // +kubebuilder:rbac:groups=gateway.envoyproxy.io,resources=backends,verbs=get;list;watch;create;update;patch;delete
@@ -173,14 +173,14 @@ func (r *InferenceServiceGatewayReconciler) applyResource(
 }
 
 // gatewayCRDsPresent reports whether the three aigw CRDs slice 1 generates are
-// registered, delegating to the shared gatewayCRDDetector. A positive result is
+// registered, delegating to the shared crdDetector. A positive result is
 // cached; while absent it re-checks on every call so a gateway installed after
 // startup is picked up without an operator restart. A transient discovery error
 // (not a missing kind) is returned so the caller requeues instead of caching a
 // false negative. The disabled message is logged once.
 func (r *InferenceServiceGatewayReconciler) gatewayCRDsPresent(log logr.Logger) (bool, error) {
 	r.detectorOnce.Do(func() {
-		r.detector = newGatewayCRDDetector([]schema.GroupVersionKind{
+		r.detector = newCRDDetector([]schema.GroupVersionKind{
 			backendGVK(), aiServiceBackendGVK(), aiGatewayRouteGVK(),
 		})
 	})
