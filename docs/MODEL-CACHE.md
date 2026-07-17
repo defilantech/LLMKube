@@ -95,6 +95,13 @@ modelCache:
   # Enable persistent model cache (default: true)
   enabled: true
 
+  # Provisioning mode: shared or perService.
+  # shared (default): a single cluster-wide PVC that all InferenceServices share.
+  # perService: operator-managed per-InferenceService PVC that binds on the node
+  #   where the inference pod schedules. A separate user-managed override is
+  #   available via spec.modelCache.claimName on individual InferenceServices.
+  mode: shared
+
   # Storage size for model cache
   size: 100Gi
 
@@ -145,6 +152,24 @@ modelCache:
   accessMode: ReadWriteMany
 ```
 
+#### Strictly tainted GPU nodes
+
+When a GPU node carries a hard `NoSchedule` taint, dynamic provisioning can fail for reasons unrelated to the inference pod's tolerations. The safest approach is to pre-provision a PVC bound to the tainted node and reference it through `spec.modelCache.claimName`.
+
+The inference pod already receives the GPU toleration derived from the Model's `hardware.gpu` configuration. The `model-downloader` runs as an init container in that same pod, so a pre-existing PVC does not require a separate download Job.
+
+The claim must already exist and be node-aligned by the cluster administrator's storage setup. `claimName` is user-owned: LLMKube mounts it through the same prep and download init containers as the built-in cache, but never creates, mutates, or deletes it. If the named PVC is missing, the InferenceService is marked Degraded rather than silently falling back to the shared cache.
+
+**Note:** `claimName` is ignored for `pvc://` model sources because those weights are already staged on the cluster and mounted read-only; no download occurs.
+
+Some dynamic provisioners create a per-node helper pod to provision volumes. This helper pod is separate from the LLMKube inference pod and typically carries only the default not-ready/unreachable tolerations. When a GPU node has a hard `NoSchedule` taint, the helper pod may remain Pending with an untolerated-taint event — even though the inference pod itself has the correct GPU toleration.
+
+Strict-taint choices:
+
+- Pre-provision a static, node-aligned claim and use `claimName`.
+- Use a provisioner whose helper configuration supports the taint.
+- Apply a narrowly scoped cluster-level policy maintained by the cluster administrator.
+
 ### Per-InferenceService Cache PVC (Bring Your Own)
 
 The cache backend above is an operator-global choice. To point a *single*
@@ -188,8 +213,11 @@ Behavior:
   `nodeSelector` so the pod lands where the PVC binds (a
   `WaitForFirstConsumer` local class binds on the first consumer; a pre-bound
   RWO PVC pins the pod).
-- `llmkube cache list` / `cache clear` inspect the shared cache only; they do
-  not see bring-your-own cache PVCs.
+- `llmkube cache list` discovers the shared cache and operator-managed
+  per-service cache PVCs. A user-managed `spec.modelCache.claimName` PVC is
+  outside the operator's cache label/discovery contract and may not appear in
+  the listing. Cache inspection may need a running pod or a transient inspector
+  pod for Pending `WaitForFirstConsumer` claims.
 
 ## CLI Commands
 
