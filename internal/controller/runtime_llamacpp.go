@@ -30,7 +30,7 @@ const llamaCppVulkanImage = "ghcr.io/defilantech/llmkube-llama-vulkan@sha256:cba
 // image for AMD nodes (gfx1151-targeted, rocWMMA FlashAttention, hipBLASLt).
 // Digest-pinned like the Vulkan image; bumped via reviewed PR after the
 // promoter smokes the candidate on real hardware. See #701.
-const llamaCppROCmImage = "ghcr.io/defilantech/llmkube-llama-rocm@sha256:8638b6824b6992f31e2bb46e222e2863def26ae3197ebe321739825acb001675"
+const llamaCppROCmImage = "ghcr.io/defilantech/llmkube-llama-rocm@sha256:ea7ada64e94d9c2435d9729bc9e0c8635c830d03dd9c6d3fbc15346bdd762812"
 
 // LlamaCppBackend generates container configuration for the llama.cpp inference server.
 type LlamaCppBackend struct{}
