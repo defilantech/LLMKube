@@ -126,8 +126,18 @@ func TestCheckAcceleratorAvailability(t *testing.T) {
 			[]client.Object{nodeWithCapacity("cpu1", "cpu", "8")}, false,
 		},
 		{
-			"rocm available when a node advertises amd.com/gpu", "rocm", "",
-			[]client.Object{nodeWithCapacity("amd1", "amd.com/gpu", "1")}, true,
+			// #701: rocm resolves to the shared devic.es/dri-render resource,
+			// not amd.com/gpu (one device-plugin resource per physical AMD GPU
+			// serves both Vulkan and ROCm).
+			"rocm available when a node advertises devic.es/dri-render", "rocm", "",
+			[]client.Object{nodeWithCapacity("amd1", "devic.es/dri-render", "4")}, true,
+		},
+		{
+			// Behavior-change guard: pre-#701 rocm checked amd.com/gpu. A node
+			// that advertises only amd.com/gpu (AMD's official plugin) without
+			// the resourceName override no longer satisfies rocm readiness.
+			"rocm unavailable when only amd.com/gpu (pre-701 resource) exists", "rocm", "",
+			[]client.Object{nodeWithCapacity("amd1", "amd.com/gpu", "1")}, false,
 		},
 		{
 			"rocm unavailable when only an nvidia node exists", "rocm", "",

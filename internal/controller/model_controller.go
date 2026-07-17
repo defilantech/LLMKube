@@ -913,12 +913,14 @@ func (r *ModelReconciler) checkAcceleratorAvailability(ctx context.Context, mode
 
 	var resName corev1.ResourceName
 	switch accel {
-	case acceleratorROCm:
-		resName = amdGPUResourceName
 	case acceleratorCUDA:
 		resName = nvidiaGPUResourceName
 	default:
-		// intel (and any other GPU vendor resolveGPUResourceName knows).
+		// rocm, intel, and any other GPU vendor resolveGPUResourceName knows.
+		// rocm resolves to the shared devic.es/dri-render device resource (one
+		// resource per physical AMD GPU serves both the Vulkan and ROCm tiers;
+		// #701), NOT amd.com/gpu, so the readiness check validates the resource
+		// the pod will actually request.
 		resName = resolveGPUResourceName(model)
 	}
 
