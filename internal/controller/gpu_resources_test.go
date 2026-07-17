@@ -99,6 +99,20 @@ func TestResolveGPUResourceName(t *testing.T) {
 			t.Fatalf("resolveGPUResourceName() = %q, want %q", got, vulkanDRIResourceName)
 		}
 	})
+
+	t.Run("uses the shared dri-render resource when accelerator is rocm", func(t *testing.T) {
+		model := &inferencev1alpha1.Model{
+			Spec: inferencev1alpha1.ModelSpec{
+				Hardware: &inferencev1alpha1.HardwareSpec{
+					Accelerator: "rocm",
+				},
+			},
+		}
+
+		if got := resolveGPUResourceName(model); got != vulkanDRIResourceName {
+			t.Fatalf("resolveGPUResourceName() = %q, want %q", got, vulkanDRIResourceName)
+		}
+	})
 }
 
 func TestDetectInsufficientGPUResource(t *testing.T) {

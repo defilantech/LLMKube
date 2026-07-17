@@ -66,9 +66,14 @@ func TestGPUResourceNameForSpec(t *testing.T) {
 			expected: nvidiaGPUResourceName,
 		},
 		{
-			name:     "vendor amd with runtime rocm maps to amd.com/gpu",
+			name:     "vendor amd with runtime rocm resolves the shared dri-render resource",
 			gpu:      &inferencev1alpha1.GPUSpec{Vendor: "amd", Runtime: "rocm"},
-			expected: amdGPUResourceName,
+			expected: vulkanDRIResourceName,
+		},
+		{
+			name:     "rocm runtime is case-insensitive",
+			gpu:      &inferencev1alpha1.GPUSpec{Vendor: "AMD", Runtime: " ROCm "},
+			expected: vulkanDRIResourceName,
 		},
 		{
 			name:     "vendor amd with empty runtime maps to amd.com/gpu",
@@ -103,6 +108,15 @@ func TestGPUResourceNameForSpec(t *testing.T) {
 			gpu: &inferencev1alpha1.GPUSpec{
 				Vendor:       "amd",
 				Runtime:      "vulkan",
+				ResourceName: "amd.com/gpu",
+			},
+			expected: amdGPUResourceName,
+		},
+		{
+			name: "explicit ResourceName wins over the rocm default",
+			gpu: &inferencev1alpha1.GPUSpec{
+				Vendor:       "amd",
+				Runtime:      "rocm",
 				ResourceName: "amd.com/gpu",
 			},
 			expected: amdGPUResourceName,
