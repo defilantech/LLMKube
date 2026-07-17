@@ -58,6 +58,7 @@ func TestRuntimeNameLabel(t *testing.T) {
 		{name: "tgi passes through", runtime: "tgi", expected: "tgi"},
 		{name: "personaplex passes through", runtime: "personaplex", expected: "personaplex"},
 		{name: "generic passes through", runtime: "generic", expected: "generic"},
+		{name: "llamacpp-router passes through", runtime: "llamacpp-router", expected: "llamacpp-router"},
 		// Future runtimes (vllm-swift on metal, etc.) pass through
 		// untouched: the label is the user-declared identifier, not a
 		// validated enum, so new backends do not need to update this map.
@@ -159,6 +160,16 @@ func TestResolveBackend_SGLang(t *testing.T) {
 	backend := resolveBackend(isvc)
 	if _, ok := backend.(*SGLangBackend); !ok {
 		t.Errorf("resolveBackend(sglang) = %T, want *SGLangBackend", backend)
+	}
+}
+
+func TestResolveBackend_LlamaCppRouter(t *testing.T) {
+	isvc := &inferencev1alpha1.InferenceService{
+		Spec: inferencev1alpha1.InferenceServiceSpec{Runtime: "llamacpp-router"},
+	}
+	backend := resolveBackend(isvc)
+	if _, ok := backend.(*LlamaCppRouterBackend); !ok {
+		t.Errorf("resolveBackend(llamacpp-router) = %T, want *LlamaCppRouterBackend", backend)
 	}
 }
 
@@ -369,6 +380,7 @@ func TestIdleDetectorConformance(t *testing.T) {
 		backend RuntimeBackend
 	}{
 		{"llamacpp", &LlamaCppBackend{}},
+		{"llamacpp-router", &LlamaCppRouterBackend{}},
 		{"vllm", &VLLMBackend{}},
 		{"tgi", &TGIBackend{}},
 		{"sglang", &SGLangBackend{}},
@@ -602,6 +614,7 @@ func TestIdleProbeRequestCreationError(t *testing.T) {
 		isvc    *inferencev1alpha1.InferenceService
 	}{
 		{"llamacpp", &LlamaCppBackend{}, nil},
+		{"llamacpp-router", &LlamaCppRouterBackend{}, nil},
 		{"vllm", &VLLMBackend{}, nil},
 		{"tgi", &TGIBackend{}, nil},
 		{"sglang", &SGLangBackend{}, nil},
@@ -624,5 +637,120 @@ func TestIdleProbeRequestCreationError(t *testing.T) {
 				t.Errorf("expected idle=false on error")
 			}
 		})
+	}
+}
+
+func TestLlamaCppRouterBackend_BuildArgs(t *testing.T) {
+	backend := &LlamaCppRouterBackend{}
+	isvc := &inferencev1alpha1.InferenceService{
+		Spec: inferencev1alpha1.InferenceServiceSpec{},
+	}
+	model := &inferencev1alpha1.Model{}
+	args := backend.BuildArgs(isvc, model, "", 8080)
+
+	// Router mode should use --models-dir instead of --model
+	if !containsArg(args, "--models-dir", "/models") {
+		t.Error("BuildArgs should include --models-dir /models")
+	}
+
+	// Should include standard host and port flags
+	if !containsArg(args, "--host", "::") {
+		t.Error("BuildArgs should include --host ::")
+	}
+	if !containsArg(args, "--port", "8080") {
+		t.Error("BuildArgs should include --port 8080")
+	}
+
+	// Should include metrics flag
+	if !containsArg(args, "--metrics", "") {
+		t.Error("BuildArgs should include --metrics")
+	}
+
+	// Should NOT include --model flag (router mode uses --models-dir)
+	if containsArg(args, "--model", "") {
+		t.Error("BuildArgs should NOT include --model in router mode")
+	}
+}
+
+func TestLlamaCppRouterBackend_NeedsModelInit(t *testing.T) {
+	backend := &LlamaCppRouterBackend{}
+	if backend.NeedsModelInit() {
+		t.Error("LlamaCppRouterBackend should not need model init container")
+	}
+}
+
+func TestLlamaCppRouterBackend_Defaults(t *testing.T) {
+	backend := &LlamaCppRouterBackend{}
+
+	if backend.ContainerName() != "llama-server" {
+		t.Errorf("ContainerName = %q, want \"llama-server\"", backend.ContainerName())
+	}
+
+	if backend.DefaultImage() != "ghcr.io/ggml-org/llama.cpp:server" {
+		t.Errorf("DefaultImage = %q, want \"ghcr.io/ggml-org/llama.cpp:server\"", backend.DefaultImage())
+	}
+
+	if backend.DefaultPort() != 8080 {
+		t.Errorf("DefaultPort = %d, want 8080", backend.DefaultPort())
+	}
+
+	if backend.DefaultHPAMetric() != "llamacpp:requests_processing" {
+		t.Errorf("DefaultHPAMetric = %q, want \"llamacpp:requests_processing\"", backend.DefaultHPAMetric())
+	}
+}
+
+func TestLlamaCppRouterBackend_BuildProbes(t *testing.T) {
+	backend := &LlamaCppRouterBackend{}
+	startup, liveness, readiness := backend.BuildProbes(8080)
+
+	// Verify startup probe
+	if startup == nil {
+		t.Fatal("startup probe should not be nil")
+	}
+	if startup.ProbeHandler.HTTPGet == nil {
+		t.Fatal("startup probe HTTPGet should not be nil")
+	}
+	if startup.ProbeHandler.HTTPGet.Path != "/health" {
+		t.Errorf("startup probe path = %q, want \"/health\"", startup.ProbeHandler.HTTPGet.Path)
+	}
+	if startup.PeriodSeconds != 10 {
+		t.Errorf("startup probe period = %d, want 10", startup.PeriodSeconds)
+	}
+	if startup.FailureThreshold != 180 {
+		t.Errorf("startup probe failure threshold = %d, want 180", startup.FailureThreshold)
+	}
+
+	// Verify liveness probe
+	if liveness == nil {
+		t.Fatal("liveness probe should not be nil")
+	}
+	if liveness.ProbeHandler.HTTPGet == nil {
+		t.Fatal("liveness probe HTTPGet should not be nil")
+	}
+	if liveness.ProbeHandler.HTTPGet.Path != "/health" {
+		t.Errorf("liveness probe path = %q, want \"/health\"", liveness.ProbeHandler.HTTPGet.Path)
+	}
+	if liveness.PeriodSeconds != 15 {
+		t.Errorf("liveness probe period = %d, want 15", liveness.PeriodSeconds)
+	}
+	if liveness.FailureThreshold != 3 {
+		t.Errorf("liveness probe failure threshold = %d, want 3", liveness.FailureThreshold)
+	}
+
+	// Verify readiness probe
+	if readiness == nil {
+		t.Fatal("readiness probe should not be nil")
+	}
+	if readiness.ProbeHandler.HTTPGet == nil {
+		t.Fatal("readiness probe HTTPGet should not be nil")
+	}
+	if readiness.ProbeHandler.HTTPGet.Path != "/health" {
+		t.Errorf("readiness probe path = %q, want \"/health\"", readiness.ProbeHandler.HTTPGet.Path)
+	}
+	if readiness.PeriodSeconds != 10 {
+		t.Errorf("readiness probe period = %d, want 10", readiness.PeriodSeconds)
+	}
+	if readiness.FailureThreshold != 3 {
+		t.Errorf("readiness probe failure threshold = %d, want 3", readiness.FailureThreshold)
 	}
 }

@@ -80,6 +80,8 @@ func resolveBackend(isvc *inferencev1alpha1.InferenceService) RuntimeBackend {
 		return &PersonaPlexBackend{}
 	case RuntimeVLLM:
 		return &VLLMBackend{}
+	case RuntimeLlamaCppRouter:
+		return &LlamaCppRouterBackend{}
 	case "tgi":
 		return &TGIBackend{}
 	case RuntimeSGLANG:
