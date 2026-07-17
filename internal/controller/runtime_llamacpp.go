@@ -26,6 +26,12 @@ var llamaCppLog = logf.Log.WithName("runtime.llamacpp")
 // it via PR when the promoter publishes a new :stable digest.
 const llamaCppVulkanImage = "ghcr.io/defilantech/llmkube-llama-vulkan@sha256:cbab8af682ecac9b5c865d85219d808dc356814326c70346e05b8b20b333e295"
 
+// llamaCppROCmImage is LLMKube's hardware-validated ROCm/HIP llama.cpp server
+// image for AMD nodes (gfx1151-targeted, rocWMMA FlashAttention, hipBLASLt).
+// Digest-pinned like the Vulkan image; bumped via reviewed PR after the
+// promoter smokes the candidate on real hardware. See #701.
+const llamaCppROCmImage = "ghcr.io/defilantech/llmkube-llama-rocm@sha256:8638b6824b6992f31e2bb46e222e2863def26ae3197ebe321739825acb001675"
+
 // LlamaCppBackend generates container configuration for the llama.cpp inference server.
 type LlamaCppBackend struct{}
 

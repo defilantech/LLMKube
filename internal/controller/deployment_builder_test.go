@@ -187,10 +187,16 @@ func TestResolveRuntimeImage(t *testing.T) {
 			expected: llamaCppVulkanImage,
 		},
 		{
-			name:     "llamacpp amd rocm keeps the stock image",
+			name:     "llamacpp amd rocm resolves the pinned ROCm image",
 			backend:  &LlamaCppBackend{},
 			model:    amdModel("rocm"),
-			expected: stockLlamaCpp,
+			expected: llamaCppROCmImage,
+		},
+		{
+			name:     "llamacpp amd rocm is case-insensitive",
+			backend:  &LlamaCppBackend{},
+			model:    amdModel("ROCm"),
+			expected: llamaCppROCmImage,
 		},
 		{
 			name:     "llamacpp amd empty runtime keeps the stock image",
@@ -205,6 +211,18 @@ func TestResolveRuntimeImage(t *testing.T) {
 				Spec: inferencev1alpha1.ModelSpec{
 					Hardware: &inferencev1alpha1.HardwareSpec{
 						GPU: &inferencev1alpha1.GPUSpec{Vendor: "nvidia", Runtime: "vulkan"},
+					},
+				},
+			},
+			expected: stockLlamaCpp,
+		},
+		{
+			name:    "llamacpp nvidia keeps the stock image even with rocm runtime",
+			backend: &LlamaCppBackend{},
+			model: &inferencev1alpha1.Model{
+				Spec: inferencev1alpha1.ModelSpec{
+					Hardware: &inferencev1alpha1.HardwareSpec{
+						GPU: &inferencev1alpha1.GPUSpec{Vendor: "nvidia", Runtime: "rocm"},
 					},
 				},
 			},

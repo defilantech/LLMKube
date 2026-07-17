@@ -20,15 +20,15 @@ const (
 // image + the generic-device-plugin /dev/dri resource).
 const gpuRuntimeVulkan = "vulkan"
 
-// gpuRuntimeROCm selects the ROCm/HIP llama.cpp compute backend. It shares the
-// AMD GPU device-plugin resource (vulkanDRIResourceName, devic.es/dri-render)
-// with the Vulkan runtime: on a single-GPU AMD node the two runtimes contend
-// for the same physical device, and squat/generic-device-plugin cannot expose
-// one device under two resource names without health-watch collisions. ROCm
-// differs from Vulkan only by the container image (see runtime_llamacpp.go).
-// Before #701 this enum value fell through to amd.com/gpu + the stock image,
-// which has no HIP support and therefore never worked; the resourceName
-// override remains the escape hatch for AMD's official amd.com/gpu plugin.
+// gpuRuntimeROCm selects the ROCm/HIP llama.cpp compute backend, backed by
+// LLMKube's hardware-validated ROCm image (llamaCppROCmImage, see
+// runtime_llamacpp.go and #701). It shares the AMD GPU device-plugin resource
+// (vulkanDRIResourceName, devic.es/dri-render) with the Vulkan runtime: on a
+// single-GPU AMD node the two runtimes contend for the same physical device,
+// and squat/generic-device-plugin cannot expose one device under two resource
+// names without health-watch collisions. ROCm differs from Vulkan only by the
+// container image. The resourceName override remains the escape hatch for
+// AMD's official amd.com/gpu plugin.
 const gpuRuntimeROCm = "rocm"
 
 // acceleratorROCm is declared in model_controller.go (Model.Spec.Hardware.

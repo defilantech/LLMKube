@@ -4823,7 +4823,7 @@ var _ = Describe("AMD Vulkan Deployment Construction", func() {
 		Expect(container.Image).To(Equal(llamaCppVulkanImage))
 	})
 
-	It("keeps amd.com/gpu and the stock image for runtime=rocm", func() {
+	It("uses the pinned ROCm image and devic.es/dri-render for vendor=amd runtime=rocm", func() {
 		model := vulkanModel()
 		model.Spec.Hardware.GPU.Runtime = "rocm"
 		isvc := &inferencev1alpha1.InferenceService{
@@ -4837,9 +4837,30 @@ var _ = Describe("AMD Vulkan Deployment Construction", func() {
 
 		deployment := reconciler.constructDeployment(isvc, model, 1)
 		container := deployment.Spec.Template.Spec.Containers[0]
-		Expect(container.Image).To(Equal((&LlamaCppBackend{}).DefaultImage()))
-		gpuLimit := container.Resources.Limits[amdGPUResourceName]
+		Expect(container.Image).To(Equal(llamaCppROCmImage))
+		gpuLimit := container.Resources.Limits[vulkanDRIResourceName]
 		Expect(gpuLimit).To(Equal(resource.MustParse("1")))
+		// The two runtimes share the device-plugin resource (#701), so ROCm
+		// must not request the amd.com/gpu resource either.
+		_, hasAMDGPU := container.Resources.Limits[amdGPUResourceName]
+		Expect(hasAMDGPU).To(BeFalse())
+	})
+
+	It("lets spec.image override the pinned ROCm image", func() {
+		model := vulkanModel()
+		model.Spec.Hardware.GPU.Runtime = "rocm"
+		isvc := &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: "rocm-service-img", Namespace: "default"},
+			Spec: inferencev1alpha1.InferenceServiceSpec{
+				ModelRef:  "vulkan-model",
+				Replicas:  &replicas,
+				Image:     "ghcr.io/example/custom-rocm:dev",
+				Resources: &inferencev1alpha1.InferenceResourceRequirements{GPU: 1},
+			},
+		}
+
+		deployment := reconciler.constructDeployment(isvc, model, 1)
+		Expect(deployment.Spec.Template.Spec.Containers[0].Image).To(Equal("ghcr.io/example/custom-rocm:dev"))
 	})
 })
 
