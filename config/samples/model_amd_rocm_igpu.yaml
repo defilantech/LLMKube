@@ -1,0 +1,47 @@
+# Example: AMD APU / iGPU with the llama.cpp ROCm (HIP) backend
+#
+# Per-model opt-in ROCm tier (#701). Vulkan remains the AMD default; choose
+# ROCm when prefill latency, long-context decode, or batched concurrency
+# dominate your workload. The operator schedules this against the same
+# devic.es/dri-render resource as Vulkan (one resource per physical AMD GPU);
+# that resource's group must include /dev/kfd for HIP (see
+# docs/amd-rocm-quickstart.md).
+---
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: Model
+metadata:
+  name: qwen36-27b-rocm
+  namespace: default
+spec:
+  source: https://huggingface.co/unsloth/Qwen3.6-27B-GGUF/resolve/main/Qwen3.6-27B-Q6_K.gguf
+  format: gguf
+  quantization: Q6_K
+  hardware:
+    accelerator: rocm
+    gpu:
+      enabled: true
+      vendor: amd
+      runtime: rocm
+      count: 1
+  resources:
+    cpu: "2"
+    memory: 8Gi
+---
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: InferenceService
+metadata:
+  name: qwen36-27b-rocm
+  namespace: default
+spec:
+  modelRef: qwen36-27b-rocm
+  replicas: 1
+  contextSize: 32768
+  flashAttention: true
+  resources:
+    cpu: "4"
+    gpu: 1
+    memory: 12Gi
+  endpoint:
+    type: ClusterIP
+    port: 8080
+    path: /v1/chat/completions

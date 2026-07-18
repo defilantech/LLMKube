@@ -17,10 +17,22 @@ const (
 )
 
 // gpuRuntimeVulkan selects the Vulkan llama.cpp compute backend (LLMKube's own
-// image + the generic-device-plugin /dev/dri resource). The other accepted
-// enum value, "rocm", needs no constant: it falls through to the historical
-// amd.com/gpu + stock-image path, identical to an empty runtime.
+// image + the generic-device-plugin /dev/dri resource).
 const gpuRuntimeVulkan = "vulkan"
+
+// gpuRuntimeROCm selects the ROCm/HIP llama.cpp compute backend, backed by
+// LLMKube's hardware-validated ROCm image (llamaCppROCmImage, see
+// runtime_llamacpp.go and #701). It shares the AMD GPU device-plugin resource
+// (vulkanDRIResourceName, devic.es/dri-render) with the Vulkan runtime: on a
+// single-GPU AMD node the two runtimes contend for the same physical device,
+// and squat/generic-device-plugin cannot expose one device under two resource
+// names without health-watch collisions. ROCm differs from Vulkan only by the
+// container image. The resourceName override remains the escape hatch for
+// AMD's official amd.com/gpu plugin.
+const gpuRuntimeROCm = "rocm"
+
+// acceleratorROCm is declared in model_controller.go (Model.Spec.Hardware.
+// Accelerator enum value "rocm"); reused here rather than redeclared.
 
 var (
 	nvidiaGPUResourceName    = corev1.ResourceName("nvidia.com/gpu")
@@ -42,10 +54,11 @@ var (
 //  1. Model.Spec.Hardware.GPU.ResourceName, when set, wins over everything
 //     else. This is the escape hatch for non-default device plugins (e.g. a
 //     custom name like squat.ai/dri-render is just an illustrative override).
-//  2. amd + runtime=vulkan -> devic.es/dri-render (the built-in Vulkan default;
-//     the generic device plugin injects /dev/dri for this resource).
+//  2. amd + runtime=vulkan or runtime=rocm -> devic.es/dri-render (the shared
+//     generic-device-plugin resource; see gpuRuntimeROCm for why ROCm reuses
+//     the Vulkan resource instead of amd.com/gpu).
 //  3. Model.Spec.Hardware.GPU.Vendor maps to the device-plugin default for
-//     that vendor (nvidia -> nvidia.com/gpu, amd -> amd.com/gpu [ROCm],
+//     that vendor (nvidia -> nvidia.com/gpu, amd -> amd.com/gpu,
 //     intel -> gpu.intel.com/i915).
 //  4. Unset / unknown -> nvidia.com/gpu (backwards-compatible default).
 //
@@ -59,6 +72,12 @@ func isVulkanRuntime(runtime string) bool {
 	return strings.EqualFold(strings.TrimSpace(runtime), gpuRuntimeVulkan)
 }
 
+// isROCmRuntime reports whether the GPU runtime selector requests the ROCm
+// compute backend. Case-insensitive, trims surrounding space.
+func isROCmRuntime(runtime string) bool {
+	return strings.EqualFold(strings.TrimSpace(runtime), gpuRuntimeROCm)
+}
+
 func gpuResourceNameForSpec(model *inferencev1alpha1.Model) corev1.ResourceName {
 	if model != nil && model.Spec.Hardware != nil && model.Spec.Hardware.GPU != nil {
 		if override := strings.TrimSpace(model.Spec.Hardware.GPU.ResourceName); override != "" {
@@ -67,9 +86,11 @@ func gpuResourceNameForSpec(model *inferencev1alpha1.Model) corev1.ResourceName 
 
 		switch strings.ToLower(strings.TrimSpace(model.Spec.Hardware.GPU.Vendor)) {
 		case "amd":
-			// The Vulkan runtime schedules against the generic-device-plugin
-			// /dev/dri resource, not the ROCm amd.com/gpu resource.
-			if isVulkanRuntime(model.Spec.Hardware.GPU.Runtime) {
+			// Both the Vulkan and ROCm runtimes schedule against the shared
+			// generic-device-plugin /dev/dri resource (vulkanDRIResourceName),
+			// not the amd.com/gpu resource; see gpuRuntimeROCm for why.
+			if isVulkanRuntime(model.Spec.Hardware.GPU.Runtime) ||
+				isROCmRuntime(model.Spec.Hardware.GPU.Runtime) {
 				return vulkanDRIResourceName
 			}
 			return amdGPUResourceName
@@ -107,6 +128,10 @@ func resolveGPUResourceName(model *inferencev1alpha1.Model) corev1.ResourceName 
 		}
 
 		if strings.EqualFold(model.Spec.Hardware.Accelerator, acceleratorVulkan) {
+			return vulkanDRIResourceName
+		}
+
+		if strings.EqualFold(model.Spec.Hardware.Accelerator, acceleratorROCm) {
 			return vulkanDRIResourceName
 		}
 	}

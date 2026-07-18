@@ -90,6 +90,11 @@ spec:
                       (gpu.vendor: amd/intel + gpu.runtime: vulkan). When set to
                       "vulkan" the readiness-check path uses devic.es/dri-render as
                       the GPU resource name instead of amd.com/gpu or nvidia.com/gpu.
+                      "rocm" is the HIP compute tier for AMD GPUs (LLMKube's own
+                      hardware-validated ROCm llama.cpp image, see #701); like "vulkan"
+                      it resolves to devic.es/dri-render rather than amd.com/gpu, since
+                      the two runtimes share the same physical device on single-GPU AMD
+                      nodes. The tiers differ only in the container image they select.
                     enum:
                     - cpu
                     - metal
@@ -225,8 +230,16 @@ spec:
                               ResourceName overrides it). The plugin injects /dev/dri; the non-root
                               container still needs the host render group, supplied via
                               InferenceService.spec.podSecurityContext.supplementalGroups.
-                            - "rocm": the historical behavior (amd -> amd.com/gpu, stock image).
-                            - "" (empty): back-compatible, identical to "rocm".
+                            - "rocm": the HIP compute tier (#701). Schedules LLMKube's
+                              hardware-validated ROCm llama.cpp image and requests the same
+                              shared `devic.es/dri-render` resource as "vulkan" (unless
+                              ResourceName overrides it): the two runtimes contend for the same
+                              physical device on single-GPU AMD nodes, so they share one
+                              device-plugin resource rather than each claiming their own. "rocm"
+                              differs from "vulkan" only in the container image it selects.
+                            - "" (empty): falls through to `amd.com/gpu` with the vendor-neutral
+                              stock image, back-compatible with pre-#701 behavior, not the same
+                              as "rocm".
 
                           Ignored for non-AMD vendors and non-llama.cpp backends.
                         enum:
