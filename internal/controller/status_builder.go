@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -171,6 +172,12 @@ func (r *InferenceServiceReconciler) updateStatusWithSchedulingInfo(
 	if runtime == "" {
 		runtime = "llamacpp"
 	}
+	// Delete any prior series for this InferenceService so that when the
+	// accelerator or runtime changes in place only one series exists per ISvc.
+	llmkubemetrics.InferenceServiceInfo.DeletePartialMatch(prometheus.Labels{
+		"inferenceservice": isvc.Name,
+		"namespace":        isvc.Namespace,
+	})
 	llmkubemetrics.InferenceServiceInfo.WithLabelValues(isvc.Name, isvc.Namespace, accelerator, runtime).Set(1)
 
 	// Track time-to-ready using creation timestamp

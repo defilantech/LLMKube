@@ -136,9 +136,14 @@ func TestInferenceServiceInfo(t *testing.T) {
 		t.Errorf("expected gauge value 1, got %f", m.GetGauge().GetValue())
 	}
 
-	// Verify a different accelerator label produces a distinct series.
+	// Simulate an accelerator change: delete the old series and emit the new one.
+	InferenceServiceInfo.DeletePartialMatch(prometheus.Labels{
+		"inferenceservice": "info-test",
+		"namespace":        "default",
+	})
 	InferenceServiceInfo.WithLabelValues("info-test", "default", "rocm", "llamacpp").Set(1)
 
+	// Verify the new accelerator series is 1.
 	if err := InferenceServiceInfo.WithLabelValues("info-test", "default", "rocm", "llamacpp").Write(&m); err != nil {
 		t.Fatalf("failed to write metric: %v", err)
 	}
@@ -146,12 +151,12 @@ func TestInferenceServiceInfo(t *testing.T) {
 		t.Errorf("expected gauge value 1 for rocm, got %f", m.GetGauge().GetValue())
 	}
 
-	// Verify the cuda series is still 1 (not overwritten).
+	// Verify the old cuda series is gone (not present / 0).
 	if err := InferenceServiceInfo.WithLabelValues("info-test", "default", "cuda", "llamacpp").Write(&m); err != nil {
 		t.Fatalf("failed to write metric: %v", err)
 	}
-	if m.GetGauge().GetValue() != 1 {
-		t.Errorf("expected cuda gauge value 1, got %f", m.GetGauge().GetValue())
+	if m.GetGauge().GetValue() != 0 {
+		t.Errorf("expected cuda gauge value 0 after deletion, got %f", m.GetGauge().GetValue())
 	}
 }
 
