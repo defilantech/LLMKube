@@ -174,7 +174,7 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	// from before the allowlist was introduced (or tightened).
 	if valErr := validateLocalSourceAllowed(model.Spec.Source, r.AllowedHostPathRoots); valErr != nil {
 		log.Error(valErr, "rejected local model source by host-path allowlist", "model", model.Name, "source", model.Spec.Source)
-		blockResult, updateErr := r.updateStatusWithSchedulingInfo(ctx, inferenceService, PhaseFailed, modelReady, 0, 0, "",
+		blockResult, updateErr := r.updateStatusWithSchedulingInfo(ctx, inferenceService, model, PhaseFailed, modelReady, 0, 0, "",
 			valErr.Error(), nil)
 		return blockResult, updateErr
 	}
@@ -187,7 +187,7 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	if effectiveModelCacheKey(model) != "" && r.ModelCachePath != "" {
 		if err := r.ensureModelCachePVC(ctx, inferenceService); err != nil {
 			log.Error(err, "Failed to ensure model cache PVC exists", "namespace", inferenceService.Namespace)
-			return r.updateStatusWithSchedulingInfo(ctx, inferenceService, PhaseFailed, modelReady, 0, desiredReplicas, "",
+			return r.updateStatusWithSchedulingInfo(ctx, inferenceService, model, PhaseFailed, modelReady, 0, desiredReplicas, "",
 				fmt.Sprintf("Failed to ensure model cache PVC: %v", err), nil)
 		}
 	}
@@ -214,7 +214,7 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, err
 	}
 
-	service, result, err := r.reconcileService(ctx, inferenceService, modelReady, desiredReplicas, isMetal)
+	service, result, err := r.reconcileService(ctx, inferenceService, model, modelReady, desiredReplicas, isMetal)
 	if err != nil || result != nil {
 		if result != nil {
 			return *result, err
@@ -229,7 +229,7 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	endpoint := r.constructEndpoint(inferenceService, service)
 	phase, schedulingInfo := r.determinePhase(ctx, inferenceService, readyReplicas, desiredReplicas, isMetal, deployment, metalSnap)
 
-	finalResult, statusErr := r.updateStatusWithSchedulingInfo(ctx, inferenceService, phase, modelReady, readyReplicas, desiredReplicas, endpoint, "", schedulingInfo)
+	finalResult, statusErr := r.updateStatusWithSchedulingInfo(ctx, inferenceService, model, phase, modelReady, readyReplicas, desiredReplicas, endpoint, "", schedulingInfo)
 	if statusErr != nil {
 		return finalResult, statusErr
 	}
@@ -265,7 +265,7 @@ func (r *InferenceServiceReconciler) getModelForInferenceService(ctx context.Con
 	if err := r.Get(ctx, modelName, model); err != nil {
 		if apierrors.IsNotFound(err) {
 			log.Info("Referenced Model not found", "model", isvc.Spec.ModelRef)
-			result, updateErr := r.updateStatusWithSchedulingInfo(ctx, isvc, PhaseFailed, false, 0, 0, "", "Model not found", nil)
+			result, updateErr := r.updateStatusWithSchedulingInfo(ctx, isvc, nil, PhaseFailed, false, 0, 0, "", "Model not found", nil)
 			return nil, false, &result, updateErr
 		}
 		log.Error(err, "Failed to get Model")
@@ -275,7 +275,7 @@ func (r *InferenceServiceReconciler) getModelForInferenceService(ctx context.Con
 	modelReady := model.Status.Phase == PhaseReady
 	if !modelReady {
 		log.Info("Model not ready yet", "model", model.Name, "phase", model.Status.Phase)
-		result, updateErr := r.updateStatusWithSchedulingInfo(ctx, isvc, "Pending", false, 0, 0, "", "Waiting for Model to be Ready", nil)
+		result, updateErr := r.updateStatusWithSchedulingInfo(ctx, isvc, model, "Pending", false, 0, 0, "", "Waiting for Model to be Ready", nil)
 		return nil, false, &result, updateErr
 	}
 
@@ -322,7 +322,7 @@ func (r *InferenceServiceReconciler) reconcileDeployment(ctx context.Context, is
 		deployment.Annotations[AnnotationDesiredTemplateHash] = tmplHash
 		if err := r.Create(ctx, deployment); err != nil {
 			log.Error(err, "Failed to create Deployment")
-			result, updateErr := r.updateStatusWithSchedulingInfo(ctx, isvc, PhaseFailed, modelReady, 0, desiredReplicas, "", "Failed to create Deployment", nil)
+			result, updateErr := r.updateStatusWithSchedulingInfo(ctx, isvc, model, PhaseFailed, modelReady, 0, desiredReplicas, "", "Failed to create Deployment", nil)
 			return nil, 0, nil, &result, updateErr
 		}
 		return deployment, 0, nil, nil, nil
@@ -461,7 +461,7 @@ func (r *InferenceServiceReconciler) reconcileDeployment(ctx context.Context, is
 	return deployment, existingDeployment.Status.ReadyReplicas, nil, nil, nil
 }
 
-func (r *InferenceServiceReconciler) reconcileService(ctx context.Context, isvc *inferencev1alpha1.InferenceService, modelReady bool, desiredReplicas int32, isMetal bool) (*corev1.Service, *ctrl.Result, error) {
+func (r *InferenceServiceReconciler) reconcileService(ctx context.Context, isvc *inferencev1alpha1.InferenceService, model *inferencev1alpha1.Model, modelReady bool, desiredReplicas int32, isMetal bool) (*corev1.Service, *ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	if isMetal {
@@ -488,7 +488,7 @@ func (r *InferenceServiceReconciler) reconcileService(ctx context.Context, isvc 
 		log.Info("Creating new Service", "name", service.Name)
 		if err := r.Create(ctx, service); err != nil {
 			log.Error(err, "Failed to create Service")
-			result, updateErr := r.updateStatusWithSchedulingInfo(ctx, isvc, PhaseFailed, modelReady, 0, desiredReplicas, "", "Failed to create Service", nil)
+			result, updateErr := r.updateStatusWithSchedulingInfo(ctx, isvc, model, PhaseFailed, modelReady, 0, desiredReplicas, "", "Failed to create Service", nil)
 			return nil, &result, updateErr
 		}
 	} else if err != nil {

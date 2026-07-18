@@ -60,6 +60,14 @@ var (
 		[]string{"inferenceservice", "namespace", "phase"},
 	)
 
+	InferenceServiceInfo = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "llmkube_inferenceservice_info",
+			Help: "Information about inference services. Value is always 1; use accelerator and runtime labels for grouping.",
+		},
+		[]string{"inferenceservice", "namespace", "accelerator", "runtime"},
+	)
+
 	GPUQueueDepth = prometheus.NewGauge(
 		prometheus.GaugeOpts{
 			Name: "llmkube_gpu_queue_depth",
@@ -170,6 +178,7 @@ func init() {
 		ModelStatus,
 		InferenceServiceReadyDuration,
 		InferenceServicePhase,
+		InferenceServiceInfo,
 		GPUQueueDepth,
 		GPUQueueWaitDuration,
 		ReconcileTotal,
