@@ -24,7 +24,14 @@
 #   --fork <remote>      Remote holding the Foreman branch (default: origin)
 #   --repo <owner/name>  Base repo slug for gh (default: derived from base remote)
 #   --fork-owner <owner> Fork owner for the PR head (default: derived from fork remote)
-#   --full-test          Also run `make test` (envtest) locally
+#   --full-test          Also run `make test` (envtest) locally; when set, this
+#                        local gate is treated as authoritative and the Foreman
+#                        verify-verdict check is skipped
+#   --kube-context <ctx> kube context for the Foreman verify-verdict lookup
+#                        (default: current kubectl context)
+#   --namespace <ns>     namespace for the verify-verdict lookup (default: default)
+#   --force              Skip the Foreman verify-verdict check (for branches you
+#                        have independently gated by hand); prints a warning
 #   --message-file <f>   Use this file as the commit message (overrides derivation)
 #   --pr-body-file <f>   Use this file as the PR body (overrides the template)
 #   --dry-run            Do everything locally through the squash; print the push
@@ -49,6 +56,9 @@ REPO=""
 FORK_OWNER=""
 FULL_TEST=0
 DRY_RUN=0
+FORCE=0
+KUBE_CONTEXT=""
+NAMESPACE="default"
 MESSAGE_FILE=""
 PR_BODY_FILE=""
 
@@ -63,6 +73,43 @@ die() {
 	exit 1
 }
 info() { echo ">> $*"; }
+
+# require_verify_verdict: refuse to finalize unless Foreman's verify stage passed
+# for this branch. The verify stage (kind=verify) fresh-clones the pushed branch and
+# runs the deterministic gate; its GATE-PASS verdict is what makes the branch
+# trustworthy. --force overrides (for branches gated by hand); --full-test defers to
+# the local envtest run performed later in this script.
+require_verify_verdict() {
+	if ((FORCE)); then
+		info "WARNING: --force set; skipping the Foreman verify-verdict check for '$BRANCH'. Confirm the branch was independently gated (envtest) before merging."
+		return 0
+	fi
+	if ((FULL_TEST)); then
+		info "--full-test set; the local envtest run is the authoritative gate (skipping Foreman verify-verdict lookup)"
+		return 0
+	fi
+	command -v kubectl >/dev/null ||
+		die "kubectl is required to check the Foreman verify verdict for '$BRANCH' (or pass --full-test to gate locally, or --force to override)"
+	command -v jq >/dev/null ||
+		die "jq is required to parse the Foreman verify verdict (or pass --full-test / --force)"
+	local ctx_args=()
+	[[ -n "$KUBE_CONTEXT" ]] && ctx_args=(--context "$KUBE_CONTEXT")
+	local verdict
+	verdict="$(kubectl "${ctx_args[@]}" -n "$NAMESPACE" get agentictasks -o json 2>/dev/null |
+		jq -r --arg b "$BRANCH" '
+			[.items[]
+			 | select(.spec.kind == "verify")
+			 | select(((.spec.payload.branch // .status.branch) // "") == $b)]
+			| sort_by(.metadata.creationTimestamp) | last | (.status.verdict // "")')" ||
+		die "failed to query AgenticTasks in namespace '$NAMESPACE' (pass --kube-context / --namespace, or --full-test / --force)"
+	if [[ -z "$verdict" || "$verdict" == "null" ]]; then
+		die "no Foreman verify (kind=verify) task found for branch '$BRANCH' in namespace '$NAMESPACE'; refusing to finalize an unverified branch. Run the verify stage, or pass --full-test to gate locally, or --force to override."
+	fi
+	if [[ "$verdict" != "GATE-PASS" ]]; then
+		die "Foreman verify for '$BRANCH' did not pass (verdict='$verdict'); refusing to finalize. Fix and re-verify, or pass --force to override."
+	fi
+	info "Foreman verify verdict for '$BRANCH': GATE-PASS"
+}
 
 while [[ $# -gt 0 ]]; do
 	case "$1" in
@@ -101,6 +148,18 @@ while [[ $# -gt 0 ]]; do
 	--full-test)
 		FULL_TEST=1
 		shift
+		;;
+	--force)
+		FORCE=1
+		shift
+		;;
+	--kube-context)
+		KUBE_CONTEXT="${2:-}"
+		shift 2
+		;;
+	--namespace)
+		NAMESPACE="${2:-}"
+		shift 2
 		;;
 	--dry-run)
 		DRY_RUN=1
@@ -188,6 +247,9 @@ ORIG_REF="$(git rev-parse --abbrev-ref HEAD)"
 
 command -v gh >/dev/null || die "gh (GitHub CLI) is required"
 gh auth status >/dev/null 2>&1 || die "gh is not authenticated (run: gh auth login)"
+
+# Refuse to finalize a branch Foreman's verify stage never blessed (#1150).
+require_verify_verdict
 
 # A fully clean tree is required: the assemble step below stages with `git add -A`,
 # so a stray untracked file would otherwise be swept into the finalize commit.
