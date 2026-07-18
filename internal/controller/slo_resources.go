@@ -37,7 +37,7 @@ const (
 	// stale resources (rename, indicator switch, spec.slo removal) can be
 	// listed and deleted; owner references only garbage-collect on
 	// InferenceService deletion.
-	sloISvcLabel = "llmkube.io/inferenceservice"
+	sloISvcLabel = "inference.llmkube.dev/inferenceservice"
 )
 
 func pyrraSLOGVK() schema.GroupVersionKind {
