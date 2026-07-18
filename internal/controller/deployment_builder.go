@@ -229,6 +229,20 @@ func buildPodAnnotations(isvc *inferencev1alpha1.InferenceService) map[string]st
 	return annotations
 }
 
+// servedModelPath picks the path handed to the runtime. For a multi-file model
+// (stagedDir set) on a directory-oriented runtime (vLLM/SGLang) whose format is
+// not GGUF, that is the staged directory (the full Hugging Face model tree);
+// otherwise it is the primary file, preserving GGUF and llama.cpp behavior.
+// (#1157)
+func servedModelPath(isvc *inferencev1alpha1.InferenceService, model *inferencev1alpha1.Model, sc modelStorageConfig) string {
+	if sc.stagedDir != "" &&
+		directoryOrientedRuntime(isvc.Spec.Runtime) &&
+		model.Spec.Format != "" && model.Spec.Format != "gguf" {
+		return sc.stagedDir
+	}
+	return sc.modelPath
+}
+
 func (r *InferenceServiceReconciler) constructDeployment(
 	isvc *inferencev1alpha1.InferenceService,
 	model *inferencev1alpha1.Model,
@@ -262,7 +276,7 @@ func (r *InferenceServiceReconciler) constructDeployment(
 	if backend.NeedsModelInit() && !skipInit {
 		useCache := effectiveModelCacheKey(model) != "" && r.ModelCachePath != ""
 		storageConfig = buildModelStorageConfig(model, isvc, isvc.Namespace, useCache, r.ModelCacheMode, r.CACertConfigMap, r.InitContainerImage, r.DefaultFSGroup, r.AllowedHostPathRoots)
-		modelPath = storageConfig.modelPath
+		modelPath = servedModelPath(isvc, model, storageConfig)
 	}
 
 	args := backend.BuildArgs(isvc, model, modelPath, port)

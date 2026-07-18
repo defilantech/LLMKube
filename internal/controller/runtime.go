@@ -91,6 +91,19 @@ func resolveBackend(isvc *inferencev1alpha1.InferenceService) RuntimeBackend {
 	}
 }
 
+// directoryOrientedRuntime reports whether a runtime loads a model from a
+// directory (the full Hugging Face model tree) rather than a single weights
+// file. Used to decide whether to hand a multi-file model its staged directory
+// instead of the primary file (#1157).
+func directoryOrientedRuntime(runtime string) bool {
+	switch runtime {
+	case RuntimeVLLM, RuntimeSGLANG:
+		return true
+	default:
+		return false
+	}
+}
+
 // runtimeNameLabel returns a stable, lowercase identifier for the runtime
 // selected by isvc.Spec.Runtime. The returned value is used as the
 // `inference.llmkube.dev/runtime` pod label so Prometheus scrapes can attach a
