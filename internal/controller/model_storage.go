@@ -419,6 +419,7 @@ func buildMultiFileInitCommand(useCache bool, refreshPolicy string) string {
 
 type modelStorageConfig struct {
 	modelPath      string
+	stagedDir      string // staged model directory for multi-file staging; empty for single-file/GGUF
 	initContainers []corev1.Container
 	volumes        []corev1.Volume
 	volumeMounts   []corev1.VolumeMount
@@ -564,6 +565,7 @@ func buildCachedStorageConfig(model *inferencev1alpha1.Model, isvc *inferencev1a
 
 		return modelStorageConfig{
 			modelPath:      modelPath,
+			stagedDir:      cacheDir,
 			initContainers: initContainers,
 			volumes:        volumes,
 			volumeMounts:   []corev1.VolumeMount{{Name: "model-cache", MountPath: "/models", ReadOnly: true}},
@@ -657,9 +659,10 @@ func buildEmptyDirStorageConfig(model *inferencev1alpha1.Model, isvc *inferencev
 		}
 	}
 	if plan != nil {
-		modelPath := fmt.Sprintf("/models/%s-%s/%s", namespace, model.Name, plan.Primary)
+		stagedDir := fmt.Sprintf("/models/%s-%s", namespace, model.Name)
+		modelPath := fmt.Sprintf("%s/%s", stagedDir, plan.Primary)
 		cmd := buildMultiFileInitCommand(false, model.Spec.RefreshPolicy)
-		env := multiFileInitEnvVars(model.Spec.Source, fmt.Sprintf("/models/%s-%s", namespace, model.Name), plan.Files)
+		env := multiFileInitEnvVars(model.Spec.Source, stagedDir, plan.Files)
 
 		initVolumeMounts := []corev1.VolumeMount{{Name: "model-storage", MountPath: "/models"}}
 		volumes := []corev1.Volume{
@@ -673,6 +676,7 @@ func buildEmptyDirStorageConfig(model *inferencev1alpha1.Model, isvc *inferencev
 
 		return modelStorageConfig{
 			modelPath: modelPath,
+			stagedDir: stagedDir,
 			initContainers: []corev1.Container{{
 				Name:            "model-downloader",
 				Image:           initContainerImage,

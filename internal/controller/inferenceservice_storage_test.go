@@ -48,6 +48,7 @@ var _ = Describe("buildCachedStorageConfig", func() {
 		config := buildCachedStorageConfig(model, nil, "", "", "curl:8.18.0", 102)
 
 		Expect(config.modelPath).To(Equal("/models/abc123def456/model.gguf"))
+		Expect(config.stagedDir).To(BeEmpty())
 		Expect(config.volumes).To(HaveLen(1))
 		Expect(config.volumes[0].Name).To(Equal("model-cache"))
 		Expect(config.volumes[0].PersistentVolumeClaim.ClaimName).To(Equal(ModelCachePVCName))
@@ -216,6 +217,22 @@ var _ = Describe("buildCachedStorageConfig multi-file staging", func() {
 		Expect(modelFiles).To(ContainSubstring("mmproj-F16.gguf"))
 	})
 
+	It("sets stagedDir to the cache directory for multi-file staging", func() {
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: "gemma", Namespace: "default"},
+			Spec: inferencev1alpha1.ModelSpec{
+				Source: "hf://unsloth/gemma-4-31B-it-GGUF",
+				Files:  []string{"a.gguf", "MTP/b.gguf"},
+			},
+			Status: inferencev1alpha1.ModelStatus{CacheKey: "abc123"},
+		}
+
+		config := buildCachedStorageConfig(model, nil, "", "", "curl:8.18.0", 102)
+
+		Expect(config.stagedDir).To(Equal("/models/abc123"))
+		Expect(config.modelPath).To(Equal("/models/abc123/a.gguf"))
+	})
+
 	It("preserves subdirectories in multi-file staging", func() {
 		model := &inferencev1alpha1.Model{
 			ObjectMeta: metav1.ObjectMeta{Name: "multi", Namespace: "default"},
@@ -333,6 +350,21 @@ var _ = Describe("buildEmptyDirStorageConfig multi-file staging", func() {
 		env := config.initContainers[0].Env
 		modelFiles := getEnvVar(env, "MODEL_FILES")
 		Expect(modelFiles).To(ContainSubstring("extra.gguf"))
+	})
+
+	It("sets stagedDir to the emptyDir staging directory for multi-file staging", func() {
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: "empty-model", Namespace: "default"},
+			Spec: inferencev1alpha1.ModelSpec{
+				Source: "hf://org/repo",
+				Files:  []string{"model.gguf", "extra.gguf"},
+			},
+		}
+
+		config := buildEmptyDirStorageConfig(model, nil, "default", "", "curl:8.18.0")
+
+		Expect(config.stagedDir).To(Equal("/models/default-empty-model"))
+		Expect(config.modelPath).To(Equal("/models/default-empty-model/model.gguf"))
 	})
 
 	It("uses OnChange per-file etag revalidation in emptyDir storage", func() {
