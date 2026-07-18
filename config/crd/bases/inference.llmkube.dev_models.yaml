@@ -233,12 +233,12 @@ spec:
                             - "rocm": the HIP compute tier (#701). Schedules LLMKube's
                               hardware-validated ROCm llama.cpp image and requests the same
                               shared `devic.es/dri-render` resource as "vulkan" (unless
-                              ResourceName overrides it) — the two runtimes contend for the same
+                              ResourceName overrides it): the two runtimes contend for the same
                               physical device on single-GPU AMD nodes, so they share one
                               device-plugin resource rather than each claiming their own. "rocm"
                               differs from "vulkan" only in the container image it selects.
                             - "" (empty): falls through to `amd.com/gpu` with the vendor-neutral
-                              stock image — back-compatible with pre-#701 behavior, not the same
+                              stock image, back-compatible with pre-#701 behavior, not the same
                               as "rocm".
 
                           Ignored for non-AMD vendors and non-llama.cpp backends.
