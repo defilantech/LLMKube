@@ -130,6 +130,7 @@ func (r *InferenceServiceReconciler) constructEndpoint(isvc *inferencev1alpha1.I
 func (r *InferenceServiceReconciler) updateStatusWithSchedulingInfo(
 	ctx context.Context,
 	isvc *inferencev1alpha1.InferenceService,
+	model *inferencev1alpha1.Model,
 	phase string,
 	modelReady bool,
 	readyReplicas int32,
@@ -158,6 +159,19 @@ func (r *InferenceServiceReconciler) updateStatusWithSchedulingInfo(
 	if previousPhase != "" && previousPhase != phase {
 		llmkubemetrics.InferenceServicePhase.WithLabelValues(isvc.Name, isvc.Namespace, previousPhase).Set(0)
 	}
+
+	// Emit info metric with hardware labels (accelerator, runtime)
+	accelerator := "cpu"
+	runtime := isvc.Spec.Runtime
+	if model != nil && model.Spec.Hardware != nil {
+		if model.Spec.Hardware.Accelerator != "" {
+			accelerator = model.Spec.Hardware.Accelerator
+		}
+	}
+	if runtime == "" {
+		runtime = "llamacpp"
+	}
+	llmkubemetrics.InferenceServiceInfo.WithLabelValues(isvc.Name, isvc.Namespace, accelerator, runtime).Set(1)
 
 	// Track time-to-ready using creation timestamp
 	if phase == PhaseReady && previousPhase != PhaseReady {

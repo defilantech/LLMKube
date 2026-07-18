@@ -50,6 +50,7 @@ func TestMetricsRegistered(t *testing.T) {
 		{"llmkube_model_status", ModelStatus},
 		{"llmkube_inferenceservice_ready_duration_seconds", InferenceServiceReadyDuration},
 		{"llmkube_inferenceservice_phase", InferenceServicePhase},
+		{"llmkube_inferenceservice_info", InferenceServiceInfo},
 		{"llmkube_gpu_queue_depth", GPUQueueDepth},
 		{"llmkube_gpu_queue_wait_duration_seconds", GPUQueueWaitDuration},
 		{"llmkube_reconcile_total", ReconcileTotal},
@@ -120,6 +121,37 @@ func TestInferenceServicePhase(t *testing.T) {
 	}
 	if m.GetGauge().GetValue() != 1 {
 		t.Errorf("expected Ready phase to be 1 after transition, got %f", m.GetGauge().GetValue())
+	}
+}
+
+func TestInferenceServiceInfo(t *testing.T) {
+	// Verify the info metric is emitted with accelerator and runtime labels.
+	InferenceServiceInfo.WithLabelValues("info-test", "default", "cuda", "llamacpp").Set(1)
+
+	var m dto.Metric
+	if err := InferenceServiceInfo.WithLabelValues("info-test", "default", "cuda", "llamacpp").Write(&m); err != nil {
+		t.Fatalf("failed to write metric: %v", err)
+	}
+	if m.GetGauge().GetValue() != 1 {
+		t.Errorf("expected gauge value 1, got %f", m.GetGauge().GetValue())
+	}
+
+	// Verify a different accelerator label produces a distinct series.
+	InferenceServiceInfo.WithLabelValues("info-test", "default", "rocm", "llamacpp").Set(1)
+
+	if err := InferenceServiceInfo.WithLabelValues("info-test", "default", "rocm", "llamacpp").Write(&m); err != nil {
+		t.Fatalf("failed to write metric: %v", err)
+	}
+	if m.GetGauge().GetValue() != 1 {
+		t.Errorf("expected gauge value 1 for rocm, got %f", m.GetGauge().GetValue())
+	}
+
+	// Verify the cuda series is still 1 (not overwritten).
+	if err := InferenceServiceInfo.WithLabelValues("info-test", "default", "cuda", "llamacpp").Write(&m); err != nil {
+		t.Fatalf("failed to write metric: %v", err)
+	}
+	if m.GetGauge().GetValue() != 1 {
+		t.Errorf("expected cuda gauge value 1, got %f", m.GetGauge().GetValue())
 	}
 }
 

@@ -213,7 +213,7 @@ var _ = Describe("reconcileService Metal path", func() {
 			Spec:       inferencev1alpha1.InferenceServiceSpec{ModelRef: "some-model"},
 		}
 
-		svc, result, err := reconciler.reconcileService(context.Background(), isvc, true, 1, true)
+		svc, result, err := reconciler.reconcileService(context.Background(), isvc, nil, true, 1, true)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result).To(BeNil())
 		Expect(svc).NotTo(BeNil())
@@ -227,7 +227,7 @@ var _ = Describe("reconcileService Metal path", func() {
 			Spec:       inferencev1alpha1.InferenceServiceSpec{ModelRef: "some-model"},
 		}
 
-		svc, result, err := reconciler.reconcileService(context.Background(), isvc, true, 1, true)
+		svc, result, err := reconciler.reconcileService(context.Background(), isvc, nil, true, 1, true)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result).To(BeNil())
 		Expect(svc.Name).To(Equal("llama-3-2-3b"))
@@ -243,7 +243,7 @@ var _ = Describe("reconcileService Metal path", func() {
 			},
 		}
 
-		svc, _, err := reconciler.reconcileService(context.Background(), isvc, true, 1, true)
+		svc, _, err := reconciler.reconcileService(context.Background(), isvc, nil, true, 1, true)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(svc.Spec.Ports).To(BeEmpty())
 		Expect(svc.Spec.Type).To(Equal(corev1.ServiceType("")))
@@ -256,7 +256,7 @@ var _ = Describe("reconcileService Metal path", func() {
 			Spec:       inferencev1alpha1.InferenceServiceSpec{ModelRef: "some-model"},
 		}
 
-		_, _, err := reconciler.reconcileService(context.Background(), isvc, true, 1, true)
+		_, _, err := reconciler.reconcileService(context.Background(), isvc, nil, true, 1, true)
 		Expect(err).NotTo(HaveOccurred())
 
 		svc := &corev1.Service{}
