@@ -8,24 +8,46 @@ workloads.
 
 ## When to Use ROCm vs Vulkan
 
-Be honest with yourself about what ROCm buys you before switching a model
-over. On a single AMD iGPU/APU node:
+Be honest about what ROCm buys you on Strix Halo (gfx1151) before switching a
+model over. We measured both backends on the same node, same llama.cpp build
+(b9663), same models (see [Benchmarks](#benchmarks)). The short version:
 
-- ROCm wins on **prefill (prompt processing)**, **long-context decode
-  retention**, and **batched concurrency**. Attention and matmul-heavy
-  workloads benefit from HIP's more mature kernels, and rocWMMA flash
-  attention holds up better as context grows.
-- **Vulkan stays the default.** Short-context decode on these nodes is
-  memory-bandwidth-bound, not compute-bound, so the two backends are close
-  and Vulkan usually wins that specific case. There is no free "ROCm is
-  faster inference" win: pick the backend that matches your workload shape,
-  not the newer-sounding one.
-- In practice: reach for ROCm when you are running long prompts, large
-  context windows, or many concurrent requests against the same model. Stay
-  on Vulkan for short-prompt, low-concurrency chat traffic.
+**Vulkan is the better default on Strix Halo across every case we measured.**
+It wins raw decode, it degrades far more gracefully as context grows, it
+addresses a much larger memory pool (about 112GB versus ROCm's 64GB carveout
+on this driver stack, which decides whether a large model fits at all), and
+it is competitive-to-faster once speculative decoding is in play. ROCm is
+shipped as a fully supported, validated per-model option, but on this
+hardware today it does not beat Vulkan. There is no free "ROCm is faster
+inference" win on Strix Halo.
 
-The [Benchmarks](#benchmarks) section below has (or will have) measured
-numbers for a concrete model on this hardware; use them, not vibes, to decide
+Where ROCm's numbers are actually stronger:
+
+- **Zero-context prefill** (317 vs 287 tok/s) and, relatedly, raw
+  **draft-verification speed** under speculative decoding. On a prompt where
+  both backends reach the same draft-acceptance rate, ROCm's faster
+  verification pulls ahead.
+
+Where Vulkan wins:
+
+- **Raw decode** at every context depth, and it holds up much better as
+  context grows (32k: 8.72 vs 7.41 tok/s).
+- **Prefill at real context.** ROCm's prefill collapses with depth while
+  RADV's coopmat path scales (32k prefill: 130 vs 51 tok/s).
+- **Memory ceiling.** RADV addresses the full unified pool (~112GB); ROCm/HIP
+  sees only the BIOS VRAM carveout (~64GB) and does not spill into GTT by
+  default. For a model larger than the carveout, Vulkan is the path on this
+  stack (see [Large models](#large-model-note-memory-ceiling)).
+- **Speculative decoding, net.** Decode rate under a draft or MTP is
+  dominated by draft-acceptance, which varies by prompt; Vulkan reached
+  higher acceptance on most prompts we tried (ROCm's TOP_K sampler currently
+  runs on CPU, which appears to cost draft quality), so end to end it is a
+  wash-to-Vulkan.
+
+So: **default to Vulkan.** Choose ROCm when you specifically want the HIP
+stack (to match other AMD/CDNA deployments, or to track ROCm maturity on
+RDNA), and re-measure for your own model and prompt mix rather than assuming a
+win. Use the [Benchmarks](#benchmarks) numbers, not vibes, to decide
 per-model.
 
 ## Node Prerequisites
@@ -220,24 +242,49 @@ curl -s http://127.0.0.1:8080/v1/chat/completions \
   }' | jq '.timings.prompt_per_second, .timings.predicted_per_second'
 ```
 
-`prompt_per_second` is where ROCm's prefill advantage should show up most;
-`predicted_per_second` (decode) is the bandwidth-bound number where Vulkan
-is often competitive or ahead at short context.
+`prompt_per_second` (prefill) is strongest for ROCm at low context but falls
+off with depth; `predicted_per_second` (decode) is the bandwidth-bound number
+where Vulkan is competitive or ahead. See [Benchmarks](#benchmarks) for the
+measured comparison.
 
-## Large-Model Note: ttm.pages_limit
+## Large-Model Note: memory ceiling
 
-The default kernel GTT/UMA ceiling caps how much system memory the GPU can
-address at once, which in practice limits GPU-visible memory to roughly
-**62GB** on a Strix Halo-class unified-memory node. The 27B Q6_K example
-above (~22GB of weights plus KV cache) fits comfortably under that ceiling;
-**you do not need to touch `ttm.pages_limit` for it.**
+This is the one place ROCm is at a real disadvantage on Strix Halo, and it is
+counterintuitive, so measure before you plan a large deployment.
 
-If you deploy a model whose weights plus KV cache exceed that ceiling, raise
-`ttm.pages_limit` (a kernel boot parameter; changing it requires a reboot) to
-opt into a larger GPU-visible allocation. Treat this as an explicit,
-per-node opt-in rather than a default: it trades system RAM headroom for GPU
-addressability, and it is easy to over-commit a UMA node if you raise it
-without also accounting for what else runs there.
+On this driver stack the two backends do **not** see the same amount of
+memory:
+
+- **ROCm/HIP sees only the BIOS VRAM carveout** (about 64GB on our node) and
+  does not spill into the shared GTT/system pool by default. `hipMalloc`
+  stays inside the carveout.
+- **Vulkan/RADV addresses the full unified pool** (about 112GB observed:
+  VRAM carveout plus GTT) automatically.
+
+So on the *same* 128GB machine, a model that needs more than the carveout
+(roughly >60GB of weights plus KV cache) **fits under Vulkan but not under
+ROCm** without extra work. This is why very large models (for example a
+low-quant 218B) run on Strix Halo under Vulkan today. The 27B Q6_K example
+above (~22GB weights plus KV) fits comfortably under either backend.
+
+If you specifically need ROCm to address more than its carveout, it takes a
+reboot and is a per-node opt-in, not a default:
+
+- **Lower the BIOS UMA / VRAM carveout** (e.g. to the minimum) so the OS
+  reclaims most of the 128GB, then raise `amdgpu.gttsize` and
+  `ttm.pages_limit` so the iGPU can map the unified pool. `ttm.pages_limit`
+  is in 4KB pages, so 12582912 pages is ~48GB; size it to the memory you want
+  the GPU to reach, leaving headroom for the OS.
+- Weigh whether it is worth it: for a model that big, Vulkan already reaches
+  the memory today, and (per [Benchmarks](#benchmarks)) Vulkan is the faster
+  backend on this hardware anyway. The ROCm-carveout retune mainly matters if
+  you specifically need the HIP stack for that workload.
+
+Do **not** enable `GGML_CUDA_ENABLE_UNIFIED_MEMORY` to work around the
+carveout. It is presence-checked (any value, including `0`, turns it on), it
+does not improve throughput when the model fits VRAM (we measured it slightly
+slower), and on gfx1151 the managed-memory path can produce incoherent output.
+Leave it unset.
 
 Very large MoE models may additionally need a batch-size clamp to control
 memory pressure during prefill; pass it via `extraArgs` on the
@@ -251,15 +298,53 @@ extraArgs:
 
 ## Benchmarks
 
-Placeholder: measured numbers land once the validated ROCm-vs-Vulkan run is
-complete (tracked in LLMKube#701). Do not treat the rows below as real data.
+Measured on Strix Halo (Radeon 8060S / Ryzen AI Max+ 395, gfx1151),
+llama.cpp b9663, both backends built from the same commit, GPU to itself for
+each run.
 
-| Metric | Vulkan | ROCm | Notes |
-|---|---|---|---|
-| Prefill (prompt tok/s) | TBD | TBD | measured on Strix Halo gfx1151, llama.cpp b9663 |
-| Decode, short context (tok/s) | TBD | TBD | measured on Strix Halo gfx1151, llama.cpp b9663 |
-| Decode, long context (tok/s) | TBD | TBD | measured on Strix Halo gfx1151, llama.cpp b9663 |
-| Concurrency (N parallel, aggregate tok/s) | TBD | TBD | measured on Strix Halo gfx1151, llama.cpp b9663 |
+### Raw throughput
+
+`llama-bench`, Qwen3.6-27B Q6_K, `-fa 1 -ngl 99 -p 512 -n 128 -d 0,8192,32768`,
+tokens/sec:
+
+| Context depth | Metric | ROCm | Vulkan | Winner |
+|---|---|---:|---:|---|
+| 0 | prefill (pp512) | **317** | 287 | ROCm +10% |
+| 0 | decode (tg128) | 9.28 | **9.57** | Vulkan |
+| 8k | prefill | 142 | **243** | Vulkan +71% |
+| 8k | decode | 8.82 | **9.34** | Vulkan |
+| 32k | prefill | 51 | **130** | Vulkan +155% |
+| 32k | decode | 7.41 | **8.72** | Vulkan |
+
+ROCm leads only on zero-context prefill; Vulkan wins decode at every depth and
+its prefill scales far better with context. `GGML_CUDA_ENABLE_UNIFIED_MEMORY`
+made no positive difference (pp512 275 vs 317, decode unchanged), so it is not
+enabled.
+
+### Speculative decoding (draft / MTP)
+
+`llama-server --spec-type draft-mtp --spec-draft-n-max 12`, Qwopus3.6-27B Coder
+MTP Q4, three coding prompts, decode tokens/sec:
+
+| Backend | decode tok/s (range) | mean | draft acceptance |
+|---|---|---:|---|
+| ROCm | 14.4 - 16.5 | 15.3 | 22 - 26% |
+| Vulkan | 11.8 - 21.7 | 16.9 | 21 - 45% |
+
+Speculative decoding roughly doubles decode over the raw ~9 tok/s on both
+backends. The end-to-end rate is dominated by draft-acceptance, which varies
+by prompt. On a prompt where both backends hit the same acceptance, ROCm's
+faster draft-verification wins (14.4 vs 11.8 at ~21% acceptance); but Vulkan
+reached higher acceptance on the other prompts (ROCm's TOP_K sampler runs on
+CPU, which appears to cost draft quality), so on average it is a
+wash-to-Vulkan. If you rely on speculative decoding, benchmark your own draft
+model and prompt mix; do not assume a backend win in either direction.
+
+### Memory
+
+At load, RADV/Vulkan reports ~112GB addressable (unified pool) versus ROCm's
+~64GB (BIOS VRAM carveout). See
+[Large-Model Note](#large-model-note-memory-ceiling).
 
 ## Troubleshooting
 
