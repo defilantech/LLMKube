@@ -11,12 +11,17 @@ PrometheusRule and PodMonitor templates.
 - A Prometheus datasource named `Prometheus` (or use the `DS_PROMETHEUS`
   template variable to pick a different one at import time)
 - Grafana 10 or newer
+- For `llmkube-slo.json` only: the operator running with `--enable-pyrra-slo`
+  and the Pyrra kubernetes operator installed, so `spec.slo` InferenceServices
+  have a PrometheusRule generated for their ServiceLevelObjective. See
+  `docs/observability/slo.md`.
 
 ## Files
 
 | File | Description |
 |---|---|
 | `llmkube-inference.json` | Request latency, TTFT (vLLM only), GPU queue wait, container restart rate. Grouped by service, runtime, namespace. |
+| `llmkube-slo.json` | Error budget remaining and multi-window burn rate for InferenceServices with `spec.slo` set, plus an SLO overview table. Reads the recording rules Pyrra's kubernetes operator writes per SLO. Templated on a `$slo` variable (`label_values(slo)`) and a manual `$objective` percentage variable, since Pyrra does not expose the target itself as a Prometheus series. Assumes the default 28d SLO window; see the dashboard description for details. |
 
 ## Importing
 

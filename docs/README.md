@@ -21,6 +21,10 @@ Terminal recordings live in `docs/site/casts/`. See `docs/site/casts/README.md` 
 
 Reference material for working on the operator itself: how to add a new runtime backend, how to spec the HuggingFace source format, internals of the vLLM image pipeline. These pages are read by people *changing* LLMKube, not people *using* LLMKube — they aren't rendered to the public site.
 
+## `observability/`: SLOs and error budgets
+
+- [SLOs and error budgets](observability/slo.md)
+
 ## During the transition
 
 A few user-facing markdown files still live at the root of `docs/` (`MULTI-GPU-DEPLOYMENT.md`, `air-gapped-quickstart.md`, etc.). They will move into `docs/site/` as they're ported — each port is its own commit/PR so the rendered site can light up one section at a time.

@@ -158,6 +158,12 @@ The following table lists the configurable parameters of the LLMKube chart and t
 | `crds.install` | Install CRDs as part of chart | `true` |
 | `crds.keep` | Keep CRDs on uninstall | `true` |
 
+### Pyrra Parameters
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `pyrra.enabled` | Enable Pyrra SLO integration | `false` |
+
 ## Examples
 
 ### Basic Installation

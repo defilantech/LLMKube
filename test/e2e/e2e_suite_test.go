@@ -34,6 +34,15 @@ import (
 var (
 	// Optional Environment Variables:
 	// - CERT_MANAGER_INSTALL_SKIP=true: Skips CertManager installation during test setup.
+	// - LLMKUBE_E2E_ROUTER_CLUSTER=true: Runs the "ModelRouter Cluster" Context
+	//   (test/e2e/e2e_test.go), which side-loads the router-proxy and
+	//   stub-upstream images built below.
+	// - LLMKUBE_E2E_PYRRA=true: Runs the "Pyrra SLO Integration" Context
+	//   (test/e2e/slo_e2e_test.go), which side-loads the Pyrra CRD/operator
+	//   plus the prometheus-operator PrometheusRule CRD and does a second
+	//   controller-manager deploy with --enable-pyrra-slo. Needs no image
+	//   build/load here (unlike LLMKUBE_E2E_ROUTER_CLUSTER): Pyrra's
+	//   kubernetes operator image is pulled directly from ghcr.io.
 	// These variables are useful if CertManager is already installed, avoiding
 	// re-installation and conflicts.
 	skipCertManagerInstall = os.Getenv("CERT_MANAGER_INSTALL_SKIP") == "true"

@@ -164,6 +164,10 @@ func main() {
 			"without repeating the URL on every ModelRouter. Empty means "+
 			"users must specify url explicitly.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
+	var enablePyrraSLO bool
+	flag.BoolVar(&enablePyrraSLO, "enable-pyrra-slo", false,
+		"Enable rendering Pyrra ServiceLevelObjective resources for InferenceServices with spec.slo. "+
+			"Requires the Pyrra CRD in the cluster (https://github.com/pyrra-dev/pyrra).")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
@@ -354,6 +358,20 @@ func main() {
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "InferenceServiceGateway")
+		os.Exit(1)
+	}
+	// InferenceServiceSLO renders a Pyrra ServiceLevelObjective for each
+	// InferenceService with spec.slo. Registered unconditionally so a
+	// disabled integration still reports the IntegrationDisabled condition;
+	// like the gateway controllers it self-gates on the pyrra.dev CRD, so a
+	// cluster without Pyrra starts the operator cleanly and this controller
+	// no-ops.
+	if err := (&controller.InferenceServiceSLOReconciler{
+		Client:  mgr.GetClient(),
+		Scheme:  mgr.GetScheme(),
+		Enabled: enablePyrraSLO,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "InferenceServiceSLO")
 		os.Exit(1)
 	}
 	// ModelRouterGateway compiles a ModelRouter in dataPlane: Gateway mode onto a
