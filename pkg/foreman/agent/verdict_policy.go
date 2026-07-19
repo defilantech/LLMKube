@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	foremanv1alpha1 "github.com/defilantech/llmkube/api/foreman/v1alpha1"
+	"github.com/defilantech/llmkube/pkg/foreman/agent/changepolicy"
 )
 
 // needsVerificationOutcome mirrors
@@ -135,7 +136,9 @@ func unverifiedPolicyEntry(class workClass) map[string]string {
 // Extra["unverified"] entry explaining why; a declared/actual mismatch
 // where BOTH classes are self-GO-able does not downgrade but records
 // Extra["workClassMismatch"] = true so the discrepancy stays visible.
-func applyVerdictPolicy(res *Result, changed map[string]int, selfGO []string) *Result {
+func applyVerdictPolicy(
+	res *Result, changed map[string]int, selfGO []string, policy changepolicy.ChangePolicy,
+) *Result {
 	if res == nil || res.Verdict != foremanv1alpha1.AgenticTaskVerdictGo {
 		return res
 	}
@@ -143,7 +146,7 @@ func applyVerdictPolicy(res *Result, changed map[string]int, selfGO []string) *R
 		res.Extra = map[string]any{}
 	}
 
-	class := classifyFootprint(changed)
+	class := workClass(policy.Classify(changed))
 	res.Extra["actualWorkClass"] = string(class)
 
 	declared, hasDeclared := res.Extra["workClass"].(string)

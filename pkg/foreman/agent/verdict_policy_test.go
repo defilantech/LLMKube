@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	foremanv1alpha1 "github.com/defilantech/llmkube/api/foreman/v1alpha1"
+	"github.com/defilantech/llmkube/pkg/foreman/agent/changepolicy"
 )
 
 func TestApplyVerdictPolicy(t *testing.T) {
@@ -31,7 +32,7 @@ func TestApplyVerdictPolicy(t *testing.T) {
 	}
 	t.Run("ci-policy footprint downgrades GO", func(t *testing.T) {
 		res := applyVerdictPolicy(goResult(),
-			map[string]int{".github/workflows/release.yml": 40}, defaultSelfGO)
+			map[string]int{".github/workflows/release.yml": 40}, defaultSelfGO, changepolicy.NewDefaultPolicy())
 		if res.Verdict != foremanv1alpha1.AgenticTaskVerdictNoGo {
 			t.Fatalf("verdict = %v, want NO-GO", res.Verdict)
 		}
@@ -54,7 +55,7 @@ func TestApplyVerdictPolicy(t *testing.T) {
 	})
 	t.Run("code-fix GO stands", func(t *testing.T) {
 		res := applyVerdictPolicy(goResult(),
-			map[string]int{"pkg/foreman/agent/loop.go": 40}, defaultSelfGO)
+			map[string]int{"pkg/foreman/agent/loop.go": 40}, defaultSelfGO, changepolicy.NewDefaultPolicy())
 		if res.Verdict != foremanv1alpha1.AgenticTaskVerdictGo {
 			t.Fatalf("verdict = %v, want GO", res.Verdict)
 		}
@@ -62,27 +63,28 @@ func TestApplyVerdictPolicy(t *testing.T) {
 	t.Run("operator opt-in allows ci-policy", func(t *testing.T) {
 		res := applyVerdictPolicy(goResult(),
 			map[string]int{".github/workflows/release.yml": 40},
-			append(defaultSelfGO, "ci-policy"))
+			append(defaultSelfGO, "ci-policy"), changepolicy.NewDefaultPolicy())
 		if res.Verdict != foremanv1alpha1.AgenticTaskVerdictGo {
 			t.Fatalf("verdict = %v, want GO with opt-in", res.Verdict)
 		}
 	})
 	t.Run("NO-GO passes through untouched", func(t *testing.T) {
 		res := &Result{Verdict: foremanv1alpha1.AgenticTaskVerdictNoGo}
-		if got := applyVerdictPolicy(res, nil, defaultSelfGO); got.Verdict != foremanv1alpha1.AgenticTaskVerdictNoGo {
+		got := applyVerdictPolicy(res, nil, defaultSelfGO, changepolicy.NewDefaultPolicy())
+		if got.Verdict != foremanv1alpha1.AgenticTaskVerdictNoGo {
 			t.Fatal("non-GO must pass through")
 		}
 	})
 	t.Run("actualWorkClass always recorded even when it stands", func(t *testing.T) {
 		res := applyVerdictPolicy(goResult(),
-			map[string]int{"pkg/foreman/agent/loop.go": 40}, defaultSelfGO)
+			map[string]int{"pkg/foreman/agent/loop.go": 40}, defaultSelfGO, changepolicy.NewDefaultPolicy())
 		if res.Extra["actualWorkClass"] != "code-fix" {
 			t.Errorf("actualWorkClass = %v", res.Extra["actualWorkClass"])
 		}
 	})
 	t.Run("declared work class is recorded when the coder set one", func(t *testing.T) {
 		res := applyVerdictPolicy(goResult(),
-			map[string]int{"pkg/foreman/agent/loop.go": 40}, defaultSelfGO)
+			map[string]int{"pkg/foreman/agent/loop.go": 40}, defaultSelfGO, changepolicy.NewDefaultPolicy())
 		if res.Extra["declaredWorkClass"] != "code-fix" {
 			t.Errorf("declaredWorkClass = %v", res.Extra["declaredWorkClass"])
 		}
@@ -90,7 +92,8 @@ func TestApplyVerdictPolicy(t *testing.T) {
 	t.Run("declared-vs-actual mismatch between two self-GO classes flags without downgrading", func(t *testing.T) {
 		res := &Result{Verdict: foremanv1alpha1.AgenticTaskVerdictGo,
 			Extra: map[string]any{"workClass": "docs"}}
-		res = applyVerdictPolicy(res, map[string]int{"pkg/foreman/agent/loop.go": 40}, defaultSelfGO)
+		res = applyVerdictPolicy(res, map[string]int{"pkg/foreman/agent/loop.go": 40},
+			defaultSelfGO, changepolicy.NewDefaultPolicy())
 		if res.Verdict != foremanv1alpha1.AgenticTaskVerdictGo {
 			t.Fatalf("verdict = %v, want GO to stand despite the mismatch", res.Verdict)
 		}
@@ -101,14 +104,14 @@ func TestApplyVerdictPolicy(t *testing.T) {
 	t.Run("no declared class means no mismatch flag", func(t *testing.T) {
 		res := applyVerdictPolicy(
 			&Result{Verdict: foremanv1alpha1.AgenticTaskVerdictGo, Extra: map[string]any{}},
-			map[string]int{"pkg/foreman/agent/loop.go": 40}, defaultSelfGO)
+			map[string]int{"pkg/foreman/agent/loop.go": 40}, defaultSelfGO, changepolicy.NewDefaultPolicy())
 		if _, ok := res.Extra["workClassMismatch"]; ok {
 			t.Errorf("workClassMismatch should be absent, got %v", res.Extra["workClassMismatch"])
 		}
 	})
 	t.Run("nil Extra on a GO result does not panic", func(t *testing.T) {
 		res := applyVerdictPolicy(&Result{Verdict: foremanv1alpha1.AgenticTaskVerdictGo},
-			map[string]int{".github/workflows/release.yml": 40}, defaultSelfGO)
+			map[string]int{".github/workflows/release.yml": 40}, defaultSelfGO, changepolicy.NewDefaultPolicy())
 		if res.Extra["outcome"] != "NEEDS-VERIFICATION" {
 			t.Errorf("outcome = %v", res.Extra["outcome"])
 		}

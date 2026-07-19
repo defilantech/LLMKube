@@ -46,6 +46,7 @@ import (
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/githubissue"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/oai"
+	"github.com/defilantech/llmkube/pkg/foreman/agent/worktracker"
 )
 
 // TestBranchNameForTask covers the precedence rule between explicit
@@ -2038,7 +2039,7 @@ func TestFetchIssueBodyIfNeeded_AppendsIssueOnRevisionTask(t *testing.T) {
 		},
 	}
 
-	fetchIssueBodyIfNeeded(context.Background(), fetcher, task, nil, logr.Discard())
+	fetchIssueBodyIfNeeded(context.Background(), &worktracker.GitHubWorkItems{Fetcher: fetcher}, task, logr.Discard())
 
 	if fetcher.calls != 1 {
 		t.Fatalf("fetcher calls = %d, want 1", fetcher.calls)
@@ -2078,7 +2079,7 @@ func TestFetchIssueBodyIfNeeded_NoIssueNumberIsNoOp(t *testing.T) {
 		},
 	}
 
-	fetchIssueBodyIfNeeded(context.Background(), fetcher, task, nil, logr.Discard())
+	fetchIssueBodyIfNeeded(context.Background(), &worktracker.GitHubWorkItems{Fetcher: fetcher}, task, logr.Discard())
 
 	if fetcher.calls != 0 {
 		t.Errorf("fetcher must not be called when Issue is 0; calls = %d", fetcher.calls)
@@ -2106,7 +2107,7 @@ func TestFetchIssueBodyIfNeeded_ComposedPromptWithoutRevisionUntouched(t *testin
 		},
 	}
 
-	fetchIssueBodyIfNeeded(context.Background(), fetcher, task, nil, logr.Discard())
+	fetchIssueBodyIfNeeded(context.Background(), &worktracker.GitHubWorkItems{Fetcher: fetcher}, task, logr.Discard())
 
 	if fetcher.calls != 0 {
 		t.Errorf("fetcher must not be called for a composed prompt without reviseFromBranch; calls = %d", fetcher.calls)
