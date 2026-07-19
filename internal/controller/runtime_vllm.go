@@ -39,6 +39,17 @@ func (b *VLLMBackend) DefaultPort() int32       { return 8000 }
 func (b *VLLMBackend) NeedsModelInit() bool     { return true }
 func (b *VLLMBackend) DefaultHPAMetric() string { return "vllm:num_requests_running" }
 
+// BuildCommand returns the entrypoint for the vLLM container, mirroring
+// SGLangBackend/PersonaPlexBackend. The stock vllm/vllm-openai image already
+// entrypoints on "vllm serve" (the positional-model form BuildArgs emits), so
+// setting it explicitly is behavior-preserving for that image while making the
+// runtime image-agnostic: a custom image (e.g. a community AMD ROCm/gfx1151
+// build) no longer has to match the stock entrypoint or set spec.command to
+// avoid exec'ing the positional model path as the container process.
+func (b *VLLMBackend) BuildCommand() []string {
+	return []string{"vllm", "serve"}
+}
+
 // DisableServiceLinks returns true so the operator emits Pods with
 // `enableServiceLinks: false`. vLLM v0.20+ logs a warning for every K8s
 // service-link env var that matches the `VLLM_*` prefix; in a namespace with
