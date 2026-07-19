@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -526,6 +527,19 @@ func TestVLLMDisableServiceLinks(t *testing.T) {
 	backend := &VLLMBackend{}
 	if !backend.DisableServiceLinks() {
 		t.Error("VLLMBackend.DisableServiceLinks() = false, want true (vLLM v0.20+ env validator noise)")
+	}
+}
+
+// TestVLLMBuildCommand pins the explicit "vllm serve" entrypoint so the runtime
+// is image-agnostic (parity with SGLang): the deployment builder sets
+// container.Command from this, so BuildArgs' positional model path is served by
+// vLLM rather than exec'd as the container process on a non-stock image.
+func TestVLLMBuildCommand(t *testing.T) {
+	b := &VLLMBackend{}
+	want := []string{"vllm", "serve"}
+	got := b.BuildCommand()
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("BuildCommand() = %v, want %v", got, want)
 	}
 }
 
