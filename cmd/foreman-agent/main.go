@@ -68,11 +68,14 @@ import (
 	foremanv1alpha1 "github.com/defilantech/llmkube/api/foreman/v1alpha1"
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 	foremanagent "github.com/defilantech/llmkube/pkg/foreman/agent"
+	"github.com/defilantech/llmkube/pkg/foreman/agent/changepolicy"
+	"github.com/defilantech/llmkube/pkg/foreman/agent/codehost"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/githubissue"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/githubpr"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/mcp"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/repo"
 	foremantools "github.com/defilantech/llmkube/pkg/foreman/agent/tools"
+	"github.com/defilantech/llmkube/pkg/foreman/agent/worktracker"
 	"github.com/defilantech/llmkube/pkg/selfupdate"
 )
 
@@ -87,6 +90,22 @@ var (
 	scheme   = runtime.NewScheme()
 	setupLog = ctrl.Log.WithName("setup")
 )
+
+// githubCodeHost builds the GitHub-backed CodeHost seam (#1158), wrapping the
+// githubpr client with the same token source (env / file) as the git auth so
+// PR creation and head-commit reads stay authenticated.
+func githubCodeHost() codehost.CodeHost {
+	token, _ := repo.TokenFromEnvOrFile()
+	return &codehost.GitHubCodeHost{Ensurer: githubpr.NewClient(), Token: token}
+}
+
+// githubWorkItems builds the GitHub-backed WorkItems seam (#1158), wrapping the
+// githubissue client with the same token source as the git auth so issue-body
+// fetches stay authenticated.
+func githubWorkItems() worktracker.WorkItems {
+	token, _ := repo.TokenFromEnvOrFile()
+	return &worktracker.GitHubWorkItems{Fetcher: githubissue.NewClient(), Token: token}
+}
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
@@ -409,8 +428,9 @@ func main() {
 			},
 			KeepWorkspace:   keepWorkspace,
 			RegistryFactory: makeRegistryFactory(kc, kcs, foremanNamespace),
-			IssueFetcher:    githubissue.NewClient(),
-			PREnsurer:       githubpr.NewClient(),
+			CodeHost:        githubCodeHost(),
+			WorkItems:       githubWorkItems(),
+			ChangePolicy:    changepolicy.NewDefaultPolicy(),
 			// CoderJobSubmitter routes Job-mode Agents to an ephemeral
 			// per-task Job (#620). Wired ONLY on the watcher executor: the
 			// run-task path (which the Job itself runs) builds its executor
@@ -573,8 +593,9 @@ func runTaskCommand(args []string) {
 		CommitCommitter:              repo.Identity{Name: commitAuthorName, Email: commitAuthorEmail},
 		KeepWorkspace:                keepWorkspace,
 		RegistryFactory:              makeRegistryFactory(kc, kcs, foremanNamespace),
-		IssueFetcher:                 githubissue.NewClient(),
-		PREnsurer:                    githubpr.NewClient(),
+		CodeHost:                     githubCodeHost(),
+		WorkItems:                    githubWorkItems(),
+		ChangePolicy:                 changepolicy.NewDefaultPolicy(),
 	})
 	if err != nil {
 		// System / execution failure: the result line + ERROR sentinel

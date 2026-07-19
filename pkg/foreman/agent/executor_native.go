@@ -40,6 +40,8 @@ import (
 
 	foremanv1alpha1 "github.com/defilantech/llmkube/api/foreman/v1alpha1"
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
+	"github.com/defilantech/llmkube/pkg/foreman/agent/changepolicy"
+	"github.com/defilantech/llmkube/pkg/foreman/agent/codehost"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/githubissue"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/githubpr"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/grounding"
@@ -47,6 +49,7 @@ import (
 	"github.com/defilantech/llmkube/pkg/foreman/agent/repo"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/repomap"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/reviewer"
+	"github.com/defilantech/llmkube/pkg/foreman/agent/worktracker"
 )
 
 // NativeAgentLoopExecutor is the M3 production executor. It resolves an
@@ -155,7 +158,30 @@ type NativeAgentLoopExecutor struct {
 	// review verdict is GO, when the task payload carries
 	// openPullRequest (#937). nil disables PR opening entirely;
 	// cmd/foreman-agent wires githubpr.NewClient().
+	//
+	// Deprecated for direct use: the executor now reaches PR + clone-URL
+	// operations through the provider-neutral CodeHost seam (#1158). This
+	// field remains as a fallback the codeHost() accessor wraps when
+	// CodeHost is nil, so existing callers/tests that inject a githubpr
+	// fake keep working.
 	PREnsurer githubpr.Ensurer
+
+	// CodeHost is the provider-neutral seam for code-host operations (PR
+	// creation, clone-URL resolution, head-commit subject) introduced by
+	// #1158. Production wires a codehost.GitHubCodeHost; when nil the
+	// codeHost() accessor falls back to wrapping PREnsurer.
+	CodeHost codehost.CodeHost
+
+	// WorkItems is the provider-neutral seam for fetching work items
+	// (issues) by ID (#1158). Production wires a worktracker.GitHubWorkItems;
+	// when nil the workItems() accessor falls back to wrapping IssueFetcher.
+	WorkItems worktracker.WorkItems
+
+	// ChangePolicy is the provider-neutral seam for classifying changed
+	// paths into work classes and gating human review (#1158). Production
+	// wires changepolicy.NewDefaultPolicy(); when nil the changePolicy()
+	// accessor falls back to that same default.
+	ChangePolicy changepolicy.ChangePolicy
 
 	// CoderJobSubmitter, when non-nil, routes Job-mode Agents
 	// (spec.execution.mode == Job) to an ephemeral per-task Kubernetes Job
@@ -178,6 +204,58 @@ type NativeAgentLoopExecutor struct {
 	// here. Nil skips the post-push envtest gate (e.g. the in-process
 	// run-task path, where the clean-room gate Job is the backstop).
 	EnvtestJobRunner EnvtestJobRunner
+}
+
+// codeHost returns the effective CodeHost seam: the injected CodeHost when
+// set, else a GitHubCodeHost wrapping the legacy PREnsurer (nil when neither
+// is configured, which disables PR opening exactly as before). token is the
+// run's git-auth token, threaded onto the legacy wrap so it authenticates the
+// GitHub API calls exactly as the pre-#1158 code did; it is ignored when
+// CodeHost is injected directly (production bakes its own token in).
+func (e *NativeAgentLoopExecutor) codeHost(token string) codehost.CodeHost {
+	if e.CodeHost != nil {
+		return e.CodeHost
+	}
+	if e.PREnsurer != nil {
+		return &codehost.GitHubCodeHost{Ensurer: e.PREnsurer, Token: token}
+	}
+	return nil
+}
+
+// workItems returns the effective WorkItems seam: the injected WorkItems
+// when set, else a GitHubWorkItems wrapping the legacy IssueFetcher (nil
+// when neither is configured, which preserves the empty-issue-body
+// behavior). token is the run's git-auth token, threaded onto the legacy
+// wrap so the issue fetch stays authenticated exactly as before; it is
+// ignored when WorkItems is injected directly.
+func (e *NativeAgentLoopExecutor) workItems(token string) worktracker.WorkItems {
+	if e.WorkItems != nil {
+		return e.WorkItems
+	}
+	if e.IssueFetcher != nil {
+		return &worktracker.GitHubWorkItems{Fetcher: e.IssueFetcher, Token: token}
+	}
+	return nil
+}
+
+// authToken returns the token carried by auth, or "" when auth is nil. It
+// bridges the run's repo.Auth to the token the CodeHost/WorkItems legacy
+// wraps need.
+func authToken(auth *repo.Auth) string {
+	if auth != nil {
+		return auth.Token
+	}
+	return ""
+}
+
+// changePolicy returns the effective ChangePolicy seam: the injected
+// ChangePolicy when set, else the default policy (which mirrors the
+// workclass.go/verdict_policy.go behavior).
+func (e *NativeAgentLoopExecutor) changePolicy() changepolicy.ChangePolicy {
+	if e.ChangePolicy != nil {
+		return e.ChangePolicy
+	}
+	return changepolicy.NewDefaultPolicy()
 }
 
 // Kind identifies this executor in Result.Kind and in logs.
@@ -503,7 +581,7 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 	// the prompt empty; without this fetch the model is asked to fix
 	// "#510" with no knowledge of what #510 is about. Best-effort: a
 	// failed fetch logs and the loop runs with the pre-#571 behavior.
-	fetchIssueBodyIfNeeded(ctx, e.IssueFetcher, task, auth, log)
+	fetchIssueBodyIfNeeded(ctx, e.workItems(authToken(auth)), task, log)
 	userPrompt := buildUserPrompt(task)
 	// issueText ranks files for both the repo-map prefix (coder Agents) and the
 	// scope-overlap guard in the coder gate verifier (#782).
@@ -994,7 +1072,7 @@ func (e *NativeAgentLoopExecutor) applyWorkClassPolicyForTask(
 		r.Extra["workClassUnknown"] = true
 		return r
 	}
-	return applyVerdictPolicy(r, changed, task.Spec.VerdictPolicy.Resolve())
+	return applyVerdictPolicy(r, changed, task.Spec.VerdictPolicy.Resolve(), e.changePolicy())
 }
 
 // reviewerGroundedChangedLines builds the changedLines callback the
@@ -1602,7 +1680,7 @@ func (e *NativeAgentLoopExecutor) maybeOpenPullRequest(
 	if verdict != foremanv1alpha1.AgenticTaskVerdictGo ||
 		task.Spec.Kind != foremanv1alpha1.AgenticTaskKindReview ||
 		!task.Spec.Payload.OpenPullRequest ||
-		e.PREnsurer == nil {
+		e.codeHost(authToken(auth)) == nil {
 		return
 	}
 	if prURL, prErr := e.openPullRequest(ctx, task, auth, r.Summary); prErr != nil {
@@ -1637,18 +1715,18 @@ func (e *NativeAgentLoopExecutor) openPullRequest(
 	if !ok || owner == "" || name == "" {
 		return "", fmt.Errorf("openPullRequest: payload.repo %q is not owner/name", p.Repo)
 	}
-	token := ""
-	if auth != nil {
-		token = auth.Token
-	}
+	ch := e.codeHost(authToken(auth))
+	// The coder pushed the branch to e.GitRemoteURL, which may be a fork of
+	// payload.repo. For a cross-fork PR the head is qualified "forkOwner:branch"
+	// and the head commit is read from the fork (headSlug), where the ref lives.
 	head := p.Branch
-	headOwner, headRepo := owner, name
+	headSlug := p.Repo
 	if forkOwner, forkRepo := gitRemoteOwnerRepo(e.GitRemoteURL); forkOwner != "" &&
 		!strings.EqualFold(forkOwner, owner) {
 		head = forkOwner + ":" + p.Branch
-		headOwner, headRepo = forkOwner, forkRepo
+		headSlug = forkOwner + "/" + forkRepo
 	}
-	title := e.PREnsurer.HeadCommitSubject(ctx, headOwner, headRepo, p.Branch, token)
+	title, _ := ch.HeadCommitSubject(ctx, headSlug, p.Branch)
 	if title == "" {
 		title = fmt.Sprintf("Fix #%d", p.Issue)
 	}
@@ -1663,12 +1741,12 @@ func (e *NativeAgentLoopExecutor) openPullRequest(
 	fmt.Fprintf(&bodyB, "Fixes #%d\n\n_Opened by foreman on review GO (workload %s)._",
 		p.Issue, task.Labels["foreman.llmkube.dev/workload"])
 	body := bodyB.String()
-	res, err := e.PREnsurer.EnsurePR(ctx, owner, name, head,
-		baseBranchOrDefault(p.BaseBranch), title, body, token)
+	prURL, _, err := ch.EnsureChangeRequest(ctx, p.Repo, head,
+		baseBranchOrDefault(p.BaseBranch), title, body)
 	if err != nil {
 		return "", err
 	}
-	return res.URL, nil
+	return prURL, nil
 }
 
 // maybePreserveGateFailedBranch commits and pushes a coder's branch when its
@@ -2102,12 +2180,15 @@ func baseBranchOrDefault(baseBranch string) string {
 // validated against a strict "owner/name" allowlist so it cannot inject path
 // traversal, spaces, or extra path segments into the derived URL.
 func upstreamURLForRepo(repoSlug string) string {
-	repoSlug = strings.TrimSpace(repoSlug)
-	if !repoSlugPattern.MatchString(repoSlug) {
-		return ""
-	}
-	return "https://github.com/" + repoSlug + ".git"
+	return cloneURLResolver.ResolveCloneURL(repoSlug)
 }
+
+// cloneURLResolver is the provider-neutral clone-URL resolver backing
+// upstreamURLForRepo. Wiring it through codehost.CodeHost (#1158) keeps the
+// github.com URL template in one place (the GitHub adapter) instead of
+// duplicated here. The Ensurer is nil because ResolveCloneURL is pure and
+// never touches it.
+var cloneURLResolver codehost.CodeHost = codehost.NewGitHubCodeHost(nil)
 
 // repoSlugPattern matches a single "owner/name" GitHub slug. Each segment is
 // limited to git/GitHub-safe characters and exactly one slash is allowed, so
@@ -2775,12 +2856,11 @@ func logReviewerFindings(log logr.Logger, extra map[string]any) {
 // being asked to do before reading the longer body.
 func fetchIssueBodyIfNeeded(
 	ctx context.Context,
-	fetcher githubissue.Fetcher,
+	items worktracker.WorkItems,
 	task *foremanv1alpha1.AgenticTask,
-	auth *repo.Auth,
 	log logr.Logger,
 ) {
-	if fetcher == nil {
+	if items == nil {
 		return
 	}
 	if task.Spec.Kind != foremanv1alpha1.AgenticTaskKindIssueFix {
@@ -2794,16 +2874,7 @@ func fetchIssueBodyIfNeeded(
 	if task.Spec.Payload.Issue <= 0 {
 		return
 	}
-	owner, repoName, err := githubissue.ParseRepo(task.Spec.Payload.Repo)
-	if err != nil {
-		log.Info("issue fetch skipped: bad repo string", "repo", task.Spec.Payload.Repo, "err", err.Error())
-		return
-	}
-	token := ""
-	if auth != nil {
-		token = auth.Token
-	}
-	iss, err := fetcher.Fetch(ctx, owner, repoName, int(task.Spec.Payload.Issue), token)
+	wi, err := items.Get(ctx, task.Spec.Payload.Repo, strconv.Itoa(int(task.Spec.Payload.Issue)))
 	if err != nil {
 		// Distinguish the common cases so the log line is actionable.
 		var herr *githubissue.HTTPError
@@ -2833,19 +2904,19 @@ func fetchIssueBodyIfNeeded(
 		// issue rides behind it under its own heading so the model sees
 		// both the retry context and the original ask.
 		b.WriteString(task.Spec.Payload.Prompt)
-		fmt.Fprintf(&b, "\n\n## Original issue (#%d): %s\n\n", iss.Number, iss.Title)
+		fmt.Fprintf(&b, "\n\n## Original issue (#%d): %s\n\n", task.Spec.Payload.Issue, wi.Title)
 	} else {
-		fmt.Fprintf(&b, "# Issue #%d: %s\n\n", iss.Number, iss.Title)
+		fmt.Fprintf(&b, "# Issue #%d: %s\n\n", task.Spec.Payload.Issue, wi.Title)
 	}
-	fmt.Fprintf(&b, "State: %s\n", iss.State)
-	if len(iss.Labels) > 0 {
-		fmt.Fprintf(&b, "Labels: %s\n", strings.Join(iss.Labels, ", "))
+	fmt.Fprintf(&b, "State: %s\n", wi.State)
+	if len(wi.Labels) > 0 {
+		fmt.Fprintf(&b, "Labels: %s\n", strings.Join(wi.Labels, ", "))
 	}
 	b.WriteString("\n")
-	b.WriteString(iss.Body)
+	b.WriteString(wi.Body)
 	task.Spec.Payload.Prompt = b.String()
 	log.Info("issue body fetched",
-		"issue", iss.Number, "state", iss.State, "bodyLen", len(iss.Body), "appended", appended)
+		"issue", task.Spec.Payload.Issue, "state", wi.State, "bodyLen", len(wi.Body), "appended", appended)
 }
 
 // progressConfigFromAgent maps the Agent CR's stuckLoopDetection field

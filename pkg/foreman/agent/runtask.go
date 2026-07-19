@@ -28,9 +28,12 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	foremanv1alpha1 "github.com/defilantech/llmkube/api/foreman/v1alpha1"
+	"github.com/defilantech/llmkube/pkg/foreman/agent/changepolicy"
+	"github.com/defilantech/llmkube/pkg/foreman/agent/codehost"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/githubissue"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/githubpr"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/repo"
+	"github.com/defilantech/llmkube/pkg/foreman/agent/worktracker"
 )
 
 // RunTask is the standalone single-task runner: it executes ONE
@@ -143,6 +146,14 @@ type RunTaskConfig struct {
 	// behavior.
 	IssueFetcher githubissue.Fetcher
 
+	// CodeHost, WorkItems, and ChangePolicy are the provider-neutral seams
+	// (#1158). When set they take precedence over the PREnsurer /
+	// IssueFetcher fallbacks in NativeAgentLoopExecutor; cmd/foreman-agent
+	// wires the GitHub-backed implementations.
+	CodeHost     codehost.CodeHost
+	WorkItems    worktracker.WorkItems
+	ChangePolicy changepolicy.ChangePolicy
+
 	// UpstreamURLForRepo overrides how the task's payload.repo slug
 	// resolves to the upstream project's git URL (mirrors
 	// NativeAgentLoopExecutor.UpstreamURLForRepo). nil falls back to the
@@ -223,6 +234,9 @@ func RunTask(ctx context.Context, cfg RunTaskConfig) (RunTaskResult, error) {
 		AuthFactory:                  cfg.AuthFactory,
 		IssueFetcher:                 cfg.IssueFetcher,
 		PREnsurer:                    cfg.PREnsurer,
+		CodeHost:                     cfg.CodeHost,
+		WorkItems:                    cfg.WorkItems,
+		ChangePolicy:                 cfg.ChangePolicy,
 		UpstreamURLForRepo:           cfg.UpstreamURLForRepo,
 	}
 
