@@ -556,3 +556,49 @@ func TestGPUTolerationKeyForSpec(t *testing.T) {
 		})
 	}
 }
+
+func TestDirectoryOrientedRuntime(t *testing.T) {
+	cases := map[string]bool{
+		RuntimeVLLM: true, RuntimeSGLANG: true,
+		"": false, "tgi": false, "generic": false, "personaplex": false,
+	}
+	for rt, want := range cases {
+		if got := directoryOrientedRuntime(rt); got != want {
+			t.Errorf("directoryOrientedRuntime(%q) = %v, want %v", rt, got, want)
+		}
+	}
+}
+
+func TestServedModelPath(t *testing.T) {
+	sf := func(format string) *inferencev1alpha1.Model {
+		return &inferencev1alpha1.Model{Spec: inferencev1alpha1.ModelSpec{Format: format}}
+	}
+	isvcRT := func(rt string) *inferencev1alpha1.InferenceService {
+		return &inferencev1alpha1.InferenceService{Spec: inferencev1alpha1.InferenceServiceSpec{Runtime: rt}}
+	}
+	dirSC := modelStorageConfig{modelPath: "/models/k/model.safetensors", stagedDir: "/models/k"}
+	fileSC := modelStorageConfig{modelPath: "/models/k/model.gguf"} // single-file: stagedDir empty
+
+	cases := []struct {
+		name     string
+		isvc     *inferencev1alpha1.InferenceService
+		model    *inferencev1alpha1.Model
+		sc       modelStorageConfig
+		expected string
+	}{
+		{"sglang + safetensors + multi-file -> directory", isvcRT(RuntimeSGLANG), sf("safetensors"), dirSC, "/models/k"},
+		{"vllm + safetensors + multi-file -> directory", isvcRT(RuntimeVLLM), sf("safetensors"), dirSC, "/models/k"},
+		{"vllm + pytorch + multi-file -> directory", isvcRT(RuntimeVLLM), sf("pytorch"), dirSC, "/models/k"},
+		{"sglang + gguf + multi-file -> primary file", isvcRT(RuntimeSGLANG), sf("gguf"), dirSC, "/models/k/model.safetensors"},
+		{"sglang + unset format + multi-file -> primary file", isvcRT(RuntimeSGLANG), sf(""), dirSC, "/models/k/model.safetensors"},
+		{"llamacpp + safetensors + multi-file -> primary file", isvcRT(""), sf("safetensors"), dirSC, "/models/k/model.safetensors"},
+		{"sglang + safetensors + single-file -> primary file", isvcRT(RuntimeSGLANG), sf("safetensors"), fileSC, "/models/k/model.gguf"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := servedModelPath(tc.isvc, tc.model, tc.sc); got != tc.expected {
+				t.Errorf("servedModelPath = %q, want %q", got, tc.expected)
+			}
+		})
+	}
+}
