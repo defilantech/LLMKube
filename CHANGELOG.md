@@ -5,6 +5,31 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.8](https://github.com/defilantech/LLMKube/compare/v0.9.7...v0.9.8) (2026-07-19)
+
+
+### Features
+
+* **controller:** add InferenceService hardware-labels info metric ([#1121](https://github.com/defilantech/LLMKube/issues/1121)) ([#1160](https://github.com/defilantech/LLMKube/issues/1160)) ([039adaa](https://github.com/defilantech/LLMKube/commit/039adaa926b76eb31bc36a512ea82e1ee70dd511))
+* **controller:** add llamacpp-router runtime for multi-model serving ([#1152](https://github.com/defilantech/LLMKube/issues/1152)) ([fae5983](https://github.com/defilantech/LLMKube/commit/fae5983242226dd70eb1345c221b1188072b6d27))
+* **controller:** explicit vllm serve entrypoint for image-agnostic vLLM ([#1164](https://github.com/defilantech/LLMKube/issues/1164)) ([#1165](https://github.com/defilantech/LLMKube/issues/1165)) ([3eeb580](https://github.com/defilantech/LLMKube/commit/3eeb580f31d6ac47c265b447638fdfbd2f92b0c3))
+* **controller:** pass staged model directory to vLLM/SGLang for multi-file models ([#1157](https://github.com/defilantech/LLMKube/issues/1157)) ([#1159](https://github.com/defilantech/LLMKube/issues/1159)) ([a24fa94](https://github.com/defilantech/LLMKube/commit/a24fa948038561d3e5b80ec0da84038844688c37))
+* **controller:** ROCm/HIP runtime tier for AMD nodes ([#701](https://github.com/defilantech/LLMKube/issues/701)) ([#1154](https://github.com/defilantech/LLMKube/issues/1154)) ([3704d47](https://github.com/defilantech/LLMKube/commit/3704d476fa650449598330ca4b91950bdc3c7ed0))
+* **finalize:** gate foreman-finalize on the Foreman verify verdict ([#1150](https://github.com/defilantech/LLMKube/issues/1150)) ([#1153](https://github.com/defilantech/LLMKube/issues/1153)) ([5c7b2cd](https://github.com/defilantech/LLMKube/commit/5c7b2cde7476c24dee0507d082e3751236385588))
+* **foreman:** in-executor envtest gate feedback loop ([#768](https://github.com/defilantech/LLMKube/issues/768)) ([#1135](https://github.com/defilantech/LLMKube/issues/1135)) ([074544a](https://github.com/defilantech/LLMKube/commit/074544a64ec35c9fe08ed8e5b003b22799947f19))
+* **foreman:** provider-neutral CodeHost/WorkItems/ChangePolicy seams ([#1158](https://github.com/defilantech/LLMKube/issues/1158)) ([#1161](https://github.com/defilantech/LLMKube/issues/1161)) ([d3a8ad6](https://github.com/defilantech/LLMKube/commit/d3a8ad65b36375ef7808d8c3f0f52b72282efdfd))
+* **observability:** per-InferenceService SLO declaration via Pyrra ([#415](https://github.com/defilantech/LLMKube/issues/415)) ([#1149](https://github.com/defilantech/LLMKube/issues/1149)) ([4ae022c](https://github.com/defilantech/LLMKube/commit/4ae022cc862ed0200ba4ea51727324a06fa51166))
+
+
+### Bug Fixes
+
+* bump boilerplate copyright year 2025 -&gt; 2026 ([#1162](https://github.com/defilantech/LLMKube/issues/1162)) ([#1163](https://github.com/defilantech/LLMKube/issues/1163)) ([30dfaf2](https://github.com/defilantech/LLMKube/commit/30dfaf22958b8cd2d9aa98a58af4a1bd0d24da09))
+
+
+### Documentation
+
+* document strict-taint model caches ([#1132](https://github.com/defilantech/LLMKube/issues/1132)) ([9250996](https://github.com/defilantech/LLMKube/commit/9250996c42f377dfd2915cfded6fbb219d3fe7ce))
+
 ## [0.9.7](https://github.com/defilantech/LLMKube/compare/v0.9.6...v0.9.7) (2026-07-16)
 
 
