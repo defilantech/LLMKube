@@ -43,11 +43,12 @@ const (
 //     one AgenticTask owner-ref'd to this Workload. The reconciler
 //     rewrites step-local DependsOn names to absolute task names. Used
 //     for full control over a hand-authored pipeline.
-//  2. Issue-batch shortcut (Issues non-empty + CoderAgentRef +
-//     VerifierAgentRef set): emit one code+verify pair per issue. The
-//     most common shape for v0.1. When ReviewerAgentRefs is also set
-//     (v0.2), each issue additionally fans out one parallel review
-//     task per listed reviewer Agent, depending on the verify task.
+//  2. Issue-batch shortcut (Issues non-empty + CoderAgentRef set): emit
+//     one code step per issue, plus a verify step when VerifierAgentRef
+//     is set. The most common shape for v0.1. When ReviewerAgentRefs is
+//     also set (v0.2), each issue additionally fans out one parallel
+//     review task per listed reviewer Agent, depending on the verify
+//     task (or directly on the code task when no verifier is set).
 //     When EscalationReviewerAgentRefs is also set, a second reviewer
 //     tier is emitted per issue only after a base reviewer returns
 //     NO-GO.
@@ -105,9 +106,13 @@ type WorkloadSpec struct {
 	// +optional
 	CoderAgentRef *corev1.LocalObjectReference `json:"coderAgentRef,omitempty"`
 
-	// VerifierAgentRef is required when Issues is set: names the same-
-	// namespace Agent the verify-<N> steps reference. Ignored in explicit
-	// Pipeline mode.
+	// VerifierAgentRef names the same-namespace Agent the verify-<N>
+	// steps reference. Optional in the issue-batch shortcut: when unset,
+	// no deterministic verify gate is emitted and each issue's pipeline
+	// is code -> review (reviews depend directly on the code step);
+	// verification then rests on the coder's own test run and the
+	// repository's CI on the opened PR. Ignored in explicit Pipeline
+	// mode.
 	// +optional
 	VerifierAgentRef *corev1.LocalObjectReference `json:"verifierAgentRef,omitempty"`
 

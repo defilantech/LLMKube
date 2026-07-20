@@ -240,7 +240,6 @@ func coderEscalationSteps(
 	w *foremanv1alpha1.Workload, children []foremanv1alpha1.AgenticTask,
 ) (steps []foremanv1alpha1.PipelineStep, escalated []int32, reason string) {
 	if w.Spec.EscalationCoderAgentRef == nil ||
-		w.Spec.VerifierAgentRef == nil ||
 		len(w.Spec.Issues) == 0 {
 		return nil, nil, ""
 	}
@@ -303,7 +302,14 @@ func coderEscalationSteps(
 					PromptPrefix: escalationHintPrompt(coderSummary(base)),
 				},
 			},
-			foremanv1alpha1.PipelineStep{
+		)
+		// Gateless Workloads (no VerifierAgentRef) skip the escalated
+		// verify step; the escalated reviews hang directly off the
+		// escalated code step, mirroring the base round's shape.
+		escReviewDep := escCodeStep
+		if w.Spec.VerifierAgentRef != nil {
+			escReviewDep = escVerifyStep
+			steps = append(steps, foremanv1alpha1.PipelineStep{
 				Name:      escVerifyStep,
 				Kind:      foremanv1alpha1.AgenticTaskKindVerify,
 				AgentRef:  *w.Spec.VerifierAgentRef,
@@ -313,8 +319,8 @@ func coderEscalationSteps(
 					Issue:  n,
 					Branch: branch,
 				},
-			},
-		)
+			})
+		}
 		// Reviewer fan-out on the escalated branch: without it the
 		// escalated coder can GO and gate-pass but nothing produces a
 		// verdict or (post-#956) the openPullRequest carrier, so the
@@ -327,7 +333,7 @@ func coderEscalationSteps(
 				Name:      fmt.Sprintf("review-%d-esc-%d", n, i),
 				Kind:      foremanv1alpha1.AgenticTaskKindReview,
 				AgentRef:  reviewerRef,
-				DependsOn: []string{escVerifyStep},
+				DependsOn: []string{escReviewDep},
 				Payload: foremanv1alpha1.AgenticTaskPayload{
 					Repo:            w.Spec.Repo,
 					Issue:           n,
