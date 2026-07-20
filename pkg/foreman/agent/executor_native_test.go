@@ -411,6 +411,78 @@ func TestNativeExecutor_HappyPathPushesBranch(t *testing.T) {
 	}
 }
 
+// truncatedTurnBody is a reasoning turn the token cap cut off: reasoning
+// present, empty content, no tool_calls, finish_reason=="length". Repeated
+// past MaxTruncationRetries it drives the loop to ErrAssistantTruncated.
+const truncatedTurnBody = `{
+  "id": "trunc",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "reasoning_content": "Designing the edit; I will change the handler to..."
+    },
+    "finish_reason": "length"
+  }]
+}`
+
+// TestNativeExecutor_TruncatedMapsToIncomplete proves the terminal-error
+// mapping: when the model's turns are truncated by the token cap until the
+// loop gives up with ErrAssistantTruncated, the executor records INCOMPLETE
+// (not an infrastructure ExecutorError) with the actionable truncation
+// message pointing the operator at maxOutputTokens / the served context.
+func TestNativeExecutor_TruncatedMapsToIncomplete(t *testing.T) {
+	gitOrSkip(t)
+	root := t.TempDir()
+	bare := initBareWithSeed(t, root)
+	// DefaultMaxTruncationRetries (3) continuations + the initial turn =
+	// 4 truncated turns before the loop surfaces ErrAssistantTruncated.
+	oaiSrv := scriptedOAI(t, []string{
+		truncatedTurnBody, truncatedTurnBody, truncatedTurnBody, truncatedTurnBody,
+	})
+
+	agent, task := taskAndAgent("truncated")
+	// Room for the initial turn + 3 continuations without tripping the
+	// final-turns force-submit convergence guard prematurely.
+	agent.Spec.MaxTurns = 10
+	c := fake.NewClientBuilder().
+		WithScheme(newScheme(t)).
+		WithObjects(agent, task).
+		Build()
+
+	reg := &fakeRegistry{results: map[string]*foremanagent.ToolResult{}}
+	e := &foremanagent.NativeAgentLoopExecutor{
+		Client:                   c,
+		WorkspaceRoot:            filepath.Join(root, "ws"),
+		GitRemoteURL:             bare,
+		UpstreamURLForRepo:       func(string) string { return bare },
+		InferenceBaseURLOverride: oaiSrv.URL + "/v1",
+		CommitAuthor:             repo.Identity{Name: "Foreman Bot", Email: "bot@foreman.test"},
+		CommitCommitter:          repo.Identity{Name: "Foreman Bot", Email: "bot@foreman.test"},
+		RegistryFactory: func(
+			_ context.Context, ws string, _ *foremanv1alpha1.Agent, _ bool,
+		) (foremanagent.ToolRegistry, error) {
+			reg.workspace = ws
+			return reg, nil
+		},
+		AuthFactory: fakeAuth(t),
+	}
+
+	res, err := e.Execute(context.Background(), task)
+	if err != nil {
+		t.Fatalf("Execute returned a hard error; truncation must map to INCOMPLETE: %v", err)
+	}
+	if res.Verdict != foremanv1alpha1.AgenticTaskVerdictIncomplete {
+		t.Fatalf("verdict: want INCOMPLETE got %s; result=%+v", res.Verdict, res)
+	}
+	if res.FailureReason != foremanv1alpha1.FailureModelMisunderstood {
+		t.Errorf("FailureReason: want %q got %q", foremanv1alpha1.FailureModelMisunderstood, res.FailureReason)
+	}
+	if !strings.Contains(res.Summary, "truncated by the token cap") {
+		t.Errorf("summary should describe the truncation; got %q", res.Summary)
+	}
+}
+
 // --- #915: no static remote -> clone+push the task's own repo -----------
 
 // TestNativeExecutor_MultiRepoClonesTaskRepoWhenNoStaticRemote proves the

@@ -167,6 +167,28 @@ type LoopConfig struct {
 	// addition to grep/bash), forcing a thrash-prone model to edit instead
 	// of re-reading. Set from the resolved ModelProfile. Default false.
 	RestrictReadsInForcingPhase bool
+
+	// MaxTokensPerTurn caps the tokens the server generates for a single
+	// turn's completion (the OAI max_tokens field). <= 0 omits max_tokens
+	// on the wire, deferring to the server's own default
+	// (max_model_len - prompt). Reasoning models engage heavy <think> only
+	// on decision turns, by which point the prompt has grown; without a cap
+	// a decision turn runs its reasoning effectively unbounded on a
+	// large-context serve, reading as a stalled task. The executor maps
+	// Agent.spec.maxOutputTokens here (or its default) so a truncated turn
+	// (finish_reason=="length") becomes a bounded, recoverable event rather
+	// than a multi-hour hang. See ErrAssistantTruncated and #650.
+	MaxTokensPerTurn int
+
+	// MaxTruncationRetries bounds the streak of turns truncated by the token
+	// cap (finish_reason=="length") before the loop gives up with
+	// ErrAssistantTruncated. A truncated turn is continued (not restarted):
+	// its partial reasoning is preserved for the immediate next turn so the
+	// model resumes and emits its tool call instead of re-thinking from
+	// scratch. Distinct from MaxReasoningOnlyRetries, which handles a
+	// finish_reason=="stop" model that circled without acting. Resets after
+	// any tool-calling turn. <= 0 falls back to DefaultMaxTruncationRetries.
+	MaxTruncationRetries int
 }
 
 // DefaultContextWindowTokens is the budget used when LoopConfig.ContextWindowTokens
@@ -195,6 +217,15 @@ const DefaultMaxReasoningOnlyRetries = 4
 // is enough for the model to chain a read -> edit -> verify sequence
 // without losing the just-observed file contents.
 const DefaultObservationWindowTurns = 3
+
+// DefaultMaxTruncationRetries is the budget used when
+// LoopConfig.MaxTruncationRetries is <= 0. A per-turn token cap that
+// truncates a reasoning model mid-<think> is recoverable: preserving the
+// partial reasoning and telling the model to stop deliberating usually
+// lands the tool call within a turn or two. Three continuation attempts
+// is enough to converge without letting a model that cannot finish inside
+// the cap spin indefinitely.
+const DefaultMaxTruncationRetries = 3
 
 const (
 	// ContextStrategyWindow applies observation masking bounded by
@@ -453,6 +484,18 @@ var ErrAssistantNoToolCalls = errors.New("loop: assistant turn had no tool_calls
 // model narrated prose" from "the model thought itself in circles."
 var ErrAssistantReasoningOnly = errors.New("loop: assistant turns carried only reasoning, no tool_calls")
 
+// ErrAssistantTruncated is returned when the model's turn hit the token
+// cap (finish_reason=="length") before it emitted a tool call, and the
+// loop exhausted MaxTruncationRetries continuing it. Distinct from
+// ErrAssistantReasoningOnly: a truncated turn was cut off mid-generation
+// by the per-turn budget (MaxTokensPerTurn or the server's max_model_len),
+// NOT a model that finished (finish_reason=="stop") having only reasoned.
+// Conflating the two misfiles a bounded, config-fixable truncation as the
+// #650 "reasoning-only circling" case, whose recovery strips the partial
+// reasoning and makes the model re-think from scratch — the exact opposite
+// of what a truncated turn needs.
+var ErrAssistantTruncated = errors.New("loop: assistant turn truncated (finish_reason=length) before a tool call")
+
 // ReasoningOnlyNudgeMessage is the continuation the loop appends after
 // a reasoning-only turn. Unlike NoToolCallNudgeMessage it does not
 // scold: the model was mid-thought, so the correction is "act on the
@@ -462,6 +505,21 @@ func ReasoningOnlyNudgeMessage() string {
 		"tool call. Continue from that reasoning and emit the tool call " +
 		"for your next action now. If your review or task is complete, " +
 		"call submit_result with your verdict."
+}
+
+// TruncationContinueMessage is the continuation the loop appends after a
+// turn the token cap truncated (finish_reason=="length"). The model was
+// cut off mid-generation, most likely deep in a <think> block before it
+// reached the tool call. Unlike ReasoningOnlyNudgeMessage this is a hard
+// "stop deliberating" directive: the partial reasoning is preserved on the
+// immediate next turn (see the preserveReasoning path in Run), so the
+// model must resume from where it was cut off and emit the tool call now
+// rather than restart. Exported so tests can assert on it.
+func TruncationContinueMessage() string {
+	return "Your previous turn hit the token limit before you finished. Do " +
+		"not restart your reasoning. Stop deliberating now and emit the tool " +
+		"call for your next concrete action. If your work is complete, call " +
+		"submit_result with your verdict."
 }
 
 // NoToolCallNudgeMessage is the corrective the loop appends as a user
@@ -477,6 +535,86 @@ func NoToolCallNudgeMessage() string {
 		"and verified, you MUST call submit_result now with your verdict " +
 		"(GO or NO_GO), a summary, and the commit message. Otherwise call " +
 		"the appropriate tool to continue. Respond with a tool call, not text."
+}
+
+// noProgressStreaks bundles the three bounded retry counters the loop uses to
+// recover a turn that made no forward progress (no tool call), plus the
+// one-shot preserve-reasoning flag the truncation path arms. Grouped so
+// recoverNoProgressTurn owns the streak bookkeeping and Run stays under the
+// gocyclo ceiling. Each streak is independent: a token-cap truncation and a
+// finish_reason=="stop" reasoning-only pause never share a budget.
+type noProgressStreaks struct {
+	// noToolCall counts consecutive prose-only replies (ErrAssistantNoToolCalls).
+	noToolCall int
+	// reasoningOnly counts consecutive reasoning-only pauses (#650).
+	reasoningOnly int
+	// truncation counts consecutive token-cap truncations (ErrAssistantTruncated).
+	truncation int
+	// preserveReasoningNext, when set, tells the NEXT turn's wire build to keep
+	// the reasoning_content on its most-recent assistant message (the
+	// just-truncated turn) so the model resumes its <think> instead of
+	// re-deriving it. Armed only on a truncation retry and cleared after the
+	// single continuation turn it applies to.
+	preserveReasoningNext bool
+}
+
+// resetOnProgress clears the three no-progress streaks after a successful
+// tool-calling turn. preserveReasoningNext is intentionally NOT reset here: it
+// is a one-shot consumed at the top of the next iteration regardless of
+// outcome, so a successful turn cannot strand it set.
+func (s *noProgressStreaks) resetOnProgress() {
+	s.noToolCall = 0
+	s.reasoningOnly = 0
+	s.truncation = 0
+}
+
+// recoverNoProgressTurn handles the three bounded no-progress recoveries a
+// turn error can trigger: a prose-only reply (ErrAssistantNoToolCalls), a
+// token-cap truncation (ErrAssistantTruncated), and a hybrid-thinking pause
+// (ErrAssistantReasoningOnly). Each appends a role-appropriate corrective and
+// retries within its own budget; the failing turn is already in the transcript
+// so the model sees its own output followed by the correction.
+//
+// handled is false when turnErr is none of these (the caller surfaces it).
+// When handled, cont=true means a corrective was appended within budget (the
+// loop should continue) and cont=false means the streak budget is spent (the
+// caller should return turnErr). The truncation path additionally arms
+// preserveReasoningNext so the continuation keeps the partial reasoning — the
+// #650 reasoning-only path deliberately does NOT, since a finish_reason=="stop"
+// pause is a completed turn whose reasoning re-entering the budget is the very
+// circling that path guards against.
+func (l *Loop) recoverNoProgressTurn(
+	res *LoopResult, cfg LoopConfig, turnErr error, s *noProgressStreaks,
+) (handled, cont bool) {
+	switch {
+	case errors.Is(turnErr, ErrAssistantNoToolCalls):
+		return true, appendCorrectiveIfBudget(
+			res, &s.noToolCall, cfg.MaxNoToolCallRetries, NoToolCallNudgeMessage())
+	case errors.Is(turnErr, ErrAssistantTruncated):
+		cont = appendCorrectiveIfBudget(
+			res, &s.truncation, cfg.MaxTruncationRetries, TruncationContinueMessage())
+		if cont {
+			s.preserveReasoningNext = true
+		}
+		return true, cont
+	case errors.Is(turnErr, ErrAssistantReasoningOnly):
+		return true, appendCorrectiveIfBudget(
+			res, &s.reasoningOnly, cfg.MaxReasoningOnlyRetries, ReasoningOnlyNudgeMessage())
+	}
+	return false, false
+}
+
+// appendCorrectiveIfBudget appends a user-role corrective and consumes one
+// unit of a bounded retry budget. Returns true when there was budget (streak
+// incremented, message appended -> the loop should continue) and false when
+// the budget is spent (nothing appended -> the loop should surface the error).
+func appendCorrectiveIfBudget(res *LoopResult, streak *int, maxRetries int, msg string) bool {
+	if *streak >= maxRetries {
+		return false
+	}
+	*streak++
+	res.Transcript = append(res.Transcript, oai.Message{Role: oai.RoleUser, Content: msg})
+	return true
 }
 
 // Loop runs the native agent loop against a single OAI endpoint. It is
@@ -520,6 +658,9 @@ func (l *Loop) Run(ctx context.Context, cfg LoopConfig) (*LoopResult, error) {
 	}
 	if cfg.MaxReasoningOnlyRetries <= 0 {
 		cfg.MaxReasoningOnlyRetries = DefaultMaxReasoningOnlyRetries
+	}
+	if cfg.MaxTruncationRetries <= 0 {
+		cfg.MaxTruncationRetries = DefaultMaxTruncationRetries
 	}
 	// Loop-wide wall-clock budget (#532). Distinct from the per-request
 	// header timeout baked into the OAI client: this bounds the whole
@@ -572,16 +713,14 @@ func (l *Loop) Run(ctx context.Context, cfg LoopConfig) (*LoopResult, error) {
 	const forceSubmitFinalTurns = 3
 	forceSubmitAnnounced := false
 
-	// noToolCallStreak counts consecutive turns that returned text without
-	// a tool call. It resets to zero after any successful tool-calling
-	// turn, so only sustained narration exhausts MaxNoToolCallRetries.
-	noToolCallStreak := 0
+	// streaks bundles the three bounded no-progress retry counters (prose
+	// narration, token-cap truncation, reasoning-only pause) plus the
+	// one-shot preserve-reasoning flag; recoverNoProgressTurn owns the
+	// bookkeeping. Each streak resets after any successful tool-calling turn,
+	// so only a sustained no-progress run exhausts its budget.
+	var streaks noProgressStreaks
 	// verifyRetries counts coder-gate fix attempts spent so far (#749).
 	verifyRetries := 0
-	// reasoningOnlyStreak is the sibling counter for reasoning-only
-	// turns (#650); separate so a thinking model's pauses don't consume
-	// the prose-narration budget and vice versa.
-	reasoningOnlyStreak := 0
 
 	for turn := 1; turn <= cfg.MaxTurns; turn++ {
 		res.Turns = turn
@@ -612,8 +751,12 @@ func (l *Loop) Run(ctx context.Context, cfg LoopConfig) (*LoopResult, error) {
 		// runOneTurn appends the assistant message + tool messages to
 		// res.Transcript. It returns errTerminalReached on submit_result.
 		// editSucceeded reports whether a write_file/str_replace landed this
-		// turn (gates the forcing phase below).
-		editSucceeded, turnErr := l.runOneTurn(ctx, cfg, activeSchemas, res)
+		// turn (gates the forcing phase below). The preserve-reasoning flag is
+		// consumed here (one-shot): it applies to exactly this turn's wire
+		// payload, so it is cleared immediately regardless of the outcome.
+		preserveReasoning := streaks.preserveReasoningNext
+		streaks.preserveReasoningNext = false
+		editSucceeded, turnErr := l.runOneTurn(ctx, cfg, activeSchemas, res, preserveReasoning)
 		if turnErr != nil {
 			if errors.Is(turnErr, errTerminalReached) {
 				// Coder gate feedback loop (#749): give the gate a chance to
@@ -633,45 +776,21 @@ func (l *Loop) Run(ctx context.Context, cfg LoopConfig) (*LoopResult, error) {
 				res.Terminal = LoopBudgetExhaustedEnvelope(turn)
 				return res, nil
 			}
-			// No-tool-call recovery: a prose-only reply makes no forward
-			// progress, but local models sometimes narrate their
-			// conclusion instead of calling submit_result. Append a
-			// forceful corrective and retry, bounded by
-			// MaxNoToolCallRetries, before surfacing the error. The
-			// failing assistant turn is already in the transcript, so the
-			// model sees its own prose followed by the correction.
-			if errors.Is(turnErr, ErrAssistantNoToolCalls) {
-				if noToolCallStreak < cfg.MaxNoToolCallRetries {
-					noToolCallStreak++
-					res.Transcript = append(res.Transcript, oai.Message{
-						Role:    oai.RoleUser,
-						Content: NoToolCallNudgeMessage(),
-					})
-					continue
-				}
-				return res, turnErr
-			}
-			// Reasoning-only recovery (#650): the model was mid-thought,
-			// not narrating. Continue it with a gentler nudge on its own
-			// roomier budget; the reasoning itself is already in the
-			// transcript for archaeology.
-			if errors.Is(turnErr, ErrAssistantReasoningOnly) {
-				if reasoningOnlyStreak < cfg.MaxReasoningOnlyRetries {
-					reasoningOnlyStreak++
-					res.Transcript = append(res.Transcript, oai.Message{
-						Role:    oai.RoleUser,
-						Content: ReasoningOnlyNudgeMessage(),
-					})
-					continue
-				}
-				return res, turnErr
+			// No-progress recovery: a prose-only reply, a token-cap
+			// truncation, or a reasoning-only pause each get a bounded
+			// corrective-and-retry within their own budget (see
+			// recoverNoProgressTurn). handled && cont means a corrective was
+			// appended with budget to spare -> continue; every other case
+			// (budget spent, or an error type this does not handle) falls
+			// through to surface turnErr.
+			if handled, cont := l.recoverNoProgressTurn(res, cfg, turnErr, &streaks); handled && cont {
+				continue
 			}
 			return res, turnErr
 		}
 
-		// A successful tool-calling turn clears both streaks.
-		noToolCallStreak = 0
-		reasoningOnlyStreak = 0
+		// A successful tool-calling turn clears every no-progress streak.
+		streaks.resetOnProgress()
 
 		// Consult the progress monitor. The most recent assistant
 		// message in the transcript has this turn's tool_calls.
@@ -761,7 +880,16 @@ func (l *Loop) Run(ctx context.Context, cfg LoopConfig) (*LoopResult, error) {
 // past reasoning never re-enters the context window or the token
 // budget (#650). Copies lazily: if no message carries reasoning, the
 // input slice is returned as-is.
-func stripReasoningForWire(msgs []oai.Message) []oai.Message {
+//
+// preserveTrailingReasoning is the one exception to the strip-everything
+// rule: when true, the reasoning_content on the single most-recent
+// assistant message is kept. This is the continuation of a token-cap
+// truncation (finish_reason=="length"): the model was cut off mid-<think>,
+// so preserving that one message's reasoning lets it resume instead of
+// re-thinking from scratch. The caller scopes this to exactly one turn, so
+// preserved reasoning re-enters the budget only for that continuation and
+// the #650 always-strip behavior holds everywhere else.
+func stripReasoningForWire(msgs []oai.Message, preserveTrailingReasoning bool) []oai.Message {
 	needsCopy := false
 	for i := range msgs {
 		if msgs[i].ReasoningContent != "" {
@@ -772,10 +900,26 @@ func stripReasoningForWire(msgs []oai.Message) []oai.Message {
 	if !needsCopy {
 		return msgs
 	}
+	// Index of the most-recent assistant message, or -1 if none. Only used
+	// when preserveTrailingReasoning is set.
+	keepIdx := -1
+	if preserveTrailingReasoning {
+		for i := len(msgs) - 1; i >= 0; i-- {
+			if msgs[i].Role == oai.RoleAssistant {
+				keepIdx = i
+				break
+			}
+		}
+	}
 	wire := make([]oai.Message, len(msgs))
 	copy(wire, msgs)
 	for i := range wire {
 		if wire[i].ReasoningContent == "" {
+			continue
+		}
+		if i == keepIdx {
+			// Preserve this one message's reasoning so the truncated turn's
+			// partial <think> survives into the continuation request.
 			continue
 		}
 		wire[i].ReasoningContent = ""
@@ -863,8 +1007,17 @@ func (l *Loop) applyTerminalGate(
 // the model invoked the terminal (submit_result) tool. editSucceeded
 // reports whether a write_file/str_replace landed this turn (used by the
 // EditFreeStreak forcing function in Run).
+// preserveTrailingReasoning, when true, keeps the reasoning_content on the
+// single most-recent assistant message in the wire payload. It is set for
+// exactly the one turn that continues a token-cap truncation
+// (finish_reason=="length"): the model was cut off mid-<think>, so it must
+// resume from that reasoning rather than restart. Every other assistant
+// message is still stripped, and the flag is reset by the caller after one
+// use, so the #650 behavior (strip all reasoning on a finish_reason=="stop"
+// reasoning-only turn) is untouched.
 func (l *Loop) runOneTurn(
 	ctx context.Context, cfg LoopConfig, schemas []oai.Tool, res *LoopResult,
+	preserveTrailingReasoning bool,
 ) (editSucceeded bool, err error) {
 	ctx, span := l.tracer.Start(ctx, "foreman.agent.turn",
 		trace.WithAttributes(attribute.Int("turn", res.Turns)))
@@ -874,9 +1027,14 @@ func (l *Loop) runOneTurn(
 	req := oai.ChatRequest{
 		Model: cfg.Model,
 		Messages: stripReasoningForWire(
-			selectWireTranscript(cfg, res.Transcript)),
+			selectWireTranscript(cfg, res.Transcript), preserveTrailingReasoning),
 		Tools:       schemas,
 		Temperature: cfg.Temperature,
+		// Per-turn generation cap (0 omits max_tokens, deferring to the
+		// server). Bounds a reasoning model's decision-turn <think> so an
+		// unbudgeted turn cannot run effectively unbounded on a
+		// large-context serve.
+		MaxTokens: cfg.MaxTokensPerTurn,
 	}
 	resp, err := l.client.Chat(ctx, req)
 	if err != nil {
@@ -890,6 +1048,7 @@ func (l *Loop) runOneTurn(
 	}
 
 	msg := resp.Choices[0].Message
+	finishReason := resp.Choices[0].FinishReason
 	// Some servers omit the role on the assistant reply; the OAI spec
 	// considers role required. Set it defensively so downstream
 	// transcript consumers do not see an empty role.
@@ -923,6 +1082,20 @@ func (l *Loop) runOneTurn(
 	res.Transcript = append(res.Transcript, msg)
 
 	if len(msg.ToolCalls) == 0 {
+		// A turn the token cap cut off mid-generation (finish_reason=="length")
+		// is a truncation, NOT a completed turn. Classify it first and
+		// distinctly: it carries reasoning_content and empty content exactly
+		// like a #650 reasoning-only turn, so without this check it would be
+		// misfiled as reasoning-only circling — whose recovery strips the
+		// partial reasoning and makes the model re-think from scratch, the
+		// opposite of what a truncated turn needs. The truncated assistant
+		// message stays in the transcript so the continuation can resume it.
+		if finishReason == "length" {
+			span.SetAttributes(attribute.Bool("truncated", true))
+			err := fmt.Errorf("turn %d: %w", res.Turns, ErrAssistantTruncated)
+			span.RecordError(err)
+			return false, err
+		}
 		// Distinguish a thinking model mid-reasoning (reasoning_content
 		// present, no prose) from a model narrating its conclusion as
 		// prose. The two get different correctives and budgets (#650).
