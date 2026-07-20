@@ -208,8 +208,7 @@ func reviewIterationSteps(
 	if maxIter <= 0 ||
 		len(w.Spec.ReviewerAgentRefs) == 0 ||
 		len(w.Spec.Issues) == 0 ||
-		w.Spec.CoderAgentRef == nil ||
-		w.Spec.VerifierAgentRef == nil {
+		w.Spec.CoderAgentRef == nil {
 		return nil, nil
 	}
 
@@ -257,19 +256,26 @@ func reviewIterationSteps(
 				})
 				issueIterated = true
 			}
-			if _, ok := existing[verifyName]; !ok {
-				steps = append(steps, foremanv1alpha1.PipelineStep{
-					Name:      verifyName,
-					Kind:      foremanv1alpha1.AgenticTaskKindVerify,
-					AgentRef:  *w.Spec.VerifierAgentRef,
-					DependsOn: []string{codeName},
-					Payload: foremanv1alpha1.AgenticTaskPayload{
-						Repo:   w.Spec.Repo,
-						Issue:  n,
-						Branch: branch,
-					},
-				})
-				issueIterated = true
+			// Gateless Workloads (no VerifierAgentRef) skip the verify
+			// step; the iteration's reviews hang directly off the fix
+			// commit, mirroring the base round's shape.
+			reviewDep := codeName
+			if w.Spec.VerifierAgentRef != nil {
+				reviewDep = verifyName
+				if _, ok := existing[verifyName]; !ok {
+					steps = append(steps, foremanv1alpha1.PipelineStep{
+						Name:      verifyName,
+						Kind:      foremanv1alpha1.AgenticTaskKindVerify,
+						AgentRef:  *w.Spec.VerifierAgentRef,
+						DependsOn: []string{codeName},
+						Payload: foremanv1alpha1.AgenticTaskPayload{
+							Repo:   w.Spec.Repo,
+							Issue:  n,
+							Branch: branch,
+						},
+					})
+					issueIterated = true
+				}
 			}
 			// Mirrors the base-round stamp (#937): an iterated-then-approved
 			// issue must still open its PR.
@@ -283,7 +289,7 @@ func reviewIterationSteps(
 					Name:      name,
 					Kind:      foremanv1alpha1.AgenticTaskKindReview,
 					AgentRef:  reviewerRef,
-					DependsOn: []string{verifyName},
+					DependsOn: []string{reviewDep},
 					Payload: foremanv1alpha1.AgenticTaskPayload{
 						Repo:            w.Spec.Repo,
 						Issue:           n,

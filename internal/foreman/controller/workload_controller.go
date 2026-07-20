@@ -298,10 +298,10 @@ func (r *WorkloadReconciler) chooseSteps(w *foremanv1alpha1.Workload) (steps []f
 	switch {
 	case len(w.Spec.Pipeline) > 0:
 		steps = append(steps, w.Spec.Pipeline...)
-	case len(w.Spec.Issues) > 0 && w.Spec.CoderAgentRef != nil && w.Spec.VerifierAgentRef != nil:
+	case len(w.Spec.Issues) > 0 && w.Spec.CoderAgentRef != nil:
 		steps = synthesizeIssueBatch(w)
 	case len(w.Spec.Issues) > 0:
-		modeErr = fmt.Errorf("issues set but coderAgentRef and verifierAgentRef are required for the issue-batch shortcut")
+		modeErr = fmt.Errorf("issues set but coderAgentRef is required for the issue-batch shortcut")
 	default:
 		modeErr = fmt.Errorf("workload has no Pipeline or Issues; the LLM-driven planner is deferred to v0.2")
 	}
@@ -317,14 +317,17 @@ func (r *WorkloadReconciler) chooseSteps(w *foremanv1alpha1.Workload) (steps []f
 // slice. Each issue N produces:
 //
 //   - step "code-<N>" (kind issue-fix, agentRef = CoderAgentRef)
-//   - step "verify-<N>" (kind verify, agentRef = VerifierAgentRef,
-//     dependsOn [code-<N>])
+//   - when VerifierAgentRef is set: step "verify-<N>" (kind verify,
+//     agentRef = VerifierAgentRef, dependsOn [code-<N>])
 //   - for each i in 0..len(ReviewerAgentRefs)-1:
 //     step "review-<N>-<i>" (kind review, agentRef = ReviewerAgentRefs[i],
-//     dependsOn [verify-<N>]). Parallel across i; the cascade-on-verdict
+//     dependsOn [verify-<N>], or [code-<N>] when no verifier is
+//     configured). Parallel across i; the cascade-on-verdict
 //     logic from #548 short-circuits these to Incomplete if verify-<N>
 //     lands GATE-FAIL or GATE-ERROR rather than running the reviewer
-//     loop against a branch the gate already rejected.
+//     loop against a branch the gate already rejected. Without a
+//     verifier there is no gate to reject the branch; the cascade
+//     still fails reviews when code-<N> itself fails.
 //
 // Payload.Branch is "foreman/<workload-name>/issue-<N>" in all stages
 // so each task clones the branch the coder produced (the cloneURL
@@ -337,11 +340,13 @@ func (r *WorkloadReconciler) chooseSteps(w *foremanv1alpha1.Workload) (steps []f
 // authored branch) survives even when an earlier run already produced
 // a branch on the same issue. See #573 for the motivating trace.
 func synthesizeIssueBatch(w *foremanv1alpha1.Workload) []foremanv1alpha1.PipelineStep {
-	tasksPerIssue := 2 + len(w.Spec.ReviewerAgentRefs)
+	tasksPerIssue := 1 + len(w.Spec.ReviewerAgentRefs)
+	if w.Spec.VerifierAgentRef != nil {
+		tasksPerIssue++
+	}
 	steps := make([]foremanv1alpha1.PipelineStep, 0, len(w.Spec.Issues)*tasksPerIssue)
 	for _, n := range w.Spec.Issues {
 		codeName := fmt.Sprintf("code-%d", n)
-		verifyName := fmt.Sprintf("verify-%d", n)
 		branch := fmt.Sprintf("foreman/%s/issue-%d", w.Name, n)
 		steps = append(steps,
 			foremanv1alpha1.PipelineStep{
@@ -355,7 +360,17 @@ func synthesizeIssueBatch(w *foremanv1alpha1.Workload) []foremanv1alpha1.Pipelin
 					AllowOverwrite: w.Spec.AllowOverwrite,
 				},
 			},
-			foremanv1alpha1.PipelineStep{
+		)
+		// Reviews hang off the verify gate when one is configured, and
+		// directly off the code step when the Workload opts out of the
+		// deterministic gate (VerifierAgentRef unset): the coder already
+		// self-verifies inside the issue-fix loop, and the repository's
+		// own CI checks the opened PR.
+		reviewDep := codeName
+		if w.Spec.VerifierAgentRef != nil {
+			verifyName := fmt.Sprintf("verify-%d", n)
+			reviewDep = verifyName
+			steps = append(steps, foremanv1alpha1.PipelineStep{
 				Name:      verifyName,
 				Kind:      foremanv1alpha1.AgenticTaskKindVerify,
 				AgentRef:  *w.Spec.VerifierAgentRef,
@@ -365,8 +380,8 @@ func synthesizeIssueBatch(w *foremanv1alpha1.Workload) []foremanv1alpha1.Pipelin
 					Issue:  n,
 					Branch: branch,
 				},
-			},
-		)
+			})
+		}
 		// nil defaults to true: an issue-batch Workload exists to produce
 		// a PR; spec.openPullRequest=false opts out (#937).
 		openPR := w.Spec.OpenPullRequest == nil || *w.Spec.OpenPullRequest
@@ -375,7 +390,7 @@ func synthesizeIssueBatch(w *foremanv1alpha1.Workload) []foremanv1alpha1.Pipelin
 				Name:      fmt.Sprintf("review-%d-%d", n, i),
 				Kind:      foremanv1alpha1.AgenticTaskKindReview,
 				AgentRef:  reviewerRef,
-				DependsOn: []string{verifyName},
+				DependsOn: []string{reviewDep},
 				Payload: foremanv1alpha1.AgenticTaskPayload{
 					Repo:            w.Spec.Repo,
 					Issue:           n,

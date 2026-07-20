@@ -771,9 +771,13 @@ spec:
                 type: object
               verifierAgentRef:
                 description: |-
-                  VerifierAgentRef is required when Issues is set: names the same-
-                  namespace Agent the verify-<N> steps reference. Ignored in explicit
-                  Pipeline mode.
+                  VerifierAgentRef names the same-namespace Agent the verify-<N>
+                  steps reference. Optional in the issue-batch shortcut: when unset,
+                  no deterministic verify gate is emitted and each issue's pipeline
+                  is code -> review (reviews depend directly on the code step);
+                  verification then rests on the coder's own test run and the
+                  repository's CI on the opened PR. Ignored in explicit Pipeline
+                  mode.
                 properties:
                   name:
                     default: ""
