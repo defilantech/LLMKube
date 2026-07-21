@@ -244,6 +244,95 @@ func TestProgressMonitor_EditResetsGroundingBonus(t *testing.T) {
 	}
 }
 
+// TestReadFileKey confirms readFileKey produces stable, distinct keys for
+// different path+range combinations and identical keys for repeated calls.
+func TestReadFileKey(t *testing.T) {
+	tests := []struct {
+		args string
+		want string
+	}{
+		{`{"path":"a.go"}`, "a.go:0:0"},
+		{`{"path":"a.go","offset":100,"limit":50}`, "a.go:100:50"},
+		{`{"path":"b.go"}`, "b.go:0:0"},
+		{`{"path":"a.go","limit":80}`, "a.go:0:80"},
+	}
+	for _, tc := range tests {
+		got := readFileKey(tc.args)
+		if got != tc.want {
+			t.Errorf("readFileKey(%q) = %q, want %q", tc.args, got, tc.want)
+		}
+	}
+}
+
+// TestProgressMonitor_RepeatedReadFileIsNoProgress pins #1116: a read_file
+// with the same path+range as the most recent read_file is treated as no
+// progress — it does not add to groundedFiles and does not extend the
+// edit-free budget. A model that re-reads the same file in the forcing phase
+// should not earn tolerance for it.
+func TestProgressMonitor_RepeatedReadFileIsNoProgress(t *testing.T) {
+	mon := NewLoopProgressMonitor(ProgressConfig{EditFreeTurnsLimit: 3})
+	tr := []oai.Message{}
+
+	// Turn 1: first read of a.go — counts as grounding.
+	d := mon.Observe(1, []oai.ToolCall{makeCall("t", "read_file", `{"path":"a.go"}`)}, tr)
+	if d.Action != ProgressContinue {
+		t.Fatalf("turn 1: want Continue, got %+v", d)
+	}
+
+	// Turn 2: repeated read of a.go (same path+range) — no progress.
+	d = mon.Observe(2, []oai.ToolCall{makeCall("t", "read_file", `{"path":"a.go"}`)}, tr)
+	if d.Action != ProgressContinue {
+		t.Fatalf("turn 2: want Continue, got %+v", d)
+	}
+
+	// Turn 3: repeated read again — no progress, streak = 3, nudge fires.
+	d = mon.Observe(3, []oai.ToolCall{makeCall("t", "read_file", `{"path":"a.go"}`)}, tr)
+	if d.Action != ProgressNudge || d.Signal != signalEditFreeStreak {
+		t.Fatalf("turn 3: want EditFreeStreak nudge, got %+v", d)
+	}
+
+	// Verify groundedFiles only has one entry (the first read), not three.
+	if len(mon.groundedFiles) != 1 {
+		t.Fatalf("groundedFiles: want 1 entry, got %d", len(mon.groundedFiles))
+	}
+}
+
+// TestProgressMonitor_DifferentRangeReadFileIsProgress confirms that a
+// read_file with a different range (offset/limit) is treated as a new read
+// and earns grounding tolerance, unlike an identical re-read.
+func TestProgressMonitor_DifferentRangeReadFileIsProgress(t *testing.T) {
+	mon := NewLoopProgressMonitor(ProgressConfig{EditFreeTurnsLimit: 3})
+	tr := []oai.Message{}
+
+	// Turn 1: read a.go from the start.
+	d := mon.Observe(1, []oai.ToolCall{makeCall("t", "read_file", `{"path":"a.go"}`)}, tr)
+	if d.Action != ProgressContinue {
+		t.Fatalf("turn 1: want Continue, got %+v", d)
+	}
+
+	// Turn 2: read a.go with a different range — counts as new grounding.
+	d = mon.Observe(2, []oai.ToolCall{makeCall("t", "read_file", `{"path":"a.go","offset":100,"limit":50}`)}, tr)
+	if d.Action != ProgressContinue {
+		t.Fatalf("turn 2: want Continue, got %+v", d)
+	}
+
+	// Turn 3: read a.go with yet another range — still new grounding.
+	d = mon.Observe(3, []oai.ToolCall{makeCall("t", "read_file", `{"path":"a.go","offset":200,"limit":50}`)}, tr)
+	if d.Action != ProgressContinue {
+		t.Fatalf("turn 3: want Continue, got %+v", d)
+	}
+
+	// groundedFiles should have 3 entries (distinct path+range keys).
+	if len(mon.groundedFiles) != 3 {
+		t.Fatalf("groundedFiles: want 3 entries, got %d", len(mon.groundedFiles))
+	}
+
+	// The effective limit should be base + 2 (3 distinct reads, bonus = 2).
+	if mon.editFreeLimit() != 5 {
+		t.Fatalf("editFreeLimit: want 5, got %d", mon.editFreeLimit())
+	}
+}
+
 // TestProgressMonitor_EditResetsStreak confirms a write_file (or
 // str_replace, or submit_result) call resets the edit-free counter.
 func TestProgressMonitor_EditResetsStreak(t *testing.T) {
