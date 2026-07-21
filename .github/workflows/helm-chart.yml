@@ -482,13 +482,17 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Sync Chart CRDs
-        run: make chart-crds
+      - name: Regenerate all codegen
+        run: make generate manifests chart-crds foreman-chart-crds
 
-      - name: Verify Chart CRDs Are In Sync
+      - name: Verify committed codegen is in sync
         run: |
-          git diff --exit-code -- charts/llmkube/templates/crds/ || \
-            { echo "Chart CRDs are out of sync with config/crd/bases/. Run 'make chart-crds' locally and commit the result."; exit 1; }
+          git diff --exit-code -- \
+            'api/**/zz_generated.deepcopy.go' \
+            config/crd/bases/ \
+            charts/llmkube/templates/crds/ \
+            charts/foreman/templates/crds/ || \
+            { echo "Committed codegen is stale. Run 'make generate manifests chart-crds foreman-chart-crds' locally and commit the result."; exit 1; }
 
   rbac-sync-check:
     name: RBAC Sync Check
