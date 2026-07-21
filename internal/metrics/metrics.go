@@ -170,10 +170,41 @@ var (
 		},
 		[]string{"router", "scope"},
 	)
+
+	// GPUQuota metrics (#416): per-quota GPU usage vs. cap, and admission
+	// denials. These enable the multi-tenancy dashboard and satisfy the
+	// "record the denial" requirement (a validating webhook, being
+	// sideEffects=None, cannot mutate the GPUQuota status counter).
+	GPUQuotaUsedGPUCount = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "llmkube_gpuquota_used_gpu_count",
+			Help: "GPUs currently used by InferenceServices in a GPUQuota's scope.",
+		},
+		[]string{"gpuquota", "namespace"},
+	)
+
+	GPUQuotaGPUCountLimit = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "llmkube_gpuquota_gpu_count_limit",
+			Help: "The GPU cap (spec.gpuCount) declared by a GPUQuota. 0 means no cap.",
+		},
+		[]string{"gpuquota", "namespace"},
+	)
+
+	GPUQuotaAdmissionDenialsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llmkube_gpuquota_admission_denials_total",
+			Help: "InferenceService admissions denied by a GPUQuota, by quota.",
+		},
+		[]string{"gpuquota", "namespace"},
+	)
 )
 
 func init() {
 	ctrlmetrics.Registry.MustRegister(
+		GPUQuotaUsedGPUCount,
+		GPUQuotaGPUCountLimit,
+		GPUQuotaAdmissionDenialsTotal,
 		ModelDownloadDuration,
 		ModelStatus,
 		InferenceServiceReadyDuration,

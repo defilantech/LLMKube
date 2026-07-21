@@ -20,6 +20,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -28,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
+	llmkubemetrics "github.com/defilantech/llmkube/internal/metrics"
 )
 
 func TestInferenceServiceQuotaValidator(t *testing.T) {
@@ -101,6 +103,34 @@ func TestInferenceServiceQuotaValidator(t *testing.T) {
 		}
 		if !strContains(err.Error(), "would exceed gpuCount") {
 			t.Fatalf("expected reason to mention gpuCount, got: %v", err)
+		}
+	})
+
+	t.Run("denial increments the metric (#416)", func(t *testing.T) {
+		// Unique quota name/namespace so the counter is not shared with the
+		// other subtests; assert the per-quota delta is exactly 1.
+		quota := inferencev1alpha1.GPUQuota{
+			ObjectMeta: metav1.ObjectMeta{Name: "metric-quota", Namespace: "quota-ns"},
+			Spec:       inferencev1alpha1.GPUQuotaSpec{NamespaceRef: "default", GPUCount: 1},
+		}
+		isvc := inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: "big-svc", Namespace: "default"},
+			Spec: inferencev1alpha1.InferenceServiceSpec{
+				Replicas:  ptrInt32Val(1),
+				Resources: &inferencev1alpha1.InferenceResourceRequirements{GPU: 4},
+			},
+		}
+		ns := corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "default"}}
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(&quota, &ns).Build()
+		v := &InferenceServiceQuotaValidator{Client: fakeClient}
+
+		before := testutil.ToFloat64(llmkubemetrics.GPUQuotaAdmissionDenialsTotal.WithLabelValues("metric-quota", "quota-ns"))
+		if _, err := v.ValidateCreate(ctx, &isvc); err == nil {
+			t.Fatal("expected denial (4 > 1), got nil")
+		}
+		after := testutil.ToFloat64(llmkubemetrics.GPUQuotaAdmissionDenialsTotal.WithLabelValues("metric-quota", "quota-ns"))
+		if after-before != 1 {
+			t.Errorf("admission denials counter delta = %v, want 1", after-before)
 		}
 	})
 
