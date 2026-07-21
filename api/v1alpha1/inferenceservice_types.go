@@ -560,6 +560,19 @@ type InferenceServiceSpec struct {
 	// Pyrra installed in the cluster (https://github.com/pyrra-dev/pyrra).
 	// +optional
 	SLO *SLOSpec `json:"slo,omitempty"`
+
+	// MaxPodLifetimeSeconds sets the maximum lifetime (in seconds) for
+	// inference pods. When set, the operator copies this value to
+	// PodSpec.ActiveDeadlineSeconds on the generated Deployment's pod
+	// template, causing Kubernetes to terminate the pod after the
+	// specified duration even if it remains healthy. This is useful for
+	// workloads that need periodic process recycling to release driver
+	// memory (e.g. llama.cpp on AMD Vulkan with pinned GTT memory).
+	// When omitted, pods run indefinitely until manually restarted or
+	// the Deployment is updated.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	MaxPodLifetimeSeconds *int64 `json:"maxPodLifetimeSeconds,omitempty"`
 }
 
 // RolloutPolicySpec defines how deployment updates should be gated on backend idleness.
