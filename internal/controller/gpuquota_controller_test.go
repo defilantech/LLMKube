@@ -20,6 +20,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -30,6 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
+	llmkubemetrics "github.com/defilantech/llmkube/internal/metrics"
 )
 
 func TestGPUQuotaCoversNamespace(t *testing.T) {
@@ -433,6 +435,14 @@ func TestReconcileNamespaceRef(t *testing.T) {
 	}
 	if updatedGQ.Status.UsedVRAMBytes != 0 {
 		t.Errorf("Reconcile() status.UsedVRAMBytes = %d, want 0", updatedGQ.Status.UsedVRAMBytes)
+	}
+
+	// #416: the reconcile also publishes per-quota usage and cap gauges.
+	if got := testutil.ToFloat64(llmkubemetrics.GPUQuotaUsedGPUCount.WithLabelValues("my-gq", "default")); got != 6 {
+		t.Errorf("GPUQuotaUsedGPUCount gauge = %v, want 6", got)
+	}
+	if got := testutil.ToFloat64(llmkubemetrics.GPUQuotaGPUCountLimit.WithLabelValues("my-gq", "default")); got != 10 {
+		t.Errorf("GPUQuotaGPUCountLimit gauge = %v, want 10", got)
 	}
 }
 

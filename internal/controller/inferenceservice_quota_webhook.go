@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
+	llmkubemetrics "github.com/defilantech/llmkube/internal/metrics"
 	"github.com/defilantech/llmkube/internal/webhook/quota"
 )
 
@@ -89,6 +90,10 @@ func (v *InferenceServiceQuotaValidator) validate(ctx context.Context, isvc *inf
 	for _, q := range quotas {
 		allow, reason := v.decide(ctx, q, isvc)
 		if !allow {
+			// Record the denial as a metric (#416): a sideEffects=None
+			// validating webhook cannot mutate the GPUQuota status counter,
+			// so the per-quota denial count is surfaced here instead.
+			llmkubemetrics.GPUQuotaAdmissionDenialsTotal.WithLabelValues(q.Name, q.Namespace).Inc()
 			return fmt.Errorf("GPUQuota %q denied: %s", q.Name, reason)
 		}
 	}

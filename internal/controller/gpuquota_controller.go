@@ -140,6 +140,11 @@ func (r *GPUQuotaReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, err
 	}
 
+	// Publish per-quota usage and cap gauges (#416) so the multi-tenancy
+	// dashboard can plot utilization = used / limit.
+	llmkubemetrics.GPUQuotaUsedGPUCount.WithLabelValues(gq.Name, gq.Namespace).Set(float64(usedGPUCount))
+	llmkubemetrics.GPUQuotaGPUCountLimit.WithLabelValues(gq.Name, gq.Namespace).Set(float64(gq.Spec.GPUCount))
+
 	return ctrl.Result{}, nil
 }
 
