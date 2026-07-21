@@ -81,10 +81,15 @@ jobs:
           # The chart self-signs its webhook serving cert (genSignedCert), so
           # cert-manager is not needed; skip its install to keep the job fast.
           CERT_MANAGER_INSTALL_SKIP: "true"
+          # Match the cluster name `make setup-test-e2e` creates. BeforeSuite's
+          # image-load reads KIND_CLUSTER (default "kind"); `make test-e2e`
+          # passes this through, but this job runs `go test` directly, so it
+          # must set the var itself or the load targets a nonexistent "kind".
+          KIND_CLUSTER: llmkube-test-e2e
         run: |
           go mod tidy
           make setup-test-e2e
-          go test -tags=e2e ./test/e2e/ -v -ginkgo.v \
+          KIND_CLUSTER=llmkube-test-e2e go test -tags=e2e ./test/e2e/ -v -ginkgo.v \
             -ginkgo.focus='GPUQuota Multi-tenancy'
 
       - name: Tear down the kind cluster
