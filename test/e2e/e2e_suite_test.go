@@ -43,6 +43,14 @@ var (
 	//   controller-manager deploy with --enable-pyrra-slo. Needs no image
 	//   build/load here (unlike LLMKUBE_E2E_ROUTER_CLUSTER): Pyrra's
 	//   kubernetes operator image is pulled directly from ghcr.io.
+	// - LLMKUBE_E2E_QUOTA=true: Runs the "GPUQuota Multi-tenancy" Context
+	//   (test/e2e/quota_e2e_test.go), which Helm-installs the chart with
+	//   multitenancy.enabled=true and exercises the InferenceService GPUQuota
+	//   validating webhook (over-quota rejection, in-quota admission, status
+	//   aggregation). Uses Helm rather than the shared make-deploy because the
+	//   webhook ships only via the chart; the chart self-signs its serving
+	//   cert, so no cert-manager is needed. Runs in its own focused CI job
+	//   (test-e2e.yml, test-e2e-quota).
 	// These variables are useful if CertManager is already installed, avoiding
 	// re-installation and conflicts.
 	skipCertManagerInstall = os.Getenv("CERT_MANAGER_INSTALL_SKIP") == "true"
