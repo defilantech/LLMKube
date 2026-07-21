@@ -151,6 +151,42 @@ func TestMessageMarshalJSON_AssistantOmitsContentWhenEmpty(t *testing.T) {
 	}
 }
 
+// TestChatRequestMarshalJSON_MaxTokens pins the per-turn generation cap
+// wire contract: max_tokens must appear in the marshaled body when set
+// (> 0) so the server bounds a reasoning model's decision-turn <think>,
+// and must be omitted when zero so the request defers to the server's own
+// default (max_model_len - prompt) rather than pinning it to 0 (which
+// would generate nothing).
+func TestChatRequestMarshalJSON_MaxTokens(t *testing.T) {
+	cases := []struct {
+		name       string
+		maxTokens  int
+		wantHasKey bool
+	}{
+		{name: "positive max_tokens is emitted", maxTokens: 8192, wantHasKey: true},
+		{name: "zero max_tokens is omitted", maxTokens: 0, wantHasKey: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := json.Marshal(ChatRequest{
+				Model:     "test",
+				Messages:  []Message{{Role: RoleUser, Content: "go"}},
+				MaxTokens: tc.maxTokens,
+			})
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			hasKey := strings.Contains(string(raw), `"max_tokens":`)
+			if hasKey != tc.wantHasKey {
+				t.Errorf("max_tokens present=%v want=%v in %s", hasKey, tc.wantHasKey, raw)
+			}
+			if tc.wantHasKey && !strings.Contains(string(raw), `"max_tokens":8192`) {
+				t.Errorf("expected max_tokens=8192 in %s", raw)
+			}
+		})
+	}
+}
+
 // TestMessageMarshalJSON_RoleAlwaysEmitted is a belt-and-suspenders
 // guard: regardless of which marshal branch a message goes through,
 // the role field must always be on the wire (it's the primary

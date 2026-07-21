@@ -627,6 +627,12 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 		// per-request meaning of RequestTimeoutSeconds; the per-request
 		// header timeout now lives on the OAI client above.
 		LoopBudget: durationFromSeconds(agent.Spec.RequestTimeoutSeconds, 3600),
+		// Per-turn generation cap. A reasoning model that does not budget
+		// its decision-turn <think> can run effectively unbounded on a
+		// large-context serve, reading as a stalled task; the cap turns that
+		// into a bounded, recoverable truncation (see ErrAssistantTruncated).
+		// Agent.spec.maxOutputTokens overrides; 0 uses the package default.
+		MaxTokensPerTurn: maxTokensPerTurnForAgent(agent),
 	}
 
 	// Coder gate feedback loop (#749): coders verify their work through a
@@ -1160,6 +1166,25 @@ func resolveAgainstDiff(f string, diff []string) string {
 // fast checks fail gets this many feedback-and-retry cycles before the loop
 // downgrades it to INCOMPLETE.
 const coderGateMaxRetries = 3
+
+// defaultMaxTokensPerTurn is the per-turn generation cap applied when an
+// Agent does not set spec.maxOutputTokens. 8192 tokens is enough headroom
+// for a reasoning model to finish a <think> block AND emit the tool call on
+// a decision turn, while staying well below a typical served context window
+// so a truncated turn recovers via a continuation rather than hanging the
+// task for hours generating unbounded reasoning.
+const defaultMaxTokensPerTurn = 8192
+
+// maxTokensPerTurnForAgent resolves the loop's per-turn generation cap from
+// the Agent CR: spec.maxOutputTokens when set (> 0), else the package
+// default. Kept as a helper so the resolution rule lives in one place and
+// the LoopConfig assembly in runLLMPath stays declarative.
+func maxTokensPerTurnForAgent(agent *foremanv1alpha1.Agent) int {
+	if agent.Spec.MaxOutputTokens > 0 {
+		return int(agent.Spec.MaxOutputTokens)
+	}
+	return defaultMaxTokensPerTurn
+}
 
 // makeCoderGateVerifier returns the TerminalVerifier that runs the fast
 // in-workspace gate on a coder's GO terminal. Non-GO terminals pass through
@@ -1957,6 +1982,16 @@ func (e *NativeAgentLoopExecutor) mapLoopError(
 		return e.incompleteResult(start, tref, lr,
 			foremanv1alpha1.FailureModelMisunderstood,
 			"model exhausted its reasoning-only budget without emitting a tool call"), nil
+	case errors.Is(loopErr, ErrAssistantTruncated):
+		// The per-turn token cap cut the model off before it emitted a tool
+		// call, and the loop's continuation retries were exhausted. Like the
+		// reasoning-only case this is a model/config outcome, not an
+		// infrastructure failure: record INCOMPLETE with an accurate,
+		// actionable message. The fix is a bigger budget, not a retry.
+		return e.incompleteResult(start, tref, lr,
+			foremanv1alpha1.FailureModelMisunderstood,
+			"model output was truncated by the token cap before it emitted a tool call; "+
+				"raise Agent.spec.maxOutputTokens or the served context window"), nil
 	case errors.Is(loopErr, context.Canceled), errors.Is(loopErr, context.DeadlineExceeded):
 		return e.incompleteResult(start, tref, lr,
 			foremanv1alpha1.FailureTimeout, loopErr.Error()), nil

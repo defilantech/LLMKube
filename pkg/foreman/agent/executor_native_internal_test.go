@@ -2614,3 +2614,29 @@ func TestMakeCoderGateVerifier_GenericGate_CleanPassesWithNoClaims(t *testing.T)
 		t.Errorf("expected empty feedback on accept, got: %q", feedback)
 	}
 }
+
+// TestMaxTokensPerTurnForAgent pins the per-turn generation-cap resolution:
+// an Agent that leaves spec.maxOutputTokens unset (0) gets the package
+// default; a set value flows through verbatim. This is the knob that bounds
+// a reasoning model's decision-turn <think> so a truncated turn recovers via
+// a continuation instead of hanging the task.
+func TestMaxTokensPerTurnForAgent(t *testing.T) {
+	cases := []struct {
+		name string
+		spec int32
+		want int
+	}{
+		{name: "unset uses the package default", spec: 0, want: defaultMaxTokensPerTurn},
+		{name: "set flows through as the CR value", spec: 2048, want: 2048},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			agent := &foremanv1alpha1.Agent{
+				Spec: foremanv1alpha1.AgentSpec{MaxOutputTokens: tc.spec},
+			}
+			if got := maxTokensPerTurnForAgent(agent); got != tc.want {
+				t.Errorf("maxTokensPerTurnForAgent=%d want %d", got, tc.want)
+			}
+		})
+	}
+}

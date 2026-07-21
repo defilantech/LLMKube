@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1020,13 +1021,174 @@ func TestLoop_ReasoningOnlyExhausted(t *testing.T) {
 	}
 }
 
+// assistantTruncated is a chat-completions body where a reasoning model
+// was cut off by the per-turn token cap: reasoning_content present, empty
+// content, no tool_calls, and finish_reason=="length". It is byte-identical
+// in shape to assistantReasoningOnly EXCEPT the finish_reason ("length" vs
+// "stop") — the single field that distinguishes a budget truncation from a
+// finish_reason=="stop" reasoning-only turn.
+const assistantTruncated = `{
+  "id": "t6",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "reasoning_content": "Let me design the edit. First I will change the function to..."
+    },
+    "finish_reason": "length"
+  }]
+}`
+
+// capturingScriptedServer behaves like scriptedOAIServer but also records
+// the full decoded ChatRequest for every call, so tests can assert on the
+// wire payload (retained reasoning_content, max_tokens, message ordering).
+func capturingScriptedServer(t *testing.T, bodies []string) (*httptest.Server, *[]oai.ChatRequest) {
+	t.Helper()
+	var calls atomic.Int64
+	var mu sync.Mutex
+	captured := make([]oai.ChatRequest, 0, len(bodies))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req oai.ChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("capturingScriptedServer: decode request: %v", err)
+		}
+		mu.Lock()
+		captured = append(captured, req)
+		mu.Unlock()
+		i := int(calls.Add(1) - 1)
+		if i >= len(bodies) {
+			t.Errorf("capturingScriptedServer: %d-th call exceeds script (%d)", i+1, len(bodies))
+			http.Error(w, "script exhausted", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(chatJSONToSSE(t, bodies[i])))
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &captured
+}
+
+// TestLoop_TruncatedTurn_ClassifiedAsTruncatedNotReasoningOnly pins the
+// core taxonomy fix: a turn cut off by the token cap (finish_reason=="length")
+// with only reasoning and no tool call must classify as ErrAssistantTruncated,
+// never as ErrAssistantReasoningOnly (the finish_reason=="stop" circling case).
+// Exhaust the truncation budget so the terminal sentinel surfaces.
+func TestLoop_TruncatedTurn_ClassifiedAsTruncatedNotReasoningOnly(t *testing.T) {
+	srv, calls := scriptedOAIServer(t, []string{assistantTruncated, assistantTruncated})
+	reg := &fakeRegistry{results: map[string]*ToolResult{}}
+	loop := newTestLoop(srv, reg)
+
+	_, err := loop.Run(context.Background(), LoopConfig{
+		Model: "test", SystemPrompt: "sys", UserPrompt: "go",
+		MaxTurns: 10, MaxTruncationRetries: 1, MaxTokensPerTurn: 256,
+	})
+	if !errors.Is(err, ErrAssistantTruncated) {
+		t.Fatalf("want ErrAssistantTruncated after budget exhaustion, got %v", err)
+	}
+	if errors.Is(err, ErrAssistantReasoningOnly) {
+		t.Fatalf("a length-truncated turn must NOT be misfiled as reasoning-only")
+	}
+	// One initial turn + one continuation retry (MaxTruncationRetries=1).
+	if calls.Load() != 2 {
+		t.Errorf("calls: want 2 got %d", calls.Load())
+	}
+}
+
+// TestLoop_TruncatedTurn_ContinuationRetainsReasoningAndRecovers proves the
+// preserve-reasoning-on-continuation mechanism end to end: after a truncated
+// turn the loop appends the continuation directive and re-requests WITHOUT
+// stripping the just-produced partial reasoning, so the model resumes and
+// emits its terminal tool call. It also asserts the per-turn max_tokens cap
+// rides on every request.
+func TestLoop_TruncatedTurn_ContinuationRetainsReasoningAndRecovers(t *testing.T) {
+	srv, captured := capturingScriptedServer(t, []string{assistantTruncated, toolCallSubmitGo})
+	reg := &fakeRegistry{results: map[string]*ToolResult{
+		"submit_result": {Terminal: true, Verdict: "GO"},
+	}}
+	loop := newTestLoop(srv, reg)
+
+	res, err := loop.Run(context.Background(), LoopConfig{
+		Model: "test", SystemPrompt: "sys", UserPrompt: "go",
+		MaxTurns: 5, MaxTokensPerTurn: 4096,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Terminal == nil || res.Terminal.Verdict != "GO" {
+		t.Fatalf("expected GO terminal after recovery, got %+v", res.Terminal)
+	}
+
+	reqs := *captured
+	if len(reqs) != 2 {
+		t.Fatalf("want 2 captured requests, got %d", len(reqs))
+	}
+	// Every turn carries the per-turn generation cap on the wire.
+	for i, rq := range reqs {
+		if rq.MaxTokens != 4096 {
+			t.Errorf("request %d: MaxTokens=%d, want 4096 (cfg.MaxTokensPerTurn)", i, rq.MaxTokens)
+		}
+	}
+	// The continuation request (2nd) must RETAIN the truncated turn's partial
+	// reasoning so the model resumes instead of re-thinking from scratch.
+	var sawRetainedReasoning bool
+	for _, m := range reqs[1].Messages {
+		if m.Role == oai.RoleAssistant && strings.Contains(m.ReasoningContent, "design the edit") {
+			sawRetainedReasoning = true
+		}
+	}
+	if !sawRetainedReasoning {
+		t.Errorf("continuation request must retain the truncated reasoning; got messages=%+v", reqs[1].Messages)
+	}
+	// The continuation directive (not the reasoning-only nudge) was appended.
+	var sawContinue bool
+	for _, m := range res.Transcript {
+		if m.Role == oai.RoleUser && m.Content == TruncationContinueMessage() {
+			sawContinue = true
+		}
+	}
+	if !sawContinue {
+		t.Errorf("transcript should contain the truncation continuation directive")
+	}
+}
+
+// TestLoop_TruncatedTurn_StreakResetsOnToolCall confirms a successful
+// tool-calling turn between truncations resets the streak, so intermittent
+// truncations never accumulate to a spurious ErrAssistantTruncated. The
+// script truncates, recovers with a read_file (resets the streak),
+// truncates again, then submits — four turns with a single-retry budget
+// that would fail if the streak did not reset.
+func TestLoop_TruncatedTurn_StreakResetsOnToolCall(t *testing.T) {
+	srv, calls := scriptedOAIServer(t, []string{
+		assistantTruncated, toolCallReadFile, assistantTruncated, toolCallSubmitGo,
+	})
+	reg := &fakeRegistry{results: map[string]*ToolResult{
+		"read_file":     {Output: map[string]any{"content": "x"}},
+		"submit_result": {Terminal: true, Verdict: "GO"},
+	}}
+	loop := newTestLoop(srv, reg)
+
+	res, err := loop.Run(context.Background(), LoopConfig{
+		Model: "test", SystemPrompt: "sys", UserPrompt: "go",
+		MaxTurns: 10, MaxTruncationRetries: 1, MaxTokensPerTurn: 512,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Terminal == nil || res.Terminal.Verdict != "GO" {
+		t.Fatalf("expected GO terminal, got %+v", res.Terminal)
+	}
+	if calls.Load() != 4 {
+		t.Errorf("calls: want 4 got %d", calls.Load())
+	}
+}
+
 func TestStripReasoningForWire(t *testing.T) {
 	transcript := []oai.Message{
 		{Role: oai.RoleSystem, Content: "sys"},
 		{Role: oai.RoleAssistant, ReasoningContent: "thinking", Content: "answer"},
 		{Role: oai.RoleUser, Content: "next"},
 	}
-	wire := stripReasoningForWire(transcript)
+	wire := stripReasoningForWire(transcript, false)
 	if wire[1].ReasoningContent != "" {
 		t.Errorf("wire copy must strip reasoning_content, got %q", wire[1].ReasoningContent)
 	}
@@ -1035,6 +1197,42 @@ func TestStripReasoningForWire(t *testing.T) {
 	}
 	if transcript[1].ReasoningContent != "thinking" {
 		t.Errorf("original transcript must be untouched, got %q", transcript[1].ReasoningContent)
+	}
+}
+
+// TestStripReasoningForWire_PreserveTrailing pins the one-shot preserve
+// mechanism: with preserveTrailingReasoning=true, ONLY the most-recent
+// assistant message keeps its reasoning_content (the just-truncated turn);
+// every earlier assistant message is still stripped. This is what lets a
+// token-cap continuation resume the model's <think> without re-admitting
+// all prior reasoning to the budget.
+func TestStripReasoningForWire_PreserveTrailing(t *testing.T) {
+	transcript := []oai.Message{
+		{Role: oai.RoleSystem, Content: "sys"},
+		{Role: oai.RoleAssistant, ReasoningContent: "old thought", Content: "prior"},
+		{Role: oai.RoleTool, Name: "read_file", Content: "{}"},
+		{Role: oai.RoleAssistant, ReasoningContent: "the truncated in-progress thought"},
+		{Role: oai.RoleUser, Content: TruncationContinueMessage()},
+	}
+	wire := stripReasoningForWire(transcript, true)
+
+	// The earlier assistant message is still stripped.
+	if wire[1].ReasoningContent != "" {
+		t.Errorf("earlier assistant reasoning must be stripped, got %q", wire[1].ReasoningContent)
+	}
+	// The most-recent assistant message keeps its reasoning.
+	if wire[3].ReasoningContent != "the truncated in-progress thought" {
+		t.Errorf("trailing assistant reasoning must be preserved, got %q", wire[3].ReasoningContent)
+	}
+	// A stripped reasoning-only assistant becomes non-empty (placeholder) so
+	// the wire stays valid (#935); the preserved one keeps its reasoning and
+	// needs no placeholder.
+	if strings.TrimSpace(wire[3].Content) != "" {
+		t.Errorf("preserved trailing message should not get a placeholder, got content=%q", wire[3].Content)
+	}
+	// Original transcript untouched.
+	if transcript[1].ReasoningContent != "old thought" {
+		t.Errorf("original transcript mutated: %q", transcript[1].ReasoningContent)
 	}
 }
 
@@ -1105,7 +1303,7 @@ func TestRunOneTurn_EmptyAssistantReply_SubstitutesPlaceholder(t *testing.T) {
 			{Role: oai.RoleUser, Content: "go"},
 		},
 	}
-	_, err := loop.runOneTurn(context.Background(), LoopConfig{Model: "test"}, sixToolSchemas(), res)
+	_, err := loop.runOneTurn(context.Background(), LoopConfig{Model: "test"}, sixToolSchemas(), res, false)
 	// The placeholder makes the message non-empty, so runOneTurn treats
 	// it as a no-tool-call turn and returns ErrAssistantNoToolCalls.
 	if !errors.Is(err, ErrAssistantNoToolCalls) {
@@ -1169,7 +1367,7 @@ func TestRunOneTurn_ToolCallTurnNotClobbered(t *testing.T) {
 			{Role: oai.RoleUser, Content: "go"},
 		},
 	}
-	_, err := loop.runOneTurn(context.Background(), LoopConfig{Model: "test"}, sixToolSchemas(), res)
+	_, err := loop.runOneTurn(context.Background(), LoopConfig{Model: "test"}, sixToolSchemas(), res, false)
 	// A tool-call turn is a normal, successful turn: no error expected.
 	if err != nil {
 		t.Fatalf("runOneTurn: expected nil error for a tool-call turn with empty content, got %v", err)
@@ -1214,7 +1412,7 @@ func TestLoop_StrippedReasoningDoesNotProduceEmptyAssistant(t *testing.T) {
 		{Role: oai.RoleAssistant, ReasoningContent: "thinking only, no action"},
 		{Role: oai.RoleUser, Content: ReasoningOnlyNudgeMessage()},
 	}
-	wire := stripReasoningForWire(transcript)
+	wire := stripReasoningForWire(transcript, false)
 	if wire[0].ReasoningContent != "" {
 		t.Errorf("reasoning must be stripped, got %q", wire[0].ReasoningContent)
 	}

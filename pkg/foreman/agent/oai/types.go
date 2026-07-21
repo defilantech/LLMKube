@@ -154,6 +154,16 @@ type ChatRequest struct {
 	Messages    []Message `json:"messages"`
 	Tools       []Tool    `json:"tools,omitempty"`
 	Temperature *float64  `json:"temperature,omitempty"`
+	// MaxTokens bounds the number of tokens the server generates for one
+	// completion (the OpenAI `max_tokens` field). Zero omits the field so
+	// the server falls back to its own default (max_model_len - prompt).
+	// The loop sets this per turn so a reasoning model cannot run its
+	// <think> block effectively unbounded on a large-context serve: an
+	// unbudgeted decision turn generates until it either finally acts or
+	// hits the context limit, which reads as a stalled task. Keep the
+	// caller's value well below (served context - prompt) so the server
+	// does not 400 on prompt + max_tokens > max_model_len.
+	MaxTokens int `json:"max_tokens,omitempty"`
 	// Stream is set by the client just before the wire send; callers
 	// do not need to populate it.
 	Stream bool `json:"stream"`

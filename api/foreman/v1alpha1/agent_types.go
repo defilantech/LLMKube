@@ -241,6 +241,22 @@ type AgentSpec struct {
 	// +optional
 	MaxRetries int32 `json:"maxRetries,omitempty"`
 
+	// MaxOutputTokens caps the tokens the model may generate per turn (the
+	// OAI max_tokens field). Reasoning models (qwen3-family served with
+	// --reasoning-parser) engage heavy <think> only on decision turns; a
+	// decision turn needs enough budget to finish reasoning AND emit the
+	// tool call. With no cap, generation budget defaults to the server's
+	// remaining context (max_model_len - prompt), so on a large-context
+	// serve a decision turn can reason effectively unbounded for hours
+	// before it acts or hits the context limit, which reads as a stalled
+	// task. Set this high enough to complete a <think> plus its tool call,
+	// but well below the served context so vLLM does not reject the request
+	// when prompt + maxOutputTokens exceeds max_model_len. Zero uses the
+	// executor default (8192 tokens).
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	MaxOutputTokens int32 `json:"maxOutputTokens,omitempty"`
+
 	// ContextWindowTokens is the soft token budget for the wire payload
 	// the loop sends on every turn. When the running message list
 	// approximately exceeds this size, older tool result messages are
