@@ -19,6 +19,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -639,6 +640,55 @@ func diffRunner(diffOutput string) commandRunner {
 			return diffOutput, nil
 		}
 		return "", nil
+	}
+}
+
+// TestInScopeCount pins the percentile floor (#1180): a file is in-scope
+// unless it falls in the bottom quartile of positively-scored files, but the
+// legacy scopeRelevantTopK stays a floor so the change is strictly more
+// permissive than the old top-50-only rule (it can only remove false
+// positives). ceil(0.75*n) wins only once it exceeds scopeRelevantTopK.
+func TestInScopeCount(t *testing.T) {
+	tests := []struct {
+		n    int
+		want int
+	}{
+		{0, 0},
+		{1, 1},
+		{10, 10},   // below the floor: all in scope, never drift for tiny repos
+		{50, 50},   // exactly the floor
+		{60, 50},   // ceil(0.75*60)=45 < 50 floor
+		{68, 51},   // ceil(0.75*68)=51 > 50 floor
+		{100, 75},  // ceil(0.75*100)=75
+		{245, 184}, // the #1116 repo: ceil(0.75*245)=184
+	}
+	for _, tc := range tests {
+		if got := inScopeCount(tc.n); got != tc.want {
+			t.Errorf("inScopeCount(%d) = %d, want %d", tc.n, got, tc.want)
+		}
+	}
+}
+
+// TestScopeRelevantView_BottomQuartileIsDrift pins #1180 end to end at the
+// pure core: a relevant-but-lower-ranked file (rank 91 of 245, the measured
+// #1116 progress.go position) must be in scope, while a bottom-quartile file
+// must not be. The display slice stays capped at scopeRelevantTopK.
+func TestScopeRelevantView_BottomQuartileIsDrift(t *testing.T) {
+	const n = 245
+	ranked := make([]string, n)
+	for i := range ranked {
+		ranked[i] = fmt.Sprintf("f%03d.go", i) // index i == rank i+1
+	}
+	paths, set := scopeRelevantView(ranked)
+
+	if !set["f090.go"] { // rank 91: top 37%, clearly relevant
+		t.Error("rank-91/245 file must be in scope (top 37%), not flagged as drift")
+	}
+	if set["f239.go"] { // rank 240: bottom quartile
+		t.Error("rank-240/245 file (bottom quartile) must be out of scope")
+	}
+	if len(paths) != scopeRelevantTopK {
+		t.Errorf("display list should be capped at %d, got %d", scopeRelevantTopK, len(paths))
 	}
 }
 

@@ -591,10 +591,13 @@ func truncateOutput(output string) string {
 	return "...(truncated)...\n" + output[len(output)-maxCheckOutputBytes:]
 }
 
-// scopeRelevantTopK bounds how many of the highest-scored files count as
-// "relevant" for the scope-overlap check. Generous on purpose: a larger set
-// means the check only fires on a clear drift (a change touching none of the
-// most-relevant files), keeping false positives low as #782 asks.
+// scopeRelevantTopK is both the display cap for the scope-overlap feedback
+// (how many of the highest-scored files are listed) and the floor of the
+// in-scope membership set (see inScopeCount). Generous on purpose: a larger
+// in-scope set means the check only fires on a clear drift, keeping false
+// positives low as #782 asks. The in-scope set widens to the top three
+// quartiles for large repos so a relevant-but-lower-ranked fix is not
+// falsely flagged (#1180).
 const scopeRelevantTopK = 50
 
 // maxRelevantShown caps how many relevant files the scope feedback lists.
@@ -611,14 +614,61 @@ var scopeRelevantFiles = func(workspace, issueText string) (paths []string, set 
 		return nil, nil
 	}
 	scored := repomap.ScoreFiles(files, issueText)
-	set = make(map[string]bool)
+	// Collect every positively-scored file in rank order. repomap ranks
+	// descending, so the first non-positive score ends the ranked set.
+	var ranked []string
 	for _, sf := range scored {
-		if sf.Score <= 0 || len(paths) >= scopeRelevantTopK {
+		if sf.Score <= 0 {
 			break
 		}
-		paths = append(paths, sf.Path)
-		set[sf.Path] = true
+		ranked = append(ranked, sf.Path)
 	}
+	return scopeRelevantView(ranked)
+}
+
+// inScopeCount returns how many of the n positively-scored files (ranked
+// descending by relevance) count as in-scope for the scope-overlap check:
+// the larger of scopeRelevantTopK and the top three quartiles (ceil(0.75*n)),
+// capped at n. Keeping scopeRelevantTopK as a floor makes the percentile
+// strictly more permissive than the old top-K-only rule, so it can only
+// remove false positives (#1180). A changed file is flagged as drift only
+// when it lands in the bottom quartile of relevance, not merely below an
+// arbitrary rank cliff over a dense score distribution (repomap routinely
+// scores every file positively, so "outside top-50" was not "unrelated").
+func inScopeCount(n int) int {
+	if n <= 0 {
+		return 0
+	}
+	c := scopeRelevantTopK
+	if q := (3*n + 3) / 4; q > c { // ceil(0.75*n)
+		c = q
+	}
+	if c > n {
+		c = n
+	}
+	return c
+}
+
+// scopeRelevantView splits a ranked list of positively-scored files into the
+// display list (the scopeRelevantTopK most relevant, shown in gate feedback)
+// and the in-scope membership set (the top inScopeCount, used for the drift
+// decision). Returns (nil, nil) for empty input so callers treat "no Go
+// signal" as observe-only. Injected via scopeRelevantFiles in tests.
+func scopeRelevantView(rankedPositive []string) (paths []string, set map[string]bool) {
+	n := len(rankedPositive)
+	if n == 0 {
+		return nil, nil
+	}
+	k := inScopeCount(n)
+	set = make(map[string]bool, k)
+	for i := 0; i < k; i++ {
+		set[rankedPositive[i]] = true
+	}
+	shown := scopeRelevantTopK
+	if shown > n {
+		shown = n
+	}
+	paths = append(paths, rankedPositive[:shown]...)
 	return paths, set
 }
 
