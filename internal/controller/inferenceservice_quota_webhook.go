@@ -56,9 +56,21 @@ var _ admission.Validator[*inferencev1alpha1.InferenceService] = &InferenceServi
 
 // SetupInferenceServiceQuotaWebhookWithManager registers the InferenceService
 // GPUQuota validating webhook.
+//
+// The custom path is REQUIRED and must match the +kubebuilder:webhook marker
+// above (and therefore config/webhook + the chart's ValidatingWebhookConfiguration).
+// Without it, the builder registers the handler at controller-runtime's default
+// path for InferenceService (/validate-inference-llmkube-dev-v1alpha1-inferenceservice),
+// while the generated webhook config points admission at
+// /validate-inference-llmkube-dev-v1alpha1-inferenceservice-quota. The API
+// server would then call a path the server does not serve and, with
+// failurePolicy=Fail, fail closed on EVERY InferenceService admission whenever
+// multitenancy is enabled. The distinct -quota suffix keeps this webhook from
+// colliding with any future default-path InferenceService webhook.
 func SetupInferenceServiceQuotaWebhookWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr, &inferencev1alpha1.InferenceService{}).
 		WithValidator(&InferenceServiceQuotaValidator{Client: mgr.GetClient()}).
+		WithValidatorCustomPath("/validate-inference-llmkube-dev-v1alpha1-inferenceservice-quota").
 		Complete()
 }
 
