@@ -1,0 +1,225 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {"type": "datasource", "uid": "grafana"},
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "Per-quota GPU utilization and admission denial tracking for LLMKube GPUQuota resources. Surfaces usedGPUCount/gpuCount ratios and denial rates by quota name and namespace.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0},
+      "id": 100,
+      "panels": [],
+      "title": "GPU utilization",
+      "type": "row"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "axisLabel": "GPUs",
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 0.7},
+              {"color": "red", "value": 0.9}
+            ]
+          },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 1},
+      "id": 1,
+      "options": {
+        "legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom"},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "expr": "llmkube_gpuquota_used_gpu_count / llmkube_gpuquota_gpu_count_limit",
+          "legendFormat": "{{gpuquota}} ({{namespace}})",
+          "refId": "A"
+        }
+      ],
+      "title": "GPU utilization per quota (usedGPUCount / gpuCount)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "axisLabel": "GPUs",
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 1},
+      "id": 2,
+      "options": {
+        "legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom"},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "expr": "llmkube_gpuquota_used_gpu_count",
+          "legendFormat": "{{gpuquota}} ({{namespace}})",
+          "refId": "A"
+        }
+      ],
+      "title": "Used GPUs per quota",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 9},
+      "id": 101,
+      "panels": [],
+      "title": "Admission denials",
+      "type": "row"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "axisLabel": "denials/s",
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "noValue": "0",
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 10},
+      "id": 3,
+      "options": {
+        "legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom"},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "expr": "rate(llmkube_gpuquota_admission_denials_total[5m])",
+          "legendFormat": "{{gpuquota}} ({{namespace}})",
+          "refId": "A"
+        }
+      ],
+      "title": "Admission denial rate (5m)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 10},
+              {"color": "red", "value": 50}
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 10},
+      "id": 4,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "expr": "llmkube_gpuquota_admission_denials_total",
+          "legendFormat": "{{gpuquota}} ({{namespace}})",
+          "refId": "A"
+        }
+      ],
+      "title": "Cumulative admission denials",
+      "type": "stat"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "style": "dark",
+  "tags": ["llmkube", "quota", "multi-tenancy"],
+  "templating": {
+    "list": [
+      {
+        "current": {"selected": false, "text": "Prometheus", "value": "prometheus"},
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource",
+        "multi": false,
+        "name": "DS_PROMETHEUS",
+        "options": [],
+        "query": "prometheus",
+        "queryValue": "",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      }
+    ]
+  },
+  "time": {"from": "now-30m", "to": "now"},
+  "timepicker": {},
+  "timezone": "",
+  "title": "LLMKube Quota",
+  "uid": "llmkube-quota",
+  "version": 1,
+  "weekStart": ""
+}
