@@ -71,10 +71,20 @@ func Connect(
 		sessions = append(sessions, s)
 
 		filtered := make([]toolDesc, 0, len(discovered))
-		for _, d := range discovered {
+		discoveredNames := make([]string, len(discovered))
+		for i, d := range discovered {
+			discoveredNames[i] = d.Name
 			if allowed(d.Name, server.AllowedTools) {
 				filtered = append(filtered, d)
 			}
+		}
+
+		// Surface stale/mistyped allowlist entries (#1183): an allowlist name
+		// that matches no discovered tool is dropped silently, so warn with the
+		// tools the server actually exposes.
+		if unmatched := unmatchedAllowlistEntries(server.AllowedTools, discoveredNames); len(unmatched) > 0 {
+			log.Info("mcp: allowlist names a tool the server does not expose; it is dropped (stale/mistyped?)",
+				"server", server.Name, "unmatched", unmatched, "available", discoveredNames)
 		}
 
 		aggregated = append(aggregated, newTools(s, server, filtered, opts, record)...)
