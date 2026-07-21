@@ -22,6 +22,7 @@ PrometheusRule and PodMonitor templates.
 |---|---|
 | `llmkube-inference.json` | Request latency, TTFT (vLLM only), GPU queue wait, container restart rate. Grouped by service, runtime, namespace. |
 | `llmkube-slo.json` | Error budget remaining and multi-window burn rate for InferenceServices with `spec.slo` set, plus an SLO overview table. Reads the recording rules Pyrra's kubernetes operator writes per SLO. Templated on a `$slo` variable (`label_values(slo)`) and a manual `$objective` percentage variable, since Pyrra does not expose the target itself as a Prometheus series. Assumes the default 28d SLO window; see the dashboard description for details. |
+| `amd-gpu-observability.json` | AMD GPU health, memory, and inference SLO signals for Strix (gfx1151) nodes. Consumes the verified metric contract from #1187: amdgpu-sysfs exporter, node-exporter hwmon, and llama.cpp /metrics. Panels cover GPU temperature, power, busy %, GTT/VRAM memory, GPU clock, tokens/sec, KV-cache occupancy, and in-flight requests. |
 
 ## Importing
 
