@@ -3696,7 +3696,7 @@ var _ = Describe("RuntimeBackend interface", func() {
 
 		It("should return correct defaults", func() {
 			Expect(backend.ContainerName()).To(Equal("vllm"))
-			Expect(backend.DefaultImage()).To(Equal("vllm/vllm-openai:v0.20.0"))
+			Expect(backend.DefaultImage()).To(Equal("vllm/vllm-openai:v0.25.1"))
 			Expect(backend.DefaultPort()).To(Equal(int32(8000)))
 			Expect(backend.NeedsModelInit()).To(BeTrue())
 			Expect(backend.DefaultHPAMetric()).To(Equal("vllm:num_requests_running"))
@@ -3871,7 +3871,7 @@ var _ = Describe("RuntimeBackend interface", func() {
 
 		It("should return correct defaults", func() {
 			Expect(backend.ContainerName()).To(Equal("tgi"))
-			Expect(backend.DefaultImage()).To(Equal("ghcr.io/huggingface/text-generation-inference:latest"))
+			Expect(backend.DefaultImage()).To(Equal("ghcr.io/huggingface/text-generation-inference:3.3.7"))
 			Expect(backend.DefaultPort()).To(Equal(int32(80)))
 			Expect(backend.NeedsModelInit()).To(BeFalse())
 			Expect(backend.DefaultHPAMetric()).To(Equal("tgi:queue_size"))

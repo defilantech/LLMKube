@@ -44,25 +44,73 @@ import (
 // it for vLLM where the v0.20+ env-var validator turns it into log noise.
 // resolveRuntimeImage returns the container image for the runtime, making the
 // otherwise vendor-blind backend.DefaultImage() vendor- and runtime-aware where
-// it matters. Today there are three divergences:
-//   - LlamaCppBackend with AMD + Vulkan Model → LLMKube's pinned Vulkan image
-//   - LlamaCppBackend with AMD + ROCm Model → LLMKube's pinned ROCm image
-//   - SGLangBackend with AMD (ROCm) Model → SGLang ROCm image
+// it matters. Resolution order:
 //
-// Every other backend/vendor/runtime combination falls through to
-// backend.DefaultImage(). An explicit InferenceService.spec.image still wins
-// over whatever this returns (handled by the caller).
-func resolveRuntimeImage(backend RuntimeBackend, model *inferencev1alpha1.Model) string {
+//  1. A fleet-level override for the backend (--runtime-images, chart value
+//     runtimeImages.{llamacpp,vllm,sglang,tgi}) wins over every built-in
+//     choice below: it exists for air-gapped/mirrored fleets, which must be
+//     able to redirect the registry unconditionally.
+//  2. Built-in vendor/runtime divergences:
+//     - LlamaCppBackend with AMD + Vulkan Model: LLMKube's pinned Vulkan image
+//     - LlamaCppBackend with AMD + ROCm Model: LLMKube's pinned ROCm image
+//     - LlamaCppBackend with an NVIDIA-GPU Model: upstream CUDA image, because
+//     the :server default is CPU-only and an NVIDIA GPU Model on it would
+//     silently serve on CPU (#1197)
+//     - SGLangBackend with AMD (ROCm) Model: SGLang ROCm image
+//  3. backend.DefaultImage().
+//
+// An explicit InferenceService.spec.image still wins over whatever this
+// returns (handled by the caller).
+func resolveRuntimeImage(backend RuntimeBackend, model *inferencev1alpha1.Model, overrides map[string]string) string {
+	if img := overrides[runtimeImageOverrideKey(backend)]; img != "" {
+		return img
+	}
 	if _, ok := backend.(*LlamaCppBackend); ok && isVulkanAMDModel(model) {
 		return llamaCppVulkanImage
 	}
 	if _, ok := backend.(*LlamaCppBackend); ok && isROCmAMDModel(model) {
 		return llamaCppROCmImage
 	}
+	if _, ok := backend.(*LlamaCppBackend); ok && isNVIDIAGPUModel(model) {
+		return llamaCppCUDAImage
+	}
 	if _, ok := backend.(*SGLangBackend); ok && isAMDROCmModel(model) {
 		return sglangROCmImage
 	}
 	return backend.DefaultImage()
+}
+
+// runtimeImageOverrideKey maps a backend to its --runtime-images key. Only
+// backends whose defaults the operator owns are overridable; every other
+// backend (generic requires spec.image by contract) returns "".
+func runtimeImageOverrideKey(backend RuntimeBackend) string {
+	switch backend.(type) {
+	case *LlamaCppBackend:
+		return "llamacpp"
+	case *VLLMBackend:
+		return "vllm"
+	case *SGLangBackend:
+		return "sglang"
+	case *TGIBackend:
+		return "tgi"
+	default:
+		return ""
+	}
+}
+
+// isNVIDIAGPUModel reports whether the Model declares a GPU that resolves to
+// the NVIDIA vendor, explicitly or by the unset-vendor default (mirroring
+// gpuResourceNameForSpec: unset vendor means NVIDIA).
+func isNVIDIAGPUModel(model *inferencev1alpha1.Model) bool {
+	if model == nil || model.Spec.Hardware == nil || model.Spec.Hardware.GPU == nil {
+		return false
+	}
+	gpu := model.Spec.Hardware.GPU
+	if !gpu.Enabled && gpu.Count <= 0 {
+		return false
+	}
+	vendor := strings.ToLower(strings.TrimSpace(gpu.Vendor))
+	return vendor == "" || vendor == "nvidia"
 }
 
 // isAMDROCmModel reports whether the Model requests the AMD vendor. ROCm vs
@@ -274,7 +322,7 @@ func (r *InferenceServiceReconciler) constructDeployment(
 		"inference.llmkube.dev/runtime": runtimeNameLabel(isvc),
 	}
 
-	image := resolveRuntimeImage(backend, model)
+	image := resolveRuntimeImage(backend, model, r.RuntimeImageOverrides)
 	if isvc.Spec.Image != "" {
 		image = isvc.Spec.Image
 	}
@@ -520,4 +568,30 @@ func buildContainerResources(isvc *inferencev1alpha1.InferenceService, model *in
 	}
 
 	return res
+}
+
+// ParseRuntimeImageOverrides parses the --runtime-images flag value
+// ("runtime=image[,runtime=image...]", keys llamacpp|vllm|sglang|tgi) into
+// the override map consumed by resolveRuntimeImage. Empty input means no
+// overrides. Exported for cmd/main.go.
+func ParseRuntimeImageOverrides(flagValue string) (map[string]string, error) {
+	flagValue = strings.TrimSpace(flagValue)
+	if flagValue == "" {
+		return nil, nil
+	}
+	valid := map[string]bool{"llamacpp": true, "vllm": true, "sglang": true, "tgi": true}
+	overrides := map[string]string{}
+	for _, pair := range strings.Split(flagValue, ",") {
+		key, img, found := strings.Cut(strings.TrimSpace(pair), "=")
+		key = strings.ToLower(strings.TrimSpace(key))
+		img = strings.TrimSpace(img)
+		if !found || key == "" || img == "" {
+			return nil, fmt.Errorf("invalid --runtime-images entry %q (expected runtime=image)", pair)
+		}
+		if !valid[key] {
+			return nil, fmt.Errorf("invalid --runtime-images runtime %q (valid: llamacpp, vllm, sglang, tgi)", key)
+		}
+		overrides[key] = img
+	}
+	return overrides, nil
 }

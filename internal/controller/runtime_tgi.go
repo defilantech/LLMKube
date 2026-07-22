@@ -15,8 +15,16 @@ import (
 type TGIBackend struct{}
 
 func (b *TGIBackend) ContainerName() string { return "tgi" }
+
+// DefaultImage pins TGI's FINAL release: upstream archived the repository on
+// 2026-03-21 (maintenance mode; the project itself recommends vLLM/SGLang
+// going forward), so 3.3.7 (2025-12-19) is the last tag there will ever be
+// and :latest must not float. TGI states no Blackwell (sm_100) support in any
+// release notes; do not use it as a B200 default. Verified 2026-07-21 via the
+// GitHub API (archived: true) and a GHCR manifest check (3.3.7 exists; not
+// every older patch tag does).
 func (b *TGIBackend) DefaultImage() string {
-	return "ghcr.io/huggingface/text-generation-inference:latest"
+	return "ghcr.io/huggingface/text-generation-inference:3.3.7"
 }
 func (b *TGIBackend) DefaultPort() int32       { return 80 }
 func (b *TGIBackend) NeedsModelInit() bool     { return false }

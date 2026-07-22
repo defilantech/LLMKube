@@ -33,8 +33,16 @@ const (
 
 type VLLMBackend struct{}
 
-func (b *VLLMBackend) ContainerName() string    { return "vllm" }
-func (b *VLLMBackend) DefaultImage() string     { return "vllm/vllm-openai:v0.20.0" }
+func (b *VLLMBackend) ContainerName() string { return "vllm" }
+
+// DefaultImage pins the newest stable vLLM release (verified 2026-07-21 via
+// github.com/vllm-project/vllm/releases and the Docker Hub tag list).
+// Blackwell (sm_100/B200) has been first-class since before v0.20.0 (FA4
+// default on SM100, MXFP4 CUTLASS MoE; see the v0.20.0 release notes), so any
+// tag at or above that floor is B200-safe; v0.25.1 is simply current. The
+// default build ships CUDA 13 userspace; fleets on the 570 driver branch can
+// pin the v0.25.1-cu129 variant via runtimeImages.vllm or spec.image.
+func (b *VLLMBackend) DefaultImage() string     { return "vllm/vllm-openai:v0.25.1" }
 func (b *VLLMBackend) DefaultPort() int32       { return 8000 }
 func (b *VLLMBackend) NeedsModelInit() bool     { return true }
 func (b *VLLMBackend) DefaultHPAMetric() string { return "vllm:num_requests_running" }
