@@ -339,6 +339,34 @@ func (r *WorkloadReconciler) chooseSteps(w *foremanv1alpha1.Workload) (steps []f
 // fast-forward conflicts, and the empirical artifact (the foreman-
 // authored branch) survives even when an earlier run already produced
 // a branch on the same issue. See #573 for the motivating trace.
+// intentPromptPrefix renders Workload.spec.intent as the operator-scope
+// block prepended to every coder prompt (via AgenticTaskPayload.PromptPrefix,
+// which the executor prints BEFORE the fetched issue body). Before this,
+// intent was a required-but-write-only field: the coder only ever saw the
+// issue body, so operator scoping ("change only these files", "X is out of
+// scope") was silently discarded (#1201).
+func intentPromptPrefix(w *foremanv1alpha1.Workload) string {
+	intent := strings.TrimSpace(w.Spec.Intent)
+	if intent == "" {
+		return ""
+	}
+	return "Operator intent for this run (this scopes the work; where it is " +
+		"narrower than the issue's proposed solution, the intent wins):\n" + intent
+}
+
+// joinPromptSections joins non-empty prompt sections with a blank line, so
+// callers composing PromptPrefix from multiple sources (operator intent,
+// escalation hint) never emit stray separators.
+func joinPromptSections(sections ...string) string {
+	parts := make([]string, 0, len(sections))
+	for _, s := range sections {
+		if s = strings.TrimSpace(s); s != "" {
+			parts = append(parts, s)
+		}
+	}
+	return strings.Join(parts, "\n\n")
+}
+
 func synthesizeIssueBatch(w *foremanv1alpha1.Workload) []foremanv1alpha1.PipelineStep {
 	tasksPerIssue := 1 + len(w.Spec.ReviewerAgentRefs)
 	if w.Spec.VerifierAgentRef != nil {
@@ -358,6 +386,7 @@ func synthesizeIssueBatch(w *foremanv1alpha1.Workload) []foremanv1alpha1.Pipelin
 					Issue:          n,
 					Branch:         branch,
 					AllowOverwrite: w.Spec.AllowOverwrite,
+					PromptPrefix:   intentPromptPrefix(w),
 				},
 			},
 		)

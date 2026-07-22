@@ -299,7 +299,7 @@ func coderEscalationSteps(
 					Repo:         w.Spec.Repo,
 					Issue:        n,
 					Branch:       branch,
-					PromptPrefix: escalationHintPrompt(coderSummary(base)),
+					PromptPrefix: joinPromptSections(intentPromptPrefix(w), escalationHintPrompt(coderSummary(base))),
 				},
 			},
 		)
