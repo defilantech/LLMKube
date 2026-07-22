@@ -36,7 +36,7 @@ var (
 	ModelStatus = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "llmkube_model_status",
-			Help: "Current status of models. Value encodes phase: 0=Unknown, 1=Downloading, 2=Copying, 3=Ready, 4=Cached, 5=Failed.",
+			Help: "Current phase of models. Value is always 1; use the phase label for filtering.",
 		},
 		[]string{"model", "namespace", "phase"},
 	)
@@ -66,6 +66,14 @@ var (
 			Help: "Information about inference services. Value is always 1; use accelerator and runtime labels for grouping.",
 		},
 		[]string{"inferenceservice", "namespace", "accelerator", "runtime"},
+	)
+
+	InferenceServiceReplicas = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "llmkube_inferenceservice_replicas",
+			Help: "InferenceService replica counts. Use the state label: ready, desired.",
+		},
+		[]string{"inferenceservice", "namespace", "state"},
 	)
 
 	GPUQueueDepth = prometheus.NewGauge(
@@ -216,28 +224,92 @@ var (
 	)
 )
 
+// AllCollectors is every metric this operator registers. init() registers
+// these and the tests range over the same slice, so a metric cannot be added
+// to one list and silently missed in the other.
+var AllCollectors = []prometheus.Collector{
+	GPUQuotaUsedGPUCount,
+	GPUQuotaGPUCountLimit,
+	GPUQuotaAdmissionDenialsTotal,
+	GPUQuotaUsedVRAMBytes,
+	GPUQuotaVRAMBytesLimit,
+	ModelDownloadDuration,
+	ModelStatus,
+	InferenceServiceReadyDuration,
+	InferenceServicePhase,
+	InferenceServiceInfo,
+	InferenceServiceReplicas,
+	GPUQueueDepth,
+	GPUQueueWaitDuration,
+	ReconcileTotal,
+	ReconcileDuration,
+	RouterRequestsTotal,
+	RouterRequestDuration,
+	RouterFailClosedTotal,
+	RouterActiveBackends,
+	RouterBackendHealth,
+	RouterFirstTokenSeconds,
+	RouterBudgetUtilization,
+}
+
 func init() {
-	ctrlmetrics.Registry.MustRegister(
-		GPUQuotaUsedGPUCount,
-		GPUQuotaGPUCountLimit,
-		GPUQuotaAdmissionDenialsTotal,
-		GPUQuotaUsedVRAMBytes,
-		GPUQuotaVRAMBytesLimit,
-		ModelDownloadDuration,
-		ModelStatus,
-		InferenceServiceReadyDuration,
-		InferenceServicePhase,
-		InferenceServiceInfo,
-		GPUQueueDepth,
-		GPUQueueWaitDuration,
-		ReconcileTotal,
-		ReconcileDuration,
-		RouterRequestsTotal,
-		RouterRequestDuration,
-		RouterFailClosedTotal,
-		RouterActiveBackends,
-		RouterBackendHealth,
-		RouterFirstTokenSeconds,
-		RouterBudgetUtilization,
-	)
+	ctrlmetrics.Registry.MustRegister(AllCollectors...)
+}
+
+// PublishModelPhase makes phase the only llmkube_model_status series for a
+// Model. The delete is unconditional so a failed status write cannot strand the
+// series it already published. No-ops on an empty phase, so callers can defer it.
+// Delete-then-set is not atomic: a scrape landing between the two ops sees no
+// series for this Model. Accepted — the window is sub-microsecond.
+func PublishModelPhase(name, namespace, phase string) {
+	if phase == "" {
+		return
+	}
+	DeleteModelSeries(name, namespace)
+	ModelStatus.WithLabelValues(name, namespace, phase).Set(1)
+}
+
+// DeleteModelSeries drops every series held for one Model. The phase label is
+// open-ended, so the exact series cannot be named.
+func DeleteModelSeries(name, namespace string) {
+	ModelStatus.DeletePartialMatch(modelLabels(name, namespace))
+}
+
+// PublishInferenceServicePhase makes phase the only phase series for one
+// InferenceService. Same self-healing argument as PublishModelPhase.
+func PublishInferenceServicePhase(name, namespace, phase string) {
+	InferenceServicePhase.DeletePartialMatch(inferenceServiceLabels(name, namespace))
+	InferenceServicePhase.WithLabelValues(name, namespace, phase).Set(1)
+}
+
+// PublishInferenceServiceInfo makes accelerator/runtime the only info series for
+// one InferenceService, so changing either in place does not leave both.
+func PublishInferenceServiceInfo(name, namespace, accelerator, runtime string) {
+	InferenceServiceInfo.DeletePartialMatch(inferenceServiceLabels(name, namespace))
+	InferenceServiceInfo.WithLabelValues(name, namespace, accelerator, runtime).Set(1)
+}
+
+// PublishInferenceServiceReplicas keeps the state label vocabulary next to the
+// declaration that documents it.
+func PublishInferenceServiceReplicas(name, namespace string, ready, desired int32) {
+	InferenceServiceReplicas.WithLabelValues(name, namespace, "ready").Set(float64(ready))
+	InferenceServiceReplicas.WithLabelValues(name, namespace, "desired").Set(float64(desired))
+}
+
+// DeleteInferenceServiceSeries drops the state gauges held for one
+// InferenceService. Cumulative metrics are deliberately kept: resetting
+// InferenceServiceReadyDuration would break rate() across a recreate.
+func DeleteInferenceServiceSeries(name, namespace string) {
+	labels := inferenceServiceLabels(name, namespace)
+	InferenceServicePhase.DeletePartialMatch(labels)
+	InferenceServiceInfo.DeletePartialMatch(labels)
+	InferenceServiceReplicas.DeletePartialMatch(labels)
+}
+
+func modelLabels(name, namespace string) prometheus.Labels {
+	return prometheus.Labels{"model": name, "namespace": namespace}
+}
+
+func inferenceServiceLabels(name, namespace string) prometheus.Labels {
+	return prometheus.Labels{"inferenceservice": name, "namespace": namespace}
 }
