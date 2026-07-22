@@ -5,6 +5,41 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.9](https://github.com/defilantech/LLMKube/compare/v0.9.8...v0.9.9) (2026-07-22)
+
+
+### Features
+
+* **api:** vendor-neutral gpuSharing tiers on InferenceService ([#1196](https://github.com/defilantech/LLMKube/issues/1196) stories 1+2) ([#1199](https://github.com/defilantech/LLMKube/issues/1199)) ([6cbd1fd](https://github.com/defilantech/LLMKube/commit/6cbd1fd7a8fd446783d0ed37f9b1955e5fbd8290))
+* **chart:** gpuSharing pool + VRAM values wired to operator flags ([#1196](https://github.com/defilantech/LLMKube/issues/1196) story 3) ([#1205](https://github.com/defilantech/LLMKube/issues/1205)) ([95eed30](https://github.com/defilantech/LLMKube/commit/95eed30e9ab67150779ff6b1523249a94b804f17))
+* **controller:** bound InferenceService pod lifetime via maxPodLifetimeSeconds ([#1182](https://github.com/defilantech/LLMKube/issues/1182)) ([3b39ee9](https://github.com/defilantech/LLMKube/commit/3b39ee9d59c5745315aedbaecc7c0804127e5118))
+* **foreman:** make the verify gate optional in the issue-batch decomposition ([#1166](https://github.com/defilantech/LLMKube/issues/1166)) ([e4e49aa](https://github.com/defilantech/LLMKube/commit/e4e49aa34e8809947679cd6bfe9b08964637aa20))
+* **metrics:** emit GPUQuota usage + admission-denial metrics ([#416](https://github.com/defilantech/LLMKube/issues/416)) ([#1193](https://github.com/defilantech/LLMKube/issues/1193)) ([dad2687](https://github.com/defilantech/LLMKube/commit/dad2687ec4b4f0c86407fe58993d8ff5e4374c04))
+* **quota:** VRAM-based GPUQuota accounting from the gpuSharing tier ([#1196](https://github.com/defilantech/LLMKube/issues/1196) story 4) ([#1200](https://github.com/defilantech/LLMKube/issues/1200)) ([2c9000c](https://github.com/defilantech/LLMKube/commit/2c9000cf6e1a55ad4b1e98dde4fb11ba5840f84f))
+* **runtime:** Blackwell-ready image pins, NVIDIA llama.cpp divert, runtimeImages overrides, platform floors ([#1197](https://github.com/defilantech/LLMKube/issues/1197)) ([#1204](https://github.com/defilantech/LLMKube/issues/1204)) ([9d40b36](https://github.com/defilantech/LLMKube/commit/9d40b369dd093f8135165e0292ca0c97ab6f16a2))
+* **webhook:** admission-time gpuSharing validation ([#1196](https://github.com/defilantech/LLMKube/issues/1196) story 5) ([#1206](https://github.com/defilantech/LLMKube/issues/1206)) ([a9de8f7](https://github.com/defilantech/LLMKube/commit/a9de8f7a9d0d57d7588ae96a830275cbe431e482))
+
+
+### Bug Fixes
+
+* **agent:** inject current date into issue-fix prompt and anchor research queries ([#1202](https://github.com/defilantech/LLMKube/issues/1202)) ([#1207](https://github.com/defilantech/LLMKube/issues/1207)) ([5067095](https://github.com/defilantech/LLMKube/commit/506709596bd2d50c72c3948a33b054cd4de9398e))
+* **chart:** nil-safe gpuSharing navigation in deployment args ([#1209](https://github.com/defilantech/LLMKube/issues/1209)) ([bbbcdcf](https://github.com/defilantech/LLMKube/commit/bbbcdcfc43dc859d59f25e4d389a052becf44349))
+* **codegen:** regenerate stale committed codegen and widen the sync check ([#1190](https://github.com/defilantech/LLMKube/issues/1190)) ([aedcb80](https://github.com/defilantech/LLMKube/commit/aedcb800a65125ea9e93e86c39919316a69991bd))
+* **deps:** bump golang.org/x/text to v0.39.0 (GO-2026-5970) ([#1192](https://github.com/defilantech/LLMKube/issues/1192)) ([af5c78e](https://github.com/defilantech/LLMKube/commit/af5c78ebd8d8ba0fe565182aaaaba6ae08225e39))
+* **foreman:** bound reasoning-model coder turns with a per-turn token budget ([#1175](https://github.com/defilantech/LLMKube/issues/1175)) ([5100c11](https://github.com/defilantech/LLMKube/commit/5100c112873211b880bc208897864ba8d42fdcec))
+* **foreman:** count identical read_file re-reads as no-progress under the edit-free nudge ([#1179](https://github.com/defilantech/LLMKube/issues/1179)) ([2fad7ec](https://github.com/defilantech/LLMKube/commit/2fad7ecb7edb12d2ed23a588377908cd53af7790))
+* **foreman:** inject Workload.spec.intent into coder prompts ([#1201](https://github.com/defilantech/LLMKube/issues/1201)) ([#1203](https://github.com/defilantech/LLMKube/issues/1203)) ([9a8371c](https://github.com/defilantech/LLMKube/commit/9a8371c41d8fd72de9a77768c1b84c5d7d213de9))
+* **foreman:** warn when an MCP allowlist entry matches no server tool ([#1184](https://github.com/defilantech/LLMKube/issues/1184)) ([0664814](https://github.com/defilantech/LLMKube/commit/0664814236b24448b74802cb7935ae0298100f86))
+* **foreman:** widen coder scope-overlap gate to a bottom-quartile floor ([#1181](https://github.com/defilantech/LLMKube/issues/1181)) ([f07cba4](https://github.com/defilantech/LLMKube/commit/f07cba4c9aed5761a5c3a810437d1688744db241))
+* **webhook:** serve GPUQuota webhook at its configured path, with e2e coverage ([#416](https://github.com/defilantech/LLMKube/issues/416)) ([#1195](https://github.com/defilantech/LLMKube/issues/1195)) ([b377f52](https://github.com/defilantech/LLMKube/commit/b377f52e88aa919ca379e3b29d7e34bc1ef22725))
+
+
+### Documentation
+
+* **grafana:** AMD (Strix/gfx1151) GPU observability dashboard ([#1188](https://github.com/defilantech/LLMKube/issues/1188)) ([3da1f2b](https://github.com/defilantech/LLMKube/commit/3da1f2b45ebea4ff04c69efc1b721a1c4bf5ed70))
+* **observability:** multi-tenancy guide + GPUQuota Grafana dashboard ([#1097](https://github.com/defilantech/LLMKube/issues/1097)) ([#1194](https://github.com/defilantech/LLMKube/issues/1194)) ([aedbd52](https://github.com/defilantech/LLMKube/commit/aedbd52e1c3f082c7dc8ec3dc8b0786cacccdcbf))
+* **operations:** GPU sharing guide ([#1196](https://github.com/defilantech/LLMKube/issues/1196) story 6) ([#1208](https://github.com/defilantech/LLMKube/issues/1208)) ([c9007a3](https://github.com/defilantech/LLMKube/commit/c9007a3b15540478c55aef040b69917ea7560bb6))
+
 ## [0.9.8](https://github.com/defilantech/LLMKube/compare/v0.9.7...v0.9.8) (2026-07-19)
 
 
