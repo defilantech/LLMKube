@@ -111,6 +111,7 @@ func main() {
 	var modelCacheMode string
 	var allowedHostPathRoots string
 	var allowedRemoteHosts string
+	var gpuSharingSharedPoolSelector string
 	var modelRevalidateInterval time.Duration
 	var caCertConfigMap string
 	var initContainerImage string
@@ -135,6 +136,10 @@ func main() {
 	flag.StringVar(&allowedHostPathRoots, "allowed-host-path-roots", "",
 		"Comma-separated absolute path prefixes under which local/file:// and hostPath model "+
 			"sources are permitted. Empty (default) disables all local/hostPath sources (GHSA-jw3m-8q7m-f35r).")
+	flag.StringVar(&gpuSharingSharedPoolSelector, "gpu-sharing-shared-pool-selector", "",
+		"Node selector (key=value[,key=value]) for the shared-GPU pool that gpuSharing mode "+
+			"shared schedules onto. Empty (default) means no shared pool exists and mode shared "+
+			"is rejected.")
 	flag.StringVar(&allowedRemoteHosts, "allowed-remote-hosts", "",
 		"Comma-separated hostnames/CIDRs permitted as remote (http/https) Model sources even if "+
 			"they resolve to private/link-local/loopback ranges. Public hosts are always allowed; "+
@@ -209,6 +214,16 @@ func main() {
 		if host = strings.TrimSpace(host); host != "" {
 			allowedRemoteHostList = append(allowedRemoteHostList, host)
 		}
+	}
+
+	// Parse the shared-GPU pool node selector (gpuSharing mode shared). A
+	// malformed value is a startup error rather than a silent no-pool: the
+	// operator refusing to start beats every shared workload being rejected
+	// with a misleading "no pool configured" message.
+	gpuSharingSharedPool, err := controller.ParseGPUSharingSharedPoolSelector(gpuSharingSharedPoolSelector)
+	if err != nil {
+		setupLog.Error(err, "invalid --gpu-sharing-shared-pool-selector")
+		os.Exit(1)
 	}
 
 	// Initialize OpenTelemetry tracing (noop if OTEL_EXPORTER_OTLP_ENDPOINT not set)
@@ -328,6 +343,7 @@ func main() {
 		InitContainerImage:   initContainerImage,
 		DefaultFSGroup:       defaultFSGroup,
 		AllowedHostPathRoots: allowedHostPathRootList,
+		GPUSharingSharedPool: gpuSharingSharedPool,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "InferenceService")
 		os.Exit(1)

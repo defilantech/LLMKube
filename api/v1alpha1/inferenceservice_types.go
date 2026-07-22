@@ -770,6 +770,61 @@ type InferenceResourceRequirements struct {
 	// Used for scheduling and validation
 	// +optional
 	GPUMemory string `json:"gpuMemory,omitempty"`
+
+	// GPUSharing declares how this InferenceService consumes its GPU:
+	// exclusively (whole device, the default), as a hardware partition
+	// (e.g. NVIDIA MIG), or co-resident with other workloads on a shared
+	// device. Sharing is a serving-time decision, which is why it lives
+	// here rather than on the Model: the same Model can run exclusive in
+	// production and shared in dev. Unset means exclusive, preserving the
+	// behavior of every existing manifest.
+	// +optional
+	GPUSharing *GPUSharingSpec `json:"gpuSharing,omitempty"`
+}
+
+// GPU sharing modes. Vendor-neutral: the operator resolves the mode plus the
+// Model's GPU vendor to the concrete mechanism (extended resource name, node
+// pool, tolerations), so the same manifest vocabulary covers NVIDIA MIG,
+// time-sliced pools, and AMD iGPU co-location.
+const (
+	// GPUSharingModeExclusive is the default: the pod owns whole device(s).
+	GPUSharingModeExclusive = "exclusive"
+	// GPUSharingModeShared co-locates the pod with other workloads on a
+	// shared device (e.g. an NVIDIA time-sliced pool or an AMD APU iGPU).
+	GPUSharingModeShared = "shared"
+	// GPUSharingModePartitioned requests a hardware partition of a device
+	// (e.g. an NVIDIA MIG slice named by Profile).
+	GPUSharingModePartitioned = "partitioned"
+)
+
+// GPUSharingSpec selects a GPU sharing tier for an InferenceService.
+//
+// +kubebuilder:validation:XValidation:rule="!has(self.mode) || self.mode != 'partitioned' || (has(self.profile) && self.profile != ”)",message="profile is required when mode is partitioned"
+// +kubebuilder:validation:XValidation:rule="!has(self.profile) || self.profile == ” || (has(self.mode) && self.mode == 'partitioned')",message="profile is only valid when mode is partitioned"
+// +kubebuilder:validation:XValidation:rule="!has(self.memoryLimitGiB) || (has(self.mode) && self.mode == 'shared')",message="memoryLimitGiB is only valid when mode is shared"
+type GPUSharingSpec struct {
+	// Mode selects the sharing tier. Defaults to exclusive.
+	// +kubebuilder:validation:Enum=exclusive;shared;partitioned
+	// +kubebuilder:default=exclusive
+	// +optional
+	Mode string `json:"mode,omitempty"`
+
+	// Profile names the hardware partition to request. Required when
+	// mode is partitioned, forbidden otherwise. The string is
+	// vendor-specific; for NVIDIA MIG it is the profile name as exposed
+	// by the device plugin, e.g. "1g.24gb" or "3g.90gb", and resolves to
+	// the extended resource nvidia.com/mig-<profile>.
+	// +optional
+	Profile string `json:"profile,omitempty"`
+
+	// MemoryLimitGiB caps this service's device-memory footprint in
+	// shared mode. It drives quota accounting (a shared workload counts
+	// this many GiB against a GPUQuota vramBytes cap) and, where the
+	// runtime supports it, a memory-cap enforcement flag. Only valid for
+	// mode shared.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	MemoryLimitGiB *int32 `json:"memoryLimitGiB,omitempty"`
 }
 
 // AutoscalingSpec configures Horizontal Pod Autoscaler for the inference service.
