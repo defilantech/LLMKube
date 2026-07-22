@@ -406,6 +406,34 @@
         "enabled": { "type": "boolean" }
       }
     },
+    "gpuSharing": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "GPU sharing configuration for the operator's gpuSharing feature (#1196).",
+      "properties": {
+        "pools": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "shared": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "nodeSelector": {
+                  "type": "object",
+                  "additionalProperties": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "vramPerDeviceGiB": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Device memory (GiB) of one whole GPU; 0 means unset."
+        }
+      }
+    },
     "runtimeImages": {
       "type": "object",
       "additionalProperties": false,
