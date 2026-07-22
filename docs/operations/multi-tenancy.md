@@ -227,3 +227,6 @@ The `llmkube-quota.json` Grafana dashboard (in `docs/grafana/`) reads the
 All series are labeled by `gpuquota` and `namespace`. Import the dashboard
 from `docs/grafana/llmkube-quota.json` into your Grafana instance; it reads
 from the same Prometheus datasource used by the other LLMKube dashboards.
+
+For GPU sharing modes (exclusive, partitioned, shared) and how they interact
+with VRAM-based quota accounting, see [gpu-sharing.md](gpu-sharing.md).
