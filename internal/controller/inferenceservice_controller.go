@@ -83,6 +83,14 @@ type InferenceServiceReconciler struct {
 	// cluster-local service DNS name. Primarily useful in tests where cluster
 	// DNS is unavailable.
 	RolloutIdleBaseURL string
+	// GPUSharingSharedPool is the node selector for the shared-GPU pool
+	// (time-sliced / co-located devices). Shared pods carry it so they never
+	// land on exclusive nodes: both pool kinds advertise the same extended
+	// resource (e.g. nvidia.com/gpu), so only the label separates them. Set
+	// via --gpu-sharing-shared-pool-selector (chart: gpuSharing.pools.shared).
+	// Empty means no shared pool exists and gpuSharing mode shared is
+	// rejected at reconcile time.
+	GPUSharingSharedPool map[string]string
 }
 
 func sanitizeDNSName(name string) string {
@@ -303,6 +311,17 @@ func (r *InferenceServiceReconciler) reconcileDeployment(ctx context.Context, is
 	// (see VLLMBackend.BuildArgs, SGLangBackend.BuildArgs).
 	r.reconcileVLLMSpecCondition(isvc)
 	r.reconcileSGLangSpecCondition(isvc)
+
+	// gpuSharing, by contrast, is fatal when invalid or unsatisfiable:
+	// building the Deployment anyway would either request an extended
+	// resource no node advertises (pod Pending forever) or land a shared
+	// workload on an exclusive node. Fail the reconcile with an actionable
+	// message; admission-time rejection is the follow-up (#1196 story 5).
+	if _, err := resolveGPUSharing(isvc, model, r.GPUSharingSharedPool); err != nil {
+		log.Info("Rejecting InferenceService with invalid gpuSharing spec", "reason", err.Error())
+		result, updateErr := r.updateStatusWithSchedulingInfo(ctx, isvc, model, PhaseFailed, modelReady, 0, desiredReplicas, "", fmt.Sprintf("Invalid gpuSharing: %v", err), nil)
+		return nil, 0, nil, &result, updateErr
+	}
 
 	deployment := r.constructDeployment(isvc, model, desiredReplicas)
 	if err := setControllerReferenceUnblocked(isvc, deployment, r.Scheme); err != nil {

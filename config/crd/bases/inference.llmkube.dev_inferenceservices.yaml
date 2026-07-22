@@ -4385,6 +4385,53 @@ spec:
                       GPUMemory specifies GPU memory limit per pod (e.g., "16Gi")
                       Used for scheduling and validation
                     type: string
+                  gpuSharing:
+                    description: |-
+                      GPUSharing declares how this InferenceService consumes its GPU:
+                      exclusively (whole device, the default), as a hardware partition
+                      (e.g. NVIDIA MIG), or co-resident with other workloads on a shared
+                      device. Sharing is a serving-time decision, which is why it lives
+                      here rather than on the Model: the same Model can run exclusive in
+                      production and shared in dev. Unset means exclusive, preserving the
+                      behavior of every existing manifest.
+                    properties:
+                      memoryLimitGiB:
+                        description: |-
+                          MemoryLimitGiB caps this service's device-memory footprint in
+                          shared mode. It drives quota accounting (a shared workload counts
+                          this many GiB against a GPUQuota vramBytes cap) and, where the
+                          runtime supports it, a memory-cap enforcement flag. Only valid for
+                          mode shared.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      mode:
+                        default: exclusive
+                        description: Mode selects the sharing tier. Defaults to exclusive.
+                        enum:
+                        - exclusive
+                        - shared
+                        - partitioned
+                        type: string
+                      profile:
+                        description: |-
+                          Profile names the hardware partition to request. Required when
+                          mode is partitioned, forbidden otherwise. The string is
+                          vendor-specific; for NVIDIA MIG it is the profile name as exposed
+                          by the device plugin, e.g. "1g.24gb" or "3g.90gb", and resolves to
+                          the extended resource nvidia.com/mig-<profile>.
+                        type: string
+                    type: object
+                    x-kubernetes-validations:
+                    - message: profile is required when mode is partitioned
+                      rule: '!has(self.mode) || self.mode != ''partitioned'' || (has(self.profile)
+                        && self.profile.size() > 0)'
+                    - message: profile is only valid when mode is partitioned
+                      rule: '!has(self.profile) || self.profile.size() == 0 || (has(self.mode)
+                        && self.mode == ''partitioned'')'
+                    - message: memoryLimitGiB is only valid when mode is shared
+                      rule: '!has(self.memoryLimitGiB) || (has(self.mode) && self.mode
+                        == ''shared'')'
                   hostMemory:
                     description: |-
                       HostMemory specifies the system RAM required for hybrid GPU/CPU offloading (e.g., "64Gi").

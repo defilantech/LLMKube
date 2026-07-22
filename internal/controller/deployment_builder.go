@@ -348,7 +348,18 @@ func (r *InferenceServiceReconciler) constructDeployment(
 	}
 
 	gpuCount := resolveGPUCount(isvc, model)
-	gpuResourceName := gpuResourceNameForSpec(model)
+	// Resolve the gpuSharing tier to its scheduling mechanism (resource name,
+	// toleration key, shared-pool selector). reconcileDeployment already
+	// rejected invalid specs before calling this builder, so the error path
+	// here falls back to the exclusive defaults the resolution starts from.
+	sharing, err := resolveGPUSharing(isvc, model, r.GPUSharingSharedPool)
+	if err != nil {
+		sharing = gpuSharingResolution{
+			resourceName:  gpuResourceNameForSpec(model),
+			tolerationKey: gpuTolerationKeyForSpec(model),
+		}
+	}
+	gpuResourceName := sharing.resourceName
 
 	container.Resources = buildContainerResources(isvc, model, gpuCount, gpuResourceName)
 
@@ -399,7 +410,9 @@ func (r *InferenceServiceReconciler) constructDeployment(
 
 		tolerations := []corev1.Toleration{
 			{
-				Key:      gpuTolerationKeyForSpec(model),
+				// Keyed off the sharing-resolved name so a partitioned pod
+				// tolerates the MIG resource's taint, not the whole-GPU one.
+				Key:      sharing.tolerationKey,
 				Operator: corev1.TolerationOpEqual,
 				Value:    "present",
 				Effect:   corev1.TaintEffectNoSchedule,
@@ -412,8 +425,18 @@ func (r *InferenceServiceReconciler) constructDeployment(
 
 		deployment.Spec.Template.Spec.Tolerations = tolerations
 
-		if len(isvc.Spec.NodeSelector) > 0 {
-			deployment.Spec.Template.Spec.NodeSelector = isvc.Spec.NodeSelector
+		// Shared-pool selector first, then the user's own nodeSelector so the
+		// user wins on key conflict; the pool label steers shared pods away
+		// from exclusive nodes that advertise the same extended resource.
+		if len(sharing.nodeSelector) > 0 || len(isvc.Spec.NodeSelector) > 0 {
+			nodeSelector := make(map[string]string, len(sharing.nodeSelector)+len(isvc.Spec.NodeSelector))
+			for k, v := range sharing.nodeSelector {
+				nodeSelector[k] = v
+			}
+			for k, v := range isvc.Spec.NodeSelector {
+				nodeSelector[k] = v
+			}
+			deployment.Spec.Template.Spec.NodeSelector = nodeSelector
 		}
 	}
 
