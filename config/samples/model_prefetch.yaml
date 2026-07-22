@@ -1,0 +1,37 @@
+# Prefetch: pull a remote model into the shared cache ahead of any
+# InferenceService (#904).
+#
+# With spec.prefetch: true the controller runs an owner-ref'd download Job
+# (the same init-container downloader the serving path uses) into the
+# namespace's shared model cache PVC (llmkube-model-cache) as soon as the
+# Model is applied. Status moves Downloading -> Ready; the first
+# InferenceService referencing the Model then starts from a cache hit
+# instead of a cold multi-GB download.
+#
+# Notes:
+# - Prefetch applies to remote sources (https://, hf://). Local paths and
+#   pvc:// sources have nothing to prefetch and ignore the field.
+# - The prefetch targets the SHARED cache. Fleets running perService cache
+#   mode cannot be pre-populated this way; pre-stage with a pvc:// source
+#   instead.
+# - The Job is garbage-collected with the Model (owner reference) and
+#   self-cleans 24h after finishing.
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: Model
+metadata:
+  name: llama-3b-prefetch
+  namespace: default
+  labels:
+    model: llama-3.2
+    size: 3b
+spec:
+  source: hf://bartowski/Llama-3.2-3B-Instruct-GGUF/Llama-3.2-3B-Instruct-Q4_K_M.gguf
+  format: gguf
+  quantization: Q4_K_M
+
+  # Pull to the shared cache now; no InferenceService required.
+  prefetch: true
+
+  resources:
+    cpu: "2"
+    memory: "4Gi"

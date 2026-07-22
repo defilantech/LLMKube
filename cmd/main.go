@@ -354,6 +354,12 @@ func main() {
 		RevalidateInterval:   modelRevalidateInterval,
 		AllowedHostPathRoots: allowedHostPathRootList,
 		AllowedRemoteHosts:   allowedRemoteHostList,
+		InitContainerImage:   initContainerImage,
+		CACertConfigMap:      caCertConfigMap,
+		DefaultFSGroup:       defaultFSGroup,
+		ModelCacheSize:       modelCacheSize,
+		ModelCacheClass:      modelCacheClass,
+		ModelCacheAccessMode: modelCacheAccessMode,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Model")
 		os.Exit(1)

@@ -321,6 +321,20 @@ spec:
                   Mmproj is an optional multimodal projector file to stage from Source and
                   pass to runtimes that support projector arguments.
                 type: string
+              prefetch:
+                description: |-
+                  Prefetch, when true on a remote (http/https/hf) source, makes the
+                  operator eagerly download the artifact into the namespace's SHARED
+                  model cache PVC (llmkube-model-cache) via an owner-ref'd Job that
+                  reuses the serving init-container download stack, instead of waiting
+                  for the first InferenceService to pull it at serve time. Progress is
+                  reflected in status (Downloading, then Ready with cacheKey set), so
+                  the first serving pod starts from a cache hit. Fleets running
+                  modelCache.mode=perService still download per-service at serve time:
+                  prefetch targets the shared cache only, and staging via a pvc://
+                  source remains the alternative there. Ignored for local and pvc://
+                  sources, which need no remote fetch.
+                type: boolean
               quantization:
                 description: Quantization describes the quantization level (e.g.,
                   Q4_0, Q5_K_M, F16)
