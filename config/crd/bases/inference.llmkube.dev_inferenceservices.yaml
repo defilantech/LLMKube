@@ -4425,9 +4425,9 @@ spec:
                     x-kubernetes-validations:
                     - message: profile is required when mode is partitioned
                       rule: '!has(self.mode) || self.mode != ''partitioned'' || (has(self.profile)
-                        && self.profile != '''')'
+                        && self.profile.size() > 0)'
                     - message: profile is only valid when mode is partitioned
-                      rule: '!has(self.profile) || self.profile == '''' || (has(self.mode)
+                      rule: '!has(self.profile) || self.profile.size() == 0 || (has(self.mode)
                         && self.mode == ''partitioned'')'
                     - message: memoryLimitGiB is only valid when mode is shared
                       rule: '!has(self.memoryLimitGiB) || (has(self.mode) && self.mode

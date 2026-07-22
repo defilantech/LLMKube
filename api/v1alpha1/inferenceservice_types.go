@@ -799,8 +799,8 @@ const (
 
 // GPUSharingSpec selects a GPU sharing tier for an InferenceService.
 //
-// +kubebuilder:validation:XValidation:rule="!has(self.mode) || self.mode != 'partitioned' || (has(self.profile) && self.profile != ”)",message="profile is required when mode is partitioned"
-// +kubebuilder:validation:XValidation:rule="!has(self.profile) || self.profile == ” || (has(self.mode) && self.mode == 'partitioned')",message="profile is only valid when mode is partitioned"
+// +kubebuilder:validation:XValidation:rule="!has(self.mode) || self.mode != 'partitioned' || (has(self.profile) && self.profile.size() > 0)",message="profile is required when mode is partitioned"
+// +kubebuilder:validation:XValidation:rule="!has(self.profile) || self.profile.size() == 0 || (has(self.mode) && self.mode == 'partitioned')",message="profile is only valid when mode is partitioned"
 // +kubebuilder:validation:XValidation:rule="!has(self.memoryLimitGiB) || (has(self.mode) && self.mode == 'shared')",message="memoryLimitGiB is only valid when mode is shared"
 type GPUSharingSpec struct {
 	// Mode selects the sharing tier. Defaults to exclusive.
