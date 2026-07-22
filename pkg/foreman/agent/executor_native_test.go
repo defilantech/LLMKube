@@ -2005,3 +2005,63 @@ func gitWriteFile(t *testing.T, dir, path, content string) {
 		t.Fatalf("gitWriteFile: %v", err)
 	}
 }
+
+// TestNativeExecutor_ModelNoGoAlreadyResolved_PromotesOutcome drives a REAL
+// executor run whose model emits NO-GO with extra.outcome=ALREADY-RESOLVED
+// and asserts the promotion contract (#1077): the outcome and its paired
+// resolvedBy surface at the TOP level of the Result's Extra (where the
+// controller's escalation classifiers read), not only under modelExtra.
+func TestNativeExecutor_ModelNoGoAlreadyResolved_PromotesOutcome(t *testing.T) {
+	gitOrSkip(t)
+	root := t.TempDir()
+	bare := initBareWithSeed(t, root)
+	oaiSrv := scriptedOAI(t, []string{submitNoGoBody})
+
+	agent, task := taskAndAgent("nogo-resolved")
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(agent, task).Build()
+
+	reg := &fakeRegistry{
+		results: map[string]*foremanagent.ToolResult{
+			"submit_result": {
+				Terminal: true, Verdict: "NO-GO",
+				Summary: "already fixed by abc1234",
+				Extra: map[string]any{
+					"outcome":    "ALREADY-RESOLVED",
+					"resolvedBy": "abc1234",
+				},
+			},
+		},
+	}
+	e := &foremanagent.NativeAgentLoopExecutor{
+		Client:                   c,
+		WorkspaceRoot:            filepath.Join(root, "ws"),
+		GitRemoteURL:             bare,
+		UpstreamURLForRepo:       func(string) string { return bare },
+		InferenceBaseURLOverride: oaiSrv.URL + "/v1",
+		CommitAuthor:             repo.Identity{Name: "B", Email: "b@x"},
+		CommitCommitter:          repo.Identity{Name: "B", Email: "b@x"},
+		RegistryFactory: func(
+			_ context.Context, _ string, _ *foremanv1alpha1.Agent, _ bool,
+		) (foremanagent.ToolRegistry, error) {
+			return reg, nil
+		},
+		AuthFactory: fakeAuth(t),
+	}
+	res, err := e.Execute(context.Background(), task)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if res.Verdict != foremanv1alpha1.AgenticTaskVerdictNoGo {
+		t.Fatalf("verdict: want NO-GO got %s", res.Verdict)
+	}
+	if got := res.Extra["outcome"]; got != "ALREADY-RESOLVED" {
+		t.Errorf("top-level outcome: want ALREADY-RESOLVED got %v", got)
+	}
+	if got := res.Extra["resolvedBy"]; got != "abc1234" {
+		t.Errorf("top-level resolvedBy: want abc1234 got %v", got)
+	}
+	me, ok := res.Extra["modelExtra"].(map[string]any)
+	if !ok || me["outcome"] != "ALREADY-RESOLVED" {
+		t.Errorf("modelExtra should keep the nested outcome for observability, got %v", res.Extra["modelExtra"])
+	}
+}

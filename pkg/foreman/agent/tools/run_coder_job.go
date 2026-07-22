@@ -197,6 +197,15 @@ type CoderJobResult struct {
 	// LogTail is the captured pod log tail, for operator triage.
 	LogTail string
 
+	// ResultExtra is the full Extra map of the in-pod executor's Result
+	// envelope, parsed from the FOREMAN-RESULT line. The in-pod native
+	// executor already promotes terminal machine outcomes
+	// (ALREADY-RESOLVED / NEEDS-VERIFICATION) to its top-level
+	// extra.outcome; carrying the map through lets the Job-mode
+	// supervisor preserve that promotion instead of re-synthesizing a
+	// generic outcome and discarding resolvedBy/unverified (#1077).
+	ResultExtra map[string]any
+
 	// JobName / Namespace identify the submitted Job.
 	JobName   string
 	Namespace string
@@ -263,6 +272,7 @@ func (r *RunCoderJob) Submit(ctx context.Context, req agent.CoderJobRequest) (ag
 		FailureReason: res.FailureReason,
 		LogTail:       res.LogTail,
 		JobName:       res.JobName,
+		ResultExtra:   res.ResultExtra,
 	}, nil
 }
 
@@ -357,6 +367,11 @@ func (r *RunCoderJob) Run(ctx context.Context, args RunCoderJobArgs) (CoderJobRe
 	// verdicts carrying FailureModelReportedError from an in-pod model ERROR.
 	if parsed.Result != nil && parsed.Result.FailureReason != "" {
 		res.FailureReason = string(parsed.Result.FailureReason)
+	}
+	// Same lift for the envelope's Extra: the in-pod executor already
+	// promoted any terminal machine outcome to its top level (#1077).
+	if parsed.Result != nil && parsed.Result.Extra != nil {
+		res.ResultExtra = parsed.Result.Extra
 	}
 	if res.Verdict == "" {
 		// Succeeded Job but no recognizable result line: treat as a
