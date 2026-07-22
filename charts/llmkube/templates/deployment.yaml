@@ -89,6 +89,15 @@ spec:
         {{- with .Values.controllerManager.routerProxy.defaultLiteLLMURL }}
         - --default-litellm-url={{ . }}
         {{- end }}
+        {{- $ns := .Values.gpuSharing.pools.shared.nodeSelector | default dict }}
+        {{- $nsPairs := list }}
+        {{- range $k, $v := $ns }}{{- $nsPairs = append $nsPairs (printf "%s=%s" $k $v) }}{{- end }}
+        {{- if $nsPairs }}
+        - --gpu-sharing-shared-pool-selector={{ join "," $nsPairs }}
+        {{- end }}
+        {{- if gt (.Values.gpuSharing.vramPerDeviceGiB | default 0) 0 }}
+        - --gpu-sharing-vram-per-device-gib={{ .Values.gpuSharing.vramPerDeviceGiB }}
+        {{- end }}
         {{- if .Values.webhook.enabled }}
         # Point the controller-runtime webhook server at the mounted serving
         # cert. cmd/main.go registers the ModelRouter validating webhook only

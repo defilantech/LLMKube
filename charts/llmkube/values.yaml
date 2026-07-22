@@ -410,6 +410,24 @@ networkPolicies:
   enabled: false
   additionalEgressCIDRs: []
 
+# GPU sharing configuration for the operator's gpuSharing feature (#1196).
+# These values are rendered as operator flags; they do not change any CRD.
+gpuSharing:
+  # Pools for gpuSharing mode "shared". When a shared pool is configured,
+  # InferenceServices with gpuSharing.mode=shared are scheduled onto nodes
+  # matching this nodeSelector (the operator passes it as
+  # --gpu-sharing-shared-pool-selector). Empty means no shared pool exists
+  # and mode shared is rejected at admission.
+  pools:
+    shared:
+      nodeSelector: {}
+  # Device memory (GiB) of one whole GPU in this fleet, used to derive the
+  # VRAM footprint of exclusive-mode InferenceServices for GPUQuota
+  # vramBytes accounting. 0 (default) means exclusive footprints are unknown;
+  # quotas with a vramBytes cap then deny such admissions with an actionable
+  # message.
+  vramPerDeviceGiB: 0
+
 # Fleet-wide runtime image overrides (#1197). When set, a value replaces the
 # operator's built-in default image for that runtime backend, including its
 # vendor-specific divergences. Intended for air-gapped or mirrored registries.
