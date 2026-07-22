@@ -5,6 +5,19 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.10](https://github.com/defilantech/LLMKube/compare/v0.9.9...v0.9.10) (2026-07-22)
+
+
+### Features
+
+* **grafana:** window-suffix variable so the SLO dashboard works for non-default windows ([#1148](https://github.com/defilantech/LLMKube/issues/1148)) ([#1211](https://github.com/defilantech/LLMKube/issues/1211)) ([8f7b70e](https://github.com/defilantech/LLMKube/commit/8f7b70e98fa1dc24715ace680bd0cc8d11ddc3ef))
+
+
+### Bug Fixes
+
+* **deps:** bump google.golang.org/grpc to v1.82.1 (GHSA-hrxh-6v49-42gf) ([#1212](https://github.com/defilantech/LLMKube/issues/1212)) ([188d8eb](https://github.com/defilantech/LLMKube/commit/188d8eb04e08fd7f608c54b683e8bcbdd3cb74b3))
+* **foreman:** preserve the in-pod outcome envelope across the coder Job hop ([#1077](https://github.com/defilantech/LLMKube/issues/1077)) ([#1210](https://github.com/defilantech/LLMKube/issues/1210)) ([6ed7edf](https://github.com/defilantech/LLMKube/commit/6ed7edf1a4bd54ea2aaf88b6e7fec3051ab88fa3))
+
 ## [0.9.9](https://github.com/defilantech/LLMKube/compare/v0.9.8...v0.9.9) (2026-07-22)
 
 
