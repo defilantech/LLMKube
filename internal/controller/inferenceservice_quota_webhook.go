@@ -50,6 +50,13 @@ import (
 // a documented follow-up (a metric or a reconciler-observed counter).
 type InferenceServiceQuotaValidator struct {
 	Client client.Client
+	// VRAMPerDeviceGiB is the fleet-level device memory per whole GPU
+	// (--gpu-sharing-vram-per-device-gib), used to derive the VRAM footprint
+	// of exclusive-mode workloads for vramBytes accounting. Zero means
+	// unconfigured: exclusive footprints are then unknowable, and admission
+	// against a quota that declares a vramBytes cap is denied with an
+	// actionable message rather than silently waved through.
+	VRAMPerDeviceGiB int
 }
 
 var _ admission.Validator[*inferencev1alpha1.InferenceService] = &InferenceServiceQuotaValidator{}
@@ -67,9 +74,12 @@ var _ admission.Validator[*inferencev1alpha1.InferenceService] = &InferenceServi
 // failurePolicy=Fail, fail closed on EVERY InferenceService admission whenever
 // multitenancy is enabled. The distinct -quota suffix keeps this webhook from
 // colliding with any future default-path InferenceService webhook.
-func SetupInferenceServiceQuotaWebhookWithManager(mgr ctrl.Manager) error {
+func SetupInferenceServiceQuotaWebhookWithManager(mgr ctrl.Manager, vramPerDeviceGiB int) error {
 	return ctrl.NewWebhookManagedBy(mgr, &inferencev1alpha1.InferenceService{}).
-		WithValidator(&InferenceServiceQuotaValidator{Client: mgr.GetClient()}).
+		WithValidator(&InferenceServiceQuotaValidator{
+			Client:           mgr.GetClient(),
+			VRAMPerDeviceGiB: vramPerDeviceGiB,
+		}).
 		WithValidatorCustomPath("/validate-inference-llmkube-dev-v1alpha1-inferenceservice-quota").
 		Complete()
 }
@@ -155,7 +165,8 @@ func (v *InferenceServiceQuotaValidator) listApplicableQuotas(ctx context.Contex
 
 // decide evaluates a single InferenceService against a single GPUQuota using
 // the pure quota.Decide function. It computes current usage by listing
-// InferenceServices in the quota's scope and summing their GPU allocations.
+// InferenceServices in the quota's scope and summing their GPU and VRAM
+// allocations.
 func (v *InferenceServiceQuotaValidator) decide(ctx context.Context, q inferencev1alpha1.GPUQuota, isvc *inferencev1alpha1.InferenceService) (bool, string) {
 	currentUsage, err := v.currentUsage(ctx, q, isvc)
 	if err != nil {
@@ -163,15 +174,35 @@ func (v *InferenceServiceQuotaValidator) decide(ctx context.Context, q inference
 		return false, fmt.Sprintf("failed to read current usage: %v", err)
 	}
 
+	// Derive the incoming VRAM footprint from the gpuSharing spec (partition
+	// profile / shared memory limit / exclusive fleet config; see
+	// podVRAMBytes). A quota that declares a vramBytes cap cannot admit a
+	// workload whose footprint is unknowable: waving it through would let
+	// undeclared workloads consume the very budget the cap exists to protect.
+	vramBytes, vramKnown := v.serviceVRAMBytes(ctx, isvc)
+	if !vramKnown && q.Spec.VRAMBytes > 0 {
+		return false, fmt.Sprintf(
+			"cannot derive the VRAM footprint required by this quota's vramBytes cap: " +
+				"declare gpuSharing.memoryLimitGiB (shared), a partition profile (partitioned), " +
+				"or configure --gpu-sharing-vram-per-device-gib for exclusive workloads")
+	}
+
 	incoming := quota.Incoming{
 		GPUCount:  gpuCount(isvc),
-		VRAMBytes: 0, // InferenceService has no VRAM field (mirrors #1093).
+		VRAMBytes: vramBytes,
 		Priority:  isvc.Spec.Priority,
 	}
 
 	// CostBudgetRef integration is a documented follow-up; for now we always
 	// pass costBudgetBreached=false.
 	return quota.Decide(q.Spec, currentUsage, incoming, false)
+}
+
+// serviceVRAMBytes derives the total VRAM footprint of an InferenceService
+// for this validator's fleet configuration. Thin wrapper over the shared
+// serviceVRAMBytesFor used by both the webhook and the GPUQuota reconciler.
+func (v *InferenceServiceQuotaValidator) serviceVRAMBytes(ctx context.Context, isvc *inferencev1alpha1.InferenceService) (int64, bool) {
+	return serviceVRAMBytesFor(ctx, v.Client, isvc, v.VRAMPerDeviceGiB)
 }
 
 // currentUsage lists InferenceServices in the quota's scope and sums their
@@ -203,6 +234,13 @@ func (v *InferenceServiceQuotaValidator) currentUsage(ctx context.Context, q inf
 			continue
 		}
 		usage.GPUCount += gpuCount(&i)
+		// Stored objects whose VRAM footprint cannot be derived contribute
+		// zero: they were admitted before the cap (or before their footprint
+		// was declarable) and cannot be retroactively rejected. The cap
+		// ratchets on new admissions instead (see decide's unknown-denial).
+		if vram, known := v.serviceVRAMBytes(ctx, &i); known {
+			usage.VRAMBytes += vram
+		}
 	}
 
 	return usage, nil

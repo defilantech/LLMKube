@@ -17,11 +17,16 @@ limitations under the License.
 package controller
 
 import (
+	"context"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 )
@@ -171,6 +176,98 @@ func resolveShared(model *inferencev1alpha1.Model, exclusive gpuSharingResolutio
 	resolved := exclusive
 	resolved.nodeSelector = sharedPoolSelector
 	return resolved, nil
+}
+
+// migProfileVRAMPattern extracts the memory portion of a MIG profile name:
+// "1g.24gb" -> 24 GiB. Same shape as migProfilePattern with a capture group.
+var migProfileVRAMPattern = regexp.MustCompile(`^[0-9]+g\.([0-9]+)gb$`)
+
+const bytesPerGiB = int64(1) << 30
+
+// podVRAMBytes derives the device-memory footprint of ONE pod of the given
+// InferenceService, for GPUQuota vramBytes accounting. The second return
+// reports whether the footprint is knowable at all; the caller decides what
+// unknown means (the admission webhook denies when the governing quota
+// declares a vramBytes cap; the status reconciler counts unknown as zero,
+// since stored objects cannot be retroactively rejected).
+//
+// Derivation by sharing mode:
+//   - partitioned: parsed from the MIG profile name (1g.24gb -> 24 GiB); the
+//     partition size IS the hard footprint.
+//   - shared: memoryLimitGiB when declared, else the Model's
+//     hardware.gpu.memory quantity, else unknown.
+//   - exclusive: gpu count x vramPerDeviceGiB (operator fleet config,
+//     --gpu-sharing-vram-per-device-gib); zero/unset means unknown.
+func podVRAMBytes(isvc *inferencev1alpha1.InferenceService, model *inferencev1alpha1.Model, vramPerDeviceGiB int) (int64, bool) {
+	switch gpuSharingMode(isvc) {
+	case inferencev1alpha1.GPUSharingModePartitioned:
+		profile := strings.TrimSpace(isvc.Spec.Resources.GPUSharing.Profile)
+		if m := migProfileVRAMPattern.FindStringSubmatch(profile); m != nil {
+			gib, err := strconv.ParseInt(m[1], 10, 32)
+			if err == nil && gib > 0 {
+				return gib * bytesPerGiB, true
+			}
+		}
+		return 0, false
+
+	case inferencev1alpha1.GPUSharingModeShared:
+		if limit := isvc.Spec.Resources.GPUSharing.MemoryLimitGiB; limit != nil && *limit > 0 {
+			return int64(*limit) * bytesPerGiB, true
+		}
+		if model != nil && model.Spec.Hardware != nil && model.Spec.Hardware.GPU != nil {
+			if mem := strings.TrimSpace(model.Spec.Hardware.GPU.Memory); mem != "" {
+				if q, err := resource.ParseQuantity(mem); err == nil && q.Value() > 0 {
+					return q.Value(), true
+				}
+			}
+		}
+		return 0, false
+
+	default: // exclusive
+		if vramPerDeviceGiB <= 0 {
+			return 0, false
+		}
+		// Nil-safe GPU count: the Model may not exist yet at admission time
+		// (resolveGPUCount assumes a non-nil Model).
+		count := int32(0)
+		if model != nil {
+			count = resolveGPUCount(isvc, model)
+		} else if isvc.Spec.Resources != nil {
+			count = isvc.Spec.Resources.GPU
+		}
+		if count <= 0 {
+			// No GPU requested: zero footprint is exact, not unknown.
+			return 0, true
+		}
+		return int64(count) * int64(vramPerDeviceGiB) * bytesPerGiB, true
+	}
+}
+
+// serviceVRAMBytesFor derives the total VRAM footprint of an
+// InferenceService (per-pod footprint x replicas), fetching its Model for the
+// shared-mode hardware.gpu.memory fallback. A missing Model is not an error:
+// derivation simply falls through to the remaining sources. Shared by the
+// GPUQuota admission webhook and the GPUQuota status reconciler so admission
+// and observed usage can never disagree on the same object.
+func serviceVRAMBytesFor(ctx context.Context, c client.Client, isvc *inferencev1alpha1.InferenceService, vramPerDeviceGiB int) (int64, bool) {
+	var model *inferencev1alpha1.Model
+	if isvc.Spec.ModelRef != "" {
+		m := &inferencev1alpha1.Model{}
+		if err := c.Get(ctx, types.NamespacedName{Name: isvc.Spec.ModelRef, Namespace: isvc.Namespace}, m); err == nil {
+			model = m
+		}
+	}
+
+	perPod, known := podVRAMBytes(isvc, model, vramPerDeviceGiB)
+	if !known {
+		return 0, false
+	}
+
+	replicas := int64(1)
+	if isvc.Spec.Replicas != nil {
+		replicas = int64(*isvc.Spec.Replicas)
+	}
+	return perPod * replicas, true
 }
 
 // ParseGPUSharingSharedPoolSelector parses the
