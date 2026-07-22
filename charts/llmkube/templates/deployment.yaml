@@ -89,14 +89,21 @@ spec:
         {{- with .Values.controllerManager.routerProxy.defaultLiteLLMURL }}
         - --default-litellm-url={{ . }}
         {{- end }}
-        {{- $ns := .Values.gpuSharing.pools.shared.nodeSelector | default dict }}
+        {{- /* Nil-safe at every level: with helm upgrade --reuse-values the
+             chart defaults are NOT merged, so a release whose stored values
+             predate the gpuSharing block would nil-pointer on a chained
+             .Values.gpuSharing.pools.shared lookup. */}}
+        {{- $gs := .Values.gpuSharing | default dict }}
+        {{- $gsPools := $gs.pools | default dict }}
+        {{- $gsShared := $gsPools.shared | default dict }}
+        {{- $ns := $gsShared.nodeSelector | default dict }}
         {{- $nsPairs := list }}
         {{- range $k, $v := $ns }}{{- $nsPairs = append $nsPairs (printf "%s=%s" $k $v) }}{{- end }}
         {{- if $nsPairs }}
         - --gpu-sharing-shared-pool-selector={{ join "," $nsPairs }}
         {{- end }}
-        {{- if gt (.Values.gpuSharing.vramPerDeviceGiB | default 0) 0 }}
-        - --gpu-sharing-vram-per-device-gib={{ .Values.gpuSharing.vramPerDeviceGiB }}
+        {{- if gt (int ($gs.vramPerDeviceGiB | default 0)) 0 }}
+        - --gpu-sharing-vram-per-device-gib={{ $gs.vramPerDeviceGiB }}
         {{- end }}
         {{- if .Values.webhook.enabled }}
         # Point the controller-runtime webhook server at the mounted serving
