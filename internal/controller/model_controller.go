@@ -48,11 +48,14 @@ import (
 )
 
 const (
-	PhaseReady    = "Ready"
-	PhaseFailed   = "Failed"
-	PhaseCached   = "Cached"
-	PhaseCreating = "Creating"
-	PhaseStopped  = "Stopped"
+	PhaseReady  = "Ready"
+	PhaseFailed = "Failed"
+	PhaseCached = "Cached"
+	// PhaseDownloading is also written as a raw string by the legacy
+	// download path's progressPhase; the const is the canonical spelling.
+	PhaseDownloading = "Downloading"
+	PhaseCreating    = "Creating"
+	PhaseStopped     = "Stopped"
 	// acceleratorMetal is the Model.Spec.Hardware.Accelerator value for the
 	// host metal-agent path.
 	acceleratorMetal      = "metal"
@@ -115,6 +118,16 @@ type ModelReconciler struct {
 	// newGuardedHTTPClient and GHSA-jw3m-8q7m-f35r.
 	AllowedRemoteHosts []string
 
+	// Prefetch (#904) configuration, mirrored from the InferenceService
+	// reconciler's cache settings so the prefetch Job writes into the same
+	// shared cache PVC the serving path mounts.
+	InitContainerImage   string
+	CACertConfigMap      string
+	DefaultFSGroup       int64
+	ModelCacheSize       string
+	ModelCacheClass      string
+	ModelCacheAccessMode string
+
 	// metadataHTTPClient is the SSRF-guarded client used for all controller-
 	// side requests to Model.spec.source (metadata reads and revalidation
 	// probes). Built lazily from AllowedRemoteHosts; never use
@@ -136,7 +149,8 @@ func (r *ModelReconciler) metadataClient() *http.Client {
 // +kubebuilder:rbac:groups=inference.llmkube.dev,resources=models,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=inference.llmkube.dev,resources=models/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=inference.llmkube.dev,resources=models/finalizers,verbs=update
-// +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create
+// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;delete
 // +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
 
 func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -173,6 +187,12 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return result, nil
 	}
 
+	// Prefetch (#904): an eligible Model is downloaded into the shared
+	// cache by an owner-ref'd Job before any InferenceService exists.
+	if handled, result, err := r.reconcilePrefetch(ctx, model); handled {
+		return result, err
+	}
+
 	// Sources that need no controller-side download (PVC, HuggingFace repo,
 	// remote HTTP, Metal local-path) are dispatched here. handled=false means
 	// the source is a local path the controller must copy itself.
@@ -195,55 +215,8 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 
 	logger.Info("Using cache key for model", "cacheKey", cacheKey, "dir", modelDir)
 
-	if existingPath, fileInfo, ok := findCachedModelFile(modelDir); ok {
-		// Cadence-gated drift check on the cached file. Under OnChange a drifted
-		// source re-downloads (overwrites); under IfNotPresent it only records
-		// the SourceDrifted condition and keeps serving the cache. Status writes
-		// here merge into the Ready update below (same in-memory object).
-		reDownload, _, err := r.handleRevalidation(ctx, model)
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-		if !reDownload {
-			logger.Info("Model found in cache, skipping download", "path", existingPath, "size", fileInfo.Size())
-
-			// Parse GGUF metadata first (non-fatal) so we have the metadata-derived
-			// name available for the rename below.
-			if model.Status.GGUF == nil {
-				if ggufMeta, err := r.parseGGUFMetadata(existingPath); err != nil {
-					logger.Info("Failed to parse GGUF metadata (non-fatal)", "error", err)
-				} else {
-					model.Status.GGUF = ggufMeta
-				}
-			}
-
-			finalPath, err := r.migrateModelFilename(existingPath, modelDir, model)
-			if err != nil {
-				logger.Error(err, "Failed to migrate model filename, keeping existing")
-				finalPath = existingPath
-			}
-
-			model.Status.Phase = PhaseReady
-			model.Status.Path = finalPath
-			model.Status.Size = formatBytes(fileInfo.Size())
-			model.Status.CacheKey = cacheKey
-			model.Status.AcceleratorReady = r.checkAcceleratorAvailability(ctx, model)
-			now := metav1.Now()
-			model.Status.LastUpdated = &now
-
-			if err := r.updateStatus(ctx, model, "Available", metav1.ConditionTrue, "ModelCached", "Model found in cache"); err != nil {
-				return ctrl.Result{}, err
-			}
-
-			llmkubemetrics.ModelStatus.WithLabelValues(model.Name, model.Namespace, "Cached").Set(1)
-			llmkubemetrics.ReconcileTotal.WithLabelValues("model", "success").Inc()
-			return ctrl.Result{}, nil
-		}
-
-		logger.Info("Source drifted under OnChange; re-downloading over cached file", "dir", modelDir)
-		if err := r.removeCachedFiles(ctx, modelDir); err != nil {
-			return ctrl.Result{}, err
-		}
+	if done, err := r.reconcileCachedModelFile(ctx, model, modelDir, cacheKey); done {
+		return ctrl.Result{}, err
 	}
 
 	if err := os.MkdirAll(modelDir, 0755); err != nil {
@@ -370,6 +343,69 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 // error. The rejection itself yields a nil error (not the validation error):
 // the failure is unrecoverable without a spec or operator-config change, and
 // a spec change re-triggers reconcile, so there is nothing to tight-loop on.
+// reconcileCachedModelFile serves a Model from an existing cached file, or
+// clears a drifted cache under OnChange. done=true means this reconcile is
+// finished (cache hit served, or an error terminal to this pass); done=false
+// means no usable cache remains and the caller should proceed to download.
+func (r *ModelReconciler) reconcileCachedModelFile(ctx context.Context, model *inferencev1alpha1.Model, modelDir, cacheKey string) (done bool, err error) {
+	logger := log.FromContext(ctx)
+
+	existingPath, fileInfo, ok := findCachedModelFile(modelDir)
+	if !ok {
+		return false, nil
+	}
+
+	// Cadence-gated drift check on the cached file. Under OnChange a drifted
+	// source re-downloads (overwrites); under IfNotPresent it only records
+	// the SourceDrifted condition and keeps serving the cache. Status writes
+	// here merge into the Ready update below (same in-memory object).
+	reDownload, _, err := r.handleRevalidation(ctx, model)
+	if err != nil {
+		return true, err
+	}
+	if !reDownload {
+		logger.Info("Model found in cache, skipping download", "path", existingPath, "size", fileInfo.Size())
+
+		// Parse GGUF metadata first (non-fatal) so we have the metadata-derived
+		// name available for the rename below.
+		if model.Status.GGUF == nil {
+			if ggufMeta, err := r.parseGGUFMetadata(existingPath); err != nil {
+				logger.Info("Failed to parse GGUF metadata (non-fatal)", "error", err)
+			} else {
+				model.Status.GGUF = ggufMeta
+			}
+		}
+
+		finalPath, err := r.migrateModelFilename(existingPath, modelDir, model)
+		if err != nil {
+			logger.Error(err, "Failed to migrate model filename, keeping existing")
+			finalPath = existingPath
+		}
+
+		model.Status.Phase = PhaseReady
+		model.Status.Path = finalPath
+		model.Status.Size = formatBytes(fileInfo.Size())
+		model.Status.CacheKey = cacheKey
+		model.Status.AcceleratorReady = r.checkAcceleratorAvailability(ctx, model)
+		now := metav1.Now()
+		model.Status.LastUpdated = &now
+
+		if err := r.updateStatus(ctx, model, "Available", metav1.ConditionTrue, "ModelCached", "Model found in cache"); err != nil {
+			return true, err
+		}
+
+		llmkubemetrics.ModelStatus.WithLabelValues(model.Name, model.Namespace, "Cached").Set(1)
+		llmkubemetrics.ReconcileTotal.WithLabelValues("model", "success").Inc()
+		return true, nil
+	}
+
+	logger.Info("Source drifted under OnChange; re-downloading over cached file", "dir", modelDir)
+	if err := r.removeCachedFiles(ctx, modelDir); err != nil {
+		return true, err
+	}
+	return false, nil
+}
+
 func (r *ModelReconciler) rejectDisallowedLocalSource(ctx context.Context, model *inferencev1alpha1.Model) (handled bool, err error) {
 	logger := log.FromContext(ctx)
 

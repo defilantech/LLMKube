@@ -86,6 +86,43 @@ Cache Key: a3b8c9d4e5f67890
 Path: /models/a3b8c9d4e5f67890/model.gguf
 ```
 
+## Prefetch (Eager Download)
+
+By default a `Model` with a remote source is only a declaration: nothing is
+downloaded until the first `InferenceService` referencing it starts. Set
+`spec.prefetch: true` to have the operator pull the artifact into the shared
+cache immediately:
+
+```yaml
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: Model
+metadata:
+  name: llama-3b-prefetch
+spec:
+  source: hf://bartowski/Llama-3.2-3B-Instruct-GGUF/Llama-3.2-3B-Instruct-Q4_K_M.gguf
+  format: gguf
+  prefetch: true
+```
+
+The controller runs an owner-referenced download Job that reuses the same
+init-container downloader the serving path uses, writing into the
+namespace's shared cache PVC (`llmkube-model-cache`, created on demand).
+`status.phase` moves `Downloading` -> `Ready`; once `Ready`, the first
+`InferenceService` starts from a cache hit instead of a cold download.
+
+Limitations:
+
+- Prefetch applies to remote sources (`https://`, `hf://`). Local paths and
+  `pvc://` sources ignore the field.
+- Prefetch targets the **shared** cache only. `perService` cache PVCs bind
+  at serve time and cannot be pre-populated; pre-stage those fleets with a
+  `pvc://` source instead.
+- A failed prefetch Job sets `status.phase: Failed`; check the Job's pod
+  logs (`<model-name>-prefetch`). The Job self-cleans 24 hours after
+  finishing and is garbage-collected with the Model.
+
+See `config/samples/model_prefetch.yaml` for a complete example.
+
 ## Configuration
 
 ### Helm Values

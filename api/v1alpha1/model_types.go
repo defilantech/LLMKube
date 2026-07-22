@@ -79,6 +79,20 @@ type ModelSpec struct {
 	// +optional
 	RefreshPolicy string `json:"refreshPolicy,omitempty"`
 
+	// Prefetch, when true on a remote (http/https/hf) source, makes the
+	// operator eagerly download the artifact into the namespace's SHARED
+	// model cache PVC (llmkube-model-cache) via an owner-ref'd Job that
+	// reuses the serving init-container download stack, instead of waiting
+	// for the first InferenceService to pull it at serve time. Progress is
+	// reflected in status (Downloading, then Ready with cacheKey set), so
+	// the first serving pod starts from a cache hit. Fleets running
+	// modelCache.mode=perService still download per-service at serve time:
+	// prefetch targets the shared cache only, and staging via a pvc://
+	// source remains the alternative there. Ignored for local and pvc://
+	// sources, which need no remote fetch.
+	// +optional
+	Prefetch bool `json:"prefetch,omitempty"`
+
 	// Format specifies the model file format.
 	// "gguf" is used with the llama-server runtime; "mlx" is used with the oMLX runtime;
 	// "safetensors", "pytorch", and "custom" are used with the generic runtime.

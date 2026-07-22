@@ -27,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
@@ -740,6 +741,59 @@ func buildEmptyDirStorageConfig(model *inferencev1alpha1.Model, isvc *inferencev
 // pod schedules to (the GPU node), co-locating download and serve instead of
 // pinning the cache to the operator's node. Use it on multi-node clusters that
 // have no RWX storage class.
+// ensureSharedModelCachePVC creates the namespace's shared llmkube-model-cache
+// PVC if absent. Extracted from the InferenceService reconciler's shared-mode
+// branch so the Model prefetch path (#904) can guarantee the same PVC exists
+// before its download Job mounts it. No owner reference: the shared cache
+// outlives any one consumer.
+func ensureSharedModelCachePVC(ctx context.Context, c client.Client, namespace, size, class, accessModeCfg string) error {
+	pvc := &corev1.PersistentVolumeClaim{}
+	err := c.Get(ctx, types.NamespacedName{Name: ModelCachePVCName, Namespace: namespace}, pvc)
+	if err == nil {
+		return nil
+	}
+	if !apierrors.IsNotFound(err) {
+		return fmt.Errorf("failed to check for existing PVC: %w", err)
+	}
+
+	accessMode := corev1.ReadWriteOnce
+	if accessModeCfg == "ReadWriteMany" {
+		accessMode = corev1.ReadWriteMany
+	}
+	if size == "" {
+		size = "100Gi"
+	}
+	storageSize, err := resource.ParseQuantity(size)
+	if err != nil {
+		return fmt.Errorf("invalid cache size %q: %w", size, err)
+	}
+
+	newPVC := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      ModelCachePVCName,
+			Namespace: namespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/name":       "llmkube",
+				"app.kubernetes.io/component":  "model-cache",
+				"app.kubernetes.io/managed-by": "llmkube-controller",
+			},
+		},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes: []corev1.PersistentVolumeAccessMode{accessMode},
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceStorage: storageSize},
+			},
+		},
+	}
+	if class != "" {
+		newPVC.Spec.StorageClassName = &class
+	}
+	if err := c.Create(ctx, newPVC); err != nil && !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("failed to create shared model cache PVC: %w", err)
+	}
+	return nil
+}
+
 func (r *InferenceServiceReconciler) ensureModelCachePVC(ctx context.Context, isvc *inferencev1alpha1.InferenceService) error {
 	log := logf.FromContext(ctx)
 
