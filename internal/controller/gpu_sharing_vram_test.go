@@ -150,10 +150,14 @@ func TestQuotaVRAMAdmission(t *testing.T) {
 			MemoryLimitGiB: gib32(limitGiB),
 		}
 	}
+	// Story 5 validates the sharing spec at admission before quota logic
+	// runs, so shared-mode subtests need a configured pool to get PAST that
+	// gate and into the VRAM accounting under test here.
+	pool := map[string]string{"llmkube.dev/gpu-pool": "shared"}
 
 	t.Run("shared within the vram cap is admitted", func(t *testing.T) {
 		c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(vramQuota(96), ns).Build()
-		v := &InferenceServiceQuotaValidator{Client: c}
+		v := &InferenceServiceQuotaValidator{Client: c, GPUSharingSharedPool: pool}
 		if _, err := v.ValidateCreate(ctx, vramISvc("s1", "vram-ns", 1, 1, shared(24))); err != nil {
 			t.Fatalf("expected admission, got: %v", err)
 		}
@@ -161,7 +165,7 @@ func TestQuotaVRAMAdmission(t *testing.T) {
 
 	t.Run("shared exceeding the vram cap is denied", func(t *testing.T) {
 		c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(vramQuota(96), ns).Build()
-		v := &InferenceServiceQuotaValidator{Client: c}
+		v := &InferenceServiceQuotaValidator{Client: c, GPUSharingSharedPool: pool}
 		_, err := v.ValidateCreate(ctx, vramISvc("s2", "vram-ns", 1, 1, shared(128)))
 		if err == nil {
 			t.Fatal("expected denial (128GiB > 96GiB cap), got nil")
@@ -174,7 +178,7 @@ func TestQuotaVRAMAdmission(t *testing.T) {
 	t.Run("vram accounts for replicas", func(t *testing.T) {
 		// 24GiB x 5 replicas = 120GiB > 96GiB cap.
 		c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(vramQuota(96), ns).Build()
-		v := &InferenceServiceQuotaValidator{Client: c}
+		v := &InferenceServiceQuotaValidator{Client: c, GPUSharingSharedPool: pool}
 		_, err := v.ValidateCreate(ctx, vramISvc("s3", "vram-ns", 1, 5, shared(24)))
 		if err == nil {
 			t.Fatal("expected denial (24*5 > 96), got nil")
@@ -187,7 +191,7 @@ func TestQuotaVRAMAdmission(t *testing.T) {
 	t.Run("stored shared usage counts against the cap", func(t *testing.T) {
 		existing := vramISvc("stored", "vram-ns", 1, 1, shared(80))
 		c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(vramQuota(96), ns, existing).Build()
-		v := &InferenceServiceQuotaValidator{Client: c}
+		v := &InferenceServiceQuotaValidator{Client: c, GPUSharingSharedPool: pool}
 		// 80 stored + 24 incoming = 104 > 96.
 		_, err := v.ValidateCreate(ctx, vramISvc("s4", "vram-ns", 1, 1, shared(24)))
 		if err == nil {
@@ -286,4 +290,112 @@ func TestGPUQuotaReconcileVRAM(t *testing.T) {
 	if limit := testutil.ToFloat64(llmkubemetrics.GPUQuotaVRAMBytesLimit.WithLabelValues("vram-gq", "default")); limit != float64(256*bytesPerGiB) {
 		t.Errorf("vram limit gauge = %v, want %v", limit, float64(256*bytesPerGiB))
 	}
+}
+
+// TestGPUSharingAdmission covers #1196 story 5: invalid or unsatisfiable
+// gpuSharing specs are rejected at admission by the quota webhook (same rules
+// as the reconcile-time backstop), including with a Model that does not exist
+// yet, and explicit parallelism config cannot ride a non-exclusive mode.
+func TestGPUSharingAdmission(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = inferencev1alpha1.AddToScheme(scheme)
+	ctx := context.Background()
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "gs-adm-ns"}}
+	// A permissive quota so only the gpuSharing rules can reject.
+	quota := &inferencev1alpha1.GPUQuota{
+		ObjectMeta: metav1.ObjectMeta{Name: "gs-adm-quota", Namespace: "gs-adm-ns"},
+		Spec:       inferencev1alpha1.GPUQuotaSpec{NamespaceRef: "gs-adm-ns", GPUCount: 100},
+	}
+	pool := map[string]string{"llmkube.dev/gpu-pool": "shared"}
+
+	newValidator := func(pool map[string]string) *InferenceServiceQuotaValidator {
+		c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(quota, ns).Build()
+		return &InferenceServiceQuotaValidator{Client: c, GPUSharingSharedPool: pool}
+	}
+
+	t.Run("partitioned with a nonexistent Model is admitted (NVIDIA default)", func(t *testing.T) {
+		isvc := vramISvc("adm1", "gs-adm-ns", 1, 1, &inferencev1alpha1.GPUSharingSpec{
+			Mode:    inferencev1alpha1.GPUSharingModePartitioned,
+			Profile: "1g.24gb",
+		})
+		if _, err := newValidator(nil).ValidateCreate(ctx, isvc); err != nil {
+			t.Fatalf("expected admission, got: %v", err)
+		}
+	})
+
+	t.Run("partitioned with a bad profile is rejected at admission", func(t *testing.T) {
+		isvc := vramISvc("adm2", "gs-adm-ns", 1, 1, &inferencev1alpha1.GPUSharingSpec{
+			Mode:    inferencev1alpha1.GPUSharingModePartitioned,
+			Profile: "24gb",
+		})
+		_, err := newValidator(nil).ValidateCreate(ctx, isvc)
+		if err == nil || !strings.Contains(err.Error(), "not a valid MIG profile") {
+			t.Fatalf("expected MIG-profile rejection, got: %v", err)
+		}
+	})
+
+	t.Run("shared without a configured pool is rejected at admission", func(t *testing.T) {
+		isvc := vramISvc("adm3", "gs-adm-ns", 1, 1, &inferencev1alpha1.GPUSharingSpec{
+			Mode: inferencev1alpha1.GPUSharingModeShared,
+		})
+		_, err := newValidator(nil).ValidateCreate(ctx, isvc)
+		if err == nil || !strings.Contains(err.Error(), "requires a configured shared pool") {
+			t.Fatalf("expected no-pool rejection, got: %v", err)
+		}
+	})
+
+	t.Run("shared with a pool is admitted", func(t *testing.T) {
+		isvc := vramISvc("adm4", "gs-adm-ns", 1, 1, &inferencev1alpha1.GPUSharingSpec{
+			Mode: inferencev1alpha1.GPUSharingModeShared,
+		})
+		if _, err := newValidator(pool).ValidateCreate(ctx, isvc); err != nil {
+			t.Fatalf("expected admission, got: %v", err)
+		}
+	})
+
+	t.Run("multi-GPU partitioned is rejected at admission", func(t *testing.T) {
+		isvc := vramISvc("adm5", "gs-adm-ns", 4, 1, &inferencev1alpha1.GPUSharingSpec{
+			Mode:    inferencev1alpha1.GPUSharingModePartitioned,
+			Profile: "1g.24gb",
+		})
+		_, err := newValidator(nil).ValidateCreate(ctx, isvc)
+		if err == nil || !strings.Contains(err.Error(), "requires exactly 1 GPU") {
+			t.Fatalf("expected single-GPU rejection, got: %v", err)
+		}
+	})
+
+	t.Run("explicit vLLM tensor parallelism cannot ride a partition", func(t *testing.T) {
+		tp := int32(4)
+		isvc := vramISvc("adm6", "gs-adm-ns", 1, 1, &inferencev1alpha1.GPUSharingSpec{
+			Mode:    inferencev1alpha1.GPUSharingModePartitioned,
+			Profile: "1g.24gb",
+		})
+		isvc.Spec.VLLMConfig = &inferencev1alpha1.VLLMConfig{TensorParallelSize: &tp}
+		_, err := newValidator(nil).ValidateCreate(ctx, isvc)
+		if err == nil || !strings.Contains(err.Error(), "tensorParallelSize > 1") {
+			t.Fatalf("expected TP rejection, got: %v", err)
+		}
+	})
+
+	t.Run("explicit SGLang expert parallelism cannot ride shared", func(t *testing.T) {
+		ep := int32(2)
+		isvc := vramISvc("adm7", "gs-adm-ns", 1, 1, &inferencev1alpha1.GPUSharingSpec{
+			Mode: inferencev1alpha1.GPUSharingModeShared,
+		})
+		isvc.Spec.SGLangConfig = &inferencev1alpha1.SGLangConfig{ExpertParallelSize: &ep}
+		_, err := newValidator(pool).ValidateCreate(ctx, isvc)
+		if err == nil || !strings.Contains(err.Error(), "parallelism > 1") {
+			t.Fatalf("expected parallelism rejection, got: %v", err)
+		}
+	})
+
+	t.Run("exclusive with explicit TP stays admitted", func(t *testing.T) {
+		tp := int32(8)
+		isvc := vramISvc("adm8", "gs-adm-ns", 8, 1, nil)
+		isvc.Spec.VLLMConfig = &inferencev1alpha1.VLLMConfig{TensorParallelSize: &tp}
+		if _, err := newValidator(nil).ValidateCreate(ctx, isvc); err != nil {
+			t.Fatalf("expected admission, got: %v", err)
+		}
+	})
 }

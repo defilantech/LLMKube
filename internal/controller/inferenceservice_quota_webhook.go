@@ -57,6 +57,20 @@ type InferenceServiceQuotaValidator struct {
 	// against a quota that declares a vramBytes cap is denied with an
 	// actionable message rather than silently waved through.
 	VRAMPerDeviceGiB int
+	// GPUSharingSharedPool mirrors the reconciler's shared-pool node
+	// selector (--gpu-sharing-shared-pool-selector) so gpuSharing specs are
+	// validated at admission with the same rules the reconciler applies:
+	// a shared-mode InferenceService on a fleet with no configured pool is
+	// rejected at kubectl apply instead of sitting Phase=Failed (#1196
+	// story 5).
+	GPUSharingSharedPool map[string]string
+}
+
+// InferenceServiceQuotaWebhookOptions carries the fleet-level configuration
+// the quota webhook shares with the reconcilers.
+type InferenceServiceQuotaWebhookOptions struct {
+	VRAMPerDeviceGiB     int
+	GPUSharingSharedPool map[string]string
 }
 
 var _ admission.Validator[*inferencev1alpha1.InferenceService] = &InferenceServiceQuotaValidator{}
@@ -74,11 +88,12 @@ var _ admission.Validator[*inferencev1alpha1.InferenceService] = &InferenceServi
 // failurePolicy=Fail, fail closed on EVERY InferenceService admission whenever
 // multitenancy is enabled. The distinct -quota suffix keeps this webhook from
 // colliding with any future default-path InferenceService webhook.
-func SetupInferenceServiceQuotaWebhookWithManager(mgr ctrl.Manager, vramPerDeviceGiB int) error {
+func SetupInferenceServiceQuotaWebhookWithManager(mgr ctrl.Manager, opts InferenceServiceQuotaWebhookOptions) error {
 	return ctrl.NewWebhookManagedBy(mgr, &inferencev1alpha1.InferenceService{}).
 		WithValidator(&InferenceServiceQuotaValidator{
-			Client:           mgr.GetClient(),
-			VRAMPerDeviceGiB: vramPerDeviceGiB,
+			Client:               mgr.GetClient(),
+			VRAMPerDeviceGiB:     opts.VRAMPerDeviceGiB,
+			GPUSharingSharedPool: opts.GPUSharingSharedPool,
 		}).
 		WithValidatorCustomPath("/validate-inference-llmkube-dev-v1alpha1-inferenceservice-quota").
 		Complete()
@@ -104,6 +119,17 @@ func (v *InferenceServiceQuotaValidator) ValidateDelete(_ context.Context, _ *in
 // validate checks the InferenceService against all applicable GPUQuotas and
 // returns an error if any quota denies the admission.
 func (v *InferenceServiceQuotaValidator) validate(ctx context.Context, isvc *inferencev1alpha1.InferenceService) error {
+	// gpuSharing spec validation first (#1196 story 5): an invalid or
+	// unsatisfiable sharing spec is rejected at admission with the same
+	// rules the reconciler applies, instead of being accepted and then
+	// parked at Phase=Failed. These are spec errors, not quota denials, so
+	// they do not touch the denial counter. The reconcile-time gate stays
+	// as the backstop for installs that run without this webhook
+	// (multitenancy disabled).
+	if err := v.validateGPUSharing(ctx, isvc); err != nil {
+		return fmt.Errorf("invalid gpuSharing spec: %w", err)
+	}
+
 	quotas, err := v.listApplicableQuotas(ctx, isvc)
 	if err != nil {
 		return fmt.Errorf("listing applicable GPUQuotas: %w", err)
@@ -121,6 +147,25 @@ func (v *InferenceServiceQuotaValidator) validate(ctx context.Context, isvc *inf
 	}
 
 	return nil
+}
+
+// validateGPUSharing runs the resolver's sharing rules plus the explicit
+// parallelism cross-checks against the incoming InferenceService. The Model
+// is fetched best-effort: at admission time it may not exist yet, and a nil
+// Model resolves with the NVIDIA-default vendor exactly as the reconciler
+// would on first sight.
+func (v *InferenceServiceQuotaValidator) validateGPUSharing(ctx context.Context, isvc *inferencev1alpha1.InferenceService) error {
+	var model *inferencev1alpha1.Model
+	if isvc.Spec.ModelRef != "" {
+		m := &inferencev1alpha1.Model{}
+		if err := v.Client.Get(ctx, types.NamespacedName{Name: isvc.Spec.ModelRef, Namespace: isvc.Namespace}, m); err == nil {
+			model = m
+		}
+	}
+	if _, err := resolveGPUSharing(isvc, model, v.GPUSharingSharedPool); err != nil {
+		return err
+	}
+	return gpuSharingParallelismConflict(isvc)
 }
 
 // listApplicableQuotas returns all GPUQuotas whose scope covers the given
