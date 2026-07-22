@@ -81,6 +81,10 @@ type CoderJobResult struct {
 	FailureReason string
 	LogTail       string
 	JobName       string
+	// ResultExtra is the in-pod executor Result's full Extra map (already
+	// outcome-promoted by the native executor); see the field of the same
+	// name on tools.CoderJobResult (#1077).
+	ResultExtra map[string]any
 }
 
 // useCoderJobPath reports whether Execute should dispatch this task to a
@@ -153,28 +157,53 @@ func (e *NativeAgentLoopExecutor) executeCoderJob(
 // failure result carrying an infrastructure FailureReason and the log
 // tail, so downstream retry policy treats it like any other run failure
 // rather than a successful model decision.
+// jobExtra seeds a Result Extra map from the in-pod envelope's Extra when
+// the Job carried one, so fields the controller and rollups read (the
+// promoted top-level outcome, resolvedBy, unverified, modelExtra,
+// transcriptRef, turnCount) survive the Job hop instead of being
+// re-synthesized flat (#1077). Job-supervisor fields are stamped on top and
+// win over any same-named envelope key.
+func jobExtra(cjr CoderJobResult, supervisor map[string]any) map[string]any {
+	extra := make(map[string]any, len(cjr.ResultExtra)+len(supervisor))
+	for k, v := range cjr.ResultExtra {
+		extra[k] = v
+	}
+	for k, v := range supervisor {
+		extra[k] = v
+	}
+	return extra
+}
+
 func coderJobResultToResult(kind string, start time.Time, cjr CoderJobResult) *Result {
 	switch cjr.Verdict {
 	case string(foremanv1alpha1.AgenticTaskVerdictGo):
 		r := NewResult(kind, foremanv1alpha1.AgenticTaskVerdictGo, cjr.Summary, time.Since(start))
-		r.Extra = map[string]any{
-			"outcome":       "",
+		r.Extra = jobExtra(cjr, map[string]any{
 			"branch":        cjr.Branch,
 			"commitSHA":     cjr.CommitSHA,
 			"commitMessage": cjr.CommitMessage,
 			"executionMode": "Job",
 			"jobName":       cjr.JobName,
 			"logTail":       cjr.LogTail,
+		})
+		if _, ok := r.Extra["outcome"]; !ok {
+			r.Extra["outcome"] = ""
 		}
 		return r
 	case string(foremanv1alpha1.AgenticTaskVerdictNoGo):
 		r := NewResult(kind, foremanv1alpha1.AgenticTaskVerdictNoGo, cjr.Summary, time.Since(start))
-		r.Extra = map[string]any{
-			"outcome":        "MODEL-NO-GO",
+		r.Extra = jobExtra(cjr, map[string]any{
 			"intendedBranch": cjr.Branch,
 			"executionMode":  "Job",
 			"jobName":        cjr.JobName,
 			"logTail":        cjr.LogTail,
+		})
+		// Preserve the envelope's promoted outcome (ALREADY-RESOLVED /
+		// NEEDS-VERIFICATION / MODEL-DECIDED, plus paired resolvedBy or
+		// unverified fields already in the map); only a Job with no
+		// envelope outcome falls back to the legacy generic tag.
+		if outcome, _ := r.Extra["outcome"].(string); outcome == "" {
+			r.Extra["outcome"] = "MODEL-NO-GO"
 		}
 		return r
 	case string(foremanv1alpha1.AgenticTaskVerdictIncomplete):
