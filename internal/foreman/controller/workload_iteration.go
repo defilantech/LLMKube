@@ -252,6 +252,7 @@ func reviewIterationSteps(
 						BranchStrategy:   foremanv1alpha1.BranchStrategyRebase,
 						AllowOverwrite:   true,
 						Prompt:           reviewFeedbackPrompt(noGo),
+						PromptPrefix:     intentPromptPrefix(w),
 					},
 				})
 				issueIterated = true
