@@ -655,8 +655,9 @@ func TestStrReplace_RecoversFromWhitespaceMismatch(t *testing.T) {
 	}
 	tool := &StrReplaceTool{Workspace: ws}
 	// Model reproduces the body with SPACES instead of the tab. Exact match
-	// fails, but the whitespace-normalized fallback should locate it and apply
-	// the replacement against the real byte span.
+	// fails, and the bounded fallbacks (trailing-ws, uniform-indent) do not
+	// cover tab-vs-space drift on a line whose common indent is zero. The
+	// tool must surface the actual file content so the model can retry.
 	wsArgs := map[string]string{
 		"path":       "f.go",
 		"old_string": "func f() {\n    return 1\n}", // spaces, not the file's tab
@@ -664,12 +665,17 @@ func TestStrReplace_RecoversFromWhitespaceMismatch(t *testing.T) {
 	}
 	wsBuf, _ := json.Marshal(wsArgs)
 	_, err := tool.Execute(context.Background(), wsBuf)
-	if err != nil {
-		t.Fatalf("expected whitespace-normalized recovery, got error: %v", err)
+	if err == nil {
+		t.Fatal("expected error for tab-vs-space drift, got nil")
 	}
+	// The error should surface the actual file content for re-anchoring.
+	if !strings.Contains(err.Error(), "return 1") {
+		t.Errorf("expected actual file content in error, got: %v", err)
+	}
+	// File must be unchanged.
 	got, _ := os.ReadFile(filepath.Join(ws, "f.go"))
-	if !strings.Contains(string(got), "return 2") {
-		t.Errorf("replacement not applied: %q", string(got))
+	if string(got) != src {
+		t.Errorf("file must be unchanged, got %q", string(got))
 	}
 }
 

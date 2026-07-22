@@ -25,9 +25,9 @@ import (
 	"testing"
 )
 
-func strReplaceArgsJSON(t *testing.T, path, oldS, newS string) json.RawMessage {
+func strReplaceArgsJSON(t *testing.T, oldS, newS string) json.RawMessage {
 	t.Helper()
-	b, err := json.Marshal(map[string]any{"path": path, "old_string": oldS, "new_string": newS})
+	b, err := json.Marshal(map[string]any{"path": testFile, "old_string": oldS, "new_string": newS})
 	if err != nil {
 		t.Fatalf("marshal args: %v", err)
 	}
@@ -46,7 +46,7 @@ func TestStrReplace_EscalatesAfterRepeatedFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	tool := &StrReplaceTool{Workspace: ws}
-	bad := strReplaceArgsJSON(t, "f.go", "ZZZ_NO_SUCH_LINE_ANYWHERE_ZZZ", "func B() {}")
+	bad := strReplaceArgsJSON(t, "ZZZ_NO_SUCH_LINE_ANYWHERE_ZZZ", "func B() {}")
 
 	_, err1 := tool.Execute(context.Background(), bad)
 	if err1 == nil {
@@ -80,8 +80,8 @@ func TestStrReplace_SuccessResetsFailureCounter(t *testing.T) {
 		t.Fatal(err)
 	}
 	tool := &StrReplaceTool{Workspace: ws}
-	bad := strReplaceArgsJSON(t, "f.go", "ZZZ_NO_SUCH_LINE_ANYWHERE_ZZZ", "x")
-	good := strReplaceArgsJSON(t, "f.go", "func A() {}", "func A() { _ = 1 }")
+	bad := strReplaceArgsJSON(t, "ZZZ_NO_SUCH_LINE_ANYWHERE_ZZZ", "x")
+	good := strReplaceArgsJSON(t, "func A() {}", "func A() { _ = 1 }")
 
 	if _, err := tool.Execute(context.Background(), bad); err == nil {
 		t.Fatal("first edit should fail")
