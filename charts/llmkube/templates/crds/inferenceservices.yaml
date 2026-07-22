@@ -3449,15 +3449,14 @@ spec:
                 type: boolean
               maxPodLifetimeSeconds:
                 description: |-
-                  MaxPodLifetimeSeconds sets the maximum lifetime (in seconds) for
-                  inference pods. When set, the operator copies this value to
-                  PodSpec.ActiveDeadlineSeconds on the generated Deployment's pod
-                  template, causing Kubernetes to terminate the pod after the
-                  specified duration even if it remains healthy. This is useful for
-                  workloads that need periodic process recycling to release driver
-                  memory (e.g. llama.cpp on AMD Vulkan with pinned GTT memory).
-                  When omitted, pods run indefinitely until manually restarted or
-                  the Deployment is updated.
+                  MaxPodLifetimeSeconds requests best-effort periodic recycling of
+                  deployment-backed inference pods. The controller serializes graceful
+                  replacement of eligible pods, using their status start time as the age
+                  reference; it is not a strict deadline and does not set
+                  PodSpec.ActiveDeadlineSeconds. This is useful for workloads that need
+                  periodic process recycling to release driver memory (e.g. llama.cpp on
+                  AMD Vulkan with pinned GTT memory). When omitted, pods run indefinitely
+                  until manually restarted or the Deployment is updated.
                 format: int64
                 minimum: 1
                 type: integer

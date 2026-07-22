@@ -41,6 +41,12 @@ rules:
   - watch
 - apiGroups:
   - ""
+  resources:
+  - pods/eviction
+  verbs:
+  - create
+- apiGroups:
+  - ""
   - events.k8s.io
   resources:
   - events
@@ -71,6 +77,13 @@ rules:
   - list
   - patch
   - update
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - replicasets
+  verbs:
+  - list
   - watch
 - apiGroups:
   - autoscaling

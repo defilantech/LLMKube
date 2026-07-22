@@ -609,7 +609,7 @@ var _ = Describe("Multi-GPU Deployment Construction", func() {
 			Expect(deployment.Spec.Template.Spec.ActiveDeadlineSeconds).To(BeNil())
 		})
 
-		It("should set ActiveDeadlineSeconds on the pod template when maxPodLifetimeSeconds is set", func() {
+		It("should leave ActiveDeadlineSeconds nil when maxPodLifetimeSeconds is set", func() {
 			lifetime := int64(3600)
 			isvc := &inferencev1alpha1.InferenceService{
 				ObjectMeta: metav1.ObjectMeta{
@@ -623,8 +623,7 @@ var _ = Describe("Multi-GPU Deployment Construction", func() {
 				},
 			}
 			deployment := reconciler.constructDeployment(isvc, model, 1)
-			Expect(deployment.Spec.Template.Spec.ActiveDeadlineSeconds).NotTo(BeNil())
-			Expect(*deployment.Spec.Template.Spec.ActiveDeadlineSeconds).To(Equal(int64(3600)))
+			Expect(deployment.Spec.Template.Spec.ActiveDeadlineSeconds).To(BeNil())
 		})
 	})
 
