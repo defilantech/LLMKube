@@ -20,6 +20,7 @@ import (
 	"context"
 	"crypto/tls"
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -112,6 +113,7 @@ func main() {
 	var allowedHostPathRoots string
 	var allowedRemoteHosts string
 	var gpuSharingSharedPoolSelector string
+	var gpuSharingVRAMPerDeviceGiB int
 	var modelRevalidateInterval time.Duration
 	var caCertConfigMap string
 	var initContainerImage string
@@ -140,6 +142,11 @@ func main() {
 		"Node selector (key=value[,key=value]) for the shared-GPU pool that gpuSharing mode "+
 			"shared schedules onto. Empty (default) means no shared pool exists and mode shared "+
 			"is rejected.")
+	flag.IntVar(&gpuSharingVRAMPerDeviceGiB, "gpu-sharing-vram-per-device-gib", 0,
+		"Device memory (GiB) of one whole GPU in this fleet, used to derive the VRAM footprint "+
+			"of exclusive-mode InferenceServices for GPUQuota vramBytes accounting. 0 (default) "+
+			"means exclusive footprints are unknown; quotas with a vramBytes cap then deny such "+
+			"admissions with an actionable message.")
 	flag.StringVar(&allowedRemoteHosts, "allowed-remote-hosts", "",
 		"Comma-separated hostnames/CIDRs permitted as remote (http/https) Model sources even if "+
 			"they resolve to private/link-local/loopback ranges. Public hosts are always allowed; "+
@@ -223,6 +230,15 @@ func main() {
 	gpuSharingSharedPool, err := controller.ParseGPUSharingSharedPoolSelector(gpuSharingSharedPoolSelector)
 	if err != nil {
 		setupLog.Error(err, "invalid --gpu-sharing-shared-pool-selector")
+		os.Exit(1)
+	}
+
+	// Bound the per-device VRAM figure. 1 PiB of device memory per GPU is
+	// far beyond any real hardware, so anything outside [0, 2^20] is a typo,
+	// not a fleet.
+	if gpuSharingVRAMPerDeviceGiB < 0 || gpuSharingVRAMPerDeviceGiB > 1<<20 {
+		setupLog.Error(fmt.Errorf("value %d out of range [0, %d]", gpuSharingVRAMPerDeviceGiB, 1<<20),
+			"invalid --gpu-sharing-vram-per-device-gib")
 		os.Exit(1)
 	}
 
@@ -406,8 +422,9 @@ func main() {
 	// InferenceServices in the quota's scope. It never rejects anything or
 	// owns external resources.
 	if err := (&controller.GPUQuotaReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:           mgr.GetClient(),
+		Scheme:           mgr.GetScheme(),
+		VRAMPerDeviceGiB: gpuSharingVRAMPerDeviceGiB,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "GPUQuota")
 		os.Exit(1)
@@ -428,7 +445,7 @@ func main() {
 			setupLog.Error(err, "unable to create webhook", "webhook", "Model")
 			os.Exit(1)
 		}
-		if err := controller.SetupInferenceServiceQuotaWebhookWithManager(mgr); err != nil {
+		if err := controller.SetupInferenceServiceQuotaWebhookWithManager(mgr, gpuSharingVRAMPerDeviceGiB); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "InferenceServiceQuota")
 			os.Exit(1)
 		}

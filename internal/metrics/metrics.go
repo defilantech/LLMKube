@@ -198,6 +198,22 @@ var (
 		},
 		[]string{"gpuquota", "namespace"},
 	)
+
+	GPUQuotaUsedVRAMBytes = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "llmkube_gpuquota_used_vram_bytes",
+			Help: "Device memory (bytes) currently accounted to InferenceServices in a GPUQuota's scope. Workloads whose footprint cannot be derived contribute zero.",
+		},
+		[]string{"gpuquota", "namespace"},
+	)
+
+	GPUQuotaVRAMBytesLimit = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "llmkube_gpuquota_vram_bytes_limit",
+			Help: "The device-memory cap (spec.vramBytes) declared by a GPUQuota. 0 means no cap.",
+		},
+		[]string{"gpuquota", "namespace"},
+	)
 )
 
 func init() {
@@ -205,6 +221,8 @@ func init() {
 		GPUQuotaUsedGPUCount,
 		GPUQuotaGPUCountLimit,
 		GPUQuotaAdmissionDenialsTotal,
+		GPUQuotaUsedVRAMBytes,
+		GPUQuotaVRAMBytesLimit,
 		ModelDownloadDuration,
 		ModelStatus,
 		InferenceServiceReadyDuration,

@@ -40,13 +40,19 @@ const (
 	gpuQuotaControllerName = "gpuquota"
 )
 
-// GPUQuotaReconciler reconciles the GPUQuota CRD. It aggregates GPU usage
-// from InferenceServices in the quota's scope and writes the total to
-// Status.UsedGPUCount. This is a status-only reconciler: it never rejects
-// anything or owns external resources.
+// GPUQuotaReconciler reconciles the GPUQuota CRD. It aggregates GPU and VRAM
+// usage from InferenceServices in the quota's scope and writes the totals to
+// Status.UsedGPUCount / Status.UsedVRAMBytes. This is a status-only
+// reconciler: it never rejects anything or owns external resources.
 type GPUQuotaReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	// VRAMPerDeviceGiB mirrors the admission webhook's fleet-level device
+	// memory per whole GPU (--gpu-sharing-vram-per-device-gib) so observed
+	// usage and admission accounting can never disagree about the same
+	// object. Zero means exclusive-mode footprints are unknowable and
+	// contribute zero to UsedVRAMBytes.
+	VRAMPerDeviceGiB int
 }
 
 // +kubebuilder:rbac:groups=inference.llmkube.dev,resources=gpuquotas,verbs=get;list;watch;update;patch
@@ -100,8 +106,15 @@ func (r *GPUQuotaReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, nil
 	}
 
-	// Aggregate GPU usage from InferenceServices in the in-scope namespaces.
+	// Aggregate GPU and VRAM usage from InferenceServices in the in-scope
+	// namespaces. VRAM is derived per service by serviceVRAMBytesFor (the
+	// same helper the admission webhook uses): partition profile, shared
+	// memoryLimitGiB / Model memory, or exclusive count x fleet
+	// VRAMPerDeviceGiB. Services whose footprint cannot be derived
+	// contribute zero; they were admitted before the footprint was
+	// declarable and the webhook ratchets on new admissions instead.
 	var usedGPUCount int32
+	var usedVRAMBytes int64
 	for _, nsName := range inScopeNamespaces {
 		isvcList := &inferencev1alpha1.InferenceServiceList{}
 		if err := r.List(ctx, isvcList, client.InNamespace(nsName)); err != nil {
@@ -120,15 +133,12 @@ func (r *GPUQuotaReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 				replicas = *isvc.Spec.Replicas
 			}
 			usedGPUCount += gpuPerPod * replicas
+
+			if vram, known := serviceVRAMBytesFor(ctx, r.Client, &isvc, r.VRAMPerDeviceGiB); known {
+				usedVRAMBytes += vram
+			}
 		}
 	}
-
-	// VRAM aggregation is a DOCUMENTED, INTENTIONAL DEFERRAL: InferenceService
-	// exposes no VRAM field, so UsedVRAMBytes stays 0 until either
-	// InferenceService gains a VRAM field or it is derived from the Model size;
-	// the admission webhook already treats vramBytes 0 as "no cap", so the
-	// VRAM half of the quota is simply inert until then.
-	usedVRAMBytes := int64(0)
 
 	// Write status.
 	desired := gq.DeepCopy()
@@ -144,6 +154,8 @@ func (r *GPUQuotaReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// dashboard can plot utilization = used / limit.
 	llmkubemetrics.GPUQuotaUsedGPUCount.WithLabelValues(gq.Name, gq.Namespace).Set(float64(usedGPUCount))
 	llmkubemetrics.GPUQuotaGPUCountLimit.WithLabelValues(gq.Name, gq.Namespace).Set(float64(gq.Spec.GPUCount))
+	llmkubemetrics.GPUQuotaUsedVRAMBytes.WithLabelValues(gq.Name, gq.Namespace).Set(float64(usedVRAMBytes))
+	llmkubemetrics.GPUQuotaVRAMBytesLimit.WithLabelValues(gq.Name, gq.Namespace).Set(float64(gq.Spec.VRAMBytes))
 
 	return ctrl.Result{}, nil
 }
