@@ -1942,6 +1942,33 @@ func TestBuildUserPrompt_IssueFix_RendersPromptPrefix(t *testing.T) {
 	}
 }
 
+// TestBuildUserPrompt_IssueFix_ContainsDateLine verifies that the issue-fix
+// prompt includes the current date so the model can anchor time-sensitive
+// research queries (#1202).
+func TestBuildUserPrompt_IssueFix_ContainsDateLine(t *testing.T) {
+	fixed := time.Date(2026, 7, 22, 0, 0, 0, 0, time.UTC)
+	orig := nowFunc
+	nowFunc = func() time.Time { return fixed }
+	defer func() { nowFunc = orig }()
+
+	task := &foremanv1alpha1.AgenticTask{
+		Spec: foremanv1alpha1.AgenticTaskSpec{
+			Kind: foremanv1alpha1.AgenticTaskKindIssueFix,
+			Payload: foremanv1alpha1.AgenticTaskPayload{
+				Repo:  "defilantech/LLMKube",
+				Issue: 1202,
+			},
+		},
+	}
+	got := buildUserPrompt(task)
+	if !strings.Contains(got, "Today's date is 2026-07-22") {
+		t.Fatalf("date line missing from prompt:\n%s", got)
+	}
+	if !strings.Contains(got, "authoritative over your internal sense of time") {
+		t.Fatalf("date authority clause missing from prompt:\n%s", got)
+	}
+}
+
 // TestBuildUserPrompt_ReviewerAppendsAdvisories verifies that gate advisories
 // wired into the payload by the reconciler are included in the reviewer's
 // first user message so the model is prompted to confirm or dismiss each one.

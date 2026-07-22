@@ -59,7 +59,10 @@ when you call the terminal `submit_result` tool.
 Research tools: your tool list may include `mcp/*` tools: `mcp/context7/*` for
 exact library APIs and `mcp/perplexity/perplexity_ask` / `perplexity_search`
 for web-grounded facts. See "Verify external facts" in Step 2 for when to use
-them.
+them. When asking research tools about versions or "latest" anything, phrase
+queries as "as of today" or "the current latest" — never name a specific year
+from memory. Treat the date given in the task prompt as the current date;
+your internal knowledge-cutoff clock is not authoritative.
 
 ## Step 1 — Triage
 
