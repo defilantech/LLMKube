@@ -4,14 +4,23 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build+scan+sign against a throwaway :provenance-test tag; do not cut a release"
+        type: boolean
+        default: true
 
 permissions:
   contents: write
   pull-requests: write
-  packages: write  # Required for pushing to GHCR
+  packages: write        # push images + attestations to GHCR
+  id-token: write        # keyless cosign / OIDC
+  attestations: write    # actions/attest-* write to the attestations store
 
 jobs:
   release-please:
+    if: ${{ github.event_name == 'push' }}
     runs-on: ubuntu-latest
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
@@ -28,7 +37,7 @@ jobs:
 
   goreleaser:
     needs: release-please
-    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    if: ${{ always() && (needs.release-please.outputs.release_created == 'true' || github.event_name == 'workflow_dispatch') }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -57,7 +66,13 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Scan images before push (Trivy, amd64)
+        run: ./hack/scan-images.sh
+        env:
+          VERSION: ${{ needs.release-please.outputs.version || github.sha }}
+
       - name: Run GoReleaser
+        if: ${{ github.event_name == 'push' }}
         uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
@@ -72,59 +87,198 @@ jobs:
         # macOS-only). Publish a cross-platform binary formula from the
         # release checksums so `brew install defilantech/tap/llmkube` works on
         # macOS and Linux and tracks every release (#1039 / #1040).
+        if: ${{ github.event_name == 'push' }}
         env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           VERSION: ${{ needs.release-please.outputs.version }}
         run: ./hack/publish-homebrew-formula.sh "$VERSION" dist/checksums.txt
 
       - name: Upload artifacts
+        if: ${{ github.event_name == 'push' }}
         uses: actions/upload-artifact@v7
         with:
           name: release-artifacts
           path: dist/*
 
-  trivy-scan:
-    needs:
-      - release-please
-      - goreleaser
-    if: ${{ needs.release-please.outputs.release_created == 'true' }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          image-ref: ghcr.io/defilantech/llmkube-controller:${{ needs.release-please.outputs.version }}
-          format: table
-          exit-code: '1'
-          severity: CRITICAL,HIGH
-          ignore-unfixed: true
+      - name: Install cosign
+        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
+        uses: sigstore/cosign-installer@v4.1.2
 
-      - name: Scan foreman-operator
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          image-ref: ghcr.io/defilantech/llmkube-foreman-operator:${{ needs.release-please.outputs.version }}
-          format: table
-          exit-code: '1'
-          severity: CRITICAL,HIGH
-          ignore-unfixed: true
+      - name: Install crane
+        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
+        uses: imjasonh/setup-crane@v0.7
 
-      - name: Scan foreman-agent
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          image-ref: ghcr.io/defilantech/llmkube-foreman-agent:${{ needs.release-please.outputs.version }}
-          format: table
-          exit-code: '1'
-          severity: CRITICAL,HIGH
-          ignore-unfixed: true
+      # Full sha256:... digests per image, captured once so every sign/attest/
+      # verify step below references the exact bytes GoReleaser pushed (#233).
+      - name: Capture image digests
+        if: ${{ github.event_name == 'push' }}
+        id: digests
+        env:
+          VERSION: ${{ needs.release-please.outputs.version }}
+        run: |
+          set -euo pipefail
+          for id in controller foreman-operator foreman-agent router-proxy; do
+            d="$(crane digest "ghcr.io/defilantech/llmkube-${id}:${VERSION}")"
+            echo "${id}=${d}" >> "$GITHUB_OUTPUT"
+          done
 
-      - name: Scan router-proxy
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+      # NOTE: step output names with hyphens (foreman-operator, foreman-agent,
+      # router-proxy) are not valid dot-notation identifiers in GitHub Actions
+      # expressions (the `-` parses as subtraction), so every reference below
+      # uses bracket notation: steps.digests.outputs['foreman-operator'].
+      - name: Sign images
+        if: ${{ github.event_name == 'push' }}
+        env:
+          COSIGN_YES: "true"
+        run: |
+          set -euo pipefail
+          cosign sign --yes "ghcr.io/defilantech/llmkube-controller@${{ steps.digests.outputs.controller }}"
+          cosign sign --yes "ghcr.io/defilantech/llmkube-foreman-operator@${{ steps.digests.outputs['foreman-operator'] }}"
+          cosign sign --yes "ghcr.io/defilantech/llmkube-foreman-agent@${{ steps.digests.outputs['foreman-agent'] }}"
+          cosign sign --yes "ghcr.io/defilantech/llmkube-router-proxy@${{ steps.digests.outputs['router-proxy'] }}"
+
+      - name: Generate SBOM (controller)
+        if: ${{ github.event_name == 'push' }}
+        uses: anchore/sbom-action@v0
         with:
-          image-ref: ghcr.io/defilantech/llmkube-router-proxy:${{ needs.release-please.outputs.version }}
-          format: table
-          exit-code: '1'
-          severity: CRITICAL,HIGH
-          ignore-unfixed: true
+          image: ghcr.io/defilantech/llmkube-controller@${{ steps.digests.outputs.controller }}
+          format: spdx-json
+          output-file: sbom-controller.spdx.json
+
+      - name: Attest SBOM (controller)
+        if: ${{ github.event_name == 'push' }}
+        uses: actions/attest-sbom@v4
+        with:
+          subject-name: ghcr.io/defilantech/llmkube-controller
+          subject-digest: ${{ steps.digests.outputs.controller }}
+          sbom-path: sbom-controller.spdx.json
+          push-to-registry: true
+
+      - name: Attest provenance (controller)
+        if: ${{ github.event_name == 'push' }}
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ghcr.io/defilantech/llmkube-controller
+          subject-digest: ${{ steps.digests.outputs.controller }}
+          push-to-registry: true
+
+      - name: Generate SBOM (foreman-operator)
+        if: ${{ github.event_name == 'push' }}
+        uses: anchore/sbom-action@v0
+        with:
+          image: ghcr.io/defilantech/llmkube-foreman-operator@${{ steps.digests.outputs['foreman-operator'] }}
+          format: spdx-json
+          output-file: sbom-foreman-operator.spdx.json
+
+      - name: Attest SBOM (foreman-operator)
+        if: ${{ github.event_name == 'push' }}
+        uses: actions/attest-sbom@v4
+        with:
+          subject-name: ghcr.io/defilantech/llmkube-foreman-operator
+          subject-digest: ${{ steps.digests.outputs['foreman-operator'] }}
+          sbom-path: sbom-foreman-operator.spdx.json
+          push-to-registry: true
+
+      - name: Attest provenance (foreman-operator)
+        if: ${{ github.event_name == 'push' }}
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ghcr.io/defilantech/llmkube-foreman-operator
+          subject-digest: ${{ steps.digests.outputs['foreman-operator'] }}
+          push-to-registry: true
+
+      - name: Generate SBOM (foreman-agent)
+        if: ${{ github.event_name == 'push' }}
+        uses: anchore/sbom-action@v0
+        with:
+          image: ghcr.io/defilantech/llmkube-foreman-agent@${{ steps.digests.outputs['foreman-agent'] }}
+          format: spdx-json
+          output-file: sbom-foreman-agent.spdx.json
+
+      - name: Attest SBOM (foreman-agent)
+        if: ${{ github.event_name == 'push' }}
+        uses: actions/attest-sbom@v4
+        with:
+          subject-name: ghcr.io/defilantech/llmkube-foreman-agent
+          subject-digest: ${{ steps.digests.outputs['foreman-agent'] }}
+          sbom-path: sbom-foreman-agent.spdx.json
+          push-to-registry: true
+
+      - name: Attest provenance (foreman-agent)
+        if: ${{ github.event_name == 'push' }}
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ghcr.io/defilantech/llmkube-foreman-agent
+          subject-digest: ${{ steps.digests.outputs['foreman-agent'] }}
+          push-to-registry: true
+
+      - name: Generate SBOM (router-proxy)
+        if: ${{ github.event_name == 'push' }}
+        uses: anchore/sbom-action@v0
+        with:
+          image: ghcr.io/defilantech/llmkube-router-proxy@${{ steps.digests.outputs['router-proxy'] }}
+          format: spdx-json
+          output-file: sbom-router-proxy.spdx.json
+
+      - name: Attest SBOM (router-proxy)
+        if: ${{ github.event_name == 'push' }}
+        uses: actions/attest-sbom@v4
+        with:
+          subject-name: ghcr.io/defilantech/llmkube-router-proxy
+          subject-digest: ${{ steps.digests.outputs['router-proxy'] }}
+          sbom-path: sbom-router-proxy.spdx.json
+          push-to-registry: true
+
+      - name: Attest provenance (router-proxy)
+        if: ${{ github.event_name == 'push' }}
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ghcr.io/defilantech/llmkube-router-proxy
+          subject-digest: ${{ steps.digests.outputs['router-proxy'] }}
+          push-to-registry: true
+
+      - name: Verify signatures + attestations
+        if: ${{ github.event_name == 'push' }}
+        run: |
+          set -euo pipefail
+          image=ghcr.io/defilantech/llmkube-controller
+          ref="${image}@${{ steps.digests.outputs.controller }}"
+          id_re="^https://github.com/defilantech/llmkube/.github/workflows/release-please.yml@.*$"
+          iss=https://token.actions.githubusercontent.com
+          cosign verify "$ref" --certificate-identity-regexp "$id_re" --certificate-oidc-issuer "$iss"
+          cosign verify-attestation "$ref" --type slsaprovenance \
+            --certificate-identity-regexp "$id_re" --certificate-oidc-issuer "$iss"
+          cosign verify-attestation "$ref" --type spdxjson \
+            --certificate-identity-regexp "$id_re" --certificate-oidc-issuer "$iss"
+
+      - name: Attest release binary provenance
+        if: ${{ github.event_name == 'push' }}
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/*.tar.gz
+
+      - name: Dry-run build + sign + verify (workflow_dispatch)
+        # Exercises the full scan -> push -> sign -> verify chain without
+        # cutting a release: builds only the controller image for amd64,
+        # staged the same way hack/scan-images.sh stages it, then pushes it
+        # to a throwaway :provenance-test tag.
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        env:
+          COSIGN_YES: "true"
+        run: |
+          set -euo pipefail
+          img=ghcr.io/defilantech/llmkube-controller
+          ctx="$(mktemp -d)"
+          mkdir -p "$ctx/linux/amd64"
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
+            -o "$ctx/linux/amd64/manager" ./cmd/main.go
+          docker buildx build --platform linux/amd64 --push \
+            -f Dockerfile.goreleaser -t "${img}:provenance-test" "$ctx"
+          digest="$(crane digest "${img}:provenance-test")"
+          cosign sign --yes "${img}@${digest}"
+          cosign verify "${img}@${digest}" \
+            --certificate-identity-regexp "^https://github.com/defilantech/llmkube/.github/workflows/release-please.yml@.*$" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com
 
   release-helm:
     needs: release-please
