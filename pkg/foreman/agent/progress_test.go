@@ -100,11 +100,11 @@ func TestProgressMonitor_RepeatedToolNudgesThenTerminates(t *testing.T) {
 // chance: if the nudge is heeded (different call on the next turn),
 // the monitor does NOT escalate to ForceTerminate.
 //
-// Note: the RepeatedToolCall nudge flag stays set for the remainder
-// of the run (we don't re-arm it after a recovery); the model has
-// already shown the pattern once and we want any future re-emergence
-// of the same pattern to escalate immediately rather than starting
-// the nudge ladder over.
+// Note: after an edit-free recovery the RepeatedToolCall nudge flag
+// stays set, so an edit-free re-emergence of the same pattern
+// escalates immediately rather than restarting the ladder. (An
+// intervening EDIT is the one thing that disarms it; see
+// TestProgressMonitor_EditDisarmsNudgedRepeatedTool and #1215.)
 func TestProgressMonitor_RecoveryAfterNudge(t *testing.T) {
 	mon := NewLoopProgressMonitor(ProgressConfig{
 		RepeatedToolThreshold: 3,
@@ -654,5 +654,53 @@ func TestFilterForcedEditSchemas_RestrictReads(t *testing.T) {
 	want = []string{"str_replace", "submit_result"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("restrictReads=true: got %v want %v", got, want)
+	}
+}
+
+// TestProgressMonitor_EditDisarmsNudgedRepeatedTool is the #1215 regression:
+// a model that spins, gets nudged, corrects course with a real edit, and
+// then re-runs the flagged command to VERIFY that edit must not be killed.
+// The exact shape comes from the strreplace-tiers-941 transcript: five
+// identical successful builds, nudge, write_file, rebuild, kill (wrong).
+// Renewed spinning after the edit must re-earn the threshold and re-enter
+// the ladder at Nudge, and edit-free defiance must still terminate.
+func TestProgressMonitor_EditDisarmsNudgedRepeatedTool(t *testing.T) {
+	mon := NewLoopProgressMonitor(ProgressConfig{
+		RepeatedToolThreshold: 3,
+	})
+	transcript := []oai.Message{}
+	buildArgs := `{"command":"go build ./pkg/foreman/agent/tools/..."}`
+
+	// Spin to the nudge.
+	_ = mon.Observe(1, []oai.ToolCall{makeCall("a", "bash", buildArgs)}, transcript)
+	_ = mon.Observe(2, []oai.ToolCall{makeCall("b", "bash", buildArgs)}, transcript)
+	d := mon.Observe(3, []oai.ToolCall{makeCall("c", "bash", buildArgs)}, transcript)
+	if d.Action != ProgressNudge {
+		t.Fatalf("expected Nudge at turn 3; got %+v", d)
+	}
+
+	// The model heeds the nudge with a real edit.
+	d = mon.Observe(4, []oai.ToolCall{makeCall("d", "write_file", `{"path":"x_test.go","content":"pkg"}`)}, transcript)
+	if d.Action != ProgressContinue {
+		t.Fatalf("edit turn should Continue; got %+v", d)
+	}
+
+	// Post-edit verification re-runs the flagged command: must NOT be killed.
+	d = mon.Observe(5, []oai.ToolCall{makeCall("e", "bash", buildArgs)}, transcript)
+	if d.Action != ProgressContinue {
+		t.Fatalf("post-edit verification build must not terminate (#1215); got %+v", d)
+	}
+
+	// Renewed spinning re-earns the threshold and re-enters at Nudge, not kill.
+	_ = mon.Observe(6, []oai.ToolCall{makeCall("f", "bash", buildArgs)}, transcript)
+	d = mon.Observe(7, []oai.ToolCall{makeCall("g", "bash", buildArgs)}, transcript)
+	if d.Action != ProgressNudge {
+		t.Fatalf("renewed spin should re-Nudge; got %+v", d)
+	}
+
+	// Edit-free defiance after the second nudge still terminates.
+	d = mon.Observe(8, []oai.ToolCall{makeCall("h", "bash", buildArgs)}, transcript)
+	if d.Action != ProgressForceTerminate {
+		t.Fatalf("edit-free defiance must still terminate; got %+v", d)
 	}
 }

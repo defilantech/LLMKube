@@ -154,8 +154,11 @@ type LoopProgressMonitor struct {
 	// escalates to ForceTerminate. For RepeatedToolCall we track the
 	// specific hash that nudged so a model that changes course on the
 	// next turn isn't punished for the historical buffer; the
-	// nudged-hash recurring even ONCE post-nudge escalates immediately.
-	// For the other signals a bool is enough.
+	// nudged-hash recurring post-nudge escalates immediately UNLESS a
+	// mutating call landed in between (#1215): an edit disarms the hash,
+	// because re-running the flagged command after changing the
+	// workspace is verification, not spin. For the other signals a bool
+	// is enough.
 	nudgedRepeatedToolHash string // "" means not yet nudged
 	nudgedEditFree         bool
 	nudgedContextSoft      bool
@@ -196,6 +199,18 @@ const (
 // model that immediately submits without editing (legitimate for
 // review-only roles or "nothing to fix" cases) does not get
 // false-flagged.
+// hasEditProducingCall reports whether any call in the slice is one of the
+// editProducingTools. Used by the RepeatedToolCall disarm (#1215) and kept
+// beside the map it reads.
+func hasEditProducingCall(calls []oai.ToolCall) bool {
+	for _, tc := range calls {
+		if _, ok := editProducingTools[tc.Function.Name]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 var editProducingTools = map[string]struct{}{
 	"write_file":    {},
 	"str_replace":   {},
@@ -338,6 +353,16 @@ func (m *LoopProgressMonitor) Observe(turn int, calls []oai.ToolCall, transcript
 	m.recordCalls(calls)
 	m.updateEditFreeStreak(calls)
 	m.contextTokens = approxTokens(transcript)
+
+	// A mutating call disarms a nudged RepeatedToolCall hash (#1215): the
+	// workspace changed, so re-running the previously-flagged command is
+	// verification of the new edit, not a continuation of the old spin.
+	// True defiance (the armed hash recurring with NO intervening edit)
+	// still escalates below, and renewed spinning after the edit has to
+	// re-earn the threshold from a buffer that was reset at nudge time.
+	if m.nudgedRepeatedToolHash != "" && hasEditProducingCall(calls) {
+		m.nudgedRepeatedToolHash = ""
+	}
 
 	// 2. Evaluate each signal in priority order: hard cap first
 	// (deadliest), then soft cap, then edit-free, then repeated tool.
