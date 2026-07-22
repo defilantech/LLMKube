@@ -12,7 +12,7 @@
       }
     ]
   },
-  "description": "Error budget and burn-rate dashboard for LLMKube InferenceServices with spec.slo set. Reads the recording rules Pyrra's kubernetes operator (pyrra.dev/v1alpha1 ServiceLevelObjective) writes as a PrometheusRule per SLO. Two assumptions baked into these queries, both worth checking before trusting a panel: (1) rule names carry a window-derived suffix (Pyrra names the default 28d window's rules with a `4w` suffix, e.g. `up:count4w`); a non-default spec.slo.window renders different suffixes and needs the queries edited to match. (2) Pyrra v0.10.1's kubernetes operator does not emit the objective/target as a queryable Prometheus series, so the `objective` dashboard variable is a manually-entered percentage (matching the selected SLO's spec.slo.objective) used only to compute error-budget-remaining locally; it is not read from Prometheus and will silently mismatch if left at its default while viewing a different SLO.",
+  "description": "Error budget and burn-rate dashboard for LLMKube InferenceServices with spec.slo set. Reads the recording rules Pyrra's kubernetes operator (pyrra.dev/v1alpha1 ServiceLevelObjective) writes as a PrometheusRule per SLO. Two assumptions baked into these queries, both worth checking before trusting a panel: (1) rule names carry a window-derived suffix (Pyrra names the default 28d window's rules with a `4w` suffix, e.g. `up:count4w`); the `Window suffix` variable interpolates that suffix into every query, so select the entry matching your spec.slo.window (28d is the default). (2) Pyrra v0.10.1's kubernetes operator does not emit the objective/target as a queryable Prometheus series, so the `objective` dashboard variable is a manually-entered percentage (matching the selected SLO's spec.slo.objective) used only to compute error-budget-remaining locally; it is not read from Prometheus and will silently mismatch if left at its default while viewing a different SLO.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -29,7 +29,7 @@
     },
     {
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-      "description": "1 - ((1 - actual availability over the SLO's window) / (1 - objective)), using Pyrra's up:count4w / up:sum4w recording rules (bool_gauge indicator). Set the `objective` variable to this SLO's spec.slo.objective first.",
+      "description": "1 - ((1 - actual availability over the SLO's window) / (1 - objective)), using Pyrra's up:count${window_suffix} / up:sum${window_suffix} recording rules (bool_gauge indicator). Set the `objective` variable to this SLO's spec.slo.objective first.",
       "fieldConfig": {
         "defaults": {
           "color": {"mode": "thresholds"},
@@ -59,7 +59,7 @@
       "targets": [
         {
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-          "expr": "1 - ((1 - (up:sum4w{slo=~\"$slo\"} / up:count4w{slo=~\"$slo\"})) / (1 - $objective/100))",
+          "expr": "1 - ((1 - (up:sum${window_suffix}{slo=~\"$slo\"} / up:count${window_suffix}{slo=~\"$slo\"})) / (1 - $objective/100))",
           "legendFormat": "{{slo}}",
           "refId": "A"
         }
@@ -69,7 +69,7 @@
     },
     {
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-      "description": "1 - ((1 - actual on-time fraction over the SLO's window) / (1 - objective)), using Pyrra's vllm:e2e_request_latency_seconds:increase4w recording rule (latency indicator; the le=\"2\" series is the fast/good count, the le=\"\" series is the total count). Set the `objective` variable to this SLO's spec.slo.objective first. Latency SLOs are vllm-runtime only.",
+      "description": "1 - ((1 - actual on-time fraction over the SLO's window) / (1 - objective)), using Pyrra's vllm:e2e_request_latency_seconds:increase${window_suffix} recording rule (latency indicator; the le=\"2\" series is the fast/good count, the le=\"\" series is the total count). Set the `objective` variable to this SLO's spec.slo.objective first. Latency SLOs are vllm-runtime only.",
       "fieldConfig": {
         "defaults": {
           "color": {"mode": "thresholds"},
@@ -99,7 +99,7 @@
       "targets": [
         {
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-          "expr": "1 - ((1 - (vllm:e2e_request_latency_seconds:increase4w{slo=~\"$slo\", le=\"2\"} / ignoring(le) vllm:e2e_request_latency_seconds:increase4w{slo=~\"$slo\", le=\"\"})) / (1 - $objective/100))",
+          "expr": "1 - ((1 - (vllm:e2e_request_latency_seconds:increase${window_suffix}{slo=~\"$slo\", le=\"2\"} / ignoring(le) vllm:e2e_request_latency_seconds:increase${window_suffix}{slo=~\"$slo\", le=\"\"})) / (1 - $objective/100))",
           "legendFormat": "{{slo}}",
           "refId": "A"
         }
@@ -126,7 +126,7 @@
       "targets": [
         {
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-          "expr": "1 - ((1 - (up:sum4w{slo=~\"$slo\"} / up:count4w{slo=~\"$slo\"})) / (1 - $objective/100))",
+          "expr": "1 - ((1 - (up:sum${window_suffix}{slo=~\"$slo\"} / up:count${window_suffix}{slo=~\"$slo\"})) / (1 - $objective/100))",
           "legendFormat": "{{slo}}",
           "refId": "A"
         }
@@ -153,7 +153,7 @@
       "targets": [
         {
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-          "expr": "1 - ((1 - (vllm:e2e_request_latency_seconds:increase4w{slo=~\"$slo\", le=\"2\"} / ignoring(le) vllm:e2e_request_latency_seconds:increase4w{slo=~\"$slo\", le=\"\"})) / (1 - $objective/100))",
+          "expr": "1 - ((1 - (vllm:e2e_request_latency_seconds:increase${window_suffix}{slo=~\"$slo\", le=\"2\"} / ignoring(le) vllm:e2e_request_latency_seconds:increase${window_suffix}{slo=~\"$slo\", le=\"\"})) / (1 - $objective/100))",
           "legendFormat": "{{slo}}",
           "refId": "A"
         }
@@ -279,7 +279,7 @@
       "targets": [
         {
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-          "expr": "up:sum4w{slo=~\"$slo\"} / up:count4w{slo=~\"$slo\"}",
+          "expr": "up:sum${window_suffix}{slo=~\"$slo\"} / up:count${window_suffix}{slo=~\"$slo\"}",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -287,7 +287,7 @@
         },
         {
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-          "expr": "vllm:e2e_request_latency_seconds:increase4w{slo=~\"$slo\", le=\"2\"} / ignoring(le) vllm:e2e_request_latency_seconds:increase4w{slo=~\"$slo\", le=\"\"}",
+          "expr": "vllm:e2e_request_latency_seconds:increase${window_suffix}{slo=~\"$slo\", le=\"2\"} / ignoring(le) vllm:e2e_request_latency_seconds:increase${window_suffix}{slo=~\"$slo\", le=\"\"}",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -322,6 +322,26 @@
         "regex": "",
         "skipUrlSync": false,
         "type": "datasource"
+      },
+      {
+        "current": {"selected": true, "text": "28d (4w)", "value": "4w"},
+        "description": "Window-derived suffix of the Pyrra recording-rule names for the selected SLO's spec.slo.window. Pyrra formats the window with prometheus common model.Duration, which uses the largest exactly-dividing unit: 28d renders as 4w, 7d as 1w, 14d as 2w, 84d as 12w, while 30d and 90d stay in days. Pick the entry matching your spec.slo.window; windows outside this list use their model.Duration rendering.",
+        "hide": 0,
+        "includeAll": false,
+        "label": "Window suffix",
+        "multi": false,
+        "name": "window_suffix",
+        "options": [
+          {"selected": true, "text": "28d (4w)", "value": "4w"},
+          {"selected": false, "text": "7d (1w)", "value": "1w"},
+          {"selected": false, "text": "14d (2w)", "value": "2w"},
+          {"selected": false, "text": "30d", "value": "30d"},
+          {"selected": false, "text": "84d (12w)", "value": "12w"},
+          {"selected": false, "text": "90d", "value": "90d"}
+        ],
+        "query": "28d (4w) : 4w, 7d (1w) : 1w, 14d (2w) : 2w, 30d : 30d, 84d (12w) : 12w, 90d : 90d",
+        "skipUrlSync": false,
+        "type": "custom"
       },
       {
         "current": {"selected": true, "text": "All", "value": "$__all"},
