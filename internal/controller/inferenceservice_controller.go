@@ -250,11 +250,11 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return finalResult, statusErr
 	}
 
-	if requeueAfter, err := r.reconcilePodLifetime(ctx, inferenceService, isMetal); err != nil {
+	lifetimeRequeue, err := r.reconcilePodLifetime(ctx, inferenceService, isMetal, time.Now())
+	if err != nil {
 		return finalResult, err
-	} else {
-		finalResult.RequeueAfter = earliestPositive(finalResult.RequeueAfter, requeueAfter)
 	}
+	finalResult.RequeueAfter = earliestPositive(finalResult.RequeueAfter, lifetimeRequeue)
 
 	// When a rollout is deferred pending idle, reconcileRolloutPolicy set
 	// RolloutDeferred=True (persisted by the status update above). Drive a

@@ -12,6 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -23,7 +24,7 @@ func TestReconcilePodLifetimeRequeuesUnexpiredPod(t *testing.T) {
 	start := now.Add(-5 * time.Second)
 	r, isvc, pod := lifetimeReconciler(t, start, 30*time.Second)
 
-	requeue, err := r.reconcilePodLifetimeAt(context.Background(), isvc, false, now)
+	requeue, err := r.reconcilePodLifetime(context.Background(), isvc, false, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +38,7 @@ func TestReconcilePodLifetimeRequeuesUnexpiredPod(t *testing.T) {
 
 func TestReconcilePodLifetimeDeletesOldestExpiredPod(t *testing.T) {
 	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
-	r, isvc, first := lifetimeReconcilerReplicas(t, now.Add(-2*time.Minute), time.Minute, 2)
+	r, isvc, first := lifetimeReconcilerWith(t, now.Add(-2*time.Minute), time.Minute, 2, nil)
 	second := first.DeepCopy()
 	second.Name = "second"
 	second.UID = "pod-second"
@@ -48,11 +49,11 @@ func TestReconcilePodLifetimeDeletesOldestExpiredPod(t *testing.T) {
 	}
 	recorder := &recordingClient{Client: r.Client}
 	r.Client = recorder
-	if _, err := r.reconcilePodLifetimeAt(context.Background(), isvc, false, now); err != nil {
+	if _, err := r.reconcilePodLifetime(context.Background(), isvc, false, now); err != nil {
 		t.Fatal(err)
 	}
-	if len(recorder.deleteOpts) != 1 {
-		t.Fatalf("eviction calls = %d", len(recorder.deleteOpts))
+	if len(recorder.evictions) != 1 {
+		t.Fatalf("eviction calls = %d", len(recorder.evictions))
 	}
 	if err := r.Get(context.Background(), client.ObjectKeyFromObject(second), &corev1.Pod{}); err != nil {
 		t.Fatalf("second pod was deleted too: %v", err)
@@ -73,11 +74,11 @@ func TestReconcilePodLifetimeIgnoresTerminalPods(t *testing.T) {
 	}
 	recorder := &recordingClient{Client: r.Client}
 	r.Client = recorder
-	if _, err := r.reconcilePodLifetimeAt(context.Background(), isvc, false, now); err != nil {
+	if _, err := r.reconcilePodLifetime(context.Background(), isvc, false, now); err != nil {
 		t.Fatal(err)
 	}
-	if len(recorder.deleteOpts) != 1 {
-		t.Fatalf("eviction calls = %d, want 1", len(recorder.deleteOpts))
+	if len(recorder.evictions) != 1 {
+		t.Fatalf("eviction calls = %d, want 1", len(recorder.evictions))
 	}
 }
 
@@ -85,12 +86,12 @@ func TestReconcilePodLifetimeNoopWhenUnsetOrMetal(t *testing.T) {
 	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
 	r, isvc, _ := lifetimeReconciler(t, now.Add(-2*time.Minute), time.Minute)
 	isvc.Spec.MaxPodLifetimeSeconds = nil
-	if got, err := r.reconcilePodLifetimeAt(context.Background(), isvc, false, now); err != nil || got != 0 {
+	if got, err := r.reconcilePodLifetime(context.Background(), isvc, false, now); err != nil || got != 0 {
 		t.Fatalf("unset lifetime returned %s, %v", got, err)
 	}
 	seconds := int64(60)
 	isvc.Spec.MaxPodLifetimeSeconds = &seconds
-	if got, err := r.reconcilePodLifetimeAt(context.Background(), isvc, true, now); err != nil || got != 0 {
+	if got, err := r.reconcilePodLifetime(context.Background(), isvc, true, now); err != nil || got != 0 {
 		t.Fatalf("metal lifetime returned %s, %v", got, err)
 	}
 }
@@ -115,7 +116,7 @@ func TestReconcilePodLifetimeBlocksUnstablePodsAndDeployment(t *testing.T) {
 					p.Finalizers = []string{"test/finalizer"}
 				}
 			}
-			r, isvc, pod := lifetimeReconcilerWith(t, now.Add(-2*time.Minute), time.Minute, podMutator)
+			r, isvc, pod := lifetimeReconcilerWith(t, now.Add(-2*time.Minute), time.Minute, 1, podMutator)
 			deployment := &appsv1.Deployment{}
 			if err := r.Get(context.Background(), types.NamespacedName{Name: "svc", Namespace: "ns"}, deployment); err != nil {
 				t.Fatal(err)
@@ -127,7 +128,7 @@ func TestReconcilePodLifetimeBlocksUnstablePodsAndDeployment(t *testing.T) {
 			if err := r.Status().Update(context.Background(), pod); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := r.reconcilePodLifetimeAt(context.Background(), isvc, false, now); err != nil {
+			if _, err := r.reconcilePodLifetime(context.Background(), isvc, false, now); err != nil {
 				t.Fatal(err)
 			}
 			if err := r.Get(context.Background(), client.ObjectKeyFromObject(pod), &corev1.Pod{}); err != nil {
@@ -145,14 +146,14 @@ func TestReconcilePodLifetimeIgnoresForeignOwnership(t *testing.T) {
 	foreign.UID = "foreign-uid"
 	foreign.ResourceVersion = ""
 	foreign.OwnerReferences[0].UID = "other-rs"
-	foreignRS := &appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{Name: "foreign-rs", Namespace: "ns", UID: "other-rs", Labels: map[string]string{"app": "svc"}, OwnerReferences: []metav1.OwnerReference{{UID: "other-deployment", Controller: boolPointer(true)}}}}
+	foreignRS := &appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{Name: "foreign-rs", Namespace: "ns", UID: "other-rs", Labels: map[string]string{"app": "svc"}, OwnerReferences: []metav1.OwnerReference{{UID: "other-deployment", Controller: ptr.To(true)}}}}
 	if err := r.Create(context.Background(), foreignRS); err != nil {
 		t.Fatal(err)
 	}
 	if err := r.Create(context.Background(), foreign); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.reconcilePodLifetimeAt(context.Background(), isvc, false, now); err != nil {
+	if _, err := r.reconcilePodLifetime(context.Background(), isvc, false, now); err != nil {
 		t.Fatal(err)
 	}
 	if err := r.Get(context.Background(), client.ObjectKeyFromObject(pod), &corev1.Pod{}); !apierrors.IsNotFound(err) {
@@ -163,8 +164,6 @@ func TestReconcilePodLifetimeIgnoresForeignOwnership(t *testing.T) {
 	}
 }
 
-func boolPointer(value bool) *bool { return &value }
-
 func TestEarliestPositive(t *testing.T) {
 	if got := earliestPositive(0, 5*time.Second, 2*time.Second, -time.Second); got != 2*time.Second {
 		t.Fatalf("got %s", got)
@@ -174,18 +173,12 @@ func TestEarliestPositive(t *testing.T) {
 	}
 }
 
+// recordingClient captures the evictions the controller submits and can fail
+// them, so tests can assert on the request the apiserver would have seen.
 type recordingClient struct {
 	client.Client
-	deleteOpts []client.DeleteOption
-	deleteErr  error
-}
-
-func (c *recordingClient) Delete(ctx context.Context, obj client.Object, opts ...client.DeleteOption) error {
-	c.deleteOpts = append(c.deleteOpts, opts...)
-	if c.deleteErr != nil {
-		return c.deleteErr
-	}
-	return c.Client.Delete(ctx, obj, opts...)
+	evictions []*policyv1.Eviction
+	evictErr  error
 }
 
 func (c *recordingClient) SubResource(name string) client.SubResourceClient {
@@ -198,22 +191,13 @@ type recordingSubResource struct {
 }
 
 func (s *recordingSubResource) Create(ctx context.Context, obj client.Object, subResource client.Object, opts ...client.SubResourceCreateOption) error {
-	if options, ok := subResource.(*policyv1.Eviction); ok {
-		s.parent.deleteOpts = append(s.parent.deleteOpts, evictionDeleteOption{options.DeleteOptions})
-		if s.parent.deleteErr != nil {
-			return s.parent.deleteErr
+	if eviction, ok := subResource.(*policyv1.Eviction); ok {
+		s.parent.evictions = append(s.parent.evictions, eviction)
+		if s.parent.evictErr != nil {
+			return s.parent.evictErr
 		}
 	}
 	return s.SubResourceClient.Create(ctx, obj, subResource, opts...)
-}
-
-type evictionDeleteOption struct{ options *metav1.DeleteOptions }
-
-func (o evictionDeleteOption) ApplyToDelete(target *client.DeleteOptions) {
-	if o.options != nil {
-		target.Preconditions = o.options.Preconditions
-		target.GracePeriodSeconds = o.options.GracePeriodSeconds
-	}
 }
 
 func TestReconcilePodLifetimeDeleteOptions(t *testing.T) {
@@ -221,16 +205,15 @@ func TestReconcilePodLifetimeDeleteOptions(t *testing.T) {
 	r, isvc, _ := lifetimeReconciler(t, now.Add(-2*time.Minute), time.Minute)
 	recorder := &recordingClient{Client: r.Client}
 	r.Client = recorder
-	if _, err := r.reconcilePodLifetimeAt(context.Background(), isvc, false, now); err != nil {
+	if _, err := r.reconcilePodLifetime(context.Background(), isvc, false, now); err != nil {
 		t.Fatal(err)
 	}
-	if len(recorder.deleteOpts) != 1 {
-		t.Fatalf("delete calls = %d", len(recorder.deleteOpts))
+	if len(recorder.evictions) != 1 {
+		t.Fatalf("eviction calls = %d", len(recorder.evictions))
 	}
-	got := &client.DeleteOptions{}
-	recorder.deleteOpts[0].ApplyToDelete(got)
-	if got.GracePeriodSeconds != nil {
-		t.Fatalf("grace period = %v", *got.GracePeriodSeconds)
+	got := recorder.evictions[0].DeleteOptions
+	if got == nil || got.GracePeriodSeconds != nil {
+		t.Fatalf("delete options did not preserve graceful termination: %#v", got)
 	}
 	if got.Preconditions == nil || got.Preconditions.UID == nil || *got.Preconditions.UID != "pod-first" {
 		t.Fatalf("missing UID precondition: %#v", got.Preconditions)
@@ -240,9 +223,9 @@ func TestReconcilePodLifetimeDeleteOptions(t *testing.T) {
 func TestReconcilePodLifetimeNotFoundDeleteIsSuccess(t *testing.T) {
 	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
 	r, isvc, _ := lifetimeReconciler(t, now.Add(-2*time.Minute), time.Minute)
-	recorder := &recordingClient{Client: r.Client, deleteErr: apierrors.NewNotFound(corev1.Resource("pods"), "first")}
+	recorder := &recordingClient{Client: r.Client, evictErr: apierrors.NewNotFound(corev1.Resource("pods"), "first")}
 	r.Client = recorder
-	if _, err := r.reconcilePodLifetimeAt(context.Background(), isvc, false, now); err != nil {
+	if _, err := r.reconcilePodLifetime(context.Background(), isvc, false, now); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -250,9 +233,9 @@ func TestReconcilePodLifetimeNotFoundDeleteIsSuccess(t *testing.T) {
 func TestReconcilePodLifetimePDBRetry(t *testing.T) {
 	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
 	r, isvc, _ := lifetimeReconciler(t, now.Add(-2*time.Minute), time.Minute)
-	recorder := &recordingClient{Client: r.Client, deleteErr: apierrors.NewTooManyRequests("pdb", 1)}
+	recorder := &recordingClient{Client: r.Client, evictErr: apierrors.NewTooManyRequests("pdb", 1)}
 	r.Client = recorder
-	got, err := r.reconcilePodLifetimeAt(context.Background(), isvc, false, now)
+	got, err := r.reconcilePodLifetime(context.Background(), isvc, false, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,18 +254,10 @@ func TestPodLifetimeBoundsDuration(t *testing.T) {
 }
 
 func lifetimeReconciler(t *testing.T, start time.Time, lifetime time.Duration) (*InferenceServiceReconciler, *inferencev1alpha1.InferenceService, *corev1.Pod) {
-	return lifetimeReconcilerReplicas(t, start, lifetime, 1)
+	return lifetimeReconcilerWith(t, start, lifetime, 1, nil)
 }
 
-func lifetimeReconcilerWith(t *testing.T, start time.Time, lifetime time.Duration, podMutator func(*corev1.Pod)) (*InferenceServiceReconciler, *inferencev1alpha1.InferenceService, *corev1.Pod) {
-	return lifetimeReconcilerReplicasWith(t, start, lifetime, 1, podMutator)
-}
-
-func lifetimeReconcilerReplicas(t *testing.T, start time.Time, lifetime time.Duration, replicaCount int32) (*InferenceServiceReconciler, *inferencev1alpha1.InferenceService, *corev1.Pod) {
-	return lifetimeReconcilerReplicasWith(t, start, lifetime, replicaCount, nil)
-}
-
-func lifetimeReconcilerReplicasWith(t *testing.T, start time.Time, lifetime time.Duration, replicaCount int32, podMutator func(*corev1.Pod)) (*InferenceServiceReconciler, *inferencev1alpha1.InferenceService, *corev1.Pod) {
+func lifetimeReconcilerWith(t *testing.T, start time.Time, lifetime time.Duration, replicaCount int32, podMutator func(*corev1.Pod)) (*InferenceServiceReconciler, *inferencev1alpha1.InferenceService, *corev1.Pod) {
 	t.Helper()
 	const (
 		isvcUID = types.UID("isvc-uid")

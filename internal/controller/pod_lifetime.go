@@ -2,7 +2,6 @@ package controller
 
 import (
 	"context"
-	"sort"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -36,11 +35,8 @@ func earliestPositive(values ...time.Duration) time.Duration {
 // reconcilePodLifetime recycles at most one healthy, expired pod. All
 // workload checks are deliberately conservative: a watch will cause another
 // attempt after the Deployment has settled or a replacement pod is ready.
-func (r *InferenceServiceReconciler) reconcilePodLifetime(ctx context.Context, isvc *inferencev1alpha1.InferenceService, isMetal bool) (time.Duration, error) {
-	return r.reconcilePodLifetimeAt(ctx, isvc, isMetal, time.Now())
-}
-
-func (r *InferenceServiceReconciler) reconcilePodLifetimeAt(ctx context.Context, isvc *inferencev1alpha1.InferenceService, isMetal bool, now time.Time) (time.Duration, error) {
+// now is injected so tests can drive the deadline arithmetic.
+func (r *InferenceServiceReconciler) reconcilePodLifetime(ctx context.Context, isvc *inferencev1alpha1.InferenceService, isMetal bool, now time.Time) (time.Duration, error) {
 	if isMetal || isvc.Spec.MaxPodLifetimeSeconds == nil {
 		return 0, nil
 	}
@@ -53,7 +49,9 @@ func (r *InferenceServiceReconciler) reconcilePodLifetimeAt(ctx context.Context,
 	if err != nil {
 		return 0, err
 	}
-	if !activePodCountMatches(deployment, owned) || !allPodsReady(owned) {
+	// stableDeployment already proved Status.Replicas is the desired count, so
+	// it doubles as the expected number of active pods.
+	if len(owned) != int(deployment.Status.Replicas) || !allPodsReady(owned) {
 		return 0, nil
 	}
 	return r.recycleExpiredPod(ctx, owned, podLifetime(*isvc.Spec.MaxPodLifetimeSeconds), now)
@@ -68,51 +66,38 @@ func (r *InferenceServiceReconciler) getStableDeployment(ctx context.Context, is
 	if err != nil {
 		return nil, err
 	}
-	_, stable := stableDeployment(deployment, isvc.UID)
-	if !stable {
+	if !stableDeployment(deployment, isvc) {
 		return nil, nil
 	}
 	return deployment, nil
 }
 
-func activePodCountMatches(deployment *appsv1.Deployment, pods []*corev1.Pod) bool {
-	replicas := int32(1)
-	if deployment.Spec.Replicas != nil {
-		replicas = *deployment.Spec.Replicas
-	}
-	return int64(len(pods)) == int64(replicas)
-}
-
+// recycleExpiredPod evicts the pod that expired first, or reports how long
+// until the next one does. Ties break on name so repeated reconciles of the
+// same state pick the same pod.
 func (r *InferenceServiceReconciler) recycleExpiredPod(ctx context.Context, owned []*corev1.Pod, lifetime time.Duration, now time.Time) (time.Duration, error) {
-	type candidate struct {
-		pod      *corev1.Pod
-		deadline time.Time
-	}
-	candidates := make([]candidate, 0, len(owned))
+	var expired *corev1.Pod
+	var expiredDeadline time.Time
 	var earliest time.Duration
 	for _, pod := range owned {
 		deadline := pod.Status.StartTime.Time.Add(lifetime)
 		if deadline.After(now) {
 			earliest = earliestPositive(earliest, deadline.Sub(now))
-		} else {
-			candidates = append(candidates, candidate{pod: pod, deadline: deadline})
+			continue
+		}
+		if expired == nil || deadline.Before(expiredDeadline) ||
+			(deadline.Equal(expiredDeadline) && pod.Name < expired.Name) {
+			expired, expiredDeadline = pod, deadline
 		}
 	}
-	if len(candidates) == 0 {
+	if expired == nil {
 		return earliest, nil
 	}
-	sort.Slice(candidates, func(i, j int) bool {
-		if candidates[i].deadline.Equal(candidates[j].deadline) {
-			return candidates[i].pod.Name < candidates[j].pod.Name
-		}
-		return candidates[i].deadline.Before(candidates[j].deadline)
-	})
-	return evictPod(ctx, r.Client, candidates[0].pod)
+	return r.evictPod(ctx, expired)
 }
 
-func evictPod(ctx context.Context, r client.Client, pod *corev1.Pod) (time.Duration, error) {
-	uid := pod.UID
-	eviction := &policyv1.Eviction{ObjectMeta: metav1.ObjectMeta{Name: pod.Name, Namespace: pod.Namespace}, DeleteOptions: &metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid}}}
+func (r *InferenceServiceReconciler) evictPod(ctx context.Context, pod *corev1.Pod) (time.Duration, error) {
+	eviction := &policyv1.Eviction{ObjectMeta: metav1.ObjectMeta{Name: pod.Name, Namespace: pod.Namespace}, DeleteOptions: &metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &pod.UID}}}
 	err := r.SubResource("eviction").Create(ctx, pod, eviction)
 	switch {
 	case apierrors.IsNotFound(err):
@@ -124,15 +109,15 @@ func evictPod(ctx context.Context, r client.Client, pod *corev1.Pod) (time.Durat
 	}
 }
 
-func stableDeployment(deployment *appsv1.Deployment, isvcUID types.UID) (int32, bool) {
-	if !controlledBy(deployment, isvcUID) || deployment.Generation == 0 || deployment.Status.ObservedGeneration != deployment.Generation {
-		return 0, false
+func stableDeployment(deployment *appsv1.Deployment, isvc *inferencev1alpha1.InferenceService) bool {
+	if !metav1.IsControlledBy(deployment, isvc) || deployment.Generation == 0 || deployment.Status.ObservedGeneration != deployment.Generation {
+		return false
 	}
 	replicas := int32(1)
 	if deployment.Spec.Replicas != nil {
 		replicas = *deployment.Spec.Replicas
 	}
-	return replicas, deployment.Status.Replicas == replicas && deployment.Status.UpdatedReplicas == replicas && deployment.Status.ReadyReplicas == replicas && deployment.Status.AvailableReplicas == replicas
+	return deployment.Status.Replicas == replicas && deployment.Status.UpdatedReplicas == replicas && deployment.Status.ReadyReplicas == replicas && deployment.Status.AvailableReplicas == replicas
 }
 
 func (r *InferenceServiceReconciler) ownedActivePods(ctx context.Context, deployment *appsv1.Deployment) ([]*corev1.Pod, error) {
@@ -146,7 +131,7 @@ func (r *InferenceServiceReconciler) ownedActivePods(ctx context.Context, deploy
 	}
 	ownedRS := make(map[types.UID]struct{})
 	for i := range replicaSets.Items {
-		if controlledBy(&replicaSets.Items[i], deployment.UID) {
+		if metav1.IsControlledBy(&replicaSets.Items[i], deployment) {
 			ownedRS[replicaSets.Items[i].UID] = struct{}{}
 		}
 	}
@@ -160,7 +145,14 @@ func (r *InferenceServiceReconciler) ownedActivePods(ctx context.Context, deploy
 	owned := make([]*corev1.Pod, 0, len(pods.Items))
 	for i := range pods.Items {
 		pod := &pods.Items[i]
-		if _, ok := ownedRS[controllerUID(pod)]; !ok || pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+		if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+			continue
+		}
+		ref := metav1.GetControllerOfNoCopy(pod)
+		if ref == nil {
+			continue
+		}
+		if _, ok := ownedRS[ref.UID]; !ok {
 			continue
 		}
 		owned = append(owned, pod)
@@ -181,28 +173,12 @@ func podLifetime(seconds int64) time.Duration {
 	if seconds <= 0 {
 		return 0
 	}
+	// The CRD has no Maximum, so an unbounded value would overflow Duration
+	// into the past and turn recycling into an eviction loop.
 	if seconds > maxPodLifetimeSeconds {
 		seconds = maxPodLifetimeSeconds
 	}
 	return time.Duration(seconds) * time.Second
-}
-
-func controlledBy(obj metav1.Object, uid types.UID) bool {
-	for _, ref := range obj.GetOwnerReferences() {
-		if ref.Controller != nil && *ref.Controller && ref.UID == uid {
-			return true
-		}
-	}
-	return false
-}
-
-func controllerUID(obj metav1.Object) types.UID {
-	for _, ref := range obj.GetOwnerReferences() {
-		if ref.Controller != nil && *ref.Controller {
-			return ref.UID
-		}
-	}
-	return ""
 }
 
 func podReady(pod *corev1.Pod) bool {
