@@ -79,10 +79,11 @@ func gpuSharingMode(isvc *inferencev1alpha1.InferenceService) string {
 // toleration key from the Model spec), so a nil/exclusive gpuSharing changes
 // nothing for existing manifests.
 //
-// Validation performed here is reconcile-time; promoting it to admission
-// time is a planned follow-up (#1196 story 5). CEL on the CRD already
-// enforces the structural rules (profile iff partitioned, memoryLimitGiB
-// only for shared).
+// These rules run at BOTH admission time (the quota webhook's
+// validateGPUSharing, on fleets with multitenancy enabled) and reconcile
+// time (the backstop for installs without the webhook). CEL on the CRD
+// already enforces the structural rules (profile iff partitioned,
+// memoryLimitGiB only for shared).
 func resolveGPUSharing(isvc *inferencev1alpha1.InferenceService, model *inferencev1alpha1.Model, sharedPoolSelector map[string]string) (gpuSharingResolution, error) {
 	exclusive := gpuSharingResolution{
 		resourceName:  gpuResourceNameForSpec(model),
@@ -96,14 +97,22 @@ func resolveGPUSharing(isvc *inferencev1alpha1.InferenceService, model *inferenc
 
 	// Both non-exclusive modes are single-device by definition: a partition
 	// cannot span devices and a shared slot is one seat on one device.
-	if count := resolveGPUCount(isvc, model); count != 1 {
+	// Nil-safe count: at admission time the Model may not exist yet
+	// (resolveGPUCount assumes a non-nil Model).
+	count := int32(0)
+	if model != nil {
+		count = resolveGPUCount(isvc, model)
+	} else if isvc.Spec.Resources != nil {
+		count = isvc.Spec.Resources.GPU
+	}
+	if count != 1 {
 		return gpuSharingResolution{}, fmt.Errorf(
 			"gpuSharing mode %q requires exactly 1 GPU, got %d (tensor parallelism needs mode exclusive)", mode, count)
 	}
 
 	// DRA claims allocate devices out-of-band; combining them with a sharing
 	// mode would leave two owners for the same placement decision.
-	if len(modelResourceClaims(model)) > 0 {
+	if model != nil && len(modelResourceClaims(model)) > 0 {
 		return gpuSharingResolution{}, fmt.Errorf(
 			"gpuSharing mode %q cannot be combined with hardware.gpu.resourceClaims (DRA claims own device placement)", mode)
 	}
@@ -241,6 +250,29 @@ func podVRAMBytes(isvc *inferencev1alpha1.InferenceService, model *inferencev1al
 		}
 		return int64(count) * int64(vramPerDeviceGiB) * bytesPerGiB, true
 	}
+}
+
+// gpuSharingParallelismConflict rejects explicit multi-device parallelism on
+// a non-exclusive sharing mode. resolveGPUSharing already enforces gpu == 1,
+// which keeps the AUTO-derived tensor-parallel size at 1; this catches the
+// remaining hole where vllmConfig/sglangConfig declare an explicit size > 1
+// that the runtime would then try to satisfy inside a single partition or
+// shared seat.
+func gpuSharingParallelismConflict(isvc *inferencev1alpha1.InferenceService) error {
+	mode := gpuSharingMode(isvc)
+	if mode == inferencev1alpha1.GPUSharingModeExclusive {
+		return nil
+	}
+	over := func(v *int32) bool { return v != nil && *v > 1 }
+	if cfg := isvc.Spec.VLLMConfig; cfg != nil && over(cfg.TensorParallelSize) {
+		return fmt.Errorf("gpuSharing mode %q cannot use vllmConfig.tensorParallelSize > 1 (parallelism needs mode exclusive)", mode)
+	}
+	if cfg := isvc.Spec.SGLangConfig; cfg != nil {
+		if over(cfg.TensorParallelSize) || over(cfg.ExpertParallelSize) || over(cfg.DataParallelSize) {
+			return fmt.Errorf("gpuSharing mode %q cannot use sglangConfig tensor/expert/data parallelism > 1 (parallelism needs mode exclusive)", mode)
+		}
+	}
+	return nil
 }
 
 // serviceVRAMBytesFor derives the total VRAM footprint of an

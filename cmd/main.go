@@ -458,7 +458,10 @@ func main() {
 			setupLog.Error(err, "unable to create webhook", "webhook", "Model")
 			os.Exit(1)
 		}
-		if err := controller.SetupInferenceServiceQuotaWebhookWithManager(mgr, gpuSharingVRAMPerDeviceGiB); err != nil {
+		if err := controller.SetupInferenceServiceQuotaWebhookWithManager(mgr, controller.InferenceServiceQuotaWebhookOptions{
+			VRAMPerDeviceGiB:     gpuSharingVRAMPerDeviceGiB,
+			GPUSharingSharedPool: gpuSharingSharedPool,
+		}); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "InferenceServiceQuota")
 			os.Exit(1)
 		}
