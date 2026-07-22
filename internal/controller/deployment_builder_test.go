@@ -205,7 +205,7 @@ func TestResolveRuntimeImage(t *testing.T) {
 			expected: stockLlamaCpp,
 		},
 		{
-			name:    "llamacpp nvidia keeps the stock image even with vulkan runtime",
+			name:    "llamacpp nvidia with GPU not enabled keeps the stock image (vulkan runtime string)",
 			backend: &LlamaCppBackend{},
 			model: &inferencev1alpha1.Model{
 				Spec: inferencev1alpha1.ModelSpec{
@@ -217,7 +217,7 @@ func TestResolveRuntimeImage(t *testing.T) {
 			expected: stockLlamaCpp,
 		},
 		{
-			name:    "llamacpp nvidia keeps the stock image even with rocm runtime",
+			name:    "llamacpp nvidia with GPU not enabled keeps the stock image (rocm runtime string)",
 			backend: &LlamaCppBackend{},
 			model: &inferencev1alpha1.Model{
 				Spec: inferencev1alpha1.ModelSpec{
@@ -286,7 +286,7 @@ func TestResolveRuntimeImage(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := resolveRuntimeImage(tc.backend, tc.model); got != tc.expected {
+			if got := resolveRuntimeImage(tc.backend, tc.model, nil); got != tc.expected {
 				t.Fatalf("resolveRuntimeImage() = %q, want %q", got, tc.expected)
 			}
 		})
@@ -601,4 +601,90 @@ func TestServedModelPath(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestResolveRuntimeImageNVIDIAAndOverrides covers the #1197 additions: the
+// NVIDIA-GPU llamacpp divert to the CUDA image (the :server default is
+// CPU-only) and the fleet-level --runtime-images override that wins over
+// every built-in divergence.
+func TestResolveRuntimeImageNVIDIAAndOverrides(t *testing.T) {
+	nvidiaGPUModel := func(vendor string) *inferencev1alpha1.Model {
+		return &inferencev1alpha1.Model{
+			Spec: inferencev1alpha1.ModelSpec{
+				Hardware: &inferencev1alpha1.HardwareSpec{
+					GPU: &inferencev1alpha1.GPUSpec{Enabled: true, Vendor: vendor},
+				},
+			},
+		}
+	}
+
+	t.Run("llamacpp with an enabled NVIDIA GPU diverts to the CUDA image", func(t *testing.T) {
+		if got := resolveRuntimeImage(&LlamaCppBackend{}, nvidiaGPUModel("nvidia"), nil); got != llamaCppCUDAImage {
+			t.Fatalf("got %q, want %q", got, llamaCppCUDAImage)
+		}
+	})
+
+	t.Run("llamacpp with an enabled vendorless GPU defaults to NVIDIA and diverts", func(t *testing.T) {
+		if got := resolveRuntimeImage(&LlamaCppBackend{}, nvidiaGPUModel(""), nil); got != llamaCppCUDAImage {
+			t.Fatalf("got %q, want %q", got, llamaCppCUDAImage)
+		}
+	})
+
+	t.Run("llamacpp with no GPU section keeps the CPU image", func(t *testing.T) {
+		got := resolveRuntimeImage(&LlamaCppBackend{}, &inferencev1alpha1.Model{}, nil)
+		if got != (&LlamaCppBackend{}).DefaultImage() {
+			t.Fatalf("got %q, want the CPU default", got)
+		}
+	})
+
+	t.Run("override wins over the built-in AMD divert", func(t *testing.T) {
+		overrides := map[string]string{"llamacpp": "mirror.local/llamacpp:airgap"}
+		if got := resolveRuntimeImage(&LlamaCppBackend{}, amdModel("vulkan"), overrides); got != "mirror.local/llamacpp:airgap" {
+			t.Fatalf("got %q, want the override", got)
+		}
+	})
+
+	t.Run("override wins over a backend default", func(t *testing.T) {
+		overrides := map[string]string{"vllm": "mirror.local/vllm:airgap"}
+		if got := resolveRuntimeImage(&VLLMBackend{}, &inferencev1alpha1.Model{}, overrides); got != "mirror.local/vllm:airgap" {
+			t.Fatalf("got %q, want the override", got)
+		}
+	})
+
+	t.Run("an override for a different backend does not leak", func(t *testing.T) {
+		overrides := map[string]string{"vllm": "mirror.local/vllm:airgap"}
+		got := resolveRuntimeImage(&TGIBackend{}, &inferencev1alpha1.Model{}, overrides)
+		if got != (&TGIBackend{}).DefaultImage() {
+			t.Fatalf("got %q, want the TGI default", got)
+		}
+	})
+}
+
+func TestParseRuntimeImageOverrides(t *testing.T) {
+	t.Run("empty means none", func(t *testing.T) {
+		got, err := ParseRuntimeImageOverrides("  ")
+		if err != nil || got != nil {
+			t.Fatalf("got (%v, %v), want (nil, nil)", got, err)
+		}
+	})
+	t.Run("parses multiple entries with spaces and case-folds keys", func(t *testing.T) {
+		got, err := ParseRuntimeImageOverrides(" VLLM=a/b:1 , tgi=c/d:2 ")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got["vllm"] != "a/b:1" || got["tgi"] != "c/d:2" {
+			t.Fatalf("got %v", got)
+		}
+	})
+	t.Run("rejects unknown runtimes and malformed pairs", func(t *testing.T) {
+		if _, err := ParseRuntimeImageOverrides("triton=x"); err == nil {
+			t.Fatal("expected error for unknown runtime")
+		}
+		if _, err := ParseRuntimeImageOverrides("vllm="); err == nil {
+			t.Fatal("expected error for empty image")
+		}
+		if _, err := ParseRuntimeImageOverrides("not-a-pair"); err == nil {
+			t.Fatal("expected error for missing separator")
+		}
+	})
 }

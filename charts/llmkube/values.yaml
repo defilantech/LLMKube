@@ -409,3 +409,30 @@ multitenancy:
 networkPolicies:
   enabled: false
   additionalEgressCIDRs: []
+
+# Fleet-wide runtime image overrides (#1197). When set, a value replaces the
+# operator's built-in default image for that runtime backend, including its
+# vendor-specific divergences. Intended for air-gapped or mirrored registries.
+# An explicit InferenceService spec.image always wins over these. Empty values
+# are ignored (stock defaults apply); the stock defaults are pinned in
+# internal/controller/runtime_*.go and listed in docs/operations/
+# b200-validation-matrix.md.
+runtimeImages:
+  llamacpp: ""
+  vllm: ""
+  sglang: ""
+  tgi: ""
+
+# Informational platform floors for NVIDIA Blackwell (B200-class) serving
+# (#1197). Rendered into NOTES.txt at install time so a first deploy on new
+# silicon fails loudly at the checklist, not cryptically at CUDA init. These
+# do not gate anything; they document what the fleet's nodes must satisfy.
+# Verified 2026-07-21 against the NVIDIA Blackwell Compatibility Guide, the
+# GPU Operator platform-support matrix, and the NCCL release notes.
+platformFloors:
+  # Render the floors block in NOTES.txt.
+  show: true
+  nvidiaDriver: ">= 570.133.20 (R570 branch; R580/CUDA 13 current)"
+  cudaToolkit: ">= 12.8 (first release with sm_100 codegen)"
+  nccl: ">= 2.25.1 (first Blackwell support; 2.27+ recommended)"
+  gpuOperator: ">= v25.3.0 (first HGX B200 support)"

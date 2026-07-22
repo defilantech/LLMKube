@@ -78,6 +78,12 @@ type InferenceServiceReconciler struct {
 	// default client with a 5-second timeout is created per request. Primarily
 	// useful in tests to capture requests or control timeouts.
 	HTTPClient *http.Client
+	// RuntimeImageOverrides remaps a runtime backend's default image
+	// fleet-wide (keys: llamacpp, vllm, sglang, tgi). Set via
+	// --runtime-images (chart: runtimeImages.*) for air-gapped/mirrored
+	// registries; wins over the built-in vendor divergences, loses to an
+	// explicit spec.image. Empty means stock defaults.
+	RuntimeImageOverrides map[string]string
 	// RolloutIdleBaseURL overrides the base URL used for idle endpoint checks.
 	// When non-empty, this URL is used directly instead of constructing a
 	// cluster-local service DNS name. Primarily useful in tests where cluster

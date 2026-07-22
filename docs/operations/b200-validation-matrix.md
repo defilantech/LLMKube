@@ -82,11 +82,13 @@ These are project changes the LLMKube codebase, Helm chart, or docs need to abso
 
 ### 3. Runtime image bumps + sm_100 codegen
 
-Audit the default images each runtime backend sets:
+**LANDED (#1197, pins verified 2026-07-21).** Current defaults and their Blackwell status:
 
-- `internal/controller/runtime_vllm.go`: `vllm/vllm-openai:v0.20.0` is on the current line (latest released v0.20.1 as of May 2026). Blackwell support landed incrementally starting around **v0.15.x** per [vllm-project/vllm RFC #18153](https://github.com/vllm-project/vllm/issues/18153) (filed May 2025), maturing through v0.16-v0.18. **Practical floor: v0.18+.** Confirm exact tag at validation time and record it in the matrix row.
-- `internal/controller/runtime_llamacpp.go`: `ghcr.io/ggml-org/llama.cpp:server` must be a build that includes `CMAKE_CUDA_ARCHITECTURES="90;100"`. Pin to a tag verified to ship `sm_100` codegen.
-- `internal/controller/runtime_tgi.go`: `ghcr.io/huggingface/text-generation-inference:latest` should pin to a 3.x tag with rebuilt flash-attn for Blackwell.
+- `internal/controller/runtime_vllm.go`: pinned to `vllm/vllm-openai:v0.25.1` (newest stable). Blackwell has been first-class since before the v0.20.0 floor (FA4 default on SM100, MXFP4 CUTLASS MoE per the v0.20.0 release notes); the default build ships CUDA 13 userspace, with a `v0.25.1-cu129` variant for 570-branch drivers (`runtimeImages.vllm` or `spec.image`).
+- `internal/controller/runtime_sglang.go`: pinned to `lmsysorg/sglang:v0.5.15.post1-cu129` (SM100 CuteDSL kernels since v0.5.14; `-cu130` variant for 580-branch fleets).
+- `internal/controller/runtime_tgi.go`: pinned to `:3.3.7`, the FINAL release; upstream archived the repository 2026-03-21 with no stated Blackwell support. Do not use TGI as a B200 default; prefer vLLM/SGLang.
+- `internal/controller/runtime_llamacpp.go` / `deployment_builder.go`: Models declaring an NVIDIA GPU now auto-divert from the CPU-only `:server` default to `ghcr.io/ggml-org/llama.cpp:server-cuda-b10068` (immutable per-build tag). CAVEAT: upstream's prebuilt CUDA images ship no native `sm_100` codegen (ggml defaults cover 50..90-virtual plus consumer 120a/121a only), so B200 runs via PTX JIT from `90-virtual`. For peak llama.cpp-on-B200, build with `CUDA_DOCKER_ARCH=100a-real` and point `runtimeImages.llamacpp` at it. Validate the JIT path on hardware (matrix row 3) before deciding whether an LLMKube-owned sm_100 build is warranted.
+- Fleet-wide overrides for air-gapped/mirrored registries: chart values `runtimeImages.{llamacpp,vllm,sglang,tgi}` flow to the operator's `--runtime-images` flag; an explicit `spec.image` still wins.
 
 ### 4. FP8 / FP4 quantization in the CRD
 

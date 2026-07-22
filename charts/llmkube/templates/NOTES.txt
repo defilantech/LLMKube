@@ -84,6 +84,25 @@ Pyrra ServiceLevelObjective. Pyrra must be installed separately:
   https://github.com/pyrra-dev/pyrra (tested with v0.10.1)
 {{- end }}
 
+{{- if and .Values.platformFloors .Values.platformFloors.show }}
+---
+PLATFORM FLOORS (NVIDIA Blackwell / B200-class serving):
+
+  These are informational minimums for the GPU nodes; the operator does not
+  enforce them. First deploys on Blackwell silicon should verify:
+
+  - NVIDIA driver:  {{ .Values.platformFloors.nvidiaDriver }}
+  - CUDA toolkit:   {{ .Values.platformFloors.cudaToolkit }}
+  - NCCL:           {{ .Values.platformFloors.nccl }}
+  - GPU Operator:   {{ .Values.platformFloors.gpuOperator }}
+
+  Runtime notes: prefer vLLM or SGLang on Blackwell. TGI is archived upstream
+  (final release 3.3.7) with no stated Blackwell support. llama.cpp prebuilt
+  CUDA images carry no native sm_100 codegen (PTX JIT only); build with
+  CUDA_DOCKER_ARCH=100a-real for peak B200 performance and point
+  runtimeImages.llamacpp at the result.
+{{- end }}
+
 ---
 DOCUMENTATION:
 

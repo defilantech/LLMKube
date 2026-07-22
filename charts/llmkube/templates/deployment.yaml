@@ -66,6 +66,12 @@ spec:
         # only when non-empty; the flag's empty default disables such sources.
         - --allowed-host-path-roots={{ join "," . }}
         {{- end }}
+        {{- $ri := .Values.runtimeImages | default dict }}
+        {{- $pairs := list }}
+        {{- range $k, $v := $ri }}{{- if $v }}{{- $pairs = append $pairs (printf "%s=%s" $k $v) }}{{- end }}{{- end }}
+        {{- if $pairs }}
+        - --runtime-images={{ join "," $pairs }}
+        {{- end }}
         {{- with .Values.modelSource.allowedRemoteHosts }}
         # SECURITY (GHSA-jw3m-8q7m-f35r): hostnames/CIDRs the controller-side
         # SSRF guard re-permits as remote (http/https) model sources despite

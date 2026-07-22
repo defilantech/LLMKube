@@ -114,6 +114,7 @@ func main() {
 	var allowedRemoteHosts string
 	var gpuSharingSharedPoolSelector string
 	var gpuSharingVRAMPerDeviceGiB int
+	var runtimeImages string
 	var modelRevalidateInterval time.Duration
 	var caCertConfigMap string
 	var initContainerImage string
@@ -135,6 +136,11 @@ func main() {
 			"(cross-isvc dedup, cache list works; use an RWX class on multi-node clusters); "+
 			"perService gives each InferenceService its own RWO, WaitForFirstConsumer cache PVC "+
 			"that binds on the serving node (opt-in escape hatch for multi-node clusters without RWX).")
+	flag.StringVar(&runtimeImages, "runtime-images", "",
+		"Fleet-wide runtime image overrides as runtime=image[,runtime=image] with runtimes "+
+			"llamacpp|vllm|sglang|tgi (chart value runtimeImages.*). Overrides the built-in "+
+			"defaults and vendor divergences for air-gapped/mirrored registries; an explicit "+
+			"InferenceService spec.image still wins.")
 	flag.StringVar(&allowedHostPathRoots, "allowed-host-path-roots", "",
 		"Comma-separated absolute path prefixes under which local/file:// and hostPath model "+
 			"sources are permitted. Empty (default) disables all local/hostPath sources (GHSA-jw3m-8q7m-f35r).")
@@ -239,6 +245,12 @@ func main() {
 	if gpuSharingVRAMPerDeviceGiB < 0 || gpuSharingVRAMPerDeviceGiB > 1<<20 {
 		setupLog.Error(fmt.Errorf("value %d out of range [0, %d]", gpuSharingVRAMPerDeviceGiB, 1<<20),
 			"invalid --gpu-sharing-vram-per-device-gib")
+		os.Exit(1)
+	}
+
+	runtimeImageOverrides, err := controller.ParseRuntimeImageOverrides(runtimeImages)
+	if err != nil {
+		setupLog.Error(err, "invalid --runtime-images")
 		os.Exit(1)
 	}
 
@@ -347,19 +359,20 @@ func main() {
 		os.Exit(1)
 	}
 	if err := (&controller.InferenceServiceReconciler{
-		Client:               mgr.GetClient(),
-		Scheme:               mgr.GetScheme(),
-		Recorder:             mgr.GetEventRecorder("inferenceservice-controller"),
-		ModelCachePath:       modelCachePath,
-		ModelCacheSize:       modelCacheSize,
-		ModelCacheClass:      modelCacheClass,
-		ModelCacheAccessMode: modelCacheAccessMode,
-		ModelCacheMode:       modelCacheMode,
-		CACertConfigMap:      caCertConfigMap,
-		InitContainerImage:   initContainerImage,
-		DefaultFSGroup:       defaultFSGroup,
-		AllowedHostPathRoots: allowedHostPathRootList,
-		GPUSharingSharedPool: gpuSharingSharedPool,
+		Client:                mgr.GetClient(),
+		Scheme:                mgr.GetScheme(),
+		Recorder:              mgr.GetEventRecorder("inferenceservice-controller"),
+		ModelCachePath:        modelCachePath,
+		ModelCacheSize:        modelCacheSize,
+		ModelCacheClass:       modelCacheClass,
+		ModelCacheAccessMode:  modelCacheAccessMode,
+		ModelCacheMode:        modelCacheMode,
+		CACertConfigMap:       caCertConfigMap,
+		InitContainerImage:    initContainerImage,
+		DefaultFSGroup:        defaultFSGroup,
+		AllowedHostPathRoots:  allowedHostPathRootList,
+		GPUSharingSharedPool:  gpuSharingSharedPool,
+		RuntimeImageOverrides: runtimeImageOverrides,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "InferenceService")
 		os.Exit(1)

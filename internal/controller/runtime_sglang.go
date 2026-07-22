@@ -48,7 +48,13 @@ const ConditionSGLangSpecValid = "SGLangSpecValid"
 
 // sglangCUDAImage is the pinned default CUDA image. Tag verified at PR time
 // against Docker Hub; bump in a follow-up if a newer SGLang release is required.
-const sglangCUDAImage = "lmsysorg/sglang:v0.5.15-cu129"
+// sglangCUDAImage pins the newest stable SGLang CUDA image (verified
+// 2026-07-21 via github.com/sgl-project/sglang/releases and Docker Hub).
+// Blackwell is a first-class SGLang target (SM100 CuteDSL kernels since
+// v0.5.14, Blackwell MLA backend since v0.5.12). The -cu129 variant matches
+// the 570 driver branch; 580-branch fleets can pin -cu130 via
+// runtimeImages.sglang or spec.image.
+const sglangCUDAImage = "lmsysorg/sglang:v0.5.15.post1-cu129"
 
 // sglangROCmImage is the AMD ROCm variant. Selected by resolveRuntimeImage
 // when model.Spec.Hardware.GPU.Vendor == "amd".

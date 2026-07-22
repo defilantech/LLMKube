@@ -405,6 +405,29 @@
       "properties": {
         "enabled": { "type": "boolean" }
       }
+    },
+    "runtimeImages": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Fleet-wide runtime image overrides; empty string means the operator's pinned default.",
+      "properties": {
+        "llamacpp": { "type": "string" },
+        "vllm": { "type": "string" },
+        "sglang": { "type": "string" },
+        "tgi": { "type": "string" }
+      }
+    },
+    "platformFloors": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Informational Blackwell platform floors rendered into NOTES.txt; not enforced.",
+      "properties": {
+        "show": { "type": "boolean" },
+        "nvidiaDriver": { "type": "string" },
+        "cudaToolkit": { "type": "string" },
+        "nccl": { "type": "string" },
+        "gpuOperator": { "type": "string" }
+      }
     }
   }
 }
