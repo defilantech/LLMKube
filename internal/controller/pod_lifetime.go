@@ -122,6 +122,18 @@ func (r *InferenceServiceReconciler) evictPod(ctx context.Context, isvc *inferen
 		// the retry has to be a timer.
 		logf.FromContext(ctx).Info("Eviction blocked by a PodDisruptionBudget, retrying later", "pod", pod.Name, "retryAfter", podLifetimeRetry)
 		return podLifetimeRetry, nil
+	case apierrors.IsForbidden(err):
+		// Missing pods/eviction RBAC — seen for real when the operator image is
+		// upgraded without the chart that owns its ClusterRole. Returning an
+		// error here would fail the whole InferenceService reconcile and retry
+		// hot forever, since no amount of retrying grants a permission. Surface
+		// it where an operator will actually look, and back off.
+		logf.FromContext(ctx).Error(err, "Not permitted to evict pods; recycling is disabled until the operator is granted create on pods/eviction", "pod", pod.Name)
+		if r.Recorder != nil {
+			r.Recorder.Eventf(isvc, nil, corev1.EventTypeWarning, "PodRecycleForbidden", "Reconcile",
+				"Cannot recycle pod %s: %v; the operator needs create on pods/eviction", pod.Name, err)
+		}
+		return podLifetimeRetry, nil
 	case err != nil:
 		return 0, err
 	}

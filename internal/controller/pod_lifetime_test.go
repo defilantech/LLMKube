@@ -282,6 +282,25 @@ func TestReconcilePodLifetimeNotFoundDeleteIsSuccess(t *testing.T) {
 	}
 }
 
+// Found on a live cluster: swapping the operator image without the chart that
+// owns its ClusterRole leaves pods/eviction ungranted. That must back off, not
+// fail the reconcile and retry hot forever.
+func TestReconcilePodLifetimeForbiddenBacksOff(t *testing.T) {
+	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
+	r, isvc, _ := lifetimeReconciler(t, now.Add(-2*time.Minute), time.Minute)
+	forbidden := apierrors.NewForbidden(corev1.Resource("pods"), "first",
+		fmt.Errorf(`User "system:serviceaccount:ai:llmkube-controller-manager" cannot create resource "pods/eviction"`))
+	r.Client = &recordingClient{Client: r.Client, evictErr: forbidden}
+
+	got, err := r.reconcilePodLifetime(context.Background(), isvc, false, now)
+	if err != nil {
+		t.Fatalf("forbidden eviction failed the reconcile: %v", err)
+	}
+	if got != podLifetimeRetry {
+		t.Fatalf("requeue = %s, want %s", got, podLifetimeRetry)
+	}
+}
+
 func TestReconcilePodLifetimePDBRetry(t *testing.T) {
 	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
 	r, isvc, _ := lifetimeReconciler(t, now.Add(-2*time.Minute), time.Minute)
