@@ -510,8 +510,9 @@ func (r *InferenceServiceReconciler) reconcileDeployment(ctx context.Context, is
 	// the live value rather than overwriting it with the operator's desired
 	// count. Setting it to nil does not work here: a plain Update with a nil
 	// replicas field is defaulted back to 1 by the API server, which fights
-	// the HPA on every reconcile.
-	if isvc.Spec.Autoscaling != nil {
+	// the HPA on every reconcile. Suspension overrides this: the HPA is
+	// deleted while suspended, and the forced zero must land.
+	if isvc.Spec.Autoscaling != nil && !isvc.Spec.Suspend {
 		existingDeployment.Spec.Replicas = existingReplicas
 	}
 	if err := r.Update(ctx, existingDeployment); err != nil {

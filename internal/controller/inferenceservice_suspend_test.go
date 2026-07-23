@@ -22,7 +22,9 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -184,5 +186,91 @@ var _ = Describe("InferenceService suspend", func() {
 		cond := meta.FindStatusCondition(updated.Status.Conditions, "Suspended")
 		Expect(cond).NotTo(BeNil())
 		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	})
+
+	It("deletes the HPA and forces zero replicas when a suspended service has autoscaling", func() {
+		modelName := "suspend-hpa-model"
+		isvcName := "suspend-hpa-isvc"
+
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
+			Spec: inferencev1alpha1.ModelSpec{
+				Source:   "https://example.com/model.gguf",
+				Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: "cpu"},
+			},
+		}
+		Expect(k8sClient.Create(ctx, model)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, model) }()
+		model.Status.Phase = PhaseReady
+		Expect(k8sClient.Status().Update(ctx, model)).To(Succeed())
+
+		replicas := int32(2)
+		isvc := &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: isvcName, Namespace: "default"},
+			Spec: inferencev1alpha1.InferenceServiceSpec{
+				ModelRef: modelName,
+				Replicas: &replicas,
+				Image:    "ghcr.io/ggml-org/llama.cpp:server",
+				Suspend:  false,
+				Autoscaling: &inferencev1alpha1.AutoscalingSpec{
+					MaxReplicas: 3,
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, isvc)).To(Succeed())
+		hpaKey := types.NamespacedName{Name: isvcName, Namespace: "default"}
+		defer func() {
+			_ = k8sClient.Delete(ctx, isvc)
+			dep := &appsv1.Deployment{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, dep); err == nil {
+				_ = k8sClient.Delete(ctx, dep)
+			}
+			svc := &corev1.Service{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, svc); err == nil {
+				_ = k8sClient.Delete(ctx, svc)
+			}
+			hpa := &autoscalingv2.HorizontalPodAutoscaler{}
+			if err := k8sClient.Get(ctx, hpaKey, hpa); err == nil {
+				_ = k8sClient.Delete(ctx, hpa)
+			}
+		}()
+
+		// First reconcile with suspend=false: autoscaling is active, HPA should exist.
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: isvcName, Namespace: "default"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(k8sClient.Get(ctx, hpaKey, &autoscalingv2.HorizontalPodAutoscaler{})).To(Succeed())
+
+		// Patch suspend=true and reconcile again.
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, isvc)).To(Succeed())
+		isvc.Spec.Suspend = true
+		Expect(k8sClient.Update(ctx, isvc)).To(Succeed())
+
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: isvcName, Namespace: "default"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		Eventually(func() bool {
+			return errors.IsNotFound(k8sClient.Get(ctx, hpaKey, &autoscalingv2.HorizontalPodAutoscaler{}))
+		}, "5s", "100ms").Should(BeTrue())
+
+		dep := &appsv1.Deployment{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, dep)).To(Succeed())
+		Expect(*dep.Spec.Replicas).To(Equal(int32(0)))
+
+		// Unsuspend and reconcile again: the HPA should be recreated.
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, isvc)).To(Succeed())
+		isvc.Spec.Suspend = false
+		Expect(k8sClient.Update(ctx, isvc)).To(Succeed())
+
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: isvcName, Namespace: "default"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(k8sClient.Get(ctx, hpaKey, &autoscalingv2.HorizontalPodAutoscaler{})).To(Succeed())
 	})
 })
