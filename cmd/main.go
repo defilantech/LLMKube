@@ -39,7 +39,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
@@ -56,6 +58,10 @@ import (
 var (
 	scheme   = runtime.NewScheme()
 	setupLog = ctrl.Log.WithName("setup")
+	// Version is the operator build version (set during build via ldflags,
+	// same convention as cmd/metal-agent). Recorded as
+	// status.observedVersion by FederationEdgeReconciler in --federation-role=edge.
+	Version = "dev"
 )
 
 func init() {
@@ -188,6 +194,20 @@ func main() {
 	flag.BoolVar(&enablePyrraSLO, "enable-pyrra-slo", false,
 		"Enable rendering Pyrra ServiceLevelObjective resources for InferenceServices with spec.slo. "+
 			"Requires the Pyrra CRD in the cluster (https://github.com/pyrra-dev/pyrra).")
+	var federationRole string
+	var federationDatacenterKubeconfig string
+	var federationClusterName string
+	flag.StringVar(&federationRole, "federation-role", controller.FederationRoleHub,
+		"Federation role for this operator instance: \"hub\" (default) reconciles status.phase for every "+
+			"registered edge from its own (datacenter) cluster; \"edge\" instead pushes this cluster's "+
+			"observed inference state to a remote datacenter's FederatedCluster status subresource and "+
+			"does not run the hub controller. A single operator instance is exactly one role.")
+	flag.StringVar(&federationDatacenterKubeconfig, "federation-datacenter-kubeconfig", "",
+		"Path to a kubeconfig for the datacenter cluster, scoped (RBAC) to get/patch this edge's own "+
+			"FederatedCluster/status object. Required when --federation-role=edge; ignored in hub mode.")
+	flag.StringVar(&federationClusterName, "federation-cluster-name", "",
+		"Name of this edge's FederatedCluster object on the datacenter cluster. Required when "+
+			"--federation-role=edge; ignored in hub mode.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
@@ -254,6 +274,47 @@ func main() {
 	if err != nil {
 		setupLog.Error(err, "invalid --runtime-images")
 		os.Exit(1)
+	}
+
+	// Validate --federation-role up front: an unrecognized value is a
+	// startup error, not a silent fallback to hub, since that would run the
+	// wrong controller for wherever this operator instance actually lives.
+	if federationRole != controller.FederationRoleHub && federationRole != controller.FederationRoleEdge {
+		setupLog.Error(fmt.Errorf("invalid value %q", federationRole),
+			"invalid --federation-role: must be \"hub\" or \"edge\"")
+		os.Exit(1)
+	}
+
+	// In edge mode, build a SEPARATE client for the datacenter cluster from
+	// the scoped kubeconfig. This client is used ONLY to patch this edge's
+	// own FederatedCluster/status object on the datacenter; the manager's
+	// own client (mgr.GetClient(), wired below) stays scoped to the local
+	// (edge) cluster for reading Models/InferenceServices/Nodes. The two
+	// are never the same client, so an edge operator cannot accidentally
+	// read or write anything else on the datacenter.
+	var federationDatacenterClient client.Client
+	if federationRole == controller.FederationRoleEdge {
+		if federationDatacenterKubeconfig == "" {
+			setupLog.Error(fmt.Errorf("missing --federation-datacenter-kubeconfig"),
+				"--federation-datacenter-kubeconfig is required when --federation-role=edge")
+			os.Exit(1)
+		}
+		if federationClusterName == "" {
+			setupLog.Error(fmt.Errorf("missing --federation-cluster-name"),
+				"--federation-cluster-name is required when --federation-role=edge")
+			os.Exit(1)
+		}
+		datacenterCfg, cfgErr := clientcmd.BuildConfigFromFlags("", federationDatacenterKubeconfig)
+		if cfgErr != nil {
+			setupLog.Error(cfgErr, "unable to load --federation-datacenter-kubeconfig",
+				"path", federationDatacenterKubeconfig)
+			os.Exit(1)
+		}
+		federationDatacenterClient, err = client.New(datacenterCfg, client.Options{Scheme: scheme})
+		if err != nil {
+			setupLog.Error(err, "unable to build datacenter client from --federation-datacenter-kubeconfig")
+			os.Exit(1)
+		}
 	}
 
 	// Initialize OpenTelemetry tracing (noop if OTEL_EXPORTER_OTLP_ENDPOINT not set)
@@ -450,16 +511,35 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "GPUQuota")
 		os.Exit(1)
 	}
-	// FederatedCluster reconciles status.phase from edge-written heartbeat
-	// staleness on the datacenter cluster. Wired unconditionally for now; a
-	// --federation-role flag to gate this to datacenter-mode only is planned
-	// as a follow-up (federation slice 1, task 3).
-	if err := (&controller.FederatedClusterReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "FederatedCluster")
-		os.Exit(1)
+	// Federation: exactly one of the two sides runs per operator instance,
+	// gated by --federation-role.
+	//   - hub (default): FederatedClusterReconciler reconciles status.phase
+	//     from edge-written heartbeat staleness, on the datacenter cluster.
+	//   - edge: FederationEdgeReconciler instead runs as a manager.Runnable
+	//     that pushes this cluster's observed inference state to the
+	//     datacenter's FederatedCluster status subresource over the
+	//     separately-scoped federationDatacenterClient built above. The hub
+	//     controller does NOT run in edge mode, since an edge has no local
+	//     FederatedCluster objects of its own to reconcile phase for.
+	switch federationRole {
+	case controller.FederationRoleEdge:
+		if err := mgr.Add(&controller.FederationEdgeReconciler{
+			LocalClient:      mgr.GetClient(),
+			DatacenterClient: federationDatacenterClient,
+			ClusterName:      federationClusterName,
+			Version:          Version,
+		}); err != nil {
+			setupLog.Error(err, "unable to create runnable", "runnable", "FederationEdge")
+			os.Exit(1)
+		}
+	default: // controller.FederationRoleHub
+		if err := (&controller.FederatedClusterReconciler{
+			Client: mgr.GetClient(),
+			Scheme: mgr.GetScheme(),
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "FederatedCluster")
+			os.Exit(1)
+		}
 	}
 
 	// Register the ModelRouter validating webhook ONLY when the serving cert is
