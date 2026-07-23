@@ -543,6 +543,12 @@ Thanks to the people who've shipped code, tests, and docs:
 
 ---
 
+## Security
+
+- [Verifying releases](docs/security/verifying-releases.md) - cosign signatures, SLSA provenance, SBOM.
+
+---
+
 ## Acknowledgments
 
 Built on [Kubebuilder](https://kubebuilder.io), [llama.cpp](https://github.com/ggml-org/llama.cpp), [Prometheus](https://prometheus.io), and [Helm](https://helm.sh).

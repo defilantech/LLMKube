@@ -1,0 +1,9 @@
+# Trivy CVE allowlist (supply-chain escape valve, issue #233).
+#
+# Gating on CRITICAL/HIGH BEFORE push means one unpatchable upstream CVE would
+# otherwise freeze every release. List only CVEs that are (a) unfixable today
+# (no upstream patch in a version we can adopt) or (b) not reachable in our
+# usage, each with a reason and a review-by date. Re-audit on the review date.
+#
+# Format: one CVE id per line. Example (remove when adding a real entry):
+# CVE-0000-00000  # <reason>; not-reachable/unfixable; review-by YYYY-MM-DD
