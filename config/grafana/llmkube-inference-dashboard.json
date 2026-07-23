@@ -564,7 +564,7 @@
         "overrides": []
       },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 33 },
-      "id": 53,
+      "id": 43,
       "options": {
         "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" },
         "tooltip": { "mode": "multi", "sort": "desc" }
@@ -574,7 +574,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum by (inferenceservice, state) (llmkube_inferenceservice_replicas{namespace=~\"$namespace\"})",
+          "expr": "llmkube_inferenceservice_replicas{namespace=~\"$namespace\"}",
           "legendFormat": "{{inferenceservice}} {{state}}",
           "refId": "A"
         }
@@ -700,7 +700,7 @@
     {
       "collapsed": false,
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 50 },
-      "id": 54,
+      "id": 60,
       "panels": [],
       "title": "Fleet Inventory",
       "type": "row"
@@ -709,18 +709,17 @@
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "description": "Runtime and accelerator per InferenceService. llmkube_inferenceservice_info is always 1; only its labels carry information.",
       "fieldConfig": {
-        "defaults": { "custom": { "align": "auto", "cellOptions": { "type": "auto" } } },
+        "defaults": {},
         "overrides": []
       },
       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 51 },
-      "id": 55,
-      "options": { "showHeader": true },
+      "id": 61,
       "title": "Service inventory",
       "type": "table",
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "llmkube_inferenceservice_info{namespace=~\"$namespace\"}",
+          "expr": "max by (inferenceservice, namespace, accelerator, runtime) (llmkube_inferenceservice_info{namespace=~\"$namespace\"})",
           "format": "table",
           "instant": true,
           "refId": "A"
@@ -732,15 +731,7 @@
           "options": {
             "excludeByName": {
               "Time": true,
-              "Value": true,
-              "__name__": true,
-              "container": true,
-              "endpoint": true,
-              "instance": true,
-              "job": true,
-              "pod": true,
-              "prometheus": true,
-              "service": true
+              "Value": true
             },
             "renameByName": {
               "accelerator": "Accelerator",
