@@ -840,10 +840,15 @@ func TestEnsureProcess_ReplicasZeroNoOpWhenNoProcess(t *testing.T) {
 // TestEnsureProcess_SuspendTrueTakesReplicasZeroStopPath covers the Kueue
 // integration path (#1251): an admission controller sets spec.suspend while
 // leaving spec.replicas at its prior desired count (2, not 0), so the count
-// is preserved for resume. The metal-agent must still take the identical
-// stop path as replicas=0 — same handleScaleToZero call, same status patch
-// (Phase=Stopped, reason=ManuallyScaledToZero) — proving suspend and
-// replicas=0 are handled by the same code path, not just a similar one.
+// is preserved for resume. The metal-agent must take the same stop path as
+// replicas=0 (same handleScaleToZero call), but the status patch must state
+// the true cause: Phase=Suspended, matching the operator's determinePhase,
+// which returns PhaseSuspended unconditionally for spec.suspend. Writing
+// Stopped here would make the two writers overwrite each other forever
+// (Suspended<->Stopped thrash: the operator's watch has no status-only
+// filter). The reason/message must also be suspend-specific — the
+// replicas=0 wording ("spec.replicas=0...") would be factually wrong in
+// kubectl describe for a suspend with replicas=2.
 //
 // Deliberately does not pre-seed a managed process: this isolates the
 // status-patch side of the stop path (mirrors
@@ -894,8 +899,9 @@ func TestEnsureProcess_SuspendTrueTakesReplicasZeroStopPath(t *testing.T) {
 		t.Fatalf("fetch InferenceService back: %v", err)
 	}
 
-	if got.Status.Phase != "Stopped" {
-		t.Errorf("status.phase = %q, want Stopped (suspend=true, replicas=2 must take the stop path)", got.Status.Phase)
+	if got.Status.Phase != "Suspended" {
+		t.Errorf("status.phase = %q, want Suspended (must match the operator's PhaseSuspended, or the two writers thrash)",
+			got.Status.Phase)
 	}
 	if got.Status.ReadyReplicas != 0 {
 		t.Errorf("status.readyReplicas = %d, want 0", got.Status.ReadyReplicas)
@@ -911,14 +917,108 @@ func TestEnsureProcess_SuspendTrueTakesReplicasZeroStopPath(t *testing.T) {
 			if c.Status != metav1.ConditionFalse {
 				t.Errorf("Available condition status = %q, want False", c.Status)
 			}
-			if c.Reason != reasonManuallyScaledToZero {
+			if c.Reason != reasonSuspended {
 				t.Errorf("Available condition reason = %q, want %q",
-					c.Reason, reasonManuallyScaledToZero)
+					c.Reason, reasonSuspended)
+			}
+			if c.Message != messageSuspended {
+				t.Errorf("Available condition message = %q, want %q (the replicas=0 wording would be false for suspend)",
+					c.Message, messageSuspended)
 			}
 		}
 	}
 	if !foundCond {
 		t.Error("Available condition not set on suspended InferenceService")
+	}
+}
+
+// TestMarkStopped_SuspendedPhaseIsIdempotent verifies the idempotency guard
+// treats the operator-written Suspended phase as settled: a second
+// ensureProcess on an already-Suspended InferenceService must not rewrite
+// status (no condition transition churn). Before the cause-aware guard, the
+// agent only recognized Stopped as settled, so it kept flipping the
+// operator's Suspended phase back to Stopped on every reconcile — and the
+// operator flipped it right back (status thrash, no status-only watch
+// filter on the operator side).
+func TestMarkStopped_SuspendedPhaseIsIdempotent(t *testing.T) {
+	scheme := newTestScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = discoveryv1.AddToScheme(scheme)
+
+	replicas := int32(2)
+	prev := metav1.NewTime(metav1.Now().Add(-time.Hour))
+	isvc := &inferencev1alpha1.InferenceService{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "settled-suspended",
+			Namespace:  "default",
+			Generation: 5,
+		},
+		Spec: inferencev1alpha1.InferenceServiceSpec{
+			ModelRef: "any-model",
+			Replicas: &replicas,
+			Suspend:  true,
+		},
+		Status: inferencev1alpha1.InferenceServiceStatus{
+			Phase:           "Suspended",
+			ReadyReplicas:   0,
+			DesiredReplicas: 0,
+			Conditions: []metav1.Condition{{
+				Type:               conditionAvailable,
+				Status:             metav1.ConditionFalse,
+				ObservedGeneration: 5,
+				LastTransitionTime: prev,
+				Reason:             reasonSuspended,
+				Message:            messageSuspended,
+			}},
+		},
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&inferencev1alpha1.InferenceService{}).
+		WithRuntimeObjects(isvc).
+		Build()
+
+	agent := NewMetalAgent(MetalAgentConfig{K8sClient: k8sClient, Namespace: "default"})
+	agent.executors["llama-server"] = NewMetalExecutor("/fake/llama-server", "/tmp/models", newNopLogger())
+	agent.registry = NewServiceRegistry(k8sClient, "", newNopLogger(), "")
+
+	// Snapshot the seeded transition time as the fake client stored it
+	// (second precision), mirroring
+	// TestEnsureProcess_ReplicasZeroStatusPatchIdempotent — comparing
+	// against the test's own metav1 value would mis-fire on sub-second
+	// serialization drift unrelated to the idempotency under test.
+	seeded := &inferencev1alpha1.InferenceService{}
+	if err := k8sClient.Get(context.Background(),
+		types.NamespacedName{Name: "settled-suspended", Namespace: "default"}, seeded); err != nil {
+		t.Fatalf("fetch seeded InferenceService: %v", err)
+	}
+	var seededTransition metav1.Time
+	for _, c := range seeded.Status.Conditions {
+		if c.Type == conditionAvailable {
+			seededTransition = c.LastTransitionTime
+		}
+	}
+
+	if err := agent.ensureProcess(context.Background(), isvc); err != nil {
+		t.Fatalf("ensureProcess returned unexpected error: %v", err)
+	}
+
+	got := &inferencev1alpha1.InferenceService{}
+	if err := k8sClient.Get(context.Background(),
+		types.NamespacedName{Name: "settled-suspended", Namespace: "default"}, got); err != nil {
+		t.Fatalf("fetch InferenceService back: %v", err)
+	}
+
+	if got.Status.Phase != "Suspended" {
+		t.Errorf("status.phase = %q, want Suspended left untouched (guard must treat Suspended as settled)", got.Status.Phase)
+	}
+	for _, c := range got.Status.Conditions {
+		if c.Type == conditionAvailable && !c.LastTransitionTime.Equal(&seededTransition) {
+			t.Errorf("Available condition transition time churned (%v -> %v); "+
+				"already-settled Suspended status must not be rewritten",
+				seededTransition, c.LastTransitionTime)
+		}
 	}
 }
 
@@ -1031,6 +1131,10 @@ func TestEnsureProcess_ReplicasZeroPatchesStatus(t *testing.T) {
 			if c.Reason != reasonManuallyScaledToZero {
 				t.Errorf("Available condition reason = %q, want %q",
 					c.Reason, reasonManuallyScaledToZero)
+			}
+			if c.Message != messageManuallyScaledToZero {
+				t.Errorf("Available condition message = %q, want %q",
+					c.Message, messageManuallyScaledToZero)
 			}
 			if c.ObservedGeneration != 7 {
 				t.Errorf("Available condition observedGeneration = %d, want 7",

@@ -1025,21 +1025,29 @@ func (a *MetalAgent) deleteProcess(ctx context.Context, key string) error {
 	return nil
 }
 
-// Condition / reason constants for the "manually scaled to zero"
-// status patch. Kept here next to the only caller; if we grow more
-// agent-driven conditions they can move into a shared constants file.
+// Condition / reason constants for the stop-path status patch. Kept here
+// next to the only caller; if we grow more agent-driven conditions they can
+// move into a shared constants file. The phase strings must match the
+// operator's PhaseStopped / PhaseSuspended values (internal/controller):
+// determinePhase returns Suspended unconditionally for spec.suspend, so if
+// the agent wrote Stopped for a suspended service the two status writers
+// would overwrite each other forever (the operator's watch has no
+// status-only filter).
 const (
 	conditionAvailable          = "Available"
 	reasonManuallyScaledToZero  = "ManuallyScaledToZero"
+	reasonSuspended             = "Suspended"
 	phaseStopped                = "Stopped"
+	phaseSuspended              = "Suspended"
 	messageManuallyScaledToZero = "spec.replicas=0; metal-agent has torn down the workload"
+	messageSuspended            = "spec.suspend=true; metal-agent has torn down the workload; spec.replicas preserved"
 )
 
 // handleScaleToZero stops the managed process (if any) for an
-// InferenceService with spec.replicas=0 and patches its status so
-// downstream observers see Phase=Stopped + readyReplicas=0
-// immediately. Extracted from ensureProcess to keep the parent
-// function under the gocyclo threshold.
+// InferenceService with spec.replicas=0 or spec.suspend and patches its
+// status so downstream observers see Phase=Stopped (or Suspended) +
+// readyReplicas=0 immediately. Extracted from ensureProcess to keep the
+// parent function under the gocyclo threshold.
 func (a *MetalAgent) handleScaleToZero(
 	ctx context.Context,
 	isvc *inferencev1alpha1.InferenceService,
@@ -1047,8 +1055,9 @@ func (a *MetalAgent) handleScaleToZero(
 	exists bool,
 ) error {
 	if exists {
-		a.logger.Infow("replicas=0; stopping process",
-			"namespace", isvc.Namespace, "name", isvc.Name)
+		a.logger.Infow("scaled to zero or suspended; stopping process",
+			"namespace", isvc.Namespace, "name", isvc.Name,
+			"suspend", isvc.Spec.Suspend)
 		if err := a.deleteProcess(ctx, key); err != nil {
 			return err
 		}
@@ -1068,12 +1077,21 @@ func (a *MetalAgent) handleScaleToZero(
 
 // markStopped patches the InferenceService status to reflect that the
 // metal-agent has stopped the managed llama-server in response to
-// spec.replicas=0. Without this patch, kubectl / dashboards / any HPA-
-// style controller keep observing the stale Phase=Ready and
-// ReadyReplicas count from before the stop. Best-effort: the caller
-// logs and continues on error rather than blocking the stop itself.
+// spec.suspend or spec.replicas=0. Without this patch, kubectl /
+// dashboards / any HPA-style controller keep observing the stale
+// Phase=Ready and ReadyReplicas count from before the stop. Best-effort:
+// the caller logs and continues on error rather than blocking the stop
+// itself.
 //
-// Surfaced as https://github.com/defilantech/LLMKube/issues/452.
+// The phase written branches on the actual cause: suspend takes
+// precedence (mirroring the operator's determinePhase, which checks
+// Spec.Suspend before anything else) and writes Phase=Suspended with a
+// suspend-specific reason/message; only a true replicas==0 writes
+// Phase=Stopped/ManuallyScaledToZero. Writing Stopped for a suspended
+// service would fight the operator's Suspended phase forever.
+//
+// Surfaced as https://github.com/defilantech/LLMKube/issues/452;
+// suspend cause added for the Kueue integration (#1251).
 func (a *MetalAgent) markStopped(ctx context.Context, isvc *inferencev1alpha1.InferenceService) error {
 	// Re-fetch to avoid a stale resource version under conflict; the
 	// watch may have delivered an older copy than what the apiserver
@@ -1086,15 +1104,31 @@ func (a *MetalAgent) markStopped(ctx context.Context, isvc *inferencev1alpha1.In
 		return fmt.Errorf("fetch InferenceService for status patch: %w", err)
 	}
 
-	// Idempotency: if we already patched to Stopped, skip the round
-	// trip. This is hit on every reconcile for a long-stopped service.
-	if fresh.Status.Phase == phaseStopped &&
+	// Branch the status text on the cause, using the re-fetched spec as
+	// the source of truth (a suspend flipped between the watch event and
+	// now should win). Suspend beats replicas==0 when both hold, exactly
+	// like the operator's determinePhase ordering.
+	targetPhase := phaseStopped
+	reason := reasonManuallyScaledToZero
+	message := messageManuallyScaledToZero
+	if fresh.Spec.Suspend {
+		targetPhase = phaseSuspended
+		reason = reasonSuspended
+		message = messageSuspended
+	}
+
+	// Idempotency: if the status already reflects the target settled
+	// state (whichever cause applies), skip the round trip. This is hit
+	// on every reconcile for a long-stopped/suspended service, and it is
+	// what keeps the agent from thrashing against the operator, which
+	// also writes Phase=Suspended for suspended services.
+	if fresh.Status.Phase == targetPhase &&
 		fresh.Status.ReadyReplicas == 0 &&
 		fresh.Status.DesiredReplicas == 0 {
 		return nil
 	}
 
-	fresh.Status.Phase = phaseStopped
+	fresh.Status.Phase = targetPhase
 	fresh.Status.ReadyReplicas = 0
 	fresh.Status.DesiredReplicas = 0
 
@@ -1103,8 +1137,8 @@ func (a *MetalAgent) markStopped(ctx context.Context, isvc *inferencev1alpha1.In
 		Status:             metav1.ConditionFalse,
 		ObservedGeneration: fresh.Generation,
 		LastTransitionTime: metav1.Now(),
-		Reason:             reasonManuallyScaledToZero,
-		Message:            messageManuallyScaledToZero,
+		Reason:             reason,
+		Message:            message,
 	})
 
 	return a.config.K8sClient.Status().Update(ctx, fresh)
