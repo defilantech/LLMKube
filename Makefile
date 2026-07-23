@@ -64,6 +64,24 @@ foreman-chart-crds: manifests ## Sync foreman.llmkube.dev CRDs to the foreman ch
 	  synced=$$((synced+1)); \
 	done; echo "Synced $$synced foreman CRD(s)"
 
+.PHONY: federation-chart-crds
+federation-chart-crds: manifests ## Sync federation.llmkube.dev CRDs into the main llmkube chart.
+# Federation runs IN the main llmkube operator (config-gated by --federation-role),
+# not a separate operator, so its CRD ships in the main chart alongside the
+# inference CRDs. Mirrors scripts/sync-crds.sh: same destination and the same
+# crds.install + crds.keep resource-policy wrapping the inference CRDs get.
+	@mkdir -p charts/llmkube/templates/crds
+	@synced=0; for src in config/crd/bases/federation.llmkube.dev_*.yaml; do \
+	  [ -e "$$src" ] || { echo "no federation CRDs in config/crd/bases (did make manifests run?)"; exit 1; }; \
+	  base=$$(basename $$src); short=$${base#federation.llmkube.dev_}; \
+	  echo "Syncing $$base -> $$short"; \
+	  { echo '{{- if .Values.crds.install }}'; \
+	    awk '/controller-gen.kubebuilder.io\/version:/{print; print "    {{- if .Values.crds.keep }}"; print "    helm.sh/resource-policy: keep"; print "    {{- end }}"; next}1' "$$src"; \
+	    echo '{{- end }}'; \
+	  } > charts/llmkube/templates/crds/$$short; \
+	  synced=$$((synced+1)); \
+	done; echo "Synced $$synced federation CRD(s)"
+
 .PHONY: check-helm-rbac
 check-helm-rbac: manifests ## Verify the Helm charts' RBAC covers every kubebuilder-generated rule (#379).
 	@./scripts/check-helm-rbac.sh

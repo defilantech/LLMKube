@@ -1,0 +1,138 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.19.0
+  name: federatedclusters.federation.llmkube.dev
+spec:
+  group: federation.llmkube.dev
+  names:
+    kind: FederatedCluster
+    listKind: FederatedClusterList
+    plural: federatedclusters
+    shortNames:
+    - fedcluster
+    - fc
+    singular: federatedcluster
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.dataResidencyTier
+      name: Tier
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.lastHeartbeatTime
+      name: Last Heartbeat
+      type: date
+    - jsonPath: .status.capacity.gpusAllocatable
+      name: GPUs
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: FederatedCluster registers one edge site on the datacenter cluster.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              FederatedClusterSpec is admin-owned. displayName and dataResidencyTier are
+              set at registration; the edge and the datacenter controller only write status.
+            properties:
+              dataResidencyTier:
+                description: |-
+                  DataResidencyTier is recorded now and enforced later by the federation
+                  router (#1237). It is a free-form tier label (for example "eu", "floor-3").
+                type: string
+              displayName:
+                description: DisplayName is a human label for the site.
+                type: string
+              heartbeatIntervalSeconds:
+                default: 30
+                description: |-
+                  HeartbeatIntervalSeconds is how often the edge is expected to push status.
+                  The datacenter derives staleness thresholds from it (3x Stale, 10x Unreachable).
+                format: int32
+                minimum: 5
+                type: integer
+            type: object
+          status:
+            description: |-
+              FederatedClusterStatus has two writers. The edge writes everything except
+              Phase, over an RBAC-scoped status-subresource client. The datacenter
+              controller writes ONLY Phase, from LastHeartbeatTime staleness.
+            properties:
+              capacity:
+                description: Capacity is edge-owned node/GPU capacity.
+                properties:
+                  gpusAllocatable:
+                    format: int32
+                    type: integer
+                  gpusTotal:
+                    format: int32
+                    type: integer
+                  nodes:
+                    format: int32
+                    type: integer
+                required:
+                - gpusAllocatable
+                - gpusTotal
+                - nodes
+                type: object
+              inference:
+                description: Inference is edge-owned inference health.
+                properties:
+                  models:
+                    format: int32
+                    type: integer
+                  servicesFailed:
+                    format: int32
+                    type: integer
+                  servicesReady:
+                    format: int32
+                    type: integer
+                  servicesTotal:
+                    format: int32
+                    type: integer
+                required:
+                - models
+                - servicesFailed
+                - servicesReady
+                - servicesTotal
+                type: object
+              lastHeartbeatTime:
+                description: 'LastHeartbeatTime is edge-owned: set to now on every
+                  successful push.'
+                format: date-time
+                type: string
+              observedVersion:
+                description: 'ObservedVersion is edge-owned: the LLMKube/operator
+                  version on the site.'
+                type: string
+              phase:
+                description: 'Phase is datacenter-owned: Connected, Stale, or Unreachable.'
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

@@ -109,6 +109,22 @@ rules:
   - list
   - watch
 - apiGroups:
+  - federation.llmkube.dev
+  resources:
+  - federatedclusters
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - federation.llmkube.dev
+  resources:
+  - federatedclusters/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
   - foreman.llmkube.dev
   resources:
   - agentictasks

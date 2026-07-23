@@ -1,0 +1,31 @@
+apiVersion: federation.llmkube.dev/v1alpha1
+kind: FederatedCluster
+metadata:
+  name: acme-datacenter-1
+spec:
+  # DisplayName is a human-readable label for this edge site.
+  displayName: "ACME Datacenter (Floor 3)"
+
+  # DataResidencyTier is a free-form tier label (e.g., "eu", "floor-3", "us-west")
+  # that is recorded now and enforced later by the federation router (issue #1237).
+  # It is not enforced by the federation status slice.
+  dataResidencyTier: "floor-3"
+
+  # HeartbeatIntervalSeconds is how often the edge operator is expected to push
+  # status updates to the datacenter. The datacenter controller derives staleness
+  # thresholds from this: 3x the interval marks the site as Stale, 10x marks it as
+  # Unreachable. Minimum is 5 seconds; defaults to 30 seconds.
+  heartbeatIntervalSeconds: 30
+
+# Status is edge-written by the federation-edge controller and datacenter-written
+# by the federation hub controller. Status is not set by hand in this sample.
+#
+# An edge site's operator (running with --federation-role=edge) writes:
+#   - lastHeartbeatTime (set to now on every successful push)
+#   - observedVersion (the LLMKube operator version on the site)
+#   - capacity (node and GPU count)
+#   - inference (inference service health summary)
+#
+# The datacenter cluster's controller (running with --federation-role=hub, the default)
+# writes:
+#   - phase (Connected, Stale, or Unreachable, computed from lastHeartbeatTime staleness)
