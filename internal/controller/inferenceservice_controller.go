@@ -147,6 +147,7 @@ func initContainerSecurityContext(isvc *inferencev1alpha1.InferenceService) *cor
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=discovery.k8s.io,resources=endpointslices,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core,resources=pods/eviction,verbs=create
 // +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=scheduling.k8s.io,resources=priorityclasses,verbs=get;list;watch
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
@@ -257,24 +258,42 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return finalResult, statusErr
 	}
 
+	lifetimeRequeue, err := r.reconcilePodLifetime(ctx, inferenceService, isMetal, time.Now())
+	if err != nil {
+		return finalResult, err
+	}
+	finalResult.RequeueAfter = earliestPositive(finalResult.RequeueAfter, lifetimeRequeue)
+
 	// When a rollout is deferred pending idle, reconcileRolloutPolicy set
 	// RolloutDeferred=True (persisted by the status update above). Drive a
 	// recheck so the controller notices when the backend goes idle or the
 	// idleTimeoutSeconds budget is spent. Metal-backed services never defer
 	// (no Deployment), so this does not conflict with the metal requeue below.
 	if cond := meta.FindStatusCondition(inferenceService.Status.Conditions, ConditionRolloutDeferred); cond != nil && cond.Status == metav1.ConditionTrue {
-		finalResult.RequeueAfter = inferencev1alpha1.DefaultIdleCheckInterval
+		finalResult.RequeueAfter = earliestPositive(finalResult.RequeueAfter, inferencev1alpha1.DefaultIdleCheckInterval)
 	}
 
 	// On the metal path a heartbeat going stale generates no watch event, so
 	// force a periodic requeue when the Endpoints carry the annotation.
 	if isMetal {
 		if requeue := metalHeartbeatRequeueDuration(metalSnap); requeue > 0 {
-			finalResult.RequeueAfter = requeue
+			finalResult.RequeueAfter = earliestPositive(finalResult.RequeueAfter, requeue)
 		}
 	}
 
 	return finalResult, nil
+}
+
+// earliestPositive merges the requeue timers Reconcile collects without
+// allowing a zero timer (which means "no requeue") to win a plain minimum.
+func earliestPositive(values ...time.Duration) time.Duration {
+	var earliest time.Duration
+	for _, value := range values {
+		if value > 0 && (earliest == 0 || value < earliest) {
+			earliest = value
+		}
+	}
+	return earliest
 }
 
 func (r *InferenceServiceReconciler) getModelForInferenceService(ctx context.Context, isvc *inferencev1alpha1.InferenceService) (*inferencev1alpha1.Model, bool, *ctrl.Result, error) {

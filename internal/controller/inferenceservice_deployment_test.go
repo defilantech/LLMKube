@@ -594,22 +594,9 @@ var _ = Describe("Multi-GPU Deployment Construction", func() {
 			}
 		})
 
-		It("should leave ActiveDeadlineSeconds nil when maxPodLifetimeSeconds is unset", func() {
-			isvc := &inferencev1alpha1.InferenceService{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "lifetime-service",
-					Namespace: "default",
-				},
-				Spec: inferencev1alpha1.InferenceServiceSpec{
-					ModelRef: "lifetime-model",
-					Image:    "ghcr.io/ggml-org/llama.cpp:server",
-				},
-			}
-			deployment := reconciler.constructDeployment(isvc, model, 1)
-			Expect(deployment.Spec.Template.Spec.ActiveDeadlineSeconds).To(BeNil())
-		})
-
-		It("should set ActiveDeadlineSeconds on the pod template when maxPodLifetimeSeconds is set", func() {
+		// Recycling is driven by the controller, not the pod template: the
+		// field must stay nil so the Deployment remains updatable.
+		It("should leave ActiveDeadlineSeconds nil when maxPodLifetimeSeconds is set", func() {
 			lifetime := int64(3600)
 			isvc := &inferencev1alpha1.InferenceService{
 				ObjectMeta: metav1.ObjectMeta{
@@ -623,8 +610,7 @@ var _ = Describe("Multi-GPU Deployment Construction", func() {
 				},
 			}
 			deployment := reconciler.constructDeployment(isvc, model, 1)
-			Expect(deployment.Spec.Template.Spec.ActiveDeadlineSeconds).NotTo(BeNil())
-			Expect(*deployment.Spec.Template.Spec.ActiveDeadlineSeconds).To(Equal(int64(3600)))
+			Expect(deployment.Spec.Template.Spec.ActiveDeadlineSeconds).To(BeNil())
 		})
 	})
 

@@ -561,18 +561,32 @@ type InferenceServiceSpec struct {
 	// +optional
 	SLO *SLOSpec `json:"slo,omitempty"`
 
-	// MaxPodLifetimeSeconds sets the maximum lifetime (in seconds) for
-	// inference pods. When set, the operator copies this value to
-	// PodSpec.ActiveDeadlineSeconds on the generated Deployment's pod
-	// template, causing Kubernetes to terminate the pod after the
-	// specified duration even if it remains healthy. This is useful for
-	// workloads that need periodic process recycling to release driver
-	// memory (e.g. llama.cpp on AMD Vulkan with pinned GTT memory).
-	// When omitted, pods run indefinitely until manually restarted or
-	// the Deployment is updated.
+	// MaxPodLifetimeSeconds requests best-effort periodic recycling of
+	// deployment-backed inference pods. The controller evicts one expired pod
+	// at a time, using its status start time as the age reference; it is not a
+	// strict deadline and does not set PodSpec.ActiveDeadlineSeconds. This is
+	// useful for workloads that need periodic process recycling to release
+	// driver memory (e.g. llama.cpp on AMD Vulkan with pinned GTT memory).
+	// Eviction respects PodDisruptionBudgets, and when rolloutPolicy.waitForIdle
+	// is set it waits for the backend to go idle first. With a single replica
+	// recycling is a restart, not a rolling replacement: expect a downtime
+	// window while the model reloads. When omitted, pods run indefinitely until
+	// manually restarted or the Deployment is updated.
 	// +kubebuilder:validation:Minimum=1
 	// +optional
 	MaxPodLifetimeSeconds *int64 `json:"maxPodLifetimeSeconds,omitempty"`
+
+	// MaxPodLifetimeIdleTimeoutSeconds bounds how long recycling will wait for
+	// an idle backend before evicting anyway, measured from the moment the pod
+	// exceeded maxPodLifetimeSeconds. It only applies when
+	// rolloutPolicy.waitForIdle is set, which otherwise makes recycling wait
+	// indefinitely — safe for in-flight requests, but a saturated service then
+	// never recycles, which is exactly when leaked driver memory hurts most.
+	// Set 0 to recycle without waiting for idle at all. When omitted, recycling
+	// waits indefinitely.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	MaxPodLifetimeIdleTimeoutSeconds *int64 `json:"maxPodLifetimeIdleTimeoutSeconds,omitempty"`
 }
 
 // RolloutPolicySpec defines how deployment updates should be gated on backend idleness.
