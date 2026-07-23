@@ -117,6 +117,7 @@ var _ = Describe("InferenceService suspend", func() {
 		cond := meta.FindStatusCondition(updated.Status.Conditions, "Suspended")
 		Expect(cond).NotTo(BeNil())
 		Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+		Expect(cond.ObservedGeneration).To(Equal(updated.Generation))
 	})
 
 	It("restores the Deployment to spec.replicas on unsuspend", func() {

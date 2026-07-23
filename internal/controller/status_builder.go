@@ -125,6 +125,7 @@ func setSuspendedCondition(isvc *inferencev1alpha1.InferenceService) {
 	meta.SetStatusCondition(&isvc.Status.Conditions, metav1.Condition{
 		Type:               "Suspended",
 		Status:             status,
+		ObservedGeneration: isvc.Generation,
 		Reason:             reason,
 		Message:            message,
 		LastTransitionTime: metav1.Now(),
