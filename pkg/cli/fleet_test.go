@@ -17,14 +17,17 @@ limitations under the License.
 package cli
 
 import (
+	"bytes"
 	"context"
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
@@ -251,6 +254,151 @@ func TestNewFleetCommandWiring(t *testing.T) {
 	for _, name := range []string{"name", "residency", "datacenter-endpoint"} {
 		if register.Flags().Lookup(name) == nil {
 			t.Errorf("register command is missing --%s flag", name)
+		}
+	}
+}
+
+func TestNewFleetCommandHasStatusSubcommand(t *testing.T) {
+	cmd := NewFleetCommand()
+
+	var status *cobra.Command
+	for _, sub := range cmd.Commands() {
+		if sub.Name() == "status" {
+			status = sub
+			break
+		}
+	}
+	if status == nil {
+		t.Fatal("fleet command is missing the status subcommand")
+	}
+}
+
+// TestFleetStatusRendersPerSiteAndFleetWideTable seeds three FederatedClusters
+// covering the three phases (one Connected with real capacity/inference, one
+// Stale, one Unreachable with never-pushed nil Capacity/Inference), and
+// asserts fleetStatus renders a deterministic (sorted by name) per-site table
+// plus a fleet-wide footer that aggregates GPUs, services, and phase counts.
+// The Unreachable/nil-Capacity site is the regression case for the nil-guard:
+// it must render zeros/dashes, not panic.
+func TestFleetStatusRendersPerSiteAndFleetWideTable(t *testing.T) {
+	now := metav1.NewTime(time.Now().Add(-90 * time.Second))
+	stale := metav1.NewTime(time.Now().Add(-10 * time.Minute))
+
+	sites := []federationv1alpha1.FederatedCluster{
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "site-a"},
+			Spec: federationv1alpha1.FederatedClusterSpec{
+				DataResidencyTier: "eu",
+			},
+			Status: federationv1alpha1.FederatedClusterStatus{
+				Phase:             federationv1alpha1.FederatedClusterConnected,
+				LastHeartbeatTime: &now,
+				Capacity: &federationv1alpha1.ClusterCapacity{
+					Nodes:           3,
+					GPUsTotal:       8,
+					GPUsAllocatable: 6,
+				},
+				Inference: &federationv1alpha1.ClusterInferenceSummary{
+					ServicesReady:  10,
+					ServicesFailed: 1,
+					ServicesTotal:  12,
+					Models:         4,
+				},
+			},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "site-b"},
+			Spec: federationv1alpha1.FederatedClusterSpec{
+				DataResidencyTier: "floor-2",
+			},
+			Status: federationv1alpha1.FederatedClusterStatus{
+				Phase:             federationv1alpha1.FederatedClusterStale,
+				LastHeartbeatTime: &stale,
+				Capacity: &federationv1alpha1.ClusterCapacity{
+					Nodes:           2,
+					GPUsTotal:       4,
+					GPUsAllocatable: 2,
+				},
+				Inference: &federationv1alpha1.ClusterInferenceSummary{
+					ServicesReady:  3,
+					ServicesFailed: 2,
+					ServicesTotal:  5,
+					Models:         2,
+				},
+			},
+		},
+		{
+			// Deliberately named so sort-by-name puts it first, to prove the
+			// output is sorted rather than insertion-ordered.
+			ObjectMeta: metav1.ObjectMeta{Name: "aaa-never-reported"},
+			Spec: federationv1alpha1.FederatedClusterSpec{
+				DataResidencyTier: "edge-1",
+			},
+			Status: federationv1alpha1.FederatedClusterStatus{
+				Phase: federationv1alpha1.FederatedClusterUnreachable,
+				// LastHeartbeatTime, Capacity, and Inference are all nil:
+				// this site has never pushed status.
+			},
+		},
+	}
+
+	c := fake.NewClientBuilder().WithScheme(fleetTestScheme(t)).WithObjects(
+		&sites[0], &sites[1], &sites[2],
+	).Build()
+
+	var buf bytes.Buffer
+	if err := fleetStatus(context.Background(), c, &buf); err != nil {
+		t.Fatalf("fleetStatus: %v (should never panic or error on nil Capacity/Inference)", err)
+	}
+	out := buf.String()
+
+	lines := strings.Split(out, "\n")
+	if len(lines) < 4 {
+		t.Fatalf("expected header + 3 site rows, got %d lines:\n%s", len(lines), out)
+	}
+
+	// Sorted by name: "aaa-never-reported" < "site-a" < "site-b".
+	if !strings.HasPrefix(strings.TrimSpace(lines[0]), "NAME") {
+		t.Errorf("line 0 = %q, want header starting with NAME", lines[0])
+	}
+	if got := lines[1]; !(strings.Contains(got, "aaa-never-reported") && strings.Contains(got, "Unreachable")) {
+		t.Errorf("line 1 = %q, want the never-reported/Unreachable site sorted first", got)
+	}
+	if got := lines[2]; !strings.Contains(got, "site-a") {
+		t.Errorf("line 2 = %q, want site-a second", got)
+	}
+	if got := lines[3]; !strings.Contains(got, "site-b") {
+		t.Errorf("line 3 = %q, want site-b third", got)
+	}
+
+	// Per-site fields.
+	for _, want := range []string{
+		// aaa-never-reported: Unreachable, edge-1 tier, nil Capacity/Inference
+		// must render as zeros/dashes, never panic and never blank.
+		"edge-1", "Unreachable", "never",
+		// site-a: Connected, eu tier, real capacity (6 allocatable/8 total)
+		// and inference (10 ready/1 failed/12 total).
+		"site-a", "eu", "Connected", "6/8", "10/1/12",
+		// site-b: Stale, floor-2 tier, capacity (2/4) and inference (3/2/5).
+		"site-b", "floor-2", "Stale", "2/4", "3/2/5",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+
+	// Fleet-wide footer: summed GPUs (6+2+0=8 allocatable, 8+4+0=12 total),
+	// summed services (10+3+0=13 ready, 1+2+0=3 failed, 12+5+0=17 total),
+	// and per-phase site counts (1 Connected, 1 Stale, 1 Unreachable).
+	for _, want := range []string{
+		"8/12",
+		"13/3/17",
+		"1 Connected",
+		"1 Stale",
+		"1 Unreachable",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("footer missing %q:\n%s", want, out)
 		}
 	}
 }

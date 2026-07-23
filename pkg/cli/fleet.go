@@ -20,7 +20,10 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"io"
+	"sort"
 	"strings"
+	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 	authenticationv1 "k8s.io/api/authentication/v1"
@@ -60,6 +63,14 @@ const (
 	// field when neither --datacenter-endpoint nor the caller's own
 	// kubeconfig host is available.
 	datacenterEndpointPlaceholder = "<DATACENTER_API_SERVER_ENDPOINT>"
+
+	// fleetStatusUnknown fills a table cell when a site has never pushed the
+	// corresponding status field (nil Capacity/Inference, empty tier/phase).
+	fleetStatusUnknown = "-"
+
+	// fleetStatusNeverHeartbeat is the LAST HEARTBEAT cell for a site whose
+	// LastHeartbeatTime is nil, i.e. it has never pushed status at all.
+	fleetStatusNeverHeartbeat = "never"
 )
 
 // mintFleetToken mints a bearer token for a ServiceAccount via the
@@ -126,6 +137,7 @@ capacity for remote edge sites (FederatedCluster objects), without those
 sites ever being granted more than a narrow, per-site scoped credential.`,
 	}
 	cmd.AddCommand(newFleetRegisterCommand())
+	cmd.AddCommand(newFleetStatusCommand())
 	return cmd
 }
 
@@ -358,4 +370,152 @@ func buildEdgeConfigSnippet(name, endpoint string, caData []byte, saName, namesp
 		"--federation-datacenter-kubeconfig=<path-to-saved-file>\n", name)
 
 	return b.String()
+}
+
+func newFleetStatusCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "status",
+		Short: "Show per-site and fleet-wide federation health",
+		Long: `List every edge site registered as a FederatedCluster, with its
+connection phase, GPU capacity, and inference service health, followed by a
+fleet-wide summary.
+
+Run this against the DATACENTER cluster's kubeconfig context.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runFleetStatus(cmd)
+		},
+	}
+	return cmd
+}
+
+func runFleetStatus(cmd *cobra.Command) error {
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	cfg, err := config.GetConfig()
+	if err != nil {
+		return fmt.Errorf("failed to get kubeconfig: %w", err)
+	}
+
+	if err := federationv1alpha1.AddToScheme(scheme.Scheme); err != nil {
+		return fmt.Errorf("failed to add scheme: %w", err)
+	}
+
+	k8sClient, err := client.New(cfg, client.Options{Scheme: scheme.Scheme})
+	if err != nil {
+		return fmt.Errorf("failed to create client: %w", err)
+	}
+
+	return fleetStatus(ctx, k8sClient, cmd.OutOrStdout())
+}
+
+// fleetStatus lists all FederatedClusters, sorts them by name for
+// deterministic output, and writes a per-site table (NAME, TIER, PHASE, LAST
+// HEARTBEAT, GPUS, SERVICES) followed by a fleet-wide summary footer that
+// aggregates GPU capacity, service health, and a count of sites by phase.
+//
+// A site that has never pushed status (nil Capacity/Inference) renders as
+// dashes in its row rather than panicking, and contributes zero to the
+// fleet-wide sums.
+func fleetStatus(ctx context.Context, c client.Client, w io.Writer) error {
+	list := &federationv1alpha1.FederatedClusterList{}
+	if err := c.List(ctx, list); err != nil {
+		return fmt.Errorf("failed to list FederatedClusters: %w", err)
+	}
+
+	sites := list.Items
+	sort.Slice(sites, func(i, j int) bool { return sites[i].Name < sites[j].Name })
+
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	if _, err := fmt.Fprintln(tw, "NAME\tTIER\tPHASE\tLAST HEARTBEAT\tGPUS\tSERVICES"); err != nil {
+		return fmt.Errorf("failed to write header: %w", err)
+	}
+
+	var totals fleetStatusTotals
+	for _, site := range sites {
+		if err := writeFleetStatusRow(tw, site, &totals); err != nil {
+			return err
+		}
+	}
+
+	if err := tw.Flush(); err != nil {
+		return fmt.Errorf("failed to flush table: %w", err)
+	}
+
+	return writeFleetStatusSummary(w, len(sites), totals)
+}
+
+// fleetStatusTotals accumulates the fleet-wide sums and per-phase site counts
+// across every FederatedCluster while the per-site table is rendered.
+type fleetStatusTotals struct {
+	gpusAllocatable int32
+	gpusTotal       int32
+	servicesReady   int32
+	servicesFailed  int32
+	servicesTotal   int32
+	phaseCounts     map[string]int
+}
+
+func writeFleetStatusRow(tw io.Writer, site federationv1alpha1.FederatedCluster, totals *fleetStatusTotals) error {
+	tier := site.Spec.DataResidencyTier
+	if tier == "" {
+		tier = fleetStatusUnknown
+	}
+	phase := site.Status.Phase
+	if phase == "" {
+		phase = fleetStatusUnknown
+	}
+	if totals.phaseCounts == nil {
+		totals.phaseCounts = map[string]int{}
+	}
+	totals.phaseCounts[phase]++
+
+	heartbeat := fleetStatusNeverHeartbeat
+	if site.Status.LastHeartbeatTime != nil {
+		heartbeat = formatAge(site.Status.LastHeartbeatTime.Time)
+	}
+
+	gpus := fleetStatusUnknown + "/" + fleetStatusUnknown
+	if capacity := site.Status.Capacity; capacity != nil {
+		gpus = fmt.Sprintf("%d/%d", capacity.GPUsAllocatable, capacity.GPUsTotal)
+		totals.gpusAllocatable += capacity.GPUsAllocatable
+		totals.gpusTotal += capacity.GPUsTotal
+	}
+
+	services := strings.Join([]string{fleetStatusUnknown, fleetStatusUnknown, fleetStatusUnknown}, "/")
+	if inference := site.Status.Inference; inference != nil {
+		services = fmt.Sprintf("%d/%d/%d", inference.ServicesReady, inference.ServicesFailed, inference.ServicesTotal)
+		totals.servicesReady += inference.ServicesReady
+		totals.servicesFailed += inference.ServicesFailed
+		totals.servicesTotal += inference.ServicesTotal
+	}
+
+	if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
+		site.Name, tier, phase, heartbeat, gpus, services,
+	); err != nil {
+		return fmt.Errorf("failed to write row for site %q: %w", site.Name, err)
+	}
+	return nil
+}
+
+func writeFleetStatusSummary(w io.Writer, siteCount int, totals fleetStatusTotals) error {
+	if _, err := fmt.Fprintf(w, "\nFleet-wide: %d site(s) (%d %s, %d %s, %d %s)\n",
+		siteCount,
+		totals.phaseCounts[federationv1alpha1.FederatedClusterConnected], federationv1alpha1.FederatedClusterConnected,
+		totals.phaseCounts[federationv1alpha1.FederatedClusterStale], federationv1alpha1.FederatedClusterStale,
+		totals.phaseCounts[federationv1alpha1.FederatedClusterUnreachable], federationv1alpha1.FederatedClusterUnreachable,
+	); err != nil {
+		return fmt.Errorf("failed to write fleet-wide summary: %w", err)
+	}
+	if _, err := fmt.Fprintf(w, "GPUs: %d/%d allocatable/total\n", totals.gpusAllocatable, totals.gpusTotal); err != nil {
+		return fmt.Errorf("failed to write GPU summary: %w", err)
+	}
+	if _, err := fmt.Fprintf(w, "Services: %d/%d/%d ready/failed/total\n",
+		totals.servicesReady, totals.servicesFailed, totals.servicesTotal,
+	); err != nil {
+		return fmt.Errorf("failed to write service summary: %w", err)
+	}
+	return nil
 }
