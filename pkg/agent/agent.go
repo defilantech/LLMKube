@@ -747,6 +747,16 @@ func (a *MetalAgent) currentBackend() (string, bool) {
 	return "", false
 }
 
+// isvcStopped reports whether the InferenceService desires zero running
+// serving processes: either explicitly scaled to zero or administratively
+// suspended (spec.suspend, e.g. held by the Kueue integration).
+func isvcStopped(isvc *inferencev1alpha1.InferenceService) bool {
+	if isvc.Spec.Suspend {
+		return true
+	}
+	return isvc.Spec.Replicas != nil && *isvc.Spec.Replicas == 0
+}
+
 func (a *MetalAgent) ensureProcess(ctx context.Context, isvc *inferencev1alpha1.InferenceService) error {
 	key := types.NamespacedName{
 		Namespace: isvc.Namespace,
@@ -804,10 +814,12 @@ func (a *MetalAgent) ensureProcess(ctx context.Context, isvc *inferencev1alpha1.
 		return nil
 	}
 
-	// Honor spec.replicas=0 by stopping a running process and not respawning.
-	// Without this, a user trying to take a model offline via spec edits has
-	// to fully reload the metal-agent to evict it.
-	if isvc.Spec.Replicas != nil && *isvc.Spec.Replicas == 0 {
+	// Honor spec.replicas=0 or spec.suspend by stopping a running process and
+	// not respawning. Without this, a user trying to take a model offline via
+	// spec edits has to fully reload the metal-agent to evict it; without the
+	// suspend half, the Kueue integration's admission hold would be ignored
+	// on hosts running the metal agent, since it doesn't watch Deployments.
+	if isvcStopped(isvc) {
 		return a.handleScaleToZero(ctx, isvc, key, exists)
 	}
 
@@ -1346,10 +1358,11 @@ func (a *MetalAgent) heartbeatOnce(ctx context.Context) {
 			continue
 		}
 
-		// Skip re-registration when the service is being deleted or has been
-		// scaled to zero. Re-asserting Service+Endpoints here would resurrect
-		// networking that deleteProcess (or handleScaleToZero) just cleaned up.
-		if isvc.DeletionTimestamp != nil || (isvc.Spec.Replicas != nil && *isvc.Spec.Replicas == 0) {
+		// Skip re-registration when the service is being deleted, scaled to
+		// zero, or suspended. Re-asserting Service+Endpoints here would
+		// resurrect networking that deleteProcess (or handleScaleToZero) just
+		// cleaned up.
+		if isvc.DeletionTimestamp != nil || isvcStopped(isvc) {
 			continue
 		}
 
@@ -1742,6 +1755,7 @@ func computeSpecHash(isvc *inferencev1alpha1.InferenceService) string {
 		ReasoningBudgetMessage string
 		Mode                   string
 		Replicas               *int32
+		Suspend                bool
 		Runtime                string
 		TurboQuantBits         *int32
 		PagedSSDCacheDir       *string
@@ -1770,6 +1784,7 @@ func computeSpecHash(isvc *inferencev1alpha1.InferenceService) string {
 		ReasoningBudgetMessage: isvc.Spec.ReasoningBudgetMessage,
 		Mode:                   isvc.Spec.Mode,
 		Replicas:               isvc.Spec.Replicas,
+		Suspend:                isvc.Spec.Suspend,
 		Runtime:                isvc.Spec.Runtime,
 		TurboQuantBits:         isvc.Spec.TurboQuantBits,
 		PagedSSDCacheDir:       isvc.Spec.PagedSSDCacheDir,

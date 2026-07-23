@@ -610,6 +610,22 @@ func TestComputeSpecHash_ChangesWithExtraArgs(t *testing.T) {
 	}
 }
 
+// TestComputeSpecHash_ChangesWithSuspend guards the change-detection snapshot
+// (#1251): flipping spec.suspend must change the hash so ensureProcess's
+// spec-drift check (line ~813) notices and re-evaluates the desired state —
+// otherwise a suspend->resume flip on an unhealthy/matching-hash process
+// could be missed by the drift path (though isvcStopped/handleScaleToZero
+// still gate the stop/start decision independently).
+func TestComputeSpecHash_ChangesWithSuspend(t *testing.T) {
+	a := &inferencev1alpha1.InferenceService{Spec: inferencev1alpha1.InferenceServiceSpec{ModelRef: "m"}}
+	b := &inferencev1alpha1.InferenceService{
+		Spec: inferencev1alpha1.InferenceServiceSpec{ModelRef: "m", Suspend: true},
+	}
+	if computeSpecHash(a) == computeSpecHash(b) {
+		t.Error("hash should differ when suspend changes")
+	}
+}
+
 func TestComputeSpecHash_NilIsvc(t *testing.T) {
 	if computeSpecHash(nil) != "" {
 		t.Error("nil isvc should produce empty hash, not panic")
@@ -818,6 +834,131 @@ func TestEnsureProcess_ReplicasZeroNoOpWhenNoProcess(t *testing.T) {
 
 	if err := agent.ensureProcess(context.Background(), isvc); err != nil {
 		t.Errorf("replicas=0 with no existing process should be a no-op (no error), got: %v", err)
+	}
+}
+
+// TestEnsureProcess_SuspendTrueTakesReplicasZeroStopPath covers the Kueue
+// integration path (#1251): an admission controller sets spec.suspend while
+// leaving spec.replicas at its prior desired count (2, not 0), so the count
+// is preserved for resume. The metal-agent must still take the identical
+// stop path as replicas=0 — same handleScaleToZero call, same status patch
+// (Phase=Stopped, reason=ManuallyScaledToZero) — proving suspend and
+// replicas=0 are handled by the same code path, not just a similar one.
+//
+// Deliberately does not pre-seed a managed process: this isolates the
+// status-patch side of the stop path (mirrors
+// TestEnsureProcess_ReplicasZeroPatchesStatus) without also depending on the
+// unrelated spec-hash-drift restart branch, which would evict a pre-seeded
+// process regardless of whether isvcStopped is honored.
+func TestEnsureProcess_SuspendTrueTakesReplicasZeroStopPath(t *testing.T) {
+	scheme := newTestScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = discoveryv1.AddToScheme(scheme)
+
+	replicas := int32(2)
+	isvc := &inferencev1alpha1.InferenceService{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "suspended-isvc",
+			Namespace:  "default",
+			Generation: 4,
+		},
+		Spec: inferencev1alpha1.InferenceServiceSpec{
+			ModelRef: "any-model",
+			Replicas: &replicas,
+			Suspend:  true,
+		},
+		Status: inferencev1alpha1.InferenceServiceStatus{
+			Phase:           "Ready",
+			ReadyReplicas:   1,
+			DesiredReplicas: 2,
+		},
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&inferencev1alpha1.InferenceService{}).
+		WithRuntimeObjects(isvc).
+		Build()
+
+	agent := NewMetalAgent(MetalAgentConfig{K8sClient: k8sClient, Namespace: "default"})
+	agent.executors["llama-server"] = NewMetalExecutor("/fake/llama-server", "/tmp/models", newNopLogger())
+	agent.registry = NewServiceRegistry(k8sClient, "", newNopLogger(), "")
+
+	if err := agent.ensureProcess(context.Background(), isvc); err != nil {
+		t.Fatalf("ensureProcess returned unexpected error: %v", err)
+	}
+
+	got := &inferencev1alpha1.InferenceService{}
+	if err := k8sClient.Get(context.Background(),
+		types.NamespacedName{Name: "suspended-isvc", Namespace: "default"}, got); err != nil {
+		t.Fatalf("fetch InferenceService back: %v", err)
+	}
+
+	if got.Status.Phase != "Stopped" {
+		t.Errorf("status.phase = %q, want Stopped (suspend=true, replicas=2 must take the stop path)", got.Status.Phase)
+	}
+	if got.Status.ReadyReplicas != 0 {
+		t.Errorf("status.readyReplicas = %d, want 0", got.Status.ReadyReplicas)
+	}
+	if got.Status.DesiredReplicas != 0 {
+		t.Errorf("status.desiredReplicas = %d, want 0", got.Status.DesiredReplicas)
+	}
+
+	var foundCond bool
+	for _, c := range got.Status.Conditions {
+		if c.Type == conditionAvailable {
+			foundCond = true
+			if c.Status != metav1.ConditionFalse {
+				t.Errorf("Available condition status = %q, want False", c.Status)
+			}
+			if c.Reason != reasonManuallyScaledToZero {
+				t.Errorf("Available condition reason = %q, want %q",
+					c.Reason, reasonManuallyScaledToZero)
+			}
+		}
+	}
+	if !foundCond {
+		t.Error("Available condition not set on suspended InferenceService")
+	}
+}
+
+// TestEnsureProcess_SuspendFalseWithReplicasIsNotStopped is the inverse of
+// TestEnsureProcess_SuspendTrueTakesReplicasZeroStopPath: with suspend left
+// false, a positive replicas count must not be treated as stopped, so a
+// healthy process with a matching spec hash is left running.
+func TestEnsureProcess_SuspendFalseWithReplicasIsNotStopped(t *testing.T) {
+	scheme := newTestScheme()
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	agent := NewMetalAgent(MetalAgentConfig{K8sClient: k8sClient, Namespace: "default"})
+	agent.executors["llama-server"] = NewMetalExecutor("/fake/llama-server", "/tmp/models", newNopLogger())
+	agent.registry = NewServiceRegistry(k8sClient, "", newNopLogger(), "")
+
+	replicas := int32(2)
+	isvc := &inferencev1alpha1.InferenceService{
+		ObjectMeta: metav1.ObjectMeta{Name: "not-suspended-isvc", Namespace: "default"},
+		Spec: inferencev1alpha1.InferenceServiceSpec{
+			ModelRef: "any-model",
+			Replicas: &replicas,
+			Suspend:  false,
+		},
+	}
+
+	// Pre-seed a healthy process whose SpecHash matches the incoming spec, so
+	// if isvcStopped incorrectly reports true, the process would be deleted
+	// instead of hitting the no-op fast path.
+	agent.processes["default/not-suspended-isvc"] = &ManagedProcess{
+		Name:      "not-suspended-isvc",
+		Namespace: "default",
+		Healthy:   true,
+		SpecHash:  computeSpecHash(isvc),
+	}
+
+	if err := agent.ensureProcess(context.Background(), isvc); err != nil {
+		t.Errorf("suspend=false with matching specHash should no-op without error, got: %v", err)
+	}
+	if _, exists := agent.processes["default/not-suspended-isvc"]; !exists {
+		t.Error("process entry should remain running when suspend=false, even with replicas > 0")
 	}
 }
 
