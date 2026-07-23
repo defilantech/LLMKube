@@ -15,6 +15,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -164,9 +165,21 @@ func TestReconcilePodLifetimeHoldsOnForeignPod(t *testing.T) {
 	}
 }
 
+// The pod starts 2 minutes ago with a 1 minute lifetime, so by now it has been
+// overdue for a minute: a 30s idle timeout is spent, a 300s one is not.
 func TestReconcilePodLifetimeWaitsForIdle(t *testing.T) {
 	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
-	for name, busy := range map[string]bool{"busy": true, "idle": false} {
+	for name, tc := range map[string]struct {
+		busy        bool
+		idleTimeout *int64
+		wantEvicted bool
+	}{
+		"idle backend recycles":                {busy: false, wantEvicted: true},
+		"busy backend waits indefinitely":      {busy: true, wantEvicted: false},
+		"busy backend waits within budget":     {busy: true, idleTimeout: ptr.To(int64(300)), wantEvicted: false},
+		"busy backend recycles once overdue":   {busy: true, idleTimeout: ptr.To(int64(30)), wantEvicted: true},
+		"zero timeout recycles without asking": {busy: true, idleTimeout: ptr.To(int64(0)), wantEvicted: true},
+	} {
 		t.Run(name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 				if req.URL.Path != "/slots" {
@@ -174,12 +187,13 @@ func TestReconcilePodLifetimeWaitsForIdle(t *testing.T) {
 					return
 				}
 				w.Header().Set("Content-Type", "application/json")
-				_, _ = fmt.Fprintf(w, `[{"id":0,"is_processing":%t}]`, busy)
+				_, _ = fmt.Fprintf(w, `[{"id":0,"is_processing":%t}]`, tc.busy)
 			}))
 			defer server.Close()
 
 			r, isvc, _ := lifetimeReconciler(t, now.Add(-2*time.Minute), time.Minute)
 			isvc.Spec.RolloutPolicy = &inferencev1alpha1.RolloutPolicySpec{WaitForIdle: true}
+			isvc.Spec.MaxPodLifetimeIdleTimeoutSeconds = tc.idleTimeout
 			r.RolloutIdleBaseURL = server.URL
 			recorder := &recordingClient{Client: r.Client}
 			r.Client = recorder
@@ -188,17 +202,15 @@ func TestReconcilePodLifetimeWaitsForIdle(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if busy {
-				if len(recorder.evictions) != 0 {
-					t.Fatalf("evicted a busy pod: %d calls", len(recorder.evictions))
-				}
-				if requeue != inferencev1alpha1.DefaultIdleCheckInterval {
-					t.Fatalf("requeue = %s, want %s", requeue, inferencev1alpha1.DefaultIdleCheckInterval)
-				}
-				return
+			want := 0
+			if tc.wantEvicted {
+				want = 1
 			}
-			if len(recorder.evictions) != 1 {
-				t.Fatalf("idle pod was not recycled: %d calls", len(recorder.evictions))
+			if len(recorder.evictions) != want {
+				t.Fatalf("eviction calls = %d, want %d", len(recorder.evictions), want)
+			}
+			if !tc.wantEvicted && requeue != inferencev1alpha1.DefaultIdleCheckInterval {
+				t.Fatalf("requeue = %s, want %s", requeue, inferencev1alpha1.DefaultIdleCheckInterval)
 			}
 		})
 	}
@@ -284,11 +296,11 @@ func TestReconcilePodLifetimePDBRetry(t *testing.T) {
 	}
 }
 
-func TestPodLifetimeBoundsDuration(t *testing.T) {
-	if got := podLifetime(maxPodLifetimeSeconds); got != time.Duration(maxPodLifetimeSeconds)*time.Second {
+func TestBoundedSecondsClampsOverflow(t *testing.T) {
+	if got := boundedSeconds(maxPodLifetimeSeconds); got != time.Duration(maxPodLifetimeSeconds)*time.Second {
 		t.Fatalf("duration = %s", got)
 	}
-	if got := podLifetime(maxPodLifetimeSeconds + 1); got != time.Duration(maxPodLifetimeSeconds)*time.Second {
+	if got := boundedSeconds(maxPodLifetimeSeconds + 1); got != time.Duration(maxPodLifetimeSeconds)*time.Second {
 		t.Fatalf("overflow duration = %s", got)
 	}
 }

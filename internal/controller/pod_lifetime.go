@@ -45,7 +45,7 @@ func (r *InferenceServiceReconciler) reconcilePodLifetime(ctx context.Context, i
 	if len(active) != int(deployment.Status.Replicas) || !allPodsReady(active) {
 		return 0, nil
 	}
-	return r.recycleExpiredPod(ctx, isvc, active, podLifetime(*isvc.Spec.MaxPodLifetimeSeconds), now)
+	return r.recycleExpiredPod(ctx, isvc, active, boundedSeconds(*isvc.Spec.MaxPodLifetimeSeconds), now)
 }
 
 func (r *InferenceServiceReconciler) getStableDeployment(ctx context.Context, isvc *inferencev1alpha1.InferenceService) (*appsv1.Deployment, error) {
@@ -84,10 +84,9 @@ func (r *InferenceServiceReconciler) recycleExpiredPod(ctx context.Context, isvc
 	if expired == nil {
 		return earliest, nil
 	}
-	// waitForIdle promises never to drop in-flight generations. Recycling is
-	// best-effort and has no deadline to race, so it simply waits for the next
-	// idle window instead of borrowing the rollout path's timeout budget.
-	if isvc.RolloutPolicyEnabled() {
+	// waitForIdle promises never to drop in-flight generations, so recycling
+	// waits for an idle window rather than killing a busy pod on a timer.
+	if isvc.RolloutPolicyEnabled() && !idleWaitExhausted(isvc, expiredDeadline, now) {
 		idle, err := r.checkServiceIdle(ctx, isvc, &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: sanitizeDNSName(isvc.Name), Namespace: isvc.Namespace}})
 		if err != nil || !idle {
 			// Fail closed, matching reconcileRolloutPolicy: an idle probe that
@@ -97,6 +96,19 @@ func (r *InferenceServiceReconciler) recycleExpiredPod(ctx context.Context, isvc
 		}
 	}
 	return r.evictPod(ctx, isvc, expired)
+}
+
+// idleWaitExhausted reports whether maxPodLifetimeIdleTimeoutSeconds says to
+// stop waiting for idle and recycle a still-busy pod. The budget runs from the
+// pod's own expiry, so the deadline is derivable from the pod and nothing has
+// to be persisted across reconciles. Omitted means wait indefinitely; 0 means
+// never wait, since the caller only reaches here once deadline has passed.
+func idleWaitExhausted(isvc *inferencev1alpha1.InferenceService, deadline time.Time, now time.Time) bool {
+	timeout := isvc.Spec.MaxPodLifetimeIdleTimeoutSeconds
+	if timeout == nil {
+		return false
+	}
+	return !now.Before(deadline.Add(boundedSeconds(*timeout)))
 }
 
 func (r *InferenceServiceReconciler) evictPod(ctx context.Context, isvc *inferencev1alpha1.InferenceService, pod *corev1.Pod) (time.Duration, error) {
@@ -166,12 +178,12 @@ func allPodsReady(pods []*corev1.Pod) bool {
 	return true
 }
 
-func podLifetime(seconds int64) time.Duration {
+// boundedSeconds converts a spec field to a Duration, clamping it so an
+// unbounded value cannot overflow into the past.
+func boundedSeconds(seconds int64) time.Duration {
 	if seconds <= 0 {
 		return 0
 	}
-	// The CRD has no Maximum, so an unbounded value would overflow Duration
-	// into the past and turn recycling into an eviction loop.
 	if seconds > maxPodLifetimeSeconds {
 		seconds = maxPodLifetimeSeconds
 	}

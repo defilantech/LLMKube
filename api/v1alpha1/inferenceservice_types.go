@@ -575,6 +575,18 @@ type InferenceServiceSpec struct {
 	// +kubebuilder:validation:Minimum=1
 	// +optional
 	MaxPodLifetimeSeconds *int64 `json:"maxPodLifetimeSeconds,omitempty"`
+
+	// MaxPodLifetimeIdleTimeoutSeconds bounds how long recycling will wait for
+	// an idle backend before evicting anyway, measured from the moment the pod
+	// exceeded maxPodLifetimeSeconds. It only applies when
+	// rolloutPolicy.waitForIdle is set, which otherwise makes recycling wait
+	// indefinitely — safe for in-flight requests, but a saturated service then
+	// never recycles, which is exactly when leaked driver memory hurts most.
+	// Set 0 to recycle without waiting for idle at all. When omitted, recycling
+	// waits indefinitely.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	MaxPodLifetimeIdleTimeoutSeconds *int64 `json:"maxPodLifetimeIdleTimeoutSeconds,omitempty"`
 }
 
 // RolloutPolicySpec defines how deployment updates should be gated on backend idleness.
