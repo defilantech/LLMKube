@@ -88,13 +88,17 @@ func (b *VLLMBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, model 
 	// accept) and v0.20+ (no deprecation warning).
 	args := []string{
 		source,
-		// Bind the dual-stack wildcard so pods are reachable on IPv6-only
-		// clusters (#972). With the default net.ipv6.bindv6only=0, :: also
-		// accepts IPv4, so IPv4-only and dual-stack clusters keep working.
-		// On IPv6-disabled nodes, override via extraArgs ("--host", "0.0.0.0"),
-		// which are appended last so the user flag wins.
-		"--host", "::",
 		"--port", fmt.Sprintf("%d", port),
+	}
+
+	// BindAddress: default "::" (dual-stack wildcard, #972/#973). Skip if
+	// user already set --host in extraArgs (extraArgs wins).
+	if !hasMatchingExtraArg(isvc.Spec.ExtraArgs, "host") {
+		bindAddr := "::"
+		if isvc.Spec.BindAddress != "" {
+			bindAddr = isvc.Spec.BindAddress
+		}
+		args = append(args, "--host", bindAddr)
 	}
 	// NOTE: vLLM has no --enable-metrics flag. Its OpenAI server always exposes
 	// Prometheus metrics at /metrics, so there is nothing to enable; passing the

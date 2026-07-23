@@ -754,3 +754,182 @@ func TestLlamaCppRouterBackend_BuildProbes(t *testing.T) {
 		t.Errorf("readiness probe failure threshold = %d, want 3", readiness.FailureThreshold)
 	}
 }
+
+// TestBindAddressAcrossRuntimes verifies that spec.bindAddress is wired into
+// every runtime builder with the correct flag name and that the default "::"
+// is preserved when bindAddress is unset. It also checks that extraArgs
+// precedence is respected (extraArgs wins).
+func TestBindAddressAcrossRuntimes(t *testing.T) {
+	model := &inferencev1alpha1.Model{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-model", Namespace: "default"},
+	}
+	const modelPath = "/models/test"
+	const port = int32(8000)
+
+	cases := []struct {
+		name       string
+		runtime    string
+		bindAddr   string
+		extraArgs  []string
+		wantFlag   string // the flag name (--host or --hostname)
+		wantValue  string
+		wantAbsent bool // when true, the flag must NOT appear (extraArgs took precedence)
+	}{
+		// --- Default: bindAddress unset → "::" ---
+		{
+			name:      "llamacpp default bindAddress",
+			runtime:   "llamacpp",
+			bindAddr:  "",
+			wantFlag:  "--host",
+			wantValue: "::",
+		},
+		{
+			name:      "llamacpp-router default bindAddress",
+			runtime:   "llamacpp-router",
+			bindAddr:  "",
+			wantFlag:  "--host",
+			wantValue: "::",
+		},
+		{
+			name:      "vllm default bindAddress",
+			runtime:   "vllm",
+			bindAddr:  "",
+			wantFlag:  "--host",
+			wantValue: "::",
+		},
+		{
+			name:      "sglang default bindAddress",
+			runtime:   "sglang",
+			bindAddr:  "",
+			wantFlag:  "--host",
+			wantValue: "::",
+		},
+		{
+			name:      "tgi default bindAddress",
+			runtime:   "tgi",
+			bindAddr:  "",
+			wantFlag:  "--hostname",
+			wantValue: "::",
+		},
+
+		// --- Custom bindAddress ---
+		{
+			name:      "llamacpp custom bindAddress",
+			runtime:   "llamacpp",
+			bindAddr:  "0.0.0.0",
+			wantFlag:  "--host",
+			wantValue: "0.0.0.0",
+		},
+		{
+			name:      "llamacpp-router custom bindAddress",
+			runtime:   "llamacpp-router",
+			bindAddr:  "0.0.0.0",
+			wantFlag:  "--host",
+			wantValue: "0.0.0.0",
+		},
+		{
+			name:      "vllm custom bindAddress",
+			runtime:   "vllm",
+			bindAddr:  "0.0.0.0",
+			wantFlag:  "--host",
+			wantValue: "0.0.0.0",
+		},
+		{
+			name:      "sglang custom bindAddress",
+			runtime:   "sglang",
+			bindAddr:  "0.0.0.0",
+			wantFlag:  "--host",
+			wantValue: "0.0.0.0",
+		},
+		{
+			name:      "tgi custom bindAddress",
+			runtime:   "tgi",
+			bindAddr:  "0.0.0.0",
+			wantFlag:  "--hostname",
+			wantValue: "0.0.0.0",
+		},
+
+		// --- extraArgs precedence: flag in extraArgs → skip declarative ---
+		{
+			name:      "llamacpp extraArgs --host takes precedence",
+			runtime:   "llamacpp",
+			bindAddr:  "0.0.0.0",
+			extraArgs: []string{"--host", "127.0.0.1"},
+			wantFlag:  "--host",
+			wantValue: "127.0.0.1",
+		},
+		{
+			name:      "llamacpp-router extraArgs --host takes precedence",
+			runtime:   "llamacpp-router",
+			bindAddr:  "0.0.0.0",
+			extraArgs: []string{"--host", "127.0.0.1"},
+			wantFlag:  "--host",
+			wantValue: "127.0.0.1",
+		},
+		{
+			name:      "vllm extraArgs --host takes precedence",
+			runtime:   "vllm",
+			bindAddr:  "0.0.0.0",
+			extraArgs: []string{"--host", "127.0.0.1"},
+			wantFlag:  "--host",
+			wantValue: "127.0.0.1",
+		},
+		{
+			name:      "sglang extraArgs --host takes precedence",
+			runtime:   "sglang",
+			bindAddr:  "0.0.0.0",
+			extraArgs: []string{"--host", "127.0.0.1"},
+			wantFlag:  "--host",
+			wantValue: "127.0.0.1",
+		},
+		{
+			name:      "tgi extraArgs --hostname takes precedence",
+			runtime:   "tgi",
+			bindAddr:  "0.0.0.0",
+			extraArgs: []string{"--hostname", "127.0.0.1"},
+			wantFlag:  "--hostname",
+			wantValue: "127.0.0.1",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			isvc := &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					Runtime:     tc.runtime,
+					ModelRef:    "test-model",
+					BindAddress: tc.bindAddr,
+					ExtraArgs:   tc.extraArgs,
+				},
+			}
+
+			var args []string
+			switch tc.runtime {
+			case "llamacpp":
+				args = (&LlamaCppBackend{}).BuildArgs(isvc, model, modelPath, port)
+			case "llamacpp-router":
+				args = (&LlamaCppRouterBackend{}).BuildArgs(isvc, model, modelPath, port)
+			case "vllm":
+				args = (&VLLMBackend{}).BuildArgs(isvc, model, modelPath, port)
+			case "sglang":
+				args = (&SGLangBackend{}).BuildArgs(isvc, model, modelPath, port)
+			case "tgi":
+				args = (&TGIBackend{}).BuildArgs(isvc, model, modelPath, port)
+			default:
+				t.Fatalf("unknown runtime %q", tc.runtime)
+			}
+
+			if !containsArg(args, tc.wantFlag, tc.wantValue) {
+				t.Errorf("expected %s %s in args, got %v", tc.wantFlag, tc.wantValue, args)
+			}
+
+			// When extraArgs sets the flag, the declarative bindAddress value
+			// must NOT appear (it was skipped).
+			if tc.extraArgs != nil && tc.bindAddr != "" && tc.wantValue != tc.bindAddr {
+				if containsArg(args, tc.wantFlag, tc.bindAddr) {
+					t.Errorf("bindAddress %q should have been skipped (extraArgs took precedence), but found %s %s in args", tc.bindAddr, tc.wantFlag, tc.bindAddr)
+				}
+			}
+		})
+	}
+}
