@@ -1,0 +1,107 @@
+suite: prometheus rules match the chart's own scrape targets
+# A rule whose matcher selects nothing installs clean and evaluates empty,
+# which is indistinguishable from a healthy cluster (#1223). Rules are
+# addressed by name, never by index.
+templates:
+  - prometheusrule.yaml
+  - inference-podmonitor.yaml
+  - servicemonitor.yaml
+
+tests:
+  # --- job label: pinned on the monitors, matched by the alerts ---
+
+  - it: should pin the inference job label to what InferenceServiceDown matches
+    template: inference-podmonitor.yaml
+    set:
+      prometheus.inferencePodMonitor.enabled: true
+    asserts:
+      - contains:
+          path: spec.podMetricsEndpoints[0].relabelings
+          content:
+            targetLabel: job
+            replacement: llmkube-inference
+
+  - it: should pin the controller job label to what ControllerDown matches
+    template: servicemonitor.yaml
+    set:
+      prometheus.serviceMonitor.enabled: true
+    asserts:
+      - contains:
+          path: spec.endpoints[0].relabelings
+          content:
+            targetLabel: job
+            replacement: llmkube-controller
+
+  - it: should alert on the job names the monitors pin
+    template: prometheusrule.yaml
+    set:
+      prometheus.prometheusRule.enabled: true
+    asserts:
+      - equal:
+          path: spec.groups[?(@.name=="llmkube-inference")].rules[?(@.alert=="InferenceServiceDown")].expr
+          value: up{job="llmkube-inference"} == 0
+      - equal:
+          path: spec.groups[?(@.name=="llmkube-inference")].rules[?(@.alert=="ControllerDown")].expr
+          value: up{job="llmkube-controller"} == 0
+
+  - it: should guard the controller job label with an absence alert
+    template: prometheusrule.yaml
+    set:
+      prometheus.prometheusRule.enabled: true
+      prometheus.serviceMonitor.enabled: true
+    asserts:
+      # up{} == 0 needs the series to exist; a stale job label removes it.
+      - equal:
+          path: spec.groups[?(@.name=="llmkube-inference")].rules[?(@.alert=="ControllerMetricsMissing")].expr
+          value: absent(up{job="llmkube-controller"})
+      - lengthEqual:
+          path: spec.groups[?(@.name=="llmkube-inference")].rules
+          count: 3
+
+  - it: should omit the absence alert when the chart scrapes nothing
+    template: prometheusrule.yaml
+    set:
+      prometheus.prometheusRule.enabled: true
+      prometheus.serviceMonitor.enabled: false
+    asserts:
+      # No chart-owned target means nothing to be absent from; the alert
+      # would fire forever.
+      - lengthEqual:
+          path: spec.groups[?(@.name=="llmkube-inference")].rules
+          count: 2
+
+  # --- restart rule: every backend container, keyed by a label KSM emits ---
+
+  - it: should select every backend container, keyed by a label KSM carries
+    template: prometheusrule.yaml
+    set:
+      prometheus.prometheusRule.enabled: true
+    asserts:
+      # Whole alternation, not substrings: a bare `vllm` also matches
+      # `vllm-swift`. TestChartRestartRuleCoversEveryBackend owns the list.
+      - matchRegex:
+          path: spec.groups[?(@.name=="llmkube-inference-recording")].rules[?(@.record=="llmkube:inference:restarts:rate5m")].expr
+          pattern: 'container=~"llama-server\|sglang\|vllm\|tgi\|personaplex\|inference-server"'
+      # service and runtime exist only on the inference pods' own metrics.
+      - matchRegex:
+          path: spec.groups[?(@.name=="llmkube-inference-recording")].rules[?(@.record=="llmkube:inference:restarts:rate5m")].expr
+          pattern: 'sum by \(namespace, pod, container\)'
+
+  # --- recording rules: only histograms some runtime emits ---
+
+  - it: should record only latency histograms a runtime publishes
+    template: prometheusrule.yaml
+    set:
+      prometheus.prometheusRule.enabled: true
+    asserts:
+      # Three and no more: llama.cpp exposes no request-latency histogram,
+      # so a rule over llamacpp:request_seconds_bucket is always empty.
+      - lengthEqual:
+          path: spec.groups[?(@.name=="llmkube-inference-recording")].rules
+          count: 3
+      - isNotNullOrEmpty:
+          path: spec.groups[?(@.name=="llmkube-inference-recording")].rules[?(@.record=="llmkube:inference:request_latency:p95_5m")].expr
+      - isNotNullOrEmpty:
+          path: spec.groups[?(@.name=="llmkube-inference-recording")].rules[?(@.record=="llmkube:inference:restarts:rate5m")].expr
+      - isNotNullOrEmpty:
+          path: spec.groups[?(@.name=="llmkube-inference-recording")].rules[?(@.record=="llmkube:inference:ttft_seconds:p95_5m")].expr

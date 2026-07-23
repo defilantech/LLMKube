@@ -4,12 +4,12 @@ templates:
 
 tests:
   # Default ON: the chart self-generates a stable serving cert, so the webhook
-  # is wired by default (matches foreman). Renders exactly three documents:
-  # the cert Secret, the webhook Service, and the ValidatingWebhookConfiguration.
-  - it: should render Secret + Service + ValidatingWebhookConfiguration by default
+  # is wired by default (matches foreman). Four documents: cert Secret, webhook
+  # Service, and the validating + mutating configurations.
+  - it: should render Secret + Service + both webhook configurations by default
     asserts:
       - hasDocuments:
-          count: 3
+          count: 4
 
   - it: should render a kubernetes.io/tls cert Secret
     documentIndex: 0
@@ -64,6 +64,25 @@ tests:
       - equal:
           path: webhooks[0].failurePolicy
           value: Fail
+
+  - it: should render a MutatingWebhookConfiguration for models
+    documentIndex: 3
+    asserts:
+      - isKind:
+          of: MutatingWebhookConfiguration
+      - equal:
+          path: webhooks[0].name
+          value: mmodel.inference.llmkube.dev
+      - equal:
+          path: webhooks[0].clientConfig.service.path
+          value: /mutate-inference-llmkube-dev-v1alpha1-model
+      - equal:
+          path: webhooks[0].rules[0].resources[0]
+          value: models
+      # Ignore, not Fail: a Model apply must survive an unreachable defaulter.
+      - equal:
+          path: webhooks[0].failurePolicy
+          value: Ignore
 
   # failurePolicy is wired from values.
   - it: should honor a custom failurePolicy

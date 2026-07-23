@@ -86,15 +86,26 @@ spec:
         summary: "LLMKube controller is down"
         description: "Controller {{`{{ $labels.instance }}`}} has been down for more than 2 minutes"
 
+    {{- if .Values.prometheus.serviceMonitor.enabled }}
+    # up{} == 0 needs the series to exist; a stale job label removes it
+    # instead, which is how #1223 stayed silent. Gated on the chart owning
+    # the scrape target.
+    - alert: ControllerMetricsMissing
+      expr: absent(up{job="llmkube-controller"})
+      for: 15m
+      labels:
+        severity: warning
+        component: controller
+      annotations:
+        summary: "LLMKube controller metrics are not being scraped"
+        description: "No up series for job=llmkube-controller for 15 minutes — the scrape target is gone, or its job label no longer matches ControllerDown."
+    {{- end }}
+
   - name: llmkube-inference-recording
     interval: 30s
     rules:
-    # Request latency p95 over 5m, unified across llama.cpp and vLLM. Each
-    # runtime publishes its own histogram name; this rule exposes a single
-    # series families (one per runtime) so dashboards can render either one
-    # without knowing the upstream metric path. TTFT is exposed only for vLLM
-    # today; llama.cpp lacks a first-token-specific histogram, so we report
-    # end-to-end request latency for it instead.
+    # Request latency p95 over 5m. vLLM-only: llama.cpp's server exposes 11
+    # metrics and none of them is a request-latency histogram.
     - record: llmkube:inference:request_latency:p95_5m
       expr: |
         histogram_quantile(0.95,
@@ -104,28 +115,19 @@ spec:
         )
       labels:
         latency_kind: end_to_end
-    - record: llmkube:inference:llamacpp_request:p95_5m
-      expr: |
-        histogram_quantile(0.95,
-          sum by (service, namespace, runtime, le) (
-            rate(llamacpp:request_seconds_bucket[5m])
-          )
-        )
-      labels:
-        latency_kind: end_to_end
 
     # Inference pod restart rate as a coarse error proxy. Per-request
     # 4xx/5xx counters are tracked in #409 and will replace this once the
-    # upstream metric paths are confirmed for each runtime. The container
-    # regex below must be extended when new runtimes ship a real container
-    # name (e.g. add `vllm-swift` to the alternation when that backend
-    # graduates from skeletal to a deployable runtime; tracked in #409).
+    # upstream metric paths are confirmed for each runtime.
+    #
+    # Alternation is every backend's ContainerName(), enforced by
+    # TestChartRestartRuleCoversEveryBackend. Keyed by pod because
+    # kube-state-metrics carries no service or runtime label.
     - record: llmkube:inference:restarts:rate5m
       expr: |
-        sum by (service, namespace, runtime) (
+        sum by (namespace, pod, container) (
           rate(kube_pod_container_status_restarts_total{
-            pod=~".+",
-            container=~"llamacpp|vllm|tgi|personaplex|llm-server"
+            container=~"llama-server|sglang|vllm|tgi|personaplex|inference-server"
           }[5m])
         )
 
