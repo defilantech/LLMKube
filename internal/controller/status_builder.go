@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -127,11 +126,35 @@ func (r *InferenceServiceReconciler) constructEndpoint(isvc *inferencev1alpha1.I
 	return fmt.Sprintf("http://%s.%s.svc.cluster.local:%d%s", svc.Name, svc.Namespace, port, path)
 }
 
+// publishInferenceServiceState exports the phase, replica and info series from
+// stored status, so a reconcile that returns before the status update still
+// reports what the service is. No-ops on an empty phase: nothing was observed
+// (Get failed, or the object has no status yet). model is nil on the paths that
+// never resolved one; the info series then falls back to cpu/llamacpp, which is
+// what the call site did with a nil model.
+func publishInferenceServiceState(isvc *inferencev1alpha1.InferenceService, model *inferencev1alpha1.Model) {
+	if isvc.Status.Phase == "" {
+		return
+	}
+
+	accelerator := "cpu"
+	if model != nil && model.Spec.Hardware != nil && model.Spec.Hardware.Accelerator != "" {
+		accelerator = model.Spec.Hardware.Accelerator
+	}
+	runtime := isvc.Spec.Runtime
+	if runtime == "" {
+		runtime = "llamacpp"
+	}
+
+	llmkubemetrics.PublishInferenceServicePhase(isvc.Name, isvc.Namespace, isvc.Status.Phase)
+	llmkubemetrics.PublishInferenceServiceReplicas(isvc.Name, isvc.Namespace, isvc.Status.ReadyReplicas, isvc.Status.DesiredReplicas)
+	llmkubemetrics.PublishInferenceServiceInfo(isvc.Name, isvc.Namespace, accelerator, runtime)
+}
+
 // nolint:unparam // ctrl.Result is always zero but callers take &result to signal status-update path
 func (r *InferenceServiceReconciler) updateStatusWithSchedulingInfo(
 	ctx context.Context,
 	isvc *inferencev1alpha1.InferenceService,
-	model *inferencev1alpha1.Model,
 	phase string,
 	modelReady bool,
 	readyReplicas int32,
@@ -155,30 +178,9 @@ func (r *InferenceServiceReconciler) updateStatusWithSchedulingInfo(
 
 	isvc.Status.EffectivePriority = r.resolveEffectivePriority(isvc)
 
-	// Update phase gauge metric
-	llmkubemetrics.InferenceServicePhase.WithLabelValues(isvc.Name, isvc.Namespace, phase).Set(1)
-	if previousPhase != "" && previousPhase != phase {
-		llmkubemetrics.InferenceServicePhase.WithLabelValues(isvc.Name, isvc.Namespace, previousPhase).Set(0)
-	}
-
-	// Emit info metric with hardware labels (accelerator, runtime)
-	accelerator := "cpu"
-	runtime := isvc.Spec.Runtime
-	if model != nil && model.Spec.Hardware != nil {
-		if model.Spec.Hardware.Accelerator != "" {
-			accelerator = model.Spec.Hardware.Accelerator
-		}
-	}
-	if runtime == "" {
-		runtime = "llamacpp"
-	}
-	// Delete any prior series for this InferenceService so that when the
-	// accelerator or runtime changes in place only one series exists per ISvc.
-	llmkubemetrics.InferenceServiceInfo.DeletePartialMatch(prometheus.Labels{
-		"inferenceservice": isvc.Name,
-		"namespace":        isvc.Namespace,
-	})
-	llmkubemetrics.InferenceServiceInfo.WithLabelValues(isvc.Name, isvc.Namespace, accelerator, runtime).Set(1)
+	// The phase, replica and info series are published by Reconcile's defer
+	// from the status written above, not here: this call site is unreachable
+	// on any pass that errors earlier.
 
 	// Track time-to-ready using creation timestamp
 	if phase == PhaseReady && previousPhase != PhaseReady {

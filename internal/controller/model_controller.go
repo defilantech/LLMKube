@@ -155,16 +155,19 @@ func (r *ModelReconciler) metadataClient() *http.Client {
 
 func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	reconcileStart := time.Now()
+	model := &inferencev1alpha1.Model{}
 	defer func() {
 		llmkubemetrics.ReconcileDuration.WithLabelValues("model").Observe(time.Since(reconcileStart).Seconds())
+		// Republish from observed state: every steady-state path returns before a Set.
+		llmkubemetrics.PublishModelPhase(model.Name, model.Namespace, model.Status.Phase)
 	}()
 
 	logger := log.FromContext(ctx)
 	logger.Info("Reconciling Model", "name", req.Name, "namespace", req.Namespace)
 
-	model := &inferencev1alpha1.Model{}
 	if err := r.Get(ctx, req.NamespacedName, model); err != nil {
 		if errors.IsNotFound(err) {
+			llmkubemetrics.DeleteModelSeries(req.Name, req.Namespace)
 			return ctrl.Result{}, nil
 		}
 		logger.Error(err, "Failed to get Model")
@@ -256,7 +259,6 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	if err != nil {
 		logger.Error(err, "Failed to fetch model")
 		llmkubemetrics.ReconcileTotal.WithLabelValues("model", "error").Inc()
-		llmkubemetrics.ModelStatus.WithLabelValues(model.Name, model.Namespace, PhaseFailed).Set(1)
 		model.Status.Phase = PhaseFailed
 		if statusErr := r.updateStatus(ctx, model, ConditionDegraded, metav1.ConditionTrue, failReason, err.Error()); statusErr != nil {
 			logger.Error(statusErr, "Failed to update status after fetch failure")
@@ -291,7 +293,6 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		logger.Error(err, "SHA256 integrity check failed")
 		_ = os.Remove(downloadPath)
 		llmkubemetrics.ReconcileTotal.WithLabelValues("model", "error").Inc()
-		llmkubemetrics.ModelStatus.WithLabelValues(model.Name, model.Namespace, PhaseFailed).Set(1)
 		model.Status.Phase = PhaseFailed
 		if statusErr := r.updateStatus(ctx, model, ConditionDegraded, metav1.ConditionTrue, "IntegrityCheckFailed", err.Error()); statusErr != nil {
 			logger.Error(statusErr, "Failed to update status after integrity check failure")
@@ -330,7 +331,6 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return ctrl.Result{}, err
 	}
 
-	llmkubemetrics.ModelStatus.WithLabelValues(model.Name, model.Namespace, "Ready").Set(1)
 	llmkubemetrics.ReconcileTotal.WithLabelValues("model", "success").Inc()
 	logger.Info("Model ready and cached", "path", finalPath, "size", model.Status.Size, "cacheKey", cacheKey)
 	return ctrl.Result{}, nil
@@ -394,7 +394,6 @@ func (r *ModelReconciler) reconcileCachedModelFile(ctx context.Context, model *i
 			return true, err
 		}
 
-		llmkubemetrics.ModelStatus.WithLabelValues(model.Name, model.Namespace, "Cached").Set(1)
 		llmkubemetrics.ReconcileTotal.WithLabelValues("model", "success").Inc()
 		return true, nil
 	}
@@ -416,7 +415,6 @@ func (r *ModelReconciler) rejectDisallowedLocalSource(ctx context.Context, model
 
 	logger.Error(valErr, "rejected local model source by host-path allowlist", "source", model.Spec.Source)
 	llmkubemetrics.ReconcileTotal.WithLabelValues("model", "error").Inc()
-	llmkubemetrics.ModelStatus.WithLabelValues(model.Name, model.Namespace, PhaseFailed).Set(1)
 	model.Status.Phase = PhaseFailed
 	if statusErr := r.updateStatus(ctx, model, ConditionDegraded, metav1.ConditionTrue, "SourceNotAllowed", valErr.Error()); statusErr != nil {
 		return true, statusErr
@@ -445,7 +443,6 @@ func (r *ModelReconciler) failInvalidFileSet(ctx context.Context, model *inferen
 		logger.Error(updateErr, "Failed to update status after invalid file set")
 	}
 	llmkubemetrics.ReconcileTotal.WithLabelValues("model", "error").Inc()
-	llmkubemetrics.ModelStatus.WithLabelValues(model.Name, model.Namespace, PhaseFailed).Set(1)
 	return ctrl.Result{RequeueAfter: 5 * time.Minute}
 }
 
@@ -556,7 +553,6 @@ func (r *ModelReconciler) reconcilePVCSource(ctx context.Context, model *inferen
 		return ctrl.Result{}, err
 	}
 
-	llmkubemetrics.ModelStatus.WithLabelValues(model.Name, model.Namespace, "Ready").Set(1)
 	llmkubemetrics.ReconcileTotal.WithLabelValues("model", "success").Inc()
 	logger.Info("PVC model ready", "pvc", claimName, "path", mountPath)
 	return ctrl.Result{}, nil
@@ -678,7 +674,6 @@ func (r *ModelReconciler) reconcileRuntimeResolvedSource(ctx context.Context, mo
 				logger.Error(updateErr, "Failed to update status after invalid file set")
 			}
 			llmkubemetrics.ReconcileTotal.WithLabelValues("model", "error").Inc()
-			llmkubemetrics.ModelStatus.WithLabelValues(model.Name, model.Namespace, PhaseFailed).Set(1)
 			return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
 		}
 		model.Status.StagedFiles = plan.Files
@@ -722,7 +717,6 @@ func (r *ModelReconciler) reconcileRuntimeResolvedSource(ctx context.Context, mo
 		return ctrl.Result{}, err
 	}
 
-	llmkubemetrics.ModelStatus.WithLabelValues(model.Name, model.Namespace, "Ready").Set(1)
 	llmkubemetrics.ReconcileTotal.WithLabelValues("model", "success").Inc()
 	logger.Info("Runtime-resolved model ready", "source", model.Spec.Source)
 	return ctrl.Result{}, nil

@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	dto "github.com/prometheus/client_model/go"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 )
@@ -40,34 +41,18 @@ func getHistogramMetric(t *testing.T, h *prometheus.HistogramVec, labels []strin
 }
 
 func TestMetricsRegistered(t *testing.T) {
-	// Verify all metrics are registered by checking that re-registration
-	// fails with AlreadyRegisteredError. This confirms init() ran correctly.
-	collectors := []struct {
-		name      string
-		collector prometheus.Collector
-	}{
-		{"llmkube_model_download_duration_seconds", ModelDownloadDuration},
-		{"llmkube_model_status", ModelStatus},
-		{"llmkube_inferenceservice_ready_duration_seconds", InferenceServiceReadyDuration},
-		{"llmkube_inferenceservice_phase", InferenceServicePhase},
-		{"llmkube_inferenceservice_info", InferenceServiceInfo},
-		{"llmkube_gpu_queue_depth", GPUQueueDepth},
-		{"llmkube_gpu_queue_wait_duration_seconds", GPUQueueWaitDuration},
-		{"llmkube_reconcile_total", ReconcileTotal},
-		{"llmkube_reconcile_duration_seconds", ReconcileDuration},
+	if len(AllCollectors) == 0 {
+		t.Fatal("AllCollectors is empty")
 	}
-
-	for _, c := range collectors {
-		t.Run(c.name, func(t *testing.T) {
-			err := ctrlmetrics.Registry.Register(c.collector)
-			if err == nil {
-				t.Errorf("metric %q was not already registered — init() did not register it", c.name)
-				// Unregister if we accidentally succeeded
-				ctrlmetrics.Registry.Unregister(c.collector)
-			} else if _, ok := err.(prometheus.AlreadyRegisteredError); !ok {
-				t.Errorf("unexpected error registering %q: %v", c.name, err)
-			}
-		})
+	for _, c := range AllCollectors {
+		err := ctrlmetrics.Registry.Register(c)
+		if err == nil {
+			t.Errorf("collector %T was not registered by init()", c)
+			continue
+		}
+		if _, ok := err.(prometheus.AlreadyRegisteredError); !ok {
+			t.Errorf("collector %T: unexpected error: %v", c, err)
+		}
 	}
 }
 
@@ -95,68 +80,64 @@ func TestModelStatus(t *testing.T) {
 }
 
 func TestInferenceServicePhase(t *testing.T) {
-	InferenceServicePhase.WithLabelValues("phase-test", "default", "Creating").Set(1)
+	labels := inferenceServiceLabels("phase-test", "default")
+	InferenceServicePhase.DeletePartialMatch(labels)
 
-	var m dto.Metric
-	if err := InferenceServicePhase.WithLabelValues("phase-test", "default", "Creating").Write(&m); err != nil {
-		t.Fatalf("failed to write metric: %v", err)
-	}
-	if m.GetGauge().GetValue() != 1 {
-		t.Errorf("expected gauge value 1, got %f", m.GetGauge().GetValue())
-	}
-
-	// Verify phase transition clears old phase
-	InferenceServicePhase.WithLabelValues("phase-test", "default", "Creating").Set(0)
-	InferenceServicePhase.WithLabelValues("phase-test", "default", "Ready").Set(1)
-
-	if err := InferenceServicePhase.WithLabelValues("phase-test", "default", "Creating").Write(&m); err != nil {
-		t.Fatalf("failed to write metric: %v", err)
-	}
-	if m.GetGauge().GetValue() != 0 {
-		t.Errorf("expected Creating phase to be 0 after transition, got %f", m.GetGauge().GetValue())
+	PublishInferenceServicePhase("phase-test", "default", "Creating")
+	if got := testutil.ToFloat64(
+		InferenceServicePhase.WithLabelValues("phase-test", "default", "Creating")); got != 1 {
+		t.Errorf("expected gauge value 1, got %f", got)
 	}
 
-	if err := InferenceServicePhase.WithLabelValues("phase-test", "default", "Ready").Write(&m); err != nil {
-		t.Fatalf("failed to write metric: %v", err)
+	// A phase change drops the old series rather than zeroing it, so the vec
+	// holds one series per service no matter how much the phase churns.
+	PublishInferenceServicePhase("phase-test", "default", "Ready")
+	if got := testutil.ToFloat64(
+		InferenceServicePhase.WithLabelValues("phase-test", "default", "Ready")); got != 1 {
+		t.Errorf("expected Ready phase to be 1 after transition, got %f", got)
 	}
-	if m.GetGauge().GetValue() != 1 {
-		t.Errorf("expected Ready phase to be 1 after transition, got %f", m.GetGauge().GetValue())
+	// WithLabelValues above resurrected Ready at its real value; count after.
+	if got := InferenceServicePhase.DeletePartialMatch(labels); got != 1 {
+		t.Errorf("expected exactly 1 series after transition, got %d", got)
 	}
 }
 
 func TestInferenceServiceInfo(t *testing.T) {
-	// Verify the info metric is emitted with accelerator and runtime labels.
-	InferenceServiceInfo.WithLabelValues("info-test", "default", "cuda", "llamacpp").Set(1)
+	labels := inferenceServiceLabels("info-test", "default")
+	InferenceServiceInfo.DeletePartialMatch(labels)
 
-	var m dto.Metric
-	if err := InferenceServiceInfo.WithLabelValues("info-test", "default", "cuda", "llamacpp").Write(&m); err != nil {
-		t.Fatalf("failed to write metric: %v", err)
-	}
-	if m.GetGauge().GetValue() != 1 {
-		t.Errorf("expected gauge value 1, got %f", m.GetGauge().GetValue())
+	PublishInferenceServiceInfo("info-test", "default", "cuda", "llamacpp")
+	if got := testutil.ToFloat64(
+		InferenceServiceInfo.WithLabelValues("info-test", "default", "cuda", "llamacpp")); got != 1 {
+		t.Errorf("expected gauge value 1, got %f", got)
 	}
 
-	// Simulate an accelerator change: delete the old series and emit the new one.
-	InferenceServiceInfo.DeletePartialMatch(prometheus.Labels{
-		"inferenceservice": "info-test",
-		"namespace":        "default",
-	})
-	InferenceServiceInfo.WithLabelValues("info-test", "default", "rocm", "llamacpp").Set(1)
+	// An in-place accelerator change must not leave both series behind.
+	PublishInferenceServiceInfo("info-test", "default", "rocm", "llamacpp")
+	if got := testutil.ToFloat64(
+		InferenceServiceInfo.WithLabelValues("info-test", "default", "rocm", "llamacpp")); got != 1 {
+		t.Errorf("expected gauge value 1 for rocm, got %f", got)
+	}
+	if got := InferenceServiceInfo.DeletePartialMatch(labels); got != 1 {
+		t.Errorf("expected exactly 1 series after an accelerator change, got %d", got)
+	}
+}
 
-	// Verify the new accelerator series is 1.
-	if err := InferenceServiceInfo.WithLabelValues("info-test", "default", "rocm", "llamacpp").Write(&m); err != nil {
-		t.Fatalf("failed to write metric: %v", err)
-	}
-	if m.GetGauge().GetValue() != 1 {
-		t.Errorf("expected gauge value 1 for rocm, got %f", m.GetGauge().GetValue())
-	}
+func TestPublishInferenceServiceReplicas(t *testing.T) {
+	labels := inferenceServiceLabels("replicas-test", "default")
+	InferenceServiceReplicas.DeletePartialMatch(labels)
 
-	// Verify the old cuda series is gone (not present / 0).
-	if err := InferenceServiceInfo.WithLabelValues("info-test", "default", "cuda", "llamacpp").Write(&m); err != nil {
-		t.Fatalf("failed to write metric: %v", err)
+	PublishInferenceServiceReplicas("replicas-test", "default", 2, 3)
+	if got := testutil.ToFloat64(
+		InferenceServiceReplicas.WithLabelValues("replicas-test", "default", "ready")); got != 2 {
+		t.Errorf("expected ready 2, got %f", got)
 	}
-	if m.GetGauge().GetValue() != 0 {
-		t.Errorf("expected cuda gauge value 0 after deletion, got %f", m.GetGauge().GetValue())
+	if got := testutil.ToFloat64(
+		InferenceServiceReplicas.WithLabelValues("replicas-test", "default", "desired")); got != 3 {
+		t.Errorf("expected desired 3, got %f", got)
+	}
+	if got := InferenceServiceReplicas.DeletePartialMatch(labels); got != 2 {
+		t.Errorf("expected exactly 2 series (ready, desired), got %d", got)
 	}
 }
 
@@ -234,5 +215,75 @@ func TestHistogramBuckets(t *testing.T) {
 				t.Errorf("expected at least %d buckets, got %d", tt.minBkts, bucketCount)
 			}
 		})
+	}
+}
+
+func TestDeleteModelSeries(t *testing.T) {
+	// Counts are taken as deltas: these vecs are package-level and other tests
+	// in this file leave series behind.
+	before := testutil.CollectAndCount(ModelStatus)
+
+	ModelStatus.WithLabelValues("del-model", "default", "Ready").Set(1)
+	ModelStatus.WithLabelValues("del-model", "default", "Failed").Set(1)
+	ModelStatus.WithLabelValues("keep-model", "default", "Ready").Set(1)
+	if got, want := testutil.CollectAndCount(ModelStatus), before+3; got != want {
+		t.Fatalf("setup: got %d series, want %d", got, want)
+	}
+
+	DeleteModelSeries("del-model", "default")
+
+	// Both phases of the deleted Model go, the unrelated Model stays.
+	if got, want := testutil.CollectAndCount(ModelStatus), before+1; got != want {
+		t.Errorf("after delete: got %d series, want %d", got, want)
+	}
+	if testutil.ToFloat64(ModelStatus.WithLabelValues("keep-model", "default", "Ready")) != 1 {
+		t.Error("unrelated Model series was removed")
+	}
+}
+
+func TestDeleteInferenceServiceSeries(t *testing.T) {
+	beforePhase := testutil.CollectAndCount(InferenceServicePhase)
+	beforeInfo := testutil.CollectAndCount(InferenceServiceInfo)
+	beforeReplicas := testutil.CollectAndCount(InferenceServiceReplicas)
+
+	InferenceServicePhase.WithLabelValues("del-isvc", "default", "Ready").Set(1)
+	InferenceServiceInfo.WithLabelValues("del-isvc", "default", "cpu", "llamacpp").Set(1)
+	InferenceServiceReplicas.WithLabelValues("del-isvc", "default", "ready").Set(1)
+	InferenceServiceReplicas.WithLabelValues("del-isvc", "default", "desired").Set(1)
+
+	DeleteInferenceServiceSeries("del-isvc", "default")
+
+	// Every per-service vec must be covered, or a deleted service keeps
+	// reporting through whichever one was missed.
+	if got := testutil.CollectAndCount(InferenceServicePhase); got != beforePhase {
+		t.Errorf("phase: got %d series, want %d", got, beforePhase)
+	}
+	if got := testutil.CollectAndCount(InferenceServiceInfo); got != beforeInfo {
+		t.Errorf("info: got %d series, want %d", got, beforeInfo)
+	}
+	if got := testutil.CollectAndCount(InferenceServiceReplicas); got != beforeReplicas {
+		t.Errorf("replicas: got %d series, want %d", got, beforeReplicas)
+	}
+}
+
+func TestPublishModelPhase(t *testing.T) {
+	labels := modelLabels("publish-test", "default")
+	ModelStatus.DeletePartialMatch(labels)
+
+	// No phase yet: callers defer this unconditionally, so it must no-op
+	// rather than publish an empty label.
+	PublishModelPhase("publish-test", "default", "")
+	if got := ModelStatus.DeletePartialMatch(labels); got != 0 {
+		t.Errorf("empty phase should publish nothing, got %d series", got)
+	}
+
+	PublishModelPhase("publish-test", "default", "Downloading")
+	PublishModelPhase("publish-test", "default", "Ready")
+	if got := testutil.ToFloat64(
+		ModelStatus.WithLabelValues("publish-test", "default", "Ready")); got != 1 {
+		t.Errorf("expected Ready to be 1, got %f", got)
+	}
+	if got := ModelStatus.DeletePartialMatch(labels); got != 1 {
+		t.Errorf("expected exactly 1 series after a phase change, got %d", got)
 	}
 }
