@@ -46,6 +46,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
+	federationv1alpha1 "github.com/defilantech/llmkube/api/federation/v1alpha1"
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 	"github.com/defilantech/llmkube/internal/controller"
 	_ "github.com/defilantech/llmkube/internal/metrics" // Register custom Prometheus metrics
@@ -61,6 +62,7 @@ func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
 	utilruntime.Must(inferencev1alpha1.AddToScheme(scheme))
+	utilruntime.Must(federationv1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
