@@ -11,6 +11,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 )
@@ -19,18 +20,6 @@ const (
 	maxPodLifetimeSeconds int64 = 9223372036
 	podLifetimeRetry            = 30 * time.Second
 )
-
-// earliestPositive merges controller timers without allowing a zero timer to
-// create a polling loop.
-func earliestPositive(values ...time.Duration) time.Duration {
-	var earliest time.Duration
-	for _, value := range values {
-		if value > 0 && (earliest == 0 || value < earliest) {
-			earliest = value
-		}
-	}
-	return earliest
-}
 
 // reconcilePodLifetime recycles at most one healthy, expired pod. All
 // workload checks are deliberately conservative: a watch will cause another
@@ -45,16 +34,18 @@ func (r *InferenceServiceReconciler) reconcilePodLifetime(ctx context.Context, i
 	if err != nil || deployment == nil {
 		return 0, err
 	}
-	owned, err := r.ownedActivePods(ctx, deployment)
+	active, err := r.activePods(ctx, deployment)
 	if err != nil {
 		return 0, err
 	}
-	// stableDeployment already proved Status.Replicas is the desired count, so
-	// it doubles as the expected number of active pods.
-	if len(owned) != int(deployment.Status.Replicas) || !allPodsReady(owned) {
+	// stableDeployment already proved Status.Replicas is the desired count, and
+	// it only counts pods the Deployment owns. A foreign pod sharing the
+	// selector therefore fails this check and holds recycling rather than
+	// risking an eviction the operator does not own.
+	if len(active) != int(deployment.Status.Replicas) || !allPodsReady(active) {
 		return 0, nil
 	}
-	return r.recycleExpiredPod(ctx, owned, podLifetime(*isvc.Spec.MaxPodLifetimeSeconds), now)
+	return r.recycleExpiredPod(ctx, isvc, active, podLifetime(*isvc.Spec.MaxPodLifetimeSeconds), now)
 }
 
 func (r *InferenceServiceReconciler) getStableDeployment(ctx context.Context, isvc *inferencev1alpha1.InferenceService) (*appsv1.Deployment, error) {
@@ -75,11 +66,11 @@ func (r *InferenceServiceReconciler) getStableDeployment(ctx context.Context, is
 // recycleExpiredPod evicts the pod that expired first, or reports how long
 // until the next one does. Ties break on name so repeated reconciles of the
 // same state pick the same pod.
-func (r *InferenceServiceReconciler) recycleExpiredPod(ctx context.Context, owned []*corev1.Pod, lifetime time.Duration, now time.Time) (time.Duration, error) {
+func (r *InferenceServiceReconciler) recycleExpiredPod(ctx context.Context, isvc *inferencev1alpha1.InferenceService, active []*corev1.Pod, lifetime time.Duration, now time.Time) (time.Duration, error) {
 	var expired *corev1.Pod
 	var expiredDeadline time.Time
 	var earliest time.Duration
-	for _, pod := range owned {
+	for _, pod := range active {
 		deadline := pod.Status.StartTime.Time.Add(lifetime)
 		if deadline.After(now) {
 			earliest = earliestPositive(earliest, deadline.Sub(now))
@@ -93,20 +84,42 @@ func (r *InferenceServiceReconciler) recycleExpiredPod(ctx context.Context, owne
 	if expired == nil {
 		return earliest, nil
 	}
-	return r.evictPod(ctx, expired)
+	// waitForIdle promises never to drop in-flight generations. Recycling is
+	// best-effort and has no deadline to race, so it simply waits for the next
+	// idle window instead of borrowing the rollout path's timeout budget.
+	if isvc.RolloutPolicyEnabled() {
+		idle, err := r.checkServiceIdle(ctx, isvc, &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: sanitizeDNSName(isvc.Name), Namespace: isvc.Namespace}})
+		if err != nil || !idle {
+			// Fail closed, matching reconcileRolloutPolicy: an idle probe that
+			// cannot answer must not authorise killing a possibly-busy pod.
+			logf.FromContext(ctx).Info("Backend not idle, holding pod recycle", "pod", expired.Name, "error", err)
+			return inferencev1alpha1.DefaultIdleCheckInterval, nil
+		}
+	}
+	return r.evictPod(ctx, isvc, expired)
 }
 
-func (r *InferenceServiceReconciler) evictPod(ctx context.Context, pod *corev1.Pod) (time.Duration, error) {
+func (r *InferenceServiceReconciler) evictPod(ctx context.Context, isvc *inferencev1alpha1.InferenceService, pod *corev1.Pod) (time.Duration, error) {
 	eviction := &policyv1.Eviction{ObjectMeta: metav1.ObjectMeta{Name: pod.Name, Namespace: pod.Namespace}, DeleteOptions: &metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &pod.UID}}}
 	err := r.SubResource("eviction").Create(ctx, pod, eviction)
 	switch {
 	case apierrors.IsNotFound(err):
 		return 0, nil
 	case apierrors.IsTooManyRequests(err):
+		// A PodDisruptionBudget rejected the eviction; nothing watches that, so
+		// the retry has to be a timer.
+		logf.FromContext(ctx).Info("Eviction blocked by a PodDisruptionBudget, retrying later", "pod", pod.Name, "retryAfter", podLifetimeRetry)
 		return podLifetimeRetry, nil
-	default:
+	case err != nil:
 		return 0, err
 	}
+	// A pod disappearing on a timer is invisible in `kubectl describe isvc`
+	// without this.
+	if r.Recorder != nil {
+		r.Recorder.Eventf(isvc, nil, corev1.EventTypeNormal, "PodRecycled", "Reconcile",
+			"Evicted pod %s after exceeding maxPodLifetimeSeconds; the Deployment will create a replacement", pod.Name)
+	}
+	return 0, nil
 }
 
 func stableDeployment(deployment *appsv1.Deployment, isvc *inferencev1alpha1.InferenceService) bool {
@@ -120,44 +133,28 @@ func stableDeployment(deployment *appsv1.Deployment, isvc *inferencev1alpha1.Inf
 	return deployment.Status.Replicas == replicas && deployment.Status.UpdatedReplicas == replicas && deployment.Status.ReadyReplicas == replicas && deployment.Status.AvailableReplicas == replicas
 }
 
-func (r *InferenceServiceReconciler) ownedActivePods(ctx context.Context, deployment *appsv1.Deployment) ([]*corev1.Pod, error) {
+// activePods lists the non-terminal pods matching the Deployment's selector.
+// The selector labels are unique per InferenceService, and the caller
+// cross-checks the count against Status.Replicas, so this deliberately does not
+// walk ReplicaSets to prove ownership pod by pod.
+func (r *InferenceServiceReconciler) activePods(ctx context.Context, deployment *appsv1.Deployment) ([]*corev1.Pod, error) {
 	listOpts := []client.ListOption{client.InNamespace(deployment.Namespace)}
 	if deployment.Spec.Selector != nil {
 		listOpts = append(listOpts, client.MatchingLabels(deployment.Spec.Selector.MatchLabels))
-	}
-	replicaSets := &appsv1.ReplicaSetList{}
-	if err := r.List(ctx, replicaSets, listOpts...); err != nil {
-		return nil, err
-	}
-	ownedRS := make(map[types.UID]struct{})
-	for i := range replicaSets.Items {
-		if metav1.IsControlledBy(&replicaSets.Items[i], deployment) {
-			ownedRS[replicaSets.Items[i].UID] = struct{}{}
-		}
-	}
-	if len(ownedRS) == 0 {
-		return nil, nil
 	}
 	pods := &corev1.PodList{}
 	if err := r.List(ctx, pods, listOpts...); err != nil {
 		return nil, err
 	}
-	owned := make([]*corev1.Pod, 0, len(pods.Items))
+	active := make([]*corev1.Pod, 0, len(pods.Items))
 	for i := range pods.Items {
 		pod := &pods.Items[i]
 		if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
 			continue
 		}
-		ref := metav1.GetControllerOfNoCopy(pod)
-		if ref == nil {
-			continue
-		}
-		if _, ok := ownedRS[ref.UID]; !ok {
-			continue
-		}
-		owned = append(owned, pod)
+		active = append(active, pod)
 	}
-	return owned, nil
+	return active, nil
 }
 
 func allPodsReady(pods []*corev1.Pod) bool {

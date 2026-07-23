@@ -2,6 +2,9 @@ package controller
 
 import (
 	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -12,7 +15,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -138,7 +140,10 @@ func TestReconcilePodLifetimeBlocksUnstablePodsAndDeployment(t *testing.T) {
 	}
 }
 
-func TestReconcilePodLifetimeIgnoresForeignOwnership(t *testing.T) {
+// A pod the Deployment does not own but which shares its selector makes the
+// active count disagree with Status.Replicas. Recycling must hold rather than
+// evict something the operator cannot account for.
+func TestReconcilePodLifetimeHoldsOnForeignPod(t *testing.T) {
 	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
 	r, isvc, pod := lifetimeReconciler(t, now.Add(-2*time.Minute), time.Minute)
 	foreign := pod.DeepCopy()
@@ -146,21 +151,56 @@ func TestReconcilePodLifetimeIgnoresForeignOwnership(t *testing.T) {
 	foreign.UID = "foreign-uid"
 	foreign.ResourceVersion = ""
 	foreign.OwnerReferences[0].UID = "other-rs"
-	foreignRS := &appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{Name: "foreign-rs", Namespace: "ns", UID: "other-rs", Labels: map[string]string{"app": "svc"}, OwnerReferences: []metav1.OwnerReference{{UID: "other-deployment", Controller: ptr.To(true)}}}}
-	if err := r.Create(context.Background(), foreignRS); err != nil {
-		t.Fatal(err)
-	}
 	if err := r.Create(context.Background(), foreign); err != nil {
 		t.Fatal(err)
 	}
+	recorder := &recordingClient{Client: r.Client}
+	r.Client = recorder
 	if _, err := r.reconcilePodLifetime(context.Background(), isvc, false, now); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.Get(context.Background(), client.ObjectKeyFromObject(pod), &corev1.Pod{}); !apierrors.IsNotFound(err) {
-		t.Fatalf("owned pod was not deleted: %v", err)
+	if len(recorder.evictions) != 0 {
+		t.Fatalf("eviction calls = %d, want 0", len(recorder.evictions))
 	}
-	if err := r.Get(context.Background(), client.ObjectKeyFromObject(foreign), &corev1.Pod{}); err != nil {
-		t.Fatalf("foreign pod was deleted: %v", err)
+}
+
+func TestReconcilePodLifetimeWaitsForIdle(t *testing.T) {
+	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
+	for name, busy := range map[string]bool{"busy": true, "idle": false} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				if req.URL.Path != "/slots" {
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprintf(w, `[{"id":0,"is_processing":%t}]`, busy)
+			}))
+			defer server.Close()
+
+			r, isvc, _ := lifetimeReconciler(t, now.Add(-2*time.Minute), time.Minute)
+			isvc.Spec.RolloutPolicy = &inferencev1alpha1.RolloutPolicySpec{WaitForIdle: true}
+			r.RolloutIdleBaseURL = server.URL
+			recorder := &recordingClient{Client: r.Client}
+			r.Client = recorder
+
+			requeue, err := r.reconcilePodLifetime(context.Background(), isvc, false, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if busy {
+				if len(recorder.evictions) != 0 {
+					t.Fatalf("evicted a busy pod: %d calls", len(recorder.evictions))
+				}
+				if requeue != inferencev1alpha1.DefaultIdleCheckInterval {
+					t.Fatalf("requeue = %s, want %s", requeue, inferencev1alpha1.DefaultIdleCheckInterval)
+				}
+				return
+			}
+			if len(recorder.evictions) != 1 {
+				t.Fatalf("idle pod was not recycled: %d calls", len(recorder.evictions))
+			}
+		})
 	}
 }
 
@@ -269,7 +309,6 @@ func lifetimeReconcilerWith(t *testing.T, start time.Time, lifetime time.Duratio
 	seconds := int64(lifetime / time.Second)
 	isvc := &inferencev1alpha1.InferenceService{ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "ns", UID: isvcUID}, Spec: inferencev1alpha1.InferenceServiceSpec{MaxPodLifetimeSeconds: &seconds}}
 	deployment := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "ns", UID: depUID, Generation: 2, OwnerReferences: []metav1.OwnerReference{{UID: isvcUID, Controller: &controller}}}, Spec: appsv1.DeploymentSpec{Replicas: &replicas, Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "svc"}}}, Status: appsv1.DeploymentStatus{ObservedGeneration: 2, Replicas: replicaCount, UpdatedReplicas: replicaCount, ReadyReplicas: replicaCount, AvailableReplicas: replicaCount}}
-	rs := &appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{Name: "svc-rs", Namespace: "ns", UID: rsUID, Labels: map[string]string{"app": "svc"}, OwnerReferences: []metav1.OwnerReference{{UID: depUID, Controller: &controller}}}}
 	ready := corev1.ConditionTrue
 	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "first", Namespace: "ns", UID: "pod-first", Labels: map[string]string{"app": "svc"}, OwnerReferences: []metav1.OwnerReference{{UID: rsUID, Controller: &controller}}}, Status: corev1.PodStatus{StartTime: &metav1.Time{Time: start}, Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: ready}}}}
 	if podMutator != nil {
@@ -288,5 +327,5 @@ func lifetimeReconcilerWith(t *testing.T, start time.Time, lifetime time.Duratio
 	if err := policyv1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
-	return &InferenceServiceReconciler{Client: fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(deployment, pod).WithObjects(isvc, deployment, rs, pod).Build()}, isvc, pod
+	return &InferenceServiceReconciler{Client: fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(deployment, pod).WithObjects(isvc, deployment, pod).Build()}, isvc, pod
 }

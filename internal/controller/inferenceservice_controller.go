@@ -148,7 +148,6 @@ func initContainerSecurityContext(isvc *inferencev1alpha1.InferenceService) *cor
 // +kubebuilder:rbac:groups=discovery.k8s.io,resources=endpointslices,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=pods/eviction,verbs=create
-// +kubebuilder:rbac:groups=apps,resources=replicasets,verbs=list;watch
 // +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=scheduling.k8s.io,resources=priorityclasses,verbs=get;list;watch
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
@@ -274,6 +273,18 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 
 	return finalResult, nil
+}
+
+// earliestPositive merges the requeue timers Reconcile collects without
+// allowing a zero timer (which means "no requeue") to win a plain minimum.
+func earliestPositive(values ...time.Duration) time.Duration {
+	var earliest time.Duration
+	for _, value := range values {
+		if value > 0 && (earliest == 0 || value < earliest) {
+			earliest = value
+		}
+	}
+	return earliest
 }
 
 func (r *InferenceServiceReconciler) getModelForInferenceService(ctx context.Context, isvc *inferencev1alpha1.InferenceService) (*inferencev1alpha1.Model, bool, *ctrl.Result, error) {

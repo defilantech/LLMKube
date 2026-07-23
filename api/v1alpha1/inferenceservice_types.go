@@ -562,13 +562,16 @@ type InferenceServiceSpec struct {
 	SLO *SLOSpec `json:"slo,omitempty"`
 
 	// MaxPodLifetimeSeconds requests best-effort periodic recycling of
-	// deployment-backed inference pods. The controller serializes graceful
-	// replacement of eligible pods, using their status start time as the age
-	// reference; it is not a strict deadline and does not set
-	// PodSpec.ActiveDeadlineSeconds. This is useful for workloads that need
-	// periodic process recycling to release driver memory (e.g. llama.cpp on
-	// AMD Vulkan with pinned GTT memory). When omitted, pods run indefinitely
-	// until manually restarted or the Deployment is updated.
+	// deployment-backed inference pods. The controller evicts one expired pod
+	// at a time, using its status start time as the age reference; it is not a
+	// strict deadline and does not set PodSpec.ActiveDeadlineSeconds. This is
+	// useful for workloads that need periodic process recycling to release
+	// driver memory (e.g. llama.cpp on AMD Vulkan with pinned GTT memory).
+	// Eviction respects PodDisruptionBudgets, and when rolloutPolicy.waitForIdle
+	// is set it waits for the backend to go idle first. With a single replica
+	// recycling is a restart, not a rolling replacement: expect a downtime
+	// window while the model reloads. When omitted, pods run indefinitely until
+	// manually restarted or the Deployment is updated.
 	// +kubebuilder:validation:Minimum=1
 	// +optional
 	MaxPodLifetimeSeconds *int64 `json:"maxPodLifetimeSeconds,omitempty"`

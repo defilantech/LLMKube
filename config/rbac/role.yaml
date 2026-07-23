@@ -79,13 +79,6 @@ rules:
   - update
   - watch
 - apiGroups:
-  - apps
-  resources:
-  - replicasets
-  verbs:
-  - list
-  - watch
-- apiGroups:
   - autoscaling
   resources:
   - horizontalpodautoscalers
