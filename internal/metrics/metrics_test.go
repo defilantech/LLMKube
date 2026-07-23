@@ -142,23 +142,26 @@ func TestPublishInferenceServiceReplicas(t *testing.T) {
 }
 
 func TestGPUQueueDepth(t *testing.T) {
-	GPUQueueDepth.Set(3)
+	PublishGPUQueueDepth(map[string]int32{"default": 3, "team-a": 1})
 
-	var m dto.Metric
-	if err := GPUQueueDepth.Write(&m); err != nil {
-		t.Fatalf("failed to write metric: %v", err)
+	if got := testutil.ToFloat64(GPUQueueDepth.WithLabelValues("default")); got != 3 {
+		t.Errorf("expected default depth 3, got %f", got)
 	}
-	if m.GetGauge().GetValue() != 3 {
-		t.Errorf("expected gauge value 3, got %f", m.GetGauge().GetValue())
+	if got := testutil.ToFloat64(GPUQueueDepth.WithLabelValues("team-a")); got != 1 {
+		t.Errorf("expected team-a depth 1, got %f", got)
 	}
 
-	GPUQueueDepth.Set(0)
-	if err := GPUQueueDepth.Write(&m); err != nil {
-		t.Fatalf("failed to write metric: %v", err)
+	// Read values before counting series: WithLabelValues resurrects a dropped
+	// series at 0 rather than reporting it missing.
+	PublishGPUQueueDepth(map[string]int32{"default": 0})
+	if got := testutil.ToFloat64(GPUQueueDepth.WithLabelValues("default")); got != 0 {
+		t.Errorf("expected default depth 0 once the queue drained, got %f", got)
 	}
-	if m.GetGauge().GetValue() != 0 {
-		t.Errorf("expected gauge value 0, got %f", m.GetGauge().GetValue())
+	if got := GPUQueueDepth.DeletePartialMatch(prometheus.Labels{"namespace": "team-a"}); got != 0 {
+		t.Errorf("expected team-a to stop being reported, got %d series", got)
 	}
+
+	GPUQueueDepth.Reset()
 }
 
 func TestReconcileTotal(t *testing.T) {

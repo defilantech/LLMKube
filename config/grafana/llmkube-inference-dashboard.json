@@ -137,7 +137,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "llmkube_gpu_queue_depth",
+          "expr": "sum(llmkube_gpu_queue_depth{namespace=~\"$namespace\"})",
           "legendFormat": "Queue",
           "refId": "A"
         }
@@ -385,8 +385,8 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "llmkube_gpu_queue_depth",
-          "legendFormat": "Queue Depth",
+          "expr": "llmkube_gpu_queue_depth{namespace=~\"$namespace\"}",
+          "legendFormat": "{{namespace}}",
           "refId": "A"
         }
       ]

@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -30,6 +31,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
@@ -688,4 +691,76 @@ var _ = Describe("HPA Autoscaling", func() {
 			Expect(*dep.Spec.Replicas).To(Equal(int32(5)))
 		})
 	})
+})
+
+// queuedISVC builds an InferenceService for the GPU queue specs; createdAt is
+// the FIFO key.
+func queuedISVC(name, namespace string, createdAt int64, phase string) *inferencev1alpha1.InferenceService {
+	return &inferencev1alpha1.InferenceService{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              name,
+			Namespace:         namespace,
+			CreationTimestamp: metav1.NewTime(time.Unix(createdAt, 0)),
+		},
+		Spec:   inferencev1alpha1.InferenceServiceSpec{ModelRef: "queue-model"},
+		Status: inferencev1alpha1.InferenceServiceStatus{Phase: phase},
+	}
+}
+
+var _ = Describe("evaluateGPUQueue", func() {
+	// Stored cluster state: alpha, beta and gamma queued across two namespaces,
+	// one service already serving, one still Pending, and a third namespace
+	// whose only service is serving.
+	fixture := func() []client.Object {
+		return []client.Object{
+			queuedISVC("alpha", "default", 10, PhaseWaitingForGPU),
+			queuedISVC("beta", "default", 20, PhaseWaitingForGPU),
+			queuedISVC("gamma", "team-a", 30, PhaseWaitingForGPU),
+			queuedISVC("ready-one", "default", 5, PhaseReady),
+			queuedISVC("delta", "default", 40, "Pending"),
+			queuedISVC("idle-one", "team-b", 50, PhaseReady),
+		}
+	}
+
+	// memoryPhase is what the caller has just written to isvc.Status; the
+	// fixture holds whatever phase the listing still reports for that name.
+	DescribeTable("reports the FIFO position and the per-namespace depths",
+		func(name, namespace string, createdAt int64, memoryPhase string,
+			expectedPos int32, expectedDepths map[string]int32) {
+			reconciler := &InferenceServiceReconciler{
+				Client: fake.NewClientBuilder().
+					WithScheme(k8sClient.Scheme()).
+					WithObjects(fixture()...).
+					Build(),
+				Scheme: k8sClient.Scheme(),
+			}
+			subject := queuedISVC(name, namespace, createdAt, memoryPhase)
+
+			pos, depths, err := reconciler.evaluateGPUQueue(context.Background(), subject)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(pos).To(Equal(expectedPos))
+			Expect(depths).To(Equal(expectedDepths))
+		},
+		Entry("head of the queue", "alpha", "default", int64(10), PhaseWaitingForGPU,
+			int32(1), map[string]int32{"default": 2, "team-a": 1, "team-b": 0}),
+		Entry("second in the queue", "beta", "default", int64(20), PhaseWaitingForGPU,
+			int32(2), map[string]int32{"default": 2, "team-a": 1, "team-b": 0}),
+		Entry("queued in another namespace", "gamma", "team-a", int64(30), PhaseWaitingForGPU,
+			int32(3), map[string]int32{"default": 2, "team-a": 1, "team-b": 0}),
+		// A service that is not queued reports position 0 and the full depths.
+		Entry("not queued", "ready-one", "default", int64(5), PhaseReady,
+			int32(0), map[string]int32{"default": 2, "team-a": 1, "team-b": 0}),
+		// The reconcile that enters the queue: the listing still says Pending.
+		Entry("entering the queue counts itself", "delta", "default", int64(40), PhaseWaitingForGPU,
+			int32(4), map[string]int32{"default": 3, "team-a": 1, "team-b": 0}),
+		// The reconcile that leaves it: the listing still says WaitingForGPU.
+		Entry("leaving the queue drops itself", "alpha", "default", int64(10), PhaseReady,
+			int32(0), map[string]int32{"default": 1, "team-a": 1, "team-b": 0}),
+		// Created and reconciled before the cache caught up.
+		Entry("absent from the listing counts itself", "epsilon", "default", int64(15), PhaseWaitingForGPU,
+			int32(2), map[string]int32{"default": 3, "team-a": 1, "team-b": 0}),
+		// The subject's namespace is always reported, so draining it reads 0.
+		Entry("only queued service in its namespace leaving", "gamma", "team-a", int64(30), PhaseReady,
+			int32(0), map[string]int32{"default": 2, "team-a": 0, "team-b": 0}),
+	)
 })

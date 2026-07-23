@@ -115,4 +115,4 @@ spec:
         component: gpu
       annotations:
         summary: "GPU queue has pending workloads"
-        description: "GPU queue depth is {{ $value }} for more than 15 minutes"
+        description: "GPU queue depth in {{ $labels.namespace }} is {{ $value }} for more than 15 minutes"
