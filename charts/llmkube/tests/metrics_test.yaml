@@ -89,6 +89,18 @@ tests:
           path: spec.endpoints[0].scheme
           value: http
 
+  # Without honorLabels the scrape target's namespace wins and the workload
+  # namespace llmkube_* metrics carry is renamed exported_namespace, which the
+  # dashboards and the GPUQueueBacklog annotation do not select on.
+  - it: should honor the metric's own namespace label
+    template: servicemonitor.yaml
+    set:
+      prometheus.serviceMonitor.enabled: true
+    asserts:
+      - equal:
+          path: spec.endpoints[0].honorLabels
+          value: true
+
   # ServiceMonitor: tlsConfig only when secure
   - it: should include tlsConfig when secure
     template: servicemonitor.yaml
