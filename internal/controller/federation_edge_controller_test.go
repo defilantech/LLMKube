@@ -48,6 +48,24 @@ func gpuNode(name string, gpus int64) corev1.Node {
 	}
 }
 
+// multiVendorGPUNode advertises two different GPU resource names on the same
+// node (e.g. an NVIDIA card plus an AMD card), so buildStatusSummary's
+// ranging over the full gpuResourceNames list is actually exercised, not
+// just the nvidia key.
+func multiVendorGPUNode(name string, nvidia, amd int64) corev1.Node {
+	rl := corev1.ResourceList{
+		nvidiaGPUResourceName: *resource.NewQuantity(nvidia, resource.DecimalSI),
+		amdGPUResourceName:    *resource.NewQuantity(amd, resource.DecimalSI),
+	}
+	return corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Status: corev1.NodeStatus{
+			Capacity:    rl,
+			Allocatable: rl,
+		},
+	}
+}
+
 func TestBuildStatusSummary(t *testing.T) {
 	models := []inferencev1alpha1.Model{
 		{ObjectMeta: metav1.ObjectMeta{Name: "model-a"}},
@@ -69,7 +87,9 @@ func TestBuildStatusSummary(t *testing.T) {
 	}
 	nodes := []corev1.Node{
 		gpuNode("node-a", 2),
-		gpuNode("node-b", 4),
+		// node-b carries two vendors (nvidia 4 + amd 2) so the multi-vendor
+		// summation path is proven, not just the nvidia key.
+		multiVendorGPUNode("node-b", 4, 2),
 	}
 
 	got := buildStatusSummary(models, isvcs, nodes, "0.9.10")
@@ -104,11 +124,12 @@ func TestBuildStatusSummary(t *testing.T) {
 	if got.Capacity.Nodes != 2 {
 		t.Errorf("Nodes = %d, want 2", got.Capacity.Nodes)
 	}
-	if got.Capacity.GPUsTotal != 6 {
-		t.Errorf("GPUsTotal = %d, want 6", got.Capacity.GPUsTotal)
+	// node-a nvidia 2 + node-b (nvidia 4 + amd 2) = 8 across both vendors.
+	if got.Capacity.GPUsTotal != 8 {
+		t.Errorf("GPUsTotal = %d, want 8", got.Capacity.GPUsTotal)
 	}
-	if got.Capacity.GPUsAllocatable != 6 {
-		t.Errorf("GPUsAllocatable = %d, want 6", got.Capacity.GPUsAllocatable)
+	if got.Capacity.GPUsAllocatable != 8 {
+		t.Errorf("GPUsAllocatable = %d, want 8", got.Capacity.GPUsAllocatable)
 	}
 }
 

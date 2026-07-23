@@ -528,6 +528,7 @@ func main() {
 			DatacenterClient: federationDatacenterClient,
 			ClusterName:      federationClusterName,
 			Version:          Version,
+			Log:              ctrl.Log.WithName("federation-edge"),
 		}); err != nil {
 			setupLog.Error(err, "unable to create runnable", "runnable", "FederationEdge")
 			os.Exit(1)
