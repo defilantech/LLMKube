@@ -21,6 +21,10 @@ spec:
         # To apply this configuration, enable cert-manager and use the patch located at config/prometheus/servicemonitor_tls_patch.yaml,
         # which securely references the certificate from the 'metrics-server-cert' secret.
         insecureSkipVerify: true
+      relabelings:
+        # Matches llmkube-alerts.yaml's ControllerDown, as the chart does.
+        - targetLabel: job
+          replacement: llmkube-controller
   selector:
     matchLabels:
       control-plane: controller-manager

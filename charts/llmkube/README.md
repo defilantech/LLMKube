@@ -151,6 +151,19 @@ The following table lists the configurable parameters of the LLMKube chart and t
 | `prometheus.prometheusRule.rules.gpu.powerLimitThreshold` | GPU power limit threshold (W) | `250` |
 | `prometheus.prometheusRule.rules.inference.enabled` | Enable inference alerts | `true` |
 
+#### Scrape labels
+
+Both monitors pin the `job` label so the chart's own alerts can select their
+targets: the ServiceMonitor sets `job="llmkube-controller"` and the inference
+PodMonitor sets `job="llmkube-inference"`. Left to the Prometheus Operator's
+defaults these come out as the metrics Service name and
+`<namespace>/<podmonitor name>` — which is what `ControllerDown` and
+`InferenceServiceDown` used to fail to match. Queries of your own written
+against those older values need updating.
+
+The PodMonitor additionally promotes `service`, `namespace`, `model` and
+`runtime` onto every inference series.
+
 ### CRD Parameters
 
 | Parameter | Description | Default |

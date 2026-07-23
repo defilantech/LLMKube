@@ -49,12 +49,6 @@
           "expr": "llmkube:inference:request_latency:p95_5m",
           "legendFormat": "{{service}} ({{runtime}})",
           "refId": "A"
-        },
-        {
-          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-          "expr": "llmkube:inference:llamacpp_request:p95_5m",
-          "legendFormat": "{{service}} ({{runtime}})",
-          "refId": "B"
         }
       ],
       "title": "End-to-end request latency p95 (5m)",
@@ -116,7 +110,7 @@
         {
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "expr": "llmkube:inference:restarts:rate5m",
-          "legendFormat": "{{service}} ({{runtime}}, {{namespace}})",
+          "legendFormat": "{{pod}} ({{container}}, {{namespace}})",
           "refId": "A"
         }
       ],

@@ -22,6 +22,10 @@ spec:
       path: /metrics
       interval: {{ .Values.prometheus.inferencePodMonitor.interval | default "30s" }}
       relabelings:
+        # Operator default is `<namespace>/<podmonitor name>`, which
+        # InferenceServiceDown cannot match.
+        - targetLabel: job
+          replacement: llmkube-inference
         # Promote the operator-managed pod labels onto every scraped series so
         # recording rules and dashboards can group by service / namespace /
         # runtime without re-joining against the kube_pod_labels metric.
