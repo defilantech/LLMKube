@@ -286,6 +286,142 @@ func TestInferenceServiceQuotaValidator(t *testing.T) {
 			t.Fatalf("expected admission, got error: %v", err)
 		}
 	})
+
+	// #1251: the GPUQuota webhook defers QUOTA gating (not spec validation)
+	// for InferenceServices carrying the Kueue queue-name label, since
+	// admission for those objects is owned by Kueue's ClusterQueue quota.
+	t.Run("admits a Kueue-managed InferenceService that exceeds the GPUQuota", func(t *testing.T) {
+		quota := inferencev1alpha1.GPUQuota{
+			ObjectMeta: metav1.ObjectMeta{Name: "kueue-quota"},
+			Spec: inferencev1alpha1.GPUQuotaSpec{
+				NamespaceRef: "default",
+				GPUCount:     1,
+			},
+		}
+		// Existing ISVC already consuming the entire 1-GPU quota.
+		existingISVC := inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: "existing-svc", Namespace: "default"},
+			Spec: inferencev1alpha1.InferenceServiceSpec{
+				Replicas: ptrInt32Val(1),
+				Resources: &inferencev1alpha1.InferenceResourceRequirements{
+					GPU: 1,
+				},
+			},
+		}
+		// New ISVC requests 1 more GPU (1+1=2 > 1 quota) but is Kueue-managed.
+		isvc := inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "kueue-svc",
+				Namespace: "default",
+				Labels:    map[string]string{"kueue.x-k8s.io/queue-name": "inference-queue"},
+			},
+			Spec: inferencev1alpha1.InferenceServiceSpec{
+				Replicas: ptrInt32Val(1),
+				Resources: &inferencev1alpha1.InferenceResourceRequirements{
+					GPU: 1,
+				},
+			},
+		}
+		ns := corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "default"}}
+
+		fakeClient := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithObjects(&quota, &existingISVC, &ns).
+			Build()
+
+		v := &InferenceServiceQuotaValidator{Client: fakeClient}
+		_, err := v.ValidateCreate(ctx, &isvc)
+		if err != nil {
+			t.Fatalf("expected admission for Kueue-managed ISVC despite exceeding the GPUQuota, got error: %v", err)
+		}
+	})
+
+	t.Run("still denies an unlabeled InferenceService that exceeds the GPUQuota", func(t *testing.T) {
+		quota := inferencev1alpha1.GPUQuota{
+			ObjectMeta: metav1.ObjectMeta{Name: "kueue-quota"},
+			Spec: inferencev1alpha1.GPUQuotaSpec{
+				NamespaceRef: "default",
+				GPUCount:     1,
+			},
+		}
+		existingISVC := inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: "existing-svc", Namespace: "default"},
+			Spec: inferencev1alpha1.InferenceServiceSpec{
+				Replicas: ptrInt32Val(1),
+				Resources: &inferencev1alpha1.InferenceResourceRequirements{
+					GPU: 1,
+				},
+			},
+		}
+		// Same over-quota shape as above, but with no Kueue label.
+		isvc := inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: "unlabeled-svc", Namespace: "default"},
+			Spec: inferencev1alpha1.InferenceServiceSpec{
+				Replicas: ptrInt32Val(1),
+				Resources: &inferencev1alpha1.InferenceResourceRequirements{
+					GPU: 1,
+				},
+			},
+		}
+		ns := corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "default"}}
+
+		fakeClient := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithObjects(&quota, &existingISVC, &ns).
+			Build()
+
+		v := &InferenceServiceQuotaValidator{Client: fakeClient}
+		_, err := v.ValidateCreate(ctx, &isvc)
+		if err == nil {
+			t.Fatal("expected denial for unlabeled ISVC exceeding the GPUQuota, got nil")
+		}
+		if !strContains(err.Error(), "kueue-quota") {
+			t.Fatalf("expected error to mention the GPUQuota name, got: %v", err)
+		}
+	})
+
+	t.Run("still rejects an invalid gpuSharing spec even when Kueue-managed", func(t *testing.T) {
+		quota := inferencev1alpha1.GPUQuota{
+			ObjectMeta: metav1.ObjectMeta{Name: "kueue-quota"},
+			Spec: inferencev1alpha1.GPUQuotaSpec{
+				NamespaceRef: "default",
+				GPUCount:     100, // permissive: only the sharing spec should reject.
+			},
+		}
+		// Shared mode with no configured pool is the suite's existing
+		// invalid-gpuSharing fixture (see TestGPUSharingAdmission).
+		isvc := inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "kueue-bad-sharing",
+				Namespace: "default",
+				Labels:    map[string]string{"kueue.x-k8s.io/queue-name": "inference-queue"},
+			},
+			Spec: inferencev1alpha1.InferenceServiceSpec{
+				Replicas: ptrInt32Val(1),
+				Resources: &inferencev1alpha1.InferenceResourceRequirements{
+					GPU: 1,
+					GPUSharing: &inferencev1alpha1.GPUSharingSpec{
+						Mode: inferencev1alpha1.GPUSharingModeShared,
+					},
+				},
+			},
+		}
+		ns := corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "default"}}
+
+		fakeClient := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithObjects(&quota, &ns).
+			Build()
+
+		v := &InferenceServiceQuotaValidator{Client: fakeClient}
+		_, err := v.ValidateCreate(ctx, &isvc)
+		if err == nil {
+			t.Fatal("expected rejection of the invalid gpuSharing spec, got nil")
+		}
+		if !strContains(err.Error(), "requires a configured shared pool") {
+			t.Fatalf("expected sharing-pool rejection reason, got: %v", err)
+		}
+	})
 }
 
 func ptrInt32Val(i int32) *int32 {
