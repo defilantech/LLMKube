@@ -56,11 +56,24 @@ func fleetTestScheme(t *testing.T) *runtime.Scheme {
 // clientset echoes the TokenRequest object back unchanged instead of
 // synthesizing a token value, so it can't be used to assert on the minted
 // token itself; mintFleetToken is a seam for exactly this reason.
+//
+// The stubbed expiration matches what a real apiserver would return when it
+// honors the requested ~10y ExpirationSeconds in full, so tests that don't
+// care about token expiry (most of them) don't trip the capped-token
+// rotation warning. Tests that DO care use stubTokenWithExpiry directly.
 func stubToken(t *testing.T, token string) {
 	t.Helper()
+	stubTokenWithExpiry(t, token, metav1.NewTime(time.Now().Add(time.Duration(fleetTokenExpirationSeconds)*time.Second)))
+}
+
+// stubTokenWithExpiry is stubToken plus an explicit ExpirationTimestamp, for
+// tests asserting on the printed token-expiry line and capped-lifetime
+// warning in the edge-config snippet.
+func stubTokenWithExpiry(t *testing.T, token string, expiresAt metav1.Time) {
+	t.Helper()
 	prev := mintFleetToken
-	mintFleetToken = func(_ context.Context, _ kubernetes.Interface, _, _ string) (string, error) {
-		return token, nil
+	mintFleetToken = func(_ context.Context, _ kubernetes.Interface, _, _ string) (string, metav1.Time, error) {
+		return token, expiresAt, nil
 	}
 	t.Cleanup(func() { mintFleetToken = prev })
 }
@@ -223,6 +236,53 @@ func TestFleetRegisterRequiresName(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(fleetTestScheme(t)).Build()
 	if _, err := fleetRegister(context.Background(), c, nil, fleetRegisterInput{}); err == nil {
 		t.Fatal("expected error for empty name")
+	}
+}
+
+// TestFleetRegisterSurfacesTokenExpiry seeds mintFleetToken to return the
+// apiserver honoring the requested ~10y ExpirationSeconds in full, and
+// asserts the real expiry is printed in the edge-config snippet with no
+// capped-lifetime warning (the apiserver didn't cap anything).
+func TestFleetRegisterSurfacesTokenExpiry(t *testing.T) {
+	uncapped := metav1.NewTime(time.Now().Add(time.Duration(fleetTokenExpirationSeconds) * time.Second))
+	stubTokenWithExpiry(t, "uncapped-token", uncapped)
+
+	c := fake.NewClientBuilder().WithScheme(fleetTestScheme(t)).Build()
+	edgeConfig, err := fleetRegister(context.Background(), c, nil, fleetRegisterInput{Name: "edge-e"})
+	if err != nil {
+		t.Fatalf("fleetRegister: %v", err)
+	}
+
+	wantLine := "# token expires: " + uncapped.UTC().Format(time.RFC3339)
+	if !strings.Contains(edgeConfig, wantLine) {
+		t.Errorf("edge config snippet missing %q:\n%s", wantLine, edgeConfig)
+	}
+	if strings.Contains(edgeConfig, "WARNING") {
+		t.Errorf("edge config snippet should not warn when the apiserver honored the requested expiration:\n%s", edgeConfig)
+	}
+}
+
+// TestFleetRegisterWarnsOnCappedTokenExpiry seeds mintFleetToken to return an
+// ExpirationTimestamp far short of the ~10y requested (simulating a
+// datacenter apiserver running with --service-account-max-token-expiration),
+// and asserts both the real (capped) expiry and a rotation warning appear in
+// the edge-config snippet.
+func TestFleetRegisterWarnsOnCappedTokenExpiry(t *testing.T) {
+	capped := metav1.NewTime(time.Now().Add(24 * time.Hour))
+	stubTokenWithExpiry(t, "capped-token", capped)
+
+	c := fake.NewClientBuilder().WithScheme(fleetTestScheme(t)).Build()
+	edgeConfig, err := fleetRegister(context.Background(), c, nil, fleetRegisterInput{Name: "edge-f"})
+	if err != nil {
+		t.Fatalf("fleetRegister: %v", err)
+	}
+
+	wantLine := "# token expires: " + capped.UTC().Format(time.RFC3339)
+	if !strings.Contains(edgeConfig, wantLine) {
+		t.Errorf("edge config snippet missing %q:\n%s", wantLine, edgeConfig)
+	}
+	if !strings.Contains(edgeConfig, "WARNING") || !strings.Contains(edgeConfig, "capped") {
+		t.Errorf("edge config snippet should warn that the cluster capped the token lifetime:\n%s", edgeConfig)
 	}
 }
 

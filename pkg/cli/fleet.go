@@ -24,6 +24,7 @@ import (
 	"sort"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/spf13/cobra"
 	authenticationv1 "k8s.io/api/authentication/v1"
@@ -79,7 +80,16 @@ const (
 // echoes the request object back unchanged instead of synthesizing a token
 // value, so tests replace this var rather than exercising the fake
 // TokenRequest subresource.
-var mintFleetToken = func(ctx context.Context, kube kubernetes.Interface, namespace, name string) (string, error) {
+//
+// It returns the apiserver's actual Status.ExpirationTimestamp alongside the
+// token, not just the ExpirationSeconds that was requested: a datacenter
+// cluster running with --service-account-max-token-expiration can cap the
+// real lifetime far below the ~10y requested here, and the caller needs the
+// real value to warn the site admin rather than silently printing a token
+// that expires much sooner than the edge-config snippet implies.
+var mintFleetToken = func(
+	ctx context.Context, kube kubernetes.Interface, namespace, name string,
+) (string, metav1.Time, error) {
 	expirationSeconds := fleetTokenExpirationSeconds
 	tr, err := kube.CoreV1().ServiceAccounts(namespace).CreateToken(ctx, name, &authenticationv1.TokenRequest{
 		Spec: authenticationv1.TokenRequestSpec{
@@ -87,9 +97,9 @@ var mintFleetToken = func(ctx context.Context, kube kubernetes.Interface, namesp
 		},
 	}, metav1.CreateOptions{})
 	if err != nil {
-		return "", fmt.Errorf("mint token for service account %s/%s: %w", namespace, name, err)
+		return "", metav1.Time{}, fmt.Errorf("mint token for service account %s/%s: %w", namespace, name, err)
 	}
-	return tr.Status.Token, nil
+	return tr.Status.Token, tr.Status.ExpirationTimestamp, nil
 }
 
 // fleetRegisterInput is the pure input to fleetRegister, decoupled from
@@ -319,18 +329,26 @@ func fleetRegister(
 		return "", fmt.Errorf("create ClusterRoleBinding %q: %w", saName, err)
 	}
 
-	token, err := mintFleetToken(ctx, kube, namespace, saName)
+	token, expiresAt, err := mintFleetToken(ctx, kube, namespace, saName)
 	if err != nil {
 		return "", err
 	}
 
-	return buildEdgeConfigSnippet(in.Name, in.DatacenterEndpoint, in.CACertData, saName, namespace, token), nil
+	return buildEdgeConfigSnippet(in.Name, in.DatacenterEndpoint, in.CACertData, saName, namespace, token, expiresAt), nil
 }
 
 // buildEdgeConfigSnippet formats the kubeconfig + operator flags a site
 // admin needs to bring an edge site's operator up in --federation-role=edge
 // mode, pointed at this one newly-minted, narrowly-scoped credential.
-func buildEdgeConfigSnippet(name, endpoint string, caData []byte, saName, namespace, token string) string {
+// expiresAt is the apiserver's actual token expiration, which is printed and,
+// when it falls well short of the ~10y requested (fleetTokenExpirationSeconds),
+// flagged with a rotation warning: some datacenter clusters cap token
+// lifetime server-side, and the token minted here is a bootstrap credential
+// carried to a remote edge site, not something the site admin would
+// otherwise think to check.
+func buildEdgeConfigSnippet(
+	name, endpoint string, caData []byte, saName, namespace, token string, expiresAt metav1.Time,
+) string {
 	server := endpoint
 	if server == "" {
 		server = datacenterEndpointPlaceholder
@@ -365,6 +383,13 @@ func buildEdgeConfigSnippet(name, endpoint string, caData []byte, saName, namesp
 	fmt.Fprintf(&b, "    token: %s\n\n", token)
 
 	fmt.Fprintf(&b, "# ServiceAccount:  %s/%s\n", namespace, saName)
+	fmt.Fprintf(&b, "# token expires: %s\n", expiresAt.UTC().Format(time.RFC3339))
+	if requested := time.Duration(fleetTokenExpirationSeconds) * time.Second; time.Until(expiresAt.Time) < requested/2 {
+		fmt.Fprintf(&b, "# WARNING: the datacenter cluster capped this token's lifetime well below\n")
+		fmt.Fprintf(&b, "# the ~10y requested (likely --service-account-max-token-expiration on the\n")
+		fmt.Fprintf(&b, "# apiserver). Rotate this credential (re-run `llmkube fleet register`) before\n")
+		fmt.Fprintf(&b, "# it expires.\n")
+	}
 	fmt.Fprintf(&b, "# On the edge site's operator, set:\n")
 	fmt.Fprintf(&b, "#   --federation-role=edge --federation-cluster-name=%s "+
 		"--federation-datacenter-kubeconfig=<path-to-saved-file>\n", name)
