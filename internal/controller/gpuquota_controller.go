@@ -73,6 +73,7 @@ func (r *GPUQuotaReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	gq := &inferencev1alpha1.GPUQuota{}
 	if err := r.Get(ctx, req.NamespacedName, gq); err != nil {
 		if errors.IsNotFound(err) {
+			llmkubemetrics.DeleteGPUQuotaSeries(req.Name, req.Namespace)
 			return ctrl.Result{}, nil
 		}
 		logger.Error(err, "failed to get GPUQuota")

@@ -265,6 +265,45 @@ func TestDeleteInferenceServiceSeries(t *testing.T) {
 	}
 }
 
+func TestDeleteGPUQuotaSeries(t *testing.T) {
+	beforeUsedGPU := testutil.CollectAndCount(GPUQuotaUsedGPUCount)
+	beforeLimitGPU := testutil.CollectAndCount(GPUQuotaGPUCountLimit)
+	beforeUsedVRAM := testutil.CollectAndCount(GPUQuotaUsedVRAMBytes)
+	beforeLimitVRAM := testutil.CollectAndCount(GPUQuotaVRAMBytesLimit)
+
+	GPUQuotaUsedGPUCount.WithLabelValues("del-gq", "default").Set(3)
+	GPUQuotaGPUCountLimit.WithLabelValues("del-gq", "default").Set(10)
+	GPUQuotaUsedVRAMBytes.WithLabelValues("del-gq", "default").Set(16000000000)
+	GPUQuotaVRAMBytesLimit.WithLabelValues("del-gq", "default").Set(32000000000)
+
+	DeleteGPUQuotaSeries("del-gq", "default")
+
+	// Every per-quota gauge must be covered, or a deleted quota keeps
+	// reporting through whichever one was missed.
+	if got := testutil.CollectAndCount(GPUQuotaUsedGPUCount); got != beforeUsedGPU {
+		t.Errorf("used gpu: got %d series, want %d", got, beforeUsedGPU)
+	}
+	if got := testutil.CollectAndCount(GPUQuotaGPUCountLimit); got != beforeLimitGPU {
+		t.Errorf("gpu limit: got %d series, want %d", got, beforeLimitGPU)
+	}
+	if got := testutil.CollectAndCount(GPUQuotaUsedVRAMBytes); got != beforeUsedVRAM {
+		t.Errorf("used vram: got %d series, want %d", got, beforeUsedVRAM)
+	}
+	if got := testutil.CollectAndCount(GPUQuotaVRAMBytesLimit); got != beforeLimitVRAM {
+		t.Errorf("vram limit: got %d series, want %d", got, beforeLimitVRAM)
+	}
+}
+
+func TestGPUQuotaLabels(t *testing.T) {
+	labels := gpuQuotaLabels("my-quota", "my-ns")
+	if labels["gpuquota"] != "my-quota" {
+		t.Errorf("gpuquota label = %q, want %q", labels["gpuquota"], "my-quota")
+	}
+	if labels["namespace"] != "my-ns" {
+		t.Errorf("namespace label = %q, want %q", labels["namespace"], "my-ns")
+	}
+}
+
 func TestPublishModelPhase(t *testing.T) {
 	labels := modelLabels("publish-test", "default")
 	ModelStatus.DeletePartialMatch(labels)

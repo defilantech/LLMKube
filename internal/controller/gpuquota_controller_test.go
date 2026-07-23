@@ -20,6 +20,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -609,6 +610,51 @@ func TestReconcileNotFound(t *testing.T) {
 	}
 	if result != (ctrl.Result{}) {
 		t.Errorf("Reconcile() returned %+v, want empty Result for NotFound", result)
+	}
+}
+
+func TestReconcileNotFoundDeletesMetrics(t *testing.T) {
+	// Seed the four per-quota gauges as if a GPUQuota had been reconciled.
+	llmkubemetrics.GPUQuotaUsedGPUCount.WithLabelValues("del-gq", "default").Set(3)
+	llmkubemetrics.GPUQuotaGPUCountLimit.WithLabelValues("del-gq", "default").Set(10)
+	llmkubemetrics.GPUQuotaUsedVRAMBytes.WithLabelValues("del-gq", "default").Set(16000000000)
+	llmkubemetrics.GPUQuotaVRAMBytesLimit.WithLabelValues("del-gq", "default").Set(32000000000)
+
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = inferencev1alpha1.AddToScheme(scheme)
+
+	c := fake.NewClientBuilder().WithScheme(scheme).Build()
+	r := &GPUQuotaReconciler{Client: c, Scheme: scheme}
+
+	req := ctrl.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      "del-gq",
+			Namespace: "default",
+		},
+	}
+
+	result, err := r.Reconcile(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Reconcile() returned error for NotFound: %v", err)
+	}
+	if result != (ctrl.Result{}) {
+		t.Errorf("Reconcile() returned %+v, want empty Result for NotFound", result)
+	}
+
+	// Every per-quota gauge must be gone, or a deleted quota keeps
+	// reporting through whichever one was missed.
+	if got := llmkubemetrics.GPUQuotaUsedGPUCount.DeletePartialMatch(prometheus.Labels{"gpuquota": "del-gq", "namespace": "default"}); got != 0 {
+		t.Errorf("GPUQuotaUsedGPUCount: got %d series, want 0", got)
+	}
+	if got := llmkubemetrics.GPUQuotaGPUCountLimit.DeletePartialMatch(prometheus.Labels{"gpuquota": "del-gq", "namespace": "default"}); got != 0 {
+		t.Errorf("GPUQuotaGPUCountLimit: got %d series, want 0", got)
+	}
+	if got := llmkubemetrics.GPUQuotaUsedVRAMBytes.DeletePartialMatch(prometheus.Labels{"gpuquota": "del-gq", "namespace": "default"}); got != 0 {
+		t.Errorf("GPUQuotaUsedVRAMBytes: got %d series, want 0", got)
+	}
+	if got := llmkubemetrics.GPUQuotaVRAMBytesLimit.DeletePartialMatch(prometheus.Labels{"gpuquota": "del-gq", "namespace": "default"}); got != 0 {
+		t.Errorf("GPUQuotaVRAMBytesLimit: got %d series, want 0", got)
 	}
 }
 
