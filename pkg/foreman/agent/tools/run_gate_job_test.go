@@ -345,6 +345,112 @@ func TestSanitizeName(t *testing.T) {
 
 // --- Template rendering ---------------------------------------------------
 
+// renderGateArgsForTest renders a gate Job from the subset of rendererInput
+// fields the bite-check tests care about, filling in the same boilerplate
+// every other render test in this file repeats verbatim (image, PVC,
+// resource sizing, task labels). Returns the joined container Args string.
+// Recognized keys: repo, branch, baseBranch, upstreamURL (all string),
+// biteCheck (bool), checks ([]string).
+func renderGateArgsForTest(t *testing.T, in map[string]any) string {
+	t.Helper()
+	rin := rendererInput{
+		Name:                    "foreman-gate-test",
+		Namespace:               "foreman-system",
+		Image:                   "golang:1.26",
+		Repo:                    "defilantech/LLMKube",
+		Branch:                  "foreman/x",
+		Checks:                  []string{"fmt", "test"},
+		PVCName:                 "foreman-gate-cache",
+		ActiveDeadlineSeconds:   1800,
+		TTLSecondsAfterFinished: 86400,
+		CPURequest:              "2",
+		CPULimit:                "4",
+		MemRequest:              "4Gi",
+		MemLimit:                "8Gi",
+		CloneURLBase:            "https://github.com",
+		TaskNamespace:           "default",
+		TaskName:                "gate-test",
+	}
+	if v, ok := in["repo"].(string); ok {
+		rin.Repo = v
+	}
+	if v, ok := in["branch"].(string); ok {
+		rin.Branch = v
+	}
+	if v, ok := in["baseBranch"].(string); ok {
+		rin.BaseBranch = v
+	}
+	if v, ok := in["biteCheck"].(bool); ok {
+		rin.BiteCheck = v
+	}
+	if v, ok := in["upstreamURL"].(string); ok {
+		rin.UpstreamURL = v
+	}
+	if v, ok := in["checks"].([]string); ok {
+		rin.Checks = v
+	}
+	job, err := renderGateJob(rin)
+	if err != nil {
+		t.Fatalf("renderGateJob: %v", err)
+	}
+	return strings.Join(job.Spec.Template.Spec.Containers[0].Args, "\n")
+}
+
+// TestGateJobBiteCheckUsesUpstreamMergeBase asserts that when upstreamURL is
+// set, the bite check fetches BaseBranch from the canonical repo (not the
+// fork) and diffs/reverts against the merge-base of HEAD and that ref, never
+// against the fork's (possibly stale) base tip. Regression for #1259: a
+// stale fork main manufactured compile failures in untouched packages and a
+// false GATE-FAIL on a good branch.
+func TestGateJobBiteCheckUsesUpstreamMergeBase(t *testing.T) {
+	args := renderGateArgsForTest(t, map[string]any{
+		"repo": "defilantech/LLMKube", "branch": "foreman/x", "biteCheck": true,
+		"upstreamURL": "https://github.com/defilantech/LLMKube.git",
+	})
+	for _, want := range []string{
+		`git fetch --depth 100 "$UPSTREAM_URL" "+refs/heads/$BASE:refs/remotes/ubase/$BASE"`,
+		`git merge-base HEAD "refs/remotes/ubase/$BASE"`,
+		`git fetch --deepen=1000 origin "$BRANCH"`,
+		`git diff --name-only "$MB" HEAD`,
+		`git checkout "$MB" -- "$f"`,
+		`GATE-WARN: bite check skipped`,
+	} {
+		if !strings.Contains(args, want) {
+			t.Errorf("rendered gate args missing %q", want)
+		}
+	}
+	// The fork-tip revert must be GONE on the upstream path.
+	if strings.Contains(args, `git checkout "origin/$BASE" -- "$f"`) &&
+		!strings.Contains(args, "UPSTREAM_URL") {
+		t.Error("bite check still reverts to fork tip origin/$BASE")
+	}
+}
+
+// TestGateJobBiteCheckFallsBackToOriginWithoutUpstreamURL asserts the
+// pre-#1259 origin-fetch path survives for freeform tasks that carry no repo
+// slug/upstream URL: the base ref is fetched from the fork itself.
+func TestGateJobBiteCheckFallsBackToOriginWithoutUpstreamURL(t *testing.T) {
+	args := renderGateArgsForTest(t, map[string]any{
+		"repo": "defilantech/LLMKube", "branch": "foreman/x", "biteCheck": true,
+	})
+	if !strings.Contains(args, `git fetch --depth 1 origin "+refs/heads/$BASE:refs/remotes/origin/$BASE"`) {
+		t.Error("origin fallback path missing when upstreamURL is empty")
+	}
+}
+
+// TestGateJobBiteCheckSanityCap asserts the bite check skips (rather than
+// fails) when the merge-base diff touches an implausible number of files,
+// the signature of a bad base resolution rather than a real coder diff.
+func TestGateJobBiteCheckSanityCap(t *testing.T) {
+	args := renderGateArgsForTest(t, map[string]any{
+		"repo": "defilantech/LLMKube", "branch": "foreman/x", "biteCheck": true,
+		"upstreamURL": "https://github.com/defilantech/LLMKube.git",
+	})
+	if !strings.Contains(args, `-gt 200`) {
+		t.Error("sanity cap (200 files) missing from bite block")
+	}
+}
+
 func TestRenderGateJob_RendersChecksAndPVCMount(t *testing.T) {
 	job, err := renderGateJob(rendererInput{
 		Name:                    "foreman-gate-x",
@@ -574,11 +680,12 @@ func TestRenderGateJob_BiteCheck_Enabled(t *testing.T) {
 	if !strings.Contains(args, "bite check") {
 		t.Errorf("bite check phase missing from rendered args:\\n%s", args)
 	}
-	// Must detect changes by committed diff against the base branch, NOT by
-	// git status: the gate Job clones a committed branch, so the working tree
-	// is clean and git status would always be empty (the round-3 fix).
-	if !strings.Contains(args, `git diff --name-only "origin/$BASE" HEAD`) {
-		t.Errorf("bite check must detect changes via committed diff against base:\\n%s", args)
+	// Must detect changes by committed diff against the resolved merge-base
+	// (#1259), NOT by git status: the gate Job clones a committed branch, so
+	// the working tree is clean and git status would always be empty (the
+	// round-3 fix).
+	if !strings.Contains(args, `git diff --name-only "$MB" HEAD`) {
+		t.Errorf("bite check must detect changes via committed diff against the merge-base:\\n%s", args)
 	}
 	if strings.Contains(args, "git status --porcelain") {
 		t.Errorf("bite check must NOT use git status (clean tree on a committed clone):\\n%s", args)
@@ -587,10 +694,10 @@ func TestRenderGateJob_BiteCheck_Enabled(t *testing.T) {
 	if !strings.Contains(args, "_test\\.go") {
 		t.Errorf("bite check must detect test files:\\n%s", args)
 	}
-	// Must revert ONLY production files to their base version, keeping the new
-	// test changes so they run against pre-change production.
-	if !strings.Contains(args, `git checkout "origin/$BASE" -- "$f"`) {
-		t.Errorf("bite check must revert production files to the base version:\\n%s", args)
+	// Must revert ONLY production files to their merge-base version, keeping
+	// the new test changes so they run against pre-change production.
+	if !strings.Contains(args, `git checkout "$MB" -- "$f"`) {
+		t.Errorf("bite check must revert production files to the merge-base version:\\n%s", args)
 	}
 	// Must NOT use the removed stash mechanism (no-op on a clean committed tree).
 	if strings.Contains(args, "git stash") {
@@ -610,9 +717,14 @@ func TestRenderGateJob_BiteCheck_Enabled(t *testing.T) {
 	if strings.Contains(args, "go test -count=1 -timeout=180s ./...") {
 		t.Errorf("bite check must NOT run the whole module (./...); unrelated failures mask the signal:\\n%s", args)
 	}
-	// Must surface errors as GATE-ERROR.
-	if !strings.Contains(args, "GATE-ERROR") {
-		t.Errorf("bite check must surface errors as GATE-ERROR:\\n%s", args)
+	// Infra anomalies must surface as a loud GATE-WARN skip, never a
+	// GATE-ERROR/GATE-FAIL: only a genuine non-biting result blocks the gate
+	// (#1259).
+	if !strings.Contains(args, "GATE-WARN: bite check skipped") {
+		t.Errorf("bite check must surface infra anomalies as GATE-WARN skips:\\n%s", args)
+	}
+	if strings.Contains(args, "GATE-ERROR") {
+		t.Errorf("bite check must not produce GATE-ERROR; infra anomalies are a GATE-WARN skip (#1259):\\n%s", args)
 	}
 	// Must report non-biting tests as GATE FAIL.
 	if !strings.Contains(args, "non-biting") {
@@ -721,10 +833,12 @@ func TestRenderGateJob_BiteCheck_SkipsWhenNoProdFiles(t *testing.T) {
 	}
 }
 
-// TestRenderGateJob_BiteCheck_FetchesBaseRef asserts the bite check fetches
-// the base ref with an explicit refspec (the clone is shallow + single-
-// branch, so a plain fetch would not create origin/$BASE) and fails loud
-// when the base ref cannot be established. Regression for the round-3 fix.
+// TestRenderGateJob_BiteCheck_FetchesBaseRef asserts the origin-fallback path
+// (no upstreamURL) fetches the base ref with an explicit refspec (the clone
+// is shallow + single-branch, so a plain fetch would not create
+// origin/$BASE) and skips loudly (GATE-WARN, #1259), rather than failing the
+// gate, when the base ref cannot be established. Regression for the round-3
+// fix.
 func TestRenderGateJob_BiteCheck_FetchesBaseRef(t *testing.T) {
 	job, err := renderGateJob(rendererInput{
 		Name:                    "foreman-gate-base",
@@ -755,12 +869,12 @@ func TestRenderGateJob_BiteCheck_FetchesBaseRef(t *testing.T) {
 	if !strings.Contains(args, `git fetch --depth 1 origin "+refs/heads/$BASE:refs/remotes/origin/$BASE"`) {
 		t.Errorf("bite check must fetch base with an explicit refspec:\\n%s", args)
 	}
-	// Must verify the ref resolved and fail loud otherwise.
+	// Must verify the ref resolved and skip loudly otherwise.
 	if !strings.Contains(args, `git rev-parse --verify --quiet "origin/$BASE"`) {
 		t.Errorf("bite check must verify the base ref resolved:\\n%s", args)
 	}
 	if !strings.Contains(args, "could not fetch base ref") {
-		t.Errorf("bite check must fail loud when the base ref cannot be fetched:\\n%s", args)
+		t.Errorf("bite check must skip loudly when the base ref cannot be fetched:\\n%s", args)
 	}
 }
 

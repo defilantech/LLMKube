@@ -13,7 +13,17 @@
 #   .Branch         -- branch on the fork to clone shallowly
 #   .BaseBranch     -- base branch the coder branch was cut from (default
 #                      "main"); the bite check diffs against and reverts to
-#                      this ref to prove new tests bite.
+#                      the MERGE-BASE of HEAD and this ref (fetched from
+#                      .UpstreamURL when set, otherwise from origin), not
+#                      the ref tip, so a stale fork base can never
+#                      manufacture failures (#1259).
+#   .UpstreamURL    -- optional. Canonical repo clone URL the bite check
+#                      fetches .BaseBranch from. When empty, the bite check
+#                      falls back to fetching .BaseBranch from origin (the
+#                      fork), the pre-#1259 behavior. Any infra anomaly in
+#                      base resolution (fetch failure, no merge-base, an
+#                      implausibly large diff) is a loud GATE-WARN skip,
+#                      never a gate failure.
 #   .Checks         -- list of make targets to run, in order
 #   .BiteCheck      -- when true, run the bite check after standard checks
 #   .PVCName        -- "foreman-gate-cache" PVC for GOMODCACHE/GOCACHE/XDG
@@ -87,74 +97,87 @@ spec:
                 rc=1
               fi
               {{- if .BiteCheck }}
-              # Bite check: verify new/changed tests actually fail against
-              # pre-change production code. The gate Job clones the coder
-              # branch as a shallow, single-branch checkout (everything is
-              # committed, working tree is clean), so change detection works
-              # on the committed diff against the base branch, NOT on
-              # `git status`. Skipped only when no test files changed.
-              # Inability to establish the base ref is GATE-ERROR (fail loud).
+              # Bite check: verify new/changed tests actually fail against pre-change
+              # production code. The gate Job clones the coder branch as a shallow,
+              # single-branch checkout (everything is committed, working tree is
+              # clean), so change detection works on the committed diff against the
+              # base branch, NOT on `git status`. Infra anomalies (base ref will not
+              # resolve, no merge-base found, a bogus base blowing up the diff size)
+              # are a loud skip (GATE-WARN), never a gate failure: only a genuine
+              # non-biting test result blocks the gate (#1259).
               BASE="${BASE_BRANCH:-main}"
               echo "=== bite check (base=$BASE) ==="
-              # The clone is shallow AND single-branch, so its refspec only
-              # tracks the coder branch; a plain `git fetch origin $BASE` would
-              # update FETCH_HEAD but never create refs/remotes/origin/$BASE.
-              # Fetch with an explicit refspec so origin/$BASE resolves, then
-              # verify it. Fail loud if the base ref cannot be established.
-              if ! git fetch --depth 1 origin "+refs/heads/$BASE:refs/remotes/origin/$BASE" >/dev/null 2>&1; then
-                echo "GATE-ERROR: bite check could not fetch base ref origin/$BASE"
-                rc=1
-              elif ! git rev-parse --verify --quiet "origin/$BASE" >/dev/null; then
-                echo "GATE-ERROR: bite check base ref origin/$BASE did not resolve after fetch"
-                rc=1
-              else
-                # Detect changes by committed diff (tree-vs-tree, two-dot: no
-                # merge-base needed, works on shallow grafts). Assumes the coder
-                # branch was cut from base, which Foreman always does.
-                changed=$(git diff --name-only "origin/$BASE" HEAD)
-                test_files=$(echo "$changed" | grep '_test\.go$' || true)
-                if [ -z "$test_files" ]; then
-                  echo "bite check: no test files changed, skipping"
+              bite_skip() { echo "GATE-WARN: bite check skipped ($1)"; }
+              MB=""
+              if [ -n "${UPSTREAM_URL:-}" ]; then
+                # Fetch the base from the CANONICAL repo, not the fork: the fork
+                # $BASE can be arbitrarily stale, and reverting production to a stale
+                # tip manufactures compile failures in packages the coder never
+                # touched (#1259). The coder branched from the upstream base (#813),
+                # so merge-base(HEAD, upstream base) IS the coder's true fork point.
+                if ! git fetch --depth 100 "$UPSTREAM_URL" "+refs/heads/$BASE:refs/remotes/ubase/$BASE" >/dev/null 2>&1; then
+                  bite_skip "could not fetch $BASE from upstream"
                 else
-                  prod_files=$(echo "$changed" | grep '\.go$' | grep -v '_test\.go$' || true)
-                  if [ -z "$prod_files" ]; then
+                  # The clone is shallow; deepen until the histories connect. Two
+                  # rounds is plenty for any sane coder branch; beyond that the base
+                  # resolution is suspect and the bite is skipped, never failed.
+                  MB=$(git merge-base HEAD "refs/remotes/ubase/$BASE" 2>/dev/null || true)
+                  if [ -z "$MB" ]; then
+                    git fetch --deepen=1000 origin "$BRANCH" >/dev/null 2>&1 || true
+                    git fetch --deepen=1000 "$UPSTREAM_URL" "+refs/heads/$BASE:refs/remotes/ubase/$BASE" >/dev/null 2>&1 || true
+                    MB=$(git merge-base HEAD "refs/remotes/ubase/$BASE" 2>/dev/null || true)
+                  fi
+                  [ -z "$MB" ] && bite_skip "no merge-base between HEAD and upstream $BASE after deepening"
+                fi
+              else
+                # No upstream URL (freeform task without a repo slug): pre-#1259
+                # behavior, fetch the base ref from origin and use its tip.
+                if ! git fetch --depth 1 origin "+refs/heads/$BASE:refs/remotes/origin/$BASE" >/dev/null 2>&1; then
+                  bite_skip "could not fetch base ref origin/$BASE"
+                elif ! git rev-parse --verify --quiet "origin/$BASE" >/dev/null; then
+                  bite_skip "base ref origin/$BASE did not resolve after fetch"
+                else
+                  MB="origin/$BASE"
+                fi
+              fi
+              if [ -n "$MB" ]; then
+                changed=$(git diff --name-only "$MB" HEAD)
+                nchanged=$(printf '%s\n' "$changed" | sed '/^$/d' | wc -l | tr -d ' ')
+                if [ "$nchanged" -gt 200 ]; then
+                  # A coder diff is tens of files at most. Hundreds means the base
+                  # resolution is wrong (the #1259 incident swept 103 commits of
+                  # drift); skipping is honest, failing would blame the coder.
+                  bite_skip "diff vs merge-base names $nchanged files; base resolution suspect"
+                else
+                  test_files=$(printf '%s\n' "$changed" | grep '_test\.go$' || true)
+                  prod_files=$(printf '%s\n' "$changed" | grep '\.go$' | grep -v '_test\.go$' || true)
+                  if [ -z "$test_files" ]; then
+                    echo "bite check: no test files changed, skipping"
+                  elif [ -z "$prod_files" ]; then
                     echo "bite check: no production files changed, skipping"
                   else
-                    # Revert ONLY production files to their base version, keeping
-                    # the coder's new tests in the tree. Files present in base
-                    # are checked out at base; files added in the branch are
-                    # removed. Tests then run against pre-change production --
-                    # the whole point. Restored to branch state afterward.
                     bite_err=0
                     for f in $prod_files; do
-                      if git cat-file -e "origin/$BASE:$f" 2>/dev/null; then
-                        git checkout "origin/$BASE" -- "$f" || { echo "GATE-ERROR: bite check revert failed for $f"; bite_err=1; break; }
+                      if git cat-file -e "$MB:$f" 2>/dev/null; then
+                        git checkout "$MB" -- "$f" || { bite_skip "revert failed for $f"; bite_err=1; break; }
                       else
-                        rm -f "$f" || { echo "GATE-ERROR: bite check could not remove added prod file $f"; bite_err=1; break; }
+                        rm -f "$f" || { bite_skip "could not remove added prod file $f"; bite_err=1; break; }
                       fi
                     done
-                    if [ "$bite_err" -ne 0 ]; then
-                      rc=1
-                    else
-                      # Run ONLY the packages whose tests changed, never the whole
-                      # module: a module-wide `go test ./...` would fail on
-                      # unrelated packages (e.g. controller envtest needs
-                      # KUBEBUILDER_ASSETS, absent here) and the bite check would
-                      # misread that as "biting" -> false pass. Scoping to the
-                      # changed test packages isolates the signal to the coder's
-                      # own tests.
+                    if [ "$bite_err" -eq 0 ]; then
                       test_pkgs=$(echo "$test_files" | xargs -n1 dirname | sort -u | sed 's;^;./;')
                       echo "bite check: running changed test packages against reverted production: $test_pkgs"
                       bite_rc=0
                       go test -count=1 -timeout=180s $test_pkgs || bite_rc=1
-                      # Restore branch state regardless of test outcome.
-                      git checkout HEAD -- $prod_files || { echo "GATE-ERROR: bite check restore failed"; rc=1; }
+                      git checkout HEAD -- $prod_files || bite_skip "restore failed; tree left reverted (all standard checks already ran)"
                       if [ "$bite_rc" -eq 0 ]; then
                         echo "GATE FAIL: bite check: tests pass against pre-change production (non-biting test)"
                         rc=1
                       else
                         echo "bite check: tests fail against pre-change production (biting test, good)"
                       fi
+                    else
+                      git checkout HEAD -- $prod_files >/dev/null 2>&1 || true
                     fi
                   fi
                 fi
@@ -168,6 +191,8 @@ spec:
               value: "{{ .Branch }}"
             - name: BASE_BRANCH
               value: "{{ .BaseBranch }}"
+            - name: UPSTREAM_URL
+              value: "{{ .UpstreamURL }}"
             # The base image (golang:1.26) bakes GOTOOLCHAIN=local, which
             # refuses to run when go.mod's toolchain floor is newer than the
             # image's Go (e.g. go.mod requires 1.26.5 but the cached
