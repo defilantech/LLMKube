@@ -306,10 +306,27 @@ func DeleteInferenceServiceSeries(name, namespace string) {
 	InferenceServiceReplicas.DeletePartialMatch(labels)
 }
 
+const nsLabel = "namespace"
+
 func modelLabels(name, namespace string) prometheus.Labels {
-	return prometheus.Labels{"model": name, "namespace": namespace}
+	return prometheus.Labels{"model": name, nsLabel: namespace}
 }
 
 func inferenceServiceLabels(name, namespace string) prometheus.Labels {
-	return prometheus.Labels{"inferenceservice": name, "namespace": namespace}
+	return prometheus.Labels{"inferenceservice": name, nsLabel: namespace}
+}
+
+// DeleteGPUQuotaSeries drops every per-quota gauge held for one GPUQuota.
+// The admission-denial counter is deliberately kept: resetting it would
+// break rate() across a recreate.
+func DeleteGPUQuotaSeries(name, namespace string) {
+	labels := gpuQuotaLabels(name, namespace)
+	GPUQuotaUsedGPUCount.DeletePartialMatch(labels)
+	GPUQuotaGPUCountLimit.DeletePartialMatch(labels)
+	GPUQuotaUsedVRAMBytes.DeletePartialMatch(labels)
+	GPUQuotaVRAMBytesLimit.DeletePartialMatch(labels)
+}
+
+func gpuQuotaLabels(name, namespace string) prometheus.Labels {
+	return prometheus.Labels{"gpuquota": name, nsLabel: namespace}
 }
