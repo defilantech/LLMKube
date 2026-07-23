@@ -450,6 +450,17 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "GPUQuota")
 		os.Exit(1)
 	}
+	// FederatedCluster reconciles status.phase from edge-written heartbeat
+	// staleness on the datacenter cluster. Wired unconditionally for now; a
+	// --federation-role flag to gate this to datacenter-mode only is planned
+	// as a follow-up (federation slice 1, task 3).
+	if err := (&controller.FederatedClusterReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "FederatedCluster")
+		os.Exit(1)
+	}
 
 	// Register the ModelRouter validating webhook ONLY when the serving cert is
 	// actually present in the configured cert dir. The webhook server crashes the
