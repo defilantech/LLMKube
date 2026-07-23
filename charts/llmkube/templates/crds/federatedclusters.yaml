@@ -5,6 +5,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.19.0
+    {{- if .Values.crds.keep }}
+    helm.sh/resource-policy: keep
+    {{- end }}
   name: federatedclusters.federation.llmkube.dev
 spec:
   group: federation.llmkube.dev
@@ -137,5 +140,4 @@ spec:
     storage: true
     subresources:
       status: {}
-
 {{- end }}
