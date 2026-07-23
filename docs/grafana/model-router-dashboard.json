@@ -126,7 +126,7 @@
         },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 10},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 10},
       "id": 4,
       "options": {
         "legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom"},
@@ -155,7 +155,7 @@
         },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 10},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 10},
       "id": 5,
       "options": {
         "legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom"},
@@ -170,33 +170,6 @@
         }
       ],
       "title": "Budget utilization (rule vs. proxy scope)",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-      "fieldConfig": {
-        "defaults": {
-          "color": {"mode": "palette-classic"},
-          "custom": {"axisLabel": "depth", "drawStyle": "bars", "fillOpacity": 80, "lineWidth": 0, "pointSize": 5, "showPoints": "never", "spanNulls": true},
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 10},
-      "id": 6,
-      "options": {
-        "legend": {"calcs": ["mean"], "displayMode": "table", "placement": "bottom"},
-        "tooltip": {"mode": "multi", "sort": "desc"}
-      },
-      "targets": [
-        {
-          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-          "expr": "sum by (router, routing_fallback_depth) (increase(otel_span_metrics{span_name=\"backend.request\"}[5m]))",
-          "legendFormat": "depth {{routing_fallback_depth}}",
-          "refId": "A"
-        }
-      ],
-      "title": "Fallback depth distribution (5m)",
       "type": "timeseries"
     },
     {

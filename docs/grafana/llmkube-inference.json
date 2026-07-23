@@ -59,35 +59,8 @@
       "gridPos": {"h": 1, "w": 24, "x": 0, "y": 9},
       "id": 101,
       "panels": [],
-      "title": "Queue + reliability",
+      "title": "Reliability",
       "type": "row"
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-      "fieldConfig": {
-        "defaults": {
-          "color": {"mode": "palette-classic"},
-          "custom": {"axisLabel": "seconds", "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true},
-          "unit": "s"
-        },
-        "overrides": []
-      },
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 10},
-      "id": 3,
-      "options": {
-        "legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom"},
-        "tooltip": {"mode": "multi", "sort": "desc"}
-      },
-      "targets": [
-        {
-          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-          "expr": "histogram_quantile(0.95, sum by (inferenceservice, namespace, le) (rate(llmkube_gpu_queue_wait_duration_seconds_bucket[5m])))",
-          "legendFormat": "{{inferenceservice}} ({{namespace}})",
-          "refId": "A"
-        }
-      ],
-      "title": "GPU queue wait p95 (5m)",
-      "type": "timeseries"
     },
     {
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
@@ -100,7 +73,7 @@
         },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 10},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 10},
       "id": 4,
       "options": {
         "legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom"},

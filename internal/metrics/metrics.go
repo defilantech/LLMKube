@@ -83,15 +83,6 @@ var (
 		},
 	)
 
-	GPUQueueWaitDuration = prometheus.NewHistogramVec(
-		prometheus.HistogramOpts{
-			Name:    "llmkube_gpu_queue_wait_duration_seconds",
-			Help:    "Time InferenceServices spend waiting for GPU resources.",
-			Buckets: prometheus.ExponentialBuckets(10, 2, 10), // 10s to ~5120s
-		},
-		[]string{"inferenceservice", "namespace"},
-	)
-
 	// Reconcile metrics
 
 	ReconcileTotal = prometheus.NewCounterVec(
@@ -240,7 +231,6 @@ var AllCollectors = []prometheus.Collector{
 	InferenceServiceInfo,
 	InferenceServiceReplicas,
 	GPUQueueDepth,
-	GPUQueueWaitDuration,
 	ReconcileTotal,
 	ReconcileDuration,
 	RouterRequestsTotal,
