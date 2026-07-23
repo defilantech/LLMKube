@@ -79,6 +79,7 @@ Examples:
 	cmd.AddCommand(newCacheListCommand())
 	cmd.AddCommand(newCacheClearCommand())
 	cmd.AddCommand(newCachePreloadCommand())
+	cmd.AddCommand(NewCachePrepCommand())
 
 	return cmd
 }
