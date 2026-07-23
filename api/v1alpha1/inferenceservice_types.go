@@ -137,6 +137,16 @@ type InferenceServiceSpec struct {
 	// +optional
 	Replicas *int32 `json:"replicas,omitempty"`
 
+	// Suspend stops the inference workload without losing the desired
+	// replica count: the serving Deployment (or metal process) is scaled to
+	// zero while spec.replicas is preserved, and the service reports phase
+	// Suspended. Intended for external admission controllers (for example
+	// the Kueue integration, which holds a queue-labeled service suspended
+	// until its ClusterQueue admits it). Defaults to false.
+	// +kubebuilder:default=false
+	// +optional
+	Suspend bool `json:"suspend,omitempty"`
+
 	// RevisionHistoryLimit caps how many old ReplicaSets the inference
 	// Deployment keeps for rollback. Unset uses the Kubernetes default (10);
 	// 0 keeps none.
@@ -1091,11 +1101,13 @@ type TGIConfig struct {
 type InferenceServiceStatus struct {
 	// Phase represents the current lifecycle phase of the InferenceService.
 	// Possible values: Pending, Creating, Progressing, Ready, WaitingForGPU,
-	// Stopped, Failed. Stopped is the terminal state when spec.replicas=0
-	// has caused the agent to tear down the workload; tooling polling for
-	// readiness should treat Stopped the same as Pending (the user
-	// intentionally took the service offline; this is not an error).
-	// +kubebuilder:validation:Enum=Pending;Creating;Progressing;Ready;WaitingForGPU;Stopped;Failed
+	// Stopped, Suspended, Failed. Stopped is the terminal state when
+	// spec.replicas=0 has caused the agent to tear down the workload; tooling
+	// polling for readiness should treat Stopped the same as Pending (the
+	// user intentionally took the service offline; this is not an error).
+	// Suspended is the equivalent state when spec.suspend=true has scaled the
+	// workload to zero while spec.replicas is preserved for restoration.
+	// +kubebuilder:validation:Enum=Pending;Creating;Progressing;Ready;WaitingForGPU;Stopped;Suspended;Failed
 	// +optional
 	Phase string `json:"phase,omitempty"`
 

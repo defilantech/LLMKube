@@ -36,6 +36,14 @@ import (
 
 // +kubebuilder:webhook:path=/validate-inference-llmkube-dev-v1alpha1-inferenceservice-quota,mutating=false,failurePolicy=fail,sideEffects=None,groups=inference.llmkube.dev,resources=inferenceservices,verbs=create;update,versions=v1alpha1,name=vinferenceservicequota.inference.llmkube.dev,admissionReviewVersions=v1
 
+// kueueQueueNameLabel marks an InferenceService as Kueue-managed. Quota
+// admission for such services is owned by Kueue (ClusterQueue quota via the
+// llmkube-kueue integration); the GPUQuota webhook defers so the two
+// systems never double-gate the same object (a suspended service being
+// unsuspended by Kueue admission would otherwise be re-denied here when
+// the namespace quota is tight, deadlocking admission). See #1251.
+const kueueQueueNameLabel = "kueue.x-k8s.io/queue-name"
+
 // +kubebuilder:rbac:groups=inference.llmkube.dev,resources=gpuquotas,verbs=get;list;watch
 // +kubebuilder:rbac:groups=inference.llmkube.dev,resources=inferenceservices,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
@@ -128,6 +136,16 @@ func (v *InferenceServiceQuotaValidator) validate(ctx context.Context, isvc *inf
 	// (multitenancy disabled).
 	if err := v.validateGPUSharing(ctx, isvc); err != nil {
 		return fmt.Errorf("invalid gpuSharing spec: %w", err)
+	}
+
+	// Kueue-managed services defer quota gating to Kueue. Spec validation
+	// above still applies; only the GPUQuota accounting is skipped. The
+	// GPUQuota status reconciler continues to include these services in
+	// usage aggregation for observability.
+	if isvc.Labels[kueueQueueNameLabel] != "" {
+		log.FromContext(ctx).V(1).Info("skipping GPUQuota gating for Kueue-managed InferenceService",
+			"name", isvc.Name, "namespace", isvc.Namespace)
+		return nil
 	}
 
 	quotas, err := v.listApplicableQuotas(ctx, isvc)

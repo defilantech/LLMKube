@@ -56,6 +56,7 @@ const (
 	PhaseDownloading = "Downloading"
 	PhaseCreating    = "Creating"
 	PhaseStopped     = "Stopped"
+	PhaseSuspended   = "Suspended"
 	// acceleratorMetal is the Model.Spec.Hardware.Accelerator value for the
 	// host metal-agent path.
 	acceleratorMetal      = "metal"

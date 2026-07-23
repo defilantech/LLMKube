@@ -49,11 +49,18 @@ func (r *InferenceServiceReconciler) reconcileHPA(
 		Namespace: isvc.Namespace,
 	}
 
-	// If autoscaling is not configured, clean up any existing HPA
-	if isvc.Spec.Autoscaling == nil {
+	// If autoscaling is not configured, or the service is suspended, clean
+	// up any existing HPA. Suspension must win over autoscaling: otherwise
+	// the HPA's minReplicas (defaults to 1) would scale the Deployment back
+	// above zero on its own reconcile loop.
+	if isvc.Spec.Autoscaling == nil || isvc.Spec.Suspend {
 		existingHPA := &autoscalingv2.HorizontalPodAutoscaler{}
 		if err := r.Get(ctx, hpaName, existingHPA); err == nil {
-			logger.Info("Autoscaling removed, deleting HPA",
+			reason := "Autoscaling removed"
+			if isvc.Spec.Suspend {
+				reason = "InferenceService suspended"
+			}
+			logger.Info(reason+", deleting HPA",
 				"name", isvc.Name)
 			if err := r.Delete(ctx, existingHPA); err != nil {
 				return fmt.Errorf("failed to delete HPA: %w", err)

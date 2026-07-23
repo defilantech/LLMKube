@@ -5175,6 +5175,16 @@ spec:
                 required:
                 - type
                 type: object
+              suspend:
+                default: false
+                description: |-
+                  Suspend stops the inference workload without losing the desired
+                  replica count: the serving Deployment (or metal process) is scaled to
+                  zero while spec.replicas is preserved, and the service reports phase
+                  Suspended. Intended for external admission controllers (for example
+                  the Kueue integration, which holds a queue-labeled service suspended
+                  until its ClusterQueue admits it). Defaults to false.
+                type: boolean
               tensorOverrides:
                 description: |-
                   TensorOverrides provides fine-grained tensor placement overrides for power users.
@@ -5802,10 +5812,12 @@ spec:
                 description: |-
                   Phase represents the current lifecycle phase of the InferenceService.
                   Possible values: Pending, Creating, Progressing, Ready, WaitingForGPU,
-                  Stopped, Failed. Stopped is the terminal state when spec.replicas=0
-                  has caused the agent to tear down the workload; tooling polling for
-                  readiness should treat Stopped the same as Pending (the user
-                  intentionally took the service offline; this is not an error).
+                  Stopped, Suspended, Failed. Stopped is the terminal state when
+                  spec.replicas=0 has caused the agent to tear down the workload; tooling
+                  polling for readiness should treat Stopped the same as Pending (the
+                  user intentionally took the service offline; this is not an error).
+                  Suspended is the equivalent state when spec.suspend=true has scaled the
+                  workload to zero while spec.replicas is preserved for restoration.
                 enum:
                 - Pending
                 - Creating
@@ -5813,6 +5825,7 @@ spec:
                 - Ready
                 - WaitingForGPU
                 - Stopped
+                - Suspended
                 - Failed
                 type: string
               queuePosition:

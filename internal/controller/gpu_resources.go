@@ -7,6 +7,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
+	"github.com/defilantech/llmkube/pkg/apiutil"
 )
 
 const (
@@ -79,27 +80,7 @@ func isROCmRuntime(runtime string) bool {
 }
 
 func gpuResourceNameForSpec(model *inferencev1alpha1.Model) corev1.ResourceName {
-	if model != nil && model.Spec.Hardware != nil && model.Spec.Hardware.GPU != nil {
-		if override := strings.TrimSpace(model.Spec.Hardware.GPU.ResourceName); override != "" {
-			return corev1.ResourceName(override)
-		}
-
-		switch strings.ToLower(strings.TrimSpace(model.Spec.Hardware.GPU.Vendor)) {
-		case "amd":
-			// Both the Vulkan and ROCm runtimes schedule against the shared
-			// generic-device-plugin /dev/dri resource (vulkanDRIResourceName),
-			// not the amd.com/gpu resource; see gpuRuntimeROCm for why.
-			if isVulkanRuntime(model.Spec.Hardware.GPU.Runtime) ||
-				isROCmRuntime(model.Spec.Hardware.GPU.Runtime) {
-				return vulkanDRIResourceName
-			}
-			return amdGPUResourceName
-		case "intel":
-			return intelGPUResourceNameI915
-		}
-	}
-
-	return nvidiaGPUResourceName
+	return apiutil.GPUResourceName(model)
 }
 
 // gpuTolerationKeyForSpec returns the taint key the GPU toleration should

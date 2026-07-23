@@ -208,6 +208,14 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		desiredReplicas = *inferenceService.Spec.Replicas
 	}
 
+	// Suspend (spec.suspend) scales the workload to zero without touching
+	// spec.replicas, so unsuspend restores the user's desired count. The
+	// forced zero flows through reconcileDeployment (Deployment replicas),
+	// the metal-agent state, and status.desiredReplicas.
+	if inferenceService.Spec.Suspend {
+		desiredReplicas = 0
+	}
+
 	if effectiveModelCacheKey(model) != "" && r.ModelCachePath != "" {
 		if err := r.ensureModelCachePVC(ctx, inferenceService); err != nil {
 			log.Error(err, "Failed to ensure model cache PVC exists", "namespace", inferenceService.Namespace)
@@ -502,8 +510,9 @@ func (r *InferenceServiceReconciler) reconcileDeployment(ctx context.Context, is
 	// the live value rather than overwriting it with the operator's desired
 	// count. Setting it to nil does not work here: a plain Update with a nil
 	// replicas field is defaulted back to 1 by the API server, which fights
-	// the HPA on every reconcile.
-	if isvc.Spec.Autoscaling != nil {
+	// the HPA on every reconcile. Suspension overrides this: the HPA is
+	// deleted while suspended, and the forced zero must land.
+	if isvc.Spec.Autoscaling != nil && !isvc.Spec.Suspend {
 		existingDeployment.Spec.Replicas = existingReplicas
 	}
 	if err := r.Update(ctx, existingDeployment); err != nil {
