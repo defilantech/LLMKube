@@ -176,7 +176,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum(llamacpp:predicted_tokens_seconds{namespace=~\"$namespace\"})",
+          "expr": "sum(rate(llamacpp:tokens_predicted_total{namespace=~\"$namespace\"}[5m]) or rate(sglang:generation_tokens_total{namespace=~\"$namespace\"}[5m]))",
           "legendFormat": "tok/s",
           "refId": "A"
         }
@@ -214,7 +214,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum(llamacpp:requests_processing{namespace=~\"$namespace\"})",
+          "expr": "sum(llamacpp:requests_processing{namespace=~\"$namespace\"} or sglang:num_running_reqs{namespace=~\"$namespace\"})",
           "legendFormat": "Processing",
           "refId": "A"
         }
@@ -252,7 +252,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum(llamacpp:requests_deferred{namespace=~\"$namespace\"})",
+          "expr": "sum(llamacpp:requests_deferred{namespace=~\"$namespace\"} or sglang:num_queue_reqs{namespace=~\"$namespace\"})",
           "legendFormat": "Deferred",
           "refId": "A"
         }
@@ -299,8 +299,8 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "llamacpp:predicted_tokens_seconds{namespace=~\"$namespace\"}",
-          "legendFormat": "{{pod}}",
+          "expr": "sum by (service, namespace, runtime) (rate(llamacpp:tokens_predicted_total{namespace=~\"$namespace\"}[5m]) or rate(sglang:generation_tokens_total{namespace=~\"$namespace\"}[5m]))",
+          "legendFormat": "{{namespace}}/{{service}} ({{runtime}})",
           "refId": "A"
         }
       ]
@@ -338,8 +338,8 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "rate(llamacpp:prompt_tokens_total{namespace=~\"$namespace\"}[5m])",
-          "legendFormat": "{{pod}}",
+          "expr": "sum by (service, namespace, runtime) (rate(llamacpp:prompt_tokens_total{namespace=~\"$namespace\"}[5m]) or rate(sglang:prompt_tokens_total{namespace=~\"$namespace\"}[5m]))",
+          "legendFormat": "{{namespace}}/{{service}} ({{runtime}})",
           "refId": "A"
         }
       ]
