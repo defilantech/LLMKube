@@ -764,3 +764,33 @@ var _ = Describe("evaluateGPUQueue", func() {
 			int32(0), map[string]int32{"default": 2, "team-a": 0, "team-b": 0}),
 	)
 })
+
+var _ = Describe("evaluateGPUQueue tie-breaking", func() {
+	// alpha and beta queued in the same wall-clock second: CreationTimestamp
+	// alone can't order them, so the tie must break by name.
+	fixture := func() []client.Object {
+		return []client.Object{
+			queuedISVC("alpha", "default", 10, PhaseWaitingForGPU),
+			queuedISVC("beta", "default", 10, PhaseWaitingForGPU),
+		}
+	}
+
+	DescribeTable("orders tied CreationTimestamps by name",
+		func(name string, expectedPos int32) {
+			reconciler := &InferenceServiceReconciler{
+				Client: fake.NewClientBuilder().
+					WithScheme(k8sClient.Scheme()).
+					WithObjects(fixture()...).
+					Build(),
+				Scheme: k8sClient.Scheme(),
+			}
+			subject := queuedISVC(name, "default", 10, PhaseWaitingForGPU)
+
+			pos, _, err := reconciler.evaluateGPUQueue(context.Background(), subject)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(pos).To(Equal(expectedPos))
+		},
+		Entry("alpha sorts before beta", "alpha", int32(1)),
+		Entry("beta sorts after alpha", "beta", int32(2)),
+	)
+})

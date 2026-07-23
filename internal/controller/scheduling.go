@@ -176,7 +176,12 @@ func (r *InferenceServiceReconciler) evaluateGPUQueue(
 		depth := depths[svc.Namespace]
 		if svc.Status.Phase == PhaseWaitingForGPU {
 			depth++
-			if svc.CreationTimestamp.Before(&isvc.CreationTimestamp) {
+			// CreationTimestamp is 1s resolution, so a Helm release or a
+			// scripted loop can create several services within the same
+			// second; break the tie by name so positions stay a strict
+			// 1..N permutation instead of colliding.
+			if svc.CreationTimestamp.Before(&isvc.CreationTimestamp) ||
+				(svc.CreationTimestamp.Equal(&isvc.CreationTimestamp) && svc.Name < isvc.Name) {
 				ahead++
 			}
 		}
