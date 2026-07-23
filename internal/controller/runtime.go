@@ -7,6 +7,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
+	"github.com/defilantech/llmkube/pkg/apiutil"
 )
 
 // RuntimeBackend generates runtime-specific container configuration
@@ -120,13 +121,7 @@ func runtimeNameLabel(isvc *inferencev1alpha1.InferenceService) string {
 
 // resolveGPUCount determines the GPU count from Model spec or InferenceService spec.
 func resolveGPUCount(isvc *inferencev1alpha1.InferenceService, model *inferencev1alpha1.Model) int32 {
-	if model.Spec.Hardware != nil && model.Spec.Hardware.GPU != nil && model.Spec.Hardware.GPU.Count > 0 {
-		return model.Spec.Hardware.GPU.Count
-	}
-	if isvc.Spec.Resources != nil && isvc.Spec.Resources.GPU > 0 {
-		return isvc.Spec.Resources.GPU
-	}
-	return 0
+	return apiutil.GPUCount(isvc, model)
 }
 
 // hasGPUPresent returns true when the workload has GPU access through either
