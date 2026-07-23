@@ -203,7 +203,6 @@ func TestHistogramBuckets(t *testing.T) {
 	}{
 		{"ModelDownloadDuration", ModelDownloadDuration, []string{"bkt-test", "default", "http"}, 12},
 		{"InferenceServiceReadyDuration", InferenceServiceReadyDuration, []string{"bkt-test", "default"}, 10},
-		{"GPUQueueWaitDuration", GPUQueueWaitDuration, []string{"bkt-test", "default"}, 10},
 		{"ReconcileDuration", ReconcileDuration, []string{"bkt-test-ctrl"}, 11},
 	}
 

@@ -448,7 +448,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 5, "w": 8, "x": 0, "y": 13 },
+      "gridPos": { "h": 5, "w": 12, "x": 0, "y": 13 },
       "id": 8,
       "options": {
         "colorMode": "value",
@@ -469,66 +469,13 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "llamacpp:tokens_per_second",
+          "expr": "llamacpp:predicted_tokens_seconds",
           "legendFormat": "Tokens/s",
           "refId": "A"
         }
       ],
       "title": "Tokens / Second",
       "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "green", "value": null },
-              { "color": "yellow", "value": 0.7 },
-              { "color": "red", "value": 0.9 }
-            ]
-          },
-          "unit": "percentunit"
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 5, "w": 8, "x": 8, "y": 13 },
-      "id": 9,
-      "options": {
-        "minVizHeight": 75,
-        "minVizWidth": 75,
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": ["lastNotNull"],
-          "fields": "",
-          "values": false
-        },
-        "showThresholdLabels": false,
-        "showThresholdMarkers": true,
-        "sizing": "auto"
-      },
-      "pluginVersion": "11.4.0",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "llamacpp:kv_cache_usage_ratio",
-          "legendFormat": "KV cache",
-          "refId": "A"
-        }
-      ],
-      "title": "KV Cache Occupancy",
-      "type": "gauge"
     },
     {
       "datasource": {
@@ -553,7 +500,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 5, "w": 8, "x": 16, "y": 13 },
+      "gridPos": { "h": 5, "w": 12, "x": 12, "y": 13 },
       "id": 10,
       "options": {
         "colorMode": "value",
@@ -1025,97 +972,12 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "llamacpp:tokens_per_second",
+          "expr": "llamacpp:predicted_tokens_seconds",
           "legendFormat": "Tokens/s",
           "refId": "A"
         }
       ],
       "title": "Tokens / Second History",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "tooltip": false,
-              "viz": false,
-              "legend": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "smooth",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "line"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "green", "value": null },
-              { "color": "yellow", "value": 0.7 },
-              { "color": "red", "value": 0.9 }
-            ]
-          },
-          "unit": "percentunit"
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 36 },
-      "id": 31,
-      "options": {
-        "legend": {
-          "calcs": ["min", "max", "mean"],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "pluginVersion": "11.4.0",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "llamacpp:kv_cache_usage_ratio",
-          "legendFormat": "KV cache",
-          "refId": "A"
-        }
-      ],
-      "title": "KV Cache Occupancy History",
       "type": "timeseries"
     },
     {
@@ -1172,7 +1034,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 44 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 36 },
       "id": 32,
       "options": {
         "legend": {

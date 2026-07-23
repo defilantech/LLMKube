@@ -256,12 +256,12 @@ curl http://prometheus:9090/api/v1/targets
 
 | Metric | Description |
 |--------|-------------|
-| `llamacpp_tokens_second` | Current generation speed (tokens/sec) |
-| `llamacpp_tokens_predicted_total` | Total generated tokens |
-| `llamacpp_prompt_tokens_total` | Total prompt tokens processed |
-| `llamacpp_kv_cache_usage_ratio` | KV cache utilization (0-1) |
-| `llamacpp_requests_processing` | Currently processing requests |
-| `llamacpp_requests_deferred` | Deferred/queued requests |
+| `llamacpp:predicted_tokens_seconds` | Current decode speed (tokens/sec) |
+| `llamacpp:prompt_tokens_seconds` | Current prefill speed (tokens/sec) |
+| `llamacpp:tokens_predicted_total` | Total generated tokens |
+| `llamacpp:prompt_tokens_total` | Total prompt tokens processed |
+| `llamacpp:requests_processing` | Currently processing requests |
+| `llamacpp:requests_deferred` | Deferred/queued requests |
 
 ### LLMKube Controller Metrics
 
@@ -273,8 +273,6 @@ curl http://prometheus:9090/api/v1/targets
 | `llmkube_inferenceservice_ready_duration_seconds` | Time to Ready phase |
 | `llmkube_reconcile_total` | Total reconciliation cycles |
 | `llmkube_reconcile_duration_seconds` | Reconciliation cycle duration |
-| `llmkube_active_models_total` | Models in Ready/Cached phase |
-| `llmkube_active_inferenceservices_total` | Inference services in Ready phase |
 
 ### LLMKube Metal Agent Metrics
 

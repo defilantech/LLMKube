@@ -61,7 +61,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "llmkube_active_models_total",
+          "expr": "count(llmkube_model_status{phase=\"Ready\"})",
           "legendFormat": "Models",
           "refId": "A"
         }
@@ -99,7 +99,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "llmkube_active_inferenceservices_total",
+          "expr": "count(llmkube_inferenceservice_phase{phase=\"Ready\"})",
           "legendFormat": "Services",
           "refId": "A"
         }
@@ -176,7 +176,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum(llamacpp_tokens_second{namespace=~\"$namespace\"})",
+          "expr": "sum(llamacpp:predicted_tokens_seconds{namespace=~\"$namespace\"})",
           "legendFormat": "tok/s",
           "refId": "A"
         }
@@ -214,7 +214,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum(llamacpp_requests_processing{namespace=~\"$namespace\"})",
+          "expr": "sum(llamacpp:requests_processing{namespace=~\"$namespace\"})",
           "legendFormat": "Processing",
           "refId": "A"
         }
@@ -252,7 +252,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum(llamacpp_requests_deferred{namespace=~\"$namespace\"})",
+          "expr": "sum(llamacpp:requests_deferred{namespace=~\"$namespace\"})",
           "legendFormat": "Deferred",
           "refId": "A"
         }
@@ -299,7 +299,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "llamacpp_tokens_second{namespace=~\"$namespace\"}",
+          "expr": "llamacpp:predicted_tokens_seconds{namespace=~\"$namespace\"}",
           "legendFormat": "{{pod}}",
           "refId": "A"
         }
@@ -338,7 +338,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "rate(llamacpp_prompt_tokens_total{namespace=~\"$namespace\"}[5m])",
+          "expr": "rate(llamacpp:prompt_tokens_total{namespace=~\"$namespace\"}[5m])",
           "legendFormat": "{{pod}}",
           "refId": "A"
         }
@@ -374,7 +374,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 15 },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 15 },
       "id": 21,
       "options": {
         "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" },
@@ -388,51 +388,6 @@
           "expr": "llmkube_gpu_queue_depth",
           "legendFormat": "Queue Depth",
           "refId": "A"
-        }
-      ]
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "axisBorderShow": false,
-            "axisLabel": "seconds",
-            "drawStyle": "line",
-            "fillOpacity": 15,
-            "gradientMode": "none",
-            "lineInterpolation": "smooth",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": { "group": "A", "mode": "none" }
-          },
-          "unit": "s"
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 15 },
-      "id": 22,
-      "options": {
-        "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" },
-        "tooltip": { "mode": "multi", "sort": "desc" }
-      },
-      "title": "GPU Queue Wait Duration",
-      "type": "timeseries",
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "histogram_quantile(0.50, rate(llmkube_gpu_queue_wait_duration_seconds_bucket[5m]))",
-          "legendFormat": "P50",
-          "refId": "A"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "histogram_quantile(0.95, rate(llmkube_gpu_queue_wait_duration_seconds_bucket[5m]))",
-          "legendFormat": "P95",
-          "refId": "B"
         }
       ]
     },
@@ -545,49 +500,8 @@
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 32 },
       "id": 40,
       "panels": [],
-      "title": "KV Cache and Service Status",
+      "title": "Service Status",
       "type": "row"
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "axisBorderShow": false,
-            "axisLabel": "usage ratio",
-            "drawStyle": "line",
-            "fillOpacity": 15,
-            "gradientMode": "none",
-            "lineInterpolation": "smooth",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": { "group": "A", "mode": "none" }
-          },
-          "max": 1,
-          "min": 0,
-          "unit": "percentunit"
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 33 },
-      "id": 41,
-      "options": {
-        "legend": { "calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom" },
-        "tooltip": { "mode": "multi", "sort": "desc" }
-      },
-      "title": "KV Cache Usage",
-      "type": "timeseries",
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "llamacpp_kv_cache_usage_ratio{namespace=~\"$namespace\"}",
-          "legendFormat": "{{pod}}",
-          "refId": "A"
-        }
-      ]
     },
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
@@ -610,7 +524,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 33 },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 33 },
       "id": 42,
       "options": {
         "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" },
