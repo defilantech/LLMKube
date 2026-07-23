@@ -220,16 +220,15 @@ func (r *InferenceServiceReconciler) updateStatusWithSchedulingInfo(
 	// (e.g. InsufficientMemory, MemoryCheckFailed) so the controller does not
 	// clobber them on its next status update (#643).
 
-	if phase == PhaseWaitingForGPU {
-		queuePos, err := r.calculateQueuePosition(ctx, isvc)
-		if err != nil {
-			log.Error(err, "Failed to calculate queue position")
-		}
-		isvc.Status.QueuePosition = queuePos
-		llmkubemetrics.GPUQueueDepth.Set(float64(queuePos))
+	// The depths cover every namespace, so each status write refreshes the whole
+	// gauge rather than only this service's series.
+	queuePos, queueDepths, err := r.evaluateGPUQueue(ctx, isvc)
+	if err != nil {
+		log.Error(err, "Failed to evaluate GPU queue")
 	} else {
-		isvc.Status.QueuePosition = 0
+		llmkubemetrics.PublishGPUQueueDepth(queueDepths)
 	}
+	isvc.Status.QueuePosition = queuePos
 
 	var condition metav1.Condition
 	switch phase {

@@ -15,6 +15,9 @@ spec:
     port: {{ if .Values.metrics.secure }}https{{ else }}http{{ end }}
     scheme: {{ if .Values.metrics.secure }}https{{ else }}http{{ end }}
     interval: {{ .Values.prometheus.serviceMonitor.interval }}
+    # llmkube_* metrics label the workload's namespace themselves. Without this
+    # the scrape target's namespace wins and theirs becomes exported_namespace.
+    honorLabels: true
     {{- if .Values.metrics.secure }}
     tlsConfig:
       insecureSkipVerify: true

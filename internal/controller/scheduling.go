@@ -23,7 +23,6 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -152,49 +151,55 @@ func (r *InferenceServiceReconciler) getPodSchedulingInfo(ctx context.Context, i
 	return nil, nil
 }
 
-func (r *InferenceServiceReconciler) calculateQueuePosition(ctx context.Context, isvc *inferencev1alpha1.InferenceService) (int32, error) {
-	if isvc.Status.Phase != PhaseWaitingForGPU {
-		return 0, nil
-	}
-
+// evaluateGPUQueue returns isvc's 1-based position in the cluster-wide FIFO GPU
+// queue, and the number of services waiting for GPU in every namespace that
+// holds an InferenceService. Position is 0 when isvc is not waiting.
+//
+// isvc carries the authoritative phase and creation time: the cache-backed
+// listing still reports the previous phase on the reconcile that changes it,
+// and may not list a freshly created object at all.
+func (r *InferenceServiceReconciler) evaluateGPUQueue(
+	ctx context.Context,
+	isvc *inferencev1alpha1.InferenceService,
+) (int32, map[string]int32, error) {
 	allServices := &inferencev1alpha1.InferenceServiceList{}
 	if err := r.List(ctx, allServices); err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 
-	type queueEntry struct {
-		name      string
-		namespace string
-		created   metav1.Time
-	}
+	// Every namespace holding an InferenceService is keyed, queued or not, so a
+	// namespace that drains to 0 reports 0 instead of losing its series.
+	depths := map[string]int32{isvc.Namespace: 0}
 
-	var waitingServices []queueEntry
-	for _, svc := range allServices.Items {
-		if svc.Status.Phase == PhaseWaitingForGPU {
-			waitingServices = append(waitingServices, queueEntry{
-				name:      svc.Name,
-				namespace: svc.Namespace,
-				created:   svc.CreationTimestamp,
-			})
+	var ahead int32
+	for i := range allServices.Items {
+		svc := &allServices.Items[i]
+		if svc.Name == isvc.Name && svc.Namespace == isvc.Namespace {
+			continue // counted once below, from isvc's own phase
 		}
-	}
-
-	// Sort by creation timestamp (FIFO)
-	for i := 0; i < len(waitingServices)-1; i++ {
-		for j := i + 1; j < len(waitingServices); j++ {
-			if waitingServices[j].created.Before(&waitingServices[i].created) {
-				waitingServices[i], waitingServices[j] = waitingServices[j], waitingServices[i]
+		depth := depths[svc.Namespace]
+		if svc.Status.Phase == PhaseWaitingForGPU {
+			depth++
+			// CreationTimestamp is 1s resolution, so a Helm release or a
+			// scripted loop can create several services within the same
+			// second; break the tie by name so positions stay a strict
+			// 1..N permutation instead of colliding.
+			if svc.CreationTimestamp.Before(&isvc.CreationTimestamp) ||
+				(svc.CreationTimestamp.Equal(&isvc.CreationTimestamp) &&
+					(svc.Namespace < isvc.Namespace ||
+						(svc.Namespace == isvc.Namespace && svc.Name < isvc.Name))) {
+				ahead++
 			}
 		}
+		depths[svc.Namespace] = depth
 	}
 
-	for pos, entry := range waitingServices {
-		if entry.name == isvc.Name && entry.namespace == isvc.Namespace {
-			return int32(pos + 1), nil //nolint:gosec // G115: queue index bounded by waitingServices size
-		}
+	if isvc.Status.Phase != PhaseWaitingForGPU {
+		return 0, depths, nil
 	}
+	depths[isvc.Namespace]++
 
-	return 0, nil
+	return ahead + 1, depths, nil
 }
 
 func (r *InferenceServiceReconciler) resolvePriorityClassName(isvc *inferencev1alpha1.InferenceService) string {

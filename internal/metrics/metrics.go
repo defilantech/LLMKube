@@ -21,6 +21,9 @@ import (
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
+// goconst caps this file at 14 "namespace" literals (.golangci.yml min-occurrences: 15).
+const labelNamespace = "namespace"
+
 var (
 	// Model metrics
 
@@ -76,11 +79,12 @@ var (
 		[]string{"inferenceservice", "namespace", "state"},
 	)
 
-	GPUQueueDepth = prometheus.NewGauge(
+	GPUQueueDepth = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "llmkube_gpu_queue_depth",
-			Help: "Number of InferenceServices waiting for GPU resources.",
+			Help: "Number of InferenceServices waiting for GPU resources, per namespace.",
 		},
+		[]string{labelNamespace},
 	)
 
 	// Reconcile metrics
@@ -284,6 +288,15 @@ func PublishInferenceServiceInfo(name, namespace, accelerator, runtime string) {
 func PublishInferenceServiceReplicas(name, namespace string, ready, desired int32) {
 	InferenceServiceReplicas.WithLabelValues(name, namespace, "ready").Set(float64(ready))
 	InferenceServiceReplicas.WithLabelValues(name, namespace, "desired").Set(float64(desired))
+}
+
+// PublishGPUQueueDepth makes depths the whole of llmkube_gpu_queue_depth: a
+// namespace absent from the map stops being reported.
+func PublishGPUQueueDepth(depths map[string]int32) {
+	GPUQueueDepth.Reset()
+	for namespace, depth := range depths {
+		GPUQueueDepth.WithLabelValues(namespace).Set(float64(depth))
+	}
 }
 
 // DeleteInferenceServiceSeries drops the state gauges held for one

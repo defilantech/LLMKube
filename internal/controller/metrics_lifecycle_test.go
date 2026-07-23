@@ -282,4 +282,78 @@ var _ = Describe("Operator state metrics lifecycle", func() {
 			Expect(llmkubemetrics.InferenceServiceReplicas.DeletePartialMatch(isvcLabels(name))).To(Equal(0))
 		})
 	})
+
+	Describe("GPU queue depth gauge", func() {
+		const queueNS = "gpu-queue"
+
+		queued := func(name string, createdAt int64, phase string) *inferencev1alpha1.InferenceService {
+			return queuedISVC(name, queueNS, createdAt, phase)
+		}
+
+		reconcilerFor := func(objs ...client.Object) *InferenceServiceReconciler {
+			builder := fake.NewClientBuilder().
+				WithScheme(k8sClient.Scheme()).
+				WithStatusSubresource(&inferencev1alpha1.InferenceService{}).
+				WithObjects(objs...)
+			return &InferenceServiceReconciler{Client: builder.Build(), Scheme: k8sClient.Scheme()}
+		}
+
+		depth := func() float64 {
+			return testutil.ToFloat64(llmkubemetrics.GPUQueueDepth.WithLabelValues(queueNS))
+		}
+
+		// Each spec asserts on absolute depths, so none of them may inherit a
+		// value another one published.
+		BeforeEach(func() {
+			llmkubemetrics.GPUQueueDepth.Reset()
+		})
+
+		// Old gauge held the reconciling service's position: 3, 2, 1 by order.
+		It("reports how many services are queued, not the position of one", func() {
+			alpha := queued("alpha", 10, PhaseWaitingForGPU)
+			beta := queued("beta", 20, PhaseWaitingForGPU)
+			gamma := queued("gamma", 30, PhaseWaitingForGPU)
+			reconciler := reconcilerFor(alpha, beta, gamma)
+
+			for _, isvc := range []*inferencev1alpha1.InferenceService{gamma, beta, alpha} {
+				_, err := reconciler.updateStatusWithSchedulingInfo(
+					ctx, isvc, PhaseWaitingForGPU, true, 0, 1, "", "", nil)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(depth()).To(Equal(3.0),
+					"three services are queued whichever one reconciled")
+			}
+		})
+
+		It("returns to zero as the queue drains", func() {
+			alpha := queued("alpha", 10, PhaseWaitingForGPU)
+			beta := queued("beta", 20, PhaseWaitingForGPU)
+			gamma := queued("gamma", 30, PhaseWaitingForGPU)
+			reconciler := reconcilerFor(alpha, beta, gamma)
+
+			for i, isvc := range []*inferencev1alpha1.InferenceService{alpha, beta, gamma} {
+				_, err := reconciler.updateStatusWithSchedulingInfo(
+					ctx, isvc, PhaseReady, true, 1, 1, "http://example", "", nil)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(depth()).To(Equal(float64(2-i)),
+					"the depth must drop as each service is scheduled")
+				Expect(isvc.Status.QueuePosition).To(Equal(int32(0)))
+			}
+		})
+
+		// delta is oldest, so position (1) and depth (3) are different numbers.
+		It("counts a service on the reconcile that puts it in the queue", func() {
+			delta := queued("delta", 5, "Pending")
+			alpha := queued("alpha", 10, PhaseWaitingForGPU)
+			beta := queued("beta", 20, PhaseWaitingForGPU)
+			reconciler := reconcilerFor(delta, alpha, beta)
+
+			_, err := reconciler.updateStatusWithSchedulingInfo(
+				ctx, delta, PhaseWaitingForGPU, true, 0, 1, "", "", nil)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(depth()).To(Equal(3.0), "the entering service must count itself")
+			Expect(delta.Status.QueuePosition).To(Equal(int32(1)),
+				"position 0 would reach the user through the Progressing condition")
+		})
+	})
 })
