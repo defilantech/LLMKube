@@ -181,7 +181,9 @@ func (r *InferenceServiceReconciler) evaluateGPUQueue(
 			// second; break the tie by name so positions stay a strict
 			// 1..N permutation instead of colliding.
 			if svc.CreationTimestamp.Before(&isvc.CreationTimestamp) ||
-				(svc.CreationTimestamp.Equal(&isvc.CreationTimestamp) && svc.Name < isvc.Name) {
+				(svc.CreationTimestamp.Equal(&isvc.CreationTimestamp) &&
+					(svc.Namespace < isvc.Namespace ||
+						(svc.Namespace == isvc.Namespace && svc.Name < isvc.Name))) {
 				ahead++
 			}
 		}
