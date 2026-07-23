@@ -66,6 +66,14 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Install Trivy
+        # Trivy is not preinstalled on ubuntu-latest; hack/scan-images.sh calls
+        # the bare `trivy` CLI, so without this the scan step below exits 127
+        # and no release can ever be cut (#233 review, Critical 1). No
+        # restrictive `if:` here - the scan below runs on both the push and
+        # workflow_dispatch paths, so this must too.
+        uses: aquasecurity/setup-trivy@v0.3.1
+
       - name: Scan images before push (Trivy, amd64)
         run: ./hack/scan-images.sh
         env:
@@ -239,17 +247,28 @@ jobs:
 
       - name: Verify signatures + attestations
         if: ${{ github.event_name == 'push' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           image=ghcr.io/defilantech/llmkube-controller
           ref="${image}@${{ steps.digests.outputs.controller }}"
-          id_re="^https://github.com/defilantech/llmkube/.github/workflows/release-please.yml@.*$"
+          # github.repository preserves the real case (defilantech/LLMKube).
+          # GitHub OIDC's workflow_ref does too, so a case-sensitive regexp
+          # match against a lowercased literal never matches (#233 review,
+          # Critical 2).
+          id_re="^${{ github.server_url }}/${{ github.repository }}/\.github/workflows/release-please\.yml@.*$"
           iss=https://token.actions.githubusercontent.com
+          owner="${{ github.repository_owner }}"
           cosign verify "$ref" --certificate-identity-regexp "$id_re" --certificate-oidc-issuer "$iss"
-          cosign verify-attestation "$ref" --type slsaprovenance \
-            --certificate-identity-regexp "$id_re" --certificate-oidc-issuer "$iss"
-          cosign verify-attestation "$ref" --type spdxjson \
-            --certificate-identity-regexp "$id_re" --certificate-oidc-issuer "$iss"
+          # actions/attest-build-provenance and actions/attest-sbom write to the
+          # GitHub attestations store (SLSA v1 provenance + in-toto SBOM
+          # predicates), not the older cosign-native predicate types that
+          # `cosign verify-attestation --type` expects, so `gh attestation
+          # verify` is the canonical verifier for both (#233 review, Important 3).
+          gh attestation verify "oci://${ref}" --owner "$owner"
+          gh attestation verify "oci://${ref}" --owner "$owner" \
+            --predicate-type https://spdx.dev/Document/v2.3
 
       - name: Attest release binary provenance
         if: ${{ github.event_name == 'push' }}
@@ -261,13 +280,18 @@ jobs:
         # Exercises the full scan -> push -> sign -> verify chain without
         # cutting a release: builds only the controller image for amd64,
         # staged the same way hack/scan-images.sh stages it, then pushes it
-        # to a throwaway :provenance-test tag.
+        # to a throwaway :provenance-test tag under the running repo's own
+        # GHCR namespace (lowercased - GHCR rejects uppercase), so this works
+        # unmodified on a fork. The whole point of the dry run is validating
+        # the chain before merge, and a fork's token cannot push into
+        # ghcr.io/defilantech (#233 review, Important 4).
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
         env:
           COSIGN_YES: "true"
         run: |
           set -euo pipefail
-          img=ghcr.io/defilantech/llmkube-controller
+          owner_lc="${GITHUB_REPOSITORY_OWNER,,}"
+          img="ghcr.io/${owner_lc}/llmkube-controller"
           ctx="$(mktemp -d)"
           mkdir -p "$ctx/linux/amd64"
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
@@ -276,8 +300,12 @@ jobs:
             -f Dockerfile.goreleaser -t "${img}:provenance-test" "$ctx"
           digest="$(crane digest "${img}:provenance-test")"
           cosign sign --yes "${img}@${digest}"
+          # github.repository preserves real case and resolves to whichever
+          # repo (fork or upstream) is actually running the workflow (#233
+          # review, Critical 2).
+          id_re="^${{ github.server_url }}/${{ github.repository }}/\.github/workflows/release-please\.yml@.*$"
           cosign verify "${img}@${digest}" \
-            --certificate-identity-regexp "^https://github.com/defilantech/llmkube/.github/workflows/release-please.yml@.*$" \
+            --certificate-identity-regexp "$id_re" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com
 
   release-helm:
