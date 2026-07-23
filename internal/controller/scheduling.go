@@ -64,6 +64,10 @@ type SchedulingInfo struct {
 }
 
 func (r *InferenceServiceReconciler) determinePhase(ctx context.Context, isvc *inferencev1alpha1.InferenceService, readyReplicas, desiredReplicas int32, isMetal bool, deployment *appsv1.Deployment, snap *metalSnapshot) (string, *SchedulingInfo) {
+	if isvc.Spec.Suspend {
+		return PhaseSuspended, nil
+	}
+
 	log := logf.FromContext(ctx)
 
 	if readyReplicas == desiredReplicas && readyReplicas > 0 {

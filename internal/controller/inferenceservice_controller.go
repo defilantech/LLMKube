@@ -208,6 +208,14 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		desiredReplicas = *inferenceService.Spec.Replicas
 	}
 
+	// Suspend (spec.suspend) scales the workload to zero without touching
+	// spec.replicas, so unsuspend restores the user's desired count. The
+	// forced zero flows through reconcileDeployment (Deployment replicas),
+	// the metal-agent state, and status.desiredReplicas.
+	if inferenceService.Spec.Suspend {
+		desiredReplicas = 0
+	}
+
 	if effectiveModelCacheKey(model) != "" && r.ModelCachePath != "" {
 		if err := r.ensureModelCachePVC(ctx, inferenceService); err != nil {
 			log.Error(err, "Failed to ensure model cache PVC exists", "namespace", inferenceService.Namespace)

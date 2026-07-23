@@ -110,6 +110,27 @@ func (r *InferenceServiceReconciler) reconcileSGLangSpecCondition(isvc *inferenc
 	})
 }
 
+// setSuspendedCondition records whether the service is administratively
+// suspended (spec.suspend). Uses meta.SetStatusCondition so external
+// controllers' foreign condition types are never disturbed.
+func setSuspendedCondition(isvc *inferencev1alpha1.InferenceService) {
+	status := metav1.ConditionFalse
+	reason := "NotSuspended"
+	message := "Service is not suspended"
+	if isvc.Spec.Suspend {
+		status = metav1.ConditionTrue
+		reason = "Suspended"
+		message = "Service is suspended (spec.suspend=true); workload scaled to zero, spec.replicas preserved"
+	}
+	meta.SetStatusCondition(&isvc.Status.Conditions, metav1.Condition{
+		Type:               "Suspended",
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		LastTransitionTime: metav1.Now(),
+	})
+}
+
 func (r *InferenceServiceReconciler) constructEndpoint(isvc *inferencev1alpha1.InferenceService, svc *corev1.Service) string {
 	port := int32(8080)
 	path := "/v1/chat/completions"
@@ -280,6 +301,11 @@ func (r *InferenceServiceReconciler) updateStatusWithSchedulingInfo(
 		}
 		meta.SetStatusCondition(&isvc.Status.Conditions, condition)
 	}
+
+	// Set unconditionally (not gated on phase) so the Suspended condition
+	// flips to False on unsuspend rather than lingering True from a prior
+	// suspended pass.
+	setSuspendedCondition(isvc)
 
 	if err := r.Status().Update(ctx, isvc); err != nil {
 		log.Error(err, "Failed to update InferenceService status")
