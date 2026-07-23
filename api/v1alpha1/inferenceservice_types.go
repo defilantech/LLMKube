@@ -454,6 +454,15 @@ type InferenceServiceSpec struct {
 	// +optional
 	ContainerPort *int32 `json:"containerPort,omitempty"`
 
+	// BindAddress sets the network address the runtime listens on.
+	// Maps to --host for llamacpp/llamacpp-router/vllm/sglang and --hostname
+	// for tgi. Default is "::" (dual-stack wildcard; see #972/#973). Prefer
+	// this over raw spec.extraArgs: it is validated and discoverable via
+	// `kubectl explain`. If --host (or --hostname for TGI) is also present in
+	// spec.extraArgs, extraArgs wins and this is skipped.
+	// +optional
+	BindAddress string `json:"bindAddress,omitempty"`
+
 	// ProbeOverrides allows replacing the auto-generated health probes.
 	// Useful for runtimes with non-HTTP health endpoints (e.g., TCP, WebSocket).
 	// +optional

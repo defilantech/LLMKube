@@ -38,11 +38,18 @@ func (b *TGIBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, model *
 
 	args := []string{
 		"--model-id", source,
-		// Bind the dual-stack wildcard so pods are reachable on IPv6-only
-		// clusters (#972). With the default net.ipv6.bindv6only=0, :: also
-		// accepts IPv4, so IPv4-only and dual-stack clusters keep working.
-		"--hostname", "::",
 		"--port", fmt.Sprintf("%d", port),
+	}
+
+	// BindAddress: default "::" (dual-stack wildcard, #972/#973). TGI uses
+	// --hostname (not --host). Skip if user already set --hostname in extraArgs
+	// (extraArgs wins).
+	if !hasMatchingExtraArg(isvc.Spec.ExtraArgs, "hostname") {
+		bindAddr := "::"
+		if isvc.Spec.BindAddress != "" {
+			bindAddr = isvc.Spec.BindAddress
+		}
+		args = append(args, "--hostname", bindAddr)
 	}
 
 	cfg := isvc.Spec.TGIConfig
@@ -64,6 +71,26 @@ func (b *TGIBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, model *
 	gpuCount := resolveGPUCount(isvc, model)
 	if gpuCount > 1 {
 		args = append(args, "--num-shard", fmt.Sprintf("%d", gpuCount))
+	}
+
+	// ExtraArgs last (user wins).
+	if len(isvc.Spec.ExtraArgs) > 0 {
+		args = append(args, isvc.Spec.ExtraArgs...)
+	}
+
+	// ExtraArgs last (user wins).
+	if len(isvc.Spec.ExtraArgs) > 0 {
+		args = append(args, isvc.Spec.ExtraArgs...)
+	}
+
+	// ExtraArgs last (user wins).
+	if len(isvc.Spec.ExtraArgs) > 0 {
+		args = append(args, isvc.Spec.ExtraArgs...)
+	}
+
+	// ExtraArgs last (user wins).
+	if len(isvc.Spec.ExtraArgs) > 0 {
+		args = append(args, isvc.Spec.ExtraArgs...)
 	}
 
 	return args

@@ -86,15 +86,21 @@ func (b *SGLangBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, mode
 	}
 	args := []string{
 		"--model-path", source,
-		// Bind the dual-stack wildcard so pods are reachable on IPv6-only
-		// clusters (#972). SGLang keeps the last occurrence of a repeated
-		// flag, so users can override via extraArgs ("--host", "0.0.0.0").
-		"--host", "::",
 		"--port", fmt.Sprintf("%d", port),
 		// SGLang requires --enable-metrics to expose /metrics (unlike vLLM which
 		// always exposes it, and llama.cpp which always passes --metrics). Without
 		// this flag, PodMonitor scrapes fail and HPA cannot read the custom metric.
 		"--enable-metrics",
+	}
+
+	// BindAddress: default "::" (dual-stack wildcard, #972/#973). Skip if
+	// user already set --host in extraArgs (extraArgs wins).
+	if !hasMatchingExtraArg(isvc.Spec.ExtraArgs, "host") {
+		bindAddr := "::"
+		if isvc.Spec.BindAddress != "" {
+			bindAddr = isvc.Spec.BindAddress
+		}
+		args = append(args, "--host", bindAddr)
 	}
 
 	// --served-model-name: skip if user already set it in extraArgs.
