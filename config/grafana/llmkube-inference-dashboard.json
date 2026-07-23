@@ -524,7 +524,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 33 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 33 },
       "id": 42,
       "options": {
         "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" },
@@ -537,6 +537,45 @@
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "expr": "llmkube_inferenceservice_phase{namespace=~\"$namespace\"}",
           "legendFormat": "{{inferenceservice}} ({{phase}})",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Ready trailing desired is a partially rolled out service; a flat gap is a stuck one.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "drawStyle": "line",
+            "fillOpacity": 15,
+            "gradientMode": "none",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" }
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 33 },
+      "id": 53,
+      "options": {
+        "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "title": "Replicas ready vs desired",
+      "type": "timeseries",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (inferenceservice, state) (llmkube_inferenceservice_replicas{namespace=~\"$namespace\"})",
+          "legendFormat": "{{inferenceservice}} {{state}}",
           "refId": "A"
         }
       ]
@@ -655,6 +694,61 @@
           "expr": "rate(llmkube_reconcile_total{result=\"error\"}[5m])",
           "legendFormat": "Error",
           "refId": "B"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 50 },
+      "id": 54,
+      "panels": [],
+      "title": "Fleet Inventory",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Runtime and accelerator per InferenceService. llmkube_inferenceservice_info is always 1; only its labels carry information.",
+      "fieldConfig": {
+        "defaults": { "custom": { "align": "auto", "cellOptions": { "type": "auto" } } },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 51 },
+      "id": 55,
+      "options": { "showHeader": true },
+      "title": "Service inventory",
+      "type": "table",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "llmkube_inferenceservice_info{namespace=~\"$namespace\"}",
+          "format": "table",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Value": true,
+              "__name__": true,
+              "container": true,
+              "endpoint": true,
+              "instance": true,
+              "job": true,
+              "pod": true,
+              "prometheus": true,
+              "service": true
+            },
+            "renameByName": {
+              "accelerator": "Accelerator",
+              "inferenceservice": "Service",
+              "namespace": "Namespace",
+              "runtime": "Runtime"
+            }
+          }
         }
       ]
     }
