@@ -22,6 +22,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -75,6 +76,10 @@ var _ = Describe("InferenceService suspend", func() {
 			dep := &appsv1.Deployment{}
 			if err := k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, dep); err == nil {
 				_ = k8sClient.Delete(ctx, dep)
+			}
+			svc := &corev1.Service{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, svc); err == nil {
+				_ = k8sClient.Delete(ctx, svc)
 			}
 		}()
 
@@ -144,6 +149,10 @@ var _ = Describe("InferenceService suspend", func() {
 			dep := &appsv1.Deployment{}
 			if err := k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, dep); err == nil {
 				_ = k8sClient.Delete(ctx, dep)
+			}
+			svc := &corev1.Service{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, svc); err == nil {
+				_ = k8sClient.Delete(ctx, svc)
 			}
 		}()
 
