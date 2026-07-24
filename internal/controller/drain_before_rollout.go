@@ -191,6 +191,32 @@ func (r *InferenceServiceReconciler) checkServiceIdle(ctx context.Context, isvc 
 	return true, nil
 }
 
+// countOldPods lists the pods owned by the InferenceService and returns the
+// total count and the number of Ready pods. A pod is considered Ready when its
+// PodReady condition is True. This is used by reconcileRolloutPolicy to decide
+// whether there is in-flight work to protect before deferring a rollout.
+func (r *InferenceServiceReconciler) countOldPods(ctx context.Context, isvc *inferencev1alpha1.InferenceService) (total, ready int32) {
+	podList := &corev1.PodList{}
+	labels := client.MatchingLabels{
+		"app":                           isvc.Name,
+		"inference.llmkube.dev/service": isvc.Name,
+	}
+	if err := r.List(ctx, podList, client.InNamespace(isvc.Namespace), labels); err != nil {
+		return 0, 0
+	}
+	for i := range podList.Items {
+		pod := &podList.Items[i]
+		total++
+		for _, cond := range pod.Status.Conditions {
+			if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue {
+				ready++
+				break
+			}
+		}
+	}
+	return total, ready
+}
+
 // reconcileRolloutPolicy checks whether the rollout should be deferred based on
 // the RolloutPolicy configuration. Returns a reconciliation result if the rollout
 // is deferred, or ctrl.Result{} if the rollout can proceed.
@@ -225,6 +251,21 @@ func (r *InferenceServiceReconciler) reconcileRolloutPolicy(
 	existingCond := meta.FindStatusCondition(isvc.Status.Conditions, ConditionRolloutDeferred)
 	now := metav1.Now()
 
+	// Check old-generation pod readiness before probing idle slots.
+	// If pods exist but none are Ready, there is no in-flight work to
+	// protect — proceed immediately instead of deferring forever.
+	totalPods, readyPods := r.countOldPods(ctx, isvc)
+	if totalPods > 0 && readyPods == 0 {
+		log.Info("All old-generation pods are unready; no work to protect, proceeding with rollout")
+		if existingCond != nil {
+			meta.RemoveStatusCondition(&isvc.Status.Conditions, ConditionRolloutDeferred)
+			if updateErr := r.Status().Update(ctx, isvc); updateErr != nil {
+				return ctrl.Result{}, fmt.Errorf("failed to clear RolloutDeferred condition: %w", updateErr)
+			}
+		}
+		return ctrl.Result{}, nil
+	}
+
 	idle, checkErr := r.checkServiceIdle(ctx, isvc, svc)
 
 	if checkErr == nil && idle {
@@ -254,6 +295,14 @@ func (r *InferenceServiceReconciler) reconcileRolloutPolicy(
 			reason = ReasonIdleCheckFailed
 			message = fmt.Sprintf("Idle check failed (%v); deferring rollout until idle or timeout", checkErr)
 		}
+	} else if totalPods > readyPods {
+		// Mixed state: some old pods are Ready (serving) while others are
+		// crashlooping. The rollout is deferred to protect in-flight work
+		// on the Ready pods, but the reason must distinguish this from the
+		// pure busy case so an operator can see why the rollout is waiting.
+		reason = ReasonPodsCrashLooping
+		message = fmt.Sprintf("%d of %d old-generation pods are crashlooping; deferring rollout to protect in-flight work on Ready pods", totalPods-readyPods, totalPods)
+		log.Info("Mixed pod state, deferring rollout to protect in-flight work", "totalPods", totalPods, "readyPods", readyPods)
 	} else {
 		log.Info("Backend slots are busy, deferring rollout")
 	}
