@@ -2170,8 +2170,12 @@ var _ = Describe("RolloutPolicy crashlooping pods", func() {
 
 	Context("when all old-generation pods are crashlooping", func() {
 		It("should proceed with rollout because there is no work to protect", func() {
-			modelName := "model-all-crashloop"
-			isvcName := "isvc-all-crashloop"
+			// Names must be unique across the shared "default" namespace: envtest
+			// has no pod GC, and this spec's crashlooping pods would otherwise
+			// leak into the countOldPods unit spec that reuses this label
+			// selector, inflating its count under Ginkgo's randomized ordering.
+			modelName := "model-rollout-all-crashloop"
+			isvcName := "isvc-rollout-all-crashloop"
 
 			model := &inferencev1alpha1.Model{
 				ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
