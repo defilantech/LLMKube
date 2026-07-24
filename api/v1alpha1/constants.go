@@ -73,6 +73,13 @@ const (
 	// implement IdleDetector, so drain-before-roll cannot probe idleness.
 	ReasonIdleCheckUnsupported string = "IdleCheckUnsupported"
 
+	// ReasonPodsCrashLooping is set when RolloutDeferred=True because some
+	// old-generation pods are crashlooping (not Ready) while others are Ready
+	// and serving. The rollout is deferred to protect in-flight work on the
+	// Ready pods; when ALL old pods are unready the rollout proceeds instead
+	// (no work to protect).
+	ReasonPodsCrashLooping string = "PodsCrashLooping"
+
 	// DefaultIdleCheckInterval is how often the controller re-checks pod
 	// idleness when waiting for idle before rollout.
 	DefaultIdleCheckInterval = 5 * time.Second

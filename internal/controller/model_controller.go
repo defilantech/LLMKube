@@ -83,6 +83,7 @@ const (
 	ReasonIdleCheckFailed      = inferencev1alpha1.ReasonIdleCheckFailed
 	ReasonIdleTimeoutExceeded  = inferencev1alpha1.ReasonIdleTimeoutExceeded
 	ReasonIdleCheckUnsupported = inferencev1alpha1.ReasonIdleCheckUnsupported
+	ReasonPodsCrashLooping     = inferencev1alpha1.ReasonPodsCrashLooping
 
 	ReasonWorkloadResolved = "WorkloadResolved"
 
