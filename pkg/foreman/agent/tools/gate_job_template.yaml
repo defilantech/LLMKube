@@ -203,6 +203,11 @@ spec:
             # GOMODCACHE below, keeping the gate immune to go.mod patch bumps.
             - name: GOTOOLCHAIN
               value: auto
+            # Anonymous upstream fetches must fail fast, never prompt: a private
+            # or air-gapped upstream then degrades to a loud bite-check skip
+            # instead of hanging the Job.
+            - name: GIT_TERMINAL_PROMPT
+              value: "0"
             - name: GOMODCACHE
               value: /cache/gomod
             - name: GOCACHE
