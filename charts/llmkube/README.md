@@ -202,11 +202,11 @@ desired state`), so an upgrade that flips it to `false` fails until the CRs are
 deleted.
 
 `operator.datasources` is a literal `${inputName}` -> `datasourceName` replace
-over the dashboard JSON before it reaches Grafana. Four of the shipped
+over the dashboard JSON before it reaches Grafana. Most of the shipped
 dashboards read their datasource from a `DS_PROMETHEUS` template variable;
 `amd-gpu-observability.json` uses one named `datasource`. None of them declares
 a dashboard `__inputs` block, so both names are plain template variables and
-covering all five takes two entries:
+covering every dashboard takes two entries:
 
 ```yaml
 grafana:
