@@ -4,6 +4,12 @@ Starter dashboards for visualizing LLMKube inference workloads. They consume
 the recording rules + metric labels installed by the LLMKube Helm chart's
 PrometheusRule and PodMonitor templates.
 
+The JSON lives in `charts/llmkube/dashboards/` so the chart can template it
+(Helm cannot read files outside the chart root). Set
+`grafana.dashboards.enabled=true` to have the release ship them; see
+[the chart README](../../charts/llmkube/README.md#grafana-dashboards). This
+page is the index for importing them by hand.
+
 ## Prerequisites
 
 - `prometheus.inferencePodMonitor.enabled=true` in your Helm values
@@ -17,6 +23,8 @@ PrometheusRule and PodMonitor templates.
   `docs/observability/slo.md`.
 
 ## Files
+
+All paths below are relative to `charts/llmkube/dashboards/`.
 
 | File | Description |
 |---|---|
@@ -37,6 +45,6 @@ Or via API:
 ```bash
 curl -sX POST -H "Content-Type: application/json" \
   -H "Authorization: Bearer $GRAFANA_TOKEN" \
-  -d @llmkube-inference.json \
+  -d @../../charts/llmkube/dashboards/llmkube-inference.json \
   https://grafana.example.com/api/dashboards/db
 ```

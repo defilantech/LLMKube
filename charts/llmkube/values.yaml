@@ -259,6 +259,33 @@ prometheus:
       inference:
         enabled: true
 
+# Grafana dashboards shipped in charts/llmkube/dashboards/. One ConfigMap holds
+# every dashboard, one key per file; the sidecar label and the grafana-operator
+# CRs are independent opt-ins on top of it.
+grafana:
+  dashboards:
+    enabled: false
+    # Additional labels for the ConfigMap. grafana_dashboard is the key the
+    # kube-prometheus-stack Grafana sidecar watches for.
+    additionalLabels:
+      grafana_dashboard: "true"
+    # Namespace for the ConfigMap and the CRs (defaults to release namespace).
+    # The sidecar only reads namespaces it is configured to search.
+    namespace: ""
+    # Annotations for the ConfigMap (e.g. grafana_folder for the sidecar)
+    annotations: {}
+    # Emit grafana-operator GrafanaDashboard CRs referencing the ConfigMap
+    operator:
+      enabled: false
+      # Required by the CRD and immutable once set; {} matches every Grafana.
+      instanceSelector: {}
+      allowCrossNamespaceImport: true
+      # Literal ${inputName} -> datasourceName replace over the dashboard JSON.
+      #   datasources:
+      #     - inputName: DS_PROMETHEUS
+      #       datasourceName: VictoriaMetrics
+      datasources: []
+
 # Pyrra SLO integration. When enabled, the operator renders a Pyrra
 # ServiceLevelObjective for every InferenceService that declares spec.slo,
 # and Pyrra generates the Prometheus recording/alert rules and error-budget

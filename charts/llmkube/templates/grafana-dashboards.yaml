@@ -1,0 +1,50 @@
+{{- if .Values.grafana.dashboards.enabled }}
+{{- /* Globbed once: the ConfigMap keys and the CRs' configMapRef keys are the
+       same file list by construction. */}}
+{{- $dashboards := .Files.Glob "dashboards/*.json" }}
+{{- $fullname := include "llmkube.fullname" . }}
+{{- $configMapName := printf "%s-dashboards" $fullname }}
+{{- $namespace := default (include "llmkube.namespace" .) .Values.grafana.dashboards.namespace }}
+{{- $labels := include "llmkube.labels" . }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $configMapName }}
+  namespace: {{ $namespace }}
+  labels:
+    {{- $labels | nindent 4 }}
+    {{- with .Values.grafana.dashboards.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.grafana.dashboards.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+data:
+  {{- $dashboards.AsConfig | nindent 2 }}
+{{- if .Values.grafana.dashboards.operator.enabled }}
+{{- range $path, $_ := $dashboards }}
+{{- $base := base $path }}
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: {{ printf "%s-%s" $fullname (trimSuffix ".json" $base) }}
+  namespace: {{ $namespace }}
+  labels:
+    {{- $labels | nindent 4 }}
+spec:
+  allowCrossNamespaceImport: {{ $.Values.grafana.dashboards.operator.allowCrossNamespaceImport }}
+  # Required by the CRD and immutable after creation.
+  instanceSelector:
+    {{- toYaml $.Values.grafana.dashboards.operator.instanceSelector | nindent 4 }}
+  {{- with $.Values.grafana.dashboards.operator.datasources }}
+  datasources:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  configMapRef:
+    name: {{ $configMapName }}
+    key: {{ $base }}
+{{- end }}
+{{- end }}
+{{- end }}

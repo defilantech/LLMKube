@@ -117,7 +117,7 @@ Every other runtime, including llama.cpp, has no entry in this table because it 
 Two ways to see how much error budget is left:
 
 - **Pyrra's own UI** (the `pyrra-api` component), if you installed it alongside the `kubernetes` operator manifests above. It renders each `ServiceLevelObjective` with its current error budget, burn rate, and the underlying PromQL.
-- **The `docs/grafana/llmkube-slo.json` reference dashboard**, which reads the same Pyrra-generated recording rules directly from Prometheus: error budget remaining per SLO and burn-rate panels across Pyrra's short and long alerting windows. Import it the same way as the other dashboards in `docs/grafana/README.md`.
+- **The `charts/llmkube/dashboards/llmkube-slo.json` reference dashboard**, which reads the same Pyrra-generated recording rules directly from Prometheus: error budget remaining per SLO and burn-rate panels across Pyrra's short and long alerting windows. Import it the same way as the other dashboards in `docs/grafana/README.md`, or ship it with the chart via `grafana.dashboards.enabled=true`.
 
 Pyrra generates multi-window multi-burn-rate alerts for every `ServiceLevelObjective`: recording rules named `<metric>:burnrate<duration>` at several windows (short windows like 5m/30m paired with longer windows like 1h/6h, per the Google SRE workbook methodology linked above), plus a `PrometheusRule` that fires only when both the short and the matching long window are burning budget fast enough to exhaust it well before the objective's window ends. That pairing is what keeps the alerts both fast (a real incident pages within minutes) and precise (a brief blip that self-resolves does not).
 

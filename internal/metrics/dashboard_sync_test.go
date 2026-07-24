@@ -36,8 +36,10 @@ const (
 	runtimeMetricsGlob = "testdata/*-metrics.txt"
 )
 
-// Every grafana directory in the repo, so a new one is covered without an edit.
-const dashboardGlob = "../../*/grafana/*.json"
+// Every dashboard directory in the repo, so a new one is covered without an
+// edit: the shipped set moved under the chart, config/grafana still holds the
+// rest.
+var dashboardGlobs = []string{"../../*/grafana/*.json", "../../charts/*/dashboards/*.json"}
 
 // externalPrefixes are metric namespaces owned by exporters outside this repo.
 var externalPrefixes = []string{
@@ -254,12 +256,16 @@ func TestDashboardsQueryEmittedMetrics(t *testing.T) {
 	maps.Copy(known, chartRecordingRules(t))
 	maps.Copy(known, runtimeNames(t))
 
-	dashboards, err := filepath.Glob(dashboardGlob)
-	if err != nil {
-		t.Fatalf("glob %s: %v", dashboardGlob, err)
+	var dashboards []string
+	for _, glob := range dashboardGlobs {
+		matched, err := filepath.Glob(glob)
+		if err != nil {
+			t.Fatalf("glob %s: %v", glob, err)
+		}
+		dashboards = append(dashboards, matched...)
 	}
 	if len(dashboards) == 0 {
-		t.Fatalf("no dashboards matching %s", dashboardGlob)
+		t.Fatalf("no dashboards matching %v", dashboardGlobs)
 	}
 
 	for _, dashboard := range dashboards {

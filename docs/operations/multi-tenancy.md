@@ -211,7 +211,8 @@ reserve capacity for important workloads.
 
 ## Observability
 
-The `llmkube-quota.json` Grafana dashboard (in `docs/grafana/`) reads the
+The `llmkube-quota.json` Grafana dashboard (in `charts/llmkube/dashboards/`)
+reads the
 `llmkube_gpuquota_*` metrics emitted by the operator and visualizes:
 
 - **GPU utilization per quota**: `llmkube_gpuquota_used_gpu_count /
@@ -225,7 +226,8 @@ The `llmkube-quota.json` Grafana dashboard (in `docs/grafana/`) reads the
   `llmkube_gpuquota_admission_denials_total`, the running denial total.
 
 All series are labeled by `gpuquota` and `namespace`. Import the dashboard
-from `docs/grafana/llmkube-quota.json` into your Grafana instance; it reads
+from `charts/llmkube/dashboards/llmkube-quota.json` into your Grafana instance,
+or ship it with the chart via `grafana.dashboards.enabled=true`; it reads
 from the same Prometheus datasource used by the other LLMKube dashboards.
 
 For GPU sharing modes (exclusive, partitioned, shared) and how they interact

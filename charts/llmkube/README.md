@@ -164,6 +164,69 @@ against those older values need updating.
 The PodMonitor additionally promotes `service`, `namespace`, `model` and
 `runtime` onto every inference series.
 
+### Grafana Parameters
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `grafana.dashboards.enabled` | Ship the dashboards in `dashboards/` as a ConfigMap | `false` |
+| `grafana.dashboards.additionalLabels` | Additional labels for the dashboards ConfigMap | `{grafana_dashboard: "true"}` |
+| `grafana.dashboards.namespace` | ConfigMap/CR namespace (defaults to release namespace) | `""` |
+| `grafana.dashboards.annotations` | Annotations for the dashboards ConfigMap | `{}` |
+| `grafana.dashboards.operator.enabled` | Also emit grafana-operator `GrafanaDashboard` CRs | `false` |
+| `grafana.dashboards.operator.instanceSelector` | `GrafanaDashboard` instance selector (required by the CRD) | `{}` |
+| `grafana.dashboards.operator.allowCrossNamespaceImport` | Match Grafanas outside the CR's namespace | `true` |
+| `grafana.dashboards.operator.datasources` | Datasource variable remaps (`inputName`/`datasourceName`) | `[]` |
+
+#### Grafana dashboards
+
+`grafana.dashboards.enabled=true` renders one ConfigMap,
+`<release>-llmkube-dashboards`, with a key per file in
+`charts/llmkube/dashboards/`. Both delivery mechanisms read that single copy of
+the JSON:
+
+- **kube-prometheus-stack sidecar** — the ConfigMap carries
+  `grafana_dashboard: "true"`, which the sidecar picks up in any namespace it
+  is configured to search. This is the default and needs nothing else.
+- **grafana-operator** — `grafana.dashboards.operator.enabled=true` adds a
+  `GrafanaDashboard` (`grafana.integreatly.org/v1beta1`) per dashboard whose
+  `configMapRef` points at the same ConfigMap key. Set
+  `operator.instanceSelector` to match your `Grafana` resource; the CRD
+  requires the field and rejects changes to it after creation. Set
+  `additionalLabels: {}` to drop the sidecar label if you run no sidecar.
+
+`allowCrossNamespaceImport` defaults to `true` so the dashboards reach a
+Grafana installed in another namespace, which is the usual layout. Turning it
+back off on an existing CR is rejected by the CRD's own validation rule
+(`disabling spec.allowCrossNamespaceImport requires a recreate to ensure
+desired state`), so an upgrade that flips it to `false` fails until the CRs are
+deleted.
+
+`operator.datasources` is a literal `${inputName}` -> `datasourceName` replace
+over the dashboard JSON before it reaches Grafana. Four of the shipped
+dashboards read their datasource from a `DS_PROMETHEUS` template variable;
+`amd-gpu-observability.json` uses one named `datasource`. None of them declares
+a dashboard `__inputs` block, so both names are plain template variables and
+covering all five takes two entries:
+
+```yaml
+grafana:
+  dashboards:
+    enabled: true
+    operator:
+      enabled: true
+      instanceSelector:
+        matchLabels:
+          dashboards: grafana
+      datasources:
+        - inputName: DS_PROMETHEUS
+          datasourceName: VictoriaMetrics
+        - inputName: datasource
+          datasourceName: VictoriaMetrics
+```
+
+The two dashboards under `config/grafana/` are not part of the chart and stay
+hand-imported.
+
 ### CRD Parameters
 
 | Parameter | Description | Default |
