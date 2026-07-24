@@ -408,9 +408,13 @@ func TestGateJobBiteCheckUsesUpstreamMergeBase(t *testing.T) {
 		"upstreamURL": "https://github.com/defilantech/LLMKube.git",
 	})
 	for _, want := range []string{
-		`git fetch --depth 100 "$UPSTREAM_URL" "+refs/heads/$BASE:refs/remotes/ubase/$BASE"`,
+		// The `--` end-of-options guard before "$UPSTREAM_URL" prevents a
+		// crafted value starting with `-` from being read as a git option
+		// (e.g. --upload-pack=..., argv smuggling).
+		`git fetch --depth 100 -- "$UPSTREAM_URL" "+refs/heads/$BASE:refs/remotes/ubase/$BASE"`,
 		`git merge-base HEAD "refs/remotes/ubase/$BASE"`,
 		`git fetch --deepen=1000 origin "$BRANCH"`,
+		`git fetch --deepen=1000 -- "$UPSTREAM_URL" "+refs/heads/$BASE:refs/remotes/ubase/$BASE"`,
 		`git diff --name-only "$MB" HEAD`,
 		`git checkout "$MB" -- "$f"`,
 		`GATE-WARN: bite check skipped`,
@@ -448,6 +452,67 @@ func TestGateJobBiteCheckSanityCap(t *testing.T) {
 	})
 	if !strings.Contains(args, `-gt 200`) {
 		t.Error("sanity cap (200 files) missing from bite block")
+	}
+}
+
+// TestRunGateJob_UpstreamURLValidation asserts Execute rejects an upstreamURL
+// that could be smuggled into git argv as an option (leading `-`, unknown
+// scheme) and accepts the legitimate shapes: https, git@, and empty (the
+// origin-fallback path). Defense in depth on top of the template's `--`
+// end-of-options guard (#1259 hardening).
+func TestRunGateJob_UpstreamURLValidation(t *testing.T) {
+	cases := []struct {
+		name        string
+		upstreamURL string
+		wantErr     bool
+	}{
+		{"leading dash rejected", "--upload-pack=/tmp/evil", true},
+		{"non-URL scheme rejected", "ext::sh -c evil", true},
+		{"https accepted", "https://github.com/defilantech/LLMKube.git", false},
+		{"git-at accepted", "git@github.com:defilantech/LLMKube.git", false},
+		{"empty accepted (origin fallback)", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			c := fake.NewClientBuilder().WithScheme(gateScheme(t)).WithStatusSubresource(&batchv1.Job{}).Build()
+			jobName := "foreman-gate-upstream-" + sanitizeName(tc.name)
+			key := types.NamespacedName{Namespace: "foreman-system", Name: jobName}
+
+			// Only the accepted cases reach the poll loop; the goroutine is
+			// harmless for the rejected ones (nothing to flip, ctx cancels it).
+			go flipStatusOnce(ctx, c, key, 1, 0)
+
+			raw, err := json.Marshal(map[string]any{
+				"repo": "defilantech/LLMKube", "branch": "foreman/x",
+				"upstreamURL": tc.upstreamURL,
+				"taskRef":     map[string]string{"namespace": "default", "name": "gate"},
+			})
+			if err != nil {
+				t.Fatalf("marshal args: %v", err)
+			}
+
+			tool := &RunGateJobTool{
+				Client: c,
+				Cfg: RunGateJobToolConfig{
+					NameFn:       pinName(jobName),
+					PollInterval: 5 * time.Millisecond,
+					PollTimeout:  2 * time.Second,
+				},
+			}
+			_, err = tool.Execute(ctx, raw)
+			if tc.wantErr {
+				if err == nil || !strings.Contains(err.Error(), tc.upstreamURL) {
+					t.Errorf("want error naming the bad upstreamURL %q; got %v", tc.upstreamURL, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("valid upstreamURL %q rejected: %v", tc.upstreamURL, err)
+			}
+		})
 	}
 }
 

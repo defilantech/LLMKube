@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"text/template"
 	"time"
@@ -235,6 +236,9 @@ func (t *RunGateJobTool) Execute(ctx context.Context, args json.RawMessage) (*ag
 	if a.Branch == "" {
 		return nil, errors.New("run_gate_job: branch is required")
 	}
+	if a.UpstreamURL != "" && !upstreamURLSafe(a.UpstreamURL) {
+		return nil, fmt.Errorf("run_gate_job: unsafe upstreamURL %q", a.UpstreamURL)
+	}
 	if !a.Generic && len(a.Checks) == 0 {
 		a.Checks = DefaultGateChecks
 	}
@@ -395,6 +399,20 @@ func (t *RunGateJobTool) errorResult(jobName, msg string) *agent.ToolResult {
 }
 
 // --- internals ------------------------------------------------------------
+
+// upstreamURLPattern is the allowlist for runGateJobArgs.UpstreamURL: an
+// https:// or git@ prefix followed by URL-safe characters only. Anything
+// else (leading `-`, exotic transports like ext::, embedded whitespace)
+// is rejected before the value can reach the gate Job's git argv, defense
+// in depth on top of the template's `--` end-of-options guard (#1259).
+var upstreamURLPattern = regexp.MustCompile(`^(https://|git@)[A-Za-z0-9._~:/@-]+$`)
+
+// upstreamURLSafe reports whether s is safe to render into the gate Job as
+// UPSTREAM_URL. Callers gate on non-empty first; empty means "no upstream,
+// use the origin fallback" and never reaches git.
+func upstreamURLSafe(s string) bool {
+	return !strings.HasPrefix(s, "-") && upstreamURLPattern.MatchString(s)
+}
 
 // rendererInput is the struct text/template binds against. Keeping it
 // here (rather than reusing the public Config + args structs) keeps the

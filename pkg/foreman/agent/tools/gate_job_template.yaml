@@ -115,7 +115,9 @@ spec:
                 # tip manufactures compile failures in packages the coder never
                 # touched (#1259). The coder branched from the upstream base (#813),
                 # so merge-base(HEAD, upstream base) IS the coder's true fork point.
-                if ! git fetch --depth 100 "$UPSTREAM_URL" "+refs/heads/$BASE:refs/remotes/ubase/$BASE" >/dev/null 2>&1; then
+                # The `--` end-of-options guard keeps a crafted URL starting
+                # with `-` from being read as a git option (argv smuggling).
+                if ! git fetch --depth 100 -- "$UPSTREAM_URL" "+refs/heads/$BASE:refs/remotes/ubase/$BASE" >/dev/null 2>&1; then
                   bite_skip "could not fetch $BASE from upstream"
                 else
                   # The clone is shallow; deepen until the histories connect. Two
@@ -124,7 +126,7 @@ spec:
                   MB=$(git merge-base HEAD "refs/remotes/ubase/$BASE" 2>/dev/null || true)
                   if [ -z "$MB" ]; then
                     git fetch --deepen=1000 origin "$BRANCH" >/dev/null 2>&1 || true
-                    git fetch --deepen=1000 "$UPSTREAM_URL" "+refs/heads/$BASE:refs/remotes/ubase/$BASE" >/dev/null 2>&1 || true
+                    git fetch --deepen=1000 -- "$UPSTREAM_URL" "+refs/heads/$BASE:refs/remotes/ubase/$BASE" >/dev/null 2>&1 || true
                     MB=$(git merge-base HEAD "refs/remotes/ubase/$BASE" 2>/dev/null || true)
                   fi
                   [ -z "$MB" ] && bite_skip "no merge-base between HEAD and upstream $BASE after deepening"
