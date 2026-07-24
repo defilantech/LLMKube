@@ -94,11 +94,11 @@ tests:
     set:
       prometheus.prometheusRule.enabled: true
     asserts:
-      # Three and no more: llama.cpp exposes no request-latency histogram,
+      # Five and no more: llama.cpp exposes no request-latency histogram,
       # so a rule over llamacpp:request_seconds_bucket is always empty.
       - lengthEqual:
           path: spec.groups[?(@.name=="llmkube-inference-recording")].rules
-          count: 3
+          count: 5
       - isNotNullOrEmpty:
           path: spec.groups[?(@.name=="llmkube-inference-recording")].rules[?(@.record=="llmkube:inference:request_latency:p95_5m")].expr
       - isNotNullOrEmpty:

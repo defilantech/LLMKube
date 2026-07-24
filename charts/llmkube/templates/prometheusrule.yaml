@@ -104,13 +104,26 @@ spec:
   - name: llmkube-inference-recording
     interval: 30s
     rules:
-    # Request latency p95 over 5m. vLLM-only: llama.cpp's server exposes 11
-    # metrics and none of them is a request-latency histogram.
+    # Request latency over 5m. vLLM and SGLang both export the histogram;
+    # llama.cpp's server exposes 11 metrics and none of them is a
+    # request-latency histogram. The runtime label keeps the prefixes apart.
     - record: llmkube:inference:request_latency:p95_5m
       expr: |
         histogram_quantile(0.95,
           sum by (service, namespace, runtime, le) (
             rate(vllm:e2e_request_latency_seconds_bucket[5m])
+            or rate(sglang:e2e_request_latency_seconds_bucket[5m])
+          )
+        )
+      labels:
+        latency_kind: end_to_end
+
+    - record: llmkube:inference:request_latency:p50_5m
+      expr: |
+        histogram_quantile(0.50,
+          sum by (service, namespace, runtime, le) (
+            rate(vllm:e2e_request_latency_seconds_bucket[5m])
+            or rate(sglang:e2e_request_latency_seconds_bucket[5m])
           )
         )
       labels:
@@ -131,9 +144,14 @@ spec:
           }[5m])
         )
 
-    # TTFT p95 over 5m. vLLM-only; llama.cpp has no first-token histogram.
+    # TTFT over 5m, same two runtimes.
     - record: llmkube:inference:ttft_seconds:p95_5m
-      expr: histogram_quantile(0.95, sum by (service, namespace, runtime, le) (rate(vllm:time_to_first_token_seconds_bucket[5m])))
+      expr: histogram_quantile(0.95, sum by (service, namespace, runtime, le) (rate(vllm:time_to_first_token_seconds_bucket[5m]) or rate(sglang:time_to_first_token_seconds_bucket[5m])))
+      labels:
+        latency_kind: ttft
+
+    - record: llmkube:inference:ttft_seconds:p50_5m
+      expr: histogram_quantile(0.50, sum by (service, namespace, runtime, le) (rate(vllm:time_to_first_token_seconds_bucket[5m]) or rate(sglang:time_to_first_token_seconds_bucket[5m])))
       labels:
         latency_kind: ttft
   {{- end }}
