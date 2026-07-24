@@ -5,6 +5,38 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.11](https://github.com/defilantech/LLMKube/compare/v0.9.10...v0.9.11) (2026-07-24)
+
+
+### Features
+
+* cache prep subcommand with direct chown/chmod syscalls ([#890](https://github.com/defilantech/LLMKube/issues/890) item 3) ([#1258](https://github.com/defilantech/LLMKube/issues/1258)) ([bde1a87](https://github.com/defilantech/LLMKube/commit/bde1a87ecaeee6ea4cadecc7612942ed706fe1cd))
+* **charts/foreman:** expose the agent --accelerator flag ([#1242](https://github.com/defilantech/LLMKube/issues/1242)) ([#1261](https://github.com/defilantech/LLMKube/issues/1261)) ([a39fd71](https://github.com/defilantech/LLMKube/commit/a39fd719791a528c79f96d2275d5967d871f328e))
+* declarative bindAddress on InferenceService ([#1240](https://github.com/defilantech/LLMKube/issues/1240)) ([#1247](https://github.com/defilantech/LLMKube/issues/1247)) ([bf01598](https://github.com/defilantech/LLMKube/commit/bf01598d4dbd9583cf28d072307d05369eeb2281))
+* **federation:** FederatedCluster registry + fleet status rollup ([#1234](https://github.com/defilantech/LLMKube/issues/1234), [#1235](https://github.com/defilantech/LLMKube/issues/1235)) ([#1241](https://github.com/defilantech/LLMKube/issues/1241)) ([1b5bf08](https://github.com/defilantech/LLMKube/commit/1b5bf08f37f5c4b531642f6a205da1fc534f761d))
+* **foreman:** tiered str_replace matching (exact, trailing-ws, uniform-indent) ([#1231](https://github.com/defilantech/LLMKube/issues/1231)) ([0372e24](https://github.com/defilantech/LLMKube/commit/0372e2425fbf2431d0fa20a2f7f02c07a69e7f9c))
+* **grafana:** chart the InferenceService metrics with no panel ([#1245](https://github.com/defilantech/LLMKube/issues/1245)) ([a5ce923](https://github.com/defilantech/LLMKube/commit/a5ce92340fa94fe9ec08edbd41147836898221a0))
+* Kueue prerequisites: spec.suspend, GPUQuota deferral, pkg/apiutil GPU mapping ([#1254](https://github.com/defilantech/LLMKube/issues/1254)) ([c95e06f](https://github.com/defilantech/LLMKube/commit/c95e06f0ddf1a86f1e867c65ce30a63331e7a709))
+* **metrics:** publish operator state metrics from observed state ([#1229](https://github.com/defilantech/LLMKube/issues/1229)) ([5db0915](https://github.com/defilantech/LLMKube/commit/5db09158d58fd700af6748b1c3198580af264410))
+* prefetch Model artifacts into the shared cache without an InferenceService ([#1218](https://github.com/defilantech/LLMKube/issues/1218)) ([7c1161b](https://github.com/defilantech/LLMKube/commit/7c1161b819eeafebf91140e9b28cee1f594497b8))
+
+
+### Bug Fixes
+
+* **chart:** make PrometheusRule select the chart's own scrape targets ([#1239](https://github.com/defilantech/LLMKube/issues/1239)) ([ffc697a](https://github.com/defilantech/LLMKube/commit/ffc697a744898c1513a10d4164f93c393489b28f))
+* delete GPUQuota metric series when the CR is deleted ([#1230](https://github.com/defilantech/LLMKube/issues/1230)) ([#1246](https://github.com/defilantech/LLMKube/issues/1246)) ([1f58c3c](https://github.com/defilantech/LLMKube/commit/1f58c3c86a03d6486a857cfaa49a8c6572f727c2))
+* **foreman:** edits disarm a nudged RepeatedToolCall hash ([#1215](https://github.com/defilantech/LLMKube/issues/1215)) ([#1216](https://github.com/defilantech/LLMKube/issues/1216)) ([60df2ad](https://github.com/defilantech/LLMKube/commit/60df2ade6879cc5d154ade41185de7b1a51e992d))
+* gate bite check reverts to the upstream merge-base, never the fork tip ([#1260](https://github.com/defilantech/LLMKube/issues/1260)) ([8a6928f](https://github.com/defilantech/LLMKube/commit/8a6928ffc08ee64d126129bf12cd722b01b55080))
+* **grafana:** delete dashboard panels for metrics nothing emits ([#1244](https://github.com/defilantech/LLMKube/issues/1244)) ([9c586d9](https://github.com/defilantech/LLMKube/commit/9c586d9458fa85a338d0fc316e1270b4bbc9e00b))
+* **metrics:** report GPU queue depth per namespace ([#1243](https://github.com/defilantech/LLMKube/issues/1243)) ([5779c05](https://github.com/defilantech/LLMKube/commit/5779c05e7dfd98d5f24acc2cbfab44301c08b0b4))
+* recycle inference pods without invalid deadlines ([#1232](https://github.com/defilantech/LLMKube/issues/1232)) ([0b716d7](https://github.com/defilantech/LLMKube/commit/0b716d7510cc9bfb172e37f5b6c1c3075a32c524))
+* waitForIdle proceeds past crashlooping pods; truthful deferral reason on mixed state ([#1250](https://github.com/defilantech/LLMKube/issues/1250)) ([#1262](https://github.com/defilantech/LLMKube/issues/1262)) ([88c87f9](https://github.com/defilantech/LLMKube/commit/88c87f9770f7e1c2d5026e52c768841a35e07b8c))
+
+
+### Documentation
+
+* envtest test-craft guide (status subresource, probe stubs, asset hygiene) ([#1263](https://github.com/defilantech/LLMKube/issues/1263)) ([#1264](https://github.com/defilantech/LLMKube/issues/1264)) ([ea4eee6](https://github.com/defilantech/LLMKube/commit/ea4eee66633053f75789988b94ab736cc5508a59))
+
 ## [0.9.10](https://github.com/defilantech/LLMKube/compare/v0.9.9...v0.9.10) (2026-07-22)
 
 
