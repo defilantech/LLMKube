@@ -425,7 +425,8 @@ func TestGateJobBiteCheckUsesUpstreamMergeBase(t *testing.T) {
 	}
 	// The fork-tip revert must be GONE on the upstream path.
 	if strings.Contains(args, `git checkout "origin/$BASE" -- "$f"`) {
-		t.Error("bite check still contains the fork-tip revert literal; production must be reverted to the merge-base ref only")
+		t.Error("bite check still contains the fork-tip revert literal; " +
+			"production must be reverted to the merge-base ref only")
 	}
 }
 
