@@ -2027,14 +2027,15 @@ var _ = Describe("countOldPods", func() {
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{{Name: "main", Image: "dummy"}},
 				},
-				Status: corev1.PodStatus{
-					Phase: corev1.PodRunning,
-					Conditions: []corev1.PodCondition{
-						{Type: corev1.PodReady, Status: corev1.ConditionTrue},
-					},
-				},
 			}
 			Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+			pod.Status = corev1.PodStatus{
+				Phase: corev1.PodRunning,
+				Conditions: []corev1.PodCondition{
+					{Type: corev1.PodReady, Status: corev1.ConditionTrue},
+				},
+			}
+			Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
 		}
 
 		reconciler := &InferenceServiceReconciler{
@@ -2072,14 +2073,15 @@ var _ = Describe("countOldPods", func() {
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{{Name: "main", Image: "dummy"}},
 				},
-				Status: corev1.PodStatus{
-					Phase: corev1.PodRunning,
-					Conditions: []corev1.PodCondition{
-						{Type: corev1.PodReady, Status: corev1.ConditionFalse, Reason: "ContainersNotReady"},
-					},
-				},
 			}
 			Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+			pod.Status = corev1.PodStatus{
+				Phase: corev1.PodRunning,
+				Conditions: []corev1.PodCondition{
+					{Type: corev1.PodReady, Status: corev1.ConditionFalse, Reason: "ContainersNotReady"},
+				},
+			}
+			Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
 		}
 
 		reconciler := &InferenceServiceReconciler{
@@ -2117,14 +2119,15 @@ var _ = Describe("countOldPods", func() {
 			Spec: corev1.PodSpec{
 				Containers: []corev1.Container{{Name: "main", Image: "dummy"}},
 			},
-			Status: corev1.PodStatus{
-				Phase: corev1.PodRunning,
-				Conditions: []corev1.PodCondition{
-					{Type: corev1.PodReady, Status: corev1.ConditionTrue},
-				},
-			},
 		}
 		Expect(k8sClient.Create(ctx, readyPod)).To(Succeed())
+		readyPod.Status = corev1.PodStatus{
+			Phase: corev1.PodRunning,
+			Conditions: []corev1.PodCondition{
+				{Type: corev1.PodReady, Status: corev1.ConditionTrue},
+			},
+		}
+		Expect(k8sClient.Status().Update(ctx, readyPod)).To(Succeed())
 
 		// 2 crashlooping pods
 		for i := 0; i < 2; i++ {
@@ -2140,14 +2143,15 @@ var _ = Describe("countOldPods", func() {
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{{Name: "main", Image: "dummy"}},
 				},
-				Status: corev1.PodStatus{
-					Phase: corev1.PodRunning,
-					Conditions: []corev1.PodCondition{
-						{Type: corev1.PodReady, Status: corev1.ConditionFalse, Reason: "ContainersNotReady"},
-					},
-				},
 			}
 			Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+			pod.Status = corev1.PodStatus{
+				Phase: corev1.PodRunning,
+				Conditions: []corev1.PodCondition{
+					{Type: corev1.PodReady, Status: corev1.ConditionFalse, Reason: "ContainersNotReady"},
+				},
+			}
+			Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
 		}
 
 		reconciler := &InferenceServiceReconciler{
@@ -2238,31 +2242,32 @@ var _ = Describe("RolloutPolicy crashlooping pods", func() {
 					Spec: corev1.PodSpec{
 						Containers: []corev1.Container{{Name: isvcName, Image: "dummy"}},
 					},
-					Status: corev1.PodStatus{
-						Phase: corev1.PodRunning,
-						Conditions: []corev1.PodCondition{
-							{Type: corev1.PodReady, Status: corev1.ConditionFalse, Reason: "ContainersNotReady"},
-						},
-						ContainerStatuses: []corev1.ContainerStatus{
-							{
-								Name:  isvcName,
-								Ready: false,
-								State: corev1.ContainerState{
-									Waiting: &corev1.ContainerStateWaiting{
-										Reason: "CrashLoopBackOff",
-									},
+				}
+				Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+				pod.Status = corev1.PodStatus{
+					Phase: corev1.PodRunning,
+					Conditions: []corev1.PodCondition{
+						{Type: corev1.PodReady, Status: corev1.ConditionFalse, Reason: "ContainersNotReady"},
+					},
+					ContainerStatuses: []corev1.ContainerStatus{
+						{
+							Name:  isvcName,
+							Ready: false,
+							State: corev1.ContainerState{
+								Waiting: &corev1.ContainerStateWaiting{
+									Reason: "CrashLoopBackOff",
 								},
-								LastTerminationState: corev1.ContainerState{
-									Terminated: &corev1.ContainerStateTerminated{
-										ExitCode: 1,
-										Reason:   "Error",
-									},
+							},
+							LastTerminationState: corev1.ContainerState{
+								Terminated: &corev1.ContainerStateTerminated{
+									ExitCode: 1,
+									Reason:   "Error",
 								},
 							},
 						},
 					},
 				}
-				Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+				Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
 			}
 
 			// Update the image to trigger a template change
@@ -2336,10 +2341,28 @@ var _ = Describe("RolloutPolicy crashlooping pods", func() {
 				}
 			}()
 
+			// The Ready pod means the idle check is actually consulted (unlike
+			// the all-crashlooping case, which short-circuits before probing).
+			// Stub the llama.cpp /slots endpoint as busy so checkServiceIdle
+			// succeeds with idle=false instead of failing closed on a real
+			// (unreachable) cluster DNS name — mirrors the "busy-defer
+			// behavior" Context's testServer pattern above.
+			testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/slots" {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte(`[{"id":0,"is_processing":true}]`))
+					return
+				}
+				w.WriteHeader(http.StatusNotFound)
+			}))
+			defer testServer.Close()
+
 			reconciler := &InferenceServiceReconciler{
 				Client:             k8sClient,
 				Scheme:             k8sClient.Scheme(),
 				InitContainerImage: "docker.io/curlimages/curl:8.18.0",
+				RolloutIdleBaseURL: testServer.URL,
 			}
 
 			// First reconcile: creates the deployment
@@ -2364,17 +2387,18 @@ var _ = Describe("RolloutPolicy crashlooping pods", func() {
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{{Name: isvcName, Image: "dummy"}},
 				},
-				Status: corev1.PodStatus{
-					Phase: corev1.PodRunning,
-					Conditions: []corev1.PodCondition{
-						{Type: corev1.PodReady, Status: corev1.ConditionTrue},
-					},
-					ContainerStatuses: []corev1.ContainerStatus{
-						{Name: isvcName, Ready: true, State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
-					},
-				},
 			}
 			Expect(k8sClient.Create(ctx, readyPod)).To(Succeed())
+			readyPod.Status = corev1.PodStatus{
+				Phase: corev1.PodRunning,
+				Conditions: []corev1.PodCondition{
+					{Type: corev1.PodReady, Status: corev1.ConditionTrue},
+				},
+				ContainerStatuses: []corev1.ContainerStatus{
+					{Name: isvcName, Ready: true, State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+				},
+			}
+			Expect(k8sClient.Status().Update(ctx, readyPod)).To(Succeed())
 
 			for i := 0; i < 2; i++ {
 				pod := &corev1.Pod{
@@ -2389,31 +2413,32 @@ var _ = Describe("RolloutPolicy crashlooping pods", func() {
 					Spec: corev1.PodSpec{
 						Containers: []corev1.Container{{Name: isvcName, Image: "dummy"}},
 					},
-					Status: corev1.PodStatus{
-						Phase: corev1.PodRunning,
-						Conditions: []corev1.PodCondition{
-							{Type: corev1.PodReady, Status: corev1.ConditionFalse, Reason: "ContainersNotReady"},
-						},
-						ContainerStatuses: []corev1.ContainerStatus{
-							{
-								Name:  isvcName,
-								Ready: false,
-								State: corev1.ContainerState{
-									Waiting: &corev1.ContainerStateWaiting{
-										Reason: "CrashLoopBackOff",
-									},
+				}
+				Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+				pod.Status = corev1.PodStatus{
+					Phase: corev1.PodRunning,
+					Conditions: []corev1.PodCondition{
+						{Type: corev1.PodReady, Status: corev1.ConditionFalse, Reason: "ContainersNotReady"},
+					},
+					ContainerStatuses: []corev1.ContainerStatus{
+						{
+							Name:  isvcName,
+							Ready: false,
+							State: corev1.ContainerState{
+								Waiting: &corev1.ContainerStateWaiting{
+									Reason: "CrashLoopBackOff",
 								},
-								LastTerminationState: corev1.ContainerState{
-									Terminated: &corev1.ContainerStateTerminated{
-										ExitCode: 1,
-										Reason:   "Error",
-									},
+							},
+							LastTerminationState: corev1.ContainerState{
+								Terminated: &corev1.ContainerStateTerminated{
+									ExitCode: 1,
+									Reason:   "Error",
 								},
 							},
 						},
 					},
 				}
-				Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+				Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
 			}
 
 			// Update the image to trigger a template change
@@ -2519,25 +2544,26 @@ var _ = Describe("RolloutPolicy crashlooping pods", func() {
 					Spec: corev1.PodSpec{
 						Containers: []corev1.Container{{Name: isvcName, Image: "dummy"}},
 					},
-					Status: corev1.PodStatus{
-						Phase: corev1.PodRunning,
-						Conditions: []corev1.PodCondition{
-							{Type: corev1.PodReady, Status: corev1.ConditionFalse, Reason: "ContainersNotReady"},
-						},
-						ContainerStatuses: []corev1.ContainerStatus{
-							{
-								Name:  isvcName,
-								Ready: false,
-								State: corev1.ContainerState{
-									Waiting: &corev1.ContainerStateWaiting{
-										Reason: "CrashLoopBackOff",
-									},
+				}
+				Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+				pod.Status = corev1.PodStatus{
+					Phase: corev1.PodRunning,
+					Conditions: []corev1.PodCondition{
+						{Type: corev1.PodReady, Status: corev1.ConditionFalse, Reason: "ContainersNotReady"},
+					},
+					ContainerStatuses: []corev1.ContainerStatus{
+						{
+							Name:  isvcName,
+							Ready: false,
+							State: corev1.ContainerState{
+								Waiting: &corev1.ContainerStateWaiting{
+									Reason: "CrashLoopBackOff",
 								},
 							},
 						},
 					},
 				}
-				Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+				Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
 			}
 
 			// Update the image to trigger a template change
