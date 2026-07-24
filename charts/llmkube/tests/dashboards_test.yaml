@@ -1,0 +1,153 @@
+suite: grafana dashboards ship from the chart, not by hand
+# The ConfigMap is the single copy of the JSON; the sidecar label and the
+# GrafanaDashboard CRs are independent opt-ins that point at it.
+templates:
+  - grafana-dashboards.yaml
+
+tests:
+  - it: should render nothing by default
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  # --- ConfigMap: the one copy of the JSON ---
+
+  - it: should render only the ConfigMap, labelled for the sidecar, when the operator is off
+    set:
+      grafana.dashboards.enabled: true
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isKind:
+          of: ConfigMap
+      - equal:
+          path: metadata.name
+          value: RELEASE-NAME-llmkube-dashboards
+      - equal:
+          path: metadata.labels.grafana_dashboard
+          value: "true"
+      - notExists:
+          path: metadata.annotations
+
+  - it: should annotate the ConfigMap when annotations are set
+    set:
+      grafana.dashboards.enabled: true
+      grafana.dashboards.annotations:
+        grafana_folder: LLMKube
+        k8s-sidecar-target-directory: /tmp/dashboards
+    asserts:
+      - equal:
+          path: metadata.annotations.grafana_folder
+          value: LLMKube
+      - equal:
+          path: metadata.annotations["k8s-sidecar-target-directory"]
+          value: /tmp/dashboards
+
+  - it: should default the namespace to the release namespace and allow an override
+    set:
+      grafana.dashboards.enabled: true
+    release:
+      namespace: llmkube-system
+    asserts:
+      - equal:
+          path: metadata.namespace
+          value: llmkube-system
+
+  - it: should place the ConfigMap in the configured namespace
+    set:
+      grafana.dashboards.enabled: true
+      grafana.dashboards.namespace: monitoring
+    asserts:
+      - equal:
+          path: metadata.namespace
+          value: monitoring
+
+  - it: should carry each dashboard file whole, one key per file
+    set:
+      grafana.dashboards.enabled: true
+    asserts:
+      # Anchored braces plus the dashboard's own uid: a broken glob yields an
+      # empty ConfigMap, and a mangled copy loses the uid or the closing brace.
+      - matchRegex:
+          path: data["llmkube-slo.json"]
+          pattern: '(?s)^\{.*"uid": "llmkube-slo".*\}\s*$'
+      - matchRegex:
+          path: data["amd-gpu-observability.json"]
+          pattern: '(?s)^\{.*"uid": "llmkube-amd-gpu-monitor".*\}\s*$'
+      - matchRegex:
+          path: data["model-router-dashboard.json"]
+          pattern: '(?s)^\{.*"uid": "llmkube-model-router".*\}\s*$'
+
+  # --- GrafanaDashboard CRs: grafana-operator, same ConfigMap ---
+
+  - it: should add a GrafanaDashboard per file alongside the ConfigMap
+    set:
+      grafana.dashboards.enabled: true
+      grafana.dashboards.operator.enabled: true
+    asserts:
+      - hasDocuments:
+          count: 8
+
+  - it: should point each GrafanaDashboard at its own ConfigMap key
+    set:
+      grafana.dashboards.enabled: true
+      grafana.dashboards.operator.enabled: true
+    documentSelector:
+      path: metadata.name
+      value: RELEASE-NAME-llmkube-llmkube-slo
+    asserts:
+      - isKind:
+          of: GrafanaDashboard
+      - isAPIVersion:
+          of: grafana.integreatly.org/v1beta1
+      - equal:
+          path: spec.configMapRef
+          value:
+            name: RELEASE-NAME-llmkube-dashboards
+            key: llmkube-slo.json
+      - notExists:
+          path: spec.datasources
+
+  - it: should set the CRD-required instanceSelector and cross-namespace import
+    set:
+      grafana.dashboards.enabled: true
+      grafana.dashboards.operator.enabled: true
+      grafana.dashboards.operator.allowCrossNamespaceImport: false
+      grafana.dashboards.operator.instanceSelector:
+        matchLabels:
+          dashboards: grafana
+    documentSelector:
+      path: metadata.name
+      value: RELEASE-NAME-llmkube-llmkube-slo
+    asserts:
+      - equal:
+          path: spec.instanceSelector.matchLabels.dashboards
+          value: grafana
+      - equal:
+          path: spec.allowCrossNamespaceImport
+          value: false
+
+  - it: should remap the dashboard datasource variable when configured
+    set:
+      grafana.dashboards.enabled: true
+      grafana.dashboards.operator.enabled: true
+      grafana.dashboards.operator.datasources:
+        - inputName: DS_PROMETHEUS
+          datasourceName: VictoriaMetrics
+    documentSelector:
+      path: metadata.name
+      value: RELEASE-NAME-llmkube-llmkube-slo
+    asserts:
+      - contains:
+          path: spec.datasources
+          content:
+            inputName: DS_PROMETHEUS
+            datasourceName: VictoriaMetrics
+
+  - it: should render no CRs when the operator is enabled but dashboards are off
+    set:
+      grafana.dashboards.enabled: false
+      grafana.dashboards.operator.enabled: true
+    asserts:
+      - hasDocuments:
+          count: 0

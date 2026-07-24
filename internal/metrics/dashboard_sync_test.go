@@ -31,14 +31,14 @@ import (
 	"github.com/defilantech/llmkube/pkg/agent"
 )
 
-const prometheusRuleTpl = "../../charts/llmkube/templates/prometheusrule.yaml"
+const (
+	prometheusRuleTpl  = "../../charts/llmkube/templates/prometheusrule.yaml"
+	runtimeMetricsGlob = "testdata/*-metrics.txt"
+)
 
-// Every grafana directory in the repo, so a new one is covered without an edit.
-const dashboardGlob = "../../*/grafana/*.json"
+var dashboardDirs = []string{"../../config/grafana", "../../charts/llmkube/dashboards"}
 
-// externalPrefixes are exporters config/grafana/SETUP.md tells operators to
-// install. An exporter this repo does not document is a phantom metric, not an
-// external one: otel_span_metrics was deleted rather than listed here.
+// externalPrefixes are metric namespaces owned by exporters outside this repo.
 var externalPrefixes = []string{
 	"vllm:",        // vLLM runtime, and the Pyrra rules derived from it
 	"up:",          // Pyrra burn-rate rules over scrape liveness
@@ -47,22 +47,18 @@ var externalPrefixes = []string{
 	"node_",        // node-exporter
 }
 
-// promqlWords are the identifiers PromQL allows outside a call: operators and
-// modifiers. Function names need no listing, a call is stripped by its "(".
+// promqlWords are the identifiers a PromQL expression can hold that are not
+// metric names. Anything left over is treated as a metric selector.
 var promqlWords = strings.Fields(`
-and atan2 bool by group_left group_right ignoring inf nan offset on or unless without
-`)
-
-// llamacppNames is what the llama.cpp server exposes on /metrics under
-// --metrics. Refresh with:
-//
-//	curl -s $POD:8080/metrics | grep -oP '^# TYPE \K\S+' | sort
-var llamacppNames = strings.Fields(`
-llamacpp:n_busy_slots_per_decode llamacpp:n_decode_total llamacpp:n_tokens_max
-llamacpp:predicted_tokens_seconds llamacpp:prompt_seconds_total
-llamacpp:prompt_tokens_seconds llamacpp:prompt_tokens_total
-llamacpp:requests_deferred llamacpp:requests_processing
-llamacpp:tokens_predicted_seconds_total llamacpp:tokens_predicted_total
+abs absent absent_over_time and avg avg_over_time bool bottomk by ceil changes
+clamp clamp_max clamp_min count count_over_time count_values day_of_month
+day_of_week days_in_month deg delta deriv exp floor group_left group_right
+histogram_quantile holt_winters hour idelta ignoring increase inf irate
+label_join label_replace label_values last_over_time ln log10 log2 max
+max_over_time min min_over_time minute month nan offset on or pi predict_linear
+present_over_time quantile quantile_over_time rad rate resets round scalar sgn
+sort sort_desc sqrt start stddev stddev_over_time stdvar stdvar_over_time sum
+sum_over_time time timestamp topk unless vector without year
 `)
 
 var (
@@ -77,8 +73,6 @@ var (
 		regexp.MustCompile(`\{[^}]*\}`),   // label matchers
 		regexp.MustCompile(`\[[^\]]*\]`),  // range selectors
 		regexp.MustCompile(`\b(?:by|without|on|ignoring|group_left|group_right)\s*\([^)]*\)`),
-		// Last: an identifier before "(" is a function, never a metric.
-		regexp.MustCompile(`[a-zA-Z_:][a-zA-Z0-9_:]*\s*\(`),
 	}
 	identifier = regexp.MustCompile(`[a-zA-Z_:][a-zA-Z0-9_:]*`)
 	// Desc keeps fqName unexported; String() is the only accessor.
@@ -86,8 +80,9 @@ var (
 	recordRule = regexp.MustCompile(`(?m)^\s*- record:\s*(\S+)`)
 )
 
-// declaredNames returns the fqName of every collector this repo registers,
-// controller plus Metal agent.
+// declaredNames returns the fqName of every collector this repo registers.
+// AllCollectors is the controller's set; the Metal agent binary registers 19
+// more into its own registry, and *prometheus.Registry is itself a Collector.
 func declaredNames(t *testing.T) map[string]bool {
 	t.Helper()
 
@@ -132,7 +127,37 @@ func chartRecordingRules(t *testing.T) map[string]bool {
 	return names
 }
 
-// metricNames extracts the metric selectors from a PromQL expression.
+// runtimeNames returns the metric names the inference runtimes' own servers
+// expose. Each fixture holds one name per line; the file set is the runtime set.
+func runtimeNames(t *testing.T) map[string]bool {
+	t.Helper()
+
+	files, err := filepath.Glob(runtimeMetricsGlob)
+	if err != nil {
+		t.Fatalf("glob %s: %v", runtimeMetricsGlob, err)
+	}
+	if len(files) == 0 {
+		t.Fatalf("no runtime metric fixtures matching %s", runtimeMetricsGlob)
+	}
+
+	names := map[string]bool{}
+	for _, path := range files {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		for _, line := range strings.Split(string(raw), "\n") {
+			if line = strings.TrimSpace(line); line != "" {
+				names[line] = true
+			}
+		}
+	}
+	return names
+}
+
+// metricNames extracts the metric selectors from a PromQL expression: strip
+// every construct that can hold a non-metric identifier, then keep the
+// identifiers PromQL itself does not define.
 func metricNames(expr string) []string {
 	expr = labelValues.ReplaceAllString(expr, " $1 ")
 	for _, noise := range exprNoise {
@@ -167,10 +192,11 @@ func dashboardQueries(t *testing.T, path string) []string {
 	walk = func(node any) {
 		switch typed := node.(type) {
 		case map[string]any:
-			if s, ok := typed["expr"].(string); ok {
-				queries = append(queries, s)
-			}
-			for _, child := range typed {
+			for key, child := range typed {
+				if s, ok := child.(string); ok && key == "expr" {
+					queries = append(queries, s)
+					continue
+				}
 				walk(child)
 			}
 		case []any:
@@ -220,37 +246,84 @@ func emitted(name string, known map[string]bool) bool {
 	return false
 }
 
-// TestDashboardsQueryEmittedMetrics checks a queried name is declared, not that
-// anything ever writes it, so it catches a misspelled or renamed series (#1223,
-// #1226) but not an inert one. It would not have caught #786, where
-// llmkube_inference_ttft_seconds was declared and registered with no Observe
-// call; that class is only fixed by deleting the declaration.
+// TestDashboardsQueryEmittedMetrics fails when a shipped dashboard queries a
+// name nothing produces. Such a panel renders empty, which is indistinguishable
+// from an idle cluster (#786, #1223, #1226).
+//
+// It checks that a name can be emitted, not that it ever is: GPUQueueWaitDuration
+// is declared and registered with no Observe() call anywhere, and passes.
 func TestDashboardsQueryEmittedMetrics(t *testing.T) {
 	known := declaredNames(t)
 	maps.Copy(known, chartRecordingRules(t))
-	for _, name := range llamacppNames {
-		known[name] = true
-	}
+	maps.Copy(known, runtimeNames(t))
 
-	dashboards, err := filepath.Glob(dashboardGlob)
-	if err != nil {
-		t.Fatalf("glob %s: %v", dashboardGlob, err)
-	}
-	if len(dashboards) == 0 {
-		t.Fatalf("no dashboards under %s", dashboardGlob)
-	}
+	for _, dir := range dashboardDirs {
+		dashboards, err := filepath.Glob(filepath.Join(dir, "*.json"))
+		if err != nil {
+			t.Fatalf("glob %s: %v", dir, err)
+		}
+		if len(dashboards) == 0 {
+			t.Fatalf("no dashboards under %s", dir)
+		}
 
-	for _, dashboard := range dashboards {
-		reported := map[string]bool{}
-		for _, query := range dashboardQueries(t, dashboard) {
-			for _, name := range metricNames(query) {
-				if emitted(name, known) || reported[name] {
-					continue
+		for _, dashboard := range dashboards {
+			reported := map[string]bool{}
+			for _, query := range dashboardQueries(t, dashboard) {
+				for _, name := range metricNames(query) {
+					if emitted(name, known) || reported[name] {
+						continue
+					}
+					reported[name] = true
+					t.Errorf("%s queries %q, which no registered collector, chart recording rule or allowlisted exporter emits\n\tquery: %s",
+						dashboard, name, query)
 				}
-				reported[name] = true
-				t.Errorf("%s queries %q, which no registered collector, chart recording rule or allowlisted exporter emits\n\tquery: %s",
-					dashboard, name, query)
 			}
 		}
+	}
+
+	if t.Failed() {
+		t.Logf("emittable: %v", slices.Sorted(maps.Keys(known)))
+	}
+}
+
+// TestInferenceDashboardCoversEveryRuntime fails when a panel on the shared
+// Inference Monitor reads one runtime's metrics without the others'. Such a
+// panel is blank in any namespace running only the runtime it omits (#1227).
+//
+// Scoped to this dashboard: amd-gpu-observability is llama.cpp-specific and
+// llmkube-inference reads only recording rules.
+func TestInferenceDashboardCoversEveryRuntime(t *testing.T) {
+	const dashboard = "../../config/grafana/llmkube-inference-dashboard.json"
+
+	// Runtimes come from the fixtures, so a new one widens the gate on drop-in.
+	want := map[string]bool{}
+	for name := range runtimeNames(t) {
+		if prefix, _, found := strings.Cut(name, ":"); found {
+			want[prefix] = true
+		}
+	}
+
+	checked := 0
+	for _, query := range dashboardQueries(t, dashboard) {
+		runtimes := map[string]bool{}
+		for _, name := range metricNames(query) {
+			if prefix, _, found := strings.Cut(name, ":"); found && want[prefix] {
+				runtimes[prefix] = true
+			}
+		}
+		if len(runtimes) == 0 {
+			continue
+		}
+
+		checked++
+		if len(runtimes) != len(want) {
+			t.Errorf("%s reads %v only, so the panel is blank on every other runtime\n\tquery: %s",
+				dashboard, slices.Sorted(maps.Keys(runtimes)), query)
+		}
+	}
+
+	// Without this the test passes vacuously once the panels are gone.
+	if checked == 0 {
+		t.Fatalf("%s has no runtime metric queries", dashboard)
 	}
 }

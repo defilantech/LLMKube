@@ -1,0 +1,11 @@
+llamacpp:n_busy_slots_per_decode
+llamacpp:n_decode_total
+llamacpp:n_tokens_max
+llamacpp:predicted_tokens_seconds
+llamacpp:prompt_seconds_total
+llamacpp:prompt_tokens_seconds
+llamacpp:prompt_tokens_total
+llamacpp:requests_deferred
+llamacpp:requests_processing
+llamacpp:tokens_predicted_seconds_total
+llamacpp:tokens_predicted_total
