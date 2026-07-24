@@ -86,7 +86,7 @@ tests:
       grafana.dashboards.operator.enabled: true
     asserts:
       - hasDocuments:
-          count: 7
+          count: 8
 
   - it: should point each GrafanaDashboard at its own ConfigMap key
     set:
