@@ -28,6 +28,7 @@ agents:
     coderGitSecretKey: token
     gateCache:
       enabled: false
+    accelerator: vulkan
   omitted-enabled:
     replicaCount: 5
     roles: [worker]

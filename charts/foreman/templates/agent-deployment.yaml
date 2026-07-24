@@ -73,6 +73,9 @@ spec:
             {{- end }}
             {{- /* Always set: the binary default is "foreman-system", a namespace the chart never creates, so gate Jobs would land where the cache PVC does not exist. */}}
             - --foreman-namespace={{ $agent.foremanNamespace | default (include "foreman.namespace" $) }}
+            {{- if $agent.accelerator }}
+            - --accelerator={{ $agent.accelerator }}
+            {{- end }}
             {{- if $agent.installedModels }}
             - --installed-models={{ join "," $agent.installedModels }}
             {{- end }}
