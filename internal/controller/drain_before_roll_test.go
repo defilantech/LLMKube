@@ -2024,6 +2024,9 @@ var _ = Describe("countOldPods", func() {
 						"inference.llmkube.dev/service": isvcName,
 					},
 				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{Name: "main", Image: "dummy"}},
+				},
 				Status: corev1.PodStatus{
 					Phase: corev1.PodRunning,
 					Conditions: []corev1.PodCondition{
@@ -2065,6 +2068,9 @@ var _ = Describe("countOldPods", func() {
 						"app":                           isvcName,
 						"inference.llmkube.dev/service": isvcName,
 					},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{Name: "main", Image: "dummy"}},
 				},
 				Status: corev1.PodStatus{
 					Phase: corev1.PodRunning,
@@ -2108,6 +2114,9 @@ var _ = Describe("countOldPods", func() {
 					"inference.llmkube.dev/service": isvcName,
 				},
 			},
+			Spec: corev1.PodSpec{
+				Containers: []corev1.Container{{Name: "main", Image: "dummy"}},
+			},
 			Status: corev1.PodStatus{
 				Phase: corev1.PodRunning,
 				Conditions: []corev1.PodCondition{
@@ -2127,6 +2136,9 @@ var _ = Describe("countOldPods", func() {
 						"app":                           isvcName,
 						"inference.llmkube.dev/service": isvcName,
 					},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{Name: "main", Image: "dummy"}},
 				},
 				Status: corev1.PodStatus{
 					Phase: corev1.PodRunning,
@@ -2222,6 +2234,9 @@ var _ = Describe("RolloutPolicy crashlooping pods", func() {
 							"app":                           isvcName,
 							"inference.llmkube.dev/service": isvcName,
 						},
+					},
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{{Name: isvcName, Image: "dummy"}},
 					},
 					Status: corev1.PodStatus{
 						Phase: corev1.PodRunning,
@@ -2346,6 +2361,9 @@ var _ = Describe("RolloutPolicy crashlooping pods", func() {
 						"inference.llmkube.dev/service": isvcName,
 					},
 				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{Name: isvcName, Image: "dummy"}},
+				},
 				Status: corev1.PodStatus{
 					Phase: corev1.PodRunning,
 					Conditions: []corev1.PodCondition{
@@ -2367,6 +2385,9 @@ var _ = Describe("RolloutPolicy crashlooping pods", func() {
 							"app":                           isvcName,
 							"inference.llmkube.dev/service": isvcName,
 						},
+					},
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{{Name: isvcName, Image: "dummy"}},
 					},
 					Status: corev1.PodStatus{
 						Phase: corev1.PodRunning,
@@ -2494,6 +2515,9 @@ var _ = Describe("RolloutPolicy crashlooping pods", func() {
 							"app":                           isvcName,
 							"inference.llmkube.dev/service": isvcName,
 						},
+					},
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{{Name: isvcName, Image: "dummy"}},
 					},
 					Status: corev1.PodStatus{
 						Phase: corev1.PodRunning,
