@@ -222,6 +222,8 @@ Fixes #55
 
 ### Testing Guidelines
 
+For envtest-based controller tests, see [envtest test-craft guide](docs/contributing/envtest-guide.md) for common traps and the blessed patterns.
+
 ```bash
 # Unit tests
 make test
