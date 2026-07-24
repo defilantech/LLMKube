@@ -211,6 +211,42 @@ tests:
           content:
             name: GITHUB_TOKEN
 
+  # ---- Accelerator flag (#1242) ----
+
+  - it: --accelerator flag renders when agent.accelerator is set
+    template: agent-deployment.yaml
+    set:
+      agent.enabled: true
+      agent.accelerator: cuda
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --accelerator=cuda
+
+  - it: --accelerator flag is absent when agent.accelerator is unset
+    template: agent-deployment.yaml
+    set:
+      agent.enabled: true
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --accelerator=
+
+  - it: per-agent accelerator override beats the shared agent default
+    template: agent-deployment.yaml
+    set:
+      agent.accelerator: cuda
+    values:
+      - ./values-multi.yaml
+    documentSelector:
+      path: metadata.name
+      value: RELEASE-NAME-foreman-llmkube-fork-agent
+      matchMany: false
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --accelerator=vulkan
+
   # ---- agent.enabled: false skips that agent ----
 
   - it: agents entry with enabled false is omitted from the deployment list

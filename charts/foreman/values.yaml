@@ -313,6 +313,11 @@ agent:
   # and the agent live in different namespaces.
   foremanNamespace: ""
 
+  # Accelerator family this node advertises in its FleetNode capability.
+  # One of: metal, cuda, vulkan, none. Required on Linux, since the
+  # scheduler rejects capability-pinned tasks when this is empty.
+  accelerator: ""
+
   # Models the foreman-agent advertises in its FleetNode.spec
   # heartbeat. Use kebab-case slugs (e.g. "qwen36-35b-carnice-mtp").
   installedModels: []
