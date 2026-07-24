@@ -63,6 +63,49 @@ func TestBaseBranchOrDefault(t *testing.T) {
 	}
 }
 
+// TestBuildDeterministicArgs_ThreadsUpstreamURL verifies every deterministic
+// gate run carries the canonical upstream repo URL, so the gate's bite check
+// fetches baseBranch from the true upstream and reverts to the real
+// merge-base instead of the fork's possibly-stale ref tip (#1259). A task
+// with no repo slug (freeform tasks) must yield an absent/empty upstreamURL
+// so the shell script's origin-fallback path stays intact.
+func TestBuildDeterministicArgs_ThreadsUpstreamURL(t *testing.T) {
+	cases := []struct {
+		name string
+		repo string
+		want string
+	}{
+		{"repo set", "defilantech/LLMKube", "https://github.com/defilantech/LLMKube.git"},
+		{"repo empty", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			task := &foremanv1alpha1.AgenticTask{
+				Spec: foremanv1alpha1.AgenticTaskSpec{
+					Kind: foremanv1alpha1.AgenticTaskKindIssueFix,
+					Payload: foremanv1alpha1.AgenticTaskPayload{
+						Repo:  tc.repo,
+						Issue: 1259,
+					},
+				},
+			}
+			raw := buildDeterministicArgs(task, "foreman/issue-1259", "https://github.com/Defilan/LLMKube.git")
+			var m map[string]any
+			if err := json.Unmarshal(raw, &m); err != nil {
+				t.Fatalf("unmarshal args: %v", err)
+			}
+			got, _ := m["upstreamURL"].(string)
+			if got != tc.want {
+				t.Errorf("args[upstreamURL] = %q, want %q", got, tc.want)
+			}
+			if tc.want != "" && got != upstreamURLForRepo(tc.repo) {
+				t.Errorf("args[upstreamURL] = %q, want it to equal upstreamURLForRepo(%q) = %q",
+					got, tc.repo, upstreamURLForRepo(tc.repo))
+			}
+		})
+	}
+}
+
 // TestBuildDeterministicArgs_ThreadsBaseBranch verifies the verify-gate args
 // carry the task's base branch (defaulting to main), so the bite check diffs
 // against the same base the coder branched from (#813).
