@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"text/template"
 	"time"
@@ -159,13 +160,20 @@ type runGateJobArgs struct {
 	Repo   string `json:"repo"`
 	Branch string `json:"branch"`
 	// BaseBranch is the branch the coder branch was cut from. The bite
-	// check diffs the coder branch against it and reverts production to it
-	// to verify new tests bite. Defaults to "main" when empty.
-	BaseBranch string   `json:"baseBranch,omitempty"`
-	CloneURL   string   `json:"cloneURL,omitempty"`
-	Image      string   `json:"image,omitempty"`
-	Checks     []string `json:"checks,omitempty"`
-	BiteCheck  bool     `json:"biteCheck,omitempty"`
+	// check diffs against and reverts production to the MERGE-BASE of HEAD
+	// and this ref (fetched from upstreamURL when set, not the ref tip) to
+	// verify new tests bite. Defaults to "main" when empty.
+	BaseBranch string `json:"baseBranch,omitempty"`
+	CloneURL   string `json:"cloneURL,omitempty"`
+	// UpstreamURL is the canonical repo clone URL. When set, the bite check
+	// fetches BaseBranch from it and diffs/reverts against the merge-base of
+	// HEAD and that ref, so a stale fork base ref can never manufacture
+	// failures (#1259). Empty falls back to fetching BaseBranch from origin
+	// (the fork), the pre-#1259 behavior.
+	UpstreamURL string   `json:"upstreamURL,omitempty"`
+	Image       string   `json:"image,omitempty"`
+	Checks      []string `json:"checks,omitempty"`
+	BiteCheck   bool     `json:"biteCheck,omitempty"`
 	// Generic switches the Job from the Go path (make-target Checks plus the
 	// bite check) to running Commands directly. Set for non-Go GateProfiles.
 	Generic bool `json:"generic,omitempty"`
@@ -200,6 +208,8 @@ func (RunGateJobTool) Schema() oai.ToolSchemaDef {
   "repo":      {"type": "string", "description": "owner/name slug of the repo (e.g. defilantech/LLMKube)"},
   "branch":    {"type": "string", "description": "branch on the fork to verify, e.g. foreman/issue-503"},
   "baseBranch": {"type": "string", "description": "base branch the bite check diffs against (default main)"},
+  "upstreamURL": {"type": "string",
+    "description": "canonical repo URL the bite check fetches baseBranch from (falls back to origin when empty)"},
   "checks":    {"type": "array", "items": {"type": "string"},
     "description": "ordered list of make targets to run; defaults to the foreman gate suite"},
   "biteCheck": {"type": "boolean",
@@ -226,6 +236,9 @@ func (t *RunGateJobTool) Execute(ctx context.Context, args json.RawMessage) (*ag
 	}
 	if a.Branch == "" {
 		return nil, errors.New("run_gate_job: branch is required")
+	}
+	if a.UpstreamURL != "" && !upstreamURLSafe(a.UpstreamURL) {
+		return nil, fmt.Errorf("run_gate_job: unsafe upstreamURL %q", a.UpstreamURL)
 	}
 	if !a.Generic && len(a.Checks) == 0 {
 		a.Checks = DefaultGateChecks
@@ -270,6 +283,7 @@ func (t *RunGateJobTool) Execute(ctx context.Context, args json.RawMessage) (*ag
 		MemLimit:                cfg.MemLimit,
 		CloneURLBase:            cfg.CloneURLBase,
 		CloneURL:                a.CloneURL,
+		UpstreamURL:             a.UpstreamURL,
 		TaskNamespace:           a.TaskRef.Namespace,
 		TaskName:                a.TaskRef.Name,
 	})
@@ -387,6 +401,20 @@ func (t *RunGateJobTool) errorResult(jobName, msg string) *agent.ToolResult {
 
 // --- internals ------------------------------------------------------------
 
+// upstreamURLPattern is the allowlist for runGateJobArgs.UpstreamURL: an
+// https:// or git@ prefix followed by URL-safe characters only. Anything
+// else (leading `-`, exotic transports like ext::, embedded whitespace)
+// is rejected before the value can reach the gate Job's git argv, defense
+// in depth on top of the template's `--` end-of-options guard (#1259).
+var upstreamURLPattern = regexp.MustCompile(`^(https://|git@)[A-Za-z0-9._~:/@-]+$`)
+
+// upstreamURLSafe reports whether s is safe to render into the gate Job as
+// UPSTREAM_URL. Callers gate on non-empty first; empty means "no upstream,
+// use the origin fallback" and never reaches git.
+func upstreamURLSafe(s string) bool {
+	return !strings.HasPrefix(s, "-") && upstreamURLPattern.MatchString(s)
+}
+
 // rendererInput is the struct text/template binds against. Keeping it
 // here (rather than reusing the public Config + args structs) keeps the
 // template stable across signature changes upstream.
@@ -416,6 +444,7 @@ type rendererInput struct {
 	MemLimit                string
 	CloneURLBase            string
 	CloneURL                string
+	UpstreamURL             string
 	TaskNamespace           string
 	TaskName                string
 }

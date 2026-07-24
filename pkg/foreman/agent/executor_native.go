@@ -1401,6 +1401,11 @@ func buildDeterministicArgs(task *foremanv1alpha1.AgenticTask, branch, cloneURL 
 		// the bite check fetches this ref explicitly. Defaults to main, and
 		// stays consistent with the base the coder branched from (#813).
 		"baseBranch": baseBranchOrDefault(task.Spec.Payload.BaseBranch),
+		// upstreamURL lets the gate's bite check fetch baseBranch from the
+		// canonical repo and revert to the true merge-base instead of the
+		// fork's possibly-stale ref tip (#1259). Empty (no repo slug) keeps
+		// the origin-fallback path.
+		"upstreamURL": upstreamURLForRepo(task.Spec.Payload.Repo),
 		// image is the container image the gate Job runs.
 		"image": resolved.Image,
 	}
@@ -1428,7 +1433,6 @@ func buildDeterministicArgs(task *foremanv1alpha1.AgenticTask, branch, cloneURL 
 	if task.Spec.Kind == foremanv1alpha1.AgenticTaskKindIntegrate ||
 		task.Spec.Kind == foremanv1alpha1.AgenticTaskKindReconcile {
 		args["slices"] = task.Spec.Payload.Slices
-		args["upstreamURL"] = upstreamURLForRepo(task.Spec.Payload.Repo)
 		args["sharedIdentifiers"] = task.Spec.Payload.SharedIdentifiers
 		args["contract"] = task.Spec.Payload.Contract
 	}
