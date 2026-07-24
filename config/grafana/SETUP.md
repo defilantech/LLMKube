@@ -252,16 +252,19 @@ curl http://prometheus:9090/api/v1/targets
 | `DCGM_FI_DEV_FB_FREE` | GPU memory free |
 | `DCGM_FI_DEV_MEM_COPY_UTIL` | Memory copy utilization |
 
-### llama.cpp Inference Metrics (PodMonitor)
+### Inference Metrics (PodMonitor)
 
-| Metric | Description |
-|--------|-------------|
-| `llamacpp:predicted_tokens_seconds` | Current decode speed (tokens/sec) |
-| `llamacpp:prompt_tokens_seconds` | Current prefill speed (tokens/sec) |
-| `llamacpp:tokens_predicted_total` | Total generated tokens |
-| `llamacpp:prompt_tokens_total` | Total prompt tokens processed |
-| `llamacpp:requests_processing` | Currently processing requests |
-| `llamacpp:requests_deferred` | Deferred/queued requests |
+The Inference Monitor unions each row, so a panel renders whichever runtime a
+namespace holds. An empty cell means the runtime exposes no counterpart.
+
+| Description | llama.cpp | SGLang |
+|-------------|-----------|--------|
+| Current decode speed (tokens/sec) | `llamacpp:predicted_tokens_seconds` | |
+| Current prefill speed (tokens/sec) | `llamacpp:prompt_tokens_seconds` | |
+| Total generated tokens | `llamacpp:tokens_predicted_total` | `sglang:generation_tokens_total` |
+| Total prompt tokens processed | `llamacpp:prompt_tokens_total` | `sglang:prompt_tokens_total` |
+| Currently processing requests | `llamacpp:requests_processing` | `sglang:num_running_reqs` |
+| Deferred/queued requests | `llamacpp:requests_deferred` | `sglang:num_queue_reqs` |
 
 ### LLMKube Controller Metrics
 
