@@ -36,7 +36,7 @@ const (
 	runtimeMetricsGlob = "testdata/*-metrics.txt"
 )
 
-var dashboardDirs = []string{"../../config/grafana", "../../docs/grafana"}
+var dashboardDirs = []string{"../../config/grafana", "../../charts/llmkube/dashboards"}
 
 // externalPrefixes are metric namespaces owned by exporters outside this repo.
 var externalPrefixes = []string{

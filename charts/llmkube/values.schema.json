@@ -247,6 +247,44 @@
         }
       }
     },
+    "grafana": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "dashboards": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "additionalLabels": {
+              "type": "object",
+              "additionalProperties": { "type": "string" }
+            },
+            "namespace": { "type": "string" },
+            "annotations": {
+              "type": "object",
+              "additionalProperties": { "type": "string" }
+            },
+            "operator": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "instanceSelector": {
+                  "type": "object",
+                  "additionalProperties": true
+                },
+                "allowCrossNamespaceImport": { "type": "boolean" },
+                "datasources": {
+                  "type": "array",
+                  "items": { "type": "object" }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "pyrra": {
       "type": "object",
       "additionalProperties": false,
