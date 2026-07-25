@@ -12,7 +12,7 @@
       }
     ]
   },
-  "description": "LLMKube SGLang runtime observability. Throughput, TTFT / E2E / inter-token latency, queue depth, KV pool utilization, scheduler backpressure and prefix cache hit rate, grouped by service / namespace from the sglang: metrics the chart's inference PodMonitor scrapes. TTFT and end-to-end p95 read the chart's llmkube:inference: recording rules. Mamba and HiCache rows are collapsed because those pools only exist on hybrid-attention models and with --hicache enabled respectively.",
+  "description": "LLMKube SGLang runtime observability. Throughput, TTFT / E2E / inter-token latency, queue depth, KV pool utilization, scheduler backpressure and prefix cache hit rate, grouped by service / namespace from the sglang: metrics the chart's inference PodMonitor scrapes. TTFT and end-to-end p95 / p50 read the chart's llmkube:inference: recording rules. Mamba and HiCache rows are collapsed because those pools only exist on hybrid-attention models and with --hicache enabled respectively.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,

@@ -12,7 +12,7 @@
       }
     ]
   },
-  "description": "LLMKube vLLM runtime observability. Throughput, TTFT / E2E / inter-token latency, queue depth, KV cache utilization, prefix cache hit rate and scheduler backpressure (preemptions, finish reason), grouped by service / namespace from the vllm: metrics the chart's inference PodMonitor scrapes. TTFT and end-to-end p95/p50 read the chart's llmkube:inference: recording rules. Request-phase timing (prefill / decode / queue) is in a collapsed row.",
+  "description": "LLMKube vLLM runtime observability. Throughput, TTFT / E2E / inter-token latency, queue depth, KV cache utilization, prefix cache hit rate and scheduler backpressure (preemptions, aborts), grouped by service / namespace from the vllm: metrics the chart's inference PodMonitor scrapes. TTFT and end-to-end p95/p50 read the chart's llmkube:inference: recording rules. Request-phase timing (prefill / decode / queue) is in a collapsed row.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
