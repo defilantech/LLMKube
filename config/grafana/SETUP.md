@@ -252,16 +252,24 @@ curl http://prometheus:9090/api/v1/targets
 | `DCGM_FI_DEV_FB_FREE` | GPU memory free |
 | `DCGM_FI_DEV_MEM_COPY_UTIL` | Memory copy utilization |
 
-### llama.cpp Inference Metrics (PodMonitor)
+### Inference Metrics (PodMonitor)
 
-| Metric | Description |
-|--------|-------------|
-| `llamacpp:predicted_tokens_seconds` | Current decode speed (tokens/sec) |
-| `llamacpp:prompt_tokens_seconds` | Current prefill speed (tokens/sec) |
-| `llamacpp:tokens_predicted_total` | Total generated tokens |
-| `llamacpp:prompt_tokens_total` | Total prompt tokens processed |
-| `llamacpp:requests_processing` | Currently processing requests |
-| `llamacpp:requests_deferred` | Deferred/queued requests |
+The Inference Monitor unions each row, so a panel renders whichever runtime a
+namespace holds. An empty cell means the runtime exposes no counterpart.
+
+The speed panels derive from the `_total` counters below via `rate()` over 5
+minutes, so they read lower than an instantaneous gauge on bursty traffic.
+llama.cpp also exposes `llamacpp:predicted_tokens_seconds` and
+`llamacpp:prompt_tokens_seconds`, its own while-generating gauges, but no panel
+uses them: SGLang and vLLM expose no counterpart and a union has to agree on a
+shape.
+
+| Description | llama.cpp | SGLang | vLLM |
+|-------------|-----------|--------|------|
+| Total generated tokens | `llamacpp:tokens_predicted_total` | `sglang:generation_tokens_total` | `vllm:generation_tokens_total` |
+| Total prompt tokens processed | `llamacpp:prompt_tokens_total` | `sglang:prompt_tokens_total` | `vllm:prompt_tokens_total` |
+| Currently processing requests | `llamacpp:requests_processing` | `sglang:num_running_reqs` | `vllm:num_requests_running` |
+| Deferred/queued requests | `llamacpp:requests_deferred` | `sglang:num_queue_reqs` | `vllm:num_requests_waiting` |
 
 ### LLMKube Controller Metrics
 
