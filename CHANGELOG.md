@@ -5,6 +5,33 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.12](https://github.com/defilantech/LLMKube/compare/v0.9.11...v0.9.12) (2026-07-26)
+
+
+### Features
+
+* add --prompt-depth-sweep to benchmark command ([#1280](https://github.com/defilantech/LLMKube/issues/1280)) ([eb511f9](https://github.com/defilantech/LLMKube/commit/eb511f93fec92bbe1520981f9cb186e65abae8c9))
+* **foreman:** support chat_template_kwargs on agent chat requests ([#1285](https://github.com/defilantech/LLMKube/issues/1285)) ([1028335](https://github.com/defilantech/LLMKube/commit/102833581be53fdcc56b0ee5f28b62f17e8fe599))
+* **grafana:** add SGLang and vLLM runtime dashboards ([#1266](https://github.com/defilantech/LLMKube/issues/1266)) ([07f340a](https://github.com/defilantech/LLMKube/commit/07f340acda8b0035be4190eea5c50dffbb3e5f0c))
+* **grafana:** union llama.cpp, sglang and vLLM metrics on the inference dashboard ([#1248](https://github.com/defilantech/LLMKube/issues/1248)) ([7cb226b](https://github.com/defilantech/LLMKube/commit/7cb226b3fce501d68e1e89756e0c61c9091cb397))
+* **hack:** spine probes for models given repo access ([#1274](https://github.com/defilantech/LLMKube/issues/1274)) ([b7b3d9b](https://github.com/defilantech/LLMKube/commit/b7b3d9b9612c7587f4a2aed1bd32c95849c97343))
+
+
+### Bug Fixes
+
+* Available condition reflects Stopped and Suspended phases ([#1273](https://github.com/defilantech/LLMKube/issues/1273)) ([208bd79](https://github.com/defilantech/LLMKube/commit/208bd795cd093068efd163ee3d2cd0cd616de79d))
+* disable llama.cpp prompt cache in benchmark requests ([#1272](https://github.com/defilantech/LLMKube/issues/1272)) ([eaa61ad](https://github.com/defilantech/LLMKube/commit/eaa61ad79607e5d239a63fac728a4962b324cb98))
+* **foreman:** apply the empty-assistant guard to the preserved truncated turn ([#1282](https://github.com/defilantech/LLMKube/issues/1282)) ([b1f51cc](https://github.com/defilantech/LLMKube/commit/b1f51cc181d4028c1a2effc4f95bb4fb28ec6900))
+* **foreman:** hold the session compaction drop point steady across turns ([#1287](https://github.com/defilantech/LLMKube/issues/1287)) ([febcb2a](https://github.com/defilantech/LLMKube/commit/febcb2a75945471167231b7e9e3b1daf6bd10163))
+* **foreman:** three first-run failures on a clean cluster ([#1295](https://github.com/defilantech/LLMKube/issues/1295)) ([5ca3e64](https://github.com/defilantech/LLMKube/commit/5ca3e64d26647501db0c104b26918c5b6a8a2f97))
+* **gate:** check non-Go changes against the shared merge-base, not HEAD~1 ([#1284](https://github.com/defilantech/LLMKube/issues/1284)) ([6940033](https://github.com/defilantech/LLMKube/commit/6940033fc9eb6b8448a7cc09919eff695428bb9e))
+* **spine-probes:** restore --max-tokens and the 'none' ablation arm ([#1278](https://github.com/defilantech/LLMKube/issues/1278)) ([9493201](https://github.com/defilantech/LLMKube/commit/94932012939c5ea9bba404faae5e7da2609a0150))
+
+
+### Documentation
+
+* **foreman:** fix AgenticTask names in minimal example ([#1290](https://github.com/defilantech/LLMKube/issues/1290)) ([7659f29](https://github.com/defilantech/LLMKube/commit/7659f295cd95d60b6716c0f566ecfa667156212d))
+
 ## [0.9.11](https://github.com/defilantech/LLMKube/compare/v0.9.10...v0.9.11) (2026-07-24)
 
 
