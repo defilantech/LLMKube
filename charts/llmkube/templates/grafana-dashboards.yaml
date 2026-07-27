@@ -96,6 +96,15 @@ metadata:
   {{- if .deferred }}
   annotations:
     dashboards.llmkube.dev/requires-runtime: {{ .requiresRuntime | quote }}
+    {{- /* Helm refuses to adopt an object it did not create, so without these
+           a later `mode: all` upgrade fails on whatever the operator has
+           published and has to be untangled by hand. The operator applies
+           these on the release's behalf, so claiming the release is honest,
+           and it makes auto <-> all switch cleanly in both directions. Inert
+           while in auto mode: Helm never sees an object outside its own
+           manifest. */}}
+    meta.helm.sh/release-name: {{ .root.Release.Name }}
+    meta.helm.sh/release-namespace: {{ .root.Release.Namespace }}
   {{- end }}
 spec:
   allowCrossNamespaceImport: {{ $operator.allowCrossNamespaceImport }}

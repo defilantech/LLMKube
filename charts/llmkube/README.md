@@ -229,6 +229,20 @@ That label is on operator-published dashboards only, so a hand-authored
 `GrafanaDashboard` is never caught by it — and for the same reason the operator
 will not adopt, overwrite, or retire one that happens to share a name.
 
+Switching `operator.mode` needs no manual step in either direction. Deferred
+manifests carry `meta.helm.sh/release-name` and `-namespace`, so `auto` -> `all`
+lets Helm adopt what the operator has already published rather than refusing it
+as a foreign object; `all` -> `auto` drops the runtime CRs from Helm's manifest
+and the operator republishes whichever runtimes are actually serving.
+
+One residue worth knowing: a dashboard adopted that way keeps its
+`dashboards.llmkube.dev/managed-by` label, because Helm does not strip fields it
+did not set. It is inert — `mode: all` renders no candidate ConfigMap, so the
+reconciler returns before looking at anything — but it does mean the `kubectl
+delete` above would also catch a live, Helm-owned dashboard. Run that command
+only for the disabled or uninstalled case it is written for; a `mode: all`
+release is cleaned up by `helm uninstall` itself.
+
 `amd-gpu-observability` (needs AMD GPUs) and `llmkube-slo` (needs
 `pyrra.enabled`) have no such signal and are always published. To drop them, or
 to narrow the set on the sidecar path, list what you want:

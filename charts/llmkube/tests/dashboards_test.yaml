@@ -260,6 +260,15 @@ tests:
       - matchRegex:
           path: data["sglang-dashboard.yaml"]
           pattern: 'requires-runtime: "sglang"'
+      # Without these Helm refuses to adopt what the operator published, and a
+      # later mode: all upgrade fails on invalid ownership metadata instead of
+      # taking the dashboards over.
+      - matchRegex:
+          path: data["vllm-dashboard.yaml"]
+          pattern: 'meta.helm.sh/release-name: RELEASE-NAME'
+      - matchRegex:
+          path: data["vllm-dashboard.yaml"]
+          pattern: 'meta.helm.sh/release-namespace: NAMESPACE'
 
   - it: should publish every dashboard directly in all mode
     set:
