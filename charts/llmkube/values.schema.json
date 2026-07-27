@@ -275,6 +275,8 @@
                   "additionalProperties": true
                 },
                 "allowCrossNamespaceImport": { "type": "boolean" },
+                "folder": { "type": "string" },
+                "resyncPeriod": { "type": "string", "pattern": "^$|^[0-9]+(ms|s|m|h)$" },
                 "datasources": {
                   "type": "array",
                   "items": { "type": "object" }

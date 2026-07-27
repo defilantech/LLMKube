@@ -280,6 +280,12 @@ grafana:
       # Required by the CRD and immutable once set; {} matches every Grafana.
       instanceSelector: {}
       allowCrossNamespaceImport: true
+      # Grafana folder for the dashboards. The sidecar path uses the
+      # grafana_folder annotation above instead; this is the CR's own field.
+      folder: ""
+      # How often grafana-operator re-reads the ConfigMap. Empty leaves the
+      # CRD default (5m).
+      resyncPeriod: ""
       # Literal ${inputName} -> datasourceName replace over the dashboard JSON.
       #   datasources:
       #     - inputName: DS_PROMETHEUS

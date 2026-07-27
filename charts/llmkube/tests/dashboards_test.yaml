@@ -126,6 +126,28 @@ tests:
       - equal:
           path: spec.allowCrossNamespaceImport
           value: false
+      # Unset leaves the CRD's own defaults rather than pinning them here.
+      - notExists:
+          path: spec.folder
+      - notExists:
+          path: spec.resyncPeriod
+
+  - it: should place the dashboards in a folder and resync on the configured period
+    set:
+      grafana.dashboards.enabled: true
+      grafana.dashboards.operator.enabled: true
+      grafana.dashboards.operator.folder: LLMKube
+      grafana.dashboards.operator.resyncPeriod: 10m
+    documentSelector:
+      path: metadata.name
+      value: RELEASE-NAME-llmkube-llmkube-slo
+    asserts:
+      - equal:
+          path: spec.folder
+          value: LLMKube
+      - equal:
+          path: spec.resyncPeriod
+          value: 10m
 
   - it: should remap the dashboard datasource variable when configured
     set:

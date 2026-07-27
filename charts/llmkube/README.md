@@ -175,6 +175,8 @@ The PodMonitor additionally promotes `service`, `namespace`, `model` and
 | `grafana.dashboards.operator.enabled` | Also emit grafana-operator `GrafanaDashboard` CRs | `false` |
 | `grafana.dashboards.operator.instanceSelector` | `GrafanaDashboard` instance selector (required by the CRD) | `{}` |
 | `grafana.dashboards.operator.allowCrossNamespaceImport` | Match Grafanas outside the CR's namespace | `true` |
+| `grafana.dashboards.operator.folder` | Grafana folder for the dashboards (sidecar path uses the `grafana_folder` annotation) | `""` |
+| `grafana.dashboards.operator.resyncPeriod` | How often grafana-operator re-reads the ConfigMap (empty leaves the CRD default) | `""` |
 | `grafana.dashboards.operator.datasources` | Datasource variable remaps (`inputName`/`datasourceName`) | `[]` |
 
 #### Grafana dashboards

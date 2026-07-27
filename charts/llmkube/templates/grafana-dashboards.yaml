@@ -35,6 +35,12 @@ metadata:
     {{- $labels | nindent 4 }}
 spec:
   allowCrossNamespaceImport: {{ $.Values.grafana.dashboards.operator.allowCrossNamespaceImport }}
+  {{- with $.Values.grafana.dashboards.operator.folder }}
+  folder: {{ . | quote }}
+  {{- end }}
+  {{- with $.Values.grafana.dashboards.operator.resyncPeriod }}
+  resyncPeriod: {{ . | quote }}
+  {{- end }}
   # Required by the CRD and immutable after creation.
   instanceSelector:
     {{- toYaml $.Values.grafana.dashboards.operator.instanceSelector | nindent 4 }}
