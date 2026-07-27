@@ -174,6 +174,14 @@ func (r *GrafanaDashboardReconciler) servingRuntimes(ctx context.Context) (map[s
 	}
 	serving := map[string]bool{}
 	for i := range list.Items {
+		// Stopped and Suspended tear the workload down, so the series stop
+		// too and the dashboard would go blank while the object lingers.
+		// Every other phase either has pods now (Ready) or is on its way to
+		// them, and a dashboard that arrives a reconcile early is harmless.
+		switch list.Items[i].Status.Phase {
+		case inferencev1alpha1.PhaseStopped, inferencev1alpha1.PhaseSuspended:
+			continue
+		}
 		// Same helper the pod's runtime label comes from, so the set matches
 		// the `runtime` label the dashboards' queries are grouped by.
 		serving[runtimeNameLabel(&list.Items[i])] = true
@@ -198,6 +206,9 @@ func (r *GrafanaDashboardReconciler) publish(ctx context.Context, candidate *uns
 	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, live, func() error {
 		live.Object["spec"] = desiredSpec
 		live.SetLabels(candidate.GetLabels())
+		// The requires-runtime annotation rides along so `kubectl get -o yaml`
+		// answers why a dashboard is here, not just that it is.
+		live.SetAnnotations(candidate.GetAnnotations())
 		return nil
 	})
 	return err

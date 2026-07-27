@@ -100,12 +100,17 @@ func dashboardMapper(withDashboardKind bool) apimeta.RESTMapper {
 }
 
 func servingISvc(name, runtimeName string) *inferencev1alpha1.InferenceService {
+	return isvcInPhase(name, runtimeName, inferencev1alpha1.PhaseReady)
+}
+
+func isvcInPhase(name, runtimeName, phase string) *inferencev1alpha1.InferenceService {
 	return &inferencev1alpha1.InferenceService{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
 		Spec: inferencev1alpha1.InferenceServiceSpec{
 			ModelRef: "a-model",
 			Runtime:  runtimeName,
 		},
+		Status: inferencev1alpha1.InferenceServiceStatus{Phase: phase},
 	}
 }
 
@@ -290,6 +295,30 @@ func TestUnparsableCandidateDoesNotBlockTheRest(t *testing.T) {
 	}
 }
 
+// The runtime a dashboard waits for is carried onto the published object, so
+// `kubectl get -o yaml` answers why it is here and not just that it is.
+func TestPublishedDashboardKeepsItsRuntimeAnnotation(t *testing.T) {
+	r := newDashboardReconciler(t, dashboardMapper(true),
+		candidatesConfigMap(map[string]string{
+			"vllm-dashboard.yaml": candidateManifest(testVLLMDashboard, "vllm"),
+		}),
+		servingISvc("v", "vllm"),
+	)
+
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	live := &unstructured.Unstructured{}
+	live.SetGroupVersionKind(grafanaDashboardGVK())
+	key := types.NamespacedName{Namespace: testDashboardNS, Name: testVLLMDashboard}
+	if err := r.Get(context.Background(), key, live); err != nil {
+		t.Fatalf("get published dashboard: %v", err)
+	}
+	if got := live.GetAnnotations()[dashboardRuntimeAnnotation]; got != "vllm" {
+		t.Errorf("published %s = %q, want %q", dashboardRuntimeAnnotation, got, "vllm")
+	}
+}
+
 // An InferenceService omitting spec.runtime serves llama.cpp, matching the
 // runtime label its pods are scraped with.
 func TestDefaultedRuntimeCountsAsServing(t *testing.T) {
@@ -306,6 +335,39 @@ func TestDefaultedRuntimeCountsAsServing(t *testing.T) {
 	}
 	if !dashboardExists(t, r.Client, llamaDashboard) {
 		t.Error("a service with no explicit runtime did not count as serving llamacpp")
+	}
+}
+
+// A scaled-to-zero service still has an InferenceService object but no pods
+// and so no series: the dashboard it would justify is exactly as blank as one
+// for a runtime nobody ever deployed.
+func TestTornDownServiceDoesNotCountAsServing(t *testing.T) {
+	for _, tc := range []struct {
+		phase string
+		want  bool
+	}{
+		{phase: inferencev1alpha1.PhaseReady, want: true},
+		{phase: inferencev1alpha1.PhaseCreating, want: true},
+		{phase: inferencev1alpha1.PhaseWaitingForGPU, want: true},
+		{phase: "", want: true},
+		{phase: inferencev1alpha1.PhaseStopped, want: false},
+		{phase: inferencev1alpha1.PhaseSuspended, want: false},
+	} {
+		t.Run(tc.phase, func(t *testing.T) {
+			r := newDashboardReconciler(t, dashboardMapper(true),
+				candidatesConfigMap(map[string]string{
+					"vllm-dashboard.yaml": candidateManifest(testVLLMDashboard, "vllm"),
+				}),
+				isvcInPhase("v", "vllm", tc.phase),
+			)
+
+			if _, err := r.Reconcile(context.Background(), ctrl.Request{}); err != nil {
+				t.Fatalf("reconcile: %v", err)
+			}
+			if got := dashboardExists(t, r.Client, testVLLMDashboard); got != tc.want {
+				t.Errorf("phase %q published = %v, want %v", tc.phase, got, tc.want)
+			}
+		})
 	}
 }
 
