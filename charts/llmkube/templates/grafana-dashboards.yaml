@@ -2,16 +2,18 @@
 {{- /* Globbed once: the ConfigMap keys and the CRs' configMapRef keys are the
        same file list by construction. */}}
 {{- $dashboards := .Files.Glob "dashboards/*.json" }}
-{{- /* ponytail: a declared list, not detection. Which runtimes exist is an
-       InferenceService fact the chart cannot see at template time; a
-       controller reconciling dashboards against live spec.runtime values is
-       the upgrade path (#1267 discussion). */}}
 {{- with .Values.grafana.dashboards.only }}
 {{- $dashboards = $.Files.Glob (printf "dashboards/{%s}.json" (join "," .)) }}
 {{- if not $dashboards }}
 {{- fail (printf "grafana.dashboards.only matches no dashboard in dashboards/: %v" .) }}
 {{- end }}
 {{- end }}
+{{- /* Dashboards whose panels read one runtime's metrics only, so they render
+       blank until something serves that runtime. The chart cannot tell: it is
+       an InferenceService fact that does not exist at install time. In auto
+       mode these are deferred to the operator instead of published here. */}}
+{{- $runtimeDashboards := dict "sglang-dashboard.json" "sglang" "vllm-dashboard.json" "vllm" }}
+{{- $defer := and .Values.grafana.dashboards.operator.enabled (eq .Values.grafana.dashboards.operator.mode "auto") }}
 {{- $fullname := include "llmkube.fullname" . }}
 {{- $configMapName := printf "%s-dashboards" $fullname }}
 {{- $namespace := default (include "llmkube.namespace" .) .Values.grafana.dashboards.namespace }}
@@ -33,34 +35,78 @@ metadata:
 data:
   {{- $dashboards.AsConfig | nindent 2 }}
 {{- if .Values.grafana.dashboards.operator.enabled }}
+{{- /* The deferred manifests travel whole, so every CR field stays owned by
+       values.yaml: the operator decides only whether a dashboard exists. */}}
+{{- $candidates := dict }}
 {{- range $path, $_ := $dashboards }}
 {{- $base := base $path }}
+{{- $requiresRuntime := get $runtimeDashboards $base }}
+{{- $deferred := and $defer $requiresRuntime }}
+{{- $manifest := include "llmkube.grafanaDashboard" (dict "root" $ "base" $base "fullname" $fullname "namespace" $namespace "labels" $labels "configMapName" $configMapName "requiresRuntime" $requiresRuntime "deferred" $deferred) }}
+{{- if $deferred }}
+{{- $_ := set $candidates (printf "%s.yaml" (trimSuffix ".json" $base)) $manifest }}
+{{- else }}
 ---
-apiVersion: grafana.integreatly.org/v1beta1
-kind: GrafanaDashboard
+{{ $manifest }}
+{{- end }}
+{{- end }}
+{{- if $candidates }}
+---
+apiVersion: v1
+kind: ConfigMap
 metadata:
-  name: {{ printf "%s-%s" $fullname (trimSuffix ".json" $base) }}
+  name: {{ $fullname }}-dashboard-candidates
   namespace: {{ $namespace }}
   labels:
     {{- $labels | nindent 4 }}
+data:
+  {{- range $key, $manifest := $candidates }}
+  {{ $key }}: |
+    {{- $manifest | nindent 4 }}
+  {{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/*
+One GrafanaDashboard manifest. Rendered either as a document of its own or
+into the candidates ConfigMap, so both paths agree by construction.
+Deferred manifests carry managed-by: llmkube (not Helm, which never applies
+them) — the operator retires only what it published, never a hand-authored
+dashboard that happens to share a name.
+*/}}
+{{- define "llmkube.grafanaDashboard" -}}
+{{- $operator := .root.Values.grafana.dashboards.operator -}}
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: {{ printf "%s-%s" .fullname (trimSuffix ".json" .base) }}
+  namespace: {{ .namespace }}
+  labels:
+    {{- .labels | nindent 4 }}
+    {{- if .deferred }}
+    app.kubernetes.io/managed-by: llmkube
+    {{- end }}
+  {{- if .deferred }}
+  annotations:
+    dashboards.llmkube.dev/requires-runtime: {{ .requiresRuntime | quote }}
+  {{- end }}
 spec:
-  allowCrossNamespaceImport: {{ $.Values.grafana.dashboards.operator.allowCrossNamespaceImport }}
-  {{- with $.Values.grafana.dashboards.operator.folder }}
+  allowCrossNamespaceImport: {{ $operator.allowCrossNamespaceImport }}
+  {{- with $operator.folder }}
   folder: {{ . | quote }}
   {{- end }}
-  {{- with $.Values.grafana.dashboards.operator.resyncPeriod }}
+  {{- with $operator.resyncPeriod }}
   resyncPeriod: {{ . | quote }}
   {{- end }}
   # Required by the CRD and immutable after creation.
   instanceSelector:
-    {{- toYaml $.Values.grafana.dashboards.operator.instanceSelector | nindent 4 }}
-  {{- with $.Values.grafana.dashboards.operator.datasources }}
+    {{- toYaml $operator.instanceSelector | nindent 4 }}
+  {{- with $operator.datasources }}
   datasources:
     {{- toYaml . | nindent 4 }}
   {{- end }}
   configMapRef:
-    name: {{ $configMapName }}
-    key: {{ $base }}
-{{- end }}
-{{- end }}
+    name: {{ .configMapName }}
+    key: {{ .base }}
 {{- end }}

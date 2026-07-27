@@ -274,6 +274,7 @@
               "additionalProperties": false,
               "properties": {
                 "enabled": { "type": "boolean" },
+                "mode": { "type": "string", "enum": ["auto", "all"] },
                 "instanceSelector": {
                   "type": "object",
                   "additionalProperties": true

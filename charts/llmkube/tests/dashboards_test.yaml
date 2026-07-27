@@ -84,6 +84,8 @@ tests:
     set:
       grafana.dashboards.enabled: true
       grafana.dashboards.operator.enabled: true
+      # Deferral is the default; this is the per-file shape without it.
+      grafana.dashboards.operator.mode: all
     asserts:
       - hasDocuments:
           count: 8
@@ -209,3 +211,65 @@ tests:
     asserts:
       - failedTemplate:
           errorPattern: matches no dashboard
+
+  # --- auto mode: the runtime dashboards are deferred to the operator ---
+
+  - it: should defer the runtime dashboards and publish the rest itself
+    set:
+      grafana.dashboards.enabled: true
+      grafana.dashboards.operator.enabled: true
+    asserts:
+      # 5 unconditional CRs + the dashboards ConfigMap + the candidates one.
+      - hasDocuments:
+          count: 7
+
+  - it: should hand the deferred manifests to the operator, whole and labelled
+    set:
+      grafana.dashboards.enabled: true
+      grafana.dashboards.operator.enabled: true
+      grafana.dashboards.operator.folder: LLMKube
+    documentSelector:
+      path: metadata.name
+      value: RELEASE-NAME-llmkube-dashboard-candidates
+    asserts:
+      - isKind:
+          of: ConfigMap
+      # managed-by scopes what the operator may retire; the annotation is the
+      # runtime it waits for. Values-owned fields ride along untouched.
+      - matchRegex:
+          path: data["vllm-dashboard.yaml"]
+          pattern: 'requires-runtime: "vllm"'
+      - matchRegex:
+          path: data["vllm-dashboard.yaml"]
+          pattern: 'app.kubernetes.io/managed-by: llmkube'
+      - matchRegex:
+          path: data["vllm-dashboard.yaml"]
+          pattern: 'folder: "LLMKube"'
+      - matchRegex:
+          path: data["sglang-dashboard.yaml"]
+          pattern: 'requires-runtime: "sglang"'
+
+  - it: should publish every dashboard directly in all mode
+    set:
+      grafana.dashboards.enabled: true
+      grafana.dashboards.operator.enabled: true
+      grafana.dashboards.operator.mode: all
+    asserts:
+      # 7 CRs + the dashboards ConfigMap, and no candidates ConfigMap.
+      - hasDocuments:
+          count: 8
+      - notExists:
+          path: data["vllm-dashboard.yaml"]
+
+  - it: should keep the sidecar path shipping every dashboard in auto mode
+    set:
+      grafana.dashboards.enabled: true
+      grafana.dashboards.operator.enabled: true
+    documentSelector:
+      path: metadata.name
+      value: RELEASE-NAME-llmkube-dashboards
+    asserts:
+      - exists:
+          path: data["vllm-dashboard.json"]
+      - exists:
+          path: data["sglang-dashboard.json"]

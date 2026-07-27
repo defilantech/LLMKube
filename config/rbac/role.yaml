@@ -194,6 +194,18 @@ rules:
   - update
   - watch
 - apiGroups:
+  - grafana.integreatly.org
+  resources:
+  - grafanadashboards
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
   - inference.llmkube.dev
   resources:
   - gpuquotas

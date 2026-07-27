@@ -48,6 +48,9 @@ spec:
         {{- if .Values.pyrra.enabled }}
         - --enable-pyrra-slo
         {{- end }}
+        {{- if and .Values.grafana.dashboards.enabled .Values.grafana.dashboards.operator.enabled (eq .Values.grafana.dashboards.operator.mode "auto") }}
+        - --grafana-dashboard-source={{ default (include "llmkube.namespace" .) .Values.grafana.dashboards.namespace }}/{{ include "llmkube.fullname" . }}-dashboard-candidates
+        {{- end }}
         {{- if .Values.modelCache.enabled }}
         - --model-cache-path={{ .Values.modelCache.mountPath }}
         - --model-cache-mode={{ .Values.modelCache.mode }}

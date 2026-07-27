@@ -194,6 +194,11 @@ func main() {
 	flag.BoolVar(&enablePyrraSLO, "enable-pyrra-slo", false,
 		"Enable rendering Pyrra ServiceLevelObjective resources for InferenceServices with spec.slo. "+
 			"Requires the Pyrra CRD in the cluster (https://github.com/pyrra-dev/pyrra).")
+	var dashboardSource string
+	flag.StringVar(&dashboardSource, "grafana-dashboard-source", "",
+		"ConfigMap of candidate GrafanaDashboard manifests as <namespace>/<name>, written by the Helm "+
+			"chart. Runtime-specific dashboards in it are published only while an InferenceService on "+
+			"that runtime exists, so a dashboard never renders blank. Empty disables the reconciler.")
 	var federationRole string
 	var federationDatacenterKubeconfig string
 	var federationClusterName string
@@ -486,6 +491,24 @@ func main() {
 		Enabled: enablePyrraSLO,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "InferenceServiceSLO")
+		os.Exit(1)
+	}
+	// GrafanaDashboard publishes the runtime dashboards the chart deferred,
+	// keeping the published set equal to the runtimes actually serving. Like
+	// the SLO controller it self-gates, on both the flag and the
+	// grafana.integreatly.org CRD, so a cluster without grafana-operator
+	// starts cleanly and this controller no-ops.
+	dashboardSourceRef, err := controller.ParseDashboardSource(dashboardSource)
+	if err != nil {
+		setupLog.Error(err, "invalid --grafana-dashboard-source")
+		os.Exit(1)
+	}
+	if err := (&controller.GrafanaDashboardReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+		Source: dashboardSourceRef,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "GrafanaDashboard")
 		os.Exit(1)
 	}
 	// ModelRouterGateway compiles a ModelRouter in dataPlane: Gateway mode onto a

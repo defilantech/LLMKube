@@ -284,6 +284,11 @@ grafana:
     # Emit grafana-operator GrafanaDashboard CRs referencing the ConfigMap
     operator:
       enabled: false
+      # auto: publish the runtime dashboards (SGLang, vLLM) only while an
+      # InferenceService on that runtime exists, so none of them renders blank.
+      # The chart hands those manifests to the operator instead of applying
+      # them; the rest are applied here as always. all: apply every dashboard.
+      mode: auto
       # Required by the CRD and immutable once set; {} matches every Grafana.
       instanceSelector: {}
       allowCrossNamespaceImport: true

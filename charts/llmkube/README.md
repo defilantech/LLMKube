@@ -174,6 +174,7 @@ The PodMonitor additionally promotes `service`, `namespace`, `model` and
 | `grafana.dashboards.namespace` | ConfigMap/CR namespace (defaults to release namespace) | `""` |
 | `grafana.dashboards.annotations` | Annotations for the dashboards ConfigMap | `{}` |
 | `grafana.dashboards.operator.enabled` | Also emit grafana-operator `GrafanaDashboard` CRs | `false` |
+| `grafana.dashboards.operator.mode` | `auto` publishes runtime dashboards only while that runtime serves; `all` publishes every dashboard | `auto` |
 | `grafana.dashboards.operator.instanceSelector` | `GrafanaDashboard` instance selector (required by the CRD) | `{}` |
 | `grafana.dashboards.operator.allowCrossNamespaceImport` | Match Grafanas outside the CR's namespace | `true` |
 | `grafana.dashboards.operator.folder` | Grafana folder for the dashboards (sidecar path uses the `grafana_folder` annotation) | `""` |
@@ -197,11 +198,27 @@ the JSON:
   requires the field and rejects changes to it after creation. Set
   `additionalLabels: {}` to drop the sidecar label if you run no sidecar.
 
-Every dashboard ships by default. Several only have data on a cluster with the
-matching workload — `sglang-dashboard` and `vllm-dashboard` need an
-`InferenceService` on that runtime, `amd-gpu-observability` needs AMD GPUs, and
-`llmkube-slo` needs `pyrra.enabled`. A dashboard with no data renders blank,
-which looks the same as an idle cluster, so narrow the set to what you deploy:
+#### Dashboards that only have data sometimes
+
+`sglang-dashboard` and `vllm-dashboard` read one runtime's metrics, so they
+render blank until something serves that runtime — and blank looks the same as
+an idle cluster.
+
+With `operator.enabled` and the default `operator.mode: auto`, the chart hands
+those two manifests to the operator instead of applying them, and the operator
+publishes each one while an `InferenceService` on its runtime exists and
+retires it when the last one goes away. Nothing to configure: deploy a vLLM
+service and the vLLM dashboard appears. Set `operator.mode: all` to apply every
+dashboard at install time instead.
+
+The chart cannot make this call itself — which runtimes exist is an
+`InferenceService` fact that does not exist at `helm install` time, and Helm
+leaves nothing running to notice later. The sidecar path is unaffected: the
+ConfigMap always carries every dashboard the sidecar is asked to load.
+
+`amd-gpu-observability` (needs AMD GPUs) and `llmkube-slo` (needs
+`pyrra.enabled`) have no such signal and are always published. To drop them, or
+to narrow the set on the sidecar path, list what you want:
 
 ```yaml
 grafana:
