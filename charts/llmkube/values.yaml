@@ -265,6 +265,13 @@ prometheus:
 grafana:
   dashboards:
     enabled: false
+    # Dashboards to ship, by filename without .json. Empty ships all of them.
+    # A dashboard for something the cluster does not run renders blank, which
+    # is indistinguishable from an idle cluster, so narrow this to what you
+    # deploy: sglang-dashboard and vllm-dashboard need an InferenceService on
+    # that runtime, amd-gpu-observability needs AMD GPUs, llmkube-slo needs
+    # pyrra.enabled.
+    only: []
     # Additional labels for the ConfigMap. grafana_dashboard is the key the
     # kube-prometheus-stack Grafana sidecar watches for.
     additionalLabels:

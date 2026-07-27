@@ -169,6 +169,7 @@ The PodMonitor additionally promotes `service`, `namespace`, `model` and
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `grafana.dashboards.enabled` | Ship the dashboards in `dashboards/` as a ConfigMap | `false` |
+| `grafana.dashboards.only` | Dashboards to ship, by filename without `.json`. Empty ships all of them | `[]` |
 | `grafana.dashboards.additionalLabels` | Additional labels for the dashboards ConfigMap | `{grafana_dashboard: "true"}` |
 | `grafana.dashboards.namespace` | ConfigMap/CR namespace (defaults to release namespace) | `""` |
 | `grafana.dashboards.annotations` | Annotations for the dashboards ConfigMap | `{}` |
@@ -195,6 +196,26 @@ the JSON:
   `operator.instanceSelector` to match your `Grafana` resource; the CRD
   requires the field and rejects changes to it after creation. Set
   `additionalLabels: {}` to drop the sidecar label if you run no sidecar.
+
+Every dashboard ships by default. Several only have data on a cluster with the
+matching workload — `sglang-dashboard` and `vllm-dashboard` need an
+`InferenceService` on that runtime, `amd-gpu-observability` needs AMD GPUs, and
+`llmkube-slo` needs `pyrra.enabled`. A dashboard with no data renders blank,
+which looks the same as an idle cluster, so narrow the set to what you deploy:
+
+```yaml
+grafana:
+  dashboards:
+    enabled: true
+    only:
+      - llmkube-inference
+      - llmkube-quota
+      - vllm-dashboard
+```
+
+An entry matching no file fails the render rather than silently shipping less
+than you asked for. The chart cannot detect this for you: which runtimes exist
+is an `InferenceService` fact that does not exist yet at `helm install` time.
 
 `allowCrossNamespaceImport` defaults to `true` so the dashboards reach a
 Grafana installed in another namespace, which is the usual layout. Turning it

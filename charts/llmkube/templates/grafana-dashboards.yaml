@@ -2,6 +2,16 @@
 {{- /* Globbed once: the ConfigMap keys and the CRs' configMapRef keys are the
        same file list by construction. */}}
 {{- $dashboards := .Files.Glob "dashboards/*.json" }}
+{{- /* ponytail: a declared list, not detection. Which runtimes exist is an
+       InferenceService fact the chart cannot see at template time; a
+       controller reconciling dashboards against live spec.runtime values is
+       the upgrade path (#1267 discussion). */}}
+{{- with .Values.grafana.dashboards.only }}
+{{- $dashboards = $.Files.Glob (printf "dashboards/{%s}.json" (join "," .)) }}
+{{- if not $dashboards }}
+{{- fail (printf "grafana.dashboards.only matches no dashboard in dashboards/: %v" .) }}
+{{- end }}
+{{- end }}
 {{- $fullname := include "llmkube.fullname" . }}
 {{- $configMapName := printf "%s-dashboards" $fullname }}
 {{- $namespace := default (include "llmkube.namespace" .) .Values.grafana.dashboards.namespace }}

@@ -173,3 +173,39 @@ tests:
     asserts:
       - hasDocuments:
           count: 0
+
+  - it: should ship only the named dashboards when narrowed
+    set:
+      grafana.dashboards.enabled: true
+      grafana.dashboards.only:
+        - llmkube-inference
+        - vllm-dashboard
+    asserts:
+      - exists:
+          path: data["llmkube-inference.json"]
+      - exists:
+          path: data["vllm-dashboard.json"]
+      # The runtime this cluster does not run would render a blank dashboard.
+      - notExists:
+          path: data["sglang-dashboard.json"]
+      - notExists:
+          path: data["amd-gpu-observability.json"]
+
+  - it: should render a CR per narrowed dashboard, not per file on disk
+    set:
+      grafana.dashboards.enabled: true
+      grafana.dashboards.only:
+        - llmkube-inference
+      grafana.dashboards.operator.enabled: true
+    asserts:
+      - hasDocuments:
+          count: 2
+
+  - it: should fail rather than silently ship nothing on a typo
+    set:
+      grafana.dashboards.enabled: true
+      grafana.dashboards.only:
+        - llmkube-inferance
+    asserts:
+      - failedTemplate:
+          errorPattern: matches no dashboard
