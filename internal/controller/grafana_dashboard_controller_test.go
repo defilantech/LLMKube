@@ -52,7 +52,7 @@ metadata:
   name: %s
   namespace: %s
   labels:
-    app.kubernetes.io/managed-by: llmkube
+    dashboards.llmkube.dev/managed-by: llmkube
   annotations:
     dashboards.llmkube.dev/requires-runtime: %q
 spec:
@@ -143,6 +143,17 @@ func newDashboardReconciler(t *testing.T, mapper apimeta.RESTMapper, objects ...
 		Scheme: s,
 		Source: types.NamespacedName{Namespace: testDashboardNS, Name: testCandidatesCM},
 	}
+}
+
+func getDashboard(t *testing.T, c client.Client, name string) *unstructured.Unstructured {
+	t.Helper()
+
+	live := &unstructured.Unstructured{}
+	live.SetGroupVersionKind(grafanaDashboardGVK())
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testDashboardNS, Name: name}, live); err != nil {
+		t.Fatalf("get %s: %v", name, err)
+	}
+	return live
 }
 
 func dashboardExists(t *testing.T, c client.Client, name string) bool {
@@ -239,6 +250,65 @@ func TestUnmanagedDashboardSurvivesRetirement(t *testing.T) {
 	}
 	if !dashboardExists(t, r.Client, testVLLMDashboard) {
 		t.Error("deleted a dashboard this operator did not publish")
+	}
+}
+
+// The gap the retirement test alone leaves open: with a serving runtime,
+// publish runs, and adopting a hand-authored dashboard would stamp our label
+// onto it — which then makes it eligible for retirement later. Config would
+// be overwritten and then deleted, in two steps and with no error anywhere.
+func TestUnmanagedDashboardIsNotAdoptedByPublish(t *testing.T) {
+	existing := publishedDashboard(testVLLMDashboard, map[string]string{"team": "platform"})
+	existing.SetAnnotations(map[string]string{"argocd.argoproj.io/tracking-id": "theirs"})
+	existing.Object["spec"] = map[string]interface{}{"folder": "hand-authored"}
+
+	r := newDashboardReconciler(t, dashboardMapper(true),
+		candidatesConfigMap(map[string]string{
+			"vllm-dashboard.yaml": candidateManifest(testVLLMDashboard, "vllm"),
+		}),
+		servingISvc("v", "vllm"),
+		existing,
+	)
+
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	live := getDashboard(t, r.Client, testVLLMDashboard)
+	if got := live.GetLabels()[managedByLabel]; got != "" {
+		t.Errorf("adopted a dashboard we did not publish: %s = %q", managedByLabel, got)
+	}
+	if folder, _, _ := unstructured.NestedString(live.Object, "spec", "folder"); folder != "hand-authored" {
+		t.Errorf("overwrote a hand-authored spec: folder = %q", folder)
+	}
+	if got := live.GetAnnotations()["argocd.argoproj.io/tracking-id"]; got != "theirs" {
+		t.Errorf("stripped a GitOps tracking annotation: %q", got)
+	}
+}
+
+// Republishing must not strip metadata another controller owns: SetLabels and
+// SetAnnotations replace the map wholesale, so a GitOps tracking annotation
+// would be removed on every reconcile and re-added on every sync, forever.
+func TestPublishPreservesForeignMetadata(t *testing.T) {
+	existing := publishedDashboard(testVLLMDashboard, map[string]string{managedByLabel: managedByValue})
+	existing.SetAnnotations(map[string]string{"argocd.argoproj.io/tracking-id": "ours"})
+
+	r := newDashboardReconciler(t, dashboardMapper(true),
+		candidatesConfigMap(map[string]string{
+			"vllm-dashboard.yaml": candidateManifest(testVLLMDashboard, "vllm"),
+		}),
+		servingISvc("v", "vllm"),
+		existing,
+	)
+
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	live := getDashboard(t, r.Client, testVLLMDashboard)
+	if got := live.GetAnnotations()["argocd.argoproj.io/tracking-id"]; got != "ours" {
+		t.Errorf("tracking annotation = %q, want %q", got, "ours")
+	}
+	if got := live.GetAnnotations()[dashboardRuntimeAnnotation]; got != "vllm" {
+		t.Errorf("%s = %q, want vllm", dashboardRuntimeAnnotation, got)
 	}
 }
 
@@ -350,6 +420,12 @@ func TestTornDownServiceDoesNotCountAsServing(t *testing.T) {
 		{phase: inferencev1alpha1.PhaseCreating, want: true},
 		{phase: inferencev1alpha1.PhaseWaitingForGPU, want: true},
 		{phase: "", want: true},
+		// Failed still intends to run pods and typically has crashlooping
+		// ones, so it keeps its dashboard: retiring on Failed would flap it
+		// out and back on every recovery, exactly when it is being watched.
+		{phase: inferencev1alpha1.PhaseFailed, want: true},
+		{phase: inferencev1alpha1.PhaseCached, want: true},
+		{phase: inferencev1alpha1.PhaseDownloading, want: true},
 		{phase: inferencev1alpha1.PhaseStopped, want: false},
 		{phase: inferencev1alpha1.PhaseSuspended, want: false},
 	} {

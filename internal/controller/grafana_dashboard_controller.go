@@ -31,7 +31,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/yaml"
 
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -48,9 +47,12 @@ const (
 	// unconditional and always published.
 	dashboardRuntimeAnnotation = "dashboards.llmkube.dev/requires-runtime"
 
-	// managedByLabel scopes deletion to what this operator published. A
-	// hand-authored GrafanaDashboard is never a deletion candidate.
-	managedByLabel = "app.kubernetes.io/managed-by"
+	// managedByLabel scopes both publication and deletion to what this
+	// operator owns. A hand-authored GrafanaDashboard is neither adopted nor
+	// deleted. Deliberately not app.kubernetes.io/managed-by: the chart's
+	// common labels already set that to Helm, and a manifest carrying the key
+	// twice resolves by parser luck rather than by intent.
+	managedByLabel = "dashboards.llmkube.dev/managed-by"
 	managedByValue = "llmkube"
 )
 
@@ -81,7 +83,7 @@ type GrafanaDashboardReconciler struct {
 	detector     *crdDetector
 }
 
-// +kubebuilder:rbac:groups=grafana.integreatly.org,resources=grafanadashboards,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=grafana.integreatly.org,resources=grafanadashboards,verbs=get;create;update;delete
 
 // Reconcile republishes the whole candidate set on every event rather than
 // diffing the one InferenceService that changed. The published set is a
@@ -113,7 +115,7 @@ func (r *GrafanaDashboardReconciler) Reconcile(ctx context.Context, _ ctrl.Reque
 	for _, candidate := range candidates {
 		runtimeName := candidate.GetAnnotations()[dashboardRuntimeAnnotation]
 		if runtimeName == "" || serving[runtimeName] {
-			if err := r.publish(ctx, candidate); err != nil {
+			if err := r.publish(ctx, candidate, log); err != nil {
 				return ctrl.Result{}, err
 			}
 			continue
@@ -176,8 +178,10 @@ func (r *GrafanaDashboardReconciler) servingRuntimes(ctx context.Context) (map[s
 	for i := range list.Items {
 		// Stopped and Suspended tear the workload down, so the series stop
 		// too and the dashboard would go blank while the object lingers.
-		// Every other phase either has pods now (Ready) or is on its way to
-		// them, and a dashboard that arrives a reconcile early is harmless.
+		// Every other phase still intends to run pods, including Failed: a
+		// crashlooping or recovering service is exactly when someone opens
+		// the dashboard, and retiring it on Failed would make it flap in and
+		// out on every recovery. Only a deliberate teardown retires.
 		switch list.Items[i].Status.Phase {
 		case inferencev1alpha1.PhaseStopped, inferencev1alpha1.PhaseSuspended:
 			continue
@@ -189,29 +193,59 @@ func (r *GrafanaDashboardReconciler) servingRuntimes(ctx context.Context) (map[s
 	return serving, nil
 }
 
-// publish creates-or-updates a candidate, overwriting spec drift. No owner
-// reference: a dashboard outlives any single InferenceService that justified
-// it, so owner-ref GC would delete it the moment one of several services on
-// that runtime went away. retire handles removal instead.
-func (r *GrafanaDashboardReconciler) publish(ctx context.Context, candidate *unstructured.Unstructured) error {
+// publish creates a candidate, or updates the one this operator already
+// published, overwriting spec drift. No owner reference: a dashboard outlives
+// any single InferenceService that justified it, so owner-ref GC would delete
+// it the moment one of several services on that runtime went away. retire
+// handles removal instead.
+//
+// A dashboard that exists without our managed-by label is left untouched.
+// Adopting it would stamp the label on, which then makes it eligible for
+// retirement later: someone's hand-authored dashboard would be silently
+// overwritten and then deleted, in two steps and with no error anywhere.
+func (r *GrafanaDashboardReconciler) publish(
+	ctx context.Context,
+	candidate *unstructured.Unstructured,
+	log logr.Logger,
+) error {
 	desiredSpec, _, err := unstructured.NestedMap(candidate.Object, "spec")
 	if err != nil {
 		return err
 	}
+	key := types.NamespacedName{Namespace: candidate.GetNamespace(), Name: candidate.GetName()}
 	live := &unstructured.Unstructured{}
 	live.SetGroupVersionKind(candidate.GroupVersionKind())
-	live.SetName(candidate.GetName())
-	live.SetNamespace(candidate.GetNamespace())
 
-	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, live, func() error {
-		live.Object["spec"] = desiredSpec
-		live.SetLabels(candidate.GetLabels())
-		// The requires-runtime annotation rides along so `kubectl get -o yaml`
-		// answers why a dashboard is here, not just that it is.
-		live.SetAnnotations(candidate.GetAnnotations())
+	switch err := r.Get(ctx, key, live); {
+	case apierrors.IsNotFound(err):
+		return r.Create(ctx, candidate.DeepCopy())
+	case err != nil:
+		return err
+	case live.GetLabels()[managedByLabel] != managedByValue:
+		log.Info("dashboard exists but was not published by llmkube, leaving it alone",
+			"dashboard", key.String())
 		return nil
-	})
-	return err
+	}
+
+	live.Object["spec"] = desiredSpec
+	// Merge rather than replace: anything else on the live object is someone
+	// else's — a GitOps tracking annotation, an operator's finalizer bookkeeping
+	// — and replacing the maps wholesale would strip it on every reconcile.
+	// The requires-runtime annotation rides along so `kubectl get -o yaml`
+	// answers why a dashboard is here, not just that it is.
+	live.SetLabels(mergedInto(live.GetLabels(), candidate.GetLabels()))
+	live.SetAnnotations(mergedInto(live.GetAnnotations(), candidate.GetAnnotations()))
+	return r.Update(ctx, live)
+}
+
+func mergedInto(existing, desired map[string]string) map[string]string {
+	if existing == nil {
+		existing = map[string]string{}
+	}
+	for k, v := range desired {
+		existing[k] = v
+	}
+	return existing
 }
 
 // retire deletes a published dashboard whose runtime is no longer served,

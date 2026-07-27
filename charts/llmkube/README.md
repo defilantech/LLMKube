@@ -216,6 +216,19 @@ The chart cannot make this call itself — which runtimes exist is an
 leaves nothing running to notice later. The sidecar path is unaffected: the
 ConfigMap always carries every dashboard the sidecar is asked to load.
 
+Because the operator applies these, Helm does not own them, and disabling the
+feature leaves nothing running to retire them. After
+`grafana.dashboards.enabled=false`, `operator.enabled=false`, or
+`helm uninstall`, clean them up by hand:
+
+```bash
+kubectl delete grafanadashboard -A -l dashboards.llmkube.dev/managed-by=llmkube
+```
+
+That label is on operator-published dashboards only, so a hand-authored
+`GrafanaDashboard` is never caught by it — and for the same reason the operator
+will not adopt, overwrite, or retire one that happens to share a name.
+
 `amd-gpu-observability` (needs AMD GPUs) and `llmkube-slo` (needs
 `pyrra.enabled`) have no such signal and are always published. To drop them, or
 to narrow the set on the sidecar path, list what you want:
@@ -230,9 +243,8 @@ grafana:
       - vllm-dashboard
 ```
 
-An entry matching no file fails the render rather than silently shipping less
-than you asked for. The chart cannot detect this for you: which runtimes exist
-is an `InferenceService` fact that does not exist yet at `helm install` time.
+Every entry is checked on its own, so any name matching no file fails the
+render rather than silently shipping less than you asked for.
 
 `allowCrossNamespaceImport` defaults to `true` so the dashboards reach a
 Grafana installed in another namespace, which is the usual layout. Turning it

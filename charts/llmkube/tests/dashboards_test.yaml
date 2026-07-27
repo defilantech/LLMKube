@@ -212,6 +212,18 @@ tests:
       - failedTemplate:
           errorPattern: matches no dashboard
 
+  # A `{a,typo}` glob still matches `a`, so a whole-set check would pass here
+  # and ship one dashboard instead of the two asked for.
+  - it: should fail on a typo among names that do match
+    set:
+      grafana.dashboards.enabled: true
+      grafana.dashboards.only:
+        - llmkube-inference
+        - llmkube-inferance
+    asserts:
+      - failedTemplate:
+          errorPattern: 'llmkube-inferance.*matches no dashboard'
+
   # --- auto mode: the runtime dashboards are deferred to the operator ---
 
   - it: should defer the runtime dashboards and publish the rest itself
@@ -241,7 +253,7 @@ tests:
           pattern: 'requires-runtime: "vllm"'
       - matchRegex:
           path: data["vllm-dashboard.yaml"]
-          pattern: 'app.kubernetes.io/managed-by: llmkube'
+          pattern: 'dashboards.llmkube.dev/managed-by: llmkube'
       - matchRegex:
           path: data["vllm-dashboard.yaml"]
           pattern: 'folder: "LLMKube"'

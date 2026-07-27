@@ -3,10 +3,14 @@
        same file list by construction. */}}
 {{- $dashboards := .Files.Glob "dashboards/*.json" }}
 {{- with .Values.grafana.dashboards.only }}
-{{- $dashboards = $.Files.Glob (printf "dashboards/{%s}.json" (join "," .)) }}
-{{- if not $dashboards }}
-{{- fail (printf "grafana.dashboards.only matches no dashboard in dashboards/: %v" .) }}
+{{- /* Checked per name, not on the combined glob: `{a,typo}` still matches `a`,
+       so a whole-set check would ship less than asked without saying so. */}}
+{{- range . }}
+{{- if not ($.Files.Glob (printf "dashboards/%s.json" .)) }}
+{{- fail (printf "grafana.dashboards.only names %q, which matches no dashboard in dashboards/" .) }}
 {{- end }}
+{{- end }}
+{{- $dashboards = $.Files.Glob (printf "dashboards/{%s}.json" (join "," .)) }}
 {{- end }}
 {{- /* Dashboards whose panels read one runtime's metrics only, so they render
        blank until something serves that runtime. The chart cannot tell: it is
@@ -71,9 +75,11 @@ data:
 {{/*
 One GrafanaDashboard manifest. Rendered either as a document of its own or
 into the candidates ConfigMap, so both paths agree by construction.
-Deferred manifests carry managed-by: llmkube (not Helm, which never applies
-them) — the operator retires only what it published, never a hand-authored
-dashboard that happens to share a name.
+Deferred manifests carry a dashboards.llmkube.dev/managed-by label — a key of
+our own rather than app.kubernetes.io/managed-by, which llmkube.labels already
+sets to Helm and which would otherwise be emitted twice. The operator adopts
+and retires only what carries it, never a hand-authored dashboard that happens
+to share a name.
 */}}
 {{- define "llmkube.grafanaDashboard" -}}
 {{- $operator := .root.Values.grafana.dashboards.operator -}}
@@ -85,7 +91,7 @@ metadata:
   labels:
     {{- .labels | nindent 4 }}
     {{- if .deferred }}
-    app.kubernetes.io/managed-by: llmkube
+    dashboards.llmkube.dev/managed-by: llmkube
     {{- end }}
   {{- if .deferred }}
   annotations:
