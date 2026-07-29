@@ -5,6 +5,41 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.13](https://github.com/defilantech/LLMKube/compare/v0.9.12...v0.9.13) (2026-07-29)
+
+
+### Features
+
+* **chart:** template Grafana dashboards, publishing runtime ones only while their runtime serves ([#1267](https://github.com/defilantech/LLMKube/issues/1267)) ([c2d56b7](https://github.com/defilantech/LLMKube/commit/c2d56b7d31746726e5dc79e2f4ce5f94b6452560))
+* **foreman:** test-dilution advisory for the coder gate ([#1332](https://github.com/defilantech/LLMKube/issues/1332)) ([#1337](https://github.com/defilantech/LLMKube/issues/1337)) ([43a30fc](https://github.com/defilantech/LLMKube/commit/43a30fc68f7d1729c131ae4e7e4ba8cbb662dd1b))
+
+
+### Bug Fixes
+
+* **controller:** append TGI extraArgs once, not four times ([#1306](https://github.com/defilantech/LLMKube/issues/1306)) ([6d675f2](https://github.com/defilantech/LLMKube/commit/6d675f23f758da6eb6168e1786b5ff07598cbdac))
+* **controller:** Available goes False when no replicas are ready ([#1304](https://github.com/defilantech/LLMKube/issues/1304)) ([f3bd243](https://github.com/defilantech/LLMKube/commit/f3bd2435f3d43e84ad7cb455df04ee6f89000038))
+* **controller:** charge GPUQuota by the resolved GPU count, closing the Model-declared-count bypass ([#1324](https://github.com/defilantech/LLMKube/issues/1324)) ([e052229](https://github.com/defilantech/LLMKube/commit/e0522294a8ec499ca10d49f4bb89bebb74ab69fa))
+* **controller:** cpu-offload verify advisory, parallelism validation, and a sample that actually runs ([#1321](https://github.com/defilantech/LLMKube/issues/1321)) ([9740dad](https://github.com/defilantech/LLMKube/commit/9740dade9e6f5fcaf790ec5c8349f6452ffba260))
+* **controller:** gate HPA scale-up by GPUQuota via maxReplicas accounting ([#1311](https://github.com/defilantech/LLMKube/issues/1311)) ([#1334](https://github.com/defilantech/LLMKube/issues/1334)) ([dcefc45](https://github.com/defilantech/LLMKube/commit/dcefc450049812531e8203334a3dd8939902f25c))
+* **controller:** recognise huggingface.co URL sources as HF repos, not single-file downloads ([#1322](https://github.com/defilantech/LLMKube/issues/1322)) ([#1325](https://github.com/defilantech/LLMKube/issues/1325)) ([36fc79f](https://github.com/defilantech/LLMKube/commit/36fc79f14e40cb9671d2ae8e71cd3012f6c3ffd8))
+* **controller:** revalidate model cache via HEAD + Content-Length, atomic download ([#1309](https://github.com/defilantech/LLMKube/issues/1309)) ([#1326](https://github.com/defilantech/LLMKube/issues/1326)) ([3e86988](https://github.com/defilantech/LLMKube/commit/3e86988d951e825e25d73343c0e4c2f9e16b499a))
+* **foreman:** accept multi-segment repo slugs (GitLab subgroups, nested Forgejo orgs) ([#1299](https://github.com/defilantech/LLMKube/issues/1299)) ([#1341](https://github.com/defilantech/LLMKube/issues/1341)) ([1b7c47a](https://github.com/defilantech/LLMKube/commit/1b7c47ae63828bea4ab93038dcf65785c2a1a346))
+* **foreman:** auto-apply gofmt in the coder gate instead of failing the coder ([#1327](https://github.com/defilantech/LLMKube/issues/1327)) ([#1333](https://github.com/defilantech/LLMKube/issues/1333)) ([954c67b](https://github.com/defilantech/LLMKube/commit/954c67bd56764436727036e00446fe4969b0e8ec))
+* **foreman:** do not downgrade a mixed footprint whose classes are all self-GO ([#1342](https://github.com/defilantech/LLMKube/issues/1342)) ([#1344](https://github.com/defilantech/LLMKube/issues/1344)) ([d7c6569](https://github.com/defilantech/LLMKube/commit/d7c656968064c5c9c3c6390c720f9e60a746a073))
+* **foreman:** make coder self-gate diff-aware, skip Go tier on non-Go diffs ([#1292](https://github.com/defilantech/LLMKube/issues/1292)) ([#1336](https://github.com/defilantech/LLMKube/issues/1336)) ([9f4acef](https://github.com/defilantech/LLMKube/commit/9f4acef6a39742894f0ba434d48c3e116b02bc50))
+* **foreman:** ParseRepo delegates to the shared codehost slug validator ([#1343](https://github.com/defilantech/LLMKube/issues/1343)) ([#1345](https://github.com/defilantech/LLMKube/issues/1345)) ([ae2dfc2](https://github.com/defilantech/LLMKube/commit/ae2dfc2ed7f2d130a12d9e6364f5e7ed03f70f11))
+* **foreman:** record IsError on MCP transport failures ([#1330](https://github.com/defilantech/LLMKube/issues/1330)) ([#1335](https://github.com/defilantech/LLMKube/issues/1335)) ([c42f873](https://github.com/defilantech/LLMKube/commit/c42f87316e667c80753401089ad20a00f1150214))
+* **foreman:** split git committer identity from author for human DCO sign-off ([#1323](https://github.com/defilantech/LLMKube/issues/1323)) ([44ef09f](https://github.com/defilantech/LLMKube/commit/44ef09fddeaa5d89200ad145f4d2c592dcdb2f10))
+* **foreman:** test-presence accepts behavioral coverage of unexported helpers ([#1329](https://github.com/defilantech/LLMKube/issues/1329)) ([#1340](https://github.com/defilantech/LLMKube/issues/1340)) ([f1aea17](https://github.com/defilantech/LLMKube/commit/f1aea178e3d05487f4dee5e42202b8ce555cb448))
+
+
+### Documentation
+
+* **api:** correct MemoryLimitGiB doc, it is quota-accounting only with no runtime enforcement ([#1312](https://github.com/defilantech/LLMKube/issues/1312)) ([#1339](https://github.com/defilantech/LLMKube/issues/1339)) ([90e6ca3](https://github.com/defilantech/LLMKube/commit/90e6ca38228f89e6818db8bb0b5312409ed8637a))
+* **api:** stop the GPU-memory fields implying enforcement that does not exist ([#1314](https://github.com/defilantech/LLMKube/issues/1314)) ([8660c85](https://github.com/defilantech/LLMKube/commit/8660c85d047965445d668bea8e77e691048fea2a))
+* **foreman:** replace em dash with colon in README heading ([#1296](https://github.com/defilantech/LLMKube/issues/1296)) ([8586a37](https://github.com/defilantech/LLMKube/commit/8586a377eaa15bd3142ba5a00226d8bcc5fbf250))
+* **multi-tenancy:** document GPUQuota is off by default + opt-in/Kueue/HPA/placement notes ([#1313](https://github.com/defilantech/LLMKube/issues/1313)) ([#1338](https://github.com/defilantech/LLMKube/issues/1338)) ([3081897](https://github.com/defilantech/LLMKube/commit/3081897bca396918f67cad7b7ea0823ad7444be2))
+
 ## [0.9.12](https://github.com/defilantech/LLMKube/compare/v0.9.11...v0.9.12) (2026-07-26)
 
 
