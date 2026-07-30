@@ -104,6 +104,7 @@
         "defaults": {
           "color": {"mode": "palette-classic"},
           "custom": {"axisLabel": "reconciles/s", "drawStyle": "line", "fillOpacity": 8, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true},
+          "noValue": "0",
           "unit": "ops"
         },
         "overrides": [
@@ -226,6 +227,7 @@
         "defaults": {
           "color": {"mode": "palette-classic"},
           "custom": {"axisLabel": "replicas", "drawStyle": "line", "fillOpacity": 8, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true},
+          "noValue": "0",
           "unit": "short"
         },
         "overrides": [
