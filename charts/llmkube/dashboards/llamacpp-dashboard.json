@@ -12,7 +12,7 @@
       }
     ]
   },
-  "description": "LLMKube llama.cpp runtime observability. Recent vs lifetime throughput, request queueing and slot concurrency, decode activity and prompt/decode duty cycle, and configured context length, grouped by service / namespace from the llamacpp: metrics the chart's inference PodMonitor scrapes. llama.cpp does not expose a KV-cache utilization series, so this board has no KV pool row.",
+  "description": "LLMKube llama.cpp runtime observability. Recent vs lifetime throughput, request queueing and slot concurrency, decode activity and prompt/decode duty cycle, and peak observed context length, grouped by service / namespace from the llamacpp: metrics the chart's inference PodMonitor scrapes. llama.cpp does not expose a KV-cache utilization series, so this board has no KV pool row.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -265,7 +265,7 @@
           "refId": "A"
         }
       ],
-      "title": "Configured max context length (n_ctx)",
+      "title": "Peak observed context length (n_ctx high watermark)",
       "type": "stat"
     }
   ],
