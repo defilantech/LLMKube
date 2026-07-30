@@ -140,7 +140,7 @@ tests:
     asserts:
       - equal:
           path: spec.groups[?(@.name=="llmkube-slo")].rules[?(@.alert=="GPUPowerLimit")].expr
-          value: (DCGM_FI_DEV_POWER_USAGE or node_hwmon_power_watt or drm_power_watts) > 250
+          value: (DCGM_FI_DEV_POWER_USAGE or node_hwmon_power_watt * on(chip, instance) group_left() node_hwmon_chip_names{chip_name="amdgpu"} or drm_power_watts) > 250
 
   - it: should pin the temperature alert to the edge sensor on the drm branch
     template: prometheusrule.yaml
@@ -152,7 +152,7 @@ tests:
           pattern: 'drm_temperature_celsius\{sensor="edge"\}'
       - matchRegex:
           path: spec.groups[?(@.name=="llmkube-slo")].rules[?(@.alert=="GPUHighTemperature")].expr
-          pattern: '^\(DCGM_FI_DEV_GPU_TEMP or node_hwmon_temp_celsius or drm_temperature_celsius\{sensor="edge"\}\) > 85$'
+          pattern: '^\(DCGM_FI_DEV_GPU_TEMP or node_hwmon_temp_celsius\{sensor="temp1"\} \* on\(chip, instance\) group_left\(\) node_hwmon_chip_names\{chip_name="amdgpu"\} or drm_temperature_celsius\{sensor="edge"\}\) > 85$'
 
   - it: should enable GPUMemoryPressure opt-in, with pool=vram pinned on both sides
     template: prometheusrule.yaml

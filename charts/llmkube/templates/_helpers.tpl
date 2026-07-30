@@ -156,9 +156,15 @@ cluster runs is the one that evaluates and absent families contribute
 nothing. A dual-vendor cluster gets both branches unioned, which is correct.
 
 temp is pinned to the edge sensor only: drm_temperature_celsius carries a
-`sensor` label (edge/junction/mem) and DCGM/node_hwmon report a single
-edge-equivalent series, so mixing sensors would make one threshold mean
-different things per exporter.
+`sensor` label (edge/junction/mem) and node_hwmon reports the same split as
+temp1/temp2/temp3, so mixing sensors would make one threshold mean different
+things per exporter. DCGM reports a single edge-equivalent series.
+
+The node_hwmon branches are scoped to chip_name="amdgpu" through
+node_hwmon_chip_names, the same join amd-gpu-observability.json uses. Without
+it these are every hwmon sensor on the node: measured on a live cluster, a
+bare node_hwmon_temp_celsius fired GPUHighTemperature at 89C off a chipset
+sensor with no GPU involved.
 
 memUsed/memTotal pin pool="vram" on both sides of the amd drm branch - the
 denominator needs the same selector as the numerator, not implicit label
@@ -166,9 +172,9 @@ matching.
 */}}
 {{- define "llmkube.gpuMetricNames" -}}
 util: DCGM_FI_DEV_GPU_UTIL or amdgpu_gpu_busy_percent or drm_engine_utilization_ratio{engine="gpu"} * 100
-temp: DCGM_FI_DEV_GPU_TEMP or node_hwmon_temp_celsius or drm_temperature_celsius{sensor="edge"}
+temp: DCGM_FI_DEV_GPU_TEMP or node_hwmon_temp_celsius{sensor="temp1"} * on(chip, instance) group_left() node_hwmon_chip_names{chip_name="amdgpu"} or drm_temperature_celsius{sensor="edge"}
 mem: (DCGM_FI_DEV_FB_USED / DCGM_FI_DEV_FB_TOTAL) * 100 or (amdgpu_vram_used_bytes / amdgpu_vram_total_bytes) * 100 or (drm_memory_used_bytes{pool="vram"} / drm_memory_total_bytes{pool="vram"}) * 100
-power: DCGM_FI_DEV_POWER_USAGE or node_hwmon_power_watt or drm_power_watts
+power: DCGM_FI_DEV_POWER_USAGE or node_hwmon_power_watt * on(chip, instance) group_left() node_hwmon_chip_names{chip_name="amdgpu"} or drm_power_watts
 {{- end }}
 
 {{/*
