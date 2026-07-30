@@ -1,3 +1,4 @@
+llamacpp:kv_cache_usage_ratio
 llamacpp:n_busy_slots_per_decode
 llamacpp:n_decode_total
 llamacpp:n_tokens_max
