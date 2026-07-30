@@ -1,0 +1,88 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: amdgpu-exporter
+  namespace: monitoring
+  labels:
+    app: amdgpu-exporter
+spec:
+  selector:
+    matchLabels:
+      app: amdgpu-exporter
+  template:
+    metadata:
+      labels:
+        app: amdgpu-exporter
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9494"
+    spec:
+      containers:
+      - name: amdgpu-exporter
+        # Pinned to the candidate digest; move to an amdgpu-exporter-v* release
+        # tag once one is cut.
+        image: ghcr.io/defilantech/llmkube-amdgpu-exporter@sha256:7fb21e54382afd60ddd3f0f5f69bd16f653fe3db300c6f8765124e5598818192
+        ports:
+        - containerPort: 9494
+          hostPort: 9494
+          name: metrics
+          protocol: TCP
+        env:
+        - name: SYSFS_ROOT
+          value: /host/sys
+        - name: LISTEN_ADDR
+          value: ":9494"
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            cpu: 100m
+            memory: 64Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65534
+          runAsGroup: 65534
+        volumeMounts:
+        - name: sys
+          mountPath: /host/sys
+          readOnly: true
+      nodeSelector:
+        # Only run on nodes with AMD GPUs.
+        # Adjust this selector based on your cluster labels.
+        llmkube.dev/gpu-vendor: amd
+      tolerations:
+      - operator: Exists
+        effect: NoSchedule
+      - operator: Exists
+        effect: NoExecute
+      volumes:
+      - name: sys
+        hostPath:
+          path: /sys
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: amdgpu-exporter
+  namespace: monitoring
+  labels:
+    app: amdgpu-exporter
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9494"
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+  - name: metrics
+    port: 9494
+    targetPort: 9494
+    protocol: TCP
+  selector:
+    app: amdgpu-exporter
