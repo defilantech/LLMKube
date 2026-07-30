@@ -13,121 +13,66 @@ spec:
   groups:
   {{- if .Values.prometheus.prometheusRule.rules.gpu.enabled }}
   {{- $vendor := .Values.prometheus.prometheusRule.rules.gpu.vendor }}
+  {{- $m := include "llmkube.gpuMetricNames" $vendor | fromYaml }}
   - name: llmkube-slo
     interval: 30s
     rules:
-    {{- if eq $vendor "nvidia" }}
     # GPU High Utilization Alert
     - alert: GPUHighUtilization
-      expr: DCGM_FI_DEV_GPU_UTIL > {{ .Values.prometheus.prometheusRule.rules.gpu.highUtilizationThreshold }}
+      expr: {{ $m.util }} > {{ .Values.prometheus.prometheusRule.rules.gpu.highUtilizationThreshold }}
       for: 5m
       labels:
         severity: warning
         component: gpu
       annotations:
         summary: "GPU utilization is high"
-        description: "GPU {{`{{ $labels.gpu }}`}} utilization is {{`{{ $value }}`}}% (threshold: {{ .Values.prometheus.prometheusRule.rules.gpu.highUtilizationThreshold }}%)"
+        description: "GPU {{ $m.gpuLabel }}utilization is {{`{{ $value }}`}}% (threshold: {{ .Values.prometheus.prometheusRule.rules.gpu.highUtilizationThreshold }}%)"
 
     # GPU High Temperature Alert
     - alert: GPUHighTemperature
-      expr: DCGM_FI_DEV_GPU_TEMP > {{ .Values.prometheus.prometheusRule.rules.gpu.highTemperatureThreshold }}
+      expr: {{ $m.temp }} > {{ .Values.prometheus.prometheusRule.rules.gpu.highTemperatureThreshold }}
       for: 2m
       labels:
         severity: critical
         component: gpu
       annotations:
         summary: "GPU temperature is critically high"
-        description: "GPU {{`{{ $labels.gpu }}`}} temperature is {{`{{ $value }}`}}°C (threshold: {{ .Values.prometheus.prometheusRule.rules.gpu.highTemperatureThreshold }}°C)"
+        description: "GPU {{ $m.gpuLabel }}temperature is {{`{{ $value }}`}}°C (threshold: {{ .Values.prometheus.prometheusRule.rules.gpu.highTemperatureThreshold }}°C)"
 
     # GPU Memory Pressure Alert
     - alert: GPUMemoryPressure
-      expr: (DCGM_FI_DEV_FB_USED / DCGM_FI_DEV_FB_TOTAL) * 100 > {{ .Values.prometheus.prometheusRule.rules.gpu.memoryPressureThreshold }}
+      expr: ({{ $m.memUsed }} / {{ $m.memTotal }}) * 100 > {{ .Values.prometheus.prometheusRule.rules.gpu.memoryPressureThreshold }}
       for: 5m
       labels:
         severity: warning
         component: gpu
       annotations:
         summary: "GPU memory usage is high"
-        description: "GPU {{`{{ $labels.gpu }}`}} memory usage is {{`{{ $value }}`}}% (threshold: {{ .Values.prometheus.prometheusRule.rules.gpu.memoryPressureThreshold }}%)"
+        description: "GPU {{ $m.gpuLabel }}memory usage is {{`{{ $value }}`}}% (threshold: {{ .Values.prometheus.prometheusRule.rules.gpu.memoryPressureThreshold }}%)"
 
     # GPU Power Limit Alert
     - alert: GPUPowerLimit
-      expr: DCGM_FI_DEV_POWER_USAGE > {{ .Values.prometheus.prometheusRule.rules.gpu.powerLimitThreshold }}
+      expr: {{ $m.power }} > {{ .Values.prometheus.prometheusRule.rules.gpu.powerLimitThreshold }}
       for: 10m
       labels:
         severity: warning
         component: gpu
       annotations:
         summary: "GPU power usage is high"
-        description: "GPU {{`{{ $labels.gpu }}`}} power usage is {{`{{ $value }}`}}W (threshold: {{ .Values.prometheus.prometheusRule.rules.gpu.powerLimitThreshold }}W)"
+        description: "GPU {{ $m.gpuLabel }}power usage is {{`{{ $value }}`}}W (threshold: {{ .Values.prometheus.prometheusRule.rules.gpu.powerLimitThreshold }}W)"
 
-    # DCGM_FI_DEV_GPU_UTIL dropping to zero series (not zero value) reads as
-    # a healthy idle GPU, same silent no-op class as #1356 — the exporter is
+    # The utilization series dropping out (not dropping to zero) reads as a
+    # healthy idle GPU, same silent no-op class as #1356 — the exporter is
     # gone, or the wrong vendor is configured for this cluster.
     - alert: GPUMetricsMissing
-      expr: absent(DCGM_FI_DEV_GPU_UTIL)
+      expr: absent({{ $m.absentMetric }})
       for: 15m
       labels:
         severity: warning
         component: gpu
       annotations:
         summary: "GPU metrics are not being scraped"
-        description: "No DCGM_FI_DEV_GPU_UTIL series for 15 minutes. Check that the DCGM exporter is running and that rules.gpu.vendor matches this cluster's GPUs."
-    {{- else if eq $vendor "amd" }}
-    # AMD equivalents of the NVIDIA rules, sourced from a drm-exporter
-    # DaemonSet (#1356). drm_engine_utilization_ratio is 0-1, not 0-100.
-    - alert: GPUHighUtilization
-      expr: drm_engine_utilization_ratio{engine="gpu"} * 100 > {{ .Values.prometheus.prometheusRule.rules.gpu.highUtilizationThreshold }}
-      for: 5m
-      labels:
-        severity: warning
-        component: gpu
-      annotations:
-        summary: "GPU utilization is high"
-        description: "GPU utilization is {{`{{ $value }}`}}% (threshold: {{ .Values.prometheus.prometheusRule.rules.gpu.highUtilizationThreshold }}%)"
-
-    - alert: GPUHighTemperature
-      expr: drm_temperature_celsius > {{ .Values.prometheus.prometheusRule.rules.gpu.highTemperatureThreshold }}
-      for: 2m
-      labels:
-        severity: critical
-        component: gpu
-      annotations:
-        summary: "GPU temperature is critically high"
-        description: "GPU temperature is {{`{{ $value }}`}}°C (threshold: {{ .Values.prometheus.prometheusRule.rules.gpu.highTemperatureThreshold }}°C)"
-
-    - alert: GPUMemoryPressure
-      expr: (drm_memory_used_bytes{pool="vram"} / drm_memory_total_bytes) * 100 > {{ .Values.prometheus.prometheusRule.rules.gpu.memoryPressureThreshold }}
-      for: 5m
-      labels:
-        severity: warning
-        component: gpu
-      annotations:
-        summary: "GPU memory usage is high"
-        description: "GPU memory usage is {{`{{ $value }}`}}% (threshold: {{ .Values.prometheus.prometheusRule.rules.gpu.memoryPressureThreshold }}%)"
-
-    - alert: GPUPowerLimit
-      expr: drm_power_watts > {{ .Values.prometheus.prometheusRule.rules.gpu.powerLimitThreshold }}
-      for: 10m
-      labels:
-        severity: warning
-        component: gpu
-      annotations:
-        summary: "GPU power usage is high"
-        description: "GPU power usage is {{`{{ $value }}`}}W (threshold: {{ .Values.prometheus.prometheusRule.rules.gpu.powerLimitThreshold }}W)"
-
-    - alert: GPUMetricsMissing
-      expr: absent(drm_engine_utilization_ratio{engine="gpu"})
-      for: 15m
-      labels:
-        severity: warning
-        component: gpu
-      annotations:
-        summary: "GPU metrics are not being scraped"
-        description: "No drm_engine_utilization_ratio series for 15 minutes. Check that the drm-exporter DaemonSet is running and that rules.gpu.vendor matches this cluster's GPUs."
-    {{- else }}
-    {{ fail (printf "prometheus.prometheusRule.rules.gpu.vendor must be \"nvidia\" or \"amd\", got %q" $vendor) }}
-    {{- end }}
+        description: "No {{ $m.absentMetricName }} series for 15 minutes. Check that {{ $m.exporterName }} is running and that rules.gpu.vendor matches this cluster's GPUs."
   {{- end }}
 
   {{- if .Values.prometheus.prometheusRule.rules.inference.enabled }}

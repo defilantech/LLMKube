@@ -253,6 +253,8 @@ prometheus:
         enabled: true
         # nvidia (DCGM exporter) or amd (drm-exporter). Unknown values fail
         # the template render instead of installing no-op rules (#1356).
+        # Narrower than the Model CRD's spec.gpu.vendor (nvidia|amd|intel):
+        # these are the only two metric families this chart's alerts know.
         vendor: nvidia
         highUtilizationThreshold: 90
         highTemperatureThreshold: 85

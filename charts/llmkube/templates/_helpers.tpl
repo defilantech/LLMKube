@@ -133,6 +133,48 @@ Prometheus PrometheusRule namespace
 {{- end }}
 
 {{/*
+GPU alert vendor metric contract (#1356). The five GPU alert bodies (for/
+labels/thresholds) are identical across vendors; only the PromQL metric
+names and description wording differ, so they're single-sourced here rather
+than duplicated per vendor in prometheusrule.yaml. Adding a vendor is one
+entry in this map, not five more rule bodies.
+
+Takes the vendor string, returns YAML for the caller to `fromYaml`. Schema
+enum (values.schema.json) is the only validity guard - values not in this
+map render an empty dict and are unreachable in practice.
+
+NOTE: dashboards/amd-gpu-observability.json reads a DIFFERENT AMD metric
+family (amdgpu_*) than these alerts (drm_*) - that disagreement is
+unreconciled. This is where both could be single-sourced later.
+*/}}
+{{- define "llmkube.gpuMetricNames" -}}
+{{- if eq . "nvidia" }}
+util: DCGM_FI_DEV_GPU_UTIL
+temp: DCGM_FI_DEV_GPU_TEMP
+memUsed: DCGM_FI_DEV_FB_USED
+memTotal: DCGM_FI_DEV_FB_TOTAL
+power: DCGM_FI_DEV_POWER_USAGE
+absentMetric: DCGM_FI_DEV_GPU_UTIL
+absentMetricName: DCGM_FI_DEV_GPU_UTIL
+gpuLabel: "{{`{{ $labels.gpu }}`}} "
+exporterName: the DCGM exporter
+{{- else if eq . "amd" }}
+util: drm_engine_utilization_ratio{engine="gpu"} * 100
+temp: drm_temperature_celsius
+memUsed: drm_memory_used_bytes{pool="vram"}
+memTotal: drm_memory_total_bytes
+power: drm_power_watts
+absentMetric: drm_engine_utilization_ratio{engine="gpu"}
+# Bare name for the description text (no label selector - matches the
+# expr's absent() argument in spirit without embedding a `"` that would
+# break the YAML-quoted description string).
+absentMetricName: drm_engine_utilization_ratio
+gpuLabel: ""
+exporterName: the drm-exporter DaemonSet
+{{- end }}
+{{- end }}
+
+{{/*
 Webhook Service name. The validating webhook's clientConfig targets this
 Service; the controller-manager pod labels are the Service selector.
 */}}
