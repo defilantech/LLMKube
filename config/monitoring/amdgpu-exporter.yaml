@@ -55,7 +55,7 @@ spec:
       nodeSelector:
         # Only run on nodes with AMD GPUs.
         # Adjust this selector based on your cluster labels.
-        llmkube.dev/gpu-vendor: amd
+        accelerator: amd
       tolerations:
       - operator: Exists
         effect: NoSchedule
