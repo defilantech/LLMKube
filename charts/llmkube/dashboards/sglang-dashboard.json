@@ -65,7 +65,9 @@
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
       "fieldConfig": {
         "defaults": {
+          "color": {"mode": "palette-classic-by-name"},
           "custom": {"axisLabel": "tok/s", "drawStyle": "line", "fillOpacity": 40, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true, "stacking": {"group": "A", "mode": "normal"}},
+          "noValue": "0",
           "unit": "short"
         },
         "overrides": []
@@ -79,7 +81,7 @@
       "targets": [
         {
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-          "expr": "sum by (mode) (rate(sglang:realtime_tokens_total[$__rate_interval]))",
+          "expr": "sum by (mode, service, namespace) (rate(sglang:realtime_tokens_total{service=~\"$service\"}[5m]))",
           "legendFormat": "{{mode}}",
           "refId": "A"
         }
@@ -401,123 +403,8 @@
       "type": "timeseries"
     },
     {
-      "collapsed": true,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 45},
-      "id": 105,
-      "panels": [
-        {
-          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-          "fieldConfig": {
-            "defaults": {
-              "color": {"mode": "palette-classic-by-name"},
-              "custom": {"axisLabel": "utilization", "drawStyle": "line", "fillOpacity": 5, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true},
-              "max": 1,
-              "min": 0,
-              "unit": "percentunit"
-            },
-            "overrides": []
-          },
-          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 46},
-          "id": 13,
-          "options": {
-            "legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom"},
-            "tooltip": {"mode": "multi", "sort": "desc"}
-          },
-          "targets": [
-            {
-              "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-              "expr": "max by (service, namespace) (sglang:mamba_usage{service=~\"$service\"})",
-              "legendFormat": "{{service}} ({{namespace}})",
-              "refId": "A"
-            }
-          ],
-          "title": "Mamba pool utilization (max across replicas)",
-          "type": "timeseries"
-        },
-        {
-          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-          "fieldConfig": {
-            "defaults": {
-              "color": {"mode": "palette-classic-by-name"},
-              "custom": {"axisLabel": "slots", "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true},
-              "noValue": "0",
-              "unit": "short"
-            },
-            "overrides": []
-          },
-          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 46},
-          "id": 14,
-          "options": {
-            "legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom"},
-            "tooltip": {"mode": "multi", "sort": "desc"}
-          },
-          "targets": [
-            {
-              "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-              "expr": "sum by (service, namespace) (sglang:mamba_used_tokens{service=~\"$service\"})",
-              "legendFormat": "{{service}} ({{namespace}}) used",
-              "refId": "A"
-            },
-            {
-              "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-              "expr": "sum by (service, namespace) (sglang:mamba_available_tokens{service=~\"$service\"})",
-              "legendFormat": "{{service}} ({{namespace}}) available",
-              "refId": "B"
-            }
-          ],
-          "title": "Mamba pool used vs available",
-          "type": "timeseries"
-        }
-      ],
-      "title": "Mamba pool (hybrid-attention models only)",
-      "type": "row"
-    },
-    {
-      "collapsed": true,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 46},
-      "id": 106,
-      "panels": [
-        {
-          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-          "fieldConfig": {
-            "defaults": {
-              "color": {"mode": "palette-classic-by-name"},
-              "custom": {"axisLabel": "tokens", "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true},
-              "noValue": "0",
-              "unit": "short"
-            },
-            "overrides": []
-          },
-          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 47},
-          "id": 15,
-          "options": {
-            "legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom"},
-            "tooltip": {"mode": "multi", "sort": "desc"}
-          },
-          "targets": [
-            {
-              "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-              "expr": "sum by (service, namespace) (sglang:hicache_host_used_tokens{service=~\"$service\"})",
-              "legendFormat": "{{service}} ({{namespace}}) used",
-              "refId": "A"
-            },
-            {
-              "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-              "expr": "sum by (service, namespace) (sglang:hicache_host_total_tokens{service=~\"$service\"})",
-              "legendFormat": "{{service}} ({{namespace}}) total",
-              "refId": "B"
-            }
-          ],
-          "title": "HiCache host pool used vs total",
-          "type": "timeseries"
-        }
-      ],
-      "title": "HiCache host pool (requires --hicache)",
-      "type": "row"
-    },
-    {
       "collapsed": false,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 47},
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 45},
       "id": 107,
       "panels": [],
       "title": "Queue wait, prefill mix and request rate",
@@ -533,7 +420,7 @@
         },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 48},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 46},
       "id": 16,
       "options": {
         "legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom"},
@@ -564,7 +451,7 @@
           {"matcher": {"id": "byRegexp", "options": "p99$"}, "properties": [{"id": "color", "value": {"fixedColor": "dark-blue", "mode": "fixed"}}]}
         ]
       },
-      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 48},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 46},
       "id": 17,
       "options": {
         "legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom"},
@@ -603,7 +490,7 @@
         },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 48},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 46},
       "id": 18,
       "options": {
         "legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom"},
@@ -632,7 +519,7 @@
         },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 56},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 54},
       "id": 19,
       "options": {
         "legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom"},
@@ -655,7 +542,7 @@
         "defaults": {"custom": {"scaleDistribution": {"type": "linear"}}, "unit": "short"},
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 56},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 54},
       "id": 20,
       "options": {
         "calculate": false,
@@ -676,6 +563,121 @@
       ],
       "title": "Prompt length distribution (5m)",
       "type": "heatmap"
+    },
+    {
+      "collapsed": true,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 62},
+      "id": 105,
+      "panels": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "palette-classic-by-name"},
+              "custom": {"axisLabel": "utilization", "drawStyle": "line", "fillOpacity": 5, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true},
+              "max": 1,
+              "min": 0,
+              "unit": "percentunit"
+            },
+            "overrides": []
+          },
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 63},
+          "id": 13,
+          "options": {
+            "legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom"},
+            "tooltip": {"mode": "multi", "sort": "desc"}
+          },
+          "targets": [
+            {
+              "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+              "expr": "max by (service, namespace) (sglang:mamba_usage{service=~\"$service\"})",
+              "legendFormat": "{{service}} ({{namespace}})",
+              "refId": "A"
+            }
+          ],
+          "title": "Mamba pool utilization (max across replicas)",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "palette-classic-by-name"},
+              "custom": {"axisLabel": "slots", "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true},
+              "noValue": "0",
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 63},
+          "id": 14,
+          "options": {
+            "legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom"},
+            "tooltip": {"mode": "multi", "sort": "desc"}
+          },
+          "targets": [
+            {
+              "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+              "expr": "sum by (service, namespace) (sglang:mamba_used_tokens{service=~\"$service\"})",
+              "legendFormat": "{{service}} ({{namespace}}) used",
+              "refId": "A"
+            },
+            {
+              "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+              "expr": "sum by (service, namespace) (sglang:mamba_available_tokens{service=~\"$service\"})",
+              "legendFormat": "{{service}} ({{namespace}}) available",
+              "refId": "B"
+            }
+          ],
+          "title": "Mamba pool used vs available",
+          "type": "timeseries"
+        }
+      ],
+      "title": "Mamba pool (hybrid-attention models only)",
+      "type": "row"
+    },
+    {
+      "collapsed": true,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 63},
+      "id": 106,
+      "panels": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "palette-classic-by-name"},
+              "custom": {"axisLabel": "tokens", "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true},
+              "noValue": "0",
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 64},
+          "id": 15,
+          "options": {
+            "legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom"},
+            "tooltip": {"mode": "multi", "sort": "desc"}
+          },
+          "targets": [
+            {
+              "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+              "expr": "sum by (service, namespace) (sglang:hicache_host_used_tokens{service=~\"$service\"})",
+              "legendFormat": "{{service}} ({{namespace}}) used",
+              "refId": "A"
+            },
+            {
+              "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+              "expr": "sum by (service, namespace) (sglang:hicache_host_total_tokens{service=~\"$service\"})",
+              "legendFormat": "{{service}} ({{namespace}}) total",
+              "refId": "B"
+            }
+          ],
+          "title": "HiCache host pool used vs total",
+          "type": "timeseries"
+        }
+      ],
+      "title": "HiCache host pool (requires --hicache)",
+      "type": "row"
     },
     {
       "collapsed": true,
