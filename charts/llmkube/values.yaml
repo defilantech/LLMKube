@@ -251,13 +251,14 @@ prometheus:
       # GPU alerts
       gpu:
         enabled: true
-        # nvidia (DCGM exporter) or amd (drm-exporter). Unknown values fail
-        # the template render instead of installing no-op rules (#1356).
-        # Narrower than the Model CRD's spec.gpu.vendor (nvidia|amd|intel):
-        # these are the only two metric families this chart's alerts know.
-        vendor: nvidia
         highUtilizationThreshold: 90
         highTemperatureThreshold: 85
+        # GPU Memory Pressure alert, off by default: SGLang and vLLM
+        # preallocate the KV cache pool, so VRAM sits at ~99% on any healthy
+        # inference host (measured). Enable only for mixed/non-inference GPU
+        # workloads where high VRAM is unusual.
+        memoryPressure:
+          enabled: false
         memoryPressureThreshold: 90
         powerLimitThreshold: 250
       # Inference service alerts

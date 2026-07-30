@@ -147,31 +147,28 @@ NOTE: dashboards/amd-gpu-observability.json reads a DIFFERENT AMD metric
 family (amdgpu_*) than these alerts (drm_*) - that disagreement is
 unreconciled. This is where both could be single-sourced later.
 */}}
+{{/*
+llmkube.gpuMetricNames is keyed by ROLE, not vendor: util, temp, memUsed,
+memTotal, power. Each value is an OR-fallback expression unioning every
+exporter this chart knows (DCGM/nvidia, amdgpu-sysfs/amd, drm/amd), all
+normalized to the same unit and physical meaning, so whichever exporter a
+cluster runs is the one that evaluates and absent families contribute
+nothing. A dual-vendor cluster gets both branches unioned, which is correct.
+
+temp is pinned to the edge sensor only: drm_temperature_celsius carries a
+`sensor` label (edge/junction/mem) and DCGM/node_hwmon report a single
+edge-equivalent series, so mixing sensors would make one threshold mean
+different things per exporter.
+
+memUsed/memTotal pin pool="vram" on both sides of the amd drm branch - the
+denominator needs the same selector as the numerator, not implicit label
+matching.
+*/}}
 {{- define "llmkube.gpuMetricNames" -}}
-{{- if eq . "nvidia" }}
-util: DCGM_FI_DEV_GPU_UTIL
-temp: DCGM_FI_DEV_GPU_TEMP
-memUsed: DCGM_FI_DEV_FB_USED
-memTotal: DCGM_FI_DEV_FB_TOTAL
-power: DCGM_FI_DEV_POWER_USAGE
-absentMetric: DCGM_FI_DEV_GPU_UTIL
-absentMetricName: DCGM_FI_DEV_GPU_UTIL
-gpuLabel: "{{`{{ $labels.gpu }}`}} "
-exporterName: the DCGM exporter
-{{- else if eq . "amd" }}
-util: drm_engine_utilization_ratio{engine="gpu"} * 100
-temp: drm_temperature_celsius
-memUsed: drm_memory_used_bytes{pool="vram"}
-memTotal: drm_memory_total_bytes
-power: drm_power_watts
-absentMetric: drm_engine_utilization_ratio{engine="gpu"}
-# Bare name for the description text (no label selector - matches the
-# expr's absent() argument in spirit without embedding a `"` that would
-# break the YAML-quoted description string).
-absentMetricName: drm_engine_utilization_ratio
-gpuLabel: ""
-exporterName: the drm-exporter DaemonSet
-{{- end }}
+util: DCGM_FI_DEV_GPU_UTIL or amdgpu_gpu_busy_percent or drm_engine_utilization_ratio{engine="gpu"} * 100
+temp: DCGM_FI_DEV_GPU_TEMP or node_hwmon_temp_celsius or drm_temperature_celsius{sensor="edge"}
+mem: (DCGM_FI_DEV_FB_USED / DCGM_FI_DEV_FB_TOTAL) * 100 or (amdgpu_vram_used_bytes / amdgpu_vram_total_bytes) * 100 or (drm_memory_used_bytes{pool="vram"} / drm_memory_total_bytes{pool="vram"}) * 100
+power: DCGM_FI_DEV_POWER_USAGE or node_hwmon_power_watt or drm_power_watts
 {{- end }}
 
 {{/*
