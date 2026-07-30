@@ -12,7 +12,7 @@
       }
     ]
   },
-  "description": "Starter dashboard for LLMKube inference workloads. Surfaces request latency, queue wait, and restart-rate by service / runtime / namespace using the recording rules in the llmkube Helm chart's PrometheusRule.",
+  "description": "Starter dashboard for LLMKube inference workloads. Surfaces request latency, restart rate, and operator health (reconcile rate/duration, time-to-ready, fleet readiness, replica state, GPU queue depth) by service / runtime / namespace using the recording rules and controller metrics from the llmkube Helm chart.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -114,7 +114,7 @@
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 19},
       "id": 5,
       "options": {
-        "legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom"},
+        "legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom"},
         "tooltip": {"mode": "multi", "sort": "desc"}
       },
       "targets": [
@@ -132,7 +132,7 @@
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
       "fieldConfig": {
         "defaults": {
-          "color": {"mode": "palette-classic-by-name"},
+          "color": {"mode": "palette-classic"},
           "custom": {"axisLabel": "seconds", "drawStyle": "line", "fillOpacity": 8, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true},
           "unit": "s"
         },
@@ -141,7 +141,7 @@
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 19},
       "id": 6,
       "options": {
-        "legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom"},
+        "legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom"},
         "tooltip": {"mode": "multi", "sort": "desc"}
       },
       "targets": [
@@ -159,7 +159,7 @@
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
       "fieldConfig": {
         "defaults": {
-          "color": {"mode": "palette-classic-by-name"},
+          "color": {"mode": "palette-classic"},
           "custom": {"axisLabel": "seconds", "drawStyle": "line", "fillOpacity": 8, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true},
           "unit": "s"
         },
@@ -168,7 +168,7 @@
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 27},
       "id": 7,
       "options": {
-        "legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom"},
+        "legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom"},
         "tooltip": {"mode": "multi", "sort": "desc"}
       },
       "targets": [
@@ -188,6 +188,7 @@
         "defaults": {
           "color": {"mode": "palette-classic"},
           "mappings": [],
+          "noValue": "0",
           "unit": "short"
         },
         "overrides": []
@@ -235,7 +236,7 @@
       "gridPos": {"h": 8, "w": 6, "x": 18, "y": 27},
       "id": 9,
       "options": {
-        "legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom"},
+        "legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom"},
         "tooltip": {"mode": "multi", "sort": "desc"}
       },
       "targets": [
@@ -253,7 +254,7 @@
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
       "fieldConfig": {
         "defaults": {
-          "color": {"mode": "palette-classic-by-name"},
+          "color": {"mode": "palette-classic"},
           "custom": {"axisLabel": "pending services", "drawStyle": "line", "fillOpacity": 8, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true},
           "unit": "short"
         },
@@ -262,7 +263,7 @@
       "gridPos": {"h": 8, "w": 24, "x": 0, "y": 35},
       "id": 10,
       "options": {
-        "legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom"},
+        "legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom"},
         "tooltip": {"mode": "multi", "sort": "desc"}
       },
       "targets": [

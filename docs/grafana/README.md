@@ -28,7 +28,7 @@ All paths below are relative to `charts/llmkube/dashboards/`.
 
 | File | Description |
 |---|---|
-| `llmkube-inference.json` | Request latency (vLLM and SGLang) and container restart rate. Latency is grouped by service, runtime, namespace; restarts by pod, container, namespace. |
+| `llmkube-inference.json` | Request latency (vLLM and SGLang), container restart rate, and operator health: reconcile rate/duration, InferenceService time-to-ready, fleet ready-vs-total, replica state, and GPU queue depth. Latency is grouped by service, runtime, namespace; restarts by pod, container, namespace. Supersedes the equivalent panels in `config/grafana/llmkube-inference-dashboard.json` (ids 52, 51, 32, 3, 43, 21) — that board predates the chart-templated dashboards and is not kept in sync with them. |
 | `llmkube-slo.json` | Error budget remaining and multi-window burn rate for InferenceServices with `spec.slo` set, plus an SLO overview table. Reads the recording rules Pyrra's kubernetes operator writes per SLO. Templated on a `$slo` variable (`label_values(slo)`) and a manual `$objective` percentage variable, since Pyrra does not expose the target itself as a Prometheus series. Assumes the default 28d SLO window; see the dashboard description for details. |
 | `amd-gpu-observability.json` | AMD GPU health, memory, and inference SLO signals for Strix (gfx1151) nodes. Reads the amdgpu-sysfs exporter, node-exporter hwmon, and the `llamacpp:*` series llama.cpp exposes on `/metrics`. Panels cover GPU temperature, power, busy %, GTT/VRAM memory, GPU clock, tokens/sec, and in-flight requests. |
 | `llmkube-quota.json` | Per-GPUQuota usage against the declared GPU and VRAM caps, plus admission denials. |
