@@ -33,6 +33,7 @@
         "defaults": {
           "color": {"mode": "palette-classic-by-name"},
           "custom": {"axisLabel": "tok/s", "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true},
+          "noValue": "0",
           "unit": "short"
         },
         "overrides": []
@@ -107,6 +108,7 @@
         "defaults": {
           "color": {"mode": "palette-classic-by-name"},
           "custom": {"axisLabel": "requests", "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true},
+          "noValue": "0",
           "unit": "short"
         },
         "overrides": []
