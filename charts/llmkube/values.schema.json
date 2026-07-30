@@ -228,6 +228,7 @@
                   "additionalProperties": false,
                   "properties": {
                     "enabled": { "type": "boolean" },
+                    "vendor": { "type": "string", "enum": ["nvidia", "amd"] },
                     "highUtilizationThreshold": { "type": "number", "minimum": 0, "maximum": 100 },
                     "highTemperatureThreshold": { "type": "number", "minimum": 0, "maximum": 125 },
                     "memoryPressureThreshold": { "type": "number", "minimum": 0, "maximum": 100 },

@@ -251,6 +251,9 @@ prometheus:
       # GPU alerts
       gpu:
         enabled: true
+        # nvidia (DCGM exporter) or amd (drm-exporter). Unknown values fail
+        # the template render instead of installing no-op rules (#1356).
+        vendor: nvidia
         highUtilizationThreshold: 90
         highTemperatureThreshold: 85
         memoryPressureThreshold: 90
