@@ -33,6 +33,7 @@
         "defaults": {
           "color": {"mode": "palette-classic"},
           "custom": {"axisLabel": "req/s", "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true},
+          "noValue": "0",
           "unit": "reqps"
         },
         "overrides": []
@@ -60,6 +61,7 @@
         "defaults": {
           "color": {"mode": "palette-classic"},
           "custom": {"axisLabel": "req/s", "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true},
+          "noValue": "0",
           "unit": "reqps"
         },
         "overrides": []
@@ -122,6 +124,7 @@
         "defaults": {
           "color": {"mode": "palette-classic"},
           "custom": {"axisLabel": "rej/s", "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true},
+          "noValue": "0",
           "unit": "reqps"
         },
         "overrides": []

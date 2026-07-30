@@ -31,8 +31,9 @@
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
       "fieldConfig": {
         "defaults": {
-          "color": {"mode": "palette-classic"},
+          "color": {"mode": "palette-classic-by-name"},
           "custom": {"axisLabel": "tok/s", "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true},
+          "noValue": "0",
           "unit": "short"
         },
         "overrides": []
@@ -72,7 +73,7 @@
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
       "fieldConfig": {
         "defaults": {
-          "color": {"mode": "palette-classic"},
+          "color": {"mode": "palette-classic-by-name"},
           "custom": {"axisLabel": "seconds", "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true},
           "unit": "s"
         },
@@ -105,7 +106,7 @@
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
       "fieldConfig": {
         "defaults": {
-          "color": {"mode": "palette-classic"},
+          "color": {"mode": "palette-classic-by-name"},
           "custom": {"axisLabel": "seconds", "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true},
           "unit": "s"
         },
@@ -138,7 +139,7 @@
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
       "fieldConfig": {
         "defaults": {
-          "color": {"mode": "palette-classic"},
+          "color": {"mode": "palette-classic-by-name"},
           "custom": {"axisLabel": "seconds", "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true},
           "unit": "s"
         },
@@ -173,8 +174,9 @@
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
       "fieldConfig": {
         "defaults": {
-          "color": {"mode": "palette-classic"},
+          "color": {"mode": "palette-classic-by-name"},
           "custom": {"axisLabel": "requests", "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true},
+          "noValue": "0",
           "unit": "short"
         },
         "overrides": []
@@ -214,8 +216,9 @@
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
       "fieldConfig": {
         "defaults": {
-          "color": {"mode": "palette-classic"},
+          "color": {"mode": "palette-classic-by-name"},
           "custom": {"axisLabel": "tokens", "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true},
+          "noValue": "0",
           "unit": "short"
         },
         "overrides": []
@@ -247,7 +250,7 @@
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
       "fieldConfig": {
         "defaults": {
-          "color": {"mode": "palette-classic"},
+          "color": {"mode": "palette-classic-by-name"},
           "custom": {"axisLabel": "utilization", "drawStyle": "line", "fillOpacity": 5, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true},
           "max": 1,
           "min": 0,
@@ -276,7 +279,7 @@
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
       "fieldConfig": {
         "defaults": {
-          "color": {"mode": "palette-classic"},
+          "color": {"mode": "palette-classic-by-name"},
           "custom": {"axisLabel": "hit rate", "drawStyle": "line", "fillOpacity": 5, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true},
           "max": 1,
           "min": 0,
@@ -313,7 +316,7 @@
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
       "fieldConfig": {
         "defaults": {
-          "color": {"mode": "palette-classic"},
+          "color": {"mode": "palette-classic-by-name"},
           "custom": {"axisLabel": "requests", "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true},
           "noValue": "0",
           "unit": "short"
@@ -347,7 +350,7 @@
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
       "fieldConfig": {
         "defaults": {
-          "color": {"mode": "palette-classic"},
+          "color": {"mode": "palette-classic-by-name"},
           "custom": {"axisLabel": "req/s", "drawStyle": "bars", "fillOpacity": 80, "lineWidth": 0, "pointSize": 5, "showPoints": "never", "spanNulls": true},
           "noValue": "0",
           "unit": "reqps"
@@ -380,7 +383,7 @@
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
-              "color": {"mode": "palette-classic"},
+              "color": {"mode": "palette-classic-by-name"},
               "custom": {"axisLabel": "utilization", "drawStyle": "line", "fillOpacity": 5, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true},
               "max": 1,
               "min": 0,
@@ -409,8 +412,9 @@
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
-              "color": {"mode": "palette-classic"},
+              "color": {"mode": "palette-classic-by-name"},
               "custom": {"axisLabel": "slots", "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true},
+              "noValue": "0",
               "unit": "short"
             },
             "overrides": []
@@ -451,8 +455,9 @@
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
-              "color": {"mode": "palette-classic"},
+              "color": {"mode": "palette-classic-by-name"},
               "custom": {"axisLabel": "tokens", "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true},
+              "noValue": "0",
               "unit": "short"
             },
             "overrides": []
