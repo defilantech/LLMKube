@@ -12,7 +12,7 @@
       }
     ]
   },
-  "description": "LLMKube llama.cpp runtime observability. Recent vs lifetime throughput, request queueing and slot concurrency, decode activity and prompt/decode duty cycle, KV cache utilization, and peak observed context length, grouped by service / namespace from the llamacpp: metrics the chart's inference PodMonitor scrapes.",
+  "description": "LLMKube llama.cpp runtime observability. Recent vs lifetime throughput, request queueing and slot concurrency, decode activity and prompt/decode duty cycle, and peak observed context length, grouped by service / namespace from the llamacpp: metrics the chart's inference PodMonitor scrapes.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -41,7 +41,7 @@
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 1},
       "id": 1,
       "options": {
-        "legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom"},
+        "legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom"},
         "tooltip": {"mode": "multi", "sort": "desc"}
       },
       "targets": [
@@ -75,7 +75,7 @@
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 1},
       "id": 2,
       "options": {
-        "legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom"},
+        "legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom"},
         "tooltip": {"mode": "multi", "sort": "desc"}
       },
       "targets": [
@@ -117,7 +117,7 @@
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 10},
       "id": 3,
       "options": {
-        "legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom"},
+        "legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom"},
         "tooltip": {"mode": "multi", "sort": "desc"}
       },
       "targets": [
@@ -150,7 +150,7 @@
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 10},
       "id": 4,
       "options": {
-        "legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom"},
+        "legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom"},
         "tooltip": {"mode": "multi", "sort": "desc"}
       },
       "targets": [
@@ -186,7 +186,7 @@
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 19},
       "id": 5,
       "options": {
-        "legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom"},
+        "legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom"},
         "tooltip": {"mode": "multi", "sort": "desc"}
       },
       "targets": [
@@ -213,7 +213,7 @@
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 19},
       "id": 6,
       "options": {
-        "legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom"},
+        "legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom"},
         "tooltip": {"mode": "multi", "sort": "desc"}
       },
       "targets": [
@@ -269,43 +269,6 @@
       ],
       "title": "Peak observed context length (n_ctx high watermark)",
       "type": "stat"
-    },
-    {
-      "collapsed": false,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 36},
-      "id": 104,
-      "panels": [],
-      "title": "KV cache",
-      "type": "row"
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-      "fieldConfig": {
-        "defaults": {
-          "color": {"mode": "palette-classic-by-name"},
-          "custom": {"axisLabel": "utilization", "drawStyle": "line", "fillOpacity": 5, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true},
-          "max": 1,
-          "min": 0,
-          "unit": "percentunit"
-        },
-        "overrides": []
-      },
-      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 37},
-      "id": 8,
-      "options": {
-        "legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom"},
-        "tooltip": {"mode": "multi", "sort": "desc"}
-      },
-      "targets": [
-        {
-          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-          "expr": "max by (service, namespace) (llamacpp:kv_cache_usage_ratio{service=~\"$service\"})",
-          "legendFormat": "{{service}} ({{namespace}})",
-          "refId": "A"
-        }
-      ],
-      "title": "KV cache utilization (max across replicas)",
-      "type": "timeseries"
     }
   ],
   "refresh": "30s",
