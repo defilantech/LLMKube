@@ -39,11 +39,13 @@ spec:
         description: "GPU temperature is {{`{{ $value }}`}}°C (threshold: {{ .Values.prometheus.prometheusRule.rules.gpu.highTemperatureThreshold }}°C)"
 
     {{- if .Values.prometheus.prometheusRule.rules.gpu.memoryPressure.enabled }}
-    # GPU Memory Pressure Alert. Off by default: SGLang and vLLM preallocate
-    # the KV cache pool by design, so VRAM sits at ~99% on any healthy
-    # inference host - a static utilization threshold is a permanent false
-    # positive there (measured 99% on a healthy SGLang host). Enable this
-    # only for mixed/non-inference GPU workloads where high VRAM is unusual.
+    # GPU Memory Pressure Alert. Off by default: on an inference host VRAM
+    # utilization is a configured value, not pressure. The runtime reserves
+    # whatever fraction it was given (SGLang mem-fraction-static, vLLM
+    # gpu-memory-utilization) and holds it for the process lifetime, so the
+    # gauge reports the setting rather than demand and never falls under load.
+    # Enable where VRAM is allocated on demand and a high reading means
+    # something.
     - alert: GPUMemoryPressure
       expr: ({{ $m.mem }}) > {{ .Values.prometheus.prometheusRule.rules.gpu.memoryPressureThreshold }}
       for: 5m

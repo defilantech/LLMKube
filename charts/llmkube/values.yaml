@@ -253,8 +253,9 @@ prometheus:
         enabled: true
         highUtilizationThreshold: 90
         highTemperatureThreshold: 85
-        # Off by default: inference runtimes preallocate the KV pool, so VRAM
-        # measures ~99% on a healthy host. Enable for mixed GPU workloads.
+        # Off by default: on an inference host VRAM utilization reports the
+        # fraction the runtime was configured to reserve, not pressure. Enable
+        # where VRAM is allocated on demand.
         memoryPressure:
           enabled: false
         memoryPressureThreshold: 90
