@@ -72,6 +72,7 @@
         },
         "overrides": []
       },
+      "description": "Splits the prompt half of the panel beside it (Generation vs prompt tokens/sec) by cache hit versus recompute; prefill_cache + prefill_compute sum to the same prompt token total, so this shows how much of prefill is served from cache rather than a different quantity.",
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 1},
       "id": 23,
       "options": {
@@ -416,6 +417,7 @@
         "defaults": {
           "color": {"mode": "palette-classic-by-name"},
           "custom": {"axisLabel": "req/s", "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true},
+          "noValue": "0",
           "unit": "reqps"
         },
         "overrides": []
@@ -445,11 +447,7 @@
           "custom": {"axisLabel": "seconds", "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true},
           "unit": "s"
         },
-        "overrides": [
-          {"matcher": {"id": "byRegexp", "options": "p50$"}, "properties": [{"id": "color", "value": {"fixedColor": "light-blue", "mode": "fixed"}}]},
-          {"matcher": {"id": "byRegexp", "options": "p90$"}, "properties": [{"id": "color", "value": {"fixedColor": "blue", "mode": "fixed"}}]},
-          {"matcher": {"id": "byRegexp", "options": "p99$"}, "properties": [{"id": "color", "value": {"fixedColor": "dark-blue", "mode": "fixed"}}]}
-        ]
+        "overrides": []
       },
       "gridPos": {"h": 8, "w": 8, "x": 8, "y": 46},
       "id": 17,
@@ -460,24 +458,18 @@
       "targets": [
         {
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-          "expr": "histogram_quantile(0.50, sum by (service, namespace, le) (rate(sglang:queue_time_seconds_bucket{service=~\"$service\"}[5m])))",
-          "legendFormat": "{{service}} ({{namespace}}) p50",
+          "expr": "llmkube:inference:queue_time_seconds:p95_5m{runtime=\"sglang\", service=~\"$service\"}",
+          "legendFormat": "{{service}} ({{namespace}}) p95",
           "refId": "A"
         },
         {
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-          "expr": "histogram_quantile(0.90, sum by (service, namespace, le) (rate(sglang:queue_time_seconds_bucket{service=~\"$service\"}[5m])))",
-          "legendFormat": "{{service}} ({{namespace}}) p90",
+          "expr": "llmkube:inference:queue_time_seconds:p50_5m{runtime=\"sglang\", service=~\"$service\"}",
+          "legendFormat": "{{service}} ({{namespace}}) p50",
           "refId": "B"
-        },
-        {
-          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-          "expr": "histogram_quantile(0.99, sum by (service, namespace, le) (rate(sglang:queue_time_seconds_bucket{service=~\"$service\"}[5m])))",
-          "legendFormat": "{{service}} ({{namespace}}) p99",
-          "refId": "C"
         }
       ],
-      "title": "Queue wait p50 / p90 / p99 (5m)",
+      "title": "Queue wait p95 / p50 (5m)",
       "type": "timeseries"
     },
     {
@@ -539,7 +531,7 @@
     {
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
       "fieldConfig": {
-        "defaults": {"custom": {"scaleDistribution": {"type": "linear"}}, "unit": "short"},
+        "defaults": {"custom": {"scaleDistribution": {"type": "linear"}}, "noValue": "0", "unit": "short"},
         "overrides": []
       },
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 54},
@@ -690,6 +682,7 @@
             "defaults": {
               "color": {"mode": "palette-classic-by-name"},
               "custom": {"axisLabel": "tokens/sec", "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true},
+              "noValue": "0",
               "unit": "short"
             },
             "overrides": []
@@ -723,6 +716,7 @@
             "defaults": {
               "color": {"mode": "palette-classic-by-name"},
               "custom": {"axisLabel": "tokens/sec", "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true},
+              "noValue": "0",
               "unit": "short"
             },
             "overrides": []

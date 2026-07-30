@@ -154,5 +154,16 @@ spec:
       expr: histogram_quantile(0.50, sum by (service, namespace, runtime, le) (rate(vllm:time_to_first_token_seconds_bucket[5m]) or rate(sglang:time_to_first_token_seconds_bucket[5m])))
       labels:
         latency_kind: ttft
+
+    # Queue wait over 5m. SGLang-only for now; no vllm equivalent metric.
+    - record: llmkube:inference:queue_time_seconds:p95_5m
+      expr: histogram_quantile(0.95, sum by (service, namespace, runtime, le) (rate(sglang:queue_time_seconds_bucket[5m])))
+      labels:
+        latency_kind: queue_wait
+
+    - record: llmkube:inference:queue_time_seconds:p50_5m
+      expr: histogram_quantile(0.50, sum by (service, namespace, runtime, le) (rate(sglang:queue_time_seconds_bucket[5m])))
+      labels:
+        latency_kind: queue_wait
   {{- end }}
 {{- end }}
