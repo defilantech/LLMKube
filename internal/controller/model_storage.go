@@ -118,6 +118,20 @@ func (r *InferenceServiceReconciler) warnIgnoredModelCacheClaim(
 	}
 }
 
+// modelNeedsCachePVC reports whether the operator should provision a model
+// cache PVC for this reconcile. Caching must be enabled on the operator
+// (modelCachePath set) and the model must have a cache key. It must NOT be a
+// pvc:// source: those are pre-staged and mounted read-only
+// (buildModelStorageConfig dispatches to buildPVCStorageConfig, never the
+// cache), so provisioning a cache PVC for them only leaves an unused,
+// ISVC-owned claim. Kept as its own predicate so the mount side (isPVCSource
+// in buildModelStorageConfig) and the provisioning side agree on pvc://.
+func modelNeedsCachePVC(model *inferencev1alpha1.Model, modelCachePath string) bool {
+	return modelCachePath != "" &&
+		effectiveModelCacheKey(model) != "" &&
+		!isPVCSource(model.Spec.Source)
+}
+
 // modelCachePVCName returns the name of the model cache PVC for the given mode.
 // A per-InferenceService spec.modelCache.claimName override (#928) wins over
 // the operator-global mode: that user-owned PVC becomes the cache volume for
