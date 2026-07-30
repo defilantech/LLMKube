@@ -88,7 +88,7 @@ tests:
       grafana.dashboards.operator.mode: all
     asserts:
       - hasDocuments:
-          count: 8
+          count: 9
 
   - it: should point each GrafanaDashboard at its own ConfigMap key
     set:
@@ -260,6 +260,9 @@ tests:
       - matchRegex:
           path: data["sglang-dashboard.yaml"]
           pattern: 'requires-runtime: "sglang"'
+      - matchRegex:
+          path: data["llamacpp-dashboard.yaml"]
+          pattern: 'requires-runtime: "llamacpp"'
       # Without these Helm refuses to adopt what the operator published, and a
       # later mode: all upgrade fails on invalid ownership metadata instead of
       # taking the dashboards over.
@@ -276,11 +279,13 @@ tests:
       grafana.dashboards.operator.enabled: true
       grafana.dashboards.operator.mode: all
     asserts:
-      # 7 CRs + the dashboards ConfigMap, and no candidates ConfigMap.
+      # 8 CRs + the dashboards ConfigMap, and no candidates ConfigMap.
       - hasDocuments:
-          count: 8
+          count: 9
       - notExists:
           path: data["vllm-dashboard.yaml"]
+      - notExists:
+          path: data["llamacpp-dashboard.yaml"]
 
   - it: should keep the sidecar path shipping every dashboard in auto mode
     set:
@@ -294,3 +299,5 @@ tests:
           path: data["vllm-dashboard.json"]
       - exists:
           path: data["sglang-dashboard.json"]
+      - exists:
+          path: data["llamacpp-dashboard.json"]

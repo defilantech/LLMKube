@@ -16,7 +16,7 @@
        blank until something serves that runtime. The chart cannot tell: it is
        an InferenceService fact that does not exist at install time. In auto
        mode these are deferred to the operator instead of published here. */}}
-{{- $runtimeDashboards := dict "sglang-dashboard.json" "sglang" "vllm-dashboard.json" "vllm" }}
+{{- $runtimeDashboards := dict "sglang-dashboard.json" "sglang" "vllm-dashboard.json" "vllm" "llamacpp-dashboard.json" "llamacpp" }}
 {{- $defer := and .Values.grafana.dashboards.operator.enabled (eq .Values.grafana.dashboards.operator.mode "auto") }}
 {{- $fullname := include "llmkube.fullname" . }}
 {{- $configMapName := printf "%s-dashboards" $fullname }}
