@@ -253,10 +253,8 @@ prometheus:
         enabled: true
         highUtilizationThreshold: 90
         highTemperatureThreshold: 85
-        # GPU Memory Pressure alert, off by default: SGLang and vLLM
-        # preallocate the KV cache pool, so VRAM sits at ~99% on any healthy
-        # inference host (measured). Enable only for mixed/non-inference GPU
-        # workloads where high VRAM is unusual.
+        # Off by default: inference runtimes preallocate the KV pool, so VRAM
+        # measures ~99% on a healthy host. Enable for mixed GPU workloads.
         memoryPressure:
           enabled: false
         memoryPressureThreshold: 90

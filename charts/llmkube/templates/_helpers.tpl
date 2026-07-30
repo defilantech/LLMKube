@@ -133,42 +133,16 @@ Prometheus PrometheusRule namespace
 {{- end }}
 
 {{/*
-GPU alert vendor metric contract (#1356). The five GPU alert bodies (for/
-labels/thresholds) are identical across vendors; only the PromQL metric
-names and description wording differ, so they're single-sourced here rather
-than duplicated per vendor in prometheusrule.yaml. Adding a vendor is one
-entry in this map, not five more rule bodies.
+GPU alert metric contract (#1356). One OR-fallback expression per role, so the
+exporter a cluster actually runs is the one that evaluates and absent families
+contribute nothing. Adding an exporter is one branch, not another rule body.
 
-Takes the vendor string, returns YAML for the caller to `fromYaml`. Schema
-enum (values.schema.json) is the only validity guard - values not in this
-map render an empty dict and are unreachable in practice.
-
-NOTE: dashboards/amd-gpu-observability.json reads a DIFFERENT AMD metric
-family (amdgpu_*) than these alerts (drm_*) - that disagreement is
-unreconciled. This is where both could be single-sourced later.
-*/}}
-{{/*
-llmkube.gpuMetricNames is keyed by ROLE, not vendor: util, temp, memUsed,
-memTotal, power. Each value is an OR-fallback expression unioning every
-exporter this chart knows (DCGM/nvidia, amdgpu-sysfs/amd, drm/amd), all
-normalized to the same unit and physical meaning, so whichever exporter a
-cluster runs is the one that evaluates and absent families contribute
-nothing. A dual-vendor cluster gets both branches unioned, which is correct.
-
-temp is pinned to the edge sensor only: drm_temperature_celsius carries a
-`sensor` label (edge/junction/mem) and node_hwmon reports the same split as
-temp1/temp2/temp3, so mixing sensors would make one threshold mean different
-things per exporter. DCGM reports a single edge-equivalent series.
-
-The node_hwmon branches are scoped to chip_name="amdgpu" through
-node_hwmon_chip_names, the same join amd-gpu-observability.json uses. Without
-it these are every hwmon sensor on the node: measured on a live cluster, a
-bare node_hwmon_temp_celsius fired GPUHighTemperature at 89C off a chipset
-sensor with no GPU involved.
-
-memUsed/memTotal pin pool="vram" on both sides of the amd drm branch - the
-denominator needs the same selector as the numerator, not implicit label
-matching.
+temp pins the edge sensor: drm reports sensor=edge/junction/mem and node_hwmon
+the same split as temp1/temp2/temp3, measured 69/82/79 C on one GPU.
+node_hwmon is scoped through node_hwmon_chip_names{chip_name="amdgpu"} -
+unscoped it is every sensor on the node, and fired at 89 C off a chipset.
+mem pins pool="vram" on both sides; the denominator needs the numerator's
+selector, not implicit label matching.
 */}}
 {{- define "llmkube.gpuMetricNames" -}}
 util: DCGM_FI_DEV_GPU_UTIL or amdgpu_gpu_busy_percent or drm_engine_utilization_ratio{engine="gpu"} * 100
