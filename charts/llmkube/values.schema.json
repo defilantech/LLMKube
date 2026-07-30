@@ -151,6 +151,7 @@
       "additionalProperties": false,
       "properties": {
         "enabled": { "type": "boolean" },
+        "emitScrapeAnnotations": { "type": "boolean" },
         "secure": { "type": "boolean" },
         "service": {
           "type": "object",

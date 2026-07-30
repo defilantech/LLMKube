@@ -45,6 +45,9 @@ spec:
         - --metrics-bind-address=:{{ .Values.metrics.service.port }}
         - --metrics-secure={{ .Values.metrics.secure }}
         {{- end }}
+        {{- if .Values.metrics.emitScrapeAnnotations }}
+        - --emit-scrape-annotations
+        {{- end }}
         {{- if .Values.pyrra.enabled }}
         - --enable-pyrra-slo
         {{- end }}

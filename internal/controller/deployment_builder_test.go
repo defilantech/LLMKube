@@ -415,9 +415,10 @@ func TestBuildPodAnnotations(t *testing.T) {
 	pFalse := func() *bool { b := false; return &b }
 
 	cases := []struct {
-		name     string
-		isvc     *inferencev1alpha1.InferenceService
-		expected map[string]string
+		name       string
+		isvc       *inferencev1alpha1.InferenceService
+		emitScrape bool
+		expected   map[string]string
 	}{
 		{
 			name: "not Ready, no user annotations → add disruption annotation",
@@ -480,11 +481,62 @@ func TestBuildPodAnnotations(t *testing.T) {
 			},
 			expected: map[string]string{"karpenter.sh/do-not-disrupt": "true"},
 		},
+		{
+			name: "emitScrape off → no prometheus.io annotations",
+			isvc: &inferencev1alpha1.InferenceService{
+				Status: inferencev1alpha1.InferenceServiceStatus{Phase: PhaseReady},
+			},
+			emitScrape: false,
+			expected:   nil,
+		},
+		{
+			name: "emitScrape on, explicit endpoint port → scrape annotations with that port",
+			isvc: &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					Endpoint: &inferencev1alpha1.EndpointSpec{Port: 8000},
+				},
+				Status: inferencev1alpha1.InferenceServiceStatus{Phase: PhaseReady},
+			},
+			emitScrape: true,
+			expected: map[string]string{
+				"prometheus.io/scrape": "true",
+				"prometheus.io/path":   "/metrics",
+				"prometheus.io/port":   "8000",
+			},
+		},
+		{
+			name: "emitScrape on, no endpoint → falls back to default port 8080",
+			isvc: &inferencev1alpha1.InferenceService{
+				Status: inferencev1alpha1.InferenceServiceStatus{Phase: PhaseReady},
+			},
+			emitScrape: true,
+			expected: map[string]string{
+				"prometheus.io/scrape": "true",
+				"prometheus.io/path":   "/metrics",
+				"prometheus.io/port":   "8080",
+			},
+		},
+		{
+			name: "emitScrape on, user set prometheus.io/port → user value wins",
+			isvc: &inferencev1alpha1.InferenceService{
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					Endpoint:       &inferencev1alpha1.EndpointSpec{Port: 8000},
+					PodAnnotations: map[string]string{"prometheus.io/port": "9000"},
+				},
+				Status: inferencev1alpha1.InferenceServiceStatus{Phase: PhaseReady},
+			},
+			emitScrape: true,
+			expected: map[string]string{
+				"prometheus.io/scrape": "true",
+				"prometheus.io/path":   "/metrics",
+				"prometheus.io/port":   "9000",
+			},
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := buildPodAnnotations(tc.isvc)
+			got := buildPodAnnotations(tc.isvc, tc.emitScrape)
 			if len(got) != len(tc.expected) {
 				t.Fatalf("buildPodAnnotations() = %v, want %v", got, tc.expected)
 			}

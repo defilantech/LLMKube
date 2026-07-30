@@ -278,20 +278,40 @@ func shouldProtectFromDisruption(isvc *inferencev1alpha1.InferenceService) bool 
 }
 
 // buildPodAnnotations merges the user's podAnnotations with the operator's
-// disruption-protection annotation. User-provided values always win on
-// collision.
-func buildPodAnnotations(isvc *inferencev1alpha1.InferenceService) map[string]string {
+// disruption-protection annotation and, when emitScrape is set, Prometheus
+// annotation-discovery hints. User-provided values always win on collision.
+func buildPodAnnotations(isvc *inferencev1alpha1.InferenceService, emitScrape bool) map[string]string {
 	annotations := copyMap(isvc.Spec.PodAnnotations)
-	if shouldProtectFromDisruption(isvc) {
+	set := func(k, v string) {
 		if annotations == nil {
 			annotations = make(map[string]string)
 		}
-		// Only set the annotation if the user hasn't already set it
-		if _, ok := annotations["karpenter.sh/do-not-disrupt"]; !ok {
-			annotations["karpenter.sh/do-not-disrupt"] = "true"
+		// The user's value always wins.
+		if _, ok := annotations[k]; !ok {
+			annotations[k] = v
 		}
 	}
+	if shouldProtectFromDisruption(isvc) {
+		set("karpenter.sh/do-not-disrupt", "true")
+	}
+	if emitScrape {
+		// port is the resolved endpoint port, so annotation-based scrapers
+		// hit the app port regardless of its container-port name (which is
+		// "http", not a metrics-named port most scrape regexes match).
+		set("prometheus.io/scrape", "true")
+		set("prometheus.io/path", "/metrics")
+		set("prometheus.io/port", fmt.Sprintf("%d", endpointPort(isvc)))
+	}
 	return annotations
+}
+
+// endpointPort returns the resolved inference service port: the explicit
+// spec.endpoint.port when set, else the CRD default (8080).
+func endpointPort(isvc *inferencev1alpha1.InferenceService) int32 {
+	if isvc.Spec.Endpoint != nil && isvc.Spec.Endpoint.Port != 0 {
+		return isvc.Spec.Endpoint.Port
+	}
+	return 8080
 }
 
 // servedModelPath picks the path handed to the runtime. For a multi-file model
@@ -429,7 +449,7 @@ func (r *InferenceServiceReconciler) constructDeployment(
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels:      mergePodLabels(labels, isvc.Spec.PodLabels),
-					Annotations: buildPodAnnotations(isvc),
+					Annotations: buildPodAnnotations(isvc, r.EmitScrapeAnnotations),
 				},
 				Spec: corev1.PodSpec{
 					SecurityContext:    inferPodSecurityContext(isvc, r.DefaultFSGroup),
