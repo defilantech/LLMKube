@@ -12,7 +12,7 @@
       }
     ]
   },
-  "description": "LLMKube SGLang runtime observability. Throughput, TTFT / E2E / inter-token latency, queue depth, KV pool utilization, scheduler backpressure and prefix cache hit rate, grouped by service / namespace from the sglang: metrics the chart's inference PodMonitor scrapes. TTFT and end-to-end p95 / p50 read the chart's llmkube:inference: recording rules. Mamba and HiCache rows are collapsed because those pools only exist on hybrid-attention models and with --hicache enabled respectively.",
+  "description": "LLMKube SGLang runtime observability. Throughput, TTFT / E2E / inter-token latency, queue depth, KV pool utilization, scheduler backpressure, prefix cache hit rate, queue wait, per-stage latency, new token ratio, prompt length distribution and request rate, grouped by service / namespace from the sglang: metrics the chart's inference PodMonitor scrapes. TTFT and end-to-end p95 / p50 read the chart's llmkube:inference: recording rules. Mamba, HiCache host and HiCache L3 rows are collapsed because those pools only exist on hybrid-attention models, with --hicache enabled, and with --hicache-storage-backend enabled respectively.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -38,7 +38,7 @@
         },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 1},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 1},
       "id": 1,
       "options": {
         "legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom"},
@@ -59,6 +59,32 @@
         }
       ],
       "title": "Generation vs prompt tokens/sec (5m)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {
+        "defaults": {
+          "custom": {"axisLabel": "tok/s", "drawStyle": "line", "fillOpacity": 40, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true, "stacking": {"group": "A", "mode": "normal"}},
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 1},
+      "id": 23,
+      "options": {
+        "legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom"},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "expr": "sum by (mode) (rate(sglang:realtime_tokens_total[$__rate_interval]))",
+          "legendFormat": "{{mode}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Token throughput by mode",
       "type": "timeseries"
     },
     {
@@ -487,6 +513,243 @@
         }
       ],
       "title": "HiCache host pool (requires --hicache)",
+      "type": "row"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 47},
+      "id": 107,
+      "panels": [],
+      "title": "Queue wait, prefill mix and request rate",
+      "type": "row"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic-by-name"},
+          "custom": {"axisLabel": "req/s", "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true},
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 48},
+      "id": 16,
+      "options": {
+        "legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom"},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "expr": "sum by (service, namespace) (rate(sglang:num_requests_total{service=~\"$service\"}[5m]))",
+          "legendFormat": "{{service}} ({{namespace}})",
+          "refId": "A"
+        }
+      ],
+      "title": "Request rate (5m)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic-by-name"},
+          "custom": {"axisLabel": "seconds", "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true},
+          "unit": "s"
+        },
+        "overrides": [
+          {"matcher": {"id": "byRegexp", "options": "p50$"}, "properties": [{"id": "color", "value": {"fixedColor": "light-blue", "mode": "fixed"}}]},
+          {"matcher": {"id": "byRegexp", "options": "p90$"}, "properties": [{"id": "color", "value": {"fixedColor": "blue", "mode": "fixed"}}]},
+          {"matcher": {"id": "byRegexp", "options": "p99$"}, "properties": [{"id": "color", "value": {"fixedColor": "dark-blue", "mode": "fixed"}}]}
+        ]
+      },
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 48},
+      "id": 17,
+      "options": {
+        "legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom"},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "expr": "histogram_quantile(0.50, sum by (service, namespace, le) (rate(sglang:queue_time_seconds_bucket{service=~\"$service\"}[5m])))",
+          "legendFormat": "{{service}} ({{namespace}}) p50",
+          "refId": "A"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "expr": "histogram_quantile(0.90, sum by (service, namespace, le) (rate(sglang:queue_time_seconds_bucket{service=~\"$service\"}[5m])))",
+          "legendFormat": "{{service}} ({{namespace}}) p90",
+          "refId": "B"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "expr": "histogram_quantile(0.99, sum by (service, namespace, le) (rate(sglang:queue_time_seconds_bucket{service=~\"$service\"}[5m])))",
+          "legendFormat": "{{service}} ({{namespace}}) p99",
+          "refId": "C"
+        }
+      ],
+      "title": "Queue wait p50 / p90 / p99 (5m)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic-by-name"},
+          "custom": {"axisLabel": "seconds", "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true},
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 48},
+      "id": 18,
+      "options": {
+        "legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom"},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "expr": "histogram_quantile(0.95, sum by (service, namespace, stage, le) (rate(sglang:per_stage_req_latency_seconds_bucket{service=~\"$service\"}[5m])))",
+          "legendFormat": "{{service}} ({{namespace}}) {{stage}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Per-stage latency p95 by stage (5m)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic-by-name"},
+          "custom": {"axisLabel": "ratio", "drawStyle": "line", "fillOpacity": 5, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true},
+          "max": 1,
+          "min": 0,
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 56},
+      "id": 19,
+      "options": {
+        "legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom"},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "expr": "avg by (service, namespace) (sglang:new_token_ratio{service=~\"$service\"})",
+          "legendFormat": "{{service}} ({{namespace}})",
+          "refId": "A"
+        }
+      ],
+      "title": "New token ratio (prefill/decode mix)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {
+        "defaults": {"custom": {"scaleDistribution": {"type": "linear"}}, "unit": "short"},
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 56},
+      "id": 20,
+      "options": {
+        "calculate": false,
+        "cellGap": 1,
+        "color": {"exponent": 0.5, "fill": "dark-orange", "mode": "scheme", "reverse": false, "scale": "exponential", "scheme": "Oranges", "steps": 64},
+        "legend": {"show": true},
+        "tooltip": {"mode": "single", "showColorScale": false, "yHistogram": false},
+        "yAxis": {"axisPlacement": "left", "reverse": false, "unit": "short"}
+      },
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "expr": "sum by (le) (rate(sglang:prompt_tokens_histogram_bucket{service=~\"$service\"}[5m]))",
+          "format": "heatmap",
+          "legendFormat": "{{le}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Prompt length distribution (5m)",
+      "type": "heatmap"
+    },
+    {
+      "collapsed": true,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 64},
+      "id": 108,
+      "panels": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "palette-classic-by-name"},
+              "custom": {"axisLabel": "tokens/sec", "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true},
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 65},
+          "id": 21,
+          "options": {
+            "legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom"},
+            "tooltip": {"mode": "multi", "sort": "desc"}
+          },
+          "targets": [
+            {
+              "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+              "expr": "sum by (service, namespace) (rate(sglang:backuped_tokens_total{service=~\"$service\"}[5m]))",
+              "legendFormat": "{{service}} ({{namespace}}) backup",
+              "refId": "A"
+            },
+            {
+              "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+              "expr": "sum by (service, namespace) (rate(sglang:load_back_tokens_total{service=~\"$service\"}[5m]))",
+              "legendFormat": "{{service}} ({{namespace}}) load-back",
+              "refId": "B"
+            }
+          ],
+          "title": "L3 backup vs load-back rate (5m)",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "palette-classic-by-name"},
+              "custom": {"axisLabel": "tokens/sec", "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true},
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 65},
+          "id": 22,
+          "options": {
+            "legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom"},
+            "tooltip": {"mode": "multi", "sort": "desc"}
+          },
+          "targets": [
+            {
+              "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+              "expr": "sum by (service, namespace) (rate(sglang:cached_tokens_total{service=~\"$service\"}[5m]))",
+              "legendFormat": "{{service}} ({{namespace}}) cached",
+              "refId": "A"
+            },
+            {
+              "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+              "expr": "sum by (service, namespace) (rate(sglang:evicted_tokens_total{service=~\"$service\"}[5m]))",
+              "legendFormat": "{{service}} ({{namespace}}) evicted",
+              "refId": "B"
+            }
+          ],
+          "title": "L3 cached vs evicted tokens (5m)",
+          "type": "timeseries"
+        }
+      ],
+      "title": "HiCache L3 pool (requires --hicache-storage-backend)",
       "type": "row"
     }
   ],
