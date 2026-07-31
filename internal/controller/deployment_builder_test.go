@@ -418,6 +418,7 @@ func TestBuildPodAnnotations(t *testing.T) {
 		name       string
 		isvc       *inferencev1alpha1.InferenceService
 		emitScrape bool
+		port       int32
 		expected   map[string]string
 	}{
 		{
@@ -490,14 +491,12 @@ func TestBuildPodAnnotations(t *testing.T) {
 			expected:   nil,
 		},
 		{
-			name: "emitScrape on, explicit endpoint port → scrape annotations with that port",
+			name: "emitScrape on → emits the resolved port it is handed",
 			isvc: &inferencev1alpha1.InferenceService{
-				Spec: inferencev1alpha1.InferenceServiceSpec{
-					Endpoint: &inferencev1alpha1.EndpointSpec{Port: 8000},
-				},
 				Status: inferencev1alpha1.InferenceServiceStatus{Phase: PhaseReady},
 			},
 			emitScrape: true,
+			port:       8000,
 			expected: map[string]string{
 				"prometheus.io/scrape": "true",
 				"prometheus.io/path":   "/metrics",
@@ -505,27 +504,31 @@ func TestBuildPodAnnotations(t *testing.T) {
 			},
 		},
 		{
-			name: "emitScrape on, no endpoint → falls back to default port 8080",
+			// Regression guard: the port is emitted verbatim, never a hardcoded
+			// 8080. Resolution itself is covered end-to-end in the
+			// constructDeployment tests (per-runtime default + spec.containerPort).
+			name: "emitScrape on, non-8080 port → emitted verbatim (not hardcoded)",
 			isvc: &inferencev1alpha1.InferenceService{
 				Status: inferencev1alpha1.InferenceServiceStatus{Phase: PhaseReady},
 			},
 			emitScrape: true,
+			port:       30000,
 			expected: map[string]string{
 				"prometheus.io/scrape": "true",
 				"prometheus.io/path":   "/metrics",
-				"prometheus.io/port":   "8080",
+				"prometheus.io/port":   "30000",
 			},
 		},
 		{
 			name: "emitScrape on, user set prometheus.io/port → user value wins",
 			isvc: &inferencev1alpha1.InferenceService{
 				Spec: inferencev1alpha1.InferenceServiceSpec{
-					Endpoint:       &inferencev1alpha1.EndpointSpec{Port: 8000},
 					PodAnnotations: map[string]string{"prometheus.io/port": "9000"},
 				},
 				Status: inferencev1alpha1.InferenceServiceStatus{Phase: PhaseReady},
 			},
 			emitScrape: true,
+			port:       8000,
 			expected: map[string]string{
 				"prometheus.io/scrape": "true",
 				"prometheus.io/path":   "/metrics",
@@ -536,7 +539,7 @@ func TestBuildPodAnnotations(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := buildPodAnnotations(tc.isvc, tc.emitScrape)
+			got := buildPodAnnotations(tc.isvc, tc.emitScrape, tc.port)
 			if len(got) != len(tc.expected) {
 				t.Fatalf("buildPodAnnotations() = %v, want %v", got, tc.expected)
 			}

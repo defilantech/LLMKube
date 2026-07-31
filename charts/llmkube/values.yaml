@@ -158,11 +158,17 @@ rbac:
 metrics:
   # Enable metrics endpoint
   enabled: true
-  # Add prometheus.io/scrape,path,port annotations (port = the resolved
-  # spec.endpoint.port) to every inference Pod so annotation-based scrapers
-  # (e.g. Grafana Alloy) discover the runtime's /metrics without a
-  # per-InferenceService podAnnotations block or a PodMonitor. A user-set
-  # spec.podAnnotations value always wins. Default off.
+  # Add prometheus.io/scrape,path,port annotations (port = the fully-resolved
+  # container port: spec.containerPort -> spec.endpoint.port -> the runtime's
+  # default) to every inference Pod so annotation-based scrapers (e.g. Grafana
+  # Alloy) discover the runtime's /metrics without a per-InferenceService
+  # podAnnotations block or a PodMonitor. A user-set spec.podAnnotations value
+  # always wins. Default off.
+  #
+  # This is an ALTERNATIVE to a PodMonitor/ServiceMonitor, not a companion: if
+  # one already scrapes these pods, do NOT also enable this against the same
+  # Prometheus, or every target is scraped twice (duplicated series and
+  # samples). Pick one discovery mechanism per Prometheus.
   emitScrapeAnnotations: false
   # Serve metrics over HTTPS with authn/authz (true) or plain HTTP (false).
   # Set to false when scraping from outside the cluster without a ServiceAccount token.
