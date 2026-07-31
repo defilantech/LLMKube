@@ -19,9 +19,8 @@ spec:
     spec:
       containers:
       - name: amdgpu-exporter
-        # Pinned to the candidate digest; move to an amdgpu-exporter-v* release
-        # tag once one is cut.
-        image: ghcr.io/defilantech/llmkube-amdgpu-exporter@sha256:7fb21e54382afd60ddd3f0f5f69bd16f653fe3db300c6f8765124e5598818192
+        # Pinned to the amdgpu-exporter-v0.1.0 release (tag + digest).
+        image: ghcr.io/defilantech/llmkube-amdgpu-exporter:0.1.0@sha256:150fc4ad15677fa43f747842404e23b23834f980b54151749048eb650bd5fcef
         ports:
         - containerPort: 9494
           hostPort: 9494
