@@ -294,7 +294,7 @@ jobs:
             --set prometheus.prometheusRule.rules.gpu.highUtilizationThreshold=95 \
             > /tmp/custom-thresholds.yaml
 
-          if ! grep -q "DCGM_FI_DEV_GPU_UTIL > 95" /tmp/custom-thresholds.yaml; then
+          if ! grep -qE 'DCGM_FI_DEV_GPU_UTIL.*> 95' /tmp/custom-thresholds.yaml; then
             echo "❌ Custom GPU threshold not applied"
             exit 1
           fi

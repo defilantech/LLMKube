@@ -25,7 +25,7 @@ spec:
         component: gpu
       annotations:
         summary: "GPU utilization is high"
-        description: "GPU utilization is {{`{{ $value }}`}}% (threshold: {{ .Values.prometheus.prometheusRule.rules.gpu.highUtilizationThreshold }}%)"
+        description: "GPU {{`{{ $labels.instance }}`}} utilization is {{`{{ $value }}`}}% (threshold: {{ .Values.prometheus.prometheusRule.rules.gpu.highUtilizationThreshold }}%)"
 
     # GPU High Temperature Alert
     - alert: GPUHighTemperature
@@ -36,7 +36,7 @@ spec:
         component: gpu
       annotations:
         summary: "GPU temperature is critically high"
-        description: "GPU temperature is {{`{{ $value }}`}}°C (threshold: {{ .Values.prometheus.prometheusRule.rules.gpu.highTemperatureThreshold }}°C)"
+        description: "GPU {{`{{ $labels.instance }}`}} temperature is {{`{{ $value }}`}}°C (threshold: {{ .Values.prometheus.prometheusRule.rules.gpu.highTemperatureThreshold }}°C)"
 
     {{- if .Values.prometheus.prometheusRule.rules.gpu.memoryPressure.enabled }}
     # GPU Memory Pressure Alert. Off by default: on an inference host VRAM
@@ -54,7 +54,7 @@ spec:
         component: gpu
       annotations:
         summary: "GPU memory usage is high"
-        description: "GPU memory usage is {{`{{ $value }}`}}% (threshold: {{ .Values.prometheus.prometheusRule.rules.gpu.memoryPressureThreshold }}%)"
+        description: "GPU {{`{{ $labels.instance }}`}} memory usage is {{`{{ $value }}`}}% (threshold: {{ .Values.prometheus.prometheusRule.rules.gpu.memoryPressureThreshold }}%)"
     {{- end }}
 
     # GPU Power Limit Alert
@@ -66,13 +66,13 @@ spec:
         component: gpu
       annotations:
         summary: "GPU power usage is high"
-        description: "GPU power usage is {{`{{ $value }}`}}W (threshold: {{ .Values.prometheus.prometheusRule.rules.gpu.powerLimitThreshold }}W)"
+        description: "GPU {{`{{ $labels.instance }}`}} power usage is {{`{{ $value }}`}}W (threshold: {{ .Values.prometheus.prometheusRule.rules.gpu.powerLimitThreshold }}W)"
 
     # The utilization series dropping out (not dropping to zero) reads as a
     # healthy idle GPU, same silent no-op class as #1356 — none of the known
     # exporters (DCGM, amdgpu-sysfs, drm) is reporting.
     - alert: GPUMetricsMissing
-      expr: absent(DCGM_FI_DEV_GPU_UTIL) and absent(amdgpu_gpu_busy_percent) and absent(drm_engine_utilization_ratio{engine="gpu"})
+      expr: absent(DCGM_FI_DEV_GPU_UTIL) and absent(amdgpu_gpu_busy_percent) and absent(drm_engine_utilization_ratio)
       for: 15m
       labels:
         severity: warning

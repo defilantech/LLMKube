@@ -174,7 +174,7 @@ tests:
     asserts:
       - equal:
           path: spec.groups[?(@.name=="llmkube-slo")].rules[?(@.alert=="GPUMetricsMissing")].expr
-          value: absent(DCGM_FI_DEV_GPU_UTIL) and absent(amdgpu_gpu_busy_percent) and absent(drm_engine_utilization_ratio{engine="gpu"})
+          value: absent(DCGM_FI_DEV_GPU_UTIL) and absent(amdgpu_gpu_busy_percent) and absent(drm_engine_utilization_ratio)
 
   - it: should omit all GPU rules including the absence guard when the group is disabled
     template: prometheusrule.yaml
