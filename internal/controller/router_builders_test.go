@@ -850,6 +850,7 @@ func modelPoolFor(name string, memberNames ...string) *inferencev1alpha1.ModelPo
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testBuilderNs},
 		Spec: inferencev1alpha1.ModelPoolSpec{
 			SwapPolicy: inferencev1alpha1.ModelPoolSwapPolicySticky,
+			SwapBudget: &metav1.Duration{Duration: 6 * time.Minute},
 			Members:    members,
 		},
 	}
@@ -895,6 +896,9 @@ func TestCompileRouterConfigResolvesBackendPool(t *testing.T) {
 	}
 	if len(local.Pool.Members) != 2 || local.Pool.Members[0] != "qwen3-coder" || local.Pool.Members[1] != "gemma-judge" {
 		t.Errorf("Pool.Members = %v, want [qwen3-coder gemma-judge]", local.Pool.Members)
+	}
+	if local.Pool.SwapBudget != 6*time.Minute {
+		t.Errorf("Pool.SwapBudget = %s, want 6m (compiled from ModelPool.spec.swapBudget)", local.Pool.SwapBudget)
 	}
 	// The cloud backend is not pooled.
 	if cfg.Backends[1].Pool != nil {

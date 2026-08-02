@@ -65,6 +65,13 @@ type Activator struct {
 	router  string
 	baseCtx context.Context
 
+	// resyncInterval bounds how stale the activator's belief about a pool's
+	// resident member may be. reconcileResident re-reads member phase at most
+	// once per interval per pool (the proxy's Kubernetes client is direct, so a
+	// re-read is a live API call), trading a small self-heal latency for not
+	// adding an API round-trip to the hot path.
+	resyncInterval time.Duration
+
 	mu    sync.Mutex
 	pools map[string]*poolRuntime
 }
@@ -76,10 +83,12 @@ type poolRuntime struct {
 	members   []string
 
 	// resident is the member the activator believes owns the slot, or "" when
-	// the pool is cold. seeded is false until the first Acquire has queried the
-	// cluster for an already-warm member (spec.default).
-	resident string
-	seeded   bool
+	// the pool is cold. residentCheckedAt is when reconcileResident last verified
+	// that belief against the members' actual InferenceService phase; the zero
+	// value means never (a cold pool, or a belief invalidated by the
+	// dispatch-failure self-heal), which forces the next Acquire to re-verify.
+	resident          string
+	residentCheckedAt time.Time
 
 	// swapping is true while a background goroutine is draining + loading a new
 	// owner; swapTarget names that owner. All callers wait until the swap
@@ -119,11 +128,12 @@ func NewActivator(baseCtx context.Context, ctrl MemberController, router string,
 		router = "default"
 	}
 	return &Activator{
-		ctrl:    ctrl,
-		logger:  logger,
-		router:  router,
-		baseCtx: baseCtx,
-		pools:   make(map[string]*poolRuntime),
+		ctrl:           ctrl,
+		logger:         logger,
+		router:         router,
+		baseCtx:        baseCtx,
+		resyncInterval: residentResyncInterval,
+		pools:          make(map[string]*poolRuntime),
 	}
 }
 
@@ -162,10 +172,11 @@ func (a *Activator) Acquire(ctx context.Context, p *BackendPool) (func(), error)
 
 	a.mu.Lock()
 	pr := a.runtime(p)
-	if err := a.seed(ctx, pr, p.Members); err != nil {
-		// Seeding is best-effort: a failed status read just means we treat the
-		// pool as cold and let the first swap establish residency.
-		a.logger.Warn("model pool seed failed", "pool", pr.pool, "error", err)
+	if err := a.reconcileResident(ctx, pr, p.Members); err != nil {
+		// Reconciliation is best-effort: a failed status read just means we keep
+		// the current belief (or treat the pool as cold) and let the next swap or
+		// resync converge residency.
+		a.logger.Warn("model pool resident reconcile failed", "pool", pr.pool, "error", err)
 	}
 
 	pr.waiting[member]++
@@ -300,6 +311,9 @@ func (a *Activator) startSwap(pr *poolRuntime, incumbent, target string, holdSta
 			return
 		}
 		pr.resident = target
+		// The swap just made target Ready, so the belief is fresh: record the
+		// check so reconcileResident does not immediately re-read its phase.
+		pr.residentCheckedAt = time.Now()
 		prommetrics.ModelPoolSwapsTotal.WithLabelValues(a.router, pr.pool, incumbent, target).Inc()
 		prommetrics.ModelPoolSwapDuration.WithLabelValues(a.router, pr.pool).Observe(time.Since(swapStart).Seconds())
 		prommetrics.ModelPoolHoldDuration.WithLabelValues(a.router, pr.pool, target).Observe(time.Since(holdStart).Seconds())
@@ -308,14 +322,49 @@ func (a *Activator) startSwap(pr *poolRuntime, incumbent, target string, holdSta
 	}()
 }
 
-// seed queries the cluster once per pool to discover a member that is already
-// resident (for example spec.default warmed by the controller) so the first
-// request does not needlessly trigger a swap. Caller holds mu.
-func (a *Activator) seed(ctx context.Context, pr *poolRuntime, members []string) error {
-	if pr.seeded {
+// reconcileResident refreshes the activator's belief about which member owns a
+// pool's slot against the members' actual InferenceService phase, the truth the
+// controller publishes. It subsumes the cold-start seed (spec.default warmed by
+// the controller) and, crucially, self-heals after an out-of-band residency
+// change the activator did not drive: a resident pod rolled by a spec edit, an
+// OOM-kill, a node drain, or a controller fallback to spec.default. Without it
+// the fast path would keep dispatching to a member whose pod is gone, returning
+// instant 502s until the proxy restarts.
+//
+// The proxy's Kubernetes client is direct (uncached), so a phase read is a live
+// API call; reconcileResident therefore verifies at most once per resyncInterval
+// per pool. A zero residentCheckedAt (a cold pool, or a belief invalidated by
+// InvalidateResident after a dispatch failure) forces an immediate recheck.
+// Caller holds mu.
+func (a *Activator) reconcileResident(ctx context.Context, pr *poolRuntime, members []string) error {
+	// A swap the activator itself is driving owns pr.resident; its goroutine
+	// publishes the new owner on completion, so never second-guess it mid-flight.
+	if pr.swapping {
 		return nil
 	}
-	pr.seeded = true
+	// Trust the current belief between rechecks so a busy resident does not incur
+	// an API call per request.
+	if !pr.residentCheckedAt.IsZero() && time.Since(pr.residentCheckedAt) < a.resyncInterval {
+		return nil
+	}
+	pr.residentCheckedAt = time.Now()
+
+	// Verify the believed resident still owns the slot. A resident whose pod is
+	// gone (phase != Ready) is stale; drop the belief so it is re-derived below
+	// and the next request drives a corrective swap.
+	if pr.resident != "" {
+		phase, err := a.ctrl.Phase(ctx, pr.namespace, pr.resident)
+		if err != nil {
+			return err
+		}
+		if phase == modelReadyPhase {
+			return nil
+		}
+		pr.resident = ""
+	}
+	// No trusted resident: adopt whichever member the controller currently
+	// reports Ready (for example spec.default warmed after a fallback) so a
+	// request for it coalesces instead of needlessly swapping.
 	for _, m := range members {
 		phase, err := a.ctrl.Phase(ctx, pr.namespace, m)
 		if err != nil {
@@ -329,6 +378,29 @@ func (a *Activator) seed(ctx context.Context, pr *poolRuntime, members []string)
 	a.observeResident(pr)
 	return nil
 }
+
+// InvalidateResident forces the next Acquire for p's pool to re-verify which
+// member owns the slot instead of trusting the cached belief. The proxy calls
+// it when a dispatch to a pooled backend fails at the connection level: a
+// believed-resident member that refuses connections has almost certainly lost
+// its pod out of band, so the belief must be rechecked immediately rather than
+// waiting up to resyncInterval for the periodic recheck. A swap the activator
+// is driving is left untouched; its goroutine owns residency.
+func (a *Activator) InvalidateResident(p *BackendPool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	pr, ok := a.pools[p.Namespace+"/"+p.Name]
+	if !ok || pr.swapping {
+		return
+	}
+	pr.residentCheckedAt = time.Time{}
+}
+
+// residentResyncInterval bounds how long a pool may serve a stale resident
+// belief before reconcileResident re-verifies it. Kept short so an out-of-band
+// residency change self-heals quickly while still coalescing the common
+// same-member request stream onto one API read per interval.
+const residentResyncInterval = 5 * time.Second
 
 // modelReadyPhase is the InferenceService status.phase value that means a member
 // is serving. Duplicated here (rather than importing the controller package) to

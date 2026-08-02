@@ -485,6 +485,73 @@ func TestProxyPoolActivationTimeout503RetryAfter(t *testing.T) {
 	close(fake.activateGate)
 }
 
+// TestProxyPoolSwapBudgetDecoupledFromDispatchTimeout is the decoupling guard:
+// a swap that takes longer than the per-request response-header (dispatch)
+// timeout still succeeds when the pool's SwapBudget covers it. Before
+// SwapBudget, a single attempt deadline bounded both the swap hold and the
+// generation cap, so a slow cold-load forced operators to inflate the
+// response-header timeout for every request. Here the dispatch timeout is short
+// (40ms) while the activation takes ~150ms; only the separate swap budget lets
+// the request through.
+func TestProxyPoolSwapBudgetDecoupledFromDispatchTimeout(t *testing.T) {
+	fb := newFakeBackend(t)
+
+	fake := newFakeMemberController()
+	gate := make(chan struct{})
+	fake.activateGate = gate
+	// Release the activation after the dispatch timeout would have fired, but
+	// well within the swap budget.
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		close(gate)
+	}()
+
+	cfg := &Config{
+		Backends: []Backend{{
+			Name:    "coder",
+			Tier:    "local",
+			Address: fb.URL(),
+			// Dispatch/response-header timeout is short: it must NOT bound the
+			// swap hold. If it did, the ~150ms activation would blow this 40ms
+			// budget and the request would 503.
+			Timeout: 40 * time.Millisecond,
+			Pool: &BackendPool{
+				Name:       "heavy-slot",
+				Namespace:  "lab",
+				Member:     "coder",
+				Members:    []string{"coder", "judge"},
+				SwapBudget: 5 * time.Second,
+			},
+		}},
+		DefaultRoute: "coder",
+		Policy:       Policy{Classification: ClassificationPolicy{Mode: "header-only"}},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("config: %v", err)
+	}
+
+	act := NewActivator(context.Background(), fake, "r", slog.Default())
+	proxy := NewProxy(cfg, slog.Default(), WithActivator(act))
+	mux := http.NewServeMux()
+	proxy.Mount(mux)
+
+	body, _ := json.Marshal(map[string]any{
+		"model":    "coder",
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(string(body)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (swap budget must cover the slow activation independent of the dispatch timeout)", rec.Code)
+	}
+	if fb.calls.Load() != 1 {
+		t.Errorf("backend calls = %d, want 1 (request dispatched after the swap completed)", fb.calls.Load())
+	}
+}
+
 // TestProxyRejectsOversizedBody enforces the body-size cap; a request
 // larger than maxRequestBodyBytes is rejected with 400.
 func TestProxyRejectsOversizedBody(t *testing.T) {

@@ -130,6 +130,18 @@ type ModelPoolSpec struct {
 	// owner. Must match one of the members' InferenceServiceRef names.
 	// +optional
 	Default string `json:"default,omitempty"`
+
+	// SwapBudget bounds how long the router holds a cross-model request open
+	// while it drains the incumbent and cold-loads the target member. It is
+	// deliberately decoupled from the router's response-header (generation)
+	// timeout: a large model can take minutes to load without forcing operators
+	// to loosen the per-request generation cap for every request. When the
+	// budget elapses before the target becomes resident, the held request is
+	// failed with 503 + Retry-After (the caller can retry; the now-warm member
+	// serves the next request). Defaults to 300s.
+	// +kubebuilder:default="300s"
+	// +optional
+	SwapBudget *metav1.Duration `json:"swapBudget,omitempty"`
 }
 
 // ModelPoolMemberStatus reports the observed state of one pool member.

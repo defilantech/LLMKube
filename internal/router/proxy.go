@@ -347,6 +347,29 @@ func (p *Proxy) dispatchWithFallback(
 			lastErr = fmt.Errorf("backend %q marked unhealthy", name)
 			continue
 		}
+
+		// ModelPool activation: make this member resident (scale it up, drain
+		// the incumbent) before dispatch. The swap hold has its own budget
+		// (pool.SwapBudget), decoupled from the dispatch/response-header timeout
+		// so a large cold model load can take minutes without loosening the
+		// per-request generation cap. The swap runs under the activator's
+		// baseCtx, so cancelling holdCtx once Acquire returns never aborts an
+		// in-progress load. The dispatch clock (attemptCtx below) starts only
+		// after the member is resident, so the swap wait never eats the
+		// generation budget.
+		var poolRelease func()
+		if b.Pool != nil && p.activator != nil {
+			holdCtx, holdCancel := context.WithTimeout(ctx,
+				resolveSwapBudget(b.Pool, p.disp.ResponseHeaderTimeout()))
+			rel, aerr := p.activator.Acquire(holdCtx, b.Pool)
+			holdCancel()
+			if aerr != nil {
+				lastErr = aerr
+				continue
+			}
+			poolRelease = rel
+		}
+
 		attemptCtx, cancel := context.WithTimeout(ctx,
 			resolveDispatchTimeout(dec, b, p.disp.ResponseHeaderTimeout()))
 		_, span := tracer.Start(attemptCtx, "backend.request",
@@ -357,22 +380,16 @@ func (p *Proxy) dispatchWithFallback(
 				otelattribute.Int("routing.fallback.depth", i),
 			),
 		)
-		// ModelPool activation: make this member resident (scale it up, drain
-		// the incumbent) before dispatch. The hold is bounded by attemptCtx, so
-		// the per-rule / per-backend timeout budget also caps the swap wait.
-		var poolRelease func()
-		if b.Pool != nil && p.activator != nil {
-			rel, aerr := p.activator.Acquire(attemptCtx, b.Pool)
-			if aerr != nil {
-				span.End()
-				cancel()
-				lastErr = aerr
-				continue
-			}
-			poolRelease = rel
-		}
 		resp, err := p.disp.Dispatch(attemptCtx, b, http.MethodPost, path, headers, body)
 		if err != nil {
+			if b.Pool != nil && p.activator != nil {
+				// A connection-level failure to a pooled backend almost always
+				// means its pod is gone (an out-of-band residency change the
+				// activator did not drive). Force the next Acquire to re-verify
+				// residency so the pool self-heals instead of serving stale 502s
+				// until the periodic resync or a proxy restart.
+				p.activator.InvalidateResident(b.Pool)
+			}
 			if poolRelease != nil {
 				poolRelease()
 			}
@@ -442,6 +459,19 @@ func resolveDispatchTimeout(dec *MatchResult, backend *Backend, proxyDefault tim
 	}
 	if backend != nil && backend.Timeout > 0 {
 		return backend.Timeout
+	}
+	return proxyDefault
+}
+
+// resolveSwapBudget returns how long the router may hold a cross-model request
+// open while it drains the incumbent and cold-loads the target member. It is
+// the pool's SwapBudget when set, decoupled from the response-header
+// (generation) timeout so a slow model load does not force operators to inflate
+// the generation cap. Falls back to the dispatch default when a pool carries no
+// explicit budget, preserving the pre-decoupling behavior.
+func resolveSwapBudget(pool *BackendPool, proxyDefault time.Duration) time.Duration {
+	if pool != nil && pool.SwapBudget > 0 {
+		return pool.SwapBudget
 	}
 	return proxyDefault
 }
