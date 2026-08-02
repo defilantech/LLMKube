@@ -12,6 +12,7 @@ package router
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -419,6 +420,69 @@ func TestProxy503WhenNoRoute(t *testing.T) {
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want 503", rec.Code)
 	}
+}
+
+// TestProxyPoolActivationTimeout503RetryAfter verifies the end-to-end mapping
+// of a ModelPool activation that never completes within the request budget: the
+// proxy returns 503 with a Retry-After header (never 429), and no request is
+// dispatched to the backend because the member never became resident.
+func TestProxyPoolActivationTimeout503RetryAfter(t *testing.T) {
+	fb := newFakeBackend(t)
+
+	// Activation never completes: Activate blocks on a gate that is never
+	// closed, so the caller's hold budget expires first.
+	fake := newFakeMemberController()
+	fake.activateGate = make(chan struct{})
+
+	cfg := &Config{
+		Backends: []Backend{{
+			Name:    "coder",
+			Tier:    "local",
+			Address: fb.URL(),
+			// The per-backend timeout bounds the activation hold, so the test
+			// does not wait the 120s proxy default.
+			Timeout: 50 * time.Millisecond,
+			Pool: &BackendPool{
+				Name:      "heavy-slot",
+				Namespace: "lab",
+				Member:    "coder",
+				Members:   []string{"coder", "judge"},
+			},
+		}},
+		DefaultRoute: "coder",
+		Policy:       Policy{Classification: ClassificationPolicy{Mode: "header-only"}},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("config: %v", err)
+	}
+
+	act := NewActivator(context.Background(), fake, "r", slog.Default())
+	proxy := NewProxy(cfg, slog.Default(), WithActivator(act))
+	mux := http.NewServeMux()
+	proxy.Mount(mux)
+
+	body, _ := json.Marshal(map[string]any{
+		"model":    "coder",
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(string(body)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	resp := rec.Result()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", resp.StatusCode)
+	}
+	if resp.Header.Get("Retry-After") == "" {
+		t.Error("missing Retry-After header on pool activation-timeout 503")
+	}
+	if fb.calls.Load() != 0 {
+		t.Errorf("backend calls = %d, want 0 (must not dispatch when activation never completed)", fb.calls.Load())
+	}
+
+	// Let the blocked activation goroutine unwind.
+	close(fake.activateGate)
 }
 
 // TestProxyRejectsOversizedBody enforces the body-size cap; a request

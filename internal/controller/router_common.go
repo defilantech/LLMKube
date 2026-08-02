@@ -41,6 +41,12 @@ const (
 
 	// routerProxyPort is the HTTP port the proxy listens on.
 	routerProxyPort int32 = 8080
+
+	// routerProxyMetricsPort is the port the proxy serves Prometheus /metrics
+	// on (matches cmd/router-proxy --metrics-listen default). A separate port
+	// keeps metrics off the inference listener and lets a ServiceMonitor target
+	// it independently.
+	routerProxyMetricsPort int32 = 8081
 )
 
 // routerProxyResourceName is the canonical name used for every K8s

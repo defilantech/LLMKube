@@ -21,6 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 	"github.com/defilantech/llmkube/internal/router"
@@ -47,6 +48,11 @@ type compiledConfig struct {
 	Hash     string
 	Backends []inferencev1alpha1.BackendStatus
 	Warnings []string
+
+	// HasPools is true when at least one backend resolved to a ModelPool
+	// member. It drives whether the reconciler provisions activation RBAC and
+	// runs the proxy with --enable-activation.
+	HasPools bool
 }
 
 // compileRouterConfig resolves every backend in the ModelRouter spec
@@ -81,6 +87,13 @@ func (r *ModelRouterReconciler) compileRouterConfig(
 		out.Backends = append(out.Backends, wire)
 		statuses = append(statuses, status)
 	}
+	hasPools := false
+	for i := range out.Backends {
+		if out.Backends[i].Pool != nil {
+			hasPools = true
+			break
+		}
+	}
 
 	for i := range mr.Spec.Rules {
 		out.Rules = append(out.Rules, translateRule(&mr.Spec.Rules[i]))
@@ -101,6 +114,7 @@ func (r *ModelRouterReconciler) compileRouterConfig(
 		Hash:     hex.EncodeToString(sum[:]),
 		Backends: statuses,
 		Warnings: warnings,
+		HasPools: hasPools,
 	}, nil
 }
 
@@ -141,6 +155,13 @@ func (r *ModelRouterReconciler) resolveBackend(
 		status.Address = addr
 		status.Healthy = addr != ""
 		status.Message = msg
+		if pool, perr := r.resolveBackendPool(ctx, mr.Namespace, b.InferenceServiceRef.Name); perr != nil {
+			// A pool lookup failure must not fail the whole compile; the
+			// backend just dispatches without activation (as if unpooled).
+			status.Message = appendMsg(status.Message, perr.Error())
+		} else if pool != nil {
+			wire.Pool = pool
+		}
 	case b.External != nil:
 		if wire.Tier == "" {
 			wire.Tier = backendTierCloud
@@ -232,6 +253,53 @@ func (r *ModelRouterReconciler) resolveInferenceServiceAddress(
 	}
 	svcName := sanitizeDNSName(isvc.Name)
 	return fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", svcName, isvc.Namespace, port), ""
+}
+
+// resolveBackendPool finds the ModelPool a member InferenceService belongs to
+// (if any) and compiles the BackendPool the proxy needs to activate it. Returns
+// (nil, nil) when the member is not pooled. Membership is a mapfunc-style scan
+// over ModelPools in the namespace; a member can belong to at most one pool
+// (the first match wins, matching the exclusive-slot invariant).
+func (r *ModelRouterReconciler) resolveBackendPool(
+	ctx context.Context,
+	namespace, member string,
+) (*router.BackendPool, error) {
+	pools := &inferencev1alpha1.ModelPoolList{}
+	if err := r.List(ctx, pools, client.InNamespace(namespace)); err != nil {
+		return nil, fmt.Errorf("list ModelPools: %w", err)
+	}
+	for i := range pools.Items {
+		pool := &pools.Items[i]
+		members := make([]string, 0, len(pool.Spec.Members))
+		isMember := false
+		for _, m := range pool.Spec.Members {
+			members = append(members, m.InferenceServiceRef.Name)
+			if m.InferenceServiceRef.Name == member {
+				isMember = true
+			}
+		}
+		if !isMember {
+			continue
+		}
+		return &router.BackendPool{
+			Name:      pool.Name,
+			Namespace: pool.Namespace,
+			Member:    member,
+			Members:   members,
+		}, nil
+	}
+	return nil, nil
+}
+
+// appendMsg joins two status messages, tolerating an empty base.
+func appendMsg(base, extra string) string {
+	if base == "" {
+		return extra
+	}
+	if extra == "" {
+		return base
+	}
+	return base + "; " + extra
 }
 
 // assertCredentialsSecretExists verifies the referenced Secret is present
