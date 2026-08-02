@@ -8,6 +8,7 @@ rules:
   - ""
   resources:
   - configmaps
+  - serviceaccounts
   - services
   verbs:
   - create
@@ -218,6 +219,7 @@ rules:
   - gpuquotas/status
   - inferenceservices/status
   - loraadapters/status
+  - modelpools/status
   - modelrouters/status
   - models/status
   verbs:
@@ -229,6 +231,7 @@ rules:
   resources:
   - inferenceservices
   - loraadapters
+  - modelpools
   - modelrouters
   - models
   verbs:
@@ -244,6 +247,7 @@ rules:
   resources:
   - inferenceservices/finalizers
   - loraadapters/finalizers
+  - modelpools/finalizers
   - modelrouters/finalizers
   - models/finalizers
   verbs:
@@ -252,6 +256,19 @@ rules:
   - pyrra.dev
   resources:
   - servicelevelobjectives
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - rolebindings
+  - roles
   verbs:
   - create
   - delete

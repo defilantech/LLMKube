@@ -30,8 +30,14 @@ import (
 	"syscall"
 	"time"
 
+	"k8s.io/apimachinery/pkg/runtime"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
+
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 	"github.com/defilantech/llmkube/internal/router"
 )
 
@@ -41,7 +47,9 @@ func main() {
 	listen := flag.String("listen", ":8080",
 		"Address the HTTP server binds to (host:port).")
 	metricsListen := flag.String("metrics-bind-address", ":9090",
-		"Address the metrics endpoint binds to (host:port).")
+		"Address the Prometheus metrics server binds to (host:port). Serves "+
+			"the controller-runtime registry at /metrics, including the ModelPool "+
+			"swap/residency/hold metrics. Empty disables the metrics server.")
 	logFormat := flag.String("log-format", "json",
 		"Structured log format: json or text.")
 	shutdownTimeout := flag.Duration("shutdown-timeout", 30*time.Second,
@@ -58,6 +66,12 @@ func main() {
 			"Per-rule and per-backend timeouts in the ModelRouter CRD "+
 			"can tighten this on a per-request basis but cannot extend "+
 			"beyond it.")
+	enableActivation := flag.Bool("enable-activation", false,
+		"Enable ModelPool activation: pooled backends are made resident "+
+			"(scaled up, incumbent drained) before dispatch, with sticky "+
+			"anti-thrash swapping. Requires in-cluster RBAC to get/list/"+
+			"watch/patch InferenceServices in the router namespace. When "+
+			"disabled, pooled backends dispatch as ordinary local backends.")
 	flag.Parse()
 
 	logger := newLogger(*logFormat)
@@ -74,12 +88,30 @@ func main() {
 		"defaultRoute", cfg.DefaultRoute,
 	)
 
-	proxy := router.NewProxy(cfg, logger,
+	// baseCtx bounds ModelPool swap operations. It is cancelled on shutdown so
+	// an in-flight swap unwinds cleanly, but it deliberately outlives any single
+	// request: a client disconnecting mid-swap must not abort an in-progress
+	// model load (the now-warm member serves the next request).
+	baseCtx, cancelBase := context.WithCancel(context.Background())
+	defer cancelBase()
+
+	proxyOpts := []router.ProxyOption{
 		router.WithDispatcherOptions(
 			router.WithQuarantineDuration(*quarantineDuration),
 			router.WithResponseHeaderTimeout(*responseHeaderTimeout),
 		),
-	)
+	}
+	if *enableActivation {
+		activator, actErr := newActivator(baseCtx, logger)
+		if actErr != nil {
+			logger.Error("initialize ModelPool activation", "error", actErr)
+			os.Exit(1)
+		}
+		proxyOpts = append(proxyOpts, router.WithActivator(activator))
+		logger.Info("ModelPool activation enabled")
+	}
+
+	proxy := router.NewProxy(cfg, logger, proxyOpts...)
 	mux := http.NewServeMux()
 	proxy.Mount(mux)
 
@@ -91,8 +123,31 @@ func main() {
 		// Per-request context handles the real deadline.
 	}
 
-	// Run the data-plane server in a goroutine so the main goroutine can
-	// wait on SIGTERM and trigger graceful shutdown.
+	// Serve Prometheus metrics on a separate listener. The router and ModelPool
+	// metrics (requests, residency, swaps, swap/hold duration, coalescing,
+	// held-request depth) are registered on the controller-runtime registry
+	// from internal/metrics; without this endpoint they are collected but never
+	// scrapeable. A separate port keeps metrics off the inference listener and
+	// lets a ServiceMonitor target it independently. Empty disables the server.
+	var metricsSrv *http.Server
+	if *metricsListen != "" {
+		metricsMux := http.NewServeMux()
+		metricsMux.Handle("GET /metrics", promhttp.HandlerFor(ctrlmetrics.Registry, promhttp.HandlerOpts{}))
+		metricsSrv = &http.Server{
+			Addr:              *metricsListen,
+			Handler:           metricsMux,
+			ReadHeaderTimeout: 5 * time.Second,
+		}
+		go func() {
+			logger.Info("metrics server listening", "address", *metricsListen)
+			if err := metricsSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				logger.Error("metrics server failed", "error", err)
+			}
+		}()
+	}
+
+	// Run the data-plane server in a goroutine so the main goroutine can wait
+	// on SIGTERM and trigger graceful shutdown.
 	serverErr := make(chan error, 1)
 	go func() {
 		logger.Info("router-proxy listening", "address", *listen)
@@ -100,23 +155,6 @@ func main() {
 			serverErr <- err
 		}
 		close(serverErr)
-	}()
-
-	// Metrics server on a separate port so the data-plane mux stays
-	// clean for inference traffic and NetworkPolicies can isolate
-	// scrape access.
-	metricsMux := http.NewServeMux()
-	metricsMux.Handle("GET /metrics", promhttp.Handler())
-	metricsSrv := &http.Server{
-		Addr:              *metricsListen,
-		Handler:           metricsMux,
-		ReadHeaderTimeout: 5 * time.Second,
-	}
-	go func() {
-		logger.Info("metrics server listening", "address", *metricsListen)
-		if err := metricsSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			serverErr <- err
-		}
 	}()
 
 	stop := make(chan os.Signal, 1)
@@ -127,12 +165,11 @@ func main() {
 		logger.Info("shutdown signal received; draining in-flight requests")
 		ctx, cancel := context.WithTimeout(context.Background(), *shutdownTimeout)
 		defer cancel()
+		if metricsSrv != nil {
+			_ = metricsSrv.Shutdown(ctx)
+		}
 		if err := srv.Shutdown(ctx); err != nil {
 			logger.Error("graceful shutdown failed", "error", err)
-			os.Exit(1)
-		}
-		if err := metricsSrv.Shutdown(ctx); err != nil {
-			logger.Error("metrics server shutdown failed", "error", err)
 			os.Exit(1)
 		}
 		logger.Info("router-proxy stopped cleanly")
@@ -152,4 +189,31 @@ func newLogger(format string) *slog.Logger {
 	default:
 		return slog.New(slog.NewJSONHandler(os.Stdout, opts))
 	}
+}
+
+// newActivator builds the ModelPool Activator backed by an in-cluster
+// Kubernetes client. It is only called when --enable-activation is set, so a
+// router with no pooled backends never constructs an API client.
+func newActivator(baseCtx context.Context, logger *slog.Logger) (*router.Activator, error) {
+	scheme := runtime.NewScheme()
+	if err := inferencev1alpha1.AddToScheme(scheme); err != nil {
+		return nil, err
+	}
+	restCfg, err := ctrl.GetConfig()
+	if err != nil {
+		return nil, err
+	}
+	cl, err := client.New(restCfg, client.Options{Scheme: scheme})
+	if err != nil {
+		return nil, err
+	}
+	memberCtrl := router.NewKubeMemberController(cl, 0)
+	return router.NewActivator(baseCtx, memberCtrl, routerNameFromEnv(), logger), nil
+}
+
+// routerNameFromEnv resolves the router name used in metric labels. The
+// controller injects ROUTER_NAME into the proxy Deployment; absent it, the
+// Activator falls back to "default".
+func routerNameFromEnv() string {
+	return os.Getenv("ROUTER_NAME")
 }

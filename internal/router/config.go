@@ -115,6 +115,32 @@ type Backend struct {
 	// Compiled from ModelRouter.spec.backends[].timeout. Per-rule
 	// timeouts (see Rule.Timeout) win over this.
 	Timeout time.Duration `json:"timeout,omitempty"`
+
+	// Pool is set when this backend's InferenceService is a member of a
+	// ModelPool: N single-model services sharing one exclusive GPU slot.
+	// When present and the proxy runs with activation enabled, the proxy
+	// makes this member resident (scaling it up and draining the incumbent)
+	// before dispatching. Nil for backends that are not pooled.
+	Pool *BackendPool `json:"pool,omitempty"`
+}
+
+// BackendPool carries the ModelPool membership a pooled backend belongs to.
+// The controller compiles it from the ModelPool CR; the proxy uses it to
+// activate the member on demand and to enforce the sticky, anti-thrash swap
+// policy across the shared slot.
+type BackendPool struct {
+	// Name is the ModelPool name.
+	Name string `json:"name"`
+
+	// Namespace is the ModelPool (and member InferenceService) namespace.
+	Namespace string `json:"namespace"`
+
+	// Member is this backend's member InferenceService name within the pool.
+	Member string `json:"member"`
+
+	// Members lists every member InferenceService name in the pool. The proxy
+	// uses it to seed which member is currently resident on a cold start.
+	Members []string `json:"members,omitempty"`
 }
 
 // Rule pairs a Match expression with a Route action.

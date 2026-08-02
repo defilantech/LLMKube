@@ -36,6 +36,7 @@ type Proxy struct {
 	disp       *Dispatcher
 	logger     *slog.Logger
 	routerName string
+	activator  *Activator
 }
 
 // ProxyOption customizes a Proxy at construction time. The proxy
@@ -61,6 +62,14 @@ func WithDispatcherOptions(opts ...DispatcherOption) ProxyOption {
 // span attributes. Defaults to "default" when omitted.
 func WithRouterName(name string) ProxyOption {
 	return func(p *Proxy) { p.routerName = name }
+}
+
+// WithActivator enables ModelPool activation: pooled backends are made
+// resident (scaled up, incumbent drained) before dispatch. Omit it and pooled
+// backends dispatch as ordinary local backends (no scale-from-zero), which is
+// the behavior when the proxy runs without --enable-activation.
+func WithActivator(a *Activator) ProxyOption {
+	return func(p *Proxy) { p.activator = a }
 }
 
 // NewProxy constructs a Proxy from a loaded Config.
@@ -171,6 +180,18 @@ func (p *Proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	chosen, resp, err := p.dispatchWithFallback(ctx, &decision, r.Header, body, "/v1/chat/completions")
 	elapsed := time.Since(start)
 	if err != nil {
+		// ModelPool cold-start hold exceeded its budget: the client's request
+		// outlived the swap window. 503 + Retry-After is the standards-correct
+		// "temporarily unavailable" signal so well-behaved clients back off
+		// deterministically; 429 would wrongly imply rate limiting.
+		if errors.Is(err, ErrHoldBudgetExceeded) {
+			w.Header().Set("Retry-After", modelPoolRetryAfterSeconds)
+			writeError(w, http.StatusServiceUnavailable,
+				"model pool activation did not complete within the request budget; retry")
+			p.audit(features, decision, nil, http.StatusServiceUnavailable,
+				"pool_activation_timeout", elapsed)
+			return
+		}
 		// Runtime fail-closed: when every backend in a fail-closed
 		// rule's pool is unreachable, return 503 with a clear reason
 		// rather than 502. This is the runtime counterpart to the
@@ -234,6 +255,12 @@ func (p *Proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 }
 
 const maxRequestBodyBytes = 32 << 20 // 32 MiB, generous for long prompts
+
+// modelPoolRetryAfterSeconds is the Retry-After value sent with a 503 when a
+// ModelPool activation hold exceeds the request budget. A few seconds is enough
+// for the in-progress swap (which is not aborted) to finish and warm the member
+// for the client's retry.
+const modelPoolRetryAfterSeconds = "5"
 
 // extractFeatures pulls the model name, stream flag, classification, and
 // task complexity out of the inbound request. The model name comes from
@@ -330,8 +357,25 @@ func (p *Proxy) dispatchWithFallback(
 				otelattribute.Int("routing.fallback.depth", i),
 			),
 		)
+		// ModelPool activation: make this member resident (scale it up, drain
+		// the incumbent) before dispatch. The hold is bounded by attemptCtx, so
+		// the per-rule / per-backend timeout budget also caps the swap wait.
+		var poolRelease func()
+		if b.Pool != nil && p.activator != nil {
+			rel, aerr := p.activator.Acquire(attemptCtx, b.Pool)
+			if aerr != nil {
+				span.End()
+				cancel()
+				lastErr = aerr
+				continue
+			}
+			poolRelease = rel
+		}
 		resp, err := p.disp.Dispatch(attemptCtx, b, http.MethodPost, path, headers, body)
 		if err != nil {
+			if poolRelease != nil {
+				poolRelease()
+			}
 			span.End()
 			cancel()
 			lastErr = err
@@ -341,17 +385,26 @@ func (p *Proxy) dispatchWithFallback(
 			// Drain and close so the connection is reusable.
 			_, _ = io.Copy(io.Discard, resp.Body)
 			_ = resp.Body.Close()
+			if poolRelease != nil {
+				poolRelease()
+			}
 			span.End()
 			cancel()
 			lastErr = fmt.Errorf("%s returned %d", name, resp.StatusCode)
 			continue
 		}
 		// Successful response: wrap the body so its Close also
-		// cancels the per-attempt context. The caller's existing
-		// `defer resp.Body.Close()` is enough — no separate cancel
-		// plumbing needed, and streaming dispatches keep the
-		// deadline alive until the client finishes reading.
-		resp.Body = &cancelOnClose{ReadCloser: resp.Body, cancel: cancel}
+		// cancels the per-attempt context and releases the pool slot.
+		// The caller's existing `defer resp.Body.Close()` is enough — no
+		// separate cancel plumbing needed, and streaming dispatches keep
+		// the deadline (and the pool residency in-flight count) alive
+		// until the client finishes reading.
+		resp.Body = &cancelOnClose{ReadCloser: resp.Body, cancel: func() {
+			if poolRelease != nil {
+				poolRelease()
+			}
+			cancel()
+		}}
 		span.End()
 		return b, resp, nil
 	}

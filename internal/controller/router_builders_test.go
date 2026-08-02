@@ -20,6 +20,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -45,6 +46,9 @@ func builderTestScheme(t *testing.T) *runtime.Scheme {
 	}
 	if err := appsv1.AddToScheme(s); err != nil {
 		t.Fatalf("add appsv1: %v", err)
+	}
+	if err := rbacv1.AddToScheme(s); err != nil {
+		t.Fatalf("add rbacv1: %v", err)
 	}
 	return s
 }
@@ -398,7 +402,7 @@ func TestCompileRouterConfigLiteLLMMissingURLFails(t *testing.T) {
 func TestRouterDeploymentBuilder(t *testing.T) {
 	mr := canonicalModelRouter()
 	r := &ModelRouterReconciler{RouterProxyImage: "ghcr.io/test/router-proxy:v1"}
-	dep := r.newRouterDeployment(mr, "deadbeef")
+	dep := r.newRouterDeployment(mr, "deadbeef", false)
 
 	if got := dep.Name; got != "coding-router-router-proxy" {
 		t.Errorf("Deployment name = %q", got)
@@ -445,7 +449,7 @@ func TestRouterDeploymentBuilderRespectsOverrides(t *testing.T) {
 		Image:    "registry.internal/router-proxy:custom",
 	}
 	r := &ModelRouterReconciler{RouterProxyImage: "should-be-overridden"}
-	dep := r.newRouterDeployment(mr, "hash")
+	dep := r.newRouterDeployment(mr, "hash", false)
 	if *dep.Spec.Replicas != 3 {
 		t.Errorf("replicas override = %d, want 3", *dep.Spec.Replicas)
 	}
@@ -460,7 +464,7 @@ func TestRouterDeploymentBuilderRespectsOverrides(t *testing.T) {
 func TestRouterDeploymentBuilderRevisionHistoryLimit(t *testing.T) {
 	r := &ModelRouterReconciler{RouterProxyImage: "ghcr.io/test/router-proxy:v1"}
 
-	depDefault := r.newRouterDeployment(canonicalModelRouter(), "hash")
+	depDefault := r.newRouterDeployment(canonicalModelRouter(), "hash", false)
 	if depDefault.Spec.RevisionHistoryLimit != nil {
 		t.Errorf("revisionHistoryLimit = %v, want nil when unset",
 			*depDefault.Spec.RevisionHistoryLimit)
@@ -471,7 +475,7 @@ func TestRouterDeploymentBuilderRevisionHistoryLimit(t *testing.T) {
 		mr.Spec.Proxy = &inferencev1alpha1.RouterProxySpec{
 			RevisionHistoryLimit: ptrInt32B(want),
 		}
-		dep := r.newRouterDeployment(mr, "hash")
+		dep := r.newRouterDeployment(mr, "hash", false)
 		if dep.Spec.RevisionHistoryLimit == nil {
 			t.Fatalf("revisionHistoryLimit = nil, want %d", want)
 		}
@@ -491,7 +495,7 @@ func TestRouterDeploymentBuilderQuarantineDuration(t *testing.T) {
 		QuarantineDuration: &metav1.Duration{Duration: 2 * time.Second},
 	}
 	r := &ModelRouterReconciler{RouterProxyImage: "ghcr.io/test/router-proxy:v1"}
-	dep := r.newRouterDeployment(mr, "hash")
+	dep := r.newRouterDeployment(mr, "hash", false)
 
 	args := dep.Spec.Template.Spec.Containers[0].Args
 	var found bool
@@ -516,7 +520,7 @@ func TestRouterDeploymentBuilderQuarantineDuration(t *testing.T) {
 func TestRouterDeploymentBuilderQuarantineDefault(t *testing.T) {
 	mr := canonicalModelRouter()
 	r := &ModelRouterReconciler{RouterProxyImage: "ghcr.io/test/router-proxy:v1"}
-	dep := r.newRouterDeployment(mr, "hash")
+	dep := r.newRouterDeployment(mr, "hash", false)
 
 	for _, a := range dep.Spec.Template.Spec.Containers[0].Args {
 		if a == "--quarantine-duration" {
@@ -534,7 +538,7 @@ func TestRouterDeploymentBuilderResponseHeaderTimeoutRendered(t *testing.T) {
 		ResponseHeaderTimeout: &metav1.Duration{Duration: 90 * time.Second},
 	}
 	r := &ModelRouterReconciler{RouterProxyImage: "ghcr.io/test/router-proxy:v1"}
-	dep := r.newRouterDeployment(mr, "hash")
+	dep := r.newRouterDeployment(mr, "hash", false)
 
 	args := dep.Spec.Template.Spec.Containers[0].Args
 	var found bool
@@ -558,7 +562,7 @@ func TestRouterDeploymentBuilderResponseHeaderTimeoutRendered(t *testing.T) {
 func TestRouterDeploymentBuilderResponseHeaderTimeoutDefault(t *testing.T) {
 	mr := canonicalModelRouter()
 	r := &ModelRouterReconciler{RouterProxyImage: "ghcr.io/test/router-proxy:v1"}
-	dep := r.newRouterDeployment(mr, "hash")
+	dep := r.newRouterDeployment(mr, "hash", false)
 
 	for _, a := range dep.Spec.Template.Spec.Containers[0].Args {
 		if a == "--response-header-timeout" {
@@ -768,7 +772,7 @@ func TestReconcileRouterDeploymentPreservesExternalAnnotations(t *testing.T) {
 	// injection / kubectl rollout-restart / GitOps annotations.
 	const gitopsInstance = "coding-router-fleet"
 	r := &ModelRouterReconciler{RouterProxyImage: "ghcr.io/test/router-proxy:v1"}
-	initial := r.newRouterDeployment(mr, "oldhash")
+	initial := r.newRouterDeployment(mr, "oldhash", false)
 	initial.Spec.Template.Annotations["sidecar.istio.io/inject"] = "true"
 	initial.Spec.Template.Annotations["kubectl.kubernetes.io/restartedAt"] = "2026-05-13T20:00:00Z"
 	initial.Spec.Template.Labels["external-team-label"] = "ml-platform"
@@ -787,7 +791,7 @@ func TestReconcileRouterDeploymentPreservesExternalAnnotations(t *testing.T) {
 
 	// Reconcile with a NEW config hash so the operator's owned
 	// annotation needs to change.
-	if err := rec.reconcileRouterDeployment(context.Background(), mr, "newhash"); err != nil {
+	if err := rec.reconcileRouterDeployment(context.Background(), mr, "newhash", false); err != nil {
 		t.Fatalf("reconcileRouterDeployment: %v", err)
 	}
 
@@ -841,7 +845,7 @@ func TestReconcileRouterDeploymentPreservesExternalAnnotations(t *testing.T) {
 func TestRouterDeploymentMetricsPort(t *testing.T) {
 	mr := canonicalModelRouter()
 	r := &ModelRouterReconciler{RouterProxyImage: "ghcr.io/test/router-proxy:v1"}
-	dep := r.newRouterDeployment(mr, "hash")
+	dep := r.newRouterDeployment(mr, "hash", false)
 
 	c := dep.Spec.Template.Spec.Containers[0]
 
@@ -877,5 +881,270 @@ func TestRouterDeploymentMetricsPort(t *testing.T) {
 	}
 	if !foundFlag {
 		t.Errorf("--metrics-bind-address flag not rendered; args = %v", c.Args)
+	}
+}
+
+// modelPoolFor builds a ModelPool in the builder test namespace whose members
+// are the given InferenceService names.
+func modelPoolFor(name string, memberNames ...string) *inferencev1alpha1.ModelPool {
+	members := make([]inferencev1alpha1.ModelPoolMember, 0, len(memberNames))
+	for _, m := range memberNames {
+		members = append(members, inferencev1alpha1.ModelPoolMember{
+			InferenceServiceRef: corev1.LocalObjectReference{Name: m},
+		})
+	}
+	return &inferencev1alpha1.ModelPool{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testBuilderNs},
+		Spec: inferencev1alpha1.ModelPoolSpec{
+			SwapPolicy: inferencev1alpha1.ModelPoolSwapPolicySticky,
+			Members:    members,
+		},
+	}
+}
+
+// TestCompileRouterConfigResolvesBackendPool verifies the CRD->proxy seam
+// (gap 1): a backend whose InferenceService is a ModelPool member compiles a
+// BackendPool into the wire config, and the compiled result reports HasPools.
+func TestCompileRouterConfigResolvesBackendPool(t *testing.T) {
+	mr := canonicalModelRouter()
+	isvc := &inferencev1alpha1.InferenceService{
+		ObjectMeta: metav1.ObjectMeta{Name: "qwen3-coder", Namespace: testBuilderNs},
+	}
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "anthropic-key", Namespace: testBuilderNs},
+		Data:       map[string][]byte{"ANTHROPIC_API_KEY": []byte("test")},
+	}
+	pool := modelPoolFor("heavy-slot", "qwen3-coder", "gemma-judge")
+	r := newRouterReconcilerForTest(t, mr, isvc, secret, pool)
+
+	compiled, err := r.compileRouterConfig(context.Background(), mr)
+	if err != nil {
+		t.Fatalf("compileRouterConfig: %v", err)
+	}
+	if !compiled.HasPools {
+		t.Fatal("compiled.HasPools = false, want true when a backend is a ModelPool member")
+	}
+
+	var cfg router.Config
+	if err := json.Unmarshal(compiled.JSON, &cfg); err != nil {
+		t.Fatalf("unmarshal compiled JSON: %v", err)
+	}
+	// local-qwen is backend[0] and references qwen3-coder.
+	local := cfg.Backends[0]
+	if local.Pool == nil {
+		t.Fatalf("backend %q Pool = nil, want compiled BackendPool", local.Name)
+	}
+	if local.Pool.Name != "heavy-slot" || local.Pool.Namespace != testBuilderNs {
+		t.Errorf("Pool name/ns = %q/%q, want heavy-slot/%s", local.Pool.Name, local.Pool.Namespace, testBuilderNs)
+	}
+	if local.Pool.Member != "qwen3-coder" {
+		t.Errorf("Pool.Member = %q, want qwen3-coder", local.Pool.Member)
+	}
+	if len(local.Pool.Members) != 2 || local.Pool.Members[0] != "qwen3-coder" || local.Pool.Members[1] != "gemma-judge" {
+		t.Errorf("Pool.Members = %v, want [qwen3-coder gemma-judge]", local.Pool.Members)
+	}
+	// The cloud backend is not pooled.
+	if cfg.Backends[1].Pool != nil {
+		t.Errorf("cloud backend Pool = %+v, want nil", cfg.Backends[1].Pool)
+	}
+}
+
+// TestCompileRouterConfigNoPoolWhenUnpooled confirms a backend whose
+// InferenceService is not a member of any ModelPool compiles no BackendPool and
+// HasPools stays false.
+func TestCompileRouterConfigNoPoolWhenUnpooled(t *testing.T) {
+	mr := canonicalModelRouter()
+	isvc := &inferencev1alpha1.InferenceService{
+		ObjectMeta: metav1.ObjectMeta{Name: "qwen3-coder", Namespace: testBuilderNs},
+	}
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "anthropic-key", Namespace: testBuilderNs},
+		Data:       map[string][]byte{"ANTHROPIC_API_KEY": []byte("test")},
+	}
+	// A pool exists but does NOT list qwen3-coder.
+	pool := modelPoolFor("other-slot", "some-other-isvc")
+	r := newRouterReconcilerForTest(t, mr, isvc, secret, pool)
+
+	compiled, err := r.compileRouterConfig(context.Background(), mr)
+	if err != nil {
+		t.Fatalf("compileRouterConfig: %v", err)
+	}
+	if compiled.HasPools {
+		t.Error("compiled.HasPools = true, want false when no backend is a pool member")
+	}
+	var cfg router.Config
+	if err := json.Unmarshal(compiled.JSON, &cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if cfg.Backends[0].Pool != nil {
+		t.Errorf("backend Pool = %+v, want nil", cfg.Backends[0].Pool)
+	}
+}
+
+// TestReconcileRouterActivationRBAC verifies the proxy activation RBAC (gap 2):
+// with pools present, a ServiceAccount, Role (get/list/watch/update/patch on
+// inferenceservices; get on status), and RoleBinding are provisioned, all
+// owner-referenced to the ModelRouter.
+func TestReconcileRouterActivationRBAC(t *testing.T) {
+	mr := canonicalModelRouter()
+	scheme := builderTestScheme(t)
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(mr).Build()
+	r := &ModelRouterReconciler{Client: c, Scheme: scheme}
+
+	if err := r.reconcileRouterActivationRBAC(context.Background(), mr, true); err != nil {
+		t.Fatalf("reconcileRouterActivationRBAC: %v", err)
+	}
+
+	name := routerProxyResourceName(mr.Name)
+	nn := types.NamespacedName{Name: name, Namespace: mr.Namespace}
+
+	sa := &corev1.ServiceAccount{}
+	if err := c.Get(context.Background(), nn, sa); err != nil {
+		t.Fatalf("ServiceAccount not created: %v", err)
+	}
+	if len(sa.OwnerReferences) == 0 {
+		t.Error("ServiceAccount has no owner reference to the ModelRouter")
+	}
+
+	role := &rbacv1.Role{}
+	if err := c.Get(context.Background(), nn, role); err != nil {
+		t.Fatalf("Role not created: %v", err)
+	}
+	if !roleGrants(role, "inferenceservices", "patch") {
+		t.Errorf("Role missing patch on inferenceservices: %+v", role.Rules)
+	}
+	if !roleGrants(role, "inferenceservices", "get") {
+		t.Errorf("Role missing get on inferenceservices: %+v", role.Rules)
+	}
+	if !roleGrants(role, "inferenceservices/status", "get") {
+		t.Errorf("Role missing get on inferenceservices/status: %+v", role.Rules)
+	}
+	// The proxy must NOT be able to create or delete InferenceServices.
+	if roleGrants(role, "inferenceservices", "delete") {
+		t.Error("Role over-grants: proxy should not be able to delete inferenceservices")
+	}
+
+	binding := &rbacv1.RoleBinding{}
+	if err := c.Get(context.Background(), nn, binding); err != nil {
+		t.Fatalf("RoleBinding not created: %v", err)
+	}
+	if binding.RoleRef.Name != name || binding.RoleRef.Kind != "Role" {
+		t.Errorf("RoleBinding roleRef = %+v, want Role/%s", binding.RoleRef, name)
+	}
+	if len(binding.Subjects) != 1 || binding.Subjects[0].Name != name || binding.Subjects[0].Kind != rbacv1.ServiceAccountKind {
+		t.Errorf("RoleBinding subjects = %+v, want ServiceAccount/%s", binding.Subjects, name)
+	}
+}
+
+// TestReconcileRouterActivationRBACNoopWhenUnpooled confirms no RBAC is
+// provisioned for a router with no pooled backends.
+func TestReconcileRouterActivationRBACNoopWhenUnpooled(t *testing.T) {
+	mr := canonicalModelRouter()
+	scheme := builderTestScheme(t)
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(mr).Build()
+	r := &ModelRouterReconciler{Client: c, Scheme: scheme}
+
+	if err := r.reconcileRouterActivationRBAC(context.Background(), mr, false); err != nil {
+		t.Fatalf("reconcileRouterActivationRBAC: %v", err)
+	}
+	nn := types.NamespacedName{Name: routerProxyResourceName(mr.Name), Namespace: mr.Namespace}
+	if err := c.Get(context.Background(), nn, &corev1.ServiceAccount{}); err == nil {
+		t.Error("ServiceAccount created for an unpooled router; activation RBAC should be a no-op")
+	}
+}
+
+// roleGrants reports whether a Role has a rule granting verb on a resource in
+// the inference.llmkube.dev API group.
+func roleGrants(role *rbacv1.Role, resource, verb string) bool {
+	const group = "inference.llmkube.dev"
+	for _, rule := range role.Rules {
+		if !strSliceHas(rule.APIGroups, group) || !strSliceHas(rule.Resources, resource) {
+			continue
+		}
+		if strSliceHas(rule.Verbs, verb) {
+			return true
+		}
+	}
+	return false
+}
+
+func strSliceHas(ss []string, want string) bool {
+	for _, s := range ss {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
+// TestNewRouterDeploymentActivationWiring verifies the deployment activation
+// wiring (gap 3): with pools the proxy container gets --enable-activation, the
+// dedicated ServiceAccount, and the ROUTER_NAME env; without pools it gets none
+// of them.
+func TestNewRouterDeploymentActivationWiring(t *testing.T) {
+	mr := canonicalModelRouter()
+	r := &ModelRouterReconciler{RouterProxyImage: "ghcr.io/test/router-proxy:v1"}
+
+	withPools := r.newRouterDeployment(mr, "hash", true)
+	wc := withPools.Spec.Template.Spec.Containers[0]
+	if !strSliceHas(wc.Args, "--enable-activation") {
+		t.Errorf("pooled deployment args = %v, want --enable-activation", wc.Args)
+	}
+	if withPools.Spec.Template.Spec.ServiceAccountName != routerProxyResourceName(mr.Name) {
+		t.Errorf("pooled ServiceAccountName = %q, want %q",
+			withPools.Spec.Template.Spec.ServiceAccountName, routerProxyResourceName(mr.Name))
+	}
+	if got := envValue(wc.Env, "ROUTER_NAME"); got != mr.Name {
+		t.Errorf("pooled ROUTER_NAME env = %q, want %q", got, mr.Name)
+	}
+
+	noPools := r.newRouterDeployment(mr, "hash", false)
+	nc := noPools.Spec.Template.Spec.Containers[0]
+	if strSliceHas(nc.Args, "--enable-activation") {
+		t.Error("unpooled deployment must not set --enable-activation")
+	}
+	if noPools.Spec.Template.Spec.ServiceAccountName != "" {
+		t.Errorf("unpooled ServiceAccountName = %q, want empty (namespace default)",
+			noPools.Spec.Template.Spec.ServiceAccountName)
+	}
+	if envValue(nc.Env, "ROUTER_NAME") != "" {
+		t.Error("unpooled deployment must not set ROUTER_NAME env")
+	}
+}
+
+func envValue(env []corev1.EnvVar, name string) string {
+	for _, e := range env {
+		if e.Name == name {
+			return e.Value
+		}
+	}
+	return ""
+}
+
+// TestFindModelRoutersForModelPool verifies the watch mapping (gap 7): a changed
+// ModelPool enqueues every ModelRouter in its namespace that references one of
+// its members, and none that do not.
+func TestFindModelRoutersForModelPool(t *testing.T) {
+	mr := canonicalModelRouter() // references qwen3-coder via local-qwen
+	other := &inferencev1alpha1.ModelRouter{
+		ObjectMeta: metav1.ObjectMeta{Name: "unrelated-router", Namespace: testBuilderNs},
+		Spec: inferencev1alpha1.ModelRouterSpec{
+			Backends: []inferencev1alpha1.RouterBackend{
+				{Name: "b", InferenceServiceRef: &corev1.LocalObjectReference{Name: "some-other-isvc"}, Tier: "local"},
+			},
+		},
+	}
+	scheme := builderTestScheme(t)
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(mr, other).Build()
+	r := &ModelRouterReconciler{Client: c, Scheme: scheme}
+
+	pool := modelPoolFor("heavy-slot", "qwen3-coder")
+	reqs := r.findModelRoutersForModelPool(context.Background(), pool)
+
+	if len(reqs) != 1 {
+		t.Fatalf("got %d requests, want 1 (only the router referencing qwen3-coder)", len(reqs))
+	}
+	if reqs[0].Name != mr.Name || reqs[0].Namespace != mr.Namespace {
+		t.Errorf("enqueued %s/%s, want %s/%s", reqs[0].Namespace, reqs[0].Name, mr.Namespace, mr.Name)
 	}
 }
