@@ -447,7 +447,14 @@ func buildLlamaServerArgs(modelPath string, port int, config ExecutorConfig) []s
 		"--port", fmt.Sprintf("%d", port),
 		"--n-gpu-layers", fmt.Sprintf("%d", gpuLayers),
 		"--ctx-size", fmt.Sprintf("%d", config.ContextSize),
-		"--metrics",
+	}
+
+	// Prometheus metrics, unless the user already asked for it in ExtraArgs
+	// (#1384). This mirrors the reranking/embedding/pooling guards below and
+	// the two controller paths; it was the one operator-owned flag here that
+	// was still emitted unconditionally.
+	if !hasMatchingExtraArg(config.ExtraArgs, "metrics") {
+		args = append(args, "--metrics")
 	}
 
 	// RoPE context extension (InferenceService.spec.ropeScaling). ExtraArgs

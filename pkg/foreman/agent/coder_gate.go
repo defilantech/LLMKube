@@ -150,13 +150,30 @@ func RunCoderGate(
 			failures = append(failures, checkFailure{name: "gofmt -l .", output: out})
 		}
 
+		// Every check below drives the Go toolchain, so each needs
+		// GOTOOLCHAIN=auto. The coder agent image is built FROM golang:1.26,
+		// which bakes GOTOOLCHAIN=local; when go.mod's floor moves past the
+		// tag's patch release (go.mod 1.26.5 vs image 1.26.4) every Go command
+		// refuses to run. That surfaces as "go build ./... failed" and is fed
+		// back to the model as "fix the issues below and resubmit", so the
+		// agent spends its whole fix budget on a premise it cannot act on and
+		// the run ends with correct work discarded unpushed (#1388).
+		//
+		// The gate Job hit this first and fixed it the same way
+		// (gate_job_template.yaml, #1019); this is the in-agent path that was
+		// missed. `auto` downloads whatever go.mod requires, which keeps the
+		// gate immune to go.mod patch bumps instead of coupling it to whatever
+		// Go the image happens to ship. #1292 reduced the blast radius by
+		// skipping this tier for non-Go diffs; it does not help a Go diff.
+		goEnv := []string{"GOTOOLCHAIN=auto"}
+
 		// 2. go vet ./... fails with a non-nil error.
-		if out, err := run(ctx, workspace, nil, "go", "vet", "./..."); err != nil {
+		if out, err := run(ctx, workspace, goEnv, "go", "vet", "./..."); err != nil {
 			failures = append(failures, checkFailure{name: "go vet ./...", output: out})
 		}
 
 		// 3. go build ./... fails with a non-nil error.
-		if out, err := run(ctx, workspace, nil, "go", "build", "./..."); err != nil {
+		if out, err := run(ctx, workspace, goEnv, "go", "build", "./..."); err != nil {
 			failures = append(failures, checkFailure{name: "go build ./...", output: out})
 		}
 
@@ -166,7 +183,9 @@ func RunCoderGate(
 		// per-workspace sibling directory so stale analysis results from
 		// another coder workspace cannot pollute this run's lint (#759); the
 		// sibling location keeps the cache out of the workspace git tree.
-		lintEnv := []string{"GOOS=linux", "GOLANGCI_LINT_CACHE=" + workspace + ".golangci-cache"}
+		// golangci-lint loads packages through go/packages, so it needs the
+		// same GOTOOLCHAIN treatment as the plain go commands.
+		lintEnv := append([]string{"GOOS=linux", "GOLANGCI_LINT_CACHE=" + workspace + ".golangci-cache"}, goEnv...)
 		if out, err := run(ctx, workspace, lintEnv, golangciPath, "run", "./..."); err != nil {
 			failures = append(failures, checkFailure{name: golangciPath + " run ./...", output: out})
 		}
@@ -178,7 +197,7 @@ func RunCoderGate(
 		// KUBEBUILDER_ASSETS / a cluster the workspace lacks; CI runs them).
 		if pkgs := changedTestPackages(ctx, workspace, run); len(pkgs) > 0 {
 			args := append([]string{"test", "-count=1", "-timeout=180s"}, pkgs...)
-			if out, err := run(ctx, workspace, nil, "go", args...); err != nil {
+			if out, err := run(ctx, workspace, goEnv, "go", args...); err != nil {
 				failures = append(failures, checkFailure{name: "go test " + strings.Join(pkgs, " "), output: out})
 			}
 		}
@@ -437,7 +456,11 @@ func resolveCodegenDrift(ctx context.Context, workspace string, run commandRunne
 	// foreman CRDs need the separate foreman-chart-crds target; `generate`
 	// (deepcopy) is included so an API change that only alters zz_generated
 	// does not slip through to CI.
-	out, err := run(ctx, workspace, nil,
+	// GOTOOLCHAIN=auto for the same reason the static checks set it: these
+	// make targets shell out to the Go toolchain (controller-gen), and the
+	// agent image's baked GOTOOLCHAIN=local refuses to run once go.mod's
+	// floor passes the image's Go patch release (#1388).
+	out, err := run(ctx, workspace, []string{"GOTOOLCHAIN=auto"},
 		"make", "manifests", "generate", "chart-crds", "foreman-chart-crds")
 	if err != nil {
 		return true, "make manifests generate chart-crds foreman-chart-crds failed:\n" + out

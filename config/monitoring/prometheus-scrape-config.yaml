@@ -21,3 +21,13 @@ scrape_configs:
         labels:
           cluster: 'llmkube'
           instance: 'gpu-node'
+
+  # AMDGPU Exporter - AMD GPU metrics from amdgpu sysfs (utilization, VRAM/GTT,
+  # temp, power, clocks). See docs/observability/amd-gpu-metrics.md.
+  - job_name: 'llmkube-amd-gpu'
+    static_configs:
+      - targets:
+        - '<YOUR-AMD-NODE-IP>:9494'
+        labels:
+          cluster: 'llmkube'
+          instance: 'amd-gpu-node'

@@ -141,6 +141,9 @@ temp pins the edge sensor: drm reports sensor=edge/junction/mem and node_hwmon
 the same split as temp1/temp2/temp3, measured 69/82/79 C on one GPU.
 node_hwmon is scoped through node_hwmon_chip_names{chip_name="amdgpu"} -
 unscoped it is every sensor on the node, and fired at 89 C off a chipset.
+The * on(chip, instance) group_left() join multiplies by that series' value
+to filter: the conventional idiom, correct only while the value is always 1.
+If an exporter ever emits something else there, switch to a bool match.
 mem pins pool="vram" on both sides; the denominator needs the numerator's
 selector, not implicit label matching.
 */}}

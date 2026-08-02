@@ -200,16 +200,16 @@ the JSON:
 
 #### Dashboards that only have data sometimes
 
-`sglang-dashboard` and `vllm-dashboard` read one runtime's metrics, so they
-render blank until something serves that runtime — and blank looks the same as
-an idle cluster.
+`sglang-dashboard`, `vllm-dashboard`, and `llamacpp-dashboard` read one
+runtime's metrics, so they render blank until something serves that runtime —
+and blank looks the same as an idle cluster.
 
 With `operator.enabled` and the default `operator.mode: auto`, the chart hands
-those two manifests to the operator instead of applying them, and the operator
-publishes each one while an `InferenceService` on its runtime exists and
-retires it when the last one goes away. Nothing to configure: deploy a vLLM
-service and the vLLM dashboard appears. Set `operator.mode: all` to apply every
-dashboard at install time instead.
+those three manifests to the operator instead of applying them, and the
+operator publishes each one while an `InferenceService` on its runtime exists
+and retires it when the last one goes away. Nothing to configure: deploy a
+vLLM service and the vLLM dashboard appears. Set `operator.mode: all` to apply
+every dashboard at install time instead.
 
 The chart cannot make this call itself — which runtimes exist is an
 `InferenceService` fact that does not exist at `helm install` time, and Helm

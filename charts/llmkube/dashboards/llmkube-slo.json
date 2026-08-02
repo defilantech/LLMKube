@@ -111,7 +111,7 @@
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
       "fieldConfig": {
         "defaults": {
-          "color": {"mode": "palette-classic"},
+          "color": {"mode": "palette-classic-by-name"},
           "custom": {"axisLabel": "budget remaining", "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true},
           "unit": "percentunit"
         },
@@ -138,7 +138,7 @@
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
       "fieldConfig": {
         "defaults": {
-          "color": {"mode": "palette-classic"},
+          "color": {"mode": "palette-classic-by-name"},
           "custom": {"axisLabel": "budget remaining", "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true},
           "unit": "percentunit"
         },
@@ -174,7 +174,7 @@
       "description": "Pyrra's up:burnrate<window> recording rules (bool_gauge indicator) plus reference lines at the ErrorBudgetBurn alert factors (14x/7x critical, 2x/1x warning), computed from the `objective` variable. A line crossing its paired-window threshold for the alert's `for:` duration is what actually pages; see docs/observability/slo.md.",
       "fieldConfig": {
         "defaults": {
-          "color": {"mode": "palette-classic"},
+          "color": {"mode": "palette-classic-by-name"},
           "custom": {"axisLabel": "burn rate", "drawStyle": "line", "fillOpacity": 5, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true},
           "unit": "percentunit"
         },
@@ -215,7 +215,7 @@
       "description": "Pyrra's vllm:e2e_request_latency_seconds:burnrate<window> recording rules (latency indicator) plus reference lines at the ErrorBudgetBurn alert factors (14x/7x critical, 2x/1x warning), computed from the `objective` variable.",
       "fieldConfig": {
         "defaults": {
-          "color": {"mode": "palette-classic"},
+          "color": {"mode": "palette-classic-by-name"},
           "custom": {"axisLabel": "burn rate", "drawStyle": "line", "fillOpacity": 5, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true},
           "unit": "percentunit"
         },

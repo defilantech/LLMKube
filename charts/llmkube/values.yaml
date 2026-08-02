@@ -158,6 +158,18 @@ rbac:
 metrics:
   # Enable metrics endpoint
   enabled: true
+  # Add prometheus.io/scrape,path,port annotations (port = the fully-resolved
+  # container port: spec.containerPort -> spec.endpoint.port -> the runtime's
+  # default) to every inference Pod so annotation-based scrapers (e.g. Grafana
+  # Alloy) discover the runtime's /metrics without a per-InferenceService
+  # podAnnotations block or a PodMonitor. A user-set spec.podAnnotations value
+  # always wins. Default off.
+  #
+  # This is an ALTERNATIVE to a PodMonitor/ServiceMonitor, not a companion: if
+  # one already scrapes these pods, do NOT also enable this against the same
+  # Prometheus, or every target is scraped twice (duplicated series and
+  # samples). Pick one discovery mechanism per Prometheus.
+  emitScrapeAnnotations: false
   # Serve metrics over HTTPS with authn/authz (true) or plain HTTP (false).
   # Set to false when scraping from outside the cluster without a ServiceAccount token.
   secure: true
@@ -495,12 +507,30 @@ runtimeImages:
 # (#1197). Rendered into NOTES.txt at install time so a first deploy on new
 # silicon fails loudly at the checklist, not cryptically at CUDA init. These
 # do not gate anything; they document what the fleet's nodes must satisfy.
-# Verified 2026-07-21 against the NVIDIA Blackwell Compatibility Guide, the
-# GPU Operator platform-support matrix, and the NCCL release notes.
+# Verified 2026-07-31 (#1374) against the NVIDIA supported-drivers matrix, the
+# CUDA release notes, the GPU Operator release notes, the k8s-device-plugin and
+# DCGM releases, and the NCCL release notes. Re-verify quarterly: this stack
+# moves fast enough that a floor can go end-of-life between releases.
 platformFloors:
   # Render the floors block in NOTES.txt.
   show: true
-  nvidiaDriver: ">= 570.133.20 (R570 branch; R580/CUDA 13 current)"
-  cudaToolkit: ">= 12.8 (first release with sm_100 codegen)"
-  nccl: ">= 2.25.1 (first Blackwell support; 2.27+ recommended)"
-  gpuOperator: ">= v25.3.0 (first HGX B200 support)"
+  # R570 reached end-of-life in Feb 2026. R580 is the current LTS branch
+  # (EOL Jun 2028) and is what DGX OS 7.5 ships; any driver >= 580 covers
+  # the whole CUDA 13.x family via minor-version compatibility.
+  nvidiaDriver: ">= 580.173.02 (R580 LTS; R570 is EOL)"
+  # 12.8 is the first toolkit with sm_100 codegen. 13.3 Update 1 is the
+  # current GA line (13.4 is developer-preview only). CUDA 13 drops
+  # pre-Turing architectures.
+  cudaToolkit: ">= 12.8 (first sm_100 codegen; 13.3 GA current)"
+  nccl: ">= 2.25.1 (first Blackwell support; 2.30.x recommended)"
+  # Pin v26.3.3 exactly: v26.3.0/.1/.2 unconditionally set MOFED_ENABLED and
+  # GDS_ENABLED, injecting ibverbs device nodes into every GPU container and
+  # breaking RDMA/NCCL -- the multi-GPU path a Blackwell fleet depends on.
+  gpuOperator: ">= v26.3.3 (do NOT use v26.3.0/.1/.2: they break RDMA/NCCL)"
+  k8sDevicePlugin: ">= v0.19.3 (Blackwell-aware product labels)"
+  # Tag format is "<DCGM version>-<exporter version>". The 3.3.x line is not
+  # viable on B200: Blackwell NVSwitch telemetry needs the 4.x NVSDM backend.
+  dcgmExporter: ">= 4.6.0-4.8.3 (DCGM 3.3.x is not viable on B200)"
+  # A Fabric Manager / driver mismatch silently degrades NVLink to PCIe with
+  # no error surface. See docs/operations/runbooks/nvlink-degrade-to-pcie.md.
+  fabricManager: "must match the installed NVIDIA driver version exactly"

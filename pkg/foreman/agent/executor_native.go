@@ -456,8 +456,9 @@ func (e *NativeAgentLoopExecutor) Execute(ctx context.Context, task *foremanv1al
 //     earlier commits forward on top of work merged since instead of reverting
 //     it. The executor owns this restore+rebase — prompt-driven git proved
 //     fragile under stuck-loop forcing windows. When the ref is gone from the
-//     remote (pruned, or the prior attempt never pushed) it logs and falls
-//     through to (2). Under the default "reset" strategy the restore is skipped
+//     remote the task FAILS (#1364) — falling through to (2) would rebuild
+//     from base and, with allowOverwrite, force-push over the prior attempt,
+//     silently destroying it. Under the default "reset" strategy the restore is skipped
 //     entirely: a retry or repair re-dispatch redoes the work fresh from base,
 //     so a stale prior branch can never drift from base and revert merged work.
 //  2. Upstream base fetch (#813): when the task carries a repo slug, fetch the
@@ -489,7 +490,8 @@ func setupTaskBranch(
 
 	// rebase (in-review revision): restore the prior attempt AND rebase it onto
 	// the current base, so its commits replay on top of work merged since rather
-	// than reverting it. reset (the default) skips the restore entirely and cuts
+	// than reverting it. A restore miss fails the task (#1364) — see below.
+	// reset (the default) skips the restore entirely and cuts
 	// fresh from the current base below, so a retry or repair re-dispatch can
 	// never carry a stale branch that drifts from base.
 	if strategy == foremanv1alpha1.BranchStrategyRebase &&
@@ -523,8 +525,19 @@ func setupTaskBranch(
 				"reviseFromBranch", ref, "branch", branch, "baseBranch", baseBranch)
 			return nil
 		}
-		log.Info("reviseFromBranch ref not found on push remote; falling back to base branch",
-			"reviseFromBranch", ref, "baseBranch", baseBranch)
+		// The caller named a prior attempt; its absence is an error, not a
+		// fallback. Falling through to a fresh base-cut here silently discards
+		// the prior attempt's work — and when the payload also carries
+		// allowOverwrite (revisions and pr-fixes always do), the base-cut then
+		// force-pushes over the surviving remote ref, destroying reviewed work
+		// with no error anywhere (#1364: a reviewed 554-line migration was
+		// replaced by a +3/−1 CI tweak this way, three times in one day). A
+		// miss here means the ref was pruned or a concurrent fix attempt is
+		// racing this one — both are conditions to surface, not paper over.
+		return fmt.Errorf(
+			"revision restore failed: reviseFromBranch %q not found on push remote "+
+				"(pruned, never pushed, or racing a concurrent fix attempt); refusing "+
+				"to rebuild from %s and overwrite the prior attempt", ref, baseBranch)
 	}
 
 	if upstreamURL := resolveUpstream(task.Spec.Payload.Repo); upstreamURL != "" {

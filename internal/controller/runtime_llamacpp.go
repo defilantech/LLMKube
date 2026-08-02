@@ -156,8 +156,14 @@ func (b *LlamaCppBackend) BuildArgs(isvc *inferencev1alpha1.InferenceService, mo
 		args = append(args, isvc.Spec.ExtraArgs...)
 	}
 
-	// Enable Prometheus metrics endpoint on llama.cpp
-	args = append(args, "--metrics")
+	// Enable Prometheus metrics endpoint on llama.cpp, unless the user already
+	// asked for it in ExtraArgs. Appending unconditionally emitted
+	// "--metrics --metrics" (#1384); llama.cpp tolerates the repeat, but the
+	// operator should not be delegating its own flag decisions to the
+	// runtime's last-flag-wins semantics.
+	if !hasMatchingExtraArg(isvc.Spec.ExtraArgs, "metrics") {
+		args = append(args, "--metrics")
+	}
 
 	return args
 }

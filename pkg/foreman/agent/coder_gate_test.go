@@ -282,6 +282,60 @@ func TestRunCoderGateLintCacheScopedToWorkspace(t *testing.T) {
 	}
 }
 
+// TestRunCoderGateGoToolchainAuto asserts every Go-toolchain-driving check
+// runs with GOTOOLCHAIN=auto (#1388).
+//
+// The agent image is built FROM golang:1.26, which bakes GOTOOLCHAIN=local.
+// Once go.mod's floor passes the image's patch release (go.mod 1.26.5 vs
+// image 1.26.4) every `go` invocation refuses to run, the gate reports it as
+// "go build ./... failed", and the model spends its whole fix budget on a
+// premise it cannot act on while its correct work is discarded unpushed.
+func TestRunCoderGateGoToolchainAuto(t *testing.T) {
+	const golangciPath = "./bin/golangci-lint"
+	run, calls := newFakeRunner(map[string]fakeCommand{
+		"gofmt":      {},
+		"go":         {},
+		golangciPath: {},
+	})
+
+	RunCoderGate(context.Background(), "/work", golangciPath, run, "", "main", nil)
+
+	hasAuto := func(env []string) bool {
+		for _, e := range env {
+			if e == "GOTOOLCHAIN=auto" {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Every `go` invocation and the lint run drive the toolchain and so must
+	// carry it. gofmt is a standalone binary that never consults go.mod.
+	sawGo, sawLint := false, false
+	for i := range *calls {
+		c := (*calls)[i]
+		switch c.name {
+		case "go":
+			sawGo = true
+			if !hasAuto(c.extraEnv) {
+				t.Errorf("go %v extraEnv = %v, want it to include GOTOOLCHAIN=auto",
+					c.args, c.extraEnv)
+			}
+		case golangciPath:
+			sawLint = true
+			if !hasAuto(c.extraEnv) {
+				t.Errorf("lint extraEnv = %v, want it to include GOTOOLCHAIN=auto", c.extraEnv)
+			}
+		}
+	}
+	if !sawGo {
+		t.Fatal("no `go` command was invoked; the Go tier did not run")
+	}
+	if !sawLint {
+		t.Fatal("golangci-lint was never invoked")
+	}
+}
+
 // TestChangedTestPackages_ExcludesEnvtestAndDedups verifies the changed
 // package set covers non-envtest packages, dedups, and excludes
 // envtest/integration packages and non-Go files (#762).

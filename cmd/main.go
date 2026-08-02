@@ -127,6 +127,7 @@ func main() {
 	var caCertConfigMap string
 	var initContainerImage string
 	var defaultFSGroup int64
+	var emitScrapeAnnotations bool
 	var routerProxyImage string
 	var defaultLiteLLMURL string
 	var tlsOpts []func(*tls.Config)
@@ -152,6 +153,10 @@ func main() {
 	flag.StringVar(&allowedHostPathRoots, "allowed-host-path-roots", "",
 		"Comma-separated absolute path prefixes under which local/file:// and hostPath model "+
 			"sources are permitted. Empty (default) disables all local/hostPath sources (GHSA-jw3m-8q7m-f35r).")
+	flag.BoolVar(&emitScrapeAnnotations, "emit-scrape-annotations", false,
+		"Add prometheus.io/scrape,path,port annotations (port = resolved endpoint port) to every "+
+			"inference Pod so annotation-based scrapers discover /metrics without a per-InferenceService "+
+			"podAnnotations block or a PodMonitor. User-set podAnnotations win. Default false.")
 	flag.StringVar(&gpuSharingSharedPoolSelector, "gpu-sharing-shared-pool-selector", "",
 		"Node selector (key=value[,key=value]) for the shared-GPU pool that gpuSharing mode "+
 			"shared schedules onto. Empty (default) means no shared pool exists and mode shared "+
@@ -444,6 +449,7 @@ func main() {
 		CACertConfigMap:       caCertConfigMap,
 		InitContainerImage:    initContainerImage,
 		DefaultFSGroup:        defaultFSGroup,
+		EmitScrapeAnnotations: emitScrapeAnnotations,
 		AllowedHostPathRoots:  allowedHostPathRootList,
 		GPUSharingSharedPool:  gpuSharingSharedPool,
 		RuntimeImageOverrides: runtimeImageOverrides,

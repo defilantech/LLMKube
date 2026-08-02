@@ -63,7 +63,7 @@ type RopeScalingSpec struct {
 type SpeculativeDecodingType string
 
 // SpeculativeDecodingSpec configures speculative decoding for the llama.cpp
-// runtime. It maps to --spec-type (Type) and --draft-n-max (NDraftMax).
+// runtime. It maps to --spec-type (Type) and --spec-draft-n-max (NDraftMax).
 // Only the "llamacpp" runtime supports this field; other runtimes must not
 // set it.
 type SpeculativeDecodingSpec struct {
@@ -73,7 +73,7 @@ type SpeculativeDecodingSpec struct {
 	Type SpeculativeDecodingType `json:"type"`
 
 	// NDraftMax is the maximum number of draft tokens to propose per step
-	// (--draft-n-max). Only emitted when set; llama.cpp uses its own default
+	// (--spec-draft-n-max). Only emitted when set; llama.cpp uses its own default
 	// otherwise.
 	// +kubebuilder:validation:Minimum=1
 	// +optional
@@ -334,7 +334,7 @@ type InferenceServiceSpec struct {
 
 	// SpeculativeDecoding configures speculative decoding for the llama.cpp
 	// runtime using MTP (Multi-Token Prediction) or draft-model decoding.
-	// Maps to llama.cpp --spec-type and --draft-n-max flags. Only the
+	// Maps to llama.cpp --spec-type and --spec-draft-n-max flags. Only the
 	// "llamacpp" runtime supports this field; other runtimes must not set it.
 	// +optional
 	SpeculativeDecoding *SpeculativeDecodingSpec `json:"speculativeDecoding,omitempty"`
@@ -958,10 +958,25 @@ type VLLMConfig struct {
 
 	// Quantization method.
 	// awq, gptq, squeezellm are classic 4-bit formats. fp8 targets 8-bit FP
-	// checkpoints (Qwen FP8, Llama FP8, etc.). nvfp4 is NVIDIA's Blackwell-native
-	// 4-bit format. compressed-tensors is the neuralmagic/vLLM cross-format
-	// loader used by Unsloth and other recent releases.
-	// +kubebuilder:validation:Enum=awq;gptq;squeezellm;fp8;nvfp4;compressed-tensors
+	// checkpoints (Qwen FP8, Llama FP8, etc.). compressed-tensors is the
+	// neuralmagic/vLLM cross-format loader used by Unsloth and other recent
+	// releases.
+	//
+	// The two FP4 formats both require Blackwell-class hardware (sm_100 for
+	// datacenter B200/GB200, sm_120 for consumer RTX 50-series):
+	//   - nvfp4 is NVIDIA's own 4-bit format. Ready-made checkpoints are
+	//     published under nvidia/*-NVFP4 on Hugging Face; local conversion
+	//     uses NVIDIA/Model-Optimizer (PyPI nvidia-modelopt), which was
+	//     renamed from NVIDIA/TensorRT-Model-Optimizer.
+	//   - mxfp4 is the OCP standard 4-bit format, with broader vLLM support.
+	//
+	// Both are hardware-supported on sm_100 and sm_120; kernel coverage is the
+	// practical limit and it is thinner on consumer sm_120. On Blackwell, use
+	// a vLLM image >= v0.25.0: v0.22.0 through v0.24.0 carry a regression that
+	// collapses NVFP4 output throughput (vllm-project/vllm#42988, fixed by
+	// #45739). The chart's pinned default is safe; see
+	// docs/operations/b200-validation-matrix.md.
+	// +kubebuilder:validation:Enum=awq;gptq;squeezellm;fp8;nvfp4;mxfp4;compressed-tensors
 	// +optional
 	Quantization string `json:"quantization,omitempty"`
 

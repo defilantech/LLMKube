@@ -122,8 +122,14 @@ func (b *LlamaCppRouterBackend) BuildArgs(isvc *inferencev1alpha1.InferenceServi
 		)
 	}
 
-	// Enable Prometheus metrics endpoint on llama.cpp
-	args = append(args, "--metrics")
+	// Enable Prometheus metrics endpoint on llama.cpp, unless the user already
+	// asked for it in ExtraArgs (#1384). Note this path appends ExtraArgs
+	// *after* the operator's flags, the opposite of the single-model path, so
+	// without the guard the user's copy would win by position here and the
+	// operator's would win there. Guarding removes the ordering dependency.
+	if !hasMatchingExtraArg(isvc.Spec.ExtraArgs, "metrics") {
+		args = append(args, "--metrics")
+	}
 
 	// Append user-provided extra args last so they can override defaults
 	if len(isvc.Spec.ExtraArgs) > 0 {

@@ -95,12 +95,31 @@ PLATFORM FLOORS (NVIDIA Blackwell / B200-class serving):
   - CUDA toolkit:   {{ .Values.platformFloors.cudaToolkit }}
   - NCCL:           {{ .Values.platformFloors.nccl }}
   - GPU Operator:   {{ .Values.platformFloors.gpuOperator }}
+{{- with .Values.platformFloors.k8sDevicePlugin }}
+  - Device plugin:  {{ . }}
+{{- end }}
+{{- with .Values.platformFloors.dcgmExporter }}
+  - dcgm-exporter:  {{ . }}
+{{- end }}
+{{- with .Values.platformFloors.fabricManager }}
 
-  Runtime notes: prefer vLLM or SGLang on Blackwell. TGI is archived upstream
-  (final release 3.3.7) with no stated Blackwell support. llama.cpp prebuilt
-  CUDA images carry no native sm_100 codegen (PTX JIT only); build with
-  CUDA_DOCKER_ARCH=100a-real for peak B200 performance and point
-  runtimeImages.llamacpp at the result.
+  Multi-GPU (NVLink) nodes, verify this one first:
+
+  - Fabric Manager: {{ . }}
+
+    A Fabric Manager / driver version mismatch silently degrades NVLink to
+    PCIe. There is no error surface: jobs still run, just far slower. Check
+    with `nvidia-smi -q | grep -i fabric` and compare the Fabric Manager
+    package version against `nvidia-smi --query-gpu=driver_version --format=csv`.
+{{- end }}
+
+  Runtime notes: prefer vLLM or SGLang on datacenter Blackwell (B200/GB200,
+  sm_100). On vLLM use >= v0.25.0: v0.22.0-v0.24.0 carry an NVFP4 throughput
+  regression. TGI is archived upstream (final release 3.3.7) with no stated
+  Blackwell support. llama.cpp does not target sm_100 at all -- its Blackwell
+  tensor-core paths gate on consumer sm_120 -- so it runs on B200 only via
+  PTX JIT and is not the recommended datacenter runtime. It remains a good
+  choice for consumer Blackwell (sm_120) and CPU serving.
 {{- end }}
 
 ---

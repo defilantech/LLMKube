@@ -77,6 +77,9 @@ var (
 	// Desc keeps fqName unexported; String() is the only accessor.
 	descFQName = regexp.MustCompile(`fqName: "([^"]+)"`)
 	recordRule = regexp.MustCompile(`(?m)^\s*- record:\s*(\S+)`)
+
+	labelMatcher    = regexp.MustCompile(`\{[^}]*\}`)
+	soleAggregation = regexp.MustCompile(`^(?:sum|count)(?:\s+(?:by|without)\s*\([^)]*\))?\s*\(`)
 )
 
 // declaredNames returns the fqName of every collector this repo registers.
@@ -225,6 +228,219 @@ func dashboardQueries(t *testing.T, path string) []string {
 		}
 	}
 	return queries
+}
+
+// panelConvention pairs a panel's own fieldConfig.defaults with the PromQL
+// its own targets evaluate, so a convention can check both together instead
+// of the flat, panel-agnostic list dashboardQueries returns.
+type panelConvention struct {
+	title     string
+	panelType string
+	defaults  map[string]any
+	exprs     []string
+}
+
+// dashboardPanels walks a dashboard like dashboardQueries does, but stops at
+// every object carrying its own fieldConfig.defaults (a panel) instead of
+// flattening every "expr" found anywhere in the document. It also returns
+// the dashboard's template variable names, needed by the label-matcher
+// convention.
+func dashboardPanels(t *testing.T, path string) ([]panelConvention, []string) {
+	t.Helper()
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+
+	var panels []panelConvention
+	var walk func(node any)
+	walk = func(node any) {
+		switch typed := node.(type) {
+		case map[string]any:
+			if fc, ok := typed["fieldConfig"].(map[string]any); ok {
+				if defaults, ok := fc["defaults"].(map[string]any); ok {
+					targets, _ := typed["targets"].([]any)
+					var exprs []string
+					for _, target := range targets {
+						if tm, ok := target.(map[string]any); ok {
+							if s, ok := tm["expr"].(string); ok {
+								exprs = append(exprs, s)
+							}
+						}
+					}
+					title, _ := typed["title"].(string)
+					panelType, _ := typed["type"].(string)
+					panels = append(panels, panelConvention{title: title, panelType: panelType, defaults: defaults, exprs: exprs})
+				}
+			}
+			for _, child := range typed {
+				walk(child)
+			}
+		case []any:
+			for _, child := range typed {
+				walk(child)
+			}
+		}
+	}
+	walk(doc)
+
+	var vars []string
+	templating, _ := doc["templating"].(map[string]any)
+	list, _ := templating["list"].([]any)
+	for _, item := range list {
+		variable, _ := item.(map[string]any)
+		if name, ok := variable["name"].(string); ok {
+			vars = append(vars, name)
+		}
+	}
+	return panels, vars
+}
+
+// isRatioAgainstLimit reports whether expr is a bare "metric / metric"
+// division: exactly one '/', no other arithmetic mixed in, not a formula
+// that starts from a constant. That excludes the shapes the convention
+// exempts: an error budget ("1 - (...)") that can go negative, and a
+// burn-rate reference line ("14 * (1 - $objective/100)") that is unbounded.
+func isRatioAgainstLimit(expr string) bool {
+	expr = strings.TrimSpace(expr)
+	if strings.Count(expr, "/") != 1 || strings.ContainsAny(expr, "*+") {
+		return false
+	}
+	return expr != "" && (expr[0] < '0' || expr[0] > '9')
+}
+
+// isSoleAggregation reports whether expr's outermost operation is a single
+// sum() or count() call with nothing applied outside it. A ratio-of-sums
+// like sum(a)/sum(b) also starts with "sum(", but its outer operator is the
+// division, so the sum() match must close at the very end of expr, not
+// partway through, to count.
+func isSoleAggregation(expr string) bool {
+	expr = strings.TrimSpace(expr)
+	loc := soleAggregation.FindStringIndex(expr)
+	if loc == nil {
+		return false
+	}
+	depth := 0
+	for i := loc[1] - 1; i < len(expr); i++ {
+		switch expr[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return i == len(expr)-1
+			}
+		}
+	}
+	return false
+}
+
+// filtersTemplateVarInLabelMatcher reports whether any of expr's label
+// matchers ({...}) references one of the dashboard's own template
+// variables, e.g. {service=~"$service"}.
+func filtersTemplateVarInLabelMatcher(expr string, vars []string) bool {
+	for _, matcher := range labelMatcher.FindAllString(expr, -1) {
+		for _, v := range vars {
+			if regexp.MustCompile(`\$` + regexp.QuoteMeta(v) + `\b`).MatchString(matcher) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// dashboardConventions are the three conventions applied by hand across
+// every panel in charts/llmkube/dashboards (see the "apply shared
+// conventions for min/max, noValue, and series color" commit). All three
+// are scoped to timeseries panels: stat and gauge panels color by
+// threshold, not by series, and table panels have neither a per-series
+// color nor an axis to autoscale, so none of the three read on them the way
+// they do on a graph.
+var dashboardConventions = []struct {
+	name    string
+	applies func(p panelConvention, vars []string) bool
+	holds   func(p panelConvention) bool
+	reason  string
+}{
+	{
+		name: `percentunit ratio against a hard limit sets min:0 and max:1`,
+		applies: func(p panelConvention, _ []string) bool {
+			if p.panelType != "timeseries" || p.defaults["unit"] != "percentunit" {
+				return false
+			}
+			return slices.ContainsFunc(p.exprs, isRatioAgainstLimit)
+		},
+		holds: func(p panelConvention) bool {
+			min, minOK := p.defaults["min"].(float64)
+			max, maxOK := p.defaults["max"].(float64)
+			return minOK && min == 0 && maxOK && max == 1
+		},
+		reason: "reads against the limit instead of autoscaling",
+	},
+	{
+		name: `sum()/count() as the outer PromQL operator sets noValue:"0"`,
+		applies: func(p panelConvention, _ []string) bool {
+			return slices.ContainsFunc(p.exprs, isSoleAggregation)
+		},
+		holds: func(p panelConvention) bool {
+			noValue, ok := p.defaults["noValue"].(string)
+			return ok && noValue == "0"
+		},
+		reason: `an empty vector on a fresh cluster otherwise renders "No data" instead of a real zero`,
+	},
+	{
+		name: `a template variable inside a label matcher sets color.mode "palette-classic-by-name"`,
+		applies: func(p panelConvention, vars []string) bool {
+			if p.panelType != "timeseries" {
+				return false
+			}
+			return slices.ContainsFunc(p.exprs, func(e string) bool {
+				return filtersTemplateVarInLabelMatcher(e, vars)
+			})
+		},
+		holds: func(p panelConvention) bool {
+			color, _ := p.defaults["color"].(map[string]any)
+			mode, _ := color["mode"].(string)
+			return mode == "palette-classic-by-name"
+		},
+		reason: "so filtering the variable doesn't repaint the series that remain",
+	},
+}
+
+// TestDashboardConventions fails when a panel matches one of the three
+// conventions above but doesn't carry the fieldConfig it requires. Unlike
+// TestDashboardsQueryEmittedMetrics, which flattens every dashboard into a
+// bare list of expr strings, this walks panel by panel so a convention can
+// see a panel's unit, color and target queries together.
+//
+// Scoped to charts/llmkube/dashboards: conventions were hand-applied only to
+// the dashboards shipped in the chart, not to config/grafana's standalone
+// pair, which predates that pass.
+func TestDashboardConventions(t *testing.T) {
+	dashboards, err := filepath.Glob("../../charts/*/dashboards/*.json")
+	if err != nil {
+		t.Fatalf("glob charts dashboards: %v", err)
+	}
+	if len(dashboards) == 0 {
+		t.Fatalf("no dashboards matching ../../charts/*/dashboards/*.json")
+	}
+
+	for _, dashboard := range dashboards {
+		panels, vars := dashboardPanels(t, dashboard)
+		for _, p := range panels {
+			for _, rule := range dashboardConventions {
+				if !rule.applies(p, vars) || rule.holds(p) {
+					continue
+				}
+				t.Errorf("%s panel %q violates convention %s: %s", dashboard, p.title, rule.name, rule.reason)
+			}
+		}
+	}
 }
 
 func emitted(name string, known map[string]bool) bool {

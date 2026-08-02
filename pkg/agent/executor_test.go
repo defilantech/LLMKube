@@ -1000,3 +1000,41 @@ func TestBuildOMLXServeArgs_AllFlags(t *testing.T) {
 		}
 	}
 }
+
+// TestBuildLlamaServerArgsMetricsNotDuplicated covers #1384 on the Metal agent
+// path. This file already guards reranking/embedding/pooling against ExtraArgs;
+// --metrics was the one operator-owned flag still emitted unconditionally, so a
+// user who set it in ExtraArgs got it twice.
+func TestBuildLlamaServerArgsMetricsNotDuplicated(t *testing.T) {
+	count := func(args []string, flag string) int {
+		n := 0
+		for _, a := range args {
+			if a == flag {
+				n++
+			}
+		}
+		return n
+	}
+
+	cases := []struct {
+		name      string
+		extraArgs []string
+		want      int
+	}{
+		{"operator supplies it when the user does not", nil, 1},
+		{"bare user flag is not duplicated", []string{"--metrics"}, 1},
+		{"inline user flag suppresses the operator's bare copy", []string{"--metrics=true"}, 0},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			args := buildLlamaServerArgs("/models/m.gguf", 8080, ExecutorConfig{
+				ContextSize: 4096,
+				ExtraArgs:   tc.extraArgs,
+			})
+			if got := count(args, "--metrics"); got != tc.want {
+				t.Errorf("bare --metrics appeared %d times, want %d; args: %v", got, tc.want, args)
+			}
+		})
+	}
+}

@@ -24,6 +24,10 @@ Every runbook should be testable: an on-call engineer who has never seen the fai
 
 - [`metal-agent-memory-pressure.md`](./metal-agent-memory-pressure.md): the metal-agent watchdog reports Warning or Critical memory pressure and may evict managed inference processes.
 
+### GPU and interconnect
+
+- [`nvlink-degrade-to-pcie.md`](./nvlink-degrade-to-pcie.md): multi-GPU inference is unexpectedly slow with no errors anywhere, because a Fabric Manager / driver version mismatch silently dropped NVLink traffic to PCIe.
+
 ### Lifecycle
 
 - [`upgrade-rollback.md`](./upgrade-rollback.md): the supported Helm-based upgrade path for moving an LLMKube install between minor or patch versions, plus the rollback procedure when an upgrade goes wrong.
@@ -37,7 +41,6 @@ These are scheduled to land before the day-one production install. Each maps to 
 - `controller-crashloop.md`: controller-manager pod itself is restarting; how to triage.
 - `inference-pod-stuck-in-creating.md`: `InferenceService` phase stays `Creating`; init container, scheduling, image pull triage.
 - `inference-pod-oom-on-gpu.md`: GPU memory exhaustion; fits with `Memory.Budget` enforcement on metal-agent and with multi-GPU sharding gone wrong.
-- `nvlink-degrade-to-pcie.md`: Fabric Manager / driver mismatch causing NVLink5 to silently fall back to PCIe (B200 specific; severe).
 - `cold-start-timeout-at-large-context.md`: `--max-model-len` set high enough that the runtime startup probe times out before the model finishes loading.
 - `parser-race-on-tool-calls.md`: streaming parser race between tool-call frames and ordinary text frames.
 - `metal-agent-respawn-blocked.md`: agent refuses to respawn an evicted process; usually correct but documented for clarity.

@@ -74,6 +74,13 @@ type InferenceServiceReconciler struct {
 	// on OpenShift, where the restricted-v2 SCC injects fsGroup from the
 	// namespace's allocated range). Set via --default-fsgroup; default 102.
 	DefaultFSGroup int64
+	// EmitScrapeAnnotations, when true, adds Prometheus annotation-discovery
+	// hints (prometheus.io/scrape, /path, /port) to every inference Pod, with
+	// port set to the resolved endpoint port, so annotation-based scrapers
+	// (e.g. Grafana Alloy) discover /metrics without a per-InferenceService
+	// podAnnotations block or a PodMonitor. User-supplied podAnnotations win.
+	// Set via --emit-scrape-annotations; default false.
+	EmitScrapeAnnotations bool
 	// HTTPClient overrides the HTTP client used for idle checks. When nil, a
 	// default client with a 5-second timeout is created per request. Primarily
 	// useful in tests to capture requests or control timeouts.
@@ -216,7 +223,7 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		desiredReplicas = 0
 	}
 
-	if effectiveModelCacheKey(model) != "" && r.ModelCachePath != "" {
+	if modelNeedsCachePVC(model, r.ModelCachePath) {
 		if err := r.ensureModelCachePVC(ctx, inferenceService); err != nil {
 			log.Error(err, "Failed to ensure model cache PVC exists", "namespace", inferenceService.Namespace)
 			return r.updateStatusWithSchedulingInfo(ctx, inferenceService, PhaseFailed, modelReady, 0, desiredReplicas, "",

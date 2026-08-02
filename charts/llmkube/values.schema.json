@@ -151,6 +151,7 @@
       "additionalProperties": false,
       "properties": {
         "enabled": { "type": "boolean" },
+        "emitScrapeAnnotations": { "type": "boolean" },
         "secure": { "type": "boolean" },
         "service": {
           "type": "object",
@@ -506,7 +507,10 @@
         "nvidiaDriver": { "type": "string" },
         "cudaToolkit": { "type": "string" },
         "nccl": { "type": "string" },
-        "gpuOperator": { "type": "string" }
+        "gpuOperator": { "type": "string" },
+        "k8sDevicePlugin": { "type": "string" },
+        "dcgmExporter": { "type": "string" },
+        "fabricManager": { "type": "string" }
       }
     }
   }

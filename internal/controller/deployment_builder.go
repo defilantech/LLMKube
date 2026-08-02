@@ -278,18 +278,31 @@ func shouldProtectFromDisruption(isvc *inferencev1alpha1.InferenceService) bool 
 }
 
 // buildPodAnnotations merges the user's podAnnotations with the operator's
-// disruption-protection annotation. User-provided values always win on
-// collision.
-func buildPodAnnotations(isvc *inferencev1alpha1.InferenceService) map[string]string {
+// disruption-protection annotation and, when emitScrape is set, Prometheus
+// annotation-discovery hints. User-provided values always win on collision.
+func buildPodAnnotations(isvc *inferencev1alpha1.InferenceService, emitScrape bool, port int32) map[string]string {
 	annotations := copyMap(isvc.Spec.PodAnnotations)
-	if shouldProtectFromDisruption(isvc) {
+	set := func(k, v string) {
 		if annotations == nil {
 			annotations = make(map[string]string)
 		}
-		// Only set the annotation if the user hasn't already set it
-		if _, ok := annotations["karpenter.sh/do-not-disrupt"]; !ok {
-			annotations["karpenter.sh/do-not-disrupt"] = "true"
+		// The user's value always wins.
+		if _, ok := annotations[k]; !ok {
+			annotations[k] = v
 		}
+	}
+	if shouldProtectFromDisruption(isvc) {
+		set("karpenter.sh/do-not-disrupt", "true")
+	}
+	if emitScrape {
+		// port is the fully-resolved container port (spec.containerPort ->
+		// spec.endpoint.port -> backend.DefaultPort(), resolved once in
+		// constructDeployment), so annotation scrapers hit the real app port
+		// for every runtime and honor spec.containerPort — regardless of the
+		// container-port name ("http", which metrics-named scrape regexes miss).
+		set("prometheus.io/scrape", "true")
+		set("prometheus.io/path", "/metrics")
+		set("prometheus.io/port", fmt.Sprintf("%d", port))
 	}
 	return annotations
 }
@@ -429,7 +442,7 @@ func (r *InferenceServiceReconciler) constructDeployment(
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels:      mergePodLabels(labels, isvc.Spec.PodLabels),
-					Annotations: buildPodAnnotations(isvc),
+					Annotations: buildPodAnnotations(isvc, r.EmitScrapeAnnotations, port),
 				},
 				Spec: corev1.PodSpec{
 					SecurityContext:    inferPodSecurityContext(isvc, r.DefaultFSGroup),

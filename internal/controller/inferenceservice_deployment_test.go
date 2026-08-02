@@ -17,6 +17,8 @@ limitations under the License.
 package controller
 
 import (
+	"fmt"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
@@ -567,6 +569,113 @@ var _ = Describe("Multi-GPU Deployment Construction", func() {
 				Expect(deployment.Spec.RevisionHistoryLimit).NotTo(BeNil())
 				Expect(*deployment.Spec.RevisionHistoryLimit).To(Equal(want))
 			}
+		})
+	})
+
+	Context("when emitting Prometheus scrape annotations", func() {
+		// These pin the port that lands in prometheus.io/port to the SAME
+		// fully-resolved container port constructDeployment uses
+		// (spec.containerPort -> spec.endpoint.port -> backend.DefaultPort()).
+		// Before threading the resolved port through, the annotation hardcoded
+		// 8080 — wrong for every non-llama.cpp runtime and blind to
+		// spec.containerPort. (#1366)
+		var model *inferencev1alpha1.Model
+
+		newReconciler := func(emit bool) *InferenceServiceReconciler {
+			return &InferenceServiceReconciler{
+				Client:                k8sClient,
+				Scheme:                k8sClient.Scheme(),
+				InitContainerImage:    "docker.io/curlimages/curl:8.18.0",
+				DefaultFSGroup:        102,
+				EmitScrapeAnnotations: emit,
+			}
+		}
+
+		BeforeEach(func() {
+			model = &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{Name: "scrape-model", Namespace: "default"},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source:       "https://example.com/model.gguf",
+					Format:       "gguf",
+					Quantization: "Q4_K_M",
+					Hardware:     &inferencev1alpha1.HardwareSpec{Accelerator: "cpu"},
+				},
+				Status: inferencev1alpha1.ModelStatus{Phase: "Ready"},
+			}
+		})
+
+		newISVC := func(mutate func(*inferencev1alpha1.InferenceService)) *inferencev1alpha1.InferenceService {
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{Name: "scrape-service", Namespace: "default"},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: "scrape-model",
+					Replicas: &replicas,
+					// Pin the image so resolveRuntimeImage never gates the test.
+					Image: "example.local/runtime:test",
+				},
+			}
+			if mutate != nil {
+				mutate(isvc)
+			}
+			return isvc
+		}
+
+		scrapePort := func(d *appsv1.Deployment) string {
+			return d.Spec.Template.ObjectMeta.Annotations["prometheus.io/port"]
+		}
+
+		It("uses the runtime's DefaultPort for a non-llama.cpp backend (vLLM → 8000)", func() {
+			isvc := newISVC(func(s *inferencev1alpha1.InferenceService) {
+				s.Spec.Runtime = RuntimeVLLM
+			})
+			d := newReconciler(true).constructDeployment(isvc, model, 1)
+			// vLLM DefaultPort is 8000; the old hardcoded 8080 was wrong here.
+			Expect(scrapePort(d)).To(Equal("8000"))
+			Expect(d.Spec.Template.ObjectMeta.Annotations["prometheus.io/scrape"]).To(Equal("true"))
+		})
+
+		It("honors spec.containerPort over the runtime default", func() {
+			cp := int32(9090)
+			isvc := newISVC(func(s *inferencev1alpha1.InferenceService) {
+				s.Spec.Runtime = RuntimeVLLM
+				s.Spec.ContainerPort = &cp
+			})
+			d := newReconciler(true).constructDeployment(isvc, model, 1)
+			Expect(scrapePort(d)).To(Equal("9090"))
+		})
+
+		It("uses spec.endpoint.port when containerPort is unset", func() {
+			isvc := newISVC(func(s *inferencev1alpha1.InferenceService) {
+				s.Spec.Endpoint = &inferencev1alpha1.EndpointSpec{Port: 7070}
+			})
+			d := newReconciler(true).constructDeployment(isvc, model, 1)
+			Expect(scrapePort(d)).To(Equal("7070"))
+		})
+
+		It("falls back to the llama.cpp default (8080) with no port hints", func() {
+			d := newReconciler(true).constructDeployment(newISVC(nil), model, 1)
+			Expect(scrapePort(d)).To(Equal("8080"))
+		})
+
+		It("matches the port actually exposed on the container", func() {
+			// The annotation must never diverge from the real ContainerPort.
+			isvc := newISVC(func(s *inferencev1alpha1.InferenceService) {
+				s.Spec.Runtime = RuntimeVLLM
+			})
+			d := newReconciler(true).constructDeployment(isvc, model, 1)
+			containerPort := d.Spec.Template.Spec.Containers[0].Ports[0].ContainerPort
+			Expect(scrapePort(d)).To(Equal(fmt.Sprintf("%d", containerPort)))
+		})
+
+		It("emits no scrape annotations when the reconciler flag is off", func() {
+			isvc := newISVC(func(s *inferencev1alpha1.InferenceService) {
+				s.Spec.Runtime = RuntimeVLLM
+			})
+			d := newReconciler(false).constructDeployment(isvc, model, 1)
+			ann := d.Spec.Template.ObjectMeta.Annotations
+			Expect(ann).NotTo(HaveKey("prometheus.io/scrape"))
+			Expect(ann).NotTo(HaveKey("prometheus.io/port"))
 		})
 	})
 

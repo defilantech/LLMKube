@@ -519,7 +519,7 @@ func TestLlamaCppBuildArgs(t *testing.T) {
 			},
 			contains: []FlagCheck{
 				{"--spec-type", "draft-mtp"},
-				{"--draft-n-max", "5"},
+				{"--spec-draft-n-max", "5"},
 			},
 		},
 		{
@@ -532,7 +532,7 @@ func TestLlamaCppBuildArgs(t *testing.T) {
 					Type: "disabled",
 				},
 			},
-			notContains: []string{"--spec-type", "--draft-n-max"},
+			notContains: []string{"--spec-type", "--spec-draft-n-max"},
 		},
 		{
 			model: model,
@@ -541,7 +541,7 @@ func TestLlamaCppBuildArgs(t *testing.T) {
 				Runtime:  "llama",
 				ModelRef: "test-model",
 			},
-			notContains: []string{"--spec-type", "--draft-n-max"},
+			notContains: []string{"--spec-type", "--spec-draft-n-max"},
 		},
 		{
 			model: model,
@@ -553,11 +553,11 @@ func TestLlamaCppBuildArgs(t *testing.T) {
 					Type: "",
 				},
 			},
-			notContains: []string{"--spec-type", "--draft-n-max"},
+			notContains: []string{"--spec-type", "--spec-draft-n-max"},
 		},
 		{
 			model: model,
-			name:  "speculativeDecoding mtp without nDraftMax does not emit --draft-n-max",
+			name:  "speculativeDecoding mtp without nDraftMax does not emit --spec-draft-n-max",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:  "llama",
 				ModelRef: "test-model",
@@ -566,7 +566,7 @@ func TestLlamaCppBuildArgs(t *testing.T) {
 				},
 			},
 			contains:    []FlagCheck{{"--spec-type", "draft-mtp"}},
-			notContains: []string{"--draft-n-max"},
+			notContains: []string{"--spec-draft-n-max"},
 		},
 		{
 			model: &inferencev1alpha1.Model{
@@ -684,5 +684,69 @@ func TestLlamaCppBuildArgs(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// countArg returns how many times flag appears verbatim in args.
+func countArg(args []string, flag string) int {
+	n := 0
+	for _, a := range args {
+		if a == flag {
+			n++
+		}
+	}
+	return n
+}
+
+// TestLlamaCppMetricsNotDuplicated covers #1384: the operator appended
+// --metrics unconditionally while ExtraArgs was appended verbatim, so a user
+// who set --metrics themselves got it twice. Both llama.cpp backends are
+// checked because they append ExtraArgs on opposite sides of the operator's
+// own flags, so a positional fix would only have corrected one of them.
+func TestLlamaCppMetricsNotDuplicated(t *testing.T) {
+	model := &inferencev1alpha1.Model{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-model", Namespace: "default"},
+		Spec:       inferencev1alpha1.ModelSpec{Format: "gguf"},
+	}
+
+	cases := []struct {
+		name      string
+		extraArgs []string
+		want      int
+	}{
+		{name: "operator supplies it when the user does not", extraArgs: nil, want: 1},
+		{name: "bare user flag is not duplicated", extraArgs: []string{"--metrics"}, want: 1},
+		{name: "inline user flag is not duplicated", extraArgs: []string{"--metrics=true"}, want: 0},
+	}
+
+	for _, tc := range cases {
+		for _, backend := range []struct {
+			name string
+			args func(*inferencev1alpha1.InferenceService) []string
+		}{
+			{"single-model", func(isvc *inferencev1alpha1.InferenceService) []string {
+				return (&LlamaCppBackend{}).BuildArgs(isvc, model, "/models/m.gguf", 8080)
+			}},
+			{"router", func(isvc *inferencev1alpha1.InferenceService) []string {
+				return (&LlamaCppRouterBackend{}).BuildArgs(isvc, model, "/models/m.gguf", 8080)
+			}},
+		} {
+			t.Run(backend.name+": "+tc.name, func(t *testing.T) {
+				isvc := &inferencev1alpha1.InferenceService{
+					ObjectMeta: metav1.ObjectMeta{Name: "isvc", Namespace: "default"},
+					Spec: inferencev1alpha1.InferenceServiceSpec{
+						Runtime:   "llama",
+						ModelRef:  "test-model",
+						ExtraArgs: tc.extraArgs,
+					},
+				}
+				args := backend.args(isvc)
+				// The inline form means the operator must not add its own bare
+				// --metrics; the user's --metrics=true is the only copy.
+				if got := countArg(args, "--metrics"); got != tc.want {
+					t.Errorf("bare --metrics appeared %d times, want %d; args: %v", got, tc.want, args)
+				}
+			})
+		}
 	}
 }

@@ -2312,16 +2312,19 @@ func TestSetupTaskBranch_RestoresPriorAttempt(t *testing.T) {
 	}
 }
 
-// TestSetupTaskBranch_MissingRefFallsBackToBase pins the degradation
-// contract: when the reviseFromBranch ref is gone from the remote the
-// task still runs — branched from the upstream base — instead of
-// failing.
-func TestSetupTaskBranch_MissingRefFallsBackToBase(t *testing.T) {
+// TestSetupTaskBranch_MissingRefFailsLoud pins the #1364 contract: when the
+// reviseFromBranch ref is gone from the remote the task FAILS instead of
+// rebuilding from base. The old fallback, combined with allowOverwrite (which
+// revisions and pr-fixes always carry), force-pushed a fresh base-cut over the
+// prior attempt — silently destroying reviewed work. A named prior attempt
+// that cannot be restored is an error to surface (pruned ref, or a race with
+// a concurrent fix attempt), never a fallback.
+func TestSetupTaskBranch_MissingRefFailsLoud(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
 	}
 	dir := t.TempDir()
-	bare, mainSHA := seededRemote(t, dir)
+	bare, _ := seededRemote(t, dir)
 	const branch = "foreman/wl/issue-641"
 
 	ws := filepath.Join(dir, "ws")
@@ -2329,14 +2332,12 @@ func TestSetupTaskBranch_MissingRefFallsBackToBase(t *testing.T) {
 
 	err := setupTaskBranch(context.Background(), revisionTask(branch), ws, branch, "main",
 		func(string) string { return bare }, nil, logr.Discard())
-	if err != nil {
-		t.Fatalf("setupTaskBranch must fall back, not fail: %v", err)
+	if err == nil {
+		t.Fatal("missing reviseFromBranch ref must fail the task, not fall back to base")
 	}
-	if got := gitIn(t, ws, "rev-parse", "HEAD"); got != mainSHA {
-		t.Errorf("HEAD = %s, want base tip %s (fallback branches from base)", got, mainSHA)
-	}
-	if got := gitIn(t, ws, "branch", "--show-current"); got != branch {
-		t.Errorf("current branch = %q, want %q", got, branch)
+	if !strings.Contains(err.Error(), "reviseFromBranch") ||
+		!strings.Contains(err.Error(), "refusing") {
+		t.Errorf("error must explain the refusal, got: %v", err)
 	}
 }
 

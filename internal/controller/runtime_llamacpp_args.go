@@ -211,7 +211,13 @@ func appendSpeculativeDecodingArgs(args []string, spec *inferencev1alpha1.Specul
 	}
 	args = append(args, "--spec-type", specType)
 	if spec.NDraftMax != nil && *spec.NDraftMax > 0 {
-		args = append(args, "--draft-n-max", fmt.Sprintf("%d", *spec.NDraftMax))
+		// --spec-draft-n-max, not --draft-n-max: llama.cpp has never accepted
+		// the latter. Its removed aliases are --draft, --draft-n and
+		// --draft-max, all of which now report "the argument has been removed.
+		// use --spec-draft-n-max". Emitting the old spelling aborted the
+		// server at startup, so any InferenceService setting nDraftMax
+		// crashlooped (#1382).
+		args = append(args, "--spec-draft-n-max", fmt.Sprintf("%d", *spec.NDraftMax))
 	}
 	return args
 }
