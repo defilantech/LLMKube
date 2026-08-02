@@ -457,6 +457,34 @@ func TestRouterDeploymentBuilderRespectsOverrides(t *testing.T) {
 	}
 }
 
+// TestRouterDeploymentBuilderNodeSelector checks that spec.proxy.nodeSelector
+// pins the proxy pod: the map reaches the Pod spec so operators can keep the
+// proxy on nodes that actually have its image (e.g. a node-local registry).
+func TestRouterDeploymentBuilderNodeSelector(t *testing.T) {
+	mr := canonicalModelRouter()
+	mr.Spec.Proxy = &inferencev1alpha1.RouterProxySpec{
+		NodeSelector: map[string]string{"kubernetes.io/hostname": "corsair"},
+	}
+	r := &ModelRouterReconciler{RouterProxyImage: "img"}
+	dep := r.newRouterDeployment(mr, "hash", false)
+	got := dep.Spec.Template.Spec.NodeSelector
+	if got["kubernetes.io/hostname"] != "corsair" {
+		t.Errorf("pod NodeSelector = %v, want kubernetes.io/hostname=corsair", got)
+	}
+}
+
+// TestRouterDeploymentBuilderNodeSelectorDefault confirms an unset
+// spec.proxy.nodeSelector leaves the Pod spec's NodeSelector nil rather than an
+// empty map, so the proxy schedules anywhere by default.
+func TestRouterDeploymentBuilderNodeSelectorDefault(t *testing.T) {
+	dep := (&ModelRouterReconciler{RouterProxyImage: "img"}).
+		newRouterDeployment(canonicalModelRouter(), "hash", false)
+	if dep.Spec.Template.Spec.NodeSelector != nil {
+		t.Errorf("pod NodeSelector = %v, want nil when spec.proxy.nodeSelector unset",
+			dep.Spec.Template.Spec.NodeSelector)
+	}
+}
+
 // TestRouterDeploymentBuilderRevisionHistoryLimit checks that
 // spec.proxy.revisionHistoryLimit reaches the Deployment, and that
 // omitting it leaves the field nil (apiserver default).

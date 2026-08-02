@@ -91,6 +91,7 @@ func (r *ModelRouterReconciler) newRouterDeployment(
 	var resources corev1.ResourceRequirements
 	var imagePullSecrets []corev1.LocalObjectReference
 	var revisionHistoryLimit *int32
+	var nodeSelector map[string]string
 
 	if mr.Spec.Proxy != nil {
 		if mr.Spec.Proxy.Replicas != nil {
@@ -104,6 +105,7 @@ func (r *ModelRouterReconciler) newRouterDeployment(
 			resources = *mr.Spec.Proxy.Resources
 		}
 		imagePullSecrets = mr.Spec.Proxy.ImagePullSecrets
+		nodeSelector = mr.Spec.Proxy.NodeSelector
 	}
 	if resources.Requests == nil && resources.Limits == nil {
 		resources = defaultRouterProxyResources()
@@ -148,6 +150,7 @@ func (r *ModelRouterReconciler) newRouterDeployment(
 					ServiceAccountName: serviceAccountName,
 					SecurityContext:    routerProxyPodSecurityContext(),
 					ImagePullSecrets:   imagePullSecrets,
+					NodeSelector:       nodeSelector,
 					Containers: []corev1.Container{
 						{
 							Name:            routerProxyContainerName,
