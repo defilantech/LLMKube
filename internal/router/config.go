@@ -141,6 +141,13 @@ type BackendPool struct {
 	// Members lists every member InferenceService name in the pool. The proxy
 	// uses it to seed which member is currently resident on a cold start.
 	Members []string `json:"members,omitempty"`
+
+	// SwapBudget bounds how long the proxy holds a cross-model request open
+	// while it drains the incumbent and cold-loads this member, decoupled from
+	// the response-header (generation) timeout so a slow cold load does not
+	// force operators to inflate the generation cap. Compiled from
+	// ModelPool.spec.swapBudget. Zero means fall back to the dispatch default.
+	SwapBudget time.Duration `json:"swapBudget,omitempty"`
 }
 
 // Rule pairs a Match expression with a Route action.

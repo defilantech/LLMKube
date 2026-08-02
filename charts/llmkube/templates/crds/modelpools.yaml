@@ -104,6 +104,18 @@ spec:
                 minItems: 1
                 type: array
                 x-kubernetes-list-type: atomic
+              minResidency:
+                default: 1
+                description: |-
+                  MinResidency is the anti-thrash floor expressed as a blocking-request
+                  count, not a timer. A member becomes swap-eligible only after it has
+                  served MinResidency in-flight requests. The floor holds only while the
+                  member is actively serving: an idle member (empty queue) is always
+                  preemptible regardless of how many requests it has served. Zero disables
+                  the floor.
+                format: int32
+                minimum: 0
+                type: integer
               nodeSelector:
                 additionalProperties:
                   type: string
@@ -112,15 +124,28 @@ spec:
                   are expected to schedule onto the same node so they contend for the same
                   device memory. Mirrors a standard Kubernetes node selector.
                 type: object
+              swapBudget:
+                default: 300s
+                description: |-
+                  SwapBudget bounds how long the router holds a cross-model request open
+                  while it drains the incumbent and cold-loads the target member. It is
+                  deliberately decoupled from the router's response-header (generation)
+                  timeout: a large model can take minutes to load without forcing operators
+                  to loosen the per-request generation cap for every request. When the
+                  budget elapses before the target becomes resident, the held request is
+                  failed with 503 + Retry-After (the caller can retry; the now-warm member
+                  serves the next request). Defaults to 300s.
+                type: string
               swapPolicy:
                 default: sticky
                 description: |-
                   SwapPolicy selects how the slot owner is chosen when demand crosses model
                   boundaries. "sticky" (default) keeps the incumbent until a different
-                  member is requested. It is the only policy in v1; a priority-based reclaim
-                  policy is a planned follow-up.
+                  member is requested; "priority" lets a higher-priority member reclaim the
+                  slot when the incumbent goes idle.
                 enum:
                 - sticky
+                - priority
                 type: string
             required:
             - members

@@ -281,12 +281,16 @@ func (r *ModelRouterReconciler) resolveBackendPool(
 		if !isMember {
 			continue
 		}
-		return &router.BackendPool{
+		bp := &router.BackendPool{
 			Name:      pool.Name,
 			Namespace: pool.Namespace,
 			Member:    member,
 			Members:   members,
-		}, nil
+		}
+		if pool.Spec.SwapBudget != nil {
+			bp.SwapBudget = pool.Spec.SwapBudget.Duration
+		}
+		return bp, nil
 	}
 	return nil, nil
 }

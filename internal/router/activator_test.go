@@ -331,3 +331,107 @@ func TestActivatorSwapFailurePropagates(t *testing.T) {
 		t.Fatalf("failed activation should not be a budget error: %v", err)
 	}
 }
+
+// stalePool builds a two-member pool whose member list matches its slot, used by
+// the #1123 self-heal tests (testPool's Member is intentionally outside its
+// Members list, which those tests must not inherit).
+func stalePool() *BackendPool {
+	return &BackendPool{
+		Name:      "heavy-slot",
+		Namespace: "lab",
+		Member:    "gemma-longctx",
+		Members:   []string{"coder", "gemma-longctx"},
+	}
+}
+
+// TestActivatorSelfHealsStaleResident is the #1123 regression: after the
+// resident member loses its pod out of band (a spec edit rolls it, an OOM-kill,
+// a node drain, or a controller fallback to spec.default), the activator must
+// not keep coalescing requests for that member onto its now-dead backend.
+// reconcileResident re-derives residency from member phase so the next request
+// drives a corrective swap instead of an instant 502. Before the fix pr.resident
+// was authored only by seed() and the activator's own swaps, so this returned
+// immediately with no new activation.
+func TestActivatorSelfHealsStaleResident(t *testing.T) {
+	fake := newFakeMemberController()
+	a := NewActivator(context.Background(), fake, "r", nil)
+	a.resyncInterval = 0 // re-verify residency on every Acquire
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// gemma-longctx becomes resident via a cold activation.
+	rel, err := a.Acquire(ctx, stalePool())
+	if err != nil {
+		t.Fatalf("Acquire(gemma-longctx): %v", err)
+	}
+	rel()
+	if got := fake.activateCount("gemma-longctx"); got != 1 {
+		t.Fatalf("gemma-longctx activate count = %d, want 1", got)
+	}
+
+	// Out-of-band residency change: gemma-longctx's pod is gone and the
+	// controller has fallen back to another Ready member.
+	fake.setPhase("gemma-longctx", "Terminating")
+	fake.setPhase("coder", modelReadyPhase)
+
+	// A fresh request for the (now pod-less) gemma-longctx must re-derive
+	// residency and drive a swap back to it, not blindly coalesce onto the dead
+	// backend.
+	rel2, err := a.Acquire(ctx, stalePool())
+	if err != nil {
+		t.Fatalf("Acquire(gemma-longctx) after stale residency: %v", err)
+	}
+	defer rel2()
+	if got := fake.activateCount("gemma-longctx"); got != 2 {
+		t.Errorf("gemma-longctx activate count = %d, want 2 (corrective swap)", got)
+	}
+}
+
+// TestActivatorInvalidateResidentForcesRecheck covers the dispatch-failure
+// self-heal (#1123, fix 3): within resyncInterval the activator trusts its
+// cached resident (one API read per interval, not per request), but
+// InvalidateResident — called by the proxy on a connection-level dispatch
+// failure — forces the next Acquire to re-derive residency immediately rather
+// than serving stale 502s until the periodic resync.
+func TestActivatorInvalidateResidentForcesRecheck(t *testing.T) {
+	fake := newFakeMemberController()
+	a := NewActivator(context.Background(), fake, "r", nil)
+	a.resyncInterval = time.Hour // never auto-rechecks during the test
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	rel, err := a.Acquire(ctx, stalePool())
+	if err != nil {
+		t.Fatalf("Acquire(gemma-longctx): %v", err)
+	}
+	rel()
+
+	// Out-of-band change, but the resync interval has not elapsed.
+	fake.setPhase("gemma-longctx", "Terminating")
+	fake.setPhase("coder", modelReadyPhase)
+
+	// Without invalidation the belief is trusted: the request coalesces onto the
+	// cached resident with no new activation. This is the deliberate rate limit.
+	rel2, err := a.Acquire(ctx, stalePool())
+	if err != nil {
+		t.Fatalf("Acquire(gemma-longctx) within interval: %v", err)
+	}
+	rel2()
+	if got := fake.activateCount("gemma-longctx"); got != 1 {
+		t.Fatalf("gemma-longctx activate count = %d, want 1 (belief trusted within interval)", got)
+	}
+
+	// The proxy signals a connection-level failure; the next Acquire must
+	// re-derive residency and drive a corrective swap.
+	a.InvalidateResident(stalePool())
+	rel3, err := a.Acquire(ctx, stalePool())
+	if err != nil {
+		t.Fatalf("Acquire(gemma-longctx) after invalidate: %v", err)
+	}
+	defer rel3()
+	if got := fake.activateCount("gemma-longctx"); got != 2 {
+		t.Errorf("gemma-longctx activate count = %d, want 2 (invalidation forced swap)", got)
+	}
+}
