@@ -473,6 +473,14 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "ModelRouter")
 		os.Exit(1)
 	}
+	if err := (&controller.ModelPoolReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorder("modelpool-controller"),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "ModelPool")
+		os.Exit(1)
+	}
 	// InferenceServiceGateway reconciles Envoy AI Gateway exposure for opted-in
 	// InferenceServices. It self-gates on the aigw CRDs being present (detected
 	// via the RESTMapper at first reconcile), so a cluster without the gateway

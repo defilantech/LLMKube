@@ -217,6 +217,69 @@ var (
 		},
 		[]string{"gpuquota", "namespace"},
 	)
+
+	// ModelPool metrics
+
+	// ModelPoolResident marks which member currently owns a pool's shared GPU
+	// slot (1 for the resident member, 0 for the rest).
+	ModelPoolResident = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "llmkube_modelpool_resident",
+			Help: "Which member owns a ModelPool's shared GPU slot (1=resident, 0=not).",
+		},
+		[]string{"namespace", "pool", "member"},
+	)
+
+	// ModelPoolSwapsTotal counts completed slot swaps by direction.
+	ModelPoolSwapsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llmkube_modelpool_swaps_total",
+			Help: "Total number of ModelPool slot swaps (incumbent unloaded, target loaded).",
+		},
+		[]string{"router", "pool", "from", "to"},
+	)
+
+	// ModelPoolSwapDuration measures how long a swap takes from the router's
+	// commit (incumbent drain start) to the target reporting Ready.
+	ModelPoolSwapDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "llmkube_modelpool_swap_duration_seconds",
+			Help:    "Duration of a ModelPool slot swap: incumbent unload plus target load.",
+			Buckets: prometheus.ExponentialBuckets(1, 2, 10), // 1s to ~512s
+		},
+		[]string{"router", "pool"},
+	)
+
+	// ModelPoolHoldDuration measures how long the router held a request open
+	// waiting for its target member to become resident (activation latency).
+	ModelPoolHoldDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "llmkube_modelpool_hold_duration_seconds",
+			Help:    "Time the router held a request open waiting for its target member to become resident.",
+			Buckets: prometheus.ExponentialBuckets(0.1, 2, 12), // 100ms to ~400s
+		},
+		[]string{"router", "pool", "member"},
+	)
+
+	// ModelPoolCoalescedTotal counts requests that were served without a swap
+	// because same-model demand kept the incumbent resident (anti-thrash).
+	ModelPoolCoalescedTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llmkube_modelpool_coalesced_total",
+			Help: "Requests coalesced onto the resident member instead of triggering a swap.",
+		},
+		[]string{"router", "pool", "member"},
+	)
+
+	// ModelPoolHeldRequests reports the number of requests currently held open
+	// per pool member, waiting for activation.
+	ModelPoolHeldRequests = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "llmkube_modelpool_held_requests",
+			Help: "Requests currently held open waiting for a ModelPool member to activate.",
+		},
+		[]string{"router", "pool", "member"},
+	)
 )
 
 // AllCollectors is every metric this operator registers. init() registers
@@ -244,6 +307,12 @@ var AllCollectors = []prometheus.Collector{
 	RouterBackendHealth,
 	RouterFirstTokenSeconds,
 	RouterBudgetUtilization,
+	ModelPoolResident,
+	ModelPoolSwapsTotal,
+	ModelPoolSwapDuration,
+	ModelPoolHoldDuration,
+	ModelPoolCoalescedTotal,
+	ModelPoolHeldRequests,
 }
 
 func init() {

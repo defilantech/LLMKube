@@ -1,0 +1,21 @@
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: ModelPool
+metadata:
+  name: heavy-slot
+  namespace: lab
+spec:
+  # The GPU slot these members share (one node / one device class).
+  nodeSelector:
+    lab.example/inference: heavy
+  gpu: 1
+  # sticky (default and only v1 policy): whichever member is resident stays
+  # resident until a different member is requested. A priority-based reclaim
+  # policy is a planned follow-up.
+  swapPolicy: sticky
+  members:
+    - inferenceServiceRef:
+        name: judge
+    - inferenceServiceRef:
+        name: coder
+  # Optional: which member is warm on a cold pool (else the first request wins).
+  default: judge

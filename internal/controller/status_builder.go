@@ -22,6 +22,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -373,6 +374,14 @@ func (r *InferenceServiceReconciler) updateStatusWithSchedulingInfo(
 	setSuspendedCondition(isvc)
 
 	if err := r.Status().Update(ctx, isvc); err != nil {
+		if apierrors.IsConflict(err) {
+			// The InferenceService was modified concurrently (e.g. a ModelPool
+			// reconcile patched spec.replicas to drive a swap). This is expected
+			// churn, not an error: requeue and recompute against the latest
+			// object rather than logging a spurious failure. controller-runtime
+			// re-runs immediately with the updated resourceVersion.
+			return ctrl.Result{Requeue: true}, nil
+		}
 		log.Error(err, "Failed to update InferenceService status")
 		return ctrl.Result{}, err
 	}
