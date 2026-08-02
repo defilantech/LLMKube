@@ -34,6 +34,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -343,6 +344,12 @@ func (r *InferenceServiceReconciler) getModelForInferenceService(ctx context.Con
 	return model, modelReady, nil, nil
 }
 
+// reconcileDeployment coordinates several independent concerns (metal snapshot,
+// rollout-policy idle gating, HPA replica ownership, and retry-on-conflict update
+// for concurrent ModelPool replica scaling), which keeps it over the gocyclo
+// threshold; splitting it further would fragment one linear reconcile step.
+//
+//nolint:gocyclo
 func (r *InferenceServiceReconciler) reconcileDeployment(ctx context.Context, isvc *inferencev1alpha1.InferenceService, model *inferencev1alpha1.Model, desiredReplicas int32, modelReady bool, isMetal bool) (*appsv1.Deployment, int32, *metalSnapshot, *ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
@@ -449,7 +456,6 @@ func (r *InferenceServiceReconciler) reconcileDeployment(ctx context.Context, is
 	// in router_deployment_builder.go; see #456.
 	existingTemplateLabels := existingDeployment.Spec.Template.Labels
 	existingTemplateAnnotations := existingDeployment.Spec.Template.Annotations
-	existingReplicas := existingDeployment.Spec.Replicas
 
 	// Compute the desired merged template so we can compare against the
 	// live Deployment before gating on idle checks.
@@ -518,30 +524,60 @@ func (r *InferenceServiceReconciler) reconcileDeployment(ctx context.Context, is
 		}
 	}
 
-	existingDeployment.Spec = deployment.Spec
-	existingDeployment.Spec.Template.Labels = desiredTemplateLabels
-	existingDeployment.Spec.Template.Annotations = desiredTemplateAnnotations
-	// Stamp the desired-template hash so subsequent reconciles can detect
-	// real changes without false positives from API-server defaulting.
-	if existingDeployment.Annotations == nil {
-		existingDeployment.Annotations = make(map[string]string)
-	}
-	existingDeployment.Annotations[AnnotationDesiredTemplateHash] = desiredHash
-	// When autoscaling is enabled the HPA owns the replica count: preserve
-	// the live value rather than overwriting it with the operator's desired
-	// count. Setting it to nil does not work here: a plain Update with a nil
-	// replicas field is defaulted back to 1 by the API server, which fights
-	// the HPA on every reconcile. Suspension overrides this: the HPA is
-	// deleted while suspended, and the forced zero must land.
-	if isvc.Spec.Autoscaling != nil && !isvc.Spec.Suspend {
-		existingDeployment.Spec.Replicas = existingReplicas
-	}
-	if err := r.Update(ctx, existingDeployment); err != nil {
-		log.Error(err, "Failed to update Deployment")
-		return nil, 0, nil, nil, err
+	// Apply the desired spec onto the live Deployment and Update. A ModelPool
+	// can be scaling this InferenceService's replicas concurrently, which
+	// advances the Deployment's resourceVersion between our Get and Update and
+	// would otherwise surface as spurious "Failed to update Deployment"
+	// optimistic-lock conflicts during a swap. Retry on conflict with a fresh
+	// read so the swap-driven replica churn is absorbed silently. Each attempt
+	// re-derives the preserved external template metadata and the HPA-owned
+	// replica count from the current object so the retry stays self-consistent.
+	readyReplicas := existingDeployment.Status.ReadyReplicas
+	updateErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		liveTemplateLabels := existingDeployment.Spec.Template.Labels
+		liveTemplateAnnotations := existingDeployment.Spec.Template.Annotations
+		liveReplicas := existingDeployment.Spec.Replicas
+
+		existingDeployment.Spec = deployment.Spec
+		existingDeployment.Spec.Template.Labels = mergePreservingExternal(
+			liveTemplateLabels, deployment.Spec.Template.Labels)
+		existingDeployment.Spec.Template.Annotations = mergePreservingExternal(
+			liveTemplateAnnotations, deployment.Spec.Template.Annotations)
+		// Stamp the desired-template hash so subsequent reconciles can detect
+		// real changes without false positives from API-server defaulting.
+		if existingDeployment.Annotations == nil {
+			existingDeployment.Annotations = make(map[string]string)
+		}
+		existingDeployment.Annotations[AnnotationDesiredTemplateHash] = desiredHash
+		// When autoscaling is enabled the HPA owns the replica count: preserve
+		// the live value rather than overwriting it with the operator's desired
+		// count. Setting it to nil does not work here: a plain Update with a nil
+		// replicas field is defaulted back to 1 by the API server, which fights
+		// the HPA on every reconcile. Suspension overrides this: the HPA is
+		// deleted while suspended, and the forced zero must land.
+		if isvc.Spec.Autoscaling != nil && !isvc.Spec.Suspend {
+			existingDeployment.Spec.Replicas = liveReplicas
+		}
+		if err := r.Update(ctx, existingDeployment); err != nil {
+			if apierrors.IsConflict(err) {
+				// Re-read the newer object for the next attempt.
+				if getErr := r.Get(ctx, types.NamespacedName{
+					Name: deployment.Name, Namespace: deployment.Namespace,
+				}, existingDeployment); getErr != nil {
+					return getErr
+				}
+			}
+			return err
+		}
+		readyReplicas = existingDeployment.Status.ReadyReplicas
+		return nil
+	})
+	if updateErr != nil {
+		log.Error(updateErr, "Failed to update Deployment")
+		return nil, 0, nil, nil, updateErr
 	}
 
-	return deployment, existingDeployment.Status.ReadyReplicas, nil, nil, nil
+	return deployment, readyReplicas, nil, nil, nil
 }
 
 func (r *InferenceServiceReconciler) reconcileService(ctx context.Context, isvc *inferencev1alpha1.InferenceService, modelReady bool, desiredReplicas int32, isMetal bool) (*corev1.Service, *ctrl.Result, error) {
