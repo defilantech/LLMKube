@@ -5,6 +5,47 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.14](https://github.com/defilantech/LLMKube/compare/v0.9.13...v0.9.14) (2026-08-05)
+
+
+### Features
+
+* **api:** add mxfp4 quantization and correct Blackwell runtime reality ([#1381](https://github.com/defilantech/LLMKube/issues/1381)) ([382af35](https://github.com/defilantech/LLMKube/commit/382af35ffee1d600b6bc05db0fb580607241a4d1))
+* **controller:** opt-in Prometheus scrape annotations on inference pods ([#1366](https://github.com/defilantech/LLMKube/issues/1366)) ([2e8f8a8](https://github.com/defilantech/LLMKube/commit/2e8f8a8c8c122db46b67ede960152f0d80ff8590))
+* **dashboards:** add a llama.cpp runtime dashboard ([#1371](https://github.com/defilantech/LLMKube/issues/1371)) ([5fedb88](https://github.com/defilantech/LLMKube/commit/5fedb88e6bbba1e7a4d827c13538a362debeb382))
+* **dashboards:** add an operator-health row to llmkube-inference ([#1369](https://github.com/defilantech/LLMKube/issues/1369)) ([ee5145b](https://github.com/defilantech/LLMKube/commit/ee5145bc6bb57b7fb2dc686d3fccd09fa15d8ed6))
+* **dashboards:** SGLang queue-wait, stage latency, token mix and HiCache L3 panels ([#1370](https://github.com/defilantech/LLMKube/issues/1370)) ([d1a57ca](https://github.com/defilantech/LLMKube/commit/d1a57cab65abbeea23dd841da768360e01128e05))
+* **observability:** AMD GPU tier — amdgpu-exporter DaemonSet, metric contract, dashboard reconcile ([#1354](https://github.com/defilantech/LLMKube/issues/1354)) ([a9e560f](https://github.com/defilantech/LLMKube/commit/a9e560f4fbd989cddf7dff1aa45184652150538e))
+
+
+### Bug Fixes
+
+* **chart:** correct stale Blackwell platform floors (R570 is EOL) ([#1380](https://github.com/defilantech/LLMKube/issues/1380)) ([445664e](https://github.com/defilantech/LLMKube/commit/445664e907bc8d5e7e0a0b8bb6646706c39f82c6))
+* **chart:** make GPU alerts exporter-agnostic instead of DCGM-only ([#1372](https://github.com/defilantech/LLMKube/issues/1372)) ([402a686](https://github.com/defilantech/LLMKube/commit/402a6865e3863294d0aa779d58a8a98ddb83e80c))
+* **controller:** correct the speculative-decoding draft flag and dedupe --metrics ([#1392](https://github.com/defilantech/LLMKube/issues/1392)) ([48d7d49](https://github.com/defilantech/LLMKube/commit/48d7d49a61c74a90b897eb273ab9aaebe21c2365))
+* **controller:** skip model-cache PVC for pvc:// sources ([#1363](https://github.com/defilantech/LLMKube/issues/1363)) ([9ec0bf9](https://github.com/defilantech/LLMKube/commit/9ec0bf972fcf6f8bf228e40a844ee95f8b996ddb))
+* **foreman:** fail loudly when a revision's prior attempt cannot be restored ([#1365](https://github.com/defilantech/LLMKube/issues/1365)) ([b9b7685](https://github.com/defilantech/LLMKube/commit/b9b76857e2ef281ad8a6387a74c5f42e2b7eaad1))
+* **foreman:** run the coder gate's Go checks with GOTOOLCHAIN=auto ([#1389](https://github.com/defilantech/LLMKube/issues/1389)) ([ce828dd](https://github.com/defilantech/LLMKube/commit/ce828dd6baeb2039dc15b2be8afebada48d3e285))
+* **router:** apply external.model as modelNameOverride on backendRefs ([#1398](https://github.com/defilantech/LLMKube/issues/1398)) ([847b14d](https://github.com/defilantech/LLMKube/commit/847b14d7da7c8fb4cd19aca68dea1af0db047918))
+* **router:** compile external backends in the Gateway data plane ([#1396](https://github.com/defilantech/LLMKube/issues/1396)) ([5045dd0](https://github.com/defilantech/LLMKube/commit/5045dd033b732544e1fdb4e83f443766fa6453f7))
+* **router:** rewrite body.model for external backends via bodyMutation ([#1401](https://github.com/defilantech/LLMKube/issues/1401)) ([2fc6992](https://github.com/defilantech/LLMKube/commit/2fc69923e7f4309958302fc76973e0064eb24d18))
+* **router:** surface a gateway reconcile failure as a Warning Event ([#1400](https://github.com/defilantech/LLMKube/issues/1400)) ([4145a67](https://github.com/defilantech/LLMKube/commit/4145a678e76653555de5b4bc749fcecbb94c4af4))
+* **router:** use the non-deprecated events API for the gateway recorder ([#1409](https://github.com/defilantech/LLMKube/issues/1409)) ([435dd72](https://github.com/defilantech/LLMKube/commit/435dd7218f6b48b11ae083449e3bf29e4e92c193))
+* skip GitHub auth and repo clone for freeform tasks without a repo ([#1350](https://github.com/defilantech/LLMKube/issues/1350)) ([c1d0cc1](https://github.com/defilantech/LLMKube/commit/c1d0cc1611c87ee040453e32cf13a6cce800577c))
+* stop wasted-turn context ballooning on max_tokens truncation ([#1352](https://github.com/defilantech/LLMKube/issues/1352)) ([eaac3ef](https://github.com/defilantech/LLMKube/commit/eaac3efbe1a8b1b290f7c828cdf8776ebcdf128d))
+* **test:** make t.Fatal terminality explicit for staticcheck SA5011 ([#1410](https://github.com/defilantech/LLMKube/issues/1410)) ([7cf58c7](https://github.com/defilantech/LLMKube/commit/7cf58c781188d58465caa6d12bc0b487a396127b))
+
+
+### Reverts
+
+* remove the inert model-rewrite paths for external backends ([#1402](https://github.com/defilantech/LLMKube/issues/1402)) ([422b9ef](https://github.com/defilantech/LLMKube/commit/422b9ef6f679e4bbdb3ab5abefbaeefec14f18ee))
+
+
+### Documentation
+
+* add observability maintainer ([#1407](https://github.com/defilantech/LLMKube/issues/1407)) ([3fb54e2](https://github.com/defilantech/LLMKube/commit/3fb54e296040de8f323e0a91a83b61be9933d3c1))
+* fix autoscaling guide to use a metric llama.cpp actually exports ([#1386](https://github.com/defilantech/LLMKube/issues/1386)) ([bc3fca2](https://github.com/defilantech/LLMKube/commit/bc3fca237ff938d91d0b6bf046f43838d2ebe29d))
+
 ## [0.9.13](https://github.com/defilantech/LLMKube/compare/v0.9.12...v0.9.13) (2026-07-29)
 
 
