@@ -231,7 +231,7 @@ func TestFindCudaDriverCrash(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			node, _, found := findCudaDriverCrash(tc.pods, tc.container)
+			node, _, _, found := findCudaDriverCrash(tc.pods, tc.container)
 			if found != tc.wantFound {
 				t.Fatalf("found = %v, want %v", found, tc.wantFound)
 			}
@@ -455,7 +455,7 @@ func TestReconcileDriverCompatCondition(t *testing.T) {
 		if cond == nil || cond.Status != metav1.ConditionFalse {
 			t.Fatal("expected False condition")
 		}
-		if !strings.Contains(cond.Message, "no longer readable") {
+		if !strings.Contains(cond.Message, "no longer exists") {
 			t.Errorf("message %q missing node-gone fallback", cond.Message)
 		}
 	})
@@ -604,4 +604,135 @@ func TestReconcileDriverCompatConditionRecovery(t *testing.T) {
 			t.Error("Available condition disturbed; diagnosis must not touch it")
 		}
 	})
+}
+
+// Driver-skew behaviors: replicas split across nodes with different driver
+// support. Readiness recovers a diagnosis only within the pod that carries
+// the crash evidence — a healthy or recovered replica elsewhere must never
+// mask the one still crashing.
+func TestReconcileDriverCompatConditionDriverSkew(t *testing.T) {
+	ctx := context.Background()
+
+	readyPod := func(name, node string) corev1.Pod {
+		return corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: name, Namespace: "default",
+				Labels: map[string]string{
+					"app":                           "svc",
+					"inference.llmkube.dev/service": "svc",
+				},
+			},
+			Spec: corev1.PodSpec{NodeName: node},
+			Status: corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{{
+				Name: "vllm", Ready: true,
+				State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}},
+			}}},
+		}
+	}
+
+	t.Run("healthy replica does not mask a crash-looping one", func(t *testing.T) {
+		isvc := driverCompatISVC()
+		good := readyPod("p-good", "node-good")
+		bad := crashPod("node-bad", "vllm", torchDriverTooOld, 1, true)
+		bad.Name = "p-bad"
+		r, recorder := newDriverCompatReconciler(t, isvc, &good, &bad)
+
+		r.reconcileDriverCompatCondition(ctx, isvc)
+
+		cond := meta.FindStatusCondition(isvc.Status.Conditions, ConditionDriverCompatible)
+		if cond == nil || cond.Status != metav1.ConditionFalse || cond.Reason != ReasonCUDADriverInsufficient {
+			t.Fatalf("condition = %+v, want False/%s despite the healthy replica", cond, ReasonCUDADriverInsufficient)
+		}
+		if !strings.Contains(cond.Message, "node-bad") {
+			t.Errorf("message %q must name the crashing pod's node", cond.Message)
+		}
+		if got := len(recorder.Events); got != 1 {
+			t.Fatalf("events emitted = %d, want 1", got)
+		}
+	})
+
+	t.Run("scale-up onto a healthy node does not recover a still-crashing carrier", func(t *testing.T) {
+		isvc := driverCompatISVC()
+		meta.SetStatusCondition(&isvc.Status.Conditions, metav1.Condition{
+			Type: ConditionDriverCompatible, Status: metav1.ConditionFalse,
+			Reason: ReasonCUDADriverInsufficient, Message: "prior diagnosis",
+		})
+		good := readyPod("p-good", "node-good")
+		bad := crashPod("node-bad", "vllm", torchDriverTooOld, 1, true)
+		bad.Name = "p-bad"
+		r, recorder := newDriverCompatReconciler(t, isvc, &good, &bad)
+
+		r.reconcileDriverCompatCondition(ctx, isvc)
+
+		cond := meta.FindStatusCondition(isvc.Status.Conditions, ConditionDriverCompatible)
+		if cond == nil || cond.Status != metav1.ConditionFalse {
+			t.Fatalf("condition = %+v, must stay False while the carrier still crashes", cond)
+		}
+		if got := len(recorder.Events); got != 0 {
+			t.Fatalf("events emitted = %d, want 0 for an unbroken episode", got)
+		}
+	})
+
+	t.Run("active crash outranks another pod's stale recovered evidence", func(t *testing.T) {
+		isvc := driverCompatISVC()
+		recovered := crashPod("node-a", "vllm", torchDriverTooOld, 1, true)
+		recovered.Name = "a-recovered"
+		recovered.Status.ContainerStatuses[0].State = corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}
+		recovered.Status.ContainerStatuses[0].Ready = true
+		crashing := crashPod("node-b", "vllm", torchDriverTooOld, 1, true)
+		crashing.Name = "b-crashing"
+		r, _ := newDriverCompatReconciler(t, isvc, &recovered, &crashing)
+
+		r.reconcileDriverCompatCondition(ctx, isvc)
+
+		cond := meta.FindStatusCondition(isvc.Status.Conditions, ConditionDriverCompatible)
+		if cond == nil || cond.Status != metav1.ConditionFalse {
+			t.Fatalf("condition = %+v, want False from the active carrier", cond)
+		}
+		if !strings.Contains(cond.Message, "node-b") {
+			t.Errorf("message %q must come from the active carrier's node, not the recovered one's", cond.Message)
+		}
+	})
+}
+
+// A node Get failure is not node deletion: the message must not claim the
+// node is gone, and the error must leave a log trail.
+func TestDriverCompatNodeReadFailure(t *testing.T) {
+	ctx := context.Background()
+	isvc := driverCompatISVC()
+	pod := crashPod("node-a", "vllm", torchDriverTooOld, 1, true)
+
+	scheme := runtime.NewScheme()
+	if err := inferencev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add inference scheme: %v", err)
+	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add corev1 scheme: %v", err)
+	}
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(isvc, &pod, gfdNode("node-a")).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if _, isNode := obj.(*corev1.Node); isNode {
+					return errors.New("apiserver throttled")
+				}
+				return cl.Get(ctx, key, obj, opts...)
+			},
+		}).
+		Build()
+	r := &InferenceServiceReconciler{Client: c, Scheme: scheme}
+
+	r.reconcileDriverCompatCondition(ctx, isvc)
+
+	cond := meta.FindStatusCondition(isvc.Status.Conditions, ConditionDriverCompatible)
+	if cond == nil || cond.Status != metav1.ConditionFalse {
+		t.Fatal("expected False condition despite the node read failure")
+	}
+	if !strings.Contains(cond.Message, "not readable right now") {
+		t.Errorf("message %q must say the node is unreadable, not gone", cond.Message)
+	}
+	if strings.Contains(cond.Message, "no longer exists") {
+		t.Errorf("message %q claims deletion on a transient read failure", cond.Message)
+	}
 }

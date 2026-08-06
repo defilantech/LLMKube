@@ -24,6 +24,7 @@ import (
 	"unicode/utf8"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -159,8 +160,15 @@ func matchCudaDriverMismatch(msg string) (string, bool) {
 // prep) and sidecars never run the engine, and a signature match there would
 // be a different problem. Both the current terminated state (fresh crash,
 // before backoff) and the last terminated state (CrashLoopBackOff) are
-// checked. Returns the node the pod ran on and the matched message line.
-func findCudaDriverCrash(pods []corev1.Pod, containerName string) (nodeName, matchedLine string, found bool) {
+// checked.
+//
+// The evidence is paired with the pod that carries it: carrierReady reports
+// whether that pod's own runtime container is Ready now. A carrier that has
+// NOT come back Ready (an active crash) is preferred over one that has
+// (stale evidence on a recovered pod) — with replicas split across a
+// driver-skewed node pool, a recovered or healthy replica must never mask
+// the one still crashing.
+func findCudaDriverCrash(pods []corev1.Pod, containerName string) (nodeName, matchedLine string, carrierReady, found bool) {
 	for i := range pods {
 		pod := &pods[i]
 		for j := range pod.Status.ContainerStatuses {
@@ -176,12 +184,19 @@ func findCudaDriverCrash(pods []corev1.Pod, containerName string) (nodeName, mat
 					continue
 				}
 				if line, ok := matchCudaDriverMismatch(term.Message); ok {
-					return pod.Spec.NodeName, line, true
+					if !cs.Ready {
+						return pod.Spec.NodeName, line, false, true
+					}
+					// Remember the stale-evidence carrier, but keep
+					// scanning for an active one.
+					if !found {
+						nodeName, matchedLine, carrierReady, found = pod.Spec.NodeName, line, true, true
+					}
 				}
 			}
 		}
 	}
-	return "", "", false
+	return nodeName, matchedLine, carrierReady, found
 }
 
 // runtimeContainerReady reports whether any pod's runtime container is Ready.
@@ -245,16 +260,19 @@ func (r *InferenceServiceReconciler) reconcileDriverCompatCondition(ctx context.
 	containerName := resolveBackend(isvc).ContainerName()
 	now := metav1.NewTime(time.Now())
 
-	// A Ready runtime container is checked before crash evidence: CUDA init
-	// succeeding now outranks a stale signature that lingers in a pod's
+	// Readiness outranks crash evidence only within the same pod: CUDA init
+	// succeeding now outranks a stale signature that lingers in that pod's
 	// LastTerminationState for its whole lifetime (e.g. a container that
 	// crashed before the node's driver daemonset finished, then started in
-	// place) or in an old pod still draining during a rollout. Without this
-	// ordering the diagnosis would stick at False forever on a serving pod.
+	// place). Without this the diagnosis would stick at False forever on a
+	// serving pod. A DIFFERENT pod being Ready says nothing about the one
+	// still crashing — with replicas split across a driver-skewed node pool,
+	// the healthy replica must not mask the diagnosis — so an active
+	// (not-Ready) carrier always wins over fleet-wide readiness.
 	ready := runtimeContainerReady(podList.Items, containerName)
-	nodeName, matchedLine, found := findCudaDriverCrash(podList.Items, containerName)
+	nodeName, matchedLine, carrierReady, found := findCudaDriverCrash(podList.Items, containerName)
 
-	if ready || !found {
+	if !found || carrierReady {
 		// Recovery follows the transition-only convention (cf.
 		// reconcileVLLMSpecCondition): flip to True only when a prior
 		// diagnosis exists AND the runtime container has demonstrably
@@ -312,10 +330,16 @@ func (r *InferenceServiceReconciler) buildDriverMismatchMessage(ctx context.Cont
 
 	node := &corev1.Node{}
 	if err := r.Get(ctx, types.NamespacedName{Name: nodeName}, node); err != nil {
-		// The node may already be gone (autoscaler scale-down); the error
-		// text alone still names the failure class.
-		return base + fmt.Sprintf(" Pod ran on node %q (no longer readable). "+
-			"Use an image whose CUDA major matches that node pool's driver support, or schedule onto nodes with a newer driver.", nodeName)
+		guidance := " Use an image whose CUDA major matches that node pool's driver support, or schedule onto nodes with a newer driver."
+		if apierrors.IsNotFound(err) {
+			// The node is genuinely gone (autoscaler scale-down); the
+			// error text alone still names the failure class.
+			return base + fmt.Sprintf(" Pod ran on node %q (no longer exists).", nodeName) + guidance
+		}
+		// Read failures (throttling, RBAC, transient API errors) are not
+		// deletion; log them so a persistent problem leaves a trail.
+		logf.FromContext(ctx).Error(err, "Failed to read node for driver-compat diagnosis", "node", nodeName)
+		return base + fmt.Sprintf(" Pod ran on node %q (not readable right now).", nodeName) + guidance
 	}
 
 	cudaMajor, cudaMinor, driverVersion := gfdCudaOffer(node.Labels)
