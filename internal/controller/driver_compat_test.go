@@ -319,10 +319,10 @@ func driverCompatISVC() *inferencev1alpha1.InferenceService {
 	}
 }
 
-func gfdNode(name string) *corev1.Node {
+func gfdNode() *corev1.Node {
 	return &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: name,
+			Name: "node-a",
 			Labels: map[string]string{
 				"nvidia.com/cuda.runtime-version.major": "12",
 				"nvidia.com/cuda.runtime-version.minor": "4",
@@ -354,7 +354,7 @@ func TestReconcileDriverCompatCondition(t *testing.T) {
 	t.Run("diagnoses mismatch with node detail and emits one event", func(t *testing.T) {
 		isvc := driverCompatISVC()
 		pod := crashPod("node-a", "vllm", torchDriverTooOld, 1, true)
-		r, recorder := newDriverCompatReconciler(t, isvc, &pod, gfdNode("node-a"))
+		r, recorder := newDriverCompatReconciler(t, isvc, &pod, gfdNode())
 
 		r.reconcileDriverCompatCondition(ctx, isvc)
 
@@ -514,7 +514,7 @@ func TestReconcileDriverCompatConditionRecovery(t *testing.T) {
 			Reason: ReasonRuntimeStarted, Message: "recovered earlier",
 		})
 		pod := crashPod("node-a", "vllm", torchDriverTooOld, 1, true)
-		r, recorder := newDriverCompatReconciler(t, isvc, &pod, gfdNode("node-a"))
+		r, recorder := newDriverCompatReconciler(t, isvc, &pod, gfdNode())
 
 		r.reconcileDriverCompatCondition(ctx, isvc)
 
@@ -593,7 +593,7 @@ func TestReconcileDriverCompatConditionRecovery(t *testing.T) {
 			Type: "Available", Status: metav1.ConditionTrue, Reason: "InferenceReady", Message: "serving",
 		})
 		pod := crashPod("node-a", "vllm", torchDriverTooOld, 1, true)
-		r, _ := newDriverCompatReconciler(t, isvc, &pod, gfdNode("node-a"))
+		r, _ := newDriverCompatReconciler(t, isvc, &pod, gfdNode())
 
 		r.reconcileDriverCompatCondition(ctx, isvc)
 
@@ -711,7 +711,7 @@ func TestDriverCompatNodeReadFailure(t *testing.T) {
 	}
 	c := fake.NewClientBuilder().
 		WithScheme(scheme).
-		WithObjects(isvc, &pod, gfdNode("node-a")).
+		WithObjects(isvc, &pod, gfdNode()).
 		WithInterceptorFuncs(interceptor.Funcs{
 			Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 				if _, isNode := obj.(*corev1.Node); isNode {
