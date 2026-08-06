@@ -18,8 +18,10 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -28,6 +30,7 @@ import (
 	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 )
@@ -130,6 +133,20 @@ func TestMatchCudaDriverMismatchCapsLineLength(t *testing.T) {
 	}
 	if len(line) > 250 {
 		t.Errorf("matched line not capped: len=%d", len(line))
+	}
+
+	// The cap must land on a rune boundary: place a multibyte rune across
+	// the cut point and require valid UTF-8 output.
+	msg = "cudaErrorInsufficientDriver " + strings.Repeat("x", 170) + strings.Repeat("€", 20)
+	line, ok = matchCudaDriverMismatch(msg)
+	if !ok {
+		t.Fatal("expected a match")
+	}
+	if !utf8.ValidString(line) {
+		t.Errorf("capped line is not valid UTF-8: %q", line)
+	}
+	if !strings.HasSuffix(line, "...") {
+		t.Errorf("capped line missing ellipsis: %q", line)
 	}
 }
 
@@ -515,6 +532,49 @@ func TestReconcileDriverCompatConditionRecovery(t *testing.T) {
 		cond := meta.FindStatusCondition(isvc.Status.Conditions, ConditionDriverCompatible)
 		if cond == nil || cond.Status != metav1.ConditionFalse {
 			t.Fatal("prior diagnosis must persist when no pods exist")
+		}
+	})
+
+	t.Run("pod list failure only logs; no condition, no panic", func(t *testing.T) {
+		isvc := driverCompatISVC()
+		scheme := runtime.NewScheme()
+		if err := inferencev1alpha1.AddToScheme(scheme); err != nil {
+			t.Fatalf("add inference scheme: %v", err)
+		}
+		if err := corev1.AddToScheme(scheme); err != nil {
+			t.Fatalf("add corev1 scheme: %v", err)
+		}
+		c := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithObjects(isvc).
+			WithInterceptorFuncs(interceptor.Funcs{
+				List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+					return errors.New("apiserver unavailable")
+				},
+			}).
+			Build()
+		r := &InferenceServiceReconciler{Client: c, Scheme: scheme}
+
+		r.reconcileDriverCompatCondition(ctx, isvc)
+
+		if meta.FindStatusCondition(isvc.Status.Conditions, ConditionDriverCompatible) != nil {
+			t.Fatal("a failed pod list must not produce a condition")
+		}
+	})
+
+	t.Run("crash on a pod with no node name diagnoses from the error text", func(t *testing.T) {
+		isvc := driverCompatISVC()
+		pod := crashPod("", "vllm", torchDriverTooOld, 1, true)
+		r, _ := newDriverCompatReconciler(t, isvc, &pod)
+
+		r.reconcileDriverCompatCondition(ctx, isvc)
+
+		cond := meta.FindStatusCondition(isvc.Status.Conditions, ConditionDriverCompatible)
+		if cond == nil || cond.Status != metav1.ConditionFalse {
+			t.Fatal("expected False condition")
+		}
+		if !strings.Contains(cond.Message, "newer GPU driver than the node provides") {
+			t.Errorf("message %q missing generic diagnosis", cond.Message)
 		}
 	})
 
