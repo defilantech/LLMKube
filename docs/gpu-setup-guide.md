@@ -328,7 +328,7 @@ InferenceService, so start there instead of the pod logs:
 
 ```bash
 kubectl get inferenceservice $NAME -o jsonpath='{.status.conditions[?(@.type=="DriverCompatible")]}'
-# status: "False", reason: CudaDriverInsufficient — the message names the node,
+# status: "False", reason: CUDADriverInsufficient — the message names the node,
 # its supported CUDA version (from GPU feature labels, when present), and the
 # runtime's own error line.
 kubectl get events --field-selector reason=CUDADriverInsufficient
