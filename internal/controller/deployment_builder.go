@@ -363,6 +363,11 @@ func (r *InferenceServiceReconciler) constructDeployment(
 		Name:            backend.ContainerName(),
 		Image:           image,
 		SecurityContext: inferContainerSecurityContext(isvc),
+		// Engines print the fatal error (CUDA init, model load) to the log
+		// rather than /dev/termination-log, so fall back to the log tail on
+		// error to make terminations self-describing; the driver-compat
+		// diagnosis reads its signatures from this message.
+		TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
 		Ports: []corev1.ContainerPort{
 			{
 				Name:          "http",

@@ -250,6 +250,13 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, err
 	}
 
+	// Post-hoc crash diagnosis before the status write persists conditions.
+	// Metal services have no pods to diagnose (the agent runs the server
+	// natively), so the pod scan is skipped there.
+	if !isMetal {
+		r.reconcileDriverCompatCondition(ctx, inferenceService)
+	}
+
 	endpoint := r.constructEndpoint(inferenceService, service)
 	phase, schedulingInfo := r.determinePhase(ctx, inferenceService, readyReplicas, desiredReplicas, isMetal, deployment, metalSnap)
 
