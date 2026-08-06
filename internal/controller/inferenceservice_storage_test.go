@@ -391,7 +391,8 @@ var _ = Describe("buildMultiFileInitCommand", func() {
 		Expect(cmd).To(ContainSubstring(`mkdir -p "$CACHE_DIR"`))
 		Expect(cmd).To(ContainSubstring("printf '%s\\n' \"$MODEL_FILES\""))
 		Expect(cmd).To(ContainSubstring(`mkdir -p "$(dirname "$dest")"`))
-		Expect(cmd).To(ContainSubstring(`curl -f -L -o "$dest" "$url"`))
+		Expect(cmd).To(ContainSubstring(`curl -f -L -o "$dest.tmp" "$url" && mv "$dest.tmp" "$dest"`))
+		Expect(cmd).ToNot(ContainSubstring(`-o "$dest" `))
 		Expect(cmd).To(ContainSubstring("already cached, skipping download"))
 	})
 
@@ -1238,8 +1239,7 @@ var _ = Describe("buildModelInitCommand", func() {
 	It("should generate cached local copy command", func() {
 		cmd := buildModelInitCommand(true, false, true, RefreshPolicyIfNotPresent)
 		Expect(cmd).To(ContainSubstring(`mkdir -p "$CACHE_DIR"`))
-		Expect(cmd).To(ContainSubstring("cp /host-model/model.gguf"))
-		Expect(cmd).To(ContainSubstring(`"$MODEL_PATH"`))
+		Expect(cmd).To(ContainSubstring(`cp /host-model/model.gguf "$MODEL_PATH.tmp" && mv "$MODEL_PATH.tmp" "$MODEL_PATH"`))
 	})
 
 	It("should generate error exit for uncached local source", func() {

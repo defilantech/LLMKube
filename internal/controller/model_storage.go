@@ -178,30 +178,35 @@ func addCACertVolume(volumes *[]corev1.Volume, mounts *[]corev1.VolumeMount, cmd
 	*cmd = fmt.Sprintf("export CURL_CA_BUNDLE=/custom-certs/$(ls /custom-certs | grep -v '^\\.' | head -n 1) && %s", *cmd)
 }
 
+// All transfers write to "$MODEL_PATH.tmp" and mv onto "$MODEL_PATH" on
+// success: the guard is a bare existence check, so publishing the file
+// non-atomically would let an interrupted transfer (OOM-kill, eviction,
+// node reboot) leave a truncated artifact that every subsequent restart
+// treats as cached. See remoteRevalidateScript for the same pattern.
 func buildModelInitCommand(isLocal, isS3, useCache bool, refreshPolicy string) string {
 	if useCache {
 		if isLocal {
-			return `mkdir -p "$CACHE_DIR" && if [ ! -f "$MODEL_PATH" ]; then echo 'Copying model from local source...'; cp /host-model/model.gguf "$MODEL_PATH" && echo 'Model copied successfully'; else echo 'Model already cached, skipping copy'; fi`
+			return `mkdir -p "$CACHE_DIR" && if [ ! -f "$MODEL_PATH" ]; then echo 'Copying model from local source...'; cp /host-model/model.gguf "$MODEL_PATH.tmp" && mv "$MODEL_PATH.tmp" "$MODEL_PATH" && echo 'Model copied successfully'; else echo 'Model already cached, skipping copy'; fi`
 		}
 		if isS3 {
-			return `mkdir -p "$CACHE_DIR" && if [ ! -f "$MODEL_PATH" ]; then echo 'Downloading model from S3...'; curl --aws-sigv4 "aws:amz:${AWS_REGION}:s3" -u "${AWS_ACCESS_KEY_ID}:${AWS_SECRET_ACCESS_KEY}" -f -L -o "$MODEL_PATH" "${AWS_ENDPOINT_URL}/${S3_BUCKET}/${S3_KEY}" && echo 'Model downloaded successfully'; else echo 'Model already cached, skipping download'; fi`
+			return `mkdir -p "$CACHE_DIR" && if [ ! -f "$MODEL_PATH" ]; then echo 'Downloading model from S3...'; curl --aws-sigv4 "aws:amz:${AWS_REGION}:s3" -u "${AWS_ACCESS_KEY_ID}:${AWS_SECRET_ACCESS_KEY}" -f -L -o "$MODEL_PATH.tmp" "${AWS_ENDPOINT_URL}/${S3_BUCKET}/${S3_KEY}" && mv "$MODEL_PATH.tmp" "$MODEL_PATH" && echo 'Model downloaded successfully'; else echo 'Model already cached, skipping download'; fi`
 		}
 		if refreshPolicy == RefreshPolicyOnChange {
 			return "mkdir -p \"$CACHE_DIR\" && " + remoteRevalidateScript
 		}
-		return `mkdir -p "$CACHE_DIR" && if [ ! -f "$MODEL_PATH" ]; then echo 'Downloading model...'; curl -f -L -o "$MODEL_PATH" "$MODEL_SOURCE" && echo 'Model downloaded successfully'; else echo 'Model already cached, skipping download'; fi`
+		return `mkdir -p "$CACHE_DIR" && if [ ! -f "$MODEL_PATH" ]; then echo 'Downloading model...'; curl -f -L -o "$MODEL_PATH.tmp" "$MODEL_SOURCE" && mv "$MODEL_PATH.tmp" "$MODEL_PATH" && echo 'Model downloaded successfully'; else echo 'Model already cached, skipping download'; fi`
 	}
 
 	if isLocal {
 		return `echo 'ERROR: Local model source requires model cache to be configured.'; exit 1`
 	}
 	if isS3 {
-		return `if [ ! -f "$MODEL_PATH" ]; then echo 'Downloading model from S3...'; curl --aws-sigv4 "aws:amz:${AWS_REGION}:s3" -u "${AWS_ACCESS_KEY_ID}:${AWS_SECRET_ACCESS_KEY}" -f -L -o "$MODEL_PATH" "${AWS_ENDPOINT_URL}/${S3_BUCKET}/${S3_KEY}" && echo 'Model downloaded successfully'; else echo 'Model already exists, skipping download'; fi`
+		return `if [ ! -f "$MODEL_PATH" ]; then echo 'Downloading model from S3...'; curl --aws-sigv4 "aws:amz:${AWS_REGION}:s3" -u "${AWS_ACCESS_KEY_ID}:${AWS_SECRET_ACCESS_KEY}" -f -L -o "$MODEL_PATH.tmp" "${AWS_ENDPOINT_URL}/${S3_BUCKET}/${S3_KEY}" && mv "$MODEL_PATH.tmp" "$MODEL_PATH" && echo 'Model downloaded successfully'; else echo 'Model already exists, skipping download'; fi`
 	}
 	if refreshPolicy == RefreshPolicyOnChange {
 		return remoteRevalidateScript
 	}
-	return `if [ ! -f "$MODEL_PATH" ]; then echo 'Downloading model...'; curl -f -L -o "$MODEL_PATH" "$MODEL_SOURCE" && echo 'Model downloaded successfully'; else echo 'Model already exists, skipping download'; fi`
+	return `if [ ! -f "$MODEL_PATH" ]; then echo 'Downloading model...'; curl -f -L -o "$MODEL_PATH.tmp" "$MODEL_SOURCE" && mv "$MODEL_PATH.tmp" "$MODEL_PATH" && echo 'Model downloaded successfully'; else echo 'Model already exists, skipping download'; fi`
 }
 
 // remoteRevalidateScript implements RefreshPolicy=OnChange for http/https
@@ -449,7 +454,7 @@ func buildMultiFileInitCommand(useCache bool, refreshPolicy string) string {
 		`url="${SOURCE%/}/$rel"; ` +
 		`if [ ! -f "$dest" ]; then ` +
 		`echo "Downloading model artifact $rel..."; ` +
-		`curl -f -L -o "$dest" "$url" || { echo "ERROR: failed to download $rel"; exit 1; }; ` +
+		`curl -f -L -o "$dest.tmp" "$url" && mv "$dest.tmp" "$dest" || { echo "ERROR: failed to download $rel"; exit 1; }; ` +
 		`else echo "Model artifact $rel already cached, skipping download"; fi; ` +
 		`done`
 	return prefix + body
