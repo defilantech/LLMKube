@@ -72,6 +72,14 @@ func TestMatchCudaDriverMismatch(t *testing.T) {
 			wantMatch: true,
 		},
 		{
+			// No uppercase bytes at all: asciiLower must take its
+			// zero-copy path and matching must still work.
+			name:      "already-lowercase input, no-copy fold path",
+			msg:       "runtimeerror: the nvidia driver on your system is too old (found version 12040)",
+			wantMatch: true,
+			wantIn:    "found version 12040",
+		},
+		{
 			name:      "driver-API enum spelling",
 			msg:       "cuInit failed: CUDA_ERROR_INSUFFICIENT_DRIVER",
 			wantMatch: true,
