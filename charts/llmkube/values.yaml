@@ -311,9 +311,14 @@ grafana:
       # CRD default (5m).
       resyncPeriod: ""
       # Literal ${inputName} -> datasourceName replace over the dashboard JSON.
+      # datasourceName must be the datasource UID, not its display name: the
+      # placeholder sits inside the dashboards' "uid" fields, so a display name
+      # lands verbatim as a uid that resolves to nothing and every panel
+      # silently renders "datasource not found" (unless the UID happens to
+      # equal the name).
       #   datasources:
       #     - inputName: DS_PROMETHEUS
-      #       datasourceName: VictoriaMetrics
+      #       datasourceName: prometheus-uid
       datasources: []
 
 # Pyrra SLO integration. When enabled, the operator renders a Pyrra
