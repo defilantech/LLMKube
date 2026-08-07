@@ -6,6 +6,7 @@ resources:
 - bases/inference.llmkube.dev_inferenceservices.yaml
 - bases/inference.llmkube.dev_loraadapters.yaml
 - bases/inference.llmkube.dev_modelrouters.yaml
+- bases/inference.llmkube.dev_modelpools.yaml
 - bases/inference.llmkube.dev_gpuquotas.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
