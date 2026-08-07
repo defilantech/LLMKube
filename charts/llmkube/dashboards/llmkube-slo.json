@@ -69,7 +69,7 @@
     },
     {
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-      "description": "1 - ((1 - actual on-time fraction over the SLO's window) / (1 - objective)), using Pyrra's vllm:e2e_request_latency_seconds:increase${window_suffix} recording rule (latency indicator; the le=\"2\" series is the fast/good count, the le=\"\" series is the total count). Set the `objective` variable to this SLO's spec.slo.objective first. Latency SLOs are vllm-runtime only.",
+      "description": "1 - ((1 - actual on-time fraction over the SLO's window) / (1 - objective)), using Pyrra's vllm:e2e_request_latency_seconds:increase${window_suffix} recording rule (latency indicator; the le!=\"\" series is the fast/good count, the le=\"\" series is the total count). Set the `objective` variable to this SLO's spec.slo.objective first. Latency SLOs are vllm-runtime only.",
       "fieldConfig": {
         "defaults": {
           "color": {"mode": "thresholds"},
@@ -99,7 +99,7 @@
       "targets": [
         {
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-          "expr": "1 - ((1 - (vllm:e2e_request_latency_seconds:increase${window_suffix}{slo=~\"$slo\", le=\"2\"} / ignoring(le) vllm:e2e_request_latency_seconds:increase${window_suffix}{slo=~\"$slo\", le=\"\"})) / (1 - $objective/100))",
+          "expr": "1 - ((1 - (vllm:e2e_request_latency_seconds:increase${window_suffix}{slo=~\"$slo\", le!=\"\"} / ignoring(le) vllm:e2e_request_latency_seconds:increase${window_suffix}{slo=~\"$slo\", le=\"\"})) / (1 - $objective/100))",
           "legendFormat": "{{slo}}",
           "refId": "A"
         }
@@ -153,7 +153,7 @@
       "targets": [
         {
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-          "expr": "1 - ((1 - (vllm:e2e_request_latency_seconds:increase${window_suffix}{slo=~\"$slo\", le=\"2\"} / ignoring(le) vllm:e2e_request_latency_seconds:increase${window_suffix}{slo=~\"$slo\", le=\"\"})) / (1 - $objective/100))",
+          "expr": "1 - ((1 - (vllm:e2e_request_latency_seconds:increase${window_suffix}{slo=~\"$slo\", le!=\"\"} / ignoring(le) vllm:e2e_request_latency_seconds:increase${window_suffix}{slo=~\"$slo\", le=\"\"})) / (1 - $objective/100))",
           "legendFormat": "{{slo}}",
           "refId": "A"
         }
@@ -287,7 +287,7 @@
         },
         {
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-          "expr": "vllm:e2e_request_latency_seconds:increase${window_suffix}{slo=~\"$slo\", le=\"2\"} / ignoring(le) vllm:e2e_request_latency_seconds:increase${window_suffix}{slo=~\"$slo\", le=\"\"}",
+          "expr": "vllm:e2e_request_latency_seconds:increase${window_suffix}{slo=~\"$slo\", le!=\"\"} / ignoring(le) vllm:e2e_request_latency_seconds:increase${window_suffix}{slo=~\"$slo\", le=\"\"}",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
