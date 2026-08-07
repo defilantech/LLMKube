@@ -170,6 +170,13 @@ type routerBackendResource struct {
 	// Envoy fails over to a healthy backend, while its Backend/AIServiceBackend
 	// objects are still generated so it can be re-added on recovery.
 	Healthy bool
+	// IsIP reports that FQDN holds a literal IP address rather than a hostname.
+	// Envoy Gateway's Backend takes these through different endpoint types
+	// (`ip` vs `fqdn`) and rejects an IP supplied as an fqdn hostname, so the
+	// resolver records which one it found and the builder emits accordingly.
+	// Only ever true for external backends; in-cluster backends always resolve
+	// to a Service FQDN.
+	IsIP bool
 }
 
 // routerRuleResource is one resolved ModelRouter rule ready to compile: the
@@ -232,15 +239,25 @@ func newRouterBackend(mr *inferencev1alpha1.ModelRouter, b routerBackendResource
 	u.SetGroupVersionKind(backendGVK())
 	u.SetName(sanitizeDNSName(b.Name))
 	u.SetNamespace(mr.Namespace)
-	u.Object["spec"] = map[string]interface{}{
-		"endpoints": []interface{}{
-			map[string]interface{}{
-				"fqdn": map[string]interface{}{
-					"hostname": b.FQDN,
-					"port":     b.Port,
-				},
-			},
+	// Envoy Gateway validates the two endpoint types differently: `fqdn.hostname`
+	// must be a DNS name and rejects a literal IP, so an external backend given
+	// as an address has to go through `ip.address` instead (#1395).
+	endpoint := map[string]interface{}{
+		"fqdn": map[string]interface{}{
+			"hostname": b.FQDN,
+			"port":     b.Port,
 		},
+	}
+	if b.IsIP {
+		endpoint = map[string]interface{}{
+			"ip": map[string]interface{}{
+				"address": b.FQDN,
+				"port":    b.Port,
+			},
+		}
+	}
+	u.Object["spec"] = map[string]interface{}{
+		"endpoints": []interface{}{endpoint},
 	}
 	return u
 }

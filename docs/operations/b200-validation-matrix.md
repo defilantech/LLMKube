@@ -10,9 +10,9 @@ LLMKube is currently validated on H100, L4, and L40S. This document captures the
 
 | Field | Value |
 |---|---|
-| Document version | 2 (floors + runtime reality corrected) |
-| Last updated | 2026-07-31 |
-| Hardware access | Not currently reachable. Pending: NVIDIA dev partnership, customer install, or rented capacity. |
+| Document version | 3 (GB10 partial-proxy reachability added) |
+| Last updated | 2026-08-05 |
+| Hardware access | **`sm_100` still not reachable.** Pending: NVIDIA dev partnership, customer install, or rented capacity. A **partial proxy is now reachable**: 2x NVIDIA DGX Spark (GB10, `sm_121`, Grace/aarch64) as of 2026-08-05. See "GB10 partial-proxy reachability" for exactly which rows it can and cannot advance. |
 | Rows passing | 0 / 10 |
 | Rows blocked on hardware | 10 / 10 |
 | Concrete deltas already landed | 1 (floors, #1197/#1374), 2 (DCGM floor, #1374), 3 (runtime pins, #1197/#1204), 4 (FP4 quantization, #1375). Remaining: 5-6 are documentation-only. |
@@ -25,6 +25,62 @@ When a row's status changes, update both this document and the tracking issue's 
 **In scope.** Datacenter Blackwell on `sm_100`: B200 (single chassis, 8x B200 NVLink5 / NVSwitch5) and GB200 (Grace+Blackwell superchip, datacenter form factor).
 
 **Out of scope here.** Consumer Blackwell (RTX 50-series, GB20x, `sm_120`) is similar but tracked separately. Multi-node B200 sharding (NVLink fabric across chassis) is a larger effort tracked outside this matrix; this document covers single-chassis topology only.
+
+## GB10 partial-proxy reachability
+
+Two NVIDIA DGX Spark (GB10) units became reachable 2026-08-05. GB10 is Blackwell,
+but it is **not a small B200**, and the difference decides which rows it can move.
+
+| | DGX Spark (GB10) | B200 |
+|---|---|---|
+| Compute capability | **`sm_121`** | **`sm_100`** |
+| Host architecture | **aarch64 (Grace)** | x86 (B200), aarch64 (GB200) |
+| Memory | 128GB unified LPDDR5X, 273 GB/s | 180GB HBM3e, multi-TB/s |
+| MIG | **not supported** | 7 profiles |
+| Interconnect | 2 boxes over ConnectX-7 RDMA | NVLink5 / NVSwitch5, 8 GPUs in-chassis |
+
+`sm_121` and `sm_100` instruction sets are not interchangeable, so **no row's
+official status changes on GB10**. Rows stay at their B200 status; GB10 results
+are recorded as supporting evidence, never as a row pass.
+
+**What GB10 does advance.** Rehearsing the #1376 harness on real Blackwell
+silicon rather than `--dry-run` (that issue anticipated only consumer `sm_120`
+and AMD/Vulkan; GB10 is closer, sharing FP4 tensor cores and, with GB200, the
+Grace/aarch64 host). Also: FP4 serve paths for rows 8-9, row 5's custom-CSV
+plumbing and `DCGM_FI_PROF_DRAM_UTIL_RATIO`, and row 10's runbooks, where
+unified memory is a genuinely new OOM shape.
+
+**What GB10 cannot advance, and why these stay wanted.** These are sequenced,
+not abandoned:
+
+- **NVLink (rows 4, and row 5's NVLink5 per-link counters).** The two Sparks link
+  over ConnectX-7 RDMA, not NVLink, and each box has one GPU, so in-chassis
+  NVLink topology cannot be exercised at all. The highest-priority silent-failure
+  mode in this document, a Fabric Manager mismatch degrading NVLink to PCIe
+  (delta 1), stays unreachable until B200. Wanted soon, B200-gated, tracked by
+  #413 / #1377. Separately, the linked Sparks open a genuinely new line of work,
+  **multi-node serving over RDMA**, which nothing in LLMKube does today (#1198 is
+  explicitly single-node); that deserves its own issue rather than this row.
+- **MIG (row 7).** GB10 does not support MIG. This is the load-bearing gap for
+  the shared-fleet story: of the `gpuSharing` tiers (#1196), `shared` is validated
+  live on Strix and `partitioned` is currently proven only by *negative* testing,
+  that is, correctly refused on an APU. Live MIG is the last unproven tier.
+  Wanted soon, B200-gated.
+- **`sm_100` (all rows, by construction).** Unreachable on `sm_121` hardware.
+  Wanted soon; expected roughly 30-60 days from 2026-07-31 per #1377. The
+  highest-value preparation remains the #1376 harness, so the scarce B200 window
+  is spent executing rather than authoring.
+
+**Adjacent item that *is* reachable on GB10 and should not be lost:** GB10 has no
+discrete VRAM (128GB unified between CPU and GPU), while the quota fairness unit
+is VRAM (`vramPerDeviceGiB`). The Strix Halo APU path likely already covers this
+shape; confirming that on Spark is cheap.
+
+**Row 1's llama.cpp correction inverts on GB10.** Row 1 moved off llama.cpp
+because there is no `sm_100` codegen. But llama.cpp's default arch list includes
+`121a-real`, and its Blackwell paths gate on `GGML_CUDA_CC_BLACKWELL 1200` (GB10
+is 1210), so llama.cpp is expected to run **natively on Spark while PTX-JIT-ing on
+B200** (see delta 3). Confirm on hardware; the correction stays right for B200.
 
 ## Validation matrix
 

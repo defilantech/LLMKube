@@ -126,6 +126,60 @@ func TestFixtureLiteralChurn_TestdataPathRelocation(t *testing.T) {
 	}
 }
 
+func TestAssertionValueChurn_EqualValueRewritten(t *testing.T) {
+	// #1347 shape: the coder changed Equal(42) to Equal(0) to match buggy behavior.
+	fh := &fileHunks{
+		Removed: []string{`	Expect(got).To(Equal(42))`},
+		Added:   []string{`	Expect(got).To(Equal(0))`},
+	}
+	got := assertionValueChurn(fh)
+	if len(got) != 1 || !strings.Contains(got[0], "Equal(42)") || !strings.Contains(got[0], "Equal(0)") {
+		t.Fatalf("expected an assertion-value-churn finding naming both values; got %q", got)
+	}
+}
+
+func TestAssertionValueChurn_ContainSubstringValueRewritten(t *testing.T) {
+	fh := &fileHunks{
+		Removed: []string{`	Expect(got).To(ContainSubstring("boom"))`},
+		Added:   []string{`	Expect(got).To(ContainSubstring("ok"))`},
+	}
+	got := assertionValueChurn(fh)
+	if len(got) != 1 || !strings.Contains(got[0], "ContainSubstring") {
+		t.Fatalf("expected a ContainSubstring churn finding; got %q", got)
+	}
+}
+
+func TestAssertionValueChurn_PureAdditionSilent(t *testing.T) {
+	// Adding a new assertion (no matching removal) is not churn.
+	fh := &fileHunks{
+		Added: []string{`	Expect(got).To(Equal(42))`},
+	}
+	if got := assertionValueChurn(fh); got != nil {
+		t.Fatalf("pure addition must not flag churn; got %q", got)
+	}
+}
+
+func TestAssertionValueChurn_PureDeletionSilent(t *testing.T) {
+	// Removing an assertion (no matching addition) is not churn (caught by erosion).
+	fh := &fileHunks{
+		Removed: []string{`	Expect(got).To(Equal(42))`},
+	}
+	if got := assertionValueChurn(fh); got != nil {
+		t.Fatalf("pure deletion must not flag churn; got %q", got)
+	}
+}
+
+func TestAssertionValueChurn_SameValueSilent(t *testing.T) {
+	// The assertion value did not change: no churn.
+	fh := &fileHunks{
+		Removed: []string{`	Expect(got).To(Equal(42))`},
+		Added:   []string{`	Expect(got).To(Equal(42))`},
+	}
+	if got := assertionValueChurn(fh); got != nil {
+		t.Fatalf("same value must not flag churn; got %q", got)
+	}
+}
+
 func TestParseNameStatus_ModifyAndRename(t *testing.T) {
 	out := "M\tpkg/model/classifier.go\n" +
 		"D\tpkg/model/testdata/real.json\n" +
@@ -282,6 +336,25 @@ func TestCheckTestDilution_FiresOnFixtureRelocation_1322Shape(t *testing.T) {
 	}
 }
 
+func TestCheckTestDilution_FiresOnAssertionValueChurn_1347Shape(t *testing.T) {
+	// #1347 shape: prod classifier changed, and an assertion's expected value
+	// was rewritten from Equal(42) to Equal(0) in the same package's test.
+	ns := "M\tpkg/model/classifier.go\nM\tpkg/model/classifier_test.go\n"
+	diff := `--- a/pkg/model/classifier_test.go
++++ b/pkg/model/classifier_test.go
+@@ -10 +10 @@
+-	Expect(classify(u)).To(Equal(42))
++	Expect(classify(u)).To(Equal(0))
+`
+	failed, out := checkTestDilution(context.Background(), "/w", dilutionRunner(ns, diff, nil, nil, nil))
+	if !failed {
+		t.Fatal("expected an advisory for the #1347 assertion-value-churn shape")
+	}
+	if !strings.Contains(out, "Equal(42)") || !strings.Contains(out, "Equal(0)") {
+		t.Errorf("detail should name both assertion values; got %q", out)
+	}
+}
+
 func TestCheckTestDilution_SilentWhenTestsOnlyGrow(t *testing.T) {
 	ns := "M\tpkg/model/classifier.go\nM\tpkg/model/classifier_test.go\n"
 	diff := `--- a/pkg/model/classifier_test.go
@@ -378,5 +451,46 @@ func TestTestDilution_SurfacesAsAdvisoryNotBlocking(t *testing.T) {
 	}
 	if len(advisories) != 1 || advisories[0].Check != "test-dilution" {
 		t.Fatalf("expected one test-dilution advisory; got %+v", advisories)
+	}
+}
+
+// TestAssertionValueChurn_NestedParens covers the review note on #1416: a
+// `[^)]+` regex stops at the first ')', so Equal(f(x), 42) truncated to
+// "Equal(f(x)" and a rewrite of the trailing value produced an IDENTICAL
+// token on both sides. That is a silent miss, the wrong failure direction
+// for a dilution signal. Balanced-paren matching fixes it.
+func TestAssertionValueChurn_NestedParens(t *testing.T) {
+	got := assertionValueChurn(&fileHunks{
+		Removed: []string{`Expect(y).To(Equal(f(x), 42))`},
+		Added:   []string{`Expect(y).To(Equal(f(x), 0))`},
+	})
+	if len(got) == 0 {
+		t.Fatalf("expected churn for a value rewrite behind a nested paren, got none")
+	}
+}
+
+// TestAssertionValueChurn_SpacingIsNotChurn covers the review note that the
+// detector's description claimed normalisation it did not perform: a
+// gofmt-driven respacing inside the parens read as churn.
+func TestAssertionValueChurn_SpacingIsNotChurn(t *testing.T) {
+	got := assertionValueChurn(&fileHunks{
+		Removed: []string{`Expect(x).To(Equal(42))`},
+		Added:   []string{`Expect(x).To(Equal( 42 ))`},
+	})
+	if len(got) != 0 {
+		t.Fatalf("respacing alone must not be churn, got %v", got)
+	}
+}
+
+// TestAssertionValueChurn_LiteralSpacingIsChurn pins the boundary of the
+// normalisation: whitespace OUTSIDE a string literal is noise, whitespace
+// INSIDE one is a genuinely different expectation.
+func TestAssertionValueChurn_LiteralSpacingIsChurn(t *testing.T) {
+	got := assertionValueChurn(&fileHunks{
+		Removed: []string{`Expect(x).To(Equal("a b"))`},
+		Added:   []string{`Expect(x).To(Equal("a  b"))`},
+	})
+	if len(got) == 0 {
+		t.Fatalf("a changed string literal must still be churn, got none")
 	}
 }

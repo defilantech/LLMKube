@@ -48,9 +48,11 @@ versions of the same readings.
 
 ## Inference signals (slice #1186)
 
+<!-- metrics-contract:begin -->
 SLO metrics come from llama.cpp `/metrics` (`--metrics`), not this exporter:
-`llamacpp:tokens_per_second`-family, `llamacpp:kv_cache_usage_ratio`,
+`llamacpp:predicted_tokens_seconds`, `llamacpp:prompt_tokens_seconds`,
 `llamacpp:requests_processing`. Backend-agnostic and already emitted.
+<!-- metrics-contract:end -->
 
 ## Known gaps (deliberate)
 

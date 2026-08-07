@@ -18,6 +18,7 @@ package metrics
 
 import (
 	"encoding/json"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
@@ -500,6 +501,66 @@ func TestDashboardsQueryEmittedMetrics(t *testing.T) {
 
 	if t.Failed() {
 		t.Logf("emittable: %v", slices.Sorted(maps.Keys(known)))
+	}
+}
+
+// TestDocContractMetrics fails when a prose document's metrics-contract region
+// names a metric that nothing produces. The region is delimited by
+// <!-- metrics-contract:begin --> and <!-- metrics-contract:end --> markers so
+// that "Known gaps" sections that deliberately name missing metrics are not
+// flagged.
+func TestDocContractMetrics(t *testing.T) {
+	known := declaredNames(t)
+	maps.Copy(known, chartRecordingRules(t))
+	maps.Copy(known, runtimeNames(t))
+
+	// Walk for markdown files rather than globbing: filepath.Glob has no "**"
+	// operator, so "docs/**/*.md" silently means "docs/*/*.md" and would skip
+	// every doc nested deeper than one directory, including
+	// docs/site/guides/, where this same defect class was fixed in #1386.
+	var mdFiles []string
+	for _, root := range []string{"../../docs", "../../config"} {
+		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if !d.IsDir() && strings.HasSuffix(path, ".md") {
+				mdFiles = append(mdFiles, path)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walk %s: %v", root, err)
+		}
+	}
+
+	for _, path := range mdFiles {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+
+		// Only process files with the contract markers.
+		begin := "<!-- metrics-contract:begin -->"
+		end := "<!-- metrics-contract:end -->"
+		idxBegin := strings.Index(string(raw), begin)
+		idxEnd := strings.Index(string(raw), end)
+		if idxBegin < 0 || idxEnd < 0 || idxEnd <= idxBegin {
+			continue
+		}
+
+		region := string(raw)[idxBegin+len(begin) : idxEnd]
+
+		// Extract backticked metric names (llamacpp:*, sglang:*, vllm:*, etc.).
+		backtick := regexp.MustCompile("`([a-zA-Z_:][a-zA-Z0-9_:]*)`")
+		for _, m := range backtick.FindAllStringSubmatch(region, -1) {
+			name := m[1]
+			if emitted(name, known) {
+				continue
+			}
+			t.Errorf("%s names %q inside metrics-contract region, which no registered collector, chart recording rule or allowlisted exporter emits",
+				path, name)
+		}
 	}
 }
 

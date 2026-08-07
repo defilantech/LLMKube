@@ -99,33 +99,19 @@ controllerManager:
   # InferenceServices and external provider backends, speaks
   # OpenAI chat completions, and enforces policy routing.
   #
-  # IMPORTANT (Phase 1 alpha): the release pipeline does not yet build
-  # and push the router-proxy image alongside the controller image.
-  # The default tag below is "dev" rather than the chart appVersion so
-  # users who never create a ModelRouter resource are unaffected, and
-  # users who do create one know they need to either:
-  #
-  #   1. Build the image locally (`make docker-build-router-proxy`)
-  #      and push it to a registry their cluster can reach, then
-  #      override repository / tag here.
-  #   2. Override `spec.proxy.image` per ModelRouter with their own
-  #      build.
-  #
-  # See https://github.com/defilantech/LLMKube/issues/449 for the
-  # tracking issue on integrating the router-proxy image into the
-  # release flow.
+  # The release pipeline publishes ghcr.io/defilantech/llmkube-router-proxy
+  # alongside the controller image with matching version tags (#449), so the
+  # empty tag below resolves to the chart appVersion.
   routerProxy:
     # Registry prefix for the router-proxy image (mirrors controller image).
     # Useful for air-gapped or enterprise proxy registries.
     registry: ""
     repository: ghcr.io/defilantech/llmkube-router-proxy
     pullPolicy: IfNotPresent
-    # Default tag. "dev" is intentional until the release pipeline
-    # ships versioned router-proxy images alongside the controller.
-    tag: "dev"
+    # Image tag. Empty defaults to the chart appVersion, which matches the
+    # tag the release pipeline publishes for this chart version.
+    tag: ""
     # Image digest (sha256:...) - takes precedence over tag when set.
-    # Use digests for production deployments once the release pipeline
-    # publishes them.
     digest: ""
 
     # Cluster-wide default URL for ModelRouter External backends whose
@@ -265,6 +251,11 @@ prometheus:
         enabled: true
         highUtilizationThreshold: 90
         highTemperatureThreshold: 85
+        # Off by default: on an inference host VRAM utilization reports the
+        # fraction the runtime was configured to reserve, not pressure. Enable
+        # where VRAM is allocated on demand.
+        memoryPressure:
+          enabled: false
         memoryPressureThreshold: 90
         powerLimitThreshold: 250
       # Inference service alerts
@@ -311,9 +302,14 @@ grafana:
       # CRD default (5m).
       resyncPeriod: ""
       # Literal ${inputName} -> datasourceName replace over the dashboard JSON.
+      # datasourceName must be the datasource UID, not its display name: the
+      # placeholder sits inside the dashboards' "uid" fields, so a display name
+      # lands verbatim as a uid that resolves to nothing and every panel
+      # silently renders "datasource not found" (unless the UID happens to
+      # equal the name).
       #   datasources:
       #     - inputName: DS_PROMETHEUS
-      #       datasourceName: VictoriaMetrics
+      #       datasourceName: prometheus-uid
       datasources: []
 
 # Pyrra SLO integration. When enabled, the operator renders a Pyrra

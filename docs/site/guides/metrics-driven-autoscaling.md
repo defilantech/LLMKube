@@ -185,11 +185,11 @@ This is the lowest-friction signal. It scales on raw concurrency, not
 quality. Good for batch-oriented workloads where you just need more
 capacity.
 
-### Option B: KV cache pressure (memory-driven)
+### Option B: Deferred requests (saturation-driven)
 
-`llamacpp_kv_cache_usage_ratio` is a gauge reporting how full the
-llama.cpp KV cache is (0.0–1.0). When the cache is near capacity the
-server starts evicting entries and latency rises, so scaling out
+`llamacpp:requests_deferred` is a gauge reporting how many requests
+llama.cpp has deferred because every slot is busy. When this rises the
+server is saturated and more replicas would help, so scaling out
 before that point keeps throughput stable:
 
 ```yaml
@@ -208,10 +208,10 @@ spec:
     - type: Pods
       pods:
         metric:
-          name: llamacpp:kv_cache_usage_ratio
+          name: llamacpp:requests_deferred
         target:
           type: AverageValue
-          averageValue: "0.8"   # scale up when avg KV cache usage > 80%
+          averageValue: "2"   # scale up when avg deferred requests > 2
 ```
 
 Use this when your prompts vary in length and you want to avoid
@@ -345,10 +345,10 @@ changes. The HPA reconciles every 15 seconds by default.
       - type: Pods
         pods:
           metric:
-            name: llamacpp:kv_cache_usage_ratio
+            name: llamacpp:requests_deferred
           target:
             type: AverageValue
-            averageValue: "0.8"
+            averageValue: "2"
     behavior:
       scaleUp:
         selectPolicy: Max

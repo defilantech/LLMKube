@@ -107,3 +107,83 @@ tests:
           path: spec.groups[?(@.name=="llmkube-inference-recording")].rules[?(@.record=="llmkube:inference:ttft_seconds:p95_5m")].expr
       - isNotNullOrEmpty:
           path: spec.groups[?(@.name=="llmkube-inference-recording")].rules[?(@.record=="llmkube:inference:queue_time_seconds:p95_5m")].expr
+
+  # --- GPU alerts: exporter-agnostic OR-fallback (#1356) ---
+  # An AMD cluster has zero DCGM series and vice versa, so a single vendor's
+  # metric family was a silent no-op for the others. Each rule now ORs the
+  # normalized expression for every exporter this chart knows, so whichever
+  # exporter a cluster runs is the one that evaluates.
+
+  - it: should default to 4 GPU rules, with GPUMemoryPressure off
+    template: prometheusrule.yaml
+    set:
+      prometheus.prometheusRule.enabled: true
+    asserts:
+      - lengthEqual:
+          path: spec.groups[?(@.name=="llmkube-slo")].rules
+          count: 4
+      - notMatchRegex:
+          path: spec.groups[?(@.name=="llmkube-slo")].rules[*].alert
+          pattern: GPUMemoryPressure
+
+  - it: should OR all three exporter families in GPUHighUtilization, edge-case-free precedence
+    template: prometheusrule.yaml
+    set:
+      prometheus.prometheusRule.enabled: true
+    asserts:
+      - equal:
+          path: spec.groups[?(@.name=="llmkube-slo")].rules[?(@.alert=="GPUHighUtilization")].expr
+          value: (DCGM_FI_DEV_GPU_UTIL or amdgpu_gpu_busy_percent or drm_engine_utilization_ratio{engine="gpu"} * 100) > 90
+
+  - it: should OR all three exporter families in GPUPowerLimit
+    template: prometheusrule.yaml
+    set:
+      prometheus.prometheusRule.enabled: true
+    asserts:
+      - equal:
+          path: spec.groups[?(@.name=="llmkube-slo")].rules[?(@.alert=="GPUPowerLimit")].expr
+          value: (DCGM_FI_DEV_POWER_USAGE or node_hwmon_power_watt * on(chip, instance) group_left() node_hwmon_chip_names{chip_name="amdgpu"} or drm_power_watts) > 250
+
+  - it: should pin the temperature alert to the edge sensor on the drm branch
+    template: prometheusrule.yaml
+    set:
+      prometheus.prometheusRule.enabled: true
+    asserts:
+      - matchRegex:
+          path: spec.groups[?(@.name=="llmkube-slo")].rules[?(@.alert=="GPUHighTemperature")].expr
+          pattern: 'drm_temperature_celsius\{sensor="edge"\}'
+      - matchRegex:
+          path: spec.groups[?(@.name=="llmkube-slo")].rules[?(@.alert=="GPUHighTemperature")].expr
+          pattern: '^\(DCGM_FI_DEV_GPU_TEMP or node_hwmon_temp_celsius\{sensor="temp1"\} \* on\(chip, instance\) group_left\(\) node_hwmon_chip_names\{chip_name="amdgpu"\} or drm_temperature_celsius\{sensor="edge"\}\) > 85$'
+
+  - it: should enable GPUMemoryPressure opt-in, with pool=vram pinned on both sides
+    template: prometheusrule.yaml
+    set:
+      prometheus.prometheusRule.enabled: true
+      prometheus.prometheusRule.rules.gpu.memoryPressure.enabled: true
+    asserts:
+      - lengthEqual:
+          path: spec.groups[?(@.name=="llmkube-slo")].rules
+          count: 5
+      - equal:
+          path: spec.groups[?(@.name=="llmkube-slo")].rules[?(@.alert=="GPUMemoryPressure")].expr
+          value: ((DCGM_FI_DEV_FB_USED / DCGM_FI_DEV_FB_TOTAL) * 100 or (amdgpu_vram_used_bytes / amdgpu_vram_total_bytes) * 100 or (drm_memory_used_bytes{pool="vram"} / drm_memory_total_bytes{pool="vram"}) * 100) > 90
+
+  - it: should AND absence across all three utilization families in GPUMetricsMissing
+    template: prometheusrule.yaml
+    set:
+      prometheus.prometheusRule.enabled: true
+    asserts:
+      - equal:
+          path: spec.groups[?(@.name=="llmkube-slo")].rules[?(@.alert=="GPUMetricsMissing")].expr
+          value: absent(DCGM_FI_DEV_GPU_UTIL) and absent(amdgpu_gpu_busy_percent) and absent(drm_engine_utilization_ratio)
+
+  - it: should omit all GPU rules including the absence guard when the group is disabled
+    template: prometheusrule.yaml
+    set:
+      prometheus.prometheusRule.enabled: true
+      prometheus.prometheusRule.rules.gpu.enabled: false
+    asserts:
+      - notMatchRegex:
+          path: spec.groups[*].name
+          pattern: llmkube-slo

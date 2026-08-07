@@ -1,0 +1,31 @@
+suite: router-proxy default image
+templates:
+  - deployment.yaml
+
+tests:
+  # The published router-proxy image is tagged with the release version, so
+  # the default must track the chart appVersion — a stock install of a
+  # ModelRouter must never point at an unpublished tag (#1426).
+  - it: should default the router-proxy image tag to the chart appVersion
+    chart:
+      appVersion: 9.9.9
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --router-proxy-image=ghcr.io/defilantech/llmkube-router-proxy:9.9.9
+
+  - it: should honor an explicit tag override
+    set:
+      controllerManager.routerProxy.tag: my-tag
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --router-proxy-image=ghcr.io/defilantech/llmkube-router-proxy:my-tag
+
+  - it: should prefer a digest over the tag
+    set:
+      controllerManager.routerProxy.digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --router-proxy-image=ghcr.io/defilantech/llmkube-router-proxy@sha256:0000000000000000000000000000000000000000000000000000000000000000

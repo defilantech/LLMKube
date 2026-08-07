@@ -173,6 +173,11 @@ func appendNoWarmupArgs(args []string, noWarmup *bool) []string {
 // A reranker needs both --reranking and --embedding. Flags already in extraArgs
 // win and are not duplicated, so hand-wired manifests are left untouched; chat
 // (or empty) adds nothing.
+//
+// For embedding and rerank modes, --cache-ram 0 is appended because llama.cpp
+// fills its host prompt cache up to --cache-ram (default 8 GiB) and never
+// releases it, while the cache read path is gated to completion tasks.
+// (#1406)
 func appendModeArgs(args []string, mode string, extraArgs []string) []string {
 	switch mode {
 	case servingModeRerank:
@@ -185,12 +190,18 @@ func appendModeArgs(args []string, mode string, extraArgs []string) []string {
 		if !hasMatchingExtraArg(extraArgs, "pooling") {
 			args = append(args, "--pooling", "rank")
 		}
+		if !hasMatchingExtraArg(extraArgs, "cache-ram") {
+			args = append(args, "--cache-ram", "0")
+		}
 	case servingModeEmbedding:
 		if !hasMatchingExtraArg(extraArgs, "embedding") {
 			args = append(args, "--embedding")
 		}
 		if !hasMatchingExtraArg(extraArgs, "pooling") {
 			args = append(args, "--pooling", "last")
+		}
+		if !hasMatchingExtraArg(extraArgs, "cache-ram") {
+			args = append(args, "--cache-ram", "0")
 		}
 	}
 	return args
@@ -205,7 +216,7 @@ func appendSpeculativeDecodingArgs(args []string, spec *inferencev1alpha1.Specul
 	case "mtp":
 		specType = "draft-mtp"
 	case "draft":
-		specType = "draft"
+		specType = "draft-simple"
 	default:
 		return args
 	}

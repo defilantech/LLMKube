@@ -59,3 +59,28 @@ func TestBuildLlamaServerArgs_ChatModeAddsNoModeFlags(t *testing.T) {
 		t.Errorf("chat mode must add no serving-mode flags (full args: %v)", args)
 	}
 }
+
+func TestBuildLlamaServerArgs_EmbeddingModeDisablesCacheRam(t *testing.T) {
+	args := buildLlamaServerArgs("/m.gguf", 8080, ExecutorConfig{ContextSize: 4096, Mode: "embedding"})
+	if got := flagValue(args, "--cache-ram"); got != "0" {
+		t.Errorf("--cache-ram = %q, want %q (full args: %v)", got, "0", args)
+	}
+}
+
+func TestBuildLlamaServerArgs_RerankModeDisablesCacheRam(t *testing.T) {
+	args := buildLlamaServerArgs("/m.gguf", 8080, ExecutorConfig{ContextSize: 4096, Mode: "rerank"})
+	if got := flagValue(args, "--cache-ram"); got != "0" {
+		t.Errorf("--cache-ram = %q, want %q (full args: %v)", got, "0", args)
+	}
+}
+
+func TestBuildLlamaServerArgs_CacheRamNotOverriddenByExtraArgs(t *testing.T) {
+	args := buildLlamaServerArgs("/m.gguf", 8080, ExecutorConfig{
+		ContextSize: 4096,
+		Mode:        "embedding",
+		ExtraArgs:   []string{"--cache-ram", "512"},
+	})
+	if got := flagValue(args, "--cache-ram"); got != "512" {
+		t.Errorf("--cache-ram = %q, want user value %q (full args: %v)", got, "512", args)
+	}
+}

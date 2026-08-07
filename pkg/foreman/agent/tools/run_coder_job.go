@@ -605,12 +605,30 @@ func applyCoderConfigDefaults(c RunCoderJobConfig) RunCoderJobConfig {
 	}
 	if c.NameFn == nil {
 		c.NameFn = func(taskName string) string {
-			name := fmt.Sprintf("foreman-coder-%s-%d", sanitizeName(taskName), time.Now().UnixMilli())
-			if len(name) > 63 {
-				name = name[:63]
-			}
-			return name
+			return coderJobName(taskName, time.Now().UnixMilli())
 		}
 	}
 	return c
+}
+
+// coderJobName builds the coder Job name "foreman-coder-<task>-<unix-ms>",
+// trimmed to the 63-char k8s object-name limit by truncating the TASK
+// portion, never the trailing <unix-ms> disambiguator. The #1405 retry loop
+// submits a second coder Job for the same task while the prior attempt's Job
+// still exists; the old code trimmed the whole name from the right, cutting
+// off the timestamp for long task names, so the retry's Create collided with
+// the prior Job (AlreadyExists -> ERROR -> could-not-recover). Keeping the
+// suffix guarantees each submission gets a distinct name.
+func coderJobName(taskName string, unixMilli int64) string {
+	const prefix = "foreman-coder-"
+	suffix := fmt.Sprintf("-%d", unixMilli)
+	budget := 63 - len(prefix) - len(suffix)
+	if budget < 0 {
+		budget = 0
+	}
+	task := sanitizeName(taskName)
+	if len(task) > budget {
+		task = task[:budget]
+	}
+	return prefix + task + suffix
 }

@@ -338,6 +338,18 @@ func gateCheckRegistry(issueText, evidenceBaseSHA string, evidence []grounding.E
 			tier: tierAdvisory,
 			fn:   checkTestDilution,
 		},
+		{
+			// command-string-test-dilution (#1346): advisory. Surfaces to the
+			// reviewer when a submission that modifies a shell/exec command
+			// string in production code adds only string-shape test assertions
+			// (ContainSubstring, strings.Contains, Equal on a string literal)
+			// with no behavioral test that executes the produced command.
+			// No lang: command-string detection is language-agnostic.
+			// Never blocks; the coder never sees it.
+			name: "command-string-test-dilution",
+			tier: tierAdvisory,
+			fn:   checkCommandStringTestDilution,
+		},
 	}
 }
 

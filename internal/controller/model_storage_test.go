@@ -32,6 +32,8 @@ var _ = Describe("buildModelInitCommand (s3)", func() {
 		Expect(cmd).To(ContainSubstring("Downloading model from S3"))
 		Expect(cmd).To(ContainSubstring("Model downloaded successfully"))
 		Expect(cmd).To(ContainSubstring("Model already cached, skipping download"))
+		Expect(cmd).To(ContainSubstring(`-o "$MODEL_PATH.tmp"`))
+		Expect(cmd).To(ContainSubstring(`&& mv "$MODEL_PATH.tmp" "$MODEL_PATH"`))
 	})
 
 	It("should emit the --aws-sigv4 curl line for s3 source without cache", func() {
@@ -41,12 +43,31 @@ var _ = Describe("buildModelInitCommand (s3)", func() {
 		Expect(cmd).To(ContainSubstring("Downloading model from S3"))
 		Expect(cmd).To(ContainSubstring("Model downloaded successfully"))
 		Expect(cmd).To(ContainSubstring("Model already exists, skipping download"))
+		Expect(cmd).To(ContainSubstring(`-o "$MODEL_PATH.tmp"`))
+		Expect(cmd).To(ContainSubstring(`&& mv "$MODEL_PATH.tmp" "$MODEL_PATH"`))
 	})
 
 	It("should NOT emit --aws-sigv4 for non-s3 source", func() {
 		cmd := buildModelInitCommand(false, false, true, "")
 		Expect(cmd).ToNot(ContainSubstring("aws-sigv4"))
-		Expect(cmd).To(ContainSubstring("curl -f -L -o \"$MODEL_PATH\" \"$MODEL_SOURCE\""))
+		Expect(cmd).To(ContainSubstring(`curl -f -L -o "$MODEL_PATH.tmp" "$MODEL_SOURCE" && mv "$MODEL_PATH.tmp" "$MODEL_PATH"`))
+	})
+
+	// A truncated transfer must never be published at $MODEL_PATH: the guard
+	// is a bare existence check, so a non-atomic write would be cached as
+	// complete forever (#1428).
+	It("should never write the download target directly for any non-OnChange variant", func() {
+		for _, tc := range [][3]bool{
+			{false, false, true},  // https, cached
+			{false, false, false}, // https, uncached
+			{false, true, true},   // s3, cached
+			{false, true, false},  // s3, uncached
+			{true, false, true},   // local, cached
+		} {
+			cmd := buildModelInitCommand(tc[0], tc[1], tc[2], "")
+			Expect(cmd).ToNot(ContainSubstring(`-o "$MODEL_PATH" `), cmd)
+			Expect(cmd).ToNot(ContainSubstring(`cp /host-model/model.gguf "$MODEL_PATH" `), cmd)
+		}
 	})
 
 	It("should emit the --aws-sigv4 curl line for s3 source with OnChange refresh", func() {

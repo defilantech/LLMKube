@@ -13,8 +13,8 @@ operator image, the runtime image, the model weights, and a CA
 bundle to the cluster once, then never reach the public internet
 again.
 
-This guide covers each piece end to end against the current `v0.7.7`
-release.
+This guide covers each piece end to end against the current `0.9.14`
+release. Image tags on ghcr are bare versions, without a `v` prefix.
 
 ## Prerequisites
 
@@ -31,23 +31,18 @@ release.
 
 Three workloads need to land inside the air gap:
 
-1. **The operator** (`ghcr.io/defilantech/llmkube-controller:v0.7.7`)
+1. **The operator** (`ghcr.io/defilantech/llmkube-controller:0.9.14`)
    reconciles `Model`, `InferenceService`, and `ModelRouter` custom
    resources.
 2. **The runtime images** (`ghcr.io/ggml-org/llama.cpp:server-cuda13`
    for llama.cpp; equivalents for vLLM, TGI, Ollama). The operator
    only schedules pods using these; it doesn't pull weights into
    them.
-3. **The router-proxy** (`ghcr.io/defilantech/llmkube-router-proxy:dev`)
+3. **The router-proxy** (`ghcr.io/defilantech/llmkube-router-proxy:0.9.14`)
    if you use `ModelRouter`. Only needed when you want the
-   policy-aware routing layer. The release pipeline does not yet
-   ship versioned router-proxy images alongside the controller, so
-   the chart default is the `dev` tag (see
-   [`#449`](https://github.com/defilantech/LLMKube/issues/449)). If
-   you need a pinned tag in an air-gapped registry, build the image
-   yourself from this commit (`make docker-build-router-proxy
-   ROUTER_PROXY_IMG=registry.internal.corp/defilantech/llmkube-router-proxy:0.7.7`)
-   and use that tag below.
+   policy-aware routing layer. The release pipeline publishes a
+   versioned router-proxy image alongside the controller on every
+   release; mirror the tag that matches your controller version.
 
 Plus the model weights themselves, which the operator either copies
 from a local source or mounts from a PVC. There is no model-weight
@@ -58,14 +53,14 @@ download from the operator's runtime pods at request time.
 On a connected machine, save the four images you need:
 
 ```bash
-docker pull ghcr.io/defilantech/llmkube-controller:v0.7.7
-docker pull ghcr.io/defilantech/llmkube-router-proxy:dev
+docker pull ghcr.io/defilantech/llmkube-controller:0.9.14
+docker pull ghcr.io/defilantech/llmkube-router-proxy:0.9.14
 docker pull ghcr.io/ggml-org/llama.cpp:server-cuda13
 docker pull docker.io/curlimages/curl:8.18.0   # init container
 
 docker save \
-  ghcr.io/defilantech/llmkube-controller:v0.7.7 \
-  ghcr.io/defilantech/llmkube-router-proxy:dev \
+  ghcr.io/defilantech/llmkube-controller:0.9.14 \
+  ghcr.io/defilantech/llmkube-router-proxy:0.9.14 \
   ghcr.io/ggml-org/llama.cpp:server-cuda13 \
   docker.io/curlimages/curl:8.18.0 \
   > llmkube-bundle.tar
@@ -77,8 +72,8 @@ private registry:
 ```bash
 docker load < llmkube-bundle.tar
 for img in \
-  ghcr.io/defilantech/llmkube-controller:v0.7.7 \
-  ghcr.io/defilantech/llmkube-router-proxy:dev \
+  ghcr.io/defilantech/llmkube-controller:0.9.14 \
+  ghcr.io/defilantech/llmkube-router-proxy:0.9.14 \
   ghcr.io/ggml-org/llama.cpp:server-cuda13 \
   docker.io/curlimages/curl:8.18.0
 do
@@ -104,9 +99,9 @@ overrides pointing at your registry:
 helm install llmkube ./llmkube \
   --namespace llmkube-system --create-namespace \
   --set controllerManager.image.repository=registry.internal.corp/defilantech/llmkube-controller \
-  --set controllerManager.image.tag=v0.7.7 \
+  --set controllerManager.image.tag=0.9.14 \
   --set controllerManager.routerProxy.repository=registry.internal.corp/defilantech/llmkube-router-proxy \
-  --set controllerManager.routerProxy.tag=dev \
+  --set controllerManager.routerProxy.tag=0.9.14 \
   --set controllerManager.initContainer.repository=registry.internal.corp/curlimages/curl \
   --set controllerManager.initContainer.tag=8.18.0
 ```
@@ -131,7 +126,7 @@ helm install llmkube ./llmkube \
   -f ./llmkube/values-openshift.yaml \
   --namespace llmkube-system --create-namespace \
   --set controllerManager.image.repository=registry.internal.corp/defilantech/llmkube-controller \
-  --set controllerManager.image.tag=v0.7.7 \
+  --set controllerManager.image.tag=0.9.14 \
   --set controllerManager.initContainer.repository=registry.internal.corp/curlimages/curl \
   --set controllerManager.initContainer.tag=8.18.0
 ```

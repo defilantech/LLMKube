@@ -231,6 +231,13 @@
                     "enabled": { "type": "boolean" },
                     "highUtilizationThreshold": { "type": "number", "minimum": 0, "maximum": 100 },
                     "highTemperatureThreshold": { "type": "number", "minimum": 0, "maximum": 125 },
+                    "memoryPressure": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "enabled": { "type": "boolean" }
+                      }
+                    },
                     "memoryPressureThreshold": { "type": "number", "minimum": 0, "maximum": 100 },
                     "powerLimitThreshold": { "type": "number", "minimum": 0 }
                   }

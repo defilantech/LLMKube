@@ -815,5 +815,30 @@ func TestApplyCoderConfigDefaults_FillsEveryField(t *testing.T) {
 	}
 }
 
+// TestCoderJobNamePreservesUniquenessSuffixWhenTruncated covers #1405. A
+// long task name whose "foreman-coder-<task>" already exceeds the 63-char
+// k8s object-name limit. The old code trimmed the whole name from the right,
+// cutting off the trailing unix-ms disambiguator, so a retry's Create
+// collided with the prior Job (AlreadyExists -> ERROR -> could-not-recover).
+// The suffix must survive truncation.
+func TestCoderJobNamePreservesUniquenessSuffixWhenTruncated(t *testing.T) {
+	long := "misospace-pr-reviewer-action-438-code-438-1785"
+	n1 := coderJobName(long, 1784157000000)
+	n2 := coderJobName(long, 1784157000001)
+
+	if len(n1) > 63 {
+		t.Fatalf("name exceeds the 63-char k8s limit: len=%d %q", len(n1), n1)
+	}
+	if !strings.HasPrefix(n1, "foreman-coder-") {
+		t.Fatalf("lost the foreman-coder- prefix: %q", n1)
+	}
+	if !strings.HasSuffix(n1, "-1784157000000") {
+		t.Fatalf("uniqueness suffix was truncated away: %q", n1)
+	}
+	if n1 == n2 {
+		t.Fatalf("two submissions of the same long task name collide: %q", n1)
+	}
+}
+
 // ensure corev1 stays imported for the resource-shape assertions above.
 var _ = corev1.ResourceRequirements{}

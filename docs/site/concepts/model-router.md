@@ -20,19 +20,6 @@ ModelRouter is **alpha** as of LLMKube 0.8. The CRD lives in `inference.llmkube.
 
 </DocCallout>
 
-<DocCallout variant="warn" title="Router-proxy image not yet in the release pipeline">
-
-The release pipeline currently builds and publishes the controller image (`ghcr.io/defilantech/llmkube-controller`) on every release. The router-proxy image (`ghcr.io/defilantech/llmkube-router-proxy`) is not yet built by CI: see [issue #449](https://github.com/defilantech/LLMKube/issues/449).
-
-The Helm chart's default for `controllerManager.routerProxy.tag` is `"dev"` until that lands. Users who want to deploy a ModelRouter today have two options:
-
-1. **Build locally and push.** Run `make docker-build-router-proxy ROUTER_PROXY_IMG=<your-registry>/llmkube-router-proxy:dev`, push it, then `--set controllerManager.routerProxy.repository=<your-registry>/llmkube-router-proxy` on the Helm install.
-2. **Override per ModelRouter.** Set `spec.proxy.image` on each ModelRouter to an image your cluster can pull.
-
-Users who never create a ModelRouter resource are unaffected.
-
-</DocCallout>
-
 ## Why this exists
 
 LLMs are increasingly composed: an agent does some work on a fast local model, hands off a hard step to a frontier cloud model, then comes back. Every team building this hits the same three problems:

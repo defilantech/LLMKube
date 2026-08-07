@@ -133,6 +133,28 @@ Prometheus PrometheusRule namespace
 {{- end }}
 
 {{/*
+GPU alert metric contract (#1356). One OR-fallback expression per role, so the
+exporter a cluster actually runs is the one that evaluates and absent families
+contribute nothing. Adding an exporter is one branch, not another rule body.
+
+temp pins the edge sensor: drm reports sensor=edge/junction/mem and node_hwmon
+the same split as temp1/temp2/temp3, measured 69/82/79 C on one GPU.
+node_hwmon is scoped through node_hwmon_chip_names{chip_name="amdgpu"} -
+unscoped it is every sensor on the node, and fired at 89 C off a chipset.
+The * on(chip, instance) group_left() join multiplies by that series' value
+to filter: the conventional idiom, correct only while the value is always 1.
+If an exporter ever emits something else there, switch to a bool match.
+mem pins pool="vram" on both sides; the denominator needs the numerator's
+selector, not implicit label matching.
+*/}}
+{{- define "llmkube.gpuMetricNames" -}}
+util: DCGM_FI_DEV_GPU_UTIL or amdgpu_gpu_busy_percent or drm_engine_utilization_ratio{engine="gpu"} * 100
+temp: DCGM_FI_DEV_GPU_TEMP or node_hwmon_temp_celsius{sensor="temp1"} * on(chip, instance) group_left() node_hwmon_chip_names{chip_name="amdgpu"} or drm_temperature_celsius{sensor="edge"}
+mem: (DCGM_FI_DEV_FB_USED / DCGM_FI_DEV_FB_TOTAL) * 100 or (amdgpu_vram_used_bytes / amdgpu_vram_total_bytes) * 100 or (drm_memory_used_bytes{pool="vram"} / drm_memory_total_bytes{pool="vram"}) * 100
+power: DCGM_FI_DEV_POWER_USAGE or node_hwmon_power_watt * on(chip, instance) group_left() node_hwmon_chip_names{chip_name="amdgpu"} or drm_power_watts
+{{- end }}
+
+{{/*
 Webhook Service name. The validating webhook's clientConfig targets this
 Service; the controller-manager pod labels are the Service selector.
 */}}

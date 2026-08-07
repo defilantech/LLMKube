@@ -496,7 +496,7 @@ func TestLlamaCppBuildArgs(t *testing.T) {
 		},
 		{
 			model: model,
-			name:  "speculativeDecoding draft emits --spec-type draft",
+			name:  "speculativeDecoding draft emits --spec-type draft-simple",
 			spec: &inferencev1alpha1.InferenceServiceSpec{
 				Runtime:  "llama",
 				ModelRef: "test-model",
@@ -504,7 +504,7 @@ func TestLlamaCppBuildArgs(t *testing.T) {
 					Type: "draft",
 				},
 			},
-			contains: []FlagCheck{{"--spec-type", "draft"}},
+			contains: []FlagCheck{{"--spec-type", "draft-simple"}},
 		},
 		{
 			model: model,

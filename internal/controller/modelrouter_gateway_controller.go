@@ -19,17 +19,22 @@ package controller
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/go-logr/logr"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -108,6 +113,12 @@ var defaultSensitiveClassifications = []string{"pii", "phi"}
 type ModelRouterGatewayReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	// Recorder surfaces reconcile failures as Kubernetes Events. A failed
+	// reconcile does not retract the previously compiled gateway resources, so
+	// the data plane keeps serving its last-good config: requests still succeed
+	// while silently using stale routing. A status condition alone is not
+	// enough, because nobody watches conditions during a routing change (#1395).
+	Recorder events.EventRecorder
 
 	// detector is the shared CRD-presence gate, lazily initialized on first
 	// reconcile and reused thereafter. It requires slice 1's three kinds plus
@@ -303,7 +314,12 @@ func (r *ModelRouterGatewayReconciler) resolveBackends(
 	resolved := make([]routerBackendResource, 0, len(mr.Spec.Backends))
 	for _, b := range mr.Spec.Backends {
 		if b.External != nil {
-			return nil, fmt.Errorf("backend %q is External; external backends are not supported in dataPlane: Gateway yet", b.Name)
+			res, err := resolveExternalBackend(b)
+			if err != nil {
+				return nil, err
+			}
+			resolved = append(resolved, res)
+			continue
 		}
 		if b.InferenceServiceRef == nil {
 			return nil, fmt.Errorf("backend %q has no inferenceServiceRef", b.Name)
@@ -459,6 +475,14 @@ func (r *ModelRouterGatewayReconciler) setGatewayNotReady(
 		Reason:  reason,
 		Message: message,
 	})
+	// Say plainly that the previously compiled routes are still live. The
+	// dangerous case is not the failure itself but that traffic keeps flowing
+	// against a config the operator believes they just replaced.
+	if r.Recorder != nil {
+		r.Recorder.Eventf(mr, nil, corev1.EventTypeWarning, reason, "Reconcile",
+			"%s; the gateway continues serving the last successfully compiled routes, "+
+				"so this router's traffic does NOT reflect the current spec", message)
+	}
 	return r.Status().Patch(ctx, mr, patch)
 }
 
@@ -953,4 +977,62 @@ func hasGlobModel(models []string) bool {
 		}
 	}
 	return false
+}
+
+// resolveExternalBackend turns a ModelRouter external backend into the
+// host/port pair the Gateway builders compile into an Envoy Backend (#1395).
+//
+// An external backend is any OpenAI-compatible endpoint outside the cluster: an
+// mlx_lm.server or llama.cpp on an Apple Silicon box, a LiteLLM proxy, a
+// workstation on the LAN. There is no InferenceService to read readiness from,
+// so these are always compiled as Healthy; liveness is Envoy's job via the
+// route's own health checking rather than something the reconciler can observe.
+//
+// The scheme supplies the port when the URL omits it, and a literal IP is
+// reported through IsIP because Envoy Gateway rejects an address given as an
+// fqdn hostname.
+func resolveExternalBackend(b inferencev1alpha1.RouterBackend) (routerBackendResource, error) {
+	raw := strings.TrimSpace(b.External.URL)
+	if raw == "" {
+		return routerBackendResource{}, fmt.Errorf("backend %q is External but has no url", b.Name)
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return routerBackendResource{}, fmt.Errorf("backend %q: parsing external url %q: %w", b.Name, raw, err)
+	}
+	if u.Host == "" {
+		return routerBackendResource{}, fmt.Errorf(
+			"backend %q: external url %q has no host; it must be absolute, e.g. http://host:8080/v1", b.Name, raw)
+	}
+
+	host := u.Hostname()
+	port := int64(0)
+	if p := u.Port(); p != "" {
+		parsed, perr := strconv.ParseInt(p, 10, 32)
+		if perr != nil {
+			return routerBackendResource{}, fmt.Errorf("backend %q: external url %q has an invalid port: %w", b.Name, raw, perr)
+		}
+		port = parsed
+	} else {
+		switch strings.ToLower(u.Scheme) {
+		case "https":
+			port = 443
+		case "http":
+			port = 80
+		default:
+			return routerBackendResource{}, fmt.Errorf(
+				"backend %q: external url %q has no port and scheme %q implies none", b.Name, raw, u.Scheme)
+		}
+	}
+	if port < 1 || port > 65535 {
+		return routerBackendResource{}, fmt.Errorf("backend %q: external url %q port %d out of range", b.Name, raw, port)
+	}
+
+	return routerBackendResource{
+		Name:    b.Name,
+		FQDN:    host,
+		Port:    port,
+		Healthy: true,
+		IsIP:    net.ParseIP(host) != nil,
+	}, nil
 }

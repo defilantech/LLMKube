@@ -70,6 +70,26 @@ linters:
   exclusions:
     generated: lax
     rules:
+      # SA5011 in tests: staticcheck does not treat t.Fatal as terminal in CI's
+      # environment, so the standard
+      #     if x == nil { t.Fatal(...) }
+      #     ... x.Field ...
+      # guard is reported as a possible nil dereference. The code is correct --
+      # t.Fatal calls runtime.Goexit, so the deref is unreachable.
+      #
+      # This does not reproduce locally (same golangci-lint 2.12.2, same config,
+      # clean on darwin/arm64 and under GOOS=linux GOARCH=amd64), which is why it
+      # reached main green in the first place. Adding an explicit `return` does
+      # silence each site, but max-same-issues caps the report at 3 so they
+      # surface a few at a time across dozens of files -- a config-level
+      # exclusion is the scalable answer to a false-positive class.
+      #
+      # Scoped to _test.go deliberately: SA5011 stays enabled for production
+      # code, where there is no t.Fatal and the finding would be real.
+      - linters:
+          - staticcheck
+        text: "SA5011"
+        path: _test\.go
       - linters:
           - lll
         path: api/*

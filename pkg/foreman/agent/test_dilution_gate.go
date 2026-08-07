@@ -25,11 +25,18 @@ import (
 	"strings"
 )
 
-// fileHunks holds the content (leading +/- stripped) of one file's added and
-// removed lines from a `git diff --unified=0` output.
+// fileHunks holds the content (leading +/-/space stripped) of one file's added,
+// removed, and context lines from a `git diff` output.
+//
+// Context is populated only when the caller requested a non-zero --unified;
+// under --unified=0 git emits no context lines and the slice stays nil. It
+// exists because a Go command-construction call is routinely spread over
+// several lines, so the changed line alone cannot show that it belongs to one
+// (see hasCommandStringChange).
 type fileHunks struct {
 	Added   []string
 	Removed []string
+	Context []string
 }
 
 // parseUnifiedDiff parses `git diff --unified=0 --src-prefix=a/ --dst-prefix=b/`
@@ -66,6 +73,10 @@ func parseUnifiedDiff(out string) map[string]*fileHunks {
 			if key != "" {
 				ensure(key).Removed = append(ensure(key).Removed, line[1:])
 			}
+		case strings.HasPrefix(line, " ") && cur != "":
+			// Context line. Only present when the caller passed a non-zero
+			// --unified; harmless (and empty) for --unified=0 callers.
+			ensure(cur).Context = append(ensure(cur).Context, line[1:])
 		}
 	}
 	return byFile
@@ -125,6 +136,8 @@ var (
 	urlHostRe = regexp.MustCompile(`https?://([^/\s"'` + "`" + `]+)`)
 	// testdataPathRe captures a testdata/ file path literal.
 	testdataPathRe = regexp.MustCompile(`[\w./-]*testdata/[\w./-]+`)
+	// assertionValueRe captures the matcher name and expected value in
+	// Gomega-style assertions like Equal(N) or ContainSubstring(N).
 )
 
 // fixtureTokens extracts fixture-input identifiers from a set of diff lines:
@@ -168,6 +181,141 @@ func fixtureLiteralChurn(fh *fileHunks) []string {
 	sort.Strings(gone)
 	sort.Strings(appeared)
 	return []string{fmt.Sprintf("fixture input changed (removed %v, added %v)", gone, appeared)}
+}
+
+// assertionValueChurn flags an assertion whose expected value was rewritten
+// in place: a matcher+value pair (e.g. Equal(N)) present only on the removed
+// side while a different one appears only on the added side. This is the
+// #1347 shape: the coder changed the expected value to match buggy behavior.
+// Pure additions or deletions of assertions are not churn (those are caught
+// by assertionErosion). Deterministic: tokens are sorted.
+func assertionValueChurn(fh *fileHunks) []string {
+	rem := assertionValueTokens(fh.Removed)
+	add := assertionValueTokens(fh.Added)
+	var gone, appeared []string
+	for tkn := range rem {
+		if !add[tkn] {
+			gone = append(gone, tkn)
+		}
+	}
+	for tkn := range add {
+		if !rem[tkn] {
+			appeared = append(appeared, tkn)
+		}
+	}
+	if len(gone) == 0 || len(appeared) == 0 {
+		return nil
+	}
+	sort.Strings(gone)
+	sort.Strings(appeared)
+	return []string{fmt.Sprintf("assertion value changed (removed %v, added %v)", gone, appeared)}
+}
+
+// assertionValueTokens extracts matcher+value pairs from assertion lines:
+// e.g. "Equal(42)" or "ContainSubstring(boom)". The key is the full
+// matcher+value string so that Equal(42) vs Equal(0) is a churn signal.
+func assertionValueTokens(lines []string) map[string]bool {
+	set := map[string]bool{}
+	for _, l := range lines {
+		for _, tok := range extractAssertionTokens(l) {
+			set[tok] = true
+		}
+	}
+	return set
+}
+
+// assertionMatchers are the matcher names whose expected value is compared.
+var assertionMatchers = []string{"Equal", "ContainSubstring"}
+
+// extractAssertionTokens pulls "Equal(...)" / "ContainSubstring(...)" spans out
+// of a line using BALANCED paren matching, not a `[^)]+` run. A regex stops at
+// the first ')', so Equal(f(x), 42) truncates to "Equal(f(x)" and a rewrite of
+// the trailing 42 yields an identical token on both sides -- a silent miss, the
+// wrong failure direction for a dilution signal.
+func extractAssertionTokens(line string) []string {
+	var out []string
+	for _, name := range assertionMatchers {
+		for off := 0; off < len(line); {
+			i := strings.Index(line[off:], name+"(")
+			if i < 0 {
+				break
+			}
+			start := off + i
+			// Reject a match inside a longer identifier (e.g. NotEqual().
+			if start > 0 && isIdentByte(line[start-1]) {
+				off = start + 1
+				continue
+			}
+			end := matchParen(line, start+len(name))
+			if end < 0 {
+				off = start + 1
+				continue
+			}
+			out = append(out, normalizeAssertionToken(line[start:end+1]))
+			off = end + 1
+		}
+	}
+	return out
+}
+
+// matchParen returns the index of the ')' closing the '(' at open, or -1.
+// Parens inside string literals do not count toward the depth.
+func matchParen(s string, open int) int {
+	depth := 0
+	for i := open; i < len(s); i++ {
+		switch s[i] {
+		case '"', '`', '\'':
+			if j := skipString(s, i); j > i {
+				i = j
+			}
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// skipString returns the index of the closing quote for the literal opening at
+// i, or i if unterminated.
+func skipString(s string, i int) int {
+	q := s[i]
+	for j := i + 1; j < len(s); j++ {
+		if s[j] == '\\' && q != '`' {
+			j++
+			continue
+		}
+		if s[j] == q {
+			return j
+		}
+	}
+	return i
+}
+
+// normalizeAssertionToken drops whitespace that sits OUTSIDE string literals,
+// so a gofmt-driven respacing such as Equal( 42 ) does not read as churn
+// against Equal(42). Whitespace inside a literal is preserved, because
+// Equal("a b") and Equal("a  b") are genuinely different expectations.
+func normalizeAssertionToken(tok string) string {
+	var b strings.Builder
+	for i := 0; i < len(tok); i++ {
+		c := tok[i]
+		if c == '"' || c == '`' || c == '\'' {
+			end := skipString(tok, i)
+			b.WriteString(tok[i : end+1])
+			i = end
+			continue
+		}
+		if c == ' ' || c == '\t' {
+			continue
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
 }
 
 // nameStatusEntry is one file-level change from `git diff --name-status`.
@@ -300,6 +448,9 @@ func checkTestDilution(ctx context.Context, workspace string, run commandRunner)
 				file, removed-added, strings.Join(firstN(snippets, 3), "; ")))
 		}
 		for _, c := range fixtureLiteralChurn(fh) {
+			findings = append(findings, file+" "+c)
+		}
+		for _, c := range assertionValueChurn(fh) {
 			findings = append(findings, file+" "+c)
 		}
 	}

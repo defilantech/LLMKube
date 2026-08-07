@@ -68,7 +68,7 @@ type SpeculativeDecodingType string
 // set it.
 type SpeculativeDecodingSpec struct {
 	// Type is the speculative decoding method (--spec-type). "mtp" maps to
-	// draft-mtp, "draft" maps to draft, and "disabled" (or omitting the
+	// draft-mtp, "draft" maps to draft-simple, and "disabled" (or omitting the
 	// entire SpeculativeDecoding block) means no speculative decoding.
 	Type SpeculativeDecodingType `json:"type"`
 

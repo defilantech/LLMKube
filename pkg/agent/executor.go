@@ -408,6 +408,11 @@ func hasMatchingExtraArg(extraArgs []string, argName string) bool {
 // mirroring the controller's runtime_llamacpp arg builder. A reranker needs
 // both --reranking and --embedding; flags already in extraArgs win and are not
 // duplicated. Chat (or empty) adds nothing.
+//
+// For embedding and rerank modes, --cache-ram 0 is appended because llama.cpp
+// fills its host prompt cache up to --cache-ram (default 8 GiB) and never
+// releases it, while the cache read path is gated to completion tasks.
+// (#1406)
 func appendModeArgs(args []string, mode string, extraArgs []string) []string {
 	switch mode {
 	case inferencev1alpha1.ServingModeRerank:
@@ -420,12 +425,18 @@ func appendModeArgs(args []string, mode string, extraArgs []string) []string {
 		if !hasMatchingExtraArg(extraArgs, "pooling") {
 			args = append(args, "--pooling", "rank")
 		}
+		if !hasMatchingExtraArg(extraArgs, "cache-ram") {
+			args = append(args, "--cache-ram", "0")
+		}
 	case inferencev1alpha1.ServingModeEmbedding:
 		if !hasMatchingExtraArg(extraArgs, "embedding") {
 			args = append(args, "--embedding")
 		}
 		if !hasMatchingExtraArg(extraArgs, "pooling") {
 			args = append(args, "--pooling", "last")
+		}
+		if !hasMatchingExtraArg(extraArgs, "cache-ram") {
+			args = append(args, "--cache-ram", "0")
 		}
 	}
 	return args

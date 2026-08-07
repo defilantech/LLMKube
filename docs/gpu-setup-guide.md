@@ -319,6 +319,35 @@ kubectl logs $POD -c llama-server | grep -i cuda
 # If not: Image may not have CUDA support, check image tag
 ```
 
+### Crash at startup: "driver on your system is too old" / "CUDA driver version is insufficient"
+
+The image's CUDA userspace is newer than what the node's kernel driver supports.
+When the error appears in the crashed container's termination message (the log
+tail on error), the operator diagnoses it and reports it on the
+InferenceService, so start there instead of the pod logs:
+
+```bash
+kubectl get inferenceservice $NAME -o jsonpath='{.status.conditions[?(@.type=="DriverCompatible")]}'
+# status: "False", reason: CUDADriverInsufficient — the message names the node,
+# its supported CUDA version (from GPU feature labels, when present), and the
+# runtime's own error line.
+kubectl get events --field-selector reason=CUDADriverInsufficient
+```
+
+The compatibility rule: the node driver's supported CUDA **major** version must
+be >= the image's CUDA major (a CUDA 12.9 image runs on a 12.4 driver; a CUDA
+13.x image does not). Minor versions within a major are compatible per
+[NVIDIA's minor version compatibility](https://docs.nvidia.com/deploy/cuda-compatibility/minor-version-compatibility.html),
+with two exceptions: PTX JIT compilation, and APIs introduced in a newer minor
+that need a matching driver. Fix: use an image built for the node's CUDA
+major, or move the workload to nodes with a newer driver. Check what a node
+supports with (older gpu-feature-discovery releases publish the same value
+under the deprecated `nvidia.com/cuda.runtime.major`):
+
+```bash
+kubectl get node $NODE -o jsonpath='{.metadata.labels.nvidia\.com/cuda\.runtime-version\.major}'
+```
+
 ### Poor GPU performance
 ```bash
 # Check GPU utilization

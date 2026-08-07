@@ -157,7 +157,7 @@ tests:
       grafana.dashboards.operator.enabled: true
       grafana.dashboards.operator.datasources:
         - inputName: DS_PROMETHEUS
-          datasourceName: VictoriaMetrics
+          datasourceName: prometheus-uid
     documentSelector:
       path: metadata.name
       value: RELEASE-NAME-llmkube-llmkube-slo
@@ -166,7 +166,7 @@ tests:
           path: spec.datasources
           content:
             inputName: DS_PROMETHEUS
-            datasourceName: VictoriaMetrics
+            datasourceName: prometheus-uid
 
   - it: should render no CRs when the operator is enabled but dashboards are off
     set:
