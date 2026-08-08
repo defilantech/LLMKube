@@ -5,6 +5,41 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.15](https://github.com/defilantech/LLMKube/compare/v0.9.14...v0.9.15) (2026-08-08)
+
+
+### Features
+
+* **chart:** expose --ca-cert-configmap as controllerManager.caCertConfigMap ([#1440](https://github.com/defilantech/LLMKube/issues/1440)) ([606c7f9](https://github.com/defilantech/LLMKube/commit/606c7f9393a412e9553e93ff3fde862bded1773d))
+* **controller:** diagnose CUDA driver/runtime mismatch from crashed pods ([#1425](https://github.com/defilantech/LLMKube/issues/1425)) ([06670f9](https://github.com/defilantech/LLMKube/commit/06670f9905664ad9ae0f7f40a04139da9cf9c1cc))
+* **controller:** diagnose model-transfer failures from init containers ([#1463](https://github.com/defilantech/LLMKube/issues/1463)) ([a092de3](https://github.com/defilantech/LLMKube/commit/a092de318b6cf959af6cec44c194e5272ccb6b88))
+* **foreman:** advisory gate for command-string changes tested only by shape ([#1421](https://github.com/defilantech/LLMKube/issues/1421)) ([b580e18](https://github.com/defilantech/LLMKube/commit/b580e18803f3ed6d1660c5d81e324290f6b795df))
+* **inferenceservice:** add spec.modelCache.persistence for an ephemeral model cache ([#1452](https://github.com/defilantech/LLMKube/issues/1452)) ([c4ae7ee](https://github.com/defilantech/LLMKube/commit/c4ae7ee6e5ffd3f7bdd9463891e3f959b57a0f5c))
+
+
+### Bug Fixes
+
+* **api:** reject unservable speculativeDecoding type draft at admission ([#1455](https://github.com/defilantech/LLMKube/issues/1455)) ([5d3ab73](https://github.com/defilantech/LLMKube/commit/5d3ab73b3396046aedfd0f26a262de807164c534))
+* **chart:** default the router-proxy image tag to the chart appVersion ([#1431](https://github.com/defilantech/LLMKube/issues/1431)) ([3e07b81](https://github.com/defilantech/LLMKube/commit/3e07b814f07bb954acfb446419d5e9ecbcb2496c))
+* **controller:** clean up orphaned .tmp files from interrupted model transfers ([#1459](https://github.com/defilantech/LLMKube/issues/1459)) ([2f453d6](https://github.com/defilantech/LLMKube/commit/2f453d621279c787fa3592020901120e93ed36d6))
+* **controller:** emit draft-simple for speculativeDecoding type draft ([#1417](https://github.com/defilantech/LLMKube/issues/1417)) ([ccccd02](https://github.com/defilantech/LLMKube/commit/ccccd0203f0b0e3a76732f52aeb2b7bbf458a772))
+* **controller:** publish model downloads atomically so an interrupted transfer is never cached ([#1432](https://github.com/defilantech/LLMKube/issues/1432)) ([206b6c3](https://github.com/defilantech/LLMKube/commit/206b6c3c56d98b03377242ec86f000d9a9315803))
+* **controller:** route s3:// model sources to the runtime-resolved path ([#1450](https://github.com/defilantech/LLMKube/issues/1450)) ([f054960](https://github.com/defilantech/LLMKube/commit/f0549605b029783fb2095d205a990d69c0bd6a7c))
+* **controller:** set TerminationMessagePolicy on generated init containers ([#1460](https://github.com/defilantech/LLMKube/issues/1460)) ([bc732b3](https://github.com/defilantech/LLMKube/commit/bc732b3afd5ce931360efd1ce4d625ae61975643))
+* **dashboard:** select the latency success series by le!="" so llmkube-slo error-budget panels render for any threshold ([#1444](https://github.com/defilantech/LLMKube/issues/1444)) ([d381112](https://github.com/defilantech/LLMKube/commit/d381112c63930d92f305d7bd942b97205266d2be))
+* **foreman:** add chart validation to the coder gate, and install helm so it can run ([#1442](https://github.com/defilantech/LLMKube/issues/1442)) ([b26c6ae](https://github.com/defilantech/LLMKube/commit/b26c6ae11a26b9e5567524680621ef8e63714a24))
+* **foreman:** detect assertion-value churn in the test-dilution gate ([#1416](https://github.com/defilantech/LLMKube/issues/1416)) ([b53df14](https://github.com/defilantech/LLMKube/commit/b53df14d95652647c10b0f32e4b7425efb69435c))
+* **foreman:** preserve the coder Job name's uniqueness suffix on truncation ([#1412](https://github.com/defilantech/LLMKube/issues/1412)) ([929f0a8](https://github.com/defilantech/LLMKube/commit/929f0a8795e8ad3070b3717e130aea9d8a88e4a0))
+* ground the PR body summary against the branch diff ([#1448](https://github.com/defilantech/LLMKube/issues/1448)) ([6f24527](https://github.com/defilantech/LLMKube/commit/6f2452743f0f30168a3f00de8db25f63d36170e5))
+* **metrics:** correct the AMD doc's metric contract and guard prose docs ([#1420](https://github.com/defilantech/LLMKube/issues/1420)) ([36631a9](https://github.com/defilantech/LLMKube/commit/36631a914a412caa13bf9a7741028cfdc10c9f74))
+* **runtime:** disable the llama.cpp prompt cache for embedding and rerank ([#1413](https://github.com/defilantech/LLMKube/issues/1413)) ([407de59](https://github.com/defilantech/LLMKube/commit/407de59a8efa5cef8eb060d83ac5faab37bb4bcc))
+
+
+### Documentation
+
+* **b200:** record GB10 partial-proxy reachability and why NVLink/MIG/sm_100 stay gated ([#1422](https://github.com/defilantech/LLMKube/issues/1422)) ([e6ab2e9](https://github.com/defilantech/LLMKube/commit/e6ab2e9d0d8220add604230ffb527ff7b1660a88))
+* **chart:** dashboard datasources examples must use the datasource UID, not its display name ([#1433](https://github.com/defilantech/LLMKube/issues/1433)) ([a57d499](https://github.com/defilantech/LLMKube/commit/a57d499fcbc3261feccb31148f6fb3796a751db0))
+
 ## [0.9.14](https://github.com/defilantech/LLMKube/compare/v0.9.13...v0.9.14) (2026-08-05)
 
 
