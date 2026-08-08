@@ -734,6 +734,12 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 		// (GO=APPROVE / NO-GO=REQUEST-CHANGES) is the authoritative
 		// signal regardless of findings validity (see pkg/foreman/agent/
 		// reviewer/findings.go for the schema).
+		//
+		// Declared out here so the PR-body summary grounding (#1411) can
+		// reuse the same base + name-only diff the reviewer rails ran on
+		// instead of resolving and shelling out for them a second time.
+		var reviewBase string
+		var reviewDiff []string
 		if agent.Spec.Role == foremanv1alpha1.AgentRoleReviewer &&
 			loopRes.Terminal != nil {
 			// Ground-truth filesTouched against the actual diff before
@@ -747,7 +753,7 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 			// reviewer clones the fork, whose local `main` lags upstream, so
 			// diffing against local `main` sweeps in the whole intervening
 			// upstream delta and neuters every rail (#1005).
-			reviewBase := e.reviewerDiffBase(ctx, log, task, workspace)
+			reviewBase = e.reviewerDiffBase(ctx, log, task, workspace)
 			reconcileReviewerFilesTouched(ctx, log, workspace, reviewBase, loopRes.Terminal.Extra)
 			// Ground-truth issueAsk against the fetch_issue tool result
 			// the model already had in its context. Devstral on the same
@@ -760,7 +766,8 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 			reconcileReviewerIssueAsk(log, loopRes.Transcript, loopRes.Terminal.Extra)
 			// Ground-truth the branch diff ONCE for the two computable rails
 			// below (grounded-finding + scope-overlap).
-			reviewDiff, reviewDiffErr := repo.DiffNameOnly(ctx, workspace, reviewBase)
+			var reviewDiffErr error
+			reviewDiff, reviewDiffErr = repo.DiffNameOnly(ctx, workspace, reviewBase)
 			// Grounded-finding rail: a NO-GO must be earned by >=1 blocking
 			// finding citing a line the diff changed; otherwise demote it to GO
 			// and archive the rejected findings. Mirror of scope-overlap, in the
@@ -810,7 +817,8 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 		// INCOMPLETE (this is NOT a GO); we only commit + push the branch and
 		// record it under r.Extra. Coder-role only (reviewers are read-only).
 		e.maybePreserveGateFailedBranch(ctx, log, agent, task, workspace, branch, auth, loopRes, r)
-		e.maybeOpenPullRequest(ctx, log, task, auth, verdict, r)
+		e.maybeOpenPullRequest(ctx, log, task, auth, verdict, r,
+			workspace, reviewBase, reviewDiff)
 		// Attach the normalized failure reason from the model-to-CRD
 		// mapping (e.g. ERROR→INCOMPLETE + ModelReportedError for #649). Only
 		// set when the normalizer produced a reason AND the result does
@@ -1065,7 +1073,10 @@ func (e *NativeAgentLoopExecutor) retryCoderTerminalResult(
 ) *Result {
 	r := e.modelDecidedResult(start, tref, lr, verdict)
 	e.maybePreserveGateFailedBranch(ctx, log, agent, task, workspace, branch, auth, lr, r)
-	e.maybeOpenPullRequest(ctx, log, task, auth, verdict, r)
+	// No reviewer rails ran on this path, so there is no resolved review base
+	// to ground the summary against; #1411's check degrades open on the empty
+	// base rather than grounding against a base it had to guess at.
+	e.maybeOpenPullRequest(ctx, log, task, auth, verdict, r, workspace, "", nil)
 	if normReason != "" && r.FailureReason == "" {
 		r.FailureReason = normReason
 	}
@@ -1740,6 +1751,7 @@ func (e *NativeAgentLoopExecutor) maybeOpenPullRequest(
 	ctx context.Context, log logr.Logger,
 	task *foremanv1alpha1.AgenticTask, auth *repo.Auth,
 	verdict foremanv1alpha1.AgenticTaskVerdict, r *Result,
+	workspace, reviewBase string, reviewDiff []string,
 ) {
 	if verdict != foremanv1alpha1.AgenticTaskVerdictGo ||
 		task.Spec.Kind != foremanv1alpha1.AgenticTaskKindReview ||
@@ -1747,7 +1759,8 @@ func (e *NativeAgentLoopExecutor) maybeOpenPullRequest(
 		e.codeHost(authToken(auth)) == nil {
 		return
 	}
-	if prURL, prErr := e.openPullRequest(ctx, task, auth, r.Summary); prErr != nil {
+	body := e.groundPRSummary(ctx, log, r, workspace, reviewBase, reviewDiff)
+	if prURL, prErr := e.openPullRequest(ctx, task, auth, body); prErr != nil {
 		log.Error(prErr, "review GO: opening pull request failed",
 			"repo", task.Spec.Payload.Repo, "branch", task.Spec.Payload.Branch)
 		r.Extra["pullRequestError"] = prErr.Error()
@@ -1756,6 +1769,48 @@ func (e *NativeAgentLoopExecutor) maybeOpenPullRequest(
 			"repo", task.Spec.Payload.Repo, "pr", prURL)
 		r.Extra["pullRequestURL"] = prURL
 	}
+}
+
+// groundPRSummary cross-checks the summary that is about to become the PR
+// description against the branch diff (#1411) and returns the prose to
+// render. Concrete claims the diff does not support get a visible note
+// appended; the model's original is archived under `extra.summaryClaimed`
+// alongside the claims that failed, mirroring `issueAskClaimed` (#644).
+//
+// Note the premise correction: the summary rendered here is the
+// *reviewer's* (maybeOpenPullRequest only fires for a review-kind task and
+// passes r.Summary), not the coder's. Grounding it is still the fix --
+// the reviewer read the diff to reach GO but its prose is no more
+// ground-truthed than any other model-authored field.
+//
+// Degrades open in every direction: no diff, a git failure, or an empty
+// summary all return the model's prose untouched.
+func (e *NativeAgentLoopExecutor) groundPRSummary(
+	ctx context.Context, log logr.Logger, r *Result,
+	workspace, reviewBase string, reviewDiff []string,
+) string {
+	summary := r.Summary
+	if strings.TrimSpace(summary) == "" || workspace == "" || reviewBase == "" {
+		return summary
+	}
+	g := diffGroundTruth{
+		workspace: workspace,
+		files:     reviewDiff,
+		text:      branchDiffText(ctx, workspace, reviewBase, execCommandRunner),
+	}
+	unverified := ungroundedSummaryClaims(summary, g)
+	if len(unverified) == 0 {
+		return summary
+	}
+	body := annotateUnverifiedClaims(summary, unverified)
+	if r.Extra == nil {
+		r.Extra = map[string]any{}
+	}
+	r.Extra["summaryClaimed"] = summary
+	r.Extra["summaryUnverifiedClaims"] = unverified
+	log.Info("PR body: summary claims not found in the branch diff; annotating",
+		"claims", unverified, "base", reviewBase)
+	return body
 }
 
 // openPullRequest ensures the PR for the task's branch exists: title
@@ -1772,7 +1827,7 @@ func (e *NativeAgentLoopExecutor) maybeOpenPullRequest(
 // owner — or one that is not an owner/repo-shaped URL at all (local
 // paths in tests) — keeps the same-repo shape.
 func (e *NativeAgentLoopExecutor) openPullRequest(
-	ctx context.Context, task *foremanv1alpha1.AgenticTask, auth *repo.Auth, reviewSummary string,
+	ctx context.Context, task *foremanv1alpha1.AgenticTask, auth *repo.Auth, summaryBody string,
 ) (string, error) {
 	p := task.Spec.Payload
 	owner, _, ok := codehost.SplitRepoSlug(p.Repo)
@@ -1795,10 +1850,11 @@ func (e *NativeAgentLoopExecutor) openPullRequest(
 		title = fmt.Sprintf("Fix #%d", p.Issue)
 	}
 	// Body: the reviewer's own summary of the change (it read the full diff
-	// against the issue to reach GO), then the issue link and provenance. Falls
-	// back to just the link when the reviewer returned no summary.
+	// against the issue to reach GO), already diff-grounded by groundPRSummary
+	// (#1411), then the issue link and provenance. Falls back to just the link
+	// when the reviewer returned no summary.
 	var bodyB strings.Builder
-	if s := strings.TrimSpace(reviewSummary); s != "" {
+	if s := strings.TrimSpace(summaryBody); s != "" {
 		bodyB.WriteString(s)
 		bodyB.WriteString("\n\n")
 	}

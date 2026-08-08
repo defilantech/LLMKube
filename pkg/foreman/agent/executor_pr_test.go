@@ -18,6 +18,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -111,7 +112,7 @@ func TestMaybeOpenPullRequest_Gating(t *testing.T) {
 			task := reviewTaskForPR(tc.kind, tc.openPR)
 			r := &Result{Extra: map[string]any{}}
 
-			e.maybeOpenPullRequest(context.Background(), logr.Discard(), task, nil, tc.verdict, r)
+			e.maybeOpenPullRequest(context.Background(), logr.Discard(), task, nil, tc.verdict, r, "", "", nil)
 
 			if called := len(fe.ensures) > 0; called != tc.wantCalled {
 				t.Fatalf("EnsurePR called=%v, want %v (calls=%+v)", called, tc.wantCalled, fe.ensures)
@@ -130,7 +131,7 @@ func TestMaybeOpenPullRequest_NilEnsurerIsDisabled(t *testing.T) {
 	task := reviewTaskForPR(foremanv1alpha1.AgenticTaskKindReview, true)
 	r := &Result{Extra: map[string]any{}}
 	e.maybeOpenPullRequest(context.Background(), logr.Discard(), task, nil,
-		foremanv1alpha1.AgenticTaskVerdictGo, r)
+		foremanv1alpha1.AgenticTaskVerdictGo, r, "", "", nil)
 	if len(r.Extra) != 0 {
 		t.Fatalf("nil ensurer must be a no-op; extra=%+v", r.Extra)
 	}
@@ -149,7 +150,7 @@ func TestMaybeOpenPullRequest_BodyCarriesReviewSummary(t *testing.T) {
 	}
 
 	e.maybeOpenPullRequest(context.Background(), logr.Discard(), task, nil,
-		foremanv1alpha1.AgenticTaskVerdictGo, r)
+		foremanv1alpha1.AgenticTaskVerdictGo, r, "", "", nil)
 
 	if len(fe.ensures) != 1 {
 		t.Fatalf("want 1 EnsurePR call, got %+v", fe.ensures)
@@ -181,7 +182,7 @@ func TestMaybeOpenPullRequest_ForkRemoteQualifiesHead(t *testing.T) {
 	r := &Result{Extra: map[string]any{}}
 
 	e.maybeOpenPullRequest(context.Background(), logr.Discard(), task, nil,
-		foremanv1alpha1.AgenticTaskVerdictGo, r)
+		foremanv1alpha1.AgenticTaskVerdictGo, r, "", "", nil)
 
 	if len(fe.ensures) != 1 {
 		t.Fatalf("want 1 EnsurePR call, got %+v", fe.ensures)
@@ -223,7 +224,7 @@ func TestMaybeOpenPullRequest_SameRepoRemoteKeepsBareHead(t *testing.T) {
 		r := &Result{Extra: map[string]any{}}
 
 		e.maybeOpenPullRequest(context.Background(), logr.Discard(), task, nil,
-			foremanv1alpha1.AgenticTaskVerdictGo, r)
+			foremanv1alpha1.AgenticTaskVerdictGo, r, "", "", nil)
 
 		if len(fe.ensures) != 1 {
 			t.Fatalf("remote %q: want 1 EnsurePR call, got %+v", remote, fe.ensures)
@@ -265,5 +266,114 @@ func TestGitRemoteOwnerRepo(t *testing.T) {
 			t.Errorf("gitRemoteOwnerRepo(%q) = %q, %q; want %q, %q",
 				tc.url, owner, name, tc.owner, tc.name)
 		}
+	}
+}
+
+// TestMaybeOpenPullRequest_BodyFlagsUngroundedClaim is the #1411 wiring
+// test: the summary that becomes the PR description is cross-checked
+// against the branch diff before it is rendered, the note lands in the
+// body a human reads, and the model's original is archived under
+// extra.summaryClaimed the way issueAskClaimed is (#644).
+func TestMaybeOpenPullRequest_BodyFlagsUngroundedClaim(t *testing.T) {
+	orig := execCommandRunner
+	t.Cleanup(func() { execCommandRunner = orig })
+	execCommandRunner = func(_ context.Context, _ string, _ []string,
+		name string, args ...string) (string, error) {
+		if name != "git" || args[0] != "diff" {
+			t.Fatalf("unexpected command %s %v", name, args)
+		}
+		return loggingDiff, nil
+	}
+
+	fe := &fakePREnsurer{subject: "feat: structured logging", url: "https://example/pr/9"}
+	e := &NativeAgentLoopExecutor{PREnsurer: fe}
+	task := reviewTaskForPR(foremanv1alpha1.AgenticTaskKindReview, true)
+	summary := "Replaces bare `print()` calls with `logger.info()` and adds a `/health` endpoint."
+	r := &Result{Summary: summary, Extra: map[string]any{}}
+
+	e.maybeOpenPullRequest(context.Background(), logr.Discard(), task, nil,
+		foremanv1alpha1.AgenticTaskVerdictGo, r, t.TempDir(), "main", []string{"bridge/app.py"})
+
+	if len(fe.ensures) != 1 {
+		t.Fatalf("want 1 EnsurePR call, got %+v", fe.ensures)
+	}
+	body := fe.ensures[0].body
+	if !strings.Contains(body, summary) {
+		t.Errorf("the reviewer's prose must survive verbatim; got %q", body)
+	}
+	if !strings.Contains(body, "Unverified claims") || !strings.Contains(body, "`/health`") {
+		t.Errorf("body must flag the ungrounded claim; got %q", body)
+	}
+	if r.Extra["summaryClaimed"] != summary {
+		t.Errorf("summaryClaimed must archive the model's original; got %v", r.Extra["summaryClaimed"])
+	}
+	claims, _ := r.Extra["summaryUnverifiedClaims"].([]string)
+	if len(claims) != 1 || claims[0] != "/health" {
+		t.Errorf("summaryUnverifiedClaims = %v, want [/health]", r.Extra["summaryUnverifiedClaims"])
+	}
+	if r.Summary != summary {
+		t.Errorf("r.Summary must stay the model's own; got %q", r.Summary)
+	}
+}
+
+// TestMaybeOpenPullRequest_GroundedSummaryUntouched: the common case. A
+// summary whose claims the diff supports renders byte-for-byte as before,
+// with no note and no summaryClaimed archive.
+func TestMaybeOpenPullRequest_GroundedSummaryUntouched(t *testing.T) {
+	orig := execCommandRunner
+	t.Cleanup(func() { execCommandRunner = orig })
+	execCommandRunner = func(_ context.Context, _ string, _ []string,
+		_ string, _ ...string) (string, error) {
+		return loggingDiff, nil
+	}
+
+	fe := &fakePREnsurer{subject: "feat: structured logging", url: "https://example/pr/10"}
+	e := &NativeAgentLoopExecutor{PREnsurer: fe}
+	task := reviewTaskForPR(foremanv1alpha1.AgenticTaskKindReview, true)
+	summary := "Replaces bare `print()` calls in `bridge/app.py` with `logger.info()`."
+	r := &Result{Summary: summary, Extra: map[string]any{}}
+
+	e.maybeOpenPullRequest(context.Background(), logr.Discard(), task, nil,
+		foremanv1alpha1.AgenticTaskVerdictGo, r, t.TempDir(), "main", []string{"bridge/app.py"})
+
+	body := fe.ensures[0].body
+	if strings.Contains(body, "Unverified claims") {
+		t.Errorf("a grounded summary must render clean; got %q", body)
+	}
+	if _, archived := r.Extra["summaryClaimed"]; archived {
+		t.Errorf("nothing to archive when the body equals the summary; extra=%+v", r.Extra)
+	}
+}
+
+// TestMaybeOpenPullRequest_NoDiffSkipsGrounding: an unresolved review base
+// (the coder-retry path) or a git failure must leave the summary alone.
+// Warning on missing ground truth would put the note on honest PRs.
+func TestMaybeOpenPullRequest_NoDiffSkipsGrounding(t *testing.T) {
+	orig := execCommandRunner
+	t.Cleanup(func() { execCommandRunner = orig })
+	execCommandRunner = func(_ context.Context, _ string, _ []string,
+		_ string, _ ...string) (string, error) {
+		return "", errors.New("fatal: bad revision")
+	}
+
+	for _, tc := range []struct{ name, workspace, base string }{
+		{"git failure", "/tmp", "main"},
+		{"no resolved base", "/tmp", ""},
+		{"no workspace", "", "main"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fe := &fakePREnsurer{subject: "feat: x", url: "https://example/pr/11"}
+			e := &NativeAgentLoopExecutor{PREnsurer: fe}
+			task := reviewTaskForPR(foremanv1alpha1.AgenticTaskKindReview, true)
+			summary := "Adds a `/health` endpoint."
+			r := &Result{Summary: summary, Extra: map[string]any{}}
+
+			e.maybeOpenPullRequest(context.Background(), logr.Discard(), task, nil,
+				foremanv1alpha1.AgenticTaskVerdictGo, r, tc.workspace, tc.base, nil)
+
+			if body := fe.ensures[0].body; strings.Contains(body, "Unverified claims") {
+				t.Errorf("no ground truth must mean no note; got %q", body)
+			}
+		})
 	}
 }
