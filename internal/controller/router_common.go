@@ -41,6 +41,11 @@ const (
 
 	// routerProxyPort is the HTTP port the proxy listens on.
 	routerProxyPort int32 = 8080
+
+	// routerProxyMetricsPort is the port the proxy exposes Prometheus
+	// metrics on. Separate from the data-plane port so NetworkPolicies
+	// can isolate scrape access.
+	routerProxyMetricsPort int32 = 9090
 )
 
 // routerProxyResourceName is the canonical name used for every K8s

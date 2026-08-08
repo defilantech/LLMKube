@@ -30,6 +30,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
 	"github.com/defilantech/llmkube/internal/router"
 )
 
@@ -38,6 +40,8 @@ func main() {
 		"Path to the compiled router config file (mounted from the controller-managed ConfigMap).")
 	listen := flag.String("listen", ":8080",
 		"Address the HTTP server binds to (host:port).")
+	metricsListen := flag.String("metrics-bind-address", ":9090",
+		"Address the metrics endpoint binds to (host:port).")
 	logFormat := flag.String("log-format", "json",
 		"Structured log format: json or text.")
 	shutdownTimeout := flag.Duration("shutdown-timeout", 30*time.Second,
@@ -87,8 +91,8 @@ func main() {
 		// Per-request context handles the real deadline.
 	}
 
-	// Run the server in a goroutine so the main goroutine can wait on
-	// SIGTERM and trigger graceful shutdown.
+	// Run the data-plane server in a goroutine so the main goroutine can
+	// wait on SIGTERM and trigger graceful shutdown.
 	serverErr := make(chan error, 1)
 	go func() {
 		logger.Info("router-proxy listening", "address", *listen)
@@ -96,6 +100,23 @@ func main() {
 			serverErr <- err
 		}
 		close(serverErr)
+	}()
+
+	// Metrics server on a separate port so the data-plane mux stays
+	// clean for inference traffic and NetworkPolicies can isolate
+	// scrape access.
+	metricsMux := http.NewServeMux()
+	metricsMux.Handle("GET /metrics", promhttp.Handler())
+	metricsSrv := &http.Server{
+		Addr:              *metricsListen,
+		Handler:           metricsMux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() {
+		logger.Info("metrics server listening", "address", *metricsListen)
+		if err := metricsSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serverErr <- err
+		}
 	}()
 
 	stop := make(chan os.Signal, 1)
@@ -108,6 +129,10 @@ func main() {
 		defer cancel()
 		if err := srv.Shutdown(ctx); err != nil {
 			logger.Error("graceful shutdown failed", "error", err)
+			os.Exit(1)
+		}
+		if err := metricsSrv.Shutdown(ctx); err != nil {
+			logger.Error("metrics server shutdown failed", "error", err)
 			os.Exit(1)
 		}
 		logger.Info("router-proxy stopped cleanly")

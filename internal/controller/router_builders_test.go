@@ -13,6 +13,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -830,5 +831,51 @@ func TestReconcileRouterDeploymentPreservesExternalAnnotations(t *testing.T) {
 		if got := updated.Spec.Template.Labels[k]; got != v {
 			t.Errorf("selector label %q = %q, want %q", k, got, v)
 		}
+	}
+}
+
+// TestRouterDeploymentMetricsPort confirms the router-proxy Deployment
+// exposes a dedicated metrics container port and passes the
+// --metrics-bind-address flag so Prometheus scrapers can reach the
+// llmkube_router_* metrics. Regression test for #1427.
+func TestRouterDeploymentMetricsPort(t *testing.T) {
+	mr := canonicalModelRouter()
+	r := &ModelRouterReconciler{RouterProxyImage: "ghcr.io/test/router-proxy:v1"}
+	dep := r.newRouterDeployment(mr, "hash")
+
+	c := dep.Spec.Template.Spec.Containers[0]
+
+	// The container must have exactly two ports: http and metrics.
+	if len(c.Ports) != 2 {
+		t.Fatalf("container ports = %d, want 2", len(c.Ports))
+	}
+
+	// Check the metrics port.
+	var foundMetrics bool
+	for _, p := range c.Ports {
+		if p.Name == "metrics" {
+			foundMetrics = true
+			if p.ContainerPort != routerProxyMetricsPort {
+				t.Errorf("metrics port = %d, want %d", p.ContainerPort, routerProxyMetricsPort)
+			}
+		}
+	}
+	if !foundMetrics {
+		t.Fatal("no metrics container port found")
+	}
+
+	// The --metrics-bind-address flag must be present.
+	var foundFlag bool
+	for i, a := range c.Args {
+		if a == "--metrics-bind-address" && i+1 < len(c.Args) {
+			foundFlag = true
+			want := fmt.Sprintf(":%d", routerProxyMetricsPort)
+			if c.Args[i+1] != want {
+				t.Errorf("--metrics-bind-address value = %q, want %q", c.Args[i+1], want)
+			}
+		}
+	}
+	if !foundFlag {
+		t.Errorf("--metrics-bind-address flag not rendered; args = %v", c.Args)
 	}
 }

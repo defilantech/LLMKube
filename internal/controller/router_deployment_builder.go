@@ -147,6 +147,11 @@ func (r *ModelRouterReconciler) newRouterDeployment(
 									ContainerPort: routerProxyPort,
 									Protocol:      corev1.ProtocolTCP,
 								},
+								{
+									Name:          "metrics",
+									ContainerPort: routerProxyMetricsPort,
+									Protocol:      corev1.ProtocolTCP,
+								},
 							},
 							EnvFrom: envFrom,
 							VolumeMounts: []corev1.VolumeMount{
@@ -275,6 +280,7 @@ func routerProxyArgs(mr *inferencev1alpha1.ModelRouter) []string {
 	args := []string{
 		"--config", routerProxyConfigMountPath + "/" + routerProxyConfigKey,
 		"--listen", fmt.Sprintf(":%d", routerProxyPort),
+		"--metrics-bind-address", fmt.Sprintf(":%d", routerProxyMetricsPort),
 		"--log-format", "json",
 	}
 	if mr.Spec.Proxy != nil && mr.Spec.Proxy.QuarantineDuration != nil {
