@@ -72,6 +72,7 @@ import (
 	"github.com/defilantech/llmkube/pkg/foreman/agent/codehost"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/githubissue"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/githubpr"
+	"github.com/defilantech/llmkube/pkg/foreman/agent/githubprfetch"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/mcp"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/repo"
 	foremantools "github.com/defilantech/llmkube/pkg/foreman/agent/tools"
@@ -810,6 +811,16 @@ func makeRegistryFactory(
 			// Closes #580.
 			&foremantools.FetchIssueTool{
 				Fetcher: githubissue.NewClient(),
+				Token:   repo.TokenFromEnvOrFile,
+			},
+			// fetch_pull_request: read-only GitHub PR surface for the
+			// coder. The same token the foreman-agent already loads
+			// at startup (via repo.TokenFromEnvOrFile) reaches GitHub
+			// through one bounded Go-side call instead of being
+			// inherited by every bash subprocess via $GH_TOKEN.
+			// Closes #1434.
+			&foremantools.FetchPullRequestTool{
+				Fetcher: githubprfetch.NewClient(),
 				Token:   repo.TokenFromEnvOrFile,
 			},
 			// run_integrate: deterministic tool for a sliced Workload's
