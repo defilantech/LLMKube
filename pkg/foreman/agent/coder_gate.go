@@ -350,6 +350,17 @@ func gateCheckRegistry(issueText, evidenceBaseSHA string, evidence []grounding.E
 			tier: tierAdvisory,
 			fn:   checkCommandStringTestDilution,
 		},
+		{
+			// two-site-parity (#1418): advisory. Surfaces to the reviewer when
+			// a changed function adds a string literal (e.g. a command-line
+			// flag) but a same-named sibling function in another package does
+			// not contain that literal. Advisory only: never blocks, because
+			// there are legitimate reasons for two same-named functions to
+			// diverge.
+			name: "two-site-parity",
+			tier: tierAdvisory,
+			fn:   checkTwoSiteParity,
+		},
 	}
 }
 

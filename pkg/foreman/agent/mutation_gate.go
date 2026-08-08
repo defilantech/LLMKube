@@ -505,6 +505,265 @@ func rangeIntersects(lines map[int]bool, start, end int) bool {
 // one gate run, so a sprawling change cannot blow the loop's time budget.
 const maxNeuterPackages = 5
 
+// checkTwoSiteParity is a tierAdvisory gate check (#1418). For each changed
+// non-test Go file it collects the string literals the diff adds and the names
+// of functions whose bodies were modified. It then searches the repository's
+// other non-test Go packages for a function declaration with the same name.
+// If such a sibling exists and does not contain the added literal, an advisory
+// naming both sites is emitted. Advisory only: it must never block a branch,
+// because there are legitimate reasons for two same-named functions to diverge.
+//
+// Scope guards:
+//   - Only fire when the sibling function name is an exact match.
+//   - Only consider string literals the diff added; ignore removals.
+//   - Skip _test.go files entirely on both sides.
+//   - Emit at most one advisory per (function name, literal) pair.
+//   - Output is sorted for determinism.
+func checkTwoSiteParity(ctx context.Context, workspace string, run commandRunner) (bool, string) {
+	changed := changedNonTestGoFiles(ctx, workspace, run)
+	if len(changed) == 0 {
+		return false, ""
+	}
+
+	// Collect added string literals per changed file.
+	type fileInfo struct {
+		path      string
+		addedLits map[string]bool
+		modFuncs  map[string]bool
+	}
+	var infos []fileInfo
+	for _, f := range changed {
+		added := addedStringLiterals(ctx, workspace, f, run)
+		modNames := modifiedFuncNames(ctx, workspace, f, run)
+		mod := map[string]bool{}
+		for _, n := range modNames {
+			mod[n] = true
+		}
+		if len(added) == 0 || len(mod) == 0 {
+			continue
+		}
+		infos = append(infos, fileInfo{
+			path:      f,
+			addedLits: added,
+			modFuncs:  mod,
+		})
+	}
+	if len(infos) == 0 {
+		return false, ""
+	}
+
+	// For each (func name, literal) pair, check if a sibling function in
+	// another file lacks the literal.
+	type parityFinding struct {
+		funcName string
+		literal  string
+		changed  string
+		sibling  string
+	}
+	var findings []parityFinding
+	seen := map[string]bool{}
+
+	for _, info := range infos {
+		for funcName := range info.modFuncs {
+			for lit := range info.addedLits {
+				sibling := findSiblingMissingLiteral(workspace, funcName, lit, info.path)
+				if sibling == "" {
+					continue
+				}
+				key := funcName + ":" + lit
+				if seen[key] {
+					continue
+				}
+				seen[key] = true
+				findings = append(findings, parityFinding{
+					funcName: funcName,
+					literal:  lit,
+					changed:  info.path,
+					sibling:  sibling,
+				})
+			}
+		}
+	}
+	if len(findings) == 0 {
+		return false, ""
+	}
+
+	// Sort for determinism: by func name, then literal, then changed file.
+	sort.Slice(findings, func(i, j int) bool {
+		if findings[i].funcName != findings[j].funcName {
+			return findings[i].funcName < findings[j].funcName
+		}
+		if findings[i].literal != findings[j].literal {
+			return findings[i].literal < findings[j].literal
+		}
+		return findings[i].changed < findings[j].changed
+	})
+
+	var b strings.Builder
+	for _, f := range findings {
+		fmt.Fprintf(&b, "%s: added %q in %s but the same-named function in %s does not contain it\n",
+			f.funcName, f.literal, f.changed, f.sibling)
+	}
+	return true, b.String()
+}
+
+// addedStringLiterals returns the set of string literals added in the diff of
+// the given file. It parses `git diff -U0 HEAD -- <file>` and extracts
+// double-quoted string literals from added lines. Only added lines are
+// considered; removed lines are ignored.
+func addedStringLiterals(ctx context.Context, workspace, file string, run commandRunner) map[string]bool {
+	out, err := run(ctx, workspace, nil, "git", "diff", "-U0", "HEAD", "--", file)
+	if err != nil {
+		return nil
+	}
+	set := map[string]bool{}
+	for _, line := range strings.Split(out, "\n") {
+		if !strings.HasPrefix(line, "+") || strings.HasPrefix(line, "+++") {
+			continue
+		}
+		for _, lit := range extractStringLiterals(line[1:]) {
+			set[lit] = true
+		}
+	}
+	return set
+}
+
+// extractStringLiterals returns all double-quoted string literals from a line,
+// returning the unescaped string value (e.g. "--cache-ram" yields "--cache-ram",
+// not the raw source bytes). Backtick and single-quote literals are not
+// extracted (the parity signal is about command-line flags like "--cache-ram"
+// which are double-quoted in Go source).
+func extractStringLiterals(line string) []string {
+	var lits []string
+	for i := 0; i < len(line); i++ {
+		if line[i] != '"' {
+			continue
+		}
+		// Find the closing quote, handling escapes.
+		j := i + 1
+		for j < len(line) {
+			if line[j] == '\\' {
+				j += 2
+				continue
+			}
+			if line[j] == '"' {
+				break
+			}
+			j++
+		}
+		if j >= len(line) {
+			break // unterminated string
+		}
+		// Unquote to get the actual string value.
+		quoted := line[i : j+1]
+		val, err := strconv.Unquote(quoted)
+		if err != nil {
+			i = j
+			continue
+		}
+		lits = append(lits, val)
+		i = j
+	}
+	return lits
+}
+
+// findSiblingMissingLiteral searches the workspace for a non-test Go file
+// that contains a function declaration with the same name as funcName, where
+// that function's body does not contain the given literal. It skips the
+// changedFile itself. Returns the workspace-relative path of the first
+// matching sibling, or "" if none is found.
+func findSiblingMissingLiteral(workspace, funcName, literal, changedFile string) string {
+	// Walk all non-test Go files in the workspace.
+	var candidates []string
+	_ = filepath.Walk(workspace, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if info.IsDir() {
+			return nil
+		}
+		base := filepath.Base(path)
+		if !strings.HasSuffix(base, ".go") || strings.HasSuffix(base, "_test.go") {
+			return nil
+		}
+		rel, err := filepath.Rel(workspace, path)
+		if err != nil {
+			return nil
+		}
+		if rel == changedFile {
+			return nil
+		}
+		candidates = append(candidates, rel)
+		return nil
+	})
+
+	for _, c := range candidates {
+		full := filepath.Join(workspace, c)
+		data, err := os.ReadFile(full)
+		if err != nil {
+			continue
+		}
+		// Check if this file has a function with the same name.
+		if !hasFuncDecl(string(data), funcName) {
+			continue
+		}
+		// Check if the function body contains the literal.
+		if funcBodyContainsLiteral(string(data), funcName, literal) {
+			continue
+		}
+		return c
+	}
+	return ""
+}
+
+// hasFuncDecl reports whether src contains a Go function declaration for
+// funcName. It uses a simple regex to match "func funcName(" or "func (recv) funcName(".
+func hasFuncDecl(src, funcName string) bool {
+	// Match: func funcName( or func (recv) funcName(
+	re := regexp.MustCompile(`(?m)^\s*func\s+(?:\([^)]*\)\s+)?` + regexp.QuoteMeta(funcName) + `\s*\(`)
+	return re.MatchString(src)
+}
+
+// funcBodyContainsLiteral reports whether the body of the named function in
+// src contains the given literal string. It parses the AST to find the
+// function's body and checks if the literal appears as a string literal
+// inside it.
+func funcBodyContainsLiteral(src, funcName, literal string) bool {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "", src, parser.ParseComments)
+	if err != nil {
+		return false
+	}
+	for _, decl := range f.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Name.Name != funcName || fn.Body == nil {
+			continue
+		}
+		// Walk the function body looking for a string literal matching literal.
+		var found bool
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			if found {
+				return false
+			}
+			bl, ok := n.(*ast.BasicLit)
+			if !ok || bl.Kind != token.STRING {
+				return true
+			}
+			// Strip the surrounding quotes from the token value.
+			val, err := strconv.Unquote(bl.Value)
+			if err != nil {
+				return true
+			}
+			if val == literal {
+				found = true
+			}
+			return true
+		})
+		return found
+	}
+	return false
+}
+
 // checkMutationSurvival neuters the changed functions in each non-envtest
 // changed package that has a changed _test.go, re-runs that package's tests on
 // an in-memory-backed-up copy, and flags any package whose tests still PASS
