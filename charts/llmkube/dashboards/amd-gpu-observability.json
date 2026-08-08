@@ -579,7 +579,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "llamacpp:predicted_tokens_seconds",
+          "expr": "llamacpp:predicted_tokens_seconds and on() (count(amdgpu_gpu_busy_percent) > 0)",
           "legendFormat": "Tokens/s",
           "refId": "A"
         }
@@ -647,7 +647,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "llamacpp:requests_processing",
+          "expr": "llamacpp:requests_processing and on() (count(amdgpu_gpu_busy_percent) > 0)",
           "legendFormat": "In-flight",
           "refId": "A"
         }
@@ -1161,7 +1161,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "llamacpp:predicted_tokens_seconds",
+          "expr": "llamacpp:predicted_tokens_seconds and on() (count(amdgpu_gpu_busy_percent) > 0)",
           "legendFormat": "Tokens/s",
           "refId": "A"
         }
@@ -1256,7 +1256,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "llamacpp:requests_processing",
+          "expr": "llamacpp:requests_processing and on() (count(amdgpu_gpu_busy_percent) > 0)",
           "legendFormat": "In-flight",
           "refId": "A"
         }
