@@ -33,25 +33,63 @@ const MaxSubmitSummaryLen = 280
 // truncateRuneSafe truncates s to at most maxLen bytes, appending an
 // ellipsis if truncation occurred. It never splits a multi-byte rune:
 // if the byte limit falls inside a rune, the rune is dropped entirely.
+//
+// When a sentence boundary survives in the tail of the budget, the cut is
+// taken there instead of mid-word (#1411). A reviewer summary is rendered
+// verbatim as the PR description, and a body that ends "... plus in
+// `claim.…" reads as a corrupted artifact rather than a capped one.
+// Backing off to the boundary costs a few characters and yields prose
+// that ends where a sentence ends.
 func truncateRuneSafe(s string, maxLen int) string {
 	if len(s) <= maxLen {
 		return s
 	}
-	ellipsis := "…"
-	// Reserve space for the ellipsis.
-	avail := maxLen - len(ellipsis)
-	// Walk runes until we would exceed avail.
-	var b []rune
-	byteLen := 0
-	for _, r := range s {
-		runeBytes := len(string(r))
-		if byteLen+runeBytes > avail {
-			break
+	const ellipsis = "…"
+	// A boundary cut keeps its terminating punctuation, so the marker is
+	// spaced off it: "First sentence. …" rather than "First sentence.…".
+	const boundarySuffix = " …"
+	if cut := runePrefix(s, maxLen-len(boundarySuffix)); cut != "" {
+		// Only back off when the boundary keeps most of the budget;
+		// otherwise a summary whose first sentence is short would lose
+		// nearly all of its content to the sentence rule.
+		if b := lastSentenceEnd(cut); b*5 >= len(cut)*3 {
+			return cut[:b] + boundarySuffix
 		}
-		b = append(b, r)
+	}
+	return runePrefix(s, maxLen-len(ellipsis)) + ellipsis
+}
+
+// runePrefix returns the longest prefix of s that fits in maxBytes without
+// splitting a rune.
+func runePrefix(s string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	byteLen := 0
+	for i, r := range s {
+		runeBytes := len(string(r))
+		if byteLen+runeBytes > maxBytes {
+			return s[:i]
+		}
 		byteLen += runeBytes
 	}
-	return string(b) + ellipsis
+	return s
+}
+
+// lastSentenceEnd returns the index just past the last sentence-ending
+// punctuation in s, or 0 when there is none. A terminator counts only when
+// followed by whitespace or the end of the string, so decimals and dotted
+// identifiers ("v1.2", "logger.info") are not mistaken for boundaries.
+func lastSentenceEnd(s string) int {
+	for i := len(s) - 1; i >= 0; i-- {
+		switch s[i] {
+		case '.', '!', '?':
+			if i == len(s)-1 || s[i+1] == ' ' || s[i+1] == '\n' || s[i+1] == '\t' {
+				return i + 1
+			}
+		}
+	}
+	return 0
 }
 
 // SubmitResultTool is the terminal tool. When the model calls it, the

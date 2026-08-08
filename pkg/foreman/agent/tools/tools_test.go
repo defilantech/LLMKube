@@ -1143,3 +1143,52 @@ func TestTruncateRuneSafe(t *testing.T) {
 		})
 	}
 }
+
+// TestTruncateRuneSafe_CutsOnSentenceBoundary is the #1411 secondary
+// defect: the reviewer summary is rendered verbatim as the PR body, and a
+// hard byte cut left it ending mid-word ("... plus in `claim.…"). When a
+// sentence boundary survives in the tail of the budget, the cut is taken
+// there instead.
+func TestTruncateRuneSafe_CutsOnSentenceBoundary(t *testing.T) {
+	first := "Replaces every bare print call with a structured logger. "
+	s := first + strings.Repeat("and then some more prose that overflows the cap ", 4)
+
+	got := truncateRuneSafe(s, 90)
+
+	if len(got) > 90 {
+		t.Fatalf("result exceeds cap: %d bytes (%q)", len(got), got)
+	}
+	if got != "Replaces every bare print call with a structured logger. …" {
+		t.Errorf("want a cut at the sentence boundary, got %q", got)
+	}
+}
+
+// TestTruncateRuneSafe_NoUsableBoundaryKeepsHardCut: backing off must not
+// gut a summary whose only sentence boundary sits near the start.
+func TestTruncateRuneSafe_NoUsableBoundaryKeepsHardCut(t *testing.T) {
+	s := "Ok. " + strings.Repeat("x", 200)
+
+	got := truncateRuneSafe(s, 60)
+
+	if len(got) > 60 {
+		t.Fatalf("result exceeds cap: %d bytes", len(got))
+	}
+	if len(got) < 50 {
+		t.Errorf("an early boundary must not gut the summary; got %q", got)
+	}
+	if !strings.HasSuffix(got, "…") {
+		t.Errorf("truncation must still be marked; got %q", got)
+	}
+}
+
+// TestTruncateRuneSafe_DottedIdentifierIsNotASentenceEnd: "v1.2" and
+// "logger.info" must not be mistaken for sentence terminators.
+func TestTruncateRuneSafe_DottedIdentifierIsNotASentenceEnd(t *testing.T) {
+	s := "Bumps the client to v1.2 and rewires logger.info " + strings.Repeat("y", 100)
+
+	got := truncateRuneSafe(s, 60)
+
+	if strings.HasSuffix(got, "v1. …") || strings.HasSuffix(got, "logger. …") {
+		t.Errorf("dotted identifier treated as a sentence end: %q", got)
+	}
+}
