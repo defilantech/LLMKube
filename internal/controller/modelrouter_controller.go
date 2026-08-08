@@ -87,6 +87,9 @@ type ModelRouterReconciler struct {
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups=inference.llmkube.dev,resources=modelpools,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch;delete
 
 func (r *ModelRouterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	reconcileStart := time.Now()
@@ -128,7 +131,10 @@ func (r *ModelRouterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	if err := r.reconcileRouterConfigMap(ctx, mr, compiled); err != nil {
 		return ctrl.Result{}, r.recordReconcileFailure(ctx, mr, compiled, "ConfigMap", err)
 	}
-	if err := r.reconcileRouterDeployment(ctx, mr, compiled.Hash); err != nil {
+	if err := r.reconcileRouterActivationRBAC(ctx, mr, compiled.HasPools); err != nil {
+		return ctrl.Result{}, r.recordReconcileFailure(ctx, mr, compiled, "ActivationRBAC", err)
+	}
+	if err := r.reconcileRouterDeployment(ctx, mr, compiled.Hash, compiled.HasPools); err != nil {
 		return ctrl.Result{}, r.recordReconcileFailure(ctx, mr, compiled, "Deployment", err)
 	}
 	if err := r.reconcileRouterService(ctx, mr); err != nil {
@@ -370,8 +376,40 @@ func (r *ModelRouterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			&inferencev1alpha1.InferenceService{},
 			handler.EnqueueRequestsFromMapFunc(r.findModelRoutersForInferenceService),
 		).
+		Watches(
+			&inferencev1alpha1.ModelPool{},
+			handler.EnqueueRequestsFromMapFunc(r.findModelRoutersForModelPool),
+		).
 		Named(modelRouterControllerName).
 		Complete(r)
+}
+
+// findModelRoutersForModelPool re-reconciles every ModelRouter in a changed
+// pool's namespace whose backends include one of the pool's members. A pool
+// edit (member set, minResidency) changes the compiled BackendPool the proxy
+// sees, so the router config must be rebuilt.
+func (r *ModelRouterReconciler) findModelRoutersForModelPool(ctx context.Context, obj client.Object) []reconcile.Request {
+	pool, ok := obj.(*inferencev1alpha1.ModelPool)
+	if !ok {
+		return nil
+	}
+	routerList := &inferencev1alpha1.ModelRouterList{}
+	if err := r.List(ctx, routerList, client.InNamespace(pool.Namespace)); err != nil {
+		return nil
+	}
+	var requests []reconcile.Request
+	for i := range routerList.Items {
+		mr := &routerList.Items[i]
+		for _, m := range pool.Spec.Members {
+			if routerReferencesInferenceService(mr, m.InferenceServiceRef.Name) {
+				requests = append(requests, reconcile.Request{
+					NamespacedName: types.NamespacedName{Name: mr.Name, Namespace: mr.Namespace},
+				})
+				break
+			}
+		}
+	}
+	return requests
 }
 
 // findModelRoutersForInferenceService returns reconcile requests for every

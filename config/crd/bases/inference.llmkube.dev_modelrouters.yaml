@@ -639,6 +639,15 @@ spec:
                       type: object
                       x-kubernetes-map-type: atomic
                     type: array
+                  nodeSelector:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      NodeSelector pins the router-proxy pod to nodes matching these labels.
+                      Use it when the proxy image is only present on specific nodes (for
+                      example a node-local registry) or to co-locate the proxy with its
+                      backends. Passthrough to the Pod spec.
+                    type: object
                   quarantineDuration:
                     description: |-
                       QuarantineDuration controls how long the proxy keeps a backend in

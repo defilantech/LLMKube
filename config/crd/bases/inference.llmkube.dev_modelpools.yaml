@@ -1,0 +1,254 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.19.0
+  name: modelpools.inference.llmkube.dev
+spec:
+  group: inference.llmkube.dev
+  names:
+    kind: ModelPool
+    listKind: ModelPoolList
+    plural: modelpools
+    shortNames:
+    - mpool
+    singular: modelpool
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.swapPolicy
+      name: Policy
+      type: string
+    - jsonPath: .status.residentMember
+      name: Resident
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: ModelPool is the Schema for the modelpools API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of ModelPool
+            properties:
+              default:
+                description: |-
+                  Default names the member to warm on a cold pool (before any request has
+                  picked an owner). When empty, the first request to arrive selects the
+                  owner. Must match one of the members' InferenceServiceRef names.
+                type: string
+              gpu:
+                default: 1
+                description: |-
+                  GPU is the number of GPUs the shared slot occupies. Informational for the
+                  pool invariant (members declare their own resource requests); recorded so
+                  operators can see the slot size at a glance.
+                format: int32
+                minimum: 0
+                type: integer
+              members:
+                description: |-
+                  Members lists the InferenceServices that share the pool's GPU slot. Each
+                  member is an ordinary single-model InferenceService with its own image,
+                  context size, and runtime.
+                items:
+                  description: ModelPoolMember names one InferenceService that shares
+                    the pool's GPU slot.
+                  properties:
+                    inferenceServiceRef:
+                      description: |-
+                        InferenceServiceRef references the member InferenceService by name. The
+                        InferenceService must live in the same namespace as the ModelPool.
+                      properties:
+                        name:
+                          default: ""
+                          description: |-
+                            Name of the referent.
+                            This field is effectively required, but due to backwards compatibility is
+                            allowed to be empty. Instances of this type with an empty value here are
+                            almost certainly wrong.
+                            More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                          type: string
+                      type: object
+                      x-kubernetes-map-type: atomic
+                  required:
+                  - inferenceServiceRef
+                  type: object
+                minItems: 1
+                type: array
+                x-kubernetes-list-type: atomic
+              nodeSelector:
+                additionalProperties:
+                  type: string
+                description: |-
+                  NodeSelector pins the shared slot to a node (or node class). All members
+                  are expected to schedule onto the same node so they contend for the same
+                  device memory. Mirrors a standard Kubernetes node selector.
+                type: object
+              swapBudget:
+                default: 300s
+                description: |-
+                  SwapBudget bounds how long the router holds a cross-model request open
+                  while it drains the incumbent and cold-loads the target member. It is
+                  deliberately decoupled from the router's response-header (generation)
+                  timeout: a large model can take minutes to load without forcing operators
+                  to loosen the per-request generation cap for every request. When the
+                  budget elapses before the target becomes resident, the held request is
+                  failed with 503 + Retry-After (the caller can retry; the now-warm member
+                  serves the next request). Defaults to 300s.
+                type: string
+              swapPolicy:
+                default: sticky
+                description: |-
+                  SwapPolicy selects how the slot owner is chosen when demand crosses model
+                  boundaries. "sticky" (default) keeps the incumbent until a different
+                  member is requested. It is the only policy in v1; a priority-based reclaim
+                  policy is a planned follow-up.
+                enum:
+                - sticky
+                type: string
+            required:
+            - members
+            type: object
+          status:
+            description: status defines the observed state of ModelPool
+            properties:
+              conditions:
+                description: Conditions represent the current state of the ModelPool
+                  resource.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              members:
+                description: Members reports the observed state of each pool member.
+                items:
+                  description: ModelPoolMemberStatus reports the observed state of
+                    one pool member.
+                  properties:
+                    name:
+                      description: Name is the member InferenceService name.
+                      type: string
+                    phase:
+                      description: Phase mirrors the member InferenceService status.phase.
+                      type: string
+                    resident:
+                      description: Resident is true when this member currently owns
+                        the shared GPU slot.
+                      type: boolean
+                  required:
+                  - name
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+              observedGeneration:
+                description: ObservedGeneration is the spec generation the status
+                  reflects.
+                format: int64
+                type: integer
+              pendingMember:
+                description: |-
+                  PendingMember is the member being loaded during a swap, or empty when the
+                  pool is not mid-swap.
+                type: string
+              phase:
+                description: 'Phase is the pool lifecycle phase: Pending, Ready, Swapping,
+                  or Degraded.'
+                enum:
+                - Pending
+                - Ready
+                - Swapping
+                - Degraded
+                type: string
+              residentMember:
+                description: |-
+                  ResidentMember is the member that currently owns the shared GPU slot, or
+                  empty when the pool is cold (no member resident).
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

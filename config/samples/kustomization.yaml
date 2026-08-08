@@ -2,4 +2,5 @@
 resources:
 - inference_v1alpha1_model.yaml
 - inference_v1alpha1_inferenceservice.yaml
+- inference_v1alpha1_modelpool.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

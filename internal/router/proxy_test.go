@@ -12,6 +12,7 @@ package router
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -418,6 +419,136 @@ func TestProxy503WhenNoRoute(t *testing.T) {
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want 503", rec.Code)
+	}
+}
+
+// TestProxyPoolActivationTimeout503RetryAfter verifies the end-to-end mapping
+// of a ModelPool activation that never completes within the request budget: the
+// proxy returns 503 with a Retry-After header (never 429), and no request is
+// dispatched to the backend because the member never became resident.
+func TestProxyPoolActivationTimeout503RetryAfter(t *testing.T) {
+	fb := newFakeBackend(t)
+
+	// Activation never completes: Activate blocks on a gate that is never
+	// closed, so the caller's hold budget expires first.
+	fake := newFakeMemberController()
+	fake.activateGate = make(chan struct{})
+
+	cfg := &Config{
+		Backends: []Backend{{
+			Name:    "coder",
+			Tier:    "local",
+			Address: fb.URL(),
+			// The per-backend timeout bounds the activation hold, so the test
+			// does not wait the 120s proxy default.
+			Timeout: 50 * time.Millisecond,
+			Pool: &BackendPool{
+				Name:      "heavy-slot",
+				Namespace: "lab",
+				Member:    "coder",
+				Members:   []string{"coder", "judge"},
+			},
+		}},
+		DefaultRoute: "coder",
+		Policy:       Policy{Classification: ClassificationPolicy{Mode: "header-only"}},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("config: %v", err)
+	}
+
+	act := NewActivator(context.Background(), fake, "r", slog.Default())
+	proxy := NewProxy(cfg, slog.Default(), WithActivator(act))
+	mux := http.NewServeMux()
+	proxy.Mount(mux)
+
+	body, _ := json.Marshal(map[string]any{
+		"model":    "coder",
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(string(body)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	resp := rec.Result()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", resp.StatusCode)
+	}
+	if resp.Header.Get("Retry-After") == "" {
+		t.Error("missing Retry-After header on pool activation-timeout 503")
+	}
+	if fb.calls.Load() != 0 {
+		t.Errorf("backend calls = %d, want 0 (must not dispatch when activation never completed)", fb.calls.Load())
+	}
+
+	// Let the blocked activation goroutine unwind.
+	close(fake.activateGate)
+}
+
+// TestProxyPoolSwapBudgetDecoupledFromDispatchTimeout is the decoupling guard:
+// a swap that takes longer than the per-request response-header (dispatch)
+// timeout still succeeds when the pool's SwapBudget covers it. Before
+// SwapBudget, a single attempt deadline bounded both the swap hold and the
+// generation cap, so a slow cold-load forced operators to inflate the
+// response-header timeout for every request. Here the dispatch timeout is short
+// (40ms) while the activation takes ~150ms; only the separate swap budget lets
+// the request through.
+func TestProxyPoolSwapBudgetDecoupledFromDispatchTimeout(t *testing.T) {
+	fb := newFakeBackend(t)
+
+	fake := newFakeMemberController()
+	gate := make(chan struct{})
+	fake.activateGate = gate
+	// Release the activation after the dispatch timeout would have fired, but
+	// well within the swap budget.
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		close(gate)
+	}()
+
+	cfg := &Config{
+		Backends: []Backend{{
+			Name:    "coder",
+			Tier:    "local",
+			Address: fb.URL(),
+			// Dispatch/response-header timeout is short: it must NOT bound the
+			// swap hold. If it did, the ~150ms activation would blow this 40ms
+			// budget and the request would 503.
+			Timeout: 40 * time.Millisecond,
+			Pool: &BackendPool{
+				Name:       "heavy-slot",
+				Namespace:  "lab",
+				Member:     "coder",
+				Members:    []string{"coder", "judge"},
+				SwapBudget: 5 * time.Second,
+			},
+		}},
+		DefaultRoute: "coder",
+		Policy:       Policy{Classification: ClassificationPolicy{Mode: "header-only"}},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("config: %v", err)
+	}
+
+	act := NewActivator(context.Background(), fake, "r", slog.Default())
+	proxy := NewProxy(cfg, slog.Default(), WithActivator(act))
+	mux := http.NewServeMux()
+	proxy.Mount(mux)
+
+	body, _ := json.Marshal(map[string]any{
+		"model":    "coder",
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(string(body)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (swap budget must cover the slow activation independent of the dispatch timeout)", rec.Code)
+	}
+	if fb.calls.Load() != 1 {
+		t.Errorf("backend calls = %d, want 1 (request dispatched after the swap completed)", fb.calls.Load())
 	}
 }
 

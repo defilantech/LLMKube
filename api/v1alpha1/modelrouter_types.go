@@ -618,6 +618,13 @@ type RouterProxySpec struct {
 	// but cannot extend it beyond this cap.
 	// +optional
 	ResponseHeaderTimeout *metav1.Duration `json:"responseHeaderTimeout,omitempty"`
+
+	// NodeSelector pins the router-proxy pod to nodes matching these labels.
+	// Use it when the proxy image is only present on specific nodes (for
+	// example a node-local registry) or to co-locate the proxy with its
+	// backends. Passthrough to the Pod spec.
+	// +optional
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
 }
 
 // MCPServerSpec configures a Model Context Protocol endpoint on the
