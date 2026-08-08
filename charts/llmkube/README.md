@@ -272,11 +272,10 @@ over the dashboard JSON before it reaches Grafana. `datasourceName` must be the
 datasource **UID**, not its display name: the placeholder sits inside the
 dashboards' `"uid"` fields, so a display name lands verbatim as a uid that
 resolves to nothing and every panel silently renders "datasource not found"
-(unless the UID happens to equal the name). Most of the shipped dashboards read
-their datasource from a `DS_PROMETHEUS` template variable;
-`amd-gpu-observability.json` uses one named `datasource`. None of them declares
-a dashboard `__inputs` block, so both names are plain template variables and
-covering every dashboard takes two entries:
+(unless the UID happens to equal the name). Every shipped dashboard reads its
+datasource from a `DS_PROMETHEUS` template variable. None of them declares a
+dashboard `__inputs` block, so that name is a plain template variable and one
+entry covers them all:
 
 ```yaml
 grafana:
@@ -290,8 +289,6 @@ grafana:
       datasources:
         - inputName: DS_PROMETHEUS
           datasourceName: prometheus-uid # the datasource's UID, not its name
-        - inputName: datasource
-          datasourceName: prometheus-uid
 ```
 
 The two dashboards under `config/grafana/` are not part of the chart and stay
