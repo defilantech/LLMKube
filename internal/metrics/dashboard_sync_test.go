@@ -50,6 +50,7 @@ var externalPrefixes = []string{
 	"up:",          // Pyrra burn-rate rules over scrape liveness
 	"DCGM_FI_DEV_", // NVIDIA dcgm-exporter
 	"amdgpu_",      // amdgpu-sysfs exporter
+	"drm_",         // drm-exporter
 	"node_",        // node-exporter
 }
 
