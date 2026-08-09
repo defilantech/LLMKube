@@ -1144,6 +1144,27 @@ func TestNewRouterDeploymentActivationWiring(t *testing.T) {
 	}
 }
 
+// TestNewRouterDeploymentPinsReplicasWhenPooled verifies the single-writer
+// constraint (#1393 review): a pooled router is pinned to one proxy replica
+// even when spec.proxy.replicas asks for more, so ModelPool swaps stay
+// serialized; an unpooled router honors the requested replica count.
+func TestNewRouterDeploymentPinsReplicasWhenPooled(t *testing.T) {
+	r := &ModelRouterReconciler{RouterProxyImage: "ghcr.io/test/router-proxy:v1"}
+	mr := canonicalModelRouter()
+	three := int32(3)
+	mr.Spec.Proxy = &inferencev1alpha1.RouterProxySpec{Replicas: &three}
+
+	pooled := r.newRouterDeployment(mr, "hash", true)
+	if pooled.Spec.Replicas == nil || *pooled.Spec.Replicas != 1 {
+		t.Errorf("pooled replicas = %v, want 1 (pinned)", pooled.Spec.Replicas)
+	}
+
+	unpooled := r.newRouterDeployment(mr, "hash", false)
+	if unpooled.Spec.Replicas == nil || *unpooled.Spec.Replicas != 3 {
+		t.Errorf("unpooled replicas = %v, want 3 (spec.proxy.replicas honored)", unpooled.Spec.Replicas)
+	}
+}
+
 func envValue(env []corev1.EnvVar, name string) string {
 	for _, e := range env {
 		if e.Name == name {

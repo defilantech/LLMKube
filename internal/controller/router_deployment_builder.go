@@ -21,6 +21,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 )
@@ -40,6 +41,11 @@ func (r *ModelRouterReconciler) reconcileRouterDeployment(
 	configHash string,
 	hasPools bool,
 ) error {
+	if hasPools && mr.Spec.Proxy != nil && mr.Spec.Proxy.Replicas != nil && *mr.Spec.Proxy.Replicas > 1 {
+		logf.FromContext(ctx).Info(
+			"pinning router-proxy to a single replica: ModelPool activation requires one proxy; ignoring spec.proxy.replicas",
+			"requestedReplicas", *mr.Spec.Proxy.Replicas)
+	}
 	desired := r.newRouterDeployment(mr, configHash, hasPools)
 	if err := setControllerReferenceUnblocked(mr, desired, r.Scheme); err != nil {
 		return fmt.Errorf("set owner ref on router Deployment: %w", err)
@@ -106,6 +112,13 @@ func (r *ModelRouterReconciler) newRouterDeployment(
 		}
 		imagePullSecrets = mr.Spec.Proxy.ImagePullSecrets
 		nodeSelector = mr.Spec.Proxy.NodeSelector
+	}
+	// A pooled router must run exactly one proxy replica: ModelPool activation
+	// serializes swaps through a single in-process lock, so a second replica
+	// would race it and thrash the shared GPU slot. Pin to 1 regardless of
+	// spec.proxy.replicas until cross-replica swap coordination lands.
+	if hasPools {
+		replicas = 1
 	}
 	if resources.Requests == nil && resources.Limits == nil {
 		resources = defaultRouterProxyResources()
