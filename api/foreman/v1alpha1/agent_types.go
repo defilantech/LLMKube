@@ -142,6 +142,30 @@ type ExecutionSpec struct {
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 }
 
+// VisionSpec opts an Agent into multimodal input. Off by default: most models
+// on a fleet are text-only, and handing them image content parts wastes context
+// at best and returns HTTP 400 at worst.
+//
+// Explicitly declared rather than inferred from the model, because an Agent
+// points at a base URL and the operator cannot introspect an arbitrary endpoint
+// to discover whether a projector is loaded.
+type VisionSpec struct {
+	// Enabled turns on image attachment for this Agent.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// MaxImageBytes caps each image AFTER base64 encoding, which inflates by
+	// about a third. Defaults to 4MiB when unset. A 947KB screenshot became
+	// 484KB of base64 in practice, so a handful of unbounded images would
+	// consume a context window whole.
+	// +optional
+	MaxImageBytes int64 `json:"maxImageBytes,omitempty"`
+
+	// MaxImages caps how many images one message may carry. Defaults to 4.
+	// +optional
+	MaxImages int32 `json:"maxImages,omitempty"`
+}
+
 // AgentSpec is the reusable role definition referenced by AgenticTasks
 // via spec.agentRef. An Agent bundles the system prompt, tool whitelist,
 // model endpoint, and required host capability for one pipeline step.
@@ -384,6 +408,11 @@ type AgentSpec struct {
 	// behavior, unchanged).
 	// +optional
 	MCP *MCPConfig `json:"mcp,omitempty"`
+
+	// Vision opts this Agent into multimodal input, so images attached to a
+	// task payload are sent to the model. See VisionSpec.
+	// +optional
+	Vision *VisionSpec `json:"vision,omitempty"`
 }
 
 // StuckLoopDetectionSpec tunes the per-Agent stuck-loop detector (#544).

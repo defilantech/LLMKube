@@ -529,6 +529,24 @@ spec:
                                 type: string
                             type: object
                           type: array
+                        images:
+                          description: |-
+                            Images are workspace-relative paths to images attached to the first
+                            user message, for agents whose model can accept them
+                            (Agent.spec.vision.enabled). The intended use is showing a coder what
+                            its own change looks like: a screenshot of a rendered page alongside
+                            the prompt describing what is wrong with it.
+
+                            Paths only, never inline data: an AgenticTask is a Kubernetes object
+                            and a base64 image would bloat etcd and every list of it. The executor
+                            reads and encodes at dispatch time.
+
+                            Ignored, with a warning, when the agent has vision disabled. Sending
+                            image parts to a text-only model wastes context at best and is an HTTP
+                            400 at worst.
+                          items:
+                            type: string
+                          type: array
                         issue:
                           description: Issue is the GitHub issue number. Required
                             for issue-fix.

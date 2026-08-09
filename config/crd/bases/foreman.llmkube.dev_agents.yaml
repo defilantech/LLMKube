@@ -644,6 +644,28 @@ spec:
                   type: string
                 minItems: 1
                 type: array
+              vision:
+                description: |-
+                  Vision opts this Agent into multimodal input, so images attached to a
+                  task payload are sent to the model. See VisionSpec.
+                properties:
+                  enabled:
+                    description: Enabled turns on image attachment for this Agent.
+                    type: boolean
+                  maxImageBytes:
+                    description: |-
+                      MaxImageBytes caps each image AFTER base64 encoding, which inflates by
+                      about a third. Defaults to 4MiB when unset. A 947KB screenshot became
+                      484KB of base64 in practice, so a handful of unbounded images would
+                      consume a context window whole.
+                    format: int64
+                    type: integer
+                  maxImages:
+                    description: MaxImages caps how many images one message may carry.
+                      Defaults to 4.
+                    format: int32
+                    type: integer
+                type: object
             required:
             - role
             - tools

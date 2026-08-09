@@ -57,6 +57,30 @@ const (
 //	tool           : Content carries the tool result (typically a JSON
 //	                 string). ToolCallID names the assistant call this
 //	                 result responds to; Name is the tool's function name.
+//
+// Content-part types for multimodal input (#1466). A message carries either a
+// plain string content or an array of these; the array form is the only way to
+// put an image on the wire.
+const (
+	ContentPartText     = "text"
+	ContentPartImageURL = "image_url"
+)
+
+// ImageURL carries the image itself. A data: URL keeps the payload
+// self-contained, so the inference server never has to fetch anything and no
+// credentials or egress are involved.
+type ImageURL struct {
+	URL string `json:"url"`
+}
+
+// ContentPart is one element of a multimodal content array. Exactly one of
+// Text or ImageURL is set, selected by Type.
+type ContentPart struct {
+	Type     string    `json:"type"`
+	Text     string    `json:"text,omitempty"`
+	ImageURL *ImageURL `json:"image_url,omitempty"`
+}
+
 type Message struct {
 	Role       Role       `json:"role"`
 	Content    string     `json:"content,omitempty"`
@@ -71,6 +95,13 @@ type Message struct {
 	// loop before the next request, mirroring how chat templates drop
 	// think blocks from history (#650).
 	ReasoningContent string `json:"reasoning_content,omitempty"`
+
+	// Parts carries multimodal content. When non-empty it REPLACES Content
+	// on the wire: the OAI schema allows content to be a string or an array
+	// of parts, never both, so emitting both keys is invalid. Kept as a
+	// separate field rather than widening Content to any, so every existing
+	// call site and the #556 always-emit-content rule below are untouched.
+	Parts []ContentPart `json:"-"`
 }
 
 // MarshalJSON serializes a Message such that non-assistant roles always
@@ -87,6 +118,24 @@ type Message struct {
 // HTTP 400 with `"All non-assistant messages must contain 'content'"`
 // when the field is absent. Fixes #556.
 func (m Message) MarshalJSON() ([]byte, error) {
+	// Multimodal: content becomes the parts array. This precedes the role
+	// switch because the array form is valid for every role that can carry
+	// content, and the empty-content rule below is about the string form.
+	if len(m.Parts) > 0 {
+		return json.Marshal(struct {
+			Role       Role          `json:"role"`
+			Content    []ContentPart `json:"content"`
+			ToolCalls  []ToolCall    `json:"tool_calls,omitempty"`
+			ToolCallID string        `json:"tool_call_id,omitempty"`
+			Name       string        `json:"name,omitempty"`
+		}{
+			Role:       m.Role,
+			Content:    m.Parts,
+			ToolCalls:  m.ToolCalls,
+			ToolCallID: m.ToolCallID,
+			Name:       m.Name,
+		})
+	}
 	if m.Role == RoleAssistant {
 		// Assistant: content may legitimately be omitted when the
 		// message is purely tool_calls. Fall back to the default

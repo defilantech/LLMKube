@@ -85,6 +85,12 @@ type LoopConfig struct {
 	// payload's serialized representation: issue body, repo URL, etc.).
 	UserPrompt string
 
+	// UserContentParts, when non-empty, REPLACES UserPrompt as the second
+	// message so it can carry images alongside the text (#1466). Empty is
+	// the normal case and leaves the wire format exactly as it was, which is
+	// what keeps text-only agents unaffected by this feature existing.
+	UserContentParts []oai.ContentPart
+
 	// Temperature is the sampling temperature (parsed from Agent.spec).
 	// Nil omits the field on the wire, deferring to the server's default.
 	Temperature *float64
@@ -672,6 +678,19 @@ func NewLoop(client *oai.Client, registry ToolRegistry, tracer trace.Tracer) *Lo
 // unrecoverable error. The returned LoopResult always carries the
 // transcript built up to the point of return so the caller can persist
 // it on error.
+// openingUserMessage builds the second message of a run. Multimodal content
+// replaces the plain string on the wire when present; Content is retained
+// either way so the transcript and its text-only consumers still read the
+// prompt. Extracted from Run to keep that function under the complexity
+// budget rather than raising the budget for one branch.
+func openingUserMessage(cfg LoopConfig) oai.Message {
+	m := oai.Message{Role: oai.RoleUser, Content: cfg.UserPrompt}
+	if len(cfg.UserContentParts) > 0 {
+		m.Parts = cfg.UserContentParts
+	}
+	return m
+}
+
 func (l *Loop) Run(ctx context.Context, cfg LoopConfig) (*LoopResult, error) {
 	if cfg.MaxTurns <= 0 {
 		cfg.MaxTurns = 50
@@ -704,7 +723,7 @@ func (l *Loop) Run(ctx context.Context, cfg LoopConfig) (*LoopResult, error) {
 	res := &LoopResult{
 		Transcript: []oai.Message{
 			{Role: oai.RoleSystem, Content: cfg.SystemPrompt},
-			{Role: oai.RoleUser, Content: cfg.UserPrompt},
+			openingUserMessage(cfg),
 		},
 	}
 	schemas := l.registry.Schemas()

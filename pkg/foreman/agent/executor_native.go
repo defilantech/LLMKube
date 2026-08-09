@@ -637,10 +637,22 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 		return nil, mpErr
 	}
 
+	// Attach any payload images to the first user message (#1466). Returns
+	// nil parts for the overwhelmingly common no-image case, which leaves the
+	// request byte-identical to before this feature existed. Warnings are
+	// logged rather than fatal: a task whose prompt describes the problem in
+	// words is still worth running without the picture.
+	userParts, imgWarnings := buildUserContentParts(
+		userPrompt, task.Spec.Payload.Images, workspace, agent)
+	for _, w := range imgWarnings {
+		log.Info("vision attachment", "task", task.Name, "warning", w)
+	}
+
 	cfg := LoopConfig{
 		Model:                  endpoint.modelName,
 		SystemPrompt:           agent.Spec.SystemPrompt,
 		UserPrompt:             userPrompt,
+		UserContentParts:       userParts,
 		Temperature:            parseTemperature(agent.Spec.Temperature),
 		MaxTurns:               int(agent.Spec.MaxTurns),
 		ContextWindowTokens:    int(agent.Spec.ContextWindowTokens),
