@@ -12,8 +12,10 @@ metadata:
 spec:
   selector:
     # Every router-proxy pod carries this label regardless of ModelRouter
-    # name (routerProxySelectorLabels in internal/controller/router_common.go),
-    # so Exists is the whole selector, same reasoning as inference-podmonitor.yaml.
+    # name (routerProxySelectorLabels in internal/controller/router_common.go).
+    # A matchLabels entry with an empty value would be ANDed in and match
+    # nothing, so the Exists expression is the whole selector, same reasoning
+    # as inference-podmonitor.yaml.
     matchExpressions:
       - key: inference.llmkube.dev/model-router
         operator: Exists
