@@ -240,6 +240,16 @@ prometheus:
     # Scrape interval
     interval: 30s
 
+  # Enable PodMonitor for router-proxy metrics (llmkube_router_* on the
+  # --metrics-bind-address listener)
+  routerPodMonitor:
+    enabled: false
+    # Additional labels for PodMonitor
+    additionalLabels:
+      prometheus: kube-prometheus-stack-prometheus
+    # Scrape interval
+    interval: 30s
+
   # Enable PrometheusRule for alerts
   prometheusRule:
     enabled: false

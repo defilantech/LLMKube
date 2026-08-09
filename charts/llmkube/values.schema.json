@@ -211,6 +211,18 @@
             "interval": { "type": "string" }
           }
         },
+        "routerPodMonitor": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "additionalLabels": {
+              "type": "object",
+              "additionalProperties": { "type": "string" }
+            },
+            "interval": { "type": "string" }
+          }
+        },
         "prometheusRule": {
           "type": "object",
           "additionalProperties": false,

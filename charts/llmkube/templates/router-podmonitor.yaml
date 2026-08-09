@@ -1,0 +1,35 @@
+{{- if .Values.prometheus.routerPodMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ include "llmkube.fullname" . }}-router
+  namespace: {{ .Values.prometheus.routerPodMonitor.namespace | default .Release.Namespace }}
+  labels:
+    {{- include "llmkube.labels" . | nindent 4 }}
+    {{- with .Values.prometheus.routerPodMonitor.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    # Every router-proxy pod carries this label regardless of ModelRouter
+    # name (routerProxySelectorLabels in internal/controller/router_common.go),
+    # so Exists is the whole selector, same reasoning as inference-podmonitor.yaml.
+    matchExpressions:
+      - key: inference.llmkube.dev/model-router
+        operator: Exists
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+      interval: {{ .Values.prometheus.routerPodMonitor.interval | default "30s" }}
+      relabelings:
+        # Operator default is `<namespace>/<podmonitor name>`; pin it so a
+        # future RouterProxyDown alert has a stable job label to match.
+        - targetLabel: job
+          replacement: llmkube-router
+        - sourceLabels: [__meta_kubernetes_pod_label_inference_llmkube_dev_model_router]
+          targetLabel: router
+        - sourceLabels: [__meta_kubernetes_namespace]
+          targetLabel: namespace
+  namespaceSelector:
+    any: true
+{{- end }}

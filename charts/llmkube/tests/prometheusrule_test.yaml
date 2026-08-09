@@ -6,6 +6,7 @@ templates:
   - prometheusrule.yaml
   - inference-podmonitor.yaml
   - servicemonitor.yaml
+  - router-podmonitor.yaml
 
 tests:
   # --- job label: pinned on the monitors, matched by the alerts ---
@@ -20,6 +21,20 @@ tests:
           content:
             targetLabel: job
             replacement: llmkube-inference
+
+  - it: should pin the router job label for a future RouterProxyDown alert
+    template: router-podmonitor.yaml
+    set:
+      prometheus.routerPodMonitor.enabled: true
+    asserts:
+      - equal:
+          path: spec.podMetricsEndpoints[0].port
+          value: metrics
+      - contains:
+          path: spec.podMetricsEndpoints[0].relabelings
+          content:
+            targetLabel: job
+            replacement: llmkube-router
 
   - it: should pin the controller job label to what ControllerDown matches
     template: servicemonitor.yaml
