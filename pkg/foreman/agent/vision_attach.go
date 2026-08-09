@@ -24,6 +24,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/go-logr/logr"
+
 	foremanv1alpha1 "github.com/defilantech/llmkube/api/foreman/v1alpha1"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/oai"
 )
@@ -183,6 +185,51 @@ func resolveInWorkspace(workspace, rel string) (string, error) {
 	// check and the read would still win, which needs openat2/RESOLVE_BENEATH
 	// and is Linux-only. Not worth it for a workspace the agent owns.
 	return absReal, nil
+}
+
+// attachImages builds the opening user message's content parts and reports both
+// what was skipped and what actually went out.
+func attachImages(
+	log logr.Logger, prompt string, images []string,
+	workspace string, agent *foremanv1alpha1.Agent,
+) []oai.ContentPart {
+	parts, warnings := buildUserContentParts(prompt, images, workspace, agent)
+	for _, w := range warnings {
+		log.Info("vision attachment", "warning", w)
+	}
+	// The success is logged too, not only the failures. Otherwise the sole
+	// signal that an image reached the model is the ABSENCE of a warning,
+	// which reads identically to a run that never attached anything, and the
+	// encoded size is what an operator wants when a context window fills up
+	// unexpectedly.
+	if n := countImageParts(parts); n > 0 {
+		log.Info("vision attachment", "images", n, "encodedBytes", encodedPartBytes(parts))
+	}
+	return parts
+}
+
+// countImageParts and encodedPartBytes describe what actually got attached, so
+// a successful attach leaves a trace an operator can find. The byte count is
+// the encoded size, since that is what travels and what the context window
+// pays for.
+func countImageParts(parts []oai.ContentPart) int {
+	n := 0
+	for _, p := range parts {
+		if p.Type == oai.ContentPartImageURL {
+			n++
+		}
+	}
+	return n
+}
+
+func encodedPartBytes(parts []oai.ContentPart) int {
+	total := 0
+	for _, p := range parts {
+		if p.ImageURL != nil {
+			total += len(p.ImageURL.URL)
+		}
+	}
+	return total
 }
 
 func withinRoot(p, root string) bool {

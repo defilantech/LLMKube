@@ -23,7 +23,6 @@ import (
 	"testing"
 
 	foremanv1alpha1 "github.com/defilantech/llmkube/api/foreman/v1alpha1"
-	"github.com/defilantech/llmkube/pkg/foreman/agent/oai"
 )
 
 // Attaching images to the first user message (#1466).
@@ -149,16 +148,6 @@ func TestAttachImages_RefusesEscapingPaths(t *testing.T) {
 	if len(warns) == 0 {
 		t.Error("refusing an escaping path must be reported")
 	}
-}
-
-func countImageParts(parts []oai.ContentPart) int {
-	n := 0
-	for _, p := range parts {
-		if p.Type == "image_url" {
-			n++
-		}
-	}
-	return n
 }
 
 // A symlink INSIDE the workspace pointing outside it must be refused. The

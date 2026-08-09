@@ -642,11 +642,7 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 	// request byte-identical to before this feature existed. Warnings are
 	// logged rather than fatal: a task whose prompt describes the problem in
 	// words is still worth running without the picture.
-	userParts, imgWarnings := buildUserContentParts(
-		userPrompt, task.Spec.Payload.Images, workspace, agent)
-	for _, w := range imgWarnings {
-		log.Info("vision attachment", "task", task.Name, "warning", w)
-	}
+	userParts := attachImages(log, userPrompt, task.Spec.Payload.Images, workspace, agent)
 
 	cfg := LoopConfig{
 		Model:                  endpoint.modelName,
