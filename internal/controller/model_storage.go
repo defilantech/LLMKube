@@ -509,28 +509,78 @@ func cachePrepInitContainer(initImage string, resolvedFSGroup int64) corev1.Cont
 
 // multiFileInitEnvVars returns env vars for a multi-file init container.
 // MODEL_SOURCE is normalized (hf:// -> https://huggingface.co/), and
-// MODEL_FILES is newline-delimited.
+// MODEL_FILES is newline-delimited. For s3:// sources, S3_BUCKET and
+// S3_PREFIX are emitted (the key prefix from the s3:// source); per-file
+// object keys are constructed as "${S3_PREFIX}/$rel" in the shell command.
 func multiFileInitEnvVars(source, cacheDir string, files []string) []corev1.EnvVar {
 	normalized := resolveHFSourceURL(source)
-	return []corev1.EnvVar{
+	envs := []corev1.EnvVar{
 		{Name: "MODEL_SOURCE", Value: normalized},
 		{Name: "CACHE_DIR", Value: cacheDir},
 		{Name: "MODEL_FILES", Value: strings.Join(files, "\n")},
 	}
+	if isS3Source(source) {
+		bucket, key, err := parseS3Source(source)
+		if err == nil {
+			envs = append(envs, corev1.EnvVar{Name: "S3_BUCKET", Value: bucket}, corev1.EnvVar{Name: "S3_PREFIX", Value: key})
+		}
+	}
+	return envs
 }
 
 // buildMultiFileInitCommand returns a shell command that downloads each file
 // listed in $MODEL_FILES from the normalized $MODEL_SOURCE. For cached storage
 // (useCache=true), it creates $CACHE_DIR first. For emptyDir (useCache=false),
 // it creates /models. The command uses env vars only, never embedding user
-// values directly in the script.
-func buildMultiFileInitCommand(useCache bool, refreshPolicy string) string {
+// values directly in the script. When isS3 is true, the curl command is signed
+// with --aws-sigv4 and uses ${AWS_ENDPOINT_URL}/${S3_BUCKET}/${S3_PREFIX}/$rel
+// as the per-file URL (S3_PREFIX may be empty for bare-bucket sources).
+func buildMultiFileInitCommand(useCache, isS3 bool, refreshPolicy string) string {
 	prefix := `mkdir -p "$CACHE_DIR" && find "$CACHE_DIR" -name '*.tmp' -delete && `
 	if !useCache {
 		prefix = `mkdir -p /models && find /models -name '*.tmp' -delete && `
 	}
 
 	normalizeFn := `normalize_hf_source() { case "$1" in hf://*) src="${1#hf://}"; rev="${src#*@}"; if [ "$rev" != "$src" ]; then echo "https://huggingface.co/${src%%@*}/resolve/$rev/"; else echo "https://huggingface.co/$src/resolve/main/"; fi ;; *) echo "$1" ;; esac; }` + " && "
+
+	if isS3 {
+		if refreshPolicy == RefreshPolicyOnChange {
+			body := normalizeFn +
+				`SOURCE="$(normalize_hf_source "$MODEL_SOURCE")" && ` +
+				`printf '%s\n' "$MODEL_FILES" | while IFS= read -r rel; do ` +
+				`[ -n "$rel" ] || continue; ` +
+				`dest="$CACHE_DIR/$rel"; ` +
+				`mkdir -p "$(dirname "$dest")"; ` +
+				`key="${S3_PREFIX:+${S3_PREFIX}/}$rel"; ` +
+				`url="${AWS_ENDPOINT_URL}/${S3_BUCKET}/${key}"; ` +
+				`remote_size=$(curl --aws-sigv4 "aws:amz:${AWS_REGION}:s3" -u "${AWS_ACCESS_KEY_ID}:${AWS_SECRET_ACCESS_KEY}" -fsSL -I "$url" -o /dev/null -w '%header{content-length}' 2>/dev/null || echo 0); ` +
+				`if [ -f "$dest" ] && [ "$(stat -c %s "$dest" 2>/dev/null || echo 0)" = "$remote_size" ] && [ "$remote_size" != "0" ]; then ` +
+				`echo "Model artifact $rel revalidated (unchanged, skipped download)"; ` +
+				`else ` +
+				`if curl --aws-sigv4 "aws:amz:${AWS_REGION}:s3" -u "${AWS_ACCESS_KEY_ID}:${AWS_SECRET_ACCESS_KEY}" -f -L -o "$dest.tmp" "$url" && mv "$dest.tmp" "$dest"; then ` +
+				`echo "Model artifact $rel revalidated (downloaded)"; ` +
+				`elif [ -f "$dest" ]; then echo "Revalidation unreachable for $rel; kept cached copy"; ` +
+				`else echo "ERROR: model artifact $rel missing and revalidation failed"; exit 1; fi; ` +
+				`fi; ` +
+				`done`
+			return prefix + body
+		}
+
+		body := normalizeFn +
+			`SOURCE="$(normalize_hf_source "$MODEL_SOURCE")" && ` +
+			`printf '%s\n' "$MODEL_FILES" | while IFS= read -r rel; do ` +
+			`[ -n "$rel" ] || continue; ` +
+			`dest="$CACHE_DIR/$rel"; ` +
+			`mkdir -p "$(dirname "$dest")"; ` +
+			`key="${S3_PREFIX:+${S3_PREFIX}/}$rel"; ` +
+			`url="${AWS_ENDPOINT_URL}/${S3_BUCKET}/${key}"; ` +
+			`if [ ! -f "$dest" ]; then ` +
+			`echo "Downloading model artifact $rel..."; ` +
+			`curl --aws-sigv4 "aws:amz:${AWS_REGION}:s3" -u "${AWS_ACCESS_KEY_ID}:${AWS_SECRET_ACCESS_KEY}" -f -L -o "$dest.tmp" "$url" && mv "$dest.tmp" "$dest" || { echo "ERROR: failed to download $rel"; exit 1; }; ` +
+			`else echo "Model artifact $rel already cached, skipping download"; fi; ` +
+			`done`
+		return prefix + body
+	}
 
 	if refreshPolicy == RefreshPolicyOnChange {
 		body := normalizeFn +
@@ -705,7 +755,7 @@ func buildCachedStorageConfig(model *inferencev1alpha1.Model, isvc *inferencev1a
 	}
 	if plan != nil {
 		modelPath := stagedCachePath(cacheDir, plan.Primary)
-		cmd := buildMultiFileInitCommand(true, model.Spec.RefreshPolicy)
+		cmd := buildMultiFileInitCommand(true, isS3Source(model.Spec.Source), model.Spec.RefreshPolicy)
 		env := multiFileInitEnvVars(model.Spec.Source, cacheDir, plan.Files)
 
 		initVolumeMounts := []corev1.VolumeMount{
@@ -732,6 +782,7 @@ func buildCachedStorageConfig(model *inferencev1alpha1.Model, isvc *inferencev1a
 				Image:           initContainerImage,
 				Command:         []string{"sh", "-c", cmd},
 				Env:             env,
+				EnvFrom:         modelEnvFrom(model),
 				VolumeMounts:    initVolumeMounts,
 				SecurityContext: initContainerSecurityContext(isvc),
 			},
@@ -835,7 +886,7 @@ func buildEmptyDirStorageConfig(model *inferencev1alpha1.Model, isvc *inferencev
 	if plan != nil {
 		stagedDir := fmt.Sprintf("/models/%s-%s", namespace, model.Name)
 		modelPath := fmt.Sprintf("%s/%s", stagedDir, plan.Primary)
-		cmd := buildMultiFileInitCommand(false, model.Spec.RefreshPolicy)
+		cmd := buildMultiFileInitCommand(false, isS3Source(model.Spec.Source), model.Spec.RefreshPolicy)
 		env := multiFileInitEnvVars(model.Spec.Source, stagedDir, plan.Files)
 
 		initVolumeMounts := []corev1.VolumeMount{{Name: "model-storage", MountPath: "/models"}}
@@ -858,6 +909,7 @@ func buildEmptyDirStorageConfig(model *inferencev1alpha1.Model, isvc *inferencev
 				Image:           initContainerImage,
 				Command:         []string{"sh", "-c", cmd},
 				Env:             env,
+				EnvFrom:         modelEnvFrom(model),
 				VolumeMounts:    initVolumeMounts,
 				SecurityContext: initContainerSecurityContext(isvc),
 			}},

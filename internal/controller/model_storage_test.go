@@ -121,6 +121,67 @@ var _ = Describe("modelInitEnvVars (s3)", func() {
 	})
 })
 
+var _ = Describe("buildMultiFileInitCommand (s3)", func() {
+	It("should emit --aws-sigv4 for s3 source with cache (IfNotPresent)", func() {
+		cmd := buildMultiFileInitCommand(true, true, "")
+		Expect(cmd).To(ContainSubstring("curl --aws-sigv4"))
+		Expect(cmd).To(ContainSubstring("${AWS_ENDPOINT_URL}/${S3_BUCKET}/"))
+		Expect(cmd).To(ContainSubstring("${S3_PREFIX:+${S3_PREFIX}/}"))
+		Expect(cmd).To(ContainSubstring("Downloading model artifact"))
+		Expect(cmd).To(ContainSubstring("Model artifact"))
+		Expect(cmd).To(ContainSubstring(`-o "$dest.tmp"`))
+		Expect(cmd).To(ContainSubstring(`&& mv "$dest.tmp" "$dest"`))
+	})
+
+	It("should emit --aws-sigv4 for s3 source without cache (emptyDir)", func() {
+		cmd := buildMultiFileInitCommand(false, true, "")
+		Expect(cmd).To(ContainSubstring("curl --aws-sigv4"))
+		Expect(cmd).To(ContainSubstring("${AWS_ENDPOINT_URL}/${S3_BUCKET}/"))
+		Expect(cmd).To(ContainSubstring("${S3_PREFIX:+${S3_PREFIX}/}"))
+	})
+
+	It("should emit --aws-sigv4 for s3 source with OnChange refresh", func() {
+		cmd := buildMultiFileInitCommand(true, true, RefreshPolicyOnChange)
+		Expect(cmd).To(ContainSubstring("curl --aws-sigv4"))
+		Expect(cmd).To(ContainSubstring("${AWS_ENDPOINT_URL}/${S3_BUCKET}/"))
+		Expect(cmd).To(ContainSubstring("${S3_PREFIX:+${S3_PREFIX}/}"))
+		Expect(cmd).To(ContainSubstring("revalidated"))
+	})
+
+	It("should NOT emit --aws-sigv4 for non-s3 source (HTTP regression)", func() {
+		cmd := buildMultiFileInitCommand(true, false, "")
+		Expect(cmd).ToNot(ContainSubstring("aws-sigv4"))
+		Expect(cmd).To(ContainSubstring(`curl -f -L -o "$dest.tmp" "$url"`))
+		Expect(cmd).To(ContainSubstring("${SOURCE%/}/$rel"))
+	})
+
+	It("should NOT emit --aws-sigv4 for non-s3 source with OnChange (HTTP regression)", func() {
+		cmd := buildMultiFileInitCommand(true, false, RefreshPolicyOnChange)
+		Expect(cmd).ToNot(ContainSubstring("aws-sigv4"))
+		Expect(cmd).To(ContainSubstring(`curl -fsSL -o "$dest.tmp" "$url"`))
+		Expect(cmd).To(ContainSubstring("${SOURCE%/}/$rel"))
+	})
+})
+
+var _ = Describe("multiFileInitEnvVars (s3)", func() {
+	It("should include S3_BUCKET and S3_PREFIX for s3 source", func() {
+		envs := multiFileInitEnvVars("s3://my-bucket/models/model.gguf", "/models/cache", []string{"model.gguf", "mmproj.gguf"})
+		Expect(envs).To(HaveLen(5))
+		Expect(envs).To(ContainElement(corev1.EnvVar{Name: "S3_BUCKET", Value: "my-bucket"}))
+		Expect(envs).To(ContainElement(corev1.EnvVar{Name: "S3_PREFIX", Value: "models/model.gguf"}))
+		Expect(envs).To(ContainElement(corev1.EnvVar{Name: "MODEL_SOURCE", Value: "s3://my-bucket/models/model.gguf"}))
+		Expect(envs).To(ContainElement(corev1.EnvVar{Name: "CACHE_DIR", Value: "/models/cache"}))
+		Expect(envs).To(ContainElement(corev1.EnvVar{Name: "MODEL_FILES", Value: "model.gguf\nmmproj.gguf"}))
+	})
+
+	It("should NOT include S3_BUCKET and S3_PREFIX for non-s3 source", func() {
+		envs := multiFileInitEnvVars("https://example.com/models/", "/models/cache", []string{"model.gguf"})
+		Expect(envs).To(HaveLen(3))
+		Expect(envs).ToNot(ContainElement(corev1.EnvVar{Name: "S3_BUCKET"}))
+		Expect(envs).ToNot(ContainElement(corev1.EnvVar{Name: "S3_PREFIX"}))
+	})
+})
+
 var _ = Describe("modelEnvFrom", func() {
 	It("should return nil when SourceSecretRef is nil", func() {
 		model := &inferencev1alpha1.Model{}
