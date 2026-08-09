@@ -151,11 +151,42 @@ func resolveInWorkspace(workspace, rel string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// Lexical check first: cheap, touches no filesystem, and it rejects the
+	// obvious "../../etc/passwd" form.
 	abs := filepath.Join(root, rel)
-	if abs != root && !strings.HasPrefix(abs, root+string(os.PathSeparator)) {
+	if !withinRoot(abs, root) {
 		return "", fmt.Errorf("path escapes the workspace")
 	}
-	return abs, nil
+
+	// Then the real one. filepath.Join resolves nothing, so a symlink sitting
+	// inside the workspace and pointing outside it passes the check above
+	// while still reading an arbitrary host file. The coder has a bash tool
+	// and writes into this workspace, and cloned repositories routinely carry
+	// symlinks, so that is reachable rather than theoretical.
+	//
+	// The root is resolved too, because it is very often a link itself
+	// (/tmp -> /private/tmp on macOS), and comparing a resolved child against
+	// an unresolved root would reject every legitimate path.
+	rootReal, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", err
+	}
+	absReal, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", err
+	}
+	if !withinRoot(absReal, rootReal) {
+		return "", fmt.Errorf("path escapes the workspace through a symlink")
+	}
+	// Returning the resolved path means the read cannot follow a link that
+	// gets swapped in afterwards; a parent directory replaced between this
+	// check and the read would still win, which needs openat2/RESOLVE_BENEATH
+	// and is Linux-only. Not worth it for a workspace the agent owns.
+	return absReal, nil
+}
+
+func withinRoot(p, root string) bool {
+	return p == root || strings.HasPrefix(p, root+string(os.PathSeparator))
 }
 
 // sniffImageMIME picks the data-URL media type from the file's own bytes

@@ -160,3 +160,44 @@ func countImageParts(parts []oai.ContentPart) int {
 	}
 	return n
 }
+
+// A symlink INSIDE the workspace pointing outside it must be refused. The
+// lexical prefix check alone passes this: filepath.Join resolves nothing, so
+// "shot.png" that happens to be a link to /etc/passwd looks perfectly confined.
+//
+// Reachable in practice: the coder has a bash tool and writes into this
+// workspace, and cloned repositories routinely contain symlinks. Reading an
+// arbitrary host file and shipping it to an inference endpoint is the
+// exfiltration primitive the confinement exists to prevent.
+func TestAttachImages_RefusesSymlinkEscape(t *testing.T) {
+	dir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "secret.png")
+	writePNG(t, filepath.Dir(outside), "secret.png", 32)
+
+	link := filepath.Join(dir, "innocent.png")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	parts, warns := buildUserContentParts("p", []string{"innocent.png"}, dir, visionAgent(0, 0))
+	if countImageParts(parts) != 0 {
+		t.Error("a symlink pointing outside the workspace was read and attached")
+	}
+	if len(warns) == 0 {
+		t.Error("refusing a symlink escape must be reported")
+	}
+}
+
+// A symlink that stays inside the workspace is legitimate and must still work,
+// so the fix cannot simply refuse all links.
+func TestAttachImages_AllowsSymlinkWithinWorkspace(t *testing.T) {
+	dir := t.TempDir()
+	writePNG(t, dir, "real.png", 32)
+	if err := os.Symlink(filepath.Join(dir, "real.png"), filepath.Join(dir, "alias.png")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	parts, warns := buildUserContentParts("p", []string{"alias.png"}, dir, visionAgent(0, 0))
+	if countImageParts(parts) != 1 {
+		t.Errorf("an in-workspace symlink should be readable (warns: %v)", warns)
+	}
+}
