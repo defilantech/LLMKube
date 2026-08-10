@@ -5,6 +5,26 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.16](https://github.com/defilantech/LLMKube/compare/v0.9.15...v0.9.16) (2026-08-10)
+
+
+### Features
+
+* **chart:** PodMonitor for router-proxy metrics ([#1473](https://github.com/defilantech/LLMKube/issues/1473)) ([fd7c640](https://github.com/defilantech/LLMKube/commit/fd7c6404fe30b2da37170c43ab04e047488a0640))
+* **foreman:** advisory two-site parity signal in the coder gate ([#1456](https://github.com/defilantech/LLMKube/issues/1456)) ([944f90d](https://github.com/defilantech/LLMKube/commit/944f90d85aafa89a3e5302c38eda025901968a49))
+* **foreman:** image input, so a vision-capable coder can see what it rendered ([#1471](https://github.com/defilantech/LLMKube/issues/1471)) ([6c122be](https://github.com/defilantech/LLMKube/commit/6c122bea5d77f1ffca975890c9d1ae6faa461321))
+* **foreman:** read-only fetch_pull_request tool ([#1458](https://github.com/defilantech/LLMKube/issues/1458)) ([7f4910b](https://github.com/defilantech/LLMKube/commit/7f4910b83f6dafcfcf5a1b49b04de49f3afe7db7))
+* **modelpool:** cross-pod sticky model swapping on a shared GPU slot ([#1393](https://github.com/defilantech/LLMKube/issues/1393)) ([ba7777d](https://github.com/defilantech/LLMKube/commit/ba7777d42d1b8e03f3ddea8e8cdf0f11ffd3ae8d))
+* **router-proxy:** expose llmkube_router_* metrics on a dedicated listener ([#1457](https://github.com/defilantech/LLMKube/issues/1457)) ([ca3730d](https://github.com/defilantech/LLMKube/commit/ca3730d1453edd451a235fec369bb32aa359af2d))
+
+
+### Bug Fixes
+
+* **controller:** make the custom CA additive to the system trust store ([#1469](https://github.com/defilantech/LLMKube/issues/1469)) ([d490059](https://github.com/defilantech/LLMKube/commit/d490059f8b64113fd70284f43b07373ba52e56ab))
+* **controller:** stage files and mmproj from an s3:// object store ([#1475](https://github.com/defilantech/LLMKube/issues/1475)) ([769b60d](https://github.com/defilantech/LLMKube/commit/769b60d22dd3772f6d86a0c6ff5a40a007a079a8))
+* **dashboard:** AMD dashboard vendor hygiene — remove runtime-agnostic llama.cpp panels, standardize on DS_PROMETHEUS ([#1446](https://github.com/defilantech/LLMKube/issues/1446)) ([c6c0670](https://github.com/defilantech/LLMKube/commit/c6c06706f8df0f12c4c48ea2d2eebe9137a4f63e))
+* **dashboard:** retarget amd-gpu-observability off amdgpu_*-only queries ([#1474](https://github.com/defilantech/LLMKube/issues/1474)) ([a02e8e8](https://github.com/defilantech/LLMKube/commit/a02e8e84ae0f22c914ae5f5793db4879dca46312))
+
 ## [0.9.15](https://github.com/defilantech/LLMKube/compare/v0.9.14...v0.9.15) (2026-08-08)
 
 
