@@ -64,6 +64,10 @@ foreman:
     # Matches the kube-prometheus-stack default (`/etc/ksm-cmaps/...`) so
     # the stack picks it up without extra wiring.
     configMapKey: foreman-crs.yaml
+    # Namespace to render the CRS ConfigMap into. kube-state-metrics can
+    # only mount ConfigMaps from its own namespace, so set this when it
+    # runs elsewhere (e.g. observability). Empty = the release namespace.
+    namespace: ""
     # Example PrometheusRule alerts shipped alongside the CRS config.
     # Disable when you prefer to author your own alerts against the same
     # metric series.

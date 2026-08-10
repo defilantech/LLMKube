@@ -1,0 +1,37 @@
+suite: CRS ConfigMap namespace override (#1491)
+templates:
+  - crs-configmap.yaml
+
+tests:
+  - it: renders into the release namespace by default
+    set:
+      foreman.crs.enabled: true
+    release:
+      namespace: llm
+    asserts:
+      - equal:
+          path: metadata.namespace
+          value: llm
+
+  - it: foreman.crs.namespace renders the ConfigMap into that namespace
+    set:
+      foreman.crs.enabled: true
+      foreman.crs.namespace: observability
+    release:
+      namespace: llm
+    asserts:
+      - equal:
+          path: metadata.namespace
+          value: observability
+
+  - it: foreman.crs.namespace does not affect the chart-wide namespace helper
+    set:
+      foreman.crs.enabled: true
+      foreman.crs.namespace: observability
+      namespace: custom-ns
+    release:
+      namespace: llm
+    asserts:
+      - equal:
+          path: metadata.namespace
+          value: observability
