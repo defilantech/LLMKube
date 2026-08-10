@@ -47,7 +47,7 @@ spec:
     # fires after `staleHeartbeatDuration` of silence, which must be >
     # 90s to avoid flapping on a single missed beat.
     - alert: ForemanFleetNodeHeartbeatStale
-      expr: foreman_fleetnode_heartbeat_timestamp_seconds > 0 and (time_seconds() - foreman_fleetnode_heartbeat_timestamp_seconds) > {{ .Values.foreman.crs.alerts.staleHeartbeatSeconds }}
+      expr: foreman_fleetnode_heartbeat_timestamp_seconds > 0 and (time() - foreman_fleetnode_heartbeat_timestamp_seconds) > {{ .Values.foreman.crs.alerts.staleHeartbeatSeconds }}
       for: {{ .Values.foreman.crs.alerts.staleHeartbeatDuration }}
       labels:
         severity: critical
