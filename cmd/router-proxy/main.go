@@ -49,7 +49,8 @@ func main() {
 	metricsListen := flag.String("metrics-bind-address", ":9090",
 		"Address the Prometheus metrics server binds to (host:port). Serves "+
 			"the controller-runtime registry at /metrics, including the ModelPool "+
-			"swap/residency/hold metrics. Empty disables the metrics server.")
+			"swap/residency/hold metrics. Empty or 0 disables the metrics "+
+			"server, matching the manager's --metrics-bind-address.")
 	logFormat := flag.String("log-format", "json",
 		"Structured log format: json or text.")
 	shutdownTimeout := flag.Duration("shutdown-timeout", 30*time.Second,
@@ -128,18 +129,19 @@ func main() {
 	// held-request depth) are registered on the controller-runtime registry
 	// from internal/metrics; without this endpoint they are collected but never
 	// scrapeable. A separate port keeps metrics off the inference listener and
-	// lets a ServiceMonitor target it independently. Empty disables the server.
+	// lets a ServiceMonitor target it independently. Empty or 0 disables the
+	// server, so the value the manager uses to turn metrics off works here too.
 	var metricsSrv *http.Server
-	if *metricsListen != "" {
+	if addr := *metricsListen; addr != "" && addr != "0" {
 		metricsMux := http.NewServeMux()
 		metricsMux.Handle("GET /metrics", newMetricsHandler())
 		metricsSrv = &http.Server{
-			Addr:              *metricsListen,
+			Addr:              addr,
 			Handler:           metricsMux,
 			ReadHeaderTimeout: 5 * time.Second,
 		}
 		go func() {
-			logger.Info("metrics server listening", "address", *metricsListen)
+			logger.Info("starting metrics server", "address", addr)
 			if err := metricsSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				logger.Error("metrics server failed", "error", err)
 			}
