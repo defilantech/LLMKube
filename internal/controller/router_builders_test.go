@@ -882,26 +882,31 @@ func TestRouterDeploymentMetricsPort(t *testing.T) {
 		t.Fatalf("container ports = %d, want 2", len(c.Ports))
 	}
 
-	// Check the metrics port.
-	var foundMetrics bool
+	ports := map[string]int32{}
 	for _, p := range c.Ports {
-		if p.Name == "metrics" {
-			foundMetrics = true
-			if p.ContainerPort != routerProxyMetricsPort {
-				t.Errorf("metrics port = %d, want %d", p.ContainerPort, routerProxyMetricsPort)
-			}
-		}
-	}
-	if !foundMetrics {
-		t.Fatal("no metrics container port found")
+		ports[p.Name] = p.ContainerPort
 	}
 
-	// The --metrics-bind-address flag must be present.
+	// Pin the literal rather than comparing against the constant the builder
+	// used: that assertion holds for any value, including one that collides
+	// with the data-plane port and stops the proxy binding at all.
+	got, ok := ports["metrics"]
+	if !ok {
+		t.Fatal("no metrics container port found")
+	}
+	if got != 9090 {
+		t.Errorf("metrics containerPort = %d, want 9090", got)
+	}
+	if got == ports["http"] {
+		t.Errorf("metrics port collides with the data-plane port (%d); both listeners would bind the same address", ports["http"])
+	}
+
+	// The --metrics-bind-address flag must be present and agree with the port.
 	var foundFlag bool
 	for i, a := range c.Args {
 		if a == "--metrics-bind-address" && i+1 < len(c.Args) {
 			foundFlag = true
-			want := fmt.Sprintf(":%d", routerProxyMetricsPort)
+			want := fmt.Sprintf(":%d", got)
 			if c.Args[i+1] != want {
 				t.Errorf("--metrics-bind-address value = %q, want %q", c.Args[i+1], want)
 			}
