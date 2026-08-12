@@ -19,12 +19,19 @@ package agent
 import (
 	"fmt"
 	"path"
+	"regexp"
 	"strings"
 
 	"github.com/go-logr/logr"
 
 	foremanv1alpha1 "github.com/defilantech/llmkube/api/foreman/v1alpha1"
 )
+
+// lineSuffixPattern matches the trailing line citation on a file reference
+// (`main.go:135`, `main.go:49-63`). path.Ext reads such a token's extension
+// as ".go:135", so the suffix has to come off before the extension lookup
+// or every line-cited reference is invisible to the extractor.
+var lineSuffixPattern = regexp.MustCompile(`:\d+(?:-\d+)?$`)
 
 // pathRefExtensions are the file extensions a token must carry to count
 // as a concrete path reference in an issue body. The set is deliberately
@@ -89,6 +96,12 @@ func extractIssuePathRefs(body string, sourceExtensions []string) []string {
 	seen := map[string]bool{}
 	for _, tok := range strings.Fields(normalized) {
 		tok = strings.Trim(tok, ".:!?")
+		// Strip the line citation before the extension lookup, and keep the
+		// bare path: refs are matched against the diff by exact path or
+		// basename, neither of which a ":135" suffix would survive. Dedup
+		// runs on the stripped form so repeated cites of the same file at
+		// different lines collapse to one ref.
+		tok = lineSuffixPattern.ReplaceAllString(tok, "")
 		if tok == "" || seen[tok] {
 			continue
 		}

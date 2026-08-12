@@ -391,3 +391,45 @@ func TestEnforceReviewerScopeOverlap_PythonExtensions(t *testing.T) {
 		t.Error("should not claim demotion when no source files of configured type changed")
 	}
 }
+
+// Issue #1515: a reference carrying a line number (`main.go:135`) read as
+// extension ".go:135" and was discarded, so an issue whose evidence cites
+// lines — the conventional form — extracted no refs at all and could never
+// vouch. Verdicts on correct branches were demoted as a result.
+func TestExtractIssuePathRefs_LineCitations(t *testing.T) {
+	body := "The process has no graceful shutdown. `main.go:135` calls " +
+		"`log.Fatal(srv.ListenAndServe())`.\n" +
+		"- `main.go:49-63` — the buffer is pure memory, drained by runFlushLoop (main.go:138-157).\n" +
+		"- `main.go:80` — no context is threaded anywhere for shutdown.\n" +
+		"- `internal/controller/pod.go:12` — unrelated helper.\n"
+	got := extractIssuePathRefs(body, nil)
+	want := []string{"main.go", "internal/controller/pod.go"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("extractIssuePathRefs(line citations) = %v, want %v", got, want)
+	}
+}
+
+func TestExtractIssuePathRefs_LineCitationNonNumericUnaffected(t *testing.T) {
+	// Only a numeric suffix is a line citation. A colon followed by anything
+	// else is part of the token and must not be stripped into a false ref.
+	body := "See `foo.go:bar` and `12:30` and `config/rbac/role.yaml:42`."
+	got := extractIssuePathRefs(body, nil)
+	want := []string{"config/rbac/role.yaml"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("extractIssuePathRefs(non-numeric suffixes) = %v, want %v", got, want)
+	}
+}
+
+func TestEnforceReviewerScopeOverlap_LineCitedRefVouches(t *testing.T) {
+	extra := map[string]any{}
+	body := "Buffered alerts are dropped on restart; see `main.go:135` and `main.go:80`."
+	got := enforceReviewerScopeOverlap(logr.Discard(), extra, body,
+		[]string{"main.go", "main_test.go"}, foremanv1alpha1.AgenticTaskVerdictGo, []string{".go"})
+	if got != foremanv1alpha1.AgenticTaskVerdictGo {
+		t.Errorf("a diff touching the line-cited file must keep GO, got %v", got)
+	}
+	matched, _ := extra["scopeMatched"].([]string)
+	if len(matched) == 0 {
+		t.Errorf("scopeMatched must be non-empty so the issueAsk vouch can fire; extra=%v", extra)
+	}
+}
