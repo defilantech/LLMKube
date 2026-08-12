@@ -50,7 +50,17 @@ var lineSuffixPattern = regexp.MustCompile(`:\d+(?:-\d+)?$`)
 var pathRefExtensions = map[string]bool{
 	"go": true, "md": true, "yaml": true, "yml": true, "sh": true,
 	"json": true, "mod": true, "sum": true, "tmpl": true, "proto": true,
-	"toml": true, "mk": true,
+	"toml": true, "mk": true, "txt": true, "hcl": true,
+}
+
+// bareSourceFilenames are build files an issue cites by name because they
+// carry no extension, so path.Ext yields "" and the extension lookup can
+// never admit them. Kept to unambiguous, conventionally-capitalized build
+// entrypoints: a token like "Makefile" in an issue body is a file, not
+// prose, whereas a general "capitalized word" rule would admit sentences.
+var bareSourceFilenames = map[string]bool{
+	"Dockerfile": true, "Makefile": true, "Justfile": true,
+	"Containerfile": true, "Earthfile": true,
 }
 
 // extensionSet normalizes a GateProfile SourceExtensions list (".gd",
@@ -137,7 +147,7 @@ func hasSourceFile(paths []string, exts []string) bool {
 // language-agnostic pathRefExtensions base.
 func isPathRef(tok string, extraExts map[string]bool) bool {
 	ext := strings.ToLower(strings.TrimPrefix(path.Ext(tok), "."))
-	if !pathRefExtensions[ext] && !extraExts[ext] {
+	if !pathRefExtensions[ext] && !extraExts[ext] && !bareSourceFilenames[path.Base(tok)] {
 		return false
 	}
 	for _, seg := range strings.Split(tok, "/") {

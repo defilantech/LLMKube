@@ -433,3 +433,26 @@ func TestEnforceReviewerScopeOverlap_LineCitedRefVouches(t *testing.T) {
 		t.Errorf("scopeMatched must be non-empty so the issueAsk vouch can fire; extra=%v", extra)
 	}
 }
+
+// Issue #1515: a build file cited by its bare name has no extension at all,
+// so path.Ext yields "" and the extension lookup could never admit it. The
+// same gap hid .txt and .hcl, which repos cite as requirements.txt and
+// docker-bake.hcl.
+func TestExtractIssuePathRefs_BareBuildFilenames(t *testing.T) {
+	body := "The `Dockerfile` comments claim Node 22 while `apps/coder/docker-bake.hcl` pins 24, " +
+		"and `requirements.txt` is duplicated. See `Makefile` for the build target."
+	got := extractIssuePathRefs(body, nil)
+	want := []string{"Dockerfile", "apps/coder/docker-bake.hcl", "requirements.txt", "Makefile"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("extractIssuePathRefs(bare build filenames) = %v, want %v", got, want)
+	}
+}
+
+func TestExtractIssuePathRefs_ProseIsNotAPathRef(t *testing.T) {
+	// The bare-filename set is an allowlist precisely so ordinary capitalized
+	// prose cannot extract as a file reference.
+	body := "Kubernetes and Prometheus are Fine. Docker is not a Dockerfilex."
+	if got := extractIssuePathRefs(body, nil); len(got) != 0 {
+		t.Errorf("prose must not extract as path refs; got %v", got)
+	}
+}
