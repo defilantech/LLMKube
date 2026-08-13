@@ -1103,11 +1103,7 @@ func (e *NativeAgentLoopExecutor) commitPushAttempt(
 	// message we invented should not auto-close the issue on merge.
 	commitMessage := lr.Terminal.CommitMessage
 	if strings.TrimSpace(commitMessage) == "" {
-		commitMessage = fmt.Sprintf(
-			"fix: resolve issue #%d\n\n%s\n\nRefs #%d",
-			task.Spec.Payload.Issue,
-			strings.TrimSpace(lr.Terminal.Summary),
-			task.Spec.Payload.Issue)
+		commitMessage = synthesizedCommitMessage(task, lr.Terminal.Summary)
 		log.Info("submit_result carried no commit message; synthesized one",
 			"issue", task.Spec.Payload.Issue)
 	}
@@ -1154,6 +1150,29 @@ func (e *NativeAgentLoopExecutor) commitPushAttempt(
 // practice (the retry loop is unreachable for read-only reviewers), so no
 // reviewer rails run here. Pulled out as a method so runLLMPath stays under
 // the gocyclo ceiling, mirroring applyWorkClassPolicyForTask above.
+// synthesizedCommitMessage builds a message for a submit_result that carried
+// none, so a real diff is never discarded on "Commit: Message is required".
+//
+// Payload.Issue is int32 with omitempty, so a task with no issue number reads
+// as 0. Freeform, integrate and reconcile tasks carry a repo without an issue
+// and do reach the commit path, so the issue reference is added only when
+// there is one — otherwise the subject names issue #0 and the trailer points
+// at nothing (#1530).
+func synthesizedCommitMessage(task *foremanv1alpha1.AgenticTask, summary string) string {
+	subject := strings.TrimSpace(summary)
+	if i := strings.IndexByte(subject, '\n'); i >= 0 {
+		subject = strings.TrimSpace(subject[:i])
+	}
+	if subject == "" {
+		subject = "apply coder changes for " + task.Name
+	}
+	if issue := task.Spec.Payload.Issue; issue > 0 {
+		return fmt.Sprintf("fix: resolve issue #%d\n\n%s\n\nRefs #%d",
+			issue, strings.TrimSpace(summary), issue)
+	}
+	return "fix: " + subject
+}
+
 func (e *NativeAgentLoopExecutor) retryCoderTerminalResult(
 	ctx context.Context, log logr.Logger,
 	agent *foremanv1alpha1.Agent, task *foremanv1alpha1.AgenticTask,

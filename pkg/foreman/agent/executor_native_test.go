@@ -2215,3 +2215,85 @@ func TestNativeExecutor_SynthesizesCommitMessageWhenModelOmitsIt(t *testing.T) {
 		t.Errorf("a synthesized message must not auto-close the issue: %q", msg)
 	}
 }
+
+// Issue #1530: Payload.Issue is int32 with omitempty, so a task carrying a
+// repo but no issue number reads as 0. Freeform, integrate and reconcile
+// tasks have that shape and do reach commitPushAttempt, so the synthesized
+// message used to name issue #0 and emit a "Refs #0" trailer pointing at
+// nothing. The regression test for #1529 cannot catch this, because
+// taskAndAgent hardcodes Issue: 9999.
+func TestNativeExecutor_SynthesizedMessageOmitsIssueWhenTaskHasNone(t *testing.T) {
+	gitOrSkip(t)
+	root := t.TempDir()
+	bare := initBareWithSeed(t, root)
+	oaiSrv := scriptedOAI(t, []string{submitGoBody})
+
+	agent, task := taskAndAgent("noissue")
+	// The shape from #1530: repo set, issue unset.
+	task.Spec.Kind = foremanv1alpha1.AgenticTaskKindFreeform
+	task.Spec.Payload.Issue = 0
+
+	c := fake.NewClientBuilder().
+		WithScheme(newScheme(t)).
+		WithObjects(agent, task).
+		Build()
+
+	reg := &fakeRegistry{
+		results: map[string]*foremanagent.ToolResult{
+			"submit_result": {
+				Terminal: true, Verdict: "GO",
+				Summary:       "Tighten the SSRF allowlist",
+				CommitMessage: "",
+			},
+		},
+		touch: func(name string, ws string) {
+			if name == "submit_result" {
+				_ = os.WriteFile(filepath.Join(ws, "fix.txt"), []byte("real work\n"), 0o644)
+			}
+		},
+	}
+
+	e := &foremanagent.NativeAgentLoopExecutor{
+		Client:                   c,
+		WorkspaceRoot:            filepath.Join(root, "ws"),
+		GitRemoteURL:             bare,
+		UpstreamURLForRepo:       func(string) string { return bare },
+		InferenceBaseURLOverride: oaiSrv.URL + "/v1",
+		CommitAuthor:             repo.Identity{Name: "Foreman Bot", Email: "bot@foreman.test"},
+		CommitCommitter:          repo.Identity{Name: "Foreman Bot", Email: "bot@foreman.test"},
+		RegistryFactory: func(
+			_ context.Context, ws string, _ *foremanv1alpha1.Agent, _ bool,
+		) (foremanagent.ToolRegistry, error) {
+			reg.workspace = ws
+			return reg, nil
+		},
+		AuthFactory: fakeAuth(t),
+	}
+
+	res, err := e.Execute(context.Background(), task)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if got := res.Extra["commitSHA"]; got == nil || got == "" {
+		t.Fatalf("work was discarded: commitSHA missing in Extra: %+v", res.Extra)
+	}
+
+	branch, _ := res.Extra["branch"].(string)
+	out, err := exec.Command("git", "-C", bare, "log", "-1", "--format=%B", branch).CombinedOutput()
+	if err != nil {
+		t.Fatalf("read commit message from %q: %v: %s", branch, err, out)
+	}
+	msg := string(out)
+	if strings.TrimSpace(msg) == "" {
+		t.Fatal("synthesized commit message is empty")
+	}
+	if strings.Contains(msg, "#0") {
+		t.Errorf("message must not reference issue #0: %q", msg)
+	}
+	if strings.Contains(msg, "Refs #") {
+		t.Errorf("no issue number, so there should be no Refs trailer: %q", msg)
+	}
+	if !strings.Contains(msg, "Tighten the SSRF allowlist") {
+		t.Errorf("message should carry the model's summary: %q", msg)
+	}
+}
