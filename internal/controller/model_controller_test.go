@@ -27,6 +27,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"testing"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -2061,6 +2062,24 @@ func buildTestGGUF(arch, name string, blockCount uint64, padBytes int) []byte {
 		buf.Write(make([]byte, padBytes))
 	}
 	return buf.Bytes()
+}
+
+// The metadata-read gate in reconcileRuntimeResolvedSource must admit s3://
+// sources (#1453). Before the gate was widened, an s3:// source was not an
+// http(s) source, so the read was skipped and status.size stayed "0" with
+// status.gguf nil even though the object store could serve the header. This
+// pins the widened predicate: an s3:// source must pass the same gate that
+// remote http(s) sources do.
+func TestS3SourceAdmittedByMetadataGate(t *testing.T) {
+	const source = "s3://models/org/repo/model-Q4_K_M.gguf"
+
+	if !isS3Source(source) {
+		t.Fatalf("isS3Source(%q) = false; test premise broken", source)
+	}
+	// The exact gate from reconcileRuntimeResolvedSource, with GGUF unset.
+	if !(isRemoteHTTPSource(source) || isS3Source(source)) {
+		t.Fatalf("metadata gate must admit s3:// source %q", source)
+	}
 }
 
 var _ = Describe("Model Controller remote GGUF metadata (#728, Task 2)", func() {

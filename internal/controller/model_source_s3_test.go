@@ -18,6 +18,9 @@ package controller
 
 import (
 	"context"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -107,4 +110,63 @@ func TestS3SourceIsNotClassifiedAsFetchableByController(t *testing.T) {
 	if isRemoteHTTPSource(source) {
 		t.Errorf("isRemoteHTTPSource(%q) = true; the controller would attempt an HTTP GET", source)
 	}
+}
+
+// The sigv4 signer must attach a valid AWS Signature Version 4 Authorization
+// header to every request it forwards, so an s3:// object store accepts the
+// controller's metadata read. This exercises sigv4RoundTripper.RoundTrip
+// directly (the in-process equivalent of the init container's signed curl) and
+// fails if the signer stops producing a signed request.
+func TestSigV4RoundTripperSignsRequest(t *testing.T) {
+	var gotAuth, gotDate, gotPayloadHash string
+	base := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		gotAuth = req.Header.Get("Authorization")
+		gotDate = req.Header.Get("x-amz-date")
+		gotPayloadHash = req.Header.Get("x-amz-content-sha256")
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("")),
+		}, nil
+	})
+
+	signer := &sigv4RoundTripper{
+		base:      base,
+		accessKey: "AKIAEXAMPLE",
+		secretKey: "secret",
+		region:    "us-east-1",
+	}
+
+	req, err := http.NewRequest(http.MethodGet, "http://minio.local/models/org/repo/model.gguf", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := signer.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if !strings.HasPrefix(gotAuth, "AWS4-HMAC-SHA256 Credential=AKIAEXAMPLE/") {
+		t.Errorf("Authorization = %q, want AWS4-HMAC-SHA256 with access key", gotAuth)
+	}
+	if !strings.Contains(gotAuth, "/us-east-1/s3/aws4_request") {
+		t.Errorf("Authorization = %q, want region/service scope us-east-1/s3", gotAuth)
+	}
+	if !strings.Contains(gotAuth, "Signature=") {
+		t.Errorf("Authorization = %q, want a Signature", gotAuth)
+	}
+	if gotDate == "" {
+		t.Error("x-amz-date header not set")
+	}
+	if gotPayloadHash == "" {
+		t.Error("x-amz-content-sha256 header not set")
+	}
+}
+
+// roundTripFunc adapts a func to http.RoundTripper for tests.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }

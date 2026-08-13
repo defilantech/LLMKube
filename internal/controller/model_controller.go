@@ -19,13 +19,16 @@ package controller
 import (
 	"bufio"
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -156,6 +159,7 @@ func (r *ModelReconciler) metadataClient() *http.Client {
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;delete
 // +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get
 
 func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	reconcileStart := time.Now()
@@ -722,8 +726,8 @@ func (r *ModelReconciler) reconcileRuntimeResolvedSource(ctx context.Context, mo
 	// fetched only by the per-isvc init container. Non-fatal: a metadata read
 	// failure (air-gapped, unreachable, non-GGUF) must not block the model from
 	// reaching Ready, since the workload still resolves the source itself.
-	if isRemoteHTTPSource(model.Spec.Source) && model.Status.GGUF == nil {
-		if ggufMeta, size, err := r.parseRemoteGGUFMetadata(ctx, model.Spec.Source); err != nil {
+	if (isRemoteHTTPSource(model.Spec.Source) || isS3Source(model.Spec.Source)) && model.Status.GGUF == nil {
+		if ggufMeta, size, err := r.parseRemoteGGUFMetadata(ctx, model); err != nil {
 			logger.Info("Failed to read remote GGUF metadata (non-fatal)", "source", model.Spec.Source, "error", err)
 		} else {
 			model.Status.GGUF = ggufMeta
@@ -1104,10 +1108,32 @@ func (r *ModelReconciler) parseGGUFMetadata(path string) (*inferencev1alpha1.GGU
 // contexts carry no default deadline).
 const remoteMetadataTimeout = 30 * time.Second
 
-func (r *ModelReconciler) parseRemoteGGUFMetadata(ctx context.Context, source string) (*inferencev1alpha1.GGUFMetadata, int64, error) {
+func (r *ModelReconciler) parseRemoteGGUFMetadata(ctx context.Context, model *inferencev1alpha1.Model) (*inferencev1alpha1.GGUFMetadata, int64, error) {
 	ctx, cancel := context.WithTimeout(ctx, remoteMetadataTimeout)
 	defer cancel()
-	parsed, err := gguf.ParseFromURLWithClient(ctx, r.metadataClient(), source)
+
+	source := model.Spec.Source
+	httpClient := r.metadataClient()
+	var size int64
+
+	if isS3Source(source) {
+		// s3:// sources are not fetchable with a plain HTTP client: the object
+		// store requires a sigv4-signed request, and the credentials live in the
+		// Model's sourceSecretRef (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY /
+		// AWS_REGION / AWS_ENDPOINT_URL), which the controller resolves here.
+		// This mirrors the signed curl the init container uses in
+		// buildS3DownloadCommand, but in-process with Go's AWS signing rather
+		// than a shelled curl. Non-fatal: any failure (missing secret, missing
+		// endpoint, unreachable store) leaves Status untouched and the model
+		// still reaches Ready, since the workload resolves the source itself.
+		parsed, s, err := r.parseS3GGUFMetadata(ctx, model)
+		if err != nil {
+			return nil, 0, err
+		}
+		return parsed, s, nil
+	}
+
+	parsed, err := gguf.ParseFromURLWithClient(ctx, httpClient, source)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to parse remote GGUF: %w", err)
 	}
@@ -1125,7 +1151,235 @@ func (r *ModelReconciler) parseRemoteGGUFMetadata(ctx context.Context, source st
 		License:       license.Normalize(parsed.License()),
 	}
 
-	return meta, r.remoteContentLength(ctx, source), nil
+	size = r.remoteContentLength(ctx, source)
+	return meta, size, nil
+}
+
+// parseS3GGUFMetadata reads GGUF metadata from an s3:// source. The object
+// store requires a sigv4-signed request, so unlike the http(s) path this
+// resolves the Model's sourceSecretRef for credentials and signs every request
+// in-process (mirroring the signed curl the init container uses in
+// buildS3DownloadCommand). The endpoint URL is built from AWS_ENDPOINT_URL plus
+// the bucket/key parsed from the s3:// source. Any failure is returned as an
+// error and treated as non-fatal by the caller.
+func (r *ModelReconciler) parseS3GGUFMetadata(ctx context.Context, model *inferencev1alpha1.Model) (*inferencev1alpha1.GGUFMetadata, int64, error) {
+	bucket, key, err := parseS3Source(model.Spec.Source)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	creds, err := r.s3Credentials(ctx, model)
+	if err != nil {
+		return nil, 0, err
+	}
+	if creds.Endpoint == "" {
+		return nil, 0, fmt.Errorf("s3 source %q: AWS_ENDPOINT_URL not set in secret %q", model.Spec.Source, model.Spec.SourceSecretRef.Name)
+	}
+
+	// Path-style endpoint: <endpoint>/<bucket>/<key>. The init container's
+	// signed curl uses the same shape (${AWS_ENDPOINT_URL}/${S3_BUCKET}/${S3_KEY}).
+	objectURL := strings.TrimRight(creds.Endpoint, "/") + "/" + bucket + "/" + key
+
+	signer := &sigv4RoundTripper{
+		base:      r.metadataClient().Transport,
+		accessKey: creds.AccessKeyID,
+		secretKey: creds.SecretAccessKey,
+		region:    creds.Region,
+	}
+	s3Client := &http.Client{
+		Timeout:   remoteMetadataTimeout,
+		Transport: signer,
+	}
+
+	parsed, err := gguf.ParseFromURLWithClient(ctx, s3Client, objectURL)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to parse s3 GGUF: %w", err)
+	}
+
+	meta := &inferencev1alpha1.GGUFMetadata{
+		Architecture:  parsed.Architecture(),
+		ModelName:     parsed.Name(),
+		Quantization:  parsed.Quantization(),
+		ContextLength: parsed.ContextLength(),
+		EmbeddingSize: parsed.EmbeddingLength(),
+		LayerCount:    parsed.BlockCount(),
+		HeadCount:     parsed.HeadCount(),
+		TensorCount:   parsed.Header.TensorCount,
+		FileVersion:   parsed.Header.Version,
+		License:       license.Normalize(parsed.License()),
+	}
+
+	return meta, r.s3ContentLength(ctx, s3Client, objectURL), nil
+}
+
+// s3Credentials resolves the AWS_* env values from the Model's sourceSecretRef.
+// The secret is read from the Model's namespace; the keys mirror what the init
+// container's envFrom projection consumes (see buildS3DownloadCommand).
+func (r *ModelReconciler) s3Credentials(ctx context.Context, model *inferencev1alpha1.Model) (s3Creds, error) {
+	if model.Spec.SourceSecretRef == nil || model.Spec.SourceSecretRef.Name == "" {
+		return s3Creds{}, fmt.Errorf("s3 source %q requires spec.sourceSecretRef", model.Spec.Source)
+	}
+	secret := &corev1.Secret{}
+	if err := r.Get(ctx, types.NamespacedName{Name: model.Spec.SourceSecretRef.Name, Namespace: model.Namespace}, secret); err != nil {
+		return s3Creds{}, fmt.Errorf("read sourceSecretRef %q: %w", model.Spec.SourceSecretRef.Name, err)
+	}
+	return s3Creds{
+		AccessKeyID:     string(secret.Data["AWS_ACCESS_KEY_ID"]),
+		SecretAccessKey: string(secret.Data["AWS_SECRET_ACCESS_KEY"]),
+		Region:          string(secret.Data["AWS_REGION"]),
+		Endpoint:        string(secret.Data["AWS_ENDPOINT_URL"]),
+	}, nil
+}
+
+// s3Creds holds the resolved AWS credentials/endpoint for an s3:// source.
+type s3Creds struct {
+	AccessKeyID     string
+	SecretAccessKey string
+	Region          string
+	Endpoint        string
+}
+
+// s3ContentLength returns the object size from a signed HEAD request, or 0 when
+// the store does not report a usable Content-Length. Best-effort: any error
+// yields 0 so the caller leaves Status.Size untouched rather than failing.
+func (r *ModelReconciler) s3ContentLength(ctx context.Context, httpClient *http.Client, objectURL string) int64 {
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, objectURL, nil)
+	if err != nil {
+		return 0
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return 0
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK || resp.ContentLength <= 0 {
+		return 0
+	}
+	return resp.ContentLength
+}
+
+// sigv4RoundTripper signs every request with AWS Signature Version 4 for the
+// s3 service, then delegates to the wrapped transport (the SSRF-guarded one).
+// This is the in-process equivalent of the init container's
+// `curl --aws-sigv4 "aws:amz:${AWS_REGION}:s3" -u "${AWS_ACCESS_KEY_ID}:${AWS_SECRET_ACCESS_KEY}"`.
+type sigv4RoundTripper struct {
+	base      http.RoundTripper
+	accessKey string
+	secretKey string
+	region    string
+}
+
+func (t *sigv4RoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	now := time.Now().UTC()
+	amzDate := now.Format("20060102T150405Z")
+	dateStamp := now.Format("20060102")
+
+	// S3 GET/HEAD carry no body; the payload hash is the SHA256 of the empty
+	// string. Range GETs and HEAD probes are all body-less.
+	payloadHash := sha256Hex(nil)
+
+	req.Header.Set("x-amz-date", amzDate)
+	req.Header.Set("x-amz-content-sha256", payloadHash)
+
+	canonicalHeaders, signedHeaders := canonicalHeaders(req)
+	canonicalRequest := strings.Join([]string{
+		req.Method,
+		canonicalURI(req.URL),
+		canonicalQuery(req.URL),
+		canonicalHeaders,
+		signedHeaders,
+		payloadHash,
+	}, "\n")
+
+	scope := dateStamp + "/" + t.region + "/s3/aws4_request"
+	stringToSign := strings.Join([]string{
+		"AWS4-HMAC-SHA256",
+		amzDate,
+		scope,
+		sha256Hex([]byte(canonicalRequest)),
+	}, "\n")
+
+	signingKey := hmacSHA256([]byte("AWS4"+t.secretKey), dateStamp)
+	signingKey = hmacSHA256(signingKey, t.region)
+	signingKey = hmacSHA256(signingKey, "s3")
+	signingKey = hmacSHA256(signingKey, "aws4_request")
+
+	signature := hex.EncodeToString(hmacSHA256(signingKey, stringToSign))
+
+	auth := "AWS4-HMAC-SHA256 Credential=" + t.accessKey + "/" + scope +
+		", SignedHeaders=" + signedHeaders +
+		", Signature=" + signature
+	req.Header.Set("Authorization", auth)
+
+	return t.base.RoundTrip(req)
+}
+
+// canonicalURI percent-encodes each path segment, matching AWS SigV4's
+// requirement that the path be URI-encoded (S3 path-style bucket included).
+func canonicalURI(u *url.URL) string {
+	segments := strings.Split(u.EscapedPath(), "/")
+	for i, s := range segments {
+		if s == "" {
+			continue
+		}
+		segments[i] = url.PathEscape(s)
+	}
+	return strings.Join(segments, "/")
+}
+
+// canonicalQuery sorts and URI-encodes the query parameters per SigV4.
+func canonicalQuery(u *url.URL) string {
+	vals := u.Query()
+	keys := make([]string, 0, len(vals))
+	for k := range vals {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for i, k := range keys {
+		if i > 0 {
+			b.WriteByte('&')
+		}
+		b.WriteString(url.QueryEscape(k))
+		b.WriteByte('=')
+		b.WriteString(url.QueryEscape(vals[k][0]))
+	}
+	return b.String()
+}
+
+// canonicalHeaders returns the SigV4 canonical headers block and the
+// semicolon-joined signed-header list. Only the host and x-amz-* headers are
+// signed, which is sufficient for S3 and keeps the signature stable.
+func canonicalHeaders(req *http.Request) (string, string) {
+	headers := map[string]string{
+		"host":                 req.URL.Host,
+		"x-amz-date":           req.Header.Get("x-amz-date"),
+		"x-amz-content-sha256": req.Header.Get("x-amz-content-sha256"),
+	}
+	keys := make([]string, 0, len(headers))
+	for k := range headers {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for _, k := range keys {
+		b.WriteString(k)
+		b.WriteByte(':')
+		b.WriteString(strings.TrimSpace(headers[k]))
+		b.WriteByte('\n')
+	}
+	return b.String(), strings.Join(keys, ";")
+}
+
+func sha256Hex(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+func hmacSHA256(key []byte, data string) []byte {
+	h := hmac.New(sha256.New, key)
+	_, _ = h.Write([]byte(data))
+	return h.Sum(nil)
 }
 
 // remoteContentLength returns the object size from a HEAD request, or 0 when the
