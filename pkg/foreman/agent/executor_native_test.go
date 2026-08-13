@@ -2135,3 +2135,83 @@ func TestNativeExecutor_ModelNoGoAlreadyResolved_PromotesOutcome(t *testing.T) {
 		t.Errorf("modelExtra should keep the nested outcome for observability, got %v", res.Extra["modelExtra"])
 	}
 }
+
+// Issue #1526: a submit_result carrying edits but an empty CommitMessage used
+// to fail repo.Commit ("Commit: Message is required"), discarding the diff and
+// recording NO-GO "commit rejected" — indistinguishable from the model
+// declining the work. Four occurrences in a 40h window on our fleet, each
+// after 1-2 hours of coder runtime. The executor now synthesizes a message.
+func TestNativeExecutor_SynthesizesCommitMessageWhenModelOmitsIt(t *testing.T) {
+	gitOrSkip(t)
+	root := t.TempDir()
+	bare := initBareWithSeed(t, root)
+	oaiSrv := scriptedOAI(t, []string{submitGoBody})
+
+	agent, task := taskAndAgent("nomsg")
+	c := fake.NewClientBuilder().
+		WithScheme(newScheme(t)).
+		WithObjects(agent, task).
+		Build()
+
+	// GO with real edits but no CommitMessage — the shape that used to be
+	// thrown away.
+	reg := &fakeRegistry{
+		results: map[string]*foremanagent.ToolResult{
+			"submit_result": {
+				Terminal: true, Verdict: "GO",
+				Summary:       "Added graceful shutdown and a regression test",
+				CommitMessage: "",
+			},
+		},
+		touch: func(name string, ws string) {
+			if name == "submit_result" {
+				_ = os.WriteFile(filepath.Join(ws, "fix.txt"), []byte("real work\n"), 0o644)
+			}
+		},
+	}
+
+	e := &foremanagent.NativeAgentLoopExecutor{
+		Client:                   c,
+		WorkspaceRoot:            filepath.Join(root, "ws"),
+		GitRemoteURL:             bare,
+		UpstreamURLForRepo:       func(string) string { return bare },
+		InferenceBaseURLOverride: oaiSrv.URL + "/v1",
+		CommitAuthor:             repo.Identity{Name: "Foreman Bot", Email: "bot@foreman.test"},
+		CommitCommitter:          repo.Identity{Name: "Foreman Bot", Email: "bot@foreman.test"},
+		RegistryFactory: func(
+			_ context.Context, ws string, _ *foremanv1alpha1.Agent, _ bool,
+		) (foremanagent.ToolRegistry, error) {
+			reg.workspace = ws
+			return reg, nil
+		},
+		AuthFactory: fakeAuth(t),
+	}
+
+	res, err := e.Execute(context.Background(), task)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if res.Verdict != foremanv1alpha1.AgenticTaskVerdictGo {
+		t.Fatalf("verdict: want GO got %s; result=%+v", res.Verdict, res)
+	}
+	if got := res.Extra["commitSHA"]; got == nil || got == "" {
+		t.Fatalf("work was discarded: commitSHA missing in Extra: %+v", res.Extra)
+	}
+
+	// The synthesized message must reference the issue without auto-closing it.
+	out, err := exec.Command("git", "-C", bare, "log", "-1", "--format=%B",
+		"foreman/issue-9999").CombinedOutput()
+	if err != nil {
+		t.Fatalf("read commit message: %v: %s", err, out)
+	}
+	msg := string(out)
+	if strings.TrimSpace(msg) == "" {
+		t.Error("synthesized commit message is empty")
+	}
+	if !strings.Contains(msg, "#9999") {
+		t.Errorf("message should reference the issue: %q", msg)
+	}
+	if strings.Contains(msg, "Fixes #") {
+		t.Errorf("a synthesized message must not auto-close the issue: %q", msg)
+	}
+}

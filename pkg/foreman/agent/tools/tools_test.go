@@ -1192,3 +1192,25 @@ func TestTruncateRuneSafe_DottedIdentifierIsNotASentenceEnd(t *testing.T) {
 		t.Errorf("dotted identifier treated as a sentence end: %q", got)
 	}
 }
+
+// Issue #1526: commit_message must be required so a model cannot reach the
+// executor with edits and no message. The executor still synthesizes a
+// fallback, but the schema is what stops it happening.
+func TestSubmitResultRequiresCommitMessage(t *testing.T) {
+	var schema struct {
+		Required []string `json:"required"`
+	}
+	if err := json.Unmarshal(SubmitResultTool{}.Schema().Parameters, &schema); err != nil {
+		t.Fatalf("unmarshal schema: %v", err)
+	}
+	want := map[string]bool{"verdict": true, "summary": true, "commit_message": true}
+	got := map[string]bool{}
+	for _, r := range schema.Required {
+		got[r] = true
+	}
+	for k := range want {
+		if !got[k] {
+			t.Errorf("schema required is missing %q; got %v", k, schema.Required)
+		}
+	}
+}

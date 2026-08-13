@@ -1095,9 +1095,26 @@ func (e *NativeAgentLoopExecutor) commitPushAttempt(
 
 	envtestTouched = len(changedEnvtestPackages(ctx, workspace, execCommandRunner)) > 0
 
+	// A submit_result that carries edits but no commit message used to fail
+	// repo.Commit ("Commit: Message is required"), which discarded the whole
+	// diff and recorded NO-GO. The work is real and the branch is resolved by
+	// this point, so synthesize a subject the same way the gate-failed path
+	// below does rather than throwing it away. Refs (not Fixes) because a
+	// message we invented should not auto-close the issue on merge.
+	commitMessage := lr.Terminal.CommitMessage
+	if strings.TrimSpace(commitMessage) == "" {
+		commitMessage = fmt.Sprintf(
+			"fix: resolve issue #%d\n\n%s\n\nRefs #%d",
+			task.Spec.Payload.Issue,
+			strings.TrimSpace(lr.Terminal.Summary),
+			task.Spec.Payload.Issue)
+		log.Info("submit_result carried no commit message; synthesized one",
+			"issue", task.Spec.Payload.Issue)
+	}
+
 	sha, commitErr := repo.Commit(ctx, repo.CommitOptions{
 		Workspace: workspace,
-		Message:   lr.Terminal.CommitMessage,
+		Message:   commitMessage,
 		Author:    e.CommitAuthor,
 		Committer: e.CommitCommitter,
 	})

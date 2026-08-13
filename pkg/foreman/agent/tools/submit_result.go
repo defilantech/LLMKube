@@ -118,12 +118,14 @@ func (SubmitResultTool) Schema() oai.ToolSchemaDef {
 "properties": {
   "verdict":        {"type": "string", "enum": ["GO", "NO-GO", "ERROR"]},
   "summary":        {"type": "string", "description": "One-sentence outcome summary (1-280 chars)."},
-  "commit_message": {"type": "string",
-    "description": "Full commit message including subject, body, and Fixes #N if applicable."},
+  "commit_message": {
+    "type": "string",
+    "description":
+      "Full commit message: subject, body, and Fixes #N if applicable. The executor commits your edits with it."},
   "extra": {"type": "object",
     "description": "Structured extra fields the executor may surface in status.result.extra."}
 },
-"required": ["verdict", "summary"]
+"required": ["verdict", "summary", "commit_message"]
 }`),
 	}
 }
