@@ -122,10 +122,42 @@ func collectReadyReplicaURLs(slices *discoveryv1.EndpointSliceList, port int32) 
 	return urls
 }
 
+// collectUnreadyReplicaURLs builds a list of "http://<addr>:<port>" URLs from
+// the not-ready endpoints in the given EndpointSliceList. Per Kubernetes
+// convention, an endpoint with Conditions.Ready == nil is treated as ready and
+// is therefore excluded here. These are the replicas the early-return in
+// reconcileRolloutPolicy used to skip: they are not serving NEW requests, but
+// generations already accepted may still be running, so they must be probed to
+// tell "saturated but still generating" apart from "dead".
+func collectUnreadyReplicaURLs(slices *discoveryv1.EndpointSliceList, port int32) []string {
+	var urls []string
+	for i := range slices.Items {
+		for j := range slices.Items[i].Endpoints {
+			ep := &slices.Items[i].Endpoints[j]
+			if ep.Conditions.Ready == nil || *ep.Conditions.Ready {
+				continue
+			}
+			for _, addr := range ep.Addresses {
+				urls = append(urls, fmt.Sprintf("http://%s:%d", addr, port))
+			}
+		}
+	}
+	return urls
+}
+
 // checkServiceIdle checks whether the InferenceService Service currently routes
 // to idle backends. It resolves the backend for the given InferenceService,
-// type-asserts to IdleDetector, and probes each Ready replica via EndpointSlices
+// type-asserts to IdleDetector, and probes each replica via EndpointSlices
 // (or falls back to a single Service URL when no EndpointSlices exist).
+//
+// Ready replicas are probed fail-closed: a probe error on a Ready replica is
+// treated as "not idle" and defers the rollout, because a Ready pod that does
+// not answer is a real anomaly. Not-ready replicas are probed too, but with the
+// opposite bias: an unreachable not-ready replica is dead (crashloop,
+// ImagePullBackOff) and has no in-flight work to protect, so it is skipped;
+// only a reachable not-ready replica that affirmatively reports busy defers the
+// rollout. This is what distinguishes "unready because saturated, still
+// generating" from "unready because dead".
 func (r *InferenceServiceReconciler) checkServiceIdle(ctx context.Context, isvc *inferencev1alpha1.InferenceService, svc *corev1.Service) (bool, error) {
 	log := logf.FromContext(ctx)
 
@@ -170,12 +202,9 @@ func (r *InferenceServiceReconciler) checkServiceIdle(ctx context.Context, isvc 
 		return idle, nil
 	}
 
-	replicaURLs := collectReadyReplicaURLs(slices, port)
-	if len(replicaURLs) == 0 {
-		return false, nil
-	}
-
-	for _, url := range replicaURLs {
+	// Probe Ready replicas first, fail-closed: a Ready pod that does not
+	// answer is a real anomaly and must not be rolled over.
+	for _, url := range collectReadyReplicaURLs(slices, port) {
 		idle, err := probe(ctx, url)
 		if err != nil {
 			log.Info("Failed to check replica idle status", "url", url, "error", err)
@@ -183,6 +212,24 @@ func (r *InferenceServiceReconciler) checkServiceIdle(ctx context.Context, isvc 
 		}
 		if !idle {
 			log.Info("Replica is busy, deferring rollout", "url", url)
+			return false, nil
+		}
+	}
+
+	// Probe not-ready replicas with the opposite bias. A not-ready replica
+	// that is unreachable is dead (crashloop, ImagePullBackOff, evicted) and
+	// has no in-flight work to protect — skip it. Only a reachable not-ready
+	// replica that affirmatively reports busy defers the rollout. This is the
+	// case the old early-return collapsed: "unready because saturated, still
+	// generating" must defer, while "unready because dead" must not.
+	for _, url := range collectUnreadyReplicaURLs(slices, port) {
+		idle, err := probe(ctx, url)
+		if err != nil {
+			log.Info("Not-ready replica unreachable, treating as dead and skipping", "url", url, "error", err)
+			continue
+		}
+		if !idle {
+			log.Info("Not-ready replica is still busy, deferring rollout", "url", url)
 			return false, nil
 		}
 	}
@@ -251,12 +298,18 @@ func (r *InferenceServiceReconciler) reconcileRolloutPolicy(
 	existingCond := meta.FindStatusCondition(isvc.Status.Conditions, ConditionRolloutDeferred)
 	now := metav1.Now()
 
-	// Check old-generation pod readiness before probing idle slots.
-	// If pods exist but none are Ready, there is no in-flight work to
-	// protect — proceed immediately instead of deferring forever.
+	// Check old-generation pod readiness before probing idle slots. When no
+	// old pod is Ready there is no Service endpoint to route NEW requests to,
+	// but generations already accepted may still be running, so readiness is
+	// not a proxy for "no in-flight work". We therefore still consult the idle
+	// probe; checkServiceIdle now probes not-ready replicas directly and skips
+	// only the ones that are unreachable (dead), so a saturated-but-generating
+	// backend defers while a crashlooping one proceeds. The totalPods == 0 case
+	// (scale-to-zero, suspend, eviction) has no pods at all and nothing to
+	// protect, so it proceeds without probing.
 	totalPods, readyPods := r.countOldPods(ctx, isvc)
-	if totalPods > 0 && readyPods == 0 {
-		log.Info("All old-generation pods are unready; no work to protect, proceeding with rollout")
+	if totalPods == 0 {
+		log.Info("No old-generation pods exist; no work to protect, proceeding with rollout")
 		if existingCond != nil {
 			meta.RemoveStatusCondition(&isvc.Status.Conditions, ConditionRolloutDeferred)
 			if updateErr := r.Status().Update(ctx, isvc); updateErr != nil {

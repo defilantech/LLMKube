@@ -1270,6 +1270,91 @@ func TestCollectReadyReplicaURLs(t *testing.T) {
 	}
 }
 
+func TestCollectUnreadyReplicaURLs(t *testing.T) {
+	trueVal := true
+	falseVal := false
+	tests := []struct {
+		name string
+		list *discoveryv1.EndpointSliceList
+		port int32
+		want []string
+	}{
+		{
+			name: "not ready endpoints",
+			list: &discoveryv1.EndpointSliceList{
+				Items: []discoveryv1.EndpointSlice{{
+					Endpoints: []discoveryv1.Endpoint{{
+						Addresses:  []string{"10.0.0.1"},
+						Conditions: discoveryv1.EndpointConditions{Ready: &falseVal},
+					}},
+				}},
+			},
+			port: 8080,
+			want: []string{"http://10.0.0.1:8080"},
+		},
+		{
+			name: "ready endpoints skipped",
+			list: &discoveryv1.EndpointSliceList{
+				Items: []discoveryv1.EndpointSlice{{
+					Endpoints: []discoveryv1.Endpoint{{
+						Addresses:  []string{"10.0.0.2"},
+						Conditions: discoveryv1.EndpointConditions{Ready: &trueVal},
+					}},
+				}},
+			},
+			port: 8080,
+			want: nil,
+		},
+		{
+			name: "nil ready treated as ready and skipped",
+			list: &discoveryv1.EndpointSliceList{
+				Items: []discoveryv1.EndpointSlice{{
+					Endpoints: []discoveryv1.Endpoint{{
+						Addresses:  []string{"10.0.0.3"},
+						Conditions: discoveryv1.EndpointConditions{Ready: nil},
+					}},
+				}},
+			},
+			port: 8080,
+			want: nil,
+		},
+		{
+			name: "mixed ready and not ready",
+			list: &discoveryv1.EndpointSliceList{
+				Items: []discoveryv1.EndpointSlice{{
+					Endpoints: []discoveryv1.Endpoint{
+						{
+							Addresses:  []string{"10.0.0.4"},
+							Conditions: discoveryv1.EndpointConditions{Ready: &trueVal},
+						},
+						{
+							Addresses:  []string{"10.0.0.5"},
+							Conditions: discoveryv1.EndpointConditions{Ready: &falseVal},
+						},
+					},
+				}},
+			},
+			port: 8080,
+			want: []string{"http://10.0.0.5:8080"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := collectUnreadyReplicaURLs(tc.list, tc.port)
+			if len(got) != len(tc.want) {
+				t.Errorf("got %d URLs, want %d: %v", len(got), len(tc.want), got)
+				return
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("url[%d] = %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
 func TestErrIdleUnsupported(t *testing.T) {
 	if errIdleUnsupported == nil {
 		t.Error("errIdleUnsupported must not be nil")
@@ -1806,7 +1891,7 @@ var _ = Describe("Multi-replica drain-before-roll", func() {
 		Expect(cond).To(BeNil())
 	})
 
-	It("should defer when all endpoints exist but none are ready", func() {
+	It("should defer when all pods are unready but still busy", func() {
 		modelName := "model-no-ready-eps"
 		isvcName := "isvc-no-ready-eps"
 
@@ -1863,9 +1948,35 @@ var _ = Describe("Multi-replica drain-before-roll", func() {
 		dep := &appsv1.Deployment{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, dep)).To(Succeed())
 
+		// Create not-ready Pods so countOldPods reports (total>0, ready==0) —
+		// the exact state the old early-return converted to PROCEED without
+		// consulting the idle probe. These pods are Running but not Ready,
+		// i.e. saturated-but-still-generating, not dead.
 		notReady := false
 		svcLabel := sanitizeDNSName(isvcName)
-		for _, addr := range []string{"10.0.0.1", "10.0.0.2"} {
+		for i, addr := range []string{"10.0.0.1", "10.0.0.2"} {
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      isvcName + "-unready-" + string(rune('a'+i)),
+					Namespace: "default",
+					Labels: map[string]string{
+						"app":                           isvcName,
+						"inference.llmkube.dev/service": isvcName,
+					},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{Name: "main", Image: "ghcr.io/ggml-org/llama.cpp:server"}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+			pod.Status = corev1.PodStatus{
+				Phase: corev1.PodRunning,
+				Conditions: []corev1.PodCondition{
+					{Type: corev1.PodReady, Status: corev1.ConditionFalse, Reason: "ContainersNotReady"},
+				},
+			}
+			Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
+
 			eslice := &discoveryv1.EndpointSlice{
 				ObjectMeta: metav1.ObjectMeta{
 					GenerateName: "eslice-",
@@ -1881,6 +1992,19 @@ var _ = Describe("Multi-replica drain-before-roll", func() {
 				}},
 			}
 			Expect(k8sClient.Create(ctx, eslice)).To(Succeed())
+		}
+
+		// Stub the llama.cpp /slots endpoint as busy on every not-ready
+		// replica. The controller has positive evidence the backend is busy
+		// and must defer, not roll over in-flight work.
+		reconciler.HTTPClient = &http.Client{
+			Transport: &addressAwareRoundTripper{
+				responses: map[string]string{
+					"10.0.0.1:8000": `[{"id":0,"is_processing":true}]`,
+					"10.0.0.2:8000": `[{"id":0,"is_processing":true}]`,
+				},
+			},
+			Timeout: 5 * time.Second,
 		}
 
 		updated := &inferencev1alpha1.InferenceService{}
