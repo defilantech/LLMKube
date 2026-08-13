@@ -5,6 +5,43 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.17](https://github.com/defilantech/LLMKube/compare/v0.9.16...v0.9.17) (2026-08-13)
+
+
+### Features
+
+* **chart:** foreman.crs.namespace — render the CRS ConfigMap where kube-state-metrics can mount it ([#1492](https://github.com/defilantech/LLMKube/issues/1492)) ([5bb8c19](https://github.com/defilantech/LLMKube/commit/5bb8c19c577dce55c502fb2f990b3648bd24a5e9))
+* fetch_pull_request: include check-run output (title/summary/text) for failed runs ([#1481](https://github.com/defilantech/LLMKube/issues/1481)) ([#1505](https://github.com/defilantech/LLMKube/issues/1505)) ([e323f32](https://github.com/defilantech/LLMKube/commit/e323f32d18556db91e255ce61123d48b79c077d6))
+
+
+### Bug Fixes
+
+* **chart:** heartbeat alert uses time(), not the nonexistent time_seconds() ([#1494](https://github.com/defilantech/LLMKube/issues/1494)) ([bf8c1a0](https://github.com/defilantech/LLMKube/commit/bf8c1a034b0209aad030905e2591941a209d63b5))
+* **chart:** scope agent Deployment selectors to their pool ([#1524](https://github.com/defilantech/LLMKube/issues/1524)) ([0da2a9e](https://github.com/defilantech/LLMKube/commit/0da2a9ee6f4b4205d6316850c988f4f92cdba1d4))
+* detect the scheduler's other wording for an unusable cache volume ([#1513](https://github.com/defilantech/LLMKube/issues/1513)) ([64ee9d7](https://github.com/defilantech/LLMKube/commit/64ee9d7788dc8fe4c17b229c461ac3f7ddae1562))
+* EnsurePR treats a closed unmerged PR as satisfied — retried work ends with no PR ([#1476](https://github.com/defilantech/LLMKube/issues/1476)) ([#1507](https://github.com/defilantech/LLMKube/issues/1507)) ([82baff8](https://github.com/defilantech/LLMKube/commit/82baff88362cac188c3b4c68654734eaffa5e9b3))
+* extract path refs the extension gate was discarding ([#1516](https://github.com/defilantech/LLMKube/issues/1516)) ([7166920](https://github.com/defilantech/LLMKube/commit/71669204cddcff8f0dd05671c5593403c8e02410))
+* **foreman:** bound edit-free resets earned from bash-shaped writes ([#1521](https://github.com/defilantech/LLMKube/issues/1521)) ([41a2829](https://github.com/defilantech/LLMKube/commit/41a282920345b0a5792d68ce6362d5d739b1f15a))
+* **foreman:** bound grep match lines so one minified file cannot end a run ([#1488](https://github.com/defilantech/LLMKube/issues/1488)) ([952f8af](https://github.com/defilantech/LLMKube/commit/952f8af1fb2eee2f8918383a40f148c32db82ae0))
+* **foreman:** one tool list, so a tool cannot ship unusable again ([#1486](https://github.com/defilantech/LLMKube/issues/1486)) ([e77d7cf](https://github.com/defilantech/LLMKube/commit/e77d7cf3435ac485bd4424b2f6c6c0df80585043))
+* **foreman:** reviewers review the change, not the base branch (+ cross-project remote guard) ([#1490](https://github.com/defilantech/LLMKube/issues/1490)) ([0f3fa83](https://github.com/defilantech/LLMKube/commit/0f3fa83f5ce8bdb89d0deb176844de7dc9346195))
+* **foreman:** route all three consumers through the provider seams ([#1510](https://github.com/defilantech/LLMKube/issues/1510)) ([79448fc](https://github.com/defilantech/LLMKube/commit/79448fca464c3377fc89685db8850b28b5d82a4d))
+* **modelpool:** guard the nil HTTPClient that panics every swap ([#1485](https://github.com/defilantech/LLMKube/issues/1485)) ([dc3fa50](https://github.com/defilantech/LLMKube/commit/dc3fa50faa2d5bc8eb38b11e5c6548acffbb86f5))
+* name the cause when a model cache PV can never bind ([#1511](https://github.com/defilantech/LLMKube/issues/1511)) ([772c99d](https://github.com/defilantech/LLMKube/commit/772c99db80580d2b5a3db56536c600ce21dd70c2))
+* normalizeContainers strips operator-owned SecurityContext fields before drift comparison ([#1462](https://github.com/defilantech/LLMKube/issues/1462)) ([#1506](https://github.com/defilantech/LLMKube/issues/1506)) ([8d291ca](https://github.com/defilantech/LLMKube/commit/8d291ca2ca36fbcb0d06ef587c30dce88b86b96f))
+* **operator:** apply nodeSelector and tolerations to non-GPU services ([#1504](https://github.com/defilantech/LLMKube/issues/1504)) ([dc3bac3](https://github.com/defilantech/LLMKube/commit/dc3bac3a7476dbe05fae8d90daab30655a880eee))
+* populate status.size and status.gguf for s3:// model sources ([#1522](https://github.com/defilantech/LLMKube/issues/1522)) ([69a76fd](https://github.com/defilantech/LLMKube/commit/69a76fdd9ff4d10c3e7c563382b12c2bd633bf05))
+* **router-proxy:** honour 0 as disable, pin the metrics port in tests, refresh the dashboard catalog ([#1519](https://github.com/defilantech/LLMKube/issues/1519)) ([774e0b9](https://github.com/defilantech/LLMKube/commit/774e0b95865668fc422192575c4fc7b19279e90c))
+* **router-proxy:** reject colliding listener addresses at startup ([#1518](https://github.com/defilantech/LLMKube/issues/1518)) ([fc49a5d](https://github.com/defilantech/LLMKube/commit/fc49a5d2c3c0deed376e5fe62d3ef625f8eb07c3))
+* surface the unbindable-cache diagnosis instead of dropping it ([#1512](https://github.com/defilantech/LLMKube/issues/1512)) ([03c0f17](https://github.com/defilantech/LLMKube/commit/03c0f179dd507cecb9a707f440ddbf007815904a))
+
+
+### Documentation
+
+* **foreman:** refresh model compatibility from what the fleet has proven ([#1483](https://github.com/defilantech/LLMKube/issues/1483)) ([8ccdbee](https://github.com/defilantech/LLMKube/commit/8ccdbee27c8cf2cfc1352e62094e5aa3d48ddec6))
+* how to recognise a cache volume the provisioner never stamped ([#1514](https://github.com/defilantech/LLMKube/issues/1514)) ([12d59c2](https://github.com/defilantech/LLMKube/commit/12d59c2f62629ee636ae83bd6853e378aca5abae))
+* **operations:** document ModelPool in the GPU-sharing guide ([#1508](https://github.com/defilantech/LLMKube/issues/1508)) ([c2c3a84](https://github.com/defilantech/LLMKube/commit/c2c3a8406434b133e9855b00e17d40793af7cc6a))
+
 ## [0.9.16](https://github.com/defilantech/LLMKube/compare/v0.9.15...v0.9.16) (2026-08-10)
 
 
