@@ -75,11 +75,11 @@ func TestRegister_AppendsMCPTools(t *testing.T) {
 	if !names["native_tool"] {
 		t.Fatalf("Register result %v missing base tool native_tool", names)
 	}
-	if !names["mcp/fake/echo"] {
-		t.Fatalf("Register result %v missing discovered mcp/fake/echo", names)
+	if !names["mcp__fake__echo"] {
+		t.Fatalf("Register result %v missing discovered mcp__fake__echo", names)
 	}
-	if !names["mcp/fake/boom"] {
-		t.Fatalf("Register result %v missing discovered mcp/fake/boom", names)
+	if !names["mcp__fake__boom"] {
+		t.Fatalf("Register result %v missing discovered mcp__fake__boom", names)
 	}
 	if len(all) != 3 {
 		t.Fatalf("Register result has %d tools, want 3 (1 base + 2 mcp)", len(all))

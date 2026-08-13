@@ -43,10 +43,10 @@ type MCPConfig struct {
 }
 
 // MCPServer configures one MCP server the agent connects to. Its tools
-// are namespaced as mcp/<name>/<tool> so identically-named tools across
+// are namespaced as mcp__<name>__<tool> so identically-named tools across
 // servers do not collide in the model-facing tool whitelist.
 type MCPServer struct {
-	// Name namespaces this server's tools as mcp/<name>/<tool>.
+	// Name namespaces this server's tools as mcp__<name>__<tool>.
 	// +kubebuilder:validation:Required
 	Name string `json:"name"`
 

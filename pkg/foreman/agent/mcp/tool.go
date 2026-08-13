@@ -19,6 +19,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -97,7 +98,7 @@ func newTool(c caller, server, toolName string, opts Options, record func(mcpCal
 }
 
 // newTools adapts every tool discovered on server's Session into a
-// tools.Tool, namespaced as "mcp/<server.Name>/<tool name>" so tools
+// tools.Tool, namespaced as "mcp__<server.Name>__<tool name>" so tools
 // from different MCP servers (or a same-named native tool) never
 // collide in the registry. record is invoked once per Execute call;
 // pass nil if the caller does not need call observations.
@@ -114,10 +115,35 @@ func newTools(
 	return out
 }
 
+// nameSeparator joins the namespace segments. It is "__" rather than "/"
+// because the OAI tool-call spec constrains function.name to
+// ^[a-zA-Z0-9_-]+$: a "/" makes every request carrying an MCP tool
+// malformed, and providers that validate reject it before the model runs.
+const nameSeparator = "__"
+
+// sanitizeNameSegment maps any character outside the OAI function-name set
+// to an underscore, so a server or tool advertising a dot, slash or space
+// cannot produce a name the provider rejects.
+func sanitizeNameSegment(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z',
+			r >= 'A' && r <= 'Z',
+			r >= '0' && r <= '9',
+			r == '_', r == '-':
+			return r
+		default:
+			return '_'
+		}
+	}, s)
+}
+
 // Name returns the namespaced tool name as advertised to the model and
-// used as the registry key.
+// used as the registry key. The remote tool is still called by its bare
+// name; see Execute.
 func (t *mcpTool) Name() string {
-	return "mcp/" + t.server + "/" + t.toolName
+	return "mcp" + nameSeparator + sanitizeNameSegment(t.server) +
+		nameSeparator + sanitizeNameSegment(t.toolName)
 }
 
 // Schema returns the OAI schema advertisement, built from the remote

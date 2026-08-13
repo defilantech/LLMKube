@@ -70,12 +70,12 @@ func TestConnect_WarnsOnUnmatchedAllowlist(t *testing.T) {
 		t.Fatalf("Connect err = %v", err)
 	}
 	// "echo" still registers; "ghost" does not exist.
-	if len(toolz) != 1 || toolz[0].Name() != "mcp/fake/echo" {
+	if len(toolz) != 1 || toolz[0].Name() != "mcp__fake__echo" {
 		names := make([]string, 0, len(toolz))
 		for _, tl := range toolz {
 			names = append(names, tl.Name())
 		}
-		t.Fatalf("want only mcp/fake/echo registered, got %v", names)
+		t.Fatalf("want only mcp__fake__echo registered, got %v", names)
 	}
 	// A warning must name the unmatched entry "ghost".
 	joined := strings.Join(logs, "\n")

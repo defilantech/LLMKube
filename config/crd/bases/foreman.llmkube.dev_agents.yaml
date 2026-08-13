@@ -308,7 +308,7 @@ spec:
                     items:
                       description: |-
                         MCPServer configures one MCP server the agent connects to. Its tools
-                        are namespaced as mcp/<name>/<tool> so identically-named tools across
+                        are namespaced as mcp__<name>__<tool> so identically-named tools across
                         servers do not collide in the model-facing tool whitelist.
                       properties:
                         allowedTools:
@@ -360,7 +360,7 @@ spec:
                             type: object
                           type: array
                         name:
-                          description: Name namespaces this server's tools as mcp/<name>/<tool>.
+                          description: Name namespaces this server's tools as mcp__<name>__<tool>.
                           type: string
                         transport:
                           description: Transport is the MCP transport. Phase 1 supports

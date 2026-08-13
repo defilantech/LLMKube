@@ -59,14 +59,14 @@ func TestConnect_SkipsUnreachableServer(t *testing.T) {
 	var echoCount, badCount int
 	for _, tl := range toolList {
 		switch {
-		case tl.Name() == "mcp/good/echo":
+		case tl.Name() == "mcp__good__echo":
 			echoCount++
-		case strings.HasPrefix(tl.Name(), "mcp/bad/"):
+		case strings.HasPrefix(tl.Name(), "mcp__bad__"):
 			badCount++
 		}
 	}
 	if echoCount != 1 {
-		t.Fatalf("mcp/good/echo appeared %d times, want exactly 1: %+v", echoCount, names(toolList))
+		t.Fatalf("mcp__good__echo appeared %d times, want exactly 1: %+v", echoCount, names(toolList))
 	}
 	if badCount != 0 {
 		t.Fatalf("bad server contributed %d tools, want 0: %+v", badCount, names(toolList))

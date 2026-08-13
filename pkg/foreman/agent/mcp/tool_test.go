@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -55,13 +56,13 @@ func TestNewTools_Wiring(t *testing.T) {
 		t.Fatalf("newTools returned %d tools, want 1", len(toolList))
 	}
 	tl := toolList[0]
-	if got, want := tl.Name(), "mcp/fake/echo"; got != want {
+	if got, want := tl.Name(), "mcp__fake__echo"; got != want {
 		t.Fatalf("Name() = %q, want %q", got, want)
 	}
 
 	schema := tl.Schema()
-	if schema.Name != "mcp/fake/echo" {
-		t.Fatalf("Schema().Name = %q, want %q", schema.Name, "mcp/fake/echo")
+	if schema.Name != "mcp__fake__echo" {
+		t.Fatalf("Schema().Name = %q, want %q", schema.Name, "mcp__fake__echo")
 	}
 	if schema.Description != "echoes back" {
 		t.Fatalf("Schema().Description = %q, want %q", schema.Description, "echoes back")
@@ -418,5 +419,32 @@ func TestTruncateUTF8_RuneBoundaries(t *testing.T) {
 					tc.s, tc.max, got, len(got), tc.max)
 			}
 		})
+	}
+}
+
+// Issue #1525: the OAI tool-call spec constrains function.name to
+// ^[a-zA-Z0-9_-]+$. The old "mcp/<server>/<tool>" namespacing embedded a
+// "/", so providers that validate rejected every request carrying an MCP
+// tool at turn 1, before the model ran.
+func TestToolNameMatchesOAIPattern(t *testing.T) {
+	oaiName := regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+	for _, tc := range []struct{ server, tool string }{
+		{"fake", "echo"},
+		{"context7", "resolve-library-id"},
+		{"weird.server", "tool/with slash"},
+		{"a b", "c.d"},
+	} {
+		tl := newTool(nil, tc.server, tc.tool, Options{}, nil)
+		if got := tl.Name(); !oaiName.MatchString(got) {
+			t.Errorf("Name() = %q for server=%q tool=%q; does not match %s",
+				got, tc.server, tc.tool, oaiName)
+		}
+	}
+}
+
+func TestToolNameSanitisesSegments(t *testing.T) {
+	tl := newTool(nil, "weird.server", "tool/name", Options{}, nil)
+	if got, want := tl.Name(), "mcp__weird_server__tool_name"; got != want {
+		t.Errorf("Name() = %q, want %q", got, want)
 	}
 }
