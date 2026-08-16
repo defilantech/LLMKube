@@ -2651,11 +2651,18 @@ func buildUserPrompt(task *foremanv1alpha1.AgenticTask) string {
 		// it, but parity across the local reviewer fleet matters.
 		// Empirical: rerun-7 review-510-1 (devstral) failed turn 1
 		// with that exact 400 before this case existed.
-		fmt.Fprintf(&b, "You are reviewing the branch the coder produced for issue #%d of %s.\n\n",
-			p.Issue, p.Repo)
-		fmt.Fprintf(&b, "- repo: %s\n", p.Repo)
-		fmt.Fprintf(&b, "- issue: %d\n", p.Issue)
-		fmt.Fprintf(&b, "- branch: %s\n", p.Branch)
+		if p.Issue > 0 {
+			fmt.Fprintf(&b, "You are reviewing the branch the coder produced for issue #%d of %s.\n\n",
+				p.Issue, p.Repo)
+			fmt.Fprintf(&b, "- repo: %s\n", p.Repo)
+			fmt.Fprintf(&b, "- issue: %d\n", p.Issue)
+			fmt.Fprintf(&b, "- branch: %s\n", p.Branch)
+		} else {
+			fmt.Fprintf(&b, "You are reviewing the branch %s of %s.\n\n",
+				p.Branch, p.Repo)
+			fmt.Fprintf(&b, "- repo: %s\n", p.Repo)
+			fmt.Fprintf(&b, "- branch: %s\n", p.Branch)
+		}
 		b.WriteString("\nFollow Step 1 of your system prompt to navigate to ")
 		b.WriteString("the branch under review before forming any judgment, ")
 		b.WriteString("then apply the Step 2 review checklist, then call ")

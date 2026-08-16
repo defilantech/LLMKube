@@ -966,6 +966,39 @@ func TestBuildUserPrompt_ReviewerCaseProducesNonEmptyContent(t *testing.T) {
 	}
 }
 
+// TestBuildUserPrompt_ReviewerCase_ZeroIssue_OmitsIssueLine guards against
+// rendering "issue #0" into reviewer prompts when the workload pipeline
+// omits the issue key (#1570).
+func TestBuildUserPrompt_ReviewerCase_ZeroIssue_OmitsIssueLine(t *testing.T) {
+	task := &foremanv1alpha1.AgenticTask{
+		Spec: foremanv1alpha1.AgenticTaskSpec{
+			Kind: foremanv1alpha1.AgenticTaskKindReview,
+			Payload: foremanv1alpha1.AgenticTaskPayload{
+				Repo:   "defilantech/LLMKube",
+				Issue:  0,
+				Branch: "foreman/custom-pipeline-branch",
+			},
+		},
+	}
+	got := buildUserPrompt(task)
+	if got == "" {
+		t.Fatal("reviewer user prompt must not be empty")
+	}
+	if strings.Contains(got, "#0") || strings.Contains(got, "issue: 0") {
+		t.Errorf("reviewer prompt must not mention issue #0 when issue is unset, got:\n%s", got)
+	}
+	for _, want := range []string{
+		"You are reviewing the branch foreman/custom-pipeline-branch of defilantech/LLMKube.",
+		"- repo: defilantech/LLMKube",
+		"- branch: foreman/custom-pipeline-branch",
+		"Step 1 of your system prompt",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("reviewer prompt missing %q in:\n%s", want, got)
+		}
+	}
+}
+
 // TestFileListsEqual_TypeShapes covers the two ways the model's
 // claim shows up in extra: as []string (the executor's own writes)
 // or as []any (the standard shape after a json.Unmarshal pass over
