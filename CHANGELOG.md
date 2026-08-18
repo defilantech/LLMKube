@@ -5,6 +5,50 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.18](https://github.com/defilantech/LLMKube/compare/v0.9.17...v0.9.18) (2026-08-18)
+
+
+### Features
+
+* **controller:** architecture-aware runtime placement ([#1544](https://github.com/defilantech/LLMKube/issues/1544)) ([6694d0b](https://github.com/defilantech/LLMKube/commit/6694d0b010e64834e884a81f85412f7082ec9adf))
+* **controller:** speculativeDecoding.draftModel for companion-file drafters ([#1564](https://github.com/defilantech/LLMKube/issues/1564)) ([a8526a8](https://github.com/defilantech/LLMKube/commit/a8526a848ba018e38bbdbcbca86286a1b79c5b85))
+* **controller:** surface actual GPU offload in InferenceService status ([#1566](https://github.com/defilantech/LLMKube/issues/1566)) ([a2335c6](https://github.com/defilantech/LLMKube/commit/a2335c60929f62b97d5d63943a04c13b68a319ea))
+* draft-model speculative decoding on InferenceService ([#1533](https://github.com/defilantech/LLMKube/issues/1533)) ([81881d6](https://github.com/defilantech/LLMKube/commit/81881d6813563bd3210089d6dabb3e642869468b))
+* **foreman:** add optional Agent.spec.maxConcurrentTasks to bound in-flight tasks ([#1546](https://github.com/defilantech/LLMKube/issues/1546)) ([0afa9c9](https://github.com/defilantech/LLMKube/commit/0afa9c9d6e7e402330ce3fc39aacfe363142ea3d))
+* **foreman:** flag issue references removed by a diff ([#1574](https://github.com/defilantech/LLMKube/issues/1574)) ([0f2d30d](https://github.com/defilantech/LLMKube/commit/0f2d30d6d40b2c04cb695d2513a1ed03ee2c5718))
+* **foreman:** honour the target repository's PR template when opening a PR ([#1562](https://github.com/defilantech/LLMKube/issues/1562)) ([5d09e07](https://github.com/defilantech/LLMKube/commit/5d09e078a1bf44866c73c7672cd1e28df5a74ec3))
+* **foreman:** mutation-check decision logic (revert the fix, require a test to fail) ([#1578](https://github.com/defilantech/LLMKube/issues/1578)) ([07754f1](https://github.com/defilantech/LLMKube/commit/07754f1c9bf9805eeb2f05e6a376a46551e527db))
+* **foreman:** operator-emitted task outcome counters ([#1563](https://github.com/defilantech/LLMKube/issues/1563)) ([2386ad8](https://github.com/defilantech/LLMKube/commit/2386ad8a80641bbab202e57839b3cab127a30f88))
+* **foreman:** pre-flight staleness detection for already-addressed issues ([#1577](https://github.com/defilantech/LLMKube/issues/1577)) ([cc9d594](https://github.com/defilantech/LLMKube/commit/cc9d59405454b7845b476413b6375a70c15c4ef6))
+
+
+### Bug Fixes
+
+* **controller:** AND the arch requirement into nodeAffinity instead of ORing a new term ([#1584](https://github.com/defilantech/LLMKube/issues/1584)) ([4e5e5d4](https://github.com/defilantech/LLMKube/commit/4e5e5d42ea573cb9602f67a1793e0ec74f556ea4))
+* **controller:** do not roll over in-flight work when idleness is undetermined ([#1543](https://github.com/defilantech/LLMKube/issues/1543)) ([daba4e1](https://github.com/defilantech/LLMKube/commit/daba4e11c1c6b21b2aac5bc473c84de91b908f1a))
+* **controller:** expose --dri-render-gid through the chart and stop defaulting it to the video group ([#1586](https://github.com/defilantech/LLMKube/issues/1586)) ([66029e7](https://github.com/defilantech/LLMKube/commit/66029e7b959537a8a2d28cef19515b2dfaabb7e1))
+* **controller:** inject the DRI render GID into Vulkan pod supplementalGroups ([#1569](https://github.com/defilantech/LLMKube/issues/1569)) ([79f8f08](https://github.com/defilantech/LLMKube/commit/79f8f0846c06f72e8873acabb562f12be2ed2bfd))
+* **controller:** let draft-mtp accept an optional draftModelRef ([#1547](https://github.com/defilantech/LLMKube/issues/1547)) ([98fd3a0](https://github.com/defilantech/LLMKube/commit/98fd3a0f886f9f9a85dd6d156c1071fc68e116f1))
+* **controller:** let ModelTransferHealthy recover after a retried download succeeds ([#1539](https://github.com/defilantech/LLMKube/issues/1539)) ([978f5ee](https://github.com/defilantech/LLMKube/commit/978f5ee7b7875c3b9ed7c9dbdd3f6ef2fced32b6))
+* **deps:** bump the Go toolchain to 1.26.6 for two stdlib advisories ([#1534](https://github.com/defilantech/LLMKube/issues/1534)) ([627ca93](https://github.com/defilantech/LLMKube/commit/627ca936dad7db35db8c5419a0d318f8530fe5ee))
+* **foreman:** do not let an unavailable diff disable the grounded-finding rail ([#1576](https://github.com/defilantech/LLMKube/issues/1576)) ([812186b](https://github.com/defilantech/LLMKube/commit/812186b5fca0a1eec906adaa749b1a34514d0a7d))
+* **foreman:** do not reserve a FleetNode for Job-mode AgenticTasks ([#1558](https://github.com/defilantech/LLMKube/issues/1558)) ([55a1434](https://github.com/defilantech/LLMKube/commit/55a1434408be54e29b71886a6953498ad24b1bb1))
+* **foreman:** honour Workload spec.repo for gate, push and PR, not just clone ([#1545](https://github.com/defilantech/LLMKube/issues/1545)) ([d949e3f](https://github.com/defilantech/LLMKube/commit/d949e3f0f82e4d4eb3487eb2c9aab20cd0784ab1))
+* **foreman:** let the reviewer author an uncapped PR body via extra.prBody ([#1575](https://github.com/defilantech/LLMKube/issues/1575)) ([827cad8](https://github.com/defilantech/LLMKube/commit/827cad8c32ac05552307eb6b866c60686df1e4fd))
+* **foreman:** map test files to their modules in scope-overlap, and dedupe issue file refs ([#1573](https://github.com/defilantech/LLMKube/issues/1573)) ([fa02f25](https://github.com/defilantech/LLMKube/commit/fa02f25cb04b3091eeea0c066d8ee5457a194c26))
+* **foreman:** mount the agent's own gate-cache PVC, and honour an empty name ([#1557](https://github.com/defilantech/LLMKube/issues/1557)) ([b09c3ad](https://github.com/defilantech/LLMKube/commit/b09c3ad12677d0dfbc56a2ba83a2bf21592d8ed2))
+* **foreman:** remap unsupported emptiness claims to ERROR instead of NO-GO ([#1565](https://github.com/defilantech/LLMKube/issues/1565)) ([ba7e3f9](https://github.com/defilantech/LLMKube/commit/ba7e3f9de9aef81fff9dbefc10ce5e5a93b966a9))
+* **foreman:** restore the coder grounding rail's MCP prefix after the [#1527](https://github.com/defilantech/LLMKube/issues/1527) rename ([#1582](https://github.com/defilantech/LLMKube/issues/1582)) ([1b289e6](https://github.com/defilantech/LLMKube/commit/1b289e63cff796749326491bda8c6ac2e45b1078))
+* **foreman:** stop Job-mode AgenticTasks orphaning their previous Job on re-dispatch ([#1556](https://github.com/defilantech/LLMKube/issues/1556)) ([32d1d65](https://github.com/defilantech/LLMKube/commit/32d1d6524592e58ddf445ba704db54f7f874b1fa))
+* namespace MCP tools with __ so names match the OAI pattern ([#1527](https://github.com/defilantech/LLMKube/issues/1527)) ([1cd05d7](https://github.com/defilantech/LLMKube/commit/1cd05d7c074ddbe71171558468e78d3652ac2f1f))
+* omit the issue reference when a task has no issue number ([#1532](https://github.com/defilantech/LLMKube/issues/1532)) ([f881ac3](https://github.com/defilantech/LLMKube/commit/f881ac310cc30c5044bab0470f34931c3d1f2ffc))
+* stop discarding a coder's diff when submit_result omits a message ([#1529](https://github.com/defilantech/LLMKube/issues/1529)) ([3cd01ac](https://github.com/defilantech/LLMKube/commit/3cd01ac70f2b0fb3a6634b026248c0032eecb2c9))
+
+
+### Documentation
+
+* make spec.files discoverable from spec.source for multi-artifact models ([#1540](https://github.com/defilantech/LLMKube/issues/1540)) ([25777da](https://github.com/defilantech/LLMKube/commit/25777da1d00bce365d596fdde39b9eaa4e3da260))
+
 ## [0.9.17](https://github.com/defilantech/LLMKube/compare/v0.9.16...v0.9.17) (2026-08-13)
 
 
