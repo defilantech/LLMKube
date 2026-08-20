@@ -5,6 +5,36 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.19](https://github.com/defilantech/LLMKube/compare/v0.9.18...v0.9.19) (2026-08-20)
+
+
+### Features
+
+* **foreman:** content-based test-coverage vouch for feature-named test files ([#1614](https://github.com/defilantech/LLMKube/issues/1614)) ([477a599](https://github.com/defilantech/LLMKube/commit/477a599b06f3196438a055ab419a7661846587ba))
+* **foreman:** deterministic cross-stage contradiction detection ([#1589](https://github.com/defilantech/LLMKube/issues/1589)) ([0bd102a](https://github.com/defilantech/LLMKube/commit/0bd102a95514d33066b016f5edae278d3986257b))
+* **foreman:** execution-verification section in the reviewer rubric ([#1617](https://github.com/defilantech/LLMKube/issues/1617)) ([03702a0](https://github.com/defilantech/LLMKube/commit/03702a0a54858ad21fcd398adceee4786f9b8564))
+* **foreman:** extract behaviour clauses from an issue body ([#1590](https://github.com/defilantech/LLMKube/issues/1590)) ([041fab7](https://github.com/defilantech/LLMKube/commit/041fab76c7901589c86f96c586b275c7291d8b7a))
+* **foreman:** implement the Agent Validated condition and stamp under-configured runs ([#1611](https://github.com/defilantech/LLMKube/issues/1611)) ([61e65a4](https://github.com/defilantech/LLMKube/commit/61e65a4d3435256a3605614fc2ab6cfbe9d9bd3b))
+* **foreman:** let GateProfile declare a test-layout convention ([#1607](https://github.com/defilantech/LLMKube/issues/1607)) ([16b42ce](https://github.com/defilantech/LLMKube/commit/16b42ce0ffd8f88cb907e0fde79118a8c754ad64))
+* **foreman:** MCP call aggregation for the foreman.audit.v1 record ([#1591](https://github.com/defilantech/LLMKube/issues/1591)) ([7b8e489](https://github.com/defilantech/LLMKube/commit/7b8e489763490824967a7b9327de020204606b7c))
+* **foreman:** rail detecting a GO from a reviewer that never diffed ([#1588](https://github.com/defilantech/LLMKube/issues/1588)) ([376fa58](https://github.com/defilantech/LLMKube/commit/376fa5869015d1dbc90998064a6574c63ad6f94a))
+* **foreman:** test-layout mapping for parallel test trees ([#1592](https://github.com/defilantech/LLMKube/issues/1592)) ([df7f719](https://github.com/defilantech/LLMKube/commit/df7f719b468919da69a68f1f3e7bf3d005d6b708))
+* **foreman:** vouch modified test files on their added lines ([#1619](https://github.com/defilantech/LLMKube/issues/1619)) ([dd6087b](https://github.com/defilantech/LLMKube/commit/dd6087bb117495b3d3dd6f0d485c10e99ad9d3e0))
+
+
+### Bug Fixes
+
+* **chart:** grant the inference operator batch/jobs and pods/log, and stop the RBAC guard covering one operator with the other's grants ([#1595](https://github.com/defilantech/LLMKube/issues/1595)) ([bb8d505](https://github.com/defilantech/LLMKube/commit/bb8d5050c663b0538a137bceb06b1238814866e4))
+* **controller:** bound the prefetch Job read and stop one Model stalling the rest ([#1598](https://github.com/defilantech/LLMKube/issues/1598)) ([82f4e47](https://github.com/defilantech/LLMKube/commit/82f4e47081da1fa85c14879dd6f5037f27dc62f5))
+* **foreman:** decide bash writes on the command word, not a substring ([#1587](https://github.com/defilantech/LLMKube/issues/1587)) ([9a0aaba](https://github.com/defilantech/LLMKube/commit/9a0aaba99e56148e13905db24c3aa9699a226de7))
+* **foreman:** record why a reviewer rail could not run ([#1606](https://github.com/defilantech/LLMKube/issues/1606)) ([135ba88](https://github.com/defilantech/LLMKube/commit/135ba88f5bbf36745c68561e67979110a2b052f2))
+* **foreman:** skip the NoSystemPrompt floor for deterministic agents ([#1615](https://github.com/defilantech/LLMKube/issues/1615)) ([3c99ac0](https://github.com/defilantech/LLMKube/commit/3c99ac04d0bf3770ac7028a996f2db9e7e24adff))
+
+
+### Documentation
+
+* **foreman:** document gateProfile.testLayout ([#1612](https://github.com/defilantech/LLMKube/issues/1612)) ([4466e6f](https://github.com/defilantech/LLMKube/commit/4466e6fd87d60c991703e603ecac5d4d3125196e))
+
 ## [0.9.18](https://github.com/defilantech/LLMKube/compare/v0.9.17...v0.9.18) (2026-08-18)
 
 
