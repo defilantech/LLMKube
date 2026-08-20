@@ -297,6 +297,15 @@ prometheus:
       # Inference service alerts
       inference:
         enabled: true
+      # Serving-quality alerts: engine is up and Ready but not admitting work
+      serving:
+        enabled: true
+        # Mean queue wait; healthy single-GPU deployments sit in the low single digits
+        queueTimeSecondsThreshold: 30
+        # Requires a KV connector, off by default since OffloadingConnector is experimental
+        kvOffload:
+          enabled: false
+          loadSecondsThreshold: 10
 
 # Grafana dashboards shipped in charts/llmkube/dashboards/. One ConfigMap holds
 # every dashboard, one key per file; the sidecar label and the grafana-operator
