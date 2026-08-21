@@ -170,6 +170,13 @@ spec:
     gpu: 1
 ```
 
+## 5b. One model across two Sparks
+
+A model too large for one Spark (120-235GiB at serve time) can span both
+over the ConnectX-7 link via llama.cpp RPC. Full runbook, including the
+worker pod, the InferenceService shape, and the wire verification:
+[dgx-spark-two-node-rpc.md](dgx-spark-two-node-rpc.md).
+
 ## 6. Test the endpoint
 
 ```bash
