@@ -57,6 +57,17 @@ const DefaultTaskLivenessInterval = 10 * time.Second
 // partition from being mistaken for a deletion and killing a healthy run.
 const maxTaskLivenessMisses = 3
 
+// DefaultMaxSupervisedTasks bounds how many Job-mode tasks one agent
+// supervises concurrently (#1559). A supervised task's loop runs in its own
+// Job pod, so the agent only submits, polls Job.Status and tails logs for it
+// -- cheap enough that serializing them behind the in-process slot only
+// starves the node. It is still bounded: each supervision holds a goroutine
+// and a liveness probe, and every one of them is an outstanding coder Job
+// competing for pods, cache volumes and inference capacity. Four keeps a
+// node's Workload pipeline moving (a coder Job plus the review/verify work
+// queued behind it) without letting one node fan out without limit.
+const DefaultMaxSupervisedTasks = 4
+
 // ErrWatcherStalled is returned from Run when consecutive List() failures
 // exceed the configured threshold; the supervisor (launchd / systemd /
 // the harness) is expected to recycle the process to rebuild the client.
@@ -67,8 +78,10 @@ var ErrWatcherStalled = errors.New("foreman agentictask watcher stalled: consecu
 // phase=Scheduled, hands them to the configured Executor, and patches
 // the final phase/verdict/result when the executor returns.
 //
-// v0.1 runs one task at a time per node (single Executor.Execute in
-// flight, controlled by a mutex). v0.2 may introduce a worker pool.
+// One IN-PROCESS Executor.Execute runs at a time per node: it owns this
+// process's CPU, memory and workspace. Job-mode runs are accounted
+// separately (see MaxSupervisedTasks): their work happens in an ephemeral
+// Job pod, so they must not hold the in-process slot (#1559).
 type AgenticTaskWatcher struct {
 	// Client is the Kubernetes client. Required.
 	Client client.Client
@@ -97,9 +110,49 @@ type AgenticTaskWatcher struct {
 	// DefaultTaskLivenessInterval.
 	TaskLivenessInterval time.Duration
 
-	// inflightMu guards inflight. Exactly one task at a time in v0.1.
+	// MaxSupervisedTasks bounds concurrent Job-mode supervisions. Zero
+	// defaults to DefaultMaxSupervisedTasks. This is a per-NODE bound on
+	// outstanding coder Jobs; Agent.spec.maxConcurrentTasks is a per-Agent
+	// bound the controller enforces before a task is ever Scheduled, so the
+	// two compose (whichever is tighter wins) rather than overlap.
+	MaxSupervisedTasks int
+
+	// inflightMu guards inflight and supervised.
 	inflightMu sync.Mutex
-	inflight   *foremanv1alpha1.AgenticTask
+	// inflight is the in-process run, if any. At most one: it uses this
+	// process's CPU, memory and workspace.
+	inflight *foremanv1alpha1.AgenticTask
+	// supervised counts Job-mode runs in flight. The agent is idle while
+	// they run, so they get their own budget instead of the single
+	// in-process slot (#1559).
+	supervised int
+}
+
+// maxSupervised is MaxSupervisedTasks with its default applied.
+func (w *AgenticTaskWatcher) maxSupervised() int {
+	if w.MaxSupervisedTasks <= 0 {
+		return DefaultMaxSupervisedTasks
+	}
+	return w.MaxSupervisedTasks
+}
+
+// hasCapacityFor reports whether the slot a task of this execution mode
+// needs is free.
+func (w *AgenticTaskWatcher) hasCapacityFor(supervise bool) bool {
+	w.inflightMu.Lock()
+	defer w.inflightMu.Unlock()
+	if supervise {
+		return w.supervised < w.maxSupervised()
+	}
+	return w.inflight == nil
+}
+
+// supervises reports whether this task's work will run outside this process,
+// by asking the Executor. An Executor that does not implement
+// SupervisingExecutor (the stub) always runs in-process.
+func (w *AgenticTaskWatcher) supervises(ctx context.Context, t *foremanv1alpha1.AgenticTask) bool {
+	se, ok := w.Executor.(SupervisingExecutor)
+	return ok && se.SupervisesExternally(ctx, t)
 }
 
 // Run blocks, polling every Interval until ctx is cancelled. Returns
@@ -245,12 +298,9 @@ func sortTasksDepthFirst(tasks []*foremanv1alpha1.AgenticTask) {
 // this node that is in phase=Scheduled, preferring downstream tasks
 // (review, verify) over new issue-fix work — see sortTasksDepthFirst.
 func (w *AgenticTaskWatcher) pollOnce(ctx context.Context, namespace string) error {
-	// If a task is already in flight, skip until it completes; v0.1 is
-	// one-task-per-node.
-	w.inflightMu.Lock()
-	busy := w.inflight != nil
-	w.inflightMu.Unlock()
-	if busy {
+	// Skip the List entirely when neither slot can take work: the
+	// in-process run is busy AND the supervision budget is spent.
+	if !w.hasCapacityFor(false) && !w.hasCapacityFor(true) {
 		return nil
 	}
 
@@ -273,6 +323,16 @@ func (w *AgenticTaskWatcher) pollOnce(ctx context.Context, namespace string) err
 	sortTasksDepthFirst(candidates)
 
 	for _, t := range candidates {
+		// Capacity is checked per candidate because the two execution modes
+		// draw on different slots: with the in-process slot busy, a Job-mode
+		// task can still start (and vice versa). Only this goroutine reserves
+		// slots (Run calls pollOnce sequentially) and the executor goroutines
+		// only ever release, so a check here cannot be invalidated by the
+		// time launchExecutor reserves below.
+		supervise := w.supervises(ctx, t)
+		if !w.hasCapacityFor(supervise) {
+			continue
+		}
 		if err := w.claim(ctx, t); err != nil {
 			// Patch race or transient apiserver error; let the next
 			// poll retry. Do not count toward the stall threshold
@@ -281,8 +341,8 @@ func (w *AgenticTaskWatcher) pollOnce(ctx context.Context, namespace string) err
 			continue
 		}
 		// Took it. Launch the executor and return to the polling loop;
-		// the next poll will see inflight!=nil and skip.
-		w.launchExecutor(ctx, t)
+		// the next poll re-checks capacity before claiming anything else.
+		w.launchExecutor(ctx, t, supervise)
 		return nil
 	}
 	return nil
@@ -307,20 +367,32 @@ func (w *AgenticTaskWatcher) claim(ctx context.Context, t *foremanv1alpha1.Agent
 	return w.Client.Status().Patch(ctx, t, patch)
 }
 
-// launchExecutor runs Execute in a goroutine, patches the terminal
-// status when it returns, and clears the inflight slot.
-func (w *AgenticTaskWatcher) launchExecutor(ctx context.Context, t *foremanv1alpha1.AgenticTask) {
+// launchExecutor runs Execute in a goroutine, patches the terminal status
+// when it returns, and releases the slot it took. supervise selects which
+// slot: the single in-process one, or a Job-mode supervision budget slot.
+// The release is deferred inside the goroutine so it happens on every exit
+// path -- error, ctx cancellation, or panic.
+func (w *AgenticTaskWatcher) launchExecutor(ctx context.Context, t *foremanv1alpha1.AgenticTask, supervise bool) {
 	w.inflightMu.Lock()
-	w.inflight = t
+	if supervise {
+		w.supervised++
+	} else {
+		w.inflight = t
+	}
 	w.inflightMu.Unlock()
 
-	log := logf.FromContext(ctx).WithName("agentictask-watcher").WithValues("task", t.Name, "kind", t.Spec.Kind)
+	log := logf.FromContext(ctx).WithName("agentictask-watcher").
+		WithValues("task", t.Name, "kind", t.Spec.Kind, "supervised", supervise)
 	log.Info("dispatching to executor")
 
 	go func() {
 		defer func() {
 			w.inflightMu.Lock()
-			w.inflight = nil
+			if supervise {
+				w.supervised--
+			} else {
+				w.inflight = nil
+			}
 			w.inflightMu.Unlock()
 		}()
 
