@@ -5,6 +5,21 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.20](https://github.com/defilantech/LLMKube/compare/v0.9.19...v0.9.20) (2026-08-22)
+
+
+### Bug Fixes
+
+* **controller:** carry Model tolerations onto the prefetch Job ([#1622](https://github.com/defilantech/LLMKube/issues/1622)) ([d0db838](https://github.com/defilantech/LLMKube/commit/d0db838a6ca442a1adf70b64cc023eb18eb86e48))
+* Empty payload.repo silently defeats the upstream-base fetch: task branches cut from a stale fork HEAD ([#1625](https://github.com/defilantech/LLMKube/issues/1625)) ([#1626](https://github.com/defilantech/LLMKube/issues/1626)) ([27a015a](https://github.com/defilantech/LLMKube/commit/27a015a279863392bbac33dc06e46fa4a1087d39))
+
+
+### Documentation
+
+* fix guide instructions that fail against the shipped API ([#1629](https://github.com/defilantech/LLMKube/issues/1629)) ([fba0bf4](https://github.com/defilantech/LLMKube/commit/fba0bf4d8cdeab13d521f0fa32da8272a2c4a0d1))
+* reframe the multi-GPU guide from an Issue [#2](https://github.com/defilantech/LLMKube/issues/2) validation plan into a deployment guide ([#1631](https://github.com/defilantech/LLMKube/issues/1631)) ([907ac8d](https://github.com/defilantech/LLMKube/commit/907ac8d8ee5bef229562ec5340ecdcb9e0576f0d))
+* **runbook:** correct the metal-agent memory-pressure runbook against pkg/agent ([#1630](https://github.com/defilantech/LLMKube/issues/1630)) ([f665674](https://github.com/defilantech/LLMKube/commit/f6656741234aa605d3f891598663df142a815171))
+
 ## [0.9.19](https://github.com/defilantech/LLMKube/compare/v0.9.18...v0.9.19) (2026-08-20)
 
 
