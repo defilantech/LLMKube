@@ -141,6 +141,7 @@ func main() {
 		heartbeat        time.Duration
 		taskPollInterval time.Duration
 		taskNamespace    string
+		maxSupervised    int
 		stubSleep        time.Duration
 		maxCtx           int
 		tokensPerSec     int
@@ -196,6 +197,9 @@ func main() {
 		"How often the AgenticTask watcher polls the cluster for new assignments.")
 	flag.StringVar(&taskNamespace, "task-namespace", "default",
 		"Namespace the AgenticTask watcher reads from.")
+	flag.IntVar(&maxSupervised, "max-supervised-tasks", foremanagent.DefaultMaxSupervisedTasks,
+		"How many Job-mode tasks this node supervises concurrently. Their work runs "+
+			"in a coder Job pod, so they do not hold the single in-process slot.")
 	flag.DurationVar(&stubSleep, "stub-sleep", foremanagent.DefaultStubSleep,
 		"How long the StubExecutor blocks per task. Only used when --executor=stub (the only v0.1 option).")
 	flag.IntVar(&maxCtx, "max-context-tokens", 0,
@@ -478,11 +482,12 @@ func main() {
 	}
 
 	watcher := &foremanagent.AgenticTaskWatcher{
-		Client:    kc,
-		NodeName:  fleetNodeName,
-		Namespace: taskNamespace,
-		Interval:  taskPollInterval,
-		Executor:  executor,
+		Client:             kc,
+		NodeName:           fleetNodeName,
+		Namespace:          taskNamespace,
+		Interval:           taskPollInterval,
+		Executor:           executor,
+		MaxSupervisedTasks: maxSupervised,
 	}
 
 	cap := provider.Capability()
@@ -494,6 +499,7 @@ func main() {
 		"totalRAMGB", cap.TotalRAMGB,
 		"heartbeat", heartbeat.String(),
 		"taskPollInterval", taskPollInterval.String(),
+		"maxSupervisedTasks", maxSupervised,
 		"taskNamespace", taskNamespace,
 		"executor", executor.Kind(),
 	)

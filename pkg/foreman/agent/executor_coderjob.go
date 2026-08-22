@@ -134,6 +134,29 @@ func (e *NativeAgentLoopExecutor) useCoderJobPath(agent *foremanv1alpha1.Agent) 
 	return agent.Spec.Execution.Mode == foremanv1alpha1.ExecutionModeJob
 }
 
+// SupervisesExternally implements SupervisingExecutor: a Job-mode task's
+// loop, workspace and toolchain live in the coder Job's pod, so Execute here
+// only submits, polls Job.Status and tails logs. It resolves the Agent and
+// reuses useCoderJobPath -- the same predicate Execute dispatches on -- so
+// the watcher's slot accounting cannot drift from the path actually taken.
+// A missing agentRef or a failed lookup answers false, the conservative
+// direction: the task keeps the in-process slot it would have held before,
+// and Execute fails it on the same error a moment later.
+func (e *NativeAgentLoopExecutor) SupervisesExternally(
+	ctx context.Context,
+	task *foremanv1alpha1.AgenticTask,
+) bool {
+	if task.Spec.AgentRef == nil || task.Spec.AgentRef.Name == "" {
+		return false
+	}
+	var agent foremanv1alpha1.Agent
+	key := types.NamespacedName{Namespace: task.Namespace, Name: task.Spec.AgentRef.Name}
+	if err := e.Client.Get(ctx, key, &agent); err != nil {
+		return false
+	}
+	return e.useCoderJobPath(&agent)
+}
+
 // executeCoderJob submits the per-task coder Job via the wired
 // CoderJobSubmitter, waits for it to finish, and folds the parsed result
 // into a *Result. It is the Job-mode counterpart to runLLMPath /

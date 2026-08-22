@@ -73,6 +73,31 @@ host runs the native Go loop against the local inference endpoint.
 Verdicts cascade to the parent Workload. Fork branches land on
 GitHub for human review.
 
+### How many tasks a node runs at once
+
+A FleetNode runs **one in-process task at a time**. That task executes the
+native Go loop inside the foreman-agent process, so it owns the host's CPU,
+memory and workspace directory; running two would have them fight over the
+same workspace.
+
+An Agent with `spec.execution.mode: Job` is different. Its loop runs in an
+ephemeral Job pod, and the agent process only submits the Job, polls its
+status and tails its logs. Those tasks are therefore accounted separately and
+several can be supervised concurrently, bounded by `--max-supervised-tasks`
+(default 4). The bound exists because each supervised task is an outstanding
+Job competing for pods, cache volumes and inference capacity — not because the
+agent is busy.
+
+The two limits are independent: a node supervising Job-mode tasks can still
+pick up an in-process review or gate task. Note that `FleetNode.status.currentTask`
+reports only the in-process task, so a node supervising Jobs looks idle in
+`kubectl get fleetnode`.
+
+`--max-supervised-tasks` is per node. `Agent.spec.maxConcurrentTasks` is per
+Agent and enforced by the controller before a task is ever `Scheduled` — use
+that one to protect an inference backend shared with other consumers. When both
+are set, whichever is tighter wins.
+
 ## Pipeline shape (v0.1)
 
 v0.1 ships the linear pipeline:

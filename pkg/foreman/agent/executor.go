@@ -42,3 +42,14 @@ type Executor interface {
 	// Failed with the error in the Completed condition.
 	Execute(ctx context.Context, task *foremanv1alpha1.AgenticTask) (*Result, error)
 }
+
+// SupervisingExecutor is an optional Executor capability: it reports whether
+// a task's real work will happen OUTSIDE this process. The watcher runs one
+// in-process task at a time, but a supervised run leaves the agent idle --
+// it only submits the work, waits, and reports the outcome -- so holding the
+// single in-process slot for its whole lifetime blocks the node for nothing
+// (#1559). An Executor that does not implement this interface is treated as
+// always running in-process.
+type SupervisingExecutor interface {
+	SupervisesExternally(ctx context.Context, task *foremanv1alpha1.AgenticTask) bool
+}
