@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -1097,6 +1098,140 @@ var _ = Describe("Reconcile lifecycle", func() {
 			// The controller must not clobber the agent-written scheduling fields.
 			Expect(updated.Status.SchedulingStatus).To(Equal("MemoryCheckFailed"))
 			Expect(updated.Status.SchedulingMessage).To(Equal("host memory insufficient for model"))
+		})
+
+		It("should clear the controller's own schedulingStatus once the service is Ready", func() {
+			modelName := "model-sched-clear"
+			isvcName := "isvc-sched-clear"
+
+			model := &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source:   "https://example.com/model.gguf",
+					Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: "cpu"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, model)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, model) }()
+
+			model.Status.Phase = PhaseReady
+			Expect(k8sClient.Status().Update(ctx, model)).To(Succeed())
+
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{Name: isvcName, Namespace: "default"},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: modelName,
+					Replicas: &replicas,
+					Image:    "ghcr.io/ggml-org/llama.cpp:server",
+				},
+			}
+			Expect(k8sClient.Create(ctx, isvc)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Delete(ctx, isvc)
+				dep := &appsv1.Deployment{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, dep); err == nil {
+					_ = k8sClient.Delete(ctx, dep)
+				}
+				svc := &corev1.Service{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, svc); err == nil {
+					_ = k8sClient.Delete(ctx, svc)
+				}
+			}()
+
+			reconciler := &InferenceServiceReconciler{
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
+				InitContainerImage: "docker.io/curlimages/curl:8.18.0",
+			}
+			key := types.NamespacedName{Name: isvcName, Namespace: "default"}
+
+			// First pass creates the Deployment.
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+
+			// envtest runs no kubelet, so drive the Deployment to Ready by hand.
+			dep := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, key, dep)).To(Succeed())
+			dep.Status.Replicas = 1
+			dep.Status.ReadyReplicas = 1
+			dep.Status.AvailableReplicas = 1
+			Expect(k8sClient.Status().Update(ctx, dep)).To(Succeed())
+
+			// Seed the diagnosis the controller itself writes on the deployment
+			// path, as if the pods had been unschedulable before recovering.
+			Expect(k8sClient.Get(ctx, key, isvc)).To(Succeed())
+			isvc.Status.SchedulingStatus = "InsufficientGPU"
+			isvc.Status.SchedulingMessage = "0/4 nodes are available: 1 Insufficient nvidia.com/gpu"
+			isvc.Status.WaitingFor = "nvidia.com/gpu: 1"
+			Expect(k8sClient.Status().Update(ctx, isvc)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+
+			recovered := &inferencev1alpha1.InferenceService{}
+			Expect(k8sClient.Get(ctx, key, recovered)).To(Succeed())
+			Expect(recovered.Status.Phase).To(Equal(PhaseReady))
+			// A serving service must not advertise a resource it is no longer
+			// waiting on (#1632).
+			Expect(recovered.Status.SchedulingStatus).To(BeEmpty())
+			Expect(recovered.Status.SchedulingMessage).To(BeEmpty())
+			Expect(recovered.Status.WaitingFor).To(BeEmpty())
+		})
+
+		It("should preserve agent-written schedulingStatus on a Ready metal service", func() {
+			modelName := "model-sched-metal-ready"
+			isvcName := "isvc-sched-metal-ready"
+
+			model := &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source:   "https://example.com/metal-model.gguf",
+					Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: "metal"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, model)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, model) }()
+
+			model.Status.Phase = PhaseReady
+			Expect(k8sClient.Status().Update(ctx, model)).To(Succeed())
+
+			replicas := int32(1)
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{Name: isvcName, Namespace: "default"},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					ModelRef: modelName,
+					Replicas: &replicas,
+				},
+			}
+			Expect(k8sClient.Create(ctx, isvc)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, isvc) }()
+
+			// A fresh heartbeat with a ready endpoint puts the metal service at Ready.
+			slice := metalEndpoints(isvcName, time.Now().UTC().Format(time.RFC3339))
+			Expect(k8sClient.Create(ctx, slice)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, slice) }()
+
+			key := types.NamespacedName{Name: isvcName, Namespace: "default"}
+			Expect(k8sClient.Get(ctx, key, isvc)).To(Succeed())
+			isvc.Status.SchedulingStatus = "InsufficientMemory"
+			isvc.Status.SchedulingMessage = "model exceeds the host memory budget"
+			Expect(k8sClient.Status().Update(ctx, isvc)).To(Succeed())
+
+			reconciler := &InferenceServiceReconciler{
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
+				InitContainerImage: "docker.io/curlimages/curl:8.18.0",
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+
+			updatedMetal := &inferencev1alpha1.InferenceService{}
+			Expect(k8sClient.Get(ctx, key, updatedMetal)).To(Succeed())
+			// The agent owns these on the metal path and clears them itself
+			// (#777); the #1632 clear must not reach across and do it here.
+			Expect(updatedMetal.Status.SchedulingStatus).To(Equal("InsufficientMemory"))
+			Expect(updatedMetal.Status.SchedulingMessage).To(Equal("model exceeds the host memory budget"))
 		})
 	})
 })

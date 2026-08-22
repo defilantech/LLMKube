@@ -307,6 +307,21 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		r.reconcileAccelerationStatus(ctx, inferenceService)
 	}
 
+	// Clear the scheduling diagnosis this controller wrote once the service is
+	// actually serving. determinePhase returns a nil SchedulingInfo at Ready,
+	// and the status builder deliberately no-ops on nil so it cannot clobber
+	// agent-written scheduling fields (#643). That preserve is correct for the
+	// metal path, where the agent owns these fields and clears them itself
+	// (#777), but it also froze the controller's own InsufficientGPU /
+	// UnbindableModelCache: a recovered service kept advertising a resource it
+	// was no longer waiting on (#1632). Deployment path only, so the metal
+	// path's ownership is untouched.
+	if !isMetal && phase == PhaseReady {
+		inferenceService.Status.SchedulingStatus = ""
+		inferenceService.Status.SchedulingMessage = ""
+		inferenceService.Status.WaitingFor = ""
+	}
+
 	finalResult, statusErr := r.updateStatusWithSchedulingInfo(ctx, inferenceService, phase, modelReady, readyReplicas, desiredReplicas, endpoint, "", schedulingInfo)
 	if statusErr != nil {
 		return finalResult, statusErr
