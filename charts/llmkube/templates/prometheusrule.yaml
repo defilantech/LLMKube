@@ -82,6 +82,62 @@ spec:
         description: "No DCGM, amdgpu-sysfs, or drm-exporter utilization series for 15 minutes. Check that a GPU metrics exporter is running."
   {{- end }}
 
+  {{- if .Values.prometheus.prometheusRule.rules.serving.enabled }}
+  - name: llmkube-serving
+    interval: 30s
+    rules:
+    # TGI has no queued-count metric to pair with tgi_batch_current_size, so it's left out.
+    - alert: InferenceAdmissionStalled
+      expr: |
+        (vllm:num_requests_waiting > 0 and vllm:num_requests_running == 0)
+        or
+        (sglang:num_queue_reqs > 0 and sglang:num_running_reqs == 0)
+        or
+        (llamacpp:requests_deferred > 0 and llamacpp:requests_processing == 0)
+      for: 10m
+      labels:
+        severity: critical
+        component: inference
+      annotations:
+        summary: "Inference engine is queuing requests but running none"
+        description: "{{`{{ $labels.service }}`}} in {{`{{ $labels.namespace }}`}} has {{`{{ $value }}`}} requests queued with none running. The process is up; it is not admitting work."
+
+    # vLLM/SGLang only, llama.cpp and TGI don't export a queue-duration metric.
+    - alert: InferenceQueueTimeHigh
+      expr: |
+        (sum by (service, namespace, runtime) (increase(vllm:request_queue_time_seconds_sum[15m]))
+         / sum by (service, namespace, runtime) (increase(vllm:request_queue_time_seconds_count[15m]))
+         or
+         sum by (service, namespace, runtime) (increase(sglang:queue_time_seconds_sum[15m]))
+         / sum by (service, namespace, runtime) (increase(sglang:queue_time_seconds_count[15m]))
+        ) > {{ .Values.prometheus.prometheusRule.rules.serving.queueTimeSecondsThreshold }}
+      for: 15m
+      labels:
+        severity: critical
+        component: inference
+      annotations:
+        summary: "Inference requests are waiting a long time before starting"
+        description: "{{`{{ $labels.service }}`}} in {{`{{ $labels.namespace }}`}} is queuing requests {{`{{ $value | printf \"%.0f\" }}`}}s before they start (threshold: {{ .Values.prometheus.prometheusRule.rules.serving.queueTimeSecondsThreshold }}s)."
+
+    {{- if .Values.prometheus.prometheusRule.rules.serving.kvOffload.enabled }}
+    # A slow async KV load holds its blocks for the whole transfer, gating admission.
+    # Names the cause; InferenceQueueTimeHigh only reports it as a symptom.
+    - alert: KVOffloadLoadSlow
+      expr: |
+        sum by (service, namespace, runtime) (increase(vllm:kv_offload_lookup_async_delay_seconds_sum[30m]))
+        /
+        sum by (service, namespace, runtime) (increase(vllm:kv_offload_lookup_async_delay_seconds_count[30m]))
+        > {{ .Values.prometheus.prometheusRule.rules.serving.kvOffload.loadSecondsThreshold }}
+      for: 15m
+      labels:
+        severity: warning
+        component: inference
+      annotations:
+        summary: "KV offload loads are slow enough to gate admission"
+        description: "{{`{{ $labels.service }}`}} in {{`{{ $labels.namespace }}`}} is averaging {{`{{ $value | printf \"%.0f\" }}`}}s per async KV-offload load (threshold: {{ .Values.prometheus.prometheusRule.rules.serving.kvOffload.loadSecondsThreshold }}s)."
+    {{- end }}
+  {{- end }}
+
   {{- if .Values.prometheus.prometheusRule.rules.inference.enabled }}
   - name: llmkube-inference
     interval: 30s
@@ -177,14 +233,14 @@ spec:
       labels:
         latency_kind: ttft
 
-    # Queue wait over 5m. SGLang-only for now; no vllm equivalent metric.
+    # Queue wait over 5m. Now covers vLLM too, via vllm:request_queue_time_seconds.
     - record: llmkube:inference:queue_time_seconds:p95_5m
-      expr: histogram_quantile(0.95, sum by (service, namespace, runtime, le) (rate(sglang:queue_time_seconds_bucket[5m])))
+      expr: histogram_quantile(0.95, sum by (service, namespace, runtime, le) (rate(vllm:request_queue_time_seconds_bucket[5m]) or rate(sglang:queue_time_seconds_bucket[5m])))
       labels:
         latency_kind: queue_wait
 
     - record: llmkube:inference:queue_time_seconds:p50_5m
-      expr: histogram_quantile(0.50, sum by (service, namespace, runtime, le) (rate(sglang:queue_time_seconds_bucket[5m])))
+      expr: histogram_quantile(0.50, sum by (service, namespace, runtime, le) (rate(vllm:request_queue_time_seconds_bucket[5m]) or rate(sglang:queue_time_seconds_bucket[5m])))
       labels:
         latency_kind: queue_wait
   {{- end }}

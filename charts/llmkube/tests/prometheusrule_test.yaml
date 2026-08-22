@@ -202,3 +202,76 @@ tests:
       - notMatchRegex:
           path: spec.groups[*].name
           pattern: llmkube-slo
+
+  # --- serving-quality group: an engine that is up but not admitting work ---
+
+  - it: should cover both runtimes in the queue-wait recording rule
+    template: prometheusrule.yaml
+    set:
+      prometheus.prometheusRule.enabled: true
+    asserts:
+      - matchRegex:
+          path: spec.groups[?(@.name=="llmkube-inference-recording")].rules[?(@.record=="llmkube:inference:queue_time_seconds:p95_5m")].expr
+          pattern: vllm:request_queue_time_seconds_bucket
+      - matchRegex:
+          path: spec.groups[?(@.name=="llmkube-inference-recording")].rules[?(@.record=="llmkube:inference:queue_time_seconds:p95_5m")].expr
+          pattern: sglang:queue_time_seconds_bucket
+
+  - it: should alert on queued-with-nothing-running for every runtime exporting the pair
+    template: prometheusrule.yaml
+    set:
+      prometheus.prometheusRule.enabled: true
+    asserts:
+      - matchRegex:
+          path: spec.groups[?(@.name=="llmkube-serving")].rules[?(@.alert=="InferenceAdmissionStalled")].expr
+          pattern: vllm:num_requests_waiting
+      - matchRegex:
+          path: spec.groups[?(@.name=="llmkube-serving")].rules[?(@.alert=="InferenceAdmissionStalled")].expr
+          pattern: sglang:num_queue_reqs
+      - matchRegex:
+          path: spec.groups[?(@.name=="llmkube-serving")].rules[?(@.alert=="InferenceAdmissionStalled")].expr
+          pattern: llamacpp:requests_deferred
+
+  - it: should render the queue-time threshold into both expr and description
+    template: prometheusrule.yaml
+    set:
+      prometheus.prometheusRule.enabled: true
+      prometheus.prometheusRule.rules.serving.queueTimeSecondsThreshold: 45
+    asserts:
+      - matchRegex:
+          path: spec.groups[?(@.name=="llmkube-serving")].rules[?(@.alert=="InferenceQueueTimeHigh")].expr
+          pattern: "> 45"
+      - matchRegex:
+          path: spec.groups[?(@.name=="llmkube-serving")].rules[?(@.alert=="InferenceQueueTimeHigh")].annotations.description
+          pattern: "threshold: 45s"
+
+  # The connector is upstream-experimental and its series are absent without it,
+  # so the rule must not ship unless it is asked for.
+  - it: should omit the KV-offload alert by default
+    template: prometheusrule.yaml
+    set:
+      prometheus.prometheusRule.enabled: true
+    asserts:
+      - notMatchRegex:
+          path: spec.groups[?(@.name=="llmkube-serving")].rules[*].alert
+          pattern: KVOffloadLoadSlow
+
+  - it: should include the KV-offload alert when explicitly enabled
+    template: prometheusrule.yaml
+    set:
+      prometheus.prometheusRule.enabled: true
+      prometheus.prometheusRule.rules.serving.kvOffload.enabled: true
+    asserts:
+      - matchRegex:
+          path: spec.groups[?(@.name=="llmkube-serving")].rules[?(@.alert=="KVOffloadLoadSlow")].expr
+          pattern: kv_offload_lookup_async_delay_seconds
+
+  - it: should omit the serving group entirely when disabled
+    template: prometheusrule.yaml
+    set:
+      prometheus.prometheusRule.enabled: true
+      prometheus.prometheusRule.rules.serving.enabled: false
+    asserts:
+      - notMatchRegex:
+          path: spec.groups[*].name
+          pattern: llmkube-serving

@@ -266,6 +266,22 @@
                   "properties": {
                     "enabled": { "type": "boolean" }
                   }
+                },
+                "serving": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "enabled": { "type": "boolean" },
+                    "queueTimeSecondsThreshold": { "type": "number", "minimum": 0 },
+                    "kvOffload": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "enabled": { "type": "boolean" },
+                        "loadSecondsThreshold": { "type": "number", "minimum": 0 }
+                      }
+                    }
+                  }
                 }
               }
             }
