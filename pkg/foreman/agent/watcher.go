@@ -152,6 +152,17 @@ func (w *AgenticTaskWatcher) hasCapacityFor(supervise bool) bool {
 	return w.inflight == nil
 }
 
+// agentRefKey identifies the Agent a task points at, namespace-qualified
+// because the watcher may be polling every namespace. It is the memo key for
+// the execution-mode lookup in pollOnce; tasks with no agentRef share the
+// empty-name key, which every Executor answers the same way.
+func agentRefKey(t *foremanv1alpha1.AgenticTask) string {
+	if t.Spec.AgentRef == nil {
+		return t.Namespace + "/"
+	}
+	return t.Namespace + "/" + t.Spec.AgentRef.Name
+}
+
 // supervises reports whether this task's work will run outside this process,
 // by asking the Executor. An Executor that does not implement
 // SupervisingExecutor (the stub) always runs in-process.
@@ -303,9 +314,14 @@ func sortTasksDepthFirst(tasks []*foremanv1alpha1.AgenticTask) {
 // this node that is in phase=Scheduled, preferring downstream tasks
 // (review, verify) over new issue-fix work — see sortTasksDepthFirst.
 func (w *AgenticTaskWatcher) pollOnce(ctx context.Context, namespace string) error {
-	// Skip the List entirely when neither slot can take work: the
-	// in-process run is busy AND the supervision budget is spent.
-	if !w.hasCapacityFor(false) && !w.hasCapacityFor(true) {
+	// Skip the List entirely when no slot can take work. The supervision
+	// budget only counts when this Executor can actually supervise: for one
+	// that cannot (the stub, or any Executor that does not implement
+	// SupervisingExecutor) the budget is permanently idle, so testing it
+	// would keep the guard from ever firing and turn every tick into a full
+	// uncached namespace List that then skips every candidate.
+	_, canSupervise := w.Executor.(SupervisingExecutor)
+	if !w.hasCapacityFor(false) && (!canSupervise || !w.hasCapacityFor(true)) {
 		return nil
 	}
 
@@ -327,6 +343,13 @@ func (w *AgenticTaskWatcher) pollOnce(ctx context.Context, namespace string) err
 	}
 	sortTasksDepthFirst(candidates)
 
+	// A task's execution mode is a property of its Agent, and the candidates
+	// queued on one node nearly always share a single Agent, so memoize the
+	// answer for this pass: w.supervises is an uncached GET, and without this
+	// a node with several queued candidates pays one per candidate per tick
+	// even for candidates it cannot claim.
+	modes := make(map[string]bool, 2)
+
 	for _, t := range candidates {
 		// Capacity is checked per candidate because the two execution modes
 		// draw on different slots: with the in-process slot busy, a Job-mode
@@ -334,7 +357,12 @@ func (w *AgenticTaskWatcher) pollOnce(ctx context.Context, namespace string) err
 		// slots (Run calls pollOnce sequentially) and the executor goroutines
 		// only ever release, so a check here cannot be invalidated by the
 		// time launchExecutor reserves below.
-		supervise := w.supervises(ctx, t)
+		modeKey := agentRefKey(t)
+		supervise, cached := modes[modeKey]
+		if !cached {
+			supervise = w.supervises(ctx, t)
+			modes[modeKey] = supervise
+		}
 		if !w.hasCapacityFor(supervise) {
 			continue
 		}

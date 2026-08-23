@@ -20,11 +20,15 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	foremanv1alpha1 "github.com/defilantech/llmkube/api/foreman/v1alpha1"
 )
@@ -35,30 +39,29 @@ import (
 // Job-mode supervisions run concurrently up to MaxSupervisedTasks, and both
 // slots are released on the error path.
 
-// modeExecutor blocks in Execute until release is closed and reports whichever
-// execution mode a test needs, so slot accounting can be driven without a real
-// coder Job.
-type modeExecutor struct {
-	supervise bool
-	release   chan struct{}
-	execErr   error
-
+// blockingExecutor blocks in Execute until release is closed, so a test can
+// hold a slot for as long as it needs one. It deliberately does NOT implement
+// SupervisingExecutor: it stands in for the stub executor, and for any node
+// whose Executor cannot supervise at all.
+type blockingExecutor struct {
+	release  chan struct{}
+	execErr  error
 	stopOnce sync.Once
-	// wg joins the Execute calls the watcher launched. Without it a test
+
+	// wg joins the Execute calls the watcher launched. Without it the test
 	// body can return while an Execute goroutine is still running, and it
-	// then patches status and logs against a finished test.
+	// then logs (and patches) against a finished test.
 	wg sync.WaitGroup
 	// started takes one send per Execute entry, so waitStarted can prove
-	// every launched goroutine has reached Execute -- and so has already
-	// done its wg.Add -- before the cleanup Waits on the group.
+	// every launched goroutine has reached Execute (and so has already done
+	// its wg.Add) before the cleanup Waits on the group.
 	started chan struct{}
 }
 
-func newModeExecutor(t *testing.T, supervise bool) *modeExecutor {
+func newBlockingExecutor(t *testing.T) *blockingExecutor {
 	t.Helper()
-	e := &modeExecutor{
-		supervise: supervise,
-		release:   make(chan struct{}),
+	e := &blockingExecutor{
+		release: make(chan struct{}),
 		// Buffered so Execute never blocks on a test that does not read
 		// every send; deeper than any task count these tests use.
 		started: make(chan struct{}, 8),
@@ -72,14 +75,14 @@ func newModeExecutor(t *testing.T, supervise bool) *modeExecutor {
 	return e
 }
 
-// stop unblocks every in-flight Execute. Idempotent, so the cleanup can call
-// it whether or not a test already did.
-func (e *modeExecutor) stop() {
+// stop unblocks every in-flight Execute. Idempotent: the cleanup calls it even
+// when a test already did.
+func (e *blockingExecutor) stop() {
 	e.stopOnce.Do(func() { close(e.release) })
 }
 
 // waitStarted blocks until n Execute calls have entered.
-func (e *modeExecutor) waitStarted(t *testing.T, n int) {
+func (e *blockingExecutor) waitStarted(t *testing.T, n int) {
 	t.Helper()
 	for i := range n {
 		select {
@@ -90,10 +93,10 @@ func (e *modeExecutor) waitStarted(t *testing.T, n int) {
 	}
 }
 
-func (*modeExecutor) Kind() string { return "test-mode" }
+func (*blockingExecutor) Kind() string { return "test-mode" }
 
-func (e *modeExecutor) Execute(
-	ctx context.Context, task *foremanv1alpha1.AgenticTask,
+func (e *blockingExecutor) Execute(
+	ctx context.Context, _ *foremanv1alpha1.AgenticTask,
 ) (*Result, error) {
 	e.wg.Add(1)
 	defer e.wg.Done()
@@ -115,10 +118,40 @@ func (e *modeExecutor) Execute(
 	}, nil
 }
 
+// modeExecutor is a blockingExecutor that also answers the watcher's
+// execution-mode question, so slot accounting can be driven without a real
+// coder Job. modeCalls counts the answers, which is what the memoization in
+// pollOnce is about.
+type modeExecutor struct {
+	*blockingExecutor
+	supervise bool
+	modeCalls atomic.Int32
+}
+
+func newModeExecutor(t *testing.T, supervise bool) *modeExecutor {
+	t.Helper()
+	return &modeExecutor{blockingExecutor: newBlockingExecutor(t), supervise: supervise}
+}
+
 func (e *modeExecutor) SupervisesExternally(
 	_ context.Context, _ *foremanv1alpha1.AgenticTask,
 ) bool {
+	e.modeCalls.Add(1)
 	return e.supervise
+}
+
+// countPhase reports how many of the named tasks are in the given phase.
+func countPhase(
+	t *testing.T, w *AgenticTaskWatcher, phase foremanv1alpha1.AgenticTaskPhase, names ...string,
+) int {
+	t.Helper()
+	n := 0
+	for _, name := range names {
+		if getTask(t, w.Client, name).Status.Phase == phase {
+			n++
+		}
+	}
+	return n
 }
 
 // pollUntilLeavesScheduled polls until the named task is claimed, or the
@@ -160,20 +193,6 @@ func waitPhase(
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-}
-
-// countPhase reports how many of the named tasks are in the given phase.
-func countPhase(
-	t *testing.T, w *AgenticTaskWatcher, phase foremanv1alpha1.AgenticTaskPhase, names ...string,
-) int {
-	t.Helper()
-	n := 0
-	for _, name := range names {
-		if getTask(t, w.Client, name).Status.Phase == phase {
-			n++
-		}
-	}
-	return n
 }
 
 // TestPollOnce_SlotAccountingByExecutionMode: with one task already running,
@@ -259,10 +278,99 @@ func TestPollOnce_SupervisionBoundEnforced(t *testing.T) {
 	exec.waitStarted(t, 2)
 }
 
+// TestPollOnce_SkipsListWhenNoSlotCanTakeWork: an Executor that cannot
+// supervise has no supervision budget to spend, so a busy in-process slot must
+// short-circuit the poll BEFORE the List. The agent's client is uncached, so a
+// guard that never fires means a full namespace List every tick for the whole
+// run, which then skips every candidate (#1635 review).
+func TestPollOnce_SkipsListWhenNoSlotCanTakeWork(t *testing.T) {
+	var lists atomic.Int32
+	held := scheduledTask("held", "node-1", foremanv1alpha1.AgenticTaskKindIssueFix, time.Hour)
+	queued := scheduledTask("queued", "node-1", foremanv1alpha1.AgenticTaskKindIssueFix, time.Minute)
+	c := fake.NewClientBuilder().
+		WithScheme(newTestScheme(t)).
+		WithObjects(held, queued).
+		WithStatusSubresource(&foremanv1alpha1.AgenticTask{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			List: func(
+				ctx context.Context, cl client.WithWatch,
+				list client.ObjectList, opts ...client.ListOption,
+			) error {
+				lists.Add(1)
+				return cl.List(ctx, list, opts...)
+			},
+		}).
+		Build()
+	exec := newBlockingExecutor(t)
+	w := &AgenticTaskWatcher{
+		Client:               c,
+		NodeName:             "node-1",
+		TaskLivenessInterval: time.Hour, // no watchdog interference
+		Executor:             exec,
+	}
+
+	if err := w.pollOnce(context.Background(), "default"); err != nil {
+		t.Fatalf("pollOnce: %v", err)
+	}
+	exec.waitStarted(t, 1)
+	if got := getTask(t, w.Client, "held").Status.Phase; got != foremanv1alpha1.AgenticTaskPhaseRunning {
+		t.Fatalf("first poll did not claim the in-process slot: phase %s", got)
+	}
+
+	before := lists.Load()
+	for range 3 {
+		if err := w.pollOnce(context.Background(), "default"); err != nil {
+			t.Fatalf("pollOnce: %v", err)
+		}
+	}
+	if got := lists.Load() - before; got != 0 {
+		t.Fatalf("pollOnce issued %d List(s) with the only slot busy; want 0", got)
+	}
+}
+
+// TestPollOnce_ResolvesExecutionModeOncePerAgent: the mode question is an
+// uncached Agent GET, so a pass that walks several candidates behind one Agent
+// must ask once, not once per candidate (#1635 review).
+func TestPollOnce_ResolvesExecutionModeOncePerAgent(t *testing.T) {
+	names := []string{"job-1", "job-2", "job-3", "job-4"}
+	objs := make([]client.Object, 0, len(names))
+	for i, name := range names {
+		task := scheduledTask(
+			name, "node-1", foremanv1alpha1.AgenticTaskKindIssueFix,
+			time.Duration(len(names)-i)*time.Hour,
+		)
+		task.Spec.AgentRef = &corev1.LocalObjectReference{Name: "coder"}
+		objs = append(objs, task)
+	}
+	exec := newModeExecutor(t, true)
+	w := &AgenticTaskWatcher{
+		Client:             newRecoveryClient(t, objs...),
+		NodeName:           "node-1",
+		Executor:           exec,
+		MaxSupervisedTasks: 1,
+	}
+
+	// Spend the whole budget, so the next pass walks every remaining
+	// candidate instead of claiming the first one and returning.
+	if err := w.pollOnce(context.Background(), "default"); err != nil {
+		t.Fatalf("pollOnce: %v", err)
+	}
+	exec.waitStarted(t, 1)
+
+	exec.modeCalls.Store(0)
+	if err := w.pollOnce(context.Background(), "default"); err != nil {
+		t.Fatalf("pollOnce: %v", err)
+	}
+	if got := exec.modeCalls.Load(); got != 1 {
+		t.Fatalf("execution mode resolved %d time(s) for %d candidates sharing one Agent; want 1",
+			got, len(names)-1)
+	}
+}
+
 // TestLaunchExecutor_ReleasesSlotOnError: an executor that returns an error
 // must release whichever slot it took, or the node wedges after one failure.
-// The release is asserted through its observable consequence -- a follow-up
-// poll can claim another task -- rather than by reading the counters.
+// The release is asserted through its observable consequence — a follow-up
+// poll can claim another task — rather than by reading the counters.
 func TestLaunchExecutor_ReleasesSlotOnError(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -286,8 +394,8 @@ func TestLaunchExecutor_ReleasesSlotOnError(t *testing.T) {
 				NodeName:             "node-1",
 				TaskLivenessInterval: time.Hour, // no watchdog interference
 				Executor:             exec,
-				// One supervision slot, so a leaked one blocks the follow-up
-				// claim instead of hiding under the default of 4.
+				// One supervision slot, so a leaked one blocks the
+				// follow-up claim instead of hiding under the default of 4.
 				MaxSupervisedTasks: 1,
 			}
 
