@@ -287,7 +287,8 @@ func TestPollOnce_SlotAccountingByExecutionMode(t *testing.T) {
 // caps how many coder Jobs one node has outstanding.
 func TestPollOnce_SupervisionBoundEnforced(t *testing.T) {
 	names := []string{"job-1", "job-2", "job-3"}
-	objs := []client.Object{agentCR("coder", true)}
+	objs := make([]client.Object, 0, 1+len(names))
+	objs = append(objs, agentCR("coder", true))
 	for i, name := range names {
 		objs = append(objs, taskForAgent(name, "coder", time.Duration(len(names)-i)*time.Hour))
 	}
@@ -371,7 +372,8 @@ func TestPollOnce_SkipsListWhenNoSlotCanTakeWork(t *testing.T) {
 // Agent, so a pass must read it once, not once per candidate (#1635 review).
 func TestPollOnce_ResolvesAgentOncePerPass(t *testing.T) {
 	names := []string{"job-1", "job-2", "job-3", "job-4"}
-	objs := []client.Object{agentCR("coder", true)}
+	objs := make([]client.Object, 0, 1+len(names))
+	objs = append(objs, agentCR("coder", true))
 	for i, name := range names {
 		objs = append(objs, taskForAgent(name, "coder", time.Duration(len(names)-i)*time.Hour))
 	}
@@ -461,5 +463,155 @@ func TestLaunchExecutor_ReleasesSlotOnError(t *testing.T) {
 			}
 			exec.waitStarted(t, 2)
 		})
+	}
+}
+
+// TestPollOnce_MixedExecutionModes is the case the slot split exists for, and
+// the one a uniform fleet cannot show: the two modes draw on DIFFERENT slots,
+// so a busy one must not block the other. Both directions are asserted --
+// #1559 itself (a Job-mode task claimed while an in-process run holds
+// inflight) and the claim in docs/site/foreman/README.md that a node already
+// supervising Job-mode work can still pick up in-process work.
+func TestPollOnce_MixedExecutionModes(t *testing.T) {
+	tests := []struct {
+		name string
+		// firstClaimed is the older task, so sortTasksDepthFirst offers it
+		// first and it takes its slot before the other is considered.
+		firstClaimed string
+	}{
+		{
+			name:         "job-mode task claimed while an in-process run holds the slot",
+			firstClaimed: "inproc",
+		},
+		{
+			name:         "in-process task claimed while a supervision is outstanding",
+			firstClaimed: "jobbed",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ages := map[string]time.Duration{tc.firstClaimed: time.Hour}
+			inproc := taskForAgent("inproc", "local", ages["inproc"]+time.Minute)
+			jobbed := taskForAgent("jobbed", "coder", ages["jobbed"]+time.Minute)
+			exec := newModeExecutor(t, map[string]bool{"coder": true})
+			w := &AgenticTaskWatcher{
+				Client: newRecoveryClient(t,
+					inproc, jobbed, agentCR("local", false), agentCR("coder", true)),
+				NodeName:             "node-1",
+				TaskLivenessInterval: time.Hour, // no watchdog interference
+				Executor:             exec,
+			}
+
+			// Neither Execute ever returns (blockingExecutor holds until
+			// cleanup), so the second claim happens with the first task's
+			// slot still occupied.
+			for range 2 {
+				if err := w.pollOnce(context.Background(), "default"); err != nil {
+					t.Fatalf("pollOnce: %v", err)
+				}
+			}
+
+			got := countPhase(t, w, foremanv1alpha1.AgenticTaskPhaseRunning, "inproc", "jobbed")
+			if got != 2 {
+				t.Fatalf("Running tasks: want 2 (one per slot) got %d", got)
+			}
+			exec.waitStarted(t, 2)
+
+			// Each run must have been handed the Agent the dispatch loop
+			// resolved for it -- that shared value is what keeps the slot
+			// reserved and the path taken from disagreeing.
+			seen := map[string]bool{}
+			for _, a := range exec.executedAgents() {
+				if a == nil {
+					t.Fatal("Execute was handed a nil Agent for a task whose Agent exists")
+				}
+				seen[a.Name] = true
+			}
+			if !seen["local"] || !seen["coder"] {
+				t.Fatalf("Agents handed to Execute: want local+coder got %v", seen)
+			}
+		})
+	}
+}
+
+// TestPollOnce_DeletedAgentIsStillClaimed: an Agent deleted between scheduling
+// and the claim resolves to nil, NOT to an error, so the task is claimed and
+// handed to the executor, which stamps FailureAgentNotFound (asserted at the
+// executor level by TestNativeExecutor_AgentNotFound). Skipping it instead
+// would leave it at Scheduled forever with nothing saying why (#1635 review).
+func TestPollOnce_DeletedAgentIsStillClaimed(t *testing.T) {
+	orphan := taskForAgent("orphan", "gone", time.Hour)
+	exec := newModeExecutor(t, nil)
+	w := &AgenticTaskWatcher{
+		Client:               newRecoveryClient(t, orphan),
+		NodeName:             "node-1",
+		TaskLivenessInterval: time.Hour, // no watchdog interference
+		Executor:             exec,
+	}
+
+	if err := w.pollOnce(context.Background(), "default"); err != nil {
+		t.Fatalf("pollOnce: %v", err)
+	}
+	if got := getTask(t, w.Client, "orphan").Status.Phase; got == foremanv1alpha1.AgenticTaskPhaseScheduled {
+		t.Fatal("task with a deleted Agent was left at Scheduled; it must be claimed and failed")
+	}
+	exec.waitStarted(t, 1)
+	agents := exec.executedAgents()
+	if len(agents) != 1 || agents[0] != nil {
+		t.Fatalf("Execute must be handed a nil Agent for a deleted one; got %v", agents)
+	}
+}
+
+// TestPollOnce_TransientAgentReadErrorHoldsCandidate: when the Agent read
+// fails ambiguously the execution mode is unknown, so the candidate is left
+// Scheduled and retried. Claiming on a guess is what reintroduces #1559 --
+// guess in-process for a Job-mode task and the node holds its only slot for
+// the coder Job's whole lifetime.
+func TestPollOnce_TransientAgentReadErrorHoldsCandidate(t *testing.T) {
+	var failing atomic.Bool
+	failing.Store(true)
+	task := taskForAgent("queued", "coder", time.Hour)
+	c := fake.NewClientBuilder().
+		WithScheme(newTestScheme(t)).
+		WithObjects(task, agentCR("coder", true)).
+		WithStatusSubresource(&foremanv1alpha1.AgenticTask{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(
+				ctx context.Context, cl client.WithWatch,
+				key client.ObjectKey, obj client.Object, opts ...client.GetOption,
+			) error {
+				if _, ok := obj.(*foremanv1alpha1.Agent); ok && failing.Load() {
+					return errors.New("apiserver blip")
+				}
+				return cl.Get(ctx, key, obj, opts...)
+			},
+		}).
+		Build()
+	exec := newModeExecutor(t, map[string]bool{"coder": true})
+	w := &AgenticTaskWatcher{
+		Client:               c,
+		NodeName:             "node-1",
+		TaskLivenessInterval: time.Hour, // no watchdog interference
+		Executor:             exec,
+	}
+
+	if err := w.pollOnce(context.Background(), "default"); err != nil {
+		t.Fatalf("pollOnce: %v", err)
+	}
+	if got := getTask(t, w.Client, "queued").Status.Phase; got != foremanv1alpha1.AgenticTaskPhaseScheduled {
+		t.Fatalf("candidate phase after an unresolvable Agent: want Scheduled got %s", got)
+	}
+	if got := exec.executedAgents(); len(got) != 0 {
+		t.Fatalf("dispatched %d task(s) without knowing the execution mode; want 0", len(got))
+	}
+
+	failing.Store(false)
+	if !pollUntilLeavesScheduled(t, w, "queued", 2*time.Second) {
+		t.Fatal("candidate was not retried once its Agent became readable")
+	}
+	exec.waitStarted(t, 1)
+	agents := exec.executedAgents()
+	if len(agents) != 1 || agents[0] == nil || agents[0].Name != "coder" {
+		t.Fatalf("Agent handed to Execute after the retry: want coder got %v", agents)
 	}
 }
