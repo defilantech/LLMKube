@@ -26,9 +26,12 @@ metadata:
     {{- include "foreman.agent.poolLabels" $ctx | nindent 4 }}
 spec:
   replicas: {{ $agent.replicaCount }}
-  # Each foreman-agent claims one task at a time. The Recreate
-  # strategy stops a rolling update from briefly running two agents
-  # that race for the same Scheduled tasks.
+  # The Recreate strategy stops a rolling update from briefly running two
+  # agents that race for the same Scheduled tasks. Note the blast radius: an
+  # agent holds one in-process task plus up to --max-supervised-tasks Job-mode
+  # supervisions (#1559), and on restart recoverOrphanedTasks resets EVERY
+  # Running task on the node back to Pending, so an upgrade can yank back more
+  # than one run at a time and each is re-dispatched from the start.
   strategy:
     type: Recreate
   # Pool-scoped, via $ctx rather than the chart root: passing $ here gave

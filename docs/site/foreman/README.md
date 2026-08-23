@@ -76,9 +76,12 @@ GitHub for human review.
 ### How many tasks a node runs at once
 
 A FleetNode runs **one in-process task at a time**. That task executes the
-native Go loop inside the foreman-agent process, so it owns the host's CPU,
-memory and workspace directory; running two would have them fight over the
-same workspace.
+native Go loop inside the foreman-agent process: it clones, runs the host's
+toolchain and drives the inference endpoint from this process, so a second
+concurrent run would compete for the same host CPU and RAM and the same
+toolchain. Workspaces are not the reason — each run gets its own
+(`<workspace-root>/<namespace>/<task-name>`, reset before the run and torn
+down after), so two in-process runs would not collide on a directory.
 
 An Agent with `spec.execution.mode: Job` is different. Its loop runs in an
 ephemeral Job pod, and the agent process only submits the Job, polls its

@@ -154,9 +154,16 @@ type FleetNodeStatus struct {
 	// +optional
 	Capability FleetNodeCapability `json:"capability,omitempty"`
 
-	// CurrentTask is the namespaced name of the AgenticTask the agent is
-	// running, or empty if idle. The scheduler skips nodes with a non-empty
-	// CurrentTask (v0.1 concurrency is one task per node).
+	// CurrentTask is the namespaced name of the in-process AgenticTask this
+	// node is reserved for, or empty if no reservation is held. The scheduler
+	// skips nodes with a non-empty CurrentTask when placing in-process work.
+	//
+	// Empty does NOT mean idle. A Job-mode task (Agent
+	// spec.execution.mode=Job) runs in an ephemeral Job pod rather than on the
+	// node, so the scheduler deliberately leaves CurrentTask untouched for it,
+	// and one agent supervises several such tasks concurrently (bounded by its
+	// --max-supervised-tasks). A node with an empty CurrentTask can therefore
+	// be supervising coder Jobs; it is free for in-process work, not idle.
 	// +optional
 	CurrentTask string `json:"currentTask,omitempty"`
 
