@@ -82,59 +82,95 @@ spec:
         description: "No DCGM, amdgpu-sysfs, or drm-exporter utilization series for 15 minutes. Check that a GPU metrics exporter is running."
   {{- end }}
 
-  {{- if .Values.prometheus.prometheusRule.rules.serving.enabled }}
+  {{- if and .Values.prometheus.prometheusRule.rules.serving.enabled .Values.prometheus.inferencePodMonitor.enabled }}
   - name: llmkube-serving
     interval: 30s
     rules:
-    # TGI has no queued-count metric to pair with tgi_batch_current_size, so it's left out.
+    # TGI has no queued-count metric to pair with tgi_batch_current_size, and
+    # PersonaPlex/Generic/LlamaCppRouter export no queue metrics at all, so
+    # they're left out.
+    #
+    # A single scrape where running momentarily ticks above the ceiling
+    # resets an instantaneous `== 0` check's pending timer, so this averages
+    # over the window instead. "<= 1" is a small-constant ceiling, not zero,
+    # because a partial stall (e.g. running pinned at 1 while waiting queues
+    # up) is still a stall.
     - alert: InferenceAdmissionStalled
       expr: |
-        (vllm:num_requests_waiting > 0 and vllm:num_requests_running == 0)
+        (avg_over_time(vllm:num_requests_waiting[10m]) > 0 and avg_over_time(vllm:num_requests_running[10m]) <= 1)
         or
-        (sglang:num_queue_reqs > 0 and sglang:num_running_reqs == 0)
+        (avg_over_time(sglang:num_queue_reqs[10m]) > 0 and avg_over_time(sglang:num_running_reqs[10m]) <= 1)
         or
-        (llamacpp:requests_deferred > 0 and llamacpp:requests_processing == 0)
+        (avg_over_time(llamacpp:requests_deferred[10m]) > 0 and avg_over_time(llamacpp:requests_processing[10m]) <= 1)
       for: 10m
       labels:
         severity: critical
         component: inference
       annotations:
-        summary: "Inference engine is queuing requests but running none"
-        description: "{{`{{ $labels.service }}`}} in {{`{{ $labels.namespace }}`}} has {{`{{ $value }}`}} requests queued with none running. The process is up; it is not admitting work."
+        summary: "Inference engine is queuing requests but running almost none"
+        description: "{{`{{ $labels.service }}`}} in {{`{{ $labels.namespace }}`}} has {{`{{ $value }}`}} requests queued while running almost none. The process is up; it is not admitting work."
+
+    # The utilization series dropping out (not dropping to zero) reads as an
+    # idle-but-healthy engine, same silent no-op class as GPUMetricsMissing /
+    # ControllerMetricsMissing: a selector that stops matching or a job-label
+    # drift is indistinguishable from nothing running.
+    - alert: InferenceMetricsMissing
+      expr: absent(vllm:num_requests_running) and absent(sglang:num_running_reqs) and absent(llamacpp:requests_processing)
+      for: 15m
+      labels:
+        severity: warning
+        component: inference
+      annotations:
+        summary: "Inference serving metrics are not being scraped"
+        description: "No vLLM, SGLang, or llama.cpp request-count series for 15 minutes. Check the inference PodMonitor selector and pod labels."
 
     # vLLM/SGLang only, llama.cpp and TGI don't export a queue-duration metric.
+    # Per-pod (not per-service): a service-wide mean weights by completed-request
+    # count, so healthy replicas dilute one stalled replica out of the average.
+    # The count>5 guard keeps a single slow request after a cold start (one
+    # sample averaging 45s) from paging on an otherwise idle, healthy pod.
+    # warning, not critical: a busy but healthy batch deployment can
+    # legitimately sit above this for a while; InferenceAdmissionStalled is
+    # the alert for actual non-admission.
     - alert: InferenceQueueTimeHigh
       expr: |
-        (sum by (service, namespace, runtime) (increase(vllm:request_queue_time_seconds_sum[15m]))
-         / sum by (service, namespace, runtime) (increase(vllm:request_queue_time_seconds_count[15m]))
-         or
-         sum by (service, namespace, runtime) (increase(sglang:queue_time_seconds_sum[15m]))
-         / sum by (service, namespace, runtime) (increase(sglang:queue_time_seconds_count[15m]))
+        (
+          (sum by (service, namespace, runtime, pod) (increase(vllm:request_queue_time_seconds_sum[15m]))
+           / sum by (service, namespace, runtime, pod) (increase(vllm:request_queue_time_seconds_count[15m]))
+           and sum by (service, namespace, runtime, pod) (increase(vllm:request_queue_time_seconds_count[15m])) > 5)
+          or
+          (sum by (service, namespace, runtime, pod) (increase(sglang:queue_time_seconds_sum[15m]))
+           / sum by (service, namespace, runtime, pod) (increase(sglang:queue_time_seconds_count[15m]))
+           and sum by (service, namespace, runtime, pod) (increase(sglang:queue_time_seconds_count[15m])) > 5)
         ) > {{ .Values.prometheus.prometheusRule.rules.serving.queueTimeSecondsThreshold }}
       for: 15m
       labels:
-        severity: critical
+        severity: warning
         component: inference
       annotations:
         summary: "Inference requests are waiting a long time before starting"
-        description: "{{`{{ $labels.service }}`}} in {{`{{ $labels.namespace }}`}} is queuing requests {{`{{ $value | printf \"%.0f\" }}`}}s before they start (threshold: {{ .Values.prometheus.prometheusRule.rules.serving.queueTimeSecondsThreshold }}s)."
+        description: "{{`{{ $labels.service }}`}} pod {{`{{ $labels.pod }}`}} in {{`{{ $labels.namespace }}`}} is queuing requests {{`{{ $value | printf \"%.0f\" }}`}}s before they start (threshold: {{ .Values.prometheus.prometheusRule.rules.serving.queueTimeSecondsThreshold }}s)."
 
     {{- if .Values.prometheus.prometheusRule.rules.serving.kvOffload.enabled }}
     # A slow async KV load holds its blocks for the whole transfer, gating admission.
     # Names the cause; InferenceQueueTimeHigh only reports it as a symptom.
+    # Same min-sample guard as InferenceQueueTimeHigh, same reason: one slow
+    # load on an otherwise idle pod shouldn't page.
     - alert: KVOffloadLoadSlow
       expr: |
-        sum by (service, namespace, runtime) (increase(vllm:kv_offload_lookup_async_delay_seconds_sum[30m]))
-        /
-        sum by (service, namespace, runtime) (increase(vllm:kv_offload_lookup_async_delay_seconds_count[30m]))
-        > {{ .Values.prometheus.prometheusRule.rules.serving.kvOffload.loadSecondsThreshold }}
+        (
+          sum by (service, namespace, runtime, pod) (increase(vllm:kv_offload_lookup_async_delay_seconds_sum[30m]))
+          /
+          sum by (service, namespace, runtime, pod) (increase(vllm:kv_offload_lookup_async_delay_seconds_count[30m]))
+          and sum by (service, namespace, runtime, pod) (increase(vllm:kv_offload_lookup_async_delay_seconds_count[30m])) > 5
+        ) > {{ .Values.prometheus.prometheusRule.rules.serving.kvOffload.loadSecondsThreshold }}
       for: 15m
       labels:
         severity: warning
         component: inference
       annotations:
         summary: "KV offload loads are slow enough to gate admission"
-        description: "{{`{{ $labels.service }}`}} in {{`{{ $labels.namespace }}`}} is averaging {{`{{ $value | printf \"%.0f\" }}`}}s per async KV-offload load (threshold: {{ .Values.prometheus.prometheusRule.rules.serving.kvOffload.loadSecondsThreshold }}s)."
+        description: "{{`{{ $labels.service }}`}} pod {{`{{ $labels.pod }}`}} in {{`{{ $labels.namespace }}`}} is averaging {{`{{ $value | printf \"%.0f\" }}`}}s per async KV-offload load (threshold: {{ .Values.prometheus.prometheusRule.rules.serving.kvOffload.loadSecondsThreshold }}s)."
     {{- end }}
   {{- end }}
 

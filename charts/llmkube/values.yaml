@@ -297,7 +297,9 @@ prometheus:
       # Inference service alerts
       inference:
         enabled: true
-      # Serving-quality alerts: engine is up and Ready but not admitting work
+      # Serving-quality alerts: engine is up and Ready but not admitting work.
+      # Also gated on prometheus.inferencePodMonitor.enabled: the rules group
+      # by the service/runtime labels only that PodMonitor's relabelings add.
       serving:
         enabled: true
         # Mean queue wait; healthy single-GPU deployments sit in the low single digits

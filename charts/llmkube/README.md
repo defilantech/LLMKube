@@ -150,6 +150,10 @@ The following table lists the configurable parameters of the LLMKube chart and t
 | `prometheus.prometheusRule.rules.gpu.memoryPressureThreshold` | GPU memory pressure threshold (%) | `90` |
 | `prometheus.prometheusRule.rules.gpu.powerLimitThreshold` | GPU power limit threshold (W) | `250` |
 | `prometheus.prometheusRule.rules.inference.enabled` | Enable inference alerts | `true` |
+| `prometheus.prometheusRule.rules.serving.enabled` | Enable serving-quality alerts (also requires `prometheus.inferencePodMonitor.enabled`) | `true` |
+| `prometheus.prometheusRule.rules.serving.queueTimeSecondsThreshold` | Mean per-pod queue wait threshold (s) | `30` |
+| `prometheus.prometheusRule.rules.serving.kvOffload.enabled` | Enable the KV-offload-slow alert (requires an OffloadingConnector) | `false` |
+| `prometheus.prometheusRule.rules.serving.kvOffload.loadSecondsThreshold` | Mean async KV-offload load threshold (s) | `10` |
 
 #### Scrape labels
 

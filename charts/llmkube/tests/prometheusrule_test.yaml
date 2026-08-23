@@ -204,6 +204,8 @@ tests:
           pattern: llmkube-slo
 
   # --- serving-quality group: an engine that is up but not admitting work ---
+  # Rules group by (service, runtime, pod), which only inferencePodMonitor's
+  # relabelings add, so every test below turns it on alongside serving.enabled.
 
   - it: should cover both runtimes in the queue-wait recording rule
     template: prometheusrule.yaml
@@ -216,11 +218,31 @@ tests:
       - matchRegex:
           path: spec.groups[?(@.name=="llmkube-inference-recording")].rules[?(@.record=="llmkube:inference:queue_time_seconds:p95_5m")].expr
           pattern: sglang:queue_time_seconds_bucket
+      - matchRegex:
+          path: spec.groups[?(@.name=="llmkube-inference-recording")].rules[?(@.record=="llmkube:inference:queue_time_seconds:p50_5m")].expr
+          pattern: vllm:request_queue_time_seconds_bucket
+      - matchRegex:
+          path: spec.groups[?(@.name=="llmkube-inference-recording")].rules[?(@.record=="llmkube:inference:queue_time_seconds:p50_5m")].expr
+          pattern: sglang:queue_time_seconds_bucket
 
-  - it: should alert on queued-with-nothing-running for every runtime exporting the pair
+  - it: should default to 3 serving rules, with KVOffloadLoadSlow off
     template: prometheusrule.yaml
     set:
       prometheus.prometheusRule.enabled: true
+      prometheus.inferencePodMonitor.enabled: true
+    asserts:
+      - lengthEqual:
+          path: spec.groups[?(@.name=="llmkube-serving")].rules
+          count: 3
+      - notMatchRegex:
+          path: spec.groups[?(@.name=="llmkube-serving")].rules[*].alert
+          pattern: KVOffloadLoadSlow
+
+  - it: should alert on queued-with-almost-nothing-running for every runtime exporting the pair
+    template: prometheusrule.yaml
+    set:
+      prometheus.prometheusRule.enabled: true
+      prometheus.inferencePodMonitor.enabled: true
     asserts:
       - matchRegex:
           path: spec.groups[?(@.name=="llmkube-serving")].rules[?(@.alert=="InferenceAdmissionStalled")].expr
@@ -231,46 +253,77 @@ tests:
       - matchRegex:
           path: spec.groups[?(@.name=="llmkube-serving")].rules[?(@.alert=="InferenceAdmissionStalled")].expr
           pattern: llamacpp:requests_deferred
+      - matchRegex:
+          path: spec.groups[?(@.name=="llmkube-serving")].rules[?(@.alert=="InferenceAdmissionStalled")].expr
+          pattern: 'avg_over_time\(vllm:num_requests_running\[10m\]\) <= 1'
 
-  - it: should render the queue-time threshold into both expr and description
+  - it: should AND absence across every runtime's running-count metric in InferenceMetricsMissing
     template: prometheusrule.yaml
     set:
       prometheus.prometheusRule.enabled: true
+      prometheus.inferencePodMonitor.enabled: true
+    asserts:
+      - equal:
+          path: spec.groups[?(@.name=="llmkube-serving")].rules[?(@.alert=="InferenceMetricsMissing")].expr
+          value: absent(vllm:num_requests_running) and absent(sglang:num_running_reqs) and absent(llamacpp:requests_processing)
+
+  - it: should render the queue-time threshold into both expr and description, grouped per pod
+    template: prometheusrule.yaml
+    set:
+      prometheus.prometheusRule.enabled: true
+      prometheus.inferencePodMonitor.enabled: true
       prometheus.prometheusRule.rules.serving.queueTimeSecondsThreshold: 45
     asserts:
       - matchRegex:
           path: spec.groups[?(@.name=="llmkube-serving")].rules[?(@.alert=="InferenceQueueTimeHigh")].expr
           pattern: "> 45"
       - matchRegex:
+          path: spec.groups[?(@.name=="llmkube-serving")].rules[?(@.alert=="InferenceQueueTimeHigh")].expr
+          pattern: "by \\(service, namespace, runtime, pod\\)"
+      - matchRegex:
+          path: spec.groups[?(@.name=="llmkube-serving")].rules[?(@.alert=="InferenceQueueTimeHigh")].expr
+          pattern: "increase\\(vllm:request_queue_time_seconds_count\\[15m\\]\\)\\) > 5"
+      - equal:
+          path: spec.groups[?(@.name=="llmkube-serving")].rules[?(@.alert=="InferenceQueueTimeHigh")].labels.severity
+          value: warning
+      - matchRegex:
           path: spec.groups[?(@.name=="llmkube-serving")].rules[?(@.alert=="InferenceQueueTimeHigh")].annotations.description
           pattern: "threshold: 45s"
 
-  # The connector is upstream-experimental and its series are absent without it,
-  # so the rule must not ship unless it is asked for.
-  - it: should omit the KV-offload alert by default
+  - it: should include the KV-offload alert when explicitly enabled, at 4 serving rules
     template: prometheusrule.yaml
     set:
       prometheus.prometheusRule.enabled: true
-    asserts:
-      - notMatchRegex:
-          path: spec.groups[?(@.name=="llmkube-serving")].rules[*].alert
-          pattern: KVOffloadLoadSlow
-
-  - it: should include the KV-offload alert when explicitly enabled
-    template: prometheusrule.yaml
-    set:
-      prometheus.prometheusRule.enabled: true
+      prometheus.inferencePodMonitor.enabled: true
       prometheus.prometheusRule.rules.serving.kvOffload.enabled: true
     asserts:
+      - lengthEqual:
+          path: spec.groups[?(@.name=="llmkube-serving")].rules
+          count: 4
       - matchRegex:
           path: spec.groups[?(@.name=="llmkube-serving")].rules[?(@.alert=="KVOffloadLoadSlow")].expr
           pattern: kv_offload_lookup_async_delay_seconds
 
-  - it: should omit the serving group entirely when disabled
+  - it: should omit the serving group entirely when serving.enabled is false
     template: prometheusrule.yaml
     set:
       prometheus.prometheusRule.enabled: true
+      prometheus.inferencePodMonitor.enabled: true
       prometheus.prometheusRule.rules.serving.enabled: false
+    asserts:
+      - notMatchRegex:
+          path: spec.groups[*].name
+          pattern: llmkube-serving
+
+  # service/runtime/pod only exist on series scraped by inferencePodMonitor's
+  # relabelings (finding #3): without it, a foreign scrape config collapses
+  # every pod in a namespace into one empty-label series.
+  - it: should omit the serving group when inferencePodMonitor is disabled, even with serving.enabled
+    template: prometheusrule.yaml
+    set:
+      prometheus.prometheusRule.enabled: true
+      prometheus.prometheusRule.rules.serving.enabled: true
+      prometheus.inferencePodMonitor.enabled: false
     asserts:
       - notMatchRegex:
           path: spec.groups[*].name
