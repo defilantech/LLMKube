@@ -79,7 +79,10 @@ var (
 	// Desc keeps fqName unexported; String() is the only accessor.
 	descFQName = regexp.MustCompile(`fqName: "([^"]+)"`)
 	recordRule = regexp.MustCompile(`(?m)^\s*- record:\s*(\S+)`)
+	alertName  = regexp.MustCompile(`(?m)^\s*- alert:\s*(\S+)`)
 	// Every alert has a `for:` right after its expr; that's the terminator.
+	// chartAlertExprs cross-checks this against alertName so a future alert
+	// breaking that assumption fails loudly instead of being silently dropped.
 	alertExprBlock = regexp.MustCompile(`(?ms)^\s*- alert:\s*(\S+).*?\n\s*expr:\s*\|?\s*\n?(.*?)\n\s*for:`)
 
 	labelMatcher    = regexp.MustCompile(`\{[^}]*\}`)
@@ -113,18 +116,25 @@ func declaredNames(t *testing.T) map[string]bool {
 	return names
 }
 
-// chartRecordingRules returns the names the chart's PrometheusRule records.
-// These are the only llmkube: series that exist.
-func chartRecordingRules(t *testing.T) map[string]bool {
+// readPrometheusRuleTpl is the raw, un-rendered chart source both
+// chartRecordingRules and chartAlertExprs regex-scrape.
+func readPrometheusRuleTpl(t *testing.T) string {
 	t.Helper()
 
 	tpl, err := os.ReadFile(prometheusRuleTpl)
 	if err != nil {
 		t.Fatalf("read %s: %v", prometheusRuleTpl, err)
 	}
+	return string(tpl)
+}
+
+// chartRecordingRules returns the names the chart's PrometheusRule records.
+// These are the only llmkube: series that exist.
+func chartRecordingRules(t *testing.T) map[string]bool {
+	t.Helper()
 
 	names := map[string]bool{}
-	for _, m := range recordRule.FindAllStringSubmatch(string(tpl), -1) {
+	for _, m := range recordRule.FindAllStringSubmatch(readPrometheusRuleTpl(t), -1) {
 		names[m[1]] = true
 	}
 	if len(names) == 0 {
@@ -133,23 +143,24 @@ func chartRecordingRules(t *testing.T) map[string]bool {
 	return names
 }
 
-// chartAlertExprs returns each alert's name and expr text, raw source
-// un-rendered. metricNames' noise stripping collapses a Go-templated
-// threshold the same way it collapses a Grafana `$var`.
+// chartAlertExprs returns each alert's name and expr text. metricNames' noise
+// stripping collapses a Go-templated threshold the same way it collapses a
+// Grafana `$var`.
 func chartAlertExprs(t *testing.T) map[string]string {
 	t.Helper()
 
-	tpl, err := os.ReadFile(prometheusRuleTpl)
-	if err != nil {
-		t.Fatalf("read %s: %v", prometheusRuleTpl, err)
-	}
+	tpl := readPrometheusRuleTpl(t)
 
 	exprs := map[string]string{}
-	for _, m := range alertExprBlock.FindAllStringSubmatch(string(tpl), -1) {
+	for _, m := range alertExprBlock.FindAllStringSubmatch(tpl, -1) {
 		exprs[m[1]] = m[2]
 	}
 	if len(exprs) == 0 {
 		t.Fatalf("no alerts in %s", prometheusRuleTpl)
+	}
+	if want := alertName.FindAllStringSubmatch(tpl, -1); len(want) != len(exprs) {
+		t.Fatalf("alertExprBlock matched %d of %d alerts in %s — an alert's expr isn't followed by `for:`",
+			len(exprs), len(want), prometheusRuleTpl)
 	}
 	return exprs
 }
@@ -510,21 +521,30 @@ func TestDashboardsQueryEmittedMetrics(t *testing.T) {
 	}
 
 	for _, dashboard := range dashboards {
-		reported := map[string]bool{}
 		for _, query := range dashboardQueries(t, dashboard) {
-			for _, name := range metricNames(query) {
-				if emitted(name, known) || reported[name] {
-					continue
-				}
-				reported[name] = true
-				t.Errorf("%s queries %q, which no registered collector, chart recording rule or allowlisted exporter emits\n\tquery: %s",
-					dashboard, name, query)
-			}
+			assertQueryEmitted(t, known, dashboard, query)
 		}
 	}
 
 	if t.Failed() {
 		t.Logf("emittable: %v", slices.Sorted(maps.Keys(known)))
+	}
+}
+
+// assertQueryEmitted fails for each metric name in query that nothing in
+// known emits, deduped per query. label identifies the query's source
+// (a dashboard path, or "alert X") in the failure message.
+func assertQueryEmitted(t *testing.T, known map[string]bool, label, query string) {
+	t.Helper()
+
+	reported := map[string]bool{}
+	for _, name := range metricNames(query) {
+		if emitted(name, known) || reported[name] {
+			continue
+		}
+		reported[name] = true
+		t.Errorf("%s queries %q, which no registered collector, chart recording rule or allowlisted exporter emits\n\tquery: %s",
+			label, name, query)
 	}
 }
 
@@ -537,15 +557,7 @@ func TestAlertExprsQueryEmittedMetrics(t *testing.T) {
 	maps.Copy(known, runtimeNames(t))
 
 	for alert, expr := range chartAlertExprs(t) {
-		reported := map[string]bool{}
-		for _, name := range metricNames(expr) {
-			if emitted(name, known) || reported[name] {
-				continue
-			}
-			reported[name] = true
-			t.Errorf("alert %s queries %q, which no registered collector, chart recording rule or allowlisted exporter emits\n\texpr: %s",
-				alert, name, expr)
-		}
+		assertQueryEmitted(t, known, "alert "+alert, expr)
 	}
 
 	if t.Failed() {

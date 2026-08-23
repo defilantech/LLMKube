@@ -253,8 +253,10 @@ spec:
       labels:
         latency_kind: ttft
 
-    # Queue wait over 5m, covers vLLM and SGLang. By pod, not just service: a
-    # service-wide percentile would dilute one stalled replica out of it.
+    # Queue wait over 5m, covers vLLM and SGLang. By pod, not just service (unlike
+    # the request_latency/ttft_seconds records above): a service-wide percentile
+    # would dilute one stalled replica out of it, and InferenceQueueTimeHigh
+    # alerts straight off this one.
     - record: llmkube:inference:queue_time_seconds:p95_5m
       expr: histogram_quantile(0.95, sum by (service, namespace, runtime, pod, le) (rate(vllm:request_queue_time_seconds_bucket[5m]) or rate(sglang:queue_time_seconds_bucket[5m])))
       labels:
