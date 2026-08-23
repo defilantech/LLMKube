@@ -12,7 +12,7 @@
       }
     ]
   },
-  "description": "LLMKube vLLM runtime observability. Throughput, TTFT / E2E / inter-token latency, queue depth, KV cache utilization, prefix cache hit rate and scheduler backpressure (preemptions, aborts), grouped by service / namespace from the vllm: metrics the chart's inference PodMonitor scrapes. TTFT and end-to-end p95/p50 read the chart's llmkube:inference: recording rules. Request-phase timing (prefill / decode / queue) is in a collapsed row.",
+  "description": "LLMKube vLLM runtime observability. Throughput, TTFT / E2E / inter-token latency, queue depth, KV cache utilization, prefix cache hit rate and scheduler backpressure (preemptions, aborts), grouped by service / namespace from the vllm: metrics the chart's inference PodMonitor scrapes. TTFT, end-to-end, and queue-wait p95/p50 read the chart's llmkube:inference: recording rules, per pod. Request-phase timing (prefill / decode / queue) is in a collapsed row.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -412,8 +412,8 @@
           "targets": [
             {
               "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-              "expr": "histogram_quantile(0.95, sum by (service, namespace, le) (rate(vllm:request_queue_time_seconds_bucket{service=~\"$service\"}[5m])))",
-              "legendFormat": "{{service}} ({{namespace}}) p95",
+              "expr": "llmkube:inference:queue_time_seconds:p95_5m{runtime=\"vllm\", service=~\"$service\"}",
+              "legendFormat": "{{service}}/{{pod}} p95",
               "refId": "A"
             }
           ],

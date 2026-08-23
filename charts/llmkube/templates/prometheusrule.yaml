@@ -86,15 +86,9 @@ spec:
   - name: llmkube-serving
     interval: 30s
     rules:
-    # TGI has no queued-count metric to pair with tgi_batch_current_size, and
-    # PersonaPlex/Generic/LlamaCppRouter export no queue metrics at all, so
-    # they're left out.
-    #
-    # A single scrape where running momentarily ticks above the ceiling
-    # resets an instantaneous `== 0` check's pending timer, so this averages
-    # over the window instead. "<= 1" is a small-constant ceiling, not zero,
-    # because a partial stall (e.g. running pinned at 1 while waiting queues
-    # up) is still a stall.
+    # TGI, PersonaPlex, Generic and LlamaCppRouter export no queue metrics, so
+    # they're left out. avg_over_time and a "<= 1" ceiling (not "== 0") catch
+    # a partial stall and survive a single scrape ticking above it.
     - alert: InferenceAdmissionStalled
       expr: |
         (avg_over_time(vllm:num_requests_waiting[10m]) > 0 and avg_over_time(vllm:num_requests_running[10m]) <= 1)
@@ -110,10 +104,8 @@ spec:
         summary: "Inference engine is queuing requests but running almost none"
         description: "{{`{{ $labels.service }}`}} in {{`{{ $labels.namespace }}`}} has {{`{{ $value }}`}} requests queued while running almost none. The process is up; it is not admitting work."
 
-    # The utilization series dropping out (not dropping to zero) reads as an
-    # idle-but-healthy engine, same silent no-op class as GPUMetricsMissing /
-    # ControllerMetricsMissing: a selector that stops matching or a job-label
-    # drift is indistinguishable from nothing running.
+    # Same silent no-op class as GPUMetricsMissing/ControllerMetricsMissing: a
+    # dead selector reads as an idle-but-healthy engine, not a gap.
     - alert: InferenceMetricsMissing
       expr: absent(vllm:num_requests_running) and absent(sglang:num_running_reqs) and absent(llamacpp:requests_processing)
       for: 15m
@@ -124,24 +116,18 @@ spec:
         summary: "Inference serving metrics are not being scraped"
         description: "No vLLM, SGLang, or llama.cpp request-count series for 15 minutes. Check the inference PodMonitor selector and pod labels."
 
-    # vLLM/SGLang only, llama.cpp and TGI don't export a queue-duration metric.
-    # Per-pod (not per-service): a service-wide mean weights by completed-request
-    # count, so healthy replicas dilute one stalled replica out of the average.
-    # The count>5 guard keeps a single slow request after a cold start (one
-    # sample averaging 45s) from paging on an otherwise idle, healthy pod.
-    # warning, not critical: a busy but healthy batch deployment can
-    # legitimately sit above this for a while; InferenceAdmissionStalled is
-    # the alert for actual non-admission.
+    # Reuses the per-pod p95 record below instead of re-deriving the ratio, so
+    # a third runtime is a one-line record edit. count>5 guards against a
+    # single slow request after a cold start reading as a sustained breach.
     - alert: InferenceQueueTimeHigh
       expr: |
         (
-          (sum by (service, namespace, runtime, pod) (increase(vllm:request_queue_time_seconds_sum[15m]))
-           / sum by (service, namespace, runtime, pod) (increase(vllm:request_queue_time_seconds_count[15m]))
-           and sum by (service, namespace, runtime, pod) (increase(vllm:request_queue_time_seconds_count[15m])) > 5)
-          or
-          (sum by (service, namespace, runtime, pod) (increase(sglang:queue_time_seconds_sum[15m]))
-           / sum by (service, namespace, runtime, pod) (increase(sglang:queue_time_seconds_count[15m]))
-           and sum by (service, namespace, runtime, pod) (increase(sglang:queue_time_seconds_count[15m])) > 5)
+          llmkube:inference:queue_time_seconds:p95_5m
+          and (
+            sum by (service, namespace, runtime, pod) (increase(vllm:request_queue_time_seconds_count[15m]))
+            or
+            sum by (service, namespace, runtime, pod) (increase(sglang:queue_time_seconds_count[15m]))
+          ) > 5
         ) > {{ .Values.prometheus.prometheusRule.rules.serving.queueTimeSecondsThreshold }}
       for: 15m
       labels:
@@ -152,10 +138,8 @@ spec:
         description: "{{`{{ $labels.service }}`}} pod {{`{{ $labels.pod }}`}} in {{`{{ $labels.namespace }}`}} is queuing requests {{`{{ $value | printf \"%.0f\" }}`}}s before they start (threshold: {{ .Values.prometheus.prometheusRule.rules.serving.queueTimeSecondsThreshold }}s)."
 
     {{- if .Values.prometheus.prometheusRule.rules.serving.kvOffload.enabled }}
-    # A slow async KV load holds its blocks for the whole transfer, gating admission.
-    # Names the cause; InferenceQueueTimeHigh only reports it as a symptom.
-    # Same min-sample guard as InferenceQueueTimeHigh, same reason: one slow
-    # load on an otherwise idle pod shouldn't page.
+    # A slow async KV load holds its blocks for the whole transfer, gating
+    # admission; names the cause where InferenceQueueTimeHigh only sees the symptom.
     - alert: KVOffloadLoadSlow
       expr: |
         (
@@ -269,14 +253,15 @@ spec:
       labels:
         latency_kind: ttft
 
-    # Queue wait over 5m. Now covers vLLM too, via vllm:request_queue_time_seconds.
+    # Queue wait over 5m, covers vLLM and SGLang. By pod, not just service: a
+    # service-wide percentile would dilute one stalled replica out of it.
     - record: llmkube:inference:queue_time_seconds:p95_5m
-      expr: histogram_quantile(0.95, sum by (service, namespace, runtime, le) (rate(vllm:request_queue_time_seconds_bucket[5m]) or rate(sglang:queue_time_seconds_bucket[5m])))
+      expr: histogram_quantile(0.95, sum by (service, namespace, runtime, pod, le) (rate(vllm:request_queue_time_seconds_bucket[5m]) or rate(sglang:queue_time_seconds_bucket[5m])))
       labels:
         latency_kind: queue_wait
 
     - record: llmkube:inference:queue_time_seconds:p50_5m
-      expr: histogram_quantile(0.50, sum by (service, namespace, runtime, le) (rate(vllm:request_queue_time_seconds_bucket[5m]) or rate(sglang:queue_time_seconds_bucket[5m])))
+      expr: histogram_quantile(0.50, sum by (service, namespace, runtime, pod, le) (rate(vllm:request_queue_time_seconds_bucket[5m]) or rate(sglang:queue_time_seconds_bucket[5m])))
       labels:
         latency_kind: queue_wait
   {{- end }}

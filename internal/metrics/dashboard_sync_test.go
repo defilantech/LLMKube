@@ -47,7 +47,7 @@ var externalPrefixes = []string{
 	// Pyrra generates these from the vLLM histogram; the runtime's own vllm:
 	// metrics are fixture-verified like every other runtime.
 	"vllm:e2e_request_latency_seconds:",
-	"up:",          // Pyrra burn-rate rules over scrape liveness
+	"up",           // Prometheus synthesizes this per scrape target; Pyrra's up:sum5m too
 	"DCGM_FI_DEV_", // NVIDIA dcgm-exporter
 	"amdgpu_",      // amdgpu-sysfs exporter
 	"drm_",         // drm-exporter
@@ -79,6 +79,8 @@ var (
 	// Desc keeps fqName unexported; String() is the only accessor.
 	descFQName = regexp.MustCompile(`fqName: "([^"]+)"`)
 	recordRule = regexp.MustCompile(`(?m)^\s*- record:\s*(\S+)`)
+	// Every alert has a `for:` right after its expr; that's the terminator.
+	alertExprBlock = regexp.MustCompile(`(?ms)^\s*- alert:\s*(\S+).*?\n\s*expr:\s*\|?\s*\n?(.*?)\n\s*for:`)
 
 	labelMatcher    = regexp.MustCompile(`\{[^}]*\}`)
 	soleAggregation = regexp.MustCompile(`^(?:sum|count)(?:\s+(?:by|without)\s*\([^)]*\))?\s*\(`)
@@ -129,6 +131,27 @@ func chartRecordingRules(t *testing.T) map[string]bool {
 		t.Fatalf("no recording rules in %s", prometheusRuleTpl)
 	}
 	return names
+}
+
+// chartAlertExprs returns each alert's name and expr text, raw source
+// un-rendered. metricNames' noise stripping collapses a Go-templated
+// threshold the same way it collapses a Grafana `$var`.
+func chartAlertExprs(t *testing.T) map[string]string {
+	t.Helper()
+
+	tpl, err := os.ReadFile(prometheusRuleTpl)
+	if err != nil {
+		t.Fatalf("read %s: %v", prometheusRuleTpl, err)
+	}
+
+	exprs := map[string]string{}
+	for _, m := range alertExprBlock.FindAllStringSubmatch(string(tpl), -1) {
+		exprs[m[1]] = m[2]
+	}
+	if len(exprs) == 0 {
+		t.Fatalf("no alerts in %s", prometheusRuleTpl)
+	}
+	return exprs
 }
 
 // runtimeNames returns the metric names the inference runtimes' own servers
@@ -497,6 +520,31 @@ func TestDashboardsQueryEmittedMetrics(t *testing.T) {
 				t.Errorf("%s queries %q, which no registered collector, chart recording rule or allowlisted exporter emits\n\tquery: %s",
 					dashboard, name, query)
 			}
+		}
+	}
+
+	if t.Failed() {
+		t.Logf("emittable: %v", slices.Sorted(maps.Keys(known)))
+	}
+}
+
+// TestAlertExprsQueryEmittedMetrics is TestDashboardsQueryEmittedMetrics's
+// counterpart for alert rules: a typo'd or renamed metric in an `expr:` ships
+// an alert that never fires.
+func TestAlertExprsQueryEmittedMetrics(t *testing.T) {
+	known := declaredNames(t)
+	maps.Copy(known, chartRecordingRules(t))
+	maps.Copy(known, runtimeNames(t))
+
+	for alert, expr := range chartAlertExprs(t) {
+		reported := map[string]bool{}
+		for _, name := range metricNames(expr) {
+			if emitted(name, known) || reported[name] {
+				continue
+			}
+			reported[name] = true
+			t.Errorf("alert %s queries %q, which no registered collector, chart recording rule or allowlisted exporter emits\n\texpr: %s",
+				alert, name, expr)
 		}
 	}
 

@@ -6,6 +6,9 @@ vllm:inter_token_latency_seconds_bucket
 vllm:inter_token_latency_seconds_count
 vllm:inter_token_latency_seconds_sum
 vllm:kv_cache_usage_perc
+vllm:kv_offload_lookup_async_delay_seconds_bucket
+vllm:kv_offload_lookup_async_delay_seconds_count
+vllm:kv_offload_lookup_async_delay_seconds_sum
 vllm:num_preemptions_total
 vllm:num_requests_running
 vllm:num_requests_waiting

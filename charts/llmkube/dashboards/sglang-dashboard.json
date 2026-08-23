@@ -12,7 +12,7 @@
       }
     ]
   },
-  "description": "LLMKube SGLang runtime observability. Throughput, TTFT / E2E / inter-token latency, queue depth, KV pool utilization, scheduler backpressure, prefix cache hit rate, queue wait, per-stage latency, new token ratio, prompt length distribution and request rate, grouped by service / namespace from the sglang: metrics the chart's inference PodMonitor scrapes. TTFT and end-to-end p95 / p50 read the chart's llmkube:inference: recording rules. Mamba, HiCache host and HiCache L3 rows are collapsed because those pools only exist on hybrid-attention models, with --hicache enabled, and with --hicache-storage-backend enabled respectively.",
+  "description": "LLMKube SGLang runtime observability. Throughput, TTFT / E2E / inter-token latency, queue depth, KV pool utilization, scheduler backpressure, prefix cache hit rate, queue wait, per-stage latency, new token ratio, prompt length distribution and request rate, grouped by service / namespace from the sglang: metrics the chart's inference PodMonitor scrapes. TTFT, end-to-end, and queue-wait p95 / p50 read the chart's llmkube:inference: recording rules, per pod. Mamba, HiCache host and HiCache L3 rows are collapsed because those pools only exist on hybrid-attention models, with --hicache enabled, and with --hicache-storage-backend enabled respectively.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -459,13 +459,13 @@
         {
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "expr": "llmkube:inference:queue_time_seconds:p95_5m{runtime=\"sglang\", service=~\"$service\"}",
-          "legendFormat": "{{service}} ({{namespace}}) p95",
+          "legendFormat": "{{service}}/{{pod}} p95",
           "refId": "A"
         },
         {
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "expr": "llmkube:inference:queue_time_seconds:p50_5m{runtime=\"sglang\", service=~\"$service\"}",
-          "legendFormat": "{{service}} ({{namespace}}) p50",
+          "legendFormat": "{{service}}/{{pod}} p50",
           "refId": "B"
         }
       ],
