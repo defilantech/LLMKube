@@ -40,16 +40,44 @@ type Executor interface {
 	// GATE-FAIL verdict). A non-nil error is a system failure: the
 	// executor did not complete, and the watcher patches the task as
 	// Failed with the error in the Completed condition.
-	Execute(ctx context.Context, task *foremanv1alpha1.AgenticTask) (*Result, error)
+	//
+	// agent is the task's already-resolved spec.agentRef target, read ONCE
+	// by the caller. Execute must not re-read it: the dispatch loop derives
+	// this task's slot accounting from the same value (see
+	// SupervisingExecutor), and a second independent read can disagree with
+	// the first -- an Agent edited between the two would be counted against
+	// one slot while burning the other (#1635 review).
+	//
+	// A nil agent means the reference could not be resolved to an Agent:
+	// either the task carries no spec.agentRef, or the Agent was deleted
+	// between scheduling and the claim. Implementations that need an Agent
+	// must produce a terminal outcome for it rather than retry.
+	Execute(
+		ctx context.Context,
+		task *foremanv1alpha1.AgenticTask,
+		agent *foremanv1alpha1.Agent,
+	) (*Result, error)
 }
 
 // SupervisingExecutor is an optional Executor capability: it reports whether
-// a task's real work will happen OUTSIDE this process. The watcher runs one
+// an Agent's work will happen OUTSIDE this process. The watcher runs one
 // in-process task at a time, but a supervised run leaves the agent idle --
 // it only submits the work, waits, and reports the outcome -- so holding the
 // single in-process slot for its whole lifetime blocks the node for nothing
 // (#1559). An Executor that does not implement this interface is treated as
 // always running in-process.
+//
+// SupervisesAgent does NO I/O: it answers over the Agent the dispatch loop
+// already resolved, and that same value is handed to Execute. That is what
+// makes "the slot accounting cannot drift from the path actually taken" true
+// -- one predicate applied to one value, not two independent reads that can
+// disagree.
+//
+// It stays an interface rather than a static executor property because the
+// predicate is a conjunction of a static fact (is a submitter wired on this
+// executor?) and a per-Agent one (does this Agent select Job mode?). A static
+// property answers only the first half, and computing the second half in the
+// watcher would leak executor wiring into the dispatch loop.
 type SupervisingExecutor interface {
-	SupervisesExternally(ctx context.Context, task *foremanv1alpha1.AgenticTask) bool
+	SupervisesAgent(agent *foremanv1alpha1.Agent) bool
 }

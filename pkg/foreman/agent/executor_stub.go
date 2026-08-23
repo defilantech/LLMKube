@@ -50,8 +50,13 @@ func (s *StubExecutor) Kind() string { return "stub" }
 
 // Execute sleeps for SleepDuration (or default) and returns a Result that
 // labels the task as a stub run. Cancellation via ctx returns
-// immediately with ctx.Err().
-func (s *StubExecutor) Execute(ctx context.Context, task *foremanv1alpha1.AgenticTask) (*Result, error) {
+// immediately with ctx.Err(). The resolved Agent is unused: the stub runs no
+// loop, so nothing about the task's Agent changes what it does.
+func (s *StubExecutor) Execute(
+	ctx context.Context,
+	task *foremanv1alpha1.AgenticTask,
+	_ *foremanv1alpha1.Agent,
+) (*Result, error) {
 	dur := s.SleepDuration
 	if dur <= 0 {
 		dur = DefaultStubSleep

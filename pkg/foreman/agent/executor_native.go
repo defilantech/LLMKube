@@ -271,10 +271,45 @@ var ErrNoAgentRef = errors.New("native-agent-loop: task.spec.agentRef is require
 // an empty or wrong-workspace tool set.
 var ErrRegistryFactoryNotSet = errors.New("native-agent-loop: RegistryFactory is required")
 
+// resolveTaskAgent reads the Agent a task points at. It is the single Agent
+// read per dispatched task: the caller derives the task's execution mode from
+// the returned value (SupervisingExecutor.SupervisesAgent) and hands the SAME
+// value to Executor.Execute, so the slot the watcher reserves and the path the
+// executor takes cannot disagree (#1635 review).
+//
+// A nil Agent and a nil error is the ABSENT case, and it is deliberately not
+// an error: either the task carries no agentRef, or the Agent is gone. Both
+// deserve a verdict from Execute rather than a retry -- a task whose Agent was
+// deleted would otherwise sit at Scheduled forever with nothing saying why. A
+// non-nil error is the AMBIGUOUS case (apiserver blip, 429, reset): the
+// execution mode is unknown, so the caller must not claim on a guess.
+func resolveTaskAgent(
+	ctx context.Context,
+	c client.Client,
+	task *foremanv1alpha1.AgenticTask,
+) (*foremanv1alpha1.Agent, error) {
+	if task.Spec.AgentRef == nil || task.Spec.AgentRef.Name == "" {
+		return nil, nil
+	}
+	var agent foremanv1alpha1.Agent
+	key := types.NamespacedName{Namespace: task.Namespace, Name: task.Spec.AgentRef.Name}
+	if err := c.Get(ctx, key, &agent); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("resolve agent: %w", err)
+	}
+	return &agent, nil
+}
+
 // Execute is the Executor implementation. See the package-level docs on
 // NativeAgentLoopExecutor for the high-level flow; this method drives
 // it step by step.
-func (e *NativeAgentLoopExecutor) Execute(ctx context.Context, task *foremanv1alpha1.AgenticTask) (*Result, error) {
+func (e *NativeAgentLoopExecutor) Execute(
+	ctx context.Context,
+	task *foremanv1alpha1.AgenticTask,
+	agent *foremanv1alpha1.Agent,
+) (*Result, error) {
 	log := logf.FromContext(ctx).WithName("native-agent-loop").WithValues("task", task.Name, "ns", task.Namespace)
 	start := time.Now()
 
@@ -285,17 +320,15 @@ func (e *NativeAgentLoopExecutor) Execute(ctx context.Context, task *foremanv1al
 		return nil, ErrNoAgentRef
 	}
 
-	// 1. Resolve the Agent CR.
-	var agent foremanv1alpha1.Agent
-	agentKey := types.NamespacedName{Namespace: task.Namespace, Name: task.Spec.AgentRef.Name}
-	if err := e.Client.Get(ctx, agentKey, &agent); err != nil {
-		if apierrors.IsNotFound(err) {
-			// Scheduler should have caught this; if we got here the
-			// Agent was deleted between scheduling and execution.
-			return e.failResult(start, foremanv1alpha1.FailureAgentNotFound,
-				fmt.Sprintf("Agent %q not found in namespace %q", agentKey.Name, agentKey.Namespace)), nil
-		}
-		return nil, fmt.Errorf("resolve agent: %w", err)
+	// 1. The Agent was resolved by the caller (resolveTaskAgent), once, and
+	// the same value already decided this run's slot accounting -- see the
+	// Executor.Execute contract. A nil Agent with an agentRef set means the
+	// Agent is gone: the scheduler should have caught it, so it was deleted
+	// between scheduling and execution.
+	if agent == nil {
+		return e.failResult(start, foremanv1alpha1.FailureAgentNotFound,
+			fmt.Sprintf("Agent %q not found in namespace %q",
+				task.Spec.AgentRef.Name, task.Namespace)), nil
 	}
 
 	// 1b. Job-mode dispatch (#620). When the Agent selects spec.execution.
@@ -307,8 +340,8 @@ func (e *NativeAgentLoopExecutor) Execute(ctx context.Context, task *foremanv1al
 	// (RunTask wires no submitter, so useCoderJobPath is false there). The
 	// InProcess path (Execution nil or mode==InProcess, or no submitter
 	// wired) is left byte-for-byte unchanged below.
-	if e.useCoderJobPath(&agent) {
-		return e.executeCoderJob(ctx, task, &agent, start), nil
+	if e.useCoderJobPath(agent) {
+		return e.executeCoderJob(ctx, task, agent, start), nil
 	}
 
 	// 2. Resolve the model-serving endpoint. Three branches:
@@ -323,11 +356,11 @@ func (e *NativeAgentLoopExecutor) Execute(ctx context.Context, task *foremanv1al
 	//   - Local Agent (default): resolveInferenceBaseURL reads
 	//     InferenceService.status.endpoint and optionally rewrites the
 	//     host (per #540).
-	deterministic := isDeterministicAgent(&agent)
+	deterministic := isDeterministicAgent(agent)
 	var endpoint providerEndpoint
 	if !deterministic {
 		var err error
-		endpoint, err = e.resolveProviderEndpoint(ctx, task.Namespace, &agent)
+		endpoint, err = e.resolveProviderEndpoint(ctx, task.Namespace, agent)
 		if err != nil {
 			return e.failResult(start, foremanv1alpha1.FailureInferenceServiceUnavailable, err.Error()), nil
 		}
@@ -439,7 +472,7 @@ func (e *NativeAgentLoopExecutor) Execute(ctx context.Context, task *foremanv1al
 
 	// 5. Build tool registry pinned to this workspace + filtered by the
 	// Agent's tool whitelist.
-	registry, err := e.RegistryFactory(ctx, workspace, &agent, mcpEnabledForTask(task))
+	registry, err := e.RegistryFactory(ctx, workspace, agent, mcpEnabledForTask(task))
 	if err != nil {
 		// Registry build failure is an operator config issue (bad
 		// whitelist name, duplicate tool); not a runtime model
@@ -452,13 +485,13 @@ func (e *NativeAgentLoopExecutor) Execute(ctx context.Context, task *foremanv1al
 	// first tool directly with the task payload as JSON arguments. The
 	// gate Agent uses this; M5+ reviewer agents use the LLM path.
 	if deterministic {
-		return e.executeDeterministic(ctx, task, &agent, branch, registry, cloneURL, start), nil
+		return e.executeDeterministic(ctx, task, agent, branch, registry, cloneURL, start), nil
 	}
 
 	// 6+. LLM-driven path: extracted to keep Execute below the
 	// cyclomatic-complexity threshold. runLLMPath owns OAI + loop +
 	// transcript + commit/push.
-	return e.runLLMPath(ctx, task, &agent, endpoint, workspace, branch, registry, auth, needsRepo, cloneURL, start)
+	return e.runLLMPath(ctx, task, agent, endpoint, workspace, branch, registry, auth, needsRepo, cloneURL, start)
 }
 
 // setupTaskBranch cuts the task's working branch in the freshly cloned

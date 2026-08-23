@@ -173,7 +173,7 @@ func (tc envtestLoopCase) run(t *testing.T) (*foremanagent.Result, int) {
 	reg := &seqEnvtestRegistry{verdicts: tc.regVerdicts}
 	runner := &scriptedEnvtestRunner{results: tc.gate}
 	e := envtestLoopExecutor(t, root, bare, oaiSrv.URL, c, runner, reg)
-	res, err := e.Execute(context.Background(), task)
+	res, err := execWithAgent(t, e, task)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}

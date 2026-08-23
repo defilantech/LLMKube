@@ -134,27 +134,21 @@ func (e *NativeAgentLoopExecutor) useCoderJobPath(agent *foremanv1alpha1.Agent) 
 	return agent.Spec.Execution.Mode == foremanv1alpha1.ExecutionModeJob
 }
 
-// SupervisesExternally implements SupervisingExecutor: a Job-mode task's
-// loop, workspace and toolchain live in the coder Job's pod, so Execute here
-// only submits, polls Job.Status and tails logs. It resolves the Agent and
-// reuses useCoderJobPath -- the same predicate Execute dispatches on -- so
-// the watcher's slot accounting cannot drift from the path actually taken.
-// A missing agentRef or a failed lookup answers false, the conservative
-// direction: the task keeps the in-process slot it would have held before,
-// and Execute fails it on the same error a moment later.
-func (e *NativeAgentLoopExecutor) SupervisesExternally(
-	ctx context.Context,
-	task *foremanv1alpha1.AgenticTask,
-) bool {
-	if task.Spec.AgentRef == nil || task.Spec.AgentRef.Name == "" {
+// SupervisesAgent implements SupervisingExecutor: a Job-mode task's loop,
+// workspace and toolchain live in the coder Job's pod, so Execute here only
+// submits, polls Job.Status and tails logs. It is useCoderJobPath -- literally
+// the predicate Execute dispatches on, over the Agent Execute will be handed
+// -- so the watcher's slot accounting cannot drift from the path actually
+// taken.
+//
+// A nil Agent (no agentRef, or deleted between scheduling and the claim) is
+// not supervised: Execute turns it into a terminal failure in this process
+// without ever reaching the Job path.
+func (e *NativeAgentLoopExecutor) SupervisesAgent(agent *foremanv1alpha1.Agent) bool {
+	if agent == nil {
 		return false
 	}
-	var agent foremanv1alpha1.Agent
-	key := types.NamespacedName{Namespace: task.Namespace, Name: task.Spec.AgentRef.Name}
-	if err := e.Client.Get(ctx, key, &agent); err != nil {
-		return false
-	}
-	return e.useCoderJobPath(&agent)
+	return e.useCoderJobPath(agent)
 }
 
 // executeCoderJob submits the per-task coder Job via the wired

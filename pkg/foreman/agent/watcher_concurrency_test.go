@@ -48,6 +48,13 @@ type blockingExecutor struct {
 	execErr  error
 	stopOnce sync.Once
 
+	// agentsMu guards agents.
+	agentsMu sync.Mutex
+	// agents records the Agent value handed to each Execute call, so a test
+	// can assert the dispatch loop passed on the Agent it resolved instead
+	// of leaving the executor to read its own.
+	agents []*foremanv1alpha1.Agent
+
 	// wg joins the Execute calls the watcher launched. Without it the test
 	// body can return while an Execute goroutine is still running, and it
 	// then logs (and patches) against a finished test.
@@ -96,10 +103,13 @@ func (e *blockingExecutor) waitStarted(t *testing.T, n int) {
 func (*blockingExecutor) Kind() string { return "test-mode" }
 
 func (e *blockingExecutor) Execute(
-	ctx context.Context, _ *foremanv1alpha1.AgenticTask,
+	ctx context.Context, _ *foremanv1alpha1.AgenticTask, agent *foremanv1alpha1.Agent,
 ) (*Result, error) {
 	e.wg.Add(1)
 	defer e.wg.Done()
+	e.agentsMu.Lock()
+	e.agents = append(e.agents, agent)
+	e.agentsMu.Unlock()
 	e.started <- struct{}{}
 
 	if e.execErr != nil {
@@ -118,26 +128,55 @@ func (e *blockingExecutor) Execute(
 	}, nil
 }
 
+// executedAgents returns the Agent handed to each Execute call so far, in
+// call order.
+func (e *blockingExecutor) executedAgents() []*foremanv1alpha1.Agent {
+	e.agentsMu.Lock()
+	defer e.agentsMu.Unlock()
+	return append([]*foremanv1alpha1.Agent(nil), e.agents...)
+}
+
 // modeExecutor is a blockingExecutor that also answers the watcher's
 // execution-mode question, so slot accounting can be driven without a real
-// coder Job. modeCalls counts the answers, which is what the memoization in
-// pollOnce is about.
+// coder Job. It answers PER AGENT, keyed by name, because that is what the
+// real predicate does: mode is a property of the Agent, so a node's fleet can
+// be mixed. An Agent not in the map (and a nil Agent) runs in-process.
 type modeExecutor struct {
 	*blockingExecutor
-	supervise bool
-	modeCalls atomic.Int32
+	jobMode map[string]bool
 }
 
-func newModeExecutor(t *testing.T, supervise bool) *modeExecutor {
+func newModeExecutor(t *testing.T, jobMode map[string]bool) *modeExecutor {
 	t.Helper()
-	return &modeExecutor{blockingExecutor: newBlockingExecutor(t), supervise: supervise}
+	return &modeExecutor{blockingExecutor: newBlockingExecutor(t), jobMode: jobMode}
 }
 
-func (e *modeExecutor) SupervisesExternally(
-	_ context.Context, _ *foremanv1alpha1.AgenticTask,
-) bool {
-	e.modeCalls.Add(1)
-	return e.supervise
+func (e *modeExecutor) SupervisesAgent(agent *foremanv1alpha1.Agent) bool {
+	if agent == nil {
+		return false
+	}
+	return e.jobMode[agent.Name]
+}
+
+// agentCR builds an Agent whose spec.execution.mode matches what the
+// modeExecutor double will answer for it, so the fixture and the double do
+// not tell two different stories.
+func agentCR(name string, jobMode bool) *foremanv1alpha1.Agent {
+	a := &foremanv1alpha1.Agent{}
+	a.Name = name
+	a.Namespace = "default"
+	if jobMode {
+		a.Spec.Execution = &foremanv1alpha1.ExecutionSpec{Mode: foremanv1alpha1.ExecutionModeJob}
+	}
+	return a
+}
+
+// taskForAgent is scheduledTask plus the agentRef the dispatch loop resolves
+// before it can decide which slot the task wants.
+func taskForAgent(name, agentName string, age time.Duration) *foremanv1alpha1.AgenticTask {
+	task := scheduledTask(name, "node-1", foremanv1alpha1.AgenticTaskKindIssueFix, age)
+	task.Spec.AgentRef = &corev1.LocalObjectReference{Name: agentName}
+	return task
 }
 
 // countPhase reports how many of the named tasks are in the given phase.
@@ -217,11 +256,11 @@ func TestPollOnce_SlotAccountingByExecutionMode(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			first := scheduledTask("first", "node-1", foremanv1alpha1.AgenticTaskKindIssueFix, time.Hour)
-			second := scheduledTask("second", "node-1", foremanv1alpha1.AgenticTaskKindIssueFix, time.Minute)
-			exec := newModeExecutor(t, tc.supervise)
+			first := taskForAgent("first", "coder", time.Hour)
+			second := taskForAgent("second", "coder", time.Minute)
+			exec := newModeExecutor(t, map[string]bool{"coder": tc.supervise})
 			w := &AgenticTaskWatcher{
-				Client:   newRecoveryClient(t, first, second),
+				Client:   newRecoveryClient(t, first, second, agentCR("coder", tc.supervise)),
 				NodeName: "node-1",
 				Executor: exec,
 			}
@@ -248,16 +287,13 @@ func TestPollOnce_SlotAccountingByExecutionMode(t *testing.T) {
 // caps how many coder Jobs one node has outstanding.
 func TestPollOnce_SupervisionBoundEnforced(t *testing.T) {
 	names := []string{"job-1", "job-2", "job-3"}
-	objs := make([]*foremanv1alpha1.AgenticTask, 0, len(names))
+	objs := []client.Object{agentCR("coder", true)}
 	for i, name := range names {
-		objs = append(objs, scheduledTask(
-			name, "node-1", foremanv1alpha1.AgenticTaskKindIssueFix,
-			time.Duration(len(names)-i)*time.Hour,
-		))
+		objs = append(objs, taskForAgent(name, "coder", time.Duration(len(names)-i)*time.Hour))
 	}
-	exec := newModeExecutor(t, true)
+	exec := newModeExecutor(t, map[string]bool{"coder": true})
 	w := &AgenticTaskWatcher{
-		Client:             newRecoveryClient(t, objs[0], objs[1], objs[2]),
+		Client:             newRecoveryClient(t, objs...),
 		NodeName:           "node-1",
 		Executor:           exec,
 		MaxSupervisedTasks: 2,
@@ -328,26 +364,41 @@ func TestPollOnce_SkipsListWhenNoSlotCanTakeWork(t *testing.T) {
 	}
 }
 
-// TestPollOnce_ResolvesExecutionModeOncePerAgent: the mode question is an
-// uncached Agent GET, so a pass that walks several candidates behind one Agent
-// must ask once, not once per candidate (#1635 review).
-func TestPollOnce_ResolvesExecutionModeOncePerAgent(t *testing.T) {
+// TestPollOnce_ResolvesAgentOncePerPass: resolving a candidate's execution
+// mode costs an uncached Agent GET, and a pass has to resolve the candidates
+// AHEAD of the one it claims too, since it cannot know which slot they want
+// without asking. Candidates queued on one node nearly always share a single
+// Agent, so a pass must read it once, not once per candidate (#1635 review).
+func TestPollOnce_ResolvesAgentOncePerPass(t *testing.T) {
 	names := []string{"job-1", "job-2", "job-3", "job-4"}
-	objs := make([]client.Object, 0, len(names))
+	objs := []client.Object{agentCR("coder", true)}
 	for i, name := range names {
-		task := scheduledTask(
-			name, "node-1", foremanv1alpha1.AgenticTaskKindIssueFix,
-			time.Duration(len(names)-i)*time.Hour,
-		)
-		task.Spec.AgentRef = &corev1.LocalObjectReference{Name: "coder"}
-		objs = append(objs, task)
+		objs = append(objs, taskForAgent(name, "coder", time.Duration(len(names)-i)*time.Hour))
 	}
-	exec := newModeExecutor(t, true)
+	var agentGets atomic.Int32
+	c := fake.NewClientBuilder().
+		WithScheme(newTestScheme(t)).
+		WithObjects(objs...).
+		WithStatusSubresource(&foremanv1alpha1.AgenticTask{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(
+				ctx context.Context, cl client.WithWatch,
+				key client.ObjectKey, obj client.Object, opts ...client.GetOption,
+			) error {
+				if _, ok := obj.(*foremanv1alpha1.Agent); ok {
+					agentGets.Add(1)
+				}
+				return cl.Get(ctx, key, obj, opts...)
+			},
+		}).
+		Build()
+	exec := newModeExecutor(t, map[string]bool{"coder": true})
 	w := &AgenticTaskWatcher{
-		Client:             newRecoveryClient(t, objs...),
-		NodeName:           "node-1",
-		Executor:           exec,
-		MaxSupervisedTasks: 1,
+		Client:               c,
+		NodeName:             "node-1",
+		TaskLivenessInterval: time.Hour, // no watchdog interference
+		Executor:             exec,
+		MaxSupervisedTasks:   1,
 	}
 
 	// Spend the whole budget, so the next pass walks every remaining
@@ -357,12 +408,12 @@ func TestPollOnce_ResolvesExecutionModeOncePerAgent(t *testing.T) {
 	}
 	exec.waitStarted(t, 1)
 
-	exec.modeCalls.Store(0)
+	agentGets.Store(0)
 	if err := w.pollOnce(context.Background(), "default"); err != nil {
 		t.Fatalf("pollOnce: %v", err)
 	}
-	if got := exec.modeCalls.Load(); got != 1 {
-		t.Fatalf("execution mode resolved %d time(s) for %d candidates sharing one Agent; want 1",
+	if got := agentGets.Load(); got != 1 {
+		t.Fatalf("Agent read %d time(s) for %d candidates sharing one Agent; want 1",
 			got, len(names)-1)
 	}
 }
@@ -386,11 +437,11 @@ func TestLaunchExecutor_ReleasesSlotOnError(t *testing.T) {
 			// ownership guard after the fake client's round-trip.
 			claimedAt := metav1.NewTime(time.Unix(time.Now().Unix(), 0))
 			task := claimedRunningTask("boom", "node-1", claimedAt)
-			next := scheduledTask("next", "node-1", foremanv1alpha1.AgenticTaskKindIssueFix, time.Minute)
-			exec := newModeExecutor(t, tc.supervise)
+			next := taskForAgent("next", "coder", time.Minute)
+			exec := newModeExecutor(t, map[string]bool{"coder": tc.supervise})
 			exec.execErr = errors.New("executor exploded")
 			w := &AgenticTaskWatcher{
-				Client:               newRecoveryClient(t, task, next),
+				Client:               newRecoveryClient(t, task, next, agentCR("coder", tc.supervise)),
 				NodeName:             "node-1",
 				TaskLivenessInterval: time.Hour, // no watchdog interference
 				Executor:             exec,
@@ -399,7 +450,7 @@ func TestLaunchExecutor_ReleasesSlotOnError(t *testing.T) {
 				MaxSupervisedTasks: 1,
 			}
 
-			w.launchExecutor(context.Background(), task, tc.supervise)
+			w.launchExecutor(context.Background(), task, agentCR("coder", tc.supervise), tc.supervise)
 
 			if !waitPhase(t, w, "boom", foremanv1alpha1.AgenticTaskPhaseFailed, 2*time.Second) {
 				t.Fatalf("task phase after executor error: want Failed got %s",
@@ -411,56 +462,4 @@ func TestLaunchExecutor_ReleasesSlotOnError(t *testing.T) {
 			exec.waitStarted(t, 2)
 		})
 	}
-}
-
-// TestSupervisesExternally: the watcher's mode question must be answered by
-// the same predicate Execute dispatches on, so slot accounting cannot drift
-// from the path actually taken (#1559).
-func TestSupervisesExternally(t *testing.T) {
-	jobAgent := &foremanv1alpha1.Agent{}
-	jobAgent.Name = "coder"
-	jobAgent.Namespace = "default"
-	jobAgent.Spec.Execution = &foremanv1alpha1.ExecutionSpec{
-		Mode: foremanv1alpha1.ExecutionModeJob,
-	}
-	inProcAgent := &foremanv1alpha1.Agent{}
-	inProcAgent.Name = "inproc"
-	inProcAgent.Namespace = "default"
-
-	tests := []struct {
-		name          string
-		agentRef      string
-		withSubmitter bool
-		want          bool
-	}{
-		{name: "job-mode agent with submitter", agentRef: "coder", withSubmitter: true, want: true},
-		{name: "job-mode agent without submitter", agentRef: "coder", want: false},
-		{name: "in-process agent", agentRef: "inproc", withSubmitter: true, want: false},
-		{name: "missing agent", agentRef: "gone", withSubmitter: true, want: false},
-		{name: "no agentRef", agentRef: "", withSubmitter: true, want: false},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			e := &NativeAgentLoopExecutor{Client: newRecoveryClient(t, jobAgent, inProcAgent)}
-			if tc.withSubmitter {
-				e.CoderJobSubmitter = stubCoderJobSubmitter{}
-			}
-			task := claimedRunningTask("t", "node-1", metav1.Now())
-			if tc.agentRef != "" {
-				task.Spec.AgentRef = &corev1.LocalObjectReference{Name: tc.agentRef}
-			}
-			if got := e.SupervisesExternally(context.Background(), task); got != tc.want {
-				t.Fatalf("SupervisesExternally: want %v got %v", tc.want, got)
-			}
-		})
-	}
-}
-
-// stubCoderJobSubmitter satisfies CoderJobSubmitter for the wiring checks
-// above; it is never invoked. (executor_native_test.go has an equivalent
-// double, but it lives in package agent_test and cannot be reached from here.)
-type stubCoderJobSubmitter struct{}
-
-func (stubCoderJobSubmitter) Submit(context.Context, CoderJobRequest) (CoderJobResult, error) {
-	return CoderJobResult{}, errors.New("not called")
 }

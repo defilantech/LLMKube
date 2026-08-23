@@ -45,6 +45,29 @@ import (
 	"github.com/defilantech/llmkube/pkg/foreman/agent/repo"
 )
 
+// execWithAgent mirrors what the dispatch loop does around Execute: resolve
+// the task's Agent exactly once, then hand that value in. A task with no
+// agentRef, or one whose Agent is missing from the client, passes nil --
+// the same "absent" signal the watcher sends when an Agent has been deleted.
+func execWithAgent(
+	t *testing.T, e *foremanagent.NativeAgentLoopExecutor, task *foremanv1alpha1.AgenticTask,
+) (*foremanagent.Result, error) {
+	t.Helper()
+	var agent *foremanv1alpha1.Agent
+	if task.Spec.AgentRef != nil && task.Spec.AgentRef.Name != "" {
+		var got foremanv1alpha1.Agent
+		key := types.NamespacedName{Namespace: task.Namespace, Name: task.Spec.AgentRef.Name}
+		err := e.Client.Get(context.Background(), key, &got)
+		switch {
+		case err == nil:
+			agent = &got
+		case !apierrors.IsNotFound(err):
+			t.Fatalf("resolve agent %s: %v", key, err)
+		}
+	}
+	return e.Execute(context.Background(), task, agent)
+}
+
 // gitOrSkip mirrors the helper in the repo subpackage: skip when git is
 // not on PATH so the suite stays healthy on minimal containers.
 func gitOrSkip(t *testing.T) {
@@ -266,7 +289,7 @@ func TestNativeExecutor_AgentNotFound(t *testing.T) {
 		},
 		AuthFactory: fakeAuth(t),
 	}
-	res, err := e.Execute(context.Background(), task)
+	res, err := execWithAgent(t, e, task)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -299,7 +322,7 @@ func TestNativeExecutor_NoAgentRefIsHardError(t *testing.T) {
 			return &fakeRegistry{}, nil
 		},
 	}
-	if _, err := e.Execute(context.Background(), task); !errors.Is(err, foremanagent.ErrNoAgentRef) {
+	if _, err := execWithAgent(t, e, task); !errors.Is(err, foremanagent.ErrNoAgentRef) {
 		t.Errorf("expected ErrNoAgentRef, got %v", err)
 	}
 }
@@ -356,7 +379,7 @@ func TestNativeExecutor_FreeformNoRepoSkipsAuthAndClone(t *testing.T) {
 		// No GitRemoteURL: proves clone is skipped.
 	}
 
-	res, err := e.Execute(context.Background(), task)
+	res, err := execWithAgent(t, e, task)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -438,7 +461,7 @@ func TestNativeExecutor_HappyPathPushesBranch(t *testing.T) {
 		AuthFactory: fakeAuth(t),
 	}
 
-	res, err := e.Execute(context.Background(), task)
+	res, err := execWithAgent(t, e, task)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -539,7 +562,7 @@ func TestNativeExecutor_TruncatedMapsToIncomplete(t *testing.T) {
 		AuthFactory: fakeAuth(t),
 	}
 
-	res, err := e.Execute(context.Background(), task)
+	res, err := execWithAgent(t, e, task)
 	if err != nil {
 		t.Fatalf("Execute returned a hard error; truncation must map to INCOMPLETE: %v", err)
 	}
@@ -605,7 +628,7 @@ func TestNativeExecutor_MultiRepoClonesTaskRepoWhenNoStaticRemote(t *testing.T) 
 		AuthFactory: fakeAuth(t),
 	}
 
-	res, err := e.Execute(context.Background(), task)
+	res, err := execWithAgent(t, e, task)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -653,7 +676,7 @@ func TestNativeExecutor_NoStaticRemoteAndNoRepoIsHardError(t *testing.T) {
 		},
 	}
 
-	res, err := e.Execute(context.Background(), task)
+	res, err := execWithAgent(t, e, task)
 	if err != nil {
 		t.Fatalf("Execute returned a system error, want a data-shaped fail: %v", err)
 	}
@@ -700,7 +723,7 @@ func TestNativeExecutor_ModelEmitsGoButNoChanges(t *testing.T) {
 		},
 		AuthFactory: fakeAuth(t),
 	}
-	res, err := e.Execute(context.Background(), task)
+	res, err := execWithAgent(t, e, task)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -777,7 +800,7 @@ func TestNativeExecutor_ModelEmitsNoGo(t *testing.T) {
 		},
 		AuthFactory: fakeAuth(t),
 	}
-	res, err := e.Execute(context.Background(), task)
+	res, err := execWithAgent(t, e, task)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -907,7 +930,7 @@ func executeCoderTask(
 		},
 		AuthFactory: fakeAuth(t),
 	}
-	res, err := e.Execute(context.Background(), task)
+	res, err := execWithAgent(t, e, task)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -1242,7 +1265,7 @@ func TestNativeExecutor_ReviewerGoIsApproveNotCommit(t *testing.T) {
 		},
 		AuthFactory: fakeAuth(t),
 	}
-	res, err := e.Execute(context.Background(), task)
+	res, err := execWithAgent(t, e, task)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -1324,7 +1347,7 @@ func TestNativeExecutor_ReviewerERRORMapsToIncompleteWithModelReportedError(t *t
 		},
 		AuthFactory: fakeAuth(t),
 	}
-	res, err := e.Execute(context.Background(), task)
+	res, err := execWithAgent(t, e, task)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -1481,7 +1504,7 @@ func TestNativeExecutor_CoderPromptHasRepoMapPrefix(t *testing.T) {
 		AuthFactory: fakeAuth(t),
 	}
 
-	if _, err := e.Execute(context.Background(), task); err != nil {
+	if _, err := execWithAgent(t, e, task); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 
@@ -1608,7 +1631,7 @@ func TestNativeExecutor_FetchesIssueBodyWhenPromptEmpty(t *testing.T) {
 		IssueFetcher: fetcher,
 	}
 
-	if _, err := e.Execute(context.Background(), task); err != nil {
+	if _, err := execWithAgent(t, e, task); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 
@@ -1687,7 +1710,7 @@ func TestNativeExecutor_NoFetcherFallsBackToEmptyBody(t *testing.T) {
 		// IssueFetcher intentionally nil.
 	}
 
-	if _, err := e.Execute(context.Background(), task); err != nil {
+	if _, err := execWithAgent(t, e, task); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	if len(captured) == 0 {
@@ -1767,7 +1790,7 @@ func TestNativeExecutor_DeterministicGateAgent(t *testing.T) {
 		AuthFactory: fakeAuth(t),
 	}
 
-	res, err := e.Execute(context.Background(), task)
+	res, err := execWithAgent(t, e, task)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -1880,7 +1903,7 @@ func TestNativeExecutor_JobModeDispatchesToCoderJob(t *testing.T) {
 		CoderJobSubmitter: sub,
 	}
 
-	res, err := e.Execute(context.Background(), task)
+	res, err := execWithAgent(t, e, task)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -1989,7 +2012,7 @@ func TestNativeExecutor_JobModeStampsJobNameWhileRunning(t *testing.T) {
 		},
 	}
 
-	if _, err := e.Execute(context.Background(), task); err != nil {
+	if _, err := execWithAgent(t, e, task); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 
@@ -2102,7 +2125,7 @@ func TestNativeExecutor_JobModeWithoutSubmitterRunsInProcess(t *testing.T) {
 		// state. The Job path must not activate.
 	}
 
-	res, err := e.Execute(context.Background(), task)
+	res, err := execWithAgent(t, e, task)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -2283,7 +2306,7 @@ func TestNativeExecutor_ModelNoGoAlreadyResolved_PromotesOutcome(t *testing.T) {
 		},
 		AuthFactory: fakeAuth(t),
 	}
-	res, err := e.Execute(context.Background(), task)
+	res, err := execWithAgent(t, e, task)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -2353,7 +2376,7 @@ func TestNativeExecutor_SynthesizesCommitMessageWhenModelOmitsIt(t *testing.T) {
 		AuthFactory: fakeAuth(t),
 	}
 
-	res, err := e.Execute(context.Background(), task)
+	res, err := execWithAgent(t, e, task)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -2436,7 +2459,7 @@ func TestNativeExecutor_SynthesizedMessageOmitsIssueWhenTaskHasNone(t *testing.T
 		AuthFactory: fakeAuth(t),
 	}
 
-	res, err := e.Execute(context.Background(), task)
+	res, err := execWithAgent(t, e, task)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -2461,5 +2484,44 @@ func TestNativeExecutor_SynthesizedMessageOmitsIssueWhenTaskHasNone(t *testing.T
 	}
 	if !strings.Contains(msg, "Tighten the SSRF allowlist") {
 		t.Errorf("message should carry the model's summary: %q", msg)
+	}
+}
+
+// TestSupervisesAgent: the watcher's slot question must be answered by the
+// same predicate Execute dispatches on, over the same resolved Agent, so the
+// accounting cannot drift from the path actually taken (#1559). It does no
+// I/O, which is what lets one Agent read serve both.
+func TestSupervisesAgent(t *testing.T) {
+	jobAgent := &foremanv1alpha1.Agent{}
+	jobAgent.Name = "coder"
+	jobAgent.Spec.Execution = &foremanv1alpha1.ExecutionSpec{
+		Mode: foremanv1alpha1.ExecutionModeJob,
+	}
+	inProcAgent := &foremanv1alpha1.Agent{}
+	inProcAgent.Name = "inproc"
+
+	tests := []struct {
+		name          string
+		agent         *foremanv1alpha1.Agent
+		withSubmitter bool
+		want          bool
+	}{
+		{name: "job-mode agent with submitter", agent: jobAgent, withSubmitter: true, want: true},
+		// The recursion guard: the executor RunTask builds inside the coder
+		// Job pod wires no submitter, so it supervises nothing.
+		{name: "job-mode agent without submitter", agent: jobAgent},
+		{name: "in-process agent", agent: inProcAgent, withSubmitter: true},
+		{name: "unresolvable agent", agent: nil, withSubmitter: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			e := &foremanagent.NativeAgentLoopExecutor{}
+			if tc.withSubmitter {
+				e.CoderJobSubmitter = &fakeCoderJobSubmitter{}
+			}
+			if got := e.SupervisesAgent(tc.agent); got != tc.want {
+				t.Fatalf("SupervisesAgent: want %v got %v", tc.want, got)
+			}
+		})
 	}
 }

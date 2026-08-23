@@ -240,7 +240,16 @@ func RunTask(ctx context.Context, cfg RunTaskConfig) (RunTaskResult, error) {
 		UpstreamURLForRepo:           cfg.UpstreamURLForRepo,
 	}
 
-	res, execErr := exec.Execute(ctx, &task)
+	// Resolve the Agent here rather than inside Execute so the in-pod path
+	// and the watcher path share one contract: exactly one Agent read per
+	// run, whose value Execute is handed.
+	agent, err := resolveTaskAgent(ctx, cfg.Client, &task)
+	if err != nil {
+		emitSentinel(out, RunTaskSentinelError, err.Error())
+		return RunTaskResult{}, fmt.Errorf("execute task %s: %w", cfg.Task, err)
+	}
+
+	res, execErr := exec.Execute(ctx, &task, agent)
 	if execErr != nil {
 		// System / transport failure. Mirror the executor's contract:
 		// these are the cases the watcher records as ExecutorError.

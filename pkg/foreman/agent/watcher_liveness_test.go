@@ -145,7 +145,8 @@ func TestLaunchExecutor_AbortsInflightRunOnDelete(t *testing.T) {
 		Executor:             &StubExecutor{SleepDuration: time.Hour}, // blocks until ctx cancelled
 	}
 
-	w.launchExecutor(context.Background(), task, false)
+	// The stub executor ignores the Agent, so nil is the honest value here.
+	w.launchExecutor(context.Background(), task, nil, false)
 
 	// Confirm the run is actually in flight before deleting.
 	if !waitInflight(w, true, time.Second) {

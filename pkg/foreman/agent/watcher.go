@@ -163,12 +163,41 @@ func agentRefKey(t *foremanv1alpha1.AgenticTask) string {
 	return t.Namespace + "/" + t.Spec.AgentRef.Name
 }
 
-// supervises reports whether this task's work will run outside this process,
+// agentResolution is one Agent read plus the slot decision derived from it,
+// memoized for the duration of a pollOnce pass.
+type agentResolution struct {
+	// agent is the resolved Agent, or nil when the task has no agentRef or
+	// its Agent is gone. Handed to Executor.Execute as-is.
+	agent *foremanv1alpha1.Agent
+	// supervise is which slot this task needs, derived from agent by the
+	// same predicate Execute dispatches on.
+	supervise bool
+	// err is set only for an ambiguous read failure. The candidate is
+	// skipped: its mode, and so its slot, is unknown.
+	err error
+}
+
+// resolveCandidateAgent reads a candidate's Agent once and derives which slot
+// it would occupy.
+func (w *AgenticTaskWatcher) resolveCandidateAgent(
+	ctx context.Context, t *foremanv1alpha1.AgenticTask,
+) agentResolution {
+	agent, err := resolveTaskAgent(ctx, w.Client, t)
+	if err != nil {
+		return agentResolution{err: err}
+	}
+	return agentResolution{agent: agent, supervise: w.supervises(agent)}
+}
+
+// supervises reports whether this Agent's work will run outside this process,
 // by asking the Executor. An Executor that does not implement
-// SupervisingExecutor (the stub) always runs in-process.
-func (w *AgenticTaskWatcher) supervises(ctx context.Context, t *foremanv1alpha1.AgenticTask) bool {
+// SupervisingExecutor (the stub) always runs in-process. A nil Agent is never
+// supervised -- Execute fails it in this process without reaching the Job
+// path -- so it charges the in-process slot it would have held before #1559,
+// which it releases again as soon as the failure is patched.
+func (w *AgenticTaskWatcher) supervises(agent *foremanv1alpha1.Agent) bool {
 	se, ok := w.Executor.(SupervisingExecutor)
-	return ok && se.SupervisesExternally(ctx, t)
+	return ok && se.SupervisesAgent(agent)
 }
 
 // Run blocks, polling every Interval until ctx is cancelled. Returns
@@ -320,6 +349,17 @@ func (w *AgenticTaskWatcher) pollOnce(ctx context.Context, namespace string) err
 	// SupervisingExecutor) the budget is permanently idle, so testing it
 	// would keep the guard from ever firing and turn every tick into a full
 	// uncached namespace List that then skips every candidate.
+	//
+	// The type assertion asks whether the TYPE has the method, which is a
+	// proxy for whether THIS INSTANCE can ever answer true. The two agree
+	// today by wiring, not by construction: a nil-submitter
+	// NativeAgentLoopExecutor does exist (RunTask builds one inside the coder
+	// Job pod so a Job cannot recurse into another Job --
+	// cmd/foreman-agent/main.go:454) and it would answer false for every
+	// Agent, but it never meets a watcher, because RunTask constructs none
+	// and the only watcher gets the submitter-wired executor. If they ever
+	// diverge the cost is that this guard stops firing and the pointless
+	// Lists come back: API load, not incorrect dispatch.
 	_, canSupervise := w.Executor.(SupervisingExecutor)
 	if !w.hasCapacityFor(false) && (!canSupervise || !w.hasCapacityFor(true)) {
 		return nil
@@ -345,10 +385,12 @@ func (w *AgenticTaskWatcher) pollOnce(ctx context.Context, namespace string) err
 
 	// A task's execution mode is a property of its Agent, and the candidates
 	// queued on one node nearly always share a single Agent, so memoize the
-	// answer for this pass: w.supervises is an uncached GET, and without this
-	// a node with several queued candidates pays one per candidate per tick
-	// even for candidates it cannot claim.
-	modes := make(map[string]bool, 2)
+	// read for this pass. The claimed candidate is resolved once, but the
+	// ones ahead of it in the queue still have to be resolved to know which
+	// slot they want, and the agent's client is uncached: without this a node
+	// with several queued candidates pays one GET per candidate per tick,
+	// including for candidates it has no slot for.
+	resolved := make(map[string]agentResolution, 2)
 
 	for _, t := range candidates {
 		// Capacity is checked per candidate because the two execution modes
@@ -358,12 +400,24 @@ func (w *AgenticTaskWatcher) pollOnce(ctx context.Context, namespace string) err
 		// only ever release, so a check here cannot be invalidated by the
 		// time launchExecutor reserves below.
 		modeKey := agentRefKey(t)
-		supervise, cached := modes[modeKey]
+		res, cached := resolved[modeKey]
 		if !cached {
-			supervise = w.supervises(ctx, t)
-			modes[modeKey] = supervise
+			res = w.resolveCandidateAgent(ctx, t)
+			resolved[modeKey] = res
 		}
-		if !w.hasCapacityFor(supervise) {
+		if res.err != nil {
+			// The read failed ambiguously, so which slot this task needs is
+			// unknown, and claiming on a guess is the bug this accounting
+			// exists to fix: guess in-process for a Job-mode task and the
+			// node holds its only slot for the Job's whole lifetime (#1559).
+			// Leave it Scheduled and retry next tick. A DELETED Agent is a
+			// different case -- resolveTaskAgent reports it as a nil Agent,
+			// so the task is still claimed and Execute gives it a verdict.
+			logf.FromContext(ctx).WithName("agentictask-watcher").
+				Error(res.err, "could not resolve candidate's Agent; retrying next poll", "task", t.Name)
+			continue
+		}
+		if !w.hasCapacityFor(res.supervise) {
 			continue
 		}
 		if err := w.claim(ctx, t); err != nil {
@@ -375,7 +429,7 @@ func (w *AgenticTaskWatcher) pollOnce(ctx context.Context, namespace string) err
 		}
 		// Took it. Launch the executor and return to the polling loop;
 		// the next poll re-checks capacity before claiming anything else.
-		w.launchExecutor(ctx, t, supervise)
+		w.launchExecutor(ctx, t, res.agent, res.supervise)
 		return nil
 	}
 	return nil
@@ -405,7 +459,16 @@ func (w *AgenticTaskWatcher) claim(ctx context.Context, t *foremanv1alpha1.Agent
 // slot: the single in-process one, or a Job-mode supervision budget slot.
 // The release is deferred inside the goroutine so it happens on every exit
 // path -- error, ctx cancellation, or panic.
-func (w *AgenticTaskWatcher) launchExecutor(ctx context.Context, t *foremanv1alpha1.AgenticTask, supervise bool) {
+//
+// agent is the Agent resolved for this task, and supervise was derived from
+// it; both come from the same read, so the executor cannot take a path the
+// accounting did not budget for.
+func (w *AgenticTaskWatcher) launchExecutor(
+	ctx context.Context,
+	t *foremanv1alpha1.AgenticTask,
+	agent *foremanv1alpha1.Agent,
+	supervise bool,
+) {
 	w.inflightMu.Lock()
 	if supervise {
 		w.supervised++
@@ -440,7 +503,7 @@ func (w *AgenticTaskWatcher) launchExecutor(ctx context.Context, t *foremanv1alp
 		// watchdog shares execCtx, so it exits when the run finishes.
 		go w.watchTaskLiveness(execCtx, cancel, t)
 
-		res, execErr := w.Executor.Execute(execCtx, t)
+		res, execErr := w.Executor.Execute(execCtx, t, agent)
 		if patchErr := w.patchTerminal(ctx, t, res, execErr); patchErr != nil {
 			log.Error(patchErr, "patching terminal status failed")
 		}
