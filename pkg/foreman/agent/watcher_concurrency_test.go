@@ -19,6 +19,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -41,14 +42,52 @@ type modeExecutor struct {
 	supervise bool
 	release   chan struct{}
 	execErr   error
+
+	stopOnce sync.Once
+	// wg joins the Execute calls the watcher launched. Without it a test
+	// body can return while an Execute goroutine is still running, and it
+	// then patches status and logs against a finished test.
+	wg sync.WaitGroup
+	// started takes one send per Execute entry, so waitStarted can prove
+	// every launched goroutine has reached Execute -- and so has already
+	// done its wg.Add -- before the cleanup Waits on the group.
+	started chan struct{}
 }
 
 func newModeExecutor(t *testing.T, supervise bool) *modeExecutor {
 	t.Helper()
-	e := &modeExecutor{supervise: supervise, release: make(chan struct{})}
-	// Unblock any still-running Execute goroutines when the test ends.
-	t.Cleanup(func() { close(e.release) })
+	e := &modeExecutor{
+		supervise: supervise,
+		release:   make(chan struct{}),
+		// Buffered so Execute never blocks on a test that does not read
+		// every send; deeper than any task count these tests use.
+		started: make(chan struct{}, 8),
+	}
+	// Unblock any still-running Execute goroutines when the test ends, then
+	// join them.
+	t.Cleanup(func() {
+		e.stop()
+		e.wg.Wait()
+	})
 	return e
+}
+
+// stop unblocks every in-flight Execute. Idempotent, so the cleanup can call
+// it whether or not a test already did.
+func (e *modeExecutor) stop() {
+	e.stopOnce.Do(func() { close(e.release) })
+}
+
+// waitStarted blocks until n Execute calls have entered.
+func (e *modeExecutor) waitStarted(t *testing.T, n int) {
+	t.Helper()
+	for i := range n {
+		select {
+		case <-e.started:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("only %d Execute call(s) started; want %d", i, n)
+		}
+	}
 }
 
 func (*modeExecutor) Kind() string { return "test-mode" }
@@ -56,6 +95,10 @@ func (*modeExecutor) Kind() string { return "test-mode" }
 func (e *modeExecutor) Execute(
 	ctx context.Context, task *foremanv1alpha1.AgenticTask,
 ) (*Result, error) {
+	e.wg.Add(1)
+	defer e.wg.Done()
+	e.started <- struct{}{}
+
 	if e.execErr != nil {
 		return nil, e.execErr
 	}
@@ -78,14 +121,38 @@ func (e *modeExecutor) SupervisesExternally(
 	return e.supervise
 }
 
-// waitSupervised polls w.supervised (under its mutex) until it equals want.
-func waitSupervised(w *AgenticTaskWatcher, want int, timeout time.Duration) bool {
+// pollUntilLeavesScheduled polls until the named task is claimed, or the
+// timeout expires. Retrying is deliberate: the slot a finished run held is
+// released after its terminal status patch, so the first poll after a failure
+// can legitimately still see it held.
+func pollUntilLeavesScheduled(
+	t *testing.T, w *AgenticTaskWatcher, name string, timeout time.Duration,
+) bool {
+	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for {
-		w.inflightMu.Lock()
-		got := w.supervised
-		w.inflightMu.Unlock()
-		if got == want {
+		if err := w.pollOnce(context.Background(), "default"); err != nil {
+			t.Fatalf("pollOnce: %v", err)
+		}
+		if getTask(t, w.Client, name).Status.Phase != foremanv1alpha1.AgenticTaskPhaseScheduled {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// waitPhase waits for the named task to reach phase.
+func waitPhase(
+	t *testing.T, w *AgenticTaskWatcher, name string,
+	phase foremanv1alpha1.AgenticTaskPhase, timeout time.Duration,
+) bool {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		if getTask(t, w.Client, name).Status.Phase == phase {
 			return true
 		}
 		if time.Now().After(deadline) {
@@ -133,10 +200,11 @@ func TestPollOnce_SlotAccountingByExecutionMode(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			first := scheduledTask("first", "node-1", foremanv1alpha1.AgenticTaskKindIssueFix, time.Hour)
 			second := scheduledTask("second", "node-1", foremanv1alpha1.AgenticTaskKindIssueFix, time.Minute)
+			exec := newModeExecutor(t, tc.supervise)
 			w := &AgenticTaskWatcher{
 				Client:   newRecoveryClient(t, first, second),
 				NodeName: "node-1",
-				Executor: newModeExecutor(t, tc.supervise),
+				Executor: exec,
 			}
 
 			for range 2 {
@@ -149,6 +217,9 @@ func TestPollOnce_SlotAccountingByExecutionMode(t *testing.T) {
 			if got != tc.wantRunning {
 				t.Fatalf("Running tasks: want %d got %d", tc.wantRunning, got)
 			}
+			// Every claimed task has an Execute goroutine; join them all
+			// before the test body returns.
+			exec.waitStarted(t, tc.wantRunning)
 		})
 	}
 }
@@ -165,10 +236,11 @@ func TestPollOnce_SupervisionBoundEnforced(t *testing.T) {
 			time.Duration(len(names)-i)*time.Hour,
 		))
 	}
+	exec := newModeExecutor(t, true)
 	w := &AgenticTaskWatcher{
 		Client:             newRecoveryClient(t, objs[0], objs[1], objs[2]),
 		NodeName:           "node-1",
-		Executor:           newModeExecutor(t, true),
+		Executor:           exec,
 		MaxSupervisedTasks: 2,
 	}
 
@@ -184,10 +256,13 @@ func TestPollOnce_SupervisionBoundEnforced(t *testing.T) {
 	if got := countPhase(t, w, foremanv1alpha1.AgenticTaskPhaseScheduled, names...); got != 1 {
 		t.Fatalf("Scheduled tasks: want 1 (held back by the bound) got %d", got)
 	}
+	exec.waitStarted(t, 2)
 }
 
 // TestLaunchExecutor_ReleasesSlotOnError: an executor that returns an error
 // must release whichever slot it took, or the node wedges after one failure.
+// The release is asserted through its observable consequence -- a follow-up
+// poll can claim another task -- rather than by reading the counters.
 func TestLaunchExecutor_ReleasesSlotOnError(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -203,26 +278,29 @@ func TestLaunchExecutor_ReleasesSlotOnError(t *testing.T) {
 			// ownership guard after the fake client's round-trip.
 			claimedAt := metav1.NewTime(time.Unix(time.Now().Unix(), 0))
 			task := claimedRunningTask("boom", "node-1", claimedAt)
+			next := scheduledTask("next", "node-1", foremanv1alpha1.AgenticTaskKindIssueFix, time.Minute)
 			exec := newModeExecutor(t, tc.supervise)
 			exec.execErr = errors.New("executor exploded")
 			w := &AgenticTaskWatcher{
-				Client:               newRecoveryClient(t, task),
+				Client:               newRecoveryClient(t, task, next),
 				NodeName:             "node-1",
 				TaskLivenessInterval: time.Hour, // no watchdog interference
 				Executor:             exec,
+				// One supervision slot, so a leaked one blocks the follow-up
+				// claim instead of hiding under the default of 4.
+				MaxSupervisedTasks: 1,
 			}
 
 			w.launchExecutor(context.Background(), task, tc.supervise)
 
-			if !waitSupervised(w, 0, 2*time.Second) {
-				t.Fatal("supervision slot leaked after executor error")
+			if !waitPhase(t, w, "boom", foremanv1alpha1.AgenticTaskPhaseFailed, 2*time.Second) {
+				t.Fatalf("task phase after executor error: want Failed got %s",
+					getTask(t, w.Client, "boom").Status.Phase)
 			}
-			if !waitInflight(w, false, 2*time.Second) {
-				t.Fatal("in-process slot leaked after executor error")
+			if !pollUntilLeavesScheduled(t, w, "next", 2*time.Second) {
+				t.Fatal("slot leaked after the executor error: no further task could be claimed")
 			}
-			if got := getTask(t, w.Client, "boom").Status.Phase; got != foremanv1alpha1.AgenticTaskPhaseFailed {
-				t.Fatalf("task phase after executor error: want Failed got %s", got)
-			}
+			exec.waitStarted(t, 2)
 		})
 	}
 }
@@ -271,7 +349,8 @@ func TestSupervisesExternally(t *testing.T) {
 }
 
 // stubCoderJobSubmitter satisfies CoderJobSubmitter for the wiring checks
-// above; it is never invoked.
+// above; it is never invoked. (executor_native_test.go has an equivalent
+// double, but it lives in package agent_test and cannot be reached from here.)
 type stubCoderJobSubmitter struct{}
 
 func (stubCoderJobSubmitter) Submit(context.Context, CoderJobRequest) (CoderJobResult, error) {
