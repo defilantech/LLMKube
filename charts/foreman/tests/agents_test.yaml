@@ -239,6 +239,43 @@ tests:
           path: spec.template.spec.containers[0].args
           content: --gate-cache-pvc=
 
+  # ---- Job-mode supervision bound (#1559) ----
+
+  - it: --max-supervised-tasks renders per pool when maxSupervisedTasks is set
+    template: agent-deployment.yaml
+    values:
+      - ./values-multi.yaml
+    documentSelector:
+      path: metadata.name
+      value: RELEASE-NAME-foreman-default-agent
+      matchMany: false
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --max-supervised-tasks=2
+
+  - it: --max-supervised-tasks is absent for a pool that leaves it unset
+    template: agent-deployment.yaml
+    values:
+      - ./values-multi.yaml
+    documentSelector:
+      path: metadata.name
+      value: RELEASE-NAME-foreman-llmkube-fork-agent
+      matchMany: false
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --max-supervised-tasks=
+
+  - it: --max-supervised-tasks is absent by default on the legacy agent block
+    template: agent-deployment.yaml
+    set:
+      agent.enabled: true
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --max-supervised-tasks=
+
   # ---- Accelerator flag (#1242) ----
 
   - it: --accelerator flag renders when agent.accelerator is set

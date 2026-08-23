@@ -110,8 +110,12 @@ type AgenticTaskWatcher struct {
 	// DefaultTaskLivenessInterval.
 	TaskLivenessInterval time.Duration
 
-	// MaxSupervisedTasks bounds concurrent Job-mode supervisions. Zero
-	// defaults to DefaultMaxSupervisedTasks. This is a per-NODE bound on
+	// MaxSupervisedTasks bounds concurrent Job-mode supervisions. Zero (or
+	// negative) means UNSET and takes DefaultMaxSupervisedTasks, the same
+	// zero-value-means-default convention as Interval and
+	// TaskLivenessInterval above; 0 is not "supervise nothing", which would
+	// wedge every Job-mode task on the node. Set it to 1 to serialize
+	// Job-mode work the way it behaved before #1559. This is a per-NODE bound on
 	// outstanding coder Jobs; Agent.spec.maxConcurrentTasks is a per-Agent
 	// bound the controller enforces before a task is ever Scheduled, so the
 	// two compose (whichever is tighter wins) rather than overlap.
@@ -128,7 +132,8 @@ type AgenticTaskWatcher struct {
 	supervised int
 }
 
-// maxSupervised is MaxSupervisedTasks with its default applied.
+// maxSupervised is MaxSupervisedTasks with its default applied. See the
+// field's doc for why <= 0 means "unset" rather than "none".
 func (w *AgenticTaskWatcher) maxSupervised() int {
 	if w.MaxSupervisedTasks <= 0 {
 		return DefaultMaxSupervisedTasks

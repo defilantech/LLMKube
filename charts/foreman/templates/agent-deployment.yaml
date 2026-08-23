@@ -74,6 +74,9 @@ spec:
             {{- if $agent.taskNamespace }}
             - --task-namespace={{ $agent.taskNamespace }}
             {{- end }}
+            {{- if $agent.maxSupervisedTasks }}
+            - --max-supervised-tasks={{ $agent.maxSupervisedTasks }}
+            {{- end }}
             {{- /* Always set: the binary default is "foreman-system", a namespace the chart never creates, so gate Jobs would land where the cache PVC does not exist. */}}
             - --foreman-namespace={{ $agent.foremanNamespace | default (include "foreman.namespace" $) }}
             {{- /* Thread the per-agent gate-cache PVC (foreman.gateCache.pvcName) so the gate Job mounts the claim the chart actually creates. gateCache.enabled=false leaves it empty, preserving the no-volume-mount behavior (#1538). */}}

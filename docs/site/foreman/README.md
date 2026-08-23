@@ -98,6 +98,11 @@ Agent and enforced by the controller before a task is ever `Scheduled` — use
 that one to protect an inference backend shared with other consumers. When both
 are set, whichever is tighter wins.
 
+Set the per-node bound through the chart with `agent.maxSupervisedTasks` (or
+`agents.<pool>.maxSupervisedTasks` for one pool). `0` means unset and keeps the
+default of 4 — to serialize Job-mode work the way it behaved before this split,
+pass `1`.
+
 ## Pipeline shape (v0.1)
 
 v0.1 ships the linear pipeline:

@@ -199,7 +199,9 @@ func main() {
 		"Namespace the AgenticTask watcher reads from.")
 	flag.IntVar(&maxSupervised, "max-supervised-tasks", foremanagent.DefaultMaxSupervisedTasks,
 		"How many Job-mode tasks this node supervises concurrently. Their work runs "+
-			"in a coder Job pod, so they do not hold the single in-process slot.")
+			"in a coder Job pod, so they do not hold the single in-process slot. "+
+			"0 (or less) means unset and keeps the default; pass 1 to serialize "+
+			"Job-mode work.")
 	flag.DurationVar(&stubSleep, "stub-sleep", foremanagent.DefaultStubSleep,
 		"How long the StubExecutor blocks per task. Only used when --executor=stub (the only v0.1 option).")
 	flag.IntVar(&maxCtx, "max-context-tokens", 0,

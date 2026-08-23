@@ -14,6 +14,7 @@ agents:
     replicaCount: 3
     roles: [worker, coder, verifier]
     gitRemoteURL: ""
+    maxSupervisedTasks: 2
   llmkube-fork:
     enabled: true
     replicaCount: 1

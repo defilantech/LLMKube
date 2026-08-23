@@ -330,6 +330,17 @@ agent:
   # tenants that should not see each other's tasks.
   taskNamespace: ""
 
+  # --max-supervised-tasks flag. How many Job-mode AgenticTasks this node
+  # supervises at once. A Job-mode task's loop runs in an ephemeral coder
+  # Job pod, so the agent only submits it, polls Job.Status and tails logs;
+  # those tasks are therefore accounted separately from the single
+  # in-process slot (#1559). Each one is still an outstanding coder Job
+  # competing for pods, cache volumes and inference capacity, so lower it
+  # on a cluster where those are tight. 1 serializes Job-mode work the way
+  # it behaved before #1559. Unset (0) leaves the agent's built-in default
+  # of 4 in place.
+  maxSupervisedTasks: 0
+
   # --foreman-namespace flag. Namespace the agent submits gate Jobs
   # into. Defaults to the release namespace, which is where the chart
   # creates the foreman-gate-cache PVC. Override only when the PVC
