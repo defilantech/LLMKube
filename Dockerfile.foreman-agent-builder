@@ -25,7 +25,7 @@
 # container's command and break that bare-name invocation.
 
 # Build stage: full Go toolchain on a small base.
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS builder
 
 ARG TARGETOS
 ARG TARGETARCH
@@ -47,7 +47,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
 
 # Runtime stage: golang:1.26 -- the same image the gate Job runs on, so it
 # already has go, make, and git for the coder's `make fmt vet lint test`.
-FROM golang:1.26
+FROM golang:1.27
 
 # TARGETARCH is supplied by buildx; declare it so the helm fetch below can
 # pick the right release asset for the runtime platform.
