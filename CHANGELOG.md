@@ -5,6 +5,35 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.20](https://github.com/defilantech/LLMKube/compare/v0.9.19...v0.9.20) (2026-08-24)
+
+
+### Features
+
+* **foreman:** opt-in archival of task audit records and transcripts ([#1655](https://github.com/defilantech/LLMKube/issues/1655)) ([c577133](https://github.com/defilantech/LLMKube/commit/c577133c7f1b5d49ddf4d1f7c936dfd5c72595f0))
+* **foreman:** report the Kubernetes node on FleetNode.status, not as identity ([#1649](https://github.com/defilantech/LLMKube/issues/1649)) ([7563e8a](https://github.com/defilantech/LLMKube/commit/7563e8a8165c5997a854a21ee31345459b66ceeb))
+
+
+### Bug Fixes
+
+* **controller:** carry Model tolerations onto the prefetch Job ([#1622](https://github.com/defilantech/LLMKube/issues/1622)) ([d0db838](https://github.com/defilantech/LLMKube/commit/d0db838a6ca442a1adf70b64cc023eb18eb86e48))
+* **controller:** clear the controller's own schedulingStatus once a service is Ready ([#1633](https://github.com/defilantech/LLMKube/issues/1633)) ([315f34d](https://github.com/defilantech/LLMKube/commit/315f34db6387da888bbcc4d65eabf75b35e44376))
+* Empty payload.repo silently defeats the upstream-base fetch: task branches cut from a stale fork HEAD ([#1625](https://github.com/defilantech/LLMKube/issues/1625)) ([#1626](https://github.com/defilantech/LLMKube/issues/1626)) ([27a015a](https://github.com/defilantech/LLMKube/commit/27a015a279863392bbac33dc06e46fa4a1087d39))
+* **foreman:** carry the in-pod result extras on every Job-mode branch ([#1657](https://github.com/defilantech/LLMKube/issues/1657)) ([d1ce51c](https://github.com/defilantech/LLMKube/commit/d1ce51c589ab0b3f45d273df29b98483ea1db675))
+* **foreman:** free the agent's in-process slot while a Job-mode task runs ([#1635](https://github.com/defilantech/LLMKube/issues/1635)) ([0d64fbb](https://github.com/defilantech/LLMKube/commit/0d64fbb5b823ec9c530cdb010a871d4c76707188))
+* **foreman:** gate the make-invoked CI checks, and pin them against the workflows ([#1642](https://github.com/defilantech/LLMKube/issues/1642)) ([4e7ab7b](https://github.com/defilantech/LLMKube/commit/4e7ab7b74313c6bf9064d8a0d939a8338b0c8f3f))
+* **foreman:** make the CustomResourceState config produce usable metrics ([#1650](https://github.com/defilantech/LLMKube/issues/1650)) ([1620443](https://github.com/defilantech/LLMKube/commit/1620443af3560926801718b33ddf3592dac1e690))
+
+
+### Documentation
+
+* add ROCm host-retune runbook for &gt;64GB on Strix Halo ([#1387](https://github.com/defilantech/LLMKube/issues/1387)) ([fff5e59](https://github.com/defilantech/LLMKube/commit/fff5e59cf1735aeaa0b4d932505fdaa23a07bfd5))
+* fix guide instructions that fail against the shipped API ([#1629](https://github.com/defilantech/LLMKube/issues/1629)) ([fba0bf4](https://github.com/defilantech/LLMKube/commit/fba0bf4d8cdeab13d521f0fa32da8272a2c4a0d1))
+* **proposals:** foreman run, an unattended orchestration loop ([#1652](https://github.com/defilantech/LLMKube/issues/1652)) ([df57f49](https://github.com/defilantech/LLMKube/commit/df57f490c1f4aa01ccb5dbf6e8dbf238aaee3a18))
+* reframe the multi-GPU guide from an Issue [#2](https://github.com/defilantech/LLMKube/issues/2) validation plan into a deployment guide ([#1631](https://github.com/defilantech/LLMKube/issues/1631)) ([907ac8d](https://github.com/defilantech/LLMKube/commit/907ac8d8ee5bef229562ec5340ecdcb9e0576f0d))
+* **runbook:** correct the metal-agent memory-pressure runbook against pkg/agent ([#1630](https://github.com/defilantech/LLMKube/issues/1630)) ([f665674](https://github.com/defilantech/LLMKube/commit/f6656741234aa605d3f891598663df142a815171))
+* serving one model across two DGX Sparks via llama.cpp RPC ([#1620](https://github.com/defilantech/LLMKube/issues/1620)) ([7eaf04b](https://github.com/defilantech/LLMKube/commit/7eaf04b46b2aa5ea4f7939f2751df412128be86b))
+
 ## [0.9.19](https://github.com/defilantech/LLMKube/compare/v0.9.18...v0.9.19) (2026-08-20)
 
 
