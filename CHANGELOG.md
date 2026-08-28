@@ -5,6 +5,38 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.21](https://github.com/defilantech/LLMKube/compare/v0.9.20...v0.9.21) (2026-08-28)
+
+
+### Features
+
+* **chart:** expose foreman-agent rollout strategy and grace period per pool ([#1647](https://github.com/defilantech/LLMKube/issues/1647)) ([f26150c](https://github.com/defilantech/LLMKube/commit/f26150cd8a4baf8102f86df04775c92e44196fac))
+* **cli:** llmkube foreman run, the unattended orchestration loop ([#1653](https://github.com/defilantech/LLMKube/issues/1653)) ([c4b0a64](https://github.com/defilantech/LLMKube/commit/c4b0a648ab7b6c5bee6804f35c7bc75267198c01))
+* **foreman:** add a rollup bucket for cross-stage contradictions ([#1690](https://github.com/defilantech/LLMKube/issues/1690)) ([cf9f794](https://github.com/defilantech/LLMKube/commit/cf9f7942ae051aa2e66620495c448e32f6cd540a))
+* **foreman:** block dependents of a contradicting dependency ([#1695](https://github.com/defilantech/LLMKube/issues/1695)) ([9be57c2](https://github.com/defilantech/LLMKube/commit/9be57c2ff55a6f16e30d43f840c7c41c36925d7f))
+* **foreman:** record claim and facts alongside cross-stage contradictions ([#1682](https://github.com/defilantech/LLMKube/issues/1682)) ([0a35fc4](https://github.com/defilantech/LLMKube/commit/0a35fc4996e8b36f1e21c3709dc339e369319fbb))
+* **foreman:** require per-clause coverage of an issue's stated behaviour ([#1671](https://github.com/defilantech/LLMKube/issues/1671)) ([7c6368e](https://github.com/defilantech/LLMKube/commit/7c6368e3037f2e220db670412d686833e4e503d8))
+* **foreman:** wire the coder stage into cross-stage contradictions (Rule 1) ([#1680](https://github.com/defilantech/LLMKube/issues/1680)) ([c166662](https://github.com/defilantech/LLMKube/commit/c166662def70f3137e66214da83d51760d4a7682))
+* **foreman:** wire the cross-stage contradiction detector into the reviewer path ([#1675](https://github.com/defilantech/LLMKube/issues/1675)) ([a73f6fa](https://github.com/defilantech/LLMKube/commit/a73f6fabd918a582ca0d3c7c5a18f82032ef3c0c))
+* **foreman:** wire the gate stage into cross-stage contradictions (Rule 4) ([#1681](https://github.com/defilantech/LLMKube/issues/1681)) ([178ad61](https://github.com/defilantech/LLMKube/commit/178ad616dfe6a3627481db19d4205252b9a5877e))
+* **helm:** support cert-manager for the webhook serving cert ([#1646](https://github.com/defilantech/LLMKube/issues/1646)) ([fe77c9c](https://github.com/defilantech/LLMKube/commit/fe77c9c47fc71898c54a459039bff9c038460060))
+
+
+### Bug Fixes
+
+* **controller:** populate status.acceleration by matching the current llama.cpp log format and reading the log head ([#1677](https://github.com/defilantech/LLMKube/issues/1677)) ([3825420](https://github.com/defilantech/LLMKube/commit/38254203c80fd8dc630af6c10b936261e5d72bf8))
+* **foreman-agent:** keep claiming in pollOnce until a slot is full ([#1665](https://github.com/defilantech/LLMKube/issues/1665)) ([691f464](https://github.com/defilantech/LLMKube/commit/691f46472afdae102bed00d824aad12d1395ec26))
+* **foreman:** do not open a fix iteration for an empty demoted NO-GO ([#1641](https://github.com/defilantech/LLMKube/issues/1641)) ([4ac7e6b](https://github.com/defilantech/LLMKube/commit/4ac7e6bee39349d493496c7f599228cf104df9c6))
+* **foreman:** fill the transcript budget when truncating ([#1673](https://github.com/defilantech/LLMKube/issues/1673)) ([76ce407](https://github.com/defilantech/LLMKube/commit/76ce40756e5cf275c884be531a2fd66e16cb366b))
+* **foreman:** make the ALREADY-RESOLVED cascade-skip transitive ([#1689](https://github.com/defilantech/LLMKube/issues/1689)) ([6f9a10c](https://github.com/defilantech/LLMKube/commit/6f9a10c2f930269330864af4e8e770f896f48efe))
+* **foreman:** make verdictClaimed first-writer-wins so demotion provenance survives a second rail ([#1683](https://github.com/defilantech/LLMKube/issues/1683)) ([0e01114](https://github.com/defilantech/LLMKube/commit/0e011142b8e7eed0403110738eb570dc47fa5294))
+* **foreman:** round-robin Job-mode placement across eligible nodes ([#1669](https://github.com/defilantech/LLMKube/issues/1669)) ([e7a6b73](https://github.com/defilantech/LLMKube/commit/e7a6b7375ed173e28113d2116949467648f89d83))
+* **foreman:** wire the deleted-reference rail into the coder GO path ([#1666](https://github.com/defilantech/LLMKube/issues/1666)) ([fe8057a](https://github.com/defilantech/LLMKube/commit/fe8057adb0cd168af2b304bedfe0b9e0673c7b57))
+* **foreman:** wire the pre-flight staleness check into coder dispatch ([#1670](https://github.com/defilantech/LLMKube/issues/1670)) ([436a918](https://github.com/defilantech/LLMKube/commit/436a918b1d98aa077b7fedf704c9c183b6602718))
+* **foreman:** wire the reviewer diff gate so an ungrounded GO is recorded ([#1668](https://github.com/defilantech/LLMKube/issues/1668)) ([a9b048c](https://github.com/defilantech/LLMKube/commit/a9b048c7daf7b7ed15dd353cb18cce458f9e5606))
+* **prefetch:** honour InferenceService modelCache.claimName ([#1691](https://github.com/defilantech/LLMKube/issues/1691)) ([0201e29](https://github.com/defilantech/LLMKube/commit/0201e292f5828b07e45ef80dca3057effc7de583))
+* **test:** make the archival failure-injection tests uid-independent ([#1658](https://github.com/defilantech/LLMKube/issues/1658)) ([2acaa15](https://github.com/defilantech/LLMKube/commit/2acaa153454f2d92c24d606c71a5980b6e55f59f))
+
 ## [0.9.20](https://github.com/defilantech/LLMKube/compare/v0.9.19...v0.9.20) (2026-08-24)
 
 
