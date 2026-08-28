@@ -5,6 +5,18 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.22](https://github.com/defilantech/LLMKube/compare/v0.9.21...v0.9.22) (2026-08-28)
+
+
+### Features
+
+* **chart:** alert when an engine is up but not serving ([#1624](https://github.com/defilantech/LLMKube/issues/1624)) ([35142e5](https://github.com/defilantech/LLMKube/commit/35142e5367a57a47a5fdd577c3484699dd1411d4))
+
+
+### Bug Fixes
+
+* **docker:** upgrade base packages so the foreman-agent image passes Trivy ([#1696](https://github.com/defilantech/LLMKube/issues/1696)) ([7a0dba5](https://github.com/defilantech/LLMKube/commit/7a0dba562689a03be6f335b5057c03387ca19b6f))
+
 ## [0.9.21](https://github.com/defilantech/LLMKube/compare/v0.9.20...v0.9.21) (2026-08-28)
 
 
