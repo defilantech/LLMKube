@@ -142,7 +142,7 @@ The following table lists the configurable parameters of the LLMKube chart and t
 | `prometheus.serviceMonitor.interval` | Scrape interval | `30s` |
 | `prometheus.serviceMonitor.namespace` | ServiceMonitor namespace (defaults to release namespace) | `""` |
 | `prometheus.serviceMonitor.additionalLabels` | Additional labels for ServiceMonitor | See values.yaml |
-| `prometheus.prometheusRule.enabled` | Enable PrometheusRule for alerts | `false` |
+| `prometheus.prometheusRule.enabled` | Enable PrometheusRule for alerts. Also required by the queue-wait panels on the vLLM and SGLang dashboards, which read the `llmkube:inference:queue_time_seconds:p95_5m` recording rule; without it those panels render blank. | `false` |
 | `prometheus.prometheusRule.namespace` | PrometheusRule namespace | `monitoring` |
 | `prometheus.prometheusRule.rules.gpu.enabled` | Enable GPU alerts | `true` |
 | `prometheus.prometheusRule.rules.gpu.highUtilizationThreshold` | GPU high utilization threshold (%) | `90` |

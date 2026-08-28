@@ -47,12 +47,19 @@ var externalPrefixes = []string{
 	// Pyrra generates these from the vLLM histogram; the runtime's own vllm:
 	// metrics are fixture-verified like every other runtime.
 	"vllm:e2e_request_latency_seconds:",
-	"up",           // Prometheus synthesizes this per scrape target; Pyrra's up:sum5m too
+	"up:",          // Pyrra's up:sum5m and friends; bare "up" is in externalExact
 	"DCGM_FI_DEV_", // NVIDIA dcgm-exporter
 	"amdgpu_",      // amdgpu-sysfs exporter
 	"drm_",         // drm-exporter
 	"node_",        // node-exporter
 }
+
+// externalExact are whole metric names owned outside this repo. Matched by
+// equality, NOT prefix: "up" is synthesized by Prometheus per scrape target,
+// but as a prefix it would also allowlist uptime_*, upstream_* and anything
+// else starting with those two letters, which is exactly the typo class this
+// guard exists to catch.
+var externalExact = []string{"up"}
 
 // promqlWords are the identifiers PromQL allows outside a call: operators and
 // modifiers. Function names need no listing, a call is stripped by its "(".
@@ -486,6 +493,11 @@ func emitted(name string, known map[string]bool) bool {
 	// Dashboards select histogram series; the Desc carries only the base name.
 	for _, suffix := range []string{"_bucket", "_sum", "_count"} {
 		if base := strings.TrimSuffix(name, suffix); base != name && known[base] {
+			return true
+		}
+	}
+	for _, exact := range externalExact {
+		if name == exact {
 			return true
 		}
 	}

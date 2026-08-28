@@ -321,6 +321,13 @@ grafana:
     # deploy: sglang-dashboard and vllm-dashboard need an InferenceService on
     # that runtime, amd-gpu-observability needs AMD GPUs, llmkube-slo needs
     # pyrra.enabled.
+    #
+    # The queue-wait panels on sglang-dashboard and vllm-dashboard additionally
+    # need prometheus.prometheusRule.enabled: they read the
+    # llmkube:inference:queue_time_seconds:p95_5m recording rule rather than
+    # deriving a quantile from raw buckets. That flag defaults false and is
+    # independent of this one, so those two panels render blank on an install
+    # that enables dashboards alone.
     only: []
     # Additional labels for the ConfigMap. grafana_dashboard is the key the
     # kube-prometheus-stack Grafana sidecar watches for.

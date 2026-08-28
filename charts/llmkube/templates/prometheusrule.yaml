@@ -86,16 +86,32 @@ spec:
   - name: llmkube-serving
     interval: 30s
     rules:
-    # TGI, PersonaPlex, Generic and LlamaCppRouter export no queue metrics, so
-    # they're left out. avg_over_time and a "<= 1" ceiling (not "== 0") catch
-    # a partial stall and survive a single scrape ticking above it.
+    # TGI, PersonaPlex and Generic export no queue metrics under these
+    # selectors, so they're left out. LlamaCppRouter is NOT excluded: it runs
+    # llama-server and runtime_llamacpp_router.go appends --metrics, so router
+    # pods emit llamacpp:* and are covered by the third arm.
+    #
+    # avg_over_time and a "<= 1" ceiling (not "== 0") catch a partial stall and
+    # survive a single scrape ticking above it.
+    #
+    # The llama.cpp arm gates on THROUGHPUT rather than a running-count ceiling,
+    # because that ceiling is meaningless there. executor.go omits --parallel
+    # when ParallelSlots <= 1 (one slot is llama-server's own default), so
+    # requests_processing is only ever 0 or 1 and the "<= 1" test is permanently
+    # true: a healthy single-slot engine at processing=1, deferred=3 would page
+    # at severity critical. A ceiling is also unstable around its own boundary --
+    # with running oscillating 0/1/2 the 10m average lands either side of 1 on
+    # consecutive evaluations, so `for: 10m` is never satisfied and a REAL stall
+    # hovering there never fires either. Zero predicted tokens while a queue
+    # persists is the honest definition of "not admitting work", and it holds
+    # for one slot and for many.
     - alert: InferenceAdmissionStalled
       expr: |
         (avg_over_time(vllm:num_requests_waiting[10m]) > 0 and avg_over_time(vllm:num_requests_running[10m]) <= 1)
         or
         (avg_over_time(sglang:num_queue_reqs[10m]) > 0 and avg_over_time(sglang:num_running_reqs[10m]) <= 1)
         or
-        (avg_over_time(llamacpp:requests_deferred[10m]) > 0 and avg_over_time(llamacpp:requests_processing[10m]) <= 1)
+        (avg_over_time(llamacpp:requests_deferred[10m]) > 0 and rate(llamacpp:tokens_predicted_total[10m]) == 0)
       for: 10m
       labels:
         severity: critical
@@ -119,11 +135,19 @@ spec:
     # Reuses the per-pod p95 record below instead of re-deriving the ratio, so
     # a third runtime is a one-line record edit. count>5 guards against a
     # single slow request after a cold start reading as a sustained breach.
+    # `and on (...)` below is load-bearing, not stylistic. The p95 record stamps
+    # latency_kind="queue_wait" via its labels: block, while the min-sample guard
+    # is a bare sum by (service, namespace, runtime, pod) and carries no such
+    # label. A plain `and` matches on the FULL label set, so the two sides never
+    # join and the alert cannot fire on any input. Naming the join keys keeps it
+    # alive. KVOffloadLoadSlow uses the bare form safely because both of its
+    # sides are sum by (...) with identical labels, which is what makes this
+    # invisible on a read-through.
     - alert: InferenceQueueTimeHigh
       expr: |
         (
           llmkube:inference:queue_time_seconds:p95_5m
-          and (
+          and on (service, namespace, runtime, pod) (
             sum by (service, namespace, runtime, pod) (increase(vllm:request_queue_time_seconds_count[15m]))
             or
             sum by (service, namespace, runtime, pod) (increase(sglang:queue_time_seconds_count[15m]))
