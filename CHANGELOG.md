@@ -5,6 +5,26 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.23](https://github.com/defilantech/LLMKube/compare/v0.9.22...v0.9.23) (2026-08-28)
+
+
+### Features
+
+* **foreman:** per-hunk mutation coverage for envtest packages ([#1705](https://github.com/defilantech/LLMKube/issues/1705)) ([45a5bce](https://github.com/defilantech/LLMKube/commit/45a5bce2e489ab60bda618b0a594a07b84d19892))
+* **foreman:** publish Job-mode supervision capacity to FleetNode status ([#1700](https://github.com/defilantech/LLMKube/issues/1700)) ([c8078bb](https://github.com/defilantech/LLMKube/commit/c8078bb8bccbc0931b299ff0d2675b34a7d8c81b))
+* **githubpr:** open Foreman PRs as drafts and keep the reviewer's body ([#1703](https://github.com/defilantech/LLMKube/issues/1703)) ([4cb10b9](https://github.com/defilantech/LLMKube/commit/4cb10b9e66c7c5074eae6a2d53141bc293e29e9d))
+
+
+### Bug Fixes
+
+* **foreman:** bound and surface a missing-dependency wait ([#1698](https://github.com/defilantech/LLMKube/issues/1698)) ([badfe7b](https://github.com/defilantech/LLMKube/commit/badfe7bed4582df365c6707254b0fb2d66bf1407))
+* **foreman:** refresh the PR body after a fix cycle ([#1704](https://github.com/defilantech/LLMKube/issues/1704)) ([a6bf02a](https://github.com/defilantech/LLMKube/commit/a6bf02add610f872f1fd01cd2006419751cd9e9a))
+
+
+### Documentation
+
+* **spark:** correct the containerd config path that bricks a node ([#1702](https://github.com/defilantech/LLMKube/issues/1702)) ([3be2bbb](https://github.com/defilantech/LLMKube/commit/3be2bbb7799b1d3f982ae373df8ee94b52f45d2f))
+
 ## [0.9.22](https://github.com/defilantech/LLMKube/compare/v0.9.21...v0.9.22) (2026-08-28)
 
 
