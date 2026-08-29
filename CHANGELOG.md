@@ -5,6 +5,13 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.24](https://github.com/defilantech/LLMKube/compare/v0.9.23...v0.9.24) (2026-08-29)
+
+
+### Features
+
+* **foreman:** make draft PR creation configurable per Agent ([#1707](https://github.com/defilantech/LLMKube/issues/1707)) ([b8c040c](https://github.com/defilantech/LLMKube/commit/b8c040c55f971663f7850bf38b30b05efa5b3131))
+
 ## [0.9.23](https://github.com/defilantech/LLMKube/compare/v0.9.22...v0.9.23) (2026-08-28)
 
 
