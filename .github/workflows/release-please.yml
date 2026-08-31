@@ -147,7 +147,7 @@ jobs:
 
       - name: Generate SBOM (controller)
         if: ${{ github.event_name == 'push' }}
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610  # v0
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26  # v0.24.2
         with:
           image: ghcr.io/defilantech/llmkube-controller@${{ steps.digests.outputs.controller }}
           format: spdx-json
@@ -172,7 +172,7 @@ jobs:
 
       - name: Generate SBOM (foreman-operator)
         if: ${{ github.event_name == 'push' }}
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610  # v0
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26  # v0.24.2
         with:
           image: ghcr.io/defilantech/llmkube-foreman-operator@${{ steps.digests.outputs['foreman-operator'] }}
           format: spdx-json
@@ -197,7 +197,7 @@ jobs:
 
       - name: Generate SBOM (foreman-agent)
         if: ${{ github.event_name == 'push' }}
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610  # v0
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26  # v0.24.2
         with:
           image: ghcr.io/defilantech/llmkube-foreman-agent@${{ steps.digests.outputs['foreman-agent'] }}
           format: spdx-json
@@ -222,7 +222,7 @@ jobs:
 
       - name: Generate SBOM (router-proxy)
         if: ${{ github.event_name == 'push' }}
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610  # v0
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26  # v0.24.2
         with:
           image: ghcr.io/defilantech/llmkube-router-proxy@${{ steps.digests.outputs['router-proxy'] }}
           format: spdx-json
