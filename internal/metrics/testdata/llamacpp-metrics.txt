@@ -3,9 +3,14 @@ llamacpp:n_decode_total
 llamacpp:n_tokens_max
 llamacpp:predicted_tokens_seconds
 llamacpp:prompt_seconds_total
+llamacpp:prompt_tokens_cached_total
 llamacpp:prompt_tokens_seconds
 llamacpp:prompt_tokens_total
 llamacpp:requests_deferred
 llamacpp:requests_processing
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total
+llamacpp:spec_decode_num_accepted_tokens_total
+llamacpp:spec_decode_num_draft_tokens_total
+llamacpp:spec_decode_num_drafts_total
 llamacpp:tokens_predicted_seconds_total
 llamacpp:tokens_predicted_total

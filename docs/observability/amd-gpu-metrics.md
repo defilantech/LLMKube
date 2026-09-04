@@ -51,7 +51,9 @@ versions of the same readings.
 <!-- metrics-contract:begin -->
 SLO metrics come from llama.cpp `/metrics` (`--metrics`), not this exporter:
 `llamacpp:predicted_tokens_seconds`, `llamacpp:prompt_tokens_seconds`,
-`llamacpp:requests_processing`. Backend-agnostic and already emitted.
+`llamacpp:requests_processing`, `llamacpp:requests_deferred`. Backend-agnostic
+and already emitted. Pinned in `llamacpp-metrics.md`; scraped by the chart's
+`inference-podmonitor.yaml`.
 <!-- metrics-contract:end -->
 
 ## Known gaps (deliberate)
