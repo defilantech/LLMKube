@@ -144,7 +144,13 @@ After code changes:
 ## Out of scope
 
 - Downloading HuggingFace weights into the cache PVC (that's option 2 from the issue; not needed for the vLLM workflow and adds significant complexity)
-- Auth for HF_TOKEN in the Model controller (runtime handles this)
+- ~~Auth for HF_TOKEN in the Model controller (runtime handles this)~~ **Shipped in #1750.**
+  The operator's own downloads now send a bearer token for `hf://` and
+  `huggingface.co` sources, read from `HF_TOKEN` in `spec.sourceSecretRef`. The
+  original reasoning held only for the runtime-resolved flow (a bare repo ID
+  with `skipModelInit: true`), which left every GGUF Model, every `spec.files`
+  staging and the prefetch Job unable to reach a gated repository at all. See
+  the gated-repositories section of the model cache guide.
 - Format validation against HF model type (leave to the runtime)
 - Supporting HF revisions/branches (user can put `owner/repo@revision` syntax in source if HF supports it via vLLM; don't special-case here)
 

@@ -505,7 +505,7 @@ func TestDownloadFile_FailedDownloadLeavesNoFile(t *testing.T) {
 	}
 	localPath := filepath.Join(modelDir, "model.gguf")
 
-	err := executor.downloadFile(t.Context(), srv.URL+"/model.gguf", localPath)
+	err := executor.downloadFile(t.Context(), srv.URL+"/model.gguf", localPath, "")
 	if err == nil {
 		t.Fatal("downloadFile should return error for 401 response")
 	}
@@ -580,7 +580,7 @@ func TestDownloadFile_TruncatedDownloadFails(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	err := executor.downloadFile(t.Context(), srv.URL+"/model.gguf", localPath)
+	err := executor.downloadFile(t.Context(), srv.URL+"/model.gguf", localPath, "")
 	if err == nil {
 		t.Fatal("downloadFile should return error for truncated download")
 	}
@@ -609,7 +609,7 @@ func TestDownloadFile_SuccessRenamesTempFile(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	err := executor.downloadFile(t.Context(), srv.URL+"/model.gguf", localPath)
+	err := executor.downloadFile(t.Context(), srv.URL+"/model.gguf", localPath, "")
 	if err != nil {
 		t.Fatalf("downloadFile should succeed: %v", err)
 	}
@@ -648,7 +648,7 @@ func TestDownloadFile_NoContentLength(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	err := executor.downloadFile(t.Context(), srv.URL+"/model.gguf", localPath)
+	err := executor.downloadFile(t.Context(), srv.URL+"/model.gguf", localPath, "")
 	if err != nil {
 		t.Fatalf("downloadFile should succeed without Content-Length: %v", err)
 	}
@@ -682,7 +682,7 @@ func TestDownloadFile_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel() // Cancel immediately.
 
-	err := executor.downloadFile(ctx, srv.URL+"/model.gguf", localPath)
+	err := executor.downloadFile(ctx, srv.URL+"/model.gguf", localPath, "")
 	if err == nil {
 		t.Fatal("downloadFile should return error when context is cancelled")
 	}

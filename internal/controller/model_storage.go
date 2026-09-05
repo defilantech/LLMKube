@@ -287,12 +287,31 @@ func addCACertVolume(volumes *[]corev1.Volume, mounts *[]corev1.VolumeMount, cmd
 	*cmd = caPrelude + *cmd
 }
 
+// hfAuthFn defines the shell helper every Hugging Face transfer goes through
+// when the Model's source is on huggingface.co (#1750). It adds a bearer token
+// from $HF_TOKEN, which reaches the container through the same
+// spec.sourceSecretRef envFrom that already carries the AWS_* keys, and falls
+// back to a plain curl when the key is absent so ungated repos keep working
+// with no Secret at all.
+//
+// A function rather than an interpolated flag because the header value contains
+// a space: `${HF_TOKEN:+-H "Authorization: Bearer $HF_TOKEN"}` word-splits into
+// four arguments and sends a malformed header, and quoting it sends one empty
+// argument when the token is unset.
+//
+// The caller decides whether this is used at all, gating on isHFAuthSource, so
+// the token cannot leak to another host. Redirects are safe to follow with -L:
+// curl drops a caller-supplied Authorization header when a redirect crosses to
+// a different host, which is exactly what the LFS handoff to the CDN needs, so
+// --location-trusted must NOT be added here.
+const hfAuthFn = `hf_curl() { if [ -n "${HF_TOKEN:-}" ]; then curl -H "Authorization: Bearer ${HF_TOKEN}" "$@"; else curl "$@"; fi; }` + " && "
+
 // All transfers write to "$MODEL_PATH.tmp" and mv onto "$MODEL_PATH" on
 // success: the guard is a bare existence check, so publishing the file
 // non-atomically would let an interrupted transfer (OOM-kill, eviction,
 // node reboot) leave a truncated artifact that every subsequent restart
 // treats as cached. See remoteRevalidateScript for the same pattern.
-func buildModelInitCommand(isLocal, isS3, useCache bool, refreshPolicy string) string {
+func buildModelInitCommand(isLocal, isS3, useCache, isHFAuth bool, refreshPolicy string) string {
 	if useCache {
 		if isLocal {
 			return `mkdir -p "$CACHE_DIR" && rm -f "$MODEL_PATH.tmp" && if [ ! -f "$MODEL_PATH" ]; then echo 'Copying model from local source...'; cp /host-model/model.gguf "$MODEL_PATH.tmp" && mv "$MODEL_PATH.tmp" "$MODEL_PATH" && echo 'Model copied successfully'; else echo 'Model already cached, skipping copy'; fi`
@@ -301,9 +320,10 @@ func buildModelInitCommand(isLocal, isS3, useCache bool, refreshPolicy string) s
 			return `mkdir -p "$CACHE_DIR" && rm -f "$MODEL_PATH.tmp" && if [ ! -f "$MODEL_PATH" ]; then echo 'Downloading model from S3...'; curl --aws-sigv4 "aws:amz:${AWS_REGION}:s3" -u "${AWS_ACCESS_KEY_ID}:${AWS_SECRET_ACCESS_KEY}" -f -L -o "$MODEL_PATH.tmp" "${AWS_ENDPOINT_URL}/${S3_BUCKET}/${S3_KEY}" && mv "$MODEL_PATH.tmp" "$MODEL_PATH" && echo 'Model downloaded successfully'; else echo 'Model already cached, skipping download'; fi`
 		}
 		if refreshPolicy == RefreshPolicyOnChange {
-			return "mkdir -p \"$CACHE_DIR\" && rm -f \"$MODEL_PATH.tmp\" && " + remoteRevalidateScript
+			return "mkdir -p \"$CACHE_DIR\" && rm -f \"$MODEL_PATH.tmp\" && " + hfAuthPrefix(isHFAuth) + remoteRevalidateScript(isHFAuth)
 		}
-		return `mkdir -p "$CACHE_DIR" && rm -f "$MODEL_PATH.tmp" && if [ ! -f "$MODEL_PATH" ]; then echo 'Downloading model...'; curl -f -L -o "$MODEL_PATH.tmp" "$MODEL_SOURCE" && mv "$MODEL_PATH.tmp" "$MODEL_PATH" && echo 'Model downloaded successfully'; else echo 'Model already cached, skipping download'; fi`
+		return `mkdir -p "$CACHE_DIR" && rm -f "$MODEL_PATH.tmp" && ` + hfAuthPrefix(isHFAuth) +
+			`if [ ! -f "$MODEL_PATH" ]; then echo 'Downloading model...'; ` + curlCmd(isHFAuth) + ` -f -L -o "$MODEL_PATH.tmp" "$MODEL_SOURCE" && mv "$MODEL_PATH.tmp" "$MODEL_PATH" && echo 'Model downloaded successfully'; else echo 'Model already cached, skipping download'; fi`
 	}
 
 	if isLocal {
@@ -313,9 +333,10 @@ func buildModelInitCommand(isLocal, isS3, useCache bool, refreshPolicy string) s
 		return `if [ ! -f "$MODEL_PATH" ]; then echo 'Downloading model from S3...'; curl --aws-sigv4 "aws:amz:${AWS_REGION}:s3" -u "${AWS_ACCESS_KEY_ID}:${AWS_SECRET_ACCESS_KEY}" -f -L -o "$MODEL_PATH.tmp" "${AWS_ENDPOINT_URL}/${S3_BUCKET}/${S3_KEY}" && mv "$MODEL_PATH.tmp" "$MODEL_PATH" && echo 'Model downloaded successfully'; else echo 'Model already exists, skipping download'; fi`
 	}
 	if refreshPolicy == RefreshPolicyOnChange {
-		return remoteRevalidateScript
+		return hfAuthPrefix(isHFAuth) + remoteRevalidateScript(isHFAuth)
 	}
-	return `if [ ! -f "$MODEL_PATH" ]; then echo 'Downloading model...'; curl -f -L -o "$MODEL_PATH.tmp" "$MODEL_SOURCE" && mv "$MODEL_PATH.tmp" "$MODEL_PATH" && echo 'Model downloaded successfully'; else echo 'Model already exists, skipping download'; fi`
+	return hfAuthPrefix(isHFAuth) +
+		`if [ ! -f "$MODEL_PATH" ]; then echo 'Downloading model...'; ` + curlCmd(isHFAuth) + ` -f -L -o "$MODEL_PATH.tmp" "$MODEL_SOURCE" && mv "$MODEL_PATH.tmp" "$MODEL_PATH" && echo 'Model downloaded successfully'; else echo 'Model already exists, skipping download'; fi`
 }
 
 // remoteRevalidateScript implements RefreshPolicy=OnChange for http/https
@@ -352,16 +373,36 @@ func buildModelInitCommand(isLocal, isS3, useCache bool, refreshPolicy string) s
 // already exists, the script logs and exits 0, keeping the cached file. Only a
 // genuinely-missing file (nothing cached and the fetch failed) fails the init
 // container.
-const remoteRevalidateScript = `echo 'Revalidating model against upstream (RefreshPolicy=OnChange)...'; ` +
-	`remote_size=$(curl -fsSL -I "$MODEL_SOURCE" -o /dev/null -w '%header{content-length}' 2>/dev/null || echo 0); ` +
-	`if [ -f "$MODEL_PATH" ] && [ "$(stat -c %s "$MODEL_PATH" 2>/dev/null || echo 0)" = "$remote_size" ] && [ "$remote_size" != "0" ]; then ` +
-	`echo 'Model revalidated (unchanged, skipped download)'; ` +
-	`else ` +
-	`if curl -fsSL -o "$MODEL_PATH.tmp" "$MODEL_SOURCE" && mv "$MODEL_PATH.tmp" "$MODEL_PATH"; then ` +
-	`echo 'Model revalidated (downloaded)'; ` +
-	`elif [ -f "$MODEL_PATH" ]; then echo 'Revalidation unreachable; kept cached copy'; exit 0; ` +
-	`else echo 'ERROR: model missing and revalidation failed'; exit 1; fi; ` +
-	`fi`
+func remoteRevalidateScript(isHFAuth bool) string {
+	c := curlCmd(isHFAuth)
+	return `echo 'Revalidating model against upstream (RefreshPolicy=OnChange)...'; ` +
+		`remote_size=$(` + c + ` -fsSL -I "$MODEL_SOURCE" -o /dev/null -w '%header{content-length}' 2>/dev/null || echo 0); ` +
+		`if [ -f "$MODEL_PATH" ] && [ "$(stat -c %s "$MODEL_PATH" 2>/dev/null || echo 0)" = "$remote_size" ] && [ "$remote_size" != "0" ]; then ` +
+		`echo 'Model revalidated (unchanged, skipped download)'; ` +
+		`else ` +
+		`if ` + c + ` -fsSL -o "$MODEL_PATH.tmp" "$MODEL_SOURCE" && mv "$MODEL_PATH.tmp" "$MODEL_PATH"; then ` +
+		`echo 'Model revalidated (downloaded)'; ` +
+		`elif [ -f "$MODEL_PATH" ]; then echo 'Revalidation unreachable; kept cached copy'; exit 0; ` +
+		`else echo 'ERROR: model missing and revalidation failed'; exit 1; fi; ` +
+		`fi`
+}
+
+// curlCmd names the transfer command for a source: the authenticating wrapper
+// for huggingface.co, plain curl everywhere else. hfAuthPrefix emits the
+// wrapper's definition, and must be prepended to any script that uses it.
+func curlCmd(isHFAuth bool) string {
+	if isHFAuth {
+		return "hf_curl"
+	}
+	return "curl"
+}
+
+func hfAuthPrefix(isHFAuth bool) string {
+	if isHFAuth {
+		return hfAuthFn
+	}
+	return ""
+}
 
 func modelInitEnvVars(source, cacheDir, modelPath string) []corev1.EnvVar {
 	envs := []corev1.EnvVar{
@@ -536,7 +577,7 @@ func multiFileInitEnvVars(source, cacheDir string, files []string) []corev1.EnvV
 // values directly in the script. When isS3 is true, the curl command is signed
 // with --aws-sigv4 and uses ${AWS_ENDPOINT_URL}/${S3_BUCKET}/${S3_PREFIX}/$rel
 // as the per-file URL (S3_PREFIX may be empty for bare-bucket sources).
-func buildMultiFileInitCommand(useCache, isS3 bool, refreshPolicy string) string {
+func buildMultiFileInitCommand(useCache, isS3, isHFAuth bool, refreshPolicy string) string {
 	prefix := `mkdir -p "$CACHE_DIR" && find "$CACHE_DIR" -name '*.tmp' -delete && `
 	if !useCache {
 		prefix = `mkdir -p /models && find /models -name '*.tmp' -delete && `
@@ -584,18 +625,18 @@ func buildMultiFileInitCommand(useCache, isS3 bool, refreshPolicy string) string
 	}
 
 	if refreshPolicy == RefreshPolicyOnChange {
-		body := normalizeFn +
+		body := normalizeFn + hfAuthPrefix(isHFAuth) +
 			`SOURCE="$(normalize_hf_source "$MODEL_SOURCE")" && ` +
 			`printf '%s\n' "$MODEL_FILES" | while IFS= read -r rel; do ` +
 			`[ -n "$rel" ] || continue; ` +
 			`dest="$CACHE_DIR/$rel"; ` +
 			`mkdir -p "$(dirname "$dest")"; ` +
 			`url="${SOURCE%/}/$rel"; ` +
-			`remote_size=$(curl -fsSL -I "$url" -o /dev/null -w '%header{content-length}' 2>/dev/null || echo 0); ` +
+			`remote_size=$(` + curlCmd(isHFAuth) + ` -fsSL -I "$url" -o /dev/null -w '%header{content-length}' 2>/dev/null || echo 0); ` +
 			`if [ -f "$dest" ] && [ "$(stat -c %s "$dest" 2>/dev/null || echo 0)" = "$remote_size" ] && [ "$remote_size" != "0" ]; then ` +
 			`echo "Model artifact $rel revalidated (unchanged, skipped download)"; ` +
 			`else ` +
-			`if curl -fsSL -o "$dest.tmp" "$url" && mv "$dest.tmp" "$dest"; then ` +
+			`if ` + curlCmd(isHFAuth) + ` -fsSL -o "$dest.tmp" "$url" && mv "$dest.tmp" "$dest"; then ` +
 			`echo "Model artifact $rel revalidated (downloaded)"; ` +
 			`elif [ -f "$dest" ]; then echo "Revalidation unreachable for $rel; kept cached copy"; ` +
 			`else echo "ERROR: model artifact $rel missing and revalidation failed"; exit 1; fi; ` +
@@ -604,7 +645,7 @@ func buildMultiFileInitCommand(useCache, isS3 bool, refreshPolicy string) string
 		return prefix + body
 	}
 
-	body := normalizeFn +
+	body := normalizeFn + hfAuthPrefix(isHFAuth) +
 		`SOURCE="$(normalize_hf_source "$MODEL_SOURCE")" && ` +
 		`printf '%s\n' "$MODEL_FILES" | while IFS= read -r rel; do ` +
 		`[ -n "$rel" ] || continue; ` +
@@ -613,7 +654,7 @@ func buildMultiFileInitCommand(useCache, isS3 bool, refreshPolicy string) string
 		`url="${SOURCE%/}/$rel"; ` +
 		`if [ ! -f "$dest" ]; then ` +
 		`echo "Downloading model artifact $rel..."; ` +
-		`curl -f -L -o "$dest.tmp" "$url" && mv "$dest.tmp" "$dest" || { echo "ERROR: failed to download $rel"; exit 1; }; ` +
+		curlCmd(isHFAuth) + ` -f -L -o "$dest.tmp" "$url" && mv "$dest.tmp" "$dest" || { echo "ERROR: failed to download $rel"; exit 1; }; ` +
 		`else echo "Model artifact $rel already cached, skipping download"; fi; ` +
 		`done`
 	return prefix + body
@@ -756,7 +797,7 @@ func buildCachedStorageConfig(model *inferencev1alpha1.Model, isvc *inferencev1a
 	}
 	if plan != nil {
 		modelPath := stagedCachePath(cacheDir, plan.Primary)
-		cmd := buildMultiFileInitCommand(true, isS3Source(model.Spec.Source), model.Spec.RefreshPolicy)
+		cmd := buildMultiFileInitCommand(true, isS3Source(model.Spec.Source), isHFAuthSource(model.Spec.Source), model.Spec.RefreshPolicy)
 		env := multiFileInitEnvVars(model.Spec.Source, cacheDir, plan.Files)
 
 		initVolumeMounts := []corev1.VolumeMount{
@@ -844,7 +885,7 @@ func buildCachedStorageConfig(model *inferencev1alpha1.Model, isvc *inferencev1a
 		})
 	}
 
-	cmd := buildModelInitCommand(isLocalModelSource(model.Spec.Source), isS3Source(model.Spec.Source), true, model.Spec.RefreshPolicy)
+	cmd := buildModelInitCommand(isLocalModelSource(model.Spec.Source), isS3Source(model.Spec.Source), true, isHFAuthSource(model.Spec.Source), model.Spec.RefreshPolicy)
 	env := modelInitEnvVars(model.Spec.Source, cacheDir, modelPath)
 	addCACertVolume(&volumes, &initVolumeMounts, &cmd, caCertConfigMap)
 
@@ -887,7 +928,7 @@ func buildEmptyDirStorageConfig(model *inferencev1alpha1.Model, isvc *inferencev
 	if plan != nil {
 		stagedDir := fmt.Sprintf("/models/%s-%s", namespace, model.Name)
 		modelPath := fmt.Sprintf("%s/%s", stagedDir, plan.Primary)
-		cmd := buildMultiFileInitCommand(false, isS3Source(model.Spec.Source), model.Spec.RefreshPolicy)
+		cmd := buildMultiFileInitCommand(false, isS3Source(model.Spec.Source), isHFAuthSource(model.Spec.Source), model.Spec.RefreshPolicy)
 		env := multiFileInitEnvVars(model.Spec.Source, stagedDir, plan.Files)
 
 		initVolumeMounts := []corev1.VolumeMount{{Name: "model-storage", MountPath: "/models"}}
@@ -932,7 +973,7 @@ func buildEmptyDirStorageConfig(model *inferencev1alpha1.Model, isvc *inferencev
 		},
 	}
 
-	cmd := buildModelInitCommand(isLocalModelSource(model.Spec.Source), isS3Source(model.Spec.Source), false, model.Spec.RefreshPolicy)
+	cmd := buildModelInitCommand(isLocalModelSource(model.Spec.Source), isS3Source(model.Spec.Source), false, isHFAuthSource(model.Spec.Source), model.Spec.RefreshPolicy)
 	env := modelInitEnvVars(model.Spec.Source, "", modelPath)
 	addCACertVolume(&volumes, &initVolumeMounts, &cmd, caCertConfigMap)
 

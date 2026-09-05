@@ -28,7 +28,7 @@ import (
 
 var _ = Describe("buildModelInitCommand (s3)", func() {
 	It("should emit the --aws-sigv4 curl line for s3 source with cache", func() {
-		cmd := buildModelInitCommand(false, true, true, "")
+		cmd := buildModelInitCommand(false, true, true, false, "")
 		Expect(cmd).To(ContainSubstring("curl --aws-sigv4"))
 		Expect(cmd).To(ContainSubstring("${AWS_ENDPOINT_URL}/${S3_BUCKET}/${S3_KEY}"))
 		Expect(cmd).To(ContainSubstring("Downloading model from S3"))
@@ -39,7 +39,7 @@ var _ = Describe("buildModelInitCommand (s3)", func() {
 	})
 
 	It("should emit the --aws-sigv4 curl line for s3 source without cache", func() {
-		cmd := buildModelInitCommand(false, true, false, "")
+		cmd := buildModelInitCommand(false, true, false, false, "")
 		Expect(cmd).To(ContainSubstring("curl --aws-sigv4"))
 		Expect(cmd).To(ContainSubstring("${AWS_ENDPOINT_URL}/${S3_BUCKET}/${S3_KEY}"))
 		Expect(cmd).To(ContainSubstring("Downloading model from S3"))
@@ -50,7 +50,7 @@ var _ = Describe("buildModelInitCommand (s3)", func() {
 	})
 
 	It("should NOT emit --aws-sigv4 for non-s3 source", func() {
-		cmd := buildModelInitCommand(false, false, true, "")
+		cmd := buildModelInitCommand(false, false, true, false, "")
 		Expect(cmd).ToNot(ContainSubstring("aws-sigv4"))
 		Expect(cmd).To(ContainSubstring(`curl -f -L -o "$MODEL_PATH.tmp" "$MODEL_SOURCE" && mv "$MODEL_PATH.tmp" "$MODEL_PATH"`))
 	})
@@ -66,14 +66,14 @@ var _ = Describe("buildModelInitCommand (s3)", func() {
 			{false, true, false},  // s3, uncached
 			{true, false, true},   // local, cached
 		} {
-			cmd := buildModelInitCommand(tc[0], tc[1], tc[2], "")
+			cmd := buildModelInitCommand(tc[0], tc[1], tc[2], false, "")
 			Expect(cmd).ToNot(ContainSubstring(`-o "$MODEL_PATH" `), cmd)
 			Expect(cmd).ToNot(ContainSubstring(`cp /host-model/model.gguf "$MODEL_PATH" `), cmd)
 		}
 	})
 
 	It("should emit the --aws-sigv4 curl line for s3 source with OnChange refresh", func() {
-		cmd := buildModelInitCommand(false, true, true, RefreshPolicyOnChange)
+		cmd := buildModelInitCommand(false, true, true, false, RefreshPolicyOnChange)
 		Expect(cmd).To(ContainSubstring("curl --aws-sigv4"))
 		Expect(cmd).To(ContainSubstring("${AWS_ENDPOINT_URL}/${S3_BUCKET}/${S3_KEY}"))
 	})
@@ -84,22 +84,22 @@ var _ = Describe("buildModelInitCommand (s3)", func() {
 // new download so they do not accumulate on the shared cache PVC.
 var _ = Describe("buildModelInitCommand (orphan .tmp cleanup, #1435)", func() {
 	It("should remove stale .tmp before downloading in cached remote path", func() {
-		cmd := buildModelInitCommand(false, false, true, RefreshPolicyIfNotPresent)
+		cmd := buildModelInitCommand(false, false, true, false, RefreshPolicyIfNotPresent)
 		Expect(cmd).To(ContainSubstring(`rm -f "$MODEL_PATH.tmp"`))
 	})
 
 	It("should remove stale .tmp before downloading in cached S3 path", func() {
-		cmd := buildModelInitCommand(false, true, true, RefreshPolicyIfNotPresent)
+		cmd := buildModelInitCommand(false, true, true, false, RefreshPolicyIfNotPresent)
 		Expect(cmd).To(ContainSubstring(`rm -f "$MODEL_PATH.tmp"`))
 	})
 
 	It("should remove stale .tmp before downloading in cached local path", func() {
-		cmd := buildModelInitCommand(true, false, true, RefreshPolicyIfNotPresent)
+		cmd := buildModelInitCommand(true, false, true, false, RefreshPolicyIfNotPresent)
 		Expect(cmd).To(ContainSubstring(`rm -f "$MODEL_PATH.tmp"`))
 	})
 
 	It("should remove stale .tmp before downloading in cached OnChange path", func() {
-		cmd := buildModelInitCommand(false, false, true, RefreshPolicyOnChange)
+		cmd := buildModelInitCommand(false, false, true, false, RefreshPolicyOnChange)
 		Expect(cmd).To(ContainSubstring(`rm -f "$MODEL_PATH.tmp"`))
 	})
 })
@@ -125,7 +125,7 @@ var _ = Describe("modelInitEnvVars (s3)", func() {
 
 var _ = Describe("buildMultiFileInitCommand (s3)", func() {
 	It("should emit --aws-sigv4 for s3 source with cache (IfNotPresent)", func() {
-		cmd := buildMultiFileInitCommand(true, true, "")
+		cmd := buildMultiFileInitCommand(true, true, false, "")
 		Expect(cmd).To(ContainSubstring("curl --aws-sigv4"))
 		Expect(cmd).To(ContainSubstring("${AWS_ENDPOINT_URL}/${S3_BUCKET}/"))
 		Expect(cmd).To(ContainSubstring("${S3_PREFIX:+${S3_PREFIX}/}"))
@@ -136,14 +136,14 @@ var _ = Describe("buildMultiFileInitCommand (s3)", func() {
 	})
 
 	It("should emit --aws-sigv4 for s3 source without cache (emptyDir)", func() {
-		cmd := buildMultiFileInitCommand(false, true, "")
+		cmd := buildMultiFileInitCommand(false, true, false, "")
 		Expect(cmd).To(ContainSubstring("curl --aws-sigv4"))
 		Expect(cmd).To(ContainSubstring("${AWS_ENDPOINT_URL}/${S3_BUCKET}/"))
 		Expect(cmd).To(ContainSubstring("${S3_PREFIX:+${S3_PREFIX}/}"))
 	})
 
 	It("should emit --aws-sigv4 for s3 source with OnChange refresh", func() {
-		cmd := buildMultiFileInitCommand(true, true, RefreshPolicyOnChange)
+		cmd := buildMultiFileInitCommand(true, true, false, RefreshPolicyOnChange)
 		Expect(cmd).To(ContainSubstring("curl --aws-sigv4"))
 		Expect(cmd).To(ContainSubstring("${AWS_ENDPOINT_URL}/${S3_BUCKET}/"))
 		Expect(cmd).To(ContainSubstring("${S3_PREFIX:+${S3_PREFIX}/}"))
@@ -151,14 +151,14 @@ var _ = Describe("buildMultiFileInitCommand (s3)", func() {
 	})
 
 	It("should NOT emit --aws-sigv4 for non-s3 source (HTTP regression)", func() {
-		cmd := buildMultiFileInitCommand(true, false, "")
+		cmd := buildMultiFileInitCommand(true, false, false, "")
 		Expect(cmd).ToNot(ContainSubstring("aws-sigv4"))
 		Expect(cmd).To(ContainSubstring(`curl -f -L -o "$dest.tmp" "$url"`))
 		Expect(cmd).To(ContainSubstring("${SOURCE%/}/$rel"))
 	})
 
 	It("should NOT emit --aws-sigv4 for non-s3 source with OnChange (HTTP regression)", func() {
-		cmd := buildMultiFileInitCommand(true, false, RefreshPolicyOnChange)
+		cmd := buildMultiFileInitCommand(true, false, false, RefreshPolicyOnChange)
 		Expect(cmd).ToNot(ContainSubstring("aws-sigv4"))
 		Expect(cmd).To(ContainSubstring(`curl -fsSL -o "$dest.tmp" "$url"`))
 		Expect(cmd).To(ContainSubstring("${SOURCE%/}/$rel"))

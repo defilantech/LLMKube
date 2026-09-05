@@ -465,10 +465,21 @@ spec:
               sourceSecretRef:
                 description: |-
                   SourceSecretRef names a Secret (in the Model's namespace) whose keys are
-                  wired as env into the model-downloader init container. Used by s3://
-                  sources for S3-compatible credentials/endpoint: AWS_ACCESS_KEY_ID,
-                  AWS_SECRET_ACCESS_KEY, AWS_REGION, AWS_ENDPOINT_URL (path-style, e.g.
-                  https://minio.internal:9000 or https://s3.us-east-1.amazonaws.com).
+                  wired as env into the model-downloader init container.
+
+                  s3:// sources read S3-compatible credentials and endpoint from
+                  AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION and AWS_ENDPOINT_URL
+                  (path-style, e.g. https://minio.internal:9000 or
+                  https://s3.us-east-1.amazonaws.com).
+
+                  hf:// and huggingface.co sources read HF_TOKEN, which is sent as a bearer
+                  credential so gated and private repositories can be downloaded. The token
+                  is attached only for huggingface.co and is dropped if a redirect leaves
+                  that host, so it never reaches a CDN or any other origin. Omit the key,
+                  or the whole Secret, for public repositories.
+
+                  One Secret may carry both sets of keys; each is used only by the source
+                  scheme it belongs to.
                 properties:
                   name:
                     default: ""

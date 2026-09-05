@@ -122,6 +122,59 @@ Strict-taint choices:
 Global `perService` mode only avoids cross-node shared-RWO affinity. It cannot
 make an untolerated external helper pod schedule on a tainted node.
 
+## Gated and private Hugging Face repositories
+
+Most vendor repositories (Llama, Gemma, Mistral and others) require an accepted
+licence and an access token. Put the token in a Secret in the Model's namespace
+and name that Secret in `spec.sourceSecretRef`. The downloader reads the
+`HF_TOKEN` key and sends it as a bearer credential.
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: hf-token
+stringData:
+  HF_TOKEN: hf_xxx
+---
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: Model
+metadata:
+  name: llama-guard
+spec:
+  source: hf://meta-llama/Llama-Guard-4-12B
+  format: safetensors
+  files:
+    - model.safetensors
+    - config.json
+    - tokenizer.json
+  sourceSecretRef:
+    name: hf-token
+```
+
+Public repositories need none of this. Omit the key, or the Secret entirely,
+and downloads go out unauthenticated as before.
+
+This covers every path the operator downloads on: single-file GGUF, multi-file
+`spec.files` staging, `RefreshPolicy: OnChange` revalidation, the prefetch Job,
+and the macOS Metal agent. It is separate from the runtime token settings
+(`vllmConfig.hfTokenSecretRef` and its equivalents), which hand a token to the
+serving container for the different case where the runtime downloads its own
+weights from a bare repo ID.
+
+Two properties worth knowing:
+
+- **The token is only ever sent to huggingface.co.** A Model pointing at a
+  mirror, a private registry or any other host gets no header, even if the
+  Secret it names carries an `HF_TOKEN` key. One Secret can safely hold both
+  `HF_TOKEN` and the `AWS_*` keys.
+- **It is dropped on a redirect that changes host.** Hugging Face answers a
+  weights request with a redirect to a content host, and the token does not
+  follow it.
+
+Rotating the token is a Secret edit; the new value is picked up the next time a
+pod starts, the same as the S3 credentials.
+
 ## Troubleshooting
 
 ### Pending PVC with `hostpath-provisioner-<node>-*` showing `untolerated taint`

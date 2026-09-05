@@ -18,6 +18,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -344,7 +345,14 @@ func (e *MetalExecutor) fetchModel(ctx context.Context, source, filePath string,
 	if isS3Source(source) {
 		return e.downloadS3(ctx, source, filePath, secretRef)
 	}
-	return e.downloadFile(ctx, source, filePath)
+	// Gated and private Hugging Face repositories need a bearer token (#1750).
+	// Read from the same sourceSecretRef the S3 path uses, and attached only for
+	// huggingface.co so a Model pointing at another host never sees it.
+	var token string
+	if isHFAuthHost(source) && secretRef != nil {
+		token = e.resolveHFToken(ctx, secretRef.Name)
+	}
+	return e.downloadFile(ctx, source, filePath, token)
 }
 
 // downloadS3 fetches an s3:// source into filePath using AWS SigV4 signing and
@@ -392,13 +400,30 @@ func (e *MetalExecutor) downloadS3(ctx context.Context, source, filePath string,
 	return e.copyToFile(filePath, resp.Body, resp.ContentLength)
 }
 
-func (e *MetalExecutor) downloadFile(ctx context.Context, url, filePath string) error {
+// downloadFile fetches url into filePath. token, when non-empty, is sent as a
+// bearer credential on the FIRST hop only.
+//
+// The redirect handling is deliberate and stricter than net/http's default.
+// Go strips Authorization only when a redirect leaves the registrable domain
+// (shouldCopyHeaderOnRedirect uses isDomainOrSubdomain), so it keeps the header
+// for a subdomain, and keeps it for a different port on the same host. Hugging
+// Face answers a weights request with a redirect to its CDN, and whether that
+// lands on another domain or a subdomain is not ours to depend on: a token
+// scoped to huggingface.co has no business reaching a content host either way,
+// which is also why huggingface_hub does not send it there. hfRedirectStripper
+// therefore drops the header on ANY change of host.
+func (e *MetalExecutor) downloadFile(ctx context.Context, url, filePath, token string) error {
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return err
 	}
+	httpClient := http.DefaultClient
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+		httpClient = hfRedirectStripper()
+	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return err
 	}
@@ -409,6 +434,24 @@ func (e *MetalExecutor) downloadFile(ctx context.Context, url, filePath string) 
 	}
 
 	return e.copyToFile(filePath, resp.Body, resp.ContentLength)
+}
+
+// hfRedirectStripper returns a client that removes the Authorization header
+// whenever a redirect changes the host, comparing host and port rather than
+// registrable domain. Everything else matches http.DefaultClient, including
+// the ten-redirect ceiling that CheckRedirect is expected to enforce.
+func hfRedirectStripper() *http.Client {
+	c := *http.DefaultClient
+	c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		if len(via) > 0 && req.URL.Host != via[0].URL.Host {
+			req.Header.Del("Authorization")
+		}
+		return nil
+	}
+	return &c
 }
 
 // copyToFile streams r into filePath atomically: it writes to a ".partial"

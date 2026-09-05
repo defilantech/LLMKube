@@ -29,7 +29,7 @@ import (
 )
 
 // TestRemoteRevalidateScript_Behavioral drives the actual OnChange revalidation
-// shell (remoteRevalidateScript) against a stub HTTP server. It is the
+// shell (remoteRevalidateScript(false)) against a stub HTTP server. It is the
 // regression guard for #1309: the remote-size probe must read Content-Length
 // from the HEAD response. A HEAD has no body, so the earlier
 // -w '%{size_download}' always reported 0, the size comparison never matched,
@@ -81,7 +81,7 @@ func TestRemoteRevalidateScript_Behavioral(t *testing.T) {
 				t.Fatalf("seed cache: %v", err)
 			}
 		}
-		cmd := exec.Command("sh", "-c", remoteRevalidateScript)
+		cmd := exec.Command("sh", "-c", remoteRevalidateScript(false))
 		cmd.Env = append(os.Environ(),
 			"MODEL_SOURCE="+srv.URL+"/model.gguf",
 			"MODEL_PATH="+modelPath,

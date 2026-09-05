@@ -246,10 +246,28 @@ func isHuggingFaceURL(source string) bool {
 	} else {
 		rest = rest[len("http://"):]
 	}
-	rest = strings.TrimPrefix(rest, "www.")
 	// Host is case-insensitive per RFC 3986; the repo path is not (Qwen/... must
-	// keep its case), so only lower-case for the host comparison.
-	return strings.HasPrefix(strings.ToLower(rest), "huggingface.co/")
+	// keep its case), so only lower-case for the host comparison. Fold BEFORE
+	// trimming the www. label: trimming first leaves "WWW.huggingface.co"
+	// untouched and the match fails, which for the auth gate means downloading
+	// unauthenticated rather than sending the token. It fails safe, but the code
+	// disagreed with this comment.
+	rest = strings.ToLower(rest)
+	rest = strings.TrimPrefix(rest, "www.")
+	return strings.HasPrefix(rest, "huggingface.co/")
+}
+
+// isHFAuthSource reports whether the operator's own downloads for this source
+// should carry a Hugging Face bearer token. True for both spellings the
+// downloader accepts: an hf:// source, which normalize_hf_source rewrites to
+// huggingface.co at run time, and a literal huggingface.co URL.
+//
+// This is the gate that keeps the token off every other host (#1750). The
+// header is emitted only when this returns true, so a Model pointing at a
+// mirror, a private registry, or an arbitrary https:// URL never sees it, even
+// if the referenced Secret happens to carry an HF_TOKEN key.
+func isHFAuthSource(source string) bool {
+	return hasSchemeFold(source, "hf://") || isHuggingFaceURL(source)
 }
 
 // hfURLPathSegments returns the non-empty path segments after the
@@ -266,10 +284,22 @@ func hfURLPathSegments(source string) (segments []string, ok bool) {
 	} else {
 		return nil, false
 	}
+	// Fold ONLY the host, up to the first slash: the host is case-insensitive
+	// per RFC 3986 but the repo path is not, so Qwen/Qwen3-8B must keep its
+	// capital Q. Folding has to happen before the www. trim, or an uppercase
+	// label survives and the match below fails.
+	//
+	// This has to agree with isHuggingFaceURL. When it did not, an uppercase
+	// host classified as a Hugging Face URL there and as nothing here, leaving
+	// a source that was neither an HF repo nor a plain remote HTTP file, which
+	// no branch in the Model controller's classifier handles.
+	if i := strings.IndexByte(rest, '/'); i >= 0 {
+		rest = strings.ToLower(rest[:i]) + rest[i:]
+	}
 	rest = strings.TrimPrefix(rest, "www.")
-	// "huggingface.co/" is 15 bytes in any case, so slicing by the literal
-	// length is safe after a case-insensitive prefix check.
-	if !strings.HasPrefix(strings.ToLower(rest), "huggingface.co/") {
+	// "huggingface.co/" is 15 bytes in any case, and the host is folded above,
+	// so slicing by the literal length is safe.
+	if !strings.HasPrefix(rest, "huggingface.co/") {
 		return nil, false
 	}
 	rest = rest[len("huggingface.co/"):]

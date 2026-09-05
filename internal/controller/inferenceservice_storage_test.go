@@ -395,7 +395,7 @@ var _ = Describe("buildEmptyDirStorageConfig multi-file staging", func() {
 
 var _ = Describe("buildMultiFileInitCommand", func() {
 	It("generates download loop for IfNotPresent policy", func() {
-		cmd := buildMultiFileInitCommand(true, false, RefreshPolicyIfNotPresent)
+		cmd := buildMultiFileInitCommand(true, false, false, RefreshPolicyIfNotPresent)
 		Expect(cmd).To(ContainSubstring(`mkdir -p "$CACHE_DIR"`))
 		Expect(cmd).To(ContainSubstring("printf '%s\\n' \"$MODEL_FILES\""))
 		Expect(cmd).To(ContainSubstring(`mkdir -p "$(dirname "$dest")"`))
@@ -405,13 +405,13 @@ var _ = Describe("buildMultiFileInitCommand", func() {
 	})
 
 	It("fails init container if any curl fails in IfNotPresent policy", func() {
-		cmd := buildMultiFileInitCommand(true, false, RefreshPolicyIfNotPresent)
+		cmd := buildMultiFileInitCommand(true, false, false, RefreshPolicyIfNotPresent)
 		Expect(cmd).To(ContainSubstring(`exit 1`))
 		Expect(cmd).To(ContainSubstring("failed to download"))
 	})
 
 	It("generates HEAD revalidation for OnChange policy", func() {
-		cmd := buildMultiFileInitCommand(true, false, RefreshPolicyOnChange)
+		cmd := buildMultiFileInitCommand(true, false, false, RefreshPolicyOnChange)
 		Expect(cmd).To(ContainSubstring(`mkdir -p "$CACHE_DIR"`))
 		Expect(cmd).To(ContainSubstring("remote_size"))
 		Expect(cmd).To(ContainSubstring("skipped download"))
@@ -419,18 +419,18 @@ var _ = Describe("buildMultiFileInitCommand", func() {
 	})
 
 	It("uses emptyDir prefix without cache dir for non-cached storage", func() {
-		cmd := buildMultiFileInitCommand(false, false, RefreshPolicyIfNotPresent)
+		cmd := buildMultiFileInitCommand(false, false, false, RefreshPolicyIfNotPresent)
 		Expect(cmd).To(ContainSubstring(`mkdir -p /models`))
 		Expect(cmd).NotTo(ContainSubstring(`"$CACHE_DIR"`))
 	})
 
 	It("normalizes hf:// URLs via MODEL_SOURCE in the generated command", func() {
-		cmd := buildMultiFileInitCommand(true, false, RefreshPolicyIfNotPresent)
+		cmd := buildMultiFileInitCommand(true, false, false, RefreshPolicyIfNotPresent)
 		Expect(cmd).To(ContainSubstring("normalize_hf_source"))
 	})
 
 	It("uses POSIX-compatible shell (no bashisms)", func() {
-		cmd := buildMultiFileInitCommand(true, false, RefreshPolicyIfNotPresent)
+		cmd := buildMultiFileInitCommand(true, false, false, RefreshPolicyIfNotPresent)
 		Expect(cmd).NotTo(ContainSubstring("[["))
 		Expect(cmd).To(ContainSubstring("case"))
 		Expect(cmd).To(ContainSubstring("esac"))
@@ -440,12 +440,12 @@ var _ = Describe("buildMultiFileInitCommand", func() {
 		// The bug: url="${SOURCE%/}$rel" strips trailing slash from SOURCE (which ends in /)
 		// and glues filename directly, producing ".../resolve/main" + "a.gguf" = ".../resolve/maina.gguf"
 		// The fix: url="${SOURCE%/}/$rel" adds the slash back, producing ".../resolve/main/a.gguf"
-		cmd := buildMultiFileInitCommand(true, false, RefreshPolicyIfNotPresent)
+		cmd := buildMultiFileInitCommand(true, false, false, RefreshPolicyIfNotPresent)
 		Expect(cmd).To(ContainSubstring(`url="${SOURCE%/}/$rel"`))
 	})
 
 	It("preserves slash between resolve base and filename in OnChange policy (regression test for #1110)", func() {
-		cmd := buildMultiFileInitCommand(true, false, RefreshPolicyOnChange)
+		cmd := buildMultiFileInitCommand(true, false, false, RefreshPolicyOnChange)
 		Expect(cmd).To(ContainSubstring(`url="${SOURCE%/}/$rel"`))
 	})
 })
@@ -1241,7 +1241,7 @@ var _ = Describe("resolveCacheMode", func() {
 
 var _ = Describe("buildModelInitCommand", func() {
 	It("should generate cached remote download command with env var references", func() {
-		cmd := buildModelInitCommand(false, false, true, RefreshPolicyIfNotPresent)
+		cmd := buildModelInitCommand(false, false, true, false, RefreshPolicyIfNotPresent)
 		Expect(cmd).To(ContainSubstring(`mkdir -p "$CACHE_DIR"`))
 		Expect(cmd).To(ContainSubstring(`"$MODEL_PATH"`))
 		Expect(cmd).To(ContainSubstring("curl -f -L"))
@@ -1249,19 +1249,19 @@ var _ = Describe("buildModelInitCommand", func() {
 	})
 
 	It("should generate cached local copy command", func() {
-		cmd := buildModelInitCommand(true, false, true, RefreshPolicyIfNotPresent)
+		cmd := buildModelInitCommand(true, false, true, false, RefreshPolicyIfNotPresent)
 		Expect(cmd).To(ContainSubstring(`mkdir -p "$CACHE_DIR"`))
 		Expect(cmd).To(ContainSubstring(`cp /host-model/model.gguf "$MODEL_PATH.tmp" && mv "$MODEL_PATH.tmp" "$MODEL_PATH"`))
 	})
 
 	It("should generate error exit for uncached local source", func() {
-		cmd := buildModelInitCommand(true, false, false, RefreshPolicyIfNotPresent)
+		cmd := buildModelInitCommand(true, false, false, false, RefreshPolicyIfNotPresent)
 		Expect(cmd).To(ContainSubstring("ERROR: Local model source requires model cache"))
 		Expect(cmd).To(ContainSubstring("exit 1"))
 	})
 
 	It("should generate uncached remote download command with env var references", func() {
-		cmd := buildModelInitCommand(false, false, false, RefreshPolicyIfNotPresent)
+		cmd := buildModelInitCommand(false, false, false, false, RefreshPolicyIfNotPresent)
 		Expect(cmd).To(ContainSubstring("curl -f -L"))
 		Expect(cmd).To(ContainSubstring(`"$MODEL_SOURCE"`))
 		Expect(cmd).To(ContainSubstring(`"$MODEL_PATH"`))
@@ -1272,7 +1272,7 @@ var _ = Describe("buildModelInitCommand", func() {
 		// Verify that a malicious source cannot appear in the shell script.
 		// The command is a static template with env var references only.
 		maliciousSource := `https://evil.com/$(touch /pwned).gguf`
-		cmd := buildModelInitCommand(false, false, true, RefreshPolicyIfNotPresent)
+		cmd := buildModelInitCommand(false, false, true, false, RefreshPolicyIfNotPresent)
 		Expect(cmd).NotTo(ContainSubstring(maliciousSource))
 		Expect(cmd).NotTo(ContainSubstring("touch"))
 		Expect(cmd).NotTo(ContainSubstring("evil.com"))
@@ -1285,7 +1285,7 @@ var _ = Describe("buildModelInitCommand", func() {
 
 	Context("RefreshPolicy=OnChange (http/https revalidation, issue #619)", func() {
 		It("cached: emits HEAD-based revalidation comparing Content-Length to local file size", func() {
-			cmd := buildModelInitCommand(false, false, true, RefreshPolicyOnChange)
+			cmd := buildModelInitCommand(false, false, true, false, RefreshPolicyOnChange)
 			// Still provisions the cache dir like IfNotPresent.
 			Expect(cmd).To(ContainSubstring(`mkdir -p "$CACHE_DIR"`))
 			// HEAD-based revalidation: compare Content-Length against local file size.
@@ -1298,7 +1298,7 @@ var _ = Describe("buildModelInitCommand", func() {
 		})
 
 		It("uncached: emits the same HEAD-based revalidation without the cache dir mkdir", func() {
-			cmd := buildModelInitCommand(false, false, false, RefreshPolicyOnChange)
+			cmd := buildModelInitCommand(false, false, false, false, RefreshPolicyOnChange)
 			Expect(cmd).To(ContainSubstring("remote_size"))
 			Expect(cmd).To(ContainSubstring(`"$MODEL_SOURCE"`))
 			Expect(cmd).NotTo(ContainSubstring("mkdir -p"))
@@ -1306,7 +1306,7 @@ var _ = Describe("buildModelInitCommand", func() {
 		})
 
 		It("keeps the cached file and exits 0 when revalidation is unreachable", func() {
-			cmd := buildModelInitCommand(false, false, true, RefreshPolicyOnChange)
+			cmd := buildModelInitCommand(false, false, true, false, RefreshPolicyOnChange)
 			// Robustness guard: a network blip must not take down a running
 			// InferenceService on pod restart.
 			Expect(cmd).To(ContainSubstring(`[ -f "$MODEL_PATH" ]`))
@@ -1319,14 +1319,14 @@ var _ = Describe("buildModelInitCommand", func() {
 		It("does not change the local (file://) init path", func() {
 			// file:// sources are owned by the controller (#635); the init
 			// container path must be identical regardless of RefreshPolicy.
-			ifNotPresent := buildModelInitCommand(true, false, true, RefreshPolicyIfNotPresent)
-			onChange := buildModelInitCommand(true, false, true, RefreshPolicyOnChange)
+			ifNotPresent := buildModelInitCommand(true, false, true, false, RefreshPolicyIfNotPresent)
+			onChange := buildModelInitCommand(true, false, true, false, RefreshPolicyOnChange)
 			Expect(onChange).To(Equal(ifNotPresent))
 			Expect(onChange).NotTo(ContainSubstring("remote_size"))
 		})
 
 		It("does not contain user-controlled values in the OnChange command string", func() {
-			cmd := buildModelInitCommand(false, false, true, RefreshPolicyOnChange)
+			cmd := buildModelInitCommand(false, false, true, false, RefreshPolicyOnChange)
 			Expect(cmd).NotTo(ContainSubstring("evil.com"))
 			Expect(cmd).NotTo(ContainSubstring("touch"))
 		})
