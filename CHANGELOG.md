@@ -5,6 +5,42 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.25](https://github.com/defilantech/LLMKube/compare/v0.9.24...v0.9.25) (2026-09-05)
+
+
+### Features
+
+* **foreman:** diff-coverage gate for added lines no test executes ([#1728](https://github.com/defilantech/LLMKube/issues/1728)) ([9666346](https://github.com/defilantech/LLMKube/commit/96663461f18c9a15cc56ed004fcf53eac4bde2a7))
+* **foreman:** enforce reviewer execution runs via a no-test-run rail ([#1747](https://github.com/defilantech/LLMKube/issues/1747)) ([152811a](https://github.com/defilantech/LLMKube/commit/152811a5b050494bb6e107464d030d8f41b35f0f))
+* **foreman:** live turn stream so a coder run can be watched as it happens ([#1717](https://github.com/defilantech/LLMKube/issues/1717)) ([34b9564](https://github.com/defilantech/LLMKube/commit/34b9564d93e27ca09c48d85ec0a9d7df0efa44ac))
+* **foreman:** report missing planned children in Dispatched condition ([#1743](https://github.com/defilantech/LLMKube/issues/1743)) ([e9ce0ff](https://github.com/defilantech/LLMKube/commit/e9ce0ffd7ad9e9802582e0d4fc1f3a3b14d82fc2))
+* **modelrouter:** AgentGateway data plane beside Proxy and Gateway ([#1711](https://github.com/defilantech/LLMKube/issues/1711)) ([af497b6](https://github.com/defilantech/LLMKube/commit/af497b675196b8e795bc9c4e7d810aa27f20fc5c))
+* **model:** send a Hugging Face token on operator-driven downloads ([#1750](https://github.com/defilantech/LLMKube/issues/1750)) ([#1758](https://github.com/defilantech/LLMKube/issues/1758)) ([5ef4fa0](https://github.com/defilantech/LLMKube/commit/5ef4fa03f8c65998d1ed5b3841fd86c849b8b02e))
+* multi-node inference groups (spec.multiNode) for vLLM ([#1746](https://github.com/defilantech/LLMKube/issues/1746)) ([b56c080](https://github.com/defilantech/LLMKube/commit/b56c08058084ba00876eb001096abdadd80e34a2))
+* **observability:** pin the llama.cpp metric contract ([#1186](https://github.com/defilantech/LLMKube/issues/1186)) ([#1754](https://github.com/defilantech/LLMKube/issues/1754)) ([da6dda9](https://github.com/defilantech/LLMKube/commit/da6dda9dabbc96edd7401bc221be57b08af25185))
+
+
+### Bug Fixes
+
+* **agent:** sign s3:// model fetches on the metal path ([#1709](https://github.com/defilantech/LLMKube/issues/1709)) ([3f30570](https://github.com/defilantech/LLMKube/commit/3f305703d6a5027e57efd9fedf19ab7c7ac9dc35))
+* **agent:** skip comment-only hunks in the per-hunk mutation pass ([#1742](https://github.com/defilantech/LLMKube/issues/1742)) ([82c0ffd](https://github.com/defilantech/LLMKube/commit/82c0ffd60bdcdc570b862dc748197ea177adebde))
+* **controller:** bound inference container memory with a limit, and validate the quantity at admission ([#1726](https://github.com/defilantech/LLMKube/issues/1726)) ([e4a3669](https://github.com/defilantech/LLMKube/commit/e4a3669afe3fcc4be46c9d4de8368a62216432bc))
+* **controller:** make zero-findings scope-overlap demotion inert ([#1737](https://github.com/defilantech/LLMKube/issues/1737)) ([8a44529](https://github.com/defilantech/LLMKube/commit/8a445297be8ac7f43bf306750a7fd3b0ca5ec080))
+* **foreman:** bound the dependency wait when TimeoutSeconds is unset ([#1736](https://github.com/defilantech/LLMKube/issues/1736)) ([db98633](https://github.com/defilantech/LLMKube/commit/db986338a9c468e908f2e6f6a2a670d34804bc7d))
+* **foreman:** clear Dispatched condition on terminal Workloads ([#1741](https://github.com/defilantech/LLMKube/issues/1741)) ([9786684](https://github.com/defilantech/LLMKube/commit/9786684f612dc645cf9e797ab64fbdfc1e327f03))
+* **foreman:** pass upstreamURL to the coder post-push envtest gate ([#1732](https://github.com/defilantech/LLMKube/issues/1732)) ([8d47306](https://github.com/defilantech/LLMKube/commit/8d47306b5ea98021c11c5a5b2ca2885f38fd70ae))
+* **foreman:** preserve the workspace when the agent loop ends unsuccessfully ([#1716](https://github.com/defilantech/LLMKube/issues/1716)) ([d17a7dd](https://github.com/defilantech/LLMKube/commit/d17a7dd8bbd9a1f52f0974c702cc544bb6d1e46f))
+* **foreman:** report gate Job DeadlineExceeded as GATE-ERROR and make the gate deadline settable ([#1748](https://github.com/defilantech/LLMKube/issues/1748)) ([#1751](https://github.com/defilantech/LLMKube/issues/1751)) ([ef69b4c](https://github.com/defilantech/LLMKube/commit/ef69b4c09f08f648d21590d6367cce75c746e3aa))
+* **foreman:** report rejected submissions on max-turns INCOMPLETE ([#1714](https://github.com/defilantech/LLMKube/issues/1714)) ([e4f88e9](https://github.com/defilantech/LLMKube/commit/e4f88e9885ffe9152b3d6647c9c62aed5571e155))
+* **foreman:** report the packages the diff-coverage gate could not measure ([#1734](https://github.com/defilantech/LLMKube/issues/1734)) ([15ba740](https://github.com/defilantech/LLMKube/commit/15ba7408b3f3b4f4c9e138c42acba565209565b9))
+* **foreman:** validate resolvedBy before ALREADY-RESOLVED skips verification ([#1730](https://github.com/defilantech/LLMKube/issues/1730)) ([2b35d71](https://github.com/defilantech/LLMKube/commit/2b35d71454058abe91cdf5a22c5a42e6890ebceb))
+
+
+### Documentation
+
+* **labs:** link the build page absolutely so the site prerender resolves it ([#1756](https://github.com/defilantech/LLMKube/issues/1756)) ([5543aa9](https://github.com/defilantech/LLMKube/commit/5543aa986fd6e0522d6d3c64cd15d426972a3d3b))
+* **labs:** reference build for DeepSeek V4 Flash Vision on two DGX Sparks ([#1755](https://github.com/defilantech/LLMKube/issues/1755)) ([e80fd7d](https://github.com/defilantech/LLMKube/commit/e80fd7da01b5b69a9ce5bec41c99781f44376b9c))
+
 ## [0.9.24](https://github.com/defilantech/LLMKube/compare/v0.9.23...v0.9.24) (2026-08-29)
 
 
