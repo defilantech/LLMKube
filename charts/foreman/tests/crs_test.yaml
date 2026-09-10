@@ -148,3 +148,14 @@ tests:
       - matchRegex:
           path: data["foreman-crs.yaml"]
           pattern: 'kubernetes_node: \[status, kubernetesNode\]'
+
+  - it: FleetNode resource labels include the worker node name (#1779)
+    set:
+      foreman.crs.enabled: true
+    asserts:
+      # Without resource-level node label, heartbeat and capacity gauges
+      # cannot be joined to AgenticTask or resolved in alerts (#1779).
+      - matchRegex:
+          path: data["foreman-crs.yaml"]
+          pattern: 'node: \[spec, nodeName\]'
+

@@ -144,6 +144,11 @@ data:
           # FleetNodes by phase but cannot name the one that is stuck.
           labelsFromPath:
             name: [metadata, name]
+            # The worker agent identity. Without this on every series,
+            # heartbeat and capacity gauges cannot be joined to AgenticTask
+            # (which labels node: [status, assignedNode]) without an extra
+            # join against foreman_fleetnode_info (#1779).
+            node: [spec, nodeName]
           metrics:
             # foreman_fleetnode_info{name,node,accelerator,os,arch,
             #                        current_task,version,agent_kind}
@@ -153,7 +158,6 @@ data:
                 type: Info
                 info:
                   labelsFromPath:
-                    node: [spec, nodeName]
                     accelerator: [status, capability, accelerator]
                     os: [status, os]
                     arch: [status, arch]
