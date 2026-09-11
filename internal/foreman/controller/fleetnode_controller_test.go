@@ -217,6 +217,99 @@ var _ = Describe("FleetNodeReconciler heartbeat staleness", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(res.RequeueAfter).To(BeNumerically(">", time.Duration(0)))
 	})
+
+	It("reaps an in-cluster NotReady node whose agent heartbeat is long stale", func() {
+		// Regression for defilantech/LLMKube#1778: when an in-cluster agent pod
+		// terminates abruptly (node reboot, rollout, eviction, crash) without
+		// completing a graceful drain, its FleetNode is orphaned in NotReady.
+		// Because there is no ownerReference for garbage collection, it must be
+		// reaped by the controller once silent past FleetNodeNotReadyReapTimeout.
+		fn := &foremanv1alpha1.FleetNode{
+			ObjectMeta: metav1.ObjectMeta{Name: "orphan-notready"},
+			Spec: foremanv1alpha1.FleetNodeSpec{
+				NodeName: "orphan-notready",
+				Roles:    []string{"worker"},
+			},
+		}
+		Expect(k8sClient.Create(ctx, fn)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, fn) })
+
+		gone := metav1.NewTime(time.Now().Add(-2 * foremanv1alpha1.FleetNodeNotReadyReapTimeout))
+		fn.Status.Phase = foremanv1alpha1.FleetNodePhaseNotReady
+		fn.Status.KubernetesNode = "eula"
+		fn.Status.LastHeartbeatTime = &gone
+		Expect(k8sClient.Status().Update(ctx, fn)).To(Succeed())
+
+		_, err := reconciler.Reconcile(ctx, ctrl.Request{
+			NamespacedName: types.NamespacedName{Name: "orphan-notready"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		var got foremanv1alpha1.FleetNode
+		err = k8sClient.Get(ctx, types.NamespacedName{Name: "orphan-notready"}, &got)
+		Expect(apierrors.IsNotFound(err)).To(BeTrue(), "orphaned in-cluster NotReady node should be deleted")
+	})
+
+	It("leaves an off-cluster NotReady node alone even when heartbeat is long stale", func() {
+		// Off-cluster nodes (metal Macs) have static identities and leave
+		// status.kubernetesNode empty. They must NOT be reaped on extended
+		// offline periods so they can reconnect without failing heartbeats.
+		fn := &foremanv1alpha1.FleetNode{
+			ObjectMeta: metav1.ObjectMeta{Name: "orphan-offcluster"},
+			Spec: foremanv1alpha1.FleetNodeSpec{
+				NodeName: "orphan-offcluster",
+				Roles:    []string{"worker"},
+			},
+		}
+		Expect(k8sClient.Create(ctx, fn)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, fn) })
+
+		gone := metav1.NewTime(time.Now().Add(-2 * foremanv1alpha1.FleetNodeNotReadyReapTimeout))
+		fn.Status.Phase = foremanv1alpha1.FleetNodePhaseNotReady
+		fn.Status.KubernetesNode = ""
+		fn.Status.LastHeartbeatTime = &gone
+		Expect(k8sClient.Status().Update(ctx, fn)).To(Succeed())
+
+		res, err := reconciler.Reconcile(ctx, ctrl.Request{
+			NamespacedName: types.NamespacedName{Name: "orphan-offcluster"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.RequeueAfter).To(BeNumerically(">", time.Duration(0)))
+
+		var got foremanv1alpha1.FleetNode
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "orphan-offcluster"}, &got)).To(Succeed())
+		Expect(got.Status.Phase).To(Equal(foremanv1alpha1.FleetNodePhaseNotReady))
+	})
+
+	It("leaves an in-cluster NotReady node alone when heartbeat is only briefly stale", func() {
+		// A briefly stale in-cluster node (e.g. restarting container) must not
+		// be reaped before the reap timeout expires.
+		fn := &foremanv1alpha1.FleetNode{
+			ObjectMeta: metav1.ObjectMeta{Name: "recent-stale-incluster"},
+			Spec: foremanv1alpha1.FleetNodeSpec{
+				NodeName: "recent-stale-incluster",
+				Roles:    []string{"worker"},
+			},
+		}
+		Expect(k8sClient.Create(ctx, fn)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, fn) })
+
+		brieflyStale := metav1.NewTime(time.Now().Add(-2 * foremanv1alpha1.FleetNodeHeartbeatTimeout))
+		fn.Status.Phase = foremanv1alpha1.FleetNodePhaseNotReady
+		fn.Status.KubernetesNode = "eula"
+		fn.Status.LastHeartbeatTime = &brieflyStale
+		Expect(k8sClient.Status().Update(ctx, fn)).To(Succeed())
+
+		res, err := reconciler.Reconcile(ctx, ctrl.Request{
+			NamespacedName: types.NamespacedName{Name: "recent-stale-incluster"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.RequeueAfter).To(BeNumerically(">", time.Duration(0)))
+
+		var got foremanv1alpha1.FleetNode
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "recent-stale-incluster"}, &got)).To(Succeed())
+		Expect(got.Status.Phase).To(Equal(foremanv1alpha1.FleetNodePhaseNotReady))
+	})
 })
 
 // meta finds a condition by type, or nil.

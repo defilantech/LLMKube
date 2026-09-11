@@ -69,35 +69,27 @@ func (r *FleetNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// drain grace; its drain will never complete.
 	if node.Status.Phase == foremanv1alpha1.FleetNodePhaseDraining {
 		if node.DrainReapable(time.Now()) {
-			log.Info("reaping orphaned Draining FleetNode (agent gone)",
-				"nodeName", node.Spec.NodeName, "lastHeartbeat", node.Status.LastHeartbeatTime)
-			// Delete under UID + ResourceVersion preconditions to close the
-			// revival race: a stable-named (launchd) agent that was down > the
-			// reap window and then restarts revives the node with a Ready
-			// heartbeat, but this reconcile reads from a cache that can lag that
-			// write. Without preconditions we would delete the freshly revived
-			// node; the agent only Upserts at startup, so it would then fail
-			// every heartbeat (Get -> NotFound) and never recreate it. With
-			// preconditions, any write since our read makes the delete 409, and
-			// we requeue to re-evaluate on a fresh view (a truly dead node's
-			// ResourceVersion never advances, so the reap still converges).
-			err := r.Delete(ctx, &node, client.Preconditions{
-				UID:             &node.UID,
-				ResourceVersion: &node.ResourceVersion,
-			})
-			if apierrors.IsConflict(err) {
-				return ctrl.Result{RequeueAfter: foremanv1alpha1.FleetNodeHeartbeatTimeout}, nil
-			}
-			if err != nil {
-				return ctrl.Result{}, client.IgnoreNotFound(err)
-			}
-			return ctrl.Result{}, nil
+			return r.reapNode(ctx, &node, "orphaned Draining FleetNode (agent gone)")
 		}
 		return ctrl.Result{RequeueAfter: foremanv1alpha1.FleetNodeHeartbeatTimeout}, nil
 	}
 
 	now := time.Now()
 	stale := node.HeartbeatStale(now)
+
+	// An in-cluster agent pod that terminates abruptly (node reboot, rollout,
+	// eviction, crash) without completing a graceful drain leaves its FleetNode
+	// orphaned in NotReady. Because FleetNode is cluster-scoped and Pod is
+	// namespaced, it carries no ownerReference for Kubernetes garbage
+	// collection. The replacement pod registers a new FleetNode under its own
+	// pod name, leaving the old one behind forever and causing
+	// ForemanFleetNodeHeartbeatStale to alert indefinitely (#1778).
+	// Reap an in-cluster NotReady node whose heartbeat has been silent past the
+	// reap timeout. Off-cluster agents (metal Macs) leave status.kubernetesNode
+	// empty and have persistent identities, so they are not reaped.
+	if (node.Status.Phase == foremanv1alpha1.FleetNodePhaseNotReady || stale) && node.NotReadyReapable(now) {
+		return r.reapNode(ctx, &node, "orphaned NotReady in-cluster FleetNode (agent pod gone)")
+	}
 
 	desiredPhase := foremanv1alpha1.FleetNodePhaseReady
 	cond := metav1.Condition{
@@ -134,4 +126,34 @@ func (r *FleetNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&foremanv1alpha1.FleetNode{}).
 		Named("fleetnode").
 		Complete(r)
+}
+
+// reapNode deletes an orphaned FleetNode under UID + ResourceVersion
+// preconditions to close the revival race: a stable-named (launchd) agent that
+// was down > the reap window and then restarts revives the node with a Ready
+// heartbeat, but this reconcile reads from a cache that can lag that write.
+// Without preconditions we would delete the freshly revived node; the agent
+// only Upserts at startup, so it would then fail every heartbeat (Get ->
+// NotFound) and never recreate it. With preconditions, any write since our read
+// makes the delete 409, and we requeue to re-evaluate on a fresh view (a truly
+// dead node's ResourceVersion never advances, so the reap still converges).
+func (r *FleetNodeReconciler) reapNode(ctx context.Context, node *foremanv1alpha1.FleetNode, reason string) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+	log.Info("reaping orphaned FleetNode",
+		"reason", reason,
+		"nodeName", node.Spec.NodeName,
+		"kubernetesNode", node.Status.KubernetesNode,
+		"lastHeartbeat", node.Status.LastHeartbeatTime,
+	)
+	err := r.Delete(ctx, node, client.Preconditions{
+		UID:             &node.UID,
+		ResourceVersion: &node.ResourceVersion,
+	})
+	if apierrors.IsConflict(err) {
+		return ctrl.Result{RequeueAfter: foremanv1alpha1.FleetNodeHeartbeatTimeout}, nil
+	}
+	if err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+	return ctrl.Result{}, nil
 }

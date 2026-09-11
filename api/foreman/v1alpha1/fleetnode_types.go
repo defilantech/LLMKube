@@ -38,6 +38,16 @@ const FleetNodeHeartbeatTimeout = 90 * time.Second
 // reaped out from under an in-flight task.
 const FleetNodeDrainReapTimeout = 10 * time.Minute
 
+// FleetNodeNotReadyReapTimeout is how long an in-cluster FleetNode may stay
+// NotReady without a heartbeat before the controller reaps it. When an
+// in-cluster agent pod terminates abruptly (node reboot, rollout, eviction,
+// crash) without completing a graceful drain, its FleetNode is orphaned in
+// NotReady with a frozen heartbeat. The replacement pod mints a new FleetNode
+// under its own pod name, leaving the old one behind forever without an
+// ownerReference for Kubernetes garbage collection (#1778). Off-cluster
+// workers have static identities and are not subject to this reap.
+const FleetNodeNotReadyReapTimeout = 10 * time.Minute
+
 // FleetNodePhase is the heartbeat-driven health state of a fleet worker.
 // +kubebuilder:validation:Enum=Ready;Draining;NotReady;Unknown
 type FleetNodePhase string
@@ -323,6 +333,27 @@ func (n *FleetNode) DrainReapable(now time.Time) bool {
 		return now.Sub(n.CreationTimestamp.Time) > FleetNodeDrainReapTimeout
 	}
 	return now.Sub(n.Status.LastHeartbeatTime.Time) > FleetNodeDrainReapTimeout
+}
+
+// NotReadyReapable reports whether an in-cluster NotReady node has been silent
+// long enough (past FleetNodeNotReadyReapTimeout) that its agent pod is gone
+// and should be deleted to prevent permanent alert firing (#1778).
+//
+// Only in-cluster nodes (Status.KubernetesNode != "") are eligible: an
+// in-cluster agent uses the ephemeral pod name as its worker identity, so a
+// replaced or deleted pod never revives its old FleetNode. Off-cluster agents
+// (metal Macs) leave KubernetesNode empty and have persistent identities, so
+// they are not reaped during extended offline periods.
+//
+// A node with no heartbeat at all falls back to its creation time.
+func (n *FleetNode) NotReadyReapable(now time.Time) bool {
+	if n == nil || n.Status.KubernetesNode == "" {
+		return false
+	}
+	if n.Status.LastHeartbeatTime == nil {
+		return now.Sub(n.CreationTimestamp.Time) > FleetNodeNotReadyReapTimeout
+	}
+	return now.Sub(n.Status.LastHeartbeatTime.Time) > FleetNodeNotReadyReapTimeout
 }
 
 // +kubebuilder:object:root=true

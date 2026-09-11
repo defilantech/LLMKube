@@ -64,3 +64,46 @@ func TestDrainReapableNilReceiver(t *testing.T) {
 		t.Fatalf("nil FleetNode must not be reapable")
 	}
 }
+
+// NotReadyReapable gates deletion of orphaned NotReady in-cluster FleetNodes
+// (#1778). Only in-cluster nodes (KubernetesNode != "") are eligible so
+// persistent off-cluster workers (metal Macs) are not reaped during extended
+// offline periods.
+func TestNotReadyReapable(t *testing.T) {
+	now := time.Now()
+	old := metav1.NewTime(now.Add(-2 * FleetNodeNotReadyReapTimeout))
+	recent := metav1.NewTime(now.Add(-1 * time.Second))
+
+	tests := []struct {
+		name      string
+		k8sNode   string
+		heartbeat *metav1.Time
+		created   metav1.Time
+		want      bool
+	}{
+		{"fresh heartbeat in-cluster is not reapable", "eula", &recent, metav1.NewTime(now), false},
+		{"stale heartbeat past the window in-cluster is reapable", "eula", &old, metav1.NewTime(now), true},
+		{"stale heartbeat past the window off-cluster is not reapable", "", &old, metav1.NewTime(now), false},
+		{"nil heartbeat with recent creation in-cluster is not reapable", "eula", nil, recent, false},
+		{"nil heartbeat with old creation in-cluster is reapable", "eula", nil, old, true},
+		{"nil heartbeat with old creation off-cluster is not reapable", "", nil, old, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			n := &FleetNode{}
+			n.CreationTimestamp = tc.created
+			n.Status.KubernetesNode = tc.k8sNode
+			n.Status.LastHeartbeatTime = tc.heartbeat
+			if got := n.NotReadyReapable(now); got != tc.want {
+				t.Fatalf("NotReadyReapable() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestNotReadyReapableNilReceiver(t *testing.T) {
+	var n *FleetNode
+	if n.NotReadyReapable(time.Now()) {
+		t.Fatalf("nil FleetNode must not be reapable")
+	}
+}
