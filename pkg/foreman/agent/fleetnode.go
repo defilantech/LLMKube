@@ -326,7 +326,17 @@ var ErrSelfUpdateRestart = fmt.Errorf("self-update applied: exiting for supervis
 func (r *Registrar) Run(ctx context.Context) error {
 	log := logf.FromContext(ctx)
 	if _, err := r.PatchHeartbeat(ctx, foremanv1alpha1.FleetNodePhaseReady); err != nil {
-		return fmt.Errorf("initial heartbeat: %w", err)
+		if apierrors.IsNotFound(err) {
+			log.Info("FleetNode missing on initial heartbeat; re-registering", "name", r.NodeName)
+			if uerr := r.Upsert(ctx); uerr != nil {
+				return fmt.Errorf("initial upsert on not found: %w", uerr)
+			}
+			if _, err := r.PatchHeartbeat(ctx, foremanv1alpha1.FleetNodePhaseReady); err != nil {
+				return fmt.Errorf("initial heartbeat after upsert: %w", err)
+			}
+		} else {
+			return fmt.Errorf("initial heartbeat: %w", err)
+		}
 	}
 	log.Info("FleetNode Ready", "name", r.NodeName)
 
@@ -354,12 +364,29 @@ func (r *Registrar) Run(ctx context.Context) error {
 		case <-ticker.C:
 			updateReq, err := r.PatchHeartbeat(ctx, foremanv1alpha1.FleetNodePhaseReady)
 			if err != nil {
-				// Don't return on transient errors; the next tick can
-				// recover. A persistent failure is visible via stale
-				// LastHeartbeatTime, which is exactly the staleness
-				// signal the scheduler uses anyway.
-				log.Error(err, "heartbeat patch failed; will retry")
-				continue
+				if apierrors.IsNotFound(err) {
+					// The FleetNode CR was reaped or deleted while this agent was
+					// silent (e.g. node partition, machine sleep, or temporary
+					// API server unreachable past the reap window). Re-register
+					// so an alive agent does not heartbeat into NotFound forever (#1778).
+					log.Info("FleetNode missing during heartbeat; re-registering", "name", r.NodeName)
+					if uerr := r.Upsert(ctx); uerr != nil {
+						log.Error(uerr, "re-registration failed; will retry next tick", "name", r.NodeName)
+						continue
+					}
+					updateReq, err = r.PatchHeartbeat(ctx, foremanv1alpha1.FleetNodePhaseReady)
+					if err != nil {
+						log.Error(err, "post-re-registration heartbeat patch failed; will retry", "name", r.NodeName)
+						continue
+					}
+				} else {
+					// Don't return on transient errors; the next tick can
+					// recover. A persistent failure is visible via stale
+					// LastHeartbeatTime, which is exactly the staleness
+					// signal the scheduler uses anyway.
+					log.Error(err, "heartbeat patch failed; will retry")
+					continue
+				}
 			}
 
 			// Check for a pending self-update after the heartbeat so the

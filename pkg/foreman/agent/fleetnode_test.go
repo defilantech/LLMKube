@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -831,5 +832,83 @@ func TestRegistrar_PatchHeartbeat_SupervisionCapacityAbsentPreservesExisting(t *
 		got.Status.SupervisionCapacity.Maximum == nil ||
 		*got.Status.SupervisionCapacity.Maximum != 4 {
 		t.Errorf("SupervisionCapacity = %+v, want {Current:2, Maximum:4}", got.Status.SupervisionCapacity)
+	}
+}
+
+// TestRegistrar_Run_ReRegistersWhenFleetNodeDeleted verifies that when a
+// running agent's FleetNode CR is deleted/reaped (e.g. while silent or asleep),
+// the heartbeat loop detects the NotFound error, re-registers the node via
+// Upsert, and restores it to Ready status (#1778).
+func TestRegistrar_Run_ReRegistersWhenFleetNodeDeleted(t *testing.T) {
+	existing := &foremanv1alpha1.FleetNode{
+		ObjectMeta: metav1.ObjectMeta{Name: "worker-re-register"},
+		Spec: foremanv1alpha1.FleetNodeSpec{
+			NodeName: "worker-re-register",
+			Roles:    []string{"worker"},
+		},
+	}
+	kc := newFakeClient(t, existing)
+	r := &Registrar{
+		Client:   kc,
+		NodeName: "worker-re-register",
+		Spec: foremanv1alpha1.FleetNodeSpec{
+			NodeName: "worker-re-register",
+			Roles:    []string{"worker"},
+		},
+		Provider: &fixedCapability{cap: foremanv1alpha1.FleetNodeCapability{TotalRAMGB: 64}},
+		Interval: 20 * time.Millisecond,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- r.Run(ctx) }()
+
+	// Let the initial heartbeat complete.
+	time.Sleep(30 * time.Millisecond)
+
+	// Simulate the reconciler reaping the FleetNode CR.
+	if err := kc.Delete(ctx, existing); err != nil {
+		t.Fatalf("delete FleetNode: %v", err)
+	}
+
+	// Verify the object is gone.
+	var check foremanv1alpha1.FleetNode
+	if err := kc.Get(ctx, types.NamespacedName{Name: "worker-re-register"}, &check); !apierrors.IsNotFound(err) {
+		t.Fatalf("expected NotFound after delete, got %v", err)
+	}
+
+	// Wait for the next tick: PatchHeartbeat gets NotFound -> Upsert -> PatchHeartbeat.
+	time.Sleep(60 * time.Millisecond)
+
+	// Verify the FleetNode was re-created and is Ready.
+	var got foremanv1alpha1.FleetNode
+	if err := kc.Get(context.Background(), types.NamespacedName{Name: "worker-re-register"}, &got); err != nil {
+		t.Fatalf("Get after re-registration: %v", err)
+	}
+	if got.Status.Phase != foremanv1alpha1.FleetNodePhaseReady {
+		t.Errorf("Phase = %v, want Ready", got.Status.Phase)
+	}
+	if got.Status.LastHeartbeatTime == nil {
+		t.Error("LastHeartbeatTime was not populated after re-registration")
+	}
+
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return within 2s")
+	}
+
+	// Verify clean drain on shutdown.
+	if err := kc.Get(context.Background(), types.NamespacedName{Name: "worker-re-register"}, &got); err != nil {
+		t.Fatalf("Get after shutdown: %v", err)
+	}
+	if got.Status.Phase != foremanv1alpha1.FleetNodePhaseDraining {
+		t.Errorf("Phase after cancel = %v, want Draining", got.Status.Phase)
 	}
 }

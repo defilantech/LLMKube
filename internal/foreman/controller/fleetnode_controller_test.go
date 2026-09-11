@@ -250,6 +250,37 @@ var _ = Describe("FleetNodeReconciler heartbeat staleness", func() {
 		Expect(apierrors.IsNotFound(err)).To(BeTrue(), "orphaned in-cluster NotReady node should be deleted")
 	})
 
+	It("reaps an in-cluster node left in Ready whose agent heartbeat is long stale", func() {
+		// When an agent pod dies abruptly, its node may still be recorded as Ready
+		// if the reconciler hasn't yet marked it NotReady. The stale-Ready disjunct
+		// ensures it is reaped once silence exceeds the reap timeout without
+		// needing an intermediate reconcile.
+		fn := &foremanv1alpha1.FleetNode{
+			ObjectMeta: metav1.ObjectMeta{Name: "orphan-stale-ready"},
+			Spec: foremanv1alpha1.FleetNodeSpec{
+				NodeName: "orphan-stale-ready",
+				Roles:    []string{"worker"},
+			},
+		}
+		Expect(k8sClient.Create(ctx, fn)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, fn) })
+
+		gone := metav1.NewTime(time.Now().Add(-2 * foremanv1alpha1.FleetNodeNotReadyReapTimeout))
+		fn.Status.Phase = foremanv1alpha1.FleetNodePhaseReady
+		fn.Status.KubernetesNode = "eula"
+		fn.Status.LastHeartbeatTime = &gone
+		Expect(k8sClient.Status().Update(ctx, fn)).To(Succeed())
+
+		_, err := reconciler.Reconcile(ctx, ctrl.Request{
+			NamespacedName: types.NamespacedName{Name: "orphan-stale-ready"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		var got foremanv1alpha1.FleetNode
+		err = k8sClient.Get(ctx, types.NamespacedName{Name: "orphan-stale-ready"}, &got)
+		Expect(apierrors.IsNotFound(err)).To(BeTrue(), "orphaned in-cluster Ready node past timeout should be reaped")
+	})
+
 	It("leaves an off-cluster NotReady node alone even when heartbeat is long stale", func() {
 		// Off-cluster nodes (metal Macs) have static identities and leave
 		// status.kubernetesNode empty. They must NOT be reaped on extended

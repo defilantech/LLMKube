@@ -88,7 +88,7 @@ func (r *FleetNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// reap timeout. Off-cluster agents (metal Macs) leave status.kubernetesNode
 	// empty and have persistent identities, so they are not reaped.
 	if (node.Status.Phase == foremanv1alpha1.FleetNodePhaseNotReady || stale) && node.NotReadyReapable(now) {
-		return r.reapNode(ctx, &node, "orphaned NotReady in-cluster FleetNode (agent pod gone)")
+		return r.reapNode(ctx, &node, "orphaned in-cluster FleetNode (agent pod gone)")
 	}
 
 	desiredPhase := foremanv1alpha1.FleetNodePhaseReady
