@@ -41,6 +41,7 @@ func coderTask() *foremanv1alpha1.AgenticTask {
 			Result: &runtime.RawExtension{Raw: []byte(`{
 				"verdict":"GO","elapsedSec":2980,
 				"extra":{"branch":"foreman/issue-89","commitSHA":"71f4343","turnCount":38,
+					"turnsWithCompletion":36,"turnsWithToolCall":30,
 					"modelExtra":{"gateAttempts":1,"outcome":"","scopeDriftDetected":false,
 						"scopeMatched":["internal/router"],"filesChanged":["internal/router/pure_test.go"],
 						"testsAdded":35}}}`)},
@@ -91,8 +92,35 @@ func TestBuildRecordCoder(t *testing.T) {
 	if rec.TurnCount != 38 || rec.TestsAdded != 35 || len(rec.FilesChanged) != 1 {
 		t.Errorf("effort fields wrong: turns=%d tests=%d files=%v", rec.TurnCount, rec.TestsAdded, rec.FilesChanged)
 	}
+	// #1628 turn accounting: how much of the turn budget produced a
+	// completion and how much produced a tool call.
+	if rec.TurnsWithCompletion != 36 || rec.TurnsWithToolCall != 30 {
+		t.Errorf("turn accounting wrong: withCompletion=%d withToolCall=%d",
+			rec.TurnsWithCompletion, rec.TurnsWithToolCall)
+	}
 	if rec.IssueAsk != nil || rec.Reviewer != nil {
 		t.Errorf("coder task must not carry reviewer/issueAsk blocks: %+v %+v", rec.IssueAsk, rec.Reviewer)
+	}
+}
+
+// TestBuildRecordTurnAccountingAbsent pins that a result JSON predating
+// the #1628 turn accounting (turnCount only) still decodes and leaves
+// the new counters zero — omitempty then keeps them out of the emitted
+// record, so old runs are never rewritten with fabricated values.
+func TestBuildRecordTurnAccountingAbsent(t *testing.T) {
+	task := coderTask()
+	task.Status.Result = &runtime.RawExtension{Raw: []byte(`{
+		"verdict":"INCOMPLETE","elapsedSec":65,
+		"extra":{"turnCount":160,"reason":"MaxTurnsExhausted"}}`)}
+	task.Status.Verdict = foremanv1alpha1.AgenticTaskVerdictIncomplete
+	task.Status.FailureReason = foremanv1alpha1.FailureMaxTurnsExhausted
+	rec := BuildRecord(task, coderAgent())
+	if rec.TurnCount != 160 {
+		t.Errorf("turnCount = %d, want 160", rec.TurnCount)
+	}
+	if rec.TurnsWithCompletion != 0 || rec.TurnsWithToolCall != 0 {
+		t.Errorf("absent turn accounting must stay zero: withCompletion=%d withToolCall=%d",
+			rec.TurnsWithCompletion, rec.TurnsWithToolCall)
 	}
 }
 

@@ -473,6 +473,95 @@ func TestLoop_MaxTurnsExhausted_AfterRejectedSubmissions(t *testing.T) {
 	}
 }
 
+const emptyChoices = `{"id": "t5", "choices": []}`
+
+// TestLoop_TurnAccounting pins the #1628 per-turn counters the spin
+// guard and the audit record consume: Turns counts consumed budget,
+// TurnsWithCompletion only counts turns that obtained a usable
+// completion (transport errors and empty-choices responses do not), and
+// TurnsWithToolCall only counts turns that dispatched at least one tool
+// — a prose-narration turn is a completion without progress and must
+// not land in the tool-call count.
+func TestLoop_TurnAccounting(t *testing.T) {
+	cases := []struct {
+		name            string
+		bodies          []string
+		maxTurns        int
+		wantErr         error
+		wantTurns       int
+		wantCompletions int
+		wantToolCalls   int
+	}{
+		{
+			// read_file, prose (nudged, not progress), submit_result.
+			name:            "mixed run to terminal",
+			bodies:          []string{toolCallReadFile, assistantNoCalls, toolCallSubmitGo},
+			maxTurns:        10,
+			wantTurns:       3,
+			wantCompletions: 3,
+			wantToolCalls:   2,
+		},
+		{
+			// The prose streak spends its corrective budget and aborts:
+			// every aborted turn still produced a completion, but only
+			// the opening read_file produced a tool call.
+			name:            "prose streak exhausts corrective budget",
+			bodies:          []string{toolCallReadFile, assistantNoCalls, assistantNoCalls, assistantNoCalls},
+			maxTurns:        10,
+			wantErr:         ErrAssistantNoToolCalls,
+			wantTurns:       4,
+			wantCompletions: 4,
+			wantToolCalls:   1,
+		},
+		{
+			// A response with no choices never became a completion: the
+			// turn consumed budget but is not counted as model work.
+			name:            "empty-choices aborts without a completion",
+			bodies:          []string{toolCallReadFile, emptyChoices},
+			maxTurns:        10,
+			wantErr:         oai.ErrNoChoices,
+			wantTurns:       2,
+			wantCompletions: 1,
+			wantToolCalls:   1,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, _ := scriptedOAIServer(t, tc.bodies)
+			reg := &fakeRegistry{
+				results: map[string]*ToolResult{
+					"read_file":     {Output: map[string]any{"content": "# README\n"}},
+					"submit_result": {Terminal: true, Verdict: "GO", Summary: "done"},
+				},
+			}
+			loop := newTestLoop(srv, reg)
+			res, err := loop.Run(context.Background(), LoopConfig{Model: "test", MaxTurns: tc.maxTurns})
+			if tc.wantErr != nil {
+				if !errors.Is(err, tc.wantErr) {
+					t.Fatalf("expected %v, got %v", tc.wantErr, err)
+				}
+			} else if err != nil {
+				t.Fatalf("unexpected err: %v", err)
+			}
+			if res.Turns != tc.wantTurns {
+				t.Errorf("turns: want %d got %d", tc.wantTurns, res.Turns)
+			}
+			if res.TurnsWithCompletion != tc.wantCompletions {
+				t.Errorf("turnsWithCompletion: want %d got %d", tc.wantCompletions, res.TurnsWithCompletion)
+			}
+			if res.TurnsWithToolCall != tc.wantToolCalls {
+				t.Errorf("turnsWithToolCall: want %d got %d", tc.wantToolCalls, res.TurnsWithToolCall)
+			}
+			// Every consumed turn spent wall-clock inside runOneTurn,
+			// even an instant httptest one — the spin guard divides
+			// this by Turns, so zero here means the guard never fires.
+			if res.TurnDuration <= 0 {
+				t.Errorf("turnDuration: want > 0, got %v", res.TurnDuration)
+			}
+		})
+	}
+}
+
 func TestLoop_UnknownToolBecomesToolErrorMessage(t *testing.T) {
 	srv, _ := scriptedOAIServer(t, []string{toolCallUnknownTool, toolCallSubmitGo})
 	reg := &fakeRegistry{

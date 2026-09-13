@@ -625,6 +625,84 @@ func TestMapLoopError_MaxTurns_SubmissionCount(t *testing.T) {
 	}
 }
 
+// TestMapLoopError_MaxTurns_SpinGuard pins the #1628 spin
+// classification: a max-turns run whose per-turn average is strictly below
+// spinGuardMaxAvgTurn ran faster than a model can generate, so the
+// failure reason is LoopSpinning and the summary reports the rate. Real
+// exhaustion (1662s of work), runs below the min-turns floor, and runs at
+// exactly the threshold (strict less-than fails) all stay on the
+// ordinary MaxTurnsExhausted reason.
+func TestMapLoopError_MaxTurns_SpinGuard(t *testing.T) {
+	e := &NativeAgentLoopExecutor{}
+	tref := corev1.ObjectReference{Name: "transcript"}
+
+	cases := []struct {
+		name       string
+		lr         *LoopResult
+		wantReason foremanv1alpha1.AgenticTaskFailureReason
+		wantFrags  []string
+	}{
+		{
+			// #1628's observed spin: 160 turns in 65s (0.41s/turn),
+			// far faster than any model can produce a turn.
+			name:       "spin",
+			lr:         &LoopResult{Turns: 160, TurnDuration: 65 * time.Second, TurnsWithCompletion: 160, TurnsWithToolCall: 150},
+			wantReason: foremanv1alpha1.FailureLoopSpinning,
+			wantFrags:  []string{"0.41s/turn", "spinning backend or shim"},
+		},
+		{
+			// A spin that also had gate-rejected submissions keeps the
+			// #1713 rejection detail in the summary.
+			name:       "spin with rejected submissions",
+			lr:         &LoopResult{Turns: 160, TurnDuration: 65 * time.Second, TurnsWithCompletion: 160, TurnsWithToolCall: 150, SubmissionsRejected: 2},
+			wantReason: foremanv1alpha1.FailureLoopSpinning,
+			wantFrags:  []string{"0.41s/turn", "2 time(s)", "verification gate"},
+		},
+		{
+			// 1662s over 160 turns is slow real work, not a spin.
+			name:       "real exhaustion",
+			lr:         &LoopResult{Turns: 160, TurnDuration: 1662 * time.Second, TurnsWithCompletion: 160, TurnsWithToolCall: 150},
+			wantReason: foremanv1alpha1.FailureMaxTurnsExhausted,
+		},
+		{
+			// Below the min-turns floor: a fast tiny run keeps the
+			// ordinary reason even at ~0.2ms/turn.
+			name:       "below min-turns floor",
+			lr:         &LoopResult{Turns: 5, TurnDuration: time.Millisecond},
+			wantReason: foremanv1alpha1.FailureMaxTurnsExhausted,
+		},
+		{
+			// Average exactly at the threshold: the strict less-than
+			// fails, so 10 turns in 10s is not a spin.
+			name:       "boundary exactly one second per turn",
+			lr:         &LoopResult{Turns: 10, TurnDuration: 10 * time.Second},
+			wantReason: foremanv1alpha1.FailureMaxTurnsExhausted,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r, err := e.mapLoopError(time.Time{}, tref, tc.lr, ErrMaxTurnsExhausted)
+			if err != nil {
+				t.Fatalf("unexpected err: %v", err)
+			}
+			if r.FailureReason != tc.wantReason {
+				t.Errorf("FailureReason: want %q got %q", tc.wantReason, r.FailureReason)
+			}
+			for _, frag := range tc.wantFrags {
+				if !strings.Contains(r.Summary, frag) {
+					t.Errorf("summary: want it to contain %q, got %q", frag, r.Summary)
+				}
+			}
+			if got := r.Extra["turnsWithCompletion"]; got != tc.lr.TurnsWithCompletion {
+				t.Errorf("Extra[turnsWithCompletion]: want %d got %v", tc.lr.TurnsWithCompletion, got)
+			}
+			if got := r.Extra["turnsWithToolCall"]; got != tc.lr.TurnsWithToolCall {
+				t.Errorf("Extra[turnsWithToolCall]: want %d got %v", tc.lr.TurnsWithToolCall, got)
+			}
+		})
+	}
+}
+
 // TestResolveProviderEndpoint covers the v0.2 cloud-proxy resolution
 // path: providerConfig must carry baseURL + model, the optional
 // APIKeySecretRef must reference a real Secret, and missing fields

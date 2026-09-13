@@ -276,6 +276,14 @@ A clean M3 demo run produces:
   `submit_result`. Either the issue was too complex (raise to a
   human) or the prompt needs tightening.
 
+- **`outcome=LOOP-INCOMPLETE`** with `reason=LoopSpinning`:
+  the loop burned its `maxTurns` budget at a per-turn rate no model
+  can produce (average well under ~1 s/turn; a healthy run takes
+  seconds-to-tens-of-seconds per turn). The budget died of a spinning
+  backend or shim, not of a model that gave up — unlike
+  `MaxTurnsExhausted`, do not raise the budget or tighten the prompt:
+  check the inference endpoint/shim instead.
+
 - **`outcome=LOOP-INCOMPLETE`** with `reason=AssistantHallucinatedFinish`:
   the model emitted plain text instead of a tool call. The system
   prompt explicitly forbids this; if it recurs, the prompt's

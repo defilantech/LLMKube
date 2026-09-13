@@ -313,6 +313,24 @@ type LoopResult struct {
 	// problems with different fixes. Zero when no terminal was ever
 	// reached, or when the gate is disabled.
 	SubmissionsRejected int
+	// TurnsWithCompletion counts the turns whose chat request returned a
+	// usable completion (a response with at least one choice; a request
+	// error or an empty-choices response does not count). #1628: the
+	// turn-accounting signal that separates real model work from a spin —
+	// a run that burned its max-turns budget on a spinning backend
+	// consumed turns the model never actually produced.
+	TurnsWithCompletion int
+	// TurnsWithToolCall counts the turns whose assistant message carried
+	// at least one tool call (submit_result counts). #1628: with
+	// TurnsWithCompletion this lets the audit record show how much of the
+	// run was actual work (tool dispatch) versus idle narration.
+	TurnsWithToolCall int
+	// TurnDuration is the cumulative wall-clock spent inside runOneTurn
+	// (request + tool dispatch) over the whole run. #1628: dividing by
+	// Turns yields the per-turn rate, which is how a real model run
+	// (seconds to tens of seconds per turn) is told apart from a spin
+	// (~0.5 s/turn, faster than the model can generate tokens).
+	TurnDuration time.Duration
 }
 
 // ErrMaxTurnsExhausted is returned when the loop hits MaxTurns without
@@ -849,7 +867,13 @@ func (l *Loop) Run(ctx context.Context, cfg LoopConfig) (*LoopResult, error) {
 		// payload, so it is cleared immediately regardless of the outcome.
 		preserveReasoning := streaks.preserveReasoningNext
 		streaks.preserveReasoningNext = false
+		// Wrap the whole turn (request + tool dispatch) so TurnDuration
+		// reflects what the endpoint actually spent; runOneTurn is called
+		// exactly once per iteration, so this single site covers every
+		// turn (#1628 spin detection uses the rate this yields).
+		turnStart := time.Now()
 		editSucceeded, turnErr := l.runOneTurn(ctx, cfg, activeSchemas, res, preserveReasoning, &sessionDrop)
+		res.TurnDuration += time.Since(turnStart)
 
 		// After a truncation-continuation turn, the just-truncated assistant
 		// message's partial reasoning has served its purpose: the model
@@ -1221,7 +1245,11 @@ func (l *Loop) runOneTurn(
 		span.RecordError(err)
 		return false, err
 	}
-
+	// A real completion is in hand. Count it once per turn here — the
+	// temperature-retry path above may have made two requests, but both
+	// funnel through this single point, so one turn can never add more
+	// than one completion (#1628 turn accounting).
+	res.TurnsWithCompletion++
 	msg := resp.Choices[0].Message
 	finishReason := resp.Choices[0].FinishReason
 	// Some servers omit the role on the assistant reply; the OAI spec
@@ -1284,6 +1312,10 @@ func (l *Loop) runOneTurn(
 		return false, err
 	}
 
+	// This point is only reached when the completion carried at least
+	// one tool call (the no-tool-call paths returned above), so one
+	// increment per turn cannot over-count (#1628 turn accounting).
+	res.TurnsWithToolCall++
 	terminal, editSucceeded := l.dispatchToolCalls(ctx, msg.ToolCalls, res)
 	span.SetAttributes(
 		attribute.Int("tool_calls", len(msg.ToolCalls)),

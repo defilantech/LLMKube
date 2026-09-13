@@ -97,7 +97,7 @@ const (
 // v0.3 #559 introduces the enum + emission; per-reason retry policy
 // on AgenticTaskSpec and retry-with-correction in the loop are
 // follow-up work that consumes this signal.
-// +kubebuilder:validation:Enum=AgentNotFound;InferenceServiceUnavailable;AuthUnavailable;GitRemoteNotConfigured;CloneFailed;ModelMisunderstood;ToolFailed;MaxTurnsExhausted;ConstraintViolated;Timeout;InfrastructureError;GateFailed;GateError;ModelReportedError
+// +kubebuilder:validation:Enum=AgentNotFound;InferenceServiceUnavailable;AuthUnavailable;GitRemoteNotConfigured;CloneFailed;ModelMisunderstood;ToolFailed;MaxTurnsExhausted;LoopSpinning;ConstraintViolated;Timeout;InfrastructureError;GateFailed;GateError;ModelReportedError
 type AgenticTaskFailureReason string
 
 const (
@@ -152,6 +152,15 @@ const (
 	// gave up. Not retryable without intervention (different
 	// MaxTurns or different prompt).
 	FailureMaxTurnsExhausted AgenticTaskFailureReason = "MaxTurnsExhausted"
+
+	// FailureLoopSpinning: the loop hit Agent.spec.MaxTurns but at a
+	// per-turn rate far below what a model can physically produce
+	// (observed 0.4-0.66 s/turn in #1628 vs seconds-to-tens-of-seconds
+	// per real turn): the budget was consumed by a spinning
+	// backend/shim, not by a model that gave up. Distinct fix path
+	// from FailureMaxTurnsExhausted: check the endpoint/shim, not the
+	// prompt/budget.
+	FailureLoopSpinning AgenticTaskFailureReason = "LoopSpinning"
 
 	// FailureConstraintViolated: the model called a tool excluded by
 	// the Agent's spec.tools whitelist (#561's

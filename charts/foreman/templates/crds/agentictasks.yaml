@@ -600,6 +600,7 @@ spec:
                 - ModelMisunderstood
                 - ToolFailed
                 - MaxTurnsExhausted
+                - LoopSpinning
                 - ConstraintViolated
                 - Timeout
                 - InfrastructureError

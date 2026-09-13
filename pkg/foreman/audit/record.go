@@ -43,9 +43,15 @@ type Record struct {
 	Branch            string           `json:"branch,omitempty"`
 	CommitSHA         string           `json:"commitSHA,omitempty"`
 	TurnCount         int              `json:"turnCount,omitempty"`
-	FilesChanged      []string         `json:"filesChanged,omitempty"`
-	TestsAdded        int              `json:"testsAdded,omitempty"`
-	TranscriptRef     string           `json:"transcriptRef,omitempty"`
+	// TurnsWithCompletion / TurnsWithToolCall are the #1628 turn
+	// accounting: how many turns produced a usable completion and how
+	// many produced a tool call. Zero when the result JSON carries no
+	// block (e.g. successful runs) — omitempty then makes them vanish.
+	TurnsWithCompletion int      `json:"turnsWithCompletion,omitempty"`
+	TurnsWithToolCall   int      `json:"turnsWithToolCall,omitempty"`
+	FilesChanged        []string `json:"filesChanged,omitempty"`
+	TestsAdded          int      `json:"testsAdded,omitempty"`
+	TranscriptRef       string   `json:"transcriptRef,omitempty"`
 }
 
 // TaskRef identifies the AgenticTask the record describes.
@@ -94,8 +100,10 @@ type ReviewerOutcome struct {
 type resultPayload struct {
 	ElapsedSec float64 `json:"elapsedSec"`
 	Extra      struct {
-		TurnCount  int `json:"turnCount"`
-		ModelExtra struct {
+		TurnCount           int `json:"turnCount"`
+		TurnsWithCompletion int `json:"turnsWithCompletion"`
+		TurnsWithToolCall   int `json:"turnsWithToolCall"`
+		ModelExtra          struct {
 			GateAttempts       int      `json:"gateAttempts"`
 			Outcome            string   `json:"outcome"`
 			ScopeDriftDetected bool     `json:"scopeDriftDetected"`
@@ -158,6 +166,8 @@ func BuildRecord(task *foremanv1alpha1.AgenticTask, agent *foremanv1alpha1.Agent
 		if err := json.Unmarshal(task.Status.Result.Raw, &rp); err == nil {
 			rec.ElapsedSec = rp.ElapsedSec
 			rec.TurnCount = rp.Extra.TurnCount
+			rec.TurnsWithCompletion = rp.Extra.TurnsWithCompletion
+			rec.TurnsWithToolCall = rp.Extra.TurnsWithToolCall
 			me := rp.Extra.ModelExtra
 			rec.FilesChanged = me.FilesChanged
 			rec.TestsAdded = me.TestsAdded

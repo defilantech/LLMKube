@@ -2173,10 +2173,12 @@ func (e *NativeAgentLoopExecutor) incompleteResult(
 	r := NewResult(e.Kind(), foremanv1alpha1.AgenticTaskVerdictIncomplete, msg, time.Since(start))
 	r.FailureReason = reason
 	r.Extra = map[string]any{
-		"reason":        string(reason),
-		"outcome":       "LOOP-INCOMPLETE",
-		"transcriptRef": objRefAsMap(tref),
-		"turnCount":     lr.Turns,
+		"reason":              string(reason),
+		"outcome":             "LOOP-INCOMPLETE",
+		"transcriptRef":       objRefAsMap(tref),
+		"turnCount":           lr.Turns,
+		"turnsWithCompletion": lr.TurnsWithCompletion,
+		"turnsWithToolCall":   lr.TurnsWithToolCall,
 	}
 	return r
 }
@@ -2886,6 +2888,19 @@ func (e *NativeAgentLoopExecutor) envtestGateFailedResult(
 	return r
 }
 
+// Spin-guard thresholds (#1628). The observed spins burned their max-turns
+// budget in 65 s / 160 turns and 105 s / 160 turns — 0.4-0.66 s/turn, faster
+// than any model can generate tokens, while healthy runs average ~1.7 s+/turn
+// (seconds to tens of seconds per real turn). A run that exhausted MaxTurns
+// with a strict per-turn average below spinGuardMaxAvgTurn therefore cannot
+// be real model work. spinGuardMinTurns keeps tiny, fast runs — and the
+// small-budget fakes in unit tests — on the ordinary MaxTurnsExhausted
+// reason.
+const (
+	spinGuardMinTurns   = 10
+	spinGuardMaxAvgTurn = time.Second
+)
+
 // mapLoopError converts a loop.Run error into the Result the initial and
 // retry paths both return. It returns (nil, nil) when loopErr is nil (the
 // caller proceeds to inspect the terminal); (result, nil) for a
@@ -2915,6 +2930,28 @@ func (e *NativeAgentLoopExecutor) mapLoopError(
 					"gate; turns exhausted", lr.SubmissionsRejected)
 		} else {
 			summary = "model did not call submit_result within max_turns"
+		}
+		// Spin guard (#1628): a max-turns run whose average turn is
+		// strictly under spinGuardMaxAvgTurn ran faster than a model can
+		// generate, so the budget died of a spinning backend/shim, not of
+		// a model that gave up. The min-turns floor keeps tiny runs on the
+		// ordinary reason. The #1713 rejected-submissions detail is kept in
+		// the summary when present so that signal is not lost.
+		spinning := lr.Turns >= spinGuardMinTurns &&
+			lr.TurnDuration < spinGuardMaxAvgTurn*time.Duration(lr.Turns)
+		if spinning {
+			spun := fmt.Sprintf(
+				"loop exhausted %d turns in %.1fs (avg %.2fs/turn; "+
+					"%d turns with a tool call) — too fast to be real "+
+					"model work, suspect a spinning backend or shim",
+				lr.Turns, lr.TurnDuration.Seconds(),
+				lr.TurnDuration.Seconds()/float64(lr.Turns),
+				lr.TurnsWithToolCall)
+			if lr.SubmissionsRejected > 0 {
+				spun += "; " + summary
+			}
+			return e.incompleteResult(start, tref, lr,
+				foremanv1alpha1.FailureLoopSpinning, spun), nil
 		}
 		return e.incompleteResult(start, tref, lr,
 			foremanv1alpha1.FailureMaxTurnsExhausted, summary), nil
