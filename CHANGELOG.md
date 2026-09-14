@@ -5,6 +5,13 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.27](https://github.com/defilantech/LLMKube/compare/v0.9.26...v0.9.27) (2026-09-14)
+
+
+### Bug Fixes
+
+* **deps:** bump google.golang.org/grpc to the CVE-2026-84445 fix ([#1823](https://github.com/defilantech/LLMKube/issues/1823)) ([cff58b5](https://github.com/defilantech/LLMKube/commit/cff58b532de2dabfbd9362abd1c98dc844b02c85))
+
 ## [0.9.26](https://github.com/defilantech/LLMKube/compare/v0.9.25...v0.9.26) (2026-09-14)
 
 
