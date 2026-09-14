@@ -5,6 +5,48 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.26](https://github.com/defilantech/LLMKube/compare/v0.9.25...v0.9.26) (2026-09-14)
+
+
+### Features
+
+* **controller:** metric-gated idle probe for the generic runtime ([#1802](https://github.com/defilantech/LLMKube/issues/1802)) ([750be58](https://github.com/defilantech/LLMKube/commit/750be58dfa5542ec34a74c82e2fa10d9441ea8a9))
+* **controller:** ModelPool reclaim policy returns the slot to spec.default after idle ([#1796](https://github.com/defilantech/LLMKube/issues/1796)) ([9fd13cd](https://github.com/defilantech/LLMKube/commit/9fd13cd8e16ead745b1fee1a303ca5f442ac029b))
+* **foreman:** expose node label on FleetNode metrics for fleet joins ([#1785](https://github.com/defilantech/LLMKube/issues/1785)) ([5db0f7c](https://github.com/defilantech/LLMKube/commit/5db0f7c2e0a4309aaa15372c6c71e8c61a99e3dd))
+* **foreman:** serve Agents from Anthropic-native endpoints ([#1811](https://github.com/defilantech/LLMKube/issues/1811)) ([a2e2b2e](https://github.com/defilantech/LLMKube/commit/a2e2b2ea9b6976c34cbaf219de3d3aa2fd94cf54))
+* **inferenceservice:** add resources.memoryLimit to decouple ceiling from reservation ([#1764](https://github.com/defilantech/LLMKube/issues/1764)) ([53e5090](https://github.com/defilantech/LLMKube/commit/53e5090f6a097c380f6106e469ea740041ec66e7))
+* **model:** resume interrupted single-file downloads via a content-keyed partial ([#1765](https://github.com/defilantech/LLMKube/issues/1765)) ([#1807](https://github.com/defilantech/LLMKube/issues/1807)) ([e3384f4](https://github.com/defilantech/LLMKube/commit/e3384f46f1e7ede48d275133c6eacecc92554ddd))
+* **router:** mount /v1/embeddings and /v1/rerank on the proxy ([#1819](https://github.com/defilantech/LLMKube/issues/1819)) ([3af89e9](https://github.com/defilantech/LLMKube/commit/3af89e9cb8e56bd20cea39197d9fa325f59f47b0))
+* **router:** opt-in endpoint-level backends for per-request balancing ([#1820](https://github.com/defilantech/LLMKube/issues/1820)) ([d9349e2](https://github.com/defilantech/LLMKube/commit/d9349e28b7aa9cb94d86625065f30d979404c9b6))
+* **router:** poolActivation IfIdle serves the warm member when the incumbent is busy ([#1787](https://github.com/defilantech/LLMKube/issues/1787)) ([d211a53](https://github.com/defilantech/LLMKube/commit/d211a53c4a00c0a44f832397b91095870ea546d8))
+* **samples:** three-Spark ring DeepSeek-V4.1-Flash EXL3 TP3 samples and the multi-node guide section ([#1816](https://github.com/defilantech/LLMKube/issues/1816)) ([6cb8389](https://github.com/defilantech/LLMKube/commit/6cb8389861b26f9649fd9f3ae7deaae9f92b8eac))
+
+
+### Bug Fixes
+
+* **agent:** resolve hf:// model sources on the metal path ([#1759](https://github.com/defilantech/LLMKube/issues/1759)) ([#1789](https://github.com/defilantech/LLMKube/issues/1789)) ([0d4879c](https://github.com/defilantech/LLMKube/commit/0d4879c503bf936cd1b2ac3778d86af758de5e4b))
+* **controller:** hold a multiNode group while a member is staging ([#1757](https://github.com/defilantech/LLMKube/issues/1757)) ([#1806](https://github.com/defilantech/LLMKube/issues/1806)) ([116ba95](https://github.com/defilantech/LLMKube/commit/116ba95cb293b6681f1532a7b7f615b95fbd1dc3))
+* **controller:** probe multiNode worker rendezvous, fix readyMembers ([#1781](https://github.com/defilantech/LLMKube/issues/1781)) ([#1782](https://github.com/defilantech/LLMKube/issues/1782)) ([97acb8e](https://github.com/defilantech/LLMKube/commit/97acb8eac270af9eac442eac36be2f8e840781a7))
+* **controller:** re-resolve a Model when spec.source changes ([#1767](https://github.com/defilantech/LLMKube/issues/1767)) ([#1805](https://github.com/defilantech/LLMKube/issues/1805)) ([9149419](https://github.com/defilantech/LLMKube/commit/9149419575e2ac2231fd2dfe09500198bf265434))
+* **foreman-chart:** name the FleetNode in the stale-heartbeat alert ([#1779](https://github.com/defilantech/LLMKube/issues/1779)) ([#1783](https://github.com/defilantech/LLMKube/issues/1783)) ([d4138d2](https://github.com/defilantech/LLMKube/commit/d4138d2c64fe49fa7b29206939b37c0cd72b98f8))
+* **foreman:** anchor coder rail diffs to the resolved upstream base SHA ([#1803](https://github.com/defilantech/LLMKube/issues/1803)) ([08ce692](https://github.com/defilantech/LLMKube/commit/08ce6927cc6214ff379255ffde436260dcf0d719))
+* **foreman:** clear a FleetNode reservation whose AgenticTask was deleted ([#1791](https://github.com/defilantech/LLMKube/issues/1791)) ([#1804](https://github.com/defilantech/LLMKube/issues/1804)) ([0cc53c4](https://github.com/defilantech/LLMKube/commit/0cc53c4ae414060d3f11aff3d3738d90b42e99b0))
+* **foreman:** drain tasks before agent exit ([#1799](https://github.com/defilantech/LLMKube/issues/1799)) ([9b22e73](https://github.com/defilantech/LLMKube/commit/9b22e7364c4476c62fb8ec210dad44056a27ecff))
+* **foreman:** omit issue references from the reviewer prompt when the payload carries none ([#1761](https://github.com/defilantech/LLMKube/issues/1761)) ([#1808](https://github.com/defilantech/LLMKube/issues/1808)) ([36e0e0b](https://github.com/defilantech/LLMKube/commit/36e0e0bb2a49793bab62f42b3d2415c66fcf637b))
+* **foreman:** reap orphaned in-cluster FleetNodes when agent pods disappear ([#1778](https://github.com/defilantech/LLMKube/issues/1778)) ([#1792](https://github.com/defilantech/LLMKube/issues/1792)) ([9fbee34](https://github.com/defilantech/LLMKube/commit/9fbee34cdaf28237c831175f9eac2479ce8f24d5))
+* **foreman:** reject unverified reviewer GO ([#1801](https://github.com/defilantech/LLMKube/issues/1801)) ([27910ed](https://github.com/defilantech/LLMKube/commit/27910ed9e09ea7b014f2180af03a4d3e8cfccc3c))
+* **foreman:** tell a spin from a real max-turns burn ([#1814](https://github.com/defilantech/LLMKube/issues/1814)) ([3e93fe4](https://github.com/defilantech/LLMKube/commit/3e93fe4e3ec0666240a67ca4e647027d0e982794))
+* **foreman:** use the coder's PR description when the PR opens on review GO ([#1768](https://github.com/defilantech/LLMKube/issues/1768)) ([#1776](https://github.com/defilantech/LLMKube/issues/1776)) ([bff8344](https://github.com/defilantech/LLMKube/commit/bff8344c766ec35f5e019cb46f652b82e5ff365c))
+* **grafana:** separate decode throughput axis ([#1815](https://github.com/defilantech/LLMKube/issues/1815)) ([bf77989](https://github.com/defilantech/LLMKube/commit/bf77989c94542b7e4ba0e75f211dd489f3c04d9b))
+* **model:** re-resolve a Model whose spec changed when no cache key exists ([#1818](https://github.com/defilantech/LLMKube/issues/1818)) ([81be593](https://github.com/defilantech/LLMKube/commit/81be593387ef3697926b06a3f5c3398d34edab38))
+* **rollout:** do not defer a scale-from-zero rollout as PodsBusy ([#1794](https://github.com/defilantech/LLMKube/issues/1794)) ([062332f](https://github.com/defilantech/LLMKube/commit/062332f67712459936551e16cc0a4221c64411c1))
+* **router:** return 503 + Retry-After when every IfIdle backend skips busy ([#1797](https://github.com/defilantech/LLMKube/issues/1797)) ([396177d](https://github.com/defilantech/LLMKube/commit/396177d7ac8791d7dd9c5c1980af110a61e4bc75))
+
+
+### Documentation
+
+* **labs:** reference build for GLM-5.3-Flash EXL3 on two DGX Sparks ([#1784](https://github.com/defilantech/LLMKube/issues/1784)) ([cbdbb25](https://github.com/defilantech/LLMKube/commit/cbdbb2539ee08d5f84cd415385aa22ed877d8a1c))
+
 ## [0.9.25](https://github.com/defilantech/LLMKube/compare/v0.9.24...v0.9.25) (2026-09-05)
 
 
