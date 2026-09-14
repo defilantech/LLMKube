@@ -1,0 +1,47 @@
+name: Release image scan
+
+# Gates the release-please PR on the same Trivy scan the goreleaser job runs
+# after the tag is cut, so a blocking CVE fails the PR instead of leaving a
+# half-published release (v0.9.26, #1815).
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: Release image scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7.0.1
+
+      - name: Self-test the scan harness
+        run: ./scripts/scan-images_test.sh
+
+      # The gate is on the steps, not the job: a skipped job does not satisfy a
+      # required status check, so the job must report success on every PR and
+      # only the expensive scan is skipped for non-release PRs. workflow_dispatch
+      # has an empty head_ref, hence the event_name clause, so the scan can be
+      # exercised on a branch before merge.
+      - name: Set up Docker Buildx
+        if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'release-please--branches--main') }}
+        uses: docker/setup-buildx-action@v4
+
+      - name: Set up Go
+        if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'release-please--branches--main') }}
+        uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Install Trivy
+        if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'release-please--branches--main') }}
+        uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567  # v0.3.1
+
+      - name: Scan images before push (Trivy, amd64)
+        if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'release-please--branches--main') }}
+        run: ./hack/scan-images.sh

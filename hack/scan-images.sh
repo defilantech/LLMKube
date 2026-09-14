@@ -21,6 +21,10 @@ ALL=(
 
 want="${IMAGES:-controller foreman-operator foreman-agent router-proxy}"
 
+# Findings do not abort the loop: a run reports every image's findings before
+# failing, instead of hiding the rest behind the first.
+failed=0
+
 for row in "${ALL[@]}"; do
   IFS='|' read -r id image dockerfile binary main <<<"$row"
   case " $want " in *" $id "*) ;; *) continue ;; esac
@@ -37,8 +41,16 @@ for row in "${ALL[@]}"; do
     -f "$dockerfile" -t "$tag" "$ctx"
 
   echo "==> trivy scan $tag"
-  trivy image \
+  if ! trivy image \
     --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1 \
-    --format table "$tag"
+    --format table "$tag"; then
+    echo "==> FAIL $tag"
+    failed=1
+  fi
 done
+
+if (( failed )); then
+  echo "one or more image scans failed" >&2
+  exit 1
+fi
 echo "all image scans clean"
