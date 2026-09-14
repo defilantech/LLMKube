@@ -435,14 +435,24 @@ func (r *InferenceServiceReconciler) constructDeployment(
 	}
 	container.VolumeMounts = append(container.VolumeMounts, isvc.Spec.ExtraVolumeMounts...)
 
-	// Set command/args based on runtime
+	// Set command/args based on runtime. A custom entrypoint owns its args: when
+	// spec.command is overridden (bring-your-own launcher — e.g. a tuned vLLM
+	// image whose entrypoint dispatches serving modes), the runtime's built args
+	// (`vllm serve <model> --host …`) would be handed to that launcher and break
+	// it. Honor spec.args verbatim instead, so a custom-image server can run under
+	// a native runtime (vllm/sglang) purely to inherit its idle probe and metrics
+	// scraping without adopting its CLI. Runtimes whose BuildArgs already returns
+	// spec.Args (generic) are unaffected.
 	if len(isvc.Spec.Command) > 0 {
 		container.Command = isvc.Spec.Command
-	} else if cb, ok := backend.(CommandBuilder); ok {
-		container.Command = cb.BuildCommand()
-	}
-	if args != nil {
-		container.Args = args
+		container.Args = isvc.Spec.Args
+	} else {
+		if cb, ok := backend.(CommandBuilder); ok {
+			container.Command = cb.BuildCommand()
+		}
+		if args != nil {
+			container.Args = args
+		}
 	}
 
 	// Add runtime-generated env vars, then user-specified env vars (user wins on conflict)

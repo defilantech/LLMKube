@@ -4311,6 +4311,56 @@ var _ = Describe("Generic Runtime Deployment Construction", func() {
 		Expect(container.ReadinessProbe.TCPSocket).NotTo(BeNil())
 	})
 
+	It("honors spec.args verbatim under a native runtime when spec.command is set", func() {
+		// A custom-image vLLM server whose entrypoint dispatches serving modes
+		// can run under the vllm runtime purely to inherit its
+		// num_requests_running idle probe. It must NOT receive the runtime's
+		// built `serve <model> --host …` args, which would break its launcher.
+		customPort := int32(18020)
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: "vllm-custom-model", Namespace: "default"},
+			Spec: inferencev1alpha1.ModelSpec{
+				Source: "org/custom-27b",
+				Format: "safetensors",
+				Hardware: &inferencev1alpha1.HardwareSpec{
+					Accelerator: "cuda",
+					GPU:         &inferencev1alpha1.GPUSpec{Enabled: true, Count: 1, Vendor: "nvidia"},
+				},
+			},
+			Status: inferencev1alpha1.ModelStatus{Phase: "Ready"},
+		}
+
+		skipInit := true
+		isvc := &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: "vllm-custom-svc", Namespace: "llm"},
+			Spec: inferencev1alpha1.InferenceServiceSpec{
+				ModelRef:      "vllm-custom-model",
+				Runtime:       "vllm",
+				Image:         "ghcr.io/example/tuned-vllm:latest",
+				Command:       []string{"bash", "docker/entrypoint.sh"},
+				Args:          []string{"batch"},
+				ContainerPort: &customPort,
+				SkipModelInit: &skipInit,
+				Resources: &inferencev1alpha1.InferenceResourceRequirements{
+					GPU:    1,
+					CPU:    "2",
+					Memory: "16Gi",
+				},
+			},
+		}
+
+		deployment := reconciler.constructDeployment(isvc, model, nil, 1)
+		container := deployment.Spec.Template.Spec.Containers[0]
+
+		By("using the custom entrypoint, not vllm serve")
+		Expect(container.Command).To(Equal([]string{"bash", "docker/entrypoint.sh"}))
+
+		By("passing spec.args verbatim, not the built vllm serve flags")
+		Expect(container.Args).To(Equal([]string{"batch"}))
+		Expect(container.Args).NotTo(ContainElement("serve"))
+		Expect(container.Args).NotTo(ContainElement("org/custom-27b"))
+	})
+
 	It("should support probe overrides", func() {
 		containerPort := int32(8000)
 		model := &inferencev1alpha1.Model{
