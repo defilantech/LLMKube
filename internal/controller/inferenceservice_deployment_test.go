@@ -4339,6 +4339,7 @@ var _ = Describe("Generic Runtime Deployment Construction", func() {
 				Image:         "ghcr.io/example/tuned-vllm:latest",
 				Command:       []string{"bash", "docker/entrypoint.sh"},
 				Args:          []string{"batch"},
+				ExtraArgs:     []string{"--seed", "42"},
 				ContainerPort: &customPort,
 				SkipModelInit: &skipInit,
 				Resources: &inferencev1alpha1.InferenceResourceRequirements{
@@ -4355,8 +4356,8 @@ var _ = Describe("Generic Runtime Deployment Construction", func() {
 		By("using the custom entrypoint, not vllm serve")
 		Expect(container.Command).To(Equal([]string{"bash", "docker/entrypoint.sh"}))
 
-		By("passing spec.args verbatim, not the built vllm serve flags")
-		Expect(container.Args).To(Equal([]string{"batch"}))
+		By("passing spec.args verbatim then spec.extraArgs, not the built vllm serve flags")
+		Expect(container.Args).To(Equal([]string{"batch", "--seed", "42"}))
 		Expect(container.Args).NotTo(ContainElement("serve"))
 		Expect(container.Args).NotTo(ContainElement("org/custom-27b"))
 	})

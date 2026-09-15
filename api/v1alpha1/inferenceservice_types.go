@@ -615,7 +615,8 @@ type InferenceServiceSpec struct {
 	// Arguments are appended after all other configured flags.
 	// Supported by the "llamacpp", "llamacpp-router", "sglang", "tgi" and
 	// "vllm" runtimes. Ignored by "generic" (which takes spec.args instead)
-	// and "personaplex".
+	// and "personaplex" — except that whenever spec.command is set, extraArgs
+	// are appended after spec.args regardless of runtime.
 	// Example: ["--seed", "42", "--log-disable"]
 	// +optional
 	ExtraArgs []string `json:"extraArgs,omitempty"`
@@ -661,8 +662,11 @@ type InferenceServiceSpec struct {
 	// +optional
 	Command []string `json:"command,omitempty"`
 
-	// Args overrides the container arguments entirely.
-	// Only used when Runtime is "generic". For llamacpp, use ExtraArgs instead.
+	// Args overrides the container arguments entirely. Used when Runtime is
+	// "generic", and — whenever spec.command is set — under any runtime: a
+	// custom entrypoint receives spec.args verbatim (with spec.extraArgs
+	// appended) instead of the runtime's built args. Without a command override,
+	// non-generic runtimes build their own args; use ExtraArgs there instead.
 	// +optional
 	Args []string `json:"args,omitempty"`
 

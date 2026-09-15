@@ -439,13 +439,14 @@ func (r *InferenceServiceReconciler) constructDeployment(
 	// spec.command is overridden (bring-your-own launcher — e.g. a tuned vLLM
 	// image whose entrypoint dispatches serving modes), the runtime's built args
 	// (`vllm serve <model> --host …`) would be handed to that launcher and break
-	// it. Honor spec.args verbatim instead, so a custom-image server can run under
-	// a native runtime (vllm/sglang) purely to inherit its idle probe and metrics
-	// scraping without adopting its CLI. Runtimes whose BuildArgs already returns
-	// spec.Args (generic) are unaffected.
+	// it. Honor spec.args verbatim instead — then still append spec.extraArgs, the
+	// documented escape hatch — so a custom-image server can run under a native
+	// runtime (vllm/sglang) purely to inherit its idle probe and metrics scraping
+	// without adopting its CLI. Runtimes whose BuildArgs already returns spec.Args
+	// (generic) are unaffected.
 	if len(isvc.Spec.Command) > 0 {
 		container.Command = isvc.Spec.Command
-		container.Args = isvc.Spec.Args
+		container.Args = append(append([]string{}, isvc.Spec.Args...), isvc.Spec.ExtraArgs...)
 	} else {
 		if cb, ok := backend.(CommandBuilder); ok {
 			container.Command = cb.BuildCommand()
