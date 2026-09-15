@@ -1,0 +1,51 @@
+# B200 matrix row 4: 8x B200 single-chassis multi-GPU sharding via NVLink5.
+#
+# Layer-based offload across 8 GPUs; confirms NVSwitch5 topology shows up
+# correctly to the device plugin and the runtime. NCCL version and Fabric
+# Manager match are preconditions (see the preflight gate).
+#
+# Run: test/e2e/b200/run-matrix.sh --rows 4
+---
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: Model
+metadata:
+  name: b200-row-04
+  namespace: default
+spec:
+  source: "RedHatAI/Llama-3.1-70B-Instruct-FP8"
+  format: safetensors
+  quantization: fp8
+  hardware:
+    accelerator: cuda
+    gpu:
+      enabled: true
+      count: 8
+      vendor: nvidia
+      layers: -1
+      sharding:
+        strategy: layer
+---
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: InferenceService
+metadata:
+  name: b200-row-04
+  namespace: default
+spec:
+  modelRef: b200-row-04
+  runtime: vllm
+  image: vllm/vllm-openai:v0.20.0
+  skipModelInit: true
+  vllmConfig:
+    quantization: fp8
+    maxModelLen: 8192
+    tensorParallelSize: 8
+    hfTokenSecretRef:
+      name: hf-token
+      key: HF_TOKEN
+  endpoint:
+    port: 8000
+    type: ClusterIP
+  resources:
+    gpu: 8
+    cpu: "64"
+    memory: "512Gi"

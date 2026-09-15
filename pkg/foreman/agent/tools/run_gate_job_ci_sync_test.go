@@ -50,6 +50,12 @@ var gateExemptCIChecks = map[string]string{
 	"test-envtest": "the CI-only second-seed envtest pass (#1693); the gate deliberately runs " +
 		"`make test` single-pass, so gating this target would double the ordering coverage the " +
 		"gate was decided not to pay for (see the DefaultGateChecks comment)",
+	"test-b200-harness": "the B200 validation harness self-test hard-requires jq " +
+		"(test/e2e/b200/lib/capture.sh normalizes `llmkube benchmark` JSON with it), and " +
+		"gate_job_template.yaml provisions only helm for the checks that need it, so the gate " +
+		"would fail on `required command not found: jq`. Same shape as validate-samples and " +
+		"check-helm-rbac. To gate it instead, provision jq in the template the way helm is " +
+		"provisioned, then move this target into DefaultGateChecks.",
 	"setup-test-e2e":                "provisions an e2e cluster; lifecycle, not a branch check",
 	"cleanup-test-e2e":              "tears down an e2e cluster; lifecycle, not a branch check",
 	"test-e2e":                      "needs a live cluster the gate Job does not own",

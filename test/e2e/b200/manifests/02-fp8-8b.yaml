@@ -1,0 +1,46 @@
+# B200 matrix row 2: single-GPU 8B model FP8 (E4M3) serve.
+#
+# Existing FP8 checkpoints load unchanged on B200. This row verifies the
+# vLLM FP8 path under Blackwell Tensor Core Gen-5.
+#
+# Run: test/e2e/b200/run-matrix.sh --rows 2
+---
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: Model
+metadata:
+  name: b200-row-02
+  namespace: default
+spec:
+  source: "RedHatAI/Llama-3.1-8B-Instruct-FP8"
+  format: safetensors
+  quantization: fp8
+  hardware:
+    accelerator: cuda
+    gpu:
+      enabled: true
+      count: 1
+      vendor: nvidia
+---
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: InferenceService
+metadata:
+  name: b200-row-02
+  namespace: default
+spec:
+  modelRef: b200-row-02
+  runtime: vllm
+  image: vllm/vllm-openai:v0.20.0
+  skipModelInit: true
+  vllmConfig:
+    quantization: fp8
+    maxModelLen: 8192
+    hfTokenSecretRef:
+      name: hf-token
+      key: HF_TOKEN
+  endpoint:
+    port: 8000
+    type: ClusterIP
+  resources:
+    gpu: 1
+    cpu: "8"
+    memory: "32Gi"
