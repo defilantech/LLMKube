@@ -266,7 +266,11 @@ that is already warm. Nothing is held and no swap is queued. When the slot is
 idle the rule behaves exactly like the default (`Wait`): the swap runs under
 `swapBudget` and the request is served by `coder-small` afterwards. A swap that
 is already in flight is waited on in both modes, because the incumbent is
-unloading and cannot serve anyway.
+unloading and cannot serve anyway. The fall-through backend receives its own
+served model name in the outbound request (the InferenceService name) rather
+than the alias the client asked for, so a runtime that validates the field
+(vLLM, SGLang, TGI) accepts it instead of answering `404 The model ... does not
+exist`.
 
 "Busy" means requests the proxy itself is tracking. Traffic that reaches a
 member's Service directly, bypassing the router, is invisible to this check

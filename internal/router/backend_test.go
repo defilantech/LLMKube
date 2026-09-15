@@ -460,6 +460,82 @@ func TestApplyModelOverride(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("already-matching model is byte-identical", func(t *testing.T) {
+		in := `{"model":"large","messages":[],"temperature":0.5}`
+		if out := applyModelOverride([]byte(in), "large"); string(out) != in {
+			t.Errorf("body re-marshalled to %q; want the original bytes", out)
+		}
+	})
+}
+
+// TestBackendOutboundModel pins which identifier each backend shape sends
+// upstream: an external backend's declared Model, a local backend's
+// InferenceService name (the name its runtime serves), and pass-through when
+// neither is known.
+func TestBackendOutboundModel(t *testing.T) {
+	cases := []struct {
+		name    string
+		backend Backend
+		want    string
+	}{
+		{"external declares model", Backend{Tier: "cloud", Model: "provider-large"}, "provider-large"},
+		{"local serves its InferenceService name", Backend{Tier: "local", InferenceService: "large"}, "large"},
+		{"model wins over InferenceService", Backend{Model: "provider-large", InferenceService: "large"}, "provider-large"},
+		{"neither set passes through", Backend{Tier: "local"}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.backend.outboundModel(); got != tc.want {
+				t.Errorf("outboundModel() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDispatchRewritesModelForLocalBackend is the regression test for the
+// IfIdle fall-through 404: a request that reaches a local backend under a
+// different client alias must arrive carrying the InferenceService's own
+// served name, because a name-validating runtime (vLLM / SGLang / TGI) 404s
+// on the alias. A request that already names the served model is untouched.
+func TestDispatchRewritesModelForLocalBackend(t *testing.T) {
+	var gotModel string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var m struct {
+			Model string `json:"model"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&m)
+		gotModel = m.Model
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	cfg := &Config{Backends: []Backend{{
+		Name: "large", Tier: "local", Address: srv.URL, InferenceService: "large",
+	}}}
+	disp := NewDispatcher(cfg)
+
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"client alias is rewritten", `{"model":"small","messages":[]}`},
+		{"served name is left alone", `{"model":"large","messages":[]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			gotModel = ""
+			resp, err := disp.Dispatch(context.Background(), &cfg.Backends[0],
+				http.MethodPost, "/v1/chat/completions", http.Header{}, []byte(tc.body))
+			if err != nil {
+				t.Fatalf("Dispatch: %v", err)
+			}
+			_ = resp.Body.Close()
+			if gotModel != "large" {
+				t.Errorf("upstream received model %q, want large (the InferenceService served name)", gotModel)
+			}
+		})
+	}
 }
 
 // TestDispatchRewritesModelForExternalBackend proves the override reaches

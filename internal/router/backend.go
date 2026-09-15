@@ -349,9 +349,9 @@ func (d *Dispatcher) Dispatch(
 	endpoint := d.pickEndpoint(backend)
 	url := joinURL(dispatchTarget(backend, endpoint), path)
 
-	// Send the backend's configured model, not the client-facing alias the
-	// router matched on.
-	outboundBody := applyModelOverride(requestBody, backend.Model)
+	// Send the model name this backend actually serves, not the
+	// client-facing alias the router matched on.
+	outboundBody := applyModelOverride(requestBody, backend.outboundModel())
 
 	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(outboundBody))
 	if err != nil {
@@ -449,11 +449,28 @@ func (d *Dispatcher) applyCredentials(b *Backend, req *http.Request) error {
 	return nil
 }
 
+// outboundModel returns the model identifier this backend expects to see in
+// the request body. External backends declare it explicitly as Model. Local
+// backends serve whatever their InferenceService is named, which is also the
+// alias the controller registers upstream, so a request that reached this
+// backend under a different alias (a rule fall-through, an IfIdle skip past a
+// busy pool member) must be rewritten to it: llama.cpp ignores the field, but
+// vLLM / SGLang / TGI answer an unknown name with 404 "The model X does not
+// exist". A backend with neither set (a hand-written config, a backend whose
+// InferenceService did not resolve) keeps the historical pass-through.
+func (b *Backend) outboundModel() string {
+	if b.Model != "" {
+		return b.Model
+	}
+	return b.InferenceService
+}
+
 // applyModelOverride returns a copy of body with the OpenAI "model" field
-// set to the backend's configured Model, so external providers receive an
-// identifier they recognize and a fallback chain degrades across models
-// instead of re-sending the client alias. Empty Model (all local backends)
-// and non-JSON-object bodies are returned unchanged.
+// set to model, so the upstream receives an identifier it recognizes and a
+// fallback chain degrades across models instead of re-sending the client
+// alias. An empty model, a body whose model field already equals model, and
+// non-JSON-object bodies are returned unchanged; the equality case keeps the
+// common request byte-identical instead of re-marshalling it.
 func applyModelOverride(body []byte, model string) []byte {
 	if model == "" {
 		return body
@@ -464,6 +481,9 @@ func applyModelOverride(body []byte, model string) []byte {
 	}
 	enc, err := json.Marshal(model)
 	if err != nil {
+		return body
+	}
+	if cur, ok := obj["model"]; ok && bytes.Equal(cur, enc) {
 		return body
 	}
 	obj["model"] = enc

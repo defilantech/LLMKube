@@ -635,8 +635,10 @@ func TestProxyPoolIfIdleFallsBackToResident(t *testing.T) {
 	}
 	cfg := &Config{
 		Backends: []Backend{
-			{Name: "coder", Tier: "local", Address: coderBackend.URL(), Pool: pool("coder")},
-			{Name: "judge", Tier: "local", Address: judgeBackend.URL(), Pool: pool("judge")},
+			{Name: "coder", Tier: "local", Address: coderBackend.URL(),
+				InferenceService: "coder", Pool: pool("coder")},
+			{Name: "judge", Tier: "local", Address: judgeBackend.URL(),
+				InferenceService: "judge", Pool: pool("judge")},
 		},
 		Rules: []Rule{{
 			Name:  "prefer-coder",
@@ -686,6 +688,13 @@ func TestProxyPoolIfIdleFallsBackToResident(t *testing.T) {
 	}
 	if got := fake.activateCount("coder"); got != 0 {
 		t.Errorf("coder activate count = %d, want 0 (no swap while judge is busy)", got)
+	}
+	// The fall-through backend must receive its own served model name. Left as
+	// the client alias, a name-validating runtime (vLLM / SGLang / TGI) answers
+	// 404 "The model work does not exist" and the proxy reports it as a
+	// successful dispatch.
+	if got := judgeBackend.LastModel(); got != "judge" {
+		t.Errorf("judge received model %q, want judge (its served name, not the client alias)", got)
 	}
 }
 

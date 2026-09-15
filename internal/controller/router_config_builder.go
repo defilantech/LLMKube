@@ -147,6 +147,7 @@ func (r *ModelRouterReconciler) resolveBackend(
 
 	switch {
 	case b.InferenceServiceRef != nil:
+		wire.InferenceService = b.InferenceServiceRef.Name
 		if wire.Tier == "" {
 			wire.Tier = backendTierLocal
 			status.Tier = backendTierLocal

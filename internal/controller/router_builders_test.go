@@ -150,6 +150,16 @@ func TestCompileRouterConfigResolvesLocalBackend(t *testing.T) {
 	if !strings.HasPrefix(cfg.Backends[0].Address, wantPrefix) {
 		t.Errorf("local backend address = %q, want prefix %q", cfg.Backends[0].Address, wantPrefix)
 	}
+	// The proxy rewrites the outbound "model" field to this name when a
+	// request reaches the backend under a different client-facing alias.
+	if cfg.Backends[0].InferenceService != "qwen3-coder" {
+		t.Errorf("local backend inferenceService = %q, want qwen3-coder",
+			cfg.Backends[0].InferenceService)
+	}
+	if cfg.Backends[1].InferenceService != "" {
+		t.Errorf("cloud backend inferenceService = %q, want empty (external backends carry model)",
+			cfg.Backends[1].InferenceService)
+	}
 	if cfg.Backends[1].CredentialsEnv != "ANTHROPIC_API_KEY" {
 		t.Errorf("cloud backend credentials env = %q, want ANTHROPIC_API_KEY", cfg.Backends[1].CredentialsEnv)
 	}

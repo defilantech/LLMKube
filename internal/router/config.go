@@ -102,6 +102,15 @@ type Backend struct {
 	// Empty for local backends (the request body carries the model name).
 	Model string `json:"model,omitempty"`
 
+	// InferenceService is the name of the InferenceService this backend
+	// resolves to, and therefore the model name the runtime behind it
+	// serves. Empty for external backends, which carry Model instead.
+	// The proxy uses it to rewrite the outbound "model" field when a
+	// request reaches this backend under a different client-facing alias
+	// (a rule fall-through, an IfIdle skip): llama.cpp ignores the field
+	// but vLLM / SGLang / TGI reject an unknown name with a 404.
+	InferenceService string `json:"inferenceService,omitempty"`
+
 	// Capabilities advertised by this backend (e.g. ["tools", "vision"]).
 	// Rules can require capabilities to filter candidates.
 	Capabilities []string `json:"capabilities,omitempty"`
