@@ -14,6 +14,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -27,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/yaml"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 	"github.com/defilantech/llmkube/internal/router"
@@ -1216,6 +1219,19 @@ func TestReconcileRouterActivationRBAC(t *testing.T) {
 		t.Error("Role over-grants: proxy should not be able to delete inferenceservices")
 	}
 
+	// The per-pool swap Lease that serializes ModelPool activation across
+	// proxy replicas (#1477).
+	var leaseRule bool
+	for _, rule := range role.Rules {
+		if strSliceHas(rule.APIGroups, "coordination.k8s.io") && strSliceHas(rule.Resources, "leases") &&
+			strSliceHas(rule.Verbs, "create") && strSliceHas(rule.Verbs, "update") {
+			leaseRule = true
+		}
+	}
+	if !leaseRule {
+		t.Errorf("Role missing create/update on coordination.k8s.io leases: %+v", role.Rules)
+	}
+
 	binding := &rbacv1.RoleBinding{}
 	if err := c.Get(context.Background(), nn, binding); err != nil {
 		t.Fatalf("RoleBinding not created: %v", err)
@@ -1304,10 +1320,12 @@ func TestNewRouterDeploymentActivationWiring(t *testing.T) {
 	}
 }
 
-// TestNewRouterDeploymentPinsReplicasWhenPooled verifies the single-writer
-// constraint (#1393 review): a pooled router is pinned to one proxy replica
-// even when spec.proxy.replicas asks for more, so ModelPool swaps stay
-// serialized; an unpooled router honors the requested replica count.
+// TestNewRouterDeploymentPinsReplicasWhenPooled verifies the pooled
+// single-replica invariant (#1477): a pooled router is pinned to one proxy
+// replica even when spec.proxy.replicas asks for more, because swap residency
+// and in-flight accounting are per-replica, while an unpooled router honors the
+// requested count. The pinned deployment must still carry the activation
+// ServiceAccount and POD_NAMESPACE the swap lease needs.
 func TestNewRouterDeploymentPinsReplicasWhenPooled(t *testing.T) {
 	r := &ModelRouterReconciler{RouterProxyImage: "ghcr.io/test/router-proxy:v1"}
 	mr := canonicalModelRouter()
@@ -1317,6 +1335,16 @@ func TestNewRouterDeploymentPinsReplicasWhenPooled(t *testing.T) {
 	pooled := r.newRouterDeployment(mr, "hash", true)
 	if pooled.Spec.Replicas == nil || *pooled.Spec.Replicas != 1 {
 		t.Errorf("pooled replicas = %v, want 1 (pinned)", pooled.Spec.Replicas)
+	}
+	var hasNamespaceRef bool
+	for _, e := range pooled.Spec.Template.Spec.Containers[0].Env {
+		if e.Name == "POD_NAMESPACE" && e.ValueFrom != nil && e.ValueFrom.FieldRef != nil &&
+			e.ValueFrom.FieldRef.FieldPath == "metadata.namespace" {
+			hasNamespaceRef = true
+		}
+	}
+	if !hasNamespaceRef {
+		t.Error("pooled deployment must inject POD_NAMESPACE for the swap lease namespace")
 	}
 
 	unpooled := r.newRouterDeployment(mr, "hash", false)
@@ -1359,6 +1387,37 @@ func TestFindModelRoutersForModelPool(t *testing.T) {
 	}
 	if reqs[0].Name != mr.Name || reqs[0].Namespace != mr.Namespace {
 		t.Errorf("enqueued %s/%s, want %s/%s", reqs[0].Namespace, reqs[0].Name, mr.Namespace, mr.Name)
+	}
+}
+
+// TestClusterRoleGrantsActivationLease verifies the operator's generated
+// ClusterRole holds the lease verbs the runtime activation Role grants. RBAC
+// escalation prevention rejects a Role that grants a permission its creator
+// does not hold, so without this grant every pooled ModelRouter fails to
+// provision its activation RBAC and is reported Failed (#1477).
+func TestClusterRoleGrantsActivationLease(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "config", "rbac", "role.yaml"))
+	if err != nil {
+		t.Fatalf("read generated ClusterRole: %v", err)
+	}
+	var role rbacv1.ClusterRole
+	if err := yaml.Unmarshal(data, &role); err != nil {
+		t.Fatalf("parse generated ClusterRole: %v", err)
+	}
+	got := map[string]bool{}
+	for _, rule := range role.Rules {
+		if !strSliceHas(rule.APIGroups, "coordination.k8s.io") || !strSliceHas(rule.Resources, "leases") {
+			continue
+		}
+		for _, v := range rule.Verbs {
+			got[v] = true
+		}
+	}
+	for _, want := range []string{"get", "list", "watch", "create", "update", "patch"} {
+		if !got[want] {
+			t.Errorf("generated ClusterRole is missing %q on coordination.k8s.io/leases; "+
+				"a pooled ModelRouter's activation Role cannot be created without it", want)
+		}
 	}
 }
 

@@ -13,6 +13,7 @@ package router
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -71,6 +72,11 @@ type Activator struct {
 	router  string
 	baseCtx context.Context
 
+	// coord, when set, makes swap decisions single-writer across proxy
+	// replicas. Without it the Activator is single-writer only within this
+	// process, which is correct at one replica.
+	coord SwapCoordinator
+
 	// resyncInterval bounds how stale the activator's belief about a pool's
 	// resident member may be. reconcileResident re-reads member phase at most
 	// once per interval per pool (the proxy's Kubernetes client is direct, so a
@@ -107,6 +113,12 @@ type poolRuntime struct {
 	swapTarget string
 	swapCancel context.CancelFunc
 
+	// leaseHeld is true while this replica owns the swap lease for the pool,
+	// so only the replica that drove the activation scales the member back
+	// down when its last waiter gives up. A deferring replica must not
+	// deactivate a member another replica is still bringing up.
+	leaseHeld bool
+
 	// swapErr records the outcome of the most recent failed swap, keyed by the
 	// target member, so the waiter that requested that member surfaces the
 	// error instead of hanging. Cleared when taken.
@@ -141,6 +153,13 @@ func NewActivator(baseCtx context.Context, ctrl MemberController, router string,
 		resyncInterval: residentResyncInterval,
 		pools:          make(map[string]*poolRuntime),
 	}
+}
+
+// SetSwapCoordinator wires cross-replica swap coordination. Omit it (or pass
+// nil) when the proxy runs at one replica; the in-process lock is then the
+// whole guarantee.
+func (a *Activator) SetSwapCoordinator(c SwapCoordinator) {
+	a.coord = c
 }
 
 func (a *Activator) runtime(p *BackendPool) *poolRuntime {
@@ -227,10 +246,14 @@ func (a *Activator) AcquireWithMode(ctx context.Context, p *BackendPool, mode st
 			if pr.swapping && pr.swapTarget == member && pr.swapCancel != nil {
 				pr.swapCancel()
 			}
+			// Only the replica that owns the swap lease scales the member back
+			// down. A deferring replica waits on a member another replica is
+			// bringing up, so it must not undo that activation.
+			deactivate := pr.leaseHeld || a.coord == nil
 			ns := pr.namespace
 			ctrl := a.ctrl
 			a.mu.Unlock()
-			if ctrl != nil {
+			if ctrl != nil && deactivate {
 				go func() { _ = ctrl.Deactivate(a.baseCtx, ns, member) }()
 			}
 			return
@@ -307,40 +330,87 @@ func (a *Activator) startSwap(pr *poolRuntime, incumbent, target string, holdSta
 
 	go func() {
 		swapStart := time.Now()
-		err := a.ctrl.Activate(swapCtx, pr.namespace, target)
+		key := pr.namespace + "/" + pr.pool
+		owned := true
+		var release func()
+		var err error
+		if a.coord != nil {
+			release, owned, err = a.coord.Acquire(swapCtx, key)
+			a.mu.Lock()
+			pr.leaseHeld = err == nil && owned
+			a.mu.Unlock()
+		}
 		if err == nil {
-			err = a.ctrl.WaitReady(swapCtx, pr.namespace, target)
+			if owned {
+				err = a.ctrl.Activate(swapCtx, pr.namespace, target)
+				if err == nil {
+					err = a.ctrl.WaitReady(swapCtx, pr.namespace, target)
+				}
+			} else {
+				// Another replica owns the swap lease: it scales the member, so
+				// defer by waiting for readiness rather than issuing a competing
+				// member write.
+				err = a.ctrl.WaitReady(swapCtx, pr.namespace, target)
+			}
 		}
 
+		// Release the lease before publishing the result so a waiter that starts
+		// the next swap can acquire it without waiting out the duration.
+		a.releaseSwapLease(key, release)
+
 		a.mu.Lock()
-		defer a.mu.Unlock()
 		pr.swapping = false
 		pr.swapTarget = ""
 		pr.swapCancel = nil
-		if err != nil {
+		switch {
+		case err == nil:
+			pr.resident = target
+			// The swap just made target Ready, so the belief is fresh: record the
+			// check so reconcileResident does not immediately re-read its phase.
+			pr.residentCheckedAt = time.Now()
+			// Only the replica that drove the write counts a swap. A deferring
+			// replica reaches the same resident state but drove nothing, so
+			// counting it there would double the swap rate that operators watch
+			// to confirm the thrash is gone.
+			if owned {
+				prommetrics.ModelPoolSwapsTotal.WithLabelValues(a.router, pr.pool, incumbent, target).Inc()
+				prommetrics.ModelPoolSwapDuration.WithLabelValues(a.router, pr.pool).Observe(time.Since(swapStart).Seconds())
+				prommetrics.ModelPoolHoldDuration.WithLabelValues(a.router, pr.pool, target).Observe(time.Since(holdStart).Seconds())
+			}
+			a.observeResident(pr)
+		case swapCtx.Err() != nil:
 			// A cancelled swap (last caller gave up) is not a failure: the
 			// target was scaled back down by the cancel path, so just clear the
 			// swap state and wake any waiters.
-			if swapCtx.Err() != nil {
-				pr.notify()
-				return
-			}
+		default:
 			a.logger.Error("model pool swap failed", "pool", pr.pool,
 				"from", incumbent, "to", target, "error", err)
-			pr.swapErr[target] = errors.New("model pool swap failed for member " + target + ": " + err.Error())
-			pr.notify()
-			return
+			// An unavailable swap lease is a transient control-plane condition,
+			// not a serving failure: keep the sentinel so the proxy surfaces it
+			// as retryable rather than folding it into a generic upstream error.
+			if errors.Is(err, ErrActivationLeaseUnavailable) {
+				pr.swapErr[target] = fmt.Errorf("activation lease unavailable for member %s: %w", target, err)
+			} else {
+				pr.swapErr[target] = errors.New("model pool swap failed for member " + target + ": " + err.Error())
+			}
 		}
-		pr.resident = target
-		// The swap just made target Ready, so the belief is fresh: record the
-		// check so reconcileResident does not immediately re-read its phase.
-		pr.residentCheckedAt = time.Now()
-		prommetrics.ModelPoolSwapsTotal.WithLabelValues(a.router, pr.pool, incumbent, target).Inc()
-		prommetrics.ModelPoolSwapDuration.WithLabelValues(a.router, pr.pool).Observe(time.Since(swapStart).Seconds())
-		prommetrics.ModelPoolHoldDuration.WithLabelValues(a.router, pr.pool, target).Observe(time.Since(holdStart).Seconds())
-		a.observeResident(pr)
 		pr.notify()
+		a.mu.Unlock()
 	}()
+}
+
+// releaseSwapLease clears this replica's swap lease and its ownership flag for
+// a pool. Called when a swap completes, fails, or is cancelled, so the next
+// swap can be driven without waiting out the lease duration.
+func (a *Activator) releaseSwapLease(key string, release func()) {
+	a.mu.Lock()
+	if pr, ok := a.pools[key]; ok {
+		pr.leaseHeld = false
+	}
+	a.mu.Unlock()
+	if release != nil {
+		release()
+	}
 }
 
 // reconcileResident refreshes the activator's belief about which member owns a

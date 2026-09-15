@@ -1557,6 +1557,113 @@ spec:
 		})
 	})
 
+	// Pooled ModelRouter activation RBAC covers what the unit and envtest suites
+	// structurally cannot: for a pooled router the operator creates a namespaced
+	// Role for the proxy's activation ServiceAccount, and RBAC escalation
+	// prevention rejects that Role unless the operator's own ClusterRole grants
+	// the same verbs. The envtest fake client does not enforce RBAC, and no
+	// other context creates a pooled router, so a missing coordination.k8s.io
+	// grant shipped green while every pooled ModelRouter was reported Failed
+	// (#1477). This case applies a real pooled router through the API server and
+	// asserts it is provisioned, which is only true when the operator holds the
+	// lease verbs itself.
+	Context("Pooled ModelRouter activation RBAC", Ordered, func() {
+		const poolTestNs = "e2e-pooled-router"
+		const poolMember = "pool-member"
+		const poolRouter = "e2e-pooled-router"
+
+		BeforeAll(func() {
+			if os.Getenv("LLMKUBE_E2E_ROUTER_CLUSTER") != "true" {
+				Skip("LLMKUBE_E2E_ROUTER_CLUSTER not set; " +
+					"the pooled-router case needs the router-proxy image side-loaded")
+			}
+
+			By("creating the pooled-router test namespace")
+			_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", poolTestNs, "--ignore-not-found"))
+			_, err := utils.Run(exec.Command("kubectl", "create", "ns", poolTestNs))
+			Expect(err).NotTo(HaveOccurred(), "Failed to create the pooled-router namespace")
+
+			By("applying a pool member, its ModelPool, and a router referencing it")
+			// The member InferenceService only has to exist: backend resolution
+			// reads its endpoint address from the object, and the ModelPool
+			// membership is what makes the router pooled.
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(fmt.Sprintf(`
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: InferenceService
+metadata:
+  name: %[2]s
+  namespace: %[1]s
+spec:
+  modelRef: pool-member-model
+---
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: ModelPool
+metadata:
+  name: e2e-heavy-slot
+  namespace: %[1]s
+spec:
+  members:
+    - inferenceServiceRef:
+        name: %[2]s
+  default: %[2]s
+---
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: ModelRouter
+metadata:
+  name: %[3]s
+  namespace: %[1]s
+spec:
+  backends:
+    - name: pooled-member
+      inferenceServiceRef:
+        name: %[2]s
+  defaultRoute: pooled-member
+`, poolTestNs, poolMember, poolRouter))
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to apply the pooled router fixture")
+		})
+
+		AfterAll(func() {
+			_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", poolTestNs, "--ignore-not-found"))
+		})
+
+		It("provisions the proxy activation Role granting swap leases", func() {
+			By("waiting for the activation Role the controller creates for the proxy")
+			// A 403 on the Role create is the escalation rejection, and it leaves
+			// no object behind, so the Role's existence is the observable.
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "role", poolRouter+"-router-proxy",
+					"-n", poolTestNs, "-o", "jsonpath={.rules[*].apiGroups}")
+				out, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(),
+					"activation Role missing: the operator cannot create a Role that grants "+
+						"coordination.k8s.io leases it does not hold itself")
+				g.Expect(out).To(ContainSubstring("coordination.k8s.io"),
+					"activation Role does not grant swap leases: %s", out)
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("waiting for the pooled router to become Ready")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "modelrouter", poolRouter,
+					"-n", poolTestNs, "-o", "jsonpath={.status.phase}")
+				out, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(out).To(Equal("Ready"),
+					"pooled ModelRouter did not reach Ready; a Failed phase with an ActivationRBAC "+
+						"reason means its activation Role could not be created")
+			}, 3*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("confirming the router was not reported Failed for its activation RBAC")
+			cmd := exec.Command("kubectl", "get", "modelrouter", poolRouter,
+				"-n", poolTestNs, "-o", "json")
+			out, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(out).NotTo(ContainSubstring("ActivationRBAC"),
+				"the router must not fail its activation RBAC step: %s", out)
+		})
+	})
+
 	Context("License Check", func() {
 		const licenseTestNs = "e2e-license-test"
 		const testLicenseModelServerURL = "http://test-model-server.e2e-license-test.svc.cluster.local/test-model.gguf"

@@ -12,15 +12,22 @@ package router
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 )
+
+// ErrMemberWriteConflict signals that a member write lost a resourceVersion
+// race to another writer. The caller retries rather than last-write-winning,
+// which would silently un-serialize two activations (#1477).
+var ErrMemberWriteConflict = errors.New("member write conflict")
 
 // kubeMemberController is the production MemberController: it drives ModelPool
 // swaps through the Kubernetes API. It scales a member InferenceService to one
@@ -54,7 +61,10 @@ func (k *kubeMemberController) Activate(ctx context.Context, namespace, isvc str
 	}
 	patched := cur.DeepCopy()
 	patched.Spec.Replicas = ptr.To(int32(1))
-	if err := k.client.Patch(ctx, patched, client.MergeFrom(cur)); err != nil {
+	if err := k.client.Patch(ctx, patched, client.MergeFromWithOptions(cur, client.MergeFromWithOptimisticLock{})); err != nil {
+		if apierrors.IsConflict(err) {
+			return fmt.Errorf("%w: scale up member %s/%s", ErrMemberWriteConflict, namespace, isvc)
+		}
 		return fmt.Errorf("scale up member %s/%s: %w", namespace, isvc, err)
 	}
 	return nil
@@ -70,7 +80,10 @@ func (k *kubeMemberController) Deactivate(ctx context.Context, namespace, isvc s
 	}
 	patched := cur.DeepCopy()
 	patched.Spec.Replicas = ptr.To(int32(0))
-	if err := k.client.Patch(ctx, patched, client.MergeFrom(cur)); err != nil {
+	if err := k.client.Patch(ctx, patched, client.MergeFromWithOptions(cur, client.MergeFromWithOptimisticLock{})); err != nil {
+		if apierrors.IsConflict(err) {
+			return fmt.Errorf("%w: scale down member %s/%s", ErrMemberWriteConflict, namespace, isvc)
+		}
 		return fmt.Errorf("scale down member %s/%s: %w", namespace, isvc, err)
 	}
 	return nil

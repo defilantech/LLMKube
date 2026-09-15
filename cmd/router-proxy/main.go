@@ -31,6 +31,7 @@ import (
 	"syscall"
 	"time"
 
+	coordinationv1 "k8s.io/api/coordination/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -232,6 +233,9 @@ func newActivator(baseCtx context.Context, logger *slog.Logger) (*router.Activat
 	if err := inferencev1alpha1.AddToScheme(scheme); err != nil {
 		return nil, err
 	}
+	if err := coordinationv1.AddToScheme(scheme); err != nil {
+		return nil, err
+	}
 	restCfg, err := ctrl.GetConfig()
 	if err != nil {
 		return nil, err
@@ -241,7 +245,21 @@ func newActivator(baseCtx context.Context, logger *slog.Logger) (*router.Activat
 		return nil, err
 	}
 	memberCtrl := router.NewKubeMemberController(cl, 0)
-	return router.NewActivator(baseCtx, memberCtrl, routerNameFromEnv(), logger), nil
+	act := router.NewActivator(baseCtx, memberCtrl, routerNameFromEnv(), logger)
+	// Cross-replica swap coordination. The proxy's own namespace is the
+	// ModelRouter (and ModelPool) namespace, injected via the downward API; a
+	// proxy without it keeps the in-process-only guarantee.
+	if ns := os.Getenv("POD_NAMESPACE"); ns != "" {
+		act.SetSwapCoordinator(router.NewLeaseCoordinator(cl, ns))
+	} else {
+		// The Deployment injects POD_NAMESPACE; an empty value means an older
+		// Deployment that has not rolled yet, or a hand-run proxy. Say so,
+		// because pooled swap coordination silently degrades to in-process
+		// serialization without it.
+		logger.Warn("activation is enabled without POD_NAMESPACE; " +
+			"pool swap coordination is in-process only")
+	}
+	return act, nil
 }
 
 // routerNameFromEnv resolves the router name used in metric labels. The

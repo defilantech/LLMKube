@@ -124,6 +124,21 @@ rules:
   - patch
   - update
   - watch
+# The ModelRouter controller creates a Role for each pooled router's proxy that
+# grants coordination.k8s.io leases. RBAC escalation prevention requires the
+# operator to hold those verbs itself, so they are granted cluster-wide here
+# and not only by the leader-election Role in one namespace.
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
 - apiGroups:
   - scheduling.k8s.io
   resources:

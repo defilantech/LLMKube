@@ -1064,3 +1064,59 @@ func TestProxyMetricsNonZeroAfterSmokeRun(t *testing.T) {
 		t.Error("RouterBackendHealth not found in registry after dispatch")
 	}
 }
+
+// TestProxyPoolLeaseUnavailable503RetryAfter verifies an unavailable swap lease
+// surfaces as 503 + Retry-After with no backend dispatch, the same transient,
+// retryable treatment as a busy incumbent or an exhausted hold budget, rather
+// than a 502 that reads as an upstream outage (#1477).
+func TestProxyPoolLeaseUnavailable503RetryAfter(t *testing.T) {
+	fb := newFakeBackend(t)
+
+	memberCtrl := newFakeMemberController()
+	cfg := &Config{
+		Backends: []Backend{{
+			Name:    "coder",
+			Tier:    "local",
+			Address: fb.URL(),
+			Timeout: 50 * time.Millisecond,
+			Pool: &BackendPool{
+				Name:      "heavy-slot",
+				Namespace: "lab",
+				Member:    "coder",
+				Members:   []string{"coder", "judge"},
+			},
+		}},
+		DefaultRoute: "coder",
+		Policy:       Policy{Classification: ClassificationPolicy{Mode: "header-only"}},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("config: %v", err)
+	}
+
+	act := NewActivator(context.Background(), memberCtrl, "r", slog.Default())
+	act.SetSwapCoordinator(&fakeCoordinator{err: ErrActivationLeaseUnavailable})
+	proxy := NewProxy(cfg, slog.Default(), WithActivator(act))
+	mux := http.NewServeMux()
+	proxy.Mount(mux)
+
+	body, _ := json.Marshal(map[string]any{
+		"model":    "coder",
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(string(body)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	resp := rec.Result()
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", resp.StatusCode)
+	}
+	if resp.Header.Get("Retry-After") == "" {
+		t.Error("missing Retry-After header on the lease-unavailable 503")
+	}
+	if fb.calls.Load() != 0 {
+		t.Errorf("backend calls = %d, want 0 (must not dispatch without a swap lease)", fb.calls.Load())
+	}
+}

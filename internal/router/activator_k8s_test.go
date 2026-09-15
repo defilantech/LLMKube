@@ -12,6 +12,8 @@ package router
 
 import (
 	"context"
+	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,6 +24,7 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 )
@@ -157,5 +160,36 @@ func TestKubeMemberControllerWaitReadyPhaseError(t *testing.T) {
 
 	if err := k.WaitReady(context.Background(), kmcNS, "ghost"); err == nil {
 		t.Error("WaitReady when the member does not exist = nil, want error")
+	}
+}
+
+// TestKubeMemberControllerActivateConflict verifies the member write uses an
+// optimistic lock: when another writer updates the member between Activate's
+// read and its patch, the write must conflict rather than silently
+// last-write-winning, which is what let two proxy replicas race a swap
+// (#1477).
+func TestKubeMemberControllerActivateConflict(t *testing.T) {
+	var raced atomic.Bool
+	c := fake.NewClientBuilder().
+		WithScheme(kubeMCScheme(t)).
+		WithObjects(memberISVC(ptr.To(int32(0)), "Stopped")).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Patch: func(ctx context.Context, cl client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+				if raced.CompareAndSwap(false, true) {
+					fresh := &inferencev1alpha1.InferenceService{}
+					if err := cl.Get(ctx, types.NamespacedName{Namespace: kmcNS, Name: kmcMember}, fresh); err == nil {
+						fresh.Spec.Replicas = ptr.To(int32(7))
+						_ = cl.Update(ctx, fresh)
+					}
+				}
+				return cl.Patch(ctx, obj, patch, opts...)
+			},
+		}).
+		Build()
+	k := NewKubeMemberController(c, 0)
+
+	err := k.Activate(context.Background(), kmcNS, kmcMember)
+	if !errors.Is(err, ErrMemberWriteConflict) {
+		t.Fatalf("Activate = %v, want ErrMemberWriteConflict after a concurrent member write", err)
 	}
 }

@@ -74,6 +74,13 @@ func (r *ModelRouterReconciler) reconcileRouterActivationRBAC(
 				Resources: []string{"inferenceservices/status"},
 				Verbs:     []string{"get"},
 			},
+			{
+				// The per-pool swap Lease that makes ModelPool activation
+				// single-writer across proxy replicas (#1477).
+				APIGroups: []string{"coordination.k8s.io"},
+				Resources: []string{"leases"},
+				Verbs:     []string{"get", "list", "watch", "create", "update", "patch"},
+			},
 		},
 	}
 	if err := r.upsertActivationRole(ctx, mr, role); err != nil {

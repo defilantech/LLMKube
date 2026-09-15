@@ -166,7 +166,6 @@ func (p *Proxy) handleCompletion(upstreamPath string) http.HandlerFunc {
 			p.audit(features, decision, nil, http.StatusServiceUnavailable, "no_route", 0)
 			return
 		}
-
 		if err := p.enforceFailClosed(&features, &decision); err != nil {
 			writeError(w, http.StatusServiceUnavailable, err.Error())
 			p.audit(features, decision, nil, http.StatusServiceUnavailable, "fail_closed", 0)
@@ -213,6 +212,18 @@ func (p *Proxy) handleCompletion(upstreamPath string) http.HandlerFunc {
 					"model pool incumbent busy; no preferred member is warm, retry")
 				p.audit(features, decision, nil, http.StatusServiceUnavailable,
 					"pool_incumbent_busy", elapsed)
+				return
+			}
+			// The swap lease could not be read or written, so this replica cannot
+			// know whether it owns the swap. Fail closed, but as a transient
+			// control-plane condition the client may retry, not a 502 that reads
+			// as an upstream outage.
+			if errors.Is(err, ErrActivationLeaseUnavailable) {
+				w.Header().Set("Retry-After", modelPoolRetryAfterSeconds)
+				writeError(w, http.StatusServiceUnavailable,
+					"model pool activation lease unavailable; retry")
+				p.audit(features, decision, nil, http.StatusServiceUnavailable,
+					"pool_lease_unavailable", elapsed)
 				return
 			}
 			// Runtime fail-closed: when every backend in a fail-closed

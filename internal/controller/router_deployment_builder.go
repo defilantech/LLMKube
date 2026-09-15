@@ -113,10 +113,13 @@ func (r *ModelRouterReconciler) newRouterDeployment(
 		imagePullSecrets = mr.Spec.Proxy.ImagePullSecrets
 		nodeSelector = mr.Spec.Proxy.NodeSelector
 	}
-	// A pooled router must run exactly one proxy replica: ModelPool activation
-	// serializes swaps through a single in-process lock, so a second replica
-	// would race it and thrash the shared GPU slot. Pin to 1 regardless of
-	// spec.proxy.replicas until cross-replica swap coordination lands.
+	// A pooled router runs exactly one proxy replica. The per-pool Lease makes
+	// the member *write* single-writer across replicas, but the activator's
+	// residency and in-flight accounting is per-replica state, so a second
+	// replica could dispatch on a stale belief until its next member-phase
+	// re-read. Sharing that state is the prerequisite for lifting this pin;
+	// until then spec.proxy.replicas is overridden for pooled routers. The
+	// Lease still matters here: a rollout overlaps the old and new pod.
 	if hasPools {
 		replicas = 1
 	}
@@ -142,6 +145,14 @@ func (r *ModelRouterReconciler) newRouterDeployment(
 	if hasPools {
 		serviceAccountName = routerProxyResourceName(mr.Name)
 		env = append(env, corev1.EnvVar{Name: "ROUTER_NAME", Value: mr.Name})
+		// POD_NAMESPACE is the lease namespace: the proxy's own namespace is
+		// the ModelRouter (and ModelPool) namespace.
+		env = append(env, corev1.EnvVar{
+			Name: "POD_NAMESPACE",
+			ValueFrom: &corev1.EnvVarSource{
+				FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.namespace"},
+			},
+		})
 	}
 
 	return &appsv1.Deployment{

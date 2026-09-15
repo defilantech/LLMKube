@@ -92,6 +92,14 @@ type ModelRouterReconciler struct {
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch;delete
 
+// The activation Role this controller creates for a pooled router's proxy
+// grants coordination.k8s.io leases. RBAC escalation prevention rejects a Role
+// that grants a permission its creator does not hold, so the operator must hold
+// the lease verbs cluster-wide or every pooled ModelRouter fails to provision
+// its activation RBAC (and is reported Failed) outside a namespace where the
+// chart's leader-election Role happens to grant them.
+// +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch
+
 func (r *ModelRouterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	reconcileStart := time.Now()
 	defer func() {
