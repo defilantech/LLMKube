@@ -19,6 +19,8 @@ package repo
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"unicode"
@@ -243,6 +245,27 @@ type RebaseOntoBaseOptions struct {
 	UpstreamURL string
 	// Auth, when non-nil, provides the GIT_ASKPASS scaffolding for the fetch.
 	Auth *Auth
+	// LeaveConflicts, when true, changes the conflict behavior: instead of
+	// aborting the half-applied rebase and returning a plain error, the
+	// conflicted state is LEFT in the workspace and a *RebaseConflictError
+	// naming the unmerged files is returned. The caller can then hand the
+	// mid-rebase workspace to the coder loop to resolve (#1839). When false
+	// (the default) the conflict aborts and fails loud, preserving the
+	// pre-#1839 contract for callers that cannot resolve.
+	LeaveConflicts bool
+}
+
+// RebaseConflictError reports that RebaseOntoBase hit a conflict and, because
+// LeaveConflicts was set, left the workspace mid-rebase rather than aborting.
+// Files names the unmerged paths.
+type RebaseConflictError struct {
+	Base  string
+	Files []string
+}
+
+func (e *RebaseConflictError) Error() string {
+	return fmt.Sprintf("RebaseOntoBase: rebase onto %s left %d conflict(s): %s",
+		e.Base, len(e.Files), strings.Join(e.Files, ", "))
 }
 
 // RebaseOntoBase fetches BaseBranch from UpstreamURL and rebases the current
@@ -250,9 +273,11 @@ type RebaseOntoBaseOptions struct {
 // CreateBranchFromRemoteRef) replays its commits ON TOP of the CURRENT base.
 // Any work merged into base since the prior attempt is preserved rather than
 // reverted — the bug that made a stale revision branch delete already-merged
-// files. A rebase conflict aborts the half-applied rebase and returns an error
-// so the task fails loud instead of pushing a branch that reverts merged work.
-// When UpstreamURL is empty there is no base to rebase onto and it is a no-op.
+// files. On a rebase conflict the default is to abort the half-applied rebase
+// and return an error so the task fails loud instead of pushing a branch that
+// reverts merged work; with opts.LeaveConflicts the conflicted state is left in
+// place and a *RebaseConflictError is returned instead (#1839). When
+// UpstreamURL is empty there is no base to rebase onto and it is a no-op.
 func RebaseOntoBase(ctx context.Context, opts RebaseOntoBaseOptions) error {
 	if opts.Workspace == "" {
 		return fmt.Errorf("RebaseOntoBase: Workspace is required")
@@ -287,12 +312,60 @@ func RebaseOntoBase(ctx context.Context, opts RebaseOntoBaseOptions) error {
 		"GIT_COMMITTER_EMAIL=foreman@llmkube.dev",
 	)
 	if _, err := runGit(ctx, opts.Workspace, rebaseEnv, "rebase", "FETCH_HEAD"); err != nil {
+		if opts.LeaveConflicts {
+			// Hand the conflict to the coder loop rather than aborting: leave
+			// the workspace mid-rebase and report the unmerged files (#1839).
+			// The #1042/#1364 invariant (never land a branch that reverts
+			// merged work) is preserved downstream by verifying the rebase
+			// actually completed cleanly before the GO commits.
+			files := unmergedFiles(ctx, opts.Workspace)
+			return &RebaseConflictError{Base: base, Files: files}
+		}
 		// Leave the workspace clean: a conflict means the revision genuinely
 		// clashes with merged work and must fail loud, not silently revert it.
 		_, _ = runGit(ctx, opts.Workspace, baseEnv(), "rebase", "--abort")
 		return fmt.Errorf("RebaseOntoBase: rebase onto %s: %w", base, err)
 	}
 	return nil
+}
+
+// unmergedFiles returns the paths git reports as unmerged (conflicted) in the
+// workspace. Best-effort: a git error yields an empty slice.
+func unmergedFiles(ctx context.Context, workspace string) []string {
+	out, err := runGit(ctx, workspace, baseEnv(), "diff", "--name-only", "--diff-filter=U")
+	if err != nil {
+		return nil
+	}
+	var files []string
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			files = append(files, line)
+		}
+	}
+	return files
+}
+
+// RebaseUnresolved reports whether the workspace is still in an unfinished
+// rebase or carries unmerged files — i.e. a rebase conflict was never resolved.
+// It is the post-loop guard for #1839: a coder GO must not land while the
+// workspace is mid-rebase or still conflicted. The returned string explains
+// which condition tripped, for the INCOMPLETE reason. Best-effort and
+// fail-closed: if it cannot tell (a git error), it reports unresolved so a
+// questionable state never lands.
+func RebaseUnresolved(ctx context.Context, workspace string) (bool, string) {
+	for _, dir := range []string{"rebase-merge", "rebase-apply"} {
+		if _, err := os.Stat(filepath.Join(workspace, ".git", dir)); err == nil {
+			return true, "workspace is mid-rebase (.git/" + dir + " present)"
+		}
+	}
+	out, err := runGit(ctx, workspace, baseEnv(), "diff", "--name-only", "--diff-filter=U")
+	if err != nil {
+		return true, "could not determine merge state: " + err.Error()
+	}
+	if strings.TrimSpace(out) != "" {
+		return true, "unmerged files remain: " + strings.Join(strings.Fields(out), ", ")
+	}
+	return false, ""
 }
 
 // baseEnv is the minimal env for read/local-only git ops that do not

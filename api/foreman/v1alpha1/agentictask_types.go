@@ -130,6 +130,13 @@ const (
 	// transient cases.
 	FailureCloneFailed AgenticTaskFailureReason = "CloneFailed"
 
+	// FailureRebaseConflictUnresolved: the task started mid-rebase (the
+	// executor left a rebase conflict for the coder to resolve, #1839) and
+	// the coder reported GO while the workspace was still mid-rebase or
+	// carried unmerged files. The GO is downgraded rather than committed, so
+	// a half-applied or merged-work-reverting tree never lands. Retryable.
+	FailureRebaseConflictUnresolved AgenticTaskFailureReason = "RebaseConflictUnresolved"
+
 	// In-loop failures (the model loop ran but did not reach
 	// submit_result with a successful verdict):
 

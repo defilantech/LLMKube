@@ -18,6 +18,7 @@ package repo
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -336,5 +337,109 @@ func TestCreateBranchFromRemoteRef_Validation(t *testing.T) {
 				t.Fatalf("expected validation error for %+v", tc.opts)
 			}
 		})
+	}
+}
+
+// pushPriorWithFile cuts branch from the current origin base and commits fname
+// with the given content, then pushes it — a prior attempt that conflicts with
+// a different edit to the same new file merged into base afterwards.
+func pushPriorWithFile(t *testing.T, bare, dir, branch, fname, content string) {
+	t.Helper()
+	work := mustClone(t, bare, dir)
+	mustGit(t, work, "checkout", "-b", branch)
+	if err := os.WriteFile(filepath.Join(work, fname), []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", fname, err)
+	}
+	mustGit(t, work, "-c", "user.email=u@x", "-c", "user.name=u", "add", fname)
+	mustGit(t, work, "-c", "user.email=u@x", "-c", "user.name=u", "commit", "-m", "prior "+fname)
+	mustGit(t, work, "push", "origin", branch)
+}
+
+// TestRebaseOntoBase_LeaveConflictsLeavesMidRebase: with LeaveConflicts, a
+// conflicting rebase leaves the workspace mid-rebase and returns a
+// *RebaseConflictError naming the unmerged files, so the coder loop can
+// resolve it (#1839) rather than the task failing loud.
+func TestRebaseOntoBase_LeaveConflictsLeavesMidRebase(t *testing.T) {
+	gitOrSkip(t)
+	dir := t.TempDir()
+	bare := initBareOrigin(t, filepath.Join(dir, "origin"))
+	seedOrigin(t, bare)
+
+	const branch = "foreman/wl/issue-1839"
+	pushPriorWithFile(t, bare, filepath.Join(dir, "prior"), branch, "conflict.txt", "from prior attempt\n")
+	// Base gains a DIFFERENT edit to the same new file after the prior attempt.
+	mainWork := mustClone(t, bare, filepath.Join(dir, "main-work"))
+	commitFile(t, mainWork, "conflict.txt", "from base since the prior attempt\n")
+
+	workspace := mustClone(t, bare, filepath.Join(dir, "workspace"))
+	found, err := CreateBranchFromRemoteRef(context.Background(), RemoteRefBranchOptions{
+		Workspace: workspace, Branch: branch, Remote: "origin", Ref: branch,
+	})
+	if err != nil || !found {
+		t.Fatalf("restore prior attempt: found=%v err=%v", found, err)
+	}
+
+	err = RebaseOntoBase(context.Background(), RebaseOntoBaseOptions{
+		Workspace: workspace, BaseBranch: "main", UpstreamURL: bare, LeaveConflicts: true,
+	})
+	var rce *RebaseConflictError
+	if !errors.As(err, &rce) {
+		t.Fatalf("expected *RebaseConflictError, got %v", err)
+	}
+	if len(rce.Files) != 1 || rce.Files[0] != "conflict.txt" {
+		t.Errorf("expected [conflict.txt], got %v", rce.Files)
+	}
+	if unresolved, why := RebaseUnresolved(context.Background(), workspace); !unresolved {
+		t.Errorf("workspace should be left mid-rebase; RebaseUnresolved=false (%s)", why)
+	}
+}
+
+// TestRebaseOntoBase_ConflictAbortsByDefault: without LeaveConflicts (the
+// pre-#1839 contract), a conflict aborts the rebase and fails loud with a
+// plain error, leaving the workspace clean.
+func TestRebaseOntoBase_ConflictAbortsByDefault(t *testing.T) {
+	gitOrSkip(t)
+	dir := t.TempDir()
+	bare := initBareOrigin(t, filepath.Join(dir, "origin"))
+	seedOrigin(t, bare)
+
+	const branch = "foreman/wl/issue-1839-abort"
+	pushPriorWithFile(t, bare, filepath.Join(dir, "prior"), branch, "conflict.txt", "from prior attempt\n")
+	mainWork := mustClone(t, bare, filepath.Join(dir, "main-work"))
+	commitFile(t, mainWork, "conflict.txt", "from base\n")
+
+	workspace := mustClone(t, bare, filepath.Join(dir, "workspace"))
+	found, err := CreateBranchFromRemoteRef(context.Background(), RemoteRefBranchOptions{
+		Workspace: workspace, Branch: branch, Remote: "origin", Ref: branch,
+	})
+	if err != nil || !found {
+		t.Fatalf("restore prior attempt: found=%v err=%v", found, err)
+	}
+
+	err = RebaseOntoBase(context.Background(), RebaseOntoBaseOptions{
+		Workspace: workspace, BaseBranch: "main", UpstreamURL: bare,
+	})
+	if err == nil {
+		t.Fatal("expected an error on conflict")
+	}
+	var rce *RebaseConflictError
+	if errors.As(err, &rce) {
+		t.Fatalf("default must not return *RebaseConflictError; got %v", err)
+	}
+	if unresolved, why := RebaseUnresolved(context.Background(), workspace); unresolved {
+		t.Errorf("default conflict must abort to a clean workspace; RebaseUnresolved=true (%s)", why)
+	}
+}
+
+// TestRebaseUnresolved_CleanWorkspace: a plain checkout with no rebase in
+// progress is not unresolved.
+func TestRebaseUnresolved_CleanWorkspace(t *testing.T) {
+	gitOrSkip(t)
+	dir := t.TempDir()
+	bare := initBareOrigin(t, filepath.Join(dir, "origin"))
+	seedOrigin(t, bare)
+	workspace := mustClone(t, bare, filepath.Join(dir, "workspace"))
+	if unresolved, why := RebaseUnresolved(context.Background(), workspace); unresolved {
+		t.Errorf("clean checkout must not be unresolved; got true (%s)", why)
 	}
 }
