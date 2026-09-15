@@ -322,6 +322,21 @@ for every request on the fleet. If the budget elapses before the target is
 resident, the held request fails with `503` and a `Retry-After`; the caller can
 retry, and the now-warm member serves the next one.
 
+`swapBudget` also bounds the swap itself, not just the request holding on it. If
+the target has not reported `Ready` within the budget, the router abandons the
+swap: it scales the target back to zero, logs `model pool swap abandoned` at
+`ERROR` with the pool, the two members and the elapsed time, counts it in
+`llmkube_modelpool_swap_failures_total{router,pool,member,reason}` (with
+`reason="deadline"`; an activation the controller rejected outright is counted
+with `reason="error"`), and fails the waiting requests with a swap error. This
+matters because the pool is otherwise unusable while a swap is in flight: the
+resident member's fast path is closed for the duration, so an unbounded swap
+whose target can never become `Ready` would 503 every request on the pool -
+including requests for the member that is still loaded - until the proxy was
+restarted. Abandoning the swap reopens the resident's fast path, and the next
+request for the target starts a fresh swap. A pool with no explicit
+`swapBudget` uses twice the router's response-header timeout as the bound.
+
 ### A pooled router runs one replica
 
 When any backend resolves to a ModelPool member, the operator pins the router

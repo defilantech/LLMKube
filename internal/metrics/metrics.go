@@ -239,6 +239,18 @@ var (
 		[]string{"router", "pool", "from", "to"},
 	)
 
+	// ModelPoolSwapFailuresTotal counts swaps that never made their target
+	// resident, by reason: "deadline" when the swap outran its bound and was
+	// abandoned so the pool could recover, "error" when the controller refused
+	// the activation or the readiness wait failed outright.
+	ModelPoolSwapFailuresTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llmkube_modelpool_swap_failures_total",
+			Help: "ModelPool slot swaps that failed or were abandoned before the target became resident.",
+		},
+		[]string{"router", "pool", "member", "reason"},
+	)
+
 	// ModelPoolReclaimsTotal counts slot reclaims: the controller returned the
 	// shared slot to spec.default after the resident non-default member went
 	// idle for the pool's reclaimAfter under the "reclaim" swap policy.
@@ -396,6 +408,7 @@ var AllCollectors = []prometheus.Collector{
 	RouterBudgetUtilization,
 	ModelPoolResident,
 	ModelPoolSwapsTotal,
+	ModelPoolSwapFailuresTotal,
 	ModelPoolReclaimsTotal,
 	ModelPoolSwapDuration,
 	ModelPoolHoldDuration,

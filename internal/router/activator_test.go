@@ -30,6 +30,13 @@ type fakeMemberController struct {
 	deactivateN  map[string]int
 	activateFail map[string]bool
 	activateGate chan struct{} // when non-nil, Activate blocks until closed
+
+	// replicas mirrors the member InferenceService's spec.replicas so a test can
+	// assert what the pool was actually left at, not just how many calls landed.
+	replicas map[string]int
+	// noAutoReady stops Activate from making the target Ready, modelling a
+	// member whose pod never comes up.
+	noAutoReady bool
 }
 
 func newFakeMemberController() *fakeMemberController {
@@ -38,6 +45,7 @@ func newFakeMemberController() *fakeMemberController {
 		activateN:    make(map[string]int),
 		deactivateN:  make(map[string]int),
 		activateFail: make(map[string]bool),
+		replicas:     make(map[string]int),
 	}
 }
 
@@ -59,11 +67,18 @@ func (f *fakeMemberController) deactivateCount(name string) int {
 	return f.deactivateN[name]
 }
 
+func (f *fakeMemberController) replicaCount(name string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.replicas[name]
+}
+
 func (f *fakeMemberController) Activate(ctx context.Context, namespace, isvc string) error {
 	f.mu.Lock()
 	gate := f.activateGate
 	fail := f.activateFail[isvc]
 	f.activateN[isvc]++
+	f.replicas[isvc] = 1
 	f.mu.Unlock()
 	if gate != nil {
 		select {
@@ -78,7 +93,9 @@ func (f *fakeMemberController) Activate(ctx context.Context, namespace, isvc str
 	// Activation makes the target Ready in this fake (the real controller drains
 	// the incumbent first; that invariant is covered by controller tests).
 	f.mu.Lock()
-	f.phase[isvc] = modelReadyPhase
+	if !f.noAutoReady {
+		f.phase[isvc] = modelReadyPhase
+	}
 	f.mu.Unlock()
 	return nil
 }
@@ -87,6 +104,8 @@ func (f *fakeMemberController) Deactivate(ctx context.Context, namespace, isvc s
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.deactivateN[isvc]++
+	f.replicas[isvc] = 0
+	f.phase[isvc] = ""
 	return nil
 }
 
@@ -549,5 +568,147 @@ func TestActivatorIfIdleWaitsOnInFlightSwap(t *testing.T) {
 	}
 	if got := fake.activateCount("coder"); got != 1 {
 		t.Errorf("coder activate count = %d, want 1 (one swap shared by both requests)", got)
+	}
+}
+
+// waitFor polls cond until it holds or the timeout elapses, so tests can
+// synchronise on activator state without fixed sleeps.
+func waitFor(t *testing.T, timeout time.Duration, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("timed out after %s waiting for %s", timeout, what)
+}
+
+func budgetPool(member string, budget time.Duration) *BackendPool {
+	return &BackendPool{
+		Name:       "heavy-slot",
+		Namespace:  "lab",
+		Member:     member,
+		Members:    []string{"judge", "coder"},
+		SwapBudget: budget,
+	}
+}
+
+// TestActivatorStaleDeactivateDoesNotUndoNewActivation is the #1837 wedge, half
+// one: the last waiter for a member leaves and schedules a deactivate, a new
+// request for the same member arrives in that window and activates it, and the
+// stale deactivate must not scale it back to zero. It used to, and because
+// Activate is idempotent-by-check and never re-issued, the new swap then waited
+// forever on a member that could never become Ready.
+func TestActivatorStaleDeactivateDoesNotUndoNewActivation(t *testing.T) {
+	fake := newFakeMemberController()
+	fake.noAutoReady = true
+	a := NewActivator(context.Background(), fake, "r", nil)
+
+	secondDone := make(chan error, 1)
+	var once sync.Once
+	a.beforeDeactivate = func(member string) {
+		if member != "coder" {
+			return
+		}
+		once.Do(func() {
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				release, err := a.Acquire(ctx, testPool("coder"))
+				if err == nil {
+					release()
+				}
+				secondDone <- err
+			}()
+			// Hold the deactivate in its old losing window until the second
+			// waiter has actually issued its Activate.
+			waitFor(t, 3*time.Second, "second Activate for coder", func() bool {
+				return fake.activateCount("coder") >= 2
+			})
+		})
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := a.Acquire(ctx, testPool("coder")); !errors.Is(err, ErrHoldBudgetExceeded) {
+		t.Fatalf("first Acquire err = %v, want ErrHoldBudgetExceeded", err)
+	}
+
+	waitFor(t, 3*time.Second, "second waiter to activate coder", func() bool {
+		return fake.activateCount("coder") >= 2
+	})
+	// Give the stale deactivate time to land if it is going to.
+	time.Sleep(250 * time.Millisecond)
+
+	if got := fake.deactivateCount("coder"); got != 0 {
+		t.Fatalf("Deactivate(coder) called %d times; the stale deactivate undid a live activation", got)
+	}
+	if got := fake.replicaCount("coder"); got != 1 {
+		t.Fatalf("coder replicas = %d, want 1", got)
+	}
+
+	fake.setPhase("coder", modelReadyPhase)
+	select {
+	case err := <-secondDone:
+		if err != nil {
+			t.Fatalf("second Acquire: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("second waiter never served: the swap is waiting on a member that was scaled back to zero")
+	}
+}
+
+// TestActivatorAbandonsSwapAtDeadline is the #1837 wedge, half two: a swap whose
+// target never becomes Ready must be abandoned at the pool's swap budget rather
+// than pinning swapping=true forever. Before the fix the swap ran under an
+// unbounded context, so the resident's fast path stayed closed and every request
+// on the pool burned its hold budget and 503ed until the proxy restarted.
+func TestActivatorAbandonsSwapAtDeadline(t *testing.T) {
+	fake := newFakeMemberController()
+	fake.noAutoReady = true
+	fake.setPhase("judge", modelReadyPhase)
+	a := NewActivator(context.Background(), fake, "r", nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	start := time.Now()
+	_, err := a.Acquire(ctx, budgetPool("coder", 150*time.Millisecond))
+	if err == nil {
+		t.Fatal("Acquire succeeded; want the swap to be abandoned at its deadline")
+	}
+	if errors.Is(err, ErrHoldBudgetExceeded) {
+		t.Fatalf("Acquire err = %v after %s; the swap was never bounded, the caller just ran out of hold budget",
+			err, time.Since(start))
+	}
+
+	a.mu.Lock()
+	pr := a.pools["lab/heavy-slot"]
+	swapping := pr.swapping
+	resident := pr.resident
+	a.mu.Unlock()
+	if swapping {
+		t.Fatal("pool still marked swapping after the swap was abandoned")
+	}
+	if resident != "judge" {
+		t.Fatalf("resident = %q, want judge to still own the slot", resident)
+	}
+
+	waitFor(t, 3*time.Second, "abandoned target to be deactivated", func() bool {
+		return fake.deactivateCount("coder") >= 1
+	})
+
+	// The resident's fast path must be open again: no swap, no activation, and
+	// well inside the hold budget.
+	fastCtx, fastCancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer fastCancel()
+	release, err := a.Acquire(fastCtx, budgetPool("judge", 150*time.Millisecond))
+	if err != nil {
+		t.Fatalf("Acquire for the resident member after an abandoned swap: %v", err)
+	}
+	release()
+	if got := fake.activateCount("judge"); got != 0 {
+		t.Fatalf("Activate(judge) called %d times; the resident did not take the fast path", got)
 	}
 }

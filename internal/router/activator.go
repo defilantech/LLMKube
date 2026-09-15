@@ -78,6 +78,12 @@ type Activator struct {
 	// adding an API round-trip to the hot path.
 	resyncInterval time.Duration
 
+	// beforeDeactivate, when non-nil, runs just before a deferred deactivate
+	// re-takes the lock to re-check whether its member is still unwanted. It
+	// exists so tests can drive a new activation into exactly the window that
+	// used to lose the race described below. Always nil in production.
+	beforeDeactivate func(member string)
+
 	mu    sync.Mutex
 	pools map[string]*poolRuntime
 }
@@ -106,6 +112,13 @@ type poolRuntime struct {
 	swapping   bool
 	swapTarget string
 	swapCancel context.CancelFunc
+
+	// swapGen identifies the swap that currently owns the fields above. A
+	// cancelled swap's goroutine can wake up after a fresh swap for the same
+	// pool has already started; without this generation it would clear the new
+	// swap's swapping/swapTarget state and leave the pool believing nothing is
+	// in flight while an activation is still running.
+	swapGen uint64
 
 	// swapErr records the outcome of the most recent failed swap, keyed by the
 	// target member, so the waiter that requested that member surfaces the
@@ -227,12 +240,18 @@ func (a *Activator) AcquireWithMode(ctx context.Context, p *BackendPool, mode st
 			if pr.swapping && pr.swapTarget == member && pr.swapCancel != nil {
 				pr.swapCancel()
 			}
-			ns := pr.namespace
-			ctrl := a.ctrl
+			// Remember which swap generation this deactivate was scheduled
+			// against; anything newer means the member was wanted again.
+			gen := pr.swapGen
 			a.mu.Unlock()
-			if ctrl != nil {
-				go func() { _ = ctrl.Deactivate(a.baseCtx, ns, member) }()
-			}
+			// The deactivate stays asynchronous (it is a live API call and this
+			// is a request goroutine), but it must re-check pool state under the
+			// lock before patching: a request for the same member can arrive in
+			// this window, start a swap and scale the member up, and a stale
+			// deactivate landing afterwards would scale it back to zero. Activate
+			// is idempotent-by-check and never re-issued, so the swap would then
+			// wait forever on a member that can never become Ready.
+			go a.deactivateIfUnwanted(pr, member, gen)
 			return
 		}
 		a.mu.Unlock()
@@ -266,7 +285,7 @@ func (a *Activator) AcquireWithMode(ctx context.Context, p *BackendPool, mode st
 		if !pr.swapping && pr.resident != member {
 			incumbent := pr.resident
 			if incumbent == "" || pr.inflight[incumbent] == 0 {
-				a.startSwap(pr, incumbent, member, holdStart)
+				a.startSwap(pr, incumbent, member, holdStart, p.SwapBudget)
 			} else if mode == PoolActivationIfIdle {
 				prommetrics.ModelPoolBusySkipsTotal.WithLabelValues(a.router, pr.pool, member).Inc()
 				a.mu.Unlock()
@@ -297,15 +316,24 @@ func (a *Activator) AcquireWithMode(ctx context.Context, p *BackendPool, mode st
 // wait on the change channel. Running the swap off the caller goroutine is what
 // lets a caller give up (budget exceeded / disconnect) without aborting the
 // in-progress model load.
-func (a *Activator) startSwap(pr *poolRuntime, incumbent, target string, holdStart time.Time) {
-	swapCtx, cancel := context.WithCancel(a.baseCtx)
+//
+// budget bounds the whole swap (activate + wait-ready). Without it the only exit
+// is swapCancel, which fires only when the last waiter for target leaves, so a
+// client that retries on 503 keeps a doomed swap alive forever: swapping stays
+// true, the resident's fast path stays closed, and every request on the pool
+// burns its hold budget and 503s until the proxy is restarted.
+func (a *Activator) startSwap(pr *poolRuntime, incumbent, target string, holdStart time.Time, budget time.Duration) {
+	swapCtx, cancel := context.WithTimeout(a.baseCtx, resolveSwapDeadline(budget))
 	pr.swapping = true
 	pr.swapTarget = target
 	pr.swapCancel = cancel
+	pr.swapGen++
+	gen := pr.swapGen
 	delete(pr.swapErr, target)
 	pr.notify()
 
 	go func() {
+		defer cancel()
 		swapStart := time.Now()
 		err := a.ctrl.Activate(swapCtx, pr.namespace, target)
 		if err == nil {
@@ -314,6 +342,12 @@ func (a *Activator) startSwap(pr *poolRuntime, incumbent, target string, holdSta
 
 		a.mu.Lock()
 		defer a.mu.Unlock()
+		if pr.swapGen != gen {
+			// Superseded: a newer swap for this pool owns the swap state now.
+			// Touching it here would strand that swap's waiters.
+			pr.notify()
+			return
+		}
 		pr.swapping = false
 		pr.swapTarget = ""
 		pr.swapCancel = nil
@@ -321,12 +355,34 @@ func (a *Activator) startSwap(pr *poolRuntime, incumbent, target string, holdSta
 			// A cancelled swap (last caller gave up) is not a failure: the
 			// target was scaled back down by the cancel path, so just clear the
 			// swap state and wake any waiters.
-			if swapCtx.Err() != nil {
+			if swapCtx.Err() != nil && !errors.Is(swapCtx.Err(), context.DeadlineExceeded) {
+				pr.notify()
+				return
+			}
+			if errors.Is(swapCtx.Err(), context.DeadlineExceeded) {
+				elapsed := time.Since(swapStart)
+				a.logger.Error("model pool swap abandoned", "pool", pr.pool,
+					"from", incumbent, "to", target, "elapsed", elapsed.String())
+				prommetrics.ModelPoolSwapFailuresTotal.
+					WithLabelValues(a.router, pr.pool, target, "deadline").Inc()
+				pr.swapErr[target] = errors.New("model pool swap to member " + target +
+					" abandoned after " + elapsed.String() + "; target never became resident")
+				// Scale the abandoned target back down. Done while still holding
+				// mu, so a waiter that is about to start a fresh swap for the
+				// same member cannot have its Activate undone by this patch.
+				if a.ctrl != nil {
+					if derr := a.ctrl.Deactivate(a.baseCtx, pr.namespace, target); derr != nil {
+						a.logger.Warn("model pool deactivate after abandoned swap failed",
+							"pool", pr.pool, "member", target, "error", derr)
+					}
+				}
 				pr.notify()
 				return
 			}
 			a.logger.Error("model pool swap failed", "pool", pr.pool,
 				"from", incumbent, "to", target, "error", err)
+			prommetrics.ModelPoolSwapFailuresTotal.
+				WithLabelValues(a.router, pr.pool, target, "error").Inc()
 			pr.swapErr[target] = errors.New("model pool swap failed for member " + target + ": " + err.Error())
 			pr.notify()
 			return
@@ -341,6 +397,48 @@ func (a *Activator) startSwap(pr *poolRuntime, incumbent, target string, holdSta
 		a.observeResident(pr)
 		pr.notify()
 	}()
+}
+
+// resolveSwapDeadline returns the wall-clock bound for one swap. The pool's own
+// swapBudget is the operator's statement of how long a cold load may take, so it
+// is the natural cap. When a pool carries no explicit budget the proxy holds
+// requests for its response-header timeout instead; twice that is used here so
+// the bound is never tighter than a single caller's hold, and a swap that is
+// merely slow still completes and warms the member for the next request.
+func resolveSwapDeadline(budget time.Duration) time.Duration {
+	if budget > 0 {
+		return budget
+	}
+	return defaultSwapDeadline
+}
+
+// defaultSwapDeadline bounds a swap for a pool that declares no swapBudget.
+const defaultSwapDeadline = 2 * defaultResponseHeaderTimeout
+
+// deactivateIfUnwanted scales member back to zero unless the pool has since
+// decided it wants that member after all: a new waiter arrived, the member
+// became resident, or a swap newer than gen (the generation this deactivate was
+// scheduled against) is activating it right now. The re-check and the patch both
+// happen under a.mu, and every path that issues an Activate sets its swap state
+// under a.mu before its goroutine calls the controller, so a deactivate can no
+// longer land on top of an activation issued after it was scheduled. Caller must
+// not hold a.mu.
+func (a *Activator) deactivateIfUnwanted(pr *poolRuntime, member string, gen uint64) {
+	if a.ctrl == nil {
+		return
+	}
+	if a.beforeDeactivate != nil {
+		a.beforeDeactivate(member)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if pr.waiting[member] > 0 || pr.resident == member ||
+		(pr.swapping && pr.swapTarget == member && pr.swapGen != gen) {
+		return
+	}
+	if err := a.ctrl.Deactivate(a.baseCtx, pr.namespace, member); err != nil {
+		a.logger.Warn("model pool deactivate failed", "pool", pr.pool, "member", member, "error", err)
+	}
 }
 
 // reconcileResident refreshes the activator's belief about which member owns a
