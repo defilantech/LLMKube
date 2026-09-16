@@ -5,6 +5,24 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.28](https://github.com/defilantech/LLMKube/compare/v0.9.27...v0.9.28) (2026-09-16)
+
+
+### Features
+
+* **runtime:** honor spec.args verbatim when spec.command is overridden ([#1829](https://github.com/defilantech/LLMKube/issues/1829)) ([f2fcc09](https://github.com/defilantech/LLMKube/commit/f2fcc09a33aa52d26cd75e43d8537dfc388523c0))
+
+
+### Bug Fixes
+
+* **router:** bound pool swaps and stop stale deactivate racing a new activation ([#1838](https://github.com/defilantech/LLMKube/issues/1838)) ([a598ec7](https://github.com/defilantech/LLMKube/commit/a598ec7740641fe4c74fefa5fad6051a795179c1))
+* **router:** rewrite model to served name on IfIdle fall-through ([#1836](https://github.com/defilantech/LLMKube/issues/1836)) ([8276b50](https://github.com/defilantech/LLMKube/commit/8276b509aa6d6f9ee9c78d7a3b0db54e82558f48))
+
+
+### Documentation
+
+* **labs:** Qwen3.8-Flash-Next with MTP on one Strix Halo ([#1832](https://github.com/defilantech/LLMKube/issues/1832)) ([3acb00d](https://github.com/defilantech/LLMKube/commit/3acb00ddc05a30945b92acbfe67d6cccd469e02c))
+
 ## [0.9.27](https://github.com/defilantech/LLMKube/compare/v0.9.26...v0.9.27) (2026-09-14)
 
 
