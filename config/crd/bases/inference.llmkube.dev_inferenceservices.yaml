@@ -1124,9 +1124,11 @@ spec:
                   for runtimes that build a command (vllm, sglang, personaplex), setting
                   Command declares a bring-your-own launcher, so the runtime's generated args
                   are dropped and the container receives Args followed by ExtraArgs verbatim;
-                  for runtimes that serve via the image entrypoint (llamacpp, generic),
-                  Command overrides the entrypoint only and the runtime's generated args
-                  (model path, context size, host/port, ...) still apply.
+                  for runtimes that serve via the image entrypoint (llamacpp, tgi,
+                  llamacpp-router, generic), Command overrides the entrypoint only and
+                  whatever args that runtime generates still apply -- llamacpp's model path,
+                  context size and host/port, tgi's --model-id, llamacpp-router's
+                  --models-dir. generic generates none of its own and passes Args through.
                 items:
                   type: string
                 type: array
