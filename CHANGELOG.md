@@ -5,6 +5,13 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.29](https://github.com/defilantech/LLMKube/compare/v0.9.28...v0.9.29) (2026-09-16)
+
+
+### Bug Fixes
+
+* **controller:** keep generated args when a non-CLI runtime overrides command ([#1843](https://github.com/defilantech/LLMKube/issues/1843)) ([c262265](https://github.com/defilantech/LLMKube/commit/c262265a88a82549565d42788e33f8d38fe55c0c))
+
 ## [0.9.28](https://github.com/defilantech/LLMKube/compare/v0.9.27...v0.9.28) (2026-09-16)
 
 
