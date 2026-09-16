@@ -988,7 +988,7 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 	// to INCOMPLETE, preserving the #1042/#1364 invariant. Only GO is gated;
 	// a non-GO terminal already routes without committing.
 	if rebaseConflict != nil && verdict == foremanv1alpha1.AgenticTaskVerdictGo {
-		if unresolved, why := repo.RebaseUnresolved(ctx, workspace); unresolved {
+		if unresolved, why := repo.RebaseUnresolved(ctx, workspace, rebaseConflict.BaseSHA); unresolved {
 			log.Info("rebase conflict left unresolved on GO; downgrading to INCOMPLETE",
 				"reason", why, "files", rebaseConflict.Files)
 			return e.incompleteResult(start, transcriptRef, loopRes,

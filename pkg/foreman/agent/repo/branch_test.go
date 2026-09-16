@@ -389,7 +389,7 @@ func TestRebaseOntoBase_LeaveConflictsLeavesMidRebase(t *testing.T) {
 	if len(rce.Files) != 1 || rce.Files[0] != "conflict.txt" {
 		t.Errorf("expected [conflict.txt], got %v", rce.Files)
 	}
-	if unresolved, why := RebaseUnresolved(context.Background(), workspace); !unresolved {
+	if unresolved, why := RebaseUnresolved(context.Background(), workspace, rce.BaseSHA); !unresolved {
 		t.Errorf("workspace should be left mid-rebase; RebaseUnresolved=false (%s)", why)
 	}
 }
@@ -426,7 +426,7 @@ func TestRebaseOntoBase_ConflictAbortsByDefault(t *testing.T) {
 	if errors.As(err, &rce) {
 		t.Fatalf("default must not return *RebaseConflictError; got %v", err)
 	}
-	if unresolved, why := RebaseUnresolved(context.Background(), workspace); unresolved {
+	if unresolved, why := RebaseUnresolved(context.Background(), workspace, ""); unresolved {
 		t.Errorf("default conflict must abort to a clean workspace; RebaseUnresolved=true (%s)", why)
 	}
 }
@@ -439,7 +439,81 @@ func TestRebaseUnresolved_CleanWorkspace(t *testing.T) {
 	bare := initBareOrigin(t, filepath.Join(dir, "origin"))
 	seedOrigin(t, bare)
 	workspace := mustClone(t, bare, filepath.Join(dir, "workspace"))
-	if unresolved, why := RebaseUnresolved(context.Background(), workspace); unresolved {
+	if unresolved, why := RebaseUnresolved(context.Background(), workspace, ""); unresolved {
 		t.Errorf("clean checkout must not be unresolved; got true (%s)", why)
+	}
+}
+
+// setupMidRebaseConflict builds a real conflict, restores the prior attempt,
+// and runs RebaseOntoBase with LeaveConflicts, returning the workspace and the
+// *RebaseConflictError (with BaseSHA) left mid-rebase.
+func setupMidRebaseConflict(t *testing.T, dir, branch string) (string, *RebaseConflictError) {
+	t.Helper()
+	bare := initBareOrigin(t, filepath.Join(dir, "origin"))
+	seedOrigin(t, bare)
+	pushPriorWithFile(t, bare, filepath.Join(dir, "prior"), branch, "conflict.txt", "from prior attempt\n")
+	mainWork := mustClone(t, bare, filepath.Join(dir, "main-work"))
+	commitFile(t, mainWork, "conflict.txt", "from base since the prior attempt\n")
+
+	workspace := mustClone(t, bare, filepath.Join(dir, "workspace"))
+	found, err := CreateBranchFromRemoteRef(context.Background(), RemoteRefBranchOptions{
+		Workspace: workspace, Branch: branch, Remote: "origin", Ref: branch,
+	})
+	if err != nil || !found {
+		t.Fatalf("restore prior attempt: found=%v err=%v", found, err)
+	}
+	err = RebaseOntoBase(context.Background(), RebaseOntoBaseOptions{
+		Workspace: workspace, BaseBranch: "main", UpstreamURL: bare, LeaveConflicts: true,
+	})
+	var rce *RebaseConflictError
+	if !errors.As(err, &rce) {
+		t.Fatalf("expected *RebaseConflictError, got %v", err)
+	}
+	if rce.BaseSHA == "" {
+		t.Fatal("expected BaseSHA to be captured after the fetch")
+	}
+	return workspace, rce
+}
+
+// TestRebaseUnresolved_AbortedRebaseCaughtByIsAncestor is Chris's #1840 repro:
+// a model "resolves" by running `git rebase --abort`, returning the branch to
+// its stale pre-rebase tip. The tree is clean and not mid-rebase, so ONLY the
+// is-ancestor check catches that the base tip is no longer contained in HEAD —
+// i.e. the branch reverts merged work.
+func TestRebaseUnresolved_AbortedRebaseCaughtByIsAncestor(t *testing.T) {
+	gitOrSkip(t)
+	dir := t.TempDir()
+	workspace, rce := setupMidRebaseConflict(t, dir, "foreman/wl/issue-1839-abort-hole")
+
+	mustGit(t, workspace, "rebase", "--abort")
+
+	unresolved, why := RebaseUnresolved(context.Background(), workspace, rce.BaseSHA)
+	if !unresolved {
+		t.Fatal("aborted rebase must be reported unresolved (branch reverts merged work); got false")
+	}
+	if !strings.Contains(why, "not contained in HEAD") {
+		t.Errorf("reason should cite the is-ancestor failure, got %q", why)
+	}
+}
+
+// TestRebaseUnresolved_GenuineResolvePasses: after actually resolving the
+// conflict and continuing the rebase, HEAD descends from the base tip, so the
+// guard passes.
+func TestRebaseUnresolved_GenuineResolvePasses(t *testing.T) {
+	gitOrSkip(t)
+	dir := t.TempDir()
+	workspace, rce := setupMidRebaseConflict(t, dir, "foreman/wl/issue-1839-resolve")
+
+	if err := os.WriteFile(filepath.Join(workspace, "conflict.txt"),
+		[]byte("from base since the prior attempt\nfrom prior attempt\n"), 0o644); err != nil {
+		t.Fatalf("write resolved: %v", err)
+	}
+	mustGit(t, workspace, "add", "conflict.txt")
+	mustGit(t, workspace, "-c", "core.editor=true",
+		"-c", "user.email=u@x", "-c", "user.name=u", "rebase", "--continue")
+
+	unresolved, why := RebaseUnresolved(context.Background(), workspace, rce.BaseSHA)
+	if unresolved {
+		t.Errorf("a genuine completed rebase must not be unresolved; got true (%s)", why)
 	}
 }
