@@ -459,6 +459,9 @@ func (e *NativeAgentLoopExecutor) Execute(
 	// when it is a fork of payload.repo (same repo name, different owner): the
 	// fork deployment pushes to the fork, not upstream (#915).
 	cloneURL := ""
+	// rebaseConflict is set when setupTaskBranch left the workspace mid-rebase
+	// for the coder loop to resolve (#1839); nil in the common case.
+	var rebaseConflict *repo.RebaseConflictError
 	if needsRepo {
 		cloneURL = resolveUpstream(task.Spec.Payload.Repo)
 		if cloneURL == "" || isForkOf(e.GitRemoteURL, task.Spec.Payload.Repo) {
@@ -481,8 +484,14 @@ func (e *NativeAgentLoopExecutor) Execute(
 		// clone-HEAD fallback). Failures bucket with CloneFailed for the
 		// retry policy.
 		baseBranch := baseBranchOrDefault(task.Spec.Payload.BaseBranch)
-		if err := setupTaskBranch(ctx, task, workspace, branch, baseBranch, resolveUpstream, auth, log); err != nil {
-			return e.failResult(start, foremanv1alpha1.FailureCloneFailed, err.Error()), nil
+		// A rebase conflict is not a hard failure: setupTaskBranch leaves the
+		// workspace mid-rebase and the coder loop resolves it (#1839). Any
+		// other error buckets as CloneFailed for the retry policy.
+		var failR *Result
+		rebaseConflict, failR = e.setupBranchClassified(
+			ctx, task, workspace, branch, baseBranch, resolveUpstream, auth, log, start)
+		if failR != nil {
+			return failR, nil
 		}
 	}
 
@@ -521,7 +530,8 @@ func (e *NativeAgentLoopExecutor) Execute(
 	// 6+. LLM-driven path: extracted to keep Execute below the
 	// cyclomatic-complexity threshold. runLLMPath owns OAI + loop +
 	// transcript + commit/push.
-	return e.runLLMPath(ctx, task, agent, endpoint, workspace, branch, registry, auth, needsRepo, cloneURL, start)
+	return e.runLLMPath(
+		ctx, task, agent, endpoint, workspace, branch, registry, auth, needsRepo, cloneURL, rebaseConflict, start)
 }
 
 // setupTaskBranch cuts the task's working branch in the freshly cloned
@@ -547,6 +557,34 @@ func (e *NativeAgentLoopExecutor) Execute(
 //     unsafe for these kinds — it bases on a fork tip that drifts from
 //     upstream — so the missing slug is refused, not papered over.
 //  4. Clone-HEAD checkout for freeform tasks without a repo slug.
+//
+// setupBranchClassified runs setupTaskBranch and classifies its outcome for
+// Execute: a *repo.RebaseConflictError is a soft signal (the workspace is left
+// mid-rebase for the coder loop to resolve, #1839), returned as the first
+// value; any other error yields a fail Result as the second value. Both nil on
+// success.
+func (e *NativeAgentLoopExecutor) setupBranchClassified(
+	ctx context.Context,
+	task *foremanv1alpha1.AgenticTask,
+	workspace, branch, baseBranch string,
+	resolveUpstream func(string) string,
+	auth *repo.Auth,
+	log logr.Logger,
+	start time.Time,
+) (*repo.RebaseConflictError, *Result) {
+	err := setupTaskBranch(ctx, task, workspace, branch, baseBranch, resolveUpstream, auth, log)
+	if err == nil {
+		return nil, nil
+	}
+	var rce *repo.RebaseConflictError
+	if errors.As(err, &rce) {
+		log.Info("rebase onto base conflicted; handing the mid-rebase workspace to the coder to resolve",
+			"branch", branch, "files", rce.Files)
+		return rce, nil
+	}
+	return nil, e.failResult(start, foremanv1alpha1.FailureCloneFailed, err.Error())
+}
+
 func setupTaskBranch(
 	ctx context.Context,
 	task *foremanv1alpha1.AgenticTask,
@@ -593,12 +631,16 @@ func setupTaskBranch(
 		}
 		if found {
 			// Replay the restored prior attempt onto the current base. A
-			// conflict fails the task loud rather than reverting merged work.
+			// conflict is LEFT in the workspace (LeaveConflicts) and returned
+			// as a *repo.RebaseConflictError so Execute can hand the mid-rebase
+			// tree to the coder loop to resolve (#1839), rather than failing
+			// loud with no path forward. Any other error still fails loud.
 			if err := repo.RebaseOntoBase(ctx, repo.RebaseOntoBaseOptions{
-				Workspace:   workspace,
-				BaseBranch:  baseBranch,
-				UpstreamURL: resolveUpstream(task.Spec.Payload.Repo),
-				Auth:        auth,
+				Workspace:      workspace,
+				BaseBranch:     baseBranch,
+				UpstreamURL:    resolveUpstream(task.Spec.Payload.Repo),
+				Auth:           auth,
+				LeaveConflicts: true,
 			}); err != nil {
 				return err
 			}
@@ -714,6 +756,56 @@ func setupTaskBranch(
 // local or cloud-proxy). The split from Execute is purely about
 // cyclomatic complexity, not separation of concerns: nothing here
 // should be reachable from the deterministic branch.
+// rebaseConflictInstruction is the opening the coder reads when its task
+// started mid-rebase (#1839). It names the conflicted files and spells out the
+// resolve-then-continue contract, emphasizing that merged work must be kept —
+// the invariant the post-loop guard and reviewer independently enforce.
+func rebaseConflictInstruction(rc *repo.RebaseConflictError) string {
+	files := "the conflicted files"
+	if len(rc.Files) > 0 {
+		files = strings.Join(rc.Files, ", ")
+	}
+	return fmt.Sprintf(
+		"IMPORTANT — resolve a rebase conflict first. Your branch is mid-rebase onto %s "+
+			"with conflicts in: %s. Before the task below, open each conflicted file and "+
+			"resolve every marker keeping BOTH the base's already-merged work and this "+
+			"branch's intent — never delete or revert work merged into %s. Then `git add` "+
+			"the resolved files and run `git rebase --continue` (repeat if more conflicts "+
+			"surface). Confirm `git status` shows no rebase in progress and no unmerged "+
+			"paths, and that the project still builds and its tests pass, before you submit GO.",
+		rc.Base, files, rc.Base)
+}
+
+// maybePrependRebaseInstruction leads the prompt with the rebase-conflict
+// instruction when the task started mid-rebase (#1839); a nil conflict returns
+// the prompt unchanged (the common case).
+func maybePrependRebaseInstruction(prompt string, rc *repo.RebaseConflictError) string {
+	if rc == nil {
+		return prompt
+	}
+	return rebaseConflictInstruction(rc) + "\n\n" + prompt
+}
+
+// applyRepoMapPrefix prepends a repo-map summary to a coder Agent's prompt
+// (#560). Non-coder agents, and a failed or empty build, return the prompt
+// unchanged.
+func (e *NativeAgentLoopExecutor) applyRepoMapPrefix(
+	ctx context.Context, agent *foremanv1alpha1.Agent,
+	workspace, issueText, userPrompt string, log logr.Logger,
+) string {
+	if agent.Spec.Role != foremanv1alpha1.AgentRoleCoder {
+		return userPrompt
+	}
+	summary, mapErr := repomap.Build(ctx, workspace, issueText, repomap.Options{})
+	switch {
+	case mapErr != nil:
+		log.Info("repomap build failed; continuing without summary", "err", mapErr.Error())
+	case summary != "":
+		return summary + "\n" + userPrompt
+	}
+	return userPrompt
+}
+
 func (e *NativeAgentLoopExecutor) runLLMPath(
 	ctx context.Context,
 	task *foremanv1alpha1.AgenticTask,
@@ -724,6 +816,7 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 	auth *repo.Auth,
 	needsRepo bool,
 	cloneURL string,
+	rebaseConflict *repo.RebaseConflictError,
 	start time.Time,
 ) (*Result, error) {
 	log := logf.FromContext(ctx).WithName("native-agent-loop").WithValues("task", task.Name, "ns", task.Namespace)
@@ -769,18 +862,15 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 	// a git/grep error logs and skips, never blocking the task.
 	applyStalenessCheckForTask(ctx, log, task, workspace)
 	userPrompt := buildUserPrompt(task)
+	// #1839: when setupTaskBranch left the workspace mid-rebase for the coder
+	// to resolve, lead with the conflict so it is the first thing the model
+	// acts on. A GO that leaves the tree mid-rebase or still conflicted is
+	// caught by the post-loop guard below and downgraded to INCOMPLETE.
+	userPrompt = maybePrependRebaseInstruction(userPrompt, rebaseConflict)
 	// issueText ranks files for both the repo-map prefix (coder Agents) and the
 	// scope-overlap guard in the coder gate verifier (#782).
 	issueText := repoMapQuery(task)
-	if agent.Spec.Role == foremanv1alpha1.AgentRoleCoder {
-		summary, mapErr := repomap.Build(ctx, workspace, issueText, repomap.Options{})
-		switch {
-		case mapErr != nil:
-			log.Info("repomap build failed; continuing without summary", "err", mapErr.Error())
-		case summary != "":
-			userPrompt = summary + "\n" + userPrompt
-		}
-	}
+	userPrompt = e.applyRepoMapPrefix(ctx, agent, workspace, issueText, userPrompt, log)
 	userPrompt = workspaceOrientationBlock(workspace) + "\n" + userPrompt
 
 	// Resolve an optional ModelProfile and layer it onto the loop config
@@ -889,6 +979,23 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 	stampAgentConfigWarnings(loopRes.Terminal, &agent.Spec)
 
 	verdict, normalizedReason := normalizeModelVerdict(loopRes.Terminal.Verdict)
+
+	// #1839 rebase-conflict guard: this task started mid-rebase (the executor
+	// left an unfinished rebase for the coder to resolve). A GO must not land
+	// unless the rebase actually completed cleanly — a still-mid-rebase or
+	// still-conflicted tree is proof the coder did not finish, and committing
+	// it would push a half-applied or merged-work-reverting branch. Downgrade
+	// to INCOMPLETE, preserving the #1042/#1364 invariant. Only GO is gated;
+	// a non-GO terminal already routes without committing.
+	if rebaseConflict != nil && verdict == foremanv1alpha1.AgenticTaskVerdictGo {
+		if unresolved, why := repo.RebaseUnresolved(ctx, workspace, rebaseConflict.BaseSHA); unresolved {
+			log.Info("rebase conflict left unresolved on GO; downgrading to INCOMPLETE",
+				"reason", why, "files", rebaseConflict.Files)
+			return e.incompleteResult(start, transcriptRef, loopRes,
+				foremanv1alpha1.FailureRebaseConflictUnresolved,
+				"rebase conflict unresolved: "+why), nil
+		}
+	}
 
 	// 9. Non-GO verdicts: no commit, no push, just record the model's
 	// stated outcome and return.
