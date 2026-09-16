@@ -97,7 +97,7 @@ const (
 // v0.3 #559 introduces the enum + emission; per-reason retry policy
 // on AgenticTaskSpec and retry-with-correction in the loop are
 // follow-up work that consumes this signal.
-// +kubebuilder:validation:Enum=AgentNotFound;InferenceServiceUnavailable;AuthUnavailable;GitRemoteNotConfigured;CloneFailed;ModelMisunderstood;ToolFailed;MaxTurnsExhausted;LoopSpinning;ConstraintViolated;Timeout;InfrastructureError;GateFailed;GateError;ModelReportedError
+// +kubebuilder:validation:Enum=AgentNotFound;InferenceServiceUnavailable;AuthUnavailable;GitRemoteNotConfigured;CloneFailed;RebaseConflictUnresolved;ModelMisunderstood;ToolFailed;MaxTurnsExhausted;LoopSpinning;ConstraintViolated;Timeout;InfrastructureError;GateFailed;GateError;ModelReportedError
 type AgenticTaskFailureReason string
 
 const (

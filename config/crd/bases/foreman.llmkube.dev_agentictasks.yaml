@@ -596,6 +596,7 @@ spec:
                 - AuthUnavailable
                 - GitRemoteNotConfigured
                 - CloneFailed
+                - RebaseConflictUnresolved
                 - ModelMisunderstood
                 - ToolFailed
                 - MaxTurnsExhausted
