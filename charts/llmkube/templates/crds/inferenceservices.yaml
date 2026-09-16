@@ -1123,8 +1123,14 @@ spec:
                 type: string
               command:
                 description: |-
-                  Command overrides the container entrypoint.
-                  Only used when Runtime is "generic" or for advanced customization.
+                  Command overrides the container entrypoint. Its effect on the container's
+                  arguments depends on whether the runtime injects its own CLI:
+                  for runtimes that build a command (vllm, sglang, personaplex), setting
+                  Command declares a bring-your-own launcher, so the runtime's generated args
+                  are dropped and the container receives Args followed by ExtraArgs verbatim;
+                  for runtimes that serve via the image entrypoint (llamacpp, generic),
+                  Command overrides the entrypoint only and the runtime's generated args
+                  (model path, context size, host/port, ...) still apply.
                 items:
                   type: string
                 type: array

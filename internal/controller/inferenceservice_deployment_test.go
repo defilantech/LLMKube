@@ -4362,6 +4362,50 @@ var _ = Describe("Generic Runtime Deployment Construction", func() {
 		Expect(container.Args).NotTo(ContainElement("org/custom-27b"))
 	})
 
+	It("keeps the generated args when spec.command is set on a runtime that builds no command", func() {
+		// llamacpp implements no CommandBuilder: it serves via the image
+		// entrypoint plus generated args, so spec.command is an entrypoint
+		// override only. Dropping the generated args here started llama-server
+		// with no --model — it answered /health, so the pod went Ready while
+		// /v1/models stayed empty (#1842).
+		contextSize := int32(4096)
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: "llamacpp-entrypoint-model", Namespace: "default"},
+			Spec: inferencev1alpha1.ModelSpec{
+				Source:   "https://example.com/model.gguf",
+				Format:   "gguf",
+				Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: "cpu"},
+			},
+			Status: inferencev1alpha1.ModelStatus{Phase: "Ready", Path: "/models/model.gguf"},
+		}
+
+		isvc := &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: "llamacpp-entrypoint-svc", Namespace: "llm"},
+			Spec: inferencev1alpha1.InferenceServiceSpec{
+				ModelRef:    "llamacpp-entrypoint-model",
+				Runtime:     "llamacpp",
+				Command:     []string{"/app/llama-server"},
+				ContextSize: &contextSize,
+				ExtraArgs:   []string{"--alias", "my-model"},
+			},
+		}
+
+		deployment := reconciler.constructDeployment(isvc, model, nil, 1)
+		container := deployment.Spec.Template.Spec.Containers[0]
+
+		By("using the overridden entrypoint")
+		Expect(container.Command).To(Equal([]string{"/app/llama-server"}))
+
+		By("still passing the runtime's generated args")
+		Expect(container.Args).To(ContainElement("--model"))
+		Expect(argValue(container.Args, "--model")).To(HaveSuffix(".gguf"))
+		Expect(argValue(container.Args, "--ctx-size")).To(Equal("4096"))
+		Expect(container.Args).To(ContainElements("--host", "--port"))
+
+		By("still appending spec.extraArgs")
+		Expect(container.Args).To(ContainElements("--alias", "my-model"))
+	})
+
 	It("should support probe overrides", func() {
 		containerPort := int32(8000)
 		model := &inferencev1alpha1.Model{

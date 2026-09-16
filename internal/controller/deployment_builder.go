@@ -339,6 +339,41 @@ func servedModelPath(isvc *inferencev1alpha1.InferenceService, model *inferencev
 	return sc.modelPath
 }
 
+// setCommandAndArgs resolves the container's entrypoint and argv. A custom
+// entrypoint owns its args, but only where the runtime would otherwise have
+// injected its own CLI: a bring-your-own launcher (e.g. a tuned vLLM image
+// whose entrypoint dispatches serving modes) must not be handed
+// `vllm serve <model> --host …`, so honor spec.args verbatim — then still
+// append spec.extraArgs, the documented escape hatch — and let a custom-image
+// server run under a native runtime purely to inherit its idle probe and
+// metrics scraping without adopting its CLI.
+//
+// Runtimes that build no command (llamacpp, generic) serve via the image
+// ENTRYPOINT plus generated args, so for them spec.command overrides the
+// entrypoint only and the generated args still apply. Keying the verbatim path
+// on spec.command alone started llama-server with no `--model` at all (#1842).
+func setCommandAndArgs(
+	container *corev1.Container,
+	isvc *inferencev1alpha1.InferenceService,
+	backend RuntimeBackend,
+	args []string,
+) {
+	cb, injectsCLI := backend.(CommandBuilder)
+	if len(isvc.Spec.Command) > 0 && injectsCLI {
+		container.Command = isvc.Spec.Command
+		container.Args = append(append([]string{}, isvc.Spec.Args...), isvc.Spec.ExtraArgs...)
+		return
+	}
+	if len(isvc.Spec.Command) > 0 {
+		container.Command = isvc.Spec.Command
+	} else if injectsCLI {
+		container.Command = cb.BuildCommand()
+	}
+	if args != nil {
+		container.Args = args
+	}
+}
+
 func (r *InferenceServiceReconciler) constructDeployment(
 	isvc *inferencev1alpha1.InferenceService,
 	model *inferencev1alpha1.Model,
@@ -435,26 +470,7 @@ func (r *InferenceServiceReconciler) constructDeployment(
 	}
 	container.VolumeMounts = append(container.VolumeMounts, isvc.Spec.ExtraVolumeMounts...)
 
-	// Set command/args based on runtime. A custom entrypoint owns its args: when
-	// spec.command is overridden (bring-your-own launcher — e.g. a tuned vLLM
-	// image whose entrypoint dispatches serving modes), the runtime's built args
-	// (`vllm serve <model> --host …`) would be handed to that launcher and break
-	// it. Honor spec.args verbatim instead — then still append spec.extraArgs, the
-	// documented escape hatch — so a custom-image server can run under a native
-	// runtime (vllm/sglang) purely to inherit its idle probe and metrics scraping
-	// without adopting its CLI. Runtimes whose BuildArgs already returns spec.Args
-	// (generic) are unaffected.
-	if len(isvc.Spec.Command) > 0 {
-		container.Command = isvc.Spec.Command
-		container.Args = append(append([]string{}, isvc.Spec.Args...), isvc.Spec.ExtraArgs...)
-	} else {
-		if cb, ok := backend.(CommandBuilder); ok {
-			container.Command = cb.BuildCommand()
-		}
-		if args != nil {
-			container.Args = args
-		}
-	}
+	setCommandAndArgs(&container, isvc, backend, args)
 
 	// Add runtime-generated env vars, then user-specified env vars (user wins on conflict)
 	if eb, ok := backend.(EnvBuilder); ok {
