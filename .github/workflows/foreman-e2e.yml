@@ -33,6 +33,9 @@ on:
       - 'Dockerfile.foreman-agent'
       - '.github/workflows/foreman-e2e.yml'
 
+permissions:
+  contents: read
+
 jobs:
   foreman-e2e:
     name: Stub task flows Pending -> Succeeded on kind

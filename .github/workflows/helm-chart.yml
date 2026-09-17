@@ -32,6 +32,9 @@ on:
       - 'release-please-config.json'
       - 'Makefile'
 
+permissions:
+  contents: read
+
 jobs:
   lint-and-validate:
     name: Lint and Validate Chart
