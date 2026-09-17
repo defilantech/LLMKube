@@ -210,6 +210,15 @@ type NativeAgentLoopExecutor struct {
 	// run-task path, where the clean-room gate Job is the backstop).
 	EnvtestJobRunner EnvtestJobRunner
 
+	// ScanJobRunner, when non-nil, reproduces the container-image scan gate
+	// in a clean-room Job on the pushed branch after a coder GO (#1798).
+	// cmd/foreman-agent wires a closure over the tools-side scan gate Job
+	// runner here. In the LLM loop, a declared scan gate with no runner
+	// wired is treated as undeclared (today's behavior preserved); on the
+	// deterministic verify path a declared-but-unwired scan gate downgrades
+	// to GATE-ERROR rather than letting an unscannable branch stand.
+	ScanJobRunner ScanJobRunner
+
 	// Stream, when non-nil, receives each completed turn of the loop so a
 	// viewer can watch the run as it happens (see turnstream.go). Nil is the
 	// normal case and costs nothing: the loop's OnTurn hook stays nil, so no
@@ -1219,27 +1228,42 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 	}
 	baseBranch := baseBranchOrDefault(task.Spec.Payload.BaseBranch)
 	maxEnvtestIters := effectiveMaxEnvtestIterations(agent)
+	maxScanIters := effectiveMaxScanIterations(agent)
 	var sha string
-	for attempt := 0; ; attempt++ {
+	// The two post-push gates keep INDEPENDENT attempt counters: a retry
+	// counts only against the budget of the gate that forced it, so one
+	// gate exhausting its bound never consumes the other's (#1798
+	// independent budgets). Their sum is the commit/push attempt, so a
+	// retry from EITHER gate flips ReplaceOnReject on its superseded push.
+	var envtestAttempt, scanAttempt int
+	for {
 		// Settle the working tree and commit -> push this attempt. A non-nil
 		// done ends the task with the pre-#768 outcome (no-change, commit
 		// rejected, or push failed); it is byte-identical to the linear path
-		// on attempt 0.
+		// on the first push.
 		attemptSHA, envtestTouched, done := e.commitPushAttempt(
 			ctx, log, task, workspace, branch, baseBranch, auth,
-			attempt, task.Spec.Payload.AllowOverwrite, start, transcriptRef, loopRes)
+			envtestAttempt > 0 || scanAttempt > 0, task.Spec.Payload.AllowOverwrite,
+			start, transcriptRef, loopRes)
 		if done != nil {
 			return done, nil
 		}
 		sha = attemptSHA
 
-		// Post-push envtest gate (#859/#768): run the gate and classify this
-		// attempt. settled -> the GO stands; done != nil -> a terminal downgrade
-		// (an unverifiable retry or the bound exhausted); otherwise retry the
-		// coder with feedback.
-		settled, done, feedback := e.postPushGateDecision(
-			ctx, envtestTouched, task, branch, sha, attempt, maxEnvtestIters,
+		// Post-push gates (#859/#768 envtest, #1798 container-image scan):
+		// classify this push. settled -> the GO stands; done != nil -> a
+		// terminal downgrade (an unverifiable retry or the bound exhausted);
+		// otherwise retry the coder with the rendered gate prompt.
+		settled, done, prompt, envRetried, scanRetried := e.postPushGateDecision(
+			ctx, envtestTouched, task, branch, sha,
+			envtestAttempt, scanAttempt, maxEnvtestIters, maxScanIters,
 			start, transcriptRef, loopRes, gateAdvisories, cloneURL)
+		if envRetried {
+			envtestAttempt++
+		}
+		if scanRetried {
+			scanAttempt++
+		}
 		if settled {
 			break
 		}
@@ -1247,13 +1271,14 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 			return done, nil
 		}
 
-		// Retry (#768): re-run the coder against the same workspace with the
-		// gate output injected, persist the new transcript, then loop back to
-		// re-commit / re-push / re-gate. A retry loop that fails structurally
-		// (max turns, no tool call, timeout) surfaces via mapLoopError; a retry
-		// that does not GO its own fix surfaces that terminal without pushing.
+		// Retry (#768/#1798): re-run the coder against the same workspace
+		// with the gate output injected, persist the new transcript, then
+		// loop back to re-commit / re-push / re-gate. A retry loop that
+		// fails structurally (max turns, no tool call, timeout) surfaces via
+		// mapLoopError; a retry that does not GO its own fix surfaces that
+		// terminal without pushing.
 		var loopErr error
-		loopRes, loopErr = loop.Run(ctx, retryCfg(cfg, feedback))
+		loopRes, loopErr = loop.Run(ctx, retryCfg(cfg, prompt))
 		transcriptRef, twErr := WriteTranscript(ctx, e.Client, task, loopRes)
 		if twErr != nil {
 			log.Error(twErr, "transcript write failed; continuing")
@@ -1331,27 +1356,63 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 	return r, nil
 }
 
-// postPushGateDecision runs the post-push envtest gate for one attempt and
-// classifies the result into exactly one of three outcomes for the #768 retry
-// loop: settle as GO (settled=true), terminate with a downgrade Result
-// (done != nil), or retry the coder (settled=false, done=nil, feedback carries
-// the gate output). Extracted from runLLMPath so it stays under the gocyclo
-// ceiling and the two downgrade sites share one construction.
+// postPushGateDecision runs the post-push envtest and container-image scan
+// gates for one pushed attempt and classifies the result into exactly one of
+// three outcomes for the retry loop: settle as GO (settled=true), terminate
+// with a downgrade Result (done != nil), or retry the coder (settled=false,
+// done=nil, prompt carries the rendered gate feedback). Extracted from
+// runLLMPath so it stays under the gocyclo ceiling and the downgrade sites
+// share one construction.
 //
-// A gate that passed, was skipped (untouched change / no runner), or -- on the
-// FIRST attempt only -- could not be verified settles as GO (attempt 0 is the
-// pre-#768 could-not-verify behavior, byte-identical). A could-not-verify gate
-// on a RETRY does NOT settle: a prior attempt already failed the gate and the
-// coder cannot fix an infra/collision failure, so it downgrades rather than
-// emit a false GO (the #768 validation caught a retry gate Job name collision
-// landing a failing branch as GO). A failed gate retries until the bound, then
-// downgrades.
+// The two gates keep independent budgets: the *_Retried returns report which
+// gate(s) forced a retry, and runLLMPath increments only those counters, so
+// one gate exhausting its bound never consumes the other's (#1798 independent
+// budgets).
+//
+// Per gate, the three-outcome contract mirrors the #768 envtest rule: a gate
+// that passed, was skipped (untouched change / undeclared / no runner), or --
+// on that gate's FIRST attempt only -- could not be verified settles as GO
+// (attempt 0 is the pre-#768 / pre-#1798 behavior, byte-identical). A
+// could-not-verify gate on a RETRY does NOT settle: a prior attempt already
+// failed that gate and the coder cannot fix an infra/collision failure, so it
+// downgrades rather than emit a false GO (the #768 validation caught a retry
+// gate Job name collision landing a failing branch as GO). A failed gate
+// retries until its bound, then downgrades. When both gates fail on the same
+// push, one retry carries the combined prompt (both renderings): a single
+// coder round can fix both.
 func (e *NativeAgentLoopExecutor) postPushGateDecision(
 	ctx context.Context, envtestTouched bool, task *foremanv1alpha1.AgenticTask,
-	branch, sha string, attempt, maxEnvtestIters int,
+	branch, sha string, envtestAttempt, scanAttempt, maxEnvtestIters, maxScanIters int,
 	start time.Time, transcriptRef corev1.ObjectReference, loopRes *LoopResult,
 	gateAdvisories *[]advisory, cloneURL string,
-) (settled bool, done *Result, feedback string) {
+) (settled bool, done *Result, prompt string, envtestRetried, scanRetried bool) {
+	scanDeclared := !task.Spec.ScanGate.IsZero()
+	envSettled, envDown, envFb, envRetried := e.envtestGateOutcome(
+		ctx, envtestTouched, task, branch, sha, envtestAttempt, maxEnvtestIters,
+		start, transcriptRef, loopRes, gateAdvisories, cloneURL)
+	scanSettled, scanDown, scanFb, scanRetried := e.scanGateOutcome(
+		ctx, scanDeclared, task, branch, sha, scanAttempt, maxScanIters,
+		start, transcriptRef, loopRes, gateAdvisories, cloneURL)
+	if envDown != nil {
+		return false, envDown, "", false, false
+	}
+	if scanDown != nil {
+		return false, scanDown, "", false, false
+	}
+	if envSettled && scanSettled {
+		return true, nil, "", false, false
+	}
+	return false, nil, combinedGateFeedback(envFb, scanFb), envRetried, scanRetried
+}
+
+// envtestGateOutcome classifies one pushed attempt's post-push envtest gate
+// into (settled, downgrade, rawFeedback, retry) for postPushGateDecision.
+func (e *NativeAgentLoopExecutor) envtestGateOutcome(
+	ctx context.Context, envtestTouched bool, task *foremanv1alpha1.AgenticTask,
+	branch, sha string, attempt, maxIters int,
+	start time.Time, transcriptRef corev1.ObjectReference, loopRes *LoopResult,
+	gateAdvisories *[]advisory, cloneURL string,
+) (settled bool, downgrade *Result, feedback string, retry bool) {
 	// resolveUpstreamForRun, not the bare slug: the gate needs the CANONICAL
 	// repo URL to diff against merge-base rather than the fork's base tip
 	// (#1731). Threading it here rather than through the parameter list keeps
@@ -1363,19 +1424,74 @@ func (e *NativeAgentLoopExecutor) postPushGateDecision(
 		task.Spec.Payload.Repo, branch, cloneURL,
 		e.resolveUpstreamForRun(task),
 	)
-	if gate == envtestGateOK || (gate == envtestGateUnverified && attempt == 0) {
-		return true, nil, ""
-	}
-	if gate == envtestGateUnverified {
+	switch gate {
+	case envtestGateOK:
+		return true, nil, "", false
+	case envtestGateUnverified:
+		if attempt == 0 {
+			return true, nil, "", false
+		}
 		return false, e.envtestGateDowngrade(start, transcriptRef, loopRes, branch, sha,
 			"envtest re-gate could not be run to a verdict; not landing an unverified retry",
-			gateAdvisories), ""
+			gateAdvisories), "", false
+	default: // envtestGateFailed
+		if attempt >= maxIters {
+			return false, e.envtestGateDowngrade(start, transcriptRef, loopRes, branch, sha, fb, gateAdvisories), "", false
+		}
+		return false, nil, fb, true
 	}
-	// gate == envtestGateFailed.
-	if attempt >= maxEnvtestIters {
-		return false, e.envtestGateDowngrade(start, transcriptRef, loopRes, branch, sha, fb, gateAdvisories), ""
+}
+
+// scanGateOutcome classifies one pushed attempt's post-push container-image
+// scan gate (#1798) into (settled, downgrade, rawFeedback, retry) for
+// postPushGateDecision. The three-outcome contract mirrors
+// envtestGateOutcome: a scan that passed, was not declared (or no runner is
+// wired), or -- on the FIRST attempt only -- could not be run settles as GO;
+// a could-not-run re-gate and a bound-exhausted failure downgrade.
+func (e *NativeAgentLoopExecutor) scanGateOutcome(
+	ctx context.Context, scanDeclared bool, task *foremanv1alpha1.AgenticTask,
+	branch, sha string, attempt, maxIters int,
+	start time.Time, transcriptRef corev1.ObjectReference, loopRes *LoopResult,
+	gateAdvisories *[]advisory, cloneURL string,
+) (settled bool, downgrade *Result, feedback string, retry bool) {
+	gate, fb := evaluatePostPushScan(
+		ctx, scanDeclared, e.ScanJobRunner,
+		task.Namespace, task.Name,
+		task.Spec.Payload.Repo, branch, cloneURL,
+		e.resolveUpstreamForRun(task),
+	)
+	switch gate {
+	case scanGateOK:
+		return true, nil, "", false
+	case scanGateUnverified:
+		if attempt == 0 {
+			return true, nil, "", false
+		}
+		return false, e.scanGateDowngrade(start, transcriptRef, loopRes, branch, sha,
+			"scan re-gate could not be run to a verdict; not landing an unverified retry",
+			gateAdvisories), "", false
+	default: // scanGateFailed
+		if attempt >= maxIters {
+			return false, e.scanGateDowngrade(start, transcriptRef, loopRes, branch, sha, fb, gateAdvisories), "", false
+		}
+		return false, nil, fb, true
 	}
-	return false, nil, fb
+}
+
+// combinedGateFeedback renders the non-empty raw gate feedbacks (envtest
+// first, then scan) with each gate's own prompt template and joins them with
+// a blank line, so one retry can address both gates when both fail on the
+// same push. An empty result means "no feedback" and must not be passed to
+// retryCfg.
+func combinedGateFeedback(envtestFb, scanFb string) string {
+	parts := make([]string, 0, 2)
+	if envtestFb != "" {
+		parts = append(parts, envtestFeedbackPrompt(envtestFb))
+	}
+	if scanFb != "" {
+		parts = append(parts, scanFeedbackPrompt(scanFb))
+	}
+	return strings.Join(parts, "\n\n")
 }
 
 // envtestGateDowngrade builds the INCOMPLETE / ENVTEST-GATE-FAILED result with
@@ -1390,19 +1506,32 @@ func (e *NativeAgentLoopExecutor) envtestGateDowngrade(
 	return r
 }
 
+// scanGateDowngrade builds the INCOMPLETE / SCAN-GATE-FAILED result with gate
+// advisories attached, shared by the unverified-retry and bound-exhausted
+// downgrade sites in scanGateOutcome.
+func (e *NativeAgentLoopExecutor) scanGateDowngrade(
+	start time.Time, transcriptRef corev1.ObjectReference, loopRes *LoopResult,
+	branch, sha, feedback string, gateAdvisories *[]advisory,
+) *Result {
+	r := e.scanGateFailedResult(start, transcriptRef, loopRes, branch, sha, feedback)
+	attachGateAdvisories(r.Extra, gateAdvisories)
+	return r
+}
+
 // commitPushAttempt settles the working tree, commits the current terminal's
 // change with the executor's identity + DCO sign-off, and pushes the branch.
 // It returns the commit SHA, whether the change touched an envtest-backed
 // package (captured before the commit clears the working-tree status), and a
 // non-nil done Result when the attempt terminates the task early (no diff,
 // commit rejected, or push failed). Extracted from runLLMPath so the #768
-// retry loop stays under the gocyclo ceiling; attempt 0 is byte-identical to
-// the pre-#768 linear commit -> push path (the only new input is attempt,
-// which flips ReplaceOnReject on for a retry that supersedes its predecessor).
+// retry loop stays under the gocyclo ceiling; the first push is byte-identical
+// to the pre-#768 linear commit -> push path (the only new input is
+// replaceOnReject, which flips ReplaceOnReject on for a retry from EITHER
+// gate that supersedes its predecessor push).
 func (e *NativeAgentLoopExecutor) commitPushAttempt(
 	ctx context.Context, log logr.Logger, task *foremanv1alpha1.AgenticTask,
 	workspace, branch, baseBranch string, auth *repo.Auth,
-	attempt int, allowOverwrite bool,
+	replaceOnReject bool, allowOverwrite bool,
 	start time.Time, tref corev1.ObjectReference, lr *LoopResult,
 ) (sha string, envtestTouched bool, done *Result) {
 	// If the model emitted GO but never edited a file, NO-CHANGES is the
@@ -1486,10 +1615,11 @@ func (e *NativeAgentLoopExecutor) commitPushAttempt(
 		Auth:      auth,
 		// A retry replaces this task's own branch (compare-and-swap via
 		// force-with-lease) because it supersedes the attempt it just
-		// re-gated. Attempt 0 honors the caller's opt-in as before: opt-in via
-		// Workload.spec.allowOverwrite (#934), off by default per #573 since a
-		// replaced ref can carry a previously-GO'd audit artifact.
-		ReplaceOnReject: attempt > 0 || allowOverwrite,
+		// re-gated. The first push honors the caller's opt-in as before:
+		// opt-in via Workload.spec.allowOverwrite (#934), off by default per
+		// #573 since a replaced ref can carry a previously-GO'd audit
+		// artifact.
+		ReplaceOnReject: replaceOnReject || allowOverwrite,
 	}); err != nil {
 		return sha, envtestTouched, e.pushFailedResult(start, tref, lr, branch, sha, err)
 	}
@@ -1877,7 +2007,82 @@ func (e *NativeAgentLoopExecutor) executeDeterministic(
 		"modelExtra":     result.Extra,
 		"intendedBranch": branch,
 	}
+
+	// A declared container-image scan gate is re-run on the verified branch
+	// (#1798): the verify tool's GATE-PASS covers only its own checks, and a
+	// branch the scan blocks on must not stand on that word alone.
+	if verdict == foremanv1alpha1.AgenticTaskVerdictGatePass && !task.Spec.ScanGate.IsZero() {
+		if down := e.verifyScanReGate(ctx, task, branch, cloneURL, start, r); down != nil {
+			return down
+		}
+	}
 	return r
+}
+
+// verifyScanReGate re-runs the declared container-image scan gate on the
+// branch a deterministic verify tool just GATE-PASSed (#1798) and returns a
+// replacement Result when the GATE-PASS must not stand, or nil when it does:
+//
+//   - a declared gate with no runner wired, or a scan that could not be run
+//     to a verdict, downgrades to GATE-ERROR / GateError (an infrastructure
+//     failure, not a finding) with a summary stating the declared scan
+//     could not run;
+//   - a failed scan downgrades to GATE-FAIL / GateFailed with the findings
+//     attached;
+//   - a passed scan keeps the GATE-PASS; the outcome (and any findings)
+//     ride its Extra.
+func (e *NativeAgentLoopExecutor) verifyScanReGate(
+	ctx context.Context, task *foremanv1alpha1.AgenticTask, branch, cloneURL string,
+	start time.Time, pass *Result,
+) *Result {
+	var (
+		passed, ran bool
+		feedback    string
+	)
+	if e.ScanJobRunner != nil {
+		passed, ran, feedback = e.ScanJobRunner.Run(
+			ctx, task.Namespace, task.Name,
+			task.Spec.Payload.Repo, branch, cloneURL,
+			e.resolveUpstreamForRun(task),
+		)
+	}
+	if ran && passed {
+		pass.Extra["scanOutcome"] = "PASS"
+		if feedback != "" {
+			pass.Extra["scanFindings"] = feedback
+		}
+		return nil
+	}
+
+	var (
+		verdict foremanv1alpha1.AgenticTaskVerdict
+		reason  foremanv1alpha1.AgenticTaskFailureReason
+		summary string
+		outcome string
+	)
+	if !ran {
+		verdict = foremanv1alpha1.AgenticTaskVerdictGateError
+		reason = foremanv1alpha1.FailureGateError
+		outcome = "UNVERIFIED"
+		if e.ScanJobRunner == nil {
+			summary = "declared container-image scan gate could not run: no scan runner wired; the GATE-PASS does not stand"
+		} else {
+			summary = "declared container-image scan gate could not be run to a verdict; the GATE-PASS does not stand"
+		}
+	} else {
+		verdict = foremanv1alpha1.AgenticTaskVerdictGateFail
+		reason = foremanv1alpha1.FailureGateFailed
+		outcome = "FAIL"
+		summary = "declared container-image scan gate failed on the verified branch; the GATE-PASS does not stand"
+	}
+	down := NewResult(e.Kind(), verdict, summary, time.Since(start))
+	down.FailureReason = reason
+	down.Extra = pass.Extra
+	down.Extra["scanOutcome"] = outcome
+	if feedback != "" {
+		down.Extra["scanFindings"] = feedback
+	}
+	return down
 }
 
 // pickDeterministicTool finds the first non-terminal tool in the
@@ -2986,6 +3191,27 @@ func (e *NativeAgentLoopExecutor) envtestGateFailedResult(
 		"post-push envtest gate failed", time.Since(start))
 	r.Extra = map[string]any{
 		"outcome":       "ENVTEST-GATE-FAILED",
+		"branch":        branch,
+		"commitSHA":     sha,
+		"feedback":      feedback,
+		"transcriptRef": objRefAsMap(tref),
+		"turnCount":     lr.Turns,
+	}
+	return r
+}
+
+// scanGateFailedResult downgrades a pushed GO to INCOMPLETE when the
+// post-push container-image scan gate failed on the pushed branch (#1798,
+// the scan counterpart of envtestGateFailedResult). The commit is already
+// pushed (sha); a re-run or a human clears the blocking findings. feedback
+// is the scan finding table.
+func (e *NativeAgentLoopExecutor) scanGateFailedResult(
+	start time.Time, tref corev1.ObjectReference, lr *LoopResult, branch, sha, feedback string,
+) *Result {
+	r := NewResult(e.Kind(), foremanv1alpha1.AgenticTaskVerdictIncomplete,
+		"post-push container-image scan gate failed", time.Since(start))
+	r.Extra = map[string]any{
+		"outcome":       "SCAN-GATE-FAILED",
 		"branch":        branch,
 		"commitSHA":     sha,
 		"feedback":      feedback,

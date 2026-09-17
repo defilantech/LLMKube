@@ -151,27 +151,3 @@ func TestScanFeedbackPromptTruncatesLargeFeedback(t *testing.T) {
 		t.Fatalf("truncated prompt did not keep the last %d bytes of the findings", maxGateOutputBytes)
 	}
 }
-
-func TestScanRetryCfgAppendsFeedbackAndPreservesFields(t *testing.T) {
-	base := LoopConfig{
-		SystemPrompt:     "sys",
-		UserPrompt:       "ORIGINAL ISSUE CONTEXT",
-		MaxTurns:         50,
-		MaxVerifyRetries: 3,
-	}
-	out := scanRetryCfg(base, "CRITICAL: openssl finding")
-
-	if !strings.HasPrefix(out.UserPrompt, "ORIGINAL ISSUE CONTEXT") {
-		t.Fatalf("retry prompt dropped the original issue context: %q", out.UserPrompt)
-	}
-	if !strings.Contains(out.UserPrompt, "CRITICAL: openssl finding") {
-		t.Fatalf("retry prompt missing the scan feedback")
-	}
-	if out.SystemPrompt != base.SystemPrompt || out.MaxTurns != base.MaxTurns ||
-		out.MaxVerifyRetries != base.MaxVerifyRetries {
-		t.Fatalf("scanRetryCfg mutated a non-prompt field: %+v", out)
-	}
-	if base.UserPrompt != "ORIGINAL ISSUE CONTEXT" {
-		t.Fatalf("scanRetryCfg mutated the base config in place")
-	}
-}

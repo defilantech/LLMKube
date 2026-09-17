@@ -118,15 +118,3 @@ func scanFeedbackPrompt(feedback string) string {
 			"\nScan findings:\n%s\n",
 		truncateGateOutput(feedback))
 }
-
-// scanRetryCfg returns a copy of the resolved loop config for a post-push
-// scan gate retry: the user prompt becomes the original issue context
-// (base.UserPrompt) plus the scan feedback section, so the retry runs with
-// the findings in front of it instead of blind. Every other field (system
-// prompt, VerifyTerminal, model profile, budgets) is unchanged. The base is
-// copied by value, so the caller's config is not mutated.
-func scanRetryCfg(base LoopConfig, feedback string) LoopConfig {
-	cfg := base
-	cfg.UserPrompt = base.UserPrompt + "\n\n" + scanFeedbackPrompt(feedback)
-	return cfg
-}

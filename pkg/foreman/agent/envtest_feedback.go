@@ -39,15 +39,15 @@ func envtestFeedbackPrompt(feedback string) string {
 		truncateGateOutput(feedback))
 }
 
-// retryCfg returns a copy of the resolved loop config for a post-push
-// envtest gate retry (#768): the user prompt becomes the original issue
-// context (base.UserPrompt) plus the gate feedback section, so the retry
-// runs with the failure in front of it instead of blind. Every other
-// field (system prompt, VerifyTerminal fast gate, model profile, budgets)
-// is unchanged. The base is copied by value, so the caller's config is not
-// mutated.
-func retryCfg(base LoopConfig, feedback string) LoopConfig {
+// retryCfg returns a copy of the resolved loop config for a post-push gate
+// retry (#768 envtest, #1798 scan): the user prompt becomes the original
+// issue context (base.UserPrompt) plus the already-rendered gate prompt
+// (combinedGateFeedback's output), so the retry runs with the failure in
+// front of it instead of blind. Every other field (system prompt,
+// VerifyTerminal fast gate, model profile, budgets) is unchanged. The base
+// is copied by value, so the caller's config is not mutated.
+func retryCfg(base LoopConfig, prompt string) LoopConfig {
 	cfg := base
-	cfg.UserPrompt = base.UserPrompt + "\n\n" + envtestFeedbackPrompt(feedback)
+	cfg.UserPrompt = base.UserPrompt + "\n\n" + prompt
 	return cfg
 }
