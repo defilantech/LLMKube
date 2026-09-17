@@ -289,6 +289,18 @@ spec:
                 maximum: 20
                 minimum: 0
                 type: integer
+              maxScanIterations:
+                description: |-
+                  MaxScanIterations bounds how many times the executor re-runs a coder
+                  after the post-push container-image scan gate fails, feeding the scan
+                  findings back so the coder fixes them and the branch is re-scanned.
+                  Three-valued: nil defaults to 1; an explicit 0 downgrades a failing
+                  scan on the first failure; N allows up to N retries. Applies only to
+                  coder issue-fix tasks that declare spec.scanGate and whose scan runner
+                  is wired.
+                format: int32
+                minimum: 0
+                type: integer
               maxTurns:
                 default: 50
                 description: |-

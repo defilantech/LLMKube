@@ -506,6 +506,12 @@ type AgenticTaskSpec struct {
 	// +optional
 	GateProfile *GateProfile `json:"gateProfile,omitempty"`
 
+	// ScanGate declares the reproducible container-image scan gate for this
+	// task (CVE/release-image gates). Unset means no scan gate — the task's
+	// post-push flow is unchanged. Consumed by the scan-gate executor.
+	// +optional
+	ScanGate *ScanGate `json:"scanGate,omitempty"`
+
 	// MCPEnabled is the reconciler-propagated effective Workload opt-out
 	// that reaches the executor without a live Workload GET. Three-valued
 	// via the *bool: nil or true means MCP is allowed (subject to the

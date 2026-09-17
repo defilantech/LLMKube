@@ -273,6 +273,17 @@ type AgentSpec struct {
 	// +optional
 	MaxEnvtestIterations *int32 `json:"maxEnvtestIterations,omitempty"`
 
+	// MaxScanIterations bounds how many times the executor re-runs a coder
+	// after the post-push container-image scan gate fails, feeding the scan
+	// findings back so the coder fixes them and the branch is re-scanned.
+	// Three-valued: nil defaults to 1; an explicit 0 downgrades a failing
+	// scan on the first failure; N allows up to N retries. Applies only to
+	// coder issue-fix tasks that declare spec.scanGate and whose scan runner
+	// is wired.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	MaxScanIterations *int32 `json:"maxScanIterations,omitempty"`
+
 	// MaxRetries bounds how many times the loop retries a single turn on
 	// recoverable errors (notably llama.cpp #22072 truncated tool_call
 	// argument JSON). Bounded exponential backoff with jitter.

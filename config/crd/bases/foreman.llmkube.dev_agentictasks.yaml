@@ -458,6 +458,46 @@ spec:
                       type: string
                     type: array
                 type: object
+              scanGate:
+                description: |-
+                  ScanGate declares the reproducible container-image scan gate for this
+                  task (CVE/release-image gates). Unset means no scan gate — the task's
+                  post-push flow is unchanged. Consumed by the scan-gate executor.
+                properties:
+                  builderImage:
+                    description: |-
+                      BuilderImage runs the Go build of each target binary. Empty defaults
+                      to the built-in builder image ("golang:1.26").
+                    type: string
+                  ignoreUnfixed:
+                    description: |-
+                      IgnoreUnfixed mirrors Trivy's --ignore-unfixed. nil defaults to true
+                      (CI's setting: only findings with an available fix block).
+                    type: boolean
+                  images:
+                    description: |-
+                      Images lists the built-in scan-target ids to scan (e.g. "controller",
+                      "foreman-agent"). Empty means all built-in targets: a nil/empty
+                      Images is the nil-means-all rule, and Resolve passes it through as a
+                      nil ResolvedScan.Images. Unknown ids are rejected by Resolve's
+                      caller; Resolve itself ignores the list beyond the empty-means-all
+                      rule and leaves per-id validation to the tool.
+                    items:
+                      type: string
+                    type: array
+                  runnerImage:
+                    description: |-
+                      RunnerImage assembles and scans each image (daemonless buildah +
+                      pinned trivy). Empty defaults to the built-in runner ("alpine:3.24").
+                    type: string
+                  severity:
+                    description: |-
+                      Severity is the Trivy severity floor. Empty defaults to
+                      {"CRITICAL","HIGH"} (CI's floor).
+                    items:
+                      type: string
+                    type: array
+                type: object
               timeoutSeconds:
                 description: |-
                   TimeoutSeconds bounds the agent's run time. Zero uses the operator's
