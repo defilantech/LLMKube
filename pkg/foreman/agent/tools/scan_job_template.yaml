@@ -1,0 +1,245 @@
+# Foreman scan Job. The run_scan_job tool renders this template with Go
+# text/template and submits the result via controller-runtime client. It
+# reproduces hack/scan-images.sh -- the release-image CVE gate -- in a
+# clean room: an initContainer builds each target binary the way
+# GoReleaser builds it (CGO_ENABLED=0 static, linux/amd64, staged under
+# the $TARGETPLATFORM layout the Dockerfiles COPY from), and the main
+# container assembles each release image with daemonless buildah and runs
+# the same pinned Trivy invocation the CI script runs.
+#
+# Two containers share one emptyDir "work" volume (/work) as the build
+# context handoff; the optional /cache PVC works exactly like the gate
+# template's (GOMODCACHE/GOCACHE reuse, tool installs under /cache/bin).
+#
+# Template fields:
+#   .Name / .Namespace  -- Job identity (foreman-scan-<task>-<unix-ms> /
+#                      foreman-system in production)
+#   .BuilderImage       -- initContainer image that runs the Go build
+#                      (default: golang:1.26)
+#   .RunnerImage        -- scan container image that runs buildah + trivy
+#                      (default: alpine:3.24)
+#   .Repo               -- "owner/name", inlined verbatim into the clone URL
+#   .Branch             -- branch on the fork to clone shallowly
+#   .CloneURLBase       -- "https://github.com" (override for fork-style
+#                      hosts; the default matches the gate template)
+#   .CloneURL           -- optional. When non-empty the Job clones this
+#                      URL verbatim and ignores .CloneURLBase / .Repo for
+#                      the clone command (the log line still names .Repo).
+#                      Precedence: explicit CloneURL > CodeHost seam >
+#                      CloneURLBase/Repo.git, resolved Go-side.
+#   .UpstreamURL        -- optional. Canonical repo clone URL, surfaced as
+#                      the UPSTREAM_URL env var for observability (the
+#                      scan always builds the clone, which is the branch
+#                      under test, so this is provenance, not a fetch).
+#   .Targets            -- []ScanTarget from resolveScanTargets, in
+#                      hack/scan-images.sh order; each contributes one
+#                      go-build line, one buildah line, and one trivy line.
+#   .Severity           -- Trivy severity list pre-joined into one
+#                      comma-separated uppercased string, e.g.
+#                      "CRITICAL,HIGH" (the CI default).
+#   .IgnoreUnfixed      -- when true, pass --ignore-unfixed (CI default).
+#   .TrivyVersion       -- pinned Trivy version installed into /cache/bin
+#                      when trivy is absent (the TrivyVersion const).
+#   .PVCName            -- optional cache PVC claim name. Empty renders no
+#                      cache volume at all (#1538's lesson: never default
+#                      a claim name the chart may not have created).
+#   .ActiveDeadlineSeconds -- max wall-clock for the Job
+#   .TTLSecondsAfterFinished -- how long the Job's resources linger so
+#                      callers can fetch logs
+#   .CPURequest / .CPULimit / .MemRequest / .MemLimit
+#   .TaskNamespace / .TaskName -- the AgenticTask that owns this Job;
+#                      surfaced as labels for observability.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Name }}
+  namespace: {{ .Namespace }}
+  labels:
+    app.kubernetes.io/name: foreman-scan
+    app.kubernetes.io/managed-by: foreman-agent
+    foreman.llmkube.dev/task-namespace: {{ .TaskNamespace }}
+    foreman.llmkube.dev/task-name: {{ .TaskName }}
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: {{ .ActiveDeadlineSeconds }}
+  ttlSecondsAfterFinished: {{ .TTLSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: foreman-scan
+        foreman.llmkube.dev/task-namespace: {{ .TaskNamespace }}
+        foreman.llmkube.dev/task-name: {{ .TaskName }}
+    spec:
+      restartPolicy: Never
+      # fsGroup makes the RWX cache PVC group-writable so the buildah/vfs
+      # tree and the tool installs under /cache/bin stay writable, same
+      # #1055 lesson as the gate template.
+      securityContext:
+        fsGroup: 100
+      volumes:
+        - name: work
+          emptyDir: {}
+      {{- if .PVCName }}
+        - name: cache
+          persistentVolumeClaim:
+            claimName: {{ .PVCName }}
+      {{- end }}
+      initContainers:
+        - name: scan-build
+          image: {{ .BuilderImage }}
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              echo "=== clone {{ .Repo }} @ {{ .Branch }} ==="
+              git clone --depth 1 --branch "{{ .Branch }}" \
+                "{{ if .CloneURL }}{{ .CloneURL }}{{ else }}{{ .CloneURLBase }}/{{ .Repo }}.git{{ end }}" /work/repo || { echo "SCAN FAIL: clone"; exit 1; }
+              # Stage each target binary the way hack/scan-images.sh does:
+              # the GoReleaser build flags (CGO_ENABLED=0 static, amd64,
+              # -trimpath) under the $TARGETPLATFORM directory layout the
+              # Dockerfiles COPY from, so the assembled image is
+              # representative of what GoReleaser will push. The build runs
+              # with /work/repo as the cwd so the go tool resolves the
+              # cloned module (file/package args are interpreted against
+              # the working directory's module, exactly as in the script).
+              {{- range .Targets }}
+              echo "=== build {{ .ID }} (linux/amd64) ==="
+              mkdir -p "/work/{{ .ID }}/linux/amd64"
+              ( cd /work/repo && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
+                -o "/work/{{ .ID }}/linux/amd64/{{ .Binary }}" "{{ .Main }}" ) \
+                || { echo "SCAN FAIL: build {{ .ID }}"; exit 1; }
+              {{- end }}
+              echo "scan build: all target binaries staged"
+          env:
+            - name: BRANCH
+              value: "{{ .Branch }}"
+            - name: UPSTREAM_URL
+              value: "{{ .UpstreamURL }}"
+            # The base image (golang:1.26) bakes GOTOOLCHAIN=local, which
+            # refuses to run when go.mod's toolchain floor is newer than
+            # the image's Go. Force `auto` so the build downloads whatever
+            # toolchain go.mod requires, keeping the scan immune to go.mod
+            # patch bumps (the same gate-template lesson).
+            - name: GOTOOLCHAIN
+              value: auto
+            # Anonymous clones must fail fast, never prompt: a private or
+            # air-gapped fork then degrades to a loud SCAN FAIL instead of
+            # hanging the Job.
+            - name: GIT_TERMINAL_PROMPT
+              value: "0"
+            - name: GOMODCACHE
+              value: /cache/gomod
+            - name: GOCACHE
+              value: /cache/gobuild
+            - name: XDG_DATA_HOME
+              value: /cache/xdg
+          volumeMounts:
+            - name: work
+              mountPath: /work
+          {{- if .PVCName }}
+            - name: cache
+              mountPath: /cache
+          {{- end }}
+          resources:
+            requests:
+              cpu: "{{ .CPURequest }}"
+              memory: {{ .MemRequest }}
+            limits:
+              cpu: "{{ .CPULimit }}"
+              memory: {{ .MemLimit }}
+      containers:
+        - name: scan
+          image: {{ .RunnerImage }}
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -uo pipefail
+              export PATH="/cache/bin:$PATH"
+              mkdir -p /cache/bin
+              # buildah assembles each release image daemonless -- no
+              # Docker daemon, no DinD sidecar socket, no privileged mode.
+              # That is the security posture of the existing gate Job and
+              # the #887 privileged-execve lesson applied to image builds:
+              # a scan gate must never need more power than the scanned
+              # workload. alpine:3.24 ships no container tooling, so
+              # install-if-missing (buildah first: it pulls the
+              # ca-certificates the trivy installer below then relies on).
+              # apk upgrade first, same as the CI script's intent that the
+              # assembled image carries patched base packages.
+              if ! command -v buildah >/dev/null 2>&1; then
+                echo "=== install buildah ==="
+                apk upgrade --no-cache && apk add --no-cache buildah \
+                  || { echo "SCAN FAIL: buildah install"; exit 1; }
+              fi
+              # Trivy is pinned so a trivy release cannot silently change
+              # what "SCAN PASS" means, the same reason the gate pins helm.
+              # It is NOT in the Alpine repos (checked: v3.24 and edge both
+              # 404), so fetch the binary straight from the release asset
+              # of the SAME pinned tag -- the gate's helm-tarball idiom.
+              # Deliberately not Aqua's installer script: that would mean
+              # executing a script pulled from a mutable branch inside the
+              # very gate whose job is supply-chain hygiene. The `||`
+              # guards the whole pipeline so a truncated download can
+              # never leave a half-installed binary that passes
+              # `command -v` on a later run.
+              if ! command -v trivy >/dev/null 2>&1; then
+                echo "=== install trivy {{ .TrivyVersion }} ==="
+                trivy_arch="$(uname -m)"
+                case "$trivy_arch" in
+                  x86_64) trivy_arch=64bit ;;
+                  aarch64) trivy_arch=ARM64 ;;
+                  *) echo "SCAN FAIL: trivy: unsupported arch $trivy_arch"; exit 1 ;;
+                esac
+                trivy_ver="{{ .TrivyVersion }}"
+                wget -q -O /tmp/trivy.tgz \
+                  "https://github.com/aquasecurity/trivy/releases/download/${trivy_ver}/trivy_${trivy_ver#v}_Linux-${trivy_arch}.tar.gz" \
+                  && tar -xzf /tmp/trivy.tgz -C /tmp trivy \
+                  && install -m 755 /tmp/trivy /cache/bin/trivy \
+                  || { echo "SCAN FAIL: trivy install"; exit 1; }
+                trivy --version >/dev/null 2>&1 || { echo "SCAN FAIL: trivy unusable"; exit 1; }
+              fi
+              rc=0
+              # Assemble each release image from the staged $TARGETPLATFORM
+              # context the initContainer produced. vfs storage + chroot
+              # isolation: no privileged mode, no user namespaces, no
+              # DinD socket -- the security posture of the existing gate
+              # Job. A failed assembly fails the scan (rc=1) but does not
+              # stop the loop: every image's findings are reported before
+              # the verdict, like hack/scan-images.sh does.
+              {{- range .Targets }}
+              echo "=== assemble {{ .ID }} ({{ .Image }}) ==="
+              buildah build --storage-driver=vfs --isolation=chroot --platform linux/amd64 \
+                -f "/work/repo/{{ .Dockerfile }}" \
+                -t "{{ .Image }}:foreman-scan" \
+                --output "type=docker,dest=/work/{{ .ID }}.tar" \
+                "/work/{{ .ID }}" \
+                || { echo "SCAN FAIL: buildah {{ .ID }}"; rc=1; }
+              {{- end }}
+              # Scan only tars that exist: an image that failed assembly is
+              # already counted as a failure; do not misattribute a
+              # buildah miss to a trivy error.
+              {{- range .Targets }}
+              if [ -f "/work/{{ .ID }}.tar" ]; then
+                echo "=== trivy {{ .ID }} ==="
+                trivy image --input "/work/{{ .ID }}.tar" \
+                  --severity {{ $.Severity }}{{ if $.IgnoreUnfixed }} --ignore-unfixed{{ end }} \
+                  --exit-code 1 --format table \
+                  || { echo "SCAN FAIL: {{ .ID }}"; rc=1; }
+              fi
+              {{- end }}
+              [ "$rc" -eq 0 ] && echo "SCAN PASS" || echo "SCAN FAIL"
+              exit "$rc"
+          volumeMounts:
+            - name: work
+              mountPath: /work
+          {{- if .PVCName }}
+            - name: cache
+              mountPath: /cache
+          {{- end }}
+          resources:
+            requests:
+              cpu: "{{ .CPURequest }}"
+              memory: {{ .MemRequest }}
+            limits:
+              cpu: "{{ .CPULimit }}"
+              memory: {{ .MemLimit }}

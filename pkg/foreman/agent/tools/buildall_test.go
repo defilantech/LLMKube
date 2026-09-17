@@ -118,6 +118,23 @@ func TestBuildAllNamesAreUnique(t *testing.T) {
 	}
 }
 
+// Tool types deliberately NOT wired into BuildAll, with why.
+//
+// BuildAll is the model-facing registry: everything it constructs reaches a
+// model's tool whitelist through admission (catalog). RunScanJobTool is
+// dispatched by the executor through the agent.ScanJobRunner seam instead —
+// a scan is a deterministic CI reproduce step, and a model that could call it
+// directly would be able to spend the scan budget itself. Wiring it into
+// BuildAll would put "run_scan_job" in the same surface admission vetts,
+// inviting exactly that.
+//
+// The exemption is a reviewed declaration, not a loophole: a new tool type
+// still fails this guard until it is either wired into BuildAll or listed
+// here with a reason.
+var executorOnlyToolTypes = map[string]string{
+	"RunScanJobTool": "executor-dispatched scan gate (#1798); never model-facing",
+}
+
 // Every tool type in the package must appear in BuildAll.
 //
 // This is the remaining hole the two tests above cannot close: a new tool type
@@ -131,13 +148,19 @@ func TestBuildAllNamesAreUnique(t *testing.T) {
 // yet anywhere to compare against.
 func TestBuildAllWiresEveryToolType(t *testing.T) {
 	built := len(BuildAll(ToolDeps{Workspace: t.TempDir()}))
-	declared := len(toolTypeNames(t))
+	var declared []string
+	for _, name := range toolTypeNames(t) {
+		if _, exempt := executorOnlyToolTypes[name]; !exempt {
+			declared = append(declared, name)
+		}
+	}
 
-	if built != declared {
-		t.Errorf("the package declares %d Tool implementations but BuildAll wires %d.\n"+
+	if built != len(declared) {
+		t.Errorf("the package declares %d model-facing Tool implementations but BuildAll wires %d.\n"+
 			"A tool type that is never constructed cannot be reached by any Agent; "+
-			"add it to BuildAll and to catalog.canonicalToolNames.\n"+
-			"declared: %v", declared, built, toolTypeNames(t))
+			"add it to BuildAll and to catalog.canonicalToolNames, or list it in "+
+			"executorOnlyToolTypes with a reason if it is dispatched without a model.\n"+
+			"declared: %v", len(declared), built, declared)
 	}
 }
 
