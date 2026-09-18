@@ -117,7 +117,8 @@ func TestBuiltInScanTargetsMatchScanScript(t *testing.T) {
 	wantRe := regexp.MustCompile(`want="\$\{IMAGES:-(.+)\}"`)
 	m := wantRe.FindStringSubmatch(src)
 	if m == nil {
-		t.Fatalf("default want list (want=\"${IMAGES:-...}\") not found in %s; the parity guard parsed nothing", scanScriptPath)
+		t.Fatalf("default want list (want=\"${IMAGES:-...}\") not found in %s; "+
+			"the parity guard parsed nothing", scanScriptPath)
 	}
 	wantIDs := strings.Fields(m[1])
 	if got := DefaultScanTargetIDs(); !reflect.DeepEqual(got, wantIDs) {
@@ -258,7 +259,7 @@ func TestResolveScanTargets(t *testing.T) {
 		if err != nil {
 			t.Fatalf("resolveScanTargets: %v", err)
 		}
-		var ids []string
+		ids := make([]string, 0, len(got))
 		for _, tgt := range got {
 			ids = append(ids, tgt.ID)
 		}
@@ -287,7 +288,8 @@ func TestDefaultScanTargetIDsReturnsCopy(t *testing.T) {
 		first[0], first[1] = first[1], first[0]
 	}
 	second := DefaultScanTargetIDs()
-	if want := []string{"controller", "foreman-operator", "foreman-agent", "router-proxy"}; !reflect.DeepEqual(second, want) {
+	want := []string{"controller", "foreman-operator", "foreman-agent", "router-proxy"}
+	if !reflect.DeepEqual(second, want) {
 		t.Errorf("DefaultScanTargetIDs leaked a mutable view: %v", second)
 	}
 }

@@ -349,7 +349,8 @@ func TestRunScanJob_SucceededProducesSCANPASS(t *testing.T) {
 			t.Errorf("runner missing trivy input line for %q:\n%s", tgt.ID, scanArgs)
 		}
 	}
-	if n := strings.Count(scanArgs, "buildah build --storage-driver=vfs --isolation=chroot --platform linux/amd64"); n != 4 {
+	if n := strings.Count(scanArgs, "buildah build --storage-driver=vfs --isolation=chroot "+
+		"--platform linux/amd64"); n != 4 {
 		t.Errorf("want 4 daemonless buildah lines, got %d:\n%s", n, scanArgs)
 	}
 	for _, flag := range []string{"--severity CRITICAL,HIGH", "--ignore-unfixed", "--exit-code 1 --format table"} {

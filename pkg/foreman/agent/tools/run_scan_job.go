@@ -233,7 +233,7 @@ func (RunScanJobTool) Schema() oai.ToolSchemaDef {
   "upstreamURL": {"type": "string",
     "description": "canonical repo URL, surfaced on the Job for provenance"},
   "images":  {"type": "array", "items": {"type": "string"},
-    "description": "built-in scan-target ids (controller, foreman-operator, foreman-agent, router-proxy); empty means all"},
+    "description": "scan-target ids (controller, foreman-operator, foreman-agent, router-proxy); empty means all"},
   "severity": {"type": "array", "items": {"type": "string"},
     "description": "Trivy severity floor; empty means CRITICAL,HIGH"},
   "ignoreUnfixed": {"type": "boolean",
