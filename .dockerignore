@@ -22,3 +22,9 @@
 # matching files found", breaking both Dockerfile.foreman-agent and the
 # Dockerfile.foreman-agent-builder coder-Job image.
 !pkg/foreman/agent/tools/coder_job_template.yaml
+
+# Re-include the scan-job YAML template the foreman-agent embeds via
+# //go:embed in pkg/foreman/agent/tools/run_scan_job.go (#1798) — the
+# same #531/#620 trap; envtest never catches it because only the Docker
+# build context honors .dockerignore.
+!pkg/foreman/agent/tools/scan_job_template.yaml
