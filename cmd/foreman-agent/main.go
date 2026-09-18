@@ -1155,7 +1155,14 @@ func makeScanJobRunner(
 				PVCName:      gateCachePVC,
 				LogTailFn:    logTailFn,
 				PollInterval: 5 * time.Second,
-				PollTimeout:  10 * time.Minute,
+				// Twice the scan Job's default 3600s ActiveDeadlineSeconds,
+				// per the field's documented rule: the Job's own deadline
+				// must always fire first (informative SCAN-ERROR with Job
+				// context); the poll timeout is only the last-resort
+				// apiserver-lag guard. A 10m poll would cut the
+				// deliberately generous buildah/vfs wall-clock by 6x
+				// and misreport slow-but-healthy scans.
+				PollTimeout: 2 * time.Hour,
 			},
 		},
 	}
