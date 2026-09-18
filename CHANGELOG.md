@@ -5,6 +5,18 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.30](https://github.com/defilantech/LLMKube/compare/v0.9.29...v0.9.30) (2026-09-18)
+
+
+### Features
+
+* **foreman:** verify-equipped scan-gate loop reproducing image scans before the verdict ([#1847](https://github.com/defilantech/LLMKube/issues/1847)) ([4a0938c](https://github.com/defilantech/LLMKube/commit/4a0938c8d44478a3dfc84b9166be3ab8ddf86115))
+
+
+### Documentation
+
+* **labs:** add the DeepSeek-V4.1-Flash EXL3 one-Spark and three-Spark ring lab builds ([#1848](https://github.com/defilantech/LLMKube/issues/1848)) ([77b5813](https://github.com/defilantech/LLMKube/commit/77b581337dbc504e43e65a008e9cee1b1c75430e))
+
 ## [0.9.29](https://github.com/defilantech/LLMKube/compare/v0.9.28...v0.9.29) (2026-09-16)
 
 
