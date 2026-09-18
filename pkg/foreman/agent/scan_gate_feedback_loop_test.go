@@ -19,6 +19,7 @@ package agent_test
 import (
 	"context"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -53,20 +54,25 @@ type scanGateResult struct {
 }
 
 // scriptedScanRunner returns results[i] for gate call i, repeating the final
-// entry after the script runs out (mirrors scriptedEnvtestRunner).
+// entry after the script runs out (mirrors scriptedEnvtestRunner). It records
+// the scan config each call received so the harness can assert the executor
+// resolved the task's ScanGate once at the decision site and handed the same
+// concrete config to every call (the runner must never re-resolve).
 type scriptedScanRunner struct {
-	results []scanGateResult
-	calls   int
+	results  []scanGateResult
+	calls    int
+	gotScans []foremanv1alpha1.ResolvedScan
 }
 
 func (f *scriptedScanRunner) Run(
-	_ context.Context, _, _, _, _, _, _ string,
+	_ context.Context, _, _, _, _, _, _ string, scan foremanv1alpha1.ResolvedScan,
 ) (pass bool, ran bool, feedback string) {
 	i := f.calls
 	if i >= len(f.results) {
 		i = len(f.results) - 1
 	}
 	f.calls++
+	f.gotScans = append(f.gotScans, scan)
 	r := f.results[i]
 	return r.pass, r.ran, r.feedback
 }
@@ -159,6 +165,15 @@ func (tc scanGateLoopCase) run(t *testing.T) (*foremanagent.Result, int, int) {
 	}
 	if scanScript != nil {
 		scanCalls = scanScript.calls
+		// Every call must carry the executor's resolved view of the task's
+		// gate verbatim -- the runner sees a ResolvedScan, never a raw
+		// ScanGate, so there is no second defaulting path to drift.
+		want := task.Spec.ScanGate.Resolve()
+		for i, got := range scanScript.gotScans {
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("scan call %d got config %+v, want the resolved task gate %+v", i, got, want)
+			}
+		}
 	}
 	return res, envCalls, scanCalls
 }
@@ -284,7 +299,8 @@ func TestNativeExecutor_ScanLoop_IndependentBudgets(t *testing.T) {
 		},
 	}.run(t)
 	if res.Verdict != foremanv1alpha1.AgenticTaskVerdictGo {
-		t.Fatalf("verdict: want GO (envtest-forced retry must not inflate the scan budget) got %s (result=%+v)", res.Verdict, res)
+		t.Fatalf("verdict: want GO (envtest-forced retry must not inflate the scan budget) got %s "+
+			"(result=%+v)", res.Verdict, res)
 	}
 	if envCalls != 2 {
 		t.Fatalf("envtest calls: want 2 got %d", envCalls)
@@ -402,6 +418,14 @@ func (tc verifyScanCase) run(t *testing.T) *foremanagent.Result {
 	}
 	if scanScript != nil && scanScript.calls != tc.wantCalls {
 		t.Fatalf("scan calls: want %d got %d", tc.wantCalls, scanScript.calls)
+	}
+	if scanScript != nil {
+		want := task.Spec.ScanGate.Resolve()
+		for i, got := range scanScript.gotScans {
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("verify re-gate call %d got config %+v, want the resolved task gate %+v", i, got, want)
+			}
+		}
 	}
 	return res
 }

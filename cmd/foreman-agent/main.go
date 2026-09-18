@@ -521,6 +521,12 @@ func main() {
 			// EnvtestJobRunner verifies envtest-backed packages post-push in a
 			// clean-room Job (#859).
 			EnvtestJobRunner: makeEnvtestJobRunner(kc, foremanNamespace, makePodLogTailFn(kcs)),
+			// ScanJobRunner reproduces the release-image CVE scan gate
+			// post-push for tasks that declare a spec.scanGate (#1798). The
+			// scan reuses the gate's cache claim: same clone, same Go module
+			// and build caches, one PVC -- mirroring the BuildAll ToolDeps
+			// wiring that hands every Job the --gate-cache-pvc value.
+			ScanJobRunner: makeScanJobRunner(kc, foremanNamespace, gateCachePVC, makePodLogTailFn(kcs)),
 		}
 	default:
 		setupLog.Error(nil, "unknown --agent-mode", "value", agentMode, "valid", "stub|native")
@@ -1109,6 +1115,100 @@ func (e *envtestJobRunnerImpl) Run(
 	if pass {
 		return true, true, ""
 	}
+	fb := result.Summary
+	if lt, ok := result.Extra["logTail"].(string); ok && lt != "" {
+		fb += "\n" + lt
+	}
+	return pass, ran, fb
+}
+
+// mapScanVerdict maps a RunScanJobTool verdict onto (pass, ran). Only
+// SCAN-PASS passes; SCAN-FAIL ran and found findings; SCAN-ERROR and an
+// empty/unknown verdict mean the scan could not be run to a verdict
+// (ran=false -> could-not-verify), never a finding against the branch.
+func mapScanVerdict(verdict string) (pass bool, ran bool) {
+	switch verdict {
+	case foremantools.VerdictScanPass:
+		return true, true
+	case foremantools.VerdictScanFail:
+		return false, true
+	default: // VerdictScanError, "", unknown
+		return false, false
+	}
+}
+
+// makeScanJobRunner returns a ScanJobRunner that submits a clean-room Job
+// building each declared release image and Trivy-scanning it (#1798),
+// wrapping RunScanJobTool. The scan reuses the gate's cache claim
+// (gateCachePVC, the --gate-cache-pvc value every gate/coder Job already
+// mounts at /cache): the scan's Go builds hit the same GOMODCACHE/GOCACHE,
+// so a warm gate cache warms the scan too and one claim suffices.
+func makeScanJobRunner(
+	kc client.Client, foremanNamespace, gateCachePVC string,
+	logTailFn func(ctx context.Context, namespace, jobName string) string,
+) foremanagent.ScanJobRunner {
+	return &scanJobRunnerImpl{
+		tool: &foremantools.RunScanJobTool{
+			Client: kc,
+			Cfg: foremantools.RunScanJobToolConfig{
+				Namespace:    foremanNamespace,
+				PVCName:      gateCachePVC,
+				LogTailFn:    logTailFn,
+				PollInterval: 5 * time.Second,
+				PollTimeout:  10 * time.Minute,
+			},
+		},
+	}
+}
+
+type scanJobRunnerImpl struct {
+	tool *foremantools.RunScanJobTool
+}
+
+func (s *scanJobRunnerImpl) Run(
+	ctx context.Context,
+	taskNamespace, taskName, repository, branch, cloneURL, upstreamURL string,
+	scan foremanv1alpha1.ResolvedScan,
+) (pass bool, ran bool, feedback string) {
+	args, err := json.Marshal(map[string]any{
+		"repo":        repository,
+		"branch":      branch,
+		"cloneURL":    cloneURL,
+		"upstreamURL": upstreamURL,
+		// The executor resolved the task's ScanGate once at the decision
+		// site; forward the concrete config verbatim. A nil scan.Images
+		// marshals to null and the tool's nil-means-all rule scans every
+		// built-in target -- this layer adds no defaults of its own.
+		"images":        scan.Images,
+		"severity":      scan.Severity,
+		"ignoreUnfixed": scan.IgnoreUnfixed,
+		"builderImage":  scan.BuilderImage,
+		"runnerImage":   scan.RunnerImage,
+		// taskRef stamps the scan Job + pod with the originating AgenticTask
+		// identity (foreman.llmkube.dev/task-{namespace,name} labels) so a
+		// scan Job/pod can be traced back to its task (#893, the envtest
+		// runner's stamping contract applied to the scan gate).
+		"taskRef": map[string]string{
+			"namespace": taskNamespace,
+			"name":      taskName,
+		},
+	})
+	if err != nil {
+		return false, false, "scan gate: marshal args: " + err.Error()
+	}
+	result, err := s.tool.Execute(ctx, args)
+	if err != nil || result == nil {
+		msg := "nil result"
+		if err != nil {
+			msg = err.Error()
+		}
+		return false, false, "scan gate: " + msg
+	}
+	pass, ran = mapScanVerdict(result.Verdict)
+	if pass {
+		return true, true, ""
+	}
+	// On SCAN-FAIL the log tail IS the finding table the retry prompt embeds.
 	fb := result.Summary
 	if lt, ok := result.Extra["logTail"].(string); ok && lt != "" {
 		fb += "\n" + lt

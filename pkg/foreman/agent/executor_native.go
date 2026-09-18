@@ -1272,35 +1272,17 @@ func (e *NativeAgentLoopExecutor) runLLMPath(
 		}
 
 		// Retry (#768/#1798): re-run the coder against the same workspace
-		// with the gate output injected, persist the new transcript, then
-		// loop back to re-commit / re-push / re-gate. A retry loop that
-		// fails structurally (max turns, no tool call, timeout) surfaces via
-		// mapLoopError; a retry that does not GO its own fix surfaces that
-		// terminal without pushing.
-		var loopErr error
-		loopRes, loopErr = loop.Run(ctx, retryCfg(cfg, prompt))
-		transcriptRef, twErr := WriteTranscript(ctx, e.Client, task, loopRes)
-		if twErr != nil {
-			log.Error(twErr, "transcript write failed; continuing")
-		}
-		if r, err := e.mapLoopError(start, transcriptRef, loopRes, loopErr); r != nil || err != nil {
-			// A retry loop that fails structurally (max turns, no tool
-			// call, timeout) has the same preservation need as the initial
-			// loop: commit and push whatever the coder wrote before
-			// returning the unsuccessful verdict (#1715).
-			r = e.preserveUnsuccessfulLoopBranch(ctx, log, agent, task,
-				workspace, branch, auth, r)
-			return r, err
-		}
-		if loopRes.Terminal == nil {
-			return e.incompleteResult(start, transcriptRef, loopRes,
-				foremanv1alpha1.FailureInfrastructureError,
-				"retry loop returned nil error but no terminal result"), nil
-		}
-		verdict, normReason := normalizeModelVerdict(loopRes.Terminal.Verdict)
-		if verdict != foremanv1alpha1.AgenticTaskVerdictGo {
-			return e.retryCoderTerminalResult(ctx, log, agent, task,
-				workspace, branch, auth, start, transcriptRef, loopRes, verdict, normReason, cloneURL), nil
+		// with the rendered gate feedback injected; a terminal from the
+		// retry (structural loop failure, missing terminal, or a non-GO
+		// verdict) ends the task, a GO loops back to re-commit / re-push /
+		// re-gate. Extracted so runLLMPath stays under the gocyclo ceiling.
+		var retryDone *Result
+		var retryErr error
+		loopRes, transcriptRef, retryDone, retryErr = e.retryCoderWithFeedback(
+			ctx, log, loop, agent, task, workspace, branch, auth,
+			start, cfg, prompt, cloneURL)
+		if retryDone != nil || retryErr != nil {
+			return retryDone, retryErr
 		}
 	}
 
@@ -1454,8 +1436,11 @@ func (e *NativeAgentLoopExecutor) scanGateOutcome(
 	start time.Time, transcriptRef corev1.ObjectReference, loopRes *LoopResult,
 	gateAdvisories *[]advisory, cloneURL string,
 ) (settled bool, downgrade *Result, feedback string, retry bool) {
+	// Resolve once here, at the decision site: the runner gets the concrete
+	// config and never re-resolves the task's ScanGate itself (Resolve is the
+	// single source of defaults).
 	gate, fb := evaluatePostPushScan(
-		ctx, scanDeclared, e.ScanJobRunner,
+		ctx, scanDeclared, e.ScanJobRunner, task.Spec.ScanGate.Resolve(),
 		task.Namespace, task.Name,
 		task.Spec.Payload.Repo, branch, cloneURL,
 		e.resolveUpstreamForRun(task),
@@ -1516,6 +1501,54 @@ func (e *NativeAgentLoopExecutor) scanGateDowngrade(
 	r := e.scanGateFailedResult(start, transcriptRef, loopRes, branch, sha, feedback)
 	attachGateAdvisories(r.Extra, gateAdvisories)
 	return r
+}
+
+// retryCoderWithFeedback re-runs the coder loop against the same live
+// workspace with the rendered gate feedback injected (#768/#1798), persists
+// the new transcript, and classifies the retry's outcome. It returns the
+// updated loop result + transcript ref for the next iteration and, when the
+// retry ends the task, a terminal Result and/or error:
+//
+//   - a structural loop failure (max turns, no tool call, timeout) surfaces
+//     via mapLoopError and carries the same branch-preservation need as the
+//     initial loop (#1715): commit and push whatever the coder wrote before
+//     returning the unsuccessful verdict;
+//   - a retry loop that ends without a terminal (nil error, nil terminal)
+//     is an infrastructure oddity and downgrades to INCOMPLETE;
+//   - a retry that reaches a terminal but does not GO its own fix surfaces
+//     that terminal without pushing (the executor never pushes work the
+//     coder itself did not stand behind).
+//
+// A nil Result and nil error means the retry GOed and the caller may
+// re-commit / re-push / re-gate. Extracted from runLLMPath so the retry
+// tail — shared by both post-push gates — runs exactly once per iteration
+// and runLLMPath stays under the gocyclo ceiling.
+func (e *NativeAgentLoopExecutor) retryCoderWithFeedback(
+	ctx context.Context, log logr.Logger, loop *Loop, agent *foremanv1alpha1.Agent,
+	task *foremanv1alpha1.AgenticTask, workspace, branch string, auth *repo.Auth,
+	start time.Time, cfg LoopConfig, prompt, cloneURL string,
+) (*LoopResult, corev1.ObjectReference, *Result, error) {
+	loopRes, loopErr := loop.Run(ctx, retryCfg(cfg, prompt))
+	transcriptRef, twErr := WriteTranscript(ctx, e.Client, task, loopRes)
+	if twErr != nil {
+		log.Error(twErr, "transcript write failed; continuing")
+	}
+
+	if r, err := e.mapLoopError(start, transcriptRef, loopRes, loopErr); r != nil || err != nil {
+		return loopRes, transcriptRef,
+			e.preserveUnsuccessfulLoopBranch(ctx, log, agent, task, workspace, branch, auth, r), err
+	}
+	if loopRes.Terminal == nil {
+		return loopRes, transcriptRef, e.incompleteResult(start, transcriptRef, loopRes,
+			foremanv1alpha1.FailureInfrastructureError,
+			"retry loop returned nil error but no terminal result"), nil
+	}
+	verdict, normReason := normalizeModelVerdict(loopRes.Terminal.Verdict)
+	if verdict != foremanv1alpha1.AgenticTaskVerdictGo {
+		return loopRes, transcriptRef, e.retryCoderTerminalResult(ctx, log, agent, task,
+			workspace, branch, auth, start, transcriptRef, loopRes, verdict, normReason, cloneURL), nil
+	}
+	return loopRes, transcriptRef, nil, nil
 }
 
 // commitPushAttempt settles the working tree, commits the current terminal's
@@ -2040,10 +2073,14 @@ func (e *NativeAgentLoopExecutor) verifyScanReGate(
 		feedback    string
 	)
 	if e.ScanJobRunner != nil {
+		// Resolve once here, at the decision site, mirroring scanGateOutcome:
+		// the runner gets the concrete config and never re-resolves the
+		// task's ScanGate itself (Resolve is the single source of defaults).
 		passed, ran, feedback = e.ScanJobRunner.Run(
 			ctx, task.Namespace, task.Name,
 			task.Spec.Payload.Repo, branch, cloneURL,
 			e.resolveUpstreamForRun(task),
+			task.Spec.ScanGate.Resolve(),
 		)
 	}
 	if ran && passed {

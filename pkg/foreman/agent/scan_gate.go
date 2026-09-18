@@ -28,9 +28,17 @@ type ScanJobRunner interface {
 	// upstreamURL is the CANONICAL repo clone URL, separate from cloneURL
 	// (where the branch lives, the fork) for the same reason EnvtestJobRunner
 	// documents (#1259/#1731).
+	//
+	// scan is the concrete, fully-defaulted scan configuration: the executor
+	// resolves task.Spec.ScanGate.Resolve() once, at the decision site, and
+	// hands the runner the result. The runner must never re-resolve or
+	// re-default a ScanGate itself — Resolve is the single source of defaults,
+	// and staying a pure consumer of ResolvedScan keeps the runner stateless
+	// with respect to the API.
 	Run(
 		ctx context.Context,
 		taskNamespace, taskName, repository, branch, cloneURL, upstreamURL string,
+		scan foremanv1alpha1.ResolvedScan,
 	) (pass bool, ran bool, feedback string)
 }
 
@@ -56,18 +64,21 @@ const (
 // the finding table; scanGateOK covers pass / undeclared / nil-runner;
 // scanGateUnverified means the scan could not be run to a verdict. The
 // caller decides what an unverified scan means by attempt number (GO stands
-// on attempt 0, not on a retry).
+// on attempt 0, not on a retry). scan is the caller's already-resolved gate
+// config, passed through to the runner verbatim; the undeclared/nil-runner
+// short-circuit never reaches it.
 func evaluatePostPushScan(
 	ctx context.Context,
 	scanDeclared bool,
 	runner ScanJobRunner,
+	scan foremanv1alpha1.ResolvedScan,
 	taskNamespace, taskName, repository, branch, cloneURL, upstreamURL string,
 ) (scanGateVerdict, string) {
 	if !scanDeclared || runner == nil {
 		return scanGateOK, ""
 	}
 	pass, ran, fb := runner.Run(
-		ctx, taskNamespace, taskName, repository, branch, cloneURL, upstreamURL)
+		ctx, taskNamespace, taskName, repository, branch, cloneURL, upstreamURL, scan)
 	if !ran {
 		return scanGateUnverified, ""
 	}
