@@ -109,7 +109,13 @@ vet: ## Run go vet against code.
 # A fresh seed per run keeps spec-order randomization (it catches test
 # pollution); echoing it into the log makes any failure replayable
 # (#1693): `make test GINKGO_SEED=<n>` reruns the exact order.
-GINKGO_SEED ?= $(shell date +%s)
+#
+# `?=` is recursive, so `$(shell date +%s)` re-runs at every reference and the
+# echoed seed can differ from the exported one. `ifndef` forces one evaluation,
+# and is false for a command-line seed, so an explicit `GINKGO_SEED=<n>` wins.
+ifndef GINKGO_SEED
+GINKGO_SEED := $(shell date +%s)
+endif
 
 .PHONY: test
 test: manifests generate fmt vet setup-envtest ## Run tests.

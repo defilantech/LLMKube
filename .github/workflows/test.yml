@@ -33,6 +33,11 @@ jobs:
       - name: Validate samples against CRD schemas
         run: make validate-samples
 
+      # Guards the seed's single evaluation (#1817): the gate log is where a
+      # seed is read to replay a failure.
+      - name: GINKGO_SEED expands once
+        run: scripts/check-ginkgo-seed_test.sh
+
       - name: Running Tests (seed 11)
         run: |
           go mod tidy
