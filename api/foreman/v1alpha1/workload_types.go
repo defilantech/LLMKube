@@ -296,6 +296,14 @@ type WorkloadSpec struct {
 	// +optional
 	GateProfile *GateProfile `json:"gateProfile,omitempty"`
 
+	// ScanGate is the default container-image scan gate applied to every
+	// AgenticTask this Workload decomposes into (issue-batch, explicit
+	// pipeline, and escalation steps alike). A PipelineStep may override it
+	// per step (see PipelineStep.ScanGate); unset on both means no scan
+	// gate — the behavior before Workloads carried one.
+	// +optional
+	ScanGate *ScanGate `json:"scanGate,omitempty"`
+
 	// MCPEnabled is a benchmark opt-out for MCP tool access. Three-valued
 	// via the *bool: nil or true means MCP is allowed for Agents in this
 	// Workload that have spec.mcp configured; false disables MCP for
@@ -371,6 +379,11 @@ type PipelineStep struct {
 	// Unset falls back to WorkloadSpec.GateProfile, then to the "go" preset.
 	// +optional
 	GateProfile *GateProfile `json:"gateProfile,omitempty"`
+
+	// ScanGate overrides the Workload-level ScanGate for this step only.
+	// Unset falls back to WorkloadSpec.ScanGate, then to no scan gate.
+	// +optional
+	ScanGate *ScanGate `json:"scanGate,omitempty"`
 }
 
 // WorkloadStatus reflects the observed state of the workload.

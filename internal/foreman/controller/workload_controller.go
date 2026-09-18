@@ -484,6 +484,7 @@ func (r *WorkloadReconciler) renderAndCreate(ctx context.Context, w *foremanv1al
 				TimeoutSeconds: step.TimeoutSeconds,
 				Priority:       step.Priority,
 				GateProfile:    effectiveGateProfile(step, w).DeepCopy(),
+				ScanGate:       effectiveScanGate(step, w).DeepCopy(),
 				MCPEnabled:     w.Spec.MCPEnabled,
 				VerdictPolicy:  w.Spec.VerdictPolicy,
 			},
@@ -533,6 +534,17 @@ func effectiveGateProfile(step foremanv1alpha1.PipelineStep, w *foremanv1alpha1.
 		return step.GateProfile
 	}
 	return w.Spec.GateProfile
+}
+
+// effectiveScanGate resolves the scan gate for a rendered task: the step's
+// own gate when set, otherwise the Workload-level default. A nil result
+// (both unset) leaves AgenticTaskSpec.ScanGate nil, which IsZero() treats
+// as "no scan gate" — the behavior before Workloads carried one.
+func effectiveScanGate(step foremanv1alpha1.PipelineStep, w *foremanv1alpha1.Workload) *foremanv1alpha1.ScanGate {
+	if step.ScanGate != nil {
+		return step.ScanGate
+	}
+	return w.Spec.ScanGate
 }
 
 // listChildren returns the AgenticTasks already owner-ref'd to this
