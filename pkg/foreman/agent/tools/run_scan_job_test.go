@@ -25,6 +25,8 @@ import (
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -440,6 +442,74 @@ func TestRunScanJob_PollTimeoutProducesSCANERROR(t *testing.T) {
 	}
 	if got, _ := res.Extra["pollError"].(string); got == "" {
 		t.Errorf("pollError should be set on timeout; got empty")
+	}
+}
+
+// TestRunScanJob_CreateFailureProducesSCANERROR mirrors the gate's
+// DuplicateCreate test (#1748's rule applied to the scan gate): the fake
+// apiserver already holds a Job at the pinned name, so the Create inside
+// Execute fails with AlreadyExists. The tool must map that to a terminal
+// SCAN-ERROR -- "the scan did not run" -- never a Go-level error and never
+// a verdict on the branch's images.
+func TestRunScanJob_CreateFailureProducesSCANERROR(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	jobName := "foreman-scan-collide"
+	seeded := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{Name: jobName, Namespace: "foreman-system"},
+	}
+	c := fake.NewClientBuilder().
+		WithScheme(gateScheme(t)).
+		WithObjects(seeded).
+		Build()
+
+	tool := &RunScanJobTool{
+		Client: c,
+		Cfg: RunScanJobToolConfig{
+			NameFn:       pinName(jobName),
+			PollInterval: 5 * time.Millisecond,
+			PollTimeout:  500 * time.Millisecond,
+		},
+	}
+
+	raw, err := json.Marshal(map[string]any{
+		"repo":    "defilantech/LLMKube",
+		"branch":  "foreman/issue-900",
+		"taskRef": map[string]string{"namespace": "default", "name": "scan-900"},
+	})
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+
+	res, err := tool.Execute(ctx, raw)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !res.Terminal {
+		t.Errorf("Terminal: want true")
+	}
+	if res.Verdict != VerdictScanError {
+		t.Errorf("Verdict: want %s got %s", VerdictScanError, res.Verdict)
+	}
+	if !strings.HasPrefix(res.Summary, "scan did not run:") {
+		t.Errorf("Summary should be prefixed %q; got %q", "scan did not run:", res.Summary)
+	}
+	if got, _ := res.Output.(map[string]any)["jobName"].(string); got != jobName {
+		t.Errorf("Output.jobName: want %q got %q", jobName, got)
+	}
+	if got, _ := res.Extra["jobName"].(string); got != jobName {
+		t.Errorf("Extra.jobName: want %q got %q", jobName, got)
+	}
+	if got, _ := res.Extra["reason"].(string); !strings.Contains(got, "create job") {
+		t.Errorf("reason should mention the create failure; got %q", got)
+	}
+	// Sanity check the AlreadyExists shape on the underlying client so
+	// we are not relying on a brittle string comparison.
+	if err := c.Create(ctx, &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{Name: jobName, Namespace: "foreman-system"},
+	}); !apierrors.IsAlreadyExists(err) {
+		t.Errorf("expected AlreadyExists; got %v", err)
 	}
 }
 

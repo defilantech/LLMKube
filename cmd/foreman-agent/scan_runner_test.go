@@ -61,6 +61,55 @@ func scanRunnerHarness(t *testing.T, pvcName string) (*scanJobRunnerImpl, client
 	return impl, kc
 }
 
+// scanRunnerHarnessFlipped is scanRunnerHarness with one extra knob: the
+// fake client is built with the Job's status subresource and a goroutine
+// flips the created Job's status to (succeeded, failed) right after the
+// tool's Create, so Run observes a terminal verdict instead of giving up
+// at the poll timeout.
+func scanRunnerHarnessFlipped(
+	t *testing.T, pvcName string, succeeded, failed int32,
+) (*scanJobRunnerImpl, client.Client) {
+	t.Helper()
+	s := runtime.NewScheme()
+	if err := batchv1.AddToScheme(s); err != nil {
+		t.Fatalf("add batchv1 scheme: %v", err)
+	}
+	kc := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&batchv1.Job{}).Build()
+	impl := &scanJobRunnerImpl{
+		tool: &foremantools.RunScanJobTool{
+			Client: kc,
+			Cfg: foremantools.RunScanJobToolConfig{
+				Namespace:    "foreman-system",
+				PVCName:      pvcName,
+				PollInterval: time.Millisecond,
+				PollTimeout:  2 * time.Second,
+				NameFn:       func(string) string { return "foreman-scan-pinned" },
+			},
+		},
+	}
+	go flipScanJobStatusOnce(t, kc, succeeded, failed)
+	return impl, kc
+}
+
+// flipScanJobStatusOnce mirrors the tools package's flipStatusOnce: watch
+// for the Job to appear, then patch its status once and return.
+func flipScanJobStatusOnce(t *testing.T, kc client.Client, succeeded, failed int32) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	key := types.NamespacedName{Namespace: "foreman-system", Name: "foreman-scan-pinned"}
+	for ctx.Err() == nil {
+		var job batchv1.Job
+		if err := kc.Get(ctx, key, &job); err == nil {
+			job.Status.Succeeded = succeeded
+			job.Status.Failed = failed
+			_ = kc.Status().Update(ctx, &job)
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func createdScanJob(t *testing.T, kc client.Client) *batchv1.Job {
 	t.Helper()
 	var job batchv1.Job
@@ -227,6 +276,66 @@ func TestScanJobRunnerForwardsResolvedScan(t *testing.T) {
 				t.Errorf("cache volume claim = %q, want the gate-cache PVC name", claim)
 			}
 		})
+	}
+}
+
+// TestScanJobRunnerFailedScanFeedbackIncludesLogTail pins the feedback
+// composition on SCAN-FAIL: the string Run returns is the verdict summary
+// with the log tail appended, and that exact string is what the executor
+// feeds the coder's retry prompt. A summary-only feedback would hand the
+// coder "the scan failed" without a single finding to fix.
+func TestScanJobRunnerFailedScanFeedbackIncludesLogTail(t *testing.T) {
+	const findings = "=== trivy controller ===\nCVE-2024-0001  CRITICAL  openssl  fixed in 1.2.3\nSCAN FAIL\n"
+	runner, _ := scanRunnerHarnessFlipped(t, "foreman-gate-cache", 0, 1)
+	runner.tool.Cfg.LogTailFn = func(context.Context, string, string) string { return findings }
+
+	emptyGate := foremanv1alpha1.ScanGate{}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	pass, ran, feedback := runner.Run(
+		ctx, "foreman-system", "scan-fail-task",
+		"defilantech/LLMKube", "foreman/scan-fail",
+		"https://github.com/Defilan/LLMKube.git",
+		"https://github.com/defilantech/LLMKube.git",
+		emptyGate.Resolve(),
+	)
+
+	if pass != false || ran != true {
+		t.Fatalf("Run = (pass=%v, ran=%v), want (false, true): a failed scan is a finding, not a could-not-run", pass, ran)
+	}
+	if !strings.Contains(feedback, "one or more image scans reported blocking findings") {
+		t.Errorf("feedback should carry the SCAN-FAIL summary; got %q", feedback)
+	}
+	if !strings.Contains(feedback, "CVE-2024-0001") {
+		t.Errorf("feedback should carry the log-tail findings table; got %q", feedback)
+	}
+}
+
+// TestScanJobRunnerScanErrorFeedback pins the honest-degradation contract
+// at the runner level: the harness's Job never reaches a terminal phase,
+// so the poll times out and the tool returns SCAN-ERROR. That maps to
+// (pass=false, ran=false) -- a could-not-verify, never a finding against
+// the branch.
+func TestScanJobRunnerScanErrorFeedback(t *testing.T) {
+	runner, _ := scanRunnerHarness(t, "foreman-gate-cache")
+
+	emptyGate := foremanv1alpha1.ScanGate{}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	pass, ran, feedback := runner.Run(
+		ctx, "foreman-system", "scan-err-task",
+		"defilantech/LLMKube", "foreman/scan-err",
+		"https://github.com/Defilan/LLMKube.git",
+		"https://github.com/defilantech/LLMKube.git",
+		emptyGate.Resolve(),
+	)
+
+	if pass != false || ran != false {
+		t.Fatalf("Run = (pass=%v, ran=%v), want (false, false): "+
+			"an unrunnable scan is a could-not-verify, not a finding", pass, ran)
+	}
+	if !strings.Contains(feedback, "terminal phase") {
+		t.Errorf("feedback should name why the scan could not run; got %q", feedback)
 	}
 }
 
