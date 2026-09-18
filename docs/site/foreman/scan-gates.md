@@ -20,7 +20,10 @@ clean.
 `Workload.spec` as the default for every task a Workload decomposes into,
 with `pipeline[].scanGate` overriding per step. Resolution is step →
 workload → no scan gate; an unset gate on both is byte-identical to today's
-behavior.
+behavior. Presence is the declaration signal: `scanGate: {}` — a present
+gate with every field empty — scans **all** built-in targets at the CI
+defaults, exactly like the `images` row of the table below promises; only
+omitting the key entirely means "no gate".
 
 Worked example — an issue-batch Workload whose tasks must keep the
 foreman-agent release image free of fixable CRITICAL/HIGH CVEs:

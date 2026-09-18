@@ -113,6 +113,7 @@ type scanGateLoopCase struct {
 	maxEnvtest  *int32 // nil -> default bound
 	maxScan     *int32 // nil -> default bound
 	declared    bool   // task declares a scan gate
+	emptyGate   bool   // declares only scanGate: {} (presence semantics)
 	oaiBodies   []string
 	regVerdicts []string
 	envGate     []envtestGateResult // nil -> no envtest runner
@@ -128,9 +129,11 @@ func (tc scanGateLoopCase) run(t *testing.T) (*foremanagent.Result, int, int) {
 	agent, task := taskAndAgent(tc.name)
 	agent.Spec.MaxEnvtestIterations = tc.maxEnvtest
 	agent.Spec.MaxScanIterations = tc.maxScan
-	if tc.declared {
-		// A non-zero gate: &ScanGate{} is IsZero-true, so a field must be set
-		// for the task to arm the scan gate.
+	if tc.emptyGate {
+		// Presence semantics: an empty-but-present gate arms the scan at
+		// Resolve()'s CI defaults. Distinct from "undeclared" (nil).
+		task.Spec.ScanGate = &foremanv1alpha1.ScanGate{}
+	} else if tc.declared {
 		task.Spec.ScanGate = &foremanv1alpha1.ScanGate{Images: []string{"controller"}}
 	}
 	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
@@ -195,6 +198,29 @@ func TestNativeExecutor_ScanLoop_ConvergesAfterOneRetry(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Fatalf("scan calls: want 2 got %d", calls)
+	}
+}
+
+// Presence, not zero-ness, arms the gate: a task declaring scanGate: {} —
+// every field empty — must run the scan at Resolve()'s CI defaults (all
+// built-in targets, CRITICAL,HIGH) and feed a failure back consuming the
+// scan budget exactly like a gate with explicit fields. The pre-review
+// IsZero check treated this YAML as "no gate at all", contradicting
+// ScanGate.Images' own "empty means all built-in targets" contract.
+func TestNativeExecutor_ScanLoop_EmptyGateIsDeclared(t *testing.T) {
+	res, _, calls := scanGateLoopCase{
+		name: "scan-empty-gate", emptyGate: true, oaiBodies: []string{submitGoBody},
+		regVerdicts: []string{"GO"},
+		scanGate: []scanGateResult{
+			{pass: false, ran: true, feedback: "CRITICAL: CVE-2024-0002 in libxml2"}, // attempt 0 fails
+			{pass: true, ran: true}, // retry passes
+		},
+	}.run(t)
+	if res.Verdict != foremanv1alpha1.AgenticTaskVerdictGo {
+		t.Fatalf("verdict: want GO got %s (result=%+v)", res.Verdict, res)
+	}
+	if calls != 2 {
+		t.Fatalf("scan calls: want 2 got %d (an empty gate must still arm the scan)", calls)
 	}
 }
 

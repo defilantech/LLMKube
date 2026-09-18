@@ -172,46 +172,14 @@ func TestScanGateResolve(t *testing.T) {
 	}
 }
 
-func TestScanGateIsZero(t *testing.T) {
-	ignoreTrue := true
-
-	tests := []struct {
-		name string
-		gate *ScanGate
-		want bool
-	}{
-		{name: "nil gate is zero", gate: nil, want: true},
-		{name: "empty gate is zero", gate: &ScanGate{}, want: true},
-		{name: "images set is not zero", gate: &ScanGate{Images: []string{"controller"}}, want: false},
-		{name: "severity set is not zero", gate: &ScanGate{Severity: []string{"CRITICAL"}}, want: false},
-		// Any non-nil IgnoreUnfixed pointer, even pointing at false, is a
-		// meaningful declaration.
-		{name: "ignoreUnfixed true is not zero", gate: &ScanGate{IgnoreUnfixed: &ignoreTrue}, want: false},
-		{name: "ignoreUnfixed false pointer is not zero", gate: &ScanGate{IgnoreUnfixed: newBool(false)}, want: false},
-		{name: "builder image set is not zero", gate: &ScanGate{BuilderImage: "golang:1.25"}, want: false},
-		{name: "runner image set is not zero", gate: &ScanGate{RunnerImage: "alpine:3.23"}, want: false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := tt.gate.IsZero()
-			if got != tt.want {
-				t.Errorf("IsZero() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
-// newBool returns a pointer to b. Kept local to the test so the table rows
-// that each need a distinct *bool do not share one address.
-func newBool(b bool) *bool { return &b }
-
 func TestScanGateResolveIsolatesDefaultSeverity(t *testing.T) {
 	// Resolve must hand out a fresh copy of the shared default severity
-	// slice: mutating one result must not corrupt the default seen by the
-	// next call.
+	// slice, proved by an IN-PLACE mutation: append onto a len==cap slice
+	// reallocates, so an append-based probe passes even if Resolve returned
+	// the shared slice. Only writing through the existing backing array
+	// catches that regression.
 	first := (*ScanGate)(nil).Resolve()
-	first.Severity = append(first.Severity, "MEDIUM")
+	first.Severity[0] = "LOW"
 
 	second := (*ScanGate)(nil).Resolve()
 	want := []string{"CRITICAL", "HIGH"}

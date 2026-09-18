@@ -36,9 +36,12 @@ var defaultScanSeverity = []string{"CRITICAL", "HIGH"}
 
 // ScanGate declares a reproducible container-image scan gate for a task:
 // which built-in release-image targets to scan, the Trivy severity floor, and
-// whether unfixed findings are ignored. Consumed by the scan-gate executor;
-// unset means "no scan gate" (unchanged task behavior). Mirrors GateProfile's
-// preset+override design.
+// whether unfixed findings are ignored. Consumed by the scan-gate executor.
+// Pointer presence, not field zero-ness, declares the gate: a nil/unset
+// ScanGate means no scan (unchanged task behavior); a present gate — even an
+// empty one (scanGate: {}) — declares a scan of all built-in targets at the
+// CI defaults. This is the same presence semantics GateProfile uses, and it
+// matches ScanGate.Images' own "Empty means all built-in targets".
 type ScanGate struct {
 	// Images lists the built-in scan-target ids to scan (e.g. "controller",
 	// "foreman-agent"). Empty means all built-in targets: a nil/empty
@@ -132,18 +135,4 @@ func (g *ScanGate) Resolve() ResolvedScan {
 	}
 
 	return resolved
-}
-
-// IsZero reports whether no meaningful scan configuration is declared: a nil
-// receiver, or a gate whose every field is zero/empty/nil. The executor uses
-// it to decide "no scan gate" (unchanged task behavior).
-func (g *ScanGate) IsZero() bool {
-	if g == nil {
-		return true
-	}
-	return len(g.Images) == 0 &&
-		len(g.Severity) == 0 &&
-		g.IgnoreUnfixed == nil &&
-		g.BuilderImage == "" &&
-		g.RunnerImage == ""
 }

@@ -538,8 +538,10 @@ func effectiveGateProfile(step foremanv1alpha1.PipelineStep, w *foremanv1alpha1.
 
 // effectiveScanGate resolves the scan gate for a rendered task: the step's
 // own gate when set, otherwise the Workload-level default. A nil result
-// (both unset) leaves AgenticTaskSpec.ScanGate nil, which IsZero() treats
-// as "no scan gate" — the behavior before Workloads carried one.
+// (both unset) leaves AgenticTaskSpec.ScanGate nil, which the executor
+// treats as "no scan gate" — the behavior before Workloads carried one.
+// Presence is the declaration signal: a present-but-empty gate propagates
+// as present and arms the scan at the CI defaults.
 func effectiveScanGate(step foremanv1alpha1.PipelineStep, w *foremanv1alpha1.Workload) *foremanv1alpha1.ScanGate {
 	if step.ScanGate != nil {
 		return step.ScanGate

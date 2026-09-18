@@ -1368,7 +1368,12 @@ func (e *NativeAgentLoopExecutor) postPushGateDecision(
 	start time.Time, transcriptRef corev1.ObjectReference, loopRes *LoopResult,
 	gateAdvisories *[]advisory, cloneURL string,
 ) (settled bool, done *Result, prompt string, envtestRetried, scanRetried bool) {
-	scanDeclared := !task.Spec.ScanGate.IsZero()
+	// Pointer presence, not IsZero: a declared-but-empty gate (scanGate: {})
+	// means "scan all built-in targets at CI defaults" — the same presence
+	// semantics gateProfile already uses. IsZero conflates "declared with no
+	// overrides" with "not declared at all" and contradicts ScanGate.Images'
+	// own comment ("Empty means all built-in targets").
+	scanDeclared := task.Spec.ScanGate != nil
 	envSettled, envDown, envFb, envRetried := e.envtestGateOutcome(
 		ctx, envtestTouched, task, branch, sha, envtestAttempt, maxEnvtestIters,
 		start, transcriptRef, loopRes, gateAdvisories, cloneURL)
@@ -2043,8 +2048,9 @@ func (e *NativeAgentLoopExecutor) executeDeterministic(
 
 	// A declared container-image scan gate is re-run on the verified branch
 	// (#1798): the verify tool's GATE-PASS covers only its own checks, and a
-	// branch the scan blocks on must not stand on that word alone.
-	if verdict == foremanv1alpha1.AgenticTaskVerdictGatePass && !task.Spec.ScanGate.IsZero() {
+	// branch the scan blocks on must not stand on that word alone. Pointer
+	// presence, not IsZero: a declared-but-empty gate declares a scan.
+	if verdict == foremanv1alpha1.AgenticTaskVerdictGatePass && task.Spec.ScanGate != nil {
 		if down := e.verifyScanReGate(ctx, task, branch, cloneURL, start, r); down != nil {
 			return down
 		}
