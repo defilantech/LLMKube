@@ -136,6 +136,9 @@ sections:
       - label: Non-Go projects (language gates)
         slug: foreman/language-gates
         file: foreman/language-gates.md
+      - label: Reproducing release scan gates locally
+        slug: foreman/scan-gates
+        file: foreman/scan-gates.md
       - label: Grounding checks
         slug: foreman/grounding-checks
         file: foreman/grounding-checks.md
