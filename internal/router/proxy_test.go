@@ -1073,3 +1073,173 @@ func TestProxyMetricsNonZeroAfterSmokeRun(t *testing.T) {
 		t.Error("RouterBackendHealth not found in registry after dispatch")
 	}
 }
+
+// budgetTestProxy builds a Proxy with a single local backend and the given
+// budget list, returning the proxy, its mux, and the fake backend. The
+// backend echoes a fixed 100-token usage object unless the caller overrides
+// the body, so a served request charges a known amount.
+func budgetTestProxy(t *testing.T, budgets []Budget) (*Proxy, http.Handler, *fakeBackend) {
+	t.Helper()
+	back := newFakeBackend(t)
+	usageBody := `{"choices":[{"message":{"content":"hi"}}],"usage":{"prompt_tokens":60,"completion_tokens":40}}`
+	back.body.Store(&usageBody)
+
+	cfg := &Config{
+		Backends:     []Backend{{Name: "local-qwen", Tier: "local", Address: back.URL()}},
+		Rules:        []Rule{{Name: "all", Route: RuleRoute{Backends: []string{"local-qwen"}}}},
+		DefaultRoute: "local-qwen",
+		Policy: Policy{
+			Classification: ClassificationPolicy{Mode: "header-only"},
+			Budgets:        budgets,
+		},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("budget test config: %v", err)
+	}
+	proxy := NewProxy(cfg, slog.Default())
+	mux := http.NewServeMux()
+	proxy.Mount(mux)
+	return proxy, mux, back
+}
+
+// budgetPost posts a minimal completion request through mux.
+func budgetPost(t *testing.T, mux http.Handler, headers map[string]string) *http.Response {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"any"}`))
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	return rec.Result()
+}
+
+// registryHas reports whether the controller-runtime registry currently
+// holds a metric family whose descriptor contains name.
+func registryHas(name string) bool {
+	ch := make(chan prometheus.Metric, 256)
+	ctrlmetrics.Registry.(prometheus.Collector).Collect(ch)
+	close(ch)
+	for m := range ch {
+		if strings.Contains(m.Desc().String(), name) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestProxyBudgetExhaustion429 is the enforcement gate for #434: a request
+// that exhausts a router-scope token budget must be rejected with 429 +
+// Retry-After before any backend is contacted, and the served request's
+// usage must land exactly on the cap boundary.
+func TestProxyBudgetExhaustion429(t *testing.T) {
+	proxy, mux, back := budgetTestProxy(t, []Budget{
+		{Name: "router-cap", Scope: BudgetScopeRouter, Window: time.Hour, MaxTokens: 100},
+	})
+
+	// First request is served and charged its full 100 tokens, landing
+	// exactly on the cap.
+	r1 := budgetPost(t, mux, nil)
+	_ = r1.Body.Close()
+	if r1.StatusCode != http.StatusOK {
+		t.Fatalf("first status = %d, want 200", r1.StatusCode)
+	}
+	if got := back.calls.Load(); got != 1 {
+		t.Fatalf("backend calls after first request = %d, want 1", got)
+	}
+
+	snap := proxy.budgets.Snapshot()
+	if len(snap) != 1 || snap[0].UsedTokens != 100 {
+		t.Fatalf("snapshot = %+v, want one entry with UsedTokens 100", snap)
+	}
+
+	// Second request is rejected synchronously, before dispatch.
+	r2 := budgetPost(t, mux, nil)
+	_ = r2.Body.Close()
+	if r2.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("second status = %d, want 429", r2.StatusCode)
+	}
+	if r2.Header.Get("Retry-After") == "" {
+		t.Error("missing Retry-After header on budget-exhausted 429")
+	}
+	if got := back.calls.Load(); got != 1 {
+		t.Errorf("backend calls after 429 = %d, want 1 (a budget-exhausted request must not reach a backend)", got)
+	}
+
+	// The token-budget gauge reflects the boundary utilization.
+	if !registryHas("llmkube_router_token_budget_utilization") {
+		t.Error("RouterTokenBudgetUtilization not found in registry after a charged request")
+	}
+}
+
+// TestProxyTeamBudgetIsPerValue covers the prefix scope end to end: a team
+// cap applies to each header value independently, so one team exhausting its
+// cap does not block another.
+func TestProxyTeamBudgetIsPerValue(t *testing.T) {
+	_, mux, back := budgetTestProxy(t, []Budget{
+		{Name: "team-cap", Scope: BudgetScopeTeam, HeaderKey: DefaultTeamHeaderKey, Window: time.Hour, MaxTokens: 100},
+	})
+
+	research := map[string]string{DefaultTeamHeaderKey: "research"}
+	finance := map[string]string{DefaultTeamHeaderKey: "finance"}
+
+	r1 := budgetPost(t, mux, research)
+	_ = r1.Body.Close()
+	if r1.StatusCode != http.StatusOK {
+		t.Fatalf("research first status = %d, want 200", r1.StatusCode)
+	}
+
+	r2 := budgetPost(t, mux, research)
+	_ = r2.Body.Close()
+	if r2.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("research second status = %d, want 429", r2.StatusCode)
+	}
+
+	// finance has its own cap and is untouched by research's exhaustion.
+	r3 := budgetPost(t, mux, finance)
+	_ = r3.Body.Close()
+	if r3.StatusCode != http.StatusOK {
+		t.Fatalf("finance status = %d, want 200 (per-value caps are independent)", r3.StatusCode)
+	}
+
+	if got := back.calls.Load(); got != 2 {
+		t.Errorf("backend calls = %d, want 2 (the exhausted research request must not dispatch)", got)
+	}
+}
+
+// TestProxyBudgetUncharged asserts the guard's failure path is visible: a
+// streaming response that reports no token usage is charged zero and counted
+// in RouterBudgetUnchargedTotal, never estimated.
+func TestProxyBudgetUncharged(t *testing.T) {
+	proxy, mux, back := budgetTestProxy(t, []Budget{
+		{Name: "router-cap", Scope: BudgetScopeRouter, Window: time.Hour, MaxTokens: 1000000},
+	})
+	back.stream.Store(true) // SSE chunks carry no usage object
+
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions",
+		strings.NewReader(`{"model":"any","stream":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("streaming request: %v", err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	for _, u := range proxy.budgets.Snapshot() {
+		if u.UsedTokens != 0 {
+			t.Errorf("budget %s charged %d tokens from a usage-less stream, want 0", u.Name, u.UsedTokens)
+		}
+	}
+	if !registryHas("llmkube_router_budget_uncharged_total") {
+		t.Error("RouterBudgetUnchargedTotal not found in registry after a usage-less streaming request")
+	}
+}

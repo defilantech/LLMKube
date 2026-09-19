@@ -17,7 +17,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -37,6 +39,7 @@ type Proxy struct {
 	logger     *slog.Logger
 	routerName string
 	activator  *Activator
+	budgets    *BudgetStore
 }
 
 // ProxyOption customizes a Proxy at construction time. The proxy
@@ -83,11 +86,47 @@ func NewProxy(cfg *Config, logger *slog.Logger, opts ...ProxyOption) *Proxy {
 		disp:       NewDispatcher(cfg),
 		logger:     logger,
 		routerName: "default",
+		budgets:    NewBudgetStore(compileBudgetRules(cfg.Policy.Budgets), time.Now),
 	}
 	for _, opt := range opts {
 		opt(p)
 	}
 	return p
+}
+
+// compileBudgetRules turns wire budgets into the engine's rule shape,
+// resolving each to the scope key the proxy looks up at request time:
+// "router", "rule:<name>", or (for a team cap) "team:<headerKey>". See
+// BudgetStore.ruleFor for how a team rule then governs each concrete
+// "team:<headerKey>:<value>" request key.
+func compileBudgetRules(budgets []Budget) []BudgetRule {
+	rules := make([]BudgetRule, 0, len(budgets))
+	for _, b := range budgets {
+		r := BudgetRule{
+			Name:      b.Name,
+			MaxTokens: b.MaxTokens,
+			MaxUSD:    b.MaxUSD,
+			Window:    b.Window,
+		}
+		switch b.Scope {
+		case BudgetScopeRouter:
+			r.ScopeKey = "router"
+		case BudgetScopeRule:
+			r.ScopeKey = "rule:" + b.RuleName
+		case BudgetScopeTeam:
+			hk := b.HeaderKey
+			if hk == "" {
+				hk = DefaultTeamHeaderKey
+			}
+			r.ScopeKey = "team:" + hk
+		default:
+			// Config.Validate rejects unknown scopes; skip defensively rather
+			// than constructing a rule no request key can ever match.
+			continue
+		}
+		rules = append(rules, r)
+	}
+	return rules
 }
 
 // Mount wires up the OpenAI-compatible endpoints plus /health on the
@@ -163,15 +202,37 @@ func (p *Proxy) handleCompletion(upstreamPath string) http.HandlerFunc {
 		decision := p.matcher.Match(&features)
 		if len(decision.Backends) == 0 {
 			writeError(w, http.StatusServiceUnavailable, "no rule matched and no defaultRoute configured")
-			p.audit(features, decision, nil, http.StatusServiceUnavailable, "no_route", 0)
+			p.audit(features, decision, nil, http.StatusServiceUnavailable, "no_route", 0, budgetAudit{})
 			return
 		}
 
 		if err := p.enforceFailClosed(&features, &decision); err != nil {
 			writeError(w, http.StatusServiceUnavailable, err.Error())
-			p.audit(features, decision, nil, http.StatusServiceUnavailable, "fail_closed", 0)
+			p.audit(features, decision, nil, http.StatusServiceUnavailable, "fail_closed", 0, budgetAudit{})
 			p.observeFailClosed(&features, &decision)
 			return
+		}
+
+		// Budget admission: a request whose resolved scope keys exhaust any
+		// configured cap is rejected synchronously here, before a backend is
+		// contacted. The caps are compiled from
+		// ModelRouter.spec.policy.budgets; scopeKeys is "router" plus the
+		// matched "rule:<name>" plus one concrete "team:<key>:<value>" per
+		// team-scoped budget whose header is present.
+		scopeKeys := p.budgetScopeKeys(&features, &decision)
+		if len(scopeKeys) > 0 {
+			if ok, retryAfter, exhausted := p.budgets.Allowed(scopeKeys); !ok {
+				secs := int(math.Ceil(retryAfter.Seconds()))
+				if secs < 1 {
+					secs = 1
+				}
+				w.Header().Set("Retry-After", strconv.Itoa(secs))
+				writeError(w, http.StatusTooManyRequests, "budget exhausted: "+exhausted)
+				p.observeRequest(&features, &decision, nil, "budget_exceeded", 0)
+				p.audit(features, decision, nil, http.StatusTooManyRequests, "budget_exceeded", 0,
+					budgetAudit{Exhausted: exhausted})
+				return
+			}
 		}
 
 		tracer := otel.Tracer("model_router.dispatch")
@@ -198,7 +259,7 @@ func (p *Proxy) handleCompletion(upstreamPath string) http.HandlerFunc {
 				writeError(w, http.StatusServiceUnavailable,
 					"model pool activation did not complete within the request budget; retry")
 				p.audit(features, decision, nil, http.StatusServiceUnavailable,
-					"pool_activation_timeout", elapsed)
+					"pool_activation_timeout", elapsed, budgetAudit{})
 				return
 			}
 			// Every backend in an IfIdle rule skipped because its ModelPool incumbent
@@ -212,7 +273,7 @@ func (p *Proxy) handleCompletion(upstreamPath string) http.HandlerFunc {
 				writeError(w, http.StatusServiceUnavailable,
 					"model pool incumbent busy; no preferred member is warm, retry")
 				p.audit(features, decision, nil, http.StatusServiceUnavailable,
-					"pool_incumbent_busy", elapsed)
+					"pool_incumbent_busy", elapsed, budgetAudit{})
 				return
 			}
 			// Runtime fail-closed: when every backend in a fail-closed
@@ -228,12 +289,12 @@ func (p *Proxy) handleCompletion(upstreamPath string) http.HandlerFunc {
 				writeError(w, http.StatusServiceUnavailable,
 					"fail-closed: all rule backends unhealthy: "+err.Error())
 				p.audit(features, decision, nil, http.StatusServiceUnavailable,
-					"fail_closed_runtime", elapsed)
+					"fail_closed_runtime", elapsed, budgetAudit{})
 				p.observeFailClosed(&features, &decision)
 				return
 			}
 			writeError(w, http.StatusBadGateway, "all backends failed: "+err.Error())
-			p.audit(features, decision, nil, http.StatusBadGateway, "all_backends_failed", elapsed)
+			p.audit(features, decision, nil, http.StatusBadGateway, "all_backends_failed", elapsed, budgetAudit{})
 			return
 		}
 		defer func() { _ = resp.Body.Close() }()
@@ -243,9 +304,35 @@ func (p *Proxy) handleCompletion(upstreamPath string) http.HandlerFunc {
 			otelattribute.String("routing.backend.tier", chosen.Tier),
 		)
 
+		// Capture the response body as it streams so the proxy can read the
+		// upstream's token usage after the client has been served. The buffer
+		// keeps the tail, where an SSE usage chunk lives.
+		captured := &capturedBody{rc: resp.Body, limit: maxUsageCaptureBytes}
+		resp.Body = captured
+
 		streamed := streamResponse(w, resp, isStream)
 		outcome := streamedReason(streamed)
-		p.audit(features, decision, chosen, resp.StatusCode, outcome, elapsed)
+
+		// Charge the served request against every resolved budget scope. When
+		// the upstream reported no usage the request goes uncharged and the
+		// uncharged counter records it, rather than estimating tokens that
+		// would silently diverge from the provider's own count.
+		ba := budgetAudit{}
+		if len(scopeKeys) > 0 {
+			prompt, completion, usageOK := parseUsage(captured.Bytes(), streamed)
+			if usageOK {
+				usd := CostUSD(prompt, completion, chosen.CostPerMillionTokens)
+				p.budgets.Charge(scopeKeys, prompt+completion, usd)
+				ba.Tokens = prompt + completion
+				ba.USD = usd
+			} else {
+				prommetrics.RouterBudgetUnchargedTotal.WithLabelValues(p.routerName, "no_usage").Inc()
+				ba.Uncharged = true
+			}
+			p.observeBudgets()
+		}
+
+		p.audit(features, decision, chosen, resp.StatusCode, outcome, elapsed, ba)
 		p.observeRequest(&features, &decision, chosen, outcome, elapsed)
 
 		// Record TTFT for streaming responses. We approximate first-byte
@@ -279,6 +366,114 @@ func (p *Proxy) handleCompletion(upstreamPath string) http.HandlerFunc {
 }
 
 const maxRequestBodyBytes = 32 << 20 // 32 MiB, generous for long prompts
+
+// maxUsageCaptureBytes bounds the response-body buffer the proxy keeps for
+// token accounting. Only the streaming tail matters (the SSE usage chunk),
+// so a pathological upstream cannot grow memory without limit.
+const maxUsageCaptureBytes = 4 << 20 // 4 MiB
+
+// budgetAudit carries the token-budget outcome of a request into its audit
+// line: the exhausted budget name when the request was rejected, the tokens
+// and USD charged when it was served, and whether usage was unavailable.
+type budgetAudit struct {
+	Exhausted string
+	Tokens    int64
+	USD       float64
+	Uncharged bool
+}
+
+// budgetScopeKeys resolves the concrete budget scope keys for a request:
+// "router" always, the matched "rule:<name>", and one
+// "team:<headerKey>:<value>" per team-scoped budget whose header is present.
+// Returns nil when no budgets are configured, so the request path takes no
+// further budget work.
+func (p *Proxy) budgetScopeKeys(f *RequestFeatures, dec *MatchResult) []string {
+	if len(p.cfg.Policy.Budgets) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(p.cfg.Policy.Budgets)+1)
+	seen := make(map[string]bool, len(p.cfg.Policy.Budgets)+1)
+	add := func(k string) {
+		if k == "" || seen[k] {
+			return
+		}
+		seen[k] = true
+		keys = append(keys, k)
+	}
+	for _, b := range p.cfg.Policy.Budgets {
+		switch b.Scope {
+		case BudgetScopeRouter:
+			add("router")
+		case BudgetScopeRule:
+			if dec.Rule != nil && dec.Rule.Name == b.RuleName {
+				add("rule:" + b.RuleName)
+			}
+		case BudgetScopeTeam:
+			hk := b.HeaderKey
+			if hk == "" {
+				hk = DefaultTeamHeaderKey
+			}
+			if v := f.Headers[strings.ToLower(hk)]; v != "" {
+				add("team:" + hk + ":" + v)
+			}
+		}
+	}
+	return keys
+}
+
+// parseUsage extracts token usage from a captured response body. Streaming
+// and non-streaming bodies need different parsers; a streamed response or a
+// body that looks like SSE goes through the SSE scanner, everything else
+// through the JSON parser.
+func parseUsage(body []byte, streamed bool) (prompt, completion int64, ok bool) {
+	if len(body) == 0 {
+		return 0, 0, false
+	}
+	if streamed || looksLikeSSE(body) {
+		return UsageTokensFromSSE(body)
+	}
+	return UsageTokens(body)
+}
+
+// observeBudgets republishes rolling-window token utilization from the
+// store's snapshot after a charged request, so the gauge reflects the
+// current window without a separate scrape loop.
+func (p *Proxy) observeBudgets() {
+	for _, u := range p.budgets.Snapshot() {
+		if u.MaxTokens <= 0 {
+			continue
+		}
+		prommetrics.RouterTokenBudgetUtilization.WithLabelValues(
+			p.routerName, u.Name, u.ScopeKey,
+		).Set(float64(u.UsedTokens) / float64(u.MaxTokens))
+	}
+}
+
+// capturedBody tees a response body into a bounded tail buffer so the proxy
+// can read the upstream's token usage after streaming the body to the
+// client. Close delegates to the wrapped reader, preserving the
+// cancel-on-close chain set up by dispatchWithFallback.
+type capturedBody struct {
+	rc    io.ReadCloser
+	buf   []byte
+	limit int
+}
+
+func (c *capturedBody) Read(p []byte) (int, error) {
+	n, err := c.rc.Read(p)
+	if n > 0 {
+		c.buf = append(c.buf, p[:n]...)
+		if len(c.buf) > c.limit {
+			c.buf = c.buf[len(c.buf)-c.limit:]
+		}
+	}
+	return n, err
+}
+
+func (c *capturedBody) Close() error { return c.rc.Close() }
+
+// Bytes returns the captured tail of the response body.
+func (c *capturedBody) Bytes() []byte { return c.buf }
 
 // modelPoolRetryAfterSeconds is the Retry-After value sent with a 503 when a
 // ModelPool activation hold exceeds the request budget. A few seconds is enough
@@ -565,6 +760,7 @@ func (p *Proxy) audit(
 	statusCode int,
 	outcome string,
 	elapsed time.Duration,
+	ba budgetAudit,
 ) {
 	attrs := []any{
 		"model", f.Model,
@@ -579,6 +775,18 @@ func (p *Proxy) audit(
 	}
 	if chosen != nil {
 		attrs = append(attrs, "backend", chosen.Name, "backendTier", chosen.Tier)
+	}
+	// Budget outcome: the exhausted cap on a rejected request, the charged
+	// tokens and USD on a served one, or the uncharged marker when the
+	// upstream reported no usage.
+	if ba.Exhausted != "" {
+		attrs = append(attrs, "budgetExhausted", ba.Exhausted)
+	}
+	if ba.Tokens > 0 || ba.USD > 0 {
+		attrs = append(attrs, "budgetTokens", ba.Tokens, "budgetUSD", ba.USD)
+	}
+	if ba.Uncharged {
+		attrs = append(attrs, "budgetUncharged", true)
 	}
 	// The resolved per-request deadline is informative regardless of
 	// outcome: on success it shows the budget that DID land, on

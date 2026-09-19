@@ -559,3 +559,67 @@ func TestUsedInWindowBoundary(t *testing.T) {
 		t.Fatalf("expected exhausted just before window boundary, got ok=true, exhausted=%s", exhausted)
 	}
 }
+
+// TestTeamPrefixScope covers the team-scope semantics the controller cannot
+// compile statically: a team rule is keyed by its header name and every
+// concrete header value gets its own independent cap.
+func TestTeamPrefixScope(t *testing.T) {
+	t0 := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	nowFn, _ := nowFn(t0)
+
+	store := NewBudgetStore([]BudgetRule{
+		{Name: "team-cap", ScopeKey: "team:x-llmkube-team", MaxTokens: 200, Window: 1 * time.Hour},
+	}, nowFn)
+
+	research := "team:x-llmkube-team:research"
+	finance := "team:x-llmkube-team:finance"
+
+	// Drive the research team to its cap.
+	store.Charge([]string{research}, 200, 0)
+
+	// research is exhausted.
+	if ok, _, exhausted := store.Allowed([]string{research}); ok {
+		t.Fatalf("expected research exhausted, got ok=true (exhausted=%s)", exhausted)
+	}
+
+	// finance has its own cap and is untouched.
+	if ok, _, exhausted := store.Allowed([]string{finance}); !ok {
+		t.Fatalf("expected finance allowed, got ok=false, exhausted=%s", exhausted)
+	}
+
+	// A value with no matching rule is never blocked.
+	if ok, _, _ := store.Allowed([]string{"team:x-llmkube-team:legal"}); !ok {
+		t.Fatal("expected an unconfigured team value to be allowed")
+	}
+}
+
+// TestTeamPrefixSnapshot asserts each concrete team value surfaces under its
+// own resolved key, so a status surface can report per-team consumption.
+func TestTeamPrefixSnapshot(t *testing.T) {
+	t0 := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	nowFn, _ := nowFn(t0)
+
+	store := NewBudgetStore([]BudgetRule{
+		{Name: "team-cap", ScopeKey: "team:x-llmkube-team", MaxTokens: 200, Window: 1 * time.Hour},
+	}, nowFn)
+	store.Charge([]string{"team:x-llmkube-team:research"}, 150, 0)
+	store.Charge([]string{"team:x-llmkube-team:finance"}, 50, 0)
+
+	snap := store.Snapshot()
+	got := map[string]int64{}
+	for _, s := range snap {
+		got[s.ScopeKey] = s.UsedTokens
+		if s.Name != "team-cap" {
+			t.Errorf("ScopeKey %q: Name = %q, want team-cap", s.ScopeKey, s.Name)
+		}
+	}
+	if got["team:x-llmkube-team:research"] != 150 {
+		t.Errorf("research UsedTokens = %d, want 150", got["team:x-llmkube-team:research"])
+	}
+	if got["team:x-llmkube-team:finance"] != 50 {
+		t.Errorf("finance UsedTokens = %d, want 50", got["team:x-llmkube-team:finance"])
+	}
+	if _, ok := got["team:x-llmkube-team"]; !ok {
+		t.Error("expected the configured team rule to appear at zero usage")
+	}
+}

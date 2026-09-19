@@ -16,6 +16,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
@@ -144,6 +147,7 @@ func (r *ModelRouterReconciler) resolveBackend(
 	if b.Timeout != nil {
 		wire.Timeout = b.Timeout.Duration
 	}
+	wire.CostPerMillionTokens = translateTokenCost(b.CostPerMillionTokens)
 
 	switch {
 	case b.InferenceServiceRef != nil:
@@ -456,7 +460,69 @@ func translatePolicy(p *inferencev1alpha1.RouterPolicy) router.Policy {
 			out.AuditLog.Sink = "stdout"
 		}
 	}
+	out.Budgets = translateBudgets(p.Budgets)
 	return out
+}
+
+// translateBudgets maps the CRD's budget list into the proxy's rule shape.
+// A team budget keeps its header key: the proxy resolves concrete team
+// values from that header at request time, because the controller cannot
+// know them in advance. The window defaults to one hour to match the CRD
+// default. Malformed MaxUSD contributes zero; controller validation already
+// rejects malformed values.
+func translateBudgets(in []inferencev1alpha1.BudgetSpec) []router.Budget {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]router.Budget, 0, len(in))
+	for _, b := range in {
+		window := time.Duration(b.WindowSeconds) * time.Second
+		if window <= 0 {
+			window = time.Hour
+		}
+		var tokens int64
+		if b.MaxTokens != nil {
+			tokens = *b.MaxTokens
+		}
+		out = append(out, router.Budget{
+			Name:      b.Name,
+			Scope:     b.Scope,
+			RuleName:  b.RuleName,
+			HeaderKey: b.HeaderKey,
+			Window:    window,
+			MaxTokens: tokens,
+			MaxUSD:    parseUSD(b.MaxUSD),
+		})
+	}
+	return out
+}
+
+// translateTokenCost converts the CRD's decimal-string pricing into the
+// proxy's float form. A nil input yields nil so backends without declared
+// pricing cost 0 USD against dollar budgets.
+func translateTokenCost(c *inferencev1alpha1.TokenCost) *router.TokenCost {
+	if c == nil {
+		return nil
+	}
+	return &router.TokenCost{
+		PromptUSD:     parseUSD(c.PromptUSD),
+		CompletionUSD: parseUSD(c.CompletionUSD),
+	}
+}
+
+// parseUSD parses a validated non-negative decimal string. Malformed input
+// (which the CRD pattern rejects) contributes zero rather than failing the
+// whole compile.
+func parseUSD(s string) float64 {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil || f < 0 {
+		return 0
+	}
+	return f
 }
 
 func copyStringMap(in map[string]string) map[string]string {

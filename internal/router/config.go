@@ -62,8 +62,8 @@ type Config struct {
 	// Name. See the DefaultRouteStrategy* constants.
 	DefaultRouteStrategy string `json:"defaultRouteStrategy,omitempty"`
 
-	// Policy holds cross-cutting controls (classification, audit). Budget
-	// enforcement and persistence land in #434 / #440.
+	// Policy holds cross-cutting controls (classification, audit, budgets).
+	// Budget persistence lands in #440.
 	Policy Policy `json:"policy"`
 }
 
@@ -137,6 +137,22 @@ type Backend struct {
 	// makes this member resident (scaling it up and draining the incumbent)
 	// before dispatching. Nil for backends that are not pooled.
 	Pool *BackendPool `json:"pool,omitempty"`
+
+	// CostPerMillionTokens prices this backend's traffic for USD budget
+	// accounting. Nil means the proxy cannot compute cost for this backend
+	// and charges 0 USD against dollar budgets. Compiled from
+	// ModelRouter.spec.backends[].costPerMillionTokens.
+	CostPerMillionTokens *TokenCost `json:"costPerMillionTokens,omitempty"`
+}
+
+// TokenCost prices prompt and completion tokens per million, in USD. The
+// controller parses the CRD's decimal-string form into these floats.
+type TokenCost struct {
+	// PromptUSD is the cost per million prompt (input) tokens.
+	PromptUSD float64 `json:"promptUSD,omitempty"`
+
+	// CompletionUSD is the cost per million completion (output) tokens.
+	CompletionUSD float64 `json:"completionUSD,omitempty"`
 }
 
 // BackendPool carries the ModelPool membership a pooled backend belongs to.
@@ -232,10 +248,60 @@ const (
 	PoolActivationIfIdle = "IfIdle"
 )
 
+// Budget scope kinds. These mirror the ModelRouterBudgetSpec.Scope enum and
+// decide how the proxy resolves a request into scope keys.
+const (
+	BudgetScopeRouter = "router"
+	BudgetScopeRule   = "rule"
+	BudgetScopeTeam   = "team"
+)
+
+// DefaultTeamHeaderKey is the request header carrying the team identifier
+// for a team-scoped budget when Budget.HeaderKey is unset. Mirrors the CRD
+// default.
+const DefaultTeamHeaderKey = "x-llmkube-team"
+
 // Policy holds cross-cutting controls.
 type Policy struct {
 	Classification ClassificationPolicy `json:"classification"`
 	AuditLog       AuditLogPolicy       `json:"auditLog"`
+
+	// Budgets are the compiled caps the proxy enforces synchronously in the
+	// request path. Empty means no budget enforcement. Compiled from
+	// ModelRouter.spec.policy.budgets.
+	Budgets []Budget `json:"budgets,omitempty"`
+}
+
+// Budget is one compiled cap over a rolling window. The proxy enforces it
+// in the request path: a request whose resolved scope keys exhaust any cap
+// is rejected with HTTP 429 before dispatch.
+type Budget struct {
+	// Name identifies this budget for metrics and audit logs.
+	Name string `json:"name"`
+
+	// Scope is "router", "rule", or "team".
+	Scope string `json:"scope"`
+
+	// RuleName names the rule a rule-scoped budget caps. Only set for
+	// Scope=rule.
+	RuleName string `json:"ruleName,omitempty"`
+
+	// HeaderKey names the request header carrying the team identifier for a
+	// team-scoped budget. The proxy resolves it per request into a concrete
+	// "team:<headerKey>:<value>" scope key. Defaults to
+	// DefaultTeamHeaderKey when empty.
+	HeaderKey string `json:"headerKey,omitempty"`
+
+	// Window is the rolling window over which the cap is evaluated.
+	Window time.Duration `json:"window"`
+
+	// MaxTokens caps total tokens (prompt + completion) over the window.
+	// Zero means no token cap.
+	MaxTokens int64 `json:"maxTokens,omitempty"`
+
+	// MaxUSD caps total estimated cost in USD over the window. Zero means no
+	// USD cap.
+	MaxUSD float64 `json:"maxUSD,omitempty"`
 }
 
 // ClassificationPolicy configures how the proxy determines the
@@ -308,10 +374,12 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("defaultRouteStrategy %q must be %q or %q",
 			c.DefaultRouteStrategy, DefaultRouteStrategyStatic, DefaultRouteStrategyBackendNameMatch)
 	}
+	ruleNames := make(map[string]bool, len(c.Rules))
 	for i, r := range c.Rules {
 		if r.Name == "" {
 			return fmt.Errorf("rules[%d]: name is required", i)
 		}
+		ruleNames[r.Name] = true
 		if len(r.Route.Backends) == 0 {
 			return fmt.Errorf("rules[%d] %s: route.backends must be non-empty", i, r.Name)
 		}
@@ -326,6 +394,39 @@ func (c *Config) Validate() error {
 		default:
 			return fmt.Errorf("rules[%d] %s: route.poolActivation %q must be %q or %q",
 				i, r.Name, r.Route.PoolActivation, PoolActivationWait, PoolActivationIfIdle)
+		}
+	}
+	// Budget validation mirrors the controller's validateBudgets so a
+	// hand-edited ConfigMap fails loudly here rather than silently
+	// under-enforcing at request time.
+	budgetNames := make(map[string]bool, len(c.Policy.Budgets))
+	for i, b := range c.Policy.Budgets {
+		if b.Name == "" {
+			return fmt.Errorf("policy.budgets[%d]: name is required", i)
+		}
+		if budgetNames[b.Name] {
+			return fmt.Errorf("policy.budgets[%d]: duplicate name %q", i, b.Name)
+		}
+		budgetNames[b.Name] = true
+		switch b.Scope {
+		case BudgetScopeRouter, BudgetScopeTeam:
+		case BudgetScopeRule:
+			if b.RuleName == "" {
+				return fmt.Errorf("policy.budgets[%d] %s: ruleName is required when scope=rule", i, b.Name)
+			}
+			if !ruleNames[b.RuleName] {
+				return fmt.Errorf("policy.budgets[%d] %s: ruleName %q does not name an existing rule",
+					i, b.Name, b.RuleName)
+			}
+		default:
+			return fmt.Errorf("policy.budgets[%d] %s: scope must be %q, %q, or %q, got %q",
+				i, b.Name, BudgetScopeRouter, BudgetScopeRule, BudgetScopeTeam, b.Scope)
+		}
+		if b.Window <= 0 {
+			return fmt.Errorf("policy.budgets[%d] %s: window must be positive", i, b.Name)
+		}
+		if b.MaxTokens <= 0 && b.MaxUSD <= 0 {
+			return fmt.Errorf("policy.budgets[%d] %s: must set at least one of maxTokens or maxUSD", i, b.Name)
 		}
 	}
 	return nil

@@ -24,6 +24,10 @@ import (
 // goconst caps this file at 14 "namespace" literals (.golangci.yml min-occurrences: 15).
 const labelNamespace = "namespace"
 
+// labelRouter is the same guard for the "router" label, which the router-proxy
+// metric families repeat across their label sets.
+const labelRouter = "router"
+
 var (
 	// Model metrics
 
@@ -113,7 +117,7 @@ var (
 			Name: "llmkube_router_requests_total",
 			Help: "Total number of router-proxy requests.",
 		},
-		[]string{"router", "rule", "backend", "classification", "outcome"},
+		[]string{labelRouter, "rule", "backend", "classification", "outcome"},
 	)
 
 	RouterRequestDuration = prometheus.NewHistogramVec(
@@ -122,7 +126,7 @@ var (
 			Help:    "Duration of router-proxy requests.",
 			Buckets: prometheus.DefBuckets,
 		},
-		[]string{"router", "rule", "backend"},
+		[]string{labelRouter, "rule", "backend"},
 	)
 
 	RouterFailClosedTotal = prometheus.NewCounterVec(
@@ -130,7 +134,7 @@ var (
 			Name: "llmkube_router_fail_closed_total",
 			Help: "Total number of requests rejected by the fail-closed gate.",
 		},
-		[]string{"router", "rule", "classification"},
+		[]string{labelRouter, "rule", "classification"},
 	)
 
 	RouterActiveBackends = prometheus.NewGaugeVec(
@@ -138,7 +142,7 @@ var (
 			Name: "llmkube_router_active_backends",
 			Help: "Number of active backends per tier.",
 		},
-		[]string{"router", "tier"},
+		[]string{labelRouter, "tier"},
 	)
 
 	RouterBackendHealth = prometheus.NewGaugeVec(
@@ -146,7 +150,7 @@ var (
 			Name: "llmkube_router_backend_health",
 			Help: "Health status of a backend (1=healthy, 0=unhealthy).",
 		},
-		[]string{"router", "backend"},
+		[]string{labelRouter, "backend"},
 	)
 
 	// RouterFirstTokenSeconds captures time-to-first-byte (TTFT) for
@@ -158,7 +162,7 @@ var (
 			Help:    "Time from inbound request to first upstream response byte (streaming TTFT).",
 			Buckets: prometheus.ExponentialBuckets(0.01, 2, 12), // 10ms to ~20s
 		},
-		[]string{"router", "backend"},
+		[]string{labelRouter, "backend"},
 	)
 
 	// RouterBudgetUtilization reports how much of a rule's dispatch
@@ -171,7 +175,29 @@ var (
 			Name: "llmkube_router_budget_utilization",
 			Help: "Fraction of the resolved dispatch timeout consumed by a request (0.0 to 1.0).",
 		},
-		[]string{"router", "scope"},
+		[]string{labelRouter, "scope"},
+	)
+
+	// RouterTokenBudgetUtilization reports rolling-window token consumption
+	// against an enforced budget, per budget name and concrete scope. It is
+	// distinct from RouterBudgetUtilization (which is dispatch latency).
+	RouterTokenBudgetUtilization = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "llmkube_router_token_budget_utilization",
+			Help: "Fraction of a token budget consumed in its rolling window (0.0 to 1.0+).",
+		},
+		[]string{labelRouter, "budget", "scope"},
+	)
+
+	// RouterBudgetUnchargedTotal counts requests that could not be charged
+	// against a budget because the upstream reported no token usage. A
+	// non-zero rate means budgets are under-enforcing for that traffic class.
+	RouterBudgetUnchargedTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llmkube_router_budget_uncharged_total",
+			Help: "Requests not charged against a budget because usage was unavailable.",
+		},
+		[]string{labelRouter, "reason"},
 	)
 
 	// GPUQuota metrics (#416): per-quota GPU usage vs. cap, and admission
@@ -236,7 +262,7 @@ var (
 			Name: "llmkube_modelpool_swaps_total",
 			Help: "Total number of ModelPool slot swaps (incumbent unloaded, target loaded).",
 		},
-		[]string{"router", "pool", "from", "to"},
+		[]string{labelRouter, "pool", "from", "to"},
 	)
 
 	// ModelPoolSwapFailuresTotal counts swaps that never made their target
@@ -248,7 +274,7 @@ var (
 			Name: "llmkube_modelpool_swap_failures_total",
 			Help: "ModelPool slot swaps that failed or were abandoned before the target became resident.",
 		},
-		[]string{"router", "pool", "member", "reason"},
+		[]string{labelRouter, "pool", "member", "reason"},
 	)
 
 	// ModelPoolReclaimsTotal counts slot reclaims: the controller returned the
@@ -270,7 +296,7 @@ var (
 			Help:    "Duration of a ModelPool slot swap: incumbent unload plus target load.",
 			Buckets: prometheus.ExponentialBuckets(1, 2, 10), // 1s to ~512s
 		},
-		[]string{"router", "pool"},
+		[]string{labelRouter, "pool"},
 	)
 
 	// ModelPoolHoldDuration measures how long the router held a request open
@@ -281,7 +307,7 @@ var (
 			Help:    "Time the router held a request open waiting for its target member to become resident.",
 			Buckets: prometheus.ExponentialBuckets(0.1, 2, 12), // 100ms to ~400s
 		},
-		[]string{"router", "pool", "member"},
+		[]string{labelRouter, "pool", "member"},
 	)
 
 	// ModelPoolCoalescedTotal counts requests that were served without a swap
@@ -291,7 +317,7 @@ var (
 			Name: "llmkube_modelpool_coalesced_total",
 			Help: "Requests coalesced onto the resident member instead of triggering a swap.",
 		},
-		[]string{"router", "pool", "member"},
+		[]string{labelRouter, "pool", "member"},
 	)
 
 	// ModelPoolBusySkipsTotal counts cross-model requests that skipped a pooled
@@ -302,7 +328,7 @@ var (
 			Name: "llmkube_modelpool_busy_skips_total",
 			Help: "Pooled backends skipped under IfIdle activation because the resident member was busy.",
 		},
-		[]string{"router", "pool", "member"},
+		[]string{labelRouter, "pool", "member"},
 	)
 
 	// ModelPoolHeldRequests reports the number of requests currently held open
@@ -312,7 +338,7 @@ var (
 			Name: "llmkube_modelpool_held_requests",
 			Help: "Requests currently held open waiting for a ModelPool member to activate.",
 		},
-		[]string{"router", "pool", "member"},
+		[]string{labelRouter, "pool", "member"},
 	)
 
 	// Foreman task metrics (#1491): per-Agent verdict rates, task duration, and
@@ -406,6 +432,8 @@ var AllCollectors = []prometheus.Collector{
 	RouterBackendHealth,
 	RouterFirstTokenSeconds,
 	RouterBudgetUtilization,
+	RouterTokenBudgetUtilization,
+	RouterBudgetUnchargedTotal,
 	ModelPoolResident,
 	ModelPoolSwapsTotal,
 	ModelPoolSwapFailuresTotal,

@@ -767,6 +767,64 @@ func TestCompileRouterConfigCopiesRuleTimeout(t *testing.T) {
 	}
 }
 
+// TestCompileRouterConfigCopiesBudgetsAndCost pins that ModelRouter
+// policy budgets and backend pricing reach the proxy wire config (#434):
+// without this translation a budget is validated but never enforced, and a
+// dollar budget can never be charged.
+func TestCompileRouterConfigCopiesBudgetsAndCost(t *testing.T) {
+	mr := canonicalModelRouter()
+	maxTokens := int64(1000)
+	mr.Spec.Policy.Budgets = []inferencev1alpha1.BudgetSpec{
+		{Name: "router-cap", Scope: "router", WindowSeconds: 3600, MaxTokens: &maxTokens},
+		{Name: "team-cap", Scope: "team", HeaderKey: "x-llmkube-team", WindowSeconds: 600, MaxUSD: "1.50"},
+		{Name: "rule-cap", Scope: "rule", RuleName: "pii-stays-local", WindowSeconds: 3600, MaxTokens: &maxTokens},
+	}
+	mr.Spec.Backends[0].CostPerMillionTokens = &inferencev1alpha1.TokenCost{
+		PromptUSD:     "0.50",
+		CompletionUSD: "1.50",
+	}
+
+	isvc := &inferencev1alpha1.InferenceService{
+		ObjectMeta: metav1.ObjectMeta{Name: "qwen3-coder", Namespace: testBuilderNs},
+	}
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "anthropic-key", Namespace: testBuilderNs},
+		Data:       map[string][]byte{"ANTHROPIC_API_KEY": []byte("test")},
+	}
+	r := newRouterReconcilerForTest(t, mr, isvc, secret)
+	compiled, err := r.compileRouterConfig(context.Background(), mr)
+	if err != nil {
+		t.Fatalf("compileRouterConfig: %v", err)
+	}
+	var cfg router.Config
+	if err := json.Unmarshal(compiled.JSON, &cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if len(cfg.Policy.Budgets) != 3 {
+		t.Fatalf("got %d budgets on the wire, want 3", len(cfg.Policy.Budgets))
+	}
+	byName := map[string]router.Budget{}
+	for _, b := range cfg.Policy.Budgets {
+		byName[b.Name] = b
+	}
+	if b := byName["router-cap"]; b.Scope != router.BudgetScopeRouter || b.MaxTokens != 1000 || b.Window != time.Hour {
+		t.Errorf("router-cap = %+v, want scope=router maxTokens=1000 window=1h", b)
+	}
+	if b := byName["team-cap"]; b.Scope != router.BudgetScopeTeam || b.HeaderKey != "x-llmkube-team" ||
+		b.Window != 10*time.Minute || b.MaxUSD != 1.5 {
+		t.Errorf("team-cap = %+v, want scope=team header=x-llmkube-team window=10m maxUSD=1.5", b)
+	}
+	if b := byName["rule-cap"]; b.Scope != router.BudgetScopeRule || b.RuleName != "pii-stays-local" {
+		t.Errorf("rule-cap = %+v, want scope=rule ruleName=pii-stays-local", b)
+	}
+
+	cost := cfg.Backends[0].CostPerMillionTokens
+	if cost == nil || cost.PromptUSD != 0.5 || cost.CompletionUSD != 1.5 {
+		t.Errorf("backend cost = %+v, want promptUSD=0.5 completionUSD=1.5", cost)
+	}
+}
+
 // TestCompileRouterConfigCopiesRulePoolActivation pins that
 // ModelRouter.spec.rules[].route.poolActivation reaches the wire-shape rule;
 // without it every rule silently behaves as Wait.

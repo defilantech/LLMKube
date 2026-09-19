@@ -19,6 +19,8 @@ package router
 import (
 	"fmt"
 	"math"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -29,7 +31,9 @@ type BudgetRule struct {
 	Name string
 
 	// ScopeKey is the scope string this budget applies to:
-	// "router", "rule:<name>", or "team:<hdrval>".
+	// "router", "rule:<name>", or (for a team cap) "team:<headerKey>".
+	// A team rule governs every concrete "team:<headerKey>:<value>"
+	// request key by prefix; see ruleFor.
 	ScopeKey string
 
 	// MaxTokens caps total tokens (prompt + completion) over the window.
@@ -72,6 +76,8 @@ type BudgetUsage struct {
 // It is keyed by scope string ("router", "rule:<name>", "team:<hdrval>")
 // and enforces ALL matching budgets on every request. The first exhausted
 // budget is reported in Allowed().
+//
+// Team scopes are resolved by prefix rather than exact match: see ruleFor.
 //
 // Usage is tracked via a ring/timestamp-bucket scheme: each bucket covers
 // a fixed time slice (bucketDuration), and usage older than Window is
@@ -116,6 +122,37 @@ func NewBudgetStore(rules []BudgetRule, nowFn func() time.Time) *BudgetStore {
 	return s
 }
 
+// ruleFor resolves the BudgetRule governing a concrete scope key. Router
+// and rule scopes match a rule's ScopeKey exactly. Team scopes do not: the
+// controller cannot know the header values in advance, so a team rule is
+// keyed by its header name ("team:<headerKey>") and each request resolves
+// to a concrete "team:<headerKey>:<value>" key that the rule governs by
+// prefix. Usage buckets are keyed by the concrete key, so each team value
+// gets its own cap.
+func (s *BudgetStore) ruleFor(sk string) (BudgetRule, bool) {
+	if r, ok := s.rules[sk]; ok {
+		return r, true
+	}
+	if hk, ok := teamHeaderKey(sk); ok {
+		if r, ok := s.rules["team:"+hk]; ok {
+			return r, true
+		}
+	}
+	return BudgetRule{}, false
+}
+
+// teamHeaderKey extracts the header name from a concrete team scope key
+// "team:<headerKey>:<value>". It returns false for any other shape,
+// including the two-segment "team:<x>" form, which only ever matches a rule
+// exactly. Team header values must not contain ":".
+func teamHeaderKey(sk string) (string, bool) {
+	parts := strings.Split(sk, ":")
+	if len(parts) != 3 || parts[0] != "team" || parts[1] == "" || parts[2] == "" {
+		return "", false
+	}
+	return parts[1], true
+}
+
 // Allowed reports whether all matching budgets have headroom. If any is
 // exhausted it returns ok=false, the retry-after until the window frees
 // the oldest usage, and the name of the first exhausted budget.
@@ -128,7 +165,7 @@ func (s *BudgetStore) Allowed(scopeKeys []string) (ok bool, retryAfter time.Dura
 
 	now := s.nowFn()
 	for _, sk := range scopeKeys {
-		rule, ok := s.rules[sk]
+		rule, ok := s.ruleFor(sk)
 		if !ok {
 			continue
 		}
@@ -163,7 +200,7 @@ func (s *BudgetStore) Charge(scopeKeys []string, tokens int64, usd float64) {
 
 	now := s.nowFn()
 	for _, sk := range scopeKeys {
-		rule, ok := s.rules[sk]
+		rule, ok := s.ruleFor(sk)
 		if !ok {
 			continue
 		}
@@ -172,13 +209,34 @@ func (s *BudgetStore) Charge(scopeKeys []string, tokens int64, usd float64) {
 }
 
 // Snapshot returns per-budget used/utilization for status/metrics surfaces.
+// Every configured rule appears (so a budget with no traffic reads as zero),
+// and every concrete team value that has seen traffic appears under its own
+// resolved key. Output is sorted by ScopeKey so callers see a stable order.
 func (s *BudgetStore) Snapshot() []BudgetUsage {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	now := s.nowFn()
-	result := make([]BudgetUsage, 0, len(s.rules))
-	for sk, rule := range s.rules {
+	keys := make(map[string]struct{}, len(s.rules)+len(s.buckets))
+	for sk := range s.rules {
+		keys[sk] = struct{}{}
+	}
+	for sk := range s.buckets {
+		keys[sk] = struct{}{}
+	}
+
+	scopeKeys := make([]string, 0, len(keys))
+	for sk := range keys {
+		scopeKeys = append(scopeKeys, sk)
+	}
+	sort.Strings(scopeKeys)
+
+	result := make([]BudgetUsage, 0, len(scopeKeys))
+	for _, sk := range scopeKeys {
+		rule, ok := s.ruleFor(sk)
+		if !ok {
+			continue
+		}
 		usedTokens, usedUSD, _ := s.usedInWindow(sk, now, rule.Window)
 		result = append(result, BudgetUsage{
 			Name:       rule.Name,

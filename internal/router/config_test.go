@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // validConfig is the canonical "everything is fine" fixture used as the
@@ -275,5 +276,41 @@ func TestConfigValidateRejectsUnknownPoolActivation(t *testing.T) {
 		if err := cfg.Validate(); err != nil {
 			t.Errorf("Validate rejected poolActivation %q: %v", ok, err)
 		}
+	}
+}
+
+// TestConfigValidateBudgets covers the fail-loud validation of compiled
+// budgets, so a hand-edited ConfigMap cannot silently under-enforce.
+func TestConfigValidateBudgets(t *testing.T) {
+	tests := []struct {
+		name    string
+		budget  Budget
+		wantErr string
+	}{
+		{"router ok", Budget{Name: "router-cap", Scope: BudgetScopeRouter, Window: time.Hour, MaxTokens: 100}, ""},
+		{"team ok", Budget{Name: "team-cap", Scope: BudgetScopeTeam, Window: time.Hour, MaxUSD: 1.5}, ""},
+		{"rule known ok", Budget{Name: "rule-cap", Scope: BudgetScopeRule, RuleName: "pii-stays-local", Window: time.Hour, MaxTokens: 100}, ""},
+		{"missing name", Budget{Scope: BudgetScopeRouter, Window: time.Hour, MaxTokens: 100}, "name is required"},
+		{"bad scope", Budget{Name: "b", Scope: "tenant", Window: time.Hour, MaxTokens: 100}, "scope must be"},
+		{"rule without ruleName", Budget{Name: "b", Scope: BudgetScopeRule, Window: time.Hour, MaxTokens: 100}, "ruleName is required"},
+		{"rule unknown", Budget{Name: "b", Scope: BudgetScopeRule, RuleName: "nope", Window: time.Hour, MaxTokens: 100}, "does not name an existing rule"},
+		{"no cap", Budget{Name: "b", Scope: BudgetScopeRouter, Window: time.Hour}, "at least one of"},
+		{"zero window", Budget{Name: "b", Scope: BudgetScopeRouter, MaxTokens: 100}, "window must be positive"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validConfig()
+			cfg.Policy.Budgets = []Budget{tt.budget}
+			err := cfg.Validate()
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Validate = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Validate = %v, want error containing %q", err, tt.wantErr)
+			}
+		})
 	}
 }
