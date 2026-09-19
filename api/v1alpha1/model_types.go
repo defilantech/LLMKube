@@ -26,13 +26,16 @@ type ModelSpec struct {
 	// Source defines where to obtain the model.
 	// For GGUF models: URL or path to a .gguf file.
 	// For MLX models: local directory path containing the model (config.json, weights).
-	// Supported schemes: http://, https://, file://, pvc://, hf://, s3://, or absolute paths.
+	// Supported schemes: http://, https://, file://, pvc://, hf://, s3://, oci://, or absolute paths.
 	// Examples:
 	//   - https://huggingface.co/org/repo/resolve/main/model.gguf
 	//   - file:///mnt/models/model.gguf
 	//   - /mnt/models/model.gguf (air-gapped deployments)
 	//   - pvc://my-models-pvc/path/to/model.gguf (pre-staged on a PersistentVolumeClaim)
 	//   - s3://my-bucket/models/llama-3.1-8b-q4_k_m.gguf (S3-compatible object store)
+	//   - oci://registry.example.com/models/llama-3.1-8b@sha256:... (mounted by a
+	//     Kubernetes ImageVolume; requires Kubernetes >= 1.36 and containerd >= 2.1.0
+	//     or CRI-O >= 1.31 on the serving node; pin by digest)
 	//   - /mnt/models/Llama-3.2-3B-Instruct-4bit (MLX model directory)
 	//
 	// Source may also name a repository or bucket PREFIX rather than a single
@@ -55,7 +58,7 @@ type ModelSpec struct {
 	// equivalent https://huggingface.co/.../<filename>.gguf URL which
 	// the runtime/init container resolves at deploy time.
 	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:Pattern=`^(https?|file|pvc|hf|s3)://.*|^/[^\s]+$|^[a-zA-Z0-9][\w\-\.\/]+$`
+	// +kubebuilder:validation:Pattern=`^(https?|file|pvc|hf|s3|oci)://.*|^/[^\s]+$|^[a-zA-Z0-9][\w\-\.\/]+$`
 	Source string `json:"source"`
 
 	// SHA256 is the expected SHA256 hash of the model file for integrity verification.

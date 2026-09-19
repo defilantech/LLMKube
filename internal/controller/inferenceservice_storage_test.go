@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -1536,3 +1537,55 @@ func getEnvVar(env []corev1.EnvVar, name string) string {
 	}
 	return ""
 }
+
+var _ = Describe("buildOCIStorageConfig (#1379)", func() {
+	ociModel := func(source string) *inferencev1alpha1.Model {
+		return &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: "qwen3-oci"},
+			Spec:       inferencev1alpha1.ModelSpec{Source: source},
+		}
+	}
+
+	It("mounts the artifact as a read-only ImageVolume with no downloader and no cache PVC", func() {
+		ref := "oci://registry.defilan.net/models/qwen3-32b@sha256:" + strings.Repeat("a", 64)
+		config := buildModelStorageConfig(ociModel(ref), nil, "default", true, "", "", "curl:8.18.0", 102, nil)
+
+		Expect(config.initContainers).To(BeEmpty())
+		Expect(config.volumes).To(HaveLen(1))
+		Expect(config.volumes[0].Name).To(Equal("model-source"))
+		Expect(config.volumes[0].PersistentVolumeClaim).To(BeNil())
+		Expect(config.volumes[0].Image).NotTo(BeNil())
+		Expect(config.volumes[0].Image.Reference).To(Equal("registry.defilan.net/models/qwen3-32b@sha256:" + strings.Repeat("a", 64)))
+		Expect(config.volumes[0].Image.PullPolicy).To(Equal(corev1.PullIfNotPresent))
+		Expect(config.volumeMounts).To(HaveLen(1))
+		Expect(config.volumeMounts[0].MountPath).To(Equal("/model-source"))
+		Expect(config.volumeMounts[0].ReadOnly).To(BeTrue())
+		Expect(config.modelPath).To(Equal("/model-source/qwen3-oci.gguf"))
+	})
+
+	It("ignores the cache flag: an oci:// source never gets a cache PVC or a downloader even with useCache=true", func() {
+		config := buildModelStorageConfig(
+			ociModel("oci://registry.example.com/models/llama-3.1-8b:latest"),
+			nil, "default", true, ModelCacheModePerService, "", "curl:8.18.0", 102, nil)
+		Expect(config.initContainers).To(BeEmpty())
+		Expect(config.volumes[0].Image).NotTo(BeNil())
+	})
+
+	It("fails loudly with an init container when the reference is malformed", func() {
+		// No repository segment: parseOCISource rejects it.
+		config := buildModelStorageConfig(ociModel("oci://busybox:1.36"), nil, "default", true, "", "", "curl:8.18.0", 102, nil)
+		Expect(config.volumes[0].Image).To(BeNil())
+		Expect(config.initContainers).To(HaveLen(1))
+		Expect(config.initContainers[0].Command).To(HaveLen(3))
+		Expect(config.initContainers[0].Command[2]).To(ContainSubstring("InvalidOCISource"))
+	})
+
+	It("uses the primary file of a multi-file spec as the model path, with no per-file fetch", func() {
+		m := ociModel("oci://registry.example.com/models/sharded-gguf")
+		m.Spec.Files = []string{"weights/model-00001-of-00002.gguf", "weights/model-00002-of-00002.gguf"}
+		config := buildModelStorageConfig(m, nil, "default", true, "", "", "curl:8.18.0", 102, nil)
+
+		Expect(config.initContainers).To(BeEmpty())
+		Expect(config.modelPath).To(Equal("/model-source/weights/model-00001-of-00002.gguf"))
+	})
+})

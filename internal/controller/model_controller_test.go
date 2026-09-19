@@ -2601,3 +2601,90 @@ var _ = Describe("Model spec.source re-resolve", func() {
 		Expect(updated.Status.CacheKey).To(Equal(computeCacheKey(fmt.Sprintf("pvc://%s/models/b.gguf", pvcName))))
 	})
 })
+
+var _ = Describe("OCI Source Reconcile (#1379)", func() {
+	ctx := context.Background()
+
+	newOCIReconciler := func(serverVersion string) *ModelReconciler {
+		return &ModelReconciler{
+			Client:        k8sClient,
+			Scheme:        k8sClient.Scheme(),
+			ServerVersion: serverVersion,
+		}
+	}
+
+	It("should set Ready with the mount path when the cluster supports ImageVolume", func() {
+		modelName := "model-oci-supported"
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
+			Spec: inferencev1alpha1.ModelSpec{
+				Source: "oci://registry.defilan.net/models/qwen3-32b@sha256:" + strings.Repeat("a", 64),
+			},
+		}
+		Expect(k8sClient.Create(ctx, model)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, model) }()
+
+		result, err := newOCIReconciler("v1.36.2").Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(Equal(reconcile.Result{}))
+
+		updated := &inferencev1alpha1.Model{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: modelName, Namespace: "default"}, updated)).To(Succeed())
+		Expect(updated.Status.Phase).To(Equal(PhaseReady))
+		// The serving pod mounts the artifact read-only at /model-source, so the
+		// resolved path must agree with buildOCIStorageConfig.
+		Expect(updated.Status.Path).To(Equal("/model-source/" + modelName + ".gguf"))
+	})
+
+	It("should fail with UnsupportedCluster when the control plane is below the ImageVolume floor", func() {
+		modelName := "model-oci-old-cluster"
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
+			Spec: inferencev1alpha1.ModelSpec{
+				Source: "oci://registry.defilan.net/models/qwen3-32b@sha256:" + strings.Repeat("a", 64),
+			},
+		}
+		Expect(k8sClient.Create(ctx, model)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, model) }()
+
+		result, err := newOCIReconciler("v1.35.6").Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.RequeueAfter).To(Equal(5 * time.Minute))
+
+		updated := &inferencev1alpha1.Model{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: modelName, Namespace: "default"}, updated)).To(Succeed())
+		Expect(updated.Status.Phase).To(Equal(PhaseFailed))
+		cond := meta.FindStatusCondition(updated.Status.Conditions, ConditionDegraded)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Reason).To(Equal("UnsupportedCluster"))
+		Expect(cond.Message).To(ContainSubstring("1.36"))
+	})
+
+	It("should fail with InvalidSource for a malformed OCI reference", func() {
+		modelName := "model-oci-malformed"
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: "default"},
+			Spec: inferencev1alpha1.ModelSpec{
+				Source: "oci://busybox:1.36",
+			},
+		}
+		Expect(k8sClient.Create(ctx, model)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, model) }()
+
+		_, err := newOCIReconciler("v1.36.2").Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: modelName, Namespace: "default"},
+		})
+		Expect(err).To(HaveOccurred())
+
+		updated := &inferencev1alpha1.Model{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: modelName, Namespace: "default"}, updated)).To(Succeed())
+		Expect(updated.Status.Phase).To(Equal(PhaseFailed))
+		cond := meta.FindStatusCondition(updated.Status.Conditions, ConditionDegraded)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Reason).To(Equal("InvalidSource"))
+	})
+})

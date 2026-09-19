@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	hfsource "github.com/defilantech/llmkube/pkg/hfsource"
@@ -98,6 +99,101 @@ func parseS3Source(source string) (bucket, key string, err error) {
 	}
 
 	return bucket, key, nil
+}
+
+// isOCISource reports whether source is an oci:// reference. Case-folded to
+// agree with the other scheme classifiers (GHSA-jw3m-8q7m-f35r).
+func isOCISource(source string) bool {
+	return hasSchemeFold(source, "oci://")
+}
+
+// parseOCISource extracts and validates the OCI reference from an oci://
+// source (#1379). The reference is everything after the scheme, e.g.
+// "registry.example.com/models/qwen3-32b@sha256:..." or "...:tag".
+//
+// A registry and a repository are both required, so a bare image name is
+// rejected rather than silently resolved against a default registry. The
+// source is served by a Kubernetes ImageVolume, so both segments are needed
+// for the kubelet to pull it.
+//
+// Credentials are NOT in the URL: they come from the pod's image pull secrets
+// (InferenceService.spec.imagePullSecrets), the same path container images
+// use. Pin by digest for an immutable, reproducible model.
+func parseOCISource(source string) (reference string, err error) {
+	if !isOCISource(source) {
+		return "", fmt.Errorf("not an OCI source: %s", source)
+	}
+
+	// Strip the oci:// prefix case-insensitively, in agreement with
+	// isOCISource and getLocalPath.
+	ref := source[len("oci://"):]
+	if ref == "" {
+		return "", fmt.Errorf("empty OCI source: %s", source)
+	}
+	if strings.ContainsAny(ref, " \t\r\n") {
+		return "", fmt.Errorf("OCI reference must not contain whitespace: %s", source)
+	}
+	slash := strings.Index(ref, "/")
+	if slash <= 0 || slash == len(ref)-1 {
+		return "", fmt.Errorf(
+			"OCI reference must be registry/repository: %s (expected oci://registry/repo[:tag|@digest])",
+			source)
+	}
+	return ref, nil
+}
+
+// ociImageVolumeFloorMinor is the minimum Kubernetes minor version whose node
+// runtime LLMKube supports for an oci:// source. ImageVolume reached GA in
+// 1.36; below that the volume type is beta or alpha and the node runtime
+// requirements are not met on the clusters LLMKube targets. See
+// docs/proposals/1379-oci-imagevolume-model-source.md.
+//
+// This gates the CONTROL PLANE version only. The capability that actually
+// serves the volume lives in the node's container runtime (containerd >= 2.1.0
+// or CRI-O >= 1.31), which an operator cannot introspect; a node whose runtime
+// cannot do it fails the pod, and that is surfaced by the InferenceService
+// status. The floor check here catches the common and clearly diagnosable case
+// of a control plane too old for the GA API.
+const ociImageVolumeFloorMinor = 36
+
+// ociSourceSupported reports whether an oci:// Model may be served on a
+// control plane at the given gitVersion (for example "v1.36.2"). An empty or
+// unparseable version is treated as supported: the gate fails open on a version
+// it cannot read (envtest, a fake client) rather than blocking a working
+// cluster, since the node runtime is the real gate anyway. Returns a reason
+// suitable for a status condition when it is not supported.
+func ociSourceSupported(serverVersion string) (bool, string) {
+	minor, ok := parseKubernetesMinor(serverVersion)
+	if !ok {
+		return true, ""
+	}
+	if minor < ociImageVolumeFloorMinor {
+		return false, fmt.Sprintf(
+			"oci:// model sources require Kubernetes >= 1.%d (ImageVolume GA); this cluster reports %s. "+
+				"The serving node also needs containerd >= 2.1.0 or CRI-O >= 1.31.",
+			ociImageVolumeFloorMinor, serverVersion)
+	}
+	return true, ""
+}
+
+// parseKubernetesMinor extracts the minor version from a Kubernetes gitVersion
+// like "v1.36.2" or "1.36.2". Returns ok=false when the string does not have
+// the expected shape.
+func parseKubernetesMinor(version string) (int, bool) {
+	v := strings.TrimPrefix(version, "v")
+	parts := strings.SplitN(v, ".", 3)
+	if len(parts) < 2 {
+		return 0, false
+	}
+	if parts[0] != "1" {
+		// A major version other than 1 is not a shape we claim to parse.
+		return 0, false
+	}
+	minor, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return 0, false
+	}
+	return minor, true
 }
 
 // parsePVCSource extracts the PVC claim name and file path from a pvc:// source.

@@ -500,11 +500,24 @@ func main() {
 	}
 	podLogReader := &clientsetPodLogReader{cs: k8sClientset}
 
+	// The control plane's Kubernetes version gates oci:// model sources on the
+	// ImageVolume GA floor (#1379). Read once at startup. A failure to read it
+	// leaves the gate open rather than blocking a working cluster, since the
+	// serving node's runtime is the capability that actually serves the volume.
+	serverVersion := ""
+	if ver, verr := k8sClientset.Discovery().ServerVersion(); verr != nil {
+		setupLog.Info("could not read cluster server version; oci:// source floor gate left open",
+			"error", verr.Error())
+	} else {
+		serverVersion = ver.GitVersion
+	}
+
 	if err := (&controller.ModelReconciler{
 		Client:               mgr.GetClient(),
 		Scheme:               mgr.GetScheme(),
 		StoragePath:          modelCachePath,
 		RevalidateInterval:   modelRevalidateInterval,
+		ServerVersion:        serverVersion,
 		AllowedHostPathRoots: allowedHostPathRootList,
 		AllowedRemoteHosts:   allowedRemoteHostList,
 		InitContainerImage:   initContainerImage,

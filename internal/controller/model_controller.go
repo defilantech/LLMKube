@@ -122,12 +122,21 @@ type ModelReconciler struct {
 	// permitted. Empty (the secure default) disables all local sources; see
 	// validateLocalSourceAllowed and GHSA-jw3m-8q7m-f35r.
 	AllowedHostPathRoots []string
+
 	// AllowedRemoteHosts is the operator-configured allowlist of hostnames
 	// and CIDRs that remote (http/https) Model sources may target even when
 	// they resolve to private/link-local/loopback ranges. Empty (the secure
 	// default) blocks all such ranges; public hosts are always allowed. See
 	// newGuardedHTTPClient and GHSA-jw3m-8q7m-f35r.
 	AllowedRemoteHosts []string
+
+	// ServerVersion is the control plane's Kubernetes gitVersion (for example
+	// "v1.36.2"), read once at startup from the discovery client. It gates
+	// oci:// model sources on the ImageVolume GA floor (#1379). Empty (a fake
+	// client or envtest) fails open: the gate refuses only a version it can
+	// read and knows to be too old, since the serving node's runtime is the
+	// capability that actually matters.
+	ServerVersion string
 
 	// Prefetch (#904) configuration, mirrored from the InferenceService
 	// reconciler's cache settings so the prefetch Job writes into the same
@@ -445,16 +454,19 @@ func (r *ModelReconciler) validateMultiFileStagingSource(ctx context.Context, mo
 	// Multi-file staging fetches each artifact individually from the init
 	// container, so it works for any source that can address one object per
 	// file. That is the HF repo path and, since #1465, s3:// object stores,
-	// where buildMultiFileInitCommand signs a per-file request.
+	// where buildMultiFileInitCommand signs a per-file request. An oci://
+	// source carries every file inside the artifact tree already, so it needs
+	// no per-file fetch and is allowed too (explicit paths only: a glob cannot
+	// be expanded against an artifact, which provides no file listing).
 	//
 	// This gate is why signing alone did not fix #1465: it runs in the
 	// reconciler, well before storage config is built, so an s3:// Model with
 	// mmproj set failed here and the download code was never reached. Verified
 	// on the fleet against a real MinIO, where the Model went straight to
 	// Failed/InvalidFileSet while both objects were fetchable by hand.
-	if !isHFRepoSource(model.Spec.Source) && !isS3Source(model.Spec.Source) {
+	if !isHFRepoSource(model.Spec.Source) && !isS3Source(model.Spec.Source) && !isOCISource(model.Spec.Source) {
 		msg := fmt.Sprintf(
-			"multi-file staging requires a HuggingFace repo or s3:// source, but got: %s",
+			"multi-file staging requires a HuggingFace repo, s3://, or oci:// source, but got: %s",
 			model.Spec.Source)
 		return true, r.failInvalidFileSet(ctx, model, msg)
 	}
@@ -606,6 +618,80 @@ func (r *ModelReconciler) reconcilePVCSource(ctx context.Context, model *inferen
 	return ctrl.Result{}, nil
 }
 
+// reconcileOCISource handles oci:// Models (#1379). Like a PVC source it is
+// pre-staged: the kubelet and the node runtime pull and mount the artifact, so
+// the controller neither downloads nor fingerprints it and there is no cache
+// entry to inspect. It validates the reference, gates the control-plane floor,
+// and marks the Model Ready at the /model-source mount path the serving pod
+// will use.
+//
+// The registry is reachable from the serving node, not from the controller, so
+// this does not probe the artifact. An unreachable, private, or unauthorized
+// reference surfaces as the pod failing to start and the InferenceService not
+// becoming Ready, which is the honest place for it: the controller has no way
+// to distinguish it from any other node-side image pull problem.
+func (r *ModelReconciler) reconcileOCISource(ctx context.Context, model *inferencev1alpha1.Model) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+
+	// Early exit if already Ready for this source. Status.CacheKey is derived
+	// from spec.source, so a mismatch means the source moved and the resolve
+	// below must re-derive Path and CacheKey (#1767).
+	wantCacheKey := computeCacheKey(model.Spec.Source)
+	if model.Status.Phase == PhaseReady && model.Status.CacheKey == wantCacheKey {
+		logger.Info("OCI model already Ready, skipping reconcile")
+		llmkubemetrics.ReconcileTotal.WithLabelValues("model", "success").Inc()
+		return ctrl.Result{}, nil
+	}
+
+	// Control-plane floor. ImageVolume is GA in 1.36; below that the volume
+	// type is beta or alpha and the node runtime requirements are not met.
+	// The node's runtime is the capability that actually serves the volume and
+	// cannot be introspected here, so this check catches the clearly
+	// diagnosable case of a control plane too old for the GA API and names the
+	// node floor in the message.
+	if supported, reason := ociSourceSupported(r.ServerVersion); !supported {
+		logger.Info("Rejecting oci:// source: cluster below the ImageVolume floor", "serverVersion", r.ServerVersion)
+		model.Status.Phase = PhaseFailed
+		if statusErr := r.updateStatus(ctx, model, ConditionDegraded, metav1.ConditionTrue, "UnsupportedCluster", reason); statusErr != nil {
+			logger.Error(statusErr, "Failed to update status")
+		}
+		llmkubemetrics.ReconcileTotal.WithLabelValues("model", "error").Inc()
+		return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
+	}
+
+	reference, err := parseOCISource(model.Spec.Source)
+	if err != nil {
+		model.Status.Phase = PhaseFailed
+		if statusErr := r.updateStatus(ctx, model, ConditionDegraded, metav1.ConditionTrue, "InvalidSource", err.Error()); statusErr != nil {
+			logger.Error(statusErr, "Failed to update status")
+		}
+		llmkubemetrics.ReconcileTotal.WithLabelValues("model", "error").Inc()
+		return ctrl.Result{}, err
+	}
+
+	primary, err := ociPrimaryFile(model)
+	if err != nil {
+		return r.failInvalidFileSet(ctx, model, err.Error()), nil
+	}
+	mountPath := fmt.Sprintf("/model-source/%s", primary)
+
+	model.Status.Phase = PhaseReady
+	model.Status.Path = mountPath
+	model.Status.CacheKey = wantCacheKey
+	model.Status.AcceleratorReady = r.checkAcceleratorAvailability(ctx, model)
+	now := metav1.Now()
+	model.Status.LastUpdated = &now
+
+	if err := r.updateStatus(ctx, model, "Available", metav1.ConditionTrue, "OCIModelReady",
+		fmt.Sprintf("Model mounted from OCI reference %q", reference)); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	llmkubemetrics.ReconcileTotal.WithLabelValues("model", "success").Inc()
+	logger.Info("OCI model ready", "reference", reference, "path", mountPath)
+	return ctrl.Result{}, nil
+}
+
 // reconcileRuntimeResolvedSource handles model sources whose actual fetch is
 // performed outside the Model controller — either by the runtime container
 // itself (HuggingFace repo IDs resolved by vLLM/llama.cpp at startup) or by
@@ -635,6 +721,14 @@ func (r *ModelReconciler) reconcileBySourceType(
 	// PVC sources: validate the PVC exists, mark Ready, no download.
 	case isPVCSource(model.Spec.Source):
 		result, err = r.reconcilePVCSource(ctx, model)
+		return true, result, err
+
+	// OCI sources: pre-staged like a PVC, but delivered by a Kubernetes
+	// ImageVolume (#1379). No download, no cache PVC, no fingerprint; the
+	// reference is validated and the control-plane floor is gated in
+	// reconcileOCISource.
+	case isOCISource(model.Spec.Source):
+		result, err = r.reconcileOCISource(ctx, model)
 		return true, result, err
 
 	// HuggingFace repo IDs: the runtime container fetches at startup; the

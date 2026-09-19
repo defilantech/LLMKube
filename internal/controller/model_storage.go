@@ -794,6 +794,13 @@ func buildModelStorageConfig(model *inferencev1alpha1.Model, isvc *inferencev1al
 	if isPVCSource(model.Spec.Source) {
 		return buildPVCStorageConfig(model)
 	}
+	// OCI sources are pre-staged and read-only too, but delivered by a
+	// Kubernetes ImageVolume rather than a user PVC (#1379). Dispatched here,
+	// before the cache paths, so an oci:// model never gets a downloader init
+	// container or a cache PVC.
+	if isOCISource(model.Spec.Source) {
+		return buildOCIStorageConfig(model, initContainerImage)
+	}
 	if useCache {
 		return buildCachedStorageConfig(model, isvc, cacheMode, caCertConfigMap, initContainerImage, defaultFSGroup)
 	}
@@ -846,6 +853,127 @@ func buildPVCStorageConfig(model *inferencev1alpha1.Model) modelStorageConfig {
 		volumeMounts: []corev1.VolumeMount{
 			{Name: "model-source", MountPath: "/model-source", ReadOnly: true},
 		},
+	}
+}
+
+// buildOCIStorageConfig mounts a model delivered as an OCI image through a
+// Kubernetes ImageVolume (#1379). The artifact is mounted read-only at
+// /model-source, the same contract buildPVCStorageConfig uses, so the serving
+// container, its args, and servedModelPath need no source-specific knowledge.
+//
+// No init container and no cache PVC: the kubelet and the node runtime pull and
+// mount the artifact, so there is nothing to download and no claim to
+// provision. The reference is user-pinned (digest recommended, see
+// parseOCISource); pull credentials come from the pod's image pull secrets
+// (InferenceService.spec.imagePullSecrets), unchanged.
+//
+// Cluster requirement: ImageVolume is GA in Kubernetes 1.36 and needs
+// containerd >= 2.1.0 or CRI-O >= 1.31 on the serving node. The Model
+// reconciler refuses a control plane below that floor with a clear condition
+// (ociSourceSupported); a node whose runtime cannot serve the volume fails the
+// pod, which surfaces through the InferenceService status.
+func buildOCIStorageConfig(model *inferencev1alpha1.Model, initContainerImage string) modelStorageConfig {
+	ref, err := parseOCISource(model.Spec.Source)
+	if err != nil {
+		return invalidOCISourceStorageConfig(initContainerImage)
+	}
+
+	// The primary file path inside the mounted tree. Multi-file staging names
+	// it through spec.files / spec.mmproj (the artifact already carries every
+	// file, so nothing is fetched per file); a single-file model falls back to
+	// the canonical basename.
+	primary, err := ociPrimaryFile(model)
+	if err != nil {
+		return invalidFileSetStorageConfig(initContainerImage)
+	}
+
+	modelPath := fmt.Sprintf("/model-source/%s", primary)
+
+	return modelStorageConfig{
+		modelPath: modelPath,
+		volumes: []corev1.Volume{
+			{
+				Name: "model-source",
+				VolumeSource: corev1.VolumeSource{
+					Image: &corev1.ImageVolumeSource{
+						// IfNotPresent: the reference is expected to be an
+						// immutable tag or digest, so re-pulling on every pod
+						// start buys nothing and costs a registry round trip.
+						Reference:  ref,
+						PullPolicy: corev1.PullIfNotPresent,
+					},
+				},
+			},
+		},
+		volumeMounts: []corev1.VolumeMount{
+			{Name: "model-source", MountPath: "/model-source", ReadOnly: true},
+		},
+	}
+}
+
+// ociPrimaryFile returns the path of the model's primary file inside the
+// mounted OCI artifact tree. Multi-file staging names it through spec.files /
+// spec.mmproj; a single-file model falls back to the canonical basename. Both
+// the storage config and the Model reconciler use this so Status.Path and the
+// serving pod's model path agree.
+//
+// A glob in spec.files cannot be expanded for an OCI source: the artifact
+// provides no file listing, so ResolveFileSet rejects it with a clear error
+// and the Model fails loudly rather than serving a wrong path.
+func ociPrimaryFile(model *inferencev1alpha1.Model) (string, error) {
+	plan, err := modelStagingPlan(model)
+	if err != nil {
+		return "", err
+	}
+	if plan != nil && plan.Primary != "" {
+		return plan.Primary, nil
+	}
+	return canonicalModelBasename(model), nil
+}
+
+// invalidOCISourceStorageConfig returns a storage config whose init container
+// exits with a static InvalidOCISource message. parseOCISource is enforced by
+// the Model reconciler, so reaching here means a malformed reference slipped
+// through (a stale spec); failing loudly beats mounting an empty volume and
+// serving nothing.
+//
+// The message is deliberately static rather than interpolating the parse
+// error: the error carries user-controlled source text, and this command is
+// rendered into a shell, so interpolating it would be a command-injection
+// surface. The reconciler already records the specific error in the Model's
+// condition.
+func invalidOCISourceStorageConfig(initImage string) modelStorageConfig {
+	return modelStorageConfig{
+		modelPath: "/model-source/model.gguf",
+		initContainers: []corev1.Container{
+			{
+				Name:  "model-downloader",
+				Image: initImage,
+				Command: []string{"sh", "-c",
+					`echo "ERROR: InvalidOCISource - the model source is not a valid oci://registry/repo reference."; exit 1`},
+			},
+		},
+		volumes: []corev1.Volume{
+			{Name: "model-source", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+		},
+		volumeMounts: []corev1.VolumeMount{{Name: "model-source", MountPath: "/model-source", ReadOnly: true}},
+	}
+}
+
+// invalidFileSetStorageConfig returns a storage config whose init container
+// exits with the InvalidFileSet message. Used by the OCI path when multi-file
+// staging is requested but the file set cannot be resolved (a glob cannot be
+// expanded against an OCI artifact, which provides no file listing).
+func invalidFileSetStorageConfig(initImage string) modelStorageConfig {
+	return modelStorageConfig{
+		modelPath: "/model-source/model.gguf",
+		initContainers: []corev1.Container{
+			invalidFileSetInitContainer(initImage),
+		},
+		volumes: []corev1.Volume{
+			{Name: "model-source", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+		},
+		volumeMounts: []corev1.VolumeMount{{Name: "model-source", MountPath: "/model-source", ReadOnly: true}},
 	}
 }
 

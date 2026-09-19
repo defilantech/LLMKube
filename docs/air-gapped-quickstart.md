@@ -193,6 +193,34 @@ cd /path/to/models
 python3 -m http.server 8080
 ```
 
+### Option 5: OCI Image from an Internal Registry
+
+Mirror the model as an OCI artifact into your internal registry and let the
+Kubernetes ImageVolume mount it. This reuses the exact registry, credentials,
+and mirroring you already run for images, with no separate download step and
+no cache PVC:
+
+```yaml
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: Model
+metadata:
+  name: oci-llama
+spec:
+  source: oci://registry.internal.corp/models/llama-3.1-8b-q4_k_m@sha256:<digest>
+  format: gguf
+```
+
+Package the weights as a minimal artifact (`FROM scratch` plus a `COPY` of the
+model directory) and push it to your registry, or use `oras`. Pin by **digest**
+so the served model is immutable.
+
+**Requirements:**
+- `oci://` needs **Kubernetes >= 1.36** on the serving node and **containerd >=
+  2.1.0** or **CRI-O >= 1.31**. On older clusters use Options 1 to 4 above.
+- Registry credentials come from `InferenceService.spec.imagePullSecrets`, so a
+  private mirror needs no extra configuration.
+- The artifact is mounted read-only; the model directory is immutable.
+
 ## Offline Operator Installation
 
 ### Option 1: Pre-built Container Images

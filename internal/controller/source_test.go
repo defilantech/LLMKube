@@ -632,3 +632,57 @@ var _ = Describe("isHFRepoSource rejects s3:// (source.go)", func() {
 		Expect(isHFRepoSource("S3://my-bucket/model.gguf")).To(BeFalse())
 	})
 })
+
+var _ = Describe("isOCISource", func() {
+	It("recognizes the oci scheme case-insensitively", func() {
+		Expect(isOCISource("oci://registry.example.com/models/m")).To(BeTrue())
+		Expect(isOCISource("OCI://registry.example.com/models/m")).To(BeTrue())
+	})
+	It("does not claim other schemes or bare references", func() {
+		Expect(isOCISource("https://example.com/m.gguf")).To(BeFalse())
+		Expect(isOCISource("pvc://claim/m.gguf")).To(BeFalse())
+		Expect(isOCISource("registry.example.com/models/m")).To(BeFalse())
+	})
+})
+
+var _ = Describe("parseOCISource", func() {
+	It("returns the reference for a registry/repository source", func() {
+		ref, err := parseOCISource("oci://registry.defilan.net/models/qwen3-32b@sha256:abc")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ref).To(Equal("registry.defilan.net/models/qwen3-32b@sha256:abc"))
+	})
+	It("rejects an empty source", func() {
+		_, err := parseOCISource("oci://")
+		Expect(err).To(HaveOccurred())
+	})
+	It("rejects a bare image name with no registry/repository", func() {
+		for _, src := range []string{"oci://busybox", "oci://busybox:1.36", "oci:///models/m"} {
+			_, err := parseOCISource(src)
+			Expect(err).To(HaveOccurred(), "source %q should be rejected", src)
+		}
+	})
+	It("rejects a reference containing whitespace", func() {
+		_, err := parseOCISource("oci://registry.example.com/models/my model")
+		Expect(err).To(HaveOccurred())
+	})
+})
+
+var _ = Describe("ociSourceSupported", func() {
+	It("accepts a control plane at or above the ImageVolume GA floor", func() {
+		ok, reason := ociSourceSupported("v1.36.2")
+		Expect(ok).To(BeTrue())
+		Expect(reason).To(BeEmpty())
+	})
+	It("refuses a control plane below the floor and names the node requirement", func() {
+		ok, reason := ociSourceSupported("v1.35.6")
+		Expect(ok).To(BeFalse())
+		Expect(reason).To(ContainSubstring("1.36"))
+		Expect(reason).To(ContainSubstring("containerd"))
+	})
+	It("fails open when the version is unreadable", func() {
+		for _, v := range []string{"", "not-a-version"} {
+			ok, _ := ociSourceSupported(v)
+			Expect(ok).To(BeTrue(), "version %q should fail open", v)
+		}
+	})
+})
