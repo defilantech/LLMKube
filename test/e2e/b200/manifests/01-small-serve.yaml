@@ -1,0 +1,47 @@
+# B200 matrix row 1: single-GPU small-model serve (FP16 baseline).
+#
+# vLLM on a single B200. This is the baseline sanity row: it proves driver,
+# CUDA toolkit, GPU operator, and device plugin are wired before anything more
+# complex runs. vLLM, not llama.cpp, because llama.cpp has no sm_100 codegen
+# (matrix row 1 correction, #1375).
+#
+# Run: test/e2e/b200/run-matrix.sh --rows 1
+---
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: Model
+metadata:
+  name: b200-row-01
+  namespace: default
+spec:
+  source: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+  format: safetensors
+  hardware:
+    accelerator: cuda
+    gpu:
+      enabled: true
+      count: 1
+      vendor: nvidia
+---
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: InferenceService
+metadata:
+  name: b200-row-01
+  namespace: default
+spec:
+  modelRef: b200-row-01
+  runtime: vllm
+  image: vllm/vllm-openai:v0.20.0
+  skipModelInit: true
+  vllmConfig:
+    maxModelLen: 4096
+    dtype: float16
+    hfTokenSecretRef:
+      name: hf-token
+      key: HF_TOKEN
+  endpoint:
+    port: 8000
+    type: ClusterIP
+  resources:
+    gpu: 1
+    cpu: "4"
+    memory: "16Gi"

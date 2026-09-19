@@ -1,0 +1,23 @@
+{
+  "service_name": "b200-row-01",
+  "namespace": "default",
+  "endpoint": "http://b200-row-01.default.svc.cluster.local:8000",
+  "iterations": 10,
+  "successful_runs": 10,
+  "failed_runs": 0,
+  "prompt_tokens": 24,
+  "max_tokens": 50,
+  "latency_min_ms": 812,
+  "latency_max_ms": 1490,
+  "latency_mean_ms": 1105,
+  "latency_p50_ms": 1088,
+  "latency_p95_ms": 1440,
+  "latency_p99_ms": 1487,
+  "prompt_toks_per_sec_mean": 268.4,
+  "generation_toks_per_sec_mean": 87.5,
+  "generation_toks_per_sec_min": 84.1,
+  "generation_toks_per_sec_max": 90.2,
+  "results": [],
+  "timestamp": "2026-09-15T00:00:00Z",
+  "duration": 60000000000
+}

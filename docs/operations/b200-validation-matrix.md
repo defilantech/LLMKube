@@ -111,8 +111,8 @@ Each row is independently runnable when hardware is reachable. The general shape
 
 1. Provision a single-chassis DGX B200 (or equivalent) with the platform versions documented under "Concrete deltas" below. Confirm `nvidia-smi` reports `sm_100` devices and `Fabric Manager` is healthy.
 2. Install LLMKube via Helm at the version pinned in the row (default: latest released minor). Capture the install command and Helm values for reproducibility.
-3. Run the row's test path. Capture: `kubectl describe inferenceservice` output, controller logs, runtime container logs, DCGM scrape sample, and a representative latency / throughput measurement.
-4. Update this matrix and the tracking issue. If the row failed, file a focused follow-up issue with the captured evidence and link both directions.
+3. Run the row through the harness: `test/e2e/b200/run-matrix.sh --rows <n>` (usage in `test/e2e/b200/README.md`). It applies the row manifest, waits Ready, runs `llmkube benchmark -o json`, asserts the row's floor, and writes the result JSON. The preflight gate in `test/e2e/b200/lib/preflight.sh` asserts the platform floors (and the Fabric Manager exact match) before any row runs, so a row cannot silently "pass" on a PCIe-degraded or below-floor node. Attach the rest of the evidence pack (controller logs, runtime container logs, DCGM scrape sample) to the row's result directory.
+4. The harness rewrites this matrix's status cells through `test/e2e/b200/lib/capture.sh` (`cap_write_row`). That is the only writer, so published status cannot drift from a captured run. For a row the harness does not cover yet, update this matrix by hand and file a focused follow-up issue with the captured evidence, linking both directions.
 
 Treat each row's evidence pack as the artifact. We want the matrix to be reproducible by anyone with B200 access, not just the maintainer who ran it first.
 

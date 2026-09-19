@@ -53,5 +53,10 @@ jobs:
           fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
 
+      - name: B200 harness self-test (#1376)
+        # Hardware-free guard on the B200 validation harness wiring: preflight
+        # floor gate, capture round-trip, matrix-doc rewrite, dry-run resume.
+        run: make test-b200-harness
+
       - name: Build Metal Agent (compile check)
         run: GOOS=darwin GOARCH=arm64 go build -o /dev/null ./cmd/metal-agent
