@@ -1,0 +1,47 @@
+# B200 matrix row 3: single-GPU 70B FP8 serve, single chassis.
+#
+# Memory-bound; exercises HBM3e bandwidth. A 70B FP8 checkpoint fits a single
+# 180GB B200.
+#
+# Run: test/e2e/b200/run-matrix.sh --rows 3
+---
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: Model
+metadata:
+  name: b200-row-03
+  namespace: default
+spec:
+  source: "RedHatAI/Llama-3.1-70B-Instruct-FP8"
+  format: safetensors
+  quantization: fp8
+  hardware:
+    accelerator: cuda
+    gpu:
+      enabled: true
+      count: 1
+      vendor: nvidia
+---
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: InferenceService
+metadata:
+  name: b200-row-03
+  namespace: default
+spec:
+  modelRef: b200-row-03
+  runtime: vllm
+  image: vllm/vllm-openai:v0.20.0
+  skipModelInit: true
+  vllmConfig:
+    quantization: fp8
+    maxModelLen: 8192
+    gpuMemoryUtilization: 0.95
+    hfTokenSecretRef:
+      name: hf-token
+      key: HF_TOKEN
+  endpoint:
+    port: 8000
+    type: ClusterIP
+  resources:
+    gpu: 1
+    cpu: "16"
+    memory: "64Gi"

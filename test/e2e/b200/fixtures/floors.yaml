@@ -1,0 +1,13 @@
+# Fixture mirroring the platformFloors block in charts/llmkube/values.yaml.
+#
+# Kept in sync by hand so the preflight self-check has a deterministic floor
+# set that does not change when the chart values are edited.
+platformFloors:
+  show: true
+  nvidiaDriver: ">= 580.173.02 (R580 LTS; R570 is EOL)"
+  cudaToolkit: ">= 12.8 (first sm_100 codegen; 13.3 GA current)"
+  nccl: ">= 2.25.1 (first Blackwell support; 2.30.x recommended)"
+  gpuOperator: ">= v26.3.3 (do NOT use v26.3.0/.1/.2)"
+  k8sDevicePlugin: ">= v0.19.3 (Blackwell-aware product labels)"
+  dcgmExporter: ">= 4.6.0-4.8.3 (DCGM 3.3.x is not viable on B200)"
+  fabricManager: "must match the installed NVIDIA driver version exactly"

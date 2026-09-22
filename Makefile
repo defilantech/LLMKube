@@ -135,6 +135,12 @@ test-chart: ## Lint and unit-test the Helm charts (requires helm + helm-unittest
 	helm lint charts/llmkube charts/foreman
 	helm unittest charts/llmkube charts/foreman
 
+# The B200 validation harness self-test (#1376). No cluster and no GPU, so
+# this is the hardware-free guard on the matrix harness wiring.
+.PHONY: test-b200-harness
+test-b200-harness: ## Run the B200 validation harness self-test (no cluster, no GPU).
+	test/e2e/b200/selftest.sh
+
 # TODO(user): To use a different vendor for e2e tests, modify the setup under 'tests/e2e'.
 # The default setup assumes Kind is pre-installed and builds/loads the Manager Docker image locally.
 # CertManager is installed by default; skip with:
