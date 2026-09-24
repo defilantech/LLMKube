@@ -421,6 +421,43 @@ probe failure that could still hide in-flight work, a timeout, a non-200
 response, an absent idle endpoint, or a refusal among two or more running Pods,
 still fails closed and defers the swap, as does a member the probe reports busy.
 
+`reclaim` needs a `default` to return the slot to. With no `default` it behaves
+exactly like `sticky`: the last member to be requested stays resident.
+
+### Releasing the slot when the pool is idle: `swapPolicy: reclaim-down`
+
+On a small or capacity-constrained cluster the pool's GPU is often wanted by
+other workloads between bursts. `swapPolicy: reclaim-down` releases the slot
+once the resident member has been continuously idle for `spec.reclaimAfter`:
+the resident is drained like any displaced incumbent, every member sits at zero
+replicas, and the pool reports `Pending` with no resident. The next request the
+router sends to any member activates it as on a cold pool.
+
+```yaml
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: ModelPool
+spec:
+  swapPolicy: reclaim-down
+  reclaimAfter: 10m         # idle grace before every member is scaled to zero
+  members:
+    - inferenceServiceRef: { name: glimmer }
+    - inferenceServiceRef: { name: coder }
+```
+
+`reclaim-down` is an explicit opt-in. A `reclaim` pool with no `default` is not
+released, so existing pools keep their resident across an upgrade.
+
+`reclaim-down` cannot be combined with `spec.default`, and the API server
+rejects a pool that sets both: the default is warmed on a cold pool, so it would
+load straight back into the slot the pool just released. Use `reclaim` to keep a
+background default resident at rest.
+
+The idle clock, the busy guard, the fail-closed probe and the sizing advice for
+`reclaimAfter` are the same as for `reclaim`. Each release adds one to
+`llmkube_modelpool_reclaims_total` with an empty `to` label. The price of a
+release is a cold load on the next request, so the router holds that request for
+up to `swapBudget` while the member starts.
+
 ### Serving on the warm member instead of waiting: `poolActivation: IfIdle`
 
 By default a request for the non-resident member is held until the incumbent

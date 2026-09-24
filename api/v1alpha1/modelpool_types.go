@@ -23,7 +23,7 @@ import (
 
 // ModelPoolSwapPolicy selects how a ModelPool decides which member owns the
 // shared GPU slot when demand crosses model boundaries.
-// +kubebuilder:validation:Enum=sticky;reclaim
+// +kubebuilder:validation:Enum=sticky;reclaim;reclaim-down
 type ModelPoolSwapPolicy string
 
 const (
@@ -39,8 +39,19 @@ const (
 	// the on-demand member's requests swap it in, an interactive workload rides
 	// whichever member is warm (with router poolActivation IfIdle), and the slot
 	// returns to the default on its own once the burst subsides, without any
-	// workload forcing a disruptive swap.
+	// workload forcing a disruptive swap. With no spec.default it behaves like
+	// sticky.
 	ModelPoolSwapPolicyReclaim ModelPoolSwapPolicy = "reclaim"
+
+	// ModelPoolSwapPolicyReclaimDown behaves like sticky for cross-model demand
+	// but releases the slot once the resident member has been continuously idle
+	// for spec.reclaimAfter: the resident is drained and every member is held at
+	// zero replicas until the next request activates one. It frees the GPU for
+	// other tenants of a capacity-constrained cluster. It is an explicit opt-in,
+	// distinct from reclaim with no default (which keeps the resident), and
+	// cannot be combined with spec.default, which would warm the released slot
+	// straight back up.
+	ModelPoolSwapPolicyReclaimDown ModelPoolSwapPolicy = "reclaim-down"
 )
 
 // ModelPool status phases.
@@ -122,6 +133,8 @@ type ModelPoolMember struct {
 // member loads. The router-proxy fronts the members and activates a stopped
 // member on demand, so the pool presents many models behind one slot with a
 // sticky, anti-thrash swap policy.
+//
+// +kubebuilder:validation:XValidation:rule="!(has(self.swapPolicy) && self.swapPolicy == 'reclaim-down' && has(self.default) && size(self.default) > 0)",message="swapPolicy reclaim-down releases the slot to zero and cannot be combined with default, which would warm it straight back up; use swapPolicy reclaim to return the slot to default instead"
 type ModelPoolSpec struct {
 	// NodeSelector pins the shared slot to a node (or node class). All members
 	// are expected to schedule onto the same node so they contend for the same
@@ -141,7 +154,9 @@ type ModelPoolSpec struct {
 	// boundaries. "sticky" (default) keeps the incumbent until a different
 	// member is requested. "reclaim" additionally returns the slot to
 	// spec.default after the resident non-default member has been idle for
-	// spec.reclaimAfter.
+	// spec.reclaimAfter. "reclaim-down" instead releases the slot (every member
+	// at zero replicas) after the resident member has been idle for
+	// spec.reclaimAfter; it requires spec.default to be empty.
 	// +kubebuilder:default=sticky
 	// +optional
 	SwapPolicy ModelPoolSwapPolicy `json:"swapPolicy,omitempty"`
@@ -176,7 +191,9 @@ type ModelPoolSpec struct {
 
 	// ReclaimAfter is how long the resident non-default member must be
 	// continuously idle before the slot is reclaimed for spec.default. Only
-	// consulted when SwapPolicy is "reclaim" and Default is set. It MUST be set
+	// consulted when SwapPolicy is "reclaim" and Default is set, or when
+	// SwapPolicy is "reclaim-down", where it is how long the resident member must
+	// be idle before the slot is released to zero. It MUST be set
 	// comfortably longer than the on-demand member's typical inter-request gap:
 	// a value shorter than that gap trades cross-model request coalescing for
 	// load-side thrash, reclaiming the default only to swap it straight back
@@ -237,9 +254,10 @@ type ModelPoolStatus struct {
 	PendingMember string `json:"pendingMember,omitempty"`
 
 	// ResidentIdleSince is when the resident non-default member was first
-	// observed idle under the "reclaim" swap policy. It is cleared when the
-	// member serves a request again or when spec.default becomes resident, and
-	// is used to time the reclaim of the slot back to spec.default.
+	// observed idle under the "reclaim" or "reclaim-down" swap policy. It is
+	// cleared when the member serves a request again, when spec.default becomes
+	// resident, or when the slot is released, and is used to time the reclaim of
+	// the slot back to spec.default (or its release to zero).
 	// +optional
 	ResidentIdleSince *metav1.Time `json:"residentIdleSince,omitempty"`
 

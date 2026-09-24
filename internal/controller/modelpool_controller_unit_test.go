@@ -432,3 +432,111 @@ func TestApplyReclaimOwnerRejectsUnsettledPool(t *testing.T) {
 		}
 	})
 }
+
+// reclaimDownPool builds a reclaim-down pool (no spec.default) with the given
+// resident and idle-since instant. members are all Ready.
+func reclaimDownPool(resident string, idleSince *metav1.Time, reclaimAfter time.Duration, names ...string) (*inferencev1alpha1.ModelPool, map[string]*inferencev1alpha1.InferenceService) {
+	pool, members := reclaimPool(resident, idleSince, reclaimAfter, names...)
+	pool.Spec.Default = ""
+	pool.Spec.SwapPolicy = inferencev1alpha1.ModelPoolSwapPolicyReclaimDown
+	return pool, members
+}
+
+func TestApplyReclaimOwnerReclaimDown(t *testing.T) {
+	longAgo := metav1.NewTime(time.Now().Add(-time.Hour))
+	justNow := metav1.NewTime(time.Now())
+	idle := func(context.Context, *inferencev1alpha1.InferenceService) (bool, error) { return true, nil }
+
+	t.Run("idle beyond the window releases the slot", func(t *testing.T) {
+		pool, members := reclaimDownPool("coder", &longAgo, time.Minute, "coder", "glimmer")
+		r := &ModelPoolReconciler{IdleCheck: idle}
+		owner, requeue := r.applyReclaimOwner(context.Background(), pool, members, "coder")
+		if owner != "" || requeue != 0 {
+			t.Fatalf("release: owner=%q requeue=%v, want no owner so every member drains", owner, requeue)
+		}
+	})
+
+	t.Run("idle within the window keeps the resident", func(t *testing.T) {
+		pool, members := reclaimDownPool("coder", &justNow, 10*time.Minute, "coder", "glimmer")
+		r := &ModelPoolReconciler{IdleCheck: idle}
+		owner, requeue := r.applyReclaimOwner(context.Background(), pool, members, "coder")
+		if owner != "coder" || pool.Status.ResidentIdleSince == nil || requeue != modelPoolReclaimPoll {
+			t.Fatalf("within-window: owner=%q requeue=%v idleSince=%v", owner, requeue, pool.Status.ResidentIdleSince)
+		}
+	})
+
+	t.Run("first idle observation starts the clock without releasing", func(t *testing.T) {
+		pool, members := reclaimDownPool("coder", nil, 10*time.Minute, "coder", "glimmer")
+		r := &ModelPoolReconciler{IdleCheck: idle}
+		owner, _ := r.applyReclaimOwner(context.Background(), pool, members, "coder")
+		if owner != "coder" || pool.Status.ResidentIdleSince == nil {
+			t.Fatalf("clock-start: owner=%q idleSince=%v", owner, pool.Status.ResidentIdleSince)
+		}
+	})
+
+	t.Run("busy resident is never released", func(t *testing.T) {
+		pool, members := reclaimDownPool("coder", &longAgo, time.Minute, "coder", "glimmer")
+		r := &ModelPoolReconciler{IdleCheck: func(context.Context, *inferencev1alpha1.InferenceService) (bool, error) { return false, nil }}
+		owner, requeue := r.applyReclaimOwner(context.Background(), pool, members, "coder")
+		if owner != "coder" || pool.Status.ResidentIdleSince != nil || requeue != modelPoolReclaimPoll {
+			t.Fatalf("busy: owner=%q requeue=%v idleSince=%v", owner, requeue, pool.Status.ResidentIdleSince)
+		}
+	})
+
+	t.Run("idle probe failure fails closed", func(t *testing.T) {
+		pool, members := reclaimDownPool("coder", &longAgo, time.Minute, "coder", "glimmer")
+		r := &ModelPoolReconciler{IdleCheck: func(context.Context, *inferencev1alpha1.InferenceService) (bool, error) {
+			return false, errIdleUnsupported
+		}}
+		owner, requeue := r.applyReclaimOwner(context.Background(), pool, members, "coder")
+		if owner != "coder" || requeue != modelPoolReclaimPoll {
+			t.Fatalf("probe-fail: owner=%q requeue=%v", owner, requeue)
+		}
+	})
+
+	t.Run("a cross-model activation in flight is not preempted", func(t *testing.T) {
+		pool, members := reclaimDownPool("glimmer", &longAgo, time.Minute, "coder", "glimmer")
+		r := &ModelPoolReconciler{IdleCheck: idle}
+		owner, _ := r.applyReclaimOwner(context.Background(), pool, members, "coder")
+		if owner != "coder" || pool.Status.ResidentIdleSince != nil {
+			t.Fatalf("activation-in-flight: owner=%q idleSince=%v", owner, pool.Status.ResidentIdleSince)
+		}
+	})
+
+	t.Run("a resident the pool already drained keeps releasing", func(t *testing.T) {
+		// Status still names coder (the release pass's status write was lost),
+		// coder is at zero with the drained mark and no longer Ready.
+		pool, members := reclaimDownPool("coder", nil, time.Minute, "coder", "glimmer")
+		members["coder"].Spec.Replicas = ptr.To(int32(0))
+		members["coder"].Annotations = map[string]string{annotationModelPoolDrained: "true"}
+		members["coder"].Status.Phase = ""
+		r := &ModelPoolReconciler{IdleCheck: idle}
+		owner, requeue := r.applyReclaimOwner(context.Background(), pool, members, "coder")
+		if owner != "" || requeue != 0 {
+			t.Fatalf("drained-resident: owner=%q requeue=%v, want the release to continue", owner, requeue)
+		}
+	})
+
+	t.Run("a drained resident the router re-activated is not released", func(t *testing.T) {
+		pool, members := reclaimDownPool("coder", nil, time.Minute, "coder", "glimmer")
+		members["coder"].Annotations = map[string]string{annotationModelPoolDrained: "true"}
+		members["coder"].Status.Phase = ""
+		r := &ModelPoolReconciler{IdleCheck: idle}
+		owner, _ := r.applyReclaimOwner(context.Background(), pool, members, "coder")
+		if owner != "coder" {
+			t.Fatalf("re-activated: owner=%q want coder", owner)
+		}
+	})
+
+	t.Run("reclaim-down with a default reclaims to the default", func(t *testing.T) {
+		// Admission rejects this shape; an object that predates the rule must
+		// not release a slot the cold-pool default would warm straight back up.
+		pool, members := reclaimDownPool("coder", &longAgo, time.Minute, "coder", "glimmer")
+		pool.Spec.Default = reclaimDefault
+		r := &ModelPoolReconciler{IdleCheck: idle}
+		owner, _ := r.applyReclaimOwner(context.Background(), pool, members, "coder")
+		if owner != reclaimDefault {
+			t.Fatalf("with-default: owner=%q want %q", owner, reclaimDefault)
+		}
+	})
+}
