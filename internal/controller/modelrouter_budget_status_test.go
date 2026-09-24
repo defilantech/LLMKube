@@ -33,6 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
+	"github.com/defilantech/llmkube/internal/router"
 )
 
 // TestBudgetStatusFromUsage covers the mapping the status poller applies to
@@ -180,7 +181,9 @@ func budgetedModelRouter(name string) *inferencev1alpha1.ModelRouter {
 }
 
 // budgetStubServer serves the proxy's admin snapshot shape and records a close
-// hook so a test can simulate an unreachable proxy.
+// hook so a test can simulate an unreachable proxy. It encodes the router
+// package's own BudgetUsage, the real producer, rather than a local mirror, so
+// drift between the served JSON tags and the operator's decoder fails here.
 func budgetStubServer(t *testing.T, usedTokens int64) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -188,7 +191,7 @@ func budgetStubServer(t *testing.T, usedTokens int64) *httptest.Server {
 			http.NotFound(w, r)
 			return
 		}
-		_ = json.NewEncoder(w).Encode([]budgetUsageWire{
+		_ = json.NewEncoder(w).Encode([]router.BudgetUsage{
 			{Name: "router-cap", UsedTokens: usedTokens, MaxTokens: 1000},
 		})
 	}))
