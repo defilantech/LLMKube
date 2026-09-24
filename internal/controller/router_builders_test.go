@@ -919,31 +919,60 @@ func TestCompileRouterConfigCopiesDisplayName(t *testing.T) {
 	}
 }
 
-// TestRouterServiceBuilder confirms ClusterIP default and the
-// canonical selector label.
+// TestRouterServiceBuilder confirms ClusterIP default, the canonical selector
+// label, and that the data-plane Service carries only the inference port. The
+// admin/metrics listener lives on the separate internal Service, so it can
+// never be published off-cluster through a NodePort or LoadBalancer endpoint.
 func TestRouterServiceBuilder(t *testing.T) {
 	mr := canonicalModelRouter()
 	svc := newRouterService(mr)
 	if svc.Spec.Type != corev1.ServiceTypeClusterIP {
 		t.Errorf("default type = %v, want ClusterIP", svc.Spec.Type)
 	}
-	// Two ports: the inference listener (http, 8080) plus the admin listener
-	// (admin, 9090) the reconciler polls for budget utilization (#1851).
-	if len(svc.Spec.Ports) != 2 {
-		t.Fatalf("ports = %+v, want http and admin", svc.Spec.Ports)
-	}
-	gotPorts := map[string]int32{}
-	for _, p := range svc.Spec.Ports {
-		gotPorts[p.Name] = p.Port
-	}
-	if gotPorts["http"] != routerProxyPort {
-		t.Errorf("http port = %d, want %d", gotPorts["http"], routerProxyPort)
-	}
-	if gotPorts["admin"] != routerProxyMetricsPort {
-		t.Errorf("admin port = %d, want %d", gotPorts["admin"], routerProxyMetricsPort)
+	if len(svc.Spec.Ports) != 1 || svc.Spec.Ports[0].Name != "http" || svc.Spec.Ports[0].Port != routerProxyPort {
+		t.Fatalf("ports = %+v, want only the http inference port", svc.Spec.Ports)
 	}
 	if got := svc.Spec.Selector["inference.llmkube.dev/model-router"]; got != mr.Name {
 		t.Errorf("selector label = %q, want %q", got, mr.Name)
+	}
+}
+
+// TestRouterServiceExposesNoAdminPort pins that no data-plane Service, at any
+// spec.endpoint.type, carries the admin/metrics port. This is the boundary that
+// keeps the budget snapshot off a NodePort or LoadBalancer.
+func TestRouterServiceExposesNoAdminPort(t *testing.T) {
+	for _, endpointType := range []string{"", "ClusterIP", "NodePort", "LoadBalancer"} {
+		t.Run("type="+endpointType, func(t *testing.T) {
+			mr := canonicalModelRouter()
+			if endpointType != "" {
+				mr.Spec.Endpoint = &inferencev1alpha1.EndpointSpec{Type: endpointType}
+			}
+			for _, p := range newRouterService(mr).Spec.Ports {
+				if p.Port == routerProxyMetricsPort {
+					t.Fatalf("data-plane Service type %q carries admin port %d; want it only on the internal admin Service", endpointType, p.Port)
+				}
+			}
+		})
+	}
+}
+
+// TestRouterAdminServiceBuilder pins the internal admin Service: always
+// ClusterIP regardless of spec.endpoint.type, one admin port, same selector.
+func TestRouterAdminServiceBuilder(t *testing.T) {
+	mr := canonicalModelRouter()
+	mr.Spec.Endpoint = &inferencev1alpha1.EndpointSpec{Type: "LoadBalancer"}
+	svc := newRouterAdminService(mr)
+	if svc.Spec.Type != corev1.ServiceTypeClusterIP {
+		t.Errorf("admin Service type = %v, want ClusterIP even for a LoadBalancer data plane", svc.Spec.Type)
+	}
+	if svc.Name != routerProxyAdminResourceName(mr.Name) {
+		t.Errorf("admin Service name = %q, want %q", svc.Name, routerProxyAdminResourceName(mr.Name))
+	}
+	if len(svc.Spec.Ports) != 1 || svc.Spec.Ports[0].Port != routerProxyMetricsPort {
+		t.Fatalf("admin ports = %+v, want a single %d", svc.Spec.Ports, routerProxyMetricsPort)
+	}
+	if got := svc.Spec.Selector["inference.llmkube.dev/model-router"]; got != mr.Name {
+		t.Errorf("admin selector label = %q, want %q", got, mr.Name)
 	}
 }
 
@@ -969,11 +998,11 @@ func TestRouterProxyEndpointURL(t *testing.T) {
 }
 
 // TestRouterProxyBudgetEndpointURL pins the admin URL the reconciler polls for
-// status.budgetUtilization: the metrics port, not the inference port, and off
-// the cluster Service DNS name.
+// status.budgetUtilization: the internal admin Service, not the data-plane
+// Service, on the metrics port.
 func TestRouterProxyBudgetEndpointURL(t *testing.T) {
 	mr := canonicalModelRouter()
-	want := "http://coding-router-router-proxy." + testBuilderNs + ".svc.cluster.local:9090/admin/budgets"
+	want := "http://coding-router-router-proxy-admin." + testBuilderNs + ".svc.cluster.local:9090/admin/budgets"
 	if got := routerProxyBudgetEndpoint(mr); got != want {
 		t.Errorf("budget endpoint = %q, want %q", got, want)
 	}

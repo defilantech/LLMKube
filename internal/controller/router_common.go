@@ -55,6 +55,13 @@ func routerProxyResourceName(modelRouterName string) string {
 	return sanitizeDNSName(modelRouterName) + "-router-proxy"
 }
 
+// routerProxyAdminResourceName is the Service that carries the proxy's
+// metrics/admin listener. It is separate from the data-plane Service so the
+// admin endpoint stays ClusterIP regardless of spec.endpoint.type.
+func routerProxyAdminResourceName(modelRouterName string) string {
+	return routerProxyResourceName(modelRouterName) + "-admin"
+}
+
 // routerProxyLabels are the standard k8s app labels applied to every
 // owned object. The selectorLabels subset is used as the Deployment
 // selector and Service selector and is immutable for the lifetime of
