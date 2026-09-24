@@ -1,0 +1,46 @@
+{{/*
+Router-proxy pods. The inference data plane stays reachable from all callers;
+the metrics listener (9090), which also serves the budget snapshot the operator
+reads to publish ModelRouter.status.budgetUtilization, is scoped to the
+controller-manager. Without this the admin Service is reachable by every pod in
+the cluster, since a ClusterIP is not a boundary.
+
+Scope note: a NetworkPolicy is namespace-scoped, so this covers router-proxy
+pods in the release namespace only. A ModelRouter in another namespace is not
+covered by this release's policy.
+*/}}
+{{- if .Values.networkPolicies.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "llmkube.fullname" . }}-router-proxy
+  namespace: {{ include "llmkube.namespace" . }}
+  labels:
+    {{- include "llmkube.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    # Every router-proxy pod carries this label regardless of ModelRouter name
+    # (routerProxySelectorLabels in internal/controller/router_common.go), the
+    # same selector the router PodMonitor uses.
+    matchExpressions:
+      - key: inference.llmkube.dev/model-router
+        operator: Exists
+  policyTypes:
+  - Ingress
+  ingress:
+  # The inference data plane.
+  - ports:
+    - protocol: TCP
+      port: 8080
+  # The metrics/admin listener, read only by the controller-manager.
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: {{ include "llmkube.namespace" . }}
+      podSelector:
+        matchLabels:
+          control-plane: controller-manager
+    ports:
+    - protocol: TCP
+      port: 9090
+{{- end }}

@@ -1,0 +1,48 @@
+suite: router-proxy network policy
+templates:
+  - router-network-policy.yaml
+
+tests:
+  - it: renders no policies when networkPolicies is disabled
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: scopes the router-proxy metrics/admin listener to the controller-manager
+    set:
+      networkPolicies.enabled: true
+    release:
+      namespace: default
+    asserts:
+      - isKind:
+          of: NetworkPolicy
+      # Every router-proxy pod, regardless of ModelRouter name.
+      - equal:
+          path: spec.podSelector.matchExpressions[0].key
+          value: inference.llmkube.dev/model-router
+      - equal:
+          path: spec.podSelector.matchExpressions[0].operator
+          value: Exists
+      # The inference data plane has no source restriction.
+      - notExists:
+          path: spec.ingress[0].from
+      - contains:
+          path: spec.ingress[0].ports
+          content:
+            protocol: TCP
+            port: 8080
+      # The metrics/admin listener is reachable only from the controller-manager.
+      - contains:
+          path: spec.ingress[1].from
+          content:
+            namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: default
+            podSelector:
+              matchLabels:
+                control-plane: controller-manager
+      - contains:
+          path: spec.ingress[1].ports
+          content:
+            protocol: TCP
+            port: 9090
