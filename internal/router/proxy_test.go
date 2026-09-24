@@ -1142,10 +1142,16 @@ func budgetPost(t *testing.T, mux http.Handler, headers map[string]string) *http
 // exercised rather than a ResponseRecorder's.
 func budgetStreamPost(t *testing.T, mux http.Handler) *http.Response {
 	t.Helper()
+	return budgetStreamPostBody(t, mux, `{"model":"any","stream":true}`)
+}
+
+// budgetStreamPostBody is budgetStreamPost with a caller-supplied request body.
+func budgetStreamPostBody(t *testing.T, mux http.Handler, body string) *http.Response {
+	t.Helper()
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions",
-		strings.NewReader(`{"model":"any","stream":true}`))
+		strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -1344,6 +1350,33 @@ func TestProxyStreamingUnbudgetedDoesNotInject(t *testing.T) {
 	}
 	if got := back.LastBody(); strings.Contains(got, "include_usage") {
 		t.Errorf("upstream body = %q, want no stream_options injection for unbudgeted traffic", got)
+	}
+}
+
+// TestProxyStreamingBudgetForcesUsageOverClientStreamOptions is the regression
+// for the evasion the injection originally left open: a budgeted stream that
+// carries its own stream_options with include_usage false must still be
+// rewritten to ask for usage, so the charge is taken rather than zero.
+func TestProxyStreamingBudgetForcesUsageOverClientStreamOptions(t *testing.T) {
+	proxy, mux, back := budgetTestProxy(t, []Budget{
+		{Name: "router-cap", Scope: BudgetScopeRouter, Window: time.Hour, MaxTokens: 1000000},
+	})
+	back.stream.Store(true)
+	back.honorUsage.Store(true)
+
+	resp := budgetStreamPostBody(t, mux,
+		`{"model":"any","stream":true,"stream_options":{"include_usage":false}}`)
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if got := back.LastBody(); !strings.Contains(got, `"include_usage":true`) {
+		t.Errorf("upstream body = %q, want a client-supplied stream_options forced to include_usage true", got)
+	}
+	snap := proxy.budgets.Snapshot()
+	if len(snap) != 1 || snap[0].UsedTokens != 100 {
+		t.Fatalf("snapshot = %+v, want one entry with UsedTokens 100 (a budgeted stream with client stream_options must still be charged)", snap)
 	}
 }
 

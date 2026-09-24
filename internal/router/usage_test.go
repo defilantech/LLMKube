@@ -197,10 +197,29 @@ func TestInjectStreamUsage(t *testing.T) {
 			wantAbsent:  "include_usage",
 		},
 		{
-			name:        "existing stream_options is not clobbered",
-			body:        `{"model":"any","stream":true,"stream_options":{"include_usage":false}}`,
-			wantChanged: false,
-			wantAbsent:  `"include_usage":true`,
+			name:         "client stream_options asking false is forced to true",
+			body:         `{"model":"any","stream":true,"stream_options":{"include_usage":false}}`,
+			wantChanged:  true,
+			wantContains: `"include_usage":true`,
+			wantAbsent:   `"include_usage":false`,
+		},
+		{
+			name:         "existing stream_options siblings are preserved",
+			body:         `{"model":"any","stream":true,"stream_options":{"include_usage":false,"foo":"bar"}}`,
+			wantChanged:  true,
+			wantContains: `"foo":"bar"`,
+		},
+		{
+			name:         "existing include_usage true is left unchanged",
+			body:         `{"model":"any","stream":true,"stream_options":{"include_usage":true}}`,
+			wantChanged:  false,
+			wantContains: `"include_usage":true`,
+		},
+		{
+			name:         "non-object stream_options is replaced",
+			body:         `{"model":"any","stream":true,"stream_options":"none"}`,
+			wantChanged:  true,
+			wantContains: `"include_usage":true`,
 		},
 		{
 			name:        "empty body is untouched",
