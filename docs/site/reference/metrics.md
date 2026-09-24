@@ -27,7 +27,7 @@ The operator's controller manager registers `ControllerCollectors` from [`intern
 | `llmkube_inferenceservice_replicas` | gauge | `inferenceservice`, `namespace`, `state` | InferenceService replica counts. Use the state label: ready, desired. |
 | `llmkube_model_download_duration_seconds` | histogram | `model`, `namespace`, `source_type` | Duration of model download/copy operations. |
 | `llmkube_model_status` | gauge | `model`, `namespace`, `phase` | Current phase of models. Value is always 1; use the phase label for filtering. |
-| `llmkube_modelpool_reclaims_total` | counter | `from`, `namespace`, `pool`, `to` | Total number of ModelPool slot reclaims to spec.default after the resident member went idle. |
+| `llmkube_modelpool_reclaims_total` | counter | `from`, `namespace`, `pool`, `to` | Total number of ModelPool slot reclaims after the resident member went idle: to spec.default, or released to zero (empty to) under swapPolicy reclaim-down. |
 | `llmkube_modelpool_resident` | gauge | `member`, `namespace`, `pool` | Which member owns a ModelPool's shared GPU slot (1=resident, 0=not). |
 | `llmkube_reconcile_duration_seconds` | histogram | `controller` | Duration of reconciliation cycles. |
 | `llmkube_reconcile_total` | counter | `controller`, `result` | Total number of reconciliation cycles. |

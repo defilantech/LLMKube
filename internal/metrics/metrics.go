@@ -450,11 +450,12 @@ var (
 
 	// ModelPoolReclaimsTotal counts slot reclaims: the controller returned the
 	// shared slot to spec.default after the resident non-default member went
-	// idle for the pool's reclaimAfter under the "reclaim" swap policy.
+	// idle for the pool's reclaimAfter under the "reclaim" swap policy, or
+	// released it to zero (to="") under "reclaim-down".
 	ModelPoolReclaimsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "llmkube_modelpool_reclaims_total",
-			Help: "Total number of ModelPool slot reclaims to spec.default after the resident member went idle.",
+			Help: "Total number of ModelPool slot reclaims after the resident member went idle: to spec.default, or released to zero (empty to) under swapPolicy reclaim-down.",
 		},
 		[]string{"namespace", "pool", "from", "to"},
 	)
