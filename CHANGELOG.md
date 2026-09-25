@@ -5,6 +5,41 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.30](https://github.com/defilantech/LLMKube/compare/v0.9.29...v0.9.30) (2026-09-25)
+
+
+### Features
+
+* **downloader:** authenticate to a Hugging Face mirror named by HF_ENDPOINT ([#1902](https://github.com/defilantech/LLMKube/issues/1902)) ([efce19b](https://github.com/defilantech/LLMKube/commit/efce19be47ac7b69e0542b6277ce3baa3784cbd7))
+* **downloader:** log newline-terminated download progress ([#1897](https://github.com/defilantech/LLMKube/issues/1897)) ([e4cf5fd](https://github.com/defilantech/LLMKube/commit/e4cf5fd8caef5db8d1258880f8b6a9dfc9c6fd74))
+* **foreman:** verify-equipped scan-gate loop reproducing image scans before the verdict ([#1847](https://github.com/defilantech/LLMKube/issues/1847)) ([4a0938c](https://github.com/defilantech/LLMKube/commit/4a0938c8d44478a3dfc84b9166be3ab8ddf86115))
+* **llamacpp:** report a clean model ID via --alias ([#1898](https://github.com/defilantech/LLMKube/issues/1898)) ([ed97bb4](https://github.com/defilantech/LLMKube/commit/ed97bb47d0ec65dddbe8fb70102109ade93cd979))
+* **model:** serve oci:// model sources via Kubernetes ImageVolume ([#1379](https://github.com/defilantech/LLMKube/issues/1379)) ([#1855](https://github.com/defilantech/LLMKube/issues/1855)) ([03ac98c](https://github.com/defilantech/LLMKube/commit/03ac98c91f37d9392242a74ade981ee4378e1505))
+* **router:** charge budgeted streams by requesting upstream usage ([#1888](https://github.com/defilantech/LLMKube/issues/1888)) ([6259d7c](https://github.com/defilantech/LLMKube/commit/6259d7cc187f0859242ea0359c5c4b8d6be4f609))
+* **router:** enforce token and dollar budgets in the proxy data plane ([#434](https://github.com/defilantech/LLMKube/issues/434)) ([#1853](https://github.com/defilantech/LLMKube/issues/1853)) ([1ec7e23](https://github.com/defilantech/LLMKube/commit/1ec7e23b89e38df91889efc71aceed42074302c5))
+* **router:** surface budget utilization on ModelRouter status ([#1889](https://github.com/defilantech/LLMKube/issues/1889)) ([3051e42](https://github.com/defilantech/LLMKube/commit/3051e42a065d138a98985d682f030fa27d7bd969))
+* **samples:** three-Spark DeepSeek-V4.1-Flash ring at 512K with vision, keep-warm, memory guard ([#1858](https://github.com/defilantech/LLMKube/issues/1858)) ([791518d](https://github.com/defilantech/LLMKube/commit/791518d4803e10dd9363d4e370f429df78596b13))
+
+
+### Bug Fixes
+
+* **build:** evaluate GINKGO_SEED once so the logged seed is the one used ([#1817](https://github.com/defilantech/LLMKube/issues/1817)) ([#1841](https://github.com/defilantech/LLMKube/issues/1841)) ([a6a00c1](https://github.com/defilantech/LLMKube/commit/a6a00c1638a54b1daaf899db167699c2c5b0eb93))
+* **controller:** make the InferenceService a first-class scale target ([#1881](https://github.com/defilantech/LLMKube/issues/1881)) ([#1882](https://github.com/defilantech/LLMKube/issues/1882)) ([d5afc1c](https://github.com/defilantech/LLMKube/commit/d5afc1c49252b060cdef0fe9183ef5bc5272baaa))
+* **e2e:** bound the E2E request pods and give the suite an explicit test timeout ([#1876](https://github.com/defilantech/LLMKube/issues/1876)) ([3788972](https://github.com/defilantech/LLMKube/commit/37889721d08b6f83232a38b4ea01bfd8133c2986))
+* **federation:** enforce and honor the edge's heartbeat push cadence ([#1874](https://github.com/defilantech/LLMKube/issues/1874)) ([08b5bf3](https://github.com/defilantech/LLMKube/commit/08b5bf3a5c2af79b311265e2628cb641c3223cd7))
+* **foreman:** confirm a missing planned child against the uncached reader ([#1744](https://github.com/defilantech/LLMKube/issues/1744)) ([#1893](https://github.com/defilantech/LLMKube/issues/1893)) ([d316268](https://github.com/defilantech/LLMKube/commit/d3162687d656ac30bfe3082bcf7e3e3e0c2ca2d6))
+* **foreman:** keep the coder's PR description across a fix cycle ([#1777](https://github.com/defilantech/LLMKube/issues/1777)) ([#1892](https://github.com/defilantech/LLMKube/issues/1892)) ([1e35a91](https://github.com/defilantech/LLMKube/commit/1e35a915692ccc84e5cfbbb3b5b7ded9f9f133f7))
+* **helm:** cap composed Service names at 63 chars ([#1885](https://github.com/defilantech/LLMKube/issues/1885)) ([#1886](https://github.com/defilantech/LLMKube/issues/1886)) ([81e5e41](https://github.com/defilantech/LLMKube/commit/81e5e41f38b0f363f21e16eb1cbf242d9184f210))
+* **release:** pre-0.9.30 blockers in federation, netpol, router buffer ([#1899](https://github.com/defilantech/LLMKube/issues/1899)) ([109ab83](https://github.com/defilantech/LLMKube/commit/109ab83392264c5e0623a34ced66164afa1a279b))
+
+
+### Documentation
+
+* **agents:** refresh AGENTS.md and add a reference check ([#1891](https://github.com/defilantech/LLMKube/issues/1891)) ([ea8687f](https://github.com/defilantech/LLMKube/commit/ea8687f38df900d465f26162e7e42ad0070a5dcd))
+* evaluate OCI ImageVolume as a model source ([#1379](https://github.com/defilantech/LLMKube/issues/1379)) ([#1854](https://github.com/defilantech/LLMKube/issues/1854)) ([8bc24ff](https://github.com/defilantech/LLMKube/commit/8bc24ff798e37d026f3d1389a40d0afeb29f9072))
+* **labs:** add the DeepSeek-V4.1-Flash EXL3 one-Spark and three-Spark ring lab builds ([#1848](https://github.com/defilantech/LLMKube/issues/1848)) ([77b5813](https://github.com/defilantech/LLMKube/commit/77b581337dbc504e43e65a008e9cee1b1c75430e))
+* record the image-vs-artifact constraint in the OCI evaluation ([#1379](https://github.com/defilantech/LLMKube/issues/1379)) ([#1859](https://github.com/defilantech/LLMKube/issues/1859)) ([210564d](https://github.com/defilantech/LLMKube/commit/210564d0a7888f0a87253d11143f25d01f0b2c08))
+
 ## [0.9.29](https://github.com/defilantech/LLMKube/compare/v0.9.28...v0.9.29) (2026-09-16)
 
 
