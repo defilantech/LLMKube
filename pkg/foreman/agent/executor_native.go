@@ -48,7 +48,6 @@ import (
 	"github.com/defilantech/llmkube/pkg/foreman/agent/grounding"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/oai"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/repo"
-	"github.com/defilantech/llmkube/pkg/foreman/agent/repomap"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/reviewer"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/worktracker"
 )
@@ -797,7 +796,8 @@ func maybePrependRebaseInstruction(prompt string, rc *repo.RebaseConflictError) 
 
 // applyRepoMapPrefix prepends a repo-map summary to a coder Agent's prompt
 // (#560). Non-coder agents, and a failed or empty build, return the prompt
-// unchanged.
+// unchanged. The summary's backend (repomap, or ripwire when
+// FOREMAN_REPOMAP_BACKEND=ripwire) is chosen in repoMapSummary.
 func (e *NativeAgentLoopExecutor) applyRepoMapPrefix(
 	ctx context.Context, agent *foremanv1alpha1.Agent,
 	workspace, issueText, userPrompt string, log logr.Logger,
@@ -805,14 +805,11 @@ func (e *NativeAgentLoopExecutor) applyRepoMapPrefix(
 	if agent.Spec.Role != foremanv1alpha1.AgentRoleCoder {
 		return userPrompt
 	}
-	summary, mapErr := repomap.Build(ctx, workspace, issueText, repomap.Options{})
-	switch {
-	case mapErr != nil:
-		log.Info("repomap build failed; continuing without summary", "err", mapErr.Error())
-	case summary != "":
-		return summary + "\n" + userPrompt
+	summary := repoMapSummary(ctx, workspace, issueText, log)
+	if summary == "" {
+		return userPrompt
 	}
-	return userPrompt
+	return summary + "\n" + userPrompt
 }
 
 func (e *NativeAgentLoopExecutor) runLLMPath(
