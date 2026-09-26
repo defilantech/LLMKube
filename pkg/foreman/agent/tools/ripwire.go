@@ -21,6 +21,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -36,7 +37,22 @@ const (
 	// defaultRipwireMaxBytes caps returned output so a large call graph does
 	// not dominate the transcript budget.
 	defaultRipwireMaxBytes = 32 * 1024
+	// ripwireBinEnv overrides the ripwire binary path; unset resolves
+	// "ripwire" from PATH. Mirrors the repo-map backend's resolver
+	// (pkg/foreman/agent/ripwire.go) so the tool and the backend find the same
+	// binary, but the tool deliberately does not depend on that package's
+	// helper: the tool must build and run whether or not the backend is
+	// wired.
+	ripwireBinEnv = "FOREMAN_RIPWIRE_BIN"
 )
+
+// ripwireBin resolves the ripwire binary for the tool.
+func ripwireBin() string {
+	if b := strings.TrimSpace(os.Getenv(ripwireBinEnv)); b != "" {
+		return b
+	}
+	return "ripwire"
+}
 
 // ripwireVerbFlag maps the model's verb choice to the one ripwire flag it may
 // select. The model picks the verb; it never supplies a flag, and the query is
@@ -116,7 +132,7 @@ func (t *RipwireTool) Execute(ctx context.Context, args json.RawMessage) (*agent
 	argv := []string{t.Workspace, prefix + a.Query, "--json"}
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	cmd := exec.CommandContext(cctx, agent.RipwireBin(), argv...)
+	cmd := exec.CommandContext(cctx, ripwireBin(), argv...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
