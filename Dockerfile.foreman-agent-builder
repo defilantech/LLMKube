@@ -86,6 +86,32 @@ ARG CONTROLLER_TOOLS_VERSION=v0.19.0
 RUN go install "sigs.k8s.io/controller-tools/cmd/controller-gen@${CONTROLLER_TOOLS_VERSION}" \
     && controller-gen --version
 
+# ripwire (#1903): the coder's call-graph repo-map backend and interactive tool
+# (pkg/foreman/agent/ripwire.go, pkg/foreman/agent/tools/ripwire.go). Fetched
+# at build time like helm above, pinned by version AND the release's own
+# per-arch SHA-256, so a swapped asset fails the build. Read-only verbs only.
+# Its LICENSE ships under /licenses/ripwire (Apache-2.0; the vendored grammars
+# it compiles in are MIT/zlib/Unicode-DFS-2016, recorded in
+# docs/third-party/ripwire.md).
+ARG RIPWIRE_VERSION=v0.6.4
+RUN set -eux; \
+    case "${TARGETARCH:-amd64}" in \
+      amd64) rwarch=x64;   rwsha=e235c4616d5c9222e0fcd7b8c15e490ff46aca329614cde80b24b5c1560e84c4 ;; \
+      arm64) rwarch=arm64; rwsha=a863c228b860ebf91920a58fa40ac5ef88157f5799f1187b6d662f2a03ff78e0 ;; \
+      *) echo "ripwire: unsupported TARGETARCH ${TARGETARCH}"; exit 1 ;; \
+    esac; \
+    ver="${RIPWIRE_VERSION#v}"; \
+    base="https://github.com/redhat-et/ripwire/releases/download/${RIPWIRE_VERSION}"; \
+    asset="ripwire-${ver}-linux-${rwarch}.tar.gz"; \
+    curl -fsSL "${base}/${asset}" -o /tmp/ripwire.tgz; \
+    echo "${rwsha}  /tmp/ripwire.tgz" | sha256sum -c -; \
+    tar -xzf /tmp/ripwire.tgz -C /tmp; \
+    install -m 0755 "/tmp/ripwire-${ver}-linux-${rwarch}/ripwire" /usr/local/bin/ripwire; \
+    mkdir -p /licenses/ripwire; \
+    install -m 0644 "/tmp/ripwire-${ver}-linux-${rwarch}/LICENSE" /licenses/ripwire/LICENSE; \
+    rm -rf /tmp/ripwire.tgz "/tmp/ripwire-${ver}-linux-${rwarch}"; \
+    ripwire --version
+
 # /usr/local/bin is on PATH in the golang image, so the template's bare
 # `command: ["foreman-agent"]` resolves here.
 COPY --from=builder /workspace/foreman-agent /usr/local/bin/foreman-agent

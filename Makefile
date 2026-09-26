@@ -309,6 +309,13 @@ FOREMAN_COMMIT_EMAIL     ?= $(shell git config user.email 2>/dev/null)
 # Required: comma-separated model names this node serves (used to match tasks).
 FOREMAN_INSTALLED_MODELS ?=
 
+# ripwire (#1903): the coder's call-graph repo-map backend, staged into the
+# install root by install-foreman-agent. Pinned by version AND the release's
+# own macOS arm64 SHA-256. Read-only usage; see docs/third-party/ripwire.md.
+RIPWIRE_VERSION ?= v0.6.4
+RIPWIRE_SHA256  ?= ad82f00bd7da95557b5124f41eb93ecdafb9db18d7208f181e6a858e4b6101f0
+RIPWIRE_BIN     ?= $(FOREMAN_INSTALL_ROOT)/ripwire
+
 .PHONY: check-foreman-install-vars
 check-foreman-install-vars:
 	@if [ -z "$(FOREMAN_INSTALLED_MODELS)" ]; then \
@@ -338,6 +345,19 @@ install-foreman-agent: check-foreman-install-vars build-foreman-agent-versioned 
 	@ln -sfn "$(FOREMAN_INSTALL_ROOT)/versions/$(FOREMAN_AGENT_VERSION)" \
 		"$(FOREMAN_INSTALL_ROOT)/current"
 	@echo "Staged at $(FOREMAN_INSTALL_ROOT)/current -> versions/$(FOREMAN_AGENT_VERSION)"
+	@# ripwire (#1903): stage the pinned call-graph backend into the install
+	@# root (no sudo). Skip when already present so a re-run is cheap; delete
+	@# the file to force a re-fetch after bumping RIPWIRE_VERSION.
+	@if [ ! -x "$(RIPWIRE_BIN)" ]; then \
+		echo "Staging ripwire $(RIPWIRE_VERSION)..."; \
+		rwdir="$$(mktemp -d)"; \
+		curl -fsSL "https://github.com/redhat-et/ripwire/releases/download/$(RIPWIRE_VERSION)/ripwire-$(RIPWIRE_VERSION:v%=%)-macos-arm64.tar.gz" -o "$$rwdir/rw.tgz"; \
+		echo "$(RIPWIRE_SHA256)  $$rwdir/rw.tgz" | shasum -a 256 -c -; \
+		tar -xzf "$$rwdir/rw.tgz" -C "$$rwdir"; \
+		install -m 0755 "$$rwdir/ripwire-$(RIPWIRE_VERSION:v%=%)-macos-arm64/ripwire" "$(RIPWIRE_BIN)"; \
+		rm -rf "$$rwdir"; \
+	fi
+	@echo "ripwire staged at $(RIPWIRE_BIN)"
 	@echo "Installing launchd service..."
 	@# Render the launchd plist: substitute the install-root path AND every
 	@# REPLACE_WITH_* placeholder, so the installed service has a complete,
@@ -350,6 +370,7 @@ install-foreman-agent: check-foreman-install-vars build-foreman-agent-versioned 
 		-e "s|REPLACE_WITH_KUBECONFIG|$(FOREMAN_KUBECONFIG)|g" \
 		-e "s|REPLACE_WITH_GIT_REMOTE_URL|$(FOREMAN_GIT_REMOTE_URL)|g" \
 		-e "s|REPLACE_WITH_EMAIL|$(FOREMAN_COMMIT_EMAIL)|g" \
+		-e "s|REPLACE_WITH_RIPWIRE_BIN|$(RIPWIRE_BIN)|g" \
 		deployment/macos/com.llmkube.foreman-agent.plist \
 		> ~/Library/LaunchAgents/$(LLMKUBE_FOREMAN_AGENT_LABEL).plist
 	@echo "Starting foreman-agent service..."
