@@ -46,6 +46,7 @@ var canonicalToolNames = []string{
 	"fetch_pull_request",
 	"grep",
 	"read_file",
+	"ripwire",
 	"run_gate_job",
 	"run_integrate",
 	"run_reconcile",

@@ -53,6 +53,10 @@ func BuildAll(deps ToolDeps) []Tool {
 		&StrReplaceTool{Workspace: deps.Workspace},
 		&GrepTool{Workspace: deps.Workspace},
 		&BashTool{Workspace: deps.Workspace, Timeout: deps.BashTimeout},
+		// ripwire: read-only call-graph queries for the coder (#1905). Off
+		// until an Agent whitelists it in spec.tools; the binary must be on
+		// the host (see the packaging story) or the call returns a tool error.
+		&RipwireTool{Workspace: deps.Workspace},
 		SubmitResultTool{},
 		&RunGateJobTool{
 			Client: deps.Client,
