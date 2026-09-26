@@ -1,0 +1,236 @@
+{
+  "cases": [
+    {
+      "id": "1849",
+      "query": "chore: release 0.9.30 :rocket: Release ${version} --- ## [0.9.30](https://github.com/defilantech/LLMKube/compare/v0.9.29...v0.9.30) (2026-09-25) ### Features * **downloader:** authenticate to a Hugging Face mirror named by HF_ENDPOINT ([#1902](https://github.com/defilantech/LLMKube/issues/1902)) ([efce19b](https://github.com/defilantech/LLMKube/commit/efce19be47ac7b69e0542b6277ce3baa3784cbd7)) * **downloader:** log newline-terminated download progress ([#1897](https://github.com/defilantech/LLMKube/issues/1897)) ([e4cf5fd](https://github.com/defilantech/LLMKube/commit/e4cf5fd8caef5db8d1258880f8b6a9dfc9c6fd74)) * **foreman:** verify-equipped scan-gate loop reproducing image scans before the verdict ([#1847](https://github.com/defilantech/LLMKube/issues/1847)) ([4a0938c](https://github.com/defilantech/LLMKube/commit/4a0938c8d44478a3dfc84b9166be3ab8ddf86115)) * **llamacpp:** report a clean model ID via --alias ([#1898](https://github.com/defilantech/LLMKube/issues/1898)) ([ed97bb4](https://github.com/defilantech/LLMKube/commit/ed97bb47d0ec65dddbe8fb70102109ade93cd979)) * **model:** serve oci:// model sources via Kubernetes ImageVolume ([#1379](https://github.com/defilantech/LLMKube/issues/1379)) ([#1855](https://github.com/defilantech/LLMKube/issues/1855)) ([03ac98c](https://github.com/defilantech/LLMKube/commit/03ac98c91f37d9392242a74ade981ee4378e1505)) * **router:** charge budgeted streams by requesting upstream usage ([#1888](https://github.com/defilantech/LLMKube/issues/1888",
+      "gold": [
+        "pkg/cli/version.go"
+      ]
+    },
+    {
+      "id": "1902",
+      "query": "feat(downloader): authenticate to a Hugging Face mirror named by HF_ENDPOINT ## What Let the model downloader send its Hugging Face bearer token to a mirror whose host the Secret names in `HF_ENDPOINT`, not only to `huggingface.co`. - `pkg/hfsource`: new `SourceHost` and `IsHFAuthSourceForEndpoint(source, hfEndpoint)`. The combined gate is the old Hugging Face hosts plus a source on the host named by `HF_ENDPOINT`. - `internal/controller/model_storage.go`: new `hfEndpointFromSecret` resolves `HF_ENDPOINT` from `spec.sourceSecretRef` (best-effort), threaded through `buildModelStorageConfig`. - `internal/controller/deployment_builder.go`, `multinode.go`, `model_prefetch.go`, `inferenceservice_controller.go`: resolve the endpoint once per reconcile and pass it down, including the draft model. - `pkg/agent/s3.go`, `executor.go`: `resolveHFToken` becomes `resolveHFAuth` (one read for `HF_TOKEN` and `HF_ENDPOINT`); the metal gate reaches the same `pkg/hfsource` predicate. - Docs: the model cache guide gains an \"authenticated mirror\" section and the \"only ever sent to huggingface.co\" property is restated for `HF_ENDPOINT`. ## Why As the platform operator: on a network that only allows listed hosts, I want Models to pull from our authenticated Hugging Face mirror so GGUF downloads work where the Hugging Face CDN is blocked (#1900). `IsHFAuthSource` was a pure function of the source string, true only for `hf://` and `huggingface.co`, so a Model pointed at an Artifactory `huggingfaceml",
+      "gold": [
+        "internal/controller/deployment_builder.go",
+        "internal/controller/inferenceservice_controller.go",
+        "internal/controller/model_prefetch.go",
+        "internal/controller/model_storage.go",
+        "internal/controller/multinode.go",
+        "internal/controller/source.go",
+        "pkg/agent/executor.go",
+        "pkg/agent/s3.go",
+        "pkg/hfsource/hfsource.go"
+      ]
+    },
+    {
+      "id": "1901",
+      "query": "test: harden the tight-timeout e2e spec against a router reachability race ## What Harden the E2E spec `Manager ModelRouter Cluster > should honor a tight rule.timeout and surface deadline as 502/503`, which flakes on `Run on Ubuntu (kind, default storage)` with `tight-timeout dispatch should surface 502 or 503; got 0`. - `test/utils/utils.go`: `RunCurlInCluster` now treats a completed curl that got no HTTP response (`HTTP_STATUS 000`) as an error that carries the pod logs, instead of returning status `0` with a nil error. - `test/utils/utils.go`: new `CurlInClusterEventually(ns, url, method, headers, body, deadline)` retries the request until it answers, bounded by a deadline, returning the last result. - `test/e2e/e2e_test.go`: the tight rule.timeout spec dispatches through `CurlInClusterEventually` and still asserts `502/503` strictly once a response arrives. ## Why Status `0` is curl's `%{http_code}` for a request that got no HTTP response at all. The spec applies a brand-new `ModelRouter`, waits on `rollout status deployment/<name>-router-proxy`, then curls `http://<name>-router-proxy.<ns>.svc.cluster.local:8080` immediately. A freshly created Service's DNS/Endpoints can lag the Deployment's readiness for a moment, so curl gets a failed dial, `parseHTTPStatus` returns `0`, and the spec fails on `got 0`. This is the unfinished half of #1875 (\"return an explicit error (not status 0)\"): #1876 turned a pod that never reaches a terminal phase into an error, but a completed cu",
+      "gold": [
+        "test/utils/utils.go"
+      ]
+    },
+    {
+      "id": "1899",
+      "query": "fix(release): pre-0.9.30 blockers in federation, netpol, router buffer ## What Three pre-release fixes so 0.9.30 ships without regressing existing users, ahead of merging the release-please PR #1849: - **Federation**: revert `FederatedCluster.spec.heartbeatIntervalSeconds`' CRD validation `Minimum` from 30 back to 5, and keep the hub's clamp. `llmkube fleet register` warns instead of rejecting a sub-cadence interval. - **Router NetworkPolicy**: admit the Prometheus scrape namespaces to the router-proxy metrics listener (9090), and permit the controller-manager egress to the router-proxy pods so the budget poll works. - **Router response buffer**: gate the bounded response-body tail buffer on a budget applying to the request, so unbudgeted routers do not pay it. Release notes are generated by release-please at release time, so this PR does not carry a repo-authored notes file. The upgrade-relevant behavior changes are listed here: - Pods restart on operator upgrade: the controller rewrites the model-download init container command (#1897) and llama.cpp's arguments (`--alias`, #1898). - `ModelRouter.spec.policy.budgets` is now enforced (was inert); `maxUSD` requires `costPerMillionTokens` on every backend. - `.status.replicas` now reports observed pods and the `/scale` subresource reads observed; `.status.desiredReplicas` carries intent. - `spec.replicas` ceiling raised to 100. - With `networkPolicies.enabled=true`, the router metrics scrape and the budget poll now work; before",
+      "gold": [
+        "api/federation/v1alpha1/federatedcluster_types.go",
+        "internal/router/proxy.go",
+        "pkg/cli/fleet.go"
+      ]
+    },
+    {
+      "id": "1777",
+      "query": "[BUG] maybeRefreshPRBody replaces a coder-authored PR body with the reviewer summary after a fix cycle ## Bug Description `maybeRefreshPRBody` (`pkg/foreman/agent/executor_native.go`, called at line 1218 after a fix cycle) rebuilds the PR body from the **reviewer's summary** and calls `PullRequestUpdate` with it. Once #1768 lands (PR #1776), the PR body opened on review GO is the **coder's** `extra.modelExtra.prBody`, rendered through `githubpr.DescriptionBody`. The refresh path knows nothing about that: after the first fix cycle it overwrites the coder-authored description with a one-line grounded summary, and it does so without the template, the provenance line or the issue link that the open path renders. So the body a maintainer reads depends on whether the Workload iterated: zero iterations, coder description; one or more, reviewer sentence. #1768 fixed the open path only and named this as a separate issue, as does the commit on #1776. ## Steps to Reproduce 1. Dispatch a Workload with `coderAgentRef`, `reviewerAgentRefs`, `openPullRequest: true` and `maxReviewIterations` >= 1 against a build that includes #1768. 2. Let the coder return GO with a populated `prBody`, the reviewer return NO-GO once, the coder fix, and the reviewer return GO. 3. Read the PR body and compare with `kubectl get agentictask <wl>-code-<N> -o jsonpath='{.status.result.extra.modelExtra.prBody}'`. ## Expected Behavior The refresh keeps the coder's description as the body and updates only what the fi",
+      "gold": [
+        "pkg/foreman/agent/executor_native.go"
+      ]
+    },
+    {
+      "id": "1897",
+      "query": "feat(downloader): log newline-terminated download progress ## What The `model-downloader` init container now logs download progress as newline-terminated lines, so `kubectl logs -c model-downloader` shows how a multi-gigabyte model download is going. ## Why Fixes #1895. curl's progress meter redraws in place with carriage returns, and Kubernetes records a log line only at a newline. After the first redirect the downloader log was silent until the transfer finished, so a healthy slow download was indistinguishable from a stalled one without `kubectl exec`. ## How Every curl transfer now runs under a shared `download_with_progress` shell helper (a `downloadProgressFn` const in `internal/controller/model_storage.go`). It backgrounds the transfer with `--no-progress-meter`, polls the partial's size every second, and prints ``` Downloaded 256 MiB of 18042 MiB (1%) ``` every `${PROGRESS_INTERVAL:-10}` seconds (a positive integer of seconds, overridable through the init container environment; default 10). `wait` carries the transfer's own exit status, so a failed download still fails the init container. The total is the `Content-Length` the HTTP resume/revalidate paths already read in their HEAD probe; `resumePrologue` now also exposes it as `$remote_size` for the heartbeat, mirroring `remoteRevalidateScript`. S3 and multi-file downloads that have no probe print bytes only (`Downloaded N MiB`). Reach: single-file HTTP IfNotPresent and OnChange, single-file S3, and all four multi-fil",
+      "gold": [
+        "internal/controller/model_storage.go"
+      ]
+    },
+    {
+      "id": "1898",
+      "query": "feat(llamacpp): report a clean model ID via --alias ## What The `llamacpp` runtime now passes `--alias` to `llama-server`, so `/v1/models` reports a clean model ID (from `spec.modelRef`, falling back to the Model name) instead of the on-disk file path. The metal-agent path does the same. ## Why Fixes #1894. Without `--alias`, llama.cpp reports the namespaced file path as the model ID, which Open WebUI and every other OpenAI-compatible client show verbatim. The ID also carried the namespace, so the same Model in two namespaces appeared under two IDs and moving a service broke saved client config. ## How `LlamaCppBackend.BuildArgs` (`internal/controller/runtime_llamacpp.go`) derives the name exactly as the SGLang backend already does for `--served-model-name`: ```go servedName := isvc.Spec.ModelRef if servedName == \"\" && model != nil { servedName = model.Name } if servedName != \"\" && !hasMatchingExtraArg(isvc.Spec.ExtraArgs, \"alias\") { args = append(args, \"--alias\", servedName) } ``` Runtime-arg parity: the metal-agent sibling is wired too. `buildExecutorConfig` (agent.go) derives `ExecutorConfig.ServedModelName`, `buildLlamaServerArgs` (executor.go) emits `--alias`, and `TestBuildLlamaServerArgsRuntimeArgParity` now asserts `--alias`. `computeSpecHash` already folds `ModelRef`, which is what the served name derives from, so no new hash entry is needed. The router runtime (`llamacpp-router`) intentionally does not get `--alias`: it serves many models from `--models-dir` and the",
+      "gold": [
+        "api/v1alpha1/inferenceservice_types.go",
+        "internal/controller/runtime_llamacpp.go",
+        "internal/controller/runtime_llamacpp_router.go",
+        "pkg/agent/agent.go",
+        "pkg/agent/executor.go"
+      ]
+    },
+    {
+      "id": "1744",
+      "query": "[BUG] Missing-planned-child report fires during informer lag, because a synchronous task list is compared against a cache-backed read ## Bug Description The missing-planned-child report added for #1738 will fire spuriously during the informer-lag window after the planner creates a Workload's children, because it compares a synchronously-written list against a cache-backed read. Filed as a known limitation of #1738 rather than discovered later: the gap was identified while reviewing that change, and the change is still worth landing because the report is diagnostic-only and self-healing. This issue covers closing the window properly. ## Actual Behavior `missingPlannedTasks` in `internal/foreman/controller/workload_controller.go` matches `w.Status.Tasks` against the observed children by name. Name matching correctly ignores **extra** observed children, which is what makes it immune to the placeholder synthesis in `workload_escalation.go`, `workload_iteration.go`, and `workload_coder_escalation.go`. It does nothing about a planned ref that is **absent because the cache has not caught up yet**, and that window exists: - `markPlanned` (`workload_controller.go`, around line 948) writes `w.Status.Tasks = created` synchronously, as part of the same status patch that records the Planned condition. - `listChildren` reads with `r.List`, the manager's cache-backed client. - The escalation and iteration paths compensate by synthesizing placeholder children so rollup sees tasks created mic",
+      "gold": [
+        "cmd/foreman-operator/main.go",
+        "internal/foreman/controller/workload_controller.go"
+      ]
+    },
+    {
+      "id": "1891",
+      "query": "docs(agents): refresh AGENTS.md and add a reference check ## What Refresh AGENTS.md to current agent-file practice and to the repo's current facts, add a CI check that keeps its references honest, and add a Story issue template. ## Why AGENTS.md is the file agents read first, and it had drifted from the repo: - it claimed Go 1.25 while `go.mod` declares 1.26; - it said \"the two CRDs are **Model** ... and **InferenceService**\" while the `foreman` and `federation` API groups also exist; - its command table listed 9 of the Makefile's targets; - its project layout omitted `api/foreman/`, `api/federation/`, `internal/foreman/`, `pkg/foreman/`, `catalog/`, `deployment/`, `terraform/`, `examples/`, `hack/`, and `scripts/`. The strongest testing rule in the repo (assert on side effects; make every assertion bite) lived only in CONTRIBUTING.md, where agents do not look. And nothing detected any of this drift. Fixes #1890 ## How - **AGENTS.md**: completed the command table and the project layout; added a Definition of done, moved the falsification rule into Testing, and added a Security-sensitive invariants section (enforcement code is adversarial; cross-process contracts are duplicated; a ClusterIP is not a network boundary) alongside the existing privileged-syscall rule. - **`cmd/check-agents-md` + `make check-agents-md` + a Lint workflow step**: fails when a referenced make target, repo path, or the Go version AGENTS.md names no longer resolves against the Makefile, the tree, or `go",
+      "gold": [
+        "cmd/check-agents-md/main.go",
+        "pkg/foreman/agent/tools/run_gate_job.go"
+      ]
+    },
+    {
+      "id": "1889",
+      "query": "feat(router): surface budget utilization on ModelRouter status ## What Populates `ModelRouter.status.budgetUtilization` from the router-proxy's enforced counters, so `kubectl get modelrouter` answers \"how much budget is left?\" without a Prometheus query. ## Why Budget enforcement shipped in #434/#1853 with no operator-facing view: the CRD field exists but nothing wrote it. The counters live in the proxy process, which pushes them nowhere, and the controller cannot derive them. Fixes #1851 ## How - `internal/router/admin.go`: `Proxy.MountAdmin` serves `GET /admin/budgets` as the same `BudgetStore.Snapshot()` the metrics gauges read. - `cmd/router-proxy/main.go`: mounts it on the metrics listener, so the inference listener carries no admin surface. - `internal/controller/router_service_builder.go`: exposes the metrics listener on the router Service as the `admin` port (the operator is a separate process and cannot reach the pod otherwise), plus `routerProxyBudgetEndpoint`. - `internal/controller/modelrouter_budget_status.go`: polls the endpoint and maps the snapshot into `BudgetStatus`. Team-scoped counters (one per header value, same budget name) are summed, consumption and caps alike, because `BudgetStatus` has no field to tell the values apart. `Utilization` is the larger of the token and dollar fractions when both caps are set. - `internal/controller/modelrouter_controller.go`: polls in `recordSuccess`, sets a `BudgetReporting` condition, and requeues on a timer because the",
+      "gold": [
+        "cmd/router-proxy/main.go",
+        "internal/controller/modelrouter_budget_status.go",
+        "internal/controller/modelrouter_controller.go",
+        "internal/controller/router_common.go",
+        "internal/controller/router_service_builder.go",
+        "internal/router/admin.go",
+        "internal/router/budget.go"
+      ]
+    },
+    {
+      "id": "1888",
+      "query": "feat(router): charge budgeted streams by requesting upstream usage ## What Charges budgeted streaming responses that carry no `usage` chunk. When a budget applies to a streamed request, the proxy rewrites the buffered request to set `stream_options.include_usage`, so the upstream reports the count it already has. ## Why The proxy charges from the provider's own count (#434/#1853). A streaming response that omits the usage object was charged zero, so a client could evade a cap by asking for `\"stream\": true`. Closes that gap. Fixes #1852 ## How - `internal/router/usage.go`: new `InjectStreamUsage` sets `stream_options.include_usage` only when the body is a stream and does not already carry `stream_options`. It preserves the other fields as raw JSON. - `internal/router/proxy.go`: calls it after budget admission, gated on `isStream && len(scopeKeys) > 0`, so unbudgeted traffic dispatches untouched. - `internal/router/proxy_test.go`: the fake backend gains an opt-in `honorUsage` SSE mode (off by default, so it still models a server that ignores the option) and captures the upstream body. New tests cover the injection reaching the upstream, unbudgeted traffic not being touched, and a compliant upstream charging a non-zero amount with the `no_usage` counter untouched. - `internal/router/usage_test.go`: table-driven `InjectStreamUsage` cases including existing `stream_options`, `stream: false`, empty, and non-JSON bodies. `RouterBudgetUnchargedTotal{reason=\"no_usage\"}` still marks an",
+      "gold": [
+        "internal/router/proxy.go",
+        "internal/router/usage.go"
+      ]
+    },
+    {
+      "id": "434",
+      "query": "feat: hierarchical token and dollar budgets with audit log Part of epic #437. **Phase 2: Production hardening**. ## Scope **Budgets:** - Implement `BudgetSpec` (token caps, dollar caps, rolling window, scope key). - Scopes: per-router, per-rule, per-team (where team is derived from a configurable header like `x-llmkube-team`). - In-memory rolling counters for v0.1 (persistence in #11). Document the state-loss-on-restart limitation. - On budget exhaustion: return HTTP 429 with `Retry-After` and a structured error body indicating the exhausted budget. - Surface utilization in `.status.budgetUtilization` and as the `llmkube_router_budget_utilization` gauge (added in #9). **Audit log:** - Structured JSON to stdout for every routing decision: timestamp, request id, router, rule matched, backend selected, backend tier, classification, prompt token count, completion token count, estimated USD cost (computed from `RouterBackend.CostPerMillionTokens`), outcome (success/fail-closed/budget-exceeded/timeout/5xx). - Configurable via `policy.auditLog.sink`: `stdout` (default), `file` (path), `otlp` (forward to OTel collector as logs). MVP ships `stdout`; the others can be stubs that return `NotImplemented` until follow-up issues fill them in. ## Success criteria - Unit tests cover budget arithmetic (rolling window math, multi-scope precedence, overflow). - Integration test exceeds a budget within the window and verifies 429 + Retry-After. - Audit log entries are valid JSON and pass schema ",
+      "gold": [
+        "internal/controller/modelrouter_validation.go",
+        "internal/controller/router_config_builder.go",
+        "internal/metrics/metrics.go",
+        "internal/router/budget.go",
+        "internal/router/config.go",
+        "internal/router/proxy.go",
+        "internal/router/usage.go"
+      ]
+    },
+    {
+      "id": "1881",
+      "query": "[BUG] KEDA and hand-authored HPAs have no working scale target: Deployment replicas are reverted and the InferenceService /scale subresource exposes no selector ## Bug Description An InferenceService cannot be scaled by anything other than the operator's own managed HPA. Every documented path for an external scaler (KEDA `ScaledObject`, hand-authored `HorizontalPodAutoscaler`, `kubectl scale deployment`) either gets reverted by the controller or is rejected by the Kubernetes HPA controller. Three defects combine: 1. **Deployment replicas are reverted unless `spec.autoscaling` is set.** `reconcileDeployment` in `internal/controller/inferenceservice_controller.go` assigns the freshly built spec onto the live Deployment on every reconcile and only preserves the live replica count when `isvc.Spec.Autoscaling != nil` (the #484 / #485 fix). The controller `Owns(&appsv1.Deployment{})`, so any external write to `deployment.spec.replicas` triggers a reconcile that immediately puts `spec.replicas` back. Options A through D and Step 3 of `docs/site/guides/metrics-driven-autoscaling.md` all point the user's HPA or KEDA `ScaledObject` at the Deployment (`apps/v1`), so the guide documents a configuration the controller fights. 2. **The InferenceService `/scale` subresource exposes no selector.** The marker in `api/v1alpha1/inferenceservice_types.go` is `+kubebuilder:subresource:scale:specpath=.spec.replicas,statuspath=.status.replicas` with no `selectorpath`, and `InferenceServiceStatus` h",
+      "gold": [
+        "api/v1alpha1/inferenceservice_types.go",
+        "internal/controller/inferenceservice_controller.go",
+        "internal/controller/multinode.go",
+        "internal/controller/status_builder.go"
+      ]
+    },
+    {
+      "id": "1884",
+      "query": "test(e2e): B200 validation harness: full row set, deferral contract, and a gated self-test (#1376, #1833) ## What Makes the ten-row NVIDIA Blackwell B200 validation matrix executable before hardware lands, and closes the two gaps the harness skeleton left open: the full row set with an explicit deferral contract, and the harness self-test joining the Foreman gate. Rows 1-3 remain the asserting rows (`apply manifest -> wait Ready -> llmkube benchmark -o json -> assert a decode floor -> capture`). Rows 4-10 ship as deferred rows: each carries `# ASSERTIONS-DEFERRED: #1377` and calls `b200_deferred_row`, which records a `deferred` result and publishes no status. ## Why The matrix (`docs/operations/b200-validation-matrix.md`) is 0/10 passing and 10/10 blocked-on-hardware. Its own doc says the highest-value preparation is the harness, so a short, contended B200 window is spent executing rather than authoring. This is #413 slice C, issued as #1376. Rows 4-10 assert properties of the B200 itself (NVLink5 topology, DCGM counters, MIG profiles, NVFP4/MXFP4 serve paths, runbooks), so their load-bearing assertions are owned by the matrix-execution pass #1377. The harness carries their structure and dry-run wiring and never asserts a floor for them, so an off-hardware run cannot publish a pass it did not earn. Fixes #1376 Fixes #1833 ## How - `test/e2e/b200/`: `run-matrix.sh` (resumable, `--dry-run` without a cluster), `lib/preflight.sh` (asserts the chart `platformFloors` plus the exact",
+      "gold": [
+        "pkg/foreman/agent/tools/run_gate_job.go"
+      ]
+    },
+    {
+      "id": "1876",
+      "query": "fix(e2e): bound the E2E request pods and give the suite an explicit test timeout ## What Stabilize the E2E phase. Four changes, one per flake class: - Bound the transient request pods: `curl --connect-timeout 5 --max-time 45`, and a phase poll that returns an explicit error instead of an HTTP status of 0 when the pod never finishes. - Give the kind suite an explicit `-timeout 30m` on all three `go test` invocations. - Retry the cert-manager manifest fetch in `BeforeSuite` (3 attempts, backoff). - Poll the OpenShift `supplemental-groups` namespace annotation instead of reading it once. ## Why The `E2E Tests` workflow flakes often enough to create false negatives on pipeline health. I scanned 500 runs at the **job** level (the run-level conclusion is useless, since the Longhorn, Quota, and MicroShift jobs are `continue-on-error: true`) and classified each failed job from its log: | Class | Jobs | Job | Evidence | |---|---|---|---| | Suite exceeds Go's 10m timeout | 2 | kind, default storage | `panic: test timed out after 10m0s`, killed mid-cleanup | | Fail-closed spec hangs | 6 | kind, default storage | `Expected <int>: 0 to equal <int>: 503` at `test/e2e/e2e_test.go:1304` | | MicroShift SCC annotation race | 5 | MicroShift | empty `openshift.io/sa.scc.supplemental-groups` right after `kubectl create ns` | | cert-manager install 504 | 1 | kind + Longhorn | `kubectl apply -f https://...cert-manager.yaml` 504 in `BeforeSuite` | The decisive finding is the timeout headroom: on suc",
+      "gold": [
+        "test/utils/utils.go"
+      ]
+    },
+    {
+      "id": "1874",
+      "query": "fix(federation): enforce and honor the edge's heartbeat push cadence ## What Three commits against the FederatedCluster heartbeat interval: 1. Reject a sub-cadence value at admission and in the CLI (`fix(federation)`). 2. Make the hub derive staleness and its requeue from the cadence the edge delivers (`fix(federation)`). 3. Run `federation-chart-crds` in the gate, now that CI regenerates it (`fix(foreman)`). ## Why Fixes #1788. The CRD accepted `heartbeatIntervalSeconds` values the edge cannot deliver. The edge pushes on a fixed 30s cadence (`defaultFederationEdgeInterval`), and the hub derives its staleness thresholds from the spec value (3x Stale, 10x Unreachable), so an accepted 5..9 flips a healthy site to Stale between pushes. Option 1 from the issue: raise the floor to 30 so admission enforces the cadence the edge actually has, and reject the same values in `llmkube fleet register` with a message naming the floor rather than bouncing off the API server. Commit 2 is the half the issue's option 1 does not cover: the floor stops *new* sub-cadence values, but a site already registered below it keeps false-Staleing. The hub now clamps the spec interval up to the delivered cadence at both use sites (the phase derivation and the requeue), through one helper tied to `defaultFederationEdgeInterval`, so the two 30s cannot drift. ## How - `api/federation/v1alpha1/federatedcluster_types.go`: `Minimum=5` -> `Minimum=30`, with the CRD regenerated (`make manifests`, `make federation-",
+      "gold": [
+        "api/federation/v1alpha1/federatedcluster_types.go",
+        "internal/controller/federatedcluster_controller.go",
+        "pkg/cli/fleet.go",
+        "pkg/foreman/agent/tools/run_gate_job.go"
+      ]
+    },
+    {
+      "id": "1379",
+      "query": "[FEATURE] Evaluate OCI ImageVolume (k8s 1.36 GA) as a model source ## Feature Description Kubernetes `ImageVolume` (the OCI VolumeSource) reached **GA and was locked in k8s 1.36**. It mounts an OCI artifact directly into a pod as a volume \u2014 meaning model weights can be pulled straight from a registry with **no init container and no download/puller step**. ## Problem Statement > As a fleet operator, I want model weights delivered by the same registry, credentials, and mirroring I already use for images, so that air-gapped and multi-node deployments do not need a separate download-and-cache path. LLMKube today stages weights via a download Job plus a model-cache PVC (`pvc://` sources, `spec.modelCache`). That path works, but it carries its own credential handling, cache-key logic, PVC lifecycle, and the oscillation class of bugs we have already hit (#928, #1139, #1353). ## Proposed Solution Evaluate, and if it holds up, add an OCI-artifact model source (e.g. `oci://`) backed by `ImageVolume`: - Weights become a normal OCI artifact \u2014 registry auth, mirroring, signing, and air-gapped import all reuse the container-image path we already document. - Removes the init-container/puller and the per-service cache PVC for that source type. - Complements rather than replaces `pvc://` and `s3://`; existing sources stay. Open questions to answer in the evaluation: k8s 1.36 floor (do we gate the source type on server version?), runtime support in the CRI versions we target, artifact layout f",
+      "gold": [
+        "api/v1alpha1/model_types.go",
+        "cmd/main.go",
+        "internal/controller/model_controller.go",
+        "internal/controller/model_storage.go",
+        "internal/controller/source.go"
+      ]
+    },
+    {
+      "id": "1847",
+      "query": "feat(foreman): verify-equipped scan-gate loop reproducing image scans before the verdict ## What A verify-equipped **scan gate** for Foreman: an `AgenticTask` (or any `Workload` step) can declare `spec.scanGate`, and after every coder push the agent reproduces the release-image CVE gate (`hack/scan-images.sh`) in a clean-room Kubernetes Job \u2014 building the release images the way GoReleaser does and Trivy-scanning them \u2014 feeding findings back to the coder for fix rounds, bounded by `Agent.spec.maxScanIterations`. The deterministic verify stage also re-runs the scan before a `GATE-PASS` can stand on a scan-declared branch. ## Why Fixes #1798 CI's container-image scan was the one gate a coder agent couldn't see into: a branch could burn its whole envtest-clean push cycle and still die at the release scan on findings (`base_image`, `other`, `content`) that the agent never had a chance to address. Coders now iterate against the actual scan output and only settle `GATE-PASS` when both the source gate and the image scan are clean \u2014 or report `INCOMPLETE / SCAN-GATE-FAILED` honestly when the fix doesn't come. ## How Eight commits, layered API \u2192 seam \u2192 loop \u2192 tool \u2192 wiring: - **API** (`api/foreman/v1alpha1`): `ScanGate` (images / severity / ignoreUnfixed / builderImage / runnerImage, `Resolve()` merges over CI-aligned defaults, parity-guarded against `hack/scan-images.sh`), `AgenticTaskSpec.scanGate`, `Agent.spec.maxScanIterations` (nil \u2192 one fix round, 0 \u2192 off), and `Workload.spec.sca",
+      "gold": [
+        "api/foreman/v1alpha1/agent_types.go",
+        "api/foreman/v1alpha1/agentictask_types.go",
+        "api/foreman/v1alpha1/scangate_types.go",
+        "api/foreman/v1alpha1/workload_types.go",
+        "api/foreman/v1alpha1/zz_generated.deepcopy.go",
+        "cmd/foreman-agent/main.go",
+        "internal/foreman/controller/workload_controller.go",
+        "pkg/foreman/agent/envtest_feedback.go",
+        "pkg/foreman/agent/executor_native.go",
+        "pkg/foreman/agent/scan_gate.go",
+        "pkg/foreman/agent/tools/run_scan_job.go",
+        "pkg/foreman/agent/tools/scan_targets.go"
+      ]
+    },
+    {
+      "id": "1844",
+      "query": "chore: release 0.9.29 :rocket: Release ${version} --- ## [0.9.29](https://github.com/defilantech/LLMKube/compare/v0.9.28...v0.9.29) (2026-09-16) ### Bug Fixes * **controller:** keep generated args when a non-CLI runtime overrides command ([#1843](https://github.com/defilantech/LLMKube/issues/1843)) ([c262265](https://github.com/defilantech/LLMKube/commit/c262265a88a82549565d42788e33f8d38fe55c0c)) --- This PR was generated with [Release Please](https://github.com/googleapis/release-please). See [documentation](https://github.com/googleapis/release-please#release-please).",
+      "gold": [
+        "pkg/cli/version.go"
+      ]
+    },
+    {
+      "id": "1843",
+      "query": "fix(controller): keep generated args when a non-CLI runtime overrides command ## What `spec.command` no longer drops the runtime's generated args for runtimes that build no command of their own. The verbatim-args path from #1829 is now gated on the backend implementing `CommandBuilder` instead of on `spec.command` being set, and the `Command` field doc (and generated CRDs) spell out both behaviors for every runtime. ## Why Refs #1842 #1829 made any `spec.command` override mean \"honor `spec.args` verbatim, drop the generated args\". That is correct for the three backends that implement `CommandBuilder` (`vllm`, `sglang`, `personaplex`): handing `vllm serve <model> --host \u2026` to a bring-your-own launcher breaks it. `llamacpp` implements no `CommandBuilder` \u2014 it serves via the image ENTRYPOINT plus generated args \u2014 so for it `spec.command` was only ever an entrypoint override. The result was a llamacpp InferenceService starting `llama-server` with no `--model`, and no `--ctx-size`, `--mmproj`, speculative-decoding flags or `--host`/`--port` either. It still passed every health gate the operator has: `llama-server` answers `/health` with 200 with no model loaded, so the pod went Ready while `/v1/models` stayed empty and every request 400'd. ## How `setCommandAndArgs` (extracted from `constructDeployment`, which was at the gocyclo ceiling) does the type assertion once: - backend implements `CommandBuilder` **and** `spec.command` is set \u2014 unchanged from #1829: command override, then ",
+      "gold": [
+        "api/v1alpha1/inferenceservice_types.go",
+        "internal/controller/deployment_builder.go"
+      ]
+    },
+    {
+      "id": "1831",
+      "query": "chore: release 0.9.28 :rocket: Release ${version} --- ## [0.9.28](https://github.com/defilantech/LLMKube/compare/v0.9.27...v0.9.28) (2026-09-16) ### Features * **runtime:** honor spec.args verbatim when spec.command is overridden ([#1829](https://github.com/defilantech/LLMKube/issues/1829)) ([f2fcc09](https://github.com/defilantech/LLMKube/commit/f2fcc09a33aa52d26cd75e43d8537dfc388523c0)) ### Bug Fixes * **foreman:** let the coder resolve a rebase conflict instead of failing loud ([#1840](https://github.com/defilantech/LLMKube/issues/1840)) ([8dfd531](https://github.com/defilantech/LLMKube/commit/8dfd531f2f4a9ed9971cad15e0333f596ee3c34a)) * **router:** bound pool swaps and stop stale deactivate racing a new activation ([#1838](https://github.com/defilantech/LLMKube/issues/1838)) ([a598ec7](https://github.com/defilantech/LLMKube/commit/a598ec7740641fe4c74fefa5fad6051a795179c1)) * **router:** rewrite model to served name on IfIdle fall-through ([#1836](https://github.com/defilantech/LLMKube/issues/1836)) ([8276b50](https://github.com/defilantech/LLMKube/commit/8276b509aa6d6f9ee9c78d7a3b0db54e82558f48)) ### Documentation * **labs:** Qwen3.8-Flash-Next with MTP on one Strix Halo ([#1832](https://github.com/defilantech/LLMKube/issues/1832)) ([3acb00d](https://github.com/defilantech/LLMKube/commit/3acb00ddc05a30945b92acbfe67d6cccd469e02c)) --- This PR was generated with [Release Please](https://github.com/googleapis/release-please). See [documentation](https://github.com/googleapis",
+      "gold": [
+        "pkg/cli/version.go"
+      ]
+    },
+    {
+      "id": "1840",
+      "query": "fix(foreman): let the coder resolve a rebase conflict instead of failing loud Closes #1839. ## Problem On a pr-fix or revision, `setupTaskBranch` restores the prior attempt and `RebaseOntoBase` rebases it onto the current base. On **any** conflict it ran `git rebase --abort` and failed the task `INCOMPLETE` **before the coder loop ran** \u2014 so a PR that only needed its conflict resolved was abandoned to needs-human. A batch of PRs touching the same files makes this systematic: once one merges, every sibling conflicts on rebase and fails identically. The fail-loud was deliberate (#1042/#1364 \u2014 the old reset+overwrite behavior silently reverted merged work). But it left no path to actually *resolve* a legitimate conflict. ## Change Add a resolve path: - **`RebaseOntoBase`** gains `LeaveConflicts`. When set, a conflict leaves the workspace mid-rebase and returns a typed `*RebaseConflictError` naming the unmerged files instead of aborting. Default (`false`) keeps the exact pre-#1839 abort-and-fail contract for callers that cannot resolve. - **`setupTaskBranch`** uses `LeaveConflicts` on the rebase path; **`Execute`** treats `*RebaseConflictError` as a soft signal and hands the mid-rebase workspace to the coder loop, whose prompt leads with an instruction to resolve the conflict (keeping both the base's merged work and the branch's intent) and finish the rebase. - **Post-loop guard**: a coder GO is downgraded to `INCOMPLETE` (`RebaseConflictUnresolved`) if the workspace is still mid",
+      "gold": [
+        "api/foreman/v1alpha1/agentictask_types.go",
+        "pkg/foreman/agent/executor_native.go",
+        "pkg/foreman/agent/repo/branch.go"
+      ]
+    },
+    {
+      "id": "1836",
+      "query": "fix(router): rewrite model to served name on IfIdle fall-through ## What The dispatcher rewrote the outbound `model` field only for backends with an explicit `Model`, which only external providers have, so a request that reached a local backend under a different client alias (an `IfIdle` rule skipping a busy non-resident ModelPool member and falling through to the warm one) still carried the alias; llama.cpp ignores the field but vLLM, SGLang and TGI answer `404 The model X does not exist`, which the proxy logged as a successful dispatch. Local backends now carry the name of the InferenceService they resolve to (the name their runtime serves) through the compiled wire config, and the dispatcher sends that when the backend declares no `Model`. A body whose `model` already matches is passed through unmodified instead of re-marshalled, so the common request stays byte-identical, and external backends keep using their declared `Model` exactly as before. ## Why Fixes #1835 ## How New `Backend.inferenceService` field on the proxy wire config, populated by the controller from `spec.backends[].inferenceServiceRef.name`, plus a `Backend.outboundModel()` helper the dispatcher uses in place of `backend.Model`. `applyModelOverride` gained an equality short-circuit. Covered by a unit test on `outboundModel`, a `Dispatch`-level test asserting the upstream receives the served name, a controller assertion that the field is compiled, and an extension to the existing `IfIdle` end-to-end proxy ",
+      "gold": [
+        "internal/controller/router_config_builder.go",
+        "internal/router/backend.go",
+        "internal/router/config.go"
+      ]
+    },
+    {
+      "id": "1838",
+      "query": "fix(router): bound pool swaps and stop stale deactivate racing a new activation ## What Bounds a ModelPool swap by the pool's `swapBudget` and stops a stale deactivate from undoing an activation issued after it, in the router-proxy activator. ## Why Fixes #1837 The activator could leave a pool dark until the proxy was restarted. When the last waiter for a member gave up, the deferred cleanup fired an asynchronous `Deactivate` outside the lock; a request for the same member arriving in that window started a swap and scaled the member up, and the stale `Deactivate` then scaled it back to zero. `Activate` is idempotent-by-check and never re-issued, so the swap goroutine waited on a member that could never become Ready. That goroutine had no deadline either: its only exit was the cancel fired when the last waiter for the target left, so a client retrying on 503 kept the doomed swap alive indefinitely. `swapping` stayed true, the resident member's fast path stayed closed, and every request on the pool burned its hold budget and 503ed, including requests for the member that was still loaded. ## How The deferred deactivate stays asynchronous but now re-takes the lock and re-checks before patching, skipping itself when the member is wanted again: a waiter has arrived, it became resident, or a swap newer than the generation the deactivate was scheduled against is activating it. A per-pool swap generation was added for that check, and it also stops a cancelled swap's goroutine from cle",
+      "gold": [
+        "internal/metrics/metrics.go",
+        "internal/router/activator.go"
+      ]
+    },
+    {
+      "id": "1829",
+      "query": "feat(runtime): honor spec.args verbatim when spec.command is overridden ## What When `spec.command` overrides the container entrypoint, honor `spec.args` verbatim and append `spec.extraArgs`, instead of injecting the runtime's built args (`vllm serve <model> --host \u2026`). ## Why Fixes #1830. A custom-image server whose entrypoint dispatches serving modes (e.g. a tuned vLLM `bash docker/entrypoint.sh batch`) could only run under `runtime: generic`, because the native runtimes overwrite its args with `vllm serve \u2026`. But `generic` has no request-aware idle probe \u2014 `GenericBackend`'s `/health` always reads idle, so in a swap-based ModelPool a busy backend is reclaimed mid-request. The `vllm` runtime already has the right signal (`IdleProbe` scrapes `vllm:num_requests_running`, fail-closed), but was unusable with a custom launcher because of the args injection. ## How In `constructDeployment`, when `spec.command` is set: `container.Args = spec.args + spec.extraArgs`. A custom entrypoint owns its args, and the documented `extraArgs` escape hatch still applies under any runtime. Runtimes whose `BuildArgs` already returns `spec.Args` (`generic`) are unaffected \u2014 the existing moshi (generic) `spec.command` test still passes. Added a `vllm` custom-command test asserting `args: [batch]` + `extraArgs: [--seed, 42]` renders `[batch, --seed, 42]` with no `serve <model>` injection. Updated the `spec.args` / `spec.extraArgs` field docs and regenerated CRDs into both `config/crd/bases` and the ",
+      "gold": [
+        "api/v1alpha1/inferenceservice_types.go",
+        "internal/controller/deployment_builder.go"
+      ]
+    }
+  ]
+}
