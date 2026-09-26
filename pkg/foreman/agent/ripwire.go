@@ -50,10 +50,9 @@ func ripwireBackendEnabled() bool {
 	return strings.EqualFold(strings.TrimSpace(os.Getenv(ripwireBackendEnv)), "ripwire")
 }
 
-// RipwireBin resolves the ripwire binary: the explicit FOREMAN_RIPWIRE_BIN
-// override, else "ripwire" resolved from PATH. Exported so the agent tool
-// resolves the same binary the advisory backend uses.
-func RipwireBin() string {
+// ripwireBin resolves the ripwire binary: the explicit FOREMAN_RIPWIRE_BIN
+// override, else "ripwire" resolved from PATH.
+func ripwireBin() string {
 	if b := strings.TrimSpace(os.Getenv(ripwireBinEnv)); b != "" {
 		return b
 	}
@@ -114,9 +113,9 @@ func ripwireSummary(ctx context.Context, workspace, issueText string, tokenBudge
 
 	cctx, cancel := context.WithTimeout(ctx, ripwireTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(cctx, RipwireBin(), args...).Output()
+	out, err := exec.CommandContext(cctx, ripwireBin(), args...).Output()
 	if err != nil {
-		return "", fmt.Errorf("ripwire %q: %w", RipwireBin(), err)
+		return "", fmt.Errorf("ripwire %q: %w", ripwireBin(), err)
 	}
 	return renderRipwire(out)
 }
