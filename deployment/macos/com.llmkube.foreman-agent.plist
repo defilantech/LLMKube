@@ -66,6 +66,11 @@
     <dict>
         <key>PATH</key>
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <!-- ripwire (#1903): the coder's call-graph backend. Staged into the
+             install root (no sudo), so its path is set explicitly here rather
+             than relying on PATH. Substituted by `make install-foreman-agent`. -->
+        <key>FOREMAN_RIPWIRE_BIN</key>
+        <string>REPLACE_WITH_RIPWIRE_BIN</string>
         <!-- The kubeconfig path is passed explicitly via --kubeconfig above. -->
     </dict>
 
