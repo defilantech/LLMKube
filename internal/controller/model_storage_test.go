@@ -228,14 +228,14 @@ var _ = Describe("buildMultiFileInitCommand (s3)", func() {
 	It("should NOT emit --aws-sigv4 for non-s3 source (HTTP regression)", func() {
 		cmd := buildMultiFileInitCommand(true, false, false, "")
 		Expect(cmd).ToNot(ContainSubstring("aws-sigv4"))
-		Expect(cmd).To(ContainSubstring(`curl -f -L -o "$dest.tmp" "$url"`))
+		Expect(cmd).To(ContainSubstring(`curl -f -L -C - -o "$MODEL_PARTIAL" "$url"`))
 		Expect(cmd).To(ContainSubstring("${SOURCE%/}/$rel"))
 	})
 
 	It("should NOT emit --aws-sigv4 for non-s3 source with OnChange (HTTP regression)", func() {
 		cmd := buildMultiFileInitCommand(true, false, false, RefreshPolicyOnChange)
 		Expect(cmd).ToNot(ContainSubstring("aws-sigv4"))
-		Expect(cmd).To(ContainSubstring(`curl -fsSL -o "$dest.tmp" "$url"`))
+		Expect(cmd).To(ContainSubstring(`curl -fsSL -C - -o "$MODEL_PARTIAL" "$url"`))
 		Expect(cmd).To(ContainSubstring("${SOURCE%/}/$rel"))
 	})
 })

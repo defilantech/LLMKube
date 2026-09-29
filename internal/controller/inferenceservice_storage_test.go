@@ -401,7 +401,7 @@ var _ = Describe("buildMultiFileInitCommand", func() {
 		Expect(cmd).To(ContainSubstring(`mkdir -p "$CACHE_DIR"`))
 		Expect(cmd).To(ContainSubstring("printf '%s\\n' \"$MODEL_FILES\""))
 		Expect(cmd).To(ContainSubstring(`mkdir -p "$(dirname "$dest")"`))
-		Expect(cmd).To(ContainSubstring(`curl -f -L -o "$dest.tmp" "$url" --no-progress-meter && mv "$dest.tmp" "$dest"`))
+		Expect(cmd).To(ContainSubstring(`curl -f -L -C - -o "$MODEL_PARTIAL" "$url" --no-progress-meter && mv "$MODEL_PARTIAL" "$dest"`))
 		Expect(cmd).ToNot(ContainSubstring(`-o "$dest" `))
 		Expect(cmd).To(ContainSubstring("already cached, skipping download"))
 	})

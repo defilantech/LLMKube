@@ -290,9 +290,9 @@ func TestDownloadProgressWiredIntoEveryCurlPath(t *testing.T) {
 		{"single-file S3 uncached", buildModelInitCommand(false, true, false, false, RefreshPolicyIfNotPresent),
 			`download_with_progress "$MODEL_PATH.tmp" "" curl --aws-sigv4`},
 		{"multi-file HTTP IfNotPresent", buildMultiFileInitCommand(true, false, false, RefreshPolicyIfNotPresent),
-			`download_with_progress "$dest.tmp" "" curl -f -L`},
+			`download_with_progress "$MODEL_PARTIAL" "$remote_size" curl -f -L`},
 		{"multi-file HTTP OnChange", buildMultiFileInitCommand(true, false, false, RefreshPolicyOnChange),
-			`download_with_progress "$dest.tmp" "$remote_size"`},
+			`download_with_progress "$MODEL_PARTIAL" "$remote_size"`},
 		{"multi-file S3 IfNotPresent", buildMultiFileInitCommand(true, true, false, RefreshPolicyIfNotPresent),
 			`download_with_progress "$dest.tmp" "" curl --aws-sigv4`},
 	}

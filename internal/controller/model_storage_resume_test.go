@@ -34,9 +34,9 @@ import (
 // Resume support (#1765) has to be proven by driving the generated shell, not by
 // string matching, for the same reason TestRemoteRevalidateScript_Behavioral
 // exists (#1326): a ContainSubstring assertion passes on a curl-flag claim that
-// turns out to be dead. These tests run the two resume code paths (the
-// IfNotPresent branch of buildModelInitCommand and remoteRevalidateScript) under
-// sh against an origin that serves byte ranges, and assert the bytes that
+// turns out to be dead. These tests run the resume code paths (the
+// IfNotPresent branch of buildModelInitCommand, remoteRevalidateScript, and both
+// HTTP branches of buildMultiFileInitCommand) under sh against an origin that serves byte ranges, and assert the bytes that
 // actually land on disk.
 //
 // The origin is a stub for the range behaviour an S3 endpoint or a CDN has:
@@ -204,6 +204,45 @@ func TestModelDownloadResume_Behavioral(t *testing.T) {
 			script: func() string { return remoteRevalidateScript(false) },
 		})
 	})
+	// The multi-file loop reuses the same resume helpers per file. With
+	// MODEL_FILES naming one file, dest is $CACHE_DIR/model.gguf, which is the
+	// modelPath every variant seeds and asserts on.
+	for _, policy := range []string{RefreshPolicyIfNotPresent, RefreshPolicyOnChange} {
+		t.Run("MultiFile"+policy, func(t *testing.T) {
+			t.Setenv("MODEL_FILES", "model.gguf")
+			testResumeVariant(t, resumeVariant{
+				name:   "MultiFile" + policy,
+				script: func() string { return buildMultiFileInitCommand(true, false, false, policy) },
+			})
+		})
+	}
+	t.Run("MultiFileSweepsDebrisAfterLoop", testMultiFileSweepsDebrisAfterLoop)
+}
+
+// testMultiFileSweepsDebrisAfterLoop pins the #1435 guarantee for the
+// multi-file loop, which no longer sweeps before it starts: once every listed
+// file is published, a partial belonging to a file no longer in the manifest,
+// in a subdirectory the per-file sweep never visits, is removed.
+func testMultiFileSweepsDebrisAfterLoop(t *testing.T) {
+	o := newRangeOrigin(t, true)
+	dir := t.TempDir()
+	orphan := filepath.Join(dir, "old", "dropped.gguf.0123456789ab.tmp")
+	if err := os.MkdirAll(filepath.Dir(orphan), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(orphan, []byte("stale"), 0o644); err != nil {
+		t.Fatalf("seed orphan partial: %v", err)
+	}
+	t.Setenv("MODEL_FILES", "model.gguf")
+
+	runInitScript(t, buildMultiFileInitCommand(true, false, false, RefreshPolicyIfNotPresent), o.srv.URL, "", dir)
+
+	if got, err := os.ReadFile(filepath.Join(dir, "model.gguf")); err != nil || string(got) != string(o.content()) {
+		t.Fatalf("model.gguf not published intact (err %v)", err)
+	}
+	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
+		t.Errorf("orphaned partial survived a completed loop (#1435)")
+	}
 }
 
 type resumeVariant struct {
