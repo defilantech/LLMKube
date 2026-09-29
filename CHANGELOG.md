@@ -5,6 +5,34 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0](https://github.com/defilantech/LLMKube/compare/v0.9.30...v0.10.0) (2026-09-29)
+
+
+### ⚠ BREAKING CHANGES
+
+* **metal-agent:** serve engines on loopback behind an authenticated ingress ([#1945](https://github.com/defilantech/LLMKube/issues/1945))
+
+### Features
+
+* **controller:** front Metal InferenceServices with an authenticated relay ([#1944](https://github.com/defilantech/LLMKube/issues/1944)) ([37be11b](https://github.com/defilantech/LLMKube/commit/37be11bbbbab6caecd1abdfadc042d90bb5fdeb4))
+* **metal-agent:** serve engines on loopback behind an authenticated ingress ([#1945](https://github.com/defilantech/LLMKube/issues/1945)) ([cf55427](https://github.com/defilantech/LLMKube/commit/cf55427aec8478c680516d493a6c96b1225afce5))
+* **metal-agent:** tensorfold runtime for MLX speculative decoding ([#1923](https://github.com/defilantech/LLMKube/issues/1923)) ([8c9820c](https://github.com/defilantech/LLMKube/commit/8c9820c45de1681cb0fa6868a91db1032668539d))
+
+
+### Bug Fixes
+
+* **api:** let InferenceService select Metal runtimes and fall back to the agent flag ([#1912](https://github.com/defilantech/LLMKube/issues/1912)) ([19191b4](https://github.com/defilantech/LLMKube/commit/19191b4dfc06f9878f88f4b44092b04331bcc826))
+* **metal-agent:** enforce a typed allowlist on extraArgs ([#1941](https://github.com/defilantech/LLMKube/issues/1941)) ([c09a4be](https://github.com/defilantech/LLMKube/commit/c09a4bebdc0ce894606479d667d797696c606950))
+* **metal-agent:** enforce allowed roots on local model paths ([#1939](https://github.com/defilantech/LLMKube/issues/1939)) ([bcdd27f](https://github.com/defilantech/LLMKube/commit/bcdd27f875b5d70948dc69482ef8c824142b9516))
+* **metal-agent:** fail fast when llama-server exits during startup ([#1917](https://github.com/defilantech/LLMKube/issues/1917)) ([23f1fc6](https://github.com/defilantech/LLMKube/commit/23f1fc689570e883099d735b3d47d5d03d3e8ea9))
+* **metal-agent:** fail fast when mlx-server exits during startup ([#1929](https://github.com/defilantech/LLMKube/issues/1929)) ([c55f535](https://github.com/defilantech/LLMKube/commit/c55f5359e59e1e566fe008c3cfdaec7e1dc576ee))
+* **metal-agent:** fail fast when vllm-swift exits during startup ([#1928](https://github.com/defilantech/LLMKube/issues/1928)) ([46e4e96](https://github.com/defilantech/LLMKube/commit/46e4e96f35c4b64e4bde877e417b325b3981d87f))
+* **metal-agent:** load local-path GGUF sources in place instead of downloading ([#1920](https://github.com/defilantech/LLMKube/issues/1920)) ([6c045b4](https://github.com/defilantech/LLMKube/commit/6c045b4c2be99fa01b11e52bb40bc81208249824))
+* **metal-agent:** never overwrite or delete a Service or EndpointSlice it does not own ([#1932](https://github.com/defilantech/LLMKube/issues/1932)) ([799194a](https://github.com/defilantech/LLMKube/commit/799194ae454b4c097b2ba719e3b4565afa5dc043))
+* **metal-agent:** size file:// model sources in the memory estimate ([#1930](https://github.com/defilantech/LLMKube/issues/1930)) ([39b1ef6](https://github.com/defilantech/LLMKube/commit/39b1ef669124c70efefbb00835146e3259619759))
+* **metal-agent:** spell mlock as --load-mode on llama.cpp 0.5.0+ ([#1916](https://github.com/defilantech/LLMKube/issues/1916)) ([f760639](https://github.com/defilantech/LLMKube/commit/f760639b92295b1688008a4f21595d9495ffac17))
+* **metal:** stop routing to a Metal endpoint nothing is serving ([#1921](https://github.com/defilantech/LLMKube/issues/1921)) ([75c792f](https://github.com/defilantech/LLMKube/commit/75c792fc05224bf0e80e88e153ec5f65486582e8))
+
 ## [0.9.30](https://github.com/defilantech/LLMKube/compare/v0.9.29...v0.9.30) (2026-09-25)
 
 
