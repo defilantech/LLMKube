@@ -5,6 +5,23 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.1](https://github.com/defilantech/LLMKube/compare/v0.10.0...v0.10.1) (2026-09-30)
+
+
+### Features
+
+* **model:** resume interrupted multi-file downloads ([#1948](https://github.com/defilantech/LLMKube/issues/1948)) ([4275797](https://github.com/defilantech/LLMKube/commit/4275797faacfaf6f3fbea353bd76c98fb2bbf138))
+
+
+### Bug Fixes
+
+* **metal-agent:** harden the Metal agent for 0.10.1 ([#1954](https://github.com/defilantech/LLMKube/issues/1954)) ([99a4dec](https://github.com/defilantech/LLMKube/commit/99a4dec9fe02490fe5ed2484ef68b96c881e6c51))
+
+
+### Documentation
+
+* **security:** list supported versions 0.10.x and 0.9.x, and the Metal agent and Foreman in scope ([#1946](https://github.com/defilantech/LLMKube/issues/1946)) ([d511e04](https://github.com/defilantech/LLMKube/commit/d511e04fc3fe454c71185653c312c3b8c96dd235))
+
 ## [0.10.0](https://github.com/defilantech/LLMKube/compare/v0.9.30...v0.10.0) (2026-09-29)
 
 
