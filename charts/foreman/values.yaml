@@ -299,6 +299,12 @@ operator:
   tolerations: []
   podAnnotations: {}
   podLabels: {}
+  # env is passed straight to the foreman-agent container. Set
+  # FOREMAN_REPOMAP_BACKEND=ripwire to use the ripwire call graph as the
+  # coder's repo-map backend (#1904), and FOREMAN_RIPWIRE_BIN to point at the
+  # binary when it is not on PATH (the macOS install stages it into the
+  # install root and sets this for you). Both are off by default. The binary
+  # must be present on the host; see docs/third-party/ripwire.md.
   env: []
 
 # webhook configures the validating admission webhook that fronts Agent +
