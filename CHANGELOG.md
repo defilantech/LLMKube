@@ -5,6 +5,26 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.2](https://github.com/defilantech/LLMKube/compare/v0.10.1...v0.10.2) (2026-10-03)
+
+
+### Features
+
+* **inferenceservice:** opt-in Model staging for the generic runtime ([#1962](https://github.com/defilantech/LLMKube/issues/1962)) ([78a35a7](https://github.com/defilantech/LLMKube/commit/78a35a716b925aafeb5d29b5b5b8addd90d6fae1))
+* **inferenceservice:** per-service storageClassName for the model cache ([#1969](https://github.com/defilantech/LLMKube/issues/1969)) ([4c5d26a](https://github.com/defilantech/LLMKube/commit/4c5d26aac011796016ffe0a067854a2b885538d4))
+* **model:** require a Socair attestation before a Model is served ([#1968](https://github.com/defilantech/LLMKube/issues/1968)) ([a9926d9](https://github.com/defilantech/LLMKube/commit/a9926d99954bb4b32856db8f13a1b3ca062592ff))
+* **model:** steer prefetch placement with prefetchNodeSelector ([#1970](https://github.com/defilantech/LLMKube/issues/1970)) ([6d92f27](https://github.com/defilantech/LLMKube/commit/6d92f2779bd2b486d70066fbf0d4b232042d4c95))
+
+
+### Bug Fixes
+
+* **security:** guard the Metal relay token Secret and stop signing cross-host S3 redirects ([#1958](https://github.com/defilantech/LLMKube/issues/1958)) ([96e150e](https://github.com/defilantech/LLMKube/commit/96e150e6e879cd584fd334943cf6abb1c6652d76))
+
+
+### Documentation
+
+* **labs:** Qwen3.8-Flash-Next on Gufo on one Strix Halo ([#1966](https://github.com/defilantech/LLMKube/issues/1966)) ([0a66ad6](https://github.com/defilantech/LLMKube/commit/0a66ad63a0bbb14af3cfc869ceef15f6cf2f1935))
+
 ## [0.10.1](https://github.com/defilantech/LLMKube/compare/v0.10.0...v0.10.1) (2026-09-30)
 
 
