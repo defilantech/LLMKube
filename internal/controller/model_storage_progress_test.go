@@ -186,9 +186,9 @@ func TestModelDownloadProgress_Behavioral(t *testing.T) {
 		script func() string
 	}{
 		{"IfNotPresent", func() string {
-			return buildModelInitCommand(false, false, true, false, RefreshPolicyIfNotPresent)
+			return buildModelInitCommand(false, false, true, false, false, RefreshPolicyIfNotPresent)
 		}},
-		{"OnChange", func() string { return remoteRevalidateScript(false) }},
+		{"OnChange", func() string { return remoteRevalidateScript(false, false) }},
 	}
 
 	for _, v := range variants {
@@ -285,9 +285,9 @@ func TestDownloadProgressWiredIntoEveryCurlPath(t *testing.T) {
 		cmd  string
 		want string
 	}{
-		{"single-file S3 cached", buildModelInitCommand(false, true, true, false, RefreshPolicyIfNotPresent),
+		{"single-file S3 cached", buildModelInitCommand(false, true, true, false, false, RefreshPolicyIfNotPresent),
 			`download_with_progress "$MODEL_PATH.tmp" "" curl --aws-sigv4`},
-		{"single-file S3 uncached", buildModelInitCommand(false, true, false, false, RefreshPolicyIfNotPresent),
+		{"single-file S3 uncached", buildModelInitCommand(false, true, false, false, false, RefreshPolicyIfNotPresent),
 			`download_with_progress "$MODEL_PATH.tmp" "" curl --aws-sigv4`},
 		{"multi-file HTTP IfNotPresent", buildMultiFileInitCommand(true, false, false, RefreshPolicyIfNotPresent),
 			`download_with_progress "$MODEL_PARTIAL" "$remote_size" curl -f -L`},

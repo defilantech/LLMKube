@@ -86,6 +86,28 @@ Cache Key: a3b8c9d4e5f67890
 Path: /models/a3b8c9d4e5f67890/model.gguf
 ```
 
+## Integrity Verification (spec.sha256)
+
+Setting `spec.sha256` on a `Model` makes the download init container verify the
+artifact's bytes against the expected digest before anything becomes the cache.
+A mismatch fails the init container, so the pod never starts the inference
+container with bad weights.
+
+- The transfer lands in a partial file and is renamed onto the final path only
+  after the hash matches. On a mismatch the partial is kept for post-mortem and
+  `<model>.sha256-rejected` records the rejected hash.
+- A verified artifact gets a `<model>.sha256` stamp holding the digest, so a
+  later start accepts the file without re-hashing gigabytes (the same
+  convention the metal-agent uses). A warm cache with no stamp, or a stamp
+  naming a different hash, is hashed once and re-stamped.
+- A start against a rejected marker fails immediately, before any network
+  transfer. Correcting `spec.sha256` leaves the marker inert; deleting the
+  marker retries the download.
+- Verification also runs on prefetch Jobs, which reuse the same init
+  container.
+- Multi-file staging (`spec.files` / `spec.mmproj`) does not verify digests;
+  `spec.sha256` applies to single-file Models.
+
 ## Prefetch (Eager Download)
 
 By default a `Model` with a remote source is only a declaration: nothing is

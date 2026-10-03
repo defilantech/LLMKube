@@ -104,7 +104,7 @@ func TestBuildModelInitCommand_HFAuth(t *testing.T) {
 	for _, policy := range []string{RefreshPolicyIfNotPresent, RefreshPolicyOnChange} {
 		for _, useCache := range []bool{true, false} {
 			t.Run(policy+"/cache="+boolStr(useCache), func(t *testing.T) {
-				withAuth := buildModelInitCommand(false, false, useCache, true, policy)
+				withAuth := buildModelInitCommand(false, false, useCache, true, false, policy)
 				if !strings.Contains(withAuth, authHeader) {
 					t.Errorf("HF source: no bearer header in:\n%s", withAuth)
 				}
@@ -129,7 +129,7 @@ func TestBuildModelInitCommand_HFAuth(t *testing.T) {
 					t.Error("--location-trusted sends the token to the redirect target")
 				}
 
-				plain := buildModelInitCommand(false, false, useCache, false, policy)
+				plain := buildModelInitCommand(false, false, useCache, false, false, policy)
 				if strings.Contains(plain, "HF_TOKEN") {
 					t.Errorf("non-HF source leaks the token into:\n%s", plain)
 				}

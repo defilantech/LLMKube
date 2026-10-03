@@ -261,6 +261,22 @@ spec:
 `stageModel` and `skipModelInit` cannot both be true. Runtimes that stage by
 default ignore `stageModel`.
 
+## Integrity verification (`spec.sha256`)
+
+When a `Model` sets `spec.sha256`, the download init container verifies the
+artifact against that digest before anything becomes the cache. A mismatch
+fails the init container, so the pod never starts with bad weights.
+
+- The transfer lands in a partial file and is renamed onto the final path only
+  after the hash matches. On a mismatch the partial is kept and
+  `<model>.sha256-rejected` records the rejected hash.
+- A verified artifact gets a `<model>.sha256` stamp, so later starts skip
+  re-hashing. A warm cache without a stamp is hashed once and stamped.
+- A start against a rejected marker fails before any transfer. Correcting
+  `spec.sha256` makes the marker inert; delete the marker to retry.
+- `spec.sha256` applies to single-file Models; multi-file staging
+  (`spec.files` / `spec.mmproj`) does not verify digests yet.
+
 ## Troubleshooting
 
 ### Pending PVC with `hostpath-provisioner-<node>-*` showing `untolerated taint`

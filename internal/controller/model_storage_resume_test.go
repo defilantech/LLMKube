@@ -194,14 +194,16 @@ func TestModelDownloadResume_Behavioral(t *testing.T) {
 
 	t.Run("IfNotPresent", func(t *testing.T) {
 		testResumeVariant(t, resumeVariant{
-			name:   "IfNotPresent",
-			script: func() string { return buildModelInitCommand(false, false, true, false, RefreshPolicyIfNotPresent) },
+			name: "IfNotPresent",
+			script: func() string {
+				return buildModelInitCommand(false, false, true, false, false, RefreshPolicyIfNotPresent)
+			},
 		})
 	})
 	t.Run("OnChange", func(t *testing.T) {
 		testResumeVariant(t, resumeVariant{
 			name:   "OnChange",
-			script: func() string { return remoteRevalidateScript(false) },
+			script: func() string { return remoteRevalidateScript(false, false) },
 		})
 	})
 	// The multi-file loop reuses the same resume helpers per file. With
@@ -551,7 +553,7 @@ func TestWarmCacheIfNotPresentMakesNoNetworkRequest(t *testing.T) {
 		t.Fatalf("seed warm cache: %v", err)
 	}
 
-	cmd := exec.Command("sh", "-c", buildModelInitCommand(false, false, true, false, RefreshPolicyIfNotPresent))
+	cmd := exec.Command("sh", "-c", buildModelInitCommand(false, false, true, false, false, RefreshPolicyIfNotPresent))
 	cmd.Env = append(os.Environ(),
 		"MODEL_SOURCE="+srv.URL+"/model.gguf",
 		"MODEL_PATH="+modelPath,
