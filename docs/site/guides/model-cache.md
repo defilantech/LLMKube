@@ -325,7 +325,9 @@ fails the init container, so the pod never starts with bad weights.
   bytes that were hashed. Later starts skip re-hashing while all three agree;
   a missing, stale or differently-sized file is hashed once and re-stamped.
   The stamp is written to a temp file and renamed, so a concurrent reader
-  never sees a truncated one.
+  never sees a truncated one. The metal agent's model store writes and reads
+  the same triple, so a stamp from either side is legible to the other, and a
+  bare-digest stamp from an older agent release is hashed once and rewritten.
 - A cached file that fails the re-hash is left in place (the cache directory
   may be shared) and replaced by a fresh verified download in the same start.
 - The gates fail closed: if the digest does not reach the container, the

@@ -599,9 +599,11 @@ func hfAuthPrefix(isHFAuth bool) string {
 //     stamp re-hashes once and rewrites it. Stamps and markers are written
 //     through a temp file and renamed so a concurrent reader never sees a
 //     truncated one; mktemp leaves nothing matching the *.tmp sweep. The
-//     stamp is a stricter sibling of the pkg/agent/executor.go
-//     verifyCachedDigest stamp, which holds the hash alone under the same
-//     <file>.sha256 name; the two are not interchangeable.
+//     stamp is the same format, under the same <file>.sha256 name, that
+//     pkg/agent/executor.go verifyCachedDigest writes and reads: a
+//     digest+size+mtime triple, so a stamp from either writer is legible to
+//     either reader (#1980). A bare-digest stamp from before #1980 is a miss
+//     and is rewritten.
 //
 // Stamps and markers are deliberately not *.tmp: the resume sweeps in
 // validatorDeriveAndSweep and debrisSweep must never remove them. Hash

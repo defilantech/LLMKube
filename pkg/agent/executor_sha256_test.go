@@ -53,6 +53,28 @@ func withHashFileCounter(t *testing.T) *int {
 	return &calls
 }
 
+// stampHasDigest reports whether the sidecar at stampPath is a
+// digest+size+mtime triple that names digest and agrees with the file's
+// current stat.
+func stampHasDigest(t *testing.T, stampPath, digest string) bool {
+	t.Helper()
+	raw, err := os.ReadFile(stampPath)
+	if err != nil {
+		return false
+	}
+	fields := strings.Fields(string(raw))
+	if len(fields) != 3 {
+		return false
+	}
+	fi, err := os.Stat(strings.TrimSuffix(stampPath, ".sha256"))
+	if err != nil {
+		return false
+	}
+	return fields[0] == digest &&
+		fields[1] == strconv.FormatInt(fi.Size(), 10) &&
+		fields[2] == strconv.FormatInt(fi.ModTime().Unix(), 10)
+}
+
 func TestDownloadFile_SHA256Match_WritesStamp(t *testing.T) {
 	tmpDir := t.TempDir()
 	executor := NewMetalExecutor("/bin/llama-server", tmpDir, newNopLogger(), allowTestServers())
@@ -86,12 +108,9 @@ func TestDownloadFile_SHA256Match_WritesStamp(t *testing.T) {
 	}
 
 	stampPath := localPath + ".sha256"
-	stamp, err := os.ReadFile(stampPath)
-	if err != nil {
-		t.Fatalf("stamp file missing: %v", err)
-	}
-	if strings.TrimSpace(string(stamp)) != digest {
-		t.Errorf("stamp = %q, want %q", strings.TrimSpace(string(stamp)), digest)
+	if !stampHasDigest(t, stampPath, digest) {
+		raw, _ := os.ReadFile(stampPath)
+		t.Errorf("stamp = %q, want the digest %q with the file's size and mtime", strings.TrimSpace(string(raw)), digest)
 	}
 	info, err := os.Stat(stampPath)
 	if err != nil {
@@ -219,7 +238,7 @@ func TestEnsureModel_CacheHit_MatchingStamp_SkipsHash(t *testing.T) {
 		t.Fatalf("seed cached file: %v", err)
 	}
 	digest := sha256Hex(payload)
-	if err := os.WriteFile(localPath+".sha256", []byte(digest), 0o600); err != nil {
+	if err := writeSHA256Stamp(localPath, digest); err != nil {
 		t.Fatalf("seed stamp: %v", err)
 	}
 
@@ -234,6 +253,177 @@ func TestEnsureModel_CacheHit_MatchingStamp_SkipsHash(t *testing.T) {
 	}
 	if *calls != 0 {
 		t.Errorf("hashFile called %d times, want 0 (a matching stamp must skip hashing)", *calls)
+	}
+}
+
+// TestEnsureModel_CacheHit_ShellFormatStamp_SkipsHash feeds the reader a stamp
+// in the init container's exact format (a digest+size+mtime triple, written
+// here without the Go writer) to pin that the two writers and readers agree on
+// one sidecar format (#1980).
+func TestEnsureModel_CacheHit_ShellFormatStamp_SkipsHash(t *testing.T) {
+	tmpDir := t.TempDir()
+	executor := NewMetalExecutor("/bin/llama-server", tmpDir, newNopLogger())
+
+	modelDir := filepath.Join(tmpDir, "shell-stamp-model")
+	if err := os.MkdirAll(modelDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	payload := []byte("shell-stamped-gguf-bytes")
+	localPath := filepath.Join(modelDir, "model.gguf")
+	if err := os.WriteFile(localPath, payload, 0o644); err != nil {
+		t.Fatalf("seed cached file: %v", err)
+	}
+	fi, err := os.Stat(localPath)
+	if err != nil {
+		t.Fatalf("stat cached file: %v", err)
+	}
+	digest := sha256Hex(payload)
+	shellStamp := fmt.Sprintf("%s %d %d", digest, fi.Size(), fi.ModTime().Unix())
+	if err := os.WriteFile(localPath+".sha256", []byte(shellStamp), 0o600); err != nil {
+		t.Fatalf("seed shell-format stamp: %v", err)
+	}
+
+	calls := withHashFileCounter(t)
+
+	_, err = executor.ensureModel(t.Context(), "https://example.invalid/model.gguf",
+		"shell-stamp-model", nil, digest)
+	if err != nil {
+		t.Fatalf("ensureModel: %v", err)
+	}
+	if *calls != 0 {
+		t.Errorf("hashFile called %d times, want 0 (the shell-format triple must be trusted)", *calls)
+	}
+}
+
+// TestEnsureModel_CacheHit_LegacyBareStamp_RehashesOnce pins that a bare-digest
+// stamp from an older release is a miss under the triple format, so it hashes
+// once and is rewritten rather than trusted (#1980).
+func TestEnsureModel_CacheHit_LegacyBareStamp_RehashesOnce(t *testing.T) {
+	tmpDir := t.TempDir()
+	executor := NewMetalExecutor("/bin/llama-server", tmpDir, newNopLogger())
+
+	modelDir := filepath.Join(tmpDir, "legacy-stamp-model")
+	if err := os.MkdirAll(modelDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	payload := []byte("legacy-stamped-gguf-bytes")
+	localPath := filepath.Join(modelDir, "model.gguf")
+	if err := os.WriteFile(localPath, payload, 0o644); err != nil {
+		t.Fatalf("seed cached file: %v", err)
+	}
+	digest := sha256Hex(payload)
+	if err := os.WriteFile(localPath+".sha256", []byte(digest), 0o600); err != nil {
+		t.Fatalf("seed legacy bare stamp: %v", err)
+	}
+
+	calls := withHashFileCounter(t)
+
+	_, err := executor.ensureModel(t.Context(), "https://example.invalid/model.gguf",
+		"legacy-stamp-model", nil, digest)
+	if err != nil {
+		t.Fatalf("ensureModel: %v", err)
+	}
+	if *calls != 1 {
+		t.Errorf("hashFile called %d times, want exactly 1 (a legacy bare stamp must not be trusted)", *calls)
+	}
+	if !stampHasDigest(t, localPath+".sha256", digest) {
+		t.Errorf("legacy stamp was not rewritten in the current triple format")
+	}
+}
+
+// TestEnsureModel_CacheHit_StampFieldMismatch_RehashesOnce pins that all three
+// fields of the stamp are load-bearing: a stamp whose digest still names the
+// expected hash but whose size or mtime no longer describes the file on disk is
+// a miss, so it hashes once and is rewritten rather than trusted (#1980).
+func TestEnsureModel_CacheHit_StampFieldMismatch_RehashesOnce(t *testing.T) {
+	cases := []struct {
+		name  string
+		stamp func(digest string, fi os.FileInfo) string
+	}{
+		{
+			name: "stale size",
+			stamp: func(digest string, fi os.FileInfo) string {
+				return fmt.Sprintf("%s %d %d", digest, fi.Size()+1, fi.ModTime().Unix())
+			},
+		},
+		{
+			name: "stale mtime",
+			stamp: func(digest string, fi os.FileInfo) string {
+				return fmt.Sprintf("%s %d %d", digest, fi.Size(), fi.ModTime().Unix()+1)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			executor := NewMetalExecutor("/bin/llama-server", tmpDir, newNopLogger())
+
+			modelDir := filepath.Join(tmpDir, "field-mismatch-model")
+			if err := os.MkdirAll(modelDir, 0755); err != nil {
+				t.Fatalf("mkdir: %v", err)
+			}
+			payload := []byte("field-mismatch-gguf-bytes")
+			localPath := filepath.Join(modelDir, "model.gguf")
+			if err := os.WriteFile(localPath, payload, 0o644); err != nil {
+				t.Fatalf("seed cached file: %v", err)
+			}
+			fi, err := os.Stat(localPath)
+			if err != nil {
+				t.Fatalf("stat cached file: %v", err)
+			}
+			digest := sha256Hex(payload)
+			if err := os.WriteFile(localPath+".sha256", []byte(tc.stamp(digest, fi)), 0o600); err != nil {
+				t.Fatalf("seed %s stamp: %v", tc.name, err)
+			}
+
+			calls := withHashFileCounter(t)
+
+			_, err = executor.ensureModel(t.Context(), "https://example.invalid/model.gguf",
+				"field-mismatch-model", nil, digest)
+			if err != nil {
+				t.Fatalf("ensureModel: %v", err)
+			}
+			if *calls != 1 {
+				t.Errorf("hashFile called %d times, want exactly 1 (a %s stamp must not be trusted)", *calls, tc.name)
+			}
+			if !stampHasDigest(t, localPath+".sha256", digest) {
+				t.Errorf("the stale %s stamp was not rewritten to the current triple", tc.name)
+			}
+		})
+	}
+}
+
+// TestWriteSHA256Stamp_MatchesShellFormat pins the written sidecar's shape: the
+// lowercase digest, the file size and its mtime in Unix seconds, matching the
+// init container's `"$MODEL_SHA256 $(stat -c '%s %Y' "$1")"`.
+//
+// This test is the agent half of the cross-writer pair: the controller suite's
+// stampTriple/writeStamp (internal/controller/model_storage_sha256_test.go)
+// writes the same bytes, and llmkube_stamp_sha256/llmkube_check_sha256
+// (internal/controller/model_storage.go) parse them, so a change to one shape
+// must land with a change to the other.
+func TestWriteSHA256Stamp_MatchesShellFormat(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "model.gguf")
+	if err := os.WriteFile(file, []byte("stamped-bytes"), 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	fi, err := os.Stat(file)
+	if err != nil {
+		t.Fatalf("stat file: %v", err)
+	}
+	upper := strings.ToUpper(sha256Hex([]byte("stamped-bytes")))
+	if err := writeSHA256Stamp(file, upper); err != nil {
+		t.Fatalf("writeSHA256Stamp: %v", err)
+	}
+	raw, err := os.ReadFile(file + ".sha256")
+	if err != nil {
+		t.Fatalf("read stamp: %v", err)
+	}
+	want := fmt.Sprintf("%s %d %d", strings.ToLower(upper), fi.Size(), fi.ModTime().Unix())
+	if string(raw) != want {
+		t.Errorf("stamp = %q, want %q", string(raw), want)
 	}
 }
 
@@ -252,7 +442,7 @@ func TestEnsureModel_CacheHit_StaleStamp_RehashesOnce(t *testing.T) {
 	}
 	digest := sha256Hex(payload)
 	// A stamp left over from a previous, different content version.
-	if err := os.WriteFile(localPath+".sha256", []byte(sha256Hex([]byte("old-bytes"))), 0o600); err != nil {
+	if err := writeSHA256Stamp(localPath, sha256Hex([]byte("old-bytes"))); err != nil {
 		t.Fatalf("seed stale stamp: %v", err)
 	}
 
@@ -269,12 +459,8 @@ func TestEnsureModel_CacheHit_StaleStamp_RehashesOnce(t *testing.T) {
 		t.Errorf("hashFile called %d times, want exactly 1 (a stale stamp hashes once)", *calls)
 	}
 
-	stamp, err := os.ReadFile(localPath + ".sha256")
-	if err != nil {
-		t.Fatalf("stamp missing after refresh: %v", err)
-	}
-	if strings.TrimSpace(string(stamp)) != digest {
-		t.Errorf("stamp = %q, want refreshed %q", strings.TrimSpace(string(stamp)), digest)
+	if !stampHasDigest(t, localPath+".sha256", digest) {
+		t.Errorf("stamp was not refreshed to the current digest")
 	}
 }
 
@@ -305,12 +491,8 @@ func TestEnsureModel_CacheHit_NoStamp_HashesAndWritesStamp(t *testing.T) {
 	if *calls != 1 {
 		t.Errorf("hashFile called %d times, want exactly 1 (a missing stamp hashes once)", *calls)
 	}
-	stamp, err := os.ReadFile(localPath + ".sha256")
-	if err != nil {
-		t.Fatalf("stamp not written after hashing a cache hit: %v", err)
-	}
-	if strings.TrimSpace(string(stamp)) != digest {
-		t.Errorf("stamp = %q, want %q", strings.TrimSpace(string(stamp)), digest)
+	if !stampHasDigest(t, localPath+".sha256", digest) {
+		t.Errorf("stamp not written (or wrong digest) after hashing a cache hit")
 	}
 }
 
@@ -326,7 +508,7 @@ func TestEnsureModel_CacheHit_Mismatch_DeletesAndRedownloads(t *testing.T) {
 	if err := os.WriteFile(localPath, []byte("corrupted-bytes"), 0o644); err != nil {
 		t.Fatalf("seed corrupt cached file: %v", err)
 	}
-	if err := os.WriteFile(localPath+".sha256", []byte(sha256Hex([]byte("corrupted-bytes"))), 0o600); err != nil {
+	if err := writeSHA256Stamp(localPath, sha256Hex([]byte("corrupted-bytes"))); err != nil {
 		t.Fatalf("seed stamp for the corrupt bytes: %v", err)
 	}
 
@@ -353,12 +535,8 @@ func TestEnsureModel_CacheHit_Mismatch_DeletesAndRedownloads(t *testing.T) {
 	if string(got) != string(correct) {
 		t.Errorf("re-downloaded content = %q, want %q", got, correct)
 	}
-	stamp, err := os.ReadFile(localPath + ".sha256")
-	if err != nil {
-		t.Fatalf("stamp missing after re-download: %v", err)
-	}
-	if strings.TrimSpace(string(stamp)) != digest {
-		t.Errorf("stamp = %q, want %q", strings.TrimSpace(string(stamp)), digest)
+	if !stampHasDigest(t, localPath+".sha256", digest) {
+		t.Errorf("stamp after re-download does not name the current digest")
 	}
 }
 
@@ -407,13 +585,8 @@ func TestDownloadFile_ResumeThenSHA256VerifiedOnFinalFile(t *testing.T) {
 	if *calls != 1 {
 		t.Errorf("hashFile called %d times, want exactly 1 (once, over the assembled file)", *calls)
 	}
-	stamp, err := os.ReadFile(localPath + ".sha256")
-	if err != nil {
-		t.Fatalf("stamp missing: %v", err)
-	}
-	if strings.TrimSpace(string(stamp)) != fullDigest {
-		t.Errorf("stamp = %q, want the full assembled content's digest %q",
-			strings.TrimSpace(string(stamp)), fullDigest)
+	if !stampHasDigest(t, localPath+".sha256", fullDigest) {
+		t.Errorf("stamp does not name the full assembled content's digest %q", fullDigest)
 	}
 }
 
@@ -481,12 +654,8 @@ func TestDownloadFile_CompletePartialShortcut_VerifiesDigestBeforePublish(t *tes
 		t.Errorf("a complete partial should publish without any body GET; full=%d range=%d",
 			o.fullFromZero.Load(), o.rangeRequests.Load())
 	}
-	stamp, err := os.ReadFile(localPath + ".sha256")
-	if err != nil {
-		t.Fatalf("stamp missing: %v", err)
-	}
-	if strings.TrimSpace(string(stamp)) != digest {
-		t.Errorf("stamp = %q, want %q", strings.TrimSpace(string(stamp)), digest)
+	if !stampHasDigest(t, localPath+".sha256", digest) {
+		t.Errorf("stamp does not name the published digest %q", digest)
 	}
 }
 

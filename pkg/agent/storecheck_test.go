@@ -259,6 +259,9 @@ func TestStoreWrites_RefuseSymlinks(t *testing.T) {
 
 	t.Run("sha256 stamp", func(t *testing.T) {
 		file := filepath.Join(t.TempDir(), "model.gguf")
+		if err := os.WriteFile(file, []byte("model bytes"), 0o600); err != nil {
+			t.Fatal(err)
+		}
 		victim := plant(t, sha256StampPath(file))
 		if err := writeSHA256Stamp(file, strings.Repeat("a", 64)); err == nil {
 			t.Fatal("writeSHA256Stamp through a symlink succeeded, want an error")

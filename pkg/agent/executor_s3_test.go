@@ -182,12 +182,8 @@ func TestEnsureModel_S3SHA256MatchWritesStamp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ensureModel: %v", err)
 	}
-	stamp, err := os.ReadFile(path + ".sha256")
-	if err != nil {
-		t.Fatalf("stamp missing: %v", err)
-	}
-	if strings.TrimSpace(string(stamp)) != digest {
-		t.Errorf("stamp = %q, want %q", strings.TrimSpace(string(stamp)), digest)
+	if !stampHasDigest(t, path+".sha256", digest) {
+		t.Errorf("stamp does not name the downloaded digest %q", digest)
 	}
 }
 

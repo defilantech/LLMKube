@@ -492,8 +492,11 @@ func modelCacheSlot(modelStorePath, modelName, source string) string {
 // match expectedSHA256 falls back to hashing the file once, and a successful
 // hash writes a fresh stamp so the next check is free again.
 func (e *MetalExecutor) verifyCachedDigest(localPath, expectedSHA256 string) (bool, error) {
-	if stamp := readSHA256Stamp(localPath); stamp != "" && strings.EqualFold(stamp, expectedSHA256) {
-		return true, nil
+	if fi, err := os.Stat(localPath); err == nil {
+		stamp := readSHA256Stamp(localPath)
+		if stamp != "" && strings.EqualFold(stamp, sha256StampValue(expectedSHA256, fi)) {
+			return true, nil
+		}
 	}
 
 	computed, err := hashFile(localPath)
@@ -1030,9 +1033,11 @@ func (e *ModelDigestMismatchError) Error() string {
 // deleting both assembledPath and any stale file already at destPath and
 // naming both digests in the error, mirroring the controller's verifySHA256
 // (internal/controller/model_controller.go). A verified file is renamed onto
-// destPath and stamped at destPath+".sha256" (lowercase hex, mode 0600) so a
-// later cache hit can skip re-hashing. An empty expectedSHA256 (no
-// Model.spec.sha256) reduces to the historical rename-only publish.
+// destPath and stamped at destPath+".sha256" (a digest+size+mtime triple, mode
+// 0600, the format the init container also writes) so a later cache hit can
+// skip re-hashing while the stamp still describes the file. An empty
+// expectedSHA256 (no Model.spec.sha256) reduces to the historical rename-only
+// publish.
 //
 // Every path that does not end in a fresh stamp (an unverified publish, a
 // mismatch) removes any existing stamp first. verifyCachedDigest trusts a
@@ -1093,22 +1098,39 @@ func computeFileSHA256(path string) (string, error) {
 }
 
 // sha256StampPath names the sidecar file a verified download's digest is
-// stamped into: <file>.sha256.
+// stamped into: <file>.sha256. The name and the digest+size+mtime format are
+// shared with the controller's model-downloader init container (#1980); a
+// legacy bare-digest stamp is a miss, not a hit.
 func sha256StampPath(filePath string) string {
 	return filePath + ".sha256"
 }
 
-// writeSHA256Stamp records digest (lowercase hex) as filePath's verified
-// SHA256, so a later ensureModel cache hit can skip re-hashing when the stamp
-// still matches Model.spec.sha256. Mode 0600: it is written only after a
-// successful verification and never needs to be group- or world-readable,
-// and it is opened without following a symlink planted at the stamp path.
+// sha256StampValue renders the sidecar's contents: the lowercase digest, the
+// file size and its mtime in Unix seconds, space separated. It is the same
+// triple the init container's llmkube_stamp_sha256 writes, so either writer's
+// stamp is legible to either reader (#1980). A bare-digest stamp from an older
+// release does not compare equal, so it is a miss that hashes once and is
+// rewritten rather than a trust decision.
+func sha256StampValue(digest string, fi os.FileInfo) string {
+	return fmt.Sprintf("%s %d %d", strings.ToLower(digest), fi.Size(), fi.ModTime().Unix())
+}
+
+// writeSHA256Stamp records filePath's verified SHA256 as a
+// digest+size+mtime triple, so a later ensureModel cache hit can skip
+// re-hashing only while the stamp still describes the file on disk. Mode 0600:
+// it is written only after a successful verification and never needs to be
+// group- or world-readable, and it is opened without following a symlink
+// planted at the stamp path.
 func writeSHA256Stamp(filePath, digest string) error {
+	fi, err := os.Stat(filePath)
+	if err != nil {
+		return fmt.Errorf("stat %s for SHA256 stamp: %w", filePath, err)
+	}
 	f, err := createNoFollow(sha256StampPath(filePath))
 	if err != nil {
 		return err
 	}
-	if _, err := f.WriteString(strings.ToLower(digest)); err != nil {
+	if _, err := f.WriteString(sha256StampValue(digest, fi)); err != nil {
 		_ = f.Close()
 		return err
 	}

@@ -130,6 +130,12 @@ func mustExist(t *testing.T, path string) {
 // stampTriple is what llmkube_stamp_sha256 writes: the digest, the file
 // size and its mtime, space separated. A stamp hit requires all three to
 // still describe the file on disk.
+//
+// These are the same bytes the metal agent writes: pkg/agent's writeSHA256Stamp
+// emits `<lowercase digest> <size> <mtime-seconds>` with no trailing newline
+// (sha256StampValue, pinned by TestWriteSHA256Stamp_MatchesShellFormat), so the
+// stamp-hit subtests below double as the cross-writer acceptance case. Changing
+// this shape must land with a change to that test.
 func stampTriple(t *testing.T, path, digest string) string {
 	t.Helper()
 	fi, err := os.Stat(path)

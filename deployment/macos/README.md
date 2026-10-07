@@ -238,7 +238,7 @@ A few behavior notes:
 
 ### `spec.sha256` digest verification
 
-When a `Model`'s `spec.sha256` is set, the agent verifies a downloaded source against it before the file is used. A mismatch deletes the file and refuses to start the InferenceService with reason `ModelDigestMismatch` (a Warning Event, plus `status.schedulingStatus`/`status.schedulingMessage`). A verified file gets a `<file>.sha256` stamp beside it, so a later restart does not re-hash a potentially huge model unless the stamp is missing or stale.
+When a `Model`'s `spec.sha256` is set, the agent verifies a downloaded source against it before the file is used. A mismatch deletes the file and refuses to start the InferenceService with reason `ModelDigestMismatch` (a Warning Event, plus `status.schedulingStatus`/`status.schedulingMessage`). A verified file gets a `<file>.sha256` stamp beside it, so a later restart does not re-hash a potentially huge model unless the stamp is missing or stale. The stamp is the same `digest size mtime` triple the cluster-side download init container writes, so a cache populated by either one is legible to the other; a bare-digest stamp from an older agent release is not trusted, and is hashed once and rewritten.
 
 `spec.sha256` is enforced for sources the agent downloads for llama-server (the `llamacpp` runtime): `http`, `https`, `hf` and `s3`. A local-path or `file://` source is loaded in place and is never hashed. The other Metal runtimes (mlx-server, vllm-swift, oMLX, TensorFold and Ollama) do not download through the agent and ignore `spec.sha256` in 0.10.1.
 

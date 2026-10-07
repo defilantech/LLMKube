@@ -112,7 +112,10 @@ container with bad weights.
   exact bytes that were hashed. A later start skips re-hashing gigabytes only
   while all three still agree; a missing, stale or differently-sized file is
   hashed once and re-stamped. The stamp is written to a temp file and renamed,
-  so a concurrent reader never sees a truncated one.
+  so a concurrent reader never sees a truncated one. The metal agent's model
+  store writes and reads the same triple, so a stamp from either side is
+  legible to the other, and a bare-digest stamp from an older agent release is
+  hashed once and rewritten.
 - A cached file that fails the re-hash was corrupted outside any download. It
   is left in place (the cache directory is keyed on the source alone and may
   be shared with another Model) and the same start replaces it with a fresh
