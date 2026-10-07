@@ -25,6 +25,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 
 	"go.uber.org/zap"
@@ -71,6 +72,11 @@ type OMLXExecutor struct {
 	// --host flag. Set once when the daemon starts; shared across all models
 	// served by this daemon. Empty resolves to engineBindHost (loopback).
 	bindHost string
+	// basePath is the oMLX data directory passed to the daemon as
+	// --base-path. The agent registers each model's served name as an oMLX
+	// model_alias in {basePath}/model_settings.json (see
+	// omlxModelSettingsFile). Empty disables alias registration.
+	basePath string
 }
 
 // NewOMLXExecutor creates an executor that manages models via the oMLX daemon.
@@ -84,6 +90,7 @@ func NewOMLXExecutor(omlxBin, modelDir string, port int, logger *zap.SugaredLogg
 			Timeout: 10 * time.Second,
 		},
 		startupTimeout: DefaultOMLXStartupTimeout,
+		basePath:       omlxDefaultBasePath(),
 	}
 }
 
@@ -138,8 +145,10 @@ func (e *OMLXExecutor) StartProcess(ctx context.Context, config ExecutorConfig) 
 	e.bindHost = config.BindHost
 	e.mu.Unlock()
 
-	// Ensure the oMLX daemon is running
-	if err := e.ensureOMLXRunning(ctx); err != nil {
+	// Ensure the oMLX daemon is running and serves this model under its
+	// served name (spec.modelRef, else the Model name) as well as under the
+	// directory name, the same name llama-server reports via --alias.
+	if err := e.ensureOMLXRunning(ctx, modelID, config.ServedModelName); err != nil {
 		return nil, fmt.Errorf("failed to start oMLX daemon: %w", err)
 	}
 
@@ -264,6 +273,13 @@ func buildOMLXServeArgs(modelDir string, port int, cfg omlxServeConfig) []string
 		args = append(args, "--paged-ssd-cache-max-size", cfg.pagedSSDCacheMaxSize)
 	}
 
+	// Base path. Maps to --base-path. Pinned explicitly so the daemon reads
+	// the model_settings.json the agent writes model aliases into, rather
+	// than relying on both sides agreeing on oMLX's ~/.omlx default.
+	if cfg.basePath != "" {
+		args = append(args, "--base-path", cfg.basePath)
+	}
+
 	return args
 }
 
@@ -279,17 +295,42 @@ type omlxServeConfig struct {
 	// --host flag. Empty resolves to engineBindHost (loopback) via
 	// resolveBindHost in buildOMLXServeArgs.
 	bindHost string
+	// basePath is the oMLX data directory (--base-path). Empty leaves the
+	// flag off and oMLX uses its own default.
+	basePath string
 }
 
-// ensureOMLXRunning starts the oMLX daemon if it is not already responding.
-func (e *OMLXExecutor) ensureOMLXRunning(ctx context.Context) error {
+// ensureOMLXRunning registers servedName as the oMLX alias of modelID and
+// starts the oMLX daemon if it is not already responding. oMLX reads aliases
+// only at startup, so when the alias changed and this agent owns the running
+// daemon, the daemon is restarted to load it. Other models the daemon served
+// are unloaded by the restart and load again lazily on their next request.
+func (e *OMLXExecutor) ensureOMLXRunning(ctx context.Context, modelID, servedName string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	aliasChanged, err := e.registerAliasLocked(modelID, servedName)
+	if err != nil {
+		return err
+	}
+
 	// Check if oMLX is already responding
 	if e.isHealthy(ctx) {
-		e.logger.Debugw("oMLX daemon already running", "port", e.port)
-		return nil
+		if !aliasChanged {
+			e.logger.Debugw("oMLX daemon already running", "port", e.port)
+			return nil
+		}
+		if e.process == nil {
+			e.logger.Warnw("oMLX daemon on this port was not started by the agent; "+
+				"restart it so it serves the model under its new alias",
+				"port", e.port, "modelID", modelID, "alias", servedName)
+			return nil
+		}
+		e.logger.Infow("restarting oMLX daemon to load a changed model alias",
+			"pid", e.process.Pid, "modelID", modelID, "alias", servedName)
+		if err := e.stopDaemonLocked(ctx); err != nil {
+			return fmt.Errorf("failed to restart oMLX daemon for alias %q: %w", servedName, err)
+		}
 	}
 
 	e.logger.Infow("starting oMLX daemon", "bin", e.omlxBin, "modelDir", e.modelDir, "port", e.port)
@@ -300,6 +341,7 @@ func (e *OMLXExecutor) ensureOMLXRunning(ctx context.Context) error {
 		hotCacheMaxSize:      e.hotCacheMaxSize,
 		pagedSSDCacheMaxSize: e.pagedSSDCacheMaxSize,
 		bindHost:             e.bindHost,
+		basePath:             e.basePath,
 	}
 	cmd := exec.Command(e.omlxBin, buildOMLXServeArgs(e.modelDir, e.port, cfg)...)
 	cmd.Dir = e.modelDir // relative paths in engine flags resolve inside the model store
@@ -323,6 +365,65 @@ func (e *OMLXExecutor) ensureOMLXRunning(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// registerAliasLocked writes servedName as the oMLX model_alias of modelID
+// and reports whether the settings file changed. A served name equal to the
+// directory name clears any stale alias, so /v1/models lists the name clients
+// should send. The directory name keeps working either way, because oMLX
+// matches it before any alias. Must be called with e.mu held.
+func (e *OMLXExecutor) registerAliasLocked(modelID, servedName string) (bool, error) {
+	if servedName == "" {
+		return false, nil
+	}
+	if e.basePath == "" {
+		e.logger.Warnw("oMLX base path unknown; model is served under its directory name only",
+			"modelID", modelID, "servedName", servedName)
+		return false, nil
+	}
+	alias := servedName
+	if alias == modelID {
+		alias = ""
+	}
+	changed, err := setOMLXModelAlias(filepath.Join(e.basePath, omlxModelSettingsFile), modelID, alias)
+	if err != nil {
+		return false, fmt.Errorf("failed to register oMLX alias %q for model %s: %w", servedName, modelID, err)
+	}
+	if changed {
+		e.logger.Infow("registered oMLX model alias", "modelID", modelID, "alias", alias)
+	}
+	return changed, nil
+}
+
+// omlxStopTimeout bounds how long stopDaemonLocked waits for the daemon to
+// exit on SIGTERM before killing it.
+const omlxStopTimeout = 15 * time.Second
+
+// stopDaemonLocked stops the daemon this executor started and waits until it
+// no longer answers /health. Must be called with e.mu held and e.process set.
+func (e *OMLXExecutor) stopDaemonLocked(ctx context.Context) error {
+	p := e.process
+	e.process = nil
+
+	exited := make(chan struct{})
+	go func() {
+		_, _ = p.Wait()
+		close(exited)
+	}()
+	_ = p.Signal(syscall.SIGTERM)
+	select {
+	case <-exited:
+	case <-time.After(omlxStopTimeout):
+		_ = p.Kill()
+		<-exited
+	case <-ctx.Done():
+		_ = p.Kill()
+		return ctx.Err()
+	}
+
+	return pollUntil(ctx, 100*time.Millisecond, omlxStopTimeout, func(ctx context.Context) (bool, error) {
+		return !e.isHealthy(ctx), nil
+	})
 }
 
 // isHealthy checks if the oMLX daemon is responding at /health.

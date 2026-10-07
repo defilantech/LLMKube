@@ -685,6 +685,20 @@ func TestComputeSpecHash_ChangesWithSuspend(t *testing.T) {
 	}
 }
 
+// TestComputeSpecHash_ChangesWithModelRef: modelRef derives the served model
+// name, which llama-server takes as --alias and oMLX as its model_alias
+// (#1972). A modelRef change must change the hash so the agent respawns and
+// the engine answers to the new name.
+func TestComputeSpecHash_ChangesWithModelRef(t *testing.T) {
+	a := &inferencev1alpha1.InferenceService{Spec: inferencev1alpha1.InferenceServiceSpec{
+		ModelRef: "qwen3-8b", Runtime: inferencev1alpha1.RuntimeOMLX}}
+	b := &inferencev1alpha1.InferenceService{Spec: inferencev1alpha1.InferenceServiceSpec{
+		ModelRef: "qwen3-8b-v2", Runtime: inferencev1alpha1.RuntimeOMLX}}
+	if computeSpecHash(a) == computeSpecHash(b) {
+		t.Error("hash should differ when modelRef changes")
+	}
+}
+
 func TestComputeSpecHash_NilIsvc(t *testing.T) {
 	if computeSpecHash(nil) != "" {
 		t.Error("nil isvc should produce empty hash, not panic")

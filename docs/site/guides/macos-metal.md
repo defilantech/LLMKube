@@ -199,7 +199,12 @@ kubectl get pods -l inference.llmkube.dev/service=phi-4-mini
 
 From a pod in the cluster, call the Service like any other
 InferenceService. The port follows `spec.endpoint.port` (default
-8080):
+8080). Send the name `GET /v1/models` lists as the `model` field. That
+is the served model name: the InferenceService's `spec.modelRef`, not
+the InferenceService name. In this guide the Model, `modelRef` and
+InferenceService all share the name `phi-4-mini`, so the two look the
+same here; they differ when you name the InferenceService differently
+from its Model.
 
 ```bash
 kubectl run curl --rm -it --restart=Never --image=curlimages/curl -- \
@@ -225,12 +230,10 @@ curl -sS http://127.0.0.1:9999/v1/chat/completions \
   -d '{"model":"phi-4-mini","messages":[{"role":"user","content":"hi"}]}'
 ```
 
-oMLX is the exception to the name above: it serves each model under its
-model-store directory basename, so a direct client (the `<isvc>` Service
-or the `:9999` proxy) must send that basename as the `model` field, not
-the InferenceService name. A `ModelRouter` backend pointing at an oMLX
-InferenceService with `spec.runtime: omlx` translates the name for you.
-See the "Model identifier" section of the
+oMLX uses the same name. The agent registers `spec.modelRef` as the
+model's oMLX alias, so `/v1/models` lists it and requests that send it
+reach the model. The model-store directory name also keeps working. See
+the "Model identifier" section of the
 [macOS agent guide](https://github.com/defilantech/LLMKube/blob/main/deployment/macos/README.md#model-identifier).
 
 ### Reaching the service from elsewhere

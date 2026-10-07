@@ -32,13 +32,23 @@ import (
 // t.TempDir(), which is under /tmp wherever TMPDIR is unset (Linux CI), and
 // the store check would refuse all of them. The /tmp refusal tests set it
 // back explicitly with withSystemTempRoots.
+//
+// It also points the oMLX base path at a temp dir, so no oMLX executor a
+// test builds can write the developer's real ~/.omlx/model_settings.json.
 func TestMain(m *testing.M) {
 	for _, k := range []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy",
 		"NO_PROXY", "no_proxy", "ALL_PROXY", "all_proxy", "REQUEST_METHOD"} {
 		_ = os.Unsetenv(k)
 	}
 	systemTempRoots = nil
-	os.Exit(m.Run())
+	omlxBase, err := os.MkdirTemp("", "omlx-base-")
+	if err != nil {
+		panic(err)
+	}
+	omlxDefaultBasePath = func() string { return omlxBase }
+	code := m.Run()
+	_ = os.RemoveAll(omlxBase)
+	os.Exit(code)
 }
 
 // productionSystemTempRoots captures the production default before TestMain
