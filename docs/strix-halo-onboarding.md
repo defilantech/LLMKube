@@ -22,29 +22,35 @@ ls -la /dev/dri/
 
 Expected: kernel ≥ 6.15, `amdgpu` listed, and at least `renderD128` present.
 
-If kernel args aren't yet applied, add them to your bootloader. Strix Halo requires:
+On kernel [≥ 6.15, amdgpu](https://github.com/torvalds/linux/blob/d5b6dc381db93ff2d1888f7d99c06e0bd85f4083/drivers/gpu/drm/amd/amdgpu/amdgpu_ttm.c#L2190) sizes the GTT aperture from `ttm.pages_limit`.
+Older versions of this guide used the `amdgpu.gttsize` argument: it is deprecated and should be removed if present.
 
-```
+Add or update these arguments in your bootloader:
+
+```text
 amd_iommu=off
-amdgpu.gttsize=126976
 ttm.pages_limit=32505856
-ttm.page_pool_size=25165824
+ttm.page_pool_size=32505856
 amdgpu.vm_fragment_size=8
 amdgpu.lockup_timeout=20000
 ```
 
-The first five tune the GTT/UMA memory ceiling. `amdgpu.lockup_timeout=20000`
-raises the GPU lockup/reset timeout to 20s (from the ~10s default): under
-sustained heavy inference on gfx1151 (long-context coder runs, draft/MTP
-decode) the default timeout can trip a spurious GPU reset ("device lost") that
-kills the llama-server backend mid-run. 20s avoids the false positive without
-masking a genuine hang.
+Both TTM values above target **124 GiB** on a 128 GiB node, using 4 KiB pages (`124 × 262144 = 32505856`).
+The `ttm.pages_limit` sets the allocation limit and GTT aperture; `ttm.page_pool_size` sets the page pool size.
+Keep them at the same target for this recipe.
+Adjust both for your node's RAM, BIOS UMA reservation, and OS/workload headroom; these limits do not reserve RAM for the OS.
+
+The `amdgpu.lockup_timeout=20000` raises the GPU lockup/reset timeout to 20s (from the ~10s default): under sustained heavy inference on gfx1151 (long-context coder runs, draft/MTP decode) the default timeout can trip a spurious GPU reset ("device lost") that kills the llama-server backend mid-run.
+
+A value of 20s avoids the false positive without masking a genuine hang.
 
 Reboot after applying. Confirm they're live:
 
 ```bash
-cat /proc/cmdline | tr ' ' '\n' | grep -E 'gttsize|ttm|amd_iommu|lockup_timeout'
+cat /proc/cmdline | tr ' ' '\n' | grep -E 'ttm\.(pages_limit|page_pool_size)|amd_iommu|amdgpu\.(vm_fragment_size|lockup_timeout)'
 ```
+
+Check the boot log for [GTT sizing warnings](#gtt-sizing-warnings) as well.
 
 For Talos nodes, set these in the machine config `customization.extraKernelArgs` and include the `siderolabs/amdgpu` and `siderolabs/amd-ucode` system extensions. See the [Talos AMD GPU guide](https://docs.siderolabs.com/talos/v1.13/configure-your-talos-cluster/hardware-and-drivers/amd-gpu) for the full Talos recipe.
 
@@ -370,10 +376,37 @@ The operator uses `feature.node.kubernetes.io/amd-gpu: "true"` to discover nodes
 
 ### GTT ceiling too low
 
-Kernel args not applied. Confirm they're in `/proc/cmdline`:
+Missing TTM arguments or an old `amdgpu.gttsize` override can leave the GTT
+ceiling below the intended target. Confirm the TTM arguments from
+[Step 1](#step-1-verify-host-prerequisites) are in `/proc/cmdline` and inspect
+the boot log:
 
 ```bash
-cat /proc/cmdline | tr ' ' '\n' | grep -E 'gttsize|ttm|amd_iommu'
+cat /proc/cmdline | tr ' ' '\n' | grep -E 'ttm\.(pages_limit|page_pool_size)|amd_iommu'
+sudo dmesg | grep -Ei 'gtt|ttm'
+```
+
+### GTT sizing warnings
+
+On kernel ≥ 6.15, these boot warnings indicate a stale `amdgpu.gttsize`
+setting:
+
+- `Configuring gttsize via module parameter is deprecated`: remove the old
+  argument and use `ttm.pages_limit` instead.
+- `GTT size has been set as X but TTM size has been set as Y`: the old GTT
+  override and TTM allocation limit disagree (the log prints sizes in bytes).
+  The override wins for the aperture, but TTM still enforces its own limit,
+  so the reported GTT size can exceed the memory available to ROCm/HIP.
+
+This follows the [kernel's GTT initialization](https://github.com/torvalds/linux/blob/v6.15/drivers/gpu/drm/amd/amdgpu/amdgpu_ttm.c#L1843-L1865).
+Remove `amdgpu.gttsize` from the bootloader or module options, set
+`ttm.pages_limit` and `ttm.page_pool_size` to the same target page count,
+regenerate the boot configuration as required by your distribution, and
+reboot. Repeat the checks above: both warnings should be gone. Check for a
+leftover boot argument explicitly (expected: no output):
+
+```bash
+cat /proc/cmdline | tr ' ' '\n' | grep '^amdgpu\.gttsize='
 ```
 
 ### OOM under load

@@ -298,12 +298,13 @@ hurts both ROCm GTT and CPU-side use.
 
 #### Step 2: Raise kernel GTT and TTM limits
 
-Add or update these kernel arguments (in GRUB, Talos `extraKernelArgs`, etc.)
-and reboot:
+Use kernel ≥ 6.15, as required by the [Strix Halo guide](strix-halo-onboarding.md#prerequisites).
+On these kernels, `ttm.pages_limit` also sizes the GTT aperture.
+Remove any existing `amdgpu.gttsize` argument; it is deprecated and overrides that sizing.
+Add or update these kernel arguments (in GRUB, Talos `extraKernelArgs`, etc.) and reboot:
 
-```
+```text
 amd_iommu=off
-amdgpu.gttsize=98304
 amdgpu.no_system_mem_limit=1
 ttm.pages_limit=25165824
 ttm.page_pool_size=25165824
@@ -311,24 +312,21 @@ amdgpu.vm_fragment_size=8
 amdgpu.lockup_timeout=20000
 ```
 
-The values above all target the same **96 GiB**, on a 128 GB box, leaving 32 GiB
-for the OS. Size them together: three knobs describing the same pool that
-disagree with each other is the easiest way to get this wrong.
+Both TTM values above target **96 GiB** on a 128 GiB box, leaving nominally 32 GiB for the BIOS carveout, OS, and other workloads.
+Adjust both together for your node; these limits do not reserve RAM for the OS.
 
 What each does:
 
-- **`amdgpu.gttsize=98304`** sets the GTT aperture, **in megabytes**, so 98304
-  is 96 GiB. This is the maximum system RAM that can be mapped into GPU address
-  spaces.
 - **`amdgpu.no_system_mem_limit=1`** removes an internal amdgpu safeguard on
   system memory usage. Without it, amdgpu may cap GTT-backed allocations below
-  `gttsize`. Use with understanding: overcommit can cause heavy swapping or OOM.
+  the configured GTT target. Use with understanding: overcommit can cause
+  heavy swapping or OOM.
 - **`ttm.pages_limit=25165824`** caps how many 4 KiB pages TTM may allocate for
-  GTT-backed buffer objects. Convert with `pages = target_GiB × 262144`
-  (1 GiB / 4 KiB = 262144), so 96 GiB is `96 × 262144 = 25165824`. Keep this
-  equal to your `gttsize` target rather than merely close to it.
+  GTT-backed buffer objects and sets the GTT aperture on kernel ≥ 6.15.
+  Convert with `pages = target_GiB × 262144` (1 GiB / 4 KiB = 262144), so
+  96 GiB is `96 × 262144 = 25165824`.
 - **`ttm.page_pool_size=25165824`** is the TTM page pool size, also in 4 KiB
-  pages. It should be at least `ttm.pages_limit`.
+  pages. Set it to the same target as `ttm.pages_limit` for this recipe.
 - **`amdgpu.vm_fragment_size=8`** sets the VM page-table fragment size **in
   bits**, so 8 means 1 MB fragments against a default of 4 (64 KB); the maximum
   is 9. Larger fragments reduce page-table overhead for the very large
@@ -344,8 +342,11 @@ What each does:
 Confirm they are live after reboot:
 
 ```bash
-cat /proc/cmdline | tr ' ' '\n' | grep -E 'gttsize|ttm|amd_iommu|lockup_timeout|no_system_mem_limit|vm_fragment'
+cat /proc/cmdline | tr ' ' '\n' | grep -E 'ttm\.(pages_limit|page_pool_size)|amd_iommu|amdgpu\.(lockup_timeout|no_system_mem_limit|vm_fragment_size)'
+sudo dmesg | grep -Ei 'gtt|ttm'
 ```
+
+If the boot log reports deprecated `gttsize` configuration or a GTT/TTM size mismatch, follow [GTT sizing warnings](strix-halo-onboarding.md#gtt-sizing-warnings) to remove the stale override and reboot.
 
 #### Step 3: Verify with `rocminfo`
 
@@ -392,14 +393,14 @@ each run.
 `llama-bench`, Qwen3.6-27B Q6_K, `-fa 1 -ngl 99 -p 512 -n 128 -d 0,8192,32768`,
 tokens/sec:
 
-| Context depth | Metric | ROCm | Vulkan | Winner |
-|---|---|---:|---:|---|
-| 0 | prefill (pp512) | **317** | 287 | ROCm +10% |
-| 0 | decode (tg128) | 9.28 | **9.57** | Vulkan |
-| 8k | prefill | 142 | **243** | Vulkan +71% |
-| 8k | decode | 8.82 | **9.34** | Vulkan |
-| 32k | prefill | 51 | **130** | Vulkan +155% |
-| 32k | decode | 7.41 | **8.72** | Vulkan |
+| Context depth | Metric          |    ROCm |   Vulkan | Winner       |
+| ------------- | --------------- | ------: | -------: | ------------ |
+| 0             | prefill (pp512) | **317** |      287 | ROCm +10%    |
+| 0             | decode (tg128)  |    9.28 | **9.57** | Vulkan       |
+| 8k            | prefill         |     142 |  **243** | Vulkan +71%  |
+| 8k            | decode          |    8.82 | **9.34** | Vulkan       |
+| 32k           | prefill         |      51 |  **130** | Vulkan +155% |
+| 32k           | decode          |    7.41 | **8.72** | Vulkan       |
 
 ROCm leads only on zero-context prefill; Vulkan wins decode at every depth and
 its prefill scales far better with context. `GGML_CUDA_ENABLE_UNIFIED_MEMORY`
@@ -412,9 +413,9 @@ enabled.
 MTP Q4, three coding prompts, decode tokens/sec:
 
 | Backend | decode tok/s (range) | mean | draft acceptance |
-|---|---|---:|---|
-| ROCm | 14.4 - 16.5 | 15.3 | 22 - 26% |
-| Vulkan | 11.8 - 21.7 | 16.9 | 21 - 45% |
+| ------- | -------------------- | ---: | ---------------- |
+| ROCm    | 14.4 - 16.5          | 15.3 | 22 - 26%         |
+| Vulkan  | 11.8 - 21.7          | 16.9 | 21 - 45%         |
 
 Speculative decoding roughly doubles decode over the raw ~9 tok/s on both
 backends. The end-to-end rate is dominated by draft-acceptance, which varies
