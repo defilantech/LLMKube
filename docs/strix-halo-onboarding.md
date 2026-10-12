@@ -36,7 +36,7 @@ amdgpu.lockup_timeout=20000
 ```
 
 Both TTM values above target **124 GiB** on a 128 GiB node, using 4 KiB pages (`124 × 262144 = 32505856`).
-The `ttm.pages_limit` sets the allocation limit and GTT aperture; `ttm.page_pool_size` sets the page pool size.
+The `ttm.pages_limit` sets the allocation limit and GTT aperture; `ttm.page_pool_size` caps how many freed pages TTM caches for reuse (by default, half of RAM).
 Keep them at the same target for this recipe.
 Adjust both for your node's RAM, BIOS UMA reservation, and OS/workload headroom; these limits do not reserve RAM for the OS.
 
@@ -398,7 +398,7 @@ setting:
   The override wins for the aperture, but TTM still enforces its own limit,
   so the reported GTT size can exceed the memory available to ROCm/HIP.
 
-This follows the [kernel's GTT initialization](https://github.com/torvalds/linux/blob/v6.15/drivers/gpu/drm/amd/amdgpu/amdgpu_ttm.c#L1843-L1865).
+This follows the [kernel's GTT initialization](https://github.com/torvalds/linux/blob/v6.15/drivers/gpu/drm/amd/amdgpu/amdgpu_ttm.c#L1964-L1979).
 Remove `amdgpu.gttsize` from the bootloader or module options, set
 `ttm.pages_limit` and `ttm.page_pool_size` to the same target page count,
 regenerate the boot configuration as required by your distribution, and
