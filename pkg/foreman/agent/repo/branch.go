@@ -397,5 +397,11 @@ func RebaseUnresolved(ctx context.Context, workspace, baseSHA string) (bool, str
 // need GIT_ASKPASS (branch, status, log). HOME is carried through so
 // git can read ~/.gitconfig if present.
 func baseEnv() []string {
-	return []string{"HOME=" + envOr("HOME", "/tmp")}
+	env := []string{"HOME=" + envOr("HOME", "/tmp")}
+	for _, key := range []string{"GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM"} {
+		if v := os.Getenv(key); v != "" {
+			env = append(env, key+"="+v)
+		}
+	}
+	return env
 }
