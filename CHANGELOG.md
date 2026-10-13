@@ -5,6 +5,41 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.3](https://github.com/defilantech/LLMKube/compare/v0.10.2...v0.10.3) (2026-10-13)
+
+
+### Features
+
+* **api:** accept SGLang's Blackwell attention backends; flag flash_attn ([#2033](https://github.com/defilantech/LLMKube/issues/2033)) ([2385fd4](https://github.com/defilantech/LLMKube/commit/2385fd4befed24206a23ec07eb13eaf80b983a26))
+* **chart:** alert on GPU faults the device plugin ignores ([#2031](https://github.com/defilantech/LLMKube/issues/2031)) ([e4697ef](https://github.com/defilantech/LLMKube/commit/e4697ef43bbd6fcb0dfae470a21ae593f427a7d7))
+* **controller:** add opt-in vLLM engine-stall liveness probe ([#2022](https://github.com/defilantech/LLMKube/issues/2022)) ([429434a](https://github.com/defilantech/LLMKube/commit/429434ae578f496275c17acb99e57d4435398974))
+* **controller:** apply the Model's HF_ENDPOINT mirror to runtime downloads ([#2039](https://github.com/defilantech/LLMKube/issues/2039)) ([cbececa](https://github.com/defilantech/LLMKube/commit/cbececa980d197311fc0350fbc843f732c6ca797))
+* **controller:** stall-aware liveness for SGLang pods; share the detector ([#2029](https://github.com/defilantech/LLMKube/issues/2029)) ([212b014](https://github.com/defilantech/LLMKube/commit/212b0142daf44f25796ad174099862b7836b94dc))
+* **router:** serve POST /v1/completions on the router-proxy ([#2019](https://github.com/defilantech/LLMKube/issues/2019)) ([1724a02](https://github.com/defilantech/LLMKube/commit/1724a0228db2e5dbdb67a9d45078f43cfc2d24d3))
+
+
+### Bug Fixes
+
+* **controller:** bind SGLang dual-stack so it can become Ready on IPv4 clusters ([#2028](https://github.com/defilantech/LLMKube/issues/2028)) ([7d87c7e](https://github.com/defilantech/LLMKube/commit/7d87c7eb57086529fb6092226a1af04575c02867))
+* **controller:** bound multiNode recreates and keep the failure evidence ([#1996](https://github.com/defilantech/LLMKube/issues/1996)) ([3331610](https://github.com/defilantech/LLMKube/commit/3331610a6fa31f281ea7c4482e533b6040de008a))
+* **controller:** refuse to overwrite or delete a same-name HPA ([#2010](https://github.com/defilantech/LLMKube/issues/2010)) ([09affe5](https://github.com/defilantech/LLMKube/commit/09affe5cfabf760967d00a199b5ac3ac66055c95))
+* **controller:** report a missing CA ConfigMap instead of wedging pods ([#1995](https://github.com/defilantech/LLMKube/issues/1995)) ([c624e02](https://github.com/defilantech/LLMKube/commit/c624e023e003a4623524e35738e7df41fec3b05c))
+* **controller:** report AutoscalingReady=True when the HPA is managed ([#2012](https://github.com/defilantech/LLMKube/issues/2012)) ([b877ee5](https://github.com/defilantech/LLMKube/commit/b877ee5ac8b175bce39ef1dc73fac89d9f19448a))
+* **controller:** split reconcileMultiNodeGroup under the gocyclo limit ([#2000](https://github.com/defilantech/LLMKube/issues/2000)) ([023a5c4](https://github.com/defilantech/LLMKube/commit/023a5c4a673fa5412d5fe83c2b1aef4daac64b77))
+* **controller:** stop the prefetch status loop while the CA ConfigMap is missing ([#2037](https://github.com/defilantech/LLMKube/issues/2037)) ([b0b3cc6](https://github.com/defilantech/LLMKube/commit/b0b3cc6bc105f57b18ad9e9b0a906e3f8e07a5c9))
+* **foreman-agent:** make the repo package's git env hermetic and forward GIT_CONFIG_* ([#2014](https://github.com/defilantech/LLMKube/issues/2014)) ([62837d9](https://github.com/defilantech/LLMKube/commit/62837d988b8e3a8753c02f533a965541dc47e1d6))
+* **router:** compile AgentGateway mode against Gateway API Inference Extension v1 ([#1990](https://github.com/defilantech/LLMKube/issues/1990)) ([ce817ba](https://github.com/defilantech/LLMKube/commit/ce817ba73974eaae2c3fed7c08d3d47c1f516727))
+* **router:** refuse to adopt same-name router-proxy objects ([#2008](https://github.com/defilantech/LLMKube/issues/2008)) ([e8f190a](https://github.com/defilantech/LLMKube/commit/e8f190adc01bc94a1902b97cfea4979e09577eaf))
+* **router:** remove router-proxy objects for routers not in Proxy mode ([#2006](https://github.com/defilantech/LLMKube/issues/2006)) ([c04f824](https://github.com/defilantech/LLMKube/commit/c04f82428011c33d703aae2e1942be4ffd0446f9))
+* **router:** stop truncating streams at the header timeout; quarantine stalled streams ([#2026](https://github.com/defilantech/LLMKube/issues/2026)) ([c4335c9](https://github.com/defilantech/LLMKube/commit/c4335c950057557214e1ecdb3e7fb983b2254755))
+* **router:** time only upstream silence in the stream idle guard ([#2035](https://github.com/defilantech/LLMKube/issues/2035)) ([933426c](https://github.com/defilantech/LLMKube/commit/933426cf94aaa62d47126a933500d4bbfee49e40))
+
+
+### Documentation
+
+* **air-gapped:** cover vLLM and SGLang safetensors checkpoints ([#1993](https://github.com/defilantech/LLMKube/issues/1993)) ([4d3fa70](https://github.com/defilantech/LLMKube/commit/4d3fa7022ce935f8a52d6f42cda5095ff06c8f84))
+* replace deprecated Strix Halo GTT sizing with TTM parameters ([#2003](https://github.com/defilantech/LLMKube/issues/2003)) ([09d8d73](https://github.com/defilantech/LLMKube/commit/09d8d73bd39cdaa92baa3b5817536037c68e4675))
+
 ## [0.10.2](https://github.com/defilantech/LLMKube/compare/v0.10.1...v0.10.2) (2026-10-07)
 
 
