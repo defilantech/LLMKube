@@ -963,6 +963,42 @@ func TestProxyPoolIfIdleAllBusyReturns503(t *testing.T) {
 	}
 }
 
+// TestProxyRejectsMalformedJSONBody pins the fix for #2074: a body that
+// is not valid JSON answers 400 with the JSON parse error instead of
+// falling through to the matcher, which used to report a misleading 503
+// "no rule matched and no defaultRoute configured" and could even
+// dispatch the request to the default route.
+func TestProxyRejectsMalformedJSONBody(t *testing.T) {
+	h := newProxyHarness(t)
+	body := `{"model":"any","messages":[}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	var payload struct {
+		Error struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("response is not JSON: %v", err)
+	}
+	if payload.Error.Code != http.StatusBadRequest {
+		t.Errorf("error.code = %d, want 400", payload.Error.Code)
+	}
+	if !strings.Contains(payload.Error.Message, "invalid character") {
+		t.Errorf("error.message = %q, want the JSON parse error", payload.Error.Message)
+	}
+	if got := h.localBack.calls.Load(); got != 0 {
+		t.Errorf("local backend calls = %d, want 0 (malformed body must not dispatch)", got)
+	}
+}
+
 // TestProxyRejectsOversizedBody enforces the body-size cap; a request
 // larger than maxRequestBodyBytes is rejected with 400.
 func TestProxyRejectsOversizedBody(t *testing.T) {
@@ -978,11 +1014,15 @@ func TestProxyRejectsOversizedBody(t *testing.T) {
 	}
 }
 
-// TestExtractFeaturesHandlesMalformedBody ensures a non-JSON body does
-// not crash feature extraction; the matcher just sees an empty model.
-func TestExtractFeaturesHandlesMalformedBody(t *testing.T) {
+// TestExtractFeaturesRejectsMalformedBody ensures a non-JSON body
+// surfaces the parse error so the handler can answer 400 instead of
+// routing an empty model.
+func TestExtractFeaturesRejectsMalformedBody(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("not json"))
-	f, _ := extractFeatures([]byte("not json"), r, "x-llmkube-classification")
+	f, _, err := extractFeatures([]byte("not json"), r, "x-llmkube-classification")
+	if err == nil {
+		t.Fatal("expected a parse error for a non-JSON body")
+	}
 	if f.Model != "" {
 		t.Errorf("Model = %q, want empty", f.Model)
 	}

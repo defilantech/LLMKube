@@ -210,7 +210,15 @@ func (p *Proxy) handleCompletion(upstreamPath string) http.HandlerFunc {
 			return
 		}
 
-		features, isStream := extractFeatures(body, r, p.cfg.ClassificationHeader())
+		features, isStream, err := extractFeatures(body, r, p.cfg.ClassificationHeader())
+		if err != nil {
+			// The OpenAI-compatible endpoints all take JSON bodies. A body
+			// that does not parse is a request error, not a routing error:
+			// answering 503 "no rule matched" would send the caller to their
+			// routing config instead of their request (issue #2074).
+			writeError(w, http.StatusBadRequest, "request body: "+err.Error())
+			return
+		}
 
 		decision := p.matcher.Match(&features)
 		if len(decision.Backends) == 0 {
@@ -526,8 +534,10 @@ const modelPoolRetryAfterSeconds = "5"
 // extractFeatures pulls the model name, stream flag, classification, and
 // task complexity out of the inbound request. The model name comes from
 // the JSON body; the rest come from headers per the MVP header-only
-// classification mode.
-func extractFeatures(body []byte, r *http.Request, classHeader string) (RequestFeatures, bool) {
+// classification mode. A body that is not valid JSON returns the parse
+// error so the caller can answer 400 instead of dispatching an empty
+// model to the rule matcher.
+func extractFeatures(body []byte, r *http.Request, classHeader string) (RequestFeatures, bool, error) {
 	headers := make(map[string]string, len(r.Header))
 	for k, vals := range r.Header {
 		if len(vals) > 0 {
@@ -539,16 +549,16 @@ func extractFeatures(body []byte, r *http.Request, classHeader string) (RequestF
 		Model  string `json:"model"`
 		Stream bool   `json:"stream"`
 	}
-	// Body may not be valid JSON yet at this point (the upstream may be
-	// more permissive). We extract what we can and proceed.
-	_ = json.Unmarshal(body, &partial)
+	if err := json.Unmarshal(body, &partial); err != nil {
+		return RequestFeatures{}, false, err
+	}
 
 	return RequestFeatures{
 		Model:          partial.Model,
 		Classification: strings.ToLower(headers[strings.ToLower(classHeader)]),
 		TaskComplexity: strings.ToLower(headers["x-llmkube-task-complexity"]),
 		Headers:        headers,
-	}, partial.Stream
+	}, partial.Stream, nil
 }
 
 // enforceFailClosed implements the runtime half of the fail-closed gate.
