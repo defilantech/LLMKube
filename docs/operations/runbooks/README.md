@@ -32,6 +32,7 @@ Every runbook should be testable: an on-call engineer who has never seen the fai
 ### Lifecycle
 
 - [`upgrade-rollback.md`](./upgrade-rollback.md): the supported Helm-based upgrade path for moving an LLMKube install between minor or patch versions, plus the rollback procedure when an upgrade goes wrong.
+- [`inferenceservice-name-taken-deployment.md`](./inferenceservice-name-taken-deployment.md): an `InferenceService` reports `DeploymentNameTaken` (phase `Failed`, or `Suspended`/`Stopped` when deliberately off) because a Deployment LLMKube did not create already holds the generated name; how to tell whose it is and recover.
 
 ### Pending (planned)
 

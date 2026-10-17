@@ -81,8 +81,10 @@ The managed HPA has the same name as the `InferenceService`
 | Status | Reason | Meaning |
 |---|---|---|
 | `True` | `HPAManaged` | The controller created or updated the HPA. |
-| `False` | `HPANameTaken` | An HPA the controller did not create already has that name. The controller leaves it alone (no overwrite, no delete), keeps reconciling the rest of the service, emits a Warning event once, and rechecks about every 2 minutes. See [the pitfall below](#an-hpa-with-the-services-name-already-exists). |
-| absent | | Nothing to report: `spec.autoscaling` is not set, the service is suspended, or it is a Metal workload. |
+| `False` | `HPANameTaken` | An HPA the controller did not create already has that name. The controller leaves it alone (no overwrite, no delete), emits a Warning event once, and rechecks about every 2 minutes. This reason also appears while a foreign Deployment refusal is in flight, because the stopped sequence cannot let the HPA reconciler report it itself. See [the pitfall below](#an-hpa-with-the-services-name-already-exists). |
+| `False` | `DeploymentNameTaken` | A foreign Deployment holds the generated name, so the controller refused to provision the service's workload and removed the HPA it owns so the HPA cannot scale the foreign object (also while the service is suspended, where the HPA would have been removed anyway). The HPA (and this condition back to `True`) return when the name is free. See [the name-taken runbook](https://github.com/defilantech/LLMKube/blob/main/docs/operations/runbooks/inferenceservice-name-taken-deployment.md). |
+| `False` | `HPAStateUnknown` | The controller could not read the HPA while refusing a foreign Deployment at the generated name; the reconcile retries in about 2 minutes. |
+| absent | | Nothing to report: `spec.autoscaling` is not set, the service is suspended, or it is a Metal workload, and no Deployment-name refusal is in flight. |
 
 ```bash
 kubectl get inferenceservice llama-3-8b \
@@ -656,6 +658,11 @@ Deployment to zero. If that HPA targets the inference Deployment rather
 than the `InferenceService`, though, it fights the suspension: it scales
 the Deployment back up and the controller forces it to zero again on the
 next reconcile. Delete it before suspending.
+
+This is the HPA-side refusal. A Deployment holding the generated name is
+a separate refusal (`DeploymentNameTaken`) that stops the workload
+provisioning itself; it is covered in
+[the name-taken runbook](https://github.com/defilantech/LLMKube/blob/main/docs/operations/runbooks/inferenceservice-name-taken-deployment.md).
 
 ### HPA cannot read the metric
 

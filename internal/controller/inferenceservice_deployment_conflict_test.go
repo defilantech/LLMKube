@@ -61,7 +61,7 @@ func TestReconcileDeploymentRetriesOnConflict(t *testing.T) {
 	}
 	replicas := int32(1)
 	isvc := &inferencev1alpha1.InferenceService{
-		ObjectMeta: metav1.ObjectMeta{Name: serviceName, Namespace: ns},
+		ObjectMeta: metav1.ObjectMeta{Name: serviceName, Namespace: ns, UID: "uid-conflict-isvc"},
 		Spec: inferencev1alpha1.InferenceServiceSpec{
 			ModelRef: modelName,
 			Replicas: &replicas,
@@ -70,13 +70,26 @@ func TestReconcileDeploymentRetriesOnConflict(t *testing.T) {
 	}
 	// Existing Deployment already carries the current operator selector so the
 	// reconcile takes the in-place update path (not the selector-migration
-	// recreate path).
+	// recreate path). It carries this service's controller reference, as every
+	// Deployment the operator creates does; an unowned Deployment is refused
+	// per #2011 before the update path is reached.
 	sel := map[string]string{
 		"app":                           serviceName,
 		"inference.llmkube.dev/service": serviceName,
 	}
+	controller := true
 	existing := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{Name: serviceName, Namespace: ns},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      serviceName,
+			Namespace: ns,
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: inferencev1alpha1.GroupVersion.String(),
+				Kind:       "InferenceService",
+				Name:       serviceName,
+				UID:        "uid-conflict-isvc",
+				Controller: &controller,
+			}},
+		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
 			Selector: &metav1.LabelSelector{MatchLabels: sel},

@@ -212,7 +212,7 @@ var _ = Describe("Operator state metrics lifecycle", func() {
 				Status: inferencev1alpha1.ModelStatus{Phase: PhaseReady},
 			}
 			isvc := &inferencev1alpha1.InferenceService{
-				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default", UID: "uid-early-return"},
 				Spec:       inferencev1alpha1.InferenceServiceSpec{ModelRef: model.Name},
 				Status: inferencev1alpha1.InferenceServiceStatus{
 					Phase:           PhaseReady,
@@ -224,8 +224,12 @@ var _ = Describe("Operator state metrics lifecycle", func() {
 			reconciler := &InferenceServiceReconciler{Scheme: k8sClient.Scheme()}
 			// Seeding the Deployment the controller would build puts
 			// reconcileDeployment on its in-place Update path, which is where the
-			// live failure lands; the interceptor then rejects that Update.
+			// live failure lands; the interceptor then rejects that Update. The
+			// seed carries this service's controller reference, as every
+			// Deployment the operator creates does; an unowned one is refused
+			// per #2011 before the Update path is reached.
 			deployment := reconciler.constructDeployment(isvc, model, nil, 2, "", "")
+			Expect(setControllerReferenceUnblocked(isvc, deployment, k8sClient.Scheme())).To(Succeed())
 			reconciler.Client = fake.NewClientBuilder().
 				WithScheme(k8sClient.Scheme()).
 				WithObjects(model, isvc, deployment).

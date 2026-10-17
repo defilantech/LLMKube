@@ -88,7 +88,7 @@ var _ = Describe("InferenceService Deployment selector migration (#606)", func()
 		By("seeding a pre-0.8 Deployment with the old {app} selector only")
 		replicas := int32(1)
 		oldSelector := map[string]string{"app": serviceName}
-		Expect(k8sClient.Create(ctx, &appsv1.Deployment{
+		dep := &appsv1.Deployment{
 			ObjectMeta: metav1.ObjectMeta{Name: serviceName, Namespace: "default"},
 			Spec: appsv1.DeploymentSpec{
 				Replicas: &replicas,
@@ -101,7 +101,17 @@ var _ = Describe("InferenceService Deployment selector migration (#606)", func()
 					}}},
 				},
 			},
-		})).To(Succeed())
+		}
+		// The old operator stamped this service's controller reference on
+		// every Deployment it created, so the migration target carries one;
+		// an unowned Deployment is refused per #2011 rather than migrated
+		// (that contract is pinned by the Deployment ownership suite's
+		// selector-differs spec, which seeds the old selector with no
+		// owner references).
+		owned := &inferencev1alpha1.InferenceService{}
+		Expect(k8sClient.Get(ctx, nn, owned)).To(Succeed())
+		Expect(setControllerReferenceUnblocked(owned, dep, k8sClient.Scheme())).To(Succeed())
+		Expect(k8sClient.Create(ctx, dep)).To(Succeed())
 
 		By("reconciling the Deployment with the model marked ready")
 		reconciler := &InferenceServiceReconciler{

@@ -299,3 +299,11 @@ var MetalAgentRefusalReasons = []string{
 // Secret is deleted (#1957). It is controller-written, so it is deliberately
 // not in MetalAgentRefusalReasons, which lists only agent refusals.
 const ReasonRelaySecretNotManaged string = "RelaySecretNotManaged"
+
+// ReasonDeploymentNameTaken is the Status.SchedulingStatus (and Warning Event
+// reason) the controller writes when a Deployment already holds the name the
+// InferenceService generates and this service does not control it. The
+// controller refuses to overwrite, adopt, or delete that Deployment (#2011).
+// It is controller-written, so it is deliberately not in
+// MetalAgentRefusalReasons, which lists only agent refusals.
+const ReasonDeploymentNameTaken string = "DeploymentNameTaken"
