@@ -1,7 +1,7 @@
 ---
 title: Model Router
 description: A single OpenAI-compatible endpoint that routes across local InferenceServices and external providers (Anthropic, OpenAI, LiteLLM) with policy-driven handoff, fail-closed semantics for regulated data, and audit log per request.
-updated: 2026-10-12
+updated: 2026-10-16
 ---
 
 # Model Router
@@ -144,6 +144,40 @@ The lookup is against backend `name` — the identifier you publish to clients �
 `BackendNameMatch` widens the trust boundary deliberately: every backend, including cloud-tier ones, becomes directly addressable by any client that names it. That is the point — it lets a single flag replace a per-backend passthrough rule for each model you want clients to reach by name. It does not weaken the fail-closed gate, because `failClosed` rules are ordinary rules and are evaluated first: a sensitive request that matches such a rule never reaches the name-match step. The same caveat as `defaultRoute` applies, though — a sensitive request that matches *no* rule will fall through to name matching (and then `defaultRoute`) exactly as it would fall through to `defaultRoute` under `Static`. Per-rule fail-closed protection is not a global PII-egress invariant; if you route sensitive classifications, gate them with an explicit `failClosed` rule.
 
 A request whose model names a backend that is currently unhealthy fails fast (HTTP 502/503) rather than silently rerouting to `defaultRoute` — naming a backend is a request for *that* backend, and answering from a different model the client did not ask for would be worse than an honest error. This matches how an explicit single-backend rule behaves on backend outage.
+
+## Per-request balancing across replicas
+
+A local backend resolves to its `InferenceService`'s ClusterIP `Service` by default. With several replicas that has a sharp edge: a keep-alive client pins to one pod through the `Service`'s conntrack entry, so one hot client saturates a single replica while the others sit idle. Embeddings and rerank workloads feel this first — they are typically called in tight loops over one connection.
+
+`spec.backends[].resolution: endpoint` changes how the upstream address is compiled. Instead of the `Service` DNS name, the controller compiles **one address per ready pod** (`http://<pod-ip>:<port>`, with the port taken from the referenced `InferenceService`'s `spec.endpoint.port`, default `8080`) out of the `EndpointSlices` behind the backend's `Service`. The router-proxy then rotates each request across those addresses, skips pods quarantined by the per-pod circuit breaker, and considers the backend healthy as long as at least one pod is dispatchable. `service` remains the default, and external backends ignore the field.
+
+The endpoint list is part of the compiled config, so there is a short window between a pod change and the proxy seeing it: the controller watches `EndpointSlices`, re-reconciles every `ModelRouter` in the namespace that has at least one endpoint-resolution backend, and recompiles the config — which re-rolls the proxy pods via the config hash. When no ready endpoints exist (a rollout in progress, or a backend with no `EndpointSlices` at all, such as a metal-agent member), the backend's status reports `no ready endpoints; dispatch falls back to the Service DNS name` and dispatch uses the `Service` address again.
+
+```yaml
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: InferenceService
+metadata:
+  name: bge-m3
+spec:
+  modelRef: bge-m3
+  replicas: 3
+  endpoint:
+    port: 8080
+---
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: ModelRouter
+metadata:
+  name: embedding-router
+spec:
+  backends:
+    - name: bge-embed
+      inferenceServiceRef:
+        name: bge-m3
+      resolution: endpoint
+  defaultRoute: bge-embed
+```
+
+Use it on multi-replica local backends where one client should not pin one pod. A single replica gains nothing — there is only one endpoint to rotate to — and out-of-cluster backends (the metal-agent path, `external:` providers) have no `EndpointSlices` to compile, so they stay service-level.
 
 ## Composition with LiteLLM
 
