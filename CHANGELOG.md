@@ -5,6 +5,29 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.5](https://github.com/defilantech/LLMKube/compare/v0.10.4...v0.10.5) (2026-10-18)
+
+
+### Features
+
+* add make gate and make test-affected, a cached parallel round gate ([#2106](https://github.com/defilantech/LLMKube/issues/2106)) ([e971675](https://github.com/defilantech/LLMKube/commit/e971675a53e240050da51e6e5c110689de6cdb98))
+
+
+### Bug Fixes
+
+* **agent:** keep the pressure block when an eviction teardown completed ([#2107](https://github.com/defilantech/LLMKube/issues/2107)) ([fd9ab77](https://github.com/defilantech/LLMKube/commit/fd9ab77618ff996cdf379a4e1b9a17d68efb470e))
+* **agent:** replace a hung oMLX daemon instead of starting a second one ([#2105](https://github.com/defilantech/LLMKube/issues/2105)) ([a16c348](https://github.com/defilantech/LLMKube/commit/a16c348f11e4e5ada404440b18aae9eccd8b8105))
+* **agent:** restart services evicted under memory pressure once memory recovers ([#2093](https://github.com/defilantech/LLMKube/issues/2093)) ([3db0ecc](https://github.com/defilantech/LLMKube/commit/3db0ecc2cc350960cacb7cacc9ed0b93b514be58))
+* answer 400 for request bodies that are not valid JSON ([#2075](https://github.com/defilantech/LLMKube/issues/2075)) ([d9826ff](https://github.com/defilantech/LLMKube/commit/d9826ff497c0f2a5b0c80979ab002f2e0ba1b53f))
+* **chart:** gate llama.cpp InferenceAdmissionStalled on decode progress ([#2065](https://github.com/defilantech/LLMKube/issues/2065)) ([5b2f45d](https://github.com/defilantech/LLMKube/commit/5b2f45d8a5396c3aa7b3c804e4a846eb18a902ee))
+* **controller:** keep downloader credentials off curl's command line ([#2098](https://github.com/defilantech/LLMKube/issues/2098)) ([2207c2e](https://github.com/defilantech/LLMKube/commit/2207c2eb533472a77f0fd8a9b999ce1a1c3b1d25))
+* size metal-agent KV cache estimate from GQA attention shape ([#2102](https://github.com/defilantech/LLMKube/issues/2102)) ([a119234](https://github.com/defilantech/LLMKube/commit/a11923401db85d564393b1be47a1f9116f19bb78))
+
+
+### Documentation
+
+* state differentiation, audience, and project status up front ([#2100](https://github.com/defilantech/LLMKube/issues/2100)) ([ee27e20](https://github.com/defilantech/LLMKube/commit/ee27e20806a1885b10fcf31422f6f711bba4d630))
+
 ## [0.10.4](https://github.com/defilantech/LLMKube/compare/v0.10.3...v0.10.4) (2026-10-16)
 
 
