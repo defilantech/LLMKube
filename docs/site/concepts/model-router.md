@@ -160,6 +160,7 @@ metadata:
   name: bge-m3
 spec:
   modelRef: bge-m3
+  mode: embedding
   replicas: 3
   endpoint:
     port: 8080
