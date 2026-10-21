@@ -5,6 +5,48 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.5](https://github.com/defilantech/LLMKube/compare/v0.10.4...v0.10.5) (2026-10-21)
+
+
+### Features
+
+* add make gate and make test-affected, a cached parallel round gate ([#2106](https://github.com/defilantech/LLMKube/issues/2106)) ([e971675](https://github.com/defilantech/LLMKube/commit/e971675a53e240050da51e6e5c110689de6cdb98))
+* **agent:** admit Metal models against memory already committed to running engines (closes [#2080](https://github.com/defilantech/LLMKube/issues/2080)) ([d2d2d43](https://github.com/defilantech/LLMKube/commit/d2d2d43653151cdb08bfbea4f1f6ccdd9e2aa9f7))
+* **agent:** record each engine the metal-agent starts in the state directory (refs [#2079](https://github.com/defilantech/LLMKube/issues/2079)) ([0224d51](https://github.com/defilantech/LLMKube/commit/0224d5144a361bbdba91edab28310789931d747b))
+* **controller:** add spec.startupTimeout for a bigger startup probe budget ([#2129](https://github.com/defilantech/LLMKube/issues/2129)) ([df0e9cd](https://github.com/defilantech/LLMKube/commit/df0e9cdae46ed3994561e0bf8cbbdc1ec0fff259))
+* **controller:** set fsGroupChangePolicy OnRootMismatch with the default fsGroup (closes [#2058](https://github.com/defilantech/LLMKube/issues/2058)) ([2bd4538](https://github.com/defilantech/LLMKube/commit/2bd45386a046d705e73f1ff963e91987b22267c8))
+
+
+### Bug Fixes
+
+* **agent:** escalate to SIGKILL when stopping an engine the agent did not spawn ([0224d51](https://github.com/defilantech/LLMKube/commit/0224d5144a361bbdba91edab28310789931d747b))
+* **agent:** keep the pressure block when an eviction teardown completed ([#2107](https://github.com/defilantech/LLMKube/issues/2107)) ([fd9ab77](https://github.com/defilantech/LLMKube/commit/fd9ab77618ff996cdf379a4e1b9a17d68efb470e))
+* **agent:** replace a hung oMLX daemon instead of starting a second one ([#2105](https://github.com/defilantech/LLMKube/issues/2105)) ([a16c348](https://github.com/defilantech/LLMKube/commit/a16c348f11e4e5ada404440b18aae9eccd8b8105))
+* **agent:** restart services evicted under memory pressure once memory recovers ([#2093](https://github.com/defilantech/LLMKube/issues/2093)) ([3db0ecc](https://github.com/defilantech/LLMKube/commit/3db0ecc2cc350960cacb7cacc9ed0b93b514be58))
+* answer 400 for request bodies that are not valid JSON ([#2075](https://github.com/defilantech/LLMKube/issues/2075)) ([d9826ff](https://github.com/defilantech/LLMKube/commit/d9826ff497c0f2a5b0c80979ab002f2e0ba1b53f))
+* **chart:** fail fast on shared cache without default storageclass and support existingClaim ([#2016](https://github.com/defilantech/LLMKube/issues/2016)) ([#2114](https://github.com/defilantech/LLMKube/issues/2114)) ([c4f7f3d](https://github.com/defilantech/LLMKube/commit/c4f7f3df7630f6d8fe92d5a40b57b3962065ee66))
+* **chart:** gate llama.cpp InferenceAdmissionStalled on decode progress ([#2065](https://github.com/defilantech/LLMKube/issues/2065)) ([5b2f45d](https://github.com/defilantech/LLMKube/commit/5b2f45d8a5396c3aa7b3c804e4a846eb18a902ee))
+* **cli:** make cache clear and delete --purge-cache remove entries ([#2134](https://github.com/defilantech/LLMKube/issues/2134)) ([2b668e2](https://github.com/defilantech/LLMKube/commit/2b668e22a916ec636e08a147d485480de497c4b2))
+* **controller:** keep downloader credentials off curl's command line ([#2098](https://github.com/defilantech/LLMKube/issues/2098)) ([2207c2e](https://github.com/defilantech/LLMKube/commit/2207c2eb533472a77f0fd8a9b999ce1a1c3b1d25))
+* **controller:** mount a memory-backed /dev/shm for multi-process vLLM, SGLang and TGI (closes [#2099](https://github.com/defilantech/LLMKube/issues/2099)) ([a68c98f](https://github.com/defilantech/LLMKube/commit/a68c98fbe72e4166038e12dbad1bb22c76e8b791))
+* **controller:** refuse to overwrite or recreate a same-name Deployment ([#2096](https://github.com/defilantech/LLMKube/issues/2096)) ([b90c8aa](https://github.com/defilantech/LLMKube/commit/b90c8aa233d12fbf513cbcf17e7e14dad2fadc23))
+* **model:** canonicalize HF repo IDs so a trailing slash stages ([#2128](https://github.com/defilantech/LLMKube/issues/2128)) ([9289ac6](https://github.com/defilantech/LLMKube/commit/9289ac6ea6419846b46e475adadcdf1608b2e42b))
+* **modelpool:** stop swap thrash on reversals, idle-probe blindness, and abandoned loads ([#2130](https://github.com/defilantech/LLMKube/issues/2130)) ([#2135](https://github.com/defilantech/LLMKube/issues/2135)) ([e7dee43](https://github.com/defilantech/LLMKube/commit/e7dee43c64bd37c4e0b8dc505e369fe7c9c74de4))
+* **model:** serialize downloaders that share a cache directory ([#2115](https://github.com/defilantech/LLMKube/issues/2115)) ([13eca01](https://github.com/defilantech/LLMKube/commit/13eca01a4490b88bcee565eba81200ee04cf7f4b))
+* **sglang:** keep endpoint API keys out of process arguments ([#2122](https://github.com/defilantech/LLMKube/issues/2122)) ([7fdae50](https://github.com/defilantech/LLMKube/commit/7fdae503fb2ce6d067efcb2104b7482a4fee3bce))
+* size metal-agent KV cache estimate from GQA attention shape ([#2102](https://github.com/defilantech/LLMKube/issues/2102)) ([a119234](https://github.com/defilantech/LLMKube/commit/a11923401db85d564393b1be47a1f9116f19bb78))
+
+
+### Documentation
+
+* cover per-request balancing in the ModelRouter page ([#2095](https://github.com/defilantech/LLMKube/issues/2095)) ([9ec4766](https://github.com/defilantech/LLMKube/commit/9ec476696c8c5b30baa275b62a161b8508f66f23))
+* **model-cache:** correct the CephFS fsGroupPolicy claim and the PSA advice ([2bd4538](https://github.com/defilantech/LLMKube/commit/2bd45386a046d705e73f1ff963e91987b22267c8))
+* state differentiation, audience, and project status up front ([#2100](https://github.com/defilantech/LLMKube/issues/2100)) ([ee27e20](https://github.com/defilantech/LLMKube/commit/ee27e20806a1885b10fcf31422f6f711bba4d630))
+* **upgrade:** every InferenceService that uses the default pod security context rolls once on upgrade, because the generated pod template gains `fsGroupChangePolicy: OnRootMismatch` (a full model reload for large models) ([2bd4538](https://github.com/defilantech/LLMKube/commit/2bd45386a046d705e73f1ff963e91987b22267c8))
+* **upgrade:** single-node vLLM, SGLang and TGI services with more than one GPU (or a tensor, pipeline or data-parallel size above 1) that do not mount /dev/shm themselves roll once on upgrade, because the generated pod template gains a memory-backed /dev/shm volume ([a68c98f](https://github.com/defilantech/LLMKube/commit/a68c98fbe72e4166038e12dbad1bb22c76e8b791))
+* **upgrade:** the metal-agent now admits a model only if it fits in the Mac's budget minus the memory committed to models already running, so a Mac whose models add up to more than its budget refuses the extra ones; a Model memoryBudget or memoryFraction above the Mac's budget is clamped to it unless the agent runs with --allow-model-memory-budget-override ([d2d2d43](https://github.com/defilantech/LLMKube/commit/d2d2d43653151cdb08bfbea4f1f6ccdd9e2aa9f7))
+* **upgrade:** the metal-agent now writes a record per engine under --state-dir/engines (both relay and legacy mode) and fails an engine start when it cannot write it; make sure the state directory (default ~/Library/Application Support/llmkube/metal-agent) is writable by the agent's user ([0224d51](https://github.com/defilantech/LLMKube/commit/0224d5144a361bbdba91edab28310789931d747b))
+
 ## [0.10.4](https://github.com/defilantech/LLMKube/compare/v0.10.3...v0.10.4) (2026-10-16)
 
 
