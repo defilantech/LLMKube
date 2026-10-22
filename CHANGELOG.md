@@ -5,6 +5,22 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.6](https://github.com/defilantech/LLMKube/compare/v0.10.5...v0.10.6) (2026-10-22)
+
+
+### Features
+
+* **controller:** prefetch per cache claim, gated by the InferenceService ([#2138](https://github.com/defilantech/LLMKube/issues/2138)) ([d76f398](https://github.com/defilantech/LLMKube/commit/d76f398f156b5435911c52a2126f7d67dc3de887))
+* **router:** per-backend Endpoint Picker for dataPlane: AgentGateway ([#2157](https://github.com/defilantech/LLMKube/issues/2157)) ([c1bbe28](https://github.com/defilantech/LLMKube/commit/c1bbe2819418e249329fa551da9ae1b1ca0002eb))
+
+
+### Bug Fixes
+
+* **cli:** read the model cache from its own pod in cache list ([#2154](https://github.com/defilantech/LLMKube/issues/2154)) ([996abe9](https://github.com/defilantech/LLMKube/commit/996abe9e598de28557eb06fa5f83d48b9e5e858a))
+* **controller:** refuse to repoint a same-name Service ([#2149](https://github.com/defilantech/LLMKube/issues/2149)) ([7965a1b](https://github.com/defilantech/LLMKube/commit/7965a1b8bef2e2367714c0c058183976761f79e1))
+* **hf-listing:** read a tree size only when it is a whole number of bytes ([#2153](https://github.com/defilantech/LLMKube/issues/2153)) ([6e6723d](https://github.com/defilantech/LLMKube/commit/6e6723d132d8cb9ac57249a4b5ac19f4c9621e5e))
+* **model:** report the staged total instead of status.size "0" ([#2150](https://github.com/defilantech/LLMKube/issues/2150)) ([f6710e7](https://github.com/defilantech/LLMKube/commit/f6710e72f1cb7a78de3293f5642d94f1fd4969e9))
+
 ## [0.10.5](https://github.com/defilantech/LLMKube/compare/v0.10.4...v0.10.5) (2026-10-21)
 
 
