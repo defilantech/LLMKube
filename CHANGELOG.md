@@ -5,6 +5,16 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.7](https://github.com/defilantech/LLMKube/compare/v0.10.6...v0.10.7) (2026-10-23)
+
+
+### Features
+
+* **chart:** install the metal-agent RBAC from the Helm chart ([#2165](https://github.com/defilantech/LLMKube/issues/2165)) ([521e502](https://github.com/defilantech/LLMKube/commit/521e5028f36d27d56d0ec32712c3b2b60aedb7ba))
+* **controller:** roll a multi-replica GPU service one pod at a time ([#2164](https://github.com/defilantech/LLMKube/issues/2164)) ([c4073cf](https://github.com/defilantech/LLMKube/commit/c4073cf26971e74088f29cc2b8930c62f89b39a9))
+* **router:** load-aware, session-sticky placement for endpoint backends ([#2166](https://github.com/defilantech/LLMKube/issues/2166)) ([74cfb0e](https://github.com/defilantech/LLMKube/commit/74cfb0e39bbae0cd17a25af56539ca55495b56ad))
+* **router:** the router proxy tracks endpoint backends' pods itself ([#2159](https://github.com/defilantech/LLMKube/issues/2159)) ([57070e1](https://github.com/defilantech/LLMKube/commit/57070e1e4b02b2f5d7e9fd7e16f528defbd28eae))
+
 ## [0.10.6](https://github.com/defilantech/LLMKube/compare/v0.10.5...v0.10.6) (2026-10-22)
 
 
