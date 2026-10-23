@@ -5,6 +5,19 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.9](https://github.com/defilantech/LLMKube/compare/v0.10.8...v0.10.9) (2026-10-23)
+
+
+### Features
+
+* **api:** affinity and topology spread for the router proxy, rolling without surge under hard placement ([#2200](https://github.com/defilantech/LLMKube/issues/2200)) ([3a61700](https://github.com/defilantech/LLMKube/commit/3a6170073cdd3cf3ef5db4e132e06cb2a9a8ddba))
+* **router:** proxy the Anthropic Messages API like chat completions ([#2201](https://github.com/defilantech/LLMKube/issues/2201)) ([86223aa](https://github.com/defilantech/LLMKube/commit/86223aa1efa7df0dbd181db24db6ec895978576a))
+
+
+### Bug Fixes
+
+* **router:** retry stale keep-alive connections and quarantine a pod only after two failures ([#2197](https://github.com/defilantech/LLMKube/issues/2197)) ([b279053](https://github.com/defilantech/LLMKube/commit/b2790538f19b01852b9c8134e8d13e5e31b467b9))
+
 ## [0.10.8](https://github.com/defilantech/LLMKube/compare/v0.10.7...v0.10.8) (2026-10-23)
 
 
