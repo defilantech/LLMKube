@@ -5,6 +5,24 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.8](https://github.com/defilantech/LLMKube/compare/v0.10.7...v0.10.8) (2026-10-23)
+
+
+### Features
+
+* **api:** type the vLLM tool-call and reasoning parsers and admit GLM on SGLang ([#2168](https://github.com/defilantech/LLMKube/issues/2168)) ([fd64c72](https://github.com/defilantech/LLMKube/commit/fd64c72817ea3aac1f82fd283bab96183bd0b4a5))
+* **controller:** add InferenceService spec.hubOffline for serving pods ([#2188](https://github.com/defilantech/LLMKube/issues/2188)) ([a911cb2](https://github.com/defilantech/LLMKube/commit/a911cb2947f5c43077bdec38d31de126c6ea6890))
+* **controller:** keep 3 old ReplicaSets for LLMKube-managed Deployments by default ([#2182](https://github.com/defilantech/LLMKube/issues/2182)) ([5e1722f](https://github.com/defilantech/LLMKube/commit/5e1722f84177b83ac82ebc8c454c8f3c062291ec))
+* **router:** honour endpoint nodePort and externalTrafficPolicy, add proxy runtimeClassName ([#2183](https://github.com/defilantech/LLMKube/issues/2183)) ([a8f9e57](https://github.com/defilantech/LLMKube/commit/a8f9e57da57c670afd2b0d1093195268284e7ce2))
+* **router:** on pools under 3 pods, move a session only when its pod is KV-full ([#2192](https://github.com/defilantech/LLMKube/issues/2192)) ([f9b934c](https://github.com/defilantech/LLMKube/commit/f9b934c359dfbca29abee1b1eb2471a3b79b0f99))
+* **router:** remember LoadAware sessions and move them only under real pressure ([#2180](https://github.com/defilantech/LLMKube/issues/2180)) ([1e8ce5a](https://github.com/defilantech/LLMKube/commit/1e8ce5a5088037f53ce2b5a5f5a626677b390ecb))
+
+
+### Bug Fixes
+
+* **router:** answer a ModelPool swap past swapBudget with 503 and Retry-After ([#2181](https://github.com/defilantech/LLMKube/issues/2181)) ([7c0d84e](https://github.com/defilantech/LLMKube/commit/7c0d84e94281677a17410877db127a82b2ae2b93))
+* **router:** release request bodies once sent and raise the proxy's default memory limit ([#2196](https://github.com/defilantech/LLMKube/issues/2196)) ([140fd6b](https://github.com/defilantech/LLMKube/commit/140fd6bfa76613f08933e25e96c04414b06344fc))
+
 ## [0.10.7](https://github.com/defilantech/LLMKube/compare/v0.10.6...v0.10.7) (2026-10-23)
 
 
