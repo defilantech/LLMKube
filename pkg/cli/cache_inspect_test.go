@@ -151,7 +151,7 @@ func TestCreateInspectorPod(t *testing.T) {
 	clientset := fakeclientset.NewClientset()
 	ctx := context.Background()
 
-	podName, err := createInspectorPodForRun(ctx, clientset, "test-ns", modelCachePVCName, purgeRunID(), nil)
+	podName, err := createInspectorPodForRun(ctx, clientset, "test-ns", modelCachePVCName, purgeRunID(), "", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -222,7 +222,8 @@ func TestCreateInspectorPod_AlreadyExists(t *testing.T) {
 	}
 	clientset := fakeclientset.NewClientset(existingPod)
 
-	_, err := createInspectorPodForRun(context.Background(), clientset, "default", modelCachePVCName, purgeRunID(), nil)
+	_, err := createInspectorPodForRun(context.Background(), clientset, "default",
+		modelCachePVCName, purgeRunID(), "", nil)
 	if err == nil {
 		t.Fatal("expected error when pod already exists")
 	}
@@ -863,7 +864,7 @@ func TestCreateInspectorPodForPVC_SpecificPVCName(t *testing.T) {
 	ctx := context.Background()
 
 	pvcName := "my-isvc-model-cache"
-	podName, err := createInspectorPodForRun(ctx, clientset, "test-ns", pvcName, purgeRunID(), nil)
+	podName, err := createInspectorPodForRun(ctx, clientset, "test-ns", pvcName, purgeRunID(), "", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

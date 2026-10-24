@@ -184,15 +184,37 @@ func inspectSinglePVC(
 	ctx context.Context, cfg *rest.Config, k8sClient client.Client, clientset kubernetes.Interface,
 	namespace string, pvcInfo PVCInfo,
 ) ([]PVCCacheEntry, error) {
-	holder, err := claimHolder(ctx, k8sClient, namespace, pvcInfo.Name)
-	if err != nil {
+	// A claim read that fails (including a forbidden one) leaves the access
+	// mode unknown, which keeps the pre-#2155 pin: a wrongly unpinned strict
+	// claim stalls on Multi-Attach.
+	claim := readCacheClaim(ctx, k8sClient, namespace, pvcInfo.Name)
+	pods := &corev1.PodList{}
+	if err := k8sClient.List(ctx, pods, client.InNamespace(namespace)); err != nil {
+		return nil, fmt.Errorf("failed to list pods: %w", err)
+	}
+	holder := claimHolder(pods.Items, pvcInfo.Name)
+	runID := purgeRunID()
+	if err := secondMountBlocker(holder, pvcInfo.Name, inspectorPodName(pvcInfo.Name),
+		inspectorPodKind, runID, claimSinglePod(claim), nil); err != nil {
 		return nil, err
+	}
+	// A shareable claim is attached wherever it is needed, so pinning the
+	// inspector adds only a way to fail; it still takes the tolerations of a
+	// pod that mounts the claim, or a cluster whose nodes are all tainted for
+	// that pod has nowhere to run it.
+	node, tolerations := "", []corev1.Toleration(nil)
+	if holder != nil {
+		// Copy so a later mutation of the live object cannot reach the pod.
+		tolerations = append(tolerations, holder.Spec.Tolerations...)
+		if !claimShareable(claim) {
+			node = holder.Spec.NodeName
+		}
 	}
 
 	podName, err := ensureCacheAccessPod(ctx, clientset, namespace, pvcInfo.Name,
-		inspectorPodName(pvcInfo.Name), inspectorPodKind, purgeRunID(),
+		inspectorPodName(pvcInfo.Name), inspectorPodKind, runID,
 		func(runID string) (string, error) {
-			return createInspectorPodForRun(ctx, clientset, namespace, pvcInfo.Name, runID, holder)
+			return createInspectorPodForRun(ctx, clientset, namespace, pvcInfo.Name, runID, node, tolerations)
 		})
 	if err != nil {
 		return nil, err
@@ -203,18 +225,12 @@ func inspectSinglePVC(
 
 // createInspectorPodForRun creates the read-only pod that reads a cache claim,
 // stamped with runID so a concurrent run's pod is refused rather than taken
-// over, and pinned to holder's node and tolerations when holder is set: that
-// is where the claim is attached and what scheduling there needs.
+// over. node is the node the claim is attached on, and tolerations what
+// scheduling there needs; empty node means the pod schedules anywhere.
 func createInspectorPodForRun(
 	ctx context.Context, clientset kubernetes.Interface, namespace, pvcName, runID string,
-	holder *corev1.Pod,
+	node string, tolerations []corev1.Toleration,
 ) (string, error) {
-	node, tolerations := "", []corev1.Toleration(nil)
-	if holder != nil {
-		// Copy so a later mutation of the live object cannot reach the pod.
-		node = holder.Spec.NodeName
-		tolerations = append(tolerations, holder.Spec.Tolerations...)
-	}
 	return createCacheAccessPod(ctx, clientset, namespace, pvcName, inspectorPodName(pvcName),
 		inspectorPodKind, runID, node, tolerations)
 }
@@ -232,20 +248,16 @@ func readCacheEntries(
 	return parseDuOutput(output, isvcName), nil
 }
 
-// claimHolder returns the pod a strict RWO claim is attached for, or nil when
-// nothing holds it: the volume is attached for any assigned pod that has not
-// terminated, including one still pulling its image (the attach/detach
+// claimHolder returns the pod a strict RWO claim is attached for from pods, or
+// nil when nothing holds it: the volume is attached for any assigned pod that
+// has not terminated, including one still pulling its image (the attach/detach
 // controller's rule, not phase Running). The inspector has to land on that
 // pod's node, under the same tolerations; with no holder the inspector binds
 // the claim itself (WaitForFirstConsumer). With several holders the first is
 // taken: they share the claim, so any of their nodes has it attached.
-func claimHolder(ctx context.Context, k8sClient client.Client, namespace, pvcName string) (*corev1.Pod, error) {
-	podList := &corev1.PodList{}
-	if err := k8sClient.List(ctx, podList, client.InNamespace(namespace)); err != nil {
-		return nil, fmt.Errorf("failed to list pods: %w", err)
-	}
-	for i := range podList.Items {
-		pod := &podList.Items[i]
+func claimHolder(pods []corev1.Pod, pvcName string) *corev1.Pod {
+	for i := range pods {
+		pod := &pods[i]
 		switch pod.Status.Phase {
 		case corev1.PodSucceeded, corev1.PodFailed:
 			continue
@@ -255,11 +267,11 @@ func claimHolder(ctx context.Context, k8sClient client.Client, namespace, pvcNam
 		}
 		for _, vol := range pod.Spec.Volumes {
 			if vol.PersistentVolumeClaim != nil && vol.PersistentVolumeClaim.ClaimName == pvcName {
-				return pod, nil
+				return pod
 			}
 		}
 	}
-	return nil, nil
+	return nil
 }
 
 // holderTerminated reports whether a pod being deleted has no container left
@@ -308,9 +320,12 @@ func newCacheAccessPodForRun(
 			RestartPolicy: corev1.RestartPolicyNever,
 			Containers: []corev1.Container{
 				{
-					Name:    containerName,
-					Image:   "busybox:1.37.0",
-					Command: []string{"sleep", "300"},
+					Name:  containerName,
+					Image: cacheAccessImageName(),
+					// A mirror tagged :latest would otherwise be pulled on
+					// every run, on a cluster that may not reach it at all.
+					ImagePullPolicy: corev1.PullIfNotPresent,
+					Command:         []string{"sleep", "300"},
 					VolumeMounts: []corev1.VolumeMount{
 						{
 							Name:      "model-cache",
@@ -344,8 +359,9 @@ func newCacheAccessPodOnNode(
 	tolerations []corev1.Toleration,
 ) *corev1.Pod {
 	pod := newCacheAccessPodForRun(podName, pvcName, component, containerName, readOnly, runID)
+	// Unpinned pods still take the tolerations; they just have no node to pin to.
+	pod.Spec.Tolerations = tolerations
 	if node != "" {
-		pod.Spec.Tolerations = tolerations
 		pod.Spec.Affinity = &corev1.Affinity{
 			NodeAffinity: &corev1.NodeAffinity{
 				RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{

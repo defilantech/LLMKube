@@ -98,6 +98,7 @@ func newCacheListCommand() *cobra.Command {
 	var namespace string
 	var allNamespaces bool
 	var orphanedOnly bool
+	var image string
 
 	cmd := &cobra.Command{
 		Use:   "list",
@@ -107,24 +108,31 @@ func newCacheListCommand() *cobra.Command {
 Shows cache entries with their size, status, and which Model resources
 are using each cache entry. Each cache claim is read through a short-lived
 read-only pod the command creates and deletes, so it works even when the
-only other pod mounting the claim cannot run a shell. The command fails
-when no discovered claim can be read, rather than reporting the cache as
-empty; a claim that cannot be read while others can is skipped with a
+only other pod mounting the claim cannot run a shell. That pod runs
+busybox:1.37.0 unless --cache-image or LLMKUBE_CACHE_IMAGE
+names another image, which is what an air-gapped cluster needs. The command
+fails when no discovered claim can be read, rather than reporting the cache
+as empty; a claim that cannot be read while others can is skipped with a
 warning.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runCacheList(namespace, allNamespaces, orphanedOnly)
+			return withCacheImage(image, func() error {
+				return runCacheList(namespace, allNamespaces, orphanedOnly)
+			})
 		},
 	}
 
 	cmd.Flags().StringVarP(&namespace, "namespace", "n", "default", "Kubernetes namespace")
 	cmd.Flags().BoolVarP(&allNamespaces, "all-namespaces", "A", false, "List models from all namespaces")
 	cmd.Flags().BoolVar(&orphanedOnly, "orphaned", false, "Show only orphaned cache entries (no matching Model)")
+	cmd.Flags().StringVar(&image, "cache-image", "",
+		"Image for the short-lived pod that reads the cache claim (default busybox:1.37.0, or $"+cacheImageEnv+")")
 
 	return cmd
 }
 
 func newCacheClearCommand() *cobra.Command {
 	var opts cacheClearOptions
+	var image string
 
 	cmd := &cobra.Command{
 		Use:   "clear",
@@ -132,7 +140,8 @@ func newCacheClearCommand() *cobra.Command {
 		Long: `Remove entries from the persistent model cache.
 
 Entries are removed through a short-lived pod that mounts the cache claim
-read-write; the controller does not mount it.
+read-write; the controller does not mount it. That pod runs busybox:1.37.0
+unless --cache-image or LLMKUBE_CACHE_IMAGE names another image.
 
 By default, clears every entry of the cache claims ` + "`cache list`" + ` discovers.
 Use --model to clear a specific model's cache entry (which also reaches a
@@ -153,7 +162,9 @@ Examples:
   llmkube cache clear --force -n default
 `,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runCacheClear(&opts)
+			return withCacheImage(image, func() error {
+				return runCacheClear(&opts)
+			})
 		},
 	}
 
@@ -162,6 +173,8 @@ Examples:
 	cmd.Flags().BoolVar(&opts.force, "force", false, "Force clear without confirmation")
 	cmd.Flags().BoolVar(&opts.orphaned, "orphaned", false, "Clear only orphaned cache entries (no matching Model)")
 	cmd.MarkFlagsMutuallyExclusive("model", "orphaned")
+	cmd.Flags().StringVar(&image, "cache-image", "",
+		"Image for the short-lived pod that mounts the cache claim (default busybox:1.37.0, or $"+cacheImageEnv+")")
 
 	return cmd
 }
@@ -476,11 +489,11 @@ func runCacheClear(opts *cacheClearOptions) error {
 		var err error
 		switch {
 		case len(keys) > 0:
-			outcome, err = purgeCacheKeys(ctx, cfg, clientset, opts.namespace, target.Name, keys)
+			outcome, err = purgeCacheKeys(ctx, cfg, k8sClient, clientset, opts.namespace, target, keys)
 		case opts.orphaned:
-			outcome, err = purgeOrphanedEntries(ctx, cfg, clientset, opts.namespace, target.Name, active)
+			outcome, err = purgeOrphanedEntries(ctx, cfg, k8sClient, clientset, opts.namespace, target, active)
 		default:
-			outcome, err = purgeAllEntries(ctx, cfg, clientset, opts.namespace, target.Name)
+			outcome, err = purgeAllEntries(ctx, cfg, k8sClient, clientset, opts.namespace, target)
 		}
 		if err != nil {
 			errs = append(errs, fmt.Errorf("purging cache PVC %s: %w", target.Name, err))

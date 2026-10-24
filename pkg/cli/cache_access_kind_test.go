@@ -53,7 +53,7 @@ func TestCacheAccessPodKinds(t *testing.T) {
 
 	clientset := fakeclientset.NewClientset()
 	if _, err := createInspectorPodForRun(context.Background(), clientset, "test-ns",
-		modelCachePVCName, purgeRunID(), nil); err != nil {
+		modelCachePVCName, purgeRunID(), "", nil); err != nil {
 		t.Fatalf("create inspector pod: %v", err)
 	}
 	pod, err := clientset.CoreV1().Pods("test-ns").Get(context.Background(),

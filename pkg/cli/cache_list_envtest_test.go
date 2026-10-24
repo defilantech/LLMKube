@@ -152,7 +152,7 @@ func seedShelllessSharedCache(t *testing.T, cfg *rest.Config, namespace string) 
 	if err := c.Create(ctx, pvc); err != nil {
 		t.Fatalf("create claim: %v", err)
 	}
-	pod := shelllessCachePod(modelCachePVCName)
+	pod := shelllessCachePod()
 	pod.Namespace = namespace
 	if err := c.Create(ctx, pod); err != nil {
 		t.Fatalf("create pod: %v", err)

@@ -52,7 +52,7 @@ func cacheListScheme() *runtime.Scheme {
 // shelllessCachePod is the shape of the chart's controller Deployment in the
 // default shared cache mode: distroless, no shell, the cache claim mounted at
 // /models. A cache list that borrows this pod cannot run `du` in it (#2140).
-func shelllessCachePod(pvcName string) *corev1.Pod {
+func shelllessCachePod() *corev1.Pod {
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: "llmkube-controller", Namespace: "test-ns"},
 		Spec: corev1.PodSpec{
@@ -66,7 +66,7 @@ func shelllessCachePod(pvcName string) *corev1.Pod {
 			Volumes: []corev1.Volume{{
 				Name: "model-cache",
 				VolumeSource: corev1.VolumeSource{
-					PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: pvcName},
+					PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: modelCachePVCName},
 				},
 			}},
 		},
@@ -172,7 +172,7 @@ func TestInspectPVCCacheUsesOwnPodWhenAPodMountsTheClaim(t *testing.T) {
 	// The controller-shaped pod the chart's shared mode creates: it mounts
 	// the claim and has no shell, so an exec there cannot run `du`. Base
 	// borrows this pod; the fix creates its own.
-	borrowable := shelllessCachePod(modelCachePVCName)
+	borrowable := shelllessCachePod()
 	k8sClient := fake.NewClientBuilder().
 		WithScheme(cacheListScheme()).
 		WithObjects(cacheClaim(), borrowable).
@@ -260,7 +260,7 @@ func pinnedTo(pod *corev1.Pod) []string {
 // holds must not be pinned: the pod is its first consumer.
 func TestInspectPVCCachePinsInspectorToTheClaimHolderNode(t *testing.T) {
 	withNode := func(name string, phase corev1.PodPhase, node string) *corev1.Pod {
-		pod := shelllessCachePod(modelCachePVCName)
+		pod := shelllessCachePod()
 		pod.Name = name
 		pod.Spec.NodeName = node
 		pod.Status.Phase = phase

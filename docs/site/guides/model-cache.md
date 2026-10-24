@@ -575,18 +575,39 @@ creates and deletes, rather than executing in a pod that happens to mount the
 claim. In the default `shared` mode the controller mounts the shared claim and
 its image has no shell, so borrowing that pod cannot work. The command needs
 your own permission to list, get, create and delete pods in the namespace,
-and `pods/exec` for the command it runs; it copies the mounting pod's tolerations,
-so a tainted node does not reject it. When no discovered claim can be read it
+`get persistentvolumeclaims` for the access mode, and `pods/exec` for the
+command it runs; it copies the tolerations of a pod that mounts the claim, so a
+tainted node does not reject it. When no discovered claim can be read it
 exits nonzero and says why, instead of reporting an empty or fully active
-cache. On a multi-node cluster the pod is pinned to the node holding the
-claim, so a strict RWO serving pod does not make it stall on Multi-Attach; a
-claim nothing holds is not pinned, and the pod is its first consumer.
+cache. A `ReadWriteOnce` or `ReadWriteOncePod` claim that a pod holds is
+attached on that pod's node, so the inspector is pinned there and does not
+stall on Multi-Attach; a `ReadWriteMany` or `ReadOnlyMany` claim is never
+pinned, since it is attached wherever the pod schedules, and a claim nothing
+holds is not pinned either: the pod is its first consumer. A
+`ReadWriteOncePod` claim that another pod still holds cannot be mounted a second
+time on any node, so the command fails at once and names the mode and the
+holding pod instead of waiting for a pod that can never start; a pod that is
+already being deleted releases the claim, so it is waited for, as is the
+serving pod `delete --purge-cache` is tearing down, recognised by the owner
+chain: the ReplicaSet that owns the pod and the Deployment that owns that
+ReplicaSet must reach the service being deleted. The check lists pods in the
+namespace, so `cache clear` and `delete --purge-cache` need `list pods` for it,
+and `delete --purge-cache` also needs `get replicasets`; without them the
+command falls back to the old wait. A cache pod llmkube left behind at the name
+the command does not use is named as such, since no run will free that claim.
 `--all-namespaces` does not inspect claims and creates no pod.
+
+Both short-lived pods run `busybox:1.37.0`. On a cluster that cannot pull it,
+name a mirrored copy with `--cache-image` or `LLMKUBE_CACHE_IMAGE`; the flag
+wins over the variable, and both cache commands and `delete --purge-cache`
+read the same setting.
 
 ### Removing cache entries with `llmkube cache clear`
 
 `cache clear` removes entries instead of printing a command to run. One
-short-lived `busybox` pod per cache claim mounts it read-write, removes only
+short-lived pod per cache claim (the same image, set the same way) mounts it
+read-write, refuses a `ReadWriteOncePod` claim another pod still holds, and
+removes only
 validated `/models/<key>` paths, and is deleted straight after. `--model
 <name>` clears one model on the claims its own InferenceServices mount (their
 `spec.modelCache.claimName`, their `<isvc>-model-cache` in `perService` mode,

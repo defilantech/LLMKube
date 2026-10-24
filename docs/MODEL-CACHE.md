@@ -746,8 +746,27 @@ llmkube cache clear
 llmkube cache clear --force
 ```
 
-Entries are removed by a short-lived `busybox` pod that mounts the cache claim
-read-write, one pod per claim, deleted as soon as it is done.
+Entries are removed by a short-lived `busybox:1.37.0` pod that mounts the cache
+claim read-write, one pod per claim, deleted as soon as it is done. On a cluster
+that cannot pull that image, pass `--cache-image <ref>` (or set
+`LLMKUBE_CACHE_IMAGE`) to `cache list`, `cache clear` and `delete
+--purge-cache`; the flag wins over the variable.
+
+A `ReadWriteOncePod` claim another pod holds cannot be mounted a second time
+on any node, so `cache list`, `cache clear` and `delete --purge-cache` refuse
+it at once, naming the access mode and the holding pod, instead of waiting for
+a pod that can never start. A pod that is already being deleted releases the
+claim, so it is waited for, not refused, and so is the serving pod `delete
+--purge-cache` itself is tearing down, which it recognises from the pod's
+owner chain: the ReplicaSet that owns the pod, and the Deployment that owns
+that ReplicaSet, must reach the service being deleted. For that check `cache
+clear` and `delete --purge-cache` need `list pods`, and `delete --purge-cache`
+also needs `get replicasets`; without either it falls back to the old wait,
+while `cache list` reports the pod-list failure as it always has. A cache pod
+llmkube itself left behind at the name the command does not use is named as
+such: no run will free that claim, so the message says to delete the pod.
+`cache list` pins its inspector pod only for a `ReadWriteOnce` or `ReadWriteOncePod`
+claim: a `ReadWriteMany` or `ReadOnlyMany` claim is never pinned.
 
 `cache clear` with no flag and `cache clear --orphaned` act on the claims
 `cache list` discovers: `llmkube-model-cache` and the labeled per-service

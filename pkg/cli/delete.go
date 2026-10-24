@@ -22,6 +22,7 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -41,6 +42,7 @@ type deleteOptions struct {
 
 func NewDeleteCommand() *cobra.Command {
 	opts := &deleteOptions{}
+	var image string
 
 	cmd := &cobra.Command{
 		Use:     "delete [NAME]",
@@ -50,13 +52,17 @@ func NewDeleteCommand() *cobra.Command {
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.name = args[0]
-			return runDelete(opts)
+			return withCacheImage(image, func() error {
+				return runDelete(opts)
+			})
 		},
 	}
 
 	cmd.Flags().StringVarP(&opts.namespace, "namespace", "n", "default", "Kubernetes namespace")
 	cmd.Flags().BoolVar(&opts.purgeCache, "purge-cache", false,
 		"Also purge the model from the persistent cache when deleting the deployment")
+	cmd.Flags().StringVar(&image, "cache-image", "",
+		"Image for the short-lived pod that purges the cache (default busybox:1.37.0, or $"+cacheImageEnv+")")
 
 	return cmd
 }
@@ -107,6 +113,10 @@ func runDelete(opts *deleteOptions) error {
 		} else if cacheKey = cachekey.EffectiveKey(purgeModel); cacheKey != "" {
 			modelClaim, stagedClaims = modelCacheClaimName(purgeModel), prefetchedClaims(purgeModel)
 			cacheTargets, cacheSvcs, cacheResolveErr = resolvePurgeTargets(ctx, k8sClient, opts.namespace)
+			// The targets, and each claim's access mode with them, come from
+			// state read before the deletes below: the service one of them
+			// removes may be what collects the claim.
+			cacheTargets = targetedClaims(cacheTargets, cacheSvcs, opts.name, modelClaim, stagedClaims)
 		}
 	}
 
@@ -148,7 +158,7 @@ func runDelete(opts *deleteOptions) error {
 			return fmt.Errorf("deployment deleted, but purging the cache failed: %w; "+
 				"run 'llmkube cache clear -n %s' to clear what remains", cacheResolveErr, opts.namespace)
 		}
-		targets := targetedClaims(cacheTargets, cacheSvcs, opts.name, modelClaim, stagedClaims)
+		targets := cacheTargets
 		var owned, purged []purgeTarget
 		for _, target := range targets {
 			// The operator garbage-collects a claim owner-ref'd to the service
@@ -176,7 +186,8 @@ func runDelete(opts *deleteOptions) error {
 			return fmt.Errorf("deployment deleted, but purging the cache failed: %w", err)
 		}
 		fmt.Printf("🗑️  Purging model cache (cache key: %s)...\n", cacheKey)
-		if err := purgeDeleteTargets(ctx, cfg, clientset, opts.namespace, cacheKey, purged); err != nil {
+		err = purgeDeleteTargets(ctx, cfg, k8sClient, clientset, opts.namespace, opts.name, cacheKey, purged)
+		if err != nil {
 			return fmt.Errorf("deployment deleted, but purging the cache failed: %w; "+
 				"run 'llmkube cache clear -n %s' to clear what remains", err, opts.namespace)
 		}
@@ -186,20 +197,62 @@ func runDelete(opts *deleteOptions) error {
 	return nil
 }
 
+// servingPodsOf reports whether a pod belongs to name, the InferenceService
+// this run deleted: its cascade is asynchronous, so its serving pod can still
+// be mounting the claim when the purge looks.
+//
+// The proof is the owner chain the deployment controller builds: the pod's
+// controller ReplicaSet, whose own controller is the Deployment named after the
+// InferenceService. A ReplicaSet whose name merely starts with name and a
+// hyphen is not proof, because the Deployment of a service called "<name>-v2"
+// produces "<name>-v2-<hash>" names too.
+func servingPodsOf(
+	ctx context.Context, clientset kubernetes.Interface, namespace, name string,
+) func(*corev1.Pod) bool {
+	verdicts := map[string]bool{}
+	return func(pod *corev1.Pod) bool {
+		owner := metav1.GetControllerOf(pod)
+		if owner == nil || owner.Kind != "ReplicaSet" || owner.Name == "" {
+			return false
+		}
+		if verdict, ok := verdicts[owner.Name]; ok {
+			return verdict
+		}
+		// Unreadable, because the ReplicaSet is already collected or the read
+		// is forbidden, is not evidence of another Deployment: waiting is what
+		// base did, and refusing fails a purge that would otherwise succeed.
+		// A readable ReplicaSet must be proven owned by the Deployment named
+		// after the service, since one under no Deployment holds the claim
+		// just as hard.
+		verdict := true
+		if set, err := clientset.AppsV1().ReplicaSets(namespace).Get(ctx, owner.Name, metav1.GetOptions{}); err == nil {
+			verdict = false
+			if controller := metav1.GetControllerOf(set); controller != nil &&
+				controller.Kind == "Deployment" && controller.Name == name {
+				verdict = true
+			}
+		}
+		verdicts[owner.Name] = verdict
+		return verdict
+	}
+}
+
 // purgeDeleteTargets removes cacheKey from every resolved claim, purging each
 // claim on its own so one failure is reported with the claim it belongs to.
 func purgeDeleteTargets(
-	ctx context.Context, cfg *rest.Config, clientset kubernetes.Interface,
-	namespace, cacheKey string, targets []purgeTarget,
+	ctx context.Context, cfg *rest.Config, k8sClient client.Client, clientset kubernetes.Interface,
+	namespace, deletedService, cacheKey string, targets []purgeTarget,
 ) error {
 	if len(targets) == 0 {
 		return fmt.Errorf("no model cache PVC found")
 	}
 
+	releasing := servingPodsOf(ctx, clientset, namespace, deletedService)
 	var errs []error
 	var outcomes []purgeOutcome
 	for _, target := range targets {
-		outcome, err := purgeCacheKeys(ctx, cfg, clientset, namespace, target.Name, []string{cacheKey})
+		outcome, err := purgeCacheKeysReleasing(ctx, cfg, k8sClient, clientset, namespace, target,
+			releasing, []string{cacheKey})
 		if err != nil {
 			errs = append(errs, fmt.Errorf("cache PVC %s: %w", target.Name, err))
 			continue
