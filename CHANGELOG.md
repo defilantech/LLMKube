@@ -5,6 +5,20 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.10](https://github.com/defilantech/LLMKube/compare/v0.10.9...v0.10.10) (2026-10-24)
+
+
+### Features
+
+* **controller:** add --model-cache-prep to skip the root cache prep ([#2206](https://github.com/defilantech/LLMKube/issues/2206)) ([8bcb973](https://github.com/defilantech/LLMKube/commit/8bcb97351c95e5cd9fb039eee4667c98cb3ffc30))
+* **router:** compile dataPlane: AgentGateway to AgentgatewayModel ([#2162](https://github.com/defilantech/LLMKube/issues/2162)) ([26b1ef4](https://github.com/defilantech/LLMKube/commit/26b1ef4f8cc681b9e5e5de143b36a83a7c562822))
+
+
+### Bug Fixes
+
+* **controller:** report a prefetch as downloading while its downloader runs ([#2207](https://github.com/defilantech/LLMKube/issues/2207)) ([7699514](https://github.com/defilantech/LLMKube/commit/769951440c187459597e12933dcbb7253b246b56))
+* **router:** let every waiter of a failed ModelPool swap see its outcome ([#2203](https://github.com/defilantech/LLMKube/issues/2203)) ([b95db62](https://github.com/defilantech/LLMKube/commit/b95db628e5b6176825a70869284b4c24ca7aaa20))
+
 ## [0.10.9](https://github.com/defilantech/LLMKube/compare/v0.10.8...v0.10.9) (2026-10-23)
 
 
