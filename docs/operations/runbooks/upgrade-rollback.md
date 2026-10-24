@@ -108,6 +108,24 @@ the relay pod would crashloop.
 If you roll the chart back (see Rollback below), roll the metal-agents
 back first, then roll back the chart, same order reversed.
 
+Rolling a metal-agent back to a release that predates engine adoption
+silently doubles every model on that Mac: the engines the current agent
+started keep running (they survive the agent by design), the older agent does
+not know them, and it starts a second copy of each. Before installing the
+older agent, stop the current agent and then its engines, with the current
+binary:
+
+```bash
+launchctl bootout gui/$(id -u)/com.llmkube.metal-agent
+while launchctl print gui/$(id -u)/com.llmkube.metal-agent >/dev/null 2>&1; do sleep 1; done
+llmkube-metal-agent stop-engines   # the current binary, before it is replaced
+```
+
+Then install the older agent. `stop-engines` exits 1 when an engine could not
+be stopped; that engine keeps its record, so read the output and rerun it
+before installing the older agent. See the metal-agent README section
+"Agent restarts, upgrades and stopping engines" for details.
+
 After either direction, check the Metal-related Events on the affected
 InferenceServices:
 
@@ -148,7 +166,10 @@ it is fixed. Check them on every Mac before upgrading its metal-agent:
   unload before reinstalling: a `bootstrap` that runs too soon after
   `bootout` can fail with `Bootstrap failed: 5: Input/output error` and leave
   the agent unloaded. The last command prints `state = running` once the
-  agent is back. The new plist uses
+  agent is back. Engines started by the old agent keep running and the new
+  agent adopts them, so they keep the flags they started with; to apply new
+  defaults, run `llmkube-metal-agent stop-engines` after the `bootout` and
+  before reinstalling. The new plist uses
   the default store `~/Library/Application Support/llmkube/models` and logs to
   `~/Library/Logs/llmkube/metal-agent.log`. For a hand-maintained plist,
   remove the `--model-store /tmp/...` pair (or point it at a directory the

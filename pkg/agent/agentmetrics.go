@@ -128,6 +128,14 @@ var (
 		},
 	)
 
+	engineAdoptionsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llmkube_metal_agent_engines_adopted_total",
+			Help: "Engine records evaluated at startup, by outcome (adopted, stopped, discarded).",
+		},
+		[]string{"result"},
+	)
+
 	evictionsSkippedTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "llmkube_metal_agent_evictions_skipped_total",
@@ -235,6 +243,7 @@ func init() {
 		memoryPressureLevelGauge,
 		evictionsTotal,
 		engineRecordErrorsTotal,
+		engineAdoptionsTotal,
 		evictionsSkippedTotal,
 		watchConsecutiveFailures,
 		watchModelLookupFailingServices,

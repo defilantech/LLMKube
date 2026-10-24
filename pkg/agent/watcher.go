@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 	"sync"
 	"time"
@@ -92,6 +93,9 @@ type InferenceServiceWatcher struct {
 	// as a claim guard).
 	lookupMu      sync.Mutex
 	lookupFailing map[string]time.Time
+	// seeded holds keys the first poll treats as already seen (engines
+	// adopted at startup, #2079); see SeedSeen.
+	seeded map[string]bool
 }
 
 // NewInferenceServiceWatcher creates a new watcher with the default failure
@@ -160,6 +164,28 @@ func (w *InferenceServiceWatcher) SetNameAllowlist(names []string) {
 	w.nameAllowlist = allow
 }
 
+// SeedSeen makes the first poll treat keys as already seen, at no resource
+// version. The agent seeds the engines it adopted at startup: an adopted key
+// the poll watches then gets Updated (a no-op while its spec hash matches),
+// and one it does not watch (deleted, off the allowlist, its Model gone or no
+// longer metal) gets Deleted, which stops the engine. Call it before Watch.
+func (w *InferenceServiceWatcher) SeedSeen(keys map[string]bool) {
+	w.seeded = maps.Clone(keys)
+}
+
+// initialSeen returns the seen map the first poll starts from, holding the
+// seeded keys, and drops the seed so it is used once. Watch takes it only
+// after its initial list succeeded, so a Watch retried after that list failed
+// still starts from the seed.
+func (w *InferenceServiceWatcher) initialSeen() map[string]string {
+	seen := make(map[string]string, len(w.seeded))
+	for key := range w.seeded {
+		seen[key] = ""
+	}
+	w.seeded = nil
+	return seen
+}
+
 // Watch starts watching for InferenceService changes. It returns nil on clean
 // context cancellation, ErrWatchStalled when consecutive list failures exceed
 // the configured threshold, or a wrapped error on initial-list failure.
@@ -178,7 +204,7 @@ func (w *InferenceServiceWatcher) Watch(ctx context.Context, eventChan chan<- In
 	defer ticker.Stop()
 
 	// Store last seen resource versions to detect changes
-	seen := make(map[string]string)
+	seen := w.initialSeen()
 
 	threshold := w.maxConsecutiveFailures
 	if threshold < 1 {

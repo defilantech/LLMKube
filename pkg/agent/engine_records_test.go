@@ -12,7 +12,12 @@ import (
 	"time"
 )
 
-type fakeInspector struct{ tokens map[int]string }
+type fakeInspector struct {
+	tokens map[int]string
+	exes   map[int]string
+}
+
+func (f fakeInspector) Executables(pid int) ([]string, error) { return []string{f.exes[pid]}, nil }
 
 func (f fakeInspector) StartToken(pid int) (string, error) {
 	if tok, ok := f.tokens[pid]; ok {
@@ -42,13 +47,14 @@ func newTestRecordStore(t *testing.T) (*engineRecordStore, string) {
 
 func TestEngineRecordStore_ProvisionalThenRunning(t *testing.T) {
 	s, dir := newTestRecordStore(t)
-	sp := SpawnedProcess{PID: 4242, Port: 53111, Executable: "/opt/homebrew/bin/llama-server",
-		ModelPath: "/m/x.gguf", LogPath: "/m/llama-server-default-a.log"}
+	sp := SpawnedProcess{PID: 4242, Port: 53111, Executable: "/opt/homebrew/Cellar/llama.cpp/1/bin/llama-server",
+		LaunchPath: "/opt/homebrew/bin/llama-server", ModelPath: "/m/x.gguf", LogPath: "/m/llama-server-default-a.log"}
 	if err := s.WriteProvisional("default", "a", runtimeLlamaServer, sp); err != nil {
 		t.Fatalf("WriteProvisional: %v", err)
 	}
 	rec := readRecord(t, dir, "a")
-	if rec["state"] != "provisional" || rec["startToken"] != "100.000001" || rec["executable"] != sp.Executable {
+	if rec["state"] != "provisional" || rec["startToken"] != "100.000001" || rec["executable"] != sp.Executable ||
+		rec["launchPath"] != sp.LaunchPath {
 		t.Fatalf("provisional record = %v", rec)
 	}
 	if info, _ := os.Stat(filepath.Join(dir, "default_a.json")); info.Mode().Perm() != 0o600 {
@@ -65,8 +71,9 @@ func TestEngineRecordStore_ProvisionalThenRunning(t *testing.T) {
 	}
 	rec = readRecord(t, dir, "a")
 	if rec["state"] != "running" || rec["specHash"] != "abc" || rec["priority"] != "high" ||
-		rec["executable"] != sp.Executable || rec["logPath"] != sp.LogPath || rec["version"] != float64(1) {
-		t.Fatalf("running record = %v, want spec fields plus the provisional executable and log path", rec)
+		rec["executable"] != sp.Executable || rec["launchPath"] != sp.LaunchPath || rec["logPath"] != sp.LogPath ||
+		rec["version"] != float64(2) {
+		t.Fatalf("running record = %v, want spec fields plus the provisional executable paths and log path", rec)
 	}
 }
 
@@ -78,6 +85,27 @@ func TestEngineRecordStore_WriteRunningPIDZero(t *testing.T) {
 	}
 	if rec := readRecord(t, dir, "o"); rec["startToken"] != nil || rec["modelID"] != "llama3:8b" {
 		t.Fatalf("record = %v, want no start token and the model ID", rec)
+	}
+}
+
+// A completed record hands its identity back to the process, so the process
+// carries what a later agent will verify.
+func TestEngineRecordStore_WriteRunningSetsProcessIdentity(t *testing.T) {
+	s, dir := newTestRecordStore(t)
+	sp := SpawnedProcess{PID: 4242, PGID: 4242, BindHost: legacyBindHost}
+	if err := s.WriteProvisional("default", "a", runtimeLlamaServer, sp); err != nil {
+		t.Fatal(err)
+	}
+	p := &ManagedProcess{Name: "a", Namespace: "default", PID: 4242, Runtime: runtimeLlamaServer}
+	if err := s.WriteRunning(p); err != nil {
+		t.Fatalf("WriteRunning: %v", err)
+	}
+	// The bind host the engine was spawned with survives the completion.
+	if rec := readRecord(t, dir, "a"); rec["bindHost"] != legacyBindHost {
+		t.Fatalf("record bindHost = %v, want %s", rec["bindHost"], legacyBindHost)
+	}
+	if p.StartToken != "100.000001" || p.PGID != 4242 {
+		t.Fatalf("process StartToken=%q PGID=%d, want the recorded token and group 4242", p.StartToken, p.PGID)
 	}
 }
 
@@ -164,5 +192,54 @@ func TestEngineRecordStore_ReadIgnoresSymlink(t *testing.T) {
 	}
 	if _, ok := s.read("default", "link"); ok {
 		t.Fatal("a symlinked record was read, want it treated as no record")
+	}
+}
+
+func TestEngineRecordStore_ListSkipsOtherVersions(t *testing.T) {
+	s, dir := newTestRecordStore(t)
+	if err := s.WriteRunning(&ManagedProcess{Name: "a", Namespace: "default", PID: 0, Runtime: "ollama"}); err != nil {
+		t.Fatal(err)
+	}
+	v1 := []byte(`{"version":1,"namespace":"default","name":"old","pid":4242}`)
+	if err := os.WriteFile(filepath.Join(dir, "default_old.json"), v1, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	recs, errs := s.List()
+	if len(recs) != 1 || recs[0].Name != "a" {
+		t.Fatalf("records = %+v, want only the version 2 record", recs)
+	}
+	if len(errs) != 1 {
+		t.Fatalf("errs = %v, want one skipped-version error", errs)
+	}
+}
+
+func TestEngineRecordStore_ListMissingDirIsEmpty(t *testing.T) {
+	s, _ := newTestRecordStore(t)
+	if recs, errs := s.List(); len(recs) != 0 || len(errs) != 0 {
+		t.Fatalf("List on a missing directory = %v, %v; want nothing", recs, errs)
+	}
+}
+
+func TestEngineRecordStore_ProvisionalRecordsPGID(t *testing.T) {
+	s, dir := newTestRecordStore(t)
+	if err := s.WriteProvisional("default", "p", runtimeLlamaServer, SpawnedProcess{PID: 4242, PGID: 4242}); err != nil {
+		t.Fatal(err)
+	}
+	if rec := readRecord(t, dir, "p"); rec["pgid"] != float64(4242) || rec["version"] != float64(2) {
+		t.Fatalf("record = %v, want pgid 4242 at version 2", rec)
+	}
+}
+
+func TestEngineRecordStore_RunningKeepsPGID(t *testing.T) {
+	s, dir := newTestRecordStore(t)
+	if err := s.WriteProvisional("default", "p", runtimeLlamaServer, SpawnedProcess{PID: 4242, PGID: 4242}); err != nil {
+		t.Fatal(err)
+	}
+	running := &ManagedProcess{Name: "p", Namespace: "default", PID: 4242, Runtime: runtimeLlamaServer}
+	if err := s.WriteRunning(running); err != nil {
+		t.Fatal(err)
+	}
+	if rec := readRecord(t, dir, "p"); rec["pgid"] != float64(4242) {
+		t.Fatalf("record = %v, want pgid kept across WriteRunning", rec)
 	}
 }

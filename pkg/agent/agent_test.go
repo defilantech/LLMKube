@@ -2015,9 +2015,9 @@ func TestDeleteProcess_UsesProcessRuntime(t *testing.T) {
 	}
 }
 
-// TestShutdown_UsesProcessRuntime verifies that Shutdown uses each process's
-// Runtime field to pick the correct executor.
-func TestShutdown_UsesProcessRuntime(t *testing.T) {
+// TestStopEngines_UsesProcessRuntime verifies that StopEngines uses each
+// process's Runtime field to pick the correct executor.
+func TestStopEngines_UsesProcessRuntime(t *testing.T) {
 	scheme := newTestScheme()
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
@@ -2033,18 +2033,18 @@ func TestShutdown_UsesProcessRuntime(t *testing.T) {
 		Runtime: "llama-server",
 	}
 
-	// Shutdown should not panic and should use the llama-server executor
-	err := agent.Shutdown(context.Background())
+	// StopEngines should not panic and should use the llama-server executor
+	err := agent.StopEngines(context.Background())
 	// The executor will fail to stop the process (no real PID), but that's OK
 	if err != nil {
-		t.Logf("Shutdown returned error (expected): %v", err)
+		t.Logf("StopEngines returned error (expected): %v", err)
 	}
 
-	// Process should still be in the map (Shutdown doesn't remove them)
+	// Process should still be in the map (StopEngines doesn't remove them)
 	agent.mu.RLock()
 	_, exists := agent.processes["default/test-isvc"]
 	agent.mu.RUnlock()
 	if !exists {
-		t.Error("Shutdown should not remove processes from the map")
+		t.Error("StopEngines should not remove processes from the map")
 	}
 }

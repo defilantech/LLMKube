@@ -24,6 +24,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"go.uber.org/zap"
@@ -104,6 +105,9 @@ func (e *VLLMSwiftExecutor) StartProcess(ctx context.Context, config ExecutorCon
 		"bin", e.bin, "modelPath", modelPath, "port", port, "ctx", config.ContextSize)
 
 	cmd := exec.Command(e.bin, args...)
+	// Its own process group, so launchd's termination of the agent's group does
+	// not reach the engine and a restarted agent can adopt it (#2079).
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Dir = e.modelStorePath // relative paths in engine flags resolve inside the model store
 	cmd.Env = os.Environ()
 

@@ -26,7 +26,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -346,7 +350,8 @@ func TestMetalStartProcess_OnSpawnedSeesTheChild(t *testing.T) {
 	e.SetStartupTimeout(10 * time.Second)
 	var got SpawnedProcess
 	cfg.OnSpawned = func(sp SpawnedProcess) error { got = sp; return nil }
-	// The record carries the resolved path (a temp dir is a symlink on macOS).
+	// The record carries the resolved path (a temp dir is a symlink on macOS)
+	// and the path as executed.
 	wantBin, err := filepath.EvalSymlinks(bin)
 	if err != nil {
 		t.Fatal(err)
@@ -357,7 +362,8 @@ func TestMetalStartProcess_OnSpawnedSeesTheChild(t *testing.T) {
 		t.Fatalf("StartProcess: %v", err)
 	}
 	t.Cleanup(func() { _ = e.StopProcess(proc.PID) })
-	if got.PID != proc.PID || got.Port != proc.Port || got.Executable != wantBin || got.LogPath != logPath {
+	if got.PID != proc.PID || got.Port != proc.Port || got.Executable != wantBin || got.LaunchPath != bin ||
+		got.LogPath != logPath || got.BindHost != engineBindHost {
 		t.Fatalf("OnSpawned got %+v, process %+v (bin %s, log %s)", got, proc, bin, logPath)
 	}
 }
@@ -514,5 +520,350 @@ func requireOnSpawnedErrorKillsChild(
 	}
 	if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
 		t.Fatalf("child %d still alive after OnSpawned failed (kill 0: %v)", pid, err)
+	}
+}
+
+func TestStopEngineGroup_KillsTheWholeGroup(t *testing.T) {
+	orig := stopGracePeriod
+	stopGracePeriod = 300 * time.Millisecond
+	t.Cleanup(func() { stopGracePeriod = orig })
+	// A leader that ignores SIGTERM and a child in its group that also ignores it.
+	script := "trap '' TERM; sh -c \"trap '' TERM; sleep 30\" & echo $! > \"$1\"; while :; do sleep 0.05; done"
+	cmd := exec.Command("sh", "-c", script, "sh", filepath.Join(t.TempDir(), "child.pid"))
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = cmd.Wait() }()
+	groupConfirmedGone := false
+	t.Cleanup(func() {
+		if !groupConfirmedGone { // never signal a group ID the kernel may have reused
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+	})
+	in := newProcessInspector()
+	tok, err := in.StartToken(cmd.Process.Pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond) // let the child start and install its trap
+	err = stopEngineGroup(cmd.Process.Pid, cmd.Process.Pid, tok, in)
+	var killed *KilledAfterGraceError
+	if !errors.As(err, &killed) {
+		t.Fatalf("err = %v, want KilledAfterGraceError", err)
+	}
+	// The group is gone: signalling it fails with ESRCH. macOS answers EPERM while
+	// the group holds only zombies launchd has not reaped yet, so wait that out.
+	deadline := time.Now().Add(5 * time.Second)
+	probe := syscall.Kill(-cmd.Process.Pid, 0)
+	for (probe == nil || errors.Is(probe, syscall.EPERM)) && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+		probe = syscall.Kill(-cmd.Process.Pid, 0)
+	}
+	if !errors.Is(probe, syscall.ESRCH) {
+		t.Fatalf("process group still alive: %v", probe)
+	}
+	groupConfirmedGone = true
+}
+
+func TestStopEngineGroup_EPERMNeverEscalates(t *testing.T) {
+	var sent []syscall.Signal
+	orig := killFn
+	killFn = func(pid int, sig syscall.Signal) error {
+		sent = append(sent, sig)
+		if sig == 0 && slices.Contains(sent, syscall.SIGTERM) { // alive and ours until SIGTERM lands
+			return syscall.EPERM
+		}
+		return nil
+	}
+	t.Cleanup(func() { killFn = orig })
+	if err := stopEngineGroup(4242, 4242, "tok", fakeInspector{tokens: map[int]string{4242: "tok"}}); err == nil {
+		t.Fatal("EPERM on the liveness probe returned nil")
+	}
+	for _, s := range sent {
+		if s == syscall.SIGKILL {
+			t.Fatal("SIGKILL sent after EPERM")
+		}
+	}
+}
+
+// flipTokenInspector reports the recorded token until flipped.
+type flipTokenInspector struct{ tok atomic.Value }
+
+func (f *flipTokenInspector) StartToken(int) (string, error)    { return f.tok.Load().(string), nil }
+func (f *flipTokenInspector) Executables(int) ([]string, error) { return nil, nil }
+
+// scriptKill swaps killFn for one that records every call and answers per sig.
+func scriptKill(t *testing.T, answer func(pid int, sig syscall.Signal) error) *[]syscall.Signal {
+	t.Helper()
+	var mu sync.Mutex
+	sent := new([]syscall.Signal)
+	orig := killFn
+	killFn = func(pid int, sig syscall.Signal) error {
+		mu.Lock()
+		defer mu.Unlock()
+		*sent = append(*sent, sig)
+		return answer(pid, sig)
+	}
+	t.Cleanup(func() { killFn = orig })
+	return sent
+}
+
+func TestStopEngineGroup_TokenChangedAtDeadlineNeverKills(t *testing.T) {
+	origGrace := stopGracePeriod
+	stopGracePeriod = 100 * time.Millisecond
+	t.Cleanup(func() { stopGracePeriod = origGrace })
+	in := &flipTokenInspector{}
+	in.tok.Store("old")
+	sent := scriptKill(t, func(pid int, sig syscall.Signal) error {
+		if sig == syscall.SIGTERM {
+			in.tok.Store("new") // the PID is reused while we wait
+		}
+		return nil // stays "alive"
+	})
+	err := stopEngineGroup(4242, 4242, "old", in)
+	if !errors.Is(err, errProcessAlreadyGone) {
+		t.Fatalf("err = %v, want errProcessAlreadyGone when the PID was reused", err)
+	}
+	if slices.Contains(*sent, syscall.SIGKILL) {
+		t.Fatal("SIGKILL sent to a reused PID")
+	}
+}
+
+func TestStopEngineGroup_PreChecksNeverSignal(t *testing.T) {
+	esrch := func(int, syscall.Signal) error { return syscall.ESRCH }
+	alive := func(int, syscall.Signal) error { return nil }
+	tests := []struct {
+		name        string
+		pid, pgid   int
+		answer      func(int, syscall.Signal) error
+		inspector   processInspector
+		wantGone    bool
+		wantErrText string
+	}{
+		{"pgid not pid", 4242, 4000, alive, fakeInspector{tokens: map[int]string{4242: "tok"}}, false, "not led by"},
+		{"dead pid", 4242, 4242, esrch, fakeInspector{tokens: map[int]string{4242: "tok"}}, true, ""},
+		{"lookup error", 4242, 4242, alive, fakeInspector{}, false, "start time"},
+		{"token mismatch", 4242, 4242, alive, fakeInspector{tokens: map[int]string{4242: "other"}}, true, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sent := scriptKill(t, tt.answer)
+			err := stopEngineGroup(tt.pid, tt.pgid, "tok", tt.inspector)
+			if err == nil {
+				t.Fatal("stopEngineGroup returned nil")
+			}
+			if errors.Is(err, errProcessAlreadyGone) != tt.wantGone {
+				t.Fatalf("err = %v, already-gone = %v, want %v", err, !tt.wantGone, tt.wantGone)
+			}
+			if tt.wantErrText != "" && !strings.Contains(err.Error(), tt.wantErrText) {
+				t.Fatalf("err = %v, want it to mention %q", err, tt.wantErrText)
+			}
+			for _, sig := range *sent {
+				if sig != 0 {
+					t.Fatalf("signal %v sent before the engine was proven ours", sig)
+				}
+			}
+		})
+	}
+}
+
+// The leader exits on SIGTERM but a member of its group ignores it: the member
+// must not be left running as an orphan.
+func TestStopEngineGroup_LeaderExitsMemberSurvives(t *testing.T) {
+	orig := stopGracePeriod
+	stopGracePeriod = 300 * time.Millisecond
+	t.Cleanup(func() { stopGracePeriod = orig })
+	childPID := filepath.Join(t.TempDir(), "child.pid")
+	script := "sh -c \"trap '' TERM; sleep 30\" & echo $! > \"$1\"; sleep 30"
+	cmd := exec.Command("sh", "-c", script, "sh", childPID)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = cmd.Wait() }()
+	groupConfirmedGone := false
+	t.Cleanup(func() {
+		if !groupConfirmedGone {
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+	})
+	in := newProcessInspector()
+	tok, err := in.StartToken(cmd.Process.Pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(300 * time.Millisecond) // let the member start and install its trap
+	err = stopEngineGroup(cmd.Process.Pid, cmd.Process.Pid, tok, in)
+	var killed *KilledAfterGraceError
+	if !errors.As(err, &killed) {
+		t.Fatalf("err = %v, want KilledAfterGraceError for the surviving member", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	probe := syscall.Kill(-cmd.Process.Pid, 0)
+	for (probe == nil || errors.Is(probe, syscall.EPERM)) && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+		probe = syscall.Kill(-cmd.Process.Pid, 0)
+	}
+	if !errors.Is(probe, syscall.ESRCH) {
+		t.Fatalf("the member outlived the stop: %v", probe)
+	}
+	groupConfirmedGone = true
+}
+
+// A record with no process group of its own is refused outright: no
+// single-PID fallback, no signal, not even the existence probe.
+func TestStopEngineGroup_NoGroupIsRefused(t *testing.T) {
+	for _, pgid := range []int{0, -1, -4242} {
+		t.Run(strconv.Itoa(pgid), func(t *testing.T) {
+			sent := scriptKill(t, func(int, syscall.Signal) error { return nil })
+			err := stopEngineGroup(4242, pgid, "tok", fakeInspector{tokens: map[int]string{4242: "tok"}})
+			if err == nil || engineStopped(err) {
+				t.Fatalf("err = %v, want a refusal that does not count as stopped", err)
+			}
+			if len(*sent) != 0 {
+				t.Fatalf("signals %v sent for a record with pgid %d", *sent, pgid)
+			}
+		})
+	}
+}
+
+// The leader is alive at every poll and exits just before the deadline's
+// re-probe while a member is still in its group: the member is SIGKILLed with
+// the group instead of being reported as already gone.
+func TestStopEngineGroup_LeaderGoneAtDeadlineDrainsGroup(t *testing.T) {
+	origGrace, origPoll := stopGracePeriod, stopPollInterval
+	// One poll inside the grace period, then the deadline re-probe.
+	stopGracePeriod, stopPollInterval = 100*time.Millisecond, time.Hour
+	t.Cleanup(func() { stopGracePeriod, stopPollInterval = origGrace, origPoll })
+	// scriptKill serializes calls, so the counters need no lock of their own.
+	var calls []string
+	termed, leaderProbes := false, 0
+	scriptKill(t, func(pid int, sig syscall.Signal) error {
+		calls = append(calls, fmt.Sprintf("%d:%d", pid, sig))
+		switch {
+		case sig == syscall.SIGTERM:
+			termed = true
+		case pid == 4242 && sig == 0 && termed:
+			leaderProbes++
+			if leaderProbes > 1 { // the deadline re-probe
+				return syscall.ESRCH
+			}
+		}
+		return nil // the group (-4242) still has a member
+	})
+	err := stopEngineGroup(4242, 4242, "tok", fakeInspector{tokens: map[int]string{4242: "tok"}})
+	var killed *KilledAfterGraceError
+	if !errors.As(err, &killed) {
+		t.Fatalf("err = %v, want KilledAfterGraceError for the member left in the group (calls %v)", err, calls)
+	}
+	if leaderProbes != 2 {
+		t.Fatalf("leader probed %d times after SIGTERM, want one poll and the deadline re-probe", leaderProbes)
+	}
+	if !slices.Contains(calls, fmt.Sprintf("%d:%d", -4242, syscall.SIGKILL)) {
+		t.Fatalf("calls = %v, want SIGKILL to process group 4242", calls)
+	}
+}
+
+// The leader of a tracked child exits on SIGTERM but a member of its group
+// ignores it: stopping the child must not leave the member running, since it
+// leads no record and would outlive the agent.
+func TestStopTrackedChild_LeaderExitsMemberSurvives(t *testing.T) {
+	orig := stopGracePeriod
+	stopGracePeriod = 300 * time.Millisecond
+	t.Cleanup(func() { stopGracePeriod = orig })
+	script := "sh -c \"trap '' TERM; sleep 30\" & echo $! > \"$1\"; sleep 30"
+	cmd := exec.Command("sh", "-c", script, "sh", filepath.Join(t.TempDir(), "member.pid"))
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	tracker := &childTracker{}
+	exit := tracker.trackChild(cmd)
+	groupConfirmedGone := false
+	t.Cleanup(func() {
+		if !groupConfirmedGone { // never signal a group ID the kernel may have reused
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+		<-exit.done
+	})
+	time.Sleep(300 * time.Millisecond) // let the member start and install its trap
+	err := tracker.stopChild(cmd.Process.Pid)
+	var killed *KilledAfterGraceError
+	if !errors.As(err, &killed) {
+		t.Fatalf("err = %v, want KilledAfterGraceError for the surviving member", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	probe := syscall.Kill(-cmd.Process.Pid, 0)
+	for (probe == nil || errors.Is(probe, syscall.EPERM)) && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+		probe = syscall.Kill(-cmd.Process.Pid, 0)
+	}
+	if !errors.Is(probe, syscall.ESRCH) {
+		t.Fatalf("the member outlived the stop: %v", probe)
+	}
+	groupConfirmedGone = true
+}
+
+func TestMetalStartProcess_EngineHasItsOwnProcessGroup(t *testing.T) {
+	bin := fakeLlamaServer(t, "exec sleep 60\n")
+	e, cfg, _ := childExitFixture(t, bin)
+	e.SetPort(healthyPort(t))
+	e.SetStartupTimeout(10 * time.Second)
+	var sp SpawnedProcess
+	cfg.OnSpawned = func(s SpawnedProcess) error { sp = s; return nil }
+	proc, err := e.StartProcess(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("StartProcess: %v", err)
+	}
+	t.Cleanup(func() { _ = e.StopProcess(proc.PID) })
+	requireOwnProcessGroup(t, proc.PID, sp)
+}
+
+// requireOwnProcessGroup asserts the engine leads its own process group, apart
+// from the agent's, and that OnSpawned recorded that group.
+func requireOwnProcessGroup(t *testing.T, pid int, sp SpawnedProcess) {
+	t.Helper()
+	pgid, err := syscall.Getpgid(pid)
+	if err != nil || pgid != pid || sp.PGID != pid {
+		t.Fatalf("pgid = %d (%v), recorded %d; want the engine to lead its own group %d", pgid, err, sp.PGID, pid)
+	}
+	if pgid == syscall.Getpgrp() {
+		t.Fatal("engine shares the agent's process group")
+	}
+}
+
+func TestMetalStopProcess_StopsTheEngineGroup(t *testing.T) {
+	// The fake leaves a grandchild in its group; stopping the engine must take it too.
+	pidFile := filepath.Join(t.TempDir(), "grandchild.pid")
+	bin := fakeLlamaServer(t, "sleep 60 & echo $! > "+pidFile+"\nwait\n")
+	e, cfg, _ := childExitFixture(t, bin)
+	e.SetPort(healthyPort(t))
+	e.SetStartupTimeout(10 * time.Second)
+	proc, err := e.StartProcess(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("StartProcess: %v", err)
+	}
+	var grandchild int
+	for i := 0; i < 50 && grandchild == 0; i++ {
+		if b, err := os.ReadFile(pidFile); err == nil {
+			_, _ = fmt.Sscanf(string(b), "%d", &grandchild)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if grandchild == 0 {
+		_ = e.StopProcess(proc.PID)
+		t.Fatal("fake engine did not start its grandchild")
+	}
+	if err := e.StopProcess(proc.PID); err != nil {
+		t.Fatalf("StopProcess: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for syscall.Kill(grandchild, 0) == nil && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err := syscall.Kill(grandchild, 0); !errors.Is(err, syscall.ESRCH) {
+		_ = syscall.Kill(grandchild, syscall.SIGKILL)
+		t.Fatalf("grandchild %d survived the engine stop: %v", grandchild, err)
 	}
 }

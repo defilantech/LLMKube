@@ -353,6 +353,16 @@ type MetalAgent struct {
 	// engineRecords keeps the on-disk record of each engine this agent
 	// started (<stateDir>/engines), so a restarted agent can adopt it (#2079).
 	engineRecords *engineRecordStore
+	// inspect reads the kernel identity of a PID (start token, executable). It
+	// is the record store's inspector, used again to verify recorded engines
+	// at adoption and before group-signalling an adopted one.
+	inspect processInspector
+	// healthChecker probes an engine's health endpoint, for the health monitor
+	// and for adoption.
+	healthChecker ProcessHealthChecker
+	// adopted holds the keys of the engines adopted at startup, whose
+	// endpoints the startup withdrawal leaves Ready. Guarded by mu.
+	adopted map[string]bool
 
 	// now returns the current time for the RelayNotAdopted watchdog.
 	// Defaults to time.Now; tests inject a fake clock.
@@ -412,6 +422,16 @@ type ManagedProcess struct {
 	// fit next to them, not just on its own (#2080). Zero when admission did
 	// not size the process (memory-check-mode=warn after a failed estimate).
 	AdmittedBytes uint64
+
+	// PGID and StartToken are the engine's process group and kernel start
+	// token, as its record holds them (#2079).
+	PGID       int
+	StartToken string
+	// Adopted marks an engine a previous agent process started and this one
+	// adopted at startup. It is not this process's child, so no executor
+	// tracks it: stopping it goes through stopEngineGroup, which re-proves
+	// its identity before signalling its group.
+	Adopted bool
 
 	// healthFailures counts this process's consecutive failed health probes.
 	// Guarded by MetalAgent.mu; a replacement process starts again at zero.
@@ -516,8 +536,8 @@ func NewMetalAgent(config MetalAgentConfig) *MetalAgent {
 	// alike; a directory that cannot be resolved fails each record write, and
 	// so each engine start, rather than the agent's startup.
 	stateDir, stateDirErr := resolveStateDir(config.StateDir, home)
-	records := newEngineRecordStore(
-		filepath.Join(stateDir, "engines"), config.Version, processInspectorFactory(), stateDirErr)
+	inspect := processInspectorFactory()
+	records := newEngineRecordStore(filepath.Join(stateDir, "engines"), config.Version, inspect, stateDirErr)
 	if stateDirErr != nil {
 		logger.Warnw("engine records unavailable: state directory not resolved",
 			"engineRecords", records.Dir(), "error", stateDirErr)
@@ -528,6 +548,8 @@ func NewMetalAgent(config MetalAgentConfig) *MetalAgent {
 	return &MetalAgent{
 		config:              config,
 		engineRecords:       records,
+		inspect:             inspect,
+		healthChecker:       NewDefaultProcessHealthChecker(5 * time.Second),
 		executors:           make(map[string]ProcessExecutor),
 		processes:           make(map[string]*ManagedProcess),
 		logger:              logger.With("component", "metal-agent"),
@@ -696,6 +718,10 @@ func (a *MetalAgent) Start(ctx context.Context) error {
 		a.config.Version,
 	)
 
+	// Adopt engines a previous agent process left running, before the startup
+	// sweep withdraws their endpoints (#2079). Needs no API server.
+	a.startAdoption(ctx)
+
 	// Put the registry in its mode (relay mode: identity + "<isvc>-agent"
 	// registrations) and clean up what earlier agent processes left behind,
 	// in that order; see prepareRegistry.
@@ -738,7 +764,7 @@ func (a *MetalAgent) Start(ctx context.Context) error {
 	// Start health monitor
 	monitor := NewHealthMonitor(
 		a,
-		NewDefaultProcessHealthChecker(5*time.Second),
+		a.healthChecker,
 		30*time.Second,
 		a.logger.With("subsystem", "health-monitor"),
 	)
@@ -1083,12 +1109,19 @@ func (a *MetalAgent) withdrawAfterStartFailure(ctx context.Context, isvc *infere
 
 // withdrawInheritedEndpoints runs WithdrawOwnedEndpoints with the watcher's
 // ownership predicate, so the allowlist partition (#524) bounds which slices a
-// restarted agent may touch.
+// restarted agent may touch. The endpoint of an engine adopted at startup is
+// left alone: it is still serving (#2079).
 func (a *MetalAgent) withdrawInheritedEndpoints(ctx context.Context) {
 	if a.watcher == nil {
 		return
 	}
-	n, err := a.registry.WithdrawOwnedEndpoints(ctx, a.config.Namespace, a.watcher.owns)
+	withdraw := func(ctx context.Context, isvc *inferencev1alpha1.InferenceService) bool {
+		a.mu.RLock()
+		adopted := a.adopted[isvc.Namespace+"/"+isvc.Name]
+		a.mu.RUnlock()
+		return !adopted && a.watcher.owns(ctx, isvc)
+	}
+	n, err := a.registry.WithdrawOwnedEndpoints(ctx, a.config.Namespace, withdraw)
 	if err != nil {
 		a.logger.Warnw("startup endpoint withdrawal failed", "error", err)
 		return
@@ -1612,6 +1645,14 @@ func (a *MetalAgent) stopManagedProcess(ctx context.Context, process *ManagedPro
 		}
 		return nil
 	}
+	if process.Adopted && process.PID > 0 {
+		// Not our child: no executor tracks it. Signal its group once its
+		// identity is proven again.
+		if err := stopEngineGroup(process.PID, process.PGID, process.StartToken, a.inspect); err != nil {
+			return fmt.Errorf("failed to stop adopted engine: %w", err)
+		}
+		return nil
+	}
 	if err := exec.StopProcess(process.PID); err != nil {
 		return fmt.Errorf("failed to stop process: %w", err)
 	}
@@ -2047,63 +2088,75 @@ func (a *MetalAgent) runHeartbeatLoop(ctx context.Context) {
 	}
 }
 
-// Shutdown gracefully shuts down all running processes. It uses each
-// process's Runtime field to pick the correct executor from the agent's
-// executor registry (#525).
+// Shutdown stops the agent's own work. Engines and their records are left in
+// place: they keep serving and the next agent process adopts them (#2079).
+// oMLX models are the exception until the oMLX daemon can be adopted: they are
+// unloaded as before, since the daemon dies with the agent's process group.
+// StopEngines is the explicit stop.
 func (a *MetalAgent) Shutdown(ctx context.Context) error {
 	a.mu.Lock()
-	defer a.mu.Unlock()
-
 	// No health restart may start an engine after shutdown.
 	for key := range a.restarts {
 		a.cancelRestartLocked(key)
 	}
-
-	a.logger.Infow("cleaning up running processes", "count", len(a.processes))
-
-	var shutdownErrors []error
-
-	for key, process := range a.processes {
-		// Pick the executor that matches the process's runtime.
-		exec := a.executors[process.Runtime]
-		if exec == nil {
-			// Fallback to the default executor if the runtime is unknown.
-			exec = a.executors[runtimeLlamaServer]
+	var omlx []*ManagedProcess
+	for _, p := range a.processes {
+		if p.Runtime == runtimeOMLX {
+			omlx = append(omlx, p)
 		}
+	}
+	kept := len(a.processes) - len(omlx)
+	a.mu.Unlock()
 
-		// For shared-daemon runtimes (oMLX, Ollama), unload each model instead of
-		// killing the daemon.
-		if ollama, ok := exec.(*OllamaExecutor); ok && process.ModelID != "" {
-			if err := ollama.UnloadModel(ctx, process.ModelID); err != nil {
-				shutdownErrors = append(shutdownErrors,
-					fmt.Errorf("failed to unload Ollama model %s: %w", key, err))
-				continue
+	var errs []error
+	for _, p := range omlx {
+		if err := a.stopManagedProcess(ctx, p, false); err != nil && !engineStopped(err) {
+			errs = append(errs, fmt.Errorf("unload oMLX model %s/%s: %w", p.Namespace, p.Name, err))
+			continue // the model may still be loaded: keep its record
+		}
+		a.removeEngineRecord(p)
+	}
+	a.logger.Infow("agent stopping; engines keep running for the next agent process to adopt", "engines", kept)
+	return errors.Join(errs...)
+}
+
+// StopEngines stops every engine this agent tracks: it withdraws the endpoint
+// (best effort), stops the engine with the executor that matches its runtime
+// (or the group of an adopted one), and removes the record of each engine that
+// is confirmed stopped. Unlike Shutdown, nothing is left for a later agent.
+func (a *MetalAgent) StopEngines(ctx context.Context) error {
+	a.mu.Lock()
+	for key := range a.restarts {
+		a.cancelRestartLocked(key)
+	}
+	procs := make([]*ManagedProcess, 0, len(a.processes))
+	for _, p := range a.processes {
+		procs = append(procs, p)
+	}
+	a.mu.Unlock()
+
+	a.logger.Infow("stopping all engines", "count", len(procs))
+
+	var errs []error
+	for _, p := range procs {
+		if a.registry != nil {
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{Namespace: p.Namespace, Name: p.Name},
 			}
-		} else if omlx, ok := exec.(*OMLXExecutor); ok && process.ModelID != "" {
-			if err := omlx.UnloadModel(ctx, process.ModelID); err != nil {
-				shutdownErrors = append(shutdownErrors,
-					fmt.Errorf("failed to unload oMLX model %s: %w", key, err))
-				continue
-			}
-		} else {
-			if err := exec.StopProcess(process.PID); err != nil {
-				shutdownErrors = append(shutdownErrors,
-					fmt.Errorf("failed to stop %s: %w", key, err))
-				if !engineStopped(err) {
-					continue // the engine may still run: keep its record
-				}
+			if _, err := a.registry.WithdrawEndpointIfPresent(ctx, isvc); err != nil {
+				a.logger.Warnw("failed to withdraw endpoint",
+					"namespace", p.Namespace, "name", p.Name, "error", err)
 			}
 		}
-		// Reached only when the engine was stopped or unloaded: a stop that
-		// failed with the engine possibly alive, or a failed unload, keeps its record.
-		a.removeEngineRecord(process)
+		if err := a.stopManagedProcess(ctx, p, false); err != nil {
+			errs = append(errs, fmt.Errorf("failed to stop %s/%s: %w", p.Namespace, p.Name, err))
+			if !engineStopped(err) {
+				continue // the engine may still run: keep its record
+			}
+		}
+		a.removeEngineRecord(p)
 	}
-
-	if len(shutdownErrors) > 0 {
-		return fmt.Errorf("shutdown errors: %w", errors.Join(shutdownErrors...))
-	}
-
-	return nil
+	return errors.Join(errs...)
 }
 
 // processMemInfoSnapshot returns a snapshot of process names and PIDs for the watchdog.

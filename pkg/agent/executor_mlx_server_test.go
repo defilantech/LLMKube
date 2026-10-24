@@ -357,3 +357,17 @@ func TestMLXServerStartProcess_OnSpawnedErrorKillsChild(t *testing.T) {
 		return e.StartProcess(context.Background(), c)
 	})
 }
+
+func TestMLXServerStartProcess_EngineHasItsOwnProcessGroup(t *testing.T) {
+	bin := fakeMLXServer(t, "exec sleep 60\n")
+	e, cfg, _ := mlxServerFixture(t, bin, healthyPort(t))
+	e.SetStartupTimeout(10 * time.Second)
+	var sp SpawnedProcess
+	cfg.OnSpawned = func(s SpawnedProcess) error { sp = s; return nil }
+	proc, err := e.StartProcess(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("StartProcess: %v", err)
+	}
+	t.Cleanup(func() { _ = e.StopProcess(proc.PID) })
+	requireOwnProcessGroup(t, proc.PID, sp)
+}

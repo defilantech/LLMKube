@@ -118,7 +118,7 @@ If the eviction was correct, no manual mitigation is needed; the freed memory sh
 
 The watchdog cannot act. You will see `EvictionSkipped` with `skip-reason=disabled` repeating. Either:
 - Manually scale down a low-priority service (see Warning section above).
-- Restart the metal-agent with `--eviction-enabled` if you accept automatic eviction policy.
+- Restart the metal-agent with `--eviction-enabled` if you accept automatic eviction policy. Running engines are adopted by the restarted agent, not reloaded.
 
 ## Resolve (structural)
 

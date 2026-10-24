@@ -40,3 +40,25 @@ func (procfsProcessInspector) StartToken(pid int) (string, error) {
 	}
 	return fields[startTimeField], nil
 }
+
+// Executables is /proc/<pid>/exe plus the first two absolute fields of
+// /proc/<pid>/cmdline (argv[0], and argv[1] for a #! script), each as read and
+// symlink-resolved.
+func (procfsProcessInspector) Executables(pid int) ([]string, error) {
+	if _, err := os.Stat("/proc/self/stat"); err != nil {
+		return nil, errProcessInspectUnsupported
+	}
+	var raw []string
+	if exe, err := os.Readlink(fmt.Sprintf("/proc/%d/exe", pid)); err == nil {
+		raw = append(raw, exe)
+	}
+	if data, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid)); err == nil {
+		args := strings.Split(string(data), "\x00")
+		raw = append(raw, args[:min(len(args), 2)]...)
+	}
+	out := executableCandidates(raw)
+	if len(out) == 0 {
+		return nil, fmt.Errorf("no executable path for PID %d", pid)
+	}
+	return out, nil
+}

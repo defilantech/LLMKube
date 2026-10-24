@@ -3,9 +3,15 @@ package agent
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -14,6 +20,8 @@ import (
 type anyPIDInspector struct{}
 
 func (anyPIDInspector) StartToken(pid int) (string, error) { return "tok", nil }
+
+func (anyPIDInspector) Executables(pid int) ([]string, error) { return []string{"/fake/engine"}, nil }
 
 // flipInspector answers the first lookup and fails every later one, so the
 // provisional write succeeds and the completion write fails.
@@ -176,7 +184,7 @@ func TestStopFailureKeepsRecord(t *testing.T) {
 	}
 }
 
-func TestShutdown_RecordFollowsStopOutcome(t *testing.T) {
+func TestStopEngines_RecordFollowsStopOutcome(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		stopErr    error
@@ -195,7 +203,7 @@ func TestShutdown_RecordFollowsStopOutcome(t *testing.T) {
 				t.Fatal(err)
 			}
 			f.exec.stopErr = tc.stopErr
-			_ = f.agent.Shutdown(context.Background())
+			_ = f.agent.StopEngines(context.Background())
 			_, err := os.Stat(filepath.Join(dir, "default_sd.json"))
 			if tc.wantRecord && err != nil {
 				t.Fatalf("record gone although the engine may still run: %v", err)
@@ -250,5 +258,107 @@ func TestEnsureProcess_RecordFailuresAreCounted(t *testing.T) {
 	}
 	if got := testutil.ToFloat64(engineRecordErrorsTotal) - before; got != 1 {
 		t.Fatalf("completion failure counted %v times, want 1", got)
+	}
+}
+
+func (i *flipInspector) Executables(pid int) ([]string, error) { return []string{"/fake/engine"}, nil }
+
+func TestShutdown_LeavesEnginesAndRecords(t *testing.T) {
+	f := newRestartFixture(t, "keep")
+	delete(f.agent.processes, f.key)
+	dir := useTempRecords(t, f)
+	if err := f.agent.ensureProcess(context.Background(), f.isvc); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.agent.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	for _, c := range f.exec.recorded() {
+		if strings.HasPrefix(c, "stop") {
+			t.Fatalf("Shutdown stopped an engine (%s)", c)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "default_keep.json")); err != nil {
+		t.Fatalf("Shutdown removed the record: %v", err)
+	}
+}
+
+// An agent whose Start failed after adopting engines still runs Shutdown: the
+// adopted engines must be left alone (the probe PID is never signalled).
+func TestShutdown_LeavesAdoptedEngineAlone(t *testing.T) {
+	f := newRestartFixture(t, "adopted")
+	f.agent.processes[f.key] = &ManagedProcess{
+		Name: "adopted", Namespace: "default", PID: deadPID(t), PGID: deadPID(t), StartToken: "tok",
+		Adopted: true, Runtime: runtimeLlamaServer,
+	}
+	if err := f.agent.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	if p := f.agent.processes[f.key]; p == nil || !p.Adopted {
+		t.Fatal("Shutdown dropped the adopted process")
+	}
+	for _, c := range f.exec.recorded() {
+		if strings.HasPrefix(c, "stop") {
+			t.Fatalf("Shutdown stopped an engine (%s)", c)
+		}
+	}
+}
+
+func TestStopEngines_StopsAndRemovesRecords(t *testing.T) {
+	f := newRestartFixture(t, "stopall")
+	delete(f.agent.processes, f.key)
+	dir := useTempRecords(t, f)
+	if err := f.agent.ensureProcess(context.Background(), f.isvc); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.agent.StopEngines(context.Background()); err != nil {
+		t.Fatalf("StopEngines: %v", err)
+	}
+	if !slices.ContainsFunc(f.exec.recorded(), func(c string) bool { return strings.HasPrefix(c, "stop") }) {
+		t.Fatal("StopEngines stopped nothing")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "default_stopall.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("StopEngines left the record")
+	}
+}
+
+// oMLX is not adopted yet: its daemon dies with the agent, so Shutdown still
+// unloads its models and drops their records.
+func TestShutdown_StillUnloadsOMLX(t *testing.T) {
+	var unloads atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		unloads.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(u.Port())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	f := newRestartFixture(t, "omlx")
+	delete(f.agent.processes, f.key)
+	dir := useTempRecords(t, f)
+	f.agent.executors[runtimeOMLX] = NewOMLXExecutor("/bin/omlx", t.TempDir(), port, newNopLogger())
+	proc := &ManagedProcess{
+		Name: "omlx", Namespace: "default", PID: 1234, Runtime: runtimeOMLX, ModelID: "m",
+	}
+	f.agent.processes[f.key] = proc
+	if err := f.agent.engineRecords.WriteRunning(proc); err != nil {
+		t.Fatalf("seed record: %v", err)
+	}
+
+	if err := f.agent.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	if unloads.Load() != 1 {
+		t.Fatalf("oMLX unload calls = %d, want 1", unloads.Load())
+	}
+	if _, err := os.Stat(filepath.Join(dir, "default_omlx.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("oMLX record left after the unload: %v", err)
 	}
 }

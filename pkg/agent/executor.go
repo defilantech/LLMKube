@@ -31,6 +31,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"go.uber.org/zap"
@@ -336,6 +337,9 @@ func (e *MetalExecutor) StartProcess(ctx context.Context, config ExecutorConfig)
 	args := e.llamaServerArgs(ctx, modelPath, port, config)
 
 	cmd := exec.Command(e.llamaServerBin, args...)
+	// Its own process group, so launchd's termination of the agent's group does
+	// not reach the engine and a restarted agent can adopt it (#2079).
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Dir = e.modelStorePath // relative paths in engine flags resolve inside the model store
 
 	cmd.Env = append(os.Environ(),

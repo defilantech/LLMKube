@@ -305,7 +305,8 @@ func (a *MetalAgent) checkRelayAdoption(ctx context.Context) {
 //     relay-to-legacy switch does not leave a relay registration behind.
 //  3. The orphan sweep: agent-owned Services (and same-named slices) whose
 //     InferenceService is gone, by their own names, in either mode.
-//  4. Withdraw inherited endpoints: this process serves nothing yet.
+//  4. Withdraw inherited endpoints: this process serves only the engines it
+//     adopted, so every other one is withdrawn.
 func (a *MetalAgent) prepareRegistry(ctx context.Context) (*ingress.Server, error) {
 	srv, err := a.prepareIngress()
 	if err != nil {
@@ -330,9 +331,11 @@ func (a *MetalAgent) prepareRegistry(ctx context.Context) (*ingress.Server, erro
 	} else if cleaned > 0 {
 		a.logger.Infow("cleaned up orphaned endpoints from prior sessions", "count", cleaned)
 	}
-	// This process serves nothing yet, so any slice a previous agent process
-	// left Ready points at a child that is gone. Withdraw them before the
-	// watcher starts; each successful ensureProcess re-registers Ready (#1918).
+	// Apart from the engines it adopted (#2079), this process serves nothing
+	// yet, so any other slice a previous agent process left Ready points at a
+	// child that is gone. Withdraw those before the watcher starts; adopted
+	// engines keep theirs, and each successful ensureProcess re-registers
+	// Ready (#1918).
 	a.withdrawInheritedEndpoints(ctx)
 	return srv, nil
 }

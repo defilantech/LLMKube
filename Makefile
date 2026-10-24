@@ -400,9 +400,17 @@ install-metal-agent: build-metal-agent ## Install Metal agent and launchd servic
 	@echo "To view logs: tail -f ~/Library/Logs/llmkube/metal-agent.log"
 
 .PHONY: uninstall-metal-agent
-uninstall-metal-agent: ## Uninstall Metal agent and launchd service.
+uninstall-metal-agent: ## Uninstall Metal agent and launchd service (stops its engines too).
 	@echo "Stopping Metal agent service..."
 	@launchctl bootout gui/$$(id -u)/$(LLMKUBE_METAL_AGENT_LABEL) 2>/dev/null || true
+	@if [ -x /usr/local/bin/llmkube-metal-agent ]; then \
+		echo "Stopping engines started by the Metal agent..."; \
+		/usr/local/bin/llmkube-metal-agent stop-engines || { \
+			echo "WARNING: stop-engines failed; continuing the uninstall."; \
+			echo "Check for engines still running: ps -ax | grep -E 'llama-server|mlx-server|vllm-swift|tensorfold'"; \
+			echo "Run stop-engines again from a kept binary, or kill the listed PIDs."; \
+		}; \
+	fi
 	@echo "Removing Metal agent..."
 	sudo rm -f /usr/local/bin/llmkube-metal-agent
 	rm -f ~/Library/LaunchAgents/$(LLMKUBE_METAL_AGENT_LABEL).plist

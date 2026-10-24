@@ -149,6 +149,82 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.llmkube.metal-agent.
 soon can fail with `Bootstrap failed: 5: Input/output error`, hence the wait.
 To restart the agent without a plist change, run
 `launchctl kickstart -k gui/$(id -u)/com.llmkube.metal-agent`.
+Either way the engines keep running and the new agent adopts them; see
+[Agent restarts, upgrades and stopping engines](#agent-restarts-upgrades-and-stopping-engines).
+
+### Agent restarts, upgrades and stopping engines
+
+Engines keep running when the agent stops: `SIGTERM`, `launchctl kickstart -k`,
+a crash and `make install-metal-agent` upgrades all leave them serving. The next
+agent process adopts each engine with the same PID and no model reload, and logs
+`adopted engine from a previous agent process`. In relay mode, requests through
+the Service fail only for the few seconds the agent itself is down; in legacy
+mode they keep succeeding.
+
+Adoption checks each engine before trusting it. Its PID must be alive, lead
+the recorded process group and have the recorded kernel start time. A process
+that fails these checks is provably not the engine the agent started, so it is
+never signalled and its record is discarded. One that passes them is ours, and
+is adopted when it also runs the recorded executable (the resolved binary or
+the path it was started through, so a `brew upgrade` that repoints
+`/opt/homebrew/bin/llama-server` does not prevent adoption), answers its health
+check, and was started for the same bind mode (legacy `0.0.0.0` or relay
+loopback). An engine that is ours but cannot be adopted is stopped and started
+fresh; one that cannot be stopped keeps its record for the next attempt.
+Ollama services are re-attached while the Ollama daemon answers its health
+check. A service no longer assigned to this Mac (allowlist change,
+reassignment, Model deleted) is stopped after the agent's first list.
+`llmkube_metal_agent_engines_adopted_total{result}` counts the outcomes.
+
+oMLX services still reload when the agent restarts; adopting the oMLX daemon is
+planned.
+
+To stop the engines, stop the agent first, then run `stop-engines`. Running it
+while the agent is up lets the health monitor respawn an engine that then
+outlives the agent:
+
+```bash
+launchctl bootout gui/$(id -u)/com.llmkube.metal-agent
+llmkube-metal-agent stop-engines
+```
+
+`stop-engines` stops every engine the agent started (as a process group, after
+the same start-time check), unloads the model of each Ollama service, and
+removes each record once its engine is confirmed stopped. A record whose
+process is gone, or is now another program, is removed without a signal. An
+engine it cannot stop keeps its record, and the command exits 1 after trying
+the rest. With a kubeconfig it first withdraws each service's endpoint. It
+takes `--state-dir`, `--namespace`, `--kubeconfig`, `--kube-context`,
+`--ollama-port` and `--log-level`. Only `--state-dir` must match the agent's,
+since the records live under it; `--namespace` only affects log lines.
+`make uninstall-metal-agent` does both steps and then removes the binary and
+plist.
+
+Adopted engines keep the flags they started with, so a new agent default does
+not reach a running engine. After an upgrade, to apply new defaults, stop the
+engines and start the agent again:
+
+```bash
+launchctl bootout gui/$(id -u)/com.llmkube.metal-agent
+llmkube-metal-agent stop-engines
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.llmkube.metal-agent.plist
+```
+
+Rolling the agent back to a release that predates engine adoption doubles
+every model: the older agent does not know the running engines, leaves them
+loaded and starts a second copy of each. Before installing an older agent,
+stop the agent and run `stop-engines` with the current binary, then install
+the older one:
+
+```bash
+launchctl bootout gui/$(id -u)/com.llmkube.metal-agent
+while launchctl print gui/$(id -u)/com.llmkube.metal-agent >/dev/null 2>&1; do sleep 1; done
+llmkube-metal-agent stop-engines   # the current binary, before it is replaced
+# then install the older agent and load its plist
+```
+
+If `stop-engines` exits 1, an engine is still running; check its output and
+run it again before installing the older agent.
 
 ### Model store
 
@@ -523,7 +599,7 @@ model" for the full flow.
 | Flag | Default | Purpose |
 |------|---------|---------|
 | `--ingress-port` | `9443` | TLS port of the ingress, on all interfaces. Open this port, not engine ports, in the macOS firewall. |
-| `--state-dir` | `~/Library/Application Support/llmkube/metal-agent` | Agent state: the ingress key and certificate in `<state-dir>/ingress/` (relay mode) and a record of each running engine in `<state-dir>/engines/` (both modes), for keeping engines across agent restarts in a later release. `<state-dir>` and `engines/` are 0700; record files 0600. A leading `~` is expanded to the agent's home and a relative path is made absolute; the resolved path is logged at startup. |
+| `--state-dir` | `~/Library/Application Support/llmkube/metal-agent` | Agent state: the ingress key and certificate in `<state-dir>/ingress/` (relay mode) and a record of each running engine in `<state-dir>/engines/` (both modes), which the next agent process uses to adopt engines that outlived the previous one (see [Agent restarts, upgrades and stopping engines](#agent-restarts-upgrades-and-stopping-engines)). `<state-dir>` and `engines/` are 0700; record files 0600. A leading `~` is expanded to the agent's home and a relative path is made absolute; the resolved path is logged at startup. |
 | `--legacy-direct-endpoints` | `false` | DEPRECATED, removed in a future release. Engines on all interfaces without authentication, registered directly, no ingress. Only for a controller that predates relay support. |
 | `--client-port` | `9999` | Listener on `127.0.0.1:<port>` that forwards `/v1/*` to the current engine, for clients on the Mac itself. `0` disables it. |
 
@@ -685,6 +761,7 @@ The Metal Agent exposes an HTTP server on `127.0.0.1:9090` (configurable via `--
 | `llmkube_metal_agent_memory_pressure_level` | Gauge | Memory pressure level: 0 Normal, 1 Warning, 2 Critical (see `--memory-pressure-warning` and `--memory-pressure-critical`) |
 | `llmkube_metal_agent_evictions_total` | Counter | Processes the memory watchdog evicted under Critical pressure (only with `--eviction-enabled`). Each eviction also emits an `Evicted` Warning event |
 | `llmkube_metal_agent_engine_record_errors_total` | Counter | Engine record writes that failed and failed the start |
+| `llmkube_metal_agent_engines_adopted_total` | Counter | Engine records evaluated at startup, by outcome. Labels: `result` (`adopted`, `stopped`, `discarded`) |
 | `llmkube_metal_agent_evictions_skipped_total` | Counter | Times the watchdog was at Critical but did not evict. Labels: `reason` (`disabled`, `below_guard`, `empty`, `floor`, `all_protected`, `runtime_ineligible`) |
 | `llmkube_metal_agent_watch_consecutive_failures` | Gauge | Consecutive failed Kubernetes lists by the InferenceService watcher; resets to 0 on success. The agent exits for a launchd restart at `--max-watch-failures` |
 | `llmkube_metal_agent_watch_model_lookup_failing_services` | Gauge | InferenceServices whose referenced Model lookup is currently failing with an error other than NotFound; each is kept in its previous state until a lookup succeeds |

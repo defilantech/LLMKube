@@ -469,6 +469,9 @@ func resolveOptionalRuntimeBins(cfg *AgentConfig, logger *zap.SugaredLogger) {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "stop-engines" {
+		os.Exit(runStopEnginesCommand(os.Args[2:]))
+	}
 	cfg := &AgentConfig{}
 
 	// Parse command-line flags

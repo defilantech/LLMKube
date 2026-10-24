@@ -48,9 +48,10 @@
     <key>WorkingDirectory</key>
     <string>__HOME__</string>
 
-    <!-- Restart on failure with throttle -->
+    <!-- Restart on failure with throttle. A crashed agent relaunches after
+         10 seconds; its engines keep serving meanwhile. -->
     <key>ThrottleInterval</key>
-    <integer>30</integer>
+    <integer>10</integer>
 
     <!-- Nice level (lower = higher priority) -->
     <key>Nice</key>

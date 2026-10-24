@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1083,5 +1084,43 @@ func TestWatch_ContextCancellation(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Error("Watch did not return after context cancellation")
+	}
+}
+
+// A key seeded before the first poll (an engine adopted at startup, #2079) is
+// compared like a seen one: an owned service gets Updated, and a key the poll
+// does not watch (here one whose service is gone) gets Deleted. The seed is
+// used once.
+func TestWatcher_SeededKeysAreUpdatedOrDeleted(t *testing.T) {
+	f := newModelLookupFixture(t)
+	owned, gone := "default/"+lookupISVCName, "default/gone"
+	f.watcher.SeedSeen(map[string]bool{owned: true, gone: true})
+
+	events := f.pollOnce(t, f.watcher.initialSeen())
+	got := eventSummary(events)
+	slices.Sort(got)
+	want := []string{"DELETED " + gone, "UPDATED " + owned}
+	if !slices.Equal(got, want) {
+		t.Fatalf("first poll events = %v, want %v", got, want)
+	}
+	if again := f.watcher.initialSeen(); len(again) != 0 {
+		t.Fatalf("second initialSeen = %v, want the seed used once", again)
+	}
+}
+
+// While ownership is unknown, a seeded key stays out of the deletion pass, as
+// a seen one does (#2076).
+func TestWatcher_SeededKeyKeptWhileOwnershipUnknown(t *testing.T) {
+	f := newModelLookupFixture(t)
+	key := "default/" + lookupISVCName
+	f.watcher.SeedSeen(map[string]bool{key: true})
+	f.failModelGet = apierrors.NewServiceUnavailable("apiserver restarting")
+
+	seen := f.watcher.initialSeen()
+	if events := f.pollOnce(t, seen); len(events) != 0 {
+		t.Fatalf("poll with the Model lookup failing emitted %v, want none", eventSummary(events))
+	}
+	if _, ok := seen[key]; !ok {
+		t.Fatalf("seen = %v, want the seeded key kept", seen)
 	}
 }

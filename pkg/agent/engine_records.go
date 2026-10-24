@@ -7,13 +7,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 )
 
 // engineRecordVersion is the record format. A record with any other version is
 // ignored by adoption (PR 2) rather than misread.
-const engineRecordVersion = 1
+const engineRecordVersion = 2
 
 const (
 	engineRecordProvisional = "provisional"
@@ -23,11 +24,19 @@ const (
 // SpawnedProcess is what an executor knows about a child right after
 // cmd.Start, passed to ExecutorConfig.OnSpawned.
 type SpawnedProcess struct {
-	PID        int
-	Port       int
+	PID  int
+	PGID int
+	Port int
+	// Executable is the spawned program with symlinks resolved; LaunchPath is
+	// the path as executed. A Homebrew relink changes what the first resolves
+	// to, so adoption accepts either.
 	Executable string
+	LaunchPath string
 	ModelPath  string
 	LogPath    string
+	// BindHost is the address the engine listens on: loopback in relay
+	// mode, all interfaces in legacy mode.
+	BindHost string
 }
 
 // engineRecord is the on-disk record of one engine the agent started, read by
@@ -39,8 +48,11 @@ type engineRecord struct {
 	Name               string    `json:"name"`
 	State              string    `json:"state"`
 	PID                int       `json:"pid"`
+	PGID               int       `json:"pgid"`
 	StartToken         string    `json:"startToken,omitempty"`
 	Executable         string    `json:"executable,omitempty"`
+	LaunchPath         string    `json:"launchPath,omitempty"`
+	BindHost           string    `json:"bindHost,omitempty"`
 	Port               int       `json:"port"`
 	Runtime            string    `json:"runtime"`
 	ModelPath          string    `json:"modelPath,omitempty"`
@@ -53,6 +65,12 @@ type engineRecord struct {
 	// AdmittedBytes is the memory estimate the engine was admitted with, so an
 	// agent that adopts it counts that memory as committed (#2080).
 	AdmittedBytes uint64 `json:"admittedBytes,omitempty"`
+}
+
+// executablePaths are the paths the engine was recorded under, resolved and
+// as executed, for executableMatches.
+func (r engineRecord) executablePaths() []string {
+	return []string{r.Executable, r.LaunchPath}
 }
 
 // engineRecordStore keeps one record file per engine under dir
@@ -85,14 +103,17 @@ func (s *engineRecordStore) WriteProvisional(namespace, name, runtime string, sp
 		return err
 	}
 	return s.write(engineRecord{
-		Namespace: namespace, Name: name, State: engineRecordProvisional, PID: sp.PID, StartToken: tok,
-		Executable: sp.Executable, Port: sp.Port, Runtime: runtime, ModelPath: sp.ModelPath, LogPath: sp.LogPath,
+		Namespace: namespace, Name: name, State: engineRecordProvisional, PID: sp.PID, PGID: sp.PGID,
+		StartToken: tok, Executable: sp.Executable, LaunchPath: sp.LaunchPath, Port: sp.Port, Runtime: runtime,
+		ModelPath: sp.ModelPath, LogPath: sp.LogPath, BindHost: sp.BindHost,
 	})
 }
 
 // WriteRunning completes (or, for a shared-daemon service with no spawn,
-// creates) the record of a stored process, keeping the executable and log path
-// a provisional record captured.
+// creates) the record of a stored process, keeping the executable paths,
+// process group, log path and bind host a provisional record captured. On success it sets
+// p.StartToken and p.PGID to the values written, so the process carries the
+// identity its record holds.
 func (s *engineRecordStore) WriteRunning(p *ManagedProcess) error {
 	tok, err := s.startToken(p.PID)
 	if err != nil {
@@ -105,9 +126,49 @@ func (s *engineRecordStore) WriteRunning(p *ManagedProcess) error {
 		AdmittedBytes: p.AdmittedBytes,
 	}
 	if prev, ok := s.read(p.Namespace, p.Name); ok && prev.PID == p.PID {
-		rec.Executable, rec.LogPath = prev.Executable, prev.LogPath
+		rec.Executable, rec.LaunchPath = prev.Executable, prev.LaunchPath
+		rec.LogPath, rec.PGID, rec.BindHost = prev.LogPath, prev.PGID, prev.BindHost
 	}
-	return s.write(rec)
+	if err := s.write(rec); err != nil {
+		return err
+	}
+	p.StartToken, p.PGID = rec.StartToken, rec.PGID
+	return nil
+}
+
+// List reads every record in the directory. Records of another version or
+// unparsable files are skipped and reported, never acted on.
+func (s *engineRecordStore) List() ([]engineRecord, []error) {
+	if s.dirErr != nil {
+		return nil, []error{s.dirErr}
+	}
+	entries, err := os.ReadDir(s.dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, []error{fmt.Errorf("list engine records in %s: %w", s.dir, err)}
+	}
+	var recs []engineRecord
+	var errs []error
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || filepath.Ext(name) != ".json" || strings.HasPrefix(name, ".") {
+			continue
+		}
+		ns, n, ok := strings.Cut(strings.TrimSuffix(name, ".json"), "_")
+		if !ok {
+			errs = append(errs, fmt.Errorf("engine record %s: unexpected file name", name))
+			continue
+		}
+		rec, ok := s.read(ns, n)
+		if !ok {
+			errs = append(errs, fmt.Errorf("engine record %s: unreadable or not version %d", name, engineRecordVersion))
+			continue
+		}
+		recs = append(recs, rec)
+	}
+	return recs, errs
 }
 
 // Remove deletes the record; a missing record is not an error.

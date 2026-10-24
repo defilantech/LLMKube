@@ -514,3 +514,19 @@ func TestTensorFoldStartProcess_OnSpawnedErrorKillsChild(t *testing.T) {
 		return e.StartProcess(context.Background(), c)
 	})
 }
+
+func TestTensorFoldStartProcess_EngineHasItsOwnProcessGroup(t *testing.T) {
+	bin := fakeTensorFold(t, "exec sleep 60\n")
+	e, cfg, _ := tensorFoldFixture(t, bin)
+	port := healthyPort(t)
+	e.allocatePort = func() (int, error) { return port, nil }
+	e.SetStartupTimeout(10 * time.Second)
+	var sp SpawnedProcess
+	cfg.OnSpawned = func(s SpawnedProcess) error { sp = s; return nil }
+	proc, err := e.StartProcess(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("StartProcess: %v", err)
+	}
+	t.Cleanup(func() { _ = e.StopProcess(proc.PID) })
+	requireOwnProcessGroup(t, proc.PID, sp)
+}
