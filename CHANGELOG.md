@@ -5,6 +5,19 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.11](https://github.com/defilantech/LLMKube/compare/v0.10.10...v0.10.11) (2026-10-24)
+
+
+### Features
+
+* **controller:** move the SGLang defaults to v0.5.22 and report removed attention backends ([#2221](https://github.com/defilantech/LLMKube/issues/2221)) ([33f9bb1](https://github.com/defilantech/LLMKube/commit/33f9bb142f30c828bf52f91c2c5bcbe93cdbb5f4))
+* **controller:** run every llama.cpp default from one pinned build, b11854 ([#2220](https://github.com/defilantech/LLMKube/issues/2220)) ([052840e](https://github.com/defilantech/LLMKube/commit/052840e54716f47730e142ed4ed85aab2f2dd5a9))
+
+
+### Bug Fixes
+
+* **controller:** render vllmConfig.speculative as --speculative-config ([#2210](https://github.com/defilantech/LLMKube/issues/2210)) ([191dcbd](https://github.com/defilantech/LLMKube/commit/191dcbd2bcc5b6678aa9766dc570589c08cb0019))
+
 ## [0.10.10](https://github.com/defilantech/LLMKube/compare/v0.10.9...v0.10.10) (2026-10-24)
 
 
