@@ -681,8 +681,8 @@ const sha256VerifyFns = sha256HashFns + `llmkube_atomic_write() { _llmkube_tmp=$
 //
 // A file with no digest in $MODEL_FILE_SHA256 gets an empty MODEL_SHA256, and
 // llmkube_accept_file / llmkube_publish_file fall back to existence and a plain
-// rename, so a partially pinned staging set stages the unpinned files exactly
-// as before. $MODEL_FILE_SHA256 is newline-delimited "<digest> <repo-relative
+// rename; the caller applies the origin-size check for unpinned cache hits.
+// $MODEL_FILE_SHA256 is newline-delimited "<digest> <repo-relative
 // path>"; the digest comes first so a path containing spaces survives the
 // read. A command built with these gates aborts when MODEL_FILE_SHA256 did not
 // reach the container, matching the single-file precheck's fail-closed rule.
@@ -1145,10 +1145,21 @@ func multiFileInitEnvVars(source, cacheDir string, files []string, digests map[s
 // MODEL_PATH and MODEL_SOURCE per file for those helpers; the loop runs in a
 // pipeline subshell, so the assignments do not leak.
 func buildMultiFileInitCommand(useCache, isS3, isHFAuth, withSHA256 bool, refreshPolicy string) string {
-	prefix := `mkdir -p "$CACHE_DIR" || exit 1; ` + cacheDirLock
-	sweep := `find "$CACHE_DIR" -name '*.tmp' -delete`
+	// Warm FUSE caches need no lock or writes. Only the prefetch stager may
+	// download there; ordinary filesystems retain the directory-wide lock.
+	// Use Linux FUSE_SUPER_MAGIC: BusyBox stat reports its name as UNKNOWN.
+	remedy := "set spec.modelCache.prefetch: true on every InferenceService using this claim, or use storage with cross-node flock support"
+	if isS3 {
+		remedy = "s3:// sources do not support prefetch; use storage with cross-node flock support, or pre-stage the files and use a pvc:// source"
+	}
+	prefix := `cache_fs=$(stat -f -c %t "$CACHE_DIR" 2>/dev/null || stat -f -c %t "$(dirname "$CACHE_DIR")") || { echo "ERROR: ModelCacheLockUnsupported: cannot determine cache filesystem; use an init image with stat -f support" >&2; exit 1; }; ` +
+		`if [ "$cache_fs" != 65735546 ]; then mkdir -p "$CACHE_DIR" || exit 1; ` + cacheDirLock +
+		`elif [ "${LLMKUBE_PREFETCH_STAGER:-false}" = true ]; then mkdir -p "$CACHE_DIR" || exit 1; fi; ` +
+		`llmkube_prepare_download() { if [ "$cache_fs" = 65735546 ] && [ "${LLMKUBE_PREFETCH_STAGER:-false}" != true ]; then ` +
+		`echo "ERROR: ModelCacheLockUnsupported: FUSE cache cannot guarantee cross-node file locking for staging $rel; ` + remedy + `" >&2; return 1; fi; mkdir -p "$(dirname "$dest")"; }; `
+	sweep := `if [ "$cache_fs" != 65735546 ] || [ "${LLMKUBE_PREFETCH_STAGER:-false}" = true ]; then find "$CACHE_DIR" -name '*.tmp' -delete; fi`
 	if !useCache {
-		prefix = `mkdir -p /models && `
+		prefix = `mkdir -p /models && llmkube_prepare_download() { mkdir -p "$(dirname "$dest")"; }; `
 		sweep = `find /models -name '*.tmp' -delete`
 	}
 	// Every branch transfers per file, so the heartbeat helper rides the prefix
@@ -1160,16 +1171,14 @@ func buildMultiFileInitCommand(useCache, isS3, isHFAuth, withSHA256 bool, refres
 
 	normalizeFn := `normalize_hf_source() { case "$1" in hf://*) src="${1#hf://}"; rev="${src#*@}"; if [ "$rev" != "$src" ]; then echo "https://huggingface.co/${src%%@*}/resolve/$rev/"; else echo "https://huggingface.co/$src/resolve/main/"; fi ;; *) echo "$1" ;; esac; }` + " && "
 
-	// Per-file verify gates (#1978). Every fragment below is empty when
-	// withSHA256 is false, so the unhashed command stays byte-for-byte what it
-	// was before this change (pinned by the initcmd_multi_* goldens).
+	// Per-file verify gates (#1978) are omitted when withSHA256 is false.
 	fns := ""
 	pre := ""
 	digestAssign := ""
 	markerGuard := ""
 	sizeHit := ""
-	keepCachedTail := `elif [ -f "$dest" ]; then echo "Revalidation unreachable for $rel; kept cached copy"; ` +
-		`else echo "ERROR: model artifact $rel missing and revalidation failed"; exit 1; fi; `
+	keepCachedTail := `elif [ -f "$dest" ] && llmkube_cached_size_matches "$remote_size"; then echo "Revalidation unreachable for $rel; kept cached copy"; ` +
+		`else echo "ERROR: model artifact $rel could not be validated or downloaded"; exit 1; fi; `
 	if withSHA256 {
 		fns = sha256VerifyFns + sha256MultiFileFns
 		pre = `llmkube_precheck_file_sha256 || exit 1; `
@@ -1180,24 +1189,43 @@ func buildMultiFileInitCommand(useCache, isS3, isHFAuth, withSHA256 bool, refres
 		// cached copy only if it still passes the gate (stamp hit or a local
 		// hash match), otherwise fail the init. Mirrors remoteRevalidateScript's
 		// keepCached, so an Offline restart cannot serve bytes that fail the
-		// pin. The unhashed shape above stays byte-for-byte unchanged.
-		keepCachedTail = `elif [ -f "$dest" ] && llmkube_accept_file "$dest"; then if llmkube_marker_hit_sha256 "$dest"; then echo "Model artifact $rel: the origin served bytes that do not match the pinned spec.fileSha256; kept the pinned cached copy"; else echo "Revalidation unreachable for $rel; kept cached copy"; fi; ` +
+		// pin. An unpinned file is kept unless its size is known to be wrong.
+		keepCachedTail = `elif [ -f "$dest" ] && { if [ -n "${MODEL_SHA256:-}" ]; then llmkube_accept_file "$dest"; else llmkube_cached_size_matches "$remote_size"; fi; }; then if llmkube_marker_hit_sha256 "$dest"; then echo "Model artifact $rel: the origin served bytes that do not match the pinned spec.fileSha256; kept the pinned cached copy"; else echo "Revalidation unreachable for $rel; kept cached copy"; fi; ` +
 			`else echo "ERROR: model artifact $rel missing and revalidation failed"; exit 1; fi; `
 	}
 	publishFile := func(partial string) string {
+		publish := `mv "` + partial + `" "$dest"`
 		if withSHA256 {
-			return `llmkube_publish_file "` + partial + `" "$dest"`
+			publish = `llmkube_publish_file "` + partial + `" "$dest"`
 		}
-		return `mv "` + partial + `" "$dest"`
+		// Object-backed filesystems may implement rename as copy/delete. Check
+		// the published file too, before a prefetch Job can report success.
+		return `{ published_size=$(stat -c %s "` + partial + `") && ` + publish + ` && ` +
+			`{ [ "$(stat -c %s "$dest")" = "$published_size" ] || { ` +
+			`rm -f "$dest" "$dest.sha256" "$dest.llmkube-size"; echo "ERROR: published artifact $rel has the wrong size" >&2; false; }; } && ` +
+			`{ printf '%s\n' "$published_size" > "$dest.llmkube-size" || echo "WARNING: could not record staged size for $rel" >&2; }; }`
 	}
-	// downloadOrCached emits the IfNotPresent download-or-skip block. The
-	// unhashed shape keeps the historical `[ ! -f ]` test byte for byte; the
-	// hashed shape inverts it so a missing or stale stamp downloads.
+	// Record the verified size alongside each staged file. IfNotPresent can then
+	// validate warm caches offline and avoid refreshing just one shard when a
+	// mutable upstream changes. Older cache entries fall back to a size probe.
+	sizeCurl := curlCmd(isHFAuth)
+	if isS3 {
+		sizeCurl = "s3_curl"
+	}
+	sizeCheck := `llmkube_cached_size_matches() { ` +
+		`_llmkube_local_size=$(stat -c %s "$dest" 2>/dev/null) || return 1; ` +
+		`if [ "$#" -eq 0 ] && [ -f "$dest.llmkube-size" ]; then _llmkube_size=$(cat "$dest.llmkube-size" 2>/dev/null); ` +
+		`case "$_llmkube_size" in ''|*[!0-9]*) ;; *) [ "$_llmkube_local_size" = "$_llmkube_size" ]; return $?;; esac; fi; ` +
+		`if [ "$#" -gt 0 ]; then _llmkube_size=$1; else _llmkube_size=$(` + sizeCurl + ` -fsSL -I "$url" -o /dev/null -w '%header{content-length}' 2>/dev/null) || _llmkube_size=; fi; ` +
+		`case "$_llmkube_size" in ''|*[!0-9]*) echo "WARNING: origin size unavailable for $rel; keeping cached copy without size validation" >&2; return 0;; esac; ` +
+		`[ "$_llmkube_local_size" = "$_llmkube_size" ]; }; `
+	prefix += sizeCheck
 	downloadOrCached := func(download, cachedEcho string) string {
+		accept := `llmkube_cached_size_matches`
 		if withSHA256 {
-			return `if [ -f "$dest" ] && llmkube_accept_file "$dest"; then ` + cachedEcho + `; else ` + download + `fi; `
+			accept = `{ if [ -n "${MODEL_SHA256:-}" ]; then llmkube_accept_file "$dest"; else llmkube_cached_size_matches; fi; }`
 		}
-		return `if [ ! -f "$dest" ]; then ` + download + `else ` + cachedEcho + `; fi; `
+		return `if [ -f "$dest" ] && ` + accept + `; then ` + cachedEcho + `; else ` + download + `fi; `
 	}
 
 	if isS3 {
@@ -1207,14 +1235,14 @@ func buildMultiFileInitCommand(useCache, isS3, isHFAuth, withSHA256 bool, refres
 				`printf '%s\n' "$MODEL_FILES" | while IFS= read -r rel; do ` +
 				`[ -n "$rel" ] || continue; ` +
 				`dest="$CACHE_DIR/$rel"; ` +
-				`mkdir -p "$(dirname "$dest")"; ` + digestAssign + markerGuard +
+				digestAssign + markerGuard +
 				`key="${S3_PREFIX:+${S3_PREFIX}/}$rel"; ` +
 				`url="${AWS_ENDPOINT_URL}/${S3_BUCKET}/${key}"; ` +
-				`remote_size=$(s3_curl -fsSL -I "$url" -o /dev/null -w '%header{content-length}' 2>/dev/null || echo 0); ` +
+				`remote_size=$(s3_curl -fsSL -I "$url" -o /dev/null -w '%header{content-length}' 2>/dev/null) || remote_size=; ` +
 				`if [ -f "$dest" ] && [ "$(stat -c %s "$dest" 2>/dev/null || echo 0)" = "$remote_size" ] && [ "$remote_size" != "0" ]` + sizeHit + `; then ` +
 				`echo "Model artifact $rel revalidated (unchanged, skipped download)"; ` +
 				`else ` +
-				`if download_with_progress "$dest.tmp" "" s3_curl -f -L -o "$dest.tmp" "$url" --no-progress-meter && ` + publishFile("$dest.tmp") + `; then ` +
+				`if llmkube_prepare_download && download_with_progress "$dest.tmp" "" s3_curl -f -L -o "$dest.tmp" "$url" --no-progress-meter && ` + publishFile("$dest.tmp") + `; then ` +
 				`echo "Model artifact $rel revalidated (downloaded)"; ` +
 				keepCachedTail +
 				`fi; ` +
@@ -1222,14 +1250,14 @@ func buildMultiFileInitCommand(useCache, isS3, isHFAuth, withSHA256 bool, refres
 			return fns + pre + prefix + sweep + " && " + body
 		}
 
-		download := `echo "Downloading model artifact $rel..."; ` +
+		download := `llmkube_prepare_download || exit 1; echo "Downloading model artifact $rel..."; ` +
 			`download_with_progress "$dest.tmp" "" s3_curl -f -L -o "$dest.tmp" "$url" --no-progress-meter && ` + publishFile("$dest.tmp") + ` || { echo "ERROR: failed to download $rel"; exit 1; }; `
 		body := normalizeFn +
 			`SOURCE="$(normalize_hf_source "$MODEL_SOURCE")" && ` +
 			`printf '%s\n' "$MODEL_FILES" | while IFS= read -r rel; do ` +
 			`[ -n "$rel" ] || continue; ` +
 			`dest="$CACHE_DIR/$rel"; ` +
-			`mkdir -p "$(dirname "$dest")"; ` + digestAssign + markerGuard +
+			digestAssign + markerGuard +
 			`key="${S3_PREFIX:+${S3_PREFIX}/}$rel"; ` +
 			`url="${AWS_ENDPOINT_URL}/${S3_BUCKET}/${key}"; ` +
 			downloadOrCached(download, `echo "Model artifact $rel already cached, skipping download"`) +
@@ -1243,17 +1271,17 @@ func buildMultiFileInitCommand(useCache, isS3, isHFAuth, withSHA256 bool, refres
 			`printf '%s\n' "$MODEL_FILES" | while IFS= read -r rel; do ` +
 			`[ -n "$rel" ] || continue; ` +
 			`dest="$CACHE_DIR/$rel"; ` +
-			`mkdir -p "$(dirname "$dest")"; ` + digestAssign + markerGuard +
+			digestAssign + markerGuard +
 			`url="${SOURCE%/}/$rel"; ` +
 			`MODEL_PATH="$dest"; MODEL_SOURCE="$url"; ` +
-			`remote_head=$(` + curlCmd(isHFAuth) + ` -fsSL -I "$url" -o /dev/null -w ` + headProbeFormat + ` 2>/dev/null || echo 'CL0ET'); ` +
+			`remote_head=$(` + curlCmd(isHFAuth) + ` -fsSL -I "$url" -o /dev/null -w ` + headProbeFormat + ` 2>/dev/null) || remote_head='CLET'; ` +
 			splitHeadProbe +
 			`remote_size=${remote_validator#CL}; remote_size=${remote_size%%ET*}; ` +
 			`if [ -f "$dest" ] && [ "$(stat -c %s "$dest" 2>/dev/null || echo 0)" = "$remote_size" ] && [ "$remote_size" != "0" ]` + sizeHit + `; then ` +
 			`echo "Model artifact $rel revalidated (unchanged, skipped download)"; ` +
 			`else ` +
-			validatorDeriveAndSweep() +
-			`if download_with_progress "$MODEL_PARTIAL" "$remote_size" ` + curlCmd(isHFAuth) + ` -fsSL -C - -o "$MODEL_PARTIAL" "$url" --no-progress-meter && ` + partialSizeGuard + publishFile("$MODEL_PARTIAL") + `; then ` +
+			`if llmkube_prepare_download && { ` + validatorDeriveAndSweep() +
+			`download_with_progress "$MODEL_PARTIAL" "$remote_size" ` + curlCmd(isHFAuth) + ` -fsSL -C - -o "$MODEL_PARTIAL" "$url" --no-progress-meter && ` + partialSizeGuard + publishFile("$MODEL_PARTIAL") + `; }; then ` +
 			`echo "Model artifact $rel revalidated (downloaded)"; ` +
 			keepCachedTail +
 			`fi; ` +
@@ -1261,7 +1289,7 @@ func buildMultiFileInitCommand(useCache, isS3, isHFAuth, withSHA256 bool, refres
 		return fns + pre + prefix + body + " && " + sweep
 	}
 
-	download := `echo "Downloading model artifact $rel..."; ` +
+	download := `llmkube_prepare_download || exit 1; echo "Downloading model artifact $rel..."; ` +
 		`MODEL_PATH="$dest"; MODEL_SOURCE="$url"; ` + resumePrologue(isHFAuth) +
 		`download_with_progress "$MODEL_PARTIAL" "$remote_size" ` + curlCmd(isHFAuth) + ` -f -L -C - -o "$MODEL_PARTIAL" "$url" --no-progress-meter && ` + partialSizeGuard + publishFile("$MODEL_PARTIAL") + ` || { echo "ERROR: failed to download $rel"; exit 1; }; `
 	body := normalizeFn + hfAuthPrefix(isHFAuth) +
@@ -1269,7 +1297,7 @@ func buildMultiFileInitCommand(useCache, isS3, isHFAuth, withSHA256 bool, refres
 		`printf '%s\n' "$MODEL_FILES" | while IFS= read -r rel; do ` +
 		`[ -n "$rel" ] || continue; ` +
 		`dest="$CACHE_DIR/$rel"; ` +
-		`mkdir -p "$(dirname "$dest")"; ` + digestAssign + markerGuard +
+		digestAssign + markerGuard +
 		`url="${SOURCE%/}/$rel"; ` +
 		downloadOrCached(download, `echo "Model artifact $rel already cached, skipping download"`) +
 		`done`
@@ -1586,6 +1614,9 @@ func buildCachedStorageConfig(model *inferencev1alpha1.Model, isvc *inferencev1a
 		base := stagingRepoBase(model.Spec.Source, hfEndpoint)
 		cmd := buildMultiFileInitCommand(true, isS3Source(model.Spec.Source), isHFAuthSourceForEndpoint(base, hfEndpoint), len(model.Spec.FileSHA256) > 0, model.Spec.RefreshPolicy)
 		env := multiFileInitEnvVars(base, cacheDir, plan.Files, model.Spec.FileSHA256)
+		// Explicit Env wins over EnvFrom, so source credentials cannot enable
+		// the prefetch-only FUSE bypass in a serving pod.
+		env = append(env, corev1.EnvVar{Name: "LLMKUBE_PREFETCH_STAGER", Value: "false"})
 
 		initVolumeMounts := []corev1.VolumeMount{
 			{Name: "model-cache", MountPath: "/models"},

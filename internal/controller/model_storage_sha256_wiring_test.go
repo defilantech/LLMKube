@@ -299,8 +299,8 @@ func TestModelStorageConfig_MultiFileDigestWiring(t *testing.T) {
 						if !strings.Contains(calls, `[ "$remote_size" != "0" ] && llmkube_accept_file "$dest"; then`) {
 							t.Errorf("OnChange size-match is not gated by llmkube_accept_file:\n%s", calls)
 						}
-					} else if !strings.Contains(calls, `if [ -f "$dest" ] && llmkube_accept_file "$dest"; then`) {
-						t.Errorf("IfNotPresent cache probe is not gated by llmkube_accept_file:\n%s", calls)
+					} else if !strings.Contains(calls, `if [ -f "$dest" ] && { if [ -n "${MODEL_SHA256:-}" ]; then llmkube_accept_file "$dest"; else llmkube_cached_size_matches; fi; }; then`) {
+						t.Errorf("IfNotPresent cache probe must verify pinned digests and check unpinned sizes:\n%s", calls)
 					}
 				})
 			}

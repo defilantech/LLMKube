@@ -96,6 +96,10 @@ const (
 	// status, not spec.files.
 	ReasonStagedFilesNotCurrent = "StagedFilesNotCurrent"
 
+	// ReasonModelCacheLockUnsupported: staging needs a cross-node lock that
+	// the cache filesystem cannot provide. Warm cached files remain usable.
+	ReasonModelCacheLockUnsupported = "ModelCacheLockUnsupported"
+
 	// ReasonModelTransferSucceeded is set when ModelTransferHealthy flips back
 	// to True: a pod has since got past its init containers.
 	ReasonModelTransferSucceeded = "ModelTransferSucceeded"
@@ -114,6 +118,12 @@ type modelTransferSignature struct {
 // cannot be tied to a real message does not belong here, because a confident
 // wrong label is worse than the bare exit code the user already has.
 var modelTransferSignatures = []modelTransferSignature{
+	{
+		reason: ReasonModelCacheLockUnsupported,
+		remedy: "for HTTP/HF sources, set spec.modelCache.prefetch: true on every service using the claim; " +
+			"s3:// sources cannot prefetch, so use storage with cross-node flock support or pre-stage files with a pvc:// source",
+		matches: []string{"modelcachelockunsupported"},
+	},
 	{
 		// A pod rendered to consume a prefetched cache found a staged file
 		// absent. The token is unique to the model-verify container.

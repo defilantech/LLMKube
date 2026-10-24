@@ -86,6 +86,61 @@ Cache Key: a3b8c9d4e5f67890
 Path: /models/a3b8c9d4e5f67890/model.gguf
 ```
 
+## Multi-file cache validation and shared volumes
+
+For multi-file downloads using `IfNotPresent`, an unpinned cached file is
+checked against its recorded staged size before it is reused. Older entries
+without a size record are checked against the origin's HTTP `Content-Length`. A
+size mismatch triggers a fresh staging attempt; a failed download fails the
+init container instead of accepting the mismatched file. This also applies
+to unpinned files in a partially pinned `spec.fileSha256` manifest.
+
+If the origin is unreachable, rate limited, or does not provide a numeric
+size, `IfNotPresent` keeps the cached file with a warning and does not
+re-download it. `OnChange` also keeps a cached file after a failed refresh
+unless a size probe proved it was the wrong size. Checksum-pinned files must
+still pass their local digest check. Size checks cannot detect corruption of
+the same length; use `spec.fileSha256` for content verification.
+The downloader checks the size again after publishing and removes the
+destination, checksum stamp, and staged size record if publication left the
+wrong size. A verified publish records its size beside the cached file, so
+`IfNotPresent` warm starts can validate it offline and do not re-pull one shard
+when a mutable origin later changes that shard.
+
+`OnChange` still revalidates each file against the current origin. A mutable
+source can therefore change shards independently during a refresh. Pin the
+source to an immutable revision (for example an HF commit) or pin every file
+with `spec.fileSha256` when all shards must come from the same revision.
+
+Concurrent staging requires filesystem locks that work across writer nodes.
+`ReadWriteMany` alone does not guarantee this. BlobFuse lists `flock` as an
+[unsupported operation](https://learn.microsoft.com/en-us/azure/storage/blobs/blobfuse2-known-issues).
+**Behavior change:** serving pods refuse to download missing or mismatched
+multi-file artifacts on FUSE mounts. Warm caches remain usable, including
+when the origin is offline; the serving downloader does not sweep temporary
+files or create a lock file on these mounts. Detection uses the Linux FUSE
+magic value, which also covers virtiofs (including Kata Containers volumes).
+The filesystem type alone cannot establish cross-node locking support.
+A refusal sets `ModelTransferHealthy=False` with reason
+`ModelCacheLockUnsupported` and a remedy in the condition message.
+
+For HTTP/HF sources, set `spec.modelCache.prefetch: true` on every
+InferenceService using such a claim. The operator's prefetch Job is allowed
+to stage on FUSE without relying on `flock`. It waits for a failed pod before
+creating a replacement, so a terminating writer is not overlapped by its
+retry. Operator-driven Job replacement also waits for the old Job's pods to
+be deleted. If an old pod is stuck on a NotReady node, recover the node or
+ensure its writer has stopped before force-deleting that pod to unblock
+replacement. Serving pods wait for successful staging into their claim,
+then mount the cache read-only. See
+[Letting the service require a prefetch](#letting-the-service-require-a-prefetch).
+
+`s3://` sources do not support prefetch. Use storage with cross-node `flock`
+support, or stage the files separately and use a `pvc://` source. Avoid other
+writers (including separate Models sharing the same cache key) while a
+prefetch Job stages its directory. Other filesystems still use `flock`;
+their cross-node lock semantics must be supported by the storage provider.
+
 ## Integrity Verification (spec.sha256)
 
 Setting `spec.sha256` on a `Model` makes the download init container verify the

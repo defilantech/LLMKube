@@ -230,7 +230,13 @@ func ownedPrefetchJob(ctx context.Context, c client.Reader, model *inferencev1al
 // default for Jobs is to orphan the pod, so propagation is set; a Job that
 // is already gone is not an error.
 func deletePrefetchJob(ctx context.Context, c client.Client, job *batchv1.Job) error {
-	if err := c.Delete(ctx, job, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil && !apierrors.IsNotFound(err) {
+	propagation := metav1.DeletePropagationBackground
+	if job.Spec.PodReplacementPolicy != nil && *job.Spec.PodReplacementPolicy == batchv1.Failed {
+		// These stagers may bypass flock on FUSE. Keep the Job's name
+		// occupied until its pods are gone, including on spec replacement.
+		propagation = metav1.DeletePropagationForeground
+	}
+	if err := c.Delete(ctx, job, client.PropagationPolicy(propagation)); err != nil && !apierrors.IsNotFound(err) {
 		return err
 	}
 	return nil

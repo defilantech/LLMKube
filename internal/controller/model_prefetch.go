@@ -1264,6 +1264,19 @@ func (r *ModelReconciler) buildPrefetchJob(ctx context.Context, model *inference
 	if len(storage.initContainers) == 0 {
 		return nil, fmt.Errorf("prefetch: source %q produced no downloader containers", model.Spec.Source)
 	}
+	var replacementPolicy *batchv1.PodReplacementPolicy
+	for i := range storage.initContainers {
+		for j := range storage.initContainers[i].Env {
+			env := &storage.initContainers[i].Env[j]
+			if env.Name == "LLMKUBE_PREFETCH_STAGER" {
+				env.Value = "true"
+				// Do not overlap a terminating writer with its replacement
+				// on storage where the downloader cannot rely on flock.
+				policy := batchv1.Failed
+				replacementPolicy = &policy
+			}
+		}
+	}
 
 	backoff := int32(2)
 	ttl := int32(24 * 60 * 60) // keep a day for log triage, then self-clean
@@ -1310,6 +1323,7 @@ func (r *ModelReconciler) buildPrefetchJob(ctx context.Context, model *inference
 			},
 		},
 		Spec: batchv1.JobSpec{
+			PodReplacementPolicy:    replacementPolicy,
 			BackoffLimit:            &backoff,
 			TTLSecondsAfterFinished: &ttl,
 			Template: corev1.PodTemplateSpec{

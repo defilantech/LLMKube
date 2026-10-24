@@ -177,7 +177,7 @@ func TestModelInitCommand_SHA256GuardRunsFirst(t *testing.T) {
 // http/hf) keeps a cached copy only through the per-file gate, so a pinned
 // file that fails its digest cannot be served from a stale cache (#1978).
 func TestModelMultiFileInitCommand_OnChangeKeepCachedIsGated(t *testing.T) {
-	gated := `elif [ -f "$dest" ] && llmkube_accept_file "$dest"; then if llmkube_marker_hit_sha256 "$dest"; then echo "Model artifact $rel: the origin served bytes that do not match the pinned spec.fileSha256; kept the pinned cached copy"`
+	gated := `elif [ -f "$dest" ] && { if [ -n "${MODEL_SHA256:-}" ]; then llmkube_accept_file "$dest"; else llmkube_cached_size_matches "$remote_size"; fi; }; then if llmkube_marker_hit_sha256 "$dest"; then echo "Model artifact $rel: the origin served bytes that do not match the pinned spec.fileSha256; kept the pinned cached copy"`
 	for _, kind := range []struct {
 		name string
 		isS3 bool

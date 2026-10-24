@@ -235,6 +235,51 @@ var _ = Describe("Model Prefetch", func() {
 			Expect(handled).To(BeFalse())
 		})
 
+		It("waits for foreground deletion before replacing a multi-file prefetch writer", func() {
+			model := newPrefetchModel("model-prefetch-writer")
+			model.Spec.Source = "https://example.com/weights"
+			model.Spec.Format = "safetensors"
+			model.Spec.Files = []string{"model.safetensors"}
+			Expect(k8sClient.Create(ctx, model)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, model) })
+			r := prefetchReconciler()
+			_, _, err := r.reconcilePrefetch(ctx, model)
+			Expect(err).NotTo(HaveOccurred())
+			jobKey := types.NamespacedName{Name: prefetchJobName(model), Namespace: ns}
+			job := &batchv1.Job{}
+			Expect(k8sClient.Get(ctx, jobKey, job)).To(Succeed())
+			oldUID := job.UID
+			oldFingerprint := job.Annotations[annotationPrefetchFingerprint]
+
+			modelKey := client.ObjectKeyFromObject(model)
+			Expect(k8sClient.Get(ctx, modelKey, model)).To(Succeed())
+			model.Spec.Files = append(model.Spec.Files, "config.json")
+			Expect(k8sClient.Update(ctx, model)).To(Succeed())
+			_, _, err = r.reconcilePrefetch(ctx, model)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(k8sClient.Get(ctx, jobKey, job)).To(Succeed(), "the old Job must remain until its writer pods are gone")
+			Expect(job.DeletionTimestamp).NotTo(BeNil())
+			Expect(job.Finalizers).To(ContainElement(metav1.FinalizerDeleteDependents))
+
+			Expect(k8sClient.Get(ctx, modelKey, model)).To(Succeed())
+			_, _, err = r.reconcilePrefetch(ctx, model)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(k8sClient.Get(ctx, jobKey, job)).To(Succeed())
+			Expect(job.UID).To(Equal(oldUID))
+			Expect(job.Annotations[annotationPrefetchFingerprint]).To(Equal(oldFingerprint))
+
+			// envtest has no garbage collector or Job controller. No pods
+			// were started, so finish foreground deletion explicitly.
+			job.Finalizers = nil
+			Expect(k8sClient.Update(ctx, job)).To(Succeed())
+			Expect(k8sClient.Get(ctx, modelKey, model)).To(Succeed())
+			_, _, err = r.reconcilePrefetch(ctx, model)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(k8sClient.Get(ctx, jobKey, job)).To(Succeed())
+			Expect(job.UID).NotTo(Equal(oldUID))
+			Expect(job.Annotations[annotationPrefetchFingerprint]).NotTo(Equal(oldFingerprint))
+		})
+
 		It("creates the Job and shared cache PVC, then completes on Job success", func() {
 			model := newPrefetchModel("model-prefetch-flow")
 			Expect(k8sClient.Create(ctx, model)).To(Succeed())
