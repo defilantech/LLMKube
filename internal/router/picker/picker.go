@@ -46,6 +46,9 @@ type Candidate struct {
 	InFlight int64
 	// Sample is the latest engine reading, or nil.
 	Sample *Sample
+	// Prefill is this replica's estimated uncached prompt tokens in flight to
+	// the pod, counted until the pod sends its first response byte.
+	Prefill int64
 }
 
 // Result names why a pod was chosen.
@@ -79,7 +82,24 @@ const (
 	KVFullThreshold = 0.9
 	// VirtualNodes is the number of ring positions per endpoint.
 	VirtualNodes = 128
+	// BytesPerToken converts a request body length to estimated prompt
+	// tokens.
+	BytesPerToken = 4
+	// TokensPerRequest is how many estimated prefill tokens weigh as one
+	// request in Score.
+	TokensPerRequest int64 = 16384
+	// MaxRequestTokens caps one request's estimate.
+	MaxRequestTokens int64 = 262144
 )
+
+// EstimateTokens returns the estimated prompt tokens of a body of bodyBytes,
+// capped at MaxRequestTokens.
+func EstimateTokens(bodyBytes int64) int64 {
+	if bodyBytes <= 0 {
+		return 0
+	}
+	return min(bodyBytes/BytesPerToken, MaxRequestTokens)
+}
 
 func freshSample(c Candidate, now time.Time) *Sample {
 	if c.Sample == nil || now.Sub(c.Sample.At) > StaleAfter {
@@ -119,7 +139,14 @@ func Eligible(cands []Candidate, now time.Time) []Candidate {
 	return out
 }
 
-// PickLeastLoaded returns the candidate with the lowest Load; ties are broken
+// Score orders pods for placement, in estimated tokens: Load weighted by
+// TokensPerRequest plus the prefill tokens in flight. Load stays the request
+// measure the pressure gate uses.
+func Score(c Candidate, now time.Time) int64 {
+	return Load(c, now)*TokensPerRequest + c.Prefill
+}
+
+// PickLeastLoaded returns the candidate with the lowest Score; ties are broken
 // by starting the scan at tieStart, so callers can rotate.
 func PickLeastLoaded(cands []Candidate, now time.Time, tieStart int) (string, Result) {
 	n := len(cands)
@@ -133,11 +160,11 @@ func PickLeastLoaded(cands []Candidate, now time.Time, tieStart int) (string, Re
 		mag = uint(-(tieStart + 1)) + 1
 	}
 	start := int(mag % uint(n))
-	best, bestLoad := start, Load(cands[start], now)
+	best, bestScore := start, Score(cands[start], now)
 	for i := 1; i < n; i++ {
 		j := (start + i) % n
-		if l := Load(cands[j], now); l < bestLoad {
-			best, bestLoad = j, l
+		if sc := Score(cands[j], now); sc < bestScore {
+			best, bestScore = j, sc
 		}
 	}
 	return cands[best].Endpoint, LeastLoaded

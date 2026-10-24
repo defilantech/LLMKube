@@ -243,3 +243,36 @@ func TestLoadScraperSkipsEndpointThatLeftMidScrape(t *testing.T) {
 		t.Error("a departed endpoint has a load gauge series")
 	}
 }
+
+func TestScraperWritesAndDeletesPrefillGauge(t *testing.T) {
+	body, _ := os.ReadFile("testdata/vllm-metrics.txt")
+	serve := func() *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(body) }))
+	}
+	keep, gone := serve(), serve()
+	defer keep.Close()
+	defer gone.Close()
+
+	cfg := scrapedConfig()
+	d := NewDispatcher(cfg, WithRouterLabel("r-prefill"))
+	d.SetEndpoints("qwen", []string{keep.URL, gone.URL})
+	release := d.trackPrefill("qwen", gone.URL, 5000)
+	defer release()
+	s := NewLoadScraper(cfg, d, "r-prefill", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	s.scrapeOnce(context.Background())
+	if got := testutil.ToFloat64(prommetrics.RouterEndpointPrefillTokens.WithLabelValues("r-prefill", "qwen", gone.URL)); got != 5000 {
+		t.Fatalf("prefill gauge = %v, want 5000", got)
+	}
+
+	d.SetEndpoints("qwen", []string{keep.URL})
+	s.scrapeOnce(context.Background())
+	if prommetrics.RouterEndpointPrefillTokens.DeleteLabelValues("r-prefill", "qwen", gone.URL) {
+		t.Error("prefill gauge series of the departed endpoint survived")
+	}
+	if prommetrics.RouterPrefillTokensEstimatedTotal.DeleteLabelValues("r-prefill", "qwen", gone.URL) {
+		t.Error("estimated-tokens counter series of the departed endpoint survived")
+	}
+	if !prommetrics.RouterEndpointPrefillTokens.DeleteLabelValues("r-prefill", "qwen", keep.URL) {
+		t.Error("prefill gauge series of the kept endpoint is missing")
+	}
+}

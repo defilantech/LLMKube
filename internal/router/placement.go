@@ -97,12 +97,13 @@ func (d *Dispatcher) RunSessionSweeper(ctx context.Context, every time.Duration)
 
 // place chooses the endpoint for a request. Backends that are not LoadAware
 // round-robin exactly as before, ignore session headers and report an empty
-// result.
-func (d *Dispatcher) place(backend *Backend, headers http.Header) (string, picker.Result, picker.Reason) {
+// result. The int64 is the request's estimated uncached prompt tokens, 0 when
+// the backend is not LoadAware.
+func (d *Dispatcher) place(backend *Backend, headers http.Header, bodyBytes int64) (string, picker.Result, picker.Reason, int64) {
 	eps := d.liveEndpoints(backend)
 	bal := backend.Balancing
 	if len(eps) == 0 || bal == nil || bal.Mode != BalancingLoadAware {
-		return d.roundRobin(backend, eps), "", picker.ReasonNone
+		return d.roundRobin(backend, eps), "", picker.ReasonNone, 0
 	}
 	cands := make([]picker.Candidate, 0, len(eps))
 	for _, ep := range eps {
@@ -110,22 +111,26 @@ func (d *Dispatcher) place(backend *Backend, headers http.Header) (string, picke
 			continue
 		}
 		l := d.loadFor(backend.Name, ep)
-		cands = append(cands, picker.Candidate{Endpoint: ep, InFlight: l.inflight.Load(), Sample: l.sample.Load()})
+		cands = append(cands, picker.Candidate{Endpoint: ep, InFlight: l.inflight.Load(), Sample: l.sample.Load(), Prefill: l.prefill.Load()})
 	}
 	if len(cands) == 0 {
-		return d.roundRobin(backend, eps), picker.Fallback, picker.ReasonNone
+		return d.roundRobin(backend, eps), picker.Fallback, picker.ReasonNone, 0
 	}
 	now := d.nowFn()
 	// The tie start shares the round-robin cursor so equal loads rotate; the
 	// pickers accept any int, so a wrapped conversion is fine.
 	tie := int(d.endpointCursor(backend.Name).Add(1) - 1) //nolint:gosec // wraps harmlessly, the pickers take any int
 	if key := sessionKey(headers, bal.SessionHeaders); key != "" {
-		ep, res, reason := d.sessionsFor(backend.Name, bal).Place(
-			picker.SessionHash(key), cands, now, tie, d.ringFor(backend.Name, eps).Home(key))
-		return ep, res, reason
+		return d.sessionsFor(backend.Name, bal).Place(
+			picker.SessionHash(key), cands, now, tie, d.ringFor(backend.Name, eps).Home(key), bodyBytes)
 	}
 	ep, res := picker.PickLeastLoaded(picker.Eligible(cands, now), now, tie)
-	return ep, res, picker.ReasonNone
+	return ep, res, picker.ReasonNone, picker.EstimateTokens(bodyBytes)
+}
+
+// isTokenCountPath reports whether path only counts a prompt's tokens.
+func isTokenCountPath(path string) bool {
+	return path == "/v1/messages/count_tokens"
 }
 
 // countPlacement records a balanced placement decision.

@@ -88,11 +88,11 @@ func TestDecodesV0107BalancingConfig(t *testing.T) {
 	d.SetEndpoints("qwen", []string{"http://10.0.1.1:8000", "http://10.0.1.2:8000"})
 	h := http.Header{}
 	h.Set("X-Session-Affinity", "agent-1")
-	ep, res, _ := d.place(&d.cfg.Backends[0], h)
+	ep, res, _, _ := d.place(&d.cfg.Backends[0], h, 0)
 	if ep == "" || res != picker.LeastLoaded {
 		t.Errorf("place = %q/%s, want a pod, least_loaded for a first request", ep, res)
 	}
-	if ep2, res2, _ := d.place(&d.cfg.Backends[0], h); ep2 != ep || res2 != picker.Sticky {
+	if ep2, res2, _, _ := d.place(&d.cfg.Backends[0], h, 0); ep2 != ep || res2 != picker.Sticky {
 		t.Errorf("second place = %q/%s, want %q sticky", ep2, res2, ep)
 	}
 }

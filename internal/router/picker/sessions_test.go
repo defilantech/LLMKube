@@ -34,7 +34,7 @@ func bare(ep string, inflight int64) Candidate {
 
 func place(t *testing.T, s *Sessions, key uint64, cands []Candidate, now time.Time, want string, wantRes Result, wantReason Reason) {
 	t.Helper()
-	ep, res, reason := s.Place(key, cands, now, 0, "")
+	ep, res, reason, _ := s.Place(key, cands, now, 0, "", 0)
 	if ep != want || res != wantRes || reason != wantReason {
 		t.Fatalf("got (%q, %q, %q), want (%q, %q, %q)", ep, res, reason, want, wantRes, wantReason)
 	}
@@ -186,7 +186,7 @@ func TestSessionsFullTableFallsBackToRingHome(t *testing.T) {
 	cands := []Candidate{pod("a", 0, 0, 0.1), pod("b", 5, 0, 0.1)}
 	place(t, s, 1, cands, t0, "a", LeastLoaded, ReasonNone)
 	place(t, s, 2, cands, t0, "a", LeastLoaded, ReasonNone)
-	ep, res, reason := s.Place(3, cands, t0, 0, "b")
+	ep, res, reason, _ := s.Place(3, cands, t0, 0, "b", 0)
 	if ep != "b" || res != Fallback || reason != ReasonNone {
 		t.Fatalf("got (%q, %q, %q), want (b, fallback, none)", ep, res, reason)
 	}
@@ -194,7 +194,7 @@ func TestSessionsFullTableFallsBackToRingHome(t *testing.T) {
 		t.Fatalf("Len = %d, want 2", s.Len())
 	}
 	place(t, s, 1, cands, t0, "a", Sticky, ReasonNone)
-	ep, res, _ = s.Place(4, cands, t0, 0, "gone")
+	ep, res, _, _ = s.Place(4, cands, t0, 0, "gone", 0)
 	if ep != "a" || res != Fallback {
 		t.Fatalf("got (%q, %q), want (a, fallback)", ep, res)
 	}
@@ -231,7 +231,7 @@ func TestSessionsConcurrentFirstRequestsBindOnce(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			got[i], _, _ = s.Place(7, cands, t0, i, "")
+			got[i], _, _, _ = s.Place(7, cands, t0, i, "", 0)
 		}(i)
 	}
 	wg.Wait()
@@ -281,7 +281,7 @@ func TestSessionsFullTableSkipsScanWhenNothingCanExpire(t *testing.T) {
 	c := []Candidate{pod("a", 0, 0, 0.1), pod("b", 5, 0, 0.1)}
 	c[0].Sample.At, c[1].Sample.At = now, now
 	for k := uint64(100); k < 200; k++ {
-		ep, res, _ := s.Place(k, c, now, 0, "")
+		ep, res, _, _ := s.Place(k, c, now, 0, "", 0)
 		if ep != "a" || res != Fallback {
 			t.Fatalf("key %d: got (%q, %q), want (a, fallback)", k, ep, res)
 		}
@@ -313,7 +313,7 @@ func TestSessionsFullTableScansWhenSomeExpire(t *testing.T) {
 		t.Fatalf("Len = %d, want 3", s.Len())
 	}
 	// The table is full of live keys again and the oldest bound moved up.
-	ep, res, _ := s.Place(5, []Candidate{c}, now, 0, "")
+	ep, res, _, _ := s.Place(5, []Candidate{c}, now, 0, "", 0)
 	if ep != "a" || res != Fallback {
 		t.Fatalf("got (%q, %q), want (a, fallback)", ep, res)
 	}
@@ -359,7 +359,7 @@ func TestSessionsKVFullHerdSelfLimits(t *testing.T) {
 	}
 	moved := 0
 	for k := uint64(1); k <= sessions; k++ {
-		ep, res, _ := s.Place(k, cands, t0, 0, "")
+		ep, res, _, _ := s.Place(k, cands, t0, 0, "", 0)
 		if res != Spill {
 			continue
 		}
@@ -415,4 +415,123 @@ func TestSessionsThreePodsGapMoves(t *testing.T) {
 	bindToA(t, s, t0)
 	cands := []Candidate{pod("a", 20, 2, 0.1), pod("b", 0, 0, 0.1), pod("c", 30, 0, 0.1)}
 	place(t, s, 1, cands, t0, "b", Spill, ReasonWaiting)
+}
+
+func placeTok(t *testing.T, s *Sessions, key uint64, cands []Candidate, now time.Time, body int64) (string, Result, int64) {
+	t.Helper()
+	ep, res, _, tok := s.Place(key, cands, now, 0, "", body)
+	return ep, res, tok
+}
+
+func TestSessionsNewKeyAvoidsPodMidColdPrefill(t *testing.T) {
+	s := NewSessions(0, 10)
+	a := pod("a", 5, 0, 0.1)
+	a.Prefill = 140000
+	if ep, res, _ := placeTok(t, s, 1, []Candidate{a, pod("b", 5, 0, 0.1)}, t0, 1000); ep != "b" || res != LeastLoaded {
+		t.Fatalf("got (%q, %q), want (b, least_loaded)", ep, res)
+	}
+}
+
+func TestSessionsSpillTargetAvoidsPodMidColdPrefill(t *testing.T) {
+	s := NewSessions(0, 10)
+	bindToA(t, s, t0)
+	b := pod("b", 2, 0, 0.1)
+	b.Prefill = 140000
+	ep, res, reason, _ := s.Place(1, []Candidate{pod("a", 20, 2, 0.1), b, pod("c", 3, 0, 0.1)}, t0, 0, "", 0)
+	if ep != "c" || res != Spill || reason != ReasonWaiting {
+		t.Fatalf("got (%q, %q, %q), want (c, spill, waiting)", ep, res, reason)
+	}
+}
+
+func TestSessionsMigrationTargetAvoidsPodMidColdPrefill(t *testing.T) {
+	s := NewSessions(0, 10)
+	bindToA(t, s, t0)
+	b := pod("b", 2, 0, 0.1)
+	b.Prefill = 140000
+	ep, res, _, _ := s.Place(1, []Candidate{b, pod("c", 3, 0, 0.1)}, t0, 0, "", 0)
+	if ep != "c" || res != Migrated {
+		t.Fatalf("got (%q, %q), want (c, migrated)", ep, res)
+	}
+}
+
+func TestSessionsEstimatesGrowthOnStickyTurns(t *testing.T) {
+	s := NewSessions(0, 10)
+	cands := []Candidate{pod("a", 0, 0, 0.1), pod("b", 9, 0, 0.1), pod("c", 9, 0, 0.1)}
+	steps := []struct {
+		body int64
+		res  Result
+		tok  int64
+	}{
+		{300000, LeastLoaded, 75000}, // first turn: whole prompt
+		{308000, Sticky, 2000},       // growth only
+		{120000, Sticky, 30000},      // compacted: whole prompt
+		{121000, Sticky, 250},        // growth over the compacted length
+	}
+	for i, st := range steps {
+		_, res, tok := placeTok(t, s, 1, cands, t0.Add(time.Duration(i)*time.Second), st.body)
+		if res != st.res || tok != st.tok {
+			t.Fatalf("step %d: got (%q, %d), want (%q, %d)", i, res, tok, st.res, st.tok)
+		}
+	}
+}
+
+func TestSessionsMovedSessionEstimatesWholePrompt(t *testing.T) {
+	s := NewSessions(0, 10)
+	bindToA(t, s, t0)
+	_, res, tok := placeTok(t, s, 1, []Candidate{pod("a", 20, 2, 0.1), pod("b", 0, 0, 0.1), pod("c", 30, 0, 0.1)}, t0, 400000)
+	if res != Spill || tok != 100000 {
+		t.Fatalf("spill: got (%q, %d), want (spill, 100000)", res, tok)
+	}
+	// The next turn on the new pod counts only its growth.
+	_, res, tok = placeTok(t, s, 1, []Candidate{pod("a", 20, 2, 0.1), pod("b", 0, 0, 0.1), pod("c", 30, 0, 0.1)}, t0.Add(time.Second), 404000)
+	if res != Sticky || tok != 1000 {
+		t.Fatalf("after spill: got (%q, %d), want (sticky, 1000)", res, tok)
+	}
+}
+
+func TestSessionsFallbackEstimatesWholePrompt(t *testing.T) {
+	s := NewSessions(0, 1)
+	placeTok(t, s, 1, []Candidate{pod("a", 0, 0, 0.1)}, t0, 4000)
+	_, res, tok := placeTok(t, s, 2, []Candidate{pod("a", 0, 0, 0.1)}, t0, 8000)
+	if res != Fallback || tok != 2000 {
+		t.Fatalf("got (%q, %d), want (fallback, 2000)", res, tok)
+	}
+}
+
+// Guards: tokens never make a session move.
+func TestSessionsTokensAloneDoNotMoveASession(t *testing.T) {
+	s := NewSessions(0, 10)
+	bindToA(t, s, t0)
+	a := pod("a", 5, 0, 0.1)
+	a.Prefill = 140000
+	if ep, res, _ := placeTok(t, s, 1, []Candidate{a, pod("b", 0, 0, 0.1), pod("c", 0, 0, 0.1)}, t0, 0); ep != "a" || res != Sticky {
+		t.Fatalf("no queue: got (%q, %q), want (a, sticky)", ep, res)
+	}
+	q := pod("a", 2, 1, 0.1) // load 3: one under PressureMargin
+	q.Prefill = 262144
+	if ep, res, _ := placeTok(t, s, 1, []Candidate{q, pod("b", 0, 0, 0.1), pod("c", 0, 0, 0.1)}, t0, 0); ep != "a" || res != Sticky {
+		t.Fatalf("request gap 3: got (%q, %q), want (a, sticky)", ep, res)
+	}
+}
+
+// Prefill tokens choose the spill target, and the gap and KV rules are then
+// measured to that target. Here the token-light target has a fresh sample with
+// KV room, so a KV-full pod sheds where, without tokens, the stale pod would
+// have been the target and the session would have stayed.
+func TestSessionsTokensPickTheTargetTheKVRuleMeasures(t *testing.T) {
+	s := NewSessions(0, 10)
+	bindToA(t, s, t0)
+	x := bare("x", 3)
+	x.Prefill = 100000
+	ep, res, reason, _ := s.Place(1, []Candidate{pod("a", 5, 1, 0.95), x, pod("y", 5, 0, 0.5)}, t0, 0, "", 0)
+	if ep != "y" || res != Spill || reason != ReasonKVFull {
+		t.Fatalf("got (%q, %q, %q), want (y, spill, kv_full)", ep, res, reason)
+	}
+	x.Prefill = 0
+	s2 := NewSessions(0, 10)
+	bindToA(t, s2, t0)
+	ep, res, _, _ = s2.Place(1, []Candidate{pod("a", 5, 1, 0.95), x, pod("y", 5, 0, 0.5)}, t0, 0, "", 0)
+	if ep != "a" || res != Sticky {
+		t.Fatalf("without tokens: got (%q, %q), want (a, sticky)", ep, res)
+	}
 }

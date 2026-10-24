@@ -226,3 +226,33 @@ func TestDispatchStaleRetryUsesAFreshConnection(t *testing.T) {
 
 	dispatchOK(t, d, b) // reuses one idle connection; the retry must not take the other
 }
+
+// The stale-connection retry carries the request's prefill estimate once and
+// releases it like any other dispatch.
+func TestDispatchStaleRetryReleasesPrefill(t *testing.T) {
+	srv := closesSecondRequestPerConn(t)
+	defer srv.Close()
+	cfg, b := loadAwareBackend(srv.URL)
+	d := NewDispatcher(cfg, WithRouterLabel("r-stale-prefill"))
+	d.SetEndpoints("qwen", []string{srv.URL})
+	retries := prommetrics.RouterDispatchRetriesTotal.WithLabelValues("r-stale-prefill", "qwen", "stale_connection")
+	estimated := prommetrics.RouterPrefillTokensEstimatedTotal.WithLabelValues("r-stale-prefill", "qwen", srv.URL)
+
+	for i := 0; i < 2; i++ { // the second reuses the first's connection, which the upstream drops
+		resp, err := d.Dispatch(context.Background(), b, http.MethodPost, "/v1/chat/completions", http.Header{}, promptBody())
+		if err != nil {
+			t.Fatalf("dispatch %d: %v", i, err)
+		}
+		_, _ = io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+	}
+	if got := testutil.ToFloat64(retries); got != 1 {
+		t.Fatalf("stale-connection retries = %v, want 1", got)
+	}
+	if got := prefill(d, srv.URL); got != 0 {
+		t.Errorf("prefill after the retried request = %d, want 0", got)
+	}
+	if got := testutil.ToFloat64(estimated); got != 2000 {
+		t.Errorf("estimated prefill total = %v, want 2000 (the retry is not counted twice)", got)
+	}
+}

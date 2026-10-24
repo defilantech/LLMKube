@@ -155,3 +155,34 @@ func TestRingSpreadsSessionHomesEvenly(t *testing.T) {
 		t.Errorf("session homes per pod: min %d, max %d, want every pod within [%d, %d] (ideal %d)", minC, maxC, lo, hi, ideal)
 	}
 }
+
+func TestPickLeastLoadedAvoidsPodMidColdPrefill(t *testing.T) {
+	a := pod("a", 5, 0, 0.1)
+	a.Prefill = 140000
+	b := pod("b", 5, 0, 0.1)
+	if ep, _ := PickLeastLoaded([]Candidate{a, b}, t0, 0); ep != "b" {
+		t.Fatalf("got %q, want b (a is mid a 140k prefill)", ep)
+	}
+}
+
+// The issue's shape: A has fewer requests but one 140k cold prefill; B has
+// more requests but only warm follow-ups.
+func TestPickLeastLoadedWeighsTokensAgainstRequests(t *testing.T) {
+	a := pod("a", 4, 0, 0.1)
+	a.Prefill = 140000
+	b := pod("b", 7, 0, 0.1)
+	b.Prefill = 3 * 2000
+	if ep, _ := PickLeastLoaded([]Candidate{a, b}, t0, 0); ep != "b" {
+		t.Fatalf("got %q, want b (a scores 12.5 request-equivalents, b 7.4)", ep)
+	}
+}
+
+func TestEstimateTokens(t *testing.T) {
+	for _, c := range []struct{ in, want int64 }{
+		{0, 0}, {-1, 0}, {3, 0}, {300000, 75000}, {32 << 20, MaxRequestTokens},
+	} {
+		if got := EstimateTokens(c.in); got != c.want {
+			t.Errorf("EstimateTokens(%d) = %d, want %d", c.in, got, c.want)
+		}
+	}
+}

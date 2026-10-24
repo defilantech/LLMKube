@@ -113,6 +113,12 @@ type Dispatcher struct {
 	endpoints sync.Map // backendName -> []string
 	loads     sync.Map // healthKey -> *endpointLoad
 
+	// prefillMu guards prefillLedger, the prefill counts not yet released,
+	// so the janitor can release one whose body never produced a byte.
+	prefillMu     sync.Mutex
+	prefillLedger map[uint64]prefillEntry
+	prefillSeq    uint64
+
 	// rings caches the consistent-hash ring per balanced backend, rebuilt when
 	// the endpoint set changes. It holds endpoint addresses only, never a
 	// session value.
@@ -347,6 +353,9 @@ func (d *Dispatcher) SetEndpoints(name string, endpoints []string) {
 		if !keep[ep] {
 			d.health.Delete(healthKey(name, ep))
 			d.loads.Delete(healthKey(name, ep))
+			// Backends without a metrics profile have no scraper to drop
+			// this per-pod series, so departure drops it here.
+			prommetrics.RouterPrefillTokensEstimatedTotal.DeleteLabelValues(d.routerName, name, ep)
 		}
 	}
 	d.endpoints.Store(name, next)
@@ -473,9 +482,21 @@ func (d *Dispatcher) Dispatch(
 	if backend == nil {
 		return nil, fmt.Errorf("dispatch: backend is nil")
 	}
-	endpoint, placed, reason := d.place(backend, headers)
-	d.countPlacement(backend.Name, placed, reason)
+	// count_tokens tokenizes the conversation without a prefill: it is placed
+	// without the session header, adds no prefill tokens, leaves the
+	// session's binding and size record to the real turns, and is not counted
+	// as a placement.
+	tokenCount := isTokenCountPath(path)
+	placeHeaders, placeBytes := headers, int64(len(requestBody))
+	if tokenCount {
+		placeHeaders, placeBytes = nil, 0
+	}
+	endpoint, placed, reason, tokens := d.place(backend, placeHeaders, placeBytes)
+	if !tokenCount {
+		d.countPlacement(backend.Name, placed, reason)
+	}
 	release := d.track(backend.Name, endpoint)
+	releasePrefill := d.trackPrefill(backend.Name, endpoint, tokens)
 	url := joinURL(dispatchTarget(backend, endpoint), path)
 
 	// Send the model name this backend actually serves, not the
@@ -488,6 +509,7 @@ func (d *Dispatcher) Dispatch(
 	reqCancel, req, reused, err := d.newUpstreamRequest(ctx, backend, method, url, headers, outboundBody)
 	if err != nil {
 		release()
+		releasePrefill()
 		return nil, err
 	}
 
@@ -504,6 +526,7 @@ func (d *Dispatcher) Dispatch(
 		reqCancel, req, _, rerr = d.newUpstreamRequest(ctx, backend, method, url, headers, outboundBody)
 		if rerr != nil {
 			release()
+			releasePrefill()
 			return nil, rerr
 		}
 		// A client with keep-alives off: the pool may hold more connections
@@ -527,6 +550,7 @@ func (d *Dispatcher) Dispatch(
 		}
 		reqCancel()
 		release()
+		releasePrefill()
 		return nil, fmt.Errorf("upstream request: %w", err)
 	}
 	if resp.StatusCode >= 500 {
@@ -548,6 +572,7 @@ func (d *Dispatcher) Dispatch(
 	} else {
 		resp.Body = &cancelOnCloseBody{ReadCloser: resp.Body, cancel: reqCancel}
 	}
+	resp.Body = &firstByteBody{ReadCloser: resp.Body, release: releasePrefill}
 	resp.Body = &releaseOnCloseBody{ReadCloser: resp.Body, release: release}
 	return resp, nil
 }

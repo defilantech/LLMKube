@@ -172,6 +172,12 @@ func main() {
 		logger.Info("engine metrics scraper started")
 	}
 
+	// LoadAware backends: release prefill counts whose response never started.
+	if cfg.HasLoadAware() {
+		go proxy.Dispatcher().RunPrefillJanitor(baseCtx, 30*time.Second)
+		logger.Info("prefill janitor started")
+	}
+
 	// Session-affine LoadAware backends: expire idle session bindings.
 	if cfg.HasSessionAffinity() {
 		go proxy.Dispatcher().RunSessionSweeper(baseCtx, 30*time.Second)

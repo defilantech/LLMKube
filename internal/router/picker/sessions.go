@@ -45,6 +45,9 @@ type binding struct {
 	endpoint string
 	lastSeen time.Time
 	movedAt  time.Time
+	// promptBytes is the body length of the session's last request, so the
+	// next sticky turn can count only its growth as uncached.
+	promptBytes int64
 }
 
 // Sessions binds session keys to pods. A binding changes only when its pod
@@ -97,10 +100,12 @@ func (s *Sessions) dropExpiredLocked(now time.Time) {
 // dispatchable candidates (quarantined pods already removed, KV-full pods not
 // removed). ringHome is the key's ring home, used only when the table is full.
 // The whole decision runs under the table's lock, so racing first requests for
-// one key bind once.
-func (s *Sessions) Place(key uint64, cands []Candidate, now time.Time, tieStart int, ringHome string) (string, Result, Reason) {
+// one key bind once. The int64 is the request's estimated uncached prompt
+// tokens: on a sticky turn the growth of the body over the session's previous
+// one, otherwise (or when the body shrank) the whole body.
+func (s *Sessions) Place(key uint64, cands []Candidate, now time.Time, tieStart int, ringHome string, bodyBytes int64) (string, Result, Reason, int64) {
 	if len(cands) == 0 {
-		return "", "", ReasonNone
+		return "", "", ReasonNone, 0
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -119,18 +124,18 @@ func (s *Sessions) Place(key uint64, cands []Candidate, now time.Time, tieStart 
 		if len(s.bindings) >= s.capacity {
 			for _, c := range cands {
 				if c.Endpoint == ringHome {
-					return ringHome, Fallback, ReasonNone
+					return ringHome, Fallback, ReasonNone, EstimateTokens(bodyBytes)
 				}
 			}
 			ep, _ := PickLeastLoaded(Eligible(cands, now), now, tieStart)
-			return ep, Fallback, ReasonNone
+			return ep, Fallback, ReasonNone, EstimateTokens(bodyBytes)
 		}
 		ep, _ := PickLeastLoaded(Eligible(cands, now), now, tieStart)
 		if len(s.bindings) == 0 {
 			s.oldest = now
 		}
-		s.bindings[key] = binding{endpoint: ep, lastSeen: now}
-		return ep, LeastLoaded, ReasonNone
+		s.bindings[key] = binding{endpoint: ep, lastSeen: now, promptBytes: bodyBytes}
+		return ep, LeastLoaded, ReasonNone, EstimateTokens(bodyBytes)
 	}
 
 	var bound *Candidate
@@ -142,18 +147,23 @@ func (s *Sessions) Place(key uint64, cands []Candidate, now time.Time, tieStart 
 	}
 	if bound == nil {
 		ep, _ := PickLeastLoaded(Eligible(cands, now), now, tieStart)
-		s.bindings[key] = binding{endpoint: ep, lastSeen: now, movedAt: now}
-		return ep, Migrated, ReasonNotReady
+		s.bindings[key] = binding{endpoint: ep, lastSeen: now, movedAt: now, promptBytes: bodyBytes}
+		return ep, Migrated, ReasonNotReady, EstimateTokens(bodyBytes)
 	}
 
 	if least, reason := pressure(*bound, cands, now, tieStart); reason != ReasonNone &&
 		(b.movedAt.IsZero() || now.Sub(b.movedAt) >= SpillCooldown) {
-		s.bindings[key] = binding{endpoint: least, lastSeen: now, movedAt: now}
-		return least, Spill, reason
+		s.bindings[key] = binding{endpoint: least, lastSeen: now, movedAt: now, promptBytes: bodyBytes}
+		return least, Spill, reason, EstimateTokens(bodyBytes)
+	}
+	uncached := bodyBytes
+	if bodyBytes >= b.promptBytes {
+		uncached = bodyBytes - b.promptBytes
 	}
 	b.lastSeen = now
+	b.promptBytes = bodyBytes
 	s.bindings[key] = b
-	return b.endpoint, Sticky, ReasonNone
+	return b.endpoint, Sticky, ReasonNone, EstimateTokens(uncached)
 }
 
 // pressure reports whether the bound pod should shed the session, and to which

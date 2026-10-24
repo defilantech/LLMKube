@@ -25,7 +25,7 @@ import (
 // pickEndpoint places a request that carries no headers, so the tests can
 // read the chosen pod directly.
 func (d *Dispatcher) pickEndpoint(backend *Backend) string {
-	ep, _, _ := d.place(backend, nil)
+	ep, _, _, _ := d.place(backend, nil, 0)
 	return ep
 }
 

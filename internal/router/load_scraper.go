@@ -131,6 +131,7 @@ func (s *LoadScraper) scrapeOnce(ctx context.Context) {
 				fresh = 1
 			}
 			prommetrics.RouterEndpointMetricsFresh.WithLabelValues(s.routerName, tgt.backend, ep).Set(fresh)
+			prommetrics.RouterEndpointPrefillTokens.WithLabelValues(s.routerName, tgt.backend, ep).Set(float64(l.prefill.Load()))
 			current[gaugeKey{tgt.backend, ep}] = struct{}{}
 		}
 	}
@@ -138,6 +139,8 @@ func (s *LoadScraper) scrapeOnce(ctx context.Context) {
 		if _, ok := current[k]; !ok {
 			prommetrics.RouterEndpointLoad.DeleteLabelValues(s.routerName, k.backend, k.endpoint)
 			prommetrics.RouterEndpointMetricsFresh.DeleteLabelValues(s.routerName, k.backend, k.endpoint)
+			prommetrics.RouterEndpointPrefillTokens.DeleteLabelValues(s.routerName, k.backend, k.endpoint)
+			prommetrics.RouterPrefillTokensEstimatedTotal.DeleteLabelValues(s.routerName, k.backend, k.endpoint)
 		}
 	}
 	s.written = current

@@ -203,6 +203,17 @@ type Balancing struct {
 	SessionIdleTimeout time.Duration `json:"sessionIdleTimeout,omitempty"`
 }
 
+// HasLoadAware reports whether any backend balances LoadAware, so the proxy
+// needs the prefill janitor.
+func (c *Config) HasLoadAware() bool {
+	for _, b := range c.Backends {
+		if b.Balancing != nil && b.Balancing.Mode == BalancingLoadAware {
+			return true
+		}
+	}
+	return false
+}
+
 // HasSessionAffinity reports whether any LoadAware backend names session
 // headers, so the proxy needs the session sweeper.
 func (c *Config) HasSessionAffinity() bool {

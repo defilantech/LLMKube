@@ -258,6 +258,10 @@ spec:
 ### How load is read
 
 - **Load** for a vLLM backend is the pod's own running plus waiting requests, read from its `/metrics` once a second, plus the requests this proxy sent since. Other runtimes, and any pod whose metrics are more than 5 seconds old, use this proxy's in-flight count.
+- **Prefill tokens** are this proxy's estimate of the uncached prompt tokens it has sent to a pod that the pod has not started answering. A request's estimate is its body size divided by 4, capped at 262,144. A known session's request counts only how much its body grew since the session's last request; a new or moved session counts its whole body. The tokens are released when the pod sends its first response byte, which for a streaming engine means prefill is done, or when the request fails or the client leaves.
+- When this page says least-loaded, it means the lowest load counted in requests plus prefill tokens, with 16,384 tokens weighing as much as one request. So a new session, a request without a session header, a moved session and a spill target avoid a pod that is in the middle of a long cold prefill. Whether a known session moves is still decided by the pressure rules below, which use load in requests; prefill tokens only choose the target those rules are measured against. So a KV-full pod can occasionally shed a session it would otherwise have kept, always toward a pod with KV room.
+- Like the in-flight count, prefill tokens are counted per proxy replica.
+- `POST /v1/messages/count_tokens` carries the whole conversation but runs no prefill, so it counts no prefill tokens, is placed least-loaded without its session header, leaves the session's binding and size record unchanged, and is not counted in `llmkube_router_placements_total`.
 - A pod whose KV cache is 90% full or more is KV-full. New sessions avoid KV-full pods while another pod has room.
 
 ### Where a session goes
@@ -288,7 +292,7 @@ Each proxy replica keeps its own binding table in memory. A restart starts it em
 - `migrated`: a session moved because its pod left (`not_ready`).
 - `fallback`: the table was full and the consistent-hash home was used, or no pod was dispatchable (all quarantined or circuit-open) and the request went round-robin over the live endpoints. A fallback count alone does not mean the table is full.
 
-`reason` is set only for `spill` and `migrated`, and empty otherwise. `llmkube_router_session_bindings{router,backend}` is the current number of bindings. It counts every session used within `idleTimeout`, not only live ones, so a client that starts a new session whenever one ends can hold several times its concurrent session count. Per pod, `llmkube_router_endpoint_load` and `llmkube_router_endpoint_metrics_fresh` cover `LoadAware` backends with a metrics profile (vLLM today).
+`reason` is set only for `spill` and `migrated`, and empty otherwise. `llmkube_router_session_bindings{router,backend}` is the current number of bindings. It counts every session used within `idleTimeout`, not only live ones, so a client that starts a new session whenever one ends can hold several times its concurrent session count. Per pod, `llmkube_router_endpoint_load`, `llmkube_router_endpoint_metrics_fresh` and `llmkube_router_endpoint_prefill_tokens` cover `LoadAware` backends with a metrics profile (vLLM today). `llmkube_router_prefill_tokens_estimated_total` counts the prefill tokens this proxy estimated it sent to each pod; compare its rate with `rate(vllm:prompt_tokens_by_source_total{source="local_compute"}[1m])` on the same pod to check the estimate.
 
 ### Upgrading from `maxLoadPercent`
 

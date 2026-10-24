@@ -192,6 +192,28 @@ var (
 		[]string{labelRouter, "backend", "reason"},
 	)
 
+	// RouterEndpointPrefillTokens is the estimated uncached prompt tokens a
+	// router proxy replica has in flight to one pod of a LoadAware backend,
+	// released when the pod sends its first response byte.
+	RouterEndpointPrefillTokens = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "llmkube_router_endpoint_prefill_tokens",
+			Help: "Estimated uncached prompt tokens this router proxy replica has in flight to one pod, released at the first response byte.",
+		},
+		[]string{labelRouter, "backend", "endpoint"},
+	)
+
+	// RouterPrefillTokensEstimatedTotal counts the estimated uncached prompt
+	// tokens a router proxy replica has sent to one pod of a LoadAware
+	// backend, for comparison with the engine's own prompt-token counters.
+	RouterPrefillTokensEstimatedTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llmkube_router_prefill_tokens_estimated_total",
+			Help: "Estimated uncached prompt tokens this router proxy replica has sent to one pod.",
+		},
+		[]string{labelRouter, "backend", "endpoint"},
+	)
+
 	// RouterPlacementsTotal counts the router proxy's placement decisions for
 	// balanced backends by result (least_loaded, sticky, spill, fallback or
 	// migrated) and, for a spill or migration, the reason (waiting, kv_full or
@@ -536,6 +558,8 @@ var AllCollectors = []prometheus.Collector{
 	RouterEndpointLoad,
 	RouterEndpointMetricsFresh,
 	RouterDispatchRetriesTotal,
+	RouterEndpointPrefillTokens,
+	RouterPrefillTokensEstimatedTotal,
 	RouterPlacementsTotal,
 	RouterSessionBindings,
 	RouterFirstTokenSeconds,
