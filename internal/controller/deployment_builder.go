@@ -572,8 +572,12 @@ func (r *InferenceServiceReconciler) constructDeployment(
 	}
 
 	container := corev1.Container{
-		Name:            backend.ContainerName(),
-		Image:           image,
+		Name:  backend.ContainerName(),
+		Image: image,
+		// spec.imagePullPolicy applies to the runtime container only. The init
+		// containers built by servingStorage run operator-chosen images and
+		// keep their own policy.
+		ImagePullPolicy: isvc.Spec.ImagePullPolicy,
 		SecurityContext: inferContainerSecurityContext(isvc),
 		// Engines print the fatal error (CUDA init, model load) to the log
 		// rather than /dev/termination-log, so fall back to the log tail on

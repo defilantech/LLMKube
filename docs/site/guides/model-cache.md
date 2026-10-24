@@ -460,6 +460,24 @@ spec:
 `stageModel` and `skipModelInit` cannot both be true. Runtimes that stage by
 default ignore `stageModel`.
 
+`spec.imagePullPolicy` (`Always`, `IfNotPresent` or `Never`) sets the pull
+policy of the serving container, which is the one that runs `spec.image`. It
+does not touch the init containers, which run the operator's own images. Useful
+for a custom image on a moving tag such as `:nightly`:
+
+```yaml
+spec:
+  image: registry.example.com/my-server:nightly
+  imagePullPolicy: Always
+```
+
+`Always` makes the kubelet pull whenever a pod is created. It does not watch the
+registry, so a re-pushed `:nightly` still needs new pods; `kubectl rollout
+restart deployment/my-server` does it. Leaving the field unset keeps
+Kubernetes' own default (`Always` for a `:latest` or untagged image,
+`IfNotPresent` otherwise), so upgrading the operator rolls no pod. A Metal
+service runs no pod and ignores the field.
+
 ## Integrity verification (`spec.sha256`)
 
 When a `Model` sets `spec.sha256`, the download init container verifies the

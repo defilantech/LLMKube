@@ -503,6 +503,26 @@ type InferenceServiceSpec struct {
 	// +optional
 	Image string `json:"image,omitempty"`
 
+	// ImagePullPolicy sets the image pull policy of the runtime container, the
+	// one that runs spec.image. The model download and cache-prep init
+	// containers run the operator's own images and keep their own policy, which
+	// this field does not change.
+	//
+	// Always makes the kubelet pull whenever a pod is created. It does not
+	// watch the registry, so picking up a new build of a moving tag such as
+	// :nightly still needs new pods (kubectl rollout restart
+	// deployment/<name>, or any spec change).
+	//
+	// When unset the field is left off the pod template, so Kubernetes applies
+	// its own default: Always for a :latest or untagged image, IfNotPresent
+	// otherwise. Upgrading the operator alone therefore rolls no pod.
+	//
+	// In-cluster only. A Metal service runs no pod, so the field has no effect
+	// there.
+	// +kubebuilder:validation:Enum=Always;IfNotPresent;Never
+	// +optional
+	ImagePullPolicy corev1.PullPolicy `json:"imagePullPolicy,omitempty"`
+
 	// Endpoint defines the service endpoint configuration
 	// +optional
 	Endpoint *EndpointSpec `json:"endpoint,omitempty"`

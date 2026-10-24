@@ -705,6 +705,20 @@ func TestComputeSpecHash_NilIsvc(t *testing.T) {
 	}
 }
 
+// There is no pod and no container image on Metal, so spec.imagePullPolicy
+// describes nothing the agent can act on. Hashing it would respawn the engine
+// on a change that cannot take effect.
+func TestComputeSpecHash_IgnoresImagePullPolicy(t *testing.T) {
+	a := &inferencev1alpha1.InferenceService{Spec: inferencev1alpha1.InferenceServiceSpec{ModelRef: "m"}}
+	b := &inferencev1alpha1.InferenceService{Spec: inferencev1alpha1.InferenceServiceSpec{
+		ModelRef:        "m",
+		ImagePullPolicy: corev1.PullAlways,
+	}}
+	if computeSpecHash(a) != computeSpecHash(b) {
+		t.Error("hash should not change when imagePullPolicy changes; Metal runs no container image")
+	}
+}
+
 // TestBuildExecutorConfig_PassesAllSpecFieldsThrough is the regression guard
 // for issue #349: every flag-relevant InferenceServiceSpec field must reach
 // the executor. If a future field gets added to the spec but the agent

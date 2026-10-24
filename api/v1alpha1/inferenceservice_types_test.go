@@ -39,10 +39,11 @@ func fullyPopulatedInferenceService() *InferenceService {
 			Namespace: "platform",
 		},
 		Spec: InferenceServiceSpec{
-			ModelRef: "qwen3-coder",
-			Runtime:  "llamacpp",
-			Replicas: ptrInt32(2),
-			Image:    "ghcr.io/ggml-org/llama.cpp:server",
+			ModelRef:        "qwen3-coder",
+			Runtime:         "llamacpp",
+			Replicas:        ptrInt32(2),
+			Image:           "ghcr.io/ggml-org/llama.cpp:server",
+			ImagePullPolicy: corev1.PullAlways,
 			Endpoint: &EndpointSpec{
 				Port: 8080,
 				Path: "/v1/chat/completions",
