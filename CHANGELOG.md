@@ -5,6 +5,24 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.11](https://github.com/defilantech/LLMKube/compare/v0.10.10...v0.10.11) (2026-10-25)
+
+
+### Features
+
+* **api:** accept fp8, float16 and bfloat16 in vllmConfig.kvCacheDtype ([#2227](https://github.com/defilantech/LLMKube/issues/2227)) ([31eb943](https://github.com/defilantech/LLMKube/commit/31eb9434df6e6c4c60d0bfa6456a0e029a8c3c03))
+* **api:** add spec.imagePullPolicy to InferenceService ([#2208](https://github.com/defilantech/LLMKube/issues/2208)) ([ec54d28](https://github.com/defilantech/LLMKube/commit/ec54d28a1257d84583a1f381fb90f40b967fd5ad))
+* **controller:** move the SGLang defaults to v0.5.22 and report removed attention backends ([#2221](https://github.com/defilantech/LLMKube/issues/2221)) ([33f9bb1](https://github.com/defilantech/LLMKube/commit/33f9bb142f30c828bf52f91c2c5bcbe93cdbb5f4))
+* **controller:** move the vLLM default to v0.32.0 and check every flag against it ([#2223](https://github.com/defilantech/LLMKube/issues/2223)) ([0144a4c](https://github.com/defilantech/LLMKube/commit/0144a4c74459377d5f9352b38325e2f0e8cea5d2))
+* **controller:** run every llama.cpp default from one pinned build, b11854 ([#2220](https://github.com/defilantech/LLMKube/issues/2220)) ([052840e](https://github.com/defilantech/LLMKube/commit/052840e54716f47730e142ed4ed85aab2f2dd5a9))
+* **router:** weigh LoadAware placement by estimated prefill tokens in flight ([#2193](https://github.com/defilantech/LLMKube/issues/2193)) ([a33735c](https://github.com/defilantech/LLMKube/commit/a33735c3331b37e19d02aadf16aafcbf59ec466b))
+
+
+### Bug Fixes
+
+* **controller:** render vllmConfig.speculative as --speculative-config ([#2210](https://github.com/defilantech/LLMKube/issues/2210)) ([191dcbd](https://github.com/defilantech/LLMKube/commit/191dcbd2bcc5b6678aa9766dc570589c08cb0019))
+* **controller:** report sglangConfig tool-call parsers SGLang does not register ([#2228](https://github.com/defilantech/LLMKube/issues/2228)) ([90fed2e](https://github.com/defilantech/LLMKube/commit/90fed2e416d24bd0d716b15437bbd35ffb96cff9))
+
 ## [0.10.10](https://github.com/defilantech/LLMKube/compare/v0.10.9...v0.10.10) (2026-10-24)
 
 
