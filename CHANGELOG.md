@@ -5,6 +5,26 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.12](https://github.com/defilantech/LLMKube/compare/v0.10.11...v0.10.12) (2026-10-27)
+
+
+### Features
+
+* **api:** add MetalNode, verified by a controller dial-back, with the agent reporting through its Lease ([#2235](https://github.com/defilantech/LLMKube/issues/2235)) ([fccc1bc](https://github.com/defilantech/LLMKube/commit/fccc1bc801cd8f48c8c095f17ec63919d185c819))
+* **cli:** add llmkube metal join and leave, with agent token renewal ([#2246](https://github.com/defilantech/LLMKube/issues/2246)) ([b1f6602](https://github.com/defilantech/LLMKube/commit/b1f66028a6a204411209332ea162617b944fd585))
+* **cli:** add llmkube metal token create and metal remove ([#2236](https://github.com/defilantech/LLMKube/issues/2236)) ([f54414a](https://github.com/defilantech/LLMKube/commit/f54414a5095af225edb057f766857586a9d98847))
+
+
+### Bug Fixes
+
+* **controller:** keep a ModelPool activation while its member is held at zero ([#2241](https://github.com/defilantech/LLMKube/issues/2241)) ([8fc4143](https://github.com/defilantech/LLMKube/commit/8fc4143afe54a8abbf9ab895d679b85600ea071c))
+* **controller:** map sglangConfig.enablePrefixCaching onto --disable-radix-cache ([#2259](https://github.com/defilantech/LLMKube/issues/2259)) ([d499aa4](https://github.com/defilantech/LLMKube/commit/d499aa4f2a7acba6b9eedc6f734ba830484e7244))
+* **controller:** stage under the cache lock when the init image's stat has no -f ([#2260](https://github.com/defilantech/LLMKube/issues/2260)) ([52241de](https://github.com/defilantech/LLMKube/commit/52241de5d805986bd825d746899cc45bcdff0bbf))
+* **router:** list each backend on /v1/models under the id BackendNameMatch routes ([#2257](https://github.com/defilantech/LLMKube/issues/2257)) ([4627cfc](https://github.com/defilantech/LLMKube/commit/4627cfcaac47f943032664dfae26e95a1c9bc9c4))
+* **router:** report moves off a quarantined pod as reason="quarantined" instead of reason="not_ready" ([faa7a5f](https://github.com/defilantech/LLMKube/commit/faa7a5fd83a72d2e5bae6741674fa421ced1fe50))
+* **router:** rewrite vLLM and SGLang backends to the name they serve ([#2258](https://github.com/defilantech/LLMKube/issues/2258)) ([3d39111](https://github.com/defilantech/LLMKube/commit/3d39111a7d1435da782301c78bbeb22aa506bc18))
+* validate multi-file cache staging on shared volumes ([#2185](https://github.com/defilantech/LLMKube/issues/2185)) ([e6eab85](https://github.com/defilantech/LLMKube/commit/e6eab857e190ad38d3ec625ab72657bca73152e0))
+
 ## [0.10.11](https://github.com/defilantech/LLMKube/compare/v0.10.10...v0.10.11) (2026-10-25)
 
 
