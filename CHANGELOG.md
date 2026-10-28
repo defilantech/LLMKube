@@ -5,6 +5,38 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.13](https://github.com/defilantech/LLMKube/compare/v0.10.12...v0.10.13) (2026-10-28)
+
+
+### Features
+
+* **agent:** add the llmkube-metal-agent stop-engines command ([2cd2ec9](https://github.com/defilantech/LLMKube/commit/2cd2ec9d68998d801c7cf97bb17cb49e7833975f))
+* **agent:** keep Metal engines serving across metal-agent restarts and adopt them on startup (refs [#2079](https://github.com/defilantech/LLMKube/issues/2079)) ([2cd2ec9](https://github.com/defilantech/LLMKube/commit/2cd2ec9d68998d801c7cf97bb17cb49e7833975f))
+* **release:** sign and notarize the macOS release binaries ([#2233](https://github.com/defilantech/LLMKube/issues/2233)) ([f5ff962](https://github.com/defilantech/LLMKube/commit/f5ff96254a0ab702528ee59c84e292fb7afeae44))
+* **router:** podLabels and podAnnotations for router-proxy pods ([#2285](https://github.com/defilantech/LLMKube/issues/2285)) ([a736e18](https://github.com/defilantech/LLMKube/commit/a736e1876f5da9041b4d58312cfcb98707f7d832))
+* **router:** publish per-backend modalities and context length on /v1/models ([#2249](https://github.com/defilantech/LLMKube/issues/2249)) ([2887f54](https://github.com/defilantech/LLMKube/commit/2887f5463f59f9261bb22bb0a1ce9091d403ad46))
+
+
+### Bug Fixes
+
+* apply CRDs server-side in make install and make deploy ([#2275](https://github.com/defilantech/LLMKube/issues/2275)) ([edaa4f7](https://github.com/defilantech/LLMKube/commit/edaa4f75ab08dbd86e2feb576d627263d493d38a))
+* **chart:** leave --init-container-user off when its value is unset ([#2286](https://github.com/defilantech/LLMKube/issues/2286)) ([ac541db](https://github.com/defilantech/LLMKube/commit/ac541dbaeceb8e7a4310f59fcec78c5cbc7e5ad7))
+* **cli:** pin only single-writer claims and make the cache pod image configurable ([#2178](https://github.com/defilantech/LLMKube/issues/2178)) ([2fe250b](https://github.com/defilantech/LLMKube/commit/2fe250bb4ade020d814b04901b430a44fe6a5b77))
+* **controller:** annotate router-proxy pods for scraping under --emit-scrape-annotations ([#2268](https://github.com/defilantech/LLMKube/issues/2268)) ([07fb7f4](https://github.com/defilantech/LLMKube/commit/07fb7f4ff1e2431afef76725be380b1d0471fbb1))
+* **controller:** chown the cache root to the init container's uid when fsGroup is off ([#2273](https://github.com/defilantech/LLMKube/issues/2273)) ([c9d86ad](https://github.com/defilantech/LLMKube/commit/c9d86adc695a5a00f0ad6577bf55a81b7023dc01))
+* **controller:** create no HPA for multiNode services ([#2272](https://github.com/defilantech/LLMKube/issues/2272)) ([c8d6f76](https://github.com/defilantech/LLMKube/commit/c8d6f769b5c90e424c8fa50cb8c454325c0428d9))
+* **controller:** delete FUSE stager Jobs in the foreground without the feature-gated field ([#2269](https://github.com/defilantech/LLMKube/issues/2269)) ([e439f60](https://github.com/defilantech/LLMKube/commit/e439f6055f28207c3eca584e124c7aa97381ad8d))
+* **controller:** make FUSE model-cache staging safe across stagers and serving pods ([#2276](https://github.com/defilantech/LLMKube/issues/2276)) ([6c7c1fe](https://github.com/defilantech/LLMKube/commit/6c7c1fe3e6de18678fae67f1e0cd86fa372d00bd))
+* **controller:** point the router-proxy Service at the port the proxy listens on ([#2280](https://github.com/defilantech/LLMKube/issues/2280)) ([1c69118](https://github.com/defilantech/LLMKube/commit/1c69118734ba9d36c20bc4355f2e7d1c73490550))
+* **controller:** run the stall-probe tests on a fake clock ([#2267](https://github.com/defilantech/LLMKube/issues/2267)) ([661856a](https://github.com/defilantech/LLMKube/commit/661856a2a13267c27d495235c82a6f7ede3a22ee))
+* **router:** tell client cancellations, upstream errors and timeouts apart ([#2284](https://github.com/defilantech/LLMKube/issues/2284)) ([3a2ea74](https://github.com/defilantech/LLMKube/commit/3a2ea74309dc74143c87cad62c72955921c208a6))
+* use vLLM's real TurboQuant KV cache types in the sample and docs ([#2270](https://github.com/defilantech/LLMKube/issues/2270)) ([3b4ffb6](https://github.com/defilantech/LLMKube/commit/3b4ffb6a66bb1f525da7cfa1418abd4526806410))
+
+
+### Documentation
+
+* **upgrade:** metal-agent engines now keep running when the agent stops and the next agent adopts them. To roll back to an older agent, run `launchctl bootout gui/$(id -u)/com.llmkube.metal-agent` and then `llmkube-metal-agent stop-engines` with the current binary before installing the older one, or every model is loaded twice. `make uninstall-metal-agent` stops the engines for you. Adopted engines keep the flags they started with; run stop-engines after the bootout to apply new defaults. ([2cd2ec9](https://github.com/defilantech/LLMKube/commit/2cd2ec9d68998d801c7cf97bb17cb49e7833975f))
+
 ## [0.10.12](https://github.com/defilantech/LLMKube/compare/v0.10.11...v0.10.12) (2026-10-27)
 
 
