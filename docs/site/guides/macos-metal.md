@@ -35,10 +35,10 @@ running Metal-accelerated InferenceService in about ten minutes.
   node) or local (minikube / kind on Docker Desktop).
 - **kubectl** and **Helm** configured against your cluster.
 - **Homebrew** (or any equivalent way to install `llama.cpp` with
-  Metal support).
-- **Xcode Command Line Tools** (`xcode-select --install`, for `git`
-  and `make`) and **Go 1.27.3 or newer** (the version `go.mod` pins),
-  to build the agent in Step 3.
+  Metal support). Homebrew also installs the agent itself in Step 3.
+- To build the agent from source instead: **Xcode Command Line Tools**
+  (`xcode-select --install`, for `git` and `make`) and **Go 1.27.3 or
+  newer** (the version `go.mod` pins).
 
 ## Step 1: Install llama.cpp with Metal
 
@@ -70,15 +70,30 @@ For OpenShift clusters, add `-f values-openshift.yaml`
 
 ## Step 3: Install and start the Metal Agent
 
-With `llmkube` on your admin machine and `llmkube` and
-`llmkube-metal-agent` on the Mac, two commands do this step and the
-RBAC part of step 4: `llmkube metal token create <mac>` where you have
-cluster access, then the `llmkube metal join` line it prints, on the
-Mac. See [Join a Mac](#join-a-mac). The rest of this step sets the
-agent up by hand.
+### Install with Homebrew (recommended)
 
-Clone the operator repo on your Mac and check out the release that
-matches the operator Helm installed:
+```bash
+brew install defilantech/tap/llmkube defilantech/tap/llmkube-metal-agent
+```
+
+This installs the signed release binary as
+`$(brew --prefix)/bin/llmkube-metal-agent`, `llama.cpp`, and the
+`llmkube` CLI. Name both: the agent cask does not depend on the CLI
+formula, because Homebrew trusts only the third-party tap items you
+name on the command line (`brew trust`). Homebrew installs the latest
+release, so keep the operator on the same release
+(`brew info --cask llmkube-metal-agent` shows the version).
+
+The cask does not start the agent. Joining the Mac to the cluster
+writes the LaunchAgent and starts it, and does the RBAC part of step 4:
+run `llmkube metal token create <mac>` where you have cluster access,
+then the `llmkube metal join` line it prints, on the Mac. See
+[Join a Mac](#join-a-mac).
+
+### Build from source
+
+To set the agent up by hand instead, clone the operator repo on your
+Mac and check out the release that matches the operator Helm installed:
 
 ```bash
 git clone https://github.com/defilantech/LLMKube.git
@@ -1080,7 +1095,16 @@ helm repo update
 helm upgrade llmkube llmkube/llmkube -n llmkube-system
 ```
 
-On each Mac, check out the matching release in your checkout, unload
+On a Mac that installed the agent with Homebrew, upgrade the cask and
+restart the agent, which keeps running the old binary until it
+restarts:
+
+```bash
+brew upgrade --cask llmkube-metal-agent
+launchctl kickstart -k gui/$(id -u)/com.llmkube.metal-agent
+```
+
+On a Mac that built from source, check out the matching release in your checkout, unload
 the agent, and reinstall it (`make install-metal-agent` alone keeps
 running the plist launchd already loaded):
 
@@ -1110,6 +1134,19 @@ access; see
 ["LAN download fails with `no route to host` after an upgrade"](https://github.com/defilantech/LLMKube/blob/main/deployment/macos/README.md#lan-download-fails-with-no-route-to-host-after-an-upgrade).
 
 ## Uninstall
+
+With Homebrew:
+
+```bash
+brew uninstall --zap --cask llmkube-metal-agent
+```
+
+`--zap` also stops the agent and removes its LaunchAgent, logs and
+state. Without it, Homebrew removes only the binary and leaves the
+LaunchAgent loaded: Homebrew runs a cask's uninstall steps on every
+`brew upgrade` as well, so the cask leaves the LaunchAgent to zap.
+
+From a source build:
 
 ```bash
 cd /path/to/LLMKube-checkout

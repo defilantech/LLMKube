@@ -406,11 +406,68 @@ release:
 
     **Full Changelog**: [CHANGELOG.md](https://github.com/defilantech/LLMKube/blob/main/CHANGELOG.md)
 
-# Homebrew tap: NOT configured here. GoReleaser removed `brews` (formulae) in
-# v2.16 and its only replacement, `homebrew_casks`, produces macOS-only casks,
-# which drops Linux Homebrew for a cross-platform CLI (see #1039 / #1040). The
-# release workflow instead runs hack/publish-homebrew-formula.sh to publish a
-# cross-platform binary formula from dist/checksums.txt.
+# Homebrew tap (defilantech/homebrew-tap).
+#
+# The llmkube CLI formula is NOT configured here. GoReleaser removed `brews`
+# (formulae) in v2.16 and its only replacement, `homebrew_casks`, produces
+# macOS-only casks, which drops Linux Homebrew for a cross-platform CLI (see
+# #1039 / #1040). The release workflow runs hack/publish-homebrew-formula.sh
+# after GoReleaser to publish a cross-platform binary formula from
+# dist/checksums.txt. That script deletes Casks/llmkube.rb, so no cask here may
+# use the token `llmkube`.
+#
+# The metal-agent is macOS-only, so a cask fits it (#822). `llmkube metal
+# join` (CLI) joins the Mac to a cluster and writes the LaunchAgent; the cask
+# cannot, since it does not know the cluster and Homebrew's install steps
+# cannot render the launchd plist's paths.
+#
+# The LaunchAgent is removed by `zap`, not `uninstall`: Homebrew runs the old
+# version's `uninstall` directives on every `brew upgrade` too (only `signal`
+# is skipped), so `uninstall launchctl:` would delete the joined Mac's
+# LaunchAgent on each upgrade and leave the agent stopped until it rejoins.
+# `brew uninstall --zap` removes it; a plain uninstall keeps the join.
+#
+# The cask does not depend on the CLI formula, only on llama.cpp: since 6.0
+# Homebrew refuses to load a dependency from a tap the user has not trusted
+# (`brew trust`), and `brew install defilantech/tap/llmkube-metal-agent`
+# trusts only the cask it names, so a fresh install would fail. The docs
+# install both by name in one command, which trusts both, and the caveats
+# name the formula.
+homebrew_casks:
+  - name: llmkube-metal-agent
+    ids:
+      - llmkube-metal-agent
+    binaries:
+      - llmkube-metal-agent
+    homepage: "https://github.com/defilantech/LLMKube"
+    description: "Runs LLM inference on Apple Silicon for a Kubernetes cluster"
+    url:
+      template: "https://github.com/defilantech/LLMKube/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
+    dependencies:
+      - formula: llama.cpp
+    zap:
+      launchctl:
+        - com.llmkube.metal-agent
+      trash:
+        - "~/Library/Application Support/llmkube/metal-agent"
+        - "~/Library/Logs/llmkube"
+    caveats: |
+      The llmkube CLI is a separate formula: brew install defilantech/tap/llmkube
+      Join a cluster with `llmkube metal join <join-string>` (get one from your cluster admin: `llmkube metal token create <mac-name>`).
+      The agent is not started until you join.
+      After brew upgrade, restart a joined agent: launchctl kickstart -k gui/$(id -u)/com.llmkube.metal-agent
+    commit_author:
+      name: github-actions[bot]
+      email: 41898282+github-actions[bot]@users.noreply.github.com
+    commit_msg_template: "Update llmkube-metal-agent cask to {{ .Tag }}"
+    directory: Casks
+    # auto: no upload for snapshots and prereleases.
+    skip_upload: auto
+    repository:
+      owner: defilantech
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
 
 # Metadata
 metadata:

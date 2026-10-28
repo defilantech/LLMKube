@@ -21,7 +21,67 @@ This directory contains the macOS launchd configuration for the LLMKube Metal Ag
 
 ## Installation
 
-### Option 1: Using Makefile (Recommended)
+### Option 1: Homebrew (Recommended)
+
+```bash
+brew install defilantech/tap/llmkube defilantech/tap/llmkube-metal-agent
+```
+
+This installs the release binary as `$(brew --prefix)/bin/llmkube-metal-agent`
+(signed as described under Option 3), `llama.cpp`, and the `llmkube` CLI.
+Name both: the `llmkube-metal-agent` cask does not depend on the `llmkube`
+formula, because Homebrew trusts only the third-party tap items named on the
+command line (see `brew trust`) and refuses to load a dependency from a tap
+you have not trusted. The cask runs on macOS only; the CLI formula also
+installs on Linux.
+
+The cask does not start the agent. Joining the Mac to a cluster writes the
+LaunchAgent and starts it:
+
+```bash
+llmkube metal join <join-string>   # your cluster admin: llmkube metal token create <mac-name>
+```
+
+To run the agent without joining, for example with a kubeconfig you already
+have, run the Homebrew binary under launchd by hand: the plist below is the
+Option 3 one, pointed at the Homebrew binary. Before
+the last command, add `--kubeconfig <file>` to `ProgramArguments` in the
+rendered plist (see "Choosing the cluster" below).
+
+```bash
+v=$(brew list --cask --versions llmkube-metal-agent | awk '{print $2}')
+mkdir -p ~/Library/LaunchAgents
+mkdir -p -m 0700 ~/Library/Logs/llmkube
+sed -e 's|__HOME__|'"$HOME"'|g' \
+    -e 's|/usr/local/bin/llmkube-metal-agent|'"$(brew --prefix)"'/bin/llmkube-metal-agent|' \
+    "$(brew --caskroom)/llmkube-metal-agent/$v/deployment/macos/com.llmkube.metal-agent.plist" \
+  > ~/Library/LaunchAgents/com.llmkube.metal-agent.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.llmkube.metal-agent.plist
+```
+
+To upgrade, upgrade the cask and restart the agent. A LaunchAgent that names
+`$(brew --prefix)/bin/llmkube-metal-agent`, as the one above does, survives
+the upgrade because Homebrew relinks that path to the new version, but the
+running agent keeps the old binary until it restarts:
+
+```bash
+brew upgrade --cask llmkube-metal-agent
+launchctl kickstart -k gui/$(id -u)/com.llmkube.metal-agent
+```
+
+If the agent does not come back after an upgrade that changed how the binary
+is signed, reload it as in "Applying a plist change" below.
+
+`brew uninstall --cask llmkube-metal-agent` removes the binary only and
+leaves the LaunchAgent loaded (Homebrew runs a cask's uninstall steps on every
+upgrade too, so the cask leaves the LaunchAgent to `--zap`); boot the job out
+yourself if you are not reinstalling. `brew uninstall --zap --cask
+llmkube-metal-agent` also removes the LaunchAgent, the agent's logs
+(`~/Library/Logs/llmkube`) and its state
+(`~/Library/Application Support/llmkube/metal-agent`). Downloaded models stay
+in the model store either way.
+
+### Option 2: Build from source with the Makefile
 
 ```bash
 # Build and install Metal agent
@@ -34,7 +94,7 @@ This will:
 - Install launchd service
 - Start the service automatically
 
-### Option 2: Manual Installation
+### Option 3: Manual Installation
 
 ```bash
 # Build the agent
@@ -1577,6 +1637,9 @@ tailscale status   # or wg show
 ## Uninstallation
 
 ```bash
+# Homebrew (also removes the LaunchAgent, logs and agent state)
+brew uninstall --zap --cask llmkube-metal-agent
+
 # Using Makefile
 make uninstall-metal-agent
 
