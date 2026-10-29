@@ -5,6 +5,28 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.14](https://github.com/defilantech/LLMKube/compare/v0.10.13...v0.10.14) (2026-10-29)
+
+
+### Features
+
+* **cli:** send the endpoint API key from llmkube benchmark ([#2297](https://github.com/defilantech/LLMKube/issues/2297)) ([df2e008](https://github.com/defilantech/LLMKube/commit/df2e008fe61d8a4c0bc87557b51599d3a1bb5fc3))
+* **router:** add spec.proxy.drainTimeout for the router-proxy shutdown ([#2304](https://github.com/defilantech/LLMKube/issues/2304)) ([113e009](https://github.com/defilantech/LLMKube/commit/113e009a2dcbec62ad911cb8f09daf444779ac69))
+* **router:** opt-in client address and caller header on the audit log ([#2288](https://github.com/defilantech/LLMKube/issues/2288)) ([4d1faac](https://github.com/defilantech/LLMKube/commit/4d1faacb70fb3418a739e0daf78a1faae0be3514))
+
+
+### Bug Fixes
+
+* **controller:** keep a ModelPool resident the router re-activates during a reclaim ([#2290](https://github.com/defilantech/LLMKube/issues/2290)) ([857daf2](https://github.com/defilantech/LLMKube/commit/857daf2b13f056fa78db591a8c248cbddef86a52))
+* **controller:** remove a key dropped from podLabels or podAnnotations from the pods ([#2289](https://github.com/defilantech/LLMKube/issues/2289)) ([ca5df08](https://github.com/defilantech/LLMKube/commit/ca5df0813eedea443d4976e349582ceb14cfaec7))
+* **foreman:** route the remaining GitHub-only paths through the forge seams ([#2291](https://github.com/defilantech/LLMKube/issues/2291)) ([a333270](https://github.com/defilantech/LLMKube/commit/a333270afe5f91977e9f5af5b38cb1d9164fdaba))
+* **metrics:** each binary serves only the metrics it records ([#2296](https://github.com/defilantech/LLMKube/issues/2296)) ([de8ca21](https://github.com/defilantech/LLMKube/commit/de8ca210029e53c5e71c237b94ce6fbc751b89c6))
+
+
+### Documentation
+
+* **modelpool:** leave member replicas out of GitOps manifests ([#2300](https://github.com/defilantech/LLMKube/issues/2300)) ([bcbc357](https://github.com/defilantech/LLMKube/commit/bcbc35744efafe213bf4802fe81dffe8cfc8d403))
+
 ## [0.10.13](https://github.com/defilantech/LLMKube/compare/v0.10.12...v0.10.13) (2026-10-28)
 
 
