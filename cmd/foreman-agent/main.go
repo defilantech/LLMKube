@@ -70,8 +70,8 @@ import (
 	foremanagent "github.com/defilantech/llmkube/pkg/foreman/agent"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/changepolicy"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/codehost"
-	"github.com/defilantech/llmkube/pkg/foreman/agent/githubissue"
-	"github.com/defilantech/llmkube/pkg/foreman/agent/githubpr"
+	"github.com/defilantech/llmkube/pkg/foreman/agent/forge"
+	"github.com/defilantech/llmkube/pkg/foreman/agent/githubprfetch"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/mcp"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/repo"
 	foremantools "github.com/defilantech/llmkube/pkg/foreman/agent/tools"
@@ -91,31 +91,50 @@ var (
 	setupLog = ctrl.Log.WithName("setup")
 )
 
-// githubCodeHost builds the GitHub-backed CodeHost seam (#1158), wrapping the
-// githubpr client with the same token source (env / file) as the git auth so
-// PR creation and head-commit reads stay authenticated. The token is resolved
-// per call, so a rotated credential is picked up without a restart.
-func githubCodeHost() codehost.CodeHost {
-	return &codehost.GitHubCodeHost{Ensurer: githubpr.NewClient(), TokenSource: repo.TokenFromEnvOrFile}
-}
-
-// githubWorkItems builds the GitHub-backed WorkItems seam (#1158), wrapping the
-// githubissue client with the same token source as the git auth so issue-body
-// fetches stay authenticated, resolved per call like githubCodeHost's.
-func githubWorkItems() worktracker.WorkItems {
-	return &worktracker.GitHubWorkItems{Fetcher: githubissue.NewClient(), TokenSource: repo.TokenFromEnvOrFile}
-}
+const (
+	forgeFlagUsage = "Code-hosting provider: github. Empty infers it from the --git-remote-url host " +
+		"(github.com, gitlab.com, codeberg.org) and otherwise defaults to github. A self-hosted " +
+		"instance's hostname carries no signal, so name its provider here (#1300)."
+	forgeAPIBaseURLFlagUsage = "API root of a self-hosted forge, for example https://ghe.example.com/api/v3 " +
+		"for GitHub Enterprise Server. Empty uses the provider's public API."
+)
 
 // forgeSeams are the provider seams an executor and its tool registry share.
 // They are built once per executor so the tools reach the same forge the
 // executor does.
 type forgeSeams struct {
-	codeHost  codehost.CodeHost
-	workItems worktracker.WorkItems
+	name         string
+	codeHost     codehost.CodeHost
+	workItems    worktracker.WorkItems
+	pullRequests githubprfetch.Fetcher
 }
 
-func githubForgeSeams() forgeSeams {
-	return forgeSeams{codeHost: githubCodeHost(), workItems: githubWorkItems()}
+// newForgeSeams selects the forge provider (#1300) and builds its seams, with
+// the token resolved per call from the same source as the git auth.
+func newForgeSeams(name, apiBaseURL, gitRemoteURL string) (forgeSeams, error) {
+	p, err := forge.Resolve(forge.Config{
+		Name:         name,
+		APIBaseURL:   apiBaseURL,
+		GitRemoteURL: gitRemoteURL,
+		TokenSource:  repo.TokenFromEnvOrFile,
+	})
+	if err != nil {
+		return forgeSeams{}, err
+	}
+	return forgeSeams{name: p.Name, codeHost: p.CodeHost, workItems: p.WorkItems, pullRequests: p.PullRequests}, nil
+}
+
+// mustForgeSeams is newForgeSeams for startup: a forge that is named or
+// inferred but not built in stops the agent, since falling back to GitHub
+// would push to and open pull requests on the wrong host.
+func mustForgeSeams(name, apiBaseURL, gitRemoteURL string) forgeSeams {
+	seams, err := newForgeSeams(name, apiBaseURL, gitRemoteURL)
+	if err != nil {
+		setupLog.Error(err, "select forge provider")
+		os.Exit(1)
+	}
+	setupLog.Info("forge provider selected", "forge", seams.name, "apiBaseURL", apiBaseURL)
+	return seams
 }
 
 func init() {
@@ -161,6 +180,8 @@ func main() {
 		// M3 executor flags
 		agentMode                string
 		gitRemoteURL             string
+		forgeName                string
+		forgeAPIBaseURL          string
 		inferenceURLOverride     string
 		inferenceURLHostOverride string
 
@@ -259,6 +280,8 @@ func main() {
 		"Executor to dispatch to: native | stub. Default is native (M3 Phase F); stub is the M2 placeholder for tests.")
 	flag.StringVar(&gitRemoteURL, "git-remote-url", "",
 		"git URL to clone from and push branches to. v0.1 uses the fork for both. Required when --agent-mode=native.")
+	flag.StringVar(&forgeName, "forge", "", forgeFlagUsage)
+	flag.StringVar(&forgeAPIBaseURL, "forge-api-base-url", "", forgeAPIBaseURLFlagUsage)
 	flag.StringVar(&inferenceURLOverride, "inference-base-url-override", "",
 		"Replace the resolved InferenceService URL entirely (e.g. http://localhost:8080/v1). "+
 			"Use for tests and stub OAI servers; for off-cluster, same-host installs prefer "+
@@ -487,7 +510,7 @@ func main() {
 	case "stub":
 		executor = &foremanagent.StubExecutor{SleepDuration: stubSleep}
 	case "native":
-		seams := githubForgeSeams()
+		seams := mustForgeSeams(forgeName, forgeAPIBaseURL, gitRemoteURL)
 		executor = &foremanagent.NativeAgentLoopExecutor{
 			Stream:                       turnStream,
 			Client:                       kc,
@@ -523,6 +546,8 @@ func main() {
 					// clone + push can authenticate and commit; without these
 					// run-task fails with GitRemoteNotConfigured (#620).
 					GitRemoteURL:         gitRemoteURL,
+					Forge:                forgeName,
+					ForgeAPIBaseURL:      forgeAPIBaseURL,
 					CommitAuthorName:     commitAuthorName,
 					CommitAuthorEmail:    commitAuthorEmail,
 					CommitCommitterName:  committerName(commitCommitterName, commitAuthorName),
@@ -622,6 +647,8 @@ func runTaskCommand(args []string) {
 		workspaceDir             string
 		kubeContext              string
 		gitRemoteURL             string
+		forgeName                string
+		forgeAPIBaseURL          string
 		inferenceURLOverride     string
 		inferenceURLHostOverride string
 		commitAuthorName         string
@@ -642,6 +669,8 @@ func runTaskCommand(args []string) {
 		"kubeconfig context override. Ignored in-cluster.")
 	fs.StringVar(&gitRemoteURL, "git-remote-url", "",
 		"git URL to clone from and push the result branch to. Required for coder tasks.")
+	fs.StringVar(&forgeName, "forge", "", forgeFlagUsage)
+	fs.StringVar(&forgeAPIBaseURL, "forge-api-base-url", "", forgeAPIBaseURLFlagUsage)
 	fs.StringVar(&inferenceURLOverride, "inference-base-url-override", "",
 		"Replace the resolved InferenceService URL entirely (e.g. http://localhost:8080/v1).")
 	fs.StringVar(&inferenceURLHostOverride, "inference-base-url-host-override", "",
@@ -697,7 +726,7 @@ func runTaskCommand(args []string) {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	seams := githubForgeSeams()
+	seams := mustForgeSeams(forgeName, forgeAPIBaseURL, gitRemoteURL)
 	res, err := foremanagent.RunTask(ctx, foremanagent.RunTaskConfig{
 		Client:                       kc,
 		Task:                         types.NamespacedName{Namespace: namespace, Name: taskName},
@@ -923,8 +952,10 @@ func makeRegistryFactory(
 			// The tools reach the same forge as the executor; nil here left
 			// fetch_issue and the gate's clone URL on their GitHub defaults
 			// whatever seam the executor was given (#1298).
-			CodeHost:  seams.codeHost,
-			WorkItems: seams.workItems,
+			CodeHost:     seams.codeHost,
+			WorkItems:    seams.workItems,
+			ForgeName:    seams.name,
+			PullRequests: seams.pullRequests,
 		})
 
 		var mcpTools []foremantools.Tool

@@ -177,6 +177,12 @@ spec:
             {{- if $agent.gitRemoteURL }}
             - --git-remote-url={{ $agent.gitRemoteURL }}
             {{- end }}
+            {{- if $agent.forge }}
+            - --forge={{ $agent.forge }}
+            {{- end }}
+            {{- if $agent.apiBaseURL }}
+            - --forge-api-base-url={{ $agent.apiBaseURL }}
+            {{- end }}
             {{- if $agent.commitAuthorName }}
             - --commit-author-name={{ $agent.commitAuthorName }}
             {{- end }}

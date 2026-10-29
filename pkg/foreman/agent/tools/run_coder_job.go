@@ -121,6 +121,13 @@ type RunCoderJobConfig struct {
 	// the watcher's --git-remote-url.
 	GitRemoteURL string
 
+	// Forge and ForgeAPIBaseURL are the watcher's --forge and
+	// --forge-api-base-url (#1300), passed to run-task so the Job pushes to
+	// and opens pull requests on the same forge. Empty omits each flag, and
+	// run-task then infers the forge the same way the watcher did.
+	Forge           string
+	ForgeAPIBaseURL string
+
 	// CommitAuthorName is the git author name run-task stamps onto the
 	// produced branch. Passed through as --commit-author-name; omitted
 	// when empty so run-task falls back to its own default.
@@ -340,6 +347,8 @@ func (r *RunCoderJob) Run(ctx context.Context, args RunCoderJobArgs) (CoderJobRe
 		GitCredentialsSecretKey: cfg.GitCredentialsSecretKey,
 		ModelAuthSecret:         cfg.ModelAuthSecret,
 		GitRemoteURL:            cfg.GitRemoteURL,
+		Forge:                   cfg.Forge,
+		ForgeAPIBaseURL:         cfg.ForgeAPIBaseURL,
 		CommitAuthorName:        cfg.CommitAuthorName,
 		CommitAuthorEmail:       cfg.CommitAuthorEmail,
 		CommitCommitterName:     cfg.CommitCommitterName,
@@ -573,6 +582,8 @@ type coderRendererInput struct {
 	GitCredentialsSecretKey string
 	ModelAuthSecret         string
 	GitRemoteURL            string
+	Forge                   string
+	ForgeAPIBaseURL         string
 	CommitAuthorName        string
 	CommitAuthorEmail       string
 	CommitCommitterName     string

@@ -94,6 +94,12 @@ spec:
             {{- if .GitRemoteURL }}
             - --git-remote-url={{ .GitRemoteURL }}
             {{- end }}
+            {{- if .Forge }}
+            - --forge={{ .Forge }}
+            {{- end }}
+            {{- if .ForgeAPIBaseURL }}
+            - --forge-api-base-url={{ .ForgeAPIBaseURL }}
+            {{- end }}
             {{- if .CommitAuthorName }}
             - --commit-author-name={{ .CommitAuthorName }}
             {{- end }}

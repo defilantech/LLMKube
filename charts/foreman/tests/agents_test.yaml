@@ -531,3 +531,26 @@ tests:
           path: spec.selector.matchLabels["foreman.llmkube.dev/agent-pool"]
       - notExists:
           path: spec.template.metadata.labels["foreman.llmkube.dev/agent-pool"]
+
+  - it: forge and apiBaseURL flow through to args when set (#1300)
+    template: agent-deployment.yaml
+    set:
+      agent.forge: github
+      agent.apiBaseURL: https://ghe.example.com/api/v3
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --forge=github
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --forge-api-base-url=https://ghe.example.com/api/v3
+
+  - it: forge flags are omitted when unset, so the agent infers the forge
+    template: agent-deployment.yaml
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --forge=
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --forge-api-base-url=

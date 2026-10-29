@@ -22,6 +22,7 @@ package codehost
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -106,6 +107,11 @@ type CodeHost interface {
 	HeadCommitSubject(ctx context.Context, repoSlug, headBranch string) (string, error)
 }
 
+// ErrNotSupported reports an operation the selected forge provider cannot
+// perform. A provider without an optional capability returns it rather than a
+// plausible wrong answer, so the caller degrades explicitly (#1300).
+var ErrNotSupported = errors.New("not supported by this forge")
+
 // GitHubCodeHost wraps a githubpr.Ensurer and provides the CodeHost
 // interface backed by GitHub. The Ensurer is injected so tests can
 // substitute a fake.
@@ -119,6 +125,9 @@ type GitHubCodeHost struct {
 	// a rotated credential is picked up without restarting the agent. A
 	// resolution error means an unauthenticated call, as an empty Token does.
 	TokenSource func() (string, error)
+	// CloneBaseURL is the scheme and host clone URLs are built on, for a
+	// GitHub Enterprise Server. Empty means https://github.com.
+	CloneBaseURL string
 }
 
 // token is the credential for one API call.
@@ -148,7 +157,11 @@ func (g *GitHubCodeHost) ResolveCloneURL(repoSlug string) string {
 	if !IsValidRepoSlug(repoSlug) {
 		return ""
 	}
-	return "https://github.com/" + repoSlug + ".git"
+	base := strings.TrimRight(g.CloneBaseURL, "/")
+	if base == "" {
+		base = "https://github.com"
+	}
+	return base + "/" + repoSlug + ".git"
 }
 
 // EnsureChangeRequest ensures a pull request exists for head → base,
