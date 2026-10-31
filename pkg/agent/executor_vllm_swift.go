@@ -56,6 +56,7 @@ type VLLMSwiftExecutor struct {
 	// so a child that dies on startup ends the health wait at once and
 	// StopProcess never waits on a PID twice.
 	childTracker
+	engineEnv
 }
 
 // NewVLLMSwiftExecutor creates an executor that spawns one vllm-swift
@@ -109,7 +110,7 @@ func (e *VLLMSwiftExecutor) StartProcess(ctx context.Context, config ExecutorCon
 	// not reach the engine and a restarted agent can adopt it (#2079).
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Dir = e.modelStorePath // relative paths in engine flags resolve inside the model store
-	cmd.Env = os.Environ()
+	cmd.Env = e.childEnv()
 
 	// Capture child stdout/stderr to a per-process log file. Without this,
 	// Go's exec.Command discards both, which means a vllm-swift import

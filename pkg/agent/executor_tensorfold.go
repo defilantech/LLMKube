@@ -62,6 +62,7 @@ type TensorFoldExecutor struct {
 	allocatePort func() (int, error)
 
 	childTracker
+	engineEnv
 }
 
 // NewTensorFoldExecutor creates an executor that spawns one tensorfold
@@ -111,7 +112,7 @@ func (e *TensorFoldExecutor) StartProcess(_ context.Context, config ExecutorConf
 	// not reach the engine and a restarted agent can adopt it (#2079).
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Dir = e.modelStorePath // relative paths in engine flags resolve inside the model store
-	cmd.Env = tensorFoldEnv(os.Environ())
+	cmd.Env = tensorFoldEnv(os.Environ(), e.envPassthrough)
 
 	// Per-process log, truncated on every start so it holds only this run.
 	// TensorFold prints why it refused a checkpoint and exits; without the
@@ -263,16 +264,12 @@ func buildTensorFoldArgs(modelPath string, port int, config ExecutorConfig) []st
 	return append(args, extra...)
 }
 
-// tensorFoldEnv returns the parent environment with the update check turned
-// off, replacing any value the parent carried.
-func tensorFoldEnv(parent []string) []string {
-	env := make([]string, 0, len(parent)+1)
-	for _, kv := range parent {
-		if !strings.HasPrefix(kv, tensorFoldNoUpdateCheckEnv+"=") {
-			env = append(env, kv)
-		}
-	}
-	return append(env, tensorFoldNoUpdateCheckEnv+"=1")
+// tensorFoldEnv returns the engine environment built from parent (see
+// buildEngineEnv) with the update check turned off, replacing any value the
+// parent carried. HOME and HF_HOME stay: TensorFold finds its drafts in the
+// Hugging Face cache through them.
+func tensorFoldEnv(parent, passthrough []string) []string {
+	return buildEngineEnv(parent, passthrough, tensorFoldNoUpdateCheckEnv+"=1")
 }
 
 // allocateLoopbackPort asks the kernel for an unused TCP port. Same TOCTOU

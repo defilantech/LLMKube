@@ -51,6 +51,7 @@ type MLXServerExecutor struct {
 	// childTracker holds the reaper of every mlx-server this executor
 	// spawned, so StopProcess never waits on a PID twice.
 	childTracker
+	engineEnv
 }
 
 // NewMLXServerExecutor creates an executor that spawns one mlx-server
@@ -97,7 +98,7 @@ func (e *MLXServerExecutor) StartProcess(_ context.Context, config ExecutorConfi
 	// not reach the engine and a restarted agent can adopt it (#2079).
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Dir = e.modelStorePath // relative paths in engine flags resolve inside the model store
-	cmd.Env = os.Environ()
+	cmd.Env = e.childEnv()
 
 	// Capture child stdout/stderr to a per-process log file. Without this a
 	// model-load failure becomes a silent crashloop with no trail. The path

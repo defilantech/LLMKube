@@ -150,7 +150,7 @@ func TestTensorFoldPort(t *testing.T) {
 }
 
 func TestTensorFoldEnv(t *testing.T) {
-	got := tensorFoldEnv([]string{"HOME=/Users/x", "TENSORFOLD_NO_UPDATE_CHECK=0", "HF_HOME=/hf"})
+	got := tensorFoldEnv([]string{"HOME=/Users/x", "TENSORFOLD_NO_UPDATE_CHECK=0", "HF_HOME=/hf"}, nil)
 	var n int
 	for _, kv := range got {
 		if strings.HasPrefix(kv, "TENSORFOLD_NO_UPDATE_CHECK=") {

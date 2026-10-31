@@ -228,6 +228,10 @@ func omlxAliasFixture(t *testing.T, dirName string) (*OMLXExecutor, string) {
 		t.Fatal(err)
 	}
 	e := NewOMLXExecutor(fakeOMLXHelperBinary(t), store, port, newNopLogger())
+	// The daemon gets a filtered environment, so the switch into the fake
+	// reaches it only through the passthrough list, as an operator's
+	// --engine-env-passthrough would.
+	e.SetEngineEnvPassthrough([]string{fakeOMLXEnv})
 	e.basePath = t.TempDir()
 	e.SetStartupTimeout(30 * time.Second)
 	t.Cleanup(func() {
