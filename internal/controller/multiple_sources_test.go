@@ -37,6 +37,7 @@ import (
 )
 
 func TestMultipleSourcesDownloader(t *testing.T) {
+	requireInitShellEnvironment(t)
 	for _, policy := range []string{"IfNotPresent", "OnChange"} {
 		for _, withSource := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/source=%t", policy, withSource), func(t *testing.T) {

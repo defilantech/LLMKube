@@ -151,9 +151,16 @@ spec:
   format: safetensors
 ```
 
-Hugging Face `/resolve/<revision>/` URLs retain their repository-relative path
-(`text_encoders/...` above); S3 URLs retain the object key; other HTTP URLs use
-the basename. Different sources cannot target the same destination. URL query
+Only `/resolve/<revision>/` URLs on `huggingface.co` retain their repository-relative
+path (`text_encoders/...` above); S3 URLs retain the object key. Other HTTP URLs,
+including explicit URLs on the configured `HF_ENDPOINT` mirror, use the basename.
+For example, a mirror URL ending in `/resolve/main/text_encoders/x.safetensors`
+is staged as `x.safetensors`, not `text_encoders/x.safetensors`, even when the
+mirror receives `HF_TOKEN`. To preserve subdirectories when using a mirror,
+use an `hf://org/repo` source with repo-relative `files` and configure
+`HF_ENDPOINT` in `sourceSecretRef`.
+
+Different sources cannot target the same destination. URL query
 parameters are preserved for downloads and do not become part of the filename.
 `fileSha256` keys use the exact entry from `files`, including the full URL.
 

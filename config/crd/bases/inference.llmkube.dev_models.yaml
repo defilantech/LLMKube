@@ -119,8 +119,9 @@ spec:
                 description: |-
                   Files lists model weight artifacts to stage from Source. Entries are
                   repo-relative for repository sources, or absolute http(s)/s3 object URLs.
-                  HuggingFace resolve URLs retain the path within their repository; S3 URLs
-                  retain the object key; other HTTP URLs use the basename. Conflicting
+                  Resolve URLs on huggingface.co retain the path within their repository;
+                  S3 URLs retain the object key. Other HTTP URLs, including explicit
+                  HF_ENDPOINT mirror URLs, use the basename. Conflicting
                   destination paths are rejected. Explicit URLs use per-origin credentials
                   and require in-cluster staging (not the Metal agent or pre-staged volumes).
                   The first entry is the primary model
