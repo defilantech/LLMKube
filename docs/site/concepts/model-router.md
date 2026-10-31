@@ -577,7 +577,7 @@ When you specify `provider: anthropic` or `provider: openai` without `url`, the 
 - Fail-closed gate, both static (apply-time) and runtime
 - OpenAI-compatible request / response, including streaming SSE
 - Structured audit log to stdout (other sinks roadmap)
-- Per-route budget caps (roadmap)
+- Token and dollar budgets per router, rule or team header (see [Token and dollar budgets](#token-and-dollar-budgets))
 - MCP server endpoint (roadmap)
 
 **Out of scope:**
@@ -675,6 +675,24 @@ JSON, so a few hundred such requests arriving together need a few
 hundred MiB. The default limit is 1 GiB (request 64 MiB); raise
 `spec.proxy.resources` for larger bursts. True request-side
 streaming is planned for Phase 2.
+
+## Token and dollar budgets
+
+On the Proxy data plane, `spec.policy.budgets` caps tokens (`maxTokens`), estimated dollars (`maxUSD`), or both over a rolling window (`windowSeconds`). Each budget has a scope:
+
+- `router`: all traffic through the router.
+- `rule`: traffic matched by the rule named in `ruleName`.
+- `team`: traffic carrying the header named in `headerKey` (default `x-llmkube-team`). Each header value gets its own counter, holding its own copy of the cap, under the key `team:<headerKey>:<value>`. A request without the header is not counted against the team budget.
+
+Every budget in scope is enforced. A request that finds one spent is refused with `429` and a `Retry-After` header before any backend is contacted; a served request is charged from the token usage the upstream reports.
+
+### How the proxy bounds team counters
+
+The team value is whatever the request carries, so the router-proxy bounds what it keeps for it:
+
+- **Idle values are dropped.** A value with no usage left inside its budget's window is deleted from the proxy's memory and from `/admin/budgets`, and its `llmkube_router_token_budget_utilization` series is removed the next time the gauge is updated (after a charged request). The cleanup runs at most once a second, when a request is charged, when the budget endpoint is read, or when the cap below is reached. It changes no decision: a value with no usage in the window is treated exactly like a value never seen. A team budget's entry in `status.budgetUtilization` therefore aggregates only the values with usage in the current window.
+- **At most 10,000 team values are tracked at once**, across all team budgets of the router. While that many have usage in their window, a request with a new value does not get a counter of its own: it is charged to, and limited by, the budget's shared overflow counter `team:<headerKey>:__overflow__`, which carries the same cap as a single value. New values are never let through unlimited. Values that already have a counter keep it and its cap. Each folded request increments `llmkube_router_budget_team_overflow_total{router, budget}`, and the proxy logs a warning the first time it happens. A sustained non-zero rate means new teams are sharing one cap.
+- **Long values are hashed.** A value longer than 128 bytes, or one that is not valid UTF-8, is kept as `sha256:<hex>` of the value, so a counter's key has a fixed size however large the header is. Shorter values are kept as sent, so existing dashboards and status entries keep their keys.
 
 ## Comparison to alternatives
 

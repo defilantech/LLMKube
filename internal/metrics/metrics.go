@@ -316,6 +316,19 @@ var (
 		[]string{labelRouter, "reason"},
 	)
 
+	// RouterBudgetTeamOverflowTotal counts requests whose team header value
+	// was folded into the team budget's shared overflow key because the
+	// router-proxy already tracks its cap of distinct team values. A non-zero
+	// rate means new team values are sharing one cap instead of getting their
+	// own.
+	RouterBudgetTeamOverflowTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llmkube_router_budget_team_overflow_total",
+			Help: "Requests whose team budget value was charged to the shared overflow key because the distinct team value cap was reached.",
+		},
+		[]string{labelRouter, "budget"},
+	)
+
 	// GPUQuota metrics (#416): per-quota GPU usage vs. cap, and admission
 	// denials. These enable the multi-tenancy dashboard and satisfy the
 	// "record the denial" requirement (a validating webhook, being
@@ -614,6 +627,7 @@ var RouterCollectors = []prometheus.Collector{
 	RouterBudgetUtilization,
 	RouterTokenBudgetUtilization,
 	RouterBudgetUnchargedTotal,
+	RouterBudgetTeamOverflowTotal,
 	ModelPoolResident,
 	ModelPoolSwapsTotal,
 	ModelPoolSwapFailuresTotal,
