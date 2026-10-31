@@ -317,7 +317,8 @@ type RuleMatch struct {
 	TaskComplexity string `json:"taskComplexity,omitempty"`
 
 	// RequiredCapabilities filters Route.Backends to those advertising
-	// every listed capability.
+	// every listed capability. The rule matches when at least one backend
+	// qualifies, and every strategy dispatches only to the ones that do.
 	RequiredCapabilities []string `json:"requiredCapabilities,omitempty"`
 
 	// Headers performs exact-match equality on inbound headers.

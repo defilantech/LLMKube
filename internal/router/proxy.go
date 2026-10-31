@@ -687,8 +687,22 @@ func (p *Proxy) enforceFailClosed(f *RequestFeatures, dec *MatchResult) error {
 	return nil
 }
 
-// dispatchWithFallback walks the backend list in dispatch order (declared
-// order, or a weighted rule's per-request draw, see dispatchOrder) and
+// dispatchOrder returns the backends dispatchWithFallback tries, in order: a
+// matched rule's backends that may serve it (capableBackends), in declared
+// order, or for a weighted rule a fresh weighted draw per request. The default
+// route and BackendNameMatch carry no rule and keep their single backend.
+func (p *Proxy) dispatchOrder(dec *MatchResult) []string {
+	if dec.Rule == nil {
+		return dec.Backends
+	}
+	if dec.Strategy == strategyWeighted {
+		return weightedOrder(weightedCandidates(dec.Rule, p.matcher.BackendByName), p.randN)
+	}
+	return capableBackends(dec.Rule, dec.Backends, p.matcher.BackendByName)
+}
+
+// dispatchWithFallback walks the backend list in dispatch order (see
+// dispatchOrder) and
 // returns the first successful (non-5xx, non-error) response. On
 // fail-closed routes with all backends unhealthy, the last error
 // propagates back to the handler as HTTP 502 or 503 (the caller in

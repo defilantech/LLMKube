@@ -53,8 +53,8 @@ func lastDraw(n int64) int64 { return n - 1 }
 
 func weight(w int32) *int32 { return &w }
 
-// weightedHarness serves one weighted rule over the named backends, each a
-// fake upstream.
+// weightedHarness serves one rule over the named backends, each a fake
+// upstream.
 type weightedHarness struct {
 	proxy   *Proxy
 	handler http.Handler
@@ -68,6 +68,13 @@ type weightedSpec struct {
 }
 
 func newWeightedHarness(t *testing.T, rnd randInt64N, required []string, specs ...weightedSpec) *weightedHarness {
+	t.Helper()
+	return newRuleHarness(t, strategyWeighted, rnd, required, specs...)
+}
+
+// newRuleHarness serves one rule with the given strategy over the named
+// backends, each a fake upstream.
+func newRuleHarness(t *testing.T, strategy string, rnd randInt64N, required []string, specs ...weightedSpec) *weightedHarness {
 	t.Helper()
 	h := &weightedHarness{backs: map[string]*fakeBackend{}}
 	cfg := &Config{
@@ -85,7 +92,7 @@ func newWeightedHarness(t *testing.T, rnd randInt64N, required []string, specs .
 	cfg.Rules = []Rule{{
 		Name:  "split",
 		Match: RuleMatch{Models: []string{"m"}, RequiredCapabilities: required},
-		Route: RuleRoute{Backends: names, Strategy: strategyWeighted},
+		Route: RuleRoute{Backends: names, Strategy: strategy},
 	}}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("weighted harness config: %v", err)

@@ -247,6 +247,8 @@ Headers that change routing:
 - **`weighted`** splits the rule's traffic across its backends in proportion to each backend's `weight` (default `1`). Use it to keep two kinds of hardware warm behind one model name.
 - **`shadow`** is not implemented by the router-proxy yet: a `shadow` rule dispatches like `primary-fallback`. `dataPlane: Gateway` and `dataPlane: AgentGateway` reject it.
 
+Whatever the strategy, a rule with `match.requiredCapabilities` sends its requests only to the backends that advertise every listed capability. The rule matches when at least one of its backends does; the others are never tried for it, not even as a fallback. A rule without `requiredCapabilities` uses all of its backends.
+
 ```yaml
 spec:
   backends:

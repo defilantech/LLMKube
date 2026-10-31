@@ -456,7 +456,9 @@ type RuleMatch struct {
 
 	// RequiredCapabilities filters backends. The rule only matches if at
 	// least one backend in Route.Backends advertises every listed
-	// capability.
+	// capability, and on dataPlane: Proxy only those backends serve the
+	// rule's requests, under every strategy. A backend that lacks one is
+	// never tried, not even as a fallback.
 	// +optional
 	RequiredCapabilities []string `json:"requiredCapabilities,omitempty"`
 

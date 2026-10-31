@@ -255,7 +255,34 @@ func (m *Matcher) satisfiesRequiredCapabilities(required, backendNames []string)
 	return false
 }
 
+// servableBy reports whether b may serve this rule's requests: it exists and
+// advertises every capability the rule requires. The rule matches when any of
+// its backends qualifies (satisfiesRequiredCapabilities); dispatch then sends
+// the request only to the backends that do (#2328).
+func (r *Rule) servableBy(b *Backend) bool {
+	return b != nil && hasAllCapabilities(b.Capabilities, r.Match.RequiredCapabilities)
+}
+
+// capableBackends returns the names, in order, whose backend may serve the
+// rule (see servableBy). A rule that requires no capability gets names back
+// unchanged, so its dispatch order is exactly the declared one.
+func capableBackends(rule *Rule, names []string, backendByName func(string) *Backend) []string {
+	if len(rule.Match.RequiredCapabilities) == 0 {
+		return names
+	}
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		if rule.servableBy(backendByName(name)) {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
 func hasAllCapabilities(have, want []string) bool {
+	if len(want) == 0 {
+		return true
+	}
 	set := make(map[string]bool, len(have))
 	for _, c := range have {
 		set[c] = true

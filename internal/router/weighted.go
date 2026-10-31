@@ -66,7 +66,7 @@ func weightedCandidates(rule *Rule, backendByName func(string) *Backend) []weigh
 		}
 		seen[name] = true
 		b := backendByName(name)
-		if b == nil || !hasAllCapabilities(b.Capabilities, rule.Match.RequiredCapabilities) {
+		if !rule.servableBy(b) {
 			continue
 		}
 		if w := b.effectiveWeight(); w > 0 {
@@ -107,16 +107,6 @@ func weightedOrder(cands []weightedCandidate, rnd randInt64N) []string {
 		cands = slices.Delete(cands, i, i+1)
 	}
 	return order
-}
-
-// dispatchOrder returns the backends dispatchWithFallback tries, in order.
-// A weighted rule draws a fresh order per request; every other strategy keeps
-// the declared order.
-func (p *Proxy) dispatchOrder(dec *MatchResult) []string {
-	if dec.Strategy != strategyWeighted || dec.Rule == nil {
-		return dec.Backends
-	}
-	return weightedOrder(weightedCandidates(dec.Rule, p.matcher.BackendByName), p.randN)
 }
 
 // defaultRandInt64N draws from math/rand/v2's global source, which is safe
