@@ -300,30 +300,6 @@ The v0.1 CRD shape was designed so each of those additions is a
 non-breaking extension. Pinning the foundation is the work of
 0.8.0; everything above is what we build on it.
 
-## Deep references
-
-- **[M3 coder runbook](/docs/foreman/runbook-m3)**: install the foreman-agent
-  on the coder host (M5 Max / Apple Silicon).
-- **[M4 verifier runbook](/docs/foreman/runbook-m4)**: install Foreman as a chart
-  on the K8s cluster and stand up the gate Agent on a verifier
-  node.
-- **[Verifier node install notes](/docs/foreman/install-verifier-node)**:
-  deeper notes on the ShadowStack reference verifier deployment.
-- **[Model compatibility table](/docs/foreman/model-compatibility)**: which
-  models the v0.4 reviewer and coder roles have been empirically
-  validated against.
-
-## Where to file issues
-
-- **Repository:** [github.com/defilantech/LLMKube](https://github.com/defilantech/LLMKube)
-- **Discord:** [discord.gg/Ktz85RFHDv](https://discord.gg/Ktz85RFHDv)
-- **Issue templates:** `[BUG]` or `[FEATURE]` prefix; the
-  templates under `.github/ISSUE_TEMPLATE/` are mandatory for
-  triage.
-
-If your shop fits the target profile (on-prem GPU, sovereignty
-constraint, K8s in production), we'd love to hear about your fleet.
-
 ## Watching a native agent run
 
 The Foreman agent serves `GET /stream` at `127.0.0.1:8082` by default.
@@ -357,3 +333,27 @@ open connection. Native Anthropic currently emits completed turns only.
 
 Browser clients can use `source.addEventListener("progress", handler)` for
 progress while keeping `source.onmessage` for completed turns.
+
+## Deep references
+
+- **[M3 coder runbook](/docs/foreman/runbook-m3)**: install the foreman-agent
+  on the coder host (M5 Max / Apple Silicon).
+- **[M4 verifier runbook](/docs/foreman/runbook-m4)**: install Foreman as a chart
+  on the K8s cluster and stand up the gate Agent on a verifier
+  node.
+- **[Verifier node install notes](/docs/foreman/install-verifier-node)**:
+  deeper notes on the ShadowStack reference verifier deployment.
+- **[Model compatibility table](/docs/foreman/model-compatibility)**: which
+  models the v0.4 reviewer and coder roles have been empirically
+  validated against.
+
+## Where to file issues
+
+- **Repository:** [github.com/defilantech/LLMKube](https://github.com/defilantech/LLMKube)
+- **Discord:** [discord.gg/Ktz85RFHDv](https://discord.gg/Ktz85RFHDv)
+- **Issue templates:** `[BUG]` or `[FEATURE]` prefix; the
+  templates under `.github/ISSUE_TEMPLATE/` are mandatory for
+  triage.
+
+If your shop fits the target profile (on-prem GPU, sovereignty
+constraint, K8s in production), we'd love to hear about your fleet.
