@@ -192,3 +192,14 @@ func TestStagedCachePath(t *testing.T) {
 		}
 	}
 }
+
+func TestResolveFileSet_MultipleRepositories(t *testing.T) {
+	const external = "https://huggingface.co/Comfy-Org/gemma-4/resolve/main/text_encoders/encoder.safetensors"
+	plan, err := ResolveFileSet([]string{"model.safetensors", external}, "", []string{"model.safetensors"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(plan.Files, []string{"model.safetensors", "text_encoders/encoder.safetensors"}) {
+		t.Fatalf("staged files = %v", plan.Files)
+	}
+}
