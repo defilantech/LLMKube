@@ -1093,6 +1093,29 @@ A controller-side reconcile saw `spec.replicas=0` on the
 (another operator, a Helm upgrade reverting your spec, an
 operator-managed argocd app pulling a stale value).
 
+## Engine environment
+
+Engines the agent starts (llama-server, mlx-server, vllm-swift,
+TensorFold, oMLX) do not inherit the agent's whole environment. They get
+`PATH`, `HOME`, `USER`, `LOGNAME`, `TMPDIR`, `LANG`, `TZ`, every `LC_*`,
+`HF_HOME` and `HF_HUB_CACHE`, plus the variables the agent sets for the
+runtime (`GGML_METAL_ENABLE` and `GGML_METAL_PATH_RESOURCES` for
+llama-server, `TENSORFOLD_NO_UPDATE_CHECK` for TensorFold). Credentials,
+`KUBECONFIG`, proxies and other overrides in the agent's launchd
+environment stay with the agent.
+
+To pass a variable through, list its exact name in
+`--engine-env-passthrough`:
+
+```xml
+    <string>--engine-env-passthrough</string>
+    <string>HTTPS_PROXY,NO_PROXY,MLX_MAX_OPS_PER_BUFFER</string>
+```
+
+An invalid name stops the agent at startup. See
+["Engine environment" in `deployment/macos/README.md`](https://github.com/defilantech/LLMKube/blob/main/deployment/macos/README.md#engine-environment---engine-env-passthrough)
+for the details.
+
 ## Upgrading
 
 Upgrade the operator first, then the agent on each Mac:
@@ -1121,7 +1144,10 @@ If you installed the agent without a dedicated kubeconfig, drop the
 
 The reinstall rewrites the launchd plist from the template, so re-add
 any flags you set by hand (`--host-ip`, `--memory-fraction` and so
-on). Before upgrading across releases, read "Upgrading" and
+on). Engines no longer inherit variables outside the
+[engine environment](#engine-environment) allowlist; add any an engine
+needs to `--engine-env-passthrough`. Engines adopted across the upgrade
+keep their old environment until `stop-engines` or their next restart. Before upgrading across releases, read "Upgrading" and
 "Upgrading to 0.10.1" in
 [`deployment/macos/README.md`](https://github.com/defilantech/LLMKube/blob/main/deployment/macos/README.md#upgrading)
 and the

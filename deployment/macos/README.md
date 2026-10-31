@@ -420,6 +420,33 @@ Like a digest mismatch, the refusal is remembered, so the agent does not downloa
 
 Upgrade note: if you deliberately serve a model file larger than the Mac's physical memory (for example with a Model `spec.hardware.memoryBudget` above the Mac's RAM), raise `--max-download-size` or set it to `0` before upgrading, or the agent will refuse that download.
 
+### Engine environment (`--engine-env-passthrough`)
+
+Engines (llama-server, including its `--help` probe, mlx-server, vllm-swift, TensorFold and the oMLX daemon) do not inherit the agent's whole environment. Each one gets only these variables from it, when they are set:
+
+- `PATH`, `HOME`, `USER`, `LOGNAME`, `TMPDIR`
+- `LANG`, `TZ` and every `LC_*` variable
+- `HF_HOME`, `HF_HUB_CACHE` (MLX engines read drafts and tokenizers from the Hugging Face cache)
+
+On top of those the agent sets each runtime's own variables, replacing any inherited value: `GGML_METAL_ENABLE=1` and `GGML_METAL_PATH_RESOURCES=/usr/local/share/llama.cpp` for llama-server, `TENSORFOLD_NO_UPDATE_CHECK=1` for TensorFold. Everything else the agent was started with stays with the agent: Hugging Face and AWS credentials, `KUBECONFIG`, `DYLD_*`, `PYTHONPATH`, `LLAMA_ARG_*` and `LLAMA_API_KEY`, and the proxy variables (the agent's own downloads still use the proxy; see "`--allowed-download-hosts` flag" above). An InferenceService's `spec.env` is not applied on Metal either. Ollama is not affected: the agent talks to an Ollama daemon it does not start.
+
+To give engines a variable they need, name it in `--engine-env-passthrough`, a comma-separated list of exact variable names (no wildcards, no `NAME=value`). Typical uses are GGML or MLX tuning variables, or the proxy variables for llama-server's own `-hf` download under `--allow-unsafe-extra-args`:
+
+```bash
+llmkube-metal-agent --engine-env-passthrough=HTTPS_PROXY,NO_PROXY,MLX_MAX_OPS_PER_BUFFER
+```
+
+To set this in the launchd plist (the values come from the agent's own environment, for example the plist's `EnvironmentVariables`):
+
+```xml
+    <string>--engine-env-passthrough</string>
+    <string>HTTPS_PROXY,NO_PROXY,MLX_MAX_OPS_PER_BUFFER</string>
+```
+
+Every engine the agent starts gets the listed variables; there is no per-runtime list. A name that is not a valid environment variable name stops the agent at startup with an error naming it. A listed name that is not set in the agent's environment is skipped. The agent logs the names as `engineEnvPassthrough` at startup, never the values.
+
+Upgrade note: variables that engines used to inherit from the agent's environment, other than the ones listed above, are no longer passed. If an engine relied on one (a GGML or MLX tuning variable, a proxy, `PYTHONPATH` for a vllm-swift install), add it to `--engine-env-passthrough` before upgrading. Engines the new agent adopts from the previous agent process keep the environment they started with until they restart. To apply the new environment at once, stop the agent, run `llmkube-metal-agent stop-engines`, and start the agent again (see "Agent restarts, upgrades and stopping engines" above). An oMLX daemon already answering on `--omlx-port` that this agent did not start is reused as it is; restart it yourself.
+
 ### Choosing the cluster (`--kubeconfig`, `--kube-context`)
 
 The agent finds its cluster the same way controller-runtime tools do: the
