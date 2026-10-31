@@ -29,6 +29,7 @@ package cachekey
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"strings"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 	hfsource "github.com/defilantech/llmkube/pkg/hfsource"
@@ -78,7 +79,18 @@ func EffectiveKey(model *inferencev1alpha1.Model) string {
 	// or metal models will silently start deriving (and caching under) a key.
 	metal := model.Spec.Hardware != nil && model.Spec.Hardware.Accelerator == "metal"
 	if multiFile && !metal {
-		return Compute(model.Spec.Source)
+		return ModelSourceKey(model)
 	}
 	return ""
+}
+
+// ModelSourceKey includes explicit file origins so replacing an artifact URL
+// cannot reuse a different repository's cached bytes under IfNotPresent.
+func ModelSourceKey(model *inferencev1alpha1.Model) string {
+	for _, entry := range model.Spec.Files {
+		if strings.Contains(entry, "://") {
+			return Compute(model.Spec.Source + "\n" + strings.Join(model.Spec.Files, "\n"))
+		}
+	}
+	return Compute(model.Spec.Source)
 }

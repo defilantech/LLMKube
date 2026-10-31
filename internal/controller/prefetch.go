@@ -145,6 +145,9 @@ func prefetchableSource(model *inferencev1alpha1.Model) bool {
 	// and s3:// do not. Checking the normalized scheme directly preserves the
 	// original semantics without depending on isRemoteHTTPSource's repo-vs-file
 	// classification.
+	if model.Spec.Source == "" && len(model.Spec.Files) > 0 {
+		return true
+	}
 	normalized := normalizeHFSource(model.Spec.Source)
 	if hasSchemeFold(normalized, "https://") || hasSchemeFold(normalized, "http://") {
 		return true

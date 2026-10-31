@@ -532,12 +532,15 @@ func (r *ModelReconciler) validateMultiFileStagingSource(ctx context.Context, mo
 	// A repo base on the origin HF_ENDPOINT names is a Hugging Face repo behind
 	// a mirror: the init container fetches "$SOURCE/$rel" with the token for
 	// that origin, so it is admitted like the HF repo path.
-	if !isHFRepoSource(model.Spec.Source) && !isS3Source(model.Spec.Source) && !isOCISource(model.Spec.Source) &&
+	if model.Spec.Source != "" && !isHFRepoSource(model.Spec.Source) && !isS3Source(model.Spec.Source) && !isOCISource(model.Spec.Source) &&
 		!isOnHFEndpoint(model.Spec.Source, hfEndpointFromSecret(ctx, r.Client, model)) {
 		msg := fmt.Sprintf(
 			"multi-file staging requires a HuggingFace repo, s3://, or oci:// source, or a repo base on the sourceSecretRef's HF_ENDPOINT origin, but got: %s",
 			model.Spec.Source)
 		return true, r.failInvalidFileSet(ctx, model, msg)
+	}
+	if err := validateExplicitFileSources(model); err != nil {
+		return true, r.failInvalidFileSet(ctx, model, err.Error())
 	}
 	// fileSha256 names the expected digest of each staged file. The CEL rules
 	// already constrain the keys and reject globs, but a stale object or a
@@ -552,7 +555,7 @@ func (r *ModelReconciler) validateMultiFileStagingSource(ctx context.Context, mo
 			return true, r.failInvalidFileSet(ctx, model, "fileSha256 requires spec.files")
 		}
 		staged := make(map[string]struct{}, len(plan.Files))
-		for _, f := range plan.Files {
+		for _, f := range plan.entries() {
 			staged[f] = struct{}{}
 		}
 		for k := range model.Spec.FileSHA256 {
@@ -810,6 +813,9 @@ func (r *ModelReconciler) reconcileBySourceType(
 	ctx context.Context, model *inferencev1alpha1.Model,
 ) (handled bool, result ctrl.Result, err error) {
 	switch {
+	case model.Spec.Source == "" && len(model.Spec.Files) > 0:
+		result, err = r.reconcileRuntimeResolvedSource(ctx, model, cachekey.ModelSourceKey(model))
+		return true, result, err
 	// PVC sources: validate the PVC exists, mark Ready, no download.
 	case isPVCSource(model.Spec.Source):
 		result, err = r.reconcilePVCSource(ctx, model)
@@ -836,7 +842,7 @@ func (r *ModelReconciler) reconcileBySourceType(
 	// fetch is deferred to the workload.
 	case isRemoteHTTPSource(model.Spec.Source):
 		result, err = r.reconcileRuntimeResolvedSource(
-			ctx, model, computeCacheKey(model.Spec.Source))
+			ctx, model, cachekey.ModelSourceKey(model))
 		return true, result, err
 
 	// S3: the InferenceService Pod's init container fetches the object with a
@@ -850,7 +856,7 @@ func (r *ModelReconciler) reconcileBySourceType(
 	// wedges in Downloading with "unsupported protocol scheme".
 	case isS3Source(model.Spec.Source):
 		result, err = r.reconcileRuntimeResolvedSource(
-			ctx, model, computeCacheKey(model.Spec.Source))
+			ctx, model, cachekey.ModelSourceKey(model))
 		return true, result, err
 
 	// Metal-accelerated models with a local-path source live on the Metal
@@ -1743,4 +1749,25 @@ func (r *ModelReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		).
 		Complete(rec)
+}
+
+func validateExplicitFileSources(model *inferencev1alpha1.Model) error {
+	explicit := false
+	for _, entry := range model.Spec.Files {
+		if strings.Contains(entry, "://") {
+			explicit = true
+			if _, err := fileEntryPath(entry); err != nil {
+				return err
+			}
+		} else if model.Spec.Source == "" {
+			return fmt.Errorf("relative file %q requires spec.source", entry)
+		}
+	}
+	if model.Spec.Source == "" && (len(model.Spec.Files) == 0 || model.Spec.Mmproj != "") {
+		return fmt.Errorf("spec.source is required for relative paths")
+	}
+	if explicit && (isOCISource(model.Spec.Source) || isPVCSource(model.Spec.Source) || isLocalSource(model.Spec.Source) || isMetalModel(model)) {
+		return fmt.Errorf("explicit file URLs require in-cluster download staging")
+	}
+	return nil
 }
