@@ -153,7 +153,7 @@ func TestHelpSupportsLoadMode(t *testing.T) {
 func newProbedExecutor(t *testing.T, help string, err error, calls *int) *MetalExecutor {
 	t.Helper()
 	e := NewMetalExecutor("/fake/llama-server", t.TempDir(), newNopLogger())
-	e.helpProbe = func(_ context.Context, bin string) (string, error) {
+	e.helpProbe = func(_ context.Context, bin string, _ []string) (string, error) {
 		*calls++
 		if bin != "/fake/llama-server" {
 			t.Errorf("probe bin = %q, want the executor's llama-server", bin)
@@ -215,7 +215,7 @@ func TestLlamaServerArgs_ProbeFailureFallsBackToMlock(t *testing.T) {
 	}
 
 	// Once the binary answers, the result is cached from then on.
-	e.helpProbe = func(context.Context, string) (string, error) {
+	e.helpProbe = func(context.Context, string, []string) (string, error) {
 		calls++
 		return newBuildHelp, nil
 	}
@@ -259,7 +259,7 @@ func TestExecHelpProbe(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			bin := writeScript(t, "cat <<'HELP'\n"+tc.help+"HELP\n")
-			out, err := execHelpProbe(context.Background(), bin)
+			out, err := execHelpProbe(context.Background(), bin, buildEngineEnv(os.Environ(), nil))
 			if err != nil {
 				t.Fatalf("execHelpProbe: %v", err)
 			}
@@ -277,7 +277,7 @@ func TestExecHelpProbe_Timeout(t *testing.T) {
 
 	bin := writeScript(t, "exec sleep 30\n")
 	start := time.Now()
-	if _, err := execHelpProbe(context.Background(), bin); err == nil {
+	if _, err := execHelpProbe(context.Background(), bin, buildEngineEnv(os.Environ(), nil)); err == nil {
 		t.Fatal("a hung --help must return an error")
 	}
 	if elapsed := time.Since(start); elapsed > 5*time.Second {

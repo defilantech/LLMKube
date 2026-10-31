@@ -98,6 +98,10 @@ type OMLXExecutor struct {
 	// model_alias in {basePath}/model_settings.json (see
 	// omlxModelSettingsFile). Empty disables alias registration.
 	basePath string
+
+	// engineEnv builds the daemon's environment, for the first start and
+	// every replacement alike.
+	engineEnv
 }
 
 // NewOMLXExecutor creates an executor that manages models via the oMLX daemon.
@@ -419,7 +423,7 @@ func (e *OMLXExecutor) ensureOMLXRunning(ctx context.Context, modelID, servedNam
 	}
 	cmd := exec.Command(e.omlxBin, buildOMLXServeArgs(e.modelDir, e.port, cfg)...)
 	cmd.Dir = e.modelDir // relative paths in engine flags resolve inside the model store
-	cmd.Env = os.Environ()
+	cmd.Env = e.childEnv()
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start oMLX daemon: %w", err)

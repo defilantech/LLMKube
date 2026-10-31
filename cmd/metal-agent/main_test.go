@@ -5,6 +5,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -481,6 +482,37 @@ func TestValidateMetalNodeFlags(t *testing.T) {
 			t.Errorf("validateMetalNodeFlags(%q, %q) = %v, want nil", tc.node, tc.lease, err)
 		case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
 			t.Errorf("validateMetalNodeFlags(%q, %q) = %v, want an error mentioning %q", tc.node, tc.lease, err, tc.wantErr)
+		}
+	}
+}
+
+// TestParseEngineEnvPassthrough: --engine-env-passthrough takes exact
+// variable names; a NAME=value entry, a wildcard or another malformed name
+// fails startup instead of silently passing nothing through.
+func TestParseEngineEnvPassthrough(t *testing.T) {
+	for _, tc := range []struct {
+		flag    string
+		want    []string
+		wantErr string
+	}{
+		{flag: "", want: nil},
+		{flag: " , ", want: nil},
+		{flag: "MLX_MAX_OPS_PER_BUFFER", want: []string{"MLX_MAX_OPS_PER_BUFFER"}},
+		{flag: "HTTPS_PROXY, no_proxy ,GGML_METAL_N_CB", want: []string{"HTTPS_PROXY", "no_proxy", "GGML_METAL_N_CB"}},
+		{flag: "HF_TOKEN=hf_x", wantErr: `"HF_TOKEN=hf_x"`},
+		{flag: "GGML_*", wantErr: `"GGML_*"`},
+		{flag: "OK,9LIVES", wantErr: `"9LIVES"`},
+		{flag: "BAD-NAME", wantErr: "--engine-env-passthrough"},
+	} {
+		got, err := parseEngineEnvPassthrough(tc.flag)
+		if tc.wantErr != "" {
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("parseEngineEnvPassthrough(%q) = %q, %v; want an error mentioning %s", tc.flag, got, err, tc.wantErr)
+			}
+			continue
+		}
+		if err != nil || !slices.Equal(got, tc.want) {
+			t.Errorf("parseEngineEnvPassthrough(%q) = %q, %v; want %q", tc.flag, got, err, tc.want)
 		}
 	}
 }

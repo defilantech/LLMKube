@@ -41,11 +41,15 @@ type loadModeCache struct {
 	warned    bool
 }
 
-// execHelpProbe runs `<bin> --help` and returns its combined output.
-func execHelpProbe(ctx context.Context, bin string) (string, error) {
+// execHelpProbe runs `<bin> --help` with env as its whole environment and
+// returns its combined output. The probe runs the operator's llama-server
+// binary, so it gets the same environment an engine spawn does, not the
+// agent's.
+func execHelpProbe(ctx context.Context, bin string, env []string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, helpProbeTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, "--help")
+	cmd.Env = env
 	// A child that forks and leaves the output pipe open must not hold the
 	// probe past its deadline either.
 	cmd.WaitDelay = time.Second
@@ -72,7 +76,7 @@ func (e *MetalExecutor) supportsLoadMode(ctx context.Context) bool {
 		return c.supported
 	}
 
-	help, err := e.helpProbe(ctx, e.llamaServerBin)
+	help, err := e.helpProbe(ctx, e.llamaServerBin, e.llamaServerEnv())
 	if err != nil {
 		if !c.warned {
 			c.warned = true

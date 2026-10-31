@@ -240,14 +240,17 @@ type MetalExecutor struct {
 	// flag, set by WithMaxDownloadBytes). Zero, the default, is no cap.
 	maxDownloadBytes int64
 
-	// helpProbe returns llama-server's --help output; a seam so tests can fake
-	// the binary. loadMode caches the result of probing it (see
-	// supportsLoadMode).
-	helpProbe func(ctx context.Context, bin string) (string, error)
+	// helpProbe returns llama-server's --help output, run with env; a seam so
+	// tests can fake the binary. loadMode caches the result of probing it
+	// (see supportsLoadMode).
+	helpProbe func(ctx context.Context, bin string, env []string) (string, error)
 	loadMode  loadModeCache
 	// childTracker holds the reaper of every llama-server this executor
 	// spawned, so StopProcess never waits on a PID twice.
 	childTracker
+	// engineEnv builds the environment of every llama-server this executor
+	// runs, the --help probe included.
+	engineEnv
 }
 
 // Option configures a MetalExecutor. Used to wire the Kubernetes client and
@@ -299,6 +302,16 @@ func NewMetalExecutor(llamaServerBin, modelStorePath string, logger *zap.Sugared
 	return e
 }
 
+// llamaServerEnv is the environment of every llama-server this executor runs,
+// the --help probe included: the filtered agent environment (see
+// buildEngineEnv) with the Metal backend switched on.
+func (e *MetalExecutor) llamaServerEnv() []string {
+	return e.childEnv(
+		"GGML_METAL_ENABLE=1",
+		"GGML_METAL_PATH_RESOURCES=/usr/local/share/llama.cpp",
+	)
+}
+
 // SetStartupTimeout overrides the default llama-server startup timeout.
 // Values <= 0 are coerced back to DefaultLlamaServerStartupTimeout.
 func (e *MetalExecutor) SetStartupTimeout(d time.Duration) {
@@ -342,10 +355,7 @@ func (e *MetalExecutor) StartProcess(ctx context.Context, config ExecutorConfig)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Dir = e.modelStorePath // relative paths in engine flags resolve inside the model store
 
-	cmd.Env = append(os.Environ(),
-		"GGML_METAL_ENABLE=1",
-		"GGML_METAL_PATH_RESOURCES=/usr/local/share/llama.cpp",
-	)
+	cmd.Env = e.llamaServerEnv()
 
 	// Capture child stdout/stderr to a per-process log file, mirroring the
 	// mlx-server executor. Without it a llama-server that rejects a flag and
