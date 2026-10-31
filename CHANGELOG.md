@@ -5,6 +5,52 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.15](https://github.com/defilantech/LLMKube/compare/v0.10.14...v0.10.15) (2026-10-31)
+
+
+### Features
+
+* **agent:** add --engine-env-passthrough to pass named variables to Metal engines ([6d4fba0](https://github.com/defilantech/LLMKube/commit/6d4fba07e6ba1df175358342090c0c76aacc625d))
+* **agent:** give Metal engines an allowlisted environment (fixes [#2314](https://github.com/defilantech/LLMKube/issues/2314)) ([6d4fba0](https://github.com/defilantech/LLMKube/commit/6d4fba07e6ba1df175358342090c0c76aacc625d))
+* **foreman:** select the forge provider by name, remote host, or default ([#2292](https://github.com/defilantech/LLMKube/issues/2292)) ([239411a](https://github.com/defilantech/LLMKube/commit/239411a770196124d731c93dff3ec9ad12315879))
+* **foreman:** stream in-turn generation progress ([#2313](https://github.com/defilantech/LLMKube/issues/2313)) ([3d57743](https://github.com/defilantech/LLMKube/commit/3d5774378d1a1f005cfeee10eeb61a7fa8bcea75))
+* **metal-agent:** read only marked Secrets through sourceSecretRef (fixes [#1956](https://github.com/defilantech/LLMKube/issues/1956)) ([eaecad3](https://github.com/defilantech/LLMKube/commit/eaecad36a16480c753497a9e0317640c106f8d0c))
+* **metal:** limit the metal-agent's Service and EndpointSlice writes by admission policy ([#2319](https://github.com/defilantech/LLMKube/issues/2319)) ([a8ea5bf](https://github.com/defilantech/LLMKube/commit/a8ea5bf6d3eb3f1ea7c6582aaf2617e14e2b2491))
+* **release:** publish a Homebrew cask for the metal-agent ([#2234](https://github.com/defilantech/LLMKube/issues/2234)) ([1b29497](https://github.com/defilantech/LLMKube/commit/1b294978dc4691dd4ccddc751bb41fad059a5efb))
+* **router:** mirror requests to the other backends of a shadow rule (fixes [#2327](https://github.com/defilantech/LLMKube/issues/2327)) ([40266ab](https://github.com/defilantech/LLMKube/commit/40266abf856fe9d8c512772d12dd00e622d42109))
+
+
+### Bug Fixes
+
+* **agent:** pin the exact powermetrics argument vector in sudoers ([d28c55f](https://github.com/defilantech/LLMKube/commit/d28c55f1b141f161e416fc997ba260c5011109dc))
+* **controller:** treat a ModelPool resident removed from spec.members as gone ([#2310](https://github.com/defilantech/LLMKube/issues/2310)) ([87464ad](https://github.com/defilantech/LLMKube/commit/87464ad4e10a345f35665a25cf733a180e229aef))
+* **foreman:** bound the Metal engine port read from the agent's EndpointSlice ([#2321](https://github.com/defilantech/LLMKube/issues/2321)) ([75837e3](https://github.com/defilantech/LLMKube/commit/75837e374c7105e2fc446ee8b8e194afba582f63))
+* **metal-agent:** re-check a refused InferenceService on a backoff (fixes [#2329](https://github.com/defilantech/LLMKube/issues/2329)) ([6f65b30](https://github.com/defilantech/LLMKube/commit/6f65b307c1e08b1564faa9697b28ac9236cdb1a1))
+* **metal-agent:** re-issue an ingress certificate the Mac's clock no longer accepts ([7e7fbaa](https://github.com/defilantech/LLMKube/commit/7e7fbaab1e29eb96ebdc381597bd416313ded036))
+* **metal-agent:** read sourceSecretRef from the Model's namespace ([eaecad3](https://github.com/defilantech/LLMKube/commit/eaecad36a16480c753497a9e0317640c106f8d0c))
+* **metal-agent:** retry a start that hit a transient source Secret read error ([5e13d5c](https://github.com/defilantech/LLMKube/commit/5e13d5c34dc5668570afda7e4d1a3289aca4d06d))
+* **metal-agent:** retry a transient remote size probe failure without refusing (fixes [#2326](https://github.com/defilantech/LLMKube/issues/2326)) ([5e13d5c](https://github.com/defilantech/LLMKube/commit/5e13d5c34dc5668570afda7e4d1a3289aca4d06d))
+* **metal:** bind MetalNode Reachable to the Mac with a UID-named certificate (refs [#2265](https://github.com/defilantech/LLMKube/issues/2265)) ([7e7fbaa](https://github.com/defilantech/LLMKube/commit/7e7fbaab1e29eb96ebdc381597bd416313ded036))
+* **metal:** expire a MetalNode Reachable result no check has renewed (refs [#2265](https://github.com/defilantech/LLMKube/issues/2265)) ([7e7fbaa](https://github.com/defilantech/LLMKube/commit/7e7fbaab1e29eb96ebdc381597bd416313ded036))
+* **metal:** read MetalNode verifier finish times on the controller's clock (refs [#2265](https://github.com/defilantech/LLMKube/issues/2265)) ([7e7fbaa](https://github.com/defilantech/LLMKube/commit/7e7fbaab1e29eb96ebdc381597bd416313ded036))
+* **metal:** trust only the reported certificate in the MetalNode dial-back ([7e7fbaa](https://github.com/defilantech/LLMKube/commit/7e7fbaab1e29eb96ebdc381597bd416313ded036))
+* preserve Foreman audit and transcript records per attempt ([#2311](https://github.com/defilantech/LLMKube/issues/2311)) ([3e838f9](https://github.com/defilantech/LLMKube/commit/3e838f96c255a3ff60a6ffbd2fd744c2346eac94))
+* **router:** dispatch only to backends with a rule's required capabilities (fixes [#2328](https://github.com/defilantech/LLMKube/issues/2328)) ([e533192](https://github.com/defilantech/LLMKube/commit/e533192534ab7b9b80e31c47deb73f6beafdafb3))
+* **router:** honor the weighted rule strategy on the Proxy data plane (fixes [#2325](https://github.com/defilantech/LLMKube/issues/2325)) ([7b34a43](https://github.com/defilantech/LLMKube/commit/7b34a43456de866b1981df2e30bc9fa92b760b85))
+
+
+### Documentation
+
+* **macos:** explain why Login Items lists the agent as Defilan Technologies LLC ([#2307](https://github.com/defilantech/LLMKube/issues/2307)) ([5b5e17e](https://github.com/defilantech/LLMKube/commit/5b5e17e6d770202e75d81de60da972cb0e95648c))
+* move Foreman stream guide before references ([#2322](https://github.com/defilantech/LLMKube/issues/2322)) ([d856cb1](https://github.com/defilantech/LLMKube/commit/d856cb1e036005af331ac5aad5beaee3e9847c3b))
+* **upgrade:** a MetalNode is Reachable only when the Mac's metal-agent reports an ingress certificate naming its MetalNode. After upgrading the controller, every Mac shows Reachable=False with reason AgentUpgradeRequired, and its hostIP is cleared, until its metal-agent is upgraded too; upgrade the agents promptly. Nothing routes to hostIP yet, so serving is unaffected. The dial-back verifier image's curl must be 7.57 or later with a TLS library that accepts a self-signed certificate as its own trust anchor; the default curlimages/curl image does. ([7e7fbaa](https://github.com/defilantech/LLMKube/commit/7e7fbaab1e29eb96ebdc381597bd416313ded036))
+* **upgrade:** Metal engines now inherit only PATH, HOME, USER, LOGNAME, TMPDIR, LANG, TZ, LC_*, HF_HOME and HF_HUB_CACHE from the agent's environment, plus the variables the agent sets for each runtime. If an engine relies on another variable from the agent's launchd environment (for example a GGML or MLX tuning variable, or proxy settings for llama-server's own `-hf` download), list it in `--engine-env-passthrough`. Engines adopted from a previous agent process keep their old environment until they restart; run `llmkube-metal-agent stop-engines` after the bootout to apply it at once. ([6d4fba0](https://github.com/defilantech/LLMKube/commit/6d4fba07e6ba1df175358342090c0c76aacc625d))
+* **upgrade:** on the Proxy data plane, a ModelRouter rule with match.requiredCapabilities now sends requests only to the backends that advertise all of them, under every strategy. A primary-fallback rule no longer sends to, or falls back to, a backend that lacks them; when every capable backend fails, the request fails instead of landing on an incapable one. ([e533192](https://github.com/defilantech/LLMKube/commit/e533192534ab7b9b80e31c47deb73f6beafdafb3))
+* **upgrade:** on the Proxy data plane, ModelRouter rules with strategy: shadow now send a copy of each request to the rule's other backends, including external ones, which bill those requests. A shadow rule with one backend now fails validation, and one that mirrors to a ModelPool member fails the compile and keeps the previous config. ([40266ab](https://github.com/defilantech/LLMKube/commit/40266abf856fe9d8c512772d12dd00e622d42109))
+* **upgrade:** on the Proxy data plane, ModelRouter rules with strategy: weighted now split requests by backend weight instead of sending all of them to the first backend. weight: 0 drains a backend, matching the Gateway data plane. A weighted rule whose backends cannot take traffic now fails validation, and a weighted rule across two members of one ModelPool fails the compile and keeps the previous config. ([7b34a43](https://github.com/defilantech/LLMKube/commit/7b34a43456de866b1981df2e30bc9fa92b760b85))
+* **upgrade:** the Metal agent now reads a Model's spec.sourceSecretRef only when the Secret is labeled inference.llmkube.dev/model-source-credentials=true; otherwise the InferenceService is refused with SourceSecretNotAllowed. Before upgrading the agent, label each credentials Secret your Metal Models use: `kubectl label secret <name> -n <namespace> inference.llmkube.dev/model-source-credentials=true`. For one release, `--allow-unlabeled-source-secrets` keeps the old behavior with a warning; it is deprecated. A Hugging Face source whose Secret cannot be read is now refused instead of downloading anonymously. ([eaecad3](https://github.com/defilantech/LLMKube/commit/eaecad36a16480c753497a9e0317640c106f8d0c))
+* **upgrade:** the powermetrics sudoers rule now names the exact command line the agent runs, with the sampling interval rendered in. Upgrading the agent does not change an installed /etc/sudoers.d/llmkube-powermetrics: on hosts that installed it, re-run `make install-powermetrics-sudo` (with `APPLE_POWER_INTERVAL_MS=<ms>` if the agent uses a non-default `--apple-power-interval`), then check with `sudo -ln | grep powermetrics` that the rule ends in `-i` followed by a number. ([d28c55f](https://github.com/defilantech/LLMKube/commit/d28c55f1b141f161e416fc997ba260c5011109dc))
+
 ## [0.10.14](https://github.com/defilantech/LLMKube/compare/v0.10.13...v0.10.14) (2026-10-29)
 
 
