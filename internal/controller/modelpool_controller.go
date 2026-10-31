@@ -126,6 +126,9 @@ func (r *ModelPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if len(missing) > 0 {
 		return r.markDegraded(ctx, pool, members, missing)
 	}
+	if autoscaled := autoscaledMembers(pool, members); len(autoscaled) > 0 {
+		return r.markInvalidMembers(ctx, pool, members, autoscaled, "MemberAutoscaling", "ModelPool members must not set spec.autoscaling: %v")
+	}
 
 	// Metal members have no device-plugin GPU gating, so the metal-agent (not
 	// this reconciler) would have to enforce unload-before-load. That is a
@@ -290,6 +293,19 @@ func (r *ModelPoolReconciler) resolveMembers(ctx context.Context, pool *inferenc
 		}
 	}
 	return members, missing, nil
+}
+
+// autoscaledMembers returns members whose replica count is owned by an HPA.
+// ModelPool must own that count to drain a member before loading another.
+func autoscaledMembers(pool *inferencev1alpha1.ModelPool, members map[string]*inferencev1alpha1.InferenceService) []string {
+	var names []string
+	for _, m := range pool.Spec.Members {
+		name := m.InferenceServiceRef.Name
+		if isvc, ok := members[name]; ok && isvc.Spec.Autoscaling != nil {
+			names = append(names, name)
+		}
+	}
+	return names
 }
 
 // resolveSlotOwner decides which member should own the shared GPU slot. The
@@ -847,6 +863,10 @@ func (r *ModelPoolReconciler) updateStatus(ctx context.Context, pool, before *in
 }
 
 func (r *ModelPoolReconciler) markDegraded(ctx context.Context, pool *inferencev1alpha1.ModelPool, members map[string]*inferencev1alpha1.InferenceService, missing []string) (ctrl.Result, error) {
+	return r.markInvalidMembers(ctx, pool, members, missing, "MissingMembers", "Member InferenceServices not found: %v")
+}
+
+func (r *ModelPoolReconciler) markInvalidMembers(ctx context.Context, pool *inferencev1alpha1.ModelPool, members map[string]*inferencev1alpha1.InferenceService, invalid []string, reason, messageFormat string) (ctrl.Result, error) {
 	before := pool.DeepCopy()
 
 	memberStatuses := make([]inferencev1alpha1.ModelPoolMemberStatus, 0, len(pool.Spec.Members))
@@ -862,12 +882,12 @@ func (r *ModelPoolReconciler) markDegraded(ctx context.Context, pool *inferencev
 	pool.Status.Phase = inferencev1alpha1.ModelPoolPhaseDegraded
 	pool.Status.ObservedGeneration = pool.Generation
 
-	sort.Strings(missing)
+	sort.Strings(invalid)
 	apimeta.SetStatusCondition(&pool.Status.Conditions, metav1.Condition{
 		Type:               inferencev1alpha1.ConditionModelPoolMembersValid,
 		Status:             metav1.ConditionFalse,
-		Reason:             "MissingMembers",
-		Message:            fmt.Sprintf("Member InferenceServices not found: %v", missing),
+		Reason:             reason,
+		Message:            fmt.Sprintf(messageFormat, invalid),
 		ObservedGeneration: pool.Generation,
 	})
 
