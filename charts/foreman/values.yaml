@@ -541,6 +541,18 @@ agent:
   # step with GitRemoteNotConfigured. Stub-mode agents ignore it.
   gitRemoteURL: ""
 
+  # Code-hosting provider (#1300). Empty infers it from the gitRemoteURL host
+  # (github.com, gitlab.com, codeberg.org) and otherwise uses github, so
+  # existing installs see no change. A self-hosted instance's hostname
+  # carries no signal: name its provider here. This build ships the github
+  # provider only; a forge that is named or inferred but not built in stops
+  # the agent at startup rather than falling back to GitHub.
+  forge: ""
+  # API root of a self-hosted forge, e.g. https://ghe.example.com/api/v3 for
+  # GitHub Enterprise Server (clone URLs then use that host too). Empty uses
+  # the provider's public API.
+  apiBaseURL: ""
+
   # Git author + committer identity stamped onto commits the coder-
   # role executor produces. Required when agent.mode=native AND the
   # agent's roles include "worker" (i.e. it can host the coder Agent).

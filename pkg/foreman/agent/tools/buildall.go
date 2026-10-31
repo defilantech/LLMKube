@@ -78,8 +78,9 @@ func BuildAll(deps ToolDeps) []Tool {
 		// fetch_pull_request: read-only GitHub PR surface for the coder, same
 		// reasoning as fetch_issue. Closes #1434.
 		&FetchPullRequestTool{
-			Fetcher: githubprfetch.NewClient(),
-			Token:   deps.Token,
+			Fetcher:   pullRequestFetcher(deps),
+			Token:     deps.Token,
+			ForgeName: deps.ForgeName,
 		},
 		// run_integrate: deterministic tool for a sliced Workload's integrate
 		// step. Unions the disjoint slice branches onto the current base and
@@ -144,4 +145,25 @@ type ToolDeps struct {
 	// the GitHub default. run_gate_job derives its clone URL from this
 	// rather than a hardcoded https://github.com.
 	CodeHost codehost.CodeHost
+
+	// ForgeName is the selected forge provider (#1300). Empty means none was
+	// selected, which keeps the GitHub defaults below.
+	ForgeName string
+
+	// PullRequests is the selected forge's pull request reader. Nil with a
+	// ForgeName set means the forge cannot read pull requests, and
+	// fetch_pull_request reports codehost.ErrNotSupported.
+	PullRequests githubprfetch.Fetcher
+}
+
+// pullRequestFetcher is the fetch_pull_request backend: the selected forge's
+// reader, else the GitHub client when no forge was selected, else nil.
+func pullRequestFetcher(deps ToolDeps) githubprfetch.Fetcher {
+	if deps.PullRequests != nil {
+		return deps.PullRequests
+	}
+	if deps.ForgeName == "" {
+		return githubprfetch.NewClient()
+	}
+	return nil
 }

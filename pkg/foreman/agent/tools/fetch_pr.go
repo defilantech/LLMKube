@@ -23,6 +23,7 @@ import (
 	"fmt"
 
 	"github.com/defilantech/llmkube/pkg/foreman/agent"
+	"github.com/defilantech/llmkube/pkg/foreman/agent/codehost"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/githubprfetch"
 	"github.com/defilantech/llmkube/pkg/foreman/agent/oai"
 )
@@ -61,6 +62,9 @@ type FetchPullRequestTool struct {
 	Fetcher githubprfetch.Fetcher
 	// Token resolves the GitHub PAT at Execute time. Required.
 	Token TokenSource
+	// ForgeName is the selected forge. With Fetcher nil it names the forge
+	// that cannot read pull requests in the codehost.ErrNotSupported error.
+	ForgeName string
 }
 
 type fetchPullRequestArgs struct {
@@ -110,6 +114,10 @@ func (t *FetchPullRequestTool) Schema() oai.ToolSchemaDef {
 //     once or call submit_result with verdict=ERROR.
 func (t *FetchPullRequestTool) Execute(ctx context.Context, args json.RawMessage) (*agent.ToolResult, error) {
 	if t.Fetcher == nil {
+		if t.ForgeName != "" {
+			return nil, fmt.Errorf("fetch_pull_request: forge %q cannot read pull requests: %w",
+				t.ForgeName, codehost.ErrNotSupported)
+		}
 		return nil, fmt.Errorf("fetch_pull_request: tool not configured (Fetcher is nil)")
 	}
 	if t.Token == nil {

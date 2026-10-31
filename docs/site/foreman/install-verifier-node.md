@@ -127,6 +127,25 @@ helm upgrade --install foreman \
   --set agent.commitAuthorEmail=foreman-bot@example.com
 ```
 
+**Choosing the forge.** The agent infers its code-hosting provider from the
+host of `agent.gitRemoteURL`: `github.com` is GitHub, `gitlab.com` is GitLab,
+and `codeberg.org` is Gitea. With no remote, or a host it doesn't recognize, it
+uses GitHub, so an existing install needs no change. A self-hosted instance's
+hostname tells the agent nothing, so set `agent.forge` to name the provider and
+`agent.apiBaseURL` to point at its API. For GitHub Enterprise Server:
+
+```sh
+  --set agent.forge=github \
+  --set agent.apiBaseURL=https://ghe.example.com/api/v3
+```
+
+Clone URLs then use the same host (`https://ghe.example.com/<owner>/<repo>.git`).
+The agent passes both settings to the coder Jobs it starts. This build ships
+only the GitHub provider. If a forge is named or inferred but not built in, for
+example from a `gitlab.com` remote, the agent stops at startup with an error
+instead of falling back to GitHub, which would push to the wrong host. Set
+`agent.forge=github` to override the inference.
+
 What that produces:
 
 - A `foreman-operator` Deployment (replicas=1) hosting the Agent,
