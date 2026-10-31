@@ -519,6 +519,27 @@ var _ = Describe("ModelPool Controller", func() {
 		Expect(cond).NotTo(BeNil())
 		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	})
+
+	It("rejects autoscaled members without changing their replicas", func() {
+		judge := modelPoolMemberFixture("judge", 1)
+		judge.Spec.Autoscaling = &inferencev1alpha1.AutoscalingSpec{MinReplicas: ptr.To(int32(1)), MaxReplicas: 2}
+		Expect(k8sClient.Create(ctx, judge)).To(Succeed())
+		Expect(k8sClient.Create(ctx, modelPoolMemberFixture("coder", 1))).To(Succeed())
+		createPool(inferencev1alpha1.ModelPoolSwapPolicySticky, "judge")
+
+		reconcile()
+
+		Expect(replicasOfMember(ctx, "judge")).To(Equal(int32(1)), "the pool must not fight the HPA-owned replica count")
+		Expect(replicasOfMember(ctx, "coder")).To(Equal(int32(1)), "an invalid pool must not drain other members")
+		pool := &inferencev1alpha1.ModelPool{}
+		Expect(k8sClient.Get(ctx, poolKey, pool)).To(Succeed())
+		Expect(pool.Status.Phase).To(Equal(inferencev1alpha1.ModelPoolPhaseDegraded))
+		cond := findPoolCondition(pool.Status.Conditions, inferencev1alpha1.ConditionModelPoolMembersValid)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		Expect(cond.Reason).To(Equal("MemberAutoscaling"))
+		Expect(cond.Message).To(ContainSubstring("judge"))
+	})
 })
 
 // findPoolCondition mirrors apimachinery meta.FindStatusCondition without an

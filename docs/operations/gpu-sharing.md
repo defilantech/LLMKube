@@ -237,8 +237,9 @@ spec:
 **Autoscaling.** Do not set `spec.autoscaling` on a pool member. With it set,
 the HorizontalPodAutoscaler owns the member's Deployment replica count and the
 operator preserves the live value, so the pool's `replicas: 0` never scales the
-member down and the swap waits for Pods that do not go away. LLMKube does not
-reject this combination yet.
+member down and the swap waits for Pods that do not go away. LLMKube rejects
+this combination: the pool reports `MembersValid=False` with reason
+`MemberAutoscaling`, names the affected member, and makes no replica changes.
 
 ### Removing a member: stop it yourself
 
