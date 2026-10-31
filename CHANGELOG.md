@@ -5,6 +5,31 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.15](https://github.com/defilantech/LLMKube/compare/v0.10.14...v0.10.15) (2026-10-31)
+
+
+### Features
+
+* **foreman:** stream in-turn generation progress ([#2313](https://github.com/defilantech/LLMKube/issues/2313)) ([3d57743](https://github.com/defilantech/LLMKube/commit/3d5774378d1a1f005cfeee10eeb61a7fa8bcea75))
+* **metal-agent:** read only marked Secrets through sourceSecretRef (fixes [#1956](https://github.com/defilantech/LLMKube/issues/1956)) ([eaecad3](https://github.com/defilantech/LLMKube/commit/eaecad36a16480c753497a9e0317640c106f8d0c))
+* **metal:** limit the metal-agent's Service and EndpointSlice writes by admission policy ([#2319](https://github.com/defilantech/LLMKube/issues/2319)) ([a8ea5bf](https://github.com/defilantech/LLMKube/commit/a8ea5bf6d3eb3f1ea7c6582aaf2617e14e2b2491))
+
+
+### Bug Fixes
+
+* **agent:** pin the exact powermetrics argument vector in sudoers ([d28c55f](https://github.com/defilantech/LLMKube/commit/d28c55f1b141f161e416fc997ba260c5011109dc))
+* **controller:** treat a ModelPool resident removed from spec.members as gone ([#2310](https://github.com/defilantech/LLMKube/issues/2310)) ([87464ad](https://github.com/defilantech/LLMKube/commit/87464ad4e10a345f35665a25cf733a180e229aef))
+* **foreman:** bound the Metal engine port read from the agent's EndpointSlice ([#2321](https://github.com/defilantech/LLMKube/issues/2321)) ([75837e3](https://github.com/defilantech/LLMKube/commit/75837e374c7105e2fc446ee8b8e194afba582f63))
+* **metal-agent:** read sourceSecretRef from the Model's namespace ([eaecad3](https://github.com/defilantech/LLMKube/commit/eaecad36a16480c753497a9e0317640c106f8d0c))
+* preserve Foreman audit and transcript records per attempt ([#2311](https://github.com/defilantech/LLMKube/issues/2311)) ([3e838f9](https://github.com/defilantech/LLMKube/commit/3e838f96c255a3ff60a6ffbd2fd744c2346eac94))
+
+
+### Documentation
+
+* **macos:** explain why Login Items lists the agent as Defilan Technologies LLC ([#2307](https://github.com/defilantech/LLMKube/issues/2307)) ([5b5e17e](https://github.com/defilantech/LLMKube/commit/5b5e17e6d770202e75d81de60da972cb0e95648c))
+* **upgrade:** the Metal agent now reads a Model's spec.sourceSecretRef only when the Secret is labeled inference.llmkube.dev/model-source-credentials=true; otherwise the InferenceService is refused with SourceSecretNotAllowed. Before upgrading the agent, label each credentials Secret your Metal Models use: `kubectl label secret <name> -n <namespace> inference.llmkube.dev/model-source-credentials=true`. For one release, `--allow-unlabeled-source-secrets` keeps the old behavior with a warning; it is deprecated. A Hugging Face source whose Secret cannot be read is now refused instead of downloading anonymously. ([eaecad3](https://github.com/defilantech/LLMKube/commit/eaecad36a16480c753497a9e0317640c106f8d0c))
+* **upgrade:** the powermetrics sudoers rule now names the exact command line the agent runs, with the sampling interval rendered in. Upgrading the agent does not change an installed /etc/sudoers.d/llmkube-powermetrics: on hosts that installed it, re-run `make install-powermetrics-sudo` (with `APPLE_POWER_INTERVAL_MS=<ms>` if the agent uses a non-default `--apple-power-interval`), then check with `sudo -ln | grep powermetrics` that the rule ends in `-i` followed by a number. ([d28c55f](https://github.com/defilantech/LLMKube/commit/d28c55f1b141f161e416fc997ba260c5011109dc))
+
 ## [0.10.14](https://github.com/defilantech/LLMKube/compare/v0.10.13...v0.10.14) (2026-10-29)
 
 
