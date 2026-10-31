@@ -1,0 +1,17 @@
+# Download in dev/test and publish the OCI image consumed in later environments.
+# The registry-writer Secret must be a same-namespace dockerconfigjson Secret.
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: Model
+metadata:
+  name: llama-3b-publish
+spec:
+  source: hf://bartowski/Llama-3.2-3B-Instruct-GGUF/Llama-3.2-3B-Instruct-Q4_K_M.gguf
+  format: gguf
+  prefetch: true
+  prefetchOCI:
+    image: registry.example.com/models/llama-3b:v1
+    pushSecretRef:
+      name: registry-writer
+# After status.prefetchOCI.phase becomes Succeeded, create a separate Model
+# with source: <status.prefetchOCI.image> and files: <status.prefetchOCI.files>.
+# Its source is then pinned by digest and serving needs no HF credentials.

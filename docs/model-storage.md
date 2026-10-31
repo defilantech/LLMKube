@@ -105,6 +105,85 @@ FROM scratch
 COPY ./qwen3-32b.gguf /
 ```
 
+### Publishing models with OCI prefetch
+
+Set `prefetch: true` and `prefetchOCI` to download an HTTP(S)/HF model and
+publish it in the image layout above. Without `prefetchOCI`, prefetch keeps
+its existing PVC behavior. See
+[`config/samples/model_prefetch_oci.yaml`](../config/samples/model_prefetch_oci.yaml).
+
+```yaml
+spec:
+  source: https://example.com/weights.gguf
+  format: gguf
+  prefetch: true
+  prefetchOCI:
+    image: registry.example.com/models/weights:v1
+    pushSecretRef:
+      name: registry-writer
+```
+
+`image` requires a fully qualified registry/repository and explicit tag, without
+an `oci://` prefix. `pushSecretRef` is optional for anonymous registries; for
+private registries it names a same-namespace `kubernetes.io/dockerconfigjson`
+Secret with push permission. Only the publisher mounts this Secret. Source
+credentials still use `sourceSecretRef`, only on the downloader. The configured
+`--ca-cert-configmap` is trusted by both containers, including registry TLS.
+Neither container needs a Kubernetes API token or privileged access.
+
+The Helm chart uses its operator image for publishing. Other installations must
+set `--oci-publisher-image=<operator-image>` to an image built from this version;
+the Job runs `/manager publish-model` in that image. Private publisher/downloader
+images need pull credentials on the Model namespace's default ServiceAccount.
+
+The Job uses node-local `emptyDir` scratch space, not a PVC. Size the node's
+available ephemeral storage for the downloaded files. The publisher streams a
+filesystem tar layer from disk and publishes a linux/amd64 + linux/arm64 image
+index sharing the weights layer. Model prefetch node selectors, affinity and
+tolerations apply to the Job. `spec.files`, `spec.mmproj`, source authentication
+and checksum validation use the existing downloader. S3, local, PVC and existing
+OCI sources are not accepted as OCI-prefetch inputs. Do not combine
+`prefetchOCI` with Model-level `modelCache`; a service can still request its own
+PVC staging through `InferenceService.spec.modelCache`.
+
+Publication completes when `status.prefetchOCI.phase` is `Succeeded`.
+`status.prefetchOCI.image` is the immutable `oci://...@sha256:...` reference;
+`status.prefetchOCI.files` lists the paths inside the image, primary first.
+Create a separate Model in the next environment using that reference and those
+explicit `spec.files` paths (and `spec.mmproj`, when present). Explicit paths
+also let the promoted Model have a different name. Omit download-only `sha256`
+and `fileSha256` there: the OCI image digest pins the whole image.
+
+Publishing does not rewrite `spec.source` or switch existing services to OCI.
+An InferenceService using the original HTTP/HF Model still uses its normal
+source/cache path. Only services using the promoted `oci://` Model require no
+provider access. Publishing itself needs no ImageVolume support; consuming the
+result has the cluster requirements below.
+
+A changed source, selected file set, checksum or destination starts a new
+publication. An unchanged successful publication is retained after the Job's
+24-hour cleanup; upstream/tag changes are not polled. Use pinned source revisions
+and unique destination tags for reproducibility. On failure, inspect the Job's
+pod logs and `status.prefetchOCI.message`, then delete the failed Job to retry.
+Removing `prefetchOCI` deletes its owned Job and clears publication status; it
+does not delete registry images. Registry retention and cross-environment
+promotion remain under your control.
+
+For a cluster smoke test with tiny fixture weights (no GPU), install this build
+on a disposable cluster with ImageVolume support, then run:
+
+```bash
+KUBECONFIG=/path/to/disposable-cluster.kubeconfig \
+OCI_PREFETCH_IMAGE=registry.example.com/models/oci-smoke:unique-test-tag \
+OCI_PREFETCH_DOCKER_CONFIG=/path/to/docker-config.json \
+bash hack/test-oci-prefetch.sh
+```
+
+Omit `OCI_PREFETCH_DOCKER_CONFIG` for an anonymous registry. The test creates and
+removes its own namespace, publishes the fixture, removes its HTTP provider,
+and verifies the bytes through an ImageVolume. It leaves the registry tag for
+inspection; delete it using your registry's normal retention tooling.
+
 ### Cluster requirement
 
 `oci://` needs **Kubernetes >= 1.36** on the serving node (ImageVolume reached

@@ -49,6 +49,8 @@ func TestDeletePrefetchJobPropagation(t *testing.T) {
 		Spec:       inferencev1alpha1.ModelSpec{Source: "https://example.com/m.gguf", Format: "gguf"},
 		Status:     inferencev1alpha1.ModelStatus{CacheKey: "cache"},
 	}
+	ociModel := singleFileModel.DeepCopy()
+	ociModel.Spec.PrefetchOCI = &inferencev1alpha1.OCIPrefetchSpec{Image: "registry.example.com/models/test:v1"}
 	for _, tc := range []struct {
 		name       string
 		model      *inferencev1alpha1.Model
@@ -58,21 +60,28 @@ func TestDeletePrefetchJobPropagation(t *testing.T) {
 		preStager bool
 		want      metav1.DeletionPropagation
 	}{
+		{"OCI publisher", ociModel, false, false, metav1.DeletePropagationForeground},
 		{"stager", stagerModel, false, false, metav1.DeletePropagationForeground},
 		{"stager read back without podReplacementPolicy", stagerModel, true, false, metav1.DeletePropagationForeground},
 		{"single-file stager", singleFileModel, false, false, metav1.DeletePropagationForeground},
 		{"single-file Job built without the stager switch", singleFileModel, true, true, metav1.DeletePropagationBackground},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			r := &ModelReconciler{InitContainerImage: defaultPrefetchImage}
-			job, err := r.buildPrefetchJob(context.Background(), tc.model, "", "")
+			r := &ModelReconciler{InitContainerImage: defaultPrefetchImage, OCIPublisherImage: "operator:test"}
+			var job *batchv1.Job
+			var err error
+			if tc.model.Spec.PrefetchOCI != nil {
+				job, _, err = r.buildOCIPrefetchJob(context.Background(), tc.model, "fingerprint")
+			} else {
+				job, err = r.buildPrefetchJob(context.Background(), tc.model, "", "")
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
 			isStager := job.Spec.PodReplacementPolicy != nil && *job.Spec.PodReplacementPolicy == batchv1.Failed
 			// Every Job buildPrefetchJob makes is a stager now; preStager
 			// turns one back into what an older operator built.
-			if !isStager {
+			if !isStager && tc.model.Spec.PrefetchOCI == nil {
 				t.Fatal("buildPrefetchJob did not build a stager (podReplacementPolicy=Failed); the cases no longer build the Jobs they name")
 			}
 			if tc.dropPolicy {
