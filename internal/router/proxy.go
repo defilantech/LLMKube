@@ -51,6 +51,8 @@ type Proxy struct {
 	// randN draws the per-request order of a weighted rule. Tests replace it
 	// with a seeded source.
 	randN randInt64N
+	// shadows runs the copies a shadow rule mirrors to its other backends.
+	shadows *shadower
 }
 
 // ProxyOption customizes a Proxy at construction time. The proxy
@@ -103,6 +105,7 @@ func NewProxy(cfg *Config, logger *slog.Logger, opts ...ProxyOption) *Proxy {
 		routerName: "default",
 		budgets:    NewBudgetStore(compileBudgetRules(cfg.Policy.Budgets), time.Now),
 		randN:      defaultRandInt64N,
+		shadows:    newShadower(maxShadowInFlight),
 	}
 	// Config.Validate rejects an unparseable entry, so the error is not
 	// checked again here.
@@ -322,6 +325,13 @@ func (p *Proxy) handleCompletion(upstreamPath string) http.HandlerFunc {
 			return
 		}
 		defer func() { _ = resp.Body.Close() }()
+
+		// A shadow rule mirrors the request to its other backends now that
+		// one has answered the client. The copies run on their own and
+		// never delay or change this response.
+		if decision.Strategy == strategyShadow {
+			p.mirror(&features, &decision, chosen, r.Header, body, upstreamPath)
+		}
 
 		span.SetAttributes(
 			otelattribute.String("routing.backend.selected", chosen.Name),

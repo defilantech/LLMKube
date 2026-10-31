@@ -337,8 +337,9 @@ type RuleRoute struct {
 	// primary-fallback tries Backends in declared order. weighted draws a
 	// backend per request in proportion to Backend.Weight among the ones
 	// that can serve now, and on a failure fails over to another drawn the
-	// same way (see weightedOrder). shadow is not implemented by the proxy
-	// yet and dispatches as primary-fallback.
+	// same way (see weightedOrder). shadow serves the client exactly as
+	// primary-fallback does and mirrors each request to the backends after
+	// the one that served it (see Proxy.mirror).
 	Strategy string `json:"strategy,omitempty"`
 
 	// PoolActivation is "Wait" (default) or "IfIdle". Under IfIdle a pooled
@@ -529,8 +530,10 @@ func (c *Config) Validate() error {
 // backends (see validateWeightedRule).
 func (c *Config) validateRuleStrategy(i int, r *Rule) error {
 	switch r.Route.Strategy {
-	case "", strategyPrimaryFallback, strategyShadow:
+	case "", strategyPrimaryFallback:
 		return nil
+	case strategyShadow:
+		return c.validateShadowRule(i, r)
 	case strategyWeighted:
 		byName := make(map[string]*Backend, len(c.Backends))
 		for j := range c.Backends {
@@ -541,6 +544,24 @@ func (c *Config) validateRuleStrategy(i int, r *Rule) error {
 		return fmt.Errorf("rules[%d] %s: route.strategy %q must be %q, %q or %q",
 			i, r.Name, r.Route.Strategy, strategyPrimaryFallback, strategyWeighted, strategyShadow)
 	}
+}
+
+// validateShadowRule checks a shadow rule: it needs a backend to serve and at
+// least one to mirror to, and no backend it mirrors to (any but the first) may
+// be a ModelPool member. A copy to a pool member would have to make it
+// resident, draining the member that serves clients from the pool's single GPU
+// slot, and a mirror must never change what serves clients.
+func (c *Config) validateShadowRule(i int, r *Rule) error {
+	if len(r.Route.Backends) < 2 {
+		return fmt.Errorf("rules[%d] %s: strategy shadow needs at least two backends: the first serves, the rest receive copies", i, r.Name)
+	}
+	for _, name := range r.Route.Backends[1:] {
+		if b := c.BackendByName(name); b != nil && b.Pool != nil {
+			return fmt.Errorf("rules[%d] %s: strategy shadow cannot mirror to backend %q, a member of ModelPool %s/%s;"+
+				" list a pooled backend first or use another strategy", i, r.Name, name, b.Pool.Namespace, b.Pool.Name)
+		}
+	}
+	return nil
 }
 
 // validate checks the client attribution settings. The controller rejects

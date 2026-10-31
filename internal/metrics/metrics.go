@@ -131,6 +131,29 @@ var (
 		[]string{labelRouter, "rule", "backend"},
 	)
 
+	// RouterShadowRequestsTotal counts the copies a shadow rule mirrors to
+	// its non-serving backends, by outcome: ok (a non-error status, body read
+	// to the end), error, or dropped (the backend's shadow in-flight cap was
+	// full, or the proxy was shutting down).
+	RouterShadowRequestsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llmkube_router_shadow_requests_total",
+			Help: "Requests a shadow rule mirrored to a backend, by outcome (ok, error, dropped).",
+		},
+		[]string{labelRouter, "rule", "backend", "outcome"},
+	)
+
+	// RouterShadowRequestDuration is how long a mirrored copy took, from
+	// sending it to reading its response to the end.
+	RouterShadowRequestDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "llmkube_router_shadow_request_duration_seconds",
+			Help:    "Duration of mirrored shadow requests, from send to the end of the discarded response.",
+			Buckets: prometheus.DefBuckets,
+		},
+		[]string{labelRouter, "rule", "backend"},
+	)
+
 	RouterFailClosedTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "llmkube_router_fail_closed_total",
@@ -574,6 +597,8 @@ var ForemanCollectors = []prometheus.Collector{
 var RouterCollectors = []prometheus.Collector{
 	RouterRequestsTotal,
 	RouterRequestDuration,
+	RouterShadowRequestsTotal,
+	RouterShadowRequestDuration,
 	RouterFailClosedTotal,
 	RouterActiveBackends,
 	RouterBackendHealth,

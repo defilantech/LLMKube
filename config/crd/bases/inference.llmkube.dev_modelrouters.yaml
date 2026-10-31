@@ -2444,8 +2444,9 @@ spec:
                             "primary-fallback" strategy, the first entry is the primary and
                             subsequent entries are tried in order on failure. For "weighted",
                             traffic is distributed across all entries by Backend.Weight. For
-                            "shadow", the first entry serves the response and subsequent entries
-                            receive mirrored requests for evaluation only.
+                            "shadow", the first entry serves the response (falling back in order
+                            as primary-fallback does) and the entries after the one that served
+                            receive mirrored copies for evaluation only; it needs at least two.
                           items:
                             type: string
                           minItems: 1
@@ -2477,8 +2478,14 @@ spec:
                             another backend of the rule picked the same way, never the same one
                             twice. A weighted rule there cannot name two members of one ModelPool,
                             since they share one GPU slot and would swap on every other request.
-                            shadow is not implemented by the Proxy yet and dispatches as
-                            primary-fallback; dataPlane: Gateway rejects it. On dataPlane:
+                            shadow serves the client exactly as primary-fallback does and sends a
+                            copy of each request, marked x-llmkube-shadow: true, to the rule's
+                            other healthy backends after the one that served; their responses are
+                            discarded, their failures never quarantine them, and they are not
+                            charged to budgets. Copies are best effort: at most 4 run at once per
+                            backend and the rest are dropped and counted. An external backend that
+                            is a shadow target receives, and bills, every request. A shadow target
+                            cannot be a ModelPool member. dataPlane: Gateway rejects shadow. On dataPlane:
                             AgentGateway only primary-fallback compiles, and a rule routes to its
                             first healthy backend: when that backend's InferenceService has no
                             ready replica, the next reconcile moves the rule to the next backend.

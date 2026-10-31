@@ -245,7 +245,9 @@ Headers that change routing:
 
 - **`primary-fallback`** (default) tries `route.backends` in order. The first backend serves; the next one is tried only when it fails.
 - **`weighted`** splits the rule's traffic across its backends in proportion to each backend's `weight` (default `1`). Use it to keep two kinds of hardware warm behind one model name.
-- **`shadow`** is not implemented by the router-proxy yet: a `shadow` rule dispatches like `primary-fallback`. `dataPlane: Gateway` and `dataPlane: AgentGateway` reject it.
+- **`shadow`** serves every request exactly as `primary-fallback` does and also sends a copy to the rule's other backends, whose answers are thrown away. Use it to try a candidate model or new hardware on real traffic without clients seeing it. Proxy data plane only: `dataPlane: Gateway` and `dataPlane: AgentGateway` reject it.
+
+Whatever the strategy, a rule with `match.requiredCapabilities` sends its requests only to the backends that advertise every listed capability. The rule matches when at least one of its backends does; the others are never tried for it, not even as a fallback. A rule without `requiredCapabilities` uses all of its backends.
 
 Whatever the strategy, a rule with `match.requiredCapabilities` sends its requests only to the backends that advertise every listed capability. The rule matches when at least one of its backends does; the others are never tried for it, not even as a fallback. A rule without `requiredCapabilities` uses all of its backends.
 
@@ -274,6 +276,28 @@ On the Proxy data plane, a weighted rule picks a backend for each request at ran
 `weight: 0` drains a backend from weighted rules: it gets none of their traffic, even while every other backend in the rule is down. This is the Gateway API meaning of a zero weight, which `dataPlane: Gateway` also follows (Envoy Gateway drops a zero-weight `backendRef`), so the same spec splits the same way on both data planes. To keep a backend as a standby for when the others fail, list it in a `primary-fallback` rule instead. A weighted rule needs at least one backend with a positive weight that has every required capability; the controller rejects one that has none.
 
 A weighted rule on the Proxy data plane cannot list two different members of one ModelPool. The members share one GPU slot, so splitting traffic between them would drain one and cold-load the other on a large share of requests. The controller reports this as `Available=False` with reason `CompileFailed` and keeps serving the previous config. Splitting across a pooled backend and a backend outside the pool is fine: picking the pooled one activates it as `primary-fallback` would. `dataPlane: AgentGateway` compiles only `primary-fallback`.
+
+### Shadow traffic
+
+```yaml
+  rules:
+    - name: chat
+      match:
+        models: ["chat"]
+      route:
+        strategy: shadow
+        backends: ["primary", "candidate"]
+```
+
+The client is served by the first backend that can serve the request, with the same fallback as `primary-fallback`: if `primary` fails, `candidate` answers the client instead. Once a backend has answered, the router-proxy sends a copy of the request to each backend listed after it that is healthy and has the rule's required capabilities. A backend that already had the request (it failed before the fallback served) or was skipped as quarantined gets no copy. A shadow rule needs at least two backends.
+
+- **The client never waits for a copy.** Copies start after the serving backend has answered, run in the background, and their responses (including streams, which are read to the end) are discarded. A copy that fails or hangs does not change the client's response.
+- **Copies carry `x-llmkube-shadow: true`,** so the shadow backend can tell them from client traffic. They are otherwise the request the serving backend got: the same body (a streaming request stays streaming), the forwarded headers, the shadow backend's own credentials and model name.
+- **Copies change nothing shared.** A failed copy never quarantines the backend (other rules may be serving from it), copies are not charged to budgets, and a ModelPool member cannot be a shadow target: a copy would swap it into the pool's GPU slot. The controller rejects a shadow rule that lists a pooled backend after the first, with reason `CompileFailed`.
+- **Copies are best effort.** At most 4 copies run at once per shadow backend; a copy that finds that many in flight is dropped. Each copy waits for headers as long as a normal request to that backend would, and the stream idle timeout ends one whose body goes silent. On shutdown the router-proxy cancels the copies still running.
+- **An external backend can be a shadow target,** and then receives every request the rule serves, which its provider bills like any other.
+
+Each copy is counted in `llmkube_router_shadow_requests_total{router,rule,backend,outcome}`, where `outcome` is `ok` (a status below 400, body read to the end), `error` or `dropped`, and timed in `llmkube_router_shadow_request_duration_seconds{router,rule,backend}`. The router-proxy logs one `router.shadow` line per copy, with the same fields as `router.dispatch` (`model`, `rule`, `backend`, `status`, `outcome`, `latencyMs`). The client's request is logged by `router.dispatch` as usual.
 
 ## Default-route strategy
 
@@ -549,7 +573,7 @@ When you specify `provider: anthropic` or `provider: openai` without `url`, the 
 **In scope:**
 
 - Routing rules: data classification, task complexity, required capabilities, model glob, header match
-- Strategies: primary-fallback and weighted; shadow (roadmap)
+- Strategies: primary-fallback, weighted and shadow
 - Fail-closed gate, both static (apply-time) and runtime
 - OpenAI-compatible request / response, including streaming SSE
 - Structured audit log to stdout (other sinks roadmap)

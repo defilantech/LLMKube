@@ -54,6 +54,7 @@ func (e ModelRouterValidationError) String() string {
 //   - Every rule's route.backends entries reference existing backends.
 //   - A weighted rule names at least one backend that can take traffic
 //     (positive weight, every required capability).
+//   - A shadow rule names at least two backends.
 //   - Rules matching sensitive classifications (pii/phi by default, or
 //     whatever policy.classification.sensitiveClassifications says) must
 //     have failClosed=true AND route only to local-tier backends. This is
@@ -229,6 +230,7 @@ func validateRules(
 		}
 		errs = append(errs, validateRuleRoute(rule, path, nameSet)...)
 		errs = append(errs, validateRuleWeights(rule, path, byName)...)
+		errs = append(errs, validateRuleShadow(rule, path)...)
 		errs = append(errs, validateRuleSensitiveData(rule, path, sensitiveSet, byName)...)
 		errs = append(errs, validateRuleTimeout(rule, path)...)
 	}
@@ -317,6 +319,26 @@ func validateRuleWeights(
 		Field: path + ".route.backends",
 		Message: "strategy weighted needs at least one backend with a positive weight " +
 			"(unset means 1) that advertises every required capability",
+	}}
+}
+
+// shadowStrategy is the RuleRoute strategy that serves from the first backend
+// and mirrors each request to the others.
+const shadowStrategy = "shadow"
+
+// validateRuleShadow rejects a shadow rule with fewer than two backends: the
+// first serves the client, and a rule with nothing to mirror to is a
+// primary-fallback rule under another name. Whether a mirror target is a
+// ModelPool member needs the pools, so the compile checks that (the
+// router-proxy's Config.Validate).
+func validateRuleShadow(rule *inferencev1alpha1.RouterRule, path string) []ModelRouterValidationError {
+	// An empty list is validateRuleRoute's to report.
+	if rule.Route.Strategy != shadowStrategy || len(rule.Route.Backends) != 1 {
+		return nil
+	}
+	return []ModelRouterValidationError{{
+		Field:   path + ".route.backends",
+		Message: "strategy shadow needs at least two backends: the first serves, the rest receive copies",
 	}}
 }
 

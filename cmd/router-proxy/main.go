@@ -270,6 +270,9 @@ func main() {
 			logger.Error("graceful shutdown failed", "error", err)
 			os.Exit(1)
 		}
+		// No handler runs any more, so no new shadow copy can start: cancel
+		// the ones in flight and wait for them.
+		proxy.Close()
 		logger.Info("router-proxy stopped cleanly")
 	case err := <-serverErr:
 		if err != nil {
