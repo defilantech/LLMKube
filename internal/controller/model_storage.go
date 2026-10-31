@@ -401,7 +401,9 @@ func addCACertVolume(volumes *[]corev1.Volume, mounts *[]corev1.VolumeMount, cmd
 // ends a quoted value at a quote and treats a backslash as an escape. The
 // never-in-argv guarantee rests on the image's /bin/sh having printf builtin,
 // which ash, dash and bash all do.
-const hfAuthFn = `hf_curl() { if [ -n "${HF_TOKEN:-}" ]; then _llmkube_tok=$(printf '%s' "$HF_TOKEN"); case "$_llmkube_tok" in *'"'*|*'\'*|*[![:print:]]*) echo "ERROR: HF_TOKEN contains a character curl config cannot carry" >&2; return 1;; esac; printf 'header = "Authorization: Bearer %s"\n' "$_llmkube_tok" | curl -K - "$@"; else curl "$@"; fi; }` + " && "
+const hfAuthBody = `if [ -n "${HF_TOKEN:-}" ]; then _llmkube_tok=$(printf '%s' "$HF_TOKEN"); case "$_llmkube_tok" in *'"'*|*'\'*|*[![:print:]]*) echo "ERROR: HF_TOKEN contains a character curl config cannot carry" >&2; return 1;; esac; printf 'header = "Authorization: Bearer %s"\n' "$_llmkube_tok" | curl -K - "$@"; else curl "$@"; fi`
+
+const hfAuthFn = `hf_curl() { ` + hfAuthBody + `; }` + " && "
 
 // s3AuthFn defines s3_curl, the helper every S3 transfer goes through. It
 // signs with SigV4 using the spec.sourceSecretRef AWS_* keys, passed to curl
@@ -1095,7 +1097,22 @@ func stagedFileEntries(model *inferencev1alpha1.Model) ([]string, error) {
 		return nil, fmt.Errorf("%w: spec.files has a glob and the Model has not recorded its expansion for generation %d",
 			errStagedFilesNotCurrent, model.Generation)
 	}
-	return model.Status.StagedFiles, nil
+	entries := append([]string(nil), model.Status.StagedFiles...)
+	for _, entry := range model.Spec.Files {
+		if !strings.Contains(entry, "://") {
+			continue
+		}
+		name, err := fileEntryPath(entry)
+		if err != nil {
+			return nil, err
+		}
+		for i, staged := range entries {
+			if staged == name {
+				entries[i] = entry
+			}
+		}
+	}
+	return entries, nil
 }
 
 // invalidFileSetInitContainer returns an init container that immediately exits
@@ -1281,6 +1298,10 @@ func multiFileInitEnvVars(source, cacheDir string, files []string, digests map[s
 // MODEL_PATH and MODEL_SOURCE per file for those helpers; the loop runs in a
 // pipeline subshell, so the assignments do not leak.
 func buildMultiFileInitCommand(useCache, isS3, isHFAuth, withSHA256 bool, refreshPolicy string) string {
+	return multiFileInitCommand(useCache, isS3, isHFAuth, withSHA256, refreshPolicy, false)
+}
+
+func multiFileInitCommand(useCache, isS3, isHFAuth, withSHA256 bool, refreshPolicy string, mixed bool) string {
 	// See cacheStagingPrologue: a serving pod on FUSE only reads a warm
 	// cache, and llmkube_prepare_download refuses its transfers.
 	prefix := cacheStagingPrologue(cacheLockRemedy(isS3, false)) +
@@ -1409,14 +1430,23 @@ func buildMultiFileInitCommand(useCache, isS3, isHFAuth, withSHA256 bool, refres
 		return fns + pre + prefix + sweep + " && " + body
 	}
 
+	loop := `printf '%s\n' "$MODEL_FILES" | while IFS= read -r rel; do `
+	sourceAssign := `url="${SOURCE%/}/$rel"; `
+	authPrefix := hfAuthPrefix(isHFAuth)
+	if mixed {
+		loop = `printf '%s\n' "$MODEL_DOWNLOADS" | while IFS="$(printf '\t')" read -r rel url auth; do `
+		sourceAssign = `case "$auth" in s3) url="${AWS_ENDPOINT_URL%/}/${url#s3://}";; esac; `
+		// Auth is selected per destination in Go, never from a Secret-provided URL.
+		authPrefix = s3AuthFn + `hf_curl() { case "$auth" in s3) s3_curl "$@";; hf) ` + hfAuthBody + `;; *) curl "$@";; esac; } && `
+	}
 	if refreshPolicy == RefreshPolicyOnChange {
-		body := normalizeFn + hfAuthPrefix(isHFAuth) +
+		body := normalizeFn + authPrefix +
 			`SOURCE="$(normalize_hf_source "$MODEL_SOURCE")" && ` +
-			`printf '%s\n' "$MODEL_FILES" | while IFS= read -r rel; do ` +
+			loop +
 			`[ -n "$rel" ] || continue; ` +
 			`dest="$CACHE_DIR/$rel"; ` +
 			digestAssign + markerGuard +
-			`url="${SOURCE%/}/$rel"; ` +
+			sourceAssign +
 			`MODEL_PATH="$dest"; MODEL_SOURCE="$url"; ` +
 			`remote_head=$(` + curlCmd(isHFAuth) + ` -fsSL -I "$url" -o /dev/null -w ` + headProbeFormat + ` 2>/dev/null) || remote_head='CLET'; ` +
 			splitHeadProbe +
@@ -1436,13 +1466,13 @@ func buildMultiFileInitCommand(useCache, isS3, isHFAuth, withSHA256 bool, refres
 	download := `llmkube_prepare_download || exit 1; echo "Downloading model artifact $rel..."; ` +
 		`MODEL_PATH="$dest"; MODEL_SOURCE="$url"; ` + resumePrologue(isHFAuth) +
 		`download_with_progress "$MODEL_PARTIAL" "$remote_size" ` + curlCmd(isHFAuth) + ` -f -L -C - -o "$MODEL_PARTIAL" "$url" --no-progress-meter && ` + partialSizeGuard + publishFile("$MODEL_PARTIAL") + ` || { echo "ERROR: failed to download $rel"; exit 1; }; `
-	body := normalizeFn + hfAuthPrefix(isHFAuth) +
+	body := normalizeFn + authPrefix +
 		`SOURCE="$(normalize_hf_source "$MODEL_SOURCE")" && ` +
-		`printf '%s\n' "$MODEL_FILES" | while IFS= read -r rel; do ` +
+		loop +
 		`[ -n "$rel" ] || continue; ` +
 		`dest="$CACHE_DIR/$rel"; ` +
 		digestAssign + markerGuard +
-		`url="${SOURCE%/}/$rel"; ` +
+		sourceAssign +
 		downloadOrCached(download, `echo "Model artifact $rel already cached, skipping download"`) +
 		`done`
 	return fns + pre + prefix + body + " && " + sweep
@@ -1487,6 +1517,13 @@ func buildModelStorageConfig(model *inferencev1alpha1.Model, isvc *inferencev1al
 	// with an init container that exits instead of silently serving nothing.
 	if err := validateLocalSourceAllowed(model.Spec.Source, allowedHostPathRoots); err != nil {
 		return disallowedLocalSourceStorageConfig(initContainerImage)
+	}
+	// Source validation belongs at the download boundary: runtime arg builders
+	// also resolve staged paths without needing the original download source.
+	if hasMultiFileStaging(model) {
+		if err := validateExplicitFileSources(model); err != nil {
+			return invalidFileSetStorageConfig(initContainerImage)
+		}
 	}
 	if isPVCSource(model.Spec.Source) {
 		return buildPVCStorageConfig(model, isvc, initContainerImage)
@@ -1757,8 +1794,7 @@ func buildCachedStorageConfig(model *inferencev1alpha1.Model, isvc *inferencev1a
 	if plan != nil {
 		modelPath := stagedCachePath(cacheDir, plan.Primary)
 		base := stagingRepoBase(model.Spec.Source, hfEndpoint)
-		cmd := buildMultiFileInitCommand(true, isS3Source(model.Spec.Source), isHFAuthSourceForEndpoint(base, hfEndpoint), len(model.Spec.FileSHA256) > 0, model.Spec.RefreshPolicy)
-		env := multiFileInitEnvVars(base, cacheDir, plan.Files, model.Spec.FileSHA256)
+		cmd, env := stagingDownloadConfig(model, plan, base, cacheDir, hfEndpoint, true)
 		// Explicit Env wins over EnvFrom, so source credentials cannot enable
 		// the prefetch-only FUSE bypass in a serving pod.
 		env = append(env, corev1.EnvVar{Name: "LLMKUBE_PREFETCH_STAGER", Value: "false"})
@@ -1888,8 +1924,7 @@ func buildEmptyDirStorageConfig(model *inferencev1alpha1.Model, isvc *inferencev
 		stagedDir := fmt.Sprintf("/models/%s-%s", namespace, model.Name)
 		modelPath := fmt.Sprintf("%s/%s", stagedDir, plan.Primary)
 		base := stagingRepoBase(model.Spec.Source, hfEndpoint)
-		cmd := buildMultiFileInitCommand(false, isS3Source(model.Spec.Source), isHFAuthSourceForEndpoint(base, hfEndpoint), len(model.Spec.FileSHA256) > 0, model.Spec.RefreshPolicy)
-		env := multiFileInitEnvVars(base, stagedDir, plan.Files, model.Spec.FileSHA256)
+		cmd, env := stagingDownloadConfig(model, plan, base, stagedDir, hfEndpoint, false)
 
 		initVolumeMounts := []corev1.VolumeMount{{Name: "model-storage", MountPath: "/models"}}
 		volumes := []corev1.Volume{
@@ -2429,4 +2464,35 @@ func buildPrefetchVerifyCommand(verifyDigest bool) string {
 			`echo "Prefetched model verified against spec.sha256"; `
 	}
 	return cmd + `echo "Prefetched model files present under $CACHE_DIR"`
+}
+
+// stagingDownloadConfig keeps legacy single-source staging unchanged. A mixed
+// set uses the same cache, resume, and integrity gates with per-file URLs/auth.
+func stagingDownloadConfig(model *inferencev1alpha1.Model, plan *StagingPlan, base, dir, hfEndpoint string, useCache bool) (string, []corev1.EnvVar) {
+	digests := make(map[string]inferencev1alpha1.SHA256Digest, len(model.Spec.FileSHA256))
+	for entry, digest := range model.Spec.FileSHA256 {
+		name, _ := fileEntryPath(entry)
+		digests[name] = digest
+	}
+	env := multiFileInitEnvVars(base, dir, plan.Files, digests)
+	if len(plan.Sources) == 0 {
+		return buildMultiFileInitCommand(useCache, isS3Source(base), isHFAuthSourceForEndpoint(base, hfEndpoint), len(digests) > 0, model.Spec.RefreshPolicy), env
+	}
+	var manifest strings.Builder
+	for _, name := range plan.Files {
+		source := plan.Sources[name]
+		if source == "" {
+			source = strings.TrimRight(base, "/") + "/" + name
+		}
+		auth := "plain"
+		if isS3Source(source) {
+			auth = "s3"
+			source = "s3://" + source[len("s3://"):]
+		} else if isHFAuthSourceForEndpoint(source, hfEndpoint) {
+			auth = "hf"
+		}
+		fmt.Fprintf(&manifest, "%s\t%s\t%s\n", name, source, auth)
+	}
+	env = append(env, corev1.EnvVar{Name: "MODEL_DOWNLOADS", Value: manifest.String()})
+	return multiFileInitCommand(useCache, false, true, len(digests) > 0, model.Spec.RefreshPolicy, true), env
 }

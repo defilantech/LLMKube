@@ -111,7 +111,7 @@ spec:
                   type: string
                 description: |-
                   FileSHA256 is a per-file SHA256 map for multi-file staging, keyed by
-                  repo-relative path (each key is a spec.files entry or spec.mmproj). Only
+                  file entry (the exact path or URL in spec.files, or spec.mmproj). Only
                   listed files are verified; a file with no entry is staged as before. It
                   is mutually exclusive with spec.sha256, and requires concrete file paths:
                   a glob cannot be keyed to an unknown expanded name, and a pre-staged
@@ -122,7 +122,12 @@ spec:
               files:
                 description: |-
                   Files lists model weight artifacts to stage from Source. Entries are
-                  repo-relative for repository sources. The first entry is the primary model
+                  repo-relative for repository sources, or absolute http(s)/s3 object URLs.
+                  HuggingFace resolve URLs retain the path within their repository; S3 URLs
+                  retain the object key; other HTTP URLs use the basename. Conflicting
+                  destination paths are rejected. Explicit URLs use per-origin credentials
+                  and require in-cluster staging (not the Metal agent or pre-staged volumes).
+                  The first entry is the primary model
                   file passed to the runtime. When Files is empty, Source must name a single
                   object directly.
                 items:
@@ -1583,7 +1588,8 @@ spec:
                 type: string
               source:
                 description: |-
-                  Source defines where to obtain the model.
+                  Source defines where to obtain the model. It may be omitted when every
+                  files entry is an absolute http(s) or s3 object URL.
                   For GGUF models: URL or path to a .gguf file.
                   For MLX models: local directory path containing the model (config.json, weights).
                   Supported schemes: http://, https://, file://, pvc://, hf://, s3://, oci://, or absolute paths.
@@ -1649,27 +1655,31 @@ spec:
                     type: string
                 type: object
                 x-kubernetes-map-type: atomic
-            required:
-            - source
             type: object
             x-kubernetes-validations:
+            - message: source is required unless every files entry is an absolute
+                http(s) or s3 URL and mmproj is unset
+              rule: has(self.source) || (has(self.files) && self.files.size() > 0
+                && self.files.all(f, f.matches('^(https?|s3)://')) && !has(self.mmproj))
             - message: 'sha256 verifies a single artifact: it cannot be combined with
                 files or mmproj, or with a pre-staged oci:// source (use fileSha256
                 for multi-file staging)'
               rule: '!((has(self.sha256) && self.sha256.size() > 0) && ((has(self.files)
                 && self.files.size() > 0) || (has(self.mmproj) && self.mmproj.size()
-                > 0) || self.source.startsWith(''oci://'')))'
+                > 0) || (has(self.source) && self.source.startsWith(''oci://''))))'
             - message: 'fileSha256 requires spec.files: it names the expected digest
                 of each staged artifact'
               rule: '!has(self.fileSha256) || self.fileSha256.size() == 0 || (has(self.files)
                 && self.files.size() > 0)'
             - message: fileSha256 cannot verify a pre-staged oci:// artifact, which
                 is already pinned by its image digest
-              rule: '!(has(self.fileSha256) && self.fileSha256.size() > 0 && self.source.startsWith(''oci://''))'
+              rule: '!(has(self.fileSha256) && self.fileSha256.size() > 0 && (has(self.source)
+                && self.source.startsWith(''oci://'')))'
             - message: 'fileSha256 needs concrete file paths: a glob cannot be keyed
                 to an unknown expanded name'
               rule: '!has(self.fileSha256) || self.fileSha256.size() == 0 || !has(self.files)
-                || self.files.all(f, !f.contains(''*'') && !f.contains(''?'') && !f.contains(''[''))'
+                || self.files.all(f, f.matches(''^(https?|s3)://'') || (!f.contains(''*'')
+                && !f.contains(''?'') && !f.contains(''['')))'
             - message: every fileSha256 key must name a spec.files entry or spec.mmproj
               rule: '!has(self.fileSha256) || self.fileSha256.size() == 0 || self.fileSha256.all(k,
                 (has(self.files) && self.files.exists(f, f == k)) || (has(self.mmproj)

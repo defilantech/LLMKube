@@ -40,6 +40,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
+	"github.com/defilantech/llmkube/pkg/cachekey"
 )
 
 // Model prefetch (#904): a remote Model is pulled into a model cache PVC ahead
@@ -237,7 +238,7 @@ func stagedClaimFor(model *inferencev1alpha1.Model, fingerprint string) string {
 // let a stale key pass a changed source off as already staged. Every
 // prefetchable source derives its key this way, so an equal key is left alone.
 func seedPrefetchCacheKey(model *inferencev1alpha1.Model) {
-	if key := computeCacheKey(model.Spec.Source); effectiveModelCacheKey(model) != key {
+	if key := cachekey.ModelSourceKey(model); effectiveModelCacheKey(model) != key {
 		model.Status.CacheKey = key
 	}
 }
@@ -408,7 +409,7 @@ func prefetchFingerprint(model *inferencev1alpha1.Model, plan *StagingPlan) stri
 	_, _ = fmt.Fprintf(h, "%s\n", effectiveModelCacheKey(model))
 	_, _ = fmt.Fprintf(h, "sha256=%s\n", strings.ToLower(model.Spec.SHA256))
 	if plan != nil {
-		for _, f := range plan.Files {
+		for _, f := range plan.entries() {
 			_, _ = fmt.Fprintf(h, "%s\n", f)
 		}
 	}
@@ -454,7 +455,7 @@ func prefetchJobModel(model *inferencev1alpha1.Model, plan *StagingPlan) *infere
 	jobModel := model.DeepCopy()
 	seedPrefetchCacheKey(jobModel)
 	if plan != nil {
-		jobModel.Spec.Files = append([]string(nil), plan.Files...)
+		jobModel.Spec.Files = plan.entries()
 	}
 	return jobModel
 }

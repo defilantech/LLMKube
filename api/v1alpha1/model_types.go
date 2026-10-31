@@ -35,15 +35,17 @@ type ModelAttestation struct {
 type SHA256Digest string
 
 // ModelSpec defines the desired state of Model
-// +kubebuilder:validation:XValidation:rule="!((has(self.sha256) && self.sha256.size() > 0) && ((has(self.files) && self.files.size() > 0) || (has(self.mmproj) && self.mmproj.size() > 0) || self.source.startsWith('oci://')))",message="sha256 verifies a single artifact: it cannot be combined with files or mmproj, or with a pre-staged oci:// source (use fileSha256 for multi-file staging)"
+// +kubebuilder:validation:XValidation:rule="has(self.source) || (has(self.files) && self.files.size() > 0 && self.files.all(f, f.matches('^(https?|s3)://')) && !has(self.mmproj))",message="source is required unless every files entry is an absolute http(s) or s3 URL and mmproj is unset"
+// +kubebuilder:validation:XValidation:rule="!((has(self.sha256) && self.sha256.size() > 0) && ((has(self.files) && self.files.size() > 0) || (has(self.mmproj) && self.mmproj.size() > 0) || (has(self.source) && self.source.startsWith('oci://'))))",message="sha256 verifies a single artifact: it cannot be combined with files or mmproj, or with a pre-staged oci:// source (use fileSha256 for multi-file staging)"
 // +kubebuilder:validation:XValidation:rule="!has(self.fileSha256) || self.fileSha256.size() == 0 || (has(self.files) && self.files.size() > 0)",message="fileSha256 requires spec.files: it names the expected digest of each staged artifact"
-// +kubebuilder:validation:XValidation:rule="!(has(self.fileSha256) && self.fileSha256.size() > 0 && self.source.startsWith('oci://'))",message="fileSha256 cannot verify a pre-staged oci:// artifact, which is already pinned by its image digest"
-// +kubebuilder:validation:XValidation:rule="!has(self.fileSha256) || self.fileSha256.size() == 0 || !has(self.files) || self.files.all(f, !f.contains('*') && !f.contains('?') && !f.contains('['))",message="fileSha256 needs concrete file paths: a glob cannot be keyed to an unknown expanded name"
+// +kubebuilder:validation:XValidation:rule="!(has(self.fileSha256) && self.fileSha256.size() > 0 && (has(self.source) && self.source.startsWith('oci://')))",message="fileSha256 cannot verify a pre-staged oci:// artifact, which is already pinned by its image digest"
+// +kubebuilder:validation:XValidation:rule="!has(self.fileSha256) || self.fileSha256.size() == 0 || !has(self.files) || self.files.all(f, f.matches('^(https?|s3)://') || (!f.contains('*') && !f.contains('?') && !f.contains('[')))",message="fileSha256 needs concrete file paths: a glob cannot be keyed to an unknown expanded name"
 // +kubebuilder:validation:XValidation:rule="!has(self.fileSha256) || self.fileSha256.size() == 0 || self.fileSha256.all(k, (has(self.files) && self.files.exists(f, f == k)) || (has(self.mmproj) && self.mmproj == k))",message="every fileSha256 key must name a spec.files entry or spec.mmproj"
 // +kubebuilder:validation:XValidation:rule="!has(self.fileSha256) || self.fileSha256.size() == 0 || self.fileSha256.all(k, !k.matches('[[:space:]]'))",message="fileSha256 keys must not contain whitespace"
 // +kubebuilder:validation:XValidation:rule="!(has(self.prefetch) && self.prefetch && has(self.modelCache) && has(self.modelCache.persistence) && self.modelCache.persistence == 'Ephemeral')",message="prefetch cannot be combined with modelCache.persistence Ephemeral: there is no cache volume to stage into"
 type ModelSpec struct {
-	// Source defines where to obtain the model.
+	// Source defines where to obtain the model. It may be omitted when every
+	// files entry is an absolute http(s) or s3 object URL.
 	// For GGUF models: URL or path to a .gguf file.
 	// For MLX models: local directory path containing the model (config.json, weights).
 	// Supported schemes: http://, https://, file://, pvc://, hf://, s3://, oci://, or absolute paths.
@@ -77,9 +79,9 @@ type ModelSpec struct {
 	// tightly (#405). Workaround: pre-stage on a pvc://, or use the
 	// equivalent https://huggingface.co/.../<filename>.gguf URL which
 	// the runtime/init container resolves at deploy time.
-	// +kubebuilder:validation:Required
+	// +optional
 	// +kubebuilder:validation:Pattern=`^(https?|file|pvc|hf|s3|oci)://.*|^/[^\s]+$|^[a-zA-Z0-9][\w\-\.\/]+$`
-	Source string `json:"source"`
+	Source string `json:"source,omitempty"`
 
 	// SHA256 is the expected SHA256 hash of the model file for integrity
 	// verification. When set, a single-file artifact verifies its bytes against
@@ -229,7 +231,12 @@ type ModelSpec struct {
 	Resources *ResourceRequirements `json:"resources,omitempty"`
 
 	// Files lists model weight artifacts to stage from Source. Entries are
-	// repo-relative for repository sources. The first entry is the primary model
+	// repo-relative for repository sources, or absolute http(s)/s3 object URLs.
+	// HuggingFace resolve URLs retain the path within their repository; S3 URLs
+	// retain the object key; other HTTP URLs use the basename. Conflicting
+	// destination paths are rejected. Explicit URLs use per-origin credentials
+	// and require in-cluster staging (not the Metal agent or pre-staged volumes).
+	// The first entry is the primary model
 	// file passed to the runtime. When Files is empty, Source must name a single
 	// object directly.
 	// +kubebuilder:validation:MaxItems=256
@@ -243,7 +250,7 @@ type ModelSpec struct {
 	Mmproj string `json:"mmproj,omitempty"`
 
 	// FileSHA256 is a per-file SHA256 map for multi-file staging, keyed by
-	// repo-relative path (each key is a spec.files entry or spec.mmproj). Only
+	// file entry (the exact path or URL in spec.files, or spec.mmproj). Only
 	// listed files are verified; a file with no entry is staged as before. It
 	// is mutually exclusive with spec.sha256, and requires concrete file paths:
 	// a glob cannot be keyed to an unknown expanded name, and a pre-staged

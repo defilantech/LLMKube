@@ -317,7 +317,7 @@ func (r *ModelReconciler) hfTokenFromSecret(ctx context.Context, model *inferenc
 
 func filesHaveGlob(files []string) bool {
 	for _, f := range files {
-		if hasGlob(f) {
+		if !strings.Contains(f, "://") && hasGlob(f) {
 			return true
 		}
 	}
