@@ -20,6 +20,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/netip"
 	"slices"
@@ -137,15 +138,19 @@ func metalNodeLeaseUpdateMatters(old, updated *coordinationv1.Lease) bool {
 type MetalNodeReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
-	// APIReader reads the MetalNode and the agent's Lease. The MetalNode is
-	// read uncached because status.verification.podUID is the only record of
-	// which verifier pod the controller started: that pod's own create event
+	// APIReader confirms the MetalNode, and finds a Lease the Lease cache does
+	// not hold. Each reconcile reads the MetalNode from the manager's cache
+	// first and reads it uncached only when the cached copy cannot be trusted
+	// (see reconcileFrom): status.verification.podUID is the only record of
+	// which verifier pod the controller started, that pod's own create event
 	// reconciles again, and a cached MetalNode from before the status write
-	// would treat the pod as a stranger and delete it. The Lease informer only
-	// holds Leases labeled inference.llmkube.dev/metal-node, so reading
-	// through it would miss an unlabeled Lease; an uncached read always finds
-	// it.
+	// would treat the pod as a stranger and delete it.
 	APIReader client.Reader
+	// leaseReader is the controller's Lease cache, which holds only Leases
+	// labeled inference.llmkube.dev/metal-node; a Lease it does not hold (an
+	// unlabeled one) is read through APIReader. nil reads every Lease through
+	// APIReader.
+	leaseReader client.Reader
 	// InitContainerImage is the operator's curl image (--init-container-image),
 	// which the verifier pod runs.
 	InitContainerImage string
@@ -162,11 +167,39 @@ type MetalNodeReconciler struct {
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;create;delete
 
+// errMetalNodeUnconfirmed stops a reconcile working from the cached
+// MetalNode before it does anything the cached copy might be wrong about.
+var errMetalNodeUnconfirmed = errors.New("the cached MetalNode needs confirming")
+
 func (r *MetalNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	mn := &inferencev1alpha1.MetalNode{}
+	if err := r.Get(ctx, req.NamespacedName, mn); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+	res, err := r.reconcileFrom(ctx, mn, false)
+	if !errors.Is(err, errMetalNodeUnconfirmed) {
+		return res, err
+	}
+	mn = &inferencev1alpha1.MetalNode{}
 	if err := r.APIReader.Get(ctx, req.NamespacedName, mn); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+	return r.reconcileFrom(ctx, mn, true)
+}
+
+// reconcileFrom reconciles mn, read from the cache (confirmed false) or
+// uncached (confirmed true). The cache can lag the controller's own last
+// status write, so working from a cached copy it stops with
+// errMetalNodeUnconfirmed, before any write, where that copy could mislead
+// it: an owned verifier pod it does not track (it may be the one the last
+// reconcile started), and a verifier about to be created (the last check or
+// start may be newer than the copy). Its status write carries the copy's
+// resourceVersion, so a write based on a stale copy is refused instead of
+// replacing newer conditions, and is redone from an uncached read. Pod
+// deletions follow the write; without one, the pods deleted are finished
+// ones or ones the copy tracks, since an untracked live pod sends the
+// reconcile to an uncached read first.
+func (r *MetalNodeReconciler) reconcileFrom(ctx context.Context, mn *inferencev1alpha1.MetalNode, confirmed bool) (ctrl.Result, error) {
 	now := r.now()
 	orig := mn.DeepCopy()
 	mn.Status.ObservedGeneration = mn.Generation
@@ -179,7 +212,10 @@ func (r *MetalNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// cost the MetalNode its observed status: store what is known first,
 	// then return the error so the request is retried.
 	requeue, toDelete, dialErr := r.reconcileDialBack(ctx, mn, report, connected, now,
-		orig.Status.IngressSPKI, orig.Status.IngressPort)
+		orig.Status.IngressSPKI, orig.Status.IngressPort, confirmed)
+	if errors.Is(dialErr, errMetalNodeUnconfirmed) {
+		return ctrl.Result{}, dialErr
+	}
 	requeue = min(metalNodeResyncInterval, requeue)
 	if meta.FindStatusCondition(mn.Status.Conditions, inferencev1alpha1.MetalNodeConditionReachable) == nil {
 		r.setCondition(mn, inferencev1alpha1.MetalNodeConditionReachable, metav1.ConditionUnknown,
@@ -187,8 +223,15 @@ func (r *MetalNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	if !apiequality.Semantic.DeepEqual(orig.Status, mn.Status) {
-		if err := r.Status().Patch(ctx, mn, client.MergeFrom(orig)); err != nil {
-			return ctrl.Result{}, fmt.Errorf("update MetalNode %s status: %w", req.NamespacedName, err)
+		patch := client.MergeFrom(orig)
+		if !confirmed {
+			patch = client.MergeFromWithOptions(orig, client.MergeFromWithOptimisticLock{})
+		}
+		if err := r.Status().Patch(ctx, mn, patch); err != nil {
+			if !confirmed && apierrors.IsConflict(err) {
+				return ctrl.Result{}, errMetalNodeUnconfirmed
+			}
+			return ctrl.Result{}, fmt.Errorf("update MetalNode %s status: %w", client.ObjectKeyFromObject(mn), err)
 		}
 	}
 	// Finished verifier pods go only after their result is stored: a lost
@@ -233,7 +276,7 @@ func (r *MetalNodeReconciler) observeLease(ctx context.Context, mn *inferencev1a
 	wasConnected := meta.IsStatusConditionTrue(mn.Status.Conditions, inferencev1alpha1.MetalNodeConditionAgentConnected)
 	lease := &coordinationv1.Lease{}
 	key := types.NamespacedName{Namespace: mn.Namespace, Name: mn.Spec.LeaseName}
-	if err := r.APIReader.Get(ctx, key, lease); err != nil {
+	if err := r.getLease(ctx, key, lease); err != nil {
 		if apierrors.IsNotFound(err) {
 			copyReportFacts(&mn.Status, metalnode.Report{})
 			r.setCondition(mn, inferencev1alpha1.MetalNodeConditionAgentConnected, metav1.ConditionFalse,
@@ -256,6 +299,19 @@ func (r *MetalNodeReconciler) observeLease(ctx context.Context, mn *inferencev1a
 		advanceHeartbeat(&mn.Status, rt.Time, connected != wasConnected)
 	}
 	return obs.report, connected, nil
+}
+
+// getLease reads the agent's Lease from the Lease cache, and uncached when
+// the cache does not hold it: a Lease without the metal-node label is still
+// the agent's Lease, it only does not wake the controller.
+func (r *MetalNodeReconciler) getLease(ctx context.Context, key types.NamespacedName, lease *coordinationv1.Lease) error {
+	if r.leaseReader != nil {
+		err := r.leaseReader.Get(ctx, key, lease)
+		if !apierrors.IsNotFound(err) {
+			return err
+		}
+	}
+	return r.APIReader.Get(ctx, key, lease)
 }
 
 // leaseObservation is what one read of the agent's Lease says.
@@ -390,7 +446,7 @@ func copyReportFacts(st *inferencev1alpha1.MetalNodeStatus, report metalnode.Rep
 // setAsideAbandoned), and starts are at least metalNodeMinStartSpacing apart
 // whatever changed.
 func (r *MetalNodeReconciler) reconcileDialBack(ctx context.Context, mn *inferencev1alpha1.MetalNode, report *metalnode.Report,
-	connected bool, now time.Time, prevPin string, prevPort int32) (time.Duration, []corev1.Pod, error) {
+	connected bool, now time.Time, prevPin string, prevPort int32, confirmed bool) (time.Duration, []corev1.Pod, error) {
 	st := &mn.Status
 	hostIP, hostIPValid := specHostIP(mn)
 	var hash string
@@ -409,6 +465,9 @@ func (r *MetalNodeReconciler) reconcileDialBack(ctx context.Context, mn *inferen
 	pods, err := r.ownedVerifiers(ctx, mn)
 	if err != nil {
 		return 0, nil, err
+	}
+	if !confirmed && hasUntrackedVerifier(mn, pods) {
+		return 0, nil, errMetalNodeUnconfirmed
 	}
 	pods, abandoned := setAsideAbandoned(pods, now)
 	for _, p := range abandoned {
@@ -473,6 +532,9 @@ func (r *MetalNodeReconciler) reconcileDialBack(ctx context.Context, mn *inferen
 	}
 	if wait := dialBackWait(mn, hash, now); wait > 0 {
 		return wait, toDelete, nil
+	}
+	if !confirmed {
+		return 0, nil, errMetalNodeUnconfirmed
 	}
 
 	prev := st.Verification.DeepCopy()
@@ -648,6 +710,21 @@ func (r *MetalNodeReconciler) ownedVerifiers(ctx context.Context, mn *inferencev
 		}
 	}
 	return out, nil
+}
+
+// hasUntrackedVerifier reports whether an owned verifier pod that is not
+// being deleted is not the one status.verification.podUID records.
+func hasUntrackedVerifier(mn *inferencev1alpha1.MetalNode, pods []corev1.Pod) bool {
+	tracked := ""
+	if v := mn.Status.Verification; v != nil {
+		tracked = v.PodUID
+	}
+	for _, p := range pods {
+		if p.DeletionTimestamp == nil && (tracked == "" || string(p.UID) != tracked) {
+			return true
+		}
+	}
+	return false
 }
 
 // terminatingVerifier is a verifier pod being deleted, which keeps any new
@@ -934,6 +1011,7 @@ func (r *MetalNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if err := mgr.Add(leaseCache); err != nil {
 		return fmt.Errorf("add MetalNode Lease cache: %w", err)
 	}
+	r.leaseReader = leaseCache
 	return ctrl.NewControllerManagedBy(mgr).
 		// The controller writes status on every heartbeat; reacting to its
 		// own writes would double every reconcile.
