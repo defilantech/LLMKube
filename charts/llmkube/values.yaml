@@ -546,6 +546,13 @@ modelAttestation:
 # a model from node-local disk, list the absolute directory roots you trust, e.g.
 #   allowedHostPathRoots:
 #     - /srv/models
+# Scope: this governs only the hostPath volume the operator generates for a
+# Model's local spec.source. It does not inspect InferenceService
+# spec.extraVolumes or security contexts, which reach the pod as written, so it
+# is not a boundary against an InferenceService author. Enforce Pod Security
+# Admission (baseline or restricted) on inference namespaces for that; note
+# that baseline also refuses the hostPath a local source generates. See
+# SECURITY.md, "Trust model".
 modelSource:
   allowedHostPathRoots: []
   # Remote-host allowlist for the controller-side SSRF guard on http/https

@@ -33,6 +33,8 @@ modelSource:
 
 Or pass the controller flag directly: `--allowed-host-path-roots=/mnt/models,/mnt/nfs/models`. A source is permitted only when its cleaned path is within a configured root; `..` escapes are rejected. The check is lexical and does not resolve symlinks, so only allowlist roots whose contents you control.
 
+The allowlist covers only the hostPath volume the operator generates for a local model source. It does not inspect an InferenceService's `spec.extraVolumes` or security contexts, which reach the pod as written, so it does not stop an InferenceService author from mounting another host path. Pod Security Admission on the namespace is the control for that. Its `baseline` level refuses every hostPath volume, including the one a local source generates, so a namespace that serves local sources has to run at `privileged`; keep InferenceService and Model write access there to principals you trust with the node. Under `baseline`, use a `pvc://` source bound to a `local` PersistentVolume instead. See the [trust model in SECURITY.md](../SECURITY.md#trust-model) and [Multi-tenancy](operations/multi-tenancy.md#inferenceservice-rights-and-pod-security).
+
 **Upgrading from an earlier release**: a local source that previously caused the controller to hot-spin now fails cleanly with `SourceNotAllowed`. After upgrading, also delete any existing InferenceService whose source now falls outside the allowlist; a pod created before the upgrade keeps its hostPath mount until it is deleted.
 
 ## Quick Start: Deploy from Local Path
@@ -444,7 +446,7 @@ kubectl get model my-model -o jsonpath='{.status.sha256}'
 ## Security Considerations
 
 1. **Model Integrity**: Use the `sha256` field to verify model checksums automatically
-2. **Host-Path Allowlist**: Keep `modelSource.allowedHostPathRoots` as narrow as possible (dedicated model directories, not `/` or `/mnt`); the allowlist is what stops a Model spec from mounting arbitrary node files into an inference pod
+2. **Host-Path Allowlist**: Keep `modelSource.allowedHostPathRoots` as narrow as possible (dedicated model directories, not `/` or `/mnt`); the allowlist limits which node paths a Model's local `spec.source` can make the operator mount. It does not inspect an InferenceService's `spec.extraVolumes`; Pod Security Admission on the namespace is what refuses a hostPath there (see the [trust model](../SECURITY.md#trust-model))
 3. **File Permissions**: Restrict model file access to necessary users/groups
 4. **Network Segmentation**: Ensure internal model servers are properly firewalled
 5. **Audit Logging**: Track model deployments and access events through the controller's structured logs and Prometheus metrics. For SOC 2 / HIPAA / FedRAMP environments, forward operator logs to your SIEM via Vector, Fluent Bit, or your existing logging stack.

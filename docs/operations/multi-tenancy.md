@@ -156,6 +156,145 @@ rules:
   verbs: ["get", "patch", "update"]
 ```
 
+## InferenceService rights and Pod Security
+
+GPUQuota limits how many GPUs a tenant's InferenceServices consume. It does
+not limit what those InferenceServices run. Plan namespace isolation around
+the following.
+
+### What creating an InferenceService grants
+
+The operator builds the inference pod from the InferenceService spec and
+creates it with its own permissions. These spec fields reach the pod directly,
+merged with the operator's own entries where both exist:
+
+- `image`, `command` and `args`
+- `env`, including `valueFrom.secretKeyRef`
+- `nodeSelector`, `tolerations`, `affinity` and `runtimeClassName`
+- `extraVolumes` and `extraVolumeMounts`
+- `securityContext` (the inference container) and `podSecurityContext`
+
+So `create` or `update` on InferenceServices in a namespace is equivalent to
+creating a pod with an arbitrary spec there: any image and command, any
+Secret in the namespace, `hostPath` volumes, `privileged: true`, and any node
+the tolerations and selectors reach. The author's own pod RBAC is not
+consulted. The spec has no ServiceAccount field, so inference pods run as the
+namespace's `default` ServiceAccount; do not bind roles to that account in a
+tenant namespace.
+
+Model fields reach the same pods. A local `spec.source` (an absolute path or
+`file://` URL) becomes a hostPath volume, within the limits of
+`modelSource.allowedHostPathRoots` (below), and `spec.sourceSecretRef` names a
+Secret in the namespace whose keys are all loaded into the model downloader
+init container. Grant Model write access on the same terms as InferenceService
+write access.
+
+The chart's `tenant` and `tenant-admin` ClusterRoles (rendered when
+`multitenancy.enabled=true`) grant `create`, `update` and `patch` on Models and
+InferenceServices. Bind them only to principals you would trust to create pods
+in that namespace, and only in namespaces that enforce a Pod Security level.
+
+### Pod Security Admission levels
+
+LLMKube does not filter the fields above. Kubernetes Pod Security Admission
+applies to the pods the operator creates, so enforce a level on every
+namespace that holds InferenceServices:
+
+```bash
+kubectl label namespace team-alpha \
+  pod-security.kubernetes.io/enforce=baseline \
+  pod-security.kubernetes.io/warn=restricted
+```
+
+`baseline` refuses `hostPath` volumes, host namespaces, `privileged: true`
+and capabilities outside its default set. `restricted` also requires non-root
+containers and allows no added capability except `NET_BIND_SERVICE`. Some
+LLMKube features need a more permissive level:
+
+| Feature | What the pod carries | Lowest level that admits it |
+|---|---|---|
+| InferenceService with the operator's default security contexts | seccomp `RuntimeDefault`, all capabilities dropped, no privilege escalation, but no `runAsNonRoot` | `baseline` |
+| GPU request (`nvidia.com/gpu`, `amd.com/gpu`, `devic.es/dri-render`) | an extended resource request; the container is not privileged | no change: the level the rest of the pod needs |
+| Model cache PVC with `modelCache.prep: always` (the default) | the `model-cache-prep` init container runs as uid 0 and adds `CHOWN` and `FOWNER` | `baseline` |
+| Local model source (`file://` or an absolute path) | a hostPath volume the operator generates | `privileged` |
+| `spec.multiNode` | `hostNetwork` and `hostIPC` on every member, plus `IPC_LOCK` when `rdmaResource` is set | `privileged` |
+
+GPU device plugins and the NVIDIA GPU Operator run privileged pods in their
+own namespaces under their own policy. That does not carry over to inference
+namespaces.
+
+Running a namespace at `restricted` takes all of the following:
+
+- Each InferenceService sets `spec.podSecurityContext` with
+  `runAsNonRoot: true`, a numeric `runAsUser` and
+  `seccompProfile: RuntimeDefault`. A supplied context replaces the operator's
+  default entirely, so restate `fsGroup` as well.
+- The runtime image works when run as that uid.
+- A service that sets `spec.securityContext` keeps
+  `allowPrivilegeEscalation: false` and drops all capabilities, since the
+  supplied context replaces the operator's default too.
+- If any service in the namespace uses the model cache, the operator runs
+  with `modelCache.prep: never` (controller flag `--model-cache-prep=never`).
+  The setting is operator-wide and only safe on storage that applies the pod
+  `fsGroup` itself.
+
+[MODEL-CACHE.md, "PSA `restricted`"](../MODEL-CACHE.md#psa-restricted) has
+the exact settings for the cache.
+
+A namespace that serves local model sources or multi-node groups has to run at
+`privileged`, where Pod Security Admission does not limit the fields above.
+Keep InferenceService and Model rights in such a namespace to principals you
+trust with privileged pods on its nodes. For node-local weights, a `pvc://`
+source over a `local` PersistentVolume works under `baseline` (see the
+[air-gapped guide](../site/guides/air-gapped.md)).
+
+### What `allowedHostPathRoots` covers
+
+`modelSource.allowedHostPathRoots` (controller flag `--allowed-host-path-roots`)
+decides which absolute paths a Model's local `spec.source` may name, and so
+which hostPath volume the operator generates for it. It does not inspect
+`spec.extraVolumes`, which reach the pod unchanged. It is not a boundary
+against an InferenceService author; Pod Security Admission is.
+
+## ModelRouter budgets and caller identity
+
+A ModelRouter's `spec.policy.budgets` caps tokens or dollars over a rolling
+window, scoped to the whole router, to one rule, or to a team. They bound
+different callers:
+
+- A `router` budget applies to every request through the router.
+- A `rule` budget applies to requests that match the rule. Matching reads the
+  request's model name and headers the client sends, so a caller can influence
+  which rule, and which rule budget, applies.
+- A `team` budget is keyed on the value of a request header (`headerKey`,
+  default `x-llmkube-team`). The router-proxy charges the request to that
+  value's bucket when the header is present, and applies no team budget when it
+  is absent.
+
+The router-proxy does not authenticate callers on its inference listener, and
+`spec.endpoint.apiKeySecretRef` is not supported on a ModelRouter. A caller
+that omits the team header is held to no team budget; one that sends another
+team's value is charged to that team; one that sends a new value gets a fresh
+budget. On their own, team budgets are an accounting label for cooperative
+callers, not an enforced limit.
+
+To make team budgets hold on the default `dataPlane: Proxy`:
+
+- Put an authenticating gateway in front of the router-proxy that sets the
+  team header from the authenticated identity and overwrites any value the
+  client sent. The [APISIX guide](../site/guides/apisix.md) covers per-client
+  keys with `key-auth`; add the header for each consumer in the gateway.
+- Use NetworkPolicy so that only the gateway can reach the router-proxy, and
+  only the router-proxy (and the gateway, if it routes there) can reach the
+  backend InferenceService Services. A ClusterIP Service is reachable from
+  every pod by default, and a request sent straight to a backend Service is not
+  charged to any router budget.
+
+On `dataPlane: Gateway`, `spec.policy.auth.jwt` validates a JWT at the gateway
+and copies a verified claim into a header (`policy.auth.jwt.headerKey`,
+default `x-llmkube-team`) that team budgets can key on. The router-proxy does
+not read `spec.policy.auth`.
+
 ## Cost-budget integration
 
 The `costBudgetRef` field on `GPUQuotaSpec` references a `CostBudget` resource

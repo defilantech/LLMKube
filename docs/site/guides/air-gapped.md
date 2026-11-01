@@ -387,6 +387,21 @@ workloads already running, delete any InferenceService whose
 source now falls outside the allowlist: a pod created before the
 upgrade keeps its hostPath mount until it is deleted.
 
+`allowedHostPathRoots` covers only the hostPath volume the
+operator generates for a local `spec.source`. It does not inspect
+an InferenceService's `spec.extraVolumes` or security contexts,
+which reach the pod as written, so it does not stop an
+InferenceService author from mounting another host path. Pod
+Security Admission on the namespace is the control for that. Its
+`baseline` level refuses every hostPath volume, including the one
+this option generates, so a namespace that serves local sources
+has to run at `privileged`: keep InferenceService and Model write
+access there to principals you trust with the node. Under
+`baseline`, serve node-local weights through a `pvc://` source
+(Option A) bound to a `local` PersistentVolume instead. The
+[trust model in SECURITY.md](https://github.com/defilantech/LLMKube/blob/main/SECURITY.md#trust-model)
+has the details.
+
 Pin the workload to nodes that have the file (via Deployment node
 selector, taint/toleration, or affinity). The operator does not
 distribute the file across nodes; that's the operator's
