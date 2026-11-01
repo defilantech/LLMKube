@@ -53,6 +53,15 @@ spec:
         {{- end }}
         - --watch-canary-namespace={{ default (include "llmkube.namespace" .) $wc.namespace }}
         {{- end }}
+        {{- $ug := .Values.controllerManager.unreconciledGeneration | default dict }}
+        {{- if and $ug.interval (ne (toString $ug.interval) "0s") }}
+        # Per-kind unreconciled-generation gauges (#2308): alert source for a
+        # single dead informer the watch canary cannot see.
+        - --unreconciled-generation-interval={{ $ug.interval }}
+        - --unreconciled-generation-threshold={{ int (required "controllerManager.unreconciledGeneration.thresholdSeconds is required while the check is on" $ug.thresholdSeconds) }}s
+        {{- else }}
+        - --unreconciled-generation-interval=0
+        {{- end }}
         {{- if and .Values.controllerManager.reconcileTimeout (ne (toString .Values.controllerManager.reconcileTimeout) "0s") }}
         # Bound every Model / InferenceService reconcile so a call that never
         # returns cannot hold a controller worker forever (#2069).

@@ -411,13 +411,20 @@ spec:
   {{- end }}
 
   {{- $watchCanary := .Values.controllerManager.watchCanary | default dict }}
-  {{- /* The alerts read the canary's gauges, which only the canary updates,
-         so render the group only when the canary itself is on (interval set
-         and not "0s"), matching the deployment args and the Role condition. */}}
-  {{- if and .Values.prometheus.prometheusRule.rules.watchCanary.enabled $watchCanary.interval (ne (toString $watchCanary.interval) "0s") }}
+  {{- /* The canary alerts read the canary's gauges, which only the canary
+         updates, so render them only when the canary itself is on (interval
+         set and not "0s"), matching the deployment args and the Role
+         condition. The unreconciled-generation alert is gated the same way on
+         its own check. The group renders when either is on. */}}
+  {{- $canaryAlerts := and .Values.prometheus.prometheusRule.rules.watchCanary.enabled $watchCanary.interval (ne (toString $watchCanary.interval) "0s") }}
+  {{- $ug := .Values.controllerManager.unreconciledGeneration | default dict }}
+  {{- $ugRules := .Values.prometheus.prometheusRule.rules.unreconciledGeneration | default dict }}
+  {{- $ugAlert := and $ugRules.enabled $ug.interval (ne (toString $ug.interval) "0s") }}
+  {{- if or $canaryAlerts $ugAlert }}
   - name: llmkube-controller-watch
     interval: 30s
     rules:
+    {{- if $canaryAlerts }}
     # The operator's watch pipeline stopped delivering events (#2069): the pod
     # stays Running, its probes pass and its webhooks answer while every
     # controller goes silent, so spec changes are silently ignored. The
@@ -448,5 +455,25 @@ spec:
       annotations:
         summary: "LLMKube operator watch canary is not coming up"
         description: "The watch canary on {{`{{ $labels.pod }}`}} has not completed a single write-observe cycle for {{ .Values.prometheus.prometheusRule.rules.watchCanary.downFor }}. Check the operator logs for watch-canary write errors (RBAC or namespace misconfiguration)."
+    {{- end }}
+    {{- if $ugAlert }}
+
+    # A spec change on an InferenceService or Model has gone unreconciled
+    # (#2308): metadata.generation has stayed ahead of every condition's
+    # observedGeneration past the threshold. Informers are per resource type,
+    # so one kind's watch can die while the canary's Lease informer stays
+    # healthy. The operator measures through the API server, not its cache, so
+    # a frozen cache cannot hide the lag. Warning, not critical: a reconcile
+    # error retried forever looks the same, and nothing restarts the pod.
+    - alert: LLMKubeUnreconciledGeneration
+      expr: llmkube_unreconciled_generation_oldest_seconds > {{ int (required "controllerManager.unreconciledGeneration.thresholdSeconds is required while the check is on" $ug.thresholdSeconds) }}
+      for: 0m
+      labels:
+        severity: warning
+        component: controller
+      annotations:
+        summary: "LLMKube {{`{{ $labels.kind }}`}} spec change has gone unreconciled"
+        description: "A {{`{{ $labels.kind }}`}} spec change has gone unreconciled for {{`{{ $value | humanizeDuration }}`}} on {{`{{ $labels.pod }}`}}: metadata.generation is ahead of every status condition's observedGeneration. The {{`{{ $labels.kind }}`}} informer may have stopped delivering events. See docs/operations/runbooks/operator-stalled-watch.md."
+    {{- end }}
   {{- end }}
 {{- end }}

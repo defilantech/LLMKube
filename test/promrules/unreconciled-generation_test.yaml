@@ -1,0 +1,71 @@
+# promtool unit tests for the chart's LLMKubeUnreconciledGeneration alert
+# (#2308). Run with `make test-chart-rules`, which renders the chart's
+# PrometheusRule into rules.yaml next to a copy of this file.
+#
+# The failure replayed here is one kind's informer dying while the rest of
+# the operator keeps working: the operator, reading through the API server,
+# sees that kind's oldest unreconciled spec change age without bound. The
+# alert must fire once that age passes the chart's default threshold (1200s)
+# and not before, name the kind, and stay quiet for a lag that catches up
+# inside the threshold (a reconcile that runs long, a rollout).
+rule_files:
+  - rules.yaml
+
+evaluation_interval: 30s
+
+tests:
+  # Healthy: no object of either kind lags.
+  - interval: 30s
+    input_series:
+      - series: 'llmkube_unreconciled_generation_oldest_seconds{kind="InferenceService",pod="llmkube-controller-manager-0"}'
+        values: '0x80'
+      - series: 'llmkube_unreconciled_generation_oldest_seconds{kind="Model",pod="llmkube-controller-manager-0"}'
+        values: '0x80'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: LLMKubeUnreconciledGeneration
+        exp_alerts: []
+
+  # Dead Model informer: a Model spec change from t=0 never gets reconciled,
+  # so its age grows with the clock while InferenceServices stay current. At
+  # 20m the age equals the threshold and must not fire; past it, it must, for
+  # the Model kind only.
+  - interval: 30s
+    input_series:
+      - series: 'llmkube_unreconciled_generation_oldest_seconds{kind="InferenceService",pod="llmkube-controller-manager-0"}'
+        values: '0x80'
+      - series: 'llmkube_unreconciled_generation_oldest_seconds{kind="Model",pod="llmkube-controller-manager-0"}'
+        values: '0+30x80'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: LLMKubeUnreconciledGeneration
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: LLMKubeUnreconciledGeneration
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: LLMKubeUnreconciledGeneration
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: controller
+              kind: Model
+              pod: llmkube-controller-manager-0
+            exp_annotations:
+              summary: "LLMKube Model spec change has gone unreconciled"
+              description: "A Model spec change has gone unreconciled for 25m 0s on llmkube-controller-manager-0: metadata.generation is ahead of every status condition's observedGeneration. The Model informer may have stopped delivering events. See docs/operations/runbooks/operator-stalled-watch.md."
+
+  # A long reconcile or a rollout: the lag grows to 15m, then the controller
+  # stamps the generation and the age drops back to 0. Never past the
+  # threshold, never fires.
+  - interval: 30s
+    input_series:
+      - series: 'llmkube_unreconciled_generation_oldest_seconds{kind="InferenceService",pod="llmkube-controller-manager-0"}'
+        values: '0+30x30 0x50'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: LLMKubeUnreconciledGeneration
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: LLMKubeUnreconciledGeneration
+        exp_alerts: []

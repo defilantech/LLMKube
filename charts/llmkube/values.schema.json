@@ -55,6 +55,14 @@
             "namespace": { "type": "string" }
           }
         },
+        "unreconciledGeneration": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "interval": { "type": "string" },
+            "thresholdSeconds": { "type": "integer", "minimum": 1 }
+          }
+        },
         "reconcileTimeout": { "type": "string" },
         "resources": {
           "type": "object",
@@ -323,6 +331,13 @@
                     "enabled": { "type": "boolean" },
                     "stalledSeconds": { "type": "number", "minimum": 0 },
                     "downFor": { "type": "string" }
+                  }
+                },
+                "unreconciledGeneration": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "enabled": { "type": "boolean" }
                   }
                 }
               }
