@@ -5,6 +5,15 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.16](https://github.com/defilantech/LLMKube/compare/v0.10.15...v0.10.16) (2026-11-01)
+
+
+### Documentation
+
+* clarify transcript retention when cleanup is disabled ([#2347](https://github.com/defilantech/LLMKube/issues/2347)) ([51b59b8](https://github.com/defilantech/LLMKube/commit/51b59b8638c2abc2d1d5e9e25b44643132807dc9))
+* note Foreman CRD upgrade order ([#2348](https://github.com/defilantech/LLMKube/issues/2348)) ([1b239bf](https://github.com/defilantech/LLMKube/commit/1b239bf86810116782b7e4dfdbbb65df81780f71))
+* **security:** document the InferenceService trust model, host-path roots and router budgets ([#2341](https://github.com/defilantech/LLMKube/issues/2341)) ([0ac7589](https://github.com/defilantech/LLMKube/commit/0ac75890b4e9a2698a0f2f570573327213e469ea))
+
 ## [0.10.15](https://github.com/defilantech/LLMKube/compare/v0.10.14...v0.10.15) (2026-10-31)
 
 
