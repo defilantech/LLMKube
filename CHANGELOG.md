@@ -41,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+* **upgrade:** apply the updated Foreman CRDs before upgrading the operator, agents, and coder images. If agents are upgraded first, the old AgenticTask schema prunes `status.attempt`, so audit and transcript names silently remain at attempt 0 and retries do not preserve separate records. ([#2311](https://github.com/defilantech/LLMKube/pull/2311))
 * **macos:** explain why Login Items lists the agent as Defilan Technologies LLC ([#2307](https://github.com/defilantech/LLMKube/issues/2307)) ([5b5e17e](https://github.com/defilantech/LLMKube/commit/5b5e17e6d770202e75d81de60da972cb0e95648c))
 * move Foreman stream guide before references ([#2322](https://github.com/defilantech/LLMKube/issues/2322)) ([d856cb1](https://github.com/defilantech/LLMKube/commit/d856cb1e036005af331ac5aad5beaee3e9847c3b))
 * **upgrade:** a MetalNode is Reachable only when the Mac's metal-agent reports an ingress certificate naming its MetalNode. After upgrading the controller, every Mac shows Reachable=False with reason AgentUpgradeRequired, and its hostIP is cleared, until its metal-agent is upgraded too; upgrade the agents promptly. Nothing routes to hostIP yet, so serving is unaffected. The dial-back verifier image's curl must be 7.57 or later with a TLS library that accepts a self-signed certificate as its own trust anchor; the default curlimages/curl image does. ([7e7fbaa](https://github.com/defilantech/LLMKube/commit/7e7fbaab1e29eb96ebdc381597bd416313ded036))
