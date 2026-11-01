@@ -708,7 +708,14 @@ after a failure with a
 backoff of 30 seconds growing to 5 minutes. Two rules hold whatever
 the Mac reports: at most one verifier pod exists per MetalNode at a
 time (a pod being deleted still counts), and two verifier starts are
-at least 30 seconds apart. Rewording a candidate's source or changing
+at least 30 seconds apart. The one exception is a verifier pod that
+has been terminating for more than 5 minutes: it has no grace period,
+so it is on a node that went away, and it stays until that node object
+is removed. One such pod stops blocking new checks; two or more block
+again, so a `spec.verifier` placement that keeps landing on lost nodes
+cannot pile pods up, and once the last success expires the
+`Reachable` message names one and says to remove the node or
+force-delete the pods. Rewording a candidate's source or changing
 an address that is never dialed is not a change. Only the verifier
 pod the controller created (recorded by UID in
 `status.verification.podUID`) can report a result. When the pin or

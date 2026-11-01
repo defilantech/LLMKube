@@ -67,6 +67,17 @@ const (
 	// metalNodeVerifierPollInterval requeues while a verifier runs, as a
 	// backstop for the pod watch.
 	metalNodeVerifierPollInterval = 5 * time.Second
+	// metalNodeVerifierAbandonAfter is how long a deleted verifier pod may
+	// stay terminating before it stops blocking new checks. The pod has no
+	// grace period, so a live kubelet removes it in seconds; one still there
+	// after this long is on a node that went away, and stays until the node
+	// object is removed.
+	metalNodeVerifierAbandonAfter = 5 * time.Minute
+	// metalNodeMaxAbandonedVerifiers is how many such pods are set aside. A
+	// lost node holds at most the one verifier that ran there; more mean a
+	// placement that keeps landing on lost nodes, and they block again rather
+	// than pile up.
+	metalNodeMaxAbandonedVerifiers = 1
 	// metalNodeHeartbeatWindowUnset is how long a Lease with no
 	// leaseDurationSeconds counts as fresh.
 	metalNodeHeartbeatWindowUnset = 2 * time.Minute
@@ -375,8 +386,9 @@ func copyReportFacts(st *inferencev1alpha1.MetalNodeStatus, report metalnode.Rep
 //
 // The Mac controls its report, so nothing in it may make the controller run
 // more pods: every verifier pod this MetalNode owns counts as busy until it
-// is gone (terminating ones included), and starts are at least
-// metalNodeMinStartSpacing apart whatever changed.
+// is gone (terminating ones included, except one set aside by
+// setAsideAbandoned), and starts are at least metalNodeMinStartSpacing apart
+// whatever changed.
 func (r *MetalNodeReconciler) reconcileDialBack(ctx context.Context, mn *inferencev1alpha1.MetalNode, report *metalnode.Report,
 	connected bool, now time.Time, prevPin string, prevPort int32) (time.Duration, []corev1.Pod, error) {
 	st := &mn.Status
@@ -398,12 +410,22 @@ func (r *MetalNodeReconciler) reconcileDialBack(ctx context.Context, mn *inferen
 	if err != nil {
 		return 0, nil, err
 	}
+	pods, abandoned := setAsideAbandoned(pods, now)
+	for _, p := range abandoned {
+		log.FromContext(ctx).V(1).Info("not waiting for a verifier pod stuck terminating", "pod", p.Name,
+			"deletionTimestamp", p.DeletionTimestamp.Time)
+	}
 	if verifiedResultExpired(mn, now) {
 		msg := fmt.Sprintf("the last check that reached this Mac finished more than %s ago and none has finished since; a new check is due",
 			metalNodeMaxResultAge)
 		if blocking := terminatingVerifier(pods); blocking != nil {
 			msg += fmt.Sprintf("; verifier pod %s has been terminating since %s and no check starts until it is gone",
 				blocking.Name, blocking.DeletionTimestamp.UTC().Format(time.RFC3339))
+			if n := countAbandoned(pods, now); n > 0 {
+				msg += fmt.Sprintf(" (%d verifier pods have been terminating for over %s, more than the controller sets aside, "+
+					"so their nodes are likely gone: remove those nodes or delete the pods with --force --grace-period=0)",
+					n, metalNodeVerifierAbandonAfter)
+			}
 		}
 		r.setReachable(mn, metav1.ConditionUnknown, inferencev1alpha1.MetalNodeReasonVerificationPending, msg)
 	}
@@ -639,6 +661,42 @@ func terminatingVerifier(pods []corev1.Pod) *corev1.Pod {
 	return nil
 }
 
+// setAsideAbandoned splits off the verifier pods that have been terminating
+// for more than metalNodeVerifierAbandonAfter, when there are at most
+// metalNodeMaxAbandonedVerifiers of them: such a pod is on a node that went
+// away, and waiting for it would keep the Mac from ever being checked again.
+// More of them keep blocking (all are returned in pods), so a placement that
+// keeps landing on lost nodes cannot pile up pods, one per check.
+func setAsideAbandoned(pods []corev1.Pod, now time.Time) (kept, abandoned []corev1.Pod) {
+	if countAbandoned(pods, now) > metalNodeMaxAbandonedVerifiers {
+		return pods, nil
+	}
+	for _, p := range pods {
+		if verifierAbandoned(&p, now) {
+			abandoned = append(abandoned, p)
+		} else {
+			kept = append(kept, p)
+		}
+	}
+	return kept, abandoned
+}
+
+// verifierAbandoned reports whether pod has been terminating for more than
+// metalNodeVerifierAbandonAfter.
+func verifierAbandoned(pod *corev1.Pod, now time.Time) bool {
+	return pod.DeletionTimestamp != nil && now.Sub(pod.DeletionTimestamp.Time) > metalNodeVerifierAbandonAfter
+}
+
+func countAbandoned(pods []corev1.Pod, now time.Time) int {
+	n := 0
+	for i := range pods {
+		if verifierAbandoned(&pods[i], now) {
+			n++
+		}
+	}
+	return n
+}
+
 // stopVerifiers is every verifier pod not already being deleted.
 func stopVerifiers(pods []corev1.Pod) []corev1.Pod {
 	var out []corev1.Pod
@@ -654,7 +712,8 @@ func stopVerifiers(pods []corev1.Pod) []corev1.Pod {
 // controller last created (status.verification.podUID), for the current
 // inputs, can report a result, and only once. Any other pod, a finished
 // pod, or one stuck past metalNodeVerifierTimeout is returned for deletion.
-// busy is true while any verifier pod exists, terminating ones included.
+// busy is true while any of pods exists, terminating ones included (the
+// caller has already set aside an abandoned one).
 func (r *MetalNodeReconciler) harvestVerifiers(mn *inferencev1alpha1.MetalNode, pods []corev1.Pod, hash string,
 	now time.Time) (busy bool, toDelete []corev1.Pod) {
 	for _, pod := range pods {
