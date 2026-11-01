@@ -199,7 +199,7 @@ Same models, sorted by what you want to do. Numbers cited come from the upstream
 
 ### Vision / multimodal
 
-llama.cpp loads the vision projector from a separate `mmproj-*.gguf` file alongside the language GGUF. Account for both.
+llama.cpp loads the vision projector from a separate `mmproj-*.gguf` file alongside the language GGUF. Account for both. Declare the projector with `spec.mmproj` on the Model and LLMKube stages it and passes `--mmproj` to llama-server; see [Serving vision models](/docs/guides/vision-models).
 
 | Tier | First pick | mmproj size |
 |------|-----------|-------------|

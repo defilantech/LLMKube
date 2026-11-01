@@ -55,6 +55,9 @@ sections:
       - label: Model matrix
         slug: guides/model-matrix
         file: guides/model-matrix.md
+      - label: Serving vision models
+        slug: guides/vision-models
+        file: guides/vision-models.md
       - label: Air-gapped install
         slug: guides/air-gapped
         file: guides/air-gapped.md
