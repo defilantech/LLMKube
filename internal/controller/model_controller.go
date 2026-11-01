@@ -156,6 +156,7 @@ type ModelReconciler struct {
 	// Prefetch (#904) configuration, mirrored from the InferenceService
 	// reconciler's cache settings so the prefetch Job writes into the same
 	// shared cache PVC the serving path mounts.
+	OCIPublisherImage    string
 	InitContainerImage   string
 	CACertConfigMap      string
 	DefaultFSGroup       int64

@@ -543,7 +543,9 @@ spec:
                   InferenceService, via an owner-ref'd Job that reuses the serving
                   init-container download stack. The Model reads Downloading until the
                   Job completes and Ready after it, so a referencing service starts from
-                  a cache hit. A glob in spec.files is expanded from the repository
+                  a cache hit. With prefetchOCI set, the Job publishes to a registry instead
+                  and consumers use a separate oci:// Model with the published digest.
+                  A glob in spec.files is expanded from the repository
                   listing before the Job is built, as the serving path expands it.
 
                   The Job stages into spec.modelCache.claimName when set. Otherwise the
@@ -1489,6 +1491,47 @@ spec:
                   prefetch pod schedules to; without a selector the PV can bind to a
                   node the InferenceService never runs on (#1964).
                 type: object
+              prefetchOCI:
+                description: |-
+                  PrefetchOCI publishes downloaded files as a container image instead of staging
+                  the Model into a PVC. Consumers use a separate oci:// Model pinned to the
+                  published digest. Service-requested PVC prefetch remains independent.
+                properties:
+                  ephemeralStorage:
+                    description: |-
+                      EphemeralStorage is the required node-local disk budget for downloading
+                      all selected files, with headroom for partial downloads and container logs.
+                      Applied to requests and limits on each Job container and to emptyDir.sizeLimit.
+                      No default is safe for both small and very large models.
+                    type: string
+                    x-kubernetes-validations:
+                    - message: ephemeralStorage must be a positive Kubernetes quantity
+                      rule: isQuantity(self) && quantity(self).isGreaterThan(quantity('0'))
+                  image:
+                    description: Image is a fully qualified registry/repository:tag
+                      destination (no oci:// prefix).
+                    minLength: 1
+                    type: string
+                  pushSecretRef:
+                    description: |-
+                      PushSecretRef names a kubernetes.io/dockerconfigjson Secret in the Model's
+                      namespace. It is mounted only in the publisher, never in the downloader.
+                    properties:
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                    type: object
+                    x-kubernetes-map-type: atomic
+                required:
+                - ephemeralStorage
+                - image
+                type: object
               prefetchTolerations:
                 description: |-
                   PrefetchTolerations are applied to the prefetch Job's pod, and govern
@@ -1687,6 +1730,11 @@ spec:
               rule: '!(has(self.prefetch) && self.prefetch && has(self.modelCache)
                 && has(self.modelCache.persistence) && self.modelCache.persistence
                 == ''Ephemeral'')'
+            - message: 'prefetchOCI requires prefetch: true'
+              rule: '!has(self.prefetchOCI) || (has(self.prefetch) && self.prefetch)'
+            - message: prefetchOCI cannot be combined with modelCache; configure service
+                caches on InferenceService
+              rule: '!has(self.prefetchOCI) || !has(self.modelCache)'
           status:
             description: status defines the observed state of Model
             properties:
@@ -1937,6 +1985,43 @@ spec:
                 x-kubernetes-list-map-keys:
                 - claimName
                 x-kubernetes-list-type: map
+              prefetchOCI:
+                description: PrefetchOCI records the published image and the files
+                  it contains.
+                properties:
+                  files:
+                    description: Files contains image-root-relative paths, with the
+                      primary file first.
+                    items:
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  fingerprint:
+                    description: Fingerprint identifies the source, file set and destination
+                      of this publication.
+                    type: string
+                  image:
+                    description: Image is the published oci://registry/repository@sha256:...
+                      reference.
+                    type: string
+                  jobName:
+                    type: string
+                  message:
+                    type: string
+                  observedGeneration:
+                    format: int64
+                    type: integer
+                  phase:
+                    description: Phase is Pending, Running, Succeeded or Failed.
+                    enum:
+                    - Pending
+                    - Running
+                    - Succeeded
+                    - Failed
+                    type: string
+                required:
+                - phase
+                type: object
               sha256:
                 description: |-
                   SHA256 is the computed SHA256 hash of the model file.

@@ -58,6 +58,7 @@ spec:
         # returns cannot hold a controller worker forever (#2069).
         - --reconcile-timeout={{ .Values.controllerManager.reconcileTimeout }}
         {{- end }}
+        - --oci-publisher-image={{ include "llmkube.controllerImage" . }}
         - --health-probe-bind-address=:8081
         {{- if .Values.metrics.enabled }}
         - --metrics-bind-address=:{{ .Values.metrics.service.port }}

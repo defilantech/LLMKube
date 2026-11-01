@@ -117,7 +117,7 @@ func resolveServingRuntime(isvc *inferencev1alpha1.InferenceService) string {
 // modelWantsPrefetch reports whether the Model asks to be staged into its own
 // cache claim: spec.prefetch, or its alias spec.modelCache.prefetch.
 func modelWantsPrefetch(model *inferencev1alpha1.Model) bool {
-	if model == nil {
+	if model == nil || model.Spec.PrefetchOCI != nil {
 		return false
 	}
 	return model.Spec.Prefetch || (model.Spec.ModelCache != nil && model.Spec.ModelCache.Prefetch)
@@ -185,7 +185,9 @@ func ownedPrefetchJob(ctx context.Context, c client.Reader, model *inferencev1al
 // is already gone is not an error.
 func deletePrefetchJob(ctx context.Context, c client.Client, job *batchv1.Job) error {
 	propagation := metav1.DeletePropagationBackground
-	if prefetchJobIsStager(job) {
+	if prefetchJobIsStager(job) || job.Annotations[annotationOCIFiles] != "" {
+		// OCI publishers must also finish terminating before a replacement
+		// can push to the same tag.
 		// These stagers may bypass flock on FUSE. Keep the Job's name
 		// occupied until its pods are gone, including on spec replacement.
 		propagation = metav1.DeletePropagationForeground

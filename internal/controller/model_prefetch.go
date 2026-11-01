@@ -498,6 +498,15 @@ type prefetchTargetOutcome struct {
 func (r *ModelReconciler) reconcilePrefetch(ctx context.Context, model *inferencev1alpha1.Model) (bool, ctrl.Result, error) {
 	before := model.Status.DeepCopy()
 	handled, result, err := r.reconcilePrefetchState(ctx, model)
+	if err == nil {
+		if model.Spec.PrefetchOCI != nil {
+			ociResult, ociErr := r.reconcileOCIPrefetch(ctx, model)
+			result.RequeueAfter = earliestPositive(result.RequeueAfter, ociResult.RequeueAfter)
+			handled, err = true, ociErr
+		} else if model.Status.PrefetchOCI != nil {
+			err = r.removeOCIPrefetch(ctx, model)
+		}
+	}
 	if err != nil {
 		return true, ctrl.Result{}, err
 	}

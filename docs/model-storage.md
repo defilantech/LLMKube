@@ -105,6 +105,117 @@ FROM scratch
 COPY ./qwen3-32b.gguf /
 ```
 
+### Publishing models with OCI prefetch
+
+Set `prefetch: true` and `prefetchOCI` to download an HTTP(S)/HF model and
+publish it in the image layout above. Without `prefetchOCI`, prefetch keeps
+its existing PVC behavior. See
+[`config/samples/model_prefetch_oci.yaml`](../config/samples/model_prefetch_oci.yaml).
+
+```yaml
+spec:
+  source: https://example.com/weights.gguf
+  format: gguf
+  prefetch: true
+  prefetchOCI:
+    image: registry.example.com/models/weights:v1
+    ephemeralStorage: 10Gi
+    pushSecretRef:
+      name: registry-writer
+```
+
+`image` requires a fully qualified registry/repository and explicit tag, without
+an `oci://` prefix. `pushSecretRef` is optional for anonymous registries; for
+private registries it names a same-namespace `kubernetes.io/dockerconfigjson`
+Secret with push permission. Only the publisher mounts this Secret. Source
+credentials still use `sourceSecretRef`, only on the downloader. The configured
+`--ca-cert-configmap` is trusted by both containers, including registry TLS.
+Neither container needs a Kubernetes API token or privileged access.
+
+The Helm chart uses its operator image for publishing. Other installations must
+set `--oci-publisher-image=<operator-image>` to an image built from this version;
+the Job runs `/manager publish-model` in that image. Private publisher/downloader
+images need pull credentials on the Model namespace's default ServiceAccount.
+
+The Job uses node-local `emptyDir` scratch space. `prefetchOCI.ephemeralStorage`
+is a required positive Kubernetes quantity (for example `150Gi`). Set it above
+**the total size of all selected files**, with headroom for partial downloads
+and container logs. The controller applies the budget to the download and
+publisher containers' `ephemeral-storage` requests and limits, and to
+`emptyDir.sizeLimit`. Because the downloader is an init container, the scheduler
+reserves the larger of the init-container and application-container requests,
+not their sum. This makes disk usage visible to scheduling and gives the kubelet
+a ceiling for the Job. Disk limits are enforced through eviction, not a hard
+filesystem quota; leave node-level headroom as well. There is no default safe
+for every model size. Existing OCI-prefetch manifests must add this field.
+
+The publisher streams one filesystem tar layer per selected file, including
+`mmproj`, and publishes a linux/amd64 + linux/arm64 image index sharing those
+layers. Layers use gzip **stored blocks** (`gzip.NoCompression`), retaining the
+`tar+gzip` media type without expensive compression of weights. Hashing and
+upload still read the files multiple times, but no whole-layer memory cache is
+used. Unchanged files retain their layer digests and are not uploaded again to
+a registry that already holds them. Each individual file plus tar/gzip overhead
+must fit the registry's blob-size limit; large single files still need upstream
+sharding. This does not add resumable uploads across Job restarts.
+
+Model prefetch node selectors, affinity and
+tolerations apply to the Job. `spec.files`, `spec.mmproj`, source authentication
+and checksum validation use the existing downloader. S3, local, PVC and existing
+OCI sources are not accepted as OCI-prefetch inputs. Do not combine
+`prefetchOCI` with Model-level `modelCache`; a service can still request its own
+PVC staging through `InferenceService.spec.modelCache`.
+
+Publication completes when `status.prefetchOCI.phase` is `Succeeded`.
+`status.prefetchOCI.image` is the immutable `oci://...@sha256:...` reference;
+`status.prefetchOCI.files` lists the paths inside the image, primary first.
+Create a separate Model in the next environment using that reference and those
+explicit `spec.files` paths (and `spec.mmproj`, when present). Explicit paths
+also let the promoted Model have a different name. Omit download-only `sha256`
+and `fileSha256` there: the OCI image digest pins the whole image.
+
+Publishing does not rewrite `spec.source` or switch existing services to OCI.
+An InferenceService using the original HTTP/HF Model still uses its normal
+source/cache path. Only services using the promoted `oci://` Model require no
+provider access. Publishing itself needs no ImageVolume support; consuming the
+result has the cluster requirements below.
+
+A changed source, selected file set, checksum or destination starts a new
+publication. An unchanged successful publication is retained after the Job's
+24-hour cleanup; upstream/tag changes are not polled. Use pinned source revisions
+and unique destination tags for reproducibility. On failure, inspect the Job's
+pod logs and `status.prefetchOCI.message`, then delete the failed Job to retry.
+Removing `prefetchOCI` deletes its owned Job and clears publication status; it
+does not delete registry images. Registry retention and cross-environment
+promotion remain under your control.
+
+For a cluster smoke test with tiny fixture weights (no GPU), rebuild and install
+this operator image **and the regenerated CRDs** on a disposable cluster with
+ImageVolume support. Confirm `--oci-publisher-image` names that rebuilt image
+(the Helm chart sets it from its operator image). Use a unique image tag so the
+node cannot reuse an older build. Then run:
+
+```bash
+KUBECONFIG=/path/to/disposable-cluster.kubeconfig \
+OCI_PREFETCH_IMAGE=registry.example.com/models/oci-smoke:unique-test-tag \
+OCI_PREFETCH_DOCKER_CONFIG=/path/to/docker-config.json \
+bash -o pipefail -c 'bash hack/test-oci-prefetch.sh 2>&1 | tee /tmp/oci-prefetch-smoke.log'
+```
+
+The registry must be reachable from pods (push) and nodes (ImageVolume pull).
+`OCI_PREFETCH_DOCKER_CONFIG` must include push access to the model repository and
+pull access to the operator image if it is private. The script uses it for the
+test namespace's default ServiceAccount and the serving InferenceService.
+Omit it when both registries allow anonymous access. The test creates and
+removes its own namespace, publishes fixture shards and a projector, removes
+its HTTP provider, and creates an `oci://` Model plus a generic InferenceService
+with `stageModel: true`. It checks the operator-created Deployment's ImageVolume
+reference and verifies all three files over the serving Service. The output
+includes the `oci://...@sha256:...` reference and a `BYTES CHECK PASSED` line for
+each file. Keep `/tmp/oci-prefetch-smoke.log` as PR evidence. This exercises
+publication, mounting and serving bytes, not LLM inference. The test leaves the registry tag for
+inspection; delete it using your registry's normal retention tooling.
+
 ### Cluster requirement
 
 `oci://` needs **Kubernetes >= 1.36** on the serving node (ImageVolume reached

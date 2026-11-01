@@ -59,6 +59,7 @@ import (
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 	"github.com/defilantech/llmkube/internal/controller"
 	llmkubemetrics "github.com/defilantech/llmkube/internal/metrics"
+	"github.com/defilantech/llmkube/internal/ocipublish"
 	"github.com/defilantech/llmkube/internal/watchcanary"
 	// +kubebuilder:scaffold:imports
 )
@@ -165,6 +166,13 @@ func initTracer(ctx context.Context) func() {
 
 // nolint:gocyclo
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "publish-model" {
+		if err := ocipublish.Run(context.Background(), os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	var metricsAddr string
 	var metricsCertPath, metricsCertName, metricsCertKey string
 	var webhookCertPath, webhookCertName, webhookCertKey string
@@ -191,6 +199,7 @@ func main() {
 	var modelAttestationMaxAge time.Duration
 	var caCertConfigMap string
 	var initContainerImage string
+	var ociPublisherImage string
 	var defaultFSGroup int64
 	var initContainerUser int64
 	var driRenderGID int64
@@ -264,6 +273,8 @@ func main() {
 			"SourceDrifted condition and acted on only when spec.refreshPolicy is OnChange.")
 	flag.StringVar(&caCertConfigMap, "ca-cert-configmap", "",
 		"Name of the ConfigMap containing a custom CA certificate to trust for model downloads.")
+	flag.StringVar(&ociPublisherImage, "oci-publisher-image", "",
+		"Operator image containing /manager publish-model; required for OCI prefetch.")
 	flag.StringVar(&initContainerImage, "init-container-image", "docker.io/curlimages/curl:8.18.0",
 		"Container image for the model downloader init container.")
 	flag.Int64Var(&initContainerUser, "init-container-user", controller.DefaultInitContainerUser,
@@ -676,6 +687,7 @@ func main() {
 		ServerVersion:        serverVersion,
 		AllowedHostPathRoots: allowedHostPathRootList,
 		AllowedRemoteHosts:   allowedRemoteHostList,
+		OCIPublisherImage:    ociPublisherImage,
 		InitContainerImage:   initContainerImage,
 		CACertConfigMap:      caCertConfigMap,
 		Recorder:             mgr.GetEventRecorder("model-controller"),
