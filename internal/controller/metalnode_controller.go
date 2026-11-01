@@ -814,19 +814,34 @@ func summarizeResults(counts map[inferencev1alpha1.MetalNodeCandidateResult]int)
 	return strings.Join(parts, ", ")
 }
 
+// metalNodeLeaseNameField indexes MetalNodes by spec.leaseName in the
+// manager's cache, so a Lease event finds its MetalNode without listing the
+// namespace.
+const metalNodeLeaseNameField = "spec.leaseName"
+
+// indexMetalNodeLeaseName registers the spec.leaseName index.
+func indexMetalNodeLeaseName(ctx context.Context, indexer client.FieldIndexer) error {
+	return indexer.IndexField(ctx, &inferencev1alpha1.MetalNode{}, metalNodeLeaseNameField, func(obj client.Object) []string {
+		mn, ok := obj.(*inferencev1alpha1.MetalNode)
+		if !ok || mn.Spec.LeaseName == "" {
+			return nil
+		}
+		return []string{mn.Spec.LeaseName}
+	})
+}
+
 // metalNodesForLease maps a Lease event to the MetalNodes in its namespace
-// whose spec.leaseName names it.
+// whose spec.leaseName names it, through the spec.leaseName index.
 func (r *MetalNodeReconciler) metalNodesForLease(ctx context.Context, lease *coordinationv1.Lease) []reconcile.Request {
 	list := &inferencev1alpha1.MetalNodeList{}
-	if err := r.List(ctx, list, client.InNamespace(lease.Namespace)); err != nil {
+	if err := r.List(ctx, list, client.InNamespace(lease.Namespace),
+		client.MatchingFields{metalNodeLeaseNameField: lease.Name}); err != nil {
 		log.FromContext(ctx).Error(err, "list MetalNodes for Lease", "lease", client.ObjectKeyFromObject(lease))
 		return nil
 	}
-	var out []reconcile.Request
+	out := make([]reconcile.Request, 0, len(list.Items))
 	for _, mn := range list.Items {
-		if mn.Spec.LeaseName == lease.Name {
-			out = append(out, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&mn)})
-		}
+		out = append(out, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&mn)})
 	}
 	return out
 }
@@ -839,6 +854,9 @@ func (r *MetalNodeReconciler) metalNodesForLease(ctx context.Context, lease *coo
 func (r *MetalNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.APIReader == nil {
 		r.APIReader = mgr.GetAPIReader()
+	}
+	if err := indexMetalNodeLeaseName(context.Background(), mgr.GetFieldIndexer()); err != nil {
+		return fmt.Errorf("index MetalNodes by %s: %w", metalNodeLeaseNameField, err)
 	}
 	hasLabel, err := labels.NewRequirement(inferencev1alpha1.LabelMetalNode, selection.Exists, nil)
 	if err != nil {
