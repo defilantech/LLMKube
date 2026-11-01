@@ -196,6 +196,7 @@ points to the latest completed attempt.
 New transcripts survive task deletion and use the operator's existing
 `--audit-retention` period (Helm: `operator.audit.retention`, seven days by
 default), measured from ConfigMap creation. A zero duration disables cleanup.
+With cleanup disabled, transcripts accumulate indefinitely, even after task deletion, unless manually deleted.
 Legacy records remain readable; already overwritten or deleted evidence cannot
 be recovered. Upgrade the Foreman CRDs, operator, agents, and coder images
 together: the attempt counter and the Job's `--attempt-key` check require the

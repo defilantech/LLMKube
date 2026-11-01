@@ -261,6 +261,7 @@ operator:
     # Default: 7 days. Override shorter for tighter retention
     # (e.g. "24h"); override longer for compliance-driven horizons.
     # Set to "0s" / "0m" / "0" to disable the reaper.
+    # Transcripts then accumulate indefinitely, even after task deletion, unless manually deleted.
     retention: 168h
     # How often the reaper sweeps. Default 1h; only useful to lower
     # for tests. The first sweep runs immediately on operator start,
