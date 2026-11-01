@@ -17,12 +17,15 @@ limitations under the License.
 package router
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"math"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // BudgetRule defines a token or dollar cap over a rolling window.
@@ -83,8 +86,11 @@ type BudgetUsage struct {
 //
 // Usage is tracked via a ring/timestamp-bucket scheme: each bucket covers
 // a fixed time slice (bucketDuration), and usage older than Window is
-// evicted. This avoids unbounded memory growth while keeping the accounting
-// precise enough for budget enforcement.
+// evicted. A key left with no bucket inside its window is deleted by a
+// periodic sweep (see maybeSweepLocked); an absent key and a key with no
+// usage in the window mean the same thing to every reader. Team keys come
+// from a client header, so the number of live team keys is capped (see
+// maxTeamKeys and resolveLocked).
 type BudgetStore struct {
 	mu    sync.Mutex
 	nowFn func() time.Time
@@ -93,8 +99,19 @@ type BudgetStore struct {
 	rules map[string]BudgetRule
 
 	// buckets maps scopeKey -> []bucket. Each bucket covers
-	// bucketDuration and holds usage within that slice.
+	// bucketDuration and holds usage within that slice. A stored slice is
+	// never empty.
 	buckets map[string][]bucket
+
+	// teamKeys counts the keys in buckets that count toward maxTeamKeys.
+	teamKeys int
+
+	// lastSweep is when the idle-key sweep last ran.
+	lastSweep time.Time
+
+	// onTeamOverflow, when set, is called (under mu) with the budget name
+	// each time Allowed folds a new team value into the overflow key.
+	onTeamOverflow func(budget string)
 }
 
 // bucket is a single time slice within a rolling window.
@@ -109,6 +126,35 @@ type bucket struct {
 // number of buckets per window manageable (e.g. 3600 buckets for a
 // 1-hour window).
 const bucketDuration = time.Second
+
+// sweepInterval paces the sweep that deletes keys with no usage left in
+// their window. Usage is kept in bucketDuration slices, so sweeping more
+// often than one slice frees memory barely sooner; pacing it keeps the
+// O(keys) walk off the per-request path.
+const sweepInterval = bucketDuration
+
+// maxTeamKeys caps the live concrete team keys ("team:<headerKey>:<value>")
+// across all team budgets. The value comes from a request header the proxy
+// does not authenticate, so without a cap each distinct value a caller sends
+// inside one window is a new map entry. When the cap is reached, a request
+// with a value that has no key yet is charged to, and limited by, its
+// budget's shared overflow key (see teamOverflowValue) instead of creating
+// one. It is not unlimited: the overflow key carries the same cap as any
+// single team value.
+const maxTeamKeys = 10000
+
+// teamOverflowValue is the team value that every new value is folded into
+// once maxTeamKeys is reached, giving "team:<headerKey>:__overflow__". A
+// client that sends this value itself only lands in the same shared bucket,
+// which the header already lets any caller choose; it gains nothing.
+const teamOverflowValue = "__overflow__"
+
+// maxTeamValueLen bounds the header value a team key embeds verbatim. Longer
+// values, and values that are not valid UTF-8 (which a Prometheus label and
+// the JSON status cannot carry), are replaced by "sha256:<hex>" of the
+// value, so a key's size is bounded however large the header is, while
+// ordinary team names keep their readable key.
+const maxTeamValueLen = 128
 
 // NewBudgetStore creates a BudgetStore from the given rules and clock.
 // The clock function is injected so tests can advance time deterministically.
@@ -135,7 +181,7 @@ func (s *BudgetStore) ruleFor(sk string) (BudgetRule, bool) {
 	if r, ok := s.rules[sk]; ok {
 		return r, true
 	}
-	if hk, ok := teamHeaderKey(sk); ok {
+	if hk, _, ok := splitTeamKey(sk); ok {
 		if r, ok := s.rules["team:"+hk]; ok {
 			return r, true
 		}
@@ -143,21 +189,119 @@ func (s *BudgetStore) ruleFor(sk string) (BudgetRule, bool) {
 	return BudgetRule{}, false
 }
 
-// teamHeaderKey extracts the header name from a concrete team scope key
-// "team:<headerKey>:<value>". It returns false for the two-segment
+// splitTeamKey splits a concrete team scope key "team:<headerKey>:<value>"
+// into its header name and value. It returns false for the two-segment
 // "team:<x>" form, which only ever matches a rule exactly. A header name
 // cannot contain a colon, so the first colon after the "team:" prefix
 // delimits the name; the value is opaque and may contain colons.
-func teamHeaderKey(sk string) (string, bool) {
+func splitTeamKey(sk string) (headerKey, value string, ok bool) {
 	rest, ok := strings.CutPrefix(sk, "team:")
 	if !ok {
-		return "", false
+		return "", "", false
 	}
 	hk, value, ok := strings.Cut(rest, ":")
 	if !ok || hk == "" || value == "" {
-		return "", false
+		return "", "", false
 	}
-	return hk, true
+	return hk, value, true
+}
+
+// teamScopeKey builds the concrete scope key for a team header value. A
+// value longer than maxTeamValueLen or not valid UTF-8 is replaced by its
+// SHA-256, so the key's length is bounded; any other value is kept verbatim.
+func teamScopeKey(headerKey, value string) string {
+	if len(value) > maxTeamValueLen || !utf8.ValidString(value) {
+		sum := sha256.Sum256([]byte(value))
+		value = "sha256:" + hex.EncodeToString(sum[:])
+	}
+	return "team:" + headerKey + ":" + value
+}
+
+// countsTowardTeamCap reports whether a key is a concrete team key that
+// maxTeamKeys bounds. The per-budget overflow keys are excluded: there is at
+// most one per team budget, and they must always be creatable.
+func countsTowardTeamCap(sk string) bool {
+	_, value, ok := splitTeamKey(sk)
+	return ok && value != teamOverflowValue
+}
+
+// resolveLocked returns the key a request scope key's usage is kept under,
+// and whether it was folded into its budget's overflow key. Every key keeps
+// its own identity except a team key that has no usage yet while
+// maxTeamKeys live team keys exist: it resolves to the overflow key, so a
+// caller cycling header values cannot add keys, and is still held to a cap.
+// A key that already exists is never redirected, so a team with usage keeps
+// its own cap however many other values arrive.
+func (s *BudgetStore) resolveLocked(sk string, now time.Time) (string, bool) {
+	if !countsTowardTeamCap(sk) {
+		return sk, false
+	}
+	if _, ok := s.buckets[sk]; ok {
+		return sk, false
+	}
+	if s.teamKeys >= maxTeamKeys {
+		// Idle keys may be holding the slots; free them before refusing.
+		s.maybeSweepLocked(now)
+	}
+	if s.teamKeys < maxTeamKeys {
+		return sk, false
+	}
+	hk, _, _ := splitTeamKey(sk)
+	return "team:" + hk + ":" + teamOverflowValue, true
+}
+
+// maybeSweepLocked runs sweepLocked at most once per sweepInterval.
+func (s *BudgetStore) maybeSweepLocked(now time.Time) {
+	if !s.lastSweep.IsZero() && now.Sub(s.lastSweep) < sweepInterval {
+		return
+	}
+	s.sweepLocked(now)
+}
+
+// sweepLocked drops every bucket outside its key's window and deletes the
+// keys left with none. It removes exactly the usage usedInWindow already
+// ignores, so no Allowed decision or Snapshot value changes.
+func (s *BudgetStore) sweepLocked(now time.Time) {
+	s.lastSweep = now
+	for sk, bkts := range s.buckets {
+		if rule, ok := s.ruleFor(sk); ok {
+			bkts = pruneBuckets(bkts, now.Add(-rule.Window))
+		} else {
+			bkts = nil
+		}
+		if len(bkts) == 0 {
+			delete(s.buckets, sk)
+			if countsTowardTeamCap(sk) {
+				s.teamKeys--
+			}
+			continue
+		}
+		s.buckets[sk] = bkts
+	}
+}
+
+// pruneBuckets drops, in place, the buckets that start at or before
+// windowStart: the same test usedInWindow applies.
+func pruneBuckets(bkts []bucket, windowStart time.Time) []bucket {
+	kept := 0
+	for i := range bkts {
+		if bkts[i].start.After(windowStart) {
+			bkts[kept] = bkts[i]
+			kept++
+		}
+	}
+	return bkts[:kept]
+}
+
+// hasBucketInWindow reports whether any bucket of a key still counts toward
+// the window starting after windowStart.
+func hasBucketInWindow(bkts []bucket, windowStart time.Time) bool {
+	for i := len(bkts) - 1; i >= 0; i-- {
+		if bkts[i].start.After(windowStart) {
+			return true
+		}
+	}
+	return false
 }
 
 // Allowed reports whether all matching budgets have headroom. If any is
@@ -176,7 +320,11 @@ func (s *BudgetStore) Allowed(scopeKeys []string) (ok bool, retryAfter time.Dura
 		if !ok {
 			continue
 		}
-		usedTokens, usedUSD, oldest := s.usedInWindow(sk, now, rule.Window)
+		key, overflowed := s.resolveLocked(sk, now)
+		if overflowed && s.onTeamOverflow != nil {
+			s.onTeamOverflow(rule.Name)
+		}
+		usedTokens, usedUSD, oldest := s.usedInWindow(key, now, rule.Window)
 
 		// Check token cap.
 		if rule.MaxTokens > 0 && usedTokens >= rule.MaxTokens {
@@ -206,24 +354,29 @@ func (s *BudgetStore) Charge(scopeKeys []string, tokens int64, usd float64) {
 	defer s.mu.Unlock()
 
 	now := s.nowFn()
+	s.maybeSweepLocked(now)
 	for _, sk := range scopeKeys {
 		rule, ok := s.ruleFor(sk)
 		if !ok {
 			continue
 		}
-		s.charge(sk, now, rule.Window, tokens, usd)
+		key, _ := s.resolveLocked(sk, now)
+		s.charge(key, now, rule.Window, tokens, usd)
 	}
 }
 
 // Snapshot returns per-budget used/utilization for status/metrics surfaces.
 // Every configured rule appears (so a budget with no traffic reads as zero),
-// and every concrete team value that has seen traffic appears under its own
-// resolved key. Output is sorted by ScopeKey so callers see a stable order.
+// and every concrete team value with usage inside its window appears under
+// its own resolved key. A team value whose usage has all left the window is
+// omitted, whether or not the sweep has deleted its key yet. Output is
+// sorted by ScopeKey so callers see a stable order.
 func (s *BudgetStore) Snapshot() []BudgetUsage {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	now := s.nowFn()
+	s.maybeSweepLocked(now)
 	keys := make(map[string]struct{}, len(s.rules)+len(s.buckets))
 	for sk := range s.rules {
 		keys[sk] = struct{}{}
@@ -242,6 +395,10 @@ func (s *BudgetStore) Snapshot() []BudgetUsage {
 	for _, sk := range scopeKeys {
 		rule, ok := s.ruleFor(sk)
 		if !ok {
+			continue
+		}
+		if _, configured := s.rules[sk]; !configured &&
+			!hasBucketInWindow(s.buckets[sk], now.Add(-rule.Window)) {
 			continue
 		}
 		usedTokens, usedUSD, _ := s.usedInWindow(sk, now, rule.Window)
@@ -284,8 +441,11 @@ func (s *BudgetStore) usedInWindow(sk string, now time.Time, window time.Duratio
 
 // charge records usage against a single budget's buckets.
 func (s *BudgetStore) charge(sk string, now time.Time, window time.Duration, tokens int64, usd float64) {
-	bkts := s.buckets[sk]
-	if len(bkts) == 0 {
+	bkts, exists := s.buckets[sk]
+	if !exists {
+		if countsTowardTeamCap(sk) {
+			s.teamKeys++
+		}
 		s.buckets[sk] = []bucket{{
 			start:  now.Truncate(bucketDuration),
 			tokens: tokens,
@@ -295,15 +455,7 @@ func (s *BudgetStore) charge(sk string, now time.Time, window time.Duration, tok
 	}
 
 	// Evict buckets outside the window.
-	windowStart := now.Add(-window)
-	evicted := 0
-	for i := range bkts {
-		if bkts[i].start.After(windowStart) {
-			bkts[evicted] = bkts[i]
-			evicted++
-		}
-	}
-	bkts = bkts[:evicted]
+	bkts = pruneBuckets(bkts, now.Add(-window))
 
 	// Find or create the bucket for now.
 	bucketStart := now.Truncate(bucketDuration)
