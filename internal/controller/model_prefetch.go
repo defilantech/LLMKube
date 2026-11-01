@@ -695,6 +695,13 @@ func (r *ModelReconciler) gateModelOnOwnPrefetch(ctx context.Context, model *inf
 			}
 			setCondition(model, ConditionProgressing, metav1.ConditionTrue, outcome.reason, message)
 		}
+		// A spec change that lands mid-download leaves the phase and the Job
+		// as they are, so nothing above restamps. Stamp the generation, or a
+		// download that legitimately runs for hours reads as a spec change
+		// the controller never saw (#2308).
+		if c := meta.FindStatusCondition(model.Status.Conditions, ConditionProgressing); c != nil && c.ObservedGeneration != model.Generation {
+			c.ObservedGeneration = model.Generation
+		}
 		// A Job whose pod cannot be scheduled or has not started is still
 		// Downloading, but the condition carries that reason while it lasts,
 		// and the running message once it clears. The transition time moves

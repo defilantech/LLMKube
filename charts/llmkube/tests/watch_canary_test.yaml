@@ -78,11 +78,28 @@ tests:
           path: spec.groups[?(@.name=="llmkube-controller-watch")].rules[?(@.alert=="LLMKubeControllerWatchCanaryDown")].expr
           value: llmkube_watch_canary_up == 0 and on(namespace) (max by (namespace) (llmkube_watch_canary_up) == 0)
 
+  # The group also carries the unreconciled-generation alert (#2308), which
+  # has its own gate, so the canary being off drops the canary alerts, not
+  # the group.
   - it: drops the stall alerts when the canary is off, even with the rules enabled
     template: prometheusrule.yaml
     set:
       prometheus.prometheusRule.enabled: true
       controllerManager.watchCanary.interval: 0s
+    asserts:
+      - notExists:
+          path: spec.groups[?(@.name=="llmkube-controller-watch")].rules[?(@.alert=="LLMKubeControllerWatchStalled")]
+      - notExists:
+          path: spec.groups[?(@.name=="llmkube-controller-watch")].rules[?(@.alert=="LLMKubeControllerWatchCanaryDown")]
+      - exists:
+          path: spec.groups[?(@.name=="llmkube-controller-watch")].rules[?(@.alert=="LLMKubeUnreconciledGeneration")]
+
+  - it: drops the group when the canary and the unreconciled-generation check are both off
+    template: prometheusrule.yaml
+    set:
+      prometheus.prometheusRule.enabled: true
+      controllerManager.watchCanary.interval: 0s
+      controllerManager.unreconciledGeneration.interval: 0s
     asserts:
       - notExists:
           path: spec.groups[?(@.name=="llmkube-controller-watch")]
