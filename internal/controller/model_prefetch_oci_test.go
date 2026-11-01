@@ -32,6 +32,7 @@ import (
 	"github.com/defilantech/llmkube/internal/ocipublish"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -50,7 +51,7 @@ func ociPrefetchFixture(t *testing.T) (*ModelReconciler, *inferencev1alpha1.Mode
 	}
 	model := &inferencev1alpha1.Model{ObjectMeta: metav1.ObjectMeta{Name: "weights", Namespace: "test", UID: types.UID("model-uid"), Generation: 1},
 		Spec: inferencev1alpha1.ModelSpec{Source: "https://example.com/weights.gguf", Prefetch: true,
-			PrefetchOCI: &inferencev1alpha1.OCIPrefetchSpec{Image: "registry.example.com/models/test:v1", PushSecretRef: &corev1.LocalObjectReference{Name: "registry"}},
+			PrefetchOCI: &inferencev1alpha1.OCIPrefetchSpec{EphemeralStorage: "2Gi", Image: "registry.example.com/models/test:v1", PushSecretRef: &corev1.LocalObjectReference{Name: "registry"}},
 		},
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(model, &batchv1.Job{}, &corev1.Pod{}).WithObjects(model).Build()
@@ -211,7 +212,7 @@ func TestOCIPrefetchFileContract(t *testing.T) {
 
 func TestOCIPrefetchAdmission(t *testing.T) {
 	c, _, _ := sharedTestEnv(t, "../../config/crd/bases")
-	for _, kind := range []string{"valid", "disabled", "cache"} {
+	for _, kind := range []string{"valid", "disabled", "cache", "missing-budget", "zero-budget", "negative-budget", "invalid-budget"} {
 		_, model := ociPrefetchFixture(t)
 		model.Namespace, model.Name, model.UID, model.ResourceVersion = testNS, "oci-"+kind, "", ""
 		model.Spec.Format = "gguf"
@@ -220,6 +221,16 @@ func TestOCIPrefetchAdmission(t *testing.T) {
 		}
 		if kind == "cache" {
 			model.Spec.ModelCache = &inferencev1alpha1.ModelCacheSpec{ClaimName: "cache"}
+		}
+		switch kind {
+		case "missing-budget":
+			model.Spec.PrefetchOCI.EphemeralStorage = ""
+		case "zero-budget":
+			model.Spec.PrefetchOCI.EphemeralStorage = "0"
+		case "negative-budget":
+			model.Spec.PrefetchOCI.EphemeralStorage = "-1Gi"
+		case "invalid-budget":
+			model.Spec.PrefetchOCI.EphemeralStorage = "bad"
 		}
 		err := c.Create(context.Background(), model)
 		if (kind == "valid") != (err == nil) {
@@ -358,5 +369,69 @@ func assertOCIPublishingJob(t *testing.T, r *ModelReconciler, model *inferencev1
 	}
 	if !foundAuth {
 		t.Fatal("publisher has no credentials mount")
+	}
+}
+
+func TestOCIPrefetchStorageBudget(t *testing.T) {
+	for _, size := range []string{"2Gi", "150Gi", "", "0", "-1Gi", "bad"} {
+		t.Run(size, func(t *testing.T) {
+			r, model := ociPrefetchFixture(t)
+			model.Spec.PrefetchOCI.EphemeralStorage = size
+			job, _, err := r.buildOCIPrefetchJob(context.Background(), model, "fingerprint")
+			want, parseErr := resource.ParseQuantity(size)
+			if parseErr != nil || want.Sign() <= 0 {
+				if err == nil {
+					t.Fatalf("created a Job with invalid ephemeralStorage %q", size)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			pod := job.Spec.Template.Spec
+			for _, container := range append(pod.InitContainers, pod.Containers...) {
+				for _, resources := range []corev1.ResourceList{container.Resources.Requests, container.Resources.Limits} {
+					got := resources[corev1.ResourceEphemeralStorage]
+					if got.Cmp(want) != 0 {
+						t.Errorf("%s storage budget = %s, want %s", container.Name, got.String(), size)
+					}
+				}
+			}
+			for _, volume := range pod.Volumes {
+				if volume.Name == "model-storage" {
+					if volume.EmptyDir == nil || volume.EmptyDir.SizeLimit == nil || volume.EmptyDir.SizeLimit.Cmp(want) != 0 {
+						t.Fatalf("model-storage has no matching emptyDir sizeLimit: %+v", volume)
+					}
+					return
+				}
+			}
+			t.Fatal("Job has no model-storage volume")
+		})
+	}
+}
+
+func TestOCIPrefetchRejectsMissingStorageBudget(t *testing.T) {
+	r, model := ociPrefetchFixture(t)
+	model.Spec.PrefetchOCI.EphemeralStorage = ""
+	ctx := context.Background()
+	if err := r.Update(ctx, model); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := r.reconcilePrefetch(ctx, model); err != nil {
+		t.Fatal(err)
+	}
+	jobs := &batchv1.JobList{}
+	if err := r.List(ctx, jobs); err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs.Items) != 0 {
+		t.Fatal("created a publishing Job without a disk budget")
+	}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(model), model); err != nil {
+		t.Fatal(err)
+	}
+	if model.Status.Phase != PhaseFailed || model.Status.PrefetchOCI == nil ||
+		!strings.Contains(model.Status.PrefetchOCI.Message, "ephemeralStorage must be a positive") {
+		t.Fatalf("missing storage budget was not reported: %+v", model.Status)
 	}
 }

@@ -1497,6 +1497,16 @@ spec:
                   the Model into a PVC. Consumers use a separate oci:// Model pinned to the
                   published digest. Service-requested PVC prefetch remains independent.
                 properties:
+                  ephemeralStorage:
+                    description: |-
+                      EphemeralStorage is the required node-local disk budget for downloading
+                      all selected files, with headroom for partial downloads and container logs.
+                      Applied to requests and limits on each Job container and to emptyDir.sizeLimit.
+                      No default is safe for both small and very large models.
+                    type: string
+                    x-kubernetes-validations:
+                    - message: ephemeralStorage must be a positive Kubernetes quantity
+                      rule: isQuantity(self) && quantity(self).isGreaterThan(quantity('0'))
                   image:
                     description: Image is a fully qualified registry/repository:tag
                       destination (no oci:// prefix).
@@ -1519,6 +1529,7 @@ spec:
                     type: object
                     x-kubernetes-map-type: atomic
                 required:
+                - ephemeralStorage
                 - image
                 type: object
               prefetchTolerations:

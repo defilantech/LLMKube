@@ -497,6 +497,12 @@ type OCIPrefetchSpec struct {
 	// Image is a fully qualified registry/repository:tag destination (no oci:// prefix).
 	// +kubebuilder:validation:MinLength=1
 	Image string `json:"image"`
+	// EphemeralStorage is the required node-local disk budget for downloading
+	// all selected files, with headroom for partial downloads and container logs.
+	// Applied to requests and limits on each Job container and to emptyDir.sizeLimit.
+	// No default is safe for both small and very large models.
+	// +kubebuilder:validation:XValidation:rule="isQuantity(self) && quantity(self).isGreaterThan(quantity('0'))",message="ephemeralStorage must be a positive Kubernetes quantity"
+	EphemeralStorage string `json:"ephemeralStorage"`
 	// PushSecretRef names a kubernetes.io/dockerconfigjson Secret in the Model's
 	// namespace. It is mounted only in the publisher, never in the downloader.
 	// +optional

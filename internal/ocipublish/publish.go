@@ -18,6 +18,7 @@ package ocipublish
 
 import (
 	"archive/tar"
+	"compress/gzip"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -112,8 +113,8 @@ func Run(ctx context.Context, args []string) error {
 	return os.WriteFile(*result, []byte(digest), 0600)
 }
 
-// Publish streams a tar filesystem layer from disk. The two platform manifests
-// share that layer: weights are architecture-independent, but CRI image pulls
+// Publish streams one tar filesystem layer per file from disk. Both platforms
+// share the layers: weights are architecture-independent, but CRI image pulls
 // select a platform before mounting the filesystem.
 func Publish(ctx context.Context, destination, directory string, files []File, options ...remote.Option) (string, error) {
 	tag, err := Destination(destination)
@@ -143,22 +144,29 @@ func Publish(ctx context.Context, destination, directory string, files []File, o
 		return "", err
 	}
 	defer func() { _ = root.Close() }()
-	layer, err := tarball.LayerFromOpener(func() (io.ReadCloser, error) {
-		reader, writer := io.Pipe()
-		go func() {
-			tw := tar.NewWriter(writer)
-			err := writeFiles(ctx, tw, root, files)
-			if closeErr := tw.Close(); err == nil {
-				err = closeErr
-			}
-			_ = writer.CloseWithError(err)
-		}()
-		return reader, nil
-	}, tarball.WithMediaType(types.OCILayer))
-	if err != nil {
-		return "", fmt.Errorf("package model: %w", err)
+	// Weights barely compress. Stored gzip blocks retain the portable media
+	// type without repeated compression work during hashing and upload.
+	// Do not enable compressed caching: it buffers entire layers in memory.
+	layers := make([]v1.Layer, 0, len(files))
+	for _, file := range files {
+		layer, err := tarball.LayerFromOpener(func() (io.ReadCloser, error) {
+			reader, writer := io.Pipe()
+			go func() {
+				tw := tar.NewWriter(writer)
+				err := writeFiles(ctx, tw, root, []File{file})
+				if closeErr := tw.Close(); err == nil {
+					err = closeErr
+				}
+				_ = writer.CloseWithError(err)
+			}()
+			return reader, nil
+		}, tarball.WithMediaType(types.OCILayer), tarball.WithCompressionLevel(gzip.NoCompression))
+		if err != nil {
+			return "", fmt.Errorf("package model file %q: %w", file.Name, err)
+		}
+		layers = append(layers, layer)
 	}
-	img, err := mutate.AppendLayers(empty.Image, layer)
+	img, err := mutate.AppendLayers(empty.Image, layers...)
 	if err != nil {
 		return "", err
 	}
