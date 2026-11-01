@@ -28,6 +28,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/name"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -230,11 +231,24 @@ func (r *ModelReconciler) ociPublishedImage(ctx context.Context, job *batchv1.Jo
 }
 
 func (r *ModelReconciler) buildOCIPrefetchJob(ctx context.Context, model *inferencev1alpha1.Model, fingerprint string) (*batchv1.Job, []string, error) {
+	budget, err := resource.ParseQuantity(model.Spec.PrefetchOCI.EphemeralStorage)
+	if err != nil || budget.Sign() <= 0 {
+		return nil, nil, fmt.Errorf("prefetchOCI.ephemeralStorage must be a positive Kubernetes quantity")
+	}
+	storageResources := corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceEphemeralStorage: budget},
+		Limits:   corev1.ResourceList{corev1.ResourceEphemeralStorage: budget},
+	}
 	image := r.InitContainerImage
 	if image == "" {
 		image = defaultPrefetchImage
 	}
 	storage := buildEmptyDirStorageConfig(model, nil, effectiveModelCache{}, model.Namespace, r.CACertConfigMap, image, hfEndpointFromSecret(ctx, r.Client, model))
+	for i := range storage.volumes {
+		if storage.volumes[i].Name == "model-storage" && storage.volumes[i].EmptyDir != nil {
+			storage.volumes[i].EmptyDir.SizeLimit = &budget
+		}
+	}
 	plan, err := modelStagingPlan(model)
 	if err != nil {
 		return nil, nil, err
@@ -262,10 +276,12 @@ func (r *ModelReconciler) buildOCIPrefetchJob(ctx context.Context, model *infere
 	uid := resolveInitContainerUser(r.InitContainerUser)
 	for i := range storage.initContainers {
 		storage.initContainers[i].SecurityContext = restrictedPrefetchSecurityContext(uid)
+		storage.initContainers[i].Resources = *storageResources.DeepCopy()
 	}
 	applyInitContainerDiagnostics(storage.initContainers)
 	publisher := corev1.Container{
 		Name: ociPublisherContainer, Image: r.OCIPublisherImage,
+		Resources:                storageResources,
 		Command:                  []string{"/manager", "publish-model"},
 		Args:                     []string{"--image=" + model.Spec.PrefetchOCI.Image, "--files=" + string(encoded)},
 		VolumeMounts:             []corev1.VolumeMount{{Name: "model-storage", MountPath: DefaultModelCachePath, ReadOnly: true}},

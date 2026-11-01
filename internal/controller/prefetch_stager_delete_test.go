@@ -50,7 +50,7 @@ func TestDeletePrefetchJobPropagation(t *testing.T) {
 		Status:     inferencev1alpha1.ModelStatus{CacheKey: "cache"},
 	}
 	ociModel := singleFileModel.DeepCopy()
-	ociModel.Spec.PrefetchOCI = &inferencev1alpha1.OCIPrefetchSpec{Image: "registry.example.com/models/test:v1"}
+	ociModel.Spec.PrefetchOCI = &inferencev1alpha1.OCIPrefetchSpec{EphemeralStorage: "2Gi", Image: "registry.example.com/models/test:v1"}
 	for _, tc := range []struct {
 		name       string
 		model      *inferencev1alpha1.Model

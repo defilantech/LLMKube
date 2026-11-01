@@ -10,6 +10,8 @@ spec:
   prefetch: true
   prefetchOCI:
     image: registry.example.com/models/llama-3b:v1
+    # Total downloaded files plus headroom for partial downloads and logs.
+    ephemeralStorage: 10Gi
     pushSecretRef:
       name: registry-writer
 # After status.prefetchOCI.phase becomes Succeeded, create a separate Model
