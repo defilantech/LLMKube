@@ -562,6 +562,16 @@ external:
 
 A per-backend `url` always wins over the cluster default.
 
+## Budgets
+
+`spec.policy.budgets` caps tokens (`maxTokens`) or estimated dollars (`maxUSD`) over a rolling window (`windowSeconds`, default 3600). The Gateway and AgentGateway data planes accept only `maxTokens` and the `router` and `team` scopes. On the Proxy data plane, once a budget that applies to a request is used up, the request is refused with `429` and a `Retry-After` header before any backend is contacted. Each budget has a scope:
+
+- `router`: every request through the router.
+- `rule`: requests that match the rule named in `ruleName`.
+- `team`: requests that carry a team header (`headerKey`, default `x-llmkube-team`). Each header value is charged separately.
+
+Team budgets bind only callers that cannot choose the header. The router-proxy does not authenticate callers, so a caller that omits the header is held to no team budget, and one that sends a different value is charged to that value instead. Rule matching also reads the model name and headers the client sends. Only a `router` budget applies to every request. To enforce team budgets, put an authenticating gateway in front of the router-proxy that sets the team header from the caller's identity and overwrites any value the client sent (the [APISIX guide](/docs/guides/apisix#client-authentication) covers per-client keys), and use NetworkPolicy so callers reach the router-proxy only through that gateway and cannot call the backend Services directly. On `dataPlane: Gateway`, `spec.policy.auth.jwt` copies a verified JWT claim into the header instead; the router-proxy does not read `spec.policy.auth`. The [multi-tenancy notes](https://github.com/defilantech/LLMKube/blob/main/docs/operations/multi-tenancy.md#modelrouter-budgets-and-caller-identity) cover this in more detail.
+
 ## Shape compatibility
 
 The router-proxy forwards the inbound OpenAI chat-completion request body to upstream backends verbatim. For backends that already speak OpenAI (local `InferenceService` pods, LiteLLM, an in-cluster vLLM or oMLX), this is correct. For first-party providers whose native API does not match (Anthropic's `/v1/messages`, Bedrock's per-region shapes, Vertex AI's structured Content payloads), put a LiteLLM proxy in front and reference it via `provider: litellm` — LiteLLM handles the per-provider translation.
@@ -577,7 +587,7 @@ When you specify `provider: anthropic` or `provider: openai` without `url`, the 
 - Fail-closed gate, both static (apply-time) and runtime
 - OpenAI-compatible request / response, including streaming SSE
 - Structured audit log to stdout (other sinks roadmap)
-- Per-route budget caps (roadmap)
+- Token and dollar budgets per router, rule or team (see [Budgets](#budgets))
 - MCP server endpoint (roadmap)
 
 **Out of scope:**
