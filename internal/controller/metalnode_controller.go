@@ -412,6 +412,12 @@ func (r *MetalNodeReconciler) reconcileDialBack(ctx context.Context, mn *inferen
 		r.setReachable(mn, metav1.ConditionFalse, inferencev1alpha1.MetalNodeReasonInvalidSpec,
 			"spec.hostIP is not an IP address; nothing is dialed until it is fixed")
 		return metalNodeResyncInterval, stopVerifiers(pods), nil
+	case report == nil && agentConnectedReason(mn) == inferencev1alpha1.MetalNodeReasonReportInvalid:
+		// The agent may well be renewing its Lease; what stops the check is
+		// the report, so Reachable points there rather than at the network.
+		r.setReachable(mn, metav1.ConditionUnknown, inferencev1alpha1.MetalNodeReasonReportInvalid,
+			"the agent's report on its Lease is invalid (see AgentConnected); reachability is not checked until it reports a valid one")
+		return metalNodeResyncInterval, stopVerifiers(pods), nil
 	case report == nil || !connected:
 		r.setReachable(mn, metav1.ConditionUnknown, inferencev1alpha1.MetalNodeReasonAgentNotConnected,
 			"the agent is not connected (see AgentConnected); reachability is not checked until it is")
@@ -523,6 +529,14 @@ func verifiedResultExpired(mn *inferencev1alpha1.MetalNode, now time.Time) bool 
 	}
 	v := mn.Status.Verification
 	return v == nil || v.LastCheckTime == nil || now.Sub(v.LastCheckTime.Time) > metalNodeMaxResultAge
+}
+
+// agentConnectedReason is the reason observeLease gave AgentConnected.
+func agentConnectedReason(mn *inferencev1alpha1.MetalNode) string {
+	if c := meta.FindStatusCondition(mn.Status.Conditions, inferencev1alpha1.MetalNodeConditionAgentConnected); c != nil {
+		return c.Reason
+	}
+	return ""
 }
 
 // specHostIP returns spec.hostIP in canonical form and whether it is usable

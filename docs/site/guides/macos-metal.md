@@ -731,8 +731,9 @@ where the relay pods for this Mac run, so it tests the path the relay
 will use.
 
 While `AgentConnected` is not True, nothing is dialed: `Reachable`
-is `Unknown` (reason `AgentNotConnected`), `status.hostIP` is
-cleared, and any verifier pod is deleted. When the Lease is missing or
+is `Unknown` (reason `ReportInvalid` when the report is what is wrong,
+`AgentNotConnected` otherwise), `status.hostIP` is cleared, and any
+verifier pod is deleted. When the Lease is missing or
 its report is invalid, the agent's reported facts (`agentVersion`,
 `capacity`, `ingressPort`, `ingressSPKI`) are cleared too; a stale but
 valid report keeps them as the last known facts. `status.lastHeartbeatTime`
@@ -796,6 +797,7 @@ on schedule does not wake the controller; its 60 s resync does.
 | `Reachable` | `VerifierFailed` | The verifier pod could not be created, failed, or never finished (check the controller log, `spec.verifier` placement and the image pull), or a pod this MetalNode does not own holds the verifier's name. |
 | `Reachable` | `VerificationPending` | `Unknown`: the pin or port changed, the verified address is no longer offered, or the last success is more than 13 minutes old with no newer check finished, so the last result no longer applies; `hostIP` is empty until the new check lands. |
 | `Reachable` | `AgentNotConnected` | `Unknown`: the agent is not connected, so nothing is dialed and `hostIP` is empty. |
+| `Reachable` | `ReportInvalid` | `Unknown`: the agent's report on its Lease is invalid (see `AgentConnected`), so nothing is dialed and `hostIP` is empty. Fix the report, not the Mac's network. |
 | `Reachable` | `InvalidSpec` | `spec.hostIP` is not an IP address; nothing is dialed until it is fixed. |
 
 ## Join a Mac

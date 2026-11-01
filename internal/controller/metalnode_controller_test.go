@@ -496,7 +496,9 @@ func TestMetalNodeReconcileVerifierNeverFinishes(t *testing.T) {
 }
 
 // TestMetalNodeReconcileAgentConnectedReasons covers the ways the Lease can
-// fail to show a live, valid agent. None of them starts a verifier.
+// fail to show a live, valid agent. None of them starts a verifier, and
+// Reachable says why: a connected agent with an invalid report is sent to
+// the report, not to the Mac's network.
 func TestMetalNodeReconcileAgentConnectedReasons(t *testing.T) {
 	f := newMetalNodeFixture(t)
 	valid := encodeReport(t, testReport(metalnode.Candidate{Address: "100.64.0.2", Source: metalnode.SourceTailnet}))
@@ -523,6 +525,12 @@ func TestMetalNodeReconcileAgentConnectedReasons(t *testing.T) {
 		// counts as stale now.
 		{name: "future", lease: true, renew: time.Hour, annotation: valid, reason: inferencev1alpha1.MetalNodeReasonHeartbeatStale},
 	}
+	// wantReachable is the Reachable reason for an AgentConnected reason.
+	wantReachable := map[string]string{
+		inferencev1alpha1.MetalNodeReasonHeartbeatStale: inferencev1alpha1.MetalNodeReasonAgentNotConnected,
+		inferencev1alpha1.MetalNodeReasonLeaseNotFound:  inferencev1alpha1.MetalNodeReasonAgentNotConnected,
+		inferencev1alpha1.MetalNodeReasonReportInvalid:  inferencev1alpha1.MetalNodeReasonReportInvalid,
+	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			name := "mac-" + tc.name
@@ -535,6 +543,15 @@ func TestMetalNodeReconcileAgentConnectedReasons(t *testing.T) {
 			wantCondition(t, mn, inferencev1alpha1.MetalNodeConditionAgentConnected, metav1.ConditionFalse, tc.reason)
 			if msg := condition(t, mn, inferencev1alpha1.MetalNodeConditionAgentConnected).Message; strings.Contains(msg, "not-a-sha256-pin") {
 				t.Errorf("AgentConnected message copies the agent's raw pin: %q", msg)
+			}
+			wantCondition(t, mn, inferencev1alpha1.MetalNodeConditionReachable, metav1.ConditionUnknown, wantReachable[tc.reason])
+			reachable := condition(t, mn, inferencev1alpha1.MetalNodeConditionReachable).Message
+			if tc.reason == inferencev1alpha1.MetalNodeReasonReportInvalid &&
+				(!strings.Contains(reachable, "report") || strings.Contains(reachable, "not connected")) {
+				t.Errorf("Reachable message %q for an invalid report, want one that points at the report, not the connection", reachable)
+			}
+			if strings.Contains(reachable, "not-a-sha256-pin") {
+				t.Errorf("Reachable message copies the agent's raw pin: %q", reachable)
 			}
 			if pods := f.verifierPods(name); len(pods) != 0 {
 				t.Errorf("%d verifier pods for an agent that is not connected, want 0", len(pods))
