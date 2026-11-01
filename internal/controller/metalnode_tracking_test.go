@@ -22,8 +22,11 @@ import (
 	"testing"
 	"time"
 
+	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -152,5 +155,196 @@ func TestMetalNodeVerifierNameTakenByAnotherPod(t *testing.T) {
 	if c.Status != metav1.ConditionFalse || c.Reason != inferencev1alpha1.MetalNodeReasonVerifierFailed ||
 		!strings.Contains(c.Message, squatter.Name) || !strings.Contains(c.Message, "not owned") {
 		t.Errorf("Reachable = %s/%s (%q), want VerifierFailed naming the pod that holds the verifier's name", c.Status, c.Reason, c.Message)
+	}
+}
+
+// countingReader counts the reads it serves, by kind.
+type countingReader struct {
+	client.Reader
+	metalNodes, leases int
+}
+
+func (c *countingReader) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	switch obj.(type) {
+	case *inferencev1alpha1.MetalNode:
+		c.metalNodes++
+	case *coordinationv1.Lease:
+		c.leases++
+	}
+	return c.Reader.Get(ctx, key, obj, opts...)
+}
+
+// emptyLeaseCache is a Lease cache that does not hold the Lease, as the
+// controller's label-scoped one does not hold an unlabeled Lease.
+type emptyLeaseCache struct{ client.Reader }
+
+func (emptyLeaseCache) Get(_ context.Context, key client.ObjectKey, _ client.Object, _ ...client.GetOption) error {
+	return apierrors.NewNotFound(schema.GroupResource{Group: coordinationv1.GroupName, Resource: "leases"}, key.Name)
+}
+
+// createCounter counts the objects the controller creates.
+type createCounter struct {
+	client.Client
+	creates int
+}
+
+func (c *createCounter) Create(ctx context.Context, obj client.Object, opts ...client.CreateOption) error {
+	c.creates++
+	return c.Client.Create(ctx, obj, opts...)
+}
+
+// TestMetalNodeReconcileReadsTheCaches: a reconcile that starts nothing
+// reads the MetalNode and the Lease from the controller's caches, not from
+// the API server. The MetalNode is read uncached once to confirm it before a
+// verifier starts, and an unlabeled Lease, which the label-scoped Lease
+// cache does not hold, is still found.
+func TestMetalNodeReconcileReadsTheCaches(t *testing.T) {
+	f := newMetalNodeFixture(t)
+	const name = "mac-cached"
+	uncached := &countingReader{Reader: f.c}
+	f.r.APIReader = uncached
+	f.r.leaseReader = f.c
+	f.verifyMetalNode(name, tailnetCandidate)
+	if uncached.metalNodes != 1 || uncached.leases != 0 {
+		t.Errorf("uncached reads to run and record one check: %d MetalNode, %d Lease; want 1 MetalNode (confirming before the start), 0 Lease",
+			uncached.metalNodes, uncached.leases)
+	}
+
+	*uncached = countingReader{Reader: f.c}
+	for range 3 {
+		f.now = f.now.Add(time.Minute)
+		f.putLease(name, f.now, tailnetReport(t))
+		f.reconcile(name)
+	}
+	if uncached.metalNodes != 0 || uncached.leases != 0 {
+		t.Errorf("uncached reads over 3 reconciles that start nothing: %d MetalNode, %d Lease; want 0",
+			uncached.metalNodes, uncached.leases)
+	}
+
+	*uncached = countingReader{Reader: f.c}
+	f.now = f.now.Add(metalNodeRecheckInterval)
+	f.putLease(name, f.now, tailnetReport(t))
+	f.reconcile(name)
+	f.onlyVerifierPod(name)
+	if uncached.metalNodes != 1 {
+		t.Errorf("%d uncached MetalNode reads for the reconcile that starts the recheck, want 1", uncached.metalNodes)
+	}
+
+	*uncached = countingReader{Reader: f.c}
+	f.r.leaseReader = emptyLeaseCache{}
+	f.reconcile(name)
+	wantCondition(t, f.get(name), inferencev1alpha1.MetalNodeConditionAgentConnected, metav1.ConditionTrue,
+		inferencev1alpha1.MetalNodeReasonHeartbeatFresh)
+	if uncached.leases != 1 {
+		t.Errorf("%d uncached Lease reads for a Lease the Lease cache does not hold, want 1", uncached.leases)
+	}
+}
+
+// TestMetalNodeStaleCachedStatusWriteIsRedone: a cached MetalNode can lag
+// the controller's own last status write. A reconcile working from such a
+// copy must not write its conditions over the newer ones: here the copy
+// still holds an old success, which has expired by its own clock, while the
+// current status records the newer failed check. The write from the copy
+// is refused and redone from an uncached read, so the newer result stands.
+func TestMetalNodeStaleCachedStatusWriteIsRedone(t *testing.T) {
+	f := newMetalNodeFixture(t)
+	const name = "mac-stalewrite"
+	t.Cleanup(func() { f.releaseVerifiers(name) })
+	// A held verifier is what keeps a new check from starting below, and the
+	// API server stamps its deletion on the real clock. Starting the
+	// controller's clock a recheck interval back keeps it under the abandon
+	// bound at the end.
+	f.now = f.now.Add(-metalNodeRecheckInterval)
+	f.verifyMetalNode(name, tailnetCandidate)
+	verifiedAt := f.now
+	stale := f.get(name)
+
+	f.now = verifiedAt.Add(metalNodeRecheckInterval + time.Second)
+	f.putLease(name, f.now, tailnetReport(t))
+	f.reconcile(name)
+	f.holdVerifiers(name)
+	f.finishVerifier(f.onlyVerifierPod(name), "100.64.0.2 7\n")
+	f.reconcile(name)
+	wantCondition(t, f.get(name), inferencev1alpha1.MetalNodeConditionReachable, metav1.ConditionFalse,
+		inferencev1alpha1.MetalNodeReasonNoneReachable)
+
+	f.r.Client = f.laggingClient(stale, nil)
+	f.now = verifiedAt.Add(metalNodeMaxResultAge + time.Minute)
+	f.putLease(name, f.now, tailnetReport(t))
+	f.reconcile(name)
+	wantCondition(t, f.get(name), inferencev1alpha1.MetalNodeConditionReachable, metav1.ConditionFalse,
+		inferencev1alpha1.MetalNodeReasonNoneReachable)
+}
+
+// TestMetalNodeStaleCacheStartsNoVerifier: a cached MetalNode from before
+// the last check would say a check is due. The verifier is not created from
+// that copy: the uncached MetalNode says the last check finished moments
+// ago, so nothing starts.
+func TestMetalNodeStaleCacheStartsNoVerifier(t *testing.T) {
+	f := newMetalNodeFixture(t)
+	const name = "mac-stalestart"
+	f.createMetalNode(name, nil)
+	stale := f.get(name)
+	f.putLease(name, f.now, tailnetReport(t))
+	f.reconcile(name)
+	f.finishVerifier(f.onlyVerifierPod(name), "100.64.0.2 0\n")
+	f.reconcile(name)
+
+	counter := &createCounter{Client: f.laggingClient(stale, nil)}
+	f.r.Client = counter
+	f.now = f.now.Add(metalNodeMinStartSpacing + time.Second)
+	f.putLease(name, f.now, tailnetReport(t))
+	f.reconcile(name)
+	if counter.creates != 0 {
+		t.Errorf("%d objects created from a cached MetalNode older than the last check, want 0", counter.creates)
+	}
+	mn := f.get(name)
+	wantCondition(t, mn, inferencev1alpha1.MetalNodeConditionReachable, metav1.ConditionTrue,
+		inferencev1alpha1.MetalNodeReasonDialBackSucceeded)
+	if mn.Status.HostIP != "100.64.0.2" {
+		t.Errorf("hostIP = %q, want the verified 100.64.0.2", mn.Status.HostIP)
+	}
+}
+
+// TestMetalNodeStaleCacheKeepsTheRunningRecheck: the recheck's own create
+// event reconciles while the cache still holds the MetalNode from before it
+// started, which tracks the previous verifier. Nothing in status differs on
+// that copy, so no write is refused; the running verifier is still not
+// taken for a stranger and deleted, and its result lands.
+func TestMetalNodeStaleCacheKeepsTheRunningRecheck(t *testing.T) {
+	f := newMetalNodeFixture(t)
+	const name = "mac-recheck"
+	// The API server stamps the recheck pod's creationTimestamp on the real
+	// clock; starting the controller's clock a recheck interval back keeps
+	// the pod well inside metalNodeVerifierTimeout when it starts.
+	f.now = f.now.Add(-metalNodeRecheckInterval)
+	f.verifyMetalNode(name, tailnetCandidate)
+	verifiedAt := f.now
+
+	// The heartbeat advances just before the recheck is due, so the start
+	// below changes nothing in status but the verifier it tracks.
+	f.now = verifiedAt.Add(metalNodeRecheckInterval - time.Second)
+	f.putLease(name, f.now, tailnetReport(t))
+	f.reconcile(name)
+	stale := f.get(name)
+	f.now = verifiedAt.Add(metalNodeRecheckInterval + time.Second)
+	f.putLease(name, f.now, tailnetReport(t))
+	f.reconcile(name)
+	pod := f.onlyVerifierPod(name)
+
+	fresh := f.r.Client
+	f.r.Client = f.laggingClient(stale, nil)
+	f.reconcile(name)
+	if pods := f.verifierPods(name); len(pods) != 1 || pods[0].UID != pod.UID || pods[0].DeletionTimestamp != nil {
+		t.Fatalf("verifier pods after a reconcile from a cached MetalNode that predates the recheck = %d, want the running recheck %s kept",
+			len(pods), pod.Name)
+	}
+
+	f.r.Client = fresh
+	f.now = f.now.Add(2 * time.Second)
+	f.finishVerifier(f.onlyVerifierPod(name), "100.64.0.2 0\n")
+	f.reconcile(name)
+	if v := f.get(name).Status.Verification; v == nil || v.LastCheckTime == nil || !v.LastCheckTime.After(verifiedAt) {
+		t.Errorf("status.verification = %+v, want the recheck's result recorded", v)
 	}
 }

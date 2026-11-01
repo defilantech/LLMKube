@@ -254,6 +254,16 @@ func TestBuildMetalNodeVerifierPod(t *testing.T) {
 	if pod.Annotations[annotationMetalNodeVerifyHash] != "abcdef0123456789" {
 		t.Errorf("annotations %v lack the input hash", pod.Annotations)
 	}
+	// A mesh sidecar would keep the pod from reaching Succeeded and route the
+	// probe through the proxy instead of straight to the Mac. Istio reads the
+	// label (current releases) or the annotation (older ones), Linkerd the
+	// annotation.
+	if pod.Labels["sidecar.istio.io/inject"] != "false" || pod.Annotations["sidecar.istio.io/inject"] != "false" {
+		t.Errorf("labels %v / annotations %v do not opt out of Istio injection", pod.Labels, pod.Annotations)
+	}
+	if pod.Annotations["linkerd.io/inject"] != "disabled" {
+		t.Errorf("annotations %v do not opt out of Linkerd injection", pod.Annotations)
+	}
 	checkVerifierPodSpec(t, mn, pod.Spec)
 	if len(pod.Spec.Containers) != 1 {
 		t.Fatalf("%d containers, want 1", len(pod.Spec.Containers))

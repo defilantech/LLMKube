@@ -33,6 +33,7 @@ import (
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
@@ -496,7 +497,9 @@ func TestMetalNodeReconcileVerifierNeverFinishes(t *testing.T) {
 }
 
 // TestMetalNodeReconcileAgentConnectedReasons covers the ways the Lease can
-// fail to show a live, valid agent. None of them starts a verifier.
+// fail to show a live, valid agent. None of them starts a verifier, and
+// Reachable says why: a connected agent with an invalid report is sent to
+// the report, not to the Mac's network.
 func TestMetalNodeReconcileAgentConnectedReasons(t *testing.T) {
 	f := newMetalNodeFixture(t)
 	valid := encodeReport(t, testReport(metalnode.Candidate{Address: "100.64.0.2", Source: metalnode.SourceTailnet}))
@@ -523,6 +526,12 @@ func TestMetalNodeReconcileAgentConnectedReasons(t *testing.T) {
 		// counts as stale now.
 		{name: "future", lease: true, renew: time.Hour, annotation: valid, reason: inferencev1alpha1.MetalNodeReasonHeartbeatStale},
 	}
+	// wantReachable is the Reachable reason for an AgentConnected reason.
+	wantReachable := map[string]string{
+		inferencev1alpha1.MetalNodeReasonHeartbeatStale: inferencev1alpha1.MetalNodeReasonAgentNotConnected,
+		inferencev1alpha1.MetalNodeReasonLeaseNotFound:  inferencev1alpha1.MetalNodeReasonAgentNotConnected,
+		inferencev1alpha1.MetalNodeReasonReportInvalid:  inferencev1alpha1.MetalNodeReasonReportInvalid,
+	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			name := "mac-" + tc.name
@@ -535,6 +544,15 @@ func TestMetalNodeReconcileAgentConnectedReasons(t *testing.T) {
 			wantCondition(t, mn, inferencev1alpha1.MetalNodeConditionAgentConnected, metav1.ConditionFalse, tc.reason)
 			if msg := condition(t, mn, inferencev1alpha1.MetalNodeConditionAgentConnected).Message; strings.Contains(msg, "not-a-sha256-pin") {
 				t.Errorf("AgentConnected message copies the agent's raw pin: %q", msg)
+			}
+			wantCondition(t, mn, inferencev1alpha1.MetalNodeConditionReachable, metav1.ConditionUnknown, wantReachable[tc.reason])
+			reachable := condition(t, mn, inferencev1alpha1.MetalNodeConditionReachable).Message
+			if tc.reason == inferencev1alpha1.MetalNodeReasonReportInvalid &&
+				(!strings.Contains(reachable, "report") || strings.Contains(reachable, "not connected")) {
+				t.Errorf("Reachable message %q for an invalid report, want one that points at the report, not the connection", reachable)
+			}
+			if strings.Contains(reachable, "not-a-sha256-pin") {
+				t.Errorf("Reachable message copies the agent's raw pin: %q", reachable)
 			}
 			if pods := f.verifierPods(name); len(pods) != 0 {
 				t.Errorf("%d verifier pods for an agent that is not connected, want 0", len(pods))
@@ -573,21 +591,150 @@ func TestMetalNodeReconcileNoDialBackPreconditions(t *testing.T) {
 	}
 }
 
+// listRecorder records the options of every List it serves.
+type listRecorder struct {
+	client.Client
+	lists []client.ListOptions
+}
+
+func (l *listRecorder) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	lo := client.ListOptions{}
+	lo.ApplyOptions(opts)
+	l.lists = append(l.lists, lo)
+	return l.Client.List(ctx, list, opts...)
+}
+
 // TestMetalNodeLeaseMapsToMetalNode pins the Lease watch's mapping: a Lease
 // event reconciles the MetalNode in the same namespace whose spec.leaseName
-// names it, and nothing else.
+// names it, and nothing else. The mapping reads a cache carrying the
+// spec.leaseName index SetupWithManager registers, and asks it for that
+// Lease name only, so a Lease event is an index lookup rather than a list
+// of every MetalNode in the namespace.
 func TestMetalNodeLeaseMapsToMetalNode(t *testing.T) {
 	f := newMetalNodeFixture(t)
 	f.createMetalNode("mac-x", func(s *inferencev1alpha1.MetalNodeSpec) { s.LeaseName = "lease-x" })
 	f.createMetalNode("mac-y", nil)
+	f.createMetalNode("mac-z", nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	informers, err := cache.New(f.cfg, cache.Options{Scheme: scheme.Scheme})
+	if err != nil {
+		t.Fatalf("build cache: %v", err)
+	}
+	if err := indexMetalNodeLeaseName(ctx, informers); err != nil {
+		t.Fatalf("register the spec.leaseName index: %v", err)
+	}
+	go func() { _ = informers.Start(ctx) }()
+	if !informers.WaitForCacheSync(ctx) {
+		t.Fatal("cache did not sync")
+	}
+	cached, err := client.New(f.cfg, client.Options{Scheme: scheme.Scheme, Cache: &client.CacheOptions{Reader: informers}})
+	if err != nil {
+		t.Fatalf("build cached client: %v", err)
+	}
+	rec := &listRecorder{Client: cached}
+	f.r.Client = rec
 
 	lease := &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Name: "lease-x", Namespace: testNS}}
-	got := f.r.metalNodesForLease(context.Background(), lease)
+	got := f.r.metalNodesForLease(ctx, lease)
 	if len(got) != 1 || got[0].Name != "mac-x" || got[0].Namespace != testNS {
 		t.Errorf("requests for Lease lease-x = %v, want only %s/mac-x", got, testNS)
 	}
+	if len(rec.lists) != 1 {
+		t.Fatalf("%d MetalNode lists for one Lease event, want 1", len(rec.lists))
+	}
+	if fs := rec.lists[0].FieldSelector; fs == nil || fs.String() != metalNodeLeaseNameField+"=lease-x" {
+		t.Errorf("MetalNode list field selector = %v, want the %s index for lease-x", fs, metalNodeLeaseNameField)
+	}
 	other := &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Name: "lease-x", Namespace: "elsewhere"}}
-	if got := f.r.metalNodesForLease(context.Background(), other); len(got) != 0 {
+	if got := f.r.metalNodesForLease(ctx, other); len(got) != 0 {
 		t.Errorf("a Lease in another namespace mapped to %v, want nothing", got)
+	}
+}
+
+// TestMetalNodeLeaseEventReachesItsMetalNode pins SetupWithManager's wiring
+// of the Lease watch: a labeled Lease appearing reconciles the MetalNode
+// whose spec.leaseName names it (a name other than the MetalNode's) at once,
+// through the spec.leaseName index SetupWithManager registers, well before
+// the 60 s resync would. Without the index the mapping's list fails and only
+// the resync is left.
+func TestMetalNodeLeaseEventReachesItsMetalNode(t *testing.T) {
+	_, cfg, _ := sharedTestEnv(t, baseCRDPath)
+	ns := testNS
+	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
+		Scheme: scheme.Scheme,
+		Cache:  cache.Options{DefaultNamespaces: map[string]cache.Config{ns: {}}},
+	})
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+	r := &MetalNodeReconciler{
+		Client:             mgr.GetClient(),
+		Scheme:             mgr.GetScheme(),
+		InitContainerImage: "registry.local/curl:1",
+		AllowedCIDRs:       mustAllowedCIDRs(t, DefaultMetalNodeAllowedCIDRs),
+	}
+	if err := r.SetupWithManager(mgr); err != nil {
+		t.Fatalf("set up the MetalNode controller: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- mgr.Start(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Errorf("manager exited with an error: %v", err)
+			}
+		case <-time.After(30 * time.Second):
+			t.Errorf("manager did not stop")
+		}
+	})
+
+	c := mgr.GetAPIReader()
+	w, err := client.New(cfg, client.Options{Scheme: scheme.Scheme})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mn := &inferencev1alpha1.MetalNode{
+		ObjectMeta: metav1.ObjectMeta{Name: "mac-watched", Namespace: ns},
+		Spec:       inferencev1alpha1.MetalNodeSpec{ServiceAccountName: "llmkube-metal-mac-watched", LeaseName: "lease-watched"},
+	}
+	if err := w.Create(ctx, mn); err != nil {
+		t.Fatalf("create MetalNode: %v", err)
+	}
+	reasonWithin := func(want string, d time.Duration) string {
+		var got string
+		deadline := time.Now().Add(d)
+		for time.Now().Before(deadline) {
+			cur := &inferencev1alpha1.MetalNode{}
+			if err := c.Get(ctx, client.ObjectKeyFromObject(mn), cur); err == nil {
+				got = agentConnectedReason(cur)
+				if got == want {
+					return got
+				}
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		return got
+	}
+	if got := reasonWithin(inferencev1alpha1.MetalNodeReasonLeaseNotFound, 30*time.Second); got != inferencev1alpha1.MetalNodeReasonLeaseNotFound {
+		t.Fatalf("AgentConnected reason = %q before the Lease exists, want %s", got, inferencev1alpha1.MetalNodeReasonLeaseNotFound)
+	}
+
+	// No report annotation: the reconcile the Lease event causes says
+	// ReportInvalid instead of LeaseNotFound.
+	lease := &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{
+		Name: "lease-watched", Namespace: ns,
+		Labels: map[string]string{inferencev1alpha1.LabelMetalNode: "mac-watched"},
+	}}
+	if err := w.Create(ctx, lease); err != nil {
+		t.Fatalf("create Lease: %v", err)
+	}
+	if got := reasonWithin(inferencev1alpha1.MetalNodeReasonReportInvalid, 15*time.Second); got != inferencev1alpha1.MetalNodeReasonReportInvalid {
+		t.Errorf("AgentConnected reason = %q 15s after the Lease appeared, want %s: the Lease event did not reach its MetalNode",
+			got, inferencev1alpha1.MetalNodeReasonReportInvalid)
 	}
 }

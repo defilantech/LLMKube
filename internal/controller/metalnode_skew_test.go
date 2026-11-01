@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -154,12 +155,18 @@ func TestMetalNodeResultAfterRecordedFailureWithNodeBehind(t *testing.T) {
 	}
 }
 
-// TestMetalNodeExpiryNamesTheBlockingVerifier: a verifier pod stuck
-// terminating keeps every new check from starting. When the last success
-// expires for that reason, Reachable names the pod.
+// TestMetalNodeExpiryNamesTheBlockingVerifier: a verifier pod terminating
+// for less than metalNodeVerifierAbandonAfter keeps every new check from
+// starting. When the last success expires for that reason, Reachable names
+// the pod.
 func TestMetalNodeExpiryNamesTheBlockingVerifier(t *testing.T) {
 	f := newMetalNodeFixture(t)
 	t.Cleanup(func() { f.releaseVerifiers("mac-stuck") })
+	// The API server stamps deletionTimestamp on the real clock. Starting the
+	// controller's clock a recheck interval back puts the deletion below at
+	// about the same instant on both, so at expiry the pod has been
+	// terminating for a few minutes, under the bound, and still blocks.
+	f.now = f.now.Add(-metalNodeRecheckInterval)
 	f.verifyMetalNode("mac-stuck", tailnetCandidate)
 	verifiedAt := f.now
 
@@ -208,5 +215,100 @@ func TestDialBackWaitSkipsTheLastCheckSecond(t *testing.T) {
 	}
 	if wait := dialBackWait(mn, "new", now.Add(time.Second)); wait != 0 {
 		t.Errorf("wait for new inputs a second later = %s, want 0", wait)
+	}
+}
+
+// TestMetalNodeAbandonsAVerifierStuckTerminating: a verifier pod on a node
+// that went away stays terminating until the node is removed. Past
+// metalNodeVerifierAbandonAfter it stops blocking new checks, so the Mac is
+// checked again; but only metalNodeMaxAbandonedVerifiers such pods are set
+// aside, so a placement that keeps losing pods cannot pile them up, and
+// Reachable then names the pod and says what to do.
+func TestMetalNodeAbandonsAVerifierStuckTerminating(t *testing.T) {
+	f := newMetalNodeFixture(t)
+	const name = "mac-ghost"
+	t.Cleanup(func() { f.releaseVerifiers(name) })
+	lan := func(n int) metalnode.Candidate {
+		return metalnode.Candidate{Address: fmt.Sprintf("192.168.1.%d", 40+n), Source: metalnode.SourceLAN}
+	}
+	// Each report only adds an address, so a True Reachable stands across
+	// them until it expires.
+	reports := []string{
+		encodeReport(t, testReport(tailnetCandidate)),
+		encodeReport(t, testReport(tailnetCandidate, lan(1))),
+		encodeReport(t, testReport(tailnetCandidate, lan(1), lan(2))),
+		encodeReport(t, testReport(tailnetCandidate, lan(1), lan(2), lan(3))),
+	}
+	step := func(d time.Duration, report string) {
+		f.now = f.now.Add(d)
+		f.putLease(name, f.now, report)
+		f.reconcile(name)
+	}
+	live := func() []corev1.Pod {
+		var out []corev1.Pod
+		for _, p := range f.verifierPods(name) {
+			if p.DeletionTimestamp == nil {
+				out = append(out, p)
+			}
+		}
+		return out
+	}
+
+	// The first verifier is held, as a lost node's kubelet would, and new
+	// inputs delete it: it is terminating. The API server stamps the
+	// deletion on the real clock, which f.now starts at.
+	f.createMetalNode(name, nil)
+	step(0, reports[0])
+	f.onlyVerifierPod(name)
+	f.holdVerifiers(name)
+	step(0, reports[1])
+	if pods := f.verifierPods(name); len(pods) != 1 || pods[0].DeletionTimestamp == nil {
+		t.Fatalf("%d verifier pods after new inputs, want only the old one, terminating", len(pods))
+	}
+
+	// Within the bound it still blocks.
+	step(metalNodeMinStartSpacing+time.Second, reports[1])
+	if n := len(live()); n != 0 {
+		t.Fatalf("%d verifiers started while the old one had been terminating for under %s, want 0",
+			n, metalNodeVerifierAbandonAfter)
+	}
+
+	// Past the bound it does not: a check starts, and its result lands.
+	step(metalNodeVerifierAbandonAfter, reports[1])
+	started := live()
+	if len(started) != 1 {
+		t.Fatalf("%d verifiers started once the old one had been terminating past %s, want 1",
+			len(started), metalNodeVerifierAbandonAfter)
+	}
+	f.finishVerifier(started[0], "100.64.0.2 0\n192.168.1.41 7\n")
+	f.reconcile(name)
+	mn := f.get(name)
+	wantCondition(t, mn, inferencev1alpha1.MetalNodeConditionReachable, metav1.ConditionTrue,
+		inferencev1alpha1.MetalNodeReasonDialBackSucceeded)
+	verifiedAt := f.now
+
+	// A second pod stuck terminating is one more than is set aside: both
+	// block again.
+	step(metalNodeMinStartSpacing+time.Second, reports[2])
+	if n := len(live()); n != 1 {
+		t.Fatalf("%d verifiers for new inputs, want 1", n)
+	}
+	f.holdVerifiers(name)
+	step(metalNodeMinStartSpacing+time.Second, reports[3])
+	step(metalNodeVerifierAbandonAfter+metalNodeMinStartSpacing, reports[3])
+	pods := f.verifierPods(name)
+	if len(pods) != 2 || len(live()) != 0 {
+		t.Fatalf("%d verifier pods (%d not terminating) with two stuck terminating, want just the two", len(pods), len(live()))
+	}
+
+	// When the last success expires, Reachable names a stuck pod and says
+	// how to clear it.
+	step(verifiedAt.Add(metalNodeMaxResultAge+time.Minute).Sub(f.now), reports[3])
+	c := condition(t, f.get(name), inferencev1alpha1.MetalNodeConditionReachable)
+	if c.Status != metav1.ConditionUnknown || c.Reason != inferencev1alpha1.MetalNodeReasonVerificationPending ||
+		!strings.Contains(c.Message, "terminating") || !strings.Contains(c.Message, "--force") ||
+		(!strings.Contains(c.Message, pods[0].Name) && !strings.Contains(c.Message, pods[1].Name)) {
+		t.Errorf("Reachable = %s/%s (%q), want Unknown/VerificationPending naming a stuck pod and how to remove it",
+			c.Status, c.Reason, c.Message)
 	}
 }
