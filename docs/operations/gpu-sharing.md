@@ -239,7 +239,9 @@ the HorizontalPodAutoscaler owns the member's Deployment replica count and the
 operator preserves the live value, so the pool's `replicas: 0` never scales the
 member down and the swap waits for Pods that do not go away. LLMKube rejects
 this combination: the pool reports `MembersValid=False` with reason
-`MemberAutoscaling`, names the affected member, and makes no replica changes.
+`MemberAutoscaling` and names the affected member. The pool leaves its
+HPA-owned replicas alone and holds another activated member at zero until the
+autoscaled member's Pods have exited.
 
 ### Removing a member: stop it yourself
 
