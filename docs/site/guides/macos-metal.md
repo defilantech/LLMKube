@@ -643,7 +643,11 @@ MetalNode's namespace, owned by the MetalNode, placed by
   path is a 64 KiB in-memory `emptyDir` for the certificate), no
   capabilities and no service account token, is killed after 60
   seconds, and stops at once when deleted (no termination grace
-  period).
+  period). It opts out of Istio and Linkerd sidecar injection
+  (`sidecar.istio.io/inject: "false"` as label and annotation,
+  `linkerd.io/inject: disabled`): a sidecar would keep the pod from
+  finishing and send the probe through the mesh instead of straight to
+  the Mac.
 - The agent's ingress certificate names the MetalNode:
   `<metadata.uid>.metal-node.llmkube.invalid` (`.invalid` never
   resolves and no public CA issues for it). The agent reads the UID
