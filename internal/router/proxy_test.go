@@ -1488,18 +1488,44 @@ func budgetStreamPostPath(t *testing.T, mux http.Handler, path, body string) *ht
 	return resp
 }
 
-// registryHas reports whether RouterRegistry currently
-// holds a metric family whose descriptor contains name.
-func registryHas(name string) bool {
-	ch := make(chan prometheus.Metric, 256)
-	prommetrics.RouterRegistry.Collect(ch)
-	close(ch)
-	for m := range ch {
-		if strings.Contains(m.Desc().String(), name) {
+// registryHas reports whether RouterRegistry currently holds at least one
+// series of the metric family named name. It gathers rather than collecting
+// into a channel: Collect sends every series synchronously, so a fixed buffer
+// deadlocks once the registry grows past it (#2339).
+func registryHas(t *testing.T, name string) bool {
+	t.Helper()
+	families, err := prommetrics.RouterRegistry.Gather()
+	if err != nil {
+		t.Fatalf("gather RouterRegistry: %v", err)
+	}
+	for _, mf := range families {
+		if mf.GetName() == name {
 			return true
 		}
 	}
 	return false
+}
+
+// TestRegistryHasLargeRegistry pins that registryHas answers for a registry
+// holding more series than any fixed collect buffer (#2339). Budget tests
+// publish one series per budget and scope, so the series count grows with
+// the suite, and a helper that blocks past a buffer size hangs the package.
+func TestRegistryHasLargeRegistry(t *testing.T) {
+	const router = "registryhas-2339"
+	const series = 300
+	t.Cleanup(func() {
+		prommetrics.RouterBudgetUtilization.DeletePartialMatch(prometheus.Labels{"router": router})
+	})
+	for i := range series {
+		prommetrics.RouterBudgetUtilization.WithLabelValues(router, fmt.Sprintf("scope-%d", i)).Set(0.5)
+	}
+
+	if !registryHas(t, "llmkube_router_budget_utilization") {
+		t.Error("registryHas missed llmkube_router_budget_utilization with more than 256 series registered")
+	}
+	if registryHas(t, "llmkube_router_no_such_metric") {
+		t.Error("registryHas reported a metric family the registry does not hold")
+	}
 }
 
 // TestProxyBudgetExhaustion429 is the enforcement gate for #434: a request
@@ -1541,7 +1567,7 @@ func TestProxyBudgetExhaustion429(t *testing.T) {
 	}
 
 	// The token-budget gauge reflects the boundary utilization.
-	if !registryHas("llmkube_router_token_budget_utilization") {
+	if !registryHas(t, "llmkube_router_token_budget_utilization") {
 		t.Error("RouterTokenBudgetUtilization not found in registry after a charged request")
 	}
 }
@@ -1638,7 +1664,7 @@ func TestProxyBudgetUncharged(t *testing.T) {
 			t.Errorf("budget %s charged %d tokens from a usage-less stream, want 0", u.Name, u.UsedTokens)
 		}
 	}
-	if !registryHas("llmkube_router_budget_uncharged_total") {
+	if !registryHas(t, "llmkube_router_budget_uncharged_total") {
 		t.Error("RouterBudgetUnchargedTotal not found in registry after a usage-less streaming request")
 	}
 }
