@@ -5,6 +5,39 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.16](https://github.com/defilantech/LLMKube/compare/v0.10.15...v0.10.16) (2026-11-02)
+
+
+### Features
+
+* **modelpool:** report a member scaled up by a field manager outside LLMKube ([#2356](https://github.com/defilantech/LLMKube/issues/2356)) ([16446a2](https://github.com/defilantech/LLMKube/commit/16446a294430c4d1d00ce52fb645c6d951508c68))
+* **observability:** alert when an InferenceService or Model spec change goes unreconciled ([#2346](https://github.com/defilantech/LLMKube/issues/2346)) ([87bdb35](https://github.com/defilantech/LLMKube/commit/87bdb357ebe527d69e22a3bc3cb2777d1b7e0174))
+
+
+### Bug Fixes
+
+* **agent:** proxy in full duplex so a streamed completion over HTTP/1.1 is not cut ([#2358](https://github.com/defilantech/LLMKube/issues/2358)) ([6de423b](https://github.com/defilantech/LLMKube/commit/6de423b4ba1a6a4f5db1084fc4c7da03101db811))
+* **chart:** pass an explicit zero to disable the watch canary and reconcile deadline ([#2352](https://github.com/defilantech/LLMKube/issues/2352)) ([d1b230c](https://github.com/defilantech/LLMKube/commit/d1b230c4d0f6b6c4456a7e403f9cbc5493d854b4))
+* **metal:** MetalNode verifier follow-ups from the [#2235](https://github.com/defilantech/LLMKube/issues/2235) review ([#2345](https://github.com/defilantech/LLMKube/issues/2345)) ([4d2a83a](https://github.com/defilantech/LLMKube/commit/4d2a83a14d9524b88064712ddc2b617d9a1bb755))
+* **metal:** withdraw a MetalNode Reachable result when a spec edit changes the check ([#2359](https://github.com/defilantech/LLMKube/issues/2359)) ([5ecbe3e](https://github.com/defilantech/LLMKube/commit/5ecbe3e717607737b914e28de451241519600eeb))
+* reject autoscaled ModelPool members ([#2323](https://github.com/defilantech/LLMKube/issues/2323)) ([7a15843](https://github.com/defilantech/LLMKube/commit/7a158438256c8e964651284976b2075a8abc3300))
+* **router:** evict idle budget keys and cap team keys (fixes [#2337](https://github.com/defilantech/LLMKube/issues/2337)) ([265ed80](https://github.com/defilantech/LLMKube/commit/265ed80ee760391fbcf1c5582a446e08d560c853))
+
+
+### Performance Improvements
+
+* **router:** rate-limit the token budget gauge republish ([#2354](https://github.com/defilantech/LLMKube/issues/2354)) ([998623b](https://github.com/defilantech/LLMKube/commit/998623b959c90e6bedbfc3e4ba406ed384cc2ca7))
+
+
+### Documentation
+
+* clarify transcript retention when cleanup is disabled ([#2347](https://github.com/defilantech/LLMKube/issues/2347)) ([51b59b8](https://github.com/defilantech/LLMKube/commit/51b59b8638c2abc2d1d5e9e25b44643132807dc9))
+* **guides:** add a guide for serving vision models with spec.mmproj ([#2344](https://github.com/defilantech/LLMKube/issues/2344)) ([8eab510](https://github.com/defilantech/LLMKube/commit/8eab510eaf4cb75e943593dee6099e78acd58423))
+* note Foreman CRD upgrade order ([#2348](https://github.com/defilantech/LLMKube/issues/2348)) ([1b239bf](https://github.com/defilantech/LLMKube/commit/1b239bf86810116782b7e4dfdbbb65df81780f71))
+* **runbooks:** read observedGeneration from conditions in the stalled-watch runbook ([#2353](https://github.com/defilantech/LLMKube/issues/2353)) ([e79f900](https://github.com/defilantech/LLMKube/commit/e79f9002597219c82663a52493c95e2ac214a681))
+* **security:** document the InferenceService trust model, host-path roots and router budgets ([#2341](https://github.com/defilantech/LLMKube/issues/2341)) ([0ac7589](https://github.com/defilantech/LLMKube/commit/0ac75890b4e9a2698a0f2f570573327213e469ea))
+* **upgrade:** router-proxy team budgets now keep only team values active in the budget window, at most 10,000 at once; new values past the cap share a per-budget overflow budget, counted by llmkube_router_budget_team_overflow_total. A team budget's status.budgetUtilization now covers only active values, so it no longer drifts toward zero as idle values accumulate. ([265ed80](https://github.com/defilantech/LLMKube/commit/265ed80ee760391fbcf1c5582a446e08d560c853))
+
 ## [0.10.15](https://github.com/defilantech/LLMKube/compare/v0.10.14...v0.10.15) (2026-10-31)
 
 
