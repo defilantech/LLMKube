@@ -4,8 +4,8 @@ The LLMKube controller-manager pod is `Running`, its liveness and readiness
 probes pass, and its admission webhooks answer, but the controllers have
 stopped reconciling: a GitOps apply lands, the CR shows the new spec, and the
 workload keeps running the old one. `metadata.generation` runs ahead of
-`status.observedGeneration` on operator-owned objects with no error anywhere
-in the operator log.
+the `observedGeneration` on the object's status conditions, with no error
+anywhere in the operator log.
 
 This is the #2069 failure class: the operator's informers have silently
 stopped receiving events. The operator detects this itself with a watch
@@ -40,16 +40,19 @@ One or more of:
     5m0s (fail-after 5m0s): the manager's watch pipeline is stalled"}
   ```
 
-- Operator notices: an InferenceService whose `status.observedGeneration`
-  lags `metadata.generation` minutes after a spec change, while the operator
-  pod is green:
+- Operator notices: an InferenceService whose conditions still carry an
+  older `observedGeneration` than `metadata.generation` minutes after a spec
+  change, while the operator pod is green. Neither InferenceService nor Model
+  has a top-level `status.observedGeneration`; each condition records the
+  generation it was set for:
 
   ```bash
   kubectl --context <ctx> -n <ns> get isvc <name> \
-    -o jsonpath='{.metadata.generation}{" / "}{.status.observedGeneration}{"\n"}'
+    -o jsonpath='{.metadata.generation}{" /"}{range .status.conditions[*]}{" "}{.type}={.observedGeneration}{end}{"\n"}'
   ```
 
-  `2 / 1` means the operator has not seen generation 2.
+  `2 / Available=1 Progressing=1` means the operator has not seen
+  generation 2. Once any condition reads `2`, it has.
 
 ## Background: what the canary does
 
@@ -69,12 +72,12 @@ Prometheus.
    ```bash
    kubectl --context <ctx> -n llmkube-system get pod \
      -l control-plane=controller-manager
-   kubectl --context <ctx> -n llmkube-system get isvc -A \
-     -o custom-columns='NS:.metadata.namespace,NAME:.metadata.name,GEN:.metadata.generation,OBSERVED:.status.observedGeneration'
+   kubectl --context <ctx> get isvc -A \
+     -o custom-columns='NS:.metadata.namespace,NAME:.metadata.name,GEN:.metadata.generation,OBSERVED:.status.conditions[*].observedGeneration'
    ```
 
-   Any row where OBSERVED lags GEN on a recently changed object is the stall
-   (or a slower problem: a stuck reconcile, an outage in a dependency).
+   Any recently changed object whose GEN is above every OBSERVED value is the
+   stall (or a slower problem: a stuck reconcile, an outage in a dependency).
 
 2. **Read the canary metrics.** If you scrape the operator:
 
@@ -161,10 +164,10 @@ closes within a minute:
 
 ```bash
 kubectl --context <ctx> -n <ns> get isvc <name> \
-  -o jsonpath='{.metadata.generation}{" / "}{.status.observedGeneration}{"\n"}'
+  -o jsonpath='{.metadata.generation}{" /"}{range .status.conditions[*]}{" "}{.type}={.observedGeneration}{end}{"\n"}'
 ```
 
-The two numbers must converge. The canary's own health is visible in
+At least one condition must reach the new generation. The canary's own health is visible in
 `/healthz?verbose`:
 
 ```bash
