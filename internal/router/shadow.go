@@ -112,11 +112,13 @@ func (s *shadower) close() {
 }
 
 // Close stops the proxy's background work tied to requests: it cancels the
-// shadow copies still in flight and waits for them to return. Call it after
-// the HTTP server has shut down, so no handler starts a new copy; a copy a
-// handler tries to start afterwards is dropped.
+// shadow copies still in flight and waits for them to return, and cancels a
+// scheduled token budget gauge republish and waits for a running one. Call it
+// after the HTTP server has shut down, so no handler starts a new copy; a copy
+// a handler tries to start afterwards is dropped, as is a republish.
 func (p *Proxy) Close() {
 	p.shadows.close()
+	p.budgetGauge.close()
 }
 
 // shadowTargets returns the backends a shadow rule mirrors this request to:

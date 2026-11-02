@@ -54,10 +54,16 @@ type Proxy struct {
 	randN randInt64N
 	// shadows runs the copies a shadow rule mirrors to its other backends.
 	shadows *shadower
+	// budgetGauge runs observeBudgets off the request path, at most once per
+	// budgetGaugeInterval and always after the last budgeted request.
+	budgetGauge *gaugePublisher
 	// budgetGaugeMu serializes observeBudgets, so budgetGaugeKeys matches the
 	// token budget gauge series this proxy has published.
 	budgetGaugeMu   sync.Mutex
 	budgetGaugeKeys map[budgetGaugeKey]struct{}
+	// budgetGaugeRepublishes counts observeBudgets runs, each a full walk of
+	// the budget store and a write of every gauge series.
+	budgetGaugeRepublishes atomic.Int64
 	// teamOverflowLogged makes the first team-key overflow log once.
 	teamOverflowLogged atomic.Bool
 }
@@ -133,6 +139,7 @@ func NewProxy(cfg *Config, logger *slog.Logger, opts ...ProxyOption) *Proxy {
 	}
 	p.disp.logger = logger
 	p.budgets.onTeamOverflow = p.observeTeamOverflow
+	p.budgetGauge = newGaugePublisher(budgetGaugeInterval, p.observeBudgets)
 	return p
 }
 
@@ -396,7 +403,7 @@ func (p *Proxy) handleCompletion(upstreamPath string) http.HandlerFunc {
 				prommetrics.RouterBudgetUnchargedTotal.WithLabelValues(p.routerName, "no_usage").Inc()
 				ba.Uncharged = true
 			}
-			p.observeBudgets()
+			p.budgetGauge.request()
 		}
 
 		p.audit(features, decision, chosen, resp.StatusCode, outcome, elapsed, ba, auditErr...)
@@ -606,14 +613,17 @@ func parseUsageFor(anthropic bool, body []byte, streamed bool) (prompt, completi
 }
 
 // observeBudgets republishes rolling-window token utilization from the
-// store's snapshot after a charged request, so the gauge reflects the
-// current window without a separate scrape loop. A series whose scope left
-// the snapshot (a team value with no usage left in its window) is deleted,
-// so the gauge neither keeps a stale value nor grows a series per team
-// value ever seen.
+// store's snapshot, so the gauge reflects the current window without a
+// separate scrape loop. A budgeted request schedules it through budgetGauge
+// rather than calling it: it walks every scope key under the store's lock and
+// writes every series, which at maxTeamKeys team keys costs milliseconds. A
+// series whose scope left the snapshot (a team value with no usage left in
+// its window) is deleted, so the gauge neither keeps a stale value nor grows
+// a series per team value ever seen.
 func (p *Proxy) observeBudgets() {
 	p.budgetGaugeMu.Lock()
 	defer p.budgetGaugeMu.Unlock()
+	p.budgetGaugeRepublishes.Add(1)
 
 	snap := p.budgets.Snapshot()
 	live := make(map[budgetGaugeKey]struct{}, len(snap))
