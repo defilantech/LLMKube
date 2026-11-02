@@ -22,6 +22,7 @@ import (
 	"net/netip"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -53,6 +54,17 @@ type Proxy struct {
 	randN randInt64N
 	// shadows runs the copies a shadow rule mirrors to its other backends.
 	shadows *shadower
+	// budgetGaugeMu serializes observeBudgets, so budgetGaugeKeys matches the
+	// token budget gauge series this proxy has published.
+	budgetGaugeMu   sync.Mutex
+	budgetGaugeKeys map[budgetGaugeKey]struct{}
+	// teamOverflowLogged makes the first team-key overflow log once.
+	teamOverflowLogged atomic.Bool
+}
+
+// budgetGaugeKey identifies one published token budget gauge series.
+type budgetGaugeKey struct {
+	budget, scope string
 }
 
 // ProxyOption customizes a Proxy at construction time. The proxy
@@ -120,7 +132,19 @@ func NewProxy(cfg *Config, logger *slog.Logger, opts ...ProxyOption) *Proxy {
 		opt(p)
 	}
 	p.disp.logger = logger
+	p.budgets.onTeamOverflow = p.observeTeamOverflow
 	return p
+}
+
+// observeTeamOverflow records a request whose team value was charged to the
+// shared overflow key. It runs under the budget store's lock, so it only
+// counts and logs.
+func (p *Proxy) observeTeamOverflow(budget string) {
+	prommetrics.RouterBudgetTeamOverflowTotal.WithLabelValues(p.routerName, budget).Inc()
+	if p.teamOverflowLogged.CompareAndSwap(false, true) {
+		p.logger.Warn("team budget value cap reached; new team values share the overflow budget key",
+			"budget", budget, "maxTeamKeys", maxTeamKeys, "overflowValue", teamOverflowValue)
+	}
 }
 
 // compileBudgetRules turns wire budgets into the engine's rule shape,
@@ -522,7 +546,8 @@ type budgetAudit struct {
 
 // budgetScopeKeys resolves the concrete budget scope keys for a request:
 // "router" always, the matched "rule:<name>", and one
-// "team:<headerKey>:<value>" per team-scoped budget whose header is present.
+// "team:<headerKey>:<value>" per team-scoped budget whose header is present
+// (a long or non-UTF-8 value is hashed; see teamScopeKey).
 // Returns nil when no budgets are configured, so the request path takes no
 // further budget work.
 func (p *Proxy) budgetScopeKeys(f *RequestFeatures, dec *MatchResult) []string {
@@ -552,7 +577,7 @@ func (p *Proxy) budgetScopeKeys(f *RequestFeatures, dec *MatchResult) []string {
 				hk = DefaultTeamHeaderKey
 			}
 			if v := f.Headers[strings.ToLower(hk)]; v != "" {
-				add("team:" + hk + ":" + v)
+				add(teamScopeKey(hk, v))
 			}
 		}
 	}
@@ -582,16 +607,31 @@ func parseUsageFor(anthropic bool, body []byte, streamed bool) (prompt, completi
 
 // observeBudgets republishes rolling-window token utilization from the
 // store's snapshot after a charged request, so the gauge reflects the
-// current window without a separate scrape loop.
+// current window without a separate scrape loop. A series whose scope left
+// the snapshot (a team value with no usage left in its window) is deleted,
+// so the gauge neither keeps a stale value nor grows a series per team
+// value ever seen.
 func (p *Proxy) observeBudgets() {
-	for _, u := range p.budgets.Snapshot() {
+	p.budgetGaugeMu.Lock()
+	defer p.budgetGaugeMu.Unlock()
+
+	snap := p.budgets.Snapshot()
+	live := make(map[budgetGaugeKey]struct{}, len(snap))
+	for _, u := range snap {
 		if u.MaxTokens <= 0 {
 			continue
 		}
+		live[budgetGaugeKey{budget: u.Name, scope: u.ScopeKey}] = struct{}{}
 		prommetrics.RouterTokenBudgetUtilization.WithLabelValues(
 			p.routerName, u.Name, u.ScopeKey,
 		).Set(float64(u.UsedTokens) / float64(u.MaxTokens))
 	}
+	for k := range p.budgetGaugeKeys {
+		if _, ok := live[k]; !ok {
+			prommetrics.RouterTokenBudgetUtilization.DeleteLabelValues(p.routerName, k.budget, k.scope)
+		}
+	}
+	p.budgetGaugeKeys = live
 }
 
 // capturedBody tees a response body into a bounded tail buffer so the proxy
