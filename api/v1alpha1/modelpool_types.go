@@ -85,6 +85,25 @@ const (
 	// have to be enforced by the metal-agent; that is a follow-up and v1 is
 	// k8s-GPU-only. The pool refuses to manage replicas in this state.
 	ConditionModelPoolMetalSupported = "MetalSupported"
+
+	// ConditionModelPoolExternallyScaled is True when a non-resident member was
+	// scaled up by a field manager other than LLMKube's own (#2302), typically a
+	// GitOps tool restoring spec.replicas on every sync. The scale-up still
+	// activates the member; the condition names the member and the manager, and
+	// clears after a quiet period with no further outside scale-up.
+	ConditionModelPoolExternallyScaled = "ExternallyScaled"
+)
+
+// Field managers LLMKube writes a pool member's spec.replicas under. The pool
+// reads a member's managedFields to tell its own and the router's scale-ups
+// from anyone else's, so both writers pass these names explicitly rather than
+// inheriting a field manager from the binary's user agent.
+const (
+	// ModelPoolFieldManager is the ModelPool controller's drain and scale-up.
+	ModelPoolFieldManager = "llmkube-modelpool"
+
+	// RouterProxyFieldManager is the router-proxy's on-demand activation.
+	RouterProxyFieldManager = "llmkube-router-proxy"
 )
 
 // ModelPoolMember names one InferenceService that shares the pool's GPU slot.
@@ -181,6 +200,25 @@ type ModelPoolMemberStatus struct {
 	Resident bool `json:"resident,omitempty"`
 }
 
+// ModelPoolExternalScale names a member scale-up made outside LLMKube.
+type ModelPoolExternalScale struct {
+	// Member is the member InferenceService that was scaled up.
+	Member string `json:"member"`
+
+	// Manager is the field manager that owns the member's spec.replicas, as
+	// recorded in its managedFields (for example kustomize-controller or
+	// kubectl).
+	Manager string `json:"manager"`
+
+	// MemberGeneration is the member's metadata.generation when the scale-up
+	// was observed. With Member and Manager it identifies one write.
+	// +optional
+	MemberGeneration int64 `json:"memberGeneration,omitempty"`
+
+	// ObservedAt is when the pool first observed this scale-up.
+	ObservedAt metav1.Time `json:"observedAt"`
+}
+
 // ModelPoolStatus defines the observed state of a ModelPool.
 type ModelPoolStatus struct {
 	// Phase is the pool lifecycle phase: Pending, Ready, Swapping, or Degraded.
@@ -204,6 +242,13 @@ type ModelPoolStatus struct {
 	// is used to time the reclaim of the slot back to spec.default.
 	// +optional
 	ResidentIdleSince *metav1.Time `json:"residentIdleSince,omitempty"`
+
+	// ExternalScale records the last scale-up of a non-resident member by a
+	// field manager outside LLMKube. It identifies the write already reported,
+	// so the same scale-up seen on a later pass is not reported again, and times
+	// the ExternallyScaled condition's quiet period.
+	// +optional
+	ExternalScale *ModelPoolExternalScale `json:"externalScale,omitempty"`
 
 	// Members reports the observed state of each pool member.
 	// +listType=map

@@ -12,6 +12,8 @@ package router
 
 import (
 	"context"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -157,5 +159,43 @@ func TestKubeMemberControllerWaitReadyPhaseError(t *testing.T) {
 
 	if err := k.WaitReady(context.Background(), kmcNS, "ghost"); err == nil {
 		t.Error("WaitReady when the member does not exist = nil, want error")
+	}
+}
+
+// TestKubeMemberControllerFieldOwner pins the field manager the router writes
+// member replicas under. The ModelPool reads it back from managedFields to tell
+// a router activation from a scale-up by anything else (#2302); without it the
+// API server names the write after the binary's user agent.
+func TestKubeMemberControllerFieldOwner(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(kubeMCScheme(t)).WithReturnManagedFields().
+		WithObjects(memberISVC(ptr.To(int32(0)), "Stopped")).Build()
+	k := NewKubeMemberController(c, 10*time.Millisecond)
+
+	replicasOwners := func() []string {
+		t.Helper()
+		got := &inferencev1alpha1.InferenceService{}
+		if err := c.Get(context.Background(), types.NamespacedName{Namespace: kmcNS, Name: kmcMember}, got); err != nil {
+			t.Fatalf("get %s/%s: %v", kmcNS, kmcMember, err)
+		}
+		var owners []string
+		for _, e := range got.ManagedFields {
+			if e.FieldsV1 != nil && strings.Contains(e.FieldsV1.GetRawString(), `"f:replicas"`) {
+				owners = append(owners, e.Manager)
+			}
+		}
+		return owners
+	}
+
+	if err := k.Activate(context.Background(), kmcNS, kmcMember); err != nil {
+		t.Fatalf("Activate: %v", err)
+	}
+	if got := replicasOwners(); !slices.Equal(got, []string{inferencev1alpha1.RouterProxyFieldManager}) {
+		t.Errorf("spec.replicas owners after Activate = %v, want [%s]", got, inferencev1alpha1.RouterProxyFieldManager)
+	}
+	if err := k.Deactivate(context.Background(), kmcNS, kmcMember); err != nil {
+		t.Fatalf("Deactivate: %v", err)
+	}
+	if got := replicasOwners(); !slices.Equal(got, []string{inferencev1alpha1.RouterProxyFieldManager}) {
+		t.Errorf("spec.replicas owners after Deactivate = %v, want [%s]", got, inferencev1alpha1.RouterProxyFieldManager)
 	}
 }

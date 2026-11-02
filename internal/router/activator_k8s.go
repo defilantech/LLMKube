@@ -22,6 +22,11 @@ import (
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 )
 
+// routerFieldOwner names the router's replica writes in the member's
+// managedFields, so the ModelPool can tell its activations from a scale-up by
+// anything else (#2302).
+var routerFieldOwner = client.FieldOwner(inferencev1alpha1.RouterProxyFieldManager)
+
 // kubeMemberController is the production MemberController: it drives ModelPool
 // swaps through the Kubernetes API. It scales a member InferenceService to one
 // replica (the activation commit the ModelPoolReconciler acts on) and polls the
@@ -54,7 +59,7 @@ func (k *kubeMemberController) Activate(ctx context.Context, namespace, isvc str
 	}
 	patched := cur.DeepCopy()
 	patched.Spec.Replicas = ptr.To(int32(1))
-	if err := k.client.Patch(ctx, patched, client.MergeFrom(cur)); err != nil {
+	if err := k.client.Patch(ctx, patched, client.MergeFrom(cur), routerFieldOwner); err != nil {
 		return fmt.Errorf("scale up member %s/%s: %w", namespace, isvc, err)
 	}
 	return nil
@@ -70,7 +75,7 @@ func (k *kubeMemberController) Deactivate(ctx context.Context, namespace, isvc s
 	}
 	patched := cur.DeepCopy()
 	patched.Spec.Replicas = ptr.To(int32(0))
-	if err := k.client.Patch(ctx, patched, client.MergeFrom(cur)); err != nil {
+	if err := k.client.Patch(ctx, patched, client.MergeFrom(cur), routerFieldOwner); err != nil {
 		return fmt.Errorf("scale down member %s/%s: %w", namespace, isvc, err)
 	}
 	return nil

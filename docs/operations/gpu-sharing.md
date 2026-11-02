@@ -169,7 +169,7 @@ The operator sets `replicas: 0` on the non-resident members itself. Do not
 "fix" a member that shows `Stopped`: in a pool that is the normal held state,
 not a failure.
 
-Four conditions report the pool's health:
+These conditions report the pool's health:
 
 | Condition | Meaning |
 | --- | --- |
@@ -177,6 +177,7 @@ Four conditions report the pool's health:
 | `SlotAllocated` | `True` / `Resident` names the owner. `False` / `Swapping` means no member is resident yet |
 | `SwapDeferred` | a swap is being held off rather than performed |
 | `MetalSupported` | whether the members are Kubernetes GPU-gated or Apple-metal backed |
+| `ExternallyScaled` | set only once something other than LLMKube scales up a held member. `True` / `ExternalFieldManager` names the member and the tool; see [GitOps](#gitops-leave-replicas-to-the-pool) |
 
 ### GitOps: leave `replicas` to the pool
 
@@ -193,6 +194,33 @@ Symptoms of a tool fighting the pool:
 - `kube_pod_created` for the members shows a new pod every interval
 - a request for one model loads the other one first, then swaps, and a large
   model that takes most of an interval to load rarely serves at all
+- the pool reports `ExternallyScaled=True` and a Warning event with reason
+  `ExternalScale` that names the member and the tool
+
+The pool tells its own scale-ups from anyone else's by the member's
+`managedFields`. The router writes `spec.replicas` as field manager
+`llmkube-router-proxy` and the pool as `llmkube-modelpool`. When a held member
+is scaled up and the manager that owns its `replicas` is neither, the pool
+still activates the member, then records the manager in
+`status.externalScale`, sets `ExternallyScaled=True`, and raises a Warning
+event:
+
+```text
+$ kubectl describe modelpool coder-pool
+...
+  Warning  ExternalScale  2m  modelpool-controller  Member "coder-large" was scaled to 1 by field manager "kustomize-controller", not by LLMKube. ...
+```
+
+The event fires when the condition turns `True`, and again only when a
+different field manager scales a member up. A tool that keeps writing
+`replicas` on every sync keeps the condition `True` and updates the member it
+names, but raises no new event until the condition has cleared. The condition
+turns `False` (`QuietPeriodElapsed`) 30 minutes after the last outside
+scale-up. A manual `kubectl scale` is reported the same way, since the pool
+cannot tell a person from a tool; it still activates the member. A pool with
+no resident member yet is not checked, so creating members with `replicas: 1`
+does not raise it, and neither does the swap the Flux note below describes: a
+`replicas` the API server filled in from the CRD default has no field manager.
 
 Leave `replicas` out of every member's manifest:
 
