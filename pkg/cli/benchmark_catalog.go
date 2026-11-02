@@ -47,6 +47,10 @@ func validateCatalogModels(modelIDs []string) ([]*Model, error) {
 		if err != nil {
 			return nil, fmt.Errorf("model '%s' not found in catalog: %w", modelID, err)
 		}
+		if model.Runtime != "" && model.Runtime != "llamacpp" {
+			return nil, fmt.Errorf(
+				"catalog benchmarks only support llamacpp; deploy %s and benchmark its endpoint instead", modelID)
+		}
 		catalogModels = append(catalogModels, model)
 		fmt.Printf("   ✅ %s (%s)\n", modelID, model.Size)
 	}

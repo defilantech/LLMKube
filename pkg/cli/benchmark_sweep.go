@@ -320,6 +320,9 @@ func runContextSweep(ctx context.Context, opts *benchmarkOptions) error {
 		return fmt.Errorf("model '%s' not found in catalog: %w", modelID, err)
 	}
 
+	if catalogModel.Runtime != "" && catalogModel.Runtime != "llamacpp" {
+		return fmt.Errorf("catalog context sweeps only support llamacpp")
+	}
 	k8sClient, err := initK8sClient()
 	if err != nil {
 		return err
