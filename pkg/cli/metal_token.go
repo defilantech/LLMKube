@@ -92,7 +92,9 @@ if missing), the Mac's Lease and MetalNode, and a join Secret. The join token
 is bound to that Secret, which the Mac deletes when it joins, so the string
 works once, and only until it expires (--ttl, 30 minutes by default). It
 refuses, before writing anything, when an object with one of the Mac's names
-exists and is not labeled for this Mac.
+exists and is not labeled for this Mac. The Lease is the exception: the Mac
+can change its labels, so it counts as the Mac's (and gets its label back)
+when the Mac's MetalNode, labeled for the Mac, names it as its Lease.
 
 Until it is used or expires, the string is a credential for the Mac's
 identity: whoever redeems it can mint the Mac's own tokens. Running this
@@ -353,7 +355,11 @@ func metalDerivedObjects(namespace string, n metalNames) []struct {
 // The steps check again when they write, for objects created in between.
 func preflightMetalOwnership(ctx context.Context, c client.Client, namespace string, n metalNames) error {
 	for _, d := range metalDerivedObjects(namespace, n) {
-		if _, err := getMetalOwned(ctx, c, d.kind, d.obj, n.Mac); err != nil {
+		found, err := getMetalOwned(ctx, c, d.kind, d.obj, n.Mac)
+		if err != nil && found && d.kind == "Lease" {
+			_, err = checkMetalLeaseOwnership(ctx, c, d.obj, n)
+		}
+		if err != nil {
 			return err
 		}
 	}
@@ -369,6 +375,40 @@ func checkMetalOwnership(kind string, obj client.Object, mac string) error {
 		return nil
 	}
 	return errNotMetalManaged(kind, obj, mac)
+}
+
+// checkMetalLeaseOwnership is checkMetalOwnership for the Lease that was
+// read. The Mac may update its Lease, labels included, so a label that no
+// longer says mac does not make the Lease someone else's when the Mac's
+// MetalNode, labeled for the Mac, names it in spec.leaseName: the Mac cannot
+// write its MetalNode. The MetalNode is read only when the label refuses.
+// claimed reports that the MetalNode, not the label, decided.
+func checkMetalLeaseOwnership(ctx context.Context, c client.Client, lease client.Object, n metalNames) (
+	claimed bool, err error) {
+	refusal := checkMetalOwnership("Lease", lease, n.Mac)
+	if refusal == nil {
+		return false, nil
+	}
+	claimed, err = metalNodeClaimsLease(ctx, c, lease.GetNamespace(), n)
+	if err != nil {
+		return false, err
+	}
+	if !claimed {
+		return false, refusal
+	}
+	return true, nil
+}
+
+// metalNodeClaimsLease reports whether the Mac's MetalNode exists, is
+// labeled for the Mac and names the Mac's Lease as its own. A cluster
+// without the MetalNode resource has no claim.
+func metalNodeClaimsLease(ctx context.Context, c client.Client, namespace string, n metalNames) (bool, error) {
+	mn := &inferencev1alpha1.MetalNode{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: n.MetalNode}}
+	found, err := getMetalObject(ctx, c, "MetalNode", mn)
+	if err != nil || !found {
+		return false, err
+	}
+	return mn.Labels[inferencev1alpha1.LabelMetalNode] == n.Mac && mn.Spec.LeaseName == n.Lease, nil
 }
 
 // getMetalOwned reads obj by its name into obj and reports whether it
@@ -465,6 +505,13 @@ func adoptCheck(kind string, obj client.Object, mac string) error {
 	if err := checkMetalOwnership(kind, obj, mac); err != nil {
 		return err
 	}
+	setMetalLabels(obj, mac)
+	return nil
+}
+
+// setMetalLabels adds the Mac's labels to obj's, overwriting the ownership
+// label.
+func setMetalLabels(obj client.Object, mac string) {
 	labels := obj.GetLabels()
 	if labels == nil {
 		labels = map[string]string{}
@@ -473,7 +520,6 @@ func adoptCheck(kind string, obj client.Object, mac string) error {
 		labels[k] = v
 	}
 	obj.SetLabels(labels)
-	return nil
 }
 
 func ensureMetalServiceAccount(ctx context.Context, a metalApply) error {
@@ -551,7 +597,8 @@ func ensureMetalRoleBindings(ctx context.Context, a metalApply) error {
 
 // ensureMetalLease creates the Lease the agent renews. An existing Lease is
 // the agent's heartbeat and report, so only its labels are touched. The
-// label is what lets the MetalNode controller watch it.
+// label is what lets the MetalNode controller watch it, and the Mac can
+// change it: a Lease the Mac's MetalNode claims gets it back.
 func ensureMetalLease(ctx context.Context, a metalApply) error {
 	c, namespace, n, log := a.c, a.namespace, a.names, a.log
 	lease := &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: n.Lease}}
@@ -560,7 +607,17 @@ func ensureMetalLease(ctx context.Context, a metalApply) error {
 			duration := metalLeaseDurationSeconds
 			lease.Spec.LeaseDurationSeconds = &duration
 		}
-		return adoptCheck("Lease", lease, n.Mac)
+		claimed, err := checkMetalLeaseOwnership(ctx, c, lease, n)
+		if err != nil {
+			return err
+		}
+		if claimed {
+			_, _ = fmt.Fprintf(log, "Lease %s/%s is labeled %s=%q, but MetalNode %s/%s names it as its Lease; "+
+				"restoring the label\n", namespace, n.Lease, inferencev1alpha1.LabelMetalNode,
+				lease.Labels[inferencev1alpha1.LabelMetalNode], namespace, n.MetalNode)
+		}
+		setMetalLabels(lease, n.Mac)
+		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("Lease %s/%s: %w", namespace, n.Lease, err)
