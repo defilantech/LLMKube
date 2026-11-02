@@ -1,0 +1,56 @@
+name: Release Notify
+
+# Comments on the issues a release fixed and on the outside contributors' PRs it
+# shipped (hack/notify-released-issues.sh). release-please.yml calls this once
+# the release's images, binaries and charts are published. It cannot listen for
+# the release event instead: release-please creates releases with
+# GITHUB_TOKEN, and events from that token do not start other workflows.
+# Run it by hand to notify for one past release.
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: "Operator release tag, such as v0.10.16"
+        type: string
+        required: true
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Operator release tag, such as v0.10.16"
+        type: string
+        required: true
+      dry_run:
+        description: "Print the comments instead of posting them"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Fetch all tags
+        run: git fetch --force --tags
+
+      - name: Comment on fixed issues and contributor PRs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+          # Unset when release-please.yml calls this, so a release always posts.
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          args=("$TAG")
+          [ "$DRY_RUN" = true ] && args+=(--dry-run)
+          ./hack/notify-released-issues.sh "${args[@]}"
