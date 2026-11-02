@@ -513,3 +513,17 @@ jobs:
           done
           echo "::error::coder image ${image}:${VERSION} not published within ~30m; check the build-coder run in llmkube-runtimes (#932)"
           exit 1
+
+  notify-released:
+    # Tell issue reporters and outside contributors that their fix or PR
+    # shipped. Waits for the images, binaries and charts, so nobody is pointed
+    # at a release they cannot install yet.
+    needs: [release-please, goreleaser, release-helm]
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    uses: ./.github/workflows/release-notify.yml
+    with:
+      tag: ${{ needs.release-please.outputs.tag_name }}
