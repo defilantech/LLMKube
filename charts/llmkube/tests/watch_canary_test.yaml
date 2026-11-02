@@ -30,24 +30,45 @@ tests:
           path: spec.template.spec.containers[0].args
           content: --watch-canary-namespace=ops-namespace
 
-  - it: omits the canary args and the deadline when disabled
+  # The binary defaults both to on (60s, 15m), so leaving the flag out would
+  # not disable either: off must reach the binary as an explicit zero.
+  - it: passes an explicit zero for the canary and the deadline when disabled
     template: deployment.yaml
     set:
       controllerManager.watchCanary.interval: 0s
       controllerManager.reconcileTimeout: 0s
     asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --watch-canary-interval=0
       - notContains:
           path: spec.template.spec.containers[0].args
-          content: --watch-canary-interval=
+          content: --watch-canary-interval=60s
       - notContains:
           path: spec.template.spec.containers[0].args
-          content: --watch-canary-fail-after=
+          content: --watch-canary-fail-after=5m
       - notContains:
           path: spec.template.spec.containers[0].args
-          content: --watch-canary-namespace=
+          content: --watch-canary-namespace=NAMESPACE
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --reconcile-timeout=0
       - notContains:
           path: spec.template.spec.containers[0].args
-          content: --reconcile-timeout=
+          content: --reconcile-timeout=15m
+
+  - it: passes an explicit zero when the canary interval is empty
+    template: deployment.yaml
+    set:
+      controllerManager.watchCanary.interval: ""
+      controllerManager.reconcileTimeout: ""
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --watch-canary-interval=0
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --reconcile-timeout=0
 
   - it: renders the leader-election Role when the canary is on but leader election is off
     template: role.yaml
