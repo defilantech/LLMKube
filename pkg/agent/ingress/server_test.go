@@ -421,9 +421,11 @@ func testStreamsChunks(t *testing.T, contentType string) {
 		t.Fatal("first SSE event did not arrive before the engine finished; the ingress is buffering")
 	}
 	closeRelease()
-	rest, _ := io.ReadAll(br)
-	if !strings.Contains(string(rest), "data: 2") {
-		t.Fatalf("second event missing, got %q", rest)
+	// Report the read error too: a stream the ingress aborted mid-copy
+	// shows up as a short read plus an unexpected EOF, not just a short read.
+	rest, err := io.ReadAll(br)
+	if err != nil || !strings.Contains(string(rest), "data: 2") {
+		t.Fatalf("second event missing or stream aborted: got %q, err %v", rest, err)
 	}
 }
 
