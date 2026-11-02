@@ -330,8 +330,8 @@ func metalTokenCreate(ctx context.Context, c client.Client, kube kubernetes.Inte
 }
 
 // metalDerivedObjects are the Mac's objects whose ownership label decides
-// whether llmkube may write them. The MetalNode is left out: it is this Mac
-// by kind and name, so a hand-applied one is adopted.
+// whether llmkube may write (or remove may delete) them, the MetalNode
+// included: a hand-applied, unlabeled one is refused like the rest.
 func metalDerivedObjects(namespace string, n metalNames) []struct {
 	kind string
 	obj  client.Object
@@ -358,18 +358,35 @@ func metalDerivedObjects(namespace string, n metalNames) []struct {
 // The steps check again when they write, for objects created in between.
 func preflightMetalOwnership(ctx context.Context, c client.Client, namespace string, n metalNames) error {
 	for _, d := range metalDerivedObjects(namespace, n) {
-		err := c.Get(ctx, client.ObjectKeyFromObject(d.obj), d.obj)
-		switch {
-		case apierrors.IsNotFound(err):
-			continue
-		case err != nil:
-			return fmt.Errorf("get %s %s/%s: %w", d.kind, namespace, d.obj.GetName(), err)
-		}
-		if d.obj.GetLabels()[inferencev1alpha1.LabelMetalNode] != n.Mac {
-			return errNotMetalManaged(d.kind, d.obj, n.Mac)
+		if _, err := getMetalOwned(ctx, c, d.kind, d.obj, n.Mac); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// checkMetalOwnership is the one ownership rule of token create, used by the
+// preflight and by every step that writes: an object that exists (it was
+// read from the API server, so it has a resourceVersion) must be labeled for
+// mac. One that does not exist yet is mac's to create.
+func checkMetalOwnership(kind string, obj client.Object, mac string) error {
+	if obj.GetResourceVersion() == "" || obj.GetLabels()[inferencev1alpha1.LabelMetalNode] == mac {
+		return nil
+	}
+	return errNotMetalManaged(kind, obj, mac)
+}
+
+// getMetalOwned reads obj by its name into obj and reports whether it
+// exists, refusing one that checkMetalOwnership refuses.
+func getMetalOwned(ctx context.Context, c client.Client, kind string, obj client.Object, mac string) (bool, error) {
+	err := c.Get(ctx, client.ObjectKeyFromObject(obj), obj)
+	switch {
+	case apierrors.IsNotFound(err):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("get %s %s/%s: %w", kind, obj.GetNamespace(), obj.GetName(), err)
+	}
+	return true, checkMetalOwnership(kind, obj, mac)
 }
 
 // metalApply is what each step of token create works with.
@@ -450,8 +467,8 @@ func sameRules(a, b []rbacv1.PolicyRule) bool {
 // adoptCheck returns a mutate prelude for controllerutil.CreateOrUpdate that
 // refuses an existing object not labeled for this Mac, then sets the labels.
 func adoptCheck(kind string, obj client.Object, mac string) error {
-	if obj.GetResourceVersion() != "" && obj.GetLabels()[inferencev1alpha1.LabelMetalNode] != mac {
-		return errNotMetalManaged(kind, obj, mac)
+	if err := checkMetalOwnership(kind, obj, mac); err != nil {
+		return err
 	}
 	labels := obj.GetLabels()
 	if labels == nil {
@@ -507,20 +524,18 @@ func ensureMetalRoleBindings(ctx context.Context, a metalApply) error {
 	for _, b := range []struct{ name, role string }{{n.RoleBinding, n.Role}, {n.SharedBinding, metalSharedRoleName}} {
 		name := b.name
 		ref := rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "Role", Name: b.role}
-		existing := &rbacv1.RoleBinding{}
-		err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, existing)
-		switch {
-		case err == nil && existing.Labels[inferencev1alpha1.LabelMetalNode] != n.Mac:
-			return errNotMetalManaged("RoleBinding", existing, n.Mac)
-		case err == nil && existing.RoleRef != ref:
+		existing := &rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name}}
+		found, err := getMetalOwned(ctx, c, "RoleBinding", existing, n.Mac)
+		if err != nil {
+			return err
+		}
+		if found && existing.RoleRef != ref {
 			if err := c.Delete(ctx, existing); client.IgnoreNotFound(err) != nil {
 				return fmt.Errorf("replace RoleBinding %s/%s: %w", namespace, name, err)
 			}
 			if err := waitGone(ctx, c, existing); err != nil {
 				return err
 			}
-		case err != nil && !apierrors.IsNotFound(err):
-			return fmt.Errorf("get RoleBinding %s/%s: %w", namespace, name, err)
 		}
 		rb := &rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name}}
 		res, err := controllerutil.CreateOrUpdate(ctx, c, rb, func() error {
@@ -587,13 +602,12 @@ func ensureMetalNode(ctx context.Context, a metalApply) error {
 // single use.
 func recreateJoinSecret(ctx context.Context, a metalApply) (*corev1.Secret, error) {
 	c, namespace, n, log := a.c, a.namespace, a.names, a.log
-	old := &corev1.Secret{}
-	err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: n.JoinSecret}, old)
-	switch {
-	case err == nil:
-		if old.Labels[inferencev1alpha1.LabelMetalNode] != n.Mac {
-			return nil, errNotMetalManaged("Secret", old, n.Mac)
-		}
+	old := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: n.JoinSecret}}
+	found, err := getMetalOwned(ctx, c, "Secret", old, n.Mac)
+	if err != nil {
+		return nil, err
+	}
+	if found {
 		if err := c.Delete(ctx, old, client.Preconditions{UID: &old.UID}); client.IgnoreNotFound(err) != nil {
 			return nil, fmt.Errorf("delete the previous join Secret %s/%s: %w", namespace, n.JoinSecret, err)
 		}
@@ -602,8 +616,6 @@ func recreateJoinSecret(ctx context.Context, a metalApply) (*corev1.Secret, erro
 		}
 		_, _ = fmt.Fprintf(log, "Secret %s/%s deleted: an unused previous join string no longer works "+
 			"(one redeemed already is revoked only by llmkube metal remove)\n", namespace, n.JoinSecret)
-	case !apierrors.IsNotFound(err):
-		return nil, fmt.Errorf("get join Secret %s/%s: %w", namespace, n.JoinSecret, err)
 	}
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: n.JoinSecret, Labels: metalLabels(n.Mac)},

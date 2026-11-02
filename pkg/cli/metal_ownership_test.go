@@ -19,6 +19,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -28,6 +29,8 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 )
@@ -231,4 +234,101 @@ func TestMetalTokenCreateRefusesAnInvalidJoinStringBeforeWriting(t *testing.T) {
 		t.Fatalf("token create: err = %v, want a refusal naming tlsServerName", err)
 	}
 	assertNothingWritten(t, c, ns, &corev1.ConfigMap{})
+}
+
+// TestCheckMetalOwnership pins the one ownership rule the preflight and every
+// write step share: an object read from the API server must carry
+// inference.llmkube.dev/metal-node=<mac>; one not created yet is the Mac's.
+func TestCheckMetalOwnership(t *testing.T) {
+	const mac = "mac-a"
+	for _, tc := range []struct {
+		name   string
+		rv     string
+		labels map[string]string
+		want   string // "" accepts; otherwise a substring of the refusal
+	}{
+		{name: "not created yet", labels: nil},
+		{name: "not created yet, labels set for the write", labels: metalLabels(mac)},
+		{name: "exists, labeled for the Mac", rv: "7", labels: map[string]string{inferencev1alpha1.LabelMetalNode: mac}},
+		{name: "exists, labeled for the Mac among others", rv: "7", labels: metalLabels(mac)},
+		{name: "exists, unlabeled", rv: "7", want: "is not labeled " + inferencev1alpha1.LabelMetalNode + "=mac-a"},
+		{name: "exists, only managed-by", rv: "7", labels: map[string]string{labelManagedBy: metalManagedBy},
+			want: "is not labeled"},
+		{name: "exists, empty label value", rv: "7", labels: map[string]string{inferencev1alpha1.LabelMetalNode: ""},
+			want: "is not labeled"},
+		{name: "exists, labeled for another Mac", rv: "7",
+			labels: map[string]string{inferencev1alpha1.LabelMetalNode: "mac-b"}, want: `belongs to Mac "mac-b"`},
+		{name: "exists, label differs in case", rv: "7",
+			labels: map[string]string{inferencev1alpha1.LabelMetalNode: "MAC-A"}, want: `belongs to Mac "MAC-A"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			obj := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+				Namespace: "ns", Name: "llmkube-metal-mac-a", ResourceVersion: tc.rv, Labels: tc.labels,
+			}}
+			err := checkMetalOwnership("ServiceAccount", obj, mac)
+			if tc.want == "" {
+				if err != nil {
+					t.Fatalf("refused: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.want) ||
+				!strings.Contains(err.Error(), "ns/llmkube-metal-mac-a") {
+				t.Fatalf("err = %v, want a refusal naming ns/llmkube-metal-mac-a and %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// TestGetMetalOwned: the read the preflight, the RoleBinding step and the
+// join Secret step share reports whether the object exists and applies
+// checkMetalOwnership to what it read.
+func TestGetMetalOwned(t *testing.T) {
+	s, err := metalScheme()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret := func(name string, labels map[string]string) *corev1.Secret {
+		return &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: name, Labels: labels}}
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(
+		secret("owned", metalLabels("mac-a")),
+		secret("unlabeled", nil),
+		secret("other-mac", map[string]string{inferencev1alpha1.LabelMetalNode: "mac-b"}),
+	).Build()
+	broken := interceptor.NewClient(fake.NewClientBuilder().WithScheme(s).Build(), interceptor.Funcs{
+		Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
+			return errors.New("connection refused")
+		},
+	})
+	for _, tc := range []struct {
+		name      string
+		c         client.Client
+		obj       string
+		wantFound bool
+		wantErr   string
+	}{
+		{name: "missing", c: c, obj: "missing"},
+		{name: "owned", c: c, obj: "owned", wantFound: true},
+		{name: "unlabeled", c: c, obj: "unlabeled", wantFound: true, wantErr: "is not labeled"},
+		{name: "another Mac's", c: c, obj: "other-mac", wantFound: true, wantErr: `belongs to Mac "mac-b"`},
+		{name: "read fails", c: broken, obj: "owned", wantErr: "get Secret ns/owned: connection refused"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			obj := secret(tc.obj, nil)
+			found, err := getMetalOwned(context.Background(), tc.c, "Secret", obj, "mac-a")
+			if found != tc.wantFound {
+				t.Errorf("found = %v, want %v", found, tc.wantFound)
+			}
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Errorf("err = %v", err)
+			case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
+				t.Errorf("err = %v, want one containing %q", err, tc.wantErr)
+			}
+			if tc.wantFound && obj.GetUID() == "" && obj.GetResourceVersion() == "" {
+				t.Error("getMetalOwned did not read the object into obj")
+			}
+		})
+	}
 }
