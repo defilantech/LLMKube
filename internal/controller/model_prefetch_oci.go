@@ -73,8 +73,8 @@ func (r *ModelReconciler) reconcileOCIPrefetch(ctx context.Context, model *infer
 		setCondition(model, ConditionProgressing, metav1.ConditionFalse, reason, message)
 		return ctrl.Result{}, nil
 	}
-	if !model.Spec.Prefetch || model.Spec.ModelCache != nil || !prefetchableSource(model) {
-		return fail("InvalidOCIPrefetch", "prefetchOCI requires prefetch: true, an HTTP(S)/HF source, and no Model modelCache configuration")
+	if model.Spec.ModelCache != nil || !prefetchableSource(model) {
+		return fail("InvalidOCIPrefetch", "prefetchOCI requires an HTTP(S)/HF source, and no Model modelCache configuration")
 	}
 	if _, err := ocipublish.Destination(spec.Image); err != nil {
 		return fail("InvalidOCIPrefetch", err.Error())
@@ -155,7 +155,7 @@ func (r *ModelReconciler) reconcileOCIPrefetch(ctx context.Context, model *infer
 	}
 	if jobFailed(job) {
 		entry.Phase = inferencev1alpha1.PrefetchPhaseFailed
-		entry.Message = "OCI prefetch Job failed; inspect its pod logs and delete the Job to retry"
+		entry.Message = "OCI prefetch Job failed; inspect its pod logs; retries after 24-hour Job cleanup, or delete the Job to retry sooner"
 		model.Status.Phase = PhaseFailed
 		setCondition(model, ConditionAvailable, metav1.ConditionFalse, ReasonPrefetchFailed, entry.Message)
 		setCondition(model, ConditionProgressing, metav1.ConditionFalse, ReasonPrefetchFailed, entry.Message)
@@ -171,7 +171,7 @@ func (r *ModelReconciler) reconcileOCIPrefetch(ctx context.Context, model *infer
 			r.completeOCIPrefetch(model, entry)
 			return ctrl.Result{}, nil
 		}
-		entry.Message = "Completed OCI prefetch Job has no valid publisher digest; inspect its pods and delete the Job to retry"
+		entry.Message = "Completed OCI prefetch Job has no valid publisher digest; inspect its pods; retries after 24-hour Job cleanup, or delete the Job to retry sooner"
 		entry.Phase = inferencev1alpha1.PrefetchPhaseFailed
 		model.Status.Phase = PhaseFailed
 		setCondition(model, ConditionAvailable, metav1.ConditionFalse, "InvalidOCIPrefetchResult", entry.Message)
@@ -260,6 +260,9 @@ func (r *ModelReconciler) buildOCIPrefetchJob(ctx context.Context, model *infere
 		for _, file := range plan.Files {
 			files = append(files, ocipublish.File{Path: path.Join(strings.TrimPrefix(storage.stagedDir, "/models/"), file), Name: file})
 		}
+	}
+	if len(files) > ocipublish.MaxFiles {
+		return nil, nil, fmt.Errorf("OCI publication supports at most %d files, including mmproj", ocipublish.MaxFiles)
 	}
 	names := make([]string, 0, len(files))
 	for _, file := range files {

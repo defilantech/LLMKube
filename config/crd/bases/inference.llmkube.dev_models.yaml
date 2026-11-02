@@ -1523,7 +1523,9 @@ spec:
                 description: |-
                   PrefetchOCI publishes downloaded files as a container image instead of staging
                   the Model into a PVC. Consumers use a separate oci:// Model pinned to the
-                  published digest. Service-requested PVC prefetch remains independent.
+                  published digest. Setting this block enables publication without prefetch: true.
+                  At most 64 resolved files (including mmproj) may be published.
+                  Service-requested PVC prefetch remains independent.
                 properties:
                   ephemeralStorage:
                     description: |-
@@ -1773,8 +1775,6 @@ spec:
               rule: '!(has(self.prefetch) && self.prefetch && has(self.modelCache)
                 && has(self.modelCache.persistence) && self.modelCache.persistence
                 == ''Ephemeral'')'
-            - message: 'prefetchOCI requires prefetch: true'
-              rule: '!has(self.prefetchOCI) || (has(self.prefetch) && self.prefetch)'
             - message: prefetchOCI cannot be combined with modelCache; configure service
                 caches on InferenceService
               rule: '!has(self.prefetchOCI) || !has(self.modelCache)'

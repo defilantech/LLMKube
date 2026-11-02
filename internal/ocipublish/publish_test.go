@@ -315,3 +315,11 @@ func TestPublishReusesUnchangedFileLayers(t *testing.T) {
 		}
 	}
 }
+
+// The publisher must enforce the cap even when invoked outside the controller.
+func TestPublishRejectsTooManyLayers(t *testing.T) {
+	_, err := Publish(context.Background(), "registry.example.com/models/test:v1", t.TempDir(), make([]File, 65))
+	if err == nil || !strings.Contains(err.Error(), "at most 64 files") {
+		t.Fatalf("want layer limit error, got %v", err)
+	}
+}

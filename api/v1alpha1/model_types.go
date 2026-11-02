@@ -45,7 +45,6 @@ type SHA256Digest string
 // +kubebuilder:validation:XValidation:rule="!has(self.downloadMaxInFlightSize) || (has(self.downloadConcurrency) && self.downloadConcurrency > 1)",message="downloadMaxInFlightSize caps what the downloadConcurrency workers hold at once: it requires downloadConcurrency above 1"
 // +kubebuilder:validation:XValidation:rule="!has(self.downloadConcurrency) || (has(self.files) && self.files.size() > 0 && (!has(self.source) || (!self.source.startsWith('pvc://') && !self.source.startsWith('oci://'))))",message="downloadConcurrency sets how many spec.files the downloader stages at once: it requires spec.files, and a pvc:// or oci:// source is not downloaded"
 // +kubebuilder:validation:XValidation:rule="!(has(self.prefetch) && self.prefetch && has(self.modelCache) && has(self.modelCache.persistence) && self.modelCache.persistence == 'Ephemeral')",message="prefetch cannot be combined with modelCache.persistence Ephemeral: there is no cache volume to stage into"
-// +kubebuilder:validation:XValidation:rule="!has(self.prefetchOCI) || (has(self.prefetch) && self.prefetch)",message="prefetchOCI requires prefetch: true"
 // +kubebuilder:validation:XValidation:rule="!has(self.prefetchOCI) || !has(self.modelCache)",message="prefetchOCI cannot be combined with modelCache; configure service caches on InferenceService"
 type ModelSpec struct {
 	// Source defines where to obtain the model. It may be omitted when every
@@ -177,7 +176,9 @@ type ModelSpec struct {
 
 	// PrefetchOCI publishes downloaded files as a container image instead of staging
 	// the Model into a PVC. Consumers use a separate oci:// Model pinned to the
-	// published digest. Service-requested PVC prefetch remains independent.
+	// published digest. Setting this block enables publication without prefetch: true.
+	// At most 64 resolved files (including mmproj) may be published.
+	// Service-requested PVC prefetch remains independent.
 	// +optional
 	PrefetchOCI *OCIPrefetchSpec `json:"prefetchOCI,omitempty"`
 

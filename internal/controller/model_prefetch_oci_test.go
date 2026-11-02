@@ -19,6 +19,8 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -212,11 +214,11 @@ func TestOCIPrefetchFileContract(t *testing.T) {
 
 func TestOCIPrefetchAdmission(t *testing.T) {
 	c, _, _ := sharedTestEnv(t, "../../config/crd/bases")
-	for _, kind := range []string{"valid", "disabled", "cache", "missing-budget", "zero-budget", "negative-budget", "invalid-budget"} {
+	for _, kind := range []string{"valid", "implicit", "cache", "missing-budget", "zero-budget", "negative-budget", "invalid-budget"} {
 		_, model := ociPrefetchFixture(t)
 		model.Namespace, model.Name, model.UID, model.ResourceVersion = testNS, "oci-"+kind, "", ""
 		model.Spec.Format = "gguf"
-		if kind == "disabled" {
+		if kind == "implicit" {
 			model.Spec.Prefetch = false
 		}
 		if kind == "cache" {
@@ -233,7 +235,7 @@ func TestOCIPrefetchAdmission(t *testing.T) {
 			model.Spec.PrefetchOCI.EphemeralStorage = "bad"
 		}
 		err := c.Create(context.Background(), model)
-		if (kind == "valid") != (err == nil) {
+		if (kind == "valid" || kind == "implicit") != (err == nil) {
 			t.Fatalf("%s admission: %v", kind, err)
 		}
 	}
@@ -278,6 +280,21 @@ func TestOCIPrefetchFailuresAndStaleJobs(t *testing.T) {
 			if scenario == "failed" {
 				if model.Status.Phase != PhaseFailed || model.Status.PrefetchOCI.Image != "" {
 					t.Fatalf("failed publication: %+v", model.Status)
+				}
+				if job.Spec.TTLSecondsAfterFinished == nil || *job.Spec.TTLSecondsAfterFinished != 86400 {
+					t.Fatal("failed publisher has no 24-hour cleanup")
+				}
+				if err := r.Delete(ctx, job); err != nil {
+					t.Fatal(err)
+				}
+				if _, _, err := r.reconcilePrefetch(ctx, model); err != nil {
+					t.Fatal(err)
+				}
+				if err := r.List(ctx, jobs); err != nil {
+					t.Fatal(err)
+				}
+				if len(jobs.Items) != 1 {
+					t.Fatal("failed publisher did not retry after cleanup")
 				}
 			} else {
 				if err := r.List(ctx, jobs); err != nil {
@@ -433,5 +450,114 @@ func TestOCIPrefetchRejectsMissingStorageBudget(t *testing.T) {
 	if model.Status.Phase != PhaseFailed || model.Status.PrefetchOCI == nil ||
 		!strings.Contains(model.Status.PrefetchOCI.Message, "ephemeralStorage must be a positive") {
 		t.Fatalf("missing storage budget was not reported: %+v", model.Status)
+	}
+}
+
+// Removing the prefetch boolean guard must allow an OCI Job to be created.
+func TestOCIPrefetchImplicit(t *testing.T) {
+	r, model := ociPrefetchFixture(t)
+	model.Spec.Prefetch = false
+	ctx := context.Background()
+	if err := r.Update(ctx, model); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := r.reconcilePrefetch(ctx, model); err != nil {
+		t.Fatal(err)
+	}
+	jobs := &batchv1.JobList{}
+	if err := r.List(ctx, jobs); err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs.Items) != 1 {
+		t.Fatalf("want one implicit OCI publishing Job, got %d", len(jobs.Items))
+	}
+	assertOCIPublishingJob(t, r, model, &jobs.Items[0])
+}
+
+// The resolved-file limit must stop oversized Jobs before any download starts.
+func TestOCIPrefetchLayerLimit(t *testing.T) {
+	for _, tc := range []struct {
+		count     int
+		projector bool
+		allowed   bool
+	}{
+		{64, false, true}, {65, false, false}, {63, true, true}, {64, true, false},
+	} {
+		t.Run(fmt.Sprintf("files=%d/projector=%t", tc.count, tc.projector), func(t *testing.T) {
+			r, model := ociPrefetchFixture(t)
+			for i := 0; i < tc.count; i++ {
+				model.Spec.Files = append(model.Spec.Files, fmt.Sprintf("shard-%03d.gguf", i))
+			}
+			if tc.projector {
+				model.Spec.Mmproj = "projector.gguf"
+			}
+			ctx := context.Background()
+			if err := r.Update(ctx, model); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := r.reconcilePrefetch(ctx, model); err != nil {
+				t.Fatal(err)
+			}
+			jobs := &batchv1.JobList{}
+			if err := r.List(ctx, jobs); err != nil {
+				t.Fatal(err)
+			}
+			if tc.allowed {
+				if len(jobs.Items) != 1 {
+					t.Fatalf("want one publishing Job, got %d", len(jobs.Items))
+				}
+			} else {
+				if len(jobs.Items) != 0 {
+					t.Fatal("created publishing Job exceeding 64 layers")
+				}
+				if err := r.Get(ctx, client.ObjectKeyFromObject(model), model); err != nil {
+					t.Fatal(err)
+				}
+				if model.Status.Phase != PhaseFailed || !strings.Contains(model.Status.PrefetchOCI.Message, "at most 64 files") {
+					t.Fatalf("layer limit not reported: %+v", model.Status)
+				}
+			}
+		})
+	}
+}
+
+func TestOCIPrefetchLayerLimitAfterGlobExpansion(t *testing.T) {
+	r, model := ociPrefetchFixture(t)
+	r.AllowedRemoteHosts = []string{"127.0.0.1"}
+	var entries []string
+	for i := 0; i < 65; i++ {
+		entries = append(entries, fmt.Sprintf(`{"type":"file","path":"shard-%03d.safetensors","size":1}`, i))
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, "["+strings.Join(entries, ",")+"]")
+	}))
+	defer server.Close()
+	ctx := context.Background()
+	model.Spec.Source = "hf://org/model"
+	model.Spec.Format = "safetensors"
+	model.Spec.Files = []string{"shard-000.safetensors", "*.safetensors"}
+	model.Spec.SourceSecretRef = &corev1.LocalObjectReference{Name: "source"}
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "source", Namespace: model.Namespace}, Data: map[string][]byte{"HF_ENDPOINT": []byte(server.URL)}}
+	if err := r.Create(ctx, secret); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Update(ctx, model); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := r.reconcilePrefetch(ctx, model); err != nil {
+		t.Fatal(err)
+	}
+	jobs := &batchv1.JobList{}
+	if err := r.List(ctx, jobs); err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs.Items) != 0 {
+		t.Fatal("created publishing Job exceeding 64 expanded files")
+	}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(model), model); err != nil {
+		t.Fatal(err)
+	}
+	if model.Status.PrefetchOCI == nil || !strings.Contains(model.Status.PrefetchOCI.Message, "at most 64 files") {
+		t.Fatalf("expanded layer limit not reported: %+v", model.Status)
 	}
 }

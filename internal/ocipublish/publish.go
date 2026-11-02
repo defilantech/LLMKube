@@ -43,6 +43,9 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/types"
 )
 
+// MaxFiles bounds image layer depth for container runtime compatibility.
+const MaxFiles = 64
+
 // File maps a downloaded file to its image-root-relative serving path.
 type File struct {
 	Path string `json:"path"`
@@ -123,6 +126,9 @@ func Publish(ctx context.Context, destination, directory string, files []File, o
 	}
 	if len(files) == 0 {
 		return "", fmt.Errorf("no model files")
+	}
+	if len(files) > MaxFiles {
+		return "", fmt.Errorf("OCI publication supports at most %d files, including mmproj", MaxFiles)
 	}
 	seen := map[string]bool{}
 	for _, file := range files {

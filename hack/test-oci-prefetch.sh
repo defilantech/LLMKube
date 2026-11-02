@@ -90,7 +90,6 @@ spec:
   files: [weights.gguf, second.gguf]
   mmproj: projector.gguf
   format: gguf
-  prefetch: true
   prefetchOCI:
     image: ${OCI_PREFETCH_IMAGE}
     ephemeralStorage: 1Gi

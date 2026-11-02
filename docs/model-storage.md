@@ -107,16 +107,16 @@ COPY ./qwen3-32b.gguf /
 
 ### Publishing models with OCI prefetch
 
-Set `prefetch: true` and `prefetchOCI` to download an HTTP(S)/HF model and
+Set `prefetchOCI` to download an HTTP(S)/HF model and
 publish it in the image layout above. Without `prefetchOCI`, prefetch keeps
-its existing PVC behavior. See
+its existing PVC behavior. The block alone enables OCI publication;
+`prefetch: true` is not required. Remove the block to disable publication. See
 [`config/samples/model_prefetch_oci.yaml`](../config/samples/model_prefetch_oci.yaml).
 
 ```yaml
 spec:
   source: https://example.com/weights.gguf
   format: gguf
-  prefetch: true
   prefetchOCI:
     image: registry.example.com/models/weights:v1
     ephemeralStorage: 10Gi
@@ -157,7 +157,10 @@ upload still read the files multiple times, but no whole-layer memory cache is
 used. Unchanged files retain their layer digests and are not uploaded again to
 a registry that already holds them. Each individual file plus tar/gzip overhead
 must fit the registry's blob-size limit; large single files still need upstream
-sharding. This does not add resumable uploads across Job restarts.
+sharding. OCI prefetch accepts at most **64 resolved files in total**, including
+`mmproj` and files selected by globs, to bound image layer depth. Larger sets
+are rejected before a download Job is created; this limit does not apply to PVC
+prefetch. This does not add resumable uploads across Job restarts.
 
 Model prefetch node selectors, affinity and
 tolerations apply to the Job. `spec.files`, `spec.mmproj`, source authentication
@@ -181,10 +184,22 @@ provider access. Publishing itself needs no ImageVolume support; consuming the
 result has the cluster requirements below.
 
 A changed source, selected file set, checksum or destination starts a new
-publication. An unchanged successful publication is retained after the Job's
+publication. Changing `prefetchOCI.ephemeralStorage` also starts a new publication,
+even after success: all files are downloaded again, while existing registry blobs
+are reused. This also lets a larger budget replace a Job that was evicted.
+An unchanged successful publication is retained after the Job's
 24-hour cleanup; upstream/tag changes are not polled. Use pinned source revisions
-and unique destination tags for reproducibility. On failure, inspect the Job's
-pod logs and `status.prefetchOCI.message`, then delete the failed Job to retry.
+and unique destination tags for reproducibility. Publishing to an existing tag
+replaces it if the registry allows it. For promotion workflows, enable tag
+immutability in the registry and use a new tag for changed content. Enforcement
+belongs in the registry: a publisher-side existence check cannot prevent a
+concurrent writer from replacing the tag. Promote the digest from status rather
+than a mutable tag.
+
+On failure, inspect the Job's pod logs and `status.prefetchOCI.message`.
+Failed Jobs are intentionally retried on the next reconcile after Kubernetes
+removes them through the 24-hour TTL; delete the Job to retry sooner. Successful
+publications are retained and do not retry after TTL cleanup.
 Removing `prefetchOCI` deletes its owned Job and clears publication status; it
 does not delete registry images. Registry retention and cross-environment
 promotion remain under your control.
