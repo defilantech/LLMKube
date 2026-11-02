@@ -71,8 +71,8 @@ func TestModelDownloadLock_Behavioral(t *testing.T) {
 	}{
 		{"single-file", buildModelInitCommand(false, false, true, false, false, RefreshPolicyIfNotPresent), ""},
 		{"single-file OnChange", buildModelInitCommand(false, false, true, false, false, RefreshPolicyOnChange), ""},
-		{"multi-file", buildMultiFileInitCommand(true, false, false, false, RefreshPolicyIfNotPresent), "model.gguf"},
-		{"multi-file OnChange", buildMultiFileInitCommand(true, false, false, false, RefreshPolicyOnChange), "model.gguf"},
+		{"multi-file", buildMultiFileInitCommand(true, false, false, false, false, RefreshPolicyIfNotPresent), "model.gguf"},
+		{"multi-file OnChange", buildMultiFileInitCommand(true, false, false, false, false, RefreshPolicyOnChange), "model.gguf"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			o := newRangeOrigin(t, true)
@@ -191,8 +191,8 @@ func TestModelDownloadSizeGuard_Behavioral(t *testing.T) {
 	}{
 		{"single-file", buildModelInitCommand(false, false, true, false, false, RefreshPolicyIfNotPresent), ""},
 		{"single-file uncached", buildModelInitCommand(false, false, false, false, false, RefreshPolicyIfNotPresent), ""},
-		{"multi-file", buildMultiFileInitCommand(true, false, false, false, RefreshPolicyIfNotPresent), "model.gguf"},
-		{"multi-file OnChange", buildMultiFileInitCommand(true, false, false, false, RefreshPolicyOnChange), "model.gguf"},
+		{"multi-file", buildMultiFileInitCommand(true, false, false, false, false, RefreshPolicyIfNotPresent), "model.gguf"},
+		{"multi-file OnChange", buildMultiFileInitCommand(true, false, false, false, false, RefreshPolicyOnChange), "model.gguf"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			o := newRangeOrigin(t, true)
@@ -240,7 +240,7 @@ func TestModelDownloadLock_ReadOnlyWarmCache(t *testing.T) {
 		files  string
 	}{
 		{"single-file", buildModelInitCommand(false, false, true, false, false, RefreshPolicyIfNotPresent), ""},
-		{"multi-file", buildMultiFileInitCommand(true, false, false, false, RefreshPolicyIfNotPresent), "model.gguf"},
+		{"multi-file", buildMultiFileInitCommand(true, false, false, false, false, RefreshPolicyIfNotPresent), "model.gguf"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()

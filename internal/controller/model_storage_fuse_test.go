@@ -224,7 +224,7 @@ func runMultiFileFUSEWarmCacheCase(t *testing.T, realStat, policy string, s3 boo
 	if s3 {
 		env = append(env, s3TestEnv(srv.URL)...)
 	}
-	out, err := runVerifyScriptEnv(t, buildMultiFileInitCommand(true, s3, false, false, policy), srv.URL, dest, "", env...)
+	out, err := runVerifyScriptEnv(t, buildMultiFileInitCommand(true, s3, false, false, false, policy), srv.URL, dest, "", env...)
 	if state == "missing" || state == "truncated" {
 		if err == nil {
 			t.Fatalf("unsafe FUSE staging succeeded: %s", out)

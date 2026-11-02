@@ -68,7 +68,7 @@ func runMultiFileCachedSizeCase(t *testing.T, kind, state string) {
 			t.Fatal(err)
 		}
 	}
-	script := buildMultiFileInitCommand(true, kind == "s3", kind == "hf", kind == "partially-pinned", RefreshPolicyIfNotPresent)
+	script := buildMultiFileInitCommand(true, kind == "s3", kind == "hf", kind == "partially-pinned", false, RefreshPolicyIfNotPresent)
 	out, err := runVerifyScriptEnv(t, script, url, dest, "", env...)
 	if state == "download-failed" {
 		if err == nil {
@@ -175,7 +175,7 @@ func TestMultiFileIfNotPresentKeepsRecordedSizeAcrossOriginChange(t *testing.T) 
 	}))
 	t.Cleanup(srv.Close)
 	dest := filepath.Join(t.TempDir(), "model.safetensors")
-	script := buildMultiFileInitCommand(true, false, false, false, RefreshPolicyIfNotPresent)
+	script := buildMultiFileInitCommand(true, false, false, false, false, RefreshPolicyIfNotPresent)
 	first, err := runVerifyScriptEnv(t, script, srv.URL, dest, "", "MODEL_FILES=model.safetensors")
 	if err != nil {
 		t.Fatalf("initial stage failed: %v\n%s", err, first)
@@ -241,7 +241,7 @@ func TestMultiFileOnChangeRejectsMismatchedCache(t *testing.T) {
 				if s3 {
 					env = append(env, s3TestEnv(srv.URL)...)
 				}
-				out, err := runVerifyScriptEnv(t, buildMultiFileInitCommand(true, s3, false, pinned, RefreshPolicyOnChange), srv.URL, dest, "", env...)
+				out, err := runVerifyScriptEnv(t, buildMultiFileInitCommand(true, s3, false, pinned, false, RefreshPolicyOnChange), srv.URL, dest, "", env...)
 				if err == nil {
 					t.Fatalf("accepted a truncated cache after failed refresh: %s", out)
 				}
@@ -277,7 +277,7 @@ func TestMultiFilePublishedSize(t *testing.T) {
 					if s3 {
 						env = append(env, s3TestEnv(o.srv.URL)...)
 					}
-					out, err := runVerifyScriptEnv(t, buildMultiFileInitCommand(true, s3, false, pinned, policy), o.srv.URL, dest, "", env...)
+					out, err := runVerifyScriptEnv(t, buildMultiFileInitCommand(true, s3, false, pinned, false, policy), o.srv.URL, dest, "", env...)
 					if err == nil {
 						t.Fatalf("reported success after a truncated publish: %s", out)
 					}
@@ -321,7 +321,7 @@ func TestMultiFileOnChangeOfflineCache(t *testing.T) {
 				if kind == "partially-pinned" {
 					env = append(env, "MODEL_FILE_SHA256="+sha256Hex([]byte("cached"))+" config.json")
 				}
-				out, err := runVerifyScriptEnv(t, buildMultiFileInitCommand(true, kind == "s3", kind == "hf", kind == "partially-pinned", RefreshPolicyOnChange), srv.URL, filepath.Join(dir, "model.safetensors"), "", env...)
+				out, err := runVerifyScriptEnv(t, buildMultiFileInitCommand(true, kind == "s3", kind == "hf", kind == "partially-pinned", false, RefreshPolicyOnChange), srv.URL, filepath.Join(dir, "model.safetensors"), "", env...)
 				if err != nil {
 					t.Fatalf("offline warm cache failed: %v\n%s", err, out)
 				}
@@ -375,7 +375,7 @@ func runMultiFileOnChangeRecordedSizeCase(t *testing.T, kind, state string) {
 	if kind == "partially-pinned" {
 		env = []string{"MODEL_FILES=model.safetensors\nconfig.json", "MODEL_FILE_SHA256=" + sha256Hex([]byte(content)) + " config.json"}
 	}
-	script := buildMultiFileInitCommand(true, kind == "s3", kind == "hf", kind == "partially-pinned", RefreshPolicyOnChange)
+	script := buildMultiFileInitCommand(true, kind == "s3", kind == "hf", kind == "partially-pinned", false, RefreshPolicyOnChange)
 	out, err := runVerifyScriptEnv(t, script, url, dest, "", env...)
 	if state == "truncated-offline" {
 		if err == nil {
@@ -462,7 +462,7 @@ func runMultiFileChangedOriginCase(t *testing.T, policy, kind, record string) {
 	if kind == "partially-pinned" {
 		env = append(env, "MODEL_FILE_SHA256="+sha256Hex([]byte(cached))+" config.json")
 	}
-	script := buildMultiFileInitCommand(true, kind == "s3", kind == "hf", kind == "partially-pinned", policy)
+	script := buildMultiFileInitCommand(true, kind == "s3", kind == "hf", kind == "partially-pinned", false, policy)
 	out, err := runVerifyScriptEnv(t, script, srv.URL, dest, "", env...)
 	for _, name := range []string{"model.safetensors", "config.json"} {
 		if got := readOrFail(t, filepath.Join(dir, name)); got != cached {
@@ -522,7 +522,7 @@ exec "$REAL_MV" "$@"
 			marker := filepath.Join(bin, "observed")
 			env := []string{"MODEL_FILES=model.safetensors", "PATH=" + bin + ":" + os.Getenv("PATH"), "REAL_MV=" + realMV,
 				"RECORD_DEST=" + dest + ".llmkube-size", "EXPECTED_SIZE=" + strconv.Itoa(len(origin.content())), "RECORD_OBSERVED=" + marker}
-			out, err := runVerifyScriptEnv(t, buildMultiFileInitCommand(true, false, false, false, RefreshPolicyIfNotPresent), origin.srv.URL, dest, "", env...)
+			out, err := runVerifyScriptEnv(t, buildMultiFileInitCommand(true, false, false, false, false, RefreshPolicyIfNotPresent), origin.srv.URL, dest, "", env...)
 			if err != nil {
 				t.Fatalf("init failed: %v\n%s", err, out)
 			}

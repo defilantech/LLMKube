@@ -42,6 +42,7 @@ type SHA256Digest string
 // +kubebuilder:validation:XValidation:rule="!has(self.fileSha256) || self.fileSha256.size() == 0 || !has(self.files) || self.files.all(f, f.matches('^(https?|s3)://') || (!f.contains('*') && !f.contains('?') && !f.contains('[')))",message="fileSha256 needs concrete file paths: a glob cannot be keyed to an unknown expanded name"
 // +kubebuilder:validation:XValidation:rule="!has(self.fileSha256) || self.fileSha256.size() == 0 || self.fileSha256.all(k, (has(self.files) && self.files.exists(f, f == k)) || (has(self.mmproj) && self.mmproj == k))",message="every fileSha256 key must name a spec.files entry or spec.mmproj"
 // +kubebuilder:validation:XValidation:rule="!has(self.fileSha256) || self.fileSha256.size() == 0 || self.fileSha256.all(k, !k.matches('[[:space:]]'))",message="fileSha256 keys must not contain whitespace"
+// +kubebuilder:validation:XValidation:rule="!has(self.downloadConcurrency) || (has(self.files) && self.files.size() > 0) || (has(self.mmproj) && self.mmproj.size() > 0)",message="downloadConcurrency sets how many spec.files are staged at once: it requires spec.files or spec.mmproj"
 // +kubebuilder:validation:XValidation:rule="!(has(self.prefetch) && self.prefetch && has(self.modelCache) && has(self.modelCache.persistence) && self.modelCache.persistence == 'Ephemeral')",message="prefetch cannot be combined with modelCache.persistence Ephemeral: there is no cache volume to stage into"
 type ModelSpec struct {
 	// Source defines where to obtain the model. It may be omitted when every
@@ -265,6 +266,17 @@ type ModelSpec struct {
 	// +kubebuilder:validation:MaxProperties=256
 	// +optional
 	FileSHA256 map[string]SHA256Digest `json:"fileSha256,omitempty"`
+
+	// DownloadConcurrency is how many spec.files and spec.mmproj entries the
+	// downloader stages at once. Unset stages one at a time. A file's close,
+	// SHA256 check and publish then overlap the next file's transfer. On a FUSE
+	// cache that holds each open file on the node's disk until close
+	// (blobfuse2's file cache), every file in flight needs that much free node
+	// disk, so size this against the largest files staged together.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=16
+	// +optional
+	DownloadConcurrency int32 `json:"downloadConcurrency,omitempty"`
 }
 
 // HardwareSpec defines hardware acceleration settings

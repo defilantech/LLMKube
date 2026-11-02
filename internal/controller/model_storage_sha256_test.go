@@ -762,7 +762,7 @@ func multiFileSHA256FailsClosed(t *testing.T) {
 	o := newRangeOrigin(t, true)
 	dir := t.TempDir()
 	primary := filepath.Join(dir, "model.gguf")
-	script := buildMultiFileInitCommand(true, false, false, true, RefreshPolicyIfNotPresent)
+	script := buildMultiFileInitCommand(true, false, false, true, false, RefreshPolicyIfNotPresent)
 
 	out, err := runVerifyScriptEnv(t, script, o.srv.URL, primary, "", "MODEL_FILES=model.gguf")
 	if err == nil {
@@ -780,7 +780,7 @@ func multiFileSHA256PinnedAndUnpinned(t *testing.T) {
 	primary := filepath.Join(dir, "model.gguf")
 	secondary := filepath.Join(dir, "other.gguf")
 	want := sha256Hex(o.content())
-	script := buildMultiFileInitCommand(true, false, false, true, RefreshPolicyIfNotPresent)
+	script := buildMultiFileInitCommand(true, false, false, true, false, RefreshPolicyIfNotPresent)
 
 	out, err := runVerifyScriptEnv(t, script, o.srv.URL, primary, "",
 		"MODEL_FILES=model.gguf\nother.gguf",
@@ -804,7 +804,7 @@ func multiFileSHA256MismatchRejects(t *testing.T) {
 	dir := t.TempDir()
 	primary := filepath.Join(dir, "model.gguf")
 	wrong := sha256Hex([]byte("a hash from another artifact"))
-	script := buildMultiFileInitCommand(true, false, false, true, RefreshPolicyIfNotPresent)
+	script := buildMultiFileInitCommand(true, false, false, true, false, RefreshPolicyIfNotPresent)
 
 	out, err := runVerifyScriptEnv(t, script, o.srv.URL, primary, "",
 		"MODEL_FILES=model.gguf",
@@ -828,7 +828,7 @@ func multiFileSHA256WarmCacheSkips(t *testing.T) {
 	}
 	want := sha256Hex(o.content())
 	writeStamp(t, primary, want)
-	script := buildMultiFileInitCommand(true, false, false, true, RefreshPolicyIfNotPresent)
+	script := buildMultiFileInitCommand(true, false, false, true, false, RefreshPolicyIfNotPresent)
 
 	o.fullFromZero.Store(0)
 	o.rangeRequests.Store(0)
@@ -854,7 +854,7 @@ func multiFileSHA256OnchangeOfflineKeepsAVerifiedCopy(t *testing.T) {
 		t.Fatalf("seed cache: %v", err)
 	}
 	want := sha256Hex(o.content())
-	script := buildMultiFileInitCommand(true, false, false, true, RefreshPolicyOnChange)
+	script := buildMultiFileInitCommand(true, false, false, true, false, RefreshPolicyOnChange)
 
 	// Air-gapped restart of an OnChange Model: the unreachable-origin fallback
 	// must still verify the cached file before keeping it.
@@ -880,7 +880,7 @@ func multiFileSHA256OnchangeOfflineRejectsACorruptCopy(t *testing.T) {
 		t.Fatalf("seed corrupt file: %v", err)
 	}
 	want := sha256Hex([]byte("expected other bytes"))
-	script := buildMultiFileInitCommand(true, false, false, true, RefreshPolicyOnChange)
+	script := buildMultiFileInitCommand(true, false, false, true, false, RefreshPolicyOnChange)
 
 	out, err := runVerifyScriptEnv(t, script, dead, primary, "",
 		"MODEL_FILES=model.gguf",
@@ -904,7 +904,7 @@ func multiFileSHA256S3Publishes(t *testing.T) {
 	dir := t.TempDir()
 	primary := filepath.Join(dir, "model.gguf")
 	want := sha256Hex(o.content())
-	script := buildMultiFileInitCommand(true, true, false, true, RefreshPolicyIfNotPresent)
+	script := buildMultiFileInitCommand(true, true, false, true, false, RefreshPolicyIfNotPresent)
 
 	out, err := runVerifyScriptEnv(t, script, "s3://bucket", primary, "",
 		append([]string{
@@ -926,7 +926,7 @@ func multiFileSHA256OnchangeDownloadMismatchRejects(t *testing.T) {
 	dir := t.TempDir()
 	primary := filepath.Join(dir, "model.gguf")
 	wrong := sha256Hex([]byte("a hash from another artifact"))
-	script := buildMultiFileInitCommand(true, false, false, true, RefreshPolicyOnChange)
+	script := buildMultiFileInitCommand(true, false, false, true, false, RefreshPolicyOnChange)
 
 	out, err := runVerifyScriptEnv(t, script, o.srv.URL, primary, "",
 		"MODEL_FILES=model.gguf",
@@ -952,7 +952,7 @@ func multiFileSHA256IfNotPresentCorruptCacheReplaced(t *testing.T) {
 		t.Fatalf("seed corrupt file: %v", err)
 	}
 	want := sha256Hex(o.content())
-	script := buildMultiFileInitCommand(true, false, false, true, RefreshPolicyIfNotPresent)
+	script := buildMultiFileInitCommand(true, false, false, true, false, RefreshPolicyIfNotPresent)
 
 	out, err := runVerifyScriptEnv(t, script, o.srv.URL, primary, "",
 		"MODEL_FILES=model.gguf",
@@ -976,7 +976,7 @@ func multiFileSHA256OnchangeSizeMatchCorruptReplaced(t *testing.T) {
 		t.Fatalf("seed corrupt same-size file: %v", err)
 	}
 	want := sha256Hex(o.content())
-	script := buildMultiFileInitCommand(true, false, false, true, RefreshPolicyOnChange)
+	script := buildMultiFileInitCommand(true, false, false, true, false, RefreshPolicyOnChange)
 
 	out, err := runVerifyScriptEnv(t, script, o.srv.URL, primary, "",
 		"MODEL_FILES=model.gguf",
@@ -1004,7 +1004,7 @@ func multiFileMarkerBounds(t *testing.T, policy string) {
 		t.Fatalf("seed stale file: %v", err)
 	}
 	wrong := sha256Hex([]byte("a hash from another artifact"))
-	script := buildMultiFileInitCommand(true, false, false, true, policy)
+	script := buildMultiFileInitCommand(true, false, false, true, false, policy)
 
 	if out, err := runVerifyScriptEnv(t, script, o.srv.URL, primary, "",
 		"MODEL_FILES=model.gguf",
@@ -1053,7 +1053,7 @@ func multiFileSHA256OrphanDigestFailsClosed(t *testing.T) {
 	dir := t.TempDir()
 	primary := filepath.Join(dir, "model.gguf")
 	want := sha256Hex(o.content())
-	script := buildMultiFileInitCommand(true, false, false, true, RefreshPolicyIfNotPresent)
+	script := buildMultiFileInitCommand(true, false, false, true, false, RefreshPolicyIfNotPresent)
 
 	out, err := runVerifyScriptEnv(t, script, o.srv.URL, primary, "",
 		"MODEL_FILES=model.gguf",
@@ -1075,7 +1075,7 @@ func multiFileSHA256OrphanDigestFailsClosed(t *testing.T) {
 func multiFileSHA256WhitespaceKeyFailsClosed(t *testing.T) {
 	o := newRangeOrigin(t, true)
 	want := sha256Hex(o.content())
-	script := buildMultiFileInitCommand(true, false, false, true, RefreshPolicyIfNotPresent)
+	script := buildMultiFileInitCommand(true, false, false, true, false, RefreshPolicyIfNotPresent)
 	// The staged name is padded the same way as the key, so the orphan check
 	// alone would pass and llmkube_file_digest (which splits on spaces) would
 	// resolve no digest: the file would stage unpinned.

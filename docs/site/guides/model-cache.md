@@ -561,6 +561,39 @@ spec:
   `spec.files` are rejected when `fileSha256` is set, because a digest cannot
   be keyed to an unknown expanded name. `spec.sha256` and `spec.fileSha256`
   are mutually exclusive, and `fileSha256` is rejected on an `oci://` source.
+- Each hash is logged: the file and the expected digest when it starts, then
+  the computed digest with the file's size and the hashing time, and the
+  rename's time once the file is published. A stamp hit names the file it
+  skipped.
+
+### Staging files concurrently (`spec.downloadConcurrency`)
+
+By default the downloader stages `spec.files` one at a time: each file is
+downloaded, closed, hashed if pinned, and renamed into place before the next
+one starts. Set `spec.downloadConcurrency` (1 to 16) to stage that many files
+at once, so one file's close, hash and rename overlap the next file's
+transfer:
+
+```yaml
+spec:
+  source: hf://org/sharded-checkpoint
+  files:
+    - model-00001-of-00048.safetensors
+    # ...
+  downloadConcurrency: 4
+```
+
+- It requires `spec.files` or `spec.mmproj`; a single-object Model is rejected
+  at admission.
+- Progress lines name their file, since the workers' lines interleave.
+- The first file that fails stops new files from starting. The files already
+  in flight finish, then the init fails; their partials stay for the next
+  attempt to resume.
+- On a FUSE cache that keeps each open file on the node's disk until close,
+  such as blobfuse2's file cache, every file in flight needs that much free
+  node disk. Size the value against the largest files staged together.
+- Changing the value changes the downloader's pod template, so serving pods
+  that stage the Model roll. Unset and `1` build the same template.
 
 ## Troubleshooting
 

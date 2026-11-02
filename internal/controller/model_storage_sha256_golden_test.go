@@ -99,7 +99,7 @@ func TestModelMultiFileInitCommand_UnhashedBranches_Golden(t *testing.T) {
 		for _, kind := range kinds {
 			for _, policy := range []string{RefreshPolicyIfNotPresent, RefreshPolicyOnChange} {
 				name := fmt.Sprintf("initcmd_multi_usecache-%v_%s_%s.golden", useCache, kind.name, policy)
-				cmd := buildMultiFileInitCommand(useCache, kind.isS3, kind.isHFAuth, false, policy)
+				cmd := buildMultiFileInitCommand(useCache, kind.isS3, kind.isHFAuth, false, false, policy)
 				path := filepath.Join("testdata", name)
 				if *updateInitCmdGoldens {
 					if err := os.MkdirAll("testdata", 0o755); err != nil {
@@ -185,11 +185,11 @@ func TestModelMultiFileInitCommand_OnChangeKeepCachedIsGated(t *testing.T) {
 		{"http", false},
 		{"s3", true},
 	} {
-		cmd := buildMultiFileInitCommand(true, kind.isS3, false, true, RefreshPolicyOnChange)
+		cmd := buildMultiFileInitCommand(true, kind.isS3, false, true, false, RefreshPolicyOnChange)
 		if !strings.Contains(cmd, gated) {
 			t.Errorf("%s: gated OnChange keep-cached fallback is not gated by llmkube_accept_file:\n%s", kind.name, cmd)
 		}
-		unhashed := buildMultiFileInitCommand(true, kind.isS3, false, false, RefreshPolicyOnChange)
+		unhashed := buildMultiFileInitCommand(true, kind.isS3, false, false, false, RefreshPolicyOnChange)
 		if strings.Contains(unhashed, "llmkube_accept_file") {
 			t.Errorf("%s: unhashed OnChange command contains a verify helper", kind.name)
 		}

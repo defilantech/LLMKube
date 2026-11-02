@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"math"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -428,6 +429,22 @@ const s3AuthFn = `s3_curl() { _llmkube_id=$(printf '%s' "${AWS_ACCESS_KEY_ID:-}"
 // remote_size must survive the call.
 const downloadProgressFn = `download_with_progress() { _llmkube_dest="$1"; _llmkube_total="${2:-}"; shift 2; "$@" & _llmkube_pid=$!; _llmkube_elapsed=0; while kill -0 "$_llmkube_pid" 2>/dev/null; do sleep 1; kill -0 "$_llmkube_pid" 2>/dev/null || break; _llmkube_elapsed=$((_llmkube_elapsed + 1)); [ $((_llmkube_elapsed % ${PROGRESS_INTERVAL:-10})) -eq 0 ] || continue; _llmkube_have=$(stat -c %s "$_llmkube_dest" 2>/dev/null || echo 0); if [ -n "$_llmkube_total" ] && [ "$_llmkube_total" -gt 0 ] 2>/dev/null; then echo "Downloaded $((_llmkube_have / 1048576)) MiB of $((_llmkube_total / 1048576)) MiB ($((_llmkube_have * 100 / _llmkube_total))%)"; else echo "Downloaded $((_llmkube_have / 1048576)) MiB"; fi; done; wait "$_llmkube_pid"; }` + " && "
 
+// downloadProgressLabeledFn is download_with_progress for concurrent multi-file
+// staging: the workers' progress lines interleave, so each names its $rel.
+var downloadProgressLabeledFn = strings.ReplaceAll(downloadProgressFn, `echo "Downloaded `, `echo "$rel: Downloaded `)
+
+// multiFilePoolFns run the multi-file loop's per-file body, llmkube_stage_file,
+// in up to $MODEL_DOWNLOAD_CONCURRENCY background workers (#2364). A worker is
+// a subshell, so its exit fails only itself. The pool stops dispatching at the
+// first failure, and llmkube_pool_join fails once the workers in flight finish,
+// which leaves their partials for the next attempt to resume. A full pool polls
+// its workers with kill -0: busybox's wait -n does not return the status of the
+// worker it waited for.
+const multiFilePoolFns = `_llmkube_conc=${MODEL_DOWNLOAD_CONCURRENCY:-1}; case "$_llmkube_conc" in ''|*[!0-9]*|0) _llmkube_conc=1;; esac; _llmkube_pids=; _llmkube_failed=; ` +
+	`llmkube_pool_reap() { _llmkube_live=; _llmkube_n=0; for _llmkube_p in $_llmkube_pids; do if kill -0 "$_llmkube_p" 2>/dev/null; then _llmkube_live="$_llmkube_live $_llmkube_p"; _llmkube_n=$((_llmkube_n + 1)); else wait "$_llmkube_p" || _llmkube_failed=1; fi; done; _llmkube_pids=$_llmkube_live; }; ` +
+	`llmkube_pool_dispatch() { while :; do llmkube_pool_reap; [ -z "$_llmkube_failed" ] || return 1; [ "$_llmkube_n" -lt "$_llmkube_conc" ] && break; sleep 1; done; llmkube_stage_file & _llmkube_pids="$_llmkube_pids $!"; }; ` +
+	`llmkube_pool_join() { for _llmkube_p in $_llmkube_pids; do wait "$_llmkube_p" || _llmkube_failed=1; done; [ -z "$_llmkube_failed" ]; }; `
+
 // The HTTP transfers fill a content-keyed partial and mv onto "$MODEL_PATH"
 // on success; the S3 and local-copy branches still fill "$MODEL_PATH.tmp".
 // Two invariants the shape of the command exists to hold:
@@ -717,11 +734,19 @@ const atomicWriteFn = `llmkube_atomic_write() { _llmkube_tmp=$(mktemp "$1.llmkub
 // never fails the start.
 const atomicWriteDebrisSweep = `find "$CACHE_DIR" -type f \( -name '*.llmkube-tmp.??????' -o -name '*.llmkube-size.??????' -o -name '*.sha256-rejected.??????' \) -mmin +10 -delete 2>/dev/null; `
 
+// sha256VerifyLogFns log each hash the download-time gates run: the file, the
+// expected digest, then the computed digest with its size and hashing time.
+// llmkube_verify_start takes the path it hashes and the path it names: a
+// publish hashes the partial but reports the file it becomes. The success line
+// must not contain "mismatch", which the transfer diagnosis matches.
+const sha256VerifyLogFns = `llmkube_verify_start() { _llmkube_mib=$(($(stat -c %s "$1" 2>/dev/null || echo 0) / 1048576)); echo "Verifying the SHA256 of $2 against ${MODEL_DIGEST_FIELD:-spec.sha256} (expected $MODEL_SHA256)..."; _llmkube_t0=$(date +%s); }; ` +
+	`llmkube_verify_ok() { echo "SHA256 OK for $1: $actual ($_llmkube_mib MiB in $(($(date +%s) - _llmkube_t0)) s)"; }; `
+
 // sha256VerifyFns is the download-time gate set: sha256HashFns plus the
 // atomic stamp/marker writers and the verify-then-publish pair.
 // buildPVCVerifyCommand uses sha256HashFns alone, because a pvc:// mount is
 // read-only and cannot carry a stamp.
-const sha256VerifyFns = sha256HashFns + atomicWriteFn + `llmkube_stamp_sha256() { llmkube_atomic_write "$1.sha256" "$MODEL_SHA256 $(stat -c '%s %Y' "$1" 2>/dev/null)"; }; llmkube_marker_hit_sha256() { [ -f "$1.$MODEL_SHA256.sha256-rejected" ]; }; llmkube_check_sha256() { if [ "$(cat "$1.sha256" 2>/dev/null)" = "$MODEL_SHA256 $(stat -c '%s %Y' "$1" 2>/dev/null)" ]; then echo "Model verified against ${MODEL_DIGEST_FIELD:-spec.sha256} (stamp hit, skipped re-hashing)"; return 0; fi; actual=$(llmkube_sha256_hash "$1") || return 1; if [ "$actual" != "$MODEL_SHA256" ]; then echo "ERROR: ${MODEL_DIGEST_FIELD:-spec.sha256} mismatch for the cached $1: expected $MODEL_SHA256, computed $actual; leaving it in place (the cache dir may be shared); a fresh download replaces it" >&2; return 1; fi; llmkube_stamp_sha256 "$1"; }; llmkube_publish_sha256() { actual=$(llmkube_sha256_hash "$1") || return 1; if [ "$actual" != "$MODEL_SHA256" ]; then rm -f "$1"; llmkube_atomic_write "$2.$MODEL_SHA256.sha256-rejected" "$MODEL_SHA256"; echo "ERROR: ${MODEL_DIGEST_FIELD:-spec.sha256} mismatch: expected $MODEL_SHA256, computed $actual; discarded $1; recorded $2.$MODEL_SHA256.sha256-rejected" >&2; return 1; fi; mv "$1" "$2" && llmkube_stamp_sha256 "$2" && rm -f "$2.$MODEL_SHA256.sha256-rejected"; }` + " && "
+const sha256VerifyFns = sha256HashFns + atomicWriteFn + sha256VerifyLogFns + `llmkube_stamp_sha256() { llmkube_atomic_write "$1.sha256" "$MODEL_SHA256 $(stat -c '%s %Y' "$1" 2>/dev/null)"; }; llmkube_marker_hit_sha256() { [ -f "$1.$MODEL_SHA256.sha256-rejected" ]; }; llmkube_check_sha256() { if [ "$(cat "$1.sha256" 2>/dev/null)" = "$MODEL_SHA256 $(stat -c '%s %Y' "$1" 2>/dev/null)" ]; then echo "Model verified against ${MODEL_DIGEST_FIELD:-spec.sha256} (stamp hit, skipped re-hashing): $1"; return 0; fi; llmkube_verify_start "$1" "$1"; actual=$(llmkube_sha256_hash "$1") || return 1; if [ "$actual" != "$MODEL_SHA256" ]; then echo "ERROR: ${MODEL_DIGEST_FIELD:-spec.sha256} mismatch for the cached $1: expected $MODEL_SHA256, computed $actual; leaving it in place (the cache dir may be shared); a fresh download replaces it" >&2; return 1; fi; llmkube_verify_ok "$1"; llmkube_stamp_sha256 "$1"; }; llmkube_publish_sha256() { llmkube_verify_start "$1" "$2"; actual=$(llmkube_sha256_hash "$1") || return 1; if [ "$actual" != "$MODEL_SHA256" ]; then rm -f "$1"; llmkube_atomic_write "$2.$MODEL_SHA256.sha256-rejected" "$MODEL_SHA256"; echo "ERROR: ${MODEL_DIGEST_FIELD:-spec.sha256} mismatch: expected $MODEL_SHA256, computed $actual; discarded $1; recorded $2.$MODEL_SHA256.sha256-rejected" >&2; return 1; fi; llmkube_verify_ok "$2"; _llmkube_t0=$(date +%s); mv "$1" "$2" && llmkube_stamp_sha256 "$2" && rm -f "$2.$MODEL_SHA256.sha256-rejected" && echo "Published $2 (rename $(($(date +%s) - _llmkube_t0)) s)"; }` + " && "
 
 // sha256MultiFileFns defines the per-file verify helpers the multi-file loop
 // runs through (#1978). It is appended to sha256VerifyFns so the loop can set
@@ -772,9 +797,21 @@ const sha256MultiFileFns = `llmkube_file_digest() { printf '%s\n' "${MODEL_FILE_
 // the #1435 guarantee (debris is still removed every attempt) while preserving
 // the resumable partial (#1765).
 func validatorDeriveAndSweep() string {
+	return validatorDeriveAndSweepMatching(`'*.tmp'`)
+}
+
+// validatorDeriveAndSweepOwn sweeps only this file's stale partials, the
+// <file>.<12-character key>.tmp names. Concurrent workers share a directory,
+// and the directory-wide sweep would delete another worker's partial in the
+// middle of its transfer. The sweep after the loop still takes the rest.
+func validatorDeriveAndSweepOwn() string {
+	return validatorDeriveAndSweepMatching(`"$(basename "$MODEL_PATH").????????????.tmp"`)
+}
+
+func validatorDeriveAndSweepMatching(pattern string) string {
 	return `key=$(printf '%s' "$remote_validator" | sha256sum | cut -c1-12); ` +
 		`MODEL_PARTIAL="$MODEL_PATH.$key.tmp"; ` +
-		`find "$(dirname "$MODEL_PATH")" -maxdepth 1 -name '*.tmp' ! -name "$(basename "$MODEL_PARTIAL")" -delete; ` +
+		`find "$(dirname "$MODEL_PATH")" -maxdepth 1 -name ` + pattern + ` ! -name "$(basename "$MODEL_PARTIAL")" -delete; ` +
 		`[ "$accept_ranges" = bytes ] || rm -f "$MODEL_PARTIAL"; `
 }
 
@@ -927,12 +964,15 @@ const debrisSweepCmd = `find "$(dirname "$MODEL_PATH")" -maxdepth 1 -name '*.tmp
 // validator and an empty $accept_ranges: the key is fixed and the transfer
 // downloads into a fresh partial instead of resuming blindly.
 func resumePrologue(isHFAuth bool) string {
+	return resumeProbe(isHFAuth) + validatorDeriveAndSweep()
+}
+
+func resumeProbe(isHFAuth bool) string {
 	return `remote_head=$(` + curlCmd(isHFAuth) + ` -fsSL -I "$MODEL_SOURCE" -o /dev/null -w ` + headProbeFormat + ` 2>/dev/null || echo ''); ` +
 		splitHeadProbe +
 		// remote_size feeds download_with_progress the total for a percent line;
 		// it is empty when the probe failed, and the heartbeat then prints bytes.
-		`remote_size=${remote_validator#CL}; remote_size=${remote_size%%ET*}; ` +
-		validatorDeriveAndSweep()
+		`remote_size=${remote_validator#CL}; remote_size=${remote_size%%ET*}; `
 }
 
 // modelInitEnvVars builds the downloader env. sha256 (Model.spec.sha256) is
@@ -1281,6 +1321,21 @@ func multiFileInitEnvVars(source, cacheDir string, files []string, digests map[s
 	return envs
 }
 
+// stagesConcurrently reports whether a Model's files go through the worker
+// pool. At 1 or unset they stage serially, from the unchanged serial command.
+func stagesConcurrently(model *inferencev1alpha1.Model) bool {
+	return model.Spec.DownloadConcurrency > 1
+}
+
+// downloadConcurrencyEnv sizes the worker pool. It is set only with the
+// concurrent command, so a serial downloader's env is unchanged too.
+func downloadConcurrencyEnv(model *inferencev1alpha1.Model) []corev1.EnvVar {
+	if !stagesConcurrently(model) {
+		return nil
+	}
+	return []corev1.EnvVar{{Name: "MODEL_DOWNLOAD_CONCURRENCY", Value: strconv.Itoa(int(model.Spec.DownloadConcurrency))}}
+}
+
 // buildMultiFileInitCommand returns a shell command that downloads each file
 // listed in $MODEL_FILES from the normalized $MODEL_SOURCE. For cached storage
 // (useCache=true), it creates $CACHE_DIR first. For emptyDir (useCache=false),
@@ -1297,11 +1352,21 @@ func multiFileInitEnvVars(source, cacheDir string, files []string, digests map[s
 // loop keeps its partial for the next attempt. The loop body assigns
 // MODEL_PATH and MODEL_SOURCE per file for those helpers; the loop runs in a
 // pipeline subshell, so the assignments do not leak.
-func buildMultiFileInitCommand(useCache, isS3, isHFAuth, withSHA256 bool, refreshPolicy string) string {
-	return multiFileInitCommand(useCache, isS3, isHFAuth, withSHA256, refreshPolicy, false)
+//
+// concurrent runs the per-file body in the worker pool of multiFilePoolFns
+// instead of inline (spec.downloadConcurrency above 1). Off, the command is
+// the serial loop, byte for byte, so a Model that does not set the field keeps
+// its pod template.
+func buildMultiFileInitCommand(useCache, isS3, isHFAuth, withSHA256, concurrent bool, refreshPolicy string) string {
+	return multiFileInitCommand(useCache, isS3, isHFAuth, withSHA256, concurrent, refreshPolicy, false)
 }
 
-func multiFileInitCommand(useCache, isS3, isHFAuth, withSHA256 bool, refreshPolicy string, mixed bool) string {
+func multiFileInitCommand(useCache, isS3, isHFAuth, withSHA256, concurrent bool, refreshPolicy string, mixed bool) string {
+	// A mixed set's loop reads $MODEL_DOWNLOADS, which the pool does not; it
+	// stages serially.
+	if mixed {
+		concurrent = false
+	}
 	// See cacheStagingPrologue: a serving pod on FUSE only reads a warm
 	// cache, and llmkube_prepare_download refuses its transfers.
 	prefix := cacheStagingPrologue(cacheLockRemedy(isS3, false)) +
@@ -1313,7 +1378,32 @@ func multiFileInitCommand(useCache, isS3, isHFAuth, withSHA256 bool, refreshPoli
 	}
 	// Every branch transfers per file, so the heartbeat helper rides the prefix
 	// once rather than being concatenated at each call site.
-	prefix = downloadProgressFn + prefix
+	if concurrent {
+		prefix = downloadProgressLabeledFn + multiFilePoolFns + prefix
+	} else {
+		prefix = downloadProgressFn + prefix
+	}
+	// Workers share the destination directory, so each sweeps only its own
+	// partials; see validatorDeriveAndSweepOwn.
+	deriveAndSweep := validatorDeriveAndSweep()
+	if concurrent {
+		deriveAndSweep = validatorDeriveAndSweepOwn()
+	}
+	// A worker is a function call, so it skips a file with return, not continue.
+	skip := "continue"
+	if concurrent {
+		skip = "return 0"
+	}
+	// head opens the serial loop; a mixed set reads $MODEL_DOWNLOADS instead.
+	head := `printf '%s\n' "$MODEL_FILES" | while IFS= read -r rel; do `
+	loop := func(perFile string) string {
+		if !concurrent {
+			return head + `[ -n "$rel" ] || continue; ` + perFile + `done`
+		}
+		return `llmkube_stage_file() { ` + perFile + `}; ` +
+			`printf '%s\n' "$MODEL_FILES" | { while IFS= read -r rel; do ` +
+			`[ -n "$rel" ] || continue; llmkube_pool_dispatch || break; done; llmkube_pool_join; }`
+	}
 	if isS3 {
 		prefix = s3AuthFn + prefix
 	}
@@ -1332,7 +1422,7 @@ func multiFileInitCommand(useCache, isS3, isHFAuth, withSHA256 bool, refreshPoli
 		fns = sha256VerifyFns + sha256MultiFileFns
 		pre = `llmkube_precheck_file_sha256 || exit 1; `
 		digestAssign = `MODEL_SHA256=$(llmkube_file_digest "$rel"); `
-		markerGuard = `if [ -n "${MODEL_SHA256:-}" ] && llmkube_marker_hit_sha256 "$dest"; then if llmkube_accept_file "$dest"; then echo "the origin served bytes for $rel that do not match the pinned spec.fileSha256; kept the pinned cached copy; fix the upload, then delete $dest.$MODEL_SHA256.sha256-rejected to retry"; continue; else echo "ERROR: spec.fileSha256 mismatch for $rel; the origin served bytes that do not match the pinned digest; fix the Model or the upload, then delete $dest.$MODEL_SHA256.sha256-rejected to retry" >&2; exit 1; fi; fi; `
+		markerGuard = `if [ -n "${MODEL_SHA256:-}" ] && llmkube_marker_hit_sha256 "$dest"; then if llmkube_accept_file "$dest"; then echo "the origin served bytes for $rel that do not match the pinned spec.fileSha256; kept the pinned cached copy; fix the upload, then delete $dest.$MODEL_SHA256.sha256-rejected to retry"; ` + skip + `; else echo "ERROR: spec.fileSha256 mismatch for $rel; the origin served bytes that do not match the pinned digest; fix the Model or the upload, then delete $dest.$MODEL_SHA256.sha256-rejected to retry" >&2; exit 1; fi; fi; `
 		sizeHit = ` && llmkube_accept_file "$dest"`
 		// The unreachable-origin fallback is part of the per-file gate: keep a
 		// cached copy only if it still passes the gate (stamp hit or a local
@@ -1396,85 +1486,72 @@ func multiFileInitCommand(useCache, isS3, isHFAuth, withSHA256 bool, refreshPoli
 	if isS3 {
 		if refreshPolicy == RefreshPolicyOnChange {
 			body := normalizeFn +
-				`SOURCE="$(normalize_hf_source "$MODEL_SOURCE")" && ` +
-				`printf '%s\n' "$MODEL_FILES" | while IFS= read -r rel; do ` +
-				`[ -n "$rel" ] || continue; ` +
-				`dest="$CACHE_DIR/$rel"; ` +
-				digestAssign + markerGuard +
-				`key="${S3_PREFIX:+${S3_PREFIX}/}$rel"; ` +
-				`url="${AWS_ENDPOINT_URL}/${S3_BUCKET}/${key}"; ` +
-				`remote_size=$(s3_curl -fsSL -I "$url" -o /dev/null -w '%header{content-length}' 2>/dev/null) || remote_size=; ` +
-				`if [ -f "$dest" ] && [ "$(stat -c %s "$dest" 2>/dev/null || echo 0)" = "$remote_size" ] && [ "$remote_size" != "0" ]` + sizeHit + `; then ` +
-				`echo "Model artifact $rel revalidated (unchanged, skipped download)"; ` +
-				`else ` +
-				onChangeRefresh + `llmkube_prepare_download && download_with_progress "$dest.tmp" "" s3_curl -f -L -o "$dest.tmp" "$url" --no-progress-meter && ` + publishFile("$dest.tmp") + `; then ` +
-				`echo "Model artifact $rel revalidated (downloaded)"; ` +
-				keepCachedTail +
-				`fi; ` +
-				`done`
+				`SOURCE="$(normalize_hf_source "$MODEL_SOURCE")" && ` + loop(
+				`dest="$CACHE_DIR/$rel"; `+
+					digestAssign+markerGuard+
+					`key="${S3_PREFIX:+${S3_PREFIX}/}$rel"; `+
+					`url="${AWS_ENDPOINT_URL}/${S3_BUCKET}/${key}"; `+
+					`remote_size=$(s3_curl -fsSL -I "$url" -o /dev/null -w '%header{content-length}' 2>/dev/null) || remote_size=; `+
+					`if [ -f "$dest" ] && [ "$(stat -c %s "$dest" 2>/dev/null || echo 0)" = "$remote_size" ] && [ "$remote_size" != "0" ]`+sizeHit+`; then `+
+					`echo "Model artifact $rel revalidated (unchanged, skipped download)"; `+
+					`else `+
+					onChangeRefresh+`llmkube_prepare_download && download_with_progress "$dest.tmp" "" s3_curl -f -L -o "$dest.tmp" "$url" --no-progress-meter && `+publishFile("$dest.tmp")+`; then `+
+					`echo "Model artifact $rel revalidated (downloaded)"; `+
+					keepCachedTail+
+					`fi; `)
 			return fns + pre + prefix + sweep + " && " + body
 		}
 
 		download := `llmkube_prepare_download || exit 1; echo "Downloading model artifact $rel..."; ` +
 			`download_with_progress "$dest.tmp" "" s3_curl -f -L -o "$dest.tmp" "$url" --no-progress-meter && ` + publishFile("$dest.tmp") + ` || { echo "ERROR: failed to download $rel"; exit 1; }; `
 		body := normalizeFn +
-			`SOURCE="$(normalize_hf_source "$MODEL_SOURCE")" && ` +
-			`printf '%s\n' "$MODEL_FILES" | while IFS= read -r rel; do ` +
-			`[ -n "$rel" ] || continue; ` +
-			`dest="$CACHE_DIR/$rel"; ` +
-			digestAssign + markerGuard +
-			`key="${S3_PREFIX:+${S3_PREFIX}/}$rel"; ` +
-			`url="${AWS_ENDPOINT_URL}/${S3_BUCKET}/${key}"; ` +
-			downloadOrCached(download, `echo "Model artifact $rel already cached, skipping download"`) +
-			`done`
+			`SOURCE="$(normalize_hf_source "$MODEL_SOURCE")" && ` + loop(
+			`dest="$CACHE_DIR/$rel"; `+
+				digestAssign+markerGuard+
+				`key="${S3_PREFIX:+${S3_PREFIX}/}$rel"; `+
+				`url="${AWS_ENDPOINT_URL}/${S3_BUCKET}/${key}"; `+
+				downloadOrCached(download, `echo "Model artifact $rel already cached, skipping download"`))
 		return fns + pre + prefix + sweep + " && " + body
 	}
 
-	loop := `printf '%s\n' "$MODEL_FILES" | while IFS= read -r rel; do `
 	sourceAssign := `url="${SOURCE%/}/$rel"; `
 	authPrefix := hfAuthPrefix(isHFAuth)
 	if mixed {
-		loop = `printf '%s\n' "$MODEL_DOWNLOADS" | while IFS="$(printf '\t')" read -r rel url auth; do `
+		head = `printf '%s\n' "$MODEL_DOWNLOADS" | while IFS="$(printf '\t')" read -r rel url auth; do `
 		sourceAssign = `case "$auth" in s3) url="${AWS_ENDPOINT_URL%/}/${url#s3://}";; esac; `
 		// Auth is selected per destination in Go, never from a Secret-provided URL.
 		authPrefix = s3AuthFn + `hf_curl() { case "$auth" in s3) s3_curl "$@";; hf) ` + hfAuthBody + `;; *) curl "$@";; esac; } && `
 	}
 	if refreshPolicy == RefreshPolicyOnChange {
 		body := normalizeFn + authPrefix +
-			`SOURCE="$(normalize_hf_source "$MODEL_SOURCE")" && ` +
-			loop +
-			`[ -n "$rel" ] || continue; ` +
-			`dest="$CACHE_DIR/$rel"; ` +
-			digestAssign + markerGuard +
-			sourceAssign +
-			`MODEL_PATH="$dest"; MODEL_SOURCE="$url"; ` +
-			`remote_head=$(` + curlCmd(isHFAuth) + ` -fsSL -I "$url" -o /dev/null -w ` + headProbeFormat + ` 2>/dev/null) || remote_head='CLET'; ` +
-			splitHeadProbe +
-			`remote_size=${remote_validator#CL}; remote_size=${remote_size%%ET*}; ` +
-			`if [ -f "$dest" ] && [ "$(stat -c %s "$dest" 2>/dev/null || echo 0)" = "$remote_size" ] && [ "$remote_size" != "0" ]` + sizeHit + `; then ` +
-			`echo "Model artifact $rel revalidated (unchanged, skipped download)"; ` +
-			`else ` +
-			onChangeRefresh + `llmkube_prepare_download && { ` + validatorDeriveAndSweep() +
-			`download_with_progress "$MODEL_PARTIAL" "$remote_size" ` + curlCmd(isHFAuth) + ` -fsSL -C - -o "$MODEL_PARTIAL" "$url" --no-progress-meter && ` + partialSizeGuard + publishFile("$MODEL_PARTIAL") + `; }; then ` +
-			`echo "Model artifact $rel revalidated (downloaded)"; ` +
-			keepCachedTail +
-			`fi; ` +
-			`done`
+			`SOURCE="$(normalize_hf_source "$MODEL_SOURCE")" && ` + loop(
+			`dest="$CACHE_DIR/$rel"; `+
+				digestAssign+markerGuard+
+				sourceAssign+
+				`MODEL_PATH="$dest"; MODEL_SOURCE="$url"; `+
+				`remote_head=$(`+curlCmd(isHFAuth)+` -fsSL -I "$url" -o /dev/null -w `+headProbeFormat+` 2>/dev/null) || remote_head='CLET'; `+
+				splitHeadProbe+
+				`remote_size=${remote_validator#CL}; remote_size=${remote_size%%ET*}; `+
+				`if [ -f "$dest" ] && [ "$(stat -c %s "$dest" 2>/dev/null || echo 0)" = "$remote_size" ] && [ "$remote_size" != "0" ]`+sizeHit+`; then `+
+				`echo "Model artifact $rel revalidated (unchanged, skipped download)"; `+
+				`else `+
+				onChangeRefresh+`llmkube_prepare_download && { `+deriveAndSweep+
+				`download_with_progress "$MODEL_PARTIAL" "$remote_size" `+curlCmd(isHFAuth)+` -fsSL -C - -o "$MODEL_PARTIAL" "$url" --no-progress-meter && `+partialSizeGuard+publishFile("$MODEL_PARTIAL")+`; }; then `+
+				`echo "Model artifact $rel revalidated (downloaded)"; `+
+				keepCachedTail+
+				`fi; `)
 		return fns + pre + prefix + body + " && " + sweep
 	}
 
 	download := `llmkube_prepare_download || exit 1; echo "Downloading model artifact $rel..."; ` +
-		`MODEL_PATH="$dest"; MODEL_SOURCE="$url"; ` + resumePrologue(isHFAuth) +
+		`MODEL_PATH="$dest"; MODEL_SOURCE="$url"; ` + resumeProbe(isHFAuth) + deriveAndSweep +
 		`download_with_progress "$MODEL_PARTIAL" "$remote_size" ` + curlCmd(isHFAuth) + ` -f -L -C - -o "$MODEL_PARTIAL" "$url" --no-progress-meter && ` + partialSizeGuard + publishFile("$MODEL_PARTIAL") + ` || { echo "ERROR: failed to download $rel"; exit 1; }; `
 	body := normalizeFn + authPrefix +
-		`SOURCE="$(normalize_hf_source "$MODEL_SOURCE")" && ` +
-		loop +
-		`[ -n "$rel" ] || continue; ` +
-		`dest="$CACHE_DIR/$rel"; ` +
-		digestAssign + markerGuard +
-		sourceAssign +
-		downloadOrCached(download, `echo "Model artifact $rel already cached, skipping download"`) +
-		`done`
+		`SOURCE="$(normalize_hf_source "$MODEL_SOURCE")" && ` + loop(
+		`dest="$CACHE_DIR/$rel"; `+
+			digestAssign+markerGuard+
+			sourceAssign+
+			downloadOrCached(download, `echo "Model artifact $rel already cached, skipping download"`))
 	return fns + pre + prefix + body + " && " + sweep
 }
 
@@ -2474,9 +2551,9 @@ func stagingDownloadConfig(model *inferencev1alpha1.Model, plan *StagingPlan, ba
 		name, _ := fileEntryPath(entry)
 		digests[name] = digest
 	}
-	env := multiFileInitEnvVars(base, dir, plan.Files, digests)
+	env := append(multiFileInitEnvVars(base, dir, plan.Files, digests), downloadConcurrencyEnv(model)...)
 	if len(plan.Sources) == 0 {
-		return buildMultiFileInitCommand(useCache, isS3Source(base), isHFAuthSourceForEndpoint(base, hfEndpoint), len(digests) > 0, model.Spec.RefreshPolicy), env
+		return buildMultiFileInitCommand(useCache, isS3Source(base), isHFAuthSourceForEndpoint(base, hfEndpoint), len(digests) > 0, stagesConcurrently(model), model.Spec.RefreshPolicy), env
 	}
 	var manifest strings.Builder
 	for _, name := range plan.Files {
@@ -2494,5 +2571,5 @@ func stagingDownloadConfig(model *inferencev1alpha1.Model, plan *StagingPlan, ba
 		fmt.Fprintf(&manifest, "%s\t%s\t%s\n", name, source, auth)
 	}
 	env = append(env, corev1.EnvVar{Name: "MODEL_DOWNLOADS", Value: manifest.String()})
-	return multiFileInitCommand(useCache, false, true, len(digests) > 0, model.Spec.RefreshPolicy, true), env
+	return multiFileInitCommand(useCache, false, true, len(digests) > 0, stagesConcurrently(model), model.Spec.RefreshPolicy, true), env
 }
