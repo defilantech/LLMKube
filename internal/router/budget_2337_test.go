@@ -381,7 +381,7 @@ func TestTeamScopeKeyLengthBound(t *testing.T) {
 // dropBudgetGauge removes a test budget's token gauge series when the test
 // ends. The gauge is process-global, and a test that publishes thousands of
 // team series would otherwise leak them into later tests' registry scans.
-func dropBudgetGauge(t *testing.T, budget string) {
+func dropBudgetGauge(t testing.TB, budget string) {
 	t.Helper()
 	t.Cleanup(func() {
 		prommetrics.RouterTokenBudgetUtilization.DeletePartialMatch(prometheus.Labels{"budget": budget})
@@ -390,7 +390,7 @@ func dropBudgetGauge(t *testing.T, budget string) {
 
 // budgetGaugeScopes returns the token budget gauge's values by scope label
 // for router "default" and the given budget.
-func budgetGaugeScopes(t *testing.T, budget string) map[string]float64 {
+func budgetGaugeScopes(t testing.TB, budget string) map[string]float64 {
 	t.Helper()
 	ch := make(chan prometheus.Metric)
 	go func() {
@@ -456,17 +456,21 @@ func TestProxyTeamBudgetLongHeaderValue(t *testing.T) {
 		t.Fatalf("snapshot is missing keys %v", wantKeys)
 	}
 
-	// The gauge publishes on the request after the bad value, so it must
-	// hold every key; "research" proves the short value kept its name.
-	gauge := budgetGaugeScopes(t, budget)
-	for _, k := range []string{
+	// The republish after the last request covers the bad value, so the
+	// gauge must hold every key; "research" proves the short value kept its
+	// name.
+	wantGauge := []string{
 		teamScopeKey(DefaultTeamHeaderKey, "bad\xffvalue"),
 		"team:" + DefaultTeamHeaderKey + ":research",
-	} {
-		if _, ok := gauge[k]; !ok {
-			t.Errorf("gauge has no series for %q; have %v", k, gauge)
-		}
 	}
+	waitBudgetGauge(t, budget, func(g map[string]float64) bool {
+		for _, k := range wantGauge {
+			if _, ok := g[k]; !ok {
+				return false
+			}
+		}
+		return true
+	})
 }
 
 // TestProxyTeamBudgetOverflowAtRequestPath fills the proxy's store to the
@@ -530,6 +534,7 @@ func TestProxyBudgetGaugeDropsEvictedKeys(t *testing.T) {
 	proxy, mux, _ := budgetTestProxy(t, []Budget{
 		{Name: budget, Scope: BudgetScopeTeam, HeaderKey: DefaultTeamHeaderKey, Window: time.Minute, MaxTokens: 1000},
 	})
+	setBudgetGaugeInterval(proxy, 10*time.Millisecond)
 	t0 := time.Now()
 	clock, advance := nowFn(t0)
 	var clockMu sync.Mutex
@@ -540,20 +545,15 @@ func TestProxyBudgetGaugeDropsEvictedKeys(t *testing.T) {
 	beta := teamScopeKey(DefaultTeamHeaderKey, "beta")
 	resp := budgetPost(t, mux, map[string]string{DefaultTeamHeaderKey: "alpha"})
 	_ = resp.Body.Close()
-	if got := budgetGaugeScopes(t, budget); got[alpha] != 0.1 {
-		t.Fatalf("gauge after alpha = %v, want alpha at 0.1", got)
-	}
+	waitBudgetGauge(t, budget, func(g map[string]float64) bool { return g[alpha] == 0.1 })
 
 	setNow(t0.Add(2 * time.Minute))
 	resp = budgetPost(t, mux, map[string]string{DefaultTeamHeaderKey: "beta"})
 	_ = resp.Body.Close()
-	got := budgetGaugeScopes(t, budget)
-	if _, ok := got[alpha]; ok {
-		t.Fatalf("gauge still has alpha (%v) after its window passed: %v", got[alpha], got)
-	}
-	if got[beta] != 0.1 {
-		t.Fatalf("gauge = %v, want beta at 0.1", got)
-	}
+	waitBudgetGauge(t, budget, func(g map[string]float64) bool {
+		_, hasAlpha := g[alpha]
+		return !hasAlpha && g[beta] == 0.1
+	})
 }
 
 // TestBudgetStoreConcurrentTeamChurn runs charges with fresh team values,

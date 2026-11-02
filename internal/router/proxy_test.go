@@ -1432,6 +1432,9 @@ func budgetTestProxy(t *testing.T, budgets []Budget) (*Proxy, http.Handler, *fak
 		t.Fatalf("budget test config: %v", err)
 	}
 	proxy := NewProxy(cfg, slog.Default())
+	// Close stops a scheduled token budget gauge republish, so none runs
+	// after the test (and its gauge cleanup) ends.
+	t.Cleanup(proxy.Close)
 	mux := http.NewServeMux()
 	proxy.Mount(mux)
 	return proxy, mux, back
@@ -1566,7 +1569,9 @@ func TestProxyBudgetExhaustion429(t *testing.T) {
 		t.Errorf("backend calls after 429 = %d, want 1 (a budget-exhausted request must not reach a backend)", got)
 	}
 
-	// The token-budget gauge reflects the boundary utilization.
+	// The token-budget gauge reflects the boundary utilization once the
+	// rate-limited republish after the charged request has run.
+	waitBudgetGauge(t, "router-cap", func(g map[string]float64) bool { return g["router"] == 1 })
 	if !registryHas(t, "llmkube_router_token_budget_utilization") {
 		t.Error("RouterTokenBudgetUtilization not found in registry after a charged request")
 	}
