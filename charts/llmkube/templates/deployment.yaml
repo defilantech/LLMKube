@@ -52,6 +52,9 @@ spec:
         - --watch-canary-fail-after={{ $wc.failAfter }}
         {{- end }}
         - --watch-canary-namespace={{ default (include "llmkube.namespace" .) $wc.namespace }}
+        {{- else }}
+        # The binary defaults the canary to on, so off has to be explicit.
+        - --watch-canary-interval=0
         {{- end }}
         {{- $ug := .Values.controllerManager.unreconciledGeneration | default dict }}
         {{- if and $ug.interval (ne (toString $ug.interval) "0s") }}
@@ -66,6 +69,9 @@ spec:
         # Bound every Model / InferenceService reconcile so a call that never
         # returns cannot hold a controller worker forever (#2069).
         - --reconcile-timeout={{ .Values.controllerManager.reconcileTimeout }}
+        {{- else }}
+        # The binary defaults the deadline to 15m, so off has to be explicit.
+        - --reconcile-timeout=0
         {{- end }}
         - --health-probe-bind-address=:8081
         {{- if .Values.metrics.enabled }}
