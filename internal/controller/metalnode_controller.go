@@ -456,6 +456,7 @@ func (r *MetalNodeReconciler) reconcileDialBack(ctx context.Context, mn *inferen
 			dialableAddresses(desired), mn.Spec.Verifier)
 		keep := st.Verification != nil && st.Verification.InputHash == hash
 		st.Candidates = mergeCandidates(st.Candidates, desired, keep)
+		r.reachableForSpec(mn, keep)
 		if !keep && verifiedResultStale(st, report, prevPin, prevPort) {
 			r.setReachable(mn, metav1.ConditionUnknown, inferencev1alpha1.MetalNodeReasonVerificationPending,
 				"the agent's pin, port or addresses changed since the last check; a new check is due")
@@ -583,6 +584,30 @@ func (r *MetalNodeReconciler) verifierExists(ctx context.Context, mn *inferencev
 	}
 	mn.Status.Verification = prev
 	return metalNodeVerifierPollInterval, toDelete, nil
+}
+
+// reachableForSpec brings a Reachable decided under an earlier spec
+// generation up to the current one, so it never lags status.observedGeneration
+// (llmkube metal join only accepts conditions for the current generation).
+// When the check still runs with the inputs its last result was for (keep),
+// or no result has been recorded, the condition stands and is re-stamped.
+// Otherwise the spec edit changed the check: spec.verifier moves it to other
+// nodes and spec.hostIP changes what it dials, so a result from the old check
+// says nothing about the new one, whichever way it went, and Reachable is
+// Unknown until a check for the new spec finishes. The Mac's own report
+// cannot reach this: only an admin edit moves the generation.
+func (r *MetalNodeReconciler) reachableForSpec(mn *inferencev1alpha1.MetalNode, keep bool) {
+	c := meta.FindStatusCondition(mn.Status.Conditions, inferencev1alpha1.MetalNodeConditionReachable)
+	if c == nil || c.ObservedGeneration == mn.Generation {
+		return
+	}
+	if v := mn.Status.Verification; keep || v == nil || v.LastCheckTime == nil {
+		r.setCondition(mn, c.Type, c.Status, c.Reason, c.Message)
+		return
+	}
+	r.setReachable(mn, metav1.ConditionUnknown, inferencev1alpha1.MetalNodeReasonVerificationPending,
+		"the MetalNode's spec changed since the last check, and the check's inputs (the spec.verifier placement, "+
+			"spec.hostIP or the agent's report) differ from the ones it ran with; a new check is due")
 }
 
 // verifiedResultStale reports whether a True Reachable no longer describes
