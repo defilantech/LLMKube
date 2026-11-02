@@ -115,6 +115,17 @@ spec:
                 maximum: 16
                 minimum: 1
                 type: integer
+              downloadMaxInFlightSize:
+                description: |-
+                  DownloadMaxInFlightSize caps the combined size of the files the
+                  downloadConcurrency workers hold at once, as a quantity such as "90Gi".
+                  A file starts only while the size in flight plus its own fits, or when
+                  nothing else is in flight, so a file larger than the cap still stages,
+                  alone. Files start in list order. A file present in the cache counts its
+                  size on disk, and one whose size the origin does not report counts the
+                  whole cap. Set it to the node disk a FUSE cache may fill.
+                pattern: ^[1-9][0-9]*(Ki|Mi|Gi|Ti|Pi|Ei|k|M|G|T|P|E)?$
+                type: string
               fileSha256:
                 additionalProperties:
                   description: SHA256Digest is a hex-encoded SHA256 digest (64 characters,
@@ -1705,6 +1716,10 @@ spec:
             - message: fileSha256 keys must not contain whitespace
               rule: '!has(self.fileSha256) || self.fileSha256.size() == 0 || self.fileSha256.all(k,
                 !k.matches(''[[:space:]]''))'
+            - message: 'downloadMaxInFlightSize caps what the downloadConcurrency
+                workers hold at once: it requires downloadConcurrency above 1'
+              rule: '!has(self.downloadMaxInFlightSize) || (has(self.downloadConcurrency)
+                && self.downloadConcurrency > 1)'
             - message: 'downloadConcurrency sets how many spec.files are staged at
                 once: it requires spec.files or spec.mmproj'
               rule: '!has(self.downloadConcurrency) || (has(self.files) && self.files.size()

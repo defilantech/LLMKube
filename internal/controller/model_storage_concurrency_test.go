@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -44,13 +45,18 @@ type pacedOrigin struct {
 	inFlight int
 	maxSeen  int
 	requests map[string]int
+	heads    map[string]int
+	// noLength leaves Content-Length off HEAD responses.
+	noLength bool
+	// durations overrides the transfer time per file.
+	durations map[string]time.Duration
 }
 
 func newPacedOrigin(t *testing.T, files map[string][]byte, perFile time.Duration) *pacedOrigin {
 	t.Helper()
-	o := &pacedOrigin{files: files, requests: map[string]int{}}
+	o := &pacedOrigin{files: files, requests: map[string]int{}, heads: map[string]int{}}
 	o.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		name := strings.TrimPrefix(r.URL.Path, "/")
+		name := strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/"), "bucket/")
 		body, ok := o.files[name]
 		if !ok {
 			http.NotFound(w, r)
@@ -58,10 +64,16 @@ func newPacedOrigin(t *testing.T, files map[string][]byte, perFile time.Duration
 		}
 		w.Header().Set("ETag", fmt.Sprintf("%q", name))
 		w.Header().Set("Accept-Ranges", "bytes")
-		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 		if r.Method == http.MethodHead {
+			o.mu.Lock()
+			o.heads[name]++
+			o.mu.Unlock()
+			if !o.noLength {
+				w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+			}
 			return
 		}
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 		o.mu.Lock()
 		o.requests[name]++
 		o.inFlight++
@@ -74,6 +86,10 @@ func newPacedOrigin(t *testing.T, files map[string][]byte, perFile time.Duration
 			o.inFlight--
 			o.mu.Unlock()
 		}()
+		pace := perFile
+		if d, ok := o.durations[name]; ok {
+			pace = d
+		}
 		const chunks = 10
 		step := len(body) / chunks
 		for i := 0; i < chunks; i++ {
@@ -85,7 +101,7 @@ func newPacedOrigin(t *testing.T, files map[string][]byte, perFile time.Duration
 				return
 			}
 			w.(http.Flusher).Flush()
-			time.Sleep(perFile / chunks)
+			time.Sleep(pace / chunks)
 		}
 	}))
 	t.Cleanup(o.srv.Close)
@@ -104,6 +120,12 @@ func (o *pacedOrigin) requested(name string) int {
 	return o.requests[name]
 }
 
+func (o *pacedOrigin) probed(name string) int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.heads[name]
+}
+
 func concurrencyFixture(names ...string) map[string][]byte {
 	files := map[string][]byte{}
 	for i, n := range names {
@@ -114,7 +136,10 @@ func concurrencyFixture(names ...string) map[string][]byte {
 
 func runMultiFile(t *testing.T, script, source, dir, files string, extra ...string) (string, error) {
 	t.Helper()
-	cmd := exec.Command("sh", "-c", script)
+	// A pool that never dispatches its next file would hang the test.
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "sh", "-c", script)
 	cmd.Env = append(os.Environ(),
 		"MODEL_SOURCE="+source,
 		"CACHE_DIR="+dir,
@@ -125,22 +150,51 @@ func runMultiFile(t *testing.T, script, source, dir, files string, extra ...stri
 	return string(out), err
 }
 
+// poolVariant is one of buildMultiFileInitCommand's four loop variants. Each
+// builds its own per-file body and size probe, so the pool's tests run over
+// all four. S3 points s3_curl at the origin through s3TestEnv, whose stub
+// ignores the signature.
+type poolVariant struct {
+	name   string
+	s3     bool
+	policy string
+}
+
+var poolVariants = []poolVariant{
+	{"http-" + RefreshPolicyIfNotPresent, false, RefreshPolicyIfNotPresent},
+	{"http-" + RefreshPolicyOnChange, false, RefreshPolicyOnChange},
+	{"s3-" + RefreshPolicyIfNotPresent, true, RefreshPolicyIfNotPresent},
+	{"s3-" + RefreshPolicyOnChange, true, RefreshPolicyOnChange},
+}
+
+func (v poolVariant) script(concurrent bool) string {
+	return buildMultiFileInitCommand(true, v.s3, false, false, concurrent, v.policy)
+}
+
+func (v poolVariant) run(t *testing.T, script string, o *pacedOrigin, dir, files string, extra ...string) (string, error) {
+	t.Helper()
+	source := o.srv.URL
+	if v.s3 {
+		source = "s3://bucket"
+		extra = append(append(s3TestEnv(o.srv.URL), "S3_PREFIX="), extra...)
+	}
+	return runMultiFile(t, script, source, dir, files, extra...)
+}
+
 // TestMultiFileConcurrentStaging_Behavioral drives the worker pool (#2364) under
-// sh against an origin that counts overlapping transfers, for both HTTP refresh
-// policies, since each builds its own per-file body.
+// sh against an origin that counts overlapping transfers, for every loop variant.
 func TestMultiFileConcurrentStaging_Behavioral(t *testing.T) {
 	requireInitShellEnvironment(t)
 
 	names := []string{"a.bin", "b.bin", "c.bin", "d.bin"}
-	for _, policy := range []string{RefreshPolicyIfNotPresent, RefreshPolicyOnChange} {
-		t.Run(policy, func(t *testing.T) {
+	for _, v := range poolVariants {
+		t.Run(v.name, func(t *testing.T) {
 			t.Run("stages up to the concurrency at once and publishes every file", func(t *testing.T) {
 				files := concurrencyFixture(names...)
 				o := newPacedOrigin(t, files, 1500*time.Millisecond)
 				dir := t.TempDir()
 
-				out, err := runMultiFile(t, buildMultiFileInitCommand(true, false, false, false, true, policy),
-					o.srv.URL, dir, strings.Join(names, "\n"), "MODEL_DOWNLOAD_CONCURRENCY=3")
+				out, err := v.run(t, v.script(true), o, dir, strings.Join(names, "\n"), "MODEL_DOWNLOAD_CONCURRENCY=3")
 				if err != nil {
 					t.Fatalf("init script failed: %v\n%s", err, out)
 				}
@@ -164,8 +218,7 @@ func TestMultiFileConcurrentStaging_Behavioral(t *testing.T) {
 				o := newPacedOrigin(t, files, 600*time.Millisecond)
 				dir := t.TempDir()
 
-				out, err := runMultiFile(t, buildMultiFileInitCommand(true, false, false, false, false, policy),
-					o.srv.URL, dir, strings.Join(names[:3], "\n"), "MODEL_DOWNLOAD_CONCURRENCY=3")
+				out, err := v.run(t, v.script(false), o, dir, strings.Join(names[:3], "\n"), "MODEL_DOWNLOAD_CONCURRENCY=3")
 				if err != nil {
 					t.Fatalf("init script failed: %v\n%s", err, out)
 				}
@@ -174,20 +227,49 @@ func TestMultiFileConcurrentStaging_Behavioral(t *testing.T) {
 				}
 			})
 
-			t.Run("progress lines name their file", func(t *testing.T) {
+			t.Run("progress lines name their file and the files in flight", func(t *testing.T) {
 				files := concurrencyFixture(names[:2]...)
 				o := newPacedOrigin(t, files, 2500*time.Millisecond)
 				dir := t.TempDir()
 
-				out, err := runMultiFile(t, buildMultiFileInitCommand(true, false, false, false, true, policy),
-					o.srv.URL, dir, strings.Join(names[:2], "\n"), "MODEL_DOWNLOAD_CONCURRENCY=2", "PROGRESS_INTERVAL=1")
+				out, err := v.run(t, v.script(true), o, dir, strings.Join(names[:2], "\n"), "MODEL_DOWNLOAD_CONCURRENCY=2", "PROGRESS_INTERVAL=1")
 				if err != nil {
 					t.Fatalf("init script failed: %v\n%s", err, out)
 				}
 				for _, name := range names[:2] {
-					if !strings.Contains(out, name+": Downloaded ") {
+					if !strings.Contains(out, "MiB of "+name+" (") {
 						t.Errorf("no progress line naming %s\n%s", name, out)
 					}
+				}
+				if !strings.Contains(out, "(concurrency: 2)") {
+					t.Errorf("no progress line carries the two files in flight\n%s", out)
+				}
+				if !strings.Contains(out, "Staging up to 2 files at once\n") {
+					t.Errorf("no line naming the pool's size\n%s", out)
+				}
+			})
+
+			// Once every file is dispatched the pool only joins, and the count
+			// must still fall as workers finish.
+			t.Run("the count in flight falls as workers finish", func(t *testing.T) {
+				files := concurrencyFixture("a.bin", "b.bin")
+				o := newPacedOrigin(t, files, 3500*time.Millisecond)
+				o.durations = map[string]time.Duration{"b.bin": 300 * time.Millisecond}
+				dir := t.TempDir()
+
+				out, err := v.run(t, v.script(true), o, dir, "a.bin\nb.bin", "MODEL_DOWNLOAD_CONCURRENCY=2", "PROGRESS_INTERVAL=1")
+				if err != nil {
+					t.Fatalf("init script failed: %v\n%s", err, out)
+				}
+				// S3 reports no total, so its lines carry no percentage.
+				fell := false
+				for _, line := range strings.Split(out, "\n") {
+					if strings.Contains(line, "MiB of a.bin") && strings.HasSuffix(line, "(concurrency: 1)") {
+						fell = true
+					}
+				}
+				if !fell {
+					t.Errorf("a.bin's progress never reported one file in flight after b.bin finished\n%s", out)
 				}
 			})
 
@@ -203,8 +285,7 @@ func TestMultiFileConcurrentStaging_Behavioral(t *testing.T) {
 					t.Fatalf("seed partial: %v", err)
 				}
 
-				out, err := runMultiFile(t, buildMultiFileInitCommand(true, false, false, false, true, policy),
-					o.srv.URL, dir, "missing.bin\na.bin\nc.bin\nd.bin", "MODEL_DOWNLOAD_CONCURRENCY=2")
+				out, err := v.run(t, v.script(true), o, dir, "missing.bin\na.bin\nc.bin\nd.bin", "MODEL_DOWNLOAD_CONCURRENCY=2")
 				if err == nil {
 					t.Fatalf("expected the init to fail on missing.bin\n%s", out)
 				}
@@ -216,10 +297,119 @@ func TestMultiFileConcurrentStaging_Behavioral(t *testing.T) {
 				if got, err := os.ReadFile(filepath.Join(dir, "a.bin")); err != nil || string(got) != string(files["a.bin"]) {
 					t.Errorf("a.bin, in flight when missing.bin failed, did not finish (err %v)\n%s", err, out)
 				}
-				if _, err := os.Stat(kept); err != nil {
+				// S3 has no resume: its loop sweeps every partial before it starts.
+				if _, err := os.Stat(kept); err != nil && !v.s3 {
 					t.Errorf("a failed loop swept a partial it should keep: %v", err)
 				}
 			})
+		})
+	}
+}
+
+// spec.downloadMaxInFlightSize caps the bytes the pool's workers hold, since a
+// FUSE cache such as blobfuse2's keeps each open file on the node's disk. Each
+// fixture file is 64 KiB.
+func TestMultiFileByteCap_Behavioral(t *testing.T) {
+	requireInitShellEnvironment(t)
+
+	names := []string{"a.bin", "b.bin", "c.bin", "d.bin"}
+	for _, v := range poolVariants {
+		t.Run(v.name, func(t *testing.T) {
+			script := v.script(true)
+
+			t.Run("holds back a file that would pass the cap", func(t *testing.T) {
+				files := concurrencyFixture(names...)
+				o := newPacedOrigin(t, files, 1500*time.Millisecond)
+				dir := t.TempDir()
+
+				// Two files fit 150000 bytes, three do not.
+				out, err := v.run(t, script, o, dir, strings.Join(names, "\n"),
+					"MODEL_DOWNLOAD_CONCURRENCY=3", "MODEL_DOWNLOAD_MAX_INFLIGHT_BYTES=150000", "PROGRESS_INTERVAL=1")
+				if err != nil {
+					t.Fatalf("init script failed: %v\n%s", err, out)
+				}
+				if got := o.maxInFlight(); got != 2 {
+					t.Errorf("max concurrent transfers = %d, want 2\n%s", got, out)
+				}
+				if !strings.Contains(out, "Waiting to start c.bin: ") || !strings.Contains(out, "MiB allowed (concurrency: 2)") {
+					t.Errorf("no wait line for c.bin with the two files in flight\n%s", out)
+				}
+				// The progress lines report the pool the cap allows, not the
+				// three downloadConcurrency asks for.
+				if !strings.Contains(out, "(concurrency: 2)") || strings.Contains(out, "(concurrency: 3)") {
+					t.Errorf("progress lines do not report the capped concurrency of 2\n%s", out)
+				}
+				for name, want := range files {
+					if got, err := os.ReadFile(filepath.Join(dir, name)); err != nil || string(got) != string(want) {
+						t.Errorf("%s not published intact (err %v)", name, err)
+					}
+				}
+			})
+
+			t.Run("stages a file larger than the cap alone", func(t *testing.T) {
+				files := concurrencyFixture(names[:3]...)
+				o := newPacedOrigin(t, files, 600*time.Millisecond)
+				dir := t.TempDir()
+
+				out, err := v.run(t, script, o, dir, strings.Join(names[:3], "\n"),
+					"MODEL_DOWNLOAD_CONCURRENCY=3", "MODEL_DOWNLOAD_MAX_INFLIGHT_BYTES=32768")
+				if err != nil {
+					t.Fatalf("init script failed: %v\n%s", err, out)
+				}
+				if got := o.maxInFlight(); got != 1 {
+					t.Errorf("max concurrent transfers = %d, want 1", got)
+				}
+				for name := range files {
+					if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+						t.Errorf("%s not published: %v", name, err)
+					}
+				}
+			})
+
+			t.Run("counts an unreported size as the whole cap", func(t *testing.T) {
+				files := concurrencyFixture(names[:3]...)
+				o := newPacedOrigin(t, files, 600*time.Millisecond)
+				o.noLength = true
+				dir := t.TempDir()
+
+				// All three would fit 1 MiB if their sizes were known.
+				out, err := v.run(t, script, o, dir, strings.Join(names[:3], "\n"),
+					"MODEL_DOWNLOAD_CONCURRENCY=3", "MODEL_DOWNLOAD_MAX_INFLIGHT_BYTES=1048576")
+				if err != nil {
+					t.Fatalf("init script failed: %v\n%s", err, out)
+				}
+				if got := o.maxInFlight(); got != 1 {
+					t.Errorf("max concurrent transfers = %d, want 1\n%s", got, out)
+				}
+			})
+		})
+	}
+
+	// A cached file is sized from disk, so an IfNotPresent warm start under a
+	// cap still makes no request for it.
+	for _, v := range poolVariants {
+		if v.policy != RefreshPolicyIfNotPresent {
+			continue
+		}
+		t.Run("sizes a present file from disk/"+v.name, func(t *testing.T) {
+			files := concurrencyFixture("a.bin", "b.bin")
+			o := newPacedOrigin(t, files, 200*time.Millisecond)
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "a.bin"), files["a.bin"], 0o644); err != nil {
+				t.Fatalf("seed a.bin: %v", err)
+			}
+
+			out, err := v.run(t, v.script(true), o, dir, "a.bin\nb.bin",
+				"MODEL_DOWNLOAD_CONCURRENCY=2", "MODEL_DOWNLOAD_MAX_INFLIGHT_BYTES=1048576")
+			if err != nil {
+				t.Fatalf("init script failed: %v\n%s", err, out)
+			}
+			if n := o.probed("a.bin") + o.requested("a.bin"); n != 0 {
+				t.Errorf("made %d request(s) for the cached a.bin\n%s", n, out)
+			}
+			if o.probed("b.bin") == 0 {
+				t.Errorf("never probed the missing b.bin's size\n%s", out)
+			}
 		})
 	}
 }
@@ -363,5 +553,24 @@ func TestDownloadConcurrencyWiring(t *testing.T) {
 	}
 	if got := poolEnv["MODEL_DOWNLOAD_CONCURRENCY"]; got != "4" {
 		t.Errorf("MODEL_DOWNLOAD_CONCURRENCY = %q, want 4", got)
+	}
+	if _, ok := poolEnv["MODEL_DOWNLOAD_MAX_INFLIGHT_BYTES"]; ok {
+		t.Error("no downloadMaxInFlightSize set MODEL_DOWNLOAD_MAX_INFLIGHT_BYTES")
+	}
+
+	capped := newModel(4)
+	capped.Spec.DownloadMaxInFlightSize = "90Gi"
+	cappedCmd, cappedEnv := downloader(t, capped)
+	if got := cappedEnv["MODEL_DOWNLOAD_MAX_INFLIGHT_BYTES"]; got != "96636764160" {
+		t.Errorf("MODEL_DOWNLOAD_MAX_INFLIGHT_BYTES = %q, want 96636764160 (90Gi)", got)
+	}
+	if cappedCmd != poolCmd {
+		t.Error("downloadMaxInFlightSize changed the downloader command; it travels in env only")
+	}
+
+	serialCapped := newModel(1)
+	serialCapped.Spec.DownloadMaxInFlightSize = "90Gi"
+	if _, env := downloader(t, serialCapped); len(env) != len(oneEnv) {
+		t.Errorf("a cap on a serial Model changed its env: %v", env)
 	}
 }

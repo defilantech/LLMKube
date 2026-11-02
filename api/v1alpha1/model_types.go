@@ -42,6 +42,7 @@ type SHA256Digest string
 // +kubebuilder:validation:XValidation:rule="!has(self.fileSha256) || self.fileSha256.size() == 0 || !has(self.files) || self.files.all(f, f.matches('^(https?|s3)://') || (!f.contains('*') && !f.contains('?') && !f.contains('[')))",message="fileSha256 needs concrete file paths: a glob cannot be keyed to an unknown expanded name"
 // +kubebuilder:validation:XValidation:rule="!has(self.fileSha256) || self.fileSha256.size() == 0 || self.fileSha256.all(k, (has(self.files) && self.files.exists(f, f == k)) || (has(self.mmproj) && self.mmproj == k))",message="every fileSha256 key must name a spec.files entry or spec.mmproj"
 // +kubebuilder:validation:XValidation:rule="!has(self.fileSha256) || self.fileSha256.size() == 0 || self.fileSha256.all(k, !k.matches('[[:space:]]'))",message="fileSha256 keys must not contain whitespace"
+// +kubebuilder:validation:XValidation:rule="!has(self.downloadMaxInFlightSize) || (has(self.downloadConcurrency) && self.downloadConcurrency > 1)",message="downloadMaxInFlightSize caps what the downloadConcurrency workers hold at once: it requires downloadConcurrency above 1"
 // +kubebuilder:validation:XValidation:rule="!has(self.downloadConcurrency) || (has(self.files) && self.files.size() > 0) || (has(self.mmproj) && self.mmproj.size() > 0)",message="downloadConcurrency sets how many spec.files are staged at once: it requires spec.files or spec.mmproj"
 // +kubebuilder:validation:XValidation:rule="!(has(self.prefetch) && self.prefetch && has(self.modelCache) && has(self.modelCache.persistence) && self.modelCache.persistence == 'Ephemeral')",message="prefetch cannot be combined with modelCache.persistence Ephemeral: there is no cache volume to stage into"
 type ModelSpec struct {
@@ -277,6 +278,17 @@ type ModelSpec struct {
 	// +kubebuilder:validation:Maximum=16
 	// +optional
 	DownloadConcurrency int32 `json:"downloadConcurrency,omitempty"`
+
+	// DownloadMaxInFlightSize caps the combined size of the files the
+	// downloadConcurrency workers hold at once, as a quantity such as "90Gi".
+	// A file starts only while the size in flight plus its own fits, or when
+	// nothing else is in flight, so a file larger than the cap still stages,
+	// alone. Files start in list order. A file present in the cache counts its
+	// size on disk, and one whose size the origin does not report counts the
+	// whole cap. Set it to the node disk a FUSE cache may fill.
+	// +kubebuilder:validation:Pattern=`^[1-9][0-9]*(Ki|Mi|Gi|Ti|Pi|Ei|k|M|G|T|P|E)?$`
+	// +optional
+	DownloadMaxInFlightSize string `json:"downloadMaxInFlightSize,omitempty"`
 }
 
 // HardwareSpec defines hardware acceleration settings

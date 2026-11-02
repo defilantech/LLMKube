@@ -430,8 +430,13 @@ const s3AuthFn = `s3_curl() { _llmkube_id=$(printf '%s' "${AWS_ACCESS_KEY_ID:-}"
 const downloadProgressFn = `download_with_progress() { _llmkube_dest="$1"; _llmkube_total="${2:-}"; shift 2; "$@" & _llmkube_pid=$!; _llmkube_elapsed=0; while kill -0 "$_llmkube_pid" 2>/dev/null; do sleep 1; kill -0 "$_llmkube_pid" 2>/dev/null || break; _llmkube_elapsed=$((_llmkube_elapsed + 1)); [ $((_llmkube_elapsed % ${PROGRESS_INTERVAL:-10})) -eq 0 ] || continue; _llmkube_have=$(stat -c %s "$_llmkube_dest" 2>/dev/null || echo 0); if [ -n "$_llmkube_total" ] && [ "$_llmkube_total" -gt 0 ] 2>/dev/null; then echo "Downloaded $((_llmkube_have / 1048576)) MiB of $((_llmkube_total / 1048576)) MiB ($((_llmkube_have * 100 / _llmkube_total))%)"; else echo "Downloaded $((_llmkube_have / 1048576)) MiB"; fi; done; wait "$_llmkube_pid"; }` + " && "
 
 // downloadProgressLabeledFn is download_with_progress for concurrent multi-file
-// staging: the workers' progress lines interleave, so each names its $rel.
-var downloadProgressLabeledFn = strings.ReplaceAll(downloadProgressFn, `echo "Downloaded `, `echo "$rel: Downloaded `)
+// staging. The workers' lines interleave, so each names its $rel, and the cap
+// can hold the pool below spec.downloadConcurrency, so each carries the files
+// in flight (llmkube_pool_label).
+var downloadProgressLabeledFn = strings.NewReplacer(
+	`MiB ($((_llmkube_have * 100 / _llmkube_total))%)"`, `MiB of $rel ($((_llmkube_have * 100 / _llmkube_total))%)$(llmkube_pool_label)"`,
+	`echo "Downloaded $((_llmkube_have / 1048576)) MiB"`, `echo "Downloaded $((_llmkube_have / 1048576)) MiB of $rel$(llmkube_pool_label)"`,
+).Replace(downloadProgressFn)
 
 // multiFilePoolFns run the multi-file loop's per-file body, llmkube_stage_file,
 // in up to $MODEL_DOWNLOAD_CONCURRENCY background workers (#2364). A worker is
@@ -440,10 +445,35 @@ var downloadProgressLabeledFn = strings.ReplaceAll(downloadProgressFn, `echo "Do
 // which leaves their partials for the next attempt to resume. A full pool polls
 // its workers with kill -0: busybox's wait -n does not return the status of the
 // worker it waited for.
-const multiFilePoolFns = `_llmkube_conc=${MODEL_DOWNLOAD_CONCURRENCY:-1}; case "$_llmkube_conc" in ''|*[!0-9]*|0) _llmkube_conc=1;; esac; _llmkube_pids=; _llmkube_failed=; ` +
-	`llmkube_pool_reap() { _llmkube_live=; _llmkube_n=0; for _llmkube_p in $_llmkube_pids; do if kill -0 "$_llmkube_p" 2>/dev/null; then _llmkube_live="$_llmkube_live $_llmkube_p"; _llmkube_n=$((_llmkube_n + 1)); else wait "$_llmkube_p" || _llmkube_failed=1; fi; done; _llmkube_pids=$_llmkube_live; }; ` +
-	`llmkube_pool_dispatch() { while :; do llmkube_pool_reap; [ -z "$_llmkube_failed" ] || return 1; [ "$_llmkube_n" -lt "$_llmkube_conc" ] && break; sleep 1; done; llmkube_stage_file & _llmkube_pids="$_llmkube_pids $!"; }; ` +
-	`llmkube_pool_join() { for _llmkube_p in $_llmkube_pids; do wait "$_llmkube_p" || _llmkube_failed=1; done; [ -z "$_llmkube_failed" ]; }; `
+//
+// $MODEL_DOWNLOAD_MAX_INFLIGHT_BYTES also caps the bytes the workers hold: a
+// FUSE cache such as blobfuse2's keeps each open file on the node's disk. A
+// file starts only while the bytes in flight plus its own size fit the cap, or
+// when nothing else is in flight, so a file larger than the cap still runs,
+// alone. Files start in list order; a file that does not fit holds back the
+// ones after it. llmkube_file_size gives a file's size: its size on disk when
+// it is present, since a cache that holds whole files also holds one it only
+// reads, otherwise the origin's Content-Length, and the whole cap when that is
+// unknown. Without a cap no size is probed.
+//
+// The workers are subshells, so the dispatcher publishes the count in flight
+// through a file under $TMPDIR that llmkube_pool_label reads for their
+// progress lines. It is refreshed on every reap, and llmkube_pool_join polls
+// rather than waiting on each worker in turn so the count stays current to the
+// second. Without a writable $TMPDIR the lines omit the count.
+const multiFilePoolFns = `_llmkube_conc=${MODEL_DOWNLOAD_CONCURRENCY:-1}; case "$_llmkube_conc" in ''|*[!0-9]*|0) _llmkube_conc=1;; esac; ` +
+	`_llmkube_cap=${MODEL_DOWNLOAD_MAX_INFLIGHT_BYTES:-}; case "$_llmkube_cap" in *[!0-9]*) _llmkube_cap=;; esac; _llmkube_pids=; _llmkube_failed=; ` +
+	`if [ -n "$_llmkube_cap" ]; then echo "Staging up to $_llmkube_conc files at once, up to $((_llmkube_cap / 1048576)) MiB in flight"; else echo "Staging up to $_llmkube_conc files at once"; fi; ` +
+	`_llmkube_state=$(mktemp "${TMPDIR:-/tmp}/llmkube-pool.XXXXXX" 2>/dev/null) || _llmkube_state=; ` +
+	`llmkube_pool_note() { [ -z "$_llmkube_state" ] || { printf '%s' "$1" > "$_llmkube_state.w" && mv "$_llmkube_state.w" "$_llmkube_state"; } 2>/dev/null; }; ` +
+	`llmkube_pool_label() { _llmkube_c=$(cat "$_llmkube_state" 2>/dev/null) && [ -n "$_llmkube_c" ] && printf ' (concurrency: %s)' "$_llmkube_c"; }; ` +
+	`llmkube_pool_reap() { _llmkube_live=; _llmkube_n=0; _llmkube_bytes=0; for _llmkube_w in $_llmkube_pids; do _llmkube_p=${_llmkube_w%%:*}; if kill -0 "$_llmkube_p" 2>/dev/null; then _llmkube_live="$_llmkube_live $_llmkube_w"; _llmkube_n=$((_llmkube_n + 1)); _llmkube_bytes=$((_llmkube_bytes + ${_llmkube_w#*:})); else wait "$_llmkube_p" || _llmkube_failed=1; fi; done; _llmkube_pids=$_llmkube_live; llmkube_pool_note "$_llmkube_n"; }; ` +
+	`llmkube_pool_fits() { [ "$_llmkube_n" -lt "$_llmkube_conc" ] || return 1; [ -n "$_llmkube_cap" ] && [ "$_llmkube_n" -gt 0 ] || return 0; [ $((_llmkube_bytes + _llmkube_size)) -le "$_llmkube_cap" ]; }; ` +
+	`llmkube_pool_dispatch() { _llmkube_size=0; [ -z "$_llmkube_cap" ] || _llmkube_size=$(llmkube_file_size); _llmkube_waited=; ` +
+	`while :; do llmkube_pool_reap; [ -z "$_llmkube_failed" ] || return 1; llmkube_pool_fits && break; ` +
+	`if [ -z "$_llmkube_waited" ] && [ "$_llmkube_n" -lt "$_llmkube_conc" ]; then echo "Waiting to start $rel: $((_llmkube_bytes / 1048576)) MiB in flight, $((_llmkube_size / 1048576)) MiB needed, $((_llmkube_cap / 1048576)) MiB allowed (concurrency: $_llmkube_n)"; _llmkube_waited=1; fi; ` +
+	`sleep 1; done; llmkube_stage_file & _llmkube_pids="$_llmkube_pids $!:$_llmkube_size"; llmkube_pool_note $((_llmkube_n + 1)); }; ` +
+	`llmkube_pool_join() { while :; do llmkube_pool_reap; [ -n "$_llmkube_pids" ] || break; sleep 1; done; [ -z "$_llmkube_state" ] || rm -f "$_llmkube_state"; [ -z "$_llmkube_failed" ]; }; `
 
 // The HTTP transfers fill a content-keyed partial and mv onto "$MODEL_PATH"
 // on success; the S3 and local-copy branches still fill "$MODEL_PATH.tmp".
@@ -1327,13 +1357,20 @@ func stagesConcurrently(model *inferencev1alpha1.Model) bool {
 	return model.Spec.DownloadConcurrency > 1
 }
 
-// downloadConcurrencyEnv sizes the worker pool. It is set only with the
-// concurrent command, so a serial downloader's env is unchanged too.
+// downloadConcurrencyEnv sizes the worker pool and its byte cap. It is set
+// only with the concurrent command, so a serial downloader's env is unchanged
+// too. Admission's pattern makes every admitted cap parse to a positive size.
 func downloadConcurrencyEnv(model *inferencev1alpha1.Model) []corev1.EnvVar {
 	if !stagesConcurrently(model) {
 		return nil
 	}
-	return []corev1.EnvVar{{Name: "MODEL_DOWNLOAD_CONCURRENCY", Value: strconv.Itoa(int(model.Spec.DownloadConcurrency))}}
+	env := []corev1.EnvVar{{Name: "MODEL_DOWNLOAD_CONCURRENCY", Value: strconv.Itoa(int(model.Spec.DownloadConcurrency))}}
+	if limit := model.Spec.DownloadMaxInFlightSize; limit != "" {
+		if q, err := resource.ParseQuantity(limit); err == nil && q.Value() > 0 {
+			env = append(env, corev1.EnvVar{Name: "MODEL_DOWNLOAD_MAX_INFLIGHT_BYTES", Value: strconv.FormatInt(q.Value(), 10)})
+		}
+	}
+	return env
 }
 
 // buildMultiFileInitCommand returns a shell command that downloads each file
@@ -1396,11 +1433,15 @@ func multiFileInitCommand(useCache, isS3, isHFAuth, withSHA256, concurrent bool,
 	}
 	// head opens the serial loop; a mixed set reads $MODEL_DOWNLOADS instead.
 	head := `printf '%s\n' "$MODEL_FILES" | while IFS= read -r rel; do `
-	loop := func(perFile string) string {
+	// sizeProbe prints the origin's Content-Length for $rel; the pool calls it
+	// only under a byte cap.
+	loop := func(perFile, sizeProbe string) string {
 		if !concurrent {
 			return head + `[ -n "$rel" ] || continue; ` + perFile + `done`
 		}
-		return `llmkube_stage_file() { ` + perFile + `}; ` +
+		return `llmkube_file_size() { _llmkube_dest="$CACHE_DIR/$rel"; if [ -f "$_llmkube_dest" ]; then stat -c %s "$_llmkube_dest" 2>/dev/null || echo "$_llmkube_cap"; return 0; fi; ` +
+			`_llmkube_s=$(` + sizeProbe + ` 2>/dev/null) || _llmkube_s=; case "$_llmkube_s" in ''|*[!0-9]*) echo "$_llmkube_cap";; *) echo "$_llmkube_s";; esac; }; ` +
+			`llmkube_stage_file() { ` + perFile + `}; ` +
 			`printf '%s\n' "$MODEL_FILES" | { while IFS= read -r rel; do ` +
 			`[ -n "$rel" ] || continue; llmkube_pool_dispatch || break; done; llmkube_pool_join; }`
 	}
@@ -1483,6 +1524,10 @@ func multiFileInitCommand(useCache, isS3, isHFAuth, withSHA256, concurrent bool,
 			`else llmkube_stage_allowed "$rel"; exit 1; fi; elif `
 	}
 
+	httpSizeProbe := `url="${SOURCE%/}/$rel"; ` + curlCmd(isHFAuth) + ` -fsSL -I "$url" -o /dev/null -w '%header{content-length}'`
+	s3SizeProbe := `key="${S3_PREFIX:+${S3_PREFIX}/}$rel"; url="${AWS_ENDPOINT_URL}/${S3_BUCKET}/${key}"; ` +
+		`s3_curl -fsSL -I "$url" -o /dev/null -w '%header{content-length}'`
+
 	if isS3 {
 		if refreshPolicy == RefreshPolicyOnChange {
 			body := normalizeFn +
@@ -1498,7 +1543,7 @@ func multiFileInitCommand(useCache, isS3, isHFAuth, withSHA256, concurrent bool,
 					onChangeRefresh+`llmkube_prepare_download && download_with_progress "$dest.tmp" "" s3_curl -f -L -o "$dest.tmp" "$url" --no-progress-meter && `+publishFile("$dest.tmp")+`; then `+
 					`echo "Model artifact $rel revalidated (downloaded)"; `+
 					keepCachedTail+
-					`fi; `)
+					`fi; `, s3SizeProbe)
 			return fns + pre + prefix + sweep + " && " + body
 		}
 
@@ -1510,7 +1555,7 @@ func multiFileInitCommand(useCache, isS3, isHFAuth, withSHA256, concurrent bool,
 				digestAssign+markerGuard+
 				`key="${S3_PREFIX:+${S3_PREFIX}/}$rel"; `+
 				`url="${AWS_ENDPOINT_URL}/${S3_BUCKET}/${key}"; `+
-				downloadOrCached(download, `echo "Model artifact $rel already cached, skipping download"`))
+				downloadOrCached(download, `echo "Model artifact $rel already cached, skipping download"`), s3SizeProbe)
 		return fns + pre + prefix + sweep + " && " + body
 	}
 
@@ -1539,7 +1584,7 @@ func multiFileInitCommand(useCache, isS3, isHFAuth, withSHA256, concurrent bool,
 				`download_with_progress "$MODEL_PARTIAL" "$remote_size" `+curlCmd(isHFAuth)+` -fsSL -C - -o "$MODEL_PARTIAL" "$url" --no-progress-meter && `+partialSizeGuard+publishFile("$MODEL_PARTIAL")+`; }; then `+
 				`echo "Model artifact $rel revalidated (downloaded)"; `+
 				keepCachedTail+
-				`fi; `)
+				`fi; `, httpSizeProbe)
 		return fns + pre + prefix + body + " && " + sweep
 	}
 
@@ -1551,7 +1596,7 @@ func multiFileInitCommand(useCache, isS3, isHFAuth, withSHA256, concurrent bool,
 		`dest="$CACHE_DIR/$rel"; `+
 			digestAssign+markerGuard+
 			sourceAssign+
-			downloadOrCached(download, `echo "Model artifact $rel already cached, skipping download"`))
+			downloadOrCached(download, `echo "Model artifact $rel already cached, skipping download"`), httpSizeProbe)
 	return fns + pre + prefix + body + " && " + sweep
 }
 

@@ -281,13 +281,35 @@ spec:
 
 - It requires `spec.files` or `spec.mmproj`; a single-object Model is rejected
   at admission.
-- Progress lines name their file, since the workers' lines interleave.
+- Each progress line names its file and the files in flight at that moment,
+  for example `Downloaded 1906 MiB of 7452 MiB of model-00004-of-00048.safetensors
+  (25%) (concurrency: 3)`. The pool logs its limits when it starts.
 - The first file that fails stops new files from starting. The files already
   in flight finish, then the init fails; their partials stay for the next
   attempt to resume.
-- On a FUSE cache that keeps each open file on the node's disk until close,
-  such as blobfuse2's file cache, every file in flight needs that much free
-  node disk. Size the value against the largest files staged together.
+
+On a FUSE cache that keeps each open file on the node's disk, such as
+blobfuse2's file cache, every file in flight needs its full size free on the
+node's disk. A file count alone cannot fit shards of different sizes, so
+`spec.downloadMaxInFlightSize` caps the bytes in flight:
+
+```yaml
+spec:
+  downloadConcurrency: 4
+  downloadMaxInFlightSize: 90Gi
+```
+
+- A file starts only while the size in flight plus its own fits the cap, or
+  when nothing else is in flight, so a file larger than the cap still stages,
+  alone. Files start in list order: one that does not fit holds back the ones
+  after it, and the pool logs `Waiting to start <file>: ...` with the sizes.
+- A file already in the cache counts its size on disk, with no request to the
+  origin; blobfuse2 holds a file it only reads, too. A missing file counts the
+  origin's `Content-Length`, from a HEAD request, and one whose size the origin
+  does not report counts the whole cap.
+- The value takes whole numbers with an optional suffix (`90Gi`, `100G`), and
+  requires `downloadConcurrency` above 1. Set it to the node disk the cache may
+  fill, below the disk's free space with the node's other writers in mind.
 - Changing the value changes the downloader's pod template, so serving pods
   that stage the Model roll. Unset and `1` build the same template.
 

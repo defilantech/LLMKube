@@ -76,4 +76,31 @@ var _ = Describe("Model downloadConcurrency CRD validation", func() {
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("spec.downloadConcurrency"))
 	})
+
+	It("admits downloadMaxInFlightSize with downloadConcurrency above 1", func() {
+		m := newModel("dlc-cap", 4, []string{"a.safetensors"}, "")
+		m.Spec.DownloadMaxInFlightSize = "90Gi"
+		Expect(k8sClient.Create(ctx, m)).To(Succeed())
+		Expect(k8sClient.Delete(ctx, m)).To(Succeed())
+	})
+
+	It("rejects downloadMaxInFlightSize without downloadConcurrency above 1", func() {
+		for name, concurrency := range map[string]int32{"dlc-cap-unset": 0, "dlc-cap-one": 1} {
+			m := newModel(name, concurrency, []string{"a.safetensors"}, "")
+			m.Spec.DownloadMaxInFlightSize = "90Gi"
+			err := k8sClient.Create(ctx, m)
+			Expect(err).To(HaveOccurred(), name)
+			Expect(err.Error()).To(ContainSubstring("downloadMaxInFlightSize caps what the downloadConcurrency workers hold at once"), name)
+		}
+	})
+
+	It("rejects a downloadMaxInFlightSize that is not a positive whole quantity", func() {
+		for _, size := range []string{"0", "1.5Gi", "-1Gi", "90GiB"} {
+			m := newModel("dlc-cap-bad", 4, []string{"a.safetensors"}, "")
+			m.Spec.DownloadMaxInFlightSize = size
+			err := k8sClient.Create(ctx, m)
+			Expect(err).To(HaveOccurred(), size)
+			Expect(err.Error()).To(ContainSubstring("spec.downloadMaxInFlightSize"), size)
+		}
+	})
 })
