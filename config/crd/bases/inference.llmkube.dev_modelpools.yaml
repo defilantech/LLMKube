@@ -212,6 +212,38 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              externalScale:
+                description: |-
+                  ExternalScale records the last scale-up of a non-resident member by a
+                  field manager outside LLMKube. It identifies the write already reported,
+                  so the same scale-up seen on a later pass is not reported again, and times
+                  the ExternallyScaled condition's quiet period.
+                properties:
+                  manager:
+                    description: |-
+                      Manager is the field manager that owns the member's spec.replicas, as
+                      recorded in its managedFields (for example kustomize-controller or
+                      kubectl).
+                    type: string
+                  member:
+                    description: Member is the member InferenceService that was scaled
+                      up.
+                    type: string
+                  memberGeneration:
+                    description: |-
+                      MemberGeneration is the member's metadata.generation when the scale-up
+                      was observed. With Member and Manager it identifies one write.
+                    format: int64
+                    type: integer
+                  observedAt:
+                    description: ObservedAt is when the pool first observed this scale-up.
+                    format: date-time
+                    type: string
+                required:
+                - manager
+                - member
+                - observedAt
+                type: object
               members:
                 description: Members reports the observed state of each pool member.
                 items:

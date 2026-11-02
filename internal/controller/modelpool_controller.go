@@ -147,6 +147,9 @@ func (r *ModelPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// After the baseline, before the reclaim logic reads the resident: a
 	// departed resident must not be named, and must not hold a reclaim.
 	clearDepartedResident(pool, members)
+	// Report a member scaled up outside LLMKube (#2302). It reads the resident
+	// as recorded, the same one resolveSlotOwner just weighed.
+	externalScale, externalScaleRequeue := observeExternalScale(pool, members, time.Now())
 
 	// Reclaim policy: once the resident non-default member has been idle for
 	// spec.reclaimAfter, return the slot to spec.default. This overrides the
@@ -257,6 +260,7 @@ func (r *ModelPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if reclaimRequeue > 0 && (result.RequeueAfter == 0 || reclaimRequeue < result.RequeueAfter) {
 		result.RequeueAfter = reclaimRequeue
 	}
+	result.RequeueAfter = soonerRequeue(result.RequeueAfter, externalScaleRequeue)
 	if err := r.updateStatus(ctx, pool, statusBefore, members, owner, swapping, deferReason); err != nil {
 		if apierrors.IsConflict(err) {
 			//nolint:staticcheck // SA1019: keep the rate-limited retry on a write conflict; RequeueAfter would swap backoff for a fixed delay.
@@ -265,6 +269,7 @@ func (r *ModelPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		log.Error(err, "update ModelPool status")
 		return ctrl.Result{}, err
 	}
+	r.reportExternalScale(pool, externalScale)
 	return result, nil
 }
 
@@ -558,7 +563,7 @@ func (r *ModelPoolReconciler) ensureReplicas(ctx context.Context, isvc *inferenc
 	}
 	patched := isvc.DeepCopy()
 	patched.Spec.Replicas = ptr.To(desired)
-	return r.Patch(ctx, patched, client.MergeFrom(isvc))
+	return r.Patch(ctx, patched, client.MergeFrom(isvc), client.FieldOwner(inferencev1alpha1.ModelPoolFieldManager))
 }
 
 // annotationModelPoolDrained marks a member this reconciler scaled to zero to
@@ -594,7 +599,7 @@ func (r *ModelPoolReconciler) drainMember(ctx context.Context, isvc *inferencev1
 		patched.Annotations = map[string]string{}
 	}
 	patched.Annotations[annotationModelPoolDrained] = "true"
-	return r.Patch(ctx, patched, client.MergeFrom(isvc))
+	return r.Patch(ctx, patched, client.MergeFrom(isvc), client.FieldOwner(inferencev1alpha1.ModelPoolFieldManager))
 }
 
 // scaleOwner sets the slot owner's replicas. Scaling it up also clears its
@@ -621,7 +626,7 @@ func (r *ModelPoolReconciler) scaleOwner(
 	patched := isvc.DeepCopy()
 	patched.Spec.Replicas = ptr.To(desired)
 	delete(patched.Annotations, annotationModelPoolDrained)
-	return r.Patch(ctx, patched, client.MergeFrom(isvc))
+	return r.Patch(ctx, patched, client.MergeFrom(isvc), client.FieldOwner(inferencev1alpha1.ModelPoolFieldManager))
 }
 
 // persistReactivation writes a re-activated resident's cancellation of the
