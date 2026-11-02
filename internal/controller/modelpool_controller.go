@@ -115,16 +115,16 @@ func (r *ModelPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// Resolve every member InferenceService. A missing reference is a spec
-	// error the operator must fix; the pool is Degraded until then and the
-	// reconciler makes no replica changes (it will not scale-to-zero a live
-	// member just because a sibling reference is broken).
+	// Resolve every member InferenceService. Missing references are a spec
+	// error the operator must fix. Autoscaled members are invalid too, but their
+	// HPA-owned replicas stay untouched while incoming members use the Pod gate.
 	members, missing, err := r.resolveMembers(ctx, pool)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	if len(missing) > 0 {
-		return r.markDegraded(ctx, pool, members, missing)
+	invalid, reason, messageFormat := validateMembers(pool, members, missing)
+	if len(invalid) > 0 {
+		return r.markInvalidMembers(ctx, pool, members, invalid, reason, messageFormat)
 	}
 
 	// Metal members have no device-plugin GPU gating, so the metal-agent (not
@@ -290,6 +290,33 @@ func (r *ModelPoolReconciler) resolveMembers(ctx context.Context, pool *inferenc
 		}
 	}
 	return members, missing, nil
+}
+
+// autoscaledMembers returns members whose replica count is owned by an HPA.
+// ModelPool must own that count to drain a member before loading another.
+func autoscaledMembers(pool *inferencev1alpha1.ModelPool, members map[string]*inferencev1alpha1.InferenceService) []string {
+	var names []string
+	for _, m := range pool.Spec.Members {
+		name := m.InferenceServiceRef.Name
+		if isvc, ok := members[name]; ok && isvc.Spec.Autoscaling != nil {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+func validateMembers(
+	pool *inferencev1alpha1.ModelPool,
+	members map[string]*inferencev1alpha1.InferenceService,
+	missing []string,
+) ([]string, string, string) {
+	if len(missing) > 0 {
+		return missing, "MissingMembers", "Member InferenceServices not found: %v"
+	}
+	if autoscaled := autoscaledMembers(pool, members); len(autoscaled) > 0 {
+		return autoscaled, "MemberAutoscaling", "ModelPool members must not set spec.autoscaling: %v"
+	}
+	return nil, "", ""
 }
 
 // resolveSlotOwner decides which member should own the shared GPU slot. The
@@ -846,8 +873,13 @@ func (r *ModelPoolReconciler) updateStatus(ctx context.Context, pool, before *in
 	return r.Status().Patch(ctx, pool, client.MergeFrom(before))
 }
 
-func (r *ModelPoolReconciler) markDegraded(ctx context.Context, pool *inferencev1alpha1.ModelPool, members map[string]*inferencev1alpha1.InferenceService, missing []string) (ctrl.Result, error) {
+func (r *ModelPoolReconciler) markInvalidMembers(ctx context.Context, pool *inferencev1alpha1.ModelPool, members map[string]*inferencev1alpha1.InferenceService, invalid []string, reason, messageFormat string) (ctrl.Result, error) {
 	before := pool.DeepCopy()
+	if reason == "MemberAutoscaling" {
+		if err := r.holdOwnerUntilOthersClear(ctx, before, members); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 
 	memberStatuses := make([]inferencev1alpha1.ModelPoolMemberStatus, 0, len(pool.Spec.Members))
 	for _, m := range pool.Spec.Members {
@@ -862,12 +894,12 @@ func (r *ModelPoolReconciler) markDegraded(ctx context.Context, pool *inferencev
 	pool.Status.Phase = inferencev1alpha1.ModelPoolPhaseDegraded
 	pool.Status.ObservedGeneration = pool.Generation
 
-	sort.Strings(missing)
+	sort.Strings(invalid)
 	apimeta.SetStatusCondition(&pool.Status.Conditions, metav1.Condition{
 		Type:               inferencev1alpha1.ConditionModelPoolMembersValid,
 		Status:             metav1.ConditionFalse,
-		Reason:             "MissingMembers",
-		Message:            fmt.Sprintf("Member InferenceServices not found: %v", missing),
+		Reason:             reason,
+		Message:            fmt.Sprintf(messageFormat, invalid),
 		ObservedGeneration: pool.Generation,
 	})
 
@@ -882,6 +914,44 @@ func (r *ModelPoolReconciler) markDegraded(ctx context.Context, pool *inferencev
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: modelPoolSwapRequeue}, nil
+}
+
+func (r *ModelPoolReconciler) holdOwnerUntilOthersClear(
+	ctx context.Context,
+	pool *inferencev1alpha1.ModelPool,
+	members map[string]*inferencev1alpha1.InferenceService,
+) error {
+	owner := resolveSlotOwner(pool, members)
+	isvc, ok := members[owner]
+	if !ok || isvc.Spec.Autoscaling != nil {
+		return nil
+	}
+
+	desired := int32(1)
+	for _, name := range memberNames(pool) {
+		if name == owner {
+			continue
+		}
+		member, ok := members[name]
+		if !ok {
+			continue
+		}
+		pods, err := r.memberPods(ctx, member)
+		if err != nil {
+			return err
+		}
+		if len(pods) > 0 {
+			desired = 0
+			break
+		}
+	}
+
+	if desired == 0 && replicasOf(isvc) > 0 {
+		if err := r.recordPendingOwner(ctx, pool, owner); err != nil {
+			return err
+		}
+	}
+	return r.scaleOwner(ctx, pool, members, owner, desired)
 }
 
 func (r *ModelPoolReconciler) observeResidency(pool *inferencev1alpha1.ModelPool, owner string) {

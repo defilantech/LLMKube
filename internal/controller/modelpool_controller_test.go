@@ -519,6 +519,47 @@ var _ = Describe("ModelPool Controller", func() {
 		Expect(cond).NotTo(BeNil())
 		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	})
+
+	It("holds a router-activated member until an autoscaled incumbent's Pod exits", func() {
+		judge := modelPoolMemberFixture("judge", 1)
+		Expect(k8sClient.Create(ctx, judge)).To(Succeed())
+		Expect(k8sClient.Create(ctx, modelPoolMemberFixture("coder", 0))).To(Succeed())
+		createPool(inferencev1alpha1.ModelPoolSwapPolicySticky, "judge")
+
+		reconcile()
+		setMemberPhase(ctx, "judge", PhaseReady, 1)
+		reconcile()
+		createMemberPodRunning(ctx, "judge")
+
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "judge", Namespace: "default"}, judge)).To(Succeed())
+		judge.Spec.Autoscaling = &inferencev1alpha1.AutoscalingSpec{MinReplicas: ptr.To(int32(1)), MaxReplicas: 2}
+		Expect(k8sClient.Update(ctx, judge)).To(Succeed())
+
+		coder := &inferencev1alpha1.InferenceService{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "coder", Namespace: "default"}, coder)).To(Succeed())
+		coder.Spec.Replicas = ptr.To(int32(1))
+		Expect(k8sClient.Update(ctx, coder)).To(Succeed())
+
+		reconcile()
+		reconcile()
+
+		Expect(replicasOfMember(ctx, "judge")).To(Equal(int32(1)), "the HPA-owned replica count must remain unchanged")
+		Expect(replicasOfMember(ctx, "coder")).To(Equal(int32(0)), "the activated member must wait for the incumbent Pod to exit")
+		pool := &inferencev1alpha1.ModelPool{}
+		Expect(k8sClient.Get(ctx, poolKey, pool)).To(Succeed())
+		Expect(pool.Status.PendingMember).To(Equal("coder"), "the held activation must survive the next reconcile")
+		Expect(pool.Status.Phase).To(Equal(inferencev1alpha1.ModelPoolPhaseDegraded))
+		cond := findPoolCondition(pool.Status.Conditions, inferencev1alpha1.ConditionModelPoolMembersValid)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		Expect(cond.Reason).To(Equal("MemberAutoscaling"))
+		Expect(cond.Message).To(ContainSubstring("judge"))
+
+		Expect(k8sClient.Delete(ctx, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "judge-pod", Namespace: "default"}})).To(Succeed())
+		reconcile()
+		Expect(replicasOfMember(ctx, "coder")).To(Equal(int32(1)), "the pending activation must resume after all incumbent Pods exit")
+		Expect(replicasOfMember(ctx, "judge")).To(Equal(int32(1)), "the pool must not change the HPA-owned replica count")
+	})
 })
 
 // findPoolCondition mirrors apimachinery meta.FindStatusCondition without an
