@@ -49,18 +49,30 @@ var _ = Describe("Model downloadConcurrency CRD validation", func() {
 		Expect(k8sClient.Delete(ctx, m)).To(Succeed())
 	})
 
-	It("admits downloadConcurrency with only mmproj", func() {
-		m := newModel("dlc-mmproj", 2, nil, "proj.gguf")
+	It("admits downloadConcurrency with files and mmproj", func() {
+		m := newModel("dlc-mmproj", 2, []string{"a.gguf"}, "proj.gguf")
 		Expect(k8sClient.Create(ctx, m)).To(Succeed())
 		Expect(k8sClient.Delete(ctx, m)).To(Succeed())
 	})
 
-	It("rejects downloadConcurrency on a single-object Model", func() {
-		m := newModel("dlc-single", 4, nil, "")
-		m.Spec.Source = "https://example.com/model.gguf"
-		err := k8sClient.Create(ctx, m)
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("downloadConcurrency sets how many spec.files are staged at once"))
+	// The downloader never runs for these, so the field would be ignored. An
+	// mmproj with no files has no primary file to stage.
+	It("rejects downloadConcurrency where the downloader does not stage spec.files", func() {
+		for _, tc := range []struct {
+			name, source, mmproj string
+			files                []string
+		}{
+			{"dlc-single", "https://example.com/model.gguf", "", nil},
+			{"dlc-mmproj-only", "hf://org/repo", "proj.gguf", nil},
+			{"dlc-pvc", "pvc://claim/path", "", []string{"a.gguf", "b.gguf"}},
+			{"dlc-oci", "oci://registry.example.com/models/m:1", "", []string{"a.gguf", "b.gguf"}},
+		} {
+			m := newModel(tc.name, 4, tc.files, tc.mmproj)
+			m.Spec.Source = tc.source
+			err := k8sClient.Create(ctx, m)
+			Expect(err).To(HaveOccurred(), tc.name)
+			Expect(err.Error()).To(ContainSubstring("downloadConcurrency sets how many spec.files the downloader stages at once"), tc.name)
+		}
 	})
 
 	It("rejects downloadConcurrency above 16", func() {
@@ -78,10 +90,12 @@ var _ = Describe("Model downloadConcurrency CRD validation", func() {
 	})
 
 	It("admits downloadMaxInFlightSize with downloadConcurrency above 1", func() {
-		m := newModel("dlc-cap", 4, []string{"a.safetensors"}, "")
-		m.Spec.DownloadMaxInFlightSize = "90Gi"
-		Expect(k8sClient.Create(ctx, m)).To(Succeed())
-		Expect(k8sClient.Delete(ctx, m)).To(Succeed())
+		for _, size := range []string{"90Gi", "999999Ti", "999999999999999"} {
+			m := newModel("dlc-cap", 4, []string{"a.safetensors"}, "")
+			m.Spec.DownloadMaxInFlightSize = size
+			Expect(k8sClient.Create(ctx, m)).To(Succeed(), size)
+			Expect(k8sClient.Delete(ctx, m)).To(Succeed(), size)
+		}
 	})
 
 	It("rejects downloadMaxInFlightSize without downloadConcurrency above 1", func() {
@@ -95,7 +109,9 @@ var _ = Describe("Model downloadConcurrency CRD validation", func() {
 	})
 
 	It("rejects a downloadMaxInFlightSize that is not a positive whole quantity", func() {
-		for _, size := range []string{"0", "1.5Gi", "-1Gi", "90GiB"} {
+		// The bound keeps every admitted value inside int64: 10E parses to 0,
+		// 99999999999999999999 wraps, and 8Ei saturates.
+		for _, size := range []string{"0", "1.5Gi", "-1Gi", "90GiB", "10E", "8Ei", "1Pi", "1000000Ti", "99999999999999999999"} {
 			m := newModel("dlc-cap-bad", 4, []string{"a.safetensors"}, "")
 			m.Spec.DownloadMaxInFlightSize = size
 			err := k8sClient.Create(ctx, m)

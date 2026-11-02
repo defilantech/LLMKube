@@ -46,10 +46,13 @@ type pacedOrigin struct {
 	maxSeen  int
 	requests map[string]int
 	heads    map[string]int
-	// noLength leaves Content-Length off HEAD responses.
-	noLength bool
+	// noLength leaves Content-Length off HEAD responses; fakeLength replaces it.
+	noLength   bool
+	fakeLength string
 	// durations overrides the transfer time per file.
 	durations map[string]time.Duration
+	// stallFirstHead names files whose first HEAD never answers.
+	stallFirstHead map[string]bool
 }
 
 func newPacedOrigin(t *testing.T, files map[string][]byte, perFile time.Duration) *pacedOrigin {
@@ -67,8 +70,16 @@ func newPacedOrigin(t *testing.T, files map[string][]byte, perFile time.Duration
 		if r.Method == http.MethodHead {
 			o.mu.Lock()
 			o.heads[name]++
+			stall := o.stallFirstHead[name] && o.heads[name] == 1
 			o.mu.Unlock()
-			if !o.noLength {
+			if stall {
+				<-r.Context().Done()
+				return
+			}
+			switch {
+			case o.fakeLength != "":
+				w.Header().Set("Content-Length", o.fakeLength)
+			case !o.noLength:
 				w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 			}
 			return
@@ -140,6 +151,9 @@ func runMultiFile(t *testing.T, script, source, dir, files string, extra ...stri
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "sh", "-c", script)
+	// The pool runs in a pipeline subshell that outlives a killed sh and holds
+	// the output pipe; without a delay the test waits on it forever.
+	cmd.WaitDelay = 5 * time.Second
 	cmd.Env = append(os.Environ(),
 		"MODEL_SOURCE="+source,
 		"CACHE_DIR="+dir,
@@ -285,9 +299,21 @@ func TestMultiFileConcurrentStaging_Behavioral(t *testing.T) {
 					t.Fatalf("seed partial: %v", err)
 				}
 
-				out, err := v.run(t, v.script(true), o, dir, "missing.bin\na.bin\nc.bin\nd.bin", "MODEL_DOWNLOAD_CONCURRENCY=2")
+				out, err := v.run(t, v.script(true), o, dir, "missing.bin\na.bin\nc.bin\nd.bin",
+					"MODEL_DOWNLOAD_CONCURRENCY=2", "PROGRESS_INTERVAL=1")
 				if err == nil {
 					t.Fatalf("expected the init to fail on missing.bin\n%s", out)
+				}
+				// a.bin keeps logging after missing.bin fails; the failure must
+				// still be the last thing logged, where the termination message's
+				// tail and the transfer diagnosis read it.
+				if strings.LastIndex(out, "returned error: 404") < strings.LastIndex(out, "a.bin") {
+					t.Errorf("missing.bin's 404 is not logged after a.bin's last line\n%s", out)
+				}
+				lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+				tail := strings.Join(lines[max(0, len(lines)-3):], "\n")
+				if f, ok := matchModelTransferFailure(tail); !ok || f.reason != ReasonModelSourceNotFound {
+					t.Errorf("the log's last lines do not classify as %s: %q", ReasonModelSourceNotFound, tail)
 				}
 				// missing.bin and a.bin dispatch together; missing.bin fails before a
 				// worker frees, so nothing after a.bin is fetched.
@@ -366,6 +392,25 @@ func TestMultiFileByteCap_Behavioral(t *testing.T) {
 				}
 			})
 
+			t.Run("counts a size too large to compare as the whole cap", func(t *testing.T) {
+				files := concurrencyFixture(names[:3]...)
+				o := newPacedOrigin(t, files, 600*time.Millisecond)
+				o.fakeLength = "99999999999999999999"
+				dir := t.TempDir()
+
+				// An HTTP worker then rejects the body, whose size does not match
+				// the one advertised; what matters here is that the pool counted
+				// each file as the cap and held b.bin back.
+				out, _ := v.run(t, script, o, dir, strings.Join(names[:3], "\n"),
+					"MODEL_DOWNLOAD_CONCURRENCY=3", "MODEL_DOWNLOAD_MAX_INFLIGHT_BYTES=1048576")
+				if want := "Waiting to start b.bin: 1 MiB in flight, 1 MiB needed, 1 MiB allowed (concurrency: 1)"; !strings.Contains(out, want) {
+					t.Errorf("log lacks %q\n%s", want, out)
+				}
+				if got := o.maxInFlight(); got != 1 {
+					t.Errorf("max concurrent transfers = %d, want 1\n%s", got, out)
+				}
+			})
+
 			t.Run("counts an unreported size as the whole cap", func(t *testing.T) {
 				files := concurrencyFixture(names[:3]...)
 				o := newPacedOrigin(t, files, 600*time.Millisecond)
@@ -385,33 +430,101 @@ func TestMultiFileByteCap_Behavioral(t *testing.T) {
 		})
 	}
 
-	// A cached file is sized from disk, so an IfNotPresent warm start under a
-	// cap still makes no request for it.
+	// The dispatcher starts nothing while it probes a size, so an origin that
+	// never answers must not hold every later file: the probe gives up, and the
+	// file counts as the whole cap.
 	for _, v := range poolVariants {
 		if v.policy != RefreshPolicyIfNotPresent {
 			continue
 		}
-		t.Run("sizes a present file from disk/"+v.name, func(t *testing.T) {
+		t.Run("gives up on a size probe that never answers/"+v.name, func(t *testing.T) {
 			files := concurrencyFixture("a.bin", "b.bin")
 			o := newPacedOrigin(t, files, 200*time.Millisecond)
+			o.stallFirstHead = map[string]bool{"b.bin": true}
 			dir := t.TempDir()
-			if err := os.WriteFile(filepath.Join(dir, "a.bin"), files["a.bin"], 0o644); err != nil {
-				t.Fatalf("seed a.bin: %v", err)
-			}
 
 			out, err := v.run(t, v.script(true), o, dir, "a.bin\nb.bin",
 				"MODEL_DOWNLOAD_CONCURRENCY=2", "MODEL_DOWNLOAD_MAX_INFLIGHT_BYTES=1048576")
 			if err != nil {
 				t.Fatalf("init script failed: %v\n%s", err, out)
 			}
-			if n := o.probed("a.bin") + o.requested("a.bin"); n != 0 {
-				t.Errorf("made %d request(s) for the cached a.bin\n%s", n, out)
-			}
-			if o.probed("b.bin") == 0 {
-				t.Errorf("never probed the missing b.bin's size\n%s", out)
+			if _, err := os.Stat(filepath.Join(dir, "b.bin")); err != nil {
+				t.Errorf("b.bin not published after its size probe stalled: %v\n%s", err, out)
 			}
 		})
 	}
+
+	// An IfNotPresent warm start under a cap makes no request for a cached file,
+	// whether its size record vouches for it or not.
+	for _, v := range poolVariants {
+		if v.policy != RefreshPolicyIfNotPresent {
+			continue
+		}
+		for _, record := range []bool{true, false} {
+			t.Run(fmt.Sprintf("sizes a present file without a request/%s/record=%v", v.name, record), func(t *testing.T) {
+				files := concurrencyFixture("a.bin", "b.bin")
+				o := newPacedOrigin(t, files, 200*time.Millisecond)
+				dir := t.TempDir()
+				if err := os.WriteFile(filepath.Join(dir, "a.bin"), files["a.bin"], 0o644); err != nil {
+					t.Fatalf("seed a.bin: %v", err)
+				}
+				if record {
+					if err := os.WriteFile(filepath.Join(dir, "a.bin.llmkube-size"), []byte(strconv.Itoa(len(files["a.bin"]))), 0o644); err != nil {
+						t.Fatalf("seed size record: %v", err)
+					}
+				}
+
+				out, err := v.run(t, v.script(true), o, dir, "a.bin\nb.bin",
+					"MODEL_DOWNLOAD_CONCURRENCY=2", "MODEL_DOWNLOAD_MAX_INFLIGHT_BYTES=1048576")
+				if err != nil {
+					t.Fatalf("init script failed: %v\n%s", err, out)
+				}
+				if n := o.probed("a.bin") + o.requested("a.bin"); n != 0 {
+					t.Errorf("made %d request(s) for the cached a.bin\n%s", n, out)
+				}
+				if o.probed("b.bin") == 0 {
+					t.Errorf("never probed the missing b.bin's size\n%s", out)
+				}
+			})
+		}
+	}
+
+	// A present file the worker replaces is replaced at the origin's size, so
+	// its size on disk must not be what the cap counts. Each file is 64 KiB and
+	// the present a.bin is half that: counted by disk, a.bin and b.bin fit
+	// 100000 bytes together.
+	for _, v := range poolVariants {
+		t.Run("counts a replaced file at its full size/"+v.name, func(t *testing.T) {
+			files := concurrencyFixture("a.bin", "b.bin")
+			o := newPacedOrigin(t, files, 1500*time.Millisecond)
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "a.bin"), files["a.bin"][:32*1024], 0o644); err != nil {
+				t.Fatalf("seed a.bin: %v", err)
+			}
+			// IfNotPresent replaces it because its size record disagrees. OnChange's
+			// record agrees with the copy on disk; the origin's size does not.
+			record := len(files["a.bin"])
+			if v.policy == RefreshPolicyOnChange {
+				record = 32 * 1024
+			}
+			if err := os.WriteFile(filepath.Join(dir, "a.bin.llmkube-size"), []byte(strconv.Itoa(record)), 0o644); err != nil {
+				t.Fatalf("seed size record: %v", err)
+			}
+
+			out, err := v.run(t, v.script(true), o, dir, "a.bin\nb.bin",
+				"MODEL_DOWNLOAD_CONCURRENCY=2", "MODEL_DOWNLOAD_MAX_INFLIGHT_BYTES=100000")
+			if err != nil {
+				t.Fatalf("init script failed: %v\n%s", err, out)
+			}
+			if got := o.maxInFlight(); got != 1 {
+				t.Errorf("max concurrent transfers = %d, want 1\n%s", got, out)
+			}
+			if got, err := os.ReadFile(filepath.Join(dir, "a.bin")); err != nil || string(got) != string(files["a.bin"]) {
+				t.Errorf("a.bin was not replaced (err %v)\n%s", err, out)
+			}
+		})
+	}
+
 }
 
 // The pool's workers share the destination directory. Each one sweeps only its
@@ -420,13 +533,16 @@ func TestMultiFileByteCap_Behavioral(t *testing.T) {
 func TestMultiFileConcurrentSweepSparesOtherFiles(t *testing.T) {
 	requireInitShellEnvironment(t)
 
-	files := concurrencyFixture("a.bin")
+	// a*b.bin's name is a find pattern that matches aXb.bin; escaped, it does not.
+	files := concurrencyFixture("a.bin", "a*b.bin")
 	o := newPacedOrigin(t, files, 200*time.Millisecond)
 	dir := t.TempDir()
 	stale := filepath.Join(dir, "a.bin.0123456789ab.tmp")
+	starStale := filepath.Join(dir, "a*b.bin.0123456789ab.tmp")
 	neighbour := filepath.Join(dir, "b.bin.0123456789ab.tmp")
 	longer := filepath.Join(dir, "a.bin.extra.0123456789ab.tmp")
-	for _, p := range []string{stale, neighbour, longer} {
+	lookalike := filepath.Join(dir, "aXb.bin.0123456789ab.tmp")
+	for _, p := range []string{stale, starStale, neighbour, longer, lookalike} {
 		if err := os.WriteFile(p, []byte("partial"), 0o644); err != nil {
 			t.Fatalf("seed %s: %v", p, err)
 		}
@@ -437,7 +553,7 @@ func TestMultiFileConcurrentSweepSparesOtherFiles(t *testing.T) {
 	// its transfer starts.
 	script := strings.Replace(buildMultiFileInitCommand(true, false, false, false, true, RefreshPolicyIfNotPresent),
 		`llmkube_pool_join; }`, `llmkube_pool_join; } && ls "$CACHE_DIR" > "$CACHE_DIR/.listing" && false`, 1)
-	out, _ := runMultiFile(t, script, o.srv.URL, dir, "a.bin", "MODEL_DOWNLOAD_CONCURRENCY=2")
+	out, _ := runMultiFile(t, script, o.srv.URL, dir, "a.bin\na*b.bin", "MODEL_DOWNLOAD_CONCURRENCY=2")
 	listing, err := os.ReadFile(filepath.Join(dir, ".listing"))
 	if err != nil {
 		t.Fatalf("no listing written: %v\n%s", err, out)
@@ -446,20 +562,27 @@ func TestMultiFileConcurrentSweepSparesOtherFiles(t *testing.T) {
 	for _, f := range strings.Fields(string(listing)) {
 		have[f] = true
 	}
-	if have[filepath.Base(stale)] {
-		t.Errorf("a.bin's own stale partial survived its worker's sweep\n%s", listing)
+	for _, p := range []string{stale, starStale} {
+		if have[filepath.Base(p)] {
+			t.Errorf("%s survived its own worker's sweep\n%s", filepath.Base(p), listing)
+		}
 	}
-	for _, p := range []string{neighbour, longer} {
+	for _, p := range []string{neighbour, longer, lookalike} {
 		if !have[filepath.Base(p)] {
-			t.Errorf("a.bin's worker swept %s, which is not its partial\n%s", filepath.Base(p), listing)
+			t.Errorf("a worker swept %s, which is not its partial\n%s", filepath.Base(p), listing)
+		}
+	}
+	for name := range files {
+		if !have[name] {
+			t.Errorf("%s was not published\n%s", name, listing)
 		}
 	}
 }
 
-// A successful SHA256 gate logs the file, the expected digest, then the
-// computed digest with its size and time, and the publish; a cache hit on the
-// stamp names the file it skipped. None of it may read as a mismatch to the
-// transfer diagnosis.
+// In the concurrent command a successful SHA256 gate logs the file, the
+// expected digest, then the computed digest with its size and time, and the
+// publish; a cache hit on the stamp names the file it skipped. None of it may
+// read as a mismatch to the transfer diagnosis.
 func TestMultiFileSHA256VerifyLogs(t *testing.T) {
 	requireInitShellEnvironment(t)
 
@@ -467,38 +590,69 @@ func TestMultiFileSHA256VerifyLogs(t *testing.T) {
 	sum := sha256.Sum256(files["a.bin"])
 	digest := hex.EncodeToString(sum[:])
 	o := newPacedOrigin(t, files, 100*time.Millisecond)
-	for _, concurrent := range []bool{false, true} {
-		t.Run(fmt.Sprintf("concurrent=%v", concurrent), func(t *testing.T) {
-			dir := t.TempDir()
-			dest := filepath.Join(dir, "a.bin")
-			script := buildMultiFileInitCommand(true, false, false, true, concurrent, RefreshPolicyIfNotPresent)
-			env := []string{"MODEL_FILE_SHA256=" + digest + " a.bin", "MODEL_DIGEST_FIELD=spec.fileSha256", "MODEL_DOWNLOAD_CONCURRENCY=2"}
+	dir := t.TempDir()
+	dest := filepath.Join(dir, "a.bin")
+	script := buildMultiFileInitCommand(true, false, false, true, true, RefreshPolicyIfNotPresent)
+	env := []string{"MODEL_FILE_SHA256=" + digest + " a.bin", "MODEL_DIGEST_FIELD=spec.fileSha256", "MODEL_DOWNLOAD_CONCURRENCY=2"}
 
-			out, err := runMultiFile(t, script, o.srv.URL, dir, "a.bin", env...)
-			if err != nil {
-				t.Fatalf("init script failed: %v\n%s", err, out)
-			}
-			for _, want := range []string{
-				"Verifying the SHA256 of " + dest + " against spec.fileSha256 (expected " + digest + ")...",
-				"SHA256 OK for " + dest + ": " + digest + " (0 MiB in ",
-				"Published " + dest + " (rename ",
-			} {
-				if !strings.Contains(out, want) {
-					t.Errorf("fresh download log lacks %q\n%s", want, out)
+	out, err := runMultiFile(t, script, o.srv.URL, dir, "a.bin", env...)
+	if err != nil {
+		t.Fatalf("init script failed: %v\n%s", err, out)
+	}
+	for _, want := range []string{
+		"Verifying the SHA256 of " + dest + " against spec.fileSha256 (expected " + digest + ")...",
+		"SHA256 OK for " + dest + ": " + digest + " (0 MiB in ",
+		"Published " + dest + " (rename ",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("fresh download log lacks %q\n%s", want, out)
+		}
+	}
+	if f, ok := matchModelTransferFailure(out); ok {
+		t.Errorf("a successful verify log classifies as %s\n%s", f.reason, out)
+	}
+
+	out, err = runMultiFile(t, script, o.srv.URL, dir, "a.bin", env...)
+	if err != nil {
+		t.Fatalf("cached rerun failed: %v\n%s", err, out)
+	}
+	if want := "Model verified against spec.fileSha256 (stamp hit, skipped re-hashing): " + dest; !strings.Contains(out, want) {
+		t.Errorf("cached rerun log lacks %q\n%s", want, out)
+	}
+}
+
+// Only the concurrent command logs the SHA256 gates or runs the pool. The
+// verify helpers are part of every pinned Model's init command, so either in
+// another command would change the pod template of Models that never set
+// spec.downloadConcurrency, and roll their pods on an operator upgrade (#1965).
+func TestPoolAndVerifyLogsStayInTheConcurrentCommand(t *testing.T) {
+	tokens := []string{"llmkube_verify_start", "llmkube_pool_", "of $rel"}
+	bs := []bool{true, false}
+	var cmds []string
+	for _, useCache := range bs {
+		for _, isS3 := range bs {
+			for _, isHFAuth := range bs {
+				for _, withSHA256 := range bs {
+					for _, policy := range []string{RefreshPolicyIfNotPresent, RefreshPolicyOnChange} {
+						cmds = append(cmds, buildMultiFileInitCommand(useCache, isS3, isHFAuth, withSHA256, false, policy))
+						for _, isLocal := range bs {
+							cmds = append(cmds, buildModelInitCommand(isLocal, isS3, useCache, isHFAuth, withSHA256, policy))
+						}
+					}
 				}
+				cmds = append(cmds, remoteRevalidateScript(isHFAuth, isS3, useCache))
 			}
-			if f, ok := matchModelTransferFailure(out); ok {
-				t.Errorf("a successful verify log classifies as %s\n%s", f.reason, out)
+		}
+	}
+	for i, cmd := range cmds {
+		for _, tok := range tokens {
+			if strings.Contains(cmd, tok) {
+				t.Errorf("command %d outside the concurrent pool contains %q", i, tok)
 			}
-
-			out, err = runMultiFile(t, script, o.srv.URL, dir, "a.bin", env...)
-			if err != nil {
-				t.Fatalf("cached rerun failed: %v\n%s", err, out)
-			}
-			if want := "Model verified against spec.fileSha256 (stamp hit, skipped re-hashing): " + dest; !strings.Contains(out, want) {
-				t.Errorf("cached rerun log lacks %q\n%s", want, out)
-			}
-		})
+		}
+	}
+	if pool := buildMultiFileInitCommand(true, false, false, true, true, RefreshPolicyIfNotPresent); !strings.Contains(pool, "llmkube_verify_start") {
+		t.Error("the concurrent command does not log its SHA256 gates")
 	}
 }
 
