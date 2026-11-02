@@ -90,7 +90,7 @@ func TestMultipleSourcesDownloader(t *testing.T) {
 				model := &inferencev1alpha1.Model{Spec: inferencev1alpha1.ModelSpec{Source: source, Files: files, RefreshPolicy: policy,
 					FileSHA256: map[string]inferencev1alpha1.SHA256Digest{files[1]: inferencev1alpha1.SHA256Digest(fmt.Sprintf("%x", sha256.Sum256([]byte(body))))}}}
 				isvc := &inferencev1alpha1.InferenceService{}
-				cfg := buildModelStorageConfig(model, isvc, "default", true, ModelCacheModeShared, "", "img:latest", 0, ModelCachePrepNever, DefaultInitContainerUser, nil, mirror.URL)
+				cfg := buildModelStorageConfig(model, isvc, resolveEffectiveModelCache(isvc, model), "default", true, ModelCacheModeShared, "", "img:latest", 0, ModelCachePrepNever, DefaultInitContainerUser, nil, mirror.URL)
 				container, _ := downloaderFrom(cfg)
 				if !strings.HasSuffix(cfg.modelPath, "/weights.gguf") {
 					t.Fatalf("runtime model path=%s", cfg.modelPath)
@@ -223,7 +223,8 @@ func TestMultipleSourcesStorageRejectsInvalidSources(t *testing.T) {
 		for _, useCache := range []bool{true, false} {
 			t.Run(fmt.Sprintf("%s/cache=%t", tc.name, useCache), func(t *testing.T) {
 				model := &inferencev1alpha1.Model{Spec: tc.spec}
-				cfg := buildModelStorageConfig(model, &inferencev1alpha1.InferenceService{}, "default", useCache, ModelCacheModeShared, "", "img:latest", 0, ModelCachePrepNever, DefaultInitContainerUser, nil, "")
+				isvc := &inferencev1alpha1.InferenceService{}
+				cfg := buildModelStorageConfig(model, isvc, resolveEffectiveModelCache(isvc, model), "default", useCache, ModelCacheModeShared, "", "img:latest", 0, ModelCachePrepNever, DefaultInitContainerUser, nil, "")
 				downloader, _ := downloaderFrom(cfg)
 				if len(downloader.Command) != 3 {
 					t.Fatal("missing fail-closed init command")
