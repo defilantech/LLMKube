@@ -520,7 +520,7 @@ var _ = Describe("ModelPool Controller", func() {
 		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	})
 
-	It("holds a router-activated member until an autoscaled incumbent's Pod exits", func() {
+	It("holds a router-activated member while an autoscaled incumbent occupies the slot", func() {
 		judge := modelPoolMemberFixture("judge", 1)
 		Expect(k8sClient.Create(ctx, judge)).To(Succeed())
 		Expect(k8sClient.Create(ctx, modelPoolMemberFixture("coder", 0))).To(Succeed())
@@ -557,8 +557,14 @@ var _ = Describe("ModelPool Controller", func() {
 
 		Expect(k8sClient.Delete(ctx, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "judge-pod", Namespace: "default"}})).To(Succeed())
 		reconcile()
-		Expect(replicasOfMember(ctx, "coder")).To(Equal(int32(1)), "the pending activation must resume after all incumbent Pods exit")
+		Expect(replicasOfMember(ctx, "coder")).To(Equal(int32(0)), "the autoscaled incumbent still owns the slot while its replacement Pod is pending")
 		Expect(replicasOfMember(ctx, "judge")).To(Equal(int32(1)), "the pool must not change the HPA-owned replica count")
+
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "judge", Namespace: "default"}, judge)).To(Succeed())
+		judge.Spec.Autoscaling = nil
+		Expect(k8sClient.Update(ctx, judge)).To(Succeed())
+		reconcile()
+		Expect(replicasOfMember(ctx, "coder")).To(Equal(int32(1)), "the pending activation must resume once the incumbent is fixed")
 	})
 })
 

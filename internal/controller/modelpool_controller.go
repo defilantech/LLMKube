@@ -936,6 +936,11 @@ func (r *ModelPoolReconciler) holdOwnerUntilOthersClear(
 		if !ok {
 			continue
 		}
+		if member.Spec.Autoscaling != nil {
+			// Autoscaling can recreate a missing Pod after this reconcile.
+			desired = 0
+			break
+		}
 		pods, err := r.memberPods(ctx, member)
 		if err != nil {
 			return err
