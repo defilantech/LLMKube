@@ -36,7 +36,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
@@ -197,12 +196,8 @@ func runMetalTokenCreate(cmd *cobra.Command, mac string, opts *metalTokenOptions
 	if err != nil {
 		return fmt.Errorf("create client: %w", err)
 	}
-	kube, err := kubernetes.NewForConfig(target.Config)
-	if err != nil {
-		return fmt.Errorf("create clientset: %w", err)
-	}
 
-	issued, err := metalTokenCreate(ctx, c, kube, target.Namespace, mac, opts.ttl, log)
+	issued, err := metalTokenCreate(ctx, c, target.Namespace, mac, opts.ttl, log)
 	if err != nil {
 		return err
 	}
@@ -291,8 +286,8 @@ type metalIssuedToken struct {
 
 // metalTokenCreate creates or updates the Mac's objects in namespace and
 // mints a join token bound to a fresh join Secret. Progress goes to log.
-func metalTokenCreate(ctx context.Context, c client.Client, kube kubernetes.Interface, namespace, mac string,
-	ttl time.Duration, log io.Writer) (*metalIssuedToken, error) {
+func metalTokenCreate(ctx context.Context, c client.Client, namespace, mac string, ttl time.Duration,
+	log io.Writer) (*metalIssuedToken, error) {
 	if _, err := c.RESTMapper().RESTMapping(
 		schema.GroupKind{Group: inferencev1alpha1.GroupVersion.Group, Kind: "MetalNode"},
 		inferencev1alpha1.GroupVersion.Version); err != nil {
@@ -326,7 +321,7 @@ func metalTokenCreate(ctx context.Context, c client.Client, kube kubernetes.Inte
 	if err != nil {
 		return nil, err
 	}
-	return mintJoinToken(ctx, kube, namespace, n, secret, ttl)
+	return mintJoinToken(ctx, c, namespace, n, secret, ttl)
 }
 
 // metalDerivedObjects are the Mac's objects whose ownership label decides
@@ -654,12 +649,13 @@ func waitGone(ctx context.Context, c client.Client, obj client.Object) error {
 
 // mintJoinToken asks for a token for the Mac's ServiceAccount, bound to the
 // join Secret so deleting the Secret revokes it. Audiences are left to the
-// API server's default.
-func mintJoinToken(ctx context.Context, kube kubernetes.Interface, namespace string, n metalNames,
+// API server's default. It uses the serviceaccounts/token subresource, as
+// llmkube metal join and the agent's renewal do.
+func mintJoinToken(ctx context.Context, c client.Client, namespace string, n metalNames,
 	secret *corev1.Secret, ttl time.Duration) (*metalIssuedToken, error) {
 	seconds := int64(ttl / time.Second)
 	requested := time.Now()
-	tr, err := kube.CoreV1().ServiceAccounts(namespace).CreateToken(ctx, n.ServiceAccount, &authenticationv1.TokenRequest{
+	tr := &authenticationv1.TokenRequest{
 		Spec: authenticationv1.TokenRequestSpec{
 			ExpirationSeconds: &seconds,
 			BoundObjectRef: &authenticationv1.BoundObjectReference{
@@ -669,8 +665,9 @@ func mintJoinToken(ctx context.Context, kube kubernetes.Interface, namespace str
 				UID:        secret.UID,
 			},
 		},
-	}, metav1.CreateOptions{})
-	if err != nil {
+	}
+	sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: n.ServiceAccount}}
+	if err := c.SubResource("token").Create(ctx, sa, tr); err != nil {
 		return nil, fmt.Errorf("mint the join token for %s/%s: %w", namespace, n.ServiceAccount, err)
 	}
 	if tr.Status.Token == "" {
