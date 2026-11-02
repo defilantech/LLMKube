@@ -723,8 +723,14 @@ port changes, or the verified address drops out of the list, the old
 `Reachable=True` and `hostIP` are withdrawn at once (`Reachable` is
 `Unknown`, reason `VerificationPending`) until the new check lands; a
 new address offered beside the verified one leaves the result
-standing, but no success stands for more than 13 minutes (the
-10-minute recheck, the 2-minute verifier timeout and a minute of
+standing. A spec edit that changes the check (`spec.verifier` moves it
+to other nodes, `spec.hostIP` changes what it dials) withdraws the last
+result the same way, success or failure, since it was for the old
+check; an edit that leaves the check as it was (the ServiceAccount,
+for example) keeps it. Either way `Reachable` carries the new
+`metadata.generation` once `status.observedGeneration` does, which is
+what `llmkube metal join` waits for. No success stands for more than
+13 minutes (the 10-minute recheck, the 2-minute verifier timeout and a minute of
 slack) without a newer check finishing. A Mac whose report keeps
 changing restarts the check each time, so without that bound an old
 success, and its `hostIP`, would outlive the address it proved; past
@@ -802,7 +808,7 @@ on schedule does not wake the controller; its 60 s resync does.
 | `Reachable` | `AgentUpgradeRequired` | The agent reports a pin but no ingress certificate, as agents from before the certificate check do; nothing is dialed until the agent is upgraded. |
 | `Reachable` | `CertificateUnbound` | The agent's ingress certificate does not name this MetalNode's UID; the agent binds it once it can read its MetalNode (see the agent log). |
 | `Reachable` | `VerifierFailed` | The verifier pod could not be created, failed, or never finished (check the controller log, `spec.verifier` placement and the image pull), or a pod this MetalNode does not own holds the verifier's name. |
-| `Reachable` | `VerificationPending` | `Unknown`: the pin or port changed, the verified address is no longer offered, or the last success is more than 13 minutes old with no newer check finished, so the last result no longer applies; `hostIP` is empty until the new check lands. |
+| `Reachable` | `VerificationPending` | `Unknown`: the pin or port changed, the verified address is no longer offered, a spec edit changed the check (`spec.verifier` or `spec.hostIP`), or the last success is more than 13 minutes old with no newer check finished, so the last result no longer applies; `hostIP` is empty until the new check lands. |
 | `Reachable` | `AgentNotConnected` | `Unknown`: the agent is not connected, so nothing is dialed and `hostIP` is empty. |
 | `Reachable` | `ReportInvalid` | `Unknown`: the agent's report on its Lease is invalid (see `AgentConnected`), so nothing is dialed and `hostIP` is empty. Fix the report, not the Mac's network. |
 | `Reachable` | `InvalidSpec` | `spec.hostIP` is not an IP address; nothing is dialed until it is fixed. |

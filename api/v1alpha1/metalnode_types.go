@@ -48,8 +48,9 @@ const (
 	MetalNodeReasonAgentNotConnected = "AgentNotConnected"
 	MetalNodeReasonInvalidSpec       = "InvalidSpec"
 	// MetalNodeReasonVerificationPending: the pin, port or verified address
-	// changed, or the last success is too old to stand for the current
-	// address, so a new check is due.
+	// changed, a spec edit changed the check (spec.verifier or spec.hostIP),
+	// or the last success is too old to stand for the current address, so a
+	// new check is due.
 	MetalNodeReasonVerificationPending = "VerificationPending"
 	// MetalNodeReasonAgentUpgradeRequired: the agent reports an ingress pin
 	// but no ingress certificate. A pin alone does not prove the address is

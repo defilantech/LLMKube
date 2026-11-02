@@ -542,6 +542,120 @@ func TestMetalNodeReachableNotStaleAfterInputChange(t *testing.T) {
 	}
 }
 
+// updateSpec edits MetalNode name's spec, as an admin would, and returns the
+// generation the edit made.
+func (f *metalNodeFixture) updateSpec(name string, mutate func(*inferencev1alpha1.MetalNodeSpec)) int64 {
+	f.t.Helper()
+	mn := f.get(name)
+	before := mn.Generation
+	mutate(&mn.Spec)
+	if err := f.c.Update(context.Background(), mn); err != nil {
+		f.t.Fatalf("update MetalNode %s spec: %v", name, err)
+	}
+	if mn.Generation == before {
+		f.t.Fatalf("the spec edit left MetalNode %s at generation %d", name, before)
+	}
+	return mn.Generation
+}
+
+// wantReachableAt asserts Reachable is status/reason, and that it and
+// status.observedGeneration are both for generation gen.
+func wantReachableAt(t *testing.T, mn *inferencev1alpha1.MetalNode, status metav1.ConditionStatus, reason string, gen int64) {
+	t.Helper()
+	wantCondition(t, mn, inferencev1alpha1.MetalNodeConditionReachable, status, reason)
+	c := condition(t, mn, inferencev1alpha1.MetalNodeConditionReachable)
+	if c.ObservedGeneration != gen || mn.Status.ObservedGeneration != gen {
+		t.Errorf("Reachable observedGeneration %d, status.observedGeneration %d, want both %d",
+			c.ObservedGeneration, mn.Status.ObservedGeneration, gen)
+	}
+}
+
+// TestMetalNodePlacementChangeWithdrawsReachable is #2265's "a placement
+// change keeps the old result": a success proven from the nodes the old
+// spec.verifier chose says nothing about the path from the new ones, so once
+// status.observedGeneration says the new spec is seen, Reachable must not
+// still be the old True and hostIP. It is Unknown until the check from the
+// new placement, which starts at once, finishes. Moving spec.hostIP among the
+// dialed addresses changes the check the same way.
+func TestMetalNodePlacementChangeWithdrawsReachable(t *testing.T) {
+	relayNodes := map[string]string{"llmkube.dev/relay": "true"}
+	for name, edit := range map[string]func(*inferencev1alpha1.MetalNodeSpec){
+		"mac-move": func(s *inferencev1alpha1.MetalNodeSpec) {
+			s.Verifier = &inferencev1alpha1.MetalNodeVerifier{NodeSelector: relayNodes}
+		},
+		"mac-admin-ip": func(s *inferencev1alpha1.MetalNodeSpec) { s.HostIP = "10.1.2.3" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newMetalNodeFixture(t)
+			report := encodeReport(t, testReport(tailnetCandidate))
+			f.verifyMetalNode(name, tailnetCandidate)
+			gen := f.updateSpec(name, edit)
+
+			f.now = f.now.Add(time.Minute)
+			f.putLease(name, f.now, report)
+			f.reconcile(name)
+			mn := f.get(name)
+			wantReachableAt(t, mn, metav1.ConditionUnknown, inferencev1alpha1.MetalNodeReasonVerificationPending, gen)
+			if mn.Status.HostIP != "" {
+				t.Errorf("hostIP = %q after the spec changed the check, want empty until the new check lands", mn.Status.HostIP)
+			}
+			if msg := condition(t, mn, inferencev1alpha1.MetalNodeConditionReachable).Message; !strings.Contains(msg, "spec") {
+				t.Errorf("Reachable message %q does not point at the spec change", msg)
+			}
+
+			pod := f.onlyVerifierPod(name)
+			if name == "mac-move" && pod.Spec.NodeSelector["llmkube.dev/relay"] != "true" {
+				t.Errorf("verifier nodeSelector = %v, want the new placement %v", pod.Spec.NodeSelector, relayNodes)
+			}
+			f.finishVerifier(pod, "100.64.0.2 0\n")
+			f.reconcile(name)
+			mn = f.get(name)
+			wantReachableAt(t, mn, metav1.ConditionTrue, inferencev1alpha1.MetalNodeReasonDialBackSucceeded, gen)
+			if mn.Status.HostIP != "100.64.0.2" {
+				t.Errorf("hostIP = %q after the new placement's check, want 100.64.0.2", mn.Status.HostIP)
+			}
+		})
+	}
+}
+
+// TestMetalNodeSpecEditOutsideTheCheckKeepsReachable: a spec edit that
+// changes nothing the check runs with (here the ServiceAccount) keeps the
+// result, stamped for the new generation. llmkube metal join only accepts a
+// Reachable whose observedGeneration is the MetalNode's, and with an
+// unchanged check the next result is up to 10 minutes away. An edit before
+// any check finished has no result to withdraw: Reachable stays NotVerified.
+func TestMetalNodeSpecEditOutsideTheCheckKeepsReachable(t *testing.T) {
+	f := newMetalNodeFixture(t)
+	f.createMetalNode("mac-first", nil)
+	f.putLease("mac-first", f.now, encodeReport(t, testReport(tailnetCandidate)))
+	f.reconcile("mac-first")
+	f.onlyVerifierPod("mac-first")
+	firstGen := f.updateSpec("mac-first", func(s *inferencev1alpha1.MetalNodeSpec) {
+		s.Verifier = &inferencev1alpha1.MetalNodeVerifier{NodeSelector: map[string]string{"llmkube.dev/relay": "true"}}
+	})
+	f.now = f.now.Add(5 * time.Second)
+	f.reconcile("mac-first")
+	wantReachableAt(t, f.get("mac-first"), metav1.ConditionUnknown, inferencev1alpha1.MetalNodeReasonNotVerified, firstGen)
+
+	f.now = f.now.Add(time.Minute)
+	f.verifyMetalNode("mac-rename", tailnetCandidate)
+	gen := f.updateSpec("mac-rename", func(s *inferencev1alpha1.MetalNodeSpec) {
+		s.ServiceAccountName = "llmkube-metal-renamed"
+	})
+
+	f.now = f.now.Add(time.Minute)
+	f.putLease("mac-rename", f.now, encodeReport(t, testReport(tailnetCandidate)))
+	f.reconcile("mac-rename")
+	mn := f.get("mac-rename")
+	wantReachableAt(t, mn, metav1.ConditionTrue, inferencev1alpha1.MetalNodeReasonDialBackSucceeded, gen)
+	if mn.Status.HostIP != "100.64.0.2" {
+		t.Errorf("hostIP = %q, want the verified 100.64.0.2 kept", mn.Status.HostIP)
+	}
+	if pods := f.verifierPods("mac-rename"); len(pods) != 0 {
+		t.Errorf("%d verifier pods after an edit the check does not depend on, want 0", len(pods))
+	}
+}
+
 // TestMetalNodeReportFactsClearedWithoutAValidReport: the agent's version,
 // capacity, ingress pin and port stay in status only while a valid report
 // backs them. An invalid report or a deleted Lease clears them (a deleted
