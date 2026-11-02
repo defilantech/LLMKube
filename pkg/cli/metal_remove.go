@@ -49,7 +49,9 @@ gone are skipped, so running it twice is fine.
 Only objects labeled inference.llmkube.dev/metal-node=<mac-name> are deleted.
 Anything else with one of the Mac's names (another app's Lease, objects
 labeled for another Mac, objects applied by hand) is left in place and
-listed. --include-unlabeled also deletes unlabeled objects with the Mac's
+listed. The Lease is also deleted, with a warning, when the Mac's MetalNode,
+labeled for the Mac, names it as its Lease: the Mac can change its Lease's
+labels. --include-unlabeled also deletes unlabeled objects with the Mac's
 names, for a Mac set up by hand; objects labeled for another Mac are never
 deleted. If the ServiceAccount is left in place, nothing was revoked and the
 command fails.
@@ -110,8 +112,19 @@ func metalRemove(ctx context.Context, c client.Client, namespace, mac string, in
 			continue
 		}
 		owner := t.obj.GetLabels()[inferencev1alpha1.LabelMetalNode]
+		claimed := false
+		if owner != mac && t.kind == "Lease" {
+			// The Mac may change its Lease's labels; its MetalNode decides.
+			if claimed, err = metalNodeClaimsLease(ctx, c, namespace, n); err != nil {
+				return err
+			}
+		}
 		switch {
 		case owner == mac:
+		case claimed:
+			_, _ = fmt.Fprintf(log, "warning: Lease %s/%s is labeled %s=%q, but MetalNode %s/%s names it as its "+
+				"Lease; deleting it\n", namespace, t.obj.GetName(), inferencev1alpha1.LabelMetalNode, owner,
+				namespace, n.MetalNode)
 		case owner == "" && includeUnlabeled:
 			_, _ = fmt.Fprintf(log, "warning: deleting unlabeled %s %s/%s by its name (--include-unlabeled)\n",
 				t.kind, namespace, t.obj.GetName())

@@ -1118,7 +1118,11 @@ the Lease (the agent's heartbeat) and any `hostIP` or `verifier` you
 set on the MetalNode, and refuses to take over an object with one of
 these names that is not labeled for this Mac (or is labeled for
 another Mac). It checks all of them before it writes anything, so a
-refusal leaves the cluster as it was. If you created the
+refusal leaves the cluster as it was. The Lease is the exception: the
+Mac may update its own Lease, labels included, so a Lease whose label
+no longer says `<mac>` still counts as the Mac's when the Mac's
+MetalNode (labeled for the Mac, and not writable by the Mac) names it
+in `spec.leaseName`. `token create` then puts the label back. If you created the
 objects by hand (see [The objects for each Mac](#the-objects-for-each-mac)),
 label them (`kubectl label ... inference.llmkube.dev/metal-node=<mac>`)
 or delete them first.
@@ -1288,7 +1292,9 @@ touch the Mac itself; run `llmkube metal leave` there.
 the Mac's names (another application's Lease, objects labeled for
 another Mac, a MetalNode applied by hand) is left in place and listed
 as `skipped`. If the ServiceAccount is among them, nothing was
-revoked and the command fails. For a Mac whose objects you applied by
+revoked and the command fails. The Lease is also deleted, with a
+warning, when the Mac's MetalNode names it as its Lease, whatever its
+label says (see above). For a Mac whose objects you applied by
 hand without the label, `--include-unlabeled` also deletes unlabeled
 objects with the Mac's names, with a warning for each; objects
 labeled for another Mac are never deleted.

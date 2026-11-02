@@ -332,3 +332,113 @@ func TestGetMetalOwned(t *testing.T) {
 		})
 	}
 }
+
+// relabelMacALease sets the labels of Mac mac-a's Lease, as the Mac itself
+// can (its Role may update the Lease), and returns the Lease as updated.
+func relabelMacALease(t *testing.T, c client.Client, ns string, labels map[string]string) *coordinationv1.Lease {
+	t.Helper()
+	lease := &coordinationv1.Lease{}
+	if err := c.Get(context.Background(), client.ObjectKey{Namespace: ns, Name: "mac-a"}, lease); err != nil {
+		t.Fatal(err)
+	}
+	lease.Labels = labels
+	if err := c.Update(context.Background(), lease); err != nil {
+		t.Fatal(err)
+	}
+	return lease
+}
+
+// TestMetalLeaseRelabeledByTheMac: the Mac may update its own Lease, labels
+// included. A Lease whose label no longer says mac-a is still mac-a's when
+// mac-a's MetalNode, which the Mac cannot write, names it: token create puts
+// the label back instead of refusing, and remove deletes the Lease instead of
+// skipping it.
+func TestMetalLeaseRelabeledByTheMac(t *testing.T) {
+	for _, lab := range foreignLabelings {
+		t.Run(lab.name, func(t *testing.T) {
+			_, c, ns := metalEnvtest(t)
+			ctx := context.Background()
+			if _, stderr, err := runMetal(t, "token", "create", "mac-a", "-n", ns); err != nil {
+				t.Fatalf("token create: %v\n%s", err, stderr)
+			}
+			relabeled := relabelMacALease(t, c, ns, lab.labels)
+
+			_, stderr, err := runMetal(t, "token", "create", "mac-a", "-n", ns)
+			if err != nil {
+				t.Fatalf("token create after the Mac relabeled its Lease: %v\n%s", err, stderr)
+			}
+			if !strings.Contains(stderr, "restoring the label") {
+				t.Errorf("token create does not say it restored the Lease's label: %q", stderr)
+			}
+			lease := &coordinationv1.Lease{}
+			if err := c.Get(ctx, client.ObjectKeyFromObject(relabeled), lease); err != nil {
+				t.Fatal(err)
+			}
+			wantMacALabels(t, "Lease", lease)
+			if lease.UID != relabeled.UID {
+				t.Errorf("token create replaced the Lease (uid %s -> %s); it must keep the agent's", relabeled.UID, lease.UID)
+			}
+
+			relabelMacALease(t, c, ns, lab.labels)
+			stdout, stderr, err := runMetal(t, "remove", "mac-a", "-n", ns)
+			if err != nil {
+				t.Fatalf("remove: %v\n%s", err, stderr)
+			}
+			if err := c.Get(ctx, client.ObjectKeyFromObject(relabeled), &coordinationv1.Lease{}); !apierrors.IsNotFound(err) {
+				t.Errorf("remove left the relabeled Lease (get: %v); stdout %q", err, stdout)
+			}
+			if !strings.Contains(stderr, "names it as its Lease") {
+				t.Errorf("remove does not say why it deleted a Lease not labeled for the Mac: %q", stderr)
+			}
+		})
+	}
+}
+
+// TestMetalLeaseNotClaimedByTheMetalNode: the MetalNode vouches for the Lease
+// only when it is labeled for the Mac and its spec.leaseName is the Mac's
+// Lease. Otherwise a Lease not labeled for the Mac is refused and left, as
+// before.
+func TestMetalLeaseNotClaimedByTheMetalNode(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		leaseName string
+		mnLabels  map[string]string
+	}{
+		{"MetalNode names another Lease", "someone-else", metalLabels("mac-a")},
+		{"MetalNode not labeled for the Mac", "mac-a", nil},
+		{"MetalNode labeled for another Mac", "mac-a", map[string]string{inferencev1alpha1.LabelMetalNode: "mac-b"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, c, ns := metalEnvtest(t)
+			ctx := context.Background()
+			if _, stderr, err := runMetal(t, "token", "create", "mac-a", "-n", ns); err != nil {
+				t.Fatalf("token create: %v\n%s", err, stderr)
+			}
+			mn := &inferencev1alpha1.MetalNode{}
+			if err := c.Get(ctx, client.ObjectKey{Namespace: ns, Name: "mac-a"}, mn); err != nil {
+				t.Fatal(err)
+			}
+			mn.Spec.LeaseName = tc.leaseName
+			mn.Labels = tc.mnLabels
+			if err := c.Update(ctx, mn); err != nil {
+				t.Fatal(err)
+			}
+			lease := relabelMacALease(t, c, ns, map[string]string{inferencev1alpha1.LabelMetalNode: "mac-b"})
+
+			_, _, err := runMetal(t, "token", "create", "mac-a", "-n", ns)
+			if err == nil || !strings.Contains(err.Error(), "Lease "+ns+"/mac-a") {
+				t.Fatalf("token create: err = %v, want a refusal naming the Lease", err)
+			}
+			assertUntouched(t, c, lease)
+
+			stdout, _, err := runMetal(t, "remove", "mac-a", "-n", ns)
+			if err != nil {
+				t.Fatalf("remove: %v", err)
+			}
+			assertUntouched(t, c, lease)
+			if !strings.Contains(stdout, "skipped Lease "+ns+"/mac-a") {
+				t.Errorf("remove does not report the skipped Lease: %q", stdout)
+			}
+		})
+	}
+}
