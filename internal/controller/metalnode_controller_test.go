@@ -35,6 +35,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 	"github.com/defilantech/llmkube/pkg/metalnode"
@@ -663,8 +664,9 @@ func TestMetalNodeLeaseEventReachesItsMetalNode(t *testing.T) {
 	_, cfg, _ := sharedTestEnv(t, baseCRDPath)
 	ns := testNS
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
-		Scheme: scheme.Scheme,
-		Cache:  cache.Options{DefaultNamespaces: map[string]cache.Config{ns: {}}},
+		Scheme:  scheme.Scheme,
+		Cache:   cache.Options{DefaultNamespaces: map[string]cache.Config{ns: {}}},
+		Metrics: metricsserver.Options{BindAddress: "0"},
 	})
 	if err != nil {
 		t.Fatalf("new manager: %v", err)
