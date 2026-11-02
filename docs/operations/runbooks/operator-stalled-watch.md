@@ -20,6 +20,9 @@ One or more of:
 - Alert: `LLMKubeControllerWatchStalled` (critical) or
   `LLMKubeControllerWatchCanaryDown` (warning), shipped by the chart's
   PrometheusRule when the watch canary is enabled.
+- Alert: `LLMKubeUnreconciledGeneration` (warning): one kind's spec changes
+  are not being reconciled while the canary may still be green. See
+  [the section for it](#alert-llmkubeunreconciledgeneration-one-kind-stopped-reconciling).
 - Kubelet restart events on the controller-manager pod. The probe response
   withholds the reason by design (the healthz endpoint is public), so the
   kubelet event reads:
@@ -170,6 +173,89 @@ curl -s localhost:8081/healthz?verbose
 ```
 
 `[+]watch-canary ok` must appear in the output.
+
+## Alert: LLMKubeUnreconciledGeneration (one kind stopped reconciling)
+
+The watch canary proves the operator's Lease informer delivers events.
+Informers are per resource type, so the InferenceService or Model informer
+can stop alone while the canary stays green
+(kubernetes-sigs/controller-runtime#3428 shows that shape). For that case the
+leader lists InferenceServices and Models through the API server every
+`--unreconciled-generation-interval` (default 60s) and exports, per kind:
+
+```
+llmkube_unreconciled_generation_objects{kind="InferenceService|Model"}
+llmkube_unreconciled_generation_oldest_seconds{kind="InferenceService|Model"}
+```
+
+An object lags when its `metadata.generation` is ahead of the highest
+`observedGeneration` across its `status.conditions` (neither kind has a
+top-level `status.observedGeneration`). `objects` counts the ones lagging
+longer than `--unreconciled-generation-threshold` (chart:
+`controllerManager.unreconciledGeneration.thresholdSeconds`, default 1200s,
+above the 15m `--reconcile-timeout`); `oldest_seconds` is the age of the
+oldest lag of that kind. `LLMKubeUnreconciledGeneration` (warning) fires when
+`oldest_seconds` passes the same threshold.
+
+This alert does **not** restart the operator. A stuck object is not always a
+dead watch: a reconcile error the controller retries forever looks the same,
+and restarting on it would restart-loop the pod.
+
+What to check:
+
+1. **Which kind and which object.** The alert's `kind` label names the kind.
+   The operator logs the object once it crosses the threshold:
+
+   ```bash
+   kubectl --context <ctx> -n llmkube-system logs deploy/llmkube-controller-manager \
+     | grep "spec change unreconciled past the threshold"
+   ```
+
+   Or list generation against the conditions' observedGeneration:
+
+   ```bash
+   kubectl --context <ctx> get isvc -A \
+     -o custom-columns='NS:.metadata.namespace,NAME:.metadata.name,GEN:.metadata.generation,OBSERVED:.status.conditions[*].observedGeneration'
+   kubectl --context <ctx> get models -A \
+     -o custom-columns='NS:.metadata.namespace,NAME:.metadata.name,GEN:.metadata.generation,OBSERVED:.status.conditions[*].observedGeneration'
+   ```
+
+   A row whose GEN is above every OBSERVED value is lagging.
+
+2. **Is that kind's controller running at all?** Look for its reconcile logs
+   after the spec change (`"controller": "inferenceservice"` or
+   `"controller": "model"`):
+
+   ```bash
+   kubectl --context <ctx> -n llmkube-system logs deploy/llmkube-controller-manager \
+     --since=30m | grep '"controller":"model"' | tail
+   ```
+
+   - No reconcile lines for the lagging object, and other objects of the same
+     kind are lagging too: that kind's informer has stopped delivering. Restart
+     the operator (see Mitigate); a restart rebuilds every informer.
+   - Reconcile lines with an error for the object, repeating: the controller
+     sees the change and fails on it. This is not a watch problem. Fix the
+     cause the error names; the alert clears on the next successful pass.
+
+3. **Clear it.** The gauge drops as soon as a reconcile stamps the current
+   generation on any condition. After a restart the clock starts again, so
+   the alert resolves and fires again only if the lag outlasts the threshold
+   once more.
+
+Not counted, by design:
+
+- A spec change the admission webhook rejects never bumps
+  `metadata.generation`, so there is nothing to lag.
+- An object with a `deletionTimestamp` (being finalized) is skipped.
+- Kinds other than InferenceService and Model, and built-in resources
+  (kube-state-metrics' `KubeDeploymentGenerationMismatch` covers
+  Deployments).
+
+To turn the check off, set `controllerManager.unreconciledGeneration.interval`
+to `"0s"` (or `--unreconciled-generation-interval=0`); to keep the gauges but
+drop the alert, set
+`prometheus.prometheusRule.rules.unreconciledGeneration.enabled: false`.
 
 ## Related
 

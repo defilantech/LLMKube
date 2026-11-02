@@ -552,6 +552,32 @@ var (
 		},
 		[]string{"result"},
 	)
+
+	// UnreconciledGenerationObjects counts, per kind, the objects whose
+	// metadata.generation has stayed ahead of every status condition's
+	// observedGeneration for longer than the operator's
+	// --unreconciled-generation-threshold (#2308). Informers are per resource
+	// type, so one kind's watch can die while the watch canary's Lease
+	// informer stays healthy; this is the per-kind signal for that.
+	UnreconciledGenerationObjects = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "llmkube_unreconciled_generation_objects",
+			Help: "Objects whose spec change has gone unreconciled for longer than the configured threshold, by kind.",
+		},
+		[]string{"kind"},
+	)
+
+	// UnreconciledGenerationOldestSeconds is how long the oldest current
+	// generation lag of a kind has lasted, threshold or not; 0 when no object
+	// of the kind lags. The alert compares it with the same threshold the
+	// operator gates UnreconciledGenerationObjects on.
+	UnreconciledGenerationOldestSeconds = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "llmkube_unreconciled_generation_oldest_seconds",
+			Help: "Seconds the oldest current spec change of a kind has gone unreconciled; 0 when none lags.",
+		},
+		[]string{"kind"},
+	)
 )
 
 // ControllerCollectors are the metrics the controller records. It registers
@@ -580,6 +606,8 @@ var ControllerCollectors = []prometheus.Collector{
 	WatchCanaryLastObservedTimestamp,
 	WatchCanaryUp,
 	WatchCanaryWritesTotal,
+	UnreconciledGenerationObjects,
+	UnreconciledGenerationOldestSeconds,
 }
 
 // ForemanCollectors are the metrics the foreman-operator records. It registers
@@ -779,4 +807,12 @@ func SetWatchCanaryUp() {
 // classification ("ok" or "error"), never an error string.
 func RecordWatchCanaryWrite(result string) {
 	WatchCanaryWritesTotal.WithLabelValues(result).Inc()
+}
+
+// SetUnreconciledGeneration publishes one generation-lag pass for a kind: the
+// objects lagging past the threshold and the age of the oldest lag. Both are
+// set every pass, so a kind that catches up drops back to 0.
+func SetUnreconciledGeneration(kind string, objects int, oldest time.Duration) {
+	UnreconciledGenerationObjects.WithLabelValues(kind).Set(float64(objects))
+	UnreconciledGenerationOldestSeconds.WithLabelValues(kind).Set(oldest.Seconds())
 }

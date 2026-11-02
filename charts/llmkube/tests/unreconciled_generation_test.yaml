@@ -1,0 +1,83 @@
+suite: unreconciled-generation alert (#2308)
+templates:
+  - deployment.yaml
+  - prometheusrule.yaml
+
+tests:
+  - it: renders the check's args by default, threshold in seconds
+    template: deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --unreconciled-generation-interval=60s
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --unreconciled-generation-threshold=1200s
+
+  - it: passes interval 0 to the operator when disabled, since the flag defaults on
+    template: deployment.yaml
+    set:
+      controllerManager.unreconciledGeneration.interval: 0s
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --unreconciled-generation-interval=0
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --unreconciled-generation-threshold=1200s
+
+  - it: renders the alert in the controller-watch group by default
+    template: prometheusrule.yaml
+    set:
+      prometheus.prometheusRule.enabled: true
+    asserts:
+      - equal:
+          path: spec.groups[?(@.name=="llmkube-controller-watch")].rules[?(@.alert=="LLMKubeUnreconciledGeneration")].expr
+          value: llmkube_unreconciled_generation_oldest_seconds > 1200
+      - equal:
+          path: spec.groups[?(@.name=="llmkube-controller-watch")].rules[?(@.alert=="LLMKubeUnreconciledGeneration")].labels.severity
+          value: warning
+
+  - it: flows one threshold to both the operator flag and the alert
+    templates:
+      - deployment.yaml
+      - prometheusrule.yaml
+    set:
+      prometheus.prometheusRule.enabled: true
+      controllerManager.unreconciledGeneration.thresholdSeconds: 1800
+    asserts:
+      - template: deployment.yaml
+        contains:
+          path: spec.template.spec.containers[0].args
+          content: --unreconciled-generation-threshold=1800s
+      - template: prometheusrule.yaml
+        equal:
+          path: spec.groups[?(@.name=="llmkube-controller-watch")].rules[?(@.alert=="LLMKubeUnreconciledGeneration")].expr
+          value: llmkube_unreconciled_generation_oldest_seconds > 1800
+
+  - it: drops the alert when the check is off, keeping the canary alerts
+    template: prometheusrule.yaml
+    set:
+      prometheus.prometheusRule.enabled: true
+      controllerManager.unreconciledGeneration.interval: 0s
+    asserts:
+      - notExists:
+          path: spec.groups[?(@.name=="llmkube-controller-watch")].rules[?(@.alert=="LLMKubeUnreconciledGeneration")]
+      - exists:
+          path: spec.groups[?(@.name=="llmkube-controller-watch")].rules[?(@.alert=="LLMKubeControllerWatchStalled")]
+
+  - it: drops the alert when its rule is disabled, keeping the check running
+    templates:
+      - deployment.yaml
+      - prometheusrule.yaml
+    set:
+      prometheus.prometheusRule.enabled: true
+      prometheus.prometheusRule.rules.unreconciledGeneration.enabled: false
+    asserts:
+      - template: prometheusrule.yaml
+        notExists:
+          path: spec.groups[?(@.name=="llmkube-controller-watch")].rules[?(@.alert=="LLMKubeUnreconciledGeneration")]
+      - template: deployment.yaml
+        contains:
+          path: spec.template.spec.containers[0].args
+          content: --unreconciled-generation-interval=60s

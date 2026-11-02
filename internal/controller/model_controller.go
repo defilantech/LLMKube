@@ -601,6 +601,14 @@ func (r *ModelReconciler) handleReadyCachedModel(
 			"statusCacheKey", model.Status.CacheKey, "specCacheKey", cacheKey)
 		return false, ctrl.Result{}, nil
 	}
+	// Any other spec change: serve the cached file again through the
+	// cache-hit path, which writes Available for the current generation.
+	// Skipping here would leave the status stamped for the old spec (#2308).
+	if availableBehindSpec(model) {
+		logger.Info("Model spec changed since the status was written; re-serving from the cache",
+			"generation", model.Generation)
+		return false, ctrl.Result{}, nil
+	}
 	if _, statErr := os.Stat(model.Status.Path); statErr != nil {
 		logger.Info("Model marked Ready but file missing, will re-download", "path", model.Status.Path)
 		return false, ctrl.Result{}, nil
@@ -648,6 +656,10 @@ func (r *ModelReconciler) reconcilePVCSource(ctx context.Context, model *inferen
 			logger.Info("Model spec.source changed since the status was written; re-resolving",
 				"statusCacheKey", model.Status.CacheKey, "specCacheKey", wantCacheKey)
 			model.Status.GGUF = nil
+		} else if availableBehindSpec(model) {
+			// Same source, other spec change: re-check the claim and write
+			// Available for the current generation (#2308).
+			logger.Info("Model spec changed since the status was written; re-resolving", "generation", model.Generation)
 		} else {
 			logger.Info("PVC model already Ready, skipping reconcile")
 			llmkubemetrics.ReconcileTotal.WithLabelValues("model", "success").Inc()
@@ -725,11 +737,13 @@ func (r *ModelReconciler) reconcilePVCSource(ctx context.Context, model *inferen
 func (r *ModelReconciler) reconcileOCISource(ctx context.Context, model *inferencev1alpha1.Model) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
-	// Early exit if already Ready for this source. Status.CacheKey is derived
-	// from spec.source, so a mismatch means the source moved and the resolve
-	// below must re-derive Path and CacheKey (#1767).
+	// Early exit if already Ready for this source and spec. Status.CacheKey is
+	// derived from spec.source, so a mismatch means the source moved and the
+	// resolve below must re-derive Path and CacheKey (#1767); a trailing
+	// Available generation means another spec field moved and the resolve
+	// below restamps it (#2308).
 	wantCacheKey := computeCacheKey(model.Spec.Source)
-	if model.Status.Phase == PhaseReady && model.Status.CacheKey == wantCacheKey {
+	if model.Status.Phase == PhaseReady && model.Status.CacheKey == wantCacheKey && !availableBehindSpec(model) {
 		logger.Info("OCI model already Ready, skipping reconcile")
 		llmkubemetrics.ReconcileTotal.WithLabelValues("model", "success").Inc()
 		return ctrl.Result{}, nil
@@ -878,6 +892,16 @@ func availableObservedGeneration(model *inferencev1alpha1.Model) (int64, bool) {
 		}
 	}
 	return 0, false
+}
+
+// availableBehindSpec reports a Ready status written for an earlier spec: the
+// Available condition trails metadata.generation. The source-keyed early exits
+// must not skip such a Model, or its conditions stay stamped for a generation
+// the controller has since seen, which the unreconciled-generation alert
+// reads as a dead informer (#2308).
+func availableBehindSpec(model *inferencev1alpha1.Model) bool {
+	gen, written := availableObservedGeneration(model)
+	return written && gen != model.Generation
 }
 
 func (r *ModelReconciler) reconcileRuntimeResolvedSource(ctx context.Context, model *inferencev1alpha1.Model, cacheKey string) (ctrl.Result, error) {

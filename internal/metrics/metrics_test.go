@@ -483,3 +483,22 @@ func TestWatchCanaryMetrics(t *testing.T) {
 		t.Errorf("expected error write counter >= 1, got %f", got)
 	}
 }
+
+func TestSetUnreconciledGeneration(t *testing.T) {
+	SetUnreconciledGeneration("Model", 2, 25*time.Minute)
+	if got := testutil.ToFloat64(UnreconciledGenerationObjects.WithLabelValues("Model")); got != 2 {
+		t.Errorf("expected 2 lagging Models, got %f", got)
+	}
+	if got := testutil.ToFloat64(UnreconciledGenerationOldestSeconds.WithLabelValues("Model")); got != 1500 {
+		t.Errorf("expected the oldest lag in seconds (1500), got %f", got)
+	}
+
+	// A caught-up kind publishes 0, not its last lagging value.
+	SetUnreconciledGeneration("Model", 0, 0)
+	if got := testutil.ToFloat64(UnreconciledGenerationObjects.WithLabelValues("Model")); got != 0 {
+		t.Errorf("expected 0 after catch-up, got %f", got)
+	}
+	if got := testutil.ToFloat64(UnreconciledGenerationOldestSeconds.WithLabelValues("Model")); got != 0 {
+		t.Errorf("expected oldest 0 after catch-up, got %f", got)
+	}
+}

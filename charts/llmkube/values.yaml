@@ -46,6 +46,21 @@ controllerManager:
     # Namespace for the canary Lease. Empty uses the chart's namespace.
     namespace: ""
 
+  # Per-kind unreconciled-generation check (#2308). The canary above proves
+  # the Lease informer delivers events, but informers are per resource type,
+  # so the InferenceService or Model informer can die alone. Every interval
+  # the leader lists both kinds through the API server (not its cache) and
+  # exports how long each one's metadata.generation has run ahead of the
+  # highest observedGeneration on its conditions. Alert only: it never
+  # restarts the pod. Set interval to "0s" to disable.
+  unreconciledGeneration:
+    interval: "60s"
+    # How long a spec change may go unreconciled before it counts, and the
+    # threshold the LLMKubeUnreconciledGeneration alert fires on. Keep it
+    # above reconcileTimeout (15m) so a reconcile that legitimately runs to
+    # its deadline does not count.
+    thresholdSeconds: 1200
+
   # Deadline for a single Model or InferenceService reconcile, so a call that
   # never returns cannot hold a controller worker forever (#2069). On expiry
   # the reconcile is cancelled and requeued with backoff. Set to "0s" to
@@ -381,6 +396,13 @@ prometheus:
         # for this long: covers a canary that is disabled-by-misconfiguration
         # or stuck in a restart loop.
         downFor: 15m
+      # Unreconciled-generation alert (#2308): an InferenceService or Model
+      # spec change has gone unreconciled past
+      # controllerManager.unreconciledGeneration.thresholdSeconds, the sign of
+      # a single dead informer the watch canary cannot see. Rendered only when
+      # controllerManager.unreconciledGeneration.interval is not "0s".
+      unreconciledGeneration:
+        enabled: true
 
 # Grafana dashboards shipped in charts/llmkube/dashboards/. One ConfigMap holds
 # every dashboard, one key per file; the sidecar label and the grafana-operator

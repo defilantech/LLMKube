@@ -325,6 +325,18 @@ func main() {
 		"Namespace for the watch-canary Lease. Empty (the default) resolves to --leader-election-namespace, "+
 			"then POD_NAMESPACE, then the pod's projected serviceaccount namespace; if none resolve, the "+
 			"canary is disabled with a warning.")
+	var unreconciledGenerationInterval time.Duration
+	var unreconciledGenerationThreshold time.Duration
+	flag.DurationVar(&unreconciledGenerationInterval, "unreconciled-generation-interval", 60*time.Second,
+		"How often the leader lists InferenceServices and Models through the API server (not the cache) and "+
+			"measures how long each one's metadata.generation has run ahead of the highest observedGeneration "+
+			"on its status conditions (#2308). Informers are per resource type, so one kind's watch can die "+
+			"while the watch canary stays green; this exports the per-kind lag as "+
+			"llmkube_unreconciled_generation_* gauges for alerting. It never restarts the pod. 0 disables it.")
+	flag.DurationVar(&unreconciledGenerationThreshold, "unreconciled-generation-threshold", 20*time.Minute,
+		"How long an object's generation may run ahead of its conditions before it counts in "+
+			"llmkube_unreconciled_generation_objects. Keep it above --reconcile-timeout so a reconcile that "+
+			"legitimately runs to its deadline does not count.")
 	var reconcileTimeout time.Duration
 	flag.DurationVar(&reconcileTimeout, "reconcile-timeout", 15*time.Minute,
 		"Deadline for a single reconcile of the Model and InferenceService controllers, so a call that "+
@@ -618,6 +630,26 @@ func main() {
 		}
 		if err := mgr.Add(canary); err != nil {
 			setupLog.Error(err, "unable to add the watch canary")
+			os.Exit(1)
+		}
+	}
+
+	// Per-kind generation lag (#2308): the canary above proves the Lease
+	// informer delivers, not the InferenceService or Model informers. The
+	// checker reads through the API reader, so a dead informer cannot hide
+	// its own lag behind a frozen cache. Alert only, never liveness.
+	if unreconciledGenerationInterval > 0 {
+		genLag, err := watchcanary.NewGenerationLagChecker(mgr, watchcanary.GenerationLagOptions{
+			Interval:  unreconciledGenerationInterval,
+			Threshold: unreconciledGenerationThreshold,
+			Log:       ctrl.Log.WithName("unreconciled-generation"),
+		})
+		if err != nil {
+			setupLog.Error(err, "unable to create the unreconciled-generation checker")
+			os.Exit(1)
+		}
+		if err := mgr.Add(genLag); err != nil {
+			setupLog.Error(err, "unable to add the unreconciled-generation checker")
 			os.Exit(1)
 		}
 	}
