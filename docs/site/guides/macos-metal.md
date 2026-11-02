@@ -643,7 +643,11 @@ MetalNode's namespace, owned by the MetalNode, placed by
   path is a 64 KiB in-memory `emptyDir` for the certificate), no
   capabilities and no service account token, is killed after 60
   seconds, and stops at once when deleted (no termination grace
-  period).
+  period). It opts out of Istio and Linkerd sidecar injection
+  (`sidecar.istio.io/inject: "false"` as label and annotation,
+  `linkerd.io/inject: disabled`): a sidecar would keep the pod from
+  finishing and send the probe through the mesh instead of straight to
+  the Mac.
 - The agent's ingress certificate names the MetalNode:
   `<metadata.uid>.metal-node.llmkube.invalid` (`.invalid` never
   resolves and no public CA issues for it). The agent reads the UID
@@ -704,7 +708,14 @@ after a failure with a
 backoff of 30 seconds growing to 5 minutes. Two rules hold whatever
 the Mac reports: at most one verifier pod exists per MetalNode at a
 time (a pod being deleted still counts), and two verifier starts are
-at least 30 seconds apart. Rewording a candidate's source or changing
+at least 30 seconds apart. The one exception is a verifier pod that
+has been terminating for more than 5 minutes: it has no grace period,
+so it is on a node that went away, and it stays until that node object
+is removed. One such pod stops blocking new checks; two or more block
+again, so a `spec.verifier` placement that keeps landing on lost nodes
+cannot pile pods up, and once the last success expires the
+`Reachable` message names one and says to remove the node or
+force-delete the pods. Rewording a candidate's source or changing
 an address that is never dialed is not a change. Only the verifier
 pod the controller created (recorded by UID in
 `status.verification.podUID`) can report a result. When the pin or
@@ -727,8 +738,9 @@ where the relay pods for this Mac run, so it tests the path the relay
 will use.
 
 While `AgentConnected` is not True, nothing is dialed: `Reachable`
-is `Unknown` (reason `AgentNotConnected`), `status.hostIP` is
-cleared, and any verifier pod is deleted. When the Lease is missing or
+is `Unknown` (reason `ReportInvalid` when the report is what is wrong,
+`AgentNotConnected` otherwise), `status.hostIP` is cleared, and any
+verifier pod is deleted. When the Lease is missing or
 its report is invalid, the agent's reported facts (`agentVersion`,
 `capacity`, `ingressPort`, `ingressSPKI`) are cleared too; a stale but
 valid report keeps them as the last known facts. `status.lastHeartbeatTime`
@@ -792,6 +804,7 @@ on schedule does not wake the controller; its 60 s resync does.
 | `Reachable` | `VerifierFailed` | The verifier pod could not be created, failed, or never finished (check the controller log, `spec.verifier` placement and the image pull), or a pod this MetalNode does not own holds the verifier's name. |
 | `Reachable` | `VerificationPending` | `Unknown`: the pin or port changed, the verified address is no longer offered, or the last success is more than 13 minutes old with no newer check finished, so the last result no longer applies; `hostIP` is empty until the new check lands. |
 | `Reachable` | `AgentNotConnected` | `Unknown`: the agent is not connected, so nothing is dialed and `hostIP` is empty. |
+| `Reachable` | `ReportInvalid` | `Unknown`: the agent's report on its Lease is invalid (see `AgentConnected`), so nothing is dialed and `hostIP` is empty. Fix the report, not the Mac's network. |
 | `Reachable` | `InvalidSpec` | `spec.hostIP` is not an IP address; nothing is dialed until it is fixed. |
 
 ## Join a Mac

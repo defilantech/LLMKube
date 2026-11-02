@@ -312,9 +312,14 @@ func buildMetalNodeVerifierPod(mn *inferencev1alpha1.MetalNode, image, pin, cert
 		return nil, fmt.Errorf("decode the agent's ingress certificate: %w", err)
 	}
 	certPEM := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
+	// A mesh sidecar would keep the pod from ever reaching Succeeded (the
+	// proxy outlives the probe) and send the probe through the mesh instead
+	// of straight to the Mac. Istio reads the label (current releases) or the
+	// annotation (older ones); Linkerd reads the annotation.
 	labels := map[string]string{
 		"app.kubernetes.io/component":  metalNodeVerifierComponent,
 		"app.kubernetes.io/managed-by": inferencev1alpha1.ManagedByController,
+		"sidecar.istio.io/inject":      "false",
 	}
 	// A label value is at most 63 characters; a longer MetalNode name is
 	// still found through the controller owner reference.
@@ -332,10 +337,14 @@ func buildMetalNodeVerifierPod(mn *inferencev1alpha1.MetalNode, image, pin, cert
 	workLimit := resource.MustParse("64Ki")
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        metalNodeVerifierName(mn.Name, hash),
-			Namespace:   mn.Namespace,
-			Labels:      labels,
-			Annotations: map[string]string{annotationMetalNodeVerifyHash: hash},
+			Name:      metalNodeVerifierName(mn.Name, hash),
+			Namespace: mn.Namespace,
+			Labels:    labels,
+			Annotations: map[string]string{
+				annotationMetalNodeVerifyHash: hash,
+				"sidecar.istio.io/inject":     "false",
+				"linkerd.io/inject":           "disabled",
+			},
 		},
 		Spec: corev1.PodSpec{
 			RestartPolicy: corev1.RestartPolicyNever,
