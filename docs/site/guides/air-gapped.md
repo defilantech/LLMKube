@@ -446,6 +446,11 @@ spec:
   mmproj: mmproj-model-f16.gguf
 ```
 
+For a vision model, `spec.mmproj` names the projector; the operator stages it
+into the same cache directory as `spec.files` and adds `--mmproj` to
+llama-server. See
+[Serving vision models](/docs/guides/vision-models).
+
 > `hf://org/repo` and bare `org/repo` sources do exist, but they
 > download from `huggingface.co` (in the init container, or in the
 > runtime itself), so they do not work inside an air gap. Mirror the

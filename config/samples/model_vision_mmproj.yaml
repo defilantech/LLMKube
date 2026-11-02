@@ -1,0 +1,35 @@
+# Example: a vision (multimodal) GGUF model served by llama.cpp.
+#
+# spec.source names the repository, spec.files[0] is the language model
+# passed to llama-server as --model, and spec.mmproj is the multimodal
+# projector. The operator stages both into the same cache directory and adds
+# --mmproj <staged path> to the llama-server arguments.
+#
+# The repository is public and not gated, so no sourceSecretRef is needed.
+# Guide: https://llmkube.com/docs/guides/vision-models
+#
+# Usage:
+#   kubectl apply -f config/samples/model_vision_mmproj.yaml
+#   kubectl get model gemma-3-4b-vision -o jsonpath='{.status.stagedFiles}'
+---
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: Model
+metadata:
+  name: gemma-3-4b-vision
+  namespace: default
+spec:
+  source: hf://ggml-org/gemma-3-4b-it-GGUF
+  format: gguf
+  quantization: Q4_K_M
+  files:
+    - gemma-3-4b-it-Q4_K_M.gguf
+  mmproj: mmproj-model-f16.gguf
+---
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: InferenceService
+metadata:
+  name: gemma-3-4b-vision
+  namespace: default
+spec:
+  modelRef: gemma-3-4b-vision
+  runtime: llamacpp
