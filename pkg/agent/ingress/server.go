@@ -87,6 +87,9 @@ type Server struct {
 	tokens   *TokenStore
 	routes   Router
 	logger   *zap.SugaredLogger
+	// transport carries proxied requests to the engine; nil means
+	// http.DefaultTransport. Tests set it to observe engine connections.
+	transport http.RoundTripper
 
 	mu   sync.Mutex
 	addr net.Addr // set once Start is listening; for tests
@@ -144,6 +147,16 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	r.Header.Del(inferencev1alpha1.HeaderRelayToken)
 	r.Header.Del(inferencev1alpha1.HeaderRelayTarget)
+	// The proxy's Transport reads r.Body while the response streams back:
+	// after an HTTP/1 Transport sends a body of known length it reads the
+	// body once more to confirm EOF, and that read can land after the engine
+	// answered and the first chunk was flushed to the caller. Unless full
+	// duplex is on, an HTTP/1 server closes the request body when the
+	// handler writes its response header, so the late read fails ("invalid
+	// Read on closed Body"), the Transport closes the engine connection, and
+	// the stream is cut after the chunks already sent. HTTP/2 is always full
+	// duplex; a writer that cannot enable it (a test recorder) is left as is.
+	_ = http.NewResponseController(sw).EnableFullDuplex()
 	s.proxy(route.Port).ServeHTTP(sw, r)
 }
 
@@ -245,6 +258,7 @@ func (s *Server) proxy(port int) *httputil.ReverseProxy {
 			answerMissingMetrics(resp)
 			return nil
 		},
+		Transport: s.transport,
 		// Flush each chunk immediately so SSE / stream:true completions
 		// are not buffered by the proxy.
 		FlushInterval: -1,

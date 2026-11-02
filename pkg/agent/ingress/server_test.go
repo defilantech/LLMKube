@@ -427,6 +427,106 @@ func testStreamsChunks(t *testing.T, contentType string) {
 	}
 }
 
+// stallBodyConn is an engine connection that holds the Transport's writing
+// goroutine just after it puts the request body on the wire. The Transport
+// copies a known-length body straight to the socket and only then reads the
+// inbound body once more to confirm EOF; stalling here widens that window
+// so the engine can answer, and the ingress flush its first chunk, inside it.
+type stallBodyConn struct {
+	net.Conn
+	body   []byte
+	resume <-chan struct{}
+	closed chan<- struct{}
+	once   sync.Once
+}
+
+func (c *stallBodyConn) Write(p []byte) (int, error) {
+	n, err := c.Conn.Write(p)
+	if string(p) == string(c.body) {
+		<-c.resume
+	}
+	return n, err
+}
+
+func (c *stallBodyConn) Close() error {
+	c.once.Do(func() { close(c.closed) })
+	return c.Conn.Close()
+}
+
+// TestServer_StreamSurvivesLateRequestBodyEOFCheck pins the ingress to
+// full-duplex proxying. Without it, the HTTP/1 server closes the inbound
+// request body when the ingress writes its first response chunk; if the
+// Transport has not yet made its final EOF read of that same body, the read
+// fails with "invalid Read on closed Body" and the Transport closes the
+// engine connection, cutting the stream after the first chunk.
+func TestServer_StreamSurvivesLateRequestBodyEOFCheck(t *testing.T) {
+	const reqBody = `{"stream":true}`
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	closeRelease := func() { releaseOnce.Do(func() { close(release) }) }
+	resume := make(chan struct{})
+	var resumeOnce sync.Once
+	closeResume := func() { resumeOnce.Do(func() { close(resume) }) }
+	engineConnClosed := make(chan struct{})
+
+	fx := newFixture(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: 1\n\n"))
+		w.(http.Flusher).Flush()
+		<-release
+		_, _ = w.Write([]byte("data: 2\n\n"))
+	})
+
+	tr := &http.Transport{}
+	var dialer net.Dialer
+	tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		c, err := dialer.DialContext(ctx, network, addr)
+		if err != nil {
+			return nil, err
+		}
+		return &stallBodyConn{Conn: c, body: []byte(reqBody), resume: resume, closed: engineConnClosed}, nil
+	}
+	t.Cleanup(tr.CloseIdleConnections)
+	fx.srv.transport = tr
+
+	front := httptest.NewServer(fx.srv)
+	// LIFO: unblock the Transport writer and the engine handler before the
+	// servers wait on them.
+	t.Cleanup(front.Close)
+	t.Cleanup(closeRelease)
+	t.Cleanup(closeResume)
+
+	req, _ := http.NewRequest(http.MethodPost, front.URL+"/v1/chat/completions", strings.NewReader(reqBody))
+	req.Header.Set(inferencev1alpha1.HeaderRelayTarget, "a/qwen")
+	req.Header.Set(inferencev1alpha1.HeaderRelayToken, tokA)
+	client := front.Client()
+	client.Timeout = 5 * time.Second
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	br := bufio.NewReader(resp.Body)
+	if line, err := br.ReadString('\n'); line != "data: 1\n" {
+		t.Fatalf("first line = %q (err %v)", line, err)
+	}
+	// The ingress has flushed the first chunk, so the server has already
+	// finished with the inbound body. Let the Transport make its EOF read.
+	closeResume()
+	select {
+	case <-engineConnClosed:
+		t.Fatal("the ingress closed the engine connection mid-stream after its final request-body read")
+	case <-time.After(200 * time.Millisecond):
+	}
+	closeRelease()
+	rest, err := io.ReadAll(br)
+	if err != nil || !strings.Contains(string(rest), "data: 2") {
+		t.Fatalf("stream tail = %q, err %v; want the second event and a clean EOF", rest, err)
+	}
+}
+
 func TestServer_ClientCancelReachesEngine(t *testing.T) {
 	started := make(chan struct{})
 	cancelled := make(chan struct{})
