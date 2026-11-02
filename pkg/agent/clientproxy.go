@@ -53,6 +53,9 @@ type ClientProxy struct {
 	provider backendProvider
 	port     int
 	logger   *zap.SugaredLogger
+	// transport carries proxied requests to the child; nil means
+	// http.DefaultTransport. Tests set it to observe child connections.
+	transport http.RoundTripper
 }
 
 // NewClientProxy builds a ClientProxy. A port <= 0 means Start is a no-op
@@ -88,6 +91,11 @@ func (p *ClientProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Full duplex keeps the HTTP/1 server from closing r.Body when the first
+	// response chunk is written, before the Transport's final EOF read of it;
+	// see the matching call in pkg/agent/ingress/server.go's ServeHTTP. Every
+	// host-side client reaches this listener over plaintext HTTP/1.1.
+	_ = http.NewResponseController(w).EnableFullDuplex()
 	rp := p.reverseProxy(addr)
 	sw := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 	rp.ServeHTTP(sw, r)
@@ -122,6 +130,7 @@ func (p *ClientProxy) reverseProxy(addr string) *httputil.ReverseProxy {
 			pr.Out.Trailer = nil
 		},
 		ModifyResponse: ingress.RefuseUpgrade,
+		Transport:      p.transport,
 		// Flush each chunk immediately so SSE / stream:true completions are
 		// not buffered by the proxy.
 		FlushInterval: -1,

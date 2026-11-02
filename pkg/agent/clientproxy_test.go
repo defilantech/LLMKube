@@ -17,12 +17,17 @@ limitations under the License.
 package agent
 
 import (
+	"bufio"
+	"context"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"go.uber.org/zap"
 )
@@ -425,5 +430,107 @@ func TestStatusClass(t *testing.T) {
 				t.Errorf("statusClass(%d) = %q, want %q", tt.code, got, tt.expected)
 			}
 		})
+	}
+}
+
+// stallBodyConn is a child connection that holds the Transport's writing
+// goroutine just after it puts the request body on the wire, before the
+// Transport's final EOF read of the inbound body. It mirrors the helper in
+// pkg/agent/ingress/server_test.go.
+type stallBodyConn struct {
+	net.Conn
+	body   string
+	resume <-chan struct{}
+	closed chan<- struct{}
+	once   sync.Once
+}
+
+func (c *stallBodyConn) Write(p []byte) (int, error) {
+	n, err := c.Conn.Write(p)
+	if string(p) == c.body {
+		<-c.resume
+	}
+	return n, err
+}
+
+func (c *stallBodyConn) Close() error {
+	c.once.Do(func() { close(c.closed) })
+	return c.Conn.Close()
+}
+
+// TestClientProxy_StreamSurvivesLateRequestBodyEOFCheck mirrors
+// pkg/agent/ingress/server_test.go's test of the same name. Host-side
+// clients reach the client proxy over HTTP/1.1, whose server closes the
+// request body when the proxy writes its first response chunk unless full
+// duplex is enabled; a Transport EOF read of that body after that point
+// fails and the Transport closes the child connection mid-stream.
+func TestClientProxy_StreamSurvivesLateRequestBodyEOFCheck(t *testing.T) {
+	const reqBody = `{"stream":true}`
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	closeRelease := func() { releaseOnce.Do(func() { close(release) }) }
+	resume := make(chan struct{})
+	var resumeOnce sync.Once
+	closeResume := func() { resumeOnce.Do(func() { close(resume) }) }
+	childConnClosed := make(chan struct{})
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "data: 1\n\n")
+		w.(http.Flusher).Flush()
+		<-release
+		_, _ = io.WriteString(w, "data: 2\n\n")
+	}))
+	t.Cleanup(backend.Close)
+
+	tr := &http.Transport{}
+	var dialer net.Dialer
+	tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		c, err := dialer.DialContext(ctx, network, addr)
+		if err != nil {
+			return nil, err
+		}
+		return &stallBodyConn{Conn: c, body: reqBody, resume: resume, closed: childConnClosed}, nil
+	}
+	t.Cleanup(tr.CloseIdleConnections)
+
+	front := httptest.NewUnstartedServer(nil)
+	port := front.Listener.Addr().(*net.TCPAddr).Port
+	p := NewClientProxy(&fakeBackend{addr: backend.Listener.Addr().String(), runtime: runtimeLlamaServer, ok: true},
+		port, zap.NewNop().Sugar())
+	p.transport = tr
+	front.Config.Handler = p
+	front.Start()
+	// LIFO: unblock the Transport writer and the backend handler before the
+	// servers wait on them.
+	t.Cleanup(front.Close)
+	t.Cleanup(closeRelease)
+	t.Cleanup(closeResume)
+
+	client := front.Client()
+	client.Timeout = 5 * time.Second
+	resp, err := client.Post(front.URL+"/v1/chat/completions", "application/json", strings.NewReader(reqBody))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	br := bufio.NewReader(resp.Body)
+	if line, err := br.ReadString('\n'); line != "data: 1\n" {
+		t.Fatalf("first line = %q (err %v)", line, err)
+	}
+	// The proxy has flushed the first chunk, so the server has already
+	// finished with the inbound body. Let the Transport make its EOF read.
+	closeResume()
+	select {
+	case <-childConnClosed:
+		t.Fatal("the client proxy closed the child connection mid-stream after its final request-body read")
+	case <-time.After(200 * time.Millisecond):
+	}
+	closeRelease()
+	rest, err := io.ReadAll(br)
+	if err != nil || !strings.Contains(string(rest), "data: 2") {
+		t.Fatalf("stream tail = %q, err %v; want the second event and a clean EOF", rest, err)
 	}
 }
