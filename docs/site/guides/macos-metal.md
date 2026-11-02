@@ -1164,7 +1164,11 @@ token. The Mac trusts only that CA (no system roots).
   since the Mac would have nothing to trust. When the server address
   is not in the certificate (a tailnet address, say), it sets the TLS
   server name to `kubernetes` if the certificate covers that, or
-  stops and lists the names the certificate does cover.
+  stops and lists the names the certificate does cover. It then
+  connects again sending `kubernetes`, as the Mac will, and stops if
+  the certificate presented for that name (an API server with
+  `--tls-sni-cert-key`, or a proxy that routes by name, can present
+  another one) does not verify against the CA the string carries.
 
 ### On the Mac: join and leave
 
