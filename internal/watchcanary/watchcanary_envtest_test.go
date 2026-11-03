@@ -34,6 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"github.com/defilantech/llmkube/internal/metrics"
 )
@@ -66,7 +67,8 @@ func TestCanaryObservesOwnWrites(t *testing.T) {
 		Scheme: scheme,
 		// The envtest namespace the test runs against; CacheScope is what
 		// production passes for the operator's own namespace.
-		Cache: CacheScope("default"),
+		Cache:   CacheScope("default"),
+		Metrics: metricsserver.Options{BindAddress: "0"},
 	})
 	if err != nil {
 		t.Fatalf("new manager: %v", err)
@@ -181,7 +183,11 @@ func TestCanaryRecoversFromExternalLeaseDeletion(t *testing.T) {
 	scheme := clientgoscheme.Scheme
 	utilruntime.Must(corev1.AddToScheme(scheme))
 
-	mgr, err := ctrl.NewManager(cfg, ctrl.Options{Scheme: scheme, Cache: CacheScope("default")})
+	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
+		Scheme:  scheme,
+		Cache:   CacheScope("default"),
+		Metrics: metricsserver.Options{BindAddress: "0"},
+	})
 	if err != nil {
 		t.Fatalf("new manager: %v", err)
 	}
