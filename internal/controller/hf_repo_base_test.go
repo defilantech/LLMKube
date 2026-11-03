@@ -407,3 +407,12 @@ func TestReconcile_RuntimeResolvedRepoIDSizeUnset(t *testing.T) {
 		t.Errorf("status.size = %q, want it unset for a Model the controller never sized", stored.Status.Size)
 	}
 }
+
+func containsString(values []string, needle string) bool {
+	for _, value := range values {
+		if value == needle {
+			return true
+		}
+	}
+	return false
+}

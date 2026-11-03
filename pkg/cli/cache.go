@@ -81,6 +81,9 @@ Examples:
   # Clear a specific cached model by name
   llmkube cache clear --model llama-3.1-8b
 
+  # Show files no Model lists any more in multi-file entries
+  llmkube cache prune --dry-run
+
   # Pre-download a catalog model to the cache
   llmkube cache preload llama-3.1-8b
 `,
@@ -88,6 +91,7 @@ Examples:
 
 	cmd.AddCommand(newCacheListCommand())
 	cmd.AddCommand(newCacheClearCommand())
+	cmd.AddCommand(newCachePruneCommand())
 	cmd.AddCommand(newCachePreloadCommand())
 	cmd.AddCommand(NewCachePrepCommand())
 

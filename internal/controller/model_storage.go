@@ -36,6 +36,7 @@ import (
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 	"github.com/defilantech/llmkube/pkg/cachekey"
+	"github.com/defilantech/llmkube/pkg/fileset"
 )
 
 // Model storage wiring. The controller has three paths for making a model
@@ -1243,7 +1244,7 @@ func resolveHFSourceURL(source string) string {
 // hasMultiFileStaging reports whether the model uses multi-file staging via
 // spec.files or spec.mmproj.
 func hasMultiFileStaging(model *inferencev1alpha1.Model) bool {
-	return model != nil && (len(model.Spec.Files) > 0 || model.Spec.Mmproj != "")
+	return fileset.HasMultiFileStaging(model)
 }
 
 // effectiveModelCacheKey returns the key used to namespace a model's
@@ -1292,60 +1293,21 @@ func stagedFileNamesFromPlan(model *inferencev1alpha1.Model, plan *StagingPlan) 
 
 // modelStagingPlan resolves the model's declared files into a staging plan.
 // Returns nil when there is no multi-file staging. Returns an error when
-// multi-file fields are set but resolution fails (fail-closed).
+// multi-file fields are set but resolution fails (fail-closed). It is
+// fileset.ModelPlan, which `llmkube cache prune` calls too (#2170).
 func modelStagingPlan(model *inferencev1alpha1.Model) (*StagingPlan, error) {
-	if !hasMultiFileStaging(model) {
-		return nil, nil
-	}
-	files, err := stagedFileEntries(model)
-	if err != nil {
-		return nil, fmt.Errorf("invalid fileset: %w", err)
-	}
-	plan, err := ResolveFileSet(files, model.Spec.Mmproj, nil)
-	if err != nil {
-		return nil, fmt.Errorf("invalid fileset: %w", err)
-	}
-	if plan == nil || plan.Primary == "" {
-		return nil, nil
-	}
-	return plan, nil
+	return fileset.ModelPlan(model)
 }
 
 // errStagedFilesNotCurrent reports a glob in spec.files whose expansion the
-// Model controller has not recorded for the current generation. It is the one
-// staging error whose cause is not in spec.files, so the generated init
-// container names the Model's status instead of blaming the file list.
-var errStagedFilesNotCurrent = errors.New("staged files are not current for the Model's generation")
+// Model controller has not recorded for the current generation.
+var errStagedFilesNotCurrent = fileset.ErrStagedFilesNotCurrent
 
 // stagedFileEntries returns the file entries to stage: spec.files as written,
 // or, when it holds a glob, the expansion the Model controller recorded in
-// status.stagedFiles. The expansion is trusted only for the current generation;
-// one written for an older spec would stage the wrong set.
+// status.stagedFiles for the current generation.
 func stagedFileEntries(model *inferencev1alpha1.Model) ([]string, error) {
-	if !filesHaveGlob(model.Spec.Files) {
-		return model.Spec.Files, nil
-	}
-	gen, ok := availableObservedGeneration(model)
-	if len(model.Status.StagedFiles) == 0 || !ok || gen != model.Generation {
-		return nil, fmt.Errorf("%w: spec.files has a glob and the Model has not recorded its expansion for generation %d",
-			errStagedFilesNotCurrent, model.Generation)
-	}
-	entries := append([]string(nil), model.Status.StagedFiles...)
-	for _, entry := range model.Spec.Files {
-		if !strings.Contains(entry, "://") {
-			continue
-		}
-		name, err := fileEntryPath(entry)
-		if err != nil {
-			return nil, err
-		}
-		for i, staged := range entries {
-			if staged == name {
-				entries[i] = entry
-			}
-		}
-	}
-	return entries, nil
+	return fileset.StagedEntries(model)
 }
 
 // invalidFileSetInitContainer returns an init container that immediately exits
