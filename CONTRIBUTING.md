@@ -258,6 +258,17 @@ git diff --exit-code  # Should be no changes
   `Phase == "Ready"`. The rule, and how to prove an assertion bites, are in
   [AGENTS.md](AGENTS.md) under "Definition of done".
 
+### A test flaked
+
+When a test fails and then passes on a re-run of the same commit, don't only
+re-run it: comment on its open
+[`flaky-test`](https://github.com/defilantech/LLMKube/issues?q=is%3Aissue+is%3Aopen+label%3Aflaky-test)
+issue with the run link, or open one titled `[FLAKY] <TestName> (<package>)`.
+The flake ledger (`.github/workflows/flake-ledger.yml`) does the same daily for
+failures on `main` and passes on a re-run; two of our worst flakes were product
+bugs. A test that flakes on `main` twice in a week is fixed, or quarantined
+(skipped with the issue number in the skip message), within a week.
+
 ### Adding entry to model catalog
 
 The model catalog is at the canonical location `catalog/catalog.yaml`. You can edit it

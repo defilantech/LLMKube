@@ -1,0 +1,22 @@
+mkdir -p /home/runner/work/LLMKube/LLMKube/bin
+Downloading sigs.k8s.io/controller-tools/cmd/controller-gen@v0.23.0
+{"Time":"2026-11-03T03:09:29.52208161Z","Action":"start","Package":"github.com/defilantech/llmkube/internal/controller"}
+{"Time":"2026-11-03T03:10:11.754152285Z","Action":"start","Package":"github.com/defilantech/llmkube/pkg/agent/policy"}
+{"Time":"2026-11-03T03:10:11.793025981Z","Action":"output","Package":"github.com/defilantech/llmkube/pkg/agent/policy","Output":"PASS\n","OutputType":"frame"}
+{"Time":"2026-11-03T03:10:11.79303163Z","Action":"output","Package":"github.com/defilantech/llmkube/pkg/agent/policy","Output":"coverage: 96.4% of statements\n"}
+{"Time":"2026-11-03T03:10:11.794582238Z","Action":"output","Package":"github.com/defilantech/llmkube/pkg/agent/policy","Output":"ok  \tgithub.com/defilantech/llmkube/pkg/agent/policy\t0.040s\tcoverage: 96.4% of statements\n"}
+{"Time":"2026-11-03T03:10:11.812777567Z","Action":"pass","Package":"github.com/defilantech/llmkube/pkg/agent/policy","Elapsed":0.059}
+{"Time":"2026-11-03T03:10:13.10732315Z","Action":"run","Package":"github.com/defilantech/llmkube/internal/controller","Test":"TestMetalNodeLeaseEventReachesItsMetalNode"}
+{"Time":"2026-11-03T03:10:13.107346284Z","Action":"output","Package":"github.com/defilantech/llmkube/internal/controller","Test":"TestMetalNodeLeaseEventReachesItsMetalNode","Output":"=== RUN   TestMetalNodeLeaseEventReachesItsMetalNode\n","OutputType":"frame"}
+{"Time":"2026-11-03T03:10:43.213064004Z","Action":"output","Package":"github.com/defilantech/llmkube/internal/controller","Test":"TestMetalNodeLeaseEventReachesItsMetalNode","Output":"    metalnode_controller_test.go:724: AgentConnected reason = \"\" before the Lease exists, want LeaseNotFound\n","OutputType":"error"}
+{"Time":"2026-11-03T03:10:43.213138175Z","Action":"output","Package":"github.com/defilantech/llmkube/internal/controller","Test":"TestMetalNodeLeaseEventReachesItsMetalNode","Output":"    metalnode_controller_test.go:689: manager exited with an error: failed to start metrics server: failed to create listener: listen tcp :8080: bind: address already in use\n","OutputType":"error"}
+{"Time":"2026-11-03T03:10:43.213150233Z","Action":"output","Package":"github.com/defilantech/llmkube/internal/controller","Test":"TestMetalNodeLeaseEventReachesItsMetalNode","Output":"--- FAIL: TestMetalNodeLeaseEventReachesItsMetalNode (30.11s)\n","OutputType":"frame"}
+{"Time":"2026-11-03T03:10:43.213153989Z","Action":"fail","Package":"github.com/defilantech/llmkube/internal/controller","Test":"TestMetalNodeLeaseEventReachesItsMetalNode","Elapsed":30.11}
+{"Time":"2026-11-03T03:17:01.472132411Z","Action":"run","Package":"github.com/defilantech/llmkube/internal/controller","Test":"TestGenuinelyPinnedVolumeIsNotReclassified"}
+{"Time":"2026-11-03T03:17:01.472134494Z","Action":"output","Package":"github.com/defilantech/llmkube/internal/controller","Test":"TestGenuinelyPinnedVolumeIsNotReclassified","Output":"=== RUN   TestGenuinelyPinnedVolumeIsNotReclassified\n","OutputType":"frame"}
+{"Time":"2026-11-03T03:17:01.472402676Z","Action":"output","Package":"github.com/defilantech/llmkube/internal/controller","Test":"TestGenuinelyPinnedVolumeIsNotReclassified","Output":"--- PASS: TestGenuinelyPinnedVolumeIsNotReclassified (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-03T03:17:01.472438921Z","Action":"pass","Package":"github.com/defilantech/llmkube/internal/controller","Test":"TestGenuinelyPinnedVolumeIsNotReclassified","Elapsed":0}
+{"Time":"2026-11-03T03:17:01.472442866Z","Action":"output","Package":"github.com/defilantech/llmkube/internal/controller","Output":"FAIL\n","OutputType":"frame"}
+{"Time":"2026-11-03T03:17:01.483619426Z","Action":"output","Package":"github.com/defilantech/llmkube/internal/controller","Output":"coverage: 90.7% of statements\n"}
+{"Time":"2026-11-03T03:17:06.034067538Z","Action":"output","Package":"github.com/defilantech/llmkube/internal/controller","Output":"FAIL\tgithub.com/defilantech/llmkube/internal/controller\t456.511s\n","OutputType":"frame"}
+{"Time":"2026-11-03T03:17:06.034101869Z","Action":"fail","Package":"github.com/defilantech/llmkube/internal/controller","Elapsed":456.512}
