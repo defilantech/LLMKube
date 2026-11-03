@@ -748,6 +748,10 @@ func applyCatalogDefaults(opts *deployOptions, catalogModel *Model) error {
 			return fmt.Errorf("catalog tensor_parallel_size requires at least %d GPUs", *tp)
 		}
 	}
+	if (catalogRuntime == "vllm" || catalogRuntime == "sglang") && (!opts.gpu || opts.gpuCount < 1) {
+		return fmt.Errorf("%s catalog entry requires at least one GPU; cannot disable GPU allocation", catalogRuntime)
+	}
+
 	if !opts.specified["extra-args"] {
 		opts.extraArgs = append([]string(nil), catalogModel.ExtraArgs...)
 	}

@@ -321,7 +321,8 @@ func runContextSweep(ctx context.Context, opts *benchmarkOptions) error {
 	}
 
 	if catalogModel.Runtime != "" && catalogModel.Runtime != "llamacpp" {
-		return fmt.Errorf("catalog context sweeps only support llamacpp")
+		return fmt.Errorf(
+			"catalog context sweeps only support llamacpp; deploy %s and benchmark its endpoint instead", modelID)
 	}
 	k8sClient, err := initK8sClient()
 	if err != nil {

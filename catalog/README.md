@@ -34,8 +34,14 @@ parallel settings, and runtime-specific context limit. The controller selects
 the default runtime image; `--image` overrides it. The served name uses
 `--served-model-name` in `extraArgs`.
 
-Explicit `--gpu`, `--gpu-count`, and `--format` values override catalog defaults;
-GPU counts below the tensor parallel size are rejected. `--extra-args` replaces
+Runtime image selection also applies to non-catalog deployments using `--source`
+with `--runtime vllm` or `--runtime sglang`: the CLI leaves `spec.image` unset
+unless `--image` is supplied, so the controller uses the backend's default image.
+
+vLLM/SGLang entries require a `gpu` block with `count >= 1`. These catalog
+deployments reject `--gpu=false` and `--gpu-count=0` because their default images
+require CUDA. Explicit `--gpu-count` and `--format` values override catalog
+defaults; GPU counts below the tensor parallel size are rejected. `--extra-args` replaces
 the catalog argument list, and an explicit served-name argument wins. A vLLM or
 SGLang entry cannot be switched to another runtime with `--runtime`: its parser
 names and arguments belong to its declared runtime. Use an explicit `--source`

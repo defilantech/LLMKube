@@ -51,6 +51,20 @@ type CatalogValidation struct {
 }
 
 type Model struct {
+	Name         string       `yaml:"name"`
+	Description  string       `yaml:"description"`
+	Size         string       `yaml:"size"`
+	Quantization string       `yaml:"quantization"`
+	Source       string       `yaml:"source"`
+	ContextSize  int          `yaml:"context_size"`
+	GPULayers    int32        `yaml:"gpu_layers"`
+	UseCases     []string     `yaml:"use_cases"`
+	Resources    ResourceSpec `yaml:"resources"`
+	VRAMEstimate string       `yaml:"vram_estimate"`
+	Tags         []string     `yaml:"tags"`
+	Homepage     string       `yaml:"homepage"`
+	Notes        string       `yaml:"notes,omitempty"`
+
 	Runtime         string             `yaml:"runtime"`
 	Files           []string           `yaml:"files"`
 	GPU             *CatalogGPU        `yaml:"gpu"`
@@ -58,22 +72,14 @@ type Model struct {
 	Parsers         *CatalogParsers    `yaml:"parsers"`
 	ExtraArgs       []string           `yaml:"extra_args"`
 	Validated       *CatalogValidation `yaml:"validated"`
-	Name            string             `yaml:"name"`
-	Description     string             `yaml:"description"`
-	Size            string             `yaml:"size"`
-	Quantization    string             `yaml:"quantization"`
-	Source          string             `yaml:"source"`
-	ContextSize     int                `yaml:"context_size"`
-	GPULayers       int32              `yaml:"gpu_layers"`
-	UseCases        []string           `yaml:"use_cases"`
-	Resources       ResourceSpec       `yaml:"resources"`
-	VRAMEstimate    string             `yaml:"vram_estimate"`
-	Tags            []string           `yaml:"tags"`
-	Homepage        string             `yaml:"homepage"`
-	Notes           string             `yaml:"notes,omitempty"`
 }
 
-func (m *Model) UnmarshalYAML(node *yaml.Node) error {
+func (m *Model) UnmarshalYAML(node *yaml.Node) (err error) {
+	defer func() {
+		if err != nil {
+			err = fmt.Errorf("catalog entry at line %d: %w", node.Line, err)
+		}
+	}()
 	type plainModel Model
 	var decoded plainModel
 	if err := node.Decode(&decoded); err != nil {
@@ -96,6 +102,9 @@ func (m *Model) UnmarshalYAML(node *yaml.Node) error {
 		}
 		if len(m.Files) == 0 {
 			return fmt.Errorf("%s catalog entry requires files", m.Runtime)
+		}
+		if m.GPU == nil {
+			return fmt.Errorf("%s catalog entry requires gpu with count >= 1", m.Runtime)
 		}
 	default:
 		return fmt.Errorf("unsupported catalog runtime %q", m.Runtime)

@@ -673,6 +673,17 @@ func TestResolveAcceleratorAndImage(t *testing.T) {
 			wantVendor: "intel",
 			wantImage:  "ghcr.io/ggml-org/llama.cpp:server-intel",
 		},
+
+		{
+			name:      "non-catalog vllm leaves image selection to controller",
+			opts:      &deployOptions{runtime: "vllm", gpu: true, gpuVendor: defaultGPUVendor},
+			wantAccel: "cuda", wantVendor: defaultGPUVendor,
+		},
+		{
+			name:      "non-catalog sglang leaves image selection to controller",
+			opts:      &deployOptions{runtime: "sglang", gpu: true, gpuVendor: defaultGPUVendor},
+			wantAccel: "cuda", wantVendor: defaultGPUVendor,
+		},
 		{
 			name: "cpu defaults",
 			opts: &deployOptions{
@@ -1113,7 +1124,7 @@ func TestCatalogRuntimeBenchmarkRejection(t *testing.T) {
 		t.Fatalf("catalog benchmark rejection = %v", err)
 	}
 	err := runContextSweep(context.Background(), &benchmarkOptions{catalog: "test", contextSweep: "1024,2048"})
-	if err == nil || !strings.Contains(err.Error(), "only support llamacpp") {
+	if err == nil || !strings.Contains(err.Error(), "deploy test and benchmark its endpoint instead") {
 		t.Fatalf("context sweep rejection = %v", err)
 	}
 }
@@ -1153,4 +1164,53 @@ func assertCatalogPreload(t *testing.T, k8s client.Client, namespace string, fil
 		t.Fatal(err)
 	}
 
+}
+
+func TestCatalogDeployRejectsCPU(t *testing.T) {
+	cfg := cacheListEnvtest(t)
+	pointKubeconfigAt(t, cfg)
+	if err := inferencev1alpha1.AddToScheme(scheme.Scheme); err != nil {
+		t.Fatal(err)
+	}
+	k8s, err := client.New(cfg, client.Options{Scheme: scheme.Scheme})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "catalog-gpu-required-"}}
+	if err := k8s.Create(ctx, ns); err != nil {
+		t.Fatal(err)
+	}
+	old := catalogInstance
+	t.Cleanup(func() { catalogInstance = old; _ = k8s.Delete(ctx, ns) })
+	catalogInstance = &Catalog{Models: map[string]Model{}}
+	for _, runtime := range []string{"vllm", "sglang"} {
+		catalogInstance.Models[runtime] = Model{
+			Runtime: runtime, Source: "org/model", Files: []string{"weights.safetensors"},
+			GPU: &CatalogGPU{Count: 1}, Resources: ResourceSpec{CPU: "2", Memory: "4Gi"},
+		}
+		for _, flag := range []string{"--gpu=false", "--gpu-count=0"} {
+			t.Run(runtime+"/"+flag, func(t *testing.T) {
+				cmd := NewDeployCommand()
+				cmd.SetArgs([]string{runtime, "-n", ns.Name, "--wait=false", flag})
+				if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "requires at least one GPU") {
+					t.Errorf("CPU deployment error = %v", err)
+				}
+			})
+		}
+	}
+	var models inferencev1alpha1.ModelList
+	if err := k8s.List(ctx, &models, client.InNamespace(ns.Name)); err != nil {
+		t.Fatal(err)
+	}
+	if len(models.Items) != 0 {
+		t.Errorf("rejected deploys created %d Models", len(models.Items))
+	}
+	var services inferencev1alpha1.InferenceServiceList
+	if err := k8s.List(ctx, &services, client.InNamespace(ns.Name)); err != nil {
+		t.Fatal(err)
+	}
+	if len(services.Items) != 0 {
+		t.Errorf("rejected deploys created %d InferenceServices", len(services.Items))
+	}
 }
