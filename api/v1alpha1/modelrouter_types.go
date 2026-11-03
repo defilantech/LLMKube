@@ -187,8 +187,8 @@ type ModelRouterSpec struct {
 	Endpoint *EndpointSpec `json:"endpoint,omitempty"`
 
 	// Proxy configures the managed router-proxy Deployment (replicas,
-	// image override for air-gapped sites, resources). Sensible defaults
-	// apply when omitted.
+	// image override for air-gapped sites, resources) and the name of its
+	// Service. Sensible defaults apply when omitted.
 	// +optional
 	Proxy *RouterProxySpec `json:"proxy,omitempty"`
 
@@ -770,8 +770,31 @@ type AuditLogPolicy struct {
 	CallerHeader string `json:"callerHeader,omitempty"`
 }
 
-// RouterProxySpec overrides the managed router-proxy Deployment.
+// RouterProxySpec overrides the managed router-proxy Deployment and names its
+// data-plane Service.
 type RouterProxySpec struct {
+	// ServiceName names the data-plane Service in front of the router-proxy
+	// pods, so clients can use a short in-cluster URL such as
+	// http://llmkube.<namespace>.svc.cluster.local/v1 (with endpoint.port 80).
+	// Unset keeps the generated name, <router>-router-proxy. Only that Service
+	// takes this name: the Deployment, ConfigMap, admin Service
+	// (<router>-router-proxy-admin), pod labels, and selectors keep their
+	// generated names, so changing it does not roll the proxy pods.
+	// status.endpoint follows the Service.
+	//
+	// A Service with this name that this ModelRouter does not control is never
+	// adopted or overwritten: the router reports RouterProxyNameTaken and keeps
+	// its previous Service. When the name changes (including back to unset),
+	// the previous Service this ModelRouter controls is deleted only after the
+	// new one exists. Clients of the old name must move, and a NodePort the
+	// cluster allocated or a LoadBalancer address is reassigned (a pinned
+	// endpoint.nodePort is carried over). Must be a DNS-1035 label and must not
+	// equal the admin Service's name. Ignored unless dataPlane is Proxy.
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z]([-a-z0-9]*[a-z0-9])?$`
+	// +optional
+	ServiceName string `json:"serviceName,omitempty"`
+
 	// Replicas is the desired number of router-proxy pods. Defaults to 1.
 	// The proxy is stateless for routing decisions; budget and SLO
 	// counters live in memory and reset on pod restart until the

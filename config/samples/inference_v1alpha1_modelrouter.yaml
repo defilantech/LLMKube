@@ -112,3 +112,4 @@ spec:
     replicas: 1
     # image: registry.internal/llmkube-router-proxy:v0.8.0
     # drainTimeout: 600s  # sets --shutdown-timeout and the pod grace period (+5s margin)
+    # serviceName: llmkube  # names the Service; the endpoint becomes http://llmkube.<ns>.svc.cluster.local:8080/...

@@ -83,8 +83,28 @@ func validateModelRouter(mr *inferencev1alpha1.ModelRouter) []ModelRouterValidat
 	errs = append(errs, ruleErrs...)
 	errs = append(errs, validateBudgets(spec, ruleNames)...)
 	errs = append(errs, validateAuditLog(spec)...)
+	errs = append(errs, validateProxyServiceName(mr)...)
 
 	return errs
+}
+
+// validateProxyServiceName rejects a spec.proxy.serviceName equal to the
+// router's own admin Service name, the one collision the ownership gate
+// cannot catch: both Services are controlled by this router, so each
+// reconcile would rewrite one as the other. The CRD schema already enforces
+// the DNS-1035 shape; any other taken name is a RouterProxyNameTaken refusal
+// at reconcile time, not a spec error.
+func validateProxyServiceName(mr *inferencev1alpha1.ModelRouter) []ModelRouterValidationError {
+	if mr.Spec.Proxy == nil || mr.Spec.Proxy.ServiceName == "" {
+		return nil
+	}
+	if admin := routerProxyAdminResourceName(mr.Name); mr.Spec.Proxy.ServiceName == admin {
+		return []ModelRouterValidationError{{
+			Field:   "spec.proxy.serviceName",
+			Message: fmt.Sprintf("%q is this router's admin Service; choose another name", admin),
+		}}
+	}
+	return nil
 }
 
 // validateAuditLog checks the client attribution settings in

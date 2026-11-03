@@ -62,6 +62,18 @@ func routerProxyResourceName(modelRouterName string) string {
 	return sanitizeDNSName(modelRouterName) + "-router-proxy"
 }
 
+// routerProxyServiceName is the data-plane Service's name:
+// spec.proxy.serviceName when set (#2279), otherwise the generated
+// routerProxyResourceName. Only that Service takes the custom name; every
+// other router-proxy object, the pod labels, and the selectors keep the
+// generated one, so a rename never touches the pods.
+func routerProxyServiceName(mr *inferencev1alpha1.ModelRouter) string {
+	if mr.Spec.Proxy != nil && mr.Spec.Proxy.ServiceName != "" {
+		return mr.Spec.Proxy.ServiceName
+	}
+	return routerProxyResourceName(mr.Name)
+}
+
 // routerProxyAdminResourceName is the Service that carries the proxy's
 // metrics/admin listener. It is separate from the data-plane Service so the
 // admin endpoint stays ClusterIP regardless of spec.endpoint.type.
