@@ -409,7 +409,7 @@ func prefetchFingerprint(model *inferencev1alpha1.Model, plan *StagingPlan) stri
 	_, _ = fmt.Fprintf(h, "%s\n", effectiveModelCacheKey(model))
 	_, _ = fmt.Fprintf(h, "sha256=%s\n", strings.ToLower(model.Spec.SHA256))
 	if plan != nil {
-		for _, f := range plan.entries() {
+		for _, f := range plan.Entries() {
 			_, _ = fmt.Fprintf(h, "%s\n", f)
 		}
 	}
@@ -455,7 +455,7 @@ func prefetchJobModel(model *inferencev1alpha1.Model, plan *StagingPlan) *infere
 	jobModel := model.DeepCopy()
 	seedPrefetchCacheKey(jobModel)
 	if plan != nil {
-		jobModel.Spec.Files = plan.entries()
+		jobModel.Spec.Files = plan.Entries()
 	}
 	return jobModel
 }

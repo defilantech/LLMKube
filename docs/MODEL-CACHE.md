@@ -899,6 +899,90 @@ until it restarts; the next start re-downloads.
 `perService` `<isvc>-model-cache` is owner-ref'd to the InferenceService, so the
 delete reports that the claim goes with the service instead of purging it.
 
+### Prune Files Dropped From `spec.files`
+
+A Model with `spec.files` is cached in a directory keyed on its source, so
+editing the list (switching a quantization, fixing a glob, dropping a
+subdirectory) keeps the directory, downloads the new files into it and leaves
+the old ones behind. Neither `cache list` nor `cache clear --orphaned` sees
+them, because the entry is still in use. `cache prune` removes them:
+
+```bash
+# Show what would be removed
+llmkube cache prune --dry-run -n <namespace>
+
+# Prune one Model's entry, asking before removing anything
+llmkube cache prune --model <name> -n <namespace>
+
+# Prune every multi-file entry without confirmation
+llmkube cache prune --force -n <namespace>
+```
+
+Output:
+```
+Cache PVC llmkube-model-cache:
+  33abf5d8d96edfa2 (Models: ltx-video, ltx-video-fp8)
+    remove    12.3 GiB  transformer/diffusion_pytorch_model-bf16.safetensors
+    keep 9 listed (31.0 GiB) and 14 staging bookkeeping
+
+Remove 1 file (12.3 GiB)? [y/N]
+```
+
+What it keeps:
+
+- **The union of every Model using the entry.** Two Models with the same
+  `spec.source` and different `files:` lists share one directory, so a file is
+  removed only when no Model resolving to that cache key lists it. Each Model's
+  `spec.files` and `spec.mmproj` are resolved by the same code staging uses
+  (`fileset.ModelPlan`): a glob counts through the expansion the Model
+  recorded in `status.stagedFiles` for its current generation, and an
+  explicit file URL through the name it is staged under.
+- **Files a pod or a prefetch still expects.** The `MODEL_FILES` of every live
+  pod's staging init container on the claim, and the `files` a Model's
+  `status.prefetch` records for the entry, are kept too: a pod started on the
+  old list, or one verifying a prefetched claim, still needs them.
+- **Staging's own bookkeeping, always**: `<file>.sha256` stamps,
+  `<file>.<digest>.sha256-rejected` markers, `<file>.llmkube-size` records,
+  resume partials (`*.tmp`), the temp files of the atomic writer
+  (`*.llmkube-tmp.XXXXXX` and the older `*.llmkube-size.XXXXXX`,
+  `*.sha256-rejected.XXXXXX`, `*.sha256.XXXXXX`), the
+  `.llmkube-download.lock` lockfile, and any other `*.llmkube-*` name. The
+  list lives in `pkg/fileset` and a controller test fails when the staging
+  scripts write a name it does not match. A dropped file's stamp and size
+  record stay behind; they are a few bytes each, and staging rewrites them if
+  the file comes back.
+
+What it leaves alone, with the reason printed:
+
+- An entry a pod's downloader is staging into, waiting to stage into, or
+  retrying (an init container on the claim that has not finished), and an
+  entry whose `.llmkube-download.lock` another process holds. The removal
+  itself runs while holding that lock, so a staging pod that starts meanwhile
+  waits for it. On a FUSE cache staging takes no lock, so the pod check is
+  the only guard there.
+- An entry a single-file Model also uses, and an entry with a Model whose file
+  list cannot be resolved (a glob the Model has not expanded for its current
+  generation yet). Only multi-file entries are in scope: single-file entries
+  and entries no Model uses are never touched (`cache clear --orphaned` is
+  for the latter).
+
+The command prints every file and its size before it removes anything, asks
+for confirmation unless `--force` is given, and reads the Models and pods again
+after you confirm, so a file a Model started listing in the meantime is kept.
+It removes regular files only, never follows a symlink, removes a directory
+only when the prune emptied it, and fails if a file it reported is still
+there.
+
+It reads and removes through the same short-lived purge pod as `cache clear`,
+mounted read-write and placed like the `cache list` inspector: on the node of a
+pod that holds a `ReadWriteOnce` claim, with that pod's tolerations, since an
+entry in scope is in use. A `ReadWriteOncePod` claim a serving pod holds cannot
+be pruned while it serves. The image (`--cache-image` or `LLMKUBE_CACHE_IMAGE`)
+also needs `find`, `stat -c` and `flock`, which busybox has. Without `--model`
+it covers every cache claim in the namespace: the shared claim, labeled
+`<isvc>-model-cache` claims and every `spec.modelCache.claimName`; `--model`
+narrows it to that Model's entry on the claims `cache clear --model` would use.
+
 ### Preload Models
 
 Pre-download models before deploying them:
@@ -1011,6 +1095,11 @@ If the cache PVC runs out of space:
 2. Clear unused models:
    ```bash
    llmkube cache clear --orphaned -n <namespace>
+   ```
+   Then remove files dropped from the `spec.files` of multi-file Models:
+   ```bash
+   llmkube cache prune --dry-run -n <namespace>
+   llmkube cache prune -n <namespace>
    ```
    Then, if that is not enough, a specific model:
    ```bash
