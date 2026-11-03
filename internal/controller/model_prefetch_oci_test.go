@@ -17,9 +17,11 @@ limitations under the License.
 package controller
 
 import (
+	"archive/tar"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -27,13 +29,18 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/registry"
+	"github.com/google/go-containerregistry/pkg/v1/remote"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 	"github.com/defilantech/llmkube/internal/ocipublish"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -559,5 +566,275 @@ func TestOCIPrefetchLayerLimitAfterGlobExpansion(t *testing.T) {
 	}
 	if model.Status.PrefetchOCI == nil || !strings.Contains(model.Status.PrefetchOCI.Message, "at most 64 files") {
 		t.Fatalf("expanded layer limit not reported: %+v", model.Status)
+	}
+}
+
+// Re-stamping OCI conditions or setting Running before reading a terminal Job
+// must not turn a steady publication into another status write.
+func TestOCIPrefetchStableStatus(t *testing.T) {
+	for _, phase := range []string{"Running", "Succeeded", "Failed", "missing-digest", "invalid-spec"} {
+		t.Run(phase, func(t *testing.T) {
+			r, model := ociPrefetchFixture(t)
+			ctx := context.Background()
+			c, _, _ := sharedTestEnv(t, "../../config/crd/bases")
+			r.Client = c
+			model.Namespace, model.UID, model.ResourceVersion = testNS, "", ""
+			if err := r.Create(ctx, model); err != nil {
+				t.Fatal(err)
+			}
+			reconcile := func() {
+				t.Helper()
+				if _, _, err := r.reconcilePrefetch(ctx, model); err != nil {
+					t.Fatal(err)
+				}
+				if err := r.Get(ctx, client.ObjectKeyFromObject(model), model); err != nil {
+					t.Fatal(err)
+				}
+			}
+			reconcile()
+			job := &batchv1.Job{}
+			if err := r.Get(ctx, client.ObjectKey{Namespace: model.Namespace, Name: model.Status.PrefetchOCI.JobName}, job); err != nil {
+				t.Fatal(err)
+			}
+			switch phase {
+			case "Succeeded":
+				model.Status.PrefetchOCI.Phase = phase
+				model.Status.PrefetchOCI.Image = "oci://registry.example.com/models/test@sha256:" + strings.Repeat("a", 64)
+				if err := r.Status().Update(ctx, model); err != nil {
+					t.Fatal(err)
+				}
+			case "Failed", "missing-digest":
+				typ, target := batchv1.JobFailed, batchv1.JobFailureTarget
+				now := metav1.Now()
+				job.Status.StartTime = &now
+				if phase == "missing-digest" {
+					typ, target = batchv1.JobComplete, batchv1.JobSuccessCriteriaMet
+					job.Status.CompletionTime = &now
+					job.Status.Succeeded = 1
+				}
+				job.Status.Conditions = []batchv1.JobCondition{{Type: target, Status: corev1.ConditionTrue}, {Type: typ, Status: corev1.ConditionTrue}}
+				if err := r.Status().Update(ctx, job); err != nil {
+					t.Fatal(err)
+				}
+			case "invalid-spec":
+				model.Spec.PrefetchOCI.Image = "invalid"
+				if err := r.Update(ctx, model); err != nil {
+					t.Fatal(err)
+				}
+			}
+			reconcile()
+			version := model.ResourceVersion
+			time.Sleep(time.Second)
+			reconcile()
+			if model.ResourceVersion != version {
+				t.Fatalf("steady %s publication rewrote status: ResourceVersion %s -> %s", phase, version, model.ResourceVersion)
+			}
+		})
+	}
+}
+
+// A listing outage must not invoke the destructive invalid-spec failure path.
+func TestOCIPrefetchListingFailurePreservesPublication(t *testing.T) {
+	for _, succeeded := range []bool{false, true} {
+		t.Run(fmt.Sprint(succeeded), func(t *testing.T) {
+			r, model := ociPrefetchFixture(t)
+			r.AllowedRemoteHosts = []string{"127.0.0.1"}
+			broken := false
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if broken {
+					http.Error(w, "unavailable", http.StatusInternalServerError)
+					return
+				}
+				_, _ = fmt.Fprint(w, `[{"type":"file","path":"weights.gguf","size":1}]`)
+			}))
+			defer server.Close()
+			ctx := context.Background()
+			model.Spec.Source = "hf://org/model"
+			model.Spec.Files = []string{"*.gguf"}
+			model.Spec.SourceSecretRef = &corev1.LocalObjectReference{Name: "source"}
+			secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "source", Namespace: model.Namespace}, Data: map[string][]byte{"HF_ENDPOINT": []byte(server.URL)}}
+			if err := r.Create(ctx, secret); err != nil {
+				t.Fatal(err)
+			}
+			if err := r.Update(ctx, model); err != nil {
+				t.Fatal(err)
+			}
+			reconcile := func() {
+				t.Helper()
+				if _, _, err := r.reconcilePrefetch(ctx, model); err != nil {
+					t.Fatal(err)
+				}
+				if err := r.Get(ctx, client.ObjectKeyFromObject(model), model); err != nil {
+					t.Fatal(err)
+				}
+			}
+			reconcile()
+			if succeeded {
+				model.Status.PrefetchOCI.Phase = inferencev1alpha1.PrefetchPhaseSucceeded
+				model.Status.PrefetchOCI.Image = "oci://registry.example.com/models/test@sha256:" + strings.Repeat("a", 64)
+				if err := r.Status().Update(ctx, model); err != nil {
+					t.Fatal(err)
+				}
+				reconcile()
+				model.Generation++
+				model.Spec.PrefetchTolerations = []corev1.Toleration{{Key: "test", Operator: corev1.TolerationOpExists}}
+				if err := r.Update(ctx, model); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := model.Status.PrefetchOCI.DeepCopy()
+			broken = true
+			reconcile()
+			if !equality.Semantic.DeepEqual(before, model.Status.PrefetchOCI) {
+				t.Fatalf("listing failure changed publication: before=%+v after=%+v", before, model.Status.PrefetchOCI)
+			}
+			job := &batchv1.Job{}
+			if err := r.Get(ctx, client.ObjectKey{Namespace: model.Namespace, Name: before.JobName}, job); err != nil {
+				t.Fatalf("listing failure removed Job: %v", err)
+			}
+			if !job.DeletionTimestamp.IsZero() {
+				t.Fatal("listing failure deleted Job")
+			}
+			if !meta.IsStatusConditionTrue(model.Status.Conditions, ConditionDegraded) {
+				t.Fatal("listing failure not reported")
+			}
+			version := model.ResourceVersion
+			reconcile()
+			if version != model.ResourceVersion {
+				t.Fatal("repeated listing failure rewrote status")
+			}
+			broken = false
+			reconcile()
+			if meta.IsStatusConditionTrue(model.Status.Conditions, ConditionDegraded) {
+				t.Fatal("listing recovery left Model degraded")
+			}
+			if succeeded && model.Status.PrefetchOCI.Image != before.Image {
+				t.Fatal("listing recovery lost published image")
+			}
+		})
+	}
+}
+
+func TestOCIPrefetchInvalidFileManifest(t *testing.T) {
+	r, model := ociPrefetchFixture(t)
+	ctx := context.Background()
+	if _, _, err := r.reconcilePrefetch(ctx, model); err != nil {
+		t.Fatal(err)
+	}
+	job := &batchv1.Job{}
+	key := client.ObjectKey{Namespace: model.Namespace, Name: model.Status.PrefetchOCI.JobName}
+	if err := r.Get(ctx, key, job); err != nil {
+		t.Fatal(err)
+	}
+	job.Annotations[annotationOCIFiles] = "not-json"
+	if err := r.Update(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := r.reconcilePrefetch(ctx, model); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(model), model); err != nil {
+		t.Fatal(err)
+	}
+	condition := meta.FindStatusCondition(model.Status.Conditions, ConditionAvailable)
+	if model.Status.Phase != PhaseFailed || condition == nil || condition.Reason != "InvalidOCIPrefetchResult" {
+		t.Fatalf("invalid manifest not rejected: %+v", model.Status)
+	}
+	if err := r.Get(ctx, key, job); err == nil && job.DeletionTimestamp.IsZero() {
+		t.Fatal("invalid Job not deleted")
+	} else if client.IgnoreNotFound(err) != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestOCIPrefetchMixedURLs(t *testing.T) {
+	requireInitShellEnvironment(t)
+	r, model := ociPrefetchFixture(t)
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		_, _ = fmt.Fprint(w, req.URL.Path)
+	}))
+	defer source.Close()
+	registryServer := httptest.NewServer(registry.New())
+	defer registryServer.Close()
+	model.Spec.Source = ""
+	model.Spec.Files = []string{source.URL + "/weights.gguf", "s3://bucket/encoder.bin"}
+	model.Spec.PrefetchOCI.Image = strings.TrimPrefix(registryServer.URL, "http://") + "/models/mixed:v1"
+	ctx := context.Background()
+	if err := r.Update(ctx, model); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := r.reconcilePrefetch(ctx, model); err != nil {
+		t.Fatal(err)
+	}
+	job := &batchv1.Job{}
+	if err := r.Get(ctx, client.ObjectKey{Namespace: model.Namespace, Name: model.Status.PrefetchOCI.JobName}, job); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	publisher := job.Spec.Template.Spec.Containers[0]
+	var mappings []ocipublish.File
+	for _, arg := range publisher.Args {
+		if strings.HasPrefix(arg, "--files=") {
+			if err := json.Unmarshal([]byte(strings.TrimPrefix(arg, "--files=")), &mappings); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if len(mappings) != 2 {
+		t.Fatalf("publisher files=%+v", mappings)
+	}
+	downloadDir := filepath.Dir(filepath.Join(root, mappings[0].Path))
+	if err := os.MkdirAll(downloadDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	downloader := downloaderOf(t, job.Spec.Template.Spec.InitContainers).DeepCopy()
+	// Run the container script on the host with its mount redirected to scratch space.
+	downloader.Command[2] = strings.ReplaceAll(downloader.Command[2], "/models", root)
+	if out, err := runDownloaderOnFS(t, downloader, downloadDir, "ext4", "AWS_ACCESS_KEY_ID=access", "AWS_SECRET_ACCESS_KEY=key", "AWS_REGION=us-east-1", "AWS_ENDPOINT_URL="+source.URL); err != nil {
+		t.Fatalf("download: %v\n%s", err, out)
+	}
+	result := filepath.Join(root, "result")
+	args := append(append([]string(nil), publisher.Args...), "--directory="+root, "--result="+result)
+	if err := ocipublish.Run(ctx, args); err != nil {
+		t.Fatal(err)
+	}
+	digest, err := os.ReadFile(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, err := name.NewDigest(strings.TrimPrefix(string(digest), "oci://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	img, err := remote.Image(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	layers, err := img.Layers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, layer := range layers {
+		stream, err := layer.Uncompressed()
+		if err != nil {
+			t.Fatal(err)
+		}
+		tr := tar.NewReader(stream)
+		header, err := tr.Next()
+		if err != nil {
+			_ = stream.Close()
+			t.Fatal(err)
+		}
+		body, err := io.ReadAll(tr)
+		_ = stream.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		got[header.Name] = string(body)
+	}
+	want := map[string]string{"weights.gguf": "/weights.gguf", "encoder.bin": "/bucket/encoder.bin"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("published files=%v want=%v", got, want)
 	}
 }

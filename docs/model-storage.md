@@ -125,12 +125,18 @@ spec:
 ```
 
 `image` requires a fully qualified registry/repository and explicit tag, without
-an `oci://` prefix. `pushSecretRef` is optional for anonymous registries; for
+an `oci://` prefix. For Docker Hub, use `index.docker.io/org/repository:tag`.
+`pushSecretRef` is optional for anonymous registries; for
 private registries it names a same-namespace `kubernetes.io/dockerconfigjson`
 Secret with push permission. Only the publisher mounts this Secret. Source
 credentials still use `sourceSecretRef`, only on the downloader. The configured
 `--ca-cert-configmap` is trusted by both containers, including registry TLS.
-Neither container needs a Kubernetes API token or privileged access.
+Neither container needs a Kubernetes API token or privileged access. Users who
+can create Models can select any push Secret in that namespace; scope those
+credentials to the intended model repositories. The registry client can fall
+back to plain HTTP for private IP addresses, `localhost` and `*.local` hosts.
+On those connections, registry credentials travel unencrypted; use HTTPS for
+authenticated publication.
 
 The Helm chart uses its operator image for publishing. Other installations must
 set `--oci-publisher-image=<operator-image>` to an image built from this version;
@@ -164,8 +170,10 @@ prefetch. This does not add resumable uploads across Job restarts.
 
 Model prefetch node selectors, affinity and
 tolerations apply to the Job. `spec.files`, `spec.mmproj`, source authentication
-and checksum validation use the existing downloader. S3, local, PVC and existing
-OCI sources are not accepted as OCI-prefetch inputs. Do not combine
+and checksum validation use the existing downloader. Absolute HTTP(S) and S3
+URLs in `spec.files` can be mixed, including on a Model without `spec.source`.
+An S3 `spec.source`, local, PVC and existing OCI sources are not accepted as
+OCI-prefetch inputs. Do not combine
 `prefetchOCI` with Model-level `modelCache`; a service can still request its own
 PVC staging through `InferenceService.spec.modelCache`.
 
@@ -181,12 +189,17 @@ Publishing does not rewrite `spec.source` or switch existing services to OCI.
 An InferenceService using the original HTTP/HF Model still uses its normal
 source/cache path. Only services using the promoted `oci://` Model require no
 provider access. Publishing itself needs no ImageVolume support; consuming the
-result has the cluster requirements below.
+result has the cluster requirements below. The publication Model bypasses normal
+remote metadata reconciliation: it does not populate GGUF metadata, size or
+accelerator readiness, or perform source revalidation and SourceDrifted checks.
 
 A changed source, selected file set, checksum or destination starts a new
 publication. Changing `prefetchOCI.ephemeralStorage` also starts a new publication,
 even after success: all files are downloaded again, while existing registry blobs
-are reused. This also lets a larger budget replace a Job that was evicted.
+are reused. This also lets a larger budget replace a Job that was evicted. Renaming
+`pushSecretRef` or changing the spelling of the storage quantity (for example,
+`10Gi` to `10240Mi`) also republishes because the entire `prefetchOCI` block is
+part of the publication fingerprint.
 An unchanged successful publication is retained after the Job's
 24-hour cleanup; upstream/tag changes are not polled. Use pinned source revisions
 and unique destination tags for reproducibility. Publishing to an existing tag

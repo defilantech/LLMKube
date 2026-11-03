@@ -28,6 +28,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/name"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -42,6 +43,13 @@ const (
 	ociPublisherContainer = "model-publisher"
 	annotationOCIFiles    = "inference.llmkube.dev/oci-files"
 )
+
+func setOCIPrefetchCondition(model *inferencev1alpha1.Model, condType string, status metav1.ConditionStatus, reason, message string) {
+	meta.SetStatusCondition(&model.Status.Conditions, metav1.Condition{
+		Type: condType, Status: status, Reason: reason, Message: message,
+		ObservedGeneration: model.Generation,
+	})
+}
 
 func (r *ModelReconciler) removeOCIPrefetch(ctx context.Context, model *inferencev1alpha1.Model) error {
 	readCtx, cancel := context.WithTimeout(ctx, r.prefetchJobReadTimeout())
@@ -69,8 +77,8 @@ func (r *ModelReconciler) reconcileOCIPrefetch(ctx context.Context, model *infer
 		}
 		model.Status.Phase = PhaseFailed
 		model.Status.PrefetchOCI = &inferencev1alpha1.OCIPrefetchStatus{Phase: inferencev1alpha1.PrefetchPhaseFailed, Message: message, ObservedGeneration: model.Generation}
-		setCondition(model, ConditionAvailable, metav1.ConditionFalse, reason, message)
-		setCondition(model, ConditionProgressing, metav1.ConditionFalse, reason, message)
+		setOCIPrefetchCondition(model, ConditionAvailable, metav1.ConditionFalse, reason, message)
+		setOCIPrefetchCondition(model, ConditionProgressing, metav1.ConditionFalse, reason, message)
 		return ctrl.Result{}, nil
 	}
 	if model.Spec.ModelCache != nil || !prefetchableSource(model) {
@@ -84,12 +92,14 @@ func (r *ModelReconciler) reconcileOCIPrefetch(ctx context.Context, model *infer
 	}
 	plan, listErr, planErr := r.prefetchStagingPlan(ctx, model)
 	if listErr != nil {
-		result, err := fail("RepoListingFailed", listErr.Error())
-		result.RequeueAfter = prefetchClaimWait
-		return result, err
+		setOCIPrefetchCondition(model, ConditionDegraded, metav1.ConditionTrue, "RepoListingFailed", listErr.Error())
+		return ctrl.Result{RequeueAfter: prefetchClaimWait}, nil
 	}
 	if planErr != nil {
 		return fail("InvalidFileSet", planErr.Error())
+	}
+	if condition := meta.FindStatusCondition(model.Status.Conditions, ConditionDegraded); condition != nil && condition.Reason == "RepoListingFailed" {
+		setOCIPrefetchCondition(model, ConditionDegraded, metav1.ConditionFalse, "RepoListingSucceeded", "Source repository listing recovered")
 	}
 	jobModel := prefetchJobModel(model, plan)
 	fingerprintInput, err := json.Marshal(struct {
@@ -110,7 +120,10 @@ func (r *ModelReconciler) reconcileOCIPrefetch(ctx context.Context, model *infer
 	}
 	entry.ObservedGeneration = model.Generation
 	if entry.Phase == inferencev1alpha1.PrefetchPhaseSucceeded {
-		r.completeOCIPrefetch(model, entry)
+		if model.Status.Phase != PhaseReady || !conditionIs(model, ConditionAvailable, metav1.ConditionTrue, "Model published to "+entry.Image) ||
+			!conditionIs(model, ConditionDegraded, metav1.ConditionFalse, "OCI prefetch completed") {
+			r.completeOCIPrefetch(model, entry)
+		}
 		return ctrl.Result{}, nil
 	}
 	entry.JobName = prefetchJobNameFor(model.Name, "-prefetch-oci")
@@ -120,10 +133,13 @@ func (r *ModelReconciler) reconcileOCIPrefetch(ctx context.Context, model *infer
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	model.Status.Phase = PhaseDownloading
-	setCondition(model, ConditionAvailable, metav1.ConditionFalse, ReasonPrefetchRunning, "Publishing model to OCI registry")
-	setCondition(model, ConditionProgressing, metav1.ConditionTrue, ReasonPrefetchRunning, "Publishing model to OCI registry")
+	setRunning := func() {
+		model.Status.Phase = PhaseDownloading
+		setOCIPrefetchCondition(model, ConditionAvailable, metav1.ConditionFalse, ReasonPrefetchRunning, "Publishing model to OCI registry")
+		setOCIPrefetchCondition(model, ConditionProgressing, metav1.ConditionTrue, ReasonPrefetchRunning, "Publishing model to OCI registry")
+	}
 	if job != nil && (job.Annotations[annotationPrefetchFingerprint] != fingerprint || !job.DeletionTimestamp.IsZero()) {
+		setRunning()
 		if job.DeletionTimestamp.IsZero() {
 			if err := deletePrefetchJob(ctx, r.Client, job); err != nil {
 				return ctrl.Result{}, err
@@ -146,6 +162,7 @@ func (r *ModelReconciler) reconcileOCIPrefetch(ctx context.Context, model *infer
 		}
 		entry.Phase = inferencev1alpha1.PrefetchPhaseRunning
 		entry.Message = ""
+		setRunning()
 		return ctrl.Result{RequeueAfter: prefetchRetryInterval}, nil
 	}
 	// Recover the file contract from the Job, not a possibly changed metadata
@@ -157,8 +174,8 @@ func (r *ModelReconciler) reconcileOCIPrefetch(ctx context.Context, model *infer
 		entry.Phase = inferencev1alpha1.PrefetchPhaseFailed
 		entry.Message = "OCI prefetch Job failed; inspect its pod logs; retries after 24-hour Job cleanup, or delete the Job to retry sooner"
 		model.Status.Phase = PhaseFailed
-		setCondition(model, ConditionAvailable, metav1.ConditionFalse, ReasonPrefetchFailed, entry.Message)
-		setCondition(model, ConditionProgressing, metav1.ConditionFalse, ReasonPrefetchFailed, entry.Message)
+		setOCIPrefetchCondition(model, ConditionAvailable, metav1.ConditionFalse, ReasonPrefetchFailed, entry.Message)
+		setOCIPrefetchCondition(model, ConditionProgressing, metav1.ConditionFalse, ReasonPrefetchFailed, entry.Message)
 		return ctrl.Result{}, nil
 	}
 	if jobSucceeded(job) {
@@ -174,9 +191,10 @@ func (r *ModelReconciler) reconcileOCIPrefetch(ctx context.Context, model *infer
 		entry.Message = "Completed OCI prefetch Job has no valid publisher digest; inspect its pods; retries after 24-hour Job cleanup, or delete the Job to retry sooner"
 		entry.Phase = inferencev1alpha1.PrefetchPhaseFailed
 		model.Status.Phase = PhaseFailed
-		setCondition(model, ConditionAvailable, metav1.ConditionFalse, "InvalidOCIPrefetchResult", entry.Message)
-		setCondition(model, ConditionProgressing, metav1.ConditionFalse, "InvalidOCIPrefetchResult", entry.Message)
+		setOCIPrefetchCondition(model, ConditionAvailable, metav1.ConditionFalse, "InvalidOCIPrefetchResult", entry.Message)
+		setOCIPrefetchCondition(model, ConditionProgressing, metav1.ConditionFalse, "InvalidOCIPrefetchResult", entry.Message)
 	} else {
+		setRunning()
 		entry.Phase = inferencev1alpha1.PrefetchPhaseRunning
 		reason, message := r.prefetchJobBlocked(ctx, job)
 		if reason != "" {
@@ -194,9 +212,9 @@ func (r *ModelReconciler) completeOCIPrefetch(model *inferencev1alpha1.Model, en
 	} else {
 		model.Status.StagedFiles = nil
 	}
-	setCondition(model, ConditionAvailable, metav1.ConditionTrue, ReasonPrefetchComplete, "Model published to "+entry.Image)
-	setCondition(model, ConditionProgressing, metav1.ConditionFalse, ReasonPrefetchComplete, "OCI prefetch completed")
-	setCondition(model, ConditionDegraded, metav1.ConditionFalse, ReasonPrefetchComplete, "OCI prefetch completed")
+	setOCIPrefetchCondition(model, ConditionAvailable, metav1.ConditionTrue, ReasonPrefetchComplete, "Model published to "+entry.Image)
+	setOCIPrefetchCondition(model, ConditionProgressing, metav1.ConditionFalse, ReasonPrefetchComplete, "OCI prefetch completed")
+	setOCIPrefetchCondition(model, ConditionDegraded, metav1.ConditionFalse, ReasonPrefetchComplete, "OCI prefetch completed")
 }
 
 func (r *ModelReconciler) ociPublishedImage(ctx context.Context, job *batchv1.Job, destination string) (string, error) {
