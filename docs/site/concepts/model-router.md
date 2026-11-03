@@ -80,7 +80,22 @@ Unset keeps the 30s default and renders nothing on the pod template, so upgradin
 
 These `spec.endpoint` and `spec.proxy` options apply to `dataPlane: Proxy`, the default.
 
-`spec.endpoint` shapes the data-plane `Service` in front of the proxy. `spec.endpoint.port` sets the `Service` port (default `8080`); the proxy itself always listens on `8080`, and the `Service` forwards to it. So `port: 80` gives clients `http://<router>-router-proxy.<namespace>.svc.cluster.local/v1` with no port in the URL, while the proxy still runs unprivileged. For a shorter name today, create your own `Service` that selects the proxy pods (labels `app: <router>-router-proxy` and `inference.llmkube.dev/model-router: <router>`) with `targetPort: 8080`; a configurable name is tracked in #2279. `type: NodePort` or `LoadBalancer` exposes it beyond the cluster. `spec.endpoint.nodePort` pins the node port and applies only to `type: NodePort`; it is ignored for `LoadBalancer`, as on `InferenceService`. When `nodePort` is unset, the port Kubernetes allocated stays the same across reconciles. Removing a previously pinned `nodePort` also keeps that port; to get a new one, change `type` or recreate the `Service`.
+`spec.endpoint` shapes the data-plane `Service` in front of the proxy. `spec.endpoint.port` sets the `Service` port (default `8080`); the proxy itself always listens on `8080`, and the `Service` forwards to it. So `port: 80` gives clients `http://<router>-router-proxy.<namespace>.svc.cluster.local/v1` with no port in the URL, while the proxy still runs unprivileged. `type: NodePort` or `LoadBalancer` exposes it beyond the cluster. `spec.endpoint.nodePort` pins the node port and applies only to `type: NodePort`; it is ignored for `LoadBalancer`, as on `InferenceService`. When `nodePort` is unset, the port Kubernetes allocated stays the same across reconciles. Removing a previously pinned `nodePort` also keeps that port; to get a new one, change `type` or recreate the `Service`.
+
+`spec.proxy.serviceName` names that `Service`, for a short in-cluster URL. With the router below in namespace `llmkube`, clients use `http://llmkube.llmkube.svc.cluster.local/v1`:
+
+```yaml
+spec:
+  endpoint:
+    port: 80
+    path: /v1
+  proxy:
+    serviceName: llmkube
+```
+
+Unset keeps `<router>-router-proxy`. The name must be a DNS-1035 label (lowercase letters, digits, and `-`, starting with a letter, at most 63 characters) and must not be the router's admin `Service`, `<router>-router-proxy-admin`. Only the data-plane `Service` is renamed: the `Deployment`, `ConfigMap`, admin `Service`, pod labels, and selectors keep their generated names, so setting or changing it does not roll the proxy pods. `status.endpoint` follows the `Service`.
+
+The operator never takes over a `Service` it did not create. If another object already holds the name, including a `Service` another `ModelRouter` serves on, the router reports `RouterProxyNameTaken` (below) and keeps serving through its previous `Service`, with `status.endpoint` unchanged. When you change the name, or remove it, the operator creates the new `Service` first and then deletes the previous one, only if this router created it. A `Service` you made yourself that selects the proxy pods is left alone. Clients of the old name must move to the new one. A `NodePort` the cluster allocated and a `LoadBalancer` address are reassigned with the new `Service`; a pinned `spec.endpoint.nodePort` is kept, but the node port stops answering between the old `Service`'s deletion and the new one taking the port, both in the same reconcile.
 
 `spec.endpoint.externalTrafficPolicy` (`Cluster` or `Local`, only with `type` NodePort or LoadBalancer) is applied to that `Service`. `Local` preserves the client source IP, but traffic only reaches nodes that run a proxy replica, so pair it with `spec.proxy.nodeSelector`, or with one replica per node (below). `spec.endpoint.apiKeySecretRef` is not supported on a `ModelRouter`.
 
@@ -744,7 +759,7 @@ When the data plane cannot serve, `Available` flips to `False` with one of these
 | --- | --- |
 | `CompileFailed` | The routing spec did not compile into a proxy config. |
 | `ReconcileFailed` | Applying the ConfigMap, Deployment, Services, or activation RBAC to the API server failed. |
-| `RouterProxyNameTaken` | An object LLMKube did not create already holds a generated router-proxy name (the ConfigMap, Deployment, Services, ServiceAccount, Role, or RoleBinding named after the router). The operator refuses to adopt or overwrite it; delete or rename the foreign object, or the router, and the reconcile recovers on its next pass, rechecked about every 2 minutes. |
+| `RouterProxyNameTaken` | An object LLMKube did not create, or another router's object, already holds a router-proxy name: one generated from the router's name (the ConfigMap, Deployment, Services, ServiceAccount, Role, or RoleBinding) or the `Service` name set in `spec.proxy.serviceName`. The operator refuses to adopt or overwrite it; delete or rename the foreign object, or the router, and the reconcile recovers on its next pass, rechecked about every 2 minutes. |
 | `DeploymentNotReady` | The proxy Deployment exists but its pods are not Ready yet. |
 
 ## Next steps

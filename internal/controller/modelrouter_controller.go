@@ -195,12 +195,16 @@ func (r *ModelRouterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 // removeRouterProxyObjects deletes the router-proxy objects this ModelRouter
 // controls, for a router that is not in Proxy mode. The proxy path creates
 // seven objects across six kinds, all named routerProxyResourceName(mr.Name)
-// in the router's namespace except the admin Service, which appends "-admin":
-// the ConfigMap (router_config_builder.go), the Deployment
-// (router_deployment_builder.go), the two Services
-// (router_service_builder.go), and the ServiceAccount, Role, and RoleBinding
-// (router_activation_rbac.go, only when the router had pools or an
-// endpoint-resolution backend).
+// in the router's namespace except the admin Service, which appends "-admin",
+// and the data-plane Service when spec.proxy.serviceName names it (both its
+// generated and its current name are swept): the ConfigMap
+// (router_config_builder.go), the Deployment (router_deployment_builder.go),
+// the two Services (router_service_builder.go), and the ServiceAccount, Role,
+// and RoleBinding (router_activation_rbac.go, only when the router had pools
+// or an endpoint-resolution backend). A Service left under a name the spec no
+// longer carries (serviceName changed in the same edit that left Proxy mode)
+// is not found by name; its owner reference still garbage-collects it with
+// the router.
 //
 // Each object is fetched by its known name, never via a List: a non-Proxy
 // router pays a few cached Gets per reconcile in steady state, and a name
@@ -226,6 +230,11 @@ func (r *ModelRouterReconciler) removeRouterProxyObjects(
 	}
 	if err := r.deleteIfControlled(ctx, mr, name, &corev1.Service{}, "Service"); err != nil {
 		return err
+	}
+	if svcName := routerProxyServiceName(mr); svcName != name {
+		if err := r.deleteIfControlled(ctx, mr, svcName, &corev1.Service{}, "Service"); err != nil {
+			return err
+		}
 	}
 	if err := r.deleteIfControlled(ctx, mr, routerProxyAdminResourceName(mr.Name), &corev1.Service{}, "admin Service"); err != nil {
 		return err
