@@ -25,6 +25,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -46,6 +47,8 @@ type pacedOrigin struct {
 	maxSeen  int
 	requests map[string]int
 	heads    map[string]int
+	// headPaths counts HEADs by full path, which names the repository.
+	headPaths map[string]int
 	// noLength leaves Content-Length off HEAD responses; fakeLength replaces it.
 	noLength   bool
 	fakeLength string
@@ -57,9 +60,11 @@ type pacedOrigin struct {
 
 func newPacedOrigin(t *testing.T, files map[string][]byte, perFile time.Duration) *pacedOrigin {
 	t.Helper()
-	o := &pacedOrigin{files: files, requests: map[string]int{}, heads: map[string]int{}}
+	o := &pacedOrigin{files: files, requests: map[string]int{}, heads: map[string]int{}, headPaths: map[string]int{}}
 	o.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		name := strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/"), "bucket/")
+		// Files are served by name under any directory: a repository, an S3
+		// bucket, or the root.
+		name := path.Base(r.URL.Path)
 		body, ok := o.files[name]
 		if !ok {
 			http.NotFound(w, r)
@@ -70,6 +75,7 @@ func newPacedOrigin(t *testing.T, files map[string][]byte, perFile time.Duration
 		if r.Method == http.MethodHead {
 			o.mu.Lock()
 			o.heads[name]++
+			o.headPaths[r.URL.Path]++
 			stall := o.stallFirstHead[name] && o.heads[name] == 1
 			o.mu.Unlock()
 			if stall {
@@ -129,6 +135,12 @@ func (o *pacedOrigin) requested(name string) int {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	return o.requests[name]
+}
+
+func (o *pacedOrigin) probedPath(p string) int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.headPaths[p]
 }
 
 func (o *pacedOrigin) probed(name string) int {
@@ -566,6 +578,55 @@ func testCapCountsUnknownSize(t *testing.T, v poolVariant) {
 	}
 }
 
+// A set whose spec.files are URLs in several repositories (#2316) reads
+// $MODEL_DOWNLOADS, one destination, URL and auth per line. The pool must
+// dispatch from it, and size each file at its own URL with its own auth: a
+// probe of $MODEL_SOURCE/<file> would size a file the worker never fetches.
+func TestMultiFileConcurrentMixedSources_Behavioral(t *testing.T) {
+	requireInitShellEnvironment(t)
+
+	for _, policy := range []string{RefreshPolicyIfNotPresent, RefreshPolicyOnChange} {
+		t.Run(policy, func(t *testing.T) {
+			files := concurrencyFixture(poolFileNames...)
+			o := newPacedOrigin(t, files, 1500*time.Millisecond)
+			dir := t.TempDir()
+			manifest := strings.Join([]string{
+				"a.bin\t" + o.srv.URL + "/repoA/a.bin\tplain",
+				"b.bin\t" + o.srv.URL + "/repoB/b.bin\tplain",
+				"c.bin\ts3://bucket/c.bin\ts3",
+				"d.bin\t" + o.srv.URL + "/repoB/d.bin\tplain",
+			}, "\n") + "\n"
+			env := append(s3TestEnv(o.srv.URL), "MODEL_DOWNLOADS="+manifest,
+				"MODEL_DOWNLOAD_CONCURRENCY=3", "MODEL_DOWNLOAD_MAX_INFLIGHT_BYTES=150000")
+
+			out, err := runMultiFile(t, multiFileInitCommand(true, false, true, false, true, policy, true),
+				o.srv.URL+"/elsewhere", dir, strings.Join(poolFileNames, "\n"), env...)
+			if err != nil {
+				t.Fatalf("init script failed: %v\n%s", err, out)
+			}
+			// Two 64 KiB files fit 150000 bytes, three do not.
+			if got := o.maxInFlight(); got != 2 {
+				t.Errorf("max concurrent transfers = %d, want 2\n%s", got, out)
+			}
+			for name, want := range files {
+				if got, err := os.ReadFile(filepath.Join(dir, name)); err != nil || string(got) != string(want) {
+					t.Errorf("%s not published intact (err %v)\n%s", name, err, out)
+				}
+			}
+			for _, p := range []string{"/repoA/a.bin", "/repoB/b.bin", "/bucket/c.bin", "/repoB/d.bin"} {
+				if o.probedPath(p) == 0 {
+					t.Errorf("never probed %s, where its file is fetched\n%s", p, out)
+				}
+			}
+			for _, name := range poolFileNames {
+				if n := o.probedPath("/elsewhere/" + name); n != 0 {
+					t.Errorf("probed $MODEL_SOURCE/%s %d time(s), which no worker fetches\n%s", name, n, out)
+				}
+			}
+		})
+	}
+}
+
 // The pool's workers share the destination directory. Each one sweeps only its
 // own stale partials before its transfer: the directory-wide sweep the serial
 // loop runs would delete a neighbour's partial in the middle of its transfer.
@@ -667,13 +728,14 @@ func TestMultiFileSHA256VerifyLogs(t *testing.T) {
 func TestPoolAndVerifyLogsStayInTheConcurrentCommand(t *testing.T) {
 	tokens := []string{"llmkube_verify_start", "llmkube_pool_", "of $rel"}
 	bs := []bool{true, false}
-	cmds := make([]string, 0, 2*2*2*2*2*3+8)
+	cmds := make([]string, 0, 2*2*2*2*2*4+8)
 	for _, useCache := range bs {
 		for _, isS3 := range bs {
 			for _, isHFAuth := range bs {
 				for _, withSHA256 := range bs {
 					for _, policy := range []string{RefreshPolicyIfNotPresent, RefreshPolicyOnChange} {
-						cmds = append(cmds, buildMultiFileInitCommand(useCache, isS3, isHFAuth, withSHA256, false, policy))
+						cmds = append(cmds, buildMultiFileInitCommand(useCache, isS3, isHFAuth, withSHA256, false, policy),
+							multiFileInitCommand(useCache, isS3, isHFAuth, withSHA256, false, policy, true))
 						for _, isLocal := range bs {
 							cmds = append(cmds, buildModelInitCommand(isLocal, isS3, useCache, isHFAuth, withSHA256, policy))
 						}
@@ -759,6 +821,19 @@ func TestDownloadConcurrencyWiring(t *testing.T) {
 	}
 	if cappedCmd != poolCmd {
 		t.Error("downloadMaxInFlightSize changed the downloader command; it travels in env only")
+	}
+
+	// A set of URLs in several repositories (#2316) goes through the same pool,
+	// which then reads $MODEL_DOWNLOADS.
+	mixed := newModel(4)
+	mixed.Spec.Source = ""
+	mixed.Spec.Files = []string{"https://example.com/a/model.gguf", "https://example.org/b/mmproj.gguf"}
+	mixedCmd, mixedEnv := downloader(t, mixed)
+	if !strings.Contains(mixedCmd, `printf '%s\n' "$MODEL_DOWNLOADS" | { `) || !strings.Contains(mixedCmd, "llmkube_pool_dispatch") {
+		t.Error("a mixed set with downloadConcurrency 4 did not dispatch the pool from $MODEL_DOWNLOADS")
+	}
+	if mixedEnv["MODEL_DOWNLOADS"] == "" || mixedEnv["MODEL_DOWNLOAD_CONCURRENCY"] != "4" {
+		t.Errorf("mixed set env lacks MODEL_DOWNLOADS or MODEL_DOWNLOAD_CONCURRENCY=4: %v", mixedEnv)
 	}
 
 	serialCapped := newModel(1)

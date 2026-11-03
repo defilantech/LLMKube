@@ -1723,7 +1723,8 @@ spec:
                 stages at once: it requires spec.files, and a pvc:// or oci:// source
                 is not downloaded'
               rule: '!has(self.downloadConcurrency) || (has(self.files) && self.files.size()
-                > 0 && !self.source.startsWith(''pvc://'') && !self.source.startsWith(''oci://''))'
+                > 0 && (!has(self.source) || (!self.source.startsWith(''pvc://'')
+                && !self.source.startsWith(''oci://''))))'
             - message: 'prefetch cannot be combined with modelCache.persistence Ephemeral:
                 there is no cache volume to stage into'
               rule: '!(has(self.prefetch) && self.prefetch && has(self.modelCache)

@@ -49,6 +49,13 @@ var _ = Describe("Model downloadConcurrency CRD validation", func() {
 		Expect(k8sClient.Delete(ctx, m)).To(Succeed())
 	})
 
+	It("admits downloadConcurrency on a set of URLs with no source", func() {
+		m := newModel("dlc-urls", 4, []string{"https://example.com/a/model.gguf", "https://example.org/b/other.gguf"}, "")
+		m.Spec.Source = ""
+		Expect(k8sClient.Create(ctx, m)).To(Succeed())
+		Expect(k8sClient.Delete(ctx, m)).To(Succeed())
+	})
+
 	It("admits downloadConcurrency with files and mmproj", func() {
 		m := newModel("dlc-mmproj", 2, []string{"a.gguf"}, "proj.gguf")
 		Expect(k8sClient.Create(ctx, m)).To(Succeed())

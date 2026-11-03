@@ -1423,13 +1423,14 @@ func serialMultiFileLoop(head, perFile string) string {
 }
 
 // concurrentMultiFileLoop runs perFile as llmkube_stage_file in the worker pool
-// of multiFilePoolFns. probe prints the origin's Content-Length for $rel; the
-// pool sizes a file with it only under a byte cap. An IfNotPresent present
+// of multiFilePoolFns, dispatching one worker per entry list and read give it.
+// probe prints the origin's Content-Length for $rel; the pool sizes a file
+// with it only under a byte cap. An IfNotPresent present
 // file is sized from disk without a request when its size record vouches for
 // it, since it is then kept as it is; otherwise it may be replaced in full, so
 // it counts the whole cap. OnChange probes every file: the worker does too, and
 // a changed file is replaced at the origin's size.
-func concurrentMultiFileLoop(perFile, probe, start, refreshPolicy string) string {
+func concurrentMultiFileLoop(perFile, probe, start, refreshPolicy, list, read string) string {
 	present := `if [ -f "$_llmkube_dest" ]; then _llmkube_l=$(stat -c %s "$_llmkube_dest" 2>/dev/null) && [ "$(cat "$_llmkube_dest.llmkube-size" 2>/dev/null)" = "$_llmkube_l" ] && { echo "$_llmkube_l"; return 0; }; echo "$_llmkube_cap"; return 0; fi; `
 	if refreshPolicy == RefreshPolicyOnChange {
 		present = ""
@@ -1437,7 +1438,7 @@ func concurrentMultiFileLoop(perFile, probe, start, refreshPolicy string) string
 	return `llmkube_file_size() { _llmkube_dest="$CACHE_DIR/$rel"; ` + present +
 		`_llmkube_s=$(` + probe + ` 2>/dev/null) || _llmkube_s=; echo "$_llmkube_s"; }; ` +
 		`llmkube_stage_file() { ` + perFile + `}; ` +
-		`printf '%s\n' "$MODEL_FILES" | { ` + start + `while IFS= read -r rel; do ` +
+		list + `{ ` + start + `while ` + read + `; do ` +
 		`[ -n "$rel" ] || continue; llmkube_pool_dispatch || break; done; llmkube_pool_join; }`
 }
 
@@ -1467,11 +1468,6 @@ func buildMultiFileInitCommand(useCache, isS3, isHFAuth, withSHA256, concurrent 
 }
 
 func multiFileInitCommand(useCache, isS3, isHFAuth, withSHA256, concurrent bool, refreshPolicy string, mixed bool) string {
-	// A mixed set's loop reads $MODEL_DOWNLOADS, which the pool does not; it
-	// stages serially.
-	if mixed {
-		concurrent = false
-	}
 	// See cacheStagingPrologue: a serving pod on FUSE only reads a warm
 	// cache, and llmkube_prepare_download refuses its transfers.
 	prefix := cacheStagingPrologue(cacheLockRemedy(isS3, false)) +
@@ -1486,9 +1482,19 @@ func multiFileInitCommand(useCache, isS3, isHFAuth, withSHA256, concurrent bool,
 	httpURL := `url="${SOURCE%/}/$rel"; `
 	s3URL := `key="${S3_PREFIX:+${S3_PREFIX}/}$rel"; url="${AWS_ENDPOINT_URL}/${S3_BUCKET}/${key}"; `
 	headLength := ` -fsSL -I "$url" -o /dev/null -w '%header{content-length}'`
-	// head opens the serial loop; a mixed set reads $MODEL_DOWNLOADS instead.
-	head := `printf '%s\n' "$MODEL_FILES" | while IFS= read -r rel; do `
-	loop := func(perFile string) string { return serialMultiFileLoop(head, perFile) }
+	// list and read feed the loop its files. A mixed set reads $MODEL_DOWNLOADS,
+	// each line a file's destination, URL and auth; it takes the HTTP branches,
+	// since stagingDownloadConfig builds it with per-file auth, never isS3.
+	list, read := `printf '%s\n' "$MODEL_FILES" | `, `IFS= read -r rel`
+	sourceAssign := httpURL
+	authPrefix := hfAuthPrefix(isHFAuth)
+	if mixed && !isS3 {
+		list, read = `printf '%s\n' "$MODEL_DOWNLOADS" | `, `IFS="$(printf '\t')" read -r rel url auth`
+		sourceAssign = `case "$auth" in s3) url="${AWS_ENDPOINT_URL%/}/${url#s3://}";; esac; `
+		// Auth is selected per destination in Go, never from a Secret-provided URL.
+		authPrefix = s3AuthFn + `hf_curl() { case "$auth" in s3) s3_curl "$@";; hf) ` + hfAuthBody + `;; *) curl "$@";; esac; } && `
+	}
+	loop := func(perFile string) string { return serialMultiFileLoop(list+`while `+read+`; do `, perFile) }
 	deriveAndSweep, skip := validatorDeriveAndSweep(), "continue"
 	if concurrent {
 		prefix = downloadProgressLabeledFn + multiFilePoolFns + prefix
@@ -1502,7 +1508,9 @@ func multiFileInitCommand(useCache, isS3, isHFAuth, withSHA256, concurrent bool,
 		if useCache {
 			start = `if llmkube_fuse_reader; then llmkube_pool_start quiet; else llmkube_pool_start; fi; `
 		}
-		url, curl := httpURL, curlCmd(isHFAuth)
+		// A mixed set's dispatcher has the file's URL and auth from its line, so
+		// the probe goes where the worker's transfer will.
+		url, curl := sourceAssign, curlCmd(isHFAuth)
 		if isS3 {
 			url, curl = s3URL, `s3_curl`
 		}
@@ -1510,7 +1518,7 @@ func multiFileInitCommand(useCache, isS3, isHFAuth, withSHA256, concurrent bool,
 		// a size it cannot learn counts as the whole cap.
 		probe := url + curl + ` --connect-timeout 10 --max-time 30` + headLength
 		loop = func(perFile string) string {
-			return concurrentMultiFileLoop(perFile, probe, start, refreshPolicy)
+			return concurrentMultiFileLoop(perFile, probe, start, refreshPolicy, list, read)
 		}
 	} else {
 		prefix = downloadProgressFn + prefix
@@ -1623,14 +1631,6 @@ func multiFileInitCommand(useCache, isS3, isHFAuth, withSHA256, concurrent bool,
 		return fns + pre + prefix + sweep + " && " + body
 	}
 
-	sourceAssign := `url="${SOURCE%/}/$rel"; `
-	authPrefix := hfAuthPrefix(isHFAuth)
-	if mixed {
-		head = `printf '%s\n' "$MODEL_DOWNLOADS" | while IFS="$(printf '\t')" read -r rel url auth; do `
-		sourceAssign = `case "$auth" in s3) url="${AWS_ENDPOINT_URL%/}/${url#s3://}";; esac; `
-		// Auth is selected per destination in Go, never from a Secret-provided URL.
-		authPrefix = s3AuthFn + `hf_curl() { case "$auth" in s3) s3_curl "$@";; hf) ` + hfAuthBody + `;; *) curl "$@";; esac; } && `
-	}
 	if refreshPolicy == RefreshPolicyOnChange {
 		body := normalizeFn + authPrefix +
 			`SOURCE="$(normalize_hf_source "$MODEL_SOURCE")" && ` + loop(
