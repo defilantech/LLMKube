@@ -1,0 +1,48 @@
+﻿2026-10-14T09:04:24.8194152Z Current runner version: '2.337.0'
+2026-10-14T09:04:24.8212552Z ##[group]Runner Image Provisioner
+2026-10-14T09:04:24.8213153Z Hosted Compute Agent
+2026-10-14T09:15:31.4141637Z ok  	github.com/defilantech/llmkube/internal/safehttp	0.017s	coverage: 93.1% of statements
+2026-10-14T09:15:31.4141971Z ok  	github.com/defilantech/llmkube/internal/webhook/quota	0.011s	coverage: 100.0% of statements
+2026-10-14T09:15:31.4142419Z ok  	github.com/defilantech/llmkube/pkg/agent	18.148s	coverage: 80.9% of statements
+2026-10-14T09:15:31.4142830Z 2026/10/14 09:07:20 httputil: ReverseProxy read error during body copy: read tcp 127.0.0.1:44018->127.0.0.1:42769: use of closed network connection
+2026-10-14T09:15:31.4143161Z --- FAIL: TestServer_StreamsChunks (0.00s)
+2026-10-14T09:15:31.4143450Z     --- FAIL: TestServer_StreamsChunks/application/x-ndjson (0.00s)
+2026-10-14T09:15:31.4146012Z         server_test.go:426: second event missing, got "\n"
+2026-10-14T09:15:31.4146277Z FAIL
+2026-10-14T09:15:31.4146462Z coverage: 87.5% of statements
+2026-10-14T09:15:31.4146664Z FAIL	github.com/defilantech/llmkube/pkg/agent/ingress	0.104s
+2026-10-14T09:15:31.4146965Z ok  	github.com/defilantech/llmkube/pkg/agent/policy	0.026s	coverage: 96.4% of statements
+2026-10-14T09:15:31.4147313Z ok  	github.com/defilantech/llmkube/pkg/apiutil	0.004s	coverage: 100.0% of statements
+2026-10-14T09:15:31.4147799Z ok  	github.com/defilantech/llmkube/pkg/cachekey	0.005s	coverage: 100.0% of statements
+2026-10-14T09:15:31.4148283Z ok  	github.com/defilantech/llmkube/pkg/cli	9.141s	coverage: 49.5% of statements
+2026-10-14T09:15:31.4148691Z ok  	github.com/defilantech/llmkube/pkg/foreman/agent	12.692s	coverage: 89.2% of statements
+2026-10-14T09:15:31.4149197Z ok  	github.com/defilantech/llmkube/pkg/foreman/agent/anthropic	0.014s	coverage: 91.1% of statements
+2026-10-14T09:15:31.4149755Z ok  	github.com/defilantech/llmkube/pkg/foreman/agent/changepolicy	0.003s	coverage: 100.0% of statements
+2026-10-14T09:15:31.4150402Z ok  	github.com/defilantech/llmkube/pkg/foreman/agent/codehost	0.003s	coverage: 88.9% of statements
+2026-10-14T09:15:31.4150837Z ok  	github.com/defilantech/llmkube/pkg/foreman/agent/githubissue	0.005s	coverage: 86.8% of statements
+2026-10-14T09:15:31.4151196Z ok  	github.com/defilantech/llmkube/pkg/foreman/agent/githubpr	0.012s	coverage: 86.7% of statements
+2026-10-14T09:15:31.4151595Z ok  	github.com/defilantech/llmkube/pkg/foreman/agent/githubprfetch	0.006s	coverage: 85.2% of statements
+2026-10-14T09:15:31.4152194Z ok  	github.com/defilantech/llmkube/pkg/foreman/agent/grounding	0.038s	coverage: 89.6% of statements
+2026-10-14T09:15:31.4152729Z ok  	github.com/defilantech/llmkube/pkg/foreman/agent/mcp	0.045s	coverage: 86.2% of statements
+2026-10-14T09:15:31.4153067Z ok  	github.com/defilantech/llmkube/pkg/foreman/agent/oai	2.492s	coverage: 89.7% of statements
+2026-10-14T09:15:31.4153412Z ok  	github.com/defilantech/llmkube/pkg/foreman/agent/repo	2.602s	coverage: 79.5% of statements
+2026-10-14T09:15:31.4153960Z ok  	github.com/defilantech/llmkube/pkg/foreman/agent/repomap	0.007s	coverage: 81.8% of statements
+2026-10-14T09:15:31.4154527Z ok  	github.com/defilantech/llmkube/pkg/foreman/agent/reviewer	0.002s	coverage: 97.6% of statements
+2026-10-14T09:15:31.4154899Z ok  	github.com/defilantech/llmkube/pkg/foreman/agent/tools	6.153s	coverage: 87.7% of statements
+2026-10-14T09:15:31.4155253Z 	github.com/defilantech/llmkube/pkg/foreman/agent/tools/catalog		coverage: 0.0% of statements
+2026-10-14T09:15:31.4155748Z ok  	github.com/defilantech/llmkube/pkg/foreman/agent/worktracker	0.003s	coverage: 100.0% of statements
+2026-10-14T09:15:31.4156315Z ok  	github.com/defilantech/llmkube/pkg/foreman/archive	0.019s	coverage: 89.8% of statements
+2026-10-14T09:15:31.4156748Z ok  	github.com/defilantech/llmkube/pkg/foreman/audit	0.190s	coverage: 81.1% of statements
+2026-10-14T09:15:31.4157182Z ok  	github.com/defilantech/llmkube/pkg/foreman/slicer	0.143s	coverage: 87.2% of statements
+2026-10-14T09:15:31.4157602Z ok  	github.com/defilantech/llmkube/pkg/gguf	0.007s	coverage: 76.1% of statements
+2026-10-14T09:15:31.4158012Z ok  	github.com/defilantech/llmkube/pkg/hfsource	0.003s	coverage: 93.8% of statements
+2026-10-14T09:15:31.4158312Z ok  	github.com/defilantech/llmkube/pkg/license	0.002s	coverage: 100.0% of statements
+2026-10-14T09:15:31.4158619Z ok  	github.com/defilantech/llmkube/pkg/selfupdate	0.017s	coverage: 78.7% of statements
+2026-10-14T09:15:31.4160101Z ok  	github.com/defilantech/llmkube/test/deps	0.001s	coverage: [no statements]
+2026-10-14T09:15:31.4160417Z ok  	github.com/defilantech/llmkube/test/e2e/stubupstream	0.656s	coverage: 83.9% of statements
+2026-10-14T09:15:31.4160845Z ok  	github.com/defilantech/llmkube/test/utils	7.013s	coverage: 41.9% of statements
+2026-10-14T09:15:31.4161173Z FAIL
+2026-10-14T09:15:31.8541458Z make: *** [Makefile:131: test] Error 1
+2026-10-14T09:15:31.8556381Z ##[error]Process completed with exit code 2.
+2026-10-14T09:15:31.8642843Z Post job cleanup.
+2026-10-14T09:15:31.9177619Z [command]/usr/bin/git version

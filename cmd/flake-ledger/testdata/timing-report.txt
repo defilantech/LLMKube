@@ -1,0 +1,58 @@
+﻿2026-11-02T20:19:54.3477961Z Current runner version: '2.338.2'
+2026-11-02T20:19:54.3505851Z ##[group]Runner Image Provisioner
+2026-11-02T20:19:54.3506950Z Hosted Compute Agent
+2026-11-02T20:25:56.4618945Z === RUN   TestCoderGroundingRail_AnchoredToUpstreamBase_NoPhantomViolations
+2026-11-02T20:25:56.5398161Z --- PASS: TestCacheAccessPodsUseTheConfiguredImage/flag_beats_the_environment (0.10s)
+2026-11-02T20:25:56.5413663Z --- PASS: TestCacheAccessPodsUseTheConfiguredImage (0.50s)
+2026-11-02T20:25:56.5415011Z === RUN   TestCacheListPinsTheInspectorForAReadWriteOnceClaim
+2026-11-02T20:25:56.6031288Z     metalnode_controller_test.go:724: AgentConnected reason = "" before the Lease exists, want LeaseNotFound
+2026-11-02T20:25:56.6033319Z     metalnode_controller_test.go:689: manager exited with an error: failed to start metrics server: failed to create listener: listen tcp :8080: bind: address already in use
+2026-11-02T20:25:56.6034189Z --- FAIL: TestMetalNodeLeaseEventReachesItsMetalNode (30.04s)
+2026-11-02T20:25:56.6034614Z === RUN   TestMetalNodeVerifierFloodBounded
+2026-11-02T20:25:56.6437681Z --- PASS: TestCacheListPinsTheInspectorForAReadWriteOnceClaim (0.10s)
+2026-11-02T20:32:09.9043098Z FAIL
+2026-11-02T20:32:09.9131613Z coverage: 90.7% of statements
+2026-11-02T20:32:14.4752022Z FAIL	github.com/defilantech/llmkube/internal/controller	458.143s
+2026-11-02T20:32:14.8805693Z make: *** [Makefile:150: test] Error 1
+2026-11-02T20:32:14.8968699Z ### test-report-seed11.jsonl
+2026-11-02T20:32:15.4422645Z == Package time (slowest first)
+2026-11-02T20:32:15.4423196Z 458.144s	fail	internal/controller
+2026-11-02T20:32:15.4423629Z 109.69s	pass	cmd/router-proxy
+2026-11-02T20:32:15.4424037Z 91.276s	pass	pkg/agent
+2026-11-02T20:32:15.4424391Z 44.104s	pass	pkg/cli
+2026-11-02T20:32:15.4424769Z 30.314s	pass	internal/foreman/controller
+2026-11-02T20:32:15.4425223Z 27.841s	pass	internal/machoplist
+2026-11-02T20:32:15.4425631Z 26.128s	pass	internal/watchcanary
+2026-11-02T20:32:15.4426038Z 16.748s	pass	pkg/foreman/agent
+2026-11-02T20:32:15.4426675Z 15.249s	pass	internal/router
+2026-11-02T20:32:15.4427079Z 7.785s	pass	cmd/machoplist
+2026-11-02T20:32:15.4427445Z 7.021s	pass	test/utils
+2026-11-02T20:32:15.4427816Z 6.455s	pass	pkg/foreman/agent/tools
+2026-11-02T20:32:15.4428302Z 4.747s	pass	cmd/check-metal-agent-rbac
+2026-11-02T20:32:15.4428746Z 2.819s	pass	pkg/foreman/agent/repo
+2026-11-02T20:32:15.4429581Z 2.505s	pass	pkg/foreman/agent/oai
+2026-11-02T20:32:15.4429842Z 
+2026-11-02T20:32:15.4429980Z == Failed tests
+2026-11-02T20:32:15.4430497Z 30.04s	internal/controller	TestMetalNodeLeaseEventReachesItsMetalNode
+2026-11-02T20:32:15.4430967Z 
+2026-11-02T20:32:15.4431289Z == Still running when the package exited (killed by -timeout or a panic)
+2026-11-02T20:32:15.4431842Z none
+2026-11-02T20:32:15.4431991Z 
+2026-11-02T20:32:15.4432153Z == Slowest 25 top-level tests
+2026-11-02T20:32:15.4432643Z 109.64s	pass	cmd/router-proxy	TestRouterProxyBinarySmoke
+2026-11-02T20:32:15.4433215Z 88.11s	pass	internal/controller	TestControllers
+2026-11-02T20:32:15.4433835Z 33.99s	pass	internal/controller	TestModelDownloadResume_Behavioral
+2026-11-02T20:32:15.4434598Z 30.04s	fail	internal/controller	TestMetalNodeLeaseEventReachesItsMetalNode
+2026-11-02T20:32:15.4435352Z 29.44s	pass	internal/foreman/controller	TestForemanControllers
+2026-11-02T20:32:15.4436051Z 27.75s	pass	internal/controller	TestMetalNodeSteadyMacStaysReachable
+2026-11-02T20:32:15.4436963Z 26.53s	pass	internal/machoplist	TestInjectAddsInfoPlistSection
+2026-11-02T20:32:15.4437675Z 24.8s	pass	internal/controller	TestMultiFileChangedOriginKeepsCache
+2026-11-02T20:32:15.4438346Z 21.54s	pass	internal/controller	TestSingleFileFUSEStaging
+2026-11-02T20:32:15.4438972Z 20.64s	pass	internal/controller	TestModelInitSHA256_Behavioral
+2026-11-02T20:32:15.4439645Z 16.43s	pass	internal/controller	TestMultiFileOnChangeOfflineCache
+2026-11-02T20:32:15.4440337Z 13.44s	pass	internal/controller	TestMultiFileOnChangeRecordedSize
+2026-11-02T20:32:15.4440985Z 12.89s	pass	internal/controller	TestMultiFileCachedSize
+2026-11-02T20:32:15.4441670Z 12.16s	pass	internal/watchcanary	TestGenerationLagSeenPastADeadInformer
+2026-11-02T20:32:15.4442418Z 11.5s	pass	internal/controller	TestModelMultiFileSHA256_Behavioral
+2026-11-02T20:32:15.4443575Z 11.21s	pass	internal/controller	TestGatewayReconcile_OptedInGeneratesResources
+2026-11-02T20:32:15.4444321Z 10.16s	pass	pkg/cli	TestMetalJoinStringIsSingleUse

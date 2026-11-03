@@ -1,0 +1,10 @@
+/home/runner/work/LLMKube/LLMKube/bin/controller-gen rbac:roleName=manager-role crd:allowDangerousTypes=true webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+/home/runner/work/LLMKube/LLMKube/bin/controller-gen object:headerFile="hack/boilerplate.go.txt" paths="./..."
+{"Time":"2026-11-03T03:32:06.016026901Z","Action":"start","Package":"github.com/defilantech/llmkube/internal/controller"}
+{"Time":"2026-11-03T03:32:39.842292573Z","Action":"run","Package":"github.com/defilantech/llmkube/internal/controller","Test":"TestMetalNodeLeaseEventReachesItsMetalNode"}
+{"Time":"2026-11-03T03:32:39.84229665Z","Action":"output","Package":"github.com/defilantech/llmkube/internal/controller","Test":"TestMetalNodeLeaseEventReachesItsMetalNode","Output":"=== RUN   TestMetalNodeLeaseEventReachesItsMetalNode\n","OutputType":"frame"}
+{"Time":"2026-11-03T03:32:40.272235636Z","Action":"output","Package":"github.com/defilantech/llmkube/internal/controller","Test":"TestMetalNodeLeaseEventReachesItsMetalNode","Output":"--- PASS: TestMetalNodeLeaseEventReachesItsMetalNode (0.43s)\n","OutputType":"frame"}
+{"Time":"2026-11-03T03:32:40.272323817Z","Action":"pass","Package":"github.com/defilantech/llmkube/internal/controller","Test":"TestMetalNodeLeaseEventReachesItsMetalNode","Elapsed":0.43}
+{"Time":"2026-11-03T03:39:07.488990402Z","Action":"output","Package":"github.com/defilantech/llmkube/internal/controller","Output":"PASS\n","OutputType":"frame"}
+{"Time":"2026-11-03T03:39:12.026664747Z","Action":"output","Package":"github.com/defilantech/llmkube/internal/controller","Output":"ok  \tgithub.com/defilantech/llmkube/internal/controller\t426.010s\n"}
+{"Time":"2026-11-03T03:39:12.026703059Z","Action":"pass","Package":"github.com/defilantech/llmkube/internal/controller","Elapsed":426.011}
