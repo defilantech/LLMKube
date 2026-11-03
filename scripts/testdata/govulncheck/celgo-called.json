@@ -1,0 +1,31 @@
+{
+  "finding": {
+    "osv": "GO-2026-6094",
+    "fixed_version": "v0.30.0",
+    "trace": [
+      {
+        "module": "github.com/google/cel-go",
+        "version": "v0.29.2",
+        "package": "github.com/google/cel-go/ext",
+        "function": "NativeTypes",
+        "position": {
+          "filename": "ext/native.go",
+          "offset": 4512,
+          "line": 131,
+          "column": 6
+        }
+      },
+      {
+        "module": "github.com/defilantech/llmkube",
+        "package": "github.com/defilantech/llmkube/internal/controller",
+        "function": "compileRoutingExpression",
+        "position": {
+          "filename": "internal/controller/modelrouter_cel.go",
+          "offset": 2210,
+          "line": 74,
+          "column": 23
+        }
+      }
+    ]
+  }
+}

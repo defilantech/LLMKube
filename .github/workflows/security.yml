@@ -5,6 +5,8 @@ on:
     branches:
       - main
   pull_request:
+  merge_group:
+    types: [checks_requested]
   schedule:
     # Catch newly-disclosed vulnerabilities in dependencies even when the
     # repo has no other changes. Runs weekly on Monday at 07:00 UTC.
@@ -14,9 +16,16 @@ permissions:
   contents: read
 
 jobs:
+  # Pull requests and merge groups fail only on the reachable vulnerabilities
+  # they introduce. Failing on every finding let one new advisory against code
+  # already on main fail every open PR until main was fixed (#2381). Main
+  # pushes and the weekly scan fail on any reachable vulnerability, and the
+  # tracking-issue job keeps one issue open for them.
   vuln:
     name: govulncheck
     runs-on: ubuntu-latest
+    outputs:
+      report: ${{ steps.compare.outputs.report }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -33,5 +42,111 @@ jobs:
       - name: Install govulncheck
         run: hack/go-mod-download.sh install golang.org/x/vuln/cmd/govulncheck@e672cbe8fbc8c76e28fcb6db0efd9ce354e0dac5 # v1.9.0
 
+      # JSON mode exits 0 whatever it finds, so a failure here is a scan that
+      # could not load the code, and fails the job as text mode did.
       - name: Run govulncheck
-        run: govulncheck ./...
+        run: govulncheck -format json ./... > "$RUNNER_TEMP/head.json"
+
+      # The commit the change applies to. A pull_request run checks out the
+      # test merge commit refs/pull/N/merge, whose first parent is the base
+      # branch commit the PR was merged onto, so the two trees differ by
+      # exactly the PR; the PR's fork point would also count what main gained
+      # since. A merge group names its base. The base's standard library is
+      # checked at the Go version its own go.mod pins (govulncheck reads
+      # GOVERSION), so a Go bump or downgrade counts as part of the change.
+      # This step never fails: without a base, the comparison below fails on
+      # every reachable finding.
+      - name: Run govulncheck on the base
+        id: base
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        env:
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = merge_group ]; then
+            base="$MERGE_GROUP_BASE_SHA"
+          else
+            base="$(git cat-file -p HEAD | sed -n 's/^parent //p' | head -n 1)"
+          fi
+          echo "sha=$base" >> "$GITHUB_OUTPUT"
+          dir="$RUNNER_TEMP/base"
+          if [ -n "$base" ] &&
+            git fetch --no-tags --depth=1 origin "$base" &&
+            git worktree add --detach "$dir" "$base"; then
+            gover="$(awk '$1 == "go" { print "go" $2; exit }' "$dir/go.mod" || true)"
+            if (cd "$dir" && GOVERSION="$gover" govulncheck -format json ./... > "$RUNNER_TEMP/base.json"); then
+              echo "ok=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          echo "::warning title=govulncheck::could not scan the base ${base:-(none)}, so every reachable finding fails this run"
+          echo "ok=false" >> "$GITHUB_OUTPUT"
+
+      # Records the verdict without failing, so the report reaches the job
+      # summary and the tracking-issue job either way; the next step fails.
+      - name: Compare findings
+        id: compare
+        env:
+          BASE_OK: ${{ steps.base.outputs.ok }}
+          BASE_SHA: ${{ steps.base.outputs.sha }}
+        run: |
+          args=(--head "$RUNNER_TEMP/head.json")
+          case "$BASE_OK" in
+            true) args+=(--base "$RUNNER_TEMP/base.json") ;;
+            false) args+=(--base-failed) ;;
+          esac
+          rc=0
+          hack/govulncheck-diff.sh "${args[@]}" > "$RUNNER_TEMP/report.md" || rc=$?
+          [ "$rc" -le 1 ] || exit "$rc"
+          cat "$RUNNER_TEMP/report.md"
+          {
+            cat "$RUNNER_TEMP/report.md"
+            [ -z "$BASE_SHA" ] || printf "\nCompared \`%s\` with its base \`%s\`.\n" "$GITHUB_SHA" "$BASE_SHA"
+          } >> "$GITHUB_STEP_SUMMARY"
+          {
+            if [ "$rc" -eq 1 ]; then echo "failed=true"; else echo "failed=false"; fi
+            echo "report<<GOVULNCHECK_REPORT_EOF"
+            cat "$RUNNER_TEMP/report.md"
+            echo "GOVULNCHECK_REPORT_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Fail on reachable vulnerabilities
+        if: steps.compare.outputs.failed == 'true'
+        run: |
+          echo "::error title=govulncheck::reachable vulnerabilities found; the job summary lists them"
+          exit 1
+
+  # Opens, updates or closes the one "[SECURITY] govulncheck findings on main"
+  # issue from main's own scans (hack/govulncheck-tracking-issue.sh). Pull
+  # requests and merge groups never run this job, so they never hold a token
+  # that can write issues. A scan that produced no report proves nothing
+  # either way and leaves the issue alone, and forks do not track.
+  tracking-issue:
+    name: govulncheck tracking issue
+    needs: vuln
+    if: >-
+      !cancelled()
+      && github.repository == 'defilantech/LLMKube'
+      && (github.event_name == 'push' || github.event_name == 'schedule')
+      && needs.vuln.outputs.report != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    concurrency:
+      group: govulncheck-tracking-issue
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Sync the tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          REPORT: ${{ needs.vuln.outputs.report }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          printf '%s\n' "$REPORT" > "$RUNNER_TEMP/report.md"
+          hack/govulncheck-tracking-issue.sh "$RUNNER_TEMP/report.md" "$RUN_URL"

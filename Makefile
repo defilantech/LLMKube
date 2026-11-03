@@ -203,9 +203,12 @@ test-affected: setup-envtest ## Test packages affected by changes since BASE_REF
 # install-rcodesign_test.sh cover the release's notarization step and its
 # pinned rcodesign install. go-mod-download_test.sh covers
 # hack/go-mod-download.sh, the retried module download every CI job and image
-# build runs first (#2380).
+# build runs first (#2380). govulncheck-diff_test.sh and
+# govulncheck-tracking-issue_test.sh cover the Security workflow's verdict
+# (fail a change only on vulnerabilities it introduces) and the tracking issue
+# for main (#2381); they need jq.
 .PHONY: test-scripts
-test-scripts: ## Run the shell regression tests (gate, test-affected, affected-packages, GINKGO_SEED single evaluation, envtest sharing, test metrics ports, macOS signing and notarization, Go module download retries).
+test-scripts: ## Run the shell regression tests (gate, test-affected, affected-packages, GINKGO_SEED single evaluation, envtest sharing, test metrics ports, macOS signing and notarization, Go module download retries, govulncheck verdict and tracking issue).
 	@bash scripts/gate_test.sh
 	@bash scripts/test-affected_test.sh
 	@bash scripts/affected-packages_test.sh
@@ -216,6 +219,8 @@ test-scripts: ## Run the shell regression tests (gate, test-affected, affected-p
 	@bash scripts/macos-notarize_test.sh
 	@bash scripts/install-rcodesign_test.sh
 	@bash scripts/go-mod-download_test.sh
+	@bash scripts/govulncheck-diff_test.sh
+	@bash scripts/govulncheck-tracking-issue_test.sh
 
 .PHONY: test-chart
 test-chart: ## Lint and unit-test the Helm charts (requires helm + helm-unittest plugin).
