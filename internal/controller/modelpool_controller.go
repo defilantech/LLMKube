@@ -116,8 +116,9 @@ func (r *ModelPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	// Resolve every member InferenceService. Missing references are a spec
-	// error the operator must fix. Autoscaled members are invalid too, but their
-	// HPA-owned replicas stay untouched while incoming members use the Pod gate.
+	// error the operator must fix. Autoscaled members are invalid too, and their
+	// HPA-owned replicas stay untouched. An invalid pool drains nothing, but
+	// for every reason it holds an incoming member at the Pod gate.
 	members, missing, err := r.resolveMembers(ctx, pool)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -880,10 +881,11 @@ func (r *ModelPoolReconciler) updateStatus(ctx context.Context, pool, before *in
 
 func (r *ModelPoolReconciler) markInvalidMembers(ctx context.Context, pool *inferencev1alpha1.ModelPool, members map[string]*inferencev1alpha1.InferenceService, invalid []string, reason, messageFormat string) (ctrl.Result, error) {
 	before := pool.DeepCopy()
-	if reason == "MemberAutoscaling" {
-		if err := r.holdOwnerUntilOthersClear(ctx, before, members); err != nil {
-			return ctrl.Result{}, err
-		}
+	// Hold for every reason: an invalid pool drains nothing, so a router
+	// activation scaled up here would otherwise start next to the resident
+	// (#2351).
+	if err := r.holdOwnerUntilOthersClear(ctx, before, members); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	memberStatuses := make([]inferencev1alpha1.ModelPoolMemberStatus, 0, len(pool.Spec.Members))
@@ -939,7 +941,14 @@ func (r *ModelPoolReconciler) holdOwnerUntilOthersClear(
 		}
 		member, ok := members[name]
 		if !ok {
-			continue
+			if name == "" {
+				continue
+			}
+			// A member deleted while still listed leaves Pods that hold the
+			// GPU until they exit. Its Pods are found by name alone (#2351).
+			member = &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: pool.Namespace},
+			}
 		}
 		if member.Spec.Autoscaling != nil {
 			// Autoscaling can recreate a missing Pod after this reconcile.

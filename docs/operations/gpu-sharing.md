@@ -173,7 +173,7 @@ These conditions report the pool's health:
 
 | Condition | Meaning |
 | --- | --- |
-| `MembersValid` | every `inferenceServiceRef` resolves. `False` / `MissingMembers` lists the names that do not exist, and the pool sits `Degraded` |
+| `MembersValid` | every `inferenceServiceRef` resolves and no member sets `spec.autoscaling`. `False` / `MissingMembers` lists the names that do not exist, `False` / `MemberAutoscaling` the autoscaled members, and the pool sits `Degraded`. While invalid the pool drains nothing and holds an activated member at zero while any other member is autoscaled or still has Pods |
 | `SlotAllocated` | `True` / `Resident` names the owner. `False` / `Swapping` means no member is resident yet |
 | `SwapDeferred` | a swap is being held off rather than performed |
 | `MetalSupported` | whether the members are Kubernetes GPU-gated or Apple-metal backed |
@@ -269,7 +269,8 @@ member down and the swap waits for Pods that do not go away. LLMKube rejects
 this combination: the pool reports `MembersValid=False` with reason
 `MemberAutoscaling` and names the affected member. The pool leaves its
 HPA-owned replicas alone and holds any other activated member at zero until the
-autoscaled member is fixed.
+autoscaled member is fixed. A pool that also has a missing member reports
+`MissingMembers` first and holds the same way.
 
 ### Removing a member: stop it yourself
 
@@ -306,9 +307,12 @@ kubectl scale isvc coder-large --replicas=0
 **Delete it, then remove it.** If the member is not `spec.default`, delete its
 `InferenceService` while it is still listed, wait for its Pod to exit, then
 remove it from `spec.members`. While the reference does not resolve the pool sits
-`Degraded` with `MembersValid=False` / `MissingMembers`, makes no replica changes,
-and rechecks every few seconds, so nothing new starts until the departing Pod is
-gone. Deleting the `InferenceService` garbage-collects its Deployment and Pods.
+`Degraded` with `MembersValid=False` / `MissingMembers`, drains nothing, holds the
+member it would start (an activated member or `spec.default`) at zero while the
+departing Pod remains, and rechecks every few seconds, so nothing new starts until
+the departing Pod is gone. That member may start once the Pod is gone, before you
+remove the reference. Deleting the `InferenceService` garbage-collects its
+Deployment and Pods.
 
 The overlap in the first order is safe only on discrete GPUs under `exclusive`
 (whole devices) or `partitioned` (MIG). There the incoming Pod either waits

@@ -171,6 +171,26 @@ var _ = Describe("ModelPool Controller", func() {
 		Expect(k8sClient.Create(ctx, pool)).To(Succeed())
 	}
 
+	// addMissingMember lists a member whose InferenceService does not exist, so
+	// the pool turns invalid with MissingMembers.
+	addMissingMember := func(name string) {
+		pool := &inferencev1alpha1.ModelPool{}
+		Expect(k8sClient.Get(ctx, poolKey, pool)).To(Succeed())
+		pool.Spec.Members = append(pool.Spec.Members, inferencev1alpha1.ModelPoolMember{
+			InferenceServiceRef: corev1.LocalObjectReference{Name: name},
+		})
+		Expect(k8sClient.Update(ctx, pool)).To(Succeed())
+	}
+
+	// setMemberReplicas writes spec.replicas the way the router's Activate (or
+	// an operator's kubectl scale) does.
+	setMemberReplicas := func(name string, replicas int32) {
+		isvc := &inferencev1alpha1.InferenceService{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: "default"}, isvc)).To(Succeed())
+		isvc.Spec.Replicas = ptr.To(replicas)
+		Expect(k8sClient.Update(ctx, isvc)).To(Succeed())
+	}
+
 	It("holds all but the default member at zero replicas on a cold pool", func() {
 		Expect(k8sClient.Create(ctx, modelPoolMemberFixture("judge", 1))).To(Succeed())
 		Expect(k8sClient.Create(ctx, modelPoolMemberFixture("coder", 1))).To(Succeed())
@@ -565,6 +585,118 @@ var _ = Describe("ModelPool Controller", func() {
 		Expect(k8sClient.Update(ctx, judge)).To(Succeed())
 		reconcile()
 		Expect(replicasOfMember(ctx, "coder")).To(Equal(int32(1)), "the pending activation must resume once the incumbent is fixed")
+	})
+
+	// #2351: validateMembers reports missing members first, so a pool that is
+	// invalid for both reasons reports MissingMembers. The hold must still keep
+	// the activated member off the GPU the autoscaled incumbent occupies.
+	It("holds a router-activated member when a missing member and an autoscaled incumbent make the pool invalid (#2351)", func() {
+		judge := modelPoolMemberFixture("judge", 1)
+		Expect(k8sClient.Create(ctx, judge)).To(Succeed())
+		Expect(k8sClient.Create(ctx, modelPoolMemberFixture("coder", 0))).To(Succeed())
+		createPool(inferencev1alpha1.ModelPoolSwapPolicySticky, "judge")
+
+		reconcile()
+		setMemberPhase(ctx, "judge", PhaseReady, 1)
+		reconcile()
+		createMemberPodRunning(ctx, "judge")
+
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "judge", Namespace: "default"}, judge)).To(Succeed())
+		judge.Spec.Autoscaling = &inferencev1alpha1.AutoscalingSpec{MinReplicas: ptr.To(int32(1)), MaxReplicas: 2}
+		Expect(k8sClient.Update(ctx, judge)).To(Succeed())
+		addMissingMember("ghost")
+
+		setMemberReplicas("coder", 1)
+		reconcile()
+		reconcile()
+
+		Expect(replicasOfMember(ctx, "coder")).To(Equal(int32(0)), "the activated member must not start next to the autoscaled incumbent")
+		Expect(replicasOfMember(ctx, "judge")).To(Equal(int32(1)), "the HPA-owned replica count must remain unchanged")
+		pool := &inferencev1alpha1.ModelPool{}
+		Expect(k8sClient.Get(ctx, poolKey, pool)).To(Succeed())
+		Expect(pool.Status.PendingMember).To(Equal("coder"), "the held activation must survive the next reconcile")
+		Expect(pool.Status.Phase).To(Equal(inferencev1alpha1.ModelPoolPhaseDegraded))
+		cond := findPoolCondition(pool.Status.Conditions, inferencev1alpha1.ConditionModelPoolMembersValid)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		Expect(cond.Reason).To(Equal("MissingMembers"))
+		Expect(cond.Message).To(ContainSubstring("ghost"))
+
+		Expect(k8sClient.Delete(ctx, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "judge-pod", Namespace: "default"}})).To(Succeed())
+		reconcile()
+		Expect(replicasOfMember(ctx, "coder")).To(Equal(int32(0)), "the autoscaled incumbent can recreate its Pod, so the activation stays held")
+	})
+
+	// #2351: with only a missing member the pool makes no drains, so a router
+	// activation must wait for the resident's Pods to be gone instead of
+	// starting next to it.
+	It("holds a router-activated member until the resident's Pods are gone when a member is missing (#2351)", func() {
+		Expect(k8sClient.Create(ctx, modelPoolMemberFixture("judge", 1))).To(Succeed())
+		Expect(k8sClient.Create(ctx, modelPoolMemberFixture("coder", 0))).To(Succeed())
+		createPool(inferencev1alpha1.ModelPoolSwapPolicySticky, "judge")
+
+		reconcile()
+		setMemberPhase(ctx, "judge", PhaseReady, 1)
+		reconcile()
+		createMemberPodRunning(ctx, "judge")
+		addMissingMember("ghost")
+
+		setMemberReplicas("coder", 1)
+		reconcile()
+		reconcile()
+
+		Expect(replicasOfMember(ctx, "coder")).To(Equal(int32(0)), "the activated member must wait for the resident's Pods")
+		Expect(replicasOfMember(ctx, "judge")).To(Equal(int32(1)), "an invalid pool does not drain the resident")
+		pool := &inferencev1alpha1.ModelPool{}
+		Expect(k8sClient.Get(ctx, poolKey, pool)).To(Succeed())
+		Expect(pool.Status.PendingMember).To(Equal("coder"), "the held activation must survive the next reconcile")
+		Expect(pool.Status.Phase).To(Equal(inferencev1alpha1.ModelPoolPhaseDegraded))
+		cond := findPoolCondition(pool.Status.Conditions, inferencev1alpha1.ConditionModelPoolMembersValid)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Reason).To(Equal("MissingMembers"))
+		Expect(cond.Message).To(ContainSubstring("ghost"))
+
+		// The operator stops the resident; its Pod is still terminating.
+		setMemberReplicas("judge", 0)
+		reconcile()
+		Expect(replicasOfMember(ctx, "coder")).To(Equal(int32(0)), "the activation must wait while the resident's Pod remains")
+
+		Expect(k8sClient.Delete(ctx, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "judge-pod", Namespace: "default"}}, client.GracePeriodSeconds(0))).To(Succeed())
+		reconcile()
+		Expect(replicasOfMember(ctx, "coder")).To(Equal(int32(1)), "the held activation resumes once the resident's Pods are gone")
+	})
+
+	// #2351: deleting a listed resident makes it a missing member while its
+	// Pod is still terminating. The hold that now runs for MissingMembers must
+	// count that Pod, or it would warm spec.default next to it.
+	It("holds the default at zero while a deleted resident's Pod remains (#2351)", func() {
+		Expect(k8sClient.Create(ctx, modelPoolMemberFixture("judge", 0))).To(Succeed())
+		Expect(k8sClient.Create(ctx, modelPoolMemberFixture("coder", 1))).To(Succeed())
+		createPool(inferencev1alpha1.ModelPoolSwapPolicySticky, "judge")
+
+		reconcile()
+		setMemberPhase(ctx, "coder", PhaseReady, 1)
+		reconcile()
+		pool := &inferencev1alpha1.ModelPool{}
+		Expect(k8sClient.Get(ctx, poolKey, pool)).To(Succeed())
+		Expect(pool.Status.ResidentMember).To(Equal("coder"))
+		createMemberPodRunning(ctx, "coder")
+
+		// envtest runs no garbage collector, so the Pod outlives its
+		// InferenceService the way a terminating Pod does on a cluster.
+		Expect(k8sClient.Delete(ctx, &inferencev1alpha1.InferenceService{ObjectMeta: metav1.ObjectMeta{Name: "coder", Namespace: "default"}})).To(Succeed())
+		reconcile()
+		reconcile()
+
+		Expect(replicasOfMember(ctx, "judge")).To(Equal(int32(0)), "the default must not start while the deleted resident's Pod remains")
+		Expect(k8sClient.Get(ctx, poolKey, pool)).To(Succeed())
+		cond := findPoolCondition(pool.Status.Conditions, inferencev1alpha1.ConditionModelPoolMembersValid)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Reason).To(Equal("MissingMembers"))
+
+		Expect(k8sClient.Delete(ctx, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "coder-pod", Namespace: "default"}}, client.GracePeriodSeconds(0))).To(Succeed())
+		reconcile()
+		Expect(replicasOfMember(ctx, "judge")).To(Equal(int32(1)), "the default loads once the departed resident's Pod is gone")
 	})
 })
 
