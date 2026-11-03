@@ -58,38 +58,37 @@ type steadyRun struct {
 // rechecks and the result age are asserted against.
 const steadyWindow = 30 * time.Minute
 
-// steadySteps are the times after the first check at which runSteady
-// reconciles. A sample follows every reconcile and the controller writes
-// status only in a reconcile, so this is every status the run can take. The
-// checks are due on metalNodeRecheckInterval and a check waits at least
-// metalNodeMinStartSpacing after the last start, so the schedule is built
-// from both and drops what falls past steadyWindow: a shorter interval puts
-// more checks inside the window, and only the two this test pins are sampled.
-var steadySteps = func() []time.Duration {
-	// The fixture's first check started and finished at 0. A verifier finishes
-	// metalNodeVerifierPollInterval after it starts, so the first recheck is
-	// due one interval after that result. The second is due one interval after
-	// the first recheck's result, and no earlier than a spacing after its
-	// start. Where a third would start is past the window on the interval this
-	// test runs with.
-	firstStart := metalNodeRecheckInterval
-	firstResult := firstStart + metalNodeVerifierPollInterval
-	secondStart := max(firstResult+metalNodeRecheckInterval, firstStart+metalNodeMinStartSpacing)
-	secondResult := secondStart + metalNodeVerifierPollInterval
+// steadySteps are the times after the fixture's check at which runSteady
+// reconciles, and steadyRechecks is how many of them start a recheck. A sample
+// follows every reconcile and the controller writes status only in a
+// reconcile, so this is every status the run can take. Every recheck due
+// inside steadyWindow gets the same samples around it, so a changed
+// metalNodeRecheckInterval moves the schedule and the expected count with it.
+var steadySteps, steadyRechecks = func() ([]time.Duration, int) {
 	steps := []time.Duration{
-		firstStart / 2,             // nothing is due yet
-		firstStart - time.Minute,   // one sample before the first recheck
-		firstStart,                 // the first recheck is due: a verifier starts
-		firstResult,                // it has finished, and its result lands
-		firstResult + time.Second,  // how the controller dated that result
-		secondStart - time.Minute,  // one sample before the second recheck
-		secondStart,                // the second recheck is due: a verifier starts
-		secondResult,               // it has finished, and its result lands
-		secondResult + time.Minute, // and stands
-		steadyWindow,               // the window closes
+		metalNodeRecheckInterval / 2, // nothing is due yet
+		steadyWindow,                 // the window closes
+	}
+	n := 0
+	// The fixture's check started and finished at 0. A recheck is due one
+	// interval after the controller dates the previous result, which is no
+	// later than the step the result landed on, and no sooner than a spacing
+	// after the previous start. The run finishes each verifier at the step
+	// after its start, which it places one metalNodeVerifierPollInterval
+	// later, when the controller looks again.
+	for start := metalNodeRecheckInterval; start <= steadyWindow; {
+		result := start + metalNodeVerifierPollInterval
+		steps = append(steps,
+			start-time.Minute,  // one sample before the recheck is due
+			start,              // it is due: a verifier starts
+			result,             // the verifier has finished, and its result lands
+			result+time.Second, // the next reconcile judges that result's age
+		)
+		n++
+		start = max(result+metalNodeRecheckInterval, start+metalNodeMinStartSpacing)
 	}
 	slices.Sort(steps)
-	return slices.DeleteFunc(slices.Compact(steps), func(d time.Duration) bool { return d > steadyWindow })
+	return slices.DeleteFunc(slices.Compact(steps), func(d time.Duration) bool { return d > steadyWindow }), n
 }()
 
 // runSteady keeps a reachable Mac steady through steadySteps: the agent
@@ -135,10 +134,10 @@ func (f *metalNodeFixture) runSteady(name string, skew time.Duration) steadyRun 
 		if uid := mn.Status.Verification.PodUID; uid != "" && !started[uid] {
 			started[uid] = true
 			run.checks++
-			// Status is written before the finished verifier is deleted, so
-			// the UID above can be the one that just reported. A held pod has
-			// the CreationTimestamp the controller times it by; a finished
-			// one has already served.
+			// The controller starts no verifier in a reconcile that finds one,
+			// so a UID new to the run is the pod this reconcile created. The
+			// list confirms it is the only live verifier and holds it for the
+			// next step to finish.
 			live := make([]corev1.Pod, 0, 1)
 			for _, p := range f.verifierPods(name) {
 				if p.DeletionTimestamp == nil && verifierTerminated(&p) == nil {
@@ -147,7 +146,7 @@ func (f *metalNodeFixture) runSteady(name string, skew time.Duration) steadyRun 
 			}
 			if len(live) != 1 {
 				f.t.Fatalf("at %s the controller records a new check but %d live verifier pods exist, want exactly 1",
-					start.Add(off).Sub(start), len(live))
+					off, len(live))
 			}
 			held = &live[0]
 		}
@@ -161,8 +160,8 @@ func (f *metalNodeFixture) runSteady(name string, skew time.Duration) steadyRun 
 // finish on its own clock; read as is, a node 14 minutes behind made every
 // fresh result older than the 13-minute bound (Reachable flapped every
 // reconcile), and one 14 minutes ahead pushed every recheck 14 minutes out.
-// The run samples both recheck boundaries and the steps around each result
-// over the same 30 minutes and the same skews a 30-second walk covered.
+// The run samples around every recheck in the window, over the same 30
+// minutes and the same skews a 30-second walk covered.
 func TestMetalNodeSteadyMacStaysReachable(t *testing.T) {
 	for name, skew := range map[string]time.Duration{
 		"mac-steady":      0,
@@ -177,8 +176,9 @@ func TestMetalNodeSteadyMacStaysReachable(t *testing.T) {
 				t.Errorf("%d of %d samples over %s not Reachable=True with hostIP (node clock %s off); first: %s",
 					run.notTrue, run.samples, steadyWindow, skew, run.firstBad)
 			}
-			if run.checks < 2 || run.checks > 3 {
-				t.Errorf("%d rechecks in %s, want one every %s (2 or 3)", run.checks, steadyWindow, metalNodeRecheckInterval)
+			if run.checks != steadyRechecks {
+				t.Errorf("%d rechecks in %s, want %d, one %s after each result", run.checks, steadyWindow, steadyRechecks,
+					metalNodeRecheckInterval)
 			}
 		})
 	}
