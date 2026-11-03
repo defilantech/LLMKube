@@ -751,7 +751,14 @@ func TestOCIPrefetchMixedURLs(t *testing.T) {
 	requireInitShellEnvironment(t)
 	r, model := ociPrefetchFixture(t)
 	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		_, _ = fmt.Fprint(w, req.URL.Path)
+		switch req.URL.Path {
+		case "/weights.gguf":
+			_, _ = fmt.Fprint(w, "fixture weights")
+		case "/bucket/encoder.bin":
+			_, _ = fmt.Fprint(w, "fixture encoder")
+		default:
+			http.NotFound(w, req)
+		}
 	}))
 	defer source.Close()
 	registryServer := httptest.NewServer(registry.New())
@@ -833,7 +840,7 @@ func TestOCIPrefetchMixedURLs(t *testing.T) {
 		}
 		got[header.Name] = string(body)
 	}
-	want := map[string]string{"weights.gguf": "/weights.gguf", "encoder.bin": "/bucket/encoder.bin"}
+	want := map[string]string{"weights.gguf": "fixture weights", "encoder.bin": "fixture encoder"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("published files=%v want=%v", got, want)
 	}

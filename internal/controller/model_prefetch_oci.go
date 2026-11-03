@@ -120,10 +120,7 @@ func (r *ModelReconciler) reconcileOCIPrefetch(ctx context.Context, model *infer
 	}
 	entry.ObservedGeneration = model.Generation
 	if entry.Phase == inferencev1alpha1.PrefetchPhaseSucceeded {
-		if model.Status.Phase != PhaseReady || !conditionIs(model, ConditionAvailable, metav1.ConditionTrue, "Model published to "+entry.Image) ||
-			!conditionIs(model, ConditionDegraded, metav1.ConditionFalse, "OCI prefetch completed") {
-			r.completeOCIPrefetch(model, entry)
-		}
+		r.completeOCIPrefetch(model, entry)
 		return ctrl.Result{}, nil
 	}
 	entry.JobName = prefetchJobNameFor(model.Name, "-prefetch-oci")
@@ -205,6 +202,10 @@ func (r *ModelReconciler) reconcileOCIPrefetch(ctx context.Context, model *infer
 }
 
 func (r *ModelReconciler) completeOCIPrefetch(model *inferencev1alpha1.Model, entry *inferencev1alpha1.OCIPrefetchStatus) {
+	if model.Status.Phase == PhaseReady && conditionIs(model, ConditionAvailable, metav1.ConditionTrue, "Model published to "+entry.Image) &&
+		conditionIs(model, ConditionDegraded, metav1.ConditionFalse, "OCI prefetch completed") {
+		return
+	}
 	model.Status.Phase = PhaseReady
 	seedPrefetchCacheKey(model)
 	if hasMultiFileStaging(model) {
