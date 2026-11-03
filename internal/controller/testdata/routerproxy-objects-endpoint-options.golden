@@ -1,0 +1,161 @@
+---
+data:
+  config.json: '{"stub":true}'
+metadata:
+  annotations:
+    inference.llmkube.dev/router-config-hash: deadbeef
+  labels:
+    app: coding-router-router-proxy
+    app.kubernetes.io/component: router-proxy
+    app.kubernetes.io/managed-by: llmkube-controller
+    app.kubernetes.io/name: llmkube
+    inference.llmkube.dev/model-router: coding-router
+  name: coding-router-router-proxy
+  namespace: router-builder-test
+---
+metadata:
+  annotations:
+    inference.llmkube.dev/applied-pod-labels: example.com/team
+  labels:
+    app: coding-router-router-proxy
+    app.kubernetes.io/component: router-proxy
+    app.kubernetes.io/managed-by: llmkube-controller
+    app.kubernetes.io/name: llmkube
+    inference.llmkube.dev/model-router: coding-router
+  name: coding-router-router-proxy
+  namespace: router-builder-test
+spec:
+  replicas: 2
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: coding-router-router-proxy
+      inference.llmkube.dev/model-router: coding-router
+  strategy: {}
+  template:
+    metadata:
+      annotations:
+        inference.llmkube.dev/router-config-hash: deadbeef
+      labels:
+        app: coding-router-router-proxy
+        example.com/team: llm
+        inference.llmkube.dev/model-router: coding-router
+    spec:
+      containers:
+      - args:
+        - --config
+        - /etc/llmkube/router/config.json
+        - --listen
+        - :8080
+        - --metrics-bind-address
+        - :9090
+        - --log-format
+        - json
+        envFrom:
+        - secretRef:
+            name: anthropic-key
+            optional: true
+        image: ghcr.io/test/router-proxy:v1
+        imagePullPolicy: IfNotPresent
+        livenessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 20
+          periodSeconds: 10
+          timeoutSeconds: 2
+        name: router-proxy
+        ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+        - containerPort: 9090
+          name: metrics
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 2
+        resources:
+          limits:
+            cpu: 500m
+            memory: 1Gi
+          requests:
+            cpu: 50m
+            memory: 64Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+        volumeMounts:
+        - mountPath: /etc/llmkube/router
+          name: router-config
+          readOnly: true
+      securityContext:
+        fsGroup: 65532
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+      - configMap:
+          name: coding-router-router-proxy
+        name: router-config
+status: {}
+---
+metadata:
+  labels:
+    app: coding-router-router-proxy
+    app.kubernetes.io/component: router-proxy
+    app.kubernetes.io/managed-by: llmkube-controller
+    app.kubernetes.io/name: llmkube
+    inference.llmkube.dev/model-router: coding-router
+  name: coding-router-router-proxy
+  namespace: router-builder-test
+spec:
+  externalTrafficPolicy: Local
+  ports:
+  - name: http
+    nodePort: 30801
+    port: 80
+    protocol: TCP
+    targetPort: 8080
+  selector:
+    app: coding-router-router-proxy
+    inference.llmkube.dev/model-router: coding-router
+  type: NodePort
+status:
+  loadBalancer: {}
+---
+metadata:
+  labels:
+    app: coding-router-router-proxy
+    app.kubernetes.io/component: router-proxy
+    app.kubernetes.io/managed-by: llmkube-controller
+    app.kubernetes.io/name: llmkube
+    inference.llmkube.dev/model-router: coding-router
+  name: coding-router-router-proxy-admin
+  namespace: router-builder-test
+spec:
+  ports:
+  - name: admin
+    port: 9090
+    protocol: TCP
+    targetPort: 9090
+  selector:
+    app: coding-router-router-proxy
+    inference.llmkube.dev/model-router: coding-router
+  type: ClusterIP
+status:
+  loadBalancer: {}
+---
+budgetEndpoint: http://coding-router-router-proxy-admin.router-builder-test.svc.cluster.local:9090/admin/budgets
+statusEndpoint: http://coding-router-router-proxy.router-builder-test.svc.cluster.local:80/v1
