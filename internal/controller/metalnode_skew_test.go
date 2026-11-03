@@ -19,13 +19,13 @@ package controller
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 	"github.com/defilantech/llmkube/pkg/metalnode"
@@ -54,33 +54,69 @@ type steadyRun struct {
 	firstBad                 string
 }
 
-// runSteady keeps a reachable Mac steady for d: the agent renews every 30 s
-// with an unchanged report, and each verifier finishes, reaching 100.64.0.2,
-// by the next step, its finish stamped on a node clock skew off the
-// controller's. It samples Reachable after every step.
-func (f *metalNodeFixture) runSteady(name string, skew, d time.Duration) steadyRun {
+// steadyWindow is how long runSteady keeps the Mac under test, which the
+// rechecks and the result age are asserted against.
+const steadyWindow = 30 * time.Minute
+
+// steadySteps are the times after the first check at which runSteady
+// reconciles. A sample follows every reconcile and the controller writes
+// status only in a reconcile, so this is every status the run can take, with
+// a sample before and after each change. The checks are due on
+// metalNodeRecheckInterval and a check waits at least metalNodeMinStartSpacing
+// after the last start, so both are read back here: a changed interval moves
+// the schedule with it.
+var steadySteps = func() []time.Duration {
+	// The fixture's first check started and finished at 0, and a verifier
+	// finishes a spacing after it starts, so the first recheck is due one
+	// interval after that result. The second is due one interval after the
+	// first recheck's result, and no earlier than a spacing after its start.
+	// A third would start a spacing after the second check's result, which is
+	// where the controller's clock catches up with the window's end.
+	firstStart := metalNodeRecheckInterval
+	firstResult := firstStart + metalNodeMinStartSpacing
+	secondStart := max(firstResult+metalNodeRecheckInterval, firstStart+metalNodeMinStartSpacing)
+	secondResult := secondStart + metalNodeMinStartSpacing
+	steps := []time.Duration{
+		firstStart / 2,            // nothing is due yet
+		firstStart - time.Minute,  // one sample before the first recheck
+		firstStart,                // the first recheck is due: a verifier starts
+		firstResult,               // it finishes, and its result lands
+		firstResult + time.Second, // how the controller dated that result
+		firstStart + metalNodeVerifierPollInterval, // the poll after that start
+		secondStart - time.Minute,                  // one sample before the second recheck
+		secondStart,                                // the second recheck is due
+		secondResult,                               // its result lands
+		secondResult + time.Minute,                 // and stands
+		steadyWindow,                               // the window closes
+	}
+	slices.Sort(steps)
+	return slices.Compact(steps)
+}()
+
+// runSteady keeps a reachable Mac steady through steadySteps: the agent
+// renews with an unchanged report, and each verifier finishes, reaching
+// 100.64.0.2, by the next step, its finish stamped on a node clock skew off
+// the controller's. The pod a step starts is held and finished at the next,
+// and the run lists pods only once the controller records a check it has not
+// seen, so it samples Reachable after every step without a pod list per step.
+// One reconcile per step: a pod's creationTimestamp is the API server's real
+// clock, so a second look in the same step at a pod just created would read as
+// past the verifier timeout.
+func (f *metalNodeFixture) runSteady(name string, skew time.Duration) steadyRun {
 	f.t.Helper()
 	report := encodeReport(f.t, testReport(tailnetCandidate))
 	var run steadyRun
-	seen := map[types.UID]bool{}
-	for end := f.now.Add(d); f.now.Before(end); {
-		f.now = f.now.Add(30 * time.Second)
-		for _, p := range f.verifierPods(name) {
-			if p.DeletionTimestamp == nil && verifierTerminated(&p) == nil {
-				f.finishVerifierAt(p, "100.64.0.2 0\n", f.now.Add(skew))
-			}
+	var held *corev1.Pod
+	started := map[string]bool{}
+	start := f.now
+	for _, off := range steadySteps {
+		f.now = start.Add(off)
+		if held != nil {
+			f.finishVerifierAt(*held, "100.64.0.2 0\n", f.now.Add(skew))
+			held = nil
 		}
-		// One reconcile per step: a pod's creationTimestamp is the API
-		// server's real clock, so a second look in the same step at a pod
-		// just created would read as past the verifier timeout.
 		f.putLease(name, f.now, report)
 		f.reconcile(name)
-		for _, p := range f.verifierPods(name) {
-			if !seen[p.UID] {
-				seen[p.UID] = true
-				run.checks++
-			}
-		}
 		mn := f.get(name)
 		run.samples++
 		if c := condition(f.t, mn, inferencev1alpha1.MetalNodeConditionReachable); c.Status != metav1.ConditionTrue || mn.Status.HostIP == "" {
@@ -92,6 +128,17 @@ func (f *metalNodeFixture) runSteady(name string, skew, d time.Duration) steadyR
 		if lc := mn.Status.Verification.LastCheckTime; lc != nil && lc.After(f.now) {
 			f.t.Fatalf("lastCheckTime %s is after the controller's now %s; the node clock leaked into status", lc, f.now)
 		}
+		if uid := mn.Status.Verification.PodUID; uid != "" && !started[uid] {
+			started[uid] = true
+			run.checks++
+			// status is written before the finished verifier is deleted, so
+			// the UID above can be the one that just reported. A held pod has
+			// the CreationTimestamp the controller times it by; a finished
+			// one has already served.
+			if pods := f.verifierPods(name); len(pods) == 1 && verifierTerminated(&pods[0]) == nil {
+				held = &pods[0]
+			}
+		}
 	}
 	return run
 }
@@ -102,6 +149,8 @@ func (f *metalNodeFixture) runSteady(name string, skew, d time.Duration) steadyR
 // finish on its own clock; read as is, a node 14 minutes behind made every
 // fresh result older than the 13-minute bound (Reachable flapped every
 // reconcile), and one 14 minutes ahead pushed every recheck 14 minutes out.
+// The run samples both recheck boundaries and the steps around each result
+// over the same 30 minutes and the same skews a 30-second walk covered.
 func TestMetalNodeSteadyMacStaysReachable(t *testing.T) {
 	for name, skew := range map[string]time.Duration{
 		"mac-steady":      0,
@@ -111,7 +160,7 @@ func TestMetalNodeSteadyMacStaysReachable(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			f := newMetalNodeFixture(t)
 			f.verifyMetalNode(name, tailnetCandidate)
-			run := f.runSteady(name, skew, 30*time.Minute)
+			run := f.runSteady(name, skew)
 			if run.notTrue != 0 {
 				t.Errorf("%d of %d samples over 30 min not Reachable=True with hostIP (node clock %s off); first: %s",
 					run.notTrue, run.samples, skew, run.firstBad)
