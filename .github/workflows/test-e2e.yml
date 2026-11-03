@@ -5,6 +5,11 @@ on:
     branches:
       - main
   pull_request:
+  # The merge queue runs the required checks on the merged result before it
+  # lands (#2379). GitHub ignores paths filters for merge_group, which is why
+  # the path-filtered workflows are not required checks and have no trigger.
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read

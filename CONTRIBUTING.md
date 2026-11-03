@@ -370,7 +370,16 @@ loop and on the hook.
 1. **Automated checks** run (tests, linting, builds)
 2. **Maintainer review** (usually within 2-3 days)
 3. **Address feedback** by pushing new commits
-4. **Approval and merge** (squash-merge to `main`)
+4. **Approval and merge** (squash-merge to `main` through the merge queue)
+
+Approved PRs merge through GitHub's merge queue. The queue squashes each PR onto
+the current `main`, together with any PRs queued ahead of it, and runs the
+required checks (Unit and envtest, Lint and static checks, the E2E Tests jobs,
+govulncheck and the DCO check) on that result before it lands. A PR whose checks
+pass on its own branch can still fail in the queue when it conflicts with
+something that merged after it was opened; the queue then removes it, and a
+rebase on `main` shows the failure locally. This is what keeps two green PRs
+from merging into a red `main` (#2379).
 
 **What reviewers look for:**
 - Code quality and readability

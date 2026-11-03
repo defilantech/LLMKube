@@ -5,13 +5,20 @@ on:
     branches:
       - main
   pull_request:
+  # The merge queue runs the required checks on the merged result before it
+  # lands (#2379). GitHub ignores paths filters for merge_group, which is why
+  # the path-filtered workflows are not required checks and have no trigger.
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
 
 jobs:
   lint:
-    name: Run on Ubuntu
+    # Unique across workflows: a required status check is matched by job name
+    # alone, and the Tests job was also called "Run on Ubuntu" (#2379).
+    name: Lint and static checks
     runs-on: ubuntu-latest
     steps:
       - name: Clone the code
@@ -56,7 +63,8 @@ jobs:
         # unless each added file is checked (#2298). The base SHA is the PR's
         # target on a pull_request; on a push it is the commit before the range,
         # and an all-zero value there (a new branch's first push) makes the
-        # check a no-op rather than failing every existing header.
+        # check a no-op rather than failing every existing header. In the merge
+        # queue it is the commit the queued PRs are merged onto.
         run: make check-copyright
         env:
-          BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
+          BASE_REF: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
