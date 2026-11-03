@@ -194,18 +194,22 @@ test-affected: setup-envtest ## Test packages affected by changes since BASE_REF
 # cmd/affected-packages. check-envtest-sharing_test.sh is a source rule rather
 # than a script test, but it belongs to the same set: a test that starts its
 # own envtest control plane is what took internal/controller into go test's
-# timeout (#2141). macos-sign_test.sh covers hack/macos-sign.sh, the release
+# timeout (#2141). check-test-metrics-bind_test.sh is the same kind of source
+# rule: a test manager that serves metrics on the default :8080 collides with
+# one in another package that go test runs in parallel (#2377).
+# macos-sign_test.sh covers hack/macos-sign.sh, the release
 # hook that signs the darwin binaries (#2084), and its real-tool case runs only
 # on macOS with rcodesign on PATH; macos-notarize_test.sh and
 # install-rcodesign_test.sh cover the release's notarization step and its
 # pinned rcodesign install.
 .PHONY: test-scripts
-test-scripts: ## Run the shell regression tests (gate, test-affected, affected-packages, GINKGO_SEED single evaluation, envtest sharing, macOS signing and notarization).
+test-scripts: ## Run the shell regression tests (gate, test-affected, affected-packages, GINKGO_SEED single evaluation, envtest sharing, test metrics ports, macOS signing and notarization).
 	@bash scripts/gate_test.sh
 	@bash scripts/test-affected_test.sh
 	@bash scripts/affected-packages_test.sh
 	@bash scripts/check-ginkgo-seed_test.sh
 	@bash scripts/check-envtest-sharing_test.sh
+	@bash scripts/check-test-metrics-bind_test.sh
 	@bash scripts/macos-sign_test.sh
 	@bash scripts/macos-notarize_test.sh
 	@bash scripts/install-rcodesign_test.sh
