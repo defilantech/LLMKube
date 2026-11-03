@@ -18,6 +18,7 @@ package controller
 
 import (
 	"fmt"
+	"net/url"
 	"path"
 	"strings"
 )
@@ -28,6 +29,8 @@ type StagingPlan struct {
 	Primary string
 	// Files is the ordered, deduplicated list of all files to stage.
 	Files []string
+	// Sources maps cache-relative destinations to explicitly supplied URLs.
+	Sources map[string]string
 	// Mmproj is the multimodal projector file, if set.
 	Mmproj string
 }
@@ -51,7 +54,8 @@ func ResolveFileSet(files []string, mmproj string, repoFileList []string) (*Stag
 		return nil, fmt.Errorf("primary file %q must resolve to exactly one file, matched %d", files[0], len(primaryMatches))
 	}
 
-	seen := map[string]struct{}{}
+	seen := map[string]string{}
+	var sources map[string]string
 	resolved := make([]string, 0, len(files)+1)
 	for _, entry := range files {
 		matches, err := expandFilePattern(entry, repoFileList)
@@ -59,11 +63,24 @@ func ResolveFileSet(files []string, mmproj string, repoFileList []string) (*Stag
 			return nil, fmt.Errorf("resolve file %q: %w", entry, err)
 		}
 		for _, match := range matches {
-			if _, ok := seen[match]; ok {
+			name, err := fileEntryPath(match)
+			if err != nil {
+				return nil, err
+			}
+			if previous, ok := seen[path.Clean(name)]; ok {
+				if previous != match {
+					return nil, fmt.Errorf("files %q and %q stage to the same path %q", previous, match, name)
+				}
 				continue
 			}
-			seen[match] = struct{}{}
-			resolved = append(resolved, match)
+			seen[path.Clean(name)] = match
+			if name != match {
+				if sources == nil {
+					sources = make(map[string]string)
+				}
+				sources[name] = match
+			}
+			resolved = append(resolved, name)
 		}
 	}
 
@@ -77,23 +94,31 @@ func ResolveFileSet(files []string, mmproj string, repoFileList []string) (*Stag
 		if len(repoFileList) > 0 && !containsString(repoFileList, mmproj) {
 			return nil, fmt.Errorf("spec.mmproj %q was not found in repository file list", mmproj)
 		}
-		if _, ok := seen[mmproj]; !ok {
+		if original, ok := seen[path.Clean(mmproj)]; ok && original != mmproj {
+			return nil, fmt.Errorf("spec.mmproj conflicts with file %q", original)
+		} else if !ok {
 			resolved = append(resolved, mmproj)
 		}
 	}
 
-	return &StagingPlan{Primary: primaryMatches[0], Files: resolved, Mmproj: mmproj}, nil
+	return &StagingPlan{Primary: resolved[0], Files: resolved, Sources: sources, Mmproj: mmproj}, nil
 }
 
 // validateRepoRelativePath rejects empty, absolute, and path-traversal paths.
 func validateRepoRelativePath(p string) error {
-	if p == "" || strings.HasPrefix(p, "/") || strings.Contains(p, "..") {
+	if p == "" || strings.HasPrefix(p, "/") || strings.Contains(p, "..") || strings.ContainsAny(p, "\t\r\n") {
 		return fmt.Errorf("invalid repo-relative path %q", p)
 	}
 	return nil
 }
 
 func expandFilePattern(entry string, repoFileList []string) ([]string, error) {
+	if strings.Contains(entry, "://") {
+		if _, err := fileEntryPath(entry); err != nil {
+			return nil, err
+		}
+		return []string{entry}, nil
+	}
 	if err := validateRepoRelativePath(entry); err != nil {
 		return nil, err
 	}
@@ -145,4 +170,46 @@ func containsString(values []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// fileEntryPath preserves HF repository paths and S3 keys; other HTTP files
+// use their basename. URLs never become filesystem paths themselves.
+func fileEntryPath(entry string) (string, error) {
+	if !strings.Contains(entry, "://") {
+		return entry, validateRepoRelativePath(entry)
+	}
+	u, err := url.Parse(entry)
+	if err != nil {
+		return "", fmt.Errorf("invalid file URL %q: %w", entry, err)
+	}
+	if (u.Scheme != "http" && u.Scheme != "https" && u.Scheme != "s3") || u.Host == "" || u.User != nil || u.Fragment != "" || strings.ContainsAny(entry, "\t\r\n") {
+		return "", fmt.Errorf("file entry must be an http(s) or s3 object URL: %q", entry)
+	}
+	name := path.Base(u.Path)
+	if u.Scheme == "s3" {
+		name = strings.TrimPrefix(u.Path, "/")
+	} else if isHuggingFaceURL(entry) {
+		parts := strings.SplitN(strings.TrimPrefix(u.Path, "/"), "/", 5)
+		if len(parts) != 5 || parts[2] != "resolve" {
+			return "", fmt.Errorf("HuggingFace file URL must name a /resolve/revision/file: %q", entry)
+		}
+		name = parts[4]
+	}
+	if strings.HasSuffix(u.Path, "/") || name == "." || hasGlob(name) {
+		return "", fmt.Errorf("file URL must name a concrete file: %q", entry)
+	}
+	if err := validateRepoRelativePath(name); err != nil {
+		return "", err
+	}
+	return name, nil
+}
+
+func (p *StagingPlan) entries() []string {
+	entries := append([]string(nil), p.Files...)
+	for i, name := range entries {
+		if source, ok := p.Sources[name]; ok {
+			entries[i] = source
+		}
+	}
+	return entries
 }

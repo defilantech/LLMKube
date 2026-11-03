@@ -139,6 +139,39 @@ mmproj: mmproj-model-f16.gguf
 
 When `spec.files` is empty, `spec.source` must name a single object directly.
 
+Files may also be absolute HTTP(S) or S3 object URLs, mixed with paths relative
+to `source`. Omit `source` when all entries are absolute URLs:
+
+```yaml
+spec:
+  source: hf://Lightricks/LTX-2.5
+  files:
+    - vae/ltx-2.5-video-vae-bf16.safetensors
+    - https://huggingface.co/Comfy-Org/gemma-4/resolve/main/text_encoders/gemma4_e2b_it_int8_convrot.safetensors
+  format: safetensors
+```
+
+Only `/resolve/<revision>/` URLs on `huggingface.co` retain their repository-relative
+path (`text_encoders/...` above); S3 URLs retain the object key. Other HTTP URLs,
+including explicit URLs on the configured `HF_ENDPOINT` mirror, use the basename.
+For example, a mirror URL ending in `/resolve/main/text_encoders/x.safetensors`
+is staged as `x.safetensors`, not `text_encoders/x.safetensors`, even when the
+mirror receives `HF_TOKEN`. To preserve subdirectories when using a mirror,
+use an `hf://org/repo` source with repo-relative `files` and configure
+`HF_ENDPOINT` in `sourceSecretRef`.
+
+Different sources cannot target the same destination. URL query
+parameters are preserved for downloads and do not become part of the filename.
+`fileSha256` keys use the exact entry from `files`, including the full URL.
+
+This uses the in-cluster downloader, including prefetch for URL-only Models.
+The Metal agent and pre-staged PVC/OCI volumes do not support explicit file
+URLs. `mmproj` remains relative to `source`. `HF_TOKEN` is sent only to Hugging
+Face or the configured `HF_ENDPOINT` origin; S3 objects use the Secret's
+`AWS_ENDPOINT_URL`, `AWS_REGION`, and AWS credentials. Changing an explicit
+file URL changes the cache key, preventing reuse of another origin's bytes.
+
+
 An `oci://` source carries every file in the image already, so
 `spec.files` selects the primary file within that tree and nothing is fetched
 per file. Use **explicit paths**: a glob cannot be expanded against an OCI
