@@ -28,3 +28,7 @@
 # same #531/#620 trap; envtest never catches it because only the Docker
 # build context honors .dockerignore.
 !pkg/foreman/agent/tools/scan_job_template.yaml
+
+# Re-include the retried module download the builder stages run before
+# `go build` (#2380). Without it the COPY fails and so does every image build.
+!hack/go-mod-download.sh

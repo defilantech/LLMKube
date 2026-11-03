@@ -38,6 +38,11 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Download Go modules
+        # Once, before the scan builds; retried on network errors only (#2380).
+        if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'release-please--branches--main') }}
+        run: hack/go-mod-download.sh
+
       - name: Install Trivy
         if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'release-please--branches--main') }}
         uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567  # v0.3.1

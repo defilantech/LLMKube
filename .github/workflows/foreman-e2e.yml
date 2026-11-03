@@ -20,6 +20,7 @@ on:
       - 'api/foreman/**'
       - 'Dockerfile.foreman-operator'
       - 'Dockerfile.foreman-agent'
+      - 'hack/go-mod-download.sh'
       - '.github/workflows/foreman-e2e.yml'
   pull_request:
     paths:
@@ -31,6 +32,7 @@ on:
       - 'api/foreman/**'
       - 'Dockerfile.foreman-operator'
       - 'Dockerfile.foreman-agent'
+      - 'hack/go-mod-download.sh'
       - '.github/workflows/foreman-e2e.yml'
 
 permissions:
