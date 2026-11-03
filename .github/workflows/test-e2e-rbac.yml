@@ -19,6 +19,7 @@ on:
       - 'config/rbac/**'
       - 'internal/controller/**'
       - 'hack/kind-e2e-rbac.sh'
+      - 'hack/go-mod-download.sh'
       - 'test/crd/inference-extension/**'
       - 'test/e2e-rbac/**'
       - 'Makefile'
@@ -33,6 +34,7 @@ on:
       - 'config/rbac/**'
       - 'internal/controller/**'
       - 'hack/kind-e2e-rbac.sh'
+      - 'hack/go-mod-download.sh'
       - 'test/crd/inference-extension/**'
       - 'test/e2e-rbac/**'
       - 'Makefile'
@@ -61,6 +63,10 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+
+      - name: Download Go modules
+        # Once, before any step builds; retried on network errors only (#2380).
+        run: hack/go-mod-download.sh
 
       - name: Install the latest version of kind
         run: |

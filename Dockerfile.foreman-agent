@@ -6,9 +6,11 @@ ARG TARGETARCH
 
 WORKDIR /workspace
 
-# Dependency layer cache.
+# Dependency layer cache. The script retries a network error from the
+# module proxy (#2380).
 COPY go.mod go.sum ./
-RUN go mod download
+COPY hack/go-mod-download.sh hack/go-mod-download.sh
+RUN sh hack/go-mod-download.sh
 
 COPY api/ api/
 COPY cmd/ cmd/

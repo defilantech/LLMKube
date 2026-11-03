@@ -29,6 +29,10 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Download Go modules
+        # Once, before any step builds; retried on network errors only (#2380).
+        run: hack/go-mod-download.sh
+
       - name: Setup Python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:

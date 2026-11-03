@@ -34,6 +34,10 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Download Go modules
+        # Once, before any step builds; retried on network errors only (#2380).
+        run: hack/go-mod-download.sh
+
       - name: Install the latest version of kind
         run: |
           curl -Lo ./kind https://kind.sigs.k8s.io/dl/latest/kind-linux-amd64
@@ -72,6 +76,10 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+
+      - name: Download Go modules
+        # Once, before any step builds; retried on network errors only (#2380).
+        run: hack/go-mod-download.sh
 
       - name: Install the latest version of kind
         run: |
@@ -122,6 +130,10 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Download Go modules
+        # Once, before any step builds; retried on network errors only (#2380).
+        run: hack/go-mod-download.sh
+
       - name: Install the latest version of kind
         run: |
           curl -Lo ./kind https://kind.sigs.k8s.io/dl/latest/kind-linux-amd64
@@ -166,6 +178,10 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Download Go modules
+        # Once, before any step builds; retried on network errors only (#2380).
+        run: hack/go-mod-download.sh
+
       - name: Install the latest version of kind
         run: |
           curl -Lo ./kind https://kind.sigs.k8s.io/dl/latest/kind-linux-amd64
@@ -205,6 +221,10 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+
+      - name: Download Go modules
+        # Once, before any step builds; retried on network errors only (#2380).
+        run: hack/go-mod-download.sh
 
       - name: Install Longhorn host prerequisites
         run: |
@@ -296,6 +316,10 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+
+      - name: Download Go modules
+        # Once, before any step builds; retried on network errors only (#2380).
+        run: hack/go-mod-download.sh
 
       - name: Install MINC
         run: |

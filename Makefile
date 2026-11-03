@@ -201,9 +201,11 @@ test-affected: setup-envtest ## Test packages affected by changes since BASE_REF
 # hook that signs the darwin binaries (#2084), and its real-tool case runs only
 # on macOS with rcodesign on PATH; macos-notarize_test.sh and
 # install-rcodesign_test.sh cover the release's notarization step and its
-# pinned rcodesign install.
+# pinned rcodesign install. go-mod-download_test.sh covers
+# hack/go-mod-download.sh, the retried module download every CI job and image
+# build runs first (#2380).
 .PHONY: test-scripts
-test-scripts: ## Run the shell regression tests (gate, test-affected, affected-packages, GINKGO_SEED single evaluation, envtest sharing, test metrics ports, macOS signing and notarization).
+test-scripts: ## Run the shell regression tests (gate, test-affected, affected-packages, GINKGO_SEED single evaluation, envtest sharing, test metrics ports, macOS signing and notarization, Go module download retries).
 	@bash scripts/gate_test.sh
 	@bash scripts/test-affected_test.sh
 	@bash scripts/affected-packages_test.sh
@@ -213,6 +215,7 @@ test-scripts: ## Run the shell regression tests (gate, test-affected, affected-p
 	@bash scripts/macos-sign_test.sh
 	@bash scripts/macos-notarize_test.sh
 	@bash scripts/install-rcodesign_test.sh
+	@bash scripts/go-mod-download_test.sh
 
 .PHONY: test-chart
 test-chart: ## Lint and unit-test the Helm charts (requires helm + helm-unittest plugin).
@@ -786,7 +789,8 @@ $(GOVULNCHECK): $(LOCALBIN)
 vulncheck: govulncheck ## Run govulncheck against the module.
 	$(GOVULNCHECK) ./...
 
-# go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
+# go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist.
+# hack/go-mod-download.sh retries the install when the module proxy fails with a network error (#2380).
 # $1 - target path with name of binary
 # $2 - package url which can be installed
 # $3 - specific version of package
@@ -796,7 +800,7 @@ set -e; \
 package=$(2)@$(3) ;\
 echo "Downloading $${package}" ;\
 rm -f $(1) ;\
-GOBIN=$(LOCALBIN) go install $${package} ;\
+GOBIN=$(LOCALBIN) hack/go-mod-download.sh install $${package} ;\
 mv $(1) $(1)-$(3) ;\
 } ;\
 ln -sf $$(realpath $(1)-$(3)) $(1)

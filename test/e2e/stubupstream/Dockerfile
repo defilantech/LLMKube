@@ -10,8 +10,10 @@ ARG TARGETARCH
 
 WORKDIR /workspace
 
+# The script retries a network error from the module proxy (#2380).
 COPY go.mod go.sum ./
-RUN go mod download
+COPY hack/go-mod-download.sh hack/go-mod-download.sh
+RUN sh hack/go-mod-download.sh
 
 COPY test/e2e/stubupstream/ test/e2e/stubupstream/
 
