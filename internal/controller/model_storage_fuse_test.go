@@ -167,18 +167,22 @@ func TestMultiFileFUSEWarmCache(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, policy := range []string{RefreshPolicyIfNotPresent, RefreshPolicyOnChange} {
-		for _, s3 := range []bool{false, true} {
-			for _, state := range []string{"offline", "matching", "missing", "truncated", "changed", "changed-recorded"} {
-				t.Run(fmt.Sprintf("%s/s3-%v/%s", policy, s3, state), func(t *testing.T) {
-					runMultiFileFUSEWarmCacheCase(t, realStat, policy, s3, state)
-				})
+	// The concurrent pool (spec.downloadConcurrency) must keep every guarantee
+	// the serial loop gives a serving pod on FUSE, and stage nothing.
+	for _, concurrent := range []bool{false, true} {
+		for _, policy := range []string{RefreshPolicyIfNotPresent, RefreshPolicyOnChange} {
+			for _, s3 := range []bool{false, true} {
+				for _, state := range []string{"offline", "matching", "missing", "truncated", "changed", "changed-recorded"} {
+					t.Run(fmt.Sprintf("concurrent-%v/%s/s3-%v/%s", concurrent, policy, s3, state), func(t *testing.T) {
+						runMultiFileFUSEWarmCacheCase(t, realStat, policy, s3, concurrent, state)
+					})
+				}
 			}
 		}
 	}
 }
 
-func runMultiFileFUSEWarmCacheCase(t *testing.T, realStat, policy string, s3 bool, state string) {
+func runMultiFileFUSEWarmCacheCase(t *testing.T, realStat, policy string, s3, concurrent bool, state string) {
 	t.Helper()
 	var gets atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -220,11 +224,15 @@ func runMultiFileFUSEWarmCacheCase(t *testing.T, realStat, policy string, s3 boo
 	if err := os.WriteFile(sentinel, []byte("untouched"), 0o444); err != nil {
 		t.Fatal(err)
 	}
-	env := []string{"MODEL_FILES=model.safetensors", "PATH=" + bin + ":" + os.Getenv("PATH"), "REAL_STAT=" + realStat}
+	env := []string{"MODEL_FILES=model.safetensors", "PATH=" + bin + ":" + os.Getenv("PATH"), "REAL_STAT=" + realStat,
+		"MODEL_DOWNLOAD_CONCURRENCY=2", "MODEL_DOWNLOAD_MAX_INFLIGHT_BYTES=1048576"}
 	if s3 {
 		env = append(env, s3TestEnv(srv.URL)...)
 	}
-	out, err := runVerifyScriptEnv(t, buildMultiFileInitCommand(true, s3, false, false, policy), srv.URL, dest, "", env...)
+	out, err := runVerifyScriptEnv(t, buildMultiFileInitCommand(true, s3, false, false, concurrent, policy), srv.URL, dest, "", env...)
+	if strings.Contains(out, "Staging up to") {
+		t.Errorf("a serving pod on FUSE, which stages nothing, announced a download pool: %s", out)
+	}
 	if state == "missing" || state == "truncated" {
 		if err == nil {
 			t.Fatalf("unsafe FUSE staging succeeded: %s", out)

@@ -103,6 +103,32 @@ spec:
                 required:
                 - configMapKeyRef
                 type: object
+              downloadConcurrency:
+                description: |-
+                  DownloadConcurrency is how many spec.files and spec.mmproj entries the
+                  downloader stages at once. Unset stages one at a time. A file's close,
+                  SHA256 check and publish then overlap the next file's transfer. It
+                  requires spec.files and a source the downloader stages: pvc:// and oci://
+                  are mounted, not downloaded. On a FUSE cache that holds each open file on
+                  the node's disk (blobfuse2's file cache), every file in flight needs its
+                  size free there; downloadMaxInFlightSize caps that.
+                format: int32
+                maximum: 16
+                minimum: 1
+                type: integer
+              downloadMaxInFlightSize:
+                description: |-
+                  DownloadMaxInFlightSize caps the combined size of the files the
+                  downloadConcurrency workers hold at once, as a quantity such as "90Gi".
+                  A file starts only while the size in flight plus its own fits, or when
+                  nothing else is in flight, so a file larger than the cap still stages,
+                  alone. Files start in list order. A file present in the cache counts its
+                  size on disk, and one whose size the origin does not report counts the
+                  whole cap. Set it to the node disk a FUSE cache may fill. It takes up to
+                  15 digits of bytes, or up to 6 digits with a suffix up to Ti, so every
+                  admitted value fits the downloader's 64-bit arithmetic.
+                pattern: ^([1-9][0-9]{0,14}|[1-9][0-9]{0,5}(Ki|Mi|Gi|Ti|k|M|G|T))$
+                type: string
               fileSha256:
                 additionalProperties:
                   description: SHA256Digest is a hex-encoded SHA256 digest (64 characters,
@@ -1693,6 +1719,16 @@ spec:
             - message: fileSha256 keys must not contain whitespace
               rule: '!has(self.fileSha256) || self.fileSha256.size() == 0 || self.fileSha256.all(k,
                 !k.matches(''[[:space:]]''))'
+            - message: 'downloadMaxInFlightSize caps what the downloadConcurrency
+                workers hold at once: it requires downloadConcurrency above 1'
+              rule: '!has(self.downloadMaxInFlightSize) || (has(self.downloadConcurrency)
+                && self.downloadConcurrency > 1)'
+            - message: 'downloadConcurrency sets how many spec.files the downloader
+                stages at once: it requires spec.files, and a pvc:// or oci:// source
+                is not downloaded'
+              rule: '!has(self.downloadConcurrency) || (has(self.files) && self.files.size()
+                > 0 && (!has(self.source) || (!self.source.startsWith(''pvc://'')
+                && !self.source.startsWith(''oci://''))))'
             - message: 'prefetch cannot be combined with modelCache.persistence Ephemeral:
                 there is no cache volume to stage into'
               rule: '!(has(self.prefetch) && self.prefetch && has(self.modelCache)

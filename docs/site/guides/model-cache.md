@@ -561,6 +561,74 @@ spec:
   `spec.files` are rejected when `fileSha256` is set, because a digest cannot
   be keyed to an unknown expanded name. `spec.sha256` and `spec.fileSha256`
   are mutually exclusive, and `fileSha256` is rejected on an `oci://` source.
+- With `spec.downloadConcurrency` above 1, each hash is logged: the file and
+  the expected digest when it starts, then the computed digest with the file's
+  size and the hashing time, and the rename's time once the file is published.
+  A stamp hit names the file it skipped. Without it the check stays silent, so
+  pinned Models that do not set the field keep their pod templates across an
+  operator upgrade.
+
+### Staging files concurrently (`spec.downloadConcurrency`)
+
+By default the downloader stages `spec.files` one at a time: each file is
+downloaded, closed, hashed if pinned, and renamed into place before the next
+one starts. Set `spec.downloadConcurrency` (1 to 16) to stage that many files
+at once, so one file's close, hash and rename overlap the next file's
+transfer:
+
+```yaml
+spec:
+  source: hf://org/sharded-checkpoint
+  files:
+    - model-00001-of-00048.safetensors
+    # ...
+  downloadConcurrency: 4
+```
+
+- It requires `spec.files` and a source the downloader stages. A single-object
+  Model, and a `pvc://` or `oci://` source, which is mounted rather than
+  downloaded, are rejected at admission.
+- Each progress line names its file and the files in flight at that moment,
+  for example `Downloaded 1906 MiB of 7452 MiB of model-00004-of-00048.safetensors
+  (25%) (concurrency: 3)`. The pool logs its limits when it starts.
+- The first file that fails stops new files from starting. The files already
+  in flight finish, then the init fails, and the failed files' errors are
+  logged again as the last lines, where the container's termination message
+  and the `ModelTransferHealthy` condition read them. Partials stay for the
+  next attempt to resume.
+
+On a FUSE cache that keeps each open file on the node's disk, such as
+blobfuse2's file cache, every file in flight needs its full size free on the
+node's disk. A file count alone cannot fit shards of different sizes, so
+`spec.downloadMaxInFlightSize` caps the bytes in flight:
+
+```yaml
+spec:
+  downloadConcurrency: 4
+  downloadMaxInFlightSize: 90Gi
+```
+
+- A file starts only while the size in flight plus its own fits the cap. A
+  file larger than the cap counts as the cap, so it starts once nothing else is
+  in flight and stages alone. Files start in list order: one that does not fit
+  holds back the ones after it, and the pool logs `Waiting to start <file>:
+  ...` with the sizes.
+- How a file is counted:
+  - Under `IfNotPresent`, a file already in the cache whose size record agrees
+    with it counts its size on disk, with no request to the origin; blobfuse2
+    holds a file it only reads, too. One without an agreeing record may be
+    replaced in full, so it counts the whole cap.
+  - Under `OnChange`, every file counts the origin's `Content-Length`, since a
+    changed file is replaced at that size.
+  - A missing file counts the origin's `Content-Length`, from a HEAD request
+    limited to 30 seconds. A size the origin does not report in time counts
+    the whole cap.
+- The value takes up to 15 digits of bytes, or up to 6 digits with a suffix up
+  to `Ti` (`90Gi`, `100G`), and requires `downloadConcurrency` above 1. Set it
+  to the node disk the cache may fill, below the disk's free space with the
+  node's other writers in mind.
+- Changing the value changes the downloader's pod template, so serving pods
+  that stage the Model roll. Unset and `1` build the same template.
 
 ## Troubleshooting
 

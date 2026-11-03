@@ -144,7 +144,7 @@ func TestBuildModelInitCommand_HFAuth(t *testing.T) {
 func TestBuildMultiFileInitCommand_HFAuth(t *testing.T) {
 	for _, policy := range []string{RefreshPolicyIfNotPresent, RefreshPolicyOnChange} {
 		t.Run(policy, func(t *testing.T) {
-			withAuth := buildMultiFileInitCommand(true, false, true, false, policy)
+			withAuth := buildMultiFileInitCommand(true, false, true, false, false, policy)
 			if !strings.Contains(withAuth, authHeader) {
 				t.Errorf("HF multi-file: no bearer header in:\n%s", withAuth)
 			}
@@ -160,14 +160,14 @@ func TestBuildMultiFileInitCommand_HFAuth(t *testing.T) {
 				}
 			}
 
-			plain := buildMultiFileInitCommand(true, false, false, false, policy)
+			plain := buildMultiFileInitCommand(true, false, false, false, false, policy)
 			if strings.Contains(plain, "HF_TOKEN") {
 				t.Errorf("non-HF multi-file leaks the token into:\n%s", plain)
 			}
 
 			// s3:// keeps signing with sigv4 and must not gain a bearer header
 			// even when the source would otherwise qualify.
-			s3 := buildMultiFileInitCommand(true, true, false, false, policy)
+			s3 := buildMultiFileInitCommand(true, true, false, false, false, policy)
 			if strings.Contains(s3, "HF_TOKEN") {
 				t.Error("s3 multi-file should authenticate with sigv4 only")
 			}

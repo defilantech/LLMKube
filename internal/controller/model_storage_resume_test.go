@@ -217,7 +217,7 @@ func TestModelDownloadResume_Behavioral(t *testing.T) {
 			t.Setenv("MODEL_FILES", "model.gguf")
 			testResumeVariant(t, resumeVariant{
 				name:   "MultiFile" + policy,
-				script: func() string { return buildMultiFileInitCommand(true, false, false, false, policy) },
+				script: func() string { return buildMultiFileInitCommand(true, false, false, false, false, policy) },
 			})
 		})
 	}
@@ -241,7 +241,7 @@ func testMultiFileSweepsDebrisAfterLoop(t *testing.T) {
 	}
 	t.Setenv("MODEL_FILES", "model.gguf")
 
-	runInitScript(t, buildMultiFileInitCommand(true, false, false, false, RefreshPolicyIfNotPresent), o.srv.URL, "", dir)
+	runInitScript(t, buildMultiFileInitCommand(true, false, false, false, false, RefreshPolicyIfNotPresent), o.srv.URL, "", dir)
 
 	if got, err := os.ReadFile(filepath.Join(dir, "model.gguf")); err != nil || string(got) != string(o.content()) {
 		t.Fatalf("model.gguf not published intact (err %v)", err)
@@ -277,7 +277,7 @@ func testMultiFileFailedLoopKeepsPartials(t *testing.T) {
 				t.Fatalf("seed partial: %v", err)
 			}
 
-			cmd := exec.Command("sh", "-c", buildMultiFileInitCommand(true, false, false, false, policy))
+			cmd := exec.Command("sh", "-c", buildMultiFileInitCommand(true, false, false, false, false, policy))
 			cmd.Env = append(os.Environ(),
 				"MODEL_SOURCE="+srv.URL,
 				"CACHE_DIR="+dir,

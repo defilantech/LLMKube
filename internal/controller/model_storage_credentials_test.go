@@ -142,7 +142,7 @@ func TestInitCommands_CredentialsOnlyThroughHelpers(t *testing.T) {
 					for _, policy := range []string{RefreshPolicyIfNotPresent, RefreshPolicyOnChange} {
 						cmds = append(cmds,
 							buildModelInitCommand(false, isS3, useCache, isHFAuth, sha, policy),
-							buildMultiFileInitCommand(useCache, isS3, isHFAuth, sha, policy))
+							buildMultiFileInitCommand(useCache, isS3, isHFAuth, sha, false, policy))
 					}
 				}
 			}
