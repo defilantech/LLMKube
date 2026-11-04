@@ -418,8 +418,8 @@ const s3AuthFn = `s3_curl() { _llmkube_id=$(printf '%s' "${AWS_ACCESS_KEY_ID:-}"
 // a multi-gigabyte download is indistinguishable from a stalled one until it
 // finishes (#1895).
 //
-// It backgrounds the transfer and polls the partial's size every second,
-// printing a line on each ${PROGRESS_INTERVAL:-10} tick. Interval is a positive
+// It backgrounds the transfer and polls it in tenths of a second, printing a
+// line on each ${PROGRESS_INTERVAL:-10}-second tick. Interval is a positive
 // integer of seconds, overridable through the init container's environment.
 // `wait` returns the transfer's own exit status so a failed download still
 // fails the init container.
@@ -437,12 +437,18 @@ var downloadProgressLabeledFn = downloadProgressFnFor(true)
 
 // downloadProgressFnFor builds both variants from one text, so the serial one
 // stays byte for byte what every existing pod template carries.
+//
+// The loop polls in tenths so a transfer that finished in milliseconds returns
+// at once instead of after a full second (#2386), and counts tenths so the
+// heartbeat still fires on whole ${PROGRESS_INTERVAL} seconds. An init image
+// whose sleep has no fractional argument falls back to a one-second poll and
+// counts the whole second, so the rhythm and the text stay what they were.
 func downloadProgressFnFor(labeled bool) string {
 	of, label := "", ""
 	if labeled {
 		of, label = ` of $rel`, `$(llmkube_pool_label)`
 	}
-	return `download_with_progress() { _llmkube_dest="$1"; _llmkube_total="${2:-}"; shift 2; "$@" & _llmkube_pid=$!; _llmkube_elapsed=0; while kill -0 "$_llmkube_pid" 2>/dev/null; do sleep 1; kill -0 "$_llmkube_pid" 2>/dev/null || break; _llmkube_elapsed=$((_llmkube_elapsed + 1)); [ $((_llmkube_elapsed % ${PROGRESS_INTERVAL:-10})) -eq 0 ] || continue; _llmkube_have=$(stat -c %s "$_llmkube_dest" 2>/dev/null || echo 0); if [ -n "$_llmkube_total" ] && [ "$_llmkube_total" -gt 0 ] 2>/dev/null; then echo "Downloaded $((_llmkube_have / 1048576)) MiB of $((_llmkube_total / 1048576)) MiB` + of + ` ($((_llmkube_have * 100 / _llmkube_total))%)` + label + `"; else echo "Downloaded $((_llmkube_have / 1048576)) MiB` + of + label + `"; fi; done; wait "$_llmkube_pid"; }` + " && "
+	return `download_with_progress() { _llmkube_dest="$1"; _llmkube_total="${2:-}"; shift 2; "$@" & _llmkube_pid=$!; _llmkube_tenths=0; while kill -0 "$_llmkube_pid" 2>/dev/null; do if sleep 0.1 2>/dev/null; then _llmkube_tenths=$((_llmkube_tenths + 1)); else sleep 1; _llmkube_tenths=$((_llmkube_tenths + 10)); fi; kill -0 "$_llmkube_pid" 2>/dev/null || break; _llmkube_elapsed=$((_llmkube_tenths / 10)); [ $((_llmkube_elapsed % ${PROGRESS_INTERVAL:-10})) -eq 0 ] || continue; _llmkube_have=$(stat -c %s "$_llmkube_dest" 2>/dev/null || echo 0); if [ -n "$_llmkube_total" ] && [ "$_llmkube_total" -gt 0 ] 2>/dev/null; then echo "Downloaded $((_llmkube_have / 1048576)) MiB of $((_llmkube_total / 1048576)) MiB` + of + ` ($((_llmkube_have * 100 / _llmkube_total))%)` + label + `"; else echo "Downloaded $((_llmkube_have / 1048576)) MiB` + of + label + `"; fi; done; wait "$_llmkube_pid"; }` + " && "
 }
 
 // multiFilePoolFns run the multi-file loop's per-file body, llmkube_stage_file,

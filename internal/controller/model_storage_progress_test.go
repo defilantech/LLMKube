@@ -128,6 +128,65 @@ func TestDownloadWithProgress(t *testing.T) {
 			t.Errorf("wait did not carry the transfer's exit status; want rc=3 in:\n%s", out)
 		}
 	})
+
+	// A transfer that finishes in milliseconds costs milliseconds, not the
+	// poll's period: the helper must notice the exit on its next poll (#2386).
+	t.Run("returns when the transfer finished in milliseconds", func(t *testing.T) {
+		dest := filepath.Join(t.TempDir(), "model.partial")
+		script := downloadProgressFn + `fake_transfer() { sleep 0.05; } && ` +
+			`download_with_progress "$DEST" "" fake_transfer "$DEST"`
+		cmd := exec.Command("sh", "-c", script)
+		cmd.Env = append(os.Environ(), "DEST="+dest, "PROGRESS_INTERVAL=1")
+		start := time.Now()
+		out, err := cmd.CombinedOutput()
+		took := time.Since(start)
+		if err != nil {
+			t.Fatalf("helper script failed: %v\n%s", err, out)
+		}
+		if took > 500*time.Millisecond {
+			t.Errorf("download_with_progress took %s for a 50ms transfer, want under 500ms", took.Round(time.Millisecond))
+		}
+	})
+
+	// An init image whose sleep has no fractional argument must keep the old
+	// one-second rhythm, not spin: the fallback counts the whole second, so a
+	// transfer that outlives one interval prints one line per interval.
+	t.Run("fractional sleep unavailable keeps the interval", func(t *testing.T) {
+		bin := t.TempDir()
+		shim := "#!/bin/sh\ncase \"$1\" in *.*) echo 'sleep: invalid number' >&2; exit 1;; esac\nexec \"$REAL_SLEEP\" \"$@\"\n"
+		if err := os.WriteFile(filepath.Join(bin, "sleep"), []byte(shim), 0o755); err != nil {
+			t.Fatalf("write sleep shim: %v", err)
+		}
+		realSleep, err := exec.LookPath("sleep")
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The shim rejects only the sub-second form the helper now asks for;
+		// the stub transfer keeps a whole-second sleep of its own.
+		dest := filepath.Join(t.TempDir(), "model.partial")
+		script := downloadProgressFn +
+			`fake_transfer() { dd if=/dev/zero of="$1" bs=1024 count=2048 2>/dev/null; "$REAL_SLEEP" 2; } && ` +
+			`download_with_progress "$DEST" "" fake_transfer "$DEST"`
+		cmd := exec.Command("sh", "-c", script)
+		cmd.Env = append(os.Environ(),
+			"DEST="+dest,
+			"PROGRESS_INTERVAL=1",
+			"PATH="+bin+":"+os.Getenv("PATH"),
+			"REAL_SLEEP="+realSleep,
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("helper script failed: %v\n%s", err, out)
+		}
+		// A 2 s transfer at a 1 s interval is two lines. A hot spin that
+		// counted each failed poll would print hundreds.
+		if n := strings.Count(string(out), "Downloaded "); n > 3 {
+			t.Errorf("printed %d progress lines in 2s at PROGRESS_INTERVAL=1, want at most 3:\n%s", n, out)
+		}
+		if !strings.Contains(string(out), "Downloaded 2 MiB") {
+			t.Errorf("no progress line at all with a one-second fallback:\n%s", out)
+		}
+	})
 }
 
 // slowOrigin serves a fixed body but holds the connection open after the first
