@@ -116,7 +116,8 @@ func runRestartsAt(a *MetalAgent, clk *fakeClock, at time.Time) {
 
 // TestEnsureProcess_FailedStartIsReportedAndRetried is the #2404 bug: a start
 // whose engine exits while loading must leave a Warning Event with the error
-// and the engine log tail, a status that says the start failed (so the
+// and where the engine log is (never its content), a status that says the
+// start failed (so the
 // controller stops saying the agent is fetching the model), and a retry on the
 // health-restart backoff (10s, then 20s, ...) that needs no InferenceService
 // change. Once a retry brings an engine up, the status is cleared.
@@ -134,10 +135,14 @@ func TestEnsureProcess_FailedStartIsReportedAndRetried(t *testing.T) {
 	if len(failed) != 1 {
 		t.Errorf("events = %v, want one Warning %s", events, wantStartFailedReason)
 	} else {
-		for _, want := range []string{"Warning", "exit status 1", "unknown model architecture: 'qwen9'"} {
+		logPath := a.config.ModelStorePath + "/llama-server-default-svc.log"
+		for _, want := range []string{"Warning", "exit status 1", logPath, logPath + ".1"} {
 			if !strings.Contains(failed[0], want) {
 				t.Errorf("%s event %q does not carry %q", wantStartFailedReason, failed[0], want)
 			}
+		}
+		if strings.Contains(failed[0], "unknown model architecture") {
+			t.Errorf("%s event %q carries engine log content", wantStartFailedReason, failed[0])
 		}
 	}
 	reason, message := isvcStatus(t, a)
@@ -292,7 +297,8 @@ func TestEnsureProcess_FailedStartRetryEnds(t *testing.T) {
 // would come back.
 func TestHealthRestart_FailedRestartSaysStartFailed(t *testing.T) {
 	f := newRestartFixture(t, "restart-status")
-	f.exec.startErr = engineCrashedOnLoad(writeEngineLog(t, t.TempDir(), "fatal: out of memory\n"))
+	logPath := writeEngineLog(t, t.TempDir(), "fatal: out of memory\n")
+	f.exec.startErr = engineCrashedOnLoad(logPath)
 	f.probe(DefaultHealthFailureThreshold)
 	f.agent.runDueRestarts(context.Background())
 	if got := f.exec.starts(); got != 1 {
@@ -306,41 +312,49 @@ func TestHealthRestart_FailedRestartSaysStartFailed(t *testing.T) {
 	if cur.Status.SchedulingStatus != wantStartFailedReason {
 		t.Errorf("status after a failed restart = %q, want %s", cur.Status.SchedulingStatus, wantStartFailedReason)
 	}
-	// One Event per failed attempt: the restart's RestartFailed, carrying
-	// the engine log tail, and no StartFailed next to it.
+	// One Event per failed attempt: the restart's RestartFailed, naming the
+	// engine log without its content, and no StartFailed next to it.
 	events := drainEvents(f.rec)
 	restartFailed := eventsWithReason(events, EventReasonRestartFailed)
-	if len(restartFailed) != 1 || !strings.Contains(restartFailed[0], "fatal: out of memory") {
-		t.Errorf("%s events = %v, want one carrying the engine log tail", EventReasonRestartFailed, restartFailed)
+	if len(restartFailed) != 1 || !strings.Contains(restartFailed[0], logPath) ||
+		strings.Contains(restartFailed[0], "fatal: out of memory") {
+		t.Errorf("%s events = %v, want one naming %s without its content", EventReasonRestartFailed, restartFailed, logPath)
 	}
 	if got := eventsWithReason(events, wantStartFailedReason); len(got) != 0 {
 		t.Errorf("a failed restart also emitted %v", got)
 	}
 }
 
-// TestWithEventLogTail_Bounded checks that an Event carries at most
-// eventLogTailBytes of the engine log, from a line boundary, ending with the
-// last line, where the engine prints the fatal cause.
-func TestWithEventLogTail_Bounded(t *testing.T) {
-	var b strings.Builder
-	for i := range 200 {
-		fmt.Fprintf(&b, "load line %d %s\n", i, strings.Repeat("x", 40))
+// TestSummarizeForEvent checks what an Event and the scheduling status may
+// say about a start error: its first line, without an attached engine log
+// tail, at most eventSummaryMaxBytes, plus the log's path.
+func TestSummarizeForEvent(t *testing.T) {
+	logPath := writeEngineLog(t, t.TempDir(), "request: "+promptSentinel+"\nfatal: out of memory\n")
+	long := strings.Repeat("x", 3*eventSummaryMaxBytes)
+	cases := []struct {
+		name        string
+		err         error
+		wantSummary string
+		wantLog     string
+	}{
+		{"engine crash with its log tail",
+			fmt.Errorf("failed to start process: %w", engineCrashedOnLoad(logPath)),
+			"failed to start process: llama-server process exited before becoming healthy (exit status 1)", logPath},
+		{"multi-line error without a log", fmt.Errorf("download failed: 503\n%s", promptSentinel),
+			"download failed: 503", ""},
+		{"long first line", fmt.Errorf("download failed: %s", long),
+			"download failed: " + long[:eventSummaryMaxBytes-len("download failed: ")] + "...", ""},
 	}
-	b.WriteString("fatal: out of memory")
-	msg := withEventLogTail("Start failed: boom", "/store/x.log", b.String())
-
-	head := "Start failed: boom. Last lines of /store/x.log:\n...\n"
-	if !strings.HasPrefix(msg, head) {
-		t.Fatalf("message starts %q, want %q", msg[:min(len(msg), len(head))], head)
-	}
-	tail := strings.TrimPrefix(msg, head)
-	if len(tail) > eventLogTailBytes || !strings.HasPrefix(tail, "load line ") ||
-		!strings.HasSuffix(tail, "fatal: out of memory") {
-		t.Errorf("bounded tail (%d bytes) = %q, want at most %d bytes from a line start to the last line",
-			len(tail), tail, eventLogTailBytes)
-	}
-	if got := withEventLogTail("Start failed: boom", "", ""); got != "Start failed: boom" {
-		t.Errorf("message with no tail = %q, want it unchanged", got)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			summary, gotLog := summarizeForEvent(tc.err)
+			if summary != tc.wantSummary || gotLog != tc.wantLog {
+				t.Errorf("summarizeForEvent = %q, %q; want %q, %q", summary, gotLog, tc.wantSummary, tc.wantLog)
+			}
+			if strings.Contains(summary, promptSentinel) || strings.Contains(summary, "out of memory") {
+				t.Errorf("summary %q carries engine log content", summary)
+			}
+		})
 	}
 }
 

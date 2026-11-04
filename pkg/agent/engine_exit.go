@@ -61,10 +61,11 @@ func (a *MetalAgent) watchEngineExit(ctx context.Context, key string, proc *Mana
 // under key: an engine the agent stopped itself (a delete, a scale to zero, a
 // spec change, an eviction or a health restart) is removed from a.processes
 // before its stop, so its exit is ignored here. It withdraws the endpoint at
-// once, logs the exit status, and stops tracking the engine and schedules its
-// restart on the service's restart backoff (stopForRestart), reporting the
-// exit status and the engine log tail in a Warning Event. The tail is read
-// first: the restart rotates the log. A start in flight for key holds the
+// once, logs the exit status with the engine log tail, and stops tracking the
+// engine and schedules its restart on the service's restart backoff
+// (stopForRestart), reporting the exit status and where the log is in a
+// Warning Event, which does not carry the log's content (see summarizeForEvent).
+// The tail is read first: the restart rotates the log. A start in flight for key holds the
 // restart off; it is tried again every restartGuardRetry while proc is still
 // tracked, withdrawing the endpoint again first, since the start that held
 // the key may have registered it.
@@ -78,15 +79,16 @@ func (a *MetalAgent) handleEngineExit(ctx context.Context, key string, proc *Man
 		return
 	}
 	a.logger.Warnw("engine process exited",
-		"namespace", proc.Namespace, "name", proc.Name, "pid", proc.PID, "status", status)
+		"namespace", proc.Namespace, "name", proc.Name, "pid", proc.PID, "status", status,
+		"log", proc.logPath, "logTail", tail)
 	processHealthy.WithLabelValues(proc.Name, proc.Namespace).Set(0)
 	a.withdrawEndpoint(ctx, proc.Name, proc.Namespace)
 
 	for ctx.Err() == nil {
 		if restartIn, ok := a.stopForRestart(ctx, key, proc, "exitStatus", status); ok {
 			a.emitInferenceEvent(ctx, proc, corev1.EventTypeWarning, EventReasonEngineExited, "%s",
-				withEventLogTail(fmt.Sprintf("Engine process %d exited (%s); restarting in %s",
-					proc.PID, status, restartIn), proc.logPath, tail))
+				fmt.Sprintf("Engine process %d exited (%s); restarting in %s", proc.PID, status, restartIn)+
+					crashedLogHint(proc.logPath))
 			return
 		}
 		select {
@@ -101,6 +103,17 @@ func (a *MetalAgent) handleEngineExit(ctx context.Context, key string, proc *Man
 		// Ready since the withdrawal above.
 		a.withdrawEndpoint(ctx, proc.Name, proc.Namespace)
 	}
+}
+
+// crashedLogHint tells an EngineExited Event's reader where the crashed
+// run's log is on the Mac; the Event does not carry its content. Empty when
+// the engine keeps no log the agent knows of.
+func crashedLogHint(logPath string) string {
+	if logPath == "" {
+		return ""
+	}
+	return fmt.Sprintf(". The crashed run's log on the Mac: %s, moved to %s.1 when the engine restarts; "+
+		"its last lines are in the agent log", logPath, logPath)
 }
 
 // markExited marks proc unhealthy if it is still tracked under key, and

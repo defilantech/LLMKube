@@ -34,13 +34,14 @@ import (
 const EventReasonStartFailed = inferencev1alpha1.ReasonStartFailed
 
 // failStart reports a failed start and retries it on the restart backoff.
-// It writes StartFailed and the error to the scheduling status, so the
-// controller stops saying the agent is fetching the model, and, unless the
+// It writes StartFailed and the error's summary to the scheduling status, so
+// the controller stops saying the agent is fetching the model, and, unless the
 // start was a restart's own attempt (runRestart reports and reschedules that
-// one), queues a retry and emits a Warning Event with the error, the retry
-// delay and the engine log tail. The status names no retry time, so a retry
-// does not rewrite it and one that a stop cancels leaves nothing stale.
-// eventReason is the Event's reason.
+// one), queues a retry and emits a Warning Event with the summary, the retry
+// delay and where the engine log is. Neither carries the engine log's content
+// (summarizeForEvent); the agent log gets the full error. The status names no
+// retry time, so a retry does not rewrite it and one that a stop cancels
+// leaves nothing stale. eventReason is the Event's reason.
 //
 // The first retry waits healthRestartInitialBackoff and each later one twice
 // as long, up to healthRestartMaxBackoff: a retry may download or load the
@@ -59,7 +60,7 @@ func (a *MetalAgent) failStart(
 		return
 	}
 	key := types.NamespacedName{Namespace: isvc.Namespace, Name: isvc.Name}.String()
-	summary, logPath, tail := splitLogTail(startErr)
+	summary, logPath := summarizeForEvent(startErr)
 	a.writeStartFailedStatus(ctx, isvc, summary)
 
 	a.mu.Lock()
@@ -80,7 +81,7 @@ func (a *MetalAgent) failStart(
 		"namespace", isvc.Namespace, "name", isvc.Name, "retryAt", retryAt, "retryIn", retryIn, "error", startErr)
 	a.emitInferenceEvent(ctx, &ManagedProcess{Namespace: isvc.Namespace, Name: isvc.Name},
 		corev1.EventTypeWarning, eventReason, "%s",
-		withEventLogTail(fmt.Sprintf("Start failed: %s; retrying in %s", summary, retryIn), logPath, tail))
+		fmt.Sprintf("Start failed: %s; retrying in %s", summary, retryIn)+engineLogHint(logPath))
 }
 
 // writeStartFailedStatus records a failed start on the InferenceService's

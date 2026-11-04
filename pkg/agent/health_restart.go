@@ -454,10 +454,13 @@ func (a *MetalAgent) runRestart(ctx context.Context, key string) {
 	}
 	a.logger.Warnw("restart failed; retrying",
 		"namespace", namespace, "name", name, "retryAt", retryAt, "retryIn", retryIn, "error", err)
-	// The engine log tail goes after the summary, bounded, as in the
-	// StartFailed Event of a first start.
-	reason, logPath, tail := splitLogTail(err)
+	// Only the first line, without the engine log tail a start error can
+	// carry: the tail belongs in the agent log (the line above), not in an
+	// Event, because Events are readable by anyone who can read the namespace
+	// and are commonly exported to central logging, and an engine log can
+	// carry request text. The Event says where the log is instead.
+	reason, logPath := summarizeForEvent(err)
 	a.emitInferenceEvent(ctx, &ManagedProcess{Namespace: namespace, Name: name}, corev1.EventTypeWarning,
-		EventReasonRestartFailed, "%s", withEventLogTail(
-			fmt.Sprintf("Restart did not bring the engine back: %s; retrying in %s", reason, retryIn), logPath, tail))
+		EventReasonRestartFailed, "%s",
+		fmt.Sprintf("Restart did not bring the engine back: %s; retrying in %s", reason, retryIn)+engineLogHint(logPath))
 }
