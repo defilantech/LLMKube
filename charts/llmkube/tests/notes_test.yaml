@@ -1,0 +1,47 @@
+suite: NOTES.txt platform floors (#2420)
+templates:
+  - NOTES.txt
+
+# NOTES.txt is plain text, so these use the *Raw matchers. Each test opens with
+# a positive matchRegexRaw on text that must be present: a Raw matcher handed
+# no document fails those, which keeps the notMatchRegexRaw lines below from
+# passing vacuously. The sentinel driver floor is set in both tests so the
+# assertions follow the show gate rather than the current floor wording.
+tests:
+  # Default install, e.g. a CPU-only kind cluster: no Blackwell floors, only a
+  # one-line pointer to the page that lists them.
+  - it: prints the first-model steps and a floors link, not the floors, by default
+    set:
+      platformFloors.nvidiaDriver: ">= 999.0 sentinel-driver"
+    asserts:
+      - matchRegexRaw:
+          pattern: llmkube deploy tinyllama
+      - matchRegexRaw:
+          pattern: 'NVIDIA Blackwell \(B200\) platform floors: https://github\.com/defilantech/LLMKube/blob/main/docs/operations/b200-validation-matrix\.md'
+      - matchRegexRaw:
+          pattern: '--set platformFloors\.show=true'
+      - notMatchRegexRaw:
+          pattern: PLATFORM FLOORS
+      - notMatchRegexRaw:
+          pattern: sentinel-driver
+      - notMatchRegexRaw:
+          pattern: 'NVIDIA driver:|CUDA toolkit:|NCCL:|GPU Operator:|Device plugin:|dcgm-exporter:|Fabric Manager:'
+      - notMatchRegexRaw:
+          pattern: 'Runtime notes|sm_100'
+
+  - it: prints the floors when platformFloors.show is true
+    set:
+      platformFloors.show: true
+      platformFloors.nvidiaDriver: ">= 999.0 sentinel-driver"
+    asserts:
+      - matchRegexRaw:
+          pattern: 'PLATFORM FLOORS \(NVIDIA Blackwell / B200-class serving\)'
+      - matchRegexRaw:
+          pattern: 'NVIDIA driver:  >= 999\.0 sentinel-driver'
+      - matchRegexRaw:
+          pattern: 'Fabric Manager: must match the installed NVIDIA driver version exactly'
+      - matchRegexRaw:
+          pattern: 'Runtime notes: prefer vLLM or SGLang'
+      # The opt-in hint is only for installs that have not opted in.
+      - notMatchRegexRaw:
+          pattern: '--set platformFloors\.show=true'

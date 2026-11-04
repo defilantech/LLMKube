@@ -123,7 +123,8 @@ These are project changes the LLMKube codebase, Helm chart, or docs need to abso
 ### 1. Driver, CUDA, and GPU operator floors documented
 
 **LANDED (#1197; values corrected #1374, re-verified 2026-07-31).** These ship as
-`platformFloors` in `charts/llmkube/values.yaml` and render into `NOTES.txt` at install time:
+`platformFloors` in `charts/llmkube/values.yaml` and render into `NOTES.txt` at install time when
+`platformFloors.show=true` (off by default, so a CPU or non-Blackwell install stays short):
 
 - NVIDIA driver: **>= 580.173.02 (R580 LTS)**. **R570 reached end-of-life in February 2026** and must not be used; R580 LTS (EOL June 2028) is what DGX OS 7.5 ships, and any driver >= 580 covers the whole CUDA 13.x family via minor-version compatibility.
 - CUDA toolkit: **12.8 minimum** (first public `sm_100` codegen); **13.3 Update 1 is the current GA line** (13.4 is developer-preview only). Note CUDA 13 dropped pre-Turing architectures.

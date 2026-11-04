@@ -96,9 +96,11 @@ is about not spending GPU hours at a fraction of expected throughput.
    and Fabric Manager as a unit. When the GPU Operator manages the driver, let
    it manage Fabric Manager too rather than installing a host package alongside.
 
-3. **Verify the platform floors** rendered in the chart's `NOTES.txt`
-   (`platformFloors`) for the driver, CUDA, NCCL, and GPU Operator minimums the
-   node should satisfy.
+3. **Verify the platform floors** (`platformFloors` in the chart values) for
+   the driver, CUDA, NCCL, and GPU Operator minimums the node should satisfy.
+   They print in the chart's `NOTES.txt` when the release sets
+   `platformFloors.show=true`; otherwise read them with
+   `helm get values <release> --all | grep -A20 platformFloors`.
 
 ## Verify
 
@@ -125,7 +127,7 @@ llmkube benchmark <service> --output table
 ## Related
 
 - Chart values: `platformFloors.fabricManager` in `charts/llmkube/values.yaml`,
-  rendered into `NOTES.txt` at install time.
+  rendered into `NOTES.txt` at install time when `platformFloors.show=true`.
 - #1374: platform floors correction that added this runbook.
 - #413: Blackwell (B200 / sm_100) enterprise readiness, which identifies a
   Fabric Manager mismatch as the highest-priority silent-failure mode on
