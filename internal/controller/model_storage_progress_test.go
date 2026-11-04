@@ -176,6 +176,25 @@ func TestDownloadWithProgress(t *testing.T) {
 		}
 	})
 
+	// A transfer that spans several intervals prints one line per interval
+	// crossed, so a checkpoint that drifts past a boundary and skips it shows
+	// up as a count short by one. Six intervals at 1s is long enough for that
+	// to surface if the guard keyed on a boundary the poll stride can miss.
+	t.Run("one line per interval across a long transfer", func(t *testing.T) {
+		dest := filepath.Join(t.TempDir(), "model.partial")
+		script := downloadProgressFn + `fake_transfer() { dd if=/dev/zero of="$1" bs=1024 count=2048 2>/dev/null; sleep 6.5; } && ` +
+			`download_with_progress "$DEST" "" fake_transfer "$DEST"`
+		cmd := exec.Command("sh", "-c", script)
+		cmd.Env = append(os.Environ(), "DEST="+dest, "PROGRESS_INTERVAL=1")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("helper script failed: %v\n%s", err, out)
+		}
+		if n := strings.Count(string(out), "Downloaded "); n != 6 {
+			t.Errorf("printed %d progress lines for a 6.5s transfer at PROGRESS_INTERVAL=1, want exactly 6:\n%s", n, out)
+		}
+	})
+
 	// An init image whose sleep has no fractional argument must keep the old
 	// one-second rhythm, not spin: the fallback counts the whole second, so a
 	// transfer that outlives one interval prints one line per interval.
