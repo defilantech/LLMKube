@@ -471,7 +471,10 @@ func downloadProgressFnFor(labeled bool) string {
 // llmkube_pool_start sets the pool up in a directory under $TMPDIR. The
 // workers are subshells, so the dispatcher publishes the count in flight there
 // for llmkube_pool_label, refreshing it on every reap; llmkube_pool_join polls
-// rather than waiting on each worker in turn, so the count stays current. Each
+// rather than waiting on each worker in turn, so the count stays current. Both
+// polls run in tenths of a second, so a worker that finished frees its slot
+// without a fixed second of latency; a shell whose sleep has no fractional
+// argument falls back to one second. Each
 // worker's stderr goes there too, and is printed when the worker ends: the
 // workers still in flight keep logging after a failure, so join prints the
 // failed workers' errors again as the last lines, where the termination
@@ -491,10 +494,10 @@ const multiFilePoolFns = `llmkube_pool_start() { _llmkube_conc=${MODEL_DOWNLOAD_
 	`llmkube_pool_dispatch() { _llmkube_size=0; [ -z "$_llmkube_cap" ] || _llmkube_size=$(llmkube_pool_clamp "$(llmkube_file_size)"); _llmkube_waited=; ` +
 	`while :; do llmkube_pool_reap; [ -z "$_llmkube_failed" ] || return 1; llmkube_pool_fits && break; ` +
 	`if [ -z "$_llmkube_waited" ] && [ "$_llmkube_n" -lt "$_llmkube_conc" ]; then echo "Waiting to start $rel: $((_llmkube_bytes / 1048576)) MiB in flight, $((_llmkube_size / 1048576)) MiB needed, $((_llmkube_cap / 1048576)) MiB allowed (concurrency: $_llmkube_n)"; _llmkube_waited=1; fi; ` +
-	`sleep 1; done; _llmkube_i=$((_llmkube_i + 1)); ` +
+	`sleep 0.1 2>/dev/null || sleep 1; done; _llmkube_i=$((_llmkube_i + 1)); ` +
 	`if [ -n "$_llmkube_state" ]; then ( llmkube_stage_file 2>"$_llmkube_state/err.$_llmkube_i"; _llmkube_rc=$?; cat "$_llmkube_state/err.$_llmkube_i" >&2; exit "$_llmkube_rc" ) & else llmkube_stage_file & fi; ` +
 	`_llmkube_pids="$_llmkube_pids $!:$_llmkube_size:$_llmkube_i"; llmkube_pool_note $((_llmkube_n + 1)); }; ` +
-	`llmkube_pool_join() { while :; do llmkube_pool_reap; [ -n "$_llmkube_pids" ] || break; sleep 1; done; ` +
+	`llmkube_pool_join() { while :; do llmkube_pool_reap; [ -n "$_llmkube_pids" ] || break; sleep 0.1 2>/dev/null || sleep 1; done; ` +
 	`if [ -n "$_llmkube_failed" ] && [ -n "$_llmkube_state" ]; then for _llmkube_f in ${_llmkube_failed_ids:-}; do cat "$_llmkube_state/err.$_llmkube_f" >&2; done; fi; ` +
 	`[ -z "$_llmkube_state" ] || rm -rf "$_llmkube_state"; [ -z "$_llmkube_failed" ]; }; `
 
