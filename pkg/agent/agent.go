@@ -497,8 +497,9 @@ type ManagedProcess struct {
 	// daemons. watchEngineExit acts on it without waiting for a health probe
 	// (#2405).
 	exit *childExit
-	// logPath is the engine's per-process log, whose tail an EngineExited
-	// Event carries. Empty when the executor keeps none.
+	// logPath is the engine's per-process log, which an EngineExited Event
+	// names and whose tail goes to the agent log. Empty when the executor
+	// keeps none.
 	logPath string
 }
 

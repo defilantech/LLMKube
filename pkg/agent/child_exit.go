@@ -298,9 +298,9 @@ func withLogTail(err error, logPath string) error {
 }
 
 // engineLogError is a startup error with the tail of the engine's log
-// attached. Its text is the error followed by the tail; the parts stay
-// separate so a Warning Event can put the tail after its own summary
-// (splitLogTail).
+// attached. Its text, which goes to the agent log, is the error followed by
+// the tail; the parts stay separate so an Event can say what failed and where
+// the log is without carrying the tail (summarizeForEvent).
 type engineLogError struct {
 	err     error
 	logPath string
@@ -316,38 +316,40 @@ func (e *engineLogError) Error() string {
 
 func (e *engineLogError) Unwrap() error { return e.err }
 
-// splitLogTail splits err into a one-line summary and, when an engine log
-// tail is attached to it, the log's path and that tail.
-func splitLogTail(err error) (summary, logPath, tail string) {
+// eventSummaryMaxBytes bounds the error summary an Event or the scheduling
+// status carries.
+const eventSummaryMaxBytes = 200
+
+// summarizeForEvent returns what an Event (and the scheduling status) may say
+// about err: its first line, without an attached engine log tail, cut to
+// eventSummaryMaxBytes, plus the engine log's path when one is attached.
+// Never the log's content: Events are readable by anyone who can read the
+// namespace and are commonly exported to central logging, and an engine log
+// can carry request text. The full error, tail included, goes to the agent
+// log only.
+func summarizeForEvent(err error) (summary, logPath string) {
 	text := err.Error()
 	var le *engineLogError
 	if errors.As(err, &le) {
 		text = strings.Replace(text, le.Error(), le.err.Error(), 1)
-		logPath, tail = le.logPath, le.tail
+		logPath = le.logPath
 	}
 	summary, _, _ = strings.Cut(text, "\n")
-	return summary, logPath, tail
+	if len(summary) > eventSummaryMaxBytes {
+		summary = strings.ToValidUTF8(summary[:eventSummaryMaxBytes], "") + "..."
+	}
+	return summary, logPath
 }
 
-// eventLogTailBytes caps the engine log tail a Warning Event carries. The
-// tail is already at most processLogTailLines lines, but one line can be
-// long; the last bytes are kept, since the engine prints the fatal cause last.
-const eventLogTailBytes = 2048
-
-// withEventLogTail appends the engine log tail to an Event message, bounded
-// to eventLogTailBytes. With no tail it returns msg unchanged.
-func withEventLogTail(msg, logPath, tail string) string {
-	if tail == "" {
-		return msg
+// engineLogHint tells an Event's reader where the engine's logs are on the
+// Mac, since the Event does not carry them: logPath for the run that failed,
+// logPath.1 for the run before it. Empty when no log is known.
+func engineLogHint(logPath string) string {
+	if logPath == "" {
+		return ""
 	}
-	if len(tail) > eventLogTailBytes {
-		cut := tail[len(tail)-eventLogTailBytes:]
-		if i := strings.IndexByte(cut, '\n'); i >= 0 && i < len(cut)-1 {
-			cut = cut[i+1:]
-		}
-		tail = "...\n" + strings.ToValidUTF8(cut, "")
-	}
-	return fmt.Sprintf("%s. Last lines of %s:\n%s", msg, logPath, tail)
+	return fmt.Sprintf(". Engine log on the Mac: %s (the run before it: %s.1); its last lines are in the agent log",
+		logPath, logPath)
 }
 
 // childTracker maps the PID of every child an executor spawned to its reaper,

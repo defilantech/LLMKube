@@ -175,7 +175,7 @@ func eventually(cond func() bool) bool {
 // TestEngineExit_WithdrawsAndRestartsAtOnce is the #2405 bug: an engine that
 // exits must lose its endpoint at once (not at the next 30s probe), be
 // restarted without waiting for the probe threshold, have its exit status and
-// log tail reported in a Warning Event, and keep the crashed run's log as
+// the log's path (not its content) reported in a Warning Event, and keep the crashed run's log as
 // <engine>.log.1 when the restart opens a new one.
 func TestEngineExit_WithdrawsAndRestartsAtOnce(t *testing.T) {
 	f := newEngineExitFixture(t)
@@ -206,10 +206,13 @@ func TestEngineExit_WithdrawsAndRestartsAtOnce(t *testing.T) {
 	if len(exited) != 1 {
 		t.Errorf("%s events = %v, want one", wantEngineExitedReason, exited)
 	} else {
-		for _, want := range []string{"Warning", "signal: killed", fmt.Sprintf("engine run %d", first.PID)} {
+		for _, want := range []string{"Warning", "signal: killed", f.logPath, f.logPath + ".1"} {
 			if !strings.Contains(exited[0], want) {
 				t.Errorf("%s event %q does not carry %q", wantEngineExitedReason, exited[0], want)
 			}
+		}
+		if strings.Contains(exited[0], "engine run") {
+			t.Errorf("%s event %q carries engine log content", wantEngineExitedReason, exited[0])
 		}
 	}
 	if !withdrawn || !queued {
@@ -442,7 +445,8 @@ func TestEngineExit_WaitsForAStartInFlight(t *testing.T) {
 		return len(exited) > 0
 	})
 	if len(exited) != 1 || !strings.Contains(exited[0], "exit status 0") ||
-		!strings.Contains(exited[0], "out of device memory") {
-		t.Errorf("%s events = %v, want one with the exit status and the log tail", wantEngineExitedReason, exited)
+		!strings.Contains(exited[0], proc.logPath) || strings.Contains(exited[0], "out of device memory") {
+		t.Errorf("%s events = %v, want one with the exit status and the log's path, not its content",
+			wantEngineExitedReason, exited)
 	}
 }
