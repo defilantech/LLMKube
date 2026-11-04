@@ -186,3 +186,34 @@ func TestEstimateTokens(t *testing.T) {
 		}
 	}
 }
+
+// unreachable builds a candidate whose load polls are failing to connect.
+func unreachable(ep string, inflight int64) Candidate {
+	return Candidate{Endpoint: ep, InFlight: inflight, Unreachable: true}
+}
+
+func TestPickLeastLoadedRanksUnreachableLast(t *testing.T) {
+	cands := []Candidate{unreachable("dead", 0), pod("busy", 9, 4, 0.5)}
+	for start := 0; start < 4; start++ {
+		if ep, _ := PickLeastLoaded(cands, t0, start); ep != "busy" {
+			t.Errorf("tieStart %d: got %q, want busy (dead's 0 in-flight is not idle)", start, ep)
+		}
+	}
+	if ep, _ := PickLeastLoaded([]Candidate{unreachable("x", 3), unreachable("y", 1)}, t0, 0); ep != "y" {
+		t.Errorf("all unreachable: got %q, want the least loaded y", ep)
+	}
+}
+
+func TestEligibleDropsUnreachable(t *testing.T) {
+	if got := Eligible([]Candidate{unreachable("dead", 0), pod("ok", 3, 0, 0.5)}, t0); len(got) != 1 || got[0].Endpoint != "ok" {
+		t.Errorf("Eligible = %v, want only ok", got)
+	}
+	if got := Eligible([]Candidate{unreachable("x", 0), unreachable("y", 0)}, t0); len(got) != 2 {
+		t.Errorf("all unreachable: Eligible kept %d, want both", len(got))
+	}
+	// Every reachable pod is KV-full: a full pod still beats an unreachable one.
+	mixed := []Candidate{unreachable("dead", 0), pod("full", 9, 2, 0.95)}
+	if ep, _ := PickLeastLoaded(Eligible(mixed, t0), t0, 0); ep != "full" {
+		t.Errorf("got %q, want full", ep)
+	}
+}

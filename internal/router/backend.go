@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -92,6 +93,13 @@ type backendHealth struct {
 	// failures counts failures since the last success, for endpoint
 	// entries; see endpointFailuresToQuarantine.
 	failures atomic.Int32
+	// pollFailures counts load polls in a row that failed to connect.
+	pollFailures atomic.Int32
+	// pollDown is set once pollFailures reaches pollFailuresToQuarantine. It
+	// has no expiry and no half-open probe: only a poll that connects clears
+	// it, so a request is never the probe for an endpoint the poll already
+	// knows is unreachable.
+	pollDown atomic.Bool
 }
 
 // Dispatcher knows how to forward an inbound request to a chosen backend.
@@ -159,6 +167,11 @@ type Dispatcher struct {
 
 	// logger records quarantines. NewProxy sets it to the proxy's logger.
 	logger *slog.Logger
+
+	// onPollTransition runs with the backend name when an endpoint enters or
+	// leaves poll quarantine, so the proxy's health gauges follow the poll
+	// without a request. NewProxy sets it; nil does nothing.
+	onPollTransition func(backend string)
 }
 
 // DispatcherOption customizes a Dispatcher at construction time.
@@ -301,6 +314,9 @@ func (d *Dispatcher) dispatchable(key string) bool {
 		return false
 	}
 	h := v.(*backendHealth)
+	if h.pollDown.Load() {
+		return false
+	}
 	if h.healthy.Load() {
 		return true
 	}
@@ -308,11 +324,68 @@ func (d *Dispatcher) dispatchable(key string) bool {
 	return until > 0 && d.nowFn().UnixNano() >= until
 }
 
+// quarantined reports whether h is out of placement for a failure rather
+// than past its quarantine window.
+func (d *Dispatcher) quarantined(h *backendHealth) bool {
+	return h.pollDown.Load() || (!h.healthy.Load() && h.quarantineUntil.Load() > d.nowFn().UnixNano())
+}
+
+// pollFailing reports whether the last load poll of the endpoint under key
+// failed to connect.
+func (d *Dispatcher) pollFailing(key string) bool {
+	v, ok := d.health.Load(key)
+	return ok && v.(*backendHealth).pollFailures.Load() > 0
+}
+
+// recordPollFailure counts a load poll of an endpoint that failed to connect,
+// and quarantines the endpoint once pollFailuresToQuarantine polls in a row
+// have. An endpoint without a health entry has left the set and is ignored.
+func (d *Dispatcher) recordPollFailure(name, endpoint string, err error) {
+	v, ok := d.health.Load(healthKey(name, endpoint))
+	if !ok {
+		return
+	}
+	h := v.(*backendHealth)
+	if h.pollFailures.Add(1) >= pollFailuresToQuarantine && h.pollDown.CompareAndSwap(false, true) {
+		d.logger.Warn("router quarantined upstream: load polls failing", "backend", name, "endpoint", endpoint,
+			"polls", pollFailuresToQuarantine, "error", err)
+		d.pollTransition(name)
+	}
+}
+
+// recordPollAnswered clears the poll failures of an endpoint that answered a
+// load poll. It leaves a request-driven quarantine alone: an answer on the
+// metrics path does not show that inference works.
+func (d *Dispatcher) recordPollAnswered(name, endpoint string) {
+	v, ok := d.health.Load(healthKey(name, endpoint))
+	if !ok {
+		return
+	}
+	h := v.(*backendHealth)
+	h.pollFailures.Store(0)
+	d.clearPollDown(name, endpoint, h, "load_poll")
+}
+
+func (d *Dispatcher) clearPollDown(name, endpoint string, h *backendHealth, via string) {
+	if h.pollDown.CompareAndSwap(true, false) {
+		d.logger.Warn("router upstream reachable again", "backend", name, "endpoint", endpoint, "via", via)
+		d.pollTransition(name)
+	}
+}
+
+func (d *Dispatcher) pollTransition(backend string) {
+	if d.onPollTransition != nil {
+		d.onPollTransition(backend)
+	}
+}
+
 // roundRobin chooses the pod to dispatch to among eps, the backend's live
 // endpoint set. Consecutive calls rotate so a keep-alive client spreads
 // across pods rather than pinning to one through conntrack. Quarantined
 // endpoints are skipped; when every endpoint is quarantined the rotation
-// returns one anyway so the half-open probe still happens.
+// returns one anyway so the request quarantine's half-open probe still
+// happens. A poll-quarantined endpoint gets no probe: IsHealthy is false for
+// a backend whose every endpoint is out, so the proxy skips it first.
 func (d *Dispatcher) roundRobin(backend *Backend, eps []string) string {
 	n := len(eps)
 	if n == 0 {
@@ -336,7 +409,8 @@ func (d *Dispatcher) roundRobin(backend *Backend, eps []string) string {
 // replica sees the same order. New endpoints start healthy; health entries of
 // endpoints that left are dropped, so a pod that later reuses an IP does not
 // inherit an old quarantine. An empty set makes dispatch fall back to the
-// backend's Address.
+// backend's Address. A changed set can change whether the backend has a
+// dispatchable endpoint, so it runs the poll transition hook too.
 func (d *Dispatcher) SetEndpoints(name string, endpoints []string) {
 	next := append([]string(nil), endpoints...)
 	sort.Strings(next)
@@ -359,6 +433,9 @@ func (d *Dispatcher) SetEndpoints(name string, endpoints []string) {
 		}
 	}
 	d.endpoints.Store(name, next)
+	if !slices.Equal(prev, next) {
+		d.pollTransition(name)
+	}
 }
 
 // liveEndpoints returns the endpoint set dispatch uses for backend: the set
@@ -457,12 +534,16 @@ func (d *Dispatcher) quarantine(name, endpoint string, h *backendHealth) {
 }
 
 // markHealthy clears quarantine on one endpoint (or the whole backend when
-// endpoint is empty).
+// endpoint is empty). Clearing the poll state covers a request that was
+// already in flight when the endpoint was poll-quarantined and then
+// succeeded; no new request reaches a poll-quarantined endpoint.
 func (d *Dispatcher) markHealthy(name, endpoint string) {
 	h := d.healthFor(healthKey(name, endpoint))
 	h.healthy.Store(true)
 	h.quarantineUntil.Store(0)
 	h.failures.Store(0)
+	h.pollFailures.Store(0)
+	d.clearPollDown(name, endpoint, h, "request")
 }
 
 // Dispatch forwards the request to the named backend and returns the

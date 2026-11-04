@@ -174,13 +174,13 @@ func (s *Sessions) Place(key uint64, cands []Candidate, now time.Time, tieStart 
 }
 
 // pressure reports whether the bound pod should shed the session, and to which
-// pod. It returns ReasonNone when the session should stay. A target never has a
-// fresh KV reading at or above KVFullThreshold. On a pool of fewer than
+// pod. It returns ReasonNone when the session should stay. A target is never
+// unreachable and never has a fresh KV reading at or above KVFullThreshold. On a pool of fewer than
 // MinPodsForLoadMoves dispatchable pods only a KV-full bound pod sheds.
 func pressure(bound Candidate, cands []Candidate, now time.Time, tieStart int) (string, Reason) {
 	others := make([]Candidate, 0, len(cands))
 	for _, c := range Eligible(cands, now) {
-		if c.Endpoint == bound.Endpoint {
+		if c.Endpoint == bound.Endpoint || c.Unreachable {
 			continue
 		}
 		if cs := freshSample(c, now); cs != nil && cs.KVUsage >= KVFullThreshold {
