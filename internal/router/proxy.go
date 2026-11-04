@@ -294,12 +294,14 @@ func (p *Proxy) handleCompletion(upstreamPath string) http.HandlerFunc {
 		if len(decision.Backends) == 0 {
 			writeErrorFor(anthropic, w, http.StatusServiceUnavailable, "no rule matched and no defaultRoute configured")
 			p.audit(features, decision, nil, http.StatusServiceUnavailable, "no_route", 0, budgetAudit{})
+			p.observeRequest(&features, &decision, nil, "no_route", 0)
 			return
 		}
 
 		if err := p.enforceFailClosed(&features, &decision); err != nil {
 			writeErrorFor(anthropic, w, http.StatusServiceUnavailable, err.Error())
 			p.audit(features, decision, nil, http.StatusServiceUnavailable, "fail_closed", 0, budgetAudit{})
+			p.observeRequest(&features, &decision, nil, "fail_closed", 0)
 			p.observeFailClosed(&features, &decision)
 			return
 		}
@@ -352,7 +354,7 @@ func (p *Proxy) handleCompletion(upstreamPath string) http.HandlerFunc {
 		chosen, resp, err := p.dispatchWithFallback(ctx, &decision, r.Header, body, upstreamPath)
 		elapsed := time.Since(start)
 		if err != nil {
-			p.writeDispatchError(w, r, anthropic, &features, &decision, err, elapsed)
+			p.writeDispatchError(w, r, anthropic, &features, &decision, chosen, err, elapsed)
 			return
 		}
 		defer func() { _ = resp.Body.Close() }()
@@ -439,14 +441,17 @@ func (p *Proxy) handleCompletion(upstreamPath string) http.HandlerFunc {
 	}
 }
 
-// writeDispatchError answers and audits a request no backend served, mapping
-// the dispatch error to the status that names its cause.
+// writeDispatchError answers, audits and counts a request no backend served,
+// mapping the dispatch error to the status that names its cause. last is the
+// backend dispatchWithFallback reached last, or nil; it labels the request
+// metrics.
 func (p *Proxy) writeDispatchError(
 	w http.ResponseWriter,
 	r *http.Request,
 	anthropic bool,
 	features *RequestFeatures,
 	decision *MatchResult,
+	last *Backend,
 	err error,
 	elapsed time.Duration,
 ) {
@@ -458,6 +463,7 @@ func (p *Proxy) writeDispatchError(
 	if errors.Is(r.Context().Err(), context.Canceled) {
 		p.audit(*features, *decision, nil, statusClientClosedRequest,
 			"client_cancelled", elapsed, budgetAudit{}, "error", err.Error())
+		p.observeRequest(features, decision, last, "client_cancelled", elapsed)
 		return
 	}
 	// ModelPool cold-start hold exceeded its budget: the client's request
@@ -472,6 +478,7 @@ func (p *Proxy) writeDispatchError(
 			"model pool activation did not complete within the request budget; retry")
 		p.audit(*features, *decision, nil, http.StatusServiceUnavailable,
 			"pool_activation_timeout", elapsed, budgetAudit{})
+		p.observeRequest(features, decision, last, "pool_activation_timeout", elapsed)
 		return
 	}
 	// Every backend in an IfIdle rule skipped because its ModelPool incumbent
@@ -486,6 +493,7 @@ func (p *Proxy) writeDispatchError(
 			"model pool incumbent busy; no preferred member is warm, retry")
 		p.audit(*features, *decision, nil, http.StatusServiceUnavailable,
 			"pool_incumbent_busy", elapsed, budgetAudit{})
+		p.observeRequest(features, decision, last, "pool_incumbent_busy", elapsed)
 		return
 	}
 	// Runtime fail-closed: when every backend in a fail-closed
@@ -502,6 +510,7 @@ func (p *Proxy) writeDispatchError(
 			"fail-closed: all rule backends unhealthy: "+err.Error())
 		p.audit(*features, *decision, nil, http.StatusServiceUnavailable,
 			"fail_closed_runtime", elapsed, budgetAudit{})
+		p.observeRequest(features, decision, last, "fail_closed_runtime", elapsed)
 		p.observeFailClosed(features, decision)
 		return
 	}
@@ -511,10 +520,12 @@ func (p *Proxy) writeDispatchError(
 	if errors.Is(err, context.DeadlineExceeded) {
 		writeErrorFor(anthropic, w, http.StatusGatewayTimeout, "backend timed out: "+err.Error())
 		p.audit(*features, *decision, nil, http.StatusGatewayTimeout, "timeout", elapsed, budgetAudit{}, "error", err.Error())
+		p.observeRequest(features, decision, last, "timeout", elapsed)
 		return
 	}
 	writeErrorFor(anthropic, w, http.StatusBadGateway, "all backends failed: "+err.Error())
 	p.audit(*features, *decision, nil, http.StatusBadGateway, "all_backends_failed", elapsed, budgetAudit{}, "error", err.Error())
+	p.observeRequest(features, decision, last, "all_backends_failed", elapsed)
 }
 
 // attributeRequest records who sent r on its features for the audit line,
@@ -766,7 +777,9 @@ func (p *Proxy) dispatchOrder(dec *MatchResult) []string {
 // returns the first successful (non-5xx, non-error) response. On
 // fail-closed routes with all backends unhealthy, the last error
 // propagates back to the handler as HTTP 502 or 503 (the caller in
-// handleCompletion decides the surface based on dec.FailClosed).
+// handleCompletion decides the surface based on dec.FailClosed). With an
+// error, the backend returned is the last configured one the walk reached,
+// or nil when it reached none.
 //
 // Per-attempt header deadline: resolveDispatchTimeout produces the cap for
 // each backend attempt, with resolution order rule -> backend -> proxy
@@ -784,6 +797,7 @@ func (p *Proxy) dispatchWithFallback(
 	path string,
 ) (*Backend, *http.Response, error) {
 	var lastErr error
+	var last *Backend
 	// allIncumbentBusy stays true only if every backend that was tried failed
 	// specifically because its ModelPool incumbent was busy under IfIdle (no
 	// swap started). Any other failure (unconfigured, unhealthy, dispatch error,
@@ -796,7 +810,7 @@ func (p *Proxy) dispatchWithFallback(
 		// A client that went away cancels every remaining attempt: a fallback
 		// would only fail on the cancelled context.
 		if err := ctx.Err(); err != nil {
-			return nil, nil, err
+			return last, nil, err
 		}
 		b := p.matcher.BackendByName(name)
 		if b == nil {
@@ -804,7 +818,9 @@ func (p *Proxy) dispatchWithFallback(
 			allIncumbentBusy = false
 			continue
 		}
+		last = b
 		if !p.disp.IsHealthy(name) {
+			p.updateBackendHealthMetrics(name, false)
 			lastErr = fmt.Errorf("backend %q marked unhealthy", name)
 			allIncumbentBusy = false
 			continue
@@ -875,6 +891,7 @@ func (p *Proxy) dispatchWithFallback(
 			}
 			span.End()
 			cancel()
+			p.refreshBackendHealth(name)
 			lastErr = err
 			allIncumbentBusy = false
 			continue
@@ -888,6 +905,7 @@ func (p *Proxy) dispatchWithFallback(
 			}
 			span.End()
 			cancel()
+			p.refreshBackendHealth(name)
 			lastErr = fmt.Errorf("%s returned %d", name, resp.StatusCode)
 			allIncumbentBusy = false
 			continue
@@ -913,9 +931,9 @@ func (p *Proxy) dispatchWithFallback(
 		// Every backend skipped under IfIdle because its incumbent was busy.
 		// Return the sentinel unwrapped so the handler maps it to 503 +
 		// Retry-After like the sibling hold-budget timeout, not a 502.
-		return nil, nil, ErrIncumbentBusy
+		return last, nil, ErrIncumbentBusy
 	}
-	return nil, nil, lastErr
+	return last, nil, lastErr
 }
 
 // cancelOnClose pairs a response body with the cancel func of the
@@ -1084,8 +1102,8 @@ func (p *Proxy) audit(
 }
 
 // observeRequest records the llmkube_router_requests_total counter and
-// llmkube_router_request_duration_seconds histogram for a completed
-// dispatch.
+// llmkube_router_request_duration_seconds histogram for a request the router
+// answered, served or not.
 func (p *Proxy) observeRequest(f *RequestFeatures, dec *MatchResult, chosen *Backend, outcome string, elapsed time.Duration) {
 	ruleName := ""
 	if dec.Rule != nil {
@@ -1106,7 +1124,7 @@ func (p *Proxy) observeRequest(f *RequestFeatures, dec *MatchResult, chosen *Bac
 	// atomic.Bool on Dispatch return (healthy on 2xx, unhealthy on 5xx
 	// or connect failure), so this just reads the live state.
 	if chosen != nil {
-		p.updateBackendHealthMetrics(chosen.Name, p.disp.IsHealthy(chosen.Name))
+		p.refreshBackendHealth(chosen.Name)
 	}
 	p.updateActiveBackendsMetrics()
 }
@@ -1123,6 +1141,12 @@ func (p *Proxy) observeFailClosed(f *RequestFeatures, dec *MatchResult) {
 	).Inc()
 }
 
+// refreshBackendHealth sets the llmkube_router_backend_health gauge of the
+// named backend from the dispatcher's current state.
+func (p *Proxy) refreshBackendHealth(name string) {
+	p.updateBackendHealthMetrics(name, p.disp.IsHealthy(name))
+}
+
 // updateBackendHealthMetrics sets the llmkube_router_backend_health gauge
 // for the named backend to 1 (healthy) or 0 (unhealthy).
 func (p *Proxy) updateBackendHealthMetrics(name string, healthy bool) {
@@ -1135,13 +1159,15 @@ func (p *Proxy) updateBackendHealthMetrics(name string, healthy bool) {
 
 // updateActiveBackendsMetrics sets the llmkube_router_active_backends
 // gauge for each tier based on the current health of backends in that
-// tier.
+// tier. A configured tier with no healthy backend is set to 0.
 func (p *Proxy) updateActiveBackendsMetrics() {
 	tierCount := map[string]int{}
 	for _, b := range p.cfg.Backends {
+		n := tierCount[b.Tier]
 		if p.disp.IsHealthy(b.Name) {
-			tierCount[b.Tier]++
+			n++
 		}
+		tierCount[b.Tier] = n
 	}
 	for tier, count := range tierCount {
 		prommetrics.RouterActiveBackends.WithLabelValues(p.routerName, tier).Set(float64(count))

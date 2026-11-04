@@ -649,7 +649,7 @@ The per-request audit-log line records `latencyMs`, `status`,
 stream-duration breakdown. "Why did this 8-minute agent loop run
 slow?" needs upstream metrics, not the proxy log.
 
-`outcome` says how a dispatched request ended:
+`outcome` says how a request ended:
 
 - `ok` or `ok_stream`: the response was relayed in full.
 - `client_cancelled`: the client disconnected. If no backend had
@@ -658,10 +658,25 @@ slow?" needs upstream metrics, not the proxy log.
 - `timeout`: the backend missed the header deadline (on a rule that is
   not fail-closed, the client gets a `504`), or a stream went silent past
   `streamIdleTimeout`.
-- `all_backends_failed`: every backend errored or returned a 5xx (`502`).
+- `all_backends_failed`: every backend errored, returned a 5xx, or was
+  quarantined (`502`).
+- `no_route`: no rule matched and there is no `defaultRoute` (`503`).
+- `fail_closed`: a fail-closed rule refused a sensitive request before
+  dispatch (`503`).
+- `fail_closed_runtime`: every backend of a fail-closed rule failed (`503`).
+- `pool_activation_timeout` or `pool_incumbent_busy`: a ModelPool member
+  was not resident in time (`503` with `Retry-After`).
+- `budget_exceeded`: a token budget was exhausted (`429`).
 
-The failure outcomes carry the underlying `error`. For a response the
-proxy relayed, the same value labels `llmkube_router_requests_total`.
+The failure outcomes carry the underlying `error`. The same value labels
+`llmkube_router_requests_total`, which counts every request the proxy
+answers, and `llmkube_router_request_duration_seconds` observes each of
+them. For a request no backend served, the `backend` label is the last
+backend the proxy tried, and empty when it tried none (`no_route`,
+`fail_closed`, `budget_exceeded`). `llmkube_router_backend_health` is
+refreshed for every backend a request tries, and
+`llmkube_router_active_backends` after every counted request, so a quarantined
+backend reads 0 whether or not a request to it has since succeeded.
 The proxy cancels the upstream request when its own request ends, so a
 `cancel task` line in llama.cpp's log usually pairs with a
 `client_cancelled` or `timeout` line here.
