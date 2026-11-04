@@ -808,7 +808,7 @@ func testCapHoldsBackFile(t *testing.T, v poolVariant) {
 // release is the moment a slot opens. Measured on head, a handoff costs about
 // 210ms; with a whole-second poll it costs 1.01s, which is what the bound
 // separates.
-func TestMultiFilePoolHandsOffWithoutAWholeSecondDelay(t *testing.T) {
+func TestMultiFileConcurrentPoolHandsOffWithoutAWholeSecondDelay(t *testing.T) {
 	requireInitShellEnvironment(t)
 
 	names := make([]string, 12)

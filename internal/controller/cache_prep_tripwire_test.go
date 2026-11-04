@@ -105,7 +105,7 @@ func TestCachePrepAlwaysTemplatesUnchanged(t *testing.T) {
 	dep := r.constructDeploymentForCache(cachePrepTripwireIsvc(), cachePrepTripwireModel(), resolveEffectiveModelCache(cachePrepTripwireIsvc(), cachePrepTripwireModel()), nil, 1, "", "")
 	if got := desiredTemplateHash(dep.Spec.Template); got != cachePrepTripwireDeploymentHash {
 		t.Errorf("cache-backed Deployment pod template drifted from base: desiredTemplateHash = %s, want %s\n"+
-			"every cache-backed pod would roll on upgrade; the default policy must render exactly what base rendered",
+			"every cache-backed pod would roll on upgrade; a builder changed shape for the default policy without an upgrade note",
 			got, cachePrepTripwireDeploymentHash)
 	}
 
