@@ -68,6 +68,13 @@ type metalNodeReporter struct {
 	// bind makes the ingress certificate name the MetalNode with the given
 	// UID and reports whether it re-issued it; nil without an ingress.
 	bind func(uid string) (bool, error)
+	// follow, when set, gets the MetalNode on every renewal (nil when it
+	// does not exist) with the report about to go out, so the agent can
+	// register the address the cluster verified. The MetalNode is then read
+	// on every renewal; without follow (--host-ip, legacy mode) it is read
+	// only for the ingress binding, until it binds and then every
+	// metalNodeBindRecheck.
+	follow func(mn *inferencev1alpha1.MetalNode, report metalnode.Report)
 
 	lastWarn     time.Time
 	lastBindWarn time.Time
@@ -109,7 +116,10 @@ func (r *metalNodeReporter) renew(ctx context.Context) {
 		return
 	}
 
-	r.bindIngress(ctx)
+	mn, read, readErr := r.readMetalNode(ctx)
+	if read {
+		r.bindIngress(mn, readErr)
+	}
 	report := r.report(ctx)
 	raw, err := metalnode.Encode(report)
 	if err == nil {
@@ -120,6 +130,11 @@ func (r *metalNodeReporter) renew(ctx context.Context) {
 	if err != nil {
 		r.warn("not renewing the MetalNode Lease: the report is invalid", "lease", key.String(), "error", err)
 		return
+	}
+	// A failed read says nothing about the MetalNode, so the registered
+	// address stays as it is; a MetalNode that is gone has nothing verified.
+	if r.follow != nil && read && (readErr == nil || apierrors.IsNotFound(readErr)) {
+		r.follow(mn, report)
 	}
 
 	holder := r.node
@@ -143,20 +158,51 @@ func (r *metalNodeReporter) renew(ctx context.Context) {
 	r.lastWarn = time.Time{}
 }
 
+// bindDue reports whether the ingress certificate's binding is due a check:
+// on every renewal until the certificate names the MetalNode, then every
+// metalNodeBindRecheck.
+func (r *metalNodeReporter) bindDue() bool {
+	return r.bind != nil && (r.boundUID == "" || r.now().Sub(r.boundAt) >= metalNodeBindRecheck)
+}
+
+// readMetalNode gets the MetalNode when this renewal has a use for it: the
+// ingress binding is due, or follow is set (every renewal). read is false
+// when no read was due. A failure is logged (rate-limited) and returned.
+func (r *metalNodeReporter) readMetalNode(ctx context.Context) (mn *inferencev1alpha1.MetalNode, read bool, err error) {
+	bindDue := r.bindDue()
+	if !bindDue && r.follow == nil {
+		return nil, false, nil
+	}
+	mn = &inferencev1alpha1.MetalNode{}
+	if err := r.client.Get(ctx, types.NamespacedName{Namespace: r.namespace, Name: r.node}, mn); err != nil {
+		switch {
+		case bindDue:
+			r.warnBind("cannot read the MetalNode to bind the ingress certificate to it; the dial-back fails until it can",
+				"metalNode", r.node, "error", err)
+		case !apierrors.IsNotFound(err):
+			// A MetalNode that is gone is follow's to log, as the switch
+			// away from its address.
+			r.warnBind("cannot read the MetalNode; the agent's endpoints keep their address until it can",
+				"metalNode", r.node, "error", err)
+		}
+		return nil, true, err
+	}
+	return mn, true, nil
+}
+
 // bindIngress makes the ingress certificate name this MetalNode's UID before
 // the report carries it: the controller's dial-back accepts only a server
-// whose certificate names it, so no other server can pass for this Mac. The
-// UID is read until the certificate names it, then every
-// metalNodeBindRecheck. A failure is logged and the report goes out anyway;
-// the controller then says the certificate does not name the MetalNode.
-func (r *metalNodeReporter) bindIngress(ctx context.Context) {
-	if r.bind == nil || (r.boundUID != "" && r.now().Sub(r.boundAt) < metalNodeBindRecheck) {
+// whose certificate names it, so no other server can pass for this Mac. It
+// binds when bindDue, or when a read made for follow shows a UID other than
+// the bound one (a MetalNode re-created under the same name). A failure is
+// logged and the report goes out anyway; the controller then says the
+// certificate does not name the MetalNode.
+func (r *metalNodeReporter) bindIngress(mn *inferencev1alpha1.MetalNode, readErr error) {
+	if r.bind == nil || (!r.bindDue() && (readErr != nil || mn.UID == r.boundUID)) {
 		return
 	}
-	mn := &inferencev1alpha1.MetalNode{}
-	if err := r.client.Get(ctx, types.NamespacedName{Namespace: r.namespace, Name: r.node}, mn); err != nil {
-		r.warnBind("cannot read the MetalNode to bind the ingress certificate to it; the dial-back fails until it can",
-			"metalNode", r.node, "error", err)
+	if readErr != nil {
+		// readMetalNode logged it.
 		return
 	}
 	reissued, err := r.bind(string(mn.UID))
@@ -194,8 +240,22 @@ func (r *metalNodeReporter) warn(msg string, kv ...any) {
 // and reports whether it did. With no MetalNode configured the agent makes
 // no Lease call at all, exactly as before the feature existed.
 func (a *MetalAgent) startMetalNodeReporter(ctx context.Context) bool {
-	if a.config.MetalNode == "" {
+	r := a.newMetalNodeReporter()
+	if r == nil {
 		return false
+	}
+	a.logger.Infow("reporting to MetalNode through its Lease",
+		"metalNode", a.config.MetalNode, "lease", a.config.Namespace+"/"+r.lease, "interval", metalNodeRenewInterval,
+		"followVerifiedHostIP", r.follow != nil)
+	go r.run(ctx)
+	return true
+}
+
+// newMetalNodeReporter is the reporter startMetalNodeReporter runs; nil
+// without --metal-node.
+func (a *MetalAgent) newMetalNodeReporter() *metalNodeReporter {
+	if a.config.MetalNode == "" {
+		return nil
 	}
 	lease := a.config.MetalNodeLease
 	if lease == "" {
@@ -213,10 +273,10 @@ func (a *MetalAgent) startMetalNodeReporter(ctx context.Context) bool {
 	if a.ingressIdentity != nil {
 		r.bind = a.ingressIdentity.BindMetalNode
 	}
-	a.logger.Infow("reporting to MetalNode through its Lease",
-		"metalNode", a.config.MetalNode, "lease", a.config.Namespace+"/"+lease, "interval", metalNodeRenewInterval)
-	go r.run(ctx)
-	return true
+	if a.followsMetalNodeHostIP() {
+		r.follow = a.followMetalNodeHostIP
+	}
+	return r
 }
 
 // metalNodeReport is what the agent knows about itself right now. The
