@@ -244,8 +244,11 @@ Engines keep running when the agent stops: `SIGTERM`, `launchctl kickstart -k`,
 a crash and `make install-metal-agent` upgrades all leave them serving. The next
 agent process adopts each engine with the same PID and no model reload, and logs
 `adopted engine from a previous agent process`. In relay mode, requests through
-the Service fail only for the few seconds the agent itself is down; in legacy
-mode they keep succeeding.
+the Service fail only for the few seconds the agent itself is down, as long as
+the new agent can reach the API server to read the relay token; in legacy mode
+they keep succeeding. An unreachable API server does not stop the agent or its
+engines; see [API server outages](#api-server-outages), which also covers an
+agent that restarts during one.
 
 Adoption checks each engine before trusting it. Its PID must be alive, lead
 the recorded process group and have the recorded kernel start time. A process
@@ -318,6 +321,53 @@ llmkube-metal-agent stop-engines   # the current binary, before it is replaced
 
 If `stop-engines` exits 1, an engine is still running; check its output and
 run it again before installing the older agent.
+
+### API server outages
+
+The agent keeps running when it cannot reach the Kubernetes API server, for
+example during a control-plane upgrade, a network drop, or after an upgrade
+that cost the agent its Local Network access on a Mac whose API server is on
+the LAN. It lists InferenceServices every 5 seconds. After
+`--max-watch-failures` consecutive failed lists (default 3, about 15 seconds
+when each fails fast) it logs `Kubernetes API unreachable` once at warn level,
+sets `llmkube_metal_agent_api_unreachable` to 1, and retries with a delay that
+doubles from 10 to 30 seconds, plus up to 20 % jitter. Before each retry it
+closes its API client's idle connections, so the retry dials a new one.
+
+While the API server is unreachable:
+
+- Every engine keeps running, and the agent keeps every service it was
+  serving. A failed list is never read as a deletion, and nothing is stopped
+  or restarted because of the outage.
+- In relay mode the ingress keeps accepting each namespace's relay token as
+  the last successful read of the token Secret left it, so traffic through
+  the relay keeps flowing while the relay pods can reach the Mac. A token
+  rotated out before the outage is still accepted only until its 10-minute
+  rotation grace ends. A token rotated in during the outage is refused until
+  the agent can read it, so a relay that switches to it gets 401 until the
+  API server is back.
+- New services, spec changes, `replicas: 0`, suspends and deletions take
+  effect only once a list succeeds.
+- Heartbeats fail, and each one logs `heartbeat: failed to fetch
+  InferenceService` per service. A controller that can still reach the API
+  server withdraws this Mac's endpoints once their heartbeat is 3 minutes old
+  (noticed within another 90 seconds; nothing is deleted), and in-cluster
+  traffic to the Mac stops then.
+
+When a list succeeds again the agent logs `Kubernetes API reachable again;
+resuming` once at info level, sets the gauge back to 0, re-registers every
+running engine's endpoint at once instead of at the next 30-second heartbeat,
+and applies what changed during the outage on that poll. At the 30-second
+backoff it notices the API server's return within about 36 seconds.
+
+An agent that restarts during an outage (a crash, `launchctl kickstart -k`,
+an upgrade, or an upgrade that also cost it Local Network access) still adopts
+its engines, but it has no relay token: tokens are kept only in memory, never
+written to disk. Until it reads the token Secret, its ingress answers every
+relay request with 401. A relay request retries the read at most once a
+second, so the first one after the API server is reachable again loads the
+token. Host clients of the client proxy (`127.0.0.1:9999`) are not affected.
+Avoid restarting or upgrading the agent while its API server is unreachable.
 
 ### Model store
 
@@ -1158,9 +1208,10 @@ The Metal Agent exposes an HTTP server on `127.0.0.1:9090` (configurable via `--
 | `llmkube_metal_agent_engine_record_errors_total` | Counter | Engine record writes that failed and failed the start |
 | `llmkube_metal_agent_engines_adopted_total` | Counter | Engine records evaluated at startup, by outcome. Labels: `result` (`adopted`, `stopped`, `discarded`) |
 | `llmkube_metal_agent_evictions_skipped_total` | Counter | Times the watchdog was at Critical but did not evict. Labels: `reason` (`disabled`, `below_guard`, `empty`, `floor`, `all_protected`, `runtime_ineligible`) |
-| `llmkube_metal_agent_watch_consecutive_failures` | Gauge | Consecutive failed Kubernetes lists by the InferenceService watcher; resets to 0 on success. The agent exits for a launchd restart at `--max-watch-failures` |
+| `llmkube_metal_agent_watch_consecutive_failures` | Gauge | Consecutive failed Kubernetes lists by the InferenceService watcher; resets to 0 on success. At `--max-watch-failures` the API counts as unreachable |
+| `llmkube_metal_agent_api_unreachable` | Gauge | 1 while the agent counts the Kubernetes API as unreachable (`--max-watch-failures` or more consecutive failed lists), 0 otherwise. The agent keeps running and its engines keep serving; see [API server outages](#api-server-outages) |
 | `llmkube_metal_agent_watch_model_lookup_failing_services` | Gauge | InferenceServices whose referenced Model lookup is currently failing with an error other than NotFound; each is kept in its previous state until a lookup succeeds |
-| `llmkube_metal_agent_fatal_exits_total` | Counter | Fatal-exit signals raised before the agent exits. Labels: `subsystem` (`watcher`, `health-server`) |
+| `llmkube_metal_agent_fatal_exits_total` | Counter | Fatal-exit signals raised before the agent exits. Labels: `subsystem` (`health-server`); an unreachable API server raises none |
 | `llmkube_metal_agent_apple_power_combined_watts` | Gauge | Combined CPU + GPU + ANE package power. Zero unless `--apple-power-enabled`. |
 | `llmkube_metal_agent_apple_power_gpu_watts` | Gauge | GPU subsystem power. Zero unless `--apple-power-enabled`. |
 | `llmkube_metal_agent_apple_power_cpu_watts` | Gauge | CPU subsystem power. Zero unless `--apple-power-enabled`. |
@@ -1780,7 +1831,7 @@ If the source is a LAN mirror you trust (an internal MinIO or registry), add its
 
 ### LAN download fails with `no route to host` after an upgrade
 
-The guard allowed the host, but macOS blocked the connection. macOS Local Network Privacy ties its permission to the agent binary, so a new binary loses access to the local network until it is granted again, and the refusal surfaces as `connect: no route to host` rather than a permission error. It affects every connection the agent opens to a LAN address, including its connection to a Kubernetes API server on the LAN, not only model downloads; downloads from the internet are not affected. Incoming connections to the ingress are governed by the macOS firewall instead, which may ask again to allow them for the new binary. Grant the agent access in System Settings, Privacy & Security, Local Network, or reach the mirror over a route macOS does not treat as local (for example a VPN or tailnet address). When the failing connection is the memory check's size probe of a remote Model, the agent retries it quietly for 3 minutes before refusing with `MemoryCheckFailed`, so a denied permission shows up as that refusal after a short delay.
+The guard allowed the host, but macOS blocked the connection. macOS Local Network Privacy ties its permission to the agent binary, so a new binary loses access to the local network until it is granted again, and the refusal surfaces as `connect: no route to host` rather than a permission error. It affects every connection the agent opens to a LAN address, including its connection to a Kubernetes API server on the LAN, not only model downloads; downloads from the internet are not affected. With the API server on the LAN, the upgraded agent starts without a relay token, so relay requests get 401 until access is granted again (see [API server outages](#api-server-outages)). Incoming connections to the ingress are governed by the macOS firewall instead, which may ask again to allow them for the new binary. Grant the agent access in System Settings, Privacy & Security, Local Network, or reach the mirror over a route macOS does not treat as local (for example a VPN or tailnet address). When the failing connection is the memory check's size probe of a remote Model, the agent retries it quietly for 3 minutes before refusing with `MemoryCheckFailed`, so a denied permission shows up as that refusal after a short delay.
 
 ### `ModelDigestMismatch`
 
