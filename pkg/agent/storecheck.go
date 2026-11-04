@@ -211,10 +211,13 @@ func appendNoFollow(path string) (*os.File, error) {
 	return os.OpenFile(path, os.O_WRONLY|os.O_APPEND|syscall.O_NOFOLLOW, 0o600)
 }
 
-// openEngineLog opens an engine's per-process log (truncated, one run per
-// file) without following a symlink. A symlinked log path fails the start
+// openEngineLog opens a new per-process log for one engine run without
+// following a symlink. The previous run's log is kept as <logPath>.1 (one
+// generation; see rotateEngineLog), so the restart after a crash does not
+// erase the output that explains it. A symlinked log path fails the start
 // with an error naming the path rather than writing through the link.
 func openEngineLog(engine, logPath string) (*os.File, error) {
+	rotateEngineLog(logPath)
 	f, err := createNoFollow(logPath)
 	if err == nil {
 		return f, nil
@@ -224,4 +227,18 @@ func openEngineLog(engine, logPath string) (*os.File, error) {
 			engine, logPath, err)
 	}
 	return nil, fmt.Errorf("failed to open %s log file %s: %w", engine, logPath, err)
+}
+
+// rotateEngineLog renames the log at logPath to logPath.1 when it is a
+// regular file. rename(2) replaces whatever sits at .1, a planted symlink
+// included, without following it, and the file keeps the mode the agent
+// created it with. A symlink at logPath is left in place for openEngineLog to
+// refuse. Rotation is best effort: when it fails, the new run truncates the
+// log as it always did.
+func rotateEngineLog(logPath string) {
+	info, err := os.Lstat(logPath)
+	if err != nil || !info.Mode().IsRegular() {
+		return
+	}
+	_ = os.Rename(logPath, logPath+".1")
 }

@@ -269,20 +269,36 @@ func (a *MetalAgent) wakeRestarts() {
 }
 
 // restartUnhealthy stops proc, which has failed `failures` consecutive health
-// probes, and schedules its replacement on the service's restart backoff. It
-// runs on the health monitor's goroutine; the replacement starts later on the
-// event loop (runDueRestarts), never before the stop has returned.
+// probes, and schedules its replacement on the service's restart backoff
+// (stopForRestart). It runs on the health monitor's goroutine.
+func (a *MetalAgent) restartUnhealthy(ctx context.Context, key string, proc *ManagedProcess, failures int) {
+	restartIn, ok := a.stopForRestart(ctx, key, proc, "consecutiveFailures", failures)
+	if !ok {
+		return
+	}
+	a.emitInferenceEvent(ctx, proc, corev1.EventTypeWarning, EventReasonHealthRestart,
+		"Engine failed %d consecutive health checks and was stopped; restarting in %s", failures, restartIn)
+}
+
+// stopForRestart stops proc, an engine marked unhealthy (it failed its health
+// probes, or its process exited), and schedules its replacement on the
+// service's restart backoff. It returns how long until the restart, and false
+// when it left proc alone or scheduled nothing. The replacement starts later
+// on the event loop (runDueRestarts), never before the stop has returned.
+// logKV is added to its log lines.
 //
 // proc is removed from a.processes and its key held in a.starting under one
 // lock, so a watch event can neither start a second engine while this one is
 // stopping nor stop it a second time. A proc that was replaced, removed or
-// recovered since the probe, or whose key has a start in flight, is left
+// recovered since it was marked, or whose key has a start in flight, is left
 // alone; the next probe looks again.
-func (a *MetalAgent) restartUnhealthy(ctx context.Context, key string, proc *ManagedProcess, failures int) {
+func (a *MetalAgent) stopForRestart(
+	ctx context.Context, key string, proc *ManagedProcess, logKV ...interface{},
+) (time.Duration, bool) {
 	a.mu.Lock()
 	if a.processes[key] != proc || proc.Healthy || a.starting[key] {
 		a.mu.Unlock()
-		return
+		return 0, false
 	}
 	delete(a.processes, key)
 	managedProcesses.Set(float64(len(a.processes)))
@@ -294,8 +310,8 @@ func (a *MetalAgent) restartUnhealthy(ctx context.Context, key string, proc *Man
 	st.specHash = proc.SpecHash
 	a.mu.Unlock()
 
-	a.logger.Warnw("stopping unhealthy process to restart it",
-		"namespace", proc.Namespace, "name", proc.Name, "pid", proc.PID, "consecutiveFailures", failures)
+	a.logger.Warnw("stopping unhealthy process to restart it", append([]interface{}{
+		"namespace", proc.Namespace, "name", proc.Name, "pid", proc.PID}, logKV...)...)
 	var notBefore time.Time
 	stopErr := a.stopManagedProcess(ctx, proc, false)
 	// The record goes only once the engine is confirmed stopped.
@@ -317,7 +333,7 @@ func (a *MetalAgent) restartUnhealthy(ctx context.Context, key string, proc *Man
 		a.mu.Unlock()
 		a.logger.Infow("service torn down or agent stopping while its unhealthy process stopped; not restarting it",
 			"namespace", proc.Namespace, "name", proc.Name)
-		return
+		return 0, false
 	}
 	if !notBefore.IsZero() {
 		st.releaseAt = notBefore
@@ -328,8 +344,7 @@ func (a *MetalAgent) restartUnhealthy(ctx context.Context, key string, proc *Man
 
 	a.logger.Warnw("restart scheduled for unhealthy process",
 		"namespace", proc.Namespace, "name", proc.Name, "restartAt", restartAt, "restartIn", restartIn)
-	a.emitInferenceEvent(ctx, proc, corev1.EventTypeWarning, EventReasonHealthRestart,
-		"Engine failed %d consecutive health checks and was stopped; restarting in %s", failures, restartIn)
+	return restartIn, true
 }
 
 // runDueRestarts runs every pending health restart whose backoff has expired.

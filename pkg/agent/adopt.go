@@ -220,7 +220,7 @@ func (a *MetalAgent) storeAdopted(rec engineRecord, healthy bool) {
 		Name: rec.Name, Namespace: rec.Namespace, PID: rec.PID, PGID: rec.PGID, StartToken: rec.StartToken,
 		Port: rec.Port, ModelPath: rec.ModelPath, ModelID: rec.ModelID, StartedAt: rec.StartedAt, Healthy: healthy,
 		SpecHash: rec.SpecHash, Priority: rec.Priority, EvictionProtection: rec.EvictionProtection,
-		Runtime: rec.Runtime, AdmittedBytes: rec.AdmittedBytes, Adopted: true,
+		Runtime: rec.Runtime, AdmittedBytes: rec.AdmittedBytes, Adopted: true, logPath: rec.LogPath,
 	}
 	a.mu.Unlock()
 	value := 0.0
