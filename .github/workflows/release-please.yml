@@ -15,8 +15,9 @@ permissions:
   contents: write
   pull-requests: write
   packages: write        # push images + attestations to GHCR
-  id-token: write        # keyless cosign / OIDC
   attestations: write    # actions/attest-* write to the attestations store
+  # id-token: write is granted only to the goreleaser job, the one job that
+  # signs or attests.
 
 jobs:
   release-please:
@@ -43,6 +44,15 @@ jobs:
     # which only main can deploy to, so a workflow run from any other branch
     # reads them as empty (docs/contributing/macos-signing.md).
     environment: release
+    # The only job that signs (cosign) or attests (actions/attest-*), so the
+    # only one that can mint an OIDC token. A job-level block replaces the
+    # workflow-level one, so the rest is repeated unchanged.
+    permissions:
+      contents: write
+      pull-requests: write
+      packages: write
+      id-token: write        # keyless cosign / OIDC
+      attestations: write
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
