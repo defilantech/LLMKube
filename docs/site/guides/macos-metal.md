@@ -794,6 +794,28 @@ so they are over-charged. Older deepseek2 conversions carry plain
 head dims and no `*_mla` keys, run the non-MLA path, and are charged
 exactly what llama-server allocates.
 
+The attention shape comes from the Model's `status.gguf` when the
+controller recorded it, which it does for http(s) and s3 sources whose
+header it could read over the network. The controller cannot read the
+Mac's disk, so for a local source (an absolute path or a `file://`
+URI), an `hf://` source, or a source whose remote header read failed,
+the agent reads the GGUF header of the file it will load: the local
+file (following symlinks, as the load does) or its own model-store copy
+once downloaded. It reads at most 32 MiB of header, never the tensor
+data, and reads a file again only when its size, modification time or
+inode changes. For a split GGUF that file is the first shard, the only
+one llama-server accepts as the model path. With no shape (an MLX
+model directory, whose `config.json` the agent does not read; a file
+that is not a GGUF; or the first start of a download the controller
+could not read, before the file is on the Mac) the estimate is the
+file size plus 20% and 512 MiB, with no KV-cache term at any
+`contextSize`. Above the default 2048-token context the agent logs
+that once per model, and an `InsufficientMemory` message then ends
+with `the KV cache for --ctx-size N is not counted (<reason>)`, so
+the figure is a lower bound. An MLX model with a long context is
+therefore admitted against less memory than it will use; leave room
+for its KV cache in `--memory-fraction`.
+
 The estimate charges the total `--ctx-size` pool: llama-server
 shares that pool across `--parallel` slots rather than multiplying
 it, so admission does not scale with slot count.

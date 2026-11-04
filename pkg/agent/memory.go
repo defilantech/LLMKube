@@ -76,7 +76,20 @@ type MemoryEstimate struct {
 	KVCacheBytes  uint64
 	OverheadBytes uint64
 	TotalBytes    uint64
+
+	// KVCacheNotCounted, when set, says why TotalBytes holds no KV-cache
+	// term although the service asks for more than the default context:
+	// the attention shape was in neither the Model status nor a GGUF
+	// header the agent could read, so the estimate is the file-size
+	// heuristic. Admission messages carry it.
+	KVCacheNotCounted string
 }
+
+// defaultContextSize is the --ctx-size the agent passes when the
+// InferenceService sets no contextSize. Its KV cache is small enough for
+// the file-size heuristic's 20% margin, so a missing attention shape is
+// only reported above it.
+const defaultContextSize = 2048
 
 // MemoryBudget is the result of a memory budget check.
 type MemoryBudget struct {
