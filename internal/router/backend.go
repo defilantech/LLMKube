@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -408,7 +409,8 @@ func (d *Dispatcher) roundRobin(backend *Backend, eps []string) string {
 // replica sees the same order. New endpoints start healthy; health entries of
 // endpoints that left are dropped, so a pod that later reuses an IP does not
 // inherit an old quarantine. An empty set makes dispatch fall back to the
-// backend's Address.
+// backend's Address. A changed set can change whether the backend has a
+// dispatchable endpoint, so it runs the poll transition hook too.
 func (d *Dispatcher) SetEndpoints(name string, endpoints []string) {
 	next := append([]string(nil), endpoints...)
 	sort.Strings(next)
@@ -431,6 +433,9 @@ func (d *Dispatcher) SetEndpoints(name string, endpoints []string) {
 		}
 	}
 	d.endpoints.Store(name, next)
+	if !slices.Equal(prev, next) {
+		d.pollTransition(name)
+	}
 }
 
 // liveEndpoints returns the endpoint set dispatch uses for backend: the set

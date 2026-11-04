@@ -363,6 +363,57 @@ func TestPollTransitionsDriveBackendHealthGauges(t *testing.T) {
 	}
 }
 
+// An endpoint-set change that flips whether the backend has a dispatchable
+// pod refreshes the health gauges with no client request: removing the last
+// dispatchable pod beside a poll-quarantined one drops them to 0, and adding
+// a healthy pod beside it raises them to 1.
+func TestEndpointSetChangeDrivesBackendHealthGauges(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		seed, want float64
+	}{
+		{name: "scale_in", seed: 1, want: 0},
+		{name: "scale_out", seed: 0, want: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			router := "poll-endpoint-set-" + tc.name
+			resetRouterSeries(router)
+			dead, live := newPollEndpoint(t, idleMetrics), newPollEndpoint(t, idleMetrics)
+			cfg := scrapedConfig()
+			p := NewProxy(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), WithRouterName(router))
+			d := p.Dispatcher()
+			before := []string{dead.srv.URL}
+			if tc.name == "scale_in" {
+				before = append(before, live.srv.URL)
+			}
+			d.SetEndpoints("qwen", before)
+			scraper := NewLoadScraper(cfg, d, router, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			dead.down.Store(true)
+			for i := int32(0); i < pollFailuresToQuarantine; i++ {
+				scraper.scrapeOnce(context.Background())
+			}
+			// The state the gauges were left in before the endpoint set changes.
+			prommetrics.RouterBackendHealth.WithLabelValues(router, "qwen").Set(tc.seed)
+			prommetrics.RouterActiveBackends.WithLabelValues(router, "local").Set(tc.seed)
+
+			d.SetEndpoints("qwen", map[string][]string{
+				"scale_in":  {dead.srv.URL},
+				"scale_out": {dead.srv.URL, live.srv.URL},
+			}[tc.name])
+
+			if got := testutil.ToFloat64(prommetrics.RouterBackendHealth.WithLabelValues(router, "qwen")); got != tc.want {
+				t.Errorf("backend health after the endpoint set changed = %v, want %v", got, tc.want)
+			}
+			if got := testutil.ToFloat64(prommetrics.RouterActiveBackends.WithLabelValues(router, "local")); got != tc.want {
+				t.Errorf("active local backends after the endpoint set changed = %v, want %v", got, tc.want)
+			}
+			if got := dead.inference.Load() + live.inference.Load(); got != 0 {
+				t.Errorf("inference requests = %d, want 0 (the gauges must move without traffic)", got)
+			}
+		})
+	}
+}
+
 // Recovery from a poll quarantine is poll-only: once every endpoint of a
 // backend is poll-quarantined, a client request through the proxy is answered
 // 502 without reaching the pod, even after the pod could serve it again.

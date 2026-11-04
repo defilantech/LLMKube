@@ -679,10 +679,12 @@ backend the proxy tried, and empty when it tried none (`bad_request`,
 `no_route`, `fail_closed`, `budget_exceeded`). `llmkube_router_backend_health` is
 refreshed for every backend a request tries, and
 `llmkube_router_active_backends` after every counted request, so a quarantined
-backend reads 0 whether or not a request to it has since succeeded. Both are
-also refreshed whenever a pod enters or leaves the load-poll quarantine
-described under [How load is read](#how-load-is-read), so a backend whose
-every pod is unreachable reads 0 without any request.
+backend reads 0 whether or not a request to it has since succeeded. Without
+any request, both are also refreshed when a pod enters or leaves the
+load-poll quarantine described under [How load is read](#how-load-is-read),
+and when the proxy's set of ready pods for an endpoint-resolution backend
+changes. So a backend whose every pod is unreachable reads 0, and one that
+regains a dispatchable pod reads 1, with no traffic.
 The proxy cancels the upstream request when its own request ends, so a
 `cancel task` line in llama.cpp's log usually pairs with a
 `client_cancelled` or `timeout` line here.
