@@ -305,12 +305,12 @@ func TestRequestSuccessClearsPollQuarantine(t *testing.T) {
 
 	pe.down.Store(true)
 	rig.scrape(int(pollFailuresToQuarantine))
-	if rig.d.IsHealthy("qwen") {
-		t.Fatal("the backend is healthy with its only endpoint failing every poll")
-	}
-
+	quarantined := !rig.d.IsHealthy("qwen")
 	close(pe.release)
 	<-done
+	if !quarantined {
+		t.Fatal("the backend was healthy with its only endpoint failing every poll")
+	}
 	if !rig.d.IsHealthy("qwen") {
 		t.Error("a served request left the endpoint poll-quarantined")
 	}
