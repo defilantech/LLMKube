@@ -294,11 +294,60 @@ func tailLines(path string, n int) string {
 // withLogTail appends the tail of the child's log to a startup error, so the
 // reason a child failed travels with the error instead of only living on disk.
 func withLogTail(err error, logPath string) error {
-	tail := tailLines(logPath, processLogTailLines)
-	if tail == "" {
-		return fmt.Errorf("%w (log: %s)", err, logPath)
+	return &engineLogError{err: err, logPath: logPath, tail: tailLines(logPath, processLogTailLines)}
+}
+
+// engineLogError is a startup error with the tail of the engine's log
+// attached. Its text is the error followed by the tail; the parts stay
+// separate so a Warning Event can put the tail after its own summary
+// (splitLogTail).
+type engineLogError struct {
+	err     error
+	logPath string
+	tail    string
+}
+
+func (e *engineLogError) Error() string {
+	if e.tail == "" {
+		return fmt.Sprintf("%v (log: %s)", e.err, e.logPath)
 	}
-	return fmt.Errorf("%w; last lines of %s:\n%s", err, logPath, tail)
+	return fmt.Sprintf("%v; last lines of %s:\n%s", e.err, e.logPath, e.tail)
+}
+
+func (e *engineLogError) Unwrap() error { return e.err }
+
+// splitLogTail splits err into a one-line summary and, when an engine log
+// tail is attached to it, the log's path and that tail.
+func splitLogTail(err error) (summary, logPath, tail string) {
+	text := err.Error()
+	var le *engineLogError
+	if errors.As(err, &le) {
+		text = strings.Replace(text, le.Error(), le.err.Error(), 1)
+		logPath, tail = le.logPath, le.tail
+	}
+	summary, _, _ = strings.Cut(text, "\n")
+	return summary, logPath, tail
+}
+
+// eventLogTailBytes caps the engine log tail a Warning Event carries. The
+// tail is already at most processLogTailLines lines, but one line can be
+// long; the last bytes are kept, since the engine prints the fatal cause last.
+const eventLogTailBytes = 2048
+
+// withEventLogTail appends the engine log tail to an Event message, bounded
+// to eventLogTailBytes. With no tail it returns msg unchanged.
+func withEventLogTail(msg, logPath, tail string) string {
+	if tail == "" {
+		return msg
+	}
+	if len(tail) > eventLogTailBytes {
+		cut := tail[len(tail)-eventLogTailBytes:]
+		if i := strings.IndexByte(cut, '\n'); i >= 0 && i < len(cut)-1 {
+			cut = cut[i+1:]
+		}
+		tail = "...\n" + strings.ToValidUTF8(cut, "")
+	}
+	return fmt.Sprintf("%s. Last lines of %s:\n%s", msg, logPath, tail)
 }
 
 // childTracker maps the PID of every child an executor spawned to its reaper,

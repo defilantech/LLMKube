@@ -200,6 +200,8 @@ func TestEnsureProcess_FormatIncompatibleWithdrawsInheritedEndpoint(t *testing.T
 
 // TestEnsureProcess_StartFailureWithdrawsThenRecovers covers a spawn error
 // from the executor, then a successful start flipping the same slice back.
+// The successful start is the failed start's retry (#2404): a watch event for
+// the same spec is left to it, like a pending health restart.
 func TestEnsureProcess_StartFailureWithdrawsThenRecovers(t *testing.T) {
 	const name = "spawn-fails"
 	model := ggufModel(t, name)
@@ -209,6 +211,8 @@ func TestEnsureProcess_StartFailureWithdrawsThenRecovers(t *testing.T) {
 	}
 	svc, slice := inheritedEndpoint(name)
 	agent, c := newWithdrawTestAgent(t, []string{filepath.Dir(model.Spec.Source)}, model, isvc, svc, slice)
+	clk := &fakeClock{t: time.Now()}
+	agent.now = clk.now
 	exec := &switchableExecutor{err: errors.New("llama-server exited during startup")}
 	agent.executors[runtimeLlamaServer] = exec
 
@@ -220,8 +224,10 @@ func TestEnsureProcess_StartFailureWithdrawsThenRecovers(t *testing.T) {
 	}
 
 	exec.err = nil
-	if err := agent.ensureProcess(context.Background(), isvc); err != nil {
-		t.Fatalf("ensureProcess after recovery: %v", err)
+	clk.t = clk.t.Add(healthRestartInitialBackoff)
+	agent.runDueRestarts(context.Background())
+	if p := agent.processes["default/"+name]; p == nil {
+		t.Fatal("the retry after the backoff did not start the engine")
 	}
 	ready, got := endpointReady(t, c, name)
 	if !ready {
