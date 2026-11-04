@@ -133,6 +133,9 @@ A change is not done until all of these hold.
   `envtest.Environment` of its own (#2141). The other envtest packages
   (`pkg/cli`, `internal/watchcanary`, `internal/foreman/controller`) keep their
   own control planes; they run in seconds.
+- Darwin-only tests (`//go:build darwin`, `_darwin_test.go`) run in CI on a
+  hosted macOS runner, with `-race`, for the packages listed in
+  `.github/workflows/test-macos.yml`; add a new package with darwin tests there.
 - Assert observable behavior, not internal implementation detail.
 - envtest runs as cluster-admin, so it cannot catch a missing
   `+kubebuilder:rbac` marker. After a controller change that adds an API
