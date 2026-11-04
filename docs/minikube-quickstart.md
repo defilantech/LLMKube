@@ -106,57 +106,20 @@ kubectl get nodes
 
 ## Step 2: Install LLMKube Operator
 
-### Option A: Run Controller Locally (Recommended for Minikube)
-
-Running the controller on your host machine avoids resource constraints and download timeout issues in Minikube:
-
-**Prerequisites:**
-- Go 1.24+ installed
-- Git
-
-**Setup:**
-```bash
-# Clone the repository
-git clone https://github.com/defilantech/LLMKube.git
-cd LLMKube
-
-# Install CRDs to the cluster
-make install
-
-# Run controller locally
-make run
-```
-
-**What this does:**
-- Installs Custom Resource Definitions (CRDs) in your Minikube cluster
-- Runs the controller process on your host machine
-- Controller watches the Minikube cluster and manages resources
-- Model downloads happen on your host (no container resource limits)
-- Health check timeouts are avoided
-
-**Keep this terminal open** - the controller will run in the foreground. Open a new terminal for the next steps.
-
-### Option B: Deploy Controller to Minikube (Advanced)
-
-If you prefer running everything in-cluster or don't have Go installed:
+Install the released Helm chart (you need [Helm](https://helm.sh/docs/intro/install/)):
 
 ```bash
-# Clone the repository
-git clone https://github.com/defilantech/LLMKube.git
-cd LLMKube
-
-# Install CRDs
-make install
-
-# Deploy controller with pre-built image (uses latest release)
-make deploy
+helm repo add llmkube https://defilantech.github.io/LLMKube
+helm install llmkube llmkube/llmkube --namespace llmkube-system --create-namespace
 
 # Verify controller is running
 kubectl get pods -n llmkube-system
 # Expected: llmkube-controller-manager-xxxxx   1/1   Running
 ```
 
-**Note:** This option may encounter timeout issues with large model downloads in resource-constrained Minikube environments. If the controller enters `CrashLoopBackOff`, switch to Option A.
+The controller does not download models. Each InferenceService pod downloads its model in a `model-downloader` init container, into a `llmkube-model-cache` PersistentVolumeClaim that the operator creates in the pod's namespace (100Gi request by default; Minikube's default storage class provides it). That claim stays after you delete the model or uninstall the chart; see [Clean Up](#clean-up).
+
+To run the controller from a source checkout instead (for working on the operator itself), see [CONTRIBUTING.md](../CONTRIBUTING.md); it needs Go 1.27.3 or later.
 
 ## Step 3: Deploy Your First Model
 
@@ -234,20 +197,20 @@ EOF
 ```
 
 **What happens:**
-1. Model controller downloads the GGUF file (~638MB) from HuggingFace
-2. InferenceService controller creates a Deployment and Service
-3. Pod starts with init container to load the model
-4. llama-server container serves the OpenAI-compatible API
+1. The Model controller validates the source and marks the Model `Ready`; it does not download the file itself
+2. The InferenceService controller creates a Deployment and a Service, both named after the InferenceService
+3. The pod's `model-downloader` init container downloads the GGUF file (~638MB) from Hugging Face into the model cache PVC
+4. The `llama-server` container serves the OpenAI-compatible API
 
 **Monitor deployment:**
 ```bash
-# Watch model download
+# Watch the Model (Ready means the source checked out, not that the download finished)
 kubectl get model tinyllama -w
-# Wait for STATUS: Ready
+# Wait for PHASE: Ready
 
 # Watch service deployment
 kubectl get inferenceservice tinyllama-service -w
-# Wait for STATUS: Available
+# Wait for PHASE: Ready
 
 # Check pod status
 kubectl get pods -l app=tinyllama-service
@@ -362,26 +325,19 @@ kubectl top pods -l app=tinyllama-service
 
 ### Controller in CrashLoopBackOff
 
-If you deployed the controller to Minikube (Option B) and see it crashing:
+If the controller pod is not `Running`:
 
 ```bash
 kubectl get pods -n llmkube-system
 # NAME                                          READY   STATUS             RESTARTS
 # llmkube-controller-manager-xxxxx              0/1     CrashLoopBackOff   5
+
+# The log of the crashed container usually names the cause
+kubectl logs -n llmkube-system deployment/llmkube-controller-manager --previous
+kubectl describe pod -n llmkube-system -l control-plane=controller-manager
 ```
 
-**Cause:** The controller is trying to download models directly and hitting liveness probe timeouts in the resource-constrained Minikube environment.
-
-**Solution:** Switch to running the controller locally (Option A):
-
-```bash
-# Delete the in-cluster controller
-kubectl delete deployment llmkube-controller-manager -n llmkube-system
-
-# Run controller locally instead
-cd /path/to/LLMKube
-make run
-```
+Model downloads do not run in the controller, so a slow or large download does not restart it. A download problem shows up in the InferenceService pod's `model-downloader` init container instead (see [Model Download Fails](#model-download-fails)).
 
 ### Pod Stuck in Pending
 
@@ -547,7 +503,7 @@ print(response.choices[0].message.content)
 While Minikube supports GPU passthrough, it's complex to set up. For GPU inference:
 - Use GKE with GPUs (see [GPU Setup Guide](gpu-setup-guide.md))
 - Or use a cloud provider with GPU support
-- GPU provides 5-10x speedup over CPU
+- The [README's Performance section](../README.md#performance) has historical CPU and GPU numbers
 
 ## Clean Up
 
@@ -560,8 +516,12 @@ kubectl delete inferenceservice tinyllama-service
 # Delete model
 kubectl delete model tinyllama
 
-# Delete operator (optional)
-kubectl delete namespace llmkube-system
+# Delete the model cache PVC the operator created (it is not removed with the model)
+kubectl delete pvc llmkube-model-cache
+
+# Uninstall the operator (optional). The CRDs are kept by default;
+# see the chart README's uninstall section to remove them.
+helm uninstall llmkube --namespace llmkube-system
 ```
 
 ### Stop Minikube

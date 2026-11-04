@@ -236,19 +236,32 @@ Pin by **digest** so the served model is immutable. A raw model artifact (an
 
 ### Option 1: Pre-built Container Images
 
-1. On a machine with internet access, pull and save the images:
+1. On a machine with internet access, pull and save the images. LLMKube's
+   image tags are the bare release version with no `v` prefix (`0.10.16`,
+   not `v0.10.16`); use the release you will install, which is the chart's
+   `appVersion` (`helm show chart llmkube/llmkube | grep appVersion`).
 
 ```bash
+VERSION=0.10.16   # the operator release you will install
+
 # Pull images
-docker pull ghcr.io/defilantech/llmkube-controller:v0.9.19
+docker pull ghcr.io/defilantech/llmkube-controller:${VERSION}
+docker pull ghcr.io/defilantech/llmkube-router-proxy:${VERSION}   # only needed for ModelRouter
+docker pull docker.io/curlimages/curl:8.18.0                       # model downloader and cache-prep init containers
 docker pull ghcr.io/ggml-org/llama.cpp:server-cuda-b11854
 docker pull ghcr.io/ggml-org/llama.cpp:server-b11854
 
 # Save to tar files
-docker save ghcr.io/defilantech/llmkube-controller:v0.9.19 > llmkube-controller.tar
+docker save ghcr.io/defilantech/llmkube-controller:${VERSION} > llmkube-controller.tar
+docker save ghcr.io/defilantech/llmkube-router-proxy:${VERSION} > llmkube-router-proxy.tar
+docker save docker.io/curlimages/curl:8.18.0 > curl.tar
 docker save ghcr.io/ggml-org/llama.cpp:server-cuda-b11854 > llama-server-cuda.tar
 docker save ghcr.io/ggml-org/llama.cpp:server-b11854 > llama-server-cpu.tar
 ```
+
+The `curlimages/curl` tag is the chart default
+(`controllerManager.initContainer.tag`); check `helm show values
+llmkube/llmkube` for the release you install.
 
 `server-cuda-b11854` is the tag the operator substitutes for NVIDIA GPU Models
 when the InferenceService sets no `image`, so a YAML-driven GPU deploy fails to
@@ -265,13 +278,16 @@ operator is upgraded. AMD and Intel tiers pull different images again: see
 ```bash
 # Load directly on nodes
 docker load < llmkube-controller.tar
+docker load < llmkube-router-proxy.tar
+docker load < curl.tar
 docker load < llama-server-cuda.tar
 docker load < llama-server-cpu.tar
 
 # Or push to private registry
 docker load < llmkube-controller.tar
-docker tag ghcr.io/defilantech/llmkube-controller:v0.9.19 registry.internal/llmkube-controller:v0.9.19
-docker push registry.internal/llmkube-controller:v0.9.19
+docker tag ghcr.io/defilantech/llmkube-controller:${VERSION} registry.internal/llmkube-controller:${VERSION}
+docker push registry.internal/llmkube-controller:${VERSION}
+# ...and the same for the router-proxy, curl and llama.cpp images
 ```
 
 ### Option 2: Helm with Private Registry
@@ -279,16 +295,33 @@ docker push registry.internal/llmkube-controller:v0.9.19
 ```bash
 # Add Helm repo (on connected machine)
 helm repo add llmkube https://defilantech.github.io/LLMKube
-helm pull llmkube/llmkube --untar
+helm pull llmkube/llmkube --version ${VERSION} --untar
 
 # Transfer chart to air-gapped environment, then install:
 helm install llmkube ./llmkube \
   --namespace llmkube-system --create-namespace \
-  --set image.repository=registry.internal/llmkube \
-  --set image.tag=v0.4.9
+  --set controllerManager.image.repository=registry.internal/llmkube-controller \
+  --set controllerManager.image.tag=${VERSION} \
+  --set controllerManager.routerProxy.repository=registry.internal/llmkube-router-proxy \
+  --set controllerManager.routerProxy.tag=${VERSION} \
+  --set controllerManager.initContainer.repository=registry.internal/curl \
+  --set controllerManager.initContainer.tag=8.18.0
 ```
 
+The llama.cpp images the operator picks by default still point at
+`ghcr.io/ggml-org`. To pull them from your registry, set `image` on each
+InferenceService, or set `runtimeImages.llamacpp` in the chart values.
+`runtimeImages.llamacpp` replaces the llama.cpp default for every Model, CPU
+and GPU alike, so it fits a cluster that serves one kind.
+
 ## CLI Commands for Air-Gapped Deployments
+
+In v0.10.16, `llmkube deploy` writes its own default image into
+`spec.image` (`ghcr.io/ggml-org/llama.cpp:server` on CPU,
+`ghcr.io/ggml-org/llama.cpp:server-cuda13` with `--gpu` on NVIDIA) unless you pass
+`--image`. Those tags are not the ones mirrored above, so pass `--image` with
+your mirrored image, for example
+`--image registry.internal/llama.cpp:server-cuda-b11854`.
 
 ```bash
 # Deploy from local file

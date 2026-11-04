@@ -138,8 +138,8 @@ terraform destroy -auto-approve
 ## 📦 Deploy LLMKube
 
 ```bash
-# From project root
-cd /Users/defilan/stuffy/code/ai/llmkube
+# From terraform/gke, back to the root of your LLMKube clone
+cd ../..
 
 # Install CRDs
 kubectl apply -f config/crd/bases/

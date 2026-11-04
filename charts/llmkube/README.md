@@ -76,11 +76,25 @@ helm install llmkube charts/llmkube \
 helm uninstall llmkube --namespace llmkube-system
 ```
 
-**Note:** By default, CRDs are kept after uninstallation to prevent data loss. To remove CRDs:
+**Note:** By default, CRDs are kept after uninstallation to prevent data loss (`crds.keep`). The chart installs eight. Deleting a CRD deletes every object of that kind in the cluster. To remove them:
 
 ```bash
-kubectl delete crd models.inference.llmkube.dev
-kubectl delete crd inferenceservices.inference.llmkube.dev
+kubectl delete crd \
+  models.inference.llmkube.dev \
+  inferenceservices.inference.llmkube.dev \
+  modelrouters.inference.llmkube.dev \
+  modelpools.inference.llmkube.dev \
+  gpuquotas.inference.llmkube.dev \
+  loraadapters.inference.llmkube.dev \
+  metalnodes.inference.llmkube.dev \
+  federatedclusters.federation.llmkube.dev
+```
+
+**Model cache PVCs.** In the default `shared` cache mode, the operator creates a `llmkube-model-cache` PVC (`modelCache.size`, 100Gi by default) in each namespace where an InferenceService downloads a model. Helm did not create these claims, so `helm uninstall` leaves them, and so does deleting the InferenceService or the Model. Per-InferenceService caches (`modelCache.mode: perService`) are owned by their InferenceService and go away with it. To list and delete the operator-created claims, and the cached weights on them:
+
+```bash
+kubectl get pvc -A -l app.kubernetes.io/component=model-cache,app.kubernetes.io/managed-by=llmkube-controller
+kubectl delete pvc -A -l app.kubernetes.io/component=model-cache,app.kubernetes.io/managed-by=llmkube-controller
 ```
 
 ## Configuration
