@@ -21,6 +21,8 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"net/url"
+	"os"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -33,6 +35,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
 
@@ -126,18 +129,22 @@ type fleetRegisterInput struct {
 	// returned edge-config snippet. Falls back to
 	// datacenterEndpointPlaceholder when empty.
 	DatacenterEndpoint string
-	// CACertData is the datacenter API server's CA certificate (PEM), used
-	// to embed certificate-authority-data in the edge-config snippet
-	// instead of insecure-skip-tls-verify. Optional.
+	// CACertData is the datacenter API server's CA certificate (PEM),
+	// embedded as certificate-authority-data in the edge-config snippet.
 	CACertData []byte
+	// InsecureSkipTLSVerify writes insecure-skip-tls-verify: true into the
+	// edge-config snippet in place of CACertData. Only the explicit
+	// --insecure-skip-tls-verify flag sets it.
+	InsecureSkipTLSVerify bool
 }
 
 type fleetRegisterOptions struct {
-	name               string
-	residency          string
-	heartbeatInterval  int32
-	datacenterEndpoint string
-	namespace          string
+	name                  string
+	residency             string
+	heartbeatInterval     int32
+	datacenterEndpoint    string
+	namespace             string
+	insecureSkipTLSVerify bool
 }
 
 // NewFleetCommand is the `llmkube fleet` parent command: registering and
@@ -189,6 +196,12 @@ Run this against the DATACENTER cluster's kubeconfig context.`,
 			"current kubeconfig context's server if not set.")
 	cmd.Flags().StringVar(&opts.namespace, "namespace", defaultFleetNamespace,
 		"Namespace on the datacenter cluster to create the per-site ServiceAccount in")
+	cmd.Flags().BoolVar(&opts.insecureSkipTLSVerify, "insecure-skip-tls-verify", false,
+		"Write insecure-skip-tls-verify: true into the edge kubeconfig instead of the "+
+			"datacenter API server's certificate authority, so the edge site does not verify "+
+			"that server's certificate. Without it, register fails when the current kubeconfig "+
+			"context has no certificate authority to embed. It does not change how this "+
+			"command itself connects.")
 
 	if err := cmd.MarkFlagRequired("name"); err != nil {
 		// Only fails if the flag name doesn't exist, which would be a
@@ -211,6 +224,29 @@ func runFleetRegister(cmd *cobra.Command, opts *fleetRegisterOptions) error {
 		return fmt.Errorf("failed to get kubeconfig: %w", err)
 	}
 
+	endpoint := opts.datacenterEndpoint
+	if endpoint == "" {
+		// Fall back to the host of the kubeconfig context this command is
+		// itself running against, since `register` is run directly on the
+		// datacenter cluster.
+		endpoint = cfg.Host
+	}
+
+	// Settle how the edge will verify the server before creating anything,
+	// so a refusal leaves no half-registered site behind.
+	caData, err := edgeClusterCA(cfg, endpoint, opts.insecureSkipTLSVerify)
+	if err != nil {
+		return err
+	}
+	if opts.insecureSkipTLSVerify {
+		if _, err := fmt.Fprintf(cmd.ErrOrStderr(),
+			"WARNING: --insecure-skip-tls-verify is set: the edge kubeconfig skips TLS verification, "+
+				"so the edge site does not verify the certificate of %s and sends its token to any "+
+				"server that answers there.\n", endpoint); err != nil {
+			return fmt.Errorf("write warning: %w", err)
+		}
+	}
+
 	if err := federationv1alpha1.AddToScheme(scheme.Scheme); err != nil {
 		return fmt.Errorf("failed to add scheme: %w", err)
 	}
@@ -225,21 +261,14 @@ func runFleetRegister(cmd *cobra.Command, opts *fleetRegisterOptions) error {
 		return fmt.Errorf("failed to create clientset: %w", err)
 	}
 
-	endpoint := opts.datacenterEndpoint
-	if endpoint == "" {
-		// Fall back to the host of the kubeconfig context this command is
-		// itself running against, since `register` is run directly on the
-		// datacenter cluster.
-		endpoint = cfg.Host
-	}
-
 	edgeConfig, err := fleetRegister(ctx, k8sClient, kube, fleetRegisterInput{
 		Name:                     opts.name,
 		ResidencyTier:            opts.residency,
 		HeartbeatIntervalSeconds: opts.heartbeatInterval,
 		Namespace:                opts.namespace,
 		DatacenterEndpoint:       endpoint,
-		CACertData:               cfg.CAData,
+		CACertData:               caData,
+		InsecureSkipTLSVerify:    opts.insecureSkipTLSVerify,
 	})
 	if err != nil {
 		return err
@@ -249,6 +278,43 @@ func runFleetRegister(cmd *cobra.Command, opts *fleetRegisterOptions) error {
 		return fmt.Errorf("write edge config: %w", err)
 	}
 	return nil
+}
+
+// edgeClusterCA returns the CA certificate the edge kubeconfig embeds so the
+// edge site can verify server: the current context's
+// certificate-authority-data, else the contents of its certificate-authority
+// file, which clientcmd leaves as a path in CAFile rather than reading into
+// CAData. With no CA to embed it fails rather than print a kubeconfig the
+// edge cannot verify server with, unless server is plain http (nothing to
+// verify) or insecure, the explicit --insecure-skip-tls-verify flag, asks for
+// exactly that. A context that itself sets insecure-skip-tls-verify has no
+// CA, so it needs the flag too.
+func edgeClusterCA(cfg *rest.Config, server string, insecure bool) ([]byte, error) {
+	if insecure {
+		return nil, nil
+	}
+	caData := cfg.CAData
+	if len(caData) == 0 && cfg.CAFile != "" {
+		var err error
+		if caData, err = os.ReadFile(cfg.CAFile); err != nil {
+			return nil, fmt.Errorf("read the kubeconfig's certificate-authority file: %w", err)
+		}
+	}
+	if len(caData) > 0 {
+		return caData, nil
+	}
+	if u, err := url.Parse(server); err == nil && u.Scheme == "http" {
+		return nil, nil
+	}
+	if cfg.Insecure {
+		return nil, fmt.Errorf("the kubeconfig context skips TLS verification (insecure-skip-tls-verify), "+
+			"so there is no certificate authority for the edge site to verify %s with; use a context "+
+			"with certificate-authority-data or certificate-authority, or pass --insecure-skip-tls-verify "+
+			"to generate an edge kubeconfig that skips verification too", server)
+	}
+	return nil, fmt.Errorf("the kubeconfig context has no certificate authority (certificate-authority-data "+
+		"or certificate-authority) for the edge site to verify %s with; add one to the context, or pass "+
+		"--insecure-skip-tls-verify to generate an edge kubeconfig that skips verification", server)
 }
 
 // fleetRegister creates the FederatedCluster plus a least-privilege
@@ -339,7 +405,8 @@ func fleetRegister(
 	if err != nil {
 		return "", err
 	}
-	out := buildEdgeConfigSnippet(in.Name, in.DatacenterEndpoint, in.CACertData, saName, namespace, token, expiresAt)
+	out := buildEdgeConfigSnippet(in.Name, in.DatacenterEndpoint, in.CACertData, in.InsecureSkipTLSVerify,
+		saName, namespace, token, expiresAt)
 	if interval < subCadenceWarnThreshold {
 		out += fmt.Sprintf("# WARNING: heartbeat-interval %ds is below the edge's fixed %ds push\n"+
 			"# cadence; the datacenter clamps a sub-cadence value up to %ds for staleness\n"+
@@ -357,8 +424,13 @@ func fleetRegister(
 // lifetime server-side, and the token minted here is a bootstrap credential
 // carried to a remote edge site, not something the site admin would
 // otherwise think to check.
+//
+// The cluster entry skips TLS verification only when insecure is set, which
+// only the explicit --insecure-skip-tls-verify flag does. With neither
+// insecure nor caData it carries no TLS setting; runFleetRegister allows that
+// only for a plain http server.
 func buildEdgeConfigSnippet(
-	name, endpoint string, caData []byte, saName, namespace, token string, expiresAt metav1.Time,
+	name, endpoint string, caData []byte, insecure bool, saName, namespace, token string, expiresAt metav1.Time,
 ) string {
 	server := endpoint
 	if server == "" {
@@ -376,10 +448,11 @@ func buildEdgeConfigSnippet(
 	fmt.Fprintf(&b, "clusters:\n")
 	fmt.Fprintf(&b, "- cluster:\n")
 	fmt.Fprintf(&b, "    server: %s\n", server)
-	if len(caData) > 0 {
+	switch {
+	case insecure:
+		fmt.Fprintf(&b, "    insecure-skip-tls-verify: true\n")
+	case len(caData) > 0:
 		fmt.Fprintf(&b, "    certificate-authority-data: %s\n", base64.StdEncoding.EncodeToString(caData))
-	} else {
-		fmt.Fprintf(&b, "    insecure-skip-tls-verify: true # TODO: replace with certificate-authority-data\n")
 	}
 	fmt.Fprintf(&b, "  name: datacenter\n")
 	fmt.Fprintf(&b, "contexts:\n")
