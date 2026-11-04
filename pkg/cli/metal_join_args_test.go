@@ -146,7 +146,7 @@ func containsArg(args []string, want string) bool {
 // does not have and parses an old plist by each flag's kind, so its table
 // must be the agent's flag set. It reads the flag registrations in
 // cmd/metal-agent, plus --kubeconfig, which controller-runtime's config
-// package registers for it.
+// package registers for it; and the port defaults join's port check uses.
 func TestMetalAgentFlagsMatchTheAgent(t *testing.T) {
 	kinds := map[string]agentFlagKind{
 		"String": agentFlagString, "StringVar": agentFlagString, "Bool": agentFlagBool, "BoolVar": agentFlagBool,
@@ -154,6 +154,7 @@ func TestMetalAgentFlagsMatchTheAgent(t *testing.T) {
 		"Duration": agentFlagDuration, "DurationVar": agentFlagDuration,
 	}
 	got := map[string]agentFlagKind{}
+	defaults := map[string]int{}
 	files, err := filepath.Glob(filepath.Join("..", "..", "cmd", "metal-agent", "*.go"))
 	if err != nil || len(files) == 0 {
 		t.Fatalf("agent sources: %v, %v", files, err)
@@ -194,6 +195,9 @@ func TestMetalAgentFlagsMatchTheAgent(t *testing.T) {
 				t.Fatal(err)
 			}
 			got[name] = kind
+			if def, ok := call.Args[at+1].(*ast.BasicLit); ok && def.Kind == token.INT {
+				defaults[name], _ = strconv.Atoi(def.Value)
+			}
 			return true
 		})
 	}
@@ -216,6 +220,15 @@ func TestMetalAgentFlagsMatchTheAgent(t *testing.T) {
 	for name := range metalJoinManagedFlags {
 		if _, ok := metalAgentFlags[name]; !ok {
 			t.Errorf("managed flag --%s is not an agent flag", name)
+		}
+	}
+	ports, err := metalAgentPorts(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range ports {
+		if defaults[p.flag] != p.port {
+			t.Errorf("join checks --%s %d by default, the agent's default is %d", p.flag, p.port, defaults[p.flag])
 		}
 	}
 }
@@ -315,6 +328,7 @@ func TestMetalRejoinDoesNotKeepWhatJoinManages(t *testing.T) {
 		t.Fatalf("join: %v\n%s", err, stderr)
 	}
 	editJoinedPlist(t, paths.Plist, "--kube-context", "admin", "--namespace", "other", "--port", "9191")
+	mac.listened = nil
 	joinString, _ = issueJoinString(t, ns)
 	_, stderr, err := runMetal(t, "join", joinString, "--wait", "0")
 	if err != nil {
@@ -332,6 +346,9 @@ func TestMetalRejoinDoesNotKeepWhatJoinManages(t *testing.T) {
 		if !strings.Contains(stderr, want) {
 			t.Errorf("re-join does not say %q: %q", want, stderr)
 		}
+	}
+	if !containsArg(mac.listened, "127.0.0.1:9191") || containsArg(mac.listened, "127.0.0.1:9090") {
+		t.Errorf("join checked %q, want the carried --port 9191 instead of 9090", mac.listened)
 	}
 }
 
@@ -365,6 +382,9 @@ func TestMetalJoinRefusesBadAgentFlags(t *testing.T) {
 		{"host-ip loopback", []string{"--host-ip", "127.0.0.1"}, "cannot reach"},
 		{"allowlist bad name", []string{"--allowlist", "Phi_4"}, "not an InferenceService name"},
 		{"allowlist empty entry", []string{"--allowlist", "a,,b"}, `"" is not an InferenceService name`},
+		{"ingress port too low", []string{"--agent-arg", "ingress-port=443"}, "1024-65535"},
+		{"port out of range", []string{"--agent-arg", "client-port=70000"}, "is not a port"},
+		{"two listeners on one port", []string{"--agent-arg", "port=9443"}, "are both 9443"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			mac := newFakeMac(t)

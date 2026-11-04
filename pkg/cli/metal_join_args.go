@@ -26,6 +26,8 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/util/validation"
+
+	"github.com/defilantech/llmkube/pkg/metalnode"
 )
 
 // agentFlagKind is how the agent's flag package reads a flag's value.
@@ -363,4 +365,59 @@ func planMetalAgentArgs(previous []agentArg, given []metalJoinExtra, joinSets ma
 			plan.notes...)
 	}
 	return plan
+}
+
+// metalAgentPort is a port the agent binds at startup.
+type metalAgentPort struct {
+	flag string
+	what string
+	// fatal: the agent exits when it cannot bind this port.
+	fatal bool
+	addr  string
+	port  int
+}
+
+// metalAgentPorts are the ports an agent started with extras binds, with the
+// agent's defaults and its listen addresses (pkg/agent health.go,
+// ingress_wiring.go, clientproxy.go). A health or client port of 0 or less
+// turns that listener off, as in the agent.
+func metalAgentPorts(extras []agentArg) ([]metalAgentPort, error) {
+	ports := []metalAgentPort{
+		{flag: "port", what: "health and metrics server", fatal: true, port: 9090},
+		{flag: "ingress-port", what: "ingress, which the cluster dials", fatal: true, port: 9443},
+		{flag: "client-port", what: "client proxy for tools on this Mac", port: 9999},
+	}
+	var out []metalAgentPort
+	for _, p := range ports {
+		for _, a := range extras {
+			if a.name != p.flag {
+				continue
+			}
+			n, err := strconv.ParseInt(a.value, 0, strconv.IntSize)
+			if err != nil {
+				return nil, fmt.Errorf("%s: not a port number", a)
+			}
+			p.port = int(n)
+		}
+		switch {
+		case p.flag == "ingress-port" && (p.port < metalnode.MinIngressPort || p.port > 65535):
+			return nil, fmt.Errorf("--ingress-port %d: the agent needs %d-65535 to report it on its MetalNode",
+				p.port, metalnode.MinIngressPort)
+		case p.port > 65535:
+			return nil, fmt.Errorf("--%s %d is not a port", p.flag, p.port)
+		case p.port <= 0:
+			continue
+		}
+		for _, o := range out {
+			if o.port == p.port {
+				return nil, fmt.Errorf("--%s and --%s are both %d: the agent binds each one", o.flag, p.flag, p.port)
+			}
+		}
+		p.addr = "127.0.0.1:" + strconv.Itoa(p.port)
+		if p.flag == "ingress-port" {
+			p.addr = ":" + strconv.Itoa(p.port)
+		}
+		out = append(out, p)
+	}
+	return out, nil
 }
