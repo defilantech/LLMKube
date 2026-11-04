@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -119,6 +120,14 @@ type InferenceServiceWatcher struct {
 	listFailures int
 	failingSince time.Time
 	unreachable  bool
+	// localNetworkHinted is set once the current outage has logged the Local
+	// Network hint (see noteLocalNetworkBlock), and cleared with unreachable.
+	localNetworkHinted bool
+	// apiHost is the API server's host; see SetAPIServer.
+	apiHost string
+	// goos is the system the Local Network hint is for: runtime.GOOS unless
+	// a test sets another.
+	goos string
 	// resetConnections and onReachable are the API hooks; see SetAPIHooks.
 	resetConnections func()
 	onReachable      func()
@@ -139,6 +148,7 @@ func NewInferenceServiceWatcher(
 		maxConsecutiveFailures: DefaultMaxConsecutiveFailures,
 		pollInterval:           defaultPollInterval,
 		now:                    time.Now,
+		goos:                   runtime.GOOS,
 	}
 }
 
@@ -171,6 +181,14 @@ func (w *InferenceServiceWatcher) SetPollInterval(d time.Duration) {
 func (w *InferenceServiceWatcher) SetAPIHooks(reset, reachable func()) {
 	w.resetConnections = reset
 	w.onReachable = reachable
+}
+
+// SetAPIServer names the API server the watcher lists from, as the
+// kubeconfig's server URL. When its host is an IP, the Local Network hint
+// falls back to it for a failed list whose error names no dialed address (see
+// localNetworkBlockAddr). Call it before Watch.
+func (w *InferenceServiceWatcher) SetAPIServer(server string) {
+	w.apiHost = apiServerHost(server)
 }
 
 // SetNameAllowlist restricts which InferenceServices the watcher
@@ -351,9 +369,41 @@ func (w *InferenceServiceWatcher) noteListFailed(err error) {
 			"failingFor", w.clock().Sub(w.failingSince).Round(time.Second),
 		)
 	}
+	if w.unreachable {
+		w.noteLocalNetworkBlock(err)
+	}
 	if w.unreachable && w.resetConnections != nil {
 		w.resetConnections()
 	}
+}
+
+// noteLocalNetworkBlock checks a list that failed while the API counts as
+// unreachable for the signature of a macOS Local Network block (#2422): the
+// gauge follows the latest failure, and the first failure in an outage that
+// matches logs the hint. Only on macOS: elsewhere the same errno is an
+// ordinary routing failure, with no permission behind it.
+func (w *InferenceServiceWatcher) noteLocalNetworkBlock(err error) {
+	if w.goos != "darwin" {
+		return
+	}
+	addr, blocked := localNetworkBlockAddr(err, w.apiHost)
+	if !blocked {
+		watchLocalNetworkBlocked.Set(0)
+		return
+	}
+	watchLocalNetworkBlocked.Set(1)
+	if w.localNetworkHinted {
+		return
+	}
+	w.localNetworkHinted = true
+	w.logger.Warnw("macOS Local Network access may be blocking the agent: the Kubernetes API server is at a "+
+		"local-network address and connections to it fail with no route to host or network unreachable, "+
+		"which is how macOS refuses a process without that access, even while Terminal reaches the same "+
+		"address. Allow the agent in "+localNetworkSettings+"; macOS drops that access whenever the agent "+
+		"binary changes, so allow it again after every agent upgrade",
+		"address", addr.String(),
+		"error", err,
+	)
 }
 
 // noteListSucceeded clears the failure count after a successful list, logging
@@ -365,13 +415,14 @@ func (w *InferenceServiceWatcher) noteListSucceeded() {
 	}
 	failures, failingFor := w.listFailures, w.clock().Sub(w.failingSince).Round(time.Second)
 	wasUnreachable := w.unreachable
-	w.listFailures, w.failingSince, w.unreachable = 0, time.Time{}, false
+	w.listFailures, w.failingSince, w.unreachable, w.localNetworkHinted = 0, time.Time{}, false, false
 	watchConsecutiveFailures.Set(0)
 	if !wasUnreachable {
 		w.logger.Infow("polling recovered after errors", "previousFailures", failures)
 		return
 	}
 	watchAPIUnreachable.Set(0)
+	watchLocalNetworkBlocked.Set(0)
 	w.logger.Infow("Kubernetes API reachable again; resuming",
 		"failedLists", failures, "unreachableFor", failingFor)
 	if w.onReachable != nil {
