@@ -272,10 +272,11 @@ spec:
 - With `spec.downloadConcurrency` above 1, each hash is logged: the file and
   the expected digest when it starts, then the computed digest with the file's
   size and the hashing time, and the rename's time once the file is published.
-  A stamp hit names the file it skipped. Without it the check logs nothing, so
-  the verify logging adds no template change of its own. The pod template of
-  every Model that stages moves anyway when the downloader's command changes,
-  as the cache upgrade note above describes.
+  A stamp hit names the file it skipped. Without it the per-hash lines are
+  absent, while the stamp-hit and mismatch lines stay what they were, so the
+  extra logging adds no template change of its own. The pod template of every
+  Model that stages moves anyway when the downloader's command changes, as the
+  cache upgrade note above describes.
 
 ### Staging files concurrently (`spec.downloadConcurrency`)
 
