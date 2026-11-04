@@ -1,0 +1,105 @@
+name: macOS Tests
+
+# Runs the packages that build differently on darwin on a hosted macOS
+# runner (#455). Linux CI cross-compiles the metal-agent for darwin but runs
+# no darwin test binary, so the darwin implementations (the kern.procargs2
+# process inspector, vm_stat parsing, the powermetrics sampler and its
+# sudoers rule, the Foreman capability probe) and the darwin-only tests,
+# codesign's check of the Info.plist the release embeds among them, had no
+# CI coverage.
+#
+# Scoped to the packages it tests and the files their darwin tests read. A
+# path-filtered workflow is not a required check and has no merge_group
+# trigger: GitHub ignores paths filters for merge_group (#2379).
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'pkg/agent/**'
+      - 'cmd/metal-agent/**'
+      - 'internal/machoplist/**'
+      - 'pkg/foreman/agent/*'
+      - 'pkg/foreman/agent/testdata/**'
+      # The sudoers fragment the darwin power tests render with make and
+      # check with visudo, and the rest of the macOS install assets.
+      - 'deployment/macos/**'
+      - 'Makefile'
+      - 'go.mod'
+      - 'go.sum'
+      - 'hack/go-mod-download.sh'
+      - 'hack/go-test-report.sh'
+      - '.github/workflows/test-macos.yml'
+  pull_request:
+    paths:
+      - 'pkg/agent/**'
+      - 'cmd/metal-agent/**'
+      - 'internal/machoplist/**'
+      - 'pkg/foreman/agent/*'
+      - 'pkg/foreman/agent/testdata/**'
+      - 'deployment/macos/**'
+      - 'Makefile'
+      - 'go.mod'
+      - 'go.sum'
+      - 'hack/go-mod-download.sh'
+      - 'hack/go-test-report.sh'
+      - '.github/workflows/test-macos.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A new push to a pull request cancels the run it supersedes: hosted macOS
+# runners have a far lower concurrency limit than Linux ones. Pushes to main
+# and manual runs each get a group of their own, so none of them is cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  test-macos:
+    # Unique across workflows: a required status check is matched by job name
+    # alone (#2379).
+    name: Darwin packages (macOS)
+    # Apple Silicon, the platform the metal-agent and the Mac Foreman agent
+    # run on.
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Download Go modules
+        # Once, before any step builds; retried on network errors only (#2380).
+        run: hack/go-mod-download.sh
+
+      # The packages with darwin-only tests (pkg/agent, internal/machoplist,
+      # pkg/foreman/agent) and the rest of the metal-agent: pkg/agent's
+      # subpackages and the command. -count=1 because setup-go restores the
+      # build cache, cached test results included. -race because the agent's
+      # watch loop, watchdog and child-exit monitors run concurrently and no
+      # other job runs the race detector. No envtest binaries here, so the
+      # pkg/agent tests that need an API server skip; they run in the Tests
+      # workflow. shell: bash runs the pipeline under -o pipefail, so go
+      # test's exit status still fails the step.
+      - name: Darwin package tests (race)
+        shell: bash
+        run: |
+          go test -race -count=1 -json \
+            ./pkg/agent/... ./cmd/metal-agent/... ./internal/machoplist/... ./pkg/foreman/agent/ 2>&1 \
+            | tee test-report-macos.jsonl | hack/go-test-report.sh stream
+
+      # Where the time went, as in the Tests workflow. Runs after a failure
+      # too, which is when it matters most.
+      - name: Test timing report
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          if [ -f test-report-macos.jsonl ]; then
+            hack/go-test-report.sh summary test-report-macos.jsonl 25
+          fi
