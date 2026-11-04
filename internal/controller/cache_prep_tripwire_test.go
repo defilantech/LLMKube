@@ -40,14 +40,18 @@ import (
 // every cache-backed single-file pod and prefetch Job rolls once on upgrade
 // (upgrade note in docs/MODEL-CACHE.md). #2255 adds the atomic-write debris
 // sweep to that prologue, which moves them again in the same release.
+// #2386 makes download_with_progress notice a finished transfer within a tenth
+// of a second instead of a whole one, which is in the downloader's command for
+// every Model, so every cache-backed pod and prefetch Job rolls once on
+// upgrade (upgrade note in docs/MODEL-CACHE.md).
 
 const (
 	// cachePrepTripwireDeploymentHash is desiredTemplateHash of
 	// constructDeploymentForCache for cachePrepTripwireIsvc and cachePrepTripwireModel.
-	cachePrepTripwireDeploymentHash = "036258d33debc73f" //nolint:gosec // a SHA-256 prefix of a pod template, not a credential
+	cachePrepTripwireDeploymentHash = "3644d8d66be95be3" //nolint:gosec // a SHA-256 prefix of a pod template, not a credential
 	// cachePrepTripwireJobHash is desiredTemplateHash of buildPrefetchJob's
 	// pod template for cachePrepTripwireModel.
-	cachePrepTripwireJobHash = "9904e1039cc235ff" //nolint:gosec // a SHA-256 prefix of a pod template, not a credential
+	cachePrepTripwireJobHash = "95d880a3d57bdf05" //nolint:gosec // a SHA-256 prefix of a pod template, not a credential
 )
 
 func cachePrepTripwireModel() *inferencev1alpha1.Model {
