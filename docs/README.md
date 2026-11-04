@@ -7,7 +7,7 @@ This directory contains all the markdown for LLMKube. It is split by audience:
 | `docs/site/` | End users | https://llmkube.com/docs |
 | `docs/contributors/` | People hacking on the operator itself | Repo only |
 | `docs/images/` | Diagrams and screenshots used by both | Both |
-| `docs/releases/` | Per-release notes | Repo only |
+| `docs/releases/` | Historical notes for v0.1.0 to v0.4.0 (later releases: `CHANGELOG.md` and GitHub Releases) | Repo only |
 
 ## `site/` — user-facing docs
 

@@ -213,9 +213,13 @@ kubectl delete pod multi-gpu-test
 
 ## Deploying LLMKube
 
+To install a released operator instead of building one, use the Helm chart
+(see the [main README](../../README.md#installation)). To build and deploy
+from source:
+
 ```bash
-# From llmkube project root
-cd /Users/defilan/stuffy/code/ai/llmkube
+# From terraform/gke, back to the root of your LLMKube clone
+cd ../..
 
 # Install CRDs
 kubectl apply -f config/crd/bases/

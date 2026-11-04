@@ -195,8 +195,8 @@ kubectl delete pod multi-gpu-test
 ## Deploying LLMKube
 
 ```bash
-# From llmkube project root
-cd /Users/defilan/stuffy/code/ai/llmkube
+# From terraform/eks, back to the root of your LLMKube clone
+cd ../..
 
 # Get AWS account ID and region
 export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
@@ -382,6 +382,6 @@ Before closing your session:
 If you encounter issues:
 
 1. Check the [troubleshooting section](#troubleshooting) above
-2. Review full test plan: `/Users/defilan/stuffy/code/ai/llmkube/test/e2e/multi-gpu-test-plan.md`
+2. Review the full test plan: [test/e2e/multi-gpu-test-plan.md](../../test/e2e/multi-gpu-test-plan.md)
 3. File issue with logs: `kubectl logs <pod> > pod-logs.txt`
 4. Include GPU info: `kubectl exec <pod> -- nvidia-smi > gpu-info.txt`

@@ -1,7 +1,6 @@
 # LLMKube Roadmap
 
-**Current Version:** 0.8.1 (released 2026-06-01)
-**Last Updated:** 2026-06-08
+**Last Updated:** 2026-06-08, at v0.8.1. The milestones and the "What's shipped" list below date from then. For the current release, see the [latest release](https://github.com/defilantech/LLMKube/releases/latest) and [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
@@ -35,7 +34,9 @@ The current work (see milestones below) is about coupling these planes into one 
 
 ---
 
-## What's shipped (v0.8.x)
+## What's shipped (as of v0.8.1, June 2026)
+
+Since then, among other changes (see the [CHANGELOG](CHANGELOG.md) for versions): the SGLang runtime, multi-node vLLM serving (`spec.multiNode`), the `ModelPool`, `GPUQuota`, `LoRAAdapter`, `MetalNode` and `FederatedCluster` CRDs, Pyrra SLOs, `s3://` and `oci://` model sources, and `llmkube metal join` for Macs.
 
 ### Serving core
 - Kubernetes-native CRDs (`Model`, `InferenceService`)
@@ -111,6 +112,8 @@ We own a compound that no single project covers: **sovereign + heterogeneous + o
 
 ## Past releases
 
+- **v0.10.0** - September 2026 · metal-agent serves engines on loopback behind an authenticated ingress (breaking)
+- **v0.9.0** - July 2026 · local and hostPath model sources gated by an allowlist, controller SSRF blocked (GHSA-jw3m-8q7m-f35r; breaking)
 - **v0.8.1** - June 2026 · docs site restructure, Foreman overview cross-refs, release hardening
 - **v0.8.0** - May 2026 · Foreman debut (Kubernetes-native agentic coder/verifier/reviewer fleet), Intel GPU contribution
 - **v0.7.9** - May 2026 · mlx-server runtime for Apple Silicon, `kubectl scale` subresource
@@ -150,8 +153,8 @@ We are actively looking for contributors, especially on the milestone themes:
 
 ## Release cadence
 
-- **Patch (0.x.y)** - bug fixes and minor improvements as needed
-- **Minor (0.x.0)** - features, mostly backward compatible (breaking changes flagged in CHANGELOG while on v0.x)
+- **Patch (0.x.y)** - fixes and new features. While on v0.x, release-please bumps the patch version for features (`bump-patch-for-minor-pre-major`), and releases often ship several times a week
+- **Minor (0.x.0)** - normally a release that carries a breaking change, listed under "BREAKING CHANGES" in the CHANGELOG
 - **Major (x.0.0)** - reserved for post-v1.0
 
 ---
