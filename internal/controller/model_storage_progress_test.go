@@ -94,6 +94,15 @@ func TestDownloadWithProgress(t *testing.T) {
 		if !strings.Contains(out, "Downloaded 2 MiB of 4 MiB (50%)") {
 			t.Errorf("missing progress line; want substring %q in:\n%s", "Downloaded 2 MiB of 4 MiB (50%)", out)
 		}
+		// One line per whole interval: a 2s transfer at PROGRESS_INTERVAL=1
+		// prints at t=1 and at t=2, never more. Base raced between one and
+		// two here, because it tested the transfer's death before printing
+		// and a stub that ends on the second loses that comparison; the
+		// tenths poll prints the interval a transfer ends in, so two is now
+		// deterministic.
+		if n := strings.Count(out, "Downloaded "); n != 2 {
+			t.Errorf("printed %d progress lines for a 2s transfer at PROGRESS_INTERVAL=1, want exactly 2:\n%s", n, out)
+		}
 		if strings.ContainsRune(out, '\r') {
 			t.Errorf("output carries a carriage return, which kubectl collapses into the prior line:\n%q", out)
 		}
@@ -126,6 +135,104 @@ func TestDownloadWithProgress(t *testing.T) {
 		out := run(t, "", `fake_transfer() { sleep 1; return 3; }`)
 		if !strings.Contains(out, "rc=3") {
 			t.Errorf("wait did not carry the transfer's exit status; want rc=3 in:\n%s", out)
+		}
+	})
+
+	// A transfer that finishes in milliseconds costs milliseconds, not the
+	// poll's period: the helper must notice the exit on its next poll (#2386).
+	t.Run("returns when the transfer finished in milliseconds", func(t *testing.T) {
+		dest := filepath.Join(t.TempDir(), "model.partial")
+		script := downloadProgressFn + `fake_transfer() { sleep 0.05; } && ` +
+			`download_with_progress "$DEST" "" fake_transfer "$DEST"`
+		cmd := exec.Command("sh", "-c", script)
+		cmd.Env = append(os.Environ(), "DEST="+dest, "PROGRESS_INTERVAL=1")
+		start := time.Now()
+		out, err := cmd.CombinedOutput()
+		took := time.Since(start)
+		if err != nil {
+			t.Fatalf("helper script failed: %v\n%s", err, out)
+		}
+		if took > 500*time.Millisecond {
+			t.Errorf("download_with_progress took %s for a 50ms transfer, want under 500ms", took.Round(time.Millisecond))
+		}
+	})
+
+	// At the shipped interval one line lands per whole 10 seconds: an 11s
+	// transfer prints the 10s tick once, not once per poll in the first
+	// second and not ten times at the tick. This is the case base and this
+	// branch agree on deterministically.
+	t.Run("one line per tick at the default interval", func(t *testing.T) {
+		dest := filepath.Join(t.TempDir(), "model.partial")
+		script := downloadProgressFn + `fake_transfer() { dd if=/dev/zero of="$1" bs=1024 count=2048 2>/dev/null; sleep 11; } && ` +
+			`download_with_progress "$DEST" "" fake_transfer "$DEST"`
+		cmd := exec.Command("sh", "-c", script)
+		cmd.Env = append(os.Environ(), "DEST="+dest)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("helper script failed: %v\n%s", err, out)
+		}
+		if n := strings.Count(string(out), "Downloaded "); n != 1 {
+			t.Errorf("printed %d progress lines for an 11s transfer at the default interval, want exactly 1:\n%s", n, out)
+		}
+	})
+
+	// A transfer that spans several intervals prints one line per interval
+	// crossed. The guard counts tenths, so each 10th poll is a boundary; the
+	// count comes up short only when per-poll overhead makes counted seconds
+	// lag the wall clock, and requiring exactly six across six intervals
+	// catches a guard keyed on a stride wider than one poll.
+	t.Run("one line per interval across a long transfer", func(t *testing.T) {
+		dest := filepath.Join(t.TempDir(), "model.partial")
+		script := downloadProgressFn + `fake_transfer() { dd if=/dev/zero of="$1" bs=1024 count=2048 2>/dev/null; sleep 6.5; } && ` +
+			`download_with_progress "$DEST" "" fake_transfer "$DEST"`
+		cmd := exec.Command("sh", "-c", script)
+		cmd.Env = append(os.Environ(), "DEST="+dest, "PROGRESS_INTERVAL=1")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("helper script failed: %v\n%s", err, out)
+		}
+		if n := strings.Count(string(out), "Downloaded "); n != 6 {
+			t.Errorf("printed %d progress lines for a 6.5s transfer at PROGRESS_INTERVAL=1, want exactly 6:\n%s", n, out)
+		}
+	})
+
+	// An init image whose sleep has no fractional argument must keep the old
+	// one-second rhythm, not spin: the fallback counts the whole second, so a
+	// transfer that outlives one interval prints one line per interval.
+	t.Run("fractional sleep unavailable keeps the interval", func(t *testing.T) {
+		bin := t.TempDir()
+		shim := "#!/bin/sh\ncase \"$1\" in *.*) echo 'sleep: invalid number' >&2; exit 1;; esac\nexec \"$REAL_SLEEP\" \"$@\"\n"
+		if err := os.WriteFile(filepath.Join(bin, "sleep"), []byte(shim), 0o755); err != nil {
+			t.Fatalf("write sleep shim: %v", err)
+		}
+		realSleep, err := exec.LookPath("sleep")
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The shim rejects only the sub-second form the helper now asks for;
+		// the stub transfer keeps a whole-second sleep of its own.
+		dest := filepath.Join(t.TempDir(), "model.partial")
+		script := downloadProgressFn +
+			`fake_transfer() { dd if=/dev/zero of="$1" bs=1024 count=2048 2>/dev/null; "$REAL_SLEEP" 2; } && ` +
+			`download_with_progress "$DEST" "" fake_transfer "$DEST"`
+		cmd := exec.Command("sh", "-c", script)
+		cmd.Env = append(os.Environ(),
+			"DEST="+dest,
+			"PROGRESS_INTERVAL=1",
+			"PATH="+bin+":"+os.Getenv("PATH"),
+			"REAL_SLEEP="+realSleep,
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("helper script failed: %v\n%s", err, out)
+		}
+		// A 2 s transfer at a 1 s interval is two lines. A hot spin that
+		// counted each failed poll would print hundreds.
+		if n := strings.Count(string(out), "Downloaded "); n > 3 {
+			t.Errorf("printed %d progress lines in 2s at PROGRESS_INTERVAL=1, want at most 3:\n%s", n, out)
+		}
+		if !strings.Contains(string(out), "Downloaded 2 MiB") {
+			t.Errorf("no progress line at all with a one-second fallback:\n%s", out)
 		}
 	})
 }

@@ -40,14 +40,19 @@ import (
 // every cache-backed single-file pod and prefetch Job rolls once on upgrade
 // (upgrade note in docs/MODEL-CACHE.md). #2255 adds the atomic-write debris
 // sweep to that prologue, which moves them again in the same release.
+// #2386 makes download_with_progress notice a finished transfer within a tenth
+// of a second instead of a whole one, which is in the downloader's command for
+// every Model, cache-backed or not. The two hashes below pin the cache-backed
+// templates, which move because they carry that command; upgrade note in
+// docs/MODEL-CACHE.md.
 
 const (
 	// cachePrepTripwireDeploymentHash is desiredTemplateHash of
 	// constructDeploymentForCache for cachePrepTripwireIsvc and cachePrepTripwireModel.
-	cachePrepTripwireDeploymentHash = "036258d33debc73f" //nolint:gosec // a SHA-256 prefix of a pod template, not a credential
+	cachePrepTripwireDeploymentHash = "fb72b0a75713545e" //nolint:gosec // a SHA-256 prefix of a pod template, not a credential
 	// cachePrepTripwireJobHash is desiredTemplateHash of buildPrefetchJob's
 	// pod template for cachePrepTripwireModel.
-	cachePrepTripwireJobHash = "9904e1039cc235ff" //nolint:gosec // a SHA-256 prefix of a pod template, not a credential
+	cachePrepTripwireJobHash = "936b9f8d228c61b7" //nolint:gosec // a SHA-256 prefix of a pod template, not a credential
 )
 
 func cachePrepTripwireModel() *inferencev1alpha1.Model {
@@ -100,7 +105,7 @@ func TestCachePrepAlwaysTemplatesUnchanged(t *testing.T) {
 	dep := r.constructDeploymentForCache(cachePrepTripwireIsvc(), cachePrepTripwireModel(), resolveEffectiveModelCache(cachePrepTripwireIsvc(), cachePrepTripwireModel()), nil, 1, "", "")
 	if got := desiredTemplateHash(dep.Spec.Template); got != cachePrepTripwireDeploymentHash {
 		t.Errorf("cache-backed Deployment pod template drifted from base: desiredTemplateHash = %s, want %s\n"+
-			"every cache-backed pod would roll on upgrade; the default policy must render exactly what base rendered",
+			"every cache-backed pod would roll on upgrade; a builder changed shape for the default policy without an upgrade note",
 			got, cachePrepTripwireDeploymentHash)
 	}
 

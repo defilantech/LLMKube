@@ -175,6 +175,14 @@ as a hand-run Job mounting the claim, while a prefetch Job stages its
 directory. Other filesystems still use `flock`;
 their cross-node lock semantics must be supported by the storage provider.
 
+**Upgrade note (#2386):** a release that includes #2386 changes the
+downloader's command for every Model that stages a model, cache-backed or not.
+The downloader checks a transfer every tenth of a second instead of every
+second, so a small file no longer waits out the rest of a second. Serving pods
+and prefetch Jobs for those Models roll once on that upgrade, whether or not
+`spec.modelCache` is in use. Progress lines still print about once per
+`PROGRESS_INTERVAL` seconds.
+
 ## Integrity Verification (spec.sha256)
 
 Setting `spec.sha256` on a `Model` makes the download init container verify the
@@ -260,9 +268,11 @@ spec:
 - With `spec.downloadConcurrency` above 1, each hash is logged: the file and
   the expected digest when it starts, then the computed digest with the file's
   size and the hashing time, and the rename's time once the file is published.
-  A stamp hit names the file it skipped. Without it the check stays silent, so
-  pinned Models that do not set the field keep their pod templates across an
-  operator upgrade.
+  A stamp hit names the file it skipped. Without it the per-hash lines are
+  absent, while the stamp-hit and mismatch lines stay what they were, so the
+  extra logging adds no template change of its own. The pod template of every
+  Model that stages moves anyway when the downloader's command changes, as the
+  #2386 upgrade note above describes.
 
 ### Staging files concurrently (`spec.downloadConcurrency`)
 

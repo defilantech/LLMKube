@@ -418,8 +418,8 @@ const s3AuthFn = `s3_curl() { _llmkube_id=$(printf '%s' "${AWS_ACCESS_KEY_ID:-}"
 // a multi-gigabyte download is indistinguishable from a stalled one until it
 // finishes (#1895).
 //
-// It backgrounds the transfer and polls the partial's size every second,
-// printing a line on each ${PROGRESS_INTERVAL:-10} tick. Interval is a positive
+// It backgrounds the transfer and polls it in tenths of a second, printing a
+// line on each ${PROGRESS_INTERVAL:-10}-second tick. Interval is a positive
 // integer of seconds, overridable through the init container's environment.
 // `wait` returns the transfer's own exit status so a failed download still
 // fails the init container.
@@ -435,14 +435,22 @@ var downloadProgressFn = downloadProgressFnFor(false)
 // in flight (llmkube_pool_label).
 var downloadProgressLabeledFn = downloadProgressFnFor(true)
 
-// downloadProgressFnFor builds both variants from one text, so the serial one
-// stays byte for byte what every existing pod template carries.
+// downloadProgressFnFor builds both variants from one text; the labeled one
+// inserts " of $rel" and appends the pool's label to each line, so the two
+// differ in their line text, not in when they print. Both carry the tenths
+// poll, so the serial command is no longer what pre-#2386 templates carried.
+//
+// The loop polls in tenths so a transfer that finished in milliseconds returns
+// at once instead of after a full second (#2386), and counts tenths so the
+// heartbeat still fires on whole ${PROGRESS_INTERVAL} seconds. An init image
+// whose sleep has no fractional argument falls back to a one-second poll and
+// counts the whole second, so the rhythm and the text stay what they were.
 func downloadProgressFnFor(labeled bool) string {
 	of, label := "", ""
 	if labeled {
 		of, label = ` of $rel`, `$(llmkube_pool_label)`
 	}
-	return `download_with_progress() { _llmkube_dest="$1"; _llmkube_total="${2:-}"; shift 2; "$@" & _llmkube_pid=$!; _llmkube_elapsed=0; while kill -0 "$_llmkube_pid" 2>/dev/null; do sleep 1; kill -0 "$_llmkube_pid" 2>/dev/null || break; _llmkube_elapsed=$((_llmkube_elapsed + 1)); [ $((_llmkube_elapsed % ${PROGRESS_INTERVAL:-10})) -eq 0 ] || continue; _llmkube_have=$(stat -c %s "$_llmkube_dest" 2>/dev/null || echo 0); if [ -n "$_llmkube_total" ] && [ "$_llmkube_total" -gt 0 ] 2>/dev/null; then echo "Downloaded $((_llmkube_have / 1048576)) MiB of $((_llmkube_total / 1048576)) MiB` + of + ` ($((_llmkube_have * 100 / _llmkube_total))%)` + label + `"; else echo "Downloaded $((_llmkube_have / 1048576)) MiB` + of + label + `"; fi; done; wait "$_llmkube_pid"; }` + " && "
+	return `download_with_progress() { _llmkube_dest="$1"; _llmkube_total="${2:-}"; shift 2; "$@" & _llmkube_pid=$!; _llmkube_tenths=0; while kill -0 "$_llmkube_pid" 2>/dev/null; do if sleep 0.1 2>/dev/null; then _llmkube_tenths=$((_llmkube_tenths + 1)); else sleep 1; _llmkube_tenths=$((_llmkube_tenths + 10)); fi; _llmkube_elapsed=$((_llmkube_tenths / 10)); if [ "$_llmkube_tenths" -ge 10 ] && [ $((_llmkube_tenths % 10)) -eq 0 ] && [ $((_llmkube_elapsed % ${PROGRESS_INTERVAL:-10})) -eq 0 ]; then _llmkube_have=$(stat -c %s "$_llmkube_dest" 2>/dev/null || echo 0); if [ -n "$_llmkube_total" ] && [ "$_llmkube_total" -gt 0 ] 2>/dev/null; then echo "Downloaded $((_llmkube_have / 1048576)) MiB of $((_llmkube_total / 1048576)) MiB` + of + ` ($((_llmkube_have * 100 / _llmkube_total))%)` + label + `"; else echo "Downloaded $((_llmkube_have / 1048576)) MiB` + of + label + `"; fi; fi; kill -0 "$_llmkube_pid" 2>/dev/null || break; done; wait "$_llmkube_pid"; }` + " && "
 }
 
 // multiFilePoolFns run the multi-file loop's per-file body, llmkube_stage_file,
@@ -465,11 +473,14 @@ func downloadProgressFnFor(labeled bool) string {
 // llmkube_pool_start sets the pool up in a directory under $TMPDIR. The
 // workers are subshells, so the dispatcher publishes the count in flight there
 // for llmkube_pool_label, refreshing it on every reap; llmkube_pool_join polls
-// rather than waiting on each worker in turn, so the count stays current. Each
-// worker's stderr goes there too, and is printed when the worker ends: the
-// workers still in flight keep logging after a failure, so join prints the
-// failed workers' errors again as the last lines, where the termination
-// message's tail and the transfer diagnosis find them. Without a writable
+// rather than waiting on each worker in turn, so the count stays current. Both
+// polls run in tenths of a second, so a worker that finished frees its slot
+// without a fixed second of latency; a shell whose sleep has no fractional
+// argument falls back to one second. Each worker's stderr goes there too, and
+// is printed when the worker ends: the workers still in flight keep logging
+// after a failure, so join prints the failed workers' errors again as the last
+// lines, where the termination message's tail and the transfer diagnosis find
+// them. Without a writable
 // $TMPDIR the lines omit the count and stderr is not held back.
 const multiFilePoolFns = `llmkube_pool_start() { _llmkube_conc=${MODEL_DOWNLOAD_CONCURRENCY:-1}; case "$_llmkube_conc" in ''|*[!0-9]*|0) _llmkube_conc=1;; esac; ` +
 	`_llmkube_cap=${MODEL_DOWNLOAD_MAX_INFLIGHT_BYTES:-}; case "$_llmkube_cap" in *[!0-9]*) _llmkube_cap=;; esac; _llmkube_pids=; _llmkube_failed=; _llmkube_i=0; ` +
@@ -485,10 +496,10 @@ const multiFilePoolFns = `llmkube_pool_start() { _llmkube_conc=${MODEL_DOWNLOAD_
 	`llmkube_pool_dispatch() { _llmkube_size=0; [ -z "$_llmkube_cap" ] || _llmkube_size=$(llmkube_pool_clamp "$(llmkube_file_size)"); _llmkube_waited=; ` +
 	`while :; do llmkube_pool_reap; [ -z "$_llmkube_failed" ] || return 1; llmkube_pool_fits && break; ` +
 	`if [ -z "$_llmkube_waited" ] && [ "$_llmkube_n" -lt "$_llmkube_conc" ]; then echo "Waiting to start $rel: $((_llmkube_bytes / 1048576)) MiB in flight, $((_llmkube_size / 1048576)) MiB needed, $((_llmkube_cap / 1048576)) MiB allowed (concurrency: $_llmkube_n)"; _llmkube_waited=1; fi; ` +
-	`sleep 1; done; _llmkube_i=$((_llmkube_i + 1)); ` +
+	`sleep 0.1 2>/dev/null || sleep 1; done; _llmkube_i=$((_llmkube_i + 1)); ` +
 	`if [ -n "$_llmkube_state" ]; then ( llmkube_stage_file 2>"$_llmkube_state/err.$_llmkube_i"; _llmkube_rc=$?; cat "$_llmkube_state/err.$_llmkube_i" >&2; exit "$_llmkube_rc" ) & else llmkube_stage_file & fi; ` +
 	`_llmkube_pids="$_llmkube_pids $!:$_llmkube_size:$_llmkube_i"; llmkube_pool_note $((_llmkube_n + 1)); }; ` +
-	`llmkube_pool_join() { while :; do llmkube_pool_reap; [ -n "$_llmkube_pids" ] || break; sleep 1; done; ` +
+	`llmkube_pool_join() { while :; do llmkube_pool_reap; [ -n "$_llmkube_pids" ] || break; sleep 0.1 2>/dev/null || sleep 1; done; ` +
 	`if [ -n "$_llmkube_failed" ] && [ -n "$_llmkube_state" ]; then for _llmkube_f in ${_llmkube_failed_ids:-}; do cat "$_llmkube_state/err.$_llmkube_f" >&2; done; fi; ` +
 	`[ -z "$_llmkube_state" ] || rm -rf "$_llmkube_state"; [ -z "$_llmkube_failed" ]; }; `
 
@@ -1460,9 +1471,9 @@ func concurrentMultiFileLoop(perFile, probe, start, refreshPolicy, list, read st
 // pipeline subshell, so the assignments do not leak.
 //
 // concurrent runs the per-file body in the worker pool of multiFilePoolFns
-// instead of inline (spec.downloadConcurrency above 1). Off, the command is
-// the serial loop, byte for byte, so a Model that does not set the field keeps
-// its pod template.
+// instead of inline (spec.downloadConcurrency above 1). Off, the command keeps
+// the serial per-file loop body unchanged, so what the field adds is the pool;
+// the downloader helper both share is not part of that difference.
 func buildMultiFileInitCommand(useCache, isS3, isHFAuth, withSHA256, concurrent bool, refreshPolicy string) string {
 	return multiFileInitCommand(useCache, isS3, isHFAuth, withSHA256, concurrent, refreshPolicy, false)
 }
@@ -1515,8 +1526,11 @@ func multiFileInitCommand(useCache, isS3, isHFAuth, withSHA256, concurrent bool,
 			url, curl = s3URL, `s3_curl`
 		}
 		// The probe is bounded: the dispatcher starts nothing while it waits, and
-		// a size it cannot learn counts as the whole cap.
-		probe := url + curl + ` --connect-timeout 10 --max-time 30` + headLength
+		// a size it cannot learn counts as the whole cap. 30s is what every
+		// shipped pod gets; MODEL_SIZE_PROBE_TIMEOUT lets a test drive the
+		// give-up branch without waiting the default out, as PROGRESS_INTERVAL
+		// does for the heartbeat.
+		probe := url + curl + ` --connect-timeout 10 --max-time ${MODEL_SIZE_PROBE_TIMEOUT:-30}` + headLength
 		loop = func(perFile string) string {
 			return concurrentMultiFileLoop(perFile, probe, start, refreshPolicy, list, read)
 		}
