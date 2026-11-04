@@ -1524,8 +1524,11 @@ func multiFileInitCommand(useCache, isS3, isHFAuth, withSHA256, concurrent bool,
 			url, curl = s3URL, `s3_curl`
 		}
 		// The probe is bounded: the dispatcher starts nothing while it waits, and
-		// a size it cannot learn counts as the whole cap.
-		probe := url + curl + ` --connect-timeout 10 --max-time 30` + headLength
+		// a size it cannot learn counts as the whole cap. 30s is what every
+		// shipped pod gets; MODEL_SIZE_PROBE_TIMEOUT lets a test drive the
+		// give-up branch without waiting the default out, as PROGRESS_INTERVAL
+		// does for the heartbeat.
+		probe := url + curl + ` --connect-timeout 10 --max-time ${MODEL_SIZE_PROBE_TIMEOUT:-30}` + headLength
 		loop = func(perFile string) string {
 			return concurrentMultiFileLoop(perFile, probe, start, refreshPolicy, list, read)
 		}

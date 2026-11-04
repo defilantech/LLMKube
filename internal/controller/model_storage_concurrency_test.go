@@ -267,10 +267,18 @@ func TestMultiFileByteCapProbeTimeout_Behavioral(t *testing.T) {
 			o.stallFirstHead = map[string]bool{"b.bin": true}
 			dir := t.TempDir()
 
+			// The dispatcher's probe gives up after MODEL_SIZE_PROBE_TIMEOUT;
+			// the shipped default is 30s, shortened here so the case tests the
+			// give-up branch instead of outlasting it.
+			start := time.Now()
 			out, err := v.run(t, v.script(true), o, dir, "a.bin\nb.bin",
-				"MODEL_DOWNLOAD_CONCURRENCY=2", "MODEL_DOWNLOAD_MAX_INFLIGHT_BYTES=1048576")
+				"MODEL_DOWNLOAD_CONCURRENCY=2", "MODEL_DOWNLOAD_MAX_INFLIGHT_BYTES=1048576", "MODEL_SIZE_PROBE_TIMEOUT=2")
+			took := time.Since(start)
 			if err != nil {
 				t.Fatalf("init script failed: %v\n%s", err, out)
+			}
+			if took > 10*time.Second {
+				t.Errorf("a stalled probe took %s to give up at MODEL_SIZE_PROBE_TIMEOUT=2, want under 10s", took.Round(time.Millisecond))
 			}
 			if _, err := os.Stat(filepath.Join(dir, "b.bin")); err != nil {
 				t.Errorf("b.bin not published after its size probe stalled: %v\n%s", err, out)
