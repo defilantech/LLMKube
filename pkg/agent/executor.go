@@ -392,6 +392,8 @@ func (e *MetalExecutor) StartProcess(ctx context.Context, config ExecutorConfig)
 		ModelPath: modelPath,
 		StartedAt: time.Now(),
 		Healthy:   false,
+		exit:      exit,
+		logPath:   logPath,
 	}
 
 	if err := e.waitForHealthy(port, e.startupTimeout, exit.done); err != nil {
