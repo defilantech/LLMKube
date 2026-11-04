@@ -668,13 +668,15 @@ slow?" needs upstream metrics, not the proxy log.
 - `pool_activation_timeout` or `pool_incumbent_busy`: a ModelPool member
   was not resident in time (`503` with `Retry-After`).
 - `budget_exceeded`: a token budget was exhausted (`429`).
+- `bad_request`: the request body could not be read or is not JSON
+  (`400`). It is counted in the metrics below but writes no audit line.
 
 The failure outcomes carry the underlying `error`. The same value labels
 `llmkube_router_requests_total`, which counts every request the proxy
-answers, and `llmkube_router_request_duration_seconds` observes each of
+answers on an inference endpoint, and `llmkube_router_request_duration_seconds` observes each of
 them. For a request no backend served, the `backend` label is the last
-backend the proxy tried, and empty when it tried none (`no_route`,
-`fail_closed`, `budget_exceeded`). `llmkube_router_backend_health` is
+backend the proxy tried, and empty when it tried none (`bad_request`,
+`no_route`, `fail_closed`, `budget_exceeded`). `llmkube_router_backend_health` is
 refreshed for every backend a request tries, and
 `llmkube_router_active_backends` after every counted request, so a quarantined
 backend reads 0 whether or not a request to it has since succeeded. Both are

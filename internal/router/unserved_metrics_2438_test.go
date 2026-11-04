@@ -26,6 +26,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -46,7 +47,9 @@ func durationCount(t *testing.T, router, rule, backend string) uint64 {
 }
 
 // resetRouterSeries drops the request and health series of one router label,
-// so a test can assert absolute values under -count above 1.
+// so a test can assert absolute values under -count above 1. The vectors are
+// package globals, so this is safe only while no test using it calls
+// t.Parallel().
 func resetRouterSeries(router string) {
 	l := prometheus.Labels{"router": router}
 	prommetrics.RouterRequestsTotal.DeletePartialMatch(l)
@@ -263,6 +266,38 @@ func TestFallbackRefreshesHealthOfEveryTriedBackend(t *testing.T) {
 	}
 	if got := testutil.ToFloat64(prommetrics.RouterRequestsTotal.WithLabelValues(router, "chain", "b", "internal", "all_backends_failed")); got != 2 {
 		t.Errorf("requests_total{backend=b,outcome=all_backends_failed} = %v, want 2", got)
+	}
+}
+
+// A body that cannot be read or does not parse is answered 400 and counted
+// as bad_request, with no rule and no backend.
+func TestBadRequestCounted(t *testing.T) {
+	const router = "unserved-bad-request"
+	resetRouterSeries(router)
+	cfg := &Config{Backends: []Backend{{Name: "b", Tier: "local", Address: "http://127.0.0.1:1"}}, DefaultRoute: "b"}
+	p := NewProxy(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), WithRouterName(router))
+	mux := http.NewServeMux()
+	p.Mount(mux)
+	badRequests := func() float64 {
+		return testutil.ToFloat64(prommetrics.RouterRequestsTotal.WithLabelValues(router, "", "", "", "bad_request"))
+	}
+
+	for name, body := range map[string]io.Reader{
+		"malformed JSON":  strings.NewReader(`{"model":`),
+		"unreadable body": iotest.ErrReader(errors.New("connection reset by peer")),
+	} {
+		before := badRequests()
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", body))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: status = %d, want 400", name, rec.Code)
+		}
+		if got := badRequests() - before; got != 1 {
+			t.Errorf("%s: requests_total{outcome=bad_request} grew by %v, want 1", name, got)
+		}
+	}
+	if got := durationCount(t, router, "", ""); got != 2 {
+		t.Errorf("request_duration_seconds samples = %d, want 2", got)
 	}
 }
 

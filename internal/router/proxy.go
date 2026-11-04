@@ -281,6 +281,7 @@ func (p *Proxy) handleCompletion(upstreamPath string) http.HandlerFunc {
 		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBodyBytes))
 		if err != nil {
 			writeErrorFor(anthropic, w, http.StatusBadRequest, "request body: "+err.Error())
+			p.observeRequest(&RequestFeatures{}, &MatchResult{}, nil, "bad_request", 0)
 			return
 		}
 
@@ -291,6 +292,7 @@ func (p *Proxy) handleCompletion(upstreamPath string) http.HandlerFunc {
 			// answering 503 "no rule matched" would send the caller to their
 			// routing config instead of their request (issue #2074).
 			writeErrorFor(anthropic, w, http.StatusBadRequest, "request body: "+err.Error())
+			p.observeRequest(&RequestFeatures{}, &MatchResult{}, nil, "bad_request", 0)
 			return
 		}
 		p.attributeRequest(&features, r)
