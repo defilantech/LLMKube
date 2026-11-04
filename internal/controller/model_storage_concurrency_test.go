@@ -258,10 +258,6 @@ func startMultiFile(t *testing.T, script, source, dir, files string, o *gatedOri
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	t.Cleanup(cancel)
 	r := &multiFileRun{done: make(chan struct{}), origin: o}
-	t.Cleanup(func() {
-		o.releaseAll()
-		<-r.done
-	})
 	cmd := exec.CommandContext(ctx, "sh", "-c", script)
 	// The pool runs in a pipeline subshell that outlives a killed sh and holds
 	// the output pipe; without a delay the test waits on it forever.
@@ -281,11 +277,15 @@ func startMultiFile(t *testing.T, script, source, dir, files string, o *gatedOri
 		r.err = cmd.Wait()
 		close(r.done)
 	}()
+	t.Cleanup(func() {
+		o.releaseAll()
+		<-r.done
+	})
 	return r
 }
 
-// releaseAll opens every gate, including one for a name the fixture never
-// listed, so a later transfer or a held worker is never left waiting.
+// releaseAll opens every fixture file's gate, so no transfer and no held
+// worker is left waiting when the test ends.
 func (o *gatedOrigin) releaseAll() {
 	o.mu.Lock()
 	names := make([]string, 0, len(o.files))

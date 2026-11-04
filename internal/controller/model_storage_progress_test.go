@@ -95,9 +95,11 @@ func TestDownloadWithProgress(t *testing.T) {
 			t.Errorf("missing progress line; want substring %q in:\n%s", "Downloaded 2 MiB of 4 MiB (50%)", out)
 		}
 		// One line per whole interval: a 2s transfer at PROGRESS_INTERVAL=1
-		// prints at t=1 and t=2, never fewer and never more. Polling faster
-		// than the interval must not print faster, and must not drop the line
-		// at the interval a transfer ends in (#2386).
+		// prints at t=1 and at t=2, never more. Base raced between one and
+		// two here, because it tested the transfer's death before printing
+		// and a stub that ends on the second loses that comparison; the
+		// tenths poll prints the interval a transfer ends in, so two is now
+		// deterministic.
 		if n := strings.Count(out, "Downloaded "); n != 2 {
 			t.Errorf("printed %d progress lines for a 2s transfer at PROGRESS_INTERVAL=1, want exactly 2:\n%s", n, out)
 		}
@@ -157,7 +159,8 @@ func TestDownloadWithProgress(t *testing.T) {
 
 	// At the shipped interval one line lands per whole 10 seconds: an 11s
 	// transfer prints the 10s tick once, not once per poll in the first
-	// second and not ten times at the tick (#2386). Base prints one.
+	// second and not ten times at the tick. This is the case base and this
+	// branch agree on deterministically.
 	t.Run("one line per tick at the default interval", func(t *testing.T) {
 		dest := filepath.Join(t.TempDir(), "model.partial")
 		script := downloadProgressFn + `fake_transfer() { dd if=/dev/zero of="$1" bs=1024 count=2048 2>/dev/null; sleep 11; } && ` +
@@ -169,7 +172,7 @@ func TestDownloadWithProgress(t *testing.T) {
 			t.Fatalf("helper script failed: %v\n%s", err, out)
 		}
 		if n := strings.Count(string(out), "Downloaded "); n != 1 {
-			t.Errorf("printed %d progress lines for an 11s transfer at the default interval, want exactly 1 (base prints 1):\n%s", n, out)
+			t.Errorf("printed %d progress lines for an 11s transfer at the default interval, want exactly 1:\n%s", n, out)
 		}
 	})
 
