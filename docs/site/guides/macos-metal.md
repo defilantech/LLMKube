@@ -526,7 +526,7 @@ warns you. Use one of:
 
   Names match `metadata.name` exactly. A Mac without the flag still claims
   everything, so set it on every Mac. An InferenceService on no list is not
-  served. A rejoin removes the flag.
+  served. `join --allowlist` sets it, and a rejoin keeps it.
 
 `kubectl get mn -n <namespace>` lists the Macs joined to a namespace.
 
@@ -545,10 +545,13 @@ Run `token create` and `join` again when:
 - **You revoked it** with `llmkube metal remove`, or want it in another
   namespace or cluster.
 
-A rejoin rewrites the plist from scratch with `join`'s fixed arguments. Flags
-you added by hand (`--host-ip`, `--inference-service-allowlist`,
-`--memory-fraction` and the rest) are dropped without a message, so note them
-before you rejoin and add them back afterwards. Joining a different cluster
+A rejoin rewrites the plist with `join`'s own arguments and keeps every other
+argument the previous `join`'s plist had, hand edits included
+(`--host-ip`, `--inference-service-allowlist`, `--memory-fraction` and the
+rest), and prints what it keeps. A flag you give `join` again replaces the
+kept value, and an empty `--host-ip=` or `--allowlist=` drops it. A plist
+`join` did not write, replaced with `--force`, passes none of its arguments
+on. Joining a different cluster
 leaves the old cluster's MetalNode and ServiceAccount in place; run
 `llmkube metal remove` there.
 
@@ -596,10 +599,13 @@ What stays:
 
 ## Changing the agent's flags
 
-`join` writes `~/Library/LaunchAgents/com.llmkube.metal-agent.plist` with a
-fixed set of arguments (`--kubeconfig`, `--namespace`, `--metal-node`,
-`--renew-service-account-token`, `--log-level` and `--llama-server`) and has
-no option to add more. Any other agent flag goes into that plist by hand:
+`join` writes `~/Library/LaunchAgents/com.llmkube.metal-agent.plist` with its
+own arguments (`--kubeconfig`, `--namespace`, `--metal-node`,
+`--renew-service-account-token`, `--log-level` and `--llama-server`) plus the
+ones you give it: `--host-ip`, `--allowlist`, and `--agent-arg <flag>=<value>`
+for any other agent flag (see [On the Mac: join and leave](#on-the-mac-join-and-leave)). On a Mac
+that is already joined, change a flag without a new join string by editing
+that plist by hand:
 
 1. Open the plist in a text editor. Keep its comment line
    `<!-- Written by llmkube metal join; llmkube metal leave removes it. -->`:
@@ -626,7 +632,7 @@ no option to add more. Any other agent flag goes into that plist by hand:
    too soon can fail with `Bootstrap failed: 5: Input/output error`, hence the
    wait. The engines keep running and are adopted.
 
-A later `join` drops these flags (see [Rejoining](#rejoining)).
+A later `join` keeps these flags (see [Rejoining](#rejoining)).
 
 | Flag | Why you would add it |
 |---|---|
@@ -1139,14 +1145,16 @@ elsewhere). In order:
 6. Writes `~/Library/LaunchAgents/com.llmkube.metal-agent.plist`
    and starts it with `launchctl bootstrap gui/<uid>`, which needs a
    logged-in desktop session. A plist `join` wrote earlier is replaced
-   without a copy, hand edits included. A plist `join` did not
+   without a copy, but the arguments it had that `join` does not set
+   itself, hand edits included, carry over. A plist `join` did not
    write, replaced with `--force`, is kept as
    `com.llmkube.metal-agent.plist.bak` in the state directory, not in
    `LaunchAgents`, where launchd could load it at login; a later `join`
    does not overwrite that copy. The agent runs with `--kubeconfig`,
    `--namespace`, `--metal-node`, `--renew-service-account-token`,
-   `--log-level` and `--llama-server`,
-   and logs to `~/Library/Logs/llmkube/metal-agent.log`. If
+   `--log-level` and `--llama-server`, plus the flags from
+   `--host-ip`, `--allowlist` and `--agent-arg` and any kept from the
+   previous `join`, and logs to `~/Library/Logs/llmkube/metal-agent.log`. If
    `launchctl bootstrap` fails, the string is already used, but the
    credentials are in place: the error prints the command that starts
    the agent once the cause is fixed.
@@ -1168,6 +1176,16 @@ elsewhere). In order:
 | `--token-lifetime` | `168h` (7 days) | Lifetime of the agent's token (at least `10m`). |
 | `--wait` | `3m` | How long to wait for `Reachable`; `0` returns once the agent is started. |
 | `--force` | off | Replace a `com.llmkube.metal-agent` LaunchAgent that `join` did not write. |
+| `--host-ip` | auto-detect | IPv4 address the agent registers for the cluster to reach the Mac (agent `--host-ip`). |
+| `--allowlist` | all | Comma-separated InferenceServices this Mac serves (agent `--inference-service-allowlist`). |
+| `--agent-arg` | none | Any other agent flag as `<flag>=<value>`, such as `port=9091`; repeatable. Not the flags `join` sets itself. |
+
+**Checks before the string is used.** `join` refuses to run as root, and
+before it redeems the string it checks that this user has a logged-in
+desktop session and that the agent's ports (`9090` and `9999` on
+`127.0.0.1`, `9443`) are free. For a busy port it names the process, and
+`--agent-arg port=9091` (or `ingress-port`, `client-port`) moves the agent
+off it. A port held by the agent this `join` replaces passes.
 
 **The agent renews its own token.** With
 `--renew-service-account-token`, the agent requests a new token for
