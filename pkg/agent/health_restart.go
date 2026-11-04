@@ -21,7 +21,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -80,6 +79,9 @@ type restartBackoff struct {
 	releaseAt time.Time
 	// timer wakes the event loop at nextAt.
 	timer *time.Timer
+	// attempting is set while runRestart's own start runs. A failed start
+	// then leaves the retry and its Event to runRestart (failStart).
+	attempting bool
 }
 
 // healthFailureThreshold resolves config.HealthFailureThreshold.
@@ -382,7 +384,13 @@ func (a *MetalAgent) runRestart(ctx context.Context, key string) {
 	// This attempt is the start deferToPendingRestart leaves to the restart,
 	// so the reconcile below must not defer it again.
 	st.pending = false
+	st.attempting = true
 	a.mu.Unlock()
+	defer func() {
+		a.mu.Lock()
+		st.attempting = false
+		a.mu.Unlock()
+	}()
 
 	namespace, name := parseKey(key)
 	isvc := &inferencev1alpha1.InferenceService{}
@@ -413,14 +421,14 @@ func (a *MetalAgent) runRestart(ctx context.Context, key string) {
 	}
 
 	a.mu.Lock()
-	st = a.restarts[key]
-	if st == nil || a.processes[key] != nil {
+	cur := a.restarts[key]
+	if cur == nil || a.processes[key] != nil {
 		// Cancelled during the attempt, or the attempt brought an engine up.
 		a.mu.Unlock()
 		return
 	}
 	if specHash != "" {
-		st.specHash = specHash
+		cur.specHash = specHash
 	}
 	retryAt := a.scheduleRestartLocked(key, time.Time{})
 	retryIn := retryAt.Sub(a.now())
@@ -431,10 +439,10 @@ func (a *MetalAgent) runRestart(ctx context.Context, key string) {
 	}
 	a.logger.Warnw("restart failed; retrying",
 		"namespace", namespace, "name", name, "retryAt", retryAt, "retryIn", retryIn, "error", err)
-	// Only the first line: a start error can carry the tail of the engine
-	// log, which belongs in the agent log, not in an Event.
-	reason, _, _ := strings.Cut(err.Error(), "\n")
+	// The engine log tail goes after the summary, bounded, as in the
+	// StartFailed Event of a first start.
+	reason, logPath, tail := splitLogTail(err)
 	a.emitInferenceEvent(ctx, &ManagedProcess{Namespace: namespace, Name: name}, corev1.EventTypeWarning,
-		EventReasonRestartFailed, "Restart did not bring the engine back: %s; retrying in %s",
-		reason, retryIn)
+		EventReasonRestartFailed, "%s", withEventLogTail(
+			fmt.Sprintf("Restart did not bring the engine back: %s; retrying in %s", reason, retryIn), logPath, tail))
 }

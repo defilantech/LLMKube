@@ -285,6 +285,15 @@ const (
 	// the agent's RBAC does not let it read, or the relay token Secret
 	// (MetalRelaySecretName).
 	ReasonSourceSecretNotAllowed string = "SourceSecretNotAllowed"
+
+	// ReasonStartFailed is set when a start the agent did not refuse failed
+	// anyway: the engine exited while loading, the download failed (a full
+	// disk, say), or the engine did not answer its health check in time. The
+	// agent retries the start on its restart backoff and clears the reason
+	// once an engine runs. It is not a refusal, but it is listed with them so
+	// the controller keeps it instead of writing "WaitingForMetalAgent", which
+	// would claim the agent is still fetching the model.
+	ReasonStartFailed string = "StartFailed"
 )
 
 // ReasonModelAttestationRejected is set on a Model the attestation policy
@@ -293,7 +302,8 @@ const (
 const ReasonModelAttestationRejected = "ModelAttestationRejected"
 
 // MetalAgentRefusalReasons lists every SchedulingStatus value the metal agent
-// writes when it refuses to start a service. internal/controller/scheduling.go
+// writes when it refuses to start a service, plus ReasonStartFailed for a start
+// that failed after it was not refused. internal/controller/scheduling.go
 // builds its agentRefusalReasons set from this list rather than maintaining a
 // second, independent copy; pkg/agent/refusal.go and pkg/agent/pressure.go's
 // EventReason constants for these reasons are defined equal to the constants
@@ -309,6 +319,7 @@ var MetalAgentRefusalReasons = []string{
 	ReasonModelDigestMismatch,
 	ReasonModelDownloadTooLarge,
 	ReasonSourceSecretNotAllowed,
+	ReasonStartFailed,
 }
 
 // ReasonRelaySecretNotManaged is the Status.SchedulingStatus (and Warning

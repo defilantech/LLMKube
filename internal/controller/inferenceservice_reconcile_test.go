@@ -379,6 +379,7 @@ var _ = Describe("determinePhase", func() {
 		Entry("model digest mismatch", inferencev1alpha1.ReasonModelDigestMismatch),
 		Entry("model download over the agent's cap", inferencev1alpha1.ReasonModelDownloadTooLarge),
 		Entry("sourceSecretRef Secret not allowed", inferencev1alpha1.ReasonSourceSecretNotAllowed),
+		Entry("a start that failed and is being retried", inferencev1alpha1.ReasonStartFailed),
 	)
 
 	It("should replace a controller-written status with WaitingForMetalAgent on a not-ready metal service", func() {

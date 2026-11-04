@@ -1166,6 +1166,7 @@ func (a *MetalAgent) ensureProcess(ctx context.Context, isvc *inferencev1alpha1.
 	// Started, already running, stopped or eviction-blocked: not refused,
 	// so a later refusal is a new one and gets its Event.
 	a.refusals.forget(types.NamespacedName{Namespace: isvc.Namespace, Name: isvc.Name}.String())
+	a.clearStartFailure(ctx, isvc)
 	return nil
 }
 
