@@ -475,7 +475,7 @@ func handleUntil(t *testing.T, a *MetalAgent, done func(InferenceServiceEvent) b
 	watchDone := make(chan struct{})
 	go func() {
 		defer close(watchDone)
-		_ = a.watcher.Watch(ctx, events)
+		a.watcher.Watch(ctx, events)
 	}()
 	defer func() { cancel(); <-watchDone }()
 	for {

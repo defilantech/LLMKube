@@ -87,7 +87,7 @@ func driveWatchLoop(
 	stopped := make(chan struct{})
 	go func() {
 		defer close(stopped)
-		_ = w.Watch(ctx, events)
+		w.Watch(ctx, events)
 	}()
 	defer func() {
 		cancel()

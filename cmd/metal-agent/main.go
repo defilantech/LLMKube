@@ -33,6 +33,8 @@ import (
 	"go.uber.org/zap/zapcore"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/runtime"
+	utilnet "k8s.io/apimachinery/pkg/util/net"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -204,6 +206,26 @@ func loadKubeconfig(contextName string) (*restclient.Config, error) {
 		return nil, fmt.Errorf("load kubeconfig: %w", err)
 	}
 	return cfg, nil
+}
+
+// newKubeClient builds the agent's uncached client on an HTTP client it keeps,
+// and returns a func that closes that HTTP client's idle connections. The
+// agent calls it while the API counts as unreachable, so a retry dials a new
+// connection instead of reusing one that went bad: the part of the old exit
+// for a supervisor restart (#276) worth keeping, done in-process (#2079).
+// client-go shares one cached transport per TLS config unless the config sets
+// a proxy, so this normally covers the events clientset built from the same
+// config too.
+func newKubeClient(cfg *restclient.Config, s *runtime.Scheme) (client.Client, func(), error) {
+	httpClient, err := restclient.HTTPClientFor(cfg)
+	if err != nil {
+		return nil, nil, fmt.Errorf("build the Kubernetes HTTP client: %w", err)
+	}
+	c, err := client.New(cfg, client.Options{Scheme: s, HTTPClient: httpClient})
+	if err != nil {
+		return nil, nil, err
+	}
+	return c, func() { utilnet.CloseIdleConnectionsFor(httpClient.Transport) }, nil
 }
 
 func parseLogLevel(level string) zapcore.Level {
@@ -613,8 +635,10 @@ func main() {
 	flag.BoolVar(&cfg.EvictionEnabled, "eviction-enabled", false,
 		"Enable automatic process eviction under critical memory pressure")
 	flag.IntVar(&cfg.MaxWatchFailures, "max-watch-failures", agent.DefaultMaxConsecutiveFailures,
-		"Consecutive Kubernetes list failures from the InferenceService watcher before the agent "+
-			"gives up and exits for supervisor restart. Set to 0 to use the agent default.")
+		"Consecutive failed InferenceService lists (one every 5s) after which the agent counts the "+
+			"Kubernetes API as unreachable: it logs that once, keeps every engine serving with its "+
+			"last-known state and relay tokens, and retries with backoff up to 30s. The agent never "+
+			"exits for it. Set to 0 to use the agent default.")
 	flag.IntVar(&cfg.HealthFailureThreshold, "health-failure-threshold", agent.DefaultHealthFailureThreshold,
 		"Consecutive failed health probes (one every 30s) before the agent stops an engine and starts "+
 			"a new one; restarts that keep failing back off from 10s to 5m. The first failed probe already "+
@@ -846,7 +870,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	k8sClient, err := client.New(k8sConfig, client.Options{Scheme: scheme.Scheme})
+	k8sClient, resetAPIConnections, err := newKubeClient(k8sConfig, scheme.Scheme)
 	if err != nil {
 		logger.Errorw("failed to create Kubernetes client", "error", err)
 		os.Exit(1)
@@ -896,6 +920,7 @@ func main() {
 		MemoryFraction:            cfg.MemoryFraction,
 		MemoryCheckMode:           cfg.MemoryCheckMode,
 		MaxWatchFailures:          cfg.MaxWatchFailures,
+		ResetAPIConnections:       resetAPIConnections,
 		HealthFailureThreshold:    cfg.HealthFailureThreshold,
 		InferenceServiceAllowlist: splitCSV(cfg.InferenceServiceAllowlist),
 		LlamaServerStartupTimeout: cfg.LlamaServerStartupTimeout,

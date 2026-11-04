@@ -154,11 +154,22 @@ type MetalAgentConfig struct {
 	// is a sharp tool: operators must opt in. Wire from --eviction-enabled.
 	EvictionEnabled bool
 
-	// MaxWatchFailures is the consecutive-failure threshold at which the
-	// InferenceService watcher gives up on its current Kubernetes connection
-	// and signals a fatal exit. Zero means use the watcher's built-in default
+	// MaxWatchFailures is how many consecutive failed InferenceService lists
+	// make the agent count the Kubernetes API as unreachable: it logs that
+	// once, sets llmkube_metal_agent_api_unreachable, calls
+	// ResetAPIConnections before each retry and backs off, while every
+	// running engine keeps serving. The agent never exits for it (#2079).
+	// Zero means use the watcher's built-in default
 	// (DefaultMaxConsecutiveFailures).
 	MaxWatchFailures int
+
+	// ResetAPIConnections closes the idle connections of K8sClient's HTTP
+	// transport, so the next request dials a new one. The agent calls it
+	// after each failed list while the API counts as unreachable: a
+	// connection that went bad cannot outlive the outage, the one thing the
+	// process restart this replaced did that a retry does not (#276). Nil
+	// skips it.
+	ResetAPIConnections func()
 
 	// HealthFailureThreshold is how many consecutive failed health probes
 	// make the agent stop an engine and start a new one. The first failure
@@ -385,6 +396,9 @@ type MetalAgent struct {
 	// restartWake asks the event loop to run due health restarts. Buffered
 	// (capacity 1) so a wake-up never blocks its sender.
 	restartWake chan struct{}
+	// heartbeatWake asks the heartbeat loop to beat now rather than at its
+	// next tick; see wakeHeartbeat. Buffered (capacity 1) like restartWake.
+	heartbeatWake chan struct{}
 
 	// roots is the set of directories local model sources and the oMLX
 	// pagedSSDCacheDir must resolve into. Derived from
@@ -434,6 +448,11 @@ type MetalAgent struct {
 	// refusals remembers each refused InferenceService's last refusal, for
 	// its re-check backoff and Event deduplication (#2329).
 	refusals refusalRechecks
+
+	// tuneWatcher, when set, is applied to the watcher Start builds, before
+	// it starts. Tests use it to poll in milliseconds; production leaves it
+	// nil.
+	tuneWatcher func(*InferenceServiceWatcher)
 }
 
 // ManagedProcess represents a running inference process (llama-server, oMLX, or Ollama model).
@@ -627,6 +646,7 @@ func NewMetalAgent(config MetalAgentConfig) *MetalAgent {
 		reservedMemory:      make(map[string]uint64),
 		restarts:            make(map[string]*restartBackoff),
 		restartWake:         make(chan struct{}, 1),
+		heartbeatWake:       make(chan struct{}, 1),
 		now:                 time.Now,
 		relayRegisteredAt:   make(map[string]time.Time),
 		relayNotAdoptedSent: make(map[string]bool),
@@ -757,9 +777,11 @@ func (a *MetalAgent) Start(ctx context.Context) error {
 		a.logger.Warnw("unable to query total memory", "error", err)
 	}
 
-	// fatalErrChan carries terminal failures from background subsystems
-	// (watcher, health server) up to the main select loop, so the agent can
-	// return cleanly and let the supervisor restart the process.
+	// fatalErrChan carries terminal failures from local subsystems (the
+	// ingress listener, the health server) up to the main select loop, so the
+	// agent can return cleanly and let the supervisor restart the process. An
+	// unreachable API server is not one of them: the watcher rides it out and
+	// the engines keep serving (#2079).
 	fatalErrChan := make(chan error, 3)
 
 	// Initialize components
@@ -767,12 +789,19 @@ func (a *MetalAgent) Start(ctx context.Context) error {
 	if a.config.MaxWatchFailures > 0 {
 		a.watcher.SetMaxConsecutiveFailures(a.config.MaxWatchFailures)
 	}
+	// While the API is unreachable, drop idle API connections before each
+	// retry; when it is back, heartbeat at once, since an outage past the
+	// controller's heartbeat timeout left the endpoints marked stale.
+	a.watcher.SetAPIHooks(a.config.ResetAPIConnections, a.wakeHeartbeat)
 	if len(a.config.InferenceServiceAllowlist) > 0 {
 		a.watcher.SetNameAllowlist(a.config.InferenceServiceAllowlist)
 		a.logger.Infow(
 			"InferenceService name allowlist active (#524 multi-Mac partition)",
 			"allowed", a.config.InferenceServiceAllowlist,
 		)
+	}
+	if a.tuneWatcher != nil {
+		a.tuneWatcher(a.watcher)
 	}
 
 	a.buildExecutors()
@@ -877,12 +906,11 @@ func (a *MetalAgent) Start(ctx context.Context) error {
 		go watchdog.Run(ctx)
 	}
 
-	// Start watcher with retry logic. If the CRDs are not installed when the
-	// agent starts, Watch will fail immediately. The retry loop with
-	// exponential backoff makes the agent recover once the CRDs land.
-	// ErrWatchStalled bypasses the retry path — see runWatcherLoop for why.
+	// Start the watcher. It retries failed lists itself until ctx ends (the
+	// CRDs not installed yet, an API server outage), so it never ends the
+	// agent.
 	eventChan := make(chan InferenceServiceEvent)
-	go a.runWatcherLoop(ctx, eventChan, fatalErrChan)
+	go a.watcher.Watch(ctx, eventChan)
 
 	// Process events
 	for {
@@ -1871,55 +1899,6 @@ func (a *MetalAgent) markStopped(ctx context.Context, isvc *inferencev1alpha1.In
 	return a.config.K8sClient.Status().Update(ctx, fresh)
 }
 
-// runWatcherLoop drives a.watcher.Watch in a loop, retrying transient errors
-// with exponential backoff (handles the "CRDs not installed yet" startup
-// race) but bubbling ErrWatchStalled up via fatalErrChan immediately.
-// Stalled means the watcher's controller-runtime client cache is wedged;
-// restarting Watch on the same client cannot fix that, so the agent has to
-// exit and let its supervisor recycle the process with a fresh client.
-//
-// Extracted from Start so the retry-vs-fatal decision is unit-testable.
-func (a *MetalAgent) runWatcherLoop(
-	ctx context.Context,
-	eventChan chan<- InferenceServiceEvent,
-	fatalErrChan chan<- error,
-) {
-	const (
-		initialBackoff = 5 * time.Second
-		maxBackoff     = 60 * time.Second
-		backoffFactor  = 2
-	)
-	backoff := initialBackoff
-	for {
-		err := a.watcher.Watch(ctx, eventChan)
-		if err == nil {
-			return
-		}
-		if ctx.Err() != nil {
-			return
-		}
-		if errors.Is(err, ErrWatchStalled) {
-			fatalExitsTotal.WithLabelValues("watcher").Inc()
-			select {
-			case fatalErrChan <- err:
-			default:
-			}
-			return
-		}
-		a.logger.Warnw("watcher exited with error, retrying",
-			"error", err, "retryIn", backoff)
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(backoff):
-		}
-		backoff *= backoffFactor
-		if backoff > maxBackoff {
-			backoff = maxBackoff
-		}
-	}
-}
-
 // reportHealthServerExit handles the post-Run state of the management HTTP
 // server. It is a no-op when the server returned cleanly or when the agent
 // itself is shutting down (ctx cancelled). Any other return is fatal and
@@ -2170,8 +2149,24 @@ func (a *MetalAgent) runHeartbeatLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			a.heartbeatOnce(ctx)
+		case <-a.heartbeatWake:
 		}
+		if ctx.Err() != nil {
+			return
+		}
+		a.heartbeatOnce(ctx)
+	}
+}
+
+// wakeHeartbeat makes the heartbeat loop beat now instead of at its next tick.
+// The watcher calls it when the Kubernetes API is reachable again after an
+// outage: the beats during the outage failed, and an outage past the
+// controller's heartbeat timeout left this agent's endpoints marked stale, so
+// waiting up to another heartbeat interval would keep them dark for nothing.
+func (a *MetalAgent) wakeHeartbeat() {
+	select {
+	case a.heartbeatWake <- struct{}{}:
+	default:
 	}
 }
 

@@ -986,16 +986,18 @@ func TestSetPollInterval(t *testing.T) {
 	}
 }
 
-// scriptedListClient wraps a fake client and lets each test prescribe a
-// failure pattern across successive List calls. failBetween reports whether
-// the n-th call (1-indexed) should fail.
-func scriptedListClient(t *testing.T, failOnCall func(n int32) bool) (client.Client, *atomic.Int32) {
+// scriptedListClient wraps a fake client holding objs and lets each test
+// prescribe a failure pattern across successive List calls. failOnCall reports
+// whether the n-th call (1-indexed) should fail.
+func scriptedListClient(
+	t *testing.T, failOnCall func(n int32) bool, objs ...client.Object,
+) (client.Client, *atomic.Int32) {
 	t.Helper()
 	scheme := runtime.NewScheme()
 	if err := inferencev1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatalf("AddToScheme: %v", err)
 	}
-	base := fake.NewClientBuilder().WithScheme(scheme).Build()
+	base := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
 	var calls atomic.Int32
 	c := interceptor.NewClient(base, interceptor.Funcs{
 		List: func(ctx context.Context, w client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
@@ -1009,52 +1011,223 @@ func scriptedListClient(t *testing.T, failOnCall func(n int32) bool) (client.Cli
 	return c, &calls
 }
 
-func TestWatch_StalledExitsAfterThreshold(t *testing.T) {
-	// Call 1 (listExisting) succeeds; calls 2+ all fail. With threshold=2 the
-	// watcher should bail out after two consecutive poll failures.
-	c, calls := scriptedListClient(t, func(n int32) bool { return n > 1 })
-	w := NewInferenceServiceWatcher(c, "default", newNopLogger())
-	w.SetPollInterval(10 * time.Millisecond)
-	w.SetMaxConsecutiveFailures(2)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	eventChan := make(chan InferenceServiceEvent, 1)
-	err := w.Watch(ctx, eventChan)
-	if !errors.Is(err, ErrWatchStalled) {
-		t.Fatalf("Watch returned %v, want ErrWatchStalled", err)
-	}
-	// Sanity: 1 listExisting + 2 failed polls = exactly 3 List calls. Anything
-	// higher means we burned past the threshold without bailing out.
-	if got := calls.Load(); got != 3 {
-		t.Errorf("List call count = %d, want 3 (1 list-existing + 2 failed polls)", got)
+// metalServiceObjects returns a Metal Model and an InferenceService that uses
+// it, so a watcher claims the service.
+func metalServiceObjects() []client.Object {
+	return []client.Object{
+		&inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: lookupModelName, Namespace: "default"},
+			Spec: inferencev1alpha1.ModelSpec{
+				Source: "https://example.com/lookup.gguf", Format: "gguf",
+				Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: "metal"},
+			},
+		},
+		&inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: lookupISVCName, Namespace: "default"},
+			Spec:       inferencev1alpha1.InferenceServiceSpec{ModelRef: lookupModelName},
+		},
 	}
 }
 
-func TestWatch_RecoversAndResetsCounter(t *testing.T) {
-	// listExisting (call 1) succeeds; polls 2 and 3 fail; everything after
-	// succeeds. Threshold of 5 means the recovery on call 4 should reset the
-	// counter and Watch should never return ErrWatchStalled — only the
-	// context timeout exits the loop.
-	c, calls := scriptedListClient(t, func(n int32) bool { return n == 2 || n == 3 })
-	w := NewInferenceServiceWatcher(c, "default", newNopLogger())
-	w.SetPollInterval(10 * time.Millisecond)
-	w.SetMaxConsecutiveFailures(5)
+// apiHookCounter counts the watcher's API hooks; see SetAPIHooks.
+type apiHookCounter struct{ resets, reachable atomic.Int32 }
 
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	defer cancel()
+func (h *apiHookCounter) install(w *InferenceServiceWatcher) {
+	w.SetAPIHooks(func() { h.resets.Add(1) }, func() { h.reachable.Add(1) })
+}
 
-	eventChan := make(chan InferenceServiceEvent, 1)
-	err := w.Watch(ctx, eventChan)
-
-	if errors.Is(err, ErrWatchStalled) {
-		t.Errorf("Watch returned ErrWatchStalled despite mid-run recovery; counter did not reset")
+// runWatch runs w.Watch on its own goroutine and returns a stop function that
+// cancels it and waits for it to return.
+func runWatch(t *testing.T, w *InferenceServiceWatcher, events chan InferenceServiceEvent) (stop func()) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		w.Watch(ctx, events)
+	}()
+	return func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("Watch did not return after its context was cancelled")
+		}
 	}
-	// We should see at least 4 calls (list-existing + the two failures + at
-	// least one recovery) within the 500ms test window at a 10ms tick.
-	if got := calls.Load(); got < 4 {
-		t.Errorf("List call count = %d, want >= 4 to prove recovery exercised", got)
+}
+
+func waitUntil(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// TestWatch_RidesOutAnOutagePastTheThreshold: more consecutive failed polls
+// than the threshold do not end Watch (#2079). The API counts as unreachable
+// from the threshold-th failure: that and the recovery are logged once each,
+// the gauge follows, the reset hook runs after every failure from then on,
+// nothing is treated as deleted, and the first successful poll carries on
+// from the services seen before the outage.
+func TestWatch_RidesOutAnOutagePastTheThreshold(t *testing.T) {
+	const threshold, failures = 2, 8
+	// List calls 1 (the initial list) and 2 (the first poll, which records
+	// the service as seen) succeed, polls 3 to 10 fail, the rest succeed.
+	c, calls := scriptedListClient(t, func(n int32) bool { return n >= 3 && n < 3+failures },
+		metalServiceObjects()...)
+	core, logs := observer.New(zap.DebugLevel)
+	w := NewInferenceServiceWatcher(c, "default", zap.New(core).Sugar())
+	w.SetPollInterval(2 * time.Millisecond)
+	w.maxPollBackoff = 10 * time.Millisecond
+	w.SetMaxConsecutiveFailures(threshold)
+	var hooks apiHookCounter
+	hooks.install(w)
+
+	events := make(chan InferenceServiceEvent, 16)
+	stop := runWatch(t, w, events)
+	defer stop()
+
+	waitUntil(t, "the API to count as unreachable", func() bool { return hooks.resets.Load() >= 1 })
+	if g := testutil.ToFloat64(watchAPIUnreachable); g != 1 {
+		t.Errorf("api_unreachable gauge during the outage = %v, want 1", g)
+	}
+	waitUntil(t, "the recovery", func() bool { return hooks.reachable.Load() >= 1 })
+	if g := testutil.ToFloat64(watchAPIUnreachable); g != 0 {
+		t.Errorf("api_unreachable gauge after the recovery = %v, want 0", g)
+	}
+	if g := testutil.ToFloat64(watchConsecutiveFailures); g != 0 {
+		t.Errorf("watch_consecutive_failures after the recovery = %v, want 0", g)
+	}
+	after := calls.Load()
+	waitUntil(t, "two more polls after the recovery", func() bool { return calls.Load() >= after+2 })
+	stop()
+
+	if got, want := hooks.resets.Load(), int32(failures-threshold+1); got != want {
+		t.Errorf("reset hook ran %d times, want %d (from the threshold-th failure on)", got, want)
+	}
+	if got := hooks.reachable.Load(); got != 1 {
+		t.Errorf("reachable hook ran %d times, want 1", got)
+	}
+	if n := logs.FilterMessageSnippet("Kubernetes API unreachable").Len(); n != 1 {
+		t.Errorf("logged the API unreachable %d times, want once", n)
+	}
+	if n := logs.FilterMessageSnippet("Kubernetes API reachable again").Len(); n != 1 {
+		t.Errorf("logged the API's return %d times, want once", n)
+	}
+	if n := logs.FilterMessage("polling error").Len(); n != threshold-1 {
+		t.Errorf("logged %d per-failure warnings, want %d (the failures below the threshold)", n, threshold-1)
+	}
+	close(events)
+	var got []EventType
+	for ev := range events {
+		got = append(got, ev.Type)
+	}
+	// The initial list and the first successful poll each deliver Created
+	// (listExisting does not fill seen); an outage must never read as a
+	// deletion.
+	if len(got) == 0 || slices.Contains(got, EventTypeDeleted) {
+		t.Errorf("events = %v, want the service delivered and never Deleted", got)
+	}
+}
+
+// TestWatch_RetriesTheInitialListThroughAnOutage: an agent started while the
+// API is down waits in Watch, counting the failed initial lists like failed
+// polls, and lists the existing services as soon as the API answers.
+func TestWatch_RetriesTheInitialListThroughAnOutage(t *testing.T) {
+	const threshold, failures = 2, 4
+	c, _ := scriptedListClient(t, func(n int32) bool { return n <= failures }, metalServiceObjects()...)
+	w := NewInferenceServiceWatcher(c, "default", newNopLogger())
+	w.SetPollInterval(2 * time.Millisecond)
+	w.maxPollBackoff = 10 * time.Millisecond
+	w.SetMaxConsecutiveFailures(threshold)
+	var hooks apiHookCounter
+	hooks.install(w)
+
+	events := make(chan InferenceServiceEvent, 4)
+	stop := runWatch(t, w, events)
+	defer stop()
+
+	select {
+	case ev := <-events:
+		if ev.Type != EventTypeCreated || ev.InferenceService.Name != lookupISVCName {
+			t.Fatalf("first event = %s %s, want Created %s", ev.Type, ev.InferenceService.Name, lookupISVCName)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the existing service was never listed after the API came back")
+	}
+	if got, want := hooks.resets.Load(), int32(failures-threshold+1); got != want {
+		t.Errorf("reset hook ran %d times, want %d", got, want)
+	}
+	if got := hooks.reachable.Load(); got != 1 {
+		t.Errorf("reachable hook ran %d times, want 1", got)
+	}
+}
+
+// TestWatch_RecoversBelowTheThreshold: failures that stop short of the
+// threshold are a blip: the counter resets, and the API never counts as
+// unreachable (no hook, no transition log).
+func TestWatch_RecoversBelowTheThreshold(t *testing.T) {
+	c, calls := scriptedListClient(t, func(n int32) bool { return n == 2 || n == 3 })
+	core, logs := observer.New(zap.InfoLevel)
+	w := NewInferenceServiceWatcher(c, "default", zap.New(core).Sugar())
+	w.SetPollInterval(2 * time.Millisecond)
+	w.SetMaxConsecutiveFailures(5)
+	var hooks apiHookCounter
+	hooks.install(w)
+
+	stop := runWatch(t, w, make(chan InferenceServiceEvent, 1))
+	waitUntil(t, "polls after the blip", func() bool { return calls.Load() >= 6 })
+	stop()
+
+	if r, ok := hooks.resets.Load(), hooks.reachable.Load(); r != 0 || ok != 0 {
+		t.Errorf("hooks ran (reset %d, reachable %d) for failures below the threshold, want none", r, ok)
+	}
+	if n := logs.FilterMessageSnippet("Kubernetes API unreachable").Len(); n != 0 {
+		t.Errorf("logged the API unreachable %d times for a blip, want never", n)
+	}
+	if n := logs.FilterMessage("polling recovered after errors").Len(); n != 1 {
+		t.Errorf("logged the blip's recovery %d times, want once", n)
+	}
+}
+
+// TestNextPollDelay_BacksOffPastTheThresholdWithJitter pins the retry
+// schedule at the defaults: the poll interval below the threshold, then
+// doubling from twice the interval to the cap, each plus up to 20 % jitter.
+func TestNextPollDelay_BacksOffPastTheThresholdWithJitter(t *testing.T) {
+	w := NewInferenceServiceWatcher(nil, "default", newNopLogger())
+	tests := []struct {
+		failures int
+		base     time.Duration
+		jitter   bool
+	}{
+		{0, 5 * time.Second, false},
+		{DefaultMaxConsecutiveFailures - 1, 5 * time.Second, false},
+		{DefaultMaxConsecutiveFailures, 10 * time.Second, true},
+		{DefaultMaxConsecutiveFailures + 1, 20 * time.Second, true},
+		{DefaultMaxConsecutiveFailures + 2, defaultMaxPollBackoff, true},
+		{DefaultMaxConsecutiveFailures + 1000, defaultMaxPollBackoff, true},
+	}
+	for _, tc := range tests {
+		w.listFailures = tc.failures
+		distinct := map[time.Duration]bool{}
+		for range 200 {
+			d := w.nextPollDelay()
+			distinct[d] = true
+			limit := tc.base
+			if tc.jitter {
+				limit = time.Duration(float64(tc.base) * (1 + pollBackoffJitter))
+			}
+			if d < tc.base || d > limit {
+				t.Fatalf("failures=%d: delay %v outside [%v, %v]", tc.failures, d, tc.base, limit)
+			}
+		}
+		if tc.jitter && len(distinct) < 2 {
+			t.Errorf("failures=%d: 200 delays were all %v, want jitter", tc.failures, tc.base)
+		}
 	}
 }
 
@@ -1064,27 +1237,12 @@ func TestWatch_ContextCancellation(t *testing.T) {
 
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 	watcher := NewInferenceServiceWatcher(k8sClient, "default", newNopLogger())
-	eventChan := make(chan InferenceServiceEvent, 10)
+	stop := runWatch(t, watcher, make(chan InferenceServiceEvent, 10))
 
-	ctx, cancel := context.WithCancel(context.Background())
-
-	done := make(chan error, 1)
-	go func() {
-		done <- watcher.Watch(ctx, eventChan)
-	}()
-
-	// Give the watcher a moment to start, then cancel
+	// Give the watcher a moment to start, then cancel; stop fails the test if
+	// Watch does not return.
 	time.Sleep(100 * time.Millisecond)
-	cancel()
-
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Errorf("Watch returned error on cancellation: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Error("Watch did not return after context cancellation")
-	}
+	stop()
 }
 
 // A key seeded before the first poll (an engine adopted at startup, #2079) is

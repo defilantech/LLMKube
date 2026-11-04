@@ -29,25 +29,28 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 )
 
-// ErrWatchStalled is returned from Watch when the polling loop has accumulated
-// more consecutive list errors than the configured threshold. The agent treats
-// this as a fatal condition and exits non-zero so the process supervisor
-// (launchd / systemd) can recycle it with a fresh Kubernetes client. This
-// recovers from situations like the underlying controller-runtime cache
-// silently serving stale data after its watch connection drops.
-var ErrWatchStalled = errors.New("watcher polling stalled: consecutive list failures exceeded threshold")
-
-// DefaultMaxConsecutiveFailures is the threshold at which the watcher gives
-// up on its current Kubernetes connection. Three failures over the 5-second
-// poll interval is 15 seconds of consecutive trouble — long enough to rule
-// out a single transient network blip and short enough that the agent does
-// not silently sit on a dead watch for hours.
+// DefaultMaxConsecutiveFailures is how many consecutive failed InferenceService
+// lists make the watcher count the Kubernetes API as unreachable. Three
+// failures over the 5-second poll interval is 15 seconds of consecutive
+// trouble: long enough to rule out a single transient network blip.
 const DefaultMaxConsecutiveFailures = 3
+
+const (
+	// defaultMaxPollBackoff caps the delay between lists while the API counts
+	// as unreachable. It matches the heartbeat interval, so the watcher
+	// notices the API's return about as soon as the heartbeat does.
+	defaultMaxPollBackoff = 30 * time.Second
+	// pollBackoffJitter is the largest fraction wait.Jitter adds to a
+	// backoff delay, so a fleet of agents cut off by one outage does not
+	// retry in lockstep when it ends.
+	pollBackoffJitter = 0.2
+)
 
 // EventType represents the type of InferenceService event
 type EventType string
@@ -105,6 +108,20 @@ type InferenceServiceWatcher struct {
 	// now returns the current time for RequeueAt; time.Now unless a test
 	// sets a fake clock.
 	now func() time.Time
+	// maxPollBackoff caps the delay between lists while the API counts as
+	// unreachable; zero means defaultMaxPollBackoff.
+	maxPollBackoff time.Duration
+	// listFailures counts consecutive failed InferenceService lists, the
+	// initial list included, and failingSince is when the first of them
+	// failed. unreachable is set once listFailures reaches the threshold and
+	// cleared by the next successful list. Only the goroutine running Watch
+	// touches them.
+	listFailures int
+	failingSince time.Time
+	unreachable  bool
+	// resetConnections and onReachable are the API hooks; see SetAPIHooks.
+	resetConnections func()
+	onReachable      func()
 }
 
 // NewInferenceServiceWatcher creates a new watcher with the default failure
@@ -125,8 +142,9 @@ func NewInferenceServiceWatcher(
 	}
 }
 
-// SetMaxConsecutiveFailures overrides the default failure threshold. Values
-// less than 1 are coerced to DefaultMaxConsecutiveFailures.
+// SetMaxConsecutiveFailures overrides how many consecutive failed lists make
+// the watcher count the API as unreachable. Values less than 1 are coerced to
+// DefaultMaxConsecutiveFailures.
 func (w *InferenceServiceWatcher) SetMaxConsecutiveFailures(n int) {
 	if n < 1 {
 		n = DefaultMaxConsecutiveFailures
@@ -142,6 +160,17 @@ func (w *InferenceServiceWatcher) SetPollInterval(d time.Duration) {
 		return
 	}
 	w.pollInterval = d
+}
+
+// SetAPIHooks sets what the watcher calls about the API's reachability, on the
+// goroutine running Watch. reset runs after each failed list once the API
+// counts as unreachable, before the retry: the agent closes its client's idle
+// connections there, so the retry dials a new one, which is what restarting
+// the process used to buy (#276). reachable runs once when a list succeeds
+// again after that. Either may be nil. Call it before Watch.
+func (w *InferenceServiceWatcher) SetAPIHooks(reset, reachable func()) {
+	w.resetConnections = reset
+	w.onReachable = reachable
 }
 
 // SetNameAllowlist restricts which InferenceServices the watcher
@@ -185,7 +214,7 @@ func (w *InferenceServiceWatcher) SeedSeen(keys map[string]bool) {
 
 // initialSeen returns the seen map the first poll starts from, holding the
 // seeded keys, and drops the seed so it is used once. Watch takes it only
-// after its initial list succeeded, so a Watch retried after that list failed
+// after its initial list succeeded, so an initial list that had to be retried
 // still starts from the seed.
 func (w *InferenceServiceWatcher) initialSeen() map[string]string {
 	seen := make(map[string]string, len(w.seeded))
@@ -196,77 +225,164 @@ func (w *InferenceServiceWatcher) initialSeen() map[string]string {
 	return seen
 }
 
-// Watch starts watching for InferenceService changes. It returns nil on clean
-// context cancellation, ErrWatchStalled when consecutive list failures exceed
-// the configured threshold, or a wrapped error on initial-list failure.
-func (w *InferenceServiceWatcher) Watch(ctx context.Context, eventChan chan<- InferenceServiceEvent) error {
-	// List existing InferenceServices on startup
-	if err := w.listExisting(ctx, eventChan); err != nil {
-		return fmt.Errorf("failed to list existing services: %w", err)
+// Watch lists the InferenceServices, emitting Created for each one it claims,
+// then polls for changes until ctx ends. A failed list never ends it (#2079):
+// the initial list is retried until it succeeds (an agent started during an
+// outage, or before the CRDs are installed, waits there), and a failed poll
+// changes nothing, so every service keeps its last-known state and nothing is
+// treated as deleted. After maxConsecutiveFailures consecutive failures the
+// API counts as unreachable: that is logged once, the retries back off (see
+// nextPollDelay), and the first successful list logs the recovery once and
+// carries on from the services seen before the outage.
+func (w *InferenceServiceWatcher) Watch(ctx context.Context, eventChan chan<- InferenceServiceEvent) {
+	for w.listExisting(ctx, eventChan) != nil {
+		if !w.sleep(ctx, w.nextPollDelay()) {
+			return
+		}
 	}
-
-	// Watch for changes
-	interval := w.pollInterval
-	if interval <= 0 {
-		interval = defaultPollInterval
-	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
 
 	// Store last seen resource versions to detect changes
 	seen := w.initialSeen()
-
-	threshold := w.maxConsecutiveFailures
-	if threshold < 1 {
-		threshold = DefaultMaxConsecutiveFailures
-	}
-	consecutiveFailures := 0
-	watchConsecutiveFailures.Set(0)
-
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-ticker.C:
-			if err := w.poll(ctx, eventChan, seen); err != nil {
-				consecutiveFailures++
-				watchConsecutiveFailures.Set(float64(consecutiveFailures))
-				w.logger.Warnw("polling error",
-					"error", err,
-					"consecutiveFailures", consecutiveFailures,
-					"threshold", threshold,
-				)
-				if consecutiveFailures >= threshold {
-					w.logger.Errorw(
-						"watcher stalled — exceeded consecutive failure threshold, "+
-							"returning ErrWatchStalled so the agent can exit and "+
-							"be restarted by its supervisor",
-						"consecutiveFailures", consecutiveFailures,
-						"threshold", threshold,
-						"lastError", err,
-					)
-					return ErrWatchStalled
-				}
-				continue
-			}
-			if consecutiveFailures > 0 {
-				w.logger.Infow("polling recovered after errors", "previousFailures", consecutiveFailures)
-				consecutiveFailures = 0
-				watchConsecutiveFailures.Set(0)
-			}
-		}
+	for w.sleep(ctx, w.nextPollDelay()) {
+		// A failed poll changes nothing; list has recorded the failure.
+		_ = w.poll(ctx, eventChan, seen)
 	}
 }
 
-// listExisting lists all existing InferenceServices and sends create events
-func (w *InferenceServiceWatcher) listExisting(ctx context.Context, eventChan chan<- InferenceServiceEvent) error {
+// list lists the InferenceServices in the watcher's namespace and records the
+// outcome as soon as the List returns: the recovery (and the heartbeat it
+// wakes) must not wait for the list's events to be handled. A List that failed
+// because ctx ended records nothing: the agent is shutting down, the API is
+// not at fault.
+func (w *InferenceServiceWatcher) list(ctx context.Context) (*inferencev1alpha1.InferenceServiceList, error) {
 	list := &inferencev1alpha1.InferenceServiceList{}
 	opts := []client.ListOption{}
 	if w.namespace != "" {
 		opts = append(opts, client.InNamespace(w.namespace))
 	}
-
 	if err := w.client.List(ctx, list, opts...); err != nil {
+		if ctx.Err() == nil {
+			w.noteListFailed(err)
+		}
+		return nil, err
+	}
+	w.noteListSucceeded()
+	return list, nil
+}
+
+// sleep waits d and reports true, or reports false as soon as ctx ends.
+func (w *InferenceServiceWatcher) sleep(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
+}
+
+// threshold is the effective maxConsecutiveFailures.
+func (w *InferenceServiceWatcher) threshold() int {
+	if w.maxConsecutiveFailures < 1 {
+		return DefaultMaxConsecutiveFailures
+	}
+	return w.maxConsecutiveFailures
+}
+
+// nextPollDelay is how long Watch waits before its next list. It is the poll
+// interval until the API counts as unreachable. From the failure that makes it
+// so, the delay doubles per failure from twice the interval up to
+// maxPollBackoff (10 s, 20 s, then 30 s at the defaults), plus up to
+// pollBackoffJitter of itself.
+func (w *InferenceServiceWatcher) nextPollDelay() time.Duration {
+	interval := w.pollInterval
+	if interval <= 0 {
+		interval = defaultPollInterval
+	}
+	past := w.listFailures - w.threshold()
+	if past < 0 {
+		return interval
+	}
+	limit := w.maxPollBackoff
+	if limit <= 0 {
+		limit = defaultMaxPollBackoff
+	}
+	limit = max(limit, interval)
+	d := interval
+	for i := 0; i <= past && d < limit; i++ {
+		d *= 2
+	}
+	return wait.Jitter(min(d, limit), pollBackoffJitter)
+}
+
+// noteListFailed counts a failed list. Below the threshold each failure is
+// logged at Warn, as a transient blip may be; the failure that reaches it
+// marks the API unreachable with one Warn line, and later ones log at Debug.
+// From then on every failure runs the reset hook before the retry.
+func (w *InferenceServiceWatcher) noteListFailed(err error) {
+	if w.listFailures == 0 {
+		w.failingSince = w.clock()
+	}
+	w.listFailures++
+	watchConsecutiveFailures.Set(float64(w.listFailures))
+	threshold := w.threshold()
+	switch {
+	case w.listFailures < threshold:
+		w.logger.Warnw("polling error",
+			"error", err,
+			"consecutiveFailures", w.listFailures,
+			"threshold", threshold,
+		)
+	case !w.unreachable:
+		w.unreachable = true
+		watchAPIUnreachable.Set(1)
+		w.logger.Warnw("Kubernetes API unreachable: InferenceService lists keep failing; "+
+			"running engines keep serving with their last-known state and relay tokens, "+
+			"and spec changes and deletions wait until a list succeeds; retrying with backoff",
+			"error", err,
+			"consecutiveFailures", w.listFailures,
+			"threshold", threshold,
+		)
+	default:
+		w.logger.Debugw("Kubernetes API still unreachable",
+			"error", err,
+			"consecutiveFailures", w.listFailures,
+			"failingFor", w.clock().Sub(w.failingSince).Round(time.Second),
+		)
+	}
+	if w.unreachable && w.resetConnections != nil {
+		w.resetConnections()
+	}
+}
+
+// noteListSucceeded clears the failure count after a successful list, logging
+// the recovery once at Info and, when the API counted as unreachable, running
+// the reachable hook.
+func (w *InferenceServiceWatcher) noteListSucceeded() {
+	if w.listFailures == 0 {
+		return
+	}
+	failures, failingFor := w.listFailures, w.clock().Sub(w.failingSince).Round(time.Second)
+	wasUnreachable := w.unreachable
+	w.listFailures, w.failingSince, w.unreachable = 0, time.Time{}, false
+	watchConsecutiveFailures.Set(0)
+	if !wasUnreachable {
+		w.logger.Infow("polling recovered after errors", "previousFailures", failures)
+		return
+	}
+	watchAPIUnreachable.Set(0)
+	w.logger.Infow("Kubernetes API reachable again; resuming",
+		"failedLists", failures, "unreachableFor", failingFor)
+	if w.onReachable != nil {
+		w.onReachable()
+	}
+}
+
+// listExisting lists all existing InferenceServices and sends create events
+func (w *InferenceServiceWatcher) listExisting(ctx context.Context, eventChan chan<- InferenceServiceEvent) error {
+	list, err := w.list(ctx)
+	if err != nil {
 		return err
 	}
 
@@ -293,13 +409,8 @@ func (w *InferenceServiceWatcher) poll(
 	eventChan chan<- InferenceServiceEvent,
 	seen map[string]string,
 ) error {
-	list := &inferencev1alpha1.InferenceServiceList{}
-	opts := []client.ListOption{}
-	if w.namespace != "" {
-		opts = append(opts, client.InNamespace(w.namespace))
-	}
-
-	if err := w.client.List(ctx, list, opts...); err != nil {
+	list, err := w.list(ctx)
+	if err != nil {
 		return err
 	}
 
