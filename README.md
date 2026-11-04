@@ -64,7 +64,7 @@ So you set up llama.cpp. It works great on one machine. Then you need to scale i
 
 Suddenly you're building an entire platform instead of shipping your product.
 
-**LLMKube is a Kubernetes operator that turns LLM deployment into a two-resource YAML problem.** Define a `Model` and an `InferenceService`, and the operator handles downloading, caching, GPU scheduling, health checks, scaling, and exposing an OpenAI-compatible API. Add a `ModelRouter` on top and the same cluster does policy-aware routing between your local models and external providers (Anthropic / OpenAI / LiteLLM) with fail-closed semantics for regulated data.
+**LLMKube is a Kubernetes operator that turns LLM deployment into a two-resource YAML problem.** Define a `Model` and an `InferenceService`, and the operator handles downloading, caching, GPU scheduling, health checks, scaling, and exposing an OpenAI-compatible API. Add a `ModelRouter` on top and the same cluster does policy-aware routing between your local models and external providers (Anthropic / OpenAI / LiteLLM). A rule that matches requests labeled pii/phi (by header) can route only to local-tier backends; content detection is planned ([#441](https://github.com/defilantech/LLMKube/issues/441)).
 
 ---
 
@@ -236,7 +236,7 @@ llmkube metal join <join-string>   # on the Mac
 
 `Model` and `InferenceService` give you self-hosted inference. `ModelRouter` puts a policy-aware OpenAI-compatible endpoint in front of *both* your local InferenceServices and external providers, with budgets, classifications, and fail-closed semantics enforced at the cluster level instead of in application code.
 
-The motivating use case: an agent running on a local model can selectively hand off specific steps to Claude or GPT without the agent code knowing or caring where the model lives, while platform policy enforces that regulated data never egresses.
+The motivating use case: an agent running on a local model can selectively hand off specific steps to Claude or GPT without the agent code knowing or caring where the model lives, while a fail-closed platform rule keeps requests labeled pii/phi (by header) on local-tier backends. Content detection is planned ([#441](https://github.com/defilantech/LLMKube/issues/441)).
 
 ```yaml
 apiVersion: inference.llmkube.dev/v1alpha1
@@ -272,7 +272,7 @@ spec:
 
 Three properties worth calling out:
 
-- **Fail-closed for regulated data, both statically and at runtime.** Apply-time validation rejects rules that would route PII / PHI to cloud-tier backends. Runtime enforcement refuses with HTTP 503 if the local pool can't serve the request, never falling through to cloud.
+- **Fail-closed for requests labeled pii/phi.** A request carries its classification in a header (`x-llmkube-classification` by default); content detection is planned ([#441](https://github.com/defilantech/LLMKube/issues/441)). Apply-time validation rejects a rule that matches pii/phi unless it is fail-closed and routes only to local-tier backends, and the proxy repeats the check on every request: if the local backends can't serve it, the answer is HTTP 503, never a fall-through to cloud. Rules match in order and the default route is not fail-closed, so put the pii/phi rule ahead of rules that send traffic to cloud and keep `defaultRoute` local.
 - **Per-rule and per-backend timeout budgets.** Strict policy tiers fast-fail; lenient tiers stay patient. The proxy applies `context.WithTimeout` per attempt, so a slow primary doesn't eat the fallback's budget. Resolution order: `rule.timeout || backend.timeout || proxy default`.
 - **OpenAI-compatible streaming endpoint.** Plug it into LangGraph, OpenAI Agents SDK, Anthropic SDK, Cline, Aider, or any framework that speaks the OpenAI API. The agent runtime doesn't need to know it's talking to a router.
 
@@ -371,7 +371,7 @@ One machine with two RTX 5060 Ti GPUs, 10 iterations of 256 max tokens per model
 **Routing & policy ([ModelRouter](#composition-modelrouter)):**
 - `ModelRouter` CRD: one OpenAI-compatible endpoint, multiple backends (local InferenceServices + external Anthropic / OpenAI / Bedrock / LiteLLM)
 - Policy-aware rules: data classification, task complexity, required capabilities, arbitrary header match
-- Fail-closed semantics for regulated data: static (apply-time) + runtime (HTTP 503, no cloud egress)
+- Fail-closed rules for requests labeled pii/phi (by header): checked at apply time and on every request, HTTP 503 instead of cloud fallback; content detection is planned ([#441](https://github.com/defilantech/LLMKube/issues/441))
 - Per-rule and per-backend timeout budgets (`spec.rules[].timeout` / `spec.backends[].timeout`)
 - Half-open circuit breaker with configurable quarantine window
 - Audit log on every request: rule, backend, tier, resolved timeout, outcome
