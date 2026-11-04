@@ -456,6 +456,8 @@ homebrew_casks:
       Join a cluster with `llmkube metal join <join-string>` (get one from your cluster admin: `llmkube metal token create <mac-name>`).
       The agent is not started until you join.
       After brew upgrade, restart a joined agent: launchctl kickstart -k gui/$(id -u)/com.llmkube.metal-agent
+      Local Network access: if the cluster or a model source is on your LAN, allow the agent when macOS asks, and after every upgrade turn it off and on in System Settings > Privacy & Security > Local Network.
+      To uninstall, run `llmkube metal leave` first, then brew uninstall --zap --cask llmkube-metal-agent; --zap on its own leaves the engines running.
     commit_author:
       name: github-actions[bot]
       email: 41898282+github-actions[bot]@users.noreply.github.com
