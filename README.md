@@ -391,7 +391,7 @@ One machine with two RTX 5060 Ti GPUs, 10 iterations of 256 max tokens per model
 **Operations:**
 - Full CLI: `llmkube deploy/list/status/delete/catalog/cache/queue`
 - Model catalog of pre-configured GGUF models for llama.cpp (`llmkube catalog list`)
-- Prometheus metrics + OpenTelemetry tracing
+- Prometheus metrics + OpenTelemetry tracing of ModelRouter proxy requests ([details](docs/observability/tracing.md))
 - For an existing Prometheus Operator or kube-prometheus-stack: Grafana dashboards (inference, llama.cpp, vLLM, SGLang, ModelRouter, GPU quota, SLOs, AMD GPU), PodMonitors, a ServiceMonitor and PrometheusRule alerts. All of them are off by default (`prometheus.*.enabled`, `grafana.dashboards.enabled`), and Prometheus and Grafana themselves are not bundled
 - GPU alert rules on DCGM exporter metrics (utilization, temperature, power, memory, Xid faults)
 - Per-service SLOs through Pyrra (`spec.slo`; needs Pyrra installed and `pyrra.enabled`)

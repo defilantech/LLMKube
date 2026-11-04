@@ -157,8 +157,10 @@ The proxy emits a structured audit log entry per request:
 Every routing decision is recoverable from the log. Compliance
 audits, "why did this 503", and per-rule budget verification all
 trace back to those records. Pair with Prometheus metrics
-(planned in the next observability pass) and the OTel tracing the
-controller already emits to Tempo for full visibility.
+(planned in the next observability pass) and the proxy's OpenTelemetry
+request spans
+([tracing](https://github.com/defilantech/LLMKube/blob/main/docs/observability/tracing.md))
+for full visibility.
 
 ## Why this shape
 

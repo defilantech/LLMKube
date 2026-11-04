@@ -56,7 +56,7 @@ Since then, among other changes (see the [CHANGELOG](CHANGELOG.md) for versions)
 - **Foreman (v0.1):** Kubernetes-native agentic pipeline (coder / verifier / reviewer) dispatched across a heterogeneous local fleet, gated against the repo's own build and tests, including Job-mode execution against in-cluster models
 
 ### Observability and economics
-- 10+ Prometheus metrics, OpenTelemetry tracing to Tempo, DCGM GPU metrics, Grafana dashboards, PodMonitor
+- 10+ Prometheus metrics, OpenTelemetry tracing of ModelRouter proxy requests (OTLP, e.g. Tempo), DCGM GPU metrics, Grafana dashboards, PodMonitor
 - **InferCost** (companion project): cost-per-token from hardware amortization + electricity + DCGM power, per-team attribution, and cloud-vs-on-prem break-even
 
 ---
