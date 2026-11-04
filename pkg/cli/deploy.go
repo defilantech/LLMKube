@@ -166,7 +166,7 @@ Examples:
 	cmd.Flags().StringVar(&opts.autoscaleMetric, "autoscale-metric", "",
 		"Custom metric for autoscaling (default: llamacpp:requests_processing)")
 
-	cmd.Flags().BoolVar(&opts.gpu, "gpu", false, "Enable GPU acceleration (auto-detects CUDA image)")
+	cmd.Flags().BoolVar(&opts.gpu, "gpu", false, "Enable GPU acceleration")
 	cmd.Flags().StringVar(&opts.accelerator, "accelerator", "",
 		"Hardware accelerator (cpu, metal, cuda, rocm, intel) - auto-detected if --gpu is set")
 	cmd.Flags().Int32Var(&opts.gpuCount, "gpu-count", 1, "Number of GPUs per pod")
@@ -221,8 +221,10 @@ Examples:
 	cmd.Flags().StringVar(&opts.cpu, "cpu", "2", "CPU request (e.g., '2' or '2000m')")
 	cmd.Flags().StringVar(&opts.memory, "memory", "4Gi", "Memory request (e.g., '4Gi')")
 	cmd.Flags().StringVar(&opts.image, "image", "",
-		"Custom llama.cpp server image. Default: server-cuda13 for GPU, server for CPU.\n"+
-			"Use this to override with an older image (e.g., ghcr.io/ggml-org/llama.cpp:server-cuda for CUDA 12).")
+		"Container image for the inference server. Default: the image the operator picks for the runtime and GPU\n"+
+			"(the chart's runtimeImages if set, else its pinned llama.cpp build), except\n"+
+			"ghcr.io/ggml-org/llama.cpp:server-intel for --gpu --accelerator intel. Required with --runtime generic.\n"+
+			"Use this to pin another build (e.g., ghcr.io/ggml-org/llama.cpp:server-cuda13 for CUDA 13).")
 
 	cmd.Flags().BoolVarP(&opts.wait, "wait", "w", true, "Wait for deployment to be ready")
 	cmd.Flags().DurationVar(&opts.timeout, "timeout", 10*time.Minute, "Timeout for waiting")
@@ -235,6 +237,9 @@ func runDeploy(opts *deployOptions) error {
 
 	if opts.metalMemoryFraction != 0 && (opts.metalMemoryFraction < 0 || opts.metalMemoryFraction > 1.0) {
 		return fmt.Errorf("--memory-fraction must be between 0.0 and 1.0, got %f", opts.metalMemoryFraction)
+	}
+	if opts.runtime == "generic" && opts.image == "" {
+		return fmt.Errorf("--runtime generic needs --image: the operator has no default image for a generic container")
 	}
 
 	var catalogModel *Model
@@ -600,8 +605,19 @@ func printDeploySummary(opts *deployOptions) {
 		}
 		fmt.Printf("KV Cache:    K=%s V=%s\n", k, v)
 	}
-	fmt.Printf("Image:       %s\n", opts.image)
+	fmt.Printf("Image:       %s\n", deployImageSummary(opts))
 	fmt.Printf("═══════════════════════════════════════════════\n\n")
+}
+
+func deployImageSummary(opts *deployOptions) string {
+	switch {
+	case opts.image != "":
+		return opts.image
+	case opts.accelerator == acceleratorMetal:
+		return "none (the Metal agent serves it natively)"
+	default:
+		return "operator default"
+	}
 }
 
 func resolveAcceleratorAndImage(opts *deployOptions) {
@@ -620,32 +636,24 @@ func resolveAcceleratorAndImage(opts *deployOptions) {
 			if opts.gpuVendor == "" || opts.gpuVendor == defaultGPUVendor {
 				opts.gpuVendor = acceleratorIntel
 			}
+			// The operator has no Intel image: it would serve an Intel GPU
+			// Model on its CPU-only default, so this one default stays here.
+			if opts.image == "" {
+				opts.image = imageLlamaCppServerIntel
+				fmt.Printf("ℹ️  Intel accelerator: using %s (override with --image)\n", opts.image)
+			}
 		}
 
 		if opts.accelerator == acceleratorMetal {
-			if opts.image == "" {
-				opts.image = ""
-			}
 			fmt.Printf("ℹ️  Metal acceleration: Using native llama-server (not containerized)\n")
 			fmt.Printf("ℹ️  Ensure Metal agent is installed: make install-metal-agent\n")
-		} else {
-			if opts.image == "" {
-				if opts.accelerator == acceleratorIntel {
-					opts.image = imageLlamaCppServerIntel
-					fmt.Printf("ℹ️  Intel accelerator: using default Intel image (override with --image if needed)\n")
-				} else {
-					opts.image = imageLlamaCppServerCUDA
-				}
-				fmt.Printf("ℹ️  Auto-detected image: %s\n", opts.image)
-			}
 		}
-	} else {
-		if opts.accelerator == "" {
-			opts.accelerator = acceleratorCPU
-		}
-		if opts.image == "" {
-			opts.image = imageLlamaCppServer
-		}
+		return
+	}
+	// No image here: spec.image would override the operator's pinned build
+	// and the chart's runtimeImages (#2413).
+	if opts.accelerator == "" {
+		opts.accelerator = acceleratorCPU
 	}
 }
 
