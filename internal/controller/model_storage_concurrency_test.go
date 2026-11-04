@@ -191,14 +191,6 @@ func (o *gatedOrigin) release(name string) {
 	o.mu.Unlock()
 }
 
-// releaseAll opens every gate, for a case whose bodies all must run to
-// completion.
-func (o *gatedOrigin) releaseAll() {
-	for name := range o.files {
-		o.release(name)
-	}
-}
-
 // await calls cond until it holds or the deadline passes, polling in
 // milliseconds: the wait ends at the event, not at a guessed duration.
 func (o *gatedOrigin) await(t *testing.T, what string, cond func() bool) {
@@ -247,22 +239,29 @@ func concurrencyFixture(names ...string) map[string][]byte {
 
 // multiFileRun is one generated init command running in the background. The
 // command runs in the background because the test drives the origin's gates
-// while it runs; a gate left closed is released by the run's cleanup, so a
-// regression fails the assertions instead of hanging the suite.
+// while it runs, so every gate it could still be waiting on has to open when
+// the test ends or fails, or a regression would hang the package instead of
+// failing an assertion.
 type multiFileRun struct {
-	done chan struct{}
-	out  strings.Builder
-	mu   sync.Mutex
-	err  error
+	done   chan struct{}
+	out    strings.Builder
+	mu     sync.Mutex
+	err    error
+	origin *gatedOrigin
 }
 
-// startMultiFile starts script under sh and returns once it is running.
-func startMultiFile(t *testing.T, script, source, dir, files string, extra ...string) *multiFileRun {
+// startMultiFile starts script against o under sh and returns once it is
+// running. Anything the test leaves held is released when the test ends.
+func startMultiFile(t *testing.T, script, source, dir, files string, o *gatedOrigin, extra ...string) *multiFileRun {
 	t.Helper()
 	// A pool that never dispatches its next file would hang the test.
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	t.Cleanup(cancel)
-	r := &multiFileRun{done: make(chan struct{})}
+	r := &multiFileRun{done: make(chan struct{}), origin: o}
+	t.Cleanup(func() {
+		o.releaseAll()
+		<-r.done
+	})
 	cmd := exec.CommandContext(ctx, "sh", "-c", script)
 	// The pool runs in a pipeline subshell that outlives a killed sh and holds
 	// the output pipe; without a delay the test waits on it forever.
@@ -283,6 +282,20 @@ func startMultiFile(t *testing.T, script, source, dir, files string, extra ...st
 		close(r.done)
 	}()
 	return r
+}
+
+// releaseAll opens every gate, including one for a name the fixture never
+// listed, so a later transfer or a held worker is never left waiting.
+func (o *gatedOrigin) releaseAll() {
+	o.mu.Lock()
+	names := make([]string, 0, len(o.files))
+	for name := range o.files {
+		names = append(names, name)
+	}
+	o.mu.Unlock()
+	for _, name := range names {
+		o.release(name)
+	}
 }
 
 // lockedWriter serializes the command's stdout and stderr into one builder, and
@@ -333,9 +346,12 @@ func (r *multiFileRun) wait(t *testing.T) (string, error) {
 	return r.output(), r.err
 }
 
-func runMultiFile(t *testing.T, script, source, dir, files string, extra ...string) (string, error) {
+// runMultiFile runs script against o with every gate open, for a case that
+// stages normally and asserts afterwards.
+func runMultiFile(t *testing.T, script string, o *gatedOrigin, dir, files string, extra ...string) (string, error) {
 	t.Helper()
-	return startMultiFile(t, script, source, dir, files, extra...).wait(t)
+	o.releaseAll()
+	return startMultiFile(t, script, o.srv.URL, dir, files, o, extra...).wait(t)
 }
 
 // poolVariant is one of buildMultiFileInitCommand's four loop variants. Each
@@ -370,7 +386,7 @@ func (v poolVariant) start(t *testing.T, script string, o *gatedOrigin, dir, fil
 		source = "s3://bucket"
 		extra = append(append(s3TestEnv(o.srv.URL), "S3_PREFIX="), extra...)
 	}
-	return startMultiFile(t, script, source, dir, files, extra...)
+	return startMultiFile(t, script, source, dir, files, o, extra...)
 }
 
 // run starts script against o with every gate open, and returns its output and
@@ -795,7 +811,12 @@ func stageBySet(t *testing.T, v poolVariant, script string, o *gatedOrigin, dir 
 			t.Errorf("max concurrent transfers = %d, want 1", got)
 		}
 		o.release(name)
-		o.await(t, name+" to leave", func() bool { return o.inFlightNow() == 0 })
+		// A worker kept alive by a transfer that already arrived (or by a
+		// regression that never lets one leave) must fail the case, not hang
+		// the package: the cleanup opens the rest when the test returns.
+		if !o.eventually(t, func() bool { return o.inFlightNow() == 0 }) {
+			t.Fatalf("%s did not leave after its gate opened; %d transfer(s) still held", name, o.inFlightNow())
+		}
 		if time.Now().After(deadline) {
 			t.Fatalf("the pool did not stage %s within 20s", name)
 		}
@@ -891,7 +912,7 @@ func TestMultiFileConcurrentMixedSources_Behavioral(t *testing.T) {
 			// Two 64 KiB files fit 150000 bytes, three do not: hold the first
 			// two, and the third arrives only once one of them finished.
 			r := startMultiFile(t, multiFileInitCommand(true, false, true, false, true, policy, true),
-				o.srv.URL+"/elsewhere", dir, strings.Join(poolFileNames, "\n"), env...)
+				o.srv.URL+"/elsewhere", dir, strings.Join(poolFileNames, "\n"), o, env...)
 			o.awaitInFlight(t, 2)
 			o.awaitGet(t, "a.bin")
 			o.awaitGet(t, "b.bin")
@@ -963,8 +984,7 @@ func TestMultiFileConcurrentSweepSparesOtherFiles(t *testing.T) {
 	// its transfer starts.
 	script := strings.Replace(buildMultiFileInitCommand(true, false, false, false, true, RefreshPolicyIfNotPresent),
 		`llmkube_pool_join; }`, `llmkube_pool_join; } && ls "$CACHE_DIR" > "$CACHE_DIR/.listing" && false`, 1)
-	o.releaseAll()
-	out, _ := runMultiFile(t, script, o.srv.URL, dir, "a.bin\na*b.bin", "MODEL_DOWNLOAD_CONCURRENCY=2")
+	out, _ := runMultiFile(t, script, o, dir, "a.bin\na*b.bin", "MODEL_DOWNLOAD_CONCURRENCY=2")
 	listing, err := os.ReadFile(filepath.Join(dir, ".listing"))
 	if err != nil {
 		t.Fatalf("no listing written: %v\n%s", err, out)
@@ -1007,7 +1027,7 @@ func TestMultiFileSHA256VerifyLogs(t *testing.T) {
 	env := []string{"MODEL_FILE_SHA256=" + digest + " a.bin", "MODEL_DIGEST_FIELD=spec.fileSha256", "MODEL_DOWNLOAD_CONCURRENCY=2"}
 	o.releaseAll()
 
-	out, err := runMultiFile(t, script, o.srv.URL, dir, "a.bin", env...)
+	out, err := runMultiFile(t, script, o, dir, "a.bin", env...)
 	if err != nil {
 		t.Fatalf("init script failed: %v\n%s", err, out)
 	}
@@ -1024,7 +1044,7 @@ func TestMultiFileSHA256VerifyLogs(t *testing.T) {
 		t.Errorf("a successful verify log classifies as %s\n%s", f.reason, out)
 	}
 
-	out, err = runMultiFile(t, script, o.srv.URL, dir, "a.bin", env...)
+	out, err = runMultiFile(t, script, o, dir, "a.bin", env...)
 	if err != nil {
 		t.Fatalf("cached rerun failed: %v\n%s", err, out)
 	}

@@ -94,6 +94,13 @@ func TestDownloadWithProgress(t *testing.T) {
 		if !strings.Contains(out, "Downloaded 2 MiB of 4 MiB (50%)") {
 			t.Errorf("missing progress line; want substring %q in:\n%s", "Downloaded 2 MiB of 4 MiB (50%)", out)
 		}
+		// One line per whole interval: a 2s transfer at PROGRESS_INTERVAL=1
+		// prints at t=1 and t=2, never fewer and never more. Polling faster
+		// than the interval must not print faster, and must not drop the line
+		// at the interval a transfer ends in (#2386).
+		if n := strings.Count(out, "Downloaded "); n != 2 {
+			t.Errorf("printed %d progress lines for a 2s transfer at PROGRESS_INTERVAL=1, want exactly 2:\n%s", n, out)
+		}
 		if strings.ContainsRune(out, '\r') {
 			t.Errorf("output carries a carriage return, which kubectl collapses into the prior line:\n%q", out)
 		}
@@ -145,6 +152,24 @@ func TestDownloadWithProgress(t *testing.T) {
 		}
 		if took > 500*time.Millisecond {
 			t.Errorf("download_with_progress took %s for a 50ms transfer, want under 500ms", took.Round(time.Millisecond))
+		}
+	})
+
+	// At the shipped interval one line lands per whole 10 seconds: an 11s
+	// transfer prints the 10s tick once, not once per poll in the first
+	// second and not ten times at the tick (#2386). Base prints one.
+	t.Run("one line per tick at the default interval", func(t *testing.T) {
+		dest := filepath.Join(t.TempDir(), "model.partial")
+		script := downloadProgressFn + `fake_transfer() { dd if=/dev/zero of="$1" bs=1024 count=2048 2>/dev/null; sleep 11; } && ` +
+			`download_with_progress "$DEST" "" fake_transfer "$DEST"`
+		cmd := exec.Command("sh", "-c", script)
+		cmd.Env = append(os.Environ(), "DEST="+dest)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("helper script failed: %v\n%s", err, out)
+		}
+		if n := strings.Count(string(out), "Downloaded "); n != 1 {
+			t.Errorf("printed %d progress lines for an 11s transfer at the default interval, want exactly 1 (base prints 1):\n%s", n, out)
 		}
 	})
 

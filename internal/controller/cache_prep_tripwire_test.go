@@ -48,10 +48,10 @@ import (
 const (
 	// cachePrepTripwireDeploymentHash is desiredTemplateHash of
 	// constructDeploymentForCache for cachePrepTripwireIsvc and cachePrepTripwireModel.
-	cachePrepTripwireDeploymentHash = "3644d8d66be95be3" //nolint:gosec // a SHA-256 prefix of a pod template, not a credential
+	cachePrepTripwireDeploymentHash = "fb72b0a75713545e" //nolint:gosec // a SHA-256 prefix of a pod template, not a credential
 	// cachePrepTripwireJobHash is desiredTemplateHash of buildPrefetchJob's
 	// pod template for cachePrepTripwireModel.
-	cachePrepTripwireJobHash = "95d880a3d57bdf05" //nolint:gosec // a SHA-256 prefix of a pod template, not a credential
+	cachePrepTripwireJobHash = "936b9f8d228c61b7" //nolint:gosec // a SHA-256 prefix of a pod template, not a credential
 )
 
 func cachePrepTripwireModel() *inferencev1alpha1.Model {
