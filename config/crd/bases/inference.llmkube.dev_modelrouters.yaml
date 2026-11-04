@@ -977,10 +977,15 @@ spec:
                           Mode determines how the router determines a request's
                           classification.
                           "header-only" (default) trusts the request header
-                            (HeaderKey, defaults to x-llmkube-classification).
-                          "detector" runs the bundled in-proxy detector.
-                          "hybrid" prefers the header, falling back to the detector when no
-                            header is present.
+                            (HeaderKey, defaults to x-llmkube-classification) and never reads
+                            a classification from the request body. It is the only implemented
+                            mode.
+                          "detector" and "hybrid" are reserved for a future in-proxy content
+                            classifier (#441) and are refused today. On dataPlane: Proxy the
+                            webhook rejects them and a router that sets either is not
+                            Validated (reason ClassifierNotImplemented when nothing else in the
+                            spec is invalid). On dataPlane: Gateway and AgentGateway a
+                            dataClassification match under either is refused.
                         enum:
                         - header-only
                         - detector
@@ -2402,11 +2407,12 @@ spec:
                         dataClassification:
                           description: |-
                             DataClassification matches if the inbound request carries any of
-                            these classifications. The classification source depends on
-                            Policy.Classification.Mode: a request header
-                            (x-llmkube-classification by default), the bundled detector, or
-                            both. Common values: "public", "internal", "confidential", "pii",
-                            "phi".
+                            these classifications. The classification is the value of the
+                            request header named by Policy.Classification.HeaderKey
+                            (x-llmkube-classification by default); the router does not classify
+                            the request body, so a request without the header matches no
+                            dataClassification rule. Common values: "public", "internal",
+                            "confidential", "pii", "phi".
                           items:
                             type: string
                           type: array

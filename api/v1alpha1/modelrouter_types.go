@@ -440,11 +440,12 @@ type RouterRule struct {
 // All declared fields are ANDed. Empty match fields are not considered.
 type RuleMatch struct {
 	// DataClassification matches if the inbound request carries any of
-	// these classifications. The classification source depends on
-	// Policy.Classification.Mode: a request header
-	// (x-llmkube-classification by default), the bundled detector, or
-	// both. Common values: "public", "internal", "confidential", "pii",
-	// "phi".
+	// these classifications. The classification is the value of the
+	// request header named by Policy.Classification.HeaderKey
+	// (x-llmkube-classification by default); the router does not classify
+	// the request body, so a request without the header matches no
+	// dataClassification rule. Common values: "public", "internal",
+	// "confidential", "pii", "phi".
 	// +optional
 	DataClassification []string `json:"dataClassification,omitempty"`
 
@@ -693,10 +694,15 @@ type ClassificationPolicy struct {
 	// Mode determines how the router determines a request's
 	// classification.
 	// "header-only" (default) trusts the request header
-	//   (HeaderKey, defaults to x-llmkube-classification).
-	// "detector" runs the bundled in-proxy detector.
-	// "hybrid" prefers the header, falling back to the detector when no
-	//   header is present.
+	//   (HeaderKey, defaults to x-llmkube-classification) and never reads
+	//   a classification from the request body. It is the only implemented
+	//   mode.
+	// "detector" and "hybrid" are reserved for a future in-proxy content
+	//   classifier (#441) and are refused today. On dataPlane: Proxy the
+	//   webhook rejects them and a router that sets either is not
+	//   Validated (reason ClassifierNotImplemented when nothing else in the
+	//   spec is invalid). On dataPlane: Gateway and AgentGateway a
+	//   dataClassification match under either is refused.
 	// +kubebuilder:validation:Enum=header-only;detector;hybrid
 	// +kubebuilder:default=header-only
 	// +optional

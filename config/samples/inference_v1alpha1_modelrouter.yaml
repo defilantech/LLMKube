@@ -96,8 +96,10 @@ spec:
 
   policy:
     classification:
-      # MVP supports header-only mode. The bundled detector (regex +
-      # optional NER) lands with the classifier feature.
+      # header-only is the only implemented mode: the classification is
+      # the header value, and the request body is never classified.
+      # detector and hybrid are reserved for the in-proxy classifier
+      # (#441) and are refused until it lands.
       mode: header-only
       headerKey: x-llmkube-classification
       # Override the default sensitive set ({pii, phi}) if your

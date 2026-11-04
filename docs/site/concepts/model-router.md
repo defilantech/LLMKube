@@ -164,6 +164,15 @@ The headline differentiator. A rule that matches sensitive classifications (defa
 
 This is the property regulated industries (healthcare, finance, defense, manufacturing) need to adopt local LLM inference at all.
 
+### Where the classification comes from
+
+The gate acts on the classification a request carries, and the router reads it from a request header: `policy.classification.headerKey`, `x-llmkube-classification` by default. The router never classifies the request body. A request that holds regulated data but carries no header is unclassified: it matches no `dataClassification` rule and goes wherever an unclassified request goes, `defaultRoute` included. Have the caller, or a gateway in front of the router, set the header on every request that carries sensitive data.
+
+`policy.classification.mode` accepts `header-only` (the default), `detector` and `hybrid`, but only `header-only` is implemented. `detector` and `hybrid` are reserved for an in-proxy content classifier ([#441](https://github.com/defilantech/LLMKube/issues/441)) and are refused until it ships, so a router never appears to inspect content it does not:
+
+- On `dataPlane: Proxy`, the webhook rejects either mode at `kubectl apply`. A router that already sets one, such as one created before this check, reports `Validated=False` with reason `ClassifierNotImplemented`, and the operator leaves its router-proxy as it was: a new router gets no proxy, and an existing one keeps serving the last config that compiled. The router-proxy itself refuses to start on a config that names either mode.
+- On `dataPlane: Gateway` and `dataPlane: AgentGateway`, a `dataClassification` match under either mode is refused.
+
 ## Minimal example
 
 ```yaml
@@ -752,6 +761,13 @@ status:
 ```
 
 `phase` is the coarse summary; the conditions tell the full story.
+
+When the spec itself is invalid, `Validated` is `False`, `phase` is `Failed`, and the operator changes nothing in the router-proxy: a new router gets no proxy, and an existing one keeps serving the last config that compiled. The message lists every problem, and the reason is one of these:
+
+| Reason | Meaning |
+| --- | --- |
+| `SpecInvalid` | The spec breaks a rule the schema cannot express, such as a sensitive rule routed to a cloud backend or a `defaultRoute` naming no backend. |
+| `ClassifierNotImplemented` | `policy.classification.mode` is `detector` or `hybrid`, which need the in-proxy classifier that is not built yet ([#441](https://github.com/defilantech/LLMKube/issues/441)), and nothing else in the spec is invalid. Set `header-only`. See [Where the classification comes from](#where-the-classification-comes-from). |
 
 When the data plane cannot serve, `Available` flips to `False` with one of these reasons:
 
