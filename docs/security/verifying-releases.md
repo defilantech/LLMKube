@@ -1,14 +1,24 @@
 # Verifying LLMKube releases
 
 Every released image is signed with cosign (keyless, Sigstore) and carries an
-SLSA build provenance attestation and an SBOM attestation, all bound to the
-`defilantech/LLMKube` release workflow identity.
+SLSA build provenance attestation and an SBOM attestation. The `.tar.gz`
+release archives carry an SLSA build provenance attestation. All of them are
+signed by one identity: the `release-please.yml` workflow of
+`defilantech/LLMKube`, running on `refs/heads/main`.
+
+The commands below accept that identity and nothing else. A signature made by
+another workflow, by another repository under the same owner, or by this
+workflow run from any other branch fails them.
 
 ## Verify the image signature
 
     cosign verify ghcr.io/defilantech/llmkube-controller:<version> \
-      --certificate-identity-regexp '^https://github.com/defilantech/LLMKube/.github/workflows/release-please.yml@.*$' \
+      --certificate-identity https://github.com/defilantech/LLMKube/.github/workflows/release-please.yml@refs/heads/main \
       --certificate-oidc-issuer https://token.actions.githubusercontent.com
+
+Use cosign 3 or later. The release signs with cosign 3, which attaches the
+signature to the image as a Sigstore bundle; cosign 2 looks for a `.sig` tag
+instead unless it is given `--new-bundle-format`.
 
 ## Verify SLSA provenance and SBOM
 
@@ -18,10 +28,15 @@ the cosign-native attestation format, so the GitHub CLI is the tool to verify th
 with, not `cosign verify-attestation`.
 
     gh attestation verify oci://ghcr.io/defilantech/llmkube-controller:<version> \
-      --owner defilantech
+      --repo defilantech/LLMKube \
+      --signer-workflow defilantech/LLMKube/.github/workflows/release-please.yml \
+      --source-ref refs/heads/main
 
     gh attestation verify oci://ghcr.io/defilantech/llmkube-controller:<version> \
-      --owner defilantech --predicate-type https://spdx.dev/Document/v2.3
+      --repo defilantech/LLMKube \
+      --signer-workflow defilantech/LLMKube/.github/workflows/release-please.yml \
+      --source-ref refs/heads/main \
+      --predicate-type https://spdx.dev/Document/v2.3
 
 The first command checks the SLSA build provenance attestation (the default
 predicate type). The second checks the SBOM attestation, whose predicate type
@@ -29,9 +44,22 @@ is derived from the SPDX document version syft emits (`SPDX-2.3` as of this
 writing); if a future release bumps that version, update the version suffix
 above to match.
 
+`--repo` requires the attestation to come from this repository rather than
+any repository the owner has, `--signer-workflow` requires the release
+workflow to have signed it, and `--source-ref` requires that workflow to have
+run on `main`.
+
 The same applies to llmkube-foreman-operator, llmkube-foreman-agent, and
-llmkube-router-proxy. Release binary archives also carry provenance; verify with
-`gh attestation verify <archive> --owner defilantech`.
+llmkube-router-proxy. Verify a `.tar.gz` release archive the same way:
+
+    gh attestation verify LLMKube_<version>_linux_amd64.tar.gz \
+      --repo defilantech/LLMKube \
+      --signer-workflow defilantech/LLMKube/.github/workflows/release-please.yml \
+      --source-ref refs/heads/main
+
+The Windows `.zip` and `checksums.txt` carry no attestation. `checksums.txt`
+shows that a `.zip` download is intact, not that the release workflow built
+it.
 
 ## Verify the macOS binaries
 
