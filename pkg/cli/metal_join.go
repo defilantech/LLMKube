@@ -212,6 +212,14 @@ func runMetalJoin(cmd *cobra.Command, joinString string, opts *metalJoinOptions)
 	if host.goos != "darwin" {
 		return fmt.Errorf("llmkube metal join sets up the Metal agent and runs on the Mac, not on %s", host.goos)
 	}
+	if host.uid == 0 {
+		// launchd runs the agent in the GUI session of the user who joins,
+		// and gui/0 has none; as root, join would also write root-owned
+		// files under whatever home sudo kept. Checked before the string is
+		// even decoded, so it stays usable.
+		return errors.New("run llmkube metal join as the user the agent runs as, not as root or with sudo; " +
+			"the join string has not been used")
+	}
 	p, err := metaljoin.Decode(joinString)
 	if err != nil {
 		return err
