@@ -82,7 +82,9 @@ This installs the signed release binary as
 formula, because Homebrew trusts only the third-party tap items you
 name on the command line (`brew trust`). Homebrew installs the latest
 release, so keep the operator on the same release
-(`brew info --cask llmkube-metal-agent` shows the version).
+(`brew info --cask llmkube-metal-agent` shows the version). To check
+the binary's code signature and notarization yourself, see
+[Verify the macOS binaries](https://github.com/defilantech/LLMKube/blob/main/docs/security/verifying-releases.md#verify-the-macos-binaries).
 
 The cask does not start the agent. Joining the Mac to the cluster
 writes the LaunchAgent and starts it, and does the RBAC part of step 4:
