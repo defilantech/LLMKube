@@ -435,9 +435,10 @@ var downloadProgressFn = downloadProgressFnFor(false)
 // in flight (llmkube_pool_label).
 var downloadProgressLabeledFn = downloadProgressFnFor(true)
 
-// downloadProgressFnFor builds both variants from one text; they differ only by
-// the label appended to each line. Both carry the tenths poll, so the serial
-// command is no longer what pre-#2386 templates carried.
+// downloadProgressFnFor builds both variants from one text; the labeled one
+// inserts " of $rel" and appends the pool's label to each line, so the two
+// differ in their line text, not in when they print. Both carry the tenths
+// poll, so the serial command is no longer what pre-#2386 templates carried.
 //
 // The loop polls in tenths so a transfer that finished in milliseconds returns
 // at once instead of after a full second (#2386), and counts tenths so the

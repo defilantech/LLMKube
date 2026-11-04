@@ -45,9 +45,8 @@ import (
 // derives a real key, and files are served by name under any directory: a
 // repository, an S3 bucket, or the root.
 //
-// A name the fixture did not list is served at once, so a case that stages a
-// file it never gates (a plain transfer, or a name the builder computes) does
-// not hang.
+// A name the fixture did not list answers 404 at once, so a case that reaches
+// for a name it never gated fails on the transfer instead of waiting.
 type gatedOrigin struct {
 	srv      *httptest.Server
 	files    map[string][]byte
@@ -102,7 +101,15 @@ func newGatedOrigin(t *testing.T, files map[string][]byte) *gatedOrigin {
 			stall := o.stallFirstHead[name] && o.heads[name] == 1
 			o.mu.Unlock()
 			if stall {
-				<-r.Context().Done()
+				// A code path that stops bounding its own probe leaves this
+				// handler waiting for a client that never gives up, and the
+				// origin then outlives the test: srv.Close blocks on this
+				// connection and the package dies of a timeout dump. Give up on
+				// the stall by itself so the case fails an assertion instead.
+				select {
+				case <-r.Context().Done():
+				case <-time.After(20 * time.Second):
+				}
 				return
 			}
 			switch {
@@ -791,6 +798,43 @@ func testCapHoldsBackFile(t *testing.T, v poolVariant) {
 		if got, err := os.ReadFile(filepath.Join(dir, name)); err != nil || string(got) != string(want) {
 			t.Errorf("%s not published intact (err %v)", name, err)
 		}
+	}
+}
+
+// The dispatcher's wait polls in tenths, so a file that leaves the pool frees
+// its slot for the next one without a whole second of latency. The fixture
+// admits one file at a time: every file but the last is held at the origin
+// until the test releases it, and with the cap set to one file's size each
+// release is the moment a slot opens. Measured on head, a handoff costs about
+// 210ms; with a whole-second poll it costs 1.01s, which is what the bound
+// separates.
+func TestMultiFilePoolHandsOffWithoutAWholeSecondDelay(t *testing.T) {
+	requireInitShellEnvironment(t)
+
+	names := make([]string, 12)
+	for i := range names {
+		names[i] = fmt.Sprintf("f%02d.bin", i)
+	}
+	files := concurrencyFixture(names...)
+	o := newGatedOrigin(t, files)
+	dir := t.TempDir()
+	v := poolVariant{"http-" + RefreshPolicyIfNotPresent, false, RefreshPolicyIfNotPresent}
+
+	r := v.start(t, v.script(true), o, dir, strings.Join(names, "\n"),
+		"MODEL_DOWNLOAD_CONCURRENCY=12", "MODEL_DOWNLOAD_MAX_INFLIGHT_BYTES=65536")
+	o.awaitGet(t, names[0])
+	for i := 1; i < len(names); i++ {
+		start := time.Now()
+		o.release(names[i-1])
+		o.awaitGet(t, names[i])
+		if took := time.Since(start); took > 750*time.Millisecond {
+			t.Errorf("handoff %d of %d took %s after the file in flight left its slot, want under 750ms",
+				i, len(names)-1, took.Round(time.Millisecond))
+		}
+	}
+	o.releaseAll()
+	if _, err := r.wait(t); err != nil {
+		t.Fatalf("init script failed: %v\n%s", err, r.output())
 	}
 }
 

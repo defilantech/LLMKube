@@ -155,8 +155,9 @@ each time its poll count reaches a whole multiple of `PROGRESS_INTERVAL`
 seconds, and it prints that line before it notices the transfer has ended, so a
 transfer finishing on a boundary still logs it. On a host where a poll costs
 more than a tenth of a second the counted seconds lag the wall clock, so the
-last interval's line can land after the transfer ends and a very long transfer
-over such a shell can log one line fewer than its length allows.
+last interval's line can land after the transfer ends and a long transfer over
+such a shell logs fewer lines than its wall-clock length allows, one per
+interval the count fell behind.
 A refusal sets `ModelTransferHealthy=False` with reason
 `ModelCacheLockUnsupported`. The condition message carries the same remedy the
 downloader logs, which depends on the source kind (prefetch for HTTP/HF
@@ -272,8 +273,8 @@ spec:
   the expected digest when it starts, then the computed digest with the file's
   size and the hashing time, and the rename's time once the file is published.
   A stamp hit names the file it skipped. Without it the check stays silent, so
-  pinned Models that do not set the field keep their pod templates across an
-  operator upgrade.
+  the field adds no template change of its own; the pod template still moves
+  when the downloader changes, as the cache upgrade note below describes.
 
 ### Staging files concurrently (`spec.downloadConcurrency`)
 
