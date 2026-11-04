@@ -36,34 +36,57 @@ import (
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 )
 
-// pacedOrigin serves fixed per-file bodies slowly enough that concurrent
-// transfers overlap, and records how many GETs were in flight at once. HEAD
-// answers with the size and an ETag so the resume probe derives a real key.
-type pacedOrigin struct {
+// gatedOrigin serves fixed per-file bodies, and serves each one only once the
+// test releases that file: a transfer that must not start is proven by the next
+// one arriving only after its blocker finished, instead of by a sleep long
+// enough for the guess to be true. A GET counts as in flight from the moment it
+// arrives, before the gate, which is what the byte cap and the pool size are
+// supposed to limit. HEAD answers with the size and an ETag so the resume probe
+// derives a real key, and files are served by name under any directory: a
+// repository, an S3 bucket, or the root.
+//
+// A name the fixture did not list is served at once, so a case that stages a
+// file it never gates (a plain transfer, or a name the builder computes) does
+// not hang.
+type gatedOrigin struct {
 	srv      *httptest.Server
 	files    map[string][]byte
 	mu       sync.Mutex
+	gates    map[string]chan struct{}
 	inFlight int
 	maxSeen  int
 	requests map[string]int
+	gets     map[string]int
 	heads    map[string]int
-	// headPaths counts HEADs by full path, which names the repository.
+	// headPaths counts HEADs by full path, getPaths counts GETs by full path;
+	// both name the repository.
 	headPaths map[string]int
+	getPaths  map[string]int
 	// noLength leaves Content-Length off HEAD responses; fakeLength replaces it.
 	noLength   bool
 	fakeLength string
-	// durations overrides the transfer time per file.
-	durations map[string]time.Duration
 	// stallFirstHead names files whose first HEAD never answers.
 	stallFirstHead map[string]bool
 }
 
-func newPacedOrigin(t *testing.T, files map[string][]byte, perFile time.Duration) *pacedOrigin {
+// newGatedOrigin returns an origin that holds every transfer until the test
+// calls release for its file or releaseAll.
+func newGatedOrigin(t *testing.T, files map[string][]byte) *gatedOrigin {
 	t.Helper()
-	o := &pacedOrigin{files: files, requests: map[string]int{}, heads: map[string]int{}, headPaths: map[string]int{}}
+	o := &gatedOrigin{
+		files:          files,
+		gates:          map[string]chan struct{}{},
+		requests:       map[string]int{},
+		gets:           map[string]int{},
+		heads:          map[string]int{},
+		headPaths:      map[string]int{},
+		getPaths:       map[string]int{},
+		stallFirstHead: map[string]bool{},
+	}
+	for name := range files {
+		o.gates[name] = make(chan struct{})
+	}
 	o.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Files are served by name under any directory: a repository, an S3
-		// bucket, or the root.
 		name := path.Base(r.URL.Path)
 		body, ok := o.files[name]
 		if !ok {
@@ -93,60 +116,125 @@ func newPacedOrigin(t *testing.T, files map[string][]byte, perFile time.Duration
 		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 		o.mu.Lock()
 		o.requests[name]++
+		o.gets[name]++
+		o.getPaths[r.URL.Path]++
 		o.inFlight++
 		if o.inFlight > o.maxSeen {
 			o.maxSeen = o.inFlight
 		}
+		gate := o.gates[name]
 		o.mu.Unlock()
 		defer func() {
 			o.mu.Lock()
 			o.inFlight--
 			o.mu.Unlock()
 		}()
-		pace := perFile
-		if d, ok := o.durations[name]; ok {
-			pace = d
-		}
-		const chunks = 10
-		step := len(body) / chunks
-		for i := 0; i < chunks; i++ {
-			end := (i + 1) * step
-			if i == chunks-1 {
-				end = len(body)
-			}
-			if _, err := w.Write(body[i*step : end]); err != nil {
+		if gate != nil {
+			select {
+			case <-gate:
+			case <-r.Context().Done():
 				return
 			}
-			w.(http.Flusher).Flush()
-			time.Sleep(pace / chunks)
+		}
+		if _, err := w.Write(body); err != nil {
+			return
 		}
 	}))
 	t.Cleanup(o.srv.Close)
 	return o
 }
 
-func (o *pacedOrigin) maxInFlight() int {
+func (o *gatedOrigin) maxInFlight() int {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	return o.maxSeen
 }
 
-func (o *pacedOrigin) requested(name string) int {
+// inFlightNow is the number of transfers held right now.
+func (o *gatedOrigin) inFlightNow() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.inFlight
+}
+
+func (o *gatedOrigin) requested(name string) int {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	return o.requests[name]
 }
 
-func (o *pacedOrigin) probedPath(p string) int {
+func (o *gatedOrigin) probedPath(p string) int {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	return o.headPaths[p]
 }
 
-func (o *pacedOrigin) probed(name string) int {
+func (o *gatedOrigin) fetchedPath(p string) int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.getPaths[p]
+}
+
+func (o *gatedOrigin) probed(name string) int {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	return o.heads[name]
+}
+
+// release lets one file's transfers through, and every later transfer of it.
+func (o *gatedOrigin) release(name string) {
+	o.mu.Lock()
+	if gate, ok := o.gates[name]; ok {
+		close(gate)
+		delete(o.gates, name)
+	}
+	o.mu.Unlock()
+}
+
+// releaseAll opens every gate, for a case whose bodies all must run to
+// completion.
+func (o *gatedOrigin) releaseAll() {
+	for name := range o.files {
+		o.release(name)
+	}
+}
+
+// await calls cond until it holds or the deadline passes, polling in
+// milliseconds: the wait ends at the event, not at a guessed duration.
+func (o *gatedOrigin) await(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("waited 10s for %s", what)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// awaitInFlight waits until the origin sees n transfers in flight.
+func (o *gatedOrigin) awaitInFlight(t *testing.T, n int) {
+	t.Helper()
+	o.await(t, fmt.Sprintf("%d transfers in flight (have %d)", n, o.maxInFlight()), func() bool { return o.maxSeen >= n })
+}
+
+// awaitGet waits until a transfer of name has arrived.
+func (o *gatedOrigin) awaitGet(t *testing.T, name string) {
+	t.Helper()
+	o.await(t, "a transfer of "+name, func() bool { return o.requested(name) > 0 })
+}
+
+// eventually reports whether cond held within the deadline, without failing.
+func (o *gatedOrigin) eventually(t *testing.T, cond func() bool) bool {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return true
 }
 
 func concurrencyFixture(names ...string) map[string][]byte {
@@ -157,11 +245,24 @@ func concurrencyFixture(names ...string) map[string][]byte {
 	return files
 }
 
-func runMultiFile(t *testing.T, script, source, dir, files string, extra ...string) (string, error) {
+// multiFileRun is one generated init command running in the background. The
+// command runs in the background because the test drives the origin's gates
+// while it runs; a gate left closed is released by the run's cleanup, so a
+// regression fails the assertions instead of hanging the suite.
+type multiFileRun struct {
+	done chan struct{}
+	out  strings.Builder
+	mu   sync.Mutex
+	err  error
+}
+
+// startMultiFile starts script under sh and returns once it is running.
+func startMultiFile(t *testing.T, script, source, dir, files string, extra ...string) *multiFileRun {
 	t.Helper()
 	// A pool that never dispatches its next file would hang the test.
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
+	r := &multiFileRun{done: make(chan struct{})}
 	cmd := exec.CommandContext(ctx, "sh", "-c", script)
 	// The pool runs in a pipeline subshell that outlives a killed sh and holds
 	// the output pipe; without a delay the test waits on it forever.
@@ -172,8 +273,69 @@ func runMultiFile(t *testing.T, script, source, dir, files string, extra ...stri
 		"MODEL_FILES="+files,
 	)
 	cmd.Env = append(cmd.Env, extra...)
-	out, err := cmd.CombinedOutput()
-	return string(out), err
+	cmd.Stdout = &lockedWriter{mu: &r.mu, w: &r.out}
+	cmd.Stderr = cmd.Stdout
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start init script: %v", err)
+	}
+	go func() {
+		r.err = cmd.Wait()
+		close(r.done)
+	}()
+	return r
+}
+
+// lockedWriter serializes the command's stdout and stderr into one builder, and
+// lets the test read what has been logged so far while the command runs.
+type lockedWriter struct {
+	mu *sync.Mutex
+	w  *strings.Builder
+}
+
+func (l *lockedWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(p)
+}
+
+// output returns what the command has logged so far.
+func (r *multiFileRun) output() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.out.String()
+}
+
+// awaitOutput waits until the command's log contains want.
+func (r *multiFileRun) awaitOutput(t *testing.T, want string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for !strings.Contains(r.output(), want) {
+		select {
+		case <-r.done:
+			t.Fatalf("the command ended before it logged %q:\n%s", want, r.output())
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("waited 10s for the log to carry %q:\n%s", want, r.output())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// wait returns the command's whole output and its exit error.
+func (r *multiFileRun) wait(t *testing.T) (string, error) {
+	t.Helper()
+	select {
+	case <-r.done:
+	case <-time.After(90 * time.Second):
+		t.Fatalf("the init script did not finish in 90s:\n%s", r.output())
+	}
+	return r.output(), r.err
+}
+
+func runMultiFile(t *testing.T, script, source, dir, files string, extra ...string) (string, error) {
+	t.Helper()
+	return startMultiFile(t, script, source, dir, files, extra...).wait(t)
 }
 
 // poolVariant is one of buildMultiFileInitCommand's four loop variants. Each
@@ -200,14 +362,23 @@ func (v poolVariant) script(concurrent bool) string {
 	return buildMultiFileInitCommand(true, v.s3, false, false, concurrent, v.policy)
 }
 
-func (v poolVariant) run(t *testing.T, script string, o *pacedOrigin, dir, files string, extra ...string) (string, error) {
+// start starts script against o, with the S3 env pointing s3_curl at it.
+func (v poolVariant) start(t *testing.T, script string, o *gatedOrigin, dir, files string, extra ...string) *multiFileRun {
 	t.Helper()
 	source := o.srv.URL
 	if v.s3 {
 		source = "s3://bucket"
 		extra = append(append(s3TestEnv(o.srv.URL), "S3_PREFIX="), extra...)
 	}
-	return runMultiFile(t, script, source, dir, files, extra...)
+	return startMultiFile(t, script, source, dir, files, extra...)
+}
+
+// run starts script against o with every gate open, and returns its output and
+// exit status: for a case that stages normally and asserts afterwards.
+func (v poolVariant) run(t *testing.T, script string, o *gatedOrigin, dir, files string, extra ...string) (string, error) {
+	t.Helper()
+	o.releaseAll()
+	return v.start(t, script, o, dir, files, extra...).wait(t)
 }
 
 // TestMultiFileConcurrentStaging_Behavioral drives the worker pool (#2364) under
@@ -263,7 +434,7 @@ func TestMultiFileByteCapProbeTimeout_Behavioral(t *testing.T) {
 		}
 		t.Run("gives up on a size probe that never answers/"+v.name, func(t *testing.T) {
 			files := concurrencyFixture("a.bin", "b.bin")
-			o := newPacedOrigin(t, files, 200*time.Millisecond)
+			o := newGatedOrigin(t, files)
 			o.stallFirstHead = map[string]bool{"b.bin": true}
 			dir := t.TempDir()
 
@@ -299,7 +470,7 @@ func TestMultiFileByteCapPresentFile_Behavioral(t *testing.T) {
 		for _, record := range []bool{true, false} {
 			t.Run(fmt.Sprintf("sizes a present file without a request/%s/record=%v", v.name, record), func(t *testing.T) {
 				files := concurrencyFixture("a.bin", "b.bin")
-				o := newPacedOrigin(t, files, 200*time.Millisecond)
+				o := newGatedOrigin(t, files)
 				dir := t.TempDir()
 				if err := os.WriteFile(filepath.Join(dir, "a.bin"), files["a.bin"], 0o644); err != nil {
 					t.Fatalf("seed a.bin: %v", err)
@@ -336,7 +507,7 @@ func TestMultiFileByteCapReplacedFile_Behavioral(t *testing.T) {
 	for _, v := range poolVariants {
 		t.Run("counts a replaced file at its full size/"+v.name, func(t *testing.T) {
 			files := concurrencyFixture("a.bin", "b.bin")
-			o := newPacedOrigin(t, files, 1500*time.Millisecond)
+			o := newGatedOrigin(t, files)
 			dir := t.TempDir()
 			if err := os.WriteFile(filepath.Join(dir, "a.bin"), files["a.bin"][:32*1024], 0o644); err != nil {
 				t.Fatalf("seed a.bin: %v", err)
@@ -351,8 +522,20 @@ func TestMultiFileByteCapReplacedFile_Behavioral(t *testing.T) {
 				t.Fatalf("seed size record: %v", err)
 			}
 
-			out, err := v.run(t, v.script(true), o, dir, "a.bin\nb.bin",
+			// Both files count their full 64 KiB, so under a 100000-byte cap
+			// only one can be in flight: hold whichever started until the
+			// other has arrived, and the cap is what kept them apart.
+			r := v.start(t, v.script(true), o, dir, "a.bin\nb.bin",
 				"MODEL_DOWNLOAD_CONCURRENCY=2", "MODEL_DOWNLOAD_MAX_INFLIGHT_BYTES=100000")
+			o.await(t, "a transfer", func() bool { return o.maxInFlight() >= 1 })
+			first := "a.bin"
+			if o.requested("b.bin") > 0 && o.requested("a.bin") == 0 {
+				first = "b.bin"
+			}
+			o.release(first)
+			o.awaitGet(t, map[string]string{"a.bin": "b.bin", "b.bin": "a.bin"}[first])
+			o.releaseAll()
+			out, err := r.wait(t)
 			if err != nil {
 				t.Fatalf("init script failed: %v\n%s", err, out)
 			}
@@ -369,14 +552,27 @@ func TestMultiFileByteCapReplacedFile_Behavioral(t *testing.T) {
 func testPoolStagesUpToConcurrency(t *testing.T, v poolVariant) {
 	names := poolFileNames
 	files := concurrencyFixture(names...)
-	o := newPacedOrigin(t, files, 1500*time.Millisecond)
+	o := newGatedOrigin(t, files)
 	dir := t.TempDir()
 
-	out, err := v.run(t, v.script(true), o, dir, strings.Join(names, "\n"), "MODEL_DOWNLOAD_CONCURRENCY=3")
+	r := v.start(t, v.script(true), o, dir, strings.Join(names, "\n"), "MODEL_DOWNLOAD_CONCURRENCY=3")
+	// Three dispatch at once; the fourth waits for a free worker.
+	o.awaitInFlight(t, 3)
+	o.awaitGet(t, "a.bin")
+	o.awaitGet(t, "b.bin")
+	o.awaitGet(t, "c.bin")
+	if n := o.requested("d.bin"); n != 0 {
+		t.Errorf("d.bin started while three files were held in flight (%d GETs)", n)
+	}
+	o.release("a.bin")
+	if !o.eventually(t, func() bool { return o.requested("d.bin") > 0 }) {
+		t.Fatalf("d.bin did not start after a.bin finished, though a worker freed\n%s", r.output())
+	}
+	o.releaseAll()
+	out, err := r.wait(t)
 	if err != nil {
 		t.Fatalf("init script failed: %v\n%s", err, out)
 	}
-	// Three dispatch at once; the fourth waits for a free worker.
 	if got := o.maxInFlight(); got != 3 {
 		t.Errorf("max concurrent transfers = %d, want 3\n%s", got, out)
 	}
@@ -394,10 +590,16 @@ func testPoolStagesUpToConcurrency(t *testing.T, v poolVariant) {
 func testPoolSerialCommandStagesOneAtATime(t *testing.T, v poolVariant) {
 	names := poolFileNames
 	files := concurrencyFixture(names[:3]...)
-	o := newPacedOrigin(t, files, 600*time.Millisecond)
+	o := newGatedOrigin(t, files)
 	dir := t.TempDir()
 
-	out, err := v.run(t, v.script(false), o, dir, strings.Join(names[:3], "\n"), "MODEL_DOWNLOAD_CONCURRENCY=3")
+	r := v.start(t, v.script(false), o, dir, strings.Join(names[:3], "\n"), "MODEL_DOWNLOAD_CONCURRENCY=3")
+	o.awaitGet(t, "a.bin")
+	if n := o.requested("b.bin") + o.requested("c.bin"); n != 0 {
+		t.Errorf("the serial loop started %d later file(s) while a.bin was held", n)
+	}
+	o.releaseAll()
+	out, err := r.wait(t)
 	if err != nil {
 		t.Fatalf("init script failed: %v\n%s", err, out)
 	}
@@ -409,10 +611,20 @@ func testPoolSerialCommandStagesOneAtATime(t *testing.T, v poolVariant) {
 func testPoolProgressNamesFileAndCount(t *testing.T, v poolVariant) {
 	names := poolFileNames
 	files := concurrencyFixture(names[:2]...)
-	o := newPacedOrigin(t, files, 2500*time.Millisecond)
+	o := newGatedOrigin(t, files)
 	dir := t.TempDir()
 
-	out, err := v.run(t, v.script(true), o, dir, strings.Join(names[:2], "\n"), "MODEL_DOWNLOAD_CONCURRENCY=2", "PROGRESS_INTERVAL=1")
+	// Both transfers are held, so the pool has two in flight while its
+	// heartbeat ticks. Each line names its own file and the count.
+	r := v.start(t, v.script(true), o, dir, strings.Join(names[:2], "\n"), "MODEL_DOWNLOAD_CONCURRENCY=2", "PROGRESS_INTERVAL=1")
+	o.awaitInFlight(t, 2)
+	o.awaitGet(t, "a.bin")
+	o.awaitGet(t, "b.bin")
+	r.awaitOutput(t, "MiB of a.bin (")
+	r.awaitOutput(t, "MiB of b.bin (")
+	r.awaitOutput(t, "(concurrency: 2)")
+	o.releaseAll()
+	out, err := r.wait(t)
 	if err != nil {
 		t.Fatalf("init script failed: %v\n%s", err, out)
 	}
@@ -431,15 +643,24 @@ func testPoolProgressNamesFileAndCount(t *testing.T, v poolVariant) {
 
 func testPoolCountFallsAsWorkersFinish(t *testing.T, v poolVariant) {
 	files := concurrencyFixture("a.bin", "b.bin")
-	o := newPacedOrigin(t, files, 3500*time.Millisecond)
-	o.durations = map[string]time.Duration{"b.bin": 300 * time.Millisecond}
+	o := newGatedOrigin(t, files)
 	dir := t.TempDir()
 
-	out, err := v.run(t, v.script(true), o, dir, "a.bin\nb.bin", "MODEL_DOWNLOAD_CONCURRENCY=2", "PROGRESS_INTERVAL=1")
+	// b.bin finishes first; the count a.bin's lines carry must then fall.
+	// S3 reports no total, so its lines carry no percentage either.
+	r := v.start(t, v.script(true), o, dir, "a.bin\nb.bin", "MODEL_DOWNLOAD_CONCURRENCY=2", "PROGRESS_INTERVAL=1")
+	o.awaitInFlight(t, 2)
+	r.awaitOutput(t, "(concurrency: 2)")
+	o.release("b.bin")
+	o.await(t, "b.bin to finish and leave a.bin alone in flight", func() bool {
+		return o.requested("b.bin") > 0 && o.inFlightNow() == 1
+	})
+	r.awaitOutput(t, "(concurrency: 1)")
+	o.releaseAll()
+	out, err := r.wait(t)
 	if err != nil {
 		t.Fatalf("init script failed: %v\n%s", err, out)
 	}
-	// S3 reports no total, so its lines carry no percentage.
 	fell := false
 	for _, line := range strings.Split(out, "\n") {
 		if strings.Contains(line, "MiB of a.bin") && strings.HasSuffix(line, "(concurrency: 1)") {
@@ -453,7 +674,7 @@ func testPoolCountFallsAsWorkersFinish(t *testing.T, v poolVariant) {
 
 func testPoolFailureStopsDispatch(t *testing.T, v poolVariant) {
 	files := concurrencyFixture("a.bin", "c.bin", "d.bin")
-	o := newPacedOrigin(t, files, 1500*time.Millisecond)
+	o := newGatedOrigin(t, files)
 	dir := t.TempDir()
 	kept := filepath.Join(dir, "old", "dropped.bin.0123456789ab.tmp")
 	if err := os.MkdirAll(filepath.Dir(kept), 0o755); err != nil {
@@ -463,8 +684,22 @@ func testPoolFailureStopsDispatch(t *testing.T, v poolVariant) {
 		t.Fatalf("seed partial: %v", err)
 	}
 
-	out, err := v.run(t, v.script(true), o, dir, "missing.bin\na.bin\nc.bin\nd.bin",
+	// missing.bin and a.bin dispatch together; a.bin is held until
+	// missing.bin's failure has been logged, so the failure happens with a
+	// worker still in flight and nothing after a.bin may be fetched.
+	r := v.start(t, v.script(true), o, dir, "missing.bin\na.bin\nc.bin\nd.bin",
 		"MODEL_DOWNLOAD_CONCURRENCY=2", "PROGRESS_INTERVAL=1")
+	// The worker's own curl stderr is held until the worker ends, but the
+	// dispatch-side failure line is printed as it happens; each refresh
+	// policy words it its own way.
+	failure := "ERROR: failed to download missing.bin"
+	if v.policy == RefreshPolicyOnChange {
+		failure = "ERROR: model artifact missing.bin could not be validated or downloaded"
+	}
+	r.awaitOutput(t, failure)
+	o.awaitGet(t, "a.bin")
+	o.releaseAll()
+	out, err := r.wait(t)
 	if err == nil {
 		t.Fatalf("expected the init to fail on missing.bin\n%s", out)
 	}
@@ -479,8 +714,8 @@ func testPoolFailureStopsDispatch(t *testing.T, v poolVariant) {
 	if f, ok := matchModelTransferFailure(tail); !ok || f.reason != ReasonModelSourceNotFound {
 		t.Errorf("the log's last lines do not classify as %s: %q", ReasonModelSourceNotFound, tail)
 	}
-	// missing.bin and a.bin dispatch together; missing.bin fails before a
-	// worker frees, so nothing after a.bin is fetched.
+	// a failure with a worker still in flight leaves no room open: the
+	// files after a.bin were never dispatched.
 	if n := o.requested("c.bin") + o.requested("d.bin"); n != 0 {
 		t.Errorf("dispatched %d file(s) after a worker failed\n%s", n, out)
 	}
@@ -497,12 +732,31 @@ func testCapHoldsBackFile(t *testing.T, v poolVariant) {
 	names := poolFileNames
 	script := v.script(true)
 	files := concurrencyFixture(names...)
-	o := newPacedOrigin(t, files, 1500*time.Millisecond)
+	o := newGatedOrigin(t, files)
 	dir := t.TempDir()
 
 	// Two files fit 150000 bytes, three do not.
-	out, err := v.run(t, script, o, dir, strings.Join(names, "\n"),
+	r := v.start(t, script, o, dir, strings.Join(names, "\n"),
 		"MODEL_DOWNLOAD_CONCURRENCY=3", "MODEL_DOWNLOAD_MAX_INFLIGHT_BYTES=150000", "PROGRESS_INTERVAL=1")
+	o.awaitInFlight(t, 2)
+	o.awaitGet(t, "a.bin")
+	o.awaitGet(t, "b.bin")
+	// Let the dispatcher settle on c.bin: either a third file is held back
+	// (the cap works) or one of c and d started (it does not).
+	if !o.eventually(t, func() bool {
+		return strings.Contains(r.output(), "Waiting to start c.bin: ") || o.requested("c.bin") > 0 || o.requested("d.bin") > 0
+	}) {
+		o.releaseAll()
+		t.Fatalf("the dispatcher neither held c.bin back nor started it:\n%s", r.output())
+	}
+	if n := o.requested("c.bin") + o.requested("d.bin"); n != 0 {
+		o.releaseAll()
+		t.Fatalf("started %d file(s) while two 64 KiB files were held under a 150000-byte cap", n)
+	}
+	o.release("a.bin")
+	o.awaitGet(t, "c.bin")
+	o.releaseAll()
+	out, err := r.wait(t)
 	if err != nil {
 		t.Fatalf("init script failed: %v\n%s", err, out)
 	}
@@ -524,14 +778,40 @@ func testCapHoldsBackFile(t *testing.T, v poolVariant) {
 	}
 }
 
+// stageBySet starts script and asserts the pool holds one file at a time: it
+// waits until some file is in flight, checks no second one ever arrives while
+// that file is held, releases it, and repeats until every listed file has
+// finished. For a case where the pool dispatches every file up front and only
+// the cap keeps them apart.
+func stageBySet(t *testing.T, v poolVariant, script string, o *gatedOrigin, dir string, names []string, extra ...string) (string, error) {
+	t.Helper()
+	r := v.start(t, script, o, dir, strings.Join(names, "\n"), extra...)
+	deadline := time.Now().Add(20 * time.Second)
+	for _, name := range names {
+		o.awaitGet(t, name)
+		// This file is the one in flight; a second one arriving now is the
+		// cap failing.
+		if got := o.maxInFlight(); got != 1 {
+			t.Errorf("max concurrent transfers = %d, want 1", got)
+		}
+		o.release(name)
+		o.await(t, name+" to leave", func() bool { return o.inFlightNow() == 0 })
+		if time.Now().After(deadline) {
+			t.Fatalf("the pool did not stage %s within 20s", name)
+		}
+	}
+	o.releaseAll()
+	return r.wait(t)
+}
+
 func testCapStagesOversizedFileAlone(t *testing.T, v poolVariant) {
 	names := poolFileNames
 	script := v.script(true)
 	files := concurrencyFixture(names[:3]...)
-	o := newPacedOrigin(t, files, 600*time.Millisecond)
+	o := newGatedOrigin(t, files)
 	dir := t.TempDir()
 
-	out, err := v.run(t, script, o, dir, strings.Join(names[:3], "\n"),
+	out, err := stageBySet(t, v, script, o, dir, names[:3],
 		"MODEL_DOWNLOAD_CONCURRENCY=3", "MODEL_DOWNLOAD_MAX_INFLIGHT_BYTES=32768")
 	if err != nil {
 		t.Fatalf("init script failed: %v\n%s", err, out)
@@ -550,13 +830,14 @@ func testCapClampsHugeSize(t *testing.T, v poolVariant) {
 	names := poolFileNames
 	script := v.script(true)
 	files := concurrencyFixture(names[:3]...)
-	o := newPacedOrigin(t, files, 600*time.Millisecond)
+	o := newGatedOrigin(t, files)
 	o.fakeLength = "99999999999999999999"
 	dir := t.TempDir()
 
 	// An HTTP worker then rejects the body, whose size does not match
 	// the one advertised; what matters here is that the pool counted
-	// each file as the cap and held b.bin back.
+	// each file as the cap and held b.bin back. Each file still runs alone,
+	// so every transfer is held until the assertion is read.
 	out, _ := v.run(t, script, o, dir, strings.Join(names[:3], "\n"),
 		"MODEL_DOWNLOAD_CONCURRENCY=3", "MODEL_DOWNLOAD_MAX_INFLIGHT_BYTES=1048576")
 	if want := "Waiting to start b.bin: 1 MiB in flight, 1 MiB needed, 1 MiB allowed (concurrency: 1)"; !strings.Contains(out, want) {
@@ -571,12 +852,12 @@ func testCapCountsUnknownSize(t *testing.T, v poolVariant) {
 	names := poolFileNames
 	script := v.script(true)
 	files := concurrencyFixture(names[:3]...)
-	o := newPacedOrigin(t, files, 600*time.Millisecond)
+	o := newGatedOrigin(t, files)
 	o.noLength = true
 	dir := t.TempDir()
 
 	// All three would fit 1 MiB if their sizes were known.
-	out, err := v.run(t, script, o, dir, strings.Join(names[:3], "\n"),
+	out, err := stageBySet(t, v, script, o, dir, names[:3],
 		"MODEL_DOWNLOAD_CONCURRENCY=3", "MODEL_DOWNLOAD_MAX_INFLIGHT_BYTES=1048576")
 	if err != nil {
 		t.Fatalf("init script failed: %v\n%s", err, out)
@@ -596,7 +877,7 @@ func TestMultiFileConcurrentMixedSources_Behavioral(t *testing.T) {
 	for _, policy := range []string{RefreshPolicyIfNotPresent, RefreshPolicyOnChange} {
 		t.Run(policy, func(t *testing.T) {
 			files := concurrencyFixture(poolFileNames...)
-			o := newPacedOrigin(t, files, 1500*time.Millisecond)
+			o := newGatedOrigin(t, files)
 			dir := t.TempDir()
 			manifest := strings.Join([]string{
 				"a.bin\t" + o.srv.URL + "/repoA/a.bin\tplain",
@@ -607,12 +888,20 @@ func TestMultiFileConcurrentMixedSources_Behavioral(t *testing.T) {
 			env := append(s3TestEnv(o.srv.URL), "MODEL_DOWNLOADS="+manifest,
 				"MODEL_DOWNLOAD_CONCURRENCY=3", "MODEL_DOWNLOAD_MAX_INFLIGHT_BYTES=150000")
 
-			out, err := runMultiFile(t, multiFileInitCommand(true, false, true, false, true, policy, true),
+			// Two 64 KiB files fit 150000 bytes, three do not: hold the first
+			// two, and the third arrives only once one of them finished.
+			r := startMultiFile(t, multiFileInitCommand(true, false, true, false, true, policy, true),
 				o.srv.URL+"/elsewhere", dir, strings.Join(poolFileNames, "\n"), env...)
+			o.awaitInFlight(t, 2)
+			o.awaitGet(t, "a.bin")
+			o.awaitGet(t, "b.bin")
+			o.release("a.bin")
+			o.awaitGet(t, "c.bin")
+			o.releaseAll()
+			out, err := r.wait(t)
 			if err != nil {
 				t.Fatalf("init script failed: %v\n%s", err, out)
 			}
-			// Two 64 KiB files fit 150000 bytes, three do not.
 			if got := o.maxInFlight(); got != 2 {
 				t.Errorf("max concurrent transfers = %d, want 2\n%s", got, out)
 			}
@@ -631,6 +920,19 @@ func TestMultiFileConcurrentMixedSources_Behavioral(t *testing.T) {
 					t.Errorf("probed $MODEL_SOURCE/%s %d time(s), which no worker fetches\n%s", name, n, out)
 				}
 			}
+			// The transfers went where the manifest says, not to
+			// $MODEL_SOURCE: the origin serves a name under any path, so a
+			// fetch from the wrong repository would publish the right bytes.
+			for _, p := range []string{"/repoA/a.bin", "/repoB/b.bin", "/bucket/c.bin", "/repoB/d.bin"} {
+				if o.fetchedPath(p) == 0 {
+					t.Errorf("never fetched %s, the URL its manifest line names\n%s", p, out)
+				}
+			}
+			for _, name := range poolFileNames {
+				if n := o.fetchedPath("/elsewhere/" + name); n != 0 {
+					t.Errorf("fetched $MODEL_SOURCE/%s %d time(s), which its manifest line does not name\n%s", name, n, out)
+				}
+			}
 		})
 	}
 }
@@ -643,7 +945,7 @@ func TestMultiFileConcurrentSweepSparesOtherFiles(t *testing.T) {
 
 	// a*b.bin's name is a find pattern that matches aXb.bin; escaped, it does not.
 	files := concurrencyFixture("a.bin", "a*b.bin")
-	o := newPacedOrigin(t, files, 200*time.Millisecond)
+	o := newGatedOrigin(t, files)
 	dir := t.TempDir()
 	stale := filepath.Join(dir, "a.bin.0123456789ab.tmp")
 	starStale := filepath.Join(dir, "a*b.bin.0123456789ab.tmp")
@@ -661,6 +963,7 @@ func TestMultiFileConcurrentSweepSparesOtherFiles(t *testing.T) {
 	// its transfer starts.
 	script := strings.Replace(buildMultiFileInitCommand(true, false, false, false, true, RefreshPolicyIfNotPresent),
 		`llmkube_pool_join; }`, `llmkube_pool_join; } && ls "$CACHE_DIR" > "$CACHE_DIR/.listing" && false`, 1)
+	o.releaseAll()
 	out, _ := runMultiFile(t, script, o.srv.URL, dir, "a.bin\na*b.bin", "MODEL_DOWNLOAD_CONCURRENCY=2")
 	listing, err := os.ReadFile(filepath.Join(dir, ".listing"))
 	if err != nil {
@@ -697,11 +1000,12 @@ func TestMultiFileSHA256VerifyLogs(t *testing.T) {
 	files := concurrencyFixture("a.bin")
 	sum := sha256.Sum256(files["a.bin"])
 	digest := hex.EncodeToString(sum[:])
-	o := newPacedOrigin(t, files, 100*time.Millisecond)
+	o := newGatedOrigin(t, files)
 	dir := t.TempDir()
 	dest := filepath.Join(dir, "a.bin")
 	script := buildMultiFileInitCommand(true, false, false, true, true, RefreshPolicyIfNotPresent)
 	env := []string{"MODEL_FILE_SHA256=" + digest + " a.bin", "MODEL_DIGEST_FIELD=spec.fileSha256", "MODEL_DOWNLOAD_CONCURRENCY=2"}
+	o.releaseAll()
 
 	out, err := runMultiFile(t, script, o.srv.URL, dir, "a.bin", env...)
 	if err != nil {
