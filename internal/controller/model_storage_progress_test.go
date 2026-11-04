@@ -177,9 +177,10 @@ func TestDownloadWithProgress(t *testing.T) {
 	})
 
 	// A transfer that spans several intervals prints one line per interval
-	// crossed, so a checkpoint that drifts past a boundary and skips it shows
-	// up as a count short by one. Six intervals at 1s is long enough for that
-	// to surface if the guard keyed on a boundary the poll stride can miss.
+	// crossed. The guard counts tenths, so each 10th poll is a boundary; the
+	// count comes up short only when per-poll overhead makes counted seconds
+	// lag the wall clock, and requiring exactly six across six intervals
+	// catches a guard keyed on a stride wider than one poll.
 	t.Run("one line per interval across a long transfer", func(t *testing.T) {
 		dest := filepath.Join(t.TempDir(), "model.partial")
 		script := downloadProgressFn + `fake_transfer() { dd if=/dev/zero of="$1" bs=1024 count=2048 2>/dev/null; sleep 6.5; } && ` +
