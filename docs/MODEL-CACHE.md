@@ -150,10 +150,13 @@ release moves every init command that stages a model, cache-backed or not:
 the downloader now checks a transfer in tenths of a second instead of a whole
 one, so a small file no longer waits out the rest of a second before the init
 step moves on (#2386). Serving pods and prefetch Jobs for those Models roll
-once, whether or not `spec.modelCache` is in use. The line text and the about-
-one-line-per-`PROGRESS_INTERVAL` cadence are what the helper guarantees; a
-transfer that ends inside an interval may print that interval's line or not,
-depending on where the poll lands.
+once, whether or not `spec.modelCache` is in use. The helper prints one line
+each time its poll count reaches a whole multiple of `PROGRESS_INTERVAL`
+seconds, and it prints that line before it notices the transfer has ended, so a
+transfer finishing on a boundary still logs it. On a host where a poll costs
+more than a tenth of a second the counted seconds lag the wall clock, so the
+last interval's line can land after the transfer ends and a very long transfer
+over such a shell can log one line fewer than its length allows.
 A refusal sets `ModelTransferHealthy=False` with reason
 `ModelCacheLockUnsupported`. The condition message carries the same remedy the
 downloader logs, which depends on the source kind (prefetch for HTTP/HF

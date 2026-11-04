@@ -42,8 +42,9 @@ import (
 // sweep to that prologue, which moves them again in the same release.
 // #2386 makes download_with_progress notice a finished transfer within a tenth
 // of a second instead of a whole one, which is in the downloader's command for
-// every Model, so every cache-backed pod and prefetch Job rolls once on
-// upgrade (upgrade note in docs/MODEL-CACHE.md).
+// every Model, cache-backed or not. The two hashes below pin the cache-backed
+// templates, which move because they carry that command; upgrade note in
+// docs/MODEL-CACHE.md.
 
 const (
 	// cachePrepTripwireDeploymentHash is desiredTemplateHash of

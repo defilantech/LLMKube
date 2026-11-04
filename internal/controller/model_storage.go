@@ -475,11 +475,11 @@ func downloadProgressFnFor(labeled bool) string {
 // rather than waiting on each worker in turn, so the count stays current. Both
 // polls run in tenths of a second, so a worker that finished frees its slot
 // without a fixed second of latency; a shell whose sleep has no fractional
-// argument falls back to one second. Each
-// worker's stderr goes there too, and is printed when the worker ends: the
-// workers still in flight keep logging after a failure, so join prints the
-// failed workers' errors again as the last lines, where the termination
-// message's tail and the transfer diagnosis find them. Without a writable
+// argument falls back to one second. Each worker's stderr goes there too, and
+// is printed when the worker ends: the workers still in flight keep logging
+// after a failure, so join prints the failed workers' errors again as the last
+// lines, where the termination message's tail and the transfer diagnosis find
+// them. Without a writable
 // $TMPDIR the lines omit the count and stderr is not held back.
 const multiFilePoolFns = `llmkube_pool_start() { _llmkube_conc=${MODEL_DOWNLOAD_CONCURRENCY:-1}; case "$_llmkube_conc" in ''|*[!0-9]*|0) _llmkube_conc=1;; esac; ` +
 	`_llmkube_cap=${MODEL_DOWNLOAD_MAX_INFLIGHT_BYTES:-}; case "$_llmkube_cap" in *[!0-9]*) _llmkube_cap=;; esac; _llmkube_pids=; _llmkube_failed=; _llmkube_i=0; ` +
