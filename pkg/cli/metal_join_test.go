@@ -570,8 +570,12 @@ func TestMetalJoinKeepsALaunchAgentItDidNotWrite(t *testing.T) {
 		t.Errorf("a refused join used up the join string: get join Secret: %v", err)
 	}
 
-	if _, stderr, err := runMetal(t, "join", joinString, "--wait", "0", "--force"); err != nil {
+	_, stderr, err := runMetal(t, "join", joinString, "--wait", "0", "--force")
+	if err != nil {
 		t.Fatalf("join --force: %v\n%s", err, stderr)
+	}
+	if !strings.Contains(stderr, "join does not keep the arguments of the LaunchAgent it replaces") {
+		t.Errorf("join --force does not say the replaced LaunchAgent's arguments are not kept: %q", stderr)
 	}
 	if kept, err := os.ReadFile(paths.PlistBackup); err != nil || string(kept) != production {
 		t.Errorf("backup %s = %q, %v; want the replaced plist", paths.PlistBackup, kept, err)
