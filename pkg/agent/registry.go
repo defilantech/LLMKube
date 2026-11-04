@@ -25,6 +25,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -120,6 +121,16 @@ type ServiceRegistry struct {
 	// ingressPort zero the registry runs in legacy mode.
 	ingressPort int
 	ingressPin  string
+	// interfaces lists the host's interface addresses for auto-detect:
+	// gatherHostIPCandidates, or a test's own list.
+	interfaces func() []hostIPCandidate
+
+	// addrMu guards followed.
+	addrMu sync.Mutex
+	// followed is the address learned from the agent's MetalNode (see
+	// followHostIP), registered while --host-ip is not set. Empty means
+	// auto-detect.
+	followed string
 }
 
 // NewServiceRegistry creates a new service registry.
@@ -145,7 +156,8 @@ func NewServiceRegistry(
 			Steps:    5,
 			Cap:      30 * time.Second,
 		},
-		now: time.Now,
+		now:        time.Now,
+		interfaces: gatherHostIPCandidates,
 	}
 }
 
@@ -457,6 +469,9 @@ func (r *ServiceRegistry) upsertEndpoint(
 		return fmt.Errorf("failed to create/update service: %w", err)
 	}
 
+	// Resolved once, so the slice and the log line below name the same
+	// address even if the MetalNode's verified address changes meanwhile.
+	hostIP := r.resolveHostIP()
 	slice := &discoveryv1.EndpointSlice{
 		ObjectMeta: metav1.ObjectMeta{Name: serviceName, Namespace: isvc.Namespace},
 	}
@@ -501,14 +516,16 @@ func (r *ServiceRegistry) upsertEndpoint(
 				slice.Annotations[inferencev1alpha1.AnnotationAgentEnginePort] = strconv.Itoa(port)
 			}
 		}
-		// resolveHostIP returns an IPv4 in every routable case and in the
-		// minikube/Docker-Desktop DNS fallback (host.minikube.internal ->
-		// 192.168.65.254). The fallback never yields a hostname, so IPv4 is a
-		// safe AddressType. If a future host-IP source could return an FQDN,
-		// this must branch on the address shape.
+		// resolveHostIP returns an IPv4 in every routable case, for an
+		// address followed from the MetalNode (followHostIP takes IPv4 only)
+		// and in the minikube/Docker-Desktop DNS fallback
+		// (host.minikube.internal -> 192.168.65.254). The fallback never
+		// yields a hostname, so IPv4 is a safe AddressType. If a future
+		// host-IP source could return an FQDN, this must branch on the
+		// address shape.
 		slice.AddressType = discoveryv1.AddressTypeIPv4
 		slice.Endpoints = []discoveryv1.Endpoint{{
-			Addresses:  []string{r.resolveHostIP()},
+			Addresses:  []string{hostIP},
 			Conditions: discoveryv1.EndpointConditions{Ready: ptr.To(ready)},
 			TargetRef: &corev1.ObjectReference{
 				Kind: "Pod",
@@ -542,7 +559,7 @@ func (r *ServiceRegistry) upsertEndpoint(
 		"namespace", isvc.Namespace,
 		"name", isvc.Name,
 		"service", serviceName,
-		"hostIP", r.resolveHostIP(),
+		"hostIP", hostIP,
 		"port", endpointPort,
 		"enginePort", port,
 	)
@@ -886,33 +903,101 @@ func sanitizeServiceName(name string) string {
 
 // resolveHostIP returns the IP address that Kubernetes uses to reach this host.
 // If an explicit hostIP was provided via --host-ip, that value is returned.
-// Otherwise it inspects the host's interfaces and applies selectHostIP's
-// preference order (Tailscale > primary LAN, excluding bridge/NAT ranges),
-// which a remote cluster or tailnet peer can actually route to. Only when no
-// routable interface exists does it fall back to the legacy DNS detection for
-// co-located minikube / Docker Desktop setups. Fixes defilantech/LLMKube#526.
+// Otherwise, for an agent that follows its MetalNode, the address it learned
+// there (see followHostIP): the one the cluster verified, or before a
+// verification the first one the dial-back tries. Otherwise it inspects the
+// host's interfaces and applies selectHostIP's preference order (Tailscale >
+// primary LAN, excluding bridge/NAT ranges), which a remote cluster or
+// tailnet peer can actually route to. Only when no routable interface exists
+// does it fall back to the legacy DNS detection for co-located minikube /
+// Docker Desktop setups. Fixes defilantech/LLMKube#526.
 func (r *ServiceRegistry) resolveHostIP() string {
 	if r.hostIP != "" {
 		return r.hostIP
 	}
+	if ip := r.followedHostIP(); ip != "" {
+		return ip
+	}
+	return r.autoDetectHostIP(true)
+}
 
-	candidates := gatherHostIPCandidates()
-	chosen, ok, rejected := selectHostIP(candidates)
+// autoDetectHostIP is resolveHostIP's interface and DNS detection. It logs
+// the choice when logChoice is set; followHostIP only names the address a
+// switch moves from or to, and does not.
+func (r *ServiceRegistry) autoDetectHostIP(logChoice bool) string {
+	chosen, ok, rejected := selectHostIP(r.interfaces())
 	if ok {
-		r.logger.Infow("auto-detected host IP",
-			"ip", chosen.ip.String(),
-			"interface", chosen.iface,
-			"rejected", formatRejected(rejected),
-		)
+		if logChoice {
+			r.logger.Infow("auto-detected host IP",
+				"ip", chosen.ip.String(),
+				"interface", chosen.iface,
+				"rejected", formatRejected(rejected),
+			)
+		}
 		return chosen.ip.String()
 	}
 
 	fallback := getHostIP()
-	r.logger.Warnw("no routable interface for host-IP auto-detect; using co-located DNS fallback",
-		"ip", fallback,
-		"rejected", formatRejected(rejected),
-	)
+	if logChoice {
+		r.logger.Warnw("no routable interface for host-IP auto-detect; using co-located DNS fallback",
+			"ip", fallback,
+			"rejected", formatRejected(rejected),
+		)
+	}
 	return fallback
+}
+
+func (r *ServiceRegistry) followedHostIP() string {
+	r.addrMu.Lock()
+	defer r.addrMu.Unlock()
+	return r.followed
+}
+
+// onLocalInterface reports whether ip is assigned to one of this host's up,
+// non-loopback interfaces.
+func (r *ServiceRegistry) onLocalInterface(ip string) bool {
+	want := net.ParseIP(ip)
+	if want == nil {
+		return false
+	}
+	for _, c := range r.interfaces() {
+		if c.ip.Equal(want) {
+			return true
+		}
+	}
+	return false
+}
+
+// followHostIP sets the address registered while --host-ip is not set, as
+// the agent learned it from its MetalNode (MetalAgent.metalNodeHostIP): an
+// IPv4 address, or "" to return to auto-detect. It reports whether that
+// changes the address the endpoints carry, so the caller re-registers them,
+// and logs such a switch once, with why. With --host-ip it does nothing:
+// that address is registered verbatim.
+func (r *ServiceRegistry) followHostIP(ip, why string) bool {
+	if r.hostIP != "" {
+		return false
+	}
+	r.addrMu.Lock()
+	prev := r.followed
+	r.followed = ip
+	r.addrMu.Unlock()
+	if prev == ip {
+		return false
+	}
+	from, to := prev, ip
+	if from == "" {
+		from = r.autoDetectHostIP(false)
+	}
+	if to == "" {
+		to = r.autoDetectHostIP(false)
+	}
+	if from == to {
+		return false
+	}
+	r.logger.Infow("host IP for the agent's endpoints changed; re-registering them",
+		"from", from, "to", to, "reason", why)
+	return true
 }
 
 // gatherHostIPCandidates enumerates the host's up, non-loopback interfaces

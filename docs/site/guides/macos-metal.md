@@ -104,7 +104,7 @@ inference traffic: the cluster must be able to open connections to the Mac.
 |---|---|
 | Cluster on the same Mac (kind, minikube or k3d in Docker Desktop, OrbStack or Colima) | **Works.** The agent's connection to the API server on `127.0.0.1` stays on the Mac. Pods reach the agent at the Mac's LAN or tailnet address through the container runtime. |
 | Cluster on your LAN (k3s, microk8s, kubeadm), Mac on the same LAN, no VPN on the Mac | **Works** once macOS gives the agent [Local Network access](#local-network-access). |
-| Cluster on your LAN, and the Mac is also on a tailnet (Tailscale) the cluster is not on | **Needs `--host-ip`** set to the Mac's LAN address, plus Local Network access. Without it, `join` succeeds but serving traffic goes to the tailnet address. See [Which address the cluster uses](#which-address-the-cluster-uses). |
+| Cluster on your LAN, and the Mac is also on a tailnet (Tailscale) the cluster is not on | **Works** once macOS gives the agent [Local Network access](#local-network-access). The agent registers the LAN address the join check verified, not the tailnet one. See [Which address the cluster uses](#which-address-the-cluster-uses). |
 | Cluster and Mac on the same tailnet or VPN | **Works** when the cluster's pods (not only its nodes) can route to the Mac's tailnet address and the tailnet's access rules allow TCP 9443 to the Mac. |
 | Managed cloud cluster (EKS, GKE, AKS), Mac at home or in an office behind NAT | **Does not work.** The cluster cannot open a connection to the Mac. `join` fails after 3 minutes with `Reachable=False (NoneReachable)`. |
 | Cloud cluster with a VPN or tailnet that its pods route through to the Mac | **Needs** that VPN, as in the tailnet row, and a Mac address that does not overlap the cluster's VPC, pod or Service ranges. |
@@ -218,9 +218,9 @@ allow it (see [Local Network access](#local-network-access)).
 `~/Library/Application Support/llmkube/metal-agent/`, writes the LaunchAgent
 `~/Library/LaunchAgents/com.llmkube.metal-agent.plist`, starts it, and waits
 until a pod in the cluster has completed a TLS handshake with the agent. The
-address it prints is the one that pod reached. Serving traffic does not yet
-follow that check: see [Which address the cluster uses](#which-address-the-cluster-uses),
-and compare after your first deploy.
+address it prints is the one that pod reached, and the agent registers that
+address for serving traffic too, unless you give it `--host-ip` (see
+[Which address the cluster uses](#which-address-the-cluster-uses)).
 
 ```bash
 kubectl get mn -n metal
@@ -327,8 +327,9 @@ The agent's log on the Mac shows the start:
 ```
 
 `hostIP` in `registered endpoint` is the address serving traffic goes to. It
-should be the `HOST IP` that `kubectl get mn -n metal` shows; if it is not,
-see [Which address the cluster uses](#which-address-the-cluster-uses).
+is the `HOST IP` that `kubectl get mn -n metal` shows unless the agent has
+`--host-ip`; [Which address the cluster uses](#which-address-the-cluster-uses)
+says when else they can differ.
 
 The model stays in `~/Library/Application Support/llmkube/models/phi-4-mini/`
 and is not downloaded again.
@@ -630,7 +631,7 @@ A later `join` drops these flags (see [Rejoining](#rejoining)).
 
 | Flag | Why you would add it |
 |---|---|
-| `--host-ip <address>` | Register this address for serving instead of the detected one. Needed on a LAN cluster when the Mac is also on a tailnet. Use an address with a DHCP reservation: with a fixed `--host-ip`, an address change leaves the Mac unreachable until you edit the plist. |
+| `--host-ip <address>` | Register this address for serving, as given, instead of the one the MetalNode check verified ([Which address the cluster uses](#which-address-the-cluster-uses)). Use an address with a DHCP reservation: with a fixed `--host-ip`, an address change leaves the Mac unreachable until you edit the plist. |
 | `--inference-service-allowlist <names>` | Serve only these InferenceServices ([More than one Mac](#more-than-one-mac)). |
 | `--memory-fraction <0-1>` | Give models more or less of the Mac's memory ([Memory budgets](#memory-budgets)). |
 | `--allowed-download-hosts <hosts,cidrs>` | Allow a model source on your LAN. |
@@ -670,36 +671,59 @@ rotation, see "Network exposure" in the
 
 ### Which address the cluster uses
 
-Two parts of the system pick an address for the Mac, separately:
+The MetalNode check, which `join` waits for and prints and `kubectl get mn`
+shows as `HOST IP`, tries the agent's candidate addresses in an order that
+follows the route to the API server, and records the first one a pod reaches
+(see [The dial-back](#the-dial-back)). Serving traffic goes to the address the
+agent writes into its `<isvc>-agent` EndpointSlice, which the relay dials:
 
-- **The MetalNode check**, which `join` waits for and prints and
-  `kubectl get mn` shows as `HOST IP`, tries the agent's candidate addresses
-  in an order that follows the route to the API server, and records the first
-  one a pod reaches (see [The dial-back](#the-dial-back)).
-- **Serving traffic** goes to the address the agent writes into its
-  `<isvc>-agent` EndpointSlice: `--host-ip` when it is set, otherwise a
-  Tailscale address (`100.64.0.0/10`) if the Mac has one, otherwise its first
-  other routable IPv4 address (skipping loopback, link-local, and Docker or VM
-  bridge ranges). Only when there is none does it fall back, for a cluster on
-  the same Mac, to the address `host.minikube.internal` resolves to on the
-  Mac, else the one `host.docker.internal` resolves to, else `192.168.65.254`,
-  and logs `no routable interface for host-IP auto-detect; using co-located DNS fallback`.
-  The address is detected again at every heartbeat (every 30 seconds), so it
-  follows a network change.
+- **`--host-ip`**, when it is set, as given. The check tries it first too.
+- Otherwise, on an agent started with `--metal-node` (`join` sets it), **the
+  address the check verified**: the MetalNode's `status.hostIP`, while
+  `Reachable` is True for the agent's ingress key and port. The agent reads
+  its MetalNode every 15 seconds for it.
+- When the controller withdraws that verification (a failed recheck, or a
+  result more than 13 minutes old with no newer check finished), **the last
+  verified address**, for as long as it is still on one of the Mac's up
+  interfaces.
+  The first address the check tries may be one that already failed, so
+  moving there on a transient failure would stop serving that was working.
+  The agent logs
+  `keeping the last verified host IP after verification was withdrawn` once.
+  It moves when a different address is verified, when the kept one leaves
+  the Mac's interfaces (a network change, a new DHCP lease), or when the
+  agent restarts, since it remembers the address in memory only.
+- Before any check has verified an address, and after the verified one has
+  left the Mac, **the first address the check tries**: the MetalNode's
+  `spec.hostIP` if set, else the agent's first candidate. A first candidate
+  that verifies then needs no switch.
+- Without `--metal-node`, or with no candidate at all, **an auto-detected
+  address**: a Tailscale address (`100.64.0.0/10`) if the Mac has one,
+  otherwise its first other routable IPv4 address (skipping loopback,
+  link-local, and Docker or VM bridge ranges). Only when there is none does
+  it fall back, for a cluster on the same Mac, to the address
+  `host.minikube.internal` resolves to on the Mac, else the one
+  `host.docker.internal` resolves to, else `192.168.65.254`, and logs
+  `no routable interface for host-IP auto-detect; using co-located DNS fallback`.
+  It is detected again at every heartbeat (every 30 seconds), so it follows
+  a network change.
 
-The serving address does not use the MetalNode's result. When the two differ
-and the cluster cannot reach the serving address, `join` succeeds and the
-InferenceService never serves. The usual case is a Mac on Tailscale joined to
-a cluster on the LAN. Compare them:
+When the registered address changes, the agent re-registers its endpoints at
+once and logs `host IP for the agent's endpoints changed; re-registering them`
+with the old address, the new one and why. To see which address the agent
+uses and why:
 
 ```bash
 kubectl get mn mac-studio -n metal     # HOST IP: the address the check reached
-grep 'registered endpoint' ~/Library/Logs/llmkube/metal-agent.log | tail -1   # hostIP: the serving address
+grep "registered endpoint\|host IP for the agent's endpoints changed\|keeping the last verified host IP" \
+  ~/Library/Logs/llmkube/metal-agent.log | tail -3   # hostIP: the serving address
 ```
 
-If they differ, set `--host-ip` to the address the check reached (see
-[Changing the agent's flags](#changing-the-agents-flags)). The check tries
-`--host-ip` first, so both then use it.
+The two differ when `--host-ip` names another address, and while a
+verification is withdrawn: `HOST IP` is then empty and the agent keeps the
+last verified address. To pin the serving address, set `--host-ip` (see
+[Changing the agent's flags](#changing-the-agents-flags)); the check tries
+it first, so both then use it when it verifies.
 
 ### Memory budgets
 
@@ -840,8 +864,8 @@ which. Operationally:
 
 - Put the Mac on a network the cluster's pods can reach (the same LAN, VPN
   or tailnet; see [Network requirements](#network-requirements)).
-- Set `--host-ip` to the Mac's address on that network when the Mac has more
-  than one.
+- On a Mac with more than one address, the agent registers the one the
+  MetalNode check verified; set `--host-ip` only to pin another.
 - With more than one Mac, follow [More than one Mac](#more-than-one-mac).
 
 ## Troubleshooting
@@ -853,7 +877,11 @@ causes: another program holds port 9090 or 9443 (`address already in use`),
 or Local Network access was refused (`no route to host`).
 
 **Pods can't reach the model**
-First compare the serving address with the verified one (see
+First check which address the agent registered and why: `hostIP` in its
+`registered endpoint` log line, and any
+`host IP for the agent's endpoints changed` or
+`keeping the last verified host IP after verification was withdrawn` line,
+against `HOST IP` in `kubectl get mn` (see
 [Which address the cluster uses](#which-address-the-cluster-uses)). Then test
 the path from a pod, not a node, since the relay is a pod:
 
@@ -1273,10 +1301,13 @@ Three parties each write only what they know:
   Lease's `renewTime`, and proves reachability with a dial-back
   before setting `Reachable` and `status.hostIP`.
 
-`status.hostIP` is what the check verified. Serving traffic does not read it
-yet: see [Which address the cluster uses](#which-address-the-cluster-uses).
-`spec.hostIP` changes what the check tries first, not where traffic goes;
-`--host-ip` on the agent changes both.
+`status.hostIP` is what the check verified. Without `--host-ip`, the agent
+registers it for serving traffic, and keeps it through a withdrawn
+verification while the address is still on the Mac (see
+[Which address the cluster uses](#which-address-the-cluster-uses)).
+`spec.hostIP` changes what the check tries first, and so where traffic goes
+once that address verifies; `--host-ip` on the agent sets the serving
+address directly, whether or not it verifies.
 
 #### Running the agent with a MetalNode
 
@@ -1290,8 +1321,9 @@ add it to the plist:
 
 The agent renews the Lease with the same name as the MetalNode;
 `--metal-node-lease <name>` picks a different one. It only ever gets
-and updates that Lease, and gets the MetalNode (for its UID, at start
-and every 5 minutes after). If the Lease does not exist, the agent logs
+and updates that Lease, and gets the MetalNode: for its UID, at start
+and every 5 minutes after, and without `--host-ip` also at every
+renewal, for the address to register. If the Lease does not exist, the agent logs
 `Lease <namespace>/<name> not found; run llmkube metal token create`
 at most once a minute and keeps serving. Without `--metal-node` the
 agent makes no Lease call at all.
@@ -1459,8 +1491,9 @@ between the verifier's start and the moment the controller reads it,
 so a node clock that is off does not change when a result expires or
 when the next check runs. Put the verifier
 where the relay pods for this Mac run, so it tests the network path the
-relay will use (the relay dials the agent's registered address, which can
-differ; see [Which address the cluster uses](#which-address-the-cluster-uses)).
+relay will use: the relay dials the address the agent registers, which is
+the verified one unless the agent has `--host-ip` (see
+[Which address the cluster uses](#which-address-the-cluster-uses)).
 
 While `AgentConnected` is not True, nothing is dialed: `Reachable`
 is `Unknown` (reason `ReportInvalid` when the report is what is wrong,

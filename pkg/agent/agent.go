@@ -399,6 +399,9 @@ type MetalAgent struct {
 	// heartbeatWake asks the heartbeat loop to beat now rather than at its
 	// next tick; see wakeHeartbeat. Buffered (capacity 1) like restartWake.
 	heartbeatWake chan struct{}
+	// lastVerified is the last address the MetalNode verified (see
+	// metalNodeHostIP); touched only from the MetalNode reporter's goroutine.
+	lastVerified lastVerifiedHostIP
 
 	// roots is the set of directories local model sources and the oMLX
 	// pagedSSDCacheDir must resolve into. Derived from
@@ -2140,7 +2143,9 @@ func (a *MetalAgent) heartbeatOnce(ctx context.Context) {
 // endpoint. This both refreshes the llmkube.ai/agent-heartbeat annotation
 // (the controller expires registrations whose heartbeat goes stale, #663)
 // and re-asserts the registration content, healing any update the agent
-// failed to deliver earlier (#657).
+// failed to deliver earlier (#657). wakeHeartbeat runs the same pass at
+// once, so endpoints recover from an API server outage, and a change of the
+// registered address reaches the slices, without waiting for the tick.
 func (a *MetalAgent) runHeartbeatLoop(ctx context.Context) {
 	ticker := time.NewTicker(inferencev1alpha1.DefaultAgentHeartbeatInterval)
 	defer ticker.Stop()
@@ -2163,6 +2168,8 @@ func (a *MetalAgent) runHeartbeatLoop(ctx context.Context) {
 // outage: the beats during the outage failed, and an outage past the
 // controller's heartbeat timeout left this agent's endpoints marked stale, so
 // waiting up to another heartbeat interval would keep them dark for nothing.
+// followMetalNodeHostIP calls it when the registered address changed. A wake
+// already pending covers a new one.
 func (a *MetalAgent) wakeHeartbeat() {
 	select {
 	case a.heartbeatWake <- struct{}{}:
