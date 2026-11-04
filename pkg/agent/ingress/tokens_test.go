@@ -428,6 +428,75 @@ func TestTokenStoreColdTransientErrorRetriesAfterBackoff(t *testing.T) {
 	}
 }
 
+// TestTokenStoreOutageKeepsOnlyWhatTheLastReadAllowed pins the rule the agent
+// relies on to keep relay traffic flowing through an API server outage
+// (#2079): while reads fail, the store answers exactly as its last successful
+// read left it. The current token stays valid. A rotated-out token stays valid
+// only until the grace deadline set when its rotation was read; the outage
+// does not move it. A token rotated in during the outage is refused until a
+// read returns it, and a namespace never read stays fail-closed.
+func TestTokenStoreOutageKeepsOnlyWhatTheLastReadAllowed(t *testing.T) {
+	const tokC = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+	ctx := context.Background()
+	s, f, clk := newTestStore()
+	f.set("a", tokA)
+	if !s.Valid(ctx, "a", tokA) {
+		t.Fatal("initial token should be valid")
+	}
+	f.set("a", tokB)
+	clk.advance(testTTL)
+	if !s.Valid(ctx, "a", tokB) {
+		t.Fatal("rotated token should be valid once read")
+	}
+	// tokA's grace ends testGrace from here, the read that saw the rotation.
+
+	// The API goes away, and the controller rotates again meanwhile.
+	outage := errors.New("dial tcp: connect: connection refused")
+	f.set("a", tokC)
+	f.set("b", tokA)
+	// Each clock step below passes the 1 s retry, so the first Valid after it
+	// re-reads once: queue one failure per step.
+	clk.advance(testGrace - time.Second)
+	f.failNext("a", outage)
+	if !s.Valid(ctx, "a", tokA) {
+		t.Error("rotated-out token refused inside its grace window during the outage")
+	}
+	if !s.Valid(ctx, "a", tokB) {
+		t.Error("current token refused during the outage")
+	}
+	if s.Valid(ctx, "a", tokC) {
+		t.Error("a token the store never read was accepted during the outage")
+	}
+	f.failNext("b", outage)
+	if s.Valid(ctx, "b", tokA) {
+		t.Error("a namespace never read accepted a token during the outage; it must fail closed")
+	}
+
+	clk.advance(time.Second)
+	f.failNext("a", outage)
+	if s.Valid(ctx, "a", tokA) {
+		t.Error("rotated-out token still valid after its grace deadline: the outage extended it")
+	}
+	if !s.Valid(ctx, "a", tokB) {
+		t.Error("current token refused during the outage")
+	}
+	if got := f.count("a"); got != 4 {
+		t.Errorf("Secret reads = %d, want 4 (two before the outage, one failed read per step in it)", got)
+	}
+
+	// The API is back: the next read installs tokC, tokB enters its grace.
+	clk.advance(transientRetry)
+	if !s.Valid(ctx, "a", tokC) {
+		t.Error("token rotated in during the outage refused after the API returned")
+	}
+	if !s.Valid(ctx, "a", tokB) {
+		t.Error("previous token refused right after the post-outage rotation, want its grace window")
+	}
+	if s.Valid(ctx, "a", tokA) {
+		t.Error("token rotated out before the outage accepted again")
+	}
+}
+
 func TestTokenStoreRefreshDetachedFromCallerContext(t *testing.T) {
 	s, f, _ := newTestStore()
 	f.set("a", tokA)

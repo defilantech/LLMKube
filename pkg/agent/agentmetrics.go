@@ -153,7 +153,18 @@ var (
 			Name: "llmkube_metal_agent_watch_consecutive_failures",
 			Help: "Current count of consecutive Kubernetes list failures from the " +
 				"InferenceService watcher. Resets to 0 on a successful poll. " +
-				"Triggers a fatal exit when the configured threshold is reached.",
+				"At the configured threshold the API counts as unreachable " +
+				"(llmkube_metal_agent_api_unreachable); the agent keeps running.",
+		},
+	)
+
+	watchAPIUnreachable = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "llmkube_metal_agent_api_unreachable",
+			Help: "1 while the agent counts the Kubernetes API as unreachable: the " +
+				"InferenceService watcher's last --max-watch-failures lists or more " +
+				"all failed. Running engines keep serving with their last-known state " +
+				"and relay tokens, and the watcher retries with backoff. 0 otherwise.",
 		},
 	)
 
@@ -170,7 +181,7 @@ var (
 		prometheus.CounterOpts{
 			Name: "llmkube_metal_agent_fatal_exits_total",
 			Help: "Total number of fatal-exit signals raised by agent subsystems " +
-				"(watcher, health-server). The agent process terminates after raising one; " +
+				"(health-server). The agent process terminates after raising one; " +
 				"this counter is therefore typically 0 or 1 over a process lifetime, but " +
 				"useful when scraped by a metric pipeline that survives the restart.",
 		},
@@ -246,6 +257,7 @@ func init() {
 		engineAdoptionsTotal,
 		evictionsSkippedTotal,
 		watchConsecutiveFailures,
+		watchAPIUnreachable,
 		watchModelLookupFailingServices,
 		fatalExitsTotal,
 		applePowerCombinedWatts,
