@@ -81,6 +81,30 @@ func TestEstimateModelMemory_FileSchemeDirectorySizedFromDisk(t *testing.T) {
 	}
 }
 
+// A model downloaded into the store as a directory (an MLX repo) is sized by
+// the files in it. A stat of the directory itself returns the size of the
+// directory entry, a few hundred bytes.
+func TestEstimateModelMemory_StoreDirectorySizedFromContents(t *testing.T) {
+	store := t.TempDir()
+	agent := newAdmissionTestAgent(t, nil, MetalAgentConfig{ModelStorePath: store})
+	model := newAdmissionTestModel("mlx-community/Some-Model-4bit", "")
+	dir := filepath.Join(store, model.Name, "Some-Model-4bit")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "model.safetensors"), make([]byte, 3000), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	estimate, err := agent.estimateModelMemory(context.Background(), model, 2048, "", "")
+	if err != nil {
+		t.Fatalf("estimateModelMemory: %v", err)
+	}
+	if estimate.WeightsBytes != 3000 {
+		t.Errorf("WeightsBytes = %d, want 3000 (the files in the directory)", estimate.WeightsBytes)
+	}
+}
+
 // A local source whose path is missing on this host must not error the
 // admission estimate: fall back to the status-size chain exactly like a
 // downloadable source would.

@@ -2552,12 +2552,14 @@ func (a *MetalAgent) estimateModelMemory(
 		}
 	}
 
-	// Try to stat the model file in the model store (downloaded models).
+	// Size the model in the model store (downloaded models). It may be a
+	// directory (an MLX repo), whose own stat is a few hundred bytes, so it is
+	// sized like a local source.
 	filename := filepath.Base(model.Spec.Source)
 	localPath := filepath.Join(a.config.ModelStorePath, model.Name, filename)
 	if fileSizeBytes == 0 {
-		if info, err := os.Stat(localPath); err == nil {
-			fileSizeBytes = uint64(info.Size()) //nolint:gosec // G115: os.FileInfo.Size is non-negative by contract
+		if size, err := localModelSize(localPath); err == nil {
+			fileSizeBytes = size
 		} else {
 			reasons = append(reasons, fmt.Sprintf("file not found at %s", localPath))
 		}
@@ -2642,7 +2644,20 @@ func (a *MetalAgent) probeRemoteModelSize(
 // localModelSize returns the on-disk size of a model at a local path: the
 // file size for a single-file model (e.g. GGUF), or the summed size of the
 // regular files for a model directory (e.g. an MLX safetensors model).
+//
+// Links are followed and count as what they point to. A Hugging Face cache
+// snapshot is a directory of links into the cache's blobs, and a store entry
+// is often a link to such a snapshot; counting the links themselves sized a
+// 15 GiB model at under a kilobyte. A link that points nowhere is an error.
 func localModelSize(path string) (uint64, error) {
+	return localTreeSize(path, map[string]struct{}{})
+}
+
+// localTreeSize is localModelSize with the directories already walked, keyed
+// by their resolved path, so a link back up the tree is not followed again.
+// Two links to one file both count: an overestimate refuses a model that
+// might have fit, an underestimate admits one that does not.
+func localTreeSize(path string, walked map[string]struct{}) (uint64, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return 0, err
@@ -2650,10 +2665,26 @@ func localModelSize(path string) (uint64, error) {
 	if !info.IsDir() {
 		return uint64(info.Size()), nil //nolint:gosec // G115: os.FileInfo.Size is non-negative by contract
 	}
+	dir, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return 0, err
+	}
+	if _, ok := walked[dir]; ok {
+		return 0, nil
+	}
+	walked[dir] = struct{}{}
 	var total uint64
-	walkErr := filepath.WalkDir(path, func(_ string, d os.DirEntry, err error) error {
+	walkErr := filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
+		}
+		if d.Type()&os.ModeSymlink != 0 {
+			size, err := localTreeSize(p, walked)
+			if err != nil {
+				return err
+			}
+			total += size
+			return nil
 		}
 		if d.IsDir() {
 			return nil
