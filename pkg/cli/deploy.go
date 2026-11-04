@@ -20,14 +20,13 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -39,6 +38,10 @@ import (
 )
 
 const defaultGPUVendor = "nvidia"
+
+// nvidiaGPUResource is the extended resource the NVIDIA device plugin
+// advertises on GPU nodes.
+const nvidiaGPUResource corev1.ResourceName = "nvidia.com/gpu"
 
 // heartbeatInterval is the minimum time between heartbeat lines during
 // the Downloading phase. It keeps the CLI from looking hung on large
@@ -86,6 +89,16 @@ type deployOptions struct {
 	args                []string
 	wait                bool
 	timeout             time.Duration
+
+	// pickGPUAccelerator chooses the accelerator for --gpu without
+	// --accelerator. A func so the cluster is asked only then; nil picks cuda.
+	pickGPUAccelerator func() acceleratorChoice
+}
+
+// acceleratorChoice is the accelerator --gpu picks and why.
+type acceleratorChoice struct {
+	accelerator string
+	reason      string
 }
 
 func NewDeployCommand() *cobra.Command {
@@ -168,7 +181,8 @@ Examples:
 
 	cmd.Flags().BoolVar(&opts.gpu, "gpu", false, "Enable GPU acceleration")
 	cmd.Flags().StringVar(&opts.accelerator, "accelerator", "",
-		"Hardware accelerator (cpu, metal, cuda, rocm, intel) - auto-detected if --gpu is set")
+		"Hardware accelerator (cpu, metal, cuda, rocm, intel). With --gpu and no --accelerator: metal when the\n"+
+			"namespace has a Reachable MetalNode and no node advertises nvidia.com/gpu, cuda otherwise")
 	cmd.Flags().Int32Var(&opts.gpuCount, "gpu-count", 1, "Number of GPUs per pod")
 	cmd.Flags().Int32Var(&opts.gpuLayers, "gpu-layers", -1,
 		"Number of model layers to offload to GPU (-1 = all layers, 0 = auto)")
@@ -270,8 +284,6 @@ func runDeploy(opts *deployOptions) error {
 		fmt.Printf("📂 Air-gapped mode: Using local model file\n")
 	}
 
-	resolveAcceleratorAndImage(opts)
-
 	// Handle cache control flags
 	if opts.skipCache && opts.fromCache {
 		return fmt.Errorf("--skip-cache and --from-cache are mutually exclusive")
@@ -297,6 +309,11 @@ func runDeploy(opts *deployOptions) error {
 	if err != nil {
 		return fmt.Errorf("failed to create client: %w", err)
 	}
+
+	opts.pickGPUAccelerator = func() acceleratorChoice {
+		return chooseGPUAccelerator(ctx, k8sClient, opts.namespace)
+	}
+	resolveAcceleratorAndImage(opts)
 
 	printDeploySummary(opts)
 
@@ -623,13 +640,13 @@ func deployImageSummary(opts *deployOptions) string {
 func resolveAcceleratorAndImage(opts *deployOptions) {
 	if opts.gpu {
 		if opts.accelerator == "" {
-			if detectMetalSupport() {
-				opts.accelerator = acceleratorMetal
-				fmt.Printf("ℹ️  Auto-detected accelerator: %s (Apple Silicon GPU)\n", opts.accelerator)
-			} else {
-				opts.accelerator = acceleratorCUDA
-				fmt.Printf("ℹ️  Auto-detected accelerator: %s\n", opts.accelerator)
+			choice := acceleratorChoice{accelerator: acceleratorCUDA, reason: "the default"}
+			if opts.pickGPUAccelerator != nil {
+				choice = opts.pickGPUAccelerator()
 			}
+			opts.accelerator = choice.accelerator
+			fmt.Printf("ℹ️  Accelerator: %s (%s); pass --accelerator to choose another\n",
+				choice.accelerator, choice.reason)
 		}
 
 		if opts.accelerator == acceleratorIntel {
@@ -646,7 +663,8 @@ func resolveAcceleratorAndImage(opts *deployOptions) {
 
 		if opts.accelerator == acceleratorMetal {
 			fmt.Printf("ℹ️  Metal acceleration: Using native llama-server (not containerized)\n")
-			fmt.Printf("ℹ️  Ensure Metal agent is installed: make install-metal-agent\n")
+			fmt.Printf("ℹ️  Serving needs a Mac running the Metal agent: " +
+				"brew install defilantech/tap/llmkube-metal-agent, then llmkube metal join\n")
 		}
 		return
 	}
@@ -657,22 +675,46 @@ func resolveAcceleratorAndImage(opts *deployOptions) {
 	}
 }
 
-func detectMetalSupport() bool {
-	if runtime.GOOS != "darwin" {
-		return false
+// chooseGPUAccelerator picks the accelerator for --gpu from the target
+// cluster, not from the machine running the CLI (#2414): metal when the
+// namespace has a Reachable MetalNode and no node advertises nvidia.com/gpu,
+// cuda otherwise, including when a lookup fails (no RBAC, no MetalNode CRD).
+func chooseGPUAccelerator(ctx context.Context, c client.Reader, namespace string) acceleratorChoice {
+	var macs inferencev1alpha1.MetalNodeList
+	if err := c.List(ctx, &macs, client.InNamespace(namespace)); err != nil {
+		return acceleratorChoice{acceleratorCUDA,
+			fmt.Sprintf("could not list MetalNodes in namespace %s: %v", namespace, err)}
+	}
+	reachable := 0
+	for i := range macs.Items {
+		if meta.IsStatusConditionTrue(macs.Items[i].Status.Conditions, inferencev1alpha1.MetalNodeConditionReachable) {
+			reachable++
+		}
+	}
+	if reachable == 0 {
+		return acceleratorChoice{acceleratorCUDA, fmt.Sprintf("no Reachable MetalNode in namespace %s", namespace)}
 	}
 
-	if _, err := exec.LookPath("llmkube-metal-agent"); err != nil {
-		return false
+	var nodes corev1.NodeList
+	if err := c.List(ctx, &nodes); err != nil {
+		return acceleratorChoice{acceleratorCUDA, fmt.Sprintf(
+			"namespace %s has %d Reachable MetalNode(s), but listing nodes for %s failed: %v",
+			namespace, reachable, nvidiaGPUResource, err)}
 	}
-
-	cmd := exec.Command("system_profiler", "SPDisplaysDataType")
-	output, err := cmd.Output()
-	if err != nil {
-		return false
+	gpuNodes := 0
+	for i := range nodes.Items {
+		if q, ok := nodes.Items[i].Status.Allocatable[nvidiaGPUResource]; ok && q.Sign() > 0 {
+			gpuNodes++
+		}
 	}
-
-	return strings.Contains(string(output), "Metal")
+	if gpuNodes > 0 {
+		return acceleratorChoice{acceleratorCUDA, fmt.Sprintf(
+			"%d node(s) advertise %s; namespace %s also has %d Reachable MetalNode(s)",
+			gpuNodes, nvidiaGPUResource, namespace, reachable)}
+	}
+	return acceleratorChoice{acceleratorMetal, fmt.Sprintf(
+		"namespace %s has %d Reachable MetalNode(s) and no node advertises %s",
+		namespace, reachable, nvidiaGPUResource)}
 }
 
 func applyCatalogDefaults(opts *deployOptions, catalogModel *Model) {
