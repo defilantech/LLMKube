@@ -16,6 +16,8 @@ limitations under the License.
 
 package metaljoin
 
+import "strings"
+
 // StopEnginesCommand is the metal-agent subcommand that stops every engine the
 // agent started. llmkube metal leave runs it, and tells an agent binary that
 // has it from one that does not by finding this word in the binary: an agent
@@ -25,24 +27,38 @@ const StopEnginesCommand = "stop-engines"
 // StopEnginesArgs is the command line, after the binary, that stops the
 // engines of an agent started with agentArgs (its LaunchAgent arguments after
 // the binary): the agent's kubeconfig, or defaultKubeconfig when it names
-// none, and its namespace and state directory when it sets them.
+// none, and its namespace, state directory and Ollama port when it sets them.
 func StopEnginesArgs(agentArgs []string, defaultKubeconfig string) []string {
-	args := []string{StopEnginesCommand, "--kubeconfig", flagValue(agentArgs, "--kubeconfig", defaultKubeconfig)}
-	if ns := flagValue(agentArgs, "--namespace", ""); ns != "" {
-		args = append(args, "--namespace", ns)
-	}
-	if dir := flagValue(agentArgs, "--state-dir", ""); dir != "" {
-		args = append(args, "--state-dir", dir)
+	args := []string{StopEnginesCommand, "--kubeconfig", flagValue(agentArgs, "kubeconfig", defaultKubeconfig)}
+	for _, name := range []string{"namespace", "state-dir", "ollama-port"} {
+		if v := flagValue(agentArgs, name, ""); v != "" {
+			args = append(args, "--"+name, v)
+		}
 	}
 	return args
 }
 
-// flagValue returns the value after name in args, or def.
+// flagValue returns the value args give flag name, read the way the agent's
+// flag package reads it: -name or --name, then =value or the next argument,
+// the last one winning; def when none does.
 func flagValue(args []string, name, def string) string {
-	for i := 0; i+1 < len(args); i++ {
-		if args[i] == name {
-			return args[i+1]
+	v := def
+	for i := 0; i < len(args); i++ {
+		a, ok := strings.CutPrefix(args[i], "-")
+		if !ok {
+			continue
+		}
+		a = strings.TrimPrefix(a, "-")
+		if n, val, ok := strings.Cut(a, "="); ok {
+			if n == name {
+				v = val
+			}
+			continue
+		}
+		if a == name && i+1 < len(args) {
+			v = args[i+1]
+			i++
 		}
 	}
-	return def
+	return v
 }
