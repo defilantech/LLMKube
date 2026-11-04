@@ -299,7 +299,7 @@ kubectl scale deployment -n kube-system --replicas=0 $(kubectl get deploy -n kub
 1. **Set up monitoring**: Prometheus, Grafana, and DCGM exporter for GPU metrics. Enable the stack with the chart's [Prometheus integration](../charts/llmkube/README.md#install-with-prometheus-integration); Grafana dashboards live in [docs/grafana](./grafana/README.md).
 2. **Use the CLI**: `llmkube deploy <model> --gpu` provisions a GPU-backed InferenceService in one command. `--gpu` is a boolean, so it takes no value; use `--gpu-count N` to request more than one GPU.
 3. **Try multi-GPU**: shard 13B-70B+ models across multiple GPUs on a single node. See [MULTI-GPU-DEPLOYMENT.md](./MULTI-GPU-DEPLOYMENT.md).
-4. **Optimize costs**: spot instances, scale-to-zero, and per-model GPU queues are all configurable on the InferenceService CRD.
+4. **Optimize costs**: on the InferenceService, `nodeSelector` and `tolerations` place a service on a spot or preemptible node pool, and `priority` (`critical` to `batch`) orders services that wait for GPUs. Scale a service to zero by hand with `kubectl scale isvc <name> --replicas=0`, or with KEDA through the scale subresource; there is no automatic idle scale-to-zero.
 
 ## Troubleshooting
 
