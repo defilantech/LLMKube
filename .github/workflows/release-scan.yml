@@ -44,8 +44,12 @@ jobs:
         run: hack/go-mod-download.sh
 
       - name: Install Trivy
+        # The same pinned Trivy the release job scans with
+        # (hack/install-pinned-tool.sh), so this gate and the release agree.
         if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'release-please--branches--main') }}
-        uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567  # v0.3.1
+        run: |
+          ./hack/install-pinned-tool.sh trivy "$RUNNER_TEMP/trivy"
+          echo "$RUNNER_TEMP/trivy" >> "$GITHUB_PATH"
 
       - name: Scan images before push (Trivy, amd64)
         if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'release-please--branches--main') }}

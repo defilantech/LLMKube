@@ -67,6 +67,11 @@ docker save \
   > llmkube-bundle.tar
 ```
 
+Verify the two LLMKube images on this connected machine, where cosign
+and `gh` can reach Sigstore and GitHub, before you transfer the
+bundle. [Verifying LLMKube releases](https://github.com/defilantech/LLMKube/blob/main/docs/security/verifying-releases.md)
+has the signature and provenance checks.
+
 Transfer the bundle, then on the air-gapped side push to your
 private registry:
 
