@@ -2,10 +2,17 @@
 
 This directory contains the macOS launchd configuration for the LLMKube Metal Agent, which enables Metal GPU acceleration for local Kubernetes LLM deployments.
 
+To set up a Mac, follow the
+[macOS Metal guide](https://llmkube.com/docs/guides/macos-metal): it covers
+the network requirements, the Homebrew install, `llmkube metal join`, a first
+model, running a Mac as a dedicated host, upgrades, and uninstalling in the
+right order. This file is the detailed reference: every flag, the security
+model, the other runtimes, and the manual and source-build installs.
+
 ## Prerequisites
 
 1. **macOS with Apple Silicon** (M1 to M5). An Intel Mac with Metal 2+ can run the agent, but the bundled plist points `--llama-server` at the Apple Silicon Homebrew path (`/opt/homebrew/bin/llama-server`); change it to `/usr/local/bin/llama-server` there.
-2. **Access to a Kubernetes cluster** — either a remote cluster (recommended) or local minikube
+2. **Access to a Kubernetes cluster**, remote or on the same Mac (minikube, kind). The cluster's pods must be able to open TCP connections to the Mac on `--ingress-port` (9443); see "Network requirements" in the [macOS Metal guide](https://llmkube.com/docs/guides/macos-metal#network-requirements)
 3. **llama.cpp** with Metal support:
    ```bash
    brew install llama.cpp
@@ -17,7 +24,7 @@ This directory contains the macOS launchd configuration for the LLMKube Metal Ag
      -n llmkube-system --create-namespace
    ```
 5. **To build the agent from source:** the Xcode Command Line Tools (`xcode-select --install`) and Go 1.27.3 or newer, the version `go.mod` pins.
-6. **`--host-ip` flag** (recommended with a remote cluster): without it the agent auto-detects an address (see "`--host-ip` flag (remote cluster)" below), which may not be one your cluster can reach. Start the agent with `--host-ip <your-mac-ip>` so that its ingress is registered in Kubernetes at an address you chose.
+6. **`--host-ip` flag** (when the Mac has more than one address the cluster could use): without it the agent auto-detects an address, preferring a Tailscale one (see "`--host-ip` flag (remote cluster)" below), which may not be one your cluster can reach. Start the agent with `--host-ip <your-mac-ip>` so that its ingress is registered in Kubernetes at an address you chose.
 
 ## Installation
 
@@ -70,7 +77,10 @@ launchctl kickstart -k gui/$(id -u)/com.llmkube.metal-agent
 ```
 
 If the agent does not come back after an upgrade that changed how the binary
-is signed, reload it as in "Applying a plist change" below.
+is signed, reload it as in "Applying a plist change" below. A new binary also
+loses macOS Local Network access: if the Mac reaches its API server or a model
+source on the LAN, grant it again after each upgrade (see "LAN download fails
+with `no route to host` after an upgrade" under Troubleshooting).
 
 `brew uninstall --cask llmkube-metal-agent` removes the binary only and
 leaves the LaunchAgent loaded (Homebrew runs a cask's uninstall steps on every
@@ -80,6 +90,13 @@ llmkube-metal-agent` also removes the LaunchAgent, the agent's logs
 (`~/Library/Logs/llmkube`) and its state
 (`~/Library/Application Support/llmkube/metal-agent`). Downloaded models stay
 in the model store either way.
+
+Stop the engines before either: run `llmkube metal leave` on a joined Mac
+(or `stop-engines` as in "Agent restarts, upgrades and stopping engines"
+below) first. Stopping the agent leaves its engines running, and `--zap` then
+deletes the engine records `stop-engines` needs, so nothing will stop those
+engines except killing them by hand. See [Uninstallation](#uninstallation)
+for the full order.
 
 ### Option 2: Build from source with the Makefile
 
@@ -149,7 +166,7 @@ plist change" below.
 
 ## Usage
 
-Once installed, the Metal agent runs automatically in the background and watches for InferenceService resources in your Kubernetes cluster.
+Once it is joined (`llmkube metal join`) or installed with the Makefile, the Metal agent runs in the background while you are logged in and watches for InferenceService resources in its namespace.
 
 ### Deploy a Model with Metal Acceleration
 
@@ -219,6 +236,15 @@ every time it runs (adding only `--kubeconfig` and `--kube-context` when
 `METAL_KUBECONFIG` or `METAL_KUBE_CONTEXT` is set), so flags you added to the
 installed copy are lost on a reinstall. Re-add them afterwards, or keep them in
 your checkout's copy of the template.
+
+On a joined Mac the plist at the same path is written by `llmkube metal join`
+instead, with `--kubeconfig`, `--namespace`, `--metal-node`,
+`--renew-service-account-token`, `--log-level` and `--llama-server`, and a
+first comment line `<!-- Written by llmkube metal join; llmkube metal leave removes it. -->`.
+`join` has no option for other flags: add them to that plist by hand, in a
+text editor so the comment line stays (`join` and `leave` recognize their
+plist by it), and reload as below. Running `join` again rewrites the plist and
+drops them without a message, so note them before a rejoin.
 
 ### Applying a plist change
 
@@ -933,9 +959,11 @@ It does not register `localhost`: the interface pick skips loopback addresses, a
 grep 'auto-detected host IP\|co-located DNS fallback\|registered endpoint' ~/Library/Logs/llmkube/metal-agent.log
 ```
 
-Auto-detection can pick an address the cluster cannot reach, for example a personal tailnet on a work Mac, or the wrong interface on a Mac with several. For a remote cluster, set `--host-ip` explicitly, ideally to an address with a DHCP reservation so it does not change.
+Auto-detection can pick an address the cluster cannot reach, for example a personal tailnet on a work Mac, or the wrong interface on a Mac with several. For a remote cluster, set `--host-ip` explicitly, ideally to an address with a DHCP reservation so it does not change. Without `--host-ip` the address is detected again at every registration (every 30 seconds), so it follows a network change; with it, an address change leaves the Mac unreachable until the plist is edited.
 
-The IP must be reachable from the cluster's nodes on `--ingress-port` (below).
+This address is chosen separately from the MetalNode dial-back (see "`--metal-node` flag" above). `llmkube metal join` and `kubectl get mn` report the address the dial-back verified, which follows the route to the API server; the relay dials the address registered here. They can differ: a Mac on Tailscale joined to a cluster on the LAN verifies at its LAN address and registers its tailnet address, so `join` succeeds and serving fails. Compare the `HOST IP` of `kubectl get mn -n <namespace>` with `hostIP` in the agent's `registered endpoint` log line, and set `--host-ip` to the verified address if they differ. The dial-back tries `--host-ip` first, so both then use it. On a joined Mac, add the flag to the plist `join` wrote (see "Configuration" above); a later `join` drops it.
+
+The IP must be reachable on `--ingress-port` (below) from the cluster's pods, not only its nodes: the relay that dials it is a pod.
 
 To set this in the launchd plist, add these lines to the `ProgramArguments` array:
 
@@ -972,6 +1000,12 @@ To set this in the launchd plist:
 Names are matched exactly against `metadata.name`. An agent without the flag
 still claims everything, so set it on every agent; an InferenceService on none
 of the lists is then not served.
+
+`llmkube metal join` does not set an allowlist and has no option for one, so
+two Macs joined to the same namespace both start every Metal model there and
+overwrite each other's `<isvc>-agent` registration. Join each Mac to a
+namespace of its own, or add the flag to each joined plist by hand (see
+"Configuration" above). A later `join` drops it.
 
 ### Ingress and client-proxy flags
 
@@ -1125,7 +1159,7 @@ All four gauges read 0 unless `--apple-power-enabled` is set.
 ### Tuning
 
 - `--apple-power-interval=1s`: sampling cadence; tighter values don't add fidelity because `powermetrics` rounds to whole milliseconds. The sudoers rule pins the interval, so after changing it re-run `make install-powermetrics-sudo APPLE_POWER_INTERVAL_MS=<ms>` with the new value in whole milliseconds (minimum 100).
-- `--powermetrics-bin=/usr/bin/powermetrics` — override only if you've installed `powermetrics` somewhere non-standard.
+- `--powermetrics-bin=/usr/bin/powermetrics`: override only if you've installed `powermetrics` somewhere non-standard.
 
 ## Health Checks & Monitoring
 
@@ -1135,9 +1169,9 @@ The Metal Agent exposes an HTTP server on `127.0.0.1:9090` (configurable via `--
 
 | Endpoint | Purpose | Success | Failure |
 |----------|---------|---------|---------|
-| `GET /healthz` | Liveness probe — agent process is alive | Always 200 | — |
-| `GET /readyz` | Readiness probe — at least one process healthy (or no processes) | 200 | 503 (all unhealthy) |
-| `GET /metrics` | Prometheus metrics | 200 | — |
+| `GET /healthz` | Liveness probe: agent process is alive | Always 200 | none |
+| `GET /readyz` | Readiness probe: at least one process healthy (or no processes) | 200 | 503 (all unhealthy) |
+| `GET /metrics` | Prometheus metrics | 200 | none |
 
 ### Prometheus Metrics
 
@@ -1435,7 +1469,9 @@ client pod ──▶ <isvc> Service ──▶ <isvc>-relay pod ──TLS──�
 
 In both modes the agent keeps one small JSON record per running engine under
 `<state-dir>/engines/`, and a start fails if the record cannot be written.
-Engines still stop when the agent stops in this release.
+Engines keep running when the agent stops, and the next agent process uses
+the records to adopt them; see
+[Agent restarts, upgrades and stopping engines](#agent-restarts-upgrades-and-stopping-engines).
 
 Only the controller may create that Secret. Otherwise someone who can create
 Secrets in a namespace, but not read them, could create it first with a
@@ -1814,6 +1850,12 @@ grep "connecting to Kubernetes\|connected to Kubernetes" ~/Library/Logs/llmkube/
 minikube status
 ```
 
+`connect: no route to host` to a LAN address, while `kubectl` from a terminal
+on the same Mac reaches it, is macOS Local Network Privacy, not the network:
+see "LAN download fails with `no route to host` after an upgrade" above, and
+"Local Network access" in the
+[macOS Metal guide](https://llmkube.com/docs/guides/macos-metal#local-network-access).
+
 ### Agent logs `referenced model lookup failed; keeping the inference service's previous state`
 
 On every poll (every 5 seconds) the agent looks up the Model each InferenceService references, to decide whether it is a Metal service this agent runs. When that lookup fails with anything other than NotFound (an API server timeout, throttling, a 5xx while the control plane restarts, `Forbidden`), the agent cannot tell, so it leaves the service as it was: a running engine keeps serving and keeps its Service and EndpointSlice, and a service it was not running yet is not started. While the lookup fails, changes to the InferenceService (`replicas: 0`, `suspend`, flag changes) do not take effect; deleting the InferenceService, or restoring the agent's access, does.
@@ -1832,7 +1874,7 @@ Of the possible lookup results, only a Model that no longer exists, or one that 
 
 ```bash
 # Verify --host-ip was set correctly
-# The IP must be reachable from the K8s nodes
+# The IP must be reachable from the cluster's pods, not only its nodes
 ping <your-mac-ip>   # run from a K8s node
 
 # Check that the agent registered its ingress with the right IP and the
@@ -1844,8 +1886,19 @@ kubectl get deploy,pods -l inference.llmkube.dev/metal-relay=<isvc>
 kubectl logs deploy/<isvc>-relay
 kubectl describe inferenceservice <isvc>   # look for RelayNotAdopted, InvalidAgentIngressPin, RelayReconcileFailed, RelaySecretNotManaged
 
-# Verify the firewall isn't blocking the ingress port (--ingress-port, default 9443)
-# macOS may prompt to allow incoming connections on first run
+# Compare the address the relay dials (hostIP in "registered endpoint") with
+# the MetalNode's verified HOST IP; see "--host-ip flag (remote cluster)"
+grep 'registered endpoint' ~/Library/Logs/llmkube/metal-agent.log | tail -1
+kubectl get mn -n <namespace>
+
+# From a pod (the relay is a pod, so test from one): 400 means it reached the
+# ingress; a curl error and 000 mean it did not
+kubectl run reach --rm -it --restart=Never -n <namespace> --image=curlimages/curl -- \
+  curl -sSk -o /dev/null -w '%{http_code}\n' https://<your-mac-ip>:9443/health
+
+# Verify the firewall isn't blocking the ingress port (--ingress-port, default 9443).
+# If the macOS firewall is on and asks whether llmkube-metal-agent may accept
+# incoming connections, allow it
 
 # If using Tailscale / WireGuard, verify the tunnel is up
 tailscale status   # or wg show
@@ -1853,18 +1906,42 @@ tailscale status   # or wg show
 
 ## Uninstallation
 
-```bash
-# Homebrew (also removes the LaunchAgent, logs and agent state)
-brew uninstall --zap --cask llmkube-metal-agent
+Engines outlive the agent, so stop them before removing anything that
+`stop-engines` needs (the agent binary and its state directory).
 
-# Using Makefile
+A joined Mac with Homebrew, in this order:
+
+```bash
+# On the Mac: stop the agent and its engines, remove the plist, kubeconfig and token
+llmkube metal leave
+
+# Where you have cluster access: revoke the Mac and delete its objects
+llmkube metal remove <mac> -n <namespace>
+
+# On the Mac: remove the binaries, the agent's state and its logs
+brew uninstall --zap --cask llmkube-metal-agent
+brew uninstall llmkube
+```
+
+Running `brew uninstall --zap` first stops the agent, which leaves its engines
+running, and deletes the engine records, so nothing will stop those engines
+except killing them by hand.
+
+```bash
+# Using Makefile (stops the agent, runs stop-engines, removes the binary and plist)
 make uninstall-metal-agent
 
 # Or manually
 launchctl bootout gui/$(id -u)/com.llmkube.metal-agent
+while launchctl print gui/$(id -u)/com.llmkube.metal-agent >/dev/null 2>&1; do sleep 1; done
+/usr/local/bin/llmkube-metal-agent stop-engines
 sudo rm /usr/local/bin/llmkube-metal-agent
 rm ~/Library/LaunchAgents/com.llmkube.metal-agent.plist
 ```
+
+Downloaded models stay in the model store
+(`~/Library/Application Support/llmkube/models` by default); delete it by hand
+to get the space back.
 
 ## How It Works
 
@@ -1880,7 +1957,7 @@ rm ~/Library/LaunchAgents/com.llmkube.metal-agent.plist
 
 ### Remote cluster (Recommended)
 
-K8s runs on a Linux server or cloud; the Mac dedicates all resources to inference:
+K8s runs on a Linux server or in a cloud the Mac is reachable from (see "Network requirements" in the [macOS Metal guide](https://llmkube.com/docs/guides/macos-metal#network-requirements)); the Mac gives its memory budget (67% to 75% of RAM by default, `--memory-fraction`) to inference:
 
 ```
 ┌──────────────────────────────┐        ┌──────────────────────────────┐
@@ -1897,14 +1974,14 @@ K8s runs on a Linux server or cloud; the Mac dedicates all resources to inferenc
 │                              │        │  ┌────────────────────────┐  │
 │                              │        │  │ llama-server (Metal)   │  │
 │                              │        │  │  Direct GPU access ✅  │  │
-│                              │        │  │  All unified memory    │  │
+│                              │        │  │  Memory budget         │  │
 │                              │        │  └────────────────────────┘  │
 └──────────────────────────────┘        └──────────────────────────────┘
 ```
 
 ### Co-located (minikube on same Mac)
 
-Everything on one machine — simpler but minikube consumes resources:
+Everything on one machine. Simpler, but minikube consumes resources:
 
 ```
 ┌─────────────────────────────────────────────────┐
