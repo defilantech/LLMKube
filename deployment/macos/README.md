@@ -24,7 +24,7 @@ model, the other runtimes, and the manual and source-build installs.
      -n llmkube-system --create-namespace
    ```
 5. **To build the agent from source:** the Xcode Command Line Tools (`xcode-select --install`) and Go 1.27.3 or newer, the version `go.mod` pins.
-6. **`--host-ip` flag** (when the Mac has more than one address the cluster could use): without it the agent auto-detects an address, preferring a Tailscale one (see "`--host-ip` flag (remote cluster)" below), which may not be one your cluster can reach. Start the agent with `--host-ip <your-mac-ip>` so that its ingress is registered in Kubernetes at an address you chose.
+6. **`--host-ip` flag** (optional): an agent started with `--metal-node` (as `llmkube metal join` does) registers the address the MetalNode dial-back verified. Without `--metal-node` it auto-detects one, preferring a Tailscale address (see "`--host-ip` flag (remote cluster)" below), which may not be one your cluster can reach. Start the agent with `--host-ip <your-mac-ip>` so that its ingress is registered in Kubernetes at an address you chose.
 
 ## Installation
 
@@ -866,8 +866,10 @@ ingress certificate must name `<uid>.metal-node.llmkube.invalid`, or the
 controller's dial-back cannot tell this Mac's ingress from another server and
 the MetalNode is not `Reachable`. The agent re-issues the certificate for the
 same key when the name is missing or names another UID, so the SPKI pin does
-not change. If it cannot read the MetalNode it logs why, at most once a minute,
-and keeps reporting. An older agent that reports no certificate is never
+not change. Without `--host-ip` it also gets the MetalNode at every renewal,
+for the address to register (see "`--host-ip` flag (remote cluster)"). If it
+cannot read the MetalNode it logs why, at most once a minute, and keeps
+reporting. An older agent that reports no certificate is never
 `Reachable` (reason `AgentUpgradeRequired`); upgrade it. It never creates the
 Lease: if the Lease is missing it logs
 `Lease <namespace>/<name> not found; run llmkube metal token create` at most
@@ -997,7 +999,7 @@ llmkube-metal-agent --host-ip 192.168.1.50
 llmkube-metal-agent --host-ip 100.64.0.10
 ```
 
-Without `--host-ip`, the agent auto-detects an address from the Mac's network interfaces, in this order:
+Without `--host-ip`, an agent started with `--metal-node` registers the address the MetalNode dial-back verified, keeps it through a withdrawn verification while it stays on the Mac, and otherwise registers the first address the dial-back tries (details below). Without `--metal-node`, or when such an agent has no verified address and no candidate, the agent auto-detects an address from the Mac's network interfaces, in this order:
 
 1. a Tailscale address (100.64.0.0/10), if the Mac has one;
 2. otherwise the first other routable IPv4 address, skipping loopback, link-local, IPv6, and the Docker and VM bridge ranges 192.168.65.0/24, 172.17.0.0/16 and 10.96.0.0/12;
@@ -1006,12 +1008,19 @@ Without `--host-ip`, the agent auto-detects an address from the Mac's network in
 It does not register `localhost`: the interface pick skips loopback addresses, and the fallback registers whatever those names resolve to on the Mac. The agent logs an interface pick as `auto-detected host IP` (with the interface and the rejected candidates), and every registration as `registered endpoint` with a `hostIP` field:
 
 ```bash
-grep 'auto-detected host IP\|co-located DNS fallback\|registered endpoint' ~/Library/Logs/llmkube/metal-agent.log
+grep "auto-detected host IP\|co-located DNS fallback\|registered endpoint\|host IP for the agent's endpoints changed\|keeping the last verified host IP" ~/Library/Logs/llmkube/metal-agent.log
 ```
 
-Auto-detection can pick an address the cluster cannot reach, for example a personal tailnet on a work Mac, or the wrong interface on a Mac with several. For a remote cluster, set `--host-ip` explicitly, ideally to an address with a DHCP reservation so it does not change. Without `--host-ip` the address is detected again at every registration (every 30 seconds), so it follows a network change; with it, an address change leaves the Mac unreachable until the plist is edited.
+Auto-detection can pick an address the cluster cannot reach, for example a personal tailnet on a work Mac, or the wrong interface on a Mac with several. For a remote cluster without `--metal-node`, set `--host-ip` explicitly, ideally to an address with a DHCP reservation so it does not change. An auto-detected address is detected again at every registration (every 30 seconds), so it follows a network change; with `--host-ip`, an address change leaves the Mac unreachable until the plist is edited.
 
-This address is chosen separately from the MetalNode dial-back (see "`--metal-node` flag" above). `llmkube metal join` and `kubectl get mn` report the address the dial-back verified, which follows the route to the API server; the relay dials the address registered here. They can differ: a Mac on Tailscale joined to a cluster on the LAN verifies at its LAN address and registers its tailnet address, so `join` succeeds and serving fails. Compare the `HOST IP` of `kubectl get mn -n <namespace>` with `hostIP` in the agent's `registered endpoint` log line, and set `--host-ip` to the verified address if they differ. The dial-back tries `--host-ip` first, so both then use it. On a joined Mac, add the flag to the plist `join` wrote (see "Configuration" above); a later `join` drops it.
+With `--metal-node` (see "`--metal-node` flag" above) and no `--host-ip`, the address registered here follows the MetalNode dial-back, so the address `llmkube metal join` and `kubectl get mn` report is the one the relay dials. A Mac on Tailscale joined to a cluster on the LAN verifies at its LAN address and registers that address. In order, the agent registers:
+
+1. the MetalNode's `status.hostIP`, while `Reachable` is True for the agent's ingress key and port (the agent reads its MetalNode every 15 seconds);
+2. after the controller withdraws that verification (a failed recheck, an expired result), the last verified address, for as long as it is still on one of the Mac's up interfaces, since the first address the dial-back tries may be one that already failed. It logs `keeping the last verified host IP after verification was withdrawn` once, and moves when a different address is verified, when the kept one leaves the Mac's interfaces, or when the agent restarts (the address is kept in memory only);
+3. before any verification, and once the verified address has left the Mac, the first address the dial-back tries: the MetalNode's `spec.hostIP` if set, else the agent's first candidate;
+4. with no candidate either, the auto-detected address above.
+
+When the registered address changes, the agent re-registers its endpoints at once and logs `host IP for the agent's endpoints changed; re-registering them` with the old and new address and why. `--host-ip` overrides all of this and is registered as given; the dial-back tries it first, so both use it when it verifies. On a joined Mac, add the flag to the plist `join` wrote (see "Configuration" above); a later `join` drops it.
 
 The IP must be reachable on `--ingress-port` (below) from the cluster's pods, not only its nodes: the relay that dials it is a pod.
 
@@ -1937,9 +1946,11 @@ kubectl get deploy,pods -l inference.llmkube.dev/metal-relay=<isvc>
 kubectl logs deploy/<isvc>-relay
 kubectl describe inferenceservice <isvc>   # look for RelayNotAdopted, InvalidAgentIngressPin, RelayReconcileFailed, RelaySecretNotManaged
 
-# Compare the address the relay dials (hostIP in "registered endpoint") with
-# the MetalNode's verified HOST IP; see "--host-ip flag (remote cluster)"
-grep 'registered endpoint' ~/Library/Logs/llmkube/metal-agent.log | tail -1
+# The address the relay dials (hostIP in "registered endpoint") is the
+# MetalNode's verified HOST IP unless --host-ip is set, or the last verified
+# one while a verification is withdrawn; see "--host-ip flag (remote cluster)"
+grep "registered endpoint\|host IP for the agent's endpoints changed\|keeping the last verified host IP" \
+  ~/Library/Logs/llmkube/metal-agent.log | tail -3
 kubectl get mn -n <namespace>
 
 # From a pod (the relay is a pod, so test from one): 400 means it reached the
