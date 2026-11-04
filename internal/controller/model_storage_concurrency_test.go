@@ -1089,6 +1089,36 @@ func TestPoolAndVerifyLogsStayInTheConcurrentCommand(t *testing.T) {
 	}
 }
 
+// The dispatcher's size probe must give up after 30 seconds unless a run
+// overrides it. A shorter default would time out a legitimately slow HEAD on a
+// large model host and count that file as the whole cap; the give-up is now
+// env-tunable, so nothing else would notice a changed default.
+func TestSizeProbeDefaultsToThirtySeconds(t *testing.T) {
+	for _, isS3 := range []bool{false, true} {
+		for _, policy := range []string{RefreshPolicyIfNotPresent, RefreshPolicyOnChange} {
+			for _, mixed := range []bool{false, true} {
+				if mixed && isS3 {
+					continue
+				}
+				cmd := multiFileInitCommand(true, isS3, false, false, true, policy, mixed)
+				var probes int
+				for _, seg := range strings.Split(cmd, "--connect-timeout") {
+					if strings.HasPrefix(seg, " 10 --max-time ") {
+						probes++
+					}
+				}
+				if probes != 1 {
+					t.Errorf("s3=%v policy=%s mixed=%v: found %d connect-timeout probes, want 1", isS3, policy, mixed, probes)
+					continue
+				}
+				if want := "--max-time ${MODEL_SIZE_PROBE_TIMEOUT:-30}"; !strings.Contains(cmd, want) {
+					t.Errorf("s3=%v policy=%s mixed=%v: the size probe does not carry %q, so its budget default moved", isS3, policy, mixed, want)
+				}
+			}
+		}
+	}
+}
+
 // spec.downloadConcurrency reaches the downloader only above 1: at 1 or unset
 // the init container keeps the serial command and env it had before the field
 // existed, so a Model that does not use it keeps its pod template.
