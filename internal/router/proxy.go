@@ -138,6 +138,10 @@ func NewProxy(cfg *Config, logger *slog.Logger, opts ...ProxyOption) *Proxy {
 		opt(p)
 	}
 	p.disp.logger = logger
+	p.disp.onPollTransition = func(backend string) {
+		p.refreshBackendHealth(backend)
+		p.updateActiveBackendsMetrics()
+	}
 	p.budgets.onTeamOverflow = p.observeTeamOverflow
 	p.budgetGauge = newGaugePublisher(budgetGaugeInterval, p.observeBudgets)
 	return p

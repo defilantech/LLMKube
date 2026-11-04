@@ -239,3 +239,47 @@ func TestRequestSuccessClearsPollQuarantine(t *testing.T) {
 		t.Errorf("recovery Warn lines via=request = %d, want 1\n%s", got, rig.logs.String())
 	}
 }
+
+// The backend health gauges follow the poll with no client request: a backend
+// whose only endpoint is poll-quarantined reads 0, and 1 once a poll connects.
+func TestPollTransitionsDriveBackendHealthGauges(t *testing.T) {
+	const router = "poll-health-gauge"
+	resetRouterSeries(router)
+	pe := newPollEndpoint(t, idleMetrics)
+	cfg := scrapedConfig()
+	p := NewProxy(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), WithRouterName(router))
+	p.Dispatcher().SetEndpoints("qwen", []string{pe.srv.URL})
+	scraper := NewLoadScraper(cfg, p.Dispatcher(), router, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	health := func() float64 {
+		return testutil.ToFloat64(prommetrics.RouterBackendHealth.WithLabelValues(router, "qwen"))
+	}
+	active := func() float64 {
+		return testutil.ToFloat64(prommetrics.RouterActiveBackends.WithLabelValues(router, "local"))
+	}
+	// The state a served request leaves behind.
+	prommetrics.RouterBackendHealth.WithLabelValues(router, "qwen").Set(1)
+	prommetrics.RouterActiveBackends.WithLabelValues(router, "local").Set(1)
+
+	pe.down.Store(true)
+	for i := 0; i < pollFailuresToQuarantine; i++ {
+		scraper.scrapeOnce(context.Background())
+	}
+	if got := health(); got != 0 {
+		t.Errorf("backend health with its only endpoint poll-quarantined = %v, want 0", got)
+	}
+	if got := active(); got != 0 {
+		t.Errorf("active local backends with the only one poll-quarantined = %v, want 0", got)
+	}
+
+	pe.down.Store(false)
+	scraper.scrapeOnce(context.Background())
+	if got := health(); got != 1 {
+		t.Errorf("backend health after a poll connected = %v, want 1", got)
+	}
+	if got := active(); got != 1 {
+		t.Errorf("active local backends after a poll connected = %v, want 1", got)
+	}
+	if got := pe.inference.Load(); got != 0 {
+		t.Errorf("inference requests = %d, want 0 (the gauges must move on polls alone)", got)
+	}
+}

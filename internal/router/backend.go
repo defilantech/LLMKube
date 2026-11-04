@@ -169,6 +169,11 @@ type Dispatcher struct {
 
 	// logger records quarantines. NewProxy sets it to the proxy's logger.
 	logger *slog.Logger
+
+	// onPollTransition runs with the backend name when an endpoint enters or
+	// leaves poll quarantine, so the proxy's health gauges follow the poll
+	// without a request. NewProxy sets it; nil does nothing.
+	onPollTransition func(backend string)
 }
 
 // DispatcherOption customizes a Dispatcher at construction time.
@@ -346,6 +351,7 @@ func (d *Dispatcher) recordPollFailure(name, endpoint string, err error) {
 	if h.pollFailures.Add(1) >= pollFailuresToQuarantine && h.pollDown.CompareAndSwap(false, true) {
 		d.logger.Warn("router quarantined upstream: load polls failing", "backend", name, "endpoint", endpoint,
 			"polls", pollFailuresToQuarantine, "error", err)
+		d.pollTransition(name)
 	}
 }
 
@@ -365,6 +371,13 @@ func (d *Dispatcher) recordPollAnswered(name, endpoint string) {
 func (d *Dispatcher) clearPollDown(name, endpoint string, h *backendHealth, via string) {
 	if h.pollDown.CompareAndSwap(true, false) {
 		d.logger.Warn("router upstream reachable again", "backend", name, "endpoint", endpoint, "via", via)
+		d.pollTransition(name)
+	}
+}
+
+func (d *Dispatcher) pollTransition(backend string) {
+	if d.onPollTransition != nil {
+		d.onPollTransition(backend)
 	}
 }
 
