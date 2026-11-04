@@ -40,6 +40,9 @@ Flag meanings:
 - `--heartbeat-interval`: Expected edge heartbeat interval in seconds. Staleness thresholds are derived from this (3x=Stale, 10x=Unreachable). Defaults to 30 seconds. Values below 30 are accepted, and the datacenter clamps them up to the 30 second cadence the edge actually pushes on before deriving those thresholds.
 - `--datacenter-endpoint`: Datacenter API server URL to embed in the edge kubeconfig. If omitted, falls back to the current kubeconfig context's server.
 - `--namespace`: Kubernetes namespace on the datacenter to create the per-site ServiceAccount. Defaults to llmkube-system.
+- `--insecure-skip-tls-verify`: Write `insecure-skip-tls-verify: true` into the edge kubeconfig instead of the datacenter API server's CA, so the edge does not verify that server's certificate. The command prints a warning when it is set. It does not change how the command itself connects.
+
+The edge kubeconfig embeds the CA of the current kubeconfig context's cluster: its `certificate-authority-data`, or the contents of the file its `certificate-authority` names. If the context has neither (including a context that itself sets `insecure-skip-tls-verify`), the command fails before creating anything, unless you pass `--insecure-skip-tls-verify` or the server is plain `http://`.
 
 The command outputs a kubeconfig snippet and operator flags:
 
