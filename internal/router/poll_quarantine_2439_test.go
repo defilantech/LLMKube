@@ -31,6 +31,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	prommetrics "github.com/defilantech/llmkube/internal/metrics"
+	"github.com/defilantech/llmkube/internal/router/picker"
 )
 
 // pollEndpoint is a vLLM-shaped pod that can drop every connection, the way
@@ -40,14 +41,25 @@ type pollEndpoint struct {
 	srv       *httptest.Server
 	down      atomic.Bool
 	inference atomic.Int64
+	// held, when set before the first request, makes an inference request
+	// signal started, wait for release, then answer 200 even while down.
+	held             bool
+	started, release chan struct{}
 }
 
 func newPollEndpoint(t *testing.T, metrics string) *pollEndpoint {
 	t.Helper()
-	pe := &pollEndpoint{}
+	pe := &pollEndpoint{started: make(chan struct{}, 1), release: make(chan struct{})}
 	pe.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/metrics" {
 			pe.inference.Add(1)
+			if pe.held {
+				pe.started <- struct{}{}
+				<-pe.release
+				_, _ = io.ReadAll(r.Body)
+				_, _ = io.WriteString(w, `{"choices":[]}`)
+				return
+			}
 		}
 		if pe.down.Load() {
 			conn, _, err := w.(http.Hijacker).Hijack()
@@ -157,7 +169,7 @@ func TestPollFailuresQuarantineEndpoint(t *testing.T) {
 		t.Errorf("an endpoint whose last poll failed to connect got %d of 5 requests, want 0", got)
 	}
 
-	rig.scrape(pollFailuresToQuarantine - 1)
+	rig.scrape(int(pollFailuresToQuarantine) - 1)
 	rig.advance(10 * time.Second) // past the 1s request quarantine, inside the session idle timeout
 	rig.scrape(1)
 	migrated := testutil.ToFloat64(prommetrics.RouterPlacementsTotal.WithLabelValues(router, "qwen", "migrated", "quarantined"))
@@ -170,7 +182,7 @@ func TestPollFailuresQuarantineEndpoint(t *testing.T) {
 	}
 	rig.scrape(3)
 	if got := rig.logCount("load polls failing"); got != 1 {
-		t.Errorf("poll failure Warn lines = %d after %d failed polls, want 1\n%s", got, pollFailuresToQuarantine+4, rig.logs.String())
+		t.Errorf("poll failure Warn lines = %d after %d failed polls, want 1\n%s", got, int(pollFailuresToQuarantine)+4, rig.logs.String())
 	}
 
 	flaky.down.Store(false)
@@ -184,6 +196,65 @@ func TestPollFailuresQuarantineEndpoint(t *testing.T) {
 	}
 }
 
+// A pod is not poll-quarantined before its last sample would read stale: a
+// path that drops a few polls in a row must not migrate its sessions.
+func TestPollQuarantineWaitsForStaleAfter(t *testing.T) {
+	pe := newPollEndpoint(t, idleMetrics)
+	rig := newPollRig(t, "poll-stale-after", nil, pe.srv.URL)
+	pe.down.Store(true)
+	rig.scrape(int(picker.StaleAfter/scrapeInterval) - 1)
+	if !rig.d.IsHealthy("qwen") {
+		t.Errorf("quarantined after %d failed polls, inside picker.StaleAfter (%s)", int(picker.StaleAfter/scrapeInterval)-1, picker.StaleAfter)
+	}
+	rig.scrape(1)
+	if rig.d.IsHealthy("qwen") {
+		t.Errorf("not quarantined after %d failed polls", int(picker.StaleAfter/scrapeInterval))
+	}
+}
+
+// A poll that fails after its pod left the endpoint set records nothing: the
+// pod's health entry is not re-created, so an address reused by a new pod
+// starts clean.
+func TestPollOfDepartedEndpointIsIgnored(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		unreachable bool
+	}{
+		{name: "connection_failure", unreachable: true},
+		{name: "http_error"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			started, release := make(chan struct{}, 1), make(chan struct{})
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				started <- struct{}{}
+				<-release
+				if tc.unreachable {
+					if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+						_ = conn.Close()
+					}
+					return
+				}
+				http.NotFound(w, r)
+			}))
+			defer srv.Close()
+			rig := newPollRig(t, "poll-departed-"+tc.name, nil, srv.URL)
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				rig.scrape(1)
+			}()
+			<-started
+			rig.d.SetEndpoints("qwen", nil) // the pod leaves while its poll is in flight
+			close(release)
+			<-done
+
+			if _, ok := rig.d.health.Load(healthKey("qwen", srv.URL)); ok {
+				t.Error("a poll that finished after the pod left re-created its health entry")
+			}
+		})
+	}
+}
+
 // A metrics path that answers with an HTTP error is not a connection failure:
 // the endpoint may serve inference fine and keeps its place.
 func TestPollHTTPErrorKeepsEndpoint(t *testing.T) {
@@ -191,7 +262,7 @@ func TestPollHTTPErrorKeepsEndpoint(t *testing.T) {
 	noMetrics := newPollEndpoint(t, "")
 	rig := newPollRig(t, "poll-http-error", nil, busy.srv.URL, noMetrics.srv.URL)
 
-	rig.scrape(pollFailuresToQuarantine + 2)
+	rig.scrape(int(pollFailuresToQuarantine) + 2)
 	rig.send(t, nil)
 	if got := noMetrics.inference.Load(); got != 1 {
 		t.Errorf("an idle endpoint whose metrics path answers 404 got %d requests, want 1", got)
@@ -209,7 +280,7 @@ func TestPollShutdownDoesNotCount(t *testing.T) {
 	pe.down.Store(true)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	for i := 0; i < pollFailuresToQuarantine; i++ {
+	for i := int32(0); i < pollFailuresToQuarantine; i++ {
 		rig.scraper.scrapeOnce(ctx)
 	}
 	if !rig.d.IsHealthy("qwen") {
@@ -217,21 +288,29 @@ func TestPollShutdownDoesNotCount(t *testing.T) {
 	}
 }
 
-// A request the endpoint served clears a poll quarantine too, so the two
-// sources of health never leave an endpoint quarantined that one of them saw
-// answer.
+// A request already in flight when its endpoint is poll-quarantined, and that
+// the endpoint then serves, clears the poll quarantine: the endpoint answered.
+// No new request can reach a poll-quarantined endpoint (see
+// TestPollQuarantinedBackendSkippedByProxy).
 func TestRequestSuccessClearsPollQuarantine(t *testing.T) {
 	pe := newPollEndpoint(t, idleMetrics)
+	pe.held = true
 	rig := newPollRig(t, "poll-request-recovery", nil, pe.srv.URL)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		rig.send(t, nil)
+	}()
+	<-pe.started
+
 	pe.down.Store(true)
-	rig.scrape(pollFailuresToQuarantine)
+	rig.scrape(int(pollFailuresToQuarantine))
 	if rig.d.IsHealthy("qwen") {
 		t.Fatal("the backend is healthy with its only endpoint failing every poll")
 	}
 
-	pe.down.Store(false)
-	// With every endpoint out, placement falls back to the round-robin probe.
-	rig.send(t, nil)
+	close(pe.release)
+	<-done
 	if !rig.d.IsHealthy("qwen") {
 		t.Error("a served request left the endpoint poll-quarantined")
 	}
@@ -261,7 +340,7 @@ func TestPollTransitionsDriveBackendHealthGauges(t *testing.T) {
 	prommetrics.RouterActiveBackends.WithLabelValues(router, "local").Set(1)
 
 	pe.down.Store(true)
-	for i := 0; i < pollFailuresToQuarantine; i++ {
+	for i := int32(0); i < pollFailuresToQuarantine; i++ {
 		scraper.scrapeOnce(context.Background())
 	}
 	if got := health(); got != 0 {
@@ -281,5 +360,47 @@ func TestPollTransitionsDriveBackendHealthGauges(t *testing.T) {
 	}
 	if got := pe.inference.Load(); got != 0 {
 		t.Errorf("inference requests = %d, want 0 (the gauges must move on polls alone)", got)
+	}
+}
+
+// Recovery from a poll quarantine is poll-only: once every endpoint of a
+// backend is poll-quarantined, a client request through the proxy is answered
+// 502 without reaching the pod, even after the pod could serve it again.
+func TestPollQuarantinedBackendSkippedByProxy(t *testing.T) {
+	const router = "poll-proxy-skip"
+	resetRouterSeries(router)
+	pe := newPollEndpoint(t, idleMetrics)
+	cfg := scrapedConfig()
+	cfg.DefaultRoute = "qwen"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("cfg: %v", err)
+	}
+	logs := &lockedLogBuffer{}
+	p := NewProxy(cfg, slog.New(slog.NewTextHandler(logs, nil)), WithRouterName(router))
+	mux := http.NewServeMux()
+	p.Mount(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	p.Dispatcher().SetEndpoints("qwen", []string{pe.srv.URL})
+	scraper := NewLoadScraper(cfg, p.Dispatcher(), router, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	pe.down.Store(true)
+	for i := int32(0); i < pollFailuresToQuarantine; i++ {
+		scraper.scrapeOnce(context.Background())
+	}
+	// The pod could serve now, but no poll has seen it yet.
+	pe.down.Store(false)
+
+	if code := postModel(t, srv.URL, nil); code != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502", code)
+	}
+	if got := pe.inference.Load(); got != 0 {
+		t.Errorf("inference requests reaching the poll-quarantined pod = %d, want 0", got)
+	}
+	if got := testutil.ToFloat64(prommetrics.RouterRequestsTotal.WithLabelValues(router, "", "qwen", "", "all_backends_failed")); got != 1 {
+		t.Errorf("requests_total{backend=qwen,outcome=all_backends_failed} = %v, want 1", got)
+	}
+	if !strings.Contains(logs.String(), "outcome=all_backends_failed") {
+		t.Errorf("no all_backends_failed audit line:\n%s", logs.String())
 	}
 }

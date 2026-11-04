@@ -37,6 +37,13 @@ import (
 const (
 	scrapeInterval = time.Second
 	scrapeTimeout  = 500 * time.Millisecond
+
+	// pollFailuresToQuarantine is how many load polls in a row must fail to
+	// connect before an endpoint leaves placement: as many as fit in
+	// picker.StaleAfter, so an endpoint is quarantined when its last sample
+	// would read stale anyway, and a pod behind a path that drops a few polls
+	// in a row is not.
+	pollFailuresToQuarantine = int32(picker.StaleAfter / scrapeInterval)
 )
 
 type scrapeTarget struct {

@@ -56,10 +56,6 @@ const defaultIdleConnTimeout = 4 * time.Second
 // connection blip, and quarantining a pod rebinds every session on it.
 const endpointFailuresToQuarantine = 2
 
-// pollFailuresToQuarantine is how many load polls in a row must fail to
-// connect before an endpoint leaves placement: about 3s at scrapeInterval.
-const pollFailuresToQuarantine = 3
-
 // defaultResponseHeaderTimeout caps how long the dispatcher waits for
 // the upstream to begin sending response headers. For non-streaming
 // chat completions, llama.cpp / vLLM / cloud providers emit headers
@@ -99,8 +95,9 @@ type backendHealth struct {
 	// pollFailures counts load polls in a row that failed to connect.
 	pollFailures atomic.Int32
 	// pollDown is set once pollFailures reaches pollFailuresToQuarantine. It
-	// has no expiry: the next poll is the probe, so a request is never the
-	// probe for an endpoint the poll already knows is unreachable.
+	// has no expiry and no half-open probe: only a poll that connects clears
+	// it, so a request is never the probe for an endpoint the poll already
+	// knows is unreachable.
 	pollDown atomic.Bool
 }
 
@@ -385,7 +382,9 @@ func (d *Dispatcher) pollTransition(backend string) {
 // endpoint set. Consecutive calls rotate so a keep-alive client spreads
 // across pods rather than pinning to one through conntrack. Quarantined
 // endpoints are skipped; when every endpoint is quarantined the rotation
-// returns one anyway so the half-open probe still happens.
+// returns one anyway so the request quarantine's half-open probe still
+// happens. A poll-quarantined endpoint gets no probe: IsHealthy is false for
+// a backend whose every endpoint is out, so the proxy skips it first.
 func (d *Dispatcher) roundRobin(backend *Backend, eps []string) string {
 	n := len(eps)
 	if n == 0 {
@@ -530,7 +529,9 @@ func (d *Dispatcher) quarantine(name, endpoint string, h *backendHealth) {
 }
 
 // markHealthy clears quarantine on one endpoint (or the whole backend when
-// endpoint is empty).
+// endpoint is empty). Clearing the poll state covers a request that was
+// already in flight when the endpoint was poll-quarantined and then
+// succeeded; no new request reaches a poll-quarantined endpoint.
 func (d *Dispatcher) markHealthy(name, endpoint string) {
 	h := d.healthFor(healthKey(name, endpoint))
 	h.healthy.Store(true)
