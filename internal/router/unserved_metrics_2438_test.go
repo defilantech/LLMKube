@@ -265,3 +265,52 @@ func TestFallbackRefreshesHealthOfEveryTriedBackend(t *testing.T) {
 		t.Errorf("requests_total{backend=b,outcome=all_backends_failed} = %v, want 2", got)
 	}
 }
+
+// A ModelPool member whose activation fails is a backend the request tried,
+// so its health gauge is refreshed from the dispatcher like any other, even
+// when a later backend serves the request.
+func TestPoolActivationFailureRefreshesHealth(t *testing.T) {
+	const router = "unserved-pool-activation"
+	resetRouterSeries(router)
+	fallback := newFakeBackend(t)
+	cfg := &Config{
+		Backends: []Backend{
+			{
+				Name: "coder", Tier: "local", Address: newFakeBackend(t).URL(),
+				Pool: &BackendPool{Name: "heavy-slot", Namespace: "lab", Member: "coder",
+					Members: []string{"coder", "judge"}, SwapBudget: 100 * time.Millisecond},
+			},
+			{Name: "b", Tier: "local", Address: fallback.URL()},
+		},
+		Rules: []Rule{{
+			Name:  "pool-then-b",
+			Match: RuleMatch{DataClassification: []string{"internal"}},
+			Route: RuleRoute{Backends: []string{"coder", "b"}},
+		}},
+		DefaultRoute: "b",
+		Policy:       Policy{Classification: ClassificationPolicy{Mode: "header-only"}},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("cfg: %v", err)
+	}
+	fake := newFakeMemberController()
+	fake.noAutoReady = true
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	act := NewActivator(t.Context(), fake, router, logger)
+	p := NewProxy(cfg, logger, WithRouterName(router), WithActivator(act))
+	mux := http.NewServeMux()
+	p.Mount(mux)
+	// A gauge left at 0 by an earlier quarantine that has since expired.
+	prommetrics.RouterBackendHealth.WithLabelValues(router, "coder").Set(0)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"coder"}`))
+	req.Header.Set("X-LLMKube-Classification", "internal")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req.WithContext(context.WithoutCancel(context.Background())))
+	if rec.Code != http.StatusOK || fallback.calls.Load() != 1 {
+		t.Fatalf("status = %d, fallback calls = %d, want 200 from b", rec.Code, fallback.calls.Load())
+	}
+	if got := testutil.ToFloat64(prommetrics.RouterBackendHealth.WithLabelValues(router, "coder")); got != 1 {
+		t.Errorf("backend health of the pool member whose activation failed = %v, want 1", got)
+	}
+}

@@ -847,6 +847,7 @@ func (p *Proxy) dispatchWithFallback(
 			rel, aerr := p.activator.AcquireWithMode(holdCtx, b.Pool, dec.PoolActivation)
 			holdCancel()
 			if aerr != nil {
+				p.refreshBackendHealth(name)
 				lastErr = aerr
 				if !errors.Is(aerr, ErrIncumbentBusy) {
 					allIncumbentBusy = false
