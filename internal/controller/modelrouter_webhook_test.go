@@ -365,6 +365,51 @@ func TestModelRouterValidator_ProxyModeStillRunsStaticChecks(t *testing.T) {
 	}
 }
 
+// TestModelRouterValidator_ProxyModeRejectsUnimplementedClassifier: a Proxy
+// router that asks for the detector or hybrid classifier is refused at apply
+// time, the way the gateway planes refuse a dataClassification match under
+// those modes, because the router-proxy has no classifier to run. An existing
+// router that already sets the mode stays updatable: a status or metadata
+// patch that leaves the spec alone is admitted, and so is the spec edit that
+// moves it to header-only.
+func TestModelRouterValidator_ProxyModeRejectsUnimplementedClassifier(t *testing.T) {
+	v := &ModelRouterValidator{}
+	ctx := context.Background()
+
+	for _, mode := range []string{"detector", "hybrid"} {
+		mr := validGatewayRouter()
+		mr.Spec.DataPlane = inferencev1alpha1.ModelRouterDataPlaneProxy
+		mr.Spec.GatewayRef = nil
+		mr.Spec.Policy = &inferencev1alpha1.RouterPolicy{
+			Classification: &inferencev1alpha1.ClassificationPolicy{Mode: mode},
+		}
+
+		_, err := v.ValidateCreate(ctx, mr)
+		if err == nil {
+			t.Fatalf("%s: expected the webhook to reject an unimplemented classification mode", mode)
+		}
+		if !apierrors.IsInvalid(err) {
+			t.Fatalf("%s: expected an Invalid error, got %T: %v", mode, err, err)
+		}
+		if !strings.Contains(err.Error(), "spec.policy.classification.mode") {
+			t.Errorf("%s: error does not name spec.policy.classification.mode: %v", mode, err)
+		}
+
+		statusPatched := mr.DeepCopy()
+		statusPatched.Labels = map[string]string{"patched": "true"}
+		statusPatched.Status.Phase = PhaseFailed
+		if _, err := v.ValidateUpdate(ctx, mr.DeepCopy(), statusPatched); err != nil {
+			t.Errorf("%s: a status-only update of an existing router was rejected: %v", mode, err)
+		}
+
+		fixed := mr.DeepCopy()
+		fixed.Spec.Policy.Classification.Mode = classificationModeHeaderOnly
+		if _, err := v.ValidateUpdate(ctx, mr.DeepCopy(), fixed); err != nil {
+			t.Errorf("%s: the update to header-only was rejected: %v", mode, err)
+		}
+	}
+}
+
 // TestModelRouterValidator_Update reuses the create branches when the spec
 // changes: a spec-changing update applies the same invariants.
 func TestModelRouterValidator_Update(t *testing.T) {

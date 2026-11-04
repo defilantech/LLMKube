@@ -34,13 +34,39 @@ const (
 // ModelRouterValidationError describes a single static-validation failure on
 // a ModelRouter spec. The Field is a dotted JSONPath-style locator so users
 // can match it to their manifest; Message is a human-readable explanation.
+// Reason, when set, is the Validated condition reason the failure reports in
+// place of SpecInvalid (see validationFailureReason).
 type ModelRouterValidationError struct {
 	Field   string
 	Message string
+	Reason  string
 }
 
 func (e ModelRouterValidationError) String() string {
 	return fmt.Sprintf("%s: %s", e.Field, e.Message)
+}
+
+// validationFailureReason picks the reason for Validated=False. A failure
+// that carries its own reason reports it when every failure shares it, so a
+// client can tell a value that is refused because it is not built yet from a
+// malformed spec. Any mix reports SpecInvalid; the message lists each failure
+// either way.
+func validationFailureReason(errs []ModelRouterValidationError) string {
+	reason := ""
+	for _, e := range errs {
+		r := e.Reason
+		if r == "" {
+			r = ModelRouterReasonSpecInvalid
+		}
+		if reason != "" && r != reason {
+			return ModelRouterReasonSpecInvalid
+		}
+		reason = r
+	}
+	if reason == "" {
+		return ModelRouterReasonSpecInvalid
+	}
+	return reason
 }
 
 // validateModelRouter performs static validation of a ModelRouter spec.
@@ -62,6 +88,9 @@ func (e ModelRouterValidationError) String() string {
 //   - Budget specs are well-formed (rule scope references a real rule;
 //     at least one of maxTokens or maxUSD is set; a maxUSD budget requires
 //     every backend to declare pricing).
+//   - On the Proxy data plane, policy.classification.mode is header-only:
+//     detector and hybrid need an in-proxy classifier that does not exist
+//     yet (#441).
 //
 // The function is pure: no K8s API access. The caller transforms the
 // returned errors into a Validated condition on the ModelRouter status.
@@ -84,8 +113,38 @@ func validateModelRouter(mr *inferencev1alpha1.ModelRouter) []ModelRouterValidat
 	errs = append(errs, validateBudgets(spec, ruleNames)...)
 	errs = append(errs, validateAuditLog(spec)...)
 	errs = append(errs, validateProxyServiceName(mr)...)
+	errs = append(errs, validateClassificationMode(mr)...)
 
 	return errs
+}
+
+// validateClassificationMode refuses classification.mode detector and hybrid
+// on the Proxy data plane. The router-proxy reads a request's classification
+// from the classification header and nothing else, so under either mode a
+// request whose body holds regulated data and carries no header matches no
+// sensitive rule and goes wherever an unclassified request goes, the
+// defaultRoute included: a silent fail-open for a user who configured a
+// classifier. The Gateway and AgentGateway data planes refuse a
+// dataClassification match under these modes in their own match checks
+// (unsupportedMatchFields), and compile nothing else that reads the mode. An
+// empty dataPlane is Proxy, as the CRD defaults it.
+func validateClassificationMode(mr *inferencev1alpha1.ModelRouter) []ModelRouterValidationError {
+	switch mr.Spec.DataPlane {
+	case "", inferencev1alpha1.ModelRouterDataPlaneProxy:
+	default:
+		return nil
+	}
+	mode := classificationMode(mr)
+	if mode == classificationModeHeaderOnly {
+		return nil
+	}
+	return []ModelRouterValidationError{{
+		Field: "spec.policy.classification.mode",
+		Message: fmt.Sprintf("%q needs an in-proxy content classifier, which is not implemented yet (#441); "+
+			"the router-proxy reads a request's classification only from the %s header, so use header-only, "+
+			"the only implemented mode", mode, classificationHeaderKey(mr)),
+		Reason: ModelRouterReasonClassifierNotImplemented,
+	}}
 }
 
 // validateProxyServiceName rejects a spec.proxy.serviceName equal to the

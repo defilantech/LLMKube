@@ -179,7 +179,9 @@ A few decisions worth being explicit about:
   inferred.** Operators can opt in to classifier sidecars later;
   the v1alpha1 contract is "the caller asserts the
   classification" so the proxy never has to be the source of
-  truth for what data is sensitive.
+  truth for what data is sensitive. Until the classifier lands,
+  the `detector` and `hybrid` classification modes are refused
+  (see [`Where the classification comes from`](./model-router#where-the-classification-comes-from)).
 
 ## Where things live in the repo
 

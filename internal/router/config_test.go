@@ -256,6 +256,43 @@ const canonicalJSON = `{
   }
 }`
 
+// TestLoadConfigRefusesUnimplementedClassifier: the proxy reads a request's
+// classification from the header alone, so a config that asks for the
+// detector or hybrid classifier (written by an older controller, or by hand)
+// would route a request carrying sensitive content and no header like any
+// other. The proxy refuses to start on it rather than serve it. The fixture is
+// the controller's wire JSON, not a Config built here.
+func TestLoadConfigRefusesUnimplementedClassifier(t *testing.T) {
+	for _, mode := range []string{"detector", "hybrid"} {
+		t.Run(mode, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "router.json")
+			data := strings.Replace(canonicalJSON, `"mode": "header-only"`, `"mode": "`+mode+`"`, 1)
+			if data == canonicalJSON {
+				t.Fatal("fixture no longer carries a header-only mode to replace")
+			}
+			if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+				t.Fatalf("write fixture: %v", err)
+			}
+			_, err := LoadConfig(path)
+			if err == nil {
+				t.Fatalf("LoadConfig accepted classification mode %q; want an error", mode)
+			}
+			for _, want := range []string{"policy.classification.mode", `"` + mode + `"`, "header-only", "#441"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not mention %s", err, want)
+				}
+			}
+		})
+	}
+	for _, ok := range []string{"", "header-only"} {
+		cfg := validConfig()
+		cfg.Policy.Classification.Mode = ok
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("Validate rejected classification mode %q: %v", ok, err)
+		}
+	}
+}
+
 // TestConfigValidateRejectsUnknownPoolActivation keeps the wire enum closed so a
 // typo in poolActivation fails at compile time instead of silently meaning Wait.
 func TestConfigValidateRejectsUnknownPoolActivation(t *testing.T) {

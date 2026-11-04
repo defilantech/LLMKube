@@ -49,10 +49,15 @@ const (
 	ModelRouterConditionBackendsReady   = "BackendsReady"
 	ModelRouterConditionBudgetReporting = "BudgetReporting"
 
-	ModelRouterReasonSpecValid       = "SpecValid"
-	ModelRouterReasonSpecInvalid     = "SpecInvalid"
-	ModelRouterReasonCompileFailed   = "CompileFailed"
-	ModelRouterReasonReconcileFailed = "ReconcileFailed"
+	ModelRouterReasonSpecValid   = "SpecValid"
+	ModelRouterReasonSpecInvalid = "SpecInvalid"
+	// ModelRouterReasonClassifierNotImplemented marks a Proxy router whose
+	// policy.classification.mode asks for a content classifier (detector,
+	// hybrid) the router-proxy does not have yet (#441). It replaces
+	// SpecInvalid only when that is the spec's sole problem.
+	ModelRouterReasonClassifierNotImplemented = "ClassifierNotImplemented"
+	ModelRouterReasonCompileFailed            = "CompileFailed"
+	ModelRouterReasonReconcileFailed          = "ReconcileFailed"
 	// ModelRouterReasonRouterProxyNameTaken marks a router whose generated
 	// router-proxy name is held by an object LLMKube did not create (any of
 	// the seven proxy objects: ConfigMap, Deployment, both Services,
@@ -277,7 +282,8 @@ func (r *ModelRouterReconciler) deleteIfControlled(
 }
 
 // recordValidationFailure writes the validated=false branch of the
-// status. Used when validateModelRouter rejects the spec.
+// status. Used when validateModelRouter rejects the spec. It writes status
+// only: the router-proxy objects keep the last config that compiled.
 func (r *ModelRouterReconciler) recordValidationFailure(
 	ctx context.Context,
 	mr *inferencev1alpha1.ModelRouter,
@@ -289,7 +295,7 @@ func (r *ModelRouterReconciler) recordValidationFailure(
 	apimeta.SetStatusCondition(&desired.Status.Conditions, metav1.Condition{
 		Type:    ModelRouterConditionValidated,
 		Status:  metav1.ConditionFalse,
-		Reason:  ModelRouterReasonSpecInvalid,
+		Reason:  validationFailureReason(valErrors),
 		Message: formatValidationErrors(valErrors),
 	})
 	desired.Status.Phase = PhaseFailed

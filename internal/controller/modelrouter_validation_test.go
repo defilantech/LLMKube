@@ -253,6 +253,127 @@ func TestValidateModelRouterCustomSensitiveClassifications(t *testing.T) {
 	}
 }
 
+// TestValidateModelRouterRefusesUnimplementedClassifier pins the Proxy data
+// plane's refusal of classification modes that need a classifier the
+// router-proxy does not have. The proxy reads a request's classification from
+// the header alone, so under "detector" or "hybrid" a request whose body holds
+// an SSN and carries no header would match no pii rule and fall through to the
+// defaultRoute, here a cloud backend. An empty dataPlane is Proxy: the CRD
+// defaults it, and the webhook sees the defaulted object.
+func TestValidateModelRouterRefusesUnimplementedClassifier(t *testing.T) {
+	for _, plane := range []inferencev1alpha1.ModelRouterDataPlane{"", inferencev1alpha1.ModelRouterDataPlaneProxy} {
+		planeName := string(plane)
+		if planeName == "" {
+			planeName = "unset"
+		}
+		for _, mode := range []string{"detector", "hybrid"} {
+			t.Run(planeName+"/"+mode, func(t *testing.T) {
+				mr := validRouter()
+				mr.Spec.DataPlane = plane
+				mr.Spec.DefaultRoute = testRouterCloudBackend
+				mr.Spec.Policy = &inferencev1alpha1.RouterPolicy{
+					Classification: &inferencev1alpha1.ClassificationPolicy{Mode: mode},
+				}
+				errs := validateModelRouter(mr)
+				var got *ModelRouterValidationError
+				for i := range errs {
+					if errs[i].Field == "spec.policy.classification.mode" {
+						got = &errs[i]
+					}
+				}
+				if got == nil {
+					t.Fatalf("mode %q on the Proxy data plane passed validation; want an error at "+
+						"spec.policy.classification.mode, got: %q", mode, formatValidationErrors(errs))
+				}
+				for _, want := range []string{`"` + mode + `"`, "header-only", "#441"} {
+					if !strings.Contains(got.Message, want) {
+						t.Errorf("message %q does not mention %s", got.Message, want)
+					}
+				}
+			})
+		}
+	}
+}
+
+// TestValidateModelRouterAcceptsHeaderOnlyClassification keeps the refusal
+// from reaching the implemented mode: header-only, an unset mode, and an unset
+// classification block all pass.
+func TestValidateModelRouterAcceptsHeaderOnlyClassification(t *testing.T) {
+	for name, policy := range map[string]*inferencev1alpha1.RouterPolicy{
+		"no policy":         nil,
+		"no classification": {},
+		"empty mode":        {Classification: &inferencev1alpha1.ClassificationPolicy{}},
+		"header-only":       {Classification: &inferencev1alpha1.ClassificationPolicy{Mode: "header-only"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			mr := validRouter()
+			mr.Spec.Policy = policy
+			if errs := validateModelRouter(mr); len(errs) != 0 {
+				t.Errorf("expected no validation errors, got: %s", formatValidationErrors(errs))
+			}
+		})
+	}
+}
+
+// TestValidateModelRouterClassifierRefusalIsProxyOnly pins the scope of the
+// refusal. The Gateway and AgentGateway data planes keep their own check, a
+// dataClassification match under detector or hybrid is refused there by
+// unsupportedMatchFields, and a router on those planes that sets the mode
+// without such a match compiles nothing that reads it.
+func TestValidateModelRouterClassifierRefusalIsProxyOnly(t *testing.T) {
+	for _, plane := range []inferencev1alpha1.ModelRouterDataPlane{
+		inferencev1alpha1.ModelRouterDataPlaneGateway,
+		inferencev1alpha1.ModelRouterDataPlaneAgentGateway,
+	} {
+		mr := validRouter()
+		mr.Spec.DataPlane = plane
+		mr.Spec.Policy = &inferencev1alpha1.RouterPolicy{
+			Classification: &inferencev1alpha1.ClassificationPolicy{Mode: "detector"},
+		}
+		if errsContain(validateModelRouter(mr), "spec.policy.classification.mode") {
+			t.Errorf("%s: static validation refused the mode; that data plane refuses it in its own match check", plane)
+		}
+	}
+}
+
+// TestValidationFailureReason: the Validated reason is
+// ClassifierNotImplemented only when the unimplemented mode is the spec's
+// sole problem. A spec that is also malformed reports SpecInvalid, so the
+// reason never suggests that changing the mode alone makes the router valid.
+func TestValidationFailureReason(t *testing.T) {
+	classifier := func(mode string) *inferencev1alpha1.ModelRouter {
+		mr := validRouter()
+		mr.Spec.Policy = &inferencev1alpha1.RouterPolicy{
+			Classification: &inferencev1alpha1.ClassificationPolicy{Mode: mode},
+		}
+		return mr
+	}
+	alsoMalformed := classifier("detector")
+	alsoMalformed.Spec.DefaultRoute = "ghost"
+	malformed := validRouter()
+	malformed.Spec.DefaultRoute = "ghost"
+
+	for name, tc := range map[string]struct {
+		mr   *inferencev1alpha1.ModelRouter
+		want string
+	}{
+		"detector only":       {classifier("detector"), "ClassifierNotImplemented"},
+		"hybrid only":         {classifier("hybrid"), "ClassifierNotImplemented"},
+		"detector and a typo": {alsoMalformed, ModelRouterReasonSpecInvalid},
+		"a typo only":         {malformed, ModelRouterReasonSpecInvalid},
+	} {
+		t.Run(name, func(t *testing.T) {
+			errs := validateModelRouter(tc.mr)
+			if len(errs) == 0 {
+				t.Fatal("test setup: expected validation errors")
+			}
+			if got := validationFailureReason(errs); got != tc.want {
+				t.Errorf("reason = %q, want %q (errors: %s)", got, tc.want, formatValidationErrors(errs))
+			}
+		})
+	}
+}
+
 // TestValidateModelRouterBudget covers BudgetSpec validation:
 // rule-scoped budgets must reference a real rule, and every budget must set
 // at least one of maxTokens / maxUSD.

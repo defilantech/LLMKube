@@ -412,9 +412,14 @@ type Budget struct {
 	MaxUSD float64 `json:"maxUSD,omitempty"`
 }
 
+// classificationModeHeaderOnly is the only classification mode the proxy
+// implements: the classification is the value of the classification header.
+const classificationModeHeaderOnly = "header-only"
+
 // ClassificationPolicy configures how the proxy determines the
-// classification of an inbound request. Currently "header-only" is the
-// only fully-implemented mode; "detector" / "hybrid" land in #441.
+// classification of an inbound request. "header-only" (or an empty Mode) is
+// the only implemented mode; "detector" and "hybrid" need an in-proxy
+// classifier that lands in #441, and Validate refuses them until it does.
 type ClassificationPolicy struct {
 	Mode      string   `json:"mode"`
 	HeaderKey string   `json:"headerKey,omitempty"`
@@ -520,10 +525,29 @@ func (c *Config) Validate() error {
 			return err
 		}
 	}
+	if err := c.validateClassification(); err != nil {
+		return err
+	}
 	if err := c.Policy.AuditLog.validate(); err != nil {
 		return err
 	}
 	return c.validateBudgets(ruleNames)
+}
+
+// validateClassification refuses a classification mode the proxy does not
+// implement. extractFeatures reads the classification from the header alone,
+// so a config that asks for a content classifier (written by an older
+// controller, or by hand) would route a request carrying regulated data and
+// no header like any other request. The controller refuses the same modes
+// on the ModelRouter (validateClassificationMode).
+func (c *Config) validateClassification() error {
+	switch m := c.Policy.Classification.Mode; m {
+	case "", classificationModeHeaderOnly:
+		return nil
+	default:
+		return fmt.Errorf("policy.classification.mode %q is not implemented (#441): the proxy reads a request's "+
+			"classification only from the %s header; use %s", m, c.ClassificationHeader(), classificationModeHeaderOnly)
+	}
 }
 
 // validateRuleStrategy checks a rule's route.strategy, and a weighted rule's
