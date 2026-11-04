@@ -836,16 +836,21 @@ runtimeImages:
   tgi: ""
 
 # Informational platform floors for NVIDIA Blackwell (B200-class) serving
-# (#1197). Rendered into NOTES.txt at install time so a first deploy on new
-# silicon fails loudly at the checklist, not cryptically at CUDA init. These
-# do not gate anything; they document what the fleet's nodes must satisfy.
+# (#1197). With show: true they render into NOTES.txt at install time so a
+# first deploy on new silicon fails loudly at the checklist, not cryptically at
+# CUDA init. These do not gate anything; they document what the fleet's nodes
+# must satisfy. The preflight in test/e2e/b200/lib/preflight.sh reads them from
+# this file whether or not show is set.
 # Verified 2026-07-31 (#1374) against the NVIDIA supported-drivers matrix, the
 # CUDA release notes, the GPU Operator release notes, the k8s-device-plugin and
 # DCGM releases, and the NCCL release notes. Re-verify quarterly: this stack
 # moves fast enough that a floor can go end-of-life between releases.
 platformFloors:
-  # Render the floors block in NOTES.txt.
-  show: true
+  # Render the floors block in NOTES.txt. Off by default (#2420): on a CPU or
+  # non-Blackwell cluster the floors are noise, so the default NOTES prints a
+  # one-line link to docs/operations/b200-validation-matrix.md instead. Set
+  # true on Blackwell (B200/GB200) GPU nodes.
+  show: false
   # R570 reached end-of-life in Feb 2026. R580 is the current LTS branch
   # (EOL Jun 2028) and is what DGX OS 7.5 ships; any driver >= 580 covers
   # the whole CUDA 13.x family via minor-version compatibility.

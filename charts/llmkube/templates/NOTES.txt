@@ -1,13 +1,4 @@
-LLMKube has been installed successfully!
-
-Thank you for installing {{ .Chart.Name }} version {{ .Chart.Version }}.
-
-Your release is named {{ .Release.Name }}.
-
-To learn more about the release, try:
-
-  $ helm status {{ .Release.Name }} --namespace {{ include "llmkube.namespace" . }}
-  $ helm get all {{ .Release.Name }} --namespace {{ include "llmkube.namespace" . }}
+LLMKube {{ .Chart.Version }} is installed: release {{ .Release.Name }} in namespace {{ include "llmkube.namespace" . }}.
 
 ---
 GETTING STARTED:
@@ -84,7 +75,14 @@ Pyrra ServiceLevelObjective. Pyrra must be installed separately:
   https://github.com/pyrra-dev/pyrra (tested with v0.10.1)
 {{- end }}
 
-{{- if and .Values.platformFloors .Values.platformFloors.show }}
+{{- /*
+  Blackwell-specific floors are opt-in (platformFloors.show, default false):
+  most installs are CPU or non-Blackwell GPU clusters, where they are noise.
+  The DOCUMENTATION section links the page that lists them either way.
+*/}}
+{{- $showFloors := and .Values.platformFloors .Values.platformFloors.show }}
+{{- if $showFloors }}
+
 ---
 PLATFORM FLOORS (NVIDIA Blackwell / B200-class serving):
 
@@ -128,8 +126,11 @@ DOCUMENTATION:
 - GitHub: https://github.com/defilantech/LLMKube
 - Documentation: https://github.com/defilantech/LLMKube/tree/main/docs
 - Minikube Quickstart: https://github.com/defilantech/LLMKube/blob/main/docs/minikube-quickstart.md
-
-For GPU deployments, see: https://github.com/defilantech/LLMKube/blob/main/docs/gpu-setup-guide.md
+- GPU deployments: https://github.com/defilantech/LLMKube/blob/main/docs/gpu-setup-guide.md
+- NVIDIA Blackwell (B200) platform floors: https://github.com/defilantech/LLMKube/blob/main/docs/operations/b200-validation-matrix.md
+{{- if not $showFloors }}
+  (print them in these notes with --set platformFloors.show=true)
+{{- end }}
 {{- if .Values.metalAgent.rbac.enabled }}
 
 ---
