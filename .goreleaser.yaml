@@ -445,12 +445,42 @@ homebrew_casks:
       template: "https://github.com/defilantech/LLMKube/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
     dependencies:
       - formula: llama.cpp
-    zap:
-      launchctl:
-        - com.llmkube.metal-agent
-      trash:
-        - "~/Library/Application Support/llmkube/metal-agent"
-        - "~/Library/Logs/llmkube"
+    # Zap stops the engines before it trashes their records (#2401): since
+    # #2116 they outlive the agent, and the state directory zap trashes holds
+    # the records stop-engines finds them by. Homebrew runs a stanza's
+    # directives in a fixed order, whatever their place in the file (launchctl,
+    # then script, then trash: ORDERED_DIRECTIVES in
+    # Library/Homebrew/cask/artifact/abstract_uninstall.rb), so the script runs
+    # once the job is removed, as stop-engines needs (a running agent can start
+    # or respawn an engine after it reads the records), and before the records
+    # go. Zap only: a plain uninstall and `brew upgrade` never run it.
+    #
+    # GoReleaser's `zap` field has no `script:` (v2.19.0), so the whole stanza
+    # is in custom_block, which GoReleaser renders at the top of the cask; it
+    # still prints "# No zap stanza required" where the zap field would go.
+    # The executable is relative, and Homebrew resolves it against the staged
+    # path when the script runs: `#{staged_path}` up there would be evaluated
+    # before `version` and pin the cask's staged path to .../unknown. The
+    # --kubeconfig is the one join writes; without it stop-engines would load
+    # ~/.kube/config and could withdraw endpoints on whatever cluster that
+    # names. must_succeed: false keeps an engine stop-engines could not stop
+    # from failing the zap; its output names the engine.
+    custom_block: |
+      # The zap stanza is up here because GoReleaser's zap field has no script: directive.
+      zap launchctl: "com.llmkube.metal-agent",
+          script:    {
+            executable:   "llmkube-metal-agent",
+            args:         [
+              "stop-engines",
+              "--kubeconfig", "#{Dir.home}/Library/Application Support/llmkube/metal-agent/kubeconfig",
+              "--state-dir", "#{Dir.home}/Library/Application Support/llmkube/metal-agent"
+            ],
+            must_succeed: false,
+          },
+          trash:     [
+            "~/Library/Application Support/llmkube/metal-agent",
+            "~/Library/Logs/llmkube",
+          ]
     caveats: |
       The llmkube CLI is a separate formula: brew install defilantech/tap/llmkube
       Join a cluster with `llmkube metal join <join-string>` (get one from your cluster admin: `llmkube metal token create <mac-name>`).
