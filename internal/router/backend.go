@@ -56,6 +56,10 @@ const defaultIdleConnTimeout = 4 * time.Second
 // connection blip, and quarantining a pod rebinds every session on it.
 const endpointFailuresToQuarantine = 2
 
+// pollFailuresToQuarantine is how many load polls in a row must fail to
+// connect before an endpoint leaves placement: about 3s at scrapeInterval.
+const pollFailuresToQuarantine = 3
+
 // defaultResponseHeaderTimeout caps how long the dispatcher waits for
 // the upstream to begin sending response headers. For non-streaming
 // chat completions, llama.cpp / vLLM / cloud providers emit headers
@@ -92,6 +96,12 @@ type backendHealth struct {
 	// failures counts failures since the last success, for endpoint
 	// entries; see endpointFailuresToQuarantine.
 	failures atomic.Int32
+	// pollFailures counts load polls in a row that failed to connect.
+	pollFailures atomic.Int32
+	// pollDown is set once pollFailures reaches pollFailuresToQuarantine. It
+	// has no expiry: the next poll is the probe, so a request is never the
+	// probe for an endpoint the poll already knows is unreachable.
+	pollDown atomic.Bool
 }
 
 // Dispatcher knows how to forward an inbound request to a chosen backend.
@@ -301,11 +311,61 @@ func (d *Dispatcher) dispatchable(key string) bool {
 		return false
 	}
 	h := v.(*backendHealth)
+	if h.pollDown.Load() {
+		return false
+	}
 	if h.healthy.Load() {
 		return true
 	}
 	until := h.quarantineUntil.Load()
 	return until > 0 && d.nowFn().UnixNano() >= until
+}
+
+// quarantined reports whether h is out of placement for a failure rather
+// than past its quarantine window.
+func (d *Dispatcher) quarantined(h *backendHealth) bool {
+	return h.pollDown.Load() || (!h.healthy.Load() && h.quarantineUntil.Load() > d.nowFn().UnixNano())
+}
+
+// pollFailing reports whether the last load poll of the endpoint under key
+// failed to connect.
+func (d *Dispatcher) pollFailing(key string) bool {
+	v, ok := d.health.Load(key)
+	return ok && v.(*backendHealth).pollFailures.Load() > 0
+}
+
+// recordPollFailure counts a load poll of an endpoint that failed to connect,
+// and quarantines the endpoint once pollFailuresToQuarantine polls in a row
+// have. An endpoint without a health entry has left the set and is ignored.
+func (d *Dispatcher) recordPollFailure(name, endpoint string, err error) {
+	v, ok := d.health.Load(healthKey(name, endpoint))
+	if !ok {
+		return
+	}
+	h := v.(*backendHealth)
+	if h.pollFailures.Add(1) >= pollFailuresToQuarantine && h.pollDown.CompareAndSwap(false, true) {
+		d.logger.Warn("router quarantined upstream: load polls failing", "backend", name, "endpoint", endpoint,
+			"polls", pollFailuresToQuarantine, "error", err)
+	}
+}
+
+// recordPollAnswered clears the poll failures of an endpoint that answered a
+// load poll. It leaves a request-driven quarantine alone: an answer on the
+// metrics path does not show that inference works.
+func (d *Dispatcher) recordPollAnswered(name, endpoint string) {
+	v, ok := d.health.Load(healthKey(name, endpoint))
+	if !ok {
+		return
+	}
+	h := v.(*backendHealth)
+	h.pollFailures.Store(0)
+	d.clearPollDown(name, endpoint, h, "load_poll")
+}
+
+func (d *Dispatcher) clearPollDown(name, endpoint string, h *backendHealth, via string) {
+	if h.pollDown.CompareAndSwap(true, false) {
+		d.logger.Warn("router upstream reachable again", "backend", name, "endpoint", endpoint, "via", via)
+	}
 }
 
 // roundRobin chooses the pod to dispatch to among eps, the backend's live
@@ -463,6 +523,8 @@ func (d *Dispatcher) markHealthy(name, endpoint string) {
 	h.healthy.Store(true)
 	h.quarantineUntil.Store(0)
 	h.failures.Store(0)
+	h.pollFailures.Store(0)
+	d.clearPollDown(name, endpoint, h, "request")
 }
 
 // Dispatch forwards the request to the named backend and returns the

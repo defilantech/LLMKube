@@ -49,6 +49,10 @@ type Candidate struct {
 	// Prefill is this replica's estimated uncached prompt tokens in flight to
 	// the pod, counted until the pod sends its first response byte.
 	Prefill int64
+	// Unreachable is set while this replica's load polls of the pod fail to
+	// connect. Its Load then counts only this replica's in-flight requests,
+	// which reads as idle, so it must not compete on Load.
+	Unreachable bool
 }
 
 // Result names why a pod was chosen.
@@ -124,11 +128,14 @@ func Load(c Candidate, now time.Time) int64 {
 	return int64(math.Ceil(s.Running+s.Waiting)) + sent
 }
 
-// Eligible drops pods whose fresh KV reading is at or above KVFullThreshold,
-// unless that would drop every pod.
+// Eligible drops unreachable pods and pods whose fresh KV reading is at or
+// above KVFullThreshold, unless that would drop every pod.
 func Eligible(cands []Candidate, now time.Time) []Candidate {
 	out := make([]Candidate, 0, len(cands))
 	for _, c := range cands {
+		if c.Unreachable {
+			continue
+		}
 		if s := freshSample(c, now); s != nil && s.KVUsage >= KVFullThreshold {
 			continue
 		}
@@ -147,8 +154,9 @@ func Score(c Candidate, now time.Time) int64 {
 	return Load(c, now)*TokensPerRequest + c.Prefill
 }
 
-// PickLeastLoaded returns the candidate with the lowest Score; ties are broken
-// by starting the scan at tieStart, so callers can rotate.
+// PickLeastLoaded returns the reachable candidate with the lowest Score, or the
+// unreachable one with the lowest Score when none is reachable; ties are
+// broken by starting the scan at tieStart, so callers can rotate.
 func PickLeastLoaded(cands []Candidate, now time.Time, tieStart int) (string, Result) {
 	n := len(cands)
 	if n == 0 {
@@ -164,7 +172,14 @@ func PickLeastLoaded(cands []Candidate, now time.Time, tieStart int) (string, Re
 	best, bestScore := start, Score(cands[start], now)
 	for i := 1; i < n; i++ {
 		j := (start + i) % n
-		if sc := Score(cands[j], now); sc < bestScore {
+		sc := Score(cands[j], now)
+		if u, bu := cands[j].Unreachable, cands[best].Unreachable; u != bu {
+			if bu {
+				best, bestScore = j, sc
+			}
+			continue
+		}
+		if sc < bestScore {
 			best, bestScore = j, sc
 		}
 	}

@@ -245,6 +245,12 @@ func TestSessionsConcurrentFirstRequestsBindOnce(t *testing.T) {
 	}
 }
 
+func TestSessionsNeverSpillsOntoUnreachablePod(t *testing.T) {
+	s := NewSessions(0, 10)
+	bindToA(t, s, t0)
+	place(t, s, 1, []Candidate{pod("a", 20, 10, 0.95), unreachable("b", 0), pod("c", 2, 0, 0.95)}, t0, "a", Sticky, ReasonNone)
+}
+
 func TestSessionsKVFullQueuedShedsToStaleTargetByGap(t *testing.T) {
 	s := NewSessions(0, 10)
 	bindToA(t, s, t0)

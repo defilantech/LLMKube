@@ -206,8 +206,9 @@ func (p *Proxy) Mount(mux *http.ServeMux) {
 }
 
 // handleHealth always returns 200. The Kubernetes liveness probe uses
-// this; the proxy is "alive" as long as its goroutine runs. Readiness
-// gating on backend health lands with #432 / #428.
+// this; the proxy is "alive" as long as its goroutine runs. It does not
+// reflect backend health: one backend with every endpoint down would take
+// every replica out of rotation, along with the healthy backends.
 func (p *Proxy) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write([]byte(`{"status":"ok"}`))

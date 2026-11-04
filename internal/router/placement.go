@@ -108,19 +108,18 @@ func (d *Dispatcher) place(backend *Backend, headers http.Header, bodyBytes int6
 	cands := make([]picker.Candidate, 0, len(eps))
 	var quarantined []string
 	for _, ep := range eps {
-		if !d.dispatchable(healthKey(backend.Name, ep)) {
+		key := healthKey(backend.Name, ep)
+		if !d.dispatchable(key) {
 			// A departing endpoint can still be in eps after its health entry
 			// was deleted. Missing health is not evidence of quarantine.
-			if v, ok := d.health.Load(healthKey(backend.Name, ep)); ok {
-				h := v.(*backendHealth)
-				if !h.healthy.Load() && h.quarantineUntil.Load() > d.nowFn().UnixNano() {
-					quarantined = append(quarantined, ep)
-				}
+			if v, ok := d.health.Load(key); ok && d.quarantined(v.(*backendHealth)) {
+				quarantined = append(quarantined, ep)
 			}
 			continue
 		}
 		l := d.loadFor(backend.Name, ep)
-		cands = append(cands, picker.Candidate{Endpoint: ep, InFlight: l.inflight.Load(), Sample: l.sample.Load(), Prefill: l.prefill.Load()})
+		cands = append(cands, picker.Candidate{Endpoint: ep, InFlight: l.inflight.Load(), Sample: l.sample.Load(),
+			Prefill: l.prefill.Load(), Unreachable: d.pollFailing(key)})
 	}
 	if len(cands) == 0 {
 		return d.roundRobin(backend, eps), picker.Fallback, picker.ReasonNone, 0

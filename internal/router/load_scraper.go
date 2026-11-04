@@ -19,6 +19,7 @@ package router
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -95,10 +96,16 @@ func (s *LoadScraper) Start(ctx context.Context) {
 	}
 }
 
+// errPollUnreachable marks a scrape that got no HTTP response: the endpoint
+// refused, reset or timed out the connection.
+var errPollUnreachable = errors.New("endpoint unreachable")
+
 // scrapeOnce scrapes every current endpoint of every target once, in parallel,
 // then refreshes the load and freshness gauges. A failed scrape stores nothing,
 // so the endpoint's last sample ages out and placement falls back to in-flight
-// after picker.StaleAfter.
+// after picker.StaleAfter. A scrape that got no HTTP response also counts
+// toward the endpoint's poll quarantine; any HTTP response clears it, since a
+// runtime without the metrics path may still serve inference.
 func (s *LoadScraper) scrapeOnce(ctx context.Context) {
 	var wg sync.WaitGroup
 	for _, tgt := range s.targets {
@@ -107,13 +114,22 @@ func (s *LoadScraper) scrapeOnce(ctx context.Context) {
 			go func(tgt scrapeTarget, ep string) {
 				defer wg.Done()
 				running, waiting, kv, err := s.scrape(ctx, ep, tgt.profile)
+				if ctx.Err() != nil {
+					return // shutting down; the failure says nothing about the endpoint
+				}
 				if err != nil {
 					s.logger.Debug("engine metrics scrape failed", "backend", tgt.backend, "endpoint", ep, "error", err)
+					if errors.Is(err, errPollUnreachable) {
+						s.disp.recordPollFailure(tgt.backend, ep, err)
+					} else {
+						s.disp.recordPollAnswered(tgt.backend, ep)
+					}
 					return
 				}
 				if !s.stillLive(tgt.backend, ep) {
 					return // the pod left while this scrape was in flight
 				}
+				s.disp.recordPollAnswered(tgt.backend, ep)
 				s.disp.RecordSample(tgt.backend, ep, picker.Sample{Running: running, Waiting: waiting, KVUsage: kv, At: s.disp.nowFn()})
 			}(tgt, ep)
 		}
@@ -165,7 +181,7 @@ func (s *LoadScraper) scrape(ctx context.Context, endpoint string, p MetricsProf
 	}
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return 0, 0, 0, err
+		return 0, 0, 0, fmt.Errorf("%w: %w", errPollUnreachable, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
