@@ -70,7 +70,9 @@ func Endpoint() string {
 
 // Enabled reports whether the environment asks for trace export: an OTLP
 // endpoint is set, and neither OTEL_SDK_DISABLED=true nor
-// OTEL_TRACES_EXPORTER=none turns it off.
+// OTEL_TRACES_EXPORTER=none turns it off. Any other OTEL_TRACES_EXPORTER
+// value (console, say) still exports over OTLP on purpose: OTLP is the only
+// exporter these binaries build.
 func Enabled() bool {
 	if strings.EqualFold(strings.TrimSpace(os.Getenv(envSDKDisabled)), "true") {
 		return false
@@ -110,7 +112,11 @@ func setup(
 	// The exporter parses the endpoint with url.Parse and, when that fails,
 	// silently falls back to localhost:4317. A bare IP:port such as
 	// 10.0.0.5:4317 is the common case that fails, so refuse it here, where
-	// the caller logs the reason, instead of exporting nowhere.
+	// the caller logs the reason, instead of exporting nowhere. Source,
+	// otlptracegrpc v1.47.0: WithURL in internal/envconfig/envconfig.go hands
+	// a url.Parse error to otel's global error handler and skips the
+	// variable, leaving the localhost:4317 default from
+	// internal/otlpconfig/options.go.
 	if _, err := url.Parse(Endpoint()); err != nil {
 		return noop, fmt.Errorf("OTLP endpoint %q is not a URL; use http://host:port or https://host:port: %w",
 			Endpoint(), err)
