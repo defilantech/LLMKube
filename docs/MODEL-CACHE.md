@@ -145,19 +145,7 @@ It reads the magic with `stat -f`; a custom init image whose `stat` lacks
 logs a warning, which leaves a FUSE cache unprotected across nodes.
 The filesystem type alone cannot establish cross-node locking support.
 Upgrading to a release with this change rolls every cache-backed serving pod
-once, because the downloader's command changes. A separate change in the same
-release moves every init command that stages a model, cache-backed or not:
-the downloader now checks a transfer in tenths of a second instead of a whole
-one, so a small file no longer waits out the rest of a second before the init
-step moves on (#2386). Serving pods and prefetch Jobs for those Models roll
-once, whether or not `spec.modelCache` is in use. The helper prints one line
-each time its poll count reaches a whole multiple of `PROGRESS_INTERVAL`
-seconds, and it prints that line before it notices the transfer has ended, so a
-transfer finishing on a boundary still logs it. On a host where a poll costs
-more than a tenth of a second the counted seconds lag the wall clock, so the
-last interval's line can land after the transfer ends and a long transfer over
-such a shell logs fewer lines than its wall-clock length allows, one per
-interval the count fell behind.
+once, because the downloader's command changes.
 A refusal sets `ModelTransferHealthy=False` with reason
 `ModelCacheLockUnsupported`. The condition message carries the same remedy the
 downloader logs, which depends on the source kind (prefetch for HTTP/HF
@@ -186,6 +174,14 @@ separate Models sharing a cache key take turns (see
 as a hand-run Job mounting the claim, while a prefetch Job stages its
 directory. Other filesystems still use `flock`;
 their cross-node lock semantics must be supported by the storage provider.
+
+**Upgrade note (#2386):** a release that includes #2386 changes the
+downloader's command for every Model that stages a model, cache-backed or not.
+The downloader checks a transfer every tenth of a second instead of every
+second, so a small file no longer waits out the rest of a second. Serving pods
+and prefetch Jobs for those Models roll once on that upgrade, whether or not
+`spec.modelCache` is in use. Progress lines still print about once per
+`PROGRESS_INTERVAL` seconds.
 
 ## Integrity Verification (spec.sha256)
 
@@ -276,7 +272,7 @@ spec:
   absent, while the stamp-hit and mismatch lines stay what they were, so the
   extra logging adds no template change of its own. The pod template of every
   Model that stages moves anyway when the downloader's command changes, as the
-  cache upgrade note above describes.
+  #2386 upgrade note above describes.
 
 ### Staging files concurrently (`spec.downloadConcurrency`)
 

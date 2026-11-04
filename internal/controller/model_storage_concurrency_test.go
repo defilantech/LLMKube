@@ -214,7 +214,9 @@ func (o *gatedOrigin) await(t *testing.T, what string, cond func() bool) {
 // awaitInFlight waits until the origin sees n transfers in flight.
 func (o *gatedOrigin) awaitInFlight(t *testing.T, n int) {
 	t.Helper()
-	o.await(t, fmt.Sprintf("%d transfers in flight (have %d)", n, o.maxInFlight()), func() bool { return o.maxSeen >= n })
+	if !o.eventually(t, func() bool { return o.maxInFlight() >= n }) {
+		t.Fatalf("waited 10s for %d transfers in flight (have %d)", n, o.maxInFlight())
+	}
 }
 
 // awaitGet waits until a transfer of name has arrived.
@@ -901,10 +903,14 @@ func testCapClampsHugeSize(t *testing.T, v poolVariant) {
 
 	// An HTTP worker then rejects the body, whose size does not match
 	// the one advertised; what matters here is that the pool counted
-	// each file as the cap and held b.bin back. Each file still runs alone,
-	// so every transfer is held until the assertion is read.
-	out, _ := v.run(t, script, o, dir, strings.Join(names[:3], "\n"),
+	// each file as the cap and held b.bin back. a.bin stays held at the
+	// origin until the dispatcher has logged that it holds b.bin back, so
+	// the check does not depend on how long a.bin's worker takes.
+	r := v.start(t, script, o, dir, strings.Join(names[:3], "\n"),
 		"MODEL_DOWNLOAD_CONCURRENCY=3", "MODEL_DOWNLOAD_MAX_INFLIGHT_BYTES=1048576")
+	r.awaitOutput(t, "Waiting to start b.bin: ")
+	o.releaseAll()
+	out, _ := r.wait(t)
 	if want := "Waiting to start b.bin: 1 MiB in flight, 1 MiB needed, 1 MiB allowed (concurrency: 1)"; !strings.Contains(out, want) {
 		t.Errorf("log lacks %q\n%s", want, out)
 	}
