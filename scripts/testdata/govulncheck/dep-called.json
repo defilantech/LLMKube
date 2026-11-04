@@ -1,0 +1,97 @@
+{
+  "osv": {
+    "schema_version": "1.3.1",
+    "id": "GO-2099-0001",
+    "modified": "2099-01-01T00:00:00Z",
+    "published": "2099-01-01T00:00:00Z",
+    "summary": "Panic in Parse | Decode on crafted input in example.com/vulnmod",
+    "details": "A fixture advisory for a dependency a change adds.",
+    "affected": [
+      {
+        "package": {
+          "name": "example.com/vulnmod",
+          "ecosystem": "Go"
+        },
+        "ranges": [
+          {
+            "type": "SEMVER",
+            "events": [
+              {
+                "introduced": "0"
+              },
+              {
+                "fixed": "1.2.1"
+              }
+            ]
+          }
+        ],
+        "ecosystem_specific": {
+          "imports": [
+            {
+              "path": "example.com/vulnmod/parse",
+              "symbols": [
+                "Parse"
+              ]
+            }
+          ]
+        }
+      }
+    ]
+  }
+}
+{
+  "finding": {
+    "osv": "GO-2099-0001",
+    "fixed_version": "v1.2.1",
+    "trace": [
+      {
+        "module": "example.com/vulnmod",
+        "version": "v1.2.0"
+      }
+    ]
+  }
+}
+{
+  "finding": {
+    "osv": "GO-2099-0001",
+    "fixed_version": "v1.2.1",
+    "trace": [
+      {
+        "module": "example.com/vulnmod",
+        "version": "v1.2.0",
+        "package": "example.com/vulnmod/parse"
+      }
+    ]
+  }
+}
+{
+  "finding": {
+    "osv": "GO-2099-0001",
+    "fixed_version": "v1.2.1",
+    "trace": [
+      {
+        "module": "example.com/vulnmod",
+        "version": "v1.2.0",
+        "package": "example.com/vulnmod/parse",
+        "function": "Parse",
+        "position": {
+          "filename": "parse/parse.go",
+          "offset": 812,
+          "line": 40,
+          "column": 6
+        }
+      },
+      {
+        "module": "github.com/defilantech/llmkube",
+        "package": "github.com/defilantech/llmkube/pkg/cli",
+        "function": "loadCatalog",
+        "position": {
+          "filename": "pkg/cli/catalog.go",
+          "offset": 3301,
+          "line": 118,
+          "column": 25
+        }
+      }
+    ]
+  }
+}

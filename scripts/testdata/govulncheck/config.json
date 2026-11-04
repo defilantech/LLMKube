@@ -1,0 +1,38 @@
+{
+  "config": {
+    "protocol_version": "v1.0.0",
+    "scanner_name": "govulncheck",
+    "scanner_version": "v1.9.0",
+    "db": "https://vuln.go.dev",
+    "db_last_modified": "2026-11-02T22:01:43Z",
+    "go_version": "go1.27.0",
+    "scan_level": "symbol",
+    "scan_mode": "source"
+  }
+}
+{
+  "SBOM": {
+    "go_version": "go1.27.0",
+    "modules": [
+      {
+        "path": "github.com/defilantech/llmkube"
+      },
+      {
+        "path": "github.com/google/cel-go",
+        "version": "v0.29.2"
+      },
+      {
+        "path": "stdlib",
+        "version": "v1.27.0"
+      }
+    ],
+    "roots": [
+      "github.com/defilantech/llmkube/cmd"
+    ]
+  }
+}
+{
+  "progress": {
+    "message": "Scanning your code and 312 packages across 101 dependent modules for known vulnerabilities..."
+  }
+}

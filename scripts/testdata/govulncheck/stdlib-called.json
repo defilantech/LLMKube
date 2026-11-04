@@ -1,0 +1,148 @@
+{
+  "osv": {
+    "schema_version": "1.3.1",
+    "id": "GO-2026-6607",
+    "modified": "2026-10-08T22:31:09Z",
+    "published": "2026-10-08T22:31:09Z",
+    "aliases": [
+      "CVE-2026-97031"
+    ],
+    "summary": "Reject malformed ECH outer extension references in crypto/tls",
+    "details": "Multiple ECH outer extension references are not permitted under RFC 9849.",
+    "affected": [
+      {
+        "package": {
+          "name": "stdlib",
+          "ecosystem": "Go"
+        },
+        "ranges": [
+          {
+            "type": "SEMVER",
+            "events": [
+              {
+                "introduced": "1.27.0-0"
+              },
+              {
+                "fixed": "1.27.2"
+              }
+            ]
+          }
+        ],
+        "ecosystem_specific": {
+          "imports": [
+            {
+              "path": "crypto/tls",
+              "symbols": [
+                "Conn.Handshake",
+                "Conn.Read"
+              ]
+            }
+          ]
+        }
+      }
+    ]
+  }
+}
+{
+  "finding": {
+    "osv": "GO-2026-6607",
+    "fixed_version": "v1.27.2",
+    "trace": [
+      {
+        "module": "stdlib",
+        "version": "v1.27.0"
+      }
+    ]
+  }
+}
+{
+  "finding": {
+    "osv": "GO-2026-6607",
+    "fixed_version": "v1.27.2",
+    "trace": [
+      {
+        "module": "stdlib",
+        "version": "v1.27.0",
+        "package": "crypto/tls"
+      }
+    ]
+  }
+}
+{
+  "finding": {
+    "osv": "GO-2026-6607",
+    "fixed_version": "v1.27.2",
+    "trace": [
+      {
+        "module": "stdlib",
+        "version": "v1.27.0",
+        "package": "crypto/tls",
+        "function": "Read",
+        "receiver": "*Conn",
+        "position": {
+          "filename": "src/crypto/tls/conn.go",
+          "offset": 43702,
+          "line": 1378,
+          "column": 16
+        }
+      },
+      {
+        "module": "stdlib",
+        "version": "v1.27.0",
+        "package": "net/http",
+        "function": "Read",
+        "receiver": "*readWriteCloserBody",
+        "position": {
+          "filename": "src/net/http/transport.go",
+          "offset": 88428,
+          "line": 2811,
+          "column": 31
+        }
+      },
+      {
+        "module": "github.com/defilantech/llmkube",
+        "package": "github.com/defilantech/llmkube/internal/router",
+        "function": "PipeBody",
+        "position": {
+          "filename": "internal/router/backend.go",
+          "offset": 29098,
+          "line": 781,
+          "column": 21
+        }
+      }
+    ]
+  }
+}
+{
+  "finding": {
+    "osv": "GO-2026-6607",
+    "fixed_version": "v1.27.2",
+    "trace": [
+      {
+        "module": "stdlib",
+        "version": "v1.27.0",
+        "package": "crypto/tls",
+        "function": "Handshake",
+        "receiver": "*Conn",
+        "position": {
+          "filename": "src/crypto/tls/conn.go",
+          "offset": 47418,
+          "line": 1498,
+          "column": 16
+        }
+      },
+      {
+        "module": "github.com/defilantech/llmkube",
+        "package": "github.com/defilantech/llmkube/internal/controller",
+        "function": "Reconcile",
+        "receiver": "*ModelRouterAgentGatewayReconciler",
+        "position": {
+          "filename": "internal/controller/modelrouter_agentgateway_controller.go",
+          "offset": 17023,
+          "line": 319,
+          "column": 48
+        }
+      }
+    ]
+  }
+}
