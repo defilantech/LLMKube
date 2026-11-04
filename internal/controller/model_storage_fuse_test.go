@@ -182,6 +182,16 @@ func TestMultiFileFUSEWarmCache(t *testing.T) {
 	}
 }
 
+// assertWarmStartIsImmediate bounds a warm FUSE start that stages nothing: the
+// concurrent command must not sit in the pool's join for a full poll period per
+// worker it never started, and the pool polls in tenths.
+func assertWarmStartIsImmediate(t *testing.T, concurrent bool, took time.Duration) {
+	t.Helper()
+	if concurrent && took > 750*time.Millisecond {
+		t.Errorf("concurrent warm start took %s, want under 750ms", took.Round(time.Millisecond))
+	}
+}
+
 func runMultiFileFUSEWarmCacheCase(t *testing.T, realStat, policy string, s3, concurrent bool, state string) {
 	t.Helper()
 	var gets atomic.Int32
@@ -231,12 +241,7 @@ func runMultiFileFUSEWarmCacheCase(t *testing.T, realStat, policy string, s3, co
 	}
 	start := time.Now()
 	out, err := runVerifyScriptEnv(t, buildMultiFileInitCommand(true, s3, false, false, concurrent, policy), srv.URL, dest, "", env...)
-	took := time.Since(start)
-	// A warm start that stages nothing must not sit in the pool's join for a
-	// full poll period per worker it never started; the pool polls in tenths.
-	if concurrent && took > 750*time.Millisecond {
-		t.Errorf("concurrent warm start took %s, want under 750ms", took.Round(time.Millisecond))
-	}
+	assertWarmStartIsImmediate(t, concurrent, time.Since(start))
 	if strings.Contains(out, "Staging up to") {
 		t.Errorf("a serving pod on FUSE, which stages nothing, announced a download pool: %s", out)
 	}
