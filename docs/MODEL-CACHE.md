@@ -145,10 +145,15 @@ It reads the magic with `stat -f`; a custom init image whose `stat` lacks
 logs a warning, which leaves a FUSE cache unprotected across nodes.
 The filesystem type alone cannot establish cross-node locking support.
 Upgrading to a release with this change rolls every cache-backed serving pod
-once, because the downloader's command changes. The same upgrade rolls every
-cache-backed pod again: the downloader now checks a transfer in tenths of a
-second instead of a whole one, so a small file no longer waits out the rest of
-a second before the init step moves on (#2386).
+once, because the downloader's command changes. A separate change in the same
+release moves every init command that stages a model, cache-backed or not:
+the downloader now checks a transfer in tenths of a second instead of a whole
+one, so a small file no longer waits out the rest of a second before the init
+step moves on (#2386). Serving pods and prefetch Jobs for those Models roll
+once, whether or not `spec.modelCache` is in use. The line text and the about-
+one-line-per-`PROGRESS_INTERVAL` cadence are what the helper guarantees; a
+transfer that ends inside an interval may print that interval's line or not,
+depending on where the poll lands.
 A refusal sets `ModelTransferHealthy=False` with reason
 `ModelCacheLockUnsupported`. The condition message carries the same remedy the
 downloader logs, which depends on the source kind (prefetch for HTTP/HF

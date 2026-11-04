@@ -435,8 +435,9 @@ var downloadProgressFn = downloadProgressFnFor(false)
 // in flight (llmkube_pool_label).
 var downloadProgressLabeledFn = downloadProgressFnFor(true)
 
-// downloadProgressFnFor builds both variants from one text, so the serial one
-// stays byte for byte what every existing pod template carries.
+// downloadProgressFnFor builds both variants from one text; they differ only by
+// the label appended to each line. Both carry the tenths poll, so the serial
+// command is no longer what pre-#2386 templates carried.
 //
 // The loop polls in tenths so a transfer that finished in milliseconds returns
 // at once instead of after a full second (#2386), and counts tenths so the
@@ -1469,9 +1470,9 @@ func concurrentMultiFileLoop(perFile, probe, start, refreshPolicy, list, read st
 // pipeline subshell, so the assignments do not leak.
 //
 // concurrent runs the per-file body in the worker pool of multiFilePoolFns
-// instead of inline (spec.downloadConcurrency above 1). Off, the command is
-// the serial loop, byte for byte, so a Model that does not set the field keeps
-// its pod template.
+// instead of inline (spec.downloadConcurrency above 1). Off, the command keeps
+// the serial per-file loop body unchanged, so what the field adds is the pool;
+// the downloader helper both share is not part of that difference.
 func buildMultiFileInitCommand(useCache, isS3, isHFAuth, withSHA256, concurrent bool, refreshPolicy string) string {
 	return multiFileInitCommand(useCache, isS3, isHFAuth, withSHA256, concurrent, refreshPolicy, false)
 }
