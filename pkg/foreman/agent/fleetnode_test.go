@@ -864,33 +864,19 @@ func TestRegistrar_Run_ReRegistersWhenFleetNodeDeleted(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- r.Run(ctx) }()
 
-	// Let the initial heartbeat complete.
-	time.Sleep(30 * time.Millisecond)
+	if !waitFleetNodeReady(t, kc, "worker-re-register", 2*time.Second) {
+		t.Fatal("initial heartbeat did not mark the FleetNode Ready within 2s")
+	}
 
-	// Simulate the reconciler reaping the FleetNode CR.
+	// Simulate the reconciler reaping the FleetNode CR. Nothing checks for
+	// NotFound here: the next 20ms tick may already have re-created it.
 	if err := kc.Delete(ctx, existing); err != nil {
 		t.Fatalf("delete FleetNode: %v", err)
 	}
 
-	// Verify the object is gone.
-	var check foremanv1alpha1.FleetNode
-	if err := kc.Get(ctx, types.NamespacedName{Name: "worker-re-register"}, &check); !apierrors.IsNotFound(err) {
-		t.Fatalf("expected NotFound after delete, got %v", err)
-	}
-
-	// Wait for the next tick: PatchHeartbeat gets NotFound -> Upsert -> PatchHeartbeat.
-	time.Sleep(60 * time.Millisecond)
-
-	// Verify the FleetNode was re-created and is Ready.
-	var got foremanv1alpha1.FleetNode
-	if err := kc.Get(context.Background(), types.NamespacedName{Name: "worker-re-register"}, &got); err != nil {
-		t.Fatalf("Get after re-registration: %v", err)
-	}
-	if got.Status.Phase != foremanv1alpha1.FleetNodePhaseReady {
-		t.Errorf("Phase = %v, want Ready", got.Status.Phase)
-	}
-	if got.Status.LastHeartbeatTime == nil {
-		t.Error("LastHeartbeatTime was not populated after re-registration")
+	// The next tick: PatchHeartbeat gets NotFound -> Upsert -> PatchHeartbeat.
+	if !waitFleetNodeReady(t, kc, "worker-re-register", 2*time.Second) {
+		t.Fatal("FleetNode was not re-created Ready with a heartbeat within 2s")
 	}
 
 	cancel()
@@ -905,10 +891,34 @@ func TestRegistrar_Run_ReRegistersWhenFleetNodeDeleted(t *testing.T) {
 	}
 
 	// Verify clean drain on shutdown.
+	var got foremanv1alpha1.FleetNode
 	if err := kc.Get(context.Background(), types.NamespacedName{Name: "worker-re-register"}, &got); err != nil {
 		t.Fatalf("Get after shutdown: %v", err)
 	}
 	if got.Status.Phase != foremanv1alpha1.FleetNodePhaseDraining {
 		t.Errorf("Phase after cancel = %v, want Draining", got.Status.Phase)
+	}
+}
+
+// waitFleetNodeReady polls until the named FleetNode exists, is Ready and
+// carries a heartbeat time, or the timeout expires. A fixed sleep instead
+// assumes how many registrar ticks fit in it, which -race on a slow runner
+// breaks.
+func waitFleetNodeReady(t *testing.T, c client.Client, name string, timeout time.Duration) bool {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		var fn foremanv1alpha1.FleetNode
+		err := c.Get(context.Background(), types.NamespacedName{Name: name}, &fn)
+		if err != nil && !apierrors.IsNotFound(err) {
+			t.Fatalf("Get FleetNode %s: %v", name, err)
+		}
+		if err == nil && fn.Status.Phase == foremanv1alpha1.FleetNodePhaseReady && fn.Status.LastHeartbeatTime != nil {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
