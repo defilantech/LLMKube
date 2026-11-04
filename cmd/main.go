@@ -32,12 +32,6 @@ import (
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
-	"go.opentelemetry.io/otel/sdk/resource"
-	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
-
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -59,6 +53,7 @@ import (
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 	"github.com/defilantech/llmkube/internal/controller"
 	llmkubemetrics "github.com/defilantech/llmkube/internal/metrics"
+	"github.com/defilantech/llmkube/internal/tracing"
 	"github.com/defilantech/llmkube/internal/watchcanary"
 	// +kubebuilder:scaffold:imports
 )
@@ -130,37 +125,6 @@ func (r *clientsetPodLogReader) ReadPodLogs(
 		return "", err
 	}
 	return kept.String(), nil
-}
-
-// initTracer initializes an OTLP trace exporter when OTEL_EXPORTER_OTLP_ENDPOINT is set.
-func initTracer(ctx context.Context) func() {
-	endpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
-	if endpoint == "" {
-		return func() {}
-	}
-
-	exporter, err := otlptracegrpc.New(ctx,
-		otlptracegrpc.WithEndpoint(endpoint),
-		otlptracegrpc.WithInsecure(),
-	)
-	if err != nil {
-		setupLog.Error(err, "failed to create OTLP trace exporter")
-		return func() {}
-	}
-
-	tp := sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(exporter),
-		sdktrace.WithResource(resource.NewWithAttributes(
-			semconv.SchemaURL,
-			semconv.ServiceName("llmkube-controller"),
-		)),
-	)
-	otel.SetTracerProvider(tp)
-	setupLog.Info("OpenTelemetry tracing initialized", "endpoint", endpoint)
-
-	return func() {
-		_ = tp.Shutdown(ctx)
-	}
 }
 
 // nolint:gocyclo
@@ -493,9 +457,21 @@ func main() {
 		}
 	}
 
-	// Initialize OpenTelemetry tracing (noop if OTEL_EXPORTER_OTLP_ENDPOINT not set)
-	shutdownTracer := initTracer(context.Background())
-	defer shutdownTracer()
+	// OpenTelemetry tracing from the standard OTEL_* env (no-op without an
+	// endpoint). The manager creates no spans of its own; the same settings are
+	// handed to the router-proxy Deployments it renders, which do.
+	shutdownTracer, tracerErr := tracing.Setup(context.Background(), "llmkube-controller")
+	switch {
+	case tracerErr != nil:
+		setupLog.Error(tracerErr, "OpenTelemetry tracing disabled")
+	case tracing.Enabled():
+		setupLog.Info("OpenTelemetry tracing initialized", "endpoint", tracing.Endpoint())
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = shutdownTracer(ctx)
+	}()
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
@@ -770,6 +746,7 @@ func main() {
 		RouterProxyImage:      routerProxyImage,
 		DefaultLiteLLMURL:     defaultLiteLLMURL,
 		EmitScrapeAnnotations: emitScrapeAnnotations,
+		RouterProxyTracingEnv: tracing.ExporterEnv(),
 		Recorder:              mgr.GetEventRecorder("modelrouter-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ModelRouter")

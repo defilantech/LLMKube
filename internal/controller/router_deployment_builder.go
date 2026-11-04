@@ -220,6 +220,7 @@ func (r *ModelRouterReconciler) newRouterDeployment(
 		serviceAccountName = routerProxyResourceName(mr.Name)
 		env = append(env, corev1.EnvVar{Name: "ROUTER_NAME", Value: mr.Name})
 	}
+	env = append(env, r.RouterProxyTracingEnv...)
 
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{

@@ -21,9 +21,10 @@ Terminal recordings live in `docs/site/casts/`. See `docs/site/casts/README.md` 
 
 Reference material for working on the operator itself: how to add a new runtime backend, how to spec the HuggingFace source format, internals of the vLLM image pipeline. These pages are read by people *changing* LLMKube, not people *using* LLMKube — they aren't rendered to the public site.
 
-## `observability/`: SLOs and error budgets
+## `observability/`: SLOs, error budgets and tracing
 
 - [SLOs and error budgets](observability/slo.md)
+- [Tracing](observability/tracing.md): what the router-proxy traces and how to export it
 
 ## During the transition
 

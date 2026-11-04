@@ -45,6 +45,7 @@ import (
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 	prommetrics "github.com/defilantech/llmkube/internal/metrics"
 	"github.com/defilantech/llmkube/internal/router"
+	"github.com/defilantech/llmkube/internal/tracing"
 )
 
 func main() {
@@ -121,6 +122,18 @@ func main() {
 			logger.Error("invalid listener configuration", "error", err)
 			os.Exit(1)
 		}
+	}
+
+	// The proxy starts a span per request and per backend attempt; without a
+	// provider installed here they go to otel's no-op default and are dropped.
+	// A setup failure is logged, not fatal: tracing is observability, and the
+	// data plane must not go down over it.
+	shutdownTracing, err := tracing.Setup(context.Background(), "llmkube-router-proxy")
+	switch {
+	case err != nil:
+		logger.Error("OpenTelemetry tracing disabled", "error", err)
+	case tracing.Enabled():
+		logger.Info("OpenTelemetry tracing enabled", "endpoint", tracing.Endpoint())
 	}
 
 	cfg, err := router.LoadConfig(*configPath)
@@ -273,6 +286,11 @@ func main() {
 		// No handler runs any more, so no new shadow copy can start: cancel
 		// the ones in flight and wait for them.
 		proxy.Close()
+		// Every span has ended now; flush the last batch. It shares the drain
+		// budget, so the pod's grace margin still only covers process exit.
+		if err := shutdownTracing(ctx); err != nil {
+			logger.Error("flush traces on shutdown", "error", err)
+		}
 		logger.Info("router-proxy stopped cleanly")
 	case err := <-serverErr:
 		if err != nil {

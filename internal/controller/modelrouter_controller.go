@@ -107,6 +107,13 @@ type ModelRouterReconciler struct {
 	// Set via --emit-scrape-annotations; default false.
 	EmitScrapeAnnotations bool
 
+	// RouterProxyTracingEnv is appended to every router-proxy container's env
+	// so the proxy exports its request spans where the controller's own OTEL_*
+	// settings point. The proxy pod gets no other way to receive them: the
+	// reconciler owns its env. Nil adds nothing. Wired in cmd/main.go from
+	// tracing.ExporterEnv.
+	RouterProxyTracingEnv []corev1.EnvVar
+
 	// BudgetStatusURL overrides how the reconciler derives the proxy's budget
 	// admin URL from a ModelRouter. Nil means routerProxyBudgetEndpoint, the
 	// in-cluster Service address. Tests inject it to point at a stub proxy.
