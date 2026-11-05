@@ -26,9 +26,13 @@ import (
 // goconst caps this file at 14 "namespace" literals (.golangci.yml min-occurrences: 15).
 const labelNamespace = "namespace"
 
-// labelRouter is the same guard for the "router" label, which the router-proxy
-// metric families repeat across their label sets.
-const labelRouter = "router"
+// labelRouter and labelBackend are the same guard for the "router" and
+// "backend" labels, which the router-proxy metric families repeat across their
+// label sets.
+const (
+	labelRouter  = "router"
+	labelBackend = "backend"
+)
 
 var (
 	// Model metrics
@@ -119,7 +123,7 @@ var (
 			Name: "llmkube_router_requests_total",
 			Help: "Total number of router-proxy requests.",
 		},
-		[]string{labelRouter, "rule", "backend", "classification", "outcome"},
+		[]string{labelRouter, "rule", labelBackend, "classification", "outcome"},
 	)
 
 	RouterRequestDuration = prometheus.NewHistogramVec(
@@ -128,7 +132,7 @@ var (
 			Help:    "Duration of router-proxy requests.",
 			Buckets: prometheus.DefBuckets,
 		},
-		[]string{labelRouter, "rule", "backend"},
+		[]string{labelRouter, "rule", labelBackend},
 	)
 
 	// RouterShadowRequestsTotal counts the copies a shadow rule mirrors to
@@ -140,7 +144,7 @@ var (
 			Name: "llmkube_router_shadow_requests_total",
 			Help: "Requests a shadow rule mirrored to a backend, by outcome (ok, error, dropped).",
 		},
-		[]string{labelRouter, "rule", "backend", "outcome"},
+		[]string{labelRouter, "rule", labelBackend, "outcome"},
 	)
 
 	// RouterShadowRequestDuration is how long a mirrored copy took, from
@@ -151,7 +155,7 @@ var (
 			Help:    "Duration of mirrored shadow requests, from send to the end of the discarded response.",
 			Buckets: prometheus.DefBuckets,
 		},
-		[]string{labelRouter, "rule", "backend"},
+		[]string{labelRouter, "rule", labelBackend},
 	)
 
 	RouterFailClosedTotal = prometheus.NewCounterVec(
@@ -179,7 +183,7 @@ var (
 			Name: "llmkube_router_endpoint_source_ready",
 			Help: "Whether the router proxy's EndpointSlice watch for a backend has synced (1) or not (0).",
 		},
-		[]string{labelRouter, "backend"},
+		[]string{labelRouter, labelBackend},
 	)
 
 	// RouterEndpointLoad is the router proxy's load estimate for one pod of a
@@ -191,7 +195,7 @@ var (
 			Name: "llmkube_router_endpoint_load",
 			Help: "Router proxy load estimate for one pod of a LoadAware backend.",
 		},
-		[]string{labelRouter, "backend", "endpoint"},
+		[]string{labelRouter, labelBackend, "endpoint"},
 	)
 
 	// RouterEndpointMetricsFresh is 1 while the router proxy holds a scrape
@@ -201,7 +205,7 @@ var (
 			Name: "llmkube_router_endpoint_metrics_fresh",
 			Help: "Whether the router proxy holds a fresh engine-metrics sample for a pod (1) or not (0).",
 		},
-		[]string{labelRouter, "backend", "endpoint"},
+		[]string{labelRouter, labelBackend, "endpoint"},
 	)
 
 	// RouterDispatchRetriesTotal counts requests the router proxy retried on a
@@ -212,7 +216,7 @@ var (
 			Name: "llmkube_router_dispatch_retries_total",
 			Help: "Requests the router proxy retried on a fresh connection, by reason.",
 		},
-		[]string{labelRouter, "backend", "reason"},
+		[]string{labelRouter, labelBackend, "reason"},
 	)
 
 	// RouterEndpointPrefillTokens is the estimated uncached prompt tokens a
@@ -223,7 +227,7 @@ var (
 			Name: "llmkube_router_endpoint_prefill_tokens",
 			Help: "Estimated uncached prompt tokens this router proxy replica has in flight to one pod, released at the first response byte.",
 		},
-		[]string{labelRouter, "backend", "endpoint"},
+		[]string{labelRouter, labelBackend, "endpoint"},
 	)
 
 	// RouterPrefillTokensEstimatedTotal counts the estimated uncached prompt
@@ -234,19 +238,57 @@ var (
 			Name: "llmkube_router_prefill_tokens_estimated_total",
 			Help: "Estimated uncached prompt tokens this router proxy replica has sent to one pod.",
 		},
-		[]string{labelRouter, "backend", "endpoint"},
+		[]string{labelRouter, labelBackend, "endpoint"},
 	)
 
 	// RouterPlacementsTotal counts the router proxy's placement decisions for
-	// balanced backends by result (least_loaded, sticky, spill, fallback or
-	// migrated) and, for a spill or migration, the reason (waiting, kv_full,
-	// not_ready or quarantined; empty otherwise).
+	// balanced backends by result (least_loaded, prefix_match, sticky, spill,
+	// fallback or migrated) and, for a spill or migration, the reason
+	// (waiting, kv_full, not_ready or quarantined; empty otherwise).
 	RouterPlacementsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "llmkube_router_placements_total",
 			Help: "Router proxy placement decisions for balanced backends, by result and reason (waiting, kv_full, not_ready or quarantined; empty otherwise).",
 		},
-		[]string{labelRouter, "backend", "result", "reason"},
+		[]string{labelRouter, labelBackend, "result", "reason"},
+	)
+
+	// RouterPrefixPromptTokensTotal and RouterPrefixCachedTokensTotal count, for
+	// LoadAware backends with prefix affinity, the estimated prompt tokens of
+	// each placed request and the part of them the chosen pod already held per
+	// the replica's prefix index. Their ratio is the prefix hit rate.
+	RouterPrefixPromptTokensTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llmkube_router_prefix_prompt_tokens_total",
+			Help: "Estimated prompt tokens of requests placed with prefix affinity.",
+		},
+		[]string{labelRouter, labelBackend},
+	)
+	RouterPrefixCachedTokensTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llmkube_router_prefix_cached_tokens_total",
+			Help: "Estimated prompt tokens of requests placed with prefix affinity that the chosen pod already held.",
+		},
+		[]string{labelRouter, labelBackend},
+	)
+	// RouterPrefixMatchRatio is the per-request spread behind that token
+	// ratio: the share of each placed request's prompt the chosen pod held.
+	RouterPrefixMatchRatio = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "llmkube_router_prefix_match_ratio",
+			Help:    "Share of each request's estimated prompt tokens that the chosen pod already held, for requests placed with prefix affinity.",
+			Buckets: []float64{0, 0.25, 0.5, 0.75, 0.9},
+		},
+		[]string{labelRouter, labelBackend},
+	)
+	// RouterPrefixChangedPlacementsTotal counts the prefix_match placements
+	// the match decided, as opposed to ones load alone would have made.
+	RouterPrefixChangedPlacementsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llmkube_router_prefix_changed_placements_total",
+			Help: "Placements reported as prefix_match that load alone, with no prefix credit, would have sent to a different pod.",
+		},
+		[]string{labelRouter, labelBackend},
 	)
 
 	// RouterSessionBindings is the number of session-to-pod bindings a
@@ -256,7 +298,7 @@ var (
 			Name: "llmkube_router_session_bindings",
 			Help: "Session-to-pod bindings held by the router proxy for a backend.",
 		},
-		[]string{labelRouter, "backend"},
+		[]string{labelRouter, labelBackend},
 	)
 
 	RouterBackendHealth = prometheus.NewGaugeVec(
@@ -264,7 +306,7 @@ var (
 			Name: "llmkube_router_backend_health",
 			Help: "Health status of a backend (1=healthy, 0=unhealthy).",
 		},
-		[]string{labelRouter, "backend"},
+		[]string{labelRouter, labelBackend},
 	)
 
 	// RouterFirstTokenSeconds captures time-to-first-byte (TTFT) for
@@ -276,7 +318,7 @@ var (
 			Help:    "Time from inbound request to first upstream response byte (streaming TTFT).",
 			Buckets: prometheus.ExponentialBuckets(0.01, 2, 12), // 10ms to ~20s
 		},
-		[]string{labelRouter, "backend"},
+		[]string{labelRouter, labelBackend},
 	)
 
 	// RouterBudgetUtilization reports how much of a rule's dispatch
@@ -650,6 +692,10 @@ var RouterCollectors = []prometheus.Collector{
 	RouterEndpointPrefillTokens,
 	RouterPrefillTokensEstimatedTotal,
 	RouterPlacementsTotal,
+	RouterPrefixPromptTokensTotal,
+	RouterPrefixCachedTokensTotal,
+	RouterPrefixMatchRatio,
+	RouterPrefixChangedPlacementsTotal,
 	RouterSessionBindings,
 	RouterFirstTokenSeconds,
 	RouterBudgetUtilization,

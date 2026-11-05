@@ -1063,6 +1063,38 @@ type BackendBalancing struct {
 	// warning event.
 	// +optional
 	SessionAffinity *SessionAffinity `json:"sessionAffinity,omitempty"`
+
+	// PrefixAffinity sends a request to the pod most likely to hold its
+	// prompt's prefix in KV cache, traded against that pod's load. The router
+	// remembers which prompt blocks it sent to each pod, so it needs no session
+	// header and no engine support. Set it (an empty object takes the
+	// defaults) to turn it on. It requires mode: LoadAware; with RoundRobin it
+	// is ignored and the router emits a PrefixAffinityIgnored warning event.
+	// +optional
+	PrefixAffinity *PrefixAffinity `json:"prefixAffinity,omitempty"`
+}
+
+// PrefixAffinity tunes prefix-aware placement.
+type PrefixAffinity struct {
+	// BlockBytes is the size of the prompt blocks the router hashes, in bytes
+	// of the request's tools, system prompt and messages (about four bytes
+	// per token). A shared prefix counts in whole blocks, so smaller blocks
+	// catch shorter shared prefixes and cost more memory. Defaults to 1024.
+	// +kubebuilder:validation:Minimum=256
+	// +kubebuilder:validation:Maximum=16384
+	// +kubebuilder:default=1024
+	// +optional
+	BlockBytes int32 `json:"blockBytes,omitempty"`
+
+	// MaxBlocksPerEndpoint bounds the blocks the router remembers per pod;
+	// the least recently sent go first. The default, 16384, covers 16 MiB of
+	// prompt (about 4M tokens) per pod at the default block size, more than a
+	// pod's KV cache holds.
+	// +kubebuilder:validation:Minimum=1024
+	// +kubebuilder:validation:Maximum=262144
+	// +kubebuilder:default=16384
+	// +optional
+	MaxBlocksPerEndpoint int32 `json:"maxBlocksPerEndpoint,omitempty"`
 }
 
 // SessionAffinity identifies sessions and sets how long the router remembers

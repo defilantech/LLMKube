@@ -417,21 +417,46 @@ Without a session header, each request goes to the least-loaded pod. With one, t
 
 `idleTimeout` drops a binding that has gone unused that long. The default is 30m, and the allowed range is 1m to 24h. Common agent headers are `x-session-affinity`, `x-openwebui-chat-id`, `x-opencode-session` and `x-session-id`.
 
+### Prefix affinity
+
+Session headers help only clients that send one. `prefixAffinity` places requests by what each pod already holds in its prefix cache, with or without a header: a follow-up turn returns to the pod that served the conversation, and clients that share a long system prompt or tool list share the pod that holds it.
+
+```yaml
+      balancing:
+        mode: LoadAware
+        prefixAffinity: {}   # blockBytes: 1024, maxBlocksPerEndpoint: 16384
+```
+
+- **What the proxy hashes.** The request's tool definitions, then its system prompt (Anthropic Messages), then each message in order, or a completion's prompt. The model name and sampling fields are left out, and whitespace differences between clients don't matter. The stream is cut into blocks of `blockBytes` (default 1024, about 256 tokens), and each block is hashed together with the blocks before it, so a block matches only as part of a prefix. Only full blocks count.
+- **What it remembers.** For each pod, the blocks it sent there, up to `maxBlocksPerEndpoint` (default 16384, about 4M tokens of prompt), dropping the least recently sent first. It never asks the engine, so it works the same for every runtime. Only block hashes are kept, never prompt text.
+- **How it places.** A pod is credited with the request's leading blocks it holds, as estimated tokens taken off its least-loaded score. A pod holding a long shared prefix wins at equal load. One queued request weighs 16,384 tokens, so a busy pod still loses to an idle one unless it holds more prompt than that.
+- **With no match anywhere**, equally loaded pods are tried starting from the prefix's home on the consistent-hash ring, so every proxy replica sends the same new prefix to the same pod.
+- **Sessions** keep their binding and pressure rules: a session under pressure still moves to the least-loaded pod, whatever another pod holds. Prefix affinity chooses a new session's pod, and it sets each request's prefill estimate from what the chosen pod holds, instead of from how much the body grew.
+- **A shared prompt concentrates traffic.** Clients that share a long prompt queue on the pod that holds it until it is busy enough to lose, so the median wait can rise while the slow cold-prefill tail shrinks.
+- **Limits.** A pod's blocks are forgotten when it leaves the endpoint set. A pod that restarts in place keeps its address, so its old blocks count until they age out and its first requests may land cold. Blocks are recorded when the pod is chosen, so a request that fails there and moves to another backend still counts on that pod. A body the proxy can't read as chat, Messages or a completion (an embeddings request, say) is placed by load alone.
+
+`prefixAffinity` requires `mode: LoadAware`. The webhook rejects it with `mode: RoundRobin`, and a stored router that has it with RoundRobin gets a `PrefixAffinityIgnored` Warning event.
+
 ### Running more than one proxy replica
 
-Each proxy replica keeps its own binding table in memory. A restart starts it empty, and the table stores only the hash of the session header. With more than one proxy replica, a session that lands on different replicas gets different bindings. Hash the session header to a proxy replica upstream so a session always reaches the same replica, for example with APISIX `chash` on the header.
+Each proxy replica keeps its own binding table and prefix memory. A restart starts both empty, and they store only hashes. With more than one proxy replica, a session that lands on different replicas gets different bindings. Hash the session header to a proxy replica upstream so a session always reaches the same replica, for example with APISIX `chash` on the header. Prefix affinity needs no such pinning to agree on a new prefix's pod, but a replica only knows the blocks it sent itself.
 
 ### Reading the metrics
 
 `llmkube_router_placements_total{router,backend,result,reason}` counts decisions. `result` is one of:
 
 - `least_loaded`: a request without a binding, or a new session, went to the least-loaded pod.
+- `prefix_match`: like `least_loaded`, but the chosen pod already held part of the request's prompt (prefix affinity).
 - `sticky`: a known session stayed on its pod.
 - `spill`: a session moved off a pod under pressure (`waiting` or `kv_full`) and is now bound to the new pod.
 - `migrated`: a session moved because its pod left the ready endpoint set (`not_ready`) or was still in that set but quarantined by the proxy (`quarantined`).
 - `fallback`: the table was full and the consistent-hash home was used, or no pod was dispatchable (all quarantined or circuit-open) and the request went round-robin over the live endpoints. A fallback count alone does not mean the table is full.
 
 `reason` is set only for `spill` and `migrated`, and empty otherwise. `llmkube_router_session_bindings{router,backend}` is the current number of bindings. It counts every session used within `idleTimeout`, not only live ones, so a client that starts a new session whenever one ends can hold several times its concurrent session count. Per pod, `llmkube_router_endpoint_load`, `llmkube_router_endpoint_metrics_fresh` and `llmkube_router_endpoint_prefill_tokens` cover `LoadAware` backends with a metrics profile (vLLM today). `llmkube_router_prefill_tokens_estimated_total` counts the prefill tokens this proxy estimated it sent to each pod; compare its rate with `rate(vllm:prompt_tokens_by_source_total{source="local_compute"}[1m])` on the same pod to check the estimate.
+
+With prefix affinity, `llmkube_router_prefix_prompt_tokens_total{router,backend}` counts the estimated prompt tokens of each placed request and `llmkube_router_prefix_cached_tokens_total{router,backend}` the part the chosen pod already held. The ratio of their rates is the prefix hit rate this proxy expects; on vLLM, compare it with the engine's own `vllm:prefix_cache_hits_total` over `vllm:prefix_cache_queries_total`.
+
+That ratio weighs requests by their size. `llmkube_router_prefix_match_ratio{router,backend}` is a histogram of the same share per request (buckets 0, 0.25, 0.5, 0.75 and 0.9), so you can tell whether a 70% hit rate means every request is 70% cached or long conversations are fully cached while short prompts never match. A prompt shorter than one block never matches, which is what `blockBytes` trades. `llmkube_router_prefix_changed_placements_total{router,backend}` counts the `prefix_match` placements the match decided: load alone, without prefix credit, would have sent the request to a different pod. The rest of the `prefix_match` placements went where load would have put them anyway, so its rate over the `prefix_match` rate is how often prefix affinity overrides load.
 
 ### Upgrading from `maxLoadPercent`
 

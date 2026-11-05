@@ -133,12 +133,12 @@ func (s *Sessions) Place(key uint64, cands []Candidate, now time.Time, tieStart 
 			ep, _ := PickLeastLoaded(Eligible(cands, now), now, tieStart)
 			return ep, Fallback, ReasonNone, EstimateTokens(bodyBytes)
 		}
-		ep, _ := PickLeastLoaded(Eligible(cands, now), now, tieStart)
+		ep, res := PickLeastLoaded(Eligible(cands, now), now, tieStart)
 		if len(s.bindings) == 0 {
 			s.oldest = now
 		}
 		s.bindings[key] = binding{endpoint: ep, lastSeen: now, promptBytes: bodyBytes}
-		return ep, LeastLoaded, ReasonNone, EstimateTokens(bodyBytes)
+		return ep, res, ReasonNone, EstimateTokens(bodyBytes)
 	}
 
 	var bound *Candidate
@@ -176,7 +176,10 @@ func (s *Sessions) Place(key uint64, cands []Candidate, now time.Time, tieStart 
 // pressure reports whether the bound pod should shed the session, and to which
 // pod. It returns ReasonNone when the session should stay. A target is never
 // unreachable and never has a fresh KV reading at or above KVFullThreshold. On a pool of fewer than
-// MinPodsForLoadMoves dispatchable pods only a KV-full bound pod sheds.
+// MinPodsForLoadMoves dispatchable pods only a KV-full bound pod sheds. Prefix
+// credit plays no part: the target is the least-loaded pod and the gap is
+// measured to it, so a pod holding the prompt cannot keep a queued session in
+// place by winning the pick with a smaller gap.
 func pressure(bound Candidate, cands []Candidate, now time.Time, tieStart int) (string, Reason) {
 	others := make([]Candidate, 0, len(cands))
 	for _, c := range Eligible(cands, now) {
@@ -186,6 +189,7 @@ func pressure(bound Candidate, cands []Candidate, now time.Time, tieStart int) (
 		if cs := freshSample(c, now); cs != nil && cs.KVUsage >= KVFullThreshold {
 			continue
 		}
+		c.Cached = 0
 		others = append(others, c)
 	}
 	if len(others) == 0 {

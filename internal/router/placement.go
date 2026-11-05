@@ -19,6 +19,8 @@ package router
 import (
 	"context"
 	"net/http"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -95,11 +97,73 @@ func (d *Dispatcher) RunSessionSweeper(ctx context.Context, every time.Duration)
 	}
 }
 
+// prefixFor returns the backend's prefix index, creating it on first use.
+func (d *Dispatcher) prefixFor(backend string, bal *Balancing) *picker.PrefixIndex {
+	if v, ok := d.prefixes.Load(backend); ok {
+		return v.(*picker.PrefixIndex)
+	}
+	n := bal.PrefixMaxBlocks
+	if n <= 0 {
+		n = defaultPrefixMaxBlocks
+	}
+	v, _ := d.prefixes.LoadOrStore(backend, picker.NewPrefixIndex(n))
+	return v.(*picker.PrefixIndex)
+}
+
+// prefix is one request's view of a backend's prefix index.
+type prefix struct {
+	index *picker.PrefixIndex
+	chain []uint64
+}
+
+// matchPrefix sets each candidate's Cached from the backend's prefix index and
+// returns the request's block chain with the index, or a zero prefix when the
+// backend has no prefix affinity. A pod that left the endpoint set is
+// forgotten first, so a new pod at its address claims nothing.
+func (d *Dispatcher) matchPrefix(backend *Backend, eps []string, cands []picker.Candidate, body []byte) prefix {
+	bal := backend.Balancing
+	if bal.PrefixBlockBytes <= 0 {
+		return prefix{}
+	}
+	idx := d.prefixFor(backend.Name, bal)
+	idx.Retain(eps)
+	chain := picker.BlockHashes(promptStream(body), bal.PrefixBlockBytes)
+	limit := picker.EstimateTokens(int64(len(body)))
+	for i := range cands {
+		held := int64(idx.Matched(cands[i].Endpoint, chain)) * int64(bal.PrefixBlockBytes) / picker.BytesPerToken
+		cands[i].Cached = min(held, limit)
+	}
+	return prefix{index: idx, chain: chain}
+}
+
+// homeTieStart returns the position, in the candidates PickLeastLoaded will
+// scan, of the ring home of the prompt's first block, so equally loaded pods
+// resolve to the same pod on every proxy replica. ok is false when the prompt
+// has no full block, some pod already matched it, or the home is not eligible.
+func homeTieStart(ring *picker.Ring, p prefix, cands []picker.Candidate, now time.Time) (int, bool) {
+	if len(p.chain) == 0 {
+		return 0, false
+	}
+	for _, c := range cands {
+		if c.Cached > 0 {
+			return 0, false
+		}
+	}
+	home := ring.Home(strconv.FormatUint(p.chain[0], 16))
+	for i, c := range picker.Eligible(cands, now) {
+		if c.Endpoint == home {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
 // place chooses the endpoint for a request. Backends that are not LoadAware
 // round-robin exactly as before, ignore session headers and report an empty
 // result. The int64 is the request's estimated uncached prompt tokens, 0 when
 // the backend is not LoadAware.
-func (d *Dispatcher) place(backend *Backend, headers http.Header, bodyBytes int64) (string, picker.Result, picker.Reason, int64) {
+func (d *Dispatcher) place(backend *Backend, headers http.Header, body []byte) (string, picker.Result, picker.Reason, int64) {
+	bodyBytes := int64(len(body))
 	eps := d.liveEndpoints(backend)
 	bal := backend.Balancing
 	if len(eps) == 0 || bal == nil || bal.Mode != BalancingLoadAware {
@@ -128,12 +192,59 @@ func (d *Dispatcher) place(backend *Backend, headers http.Header, bodyBytes int6
 	// The tie start shares the round-robin cursor so equal loads rotate; the
 	// pickers accept any int, so a wrapped conversion is fine.
 	tie := int(d.endpointCursor(backend.Name).Add(1) - 1) //nolint:gosec // wraps harmlessly, the pickers take any int
-	if key := sessionKey(headers, bal.SessionHeaders); key != "" {
-		return d.sessionsFor(backend.Name, bal).Place(
-			picker.SessionHash(key), cands, now, tie, d.ringFor(backend.Name, eps).Home(key), bodyBytes, quarantined)
+	p := d.matchPrefix(backend, eps, cands, body)
+	if start, ok := homeTieStart(d.ringFor(backend.Name, eps), p, cands, now); ok {
+		tie = start
 	}
-	ep, res := picker.PickLeastLoaded(picker.Eligible(cands, now), now, tie)
-	return ep, res, picker.ReasonNone, picker.EstimateTokens(bodyBytes)
+	var (
+		ep     string
+		res    picker.Result
+		reason picker.Reason
+		tokens int64
+	)
+	if key := sessionKey(headers, bal.SessionHeaders); key != "" {
+		ep, res, reason, tokens = d.sessionsFor(backend.Name, bal).Place(
+			picker.SessionHash(key), cands, now, tie, d.ringFor(backend.Name, eps).Home(key), bodyBytes, quarantined)
+	} else {
+		ep, res = picker.PickLeastLoaded(picker.Eligible(cands, now), now, tie)
+		reason, tokens = picker.ReasonNone, picker.EstimateTokens(bodyBytes)
+	}
+	if p.index != nil && ep != "" {
+		// The index measures what the chosen pod holds, which beats a
+		// session's growth estimate when the prompt changed at the front.
+		var held int64
+		for _, c := range cands {
+			if c.Endpoint == ep {
+				held = c.Cached
+				break
+			}
+		}
+		prompt := picker.EstimateTokens(bodyBytes)
+		tokens = prompt - held
+		p.index.Record(ep, p.chain)
+		prommetrics.RouterPrefixPromptTokensTotal.WithLabelValues(d.routerName, backend.Name).Add(float64(prompt))
+		prommetrics.RouterPrefixCachedTokensTotal.WithLabelValues(d.routerName, backend.Name).Add(float64(held))
+		if prompt > 0 {
+			prommetrics.RouterPrefixMatchRatio.WithLabelValues(d.routerName, backend.Name).Observe(float64(held) / float64(prompt))
+		}
+		// A prefix_match means some pod matched, so tie is still the plain
+		// rotation (homeTieStart applies only when none did).
+		if res == picker.PrefixMatch && loadOnlyPick(cands, now, tie) != ep {
+			prommetrics.RouterPrefixChangedPlacementsTotal.WithLabelValues(d.routerName, backend.Name).Inc()
+		}
+	}
+	return ep, res, reason, tokens
+}
+
+// loadOnlyPick returns the pod PickLeastLoaded chooses from cands with no
+// prefix credit: the placement the request would have had without its match.
+func loadOnlyPick(cands []picker.Candidate, now time.Time, tie int) string {
+	plain := slices.Clone(cands)
+	for i := range plain {
+		plain[i].Cached = 0
+	}
+	ep, _ := picker.PickLeastLoaded(picker.Eligible(plain, now), now, tie)
+	return ep
 }
 
 // isTokenCountPath reports whether path only counts a prompt's tokens.
