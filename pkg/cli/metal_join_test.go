@@ -24,9 +24,11 @@ import (
 	"encoding/pem"
 	"errors"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -66,6 +68,18 @@ type fakeMac struct {
 	// onAgent runs when leave runs the agent binary; its error is the run's.
 	onAgent func(args []string) error
 	uid     int
+	// noGUISession: launchctl print gui/<uid> fails, as over SSH with nobody
+	// logged in at the Mac.
+	noGUISession bool
+	// pid is what launchctl print reports for the loaded agent; 0 prints none.
+	pid int
+	// listened records join's port checks. Every port is free unless busy
+	// names its address; nothing is bound unless realPorts names its port.
+	listened  []string
+	busy      map[string]error
+	realPorts map[int]bool
+	// holders is what lsof reports for a port.
+	holders map[int][]portHolder
 }
 
 func newFakeMac(t *testing.T) *fakeMac {
@@ -88,37 +102,50 @@ func newFakeMac(t *testing.T) *fakeMac {
 			goos: "darwin",
 			home: m.home,
 			uid:  m.uid,
-			launchctl: func(_ context.Context, args ...string) error {
+			launchctl: func(_ context.Context, args ...string) (string, error) {
 				call := strings.Join(args, " ")
 				m.calls = append(m.calls, call)
 				if m.failOn != "" && strings.HasPrefix(call, m.failOn) {
-					return errors.New("launchctl failed")
+					return "", errors.New("launchctl failed")
 				}
 				switch args[0] {
 				case "bootout":
 					if !m.loaded {
-						return errors.New("Boot-out failed: 3: No such process")
+						return "", errors.New("Boot-out failed: 3: No such process")
 					}
 					m.stopping = m.stopPolls
 					m.loaded = m.stopping > 0
 				case "print":
+					if args[1] == "gui/"+strconv.Itoa(m.uid) {
+						if m.noGUISession {
+							return "", errors.New("exit status 112: Bad request.\nCould not find domain for user gui: " +
+								strconv.Itoa(m.uid))
+						}
+						return "gui/" + strconv.Itoa(m.uid) + " = {\n}\n", nil
+					}
 					if !m.loaded {
-						return errors.New("Could not find service")
+						return "", errors.New("Could not find service")
 					}
 					if m.stopping > 0 {
 						m.stopping--
 						m.loaded = m.stopping > 0
 					}
+					// The shape of launchctl print: top-level keys one tab in.
+					out := args[1] + " = {\n\tstate = running\n"
+					if m.pid > 0 {
+						out += "\tpid = " + strconv.Itoa(m.pid) + "\n"
+					}
+					return out + "\tsemaphores = {\n\t\tpid = 1\n\t}\n}\n", nil
 				case "bootstrap":
 					if m.loaded {
-						return errors.New("Bootstrap failed: 5: Input/output error")
+						return "", errors.New("Bootstrap failed: 5: Input/output error")
 					}
 					m.loaded = true
 					if m.onBootstrap != nil {
 						m.onBootstrap()
 					}
 				}
-				return nil
+				return "", nil
 			},
 			lookPath: func(name string) (string, error) {
 				if name == metalAgentBinary {
@@ -139,6 +166,21 @@ func newFakeMac(t *testing.T) *fakeMac {
 				}
 				return nil
 			},
+			listen: func(network, address string) (net.Listener, error) {
+				m.listened = append(m.listened, address)
+				if err, ok := m.busy[address]; ok {
+					return nil, err
+				}
+				_, port, err := net.SplitHostPort(address)
+				if err != nil {
+					t.Fatalf("join checks %q, not a host:port", address)
+				}
+				if n, _ := strconv.Atoi(port); m.realPorts[n] {
+					return net.Listen(network, address)
+				}
+				return fakeListener{}, nil
+			},
+			portHolders: func(_ context.Context, port int) []portHolder { return m.holders[port] },
 		}, nil
 	}
 	t.Cleanup(func() { newMetalHost = prev })
@@ -146,6 +188,12 @@ func newFakeMac(t *testing.T) *fakeMac {
 }
 
 func (m *fakeMac) paths() metalAgentPaths { return newMetalAgentPaths(m.home) }
+
+// fakeListener is a port join's check found free, without binding it: the
+// Mac running the tests may have its own agent on the default ports.
+type fakeListener struct{ net.Listener }
+
+func (fakeListener) Close() error { return nil }
 
 // issueJoinString runs token create for mac-a and returns the join string
 // and its payload.
@@ -357,7 +405,7 @@ func assertMetalAgentPlist(t *testing.T, mac *fakeMac, paths metalAgentPaths, ns
 			t.Errorf("plutil -lint: %v: %s", err, out)
 		}
 	}
-	wantCalls := []string{"bootout gui/501/" + metalAgentLabel, "print gui/501/" + metalAgentLabel,
+	wantCalls := []string{"print gui/501", "bootout gui/501/" + metalAgentLabel, "print gui/501/" + metalAgentLabel,
 		"bootstrap gui/501 " + paths.Plist}
 	if strings.Join(mac.calls, "; ") != strings.Join(wantCalls, "; ") {
 		t.Errorf("launchctl calls %q, want %q", mac.calls, wantCalls)
@@ -570,8 +618,12 @@ func TestMetalJoinKeepsALaunchAgentItDidNotWrite(t *testing.T) {
 		t.Errorf("a refused join used up the join string: get join Secret: %v", err)
 	}
 
-	if _, stderr, err := runMetal(t, "join", joinString, "--wait", "0", "--force"); err != nil {
+	_, stderr, err := runMetal(t, "join", joinString, "--wait", "0", "--force")
+	if err != nil {
 		t.Fatalf("join --force: %v\n%s", err, stderr)
+	}
+	if !strings.Contains(stderr, "join does not keep the arguments of the LaunchAgent it replaces") {
+		t.Errorf("join --force does not say the replaced LaunchAgent's arguments are not kept: %q", stderr)
 	}
 	if kept, err := os.ReadFile(paths.PlistBackup); err != nil || string(kept) != production {
 		t.Errorf("backup %s = %q, %v; want the replaced plist", paths.PlistBackup, kept, err)

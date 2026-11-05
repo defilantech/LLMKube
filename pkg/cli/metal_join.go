@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -74,8 +75,8 @@ type metalHost struct {
 	goos string
 	home string
 	uid  int
-	// launchctl runs /bin/launchctl with args.
-	launchctl func(ctx context.Context, args ...string) error
+	// launchctl runs /bin/launchctl with args and returns its output.
+	launchctl func(ctx context.Context, args ...string) (string, error)
 	// lookPath finds a program on PATH.
 	lookPath func(string) (string, error)
 	// llamaServerPaths are where the agent looks for llama-server.
@@ -85,6 +86,11 @@ type metalHost struct {
 	// runAgent runs the Metal agent binary bin with args, streaming its
 	// output to stdout and stderr.
 	runAgent func(ctx context.Context, bin string, args []string, stdout, stderr io.Writer) error
+	// listen binds a TCP address, for join's check that the agent's ports
+	// are free; the caller closes it.
+	listen func(network, address string) (net.Listener, error)
+	// portHolders lists the processes listening on a TCP port, best effort.
+	portHolders func(ctx context.Context, port int) []portHolder
 }
 
 var newMetalHost = func() (metalHost, error) {
@@ -96,12 +102,12 @@ var newMetalHost = func() (metalHost, error) {
 		goos: runtime.GOOS,
 		home: home,
 		uid:  os.Getuid(),
-		launchctl: func(ctx context.Context, args ...string) error {
+		launchctl: func(ctx context.Context, args ...string) (string, error) {
 			out, err := exec.CommandContext(ctx, "/bin/launchctl", args...).CombinedOutput()
 			if err != nil {
-				return fmt.Errorf("launchctl %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+				return "", fmt.Errorf("launchctl %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 			}
-			return nil
+			return string(out), nil
 		},
 		lookPath:         exec.LookPath,
 		llamaServerPaths: defaultLlamaServerPaths,
@@ -111,6 +117,8 @@ var newMetalHost = func() (metalHost, error) {
 			c.Stdout, c.Stderr = stdout, stderr
 			return c.Run()
 		},
+		listen:      net.Listen,
+		portHolders: lsofPortHolders,
 	}, nil
 }
 
@@ -151,6 +159,13 @@ type metalJoinOptions struct {
 	tokenLifetime time.Duration
 	wait          time.Duration
 	force         bool
+	hostIP        string
+	allowlist     string
+	agentArgs     []string
+	// hostIPSet and allowlistSet: the flag was given, so an empty value drops
+	// the one a previous join's LaunchAgent carries.
+	hostIPSet    bool
+	allowlistSet bool
 }
 
 func newMetalJoinCommand() *cobra.Command {
@@ -173,12 +188,27 @@ The agent renews its token at half its lifetime (--token-lifetime, 7 days by
 default). A Mac that is off for longer needs a new join string. Running join
 again replaces the earlier setup; 'llmkube metal leave' removes it.
 
+--host-ip and --allowlist set the agent's --host-ip and
+--inference-service-allowlist, and --agent-arg <flag>=<value> (repeatable)
+passes any other agent flag, such as --agent-arg port=9091. A re-join keeps
+every agent argument the previous join's LaunchAgent has that join does not
+set itself, hand edits included, and prints them; a flag given now replaces
+a kept value, and an empty --host-ip or --allowlist drops it.
+
 join refuses to replace a com.llmkube.metal-agent LaunchAgent it did not
 write (make install-metal-agent, a playbook), since that one carries the
-Mac's own arguments; --force replaces it and keeps a copy for leave to
-point back to.`,
+Mac's own arguments; --force replaces it, without its arguments, and keeps a
+copy for leave to point back to.
+
+Before it uses the join string, join refuses to run as root, checks that
+this user is logged in at the Mac (a LaunchAgent runs only in a GUI login
+session), and checks that the ports the agent binds (--port 9090 and
+--client-port 9999 on 127.0.0.1, --ingress-port 9443) are free or held by the
+agent it replaces.`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			opts.hostIPSet = cmd.Flags().Changed("host-ip")
+			opts.allowlistSet = cmd.Flags().Changed("allowlist")
 			// A join string a terminal wrapped can arrive as several
 			// arguments; Decode ignores the whitespace between them.
 			return runMetalJoin(cmd, strings.Join(args, ""), opts)
@@ -194,7 +224,52 @@ point back to.`,
 		"How long to wait for the MetalNode to report Reachable; 0 does not wait")
 	cmd.Flags().BoolVar(&opts.force, "force", false,
 		"Replace a com.llmkube.metal-agent LaunchAgent that join did not write (it is kept in the state directory)")
+	cmd.Flags().StringVar(&opts.hostIP, "host-ip", "",
+		"IPv4 address the agent registers for the cluster to reach this Mac (agent --host-ip; default: auto-detect)")
+	cmd.Flags().StringVar(&opts.allowlist, "allowlist", "",
+		"Comma-separated InferenceServices this Mac serves (agent --inference-service-allowlist; default: all)")
+	cmd.Flags().StringArrayVar(&opts.agentArgs, "agent-arg", nil,
+		"Another agent flag as <flag>=<value>, such as port=9091 (repeatable; not the flags join sets itself)")
 	return cmd
+}
+
+// metalJoinExtras checks the agent arguments given on the command line,
+// before join looks at the Mac.
+func metalJoinExtras(opts *metalJoinOptions) ([]metalJoinExtra, error) {
+	var extras []metalJoinExtra
+	seen := map[string]bool{}
+	for _, raw := range opts.agentArgs {
+		a, err := parseAgentArgFlag(raw)
+		if err != nil {
+			return nil, err
+		}
+		if seen[a.name] {
+			return nil, fmt.Errorf("--agent-arg %s is given more than once", a.name)
+		}
+		seen[a.name] = true
+		extras = append(extras, metalJoinExtra{arg: a})
+	}
+	if opts.hostIPSet {
+		e := metalJoinExtra{arg: agentArg{name: "host-ip", value: opts.hostIP, hasValue: true}, drop: opts.hostIP == ""}
+		if !e.drop {
+			if err := validateMetalJoinHostIP(opts.hostIP); err != nil {
+				return nil, err
+			}
+		}
+		extras = append(extras, e)
+	}
+	if opts.allowlistSet {
+		e := metalJoinExtra{arg: agentArg{name: "inference-service-allowlist", hasValue: true}, drop: opts.allowlist == ""}
+		if !e.drop {
+			list, err := normalizeMetalJoinAllowlist(opts.allowlist)
+			if err != nil {
+				return nil, err
+			}
+			e.arg.value = list
+		}
+		extras = append(extras, e)
+	}
+	return extras, nil
 }
 
 func runMetalJoin(cmd *cobra.Command, joinString string, opts *metalJoinOptions) error {
@@ -205,12 +280,24 @@ func runMetalJoin(cmd *cobra.Command, joinString string, opts *metalJoinOptions)
 	if opts.wait < 0 {
 		return fmt.Errorf("--wait %s is negative", opts.wait)
 	}
+	given, err := metalJoinExtras(opts)
+	if err != nil {
+		return err
+	}
 	host, err := newMetalHost()
 	if err != nil {
 		return err
 	}
 	if host.goos != "darwin" {
 		return fmt.Errorf("llmkube metal join sets up the Metal agent and runs on the Mac, not on %s", host.goos)
+	}
+	if host.uid == 0 {
+		// launchd runs the agent in the GUI session of the user who joins,
+		// and gui/0 has none; as root, join would also write root-owned
+		// files under whatever home sudo kept. Checked before the string is
+		// even decoded, so it stays usable.
+		return errors.New("run llmkube metal join as the user the agent runs as, not as root or with sudo; " +
+			"the join string has not been used")
 	}
 	p, err := metaljoin.Decode(joinString)
 	if err != nil {
@@ -236,10 +323,24 @@ func runMetalJoin(cmd *cobra.Command, joinString string, opts *metalJoinOptions)
 	if err := checkMetalAgentPlist(paths, opts.force); err != nil {
 		return err
 	}
+	plan, err := planMetalJoinAgentArgs(paths, p, llamaServer, given, log)
+	if err != nil {
+		return err
+	}
+	ports, err := metalAgentPorts(plan.extras)
+	if err != nil {
+		return err
+	}
+	if err := checkMetalAgentGUISession(ctx, host); err != nil {
+		return err
+	}
+	if err := checkMetalAgentPorts(ctx, host, ports, log); err != nil {
+		return err
+	}
 	if err := metalJoinSetup(ctx, p, opts.tokenLifetime, paths, log); err != nil {
 		return err
 	}
-	started, err := installMetalAgent(ctx, host, paths, metalAgentArgs(agentBin, paths, p, llamaServer), log)
+	started, err := installMetalAgent(ctx, host, paths, metalAgentArgs(agentBin, paths, p, llamaServer, plan), log)
 	if err != nil {
 		return err
 	}
@@ -458,15 +559,57 @@ func metalAgentClient(kubeconfig string) (client.Client, error) {
 	return c, nil
 }
 
-// metalAgentArgs is the agent's command line in the LaunchAgent.
-func metalAgentArgs(agentBin string, paths metalAgentPaths, p metaljoin.Payload, llamaServer string) []string {
-	args := []string{agentBin,
+// metalJoinSets are the agent flags join writes from the join string and what
+// it found on the Mac.
+func metalJoinSets(paths metalAgentPaths, p metaljoin.Payload, llamaServer string) map[string]agentArg {
+	sets := map[string]agentArg{}
+	for _, a := range []agentArg{
+		{name: "kubeconfig", value: paths.Kubeconfig, hasValue: true},
+		{name: "namespace", value: p.Namespace, hasValue: true},
+		{name: "metal-node", value: p.Mac, hasValue: true},
+		{name: "renew-service-account-token"},
+		{name: "llama-server", value: llamaServer, hasValue: true},
+	} {
+		sets[a.name] = a
+	}
+	return sets
+}
+
+// planMetalJoinAgentArgs is the agent's command line beyond what join sets:
+// what the previous join's LaunchAgent carries, with the flags given now
+// over it. It prints what it keeps, replaces and drops.
+func planMetalJoinAgentArgs(paths metalAgentPaths, p metaljoin.Payload, llamaServer string, given []metalJoinExtra,
+	log io.Writer) (metalJoinArgPlan, error) {
+	previous, err := previousJoinAgentArgs(paths.Plist)
+	if err != nil {
+		return metalJoinArgPlan{}, err
+	}
+	if exists, joined, _ := readMetalAgentPlist(paths.Plist); exists && !joined {
+		_, _ = fmt.Fprintf(log, "join does not keep the arguments of the LaunchAgent it replaces (it keeps the file "+
+			"as %s); pass the ones this Mac needs with --host-ip, --allowlist or --agent-arg\n", paths.PlistBackup)
+	}
+	plan := planMetalAgentArgs(previous, given, metalJoinSets(paths, p, llamaServer))
+	for _, n := range plan.notes {
+		_, _ = fmt.Fprintln(log, n)
+	}
+	return plan, nil
+}
+
+// metalAgentArgs is the agent's command line in the LaunchAgent: the flags
+// join sets, then plan's.
+func metalAgentArgs(agentBin string, paths metalAgentPaths, p metaljoin.Payload, llamaServer string,
+	plan metalJoinArgPlan) []string {
+	args := make([]string, 0, 12+len(plan.extras))
+	args = append(args, agentBin,
 		"--kubeconfig", paths.Kubeconfig,
 		"--namespace", p.Namespace,
 		"--metal-node", p.Mac,
 		"--renew-service-account-token",
-		"--log-level", "info",
+		"--log-level", plan.logLevel,
 		"--llama-server", llamaServer,
+	)
+	for _, a := range plan.extras {
+		args = append(args, a.String())
 	}
 	return args
 }
@@ -535,12 +678,12 @@ func installMetalAgent(ctx context.Context, host metalHost, paths metalAgentPath
 	domain := "gui/" + strconv.Itoa(host.uid)
 	// Not loaded yet is the usual case for bootout; anything else surfaces
 	// when bootstrap fails.
-	_ = host.launchctl(ctx, "bootout", domain+"/"+metalAgentLabel)
+	_, _ = host.launchctl(ctx, "bootout", domain+"/"+metalAgentLabel)
 	_ = waitMetalAgentUnloaded(ctx, host, domain+"/"+metalAgentLabel)
 	// Truncated to the Lease's renewTime precision, so a renewal in the
 	// same microsecond still counts as the new agent's.
 	started := time.Now().Truncate(time.Microsecond)
-	if err := host.launchctl(ctx, "bootstrap", domain, paths.Plist); err != nil {
+	if _, err := host.launchctl(ctx, "bootstrap", domain, paths.Plist); err != nil {
 		return time.Time{}, fmt.Errorf("start the agent: %w; the join string is used up but the agent's "+
 			"credentials are in place, so once that is fixed start it with: launchctl bootstrap %s %q",
 			err, domain, paths.Plist)
@@ -563,7 +706,10 @@ const metalAgentUnloadPoll = 100 * time.Millisecond
 // bootstrap error says how to start the agent.
 func waitMetalAgentUnloaded(ctx context.Context, host metalHost, service string) bool {
 	deadline := time.Now().Add(metalAgentUnloadTimeout)
-	for host.launchctl(ctx, "print", service) == nil {
+	for {
+		if _, err := host.launchctl(ctx, "print", service); err != nil {
+			return true
+		}
 		if !time.Now().Before(deadline) {
 			return false
 		}
@@ -573,7 +719,6 @@ func waitMetalAgentUnloaded(ctx context.Context, host metalHost, service string)
 		case <-time.After(metalAgentUnloadPoll):
 		}
 	}
-	return true
 }
 
 // renderMetalAgentPlist renders the LaunchAgent, matching
@@ -804,7 +949,7 @@ func runMetalLeave(cmd *cobra.Command) error {
 	switch {
 	case joined:
 		service := domain + "/" + metalAgentLabel
-		if err := host.launchctl(ctx, "bootout", service); err != nil {
+		if _, err := host.launchctl(ctx, "bootout", service); err != nil {
 			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "the agent was not running (%v)\n", err)
 		}
 		if err := stopMetalEngines(ctx, host, paths, service, out, cmd.ErrOrStderr()); err != nil {

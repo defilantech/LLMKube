@@ -571,18 +571,27 @@ func TestStopEnginesParsesWhatLeaveSends(t *testing.T) {
 	prev := kc.Value.String()
 	t.Cleanup(func() { _ = kc.Value.Set(prev) })
 
-	agentArgs := []string{"--kubeconfig", "/Users/a/kc", "--namespace", "team", "--metal-node", "mac-a",
-		"--renew-service-account-token", "--state-dir", "/Users/a/state", "--llama-server", "/opt/llama-server"}
-	args := metaljoin.StopEnginesArgs(agentArgs, "/unused")
-	if args[0] != metaljoin.StopEnginesCommand {
-		t.Fatalf("leave sends %q first, want the subcommand main dispatches on", args[0])
-	}
-	opts, err := parseStopEnginesArgs(args[1:])
-	if err != nil {
-		t.Fatalf("parseStopEnginesArgs(%q): %v", args[1:], err)
-	}
-	if opts.Namespace != "team" || opts.StateDir != "/Users/a/state" || kc.Value.String() != "/Users/a/kc" {
-		t.Fatalf("parsed namespace %q, state dir %q, kubeconfig %q from %q; want team, /Users/a/state, /Users/a/kc",
-			opts.Namespace, opts.StateDir, kc.Value.String(), args[1:])
+	// join writes the flags it sets as two arguments and the ones passed
+	// with --agent-arg as --flag=value; a hand edit may use either.
+	for _, extra := range [][]string{
+		{"--state-dir", "/Users/a/state", "--ollama-port", "11500"},
+		{"--state-dir=/Users/a/state", "-ollama-port=11500"},
+	} {
+		agentArgs := append([]string{"--kubeconfig", "/Users/a/kc", "--namespace", "team", "--metal-node", "mac-a",
+			"--renew-service-account-token", "--llama-server", "/opt/llama-server"}, extra...)
+		args := metaljoin.StopEnginesArgs(agentArgs, "/unused")
+		if args[0] != metaljoin.StopEnginesCommand {
+			t.Fatalf("leave sends %q first, want the subcommand main dispatches on", args[0])
+		}
+		opts, err := parseStopEnginesArgs(args[1:])
+		if err != nil {
+			t.Fatalf("parseStopEnginesArgs(%q): %v", args[1:], err)
+		}
+		if opts.Namespace != "team" || opts.StateDir != "/Users/a/state" || kc.Value.String() != "/Users/a/kc" ||
+			opts.OllamaPort != 11500 {
+			t.Fatalf("parsed namespace %q, state dir %q, kubeconfig %q, Ollama port %d from %q; "+
+				"want team, /Users/a/state, /Users/a/kc, 11500", opts.Namespace, opts.StateDir, kc.Value.String(),
+				opts.OllamaPort, args[1:])
+		}
 	}
 }
