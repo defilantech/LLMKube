@@ -1,0 +1,27 @@
+mkdir -p /home/runner/work/LLMKube/LLMKube/bin
+{"Time":"2026-11-03T08:04:40Z","Action":"start","Package":"github.com/defilantech/llmkube/internal/controller"}
+{"Time":"2026-11-03T08:04:41Z","Action":"run","Package":"github.com/defilantech/llmkube/internal/controller","Test":"TestControllers"}
+ginkgo seed: 11 (pinned by GINKGO_SEED)
+{"Time":"2026-11-03T08:06:08Z","Action":"pass","Package":"github.com/defilantech/llmkube/internal/controller","Test":"TestControllers","Elapsed":87.25}
+{"Time":"2026-11-03T08:06:08Z","Action":"run","Package":"github.com/defilantech/llmkube/internal/controller","Test":"TestModelDownloadResume_Behavioral"}
+{"Time":"2026-11-03T08:06:08Z","Action":"run","Package":"github.com/defilantech/llmkube/internal/controller","Test":"TestModelDownloadResume_Behavioral/IfNotPresent"}
+{"Time":"2026-11-03T08:06:28Z","Action":"pass","Package":"github.com/defilantech/llmkube/internal/controller","Test":"TestModelDownloadResume_Behavioral/IfNotPresent","Elapsed":20}
+{"Time":"2026-11-03T08:06:42Z","Action":"pass","Package":"github.com/defilantech/llmkube/internal/controller","Test":"TestModelDownloadResume_Behavioral","Elapsed":33.72}
+{"Time":"2026-11-03T08:06:42Z","Action":"run","Package":"github.com/defilantech/llmkube/internal/controller","Test":"TestStallProbeIdleNeverFails"}
+{"Time":"2026-11-03T08:06:42Z","Action":"pass","Package":"github.com/defilantech/llmkube/internal/controller","Test":"TestStallProbeIdleNeverFails","Elapsed":0.07}
+{"Time":"2026-11-03T08:06:42Z","Action":"run","Package":"github.com/defilantech/llmkube/internal/controller","Test":"TestSkippedNow"}
+{"Time":"2026-11-03T08:06:42Z","Action":"skip","Package":"github.com/defilantech/llmkube/internal/controller","Test":"TestSkippedNow","Elapsed":0}
+{"Time":"2026-11-03T08:06:42Z","Action":"run","Package":"github.com/defilantech/llmkube/internal/controller","Test":"TestFailsNow"}
+{"Time":"2026-11-03T08:06:42Z","Action":"output","Package":"github.com/defilantech/llmkube/internal/controller","Test":"TestFailsNow","Output":"    fails_test.go:12: boom\n"}
+{"Time":"2026-11-03T08:06:48Z","Action":"fail","Package":"github.com/defilantech/llmkube/internal/controller","Test":"TestFailsNow","Elapsed":5.5}
+{"Time":"2026-11-03T08:06:48Z","Action":"run","Package":"github.com/defilantech/llmkube/internal/controller","Test":"TestSteady"}
+{"Time":"2026-11-03T08:06:49Z","Action":"pass","Package":"github.com/defilantech/llmkube/internal/controller","Test":"TestSteady","Elapsed":1.62}
+{"Time":"2026-11-03T08:06:49Z","Action":"run","Package":"github.com/defilantech/llmkube/internal/controller","Test":"TestMetalNodeSteadyMacStaysReachable"}
+{"Time":"2026-11-03T08:07:17Z","Action":"pass","Package":"github.com/defilantech/llmkube/internal/controller","Test":"TestMetalNodeSteadyMacStaysReachable","Elapsed":27.74}
+{"Time":"2026-11-03T08:07:17Z","Action":"run","Package":"github.com/defilantech/llmkube/internal/controller","Test":"TestMultiFileCachedSize"}
+{"Time":"2026-11-03T08:07:30Z","Action":"pass","Package":"github.com/defilantech/llmkube/internal/controller","Test":"TestMultiFileCachedSize","Elapsed":12.74}
+{"Time":"2026-11-03T08:14:38Z","Action":"fail","Package":"github.com/defilantech/llmkube/internal/controller","Elapsed":424.398}
+{"Time":"2026-11-03T08:04:40Z","Action":"start","Package":"github.com/defilantech/llmkube/pkg/cli"}
+{"Time":"2026-11-03T08:04:41Z","Action":"run","Package":"github.com/defilantech/llmkube/pkg/cli","Test":"TestMetalJoinStringIsSingleUse"}
+{"Time":"2026-11-03T08:04:50Z","Action":"pass","Package":"github.com/defilantech/llmkube/pkg/cli","Test":"TestMetalJoinStringIsSingleUse","Elapsed":9}
+{"Time":"2026-11-03T08:05:30Z","Action":"pass","Package":"github.com/defilantech/llmkube/pkg/cli","Elapsed":95.402}

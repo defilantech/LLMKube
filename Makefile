@@ -206,9 +206,11 @@ test-affected: setup-envtest ## Test packages affected by changes since BASE_REF
 # build runs first (#2380). govulncheck-diff_test.sh and
 # govulncheck-tracking-issue_test.sh cover the Security workflow's verdict
 # (fail a change only on vulnerabilities it introduces) and the tracking issue
-# for main (#2381); they need jq.
+# for main (#2381); they need jq. go-test-report_test.sh covers the CI timing
+# report's package time budgets and its growth list against the last green
+# main run (#2382).
 .PHONY: test-scripts
-test-scripts: ## Run the shell regression tests (gate, test-affected, affected-packages, GINKGO_SEED single evaluation, envtest sharing, test metrics ports, macOS signing and notarization, Go module download retries, govulncheck verdict and tracking issue).
+test-scripts: ## Run the shell regression tests (gate, test-affected, affected-packages, GINKGO_SEED single evaluation, envtest sharing, test metrics ports, macOS signing and notarization, Go module download retries, govulncheck verdict and tracking issue, CI timing report).
 	@bash scripts/gate_test.sh
 	@bash scripts/test-affected_test.sh
 	@bash scripts/affected-packages_test.sh
@@ -221,6 +223,7 @@ test-scripts: ## Run the shell regression tests (gate, test-affected, affected-p
 	@bash scripts/go-mod-download_test.sh
 	@bash scripts/govulncheck-diff_test.sh
 	@bash scripts/govulncheck-tracking-issue_test.sh
+	@bash scripts/go-test-report_test.sh
 
 .PHONY: test-chart
 test-chart: ## Lint and unit-test the Helm charts (requires helm + helm-unittest plugin).

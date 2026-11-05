@@ -20,6 +20,12 @@ jobs:
     # alone, and Lint's job was also called "Run on Ubuntu" (#2379).
     name: Unit and envtest
     runs-on: ubuntu-latest
+    # actions: read lets the timing report download the go-test-report
+    # artifact of the last green main run to compare against (#2382). It is
+    # read-only: it lists runs and downloads their artifacts, nothing else.
+    permissions:
+      contents: read
+      actions: read
     steps:
       - name: Clone the code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -70,8 +76,42 @@ jobs:
           make test-envtest GINKGO_SEED=22 GO_TEST_FLAGS=-json 2>&1 \
             | tee test-report-seed22.jsonl | hack/go-test-report.sh stream
 
-      # Where the time went: package times, failures, tests a -timeout killed
-      # mid-run, and the slowest tests. Runs after a failure too, which is
+      # The baseline for the timing report's growth list: the go-test-report
+      # artifact of the latest successful push to main (selected by workflow
+      # file, event and branch, so PR and merge queue runs never qualify).
+      # No such run, an expired artifact, or a token that cannot read it
+      # leaves the directory empty and the report says "no baseline"; this
+      # step never fails the job.
+      - name: Download baseline test reports
+        if: ${{ !cancelled() }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          dir="$RUNNER_TEMP/go-test-report-baseline"
+          mkdir -p "$dir"
+          if ! run="$(gh run list --workflow test.yml --branch main --event push \
+              --status success --limit 1 --json databaseId,headSha,createdAt \
+              --jq '.[0] // empty | "\(.databaseId) \(.headSha[:9]) \(.createdAt)"')"; then
+            echo "no baseline: cannot list the Tests runs on main"
+          elif [ -z "$run" ]; then
+            echo "no baseline: no successful Tests run on main"
+          else
+            read -r id sha created <<<"$run"
+            url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$id"
+            if gh run download "$id" --name go-test-report --dir "$dir"; then
+              echo "baseline: main at $sha, $created, $url"
+            else
+              rm -rf "$dir" && mkdir -p "$dir"
+              echo "no baseline: $url has no go-test-report artifact this token can read (expired or never uploaded)"
+            fi
+          fi
+
+      # Where the time went: package times, each budgeted package against its
+      # budget (a ::warning:: over it, never a failure), failures, tests a
+      # -timeout killed mid-run, the slowest tests, and the tests that grew
+      # most since the baseline above. Runs after a failure too, which is
       # when it matters most.
       - name: Test timing report
         if: ${{ !cancelled() }}
@@ -80,7 +120,7 @@ jobs:
           for f in test-report-seed*.jsonl; do
             [ -f "$f" ] || continue
             echo "### $f"
-            hack/go-test-report.sh summary "$f" 25
+            hack/go-test-report.sh summary "$f" 25 "$RUNNER_TEMP/go-test-report-baseline/$f"
             echo
           done
 

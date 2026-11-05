@@ -1,0 +1,19 @@
+mkdir -p /home/runner/work/LLMKube/LLMKube/bin
+KUBEBUILDER_ASSETS="/home/runner/work/LLMKube/LLMKube/bin/k8s/1.35.0-linux-amd64" go test $(go list ./... | grep -v /e2e) -json -timeout 20m -coverprofile cover.out
+{"Time":"2026-11-03T08:04:40Z","Action":"start","Package":"github.com/defilantech/llmkube/internal/controller"}
+{"Time":"2026-11-03T08:04:40Z","Action":"start","Package":"github.com/defilantech/llmkube/pkg/cli"}
+{"Time":"2026-11-03T08:04:41Z","Action":"run","Package":"github.com/defilantech/llmkube/internal/controller","Test":"TestControllers"}
+{"Time":"2026-11-03T08:04:41Z","Action":"output","Package":"github.com/defilantech/llmkube/internal/controller","Test":"TestControllers","Output":"=== RUN   TestControllers\n"}
+ginkgo seed: 11 (pinned by GINKGO_SEED)
+{"Time":"2026-11-03T08:04:41Z","Action":"run","Package":"github.com/defilantech/llmkube/pkg/cli","Test":"TestMetalJoinStringIsSingleUse"}
+{"Time":"2026-11-03T08:04:51Z","Action":"pass","Package":"github.com/defilantech/llmkube/pkg/cli","Test":"TestMetalJoinStringIsSingleUse","Elapsed":10.11}
+{"Time":"2026-11-03T08:05:30Z","Action":"output","Package":"github.com/defilantech/llmkube/pkg/cli","Output":"ok  \tgithub.com/defilantech/llmkube/pkg/cli\t95.402s\n"}
+{"Time":"2026-11-03T08:05:30Z","Action":"pass","Package":"github.com/defilantech/llmkube/pkg/cli","Elapsed":95.402}
+{"Time":"2026-11-03T08:06:16Z","Action":"output","Package":"github.com/defilantech/llmkube/internal/controller","Test":"TestControllers","Output":"--- PASS: TestControllers (95.12s)\n"}
+{"Time":"2026-11-03T08:06:16Z","Action":"pass","Package":"github.com/defilantech/llmkube/internal/controller","Test":"TestControllers","Elapsed":95.12}
+{"Time":"2026-11-03T08:06:16Z","Action":"run","Package":"github.com/defilantech/llmkube/internal/controller","Test":"TestSingleFileFUSEStaging"}
+{"Time":"2026-11-03T08:06:16Z","Action":"run","Package":"github.com/defilantech/llmkube/internal/controller","Test":"TestSingleFileFUSEStaging/serving"}
+{"Time":"2026-11-03T08:06:37Z","Action":"pass","Package":"github.com/defilantech/llmkube/internal/controller","Test":"TestSingleFileFUSEStaging/serving","Elapsed":21.3}
+{"Time":"2026-11-03T08:06:37Z","Action":"pass","Package":"github.com/defilantech/llmkube/internal/controller","Test":"TestSingleFileFUSEStaging","Elapsed":21.39}
+{"Time":"2026-11-03T08:14:38Z","Action":"output","Package":"github.com/defilantech/llmkube/internal/controller","Output":"ok  \tgithub.com/defilantech/llmkube/internal/controller\t612.503s\n"}
+{"Time":"2026-11-03T08:14:38Z","Action":"pass","Package":"github.com/defilantech/llmkube/internal/controller","Elapsed":612.503}
