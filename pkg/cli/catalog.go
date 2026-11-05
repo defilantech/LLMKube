@@ -35,6 +35,21 @@ type Catalog struct {
 	Models  map[string]Model `yaml:"models"`
 }
 
+type CatalogGPU struct {
+	Count              int32  `yaml:"count"`
+	TensorParallelSize *int32 `yaml:"tensor_parallel_size"`
+}
+
+type CatalogParsers struct {
+	ToolCall  string `yaml:"tool_call"`
+	Reasoning string `yaml:"reasoning"`
+}
+
+type CatalogValidation struct {
+	Hardware string `yaml:"hardware"`
+	LLMKube  string `yaml:"llmkube"`
+}
+
 type Model struct {
 	Name         string       `yaml:"name"`
 	Description  string       `yaml:"description"`
@@ -49,6 +64,67 @@ type Model struct {
 	Tags         []string     `yaml:"tags"`
 	Homepage     string       `yaml:"homepage"`
 	Notes        string       `yaml:"notes,omitempty"`
+
+	Runtime         string             `yaml:"runtime"`
+	Files           []string           `yaml:"files"`
+	GPU             *CatalogGPU        `yaml:"gpu"`
+	ServedModelName string             `yaml:"served_model_name"`
+	Parsers         *CatalogParsers    `yaml:"parsers"`
+	ExtraArgs       []string           `yaml:"extra_args"`
+	Validated       *CatalogValidation `yaml:"validated"`
+}
+
+func (m *Model) UnmarshalYAML(node *yaml.Node) (err error) {
+	defer func() {
+		if err != nil {
+			err = fmt.Errorf("catalog entry at line %d: %w", node.Line, err)
+		}
+	}()
+	type plainModel Model
+	var decoded plainModel
+	if err := node.Decode(&decoded); err != nil {
+		return err
+	}
+	*m = Model(decoded)
+	if m.Runtime == "" {
+		m.Runtime = "llamacpp"
+	}
+	switch m.Runtime {
+	case "llamacpp":
+		if m.Parsers != nil || m.ServedModelName != "" || (m.GPU != nil && m.GPU.TensorParallelSize != nil) {
+			return fmt.Errorf("llamacpp catalog entry cannot set parsers, served_model_name or tensor_parallel_size")
+		}
+	case "vllm", "sglang":
+		for i := 0; i < len(node.Content); i += 2 {
+			if node.Content[i].Value == "gpu_layers" {
+				return fmt.Errorf("gpu_layers is only supported by llamacpp")
+			}
+		}
+		if len(m.Files) == 0 {
+			return fmt.Errorf("%s catalog entry requires files", m.Runtime)
+		}
+		if m.GPU == nil {
+			return fmt.Errorf("%s catalog entry requires gpu with count >= 1", m.Runtime)
+		}
+	default:
+		return fmt.Errorf("unsupported catalog runtime %q", m.Runtime)
+	}
+	if m.GPU != nil {
+		if m.GPU.Count < 1 {
+			return fmt.Errorf("catalog gpu.count must be positive")
+		}
+		if tp := m.GPU.TensorParallelSize; tp != nil && (*tp < 1 || *tp > m.GPU.Count) {
+			return fmt.Errorf("catalog tensor_parallel_size must be between 1 and gpu.count")
+		}
+	}
+	return nil
+}
+
+func (m *Model) modelFormat() string {
+	if m.Runtime == "vllm" || m.Runtime == "sglang" {
+		return "safetensors"
+	}
+	return "gguf"
 }
 
 type ResourceSpec struct {
@@ -193,8 +269,8 @@ func runCatalogList(tagFilter string) error {
 	fmt.Printf("═══════════════════════════════════════════════════════════════════════\n\n")
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintln(w, "ID\tNAME\tSIZE\tQUANT\tUSE CASE\tVRAM")
-	_, _ = fmt.Fprintln(w, "──\t────\t────\t─────\t────────\t────")
+	_, _ = fmt.Fprintln(w, "ID\tNAME\tRUNTIME\tSIZE\tQUANT\tUSE CASE\tVRAM")
+	_, _ = fmt.Fprintln(w, "──\t────\t───────\t────\t─────\t────────\t────")
 
 	for _, id := range modelIDs {
 		model := catalog.Models[id]
@@ -203,9 +279,10 @@ func runCatalogList(tagFilter string) error {
 			useCase = formatUseCase(model.UseCases[0])
 		}
 
-		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			id,
 			truncate(model.Name, 30),
+			model.Runtime,
 			model.Size,
 			model.Quantization,
 			truncate(useCase, 20),
@@ -230,6 +307,7 @@ func runCatalogInfo(modelID string) error {
 	fmt.Printf("\n📦 %s\n", model.Name)
 	fmt.Printf("═══════════════════════════════════════════════════════════════════════\n\n")
 	fmt.Printf("ID:              %s\n", modelID)
+	fmt.Printf("Runtime:         %s\n", model.Runtime)
 	fmt.Printf("Size:            %s parameters\n", model.Size)
 	fmt.Printf("Quantization:    %s\n", model.Quantization)
 	fmt.Printf("Context Size:    %s tokens\n", formatNumber(model.ContextSize))
@@ -251,7 +329,9 @@ func runCatalogInfo(modelID string) error {
 	fmt.Printf("  CPU:         %s\n", model.Resources.CPU)
 	fmt.Printf("  Memory:      %s\n", model.Resources.Memory)
 	fmt.Printf("  GPU Memory:  %s\n", model.Resources.GPUMemory)
-	fmt.Printf("  GPU Layers:  %d\n", model.GPULayers)
+	if model.Runtime == "llamacpp" {
+		fmt.Printf("  GPU Layers:  %d\n", model.GPULayers)
+	}
 	fmt.Printf("\n")
 
 	if len(model.Tags) > 0 {
@@ -264,8 +344,10 @@ func runCatalogInfo(modelID string) error {
 
 	fmt.Printf("═══════════════════════════════════════════════════════════════════════\n")
 	fmt.Printf("🚀 Quick Deploy:\n\n")
-	fmt.Printf("  # CPU deployment\n")
-	fmt.Printf("  llmkube deploy %s\n\n", modelID)
+	if model.Runtime == "llamacpp" {
+		fmt.Printf("  # CPU deployment\n")
+		fmt.Printf("  llmkube deploy %s\n\n", modelID)
+	}
 	fmt.Printf("  # GPU deployment (recommended)\n")
 	fmt.Printf("  llmkube deploy %s --gpu\n\n", modelID)
 	fmt.Printf("  # Custom configuration\n")

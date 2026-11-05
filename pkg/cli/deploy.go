@@ -46,6 +46,9 @@ const defaultGPUVendor = "nvidia"
 const heartbeatInterval = 5 * time.Second
 
 type deployOptions struct {
+	specified           map[string]bool
+	catalogModel        *Model
+	modelFiles          []string
 	name                string
 	namespace           string
 	modelSource         string
@@ -140,6 +143,10 @@ Examples:
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.name = args[0]
+			opts.specified = make(map[string]bool)
+			for _, name := range []string{"runtime", "format", "gpu", "gpu-count", "extra-args"} {
+				opts.specified[name] = cmd.Flags().Changed(name)
+			}
 			return runDeploy(opts)
 		},
 	}
@@ -192,10 +199,10 @@ Examples:
 	cmd.Flags().StringVar(&opts.cacheTypeV, "cache-type-v", "",
 		"KV cache type for values (f16, q8_0, q4_0, etc.). Maps to llama.cpp --cache-type-v.")
 	cmd.Flags().StringSliceVar(&opts.extraArgs, "extra-args", nil,
-		"Additional llama-server arguments (can specify multiple times)")
+		"Additional runtime arguments (can specify multiple times)")
 
 	cmd.Flags().StringVar(&opts.runtime, "runtime", "llamacpp",
-		"Inference runtime backend (llamacpp, generic)")
+		"Inference runtime backend (llamacpp, vllm, sglang, generic)")
 	cmd.Flags().Int32Var(&opts.containerPort, "container-port", 0,
 		"Override the container port (default depends on runtime)")
 	cmd.Flags().BoolVar(&opts.skipModelInit, "skip-model-init", false,
@@ -247,7 +254,9 @@ func runDeploy(opts *deployOptions) error {
 				opts.name)
 		}
 		catalogModel = model
-		applyCatalogDefaults(opts, catalogModel)
+		if err := applyCatalogDefaults(opts, catalogModel); err != nil {
+			return err
+		}
 	}
 
 	if opts.sourceOverride != "" {
@@ -303,6 +312,7 @@ func runDeploy(opts *deployOptions) error {
 		},
 		Spec: inferencev1alpha1.ModelSpec{
 			Source:       opts.modelSource,
+			Files:        opts.modelFiles,
 			Format:       opts.modelFormat,
 			Quantization: opts.quantization,
 			SHA256:       opts.sha256,
@@ -429,6 +439,7 @@ func buildInferenceService(opts *deployOptions) *inferencev1alpha1.InferenceServ
 	if opts.runtime != "" && opts.runtime != "llamacpp" {
 		isvc.Spec.Runtime = opts.runtime
 	}
+	applyCatalogRuntime(isvc, opts)
 	if opts.containerPort > 0 {
 		isvc.Spec.ContainerPort = &opts.containerPort
 	}
@@ -605,6 +616,17 @@ func printDeploySummary(opts *deployOptions) {
 }
 
 func resolveAcceleratorAndImage(opts *deployOptions) {
+	if opts.runtime == "vllm" || opts.runtime == "sglang" {
+		// Let the controller select the runtime image; llama.cpp images cannot serve these backends.
+		if opts.accelerator == "" {
+			if opts.gpu {
+				opts.accelerator = acceleratorCUDA
+			} else {
+				opts.accelerator = acceleratorCPU
+			}
+		}
+		return
+	}
 	if opts.gpu {
 		if opts.accelerator == "" {
 			if detectMetalSupport() {
@@ -667,7 +689,72 @@ func detectMetalSupport() bool {
 	return strings.Contains(string(output), "Metal")
 }
 
-func applyCatalogDefaults(opts *deployOptions, catalogModel *Model) {
+func applyCatalogRuntime(isvc *inferencev1alpha1.InferenceService, opts *deployOptions) {
+	if m := opts.catalogModel; m != nil {
+		var tp *int32
+		if m.GPU != nil {
+			tp = m.GPU.TensorParallelSize
+		}
+		parsers := CatalogParsers{}
+		if m.Parsers != nil {
+			parsers = *m.Parsers
+		}
+		switch opts.runtime {
+		case "vllm":
+			isvc.Spec.VLLMConfig = &inferencev1alpha1.VLLMConfig{TensorParallelSize: tp, ToolCallParser: parsers.ToolCall,
+				ReasoningParser: parsers.Reasoning,
+			}
+			if opts.contextSize > 0 {
+				isvc.Spec.VLLMConfig.MaxModelLen = &opts.contextSize
+			}
+		case "sglang":
+			isvc.Spec.SGLangConfig = &inferencev1alpha1.SGLangConfig{TensorParallelSize: tp, ToolCallParser: parsers.ToolCall,
+				ReasoningParser: parsers.Reasoning,
+			}
+			if opts.contextSize > 0 {
+				isvc.Spec.SGLangConfig.ContextLength = &opts.contextSize
+			}
+		}
+		if m.ServedModelName != "" && !hasMatchingExtraArg(isvc.Spec.ExtraArgs, "served-model-name") {
+			isvc.Spec.ExtraArgs = append(append([]string(nil), isvc.Spec.ExtraArgs...), "--served-model-name", m.ServedModelName)
+		}
+	}
+}
+
+func applyCatalogDefaults(opts *deployOptions, catalogModel *Model) error {
+	catalogRuntime := catalogModel.Runtime
+	if catalogRuntime == "" {
+		catalogRuntime = "llamacpp"
+	}
+	if opts.specified["runtime"] && opts.runtime != catalogRuntime && catalogRuntime != "llamacpp" {
+		return fmt.Errorf("catalog entry requires runtime %s; use --source for a different runtime", catalogRuntime)
+	}
+	if !opts.specified["runtime"] {
+		opts.runtime = catalogRuntime
+	}
+	opts.catalogModel = catalogModel
+	opts.modelFiles = append([]string(nil), catalogModel.Files...)
+	if !opts.specified["format"] {
+		opts.modelFormat = catalogModel.modelFormat()
+	}
+	if catalogModel.GPU != nil {
+		if !opts.specified["gpu"] {
+			opts.gpu = true
+		}
+		if !opts.specified["gpu-count"] {
+			opts.gpuCount = catalogModel.GPU.Count
+		}
+		if tp := catalogModel.GPU.TensorParallelSize; tp != nil && (!opts.gpu || opts.gpuCount < *tp) {
+			return fmt.Errorf("catalog tensor_parallel_size requires at least %d GPUs", *tp)
+		}
+	}
+	if (catalogRuntime == "vllm" || catalogRuntime == "sglang") && (!opts.gpu || opts.gpuCount < 1) {
+		return fmt.Errorf("%s catalog entry requires at least one GPU; cannot disable GPU allocation", catalogRuntime)
+	}
+
+	if !opts.specified["extra-args"] {
+		opts.extraArgs = append([]string(nil), catalogModel.ExtraArgs...)
+	}
 	opts.modelSource = catalogModel.Source
 	fmt.Printf("📚 Using catalog model: %s\n", catalogModel.Name)
 
@@ -689,6 +776,7 @@ func applyCatalogDefaults(opts *deployOptions, catalogModel *Model) {
 	if opts.contextSize == 0 && catalogModel.ContextSize > 0 {
 		opts.contextSize = int32(catalogModel.ContextSize) //nolint:gosec // G115: catalog ContextSize positive
 	}
+	return nil
 }
 
 // shouldHeartbeat returns true when a heartbeat line should be printed.

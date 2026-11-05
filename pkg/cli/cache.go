@@ -614,7 +614,8 @@ func runCachePreload(modelID, namespace string) error {
 			},
 			Spec: inferencev1alpha1.ModelSpec{
 				Source:       catalogModel.Source,
-				Format:       "gguf",
+				Format:       catalogModel.modelFormat(),
+				Files:        catalogModel.Files,
 				Quantization: catalogModel.Quantization,
 				Hardware: &inferencev1alpha1.HardwareSpec{
 					Accelerator: "cpu", // Preload doesn't need GPU

@@ -17,10 +17,20 @@ limitations under the License.
 package cli
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 	"github.com/defilantech/llmkube/pkg/cachekey"
@@ -362,7 +372,9 @@ func TestApplyCatalogDefaults(t *testing.T) {
 			memory:    "4Gi", // default
 			gpuLayers: -1,    // default
 		}
-		applyCatalogDefaults(opts, catalogModel)
+		if err := applyCatalogDefaults(opts, catalogModel); err != nil {
+			t.Fatal(err)
+		}
 
 		if opts.modelSource != catalogModel.Source {
 			t.Errorf("modelSource = %q, want %q", opts.modelSource, catalogModel.Source)
@@ -396,7 +408,9 @@ func TestApplyCatalogDefaults(t *testing.T) {
 			gpuMemory:    "24Gi",
 			contextSize:  4096,
 		}
-		applyCatalogDefaults(opts, catalogModel)
+		if err := applyCatalogDefaults(opts, catalogModel); err != nil {
+			t.Fatal(err)
+		}
 
 		if opts.quantization != "Q8_0" {
 			t.Errorf("quantization = %q, want Q8_0 (user-specified)", opts.quantization)
@@ -432,7 +446,9 @@ func TestApplyCatalogDefaults(t *testing.T) {
 			memory:    "4Gi",
 			gpuLayers: -1,
 		}
-		applyCatalogDefaults(opts, noCtxModel)
+		if err := applyCatalogDefaults(opts, noCtxModel); err != nil {
+			t.Fatal(err)
+		}
 
 		if opts.contextSize != 0 {
 			t.Errorf("contextSize = %d, want 0 when catalog model has no context size", opts.contextSize)
@@ -656,6 +672,17 @@ func TestResolveAcceleratorAndImage(t *testing.T) {
 			wantAccel:  "intel",
 			wantVendor: "intel",
 			wantImage:  "ghcr.io/ggml-org/llama.cpp:server-intel",
+		},
+
+		{
+			name:      "non-catalog vllm leaves image selection to controller",
+			opts:      &deployOptions{runtime: "vllm", gpu: true, gpuVendor: defaultGPUVendor},
+			wantAccel: "cuda", wantVendor: defaultGPUVendor,
+		},
+		{
+			name:      "non-catalog sglang leaves image selection to controller",
+			opts:      &deployOptions{runtime: "sglang", gpu: true, gpuVendor: defaultGPUVendor},
+			wantAccel: "cuda", wantVendor: defaultGPUVendor,
 		},
 		{
 			name: "cpu defaults",
@@ -894,5 +921,296 @@ func TestComputeCacheKeyUsedByDeploy(t *testing.T) {
 		if key != key2 {
 			t.Errorf("cachekey.Compute not deterministic for %q", source)
 		}
+	}
+}
+
+func TestCatalogRuntimeDeployment(t *testing.T) {
+	for _, runtime := range []string{"vllm", "sglang"} {
+		t.Run(runtime, func(t *testing.T) {
+			var model Model
+			err := yaml.Unmarshal([]byte(`name: test
+runtime: `+runtime+`
+source: org/model
+files: ["*.safetensors", "*.json"]
+context_size: 8192
+gpu:
+  count: 2
+  tensor_parallel_size: 2
+served_model_name: chat
+parsers:
+  tool_call: hermes
+  reasoning: deepseek-r1
+extra_args: ["--trust-remote-code"]
+`), &model)
+			if err != nil {
+				t.Fatal(err)
+			}
+			opts := &deployOptions{runtime: "llamacpp", modelFormat: "gguf", gpuCount: 1}
+			if err := applyCatalogDefaults(opts, &model); err != nil {
+				t.Fatal(err)
+			}
+			resolveAcceleratorAndImage(opts)
+			svc := buildInferenceService(opts)
+			if opts.modelFormat != "safetensors" ||
+				!reflect.DeepEqual(opts.modelFiles, []string{"*.safetensors", "*.json"}) {
+				t.Fatalf("model format/files = %s %v", opts.modelFormat, opts.modelFiles)
+			}
+			if !reflect.DeepEqual(svc.Spec.ExtraArgs, []string{"--trust-remote-code", "--served-model-name", "chat"}) {
+				t.Fatalf("extra args = %v", svc.Spec.ExtraArgs)
+			}
+			if svc.Spec.Runtime != runtime {
+				t.Fatalf("runtime = %q, want %q", svc.Spec.Runtime, runtime)
+			}
+			if svc.Spec.Image != "" {
+				t.Fatalf("runtime image must be selected by controller, got %q", svc.Spec.Image)
+			}
+			if svc.Spec.Resources.GPU != 2 {
+				t.Fatalf("GPU count = %d, want 2", svc.Spec.Resources.GPU)
+			}
+			if runtime == "vllm" {
+				c := svc.Spec.VLLMConfig
+				if c == nil ||
+					c.TensorParallelSize == nil ||
+					*c.TensorParallelSize != 2 ||
+					c.ToolCallParser != "hermes" ||
+					c.ReasoningParser != "deepseek-r1" ||
+					c.MaxModelLen == nil ||
+					*c.MaxModelLen != 8192 {
+					t.Fatalf("vLLM config = %+v", c)
+				}
+			} else {
+				c := svc.Spec.SGLangConfig
+				if c == nil ||
+					c.TensorParallelSize == nil ||
+					*c.TensorParallelSize != 2 ||
+					c.ToolCallParser != "hermes" ||
+					c.ReasoningParser != "deepseek-r1" ||
+					c.ContextLength == nil ||
+					*c.ContextLength != 8192 {
+					t.Fatalf("SGLang config = %+v", c)
+				}
+			}
+		})
+	}
+}
+
+func TestCatalogDeployCreatesRuntimeResources(t *testing.T) {
+	cfg := cacheListEnvtest(t)
+	pointKubeconfigAt(t, cfg)
+	if err := inferencev1alpha1.AddToScheme(scheme.Scheme); err != nil {
+		t.Fatal(err)
+	}
+	k8s, err := client.New(cfg, client.Options{Scheme: scheme.Scheme})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "catalog-runtime-"}}
+	if err := k8s.Create(ctx, ns); err != nil {
+		t.Fatal(err)
+	}
+	old := catalogInstance
+	t.Cleanup(func() { catalogInstance = old; _ = k8s.Delete(ctx, ns) })
+	var catalog Catalog
+	err = yaml.Unmarshal([]byte(`version: test
+models:
+  runtime-test:
+    name: runtime-test
+    runtime: vllm
+    source: org/model
+    files: ["*.safetensors", "*.json"]
+    gpu: {count: 2, tensor_parallel_size: 2}
+    parsers: {tool_call: hermes, reasoning: deepseek-r1}
+    served_model_name: chat
+    context_size: 8192
+    resources: {cpu: "2", memory: 4Gi}
+`), &catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalogInstance = &catalog
+	for _, runtime := range []string{"vllm", "sglang"} {
+		m := catalog.Models["runtime-test"]
+		m.Runtime = runtime
+		catalog.Models[runtime] = m
+		cmd := NewDeployCommand()
+		cmd.SetArgs([]string{runtime, "-n", ns.Name, "--wait=false"})
+		if err := cmd.Execute(); err != nil {
+			t.Fatal(err)
+		}
+		key := client.ObjectKey{Namespace: ns.Name, Name: runtime}
+		var model inferencev1alpha1.Model
+		if err := k8s.Get(ctx, key, &model); err != nil {
+			t.Fatal(err)
+		}
+		if model.Spec.Source != m.Source ||
+			model.Spec.Format != "safetensors" ||
+			!reflect.DeepEqual(model.Spec.Files, m.Files) {
+			t.Fatalf("persisted Model spec = %+v", model.Spec)
+		}
+		if model.Spec.Hardware.GPU.Count != 2 || model.Spec.Hardware.Accelerator != "cuda" {
+			t.Fatalf("persisted hardware = %+v", model.Spec.Hardware)
+		}
+		var svc inferencev1alpha1.InferenceService
+		if err := k8s.Get(ctx, key, &svc); err != nil {
+			t.Fatal(err)
+		}
+		if svc.Spec.Runtime != runtime || svc.Spec.Resources.GPU != 2 || svc.Spec.Image != "" {
+			t.Fatalf("persisted InferenceService spec = %+v", svc.Spec)
+		}
+		if runtime == "vllm" && (svc.Spec.VLLMConfig == nil || svc.Spec.VLLMConfig.ToolCallParser != "hermes") {
+			t.Fatalf("persisted vLLM config = %+v", svc.Spec.VLLMConfig)
+		}
+		if runtime == "sglang" && (svc.Spec.SGLangConfig == nil || svc.Spec.SGLangConfig.ToolCallParser != "hermes") {
+			t.Fatalf("persisted SGLang config = %+v", svc.Spec.SGLangConfig)
+		}
+	}
+	assertCatalogPreload(t, k8s, ns.Name, catalog.Models["runtime-test"].Files)
+
+	cmd := NewDeployCommand()
+	cmd.SetArgs([]string{"runtime-test", "-n", ns.Name, "--runtime=llamacpp", "--wait=false"})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "requires runtime") {
+		t.Fatalf("incompatible runtime error = %v", err)
+	}
+	var models inferencev1alpha1.ModelList
+	if err := k8s.List(ctx, &models, client.InNamespace(ns.Name)); err != nil {
+		t.Fatal(err)
+	}
+	if len(models.Items) != 2 {
+		t.Fatalf("rejected deploy created a Model: %d models", len(models.Items))
+	}
+}
+
+func TestCatalogRuntimeOverrides(t *testing.T) {
+	tp := int32(2)
+	model := &Model{
+		Runtime: "vllm", Files: []string{"weights.safetensors"},
+		GPU:             &CatalogGPU{Count: 2, TensorParallelSize: &tp},
+		ServedModelName: "catalog", ExtraArgs: []string{"--trust-remote-code"},
+	}
+	opts := &deployOptions{
+		gpu: true, gpuCount: 4, image: "custom-image", contextSize: 4096,
+		extraArgs: []string{"--served-model-name=custom"},
+		specified: map[string]bool{"gpu-count": true, "extra-args": true},
+	}
+	if err := applyCatalogDefaults(opts, model); err != nil {
+		t.Fatal(err)
+	}
+	resolveAcceleratorAndImage(opts)
+	svc := buildInferenceService(opts)
+	if svc.Spec.Image != "custom-image" ||
+		svc.Spec.Resources.GPU != 4 ||
+		*svc.Spec.VLLMConfig.MaxModelLen != 4096 ||
+		!reflect.DeepEqual(svc.Spec.ExtraArgs, []string{"--served-model-name=custom"}) {
+		t.Fatalf("overrides lost: %+v", svc.Spec)
+	}
+	opts = &deployOptions{gpuCount: 1, specified: map[string]bool{"gpu-count": true}}
+	if err := applyCatalogDefaults(opts, model); err == nil {
+		t.Fatal("expected insufficient GPU error")
+	}
+	opts = &deployOptions{runtime: "generic", specified: map[string]bool{"runtime": true}}
+	if err := applyCatalogDefaults(opts, &Model{}); err != nil || opts.runtime != "generic" {
+		t.Fatalf("legacy runtime override: %q, %v", opts.runtime, err)
+	}
+}
+
+func TestCatalogRuntimeBenchmarkRejection(t *testing.T) {
+	old := catalogInstance
+	t.Cleanup(func() { catalogInstance = old })
+	catalogInstance = &Catalog{Models: map[string]Model{"test": {Runtime: "vllm"}}}
+	t.Setenv("KUBECONFIG", filepath.Join(t.TempDir(), "missing"))
+	if _, err := validateCatalogModels([]string{"test"}); err == nil ||
+		!strings.Contains(err.Error(), "only support llamacpp") {
+		t.Fatalf("catalog benchmark rejection = %v", err)
+	}
+	err := runContextSweep(context.Background(), &benchmarkOptions{catalog: "test", contextSweep: "1024,2048"})
+	if err == nil || !strings.Contains(err.Error(), "deploy test and benchmark its endpoint instead") {
+		t.Fatalf("context sweep rejection = %v", err)
+	}
+}
+
+func assertCatalogPreload(t *testing.T, k8s client.Client, namespace string, files []string) {
+	t.Helper()
+	ctx := context.Background()
+	preloadDone := make(chan error, 1)
+	go func() { preloadDone <- runCachePreload("runtime-test", namespace) }()
+	key := client.ObjectKey{Namespace: namespace, Name: "runtime-test"}
+	var preloaded inferencev1alpha1.Model
+	err := wait.PollUntilContextTimeout(ctx, 20*time.Millisecond, 10*time.Second, true,
+		func(ctx context.Context) (bool, error) {
+			err := k8s.Get(ctx, key, &preloaded)
+			return err == nil, client.IgnoreNotFound(err)
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preloaded.Spec.Format != "safetensors" ||
+		!reflect.DeepEqual(preloaded.Spec.Files, files) {
+		t.Errorf("preload lost format/files: %+v", preloaded.Spec)
+	}
+	preloaded.Status.Phase = phaseReady
+	if err := k8s.Status().Update(ctx, &preloaded); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-preloadDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("cache preload did not observe Ready")
+	}
+	if err := k8s.Delete(ctx, &preloaded); err != nil {
+		t.Fatal(err)
+	}
+
+}
+
+func TestCatalogDeployRejectsCPU(t *testing.T) {
+	cfg := cacheListEnvtest(t)
+	pointKubeconfigAt(t, cfg)
+	if err := inferencev1alpha1.AddToScheme(scheme.Scheme); err != nil {
+		t.Fatal(err)
+	}
+	k8s, err := client.New(cfg, client.Options{Scheme: scheme.Scheme})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "catalog-gpu-required-"}}
+	if err := k8s.Create(ctx, ns); err != nil {
+		t.Fatal(err)
+	}
+	old := catalogInstance
+	t.Cleanup(func() { catalogInstance = old; _ = k8s.Delete(ctx, ns) })
+	catalogInstance = &Catalog{Models: map[string]Model{}}
+	for _, runtime := range []string{"vllm", "sglang"} {
+		catalogInstance.Models[runtime] = Model{
+			Runtime: runtime, Source: "org/model", Files: []string{"weights.safetensors"},
+			GPU: &CatalogGPU{Count: 1}, Resources: ResourceSpec{CPU: "2", Memory: "4Gi"},
+		}
+		for _, flag := range []string{"--gpu=false", "--gpu-count=0"} {
+			t.Run(runtime+"/"+flag, func(t *testing.T) {
+				cmd := NewDeployCommand()
+				cmd.SetArgs([]string{runtime, "-n", ns.Name, "--wait=false", flag})
+				if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "requires at least one GPU") {
+					t.Errorf("CPU deployment error = %v", err)
+				}
+			})
+		}
+	}
+	var models inferencev1alpha1.ModelList
+	if err := k8s.List(ctx, &models, client.InNamespace(ns.Name)); err != nil {
+		t.Fatal(err)
+	}
+	if len(models.Items) != 0 {
+		t.Errorf("rejected deploys created %d Models", len(models.Items))
+	}
+	var services inferencev1alpha1.InferenceServiceList
+	if err := k8s.List(ctx, &services, client.InNamespace(ns.Name)); err != nil {
+		t.Fatal(err)
+	}
+	if len(services.Items) != 0 {
+		t.Errorf("rejected deploys created %d InferenceServices", len(services.Items))
 	}
 }

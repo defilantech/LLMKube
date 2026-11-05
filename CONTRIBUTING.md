@@ -261,7 +261,9 @@ git diff --exit-code  # Should be no changes
 ### Adding entry to model catalog
 
 The model catalog is at the canonical location `catalog/catalog.yaml`. You can edit it
-to add or update a model definition. Before submitting, make sure the standard checks pass:
+to add or update a model definition. Read [the catalog guide](catalog/README.md)
+for the runtime-specific schema and hardware validation policy. Before submitting,
+make sure the standard checks pass:
 
 ```bash
 make fmt

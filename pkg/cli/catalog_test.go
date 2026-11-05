@@ -21,6 +21,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestLoadCatalog(t *testing.T) {
@@ -373,6 +375,12 @@ func TestModelQuantizationFormats(t *testing.T) {
 	}
 
 	for modelID, model := range catalog.Models {
+		if model.Runtime != "llamacpp" {
+			if model.Quantization == "" {
+				t.Errorf("Model %s needs quantization metadata", modelID)
+			}
+			continue
+		}
 		if !validQuantizations[model.Quantization] {
 			t.Errorf("Model '%s' has unexpected quantization format: %s",
 				modelID, model.Quantization)
@@ -387,6 +395,15 @@ func TestModelSourceURLs(t *testing.T) {
 	}
 
 	for modelID, model := range catalog.Models {
+		if model.Runtime != "llamacpp" {
+			if len(model.Files) == 0 {
+				t.Errorf("Model %s needs a file set", modelID)
+			}
+			if model.Validated == nil || model.Validated.Hardware == "" || model.Validated.LLMKube == "" {
+				t.Errorf("Model %s needs hardware and LLMKube validation metadata", modelID)
+			}
+			continue
+		}
 		// Verify source URLs are HuggingFace URLs
 		if !strings.HasPrefix(model.Source, "https://huggingface.co/") {
 			t.Errorf("Model '%s' source URL should start with https://huggingface.co/, got: %s",
@@ -441,6 +458,9 @@ func TestRunCatalogList(t *testing.T) {
 	_, _ = buf.ReadFrom(r)
 	output := buf.String()
 
+	if !strings.Contains(output, "RUNTIME") || !strings.Contains(output, "llamacpp") {
+		t.Error("output must show runtimes")
+	}
 	if !strings.Contains(output, "Model Catalog") {
 		t.Error("output should contain catalog header")
 	}
@@ -570,5 +590,45 @@ func TestNewCatalogInfoCommand(t *testing.T) {
 
 	if cmd.Use != "info MODEL_ID" {
 		t.Errorf("Use = %q, want %q", cmd.Use, "info MODEL_ID")
+	}
+}
+
+func TestCatalogRuntimeValidation(t *testing.T) {
+	for _, tc := range []struct {
+		name, entry string
+		valid       bool
+	}{
+		{"legacy", "source: https://example.com/model.gguf\ngpu_layers: 0", true},
+		{"vllm", "runtime: vllm\nfiles: [weights.safetensors]\ngpu: {count: 1}", true},
+		{"sglang", "runtime: sglang\nfiles: [weights.safetensors]\ngpu: {count: 1}", true},
+		{"vllm missing GPUs", "runtime: vllm\nfiles: [weights.safetensors]", false},
+		{"sglang missing GPUs", "runtime: sglang\nfiles: [weights.safetensors]", false},
+		{"vllm zero GPUs", "runtime: vllm\nfiles: [weights.safetensors]\ngpu: {count: 0}", false},
+		{"sglang zero GPUs", "runtime: sglang\nfiles: [weights.safetensors]\ngpu: {count: 0}", false},
+		{"malformed GPU count", "gpu: {count: nope}", false},
+		{"unknown", "runtime: typo", false},
+		{"llamacpp parsers", "parsers: {tool_call: hermes}", false},
+		{"llamacpp served name", "served_model_name: chat", false},
+		{"llamacpp tensor parallel", "gpu: {count: 2, tensor_parallel_size: 2}", false},
+		{"vllm layers zero", "runtime: vllm\nfiles: [weights.safetensors]\ngpu_layers: 0", false},
+		{"sglang layers", "runtime: sglang\nfiles: [weights.safetensors]\ngpu_layers: -1", false},
+		{"missing files", "runtime: sglang\ngpu: {count: 1}", false},
+		{"zero GPUs", "gpu: {count: 0}", false},
+		{"too many shards", "runtime: vllm\nfiles: [weights.safetensors]\ngpu: {count: 1, tensor_parallel_size: 2}", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var catalog Catalog
+			entry := "version: test\nmodels:\n  test:\n    " + strings.ReplaceAll(tc.entry, "\n", "\n    ")
+			err := yaml.Unmarshal([]byte(entry), &catalog)
+			if (err == nil) != tc.valid {
+				t.Fatalf("parse error = %v, valid = %v", err, tc.valid)
+			}
+			if err != nil && !strings.Contains(err.Error(), "line 4:") {
+				t.Errorf("catalog error must identify the entry line: %v", err)
+			}
+			if tc.name == "legacy" && catalog.Models["test"].Runtime != "llamacpp" {
+				t.Fatal("legacy runtime must default to llamacpp")
+			}
+		})
 	}
 }
