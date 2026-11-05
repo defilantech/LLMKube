@@ -168,6 +168,17 @@ var (
 		},
 	)
 
+	watchLocalNetworkBlocked = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "llmkube_metal_agent_local_network_blocked",
+			Help: "1 while, on macOS, the Kubernetes API counts as unreachable and the " +
+				"latest failed InferenceService list failed with no route to host or " +
+				"network unreachable to a private or link-local address: how macOS refuses " +
+				"an agent without Local Network access, which it loses on every agent " +
+				"upgrade. 0 otherwise, and always 0 on other systems.",
+		},
+	)
+
 	watchModelLookupFailingServices = prometheus.NewGauge(
 		prometheus.GaugeOpts{
 			Name: "llmkube_metal_agent_watch_model_lookup_failing_services",
@@ -258,6 +269,7 @@ func init() {
 		evictionsSkippedTotal,
 		watchConsecutiveFailures,
 		watchAPIUnreachable,
+		watchLocalNetworkBlocked,
 		watchModelLookupFailingServices,
 		fatalExitsTotal,
 		applePowerCombinedWatts,

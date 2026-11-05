@@ -303,7 +303,9 @@ type MetalAgentConfig struct {
 	// disables renewal.
 	RenewTokenFile string
 	// APIServerHost is the kubeconfig's server URL. The route to it decides
-	// the order of the candidate addresses the agent reports.
+	// the order of the candidate addresses the agent reports, and an IP host
+	// is the address the Local Network hint names when a failed list's error
+	// names none.
 	APIServerHost string
 	// HostCapacity is the hardware reported to the MetalNode, collected once
 	// at startup.
@@ -788,24 +790,7 @@ func (a *MetalAgent) Start(ctx context.Context) error {
 	fatalErrChan := make(chan error, 3)
 
 	// Initialize components
-	a.watcher = NewInferenceServiceWatcher(a.config.K8sClient, a.config.Namespace, a.logger.With("subsystem", "watcher"))
-	if a.config.MaxWatchFailures > 0 {
-		a.watcher.SetMaxConsecutiveFailures(a.config.MaxWatchFailures)
-	}
-	// While the API is unreachable, drop idle API connections before each
-	// retry; when it is back, heartbeat at once, since an outage past the
-	// controller's heartbeat timeout left the endpoints marked stale.
-	a.watcher.SetAPIHooks(a.config.ResetAPIConnections, a.wakeHeartbeat)
-	if len(a.config.InferenceServiceAllowlist) > 0 {
-		a.watcher.SetNameAllowlist(a.config.InferenceServiceAllowlist)
-		a.logger.Infow(
-			"InferenceService name allowlist active (#524 multi-Mac partition)",
-			"allowed", a.config.InferenceServiceAllowlist,
-		)
-	}
-	if a.tuneWatcher != nil {
-		a.tuneWatcher(a.watcher)
-	}
+	a.watcher = a.newWatcher()
 
 	a.buildExecutors()
 
@@ -1900,6 +1885,33 @@ func (a *MetalAgent) markStopped(ctx context.Context, isvc *inferencev1alpha1.In
 	})
 
 	return a.config.K8sClient.Status().Update(ctx, fresh)
+}
+
+// newWatcher builds the InferenceService watcher Start runs, configured from
+// the agent's config.
+func (a *MetalAgent) newWatcher() *InferenceServiceWatcher {
+	w := NewInferenceServiceWatcher(a.config.K8sClient, a.config.Namespace, a.logger.With("subsystem", "watcher"))
+	if a.config.MaxWatchFailures > 0 {
+		w.SetMaxConsecutiveFailures(a.config.MaxWatchFailures)
+	}
+	// While the API is unreachable, drop idle API connections before each
+	// retry; when it is back, heartbeat at once, since an outage past the
+	// controller's heartbeat timeout left the endpoints marked stale.
+	w.SetAPIHooks(a.config.ResetAPIConnections, a.wakeHeartbeat)
+	// The Local Network hint names the API server's address from it when a
+	// failed list's error names none.
+	w.SetAPIServer(a.config.APIServerHost)
+	if len(a.config.InferenceServiceAllowlist) > 0 {
+		w.SetNameAllowlist(a.config.InferenceServiceAllowlist)
+		a.logger.Infow(
+			"InferenceService name allowlist active (#524 multi-Mac partition)",
+			"allowed", a.config.InferenceServiceAllowlist,
+		)
+	}
+	if a.tuneWatcher != nil {
+		a.tuneWatcher(w)
+	}
+	return w
 }
 
 // reportHealthServerExit handles the post-Run state of the management HTTP

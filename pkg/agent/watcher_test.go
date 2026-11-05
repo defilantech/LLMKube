@@ -993,6 +993,20 @@ func scriptedListClient(
 	t *testing.T, failOnCall func(n int32) bool, objs ...client.Object,
 ) (client.Client, *atomic.Int32) {
 	t.Helper()
+	return scriptedListErrors(t, func(n int32) error {
+		if failOnCall(n) {
+			return errors.New("synthetic list failure")
+		}
+		return nil
+	}, objs...)
+}
+
+// scriptedListErrors is scriptedListClient with the error itself prescribed:
+// the n-th List call (1-indexed) returns errOnCall(n) when that is non-nil.
+func scriptedListErrors(
+	t *testing.T, errOnCall func(n int32) error, objs ...client.Object,
+) (client.Client, *atomic.Int32) {
+	t.Helper()
 	scheme := runtime.NewScheme()
 	if err := inferencev1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatalf("AddToScheme: %v", err)
@@ -1001,9 +1015,8 @@ func scriptedListClient(
 	var calls atomic.Int32
 	c := interceptor.NewClient(base, interceptor.Funcs{
 		List: func(ctx context.Context, w client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
-			n := calls.Add(1)
-			if failOnCall(n) {
-				return errors.New("synthetic list failure")
+			if err := errOnCall(calls.Add(1)); err != nil {
+				return err
 			}
 			return w.List(ctx, list, opts...)
 		},
