@@ -283,7 +283,10 @@ func linkRelIsNext(params string) bool {
 
 // repoFileListing lists the Model's source repository when spec.files holds a
 // glob, and returns nil when no glob needs one. A source with no listing also
-// returns nil, leaving ResolveFileSet to reject the glob.
+// returns nil, leaving ResolveFileSet to reject the glob. With
+// FileListingImage set the listing comes from a listing pod
+// (listRepoFilesInPod): errRepoListingPending while it runs, and a
+// listedFileSetError for a spec.files the full listing does not resolve.
 func (r *ModelReconciler) repoFileListing(ctx context.Context, model *inferencev1alpha1.Model) ([]hfTreeEntry, error) {
 	if !filesHaveGlob(model.Spec.Files) {
 		return nil, nil
@@ -293,8 +296,16 @@ func (r *ModelReconciler) repoFileListing(ctx context.Context, model *inferencev
 	if !ok {
 		return nil, nil
 	}
+	auth := isHFAuthSourceForEndpoint(treeURL, hfEndpoint)
+	if r.FileListingImage != "" {
+		entries, err := r.listRepoFilesInPod(ctx, model, treeURL, auth)
+		if !repoListingPending(err) {
+			clearRepoListingPending(model)
+		}
+		return entries, err
+	}
 	token := ""
-	if isHFAuthSourceForEndpoint(treeURL, hfEndpoint) {
+	if auth {
 		token = r.hfTokenFromSecret(ctx, model)
 	}
 	return listHFRepoFiles(ctx, r.metadataClient(), treeURL, token)

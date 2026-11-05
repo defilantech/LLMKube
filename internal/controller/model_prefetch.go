@@ -440,6 +440,10 @@ func (r *ModelReconciler) prefetchStagingPlan(ctx context.Context, model *infere
 		return plan, nil, planErr
 	}
 	repoFiles, err := r.repoFileListing(ctx, model)
+	if listedFileSet(err) != nil {
+		// The listing pod resolved spec.files against the full listing.
+		return nil, nil, err
+	}
 	if err != nil {
 		return nil, err, nil
 	}
@@ -560,6 +564,12 @@ func (r *ModelReconciler) reconcilePrefetchState(ctx context.Context, model *inf
 
 	plan, listingErr, planErr := r.prefetchStagingPlan(ctx, model)
 	switch {
+	case repoListingPending(listingErr):
+		// A listing pod (--file-listing=pod) has not finished; no Job can be
+		// built from the glob until it has.
+		model.Status.Phase = "Pending"
+		setCondition(model, ConditionProgressing, metav1.ConditionTrue, ReasonRepoListingPending, listingErr.Error())
+		return true, ctrl.Result{RequeueAfter: repoListingPendingRequeue}, nil
 	case listingErr != nil:
 		// The same failure, reported the same way, as the runtime-resolved
 		// path: without the listing neither a Job nor a serving pod can stage
@@ -1498,12 +1508,7 @@ func (r *ModelReconciler) buildPrefetchJob(ctx context.Context, model *inference
 			BackoffLimit:            &backoff,
 			TTLSecondsAfterFinished: &ttl,
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{
-						"app.kubernetes.io/component": "model-prefetch",
-						"inference.llmkube.dev/model": model.Name,
-					},
-				},
+				ObjectMeta: metav1.ObjectMeta{Labels: prefetchPodLabels(model)},
 				Spec: corev1.PodSpec{
 					RestartPolicy:   corev1.RestartPolicyNever,
 					SecurityContext: podSecurity,
@@ -1537,6 +1542,16 @@ func (r *ModelReconciler) buildPrefetchJob(ctx context.Context, model *inference
 // absent: the prep runs as uid 0, and a pod-level runAsNonRoot cannot coexist
 // with it.
 //
+// prefetchPodLabels labels a pod that reaches the model host for a Model: its
+// prefetch Job's pod, and the listing pod that expands its globs (#2451). A
+// NetworkPolicy that lets the one reach the host lets the other too.
+func prefetchPodLabels(model *inferencev1alpha1.Model) map[string]string {
+	return map[string]string{
+		"app.kubernetes.io/component": "model-prefetch",
+		"inference.llmkube.dev/model": model.Name,
+	}
+}
+
 // RunAsUser is set explicitly because the default init image declares a named
 // user, and the kubelet refuses runAsNonRoot on one whose USER is a name it
 // cannot resolve (pkg/kubelet/kuberuntime/security_context_others.go,

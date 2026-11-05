@@ -91,6 +91,10 @@ func (r *ModelReconciler) reconcileOCIPrefetch(ctx context.Context, model *infer
 		return fail("InvalidOCIPrefetch", "operator --oci-publisher-image must name an image containing /manager publish-model")
 	}
 	plan, listErr, planErr := r.prefetchStagingPlan(ctx, model)
+	if repoListingPending(listErr) {
+		setOCIPrefetchCondition(model, ConditionProgressing, metav1.ConditionTrue, ReasonRepoListingPending, listErr.Error())
+		return ctrl.Result{RequeueAfter: repoListingPendingRequeue}, nil
+	}
 	if listErr != nil {
 		setOCIPrefetchCondition(model, ConditionDegraded, metav1.ConditionTrue, "RepoListingFailed", listErr.Error())
 		return ctrl.Result{RequeueAfter: prefetchClaimWait}, nil

@@ -1,0 +1,46 @@
+suite: where spec.files globs are listed (#2451)
+templates:
+  - deployment.yaml
+tests:
+  - it: lists from the controller by default and names the operator image for listing pods
+    set:
+      controllerManager.image.repository: registry.example.com/llmkube
+      controllerManager.image.tag: test-list
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --file-listing=controller
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --file-listing-image=registry.example.com/llmkube:test-list
+
+  - it: lists from a pod when asked
+    set:
+      modelSource.fileListing: pod
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --file-listing=pod
+
+  # `helm upgrade --reuse-values` from an older release has no value: the
+  # flag is left out so the binary's default applies, not rendered empty.
+  - it: leaves the flag out when the value is unset
+    set:
+      modelSource.fileListing: null
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --file-listing=
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --file-listing=controller
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --file-listing=pod
+
+  - it: rejects an unknown mode at install time
+    set:
+      modelSource.fileListing: Pod
+    asserts:
+      - failedTemplate:
+          errorPattern: "/modelSource/fileListing'"

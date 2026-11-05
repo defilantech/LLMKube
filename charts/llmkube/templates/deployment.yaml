@@ -74,6 +74,12 @@ spec:
         - --reconcile-timeout=0
         {{- end }}
         - --oci-publisher-image={{ include "llmkube.controllerImage" . }}
+        - --file-listing-image={{ include "llmkube.controllerImage" . }}
+        {{- with .Values.modelSource.fileListing }}
+        # Rendered only when set: `helm upgrade --reuse-values` from a release
+        # older than this value keeps the binary's default (controller).
+        - --file-listing={{ . }}
+        {{- end }}
         - --health-probe-bind-address=:8081
         {{- if .Values.metrics.enabled }}
         - --metrics-bind-address=:{{ .Values.metrics.service.port }}

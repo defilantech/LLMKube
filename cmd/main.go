@@ -137,6 +137,13 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "list-repo-files" {
+		if err := controller.RunListRepoFiles(context.Background(), os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	var metricsAddr string
 	var metricsCertPath, metricsCertName, metricsCertKey string
 	var webhookCertPath, webhookCertName, webhookCertKey string
@@ -164,6 +171,7 @@ func main() {
 	var caCertConfigMap string
 	var initContainerImage string
 	var ociPublisherImage string
+	var fileListing, fileListingImage string
 	var defaultFSGroup int64
 	var initContainerUser int64
 	var driRenderGID int64
@@ -239,6 +247,12 @@ func main() {
 		"Name of the ConfigMap containing a custom CA certificate to trust for model downloads.")
 	flag.StringVar(&ociPublisherImage, "oci-publisher-image", "",
 		"Operator image containing /manager publish-model; required for OCI prefetch.")
+	flag.StringVar(&fileListing, "file-listing", controller.FileListingController,
+		"Where a glob in a Model's spec.files is expanded: \"controller\" (the controller lists the source repository) "+
+			"or \"pod\" (a short-lived Job in the Model's namespace, labeled and placed like its prefetch Job, lists it, "+
+			"so only prefetch pods need egress to the model host).")
+	flag.StringVar(&fileListingImage, "file-listing-image", "",
+		"Operator image containing /manager list-repo-files; required for --file-listing=pod.")
 	flag.StringVar(&initContainerImage, "init-container-image", "docker.io/curlimages/curl:8.18.0",
 		"Container image for the model downloader init container.")
 	flag.Int64Var(&initContainerUser, "init-container-user", controller.DefaultInitContainerUser,
@@ -433,6 +447,11 @@ func main() {
 	// Job would be refused at container start.
 	if err := controller.ValidateInitContainerUser(initContainerUser); err != nil {
 		setupLog.Error(err, "invalid --init-container-user")
+		os.Exit(1)
+	}
+	fileListingPodImage, err := controller.FileListingImageFor(fileListing, fileListingImage)
+	if err != nil {
+		setupLog.Error(err, "invalid --file-listing")
 		os.Exit(1)
 	}
 
@@ -696,6 +715,7 @@ func main() {
 		AllowedHostPathRoots: allowedHostPathRootList,
 		AllowedRemoteHosts:   allowedRemoteHostList,
 		OCIPublisherImage:    ociPublisherImage,
+		FileListingImage:     fileListingPodImage,
 		InitContainerImage:   initContainerImage,
 		CACertConfigMap:      caCertConfigMap,
 		Recorder:             mgr.GetEventRecorder("model-controller"),

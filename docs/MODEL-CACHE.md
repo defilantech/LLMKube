@@ -361,7 +361,10 @@ init-container downloader the serving path uses. `status.phase` moves
 from a cache hit instead of a cold download. A glob in `spec.files` is
 expanded from the repository listing before the Job is built, exactly as it
 is for the serving pods, so a multi-file checkpoint such as
-`files: [config.json, "*.json", "*.safetensors"]` prefetches too.
+`files: [config.json, "*.json", "*.safetensors"]` prefetches too. With
+`--file-listing=pod` that listing runs in a short-lived Job labeled and placed
+like the prefetch Job, so the controller needs no egress to the model host
+(see "Listing from a pod instead of the controller" in the model cache guide).
 
 ### Where the download lands
 

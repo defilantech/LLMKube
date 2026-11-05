@@ -87,25 +87,9 @@ func Run(ctx context.Context, args []string) error {
 	}
 	transport := remote.DefaultTransport.(*http.Transport).Clone()
 	if *caDir != "" {
-		roots, err := x509.SystemCertPool()
+		roots, err := RootsWithCADirectory(*caDir)
 		if err != nil {
 			return err
-		}
-		entries, err := os.ReadDir(*caDir)
-		if err != nil {
-			return err
-		}
-		for _, entry := range entries {
-			if strings.HasPrefix(entry.Name(), ".") || entry.IsDir() {
-				continue
-			}
-			pem, err := os.ReadFile(filepath.Join(*caDir, entry.Name()))
-			if err != nil {
-				return err
-			}
-			if !roots.AppendCertsFromPEM(pem) {
-				return fmt.Errorf("no CA certificates in %s", entry.Name())
-			}
 		}
 		transport.TLSClientConfig = &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}
 	}
@@ -126,6 +110,34 @@ func Run(ctx context.Context, args []string) error {
 		return err
 	}
 	return os.WriteFile(*result, []byte(digest), 0600)
+}
+
+// RootsWithCADirectory returns the system roots plus the certificates in every
+// file of dir, a mounted --ca-cert-configmap. Dotfiles and directories (the
+// ConfigMap volume's ..data links) are skipped; a file holding no certificate
+// is an error rather than a silently weaker trust store.
+func RootsWithCADirectory(dir string) (*x509.CertPool, error) {
+	roots, err := x509.SystemCertPool()
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".") || entry.IsDir() {
+			continue
+		}
+		pem, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			return nil, err
+		}
+		if !roots.AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf("no CA certificates in %s", entry.Name())
+		}
+	}
+	return roots, nil
 }
 
 // Block HTTP fallback and redirects before registry credentials reach the network.
