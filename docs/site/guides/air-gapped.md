@@ -34,10 +34,15 @@ Three workloads need to land inside the air gap:
 1. **The operator** (`ghcr.io/defilantech/llmkube-controller:0.9.14`)
    reconciles `Model`, `InferenceService`, and `ModelRouter` custom
    resources.
-2. **The runtime images** (`ghcr.io/ggml-org/llama.cpp:server-cuda13`
-   for llama.cpp; equivalents for vLLM, TGI, Ollama). The operator
-   only schedules pods using these; it doesn't pull weights into
-   them.
+2. **The runtime images** (`ghcr.io/ggml-org/llama.cpp:server-cuda-b11854`
+   for llama.cpp on NVIDIA GPUs; equivalents for vLLM, TGI, Ollama).
+   That tag is the llama.cpp build the operator pins and uses when an
+   InferenceService names no image, which is what `llmkube deploy`
+   creates unless you pass `--image`. CPU-only Models use
+   `server-b11854`. The build moves with operator releases
+   (`llamaCppBuild` in `internal/controller/runtime_llamacpp.go`), so
+   mirror the one your release pins. The operator only schedules pods
+   using these; it doesn't pull weights into them.
 3. **The router-proxy** (`ghcr.io/defilantech/llmkube-router-proxy:0.9.14`)
    if you use `ModelRouter`, or if you run Metal InferenceServices even
    with no `ModelRouter` at all: the controller's Metal relay pods use
@@ -56,13 +61,13 @@ On a connected machine, save the four images you need:
 ```bash
 docker pull ghcr.io/defilantech/llmkube-controller:0.9.14
 docker pull ghcr.io/defilantech/llmkube-router-proxy:0.9.14
-docker pull ghcr.io/ggml-org/llama.cpp:server-cuda13
+docker pull ghcr.io/ggml-org/llama.cpp:server-cuda-b11854
 docker pull docker.io/curlimages/curl:8.18.0   # init container
 
 docker save \
   ghcr.io/defilantech/llmkube-controller:0.9.14 \
   ghcr.io/defilantech/llmkube-router-proxy:0.9.14 \
-  ghcr.io/ggml-org/llama.cpp:server-cuda13 \
+  ghcr.io/ggml-org/llama.cpp:server-cuda-b11854 \
   docker.io/curlimages/curl:8.18.0 \
   > llmkube-bundle.tar
 ```
@@ -75,7 +80,7 @@ docker load < llmkube-bundle.tar
 for img in \
   ghcr.io/defilantech/llmkube-controller:0.9.14 \
   ghcr.io/defilantech/llmkube-router-proxy:0.9.14 \
-  ghcr.io/ggml-org/llama.cpp:server-cuda13 \
+  ghcr.io/ggml-org/llama.cpp:server-cuda-b11854 \
   docker.io/curlimages/curl:8.18.0
 do
   newtag="registry.internal.corp/${img#*/}"

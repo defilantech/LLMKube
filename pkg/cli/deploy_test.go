@@ -649,7 +649,7 @@ func TestResolveAcceleratorAndImage(t *testing.T) {
 			},
 			wantAccel:  "cuda",
 			wantVendor: defaultGPUVendor,
-			wantImage:  "ghcr.io/ggml-org/llama.cpp:server-cuda13",
+			wantImage:  "",
 		},
 		{
 			name: "metal with explicit amd vendor is preserved",
@@ -692,7 +692,7 @@ func TestResolveAcceleratorAndImage(t *testing.T) {
 			},
 			wantAccel:  "cpu",
 			wantVendor: defaultGPUVendor,
-			wantImage:  "ghcr.io/ggml-org/llama.cpp:server",
+			wantImage:  "",
 		},
 	}
 
@@ -710,6 +710,100 @@ func TestResolveAcceleratorAndImage(t *testing.T) {
 				t.Errorf("image = %q, want %q", tt.opts.image, tt.wantImage)
 			}
 		})
+	}
+}
+
+// A spec.image the CLI writes beats the operator's pinned llama.cpp build and
+// the chart's runtimeImages.llamacpp, so deploy leaves it empty unless --image
+// is passed (#2413). The Intel image stays: the operator has no Intel default
+// and would run an Intel GPU Model on its CPU-only image.
+func TestDeployLeavesTheImageToTheOperator(t *testing.T) {
+	const custom = "registry.example/llama.cpp:server-custom"
+	tests := []struct {
+		name      string
+		opts      deployOptions
+		wantImage string
+	}{
+		{name: "cpu", opts: deployOptions{}, wantImage: ""},
+		{name: "cuda", opts: deployOptions{gpu: true, accelerator: acceleratorCUDA}, wantImage: ""},
+		{name: "rocm", opts: deployOptions{gpu: true, accelerator: acceleratorROCm}, wantImage: ""},
+		{name: "metal", opts: deployOptions{gpu: true, accelerator: acceleratorMetal}, wantImage: ""},
+		{name: "metal without --gpu", opts: deployOptions{accelerator: acceleratorMetal}, wantImage: ""},
+		{
+			name:      "intel keeps the CLI's Intel image",
+			opts:      deployOptions{gpu: true, accelerator: acceleratorIntel},
+			wantImage: imageLlamaCppServerIntel,
+		},
+		{name: "--image on cpu", opts: deployOptions{image: custom}, wantImage: custom},
+		{
+			name:      "--image on cuda",
+			opts:      deployOptions{gpu: true, accelerator: acceleratorCUDA, image: custom},
+			wantImage: custom,
+		},
+		{
+			name:      "--image on intel",
+			opts:      deployOptions{gpu: true, accelerator: acceleratorIntel, image: custom},
+			wantImage: custom,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := tt.opts
+			opts.name, opts.namespace, opts.replicas, opts.gpuVendor = "m", testDefaultNamespace, 1, defaultGPUVendor
+			resolveAcceleratorAndImage(&opts)
+			if got := buildInferenceService(&opts).Spec.Image; got != tt.wantImage {
+				t.Errorf("spec.image = %q, want %q", got, tt.wantImage)
+			}
+		})
+	}
+}
+
+// The deploy summary names who picks the image instead of printing an empty
+// string when --image is not passed.
+func TestDeploySummaryImageLine(t *testing.T) {
+	tests := []struct {
+		name string
+		opts deployOptions
+		want string
+	}{
+		{
+			name: "operator picks",
+			opts: deployOptions{accelerator: acceleratorCUDA},
+			want: "Image:       operator default\n",
+		},
+		{
+			name: "metal has none",
+			opts: deployOptions{accelerator: acceleratorMetal},
+			want: "Image:       none (the Metal agent serves it natively)\n",
+		},
+		{
+			name: "--image",
+			opts: deployOptions{accelerator: acceleratorCUDA, image: "registry.example/llama:1"},
+			want: "Image:       registry.example/llama:1\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out := captureStdout(t, func() { printDeploySummary(&tt.opts) })
+			if !contains(out, tt.want) {
+				t.Errorf("summary lacks %q:\n%s", tt.want, out)
+			}
+		})
+	}
+}
+
+// The generic runtime runs the container it is given and the operator has no
+// default for it, so deploy refuses it without --image rather than create a
+// service whose Deployment the API server rejects. KUBECONFIG points nowhere:
+// a deploy that got past the check fails to load it instead.
+func TestDeployGenericRuntimeNeedsAnImage(t *testing.T) {
+	t.Setenv("KUBECONFIG", filepath.Join(t.TempDir(), "missing"))
+	err := runDeploy(&deployOptions{
+		name: "m", namespace: testDefaultNamespace, runtime: "generic",
+		modelSource: "https://example.com/model.gguf",
+	})
+	if err == nil || !contains(err.Error(), "--image") {
+		t.Fatalf("runDeploy(--runtime generic, no --image) = %v, want an error naming --image", err)
 	}
 }
 
