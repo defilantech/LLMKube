@@ -206,19 +206,23 @@ func agentGatewayModeViolations(mr *inferencev1alpha1.ModelRouter, specPath *fie
 	return errs
 }
 
-// balancingViolations rejects a backend that sets balancing.sessionAffinity
-// without balancing.mode: LoadAware. An empty mode counts as not LoadAware.
-// Pure (mr.Spec only).
+// balancingViolations rejects a backend that sets balancing.sessionAffinity or
+// balancing.prefixAffinity without balancing.mode: LoadAware. An empty mode
+// counts as not LoadAware. Pure (mr.Spec only).
 func balancingViolations(mr *inferencev1alpha1.ModelRouter, specPath *field.Path) field.ErrorList {
 	var errs field.ErrorList
 	for i, b := range mr.Spec.Backends {
-		if b.Balancing == nil || b.Balancing.SessionAffinity == nil {
+		if b.Balancing == nil || b.Balancing.Mode == inferencev1alpha1.BalancingModeLoadAware {
 			continue
 		}
-		if b.Balancing.Mode != inferencev1alpha1.BalancingModeLoadAware {
-			errs = append(errs, field.Invalid(
-				specPath.Child("backends").Index(i).Child("balancing", "sessionAffinity"),
+		path := specPath.Child("backends").Index(i).Child("balancing")
+		if b.Balancing.SessionAffinity != nil {
+			errs = append(errs, field.Invalid(path.Child("sessionAffinity"),
 				nil, "sessionAffinity requires balancing.mode: LoadAware"))
+		}
+		if b.Balancing.PrefixAffinity != nil {
+			errs = append(errs, field.Invalid(path.Child("prefixAffinity"),
+				nil, "prefixAffinity requires balancing.mode: LoadAware"))
 		}
 	}
 	return errs

@@ -539,6 +539,29 @@ func TestModelRouterValidator_SessionAffinityNeedsLoadAware(t *testing.T) {
 	}
 }
 
+func TestModelRouterValidator_PrefixAffinityNeedsLoadAware(t *testing.T) {
+	v := &ModelRouterValidator{}
+	ctx := context.Background()
+	prefixRouter := func(mode string) *inferencev1alpha1.ModelRouter {
+		mr := validGatewayRouter()
+		mr.Spec.Backends[0].Balancing = &inferencev1alpha1.BackendBalancing{
+			Mode: mode, PrefixAffinity: &inferencev1alpha1.PrefixAffinity{},
+		}
+		return mr
+	}
+
+	for _, mode := range []string{inferencev1alpha1.BalancingModeRoundRobin, ""} {
+		_, err := v.ValidateCreate(ctx, prefixRouter(mode))
+		if err == nil || !strings.Contains(err.Error(), "spec.backends[0].balancing.prefixAffinity") ||
+			!strings.Contains(err.Error(), "prefixAffinity requires balancing.mode: LoadAware") {
+			t.Fatalf("mode %q plus prefixAffinity: want it rejected naming the field, got %v", mode, err)
+		}
+	}
+	if _, err := v.ValidateCreate(ctx, prefixRouter(inferencev1alpha1.BalancingModeLoadAware)); err != nil {
+		t.Fatalf("expected LoadAware plus prefixAffinity to be accepted, got %v", err)
+	}
+}
+
 func TestModelRouterValidator_SessionAffinityUnchangedSpecGrandfathered(t *testing.T) {
 	v := &ModelRouterValidator{}
 	ctx := context.Background()
