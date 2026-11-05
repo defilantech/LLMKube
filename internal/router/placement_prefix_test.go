@@ -190,6 +190,21 @@ func TestPlacePrefixSessionUsesTheMeasuredUncachedTokens(t *testing.T) {
 	}
 }
 
+// A new session is placed like a headerless request, so a pod holding its
+// prompt's prefix wins and the placement says so.
+func TestPlacePrefixNewSessionGoesToThePodHoldingItsPrefix(t *testing.T) {
+	d, b, eps := prefixDispatcher(t, []string{"x-session-affinity"}, 3)
+	equalLoad(d, eps)
+	h := http.Header{}
+	h.Set("X-Session-Affinity", "s-1")
+	held, _, _, _ := d.place(b, h, chat(t, longSystem, "first session"))
+	h.Set("X-Session-Affinity", "s-2")
+	ep, res, _, _ := d.place(b, h, chat(t, longSystem, "second session, same system prompt"))
+	if ep != held || res != picker.PrefixMatch {
+		t.Errorf("new session placed %s/%s, want %s prefix_match", ep, res, held)
+	}
+}
+
 func TestPlacePrefixCountsPromptAndCachedTokens(t *testing.T) {
 	d, b, eps := prefixDispatcher(t, nil, 2)
 	d.routerName = "prefix-metrics"

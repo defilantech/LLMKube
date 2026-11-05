@@ -44,6 +44,9 @@ func TestValidateBalancing(t *testing.T) {
 		balancedConfig(&Balancing{Mode: BalancingRoundRobin}, nil),
 		balancedConfig(&Balancing{}, nil),
 		balancedConfig(&Balancing{SessionHeaders: []string{"X-Session_ID.v2", "!#$%&'*+-.^_`|~"}}, nil),
+		balancedConfig(&Balancing{Mode: BalancingLoadAware, PrefixBlockBytes: 256, PrefixMaxBlocks: 1024}, vllm),
+		balancedConfig(&Balancing{Mode: BalancingLoadAware, PrefixBlockBytes: 16384, PrefixMaxBlocks: 262144}, vllm),
+		balancedConfig(&Balancing{Mode: BalancingLoadAware, PrefixBlockBytes: DefaultPrefixBlockBytes}, vllm),
 	} {
 		if err := ok.Validate(); err != nil {
 			t.Errorf("valid config rejected: %v", err)
@@ -62,6 +65,11 @@ func TestValidateBalancing(t *testing.T) {
 		"header name too long":    balancedConfig(&Balancing{SessionHeaders: []string{strings.Repeat("x", 257)}}, nil),
 		"profile without path":    balancedConfig(&Balancing{Mode: BalancingLoadAware}, &MetricsProfile{Running: "a", Waiting: "b"}),
 		"profile without waiting": balancedConfig(&Balancing{Mode: BalancingLoadAware}, &MetricsProfile{Path: "/metrics", Running: "a"}),
+		"prefix block 255 bytes":  balancedConfig(&Balancing{Mode: BalancingLoadAware, PrefixBlockBytes: 255}, nil),
+		"prefix block 16385":      balancedConfig(&Balancing{Mode: BalancingLoadAware, PrefixBlockBytes: 16385}, nil),
+		"prefix block negative":   balancedConfig(&Balancing{Mode: BalancingLoadAware, PrefixBlockBytes: -1}, nil),
+		"prefix max blocks 1023":  balancedConfig(&Balancing{Mode: BalancingLoadAware, PrefixBlockBytes: 1024, PrefixMaxBlocks: 1023}, nil),
+		"prefix max blocks 2^20":  balancedConfig(&Balancing{Mode: BalancingLoadAware, PrefixBlockBytes: 1024, PrefixMaxBlocks: 1 << 20}, nil),
 	} {
 		err := bad.Validate()
 		if err == nil || !(strings.Contains(err.Error(), "balancing") || strings.Contains(err.Error(), "metrics")) {
