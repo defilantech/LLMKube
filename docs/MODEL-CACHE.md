@@ -479,6 +479,21 @@ With the field set:
   no Hub-offline variable: set `spec.hubOffline: true` when the runtime
   must not reach the Hub for anything the Job did not stage (see the
   air-gapped guide).
+- The Job writes the cache as the init image's user (`--init-container-user`)
+  in the operator's group (`--default-fsgroup`), whatever the requesting
+  service's `podSecurityContext` says, and its prep hands the cache root to
+  that group. Because the serving pods mount the claim read-only, the kubelet
+  does not apply their own `fsGroup` to it. So a pod that reads a prefetched
+  cache also runs in the Job's group: when its `podSecurityContext` sets a
+  different `fsGroup` (and neither its `runAsGroup` nor its
+  `supplementalGroups` already include that group), the operator adds it to
+  the pod's `supplementalGroups`. The service's spec is not changed. With
+  `--default-fsgroup 0` nothing is added, because the prep then hands the
+  root to group 0. If `model-verify` still cannot read a staged file or enter
+  its directory, it fails with `PrefetchedFilesUnreadable`, naming the pod's
+  uid and groups and the blocking path's owner and mode. That is an
+  ownership problem, so unlike `PrefetchedFilesMissing` it does not trigger a
+  re-stage.
 - Use a `ReadWriteMany` (or `ReadOnlyMany`) claim when the serving pods run
   on other nodes than the Job. A `ReadWriteOnce` claim attaches to one node:
   the first staging works because the Job finishes before the pods attach,

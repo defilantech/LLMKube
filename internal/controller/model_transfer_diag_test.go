@@ -144,6 +144,14 @@ func TestMatchModelTransferFailure_Signatures(t *testing.T) {
 			msg:        "mkdir: can't create directory '/models/tripwire-key': Permission denied",
 			wantReason: ReasonModelCacheNotWritable,
 		},
+		{
+			// A prefetched pod that cannot enter the cache root its prefetch
+			// Job handed to another group: not a missing file (#2450).
+			name: "a prefetched pod that cannot read the cache",
+			msg: "ERROR: PrefetchedFilesUnreadable - uid 2000 (groups: 2000) cannot read /models/k/a.safetensors on the cache claim; " +
+				"blocked at: drwxrwx--- 3 0 102 4096 Nov  5 17:38 /models",
+			wantReason: ReasonPrefetchedFilesUnreadable,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

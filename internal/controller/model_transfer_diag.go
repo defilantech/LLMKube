@@ -100,6 +100,12 @@ const (
 	// the cache filesystem cannot provide. Warm cached files remain usable.
 	ReasonModelCacheLockUnsupported = "ModelCacheLockUnsupported"
 
+	// ReasonPrefetchedFilesUnreadable: a serving pod built to consume a
+	// prefetched cache cannot read a staged file or enter its directory. An
+	// ownership mismatch, so unlike PrefetchedFilesMissing it does not ask for
+	// a re-stage (#2450).
+	ReasonPrefetchedFilesUnreadable = "PrefetchedFilesUnreadable"
+
 	// ReasonModelTransferSucceeded is set when ModelTransferHealthy flips back
 	// to True: a pod has since got past its init containers.
 	ReasonModelTransferSucceeded = "ModelTransferSucceeded"
@@ -138,6 +144,15 @@ var modelTransferSignatures = []modelTransferSignature{
 		reason:     ReasonModelCacheLockUnsupported,
 		remedyFrom: cacheLockRemedyIn,
 		matches:    []string{"modelcachelockunsupported"},
+	},
+	{
+		// A pod rendered to consume a prefetched cache cannot reach a staged
+		// file (#2450). The token is unique to the model-verify container.
+		reason: ReasonPrefetchedFilesUnreadable,
+		remedy: "the pod's user cannot read a file the prefetch staged (the message names its uid, its groups and the blocking path's owner and mode); " +
+			"the prefetch Job writes the cache in the operator's --default-fsgroup, which the operator adds to a prefetched pod's groups, " +
+			"so a path it cannot read was written under another group (files staged before --default-fsgroup changed, or by something else): make it readable by the pod's groups",
+		matches: []string{"prefetchedfilesunreadable"},
 	},
 	{
 		// A pod rendered to consume a prefetched cache found a staged file
