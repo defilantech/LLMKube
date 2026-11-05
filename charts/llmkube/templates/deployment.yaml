@@ -73,6 +73,7 @@ spec:
         # The binary defaults the deadline to 15m, so off has to be explicit.
         - --reconcile-timeout=0
         {{- end }}
+        - --oci-publisher-image={{ include "llmkube.controllerImage" . }}
         - --health-probe-bind-address=:8081
         {{- if .Values.metrics.enabled }}
         - --metrics-bind-address=:{{ .Values.metrics.service.port }}

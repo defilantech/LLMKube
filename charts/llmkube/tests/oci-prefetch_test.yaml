@@ -1,0 +1,20 @@
+suite: OCI publisher uses the installed operator image
+templates:
+  - deployment.yaml
+tests:
+  - it: uses the mirrored operator tag for publishing Jobs
+    set:
+      controllerManager.image.repository: registry.example.com/llmkube
+      controllerManager.image.tag: test-oci
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --oci-publisher-image=registry.example.com/llmkube:test-oci
+  - it: preserves a pinned operator digest
+    set:
+      controllerManager.image.repository: registry.example.com/llmkube
+      controllerManager.image.digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --oci-publisher-image=registry.example.com/llmkube@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa

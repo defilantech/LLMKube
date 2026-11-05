@@ -45,6 +45,7 @@ type SHA256Digest string
 // +kubebuilder:validation:XValidation:rule="!has(self.downloadMaxInFlightSize) || (has(self.downloadConcurrency) && self.downloadConcurrency > 1)",message="downloadMaxInFlightSize caps what the downloadConcurrency workers hold at once: it requires downloadConcurrency above 1"
 // +kubebuilder:validation:XValidation:rule="!has(self.downloadConcurrency) || (has(self.files) && self.files.size() > 0 && (!has(self.source) || (!self.source.startsWith('pvc://') && !self.source.startsWith('oci://'))))",message="downloadConcurrency sets how many spec.files the downloader stages at once: it requires spec.files, and a pvc:// or oci:// source is not downloaded"
 // +kubebuilder:validation:XValidation:rule="!(has(self.prefetch) && self.prefetch && has(self.modelCache) && has(self.modelCache.persistence) && self.modelCache.persistence == 'Ephemeral')",message="prefetch cannot be combined with modelCache.persistence Ephemeral: there is no cache volume to stage into"
+// +kubebuilder:validation:XValidation:rule="!has(self.prefetchOCI) || !has(self.modelCache)",message="prefetchOCI cannot be combined with modelCache; configure service caches on InferenceService"
 type ModelSpec struct {
 	// Source defines where to obtain the model. It may be omitted when every
 	// files entry is an absolute http(s) or s3 object URL.
@@ -152,7 +153,9 @@ type ModelSpec struct {
 	// InferenceService, via an owner-ref'd Job that reuses the serving
 	// init-container download stack. The Model reads Downloading until the
 	// Job completes and Ready after it, so a referencing service starts from
-	// a cache hit. A glob in spec.files is expanded from the repository
+	// a cache hit. With prefetchOCI set, the Job publishes to a registry instead
+	// and consumers use a separate oci:// Model with the published digest.
+	// A glob in spec.files is expanded from the repository
 	// listing before the Job is built, as the serving path expands it.
 	//
 	// The Job stages into spec.modelCache.claimName when set. Otherwise the
@@ -170,6 +173,14 @@ type ModelSpec struct {
 	// prefetched.
 	// +optional
 	Prefetch bool `json:"prefetch,omitempty"`
+
+	// PrefetchOCI publishes downloaded files as a container image instead of staging
+	// the Model into a PVC. Consumers use a separate oci:// Model pinned to the
+	// published digest. Setting this block enables publication without prefetch: true.
+	// At most 64 resolved files (including mmproj) may be published.
+	// Service-requested PVC prefetch remains independent.
+	// +optional
+	PrefetchOCI *OCIPrefetchSpec `json:"prefetchOCI,omitempty"`
 
 	// PrefetchTolerations are applied to the prefetch Job's pod, and govern
 	// nothing else: they say where the download may run, not where the model
@@ -522,6 +533,46 @@ type GGUFMetadata struct {
 	License string `json:"license,omitempty"`
 }
 
+// OCIPrefetchSpec selects the registry destination for Model prefetch.
+type OCIPrefetchSpec struct {
+	// Image is a fully qualified registry/repository:tag destination (no oci:// prefix).
+	// +kubebuilder:validation:MinLength=1
+	Image string `json:"image"`
+	// EphemeralStorage is the required node-local disk budget for downloading
+	// all selected files, with headroom for partial downloads and container logs.
+	// Applied to requests and limits on each Job container and to emptyDir.sizeLimit.
+	// No default is safe for both small and very large models.
+	// +kubebuilder:validation:XValidation:rule="isQuantity(self) && quantity(self).isGreaterThan(quantity('0'))",message="ephemeralStorage must be a positive Kubernetes quantity"
+	EphemeralStorage string `json:"ephemeralStorage"`
+	// PushSecretRef names a kubernetes.io/dockerconfigjson Secret in the Model's
+	// namespace. It is mounted only in the publisher, never in the downloader.
+	// +optional
+	PushSecretRef *corev1.LocalObjectReference `json:"pushSecretRef,omitempty"`
+}
+
+// OCIPrefetchStatus records publication independently of PVC cache claims.
+type OCIPrefetchStatus struct {
+	// Phase is Pending, Running, Succeeded or Failed.
+	// +kubebuilder:validation:Enum=Pending;Running;Succeeded;Failed
+	Phase string `json:"phase"`
+	// +optional
+	JobName string `json:"jobName,omitempty"`
+	// Fingerprint identifies the source, file set and destination of this publication.
+	// +optional
+	Fingerprint string `json:"fingerprint,omitempty"`
+	// Image is the published oci://registry/repository@sha256:... reference.
+	// +optional
+	Image string `json:"image,omitempty"`
+	// Files contains image-root-relative paths, with the primary file first.
+	// +listType=atomic
+	// +optional
+	Files []string `json:"files,omitempty"`
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+	// +optional
+	Message string `json:"message,omitempty"`
+}
+
 // Prefetch phases, as reported in PrefetchStatus.Phase.
 const (
 	// PrefetchPhasePending: the Job is held, for example on a cache claim or
@@ -633,6 +684,10 @@ type ModelStatus struct {
 	// +listMapKey=claimName
 	// +optional
 	Prefetch []PrefetchStatus `json:"prefetch,omitempty"`
+
+	// PrefetchOCI records the published image and the files it contains.
+	// +optional
+	PrefetchOCI *OCIPrefetchStatus `json:"prefetchOCI,omitempty"`
 
 	// SourceETag is the HTTP ETag recorded for the upstream source at the last
 	// revalidation. Used to detect upstream changes for http/https sources
