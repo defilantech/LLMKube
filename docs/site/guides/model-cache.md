@@ -435,6 +435,45 @@ pod starts, the same as the S3 credentials. An `HF_ENDPOINT` change is also
 picked up on the next reconcile or pod restart, not the moment the Secret is
 edited.
 
+#### Listing from a pod instead of the controller
+
+By default the controller lists the repository itself, so it needs egress to
+the model host. Under a default-deny NetworkPolicy that usually means opening
+the controller to the internet just to expand `*.safetensors`. Set the chart
+value `modelSource.fileListing: pod` (the operator flag
+`--file-listing=pod`, with `--file-listing-image` naming the operator image,
+which the chart sets for you) and the listing moves into a short-lived Job in
+the Model's namespace instead:
+
+- **Its pod is selected like a prefetch pod.** It carries the prefetch pods'
+  labels, `app.kubernetes.io/component: model-prefetch` and
+  `inference.llmkube.dev/model: <model>`, and the Model's
+  `prefetchNodeSelector`, `prefetchTolerations` and `prefetchAffinity`. So the
+  NetworkPolicy that lets prefetch pods reach the Hub (or your mirror) covers
+  the listing too, and the controller needs no egress to the model host.
+- **It lists the same way.** It runs the operator image's
+  `/manager list-repo-files`, the same listing and glob matching as the
+  controller, against the same host. It gets only the `HF_TOKEN` key of
+  `sourceSecretRef`, and only when the token may be sent to that host. It
+  trusts `--ca-cert-configmap` as the downloads do, so that ConfigMap must be
+  in the Model's namespace. It reaches the host with the namespace's own
+  network access, as the downloads do, so `modelSource.allowedRemoteHosts`
+  (the controller's guard) does not apply to it.
+- **The Model reports `RepoListingPending` while the pod runs.** A failed
+  listing fails the Model with `RepoListingFailed` and the pod's error, and a
+  `spec.files` that does not resolve fails it with `InvalidFileSet`, as on the
+  controller. They are retried after a minute and five minutes respectively,
+  by a new Job. A pod that cannot start (an image it cannot pull, a placement
+  no node satisfies) fails after five minutes, naming what held it.
+- **The result comes back in the pod's termination message, which holds at
+  most 4 KiB.** The pod returns only the files `spec.files` resolves to,
+  compressed, which fits a checkpoint of a few hundred shards. A set too large
+  to fit fails with `RepoListingFailed` saying so: name the files in
+  `spec.files` instead of a glob.
+- **The finished Job is kept** while its inputs match, since a prefetch lists
+  on each pass until it completes, and is removed a day after it finished, or
+  with the Model.
+
 ## Custom servers on the generic runtime
 
 `runtime: generic` runs your own image with your own `args`, so by default it

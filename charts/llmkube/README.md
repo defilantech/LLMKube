@@ -415,6 +415,14 @@ under "Turning the prep off".
 See the [air-gapped guide](../../docs/site/guides/air-gapped.md#clusters-without-dynamic-provisioning)
 for a static-PV example.
 
+`modelSource.fileListing` defaults to `controller`: a glob in a Model's
+`spec.files` is expanded by the controller listing the source repository, so
+the controller needs egress to the model host. Set it to `pod` and a
+short-lived Job in the Model's namespace, carrying the prefetch pods' labels
+and placement, lists it instead, so the NetworkPolicy that lets prefetch pods
+reach the host covers the listing. See the
+[model cache guide](../../docs/site/guides/model-cache.md#listing-from-a-pod-instead-of-the-controller).
+
 ## Examples
 
 ### Basic Installation

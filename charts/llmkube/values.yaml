@@ -586,6 +586,13 @@ modelSource:
   #     - models.corp.internal
   #     - 10.20.0.0/16
   allowedRemoteHosts: []
+  # Where a glob in a Model's spec.files is expanded (#2451). "controller":
+  # the controller lists the source repository, so it needs egress to the
+  # model host. "pod": a short-lived Job in the Model's namespace, carrying
+  # the prefetch pods' labels and placement, lists it, so a NetworkPolicy that
+  # lets prefetch pods reach the host covers the listing and the controller
+  # needs no egress to it.
+  fileListing: controller
 
 # Priority classes for GPU scheduling
 priorityClasses:

@@ -167,6 +167,11 @@ type ModelReconciler struct {
 	// service-requested prefetch (#2136) targets the claim that service's
 	// pods mount (effectiveModelCache.pvcName), including a perService claim.
 	ModelCacheMode string
+	// FileListingImage, when set (--file-listing=pod), expands a glob in
+	// spec.files from a listing pod running this image in the Model's
+	// namespace, labeled and placed like its prefetch Job, instead of from the
+	// controller, which then needs no egress to the model host (#2451).
+	FileListingImage string
 	// ModelCachePath is the InferenceService reconciler's cache path flag;
 	// empty means caching is disabled and no service can consume a
 	// prefetch. StoragePath is the same flag but defaults itself, so it
@@ -983,7 +988,17 @@ func (r *ModelReconciler) reconcileRuntimeResolvedSource(ctx context.Context, mo
 	stagedSize := ""
 	if hasMultiFileStaging(model) {
 		repoFiles, listErr := r.repoFileListing(ctx, model)
-		if listErr != nil {
+		fileSetErr := listedFileSet(listErr)
+		if repoListingPending(listErr) {
+			// A listing pod (--file-listing=pod) has not finished; its Job's
+			// events requeue the Model, and the poll bounds a missed one.
+			model.Status.Phase = "Pending"
+			if updateErr := r.updateStatus(ctx, model, ConditionProgressing, metav1.ConditionTrue, ReasonRepoListingPending, listErr.Error()); updateErr != nil {
+				logger.Error(updateErr, "Failed to update status while the repository listing runs")
+			}
+			return ctrl.Result{RequeueAfter: repoListingPendingRequeue}, nil
+		}
+		if listErr != nil && fileSetErr == nil {
 			model.Status.Phase = PhaseFailed
 			model.Status.StagedFiles = nil
 			if updateErr := r.updateStatus(ctx, model, ConditionDegraded, metav1.ConditionTrue, "RepoListingFailed",
@@ -993,7 +1008,14 @@ func (r *ModelReconciler) reconcileRuntimeResolvedSource(ctx context.Context, mo
 			llmkubemetrics.ReconcileTotal.WithLabelValues("model", "error").Inc()
 			return ctrl.Result{RequeueAfter: time.Minute}, nil
 		}
-		plan, err := ResolveFileSet(model.Spec.Files, model.Spec.Mmproj, hfFilePaths(repoFiles))
+		var plan *StagingPlan
+		var err error
+		if fileSetErr != nil {
+			// The listing pod resolved spec.files against the full listing.
+			err = fileSetErr
+		} else {
+			plan, err = ResolveFileSet(model.Spec.Files, model.Spec.Mmproj, hfFilePaths(repoFiles))
+		}
 		if err != nil {
 			model.Status.Phase = PhaseFailed
 			if updateErr := r.updateStatus(ctx, model, ConditionDegraded, metav1.ConditionTrue, "InvalidFileSet", err.Error()); updateErr != nil {

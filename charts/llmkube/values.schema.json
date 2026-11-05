@@ -473,6 +473,11 @@
           "type": "array",
           "items": { "type": "string" },
           "default": []
+        },
+        "fileListing": {
+          "type": "string",
+          "enum": ["controller", "pod"],
+          "default": "controller"
         }
       }
     },
