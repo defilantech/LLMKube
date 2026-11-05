@@ -19,6 +19,7 @@ package router
 import (
 	"context"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -218,12 +219,32 @@ func (d *Dispatcher) place(backend *Backend, headers http.Header, body []byte) (
 				break
 			}
 		}
-		tokens = picker.EstimateTokens(bodyBytes) - held
+		prompt := picker.EstimateTokens(bodyBytes)
+		tokens = prompt - held
 		p.index.Record(ep, p.chain)
-		prommetrics.RouterPrefixPromptTokensTotal.WithLabelValues(d.routerName, backend.Name).Add(float64(picker.EstimateTokens(bodyBytes)))
+		prommetrics.RouterPrefixPromptTokensTotal.WithLabelValues(d.routerName, backend.Name).Add(float64(prompt))
 		prommetrics.RouterPrefixCachedTokensTotal.WithLabelValues(d.routerName, backend.Name).Add(float64(held))
+		if prompt > 0 {
+			prommetrics.RouterPrefixMatchRatio.WithLabelValues(d.routerName, backend.Name).Observe(float64(held) / float64(prompt))
+		}
+		// A prefix_match means some pod matched, so tie is still the plain
+		// rotation (homeTieStart applies only when none did).
+		if res == picker.PrefixMatch && loadOnlyPick(cands, now, tie) != ep {
+			prommetrics.RouterPrefixChangedPlacementsTotal.WithLabelValues(d.routerName, backend.Name).Inc()
+		}
 	}
 	return ep, res, reason, tokens
+}
+
+// loadOnlyPick returns the pod PickLeastLoaded chooses from cands with no
+// prefix credit: the placement the request would have had without its match.
+func loadOnlyPick(cands []picker.Candidate, now time.Time, tie int) string {
+	plain := slices.Clone(cands)
+	for i := range plain {
+		plain[i].Cached = 0
+	}
+	ep, _ := picker.PickLeastLoaded(picker.Eligible(plain, now), now, tie)
+	return ep
 }
 
 // isTokenCountPath reports whether path only counts a prompt's tokens.

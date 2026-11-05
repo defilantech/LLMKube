@@ -456,6 +456,8 @@ Each proxy replica keeps its own binding table and prefix memory. A restart star
 
 With prefix affinity, `llmkube_router_prefix_prompt_tokens_total{router,backend}` counts the estimated prompt tokens of each placed request and `llmkube_router_prefix_cached_tokens_total{router,backend}` the part the chosen pod already held. The ratio of their rates is the prefix hit rate this proxy expects; on vLLM, compare it with the engine's own `vllm:prefix_cache_hits_total` over `vllm:prefix_cache_queries_total`.
 
+That ratio weighs requests by their size. `llmkube_router_prefix_match_ratio{router,backend}` is a histogram of the same share per request (buckets 0, 0.25, 0.5, 0.75 and 0.9), so you can tell whether a 70% hit rate means every request is 70% cached or long conversations are fully cached while short prompts never match. A prompt shorter than one block never matches, which is what `blockBytes` trades. `llmkube_router_prefix_changed_placements_total{router,backend}` counts the `prefix_match` placements the match decided: load alone, without prefix credit, would have sent the request to a different pod. The rest of the `prefix_match` placements went where load would have put them anyway, so its rate over the `prefix_match` rate is how often prefix affinity overrides load.
+
 ### Upgrading from `maxLoadPercent`
 
 `sessionAffinity.maxLoadPercent` is deprecated and ignored. The webhook returns a warning when it is set, so remove it from your manifests. An existing `RoundRobin` router that has `sessionAffinity` keeps serving with its affinity ignored, and gets a `SessionAffinityIgnored` Warning event. Change it to `mode: LoadAware` to get sessions back.

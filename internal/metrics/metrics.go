@@ -271,6 +271,25 @@ var (
 		},
 		[]string{labelRouter, labelBackend},
 	)
+	// RouterPrefixMatchRatio is the per-request spread behind that token
+	// ratio: the share of each placed request's prompt the chosen pod held.
+	RouterPrefixMatchRatio = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "llmkube_router_prefix_match_ratio",
+			Help:    "Share of each request's estimated prompt tokens that the chosen pod already held, for requests placed with prefix affinity.",
+			Buckets: []float64{0, 0.25, 0.5, 0.75, 0.9},
+		},
+		[]string{labelRouter, labelBackend},
+	)
+	// RouterPrefixChangedPlacementsTotal counts the prefix_match placements
+	// the match decided, as opposed to ones load alone would have made.
+	RouterPrefixChangedPlacementsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llmkube_router_prefix_changed_placements_total",
+			Help: "Placements reported as prefix_match that load alone, with no prefix credit, would have sent to a different pod.",
+		},
+		[]string{labelRouter, labelBackend},
+	)
 
 	// RouterSessionBindings is the number of session-to-pod bindings a
 	// LoadAware backend currently holds, refreshed by the proxy's sweeper.
@@ -675,6 +694,8 @@ var RouterCollectors = []prometheus.Collector{
 	RouterPlacementsTotal,
 	RouterPrefixPromptTokensTotal,
 	RouterPrefixCachedTokensTotal,
+	RouterPrefixMatchRatio,
+	RouterPrefixChangedPlacementsTotal,
 	RouterSessionBindings,
 	RouterFirstTokenSeconds,
 	RouterBudgetUtilization,

@@ -22,7 +22,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	dto "github.com/prometheus/client_model/go"
 
 	prommetrics "github.com/defilantech/llmkube/internal/metrics"
 	"github.com/defilantech/llmkube/internal/router/picker"
@@ -226,6 +228,82 @@ func TestPlacePrefixCountsPromptAndCachedTokens(t *testing.T) {
 	}
 	if got := testutil.ToFloat64(cached) - c0; got <= 0 {
 		t.Errorf("the follow-up turn counted %v cached tokens, want > 0", got)
+	}
+}
+
+// A prefix_match counts as changed only when load alone, with no prefix
+// credit, would have picked another pod.
+func TestPlacePrefixCountsChangedPlacements(t *testing.T) {
+	d, b, eps := prefixDispatcher(t, nil, 2)
+	d.routerName = "prefix-changed"
+	equalLoad(d, eps)
+	changed := prommetrics.RouterPrefixChangedPlacementsTotal.WithLabelValues("prefix-changed", "qwen")
+	c0 := testutil.ToFloat64(changed)
+	holder, _, _, _ := d.place(b, http.Header{}, chat(t, longSystem, "q1"))
+	other := eps[0]
+	if other == holder {
+		other = eps[1]
+	}
+
+	// The holder has more prefill in flight, so load alone picks the other
+	// pod; the prompt it holds outweighs that.
+	d.loadFor("qwen", holder).prefill.Store(100)
+	ep, res, _, _ := d.place(b, http.Header{}, chat(t, longSystem, "q1", "a1", "q2"))
+	if ep != holder || res != picker.PrefixMatch {
+		t.Fatalf("follow-up placed %s/%s, want %s prefix_match", ep, res, holder)
+	}
+	if got := testutil.ToFloat64(changed) - c0; got != 1 {
+		t.Errorf("a pick the match decided counted %v changed placements, want 1", got)
+	}
+
+	// The other pod is now busier, so load alone also picks the holder.
+	d.loadFor("qwen", holder).prefill.Store(0)
+	d.RecordSample("qwen", other, picker.Sample{Running: 3, At: d.nowFn()})
+	ep, res, _, _ = d.place(b, http.Header{}, chat(t, longSystem, "q1", "a1", "q2", "a2", "q3"))
+	if ep != holder || res != picker.PrefixMatch {
+		t.Fatalf("second follow-up placed %s/%s, want %s prefix_match", ep, res, holder)
+	}
+	if got := testutil.ToFloat64(changed) - c0; got != 1 {
+		t.Errorf("a pick load alone would make was counted as changed: %v changed placements, want 1", got)
+	}
+}
+
+// matchRatio reads the router's match-ratio histogram for one backend.
+func matchRatio(t *testing.T, router, backend string) *dto.Histogram {
+	t.Helper()
+	m := &dto.Metric{}
+	if err := prommetrics.RouterPrefixMatchRatio.WithLabelValues(router, backend).(prometheus.Metric).Write(m); err != nil {
+		t.Fatal(err)
+	}
+	return m.GetHistogram()
+}
+
+func TestPlacePrefixObservesMatchRatio(t *testing.T) {
+	d, b, eps := prefixDispatcher(t, nil, 2)
+	d.routerName = "prefix-ratio"
+	equalLoad(d, eps)
+	h0 := matchRatio(t, "prefix-ratio", "qwen")
+	d.place(b, http.Header{}, chat(t, longSystem, "q1"))
+	d.place(b, http.Header{}, chat(t, longSystem, "q1", "a1", "q2"))
+	h := matchRatio(t, "prefix-ratio", "qwen")
+	if got := h.GetSampleCount() - h0.GetSampleCount(); got != 2 {
+		t.Fatalf("observed %d ratios for two placements, want 2", got)
+	}
+	// The first turn matched nothing, the follow-up part of its prompt.
+	if got := h.GetSampleSum() - h0.GetSampleSum(); got <= 0 || got >= 1 {
+		t.Errorf("ratio sum = %v, want the follow-up's ratio, between 0 and 1", got)
+	}
+	zero := func(h *dto.Histogram) uint64 {
+		for _, bk := range h.GetBucket() {
+			if bk.GetUpperBound() == 0 {
+				return bk.GetCumulativeCount()
+			}
+		}
+		t.Fatal("no bucket at 0")
+		return 0
+	}
+	if got := zero(h) - zero(h0); got != 1 {
+		t.Errorf("%d placements in the 0 bucket, want the first turn only", got)
 	}
 }
 
