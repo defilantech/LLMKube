@@ -1483,6 +1483,8 @@ func TestWithPrefetchGroup(t *testing.T) {
 	}{
 		{name: "not a prefetched cache", psc: &corev1.PodSecurityContext{FSGroup: i64(2000)}, defaultFS: 102, verbatim: true},
 		{name: "own fsGroup", psc: &corev1.PodSecurityContext{RunAsUser: i64(2000), FSGroup: i64(2000)}, defaultFS: 102, prefetched: true, want: []int64{102}},
+		// A supplied context with no fsGroup is in no group the Job writes.
+		{name: "no fsGroup", psc: &corev1.PodSecurityContext{RunAsNonRoot: boolPtr(true), RunAsUser: i64(10001)}, defaultFS: 102, prefetched: true, want: []int64{102}},
 		{name: "own supplemental groups are kept", psc: &corev1.PodSecurityContext{FSGroup: i64(2000), SupplementalGroups: []int64{5}}, defaultFS: 102, prefetched: true, want: []int64{5, 102}},
 		{name: "fsGroup is already the Job's group", psc: &corev1.PodSecurityContext{FSGroup: i64(102)}, defaultFS: 102, prefetched: true, verbatim: true},
 		{name: "runAsGroup is already the Job's group", psc: &corev1.PodSecurityContext{RunAsGroup: i64(102)}, defaultFS: 102, prefetched: true, verbatim: true},

@@ -36,10 +36,10 @@ func TestPrefetchVerifyCommand_MissingOrUnreadable(t *testing.T) {
 		t.Helper()
 		root = filepath.Join(t.TempDir(), "models")
 		cacheDir = filepath.Join(root, "k")
-		if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Join(cacheDir, "sub"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		for _, f := range []string{"config.json", "a.safetensors"} {
+		for _, f := range []string{"config.json", "a.safetensors", "sub/b.safetensors"} {
 			if err := os.WriteFile(filepath.Join(cacheDir, f), []byte("x"), 0o644); err != nil {
 				t.Fatal(err)
 			}
@@ -49,6 +49,7 @@ func TestPrefetchVerifyCommand_MissingOrUnreadable(t *testing.T) {
 		t.Cleanup(func() {
 			_ = os.Chmod(root, 0o700)                                     //nolint:gosec // the test's own temp dir, restored for removal
 			_ = os.Chmod(cacheDir, 0o700)                                 //nolint:gosec // the test's own temp dir, restored for removal
+			_ = os.Chmod(filepath.Join(cacheDir, "sub"), 0o700)           //nolint:gosec // the test's own temp dir, restored for removal
 			_ = os.Chmod(filepath.Join(cacheDir, "a.safetensors"), 0o600) // owner read-write
 		})
 		return root, cacheDir
@@ -60,7 +61,9 @@ func TestPrefetchVerifyCommand_MissingOrUnreadable(t *testing.T) {
 		out, err := cmd.CombinedOutput()
 		return string(out), err
 	}
-	unreadable := func(t *testing.T, out string, err error, blocked string) {
+	// mode is the blocking path's mode as ls -l prints it; the message lists
+	// that path last, so "<path>. Model" pins which path was listed.
+	unreadable := func(t *testing.T, out string, err error, blocked, mode string) {
 		t.Helper()
 		if err == nil {
 			t.Fatalf("verify passed on a cache it cannot read:\n%s", out)
@@ -71,8 +74,8 @@ func TestPrefetchVerifyCommand_MissingOrUnreadable(t *testing.T) {
 		if strings.Contains(out, "PrefetchedFilesMissing") {
 			t.Errorf("an unreadable file also reported as missing, which would trigger a useless re-stage:\n%s", out)
 		}
-		if !strings.Contains(out, "uid ") || !strings.Contains(out, blocked) {
-			t.Errorf("the message should name the uid and the blocking path %q:\n%s", blocked, out)
+		if !strings.Contains(out, "uid ") || !strings.Contains(out, "blocked at: "+mode) || !strings.Contains(out, blocked+". Model") {
+			t.Errorf("the message should name the uid and list the blocking path %q with mode %s:\n%s", blocked, mode, out)
 		}
 	}
 
@@ -100,16 +103,16 @@ func TestPrefetchVerifyCommand_MissingOrUnreadable(t *testing.T) {
 			t.Fatal(err)
 		}
 		out, err := run(t, cacheDir, "config.json")
-		unreadable(t, out, err, root)
+		unreadable(t, out, err, root, "drw-------")
 	})
 
 	t.Run("the cache directory cannot be entered", func(t *testing.T) {
 		_, cacheDir := setup(t)
-		if err := os.Chmod(cacheDir, 0o600); err != nil {
+		if err := os.Chmod(cacheDir, 0o400); err != nil {
 			t.Fatal(err)
 		}
 		out, err := run(t, cacheDir, "config.json")
-		unreadable(t, out, err, cacheDir)
+		unreadable(t, out, err, cacheDir, "dr--------")
 	})
 
 	t.Run("a staged file cannot be read", func(t *testing.T) {
@@ -119,6 +122,16 @@ func TestPrefetchVerifyCommand_MissingOrUnreadable(t *testing.T) {
 			t.Fatal(err)
 		}
 		out, err := run(t, cacheDir, "config.json", "a.safetensors")
-		unreadable(t, out, err, f)
+		unreadable(t, out, err, f, "--w-------")
+	})
+
+	t.Run("a directory below the cache directory cannot be entered", func(t *testing.T) {
+		_, cacheDir := setup(t)
+		sub := filepath.Join(cacheDir, "sub")
+		if err := os.Chmod(sub, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		out, err := run(t, cacheDir, "config.json", "sub/b.safetensors")
+		unreadable(t, out, err, sub, "drw-------")
 	})
 }

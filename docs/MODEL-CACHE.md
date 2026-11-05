@@ -484,10 +484,11 @@ With the field set:
   service's `podSecurityContext` says, and its prep hands the cache root to
   that group. Because the serving pods mount the claim read-only, the kubelet
   does not apply their own `fsGroup` to it. So a pod that reads a prefetched
-  cache also runs in the Job's group: when its `podSecurityContext` sets a
-  different `fsGroup` (and neither its `runAsGroup` nor its
-  `supplementalGroups` already include that group), the operator adds it to
-  the pod's `supplementalGroups`. The service's spec is not changed. With
+  cache also runs in the Job's group: unless that group is already the pod's
+  `fsGroup`, its `runAsGroup` or one of its `supplementalGroups`, the operator
+  adds it to the pod's `supplementalGroups`. That covers a
+  `podSecurityContext` with its own `fsGroup` and one with none. The
+  service's spec is not changed. With
   `--default-fsgroup 0` nothing is added, because the prep then hands the
   root to group 0. If `model-verify` still cannot read a staged file or enter
   its directory, it fails with `PrefetchedFilesUnreadable`, naming the pod's
@@ -1210,7 +1211,7 @@ Before this change the `fsGroup <= 0` branch ran `chown 100:100 /models && chmod
 | `always` (default) | The prep runs in every cache-backed pod and every prefetch Job. |
 | `never` | The prep is never injected. The downloader still runs non-root; if the volume's ownership is wrong it fails with `Permission denied` and the `ModelCacheNotWritable` diagnosis names this setting, and `--init-container-user` for the case where the prep is on with fsGroup disabled. |
 
-Use `never` only when you know the cache's ownership is right without the prep: a CSI driver with `fsGroupPolicy: File` and a pod that sets `fsGroup` (kubelet applies only the pod's fsGroup), or a claim you pre-provisioned with the downloader's ownership. A supplied `spec.podSecurityContext` replaces the operator's default entirely, so `fsGroup` must be restated there. Then the cache-backed pods contain no root container at all, which is what a `restricted` namespace needs, and the prefetch Job additionally carries `runAsNonRoot` with a numeric uid, `allowPrivilegeEscalation: false`, `ALL` dropped, and a pod-level `seccompProfile: RuntimeDefault`.
+Use `never` only when you know the cache's ownership is right without the prep: a CSI driver with `fsGroupPolicy: File` and a pod that sets `fsGroup` (kubelet applies only the pod's fsGroup), or a claim you pre-provisioned with the downloader's ownership. A supplied `spec.podSecurityContext` replaces the operator's default, so `fsGroup` must be restated there. The one thing the operator still adds to it is the prefetch Job's group, in the `supplementalGroups` of a pod that reads a prefetched cache (see the prefetch section). Then the cache-backed pods contain no root container at all, which is what a `restricted` namespace needs, and the prefetch Job additionally carries `runAsNonRoot` with a numeric uid, `allowPrivilegeEscalation: false`, `ALL` dropped, and a pod-level `seccompProfile: RuntimeDefault`.
 
 Changing the value rolls every cache-backed serving pod once, because the pod template changes. A prefetch Job whose pod has already started finishes under the setting it started with. One that has not started a pod yet keeps the template it was created with, so under `restricted` its pods are refused until the Job is deleted and rebuilt (or its `ttlSecondsAfterFinished` expires). Under `never` the prefetch Job's containers run as `--init-container-user` (default 101, the default `curlimages/curl` user), so set that flag to your image's uid when you change `--init-container-image`; otherwise the prefetch writes as a different user from the serving downloader.
 

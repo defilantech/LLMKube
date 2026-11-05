@@ -100,12 +100,6 @@ const (
 	// the cache filesystem cannot provide. Warm cached files remain usable.
 	ReasonModelCacheLockUnsupported = "ModelCacheLockUnsupported"
 
-	// ReasonPrefetchedFilesUnreadable: a serving pod built to consume a
-	// prefetched cache cannot read a staged file or enter its directory. An
-	// ownership mismatch, so unlike PrefetchedFilesMissing it does not ask for
-	// a re-stage (#2450).
-	ReasonPrefetchedFilesUnreadable = "PrefetchedFilesUnreadable"
-
 	// ReasonModelTransferSucceeded is set when ModelTransferHealthy flips back
 	// to True: a pod has since got past its init containers.
 	ReasonModelTransferSucceeded = "ModelTransferSucceeded"

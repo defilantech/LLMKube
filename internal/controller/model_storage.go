@@ -2658,21 +2658,23 @@ func buildPrefetchedStorageConfig(model *inferencev1alpha1.Model, isvc *inferenc
 // runs in a pipeline subshell, so a failed file exits that subshell and the
 // trailing `|| exit 1` fails the container.
 //
-// A file the pod's user cannot reach (the cache root or directory it cannot
-// enter, or the file it cannot read) is reported as PrefetchedFilesUnreadable,
-// with the uid, the groups and the blocking path's owner and mode, not as
-// missing: a missing file asks for a re-stage, and a re-stage does not change
-// who can read the files (#2450).
+// A file the pod's user cannot reach (a directory on its path it cannot enter,
+// from the cache root down, or the file it cannot read) is reported as
+// PrefetchedFilesUnreadable, with the uid, the groups and the blocking path's
+// owner and mode, not as missing: a missing file asks for a re-stage, and a
+// re-stage does not change who can read the files (#2450).
 func buildPrefetchVerifyCommand(verifyDigest bool) string {
 	cmd := `root="${CACHE_DIR%/*}"; ` +
 		`printf '%s\n' "$MODEL_FILES" | while IFS= read -r rel; do ` +
 		`[ -n "$rel" ] || continue; ` +
 		`f="$CACHE_DIR/$rel"; ` +
 		`if [ -f "$f" ] && [ -r "$f" ]; then continue; fi; ` +
-		`blocked=""; ` +
-		`if [ -d "$root" ] && [ ! -x "$root" ]; then blocked="$root"; ` +
-		`elif [ -d "$CACHE_DIR" ] && [ ! -x "$CACHE_DIR" ]; then blocked="$CACHE_DIR"; ` +
-		`elif [ -e "$f" ]; then blocked="$f"; fi; ` +
+		`blocked=""; d="$root"; rest="${CACHE_DIR##*/}/$rel"; ` +
+		`while :; do ` +
+		`if [ -d "$d" ] && [ ! -x "$d" ]; then blocked="$d"; break; fi; ` +
+		`[ "${rest#*/}" != "$rest" ] || break; ` +
+		`d="$d/${rest%%/*}"; rest="${rest#*/}"; done; ` +
+		`if [ -z "$blocked" ] && [ -e "$f" ]; then blocked="$f"; fi; ` +
 		`if [ -n "$blocked" ]; then ` +
 		`printf 'ERROR: PrefetchedFilesUnreadable - uid %s (groups: %s) cannot read %s on the cache claim; blocked at: %s. Model %s staged it there with its prefetch job; a re-stage does not change who can read it.\n' "$(id -u 2>/dev/null)" "$(id -G 2>/dev/null)" "$f" "$(ls -ldn "$blocked" 2>&1)" "$MODEL_NAME" >&2; ` +
 		`exit 1; fi; ` +

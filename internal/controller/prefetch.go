@@ -43,6 +43,12 @@ import (
 // init-container diagnosis and read by both controllers.
 const ReasonPrefetchedFilesMissing = "PrefetchedFilesMissing"
 
+// ReasonPrefetchedFilesUnreadable: a serving pod built to consume a prefetched
+// cache cannot read a staged file or enter a directory on its path. An
+// ownership mismatch, so unlike PrefetchedFilesMissing it does not ask for a
+// re-stage (#2450).
+const ReasonPrefetchedFilesUnreadable = "PrefetchedFilesUnreadable"
+
 // prefetchApplicability classifies a service's prefetch request against its
 // Model and the operator. Both controllers use it, so the Model side never
 // stages for a request the service side cannot consume.
