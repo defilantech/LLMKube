@@ -423,6 +423,19 @@ func TestSessionsThreePodsGapMoves(t *testing.T) {
 	place(t, s, 1, cands, t0, "b", Spill, ReasonWaiting)
 }
 
+// Prefix credit stays out of the pressure gate. b holds 40,000 tokens of the
+// prompt, which would make it the cheapest pick for a new request, but a
+// queued session sheds by load: to c, five requests below a, as it would
+// without prefix affinity, not held on a because b is only three below.
+func TestSessionsPressureIgnoresPrefixCredit(t *testing.T) {
+	s := NewSessions(0, 10)
+	bindToA(t, s, t0)
+	b := pod("b", 3, 0, 0.1)
+	b.Cached = 40000
+	cands := []Candidate{pod("a", 5, 1, 0.1), b, pod("c", 1, 0, 0.1)}
+	place(t, s, 1, cands, t0, "c", Spill, ReasonWaiting)
+}
+
 func placeTok(t *testing.T, s *Sessions, key uint64, cands []Candidate, now time.Time, body int64) (string, Result, int64) {
 	t.Helper()
 	ep, res, _, tok := s.Place(key, cands, now, 0, "", body, nil)
