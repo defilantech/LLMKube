@@ -845,3 +845,37 @@ func TestOCIPrefetchMixedURLs(t *testing.T) {
 		t.Fatalf("published files=%v want=%v", got, want)
 	}
 }
+
+// Removing the message reset must leave the scheduling failure in stored status.
+func TestOCIPrefetchClearsBlockedMessage(t *testing.T) {
+	r, model := ociPrefetchFixture(t)
+	ctx := context.Background()
+	reconcile := func() {
+		t.Helper()
+		if _, _, err := r.reconcilePrefetch(ctx, model); err != nil {
+			t.Fatal(err)
+		}
+		if err := r.Get(ctx, client.ObjectKeyFromObject(model), model); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reconcile()
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "publisher", Namespace: model.Namespace, Labels: map[string]string{"batch.kubernetes.io/job-name": model.Status.PrefetchOCI.JobName}},
+		Status: corev1.PodStatus{Phase: corev1.PodPending, Conditions: []corev1.PodCondition{{Type: corev1.PodScheduled, Status: corev1.ConditionFalse, Reason: corev1.PodReasonUnschedulable, Message: "insufficient storage"}}}}
+	if err := r.Create(ctx, pod); err != nil {
+		t.Fatal(err)
+	}
+	reconcile()
+	if got := model.Status.PrefetchOCI.Message; got != "cannot be scheduled: insufficient storage" {
+		t.Fatalf("missing scheduling failure: %q", got)
+	}
+	pod.Status.Phase = corev1.PodRunning
+	pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodScheduled, Status: corev1.ConditionTrue}}
+	if err := r.Status().Update(ctx, pod); err != nil {
+		t.Fatal(err)
+	}
+	reconcile()
+	if got := model.Status.PrefetchOCI.Message; got != "" {
+		t.Fatalf("scheduled publication retains stale message: %q", got)
+	}
+}

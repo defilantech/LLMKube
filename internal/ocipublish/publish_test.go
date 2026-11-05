@@ -22,6 +22,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/base64"
+	"encoding/pem"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -29,6 +30,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/google/go-containerregistry/pkg/authn"
@@ -136,7 +138,7 @@ func TestPublishRejectsUnsafeFiles(t *testing.T) {
 
 func TestRunRegistryAuthAndFailure(t *testing.T) {
 	handler := registry.New()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		user, pass, ok := r.BasicAuth()
 		if !ok || user != "writer" || pass != "token" {
 			w.Header().Set("WWW-Authenticate", `Basic realm="registry"`)
@@ -151,9 +153,13 @@ func TestRunRegistryAuthAndFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	result := filepath.Join(directory, "result")
-	host := strings.TrimPrefix(server.URL, "http://")
+	host := strings.TrimPrefix(server.URL, "https://")
+	caDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(caDir, "registry.crt"), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0600); err != nil {
+		t.Fatal(err)
+	}
 	destination := host + "/models/private:v1"
-	args := []string{"--image=" + destination, "--directory=" + directory, `--files=[{"path":"model","name":"model.gguf"}]`, "--result=" + result}
+	args := []string{"--image=" + destination, "--directory=" + directory, `--files=[{"path":"model","name":"model.gguf"}]`, "--result=" + result, "--ca-directory=" + caDir}
 	config := t.TempDir()
 	t.Setenv("DOCKER_CONFIG", config)
 	if err := Run(context.Background(), args); err == nil {
@@ -177,7 +183,7 @@ func TestRunRegistryAuthAndFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := remote.Index(ref, remote.WithAuth(&authn.Basic{Username: "writer", Password: "token"})); err != nil {
+	if _, err := remote.Index(ref, remote.WithAuth(&authn.Basic{Username: "writer", Password: "token"}), remote.WithTransport(server.Client().Transport)); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -321,5 +327,40 @@ func TestPublishRejectsTooManyLayers(t *testing.T) {
 	_, err := Publish(context.Background(), "registry.example.com/models/test:v1", t.TempDir(), make([]File, 65))
 	if err == nil || !strings.Contains(err.Error(), "at most 64 files") {
 		t.Fatalf("want layer limit error, got %v", err)
+	}
+}
+
+// Removing the HTTPS guard must expose the credentials to this HTTP registry.
+func TestRunRefusesAuthenticatedHTTP(t *testing.T) {
+	var authorized atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "" {
+			authorized.Store(true)
+		}
+		w.Header().Set("WWW-Authenticate", `Basic realm="registry"`)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+	host := strings.TrimPrefix(server.URL, "http://")
+	directory := t.TempDir()
+	if err := os.WriteFile(filepath.Join(directory, "model"), []byte("weights"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	config := t.TempDir()
+	t.Setenv("DOCKER_CONFIG", config)
+	credentials := `{"auths":{"` + host + `":{"auth":"` + base64.StdEncoding.EncodeToString([]byte("writer:token")) + `"}}}`
+	if err := os.WriteFile(filepath.Join(config, "config.json"), []byte(credentials), 0600); err != nil {
+		t.Fatal(err)
+	}
+	result := filepath.Join(directory, "result")
+	err := Run(context.Background(), []string{"--image=" + host + "/models/private:v1", "--directory=" + directory, `--files=[{"path":"model","name":"model.gguf"}]`, "--result=" + result})
+	if authorized.Load() {
+		t.Fatal("push credentials reached the plain-HTTP registry")
+	}
+	if err == nil {
+		t.Fatal("authenticated HTTP publication succeeded")
+	}
+	if _, err := os.Stat(result); !os.IsNotExist(err) {
+		t.Fatalf("failure wrote result: %v", err)
 	}
 }

@@ -109,11 +109,33 @@ func Run(ctx context.Context, args []string) error {
 		}
 		transport.TLSClientConfig = &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}
 	}
-	digest, err := Publish(ctx, *image, *directory, files, remote.WithAuthFromKeychain(authn.DefaultKeychain), remote.WithTransport(transport))
+	tag, err := Destination(*image)
+	if err != nil {
+		return err
+	}
+	auth, err := authn.DefaultKeychain.Resolve(tag.Context())
+	if err != nil {
+		return err
+	}
+	var rt http.RoundTripper = transport
+	if auth != authn.Anonymous {
+		rt = httpsOnly{next: rt}
+	}
+	digest, err := Publish(ctx, *image, *directory, files, remote.WithAuth(auth), remote.WithTransport(rt))
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(*result, []byte(digest), 0600)
+}
+
+// Block HTTP fallback and redirects before registry credentials reach the network.
+type httpsOnly struct{ next http.RoundTripper }
+
+func (t httpsOnly) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.URL.Scheme != "https" {
+		return nil, fmt.Errorf("refusing plain-HTTP %s to %s: push credentials are configured, so the registry must serve HTTPS", req.Method, req.URL.Host)
+	}
+	return t.next.RoundTrip(req)
 }
 
 // Publish streams one tar filesystem layer per file from disk. Both platforms

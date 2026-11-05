@@ -193,10 +193,7 @@ func (r *ModelReconciler) reconcileOCIPrefetch(ctx context.Context, model *infer
 	} else {
 		setRunning()
 		entry.Phase = inferencev1alpha1.PrefetchPhaseRunning
-		reason, message := r.prefetchJobBlocked(ctx, job)
-		if reason != "" {
-			entry.Message = message
-		}
+		_, entry.Message = r.prefetchJobBlocked(ctx, job)
 	}
 	return ctrl.Result{RequeueAfter: prefetchRetryInterval}, nil
 }

@@ -133,10 +133,10 @@ credentials still use `sourceSecretRef`, only on the downloader. The configured
 `--ca-cert-configmap` is trusted by both containers, including registry TLS.
 Neither container needs a Kubernetes API token or privileged access. Users who
 can create Models can select any push Secret in that namespace; scope those
-credentials to the intended model repositories. The registry client can fall
-back to plain HTTP for private IP addresses, `localhost` and `*.local` hosts.
-On those connections, registry credentials travel unencrypted; use HTTPS for
-authenticated publication.
+credentials to the intended model repositories. Authenticated publication
+requires HTTPS; the publisher refuses plain-HTTP requests when registry
+credentials are resolved. Anonymous pushes can still fall back to plain HTTP
+for private IP addresses, loopback addresses, `localhost` and `*.localhost` hosts.
 
 The Helm chart uses its operator image for publishing. Other installations must
 set `--oci-publisher-image=<operator-image>` to an image built from this version;
