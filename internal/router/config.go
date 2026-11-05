@@ -207,7 +207,26 @@ type Balancing struct {
 	// writes maxLoadPercent; the field is no longer read and is ignored on
 	// decode.
 	SessionIdleTimeout time.Duration `json:"sessionIdleTimeout,omitempty"`
+	// PrefixBlockBytes turns on prefix affinity: the prompt is hashed in
+	// blocks of this many bytes, and pods that already hold a request's
+	// leading blocks are preferred. 0 leaves it off.
+	PrefixBlockBytes int `json:"prefixBlockBytes,omitempty"`
+	// PrefixMaxBlocks bounds the blocks remembered per pod. 0 means
+	// defaultPrefixMaxBlocks.
+	PrefixMaxBlocks int `json:"prefixMaxBlocks,omitempty"`
 }
+
+// DefaultPrefixBlockBytes is the CRD's default prefixAffinity.blockBytes.
+const DefaultPrefixBlockBytes = 1024
+
+// Bounds on Balancing's prefix settings, mirroring the CRD's validation.
+const (
+	minPrefixBlockBytes    = 256
+	maxPrefixBlockBytes    = 16384
+	minPrefixMaxBlocks     = 1024
+	maxPrefixMaxBlocks     = 262144
+	defaultPrefixMaxBlocks = 16384
+)
 
 // HasLoadAware reports whether any backend balances LoadAware, so the proxy
 // needs the prefill janitor.
@@ -615,6 +634,14 @@ func validateBalancing(i int, b Backend) error {
 		if t := bal.SessionIdleTimeout; t != 0 && (t < minSessionIdleTimeout || t > maxSessionIdleTimeout) {
 			return fmt.Errorf("backends[%d] %s: balancing sessionIdleTimeout %s must be between %s and %s",
 				i, b.Name, t, minSessionIdleTimeout, maxSessionIdleTimeout)
+		}
+		if n := bal.PrefixBlockBytes; n != 0 && (n < minPrefixBlockBytes || n > maxPrefixBlockBytes) {
+			return fmt.Errorf("backends[%d] %s: balancing prefixBlockBytes %d must be between %d and %d",
+				i, b.Name, n, minPrefixBlockBytes, maxPrefixBlockBytes)
+		}
+		if n := bal.PrefixMaxBlocks; n != 0 && (n < minPrefixMaxBlocks || n > maxPrefixMaxBlocks) {
+			return fmt.Errorf("backends[%d] %s: balancing prefixMaxBlocks %d must be between %d and %d",
+				i, b.Name, n, minPrefixMaxBlocks, maxPrefixMaxBlocks)
 		}
 		for _, h := range bal.SessionHeaders {
 			// Mirrors the CRD's items pattern and length bound: an RFC 7230

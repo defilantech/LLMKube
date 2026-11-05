@@ -137,6 +137,11 @@ type Dispatcher struct {
 	// table is never dropped at runtime. Keys are hashes of session values.
 	sessions sync.Map // backendName -> *picker.Sessions
 
+	// prefixes holds the prefix index per LoadAware backend with prefix
+	// affinity, created on first use and, like sessions, kept for the life of
+	// the proxy. It holds block hashes, never prompt text.
+	prefixes sync.Map // backendName -> *picker.PrefixIndex
+
 	// cursors is the round-robin position per endpoint backend. Consecutive
 	// requests advance it so a keep-alive client spreads across pods.
 	cursors sync.Map // backendName -> *atomic.Uint64
@@ -568,11 +573,11 @@ func (d *Dispatcher) Dispatch(
 	// session's binding and size record to the real turns, and is not counted
 	// as a placement.
 	tokenCount := isTokenCountPath(path)
-	placeHeaders, placeBytes := headers, int64(len(requestBody))
+	placeHeaders, placeBody := headers, requestBody
 	if tokenCount {
-		placeHeaders, placeBytes = nil, 0
+		placeHeaders, placeBody = nil, nil
 	}
-	endpoint, placed, reason, tokens := d.place(backend, placeHeaders, placeBytes)
+	endpoint, placed, reason, tokens := d.place(backend, placeHeaders, placeBody)
 	if !tokenCount {
 		d.countPlacement(backend.Name, placed, reason)
 	}

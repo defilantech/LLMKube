@@ -53,6 +53,10 @@ type Candidate struct {
 	// connect. Its Load then counts only this replica's in-flight requests,
 	// which reads as idle, so it must not compete on Load.
 	Unreachable bool
+	// Cached is the estimated prompt tokens of the request being placed that
+	// the pod already holds, from the prefix index; 0 without prefix
+	// affinity. It is prefill the pod would not have to do.
+	Cached int64
 }
 
 // Result names why a pod was chosen.
@@ -66,6 +70,9 @@ const (
 	// Migrated means the session's pod left the candidate set and the session
 	// was rebound.
 	Migrated Result = "migrated"
+	// PrefixMatch is a least-loaded pick won by a pod that already held part
+	// of the request's prompt.
+	PrefixMatch Result = "prefix_match"
 )
 
 // Reason names what pressure moved a session off its pod.
@@ -148,10 +155,12 @@ func Eligible(cands []Candidate, now time.Time) []Candidate {
 }
 
 // Score orders pods for placement, in estimated tokens: Load weighted by
-// TokensPerRequest plus the prefill tokens in flight. Load stays the request
-// measure the pressure gate uses.
+// TokensPerRequest plus the prefill tokens in flight, less the request's
+// prompt tokens the pod already holds. Without prefix affinity Cached is 0
+// everywhere and the order is unchanged. Load stays the request measure the
+// pressure gate uses.
 func Score(c Candidate, now time.Time) int64 {
-	return Load(c, now)*TokensPerRequest + c.Prefill
+	return Load(c, now)*TokensPerRequest + c.Prefill - c.Cached
 }
 
 // PickLeastLoaded returns the reachable candidate with the lowest Score, or the
@@ -183,6 +192,9 @@ func PickLeastLoaded(cands []Candidate, now time.Time, tieStart int) (string, Re
 			best, bestScore = j, sc
 		}
 	}
+	if cands[best].Cached > 0 {
+		return cands[best].Endpoint, PrefixMatch
+	}
 	return cands[best].Endpoint, LeastLoaded
 }
 
@@ -201,7 +213,11 @@ type Ring struct {
 func hash64(s string) uint64 {
 	h := fnv.New64a()
 	_, _ = h.Write([]byte(s))
-	x := h.Sum64()
+	return mix64(h.Sum64())
+}
+
+// mix64 is the splitmix64 finalizer.
+func mix64(x uint64) uint64 {
 	x ^= x >> 30
 	x *= 0xbf58476d1ce4e5b9
 	x ^= x >> 27

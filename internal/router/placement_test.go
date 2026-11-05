@@ -78,7 +78,7 @@ func TestPlaceLoadAwarePicksLeastLoaded(t *testing.T) {
 	d.RecordSample("qwen", eps[0], picker.Sample{Running: 9, At: now})
 	d.RecordSample("qwen", eps[1], picker.Sample{Running: 1, At: now})
 	d.RecordSample("qwen", eps[2], picker.Sample{Running: 5, At: now})
-	ep, res, _, _ := d.place(b, http.Header{}, 0)
+	ep, res, _, _ := d.place(b, http.Header{}, nil)
 	if ep != eps[1] || res != picker.LeastLoaded {
 		t.Errorf("place = %s/%s, want %s least_loaded", ep, res, eps[1])
 	}
@@ -92,12 +92,12 @@ func TestPlaceSessionStaysWhileNothingQueues(t *testing.T) {
 	d.RecordSample("qwen", eps[2], picker.Sample{Running: 1, At: now})
 	h := http.Header{}
 	h.Set("X-Session-Affinity", "agent-1")
-	first, res, _, _ := d.place(b, h, 0)
+	first, res, _, _ := d.place(b, h, nil)
 	if first == "" || res != picker.LeastLoaded {
 		t.Fatalf("first place = %q/%s, want a pod, least_loaded", first, res)
 	}
 	for i := 0; i < 10; i++ {
-		ep, res, reason, _ := d.place(b, h, 0)
+		ep, res, reason, _ := d.place(b, h, nil)
 		if ep != first || res != picker.Sticky || reason != picker.ReasonNone {
 			t.Fatalf("request %d: place = %s/%s/%q, want %s sticky", i, ep, res, reason, first)
 		}
@@ -110,9 +110,9 @@ func TestPlaceSessionMigratesOffQuarantinedPodAndStays(t *testing.T) {
 	d, b, _ := balancedDispatcher([]string{"x-session-affinity"}, 4, clock, WithQuarantineDuration(time.Minute))
 	h := http.Header{}
 	h.Set("X-Session-Affinity", "agent-2")
-	home, _, _, _ := d.place(b, h, 0)
+	home, _, _, _ := d.place(b, h, nil)
 	quarantineEndpoint(d, "qwen", home)
-	ep, res, reason, _ := d.place(b, h, 0)
+	ep, res, reason, _ := d.place(b, h, nil)
 	if ep == home || ep == "" || res != picker.Migrated || reason != picker.ReasonQuarantined {
 		t.Fatalf("quarantined pod: place = %s/%s/%q, want another pod, migrated, quarantined", ep, res, reason)
 	}
@@ -120,7 +120,7 @@ func TestPlaceSessionMigratesOffQuarantinedPodAndStays(t *testing.T) {
 	// its new pod rather than returning to the old one.
 	now = now.Add(2 * time.Minute)
 	for i := 0; i < 3; i++ {
-		if ep2, res2, _, _ := d.place(b, h, 0); ep2 != ep || res2 != picker.Sticky {
+		if ep2, res2, _, _ := d.place(b, h, nil); ep2 != ep || res2 != picker.Sticky {
 			t.Fatalf("after the quarantine expired: place = %s/%s, want %s sticky", ep2, res2, ep)
 		}
 	}
@@ -138,7 +138,7 @@ func TestPlaceRoundRobinIgnoresSessionHeaders(t *testing.T) {
 	h.Set("X-Session-Affinity", "agent-1")
 	seen := map[string]bool{}
 	for i := 0; i < 6; i++ {
-		ep, res, reason, _ := d.place(&d.cfg.Backends[0], h, 0)
+		ep, res, reason, _ := d.place(&d.cfg.Backends[0], h, nil)
 		if res != "" || reason != picker.ReasonNone {
 			t.Errorf("round robin reported %q/%q, want empty", res, reason)
 		}
@@ -156,7 +156,7 @@ func TestPlaceEmptySessionHeaderIsNoSession(t *testing.T) {
 	d, b, _ := balancedDispatcher([]string{"x-session-affinity"}, 3)
 	h := http.Header{}
 	h.Set("X-Session-Affinity", "   ")
-	ep, res, _, _ := d.place(b, h, 0)
+	ep, res, _, _ := d.place(b, h, nil)
 	if ep == "" || res != picker.LeastLoaded {
 		t.Fatalf("blank header: place = %q/%s, want least_loaded", ep, res)
 	}
@@ -210,7 +210,7 @@ func TestSweeperRacesPlacementSafely(t *testing.T) {
 				for k := w; k < keys; k += workers {
 					h := http.Header{}
 					h.Set("X-Session-Affinity", fmt.Sprintf("agent-%d", k))
-					if ep, _, _, _ := d.place(b, h, 0); ep == "" {
+					if ep, _, _, _ := d.place(b, h, nil); ep == "" {
 						t.Errorf("key %d placed on no pod", k)
 						return
 					}
@@ -234,8 +234,8 @@ func TestSweeperRacesPlacementSafely(t *testing.T) {
 	for k := 0; k < keys; k++ {
 		h := http.Header{}
 		h.Set("X-Session-Affinity", fmt.Sprintf("agent-%d", k))
-		ep1, res1, _, _ := d.place(b, h, 0)
-		ep2, _, _, _ := d.place(b, h, 0)
+		ep1, res1, _, _ := d.place(b, h, nil)
+		ep2, _, _, _ := d.place(b, h, nil)
 		if res1 != picker.Sticky || ep1 != ep2 {
 			t.Fatalf("key %d at %s: place = %s/%s then %s, want one pod, sticky", k, at, ep1, res1, ep2)
 		}
@@ -247,7 +247,7 @@ func TestSessionBindingsGauge(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		h := http.Header{}
 		h.Set("X-Session-Affinity", fmt.Sprintf("agent-%d", i))
-		d.place(b, h, 0)
+		d.place(b, h, nil)
 	}
 	d.SweepSessions(d.nowFn())
 	if got := testutil.ToFloat64(prommetrics.RouterSessionBindings.WithLabelValues("gauge-router", "qwen")); got != 3 {
@@ -264,17 +264,17 @@ func TestPlacementReasonLabel(t *testing.T) {
 	}
 	h := http.Header{}
 	h.Set("X-Session-Affinity", "agent-1")
-	home, res, reason, _ := d.place(b, h, 0)
+	home, res, reason, _ := d.place(b, h, nil)
 	d.countPlacement("qwen", res, reason)
 	stickyBefore := counter("sticky", "")
-	ep, res, reason, _ := d.place(b, h, 0)
+	ep, res, reason, _ := d.place(b, h, nil)
 	d.countPlacement("qwen", res, reason)
 	if ep != home || counter("sticky", "") != stickyBefore+1 {
 		t.Errorf("sticky placement: counter {sticky,\"\"} = %v, want %v", counter("sticky", ""), stickyBefore+1)
 	}
 	migratedBefore := counter("migrated", "quarantined")
 	quarantineEndpoint(d, "qwen", home)
-	_, res, reason, _ = d.place(b, h, 0)
+	_, res, reason, _ = d.place(b, h, nil)
 	d.countPlacement("qwen", res, reason)
 	if counter("migrated", "quarantined") != migratedBefore+1 {
 		t.Errorf("migration: counter {migrated,quarantined} = %v, want %v", counter("migrated", "quarantined"), migratedBefore+1)
@@ -345,7 +345,7 @@ func TestPlaceRoundRobinUnchanged(t *testing.T) {
 	d.SetEndpoints("qwen", []string{"http://10.0.2.1:8000", "http://10.0.2.2:8000"})
 	seen := map[string]bool{}
 	for i := 0; i < 4; i++ {
-		ep, res, _, _ := d.place(&d.cfg.Backends[0], http.Header{"X-Session-Affinity": {"s"}}, 0)
+		ep, res, _, _ := d.place(&d.cfg.Backends[0], http.Header{"X-Session-Affinity": {"s"}}, nil)
 		if res != "" {
 			t.Errorf("an unbalanced backend reported result %q", res)
 		}
@@ -369,7 +369,7 @@ func TestPlaceHeaderlessAvoidsPodMidColdPrefill(t *testing.T) {
 	d.RecordSample("qwen", eps[0], picker.Sample{Running: 5, At: now})
 	d.RecordSample("qwen", eps[1], picker.Sample{Running: 5, At: now})
 	d.loadFor("qwen", eps[0]).prefill.Store(140000)
-	ep, res, _, tok := d.place(b, http.Header{}, 4000)
+	ep, res, _, tok := d.place(b, http.Header{}, make([]byte, 4000))
 	if ep != eps[1] || res != picker.LeastLoaded || tok != picker.EstimateTokens(4000) {
 		t.Errorf("place = %s/%s/%d, want %s least_loaded %d", ep, res, tok, eps[1], picker.EstimateTokens(4000))
 	}

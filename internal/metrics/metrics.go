@@ -238,15 +238,34 @@ var (
 	)
 
 	// RouterPlacementsTotal counts the router proxy's placement decisions for
-	// balanced backends by result (least_loaded, sticky, spill, fallback or
-	// migrated) and, for a spill or migration, the reason (waiting, kv_full,
-	// not_ready or quarantined; empty otherwise).
+	// balanced backends by result (least_loaded, prefix_match, sticky, spill,
+	// fallback or migrated) and, for a spill or migration, the reason
+	// (waiting, kv_full, not_ready or quarantined; empty otherwise).
 	RouterPlacementsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "llmkube_router_placements_total",
 			Help: "Router proxy placement decisions for balanced backends, by result and reason (waiting, kv_full, not_ready or quarantined; empty otherwise).",
 		},
 		[]string{labelRouter, "backend", "result", "reason"},
+	)
+
+	// RouterPrefixPromptTokensTotal and RouterPrefixCachedTokensTotal count, for
+	// LoadAware backends with prefix affinity, the estimated prompt tokens of
+	// each placed request and the part of them the chosen pod already held per
+	// the replica's prefix index. Their ratio is the prefix hit rate.
+	RouterPrefixPromptTokensTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llmkube_router_prefix_prompt_tokens_total",
+			Help: "Estimated prompt tokens of requests placed with prefix affinity.",
+		},
+		[]string{labelRouter, "backend"},
+	)
+	RouterPrefixCachedTokensTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llmkube_router_prefix_cached_tokens_total",
+			Help: "Estimated prompt tokens of requests placed with prefix affinity that the chosen pod already held.",
+		},
+		[]string{labelRouter, "backend"},
 	)
 
 	// RouterSessionBindings is the number of session-to-pod bindings a
@@ -650,6 +669,8 @@ var RouterCollectors = []prometheus.Collector{
 	RouterEndpointPrefillTokens,
 	RouterPrefillTokensEstimatedTotal,
 	RouterPlacementsTotal,
+	RouterPrefixPromptTokensTotal,
+	RouterPrefixCachedTokensTotal,
 	RouterSessionBindings,
 	RouterFirstTokenSeconds,
 	RouterBudgetUtilization,

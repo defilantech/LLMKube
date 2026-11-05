@@ -133,12 +133,12 @@ func (s *Sessions) Place(key uint64, cands []Candidate, now time.Time, tieStart 
 			ep, _ := PickLeastLoaded(Eligible(cands, now), now, tieStart)
 			return ep, Fallback, ReasonNone, EstimateTokens(bodyBytes)
 		}
-		ep, _ := PickLeastLoaded(Eligible(cands, now), now, tieStart)
+		ep, res := PickLeastLoaded(Eligible(cands, now), now, tieStart)
 		if len(s.bindings) == 0 {
 			s.oldest = now
 		}
 		s.bindings[key] = binding{endpoint: ep, lastSeen: now, promptBytes: bodyBytes}
-		return ep, LeastLoaded, ReasonNone, EstimateTokens(bodyBytes)
+		return ep, res, ReasonNone, EstimateTokens(bodyBytes)
 	}
 
 	var bound *Candidate
