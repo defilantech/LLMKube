@@ -34,6 +34,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -810,5 +811,28 @@ func TestOCIPrefetchWaitsForListingPod(t *testing.T) {
 	}
 	if publisher == nil || !strings.Contains(publisher.Annotations[annotationOCIFiles], "model-00002-of-00002.safetensors") {
 		t.Fatalf("publisher = %+v, want a publishing Job staging the pod's expansion", publisher)
+	}
+}
+
+// A failure message is cut to the termination message's size on a character
+// boundary, so the message the controller reads stays valid UTF-8.
+func TestTruncateUTF8(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		n    int
+		want string
+	}{
+		{"héllo", 10, "héllo"},
+		{"héllo", 3, "hé"},
+		{"héllo", 2, "h"},
+		{"é", 1, ""},
+	} {
+		if got := truncateUTF8(tc.in, tc.n); got != tc.want {
+			t.Errorf("truncateUTF8(%q, %d) = %q, want %q", tc.in, tc.n, got, tc.want)
+		}
+	}
+	long := strings.Repeat("é", maxListingResultBytes)
+	if got := truncateUTF8(long, maxListingResultBytes); len(got) > maxListingResultBytes || !utf8.ValidString(got) {
+		t.Errorf("cut to %d bytes, valid UTF-8 %v; want at most %d, valid", len(got), utf8.ValidString(got), maxListingResultBytes)
 	}
 }

@@ -33,6 +33,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -219,15 +220,23 @@ func RunListRepoFiles(ctx context.Context, args []string) error {
 	}
 	msg, err := listRepoFilesResult(ctx, *treeURL, *filesJSON, *mmproj, *caDir)
 	if err != nil {
-		msg = err.Error()
-		if len(msg) > maxListingResultBytes {
-			msg = msg[:maxListingResultBytes]
-		}
+		msg = truncateUTF8(err.Error(), maxListingResultBytes)
 	}
 	if writeErr := os.WriteFile(*result, []byte(msg), 0o600); writeErr != nil && err == nil {
 		return writeErr
 	}
 	return err
+}
+
+// truncateUTF8 cuts s to at most n bytes without splitting a character.
+func truncateUTF8(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 func listRepoFilesResult(ctx context.Context, treeURL, filesJSON, mmproj, caDir string) (string, error) {
