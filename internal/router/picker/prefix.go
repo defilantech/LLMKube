@@ -86,7 +86,9 @@ func (x *PrefixIndex) Matched(endpoint string, chain []uint64) int {
 }
 
 // Record marks chain as sent to the endpoint, most recent first, evicting the
-// endpoint's least recently recorded blocks past maxBlocks.
+// endpoint's least recently recorded blocks past maxBlocks. The chain goes in
+// tail first, so its leading block is the most recent: a match counts only a
+// leading run, and eviction then cuts a chain from its tail.
 func (x *PrefixIndex) Record(endpoint string, chain []uint64) {
 	if len(chain) == 0 {
 		return
@@ -98,7 +100,8 @@ func (x *PrefixIndex) Record(endpoint string, chain []uint64) {
 		l = &blockLRU{order: list.New(), at: map[uint64]*list.Element{}}
 		x.eps[endpoint] = l
 	}
-	for _, h := range chain {
+	for i := len(chain) - 1; i >= 0; i-- {
+		h := chain[i]
 		if e, ok := l.at[h]; ok {
 			l.order.MoveToFront(e)
 			continue

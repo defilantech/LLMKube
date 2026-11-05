@@ -95,6 +95,18 @@ func TestPrefixIndexEvictsLeastRecentlyRecorded(t *testing.T) {
 	}
 }
 
+// A match counts only a leading run, so eviction must cut a chain from its
+// tail: losing the first block would make every later block unmatchable.
+func TestPrefixIndexEvictsAChainFromItsTail(t *testing.T) {
+	x := NewPrefixIndex(5)
+	conv := BlockHashes(blocks("sys1", "usr1", "ast1", "usr2"), 4)
+	x.Record("a", conv)
+	x.Record("a", BlockHashes(blocks("oth1", "oth2"), 4))
+	if got := x.Matched("a", conv); got != 3 {
+		t.Errorf("one block of the chain was evicted; matched %d, want the leading 3", got)
+	}
+}
+
 func TestPrefixIndexRecordRefreshesRecency(t *testing.T) {
 	x := NewPrefixIndex(4)
 	shared := BlockHashes(blocks("sys1", "sys2"), 4)
