@@ -235,6 +235,7 @@ func (r *ModelRouterReconciler) resolveBackend(
 				return wire, status, err
 			}
 			r.warnSessionAffinityIgnored(mr, b)
+			r.warnPrefixAffinityIgnored(mr, b)
 			status.Address = svcAddr
 			if len(endpoints) == 0 {
 				status.Healthy = false
@@ -883,6 +884,21 @@ func (r *ModelRouterReconciler) warnSessionAffinityIgnored(mr *inferencev1alpha1
 		b.Name)
 }
 
+// modelRouterReasonPrefixAffinityIgnored is the event reason for a backend
+// that sets prefixAffinity without mode: LoadAware.
+const modelRouterReasonPrefixAffinityIgnored = "PrefixAffinityIgnored"
+
+// warnPrefixAffinityIgnored is warnSessionAffinityIgnored for prefixAffinity.
+func (r *ModelRouterReconciler) warnPrefixAffinityIgnored(mr *inferencev1alpha1.ModelRouter, b *inferencev1alpha1.RouterBackend) {
+	if r.Recorder == nil || b.Balancing == nil || b.Balancing.PrefixAffinity == nil ||
+		b.Balancing.Mode == inferencev1alpha1.BalancingModeLoadAware {
+		return
+	}
+	r.Recorder.Eventf(mr, nil, corev1.EventTypeWarning, modelRouterReasonPrefixAffinityIgnored, "Reconcile",
+		"backend %q sets balancing.prefixAffinity but balancing.mode is not LoadAware, so prefix affinity is ignored; set balancing.mode: LoadAware to enable it",
+		b.Name)
+}
+
 // compileBalancing translates a backend's balancing block, and attaches the
 // metrics profile for runtimes LLMKube has one for. A missing
 // InferenceService compiles without a profile; any other lookup error is
@@ -900,6 +916,16 @@ func (r *ModelRouterReconciler) compileBalancing(ctx context.Context, namespace,
 		if sa.IdleTimeout != nil {
 			out.SessionIdleTimeout = sa.IdleTimeout.Duration
 		}
+	}
+	// Likewise prefix affinity; resolveBackend warns about it under RoundRobin.
+	// An object stored before the CRD defaulted blockBytes compiles with the
+	// default rather than off; maxBlocksPerEndpoint 0 is the proxy's default.
+	if pa := b.PrefixAffinity; pa != nil && out.Mode == router.BalancingLoadAware {
+		out.PrefixBlockBytes = int(pa.BlockBytes)
+		if out.PrefixBlockBytes == 0 {
+			out.PrefixBlockBytes = router.DefaultPrefixBlockBytes
+		}
+		out.PrefixMaxBlocks = int(pa.MaxBlocksPerEndpoint)
 	}
 	if out.Mode != router.BalancingLoadAware {
 		return out, nil, nil

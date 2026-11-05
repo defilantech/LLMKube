@@ -200,6 +200,38 @@ spec:
                           - RoundRobin
                           - LoadAware
                           type: string
+                        prefixAffinity:
+                          description: |-
+                            PrefixAffinity sends a request to the pod most likely to hold its
+                            prompt's prefix in KV cache, traded against that pod's load. The router
+                            remembers which prompt blocks it sent to each pod, so it needs no session
+                            header and no engine support. Set it (an empty object takes the
+                            defaults) to turn it on. It requires mode: LoadAware; with RoundRobin it
+                            is ignored and the router emits a PrefixAffinityIgnored warning event.
+                          properties:
+                            blockBytes:
+                              default: 1024
+                              description: |-
+                                BlockBytes is the size of the prompt blocks the router hashes, in bytes
+                                of the request's tools, system prompt and messages (about four bytes
+                                per token). A shared prefix counts in whole blocks, so smaller blocks
+                                catch shorter shared prefixes and cost more memory. Defaults to 1024.
+                              format: int32
+                              maximum: 16384
+                              minimum: 256
+                              type: integer
+                            maxBlocksPerEndpoint:
+                              default: 16384
+                              description: |-
+                                MaxBlocksPerEndpoint bounds the blocks the router remembers per pod;
+                                the least recently sent go first. The default, 16384, covers 16 MiB of
+                                prompt (about 4M tokens) per pod at the default block size, more than a
+                                pod's KV cache holds.
+                              format: int32
+                              maximum: 262144
+                              minimum: 1024
+                              type: integer
+                          type: object
                         sessionAffinity:
                           description: |-
                             SessionAffinity places a new session on the least-loaded pod. The session
