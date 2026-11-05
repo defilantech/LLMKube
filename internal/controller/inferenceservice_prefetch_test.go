@@ -355,6 +355,40 @@ var _ = Describe("InferenceService modelCache.prefetch (#2136)", func() {
 	})
 	AfterEach(func() { collectPrefetchJobs(ctx, ns) })
 
+	// The prefetch Job writes the cache as the operator's default fsGroup, and a
+	// prefetched pod mounts the claim read-only, so the kubelet never applies the
+	// service's own fsGroup to it. A service that sets its own podSecurityContext
+	// must still be able to enter the cache root (#2450).
+	It("runs a pod with its own podSecurityContext in the group the prefetch Job writes the cache as", func() {
+		createCachePVC(ctx, ns, "own-uid-cache")
+		model := readyModel("own-uid-model", "https://example.com/models/own.gguf", nil)
+		isvc := newService("own-uid", model.Name, &inferencev1alpha1.ModelCacheSpec{ClaimName: "own-uid-cache", Prefetch: true})
+		uid := int64(2000)
+		isvc.Spec.PodSecurityContext = &corev1.PodSecurityContext{RunAsUser: &uid, RunAsGroup: &uid, FSGroup: &uid}
+		Expect(k8sClient.Update(ctx, isvc)).To(Succeed())
+		mr, ir := modelReconciler(), isvcReconciler()
+		key := types.NamespacedName{Name: isvc.Name, Namespace: ns}
+
+		prefetchModel(mr, model.Name)
+		markJobComplete(ctx, types.NamespacedName{Name: prefetchTargetJobName(model, "own-uid-cache"), Namespace: ns})
+		model, _, _ = prefetchModel(mr, model.Name)
+		Expect(findPrefetchStatus(model, "own-uid-cache").Phase).To(Equal(inferencev1alpha1.PrefetchPhaseSucceeded))
+		reconcileService(ir, isvc.Name)
+
+		dep := &appsv1.Deployment{}
+		Expect(k8sClient.Get(ctx, key, dep)).To(Succeed())
+		Expect(initContainerNames(&dep.Spec.Template.Spec)).To(Equal([]string{"model-verify"}))
+		psc := dep.Spec.Template.Spec.SecurityContext
+		Expect(psc).NotTo(BeNil())
+		Expect(psc.SupplementalGroups).To(ConsistOf(int64(102)), "the group the prefetch Job writes the cache as")
+		Expect(psc.FSGroup).To(HaveValue(Equal(uid)))
+		Expect(psc.RunAsUser).To(HaveValue(Equal(uid)))
+
+		stored := &inferencev1alpha1.InferenceService{}
+		Expect(k8sClient.Get(ctx, key, stored)).To(Succeed())
+		Expect(stored.Spec.PodSecurityContext.SupplementalGroups).To(BeEmpty(), "the service's spec is not rewritten")
+	})
+
 	It("holds the first rollout until the prefetch into its claim succeeds, then mounts the cache read-only with no downloader, and holds later rollouts the same way", func() {
 		createCachePVC(ctx, ns, "svc-cache")
 		model := readyModel("gated-model", "https://example.com/models/llama.gguf", func(m *inferencev1alpha1.Model) {

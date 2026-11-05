@@ -1469,6 +1469,61 @@ func TestInferPodSecurityContext_FSGroupChangePolicy(t *testing.T) {
 	})
 }
 
+// TestWithPrefetchGroup: a pod that reads a prefetched cache runs in the group
+// the prefetch Job writes it as (#2450), without changing the service's spec.
+func TestWithPrefetchGroup(t *testing.T) {
+	i64 := func(v int64) *int64 { return &v }
+	cases := []struct {
+		name       string
+		psc        *corev1.PodSecurityContext
+		defaultFS  int64
+		prefetched bool
+		want       []int64 // supplementalGroups of the result
+		verbatim   bool    // the input pointer comes back unchanged
+	}{
+		{name: "not a prefetched cache", psc: &corev1.PodSecurityContext{FSGroup: i64(2000)}, defaultFS: 102, verbatim: true},
+		{name: "own fsGroup", psc: &corev1.PodSecurityContext{RunAsUser: i64(2000), FSGroup: i64(2000)}, defaultFS: 102, prefetched: true, want: []int64{102}},
+		// A supplied context with no fsGroup is in no group the Job writes.
+		{name: "no fsGroup", psc: &corev1.PodSecurityContext{RunAsNonRoot: boolPtr(true), RunAsUser: i64(10001)}, defaultFS: 102, prefetched: true, want: []int64{102}},
+		{name: "own supplemental groups are kept", psc: &corev1.PodSecurityContext{FSGroup: i64(2000), SupplementalGroups: []int64{5}}, defaultFS: 102, prefetched: true, want: []int64{5, 102}},
+		{name: "fsGroup is already the Job's group", psc: &corev1.PodSecurityContext{FSGroup: i64(102)}, defaultFS: 102, prefetched: true, verbatim: true},
+		{name: "runAsGroup is already the Job's group", psc: &corev1.PodSecurityContext{RunAsGroup: i64(102)}, defaultFS: 102, prefetched: true, verbatim: true},
+		{name: "already a supplemental group", psc: &corev1.PodSecurityContext{FSGroup: i64(2000), SupplementalGroups: []int64{102}}, defaultFS: 102, prefetched: true, verbatim: true},
+		{name: "default fsGroup disabled", psc: &corev1.PodSecurityContext{FSGroup: i64(2000)}, defaultFS: 0, prefetched: true, verbatim: true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			before := c.psc.DeepCopy()
+			got := withPrefetchGroup(c.psc, c.defaultFS, c.prefetched)
+			if !reflect.DeepEqual(c.psc, before) {
+				t.Fatalf("the input was modified: %+v, was %+v", c.psc, before)
+			}
+			if c.verbatim {
+				if got != c.psc {
+					t.Fatalf("got a new context %+v, want the input back", got)
+				}
+				return
+			}
+			if got == c.psc {
+				t.Fatal("got the input back, want a copy with the Job's group")
+			}
+			if !reflect.DeepEqual(got.SupplementalGroups, c.want) {
+				t.Errorf("supplementalGroups = %v, want %v", got.SupplementalGroups, c.want)
+			}
+			if !reflect.DeepEqual(got.FSGroup, c.psc.FSGroup) || !reflect.DeepEqual(got.RunAsUser, c.psc.RunAsUser) {
+				t.Errorf("fsGroup or runAsUser changed: %+v", got)
+			}
+		})
+	}
+
+	t.Run("the operator's own context already carries the Job's group", func(t *testing.T) {
+		psc := inferPodSecurityContext(&inferencev1alpha1.InferenceService{}, 102, 0, false)
+		if got := withPrefetchGroup(psc, 102, true); got != psc {
+			t.Errorf("got %+v, want the operator's context unchanged", got)
+		}
+	})
+}
+
 // TestBuildContainerResources_MemoryLimit sets a memory LIMIT alongside the
 // request. Historically the builder set only Requests[memory], so a serving
 // container was unbounded: a model whose resident set exceeded available RAM

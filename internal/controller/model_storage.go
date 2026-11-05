@@ -1684,6 +1684,10 @@ type modelStorageConfig struct {
 	initContainers []corev1.Container
 	volumes        []corev1.Volume
 	volumeMounts   []corev1.VolumeMount
+	// readsPrefetchedCache marks a pod that mounts a prefetched cache
+	// read-only (buildPrefetchedStorageConfig): it gets the prefetch Job's
+	// group (withPrefetchGroup, #2450).
+	readsPrefetchedCache bool
 }
 
 // applyInitContainerDiagnostics makes every generated init container report its
@@ -2576,7 +2580,10 @@ func (r *InferenceServiceReconciler) ensureModelCachePVC(ctx context.Context, is
 // name is derived from GGUF metadata the Model may have parsed only after
 // the Job ran, and the Job wrote the name it had then.
 func buildPrefetchedStorageConfig(model *inferencev1alpha1.Model, isvc *inferencev1alpha1.InferenceService, cache effectiveModelCache, cacheMode string, initContainerImage string, staged []string) (cfg modelStorageConfig) {
-	defer func() { applyInitContainerDiagnostics(cfg.initContainers) }()
+	defer func() {
+		cfg.readsPrefetchedCache = true
+		applyInitContainerDiagnostics(cfg.initContainers)
+	}()
 	cacheDir := fmt.Sprintf("/models/%s", effectiveModelCacheKey(model))
 	volumes := []corev1.Volume{{
 		Name: "model-cache",
@@ -2643,19 +2650,36 @@ func buildPrefetchedStorageConfig(model *inferencev1alpha1.Model, isvc *inferenc
 	}
 }
 
-// buildPrefetchVerifyCommand checks every staged file is present on the
-// read-only cache mount, and with verifyDigest hashes the primary file
+// buildPrefetchVerifyCommand checks every staged file is present and readable
+// on the read-only cache mount, and with verifyDigest hashes the primary file
 // against MODEL_SHA256 as buildPVCVerifyCommand does (no stamp: the mount is
 // read-only). The file list and the Model name arrive through env and are
 // printed as printf arguments, never interpolated into the shell. The loop
-// runs in a pipeline subshell, so a missing file exits that subshell and the
+// runs in a pipeline subshell, so a failed file exits that subshell and the
 // trailing `|| exit 1` fails the container.
+//
+// A file the pod's user cannot reach (a directory on its path it cannot enter,
+// from the cache root down, or the file it cannot read) is reported as
+// PrefetchedFilesUnreadable, with the uid, the groups and the blocking path's
+// owner and mode, not as missing: a missing file asks for a re-stage, and a
+// re-stage does not change who can read the files (#2450).
 func buildPrefetchVerifyCommand(verifyDigest bool) string {
-	cmd := `printf '%s\n' "$MODEL_FILES" | while IFS= read -r rel; do ` +
+	cmd := `root="${CACHE_DIR%/*}"; ` +
+		`printf '%s\n' "$MODEL_FILES" | while IFS= read -r rel; do ` +
 		`[ -n "$rel" ] || continue; ` +
-		`if [ ! -f "$CACHE_DIR/$rel" ] || [ ! -r "$CACHE_DIR/$rel" ]; then ` +
-		`printf 'ERROR: PrefetchedFilesMissing - %s is not on the cache claim. Model %s was expected to be staged there by its prefetch job (see the Model status.prefetch); not downloading on the serving node.\n' "$CACHE_DIR/$rel" "$MODEL_NAME" >&2; ` +
-		`exit 1; fi; done || exit 1; `
+		`f="$CACHE_DIR/$rel"; ` +
+		`if [ -f "$f" ] && [ -r "$f" ]; then continue; fi; ` +
+		`blocked=""; d="$root"; rest="${CACHE_DIR##*/}/$rel"; ` +
+		`while :; do ` +
+		`if [ -d "$d" ] && [ ! -x "$d" ]; then blocked="$d"; break; fi; ` +
+		`[ "${rest#*/}" != "$rest" ] || break; ` +
+		`d="$d/${rest%%/*}"; rest="${rest#*/}"; done; ` +
+		`if [ -z "$blocked" ] && [ -e "$f" ]; then blocked="$f"; fi; ` +
+		`if [ -n "$blocked" ]; then ` +
+		`printf 'ERROR: PrefetchedFilesUnreadable - uid %s (groups: %s) cannot read %s on the cache claim; blocked at: %s. Model %s staged it there with its prefetch job; a re-stage does not change who can read it.\n' "$(id -u 2>/dev/null)" "$(id -G 2>/dev/null)" "$f" "$(ls -ldn "$blocked" 2>&1)" "$MODEL_NAME" >&2; ` +
+		`exit 1; fi; ` +
+		`printf 'ERROR: PrefetchedFilesMissing - %s is not on the cache claim. Model %s was expected to be staged there by its prefetch job (see the Model status.prefetch); not downloading on the serving node.\n' "$f" "$MODEL_NAME" >&2; ` +
+		`exit 1; done || exit 1; `
 	if verifyDigest {
 		cmd = sha256HashFns + cmd +
 			`llmkube_precheck_sha256 || exit 1; ` +

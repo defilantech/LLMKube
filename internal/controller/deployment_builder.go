@@ -19,6 +19,7 @@ package controller
 import (
 	"fmt"
 	"path"
+	"slices"
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -248,7 +249,9 @@ func devShmVolume(isvc *inferencev1alpha1.InferenceService, backend RuntimeBacke
 // path; the CUDA and Metal paths are untouched. A user-supplied
 // Spec.PodSecurityContext is returned as-is, so setting it takes full
 // ownership of supplementalGroups (the per-service workaround for a node
-// whose render GID differs from the operator default).
+// whose render GID differs from the operator default). The one addition the
+// operator makes to it is the prefetch Job's group, for a pod that reads a
+// prefetched cache (withPrefetchGroup).
 //
 // Operators using a custom init container image (--init-container-image) with
 // a different UID/GID should override Spec.PodSecurityContext or set
@@ -675,7 +678,7 @@ func (r *InferenceServiceReconciler) constructDeploymentForCache(
 					Annotations: buildPodAnnotations(isvc, r.EmitScrapeAnnotations, port),
 				},
 				Spec: corev1.PodSpec{
-					SecurityContext:    inferPodSecurityContext(isvc, r.DefaultFSGroup, r.DRIRenderGID, vulkan),
+					SecurityContext:    withPrefetchGroup(inferPodSecurityContext(isvc, r.DefaultFSGroup, r.DRIRenderGID, vulkan), r.DefaultFSGroup, storageConfig.readsPrefetchedCache),
 					InitContainers:     storageConfig.initContainers,
 					Containers:         []corev1.Container{container},
 					Volumes:            storageConfig.volumes,
@@ -981,4 +984,31 @@ func revisionHistoryLimitOrDefault(limit *int32) *int32 {
 		v = *limit
 	}
 	return &v
+}
+
+// withPrefetchGroup adds the group the prefetch Job writes the cache as
+// (--default-fsgroup) to the supplemental groups of a pod that reads a
+// prefetched cache, unless the pod already runs in it (#2450).
+//
+// The Job has no InferenceService behind it: it writes as the init image's
+// user in the operator's default group, and its prep hands the cache root to
+// that group. A prefetched pod mounts the claim read-only, so the kubelet never
+// applies the pod's own fsGroup to it, and a service with its own
+// podSecurityContext could not enter the root whenever the Job was the last to
+// set its owner (its other, read-write pods hand the root back to the
+// service's group, so the failure came and went). The group is added on a
+// copy: the InferenceService's spec is never changed. A default fsGroup of 0
+// (disabled, the OpenShift preset) adds nothing: the prep then hands the root
+// to group 0, which such a platform's arbitrary uids already run under.
+func withPrefetchGroup(psc *corev1.PodSecurityContext, defaultFSGroup int64, readsPrefetchedCache bool) *corev1.PodSecurityContext {
+	if !readsPrefetchedCache || defaultFSGroup <= 0 || psc == nil {
+		return psc
+	}
+	inGroup := func(g *int64) bool { return g != nil && *g == defaultFSGroup }
+	if inGroup(psc.FSGroup) || inGroup(psc.RunAsGroup) || slices.Contains(psc.SupplementalGroups, defaultFSGroup) {
+		return psc
+	}
+	out := psc.DeepCopy()
+	out.SupplementalGroups = append(out.SupplementalGroups, defaultFSGroup)
+	return out
 }
