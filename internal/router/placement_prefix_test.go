@@ -42,7 +42,8 @@ func prefixDispatcher(t *testing.T, headers []string, n int) (*Dispatcher, *Back
 // behind a system prompt.
 func chat(t *testing.T, system string, turns ...string) []byte {
 	t.Helper()
-	msgs := []map[string]string{{"role": "system", "content": system}}
+	msgs := make([]map[string]string, 0, 1+len(turns))
+	msgs = append(msgs, map[string]string{"role": "system", "content": system})
 	for i, c := range turns {
 		role := "user"
 		if i%2 == 1 {
