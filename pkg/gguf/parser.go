@@ -40,6 +40,7 @@ var (
 	ErrUnsupportedVersion = errors.New("unsupported GGUF version")
 	ErrUnknownValueType   = errors.New("unknown metadata value type")
 	ErrSizeLimitExceeded  = errors.New("size limit exceeded")
+	ErrNestedArray        = errors.New("nested metadata arrays are not supported")
 )
 
 // Value type constants as stored in the GGUF file format.
@@ -439,6 +440,14 @@ func readValueData(r io.Reader, valueType uint32) (GGUFValue, error) {
 		if err := binary.Read(r, binary.LittleEndian, &elemType); err != nil {
 			return nil, fmt.Errorf("reading array element type: %w", err)
 		}
+		// ggml's gguf reader refuses an array whose elements are arrays
+		// (gguf_init_from_file_impl treats GGUF_TYPE_ARRAY there as an
+		// invalid type), so no file llama-server loads has one. Following
+		// the nesting instead recursed once per 12 header bytes with no
+		// bound.
+		if elemType == valueTypeArray {
+			return nil, ErrNestedArray
+		}
 		var count uint64
 		if err := binary.Read(r, binary.LittleEndian, &count); err != nil {
 			return nil, fmt.Errorf("reading array count: %w", err)
@@ -446,7 +455,9 @@ func readValueData(r io.Reader, valueType uint32) (GGUFValue, error) {
 		if count > maxArrayCount {
 			return nil, fmt.Errorf("%w: array count %d exceeds maximum %d", ErrSizeLimitExceeded, count, maxArrayCount)
 		}
-		values := make([]GGUFValue, 0, count)
+		// The count is untrusted until the elements arrive; cap the
+		// preallocation like Parse does for the header counts.
+		values := make([]GGUFValue, 0, min(count, maxPreallocCount))
 		for i := uint64(0); i < count; i++ {
 			v, err := readValueData(r, elemType)
 			if err != nil {

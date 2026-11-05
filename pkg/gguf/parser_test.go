@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"runtime"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -689,6 +690,55 @@ func TestRejectOversizedArray(t *testing.T) {
 	}
 	if !errors.Is(err, ErrSizeLimitExceeded) {
 		t.Errorf("expected ErrSizeLimitExceeded, got: %v", err)
+	}
+}
+
+// An array of arrays is refused at the first nested element type, before any
+// element is read: ggml's own reader refuses it as an invalid type, so no
+// file llama-server loads carries one, and following the nesting recursed
+// once per 12 header bytes with no bound (a fatal stack overflow, which
+// recover cannot catch).
+func TestRejectNestedArray(t *testing.T) {
+	buf := &bytes.Buffer{}
+	writeLE(buf, uint32(9)) // ARRAY
+	for range 100_000 {
+		writeLE(buf, uint32(9)) // element type: ARRAY
+		writeLE(buf, uint64(1)) // count
+	}
+	before := buf.Len()
+
+	_, err := readValue(buf)
+	if !errors.Is(err, ErrNestedArray) {
+		t.Fatalf("readValue(array of arrays) error = %v, want ErrNestedArray", err)
+	}
+	// The outer type tag and the first element type, nothing past them.
+	if consumed := before - buf.Len(); consumed != 8 {
+		t.Errorf("consumed %d bytes, want 8 (the outer type tag and the nested element type)", consumed)
+	}
+}
+
+// An array header's count is untrusted: a header that claims the maximum
+// element count and then ends must not allocate storage for all of them
+// before the first element is read.
+func TestArrayCountDoesNotPreallocate(t *testing.T) {
+	buf := &bytes.Buffer{}
+	writeLE(buf, uint32(9)) // ARRAY
+	writeLE(buf, uint32(0)) // element type: UINT8
+	writeLE(buf, uint64(maxArrayCount))
+	data := buf.Bytes()
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	_, err := readValue(bytes.NewReader(data))
+	runtime.ReadMemStats(&after)
+	if err == nil {
+		t.Fatal("readValue of a truncated array succeeded, want an error")
+	}
+	// maxArrayCount interface slots are 160 MB; the capped preallocation
+	// is 1 MiB.
+	if alloc := after.TotalAlloc - before.TotalAlloc; alloc > 16<<20 {
+		t.Errorf("a 16-byte truncated array header allocated %d bytes, want under 16 MiB", alloc)
 	}
 }
 
