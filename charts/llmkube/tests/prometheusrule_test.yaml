@@ -241,7 +241,7 @@ tests:
           path: spec.groups[?(@.name=="llmkube-serving")].rules[*].alert
           pattern: KVOffloadLoadSlow
 
-  - it: should alert on queued-with-almost-nothing-running for every runtime exporting the pair
+  - it: should alert on queued-with-no-progress for every runtime
     template: prometheusrule.yaml
     set:
       prometheus.prometheusRule.enabled: true
@@ -261,7 +261,13 @@ tests:
           pattern: 'rate\(llamacpp:n_decode_total\[10m\]\) == 0'
       - matchRegex:
           path: spec.groups[?(@.name=="llmkube-serving")].rules[?(@.alert=="InferenceAdmissionStalled")].expr
-          pattern: 'avg_over_time\(vllm:num_requests_running\[10m\]\) <= 1'
+          pattern: 'rate\(vllm:prompt_tokens_total\[10m\]\) \+ rate\(vllm:generation_tokens_total\[10m\]\)\) == 0'
+      - matchRegex:
+          path: spec.groups[?(@.name=="llmkube-serving")].rules[?(@.alert=="InferenceAdmissionStalled")].expr
+          pattern: 'sum by \(namespace, service, pod\) \(rate\(sglang:realtime_tokens_total\[10m\]\)\) == 0'
+      - notMatchRegex:
+          path: spec.groups[?(@.name=="llmkube-serving")].rules[?(@.alert=="InferenceAdmissionStalled")].expr
+          pattern: '<= 1'
 
   - it: should AND absence across every runtime's running-count metric in InferenceMetricsMissing
     template: prometheusrule.yaml
