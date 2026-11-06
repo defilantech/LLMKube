@@ -67,11 +67,15 @@ func progressTestReady(t *testing.T) {
 func TestDownloadWithProgress(t *testing.T) {
 	progressTestReady(t)
 
-	// run assembles the helper plus a stub transfer and returns combined output.
-	run := func(t *testing.T, total, transfer string) string {
+	// labeled is what a pool's workers run, with the two names the pool defines
+	// stubbed. Only it polls in tenths; the serial helper's text is what shipped.
+	labeled := `rel=m.bin; llmkube_pool_label() { :; }; ` + downloadProgressLabeledFn
+
+	// run assembles a helper plus a stub transfer and returns combined output.
+	run := func(t *testing.T, helper, total, transfer string) string {
 		t.Helper()
 		dest := filepath.Join(t.TempDir(), "model.partial")
-		script := downloadProgressFn + transfer +
+		script := helper + transfer +
 			` && download_with_progress "$DEST" "$TOTAL" fake_transfer "$DEST"; echo "rc=$?"`
 		cmd := exec.Command("sh", "-c", script)
 		cmd.Env = append(os.Environ(),
@@ -89,60 +93,69 @@ func TestDownloadWithProgress(t *testing.T) {
 	// 2048 * 1024 = 2097152 bytes = exactly 2 MiB.
 	const writer = `fake_transfer() { dd if=/dev/zero of="$1" bs=1024 count=2048 2>/dev/null; sleep 2; }`
 
-	t.Run("percent when total is known", func(t *testing.T) {
-		out := run(t, "4194304", writer)
-		if !strings.Contains(out, "Downloaded 2 MiB of 4 MiB (50%)") {
-			t.Errorf("missing progress line; want substring %q in:\n%s", "Downloaded 2 MiB of 4 MiB (50%)", out)
-		}
-		// One line per whole interval: a 2s transfer at PROGRESS_INTERVAL=1
-		// prints at t=1 and at t=2, never more. Base raced between one and
-		// two here, because it tested the transfer's death before printing
-		// and a stub that ends on the second loses that comparison; the
-		// tenths poll prints the interval a transfer ends in, so two is now
-		// deterministic.
-		if n := strings.Count(out, "Downloaded "); n != 2 {
-			t.Errorf("printed %d progress lines for a 2s transfer at PROGRESS_INTERVAL=1, want exactly 2:\n%s", n, out)
-		}
-		if strings.ContainsRune(out, '\r') {
-			t.Errorf("output carries a carriage return, which kubectl collapses into the prior line:\n%q", out)
-		}
-	})
+	// One line per whole interval: a 2s transfer at PROGRESS_INTERVAL=1 prints at
+	// t=1 and at t=2, never more. The serial helper races between one and two,
+	// because it tests the transfer's death before printing and a stub that ends
+	// on the second loses that comparison; the tenths poll prints the interval a
+	// transfer ends in, so two is deterministic there.
+	for _, v := range []struct {
+		name, helper, percent string
+		minLines              int
+	}{
+		{"serial", downloadProgressFn, "Downloaded 2 MiB of 4 MiB (50%)", 1},
+		{"labeled", labeled, "Downloaded 2 MiB of 4 MiB of m.bin (50%)", 2},
+	} {
+		t.Run(v.name, func(t *testing.T) {
+			t.Run("percent when total is known", func(t *testing.T) {
+				out := run(t, v.helper, "4194304", writer)
+				if !strings.Contains(out, v.percent) {
+					t.Errorf("missing progress line; want substring %q in:\n%s", v.percent, out)
+				}
+				if n := strings.Count(out, "Downloaded "); n < v.minLines || n > 2 {
+					t.Errorf("printed %d progress lines for a 2s transfer at PROGRESS_INTERVAL=1, want %d to 2:\n%s", n, v.minLines, out)
+				}
+				if strings.ContainsRune(out, '\r') {
+					t.Errorf("output carries a carriage return, which kubectl collapses into the prior line:\n%q", out)
+				}
+			})
 
-	t.Run("bytes-only when total is unknown", func(t *testing.T) {
-		out := run(t, "", writer)
-		if !strings.Contains(out, "Downloaded 2 MiB") {
-			t.Errorf(`missing "Downloaded 2 MiB" in:`+"\n%s", out)
-		}
-		if strings.Contains(out, "%") {
-			t.Errorf("output contains a percent but total was empty:\n%s", out)
-		}
-	})
+			t.Run("bytes-only when total is unknown", func(t *testing.T) {
+				out := run(t, v.helper, "", writer)
+				if !strings.Contains(out, "Downloaded 2 MiB") {
+					t.Errorf(`missing "Downloaded 2 MiB" in:`+"\n%s", out)
+				}
+				if strings.Contains(out, "%") {
+					t.Errorf("output contains a percent but total was empty:\n%s", out)
+				}
+			})
 
-	t.Run("missing dest prints 0 MiB and swallows the stat error", func(t *testing.T) {
-		out := run(t, "", `fake_transfer() { sleep 2; }`)
-		if !strings.Contains(out, "Downloaded 0 MiB") {
-			t.Errorf(`missing "Downloaded 0 MiB" (the stat fallback):`+"\n%s", out)
-		}
-		// Empty shell arithmetic is 0, so the value alone does not pin the
-		// fallback: `stat -c %s` on a missing partial prints an error to stderr
-		// unless the helper redirects it. That redirection is the assertion.
-		if strings.Contains(out, "stat:") {
-			t.Errorf("the stat fallback leaked an error for a missing partial:\n%s", out)
-		}
-	})
+			t.Run("missing dest prints 0 MiB and swallows the stat error", func(t *testing.T) {
+				out := run(t, v.helper, "", `fake_transfer() { sleep 2; }`)
+				if !strings.Contains(out, "Downloaded 0 MiB") {
+					t.Errorf(`missing "Downloaded 0 MiB" (the stat fallback):`+"\n%s", out)
+				}
+				// Empty shell arithmetic is 0, so the value alone does not pin the
+				// fallback: `stat -c %s` on a missing partial prints an error to stderr
+				// unless the helper redirects it. That redirection is the assertion.
+				if strings.Contains(out, "stat:") {
+					t.Errorf("the stat fallback leaked an error for a missing partial:\n%s", out)
+				}
+			})
 
-	t.Run("transfer exit status is preserved", func(t *testing.T) {
-		out := run(t, "", `fake_transfer() { sleep 1; return 3; }`)
-		if !strings.Contains(out, "rc=3") {
-			t.Errorf("wait did not carry the transfer's exit status; want rc=3 in:\n%s", out)
-		}
-	})
+			t.Run("transfer exit status is preserved", func(t *testing.T) {
+				out := run(t, v.helper, "", `fake_transfer() { sleep 1; return 3; }`)
+				if !strings.Contains(out, "rc=3") {
+					t.Errorf("wait did not carry the transfer's exit status; want rc=3 in:\n%s", out)
+				}
+			})
+		})
+	}
 
 	// A transfer that finishes in milliseconds costs milliseconds, not the
-	// poll's period: the helper must notice the exit on its next poll (#2386).
+	// poll's period: a pool's worker must notice the exit on its next poll (#2386).
 	t.Run("returns when the transfer finished in milliseconds", func(t *testing.T) {
 		dest := filepath.Join(t.TempDir(), "model.partial")
-		script := downloadProgressFn + `fake_transfer() { sleep 0.05; } && ` +
+		script := labeled + `fake_transfer() { sleep 0.05; } && ` +
 			`download_with_progress "$DEST" "" fake_transfer "$DEST"`
 		cmd := exec.Command("sh", "-c", script)
 		cmd.Env = append(os.Environ(), "DEST="+dest, "PROGRESS_INTERVAL=1")
@@ -159,11 +172,10 @@ func TestDownloadWithProgress(t *testing.T) {
 
 	// At the shipped interval one line lands per whole 10 seconds: an 11s
 	// transfer prints the 10s tick once, not once per poll in the first
-	// second and not ten times at the tick. This is the case base and this
-	// branch agree on deterministically.
+	// second and not ten times at the tick.
 	t.Run("one line per tick at the default interval", func(t *testing.T) {
 		dest := filepath.Join(t.TempDir(), "model.partial")
-		script := downloadProgressFn + `fake_transfer() { dd if=/dev/zero of="$1" bs=1024 count=2048 2>/dev/null; sleep 11; } && ` +
+		script := labeled + `fake_transfer() { dd if=/dev/zero of="$1" bs=1024 count=2048 2>/dev/null; sleep 11; } && ` +
 			`download_with_progress "$DEST" "" fake_transfer "$DEST"`
 		cmd := exec.Command("sh", "-c", script)
 		cmd.Env = append(os.Environ(), "DEST="+dest)
@@ -183,7 +195,7 @@ func TestDownloadWithProgress(t *testing.T) {
 	// catches a guard keyed on a stride wider than one poll.
 	t.Run("one line per interval across a long transfer", func(t *testing.T) {
 		dest := filepath.Join(t.TempDir(), "model.partial")
-		script := downloadProgressFn + `fake_transfer() { dd if=/dev/zero of="$1" bs=1024 count=2048 2>/dev/null; sleep 6.5; } && ` +
+		script := labeled + `fake_transfer() { dd if=/dev/zero of="$1" bs=1024 count=2048 2>/dev/null; sleep 6.5; } && ` +
 			`download_with_progress "$DEST" "" fake_transfer "$DEST"`
 		cmd := exec.Command("sh", "-c", script)
 		cmd.Env = append(os.Environ(), "DEST="+dest, "PROGRESS_INTERVAL=1")
@@ -209,10 +221,10 @@ func TestDownloadWithProgress(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// The shim rejects only the sub-second form the helper now asks for;
+		// The shim rejects only the sub-second form the helper asks for;
 		// the stub transfer keeps a whole-second sleep of its own.
 		dest := filepath.Join(t.TempDir(), "model.partial")
-		script := downloadProgressFn +
+		script := labeled +
 			`fake_transfer() { dd if=/dev/zero of="$1" bs=1024 count=2048 2>/dev/null; "$REAL_SLEEP" 2; } && ` +
 			`download_with_progress "$DEST" "" fake_transfer "$DEST"`
 		cmd := exec.Command("sh", "-c", script)
@@ -235,6 +247,33 @@ func TestDownloadWithProgress(t *testing.T) {
 			t.Errorf("no progress line at all with a one-second fallback:\n%s", out)
 		}
 	})
+}
+
+// The serial command is in the template hash of every Model that stages, so the
+// tenths poll stays out of it: a golden can be regenerated without anyone noticing
+// that the release now restarts those Models' serving pods.
+func TestOnlyConcurrentStagingPollsInTenths(t *testing.T) {
+	for _, useCache := range []bool{false, true} {
+		for shape, serial := range map[string]string{
+			"multi-file":  buildMultiFileInitCommand(useCache, false, true, false, false, "IfNotPresent"),
+			"single-file": buildModelInitCommand(false, false, useCache, true, false, "IfNotPresent"),
+		} {
+			if strings.Contains(serial, "sleep 0.1") {
+				t.Errorf("serial %s command (useCache=%v) polls in tenths, which restarts every staging Model's pods on upgrade:\n%s", shape, useCache, serial)
+			}
+			if !strings.Contains(serial, downloadProgressFn) {
+				t.Errorf("serial %s command (useCache=%v) does not carry the serial helper:\n%s", shape, useCache, serial)
+			}
+		}
+		// The pool's own polls are in tenths too, so look for the helper itself.
+		concurrent := buildMultiFileInitCommand(useCache, false, true, false, true, "IfNotPresent")
+		if !strings.Contains(concurrent, downloadProgressLabeledFn) {
+			t.Errorf("concurrent command (useCache=%v) does not carry the labeled helper:\n%s", useCache, concurrent)
+		}
+	}
+	if !strings.Contains(downloadProgressLabeledFn, "sleep 0.1") {
+		t.Errorf("labeled download_with_progress lost the tenths poll (#2386):\n%s", downloadProgressLabeledFn)
+	}
 }
 
 // slowOrigin serves a fixed body but holds the connection open after the first

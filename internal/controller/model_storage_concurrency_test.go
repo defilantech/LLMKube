@@ -1171,8 +1171,7 @@ func TestSizeProbeDefaultsToThirtySeconds(t *testing.T) {
 
 // spec.downloadConcurrency reaches the downloader only above 1: at 1 or unset
 // the init container keeps the serial command and env, so the field adds no
-// template change of its own. The downloader's own change still moves every
-// staging template, as the cache upgrade note records.
+// template change of its own.
 func TestDownloadConcurrencyWiring(t *testing.T) {
 	newModel := func(concurrency int32) *inferencev1alpha1.Model {
 		return &inferencev1alpha1.Model{
