@@ -317,6 +317,11 @@ prometheus:
       prometheus: kube-prometheus-stack-prometheus
     # Scrape interval
     interval: 30s
+    # Target and sample relabelings, run after the chart's own. Rewriting or
+    # dropping job, service, namespace, model or runtime breaks the alerts and
+    # dashboards that select on them
+    relabelings: []
+    metricRelabelings: []
 
   # Enable PodMonitor for router-proxy metrics (llmkube_router_* on the
   # --metrics-bind-address listener)
@@ -327,6 +332,10 @@ prometheus:
       prometheus: kube-prometheus-stack-prometheus
     # Scrape interval
     interval: 30s
+    # Target and sample relabelings, run after the chart's own. Rewriting or
+    # dropping job, router or namespace breaks the queries that select on them
+    relabelings: []
+    metricRelabelings: []
 
   # Enable PrometheusRule for alerts
   prometheusRule:

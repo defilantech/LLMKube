@@ -37,6 +37,13 @@ spec:
           targetLabel: model
         - sourceLabels: [__meta_kubernetes_pod_label_inference_llmkube_dev_runtime]
           targetLabel: runtime
+        {{- with .Values.prometheus.inferencePodMonitor.relabelings }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.prometheus.inferencePodMonitor.metricRelabelings }}
+      metricRelabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
   namespaceSelector:
     any: true
 {{- end }}

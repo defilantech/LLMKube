@@ -241,7 +241,15 @@
               "type": "object",
               "additionalProperties": { "type": "string" }
             },
-            "interval": { "type": "string" }
+            "interval": { "type": "string" },
+            "relabelings": {
+              "type": "array",
+              "items": { "type": "object" }
+            },
+            "metricRelabelings": {
+              "type": "array",
+              "items": { "type": "object" }
+            }
           }
         },
         "routerPodMonitor": {
@@ -253,7 +261,15 @@
               "type": "object",
               "additionalProperties": { "type": "string" }
             },
-            "interval": { "type": "string" }
+            "interval": { "type": "string" },
+            "relabelings": {
+              "type": "array",
+              "items": { "type": "object" }
+            },
+            "metricRelabelings": {
+              "type": "array",
+              "items": { "type": "object" }
+            }
           }
         },
         "prometheusRule": {
