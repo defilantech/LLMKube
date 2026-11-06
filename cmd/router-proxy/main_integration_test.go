@@ -339,8 +339,10 @@ func TestRouterProxyBinaryReadyzRequiresListener(t *testing.T) {
 			t.Errorf("/readyz without /proc = %d %s, want 200 (fail open)", code, body)
 		}
 		stop()
-		if !strings.Contains(logs.String(), "cannot read TCP socket table") {
-			t.Errorf("no warning about the unreadable socket table in the logs:\n%s", logs.String())
+		for _, want := range []string{"cannot read TCP socket table", "required listeners not enforced; reporting ready"} {
+			if !strings.Contains(logs.String(), want) {
+				t.Errorf("logs do not contain %q:\n%s", want, logs.String())
+			}
 		}
 		return
 	}

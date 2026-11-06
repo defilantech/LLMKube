@@ -59,38 +59,45 @@ func TestListenerCheckerMissing(t *testing.T) {
 		ports     []uint16
 		tcp, tcp6 string
 		want      []uint16
+		wantState string
 		wantWarn  string
 	}{
 		{name: "LISTEN in tcp only", ports: []uint16{15008},
-			tcp: procNetFixture("tcp-listen-15008"), tcp6: procNetFixture("tcp6-no-listener")},
+			tcp: procNetFixture("tcp-listen-15008"), tcp6: procNetFixture("tcp6-no-listener"),
+			wantState: logPresent},
 		{name: "LISTEN in tcp6 only", ports: []uint16{15008},
-			tcp: procNetFixture("tcp-no-listener"), tcp6: procNetFixture("tcp6-listen-15008")},
+			tcp: procNetFixture("tcp-no-listener"), tcp6: procNetFixture("tcp6-listen-15008"),
+			wantState: logPresent},
 		{name: "ESTABLISHED on the port does not count", ports: []uint16{15008},
 			tcp: procNetFixture("tcp-established-15008"), tcp6: procNetFixture("tcp6-no-listener"),
-			want: []uint16{15008}},
+			want: []uint16{15008}, wantState: logMissing},
 		{name: "a different port in LISTEN does not count", ports: []uint16{15008},
 			tcp: procNetFixture("tcp-listen-15006"), tcp6: procNetFixture("tcp6-no-listener"),
-			want: []uint16{15008}},
+			want: []uint16{15008}, wantState: logMissing},
 		{name: "only the ports without a listener are missing", ports: []uint16{15008, 15006, 15008},
 			tcp: procNetFixture("tcp-listen-15006"), tcp6: procNetFixture("tcp6-no-listener"),
-			want: []uint16{15008}},
+			want: []uint16{15008}, wantState: logMissing},
 		{name: "absent tcp6 is an empty table, not a read failure", ports: []uint16{15008},
 			tcp: procNetFixture("tcp-no-listener"), tcp6: notExist,
-			want: []uint16{15008}},
+			want: []uint16{15008}, wantState: logMissing},
 		{name: "absent tcp6 still finds the tcp listener", ports: []uint16{15008},
-			tcp: procNetFixture("tcp-listen-15008"), tcp6: notExist},
+			tcp: procNetFixture("tcp-listen-15008"), tcp6: notExist,
+			wantState: logPresent},
 		{name: "unreadable tcp reports ready", ports: []uint16{15008},
 			tcp: unreadable, tcp6: procNetFixture("tcp6-no-listener"),
-			wantWarn: unreadable},
+			wantState: logNotEnforced, wantWarn: unreadable},
 		{name: "absent tcp reports ready", ports: []uint16{15008},
 			tcp: notExist, tcp6: procNetFixture("tcp6-no-listener"),
-			wantWarn: notExist},
+			wantState: logNotEnforced, wantWarn: notExist},
 		{name: "unreadable tcp6 reports ready", ports: []uint16{15008},
 			tcp: procNetFixture("tcp-no-listener"), tcp6: unreadable,
-			wantWarn: unreadable},
+			wantState: logNotEnforced, wantWarn: unreadable},
 		{name: "unrecognized header reports ready", ports: []uint16{15008},
 			tcp: badHeader, tcp6: procNetFixture("tcp6-no-listener"),
-			wantWarn: badHeader},
+			wantState: logNotEnforced, wantWarn: badHeader},
+		{name: "a port found in the readable table is present", ports: []uint16{15008},
+			tcp: procNetFixture("tcp-listen-15008"), tcp6: unreadable,
+			wantState: logPresent, wantWarn: unreadable},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var logs bytes.Buffer
@@ -119,9 +126,29 @@ func TestListenerCheckerMissing(t *testing.T) {
 			case tc.wantWarn == "" && warns != 0:
 				t.Errorf("got %d read-failure warnings, want none:\n%s", warns, logs.String())
 			}
+
+			for _, state := range []string{logPresent, logMissing, logNotEnforced} {
+				want := 0
+				if state == tc.wantState {
+					want = 1
+				}
+				if n := strings.Count(logs.String(), state); n != want {
+					t.Errorf("%q logged %d times over two checks, want %d:\n%s", state, n, want, logs.String())
+				}
+			}
+			if tc.wantState == logNotEnforced && !strings.Contains(logs.String(), "unreadable=["+tc.wantWarn+"]") {
+				t.Errorf("%q does not name the unreadable table %s:\n%s", logNotEnforced, tc.wantWarn, logs.String())
+			}
 		})
 	}
 }
+
+// The transition lines a listenerChecker logs.
+const (
+	logPresent     = "required listeners present; reporting ready"
+	logMissing     = "required listeners missing; reporting not ready"
+	logNotEnforced = "required listeners not enforced; reporting ready"
+)
 
 // TestListenerCheckerLogsRecovery pins that a table that becomes readable
 // again is logged once, so the warning has a matching all-clear.
@@ -148,8 +175,10 @@ func TestListenerCheckerLogsRecovery(t *testing.T) {
 	if n := strings.Count(logs.String(), "TCP socket table readable again"); n != 1 {
 		t.Errorf("recovery logged %d times, want 1:\n%s", n, logs.String())
 	}
+	if n := strings.Count(logs.String(), logPresent); n != 1 {
+		t.Errorf("%q logged %d times after the listener was seen, want 1:\n%s", logPresent, n, logs.String())
+	}
 }
-
 // TestProxyReadyz drives GET /readyz through the mux Mount builds, the path a
 // kubelet probe takes.
 func TestProxyReadyz(t *testing.T) {

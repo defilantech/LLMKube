@@ -49,29 +49,58 @@ type procNetTable struct {
 	absentIsEmpty bool
 }
 
+// listenerState is what a check concluded, for transition-only logging.
+type listenerState int
+
+const (
+	listenersUnchecked listenerState = iota
+	listenersPresent
+	listenersMissing
+	// listenersNotEnforced: a table could not be read and a port was not found
+	// in the tables that could, so the check reports ready without having seen
+	// the port.
+	listenersNotEnforced
+)
+
+// listenerCheck is the outcome of one scan of the socket tables.
+type listenerCheck struct {
+	state listenerState
+	// notFound holds the required ports no readable table listed.
+	notFound []uint16
+	// unreadable maps each table that failed to read to its error.
+	unreadable map[string]error
+}
+
 // listenerChecker reports which required TCP ports have no LISTEN socket in
 // the pod's network namespace. It fails open: when a table cannot be read and
 // a port was not found in the tables that could, the port is not reported
 // missing, because a /proc problem is not a reason to take a replica out.
 type listenerChecker struct {
 	ports  []uint16
+	want   map[uint16]bool
 	tables []procNetTable
 	logger *slog.Logger
 
-	mu sync.Mutex
-	// unreadable holds the tables whose last read failed, so a failure is
-	// logged when it starts and when it clears, not on every probe.
-	unreadable map[string]bool
-	// lastMissing is the missing set the previous check reported, for the
-	// same transition-only logging.
+	mu     sync.Mutex
+	result []uint16
+	// unreadable and last hold what was last logged, so a state is logged
+	// when it starts, not on every check.
+	unreadable  map[string]bool
+	last        listenerState
 	lastMissing string
 }
 
 func newListenerChecker(ports []uint16, tcpPath, tcp6Path string, logger *slog.Logger) *listenerChecker {
 	sorted := slices.Clone(ports)
 	slices.Sort(sorted)
+	sorted = slices.Compact(sorted)
+	want := make(map[uint16]bool, len(sorted))
+	for _, p := range sorted {
+		want[p] = true
+	}
 	return &listenerChecker{
-		ports: slices.Compact(sorted),
+		ports: sorted,
+		want:  want,
 		tables: []procNetTable{
 			{path: tcpPath},
 			{path: tcp6Path, absentIsEmpty: true},
@@ -84,54 +113,81 @@ func newListenerChecker(ports []uint16, tcpPath, tcp6Path string, logger *slog.L
 // missing returns the required ports with no LISTEN socket, in ascending
 // order, or nil when every port listens or a table could not be read.
 func (c *listenerChecker) missing() []uint16 {
-	want := make(map[uint16]bool, len(c.ports))
-	for _, p := range c.ports {
-		want[p] = true
-	}
-	found := make(map[uint16]bool, len(c.ports))
-
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.record(c.check())
+	return c.result
+}
 
-	anyUnreadable := false
+// check scans every table.
+func (c *listenerChecker) check() listenerCheck {
+	found := make(map[uint16]bool, len(c.ports))
+	res := listenerCheck{unreadable: map[string]error{}}
 	for _, t := range c.tables {
-		err := scanListeners(t.path, want, found)
+		err := scanListeners(t.path, c.want, found)
 		if err != nil && t.absentIsEmpty && errors.Is(err, fs.ErrNotExist) {
 			err = nil
 		}
+		if err != nil {
+			res.unreadable[t.path] = err
+		}
+	}
+	for _, p := range c.ports {
+		if !found[p] {
+			res.notFound = append(res.notFound, p)
+		}
+	}
+	switch {
+	case len(res.notFound) == 0:
+		res.state = listenersPresent
+	case len(res.unreadable) > 0:
+		res.state = listenersNotEnforced
+	default:
+		res.state = listenersMissing
+	}
+	return res
+}
+
+// record stores res and logs what changed since the last check. Callers hold
+// c.mu.
+func (c *listenerChecker) record(res listenerCheck) {
+	c.result = nil
+	if res.state == listenersMissing {
+		c.result = res.notFound
+	}
+
+	for _, t := range c.tables {
+		err, failed := res.unreadable[t.path]
 		switch {
-		case err != nil:
-			anyUnreadable = true
-			if !c.unreadable[t.path] {
-				c.unreadable[t.path] = true
-				c.logger.Warn("cannot read TCP socket table; required listeners are not enforced until it is readable",
-					"path", t.path, "error", err)
-			}
-		case c.unreadable[t.path]:
+		case failed && !c.unreadable[t.path]:
+			c.unreadable[t.path] = true
+			c.logger.Warn("cannot read TCP socket table", "path", t.path, "error", err)
+		case !failed && c.unreadable[t.path]:
 			delete(c.unreadable, t.path)
 			c.logger.Info("TCP socket table readable again", "path", t.path)
 		}
 	}
 
-	var missing []uint16
-	for _, p := range c.ports {
-		if !found[p] {
-			missing = append(missing, p)
+	missingKey := fmt.Sprint(res.notFound)
+	if res.state == c.last && (res.state != listenersMissing || missingKey == c.lastMissing) {
+		return
+	}
+	c.last = res.state
+	c.lastMissing = missingKey
+	switch res.state {
+	case listenersPresent:
+		c.logger.Info("required listeners present; reporting ready", "ports", c.ports)
+	case listenersMissing:
+		c.logger.Warn("required listeners missing; reporting not ready", "ports", res.notFound)
+	case listenersNotEnforced:
+		unreadable := make([]string, 0, len(res.unreadable))
+		for path := range res.unreadable {
+			unreadable = append(unreadable, path)
 		}
+		slices.Sort(unreadable)
+		c.logger.Warn("required listeners not enforced; reporting ready",
+			"ports", res.notFound, "unreadable", unreadable)
 	}
-	if anyUnreadable {
-		missing = nil
-	}
-
-	if key := fmt.Sprint(missing); key != c.lastMissing {
-		c.lastMissing = key
-		if len(missing) > 0 {
-			c.logger.Warn("required listeners missing; reporting not ready", "ports", missing)
-		} else {
-			c.logger.Info("required listeners present; reporting ready", "ports", c.ports)
-		}
-	}
-	return missing
 }
 
 // scanListeners marks in found every port in want that has a LISTEN entry in
