@@ -215,12 +215,11 @@ func (r *ModelRouterReconciler) newRouterDeployment(
 	// under a dedicated ServiceAccount bound to the Role reconcileRouterActivationRBAC
 	// provisions; other routers keep the namespace default SA and no API access.
 	serviceAccountName := ""
-	env := []corev1.EnvVar{}
 	if hasPools || routerNeedsEndpointWatch(mr) {
 		serviceAccountName = routerProxyResourceName(mr.Name)
-		env = append(env, corev1.EnvVar{Name: "ROUTER_NAME", Value: mr.Name})
 	}
-	env = append(env, r.RouterProxyTracingEnv...)
+	// Every proxy labels its metrics with this router's name, whatever else it does.
+	env := append([]corev1.EnvVar{{Name: "ROUTER_NAME", Value: mr.Name}}, r.RouterProxyTracingEnv...)
 
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{

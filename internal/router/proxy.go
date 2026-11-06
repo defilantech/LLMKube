@@ -96,8 +96,8 @@ func WithDispatcherOptions(opts ...DispatcherOption) ProxyOption {
 // it live endpoint sets.
 func (p *Proxy) Dispatcher() *Dispatcher { return p.disp }
 
-// WithRouterName sets the router name used in metric labels and OTel
-// span attributes. Defaults to "default" when omitted.
+// WithRouterName sets the router name used in metric labels. Defaults to
+// "default" when omitted.
 func WithRouterName(name string) ProxyOption {
 	return func(p *Proxy) { p.routerName = name }
 }

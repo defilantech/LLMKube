@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"syscall"
@@ -172,6 +173,101 @@ func TestRouterProxyBinarySmoke(t *testing.T) {
 
 // waitForReady polls the given URL until it returns 2xx or the timeout
 // expires.
+// TestRouterProxyBinaryLabelsMetricsWithRouterName runs the real binary because
+// the bug it pins lived in main's wiring: in-process tests set the name on the
+// Proxy directly, so they passed while no running proxy had it (#2455).
+func TestRouterProxyBinaryLabelsMetricsWithRouterName(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in -short mode")
+	}
+
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "router-proxy")
+	repoRoot, err := findRepoRoot()
+	if err != nil {
+		t.Fatalf("locate repo root: %v", err)
+	}
+	build := exec.Command("go", "build", "-o", binPath, "./cmd/router-proxy")
+	build.Dir = repoRoot
+	build.Env = append(os.Environ(), "CGO_ENABLED=0")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("go build failed: %v\n%s", err, out)
+	}
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"ok"}}]}`)
+	}))
+	defer upstream.Close()
+
+	configPath := filepath.Join(dir, "config.json")
+	cfgBytes, _ := json.Marshal(map[string]any{
+		"backends":     []map[string]any{{"name": "local", "tier": "local", "address": upstream.URL}},
+		"defaultRoute": "local",
+	})
+	if err := os.WriteFile(configPath, cfgBytes, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	routerLabel := regexp.MustCompile(`(?m)^llmkube_router_\w+\{[^}]*\brouter="([^"]*)"`)
+	for _, tc := range []struct{ name, env, want string }{
+		{name: "the name the controller injects", env: "my-router", want: "my-router"},
+		{name: "no name set", env: "", want: "default"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			listen := fmt.Sprintf("127.0.0.1:%d", pickFreePort(t))
+			metricsAddr := fmt.Sprintf("127.0.0.1:%d", pickFreePort(t))
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, binPath,
+				"--config", configPath, "--listen", listen,
+				"--metrics-bind-address", metricsAddr, "--log-format", "text")
+			cmd.Env = append(os.Environ(), "ROUTER_NAME="+tc.env)
+			if err := cmd.Start(); err != nil {
+				t.Fatalf("start router-proxy: %v", err)
+			}
+			t.Cleanup(func() {
+				_ = cmd.Process.Kill()
+				_ = cmd.Wait()
+			})
+			if err := waitForReady("http://"+listen+"/health", 10*time.Second); err != nil {
+				t.Fatalf("router-proxy never became ready: %v", err)
+			}
+
+			resp, err := http.Post("http://"+listen+"/v1/chat/completions",
+				"application/json", strings.NewReader(`{"model":"any"}`))
+			if err != nil {
+				t.Fatalf("POST /v1/chat/completions: %v", err)
+			}
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+
+			// The counter is written as the handler returns, just after the client's EOF.
+			var scrape string
+			deadline := time.Now().Add(5 * time.Second)
+			for !strings.Contains(scrape, "llmkube_router_requests_total{") {
+				if time.Now().After(deadline) {
+					t.Fatalf("no llmkube_router_requests_total series after a request:\n%s", scrape)
+				}
+				time.Sleep(50 * time.Millisecond)
+				metricsResp, err := http.Get("http://" + metricsAddr + "/metrics")
+				if err != nil {
+					continue
+				}
+				body, _ := io.ReadAll(metricsResp.Body)
+				_ = metricsResp.Body.Close()
+				scrape = string(body)
+			}
+
+			for _, m := range routerLabel.FindAllStringSubmatch(scrape, -1) {
+				if m[1] != tc.want {
+					t.Errorf("series with router=%q, want %q: %s", m[1], tc.want, m[0])
+				}
+			}
+		})
+	}
+}
+
 func waitForReady(url string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {

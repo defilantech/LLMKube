@@ -48,6 +48,9 @@ spec:
         - :9090
         - --log-format
         - json
+        env:
+        - name: ROUTER_NAME
+          value: coding-router
         envFrom:
         - secretRef:
             name: anthropic-key
