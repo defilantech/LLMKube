@@ -545,6 +545,11 @@ func TestRunCatalogInfo(t *testing.T) {
 	if !strings.Contains(output, "Resource Requirements") {
 		t.Error("output should contain resource requirements")
 	}
+	for _, want := range []string{"Context Size:    8,192 tokens", "VRAM Estimate:   7-8GB"} {
+		if !strings.Contains(output, want) {
+			t.Errorf("catalog info missing %q", want)
+		}
+	}
 }
 
 func TestRunCatalogInfoNonexistent(t *testing.T) {
