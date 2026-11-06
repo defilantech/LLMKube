@@ -60,8 +60,8 @@ func TestRouterProxyTracingEnv(t *testing.T) {
 			if got := otelEnv(env); !reflect.DeepEqual(got, testTracingEnv) {
 				t.Errorf("proxy OTEL_* env = %+v, want %+v", got, testTracingEnv)
 			}
-			if hasPools && envValue(env, "ROUTER_NAME") != mr.Name {
-				t.Errorf("pooled proxy lost ROUTER_NAME beside the tracing env: %+v", env)
+			if envValue(env, "ROUTER_NAME") != mr.Name {
+				t.Errorf("proxy lost ROUTER_NAME beside the tracing env: %+v", env)
 			}
 		})
 	}

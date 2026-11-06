@@ -155,6 +155,7 @@ func main() {
 	defer cancelBase()
 
 	proxyOpts := []router.ProxyOption{
+		router.WithRouterName(routerNameFromEnv()),
 		router.WithDispatcherOptions(
 			router.WithQuarantineDuration(*quarantineDuration),
 			router.WithResponseHeaderTimeout(*responseHeaderTimeout),
@@ -366,10 +367,13 @@ func newActivator(baseCtx context.Context, logger *slog.Logger) (*router.Activat
 }
 
 // routerNameFromEnv resolves the router name used in metric labels. The
-// controller injects ROUTER_NAME into the proxy Deployment; absent it, the
-// Activator falls back to "default".
+// controller injects ROUTER_NAME into the proxy Deployment; absent it, as when
+// the binary runs on its own, every series says "default".
 func routerNameFromEnv() string {
-	return os.Getenv("ROUTER_NAME")
+	if name := os.Getenv("ROUTER_NAME"); name != "" {
+		return name
+	}
+	return "default"
 }
 
 // newMetricsHandler serves internal/metrics' RouterRegistry plus

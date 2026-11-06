@@ -708,7 +708,8 @@ slow?" needs upstream metrics, not the proxy log.
 The failure outcomes carry the underlying `error`. The same value labels
 `llmkube_router_requests_total`, which counts every request the proxy
 answers on an inference endpoint, and `llmkube_router_request_duration_seconds` observes each of
-them. For a request no backend served, the `backend` label is the last
+them. The `router` label on these and the other `llmkube_router_*` series is the ModelRouter's name.
+For a request no backend served, the `backend` label is the last
 backend the proxy tried, and empty when it tried none (`bad_request`,
 `no_route`, `fail_closed`, `budget_exceeded`). `llmkube_router_backend_health` is
 refreshed for every backend a request tries, and

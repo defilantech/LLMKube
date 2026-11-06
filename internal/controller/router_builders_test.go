@@ -1770,9 +1770,9 @@ func strSliceHas(ss []string, want string) bool {
 }
 
 // TestNewRouterDeploymentActivationWiring verifies the deployment activation
-// wiring (gap 3): with pools the proxy container gets --enable-activation, the
-// dedicated ServiceAccount, and the ROUTER_NAME env; without pools it gets none
-// of them.
+// wiring (gap 3): with pools the proxy container gets --enable-activation and
+// the dedicated ServiceAccount; without pools it gets neither. Either way it gets
+// the ROUTER_NAME env, because every proxy labels its metrics with it (#2455).
 func TestNewRouterDeploymentActivationWiring(t *testing.T) {
 	mr := canonicalModelRouter()
 	r := &ModelRouterReconciler{RouterProxyImage: "ghcr.io/test/router-proxy:v1"}
@@ -1799,8 +1799,8 @@ func TestNewRouterDeploymentActivationWiring(t *testing.T) {
 		t.Errorf("unpooled ServiceAccountName = %q, want empty (namespace default)",
 			noPools.Spec.Template.Spec.ServiceAccountName)
 	}
-	if envValue(nc.Env, "ROUTER_NAME") != "" {
-		t.Error("unpooled deployment must not set ROUTER_NAME env")
+	if got := envValue(nc.Env, "ROUTER_NAME"); got != mr.Name {
+		t.Errorf("unpooled ROUTER_NAME env = %q, want %q", got, mr.Name)
 	}
 }
 
