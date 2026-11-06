@@ -2048,6 +2048,23 @@ spec:
                       probe load on genuinely-down upstreams. Tests can shrink this to
                       sub-second to verify recovery without sleeping the full default.
                     type: string
+                  readinessRequiredListeners:
+                    description: |-
+                      ReadinessRequiredListeners lists TCP ports that must have a LISTEN
+                      socket in the proxy pod's network namespace before the replica is
+                      Ready, for example [15008] for Istio ambient's HBONE inbound port, so a
+                      replica the mesh cannot reach leaves the Service endpoints. When set,
+                      the readiness probe moves to /readyz; liveness stays on /health. If the
+                      proxy cannot read /proc/net/tcp it reports Ready and logs a warning.
+                      Unset renders nothing on the pod template.
+                    items:
+                      format: int32
+                      maximum: 65535
+                      minimum: 1
+                      type: integer
+                    maxItems: 16
+                    type: array
+                    x-kubernetes-list-type: set
                   replicas:
                     description: |-
                       Replicas is the desired number of router-proxy pods. Defaults to 1.

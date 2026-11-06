@@ -897,6 +897,20 @@ type RouterProxySpec struct {
 	// +optional
 	DrainTimeout *metav1.Duration `json:"drainTimeout,omitempty"`
 
+	// ReadinessRequiredListeners lists TCP ports that must have a LISTEN
+	// socket in the proxy pod's network namespace before the replica is
+	// Ready, for example [15008] for Istio ambient's HBONE inbound port, so a
+	// replica the mesh cannot reach leaves the Service endpoints. When set,
+	// the readiness probe moves to /readyz; liveness stays on /health. If the
+	// proxy cannot read /proc/net/tcp it reports Ready and logs a warning.
+	// Unset renders nothing on the pod template.
+	// +kubebuilder:validation:MaxItems=16
+	// +kubebuilder:validation:items:Minimum=1
+	// +kubebuilder:validation:items:Maximum=65535
+	// +listType=set
+	// +optional
+	ReadinessRequiredListeners []int32 `json:"readinessRequiredListeners,omitempty"`
+
 	// NodeSelector pins the router-proxy pod to nodes matching these labels.
 	// Use it when the proxy image is only present on specific nodes (for
 	// example a node-local registry) or to co-locate the proxy with its
