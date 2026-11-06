@@ -66,6 +66,13 @@ type Proxy struct {
 	budgetGaugeRepublishes atomic.Int64
 	// teamOverflowLogged makes the first team-key overflow log once.
 	teamOverflowLogged atomic.Bool
+	// requiredListeners are the ports /readyz requires a LISTEN socket on,
+	// read from procNetTCP and procNetTCP6. listeners is nil when none are
+	// required.
+	requiredListeners []uint16
+	procNetTCP        string
+	procNetTCP6       string
+	listeners         *listenerChecker
 }
 
 // budgetGaugeKey identifies one published token budget gauge series.
@@ -110,6 +117,13 @@ func WithActivator(a *Activator) ProxyOption {
 	return func(p *Proxy) { p.activator = a }
 }
 
+// WithReadinessRequiredListeners makes GET /readyz answer 503 while any of
+// ports has no LISTEN socket in the pod's network namespace. Without it
+// /readyz always answers 200.
+func WithReadinessRequiredListeners(ports []uint16) ProxyOption {
+	return func(p *Proxy) { p.requiredListeners = ports }
+}
+
 // NewProxy constructs a Proxy from a loaded Config.
 func NewProxy(cfg *Config, logger *slog.Logger, opts ...ProxyOption) *Proxy {
 	if logger == nil {
@@ -124,6 +138,9 @@ func NewProxy(cfg *Config, logger *slog.Logger, opts ...ProxyOption) *Proxy {
 		budgets:    NewBudgetStore(compileBudgetRules(cfg.Policy.Budgets), time.Now),
 		randN:      defaultRandInt64N,
 		shadows:    newShadower(maxShadowInFlight),
+
+		procNetTCP:  defaultProcNetTCP,
+		procNetTCP6: defaultProcNetTCP6,
 	}
 	// Config.Validate rejects an unparseable entry, so the error is not
 	// checked again here.
@@ -136,6 +153,9 @@ func NewProxy(cfg *Config, logger *slog.Logger, opts ...ProxyOption) *Proxy {
 	}
 	for _, opt := range opts {
 		opt(p)
+	}
+	if len(p.requiredListeners) > 0 {
+		p.listeners = newListenerChecker(p.requiredListeners, p.procNetTCP, p.procNetTCP6, logger)
 	}
 	p.disp.logger = logger
 	p.disp.onPollTransition = func(backend string) {
@@ -193,7 +213,7 @@ func compileBudgetRules(budgets []Budget) []BudgetRule {
 	return rules
 }
 
-// Mount wires up the OpenAI-compatible endpoints plus /health on the
+// Mount wires up the OpenAI-compatible endpoints plus /health and /readyz on the
 // given mux. Callers attach the mux to an http.Server.
 func (p *Proxy) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/chat/completions", p.handleCompletion("/v1/chat/completions"))
@@ -207,6 +227,7 @@ func (p *Proxy) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/models", p.handleModels)
 	mux.HandleFunc("GET /health", p.handleHealth)
 	mux.HandleFunc("GET /healthz", p.handleHealth)
+	mux.HandleFunc("GET /readyz", p.handleReady)
 }
 
 // handleHealth always returns 200. The Kubernetes liveness probe uses
@@ -216,6 +237,27 @@ func (p *Proxy) Mount(mux *http.ServeMux) {
 func (p *Proxy) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write([]byte(`{"status":"ok"}`))
+}
+
+// handleReady backs the readiness probe of a router that sets
+// spec.proxy.readinessRequiredListeners: 503 naming the ports while a
+// required port has no LISTEN socket, else 200. Like /health it ignores
+// backend health.
+func (p *Proxy) handleReady(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	var missing []uint16
+	if p.listeners != nil {
+		missing = p.listeners.missing()
+	}
+	if len(missing) == 0 {
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+		return
+	}
+	w.WriteHeader(http.StatusServiceUnavailable)
+	_ = json.NewEncoder(w).Encode(struct {
+		Status           string   `json:"status"`
+		MissingListeners []uint16 `json:"missingListeners"`
+	}{Status: "not ready", MissingListeners: missing})
 }
 
 // handleModels returns an OpenAI-compatible /v1/models payload listing

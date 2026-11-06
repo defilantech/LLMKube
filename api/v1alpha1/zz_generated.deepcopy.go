@@ -2542,6 +2542,11 @@ func (in *RouterProxySpec) DeepCopyInto(out *RouterProxySpec) {
 		*out = new(v1.Duration)
 		**out = **in
 	}
+	if in.ReadinessRequiredListeners != nil {
+		in, out := &in.ReadinessRequiredListeners, &out.ReadinessRequiredListeners
+		*out = make([]int32, len(*in))
+		copy(*out, *in)
+	}
 	if in.NodeSelector != nil {
 		in, out := &in.NodeSelector, &out.NodeSelector
 		*out = make(map[string]string, len(*in))
