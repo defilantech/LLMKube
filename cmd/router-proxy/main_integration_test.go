@@ -359,8 +359,17 @@ func TestRouterProxyBinaryReadyzRequiresListener(t *testing.T) {
 		t.Fatalf("listen on the required port: %v", err)
 	}
 	defer func() { _ = l.Close() }()
-	if code, body := get("/readyz"); code != http.StatusOK {
-		t.Errorf("/readyz with a listener on %d = %d %s, want 200", required, code, body)
+	// /readyz caches its result for about a second.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		code, body := get("/readyz")
+		if code == http.StatusOK {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("/readyz with a listener on %d = %d %s, want 200", required, code, body)
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 }
 

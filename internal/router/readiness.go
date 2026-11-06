@@ -27,6 +27,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // The kernel's TCP socket tables for the reading process's network namespace,
@@ -39,6 +40,11 @@ const (
 
 // tcpStateListen is TCP_LISTEN in the st column of /proc/net/tcp{,6}.
 const tcpStateListen = "0A"
+
+// listenerCheckTTL bounds how often /readyz rescans the socket tables. The
+// endpoint is reachable by any pod that can reach the proxy, so callers must
+// not be able to drive a scan per request.
+const listenerCheckTTL = time.Second
 
 // procNetTable is one /proc/net/tcp-format file. absentIsEmpty marks a table
 // the kernel omits when the protocol is compiled out or disabled at boot
@@ -80,9 +86,18 @@ type listenerChecker struct {
 	want   map[uint16]bool
 	tables []procNetTable
 	logger *slog.Logger
+	ttl    time.Duration
+	now    func() time.Time
+	scan   func(path string, want, found map[uint16]bool) error
 
-	mu     sync.Mutex
-	result []uint16
+	mu sync.Mutex
+	// result and checkedAt cache the last check for ttl.
+	result    []uint16
+	checkedAt time.Time
+	checked   bool
+	// inflight is closed when the running check finishes, so concurrent
+	// callers wait for it instead of scanning again.
+	inflight chan struct{}
 	// unreadable and last hold what was last logged, so a state is logged
 	// when it starts, not on every check.
 	unreadable  map[string]bool
@@ -106,25 +121,51 @@ func newListenerChecker(ports []uint16, tcpPath, tcp6Path string, logger *slog.L
 			{path: tcp6Path, absentIsEmpty: true},
 		},
 		logger:     logger,
+		ttl:        listenerCheckTTL,
+		now:        time.Now,
+		scan:       scanListeners,
 		unreadable: map[string]bool{},
 	}
 }
 
 // missing returns the required ports with no LISTEN socket, in ascending
-// order, or nil when every port listens or a table could not be read.
+// order, or nil when every port listens or a table could not be read. A result
+// younger than ttl is reused, and callers that arrive while a check runs share
+// its result. The returned slice must not be modified.
 func (c *listenerChecker) missing() []uint16 {
 	c.mu.Lock()
+	if c.checked && c.now().Sub(c.checkedAt) < c.ttl {
+		defer c.mu.Unlock()
+		return c.result
+	}
+	if ch := c.inflight; ch != nil {
+		c.mu.Unlock()
+		<-ch
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return c.result
+	}
+	ch := make(chan struct{})
+	c.inflight = ch
+	c.mu.Unlock()
+
+	res := c.check()
+
+	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.record(c.check())
+	c.record(res)
+	c.inflight = nil
+	close(ch)
 	return c.result
 }
 
-// check scans every table.
+// check scans every table. It takes no lock: want is read-only after
+// construction.
 func (c *listenerChecker) check() listenerCheck {
 	found := make(map[uint16]bool, len(c.ports))
 	res := listenerCheck{unreadable: map[string]error{}}
 	for _, t := range c.tables {
-		err := scanListeners(t.path, c.want, found)
+		err := c.scan(t.path, c.want, found)
 		if err != nil && t.absentIsEmpty && errors.Is(err, fs.ErrNotExist) {
 			err = nil
 		}
@@ -148,9 +189,11 @@ func (c *listenerChecker) check() listenerCheck {
 	return res
 }
 
-// record stores res and logs what changed since the last check. Callers hold
+// record caches res and logs what changed since the last check. Callers hold
 // c.mu.
 func (c *listenerChecker) record(res listenerCheck) {
+	c.checked = true
+	c.checkedAt = c.now()
 	c.result = nil
 	if res.state == listenersMissing {
 		c.result = res.notFound

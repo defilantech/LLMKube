@@ -26,7 +26,10 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // procNetFixture returns the path of a /proc/net/tcp{,6} fixture. Each one is
@@ -103,6 +106,7 @@ func TestListenerCheckerMissing(t *testing.T) {
 			var logs bytes.Buffer
 			logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
 			c := newListenerChecker(tc.ports, tc.tcp, tc.tcp6, logger)
+			c.ttl = 0
 
 			// Twice, so the transition-only logging is exercised too.
 			for range 2 {
@@ -158,6 +162,7 @@ func TestListenerCheckerLogsRecovery(t *testing.T) {
 	var logs bytes.Buffer
 	c := newListenerChecker([]uint16{15008}, tcp, procNetFixture("tcp6-no-listener"),
 		slog.New(slog.NewTextHandler(&logs, nil)))
+	c.ttl = 0
 
 	if got := c.missing(); got != nil {
 		t.Fatalf("missing() with tcp absent = %v, want nil", got)
@@ -179,6 +184,124 @@ func TestListenerCheckerLogsRecovery(t *testing.T) {
 		t.Errorf("%q logged %d times after the listener was seen, want 1:\n%s", logPresent, n, logs.String())
 	}
 }
+
+// fakeClock is a settable clock for the listener cache.
+type fakeClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func (f *fakeClock) now() time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.t
+}
+
+func (f *fakeClock) advance(d time.Duration) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.t = f.t.Add(d)
+}
+
+// countScans wraps c's table scan so a test can count how many times the
+// tables were read.
+func countScans(c *listenerChecker) *atomic.Int64 {
+	var n atomic.Int64
+	scan := c.scan
+	c.scan = func(path string, want, found map[uint16]bool) error {
+		n.Add(1)
+		return scan(path, want, found)
+	}
+	return &n
+}
+
+// TestListenerCheckerCachesWithinTTL pins the bound on /readyz cost: callers
+// within the TTL reuse the last result, and the first call after it rescans
+// and sees a change.
+func TestListenerCheckerCachesWithinTTL(t *testing.T) {
+	tcp := filepath.Join(t.TempDir(), "tcp")
+	copyFixture(t, "tcp-no-listener", tcp)
+	c := newListenerChecker([]uint16{15008}, tcp, procNetFixture("tcp6-no-listener"), slog.New(slog.DiscardHandler))
+	clock := &fakeClock{t: time.Unix(0, 0)}
+	c.now = clock.now
+	scans := countScans(c)
+
+	if got := c.missing(); !slices.Equal(got, []uint16{15008}) {
+		t.Fatalf("first missing() = %v, want [15008]", got)
+	}
+	copyFixture(t, "tcp-listen-15008", tcp)
+	clock.advance(listenerCheckTTL - time.Millisecond)
+	if got := c.missing(); !slices.Equal(got, []uint16{15008}) {
+		t.Errorf("missing() within the TTL = %v, want the cached [15008]", got)
+	}
+	if n := scans.Load(); n != 2 {
+		t.Errorf("tables read %d times for two calls within the TTL, want 2 (one check)", n)
+	}
+
+	clock.advance(time.Millisecond)
+	if got := c.missing(); got != nil {
+		t.Errorf("missing() after the TTL = %v, want nil now that 15008 listens", got)
+	}
+	if n := scans.Load(); n != 4 {
+		t.Errorf("tables read %d times after the TTL, want 4 (two checks)", n)
+	}
+}
+
+// TestListenerCheckerConcurrentCallersShareOneCheck pins that callers arriving
+// while a check runs wait for it rather than scanning again, and all get the
+// same answer. Run with -race.
+func TestListenerCheckerConcurrentCallersShareOneCheck(t *testing.T) {
+	c := newListenerChecker([]uint16{15008}, procNetFixture("tcp-listen-15006"),
+		procNetFixture("tcp6-no-listener"), slog.New(slog.DiscardHandler))
+	clock := &fakeClock{t: time.Unix(0, 0)}
+	c.now = clock.now
+	scans := countScans(c)
+	release := make(chan struct{})
+	scan := c.scan
+	c.scan = func(path string, want, found map[uint16]bool) error {
+		<-release
+		return scan(path, want, found)
+	}
+
+	const callers = 32
+	results := make([][]uint16, callers)
+	var started, done sync.WaitGroup
+	for i := range callers {
+		started.Add(1)
+		done.Add(1)
+		go func() {
+			defer done.Done()
+			started.Done()
+			results[i] = c.missing()
+		}()
+	}
+	started.Wait()
+	// Give every caller time to reach missing() before the scan finishes.
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	done.Wait()
+
+	for i, got := range results {
+		if !slices.Equal(got, []uint16{15008}) {
+			t.Errorf("caller %d got %v, want [15008]", i, got)
+		}
+	}
+	if n := scans.Load(); n != 2 {
+		t.Errorf("tables read %d times for %d concurrent callers, want 2 (one check)", n, callers)
+	}
+}
+
+func copyFixture(t *testing.T, name, dst string) {
+	t.Helper()
+	data, err := os.ReadFile(procNetFixture(name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dst, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // TestProxyReadyz drives GET /readyz through the mux Mount builds, the path a
 // kubelet probe takes.
 func TestProxyReadyz(t *testing.T) {
