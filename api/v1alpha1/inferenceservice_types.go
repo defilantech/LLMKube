@@ -160,6 +160,8 @@ const (
 // +kubebuilder:validation:XValidation:rule="!(has(self.persistence) && self.persistence == 'Ephemeral' && has(self.claimName))",message="claimName cannot be set when persistence is Ephemeral: one names a cache volume to use, the other declines to use any"
 // +kubebuilder:validation:XValidation:rule="!(has(self.storageClassName) && has(self.claimName))",message="storageClassName cannot be set together with claimName: the named claim is user-owned and its storage class was chosen when the claim itself was created"
 // +kubebuilder:validation:XValidation:rule="!(has(self.persistence) && self.persistence == 'Ephemeral' && has(self.storageClassName))",message="storageClassName cannot be set when persistence is Ephemeral: the weights land in an emptyDir and no PVC is created to class"
+// +kubebuilder:validation:XValidation:rule="!(has(self.size) && has(self.claimName))",message="size cannot be set together with claimName: the named claim is user-owned and its size was chosen when the claim itself was created"
+// +kubebuilder:validation:XValidation:rule="!(has(self.persistence) && self.persistence == 'Ephemeral' && has(self.size))",message="size cannot be set when persistence is Ephemeral: the weights land in an emptyDir and no PVC is created to size; bound the emptyDir with resources.ephemeralStorage instead"
 // +kubebuilder:validation:XValidation:rule="!(has(self.persistence) && self.persistence == 'Ephemeral' && has(self.prefetch) && self.prefetch)",message="prefetch cannot be set when persistence is Ephemeral: there is no cache volume to stage into"
 type ModelCacheSpec struct {
 	// Persistence selects whether weights survive a Pod restart.
@@ -235,6 +237,31 @@ type ModelCacheSpec struct {
 	// +kubebuilder:validation:MaxLength=63
 	// +optional
 	StorageClassName string `json:"storageClassName,omitempty"`
+
+	// Size overrides the operator's --model-cache-size flag (100Gi when the
+	// flag is unset too) for the model-cache PVC this operator creates for the
+	// service (#2448). A cluster serving both small and large models can then
+	// size each service's cache for its own model rather than for the largest
+	// one, without hand-managing a claimName PVC per service.
+	//
+	// It applies in perService mode only, to the per-service claim
+	// <isvc>-model-cache. When that claim already exists with a smaller
+	// storage request, the operator raises the request and the StorageClass
+	// expands the volume if its allowVolumeExpansion is true; a class that
+	// does not allow expansion rejects the request, which surfaces as a
+	// ModelCacheResizeRejected warning while the service keeps the claim as
+	// it is. A claim is grown only once it is Bound, because the request of a
+	// Pending claim is immutable. A smaller size never shrinks an existing
+	// claim. In shared mode the namespace has one claim that every service
+	// shares, so the field is ignored with a ModelCacheSizeIgnored warning.
+	//
+	// Mutually exclusive with claimName (the claim is user-owned) and with
+	// persistence Ephemeral (no PVC exists to size).
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=64
+	// +kubebuilder:validation:XValidation:rule="isQuantity(self) && quantity(self).isGreaterThan(quantity('0'))",message="size must be a positive Kubernetes quantity"
+	// +optional
+	Size string `json:"size,omitempty"`
 
 	// Prefetch asks for the Model's weights to be staged into this cache claim
 	// by a prefetch Job before any serving pod consumes them.

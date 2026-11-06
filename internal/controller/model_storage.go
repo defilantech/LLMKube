@@ -256,6 +256,85 @@ func (r *InferenceServiceReconciler) warnIgnoredModelCacheStorageClass(
 		requested, existing.Name, existingClass)
 }
 
+// warnIgnoredModelCacheSize emits a ModelCacheSizeIgnored warning event when
+// modelCache.size is set in shared mode, whether on the service or inherited
+// from its Model. The namespace has one claim that
+// every service mounts, so no one service may size it; --model-cache-size
+// does, and the field must not pass silently (#2448).
+func (r *InferenceServiceReconciler) warnIgnoredModelCacheSize(
+	isvc *inferencev1alpha1.InferenceService,
+	cache effectiveModelCache,
+) {
+	if r.Recorder == nil || cache.size() == "" {
+		return
+	}
+	r.Recorder.Eventf(isvc, nil, corev1.EventTypeWarning, "ModelCacheSizeIgnored", "Reconcile",
+		"modelCache.size %q is ignored: the operator runs the shared model cache, whose one claim %q every service in the namespace mounts is sized by --model-cache-size; the field applies only with --model-cache-mode=perService",
+		cache.size(), ModelCachePVCName)
+}
+
+// growModelCachePVC raises the storage request of the service's own perService
+// cache claim to spec.modelCache.size when the claim asks for less (#2448).
+// Whether the volume actually grows is the StorageClass's call: the API server
+// rejects the request for a class without allowVolumeExpansion, and that
+// rejection is reported as a ModelCacheResizeRejected warning rather than an
+// error, because the service runs fine on the claim it already has. The
+// operator needs no StorageClass read for this.
+//
+// A Pending claim is left alone: its request is immutable until it binds, so
+// a patch could only be rejected. The claim is grown on a reconcile after it
+// binds (the serving pod's own events trigger one). A size at or below the
+// current request is a no-op, so a smaller size never shrinks a claim.
+func (r *InferenceServiceReconciler) growModelCachePVC(
+	ctx context.Context,
+	isvc *inferencev1alpha1.InferenceService,
+	cache effectiveModelCache,
+	pvc *corev1.PersistentVolumeClaim,
+) error {
+	requested := cache.size()
+	if requested == "" {
+		return nil
+	}
+	desired, err := resource.ParseQuantity(requested)
+	if err != nil {
+		return fmt.Errorf("invalid modelCache.size %q: %w", requested, err)
+	}
+	current := pvc.Spec.Resources.Requests[corev1.ResourceStorage]
+	if desired.Cmp(current) <= 0 {
+		return nil
+	}
+	// A claim with the perService name that the operator did not create for
+	// this service is not the operator's to mutate.
+	if !metav1.IsControlledBy(pvc, isvc) {
+		if r.Recorder != nil {
+			r.Recorder.Eventf(isvc, nil, corev1.EventTypeWarning, "ModelCacheSizeIgnored", "Reconcile",
+				"modelCache.size %q is ignored: model cache PVC %q was not created by the operator for this service, so its %s request is left as it is",
+				requested, pvc.Name, current.String())
+		}
+		return nil
+	}
+	if pvc.Status.Phase != corev1.ClaimBound {
+		return nil
+	}
+
+	patch := client.MergeFrom(pvc.DeepCopy())
+	pvc.Spec.Resources.Requests[corev1.ResourceStorage] = desired
+	if err := r.Patch(ctx, pvc, patch); err != nil {
+		if apierrors.IsForbidden(err) || apierrors.IsInvalid(err) {
+			if r.Recorder != nil {
+				r.Recorder.Eventf(isvc, nil, corev1.EventTypeWarning, "ModelCacheResizeRejected", "Reconcile",
+					"modelCache.size %q is not applied: growing model cache PVC %q from %s was rejected (%v); the claim keeps its current size. One cause is a StorageClass without allowVolumeExpansion: true",
+					requested, pvc.Name, current.String(), err)
+			}
+			return nil
+		}
+		return fmt.Errorf("failed to grow model cache PVC %q: %w", pvc.Name, err)
+	}
+	logf.FromContext(ctx).Info("Raised model cache PVC storage request",
+		"namespace", pvc.Namespace, "name", pvc.Name, "from", current.String(), "to", desired.String())
+	return nil
+}
+
 // modelNeedsCachePVC reports whether the operator should provision a model
 // cache PVC for this reconcile. Caching must be enabled on the operator
 // (modelCachePath set) and the model must have a cache key. It must NOT be a
@@ -2491,11 +2570,17 @@ func (r *InferenceServiceReconciler) ensureModelCachePVC(ctx context.Context, is
 	shared := resolveCacheMode(r.ModelCacheMode) == ModelCacheModeShared
 	namespace := isvc.Namespace
 	pvcName := cache.pvcName(r.ModelCacheMode)
+	if shared {
+		r.warnIgnoredModelCacheSize(isvc, cache)
+	}
 
 	pvc := &corev1.PersistentVolumeClaim{}
 	err := r.Get(ctx, types.NamespacedName{Name: pvcName, Namespace: namespace}, pvc)
 	if err == nil {
 		r.warnIgnoredModelCacheStorageClass(isvc, cache, pvc)
+		if !shared {
+			return r.growModelCachePVC(ctx, isvc, cache, pvc)
+		}
 		return nil
 	}
 	if !apierrors.IsNotFound(err) {
@@ -2511,9 +2596,15 @@ func (r *InferenceServiceReconciler) ensureModelCachePVC(ctx context.Context, is
 		accessMode = corev1.ReadWriteMany
 	}
 
+	// A per-service spec.modelCache.size overrides the operator-global flag
+	// for the perService claim created here (#2448); the shared claim is
+	// sized by the flag alone, which warnIgnoredModelCacheSize surfaces.
 	size := "100Gi"
 	if r.ModelCacheSize != "" {
 		size = r.ModelCacheSize
+	}
+	if s := cache.size(); s != "" && !shared {
+		size = s
 	}
 	storageSize, err := resource.ParseQuantity(size)
 	if err != nil {
