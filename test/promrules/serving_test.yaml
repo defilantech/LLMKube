@@ -44,8 +44,10 @@ tests:
   # burst finishes each request in the step that admits it, so running stays 0
   # while prompt tokens advance (#2464). A single-slot engine works through a
   # queue at running=1 while generation advances. The burst's queue is empty by
-  # 3m, but the 10m average keeps seeing it, which is what let the old ceiling
-  # page after the fact. A wedged engine with flat counters must still page.
+  # 4m, but the 10m average keeps seeing it, which is what let the old ceiling
+  # page after the fact. A prefill-only engine under a queue that never drains
+  # pins the prompt counter, since its generation counter stays flat throughout.
+  # A wedged engine with flat counters must still page.
   - interval: 1m
     input_series:
       - series: 'vllm:num_requests_waiting{namespace="ai",service="prefill",pod="prefill-0",engine="0"}'
@@ -55,6 +57,14 @@ tests:
       - series: 'vllm:prompt_tokens_total{namespace="ai",service="prefill",pod="prefill-0",engine="0"}'
         values: '0+5000x20'
       - series: 'vllm:generation_tokens_total{namespace="ai",service="prefill",pod="prefill-0",engine="0"}'
+        values: '0x20'
+      - series: 'vllm:num_requests_waiting{namespace="ai",service="prefillbusy",pod="prefillbusy-0",engine="0"}'
+        values: '10x20'
+      - series: 'vllm:num_requests_running{namespace="ai",service="prefillbusy",pod="prefillbusy-0",engine="0"}'
+        values: '0x20'
+      - series: 'vllm:prompt_tokens_total{namespace="ai",service="prefillbusy",pod="prefillbusy-0",engine="0"}'
+        values: '0+5000x20'
+      - series: 'vllm:generation_tokens_total{namespace="ai",service="prefillbusy",pod="prefillbusy-0",engine="0"}'
         values: '0x20'
       - series: 'vllm:num_requests_waiting{namespace="ai",service="oneslot",pod="oneslot-0",engine="0"}'
         values: '3x20'
@@ -123,19 +133,19 @@ tests:
   # advancing is progress, and flat in every mode must still join and page.
   - interval: 1m
     input_series:
-      - series: 'sglang:num_queue_reqs{namespace="ai",service="sgbusy",pod="sgbusy-0",tp_rank="0"}'
+      - series: 'sglang:num_queue_reqs{namespace="ai",service="sgbusy",pod="sgbusy-0",model_name="q"}'
         values: '5x20'
-      - series: 'sglang:num_running_reqs{namespace="ai",service="sgbusy",pod="sgbusy-0",tp_rank="0"}'
+      - series: 'sglang:num_running_reqs{namespace="ai",service="sgbusy",pod="sgbusy-0",model_name="q"}'
         values: '0x20'
-      - series: 'sglang:realtime_tokens_total{namespace="ai",service="sgbusy",pod="sgbusy-0",tp_rank="0",mode="prefill_compute"}'
+      - series: 'sglang:realtime_tokens_total{namespace="ai",service="sgbusy",pod="sgbusy-0",model_name="q",mode="prefill_compute"}'
         values: '0+16384x20'
-      - series: 'sglang:realtime_tokens_total{namespace="ai",service="sgbusy",pod="sgbusy-0",tp_rank="0",mode="inference"}'
+      - series: 'sglang:realtime_tokens_total{namespace="ai",service="sgbusy",pod="sgbusy-0",model_name="q",mode="inference"}'
         values: '100x20'
-      - series: 'sglang:num_queue_reqs{namespace="ai",service="sgstuck",pod="sgstuck-0",tp_rank="0"}'
+      - series: 'sglang:num_queue_reqs{namespace="ai",service="sgstuck",pod="sgstuck-0",model_name="q"}'
         values: '5x20'
-      - series: 'sglang:realtime_tokens_total{namespace="ai",service="sgstuck",pod="sgstuck-0",tp_rank="0",mode="prefill_compute"}'
+      - series: 'sglang:realtime_tokens_total{namespace="ai",service="sgstuck",pod="sgstuck-0",model_name="q",mode="prefill_compute"}'
         values: '7000x20'
-      - series: 'sglang:realtime_tokens_total{namespace="ai",service="sgstuck",pod="sgstuck-0",tp_rank="0",mode="inference"}'
+      - series: 'sglang:realtime_tokens_total{namespace="ai",service="sgstuck",pod="sgstuck-0",model_name="q",mode="inference"}'
         values: '100x20'
     alert_rule_test:
       - eval_time: 12m
@@ -147,7 +157,7 @@ tests:
               namespace: ai
               service: sgstuck
               pod: sgstuck-0
-              tp_rank: "0"
+              model_name: q
             exp_annotations:
               summary: "Inference engine is queuing requests but making no progress"
               description: "sgstuck in ai has 5 requests queued while making no progress. The process is up; it is not admitting work."

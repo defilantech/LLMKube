@@ -208,8 +208,9 @@ spec:
     # llama-server and runtime_llamacpp_router.go appends --metrics, so router
     # pods emit llamacpp:* and are covered by the third arm.
     #
-    # avg_over_time and a "<= 1" ceiling (not "== 0") catch a partial stall and
-    # survive a single scrape ticking above it.
+    # avg_over_time keeps a queue in view across a momentary drain. It also stays
+    # above zero for 10m after any queue, so the progress side decides whether
+    # this is a stall.
     #
     # Every arm gates on THROUGHPUT rather than a running-count ceiling, because
     # that ceiling is meaningless. executor.go omits --parallel when
@@ -223,12 +224,15 @@ spec:
     # consecutive evaluations, so `for: 10m` is never satisfied and a REAL stall
     # hovering there never fires either. No progress while a queue persists is
     # the honest definition of "not admitting work", and it holds for one slot
-    # and for many. Each arm's counter is the one its stall probe trusts:
+    # and for many. vLLM's and SGLang's counters are progress signals their stall
+    # probes use too (stallSignals in internal/controller); llama.cpp has no probe:
     #   - llama.cpp: n_decode_total, not tokens_predicted_total: --embedding and
     #     --reranking servers decode but never predict a token.
     #   - vLLM: prompt and generation tokens. Both stay flat through a prefill
-    #     and advance when it completes, so a prefill only reads as a stall if
-    #     it outlasts the 10m window and then `for: 10m`.
+    #     and advance when it completes. The stall probe also reads
+    #     kv_cache_usage_perc as its mid-prefill heartbeat and this alert does not,
+    #     so a prefill reads as a stall here if it outlasts the 10m window and then
+    #     `for: 10m`.
     #   - SGLang: realtime_tokens_total, which advances on every prefill chunk
     #     and decode step; its prompt and generation counters wait for a request
     #     to finish. It carries a `mode` label the queue gauge lacks, so it is
