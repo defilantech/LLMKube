@@ -15,6 +15,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -162,6 +163,35 @@ func TestAdopt_HealthyEngineIsAdopted(t *testing.T) {
 	if d := testutil.ToFloat64(engineAdoptionsTotal.WithLabelValues(adoptionAdopted)) - before; d != 1 {
 		t.Fatalf("adopted counter moved by %v, want 1", d)
 	}
+}
+
+func TestAdopt_SlowHealthProbeKeepsEngine(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		in := adoptInspector{tokens: map[int]string{4242: "t1"}, exes: map[int]string{4242: "/bin/engine"}}
+		a, sent := newAdoptAgent(t, in, true, map[int]bool{4242: true})
+		writeSpawned(t, a)
+		a.healthChecker = &slowAdoptionChecker{}
+
+		a.adoptEngines(context.Background())
+		onlyProbes(t, *sent, "an engine recovering from a slow health probe")
+		if p := a.processes["default/svc"]; p == nil || !p.Healthy || p.PID != 4242 {
+			t.Fatalf("process = %+v, want the original engine adopted healthy", p)
+		}
+		if !recordExists(t, a, "svc") {
+			t.Fatal("the recovering engine's record was removed")
+		}
+	})
+}
+
+type slowAdoptionChecker struct{ calls int }
+
+func (c *slowAdoptionChecker) Check(_ context.Context, _ int, _ string) (bool, error) {
+	c.calls++
+	if c.calls == 1 {
+		time.Sleep(5 * time.Second)
+		return false, context.DeadlineExceeded
+	}
+	return true, nil
 }
 
 func TestAdopt_ReusedPIDIsNeverSignalled(t *testing.T) {
@@ -328,46 +358,55 @@ func TestAdopt_CorruptAndUnknownVersionRecordsAreIgnored(t *testing.T) {
 }
 
 func TestAdopt_ProvisionalNotServingIsStopped(t *testing.T) {
-	in := adoptInspector{tokens: map[int]string{4242: "t1"}, exes: map[int]string{4242: "/bin/engine"}}
-	a, sent := newAdoptAgent(t, in, false, map[int]bool{4242: true}) // health fails
-	writeSpawned(t, a)
-	before := testutil.ToFloat64(engineAdoptionsTotal.WithLabelValues(adoptionStopped))
+	synctest.Test(t, func(t *testing.T) {
+		in := adoptInspector{tokens: map[int]string{4242: "t1"}, exes: map[int]string{4242: "/bin/engine"}}
+		a, sent := newAdoptAgent(t, in, false, map[int]bool{4242: true}) // health fails
+		writeSpawned(t, a)
+		before := testutil.ToFloat64(engineAdoptionsTotal.WithLabelValues(adoptionStopped))
 
-	if a.adoptEngines(context.Background())["default/svc"] {
-		t.Fatal("adopted an engine that is not serving")
-	}
-	if !slices.Contains(*sent, fmt.Sprintf("%d:%d", -4242, syscall.SIGTERM)) {
-		t.Fatalf("signals = %v, want SIGTERM to process group 4242", *sent)
-	}
-	if recordExists(t, a, "svc") {
-		t.Fatal("the record of a stopped engine was kept")
-	}
-	if d := testutil.ToFloat64(engineAdoptionsTotal.WithLabelValues(adoptionStopped)) - before; d != 1 {
-		t.Fatalf("stopped counter moved by %v, want 1", d)
-	}
+		started := time.Now()
+		if a.adoptEngines(context.Background())["default/svc"] {
+			t.Fatal("adopted an engine that is not serving")
+		}
+		if !slices.Contains(*sent, fmt.Sprintf("%d:%d", -4242, syscall.SIGTERM)) {
+			t.Fatalf("signals = %v, want SIGTERM to process group 4242", *sent)
+		}
+		if recordExists(t, a, "svc") {
+			t.Fatal("the record of a stopped engine was kept")
+		}
+		if d := testutil.ToFloat64(engineAdoptionsTotal.WithLabelValues(adoptionStopped)) - before; d != 1 {
+			t.Fatalf("stopped counter moved by %v, want 1", d)
+		}
+		if elapsed := time.Since(started); elapsed != 30*time.Second {
+			t.Fatalf("adoption waited %s, want 30s before stopping the engine", elapsed)
+		}
+
+	})
 }
 
 // A non-serving engine the agent could not stop may still run, so its record
 // stays for a later stop.
 func TestAdopt_FailedStopKeepsTheRecord(t *testing.T) {
-	in := adoptInspector{tokens: map[int]string{4242: "t1"}, exes: map[int]string{4242: "/bin/engine"}}
-	a, _ := newAdoptAgent(t, in, false, map[int]bool{4242: true})
-	writeSpawned(t, a)
-	scripted := killFn
-	killFn = func(pid int, sig syscall.Signal) error {
-		if sig == syscall.SIGTERM {
-			_ = scripted(pid, sig)
-			return syscall.EPERM
+	synctest.Test(t, func(t *testing.T) {
+		in := adoptInspector{tokens: map[int]string{4242: "t1"}, exes: map[int]string{4242: "/bin/engine"}}
+		a, _ := newAdoptAgent(t, in, false, map[int]bool{4242: true})
+		writeSpawned(t, a)
+		scripted := killFn
+		killFn = func(pid int, sig syscall.Signal) error {
+			if sig == syscall.SIGTERM {
+				_ = scripted(pid, sig)
+				return syscall.EPERM
+			}
+			return scripted(pid, sig)
 		}
-		return scripted(pid, sig)
-	}
 
-	if a.adoptEngines(context.Background())["default/svc"] {
-		t.Fatal("adopted an engine that is not serving")
-	}
-	if !recordExists(t, a, "svc") {
-		t.Fatal("the record of an engine that may still run was removed")
-	}
+		if a.adoptEngines(context.Background())["default/svc"] {
+			t.Fatal("adopted an engine that is not serving")
+		}
+		if !recordExists(t, a, "svc") {
+			t.Fatal("the record of an engine that may still run was removed")
+		}
+	})
 }
 
 // A health probe cut short because the agent is stopping proves nothing: the
@@ -386,6 +425,26 @@ func TestAdopt_CancelledContextStopsNothing(t *testing.T) {
 	if !recordExists(t, a, "svc") {
 		t.Fatal("the record was removed although the engine was never judged")
 	}
+}
+
+func TestAdopt_CancelledDuringRetryStopsNothing(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		in := adoptInspector{tokens: map[int]string{4242: "t1"}, exes: map[int]string{4242: "/bin/engine"}}
+		a, sent := newAdoptAgent(t, in, false, map[int]bool{4242: true})
+		writeSpawned(t, a)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		time.AfterFunc(time.Second, cancel)
+
+		a.adoptEngines(ctx)
+		onlyProbes(t, *sent, "an engine whose adoption retry was cancelled")
+		if !recordExists(t, a, "svc") {
+			t.Fatal("the record was removed although adoption was cancelled")
+		}
+		if len(a.processes) != 0 {
+			t.Fatal("an unhealthy engine was adopted after cancellation")
+		}
+	})
 }
 
 // cancelingChecker ends the context during the probe, as a SIGTERM to the
@@ -576,15 +635,17 @@ func TestAdopt_OllamaIsReattachedWhenHealthy(t *testing.T) {
 }
 
 func TestAdopt_UnhealthyOllamaIsDiscarded(t *testing.T) {
-	a, sent := newAdoptAgent(t, adoptInspector{}, false, nil)
-	writeRunning(t, a, &ManagedProcess{Name: "l", Namespace: "default", PID: 0, Port: 11434,
-		Runtime: runtimeOllama, ModelID: "llama3:8b"})
-	if a.adoptEngines(context.Background())["default/l"] || len(*sent) != 0 {
-		t.Fatalf("unhealthy Ollama service re-attached or signalled (signals %v)", *sent)
-	}
-	if recordExists(t, a, "l") {
-		t.Fatal("the record of an unhealthy Ollama service was kept")
-	}
+	synctest.Test(t, func(t *testing.T) {
+		a, sent := newAdoptAgent(t, adoptInspector{}, false, nil)
+		writeRunning(t, a, &ManagedProcess{Name: "l", Namespace: "default", PID: 0, Port: 11434,
+			Runtime: runtimeOllama, ModelID: "llama3:8b"})
+		if a.adoptEngines(context.Background())["default/l"] || len(*sent) != 0 {
+			t.Fatalf("unhealthy Ollama service re-attached or signalled (signals %v)", *sent)
+		}
+		if recordExists(t, a, "l") {
+			t.Fatal("the record of an unhealthy Ollama service was kept")
+		}
+	})
 }
 
 func TestAdopt_RunsWithoutAPIServer(t *testing.T) {
