@@ -175,7 +175,7 @@ func TestRouterProxyExportsTraces(t *testing.T) {
 		}
 	})
 
-	if err := waitForReady("http://"+listen+"/health", 10*time.Second); err != nil {
+	if err := waitForReady("http://" + listen + "/health"); err != nil {
 		t.Fatalf("router-proxy never became ready: %v", err)
 	}
 	resp, err := http.Post("http://"+listen+"/v1/chat/completions",

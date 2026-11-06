@@ -13,6 +13,7 @@ package main
 import (
 	"flag"
 	"io"
+	"slices"
 	"testing"
 	"time"
 )
@@ -56,6 +57,53 @@ func TestShutdownTimeoutFlagParses(t *testing.T) {
 			}
 			if *got != tc.want {
 				t.Errorf("parse %v: --shutdown-timeout = %s, want %s", tc.args, *got, tc.want)
+			}
+		})
+	}
+}
+
+// TestReadinessRequiredListenerFlagParses drives the real registration with
+// the args the controller renders for spec.proxy.readinessRequiredListeners:
+// one --readiness-required-listener per port, in spec order.
+func TestReadinessRequiredListenerFlagParses(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		args    []string
+		want    []uint16
+		wantErr bool
+	}{
+		{name: "none when unset", args: nil, want: nil},
+		{name: "one port", args: []string{"--readiness-required-listener", "15008"}, want: []uint16{15008}},
+		{name: "repeated", args: []string{
+			"--readiness-required-listener", "15008",
+			"--readiness-required-listener=15006",
+		}, want: []uint16{15008, 15006}},
+		{name: "bounds", args: []string{
+			"--readiness-required-listener", "1",
+			"--readiness-required-listener", "65535",
+		}, want: []uint16{1, 65535}},
+		{name: "zero fails", args: []string{"--readiness-required-listener", "0"}, wantErr: true},
+		{name: "above 65535 fails", args: []string{"--readiness-required-listener", "65536"}, wantErr: true},
+		{name: "negative fails", args: []string{"--readiness-required-listener", "-1"}, wantErr: true},
+		{name: "comma list fails", args: []string{"--readiness-required-listener", "15008,15006"}, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fs := flag.NewFlagSet("router-proxy", flag.ContinueOnError)
+			fs.SetOutput(io.Discard)
+			got := registerReadinessRequiredListeners(fs)
+
+			err := fs.Parse(tc.args)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("parse %v: want an error, got %v", tc.args, *got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parse %v: %v", tc.args, err)
+			}
+			if !slices.Equal(*got, tc.want) {
+				t.Errorf("parse %v: --readiness-required-listener = %v, want %v", tc.args, *got, tc.want)
 			}
 		})
 	}
