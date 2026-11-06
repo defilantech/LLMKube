@@ -261,9 +261,8 @@ spec:
   the expected digest when it starts, then the computed digest with the file's
   size and the hashing time, and the rename's time once the file is published.
   A stamp hit names the file it skipped. Without it the per-hash lines are
-  absent, while the stamp-hit and mismatch lines stay what they were, so pinned
-  Models that do not set the field keep their pod templates across an operator
-  upgrade.
+  absent, while the stamp-hit and mismatch lines stay what they were, so the
+  logging adds no template change of its own.
 
 ### Staging files concurrently (`spec.downloadConcurrency`)
 

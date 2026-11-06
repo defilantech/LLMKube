@@ -254,9 +254,16 @@ func TestDownloadWithProgress(t *testing.T) {
 // that the release now restarts those Models' serving pods.
 func TestOnlyConcurrentStagingPollsInTenths(t *testing.T) {
 	for _, useCache := range []bool{false, true} {
-		serial := buildMultiFileInitCommand(useCache, false, true, false, false, "IfNotPresent")
-		if strings.Contains(serial, "sleep 0.1") {
-			t.Errorf("serial command (useCache=%v) polls in tenths, which restarts every staging Model's pods on upgrade:\n%s", useCache, serial)
+		for shape, serial := range map[string]string{
+			"multi-file":  buildMultiFileInitCommand(useCache, false, true, false, false, "IfNotPresent"),
+			"single-file": buildModelInitCommand(false, false, useCache, true, false, "IfNotPresent"),
+		} {
+			if strings.Contains(serial, "sleep 0.1") {
+				t.Errorf("serial %s command (useCache=%v) polls in tenths, which restarts every staging Model's pods on upgrade:\n%s", shape, useCache, serial)
+			}
+			if !strings.Contains(serial, downloadProgressFn) {
+				t.Errorf("serial %s command (useCache=%v) does not carry the serial helper:\n%s", shape, useCache, serial)
+			}
 		}
 		// The pool's own polls are in tenths too, so look for the helper itself.
 		concurrent := buildMultiFileInitCommand(useCache, false, true, false, true, "IfNotPresent")
