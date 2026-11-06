@@ -208,26 +208,40 @@ spec:
     # llama-server and runtime_llamacpp_router.go appends --metrics, so router
     # pods emit llamacpp:* and are covered by the third arm.
     #
-    # avg_over_time and a "<= 1" ceiling (not "== 0") catch a partial stall and
-    # survive a single scrape ticking above it.
+    # avg_over_time keeps a queue in view across a momentary drain. It also stays
+    # above zero for 10m after any queue, so the progress side decides whether
+    # this is a stall.
     #
-    # The llama.cpp arm gates on THROUGHPUT rather than a running-count ceiling,
-    # because that ceiling is meaningless there. executor.go omits --parallel
-    # when ParallelSlots <= 1 (one slot is llama-server's own default), so
+    # Every arm gates on THROUGHPUT rather than a running-count ceiling, because
+    # that ceiling is meaningless. executor.go omits --parallel when
+    # ParallelSlots <= 1 (one slot is llama-server's own default), so
     # requests_processing is only ever 0 or 1 and the "<= 1" test is permanently
     # true: a healthy single-slot engine at processing=1, deferred=3 would page
-    # at severity critical. A ceiling is also unstable around its own boundary --
-    # with running oscillating 0/1/2 the 10m average lands either side of 1 on
+    # at severity critical. On vLLM a prefill-only request finishes within the
+    # step that admits it, so num_requests_running reads 0 while the engine is
+    # busy (#2464). A ceiling is also unstable around its own boundary -- with
+    # running oscillating 0/1/2 the 10m average lands either side of 1 on
     # consecutive evaluations, so `for: 10m` is never satisfied and a REAL stall
-    # hovering there never fires either. Zero decode calls while a queue
-    # persists is the honest definition of "not admitting work", and it holds
-    # for one slot and for many. n_decode_total, not tokens_predicted_total:
-    # --embedding and --reranking servers decode but never predict a token.
+    # hovering there never fires either. No progress while a queue persists is
+    # the honest definition of "not admitting work", and it holds for one slot
+    # and for many. vLLM's and SGLang's counters are progress signals their stall
+    # probes use too (stallSignals in internal/controller); llama.cpp has no probe:
+    #   - llama.cpp: n_decode_total, not tokens_predicted_total: --embedding and
+    #     --reranking servers decode but never predict a token.
+    #   - vLLM: prompt and generation tokens. Both stay flat through a prefill
+    #     and advance when it completes. The stall probe also reads
+    #     kv_cache_usage_perc as its mid-prefill heartbeat and this alert does not,
+    #     so a prefill reads as a stall here if it outlasts the 10m window and then
+    #     `for: 10m`.
+    #   - SGLang: realtime_tokens_total, which advances on every prefill chunk
+    #     and decode step; its prompt and generation counters wait for a request
+    #     to finish. It carries a `mode` label the queue gauge lacks, so it is
+    #     summed and joined on named keys: a plain `and` would never match.
     - alert: InferenceAdmissionStalled
       expr: |
-        (avg_over_time(vllm:num_requests_waiting[10m]) > 0 and avg_over_time(vllm:num_requests_running[10m]) <= 1)
+        (avg_over_time(vllm:num_requests_waiting[10m]) > 0 and (rate(vllm:prompt_tokens_total[10m]) + rate(vllm:generation_tokens_total[10m])) == 0)
         or
-        (avg_over_time(sglang:num_queue_reqs[10m]) > 0 and avg_over_time(sglang:num_running_reqs[10m]) <= 1)
+        (avg_over_time(sglang:num_queue_reqs[10m]) > 0 and on (namespace, service, pod) sum by (namespace, service, pod) (rate(sglang:realtime_tokens_total[10m])) == 0)
         or
         (avg_over_time(llamacpp:requests_deferred[10m]) > 0 and rate(llamacpp:n_decode_total[10m]) == 0)
       for: 10m
@@ -235,8 +249,8 @@ spec:
         severity: critical
         component: inference
       annotations:
-        summary: "Inference engine is queuing requests but running almost none"
-        description: "{{`{{ $labels.service }}`}} in {{`{{ $labels.namespace }}`}} has {{`{{ $value }}`}} requests queued while running almost none. The process is up; it is not admitting work."
+        summary: "Inference engine is queuing requests but making no progress"
+        description: "{{`{{ $labels.service }}`}} in {{`{{ $labels.namespace }}`}} has {{`{{ $value }}`}} requests queued while making no progress. The process is up; it is not admitting work."
 
     # Same silent no-op class as GPUMetricsMissing/ControllerMetricsMissing: a
     # dead selector reads as an idle-but-healthy engine, not a gap.
