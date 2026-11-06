@@ -298,7 +298,7 @@ func TestRouterProxyBinaryReadyzRequiresListener(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	required := pickFreePort(t)
+	required, startListening := reserveTCPPort(t)
 	listen := fmt.Sprintf("127.0.0.1:%d", pickFreePort(t))
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -354,11 +354,7 @@ func TestRouterProxyBinaryReadyzRequiresListener(t *testing.T) {
 	if code, _ := get("/health"); code != http.StatusOK {
 		t.Errorf("/health = %d while not ready, want 200", code)
 	}
-	l, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", required))
-	if err != nil {
-		t.Fatalf("listen on the required port: %v", err)
-	}
-	defer func() { _ = l.Close() }()
+	startListening()
 	// /readyz caches its result for about a second.
 	deadline := time.Now().Add(5 * time.Second)
 	for {
@@ -370,6 +366,30 @@ func TestRouterProxyBinaryReadyzRequiresListener(t *testing.T) {
 			t.Fatalf("/readyz with a listener on %d = %d %s, want 200", required, code, body)
 		}
 		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// reserveTCPPort binds a TCP socket on 127.0.0.1 without listening on it, so
+// no other process can take the port while it has no LISTEN entry, and returns
+// the port and a func that starts listening on that same socket.
+func reserveTCPPort(t *testing.T) (int, func()) {
+	t.Helper()
+	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, 0)
+	if err != nil {
+		t.Fatalf("socket: %v", err)
+	}
+	t.Cleanup(func() { _ = syscall.Close(fd) })
+	if err := syscall.Bind(fd, &syscall.SockaddrInet4{Addr: [4]byte{127, 0, 0, 1}}); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	sa, err := syscall.Getsockname(fd)
+	if err != nil {
+		t.Fatalf("getsockname: %v", err)
+	}
+	return sa.(*syscall.SockaddrInet4).Port, func() {
+		if err := syscall.Listen(fd, 1); err != nil {
+			t.Fatalf("listen on the reserved port: %v", err)
+		}
 	}
 }
 
