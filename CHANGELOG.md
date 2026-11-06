@@ -5,6 +5,53 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.17](https://github.com/defilantech/LLMKube/compare/v0.10.16...v0.10.17) (2026-11-06)
+
+
+### Features
+
+* add OCI registry publishing for model prefetch ([#2324](https://github.com/defilantech/LLMKube/issues/2324)) ([bfd5622](https://github.com/defilantech/LLMKube/commit/bfd5622ffc4951770ef5fe4bd53c15d89f40c3b1))
+* **cli:** support runtime-aware model catalog entries ([#2360](https://github.com/defilantech/LLMKube/issues/2360)) ([9fb7206](https://github.com/defilantech/LLMKube/commit/9fb7206a7e45c08883f9b167dcc456c9345a825e))
+* **metal:** join passes agent flags, keeps them on a re-join, and checks the Mac before it spends the string ([#2433](https://github.com/defilantech/LLMKube/issues/2433)) ([704696a](https://github.com/defilantech/LLMKube/commit/704696a5fd795f9e33d622cfb93102e2bc340cec))
+* **metal:** say when macOS Local Network access may be blocking the API server ([#2437](https://github.com/defilantech/LLMKube/issues/2437)) ([8cd015b](https://github.com/defilantech/LLMKube/commit/8cd015bcaa35b70c9554fb45a8b2b13a641aa011))
+* **model:** expand spec.files globs from a listing pod, so the controller needs no egress ([#2453](https://github.com/defilantech/LLMKube/issues/2453)) ([cf9daa5](https://github.com/defilantech/LLMKube/commit/cf9daa5b3110e99ce86d97acc75d7b03f781d57c))
+* **models:** support staging files from multiple repositories ([#2316](https://github.com/defilantech/LLMKube/issues/2316)) ([fa4c273](https://github.com/defilantech/LLMKube/commit/fa4c2731f88b3d0e142fa94e04784ab1652f4f74))
+* **model:** stage spec.files concurrently with spec.downloadConcurrency ([#2371](https://github.com/defilantech/LLMKube/issues/2371)) ([f04c9ca](https://github.com/defilantech/LLMKube/commit/f04c9ca529ff892d85ae46c0b241e926dee3a41f))
+* **router:** name the router-proxy Service with spec.proxy.serviceName ([#2374](https://github.com/defilantech/LLMKube/issues/2374)) ([30a1d77](https://github.com/defilantech/LLMKube/commit/30a1d7707563089d86e67af57b5283db2924f2cd))
+* **router:** prefix affinity for ModelRouter LoadAware backends ([#2447](https://github.com/defilantech/LLMKube/issues/2447)) ([a1fab9c](https://github.com/defilantech/LLMKube/commit/a1fab9cd409c5048037749559ac71bd626f39aba))
+
+
+### Bug Fixes
+
+* **chart:** page InferenceAdmissionStalled on vLLM and SGLang only without progress ([#2465](https://github.com/defilantech/LLMKube/issues/2465)) ([8d13568](https://github.com/defilantech/LLMKube/commit/8d13568535e532cb40f2aa81e1227ecacef56142))
+* **chart:** print the Blackwell platform floors only when asked ([#2430](https://github.com/defilantech/LLMKube/issues/2430)) ([0c15420](https://github.com/defilantech/LLMKube/commit/0c15420aeccb27b5232da128e229e087cb1f07b3))
+* **cli:** deploy leaves the image to the operator and picks the --gpu accelerator from the cluster ([#2429](https://github.com/defilantech/LLMKube/issues/2429)) ([b53e180](https://github.com/defilantech/LLMKube/commit/b53e180ba0493b83417682c53d1a056301cba84d))
+* **cli:** never write an insecure fleet edge kubeconfig unasked ([#2431](https://github.com/defilantech/LLMKube/issues/2431)) ([0f4fa2b](https://github.com/defilantech/LLMKube/commit/0f4fa2b3ac96e47222fd83e4f0b79d7cf5b82989))
+* **deps:** bump klauspost/compress to v1.20.3 for GO-2026-6865 ([#2466](https://github.com/defilantech/LLMKube/issues/2466)) ([e0c6c17](https://github.com/defilantech/LLMKube/commit/e0c6c1746941241a052a81072d51eeab9470650c))
+* **gguf:** reject nested metadata arrays and cap array preallocation ([#2445](https://github.com/defilantech/LLMKube/issues/2445)) ([7e99868](https://github.com/defilantech/LLMKube/commit/7e998683a473d55155e49a452c1711801a05ea1c))
+* **metal:** keep the agent serving through API server outages ([#2434](https://github.com/defilantech/LLMKube/issues/2434)) ([fc255f1](https://github.com/defilantech/LLMKube/commit/fc255f111437feb8b5a70c303427820180209097))
+* **metal:** register the address the MetalNode dial-back verified ([#2432](https://github.com/defilantech/LLMKube/issues/2432)) ([4a605a2](https://github.com/defilantech/LLMKube/commit/4a605a22888eaf6ae258aa47f416ba7cc8bdd945))
+* **metal:** size linked model files by what the links point to ([#2444](https://github.com/defilantech/LLMKube/issues/2444)) ([4e06dfb](https://github.com/defilantech/LLMKube/commit/4e06dfb979a3984cccd0b016de5e8ff96a4fde2e))
+* **metal:** stop the engines on brew uninstall --zap ([#2435](https://github.com/defilantech/LLMKube/issues/2435)) ([6640f44](https://github.com/defilantech/LLMKube/commit/6640f44aa5216151faf90460fafe428ac6d14578))
+* **model:** keep the serial downloader so an upgrade doesn't restart serving pods ([#2463](https://github.com/defilantech/LLMKube/issues/2463)) ([912dce7](https://github.com/defilantech/LLMKube/commit/912dce740db3a1e5cd3610161a5e8079bd477690))
+* **modelpool:** hold router activations for every invalid-members reason ([#2373](https://github.com/defilantech/LLMKube/issues/2373)) ([81af45b](https://github.com/defilantech/LLMKube/commit/81af45b603adc9168a70eb39a102b7cb04ca1f0d))
+* **prefetch:** run prefetched pods in the prefetch Job's group, and report unreadable files ([#2452](https://github.com/defilantech/LLMKube/issues/2452)) ([bf3e8c5](https://github.com/defilantech/LLMKube/commit/bf3e8c5661f350e6bae00758ac16397da88c165e))
+* **router:** count unserved requests and quarantine endpoints whose load polls fail ([#2440](https://github.com/defilantech/LLMKube/issues/2440)) ([cec3b18](https://github.com/defilantech/LLMKube/commit/cec3b187f3acab7eb0455b077d4e839f716d57dd))
+* **router:** export router-proxy spans over OTLP ([#2423](https://github.com/defilantech/LLMKube/issues/2423)) ([6c0ee67](https://github.com/defilantech/LLMKube/commit/6c0ee674fcd53adff46eeaf77a298a3e2b5f9f78))
+* **router:** label every proxy metric with the router's name ([#2456](https://github.com/defilantech/LLMKube/issues/2456)) ([1185be2](https://github.com/defilantech/LLMKube/commit/1185be22d637a08f159c98dae0495b1ddc190a8b))
+* **router:** refuse detector and hybrid classification modes on the Proxy data plane ([#2424](https://github.com/defilantech/LLMKube/issues/2424)) ([d6d19f1](https://github.com/defilantech/LLMKube/commit/d6d19f18fa69fee279b9e9f4d29f7fb4c941af95))
+
+
+### Performance Improvements
+
+* **model:** poll staging downloads in tenths of a second ([#2394](https://github.com/defilantech/LLMKube/issues/2394)) ([a8b91ef](https://github.com/defilantech/LLMKube/commit/a8b91efecd14c3aaef15e082faa4dd4b32421c88))
+
+
+### Documentation
+
+* make the README and entry-point docs match the code ([#2426](https://github.com/defilantech/LLMKube/issues/2426)) ([6c9b91c](https://github.com/defilantech/LLMKube/commit/6c9b91c66ed43906720436cb0a517c27e8fbd31b))
+* **metal:** put the brew and join path first in the macOS docs and state the Mac's limits ([#2428](https://github.com/defilantech/LLMKube/issues/2428)) ([be4834f](https://github.com/defilantech/LLMKube/commit/be4834f4272ca27a7501cb60d1c8da8800953754))
+
 ## [0.10.16](https://github.com/defilantech/LLMKube/compare/v0.10.15...v0.10.16) (2026-11-02)
 
 
