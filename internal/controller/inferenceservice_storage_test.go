@@ -24,6 +24,7 @@ import (
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
@@ -1263,6 +1264,264 @@ var _ = Describe("modelCache.storageClassName (#1963)", func() {
 		err := k8sClient.Create(ctx, isvc)
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("storageClassName cannot be set when persistence is Ephemeral"))
+	})
+})
+
+var _ = Describe("modelCache.size (#2448)", func() {
+	ctx := context.Background()
+
+	var recorder *events.FakeRecorder
+	var reconciler *InferenceServiceReconciler
+	var namespace, expandable, fixed string
+	oneReplica := int32(1)
+
+	drainEvents := func() []string {
+		var out []string
+		for {
+			select {
+			case e := <-recorder.Events:
+				out = append(out, e)
+			default:
+				return out
+			}
+		}
+	}
+
+	newSizeISVC := func(name string, cache *inferencev1alpha1.ModelCacheSpec) *inferencev1alpha1.InferenceService {
+		return &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+			Spec: inferencev1alpha1.InferenceServiceSpec{
+				ModelRef:   "some-model",
+				Replicas:   &oneReplica,
+				Image:      "ghcr.io/ggml-org/llama.cpp:server",
+				ModelCache: cache,
+			},
+		}
+	}
+
+	// createSizeISVC persists the service: the perService claim owner-ref
+	// needs a real UID, and IsControlledBy compares against it.
+	createSizeISVC := func(name string, cache *inferencev1alpha1.ModelCacheSpec) *inferencev1alpha1.InferenceService {
+		isvc := newSizeISVC(name, cache)
+		Expect(k8sClient.Create(ctx, isvc)).To(Succeed())
+		return isvc
+	}
+
+	ensure := func(isvc *inferencev1alpha1.InferenceService) error {
+		return reconciler.ensureModelCachePVC(ctx, isvc, resolveEffectiveModelCache(isvc, nil))
+	}
+
+	requestOf := func(name string) string {
+		pvc := &corev1.PersistentVolumeClaim{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, pvc)).To(Succeed())
+		q := pvc.Spec.Resources.Requests[corev1.ResourceStorage]
+		return q.String()
+	}
+
+	// markBound stands in for the PV controller, which envtest does not run:
+	// only a Bound claim's request may change.
+	markBound := func(name string) {
+		pvc := &corev1.PersistentVolumeClaim{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, pvc)).To(Succeed())
+		pvc.Status.Phase = corev1.ClaimBound
+		Expect(k8sClient.Status().Update(ctx, pvc)).To(Succeed())
+	}
+
+	setSize := func(isvc *inferencev1alpha1.InferenceService, size string) *inferencev1alpha1.InferenceService {
+		updated := &inferencev1alpha1.InferenceService{}
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(isvc), updated)).To(Succeed())
+		updated.Spec.ModelCache.Size = size
+		Expect(k8sClient.Update(ctx, updated)).To(Succeed())
+		return updated
+	}
+
+	storageClass := func(name string, allowExpansion bool) *storagev1.StorageClass {
+		return &storagev1.StorageClass{
+			ObjectMeta:           metav1.ObjectMeta{Name: name},
+			Provisioner:          "example.com/test",
+			AllowVolumeExpansion: &allowExpansion,
+		}
+	}
+
+	BeforeEach(func() {
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "cache-size-"}}
+		Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+		namespace = ns.Name
+		expandable = namespace + "-expandable"
+		fixed = namespace + "-fixed"
+		Expect(k8sClient.Create(ctx, storageClass(expandable, true))).To(Succeed())
+		Expect(k8sClient.Create(ctx, storageClass(fixed, false))).To(Succeed())
+
+		recorder = events.NewFakeRecorder(20)
+		reconciler = &InferenceServiceReconciler{
+			Client:         k8sClient,
+			Scheme:         k8sClient.Scheme(),
+			Recorder:       recorder,
+			ModelCacheMode: ModelCacheModePerService,
+			ModelCacheSize: "50Gi",
+		}
+	})
+
+	// Remove what the specs created: envtest runs no namespace controller, and
+	// other suites count InferenceServices cluster-wide.
+	AfterEach(func() {
+		Expect(k8sClient.DeleteAllOf(ctx, &inferencev1alpha1.InferenceService{}, client.InNamespace(namespace))).To(Succeed())
+		pvcs := &corev1.PersistentVolumeClaimList{}
+		Expect(k8sClient.List(ctx, pvcs, client.InNamespace(namespace))).To(Succeed())
+		for i := range pvcs.Items {
+			pvc := &pvcs.Items[i]
+			if len(pvc.Finalizers) > 0 {
+				pvc.Finalizers = nil
+				_ = k8sClient.Update(ctx, pvc)
+			}
+			_ = client.IgnoreNotFound(k8sClient.Delete(ctx, pvc))
+		}
+		for _, name := range []string{expandable, fixed} {
+			_ = client.IgnoreNotFound(k8sClient.Delete(ctx, &storagev1.StorageClass{ObjectMeta: metav1.ObjectMeta{Name: name}}))
+		}
+		_ = client.IgnoreNotFound(k8sClient.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}))
+	})
+
+	It("creates the perService claim with the service's size instead of the flag", func() {
+		isvc := createSizeISVC("small", &inferencev1alpha1.ModelCacheSpec{Size: "1Gi"})
+		Expect(ensure(isvc)).To(Succeed())
+
+		Expect(requestOf("small-model-cache")).To(Equal("1Gi"))
+	})
+
+	It("falls back to the flag, then to 100Gi, when the field is unset", func() {
+		isvc := createSizeISVC("flag", &inferencev1alpha1.ModelCacheSpec{})
+		Expect(ensure(isvc)).To(Succeed())
+		Expect(requestOf("flag-model-cache")).To(Equal("50Gi"))
+
+		reconciler.ModelCacheSize = ""
+		isvc = createSizeISVC("default", nil)
+		Expect(ensure(isvc)).To(Succeed())
+		Expect(requestOf("default-model-cache")).To(Equal("100Gi"))
+	})
+
+	It("shared mode: ignores the size with a warning and sizes the claim by the flag", func() {
+		reconciler.ModelCacheMode = ModelCacheModeShared
+		isvc := newSizeISVC("shared", &inferencev1alpha1.ModelCacheSpec{Size: "1Gi"})
+		Expect(ensure(isvc)).To(Succeed())
+
+		Expect(requestOf(ModelCachePVCName)).To(Equal("50Gi"))
+		Expect(drainEvents()).To(ContainElement(SatisfyAll(
+			ContainSubstring("Warning"),
+			ContainSubstring("ModelCacheSizeIgnored"),
+			ContainSubstring(`modelCache.size "1Gi" is ignored`),
+		)))
+	})
+
+	It("raises the request of a Bound claim whose class allows expansion", func() {
+		isvc := createSizeISVC("grow", &inferencev1alpha1.ModelCacheSpec{StorageClassName: expandable, Size: "1Gi"})
+		Expect(ensure(isvc)).To(Succeed())
+		markBound("grow-model-cache")
+
+		Expect(ensure(setSize(isvc, "5Gi"))).To(Succeed())
+
+		Expect(requestOf("grow-model-cache")).To(Equal("5Gi"))
+		Expect(drainEvents()).NotTo(ContainElement(ContainSubstring("ModelCacheResizeRejected")))
+	})
+
+	It("warns, and keeps the service running, when the class does not allow expansion", func() {
+		isvc := createSizeISVC("fixed", &inferencev1alpha1.ModelCacheSpec{StorageClassName: fixed, Size: "1Gi"})
+		Expect(ensure(isvc)).To(Succeed())
+		markBound("fixed-model-cache")
+
+		Expect(ensure(setSize(isvc, "5Gi"))).To(Succeed())
+
+		Expect(requestOf("fixed-model-cache")).To(Equal("1Gi"))
+		Expect(drainEvents()).To(ContainElement(SatisfyAll(
+			ContainSubstring("Warning"),
+			ContainSubstring("ModelCacheResizeRejected"),
+			ContainSubstring("5Gi"),
+			ContainSubstring("fixed-model-cache"),
+		)))
+	})
+
+	It("never shrinks an existing claim", func() {
+		isvc := createSizeISVC("shrink", &inferencev1alpha1.ModelCacheSpec{StorageClassName: expandable, Size: "5Gi"})
+		Expect(ensure(isvc)).To(Succeed())
+		markBound("shrink-model-cache")
+
+		Expect(ensure(setSize(isvc, "1Gi"))).To(Succeed())
+
+		Expect(requestOf("shrink-model-cache")).To(Equal("5Gi"))
+		Expect(drainEvents()).NotTo(ContainElement(ContainSubstring("ModelCacheResizeRejected")))
+	})
+
+	It("leaves a Pending claim alone until it binds", func() {
+		isvc := createSizeISVC("pending", &inferencev1alpha1.ModelCacheSpec{StorageClassName: expandable, Size: "1Gi"})
+		Expect(ensure(isvc)).To(Succeed())
+
+		updated := setSize(isvc, "5Gi")
+		Expect(ensure(updated)).To(Succeed())
+		Expect(requestOf("pending-model-cache")).To(Equal("1Gi"))
+		Expect(drainEvents()).NotTo(ContainElement(ContainSubstring("ModelCacheResizeRejected")))
+
+		markBound("pending-model-cache")
+		Expect(ensure(updated)).To(Succeed())
+		Expect(requestOf("pending-model-cache")).To(Equal("5Gi"))
+	})
+
+	It("does not resize a claim with the perService name that the operator did not create", func() {
+		className := expandable
+		byHand := &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: "byhand-model-cache", Namespace: namespace},
+			Spec: corev1.PersistentVolumeClaimSpec{
+				AccessModes:      []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+				StorageClassName: &className,
+				Resources: corev1.VolumeResourceRequirements{
+					Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("1Gi")},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, byHand)).To(Succeed())
+		markBound("byhand-model-cache")
+
+		isvc := createSizeISVC("byhand", &inferencev1alpha1.ModelCacheSpec{StorageClassName: expandable, Size: "5Gi"})
+		Expect(ensure(isvc)).To(Succeed())
+
+		Expect(requestOf("byhand-model-cache")).To(Equal("1Gi"))
+		Expect(drainEvents()).To(ContainElement(SatisfyAll(
+			ContainSubstring("Warning"),
+			ContainSubstring("ModelCacheSizeIgnored"),
+			ContainSubstring("byhand-model-cache"),
+		)))
+	})
+
+	DescribeTable("admission",
+		func(cache inferencev1alpha1.ModelCacheSpec, want string) {
+			err := k8sClient.Create(ctx, newSizeISVC("rejected", &cache))
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring(want))
+		},
+		Entry("rejects size combined with claimName",
+			inferencev1alpha1.ModelCacheSpec{ClaimName: "some-claim", Size: "1Gi"},
+			"size cannot be set together with claimName"),
+		Entry("rejects size with Ephemeral persistence",
+			inferencev1alpha1.ModelCacheSpec{Persistence: inferencev1alpha1.ModelCachePersistenceEphemeral, Size: "1Gi"},
+			"size cannot be set when persistence is Ephemeral"),
+		Entry("rejects a size that is not a quantity",
+			inferencev1alpha1.ModelCacheSpec{Size: "lots"},
+			"size must be a positive Kubernetes quantity"),
+		Entry("rejects a zero size",
+			inferencev1alpha1.ModelCacheSpec{Size: "0"},
+			"size must be a positive Kubernetes quantity"),
+	)
+
+	It("rejects size combined with claimName on a Model too", func() {
+		model := &inferencev1alpha1.Model{
+			ObjectMeta: metav1.ObjectMeta{Name: "rejected", Namespace: namespace},
+			Spec: inferencev1alpha1.ModelSpec{
+				Source:     "https://example.com/model.gguf",
+				ModelCache: &inferencev1alpha1.ModelCacheSpec{ClaimName: "some-claim", Size: "1Gi"},
+			},
+		}
+		err := k8sClient.Create(ctx, model)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("size cannot be set together with claimName"))
 	})
 })
 

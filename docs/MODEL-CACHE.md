@@ -896,6 +896,52 @@ Behavior:
   cluster. Scope who may edit InferenceServices if storage-class choice is
   restricted in your cluster.
 
+### Per-Service Cache Size
+
+`spec.modelCache.size` overrides the operator-global `--model-cache-size`
+flag (chart `modelCache.size`, 100Gi when unset) for the cache claim the
+operator creates, so a small model does not get a cache sized for the largest
+one:
+
+```yaml
+apiVersion: inference.llmkube.dev/v1alpha1
+kind: InferenceService
+metadata:
+  name: embeddinggemma
+spec:
+  modelRef: embeddinggemma
+  modelCache:
+    size: 1Gi   # overrides --model-cache-size
+```
+
+Behavior:
+
+- The size order is `spec.modelCache.size`, then `--model-cache-size`, then
+  100Gi.
+- The field applies in `perService` mode only, to the claim the operator
+  creates, `<isvc>-model-cache`. In `shared` mode the namespace has one claim
+  shared by every service, sized by the flag, so the field is ignored and
+  raises a `ModelCacheSizeIgnored` warning event.
+- When the claim already exists with a smaller storage request, the operator
+  raises the request, and the StorageClass expands the volume if it sets
+  `allowVolumeExpansion: true`. A class that does not allow expansion rejects
+  the request; the operator raises a `ModelCacheResizeRejected` warning event
+  and the service keeps running on the claim as it is. A Pending claim is
+  grown only once it binds, because its request cannot change before then.
+- A smaller size never shrinks an existing claim, and a change to the flag
+  alone never resizes an existing claim.
+- A claim named `<isvc>-model-cache` that the operator did not create for the
+  service is never resized; a size larger than its request raises a
+  `ModelCacheSizeIgnored` warning event.
+- Set on a Model, the size applies to every service that references it and
+  sets no `spec.modelCache` of its own. A service's `spec.modelCache` replaces
+  the Model's block as a whole, so a service that sets only
+  `storageClassName` does not inherit the Model's size.
+- The field cannot combine with `claimName` (the claim is user-owned) or with
+  `persistence: Ephemeral` (no PVC is created to size; bound the emptyDir with
+  `spec.resources.ephemeralStorage`); both are rejected at admission, as is a
+  value that is not a positive Kubernetes quantity.
+
 ## CLI Commands
 
 ### List Cached Models
