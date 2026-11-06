@@ -155,6 +155,25 @@ spec:
 
 With `replicas` above 1 and a hard placement rule (a constraint with `whenUnsatisfiable: DoNotSchedule`, or required pod anti-affinity), the proxy Deployment rolls out with `maxSurge: 0` and `maxUnavailable: 1`: an extra replica could never be placed, so the default surge would hang the rollout. The proxy rolls on every LLMKube upgrade, and while one replica restarts, its node's NodePort has no local endpoint, so the upstream should fail over to the other node's address. Soft rules (`ScheduleAnyway`, preferred affinity) and single-replica routers keep the default rollout. A router with ModelPools always runs one replica.
 
+### Readiness that requires mesh listeners
+
+By default the proxy's readiness and liveness probes both call `GET /health`, which answers `200` while the process runs. In a service mesh that captures traffic inside the pod, a replica can be running while the mesh has not set it up, so requests sent to it fail. `spec.proxy.readinessRequiredListeners` lists TCP ports that must be listening in the pod before the replica is Ready. For Istio ambient mode, that is the HBONE inbound port, `15008`:
+
+```yaml
+spec:
+  proxy:
+    replicas: 2
+    readinessRequiredListeners: [15008]
+```
+
+When the list is set, the readiness probe moves to `GET /readyz` (same port and timings), and the proxy gets one `--readiness-required-listener` flag per port. `/readyz` reads `/proc/net/tcp` and `/proc/net/tcp6`, which list the sockets in the pod's network namespace, including ones the mesh opened. A port counts only when one of its entries is in the `LISTEN` state. While a port has no listener, `/readyz` answers `503` with the missing ports, for example `{"status":"not ready","missingListeners":[15008]}`, and the replica leaves the `Service` endpoints until the listener appears. Liveness stays on `/health`, so a replica the mesh hasn't set up is taken out of rotation but not restarted.
+
+If `/proc/net/tcp` or `/proc/net/tcp6` can't be read, or its header isn't in the expected format, `/readyz` fails open: any port it didn't find in a table it could read is treated as present, so the replica stays Ready, and the proxy logs a warning once (and once more when the table can be read again). A missing `/proc/net/tcp6`, as on a kernel booted with IPv6 disabled, counts as an empty table, not a read failure. A `/proc` problem is not a reason to take every replica out of service.
+
+The list takes up to 16 ports from `1` to `65535`, with no duplicates. Unset or empty keeps readiness on `/health` and renders nothing new on the pod template, so upgrading the operator does not roll existing proxies. Setting or clearing it rolls them once. If `spec.proxy.image` pins a router-proxy image, it must be a release that has the `--readiness-required-listener` flag; an older image exits on the unknown flag.
+
+`/readyz` is served on every proxy, on the same port as the inference API. Like `/health`, it needs no authentication and is reachable from any pod that can reach that port. It reports only whether the configured ports are listening.
+
 ## The fail-closed gate
 
 The headline differentiator. A rule that matches sensitive classifications (default: `pii`, `phi`) and is marked `failClosed: true` has two guarantees:
