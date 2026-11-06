@@ -1035,6 +1035,9 @@ func TestCatalogContextDefaultDeployment(t *testing.T) {
 		args    []string
 		context int32
 	}{
+		{name: "llama-3.1-8b catalog default", model: "llama-3.1-8b", context: 8192},
+		{name: "llama-3.1-8b explicit override", model: "llama-3.1-8b",
+			args: []string{"--context", "16384"}, context: 16384},
 		{name: "qwen-2.5-14b catalog default", model: "qwen-2.5-14b", context: 16384},
 		{name: "qwen-2.5-14b explicit override", model: "qwen-2.5-14b",
 			args: []string{"--context", "32768"}, context: 32768},

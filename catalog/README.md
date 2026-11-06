@@ -49,6 +49,19 @@ entry names (2× A100 40GB or 1× A100 80GB). The full 131,072-token window
 needs about 85 GB before runtime buffers. `--context 32768` costs about
 53 GB and fits either setup with headroom.
 
+For `llama-3.1-8b`, the default is 8,192 tokens. Its
+[Q5_K_M weights](https://huggingface.co/bartowski/Meta-Llama-3.1-8B-Instruct-GGUF/blob/main/Meta-Llama-3.1-8B-Instruct-Q5_K_M.gguf)
+are about 5.73 GB. With 32 layers, 8 KV heads and a head dimension of 128,
+the f16 KV cache uses `2 (K and V) × 32 × 8 × 128 × 2 bytes × context tokens`:
+1 GiB at 8K, 2 GiB at 16K, or 16 GiB at 131,072 tokens.
+Weights plus the default cache total about 6.8 GB; the catalog estimates
+7–8 GB including runtime overhead for full GPU offload. This is a calculated
+estimate, not a hardware-validated guarantee: runtime buffers, batch size and
+cache types affect actual usage. `resources.gpu_memory` is descriptive metadata,
+not an enforced GPU memory reservation.
+
+## Runtime-specific entries
+
 For a vLLM or SGLang entry, use this schema (illustrative only, not a validated
 model recommendation):
 
