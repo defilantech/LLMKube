@@ -168,9 +168,7 @@ spec:
 
 When the list is set, the readiness probe moves to `GET /readyz` (same port and timings), and the proxy gets one `--readiness-required-listener` flag per port. `/readyz` reads `/proc/net/tcp` and `/proc/net/tcp6`, which list the sockets in the pod's network namespace, including ones the mesh opened. A port counts only when one of its entries is in the `LISTEN` state. While a port has no listener, `/readyz` answers `503` with the missing ports, for example `{"status":"not ready","missingListeners":[15008]}`, and the replica leaves the `Service` endpoints until the listener appears. Liveness stays on `/health`, so a replica the mesh hasn't set up is taken out of rotation but not restarted.
 
-The listener must exist in the router pod's own network namespace. For Istio ambient that is in-pod mode, where ztunnel opens `15008` inside each enrolled pod's network namespace. It is the default when ztunnel is not host-networked (`ambient.shareHostNetworkNamespace` unset or `false`). On Istio 1.30.7 the listener appears as `[::]:15008`, in `/proc/net/tcp6` only.
-
-Don't combine the field with a `spec.proxy.runtimeClassName` whose runtime has its own network stack, such as gVisor. There `/proc/net/tcp*` is the sandbox's table, the mesh's listener never appears in it, and every replica stays unready.
+Don't combine the field with a `spec.proxy.runtimeClassName` whose runtime has its own network stack, such as gVisor: `/proc/net/tcp*` is then the sandbox's table, so the mesh's listener never appears and every replica stays unready.
 
 If `/proc/net/tcp` or `/proc/net/tcp6` can't be read, or its header isn't in the expected format, `/readyz` fails open: any port it didn't find in a table it could read is treated as present, so the replica stays Ready. The proxy logs `cannot read TCP socket table` and `required listeners not enforced; reporting ready` once each, and logs again when the table can be read. A missing `/proc/net/tcp6`, as on a kernel booted with IPv6 disabled, counts as an empty table, not a read failure. A `/proc` problem is not a reason to take every replica out of service.
 
