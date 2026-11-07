@@ -385,6 +385,10 @@ are downloaded from. Other sources need explicit paths.
   otherwise empty. An empty size means unknown, not zero.
 - A pattern matches within one directory (`*.safetensors` does not match
   `sub/x.safetensors`; write `sub/*.safetensors`).
+- The primary pattern must match exactly one file. Secondary patterns that match
+  nothing are skipped and do not prevent `Ready`. The `UnmatchedFilePatterns=True`
+  condition and a Warning event name those patterns, so check them for typos.
+  Correcting or removing the unmatched patterns clears the condition.
 - A failed listing fails the Model with reason `RepoListingFailed` and the
   cause, and is retried every minute.
 - A serving pod built before the expansion is recorded for its generation

@@ -1024,11 +1024,13 @@ func (r *ModelReconciler) reconcileRuntimeResolvedSource(ctx context.Context, mo
 			llmkubemetrics.ReconcileTotal.WithLabelValues("model", "error").Inc()
 			return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
 		}
+		r.setUnmatchedFilePatterns(model, plan)
 		model.Status.StagedFiles = plan.Files
 		if total, ok := hfTotalSize(repoFiles, plan.Files); ok {
 			stagedSize = formatBytes(total)
 		}
 	} else {
+		r.setUnmatchedFilePatterns(model, nil)
 		model.Status.StagedFiles = nil
 	}
 
