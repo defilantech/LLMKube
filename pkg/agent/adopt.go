@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"time"
 )
 
 // Outcomes of evaluating one engine record at startup, the result label of
@@ -201,11 +202,24 @@ func (a *MetalAgent) runsRecordedExecutable(rec engineRecord) bool {
 	return err == nil && executableMatches(exes, rec.executablePaths()...)
 }
 
-// serving probes the runtime's health endpoint on the recorded port, as the
-// health monitor does.
+// serving gives a busy engine time to answer before adoption stops it.
 func (a *MetalAgent) serving(ctx context.Context, rec engineRecord) bool {
-	ok, err := a.healthChecker.Check(ctx, rec.Port, healthProbePath(rec.Runtime))
-	return err == nil && ok
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	for ctx.Err() == nil {
+		ok, err := a.healthChecker.Check(ctx, rec.Port, healthProbePath(rec.Runtime))
+		if err == nil && ok {
+			return true
+		}
+		timer := time.NewTimer(5 * time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return false
+		case <-timer.C:
+		}
+	}
+	return false
 }
 
 // storeAdopted inserts the ManagedProcess of an adopted engine with every
