@@ -1,0 +1,69 @@
+{
+ "total_count": 4,
+ "workflow_runs": [
+  {
+   "id": 41518210793,
+   "name": "Tests",
+   "path": ".github/workflows/test.yml",
+   "event": "push",
+   "head_branch": "main",
+   "head_sha": "803cc3df9683891ff4e0fdb10330369331b5c6d2",
+   "run_attempt": 1,
+   "status": "completed",
+   "conclusion": "failure",
+   "created_at": "2026-11-02T20:19:47Z",
+   "html_url": "https://github.com/defilantech/LLMKube/actions/runs/41518210793",
+   "head_repository": {
+    "full_name": "defilantech/LLMKube"
+   }
+  },
+  {
+   "id": 41570133041,
+   "name": "Tests",
+   "path": ".github/workflows/test.yml",
+   "event": "pull_request",
+   "head_branch": "dependabot/go_modules/github.com/prometheus/common-0.73.1",
+   "head_sha": "ed200bf37c076282d1b57112d7573ed87c391d50",
+   "run_attempt": 2,
+   "status": "completed",
+   "conclusion": "success",
+   "created_at": "2026-11-03T03:06:02Z",
+   "html_url": "https://github.com/defilantech/LLMKube/actions/runs/41570133041",
+   "head_repository": {
+    "full_name": "defilantech/LLMKube"
+   }
+  },
+  {
+   "id": 39985914548,
+   "name": "Tests",
+   "path": ".github/workflows/test.yml",
+   "event": "pull_request",
+   "head_branch": "fix/modelpool-swap-past-swapbudget-races-2167",
+   "head_sha": "1f80b0fb084e1aebfd376db728f2ca2930615398",
+   "run_attempt": 1,
+   "status": "completed",
+   "conclusion": "failure",
+   "created_at": "2026-10-23T16:20:07Z",
+   "html_url": "https://github.com/defilantech/LLMKube/actions/runs/39985914548",
+   "head_repository": {
+    "full_name": "Defilan/LLMKube"
+   }
+  },
+  {
+   "id": 38539659280,
+   "name": "Tests",
+   "path": ".github/workflows/test.yml",
+   "event": "push",
+   "head_branch": "main",
+   "head_sha": "780e7102ff8c8a9794d0a42f3c1b7b5c5c93c27a",
+   "run_attempt": 1,
+   "status": "completed",
+   "conclusion": "failure",
+   "created_at": "2026-10-14T09:04:19Z",
+   "html_url": "https://github.com/defilantech/LLMKube/actions/runs/38539659280",
+   "head_repository": {
+    "full_name": "defilantech/LLMKube"
+   }
+  }
+ ]
+}

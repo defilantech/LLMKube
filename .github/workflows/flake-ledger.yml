@@ -1,0 +1,69 @@
+name: Flake Ledger
+
+# Records every test failure on main or in the merge queue, and every failure
+# that passed on a rerun of the same commit, as one open issue per flaky test
+# (labelled flaky-test) with a comment per occurrence (#2378). A failure only
+# on a PR's own commits is CI doing its job and is not recorded. The logic and
+# its tests are in cmd/flake-ledger; hack/flake-ledger.sh runs it locally.
+#
+# The daily run reads three days back: a run still in progress at one tick, or
+# rerun a day or two later, is read at the next one, and the marker on each
+# comment keeps the overlap from recording anything twice. The go-test-report
+# artifacts it prefers expire after 14 days; past that it reads the job logs.
+
+on:
+  schedule:
+    - cron: '23 6 * * *'
+  workflow_dispatch:
+    inputs:
+      since:
+        description: "Read runs created since: 3d, 36h, or a date such as 2026-10-20"
+        type: string
+        default: 3d
+      dry_run:
+        description: "Print what would be filed instead of filing it"
+        type: boolean
+        default: true
+
+permissions:
+  actions: read
+  issues: write
+  contents: read
+
+# Two ledgers at once could both open the same test's issue.
+concurrency:
+  group: flake-ledger
+  cancel-in-progress: false
+
+jobs:
+  ledger:
+    name: Record flaky tests
+    # A fork with Actions enabled would otherwise file issues against itself.
+    if: github.event_name != 'schedule' || github.repository == 'defilantech/LLMKube'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The tool imports only the standard library, so the module cache
+      # would be restored for nothing.
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Record flaky tests
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Both inputs are empty on a scheduled run, so it reads three days
+          # back and files for real.
+          SINCE: ${{ inputs.since || '3d' }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          args=(--since "$SINCE")
+          [ "$DRY_RUN" = true ] && args+=(--dry-run)
+          hack/flake-ledger.sh "${args[@]}"

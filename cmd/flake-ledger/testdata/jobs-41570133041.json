@@ -1,0 +1,27 @@
+{
+ "total_count": 2,
+ "jobs": [
+  {
+   "id": 125700832816,
+   "run_id": 41570133041,
+   "run_attempt": 1,
+   "name": "Run on Ubuntu",
+   "status": "completed",
+   "conclusion": "failure",
+   "started_at": "2026-11-03T03:06:05Z",
+   "completed_at": "2026-11-03T03:17:11Z",
+   "html_url": "https://github.com/defilantech/LLMKube/actions/runs/41570133041/job/125700832816"
+  },
+  {
+   "id": 125705304607,
+   "run_id": 41570133041,
+   "run_attempt": 2,
+   "name": "Run on Ubuntu",
+   "status": "completed",
+   "conclusion": "success",
+   "started_at": "2026-11-03T03:19:44Z",
+   "completed_at": "2026-11-03T03:40:43Z",
+   "html_url": "https://github.com/defilantech/LLMKube/actions/runs/41570133041/job/125705304607"
+  }
+ ]
+}
