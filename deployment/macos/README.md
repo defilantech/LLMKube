@@ -171,8 +171,8 @@ Once it is joined (`llmkube metal join`) or installed with the Makefile, the Met
 ### Deploy a Model with Metal Acceleration
 
 ```bash
-# Deploy from catalog (--context caps the 131072-token catalog default so the
-# model fits the agent's memory budget on most Macs)
+# Deploy from catalog (8192 tokens is the catalog default; increase --context
+# only if the agent's memory budget allows)
 llmkube deploy llama-3.1-8b --accelerator metal --context 8192
 
 # Or deploy custom model
