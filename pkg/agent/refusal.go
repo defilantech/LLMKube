@@ -85,11 +85,14 @@ func (a *MetalAgent) refuseStart(
 // slot that appeared after checkModelCacheSlot ran) is refused the same way
 // as ModelSourceNotAllowed. A *SourceSecretNotAllowedError (a sourceSecretRef
 // Secret that lost its marker or was deleted after checkSourceSecret ran) is
-// refused as SourceSecretNotAllowed. Every other StartProcess failure
-// (network error, bad status, truncated download, health-check timeout, ...)
-// keeps the historical plain-wrapped-error, log-only behavior. Split out of
-// reconcileProcess, rather than inlined as an extra branch there, to keep its
-// cyclomatic complexity from crossing the linter's threshold.
+// refused as SourceSecretNotAllowed. A transient failure to read the
+// sourceSecretRef Secret is retried on the next poll. Every other StartProcess
+// failure (an engine that exits while loading, a download that fails on a
+// full disk or a bad status, a health-check timeout, ...) is not a refusal: it
+// is reported as StartFailed and retried on the restart backoff (failStart,
+// #2404). Split out of reconcileProcess, rather than inlined as an extra
+// branch there, to keep its cyclomatic complexity from crossing the linter's
+// threshold.
 func (a *MetalAgent) handleStartProcessError(
 	ctx context.Context, isvc *inferencev1alpha1.InferenceService, model *inferencev1alpha1.Model, startErr error,
 ) error {
@@ -117,18 +120,20 @@ func (a *MetalAgent) handleStartProcessError(
 	if errors.As(startErr, &secretErr) {
 		return a.refuseStart(ctx, isvc, EventReasonSourceSecretNotAllowed, secretErr.Error())
 	}
-	if errors.Is(startErr, errEngineRecordWrite) {
-		a.emitInferenceEvent(ctx, &ManagedProcess{Namespace: isvc.Namespace, Name: isvc.Name},
-			corev1.EventTypeWarning, EventReasonEngineRecordFailed, "Start failed: %v", startErr)
-	}
 	// A download that could not read its sourceSecretRef has not fetched
-	// anything yet, so retrying the start costs one more read. Any other
-	// failure is not requeued even when it may be transient: a retry would
-	// download or load the model again every poll.
+	// anything yet, so retrying the start on the next poll costs one more
+	// read. Any other failure is retried on the restart backoff instead: a
+	// retry may download or load the model again.
 	var readErr *sourceSecretReadError
 	if errors.As(startErr, &readErr) {
 		a.requeue(types.NamespacedName{Namespace: isvc.Namespace, Name: isvc.Name}.String())
+		return fmt.Errorf("failed to start process: %w", startErr)
 	}
+	eventReason := EventReasonStartFailed
+	if errors.Is(startErr, errEngineRecordWrite) {
+		eventReason = EventReasonEngineRecordFailed
+	}
+	a.failStart(ctx, isvc, startErr, eventReason)
 	return fmt.Errorf("failed to start process: %w", startErr)
 }
 

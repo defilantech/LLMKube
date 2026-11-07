@@ -144,6 +144,8 @@ func (e *TensorFoldExecutor) StartProcess(_ context.Context, config ExecutorConf
 		ModelPath: modelPath,
 		ModelID:   tensorFoldServedName(config),
 		StartedAt: time.Now(),
+		exit:      exit,
+		logPath:   logPath,
 	}
 
 	if err := waitForChildHealthy(port, e.startupTimeout, exit.done); err != nil {

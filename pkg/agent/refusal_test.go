@@ -886,10 +886,11 @@ func TestEnsureProcess_CacheSlotErrorFromStartRefused(t *testing.T) {
 }
 
 // A plain (non-digest) StartProcess failure must NOT be routed through
-// refuseStart: it keeps the historical plain-wrapped-error, log-only
-// behavior, so a transient network or process-spawn failure is retried by
-// the next watch event rather than parked behind a status refusal an
-// operator would have to clear.
+// refuseStart: a transient network or process-spawn failure is not a refusal
+// to park behind a refusal reason. It is reported as StartFailed, which the
+// agent clears itself once a retry starts the engine, and retried on the
+// restart backoff rather than the refusal re-check (#2404). This test used to
+// require no Event and an empty status, which was the #2404 bug.
 func TestEnsureProcess_PlainStartFailureNotRefused(t *testing.T) {
 	isvc := refusalISVC("svc")
 	a, ex, rec := refusalFixture(t, MetalAgentConfig{}, isvc, refusalModel())
@@ -900,16 +901,27 @@ func TestEnsureProcess_PlainStartFailureNotRefused(t *testing.T) {
 	if err == nil || strings.Contains(err.Error(), EventReasonModelDigestMismatch) {
 		t.Fatalf("ensureProcess error = %v, want a plain failure not naming %s", err, EventReasonModelDigestMismatch)
 	}
-	if len(drainEvents(rec)) != 0 {
-		t.Errorf("events = %v, want none for a plain start failure", drainEvents(rec))
+	events := drainEvents(rec)
+	if len(events) != 1 || !strings.HasPrefix(events[0], "Warning "+EventReasonStartFailed+" ") {
+		t.Errorf("events = %v, want only a Warning %s", events, EventReasonStartFailed)
 	}
 	got := &inferencev1alpha1.InferenceService{}
 	if gErr := a.config.K8sClient.Get(context.Background(),
 		types.NamespacedName{Name: "svc", Namespace: "default"}, got); gErr != nil {
 		t.Fatalf("get InferenceService: %v", gErr)
 	}
-	if got.Status.SchedulingStatus != "" {
-		t.Errorf("status.schedulingStatus = %q, want empty for a plain start failure", got.Status.SchedulingStatus)
+	if got.Status.SchedulingStatus != EventReasonStartFailed {
+		t.Errorf("status.schedulingStatus = %q, want %s for a plain start failure",
+			got.Status.SchedulingStatus, EventReasonStartFailed)
+	}
+	a.refusals.mu.Lock()
+	_, refused := a.refusals.records["default/svc"]
+	a.refusals.mu.Unlock()
+	if refused {
+		t.Errorf("a plain start failure was recorded as a refusal")
+	}
+	if !restartPending(a, "default/svc") {
+		t.Errorf("a plain start failure was not queued for a retry")
 	}
 }
 

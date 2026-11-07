@@ -514,6 +514,17 @@ type ManagedProcess struct {
 	// healthFailures counts this process's consecutive failed health probes.
 	// Guarded by MetalAgent.mu; a replacement process starts again at zero.
 	healthFailures int
+
+	// exit reports the engine's exit: its reaper, set by the executor that
+	// spawned it, or for an adopted engine a kernel exit watch set by
+	// watchAdoptedExits (macOS only). Nil for the shared oMLX and Ollama
+	// daemons. watchEngineExit acts on it without waiting for a health probe
+	// (#2405).
+	exit *childExit
+	// logPath is the engine's per-process log, which an EngineExited Event
+	// names and whose tail goes to the agent log. Empty when the executor
+	// keeps none.
+	logPath string
 }
 
 // EffectiveModelRoots returns the root paths NewMetalAgent resolves into
@@ -857,6 +868,9 @@ func (a *MetalAgent) Start(ctx context.Context) error {
 		}()
 	}
 
+	// Act on the exit of an adopted engine at once, as for a child (#2405).
+	a.watchAdoptedExits(ctx)
+
 	// Start health monitor
 	monitor := NewHealthMonitor(
 		a,
@@ -1182,6 +1196,7 @@ func (a *MetalAgent) ensureProcess(ctx context.Context, isvc *inferencev1alpha1.
 	// Started, already running, stopped or eviction-blocked: not refused,
 	// so a later refusal is a new one and gets its Event.
 	a.refusals.forget(types.NamespacedName{Namespace: isvc.Namespace, Name: isvc.Name}.String())
+	a.clearStartFailure(ctx, isvc)
 	return nil
 }
 
@@ -1526,6 +1541,7 @@ func (a *MetalAgent) reconcileProcess(ctx context.Context, isvc *inferencev1alph
 	// record when the stop fails, so the deferred drop must not remove it.
 	stored = true
 	processHealthy.WithLabelValues(isvc.Name, isvc.Namespace).Set(1)
+	a.watchEngineExit(ctx, key, process)
 
 	if err := a.completeEngineRecord(ctx, key, process); err != nil {
 		return err

@@ -21,7 +21,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -80,6 +79,9 @@ type restartBackoff struct {
 	releaseAt time.Time
 	// timer wakes the event loop at nextAt.
 	timer *time.Timer
+	// attempting is set while runRestart's own start runs. A failed start
+	// then leaves the retry and its Event to runRestart (failStart).
+	attempting bool
 }
 
 // healthFailureThreshold resolves config.HealthFailureThreshold.
@@ -267,20 +269,36 @@ func (a *MetalAgent) wakeRestarts() {
 }
 
 // restartUnhealthy stops proc, which has failed `failures` consecutive health
-// probes, and schedules its replacement on the service's restart backoff. It
-// runs on the health monitor's goroutine; the replacement starts later on the
-// event loop (runDueRestarts), never before the stop has returned.
+// probes, and schedules its replacement on the service's restart backoff
+// (stopForRestart). It runs on the health monitor's goroutine.
+func (a *MetalAgent) restartUnhealthy(ctx context.Context, key string, proc *ManagedProcess, failures int) {
+	restartIn, ok := a.stopForRestart(ctx, key, proc, "consecutiveFailures", failures)
+	if !ok {
+		return
+	}
+	a.emitInferenceEvent(ctx, proc, corev1.EventTypeWarning, EventReasonHealthRestart,
+		"Engine failed %d consecutive health checks and was stopped; restarting in %s", failures, restartIn)
+}
+
+// stopForRestart stops proc, an engine marked unhealthy (it failed its health
+// probes, or its process exited), and schedules its replacement on the
+// service's restart backoff. It returns how long until the restart, and false
+// when it left proc alone or scheduled nothing. The replacement starts later
+// on the event loop (runDueRestarts), never before the stop has returned.
+// logKV is added to its log lines.
 //
 // proc is removed from a.processes and its key held in a.starting under one
 // lock, so a watch event can neither start a second engine while this one is
 // stopping nor stop it a second time. A proc that was replaced, removed or
-// recovered since the probe, or whose key has a start in flight, is left
+// recovered since it was marked, or whose key has a start in flight, is left
 // alone; the next probe looks again.
-func (a *MetalAgent) restartUnhealthy(ctx context.Context, key string, proc *ManagedProcess, failures int) {
+func (a *MetalAgent) stopForRestart(
+	ctx context.Context, key string, proc *ManagedProcess, logKV ...interface{},
+) (time.Duration, bool) {
 	a.mu.Lock()
 	if a.processes[key] != proc || proc.Healthy || a.starting[key] {
 		a.mu.Unlock()
-		return
+		return 0, false
 	}
 	delete(a.processes, key)
 	managedProcesses.Set(float64(len(a.processes)))
@@ -292,8 +310,8 @@ func (a *MetalAgent) restartUnhealthy(ctx context.Context, key string, proc *Man
 	st.specHash = proc.SpecHash
 	a.mu.Unlock()
 
-	a.logger.Warnw("stopping unhealthy process to restart it",
-		"namespace", proc.Namespace, "name", proc.Name, "pid", proc.PID, "consecutiveFailures", failures)
+	a.logger.Warnw("stopping unhealthy process to restart it", append([]interface{}{
+		"namespace", proc.Namespace, "name", proc.Name, "pid", proc.PID}, logKV...)...)
 	var notBefore time.Time
 	stopErr := a.stopManagedProcess(ctx, proc, false)
 	// The record goes only once the engine is confirmed stopped.
@@ -315,7 +333,7 @@ func (a *MetalAgent) restartUnhealthy(ctx context.Context, key string, proc *Man
 		a.mu.Unlock()
 		a.logger.Infow("service torn down or agent stopping while its unhealthy process stopped; not restarting it",
 			"namespace", proc.Namespace, "name", proc.Name)
-		return
+		return 0, false
 	}
 	if !notBefore.IsZero() {
 		st.releaseAt = notBefore
@@ -326,8 +344,7 @@ func (a *MetalAgent) restartUnhealthy(ctx context.Context, key string, proc *Man
 
 	a.logger.Warnw("restart scheduled for unhealthy process",
 		"namespace", proc.Namespace, "name", proc.Name, "restartAt", restartAt, "restartIn", restartIn)
-	a.emitInferenceEvent(ctx, proc, corev1.EventTypeWarning, EventReasonHealthRestart,
-		"Engine failed %d consecutive health checks and was stopped; restarting in %s", failures, restartIn)
+	return restartIn, true
 }
 
 // runDueRestarts runs every pending health restart whose backoff has expired.
@@ -382,7 +399,13 @@ func (a *MetalAgent) runRestart(ctx context.Context, key string) {
 	// This attempt is the start deferToPendingRestart leaves to the restart,
 	// so the reconcile below must not defer it again.
 	st.pending = false
+	st.attempting = true
 	a.mu.Unlock()
+	defer func() {
+		a.mu.Lock()
+		st.attempting = false
+		a.mu.Unlock()
+	}()
 
 	namespace, name := parseKey(key)
 	isvc := &inferencev1alpha1.InferenceService{}
@@ -413,14 +436,14 @@ func (a *MetalAgent) runRestart(ctx context.Context, key string) {
 	}
 
 	a.mu.Lock()
-	st = a.restarts[key]
-	if st == nil || a.processes[key] != nil {
+	cur := a.restarts[key]
+	if cur == nil || a.processes[key] != nil {
 		// Cancelled during the attempt, or the attempt brought an engine up.
 		a.mu.Unlock()
 		return
 	}
 	if specHash != "" {
-		st.specHash = specHash
+		cur.specHash = specHash
 	}
 	retryAt := a.scheduleRestartLocked(key, time.Time{})
 	retryIn := retryAt.Sub(a.now())
@@ -431,10 +454,13 @@ func (a *MetalAgent) runRestart(ctx context.Context, key string) {
 	}
 	a.logger.Warnw("restart failed; retrying",
 		"namespace", namespace, "name", name, "retryAt", retryAt, "retryIn", retryIn, "error", err)
-	// Only the first line: a start error can carry the tail of the engine
-	// log, which belongs in the agent log, not in an Event.
-	reason, _, _ := strings.Cut(err.Error(), "\n")
+	// Only the first line, without the engine log tail a start error can
+	// carry: the tail belongs in the agent log (the line above), not in an
+	// Event, because Events are readable by anyone who can read the namespace
+	// and are commonly exported to central logging, and an engine log can
+	// carry request text. The Event says where the log is instead.
+	reason, logPath := summarizeForEvent(err)
 	a.emitInferenceEvent(ctx, &ManagedProcess{Namespace: namespace, Name: name}, corev1.EventTypeWarning,
-		EventReasonRestartFailed, "Restart did not bring the engine back: %s; retrying in %s",
-		reason, retryIn)
+		EventReasonRestartFailed, "%s",
+		fmt.Sprintf("Restart did not bring the engine back: %s; retrying in %s", reason, retryIn)+engineLogHint(logPath))
 }

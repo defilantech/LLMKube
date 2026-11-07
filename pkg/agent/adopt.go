@@ -216,7 +216,7 @@ func (a *MetalAgent) storeAdopted(rec engineRecord) {
 		Name: rec.Name, Namespace: rec.Namespace, PID: rec.PID, PGID: rec.PGID, StartToken: rec.StartToken,
 		Port: rec.Port, ModelPath: rec.ModelPath, ModelID: rec.ModelID, StartedAt: rec.StartedAt, Healthy: true,
 		SpecHash: rec.SpecHash, Priority: rec.Priority, EvictionProtection: rec.EvictionProtection,
-		Runtime: rec.Runtime, AdmittedBytes: rec.AdmittedBytes, Adopted: true,
+		Runtime: rec.Runtime, AdmittedBytes: rec.AdmittedBytes, Adopted: true, logPath: rec.LogPath,
 	}
 	a.mu.Unlock()
 	processHealthy.WithLabelValues(rec.Name, rec.Namespace).Set(1)
