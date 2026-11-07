@@ -141,6 +141,11 @@ The first deploy downloads the weights (about 2.8 GB for phi-4-mini) into a `llm
 llmkube deploy llama-3.1-8b --gpu --gpu-count 1
 ```
 
+This catalog entry defaults to 8,192 context tokens, with an estimated 7–8 GB
+VRAM footprint. Use `--context 16384` for a longer window if memory allows;
+the model's 131,072-token maximum needs about 16 GiB for the f16 KV cache alone.
+See [catalog memory estimates](catalog/README.md#context-and-memory-estimates).
+
 On a Mac that has the Metal Agent installed, `--gpu` picks Metal; add `--accelerator cuda` to target NVIDIA nodes.
 
 <details>
