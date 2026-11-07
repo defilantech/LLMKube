@@ -346,11 +346,9 @@ func (a *MetalAgent) prepareRegistry(ctx context.Context) (*ingress.Server, erro
 	} else if cleaned > 0 {
 		a.logger.Infow("cleaned up orphaned endpoints from prior sessions", "count", cleaned)
 	}
-	// Apart from the engines it adopted (#2079), this process serves nothing
-	// yet, so any other slice a previous agent process left Ready points at a
-	// child that is gone. Withdraw those before the watcher starts; adopted
-	// engines keep theirs, and each successful ensureProcess re-registers
-	// Ready (#1918).
+	// Only healthy adopted engines keep their inherited endpoints Ready.
+	// Withdraw the rest before the watcher starts; recovery or a successful
+	// ensureProcess re-registers them (#1918).
 	a.withdrawInheritedEndpoints(ctx)
 	return srv, nil
 }

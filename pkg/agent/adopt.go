@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"errors"
-	"time"
 )
 
 // Outcomes of evaluating one engine record at startup, the result label of
@@ -29,14 +28,13 @@ func (a *MetalAgent) startAdoption(ctx context.Context) map[string]bool {
 	return adopted
 }
 
-// adoptEngines reads the engine records a previous agent process left and
-// adopts each engine that is still ours and serving, so it keeps serving
-// instead of being reloaded (#2079). It needs no API server. An engine that is
-// ours (its start token matches) but cannot be adopted, because its executable
-// changed, it is not serving or it is bound for another mode, is stopped as a
-// group; a record whose process is not provably ours is discarded without a
-// signal. Records it cannot parse are logged and left alone. It returns the adopted keys (namespace/name),
-// which the startup endpoint withdrawal skips.
+// adoptEngines reads the records a previous agent left and adopts engines
+// that are still ours and either serving or previously finished loading.
+// A running engine that misses its probe is left to the health monitor.
+// Engines with a changed executable or bind host, and provisional engines
+// that are not serving, are stopped as a group. Unproven identities are
+// discarded without a signal; unparseable records are logged and left alone.
+// It needs no API server and returns the adopted keys for the watcher.
 func (a *MetalAgent) adoptEngines(ctx context.Context) map[string]bool {
 	adopted := map[string]bool{}
 	recs, errs := a.engineRecords.List()
@@ -83,6 +81,7 @@ func (a *MetalAgent) adoptOne(ctx context.Context, rec engineRecord) (outcome st
 	if ctx.Err() != nil {
 		return adoptionInterrupted, true
 	}
+	healthy := true
 	switch {
 	case rec.Version == legacyEngineRecordVersion:
 		// An engine of an agent from before process groups is never adopted.
@@ -125,10 +124,14 @@ func (a *MetalAgent) adoptOne(ctx context.Context, rec engineRecord) (outcome st
 		if ctx.Err() != nil {
 			return adoptionInterrupted, true
 		}
-		// Ours but not serving: crashed mid-load, hung, or still loading.
-		return a.stopUnwanted(rec, "not serving")
+		// Only a running record proves loading finished; let the monitor
+		// handle a busy engine without delaying agent startup.
+		if rec.State != engineRecordRunning {
+			return a.stopUnwanted(rec, "not serving")
+		}
+		healthy = false
 	}
-	a.storeAdopted(rec)
+	a.storeAdopted(rec, healthy)
 	return adoptionAdopted, false
 }
 
@@ -202,36 +205,27 @@ func (a *MetalAgent) runsRecordedExecutable(rec engineRecord) bool {
 	return err == nil && executableMatches(exes, rec.executablePaths()...)
 }
 
-// serving gives a busy engine time to answer before adoption stops it.
+// serving probes the runtime's health endpoint on the recorded port, as the
+// health monitor does.
 func (a *MetalAgent) serving(ctx context.Context, rec engineRecord) bool {
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	for ctx.Err() == nil {
-		ok, err := a.healthChecker.Check(ctx, rec.Port, healthProbePath(rec.Runtime))
-		if err == nil && ok {
-			return true
-		}
-		timer := time.NewTimer(5 * time.Second)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return false
-		case <-timer.C:
-		}
-	}
-	return false
+	ok, err := a.healthChecker.Check(ctx, rec.Port, healthProbePath(rec.Runtime))
+	return err == nil && ok
 }
 
 // storeAdopted inserts the ManagedProcess of an adopted engine with every
 // recorded field.
-func (a *MetalAgent) storeAdopted(rec engineRecord) {
+func (a *MetalAgent) storeAdopted(rec engineRecord, healthy bool) {
 	a.mu.Lock()
 	a.processes[rec.Namespace+"/"+rec.Name] = &ManagedProcess{
 		Name: rec.Name, Namespace: rec.Namespace, PID: rec.PID, PGID: rec.PGID, StartToken: rec.StartToken,
-		Port: rec.Port, ModelPath: rec.ModelPath, ModelID: rec.ModelID, StartedAt: rec.StartedAt, Healthy: true,
+		Port: rec.Port, ModelPath: rec.ModelPath, ModelID: rec.ModelID, StartedAt: rec.StartedAt, Healthy: healthy,
 		SpecHash: rec.SpecHash, Priority: rec.Priority, EvictionProtection: rec.EvictionProtection,
 		Runtime: rec.Runtime, AdmittedBytes: rec.AdmittedBytes, Adopted: true,
 	}
 	a.mu.Unlock()
-	processHealthy.WithLabelValues(rec.Name, rec.Namespace).Set(1)
+	value := 0.0
+	if healthy {
+		value = 1
+	}
+	processHealthy.WithLabelValues(rec.Name, rec.Namespace).Set(value)
 }
