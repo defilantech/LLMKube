@@ -326,15 +326,6 @@ func (r *ModelReconciler) hfTokenFromSecret(ctx context.Context, model *inferenc
 	return strings.TrimSpace(string(secret.Data["HF_TOKEN"]))
 }
 
-func filesHaveGlob(files []string) bool {
-	for _, f := range files {
-		if !strings.Contains(f, "://") && hasGlob(f) {
-			return true
-		}
-	}
-	return false
-}
-
 // stagingRepoBase returns the URL multi-file staging fetches "<base>/<file>"
 // from. A Hugging Face repo source (hf://, a bare repo ID, or a huggingface.co
 // repo URL) resolves on HF_ENDPOINT when the Secret names one, as
