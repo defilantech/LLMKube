@@ -14,6 +14,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"strconv"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -277,8 +278,8 @@ func (r *ModelRouterReconciler) newRouterDeployment(
 							},
 							Resources:       resources,
 							SecurityContext: routerProxyContainerSecurityContext(),
-							LivenessProbe:   routerProxyProbe(20, 10),
-							ReadinessProbe:  routerProxyProbe(5, 5),
+							LivenessProbe:   routerProxyProbe(routerProxyHealthPath, 20, 10),
+							ReadinessProbe:  routerProxyProbe(routerProxyReadinessPath(mr), 5, 5),
 						},
 					},
 					Volumes: []corev1.Volume{
@@ -375,11 +376,32 @@ func routerProxyContainerSecurityContext() *corev1.SecurityContext {
 	}
 }
 
-func routerProxyProbe(initialDelay, periodSeconds int32) *corev1.Probe {
+const (
+	routerProxyHealthPath = "/health"
+	routerProxyReadyPath  = "/readyz"
+)
+
+// routerProxyReadinessPath keeps readiness on /health unless the router
+// requires local listeners, so an unset field leaves the pod template as is.
+func routerProxyReadinessPath(mr *inferencev1alpha1.ModelRouter) string {
+	if len(proxyReadinessRequiredListeners(mr)) > 0 {
+		return routerProxyReadyPath
+	}
+	return routerProxyHealthPath
+}
+
+func proxyReadinessRequiredListeners(mr *inferencev1alpha1.ModelRouter) []int32 {
+	if mr.Spec.Proxy == nil {
+		return nil
+	}
+	return mr.Spec.Proxy.ReadinessRequiredListeners
+}
+
+func routerProxyProbe(path string, initialDelay, periodSeconds int32) *corev1.Probe {
 	return &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{
 			HTTPGet: &corev1.HTTPGetAction{
-				Path: "/health",
+				Path: path,
 				Port: intstr.FromInt(int(routerProxyPort)),
 			},
 		},
@@ -419,6 +441,9 @@ func routerProxyArgs(mr *inferencev1alpha1.ModelRouter, hasPools bool) []string 
 	}
 	if hasPools {
 		args = append(args, "--enable-activation")
+	}
+	for _, port := range proxyReadinessRequiredListeners(mr) {
+		args = append(args, "--readiness-required-listener", strconv.Itoa(int(port)))
 	}
 	return args
 }

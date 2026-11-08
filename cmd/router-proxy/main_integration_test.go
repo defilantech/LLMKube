@@ -117,7 +117,7 @@ func TestRouterProxyBinarySmoke(t *testing.T) {
 		}
 	})
 
-	if err := waitForReady("http://"+listen+"/health", 10*time.Second); err != nil {
+	if err := waitForReady("http://" + listen + "/health"); err != nil {
 		t.Fatalf("router-proxy never became ready: %v", err)
 	}
 
@@ -171,8 +171,6 @@ func TestRouterProxyBinarySmoke(t *testing.T) {
 	}
 }
 
-// waitForReady polls the given URL until it returns 2xx or the timeout
-// expires.
 // TestRouterProxyBinaryLabelsMetricsWithRouterName runs the real binary because
 // the bug it pins lived in main's wiring: in-process tests set the name on the
 // Proxy directly, so they passed while no running proxy had it (#2455).
@@ -230,7 +228,7 @@ func TestRouterProxyBinaryLabelsMetricsWithRouterName(t *testing.T) {
 				_ = cmd.Process.Kill()
 				_ = cmd.Wait()
 			})
-			if err := waitForReady("http://"+listen+"/health", 10*time.Second); err != nil {
+			if err := waitForReady("http://" + listen + "/health"); err != nil {
 				t.Fatalf("router-proxy never became ready: %v", err)
 			}
 
@@ -268,8 +266,136 @@ func TestRouterProxyBinaryLabelsMetricsWithRouterName(t *testing.T) {
 	}
 }
 
-func waitForReady(url string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
+// TestRouterProxyBinaryReadyzRequiresListener runs the real binary with the
+// flag the controller renders for spec.proxy.readinessRequiredListeners, so it
+// covers main's wiring of the flag into the proxy. On Linux /readyz follows a
+// real LISTEN socket in /proc/net/tcp; elsewhere there is no /proc, so /readyz
+// must fail open and log why.
+func TestRouterProxyBinaryReadyzRequiresListener(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in -short mode")
+	}
+
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "router-proxy")
+	repoRoot, err := findRepoRoot()
+	if err != nil {
+		t.Fatalf("locate repo root: %v", err)
+	}
+	build := exec.Command("go", "build", "-o", binPath, "./cmd/router-proxy")
+	build.Dir = repoRoot
+	build.Env = append(os.Environ(), "CGO_ENABLED=0")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("go build failed: %v\n%s", err, out)
+	}
+
+	configPath := filepath.Join(dir, "config.json")
+	cfgBytes, _ := json.Marshal(map[string]any{
+		"backends":     []map[string]any{{"name": "local", "tier": "local", "address": "http://127.0.0.1:1"}},
+		"defaultRoute": "local",
+	})
+	if err := os.WriteFile(configPath, cfgBytes, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	required, startListening := reserveTCPPort(t)
+	listen := fmt.Sprintf("127.0.0.1:%d", pickFreePort(t))
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binPath,
+		"--config", configPath, "--listen", listen, "--metrics-bind-address", "0",
+		"--log-format", "text", "--readiness-required-listener", fmt.Sprint(required))
+	var logs strings.Builder
+	cmd.Stdout = &logs
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start router-proxy: %v", err)
+	}
+	stopped := false
+	stop := func() {
+		if !stopped {
+			stopped = true
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	}
+	t.Cleanup(stop)
+	if err := waitForReady("http://" + listen + "/health"); err != nil {
+		t.Fatalf("router-proxy never became live: %v", err)
+	}
+
+	get := func(path string) (int, string) {
+		t.Helper()
+		resp, err := http.Get("http://" + listen + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		body, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(body)
+	}
+
+	if runtime.GOOS != "linux" {
+		if code, body := get("/readyz"); code != http.StatusOK {
+			t.Errorf("/readyz without /proc = %d %s, want 200 (fail open)", code, body)
+		}
+		stop()
+		for _, want := range []string{"cannot read TCP socket table", "required listeners not enforced; reporting ready"} {
+			if !strings.Contains(logs.String(), want) {
+				t.Errorf("logs do not contain %q:\n%s", want, logs.String())
+			}
+		}
+		return
+	}
+
+	code, body := get("/readyz")
+	if code != http.StatusServiceUnavailable || !strings.Contains(body, fmt.Sprint(required)) {
+		t.Errorf("/readyz with no listener on %d = %d %s, want 503 naming the port", required, code, body)
+	}
+	if code, _ := get("/health"); code != http.StatusOK {
+		t.Errorf("/health = %d while not ready, want 200", code)
+	}
+	startListening()
+	// /readyz caches its result for about a second.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		code, body := get("/readyz")
+		if code == http.StatusOK {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("/readyz with a listener on %d = %d %s, want 200", required, code, body)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// reserveTCPPort binds a TCP socket on 127.0.0.1 without listening on it, so
+// no other process can take the port while it has no LISTEN entry, and returns
+// the port and a func that starts listening on that same socket.
+func reserveTCPPort(t *testing.T) (int, func()) {
+	t.Helper()
+	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, 0)
+	if err != nil {
+		t.Fatalf("socket: %v", err)
+	}
+	t.Cleanup(func() { _ = syscall.Close(fd) })
+	if err := syscall.Bind(fd, &syscall.SockaddrInet4{Addr: [4]byte{127, 0, 0, 1}}); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	sa, err := syscall.Getsockname(fd)
+	if err != nil {
+		t.Fatalf("getsockname: %v", err)
+	}
+	return sa.(*syscall.SockaddrInet4).Port, func() {
+		if err := syscall.Listen(fd, 1); err != nil {
+			t.Fatalf("listen on the reserved port: %v", err)
+		}
+	}
+}
+
+// waitForReady polls the given URL until it returns 2xx or 10 seconds pass.
+func waitForReady(url string) error {
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		resp, err := http.Get(url) //nolint:gosec // URL is constructed locally in test
 		if err == nil {

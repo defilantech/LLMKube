@@ -22,12 +22,14 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -62,6 +64,7 @@ func main() {
 	logFormat := flag.String("log-format", "json",
 		"Structured log format: json or text.")
 	shutdownTimeout := registerShutdownTimeout(flag.CommandLine)
+	readinessListeners := registerReadinessRequiredListeners(flag.CommandLine)
 	quarantineDuration := flag.Duration("quarantine-duration", 15*time.Second,
 		"How long a backend stays in the quarantined (skip) state after a "+
 			"5xx / network error (two in a row for a pod of an endpoint "+
@@ -171,6 +174,10 @@ func main() {
 		}
 		proxyOpts = append(proxyOpts, router.WithActivator(activator))
 		logger.Info("ModelPool activation enabled")
+	}
+	if len(*readinessListeners) > 0 {
+		proxyOpts = append(proxyOpts, router.WithReadinessRequiredListeners(*readinessListeners))
+		logger.Info("readiness requires local TCP listeners", "ports", []uint16(*readinessListeners))
 	}
 
 	proxy := router.NewProxy(cfg, logger, proxyOpts...)
@@ -323,6 +330,42 @@ const defaultShutdownTimeout = 30 * time.Second
 func registerShutdownTimeout(fs *flag.FlagSet) *time.Duration {
 	return fs.Duration("shutdown-timeout", defaultShutdownTimeout,
 		"How long to wait for in-flight requests on SIGTERM before forcing a close.")
+}
+
+// portList is a repeatable flag of TCP ports, one per occurrence.
+type portList []uint16
+
+func (p *portList) String() string {
+	if p == nil {
+		return ""
+	}
+	s := make([]string, len(*p))
+	for i, port := range *p {
+		s[i] = strconv.Itoa(int(port))
+	}
+	return strings.Join(s, ",")
+}
+
+func (p *portList) Set(v string) error {
+	n, err := strconv.ParseUint(v, 10, 16)
+	if err != nil || n == 0 {
+		return fmt.Errorf("want a TCP port from 1 to 65535, got %q", v)
+	}
+	*p = append(*p, uint16(n))
+	return nil
+}
+
+// registerReadinessRequiredListeners registers the repeatable
+// --readiness-required-listener on fs, which the controller renders once per
+// entry of ModelRouter spec.proxy.readinessRequiredListeners.
+func registerReadinessRequiredListeners(fs *flag.FlagSet) *portList {
+	var ports portList
+	fs.Var(&ports, "readiness-required-listener",
+		"TCP port that must have a LISTEN socket in this pod's network "+
+			"namespace for GET /readyz to answer 200. Repeat for several "+
+			"ports. If /proc/net/tcp cannot be read, /readyz answers 200 "+
+			"and logs a warning.")
+	return &ports
 }
 
 // newEndpointWatcher builds the EndpointSlice watcher when the config has an
