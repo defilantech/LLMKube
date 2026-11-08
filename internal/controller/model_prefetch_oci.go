@@ -105,6 +105,7 @@ func (r *ModelReconciler) reconcileOCIPrefetch(ctx context.Context, model *infer
 	if condition := meta.FindStatusCondition(model.Status.Conditions, ConditionDegraded); condition != nil && condition.Reason == "RepoListingFailed" {
 		setOCIPrefetchCondition(model, ConditionDegraded, metav1.ConditionFalse, "RepoListingSucceeded", "Source repository listing recovered")
 	}
+	r.setUnmatchedFilePatterns(model, plan)
 	jobModel := prefetchJobModel(model, plan)
 	fingerprintInput, err := json.Marshal(struct {
 		Source      string

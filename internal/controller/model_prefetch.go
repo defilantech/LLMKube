@@ -584,6 +584,7 @@ func (r *ModelReconciler) reconcilePrefetchState(ctx context.Context, model *inf
 		setCondition(model, ConditionDegraded, metav1.ConditionTrue, "InvalidFileSet", planErr.Error())
 		return true, ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
 	}
+	r.setUnmatchedFilePatterns(model, plan)
 	// The key is part of the fingerprint, so it is settled before the
 	// fingerprint is taken; the Ready written below carries it too.
 	seedPrefetchCacheKey(model)
