@@ -54,6 +54,10 @@ import (
 // deployment/macos/metal-agent-write-policy.yaml.
 const writePolicyName = "llmkube-metal-agent-writes"
 
+// labelPolicyName is the policy and binding name in
+// deployment/macos/metal-agent-label-policy.yaml.
+const labelPolicyName = "llmkube-metal-agent-labels"
+
 // writePolicyEnv is a real API server with the raw write policy and the
 // shared metal-agent Role applied, and clients acting as a per-Mac agent
 // ServiceAccount (matched by the policy) and as an unrelated ServiceAccount
@@ -215,25 +219,34 @@ func newWritePolicyEnv(t *testing.T) *writePolicyEnv {
 
 	// The API server loads policies asynchronously: wait until a write the
 	// policy denies is denied. Dry runs, so nothing changes while the policy
-	// is not yet in force. Two probes, one per validation, so a test run with
-	// either validation removed still gets past this wait and fails on the
-	// case that names it.
+	// is not yet in force. Three probes, one per validation and one for the
+	// label policy, and all must pass, so a test run with either validation
+	// removed still gets past this wait and fails on the case that names it,
+	// and a run whose label policy has not loaded does not report a forged
+	// write as admitted.
 	mustCreate(e.service("load-probe", nil))
 	err = wait.PollUntilContextTimeout(ctx, 100*time.Millisecond, 30*time.Second, true,
 		func(ctx context.Context) (bool, error) {
 			create := e.service("load-probe-new", nil)
-			if policyDenied(e.agent.Create(ctx, create, client.DryRunAll)) {
-				return true, nil
+			if !policyDenied(e.agent.Create(ctx, create, client.DryRunAll)) {
+				return false, nil
 			}
 			update := e.service("load-probe", nil)
 			if err := e.agent.Get(ctx, client.ObjectKeyFromObject(update), update); err != nil {
 				return false, nil
 			}
 			update.Labels = managedLabels("load-probe")
-			return policyDenied(e.agent.Update(ctx, update, client.DryRunAll)), nil
+			if !policyDenied(e.agent.Update(ctx, update, client.DryRunAll)) {
+				return false, nil
+			}
+			// The label policy is a second object and loads on its own
+			// schedule: an unrelated identity writing a labeled object is
+			// admitted until it is in force.
+			labeled := e.service("load-probe-labeled", managedLabels("load-probe-labeled"))
+			return deniedBy(e.other.Create(ctx, labeled, client.DryRunAll), labelPolicyName), nil
 		})
 	if err != nil {
-		t.Fatalf("the write policy never denied an unlabeled write: %v", err)
+		t.Fatalf("the write or label policy never denied its probe write: %v", err)
 	}
 	return e
 }

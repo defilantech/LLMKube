@@ -55,6 +55,18 @@ tests:
           path: spec.validations[0].reason
           value: Forbidden
         documentIndex: 0
+      - matchRegex:
+          path: spec.validations[0].expression
+          pattern: ^!has\(object\.metadata\.labels\) \|\|
+        documentIndex: 0
+      - matchRegex:
+          path: spec.validations[0].expression
+          pattern: object\.metadata\.labels\['llmkube\.ai/managed-by'\] != 'metal-agent'
+        documentIndex: 0
+      - matchRegex:
+          path: spec.validations[0].expression
+          pattern: llmkube-metal-\[a-z0-9\]\(\[-a-z0-9\]\*\[a-z0-9\]\)\?\$
+        documentIndex: 0
       - isKind:
           of: ValidatingAdmissionPolicyBinding
         documentIndex: 1

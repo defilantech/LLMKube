@@ -26,8 +26,9 @@ cluster-scoped, so in a cluster with more than one LLMKube release each copy
 denies every other release's controller writes to a labeled object. Lift that
 by disabling this policy on every release, or by editing each installed copy's
 not-llmkube-controller condition to name every release's controller. A
-serviceAccount.name that starts with llmkube-metal- also passes, but then the
-write policy holds that controller and denies its unlabeled writes.
+serviceAccount.name that starts with llmkube-metal- also passes, and the write
+policy exempts that same release's controller by name, so its unlabeled writes
+stay allowed.
 
 A system controller that rewrites a leftover core/v1 Endpoints still carrying
 the label (EndpointSliceMirroring, the endpoints controller) is denied by this
