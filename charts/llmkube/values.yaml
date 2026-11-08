@@ -780,8 +780,10 @@ metalAgent:
       create: true
       # Name of the ServiceAccount. Empty uses llmkube-metal-agent, the name
       # deployment/macos/README.md's `kubectl create token` recipe uses.
-      # Keep the llmkube-metal- prefix, or writePolicy below does not cover
-      # the agent.
+      # The name must start with llmkube-metal-, and the suffix must be a
+      # DNS-1123 label. writePolicy below only covers such names, and with
+      # labelGuard.enabled (the default) an agent bound to any other name has
+      # its own registration write denied by llmkube-metal-agent-labels.
       name: ""
   writePolicy:
     # Install a ValidatingAdmissionPolicy that holds every ServiceAccount named

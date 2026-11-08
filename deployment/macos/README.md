@@ -818,7 +818,7 @@ namespace: the shared `llmkube-metal-agent` and the per-Mac
 `llmkube-metal-` ServiceAccount prefix is reserved for Mac agents; another
 workload with a ServiceAccount of that name is held to the same rule. This
 policy constrains those identities only. Every other writer is covered by the
-label policy below, which exempts the controller by name.
+label policy below, for that label, and it exempts the controller by name.
 
 Without Helm, a cluster admin applies both policies once per cluster (they are
 cluster-scoped). The label policy is the half that covers writers outside the
