@@ -200,8 +200,13 @@ func newWritePolicyEnv(t *testing.T) *writePolicyEnv {
 		})
 	}
 
-	for _, obj := range decodeManifest(t, "deployment/macos/metal-agent-write-policy.yaml", policyKinds) {
-		mustCreate(obj)
+	for _, manifest := range []string{
+		"deployment/macos/metal-agent-write-policy.yaml",
+		"deployment/macos/metal-agent-label-policy.yaml",
+	} {
+		for _, obj := range decodeManifest(t, manifest, policyKinds) {
+			mustCreate(obj)
+		}
 	}
 
 	e.agent = e.clientAs(t, "llmkube-metal-test-mac")
@@ -303,11 +308,40 @@ func isvcOwnerRef(name string, uid types.UID) metav1.OwnerReference {
 	}
 }
 
-// seed creates obj as the admin, outside the policy.
+// seed creates obj outside the policies, standing up a fixture the case under
+// test then acts on: as the admin when it carries no metal-agent label, and
+// with the agent's username when it does, since llmkube-metal-agent-labels
+// admits a labeled object only from a llmkube-metal-* ServiceAccount
+// (GHSA-863w-vh42-mjhj).
 func (e *writePolicyEnv) seed(t *testing.T, obj client.Object) {
 	t.Helper()
+	if obj.GetLabels()[managedByLabel] == managedByValue {
+		e.seedAsAgent(t, obj)
+		return
+	}
 	if err := e.admin.Create(context.Background(), obj); err != nil {
 		t.Fatalf("seed %T %s: %v", obj, obj.GetName(), err)
+	}
+}
+
+// seedAsAgent creates obj carrying the agent's username, for a labeled object
+// the agent's Role cannot create itself: it holds only get and delete on
+// legacy core/v1 Endpoints. The write is authorized as admin but names the
+// agent, which is what llmkube-metal-agent-labels reads, so the seed stands
+// up the fixture without touching the Role under test.
+func (e *writePolicyEnv) seedAsAgent(t *testing.T, obj client.Object) {
+	t.Helper()
+	cfg := rest.CopyConfig(e.cfg)
+	cfg.Impersonate = rest.ImpersonationConfig{
+		UserName: "system:serviceaccount:" + e.namespace + ":llmkube-metal-test-mac",
+		Groups:   []string{"system:masters"},
+	}
+	c, err := client.New(cfg, client.Options{Scheme: e.scheme})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Create(context.Background(), obj); err != nil {
+		t.Fatalf("seed %T %s as the agent: %v", obj, obj.GetName(), err)
 	}
 }
 

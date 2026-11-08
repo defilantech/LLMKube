@@ -1,0 +1,69 @@
+{{- /*
+Make llmkube.ai/managed-by=metal-agent mean what the controller reads it as
+(GHSA-863w-vh42-mjhj). metal-agent-write-policy.yaml holds the agent's own
+identities to the label, but its metal-agent-identity match condition filters
+every other writer out before a validation runs, so on its own it says nothing
+about anyone else.
+
+The controller trusts the label as proof the macOS agent published a
+registration: it reads the "<isvc>-agent" EndpointSlice, takes the
+llmkube.ai/agent-ingress-spki annotation as the certificate to pin, and a fresh
+llmkube.ai/agent-heartbeat as proof the agent is up (decideMetalMode in
+metal_relay.go). Nothing there authenticates the writer, so a namespace editor
+could publish the label on a slice pointing at its own TLS server, and the
+relay would present the per-namespace relay token to it.
+
+This policy has no identity match condition on purpose: it applies to every
+writer and requires a llmkube-metal-* ServiceAccount of any Service,
+EndpointSlice or Endpoints object that claims the label. An object without the
+label is unaffected. Delete stays allowed, as in the write policy above.
+
+deployment/macos/metal-agent-label-policy.yaml is the same policy for installs
+without Helm. make check-metal-agent-rbac fails if the two drift. Clusters
+without ValidatingAdmissionPolicy (Kubernetes older than 1.30) skip this.
+
+The has() guards matter: with failurePolicy Fail, an evaluation error would
+deny the request.
+*/ -}}
+{{- if and .Values.metalAgent.writePolicy.enabled .Values.metalAgent.writePolicy.labelGuard.enabled (.Capabilities.APIVersions.Has "admissionregistration.k8s.io/v1/ValidatingAdmissionPolicy") }}
+{{- $name := include "llmkube.resourceName" (dict "root" $ "suffix" "-metal-agent-labels") }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "llmkube.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+    - apiGroups: [""]
+      apiVersions: ["v1"]
+      operations: ["CREATE", "UPDATE"]
+      resources: ["services", "endpoints"]
+    - apiGroups: ["discovery.k8s.io"]
+      apiVersions: ["v1"]
+      operations: ["CREATE", "UPDATE"]
+      resources: ["endpointslices"]
+  validations:
+  - expression: >-
+      !has(object.metadata.labels) ||
+      !('llmkube.ai/managed-by' in object.metadata.labels) ||
+      object.metadata.labels['llmkube.ai/managed-by'] != 'metal-agent' ||
+      request.userInfo.username.matches('^system:serviceaccount:[a-z0-9]([-a-z0-9]*[a-z0-9])?:llmkube-metal-[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
+    message: >-
+      an object labeled llmkube.ai/managed-by=metal-agent is a macOS agent
+      registration; only a ServiceAccount named llmkube-metal-* may write one
+      (GHSA-863w-vh42-mjhj)
+    reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "llmkube.labels" . | nindent 4 }}
+spec:
+  policyName: {{ $name }}
+  validationActions: [Deny]
+{{- end }}

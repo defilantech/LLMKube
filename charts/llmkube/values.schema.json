@@ -681,7 +681,15 @@
           "additionalProperties": false,
           "description": "ValidatingAdmissionPolicy that limits llmkube-metal-* ServiceAccounts' Service, EndpointSlice and Endpoints writes to objects labeled llmkube.ai/managed-by=metal-agent (#2081).",
           "properties": {
-            "enabled": { "type": "boolean" }
+            "enabled": { "type": "boolean" },
+            "labelGuard": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "Second policy, with no identity match condition, requiring a llmkube-metal-* ServiceAccount for any write to an object labeled llmkube.ai/managed-by=metal-agent (GHSA-863w-vh42-mjhj).",
+              "properties": {
+                "enabled": { "type": "boolean" }
+              }
+            }
           }
         }
       }

@@ -38,6 +38,10 @@ import (
 
 const (
 	writePolicyTemplate = "templates/metal-agent-write-policy.yaml"
+	// labelPolicyTemplate is the second half of the same rule: any writer of a
+	// labeled object must be a mac agent (GHSA-863w-vh42-mjhj). It has no
+	// identity match condition, so the chart copy equals the manifest.
+	labelPolicyTemplate = "templates/metal-agent-label-policy.yaml"
 	// controllerExclusion is the name of the chart's extra match condition.
 	controllerExclusion = "not-llmkube-controller"
 	// writePolicyController is the controller username of the release
@@ -96,10 +100,10 @@ func readWritePolicy(raw []byte) (writePolicy, error) {
 
 // renderWritePolicy renders the chart's write policy as on a cluster that
 // serves ValidatingAdmissionPolicy, with the default values.
-func renderWritePolicy(helmBin, chartPath string) ([]byte, error) {
+func renderWritePolicy(helmBin, chartPath, template string) ([]byte, error) {
 	cmd := exec.Command(helmBin, "template", "rel", chartPath,
 		"--namespace", "llmkube-system",
-		"--show-only", writePolicyTemplate,
+		"--show-only", template,
 		"--api-versions", "admissionregistration.k8s.io/v1/ValidatingAdmissionPolicy")
 	cmd.Stderr = os.Stderr
 	return cmd.Output()
@@ -107,7 +111,7 @@ func renderWritePolicy(helmBin, chartPath string) ([]byte, error) {
 
 // runWritePolicy reads the manifest, renders the chart, and returns one
 // problem per divergence.
-func runWritePolicy(root, manifestPath, chartPath, helmBin string) ([]string, error) {
+func runWritePolicy(root, manifestPath, chartPath, helmBin, template string) ([]string, error) {
 	raw, err := os.ReadFile(filepath.Join(root, manifestPath))
 	if err != nil {
 		return nil, err
@@ -116,15 +120,19 @@ func runWritePolicy(root, manifestPath, chartPath, helmBin string) ([]string, er
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", manifestPath, err)
 	}
-	out, err := renderWritePolicy(helmBin, filepath.Join(root, chartPath))
+	out, err := renderWritePolicy(helmBin, filepath.Join(root, chartPath), template)
 	if err != nil {
-		return nil, fmt.Errorf("render %s: %w", writePolicyTemplate, err)
+		return nil, fmt.Errorf("render %s: %w", template, err)
 	}
 	chart, err := readWritePolicy(out)
 	if err != nil {
-		return nil, fmt.Errorf("rendered %s: %w", writePolicyTemplate, err)
+		return nil, fmt.Errorf("rendered %s: %w", template, err)
 	}
-	return compareWritePolicy(manifest, chart, writePolicyController), nil
+	controllerUser := ""
+	if template == writePolicyTemplate {
+		controllerUser = writePolicyController
+	}
+	return compareWritePolicy(manifest, chart, controllerUser), nil
 }
 
 // compareWritePolicy returns one problem per field where the chart's policy
@@ -146,12 +154,23 @@ func compareWritePolicy(manifest, chart writePolicy, controllerUser string) []st
 	differ("spec.validations", m.Validations, c.Validations)
 	differ("spec.auditAnnotations", m.AuditAnnotations, c.AuditAnnotations)
 
-	wantConditions := append(append([]admissionregistrationv1.MatchCondition{}, m.MatchConditions...),
-		admissionregistrationv1.MatchCondition{
+	var wantConditions []admissionregistrationv1.MatchCondition
+	if len(m.MatchConditions) > 0 {
+		wantConditions = append([]admissionregistrationv1.MatchCondition{}, m.MatchConditions...)
+	}
+	var chartConditions []admissionregistrationv1.MatchCondition
+	if len(c.MatchConditions) > 0 {
+		chartConditions = c.MatchConditions
+	}
+	if controllerUser != "" {
+		wantConditions = append(wantConditions, admissionregistrationv1.MatchCondition{
 			Name:       controllerExclusion,
 			Expression: fmt.Sprintf("request.userInfo.username != '%s'", controllerUser),
 		})
-	differ("spec.matchConditions (the manifest's plus the controller exclusion)", wantConditions, c.MatchConditions)
+		differ("spec.matchConditions (the manifest's plus the controller exclusion)", wantConditions, chartConditions)
+	} else {
+		differ("spec.matchConditions", wantConditions, chartConditions)
+	}
 
 	mb, cb := manifest.binding.Spec, chart.binding.Spec
 	differ("binding spec.validationActions", mb.ValidationActions, cb.ValidationActions)

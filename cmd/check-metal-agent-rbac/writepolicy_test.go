@@ -181,11 +181,29 @@ func TestRealRepoWritePolicy(t *testing.T) {
 		t.Skip("helm not on PATH; run make check-metal-agent-rbac in CI")
 	}
 	problems, err := runWritePolicy(repoRoot(t),
-		"deployment/macos/metal-agent-write-policy.yaml", "charts/llmkube", helmBin)
+		"deployment/macos/metal-agent-write-policy.yaml", "charts/llmkube", helmBin, writePolicyTemplate)
 	if err != nil {
 		t.Fatalf("runWritePolicy: %v", err)
 	}
 	if len(problems) != 0 {
 		t.Fatalf("chart and manifest write policies diverge:\n%s", strings.Join(problems, "\n"))
+	}
+}
+
+// TestRealRepoLabelPolicy is the same acceptance test for the label policy:
+// it has no identity match condition, so the chart renders the manifest's
+// policy unchanged.
+func TestRealRepoLabelPolicy(t *testing.T) {
+	helmBin, err := exec.LookPath("helm")
+	if err != nil {
+		t.Skip("helm not on PATH; run make check-metal-agent-rbac in CI")
+	}
+	problems, err := runWritePolicy(repoRoot(t),
+		"deployment/macos/metal-agent-label-policy.yaml", "charts/llmkube", helmBin, labelPolicyTemplate)
+	if err != nil {
+		t.Fatalf("runWritePolicy: %v", err)
+	}
+	if len(problems) != 0 {
+		t.Fatalf("chart and manifest label policies diverge:\n%s", strings.Join(problems, "\n"))
 	}
 }

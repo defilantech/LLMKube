@@ -84,6 +84,8 @@ func main() {
 		"standalone RBAC manifest, relative to --root")
 	writePolicyManifest := flag.String("write-policy", "deployment/macos/metal-agent-write-policy.yaml",
 		"standalone agent write policy, relative to --root")
+	labelPolicyManifest := flag.String("label-policy", "deployment/macos/metal-agent-label-policy.yaml",
+		"standalone agent label policy, relative to --root")
 	chart := flag.String("chart", "charts/llmkube", "chart directory, relative to --root")
 	helm := flag.String("helm", "helm", "helm binary")
 	flag.Parse()
@@ -93,12 +95,18 @@ func main() {
 		fmt.Fprintln(os.Stderr, "check-metal-agent-rbac:", err)
 		os.Exit(2)
 	}
-	policyProblems, err := runWritePolicy(*root, *writePolicyManifest, *chart, *helm)
+	policyProblems, err := runWritePolicy(*root, *writePolicyManifest, *chart, *helm, writePolicyTemplate)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "check-metal-agent-rbac:", err)
 		os.Exit(2)
 	}
 	problems = append(problems, policyProblems...)
+	labelProblems, err := runWritePolicy(*root, *labelPolicyManifest, *chart, *helm, labelPolicyTemplate)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "check-metal-agent-rbac:", err)
+		os.Exit(2)
+	}
+	problems = append(problems, labelProblems...)
 	if len(problems) > 0 {
 		for _, p := range problems {
 			fmt.Fprintf(os.Stderr, "FAIL: %s\n", p)
@@ -107,6 +115,7 @@ func main() {
 	}
 	fmt.Println("✅ metal-agent RBAC matches deployment/macos/metal-agent-rbac.yaml")
 	fmt.Println("✅ metal-agent write policy matches deployment/macos/metal-agent-write-policy.yaml")
+	fmt.Println("✅ metal-agent label policy matches deployment/macos/metal-agent-label-policy.yaml")
 }
 
 // run reads the manifest, renders the chart for every branch, and returns one

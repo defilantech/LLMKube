@@ -1575,10 +1575,14 @@ The ingress answers:
 
 The pin is rooted in Kubernetes write access: anyone who can write Services
 or EndpointSlices in the namespace could already redirect the
-InferenceService's traffic, so publishing the pin there adds no new trust.
-Write access to a legacy core/v1 `Endpoints` object of the same name is
-equivalent, since Kubernetes mirrors it into an EndpointSlice: treat both as
-sensitive.
+InferenceService's traffic. Publishing the pin there also lets that writer
+choose which certificate the relay trusts, which is more than redirection: the
+relay presents the namespace's token to whatever server the pin names. The
+`metal-agent-label-policy.yaml` admission policy closes that by admitting an
+object labeled `llmkube.ai/managed-by=metal-agent` only from a
+`llmkube-metal-*` ServiceAccount. Write access to a legacy core/v1 `Endpoints`
+object of the same name is equivalent, since Kubernetes mirrors it into an
+EndpointSlice: treat both as sensitive.
 
 #### Path allowlist
 
