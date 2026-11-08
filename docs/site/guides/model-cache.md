@@ -18,6 +18,7 @@ init container and the serving container mount.
 | Multi-node without RWX, compatible topology-aware provisioner | `perService` |
 | Strictly tainted node with unsuitable dynamic provisioner | Pre-provision a node-aligned PVC and set `spec.modelCache.claimName` |
 | Mixed node types where the default class cannot attach everywhere | Set `spec.modelCache.storageClassName` per InferenceService |
+| Small and large models in `perService` mode | Set `spec.modelCache.size` per InferenceService or Model |
 
 `shared` is the default. A single cluster-wide PVC named `llmkube-model-cache`
 is created (or reused if it already exists). When using an RWO storage class,
@@ -50,6 +51,29 @@ the requested class. The field cannot combine with `claimName` (the claim is
 user-owned) or `persistence: Ephemeral` (no PVC is created). There is no
 allowlist of storage classes: anyone who can edit an InferenceService can
 pin its cache claim to any storage class in the cluster.
+
+### Per-service cache size
+
+In `perService` mode an InferenceService, or the Model it references, can
+size the claim the operator creates for it in place of the chart's
+`modelCache.size` (`--model-cache-size`):
+
+```yaml
+spec:
+  modelCache:
+    size: 1Gi
+```
+
+The size order is `spec.modelCache.size`, then the operator's
+`--model-cache-size`, then 100Gi. When the claim already exists with a smaller
+request, the operator raises the request once the claim is Bound, and the
+StorageClass expands the volume if it sets `allowVolumeExpansion: true`. For a
+class that does not allow expansion the API server rejects the request, the
+operator raises a `ModelCacheResizeRejected` warning, and the service keeps
+the claim as it is.
+A smaller size never shrinks a claim. In `shared` mode the field is ignored
+with a `ModelCacheSizeIgnored` warning, since one claim serves every service.
+The field cannot combine with `claimName` or `persistence: Ephemeral`.
 
 ## Strictly tainted GPU nodes
 

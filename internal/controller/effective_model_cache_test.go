@@ -42,6 +42,7 @@ func TestResolveEffectiveModelCache(t *testing.T) {
 		model       *inferencev1alpha1.Model
 		wantClaim   string
 		wantClass   string
+		wantSize    string
 		wantEphem   bool
 		wantPrefech bool
 	}{
@@ -63,6 +64,21 @@ func TestResolveEffectiveModelCache(t *testing.T) {
 			model: modelWith(&inferencev1alpha1.ModelCacheSpec{ClaimName: "from-model", StorageClassName: "fast"}),
 			// The Model's block is copied whole, as before #2142.
 			wantClaim: "from-model",
+			wantClass: "fast",
+		},
+		{
+			name:     "a service with no block inherits the Model's size",
+			isvc:     svcWith("svc", nil),
+			model:    modelWith(&inferencev1alpha1.ModelCacheSpec{Size: "1Gi"}),
+			wantSize: "1Gi",
+		},
+		{
+			// Whole-struct precedence: the service's block replaces the
+			// Model's, so the Model's size does not fill in a field the
+			// service left unset (#2448).
+			name:      "the service's own block drops the Model's size",
+			isvc:      svcWith("svc", &inferencev1alpha1.ModelCacheSpec{StorageClassName: "fast"}),
+			model:     modelWith(&inferencev1alpha1.ModelCacheSpec{Size: "1Gi"}),
 			wantClass: "fast",
 		},
 		{
@@ -119,6 +135,9 @@ func TestResolveEffectiveModelCache(t *testing.T) {
 			}
 			if got.storageClassName() != tc.wantClass {
 				t.Errorf("storageClassName() = %q, want %q", got.storageClassName(), tc.wantClass)
+			}
+			if got.size() != tc.wantSize {
+				t.Errorf("size() = %q, want %q", got.size(), tc.wantSize)
 			}
 			if got.isEphemeral() != tc.wantEphem {
 				t.Errorf("isEphemeral() = %v, want %v", got.isEphemeral(), tc.wantEphem)

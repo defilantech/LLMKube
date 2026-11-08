@@ -73,6 +73,15 @@ func (e effectiveModelCache) storageClassName() string {
 	return e.spec.StorageClassName
 }
 
+// size returns the user-supplied cache claim size, or "" when the service does
+// not override the operator-global --model-cache-size.
+func (e effectiveModelCache) size() string {
+	if e.spec == nil {
+		return ""
+	}
+	return e.spec.Size
+}
+
 // isEphemeral reports whether the service declined the cache (#1451). Only an
 // explicit Ephemeral opts out: an absent block and an empty persistence both
 // resolve to Cached.
