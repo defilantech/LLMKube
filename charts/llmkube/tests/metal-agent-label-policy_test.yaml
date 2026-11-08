@@ -31,8 +31,13 @@ tests:
           path: spec.failurePolicy
           value: Fail
         documentIndex: 0
-      - notExists:
-          path: spec.matchConditions
+      - equal:
+          path: spec.matchConditions[0].name
+          value: not-llmkube-controller
+        documentIndex: 0
+      - equal:
+          path: spec.matchConditions[0].expression
+          value: request.userInfo.username != 'system:serviceaccount:llmkube-system:rel-llmkube-controller-manager'
         documentIndex: 0
       - equal:
           path: spec.matchConstraints.resourceRules

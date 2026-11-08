@@ -20,6 +20,10 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	discoveryv1 "k8s.io/api/discovery/v1"
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // GHSA-863w-vh42-mjhj: the metal-agent write policy holds only the
@@ -85,5 +89,32 @@ func TestLabelGuard_Repro(t *testing.T) {
 			"llmkube.ai/inference-service": "beta",
 		})
 		wantAllowed(t, "agent create", e.agent.Create(ctx, svc))
+	})
+
+	// withdrawStaleMetalEndpoints patches a stale agent slice to withdraw its
+	// endpoints and keeps the label (#1918). The controller's ServiceAccount
+	// is the only other writer the policy must admit.
+	t.Run("the controller may still withdraw a stale labeled slice", func(t *testing.T) {
+		sl := e.slice("gamma-agent", map[string]string{
+			"kubernetes.io/service-name":   "gamma-agent",
+			managedByLabel:                 managedByValue,
+			"llmkube.ai/inference-service": "gamma",
+		})
+		sl.Annotations = map[string]string{"llmkube.ai/agent-heartbeat": "2026-01-01T00:00:00Z"}
+		sl.Endpoints = []discoveryv1.Endpoint{{
+			Addresses:  []string{"10.0.0.9"},
+			Conditions: discoveryv1.EndpointConditions{Ready: ptr.To(true)},
+		}}
+		e.seed(t, sl)
+
+		controller := e.clientAsUsername(t, labelControllerUser)
+		var got discoveryv1.EndpointSlice
+		if err := controller.Get(ctx, client.ObjectKeyFromObject(sl), &got); err != nil {
+			t.Fatalf("get slice: %v", err)
+		}
+		base := got.DeepCopy()
+		got.Endpoints[0].Conditions.Ready = ptr.To(false)
+		patch := client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})
+		wantAllowed(t, "controller withdrawal patch", controller.Patch(ctx, &got, patch))
 	})
 }

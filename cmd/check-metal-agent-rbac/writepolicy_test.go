@@ -85,7 +85,7 @@ func TestCompareWritePolicy(t *testing.T) {
 	const user = "system:serviceaccount:llmkube-system:rel-llmkube-controller-manager"
 	manifest := realWritePolicy(t)
 
-	if problems := compareWritePolicy(manifest, chartCopy(manifest, user), user); len(problems) != 0 {
+	if problems := compareWritePolicy(manifest, chartCopy(manifest, user), user, ""); len(problems) != 0 {
 		t.Fatalf("a faithful chart copy reported problems: %v", problems)
 	}
 
@@ -164,7 +164,7 @@ func TestCompareWritePolicy(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			c := chartCopy(manifest, user)
 			tt.mutate(&c)
-			problems := compareWritePolicy(manifest, c, user)
+			problems := compareWritePolicy(manifest, c, user, "")
 			if !strings.Contains(strings.Join(problems, "\n"), tt.wantSub) {
 				t.Fatalf("problems %v do not contain %q", problems, tt.wantSub)
 			}
@@ -191,8 +191,8 @@ func TestRealRepoWritePolicy(t *testing.T) {
 }
 
 // TestRealRepoLabelPolicy is the same acceptance test for the label policy:
-// it has no identity match condition, so the chart renders the manifest's
-// policy unchanged.
+// the chart's copy names its release's controller where the manifest names
+// the kustomize one.
 func TestRealRepoLabelPolicy(t *testing.T) {
 	helmBin, err := exec.LookPath("helm")
 	if err != nil {

@@ -819,11 +819,13 @@ namespace: the shared `llmkube-metal-agent` and the per-Mac
 workload with a ServiceAccount of that name is held to the same rule. Other
 identities, including the LLMKube controller, are not affected.
 
-Without Helm, a cluster admin applies it once per cluster (it is
-cluster-scoped):
+Without Helm, a cluster admin applies both policies once per cluster (they are
+cluster-scoped). The label policy is the half that covers writers outside the
+`llmkube-metal-` prefix:
 
 ```bash
 kubectl apply -f deployment/macos/metal-agent-write-policy.yaml
+kubectl apply -f deployment/macos/metal-agent-label-policy.yaml
 ```
 
 With Helm, the chart installs the same policy by default
@@ -1580,8 +1582,11 @@ choose which certificate the relay trusts, which is more than redirection: the
 relay presents the namespace's token to whatever server the pin names. The
 `metal-agent-label-policy.yaml` admission policy closes that by admitting an
 object labeled `llmkube.ai/managed-by=metal-agent` only from a
-`llmkube-metal-*` ServiceAccount. Write access to a legacy core/v1 `Endpoints`
-object of the same name is equivalent, since Kubernetes mirrors it into an
+`llmkube-metal-*` ServiceAccount, other than the controller itself. The guard
+is on the name, so an identity that can also create a ServiceAccount and
+RoleBinding in the namespace can mint one: keep the `llmkube-metal-` prefix
+reserved for Mac agents. Write access to a legacy core/v1 `Endpoints` object
+of the same name is equivalent, since Kubernetes mirrors it into an
 EndpointSlice: treat both as sensitive.
 
 #### Path allowlist

@@ -324,6 +324,24 @@ func (e *writePolicyEnv) seed(t *testing.T, obj client.Object) {
 	}
 }
 
+// labelControllerUser is the controller identity the standalone label
+// manifest exempts: the kustomize install's controller ServiceAccount.
+const labelControllerUser = "system:serviceaccount:llmkube-system:llmkube-controller-manager"
+
+// clientAsUsername returns a client impersonating username with admin
+// rights, for an identity that has no token in this environment (the
+// controller's own ServiceAccount).
+func (e *writePolicyEnv) clientAsUsername(t *testing.T, username string) client.Client {
+	t.Helper()
+	cfg := rest.CopyConfig(e.cfg)
+	cfg.Impersonate = rest.ImpersonationConfig{UserName: username, Groups: []string{"system:masters"}}
+	c, err := client.New(cfg, client.Options{Scheme: e.scheme})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
 // seedAsAgent creates obj carrying the agent's username, for a labeled object
 // the agent's Role cannot create itself: it holds only get and delete on
 // legacy core/v1 Endpoints. The write is authorized as admin but names the

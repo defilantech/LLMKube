@@ -685,7 +685,7 @@
             "labelGuard": {
               "type": "object",
               "additionalProperties": false,
-              "description": "Second policy, with no identity match condition, requiring a llmkube-metal-* ServiceAccount for any write to an object labeled llmkube.ai/managed-by=metal-agent (GHSA-863w-vh42-mjhj).",
+              "description": "Second policy, applying to every writer except the controller, requiring a llmkube-metal-* ServiceAccount for any write to an object labeled llmkube.ai/managed-by=metal-agent (GHSA-863w-vh42-mjhj).",
               "properties": {
                 "enabled": { "type": "boolean" }
               }

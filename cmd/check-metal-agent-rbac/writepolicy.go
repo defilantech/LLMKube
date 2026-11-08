@@ -47,6 +47,10 @@ const (
 	// writePolicyController is the controller username of the release
 	// renderWritePolicy renders: release rel in namespace llmkube-system.
 	writePolicyController = "system:serviceaccount:llmkube-system:rel-llmkube-controller-manager"
+	// labelPolicyController is the controller username the standalone label
+	// manifest names, whose install has no release. The chart's copy names
+	// its own release's controller in the same condition.
+	labelPolicyController = "system:serviceaccount:llmkube-system:llmkube-controller-manager"
 )
 
 // writePolicy is one copy of the policy: its ValidatingAdmissionPolicy and
@@ -128,16 +132,17 @@ func runWritePolicy(root, manifestPath, chartPath, helmBin, template string) ([]
 	if err != nil {
 		return nil, fmt.Errorf("rendered %s: %w", template, err)
 	}
-	controllerUser := ""
-	if template == writePolicyTemplate {
-		controllerUser = writePolicyController
+	chartUser := writePolicyController
+	manifestUser := ""
+	if template == labelPolicyTemplate {
+		manifestUser = labelPolicyController
 	}
-	return compareWritePolicy(manifest, chart, controllerUser), nil
+	return compareWritePolicy(manifest, chart, chartUser, manifestUser), nil
 }
 
 // compareWritePolicy returns one problem per field where the chart's policy
 // is not the manifest's plus the controller exclusion for controllerUser.
-func compareWritePolicy(manifest, chart writePolicy, controllerUser string) []string {
+func compareWritePolicy(manifest, chart writePolicy, controllerUser, manifestController string) []string {
 	var problems []string
 	differ := func(field string, want, got any) {
 		if !reflect.DeepEqual(want, got) {
@@ -162,14 +167,23 @@ func compareWritePolicy(manifest, chart writePolicy, controllerUser string) []st
 	if len(c.MatchConditions) > 0 {
 		chartConditions = c.MatchConditions
 	}
-	if controllerUser != "" {
+	switch {
+	case manifestController == "":
+		// The write manifest names no controller; the chart adds the
+		// exclusion.
 		wantConditions = append(wantConditions, admissionregistrationv1.MatchCondition{
 			Name:       controllerExclusion,
 			Expression: fmt.Sprintf("request.userInfo.username != '%s'", controllerUser),
 		})
 		differ("spec.matchConditions (the manifest's plus the controller exclusion)", wantConditions, chartConditions)
-	} else {
-		differ("spec.matchConditions", wantConditions, chartConditions)
+	default:
+		// The label manifest names the kustomize controller in the same
+		// condition; the chart names its own release's.
+		if len(m.MatchConditions) > 0 {
+			wantConditions[len(wantConditions)-1].Expression =
+				fmt.Sprintf("request.userInfo.username != '%s'", controllerUser)
+		}
+		differ("spec.matchConditions (the manifest's, naming the chart's controller)", wantConditions, chartConditions)
 	}
 
 	mb, cb := manifest.binding.Spec, chart.binding.Spec

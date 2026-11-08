@@ -21,9 +21,19 @@
 # working for everyone. Delete stays allowed, as in the policy above: removing
 # an object never publishes the label.
 #
+# The controller's own ServiceAccount is exempt: it patches a stale
+# agent-managed EndpointSlice to withdraw its endpoints without dropping the
+# label (withdrawStaleMetalEndpoints, #1918), and that write is not the agent's.
+# The kustomize controller runs as llmkube-controller-manager. The Helm chart
+# renders the same policy and exempts the release's controller ServiceAccount,
+# since a release named, say, llmkube-metal-prod names it
+# llmkube-metal-prod-controller-manager. make check-metal-agent-rbac fails if
+# the two copies drift.
+#
 # Cluster-scoped. Needs Kubernetes 1.30 or newer (admissionregistration.k8s.io/v1
 # ValidatingAdmissionPolicy); older clusters have only the Role, which is the
-# weaker fallback. A cluster admin applies it once per cluster:
+# weaker fallback. A cluster admin applies it once per cluster, beside
+# metal-agent-write-policy.yaml:
 #
 #   kubectl apply -f deployment/macos/metal-agent-label-policy.yaml
 #
@@ -45,6 +55,9 @@ spec:
       apiVersions: ["v1"]
       operations: ["CREATE", "UPDATE"]
       resources: ["endpointslices"]
+  matchConditions:
+  - name: not-llmkube-controller
+    expression: request.userInfo.username != 'system:serviceaccount:llmkube-system:llmkube-controller-manager'
   validations:
   - expression: >-
       !has(object.metadata.labels) ||

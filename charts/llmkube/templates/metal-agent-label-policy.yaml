@@ -18,6 +18,12 @@ writer and requires a llmkube-metal-* ServiceAccount of any Service,
 EndpointSlice or Endpoints object that claims the label. An object without the
 label is unaffected. Delete stays allowed, as in the write policy above.
 
+The controller's own ServiceAccount is exempt. It patches a stale
+agent-managed EndpointSlice to withdraw its endpoints without dropping the
+label (withdrawStaleMetalEndpoints, #1918), and that write is not the agent's.
+The exemption names the release's controller ServiceAccount, as the write
+policy does.
+
 deployment/macos/metal-agent-label-policy.yaml is the same policy for installs
 without Helm. make check-metal-agent-rbac fails if the two drift. Clusters
 without ValidatingAdmissionPolicy (Kubernetes older than 1.30) skip this.
@@ -27,6 +33,7 @@ deny the request.
 */ -}}
 {{- if and .Values.metalAgent.writePolicy.enabled .Values.metalAgent.writePolicy.labelGuard.enabled (.Capabilities.APIVersions.Has "admissionregistration.k8s.io/v1/ValidatingAdmissionPolicy") }}
 {{- $name := include "llmkube.resourceName" (dict "root" $ "suffix" "-metal-agent-labels") }}
+{{- $controller := printf "system:serviceaccount:%s:%s" (include "llmkube.namespace" .) (include "llmkube.serviceAccountName" .) }}
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
@@ -45,6 +52,9 @@ spec:
       apiVersions: ["v1"]
       operations: ["CREATE", "UPDATE"]
       resources: ["endpointslices"]
+  matchConditions:
+  - name: not-llmkube-controller
+    expression: request.userInfo.username != {{ $controller | squote }}
   validations:
   - expression: >-
       !has(object.metadata.labels) ||
