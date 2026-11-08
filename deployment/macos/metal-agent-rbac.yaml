@@ -19,10 +19,12 @@
 #
 # RBAC cannot scope the Service and EndpointSlice verbs below to the agent's
 # own objects. On Kubernetes 1.30 or newer, also apply
-# metal-agent-write-policy.yaml once per cluster (the Helm chart installs it by
-# default): it limits those writes to objects labeled
-# llmkube.ai/managed-by=metal-agent (#2081). Without it this Role is the only
-# limit.
+# metal-agent-write-policy.yaml and metal-agent-label-policy.yaml once per
+# cluster (the Helm chart installs both by default): the first limits these
+# writes to objects labeled llmkube.ai/managed-by=metal-agent (#2081), and the
+# second admits such an object only from a llmkube-metal-* ServiceAccount, so
+# the label means the agent wrote it (GHSA-863w-vh42-mjhj). Without them this
+# Role is the only limit.
 apiVersion: v1
 kind: ServiceAccount
 metadata:

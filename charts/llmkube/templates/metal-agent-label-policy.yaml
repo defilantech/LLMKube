@@ -22,7 +22,8 @@ The controller's own ServiceAccount is exempt. It patches a stale
 agent-managed EndpointSlice to withdraw its endpoints without dropping the
 label (withdrawStaleMetalEndpoints, #1918), and that write is not the agent's.
 The exemption names the release's controller ServiceAccount, as the write
-policy does.
+policy does, so a second LLMKube release in the same cluster is denied by this
+copy and needs the guard off or a distinct serviceAccount.name.
 
 A system controller that rewrites a leftover core/v1 Endpoints still carrying
 the label (EndpointSliceMirroring, the endpoints controller) is denied by this
