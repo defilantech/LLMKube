@@ -163,6 +163,10 @@ fit, keeping the role suffix that identifies the object.
 | `prometheus.serviceMonitor.interval` | Scrape interval | `30s` |
 | `prometheus.serviceMonitor.namespace` | ServiceMonitor namespace (defaults to release namespace) | `""` |
 | `prometheus.serviceMonitor.additionalLabels` | Additional labels for ServiceMonitor | See values.yaml |
+| `prometheus.inferencePodMonitor.relabelings` | Extra target relabelings for the inference PodMonitor, appended after the chart's own | `[]` |
+| `prometheus.inferencePodMonitor.metricRelabelings` | Sample relabelings for the inference PodMonitor | `[]` |
+| `prometheus.routerPodMonitor.relabelings` | Extra target relabelings for the router PodMonitor, appended after the chart's own | `[]` |
+| `prometheus.routerPodMonitor.metricRelabelings` | Sample relabelings for the router PodMonitor | `[]` |
 | `prometheus.prometheusRule.enabled` | Enable PrometheusRule for alerts. Also required by the queue-wait panels on the vLLM and SGLang dashboards, which read the `llmkube:inference:queue_time_seconds:p95_5m` recording rule; without it those panels render blank. | `false` |
 | `prometheus.prometheusRule.namespace` | PrometheusRule namespace | `monitoring` |
 | `prometheus.prometheusRule.rules.gpu.enabled` | Enable GPU alerts | `true` |
@@ -188,8 +192,11 @@ defaults these come out as the metrics Service name and
 `InferenceServiceDown` used to fail to match. Queries of your own written
 against those older values need updating.
 
-The PodMonitor additionally promotes `service`, `namespace`, `model` and
-`runtime` onto every inference series.
+The inference PodMonitor additionally promotes `service`, `namespace`, `model`
+and `runtime` onto every inference series, and the router PodMonitor `router`
+and `namespace`. Each monitor's `relabelings` and `metricRelabelings` run after
+the chart's own, so they can add labels but should not rewrite or drop `job` or
+any of these.
 
 ### Grafana Parameters
 

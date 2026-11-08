@@ -1,0 +1,117 @@
+suite: podmonitor relabelings from values
+# User relabelings run after the chart's own, so the job and promoted labels
+# the PrometheusRule and dashboards select on are in place before them (#2449).
+# Two user items pin their order; negative indices keep the assertions
+# independent of how many relabelings the chart itself adds.
+templates:
+  - inference-podmonitor.yaml
+  - router-podmonitor.yaml
+
+tests:
+  - it: should render no metricRelabelings on the inference PodMonitor by default
+    template: inference-podmonitor.yaml
+    set:
+      prometheus.inferencePodMonitor.enabled: true
+    asserts:
+      - notExists:
+          path: spec.podMetricsEndpoints[0].metricRelabelings
+
+  - it: should render the inference metricRelabelings as given
+    template: inference-podmonitor.yaml
+    set:
+      prometheus.inferencePodMonitor.enabled: true
+      prometheus.inferencePodMonitor.metricRelabelings:
+        - action: drop
+          sourceLabels: [__name__]
+          regex: vllm:cache_config_info
+        - action: labeldrop
+          regex: engine
+    asserts:
+      - equal:
+          path: spec.podMetricsEndpoints[0].metricRelabelings
+          value:
+            - action: drop
+              sourceLabels: [__name__]
+              regex: vllm:cache_config_info
+            - action: labeldrop
+              regex: engine
+
+  - it: should append inference relabelings after the chart's own
+    template: inference-podmonitor.yaml
+    set:
+      prometheus.inferencePodMonitor.enabled: true
+      prometheus.inferencePodMonitor.relabelings:
+        - targetLabel: cluster
+          replacement: home
+        - targetLabel: region
+          replacement: eu
+    asserts:
+      - contains:
+          path: spec.podMetricsEndpoints[0].relabelings
+          content:
+            targetLabel: job
+            replacement: llmkube-inference
+      - equal:
+          path: spec.podMetricsEndpoints[0].relabelings[-2]
+          value:
+            targetLabel: cluster
+            replacement: home
+      - equal:
+          path: spec.podMetricsEndpoints[0].relabelings[-1]
+          value:
+            targetLabel: region
+            replacement: eu
+
+  - it: should render no metricRelabelings on the router PodMonitor by default
+    template: router-podmonitor.yaml
+    set:
+      prometheus.routerPodMonitor.enabled: true
+    asserts:
+      - notExists:
+          path: spec.podMetricsEndpoints[0].metricRelabelings
+
+  - it: should render the router metricRelabelings as given
+    template: router-podmonitor.yaml
+    set:
+      prometheus.routerPodMonitor.enabled: true
+      prometheus.routerPodMonitor.metricRelabelings:
+        - action: drop
+          sourceLabels: [__name__]
+          regex: go_gc_.*
+        - action: labeldrop
+          regex: pod
+    asserts:
+      - equal:
+          path: spec.podMetricsEndpoints[0].metricRelabelings
+          value:
+            - action: drop
+              sourceLabels: [__name__]
+              regex: go_gc_.*
+            - action: labeldrop
+              regex: pod
+
+  - it: should append router relabelings after the chart's own
+    template: router-podmonitor.yaml
+    set:
+      prometheus.routerPodMonitor.enabled: true
+      prometheus.routerPodMonitor.relabelings:
+        - targetLabel: cluster
+          replacement: home
+        - targetLabel: region
+          replacement: eu
+    asserts:
+      - contains:
+          path: spec.podMetricsEndpoints[0].relabelings
+          content:
+            targetLabel: job
+            replacement: llmkube-router
+      - equal:
+          path: spec.podMetricsEndpoints[0].relabelings[-2]
+          value:
+            targetLabel: cluster
+            replacement: home
+      - equal:
+          path: spec.podMetricsEndpoints[0].relabelings[-1]
+          value:
+            targetLabel: region
+            replacement: eu
