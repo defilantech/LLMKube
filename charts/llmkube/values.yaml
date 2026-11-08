@@ -810,10 +810,13 @@ metalAgent:
       # namespace editor that can write it would otherwise choose the relay's
       # SPKI pin and receive the per-namespace relay token
       # (GHSA-863w-vh42-mjhj). The controller's own ServiceAccount is exempt:
-      # it patches stale agent slices to withdraw their endpoints (#1918).
-      # Objects without the label are unaffected. Disabling it leaves only the
-      # policy above, which constrains the agent and not other writers. Render
-      # condition is writePolicy.enabled's.
+      # it patches stale agent slices to withdraw their endpoints (#1918). The
+      # policy is cluster-scoped and each copy names one release's controller,
+      # so in a cluster with more than one LLMKube release the others are
+      # denied on labeled objects; disable this on every release or edit each
+      # installed copy's controller condition. Objects without the label are
+      # unaffected. Enabling it needs writePolicy.enabled too, and the cluster
+      # must serve ValidatingAdmissionPolicy.
       enabled: true
 
 # Network policies for the controller manager pod

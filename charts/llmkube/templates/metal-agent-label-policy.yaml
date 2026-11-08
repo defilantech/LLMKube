@@ -21,14 +21,24 @@ Endpoints object that claims the label, less the controller exemption below.
 The controller's own ServiceAccount is exempt. It patches a stale
 agent-managed EndpointSlice to withdraw its endpoints without dropping the
 label (withdrawStaleMetalEndpoints, #1918), and that write is not the agent's.
-The exemption names the release's controller ServiceAccount, as the write
-policy does, so a second LLMKube release in the same cluster is denied by this
-copy and needs the guard off or a distinct serviceAccount.name.
+The exemption names this release's controller ServiceAccount, and the policy is
+cluster-scoped, so in a cluster with more than one LLMKube release each copy
+denies every other release's controller writes to a labeled object. Lift that
+by disabling this policy on every release, or by editing each installed copy's
+not-llmkube-controller condition to name every release's controller. A
+serviceAccount.name that starts with llmkube-metal- also passes, but then the
+write policy holds that controller and denies its unlabeled writes.
 
 A system controller that rewrites a leftover core/v1 Endpoints still carrying
 the label (EndpointSliceMirroring, the endpoints controller) is denied by this
 policy, and that is accepted: the agent reaps the legacy Endpoints on its next
 registration, so the state clears itself.
+
+This rule is described in four places (this comment, the chart README row, the
+chart values comment, and the standalone manifest) and they have gone out of
+step twice: each round that reworded one left another stating the old behavior.
+Edit all four together, and prefer one short sentence to an explanatory clause,
+which is what drifted.
 
 deployment/macos/metal-agent-label-policy.yaml is the same policy for installs
 without Helm. make check-metal-agent-rbac fails if the two drift. Clusters
