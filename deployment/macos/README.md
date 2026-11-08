@@ -816,8 +816,9 @@ It applies to every ServiceAccount named `llmkube-metal-<name>` in any
 namespace: the shared `llmkube-metal-agent` and the per-Mac
 `llmkube-metal-<mac>` identities `llmkube metal token create` creates. The
 `llmkube-metal-` ServiceAccount prefix is reserved for Mac agents; another
-workload with a ServiceAccount of that name is held to the same rule. Other
-identities, including the LLMKube controller, are not affected.
+workload with a ServiceAccount of that name is held to the same rule. This
+policy constrains those identities only. Every other writer is covered by the
+label policy below, which exempts the controller by name.
 
 Without Helm, a cluster admin applies both policies once per cluster (they are
 cluster-scoped). The label policy is the half that covers writers outside the
@@ -828,11 +829,13 @@ kubectl apply -f deployment/macos/metal-agent-write-policy.yaml
 kubectl apply -f deployment/macos/metal-agent-label-policy.yaml
 ```
 
-With Helm, the chart installs the same policy by default
-(`metalAgent.writePolicy.enabled`), whether or not it also renders the agent's
-identity. Do not apply the raw file as well: the chart's copy also exempts the
-controller's own ServiceAccount, which a release named `llmkube-metal-<something>`
-puts under the prefix, and the raw copy does not. `make check-metal-agent-rbac`
+With Helm, the chart installs both by default, whether or not it also renders
+the agent's identity. That is `metalAgent.writePolicy.enabled` for the write
+policy and `metalAgent.writePolicy.labelGuard.enabled` for the label policy,
+each also needing a cluster that serves ValidatingAdmissionPolicy. Do not apply
+the raw files as well: the chart's copies also exempt the controller's own
+ServiceAccount, which a release named `llmkube-metal-<something>`
+puts under the prefix, and neither raw copy names that release. `make check-metal-agent-rbac`
 fails if the two copies drift.
 
 Check it from an admin context:

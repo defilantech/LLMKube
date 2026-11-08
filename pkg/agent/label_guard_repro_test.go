@@ -83,6 +83,19 @@ func TestLabelGuard_Repro(t *testing.T) {
 		wantAllowed(t, "unlabelled create", e.other.Create(ctx, svc))
 	})
 
+	// managed-by carries other values in the wild: the agent stamps
+	// metal-agent, and other controllers in the namespace stamp their own. Only
+	// metal-agent means "the agent published this registration", so the guard
+	// must not touch the others.
+	t.Run("another managed-by value is left to everyone", func(t *testing.T) {
+		for _, v := range []string{"cuda", "llmkube-controller", "something-else"} {
+			svc := e.service("other-value-"+v, map[string]string{
+				managedByLabel: v,
+			})
+			wantAllowed(t, "non-agent managed-by="+v, e.other.Create(ctx, svc))
+		}
+	})
+
 	t.Run("a mac agent identity may still write the label", func(t *testing.T) {
 		svc := e.service("beta-agent", map[string]string{
 			managedByLabel:                 managedByValue,
