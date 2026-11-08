@@ -14,12 +14,13 @@
 # server: the controller would enter relay mode pinned to that server, and the
 # relay would present the per-namespace relay token to it.
 #
-# This policy has no identity match condition on purpose. It applies to every
-# writer, and requires a llmkube-metal-* ServiceAccount of any Service,
-# EndpointSlice or Endpoints object that claims the label. An object without
-# the label is not agent-authored and is unaffected, so ordinary objects keep
-# working for everyone. Delete stays allowed, as in the policy above: removing
-# an object never publishes the label.
+# This policy is the exception to that: it applies to every writer, because it
+# has no condition that filters writers down to the agent's identities. It
+# requires a llmkube-metal-* ServiceAccount of any Service, EndpointSlice or
+# Endpoints object that claims the label, less the controller exemption below.
+# An object without the label is not agent-authored and is unaffected, so
+# ordinary objects keep working for everyone. Delete stays allowed, as in the
+# policy above: removing an object never publishes the label.
 #
 # The controller's own ServiceAccount is exempt: it patches a stale
 # agent-managed EndpointSlice to withdraw its endpoints without dropping the
@@ -29,6 +30,11 @@
 # since a release named, say, llmkube-metal-prod names it
 # llmkube-metal-prod-controller-manager. make check-metal-agent-rbac fails if
 # the two copies drift.
+#
+# A system controller that rewrites a leftover core/v1 Endpoints still carrying
+# the label (EndpointSliceMirroring, the endpoints controller) is denied by this
+# policy, and that is accepted: the agent reaps the legacy Endpoints on its
+# next registration, so the state clears itself.
 #
 # Cluster-scoped. Needs Kubernetes 1.30 or newer (admissionregistration.k8s.io/v1
 # ValidatingAdmissionPolicy); older clusters have only the Role, which is the

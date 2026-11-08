@@ -799,18 +799,19 @@ metalAgent:
     # only the Role, the weaker fallback.
     enabled: true
     labelGuard:
-      # Install the second half of the rule, a ValidatingAdmissionPolicy with
-      # no identity match condition, so that it applies to every writer except
-      # the controller itself: an object labeled llmkube.ai/managed-by=metal-agent
-      # may only be created or updated by a ServiceAccount named
-      # llmkube-metal-* in any namespace. The controller reads that label as
-      # proof the agent published the registration, so a namespace editor that
-      # can write it would otherwise choose the relay's SPKI pin and receive
-      # the per-namespace relay token (GHSA-863w-vh42-mjhj). The controller's
-      # own ServiceAccount is exempt: it patches stale agent slices to withdraw
-      # their endpoints (#1918). Objects without the label are unaffected.
-      # Disabling it leaves only the policy above, which constrains the agent
-      # and not other writers. Render condition is writePolicy.enabled's.
+      # Install the second half of the rule, a ValidatingAdmissionPolicy that
+      # is not filtered to the agent's identities, so that it applies to every
+      # writer except the controller itself: an object labeled
+      # llmkube.ai/managed-by=metal-agent may only be created or updated by a
+      # ServiceAccount named llmkube-metal-* in any namespace. The controller
+      # reads that label as proof the agent published the registration, so a
+      # namespace editor that can write it would otherwise choose the relay's
+      # SPKI pin and receive the per-namespace relay token
+      # (GHSA-863w-vh42-mjhj). The controller's own ServiceAccount is exempt:
+      # it patches stale agent slices to withdraw their endpoints (#1918).
+      # Objects without the label are unaffected. Disabling it leaves only the
+      # policy above, which constrains the agent and not other writers. Render
+      # condition is writePolicy.enabled's.
       enabled: true
 
 # Network policies for the controller manager pod

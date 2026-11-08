@@ -13,16 +13,21 @@ metal_relay.go). Nothing there authenticates the writer, so a namespace editor
 could publish the label on a slice pointing at its own TLS server, and the
 relay would present the per-namespace relay token to it.
 
-This policy has no identity match condition on purpose: it applies to every
-writer and requires a llmkube-metal-* ServiceAccount of any Service,
-EndpointSlice or Endpoints object that claims the label. An object without the
-label is unaffected. Delete stays allowed, as in the write policy above.
+This policy is the exception to that: it applies to every writer, because it
+has no condition that filters writers down to the agent's identities. It
+requires a llmkube-metal-* ServiceAccount of any Service, EndpointSlice or
+Endpoints object that claims the label, less the controller exemption below.
 
 The controller's own ServiceAccount is exempt. It patches a stale
 agent-managed EndpointSlice to withdraw its endpoints without dropping the
 label (withdrawStaleMetalEndpoints, #1918), and that write is not the agent's.
 The exemption names the release's controller ServiceAccount, as the write
 policy does.
+
+A system controller that rewrites a leftover core/v1 Endpoints still carrying
+the label (EndpointSliceMirroring, the endpoints controller) is denied by this
+policy, and that is accepted: the agent reaps the legacy Endpoints on its next
+registration, so the state clears itself.
 
 deployment/macos/metal-agent-label-policy.yaml is the same policy for installs
 without Helm. make check-metal-agent-rbac fails if the two drift. Clusters

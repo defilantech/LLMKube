@@ -1269,21 +1269,27 @@ labeled for another Mac are never deleted.
 
 The agent's Role lets it create, update and delete any Service and
 EndpointSlice in its namespace, because RBAC cannot scope a verb to a label.
-A ValidatingAdmissionPolicy narrows that to the objects the agent manages:
-for every ServiceAccount named `llmkube-metal-<name>`, a write must leave the
-label `llmkube.ai/managed-by=metal-agent` on a Service, EndpointSlice or
-Endpoints object, and an update or delete must find it there. An update of
-the Service an InferenceService controls is also allowed, so the agent can
-take it over after a CUDA to Metal switch or a relay hand-back. The
-`llmkube-metal-` ServiceAccount prefix is reserved for Mac agents.
+Two ValidatingAdmissionPolicies narrow that. The first holds every
+ServiceAccount named `llmkube-metal-<name>` to its own writes: a write must
+leave the label `llmkube.ai/managed-by=metal-agent` on a Service,
+EndpointSlice or Endpoints object, and an update or delete must find it there.
+An update of the Service an InferenceService controls is also allowed, so the
+agent can take it over after a CUDA to Metal switch or a relay hand-back. The
+second is the other half: the controller reads that label as proof the agent
+published a registration, so an object that carries it may be created or
+updated only by a `llmkube-metal-*` ServiceAccount, other than the controller
+itself. The `llmkube-metal-` ServiceAccount prefix is reserved for Mac agents.
 
-The Helm chart installs the policy by default
-(`metalAgent.writePolicy.enabled`). Without Helm, a cluster admin applies
+The Helm chart installs both by default (`metalAgent.writePolicy.enabled` and
+`metalAgent.writePolicy.labelGuard.enabled`). Without Helm, a cluster admin
+applies both, once each:
+
 [`deployment/macos/metal-agent-write-policy.yaml`](https://github.com/defilantech/LLMKube/blob/main/deployment/macos/metal-agent-write-policy.yaml)
-once; do not apply both. On Kubernetes older than 1.30 only the Role applies.
-See
+and
+[`deployment/macos/metal-agent-label-policy.yaml`](https://github.com/defilantech/LLMKube/blob/main/deployment/macos/metal-agent-label-policy.yaml).
+On Kubernetes older than 1.30 only the Role applies. See
 ["Limiting the agent's writes"](https://github.com/defilantech/LLMKube/blob/main/deployment/macos/README.md#limiting-the-agents-writes-admission-policy-kubernetes-130)
-for what it does and does not stop.
+for what they do and do not stop.
 
 ### MetalNode: the Mac as a cluster object
 
