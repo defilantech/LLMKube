@@ -33,6 +33,69 @@ import (
 	llmkubemetrics "github.com/defilantech/llmkube/internal/metrics"
 )
 
+func TestQuotaWebhookUncachedNamespace(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = inferencev1alpha1.AddToScheme(scheme)
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "new-namespace", Labels: map[string]string{"env": "prod"}}}
+	q := &inferencev1alpha1.GPUQuota{
+		ObjectMeta: metav1.ObjectMeta{Name: "uncached-namespace-quota"},
+		Spec: inferencev1alpha1.GPUQuotaSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"env": "prod"}},
+			GPUCount: 1,
+		},
+	}
+	for _, tt := range []struct {
+		name      string
+		live      bool
+		cached    bool
+		gpu       int32
+		wantError string
+	}{
+		{name: "new namespace admitted", live: true},
+		{name: "new namespace quota enforced", live: true, gpu: 2, wantError: "would exceed gpuCount"},
+		{name: "fresh labels enforce quota", live: true, cached: true, gpu: 2, wantError: "would exceed gpuCount"},
+		{name: "missing namespace denied", cached: true, wantError: "not found"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cached := fake.NewClientBuilder().WithScheme(scheme).WithObjects(q)
+			if tt.cached {
+				cached.WithObjects(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns.Name}})
+			}
+			live := fake.NewClientBuilder().WithScheme(scheme)
+			if tt.live {
+				live.WithObjects(ns)
+			}
+			v := &InferenceServiceQuotaValidator{Client: cached.Build(), APIReader: live.Build()}
+			isvc := &inferencev1alpha1.InferenceService{
+				ObjectMeta: metav1.ObjectMeta{Name: "service", Namespace: ns.Name},
+				Spec: inferencev1alpha1.InferenceServiceSpec{
+					Replicas:  ptrInt32Val(1),
+					Resources: &inferencev1alpha1.InferenceResourceRequirements{GPU: tt.gpu},
+				},
+			}
+			for _, validate := range []func() (admission.Warnings, error){
+				func() (admission.Warnings, error) { return v.ValidateCreate(context.Background(), isvc) },
+				func() (admission.Warnings, error) { return v.ValidateUpdate(context.Background(), isvc, isvc) },
+			} {
+				counter := llmkubemetrics.GPUQuotaAdmissionDenialsTotal.WithLabelValues(q.Name, q.Namespace)
+				before := testutil.ToFloat64(counter)
+				_, err := validate()
+				if tt.wantError == "" {
+					if err != nil {
+						t.Fatalf("expected admission, got: %v", err)
+					}
+				} else if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+					t.Fatalf("expected denial containing %q, got: %v", tt.wantError, err)
+				}
+				if tt.wantError == "would exceed gpuCount" && testutil.ToFloat64(counter)-before != 1 {
+					t.Fatal("expected quota denial to increment the admission denial metric")
+				}
+			}
+		})
+	}
+}
+
 func TestInferenceServiceQuotaValidator(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)

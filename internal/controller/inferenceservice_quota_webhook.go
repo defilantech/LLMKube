@@ -59,6 +59,8 @@ const kueueQueueNameLabel = "kueue.x-k8s.io/queue-name"
 // a documented follow-up (a metric or a reconciler-observed counter).
 type InferenceServiceQuotaValidator struct {
 	Client client.Client
+	// APIReader avoids stale Namespace existence and labels during admission.
+	APIReader client.Reader
 	// VRAMPerDeviceGiB is the fleet-level device memory per whole GPU
 	// (--gpu-sharing-vram-per-device-gib), used to derive the VRAM footprint
 	// of exclusive-mode workloads for vramBytes accounting. Zero means
@@ -101,6 +103,7 @@ func SetupInferenceServiceQuotaWebhookWithManager(mgr ctrl.Manager, opts Inferen
 	return ctrl.NewWebhookManagedBy(mgr, &inferencev1alpha1.InferenceService{}).
 		WithValidator(&InferenceServiceQuotaValidator{
 			Client:               mgr.GetClient(),
+			APIReader:            mgr.GetAPIReader(),
 			VRAMPerDeviceGiB:     opts.VRAMPerDeviceGiB,
 			GPUSharingSharedPool: opts.GPUSharingSharedPool,
 		}).
@@ -245,7 +248,11 @@ func (v *InferenceServiceQuotaValidator) listApplicableQuotas(ctx context.Contex
 	}
 
 	var ns corev1.Namespace
-	if err := v.Client.Get(ctx, types.NamespacedName{Name: isvc.Namespace}, &ns); err != nil {
+	reader := v.APIReader
+	if reader == nil {
+		reader = v.Client
+	}
+	if err := reader.Get(ctx, types.NamespacedName{Name: isvc.Namespace}, &ns); err != nil {
 		return nil, err
 	}
 
