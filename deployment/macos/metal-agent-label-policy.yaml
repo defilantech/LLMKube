@@ -28,11 +28,7 @@
 # The kustomize controller runs as llmkube-controller-manager. The Helm chart
 # renders the same policy and exempts the release's controller ServiceAccount,
 # since a release named, say, llmkube-metal-prod names it
-# llmkube-metal-prod-controller-manager. The policy is cluster-scoped, so in a
-# cluster with more than one LLMKube release this copy denies every other
-# release's controller writes to a labeled object; lift that by editing each
-# installed copy's condition to name every release's controller (a chart value
-# disables only the copy it belongs to). make check-metal-agent-rbac fails if
+# llmkube-metal-prod-controller-manager. make check-metal-agent-rbac fails if
 # the two copies drift.
 #
 # A system controller that rewrites a leftover core/v1 Endpoints still carrying
