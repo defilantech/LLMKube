@@ -1018,6 +1018,53 @@ func TestComputeCacheKeyUsedByDeploy(t *testing.T) {
 	}
 }
 
+func TestCatalogContextDefaultDeployment(t *testing.T) {
+	cfg := cacheListEnvtest(t)
+	pointKubeconfigAt(t, cfg)
+	if err := inferencev1alpha1.AddToScheme(scheme.Scheme); err != nil {
+		t.Fatal(err)
+	}
+	k8s, err := client.New(cfg, client.Options{Scheme: scheme.Scheme})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	for _, tt := range []struct {
+		name    string
+		model   string
+		args    []string
+		context int32
+	}{
+		{name: "qwen-2.5-14b catalog default", model: "qwen-2.5-14b", context: 16384},
+		{name: "qwen-2.5-14b explicit override", model: "qwen-2.5-14b",
+			args: []string{"--context", "32768"}, context: 32768},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "catalog-context-"}}
+			if err := k8s.Create(ctx, ns); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = k8s.Delete(ctx, ns) })
+			cmd := NewDeployCommand()
+			cmd.SetArgs(append([]string{tt.model, "-n", ns.Name,
+				"--gpu", "--gpu-count", "1", "--wait=false"}, tt.args...))
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+			var svc inferencev1alpha1.InferenceService
+			if err := k8s.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: tt.model}, &svc); err != nil {
+				t.Fatal(err)
+			}
+			if svc.Spec.ContextSize == nil {
+				t.Fatal("persisted context size is nil")
+			}
+			if *svc.Spec.ContextSize != tt.context {
+				t.Errorf("persisted context size = %d, want %d", *svc.Spec.ContextSize, tt.context)
+			}
+		})
+	}
+}
+
 func TestCatalogRuntimeDeployment(t *testing.T) {
 	for _, runtime := range []string{"vllm", "sglang"} {
 		t.Run(runtime, func(t *testing.T) {
