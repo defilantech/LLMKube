@@ -115,6 +115,78 @@ func TestRelay_ForwardsWithTokenAndTarget(t *testing.T) {
 	}
 }
 
+func TestRelay_SetsXForwardedFromClientConnection(t *testing.T) {
+	cases := []struct {
+		name                    string
+		inbound                 map[string]string
+		wantFor, wantHost, want string
+	}{
+		{
+			name:     "direct client",
+			inbound:  map[string]string{"Forwarded": "for=192.0.2.1"},
+			wantFor:  "203.0.113.7",
+			wantHost: "llm.example",
+			want:     "http",
+		},
+		{
+			// A TLS-terminating gateway in front of the Service already
+			// recorded the original client, host and scheme.
+			name: "behind a gateway",
+			inbound: map[string]string{
+				"X-Forwarded-For":   "198.51.100.9",
+				"X-Forwarded-Host":  "api.example.com",
+				"X-Forwarded-Proto": "https",
+				"Forwarded":         "for=192.0.2.1",
+			},
+			wantFor:  "198.51.100.9, 203.0.113.7",
+			wantHost: "api.example.com",
+			want:     "https",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var got http.Header
+			srv, pin := newIngress(t, func(w http.ResponseWriter, r *http.Request) {
+				got = r.Header.Clone()
+				w.WriteHeader(http.StatusOK)
+			})
+			r, err := New(Config{
+				Target:    "default/qwen",
+				Upstream:  srv.URL,
+				SPKIPin:   pin,
+				TokenFile: writeToken(t, "tok123"),
+			}, testLogger())
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+
+			req := httptest.NewRequest(http.MethodPost, "http://llm.example/v1/chat/completions", nil)
+			req.RemoteAddr = "203.0.113.7:41234"
+			for k, v := range tc.inbound {
+				req.Header.Set(k, v)
+			}
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("client status = %d, want 200; body=%s", w.Code, w.Body.String())
+			}
+			for h, want := range map[string]string{
+				"X-Forwarded-For":   tc.wantFor,
+				"X-Forwarded-Host":  tc.wantHost,
+				"X-Forwarded-Proto": tc.want,
+			} {
+				if v := got.Values(h); len(v) != 1 || v[0] != want {
+					t.Errorf("ingress saw %s %q, want [%q]", h, v, want)
+				}
+			}
+			if v := got.Values("Forwarded"); len(v) != 0 {
+				t.Errorf("ingress saw Forwarded %q, want it dropped", v)
+			}
+		})
+	}
+}
+
 func TestRelay_PinMismatchIs502(t *testing.T) {
 	var called atomic.Bool
 	srv, _ := newIngress(t, func(w http.ResponseWriter, _ *http.Request) {

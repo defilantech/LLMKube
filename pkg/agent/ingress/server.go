@@ -230,8 +230,13 @@ func answerMissingMetrics(resp *http.Response) {
 // proxy builds the reverse proxy to the engine on 127.0.0.1:port. SetURL
 // joins the outbound path from the inbound URL's Path and RawPath, so the
 // engine receives exactly the escaped path that Allowed judged. Rewrite
-// also drops inbound X-Forwarded-* headers and sets Host to the loopback
-// target.
+// sets Host to the loopback target. ReverseProxy drops inbound Forwarded and
+// X-Forwarded-* headers; Rewrite restores the relay's X-Forwarded-For and
+// -Proto verbatim. Only token-authenticated requests reach the proxy, so
+// those values come from a relay or another holder of the namespace token.
+// The relay's own address is not appended, which keeps the client as the
+// rightmost X-Forwarded-For entry. X-Forwarded-Host stays dropped: it is the
+// client's Host header, and an engine could build URLs from it.
 //
 // Protocol upgrades are refused: ReverseProxy re-adds Upgrade and
 // "Connection: Upgrade" after stripping hop-by-hop headers, so Rewrite
@@ -247,6 +252,8 @@ func (s *Server) proxy(port int) *httputil.ReverseProxy {
 	return &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(target)
+			pr.Out.Header["X-Forwarded-For"] = pr.In.Header["X-Forwarded-For"]
+			pr.Out.Header["X-Forwarded-Proto"] = pr.In.Header["X-Forwarded-Proto"]
 			pr.Out.Header.Del("Upgrade")
 			pr.Out.Header.Del("Connection")
 			pr.Out.Trailer = nil

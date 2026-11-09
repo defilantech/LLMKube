@@ -1192,5 +1192,9 @@ LLMKube:
   the same way on `BackendsReady` (pool siblings are reachable only through
   the Proxy data plane). Route to keyed InferenceServices from APISIX
   directly.
-- `externalTrafficPolicy` is not applied to Services relayed to the macOS
-  Metal agent.
+- On an InferenceService relayed to a metal agent, `externalTrafficPolicy`
+  applies to the relay's Service. With `Local`, a NetworkPolicy `ipBlock` on
+  the relay pod sees APISIX's address, and the engine on the host, which
+  connects from the agent's loopback ingress, gets it as the rightmost
+  `X-Forwarded-For` entry. With the default `Cluster`, both see a node's
+  address instead.

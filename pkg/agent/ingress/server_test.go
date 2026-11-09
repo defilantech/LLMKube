@@ -23,10 +23,13 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -315,6 +318,89 @@ func TestServer_ForwardsAllowedAndStripsRelayHeaders(t *testing.T) {
 	}
 	if got.Method != http.MethodPost || got.URL.Path != "/v1/chat/completions" || got.URL.RawQuery != "x=1" {
 		t.Fatalf("engine saw %s %s?%s", got.Method, got.URL.Path, got.URL.RawQuery)
+	}
+}
+
+func TestServer_ForwardsRelayXForwardedHeaders(t *testing.T) {
+	fx := newFixture(t, nil)
+	req := newReq(http.MethodPost, "a/qwen", tokA, "/v1/chat/completions")
+	req.RemoteAddr = "10.244.1.5:52000"
+	req.Header.Set("X-Forwarded-For", "198.51.100.9, 203.0.113.7")
+	req.Header.Set("X-Forwarded-Host", "llm.example")
+	req.Header.Set("X-Forwarded-Proto", "http")
+	req.Header.Set("Forwarded", "for=192.0.2.1")
+	rec := fx.do(req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %q, want 200 from the engine", rec.Code, rec.Body.String())
+	}
+	got := fx.engine.lastRequest()
+	if got == nil {
+		t.Fatal("engine was not called")
+	}
+	// The relay's own address is not appended: it is an authenticated hop,
+	// and the client must stay the rightmost entry for engines that read it.
+	for h, want := range map[string]string{
+		"X-Forwarded-For":   "198.51.100.9, 203.0.113.7",
+		"X-Forwarded-Proto": "http",
+	} {
+		if v := got.Header.Values(h); len(v) != 1 || v[0] != want {
+			t.Errorf("engine %s = %q, want [%q]", h, v, want)
+		}
+	}
+	// X-Forwarded-Host carries the client's Host header; an engine that
+	// builds URLs from it must not see it.
+	for _, h := range []string{"X-Forwarded-Host", "Forwarded"} {
+		if v := got.Header.Values(h); len(v) != 0 {
+			t.Errorf("engine %s = %q, want it dropped", h, v)
+		}
+	}
+}
+
+func TestServer_RelayedClientAddressReachesEngine(t *testing.T) {
+	id, err := LoadOrCreateIdentity(t.TempDir())
+	if err != nil {
+		t.Fatalf("LoadOrCreateIdentity: %v", err)
+	}
+	fx := newFixture(t, nil)
+	srv := NewServer(id, fx.srv.tokens, fx.router, zap.NewNop().Sugar())
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- srv.Start(ctx, "127.0.0.1:0") }()
+	t.Cleanup(func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Errorf("Start returned %v after cancel, want nil", err)
+		}
+	})
+	addr := waitAddr(t, srv)
+
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tokenFile, []byte(tokA), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rl, err := relay.New(relay.Config{
+		Target:    "a/qwen",
+		Upstream:  "https://" + addr,
+		SPKIPin:   id.Pin(),
+		TokenFile: tokenFile,
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("relay.New: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "http://llm.example/v1/models", nil)
+	req.RemoteAddr = "203.0.113.7:41234"
+	rec := httptest.NewRecorder()
+	rl.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %q, want 200 through relay and ingress", rec.Code, rec.Body.String())
+	}
+	got := fx.engine.lastRequest()
+	if got == nil {
+		t.Fatal("engine was not called")
+	}
+	if xff := got.Header.Get("X-Forwarded-For"); xff != "203.0.113.7" {
+		t.Errorf("engine X-Forwarded-For = %q, want the relay's client %q", xff, "203.0.113.7")
 	}
 }
 
