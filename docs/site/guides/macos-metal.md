@@ -398,11 +398,14 @@ The engine on the Mac receives connections from the agent's ingress on
 `127.0.0.1`. The relay records the address it was called from in
 `X-Forwarded-For`, appended to any chain an upstream gateway already set, and
 the ingress passes that header on to the engine along with
-`X-Forwarded-Host` and `X-Forwarded-Proto`. The rightmost `X-Forwarded-For`
-entry is the address the relay saw: with `Local`, the client's. Entries to
-its left came from the caller and are only as trustworthy as whatever set
-them. Whether the engine's own logs show the client depends on whether the
-engine reads `X-Forwarded-For`; one that does not reports `127.0.0.1`.
+`X-Forwarded-Proto` (the gateway's, when one set it; otherwise `http`). The
+rightmost `X-Forwarded-For` entry is the address the relay saw: with `Local`,
+the client's; with the default `Cluster`, a node's. Entries to its left came
+from the caller and are only as trustworthy as whatever set them. The ingress
+accepts these headers from any caller holding the namespace's relay token,
+so treat that token as able to set them. Whether the engine's own logs show
+the client depends on whether the engine reads `X-Forwarded-For`; one that
+does not reports `127.0.0.1`.
 
 On the Mac itself, the agent's client proxy on `127.0.0.1:9999`
 (`--client-port`) forwards `/v1/*` to an engine. With one model running that

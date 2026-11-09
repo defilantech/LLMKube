@@ -1193,7 +1193,8 @@ LLMKube:
   the Proxy data plane). Route to keyed InferenceServices from APISIX
   directly.
 - On an InferenceService relayed to a metal agent, `externalTrafficPolicy`
-  applies to the relay's Service: a NetworkPolicy `ipBlock` on the relay pod
-  sees APISIX's address. The engine on the host connects from the agent's
-  loopback ingress and gets APISIX's address as the rightmost
-  `X-Forwarded-For` entry.
+  applies to the relay's Service. With `Local`, a NetworkPolicy `ipBlock` on
+  the relay pod sees APISIX's address, and the engine on the host, which
+  connects from the agent's loopback ingress, gets it as the rightmost
+  `X-Forwarded-For` entry. With the default `Cluster`, both see a node's
+  address instead.

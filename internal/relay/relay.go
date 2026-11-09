@@ -163,6 +163,13 @@ func New(cfg Config, logger *slog.Logger) (*Relay, error) {
 			// the rightmost entry is the relay's own observation.
 			pr.Out.Header["X-Forwarded-For"] = pr.In.Header["X-Forwarded-For"]
 			pr.SetXForwarded()
+			// SetXForwarded describes this hop only; a TLS-terminating
+			// gateway in front already recorded the client's host and scheme.
+			for _, h := range []string{"X-Forwarded-Host", "X-Forwarded-Proto"} {
+				if v := pr.In.Header.Values(h); len(v) > 0 {
+					pr.Out.Header[h] = v
+				}
+			}
 			pr.Out.Header.Del(apiv1.HeaderRelayToken)
 			pr.Out.Header.Del(apiv1.HeaderRelayTarget)
 			pr.Out.Header.Set(apiv1.HeaderRelayTarget, cfg.Target)

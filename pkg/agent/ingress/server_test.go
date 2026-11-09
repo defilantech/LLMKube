@@ -341,15 +341,18 @@ func TestServer_ForwardsRelayXForwardedHeaders(t *testing.T) {
 	// and the client must stay the rightmost entry for engines that read it.
 	for h, want := range map[string]string{
 		"X-Forwarded-For":   "198.51.100.9, 203.0.113.7",
-		"X-Forwarded-Host":  "llm.example",
 		"X-Forwarded-Proto": "http",
 	} {
 		if v := got.Header.Values(h); len(v) != 1 || v[0] != want {
 			t.Errorf("engine %s = %q, want [%q]", h, v, want)
 		}
 	}
-	if v := got.Header.Values("Forwarded"); len(v) != 0 {
-		t.Errorf("engine Forwarded = %q, want it dropped", v)
+	// X-Forwarded-Host carries the client's Host header; an engine that
+	// builds URLs from it must not see it.
+	for _, h := range []string{"X-Forwarded-Host", "Forwarded"} {
+		if v := got.Header.Values(h); len(v) != 0 {
+			t.Errorf("engine %s = %q, want it dropped", h, v)
+		}
 	}
 }
 
