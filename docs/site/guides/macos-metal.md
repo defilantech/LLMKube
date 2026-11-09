@@ -398,10 +398,13 @@ The engine on the Mac receives connections from the agent's ingress on
 `127.0.0.1`. The relay records the address it was called from in
 `X-Forwarded-For`, appended to any chain an upstream gateway already set, and
 the ingress passes that header on to the engine along with
-`X-Forwarded-Proto` (the gateway's, when one set it; otherwise `http`). The
-rightmost `X-Forwarded-For` entry is the address the relay saw: with `Local`,
-the client's; with the default `Cluster`, a node's. Entries to its left came
-from the caller and are only as trustworthy as whatever set them. The ingress
+`X-Forwarded-Proto`. The relay passes an inbound `X-Forwarded-Proto` through
+verbatim and sets `http` only when the request has none, so any caller that
+reaches the Service can set it, not only a gateway; trust it only when a
+gateway you control sits in front and overwrites it. The rightmost
+`X-Forwarded-For` entry is the address the relay saw: with `Local`, the
+client's; with the default `Cluster`, a node's. Entries to its left came from
+the caller and are only as trustworthy as whatever set them. The ingress
 accepts these headers from any caller holding the namespace's relay token,
 so treat that token as able to set them. Whether the engine's own logs show
 the client depends on whether the engine reads `X-Forwarded-For`; one that
