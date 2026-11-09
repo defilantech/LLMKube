@@ -4,6 +4,25 @@
 `llamacpp` default and GGUF format. `catalog list` and `catalog info` show the
 runtime. Rebuild the CLI after editing the catalog.
 
+## Context and memory estimates
+
+`context_size` is the deployment default, not necessarily the model's maximum
+supported context. `llmkube deploy <model> --context <tokens>` overrides it;
+larger contexts need more KV-cache memory.
+
+For `qwen-2.5-14b`, the default is 16,384 tokens. The model is trained for
+32,768 (`max_position_embeddings`, no `rope_scaling`); Qwen documents 128K only
+with YaRN, which a catalog entry cannot set. Its
+[Q5_K_M weights](https://huggingface.co/bartowski/Qwen2.5-14B-Instruct-GGUF/blob/main/Qwen2.5-14B-Instruct-Q5_K_M.gguf)
+are about 10.51 GB. With 48 layers, 8 KV heads and a head dimension of 128,
+the f16 KV cache uses `2 (K and V) × 48 × 8 × 128 × 2 bytes × context tokens`:
+1.5 GiB at 8K, 3 GiB at 16K, or 6 GiB at the trained 32,768 tokens.
+Weights plus the default cache total about 13.7 GB; the catalog estimates
+14–16 GB including runtime overhead for full GPU offload. `--context 32768`,
+the trained maximum, needs about 16.5 GB and leaves no headroom on a 16 GB card.
+A context above 32,768 does not add usable window: llama.cpp allocates the
+larger cache but caps each slot at the trained context.
+
 For a vLLM or SGLang entry, use this schema (illustrative only, not a validated
 model recommendation):
 

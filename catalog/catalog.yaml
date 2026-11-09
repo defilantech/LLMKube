@@ -374,11 +374,11 @@ models:
 
   qwen-2.5-14b:
     name: "Qwen 2.5 14B Instruct"
-    description: "Multilingual powerhouse with strong creative writing capabilities."
+    description: "Multilingual powerhouse with strong creative writing capabilities. Defaults to 16K context; trained for 32K."
     size: "14B"
     quantization: "Q5_K_M"
     source: "https://huggingface.co/bartowski/Qwen2.5-14B-Instruct-GGUF/resolve/main/Qwen2.5-14B-Instruct-Q5_K_M.gguf"
-    context_size: 131072
+    context_size: 16384
     gpu_layers: 48
     use_cases:
       - "multilingual"
@@ -388,7 +388,8 @@ models:
       cpu: "6"
       memory: "16Gi"
       gpu_memory: "16Gi"
-    vram_estimate: "10-16GB"
+    # Q5_K_M weights (~10.51 GB) + 16K f16 KV cache (3 GiB) + runtime overhead.
+    vram_estimate: "14-16GB"
     tags:
       - "qwen"
       - "multilingual"
