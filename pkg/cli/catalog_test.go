@@ -572,6 +572,31 @@ func TestRunCatalogInfoQwen14BContext(t *testing.T) {
 	}
 }
 
+func TestRunCatalogInfoLlama70BContext(t *testing.T) {
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	err := runCatalogInfo("llama-3.3-70b")
+
+	_ = w.Close()
+	os.Stdout = old
+
+	if err != nil {
+		t.Fatalf("runCatalogInfo error: %v", err)
+	}
+
+	var buf bytes.Buffer
+	_, _ = buf.ReadFrom(r)
+	output := buf.String()
+
+	for _, want := range []string{"Context Size:    8,192 tokens", "VRAM Estimate:   45-55GB"} {
+		if !strings.Contains(output, want) {
+			t.Errorf("catalog info missing %q", want)
+		}
+	}
+}
+
 func TestRunCatalogInfoNonexistent(t *testing.T) {
 	err := runCatalogInfo("nonexistent-model-xyz")
 	if err == nil {

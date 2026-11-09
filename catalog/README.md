@@ -23,6 +23,19 @@ the trained maximum, needs about 16.5 GB and leaves no headroom on a 16 GB card.
 A context above 32,768 does not add usable window: llama.cpp allocates the
 larger cache but caps each slot at the trained context.
 
+For `llama-3.3-70b`, the default is 8,192 tokens even though the model is
+trained for 131,072 (the GGUF reports `context_length: 131072` with llama3
+RoPE scaling). Its
+[Q4_K_M weights](https://huggingface.co/bartowski/Llama-3.3-70B-Instruct-GGUF/blob/main/Llama-3.3-70B-Instruct-Q4_K_M.gguf)
+are about 42.52 GB. With 80 layers, 8 KV heads and a head dimension of 128,
+the f16 KV cache uses `2 (K and V) × 80 × 8 × 128 × 2 bytes × context tokens`
+= 327,680 bytes per token: 2.5 GiB at 8K, 10 GiB at 32K, or 40 GiB at
+131,072 tokens. Weights plus the default cache total about 45 GB; the catalog
+estimates 45–55 GB including runtime overhead for the multi-GPU setups the
+entry names (2× A100 40GB or 1× A100 80GB). The full 131,072-token window
+needs about 85 GB before runtime buffers. `--context 32768` costs about
+53 GB and fits either setup with headroom.
+
 For a vLLM or SGLang entry, use this schema (illustrative only, not a validated
 model recommendation):
 
