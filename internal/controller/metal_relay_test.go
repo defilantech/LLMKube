@@ -612,24 +612,84 @@ var _ = Describe("metal relay mode", func() {
 			Expect(got.Spec.Ports[0].TargetPort).To(Equal(intstr.FromInt(8080)))
 		})
 
-		It("clears a Local externalTrafficPolicy left over from before the isvc was relayed", func() {
-			isvc := newEndpointISVC("relay-adopt-etp", &inferencev1alpha1.EndpointSpec{
+		// expectServiceConverged runs reconcileRelayService again with nothing
+		// changed and asserts it sent no Service Update. A no-op Update is
+		// dropped by the API server without bumping resourceVersion (see
+		// updateCountingClient's doc comment above), so resourceVersion alone
+		// cannot tell a converged pass apart from one that redundantly
+		// re-submits the same content; count the Update call too.
+		expectServiceConverged := func(isvc *inferencev1alpha1.InferenceService, key client.ObjectKey) {
+			before := &corev1.Service{}
+			Expect(k8sClient.Get(ctx, key, before)).To(Succeed())
+			counting := &updateCountingClient{Client: k8sClient}
+			reconciler.Client = counting
+			Expect(reconciler.reconcileRelayService(ctx, isvc)).To(Succeed())
+			reconciler.Client = k8sClient
+			Expect(counting.services).To(BeZero(), "a converged second pass must not Update the Service")
+
+			after := &corev1.Service{}
+			Expect(k8sClient.Get(ctx, key, after)).To(Succeed())
+			Expect(after.ResourceVersion).To(Equal(before.ResourceVersion), "a converged second pass must not Update the Service")
+		}
+
+		// relayedService builds the Service the way an earlier relay pass
+		// left it: constructService for the given endpoint, on the relay
+		// selector and listener, controlled by isvc.
+		relayedService := func(isvc *inferencev1alpha1.InferenceService, endpoint *inferencev1alpha1.EndpointSpec) *corev1.Service {
+			shaped := isvc.DeepCopy()
+			shaped.Spec.Endpoint = endpoint
+			svc := reconciler.constructService(shaped)
+			svc.Spec.Selector = relayPodSelector(isvc.Name)
+			for i := range svc.Spec.Ports {
+				svc.Spec.Ports[i].TargetPort = intstr.FromInt(relayListenPort)
+			}
+			Expect(setControllerReferenceUnblocked(isvc, svc, k8sClient.Scheme())).To(Succeed())
+			return svc
+		}
+
+		It("creates the relay Service with the externalTrafficPolicy spec.endpoint asks for", func() {
+			isvc := newEndpointISVC("relay-create-etp", &inferencev1alpha1.EndpointSpec{
 				Type:                  "NodePort",
 				ExternalTrafficPolicy: "Local",
 			})
 			cleanupRelay(isvc.Name)
 
-			// Builds the Service the way an earlier relay pass would have left
-			// it pre-fix: already on the relay selector, but still carrying the
-			// Local that constructService renders for this spec (what the
-			// pod-backed Service had before the Model moved to Metal).
-			svc := reconciler.constructService(isvc)
-			svc.Spec.Selector = relayPodSelector(isvc.Name)
-			for i := range svc.Spec.Ports {
-				svc.Spec.Ports[i].TargetPort = intstr.FromInt(relayListenPort)
+			Expect(reconciler.reconcileRelayService(ctx, isvc)).To(Succeed())
+
+			key := types.NamespacedName{Name: sanitizeDNSName(isvc.Name), Namespace: namespace}
+			got := &corev1.Service{}
+			Expect(k8sClient.Get(ctx, key, got)).To(Succeed())
+			Expect(got.Spec.ExternalTrafficPolicy).To(Equal(corev1.ServiceExternalTrafficPolicyLocal))
+			Expect(got.Spec.Selector).To(Equal(relayPodSelector(isvc.Name)))
+			expectServiceConverged(isvc, key)
+		})
+
+		It("keeps a Local externalTrafficPolicy carried over from the pod-backed Service", func() {
+			endpoint := &inferencev1alpha1.EndpointSpec{
+				Type:                  "NodePort",
+				ExternalTrafficPolicy: "Local",
 			}
+			isvc := newEndpointISVC("relay-keep-etp", endpoint)
+			cleanupRelay(isvc.Name)
+			svc := relayedService(isvc, endpoint)
 			Expect(svc.Spec.ExternalTrafficPolicy).To(Equal(corev1.ServiceExternalTrafficPolicyLocal))
-			Expect(setControllerReferenceUnblocked(isvc, svc, k8sClient.Scheme())).To(Succeed())
+			Expect(k8sClient.Create(ctx, svc)).To(Succeed())
+
+			Expect(reconciler.reconcileRelayService(ctx, isvc)).To(Succeed())
+
+			got := &corev1.Service{}
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(svc), got)).To(Succeed())
+			Expect(got.Spec.ExternalTrafficPolicy).To(Equal(corev1.ServiceExternalTrafficPolicyLocal))
+			expectServiceConverged(isvc, client.ObjectKeyFromObject(svc))
+		})
+
+		It("reverts a Local externalTrafficPolicy to Cluster when spec.endpoint drops it", func() {
+			isvc := newEndpointISVC("relay-revert-etp", &inferencev1alpha1.EndpointSpec{Type: "NodePort"})
+			cleanupRelay(isvc.Name)
+			svc := relayedService(isvc, &inferencev1alpha1.EndpointSpec{
+				Type:                  "NodePort",
+				ExternalTrafficPolicy: "Local",
+			})
 			Expect(k8sClient.Create(ctx, svc)).To(Succeed())
 
 			Expect(reconciler.reconcileRelayService(ctx, isvc)).To(Succeed())
@@ -637,22 +697,28 @@ var _ = Describe("metal relay mode", func() {
 			got := &corev1.Service{}
 			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(svc), got)).To(Succeed())
 			Expect(got.Spec.ExternalTrafficPolicy).To(Equal(corev1.ServiceExternalTrafficPolicyCluster))
+			expectServiceConverged(isvc, client.ObjectKeyFromObject(svc))
+		})
 
-			firstResourceVersion := got.ResourceVersion
-			// A no-op Update is dropped by the API server without bumping
-			// resourceVersion (see updateCountingClient's doc comment above),
-			// so resourceVersion alone cannot tell a converged pass apart from
-			// one that redundantly re-submits the same content; count the
-			// Update call too.
-			counting := &updateCountingClient{Client: k8sClient}
-			reconciler.Client = counting
-			Expect(reconciler.reconcileRelayService(ctx, isvc)).To(Succeed())
-			reconciler.Client = k8sClient
-			Expect(counting.services).To(BeZero(), "a converged second pass must not Update the Service")
+		It("adopts an agent ClusterIP Service as a Local LoadBalancer when spec.endpoint asks for one", func() {
+			isvc := newEndpointISVC("relay-adopt-lb-etp", &inferencev1alpha1.EndpointSpec{
+				Type:                  "LoadBalancer",
+				ExternalTrafficPolicy: "Local",
+			})
+			cleanupRelay(isvc.Name)
+			svc := agentService(isvc.Name, 8080)
+			Expect(k8sClient.Create(ctx, svc)).To(Succeed())
 
-			second := &corev1.Service{}
-			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(svc), second)).To(Succeed())
-			Expect(second.ResourceVersion).To(Equal(firstResourceVersion), "a converged second pass must not Update the Service")
+			_, err := reconciler.reconcileRelay(ctx, isvc, pinA)
+			Expect(err).NotTo(HaveOccurred())
+
+			got := &corev1.Service{}
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(svc), got)).To(Succeed())
+			Expect(got.Spec.Type).To(Equal(corev1.ServiceTypeLoadBalancer))
+			Expect(got.Spec.ExternalTrafficPolicy).To(Equal(corev1.ServiceExternalTrafficPolicyLocal))
+			Expect(got.Spec.HealthCheckNodePort).NotTo(BeZero(),
+				"the API server allocates a health check node port for a Local LoadBalancer")
+			expectServiceConverged(isvc, client.ObjectKeyFromObject(svc))
 		})
 
 		// expectSteadyState runs a second reconcileRelay with nothing changed

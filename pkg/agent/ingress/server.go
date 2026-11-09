@@ -78,6 +78,10 @@ const (
 	msgUnauthorized = "invalid relay token or target"
 )
 
+// relayForwardedHeaders are the headers the relay sets with
+// httputil.ProxyRequest.SetXForwarded, in canonical form.
+var relayForwardedHeaders = []string{"X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto"}
+
 // Server is the metal-agent's authenticated TLS ingress. In-cluster relays
 // present a per-namespace token (HeaderRelayToken) and a target
 // (HeaderRelayTarget, "<ns>/<name>"); allowed requests are reverse-proxied
@@ -230,8 +234,11 @@ func answerMissingMetrics(resp *http.Response) {
 // proxy builds the reverse proxy to the engine on 127.0.0.1:port. SetURL
 // joins the outbound path from the inbound URL's Path and RawPath, so the
 // engine receives exactly the escaped path that Allowed judged. Rewrite
-// also drops inbound X-Forwarded-* headers and sets Host to the loopback
-// target.
+// sets Host to the loopback target. ReverseProxy drops inbound Forwarded and
+// X-Forwarded-* headers; Rewrite restores the relay's X-Forwarded-For, -Host
+// and -Proto verbatim. Only token-authenticated requests reach the proxy, so
+// those values come from a relay. The relay's own address is not appended,
+// which keeps the client as the rightmost X-Forwarded-For entry.
 //
 // Protocol upgrades are refused: ReverseProxy re-adds Upgrade and
 // "Connection: Upgrade" after stripping hop-by-hop headers, so Rewrite
@@ -247,6 +254,11 @@ func (s *Server) proxy(port int) *httputil.ReverseProxy {
 	return &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(target)
+			for _, h := range relayForwardedHeaders {
+				if v := pr.In.Header.Values(h); len(v) > 0 {
+					pr.Out.Header[h] = v
+				}
+			}
 			pr.Out.Header.Del("Upgrade")
 			pr.Out.Header.Del("Connection")
 			pr.Out.Trailer = nil

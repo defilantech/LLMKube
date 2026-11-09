@@ -500,15 +500,13 @@ func relayDeploymentConverged(desired, existing *appsv1.Deployment) bool {
 
 // relayServiceConverged reports whether the adopted Service already matches
 // what reconcileRelayService would write: controlled by isvc, no metal-agent
-// managed-by label, desired labels present, the selector, type and ports
-// (ports already merged with the existing nodePorts) in place, and no leftover
-// Local externalTrafficPolicy from before this isvc was relayed. Ports compare
-// derivatively because the API server defaults fields such as appProtocol.
-// externalTrafficPolicy itself compares only against Local, not equality with
-// desired's "": the API server re-defaults an empty value to Cluster on a
-// NodePort/LoadBalancer Service, so Cluster and "" both count as converged
-// and an equality check against "" would never converge and update on every
-// pass.
+// managed-by label, desired labels present, the selector, type, ports (ports
+// already merged with the existing nodePorts) and externalTrafficPolicy in
+// place. Ports compare derivatively because the API server defaults fields
+// such as appProtocol. externalTrafficPolicy compares with "" read as
+// Cluster: the API server re-defaults an empty value to Cluster on a
+// NodePort/LoadBalancer Service, so a plain equality check against desired's
+// "" would never converge and update on every pass.
 func relayServiceConverged(isvc *inferencev1alpha1.InferenceService, desired, existing *corev1.Service, ports []corev1.ServicePort) bool {
 	if !metav1.IsControlledBy(existing, isvc) {
 		return false
@@ -522,23 +520,27 @@ func relayServiceConverged(isvc *inferencev1alpha1.InferenceService, desired, ex
 		}
 	}
 	return existing.Spec.Type == desired.Spec.Type &&
-		existing.Spec.ExternalTrafficPolicy != corev1.ServiceExternalTrafficPolicyLocal &&
+		trafficPolicyOrCluster(existing.Spec.ExternalTrafficPolicy) ==
+			trafficPolicyOrCluster(desired.Spec.ExternalTrafficPolicy) &&
 		apiequality.Semantic.DeepEqual(existing.Spec.Selector, desired.Spec.Selector) &&
 		len(existing.Spec.Ports) == len(ports) &&
 		apiequality.Semantic.DeepDerivative(ports, existing.Spec.Ports)
 }
 
-// reconcileRelayService points "<isvc>" at the relay pods. Type, port and
-// nodePort follow spec.endpoint exactly as for a pod-backed InferenceService
-// (constructService); every port targets the relay's listener.
+func trafficPolicyOrCluster(p corev1.ServiceExternalTrafficPolicy) corev1.ServiceExternalTrafficPolicy {
+	if p == "" {
+		return corev1.ServiceExternalTrafficPolicyCluster
+	}
+	return p
+}
+
+// reconcileRelayService points "<isvc>" at the relay pods. Type, port,
+// nodePort and externalTrafficPolicy follow spec.endpoint exactly as for a
+// pod-backed InferenceService (constructService); every port targets the
+// relay's listener.
 func (r *InferenceServiceReconciler) reconcileRelayService(ctx context.Context, isvc *inferencev1alpha1.InferenceService) error {
 	desired := r.constructService(isvc)
 	desired.Spec.Selector = relayPodSelector(isvc.Name)
-	// externalTrafficPolicy is supported for pod-backed services only in this
-	// release. Clearing it on desired keeps Create from setting it; the merge
-	// block and relayServiceConverged below also clear and guard against a
-	// Local left over from before this isvc was relayed.
-	desired.Spec.ExternalTrafficPolicy = ""
 	// Deliberate: adoption moves the port to spec.endpoint.port (what status
 	// already advertises), even when the agent-written Service used another.
 	for i := range desired.Spec.Ports {
@@ -587,11 +589,9 @@ func (r *InferenceServiceReconciler) reconcileRelayService(ctx context.Context, 
 	// carries a nodePort is rejected by the API on every reconcile.
 	existing.Spec.Type = desired.Spec.Type
 	existing.Spec.Ports = ports
-	// externalTrafficPolicy is not carried onto a relay Service; clear a
-	// Local left over from when this isvc was still pod-backed.
-	if existing.Spec.ExternalTrafficPolicy == corev1.ServiceExternalTrafficPolicyLocal {
-		existing.Spec.ExternalTrafficPolicy = ""
-	}
+	// Empty is safe to send: the apiserver re-defaults it to Cluster on
+	// NodePort/LoadBalancer, so removing the field reverts to the default.
+	existing.Spec.ExternalTrafficPolicy = desired.Spec.ExternalTrafficPolicy
 	// Spec.ClusterIP is left as observed: adoption must not change the
 	// address clients already resolve.
 	if err := r.Update(ctx, existing); err != nil {

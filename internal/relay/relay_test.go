@@ -115,6 +115,51 @@ func TestRelay_ForwardsWithTokenAndTarget(t *testing.T) {
 	}
 }
 
+func TestRelay_SetsXForwardedFromClientConnection(t *testing.T) {
+	var gotFor, gotHost, gotProto string
+	var gotForwarded []string
+	srv, pin := newIngress(t, func(w http.ResponseWriter, r *http.Request) {
+		gotFor = r.Header.Get("X-Forwarded-For")
+		gotHost = r.Header.Get("X-Forwarded-Host")
+		gotProto = r.Header.Get("X-Forwarded-Proto")
+		gotForwarded = r.Header.Values("Forwarded")
+		w.WriteHeader(http.StatusOK)
+	})
+	r, err := New(Config{
+		Target:    "default/qwen",
+		Upstream:  srv.URL,
+		SPKIPin:   pin,
+		TokenFile: writeToken(t, "tok123"),
+	}, testLogger())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "http://llm.example/v1/chat/completions", nil)
+	req.RemoteAddr = "203.0.113.7:41234"
+	// A gateway in front of the Service already recorded the original client.
+	req.Header.Set("X-Forwarded-For", "198.51.100.9")
+	req.Header.Set("Forwarded", "for=192.0.2.1")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("client status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	if want := "198.51.100.9, 203.0.113.7"; gotFor != want {
+		t.Errorf("ingress saw X-Forwarded-For %q, want %q (inbound chain plus the relay's peer)", gotFor, want)
+	}
+	if gotHost != "llm.example" {
+		t.Errorf("ingress saw X-Forwarded-Host %q, want the client's Host %q", gotHost, "llm.example")
+	}
+	if gotProto != "http" {
+		t.Errorf("ingress saw X-Forwarded-Proto %q, want %q", gotProto, "http")
+	}
+	if len(gotForwarded) != 0 {
+		t.Errorf("ingress saw Forwarded %q, want it dropped", gotForwarded)
+	}
+}
+
 func TestRelay_PinMismatchIs502(t *testing.T) {
 	var called atomic.Bool
 	srv, _ := newIngress(t, func(w http.ResponseWriter, _ *http.Request) {
