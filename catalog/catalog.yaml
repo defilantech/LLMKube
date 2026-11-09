@@ -423,11 +423,11 @@ models:
 
   llama-3.3-70b:
     name: "Llama 3.3 70B Instruct"
-    description: "Meta's latest 70B. Improved quality over 3.1 for production workloads."
+    description: "Meta's latest 70B. Improved quality over 3.1 for production workloads. Defaults to 8K context; trained for 131K — use --context for longer windows."
     size: "70B"
     quantization: "Q4_K_M"
     source: "https://huggingface.co/bartowski/Llama-3.3-70B-Instruct-GGUF/resolve/main/Llama-3.3-70B-Instruct-Q4_K_M.gguf"
-    context_size: 131072
+    context_size: 8192
     gpu_layers: 80
     use_cases:
       - "flagship-performance"
@@ -437,7 +437,8 @@ models:
       cpu: "8"
       memory: "80Gi"
       gpu_memory: "80Gi"
-    vram_estimate: "40-80GB"
+    # Q4_K_M weights (~42.52 GB) + 8K f16 KV cache (2.5 GiB) + runtime overhead.
+    vram_estimate: "45-55GB"
     tags:
       - "meta"
       - "llama"

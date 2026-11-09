@@ -1038,6 +1038,9 @@ func TestCatalogContextDefaultDeployment(t *testing.T) {
 		{name: "qwen-2.5-14b catalog default", model: "qwen-2.5-14b", context: 16384},
 		{name: "qwen-2.5-14b explicit override", model: "qwen-2.5-14b",
 			args: []string{"--context", "32768"}, context: 32768},
+		{name: "llama-3.3-70b catalog default", model: "llama-3.3-70b", context: 8192},
+		{name: "llama-3.3-70b explicit override", model: "llama-3.3-70b",
+			args: []string{"--context", "32768"}, context: 32768},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "catalog-context-"}}
