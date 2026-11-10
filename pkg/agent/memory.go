@@ -77,6 +77,10 @@ type MemoryEstimate struct {
 	OverheadBytes uint64
 	TotalBytes    uint64
 
+	// RecurrentStateBytes is EstimateOptions.RecurrentStateBytes when the
+	// KV term was computed, and is included in TotalBytes.
+	RecurrentStateBytes uint64
+
 	// KVCacheNotCounted, when set, says why TotalBytes holds no KV-cache
 	// term although the service asks for more than the default context:
 	// the attention shape was in neither the Model status nor a GGUF
@@ -137,6 +141,20 @@ type EstimateOptions struct {
 	// ValueLength is the per-head value dimension. 0 means the GGUF did not
 	// provide a usable scalar value; resolved like KeyLength.
 	ValueLength uint64
+
+	// KVHeadLayers, when non-zero, is the KV head count summed over the
+	// layers that hold a KV cache, read from a GGUF header's layer layout
+	// (kvLayoutFromParsed). It replaces layerCount * HeadCountKV for files
+	// where the two differ: a hybrid model's recurrent layers and a layer
+	// whose per-layer head_count_kv is 0 hold no KV cache. HeadCount and
+	// HeadCountKV are then needed only to derive a missing head dim.
+	KVHeadLayers uint64
+
+	// RecurrentStateBytes is the state a hybrid model's recurrent layers
+	// hold instead of a KV cache, for every sequence llama-server sizes it
+	// for. It is charged next to the KV term and does not grow with the
+	// context.
+	RecurrentStateBytes uint64
 }
 
 // cacheTypeBytesPerElement returns the per-element byte cost of a llama.cpp
@@ -212,20 +230,29 @@ func EstimateModelMemory(fileSizeBytes uint64, layerCount, embeddingSize uint64,
 // Models that do fall back are over-charged by HeadCount/HeadCountKV, and
 // the hybrid archs named above are charged further because their layer
 // count includes the non-attention layers.
+//
+// With opts.KVHeadLayers set, the per-layer head counts already came from the
+// file, so only the head dims are resolved here (a missing one still needs a
+// scalar HeadCount that divides embeddingSize).
 func resolveKVShape(embeddingSize uint64, opts EstimateOptions) (kvHeads, keyLen, valLen uint64, ok bool) {
-	if opts.HeadCount == 0 || opts.HeadCountKV == 0 || opts.HeadCountKV > opts.HeadCount {
+	if opts.KVHeadLayers == 0 &&
+		(opts.HeadCount == 0 || opts.HeadCountKV == 0 || opts.HeadCountKV > opts.HeadCount) {
 		return 0, 0, 0, false
 	}
 	keyLen, valLen = opts.KeyLength, opts.ValueLength
-	if (keyLen == 0 || valLen == 0) && embeddingSize%opts.HeadCount != 0 {
-		return 0, 0, 0, false
-	}
-	derived := embeddingSize / opts.HeadCount
-	if keyLen == 0 {
-		keyLen = derived
-	}
-	if valLen == 0 {
-		valLen = derived
+	if keyLen == 0 || valLen == 0 {
+		// HeadCount is non-zero here unless KVHeadLayers is set; a layout
+		// with no scalar head count cannot derive a dim.
+		if opts.HeadCount == 0 || embeddingSize%opts.HeadCount != 0 {
+			return 0, 0, 0, false
+		}
+		derived := embeddingSize / opts.HeadCount
+		if keyLen == 0 {
+			keyLen = derived
+		}
+		if valLen == 0 {
+			valLen = derived
+		}
 	}
 	return opts.HeadCountKV, keyLen, valLen, true
 }
@@ -266,12 +293,15 @@ func EstimateModelMemoryWithOptions(
 	// below well-defined for any caller.
 	if kvHeads, keyLen, valLen, ok := resolveKVShape(embeddingSize, opts); ok && contextSize > 0 {
 		ctx := uint64(contextSize) //nolint:gosec // G115: contextSize is CRD-validated ≥128 upstream
-		base := layerCount * kvHeads
-		if base/layerCount != kvHeads {
-			return fallbackEstimate(fileSizeBytes)
+		headLayers := opts.KVHeadLayers
+		if headLayers == 0 {
+			headLayers = layerCount * kvHeads
+			if headLayers/layerCount != kvHeads {
+				return fallbackEstimate(fileSizeBytes)
+			}
 		}
-		base *= ctx
-		if base/ctx != layerCount*kvHeads {
+		base := headLayers * ctx
+		if base/ctx != headLayers {
 			return fallbackEstimate(fileSizeBytes)
 		}
 		kElems := base * keyLen
@@ -299,15 +329,22 @@ func EstimateModelMemoryWithOptions(
 		}
 		kvCache := uint64(math.Ceil(float64(kElems)*bytesK + float64(vElems)*bytesV))
 
-		total := fileSizeBytes + kvCache + uint64(overheadBytes)
+		// kvCache is at most MaxUint64/2 (each side is bounded to /4 above).
+		// Bounding the recurrent state to /4 keeps every term but the weights
+		// below MaxUint64 together, so the single check below catches a wrap.
+		if opts.RecurrentStateBytes > math.MaxUint64/4 {
+			return fallbackEstimate(fileSizeBytes)
+		}
+		total := fileSizeBytes + kvCache + opts.RecurrentStateBytes + uint64(overheadBytes)
 		if total < fileSizeBytes { // addition overflow
 			return fallbackEstimate(fileSizeBytes)
 		}
 		return MemoryEstimate{
-			WeightsBytes:  fileSizeBytes,
-			KVCacheBytes:  kvCache,
-			OverheadBytes: uint64(overheadBytes),
-			TotalBytes:    total,
+			WeightsBytes:        fileSizeBytes,
+			KVCacheBytes:        kvCache,
+			RecurrentStateBytes: opts.RecurrentStateBytes,
+			OverheadBytes:       uint64(overheadBytes),
+			TotalBytes:          total,
 		}
 	}
 

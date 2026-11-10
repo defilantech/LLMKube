@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"os"
 	"path/filepath"
@@ -2354,7 +2355,8 @@ func (a *MetalAgent) checkMemoryAdmission(
 	contextSize int,
 	cacheTypeK, cacheTypeV string,
 ) error {
-	estimate, err := a.estimateModelMemory(ctx, model, contextSize, cacheTypeK, cacheTypeV)
+	estimate, err := a.estimateModelMemory(ctx, model, contextSize, cacheTypeK, cacheTypeV,
+		derefInt32(isvc.Spec.ParallelSlots))
 	if err != nil {
 		return a.failModelEstimate(ctx, isvc, model, err)
 	}
@@ -2509,6 +2511,10 @@ func kvCacheLogValue(estimate MemoryEstimate) string {
 	if estimate.KVCacheNotCounted != "" {
 		return "not counted: " + estimate.KVCacheNotCounted
 	}
+	if estimate.RecurrentStateBytes > 0 {
+		return formatMemory(estimate.KVCacheBytes) + " (plus " + formatMemory(estimate.RecurrentStateBytes) +
+			" recurrent state)"
+	}
 	return formatMemory(estimate.KVCacheBytes)
 }
 
@@ -2654,11 +2660,16 @@ func (a *MetalAgent) failMemoryCheck(
 // matters on fresh hosts: with no file on disk and a not-yet-populated status
 // size ("0"), the old chain errored out and the caller started the process
 // unchecked.
+//
+// parallelSlots is the InferenceService's spec.parallelSlots; it sizes the
+// recurrent state of a hybrid model, which llama-server keeps per sequence
+// (see recurrentSequences).
 func (a *MetalAgent) estimateModelMemory(
 	ctx context.Context,
 	model *inferencev1alpha1.Model,
 	contextSize int,
 	cacheTypeK, cacheTypeV string,
+	parallelSlots int,
 ) (MemoryEstimate, error) {
 	var fileSizeBytes uint64
 	var reasons []string
@@ -2746,14 +2757,21 @@ func (a *MetalAgent) estimateModelMemory(
 	}
 
 	shape, notCounted := a.attentionShapeFor(model, headerPath, headerFollowsSymlinks)
+	seqs := recurrentSequences(parallelSlots)
+	recurrentState := shape.RecurrentStatePerSeq * seqs
+	if recurrentState/seqs != shape.RecurrentStatePerSeq {
+		recurrentState = math.MaxUint64 // overflow: the estimate takes its overflow fallback
+	}
 	estimate := EstimateModelMemoryWithOptions(fileSizeBytes, shape.LayerCount, shape.EmbeddingSize, contextSize,
 		EstimateOptions{
-			CacheTypeK:  cacheTypeK,
-			CacheTypeV:  cacheTypeV,
-			HeadCount:   shape.HeadCount,
-			HeadCountKV: shape.HeadCountKV,
-			KeyLength:   shape.KeyLength,
-			ValueLength: shape.ValueLength,
+			CacheTypeK:          cacheTypeK,
+			CacheTypeV:          cacheTypeV,
+			HeadCount:           shape.HeadCount,
+			HeadCountKV:         shape.HeadCountKV,
+			KeyLength:           shape.KeyLength,
+			ValueLength:         shape.ValueLength,
+			KVHeadLayers:        shape.KVHeadLayers,
+			RecurrentStateBytes: recurrentState,
 		})
 	if notCounted != "" && contextSize > defaultContextSize {
 		estimate.KVCacheNotCounted = notCounted
@@ -2784,6 +2802,23 @@ func (a *MetalAgent) attentionShapeFor(
 		return attentionShape{}, "the Model status has no GGUF attention shape and the model file is not on this Mac yet"
 	}
 	return a.ggufShapes.shapeOf(headerPath, followSymlinks)
+}
+
+// llamaServerAutoSlots is how many slots llama-server runs when --parallel is
+// not given: its default is auto, which it resolves to 4 with a unified KV
+// cache (tools/server/server.cpp, "n_parallel is set to auto"). The agent
+// omits the flag for spec.parallelSlots <= 1, so such a service runs 4 slots.
+const llamaServerAutoSlots = 4
+
+// recurrentSequences is the number of sequences llama-server sizes a hybrid
+// model's recurrent state for: one per slot (llama-model.cpp passes
+// max(1, n_seq_max) as the recurrent cache size). extraArgs are not read; a
+// --parallel there above the spec's value is not counted.
+func recurrentSequences(parallelSlots int) uint64 {
+	if parallelSlots <= 1 {
+		return llamaServerAutoSlots
+	}
+	return uint64(parallelSlots) //nolint:gosec // G115: positive here
 }
 
 // probeRemoteModelSize sizes an http(s) source with a HEAD for its

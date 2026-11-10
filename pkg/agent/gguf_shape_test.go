@@ -121,7 +121,7 @@ func TestEstimateModelMemory_LocalGGUFChargesKVFromFileHeader(t *testing.T) {
 			agent := newAdmissionTestAgent(t, nil, MetalAgentConfig{})
 			model := newAdmissionTestModel(source, "")
 
-			est, err := agent.estimateModelMemory(context.Background(), model, 131072, "", "")
+			est, err := agent.estimateModelMemory(context.Background(), model, 131072, "", "", 0)
 			if err != nil {
 				t.Fatalf("estimateModelMemory: %v", err)
 			}
@@ -184,7 +184,7 @@ func TestEstimateModelMemory_StoreGGUFChargesKVFromFileHeader(t *testing.T) {
 	slot := modelCacheSlot(agent.config.ModelStorePath, model.Name, source)
 	writeTestGGUF(t, slot, qwen3_32BShape)
 
-	est, err := agent.estimateModelMemory(context.Background(), model, 131072, "", "")
+	est, err := agent.estimateModelMemory(context.Background(), model, 131072, "", "", 0)
 	if err != nil {
 		t.Fatalf("estimateModelMemory: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestEstimateModelMemory_StatusShapeTakesPrecedenceOverFileHeader(t *testing
 	}
 	writeTestGGUF(t, modelCacheSlot(agent.config.ModelStorePath, model.Name, source), qwen3_32BShape)
 
-	est, err := agent.estimateModelMemory(context.Background(), model, 131072, "", "")
+	est, err := agent.estimateModelMemory(context.Background(), model, 131072, "", "", 0)
 	if err != nil {
 		t.Fatalf("estimateModelMemory: %v", err)
 	}
@@ -231,7 +231,7 @@ func TestEstimateModelMemory_LocalGGUFSymlinkIsFollowed(t *testing.T) {
 	}
 
 	agent := newAdmissionTestAgent(t, nil, MetalAgentConfig{})
-	est, err := agent.estimateModelMemory(context.Background(), newAdmissionTestModel(link, ""), 131072, "", "")
+	est, err := agent.estimateModelMemory(context.Background(), newAdmissionTestModel(link, ""), 131072, "", "", 0)
 	if err != nil {
 		t.Fatalf("estimateModelMemory: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestEstimateModelMemory_StoreSlotSymlinkIsNotFollowed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	est, err := agent.estimateModelMemory(context.Background(), model, 131072, "", "")
+	est, err := agent.estimateModelMemory(context.Background(), model, 131072, "", "", 0)
 	if err != nil {
 		t.Fatalf("estimateModelMemory: %v", err)
 	}
@@ -302,7 +302,7 @@ func TestEstimateModelMemory_NoShapeReportsWhyAboveDefaultContext(t *testing.T) 
 			agent := newAdmissionTestAgent(t, nil, MetalAgentConfig{})
 			model := newAdmissionTestModel(tt.source, tt.statusSize)
 
-			est, err := agent.estimateModelMemory(context.Background(), model, 131072, "", "")
+			est, err := agent.estimateModelMemory(context.Background(), model, 131072, "", "", 0)
 			if err != nil {
 				t.Fatalf("estimateModelMemory: %v", err)
 			}
@@ -316,7 +316,7 @@ func TestEstimateModelMemory_NoShapeReportsWhyAboveDefaultContext(t *testing.T) 
 				t.Errorf("KVCacheNotCounted = %q, want it to contain %q", est.KVCacheNotCounted, tt.want)
 			}
 
-			atDefault, err := agent.estimateModelMemory(context.Background(), model, defaultContextSize, "", "")
+			atDefault, err := agent.estimateModelMemory(context.Background(), model, defaultContextSize, "", "", 0)
 			if err != nil {
 				t.Fatalf("estimateModelMemory at the default context: %v", err)
 			}
@@ -371,7 +371,7 @@ func TestEstimateModelMemory_HeaderShapeCachedBySizeAndMtime(t *testing.T) {
 	model := newAdmissionTestModel(path, "")
 	kv := func() uint64 {
 		t.Helper()
-		est, err := agent.estimateModelMemory(context.Background(), model, 131072, "", "")
+		est, err := agent.estimateModelMemory(context.Background(), model, 131072, "", "", 0)
 		if err != nil {
 			t.Fatalf("estimateModelMemory: %v", err)
 		}
@@ -435,7 +435,7 @@ func TestEstimateModelMemory_HeaderReadIsBounded(t *testing.T) {
 	t.Cleanup(func() { maxGGUFHeaderBytes = prev })
 
 	agent := newAdmissionTestAgent(t, nil, MetalAgentConfig{})
-	est, err := agent.estimateModelMemory(context.Background(), newAdmissionTestModel(path, ""), 131072, "", "")
+	est, err := agent.estimateModelMemory(context.Background(), newAdmissionTestModel(path, ""), 131072, "", "", 0)
 	if err != nil {
 		t.Fatalf("estimateModelMemory: %v", err)
 	}
@@ -463,7 +463,7 @@ func TestEstimateModelMemory_FIFOSourceDoesNotBlock(t *testing.T) {
 	}
 	done := make(chan result, 1)
 	go func() {
-		est, err := agent.estimateModelMemory(context.Background(), model, 131072, "", "")
+		est, err := agent.estimateModelMemory(context.Background(), model, 131072, "", "", 0)
 		done <- result{est, err}
 	}()
 	select {
@@ -491,7 +491,7 @@ func TestEstimateModelMemory_KVNotCountedLoggedOnce(t *testing.T) {
 	model := newAdmissionTestModel(notGGUF, "")
 
 	for range 3 {
-		if _, err := agent.estimateModelMemory(context.Background(), model, 131072, "", ""); err != nil {
+		if _, err := agent.estimateModelMemory(context.Background(), model, 131072, "", "", 0); err != nil {
 			t.Fatalf("estimateModelMemory: %v", err)
 		}
 	}

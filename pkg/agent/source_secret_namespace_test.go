@@ -132,7 +132,7 @@ func TestSourceSecret_ReadFromModelNamespace(t *testing.T) {
 			model := sourceSecretTestModel(teamNamespace, minioRefName)
 
 			// Before buildExecutors: s3SizeProbe's stand-in executor.
-			est, err := a.estimateModelMemory(t.Context(), model, 2048, "", "")
+			est, err := a.estimateModelMemory(t.Context(), model, 2048, "", "", 0)
 			if err != nil {
 				t.Fatalf("size probe without registered executor: %v", err)
 			}
@@ -141,7 +141,7 @@ func TestSourceSecret_ReadFromModelNamespace(t *testing.T) {
 			}
 
 			a.buildExecutors()
-			if _, err := a.estimateModelMemory(t.Context(), model, 2048, "", ""); err != nil {
+			if _, err := a.estimateModelMemory(t.Context(), model, 2048, "", "", 0); err != nil {
 				t.Fatalf("size probe through the registered executor: %v", err)
 			}
 

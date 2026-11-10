@@ -816,9 +816,30 @@ the figure is a lower bound. An MLX model with a long context is
 therefore admitted against less memory than it will use; leave room
 for its KV cache in `--memory-fraction`.
 
-The estimate charges the total `--ctx-size` pool: llama-server
-shares that pool across `--parallel` slots rather than multiplying
-it, so admission does not scale with slot count.
+A header the agent reads also gives the model's layer layout, which
+`status.gguf` does not record. On a hybrid model only the attention
+layers keep a KV cache: the layers `<arch>.attention.recurrent_layers`
+or `<arch>.full_attention_interval` mark as attention, plus any MTP
+(`nextn_predict_layers`) layers, or, when the file has neither key but
+has SSM geometry, the layers whose per-layer `head_count_kv` is not 0.
+That covers the Qwen3.5, Qwen3.6 and Qwen3.8 GGUFs (`qwen35`,
+`qwen35moe`), Qwen3-Next, and the Jamba, Nemotron-H and Granite
+hybrids. Each other layer keeps a fixed f32 recurrent state per
+sequence, sized from the `ssm.*` keys as llama.cpp sizes it, and
+charged for `spec.parallelSlots` sequences, or 4 when that is 1 or
+unset, because llama-server then runs its automatic 4 slots. A
+per-layer `head_count_kv` array (Nemotron Super) is summed rather than
+falling back to the embedding-width formula. For Qwen3.8-27B at
+`contextSize: 131072` this charges 8 GiB of KV cache and 0.6 GiB of
+recurrent state, where counting all 64 layers charged 32 GiB. A file
+whose recurrent layers keep another kind of state (RWKV, LFM2, Kimi
+Linear) or lack SSM geometry is charged at every layer, as before, and
+so is a Model charged from its `status.gguf`.
+
+The estimate charges the total `--ctx-size` pool: llama-server shares
+that pool across `--parallel` slots rather than multiplying it, so the
+KV term does not scale with slot count. A hybrid model's recurrent
+state, above, is per sequence and does.
 
 A Model parsed by an older controller keeps the
 embedding-width estimate until its GGUF metadata is re-parsed, which
