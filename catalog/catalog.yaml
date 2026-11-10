@@ -148,8 +148,8 @@ models:
     size: "7B"
     quantization: "Q5_K_M"
     source: "https://huggingface.co/bartowski/Qwen2.5-Coder-7B-Instruct-GGUF/resolve/main/Qwen2.5-Coder-7B-Instruct-Q5_K_M.gguf"
-    context_size: 131072
-    gpu_layers: 33
+    context_size: 32768
+    gpu_layers: 28
     use_cases:
       - "code-generation"
       - "debugging"
@@ -158,7 +158,7 @@ models:
       cpu: "4"
       memory: "8Gi"
       gpu_memory: "8Gi"
-    vram_estimate: "5-8GB"
+    vram_estimate: "7-8GB"
     tags:
       - "qwen"
       - "code"
@@ -166,6 +166,10 @@ models:
       - "long-context"
       - "recommended"
     homepage: "https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct"
+    # 32,768 is this model's trained window (max_position_embeddings, no rope_scaling);
+    # the 128K Qwen documents needs YaRN, which the catalog cannot set. Pass
+    # `--context` to llmkube deploy for a longer window. 28 layers is the model's own.
+    notes: "Trained context is 32,768 tokens; use --context for longer windows (YaRN not configured)"
 
   deepseek-r1-7b:
     name: "DeepSeek R1 Distill Qwen 7B"
