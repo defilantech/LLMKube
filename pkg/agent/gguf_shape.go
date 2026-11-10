@@ -35,8 +35,8 @@ import (
 // attention shape. The header, metadata and tensor index precede the tensor
 // data; the tokenizer arrays dominate them, and a 262144-token vocabulary
 // with scores and merges is well under 16 MiB. A header past the bound is
-// treated as unreadable, which leaves the file-size estimate in place. A
-// variable so tests can lower it.
+// treated as unreadable, which leaves the file-size estimate in place. It is
+// a variable so tests can lower it.
 var maxGGUFHeaderBytes int64 = 32 << 20
 
 // attentionShape is the model geometry the KV-cache term of the memory
@@ -181,6 +181,9 @@ func kvLayoutFromParsed(f *gguf.GGUFFile) (kvHeadLayers, recurrentStatePerSeq ui
 		return kvHeadLayers, 0
 	}
 
+	// MiniMax-01's linear-attention state (n_embd_head_la in llama.cpp) needs
+	// no key here: src/models/minimax-01.cpp reads no ssm.* key, so such a
+	// file has no SSM geometry and takes the every-layer charge below.
 	if !hasSSM || ggufHasKeyPart(f, arch, ".wkv.", ".shortconv.", ".kda.", ".ple.") {
 		return 0, 0
 	}
