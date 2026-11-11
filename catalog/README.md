@@ -23,6 +23,19 @@ the trained maximum, needs about 16.5 GB and leaves no headroom on a 16 GB card.
 A context above 32,768 does not add usable window: llama.cpp allocates the
 larger cache but caps each slot at the trained context.
 
+For `qwen-2.5-coder-7b`, the default is 32,768 tokens, which is the model's trained
+window (`context_length` and `max_position_embeddings` agree, with no `rope_scaling`).
+Its
+[Q5_K_M weights](https://huggingface.co/bartowski/Qwen2.5-Coder-7B-Instruct-GGUF/blob/main/Qwen2.5-Coder-7B-Instruct-Q5_K_M.gguf)
+are about 5.44 GB. With 28 layers, 4 KV heads and a head dimension of 128, the f16
+KV cache uses `2 (K and V) × 28 × 4 × 128 × 2 bytes × context tokens` = 57,344 bytes
+per token: 0.44 GiB at 8K, 0.87 GiB at 16K, or 1.75 GiB at 32,768 tokens. Weights
+plus the default cache total about 7.3 GB; the catalog estimates 7–8 GB including
+runtime overhead for full GPU offload. `--context` above 32,768 does not add usable
+window: without RoPE flags llama-server caps each slot at the trained context, so the
+larger cache is allocated and never used. The 128K Qwen documents needs YaRN, which a
+catalog entry cannot set.
+
 For `llama-3.3-70b`, the default is 8,192 tokens even though the model is
 trained for 131,072 (the GGUF reports `context_length: 131072` with llama3
 RoPE scaling). Its
