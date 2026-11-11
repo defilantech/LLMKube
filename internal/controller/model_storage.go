@@ -343,7 +343,11 @@ func (r *InferenceServiceReconciler) growModelCachePVC(
 // buildOCIStorageConfig, never the cache), so provisioning a cache PVC for
 // them only leaves an unused, ISVC-owned claim. Kept as its own predicate so
 // the mount side (isPVCSource / isOCISource in buildModelStorageConfig) and
-// the provisioning side agree on both pre-staged schemes.
+// the provisioning side agree on both pre-staged schemes. A Metal model is
+// excluded for the same reason: its service runs no pod, and the host
+// metal-agent downloads the model into its own store on the Mac, so a cache
+// PVC would never be mounted and, without a default StorageClass, stays
+// Pending (#2511).
 func modelNeedsCachePVC(
 	model *inferencev1alpha1.Model,
 	cache effectiveModelCache,
@@ -351,7 +355,8 @@ func modelNeedsCachePVC(
 ) bool {
 	return modelWantsCacheVolume(model, cache, modelCachePath) &&
 		!isPVCSource(model.Spec.Source) &&
-		!isOCISource(model.Spec.Source)
+		!isOCISource(model.Spec.Source) &&
+		!isMetalModel(model)
 }
 
 // modelWantsCacheVolume reports whether this workload should download into the
