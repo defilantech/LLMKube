@@ -97,7 +97,7 @@ Look for issues labeled:
 ### Prerequisites
 
 **Required:**
-- **Go 1.27.3+** (the version `go.mod` pins): Install from [golang.org](https://golang.org/dl/)
+- **Go 1.27.4+** (the version `go.mod` pins): Install from [golang.org](https://golang.org/dl/)
 - **Docker 17.03+**: For building images
 - **kubectl**: Configured with a cluster (minikube, kind, GKE, etc.)
 - **Kubernetes cluster**: a recent release (minikube, kind, or cloud). CI runs the e2e suite on kind's default node image, which is Kubernetes v1.37.0 as of November 2026; older versions are not tested

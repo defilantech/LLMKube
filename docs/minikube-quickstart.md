@@ -119,7 +119,7 @@ kubectl get pods -n llmkube-system
 
 The controller does not download models. Each InferenceService pod downloads its model in a `model-downloader` init container, into a `llmkube-model-cache` PersistentVolumeClaim that the operator creates in the pod's namespace (100Gi request by default; Minikube's default storage class provides it). That claim stays after you delete the model or uninstall the chart; see [Clean Up](#clean-up).
 
-To run the controller from a source checkout instead (for working on the operator itself), see [CONTRIBUTING.md](../CONTRIBUTING.md); it needs Go 1.27.3 or later.
+To run the controller from a source checkout instead (for working on the operator itself), see [CONTRIBUTING.md](../CONTRIBUTING.md); it needs Go 1.27.4 or later.
 
 ## Step 3: Deploy Your First Model
 

@@ -23,7 +23,7 @@ model, the other runtimes, and the manual and source-build installs.
    helm install llmkube llmkube/llmkube \
      -n llmkube-system --create-namespace
    ```
-5. **To build the agent from source:** the Xcode Command Line Tools (`xcode-select --install`) and Go 1.27.3 or newer, the version `go.mod` pins.
+5. **To build the agent from source:** the Xcode Command Line Tools (`xcode-select --install`) and Go 1.27.4 or newer, the version `go.mod` pins.
 6. **`--host-ip` flag** (optional): an agent started with `--metal-node` (as `llmkube metal join` does) registers the address the MetalNode dial-back verified. Without `--metal-node` it auto-detects one, preferring a Tailscale address (see "`--host-ip` flag (remote cluster)" below), which may not be one your cluster can reach. Start the agent with `--host-ip <your-mac-ip>` so that its ingress is registered in Kubernetes at an address you chose.
 
 ## Installation

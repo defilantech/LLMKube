@@ -23,7 +23,7 @@ contributors share. The human onboarding narrative lives in
 
 ## Setup
 
-- Go 1.27.3+ (pinned in `go.mod`).
+- Go 1.27.4+ (pinned in `go.mod`).
 - `make test` downloads envtest binaries on first run; no cluster needed for
   unit tests.
 - `make test-chart` needs `helm` and the `helm-unittest` plugin.
@@ -176,7 +176,7 @@ A change is not done until all of these hold.
   The gate does not regenerate the Helm chart CRDs; run `make chart-crds`
   separately when `api/v1alpha1` types change. If
   staticcheck panics under your Go toolchain, set
-  `LINT_GOTOOLCHAIN=<version>` (for example go1.27.3).
+  `LINT_GOTOOLCHAIN=<version>` (for example go1.27.4).
   The copyright step diffs against `BASE_REF` (default `upstream/main`,
   override with `BASE_REF=origin/main` in a fork clone, the same knob
   `make test-affected` uses), so an unresolvable base fails the gate.
