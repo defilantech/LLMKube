@@ -44,6 +44,12 @@ kubectl wait --for=condition=ready pod -l control-plane=controller-manager \
   -n llmkube-system --timeout=120s
 ```
 
+Another cluster on the Mac works the same way, such as kind, k3d or Apple's
+`container cluster create`. If it has no default StorageClass (Apple's does
+not), `helm install` stops with "LLMKube shared model cache requires a default
+StorageClass". Add `--set modelCache.mode=perService` to the install: the
+Metal agent keeps models on the Mac, so the shared cache volume is not needed.
+
 ## 2. Install the agent and the CLI
 
 ```bash
@@ -72,6 +78,12 @@ llmkube metal token create mac -n metal
 ```bash
 llmkube metal join llmkube://eyJ2IjoxLCJzZXJ2ZXIiOi...
 ```
+
+If this Mac was joined to a cluster before, `join` keeps that join's agent
+flags, such as `--host-ip` and `--inference-service-allowlist`, and prints them
+as "keeping agent arguments from the previous join". An old allowlist stops
+the agent from serving phi-4-mini. Run `llmkube metal leave` first, or drop
+them on the join line with `--host-ip= --allowlist=`.
 
 The join string carries minikube's API server address, `127.0.0.1`, so it
 works only on this Mac. `join` writes the agent's own credentials and its
@@ -117,6 +129,10 @@ kubectl apply -f phi-4-mini.yaml
 kubectl get inferenceservice phi-4-mini -n metal -w
 # wait for PHASE Ready; the first start downloads the file to the Mac
 ```
+
+PHASE stays `Creating` while the agent downloads the 2.5 GB file, which takes
+a few minutes on a slow connection; the engine starts seconds after it
+arrives.
 
 On the Mac:
 
