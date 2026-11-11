@@ -15,6 +15,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -162,6 +163,91 @@ func TestAdopt_HealthyEngineIsAdopted(t *testing.T) {
 	if d := testutil.ToFloat64(engineAdoptionsTotal.WithLabelValues(adoptionAdopted)) - before; d != 1 {
 		t.Fatalf("adopted counter moved by %v, want 1", d)
 	}
+}
+
+func TestAdopt_UnhealthyRunningEngine(t *testing.T) {
+	for _, recovers := range []bool{true, false} {
+		t.Run(fmt.Sprintf("recovers=%v", recovers), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				in := adoptInspector{tokens: map[int]string{4242: "t1"}, exes: map[int]string{4242: "/bin/engine"}}
+				a, sent := newAdoptAgent(t, in, false, map[int]bool{4242: true})
+				writeSpawned(t, a)
+				writeRunning(t, a, &ManagedProcess{Name: "svc", Namespace: "default", PID: 4242, Port: 18080,
+					Runtime: runtimeLlamaServer, SpecHash: "h", AdmittedBytes: 40 << 30})
+				a.healthChecker = slowAdoptionChecker{}
+				started := time.Now()
+				a.startAdoption(context.Background())
+				onlyProbes(t, *sent, "a busy running engine")
+				p := a.processes["default/svc"]
+				if p == nil || p.Healthy || !p.Adopted || p.PID != 4242 || p.SpecHash != "h" || p.AdmittedBytes != 40<<30 {
+					t.Fatalf("process = %+v, want the original engine adopted unhealthy with its recorded fields", p)
+				}
+				if !recordExists(t, a, "svc") {
+					t.Fatal("running engine record removed")
+				}
+				if elapsed := time.Since(started); elapsed != 5*time.Second {
+					t.Fatalf("adoption waited %s, want one 5s probe", elapsed)
+				}
+				if got := testutil.ToFloat64(processHealthy.WithLabelValues("svc", "default")); got != 0 {
+					t.Fatalf("health metric = %v, want 0", got)
+				}
+
+				svc := &inferencev1alpha1.InferenceService{
+					ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "default"},
+					Spec:       inferencev1alpha1.InferenceServiceSpec{ModelRef: "svc"},
+				}
+				inheritedSvc, inheritedSlice := inheritedEndpoint("svc")
+				for _, obj := range []runtimeObject{ggufModel(t, "svc"), svc, inheritedSvc, inheritedSlice} {
+					if err := a.config.K8sClient.Create(context.Background(), obj); err != nil {
+						t.Fatal(err)
+					}
+				}
+				a.registry = NewServiceRegistry(a.config.K8sClient, "10.0.0.1", newNopLogger(), "")
+				a.watcher = NewInferenceServiceWatcher(a.config.K8sClient, "default", newNopLogger())
+				a.withdrawInheritedEndpoints(context.Background())
+				if ready, _ := endpointReady(t, a.config.K8sClient, "svc"); ready {
+					t.Fatal("unhealthy adopted endpoint stayed Ready")
+				}
+
+				checker := &mockHealthChecker{result: false}
+				monitor := NewHealthMonitor(a, checker, 30*time.Second, newNopLogger())
+				for range DefaultHealthFailureThreshold - 1 {
+					monitor.checkAll(context.Background())
+					onlyProbes(t, *sent, "an engine below the monitor failure threshold")
+				}
+				checker.result = recovers
+				monitor.checkAll(context.Background())
+				if recovers {
+					onlyProbes(t, *sent, "a recovered engine")
+					if a.processes["default/svc"] != p || !p.Healthy {
+						t.Fatal("monitor did not recover the original engine")
+					}
+					if ready, _ := endpointReady(t, a.config.K8sClient, "svc"); !ready {
+						t.Fatal("recovered endpoint is not Ready")
+					}
+				} else {
+					if !slices.Contains(*sent, fmt.Sprintf("%d:%d", -4242, syscall.SIGTERM)) {
+						t.Fatalf("signals = %v, want group SIGTERM at threshold", *sent)
+					}
+					if a.processes["default/svc"] != nil || recordExists(t, a, "svc") {
+						t.Fatal("stopped engine or its record retained")
+					}
+					select {
+					case <-a.restartWake:
+					default:
+						t.Fatal("no restart queued")
+					}
+				}
+			})
+		})
+	}
+}
+
+type slowAdoptionChecker struct{}
+
+func (slowAdoptionChecker) Check(context.Context, int, string) (bool, error) {
+	time.Sleep(5 * time.Second)
+	return false, context.DeadlineExceeded
 }
 
 func TestAdopt_ReusedPIDIsNeverSignalled(t *testing.T) {
@@ -678,6 +764,7 @@ func TestWithdrawInheritedEndpoints_SkipsAdopted(t *testing.T) {
 		adoptedSvc, adoptedSlice, goneSvc, goneSlice)
 	agent.watcher = NewInferenceServiceWatcher(c, "default", newNopLogger())
 	agent.adopted = map[string]bool{"default/" + adopted: true}
+	agent.processes["default/"+adopted] = &ManagedProcess{Healthy: true}
 
 	agent.withdrawInheritedEndpoints(context.Background())
 

@@ -425,7 +425,7 @@ type MetalAgent struct {
 	// and for adoption.
 	healthChecker ProcessHealthChecker
 	// adopted holds the keys of the engines adopted at startup, whose
-	// endpoints the startup withdrawal leaves Ready. Guarded by mu.
+	// healthy endpoints the startup withdrawal leaves Ready. Guarded by mu.
 	adopted map[string]bool
 
 	// now returns the current time for the RelayNotAdopted watchdog.
@@ -1208,15 +1208,17 @@ func (a *MetalAgent) withdrawAfterStartFailure(ctx context.Context, isvc *infere
 
 // withdrawInheritedEndpoints runs WithdrawOwnedEndpoints with the watcher's
 // ownership predicate, so the allowlist partition (#524) bounds which slices a
-// restarted agent may touch. The endpoint of an engine adopted at startup is
-// left alone: it is still serving (#2079).
+// restarted agent may touch. Only healthy adopted engines keep their
+// endpoints Ready (#2079).
 func (a *MetalAgent) withdrawInheritedEndpoints(ctx context.Context) {
 	if a.watcher == nil {
 		return
 	}
 	withdraw := func(ctx context.Context, isvc *inferencev1alpha1.InferenceService) bool {
 		a.mu.RLock()
-		adopted := a.adopted[isvc.Namespace+"/"+isvc.Name]
+		key := isvc.Namespace + "/" + isvc.Name
+		p := a.processes[key]
+		adopted := a.adopted[key] && p != nil && p.Healthy
 		a.mu.RUnlock()
 		return !adopted && a.watcher.owns(ctx, isvc)
 	}
