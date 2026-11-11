@@ -286,7 +286,9 @@ generated or substantially assisted by an AI tool, the following apply.
 - A human signs off every commit with the DCO (`git commit -s`). The sign-off
   means a person takes responsibility for understanding, testing, and
   maintaining the change, however it was produced. Bot-only sign-offs are not
-  accepted.
+  accepted. On pull requests opened by the project's own agent, a maintainer
+  adds the sign-off before approving; see "The maintainer-run agent workflow"
+  below.
 - A human, not an agent, owns the review conversation. Replies to review
   feedback come from you, not from an autonomous agent posting on your behalf.
 
@@ -313,6 +315,19 @@ generated or substantially assisted by an AI tool, the following apply.
   or discussion, especially low-effort ones targeting `good-first-issue`
   labels. To work an issue, comment on it first so a human can confirm it is a
   good fit and not already in progress.
+
+**The maintainer-run agent workflow.**
+
+Work an agent does for the maintainers is authored by `defilan-agent[bot]`,
+the project's GitHub App, and pushed to `agent/<topic>` branches in
+`defilantech/LLMKube` itself. Human contributors keep opening pull requests
+from their own forks, and keep signing off their own commits with
+`git commit -s`, as today. The bot's commits carry no sign-off: the agent
+never adds a `Signed-off-by` line. Before approving an agent PR, a human
+maintainer adds the DCO sign-off with the `signoff-pr` helper (a
+`git rebase --signoff` followed by a `--force-with-lease` push of the PR
+branch). Commit messages stay conventional and free of attribution trailers,
+and the PR description keeps the `Assisted-by:` disclosure line.
 
 This is not an anti-AI policy. It is a "stand behind your work" policy. We
 dogfood agentic contribution daily; we just require that a person stay in the
