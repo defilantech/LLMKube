@@ -1,16 +1,21 @@
 ---
 title: "Quickstart: a cluster and the Metal agent on one Mac"
-description: Run Minikube and the LLMKube Metal agent on the same Apple Silicon Mac, join the Mac to the cluster, and serve a small model with Metal in a few commands.
+description: Run a Kubernetes cluster with Apple's container tool and the LLMKube Metal agent on the same Apple Silicon Mac, join the Mac to the cluster, and serve a small model with Metal in a few commands.
 ---
 
 # Quickstart: a cluster and the Metal agent on one Mac
 
-This quickstart runs a local Kubernetes cluster (minikube with the Docker
-driver) and the LLMKube Metal agent on the same Mac, joins the Mac to that
-cluster, and serves a small model with Metal. The agent runs `llama-server`
-natively; engines listen on `127.0.0.1` only, the cluster reaches them through
-the agent's authenticated TLS ingress and an in-cluster relay, and clients on
-the Mac use the agent's client proxy on `127.0.0.1:9999`.
+This quickstart runs a local Kubernetes cluster with Apple's
+[`container`](https://github.com/apple/container) tool and the LLMKube Metal
+agent on the same Mac, joins the Mac to that cluster, and serves a small model
+with Metal. The cluster's node is a lightweight Linux VM with no GPU, so the
+agent runs `llama-server` natively on the Mac, where Metal is. Engines listen
+on `127.0.0.1` only, the cluster reaches them through the agent's
+authenticated TLS ingress and an in-cluster relay, and clients on the Mac use
+the agent's client proxy on `127.0.0.1:9999`.
+
+Apple's `container` supports macOS 26 and later. On macOS 13 to 15, run the
+cluster with minikube instead: see [On macOS 13 to 15](#on-macos-13-to-15).
 
 For a cluster on another machine, the network requirements, Local Network
 access, running a Mac as a dedicated host, upgrades and troubleshooting, follow
@@ -20,35 +25,51 @@ which the release archive also carries under `deployment/macos/`.
 
 ## What you need
 
-- An Apple Silicon Mac with 16 GB of memory or more, on macOS 13 or later.
+- An Apple Silicon Mac with 16 GB of memory or more, on macOS 26 or later.
 - To be logged in at the Mac's screen: the agent is a LaunchAgent and runs only
   in your login session.
 - Ports 9443 and 9090 free on the Mac (the agent's ingress, and its health
   and metrics on `127.0.0.1`).
-- Homebrew, and a running Docker runtime for minikube's Docker driver (Docker
-  Desktop, or another such as Colima).
+- Homebrew.
 
 ```bash
-brew install minikube kubectl helm
+brew install container kubectl helm
+container system start --enable-kernel-install
 ```
 
-## 1. Start the cluster and install the operator
+`container system start` starts Apple's container services. On the first run
+it needs a Linux kernel for the VMs, and `--enable-kernel-install` installs
+the default one instead of asking. Apple also publishes a signed installer
+package for `container` on its
+[releases page](https://github.com/apple/container/releases), if you prefer
+it to Homebrew.
+
+## 1. Create the cluster and install the operator
 
 ```bash
-minikube start --driver=docker
+container cluster create --name llmkube
 
 helm repo add llmkube https://defilantech.github.io/LLMKube
 helm repo update
-helm install llmkube llmkube/llmkube -n llmkube-system --create-namespace
+helm install llmkube llmkube/llmkube -n llmkube-system --create-namespace \
+  --set modelCache.mode=perService
 kubectl wait --for=condition=ready pod -l control-plane=controller-manager \
   -n llmkube-system --timeout=120s
 ```
 
-Another cluster on the Mac works the same way, such as kind, k3d or Apple's
-`container cluster create`. If it has no default StorageClass (Apple's does
-not), `helm install` stops with "LLMKube shared model cache requires a default
-StorageClass". Add `--set modelCache.mode=perService` to the install: the
-Metal agent keeps models on the Mac, so the shared cache volume is not needed.
+`container cluster create` runs a one-node cluster in about a minute, adds it
+to `~/.kube/config` as the context `llmkube` and switches `kubectl` to it. The
+node gets a quarter of the Mac's CPUs and memory by default (at least 2 CPUs
+and 2 GB), which is plenty: the model runs on the Mac, not in the cluster.
+
+The cluster has no default StorageClass, and the chart's default model cache
+(`modelCache.mode=shared`) needs one: without the flag, `helm install` stops
+with "LLMKube shared model cache requires a default StorageClass". The Metal
+agent keeps models on the Mac, so the per-service mode loses nothing here.
+With LLMKube 0.10.17 and earlier, `kubectl get pvc -n metal` also shows a
+`phi-4-mini-model-cache` claim stuck in `Pending` once you deploy: nothing
+mounts it for a Metal model, and it does not affect serving
+([#2511](https://github.com/defilantech/LLMKube/issues/2511)).
 
 ## 2. Install the agent and the CLI
 
@@ -72,7 +93,7 @@ kubectl create namespace metal
 llmkube metal token create mac -n metal
 ```
 
-`token create` uses the context `minikube start` set and prints a
+`token create` uses the current context, `llmkube`, and prints a
 `llmkube metal join llmkube://...` line. Run that line on this same Mac:
 
 ```bash
@@ -85,9 +106,9 @@ as "keeping agent arguments from the previous join". An old allowlist stops
 the agent from serving phi-4-mini. Run `llmkube metal leave` first, or drop
 them on the join line with `--host-ip= --allowlist=`.
 
-The join string carries minikube's API server address, `127.0.0.1`, so it
+The join string carries the cluster's API server address, `127.0.0.1`, so it
 works only on this Mac. `join` writes the agent's own credentials and its
-LaunchAgent, starts it, and returns once a pod in minikube has reached the
+LaunchAgent, starts it, and returns once a pod in the cluster has reached the
 agent: it ends with
 `Mac mac joined: the cluster reaches it at <address>:9443 (log: ...)`.
 If macOS asks whether LLMKube Metal Agent may use the local network, allow
@@ -197,7 +218,7 @@ print(response.choices[0].message.content)
 
 ```
 client pod ──▶ phi-4-mini Service ──▶ phi-4-mini-relay pod ──TLS──▶ agent ingress :9443 ──▶ llama-server on 127.0.0.1
-               (in minikube)          (in minikube)                  (on the Mac)
+               (in the cluster)       (in the cluster)               (on the Mac)
 
 curl on the Mac ──▶ agent client proxy 127.0.0.1:9999 ──▶ llama-server on 127.0.0.1
 ```
@@ -221,13 +242,41 @@ llmkube metal leave                     # stops the agent, removes its plist and
 llmkube metal remove mac -n metal       # revokes the Mac in the cluster
 brew uninstall --zap --cask llmkube-metal-agent
 brew uninstall llmkube
-minikube delete
+container cluster delete --name llmkube
 ```
 
 `brew uninstall --zap` on its own leaves running engines behind with their
 models in memory. Downloaded models stay in
 `~/Library/Application Support/llmkube/models`; delete that folder to get the
 space back.
+
+## Good to know
+
+- Apple marks `container cluster` as experimental, so its commands and
+  defaults can change between releases. This page was tested with
+  `container` 1.7.1.
+- If the cluster's node stops, for example after `container system stop`,
+  Apple's fix is to delete the cluster and create it again: start the
+  services with `container system start` if they are stopped, then
+  `container cluster delete --name llmkube` and step 1.
+- The new cluster has no record of the Mac, so join it again with a new token
+  (step 3): `join` stops the agent from the old cluster and starts it for the
+  new one. Models already on the Mac are not downloaded again.
+
+## On macOS 13 to 15
+
+Apple's `container` needs macOS 26. On macOS 13 to 15, run the cluster with
+minikube and its Docker driver, which needs a running Docker runtime (Docker
+Desktop, or another such as Colima). Three steps change:
+
+- What you need: `brew install minikube kubectl helm`, in place of the
+  `container` lines.
+- Step 1: `minikube start --driver=docker` in place of
+  `container cluster create --name llmkube`, and `helm install` without
+  `--set modelCache.mode=perService`: minikube has a default StorageClass.
+- Clean up: `minikube delete` in place of `container cluster delete`.
+
+The rest is the same.
 
 ## More
 

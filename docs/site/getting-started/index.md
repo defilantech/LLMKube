@@ -177,7 +177,8 @@ tool that speaks the OpenAI API work the same way.
 An Apple Silicon Mac can serve models for the cluster with Metal. The Metal
 agent runs on the Mac as a native process, not as a pod, and the operator from
 step 2 routes the cluster's requests to it. The cluster can be anywhere the
-Mac can reach, including Minikube on the same Mac.
+Mac can reach, including one on the same Mac made with Apple's `container`
+tool.
 
 ```bash
 # On the Mac: the CLI, the Metal agent and llama.cpp
@@ -202,7 +203,9 @@ with `hardware.accelerator: metal` in that namespace does the same thing.
   requirements, memory budgets, more than one Mac, upgrades and
   troubleshooting.
 - The [one-Mac quickstart](/docs/getting-started/metal-quickstart)
-  runs the whole thing on a single Mac: Minikube, the agent and a first model.
+  runs the whole thing on a single Mac: a cluster made with Apple's
+  `container` tool (macOS 26 and later, with minikube for macOS 13 to 15),
+  the agent and a first model.
 
 ## GPU acceleration
 
