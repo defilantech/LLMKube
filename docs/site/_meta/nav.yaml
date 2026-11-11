@@ -29,7 +29,6 @@ sections:
       - label: Quickstart on Minikube
         slug: quickstart-minikube
         file: getting-started/minikube.md
-        status: stub
 
   - title: Concepts
     items:
@@ -70,14 +69,12 @@ sections:
       - label: Multi-GPU sharding
         slug: guides/multi-gpu
         file: guides/multi-gpu.md
-        status: stub
       - label: Multi-node inference
         slug: guides/multi-node-inference
         file: guides/multi-node-inference.md
       - label: GPU setup
         slug: guides/gpu-setup
         file: guides/gpu-setup.md
-        status: stub
       - label: Model cache
         slug: guides/model-cache
         file: guides/model-cache.md
@@ -131,11 +128,9 @@ sections:
       - label: Observability
         slug: operations/observability
         file: operations/observability.md
-        status: stub
       - label: KV cache types
         slug: operations/kv-cache
         file: operations/kv-cache.md
-        status: stub
 
   - title: Foreman
     items:

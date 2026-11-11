@@ -21,13 +21,15 @@ Terminal recordings live in `docs/site/casts/`. See `docs/site/casts/README.md` 
 
 Reference material for working on the operator itself: how to add a new runtime backend, how to spec the HuggingFace source format, internals of the vLLM image pipeline. These pages are read by people *changing* LLMKube, not people *using* LLMKube — they aren't rendered to the public site.
 
-## `observability/`: SLOs, error budgets and tracing
+## `observability/`: moved to the site
 
-- [SLOs and error budgets](observability/slo.md)
-- [Tracing](observability/tracing.md): what the router-proxy traces and how to export it
+The SLO, tracing and metric-contract pages are now one page,
+[`site/operations/observability.md`](site/operations/observability.md)
+([llmkube.com/docs/operations/observability](https://llmkube.com/docs/operations/observability)).
+The files under `observability/` are pointers to its sections.
 
 ## During the transition
 
-A few user-facing markdown files still live at the root of `docs/` (`MULTI-GPU-DEPLOYMENT.md`, `air-gapped-quickstart.md`, etc.). They will move into `docs/site/` as they're ported — each port is its own commit/PR so the rendered site can light up one section at a time.
+A few user-facing markdown files still live at the root of `docs/` (`air-gapped-quickstart.md`, `intel-gpu-quickstart.md`, etc.). They will move into `docs/site/` as they're ported. A ported file keeps a short pointer at its old path (as `minikube-quickstart.md`, `MULTI-GPU-DEPLOYMENT.md`, `gpu-setup-guide.md` and `kv-cache-dtype.md` do), so existing links keep working.
 
 When you see a file at the root of `docs/`, treat it as either (a) about to be moved into `site/` or `contributors/`, or (b) something specific to the repo (like this README). If you're not sure where a new doc should go, default to `site/` if a user might reach for it and `contributors/` if only a maintainer would.
