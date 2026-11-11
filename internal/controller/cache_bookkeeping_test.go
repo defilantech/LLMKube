@@ -27,8 +27,8 @@ import (
 
 // stagingCommands renders every init command variant that writes into a
 // cache entry: single-file and multi-file (plain, S3 and mixed-origin), with
-// and without the cache, auth and SHA-256 gates, under both refresh
-// policies, plus the prefetch verifier.
+// and without the cache, auth and SHA-256 gates, serial and concurrent, under
+// both refresh policies, plus the prefetch verifier.
 func stagingCommands() map[string]string {
 	cmds := map[string]string{}
 	bools := []bool{false, true}
@@ -38,8 +38,11 @@ func stagingCommands() map[string]string {
 				for _, auth := range bools {
 					for _, sha := range bools {
 						name := strings.Join([]string{policy, b2s("cache", useCache), b2s("s3", isS3), b2s("auth", auth), b2s("sha", sha)}, "/")
-						cmds["multi/"+name] = buildMultiFileInitCommand(useCache, isS3, auth, sha, policy)
-						cmds["mixed/"+name] = multiFileInitCommand(useCache, false, true, sha, policy, true)
+						for _, concurrent := range bools {
+							multi := name + "/" + b2s("concurrent", concurrent)
+							cmds["multi/"+multi] = buildMultiFileInitCommand(useCache, isS3, auth, sha, concurrent, policy)
+							cmds["mixed/"+multi] = multiFileInitCommand(useCache, false, true, sha, concurrent, policy, true)
+						}
 						for _, local := range bools {
 							cmds["single/"+name+"/"+b2s("local", local)] = buildModelInitCommand(local, isS3, useCache, auth, sha, policy)
 						}

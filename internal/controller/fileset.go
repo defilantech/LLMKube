@@ -48,3 +48,15 @@ func filesHaveGlob(files []string) bool {
 func fileEntryPath(entry string) (string, error) {
 	return fileset.EntryPath(entry)
 }
+
+func hasGlob(value string) bool {
+	return fileset.HasGlob(value)
+}
+
+func validateRepoRelativePath(p string) error {
+	return fileset.ValidateRepoRelativePath(p)
+}
+
+func expandFilePattern(entry string, repoFileList []string) ([]string, error) {
+	return fileset.ExpandFilePattern(entry, repoFileList)
+}

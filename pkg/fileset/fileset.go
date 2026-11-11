@@ -53,7 +53,7 @@ func ResolveFileSet(files []string, mmproj string, repoFileList []string) (*Stag
 		return nil, fmt.Errorf("spec.files must include a primary model file when spec.mmproj is set")
 	}
 
-	primaryMatches, err := expandFilePattern(files[0], repoFileList)
+	primaryMatches, err := ExpandFilePattern(files[0], repoFileList)
 	if err != nil {
 		return nil, fmt.Errorf("resolve primary file %q: %w", files[0], err)
 	}
@@ -65,7 +65,7 @@ func ResolveFileSet(files []string, mmproj string, repoFileList []string) (*Stag
 	var sources map[string]string
 	resolved := make([]string, 0, len(files)+1)
 	for _, entry := range files {
-		matches, err := expandFilePattern(entry, repoFileList)
+		matches, err := ExpandFilePattern(entry, repoFileList)
 		if err != nil {
 			return nil, fmt.Errorf("resolve file %q: %w", entry, err)
 		}
@@ -92,7 +92,7 @@ func ResolveFileSet(files []string, mmproj string, repoFileList []string) (*Stag
 	}
 
 	if mmproj != "" {
-		if err := validateRepoRelativePath(mmproj); err != nil {
+		if err := ValidateRepoRelativePath(mmproj); err != nil {
 			return nil, fmt.Errorf("spec.mmproj: %w", err)
 		}
 		if HasGlob(mmproj) {
@@ -111,22 +111,25 @@ func ResolveFileSet(files []string, mmproj string, repoFileList []string) (*Stag
 	return &StagingPlan{Primary: resolved[0], Files: resolved, Sources: sources, Mmproj: mmproj}, nil
 }
 
-// validateRepoRelativePath rejects empty, absolute, and path-traversal paths.
-func validateRepoRelativePath(p string) error {
+// ValidateRepoRelativePath rejects empty, absolute, and path-traversal paths.
+func ValidateRepoRelativePath(p string) error {
 	if p == "" || strings.HasPrefix(p, "/") || strings.Contains(p, "..") || strings.ContainsAny(p, "\t\r\n") {
 		return fmt.Errorf("invalid repo-relative path %q", p)
 	}
 	return nil
 }
 
-func expandFilePattern(entry string, repoFileList []string) ([]string, error) {
+// ExpandFilePattern resolves one spec.files entry against repoFileList. A URL, or a
+// concrete path found in the listing, comes back as is; a glob returns its matches,
+// which may be none.
+func ExpandFilePattern(entry string, repoFileList []string) ([]string, error) {
 	if strings.Contains(entry, "://") {
 		if _, err := EntryPath(entry); err != nil {
 			return nil, err
 		}
 		return []string{entry}, nil
 	}
-	if err := validateRepoRelativePath(entry); err != nil {
+	if err := ValidateRepoRelativePath(entry); err != nil {
 		return nil, err
 	}
 	if !HasGlob(entry) {
@@ -190,7 +193,7 @@ func FilesHaveGlob(files []string) bool {
 // use their basename. URLs never become filesystem paths themselves.
 func EntryPath(entry string) (string, error) {
 	if !strings.Contains(entry, "://") {
-		return entry, validateRepoRelativePath(entry)
+		return entry, ValidateRepoRelativePath(entry)
 	}
 	u, err := url.Parse(entry)
 	if err != nil {
@@ -213,7 +216,7 @@ func EntryPath(entry string) (string, error) {
 	if strings.HasSuffix(u.Path, "/") || name == "." || HasGlob(name) {
 		return "", fmt.Errorf("file URL must name a concrete file: %q", entry)
 	}
-	if err := validateRepoRelativePath(name); err != nil {
+	if err := ValidateRepoRelativePath(name); err != nil {
 		return "", err
 	}
 	return name, nil
