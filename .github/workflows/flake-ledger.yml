@@ -38,7 +38,8 @@ concurrency:
 jobs:
   ledger:
     name: Record flaky tests
-    # A fork with Actions enabled would otherwise file issues against itself.
+    # A scheduled run on a fork with Actions enabled would otherwise file
+    # issues against the fork. A manual run there is the fork owner's choice.
     if: github.event_name != 'schedule' || github.repository == 'defilantech/LLMKube'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -59,10 +60,10 @@ jobs:
       - name: Record flaky tests
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Both inputs are empty on a scheduled run, so it reads three days
-          # back and files for real.
-          SINCE: ${{ inputs.since || '3d' }}
-          DRY_RUN: ${{ inputs.dry_run }}
+          # inputs is read only on a manual run, as release-please.yml does, so
+          # a scheduled run reads three days back and files for real.
+          SINCE: ${{ github.event_name == 'workflow_dispatch' && inputs.since || '3d' }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
         run: |
           args=(--since "$SINCE")
           [ "$DRY_RUN" = true ] && args+=(--dry-run)

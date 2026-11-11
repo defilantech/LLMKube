@@ -307,6 +307,9 @@ func (c *collector) runs(ctx context.Context, wf workflow, since time.Time) ([]r
 	q := url.Values{}
 	q.Set("created", ">="+since.UTC().Format(time.RFC3339))
 	q.Set("per_page", "100")
+	// Not a filter: pull_request runs still come back (pass-on-rerun needs
+	// them). It empties each run's pull_requests array, which nothing here
+	// reads; branch() names a fork's branch from head_repository.
 	q.Set("exclude_pull_requests", "true")
 	p := fmt.Sprintf("repos/%s/actions/workflows/%s/runs?%s", c.repo, url.PathEscape(wf.File), q.Encode())
 	var runs []run
