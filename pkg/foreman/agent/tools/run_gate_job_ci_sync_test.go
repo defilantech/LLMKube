@@ -51,6 +51,10 @@ var gateExemptCIChecks = map[string]string{
 		"check-helm-rbac: it exits 2 unless `python3 -c 'import yaml'` succeeds, and it also needs " +
 		"openssl on PATH, so the same plain golang gate image would fail every gate run. CI clears it " +
 		"only because helm-chart.yml installs PyYAML in a step of its own beforehand",
+	"check-docs-links": "scripts/check-docs-links.py imports PyYAML to read docs/site/_meta/nav.yaml; " +
+		"the gate image is a plain golang image that ships python3 but neither PyYAML nor pip3, so " +
+		"adding this target would fail every gate run. CI clears it only because test.yml installs " +
+		"PyYAML in a step of its own beforehand",
 	"test-envtest": "the CI-only second-seed envtest pass (#1693); the gate deliberately runs " +
 		"`make test` single-pass, so gating this target would double the ordering coverage the " +
 		"gate was decided not to pay for (see the DefaultGateChecks comment)",

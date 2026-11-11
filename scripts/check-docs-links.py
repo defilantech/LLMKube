@@ -169,7 +169,7 @@ def check_markup(rel, text, problems):
 
 def check_links(repo, site, pages, slug, path, problems):
     rel = os.path.relpath(path, repo)
-    text = open(path, encoding="utf-8").read()
+    text = open(path, encoding="utf-8", errors="replace").read()
     check_markup(rel, text, problems)
     body = strip_code_spans(strip_fences(text))
     page_url = "https://llmkube.com/docs" + (f"/{slug}" if slug else "")

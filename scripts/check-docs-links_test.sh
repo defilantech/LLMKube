@@ -12,6 +12,14 @@
 # Usage: scripts/check-docs-links_test.sh
 set -euo pipefail
 
+# The Foreman gate runs make test-scripts in an image with python3 but no
+# PyYAML (see gateExemptCIChecks in pkg/foreman/agent/tools), so the test
+# skips there; CI installs PyYAML first and runs it.
+if ! python3 -c 'import yaml' 2>/dev/null; then
+  echo "SKIP - check-docs-links_test.sh: python3 has no PyYAML (pip3 install pyyaml)"
+  exit 0
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CHECK="$SCRIPT_DIR/check-docs-links.py"
 DATA="$SCRIPT_DIR/testdata/docs-links"
