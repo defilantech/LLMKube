@@ -197,6 +197,8 @@ archives:
       - LICENSE
       - README.md
       - examples/metal-quickstart/*
+      # The quickstart's full text; the example README above points to it.
+      - docs/site/getting-started/metal-quickstart.md
       # deployment/macos minus the *.Info.plist.tmpl files, which only the
       # build hook uses (internal/machoplist/release_identity_test.go).
       - deployment/macos/README.md

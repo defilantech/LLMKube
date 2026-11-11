@@ -31,6 +31,9 @@ sections:
       - label: Install in 5 minutes
         slug: getting-started
         file: getting-started/index.md
+      - label: Quickstart on one Mac
+        slug: getting-started/metal-quickstart
+        file: getting-started/metal-quickstart.md
       - label: Quickstart on Minikube
         slug: quickstart-minikube
         file: getting-started/minikube.md
