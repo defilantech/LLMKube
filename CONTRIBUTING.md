@@ -389,14 +389,18 @@ loop and on the hook.
 3. **Address feedback** by pushing new commits
 4. **Approval and merge** (squash-merge to `main` through the merge queue)
 
-Approved PRs merge through GitHub's merge queue. The queue squashes each PR onto
-the current `main`, together with any PRs queued ahead of it, and runs the
-required checks (Unit and envtest, Lint and static checks, the E2E Tests jobs,
-govulncheck and the DCO check) on that result before it lands. A PR whose checks
-pass on its own branch can still fail in the queue when it conflicts with
-something that merged after it was opened; the queue then removes it, and a
-rebase on `main` shows the failure locally. This is what keeps two green PRs
-from merging into a red `main` (#2379).
+Approved PRs merge through GitHub's merge queue: a maintainer clicks "Merge when
+ready", and GitHub adds the PR to the queue once its own required checks pass,
+waiting for them if they are still running. The queue squashes each PR onto the
+current `main`, together with any PRs queued ahead of it, and runs the three
+required checks on that result before it lands: Unit and envtest, Lint and
+static checks, and Developer Certificate of Origin. The DCO check reads the PR's
+own commits, so in the queue it only reports a pass. The E2E Tests jobs and
+govulncheck run on the queued result too, but a failure there does not stop the
+merge. A PR whose checks pass on its own branch can still fail in the queue when
+it conflicts with something that merged after it was opened; the queue then
+removes it, and a rebase on `main` shows the failure locally. This is what keeps
+two green PRs from merging into a red `main` (#2379, #2509).
 
 **What reviewers look for:**
 - Code quality and readability
