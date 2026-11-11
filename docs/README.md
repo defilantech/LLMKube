@@ -15,6 +15,8 @@ Anything in `docs/site/**/*.md` is the source of truth for a page on the docs si
 
 Site pages can embed Svelte components like `<DocCallout>` and `<AsciinemaCast>` directly inside the markdown — they're auto-registered by the renderer.
 
+`make check-docs-links` checks the links and anchors in every page nav.yaml lists, the way the site resolves them, and flags text the renderer would misread as markup (a bare `<`, a brace, a line that starts with `<name>`). CI runs it; run it before you push a docs change.
+
 Terminal recordings live in `docs/site/casts/`. See `docs/site/casts/README.md` for the recording recipe and conventions.
 
 ## `contributors/` — internal docs

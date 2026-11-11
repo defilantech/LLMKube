@@ -50,6 +50,11 @@ jobs:
       - name: Validate samples against CRD schemas
         run: make validate-samples
 
+      # llmkube.com renders docs/site from main and fails its build on a link
+      # to a page that does not exist; checked here so it fails before merge.
+      - name: Check docs/site links
+        run: make check-docs-links
+
       # Shell regression suites go test never runs: the seed's single
       # evaluation (#1817; the gate log is where a seed is read to replay a
       # failure), make gate, make test-affected and cmd/affected-packages.

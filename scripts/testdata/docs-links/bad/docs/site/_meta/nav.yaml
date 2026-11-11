@@ -1,0 +1,18 @@
+sections:
+  - title: Getting Started
+    items:
+      - label: Overview
+        slug: ""
+        source: web
+      - label: Install
+        slug: getting-started
+        file: getting-started.md
+  - title: Guides
+    items:
+      - label: Guide
+        slug: guides/guide
+        file: guides/guide.md
+      - label: Coming soon
+        slug: guides/stub
+        file: guides/stub.md
+        status: stub
