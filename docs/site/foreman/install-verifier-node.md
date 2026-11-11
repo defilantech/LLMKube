@@ -276,7 +276,7 @@ ReadWriteOnce. Set `agent.gateCache.storageClass` explicitly or
 disable the PVC: `--set agent.gateCache.enabled=false` (gate runs
 will still work, just without the inter-run cache).
 
-**Agent Pod startup info-log "--git-remote-url is unset"**: not
+**Agent Pod startup info-log `--git-remote-url is unset`**: not
 an error. Foreman v0.7.10+ logs this as INFO and proceeds; coder
 tasks that actually need the URL fail per-task with reason
 `GitRemoteURLNotConfigured`. Deterministic Agents (e.g. the M4
