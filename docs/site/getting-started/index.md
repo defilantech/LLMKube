@@ -204,8 +204,8 @@ with `hardware.accelerator: metal` in that namespace does the same thing.
   troubleshooting.
 - The [one-Mac quickstart](/docs/getting-started/metal-quickstart)
   runs the whole thing on a single Mac: a cluster made with Apple's
-  `container` tool (macOS 26 and later, with minikube for older macOS), the
-  agent and a first model.
+  `container` tool (macOS 26 and later, with minikube for macOS 13 to 15),
+  the agent and a first model.
 
 ## GPU acceleration
 

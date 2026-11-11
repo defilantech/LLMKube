@@ -39,7 +39,10 @@ container system start --enable-kernel-install
 
 `container system start` starts Apple's container services. On the first run
 it needs a Linux kernel for the VMs, and `--enable-kernel-install` installs
-the default one instead of asking.
+the default one instead of asking. Apple also publishes a signed installer
+package for `container` on its
+[releases page](https://github.com/apple/container/releases), if you prefer
+it to Homebrew.
 
 ## 1. Create the cluster and install the operator
 
@@ -56,13 +59,17 @@ kubectl wait --for=condition=ready pod -l control-plane=controller-manager \
 
 `container cluster create` runs a one-node cluster in about a minute, adds it
 to `~/.kube/config` as the context `llmkube` and switches `kubectl` to it. The
-node gets a quarter of the Mac's CPUs and memory by default, which is plenty:
-the model runs on the Mac, not in the cluster.
+node gets a quarter of the Mac's CPUs and memory by default (at least 2 CPUs
+and 2 GB), which is plenty: the model runs on the Mac, not in the cluster.
 
 The cluster has no default StorageClass, and the chart's default model cache
 (`modelCache.mode=shared`) needs one: without the flag, `helm install` stops
 with "LLMKube shared model cache requires a default StorageClass". The Metal
 agent keeps models on the Mac, so the per-service mode loses nothing here.
+With LLMKube 0.10.17 and earlier, `kubectl get pvc -n metal` also shows a
+`phi-4-mini-model-cache` claim stuck in `Pending` once you deploy: nothing
+mounts it for a Metal model, and it does not affect serving
+([#2511](https://github.com/defilantech/LLMKube/issues/2511)).
 
 ## 2. Install the agent and the CLI
 
@@ -249,11 +256,12 @@ space back.
   defaults can change between releases. This page was tested with
   `container` 1.7.1.
 - If the cluster's node stops, for example after `container system stop`,
-  Apple's fix is to delete the cluster and create it again
-  (`container cluster delete --name llmkube`, then step 1). The new cluster
-  has no record of the Mac, so join it again with a new token (step 3): `join`
-  stops the agent from the old cluster and starts it for the new one. Models
-  already on the Mac are not downloaded again.
+  Apple's fix is to delete the cluster and create it again: start the
+  services with `container system start` if they are stopped, then
+  `container cluster delete --name llmkube` and step 1.
+- The new cluster has no record of the Mac, so join it again with a new token
+  (step 3): `join` stops the agent from the old cluster and starts it for the
+  new one. Models already on the Mac are not downloaded again.
 
 ## On macOS 13 to 15
 
@@ -263,9 +271,9 @@ Desktop, or another such as Colima). Three steps change:
 
 - What you need: `brew install minikube kubectl helm`, in place of the
   `container` lines.
-- Step 1: `minikube start --driver=docker` in place of the two cluster lines,
-  and `helm install` without `--set modelCache.mode=perService`: minikube has a
-  default StorageClass.
+- Step 1: `minikube start --driver=docker` in place of
+  `container cluster create --name llmkube`, and `helm install` without
+  `--set modelCache.mode=perService`: minikube has a default StorageClass.
 - Clean up: `minikube delete` in place of `container cluster delete`.
 
 The rest is the same.
