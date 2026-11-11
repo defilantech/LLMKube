@@ -210,24 +210,35 @@ changelogs and version bumps. Every commit needs one:
 
 Use `feat!:` / `fix!:` for breaking changes.
 
-- Sign off every commit: `git commit -s`. A human is accountable for every
-  commit, however it was produced (DCO is enforced by CI; bot-only sign-offs
-  are not accepted).
+- Human contributors sign off every commit: `git commit -s`. A human is
+  accountable for every commit, however it was produced (DCO is enforced by
+  CI; bot-only sign-offs are not accepted).
+- Work authored by `defilan-agent[bot]`, the project's GitHub App, carries no
+  `Signed-off-by` line; the agent never signs off its own commits. Before
+  approving an agent PR, a maintainer adds the sign-off to the PR branch with
+  the `signoff-pr` helper: a `git rebase --signoff` followed by a
+  `--force-with-lease` push.
 - Subject says *what* changed; body says *why*. No implementation play-by-play.
-- Keep commit messages free of attribution trailers (`Co-Authored-By`,
-  `AI-Agent`, `Assisted-by`, etc.). Disclose AI assistance in the PR
-  description instead, per `CONTRIBUTING.md` ("AI-Assisted and Agent
-  Contributions").
+- Keep commit messages conventional and free of attribution trailers
+  (`Co-Authored-By`, `AI-Agent`, `Assisted-by`, etc.). Disclose AI assistance
+  with the `Assisted-by:` line in the PR description instead, per
+  `CONTRIBUTING.md` ("AI-Assisted and Agent Contributions").
 - One logical change per commit.
 
 ## Branches and pull requests
 
-- Contributions go through fork-based PRs. Branch from an up-to-date `main`.
+- Human contributions go through fork-based PRs. Branch from an up-to-date
+  `main`.
 - Branch names: `feat/<slug>`, `fix/<slug>`, `docs/<slug>`, `refactor/<slug>`,
   `chore/<slug>`.
+- Work an agent does for the maintainers is the exception: it is authored by
+  `defilan-agent[bot]`, the project's GitHub App, on `agent/<topic>` branches
+  in `defilantech/LLMKube` itself, and the bot pushes there, never to a fork.
 - PRs follow `.github/PULL_REQUEST_TEMPLATE.md` (What / Why / How / Checklist)
   and reference the issue with `Fixes #N`.
-- Do not push to `main`. Do not force-push shared branches.
+- Do not push to `main`. Do not force-push shared branches; the one exception
+  is a maintainer adding the DCO sign-off to an agent PR branch with
+  `signoff-pr` (see Commits).
 
 ## Project layout
 
