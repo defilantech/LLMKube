@@ -89,7 +89,7 @@ const MaxLogTailBytes = 32 * 1024
 var DefaultGateChecks = []string{
 	"fmt", "vet", "lint", "lint-deadcode", "test",
 	"generate", "manifests", "chart-crds", "foreman-chart-crds", "federation-chart-crds",
-	"check-reviewer-prompts", "check-agents-md", "check-go-version", "test-scripts", ChartCheck,
+	"check-reviewer-prompts", "check-agents-md", "check-docs-reference", "check-go-version", "test-scripts", ChartCheck,
 	MetalAgentRBACCheck, B200HarnessCheck,
 }
 
