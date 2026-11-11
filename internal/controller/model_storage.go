@@ -343,11 +343,7 @@ func (r *InferenceServiceReconciler) growModelCachePVC(
 // buildOCIStorageConfig, never the cache), so provisioning a cache PVC for
 // them only leaves an unused, ISVC-owned claim. Kept as its own predicate so
 // the mount side (isPVCSource / isOCISource in buildModelStorageConfig) and
-// the provisioning side agree on both pre-staged schemes. A Metal model is
-// excluded for the same reason: its service runs no pod, and the host
-// metal-agent downloads the model into its own store on the Mac, so a cache
-// PVC would never be mounted and, without a default StorageClass, stays
-// Pending (#2511).
+// the provisioning side agree on both pre-staged schemes.
 func modelNeedsCachePVC(
 	model *inferencev1alpha1.Model,
 	cache effectiveModelCache,
@@ -355,8 +351,27 @@ func modelNeedsCachePVC(
 ) bool {
 	return modelWantsCacheVolume(model, cache, modelCachePath) &&
 		!isPVCSource(model.Spec.Source) &&
-		!isOCISource(model.Spec.Source) &&
-		!isMetalModel(model)
+		!isOCISource(model.Spec.Source)
+}
+
+// metalAgentServes reports whether the host metal-agent serves this service
+// with no pod: a Metal model outside a multiNode group. reconcileWorkload checks
+// multiNode before the Metal path, so a group runs member pods even for a Metal
+// model. A service the agent serves needs no model cache claim, since nothing in
+// the cluster mounts one (#2511).
+func metalAgentServes(isvc *inferencev1alpha1.InferenceService, model *inferencev1alpha1.Model) bool {
+	return model != nil && isMetalModel(model) && (isvc == nil || isvc.Spec.MultiNode == nil)
+}
+
+// serviceNeedsCachePVC reports whether this reconcile should provision the
+// service's model cache claim: the model needs one and the service runs pods
+// that mount it, which a service the host metal-agent serves does not.
+func (r *InferenceServiceReconciler) serviceNeedsCachePVC(
+	isvc *inferencev1alpha1.InferenceService,
+	model *inferencev1alpha1.Model,
+	cache effectiveModelCache,
+) bool {
+	return !metalAgentServes(isvc, model) && modelNeedsCachePVC(model, cache, r.ModelCachePath)
 }
 
 // modelWantsCacheVolume reports whether this workload should download into the

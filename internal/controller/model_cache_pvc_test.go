@@ -11,22 +11,14 @@ import (
 // download), so the operator must not provision a cache PVC for either. Each
 // model below sets Status.CacheKey so effectiveModelCacheKey is non-empty -- the
 // pvc:// and oci:// cases are therefore false ONLY because of the isPVCSource /
-// isOCISource guards, and the Metal cases ONLY because of the isMetalModel guard
-// (a Metal service runs no pod; the agent downloads on the Mac, #2511). Remove
-// any guard and its rows flip to true, failing this test.
+// isOCISource guards. Remove either guard and its row flips to true, failing
+// this test.
 func TestModelNeedsCachePVC(t *testing.T) {
 	withKey := func(source string) *inferencev1alpha1.Model {
 		return &inferencev1alpha1.Model{
 			Spec:   inferencev1alpha1.ModelSpec{Source: source},
 			Status: inferencev1alpha1.ModelStatus{CacheKey: "deadbeef"},
 		}
-	}
-	// A Metal model with a remote source carries a cache key too: the Model
-	// controller records one for the agent's fetch (#2511).
-	metalWithKey := func(source string) *inferencev1alpha1.Model {
-		m := withKey(source)
-		m.Spec.Hardware = &inferencev1alpha1.HardwareSpec{Accelerator: acceleratorMetal}
-		return m
 	}
 	const cachePath = "/models"
 
@@ -43,8 +35,6 @@ func TestModelNeedsCachePVC(t *testing.T) {
 		{"oci:// source is pre-staged/read-only -> no cache PVC", withKey("oci://registry.defilan.net/models/qwen3-32b@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), cachePath, false},
 		{"caching disabled (empty cache path) -> no cache PVC", withKey("https://example.com/model.gguf"), "", false},
 		{"no cache key -> no cache PVC", &inferencev1alpha1.Model{Spec: inferencev1alpha1.ModelSpec{Source: "https://example.com/model.gguf"}}, cachePath, false},
-		{"metal https source is fetched by the agent on the Mac -> no cache PVC", metalWithKey("https://example.com/model.gguf"), cachePath, false},
-		{"metal s3 source is fetched by the agent on the Mac -> no cache PVC", metalWithKey("s3://bucket/model.gguf"), cachePath, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -54,6 +44,44 @@ func TestModelNeedsCachePVC(t *testing.T) {
 			if got := modelNeedsCachePVC(tc.model, resolveEffectiveModelCache(nil, nil), tc.cachePath); got != tc.want {
 				t.Errorf("modelNeedsCachePVC(source=%q, cachePath=%q) = %v, want %v",
 					tc.model.Spec.Source, tc.cachePath, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestMetalAgentServes pins which services the host metal-agent serves with no
+// pod, so they need no model cache claim (#2511): a Metal model outside a
+// multiNode group. A multiNode group runs member pods even for a Metal model,
+// because reconcileWorkload checks multiNode before the Metal path, so it keeps
+// its claim.
+func TestMetalAgentServes(t *testing.T) {
+	withAccel := func(accel string) *inferencev1alpha1.Model {
+		return &inferencev1alpha1.Model{Spec: inferencev1alpha1.ModelSpec{
+			Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: accel},
+		}}
+	}
+	single := &inferencev1alpha1.InferenceService{}
+	group := &inferencev1alpha1.InferenceService{Spec: inferencev1alpha1.InferenceServiceSpec{
+		MultiNode: &inferencev1alpha1.MultiNodeSpec{},
+	}}
+
+	tests := []struct {
+		name  string
+		isvc  *inferencev1alpha1.InferenceService
+		model *inferencev1alpha1.Model
+		want  bool
+	}{
+		{"metal model, single service -> the agent serves it, no pod", single, withAccel(acceleratorMetal), true},
+		{"metal model in a multiNode group -> member pods, keeps its claim", group, withAccel(acceleratorMetal), false},
+		{"cuda model -> pods", single, withAccel("cuda"), false},
+		{"cpu model -> pods", single, withAccel("cpu"), false},
+		{"no hardware block -> pods", single, &inferencev1alpha1.Model{}, false},
+		{"no model -> pods", single, nil, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := metalAgentServes(tc.isvc, tc.model); got != tc.want {
+				t.Errorf("metalAgentServes() = %v, want %v", got, tc.want)
 			}
 		})
 	}

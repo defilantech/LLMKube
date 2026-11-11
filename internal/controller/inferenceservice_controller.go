@@ -285,7 +285,7 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		desiredReplicas = 0
 	}
 
-	if modelNeedsCachePVC(model, cache, r.ModelCachePath) {
+	if r.serviceNeedsCachePVC(inferenceService, model, cache) {
 		if err := r.ensureModelCachePVC(ctx, inferenceService, cache); err != nil {
 			log.Error(err, "Failed to ensure model cache PVC exists", "namespace", inferenceService.Namespace)
 			return r.updateStatusWithSchedulingInfo(ctx, inferenceService, PhaseFailed, modelReady, 0, inferenceService.Status.Replicas, desiredReplicas, "",
