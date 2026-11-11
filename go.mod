@@ -1,6 +1,6 @@
 module github.com/defilantech/llmkube
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/defilantech/socair-verify v0.1.0

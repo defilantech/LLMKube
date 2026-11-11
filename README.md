@@ -447,7 +447,7 @@ curl -sSL https://raw.githubusercontent.com/defilantech/LLMKube/main/install.sh 
 
 ### From Source
 
-Needs Go 1.27.3 or later (the version `go.mod` pins).
+Needs Go 1.27.4 or later (the version `go.mod` pins).
 
 ```bash
 git clone https://github.com/defilantech/LLMKube.git && cd LLMKube

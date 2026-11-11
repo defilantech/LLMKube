@@ -1698,7 +1698,7 @@ git checkout v$(helm show chart llmkube/llmkube | awk '/^appVersion:/{print $2}'
 `helm show chart` reads the same local chart index `helm install`
 used, so this builds the agent from the controller's release tag
 instead of from `main`. You need the Xcode Command Line Tools
-(`xcode-select --install`, for `git` and `make`) and Go 1.27.3 or newer (the
+(`xcode-select --install`, for `git` and `make`) and Go 1.27.4 or newer (the
 version `go.mod` pins).
 
 The agent does not need your admin credentials. From the checkout, run the
