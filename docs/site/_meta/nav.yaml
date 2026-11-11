@@ -1,8 +1,8 @@
 # Sidebar navigation for llmkube.com/docs.
 #
-# This file is the source of truth for the docs site sidebar. The llmkube-web
-# build pipeline reads this YAML and renders the sidebar from it. Order here is
-# render order on the site.
+# This file is the source of truth for the docs site: llmkube-web's build
+# (Defilan/llmkube-web, scripts/render-docs.js) renders the markdown it lists
+# and builds the sidebar from it. Order here is render order on the site.
 #
 # Schema:
 #   sections:
@@ -12,17 +12,22 @@
 #           slug: <path under /docs/>          # required for live pages
 #           file: <path under docs/site/>      # the .md file to render
 #           status: real | stub                # optional, defaults to real
+#           source: web                        # optional, see below; no file
 #
-# A `status: stub` entry renders a "this page is in progress" placeholder
-# (using llmkube-web's DocStub component) until the markdown is ported.
-# Once the markdown lands, drop the status field.
+# A `status: stub` entry is left out of the sidebar, and the site serves a
+# placeholder page for it (llmkube-web's src/lib/docs/fallback/) until the
+# markdown is ported. To port one, add the markdown and drop the status field;
+# the next site build serves the markdown in place of the placeholder.
+#
+# A `source: web` entry is a page written in llmkube-web itself, so there is no
+# markdown here to render. The comment on each says which file it is.
 
 sections:
   - title: Getting Started
     items:
       - label: Overview
         slug: ""
-        file: index.md
+        source: web  # the docs landing page, src/routes/docs/+page.svelte
       - label: Install in 5 minutes
         slug: getting-started
         file: getting-started/index.md
@@ -38,7 +43,7 @@ sections:
         file: concepts/architecture.md
       - label: CRD reference
         slug: concepts/crds
-        file: concepts/crds.md
+        source: web  # src/lib/docs/fallback/concepts/crds.svelte
       - label: Runtime backends
         slug: concepts/runtime-backends
         file: concepts/runtime-backends.md
