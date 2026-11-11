@@ -211,7 +211,7 @@ test-affected: setup-envtest ## Test packages affected by changes since BASE_REF
 # report's package time budgets and its growth list against the last green
 # main run (#2382).
 .PHONY: test-scripts
-test-scripts: ## Run the shell regression tests (gate, test-affected, affected-packages, GINKGO_SEED single evaluation, envtest sharing, test metrics ports, macOS signing and notarization, pinned release tools, Go module download retries, govulncheck verdict and tracking issue, CI timing report).
+test-scripts: ## Run the shell regression tests (gate, test-affected, affected-packages, GINKGO_SEED single evaluation, envtest sharing, test metrics ports, macOS signing and notarization, pinned release tools, Go module download retries, govulncheck verdict and tracking issue, CI timing report, docs link check).
 	@bash scripts/gate_test.sh
 	@bash scripts/test-affected_test.sh
 	@bash scripts/affected-packages_test.sh
@@ -226,6 +226,7 @@ test-scripts: ## Run the shell regression tests (gate, test-affected, affected-p
 	@bash scripts/govulncheck-diff_test.sh
 	@bash scripts/govulncheck-tracking-issue_test.sh
 	@bash scripts/go-test-report_test.sh
+	@bash scripts/check-docs-links_test.sh
 
 .PHONY: test-chart
 test-chart: ## Lint and unit-test the Helm charts (requires helm + helm-unittest plugin).
@@ -350,6 +351,11 @@ lint-config: golangci-lint ## Verify golangci-lint linter configuration
 .PHONY: lint-deadcode
 lint-deadcode: golangci-lint ## Fail on production code referenced only by its own tests.
 	$(GOLANGCI_LINT) run -c .golangci-deadcode.yml ./...
+
+.PHONY: check-docs-links
+check-docs-links: ## Check docs/site links, anchors and mdsvex-breaking markup the way llmkube.com builds them.
+	@command -v python3 >/dev/null 2>&1 || { echo "ERROR: python3 is required for check-docs-links"; exit 1; }
+	@python3 scripts/check-docs-links.py
 
 .PHONY: validate-samples
 validate-samples: ## Validate config/samples against CRD schemas (catch hallucinated manifests).
