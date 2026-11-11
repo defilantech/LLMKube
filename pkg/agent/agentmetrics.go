@@ -143,7 +143,9 @@ var (
 				"Reasons: 'disabled' (eviction CLI flag off), 'below_guard' (LLMKube " +
 				"not responsible for >50% of system RSS), 'floor' (would have left " +
 				"zero managed processes), 'all_protected' (every candidate has " +
-				"EvictionProtection=true), 'empty' (no managed processes).",
+				"EvictionProtection=true), 'empty' (no managed processes), " +
+				"'runtime_ineligible' (every managed process is on a shared daemon, " +
+				"such as oMLX or Ollama, that the agent does not own).",
 		},
 		[]string{"reason"},
 	)

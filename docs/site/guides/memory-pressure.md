@@ -36,8 +36,8 @@ running models have left is refused: the InferenceService gets
 agent re-checks it on a backoff of up to a minute, so it starts once memory
 frees up.
 
-The budget is a fraction of the Mac's memory: 67% on a 16 GB or 36 GB Mac
-and 75% from 48 GB up, changed with the agent flag `--memory-fraction`. When
+The budget is a fraction of the Mac's memory: 67% on a Mac with 36 GB or
+less, and 75% above that, changed with the agent flag `--memory-fraction`. When
 the agent cannot size a model at all, it fails closed with
 `MemoryCheckFailed` instead of starting it blind, because Metal wires model
 memory so the kernel cannot page it out. `--memory-check-mode warn` restores

@@ -115,7 +115,8 @@ docs-reference: ## Regenerate the CLI, Helm values, metrics and CRD reference pa
 	@go run ./cmd/gen-reference-docs
 
 # Every page the generator writes is compared, so a page added to it is checked
-# without editing this target; a hand-written page in the directory is not.
+# without editing this target. A page in the directory that the generator does
+# not write, such as one it stopped generating, fails the check too.
 .PHONY: check-docs-reference
 check-docs-reference: ## Drift-check: fail if any generated page in docs/site/reference differs from what make docs-reference writes.
 	@tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
@@ -123,6 +124,9 @@ check-docs-reference: ## Drift-check: fail if any generated page in docs/site/re
 	status=0; \
 	for f in "$$tmp"/*.md; do \
 	  diff -u "docs/site/reference/$$(basename "$$f")" "$$f" || status=1; \
+	done; \
+	for f in docs/site/reference/*.md; do \
+	  [ -e "$$tmp/$$(basename "$$f")" ] || { echo "$$f is not written by the generator: delete it, or generate it"; status=1; }; \
 	done; \
 	if [ "$$status" -ne 0 ]; then \
 	  echo "docs/site/reference is out of date: run 'make docs-reference' and commit the result."; \
