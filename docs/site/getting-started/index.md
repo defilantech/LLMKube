@@ -201,14 +201,14 @@ with `hardware.accelerator: metal` in that namespace does the same thing.
 - The [macOS Metal Agent guide](/docs/guides/macos-metal) covers the network
   requirements, memory budgets, more than one Mac, upgrades and
   troubleshooting.
-- The [one-Mac quickstart](https://github.com/defilantech/LLMKube/tree/main/examples/metal-quickstart)
+- The [one-Mac quickstart](/docs/getting-started/metal-quickstart)
   runs the whole thing on a single Mac: Minikube, the agent and a first model.
 
 ## GPU acceleration
 
 On a cluster with NVIDIA GPUs, deploy with `--gpu`: the operator schedules the
 model onto a GPU node and uses a CUDA build of the runtime. The
-[GPU setup guide](https://github.com/defilantech/LLMKube/blob/main/docs/gpu-setup-guide.md)
+[GPU setup guide](/docs/guides/gpu-setup)
 covers the prerequisites.
 
 ```bash
@@ -273,7 +273,7 @@ For larger models or longer prompts, raise the resource requests and the
 probe timeouts on the InferenceService.
 
 More cases are in the
-[Minikube quickstart's troubleshooting section](https://github.com/defilantech/LLMKube/blob/main/docs/minikube-quickstart.md#troubleshooting).
+[Minikube quickstart's troubleshooting section](/docs/quickstart-minikube#troubleshooting).
 
 ## Next
 
@@ -283,5 +283,5 @@ More cases are in the
   InferenceService
 - [Memory-pressure protection](/docs/memory-pressure-protection): the Metal
   agent's watchdog and eviction model
-- [GPU setup](https://github.com/defilantech/LLMKube/blob/main/docs/gpu-setup-guide.md):
+- [GPU setup](/docs/guides/gpu-setup):
   installing the NVIDIA stack on a fresh cluster
