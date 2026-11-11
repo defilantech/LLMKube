@@ -71,8 +71,14 @@ var (
 	)
 )
 
+// Collectors are the relay's metrics; init registers them in the router
+// proxy's registry, which the binary that runs the relay serves. They are
+// exported so cmd/gen-reference-docs can document them, including the
+// vector that has no series until the relay serves a request.
+var Collectors = []prometheus.Collector{requestsTotal, pinMismatchTotal}
+
 func init() {
-	prommetrics.RouterRegistry.MustRegister(requestsTotal, pinMismatchTotal)
+	prommetrics.RouterRegistry.MustRegister(Collectors...)
 }
 
 // Config configures a Relay.

@@ -21,6 +21,8 @@ Terminal recordings live in `docs/site/casts/`. See `docs/site/casts/README.md` 
 
 Reference material for working on the operator itself: how to add a new runtime backend, how to spec the HuggingFace source format, internals of the vLLM image pipeline. These pages are read by people *changing* LLMKube, not people *using* LLMKube — they aren't rendered to the public site.
 
+The pages under `site/reference/` (CLI, Helm values, metrics, CRDs) are generated from the source by `make docs-reference`; do not edit them by hand. CI fails when they are out of date (`make check-docs-reference`).
+
 ## `observability/`: moved to the site
 
 The SLO, tracing and metric-contract pages are now one page,
