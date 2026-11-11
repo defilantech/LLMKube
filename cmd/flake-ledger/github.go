@@ -121,7 +121,7 @@ func (g *gitHub) pages(ctx context.Context, path string, page func([]byte) error
 			return err
 		}
 		if err := page(body); err != nil {
-			return fmt.Errorf("decode %s: %w", path, err)
+			return fmt.Errorf("%s: %w", path, err)
 		}
 		path = ""
 		if m := nextLink.FindStringSubmatch(link); m != nil {
