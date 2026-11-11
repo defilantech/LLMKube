@@ -771,9 +771,8 @@ that takes `-sb`, as busybox and GNU coreutils do.
 `cache clear` removes entries instead of printing a command to run. One
 short-lived pod per cache claim (the same image, set the same way) mounts it
 read-write, refuses a `ReadWriteOncePod` claim another pod still holds, and
-removes only
-validated `/models/<key>` paths, and is deleted straight after. `--model
-<name>` clears one model on the claims its own InferenceServices mount (their
+removes only validated `/models/<key>` paths, and is deleted straight after.
+`--model <name>` clears one model on the claims its own InferenceServices mount (their
 `spec.modelCache.claimName`, their `<isvc>-model-cache` in `perService` mode,
 and the shared `llmkube-model-cache` in the default `shared` mode),
 `--orphaned` clears every entry no Model references across the
