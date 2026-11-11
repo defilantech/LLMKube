@@ -15,7 +15,8 @@ same resolution in this repo's CI:
   - no text outside code is something mdsvex would read as markup: a line that
     starts with an unknown <tag>, a bare "<" (as in "<1s"), or a brace (a
     Svelte expression). The first breaks the page's structure; the others fail
-    the build.
+    the build. A --flag outside code is flagged too: the renderer's typography
+    turns "--" into a dash.
 
 With --site <dir>, it also checks a built copy of the site (llmkube-web's
 build/ directory): every internal link and #anchor on every page.
@@ -145,6 +146,9 @@ def check_markup(rel, text, problems):
             problems.append(f"{rel}:{n}: <{start.group(2)}> starts a line, so mdsvex reads it as an element; reflow the paragraph so it does not")
     body = strip_code_spans(fenced)
     body = re.sub(r"<!--.*?-->", lambda m: re.sub(r"[^\n]", " ", m.group(0)), body, flags=re.S)
+    # Link destinations and attribute values are not prose.
+    body = re.sub(r"\]\([^)\s]*\)", "]()", body)
+    body = re.sub(r'="[^"]*"', '=""', body)
     in_component = False
     for n, line in enumerate(body.split("\n"), 1):
         for m in re.finditer(r"<(?!/?[A-Za-z]|!--)", line):
@@ -152,6 +156,8 @@ def check_markup(rel, text, problems):
         for m in re.finditer(r"<([a-z][\w-]*)\b", line):
             if m.group(1) not in KNOWN_TAGS and not re.match(r"<(https?|mailto):", line[m.start():]):
                 problems.append(f"{rel}:{n}: <{m.group(1)}> outside code is read as an element; put it in code")
+        for m in re.finditer(r"(?<![\w-])--[A-Za-z]", line):
+            problems.append(f"{rel}:{n}: '--' outside code becomes a dash on the site; put the flag in code")
         # Attribute values of the site's components ({[...]} props) are code.
         if re.search(r"<(DocCallout|AsciinemaCast)\b", line):
             in_component = True

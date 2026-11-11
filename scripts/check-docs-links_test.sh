@@ -43,8 +43,9 @@ expect "a line that starts with <name>" "getting-started.md:10: <name> starts a 
 expect "a bare < in text" "getting-started.md:12: bare '<' outside code"
 expect "a bare < between code spans" "getting-started.md:14: bare '<' outside code"
 expect "a brace in text" "getting-started.md:16: brace outside code"
+expect "a --flag in text" "getting-started.md:18: '--' outside code becomes a dash"
 n="$(grep -c '^docs/site/' <<<"$out" || true)"
-[[ "$n" == 9 ]] && pass "exactly the nine planted problems" || bad "expected 9 problems, got $n"
+[[ "$n" == 10 ]] && pass "exactly the ten planted problems" || bad "expected 10 problems, got $n"
 
 if out="$(python3 "$CHECK" --site "$DATA/site" "$DATA/good" 2>&1)"; then
   bad "a built site with broken links passes"

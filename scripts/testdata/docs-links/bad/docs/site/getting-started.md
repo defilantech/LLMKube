@@ -14,3 +14,5 @@ Latency P99 is <1s.
 Lowest first: `batch` < `low`.
 
 A {brace} outside code.
+
+Run it with --verbose to see more.

@@ -12,7 +12,7 @@ llmkube cache clear --model <name>
 echo {not an expression}
 ```
 
-A latency under 1s, and `{braces}` and `a < b` in code are fine.
+A latency under 1s, and `{braces}`, `a < b` and `--verbose` in code are fine. A dash -- like this -- is prose.
 
 ## Notes
 
