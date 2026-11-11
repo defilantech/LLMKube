@@ -33,7 +33,7 @@ const ConditionUnmatchedFilePatterns = "UnmatchedFilePatterns"
 func (r *ModelReconciler) setUnmatchedFilePatterns(model *inferencev1alpha1.Model, plan *StagingPlan) {
 	var unmatched []string
 	if plan != nil {
-		entries := plan.entries()
+		entries := plan.Entries()
 		for _, pattern := range model.Spec.Files {
 			if !hasGlob(pattern) || strings.Contains(pattern, "://") {
 				continue
