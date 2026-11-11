@@ -1296,8 +1296,9 @@ revoked and the command fails. The Lease is also deleted, with a
 warning, when the Mac's MetalNode names it as its Lease, whatever its
 label says (see above). For a Mac whose objects you applied by
 hand without the label, `--include-unlabeled` also deletes unlabeled
-objects with the Mac's names, with a warning for each; objects
-labeled for another Mac are never deleted.
+objects with the Mac's names, with a warning for each. Apart from the
+Lease the Mac's MetalNode names, objects labeled for another Mac are
+never deleted.
 
 ### Limit the agent's writes (Kubernetes 1.30+)
 

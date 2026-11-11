@@ -52,9 +52,9 @@ labeled for another Mac, objects applied by hand) is left in place and
 listed. The Lease is also deleted, with a warning, when the Mac's MetalNode,
 labeled for the Mac, names it as its Lease: the Mac can change its Lease's
 labels. --include-unlabeled also deletes unlabeled objects with the Mac's
-names, for a Mac set up by hand; objects labeled for another Mac are never
-deleted. If the ServiceAccount is left in place, nothing was revoked and the
-command fails.
+names, for a Mac set up by hand. Apart from that Lease, objects labeled for
+another Mac are never deleted. If the ServiceAccount is left in place, nothing
+was revoked and the command fails.
 
 This does not stop the agent on the Mac.`,
 		Args: cobra.ExactArgs(1),
@@ -122,8 +122,8 @@ func metalRemove(ctx context.Context, c client.Client, namespace, mac string, in
 		switch {
 		case owner == mac:
 		case claimed:
-			_, _ = fmt.Fprintf(log, "warning: Lease %s/%s is labeled %s=%q, but MetalNode %s/%s names it as its "+
-				"Lease; deleting it\n", namespace, t.obj.GetName(), inferencev1alpha1.LabelMetalNode, owner,
+			_, _ = fmt.Fprintf(log, "warning: Lease %s/%s %s, but MetalNode %s/%s names it as its "+
+				"Lease; deleting it\n", namespace, t.obj.GetName(), metalLabelState(owner),
 				namespace, n.MetalNode)
 		case owner == "" && includeUnlabeled:
 			_, _ = fmt.Fprintf(log, "warning: deleting unlabeled %s %s/%s by its name (--include-unlabeled)\n",

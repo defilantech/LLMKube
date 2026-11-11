@@ -612,9 +612,9 @@ func ensureMetalLease(ctx context.Context, a metalApply) error {
 			return err
 		}
 		if claimed {
-			_, _ = fmt.Fprintf(log, "Lease %s/%s is labeled %s=%q, but MetalNode %s/%s names it as its Lease; "+
-				"restoring the label\n", namespace, n.Lease, inferencev1alpha1.LabelMetalNode,
-				lease.Labels[inferencev1alpha1.LabelMetalNode], namespace, n.MetalNode)
+			_, _ = fmt.Fprintf(log, "Lease %s/%s %s, but MetalNode %s/%s names it as its Lease; "+
+				"restoring the label\n", namespace, n.Lease, metalLabelState(lease.Labels[inferencev1alpha1.LabelMetalNode]),
+				namespace, n.MetalNode)
 		}
 		setMetalLabels(lease, n.Mac)
 		return nil
@@ -736,4 +736,13 @@ func mintJoinToken(ctx context.Context, c client.Client, namespace string, n met
 		lifetime = expires.Sub(requested)
 	}
 	return &metalIssuedToken{token: tr.Status.Token, expiresAt: expires, lifetime: lifetime}, nil
+}
+
+// metalLabelState describes an object's Mac label for a message: its value, or
+// that there is none (an empty value would print as "").
+func metalLabelState(owner string) string {
+	if owner == "" {
+		return "has no " + inferencev1alpha1.LabelMetalNode + " label"
+	}
+	return fmt.Sprintf("is labeled %s=%q", inferencev1alpha1.LabelMetalNode, owner)
 }

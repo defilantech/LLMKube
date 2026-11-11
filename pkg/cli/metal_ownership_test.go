@@ -92,9 +92,15 @@ func foreignObjects() []foreignObject {
 var foreignLabelings = []struct {
 	name   string
 	labels map[string]string
+	// say is how a message describes the object's label.
+	say string
 }{
-	{"unlabeled", nil},
-	{"other-mac", map[string]string{inferencev1alpha1.LabelMetalNode: "mac-b"}},
+	{"unlabeled", nil, "has no " + inferencev1alpha1.LabelMetalNode + " label"},
+	{
+		"other-mac",
+		map[string]string{inferencev1alpha1.LabelMetalNode: "mac-b"},
+		"is labeled " + inferencev1alpha1.LabelMetalNode + `="mac-b"`,
+	},
 }
 
 // assertUntouched fails unless obj still exists exactly as created.
@@ -370,6 +376,9 @@ func TestMetalLeaseRelabeledByTheMac(t *testing.T) {
 			if !strings.Contains(stderr, "restoring the label") {
 				t.Errorf("token create does not say it restored the Lease's label: %q", stderr)
 			}
+			if !strings.Contains(stderr, lab.say) {
+				t.Errorf("token create does not say the Lease %s: %q", lab.say, stderr)
+			}
 			lease := &coordinationv1.Lease{}
 			if err := c.Get(ctx, client.ObjectKeyFromObject(relabeled), lease); err != nil {
 				t.Fatal(err)
@@ -389,6 +398,9 @@ func TestMetalLeaseRelabeledByTheMac(t *testing.T) {
 			}
 			if !strings.Contains(stderr, "names it as its Lease") {
 				t.Errorf("remove does not say why it deleted a Lease not labeled for the Mac: %q", stderr)
+			}
+			if !strings.Contains(stderr, lab.say) {
+				t.Errorf("remove does not say the Lease %s: %q", lab.say, stderr)
 			}
 		})
 	}
