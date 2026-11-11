@@ -554,3 +554,17 @@ jobs:
     uses: ./.github/workflows/release-notify.yml
     with:
       tag: ${{ needs.release-please.outputs.tag_name }}
+
+  publish-site:
+    # Rebuild llmkube.com, which renders the docs from main, so the site shows
+    # this release's docs. Waits for the images, binaries and
+    # charts for the same reason as notify-released: the site's install steps
+    # must work the moment they appear.
+    needs: [release-please, goreleaser, release-helm]
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    permissions: {}
+    uses: ./.github/workflows/publish-site.yml
+    with:
+      reason: "LLMKube ${{ needs.release-please.outputs.tag_name }} released"
+    secrets:
+      NETLIFY_BUILD_HOOK_URL: ${{ secrets.NETLIFY_BUILD_HOOK_URL }}
