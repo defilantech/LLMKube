@@ -15,8 +15,9 @@ permissions:
   contents: write
   pull-requests: write
   packages: write        # push images + attestations to GHCR
-  id-token: write        # keyless cosign / OIDC
   attestations: write    # actions/attest-* write to the attestations store
+  # id-token: write is granted only to the goreleaser job, the one job that
+  # signs or attests.
 
 jobs:
   release-please:
@@ -43,6 +44,15 @@ jobs:
     # which only main can deploy to, so a workflow run from any other branch
     # reads them as empty (docs/contributing/macos-signing.md).
     environment: release
+    # The only job that signs (cosign) or attests (actions/attest-*), so the
+    # only one that can mint an OIDC token. A job-level block replaces the
+    # workflow-level one, so the rest is repeated unchanged.
+    permissions:
+      contents: write
+      pull-requests: write
+      packages: write
+      id-token: write        # keyless cosign / OIDC
+      attestations: write
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -75,8 +85,25 @@ jobs:
         # the bare `trivy` CLI, so without this the scan step below exits 127
         # and no release can ever be cut (#233 review, Critical 1). No
         # restrictive `if:` here - the scan below runs on both the push and
-        # workflow_dispatch paths, so this must too.
-        uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567  # v0.3.1
+        # workflow_dispatch paths, so this must too. Pinned by version and
+        # SHA-256 in hack/install-pinned-tool.sh, the same Trivy the release
+        # PR's scan gate runs (release-scan.yml). This job holds the signing
+        # material and the tap token, so a download that does not match the
+        # pin fails the step and is never run.
+        run: |
+          ./hack/install-pinned-tool.sh trivy "$RUNNER_TEMP/trivy"
+          echo "$RUNNER_TEMP/trivy" >> "$GITHUB_PATH"
+
+      - name: Install crane
+        # Reads the pushed image digests for the sign and attest steps.
+        # Pinned like Trivy, and installed here rather than beside cosign so a
+        # failed download or a pin mismatch fails the job before GoReleaser
+        # publishes anything. crane reads the GHCR login above from the
+        # docker config.
+        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
+        run: |
+          ./hack/install-pinned-tool.sh crane "$RUNNER_TEMP/crane"
+          echo "$RUNNER_TEMP/crane" >> "$GITHUB_PATH"
 
       - name: Scan images before push (Trivy, amd64)
         run: ./hack/scan-images.sh
@@ -147,10 +174,6 @@ jobs:
       - name: Install cosign
         if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
         uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532  # v4.1.3
-
-      - name: Install crane
-        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
-        uses: imjasonh/setup-crane@feee3b6bb0d4c68370f256a4502498c9227e5c6b  # v0.7
 
       # Full sha256:... digests per image, captured once so every sign/attest/
       # verify step below references the exact bytes GoReleaser pushed (#233).

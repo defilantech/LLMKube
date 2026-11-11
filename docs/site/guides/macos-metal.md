@@ -134,7 +134,9 @@ This installs the agent as `$(brew --prefix)/bin/llmkube-metal-agent`
 (Developer ID signed and notarized by Apple), the `llmkube` CLI, and
 `llama.cpp`, the agent's default engine. Name both: the agent cask does not
 depend on the CLI formula, because Homebrew trusts only the third-party tap
-items you name on the command line (`brew trust`).
+items you name on the command line (`brew trust`). To check the binary's
+code signature and notarization yourself, see
+[Verify the macOS binaries](https://github.com/defilantech/LLMKube/blob/main/docs/security/verifying-releases.md#verify-the-macos-binaries).
 
 The cask does not start the agent; `join` does.
 

@@ -201,7 +201,8 @@ test-affected: setup-envtest ## Test packages affected by changes since BASE_REF
 # hook that signs the darwin binaries (#2084), and its real-tool case runs only
 # on macOS with rcodesign on PATH; macos-notarize_test.sh and
 # install-rcodesign_test.sh cover the release's notarization step and its
-# pinned rcodesign install. go-mod-download_test.sh covers
+# pinned rcodesign install; install-pinned-tool_test.sh covers the pinned
+# trivy and crane installs of the release workflows. go-mod-download_test.sh covers
 # hack/go-mod-download.sh, the retried module download every CI job and image
 # build runs first (#2380). govulncheck-diff_test.sh and
 # govulncheck-tracking-issue_test.sh cover the Security workflow's verdict
@@ -210,7 +211,7 @@ test-affected: setup-envtest ## Test packages affected by changes since BASE_REF
 # report's package time budgets and its growth list against the last green
 # main run (#2382).
 .PHONY: test-scripts
-test-scripts: ## Run the shell regression tests (gate, test-affected, affected-packages, GINKGO_SEED single evaluation, envtest sharing, test metrics ports, macOS signing and notarization, Go module download retries, govulncheck verdict and tracking issue, CI timing report).
+test-scripts: ## Run the shell regression tests (gate, test-affected, affected-packages, GINKGO_SEED single evaluation, envtest sharing, test metrics ports, macOS signing and notarization, pinned release tools, Go module download retries, govulncheck verdict and tracking issue, CI timing report).
 	@bash scripts/gate_test.sh
 	@bash scripts/test-affected_test.sh
 	@bash scripts/affected-packages_test.sh
@@ -220,6 +221,7 @@ test-scripts: ## Run the shell regression tests (gate, test-affected, affected-p
 	@bash scripts/macos-sign_test.sh
 	@bash scripts/macos-notarize_test.sh
 	@bash scripts/install-rcodesign_test.sh
+	@bash scripts/install-pinned-tool_test.sh
 	@bash scripts/go-mod-download_test.sh
 	@bash scripts/govulncheck-diff_test.sh
 	@bash scripts/govulncheck-tracking-issue_test.sh

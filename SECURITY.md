@@ -63,6 +63,10 @@ Two settings are easy to read as stronger boundaries than they are:
 - `--allowed-host-path-roots` (chart value `modelSource.allowedHostPathRoots`) limits only the hostPath volume the operator generates for a local model source. It does not inspect `spec.extraVolumes`.
 - A team-scoped ModelRouter budget is keyed on a request header the caller sends, and the router-proxy does not authenticate callers. It binds only callers that cannot set or change that header, for example because an authenticating gateway in front of the router sets it.
 
+## Verifying releases
+
+Release images are signed with cosign and carry SLSA build provenance and SBOM attestations, and the `.tar.gz` release archives carry SLSA build provenance, all made by the `release-please.yml` workflow on `main`. The darwin binaries are code-signed and, in releases built with the signing secrets, notarized by Apple. [Verifying LLMKube releases](docs/security/verifying-releases.md) has the commands that check each of these.
+
 ## Security Best Practices
 
 When deploying LLMKube:
@@ -71,6 +75,6 @@ When deploying LLMKube:
 2. **Pod Security Admission**: Enforce `baseline` or `restricted` on inference namespaces
 3. **Network Policies**: Isolate inference pods from sensitive workloads
 4. **Resource Limits**: Always set CPU/memory limits to prevent DoS
-5. **Image Verification**: Use image digests in production Helm values
+5. **Image Verification**: Verify release images before you deploy them (see [Verifying releases](#verifying-releases)), and use image digests in production Helm values
 6. **Air-gapped Models**: Pre-download models for sensitive environments
 7. **Apple Silicon hosts**: Run the Metal agent at 0.10.0 or later, list model directories in `--allowed-model-roots`, and leave `--allow-unsafe-extra-args` off unless every InferenceService author is trusted with the Mac. See the [macOS agent security model](deployment/macos/README.md)
