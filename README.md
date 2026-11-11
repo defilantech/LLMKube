@@ -172,7 +172,7 @@ kubectl apply -f model.yaml
 ```
 </details>
 
-**Full setup guides:** [Minikube Quickstart](docs/minikube-quickstart.md) | [GKE with GPUs](docs/gpu-setup-guide.md) | [Intel GPU Quickstart](docs/intel-gpu-quickstart.md) | [DGX Spark (MicroK8s)](docs/dgx-spark-microk8s.md) | [Air-Gapped Deployment](docs/air-gapped-quickstart.md) | [OpenShift](#troubleshooting)
+**Full setup guides:** [Minikube Quickstart](https://llmkube.com/docs/quickstart-minikube) | [GKE with GPUs](https://llmkube.com/docs/guides/gpu-setup) | [Intel GPU Quickstart](docs/intel-gpu-quickstart.md) | [DGX Spark (MicroK8s)](docs/dgx-spark-microk8s.md) | [Air-Gapped Deployment](docs/air-gapped-quickstart.md) | [OpenShift](#troubleshooting)
 
 ---
 
@@ -382,7 +382,7 @@ One machine with two RTX 5060 Ti GPUs, 10 iterations of 256 max tokens per model
 - AMD GPUs with llama.cpp Vulkan or ROCm images, including Strix Halo ([guide](docs/amd-rocm-quickstart.md))
 - Intel GPU (i915 or xe plugin resources) with llama.cpp SYCL backend
 - Apple Silicon (M-series) Metal via [Metal Agent](deployment/macos/)
-- Multi-GPU inference for 13B-70B+ models ([guide](docs/MULTI-GPU-DEPLOYMENT.md))
+- Multi-GPU inference for 13B-70B+ models ([guide](https://llmkube.com/docs/guides/multi-gpu))
 - Multi-node inference: one model across several nodes with `spec.multiNode` (vLLM) ([guide](docs/site/guides/multi-node-inference.md))
 - Automatic layer offloading and tensor splitting
 - GPU queue management with priority classes
@@ -391,7 +391,7 @@ One machine with two RTX 5060 Ti GPUs, 10 iterations of 256 max tokens per model
 **Operations:**
 - Full CLI: `llmkube deploy/list/status/delete/catalog/cache/queue`
 - Model catalog of pre-configured GGUF models for llama.cpp (`llmkube catalog list`)
-- Prometheus metrics + OpenTelemetry tracing of ModelRouter proxy requests ([details](docs/observability/tracing.md))
+- Prometheus metrics + OpenTelemetry tracing of ModelRouter proxy requests ([details](https://llmkube.com/docs/operations/observability#tracing))
 - For an existing Prometheus Operator or kube-prometheus-stack: Grafana dashboards (inference, llama.cpp, vLLM, SGLang, ModelRouter, GPU quota, SLOs, AMD GPU), PodMonitors, a ServiceMonitor and PrometheusRule alerts. All of them are off by default (`prometheus.*.enabled`, `grafana.dashboards.enabled`), and Prometheus and Grafana themselves are not bundled
 - GPU alert rules on DCGM exporter metrics (utilization, temperature, power, memory, Xid faults)
 - Per-service SLOs through Pyrra (`spec.slo`; needs Pyrra installed and `pyrra.enabled`)
@@ -455,7 +455,7 @@ make install  # Install CRDs
 make run      # Run controller locally
 ```
 
-[Helm Chart docs](charts/llmkube/README.md) | [Minikube Quickstart](docs/minikube-quickstart.md) | [GKE GPU Setup](docs/gpu-setup-guide.md)
+[Helm Chart docs](charts/llmkube/README.md) | [Minikube Quickstart](https://llmkube.com/docs/quickstart-minikube) | [GKE GPU Setup](https://llmkube.com/docs/guides/gpu-setup)
 
 ---
 

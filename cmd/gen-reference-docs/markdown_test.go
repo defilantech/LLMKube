@@ -1,0 +1,149 @@
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package main
+
+import (
+	"strings"
+	"testing"
+
+	"gopkg.in/yaml.v3"
+)
+
+func TestInlineText(t *testing.T) {
+	tests := []struct {
+		name, in, want string
+	}{
+		{"plain text passes", "Number of replicas", "Number of replicas"},
+		{"angle brackets become entities", "run as <user>:0", "run as &lt;user&gt;:0"},
+		{"ampersand becomes an entity", "R&D", "R&amp;D"},
+		{"JSON object becomes code", `a JSON object {"name":"x"}. Next`, "a JSON object `{\"name\":\"x\"}`. Next"},
+		{"brace group spanning spaces is one span", "use {{ .Values.x }} here", "use `{{ .Values.x }}` here"},
+		{"brace widened to its token", "a map of {key,value} pairs", "a map of `{key,value}` pairs"},
+		{"unmatched brace still becomes code", "ends with }", "ends with `}`"},
+		{"empty map", "{} matches every Grafana", "`{}` matches every Grafana"},
+		{"brace inside parentheses keeps them outside", "(see {a}.)", "(see `{a}`.)"},
+		{"flag becomes code", "after --max-watch-failures lists", "after `--max-watch-failures` lists"},
+		{"flag in parentheses", "(--ttl, 30 minutes)", "(`--ttl`, 30 minutes)"},
+		{"prose double dash untouched", "empty -- the gate", "empty -- the gate"},
+		{"URL with a placeholder becomes code", "such as http://llmkube.<namespace>.svc.cluster.local/v1 (with",
+			"such as `http://llmkube.<namespace>.svc.cluster.local/v1` (with"},
+		{"quoted URL becomes code without the quotes", `defaultLiteLLMURL: "http://litellm.litellm.svc.cluster.local:4000"`,
+			"defaultLiteLLMURL: \"`http://litellm.litellm.svc.cluster.local:4000`\""},
+		{"URL before a full stop", "see https://example.com/docs.", "see `https://example.com/docs`."},
+		{"existing code span kept verbatim", "use `a_b *c* {d}` now", "use `a_b *c* {d}` now"},
+		{"double-backtick span kept", "``a ` b`` c", "``a ` b`` c"},
+		{"unmatched backtick escaped", "it's a ` mark", "it's a \\` mark"},
+		{"intraword underscore kept", "run_gate_job and XDG_DATA_HOME", "run_gate_job and XDG_DATA_HOME"},
+		{"boundary underscore escaped", "_private name", `\_private name`},
+		{"emphasis characters escaped", "llmkube_* and [x]", `llmkube\_\* and \[x\]`},
+		{"backslash escaped", `a\d`, `a\\d`},
+		{"utf-8 preserved", "°C — sensor", "°C — sensor"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := inlineText(tt.in); got != tt.want {
+				t.Errorf("inlineText(%q)\n got %q\nwant %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTableCell(t *testing.T) {
+	tests := []struct {
+		name, in, want string
+	}{
+		{"pipe in prose", "a | b", `a \| b`},
+		{"pipe in code span", "one of `a|b`", "one of `a\\|b`"},
+		{"pipe in brace code", "{a|b}", "`{a\\|b}`"},
+		{"newlines collapse", "line one\n\n  line two\n", "line one line two"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tableCell(tt.in); got != tt.want {
+				t.Errorf("tableCell(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCodeSpanOutgrowsBackticks(t *testing.T) {
+	tests := map[string]string{
+		"plain":     "`plain`",
+		"a`b":       "``a`b``",
+		"`edge":     "`` `edge ``",
+		"x``y":      "```x``y```",
+		"":          "",
+		"{a: b|c}}": "`{a: b|c}}`",
+	}
+	for in, want := range tests {
+		if got := codeSpan(in); got != want {
+			t.Errorf("codeSpan(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestCodeBlockFenceOutgrowsContent(t *testing.T) {
+	got := codeBlock("text", "has ``` inside\n")
+	if !strings.HasPrefix(got, "````text\n") || !strings.HasSuffix(got, "\n````\n\n") {
+		t.Errorf("codeBlock fence does not outgrow the content:\n%s", got)
+	}
+}
+
+// A plain YAML scalar cannot hold ": ", and the site parses this frontmatter.
+func TestPageHeaderFrontmatterParses(t *testing.T) {
+	desc := "Every resource: names, columns # and a hash"
+	h := pageHeader("CRD reference", desc, "somewhere")
+	parts := strings.SplitN(h, "---\n", 3)
+	if len(parts) != 3 || parts[0] != "" {
+		t.Fatalf("header does not open with a frontmatter block:\n%s", h)
+	}
+	var fm struct {
+		Title       string `yaml:"title"`
+		Description string `yaml:"description"`
+	}
+	if err := yaml.Unmarshal([]byte(parts[1]), &fm); err != nil {
+		t.Fatalf("frontmatter does not parse: %v\n%s", err, parts[1])
+	}
+	if fm.Title != "CRD reference" || fm.Description != desc {
+		t.Errorf("frontmatter round trip = %+v", fm)
+	}
+	if !strings.Contains(parts[2], "# CRD reference\n\nThis page is generated by `make docs-reference` from somewhere.") {
+		t.Errorf("missing H1 or generated-by paragraph:\n%s", parts[2])
+	}
+}
+
+func TestAnchor(t *testing.T) {
+	tests := map[string]string{
+		"llmkube metal join": "llmkube-metal-join",
+		"Foreman: crds":      "foreman-crds",
+		"InferenceService":   "inferenceservice",
+		"a_b-c":              "a_b-c",
+	}
+	for in, want := range tests {
+		if got := anchor(in); got != want {
+			t.Errorf("anchor(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestDedent(t *testing.T) {
+	in := "\n  llmkube deploy x\n\n    --flag\n  llmkube list  \n"
+	want := "llmkube deploy x\n\n  --flag\nllmkube list"
+	if got := dedent(in); got != want {
+		t.Errorf("dedent = %q, want %q", got, want)
+	}
+}

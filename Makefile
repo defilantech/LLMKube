@@ -110,6 +110,29 @@ check-reviewer-prompts: ## Drift-check: fail if any reviewer Agent's systemPromp
 check-agents-md: ## Drift-check: fail if any make target, repo path, or Go version AGENTS.md references no longer resolves.
 	@go run ./cmd/check-agents-md --check
 
+.PHONY: docs-reference
+docs-reference: ## Regenerate the CLI, Helm values, metrics and CRD reference pages in docs/site/reference.
+	@go run ./cmd/gen-reference-docs
+
+# Every page the generator writes is compared, so a page added to it is checked
+# without editing this target. A page in the directory that the generator does
+# not write, such as one it stopped generating, fails the check too.
+.PHONY: check-docs-reference
+check-docs-reference: ## Drift-check: fail if any generated page in docs/site/reference differs from what make docs-reference writes.
+	@tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
+	go run ./cmd/gen-reference-docs -out "$$tmp"; \
+	status=0; \
+	for f in "$$tmp"/*.md; do \
+	  diff -u "docs/site/reference/$$(basename "$$f")" "$$f" || status=1; \
+	done; \
+	for f in docs/site/reference/*.md; do \
+	  [ -e "$$tmp/$$(basename "$$f")" ] || { echo "$$f is not written by the generator: delete it, or generate it"; status=1; }; \
+	done; \
+	if [ "$$status" -ne 0 ]; then \
+	  echo "docs/site/reference is out of date: run 'make docs-reference' and commit the result."; \
+	  exit 1; \
+	fi
+
 .PHONY: check-copyright
 check-copyright: ## Fail when a branch adds a Go file whose copyright header is not the year hack/boilerplate.go.txt carries (#2298).
 	@go run ./cmd/check-copyright -base "$(BASE_REF)"

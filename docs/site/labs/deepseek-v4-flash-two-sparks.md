@@ -339,5 +339,5 @@ A shorter starting point is
 ## Related
 
 - [Multi-node inference](../guides/multi-node-inference), the API reference.
-- `docs/kv-cache-dtype.md` in the repo, for the `fp8_e4m3` trade.
+- [KV cache types](/docs/operations/kv-cache), for the `fp8_e4m3` trade.
 - [Model cache](../guides/model-cache), for staging strategies.
