@@ -48,3 +48,41 @@ func TestModelNeedsCachePVC(t *testing.T) {
 		})
 	}
 }
+
+// TestMetalAgentServes pins which services the host metal-agent serves with no
+// pod, so they need no model cache claim (#2511): a Metal model outside a
+// multiNode group. A multiNode group runs member pods even for a Metal model,
+// because reconcileWorkload checks multiNode before the Metal path, so it keeps
+// its claim.
+func TestMetalAgentServes(t *testing.T) {
+	withAccel := func(accel string) *inferencev1alpha1.Model {
+		return &inferencev1alpha1.Model{Spec: inferencev1alpha1.ModelSpec{
+			Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: accel},
+		}}
+	}
+	single := &inferencev1alpha1.InferenceService{}
+	group := &inferencev1alpha1.InferenceService{Spec: inferencev1alpha1.InferenceServiceSpec{
+		MultiNode: &inferencev1alpha1.MultiNodeSpec{},
+	}}
+
+	tests := []struct {
+		name  string
+		isvc  *inferencev1alpha1.InferenceService
+		model *inferencev1alpha1.Model
+		want  bool
+	}{
+		{"metal model, single service -> the agent serves it, no pod", single, withAccel(acceleratorMetal), true},
+		{"metal model in a multiNode group -> member pods, keeps its claim", group, withAccel(acceleratorMetal), false},
+		{"cuda model -> pods", single, withAccel("cuda"), false},
+		{"cpu model -> pods", single, withAccel("cpu"), false},
+		{"no hardware block -> pods", single, &inferencev1alpha1.Model{}, false},
+		{"no model -> pods", single, nil, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := metalAgentServes(tc.isvc, tc.model); got != tc.want {
+				t.Errorf("metalAgentServes() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
