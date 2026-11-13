@@ -336,6 +336,14 @@ func validateMembers(
 // are gone), which would erase the activation signal. The in-progress owner is
 // therefore remembered in status.PendingMember and honored here even while it is
 // held at zero, so a deferred swap does not revert to the incumbent.
+//
+// A pending owner is not always one the router is waiting for, though: the
+// reconciler also loads spec.default into a cold pool and reclaims the slot for
+// it, and the router may have given up on an earlier target. The router scales
+// its target up once and then only waits, so a member it scaled up must not
+// lose to such an owner: it would be drained and the held request would wait
+// out spec.swapBudget for a member that never loads (#2533). routerTarget picks
+// that member first.
 func resolveSlotOwner(pool *inferencev1alpha1.ModelPool, members map[string]*inferencev1alpha1.InferenceService) string {
 	resident := pool.Status.ResidentMember
 	pending := pool.Status.PendingMember
@@ -369,8 +377,12 @@ func resolveSlotOwner(pool *inferencev1alpha1.ModelPool, members map[string]*inf
 
 	if resident == "" {
 		// Cold pool (no member has become resident yet).
-		// Continue an in-progress swap first, then honor a fresh activation,
-		// then spec.default, then declaration order, else stay cold.
+		// A member the router is holding a request for first, then continue an
+		// in-progress swap, then honor a fresh activation, then spec.default,
+		// then declaration order, else stay cold.
+		if target := routerTarget(pending, requested, members); target != "" {
+			return target
+		}
 		if pending != "" {
 			if _, ok := members[pending]; ok {
 				return pending
@@ -396,9 +408,13 @@ func resolveSlotOwner(pool *inferencev1alpha1.ModelPool, members map[string]*inf
 
 	// Warm pool with a recorded resident.
 	if len(newly) > 0 {
-		// A fresh activation supersedes. Prefer the in-progress pending swap
+		// A fresh activation supersedes. A member the router is holding a
+		// request for comes first; otherwise prefer the in-progress pending swap
 		// when it is still among the scaled-up members, else the first newly
 		// activated member.
+		if target := routerTarget(pending, newly, members); target != "" {
+			return target
+		}
 		if pending != "" {
 			for _, name := range newly {
 				if name == pending {
@@ -416,6 +432,51 @@ func resolveSlotOwner(pool *inferencev1alpha1.ModelPool, members map[string]*inf
 		}
 	}
 	return resident
+}
+
+// routerReplicaManagers are the field managers of the router-proxy's
+// activation: the one it names since #2302, and the name the API server gave a
+// build from before it, taken from its binary.
+var routerReplicaManagers = map[string]bool{
+	inferencev1alpha1.RouterProxyFieldManager: true,
+	"router-proxy": true,
+}
+
+// routerRequested reports whether isvc is scaled up and the router wrote its
+// current spec.replicas. A write that changes the field takes it from every
+// other manager, so the router still owning it means the pool has not drained,
+// held or scaled the member since: it is the target of a request the router is
+// holding open.
+func routerRequested(isvc *inferencev1alpha1.InferenceService) bool {
+	if isvc == nil || replicasOf(isvc) < 1 {
+		return false
+	}
+	for _, entry := range isvc.ManagedFields {
+		if routerReplicaManagers[entry.Manager] && ownsSpecReplicas(entry) {
+			return true
+		}
+	}
+	return false
+}
+
+// routerTarget returns the candidate the router is holding a request for, or ""
+// when none is. The router drives one swap per pool at a time, so there is at
+// most one unless several routers front the pool; then the pending one keeps the
+// slot, as between any two activations, else declaration order decides.
+func routerTarget(pending string, candidates []string, members map[string]*inferencev1alpha1.InferenceService) string {
+	first := ""
+	for _, name := range candidates {
+		if !routerRequested(members[name]) {
+			continue
+		}
+		if name == pending {
+			return name
+		}
+		if first == "" {
+			first = name
+		}
+	}
+	return first
 }
 
 // clearDepartedResident drops a resident that left spec.members. Status is the

@@ -214,6 +214,92 @@ func TestResolveSlotOwnerReactivatedResident(t *testing.T) {
 	}
 }
 
+// replicasWrittenBy records manager as the writer of the member's current
+// spec.replicas, the way the API server does for a merge patch that changed it.
+func replicasWrittenBy(isvc *inferencev1alpha1.InferenceService, manager string) *inferencev1alpha1.InferenceService {
+	isvc.ManagedFields = append(isvc.ManagedFields, metav1.ManagedFieldsEntry{
+		Manager:   manager,
+		Operation: metav1.ManagedFieldsOperationUpdate,
+		FieldsV1:  metav1.NewFieldsV1(`{"f:spec":{"f:replicas":{}}}`),
+	})
+	return isvc
+}
+
+// A request the router is holding open names the member it scaled up. The pool
+// used to prefer any pending owner over it, including one the controller chose
+// by itself: spec.default warming a cold pool, or a reclaim back to the
+// default. The router never scales its target up again, so the drained target
+// waited out spec.swapBudget while the member nobody asked for loaded into the
+// slot (#2533). A member whose replicas the router wrote, and the pool has not
+// touched since, is the router's current target; it beats such a pending owner.
+func TestResolveSlotOwnerRouterRequestBeatsPoolChoice(t *testing.T) {
+	const pool, router = inferencev1alpha1.ModelPoolFieldManager, inferencev1alpha1.RouterProxyFieldManager
+	tests := []struct {
+		name     string
+		resident string
+		pending  string
+		def      string
+		writers  map[string]string // member at replicas 1 -> writer of its replicas
+		want     string
+	}{
+		{
+			name:    "cold pool warming spec.default, the router asks for another member",
+			pending: "glimmer", def: "glimmer",
+			writers: map[string]string{"glimmer": pool, "coder": router},
+			want:    "coder",
+		},
+		{
+			name:     "reclaim to spec.default loading, the router asks for another member",
+			resident: "judge", pending: "glimmer", def: "glimmer",
+			writers: map[string]string{"glimmer": pool, "coder": router},
+			want:    "coder",
+		},
+		{
+			name:    "a router from before #2302 is the router too",
+			pending: "glimmer", def: "glimmer",
+			writers: map[string]string{"glimmer": pool, "coder": "router-proxy"},
+			want:    "coder",
+		},
+		{
+			name:    "cold pool warming spec.default, a GitOps write is not a held request",
+			pending: "glimmer", def: "glimmer",
+			writers: map[string]string{"glimmer": pool, "coder": "kustomize-controller"},
+			want:    "glimmer",
+		},
+		{
+			name:     "two router requests: the pending one keeps the slot",
+			resident: "judge", pending: "coder",
+			writers: map[string]string{"glimmer": router, "coder": router},
+			want:    "coder",
+		},
+		{
+			name:     "two router requests, neither pending: declaration order",
+			resident: "judge",
+			writers:  map[string]string{"glimmer": router, "coder": router},
+			want:     "glimmer",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			p := mpoolFor(tc.resident, tc.pending, tc.def, "judge", "glimmer", "coder")
+			scaled := map[string]int32{"judge": 0, "glimmer": 0, "coder": 0}
+			if tc.resident != "" {
+				scaled[tc.resident] = 1
+			}
+			for name := range tc.writers {
+				scaled[name] = 1
+			}
+			members := membersMap(scaled)
+			for name, writer := range tc.writers {
+				replicasWrittenBy(members[name], writer)
+			}
+			if got := resolveSlotOwner(p, members); got != tc.want {
+				t.Errorf("resolveSlotOwner = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestReplicasOf(t *testing.T) {
 	if got := replicasOf(&inferencev1alpha1.InferenceService{}); got != 1 {
 		t.Errorf("replicasOf(nil replicas) = %d, want 1 (apiserver default)", got)
