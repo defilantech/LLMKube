@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -144,6 +145,23 @@ func TestRunStopEngines_ExecutableMismatchIsStopped(t *testing.T) {
 	}
 	if recs, _ := store.List(); len(recs) != 0 {
 		t.Fatalf("records left: %+v", recs)
+	}
+}
+
+func TestRunStopEngines_LogsResolvedStateDir(t *testing.T) {
+	dir := t.TempDir()
+	core, logs := observer.New(zap.InfoLevel)
+	cfg := StopEnginesConfig{StateDir: dir, Logger: zap.New(core).Sugar()}
+	if err := RunStopEngines(context.Background(), cfg); err != nil {
+		t.Fatalf("RunStopEngines: %v", err)
+	}
+	entries := logs.FilterMessage("stopping recorded engines").All()
+	if len(entries) != 1 {
+		t.Fatalf("got %d \"stopping recorded engines\" lines, want 1", len(entries))
+	}
+	fields := entries[0].ContextMap()
+	if fields["stateDir"] != dir || fields["engineRecords"] != filepath.Join(dir, "engines") {
+		t.Errorf("log fields = %v, want stateDir %q and engineRecords %q", fields, dir, filepath.Join(dir, "engines"))
 	}
 }
 

@@ -48,6 +48,7 @@ import (
 	"github.com/defilantech/llmkube/internal/platform"
 	"github.com/defilantech/llmkube/pkg/agent"
 	"github.com/defilantech/llmkube/pkg/agent/policy"
+	"github.com/defilantech/llmkube/pkg/datadir"
 	"github.com/defilantech/llmkube/pkg/metaljoin"
 	"github.com/defilantech/llmkube/pkg/metalnode"
 )
@@ -348,21 +349,20 @@ var defaultTensorFoldPaths = []string{
 // userHomeDir is os.UserHomeDir, overridden in tests.
 var userHomeDir = os.UserHomeDir
 
-// resolveModelStorePath returns the absolute model store path: the default
-// "~/Library/Application Support/llmkube/models" under the agent user's home
-// when the flag is empty (beside the --state-dir default, out of the
-// world-writable /tmp the store used to default to), otherwise the flag with
-// a leading "~" or "~/" resolved against home exactly as --state-dir does
-// (launchd passes "~" literally). "~user" is not expanded. Anything still
-// relative is refused: it would resolve against the agent's working
-// directory rather than a directory the operator chose.
+// resolveModelStorePath returns the absolute model store path: the models
+// directory under datadir.Dir when the flag is empty (beside the
+// --state-dir default, out of the world-writable /tmp the store used to
+// default to), otherwise the flag with a leading "~" or "~/" resolved against
+// home exactly as --state-dir does (launchd passes "~" literally). "~user" is
+// not expanded. Anything still relative is refused: it would resolve against
+// the agent's working directory rather than a directory the operator chose.
 func resolveModelStorePath(flagValue string) (string, error) {
 	if flagValue == "" {
 		home, err := modelStoreHome("--model-store is not set")
 		if err != nil {
 			return "", err
 		}
-		return filepath.Join(home, "Library", "Application Support", "llmkube", "models"), nil
+		return filepath.Join(datadir.Dir(home), "models"), nil
 	}
 	path := flagValue
 	if path == "~" || strings.HasPrefix(path, "~/") {
@@ -577,7 +577,8 @@ func main() {
 	flag.StringVar(&cfg.Namespace, "namespace", "default", "Kubernetes namespace to watch")
 	flag.StringVar(&cfg.ModelStorePath, "model-store", "",
 		"Path to store downloaded models: absolute, or starting with ~/. "+
-			"Default: ~/Library/Application Support/llmkube/models. The agent refuses a store it does "+
+			"Default: ~/Library/Application Support/llmkube/models on macOS, "+
+			"$XDG_DATA_HOME/llmkube/models (~/.local/share/llmkube/models) elsewhere. The agent refuses a store it does "+
 			"not own, that other users can write, or that sits under a directory other users can write.")
 	flag.StringVar(&llamaServerFlag, "llama-server", "", "Path to llama-server binary (auto-detected if not set)")
 	flag.IntVar(&cfg.LlamaServerPort, "llama-server-port", 0,
@@ -601,7 +602,8 @@ func main() {
 		"TLS port of the authenticated ingress that in-cluster relays use to reach engines (engines listen on "+
 			"127.0.0.1 only). Open this port, not engine ports, in the macOS firewall.")
 	flag.StringVar(&cfg.StateDir, "state-dir", "",
-		"Directory for agent state (the ingress TLS key). Default: ~/Library/Application Support/llmkube/metal-agent.")
+		"Directory for agent state (the ingress TLS key). Default: ~/Library/Application Support/llmkube/metal-agent "+
+			"on macOS, $XDG_DATA_HOME/llmkube/metal-agent (~/.local/share/llmkube/metal-agent) elsewhere.")
 	flag.BoolVar(&cfg.LegacyDirectEndpoints, "legacy-direct-endpoints", false,
 		"DEPRECATED, removed in a future release: bind engines on all interfaces without authentication and "+
 			"register them directly, as before the ingress. Only for a controller that predates relay support.")

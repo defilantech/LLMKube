@@ -317,7 +317,12 @@ engine it cannot stop keeps its record, and the command exits 1 after trying
 the rest. With a kubeconfig it first withdraws each service's endpoint. It
 takes `--state-dir`, `--namespace`, `--kubeconfig`, `--kube-context`,
 `--ollama-port` and `--log-level`. Only `--state-dir` must match the agent's,
-since the records live under it; `--namespace` only affects log lines.
+since the records live under it; `--namespace` only affects log lines. The
+default state directory depends on `HOME` (and `XDG_DATA_HOME` off macOS), so
+a shell with a different environment than the agent resolves a different one.
+`stop-engines` logs the directory it read as `stateDir` on its `stopping
+recorded engines` line; compare it with `stateDir` on the agent's `engine
+records directory` startup line, and pass `--state-dir` when they differ.
 `make uninstall-metal-agent` does both steps and then removes the binary and
 plist.
 
@@ -398,8 +403,10 @@ Avoid restarting or upgrading the agent while its API server is unreachable.
 ### Model store
 
 Downloaded models and the per-engine logs live in the model store, by default
-`~/Library/Application Support/llmkube/models`. The agent creates it (mode
-0700) on first start. The store is judged on the directory it resolves to (the
+`~/Library/Application Support/llmkube/models` (off macOS,
+`$XDG_DATA_HOME/llmkube/models`, or `~/.local/share/llmkube/models` when
+`XDG_DATA_HOME` is unset or not absolute). The agent creates it (mode 0700) on
+first start. The store is judged on the directory it resolves to (the
 target of a symlinked store), and the agent refuses to start unless:
 
 - the store is not at or under `/tmp`, `/var/tmp` or their `/private` forms
@@ -1075,7 +1082,7 @@ model" for the full flow.
 | Flag | Default | Purpose |
 |------|---------|---------|
 | `--ingress-port` | `9443` | TLS port of the ingress, on all interfaces. Open this port, not engine ports, in the macOS firewall. |
-| `--state-dir` | `~/Library/Application Support/llmkube/metal-agent` | Agent state: the ingress key and certificate in `<state-dir>/ingress/` (relay mode) and a record of each running engine in `<state-dir>/engines/` (both modes), which the next agent process uses to adopt engines that outlived the previous one (see [Agent restarts, upgrades and stopping engines](#agent-restarts-upgrades-and-stopping-engines)). `<state-dir>` and `engines/` are 0700; record files 0600. A leading `~` is expanded to the agent's home and a relative path is made absolute; the resolved path is logged at startup. |
+| `--state-dir` | `~/Library/Application Support/llmkube/metal-agent`; off macOS, `$XDG_DATA_HOME/llmkube/metal-agent` (`~/.local/share/llmkube/metal-agent` when `XDG_DATA_HOME` is unset or not absolute) | Agent state: the ingress key and certificate in `<state-dir>/ingress/` (relay mode) and a record of each running engine in `<state-dir>/engines/` (both modes), which the next agent process uses to adopt engines that outlived the previous one (see [Agent restarts, upgrades and stopping engines](#agent-restarts-upgrades-and-stopping-engines)). `<state-dir>` and `engines/` are 0700; record files 0600. A leading `~` is expanded to the agent's home and a relative path is made absolute; the resolved path is logged at startup. |
 | `--legacy-direct-endpoints` | `false` | DEPRECATED, removed in a future release. Engines on all interfaces without authentication, registered directly, no ingress. Only for a controller that predates relay support. |
 | `--client-port` | `9999` | Listener on `127.0.0.1:<port>` that forwards `/v1/*` to the current engine, for clients on the Mac itself. `0` disables it. |
 

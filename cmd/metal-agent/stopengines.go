@@ -40,7 +40,8 @@ func parseStopEnginesArgs(args []string) (stopEnginesOptions, error) {
 		fs.PrintDefaults()
 	}
 	fs.StringVar(&opts.StateDir, "state-dir", "",
-		"Directory for agent state, as for the agent. Default: ~/Library/Application Support/llmkube/metal-agent.")
+		"Directory for agent state, as for the agent. Default: ~/Library/Application Support/llmkube/metal-agent "+
+			"on macOS, $XDG_DATA_HOME/llmkube/metal-agent elsewhere.")
 	fs.StringVar(&opts.Namespace, "namespace", "default",
 		"Namespace the agent watched, for log lines only: every recorded engine is stopped")
 	fs.StringVar(&opts.KubeContext, "kube-context", "", "kubeconfig context to withdraw endpoints with")

@@ -50,9 +50,11 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		panic(err)
 	}
-	// NewMetalAgent resolves the default state directory under HOME; no test
-	// may write engine records under the developer's real home.
+	// NewMetalAgent resolves the default state directory under HOME, or under
+	// XDG_DATA_HOME off macOS; no test may write engine records under the
+	// developer's real data directory.
 	_ = os.Setenv("HOME", home)
+	_ = os.Unsetenv("XDG_DATA_HOME")
 	// Tests hand out fake PIDs, which the real inspector would reject.
 	processInspectorFactory = func() processInspector { return anyPIDInspector{} }
 	code := m.Run()

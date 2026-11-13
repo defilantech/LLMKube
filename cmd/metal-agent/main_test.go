@@ -5,6 +5,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -195,10 +196,18 @@ func TestResolveModelStorePath(t *testing.T) {
 
 	t.Run("empty flag defaults under the home directory", func(t *testing.T) {
 		userHomeDir = func() (string, error) { return "/Users/tester", nil }
-		got, err := resolveModelStorePath("")
-		want := "/Users/tester/Library/Application Support/llmkube/models"
-		if err != nil || got != want {
-			t.Fatalf("resolveModelStorePath(\"\") = %q, %v; want %q", got, err, want)
+		for _, tc := range []struct{ xdg, offDarwin string }{
+			{"", "/Users/tester/.local/share/llmkube/models"},
+			{"/xdg", "/xdg/llmkube/models"},
+		} {
+			t.Setenv("XDG_DATA_HOME", tc.xdg)
+			want := tc.offDarwin
+			if runtime.GOOS == "darwin" {
+				want = "/Users/tester/Library/Application Support/llmkube/models"
+			}
+			if got, err := resolveModelStorePath(""); err != nil || got != want {
+				t.Fatalf("resolveModelStorePath(\"\") with XDG_DATA_HOME=%q = %q, %v; want %q", tc.xdg, got, err, want)
+			}
 		}
 	})
 
