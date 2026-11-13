@@ -104,8 +104,10 @@ type ExecutorConfig struct {
 	// own default).
 	UBatchSize int
 
-	// ParallelSlots maps to --parallel. Values <= 1 omit the flag (one slot
-	// is the llama-server default and adding the flag is just noise).
+	// ParallelSlots maps to --parallel. Values <= 1 omit the flag, which
+	// leaves llama-server on its auto default: 4 slots with a unified KV cache
+	// (see llamaServerAutoSlots), not 1. That is why the admission estimate
+	// charges a hybrid model's recurrent state for 4 sequences.
 	ParallelSlots int
 
 	// CacheTypeK / CacheTypeV are the resolved llama.cpp KV cache types,
