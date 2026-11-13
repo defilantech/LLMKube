@@ -50,6 +50,8 @@ import (
 	"strings"
 
 	"github.com/go-logr/logr"
+
+	"github.com/defilantech/llmkube/pkg/datadir"
 )
 
 // Updater performs self-update of a managed binary. Zero value is not
@@ -381,18 +383,22 @@ func (u *Updater) download(hc *http.Client, url string, dst *os.File, maxBytes i
 }
 
 // ResolveInstallRoot returns the user-owned default install root for
-// binaryName on the current platform:
+// binaryName, <datadir.Dir>/<binaryName>:
 //
 //   - darwin: ~/Library/Application Support/llmkube/<binaryName>
-//   - linux:  ~/.local/share/llmkube/<binaryName>
-//   - other:  ~/.local/share/llmkube/<binaryName>
+//   - other:  $XDG_DATA_HOME/llmkube/<binaryName>, or
+//     ~/.local/share/llmkube/<binaryName> when XDG_DATA_HOME is unset or
+//     not absolute
+//
+// The home directory is required only when the result depends on it.
 func ResolveInstallRoot(binaryName string) (string, error) {
-	return resolveInstallRoot(binaryName)
+	home, homeErr := os.UserHomeDir()
+	root := datadir.Dir(home)
+	if homeErr != nil && !filepath.IsAbs(root) {
+		return "", fmt.Errorf("resolve home dir: %w", homeErr)
+	}
+	return filepath.Join(root, binaryName), nil
 }
-
-// resolveInstallRoot is the platform-specific implementation; defined in
-// platform-specific files (install_root_darwin.go, install_root_other.go).
-// Declared here as a forward reference so the package compiles.
 
 // RunningUnderManagedRoot reports whether the current os.Executable()
 // resolves to a path under installRoot/current/. This gates whether

@@ -504,7 +504,7 @@ type ModelCacheEntryNotRegularError struct {
 func (e *ModelCacheEntryNotRegularError) Error() string {
 	return fmt.Sprintf("refusing model cache entry %s: not a regular file (mode %s); the agent does not follow "+
 		"a symlink in the cache slot of a downloaded source. Remove it to re-download, or to serve a file already "+
-		"on this Mac set the Model's spec.source to its absolute path or a file:// URI and add its directory "+
+		"on this host set the Model's spec.source to its absolute path or a file:// URI and add its directory "+
 		"to --allowed-model-roots", e.Path, e.Mode)
 }
 

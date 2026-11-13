@@ -626,7 +626,7 @@ func NewMetalAgent(config MetalAgentConfig) *MetalAgent {
 		logger.Warnw("engine records unavailable: state directory not resolved",
 			"engineRecords", records.Dir(), "error", stateDirErr)
 	} else {
-		logger.Infow("engine records directory", "engineRecords", records.Dir())
+		logger.Infow("engine records directory", "stateDir", stateDir, "engineRecords", records.Dir())
 	}
 
 	return &MetalAgent{

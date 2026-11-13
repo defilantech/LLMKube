@@ -688,7 +688,7 @@ func TestDownloadFile_CompletePartialShortcut_MismatchDeletesPartial(t *testing.
 // TestEnsureModel_LocalSource_NotHashed pins that a local source (loaded in
 // place, never copied into the model store) is never hashed, even when
 // Model.spec.sha256 is set: the digest check covers bytes the agent downloads
-// itself, and hashing a file an operator placed on this Mac on every start
+// itself, and hashing a file an operator placed on this host on every start
 // would be surprising (and slow for a large model).
 func TestEnsureModel_LocalSource_NotHashed(t *testing.T) {
 	store := t.TempDir()

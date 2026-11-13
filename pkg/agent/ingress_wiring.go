@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/defilantech/llmkube/pkg/agent/ingress"
+	"github.com/defilantech/llmkube/pkg/datadir"
 )
 
 // EventReasonRelayNotAdopted is emitted once per InferenceService per agent
@@ -74,16 +75,17 @@ func (c MetalAgentConfig) validateIngress() error {
 	return nil
 }
 
-// resolveStateDir returns the absolute state directory: the macOS default
-// under home when stateDir is empty, otherwise stateDir with a leading "~" or
-// "~/" resolved against home (launchd does not expand it) and a relative path
-// made absolute against the working directory. "~user" is not expanded.
+// resolveStateDir returns the absolute state directory: datadir.Dir's
+// metal-agent directory when stateDir is empty, otherwise stateDir with a
+// leading "~" or "~/" resolved against home (launchd does not expand it) and a
+// relative path made absolute against the working directory. "~user" is not
+// expanded.
 func resolveStateDir(stateDir, home string) (string, error) {
 	if stateDir == "" {
 		if home == "" {
 			return "", errors.New("--state-dir is not set and the home directory is unknown")
 		}
-		return filepath.Join(home, "Library", "Application Support", "llmkube", "metal-agent"), nil
+		return filepath.Join(datadir.Dir(home), "metal-agent"), nil
 	}
 	if stateDir == "~" || strings.HasPrefix(stateDir, "~/") {
 		if home == "" {
@@ -118,7 +120,7 @@ func (a *MetalAgent) prepareIngress() (*ingress.Server, error) {
 	if a.config.LegacyDirectEndpoints {
 		a.logger.Warnw("--legacy-direct-endpoints is DEPRECATED and will be removed: inference engines bind " +
 			"on all interfaces without authentication and are registered directly, so anyone who can reach " +
-			"this Mac can use (and on some runtimes reconfigure) them; upgrade the LLMKube controller and drop the flag")
+			"this host can use (and on some runtimes reconfigure) them; upgrade the LLMKube controller and drop the flag")
 		return nil, nil
 	}
 	stateDir, err := resolveStateDir(a.config.StateDir, a.home)
