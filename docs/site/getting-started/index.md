@@ -117,9 +117,10 @@ llmkube deploy tinyllama \
 ### Watch the rollout
 
 `llmkube deploy` waits until the model is ready, up to 10 minutes by default,
-and prints the download's progress while the pod fetches the model. For a large
-model or a slow link, pass a longer `--timeout`, or `--wait=false` to return at
-once. A timeout only stops the wait: the deployment keeps going in the cluster.
+and prints the download's progress while the pod fetches the model. Showing the
+progress needs permission to list pods and read their logs in the namespace;
+without it, deploy prints the status line alone. For a large model or a slow
+link, pass a longer `--timeout`, or `--wait=false` to return at once. A timeout only stops the wait: the deployment keeps going in the cluster.
 To check on it from another terminal, use the name you deployed, `phi-4-mini`
 or `tinyllama`:
 
