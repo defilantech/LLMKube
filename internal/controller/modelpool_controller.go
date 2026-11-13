@@ -159,6 +159,9 @@ func (r *ModelPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// keeps the reconciler polling idle state, which no InferenceService or Pod
 	// event would otherwise surface.
 	restartIdleClockOnReactivation(pool, members, owner)
+	// Under reclaim-down the reclaim can release the slot outright: no owner,
+	// so the drain below takes every member, the resident included, to zero.
+	unreclaimedOwner := owner
 	owner, reclaimRequeue := r.applyReclaimOwner(ctx, pool, members, owner)
 
 	// Drain every non-owner. A non-owner that reports Ready could still be
@@ -262,7 +265,8 @@ func (r *ModelPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		result.RequeueAfter = reclaimRequeue
 	}
 	result.RequeueAfter = soonerRequeue(result.RequeueAfter, externalScaleRequeue)
-	if err := r.updateStatus(ctx, pool, statusBefore, members, owner, swapping, deferReason); err != nil {
+	statusOwner := reportedOwner(owner, unreclaimedOwner, deferReason)
+	if err := r.updateStatus(ctx, pool, statusBefore, members, statusOwner, swapping, deferReason); err != nil {
 		if apierrors.IsConflict(err) {
 			//nolint:staticcheck // SA1019: keep the rate-limited retry on a write conflict; RequeueAfter would swap backoff for a fixed delay.
 			return ctrl.Result{Requeue: true}, nil
@@ -432,10 +436,13 @@ func clearDepartedResident(pool *inferencev1alpha1.ModelPool, members map[string
 	}
 }
 
-// applyReclaimOwner implements the "reclaim" swap policy. When a non-default
-// member has held the slot and been continuously idle for spec.reclaimAfter, it
-// overrides owner with spec.default so the ordinary drain-and-swap machinery
-// returns the slot to the background model. It returns the (possibly overridden)
+// applyReclaimOwner implements the "reclaim" and "reclaim-down" swap policies.
+// When a non-default member has held the slot and been continuously idle for
+// spec.reclaimAfter, it overrides owner with spec.default so the ordinary
+// drain-and-swap machinery returns the slot to the background model. Under
+// reclaim-down (no spec.default) it overrides owner with "" instead: every
+// member, the idle resident included, is drained to zero and the slot is
+// released until a request activates a member. It returns the (possibly overridden)
 // owner and a requeue interval that keeps the reconciler polling idle state
 // while a non-default member is resident (no watch fires on a busy->idle
 // transition). Idle-probe failure is fail-closed: the clock holds its value and
@@ -451,7 +458,20 @@ func (r *ModelPoolReconciler) applyReclaimOwner(
 	log := logf.FromContext(ctx)
 
 	def := pool.Spec.Default
-	if pool.Spec.SwapPolicy != inferencev1alpha1.ModelPoolSwapPolicyReclaim || def == "" {
+	// Releasing to zero is an explicit opt-in (#1896): reclaim with no default
+	// keeps the resident, as it always has. Admission rejects reclaim-down with a
+	// default; one that predates the rule reclaims to it rather than releasing a
+	// slot the cold-pool default would warm straight back up.
+	toZero := false
+	switch pool.Spec.SwapPolicy {
+	case inferencev1alpha1.ModelPoolSwapPolicyReclaim:
+		if def == "" {
+			pool.Status.ResidentIdleSince = nil
+			return owner, 0
+		}
+	case inferencev1alpha1.ModelPoolSwapPolicyReclaimDown:
+		toZero = def == ""
+	default:
 		pool.Status.ResidentIdleSince = nil
 		return owner, 0
 	}
@@ -462,16 +482,24 @@ func (r *ModelPoolReconciler) applyReclaimOwner(
 	// still a member to reclaim to. Any other shape means a real swap is already
 	// in motion or there is nothing to reclaim.
 	resident := pool.Status.ResidentMember
-	if owner == "" || owner != resident || resident == def {
+	if owner == "" || owner != resident || (!toZero && resident == def) {
 		pool.Status.ResidentIdleSince = nil
 		return owner, 0
 	}
 	residentISVC, ok := members[resident]
+	if toZero && ok && drainedByPool(residentISVC) && replicasOf(residentISVC) == 0 {
+		// The pool already drained the resident to release the slot, but status
+		// still names it: the release pass's status write was lost, or this pass
+		// read a stale member. No one has scaled it back up (that would read
+		// replicas 1), so keep releasing. Treating it as the owner would scale
+		// it straight back up once it stops reporting Ready.
+		return "", 0
+	}
 	if !ok || !memberReady(residentISVC) {
 		pool.Status.ResidentIdleSince = nil
 		return owner, 0
 	}
-	if _, ok := members[def]; !ok {
+	if _, ok := members[def]; !ok && !toZero {
 		pool.Status.ResidentIdleSince = nil
 		return owner, 0
 	}
@@ -500,14 +528,32 @@ func (r *ModelPoolReconciler) applyReclaimOwner(
 		return owner, pollWithin(reclaimAfter)
 	}
 	if elapsed := now.Sub(pool.Status.ResidentIdleSince.Time); elapsed >= reclaimAfter {
-		log.Info("reclaiming pool slot to default after idle",
-			"pool", pool.Name, "from", resident, "to", def, "idleFor", elapsed.String())
+		if toZero {
+			log.Info("releasing pool slot to zero after idle",
+				"pool", pool.Name, "from", resident, "idleFor", elapsed.String())
+		} else {
+			log.Info("reclaiming pool slot to default after idle",
+				"pool", pool.Name, "from", resident, "to", def, "idleFor", elapsed.String())
+		}
+		// def is "" on a release, so the to label is empty; no member is named "".
 		llmkubemetrics.ModelPoolReclaimsTotal.WithLabelValues(pool.Namespace, pool.Name, resident, def).Inc()
 		// Leave ResidentIdleSince set; it clears on the next reconcile once the
-		// default is resident (owner == resident == def branch above).
+		// default is resident (owner == resident == def branch above), or once a
+		// released pool is cold (owner == "" branch).
 		return def, 0
 	}
 	return owner, pollWithin(reclaimAfter)
+}
+
+// reportedOwner is the owner the pool's status reports. A release to zero
+// (owner "" where the reclaim started from a resident) that the drain deferred
+// left the resident serving: keep reporting it as the resident rather than a
+// cold pool. The next pass probes it again and retries the release.
+func reportedOwner(owner, unreclaimedOwner, deferReason string) string {
+	if owner == "" && unreclaimedOwner != "" && deferReason != "" {
+		return unreclaimedOwner
+	}
+	return owner
 }
 
 // pollWithin returns how long to wait before re-checking a running idle clock:

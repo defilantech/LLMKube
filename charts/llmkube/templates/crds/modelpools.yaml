@@ -119,7 +119,9 @@ spec:
                 description: |-
                   ReclaimAfter is how long the resident non-default member must be
                   continuously idle before the slot is reclaimed for spec.default. Only
-                  consulted when SwapPolicy is "reclaim" and Default is set. It MUST be set
+                  consulted when SwapPolicy is "reclaim" and Default is set, or when
+                  SwapPolicy is "reclaim-down", where it is how long the resident member must
+                  be idle before the slot is released to zero. It MUST be set
                   comfortably longer than the on-demand member's typical inter-request gap:
                   a value shorter than that gap trades cross-model request coalescing for
                   load-side thrash, reclaiming the default only to swap it straight back
@@ -144,14 +146,23 @@ spec:
                   boundaries. "sticky" (default) keeps the incumbent until a different
                   member is requested. "reclaim" additionally returns the slot to
                   spec.default after the resident non-default member has been idle for
-                  spec.reclaimAfter.
+                  spec.reclaimAfter. "reclaim-down" instead releases the slot (every member
+                  at zero replicas) after the resident member has been idle for
+                  spec.reclaimAfter; it requires spec.default to be empty.
                 enum:
                 - sticky
                 - reclaim
+                - reclaim-down
                 type: string
             required:
             - members
             type: object
+            x-kubernetes-validations:
+            - message: swapPolicy reclaim-down releases the slot to zero and cannot
+                be combined with default, which would warm it straight back up; use
+                swapPolicy reclaim to return the slot to default instead
+              rule: '!(has(self.swapPolicy) && self.swapPolicy == ''reclaim-down''
+                && has(self.default) && size(self.default) > 0)'
           status:
             description: status defines the observed state of ModelPool
             properties:
@@ -293,9 +304,10 @@ spec:
               residentIdleSince:
                 description: |-
                   ResidentIdleSince is when the resident non-default member was first
-                  observed idle under the "reclaim" swap policy. It is cleared when the
-                  member serves a request again or when spec.default becomes resident, and
-                  is used to time the reclaim of the slot back to spec.default.
+                  observed idle under the "reclaim" or "reclaim-down" swap policy. It is
+                  cleared when the member serves a request again, when spec.default becomes
+                  resident, or when the slot is released, and is used to time the reclaim of
+                  the slot back to spec.default (or its release to zero).
                 format: date-time
                 type: string
               residentMember:
