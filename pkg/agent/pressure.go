@@ -54,7 +54,7 @@ const (
 	EventReasonEvictionSkipped            = "EvictionSkipped"
 	EventReasonRespawnBlocked             = "RespawnBlocked"
 	// EventReasonMemoryBudgetClamped marks a Model memory budget lowered to
-	// this Mac's budget at admission. It is a warning, not a refusal, so it is
+	// this host's budget at admission. It is a warning, not a refusal, so it is
 	// not one of the SchedulingStatus reasons.
 	EventReasonMemoryBudgetClamped = "MemoryBudgetClamped"
 	EventReasonEngineRecordFailed  = "EngineRecordFailed"

@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -574,5 +575,34 @@ func TestEstimateModelMemory_S3GuardRefusalFailsClosed(t *testing.T) {
 	}
 	if n := hits.Load(); n != 0 {
 		t.Errorf("guard-refused s3 endpoint received %d HEAD requests, want 0", n)
+	}
+}
+
+func TestCheckMemoryAdmission_OllamaUsesHostWideMemory(t *testing.T) {
+	root := writeProcFixture(t, map[string]string{
+		"proc/meminfo":            "MemTotal: 67108864 kB\nMemAvailable: 60000000 kB\n",
+		"proc/self/cgroup":        "0::/agent\n",
+		"cg/agent/memory.max":     "4294967296\n",
+		"cg/agent/memory.current": "0\n",
+	})
+	model := newAdmissionTestModel("https://model-host.invalid/model.gguf", "20.0 GiB")
+
+	for runtime, wantAdmit := range map[string]bool{runtimeLlamaServer: false, runtimeOllama: true} {
+		isvc := newAdmissionTestISVC()
+		isvc.Spec.Runtime = runtime
+		agent := newAdmissionTestAgent(t, isvc, MetalAgentConfig{
+			MemoryProvider: &LinuxMemoryProvider{
+				ProcRoot:   filepath.Join(root, "proc"),
+				CgroupRoot: filepath.Join(root, "cg"),
+			},
+			MemoryFraction: 0.75,
+		})
+		err := agent.checkMemoryAdmission(context.Background(), isvc, model, 2048, "", "")
+		if wantAdmit && err != nil {
+			t.Errorf("%s: 20 GiB model on a 64 GiB host = %v; want admitted against host-wide memory", runtime, err)
+		}
+		if !wantAdmit && err == nil {
+			t.Errorf("%s: 20 GiB model under a 4 GiB cgroup limit admitted; want rejected", runtime)
+		}
 	}
 }
