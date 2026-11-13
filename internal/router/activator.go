@@ -293,10 +293,15 @@ func (a *Activator) AcquireWithMode(ctx context.Context, p *BackendPool, mode st
 		// Start a swap to our member when none is running and the incumbent is
 		// idle (drain-before-swap; a busy incumbent is never preempted). The
 		// swap itself runs in the background under baseCtx; this caller just
-		// waits for it.
+		// waits for it. An incumbent with requests still registered for it is
+		// not idle either: right after a swap makes it resident, the requests
+		// that waited for that swap are woken together with everyone else's,
+		// and until they take the lock they show no in-flight work. Swapping
+		// it out then would load the requested member and throw it away before
+		// it served anything (#2533).
 		if !pr.swapping && pr.resident != member {
 			incumbent := pr.resident
-			if incumbent == "" || pr.inflight[incumbent] == 0 {
+			if incumbent == "" || (pr.inflight[incumbent] == 0 && pr.waiting[incumbent] == 0) {
 				a.startSwap(pr, incumbent, member, holdStart, p.SwapBudget)
 			} else if mode == PoolActivationIfIdle {
 				prommetrics.ModelPoolBusySkipsTotal.WithLabelValues(a.router, pr.pool, member).Inc()

@@ -373,6 +373,49 @@ func TestActivatorCoalesceHoldsCrossModelUntilDrain(t *testing.T) {
 	}
 }
 
+// TestActivatorKeepsNewResidentForItsWaiters is the window right after a swap
+// completes (#2533). The swap goroutine makes judge resident and wakes every
+// held request at once. If a coder request takes the lock before the judge
+// requests that waited for that swap, judge has no in-flight request yet, so
+// it looked idle and coder started swapping it out again before a single
+// judge request was served: the requested model loads, the other one is
+// swapped in, then the requested one again. A resident with requests still
+// registered for it is about to serve them, so it counts as busy.
+func TestActivatorKeepsNewResidentForItsWaiters(t *testing.T) {
+	for _, mode := range []string{PoolActivationWait, PoolActivationIfIdle} {
+		t.Run(mode, func(t *testing.T) {
+			fake := newFakeMemberController()
+			fake.setPhase("judge", modelReadyPhase)
+			a := NewActivator(context.Background(), fake, "r", nil)
+
+			// The state the swap to judge leaves: judge resident and freshly
+			// verified, no swap running, and one judge request woken but not yet
+			// back under the lock (registered, nothing in flight).
+			a.mu.Lock()
+			pr := a.runtime(testPool("judge"))
+			pr.resident = "judge"
+			pr.residentCheckedAt = time.Now()
+			pr.waiting["judge"] = 1
+			a.mu.Unlock()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			defer cancel()
+			_, err := a.AcquireWithMode(ctx, testPool("coder"), mode)
+
+			if got := fake.activateCount("coder"); got != 0 {
+				t.Fatalf("coder activated %d times while a judge request waited for the swap to judge", got)
+			}
+			want := ErrHoldBudgetExceeded
+			if mode == PoolActivationIfIdle {
+				want = ErrIncumbentBusy
+			}
+			if !errors.Is(err, want) {
+				t.Errorf("coder Acquire err = %v, want %v", err, want)
+			}
+		})
+	}
+}
+
 // TestActivatorSwapFailurePropagates verifies a failed activation surfaces an
 // error to the caller rather than hanging.
 func TestActivatorSwapFailurePropagates(t *testing.T) {
