@@ -22,6 +22,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -159,7 +160,103 @@ func validateMultiNode(isvc *inferencev1alpha1.InferenceService) error {
 	if _, ok := resolveBackend(isvc).(MultiNodeArgsBuilder); !ok {
 		return fmt.Errorf("runtime %q does not support multiNode; supported: vllm", runtimeNameLabel(isvc))
 	}
+	return validateMultiNodeMemory(mn.Memory)
+}
+
+// multiNodeMemoryPrepContainer is the init container that prepares a member
+// node's memory (spec.multiNode.memory).
+const multiNodeMemoryPrepContainer = "multinode-memory-prep"
+
+// The sysctl names and values the memory prep accepts. The CRD carries the
+// same two patterns; they are repeated here because the name becomes a
+// path under /proc/sys in a privileged container, so an object that reached
+// the controller without that admission check (a CRD from an older chart)
+// must not be able to name anything outside /proc/sys/vm.
+var (
+	multiNodeSysctlKey   = regexp.MustCompile(`^vm[.][a-z0-9_]+$`)
+	multiNodeSysctlValue = regexp.MustCompile(`^[0-9]+$`)
+)
+
+func validateMultiNodeMemory(mem *inferencev1alpha1.MultiNodeMemory) error {
+	if mem == nil {
+		return nil
+	}
+	for k, v := range mem.Sysctls {
+		if !multiNodeSysctlKey.MatchString(k) {
+			return fmt.Errorf("multiNode.memory.sysctls key %q is not a vm.<name> sysctl", k)
+		}
+		if !multiNodeSysctlValue.MatchString(string(v)) {
+			return fmt.Errorf("multiNode.memory.sysctls[%q] value %q is not a non-negative integer", k, v)
+		}
+	}
 	return nil
+}
+
+// multiNodeMemoryPrepScript writes each "vm.name=value" argument under
+// /proc/sys, then drops the page cache when DROP_PAGE_CACHE is 1. The sysctls
+// go first: raising vm.min_free_kbytes before the drop is what leaves the
+// kernel room afterwards. Every write prints before and after, which is the
+// audit trail (kubectl logs <member> -c multinode-memory-prep). set -e makes a
+// refused write fail the init container rather than boot on an unprepared node.
+const multiNodeMemoryPrepScript = `set -eu
+for kv in "$@"; do
+  k=${kv%%=*}
+  v=${kv#*=}
+  f=/proc/sys/$(echo "$k" | tr . /)
+  before=$(cat "$f")
+  echo "$v" > "$f"
+  echo "sysctl $k: $before -> $(cat "$f")"
+done
+if [ "${DROP_PAGE_CACHE:-0}" = 1 ]; then
+  before=$(awk '/^MemFree:/{print int($2/1024)}' /proc/meminfo)
+  sync
+  echo 3 > /proc/sys/vm/drop_caches
+  after=$(awk '/^MemFree:/{print int($2/1024)}' /proc/meminfo)
+  echo "pre-boot page cache drop: MemFree $before -> $after MiB"
+fi
+`
+
+// multiNodeMemoryPrepInitContainer builds the init container for
+// spec.multiNode.memory, or reports false when the block asks for nothing.
+//
+// It is privileged and root: /proc/sys is read-only in any other container,
+// and no capability makes it writable. The vm.* sysctls and drop_caches are
+// not namespaced, so the write lands on the node. It mounts nothing and has a
+// read-only root filesystem; the script and its arguments are the whole input,
+// and validateMultiNodeMemory bounds the arguments.
+func multiNodeMemoryPrepInitContainer(mem *inferencev1alpha1.MultiNodeMemory, image string) (corev1.Container, bool) {
+	if mem == nil || (!mem.DropPageCacheBeforeBoot && len(mem.Sysctls) == 0) {
+		return corev1.Container{}, false
+	}
+	if image == "" {
+		image = defaultPrefetchImage
+	}
+	// Sorted so the pod spec, and with it the group hash, does not depend on
+	// map iteration order.
+	keys := make([]string, 0, len(mem.Sysctls))
+	for k := range mem.Sysctls {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	command := []string{"sh", "-c", multiNodeMemoryPrepScript, multiNodeMemoryPrepContainer}
+	for _, k := range keys {
+		command = append(command, k+"="+string(mem.Sysctls[k]))
+	}
+	drop := "0"
+	if mem.DropPageCacheBeforeBoot {
+		drop = "1"
+	}
+	return corev1.Container{
+		Name:    multiNodeMemoryPrepContainer,
+		Image:   image,
+		Command: command,
+		Env:     []corev1.EnvVar{{Name: "DROP_PAGE_CACHE", Value: drop}},
+		SecurityContext: &corev1.SecurityContext{
+			Privileged:             boolPtr(true),
+			RunAsUser:              int64Ptr(0),
+			ReadOnlyRootFilesystem: boolPtr(true),
+		},
+	}, true
 }
 
 // multiNodeResourceClaimsConflict rejects spec.multiNode on a Model that
@@ -230,8 +327,8 @@ func (r *InferenceServiceReconciler) constructMemberPods(
 	h := sha256.New()
 	for i, member := range mn.Members {
 		rank := int32(i) //nolint:gosec // G115: bounded by the CRD's MaxItems=64
-		pod := memberPodFromTemplate(tmpl, pinned, member, rank, mnb)
-		hashPod := memberPodFromTemplate(hashTmpl, statusless, member, rank, mnb)
+		pod := memberPodFromTemplate(tmpl, pinned, member, rank, mnb, r.InitContainerImage)
+		hashPod := memberPodFromTemplate(hashTmpl, statusless, member, rank, mnb, r.InitContainerImage)
 		h.Write([]byte(desiredTemplateHash(corev1.PodTemplateSpec{ObjectMeta: hashPod.ObjectMeta, Spec: hashPod.Spec})))
 		pods = append(pods, pod)
 	}
@@ -252,6 +349,7 @@ func memberPodFromTemplate(
 	member inferencev1alpha1.MultiNodeMember,
 	rank int32,
 	mnb MultiNodeArgsBuilder,
+	initImage string,
 ) *corev1.Pod {
 	spec := *tmpl.Spec.DeepCopy()
 	labels := copyMap(tmpl.Labels)
@@ -334,6 +432,12 @@ func memberPodFromTemplate(
 				spec.Volumes[i].PersistentVolumeClaim.ClaimName = member.ModelCache.ClaimName
 			}
 		}
+	}
+
+	// Last, so it runs after the model-downloader has filled the page cache
+	// and immediately before the runtime starts.
+	if prep, ok := multiNodeMemoryPrepInitContainer(isvc.Spec.MultiNode.Memory, initImage); ok {
+		spec.InitContainers = append(spec.InitContainers, prep)
 	}
 
 	return &corev1.Pod{

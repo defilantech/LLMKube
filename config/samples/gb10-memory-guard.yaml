@@ -16,6 +16,9 @@
 #   - guard: if MemFree stays under 1.5 GiB for 10 s while Ready, even after a drop, patch spec.suspend=true ONCE on the
 #     InferenceService (the operator then deletes the members cleanly) and say so in the log. That is the K8s form of his
 #     servguard. SUSPEND_ON_FLOOR=0 disarms it. The Role is scoped to that one object by resourceNames.
+# The sysctls and the pre-boot drop are also available from the operator, as spec.multiNode.memory on the
+# InferenceService (sequenced after the member's weights are staged); the serving-phase flusher and the suspend
+# guard are still only here (#1857).
 # Audit: kubectl logs ds/gb10-memory-guard --all-containers --prefix. Every action is one line with before/after MiB.
 # Usage: kubectl apply -f gb10-memory-guard.yaml   (once; it survives ring restarts)
 apiVersion: v1

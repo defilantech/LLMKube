@@ -377,7 +377,43 @@ type MultiNodeSpec struct {
 	// +kubebuilder:validation:Minimum=1024
 	// +kubebuilder:validation:Maximum=65535
 	RendezvousPort *int32 `json:"rendezvousPort,omitempty"`
+
+	// Memory prepares each member node's memory right before the member's
+	// runtime starts. Unset adds nothing to the member pods.
+	// +optional
+	Memory *MultiNodeMemory `json:"memory,omitempty"`
 }
+
+// MultiNodeMemory is the node memory preparation of a multi-node group. On a
+// unified-memory host (DGX Spark, GB10) host RAM is GPU memory, and a runtime
+// whose KV cache is pinned (vLLM --kv-cache-memory-bytes) skips its own memory
+// profiling, so a page cache left by staging the weights takes memory the
+// model needs and nothing else notices. Either field makes the operator add
+// one privileged init container, the last one, to every member pod, so the
+// namespace's Pod Security level must allow privileged pods. What it writes
+// is node-wide and outlives the pod.
+type MultiNodeMemory struct {
+	// DropPageCacheBeforeBoot syncs and drops the node's page cache after the
+	// member has staged its weights and before its runtime container starts.
+	// +optional
+	DropPageCacheBeforeBoot bool `json:"dropPageCacheBeforeBoot,omitempty"`
+
+	// Sysctls are kernel memory settings written on the member's node before
+	// the drop, each logged with its value before and after. Keys are vm.*
+	// names (vm.min_free_kbytes, vm.watermark_scale_factor); values are
+	// non-negative integers. They are not restored when the group goes away.
+	// +optional
+	// +kubebuilder:validation:MaxProperties=16
+	// +kubebuilder:validation:XValidation:rule="self.all(k, k.matches('^vm[.][a-z0-9_]+$'))",message="sysctls keys must be vm.<name> (lowercase letters, digits, '_')"
+	Sysctls map[string]MultiNodeSysctlValue `json:"sysctls,omitempty"`
+}
+
+// MultiNodeSysctlValue is the value written for one sysctl: a non-negative
+// integer. It is a type of its own so the schema can bound it; the key rule
+// above is CEL, whose cost budget an unbounded value would exceed.
+// +kubebuilder:validation:Pattern=`^[0-9]+$`
+// +kubebuilder:validation:MaxLength=20
+type MultiNodeSysctlValue string
 
 // RendezvousPortOrDefault returns the configured rendezvous port or the
 // default. Safe on a nil receiver.
