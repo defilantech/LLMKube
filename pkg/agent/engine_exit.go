@@ -87,7 +87,7 @@ func (a *MetalAgent) handleEngineExit(ctx context.Context, key string, proc *Man
 	for ctx.Err() == nil {
 		if restartIn, ok := a.stopForRestart(ctx, key, proc, "exitStatus", status); ok {
 			a.emitInferenceEvent(ctx, proc, corev1.EventTypeWarning, EventReasonEngineExited, "%s",
-				fmt.Sprintf("Engine process %d exited (%s); restarting in %s", proc.PID, status, restartIn)+
+				fmt.Sprintf("Engine process %d exited (%s); restarting in %s", proc.PID, status, eventDelay(restartIn))+
 					crashedLogHint(proc.logPath))
 			return
 		}

@@ -114,6 +114,26 @@ func runRestartsAt(a *MetalAgent, clk *fakeClock, at time.Time) {
 	a.runDueRestarts(context.Background())
 }
 
+// TestEventDelay_RoundsToWholeSeconds: a restart or retry delay is computed
+// from a deadline, so on a real clock it carries the nanoseconds spent in
+// between. Seen on a Mac: "restarting in 9.999996916s" and
+// "retrying in 1m19.99999675s". An Event says the delay in whole seconds.
+func TestEventDelay_RoundsToWholeSeconds(t *testing.T) {
+	for _, tc := range []struct {
+		in   time.Duration
+		want string
+	}{
+		{9999996916 * time.Nanosecond, "10s"},
+		{79999996750 * time.Nanosecond, "1m20s"},
+		{299999999 * time.Nanosecond, "0s"},
+		{10 * time.Second, "10s"},
+	} {
+		if got := eventDelay(tc.in).String(); got != tc.want {
+			t.Errorf("eventDelay(%v) = %s, want %s", tc.in, got, tc.want)
+		}
+	}
+}
+
 // TestEnsureProcess_FailedStartIsReportedAndRetried is the #2404 bug: a start
 // whose engine exits while loading must leave a Warning Event with the error
 // and where the engine log is (never its content), a status that says the

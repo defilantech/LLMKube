@@ -277,7 +277,7 @@ func (a *MetalAgent) restartUnhealthy(ctx context.Context, key string, proc *Man
 		return
 	}
 	a.emitInferenceEvent(ctx, proc, corev1.EventTypeWarning, EventReasonHealthRestart,
-		"Engine failed %d consecutive health checks and was stopped; restarting in %s", failures, restartIn)
+		"Engine failed %d consecutive health checks and was stopped; restarting in %s", failures, eventDelay(restartIn))
 }
 
 // stopForRestart stops proc, an engine marked unhealthy (it failed its health
@@ -462,5 +462,6 @@ func (a *MetalAgent) runRestart(ctx context.Context, key string) {
 	reason, logPath := summarizeForEvent(err)
 	a.emitInferenceEvent(ctx, &ManagedProcess{Namespace: namespace, Name: name}, corev1.EventTypeWarning,
 		EventReasonRestartFailed, "%s",
-		fmt.Sprintf("Restart did not bring the engine back: %s; retrying in %s", reason, retryIn)+engineLogHint(logPath))
+		fmt.Sprintf("Restart did not bring the engine back: %s; retrying in %s", reason, eventDelay(retryIn))+
+			engineLogHint(logPath))
 }

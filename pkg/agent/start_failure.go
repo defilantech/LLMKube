@@ -19,6 +19,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -81,7 +82,15 @@ func (a *MetalAgent) failStart(
 		"namespace", isvc.Namespace, "name", isvc.Name, "retryAt", retryAt, "retryIn", retryIn, "error", startErr)
 	a.emitInferenceEvent(ctx, &ManagedProcess{Namespace: isvc.Namespace, Name: isvc.Name},
 		corev1.EventTypeWarning, eventReason, "%s",
-		fmt.Sprintf("Start failed: %s; retrying in %s", summary, retryIn)+engineLogHint(logPath))
+		fmt.Sprintf("Start failed: %s; retrying in %s", summary, eventDelay(retryIn))+engineLogHint(logPath))
+}
+
+// eventDelay rounds a restart or retry delay to whole seconds for an Event.
+// The delay is computed from a deadline, so on a real clock it carries the
+// nanoseconds spent in between ("9.999996916s"); the agent log keeps the exact
+// figure.
+func eventDelay(d time.Duration) time.Duration {
+	return d.Round(time.Second)
 }
 
 // writeStartFailedStatus records a failed start on the InferenceService's
