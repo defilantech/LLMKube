@@ -498,6 +498,17 @@ func (a *Activator) reconcileResident(ctx context.Context, pr *poolRuntime, memb
 	}
 	pr.residentCheckedAt = time.Now()
 
+	// A residency change made here, without a swap, must wake the held
+	// requests: those for the new resident can take it now, and left asleep
+	// they would count as waiting for it and hold off every other member's
+	// swap until their budget ran out (#2533).
+	before := pr.resident
+	defer func() {
+		if pr.resident != before {
+			pr.notify()
+		}
+	}()
+
 	// Verify the believed resident still owns the slot. A resident whose pod is
 	// gone (phase != Ready) is stale; drop the belief so it is re-derived below
 	// and the next request drives a corrective swap.

@@ -416,6 +416,69 @@ func TestActivatorKeepsNewResidentForItsWaiters(t *testing.T) {
 	}
 }
 
+// TestActivatorWakesWaitersWhenResidentSelfHeals: reconcileResident can move
+// the resident without a swap, when the member it believed in is gone and
+// another reports Ready (a pod lost out of band, a member scaled up by hand).
+// Requests already held for that member must be woken to take it. Left asleep,
+// they would also count as waiting for the resident and keep every other
+// member's request from swapping until their hold budget ran out (#2533).
+func TestActivatorWakesWaitersWhenResidentSelfHeals(t *testing.T) {
+	fake := newFakeMemberController()
+	fake.setPhase("judge", modelReadyPhase)
+	a := NewActivator(context.Background(), fake, "r", nil)
+
+	// judge resident and busy; a coder request is held behind it.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	judgeRel, err := a.Acquire(ctx, testPool("judge"))
+	if err != nil {
+		t.Fatalf("Acquire judge: %v", err)
+	}
+	defer judgeRel()
+	held := make(chan error, 1)
+	go func() {
+		hctx, hcancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer hcancel()
+		rel, e := a.Acquire(hctx, testPool("coder"))
+		if rel != nil {
+			rel()
+		}
+		held <- e
+	}()
+	select {
+	case e := <-held:
+		t.Fatalf("coder acquired while judge was busy (err=%v)", e)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	// Out of band, judge's pod goes and coder comes up Ready. The next request
+	// re-verifies the resident and adopts coder.
+	fake.setPhase("judge", "")
+	fake.setPhase("coder", modelReadyPhase)
+	a.InvalidateResident(testPool("coder"))
+	nctx, ncancel := context.WithTimeout(context.Background(), time.Second)
+	defer ncancel()
+	rel, err := a.Acquire(nctx, testPool("coder"))
+	if err != nil {
+		t.Fatalf("second coder Acquire: %v", err)
+	}
+	// Still in flight: its release would wake the held request on its own, so
+	// only the residency change may do it here.
+	defer rel()
+
+	select {
+	case e := <-held:
+		if e != nil {
+			t.Fatalf("held coder request: %v", e)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("the held coder request was not woken when coder became the resident")
+	}
+	if got := fake.activateCount("coder"); got != 0 {
+		t.Errorf("coder activated %d times; it was already Ready", got)
+	}
+}
+
 // TestActivatorSwapFailurePropagates verifies a failed activation surfaces an
 // error to the caller rather than hanging.
 func TestActivatorSwapFailurePropagates(t *testing.T) {
