@@ -130,7 +130,7 @@ type MetalAgentConfig struct {
 	// process (the historical behavior).
 	LlamaServerPort int
 
-	// MemoryProvider supplies system memory info. Nil defaults to DarwinMemoryProvider.
+	// MemoryProvider supplies system memory info. Nil defaults to NewHostMemoryProvider.
 	MemoryProvider MemoryProvider
 	// MemoryFraction is the fraction of total memory to budget for models (0 = auto-detect).
 	MemoryFraction float64
@@ -140,9 +140,9 @@ type MetalAgentConfig struct {
 	// proceeds (the legacy behavior).
 	MemoryCheckMode string
 	// AllowModelMemoryBudgetOverride lets a Model's spec.hardware.memoryBudget
-	// or memoryFraction exceed this Mac's budget (total * MemoryFraction).
-	// False (the default) clamps such a Model budget to the Mac's budget with
-	// a Warning event, so a Model cannot raise the limit its Mac's owner set.
+	// or memoryFraction exceed this host's budget (total * MemoryFraction).
+	// False (the default) clamps such a Model budget to the host's budget with
+	// a Warning event, so a Model cannot raise the limit the host's owner set.
 	AllowModelMemoryBudgetOverride bool
 
 	// WatchdogConfig configures the memory pressure watchdog. Nil disables it.
@@ -390,7 +390,7 @@ type MetalAgent struct {
 	// services starting at once cannot both fit into the same free budget;
 	// the start moves it onto ManagedProcess.AdmittedBytes or releases it.
 	// Guarded by mu.
-	reservedMemory map[string]uint64
+	reservedMemory map[string]memoryReservation
 
 	// restarts holds the health-restart backoff of each service whose engine
 	// the health monitor has restarted (see health_restart.go).
@@ -548,7 +548,7 @@ func NewMetalAgent(config MetalAgentConfig) *MetalAgent {
 	// Resolve memory provider
 	provider := config.MemoryProvider
 	if provider == nil {
-		provider = &DarwinMemoryProvider{}
+		provider = NewHostMemoryProvider()
 	}
 
 	// Resolve memory fraction
@@ -648,7 +648,7 @@ func NewMetalAgent(config MetalAgentConfig) *MetalAgent {
 		evictionBackoff:     make(map[string]*evictionBackoff),
 		pressureObserved:    make(map[string]MemoryPressureLevel),
 		starting:            make(map[string]bool),
-		reservedMemory:      make(map[string]uint64),
+		reservedMemory:      make(map[string]memoryReservation),
 		restarts:            make(map[string]*restartBackoff),
 		restartWake:         make(chan struct{}, 1),
 		heartbeatWake:       make(chan struct{}, 1),
@@ -773,19 +773,24 @@ func (a *MetalAgent) Start(ctx context.Context) error {
 	}
 
 	// Log effective memory budget and set gauge
-	if total, err := a.memoryProvider.TotalMemory(); err == nil {
+	if total, hostTotal, err := a.memoryTotals(); err == nil {
 		budget := uint64(float64(total) * a.memoryFraction)
+		hostBudget := uint64(float64(hostTotal) * a.memoryFraction)
 		checkMode := MemoryCheckModeEnforce
 		if a.memoryCheckWarnOnly {
 			checkMode = MemoryCheckModeWarn
 		}
-		a.logger.Infow("memory budget",
+		kv := []interface{}{
 			"total", formatMemory(total),
 			"fraction", a.memoryFraction,
 			"budget", formatMemory(budget),
 			"checkMode", checkMode,
-		)
-		memoryBudgetBytes.Set(float64(budget))
+		}
+		if hostTotal != total {
+			kv = append(kv, "hostTotal", formatMemory(hostTotal), "hostBudget", formatMemory(hostBudget))
+		}
+		a.logger.Infow("memory budget", kv...)
+		memoryBudgetBytes.Set(float64(hostBudget))
 	} else {
 		a.logger.Warnw("unable to query total memory", "error", err)
 	}
@@ -1526,7 +1531,7 @@ func (a *MetalAgent) reconcileProcess(ctx context.Context, isvc *inferencev1alph
 	// the record in the same critical section, so the budget it holds is
 	// never counted twice or dropped in between.
 	a.mu.Lock()
-	process.AdmittedBytes = a.reservedMemory[key]
+	process.AdmittedBytes = a.reservedMemory[key].bytes
 	delete(a.reservedMemory, key)
 	a.processes[key] = process
 	managedProcesses.Set(float64(len(a.processes)))
@@ -2300,6 +2305,37 @@ func (a *MetalAgent) HealthCheck() map[string]bool {
 	return health
 }
 
+// runsOutsideAgentCgroup reports whether runtime's engine is a daemon the
+// agent does not start, so its memory is not charged to the agent's cgroup.
+func runsOutsideAgentCgroup(runtime string) bool {
+	return runtime == runtimeOllama
+}
+
+// memoryReservation is an admitted start's estimate and whether its engine
+// runs outside the agent's cgroup.
+type memoryReservation struct {
+	bytes    uint64
+	hostWide bool
+}
+
+// memoryTotals returns total memory as the agent's cgroup sees it and
+// host-wide. They are equal without a cgroup memory limit and on macOS.
+func (a *MetalAgent) memoryTotals() (total, hostTotal uint64, err error) {
+	total, err = a.memoryProvider.TotalMemory()
+	if err != nil {
+		return 0, 0, err
+	}
+	hostProvider, distinct := hostWideProvider(a.memoryProvider)
+	if !distinct {
+		return total, total, nil
+	}
+	hostTotal, err = hostProvider.TotalMemory()
+	if err != nil {
+		return 0, 0, err
+	}
+	return total, hostTotal, nil
+}
+
 // checkMemoryAdmission runs the pre-flight memory check for an
 // InferenceService: estimate the model's memory need, resolve the budget, and
 // reject the service when it does not fit. A check that cannot be completed
@@ -2322,14 +2358,26 @@ func (a *MetalAgent) checkMemoryAdmission(
 	a.sizeProbes.forget(types.NamespacedName{Namespace: isvc.Namespace, Name: isvc.Name}.String())
 	memoryEstimatedBytes.WithLabelValues(isvc.Name, isvc.Namespace).Set(float64(estimate.TotalBytes))
 
-	// This Mac's budget, the limit its owner set with --memory-fraction. Every
-	// admitted model shares it, and a Model budget may not exceed it.
-	total, totalErr := a.memoryProvider.TotalMemory()
+	// This host's budget, the limit its owner set with --memory-fraction. Every
+	// admitted model shares it, and a Model budget may not exceed it. An
+	// engine outside the agent's cgroup is measured against the host-wide
+	// budget, every other engine against the cgroup's.
+	hostWide := runsOutsideAgentCgroup(a.resolveRuntime(isvc))
+	provider := a.memoryProvider
+	if hostWide {
+		provider, _ = hostWideProvider(provider)
+	}
+	agentTotal, hostTotal, totalErr := a.memoryTotals()
 	if totalErr != nil {
 		return a.failMemoryCheck(ctx, isvc,
 			fmt.Sprintf("memory budget check failed: failed to get total memory: %v", totalErr))
 	}
-	hostBudget := uint64(float64(total) * a.memoryFraction)
+	total := agentTotal
+	if hostWide {
+		total = hostTotal
+	}
+	serviceBudget := uint64(float64(total) * a.memoryFraction)
+	hostBudget := uint64(float64(hostTotal) * a.memoryFraction)
 	memoryBudgetBytes.Set(float64(hostBudget))
 
 	resolved, resolveErr := ResolveMemoryBudget(model.Spec.Hardware, a.memoryFraction)
@@ -2345,24 +2393,24 @@ func (a *MetalAgent) checkMemoryAdmission(
 		budget = CheckMemoryBudgetAbsolute(resolved.Bytes, estimate)
 	default: // BudgetModeFraction
 		var budgetErr error
-		budget, budgetErr = CheckMemoryBudget(a.memoryProvider, estimate, resolved.Fraction)
+		budget, budgetErr = CheckMemoryBudget(provider, estimate, resolved.Fraction)
 		if budgetErr != nil {
 			return a.failMemoryCheck(ctx, isvc, fmt.Sprintf("memory budget check failed: %v", budgetErr))
 		}
 	}
 
-	// A Model's memoryBudget or memoryFraction may lower this Mac's limit for
+	// A Model's memoryBudget or memoryFraction may lower this host's limit for
 	// itself but not raise it, unless the agent allows overrides (#2080).
 	clamped := false
-	if budget.BudgetBytes > hostBudget && !a.config.AllowModelMemoryBudgetOverride {
+	if budget.BudgetBytes > serviceBudget && !a.config.AllowModelMemoryBudgetOverride {
 		a.emitInferenceEvent(ctx, &ManagedProcess{Namespace: isvc.Namespace, Name: isvc.Name},
 			corev1.EventTypeWarning, EventReasonMemoryBudgetClamped,
-			"Model %s budget %s (%s) exceeds this Mac's budget %s (%s total * %.0f%%); clamped to it. "+
+			"Model %s budget %s (%s) exceeds this host's budget %s (%s total * %.0f%%); clamped to it. "+
 				"Start the metal-agent with --allow-model-memory-budget-override to allow it",
 			model.Name, formatMemory(budget.BudgetBytes), resolved.Source,
-			formatMemory(hostBudget), formatMemory(total), a.memoryFraction*100,
+			formatMemory(serviceBudget), formatMemory(total), a.memoryFraction*100,
 		)
-		budget = CheckMemoryBudgetAbsolute(hostBudget, estimate)
+		budget = CheckMemoryBudgetAbsolute(serviceBudget, estimate)
 		clamped = true
 	}
 
@@ -2370,7 +2418,7 @@ func (a *MetalAgent) checkMemoryAdmission(
 		var msg string
 		switch {
 		case clamped:
-			msg = fmt.Sprintf("estimated %s required, budget %s (the Model's budget, clamped to this Mac's: %s total * %.0f%%)",
+			msg = fmt.Sprintf("estimated %s required, budget %s (the Model's budget, clamped to this host's: %s total * %.0f%%)",
 				formatMemory(budget.EstimateBytes),
 				formatMemory(budget.BudgetBytes),
 				formatMemory(total),
@@ -2397,27 +2445,25 @@ func (a *MetalAgent) checkMemoryAdmission(
 	// section, so two services starting at once cannot both claim the same
 	// free budget. A respawn is checked against everything but its own key:
 	// its previous engine is already stopped. An override-raised Model budget
-	// raises the shared limit for this admission too.
+	// raises the shared limit for this admission too. Every service counts
+	// against the host-wide budget; a service in the agent's cgroup must also
+	// fit next to the other in-cgroup services under the cgroup's budget.
 	key := types.NamespacedName{Namespace: isvc.Namespace, Name: isvc.Name}.String()
-	capacity := max(hostBudget, budget.BudgetBytes)
 	a.mu.Lock()
-	committed, holders := a.committedMemoryLocked(key)
-	if committed+estimate.TotalBytes > capacity {
+	committed, holders := a.committedMemoryLocked(key, false)
+	if msg, ok := memoryRefusal(estimate.TotalBytes, committed, max(hostBudget, budget.BudgetBytes), holders); !ok {
 		a.mu.Unlock()
-		var free uint64
-		if committed < capacity {
-			free = capacity - committed
-		}
-		msg := fmt.Sprintf("estimated %s required, %s of the %s budget already committed to %s, %s free",
-			formatMemory(estimate.TotalBytes),
-			formatMemory(committed),
-			formatMemory(capacity),
-			describeMemoryHolders(holders),
-			formatMemory(free),
-		)
 		return a.refuseInsufficientMemory(ctx, isvc, msg, "committed", formatMemory(committed))
 	}
-	a.reservedMemory[key] = estimate.TotalBytes
+	if !hostWide {
+		inCgroup, inCgroupHolders := a.committedMemoryLocked(key, true)
+		capacity := max(serviceBudget, budget.BudgetBytes)
+		if msg, ok := memoryRefusal(estimate.TotalBytes, inCgroup, capacity, inCgroupHolders); !ok {
+			a.mu.Unlock()
+			return a.refuseInsufficientMemory(ctx, isvc, msg, "committed", formatMemory(inCgroup))
+		}
+	}
+	a.reservedMemory[key] = memoryReservation{bytes: estimate.TotalBytes, hostWide: hostWide}
 	a.updateCommittedMetricLocked()
 	a.mu.Unlock()
 
@@ -2462,16 +2508,42 @@ func (a *MetalAgent) refuseInsufficientMemory(
 	return fmt.Errorf("insufficient memory: %s", msg)
 }
 
+// memoryRefusal returns the refusal message when estimate does not fit next
+// to committed under capacity; ok is true when it fits.
+func memoryRefusal(estimate, committed, capacity uint64, holders []string) (msg string, ok bool) {
+	if committed+estimate <= capacity {
+		return "", true
+	}
+	var free uint64
+	if committed < capacity {
+		free = capacity - committed
+	}
+	return fmt.Sprintf("estimated %s required, %s of the %s budget already committed to %s, %s free",
+		formatMemory(estimate),
+		formatMemory(committed),
+		formatMemory(capacity),
+		describeMemoryHolders(holders),
+		formatMemory(free),
+	), false
+}
+
 // committedMemoryLocked sums the admitted estimates of running processes and
 // of starts holding a reservation, skipping exclude, and returns the keys that
-// hold memory, sorted. Caller holds a.mu.
-func (a *MetalAgent) committedMemoryLocked(exclude string) (uint64, []string) {
+// hold memory, sorted. inCgroupOnly skips engines that run outside the
+// agent's cgroup. Caller holds a.mu.
+func (a *MetalAgent) committedMemoryLocked(exclude string, inCgroupOnly bool) (uint64, []string) {
 	perKey := make(map[string]uint64, len(a.processes)+len(a.reservedMemory))
 	for k, p := range a.processes {
+		if inCgroupOnly && runsOutsideAgentCgroup(p.Runtime) {
+			continue
+		}
 		perKey[k] += p.AdmittedBytes
 	}
-	for k, b := range a.reservedMemory {
-		perKey[k] += b
+	for k, r := range a.reservedMemory {
+		if inCgroupOnly && r.hostWide {
+			continue
+		}
+		perKey[k] += r.bytes
 	}
 	var sum uint64
 	holders := make([]string, 0, len(perKey))
@@ -2488,7 +2560,7 @@ func (a *MetalAgent) committedMemoryLocked(exclude string) (uint64, []string) {
 
 // updateCommittedMetricLocked publishes the committed total. Caller holds a.mu.
 func (a *MetalAgent) updateCommittedMetricLocked() {
-	committed, _ := a.committedMemoryLocked("")
+	committed, _ := a.committedMemoryLocked("", false)
 	memoryCommittedBytes.Set(float64(committed))
 }
 

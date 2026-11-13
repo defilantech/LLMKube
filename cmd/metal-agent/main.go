@@ -654,7 +654,7 @@ func main() {
 		"What to do when the pre-flight memory check cannot be completed: "+
 			"\"enforce\" refuses to start the process (fail closed), \"warn\" logs and starts it anyway")
 	flag.BoolVar(&cfg.AllowModelMemoryBudgetOverride, "allow-model-memory-budget-override", false,
-		"Let a Model's spec.hardware.memoryBudget or memoryFraction exceed this Mac's budget "+
+		"Let a Model's spec.hardware.memoryBudget or memoryFraction exceed this host's budget "+
 			"(total * memory-fraction); by default such a budget is clamped to it with a Warning event")
 	flag.DurationVar(&cfg.WatchdogInterval, "memory-watchdog-interval", 10*time.Second,
 		"How often to check memory pressure (0 to disable)")
@@ -843,10 +843,7 @@ func main() {
 		"metalVersion", caps.MetalVersion,
 	)
 
-	// Resolved after the Metal check: its default reads the host's memory
-	// through the darwin provider, which is a stub elsewhere, so a non-Mac
-	// host should fail on Metal first.
-	maxDownloadBytes, err := resolveMaxDownloadBytes(cfg.MaxDownloadSize, (&agent.DarwinMemoryProvider{}).TotalMemory)
+	maxDownloadBytes, err := resolveMaxDownloadBytes(cfg.MaxDownloadSize, agent.NewHostMemoryProvider().TotalMemory)
 	if err != nil {
 		logger.Errorw("invalid --max-download-size", "error", err)
 		os.Exit(1)

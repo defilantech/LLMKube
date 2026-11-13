@@ -157,7 +157,7 @@ func TestAdopt_HealthyEngineIsAdopted(t *testing.T) {
 	}
 	// The admitted estimate counts as committed, so admission sees the
 	// adopted engine's memory (#2080).
-	if got, _ := a.committedMemoryLocked(""); got != 40<<30 {
+	if got, _ := a.committedMemoryLocked("", false); got != 40<<30 {
 		t.Fatalf("committed memory = %d, want the adopted engine's %d", got, uint64(40<<30))
 	}
 	if d := testutil.ToFloat64(engineAdoptionsTotal.WithLabelValues(adoptionAdopted)) - before; d != 1 {

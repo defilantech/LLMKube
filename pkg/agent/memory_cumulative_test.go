@@ -19,6 +19,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -31,7 +32,7 @@ import (
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 )
 
-// A 64 GiB Mac at the 0.75 fraction has a 48 GiB budget. A 33 GiB file with no
+// A 64 GiB host at the 0.75 fraction has a 48 GiB budget. A 33 GiB file with no
 // GGUF shape estimates at 33 * 1.2 + 0.5 = 40.1 GiB (fallbackEstimate), so one
 // such model fits and a second one does not fit next to it (#2080).
 const (
@@ -46,7 +47,7 @@ func sizedModel(size string) *inferencev1alpha1.Model {
 	return newAdmissionTestModel("https://model-host.invalid/m.gguf", size)
 }
 
-// newCumulativeAgent is an admission agent on a 64 GiB Mac with a fake event
+// newCumulativeAgent is an admission agent on a 64 GiB host with a fake event
 // recorder; isvcs are stored with the status subresource enabled.
 func newCumulativeAgent(
 	t *testing.T, cfg MetalAgentConfig, isvcs ...*inferencev1alpha1.InferenceService,
@@ -124,10 +125,10 @@ func TestCheckMemoryAdmission_ReservesAdmittedEstimate(t *testing.T) {
 	if err := a.checkMemoryAdmission(context.Background(), isvc, sizedModel("33.0 GiB"), 2048, "", ""); err != nil {
 		t.Fatalf("a single 40 GiB model on a 48 GiB budget was refused: %v", err)
 	}
-	if got := a.reservedMemory["default/only"]; got < gib(40) || got > gib(40.2) {
+	if got := a.reservedMemory["default/only"].bytes; got < gib(40) || got > gib(40.2) {
 		t.Errorf("reservation = %d bytes, want the ~40.1 GiB estimate", got)
 	}
-	if got := testutil.ToFloat64(memoryCommittedBytes); got != float64(a.reservedMemory["default/only"]) {
+	if got := testutil.ToFloat64(memoryCommittedBytes); got != float64(a.reservedMemory["default/only"].bytes) {
 		t.Errorf("committed gauge = %v, want the reserved estimate", got)
 	}
 }
@@ -188,11 +189,11 @@ func TestCheckMemoryAdmission_StoppedProcessFreesBudget(t *testing.T) {
 	}
 }
 
-// A Model memoryBudget above the Mac's budget is clamped to it, with a Warning
+// A Model memoryBudget above the host's budget is clamped to it, with a Warning
 // event; --allow-model-memory-budget-override restores the old behavior.
 func TestCheckMemoryAdmission_ClampsModelBudgetToHost(t *testing.T) {
 	// 50 GiB file: 60.5 GiB estimate, under the Model's 100Gi but over the
-	// Mac's 48 GiB.
+	// host's 48 GiB.
 	model := sizedModel("50.0 GiB")
 	model.Spec.Hardware = &inferencev1alpha1.HardwareSpec{MemoryBudget: "100Gi"}
 
@@ -200,7 +201,7 @@ func TestCheckMemoryAdmission_ClampsModelBudgetToHost(t *testing.T) {
 		isvc := cumulativeISVC("big")
 		a, rec := newCumulativeAgent(t, MetalAgentConfig{}, isvc)
 		if err := a.checkMemoryAdmission(context.Background(), isvc, model, 2048, "", ""); err == nil {
-			t.Fatal("a Model memoryBudget above the Mac's budget let a 60 GiB model onto a 48 GiB budget")
+			t.Fatal("a Model memoryBudget above the host's budget let a 60 GiB model onto a 48 GiB budget")
 		}
 		events := strings.Join(drainEvents(rec), "\n")
 		if !strings.Contains(events, "Warning "+EventReasonMemoryBudgetClamped) {
@@ -261,4 +262,125 @@ func TestEnsureProcess_ClaimsOrReleasesAdmission(t *testing.T) {
 			t.Error("a failed start left its reservation behind, holding budget forever")
 		}
 	})
+}
+
+// newCgroupAgent is an admission agent at the 0.75 fraction on a fake 64 GiB
+// Linux host whose agent cgroup has memory.max set to cgroupMax ("max" for
+// no limit): a 48 GiB host-wide budget and a cgroupMax*0.75 cgroup budget.
+func newCgroupAgent(
+	t *testing.T, cgroupMax string, isvcs ...*inferencev1alpha1.InferenceService,
+) *MetalAgent {
+	t.Helper()
+	root := writeProcFixture(t, map[string]string{
+		"proc/meminfo":            "MemTotal: 67108864 kB\nMemAvailable: 60000000 kB\n",
+		"proc/self/cgroup":        "0::/agent\n",
+		"cg/agent/memory.max":     cgroupMax + "\n",
+		"cg/agent/memory.current": "0\n",
+	})
+	a, _ := newCumulativeAgent(t, MetalAgentConfig{}, isvcs...)
+	a.memoryProvider = &LinuxMemoryProvider{
+		ProcRoot:   filepath.Join(root, "proc"),
+		CgroupRoot: filepath.Join(root, "cg"),
+	}
+	return a
+}
+
+func runtimeISVC(name, runtime string) *inferencev1alpha1.InferenceService {
+	isvc := cumulativeISVC(name)
+	isvc.Spec.Runtime = runtime
+	return isvc
+}
+
+// A 20 GiB Ollama model runs outside a 4 GiB agent cgroup, so it does not
+// fill the cgroup's 3 GiB budget; in-cgroup services still share that budget.
+func TestCheckMemoryAdmission_HostWideServiceDoesNotFillCgroupBudget(t *testing.T) {
+	small := runtimeISVC("small", runtimeLlamaServer)
+	second := runtimeISVC("second", runtimeLlamaServer)
+	a := newCgroupAgent(t, "4294967296", small, second)
+	a.processes["default/ollama"] = &ManagedProcess{
+		Name: "ollama", Namespace: "default", Runtime: runtimeOllama, AdmittedBytes: gib(20),
+	}
+
+	// 0.4 GiB * 1.2 + 0.5 GiB = 0.98 GiB.
+	if err := a.checkMemoryAdmission(context.Background(), small, sizedModel("0.4 GiB"), 2048, "", ""); err != nil {
+		t.Fatalf("1 GiB llama-server service refused under an empty 3 GiB cgroup budget: %v", err)
+	}
+	if got := testutil.ToFloat64(memoryCommittedBytes); got != float64(gib(20)+a.reservedMemory["default/small"].bytes) {
+		t.Errorf("committed gauge = %v, want every service's estimate, Ollama's included", got)
+	}
+	if got := testutil.ToFloat64(memoryBudgetBytes); got != cumulativeBudget {
+		t.Errorf("budget gauge = %v, want the %d host-wide budget", got, uint64(cumulativeBudget))
+	}
+
+	// 1.8 GiB * 1.2 + 0.5 GiB = 2.66 GiB, over the 2.02 GiB the cgroup has left.
+	err := a.checkMemoryAdmission(context.Background(), second, sizedModel("1.8 GiB"), 2048, "", "")
+	if err == nil {
+		t.Fatal("second llama-server service admitted past the 3 GiB cgroup budget")
+	}
+	_, msg := schedulingStatus(t, a, "second")
+	if !strings.Contains(msg, "3.0 GB budget") || !strings.Contains(msg, "default/small") ||
+		strings.Contains(msg, "default/ollama") {
+		t.Errorf("SchedulingMessage %q: want the 3.0 GB cgroup budget held by default/small only", msg)
+	}
+}
+
+// A big in-cgroup service does not block an Ollama service that fits
+// host-wide, but it still counts toward the host-wide budget.
+func TestCheckMemoryAdmission_CgroupServiceCountsTowardHostBudget(t *testing.T) {
+	fits := runtimeISVC("fits", runtimeOllama)
+	over := runtimeISVC("over", runtimeOllama)
+	a := newCgroupAgent(t, "4294967296", fits, over)
+	a.processes["default/llama"] = &ManagedProcess{
+		Name: "llama", Namespace: "default", Runtime: runtimeLlamaServer, AdmittedBytes: gib(2.9),
+	}
+
+	// 33 GiB -> 40.1 GiB; 2.9 + 40.1 fits the 48 GiB host-wide budget.
+	if err := a.checkMemoryAdmission(context.Background(), fits, sizedModel("33.0 GiB"), 2048, "", ""); err != nil {
+		t.Fatalf("Ollama service refused although it fits host-wide next to the in-cgroup service: %v", err)
+	}
+	delete(a.reservedMemory, "default/fits")
+
+	// 38 GiB -> 46.1 GiB fits 48 GiB alone, not next to the 2.9 GiB service.
+	err := a.checkMemoryAdmission(context.Background(), over, sizedModel("38.0 GiB"), 2048, "", "")
+	if err == nil {
+		t.Fatal("Ollama service admitted past the host-wide budget the in-cgroup service shares")
+	}
+	_, msg := schedulingStatus(t, a, "over")
+	if !strings.Contains(msg, "48.0 GB budget") || !strings.Contains(msg, "default/llama") {
+		t.Errorf("SchedulingMessage %q: want the 48.0 GB host-wide budget held by default/llama", msg)
+	}
+}
+
+// Without a cgroup limit, and on macOS, the cgroup and host-wide budgets are
+// the same and every service shares one pool: a running Ollama model blocks an
+// in-cgroup service that does not fit next to it.
+func TestCheckMemoryAdmission_OnePoolWithoutCgroupLimit(t *testing.T) {
+	for name, newAgent := range map[string]func(*inferencev1alpha1.InferenceService) *MetalAgent{
+		"linux, no memory.max": func(isvc *inferencev1alpha1.InferenceService) *MetalAgent {
+			return newCgroupAgent(t, "max", isvc)
+		},
+		"non-Linux provider (macOS)": func(isvc *inferencev1alpha1.InferenceService) *MetalAgent {
+			a, _ := newCumulativeAgent(t, MetalAgentConfig{}, isvc)
+			return a
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			isvc := runtimeISVC("llama", runtimeLlamaServer)
+			a := newAgent(isvc)
+			a.processes["default/ollama"] = &ManagedProcess{
+				Name: "ollama", Namespace: "default", Runtime: runtimeOllama, AdmittedBytes: gib(20),
+			}
+			err := a.checkMemoryAdmission(context.Background(), isvc, sizedModel("33.0 GiB"), 2048, "", "")
+			if err == nil {
+				t.Fatal("40 GiB service admitted next to a 20 GiB Ollama model on a 48 GiB budget")
+			}
+			_, msg := schedulingStatus(t, a, "llama")
+			if !strings.Contains(msg, "48.0 GB budget") || !strings.Contains(msg, "default/ollama") {
+				t.Errorf("SchedulingMessage %q: want the 48.0 GB budget held by default/ollama", msg)
+			}
+			if got := testutil.ToFloat64(memoryBudgetBytes); got != cumulativeBudget {
+				t.Errorf("budget gauge = %v, want %d", got, uint64(cumulativeBudget))
+			}
+		})
+	}
 }
