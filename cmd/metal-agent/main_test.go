@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	restclient "k8s.io/client-go/rest"
 
@@ -121,6 +122,58 @@ func TestResolveLlamaServerBin(t *testing.T) {
 			t.Fatal("expected error, got nil")
 		}
 	})
+}
+
+func TestResolveDefaultLlamaServerBin(t *testing.T) {
+	origStat := statFunc
+	t.Cleanup(func() { statFunc = origStat })
+	installed := func(string) (os.FileInfo, error) { return nil, nil }
+	missing := func(string) (os.FileInfo, error) { return nil, errors.New("not found") }
+
+	for _, tc := range []struct {
+		name, runtime, override string
+		stat                    func(string) (os.FileInfo, error)
+		wantBin                 string
+		wantErr                 bool
+	}{
+		{name: "llama-server missing is fatal", runtime: "llama-server", stat: missing, wantErr: true},
+		{name: "llamacpp missing is fatal", runtime: "llamacpp", stat: missing, wantErr: true},
+		{name: "ollama starts without llama-server", runtime: "ollama", stat: missing},
+		{name: "omlx starts without llama-server", runtime: "omlx", stat: missing},
+		{name: "mlx-server starts without llama-server", runtime: "mlx-server", stat: missing},
+		{name: "llama-server found", runtime: "llama-server", stat: installed, wantBin: defaultLlamaServerPaths[0]},
+		{name: "ollama still records a found llama-server", runtime: "ollama", stat: installed,
+			wantBin: defaultLlamaServerPaths[0]},
+		{name: "override wins", runtime: "ollama", override: "/opt/llama-server", stat: missing,
+			wantBin: "/opt/llama-server"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			statFunc = tc.stat
+			cfg := &AgentConfig{Runtime: tc.runtime}
+			err := resolveDefaultLlamaServerBin(cfg, tc.override, zap.NewNop().Sugar())
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, want error %v", err, tc.wantErr)
+			}
+			if cfg.LlamaServerBin != tc.wantBin {
+				t.Errorf("LlamaServerBin = %q, want %q", cfg.LlamaServerBin, tc.wantBin)
+			}
+		})
+	}
+}
+
+func TestDefaultLlamaServerPathsIncludeDistroPackage(t *testing.T) {
+	if !slices.Contains(defaultLlamaServerPaths, "/usr/bin/llama-server") {
+		t.Errorf("defaultLlamaServerPaths = %v, want /usr/bin/llama-server", defaultLlamaServerPaths)
+	}
+}
+
+func TestLlamaServerInstallHint(t *testing.T) {
+	if got := llamaServerInstallHint("darwin"); got != "brew install llama.cpp" {
+		t.Errorf("darwin hint = %q, want brew install llama.cpp", got)
+	}
+	if got := llamaServerInstallHint("linux"); strings.Contains(got, "brew") {
+		t.Errorf("linux hint = %q, want no Homebrew", got)
+	}
 }
 
 func TestResolveTensorFoldBin(t *testing.T) {

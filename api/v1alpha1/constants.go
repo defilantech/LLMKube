@@ -285,6 +285,11 @@ const (
 	// the agent's RBAC does not let it read, or the relay token Secret
 	// (MetalRelaySecretName).
 	ReasonSourceSecretNotAllowed string = "SourceSecretNotAllowed"
+
+	// ReasonRuntimeNotAvailable is set when the service's resolved runtime
+	// has no executor on the agent: its binary was not found or not
+	// configured when the agent started.
+	ReasonRuntimeNotAvailable string = "RuntimeNotAvailable"
 )
 
 // ReasonModelAttestationRejected is set on a Model the attestation policy
@@ -309,6 +314,7 @@ var MetalAgentRefusalReasons = []string{
 	ReasonModelDigestMismatch,
 	ReasonModelDownloadTooLarge,
 	ReasonSourceSecretNotAllowed,
+	ReasonRuntimeNotAvailable,
 }
 
 // ReasonRelaySecretNotManaged is the Status.SchedulingStatus (and Warning

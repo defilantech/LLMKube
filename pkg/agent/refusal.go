@@ -46,7 +46,22 @@ const (
 	EventReasonModelDigestMismatch    = inferencev1alpha1.ReasonModelDigestMismatch
 	EventReasonModelDownloadTooLarge  = inferencev1alpha1.ReasonModelDownloadTooLarge
 	EventReasonSourceSecretNotAllowed = inferencev1alpha1.ReasonSourceSecretNotAllowed
+	EventReasonRuntimeNotAvailable    = inferencev1alpha1.ReasonRuntimeNotAvailable
 )
+
+// runtimeNotAvailableMessage is the refusal message for an InferenceService
+// whose resolved runtime has no registered executor.
+func runtimeNotAvailableMessage(runtime string) string {
+	if runtime == runtimeLlamaServer || runtime == runtimeLlamaCPP {
+		return fmt.Sprintf("no executor registered for runtime %q: this agent has no llama.cpp executor because "+
+			"llama-server was not found when it started; install llama.cpp or pass "+
+			"--llama-server=/path/to/llama-server and restart the agent, or set spec.runtime to an engine "+
+			"this agent serves", runtime)
+	}
+	return fmt.Sprintf("no executor registered for runtime %q: this agent was started without that engine; "+
+		"install it, pass its binary flag or select it with --runtime, and restart the agent, or set "+
+		"spec.runtime to an engine this agent serves", runtime)
+}
 
 // refuseStart records why the agent will not serve an InferenceService: it
 // writes the agent-owned scheduling status fields (the same surface memory
