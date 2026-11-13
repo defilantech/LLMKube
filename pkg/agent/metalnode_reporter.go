@@ -50,7 +50,7 @@ const (
 // metalNodeReporter is the agent's only presence on its MetalNode: it renews
 // the Lease the admin pre-created (llmkube metal token create) and carries
 // the agent's report in an annotation on it. It only ever gets and updates
-// that one Lease, the two verbs the per-Mac Role grants on it; it never
+// that one Lease, the two verbs the per-host Role grants on it; it never
 // creates it and never writes the MetalNode. It reads the MetalNode (the
 // Role's get) for its UID, which the ingress certificate must name.
 type metalNodeReporter struct {
@@ -192,7 +192,7 @@ func (r *metalNodeReporter) readMetalNode(ctx context.Context) (mn *inferencev1a
 
 // bindIngress makes the ingress certificate name this MetalNode's UID before
 // the report carries it: the controller's dial-back accepts only a server
-// whose certificate names it, so no other server can pass for this Mac. It
+// whose certificate names it, so no other server can pass for this host. It
 // binds when bindDue, or when a read made for follow shows a UID other than
 // the bound one (a MetalNode re-created under the same name). A failure is
 // logged and the report goes out anyway; the controller then says the

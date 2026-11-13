@@ -55,11 +55,11 @@ func (a *MetalAgent) followMetalNodeHostIP(mn *inferencev1alpha1.MetalNode, repo
 //     verifiedHostIP), which is the one the relay can reach;
 //   - once verification is withdrawn (a failed recheck, or an expired
 //     result), the last address it verified, for as long as
-//     that address is still on one of this Mac's up interfaces. The first
+//     that address is still on one of this host's up interfaces. The first
 //     address the dial-back tries can be the one that just failed, so moving
 //     there would turn a transient recheck failure into an outage;
 //   - before any verification, or once the last verified address has left
-//     the Mac's interfaces, the first address the dial-back tries:
+//     the host's interfaces, the first address the dial-back tries:
 //     spec.hostIP, else the report's first candidate (buildMetalNodeCandidates
 //     order). Registering what the check tries first means a first candidate
 //     that verifies needs no switch;
@@ -89,7 +89,7 @@ func (a *MetalAgent) metalNodeHostIP(mn *inferencev1alpha1.MetalNode, report met
 			return last, "the last verified address, kept after verification was withdrawn: " + pending
 		}
 		a.lastVerified = lastVerifiedHostIP{}
-		pending = fmt.Sprintf("the last verified address %s is no longer on any of this Mac's interfaces; %s",
+		pending = fmt.Sprintf("the last verified address %s is no longer on any of this host's interfaces; %s",
 			last, pending)
 	}
 	if mn != nil {

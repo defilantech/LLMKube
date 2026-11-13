@@ -117,7 +117,7 @@ The Metal agent serves `AgentRegistry` at `GET /metrics` ([`pkg/agent/health.go`
 | `llmkube_metal_agent_ingress_requests_total` | counter | `code` | Total metal-agent ingress requests, labeled by HTTP response status code. |
 | `llmkube_metal_agent_local_network_blocked` | gauge |  | 1 while, on macOS, the Kubernetes API counts as unreachable and the latest failed InferenceService list failed with no route to host or network unreachable to a private or link-local address: how macOS refuses an agent without Local Network access, which it loses on every agent upgrade. 0 otherwise, and always 0 on other systems. |
 | `llmkube_metal_agent_managed_processes` | gauge |  | Number of llama-server processes currently managed by the agent. |
-| `llmkube_metal_agent_memory_budget_bytes` | gauge |  | Total memory budget available for model serving in bytes. |
+| `llmkube_metal_agent_memory_budget_bytes` | gauge |  | Host-wide memory budget available for model serving in bytes (total memory times `--memory-fraction`). Under a cgroup memory limit on Linux, engines the agent starts are admitted against the cgroup's budget instead, which this gauge does not report. |
 | `llmkube_metal_agent_memory_committed_bytes` | gauge |  | Memory admitted to running and starting processes in bytes; new models are admitted against the budget minus this. |
 | `llmkube_metal_agent_memory_estimated_bytes` | gauge | `name`, `namespace` | Estimated memory usage per managed process in bytes. |
 | `llmkube_metal_agent_memory_pressure_level` | gauge |  | Current memory pressure level: 0=normal, 1=warning, 2=critical. |

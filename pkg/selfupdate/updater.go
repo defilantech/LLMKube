@@ -68,8 +68,9 @@ type Updater struct {
 
 	// InstallRoot is the user-owned directory managed by this Updater.
 	// Conventionally ~/Library/Application Support/llmkube/<binaryName>
-	// on macOS or ~/.local/share/llmkube/<binaryName> on Linux.
-	// Use ResolveInstallRoot to get the platform default.
+	// on macOS, and $XDG_DATA_HOME/llmkube/<binaryName> elsewhere
+	// (~/.local/share/llmkube/<binaryName> when XDG_DATA_HOME is unset or
+	// not absolute). Use ResolveInstallRoot to get the platform default.
 	InstallRoot string
 
 	// BinaryName is the name of the executable file (e.g. "foreman-agent").

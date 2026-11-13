@@ -16,6 +16,9 @@ the model through an ordinary Service.
 The Mac is not a Kubernetes node: nothing schedules pods on it. The cluster
 sees it as a `MetalNode` object and as the Services the agent registers.
 
+The agent also starts on Linux, experimentally; see
+[Linux Host Agent](/docs/guides/linux-host-agent).
+
 The path, in order:
 
 1. Check the [prerequisites](#prerequisites), especially the
@@ -566,7 +569,7 @@ Run `token create` and `join` again when:
   for more than 7 days always comes back with an expired token, and one away
   for more than 3.5 days may (less if the API server caps token lifetimes).
   The agent then logs
-  `the agent's token has expired and cannot be renewed; join the Mac again`.
+  `the agent's token has expired and cannot be renewed; join the host again`.
   `join --token-lifetime` asks for a different lifetime; the API server may
   issue a shorter one, and `join` warns when it does.
 - **You revoked it** with `llmkube metal remove`, or want it in another
@@ -1003,6 +1006,18 @@ gives the `kubectl label` command; label, create, or allow the Secret
 and the next poll starts the service. Keep
 credentials out of the relay Secret. See
 ["Model-source credentials Secrets"](https://github.com/defilantech/LLMKube/blob/main/deployment/macos/README.md#model-source-credentials-secrets-sourcesecretref).
+
+**InferenceService refused with `RuntimeNotAvailable`**
+The service's runtime (`spec.runtime`, or the agent's `--runtime` when
+that is unset) has no engine on this agent: its binary was not found
+when the agent started, or the agent was started without that engine's
+flag. An engine that is already serving the service keeps running.
+`status.schedulingMessage` names the runtime. Install the engine, pass
+its binary flag (`--llama-server`, `--mlx-server-bin`, `--omlx-bin`,
+`--vllm-swift-bin`, `--tensorfold-bin`) or select it with `--runtime`,
+and restart the agent; or set `spec.runtime` to an engine the agent
+serves. See "`RuntimeNotAvailable`" in
+[`deployment/macos/README.md`](https://github.com/defilantech/LLMKube/blob/main/deployment/macos/README.md#runtimenotavailable).
 
 **Login Items lists the agent as "Defilan Technologies LLC"**
 System Settings > General > Login Items & Extensions lists a release

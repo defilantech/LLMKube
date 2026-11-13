@@ -400,7 +400,7 @@ func TestMetalNodeHostIPChangeReregisters(t *testing.T) {
 		}, nil, 2},
 		{"is withdrawn, still local", "", "192.168.1.47", "",
 			withdraw(inferencev1alpha1.MetalNodeReasonNoneReachable), nil, 2},
-		{"left the interfaces", "192.168.1.47", "100.64.0.2", "192.168.1.47 is no longer on any of this Mac's interfaces",
+		{"left the interfaces", "192.168.1.47", "100.64.0.2", "192.168.1.47 is no longer on any of this host's interfaces",
 			nil, []hostIPCandidate{cand("en1", "10.0.0.47"), cand("utun4", "100.64.0.2")}, 3},
 	}
 	for _, step := range steps {
@@ -522,7 +522,7 @@ func TestMetalNodeLastVerifiedHostIPLeftInterfacesFallsBack(t *testing.T) {
 	}
 	fields := logs[len(logs)-1].ContextMap()
 	if fields["from"] != "192.168.1.47" || fields["to"] != "10.0.0.47" ||
-		!strings.Contains(fields["reason"].(string), "192.168.1.47 is no longer on any of this Mac's interfaces") {
+		!strings.Contains(fields["reason"].(string), "192.168.1.47 is no longer on any of this host's interfaces") {
 		t.Errorf("switch logged %v, want 192.168.1.47 -> 10.0.0.47 naming the address that left", fields)
 	}
 
