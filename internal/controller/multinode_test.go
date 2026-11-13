@@ -1059,3 +1059,50 @@ func TestValidateMultiNodeMemory(t *testing.T) {
 		})
 	}
 }
+
+// The prep exists to clear what staging left in the page cache, so it must
+// come after the model-downloader on a member that has one (#2527 review).
+func TestConstructMemberPodsMemoryPrepRunsAfterDownloader(t *testing.T) {
+	isvc, model := multiNodeFixture()
+	isvc.Spec.MultiNode.Memory = &inferencev1alpha1.MultiNodeMemory{DropPageCacheBeforeBoot: true}
+	r := &InferenceServiceReconciler{ModelCachePath: "/models", ModelCacheMode: ModelCacheModePerService}
+	pods, _, err := r.constructMemberPods(isvc, model, resolveEffectiveModelCache(isvc, model), nil, "", "")
+	if err != nil {
+		t.Fatalf("constructMemberPods: %v", err)
+	}
+	for _, p := range pods {
+		downloader := -1
+		for i, c := range p.Spec.InitContainers {
+			if c.Name == "model-downloader" {
+				downloader = i
+			}
+		}
+		if downloader < 0 {
+			t.Fatalf("%s: the fixture no longer renders a model-downloader, so this test proves nothing: %v", p.Name, p.Spec.InitContainers)
+		}
+		if _, prep := memoryPrep(p); prep <= downloader {
+			t.Errorf("%s: memory prep is init container %d, model-downloader is %d; the prep must run after the weights are staged", p.Name, prep, downloader)
+		}
+	}
+}
+
+// The CRD caps sysctls at 16 entries; the controller repeats the cap for an
+// object stored under a CRD that did not have it (#2527 review).
+func TestValidateMultiNodeMemorySysctlLimit(t *testing.T) {
+	build := func(n int) *inferencev1alpha1.InferenceService {
+		isvc, _ := multiNodeFixture()
+		s := map[string]inferencev1alpha1.MultiNodeSysctlValue{}
+		for i := range n {
+			s["vm.knob_"+strconv.Itoa(i)] = "1"
+		}
+		isvc.Spec.MultiNode.Memory = &inferencev1alpha1.MultiNodeMemory{Sysctls: s}
+		return isvc
+	}
+	if err := validateMultiNode(build(multiNodeMaxSysctls)); err != nil {
+		t.Errorf("%d sysctls must be accepted: %v", multiNodeMaxSysctls, err)
+	}
+	err := validateMultiNode(build(multiNodeMaxSysctls + 1))
+	if err == nil || !strings.Contains(err.Error(), "has 17 entries, at most 16 are allowed") {
+		t.Errorf("17 sysctls: err = %v, want the entry limit", err)
+	}
+}

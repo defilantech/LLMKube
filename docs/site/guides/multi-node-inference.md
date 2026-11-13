@@ -160,8 +160,17 @@ What to know before turning it on:
   the group is deleted, and they affect every pod on the node. The drop
   empties the page cache for everything on the node, which is why it suits a
   node dedicated to the group.
+- **It runs as root.** The prep is uid 0, so it cannot be combined with
+  `podSecurityContext.runAsNonRoot: true`; the kubelet refuses to start it.
+  The cache prep has the same limit.
+- **The init container image must have a shell.** The prep uses the
+  operator's `--init-container-image` and needs `sh`, `awk`, `tr` and `sync`
+  from it. The default curl image has them; a distroless mirror does not.
 - **Only `vm.*` names with integer values** are accepted, at most 16. The API
   server rejects anything else.
+- **A name the node's kernel does not have stops the boot.** The prep fails on
+  the first sysctl it cannot write and the member never starts its runtime,
+  so check the names against `sysctl -a` on the member nodes first.
 - **Changing the block recreates the group**, like any other member change.
   Adding it to a serving group is a restart; a group without the block is
   untouched by an operator upgrade.
