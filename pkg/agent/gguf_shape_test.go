@@ -357,6 +357,48 @@ func TestCheckMemoryAdmission_RefusalSaysKVCacheNotCounted(t *testing.T) {
 	}
 }
 
+// A model that fits on its own but not next to the services already running
+// carries the same note, whether the host-wide budget or the agent cgroup's
+// budget refuses it.
+func TestCheckMemoryAdmission_CommittedRefusalSaysKVCacheNotCounted(t *testing.T) {
+	notGGUF := filepath.Join(t.TempDir(), "model.bin")
+	if err := os.WriteFile(notGGUF, make([]byte, 4096), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The 4 KiB file estimates at about 0.5 GiB, which fits either budget alone.
+	tests := []struct {
+		name      string
+		cgroupMax string
+		running   float64 // GiB already admitted to an in-cgroup engine
+		refusedBy string  // the budget the refusal names
+	}{
+		{name: "host-wide budget", cgroupMax: "max", running: 48, refusedBy: "of the 48.0 GB budget"},
+		{name: "cgroup budget", cgroupMax: "4294967296", running: 2.8, refusedBy: "of the 3.0 GB budget"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isvc := runtimeISVC("late", runtimeLlamaServer)
+			a := newCgroupAgent(t, tt.cgroupMax, isvc)
+			a.processes["default/early"] = &ManagedProcess{
+				Name: "early", Namespace: "default", Runtime: runtimeLlamaServer, AdmittedBytes: gib(tt.running),
+			}
+
+			err := a.checkMemoryAdmission(context.Background(), isvc, newAdmissionTestModel(notGGUF, ""), 131072, "", "")
+			if err == nil {
+				t.Fatal("admission passed; want a refusal")
+			}
+			_, msg := schedulingStatus(t, a, "late")
+			if !strings.Contains(msg, tt.refusedBy+" already committed to 1 service (default/early)") {
+				t.Fatalf("SchedulingMessage = %q, want a refusal %q held by default/early", msg, tt.refusedBy)
+			}
+			want := "the KV cache for --ctx-size 131072 is not counted (" + notGGUF + " is not a GGUF file)"
+			if !strings.Contains(msg, want) {
+				t.Errorf("SchedulingMessage = %q, want it to contain %q", msg, want)
+			}
+		})
+	}
+}
+
 // The parsed shape is cached per file and reused while size, mtime and inode
 // are unchanged; a change to any of them makes the next admission read the
 // header again.
