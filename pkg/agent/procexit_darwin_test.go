@@ -21,6 +21,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -125,51 +126,66 @@ func TestWatchProcessExit_GoneAndCancelled(t *testing.T) {
 // TestEngineExit_AdoptedEngine is #2405 for an engine adopted from a previous
 // agent process, which has no reaper in this one: its exit is watched through
 // kqueue, so the endpoint is withdrawn and the restart queued without waiting
-// for the health probe threshold.
+// for the health probe threshold. An engine adopted unhealthy (#2462: it is
+// running but missed its probe at adoption, so it has no Ready endpoint) is
+// watched the same way, so its exit restarts it at once too.
 func TestEngineExit_AdoptedEngine(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds a fake engine binary")
 	}
 	bin := filepath.Join(t.TempDir(), "llama-server")
 	buildFakeEngine(t, bin)
-	stateDir := t.TempDir()
-	port := healthyPort(t)
-	proc := startRecordedEngine(t, bin, stateDir, port)
+	for _, healthy := range []bool{true, false} {
+		t.Run(fmt.Sprintf("healthy=%v", healthy), func(t *testing.T) {
+			stateDir := t.TempDir()
+			port := healthyPort(t)
+			proc := startRecordedEngine(t, bin, stateDir, port)
 
-	isvc := &inferencev1alpha1.InferenceService{ObjectMeta: metav1.ObjectMeta{Name: "real", Namespace: "default"}}
-	scheme := newTestScheme()
-	_ = corev1.AddToScheme(scheme)
-	_ = discoveryv1.AddToScheme(scheme)
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(isvc).Build()
-	rec := record.NewFakeRecorder(16)
-	a := NewMetalAgent(MetalAgentConfig{
-		K8sClient: c, Namespace: "default", EventRecorder: rec,
-		MemoryProvider: &mockMemoryProvider{totalBytes: 128 << 30}, StateDir: stateDir,
-	})
-	a.registry = NewServiceRegistry(c, "10.0.0.1", newNopLogger(), "")
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	if !a.adoptEngines(ctx)["default/real"] {
-		t.Fatal("setup: the engine was not adopted")
-	}
-	a.registerEndpoint(ctx, "default/real", a.processes["default/real"])
-	a.watchAdoptedExits(ctx)
+			isvc := &inferencev1alpha1.InferenceService{ObjectMeta: metav1.ObjectMeta{Name: "real", Namespace: "default"}}
+			scheme := newTestScheme()
+			_ = corev1.AddToScheme(scheme)
+			_ = discoveryv1.AddToScheme(scheme)
+			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(isvc).Build()
+			rec := record.NewFakeRecorder(16)
+			a := NewMetalAgent(MetalAgentConfig{
+				K8sClient: c, Namespace: "default", EventRecorder: rec,
+				MemoryProvider: &mockMemoryProvider{totalBytes: 128 << 30}, StateDir: stateDir,
+			})
+			if !healthy {
+				a.healthChecker = &mockHealthChecker{result: false}
+			}
+			a.registry = NewServiceRegistry(c, "10.0.0.1", newNopLogger(), "")
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if !a.adoptEngines(ctx)["default/real"] {
+				t.Fatal("setup: the engine was not adopted")
+			}
+			p := a.processes["default/real"]
+			if p.Healthy != healthy {
+				t.Fatalf("setup: engine adopted with Healthy=%v, want %v", p.Healthy, healthy)
+			}
+			if healthy {
+				a.registerEndpoint(ctx, "default/real", p)
+			}
+			a.watchAdoptedExits(ctx)
 
-	if err := syscall.Kill(proc.PID, syscall.SIGKILL); err != nil {
-		t.Fatalf("kill the engine: %v", err)
-	}
-	if !eventually(func() bool { return restartPending(a, "default/real") }) {
-		t.Fatalf("no restart queued %s after the adopted engine exited", exitWaitTimeout)
-	}
-	if ready, _ := endpointReady(t, c, "real"); ready {
-		t.Error("the adopted engine's endpoint still advertises Ready after it exited")
-	}
-	var exited []string
-	eventually(func() bool {
-		exited = append(exited, eventsWithReason(drainEvents(rec), wantEngineExitedReason)...)
-		return len(exited) > 0
-	})
-	if len(exited) != 1 || !strings.Contains(exited[0], "exit status unknown") {
-		t.Errorf("%s events = %v, want one saying the exit status is unknown", wantEngineExitedReason, exited)
+			if err := syscall.Kill(proc.PID, syscall.SIGKILL); err != nil {
+				t.Fatalf("kill the engine: %v", err)
+			}
+			if !eventually(func() bool { return restartPending(a, "default/real") }) {
+				t.Fatalf("no restart queued %s after the adopted engine exited", exitWaitTimeout)
+			}
+			if ready, _ := endpointReady(t, c, "real"); ready {
+				t.Error("the adopted engine's endpoint advertises Ready after it exited")
+			}
+			var exited []string
+			eventually(func() bool {
+				exited = append(exited, eventsWithReason(drainEvents(rec), wantEngineExitedReason)...)
+				return len(exited) > 0
+			})
+			if len(exited) != 1 || !strings.Contains(exited[0], "exit status unknown") {
+				t.Errorf("%s events = %v, want one saying the exit status is unknown", wantEngineExitedReason, exited)
+			}
+		})
 	}
 }
