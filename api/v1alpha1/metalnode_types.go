@@ -113,10 +113,11 @@ type MetalNodeVerifier struct {
 	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
 }
 
-// MetalNodeCapacity is the hardware the agent reports. All of it is the Mac's
-// own claim.
+// MetalNodeCapacity is the hardware the agent reports. All of it is the
+// host's own claim.
 type MetalNodeCapacity struct {
-	// MemoryBytes is the Mac's unified memory in bytes.
+	// MemoryBytes is the host's memory in bytes: unified memory on a Mac,
+	// RAM capped by the agent's cgroup limit on Linux.
 	// +optional
 	MemoryBytes int64 `json:"memoryBytes,omitempty"`
 
@@ -124,15 +125,17 @@ type MetalNodeCapacity struct {
 	// +optional
 	Memory string `json:"memory,omitempty"`
 
-	// Chip is the CPU brand string (for example "Apple M5 Max").
+	// Chip is the CPU brand string on macOS (for example "Apple M5 Max"),
+	// and the device-tree model or the cpuinfo model name on Linux.
 	// +optional
 	Chip string `json:"chip,omitempty"`
 
-	// GPUCores is the GPU core count.
+	// GPUCores is the GPU core count. Reported on macOS only.
 	// +optional
 	GPUCores int32 `json:"gpuCores,omitempty"`
 
-	// MetalVersion is the Metal family the GPU supports (for example "Metal 4").
+	// MetalVersion is the Metal family the GPU supports (for example
+	// "Metal 4"). Reported on macOS only.
 	// +optional
 	MetalVersion string `json:"metalVersion,omitempty"`
 }

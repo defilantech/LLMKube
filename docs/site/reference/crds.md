@@ -776,11 +776,11 @@ MetalNodeStatus is written only by the controller.
 | `status.candidates[].result` | string | yes |  | one of `"Pending"`, `"Reachable"`, `"Timeout"`, `"Refused"`, `"PinMismatch"`, `"CertificateMismatch"`, `"NotAllowed"`, `"Error"` | Result is the dial-back outcome. |
 | `status.candidates[].source` | string |  |  |  | Source says where the address came from: override (spec.hostIP or the agent's `--host-ip`), tailnet, lan or docker-host. |
 | `status.capacity` | object |  |  |  | Capacity is the hardware the agent reports. |
-| `status.capacity.chip` | string |  |  |  | Chip is the CPU brand string (for example "Apple M5 Max"). |
-| `status.capacity.gpuCores` | integer (int32) |  |  |  | GPUCores is the GPU core count. |
+| `status.capacity.chip` | string |  |  |  | Chip is the CPU brand string on macOS (for example "Apple M5 Max"), and the device-tree model or the cpuinfo model name on Linux. |
+| `status.capacity.gpuCores` | integer (int32) |  |  |  | GPUCores is the GPU core count. Reported on macOS only. |
 | `status.capacity.memory` | string |  |  |  | Memory is MemoryBytes as a quantity (for example 128Gi), for display. |
-| `status.capacity.memoryBytes` | integer (int64) |  |  |  | MemoryBytes is the Mac's unified memory in bytes. |
-| `status.capacity.metalVersion` | string |  |  |  | MetalVersion is the Metal family the GPU supports (for example "Metal 4"). |
+| `status.capacity.memoryBytes` | integer (int64) |  |  |  | MemoryBytes is the host's memory in bytes: unified memory on a Mac, RAM capped by the agent's cgroup limit on Linux. |
+| `status.capacity.metalVersion` | string |  |  |  | MetalVersion is the Metal family the GPU supports (for example "Metal 4"). Reported on macOS only. |
 | `status.conditions` | array of object |  |  |  | Conditions: AgentConnected and Reachable. |
 | `status.conditions[].lastTransitionTime` | string (date-time) | yes |  |  | lastTransitionTime is the last time the condition transitioned from one status to another. This should be when the underlying condition changed. If that is not known, then using the time when the API field changed is acceptable. |
 | `status.conditions[].message` | string | yes |  | max length 32768 | message is a human readable message indicating details about the transition. This may be an empty string. |

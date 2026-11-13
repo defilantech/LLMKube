@@ -1,4 +1,4 @@
-//go:build !darwin
+//go:build !darwin && !linux
 
 /*
 Copyright 2026.
@@ -18,17 +18,5 @@ limitations under the License.
 
 package agent
 
-import "errors"
-
-// errNoSysctl is what the capacity reader returns off macOS, where the
-// sysctl names it asks for do not exist.
-var errNoSysctl = errors.New("host capacity is only read on macOS")
-
-// DetectHostCapacity reports nothing off macOS. It goes through the same
-// reader as darwin, with every read failing, so the parsing helpers are
-// compiled and used on every OS.
-func DetectHostCapacity() HostCapacity {
-	return hostCapacityFromSysctl(func(string) (string, error) {
-		return "", errNoSysctl
-	})
-}
+// DetectHostCapacity reports nothing off macOS and Linux.
+func DetectHostCapacity() HostCapacity { return HostCapacity{} }
