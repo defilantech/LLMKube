@@ -295,6 +295,59 @@ var _ = Describe("multiNode group reconcile", func() {
 		Expect(after[0].Annotations[AnnotationMultiNodeGroupHash]).NotTo(Equal(oldHash))
 	})
 
+	// #1857: the memory block reaches the member pods the API server stores,
+	// and the CRD refuses a sysctl outside vm.* before the controller sees it.
+	It("adds the memory prep to every member and recreates the group for it", func() {
+		reconcileOnce()
+		for _, p := range memberPods() {
+			for _, c := range p.Spec.InitContainers {
+				Expect(c.Name).NotTo(Equal(multiNodeMemoryPrepContainer), "%s: no memory block, no prep", p.Name)
+			}
+		}
+
+		var isvc inferencev1alpha1.InferenceService
+		Expect(k8sClient.Get(ctx, key, &isvc)).To(Succeed())
+		isvc.Spec.MultiNode.Memory = &inferencev1alpha1.MultiNodeMemory{
+			DropPageCacheBeforeBoot: true,
+			Sysctls:                 map[string]inferencev1alpha1.MultiNodeSysctlValue{"vm.min_free_kbytes": "1048576"},
+		}
+		Expect(k8sClient.Update(ctx, &isvc)).To(Succeed())
+
+		reconcileOnce() // stale -> delete
+		finishTerminating()
+		Eventually(memberPods).Should(BeEmpty())
+		reconcileOnce() // recreate
+		pods := memberPods()
+		Expect(pods).To(HaveLen(2))
+		for _, p := range pods {
+			Expect(p.Spec.InitContainers).NotTo(BeEmpty())
+			last := p.Spec.InitContainers[len(p.Spec.InitContainers)-1]
+			Expect(last.Name).To(Equal(multiNodeMemoryPrepContainer), "%s: the prep runs last", p.Name)
+			Expect(last.SecurityContext).NotTo(BeNil())
+			Expect(last.SecurityContext.Privileged).To(HaveValue(BeTrue()))
+			Expect(last.Command).To(ContainElement("vm.min_free_kbytes=1048576"))
+			Expect(last.Env).To(ContainElement(corev1.EnvVar{Name: "DROP_PAGE_CACHE", Value: "1"}))
+		}
+	})
+
+	It("refuses memory sysctls that are not vm.* integers at admission", func() {
+		for _, tc := range []struct {
+			bad  map[string]inferencev1alpha1.MultiNodeSysctlValue
+			want string
+		}{
+			{map[string]inferencev1alpha1.MultiNodeSysctlValue{"kernel.panic": "1"}, "sysctls keys must be vm.<name>"},
+			{map[string]inferencev1alpha1.MultiNodeSysctlValue{"vm.../kernel/panic": "1"}, "sysctls keys must be vm.<name>"},
+			{map[string]inferencev1alpha1.MultiNodeSysctlValue{"vm.min_free_kbytes": "1; reboot"}, "should match '^[0-9]+$'"},
+		} {
+			var isvc inferencev1alpha1.InferenceService
+			Expect(k8sClient.Get(ctx, key, &isvc)).To(Succeed())
+			isvc.Spec.MultiNode.Memory = &inferencev1alpha1.MultiNodeMemory{Sysctls: tc.bad}
+			err := k8sClient.Update(ctx, &isvc)
+			Expect(apierrors.IsInvalid(err)).To(BeTrue(), "sysctls %v must be rejected, got %v", tc.bad, err)
+			Expect(err.Error()).To(ContainSubstring(tc.want))
+		}
+	})
+
 	It("fails clearly when a member claim is missing", func() {
 		var isvc inferencev1alpha1.InferenceService
 		Expect(k8sClient.Get(ctx, key, &isvc)).To(Succeed())

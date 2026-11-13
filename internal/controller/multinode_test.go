@@ -906,3 +906,156 @@ func TestMultiNodeRecreateResetRequeue(t *testing.T) {
 		t.Fatalf("got %s, want %s", got, multiNodeRecreateResetAfter-time.Minute)
 	}
 }
+
+// memoryPrep returns the pod's multinode-memory-prep init container and its
+// index, or -1.
+func memoryPrep(p *corev1.Pod) (corev1.Container, int) {
+	for i, c := range p.Spec.InitContainers {
+		if c.Name == multiNodeMemoryPrepContainer {
+			return c, i
+		}
+	}
+	return corev1.Container{}, -1
+}
+
+// #1857: spec.multiNode.memory puts one privileged init container on every
+// member, after the downloader, that writes the sysctls and drops the cache.
+func TestConstructMemberPodsMemoryPrep(t *testing.T) {
+	isvc, model := multiNodeFixture()
+	isvc.Spec.MultiNode.Memory = &inferencev1alpha1.MultiNodeMemory{
+		DropPageCacheBeforeBoot: true,
+		Sysctls: map[string]inferencev1alpha1.MultiNodeSysctlValue{
+			"vm.watermark_scale_factor": "200",
+			"vm.min_free_kbytes":        "1048576",
+		},
+	}
+	r := &InferenceServiceReconciler{ModelCachePath: "/models", ModelCacheMode: ModelCacheModePerService, InitContainerImage: "mirror.example/curl:1"}
+	pods, _, err := r.constructMemberPods(isvc, model, resolveEffectiveModelCache(isvc, model), nil, "", "")
+	if err != nil {
+		t.Fatalf("constructMemberPods: %v", err)
+	}
+	for _, p := range pods {
+		c, i := memoryPrep(p)
+		if i < 0 {
+			t.Fatalf("%s: no %s init container: %v", p.Name, multiNodeMemoryPrepContainer, p.Spec.InitContainers)
+		}
+		if i != len(p.Spec.InitContainers)-1 {
+			t.Errorf("%s: memory prep is init container %d of %d; it must run last, after the weights are staged", p.Name, i, len(p.Spec.InitContainers))
+		}
+		if c.Image != "mirror.example/curl:1" {
+			t.Errorf("%s: image %q, want the operator's init container image", p.Name, c.Image)
+		}
+		sc := c.SecurityContext
+		if sc == nil || sc.Privileged == nil || !*sc.Privileged || sc.RunAsUser == nil || *sc.RunAsUser != 0 {
+			t.Errorf("%s: memory prep must be privileged and root to write /proc/sys: %+v", p.Name, sc)
+		}
+		if len(c.VolumeMounts) != 0 {
+			t.Errorf("%s: memory prep must mount nothing: %v", p.Name, c.VolumeMounts)
+		}
+		// sh -c <script> <$0> <sysctls sorted by name>
+		wantArgs := []string{"vm.min_free_kbytes=1048576", "vm.watermark_scale_factor=200"}
+		if len(c.Command) != 4+len(wantArgs) || c.Command[0] != "sh" || c.Command[1] != "-c" || c.Command[2] != multiNodeMemoryPrepScript {
+			t.Fatalf("%s: command = %q", p.Name, c.Command)
+		}
+		if got := strings.Join(c.Command[4:], " "); got != strings.Join(wantArgs, " ") {
+			t.Errorf("%s: sysctl args = %q, want %q", p.Name, got, strings.Join(wantArgs, " "))
+		}
+		if len(c.Env) != 1 || c.Env[0].Name != "DROP_PAGE_CACHE" || c.Env[0].Value != "1" {
+			t.Errorf("%s: env = %v, want DROP_PAGE_CACHE=1", p.Name, c.Env)
+		}
+	}
+
+	// Sysctls alone must not drop the cache.
+	isvc.Spec.MultiNode.Memory.DropPageCacheBeforeBoot = false
+	pods, _, err = r.constructMemberPods(isvc, model, resolveEffectiveModelCache(isvc, model), nil, "", "")
+	if err != nil {
+		t.Fatalf("constructMemberPods: %v", err)
+	}
+	if c, i := memoryPrep(pods[0]); i < 0 || c.Env[0].Value != "0" {
+		t.Errorf("sysctls without the drop: container index %d, env %v; want DROP_PAGE_CACHE=0", i, c.Env)
+	}
+}
+
+// The drop must stay in the script and come after the sysctl loop: the
+// rendered-spec assertions above pass with an empty script.
+func TestMultiNodeMemoryPrepScriptOrder(t *testing.T) {
+	sysctl := strings.Index(multiNodeMemoryPrepScript, `echo "$v" > "$f"`)
+	drop := strings.Index(multiNodeMemoryPrepScript, "echo 3 > /proc/sys/vm/drop_caches")
+	sync := strings.Index(multiNodeMemoryPrepScript, "\n  sync\n")
+	if sysctl < 0 || drop < 0 || sync < 0 {
+		t.Fatalf("script lost a step (sysctl write %d, sync %d, drop %d):\n%s", sysctl, sync, drop, multiNodeMemoryPrepScript)
+	}
+	if sysctl >= sync || sync >= drop {
+		t.Errorf("order must be sysctls, sync, drop; got offsets %d, %d, %d", sysctl, sync, drop)
+	}
+	if !strings.HasPrefix(multiNodeMemoryPrepScript, "set -eu\n") {
+		t.Errorf("script must fail the init container on a refused write (set -eu)")
+	}
+}
+
+// An unset or empty memory block must leave the member pods, and so the group
+// hash, exactly as they were: an operator upgrade must not recreate a serving
+// group that never asked for the prep.
+func TestConstructMemberPodsMemoryUnsetIsInert(t *testing.T) {
+	isvc, model := multiNodeFixture()
+	r := &InferenceServiceReconciler{ModelCachePath: "/models", ModelCacheMode: ModelCacheModePerService}
+	basePods, baseHash, err := r.constructMemberPods(isvc, model, resolveEffectiveModelCache(isvc, model), nil, "", "")
+	if err != nil {
+		t.Fatalf("constructMemberPods: %v", err)
+	}
+	if _, i := memoryPrep(basePods[0]); i >= 0 {
+		t.Fatalf("no memory block must add no init container")
+	}
+
+	isvc.Spec.MultiNode.Memory = &inferencev1alpha1.MultiNodeMemory{}
+	emptyPods, emptyHash, err := r.constructMemberPods(isvc, model, resolveEffectiveModelCache(isvc, model), nil, "", "")
+	if err != nil {
+		t.Fatalf("constructMemberPods: %v", err)
+	}
+	if _, i := memoryPrep(emptyPods[0]); i >= 0 || emptyHash != baseHash {
+		t.Errorf("an empty memory block must change nothing: prep index %d, hash %s vs %s", i, emptyHash, baseHash)
+	}
+
+	isvc.Spec.MultiNode.Memory.DropPageCacheBeforeBoot = true
+	_, dropHash, err := r.constructMemberPods(isvc, model, resolveEffectiveModelCache(isvc, model), nil, "", "")
+	if err != nil {
+		t.Fatalf("constructMemberPods: %v", err)
+	}
+	if dropHash == baseHash {
+		t.Errorf("turning the drop on must change the group hash so the group is recreated with it")
+	}
+}
+
+func TestValidateMultiNodeMemory(t *testing.T) {
+	cases := []struct {
+		name    string
+		sysctls map[string]inferencev1alpha1.MultiNodeSysctlValue
+		wantErr string
+	}{
+		{"vm sysctls", map[string]inferencev1alpha1.MultiNodeSysctlValue{"vm.min_free_kbytes": "1048576", "vm.watermark_scale_factor": "200"}, ""},
+		{"none", nil, ""},
+		{"other subsystem", map[string]inferencev1alpha1.MultiNodeSysctlValue{"kernel.panic": "1"}, `key "kernel.panic"`},
+		{"path traversal", map[string]inferencev1alpha1.MultiNodeSysctlValue{"vm.../kernel/panic": "1"}, "is not a vm.<name> sysctl"},
+		{"nested name", map[string]inferencev1alpha1.MultiNodeSysctlValue{"vm.a.b": "1"}, "is not a vm.<name> sysctl"},
+		{"shell in the name", map[string]inferencev1alpha1.MultiNodeSysctlValue{"vm.x$(reboot)": "1"}, "is not a vm.<name> sysctl"},
+		{"shell in the value", map[string]inferencev1alpha1.MultiNodeSysctlValue{"vm.min_free_kbytes": "1; reboot"}, "is not a non-negative integer"},
+		{"negative value", map[string]inferencev1alpha1.MultiNodeSysctlValue{"vm.min_free_kbytes": "-1"}, "is not a non-negative integer"},
+		{"empty value", map[string]inferencev1alpha1.MultiNodeSysctlValue{"vm.min_free_kbytes": ""}, "is not a non-negative integer"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			isvc, _ := multiNodeFixture()
+			isvc.Spec.MultiNode.Memory = &inferencev1alpha1.MultiNodeMemory{Sysctls: tc.sysctls}
+			err := validateMultiNode(isvc)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("rejected: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("err = %v, want it to contain %q", err, tc.wantErr)
+			}
+		})
+	}
+}

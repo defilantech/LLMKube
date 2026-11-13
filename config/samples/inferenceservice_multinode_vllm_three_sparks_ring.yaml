@@ -10,11 +10,12 @@
 #     subnet. Without it NCCL pairs NICs by channel index on both ends, which a P0->P1 ring never satisfies.
 #
 # Before creating this: stage all 54 checkpoint files on every member (config/samples/model_dsv41_flash_exl3.yaml),
-# apply config/samples/jobs/dsv41-tp3-config.yaml (72 heads / 9 o_groups), and run
-# config/samples/jobs/drop-page-cache.yaml on each member, and apply config/samples/gb10-memory-guard.yaml once:
-# with the KV pin below, vLLM skips memory profiling, so nothing else catches a dirty page cache (a fresh 460 GB
-# stage leaves ~10 GiB of it resident even with the group down; measured 2026-09-20). The guard DaemonSet does the
-# drop on every boot, keeps MemFree above 4 GiB while serving, and suspends the group before the allocator stalls.
+# apply config/samples/jobs/dsv41-tp3-config.yaml (72 heads / 9 o_groups), and apply
+# config/samples/gb10-memory-guard.yaml once: with the KV pin below, vLLM skips memory profiling, so nothing else
+# catches a dirty page cache (a fresh 460 GB stage leaves ~10 GiB of it resident even with the group down; measured
+# 2026-09-20). multiNode.memory below drops the cache and sets the two vm sysctls on every member right before its
+# runtime starts, on every boot (a privileged init container, so the namespace must allow privileged pods); the
+# guard DaemonSet keeps MemFree above 4 GiB while serving and suspends the group before the allocator stalls.
 #
 # Turn swap off on every member before the first boot (sudo swapoff -a): a memory overrun then OOM-kills the worker,
 # which the operator restarts, instead of paging kubelet out and wedging the node. The image pre-warms FlashInfer's
@@ -106,7 +107,7 @@ spec:
     # on, DSpark k=5: stripe PASS, prefill 2,000 / 2,120 tok/s at 10K / 40K, a 450,979-token request at
     # 1,472 tok/s, decode 84-86). vLLM then skips memory profiling and ignores gpuMemoryUtilization; the pin
     # is the whole budget, which is what lets 512K + vision fit (see maxModelLen). Two things become
-    # mandatory: drop caches on every member before every boot (jobs/drop-page-cache.yaml; no profiler
+    # mandatory: drop caches on every member before every boot (multiNode.memory below; no profiler
     # catches a dirty cache), and a serving-phase flusher under 4 GiB MemFree (rank 2 dipped to 2.7 GiB under
     # the 450K prefill even with one). Do not raise the pin past ~4.2 GiB on three Sparks: MemAvailable while
     # serving is ~10 GiB. 2.3 GiB (1.10x) also boots and serves if headroom matters more than concurrency.
@@ -200,9 +201,16 @@ spec:
   multiNode:
     rdmaResource: rdma/rdma_shared_device_a
     ibGIDIndex: 3
+    # The nodes shipped at vm.min_free_kbytes 44 MiB and watermark_scale_factor 10, which left background reclaim
+    # no room; with these two set, a 450,977-token prefill needed no serving-phase drop (measured 2026-09-20).
+    memory:
+      dropPageCacheBeforeBoot: true
+      sysctls:
+        vm.min_free_kbytes: "1048576"
+        vm.watermark_scale_factor: "200"
     members:
       - node: ahazidgx1
-        fabric: {address: 192.168.1.28,  socketInterface: enP7s7, ibHCA: "rocep1s0f0,rocep1s0f1,roceP2p1s0f0,roceP2p1s0f1"}
+        fabric: {address: 192.168.1.28, socketInterface: enP7s7, ibHCA: "rocep1s0f0,rocep1s0f1,roceP2p1s0f0,roceP2p1s0f1"}
         modelCache: {claimName: dsv41-dgx1}
       - node: ahazidgx2
         fabric: {address: 192.168.1.86,  socketInterface: enP7s7, ibHCA: "rocep1s0f0,rocep1s0f1,roceP2p1s0f0,roceP2p1s0f1"}

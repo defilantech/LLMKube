@@ -90,6 +90,16 @@ func fullyPopulatedInferenceService() *InferenceService {
 				Dtype:              "bfloat16",
 				AttentionBackend:   "FLASHINFER",
 			},
+			MultiNode: &MultiNodeSpec{
+				Members: []MultiNodeMember{
+					{Node: "node-a", Fabric: &MultiNodeMemberFabric{Address: "10.0.0.1"}},
+					{Node: "node-b"},
+				},
+				Memory: &MultiNodeMemory{
+					DropPageCacheBeforeBoot: true,
+					Sysctls:                 map[string]MultiNodeSysctlValue{"vm.min_free_kbytes": "1048576"},
+				},
+			},
 			Autoscaling: &AutoscalingSpec{
 				MinReplicas: ptrInt32(1),
 				MaxReplicas: 5,
@@ -150,6 +160,25 @@ func TestInferenceServiceDeepCopyIndependence(t *testing.T) {
 	}
 	if got := orig.Spec.PodLabels["team"]; got != "platform" {
 		t.Errorf("original Spec.PodLabels[team] = %q; want %q", got, "platform")
+	}
+
+	// The controller renders member pods from a copy of the service, so the
+	// copy's multiNode.memory must not share the sysctls map.
+	clone.Spec.MultiNode.Memory.Sysctls["vm.min_free_kbytes"] = "1"
+	clone.Spec.MultiNode.Memory.DropPageCacheBeforeBoot = false
+	if got := orig.Spec.MultiNode.Memory.Sysctls["vm.min_free_kbytes"]; got != "1048576" {
+		t.Errorf("original Spec.MultiNode.Memory.Sysctls[vm.min_free_kbytes] = %q; want %q", got, "1048576")
+	}
+	if !orig.Spec.MultiNode.Memory.DropPageCacheBeforeBoot {
+		t.Errorf("original Spec.MultiNode.Memory.DropPageCacheBeforeBoot was changed through the clone")
+	}
+	mem := orig.Spec.MultiNode.Memory.DeepCopy()
+	mem.Sysctls["vm.min_free_kbytes"] = "2"
+	if got := orig.Spec.MultiNode.Memory.Sysctls["vm.min_free_kbytes"]; got != "1048576" {
+		t.Errorf("original sysctls changed through MultiNodeMemory.DeepCopy: %q", got)
+	}
+	if (*MultiNodeMemory)(nil).DeepCopy() != nil {
+		t.Errorf("DeepCopy of a nil MultiNodeMemory must be nil")
 	}
 
 	// Mutate pointer fields on the clone.

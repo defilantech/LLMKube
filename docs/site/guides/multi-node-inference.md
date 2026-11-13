@@ -123,6 +123,52 @@ a plain directory needs the same relative path, which a relative symlink
 inside the volume root provides (`snapshots/<hash> -> ../<dir>`); a symlink
 to a path outside the volume root dangles the same way.
 
+## Node memory before boot
+
+On a unified-memory host such as a DGX Spark, host RAM is GPU memory. Staging
+a checkpoint leaves most of it as page cache, and a vLLM group whose KV cache
+is pinned with `--kv-cache-memory-bytes` skips memory profiling, so nothing
+notices that the cache is in the way until the allocator runs out.
+`spec.multiNode.memory` has the operator clear it on every member, on every
+boot:
+
+```yaml
+  multiNode:
+    memory:
+      dropPageCacheBeforeBoot: true
+      sysctls:
+        vm.min_free_kbytes: "1048576"
+        vm.watermark_scale_factor: "200"
+```
+
+Either field adds one init container, `multinode-memory-prep`, as the last
+init container of every member pod: it runs after the member's weights are
+staged and right before its runtime starts. It writes the sysctls first, then
+syncs and drops the page cache, and prints each value before and after:
+
+```bash
+kubectl logs <service>-mn-0 -c multinode-memory-prep
+```
+
+What to know before turning it on:
+
+- **It is privileged.** `/proc/sys` is writable only in a privileged
+  container, so the namespace's Pod Security level must allow privileged
+  pods (a multiNode group already needs `hostNetwork` and `hostIPC`). Anyone
+  who may create an InferenceService in that namespace can set these fields.
+- **The writes are node-wide and stay.** The sysctls are not restored when
+  the group is deleted, and they affect every pod on the node. The drop
+  empties the page cache for everything on the node, which is why it suits a
+  node dedicated to the group.
+- **Only `vm.*` names with integer values** are accepted, at most 16. The API
+  server rejects anything else.
+- **Changing the block recreates the group**, like any other member change.
+  Adding it to a serving group is a restart; a group without the block is
+  untouched by an operator upgrade.
+- **It covers boot, not serving.** A page cache that regrows under load still
+  needs a serving-phase flusher; `config/samples/gb10-memory-guard.yaml` is
+  the one the three-Spark ring runs.
+
 ## Failure semantics
 
 The group is Ready only when every member is Running and rank 0 passes its
@@ -298,7 +344,9 @@ checkpoint files locally, including the two 101 GB Engram tables the runtime
 reads from NVMe; a claim the operator must stage into has to be a pre-bound
 static `local` PV (the members are placed with `nodeName`, so a
 WaitForFirstConsumer class never binds); and after a large stage, drop the
-page cache on each member before creating the InferenceService, or the worker
+page cache on each member before the group boots
+(`multiNode.memory.dropPageCacheBeforeBoot`, see
+[Node memory before boot](#node-memory-before-boot)), or the worker
 refuses to start with CUDA-free below `gpuMemoryUtilization` x total. Turn
 swap off on every member first (`sudo swapoff -a`): an overrun then OOM-kills
 the worker, which the operator restarts, where a swapping node pages kubelet

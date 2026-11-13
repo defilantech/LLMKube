@@ -4010,6 +4010,37 @@ spec:
                     maxItems: 64
                     minItems: 2
                     type: array
+                  memory:
+                    description: |-
+                      Memory prepares each member node's memory right before the member's
+                      runtime starts. Unset adds nothing to the member pods.
+                    properties:
+                      dropPageCacheBeforeBoot:
+                        description: |-
+                          DropPageCacheBeforeBoot syncs and drops the node's page cache after the
+                          member has staged its weights and before its runtime container starts.
+                        type: boolean
+                      sysctls:
+                        additionalProperties:
+                          description: |-
+                            MultiNodeSysctlValue is the value written for one sysctl: a non-negative
+                            integer. It is a type of its own so the schema can bound it; the key rule
+                            above is CEL, whose cost budget an unbounded value would exceed.
+                          maxLength: 20
+                          pattern: ^[0-9]+$
+                          type: string
+                        description: |-
+                          Sysctls are kernel memory settings written on the member's node before
+                          the drop, each logged with its value before and after. Keys are vm.*
+                          names (vm.min_free_kbytes, vm.watermark_scale_factor); values are
+                          non-negative integers. They are not restored when the group goes away.
+                        maxProperties: 16
+                        type: object
+                        x-kubernetes-validations:
+                        - message: sysctls keys must be vm.<name> (lowercase letters,
+                            digits, '_')
+                          rule: self.all(k, k.matches('^vm[.][a-z0-9_]+$'))
+                    type: object
                   rdmaResource:
                     description: |-
                       RDMAResource is an extended resource name advertised by an RDMA device

@@ -362,6 +362,9 @@ spec defines the desired state of InferenceService
 | `spec.multiNode.members[].fabric` | object |  |  |  | Fabric is this member's fabric configuration. Has 3 nested fields; see the YAML. |
 | `spec.multiNode.members[].modelCache` | object |  |  |  | ModelCache overrides spec.modelCache for this member. Has 1 nested fields; see the YAML. |
 | `spec.multiNode.members[].node` | string | yes |  | min length 1 | Node is the Kubernetes node this rank is pinned to. |
+| `spec.multiNode.memory` | object |  |  |  | Memory prepares each member node's memory right before the member's runtime starts. Unset adds nothing to the member pods. |
+| `spec.multiNode.memory.dropPageCacheBeforeBoot` | boolean |  |  |  | DropPageCacheBeforeBoot syncs and drops the node's page cache after the member has staged its weights and before its runtime container starts. |
+| `spec.multiNode.memory.sysctls` | map of string |  |  | max properties 16 | Sysctls are kernel memory settings written on the member's node before the drop, each logged with its value before and after. Keys are vm.\* names (vm.min_free_kbytes, vm.watermark_scale_factor); values are non-negative integers. They are not restored when the group goes away. |
 | `spec.multiNode.rdmaResource` | string |  |  |  | RDMAResource is an extended resource name advertised by an RDMA device plugin (e.g. rdma/rdma_shared_device_a). When set, every member requests one and gets CAP_IPC_LOCK, which NCCL needs to pin registered memory. |
 | `spec.multiNode.rendezvousPort` | integer (int32) |  |  | min 1024; max 65535 | RendezvousPort is the port rank 0 listens on for torch.distributed. Defaults to 29500. |
 | `spec.noKvOffload` | boolean |  |  |  | NoKvOffload keeps the KV cache in system RAM instead of VRAM. Useful for extended context windows when VRAM is constrained by model weights. Maps to llama.cpp `--no-kv-offload` flag. Requires sufficient system RAM via resources.memory. |
