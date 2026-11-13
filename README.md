@@ -133,7 +133,7 @@ curl http://localhost:8080/v1/chat/completions \
 
 That's it. The operator creates the Deployment and the Service, the pod's init container downloads the model, and llama.cpp serves an OpenAI-compatible API. Works with the OpenAI Python/Node/Go SDKs, LangChain, and LlamaIndex out of the box.
 
-The first deploy downloads the weights (about 2.8 GB for phi-4-mini) into a `llmkube-model-cache` PersistentVolumeClaim that the operator creates in your namespace (100Gi request by default). That claim is not removed with the model or by `helm uninstall`. On a slow link the download takes several minutes; `llmkube deploy` waits up to 10 minutes by default (`--timeout`).
+The first deploy downloads the weights (about 2.8 GB for phi-4-mini) into a `llmkube-model-cache` PersistentVolumeClaim that the operator creates in your namespace (100Gi request by default). That claim is not removed with the model or by `helm uninstall`. On a slow link the download takes several minutes. `llmkube deploy` prints the download's progress while it waits, up to 10 minutes by default; pass a longer `--timeout` for a large model or a slow link. A timeout only stops the wait: the deployment keeps going, and `llmkube status phi-4-mini` follows it.
 
 **Want GPU acceleration?** Add `--gpu`:
 
