@@ -117,8 +117,12 @@ func crashedLogHint(logPath string) string {
 }
 
 // markExited marks proc unhealthy if it is still tracked under key, and
-// reports whether it is. A probe that answered for the port in the meantime
-// cannot make a dead engine healthy again.
+// reports whether it is. A probe that was already in flight when the engine
+// exited can still mark it healthy and re-register its endpoint, since the
+// health monitor checks only that the same process is tracked. That lasts at
+// most restartGuardRetry: handleEngineExit marks it exited and withdraws the
+// endpoint again before each retry, and stopForRestart never stops a process
+// that reads healthy.
 func (a *MetalAgent) markExited(key string, proc *ManagedProcess) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()

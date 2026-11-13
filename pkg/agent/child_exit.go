@@ -334,6 +334,9 @@ func summarizeForEvent(err error) (summary, logPath string) {
 		text = strings.Replace(text, le.Error(), le.err.Error(), 1)
 		logPath = le.logPath
 	}
+	// The cut is what keeps log content out: engineLogError always puts the
+	// tail after a newline, so it holds even when a wrapper did not quote the
+	// engineLogError verbatim and the Replace above found nothing.
 	summary, _, _ = strings.Cut(text, "\n")
 	if len(summary) > eventSummaryMaxBytes {
 		summary = strings.ToValidUTF8(summary[:eventSummaryMaxBytes], "") + "..."

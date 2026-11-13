@@ -1707,7 +1707,10 @@ retries at once).
 `EngineExited` means a running engine's process exited: the agent withdraws its
 endpoint at once and restarts the engine without waiting for failed health
 checks, the Event carries the exit status and the log's path, and the crashed
-run's log is kept as `<runtime>-<namespace>-<name>.log.1` in the model store.
+run's log is kept as `<engine>-<namespace>-<name>.log.1` in the model store
+(`llama-server-...` for llama.cpp). The restart uses the same backoff as
+`StartFailed`, 10 seconds doubling up to 5 minutes, so an engine that keeps
+crashing is restarted less and less often.
 Neither Event carries engine log content, since Events are readable by anyone
 who can read the namespace and an engine log can hold request text; the last
 lines of the log go to the agent's own log.

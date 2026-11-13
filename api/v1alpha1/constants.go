@@ -334,7 +334,8 @@ var MetalAgentRefusalReasons = []string{
 // controller's managed-by label. The controller did not create that Secret,
 // so it neither uses it nor creates or updates the relay Deployment until the
 // Secret is deleted (#1957). It is controller-written, so it is deliberately
-// not in MetalAgentRefusalReasons, which lists only agent refusals.
+// not in MetalAgentRefusalReasons, which lists only the statuses the agent
+// writes and clears itself.
 const ReasonRelaySecretNotManaged string = "RelaySecretNotManaged"
 
 // ReasonDeploymentNameTaken is the Status.SchedulingStatus (and Warning Event
@@ -342,7 +343,8 @@ const ReasonRelaySecretNotManaged string = "RelaySecretNotManaged"
 // InferenceService generates and this service does not control it. The
 // controller refuses to overwrite, adopt, or delete that Deployment (#2011).
 // It is controller-written, so it is deliberately not in
-// MetalAgentRefusalReasons, which lists only agent refusals.
+// MetalAgentRefusalReasons, which lists only the statuses the agent writes and
+// clears itself.
 const ReasonDeploymentNameTaken string = "DeploymentNameTaken"
 
 // ReasonServiceNameTaken is the Status.SchedulingStatus (and Warning Event

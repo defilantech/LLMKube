@@ -128,7 +128,10 @@ func TestWatchProcessExit_GoneAndCancelled(t *testing.T) {
 // kqueue, so the endpoint is withdrawn and the restart queued without waiting
 // for the health probe threshold. An engine adopted unhealthy (#2462: it is
 // running but missed its probe at adoption, so it has no Ready endpoint) is
-// watched the same way, so its exit restarts it at once too.
+// watched the same way, so its exit restarts it at once too. No health
+// monitor runs here: the unhealthy case shows the watch is armed and acted on
+// for such an engine. That the monitor and the watch cannot both restart it
+// rests on stopForRestart's single critical section.
 func TestEngineExit_AdoptedEngine(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds a fake engine binary")
@@ -160,9 +163,12 @@ func TestEngineExit_AdoptedEngine(t *testing.T) {
 			if !a.adoptEngines(ctx)["default/real"] {
 				t.Fatal("setup: the engine was not adopted")
 			}
+			a.mu.RLock()
 			p := a.processes["default/real"]
-			if p.Healthy != healthy {
-				t.Fatalf("setup: engine adopted with Healthy=%v, want %v", p.Healthy, healthy)
+			adoptedHealthy := p.Healthy
+			a.mu.RUnlock()
+			if adoptedHealthy != healthy {
+				t.Fatalf("setup: engine adopted with Healthy=%v, want %v", adoptedHealthy, healthy)
 			}
 			if healthy {
 				a.registerEndpoint(ctx, "default/real", p)
@@ -175,8 +181,10 @@ func TestEngineExit_AdoptedEngine(t *testing.T) {
 			if !eventually(func() bool { return restartPending(a, "default/real") }) {
 				t.Fatalf("no restart queued %s after the adopted engine exited", exitWaitTimeout)
 			}
-			if ready, _ := endpointReady(t, c, "real"); ready {
-				t.Error("the adopted engine's endpoint advertises Ready after it exited")
+			if healthy {
+				if ready, _ := endpointReady(t, c, "real"); ready {
+					t.Error("the adopted engine's endpoint still advertises Ready after it exited")
+				}
 			}
 			var exited []string
 			eventually(func() bool {

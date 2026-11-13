@@ -519,11 +519,12 @@ type ManagedProcess struct {
 	// spawned it, or for an adopted engine a kernel exit watch set by
 	// watchAdoptedExits (macOS only). Nil for the shared oMLX and Ollama
 	// daemons. watchEngineExit acts on it without waiting for a health probe
-	// (#2405).
+	// (#2405). Set before the process is shared (by the executor) or under
+	// MetalAgent.mu before its watcher starts (adoption), and read-only after.
 	exit *childExit
 	// logPath is the engine's per-process log, which an EngineExited Event
 	// names and whose tail goes to the agent log. Empty when the executor
-	// keeps none.
+	// keeps none. Set at spawn or adoption and read-only after.
 	logPath string
 }
 
