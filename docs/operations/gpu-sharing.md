@@ -346,10 +346,11 @@ Two edits belong in the same apply:
 is requested.
 
 When requests for two members arrive together, the router serves them in turns
-rather than letting them take the slot from each other. A request for the other
-member waits while the incumbent has requests in flight, and also while
-requests are still waiting for the incumbent: right after a swap, the requests
-that waited for it are served before the slot moves again.
+rather than letting them take the slot from each other. A swap away from the
+incumbent starts only when it has no requests in flight and none waiting for
+it, so right after a swap the requests that waited for it are served before the
+slot moves again. Until then a request for the other member is held, or, with
+`poolActivation: IfIdle` (below), sent to the warm member.
 
 One consequence surprises operators, so it is worth stating plainly: **editing
 `spec.default` on a warm sticky pool does not move the slot.** `default` names the
@@ -395,11 +396,13 @@ cancels the reclaim. The resident keeps the slot, and its idle clock starts over
 A request for another member can arrive while the pool is loading the default,
 after a reclaim or to warm a cold pool. That member takes the slot: the default
 stops loading, and the requested member loads once the default's Pods are gone.
-The pool tells a held request from its own choice by who wrote the member's
-`spec.replicas`: the router writes it as the field manager
+The pool gives the slot to the member the router last scaled up, which it reads
+from the member's `spec.replicas` field manager: the router writes it as
 `llmkube-router-proxy`, and the pool as `llmkube-modelpool`. A scale-up by any
 other field manager, such as a GitOps tool, does not take the slot from a load
-already in flight.
+already in flight. A pooled ModelRouter runs one proxy replica, so its scale-ups
+come one at a time; with several ModelRouters in front of one pool, the latest
+scale-up wins and the other router's request waits out `spec.swapBudget`.
 
 To tell this re-activation apart from the resident simply staying up, the pool
 marks every member it scales to zero with the annotation
@@ -473,7 +476,8 @@ basename for oMLX; otherwise the InferenceService name) rather than the alias
 the client asked for, so a runtime that validates the field accepts it instead
 of answering `404 The model ... does not exist`.
 
-"Busy" means requests the proxy itself is tracking. Traffic that reaches a
+"Busy" means requests the proxy itself is tracking: in flight on the member, or
+waiting for it, as right after a swap made it resident. Traffic that reaches a
 member's Service directly, bypassing the router, is invisible to this check
 (the controller's `/slots` drain still protects it at swap time). Route all
 pool traffic through the router if you rely on `IfIdle`. Skips are counted in
