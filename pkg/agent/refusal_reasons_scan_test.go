@@ -60,6 +60,7 @@ var knownReasonConstants = map[string]string{
 	"EventReasonModelDigestMismatch":    EventReasonModelDigestMismatch,
 	"EventReasonModelDownloadTooLarge":  EventReasonModelDownloadTooLarge,
 	"EventReasonSourceSecretNotAllowed": EventReasonSourceSecretNotAllowed,
+	"EventReasonRuntimeNotAvailable":    EventReasonRuntimeNotAvailable,
 	"EventReasonMemoryCheckFailed":      EventReasonMemoryCheckFailed,
 	"EventReasonInsufficientMemory":     EventReasonInsufficientMemory,
 }

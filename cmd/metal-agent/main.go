@@ -25,6 +25,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -248,11 +249,12 @@ func newLogger(level string) (*zap.Logger, error) {
 }
 
 // defaultLlamaServerPaths is the list of paths to search for llama-server,
-// in order of preference. Apple Silicon Homebrew installs to /opt/homebrew/bin,
-// Intel Homebrew installs to /usr/local/bin.
+// in order of preference: Apple Silicon Homebrew, Intel Homebrew or a source
+// install, then a Linux distribution package.
 var defaultLlamaServerPaths = []string{
 	"/opt/homebrew/bin/llama-server",
 	"/usr/local/bin/llama-server",
+	"/usr/bin/llama-server",
 }
 
 // statFunc is the function used to check file existence (overridden in tests).
@@ -271,9 +273,8 @@ func resolveLlamaServerBin(override string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf(
-		"llama-server not found in default paths (%v); "+
-			"install with: brew install llama.cpp, or pass --llama-server=/path/to/binary",
-		defaultLlamaServerPaths)
+		"llama-server not found in default paths (%v); install with: %s, or pass --llama-server=/path/to/binary",
+		defaultLlamaServerPaths, llamaServerInstallHint(goruntime.GOOS))
 }
 
 // defaultOMLXPaths is the list of paths to search for the omlx binary.
@@ -500,6 +501,33 @@ func resolveOMLXBin(override string) (string, error) {
 		defaultOMLXPaths)
 }
 
+// resolveDefaultLlamaServerBin sets cfg.LlamaServerBin. A missing binary is
+// an error only when --runtime selects llama.cpp; with another runtime the
+// agent starts without the llama.cpp executor and only services that select
+// llama.cpp are refused.
+func resolveDefaultLlamaServerBin(cfg *AgentConfig, override string, logger *zap.SugaredLogger) error {
+	resolvedBin, err := resolveLlamaServerBin(override)
+	switch {
+	case err == nil:
+		cfg.LlamaServerBin = resolvedBin
+		return nil
+	case inferencev1alpha1.IsMetalOnlyRuntime(cfg.Runtime):
+		logger.Warnw("llama-server binary not found; services that select llama.cpp will be refused",
+			"runtime", cfg.Runtime, "error", err)
+		return nil
+	default:
+		return err
+	}
+}
+
+// llamaServerInstallHint names how to install llama-server on goos.
+func llamaServerInstallHint(goos string) string {
+	if goos == "darwin" {
+		return "brew install llama.cpp"
+	}
+	return "your distribution's llama.cpp package or a source build of llama-server"
+}
+
 // resolveOptionalRuntimeBins resolves the binaries of the non-default
 // runtimes. Each one is resolved when its binary flag is set or --runtime
 // selects it, so one agent can host several runtimes (#525). A runtime that
@@ -694,7 +722,7 @@ func main() {
 			"wired). 0 disables the cap.")
 	flag.BoolVar(&cfg.AllowUnsafeExtraArgs, "allow-unsafe-extra-args", false,
 		"Relax the extraArgs policy (unknown flags, stray tokens, refused non-listener flags, path checks, "+
-			"vllm-swift code-loading) for Macs whose InferenceService authors are fully trusted; flags that "+
+			"vllm-swift code-loading) for hosts whose InferenceService authors are fully trusted; flags that "+
 			"set or move the engine's listener or registration, or start multi-node or distributed backends, stay refused.")
 	flag.BoolVar(&cfg.AllowUnlabeledSourceSecrets, "allow-unlabeled-source-secrets", false,
 		"DEPRECATED, removed in a future release: let a Model's spec.sourceSecretRef name a Secret without the "+
@@ -767,21 +795,14 @@ func main() {
 	// Kubernetes client/controller-runtime logs share the same configuration.
 
 	// Resolve runtime-specific binary paths. llama-server is always resolved
-	// because it is the default fallback runtime. Other runtimes are resolved
+	// because it is the default fallback runtime; it is fatal only when
+	// --runtime selects llama.cpp. Other runtimes are resolved
 	// when their binary path flag is set or when the agent's --runtime flag
 	// selects them, so the agent can host multiple runtimes concurrently
 	// (#525).
-	{
-		resolvedBin, err := resolveLlamaServerBin(llamaServerFlag)
-		if err != nil {
-			logger.Errorw("llama-server binary not found",
-				"searchPaths", defaultLlamaServerPaths,
-				"installHint", "brew install llama.cpp",
-				"error", err,
-			)
-			os.Exit(1)
-		}
-		cfg.LlamaServerBin = resolvedBin
+	if err := resolveDefaultLlamaServerBin(cfg, llamaServerFlag, logger); err != nil {
+		logger.Errorw("llama-server binary not found", "error", err)
+		os.Exit(1)
 	}
 	resolveOptionalRuntimeBins(cfg, logger)
 
@@ -830,10 +851,10 @@ func main() {
 	}
 	logger.Infow("model download cap", "maxDownloadBytes", maxDownloadBytes)
 
-	// Log which runtimes are available. llama-server is always available
-	// (resolved above). Other runtimes are available when their binary
-	// path was resolved successfully.
-	logger.Infow("llama-server binary found", "path", cfg.LlamaServerBin)
+	// Log which runtimes are available: each one whose binary path resolved.
+	if cfg.LlamaServerBin != "" {
+		logger.Infow("llama-server binary found", "path", cfg.LlamaServerBin)
+	}
 	if cfg.OMLXBin != "" {
 		logger.Infow("omlx binary found", "path", cfg.OMLXBin)
 	}

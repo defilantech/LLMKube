@@ -13,7 +13,7 @@ model, the other runtimes, and the manual and source-build installs.
 
 1. **macOS with Apple Silicon** (M1 to M5). An Intel Mac with Metal 2+ can run the agent, but the bundled plist points `--llama-server` at the Apple Silicon Homebrew path (`/opt/homebrew/bin/llama-server`); change it to `/usr/local/bin/llama-server` there.
 2. **Access to a Kubernetes cluster**, remote or on the same Mac (minikube, kind). The cluster's pods must be able to open TCP connections to the Mac on `--ingress-port` (9443); see "Network requirements" in the [macOS Metal guide](https://llmkube.com/docs/guides/macos-metal#network-requirements)
-3. **llama.cpp** with Metal support:
+3. **llama.cpp** with Metal support, unless `--runtime` selects another engine (see "Choosing a Runtime per InferenceService"):
    ```bash
    brew install llama.cpp
    ```
@@ -1354,6 +1354,9 @@ kubectl describe inferenceservice <name>
 - **Cache slot** (`ModelSourceNotAllowed`): for a downloaded source, the
   file at `<model-store>/<model>/<file>` must be a regular file the agent
   wrote. A symlink there is refused, not followed.
+- **Runtime** (`RuntimeNotAvailable`): the InferenceService's runtime must
+  have an engine on this agent. The refusal comes before anything is stopped
+  or downloaded, so an engine already serving the service keeps running.
 - **Credentials Secret** (`SourceSecretNotAllowed`): a Model's
   `sourceSecretRef` must name an existing Secret labeled
   `inference.llmkube.dev/model-source-credentials=true`, and never the relay
@@ -1683,7 +1686,7 @@ On a Metal InferenceService (`kubectl describe inferenceservice <name>`):
 - From the agent: `RelayNotAdopted`, `ExtraArgsRejected`,
   `EndpointNameConflict`, `ModelSourceNotAllowed`, `ServiceNameTooLong`,
   `ModelDigestMismatch`, `ModelDownloadTooLarge`, `SourceSecretNotAllowed`,
-  `SourceSecretUnlabeled` (Warning).
+  `RuntimeNotAvailable`, `SourceSecretUnlabeled` (Warning).
 
 `ServiceNameTooLong` means the InferenceService name is too long for the
 `<isvc>-agent` Service (at most 57 characters, since the name plus `-agent`
@@ -1891,6 +1894,10 @@ The Model's download went over `--max-download-size`: either the source declared
 
 The Model's `spec.sourceSecretRef` names a Secret the agent will not read: it is not labeled `inference.llmkube.dev/model-source-credentials=true`, it does not exist in the Model's namespace, the agent's RBAC does not let it read it (a Secret outside `metalAgent.rbac.secretNames`, or the `resourceNames` you pinned in `metal-agent-rbac.yaml`), or it is the relay token Secret `llmkube-metal-relay`. The message says which, and gives the `kubectl label` command. Label (or create) the Secret, or add it to the pinned names, and the next poll starts the service; for the relay Secret, move the credentials to a Secret of their own and point `sourceSecretRef` at it. See "Model-source credentials Secrets (`sourceSecretRef`)" above.
 
+### `RuntimeNotAvailable`
+
+The InferenceService resolves to a runtime this agent has no engine for: its binary was not found or not configured when the agent started. For `llamacpp` (or `llama-server`) that means llama-server was not found and `--runtime` selects another engine. Install llama.cpp or pass `--llama-server=/path/to/llama-server` and restart the agent, or set `spec.runtime` to an engine the agent serves. For another runtime, install its binary or pass its binary flag (or select it with `--runtime`) and restart the agent. An engine already running for the service is not stopped.
+
 ### Can't connect to Kubernetes
 
 ```bash
@@ -2096,6 +2103,13 @@ spec:
 `mlx-server`, `omlx`, `vllm-swift`, `ollama`, and `tensorfold` only work on the metal-agent.
 The operator rejects them on an InferenceService whose Model does not set
 `hardware.accelerator: metal`.
+
+llama-server is looked up in `/opt/homebrew/bin`, `/usr/local/bin` and
+`/usr/bin` unless `--llama-server` names it. The agent exits at startup when
+it is missing and `--runtime` is `llama-server` (the default). With another
+`--runtime` it logs a warning and starts without llama.cpp, and an
+InferenceService that resolves to `llamacpp` is refused with
+`RuntimeNotAvailable` (see "`RuntimeNotAvailable`" under Troubleshooting).
 
 InferenceServices created with LLMKube 0.9.30 or earlier were stored with
 `runtime: llamacpp`, because the CRD used to set that default. They keep

@@ -254,7 +254,7 @@ type MetalAgentConfig struct {
 	// no cap.
 	MaxDownloadBytes int64
 
-	// AllowUnsafeExtraArgs relaxes the extraArgs policy on a Mac whose
+	// AllowUnsafeExtraArgs relaxes the extraArgs policy on a host whose
 	// InferenceService authors are fully trusted: unknown flags, stray
 	// tokens, refused non-listener flags, path checks and vllm-swift
 	// code-loading checks are skipped. Flags that set or move the engine's
@@ -659,15 +659,9 @@ func NewMetalAgent(config MetalAgentConfig) *MetalAgent {
 	}
 }
 
-// Start begins watching for InferenceService resources and managing processes
-// buildExecutors populates a.executors with one ProcessExecutor per runtime
-// whose binary path is configured, so each InferenceService can pick its own
-// backend via spec.runtime (#525). The llama.cpp executor is always created
-// because it is the default fallback, and it is registered under BOTH
-// runtimeLlamaServer ("llama-server", the historical key and --runtime
-// default) and runtimeLlamaCPP ("llamacpp", the CRD/controller canonical
-// value) so CRs authored with either runtime name resolve to it (#784).
-func (a *MetalAgent) buildExecutors() {
+// buildLlamaCPPExecutor registers the llama.cpp executor under both of its
+// runtime names.
+func (a *MetalAgent) buildLlamaCPPExecutor() {
 	metalExec := NewMetalExecutor(
 		a.config.LlamaServerBin,
 		a.config.ModelStorePath,
@@ -684,6 +678,20 @@ func (a *MetalAgent) buildExecutors() {
 	metalExec.SetEngineEnvPassthrough(a.config.EngineEnvPassthrough)
 	a.executors[runtimeLlamaServer] = metalExec
 	a.executors[runtimeLlamaCPP] = metalExec
+}
+
+// buildExecutors populates a.executors with one ProcessExecutor per runtime
+// whose binary path is configured, so each InferenceService can pick its own
+// backend via spec.runtime (#525). The llama.cpp executor is created whenever
+// llama-server was found (the agent exits without it unless --runtime selects
+// another engine), and it is registered under BOTH
+// runtimeLlamaServer ("llama-server", the historical key and --runtime
+// default) and runtimeLlamaCPP ("llamacpp", the CRD/controller canonical
+// value) so CRs authored with either runtime name resolve to it (#784).
+func (a *MetalAgent) buildExecutors() {
+	if a.config.LlamaServerBin != "" {
+		a.buildLlamaCPPExecutor()
+	}
 
 	if a.config.OMLXBin != "" {
 		port := a.config.OMLXPort
@@ -1138,7 +1146,7 @@ func (a *MetalAgent) validateRuntimeFormat(model *inferencev1alpha1.Model, runti
 // (ManagedProcess.Runtime, mirrored into ingress.Route.Runtime by Route), so
 // the client proxy can apply the identical ingress.Allowed path policy. The
 // agent tracks one process per InferenceService but in practice runs one at a
-// time on a single Mac, so we return the first running child with an
+// time on a single host, so we return the first running child with an
 // allocated port, preferring a healthy one. ok is false when none is running.
 func (a *MetalAgent) currentBackend() (addr, runtime string, ok bool) {
 	a.mu.RLock()
@@ -1364,16 +1372,23 @@ func (a *MetalAgent) reconcileProcess(ctx context.Context, isvc *inferencev1alph
 		return nil
 	}
 
+	// Resolve the effective runtime for this InferenceService.
+	// spec.runtime wins; the agent's --runtime flag is the fallback.
+	runtime := a.resolveRuntime(isvc)
+
+	// Refuse a runtime with no executor before fetchModelThenStopStale, which
+	// stops the running engine of a changed spec.
+	exec, ok := a.executors[runtime]
+	if !ok {
+		return a.refuseStart(ctx, isvc, EventReasonRuntimeNotAvailable, runtimeNotAvailableMessage(runtime))
+	}
+
 	model, err := a.fetchModelThenStopStale(ctx, isvc, key, existing, desiredHash)
 	if err != nil {
 		return err
 	}
 
 	a.logger.Infow("starting inference service", "namespace", isvc.Namespace, "name", isvc.Name)
-
-	// Resolve the effective runtime for this InferenceService.
-	// spec.runtime wins; the agent's --runtime flag is the fallback.
-	runtime := a.resolveRuntime(isvc)
 
 	// Relay mode appends "-agent" to the Service name; refuse a name that no
 	// longer fits a DNS label before starting anything.
@@ -1424,13 +1439,6 @@ func (a *MetalAgent) reconcileProcess(ctx context.Context, isvc *inferencev1alph
 
 	if err := a.validateRuntimeFormat(model, runtime); err != nil {
 		return err
-	}
-
-	// Look up the executor for the resolved runtime.
-	exec, ok := a.executors[runtime]
-	if !ok {
-		return fmt.Errorf("no executor registered for runtime %q; "+
-			"ensure the corresponding binary is installed and the agent was started with the right flags", runtime)
 	}
 
 	// Get GPU layers if specified
@@ -1757,6 +1765,9 @@ func (a *MetalAgent) stopManagedProcess(ctx context.Context, process *ManagedPro
 			return fmt.Errorf("failed to stop adopted engine: %w", err)
 		}
 		return nil
+	}
+	if exec == nil {
+		return fmt.Errorf("no executor registered for runtime %q to stop PID %d", process.Runtime, process.PID)
 	}
 	if err := exec.StopProcess(process.PID); err != nil {
 		return fmt.Errorf("failed to stop process: %w", err)
