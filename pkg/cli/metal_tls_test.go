@@ -33,7 +33,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -353,6 +355,94 @@ func TestResolveJoinTLSAgainstALiveServer(t *testing.T) {
 			t.Fatal("resolveJoinTLS succeeded against a closed port")
 		}
 	})
+}
+
+// sniAPIServer presents byName[name] to a client that sends a server name it
+// has, else def, like an API server with --tls-sni-cert-key or a proxy that
+// routes by SNI. seen returns the server names clients sent.
+func sniAPIServer(t *testing.T, def tls.Certificate, byName map[string]tls.Certificate) (
+	srv *httptest.Server, seen func() []string) {
+	t.Helper()
+	var mu sync.Mutex
+	var names []string
+	srv = httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	// GetCertificate runs only for a client that sends a name; returning
+	// nil falls back to Certificates.
+	srv.TLS = &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{def},
+		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			mu.Lock()
+			names = append(names, hello.ServerName)
+			mu.Unlock()
+			if cert, ok := byName[hello.ServerName]; ok {
+				return &cert, nil
+			}
+			return nil, nil
+		}}
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+	return srv, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(names)
+	}
+}
+
+// TestResolveJoinTLSProbesTheChosenServerName: when token create picks a
+// tls-server-name because the address is not in the certificate, it checks
+// the certificate the server presents for that name, against the one CA the
+// join string carries, before anything is encoded. The first handshake sends
+// no name (the server is an IP address), so without the second one a server
+// that picks its certificate by SNI would hand the Mac a certificate the join
+// string cannot verify.
+func TestResolveJoinTLSProbesTheChosenServerName(t *testing.T) {
+	ca := newTestCA(t, "cluster-ca")
+	other := newTestCA(t, "other-ca")
+	def := ca.issue(t, []string{"kubernetes"}, nil)
+
+	for _, tc := range []struct {
+		name       string
+		kubernetes tls.Certificate
+		cas        []*x509.Certificate
+		wantErr    bool
+	}{
+		{name: "same CA, covers kubernetes", kubernetes: ca.issue(t, []string{"kubernetes"}, nil),
+			cas: []*x509.Certificate{ca.cert}},
+		{name: "another CA", kubernetes: other.issue(t, []string{"kubernetes"}, nil),
+			cas: []*x509.Certificate{ca.cert}, wantErr: true},
+		{name: "same CA, does not cover kubernetes", kubernetes: ca.issue(t, []string{"api.internal"}, nil),
+			cas: []*x509.Certificate{ca.cert}, wantErr: true},
+		// The kubeconfig trusts both CAs, but the join string carries only the
+		// one that verified the first certificate, and so does the Mac.
+		{name: "another CA of the kubeconfig's bundle", kubernetes: other.issue(t, []string{"kubernetes"}, nil),
+			cas: []*x509.Certificate{ca.cert, other.cert}, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, seen := sniAPIServer(t, def, map[string]tls.Certificate{"kubernetes": tc.kubernetes})
+			target := &metalTarget{Server: srv.URL, KubeServer: srv.URL, CAs: tc.cas}
+			gotCA, name, err := resolveJoinTLS(context.Background(), target, "", false, &bytes.Buffer{})
+			if !slices.Contains(seen(), "kubernetes") {
+				t.Errorf("no handshake sent the server name kubernetes (sent %q)", seen())
+			}
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("resolveJoinTLS accepted tls-server-name %q, which the server presents an "+
+						"unverifiable certificate for", name)
+				}
+				for _, w := range []string{`"kubernetes"`, "--tls-server-name"} {
+					if !strings.Contains(err.Error(), w) {
+						t.Errorf("error %q does not mention %s", err, w)
+					}
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if name != "kubernetes" || !gotCA.Equal(ca.cert) {
+				t.Errorf("got name %q CA %q", name, gotCA.Subject.CommonName)
+			}
+		})
+	}
 }
 
 // TestFetchServerChainRejectsAForeignCA: a certificate from another CA is an
