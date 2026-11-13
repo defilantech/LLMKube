@@ -276,8 +276,9 @@ autoscaled member is fixed. A pool that also has a missing member reports
 
 Removing a member from `spec.members` takes effect on the next reconcile. If the
 member that left was the resident, status stops naming it in that same pass, and
-the slot resolves the way a cold pool resolves it. A swap already in flight
-continues first. Otherwise, when no remaining member is scaled up, `spec.default`
+the slot resolves the way a cold pool resolves it. A member the router is
+holding a request for takes the slot first, then a swap already in flight
+continues. Otherwise, when no remaining member is scaled up, `spec.default`
 warms if it names one, and the pool stays cold if it does not. When members are
 scaled up, `spec.default` takes the slot if it is one of them, else the first
 scaled-up member in declaration order.
@@ -344,6 +345,12 @@ Two edits belong in the same apply:
 `swapPolicy: sticky` (the default) keeps the incumbent until a *different* member
 is requested.
 
+When requests for two members arrive together, the router serves them in turns
+rather than letting them take the slot from each other. A request for the other
+member waits while the incumbent has requests in flight, and also while
+requests are still waiting for the incumbent: right after a swap, the requests
+that waited for it are served before the slot moves again.
+
 One consequence surprises operators, so it is worth stating plainly: **editing
 `spec.default` on a warm sticky pool does not move the slot.** `default` names the
 member to warm on a *cold* pool, before anything has picked an owner. Once a
@@ -384,6 +391,15 @@ reclaimed. Reclaims are counted in `llmkube_modelpool_reclaims_total`.
 A request for the resident can arrive after the reclaim has started draining it,
 before the default is up. The router then scales the resident back up, and that
 cancels the reclaim. The resident keeps the slot, and its idle clock starts over.
+
+A request for another member can arrive while the pool is loading the default,
+after a reclaim or to warm a cold pool. That member takes the slot: the default
+stops loading, and the requested member loads once the default's Pods are gone.
+The pool tells a held request from its own choice by who wrote the member's
+`spec.replicas`: the router writes it as the field manager
+`llmkube-router-proxy`, and the pool as `llmkube-modelpool`. A scale-up by any
+other field manager, such as a GitOps tool, does not take the slot from a load
+already in flight.
 
 To tell this re-activation apart from the resident simply staying up, the pool
 marks every member it scales to zero with the annotation
