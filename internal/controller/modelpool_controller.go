@@ -439,7 +439,7 @@ func resolveSlotOwner(pool *inferencev1alpha1.ModelPool, members map[string]*inf
 // build from before it, taken from its binary.
 var routerReplicaManagers = map[string]bool{
 	inferencev1alpha1.RouterProxyFieldManager: true,
-	"router-proxy": true,
+	legacyRouterProxyFieldManager:             true,
 }
 
 // routerWrite reports whether isvc is scaled up and the router wrote its
@@ -461,14 +461,20 @@ func routerWrite(isvc *inferencev1alpha1.InferenceService) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-// routerTarget returns the candidate the router is holding a request for, or ""
-// when none is. A member the pool loaded without a hold keeps the router's
-// write, since the pool had no reason to write its replicas, so a member the
-// router asked for earlier can still read as its request. The router drives one
-// swap per pool at a time, so its latest write is the request it holds now.
-// Writes the API server timed to the same second cannot be ordered; the pending
-// one keeps the slot among those, as between any two activations, else
-// declaration order decides.
+// routerTarget returns the candidate the router last scaled up, or "" when the
+// router owns none of their replica counts. A member the pool loaded without a
+// hold keeps the router's write, since the pool had no reason to write its
+// replicas, so a member the router asked for earlier can still read as its
+// request. A pooled ModelRouter runs one router-proxy replica (the deployment
+// builder pins it), and its Activator drives one swap per pool at a time, so
+// the latest write is the request that router holds now. Writes the API server
+// timed to the same second cannot be ordered; the pending one keeps the slot
+// among those, as between any two activations, else declaration order decides.
+//
+// Two router processes can still write: several ModelRouters fronting one pool,
+// or the old and new proxy Pod overlapping in a rollout. Then the latest write
+// wins and the other process's request waits out its swapBudget: with no
+// coordination between them, one of the two requests waits either way.
 func routerTarget(pending string, candidates []string, members map[string]*inferencev1alpha1.InferenceService) string {
 	best := ""
 	var bestAt time.Time
