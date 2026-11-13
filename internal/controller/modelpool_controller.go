@@ -443,7 +443,9 @@ var routerReplicaManagers = map[string]bool{
 }
 
 // routerWrite reports whether isvc is scaled up and the router wrote its
-// current spec.replicas, and when (zero when the entry carries no time). A
+// current spec.replicas, and when. The router writes with a merge patch, whose
+// entry the API server times; an entry without a time (a scale subresource
+// write) reads as the zero time and so sorts before any timed one. A
 // write that changes the field takes it from every other manager, so the router
 // still owning it means the pool has not drained or held the member since.
 func routerWrite(isvc *inferencev1alpha1.InferenceService) (time.Time, bool) {

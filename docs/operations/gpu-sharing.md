@@ -399,8 +399,9 @@ stops loading, and the requested member loads once the default's Pods are gone.
 The pool gives the slot to the member the router last scaled up, which it reads
 from the member's `spec.replicas` field manager: the router writes it as
 `llmkube-router-proxy`, and the pool as `llmkube-modelpool`. A scale-up by any
-other field manager, such as a GitOps tool, does not take the slot from a load
-already in flight. A pooled ModelRouter runs one proxy replica, so its scale-ups
+other field manager, such as a GitOps tool, does not take the slot from a member
+the pool is already loading; otherwise it is a request for the slot like any
+other (see "GitOps" above). A pooled ModelRouter runs one proxy replica, so its scale-ups
 come one at a time; with several ModelRouters in front of one pool, the latest
 scale-up wins and the other router's request waits out `spec.swapBudget`.
 

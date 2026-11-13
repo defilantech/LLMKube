@@ -58,8 +58,8 @@ var llmkubeReplicaManagers = map[string]bool{
 	legacyRouterProxyFieldManager:             true,
 }
 
-// The field managers the API server named LLMKube's replica writes after before
-// #2302, from the binaries' user agents.
+// The field managers the API server gave LLMKube's replica writes before
+// #2302, taken from the binaries' user agents.
 const (
 	legacyOperatorFieldManager    = "manager"
 	legacyRouterProxyFieldManager = "router-proxy"

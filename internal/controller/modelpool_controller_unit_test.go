@@ -259,6 +259,12 @@ func TestResolveSlotOwnerLatestRouterRequestWins(t *testing.T) {
 	if got := resolveSlotOwner(p, members); got != "coder" {
 		t.Errorf("same-second router writes: resolveSlotOwner = %q, want the pending coder", got)
 	}
+
+	// The same tie with the pending member first in declaration order.
+	p = mpoolFor("judge", "glimmer", "", "judge", "glimmer", "coder")
+	if got := resolveSlotOwner(p, members); got != "glimmer" {
+		t.Errorf("same-second router writes, pending first: resolveSlotOwner = %q, want the pending glimmer", got)
+	}
 }
 
 // A request the router is holding open names the member it scaled up. The pool
