@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
@@ -95,6 +96,15 @@ var _ = Describe("ModelPool #2533 router request during a pool-chosen load", fun
 		}
 		return out
 	}
+	replicasManagers := func(isvc *inferencev1alpha1.InferenceService) []string {
+		var owners []string
+		for _, e := range isvc.ManagedFields {
+			if ownsSpecReplicas(e) {
+				owners = append(owners, e.Manager)
+			}
+		}
+		return owners
+	}
 	routerRequests := func(n string) {
 		Expect(router.NewKubeMemberController(k8sClient, time.Millisecond).Activate(ctx, "default", n)).To(Succeed())
 	}
@@ -144,6 +154,51 @@ var _ = Describe("ModelPool #2533 router request during a pool-chosen load", fun
 		routerRequests(t)
 		reconcileOnce(pool)
 		expectRequestHonored(pool, d, t)
+	})
+
+	It("holds the router's target until the default's Pod is gone, and keeps it as the owner", func() {
+		seq++
+		pool := fmt.Sprintf("x2533-hold-%d", seq)
+		d, t := pool+"-d", pool+"-t"
+		createMembers(map[string]int32{d: 0, t: 0})
+		Expect(k8sClient.Create(ctx, &inferencev1alpha1.ModelPool{
+			ObjectMeta: metav1.ObjectMeta{Name: pool, Namespace: "default"},
+			Spec:       inferencev1alpha1.ModelPoolSpec{GPU: 1, Default: d, Members: refs(d, t)},
+		})).To(Succeed())
+		pools = append(pools, pool)
+
+		// The cold pool warms spec.default, and d's Pod is up and loading.
+		reconcileOnce(pool)
+		Expect(poolOf(pool).Status.PendingMember).To(Equal(d))
+		createMemberPod(ctx, d)
+		DeferCleanup(func() {
+			_ = k8sClient.Delete(ctx, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: d + "-pod", Namespace: "default"}},
+				client.GracePeriodSeconds(0))
+		})
+
+		// The router's request for t takes the slot, but t is held at zero
+		// while d's Pod still holds the GPU. The hold is the pool's write, so it
+		// takes spec.replicas from the router.
+		routerRequests(t)
+		reconcileOnce(pool)
+		Expect(poolOf(pool).Status.PendingMember).To(Equal(t))
+		Expect(replicasOf(member(d))).To(Equal(int32(0)))
+		Expect(replicasOf(member(t))).To(Equal(int32(0)), "t is held until d's Pod is gone")
+		Expect(replicasManagers(member(t))).To(ConsistOf(inferencev1alpha1.ModelPoolFieldManager))
+
+		// Still held: t stays the owner on the next pass.
+		reconcileOnce(pool)
+		Expect(poolOf(pool).Status.PendingMember).To(Equal(t))
+		Expect(replicasOf(member(t))).To(Equal(int32(0)))
+
+		// d's Pod goes: t loads and becomes resident.
+		Expect(k8sClient.Delete(ctx, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: d + "-pod", Namespace: "default"}},
+			client.GracePeriodSeconds(0))).To(Succeed())
+		reconcileOnce(pool)
+		Expect(replicasOf(member(t))).To(Equal(int32(1)))
+		setPhase(t, PhaseReady)
+		reconcileOnce(pool)
+		Expect(poolOf(pool).Status.ResidentMember).To(Equal(t))
 	})
 
 	It("lets the router's target take the slot from a reclaim to spec.default", func() {
