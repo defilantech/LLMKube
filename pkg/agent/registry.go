@@ -308,7 +308,7 @@ func sliceWithdrawnRecently(slice *discoveryv1.EndpointSlice, now time.Time) boo
 // next successful ensureProcess re-registers it Ready (#1918).
 //
 // owns is the agent's ownership predicate (the watcher's allowlist + metal
-// check, #524), so a multi-Mac partition never touches a sibling agent's
+// check, #524), so a multi-host partition never touches a sibling agent's
 // slices. Services whose InferenceService is gone are left to
 // ReconcileOrphanEndpoints. Per-object errors are logged and skipped.
 func (r *ServiceRegistry) WithdrawOwnedEndpoints(

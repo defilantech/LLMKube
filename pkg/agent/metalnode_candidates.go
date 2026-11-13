@@ -26,8 +26,8 @@ import (
 )
 
 // dockerDesktopHostIP is the address pods on Docker Desktop (kind, the
-// built-in Kubernetes) reach the Mac at. It is stable across network changes,
-// unlike the Mac's LAN or tailnet address.
+// built-in Kubernetes) reach the host at. It is stable across network changes,
+// unlike the host's LAN or tailnet address.
 const dockerDesktopHostIP = "192.168.65.254"
 
 // candidateEnv is what the MetalNode address classifier looks at.
@@ -39,17 +39,17 @@ type candidateEnv struct {
 	// sourceIP is the address the kernel would send from toward serverIP;
 	// nil when it is unknown.
 	sourceIP net.IP
-	// ifaces are the Mac's up, non-loopback interface addresses.
+	// ifaces are the host's up, non-loopback interface addresses.
 	ifaces []hostIPCandidate
 }
 
 // buildMetalNodeCandidates orders the addresses the cluster might reach this
-// Mac at, for the controller's dial-back to try in turn. The route to the API
+// host at, for the controller's dial-back to try in turn. The route to the API
 // server decides the order:
 //
 //   - --host-ip first, as an override (still verified);
 //   - co-located (the API server is on loopback, a kind or Docker Desktop
-//     cluster on this Mac): Docker Desktop's host address, then LAN, then
+//     cluster on this host): Docker Desktop's host address, then LAN, then
 //     tailnet;
 //   - tailnet (the server is in 100.64.0.0/10, or the route to it leaves
 //     through a utun interface): the address on that route, then the other

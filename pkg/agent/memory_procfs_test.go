@@ -20,6 +20,10 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 // An 8 GB host, trimmed.
@@ -168,5 +172,49 @@ func TestHostWideProviderKeepsOtherProviders(t *testing.T) {
 	if !ok || !distinct || !hw.IgnoreCgroup || hw.ProcRoot != "/p" || hw.CgroupRoot != "/c" || hw == lp {
 		t.Errorf("hostWideProvider(linux) = %+v, %v; want a new, distinct host-wide provider on the same roots",
 			hw, distinct)
+	}
+}
+
+func TestLogCgroupV1Memory(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		cgroup   string
+		provider func(root string) MemoryProvider
+		wantLog  bool
+	}{
+		{
+			name: "hybrid v1/v2 host", cgroup: "12:memory:/user.slice\n1:name=systemd:/user.slice\n0::/user.slice\n",
+			wantLog: true,
+		},
+		{name: "memory among other v1 controllers", cgroup: "4:cpu,memory:/agent\n", wantLog: true},
+		{name: "cgroup v2 only", cgroup: "0::/system.slice/llmkube.service\n"},
+		{name: "v1 without the memory controller", cgroup: "3:cpu,cpuacct:/x\n0::/x\n"},
+		{
+			name: "host-wide provider", cgroup: "12:memory:/user.slice\n",
+			provider: func(root string) MemoryProvider {
+				return (&LinuxMemoryProvider{ProcRoot: root}).HostWide()
+			},
+		},
+		{
+			name: "macOS provider", cgroup: "12:memory:/user.slice\n",
+			provider: func(string) MemoryProvider { return &DarwinMemoryProvider{} },
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := writeProcFixture(t, map[string]string{"self/cgroup": tc.cgroup})
+			var provider MemoryProvider = &LinuxMemoryProvider{ProcRoot: root}
+			if tc.provider != nil {
+				provider = tc.provider(root)
+			}
+			core, logs := observer.New(zapcore.InfoLevel)
+			logCgroupV1Memory(provider, zap.New(core).Sugar())
+			want := 0
+			if tc.wantLog {
+				want = 1
+			}
+			if got := logs.FilterMessageSnippet("cgroup v1").Len(); got != want {
+				t.Errorf("cgroup v1 log lines = %d, want %d", got, want)
+			}
+		})
 	}
 }

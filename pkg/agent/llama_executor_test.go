@@ -139,6 +139,44 @@ func TestEnsureProcessRuntimeNotAvailableKeepsRunningEngine(t *testing.T) {
 	}
 }
 
+func TestEnsureProcessRefusesUnregisteredRuntime(t *testing.T) {
+	isvc := refusalISVC("svc")
+	isvc.Spec.Runtime = runtimeMLXServer
+	a, ex, rec := refusalFixture(t, MetalAgentConfig{}, isvc, refusalModel())
+	if _, ok := a.executors[runtimeMLXServer]; ok {
+		t.Fatalf("executors[%q] registered on an agent started without --mlx-server-bin", runtimeMLXServer)
+	}
+
+	err := a.ensureProcess(context.Background(), isvc)
+	if err == nil || !strings.Contains(err.Error(), EventReasonRuntimeNotAvailable) {
+		t.Fatalf("ensureProcess error = %v, want %s", err, EventReasonRuntimeNotAvailable)
+	}
+	if ex.starts != 0 {
+		t.Errorf("starts = %d, want 0", ex.starts)
+	}
+
+	got := &inferencev1alpha1.InferenceService{}
+	if gErr := a.config.K8sClient.Get(context.Background(),
+		types.NamespacedName{Name: "svc", Namespace: "default"}, got); gErr != nil {
+		t.Fatalf("get InferenceService: %v", gErr)
+	}
+	if got.Status.SchedulingStatus != EventReasonRuntimeNotAvailable {
+		t.Errorf("status.schedulingStatus = %q, want %q", got.Status.SchedulingStatus, EventReasonRuntimeNotAvailable)
+	}
+	for _, want := range []string{`runtime "mlx-server"`, "started without that engine", "restart the agent"} {
+		if !strings.Contains(got.Status.SchedulingMessage, want) {
+			t.Errorf("status.schedulingMessage = %q, want it to contain %q", got.Status.SchedulingMessage, want)
+		}
+	}
+	if strings.Contains(got.Status.SchedulingMessage, "llama-server") {
+		t.Errorf("status.schedulingMessage = %q, want no llama-server advice for another runtime",
+			got.Status.SchedulingMessage)
+	}
+	if events := warningEvents(rec, EventReasonRuntimeNotAvailable); len(events) != 1 {
+		t.Errorf("Warning %s events = %v, want one", EventReasonRuntimeNotAvailable, events)
+	}
+}
+
 func TestStopManagedProcessWithoutExecutor(t *testing.T) {
 	a := newAgentWithoutLlamaServer(t)
 	for _, tc := range []struct {

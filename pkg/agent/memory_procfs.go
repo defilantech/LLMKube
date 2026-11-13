@@ -14,6 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// No build tag: the fake-/proc tests run on every OS, the macOS runner included.
+
 package agent
 
 import (
@@ -24,6 +26,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"go.uber.org/zap"
 )
 
 // LinuxMemoryProvider implements MemoryProvider from /proc, capped by the
@@ -86,6 +90,45 @@ func (p *LinuxMemoryProvider) cgroupDirs() []string {
 		}
 	})
 	return p.dirs
+}
+
+// cgroupV1Memory reports whether /proc/self/cgroup places the agent under a
+// cgroup v1 memory controller, as on a hybrid v1/v2 host. The provider reads
+// only cgroup v2 limits, so such a limit is not applied.
+func (p *LinuxMemoryProvider) cgroupV1Memory() bool {
+	if p.IgnoreCgroup {
+		return false
+	}
+	data, err := os.ReadFile(p.procPath("self", "cgroup"))
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		id, rest, found := strings.Cut(line, ":")
+		if !found || id == "0" {
+			continue
+		}
+		controllers, _, _ := strings.Cut(rest, ":")
+		for _, c := range strings.Split(controllers, ",") {
+			if c == "memory" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// logCgroupV1Memory logs at Info when provider is a Linux provider whose
+// memory controller is cgroup v1, so its figures are host-wide. NewMetalAgent
+// calls it once.
+func logCgroupV1Memory(provider MemoryProvider, logger *zap.SugaredLogger) {
+	lp, ok := provider.(*LinuxMemoryProvider)
+	if !ok || !lp.cgroupV1Memory() {
+		return
+	}
+	logger.Infow("memory controller is on cgroup v1, whose limits the agent does not read; "+
+		"memory figures are the host's, not the agent's cgroup limit",
+		"cgroupFile", lp.procPath("self", "cgroup"))
 }
 
 // cgroupLimit is the smallest memory.max on the agent's cgroup path. ok is
