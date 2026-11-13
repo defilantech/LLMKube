@@ -27,6 +27,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -182,7 +183,7 @@ type MetalAgentConfig struct {
 	// InferenceServices this agent claims by name. Empty / nil claims
 	// every metal-accelerator InferenceService in the namespace (v0.1
 	// behavior); non-empty surfaces only the named ones to the
-	// runtime executor. v0.2 (#524): lets multi-Mac fleets share a
+	// runtime executor. v0.2 (#524): lets several hosts share a
 	// cluster without racing for each other's InferenceServices.
 	InferenceServiceAllowlist []string
 
@@ -285,7 +286,10 @@ type MetalAgentConfig struct {
 	IngressPort int
 	// StateDir holds agent state (the ingress TLS identity, under
 	// "<StateDir>/ingress"). Empty means
-	// ~/Library/Application Support/llmkube/metal-agent.
+	// ~/Library/Application Support/llmkube/metal-agent on macOS, and
+	// $XDG_DATA_HOME/llmkube/metal-agent elsewhere
+	// (~/.local/share/llmkube/metal-agent when XDG_DATA_HOME is unset or not
+	// absolute).
 	StateDir string
 	// LegacyDirectEndpoints is the deprecated pre-ingress mode: engines bind
 	// on all interfaces without authentication and are registered directly
@@ -566,6 +570,7 @@ func NewMetalAgent(config MetalAgentConfig) *MetalAgent {
 	if provider == nil {
 		provider = NewHostMemoryProvider()
 	}
+	logCgroupV1Memory(provider, logger)
 
 	// Resolve memory fraction
 	fraction := config.MemoryFraction
@@ -1405,7 +1410,7 @@ func (a *MetalAgent) reconcileProcess(ctx context.Context, isvc *inferencev1alph
 	// stops the running engine of a changed spec.
 	exec, ok := a.executors[runtime]
 	if !ok {
-		return a.refuseStart(ctx, isvc, EventReasonRuntimeNotAvailable, runtimeNotAvailableMessage(runtime))
+		return a.refuseStart(ctx, isvc, EventReasonRuntimeNotAvailable, runtimeNotAvailableMessage(goruntime.GOOS, runtime))
 	}
 
 	model, err := a.fetchModelThenStopStale(ctx, isvc, key, existing, desiredHash)
@@ -1943,7 +1948,7 @@ func (a *MetalAgent) newWatcher() *InferenceServiceWatcher {
 	if len(a.config.InferenceServiceAllowlist) > 0 {
 		w.SetNameAllowlist(a.config.InferenceServiceAllowlist)
 		a.logger.Infow(
-			"InferenceService name allowlist active (#524 multi-Mac partition)",
+			"InferenceService name allowlist active (#524 multi-host partition)",
 			"allowed", a.config.InferenceServiceAllowlist,
 		)
 	}

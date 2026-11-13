@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 
@@ -35,7 +36,7 @@ import (
 
 const (
 	// tokenRenewMaxWait caps one wait between checks. Timers do not advance
-	// while a Mac sleeps, so a wait of days would wake late; the wall clock is
+	// while a host sleeps, so a wait of days would wake late; the wall clock is
 	// re-read at least this often instead.
 	tokenRenewMaxWait = 10 * time.Minute
 	// tokenRenewRetry is the wait after a failed renewal.
@@ -51,7 +52,7 @@ const (
 // names as tokenFile, and client-go re-reads that file about once a minute,
 // so replacing it is all a renewal takes. The new token is requested with
 // the current one, through TokenRequest on the agent's own ServiceAccount,
-// which the per-Mac Role allows by resourceNames. Renewal is due at half the
+// which the per-host Role allows by resourceNames. Renewal is due at half the
 // token's lifetime; deleting the ServiceAccount (llmkube metal remove)
 // revokes the token and ends renewal with it.
 type tokenRenewer struct {
@@ -162,18 +163,29 @@ func (r *tokenRenewer) renewIfDue(ctx context.Context) time.Duration {
 	next, err := r.renew(ctx, cur)
 	if err != nil {
 		if now.After(cur.expires) {
-			r.logger.Errorw("the agent's token has expired and cannot be renewed; join the Mac again "+
-				"(llmkube metal token create, then llmkube metal join)", "expired", cur.expires, "error", err)
+			r.logger.Errorw("the agent's token has expired and cannot be renewed; "+
+				tokenExpiredHint(runtime.GOOS, cur, r.path), "expired", cur.expires, "error", err)
 		} else {
 			r.logger.Warnw("token renewal failed; retrying", "expires", cur.expires, "error", err)
 		}
 		return tokenRenewRetry
 	}
 	r.logger.Infow("renewed the agent's ServiceAccount token", "expires", next.expires)
-	// At least tokenRenewRetry: a Mac clock ahead of the API server's, or a
+	// At least tokenRenewRetry: a host clock ahead of the API server's, or a
 	// server that cut the lifetime short, can put the new token's half-life
 	// in the past, and renewing at once again would spin.
 	return min(max(next.renewAt.Sub(r.now()), tokenRenewRetry), tokenRenewMaxWait)
+}
+
+// tokenExpiredHint is how to give the agent a new token once cur has
+// expired, on goos. llmkube metal join runs only on macOS; elsewhere the
+// token is minted by hand and written over the token file.
+func tokenExpiredHint(goos string, cur serviceAccountToken, path string) string {
+	if goos == "darwin" {
+		return "join the host again (llmkube metal token create, then llmkube metal join)"
+	}
+	return fmt.Sprintf("mint a new token where you have cluster access "+
+		"(kubectl -n %s create token %s --duration=168h) and write it over %s", cur.namespace, cur.name, path)
 }
 
 // renew requests a token with the current one's lifetime for the same

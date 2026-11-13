@@ -65,7 +65,9 @@ var (
 	memoryBudgetBytes = prometheus.NewGauge(
 		prometheus.GaugeOpts{
 			Name: "llmkube_metal_agent_memory_budget_bytes",
-			Help: "Total memory budget available for model serving in bytes.",
+			Help: "Host-wide memory budget available for model serving in bytes (total memory times " +
+				"--memory-fraction). Under a cgroup memory limit on Linux, engines the agent starts are " +
+				"admitted against the cgroup's budget instead, which this gauge does not report.",
 		},
 	)
 

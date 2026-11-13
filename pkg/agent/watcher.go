@@ -85,8 +85,8 @@ type InferenceServiceWatcher struct {
 	// every metal-accelerator InferenceService in its namespace
 	// (v0.1 behavior); when non-empty only InferenceServices whose
 	// name is a member are surfaced as events. Set via
-	// SetNameAllowlist; v0.2 #524 (per-node partition for multi-Mac
-	// fleets sharing one cluster).
+	// SetNameAllowlist; v0.2 #524 (per-host partition for several
+	// hosts sharing one cluster).
 	nameAllowlist map[string]struct{}
 	// lookupFailing maps the key of each InferenceService whose latest
 	// Model lookup failed (other than NotFound) to when it started failing,
@@ -198,7 +198,7 @@ func (w *InferenceServiceWatcher) SetAPIServer(server string) {
 // produce events; everything else is silently skipped at the
 // shouldWatch gate.
 //
-// Use this on multi-Mac fleets sharing one cluster so each node
+// Use this when several hosts share one cluster so each host
 // claims only its own InferenceServices instead of racing with peers
 // for every metal ISvc in the namespace (#524).
 func (w *InferenceServiceWatcher) SetNameAllowlist(names []string) {
@@ -535,8 +535,8 @@ func (w *InferenceServiceWatcher) poll(
 // shouldWatch determines if this InferenceService should be watched by the Metal Agent.
 // It applies (in order):
 //  1. nameAllowlist filter -- cheap; skips the API call below if the
-//     InferenceService isn't on this node's list. v0.2 #524: lets
-//     multi-Mac fleets partition without colliding.
+//     InferenceService isn't on this host's list. v0.2 #524: lets
+//     several hosts partition without colliding.
 //  2. Model.spec.hardware.accelerator check -- looks up the referenced
 //     Model and returns true only when its accelerator is "metal".
 //

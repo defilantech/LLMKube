@@ -147,6 +147,17 @@ const (
 	RuntimeTensorFold = "tensorfold"
 )
 
+// IsMacOSOnlyRuntime reports whether runtime's engine needs Apple Silicon
+// (MLX or Metal), so a metal-agent on another OS cannot serve it.
+func IsMacOSOnlyRuntime(runtime string) bool {
+	switch runtime {
+	case RuntimeMLXServer, RuntimeOMLX, RuntimeVLLMSwift, RuntimeTensorFold:
+		return true
+	default:
+		return false
+	}
+}
+
 // IsMetalOnlyRuntime reports whether runtime is served only by the
 // metal-agent. The empty runtime is not: it means llama.cpp in-cluster and the
 // agent's --runtime flag on a Mac.

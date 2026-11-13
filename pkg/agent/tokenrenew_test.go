@@ -19,11 +19,17 @@ package agent
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 	authenticationv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -31,6 +37,8 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 )
 
@@ -228,5 +236,65 @@ func TestTokenRenewerStopsWhenTheServiceAccountIsDeleted(t *testing.T) {
 	}
 	if wait != tokenRenewRetry {
 		t.Errorf("wait after a failed renewal = %s, want %s", wait, tokenRenewRetry)
+	}
+}
+
+func TestTokenExpiredHint(t *testing.T) {
+	cur := serviceAccountToken{namespace: "edge", name: "llmkube-metal-edge-1"}
+	for _, tc := range []struct {
+		goos          string
+		want, notWant []string
+	}{
+		{goos: "darwin", want: []string{"join the host again", "llmkube metal join"}},
+		{
+			goos:    "linux",
+			want:    []string{"kubectl -n edge create token llmkube-metal-edge-1", "write it over /srv/agent/token"},
+			notWant: []string{"metal join"},
+		},
+	} {
+		t.Run(tc.goos, func(t *testing.T) {
+			got := tokenExpiredHint(tc.goos, cur, "/srv/agent/token")
+			for _, w := range tc.want {
+				if !strings.Contains(got, w) {
+					t.Errorf("tokenExpiredHint(%q) = %q, want it to contain %q", tc.goos, got, w)
+				}
+			}
+			for _, w := range tc.notWant {
+				if strings.Contains(got, w) {
+					t.Errorf("tokenExpiredHint(%q) = %q, want no %q", tc.goos, got, w)
+				}
+			}
+		})
+	}
+}
+
+// An expired token whose renewal fails logs this OS's hint at Error.
+func TestTokenRenewerLogsExpiredHint(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "token")
+	claims := `{"iat":1000,"exp":3000,` +
+		`"kubernetes.io":{"namespace":"edge","serviceaccount":{"name":"llmkube-metal-edge-1"}}}`
+	if err := os.WriteFile(path, []byte(jwtWithClaims(claims)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := fake.NewClientBuilder().WithInterceptorFuncs(interceptor.Funcs{
+		SubResourceCreate: func(context.Context, client.Client, string, client.Object, client.Object,
+			...client.SubResourceCreateOption) error {
+			return errors.New("Unauthorized")
+		},
+	}).Build()
+	core, logs := observer.New(zapcore.InfoLevel)
+	r := &tokenRenewer{client: c, path: path, logger: zap.New(core).Sugar(),
+		now: func() time.Time { return time.Unix(4000, 0) }}
+
+	if wait := r.renewIfDue(context.Background()); wait != tokenRenewRetry {
+		t.Errorf("wait = %s, want %s", wait, tokenRenewRetry)
+	}
+	entries := logs.FilterMessageSnippet("has expired and cannot be renewed").All()
+	if len(entries) != 1 || entries[0].Level != zapcore.ErrorLevel {
+		t.Fatalf("expired-token entries = %v, want one at Error", entries)
+	}
+	want := tokenExpiredHint(runtime.GOOS, serviceAccountToken{namespace: "edge", name: "llmkube-metal-edge-1"}, path)
+	if !strings.Contains(entries[0].Message, want) {
+		t.Errorf("message = %q, want it to end with %q", entries[0].Message, want)
 	}
 }

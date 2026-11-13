@@ -317,6 +317,19 @@ func TestIsMetalOnlyRuntime(t *testing.T) {
 	}
 }
 
+func TestIsMacOSOnlyRuntime(t *testing.T) {
+	for _, rt := range []string{"mlx-server", "omlx", "vllm-swift", "tensorfold"} {
+		if !IsMacOSOnlyRuntime(rt) {
+			t.Errorf("IsMacOSOnlyRuntime(%q) = false, want true", rt)
+		}
+	}
+	for _, rt := range []string{"", "ollama", "llamacpp", "llama-server", "vllm"} {
+		if IsMacOSOnlyRuntime(rt) {
+			t.Errorf("IsMacOSOnlyRuntime(%q) = true, want false", rt)
+		}
+	}
+}
+
 // TestInferenceServicePriorityEnum verifies the documented priority values
 // are accepted by the type.
 func TestInferenceServicePriorityEnum(t *testing.T) {

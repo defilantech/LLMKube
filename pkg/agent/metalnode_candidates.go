@@ -20,14 +20,15 @@ import (
 	"context"
 	"net"
 	"net/url"
+	"runtime"
 	"strings"
 
 	"github.com/defilantech/llmkube/pkg/metalnode"
 )
 
 // dockerDesktopHostIP is the address pods on Docker Desktop (kind, the
-// built-in Kubernetes) reach the Mac at. It is stable across network changes,
-// unlike the Mac's LAN or tailnet address.
+// built-in Kubernetes) reach the host at. It is stable across network changes,
+// unlike the host's LAN or tailnet address.
 const dockerDesktopHostIP = "192.168.65.254"
 
 // candidateEnv is what the MetalNode address classifier looks at.
@@ -39,18 +40,22 @@ type candidateEnv struct {
 	// sourceIP is the address the kernel would send from toward serverIP;
 	// nil when it is unknown.
 	sourceIP net.IP
-	// ifaces are the Mac's up, non-loopback interface addresses.
+	// ifaces are the host's up, non-loopback interface addresses.
 	ifaces []hostIPCandidate
+	// goos is the host's OS. On "linux" a co-located cluster usually runs on
+	// native Docker, where dockerDesktopHostIP does not exist; any other
+	// value orders candidates for macOS.
+	goos string
 }
 
 // buildMetalNodeCandidates orders the addresses the cluster might reach this
-// Mac at, for the controller's dial-back to try in turn. The route to the API
+// host at, for the controller's dial-back to try in turn. The route to the API
 // server decides the order:
 //
 //   - --host-ip first, as an override (still verified);
 //   - co-located (the API server is on loopback, a kind or Docker Desktop
-//     cluster on this Mac): Docker Desktop's host address, then LAN, then
-//     tailnet;
+//     cluster on this host): Docker Desktop's host address, then LAN, then
+//     tailnet; on Linux, LAN, then tailnet, then Docker Desktop's address;
 //   - tailnet (the server is in 100.64.0.0/10, or the route to it leaves
 //     through a utun interface): the address on that route, then the other
 //     tailnet addresses, then LAN;
@@ -100,6 +105,10 @@ func buildMetalNodeCandidates(env candidateEnv) []metalnode.Candidate {
 	}
 
 	switch {
+	case env.serverIP != nil && env.serverIP.IsLoopback() && env.goos == "linux":
+		addAll(lan, metalnode.SourceLAN)
+		addAll(tailnet, metalnode.SourceTailnet)
+		add(net.ParseIP(dockerDesktopHostIP), metalnode.SourceDockerHost)
 	case env.serverIP != nil && env.serverIP.IsLoopback():
 		add(net.ParseIP(dockerDesktopHostIP), metalnode.SourceDockerHost)
 		addAll(lan, metalnode.SourceLAN)
@@ -161,6 +170,8 @@ type candidateGatherer struct {
 	lookupIP   func(ctx context.Context, network, host string) ([]net.IP, error)
 	sourceIP   func(dst net.IP) (net.IP, error)
 	interfaces func() []hostIPCandidate
+	// goos is copied into the candidateEnv.
+	goos string
 }
 
 func newCandidateGatherer() candidateGatherer {
@@ -168,13 +179,14 @@ func newCandidateGatherer() candidateGatherer {
 		lookupIP:   net.DefaultResolver.LookupIP,
 		sourceIP:   udpSourceIP,
 		interfaces: gatherHostIPCandidates,
+		goos:       runtime.GOOS,
 	}
 }
 
 // gather resolves the API server host from the kubeconfig's server URL and
 // asks the kernel which source address it would use toward it.
 func (g candidateGatherer) gather(ctx context.Context, override, apiServer string) candidateEnv {
-	env := candidateEnv{override: override, ifaces: g.interfaces()}
+	env := candidateEnv{override: override, ifaces: g.interfaces(), goos: g.goos}
 	host := apiServerHost(apiServer)
 	if host == "" {
 		return env
