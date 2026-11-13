@@ -442,41 +442,47 @@ var routerReplicaManagers = map[string]bool{
 	"router-proxy": true,
 }
 
-// routerRequested reports whether isvc is scaled up and the router wrote its
-// current spec.replicas. A write that changes the field takes it from every
-// other manager, so the router still owning it means the pool has not drained,
-// held or scaled the member since: it is the target of a request the router is
-// holding open.
-func routerRequested(isvc *inferencev1alpha1.InferenceService) bool {
+// routerWrite reports whether isvc is scaled up and the router wrote its
+// current spec.replicas, and when (zero when the entry carries no time). A
+// write that changes the field takes it from every other manager, so the router
+// still owning it means the pool has not drained or held the member since.
+func routerWrite(isvc *inferencev1alpha1.InferenceService) (time.Time, bool) {
 	if isvc == nil || replicasOf(isvc) < 1 {
-		return false
+		return time.Time{}, false
 	}
 	for _, entry := range isvc.ManagedFields {
 		if routerReplicaManagers[entry.Manager] && ownsSpecReplicas(entry) {
-			return true
+			if entry.Time != nil {
+				return entry.Time.Time, true
+			}
+			return time.Time{}, true
 		}
 	}
-	return false
+	return time.Time{}, false
 }
 
 // routerTarget returns the candidate the router is holding a request for, or ""
-// when none is. The router drives one swap per pool at a time, so there is at
-// most one unless several routers front the pool; then the pending one keeps the
-// slot, as between any two activations, else declaration order decides.
+// when none is. A member the pool loaded without a hold keeps the router's
+// write, since the pool had no reason to write its replicas, so a member the
+// router asked for earlier can still read as its request. The router drives one
+// swap per pool at a time, so its latest write is the request it holds now.
+// Writes the API server timed to the same second cannot be ordered; the pending
+// one keeps the slot among those, as between any two activations, else
+// declaration order decides.
 func routerTarget(pending string, candidates []string, members map[string]*inferencev1alpha1.InferenceService) string {
-	first := ""
+	best := ""
+	var bestAt time.Time
 	for _, name := range candidates {
-		if !routerRequested(members[name]) {
-			continue
-		}
-		if name == pending {
-			return name
-		}
-		if first == "" {
-			first = name
+		at, ok := routerWrite(members[name])
+		switch {
+		case !ok:
+		case best == "", at.After(bestAt):
+			best, bestAt = name, at
+		case at.Equal(bestAt) && name == pending:
+			best = name
 		}
 	}
-	return first
+	return best
 }
 
 // clearDepartedResident drops a resident that left spec.members. Status is the

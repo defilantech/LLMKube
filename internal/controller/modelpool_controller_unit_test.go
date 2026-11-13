@@ -217,12 +217,48 @@ func TestResolveSlotOwnerReactivatedResident(t *testing.T) {
 // replicasWrittenBy records manager as the writer of the member's current
 // spec.replicas, the way the API server does for a merge patch that changed it.
 func replicasWrittenBy(isvc *inferencev1alpha1.InferenceService, manager string) *inferencev1alpha1.InferenceService {
+	return replicasWrittenAt(isvc, manager, nil)
+}
+
+// replicasWrittenAt is replicasWrittenBy with the entry's time, which the API
+// server records to the second.
+func replicasWrittenAt(isvc *inferencev1alpha1.InferenceService, manager string, at *metav1.Time) *inferencev1alpha1.InferenceService {
 	isvc.ManagedFields = append(isvc.ManagedFields, metav1.ManagedFieldsEntry{
 		Manager:   manager,
 		Operation: metav1.ManagedFieldsOperationUpdate,
+		Time:      at,
 		FieldsV1:  metav1.NewFieldsV1(`{"f:spec":{"f:replicas":{}}}`),
 	})
 	return isvc
+}
+
+// The router's ownership of spec.replicas outlives its request: when the pool
+// needs no hold, it never writes the member's replicas, so the member it loaded
+// still reads as the router's. The router can see it Ready and move on to the
+// next member before the pool records the residency, and then two members read
+// as router requests with the old one still pending. The router writes one
+// target at a time, so its latest write is the request it is holding now; the
+// older target is drained only if it is idle, like any incumbent (#2533).
+func TestResolveSlotOwnerLatestRouterRequestWins(t *testing.T) {
+	router := inferencev1alpha1.RouterProxyFieldManager
+	t0 := metav1.NewTime(time.Unix(1_800_000_000, 0))
+	later := metav1.NewTime(t0.Add(90 * time.Second))
+
+	p := mpoolFor("judge", "coder", "", "judge", "glimmer", "coder")
+	members := membersMap(map[string]int32{"judge": 1, "glimmer": 1, "coder": 1})
+	replicasWrittenAt(members["coder"], router, &t0)
+	replicasWrittenAt(members["glimmer"], router, &later)
+	if got := resolveSlotOwner(p, members); got != "glimmer" {
+		t.Errorf("router moved on to glimmer: resolveSlotOwner = %q, want glimmer", got)
+	}
+
+	// Writes within the same second cannot be ordered: the pending one keeps it.
+	members = membersMap(map[string]int32{"judge": 1, "glimmer": 1, "coder": 1})
+	replicasWrittenAt(members["coder"], router, &t0)
+	replicasWrittenAt(members["glimmer"], router, &t0)
+	if got := resolveSlotOwner(p, members); got != "coder" {
+		t.Errorf("same-second router writes: resolveSlotOwner = %q, want the pending coder", got)
+	}
 }
 
 // A request the router is holding open names the member it scaled up. The pool
