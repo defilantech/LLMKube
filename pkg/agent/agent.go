@@ -1209,7 +1209,9 @@ func isvcStopped(isvc *inferencev1alpha1.InferenceService) bool {
 // the running engine of key. Neither reaches the engine's arguments, so
 // editing them keeps the engine, but the memory-pressure selector reads them
 // from the process, which otherwise kept the values it started with (#2410).
-// The pressure loop copies each process under a.mu before reading them.
+// The pressure loop copies each process under a.mu before reading them. The
+// engine record keeps the values from the spawn: an agent that adopts the
+// engine after a restart refreshes them on its first reconcile.
 func (a *MetalAgent) refreshEvictionPolicy(key string, isvc *inferencev1alpha1.InferenceService) {
 	protect := isvc.Spec.EvictionProtection != nil && *isvc.Spec.EvictionProtection
 	a.mu.Lock()
@@ -2959,9 +2961,11 @@ func hashedReplicas(replicas *int32) *int32 {
 
 // sameEngineSpec reports whether an engine started with spec hash stored
 // already runs what isvc asks for: an equal hash, or the hash of the same
-// spec with replicas unset or 1. Unset, 1 and any higher count all run one
-// engine on a Mac, but unset and 1 hash differently in every record written
-// before #2410, so a replicas edit between them is not a reason to restart.
+// spec with replicas unset, 1, or the raw count. Unset, 1 and any higher
+// count all run one engine on a Mac, but unset and 1 hash differently in
+// every record written before #2410, and such a record holds the raw count
+// for a service that ran with replicas above 1, so neither a replicas edit
+// nor the agent upgrade restarts the engine.
 func sameEngineSpec(stored string, isvc *inferencev1alpha1.InferenceService) bool {
 	if stored == computeSpecHash(isvc) {
 		return true
@@ -2970,10 +2974,8 @@ func sameEngineSpec(stored string, isvc *inferencev1alpha1.InferenceService) boo
 		return false
 	}
 	one := int32(1)
-	alt := isvc.DeepCopy()
-	for _, r := range []*int32{nil, &one} {
-		alt.Spec.Replicas = r
-		if computeSpecHash(alt) == stored {
+	for _, r := range []*int32{nil, &one, isvc.Spec.Replicas} {
+		if specHashWithReplicas(isvc, r) == stored {
 			return true
 		}
 	}
@@ -2984,6 +2986,13 @@ func computeSpecHash(isvc *inferencev1alpha1.InferenceService) string {
 	if isvc == nil {
 		return ""
 	}
+	return specHashWithReplicas(isvc, hashedReplicas(isvc.Spec.Replicas))
+}
+
+// specHashWithReplicas is computeSpecHash with replicas as the count hashed.
+// sameEngineSpec also hashes the raw count, which records written before
+// #2410 hold for a service running with replicas above 1.
+func specHashWithReplicas(isvc *inferencev1alpha1.InferenceService, replicas *int32) string {
 	// Fields included MUST match what the executor actually consumes (or what
 	// it will consume once #349 closes the ExecutorConfig gap). When adding a
 	// new spec field that affects llama-server args, add it here too.
@@ -3050,7 +3059,7 @@ func computeSpecHash(isvc *inferencev1alpha1.InferenceService) string {
 		ReasoningBudget:        isvc.Spec.ReasoningBudget,
 		ReasoningBudgetMessage: isvc.Spec.ReasoningBudgetMessage,
 		Mode:                   isvc.Spec.Mode,
-		Replicas:               hashedReplicas(isvc.Spec.Replicas),
+		Replicas:               replicas,
 		Suspend:                isvc.Spec.Suspend,
 		Runtime:                isvc.Spec.Runtime,
 		TurboQuantBits:         isvc.Spec.TurboQuantBits,

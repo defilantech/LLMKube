@@ -479,13 +479,14 @@ through the Mac fail while the agent itself is down.
 | An engine still loading when the agent restarts, or one that misses its single 5-second health check | stopped | no: it reloads |
 | Logout, restart, macOS update | stop | no: every model reloads after the next login |
 
+| `llmkube metal leave`, or `llmkube-metal-agent stop-engines` | stopped on purpose | not applicable |
+
 An edit to an InferenceService field that changes the engine's command line
 (`contextSize`, `ropeScaling`, `extraArgs`, the cache types and the other
 llama.cpp tuning fields) restarts its engine with the new arguments.
 `priority` and `evictionProtection` take effect on the running engine at
 once, without a restart, and so does a change of `replicas` between 1 and
 any higher count.
-| `llmkube metal leave`, or `llmkube-metal-agent stop-engines` | stopped on purpose | not applicable |
 
 Upgrading from a release before 0.10.13, which had no adoption, reloads every
 model once. Adopted engines keep the flags, environment and llama.cpp build
