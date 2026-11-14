@@ -416,9 +416,12 @@ On the Mac itself, the agent's client proxy on `127.0.0.1:9999`
 (`--client-port`) forwards `/v1/*` to an engine. With one model running,
 every request goes to it, whatever `model` it names. With several, each
 request goes to the engine its `model` field names: the model ID
-`GET /v1/models` lists for it (`spec.modelRef`, unless `extraArgs` sets an
-`--alias`), the InferenceService name, or `<namespace>/<name>` when the same
-name is used in two namespaces.
+`GET /v1/models` lists for it, the InferenceService name, or
+`<namespace>/<name>` when the same name is used in two namespaces. For
+llama-server, oMLX and TensorFold the listed ID is `spec.modelRef` unless
+`extraArgs` overrides it; mlx-server, vllm-swift and Ollama list IDs of their
+own. The proxy forwards the `model` field unchanged, so for an engine that
+checks it (all but llama-server), send the ID it lists.
 `GET /v1/models` lists the models of every engine. A request that names no
 model, or one no engine serves, gets an error listing the names to use.
 

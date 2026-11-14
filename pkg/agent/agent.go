@@ -1170,8 +1170,9 @@ func (a *MetalAgent) validateRuntimeFormat(model *inferencev1alpha1.Model, runti
 // engineServedName returns the model ID an engine of runtime serves because
 // the agent named it (ExecutorConfig.ServedModelName), mirroring each
 // executor: llama-server gets it as --alias unless extraArgs sets its own
-// alias, oMLX as the model directory's model_alias, TensorFold as its served
-// name. It is "" for the runtimes that name the model themselves, so the
+// alias, oMLX as the model directory's model_alias, TensorFold as its --name
+// unless extraArgs sets --name or --alias (buildTensorFoldArgs). It is "" for
+// the runtimes that name the model themselves and for an override, so the
 // client proxy never matches a request on a name the engine does not answer
 // to.
 func engineServedName(runtime string, cfg ExecutorConfig) string {
@@ -1184,6 +1185,9 @@ func engineServedName(runtime string, cfg ExecutorConfig) string {
 	case inferencev1alpha1.RuntimeOMLX:
 		return cfg.ServedModelName
 	case inferencev1alpha1.RuntimeTensorFold:
+		if hasMatchingExtraArg(cfg.ExtraArgs, "name") || hasMatchingExtraArg(cfg.ExtraArgs, "alias") {
+			return ""
+		}
 		return tensorFoldServedName(cfg)
 	}
 	return ""
