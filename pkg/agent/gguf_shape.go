@@ -78,7 +78,8 @@ func shapeFromStatus(meta *inferencev1alpha1.GGUFMetadata) attentionShape {
 // shapeFromParsed reads the same accessors the controller maps into
 // Model.status.gguf (ggufMetadataFromParsed in
 // internal/controller/model_controller.go), so a shape read here is the one
-// the status path would have carried for the same file.
+// the status path would have carried for the same file. It wins over the
+// status once the file is on this Mac (attentionShapeFor).
 func shapeFromParsed(f *gguf.GGUFFile) attentionShape {
 	s := attentionShape{
 		LayerCount:    f.BlockCount(),
