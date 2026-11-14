@@ -138,7 +138,7 @@ func TestEstimateModelMemory_RemoteHEADFallback(t *testing.T) {
 	agent := newAdmissionTestAgent(t, nil, MetalAgentConfig{AllowedDownloadHosts: []string{"127.0.0.1"}})
 	model := newAdmissionTestModel(ts.URL+"/model.gguf", "0")
 
-	estimate, err := agent.estimateModelMemory(context.Background(), model, 2048, "", "")
+	estimate, err := agent.estimateModelMemory(context.Background(), model, 2048, "", "", 0)
 	if err != nil {
 		t.Fatalf("estimateModelMemory returned error: %v", err)
 	}
@@ -162,7 +162,7 @@ func TestEstimateModelMemory_RemoteHEADRefusesBlockedSource(t *testing.T) {
 	agent := newAdmissionTestAgent(t, nil, MetalAgentConfig{})
 	model := newAdmissionTestModel(ts.URL+"/model.gguf", "0")
 
-	_, err := agent.estimateModelMemory(context.Background(), model, 2048, "", "")
+	_, err := agent.estimateModelMemory(context.Background(), model, 2048, "", "", 0)
 	assertGuardRefusal(t, err, "127.0.0.1")
 	if n := hits.Load(); n != 0 {
 		t.Errorf("blocked source received %d HEAD requests, want 0", n)
@@ -175,7 +175,7 @@ func TestEstimateModelMemory_StatusSizePreferredOverRemote(t *testing.T) {
 	agent := newAdmissionTestAgent(t, nil, MetalAgentConfig{})
 	model := newAdmissionTestModel("https://model-host.invalid/model.gguf", "20.0 GiB")
 
-	estimate, err := agent.estimateModelMemory(context.Background(), model, 2048, "", "")
+	estimate, err := agent.estimateModelMemory(context.Background(), model, 2048, "", "", 0)
 	if err != nil {
 		t.Fatalf("estimateModelMemory returned error: %v", err)
 	}
@@ -189,7 +189,7 @@ func TestEstimateModelMemory_AllSourcesExhausted(t *testing.T) {
 	agent := newAdmissionTestAgent(t, nil, MetalAgentConfig{})
 	model := newAdmissionTestModel("https://model-host.invalid/model.gguf", "0")
 
-	_, err := agent.estimateModelMemory(context.Background(), model, 2048, "", "")
+	_, err := agent.estimateModelMemory(context.Background(), model, 2048, "", "", 0)
 	if err == nil {
 		t.Fatal("expected error when no size source is available, got nil")
 	}
@@ -479,7 +479,7 @@ func TestEstimateModelMemory_S3SizesFromSignedHead(t *testing.T) {
 	agent := newS3AdmissionAgent(t, nil, srv.URL, []string{"127.0.0.1"})
 	model := newS3AdmissionModel("org/repo/model.gguf")
 
-	estimate, err := agent.estimateModelMemory(context.Background(), model, 2048, "", "")
+	estimate, err := agent.estimateModelMemory(context.Background(), model, 2048, "", "", 0)
 	if err != nil {
 		t.Fatalf("estimateModelMemory for an s3:// source returned error: %v", err)
 	}
@@ -525,7 +525,7 @@ func TestEstimateModelMemory_S3Non2xxFailsClosed(t *testing.T) {
 	agent := newS3AdmissionAgent(t, nil, srv.URL, []string{"127.0.0.1"})
 	model := newS3AdmissionModel("org/repo/missing.gguf")
 
-	_, err := agent.estimateModelMemory(context.Background(), model, 2048, "", "")
+	_, err := agent.estimateModelMemory(context.Background(), model, 2048, "", "", 0)
 	if err == nil || !strings.Contains(err.Error(), "cannot determine model size") ||
 		!strings.Contains(err.Error(), "remote size probe failed") ||
 		!strings.Contains(err.Error(), "404") {
@@ -543,7 +543,7 @@ func TestEstimateModelMemory_S3MissingContentLengthFailsClosed(t *testing.T) {
 	agent := newS3AdmissionAgent(t, nil, srv.URL, []string{"127.0.0.1"})
 	model := newS3AdmissionModel("org/repo/model.gguf")
 
-	_, err := agent.estimateModelMemory(context.Background(), model, 2048, "", "")
+	_, err := agent.estimateModelMemory(context.Background(), model, 2048, "", "", 0)
 	if err == nil || !strings.Contains(err.Error(), "cannot determine model size") ||
 		!strings.Contains(err.Error(), "remote size probe failed") ||
 		!strings.Contains(err.Error(), "Content-Length") {
@@ -566,7 +566,7 @@ func TestEstimateModelMemory_S3GuardRefusalFailsClosed(t *testing.T) {
 	agent := newS3AdmissionAgent(t, nil, srv.URL, nil)
 	model := newS3AdmissionModel("org/repo/model.gguf")
 
-	_, err := agent.estimateModelMemory(context.Background(), model, 2048, "", "")
+	_, err := agent.estimateModelMemory(context.Background(), model, 2048, "", "", 0)
 	if err == nil || !strings.Contains(err.Error(), "cannot determine model size") ||
 		!strings.Contains(err.Error(), "remote size probe failed") ||
 		!strings.Contains(err.Error(), downloadHostsFlag) {

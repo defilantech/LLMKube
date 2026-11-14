@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"os"
 	"path/filepath"
@@ -339,6 +340,9 @@ type MetalAgent struct {
 	mu               sync.RWMutex
 	memoryProvider   MemoryProvider
 	memoryFraction   float64
+	// ggufShapes caches the attention shape read from model files on this
+	// Mac for the KV-cache estimate (see estimateModelMemory).
+	ggufShapes ggufShapeCache
 	// memoryCheckWarnOnly is true when config.MemoryCheckMode resolved to
 	// MemoryCheckModeWarn; an incomplete admission check then logs and
 	// proceeds instead of failing closed.
@@ -1453,7 +1457,7 @@ func (a *MetalAgent) reconcileProcess(ctx context.Context, isvc *inferencev1alph
 	}
 
 	// Get context size from InferenceService spec, default to 2048
-	contextSize := 2048
+	contextSize := defaultContextSize
 	if isvc.Spec.ContextSize != nil && *isvc.Spec.ContextSize > 0 {
 		contextSize = int(*isvc.Spec.ContextSize)
 	}
@@ -2351,7 +2355,8 @@ func (a *MetalAgent) checkMemoryAdmission(
 	contextSize int,
 	cacheTypeK, cacheTypeV string,
 ) error {
-	estimate, err := a.estimateModelMemory(ctx, model, contextSize, cacheTypeK, cacheTypeV)
+	estimate, err := a.estimateModelMemory(ctx, model, contextSize, cacheTypeK, cacheTypeV,
+		derefInt32(isvc.Spec.ParallelSlots))
 	if err != nil {
 		return a.failModelEstimate(ctx, isvc, model, err)
 	}
@@ -2437,7 +2442,7 @@ func (a *MetalAgent) checkMemoryAdmission(
 				resolved.Fraction*100,
 			)
 		}
-		return a.refuseInsufficientMemory(ctx, isvc, msg, "source", resolved.Source)
+		return a.refuseInsufficientMemory(ctx, isvc, msg+kvNotCountedNote(estimate, contextSize), "source", resolved.Source)
 	}
 
 	// The model fits on its own; it must also fit next to every running and
@@ -2453,14 +2458,16 @@ func (a *MetalAgent) checkMemoryAdmission(
 	committed, holders := a.committedMemoryLocked(key, false)
 	if msg, ok := memoryRefusal(estimate.TotalBytes, committed, max(hostBudget, budget.BudgetBytes), holders); !ok {
 		a.mu.Unlock()
-		return a.refuseInsufficientMemory(ctx, isvc, msg, "committed", formatMemory(committed))
+		return a.refuseInsufficientMemory(ctx, isvc, msg+kvNotCountedNote(estimate, contextSize),
+			"committed", formatMemory(committed))
 	}
 	if !hostWide {
 		inCgroup, inCgroupHolders := a.committedMemoryLocked(key, true)
 		capacity := max(serviceBudget, budget.BudgetBytes)
 		if msg, ok := memoryRefusal(estimate.TotalBytes, inCgroup, capacity, inCgroupHolders); !ok {
 			a.mu.Unlock()
-			return a.refuseInsufficientMemory(ctx, isvc, msg, "committed", formatMemory(inCgroup))
+			return a.refuseInsufficientMemory(ctx, isvc, msg+kvNotCountedNote(estimate, contextSize),
+				"committed", formatMemory(inCgroup))
 		}
 	}
 	a.reservedMemory[key] = memoryReservation{bytes: estimate.TotalBytes, hostWide: hostWide}
@@ -2469,6 +2476,7 @@ func (a *MetalAgent) checkMemoryAdmission(
 
 	a.logger.Infow("memory check passed",
 		"estimate", formatMemory(budget.EstimateBytes),
+		"kvCache", kvCacheLogValue(estimate),
 		"budget", formatMemory(budget.BudgetBytes),
 		"headroom", formatMemory(budget.HeadroomBytes),
 		"committed", formatMemory(committed),
@@ -2485,6 +2493,29 @@ func (a *MetalAgent) checkMemoryAdmission(
 	}
 
 	return nil
+}
+
+// kvNotCountedNote is appended to an InsufficientMemory message whose
+// estimate holds no KV-cache term, so the reader knows the figure is a lower
+// bound and why.
+func kvNotCountedNote(estimate MemoryEstimate, contextSize int) string {
+	if estimate.KVCacheNotCounted == "" {
+		return ""
+	}
+	return fmt.Sprintf("; the KV cache for --ctx-size %d is not counted (%s)", contextSize, estimate.KVCacheNotCounted)
+}
+
+// kvCacheLogValue renders the KV-cache term of an admitted estimate for the
+// "memory check passed" log line.
+func kvCacheLogValue(estimate MemoryEstimate) string {
+	if estimate.KVCacheNotCounted != "" {
+		return "not counted: " + estimate.KVCacheNotCounted
+	}
+	if estimate.RecurrentStateBytes > 0 {
+		return formatMemory(estimate.KVCacheBytes) + " (plus " + formatMemory(estimate.RecurrentStateBytes) +
+			" recurrent state)"
+	}
+	return formatMemory(estimate.KVCacheBytes)
 }
 
 // refuseInsufficientMemory refuses a start that does not fit: it records msg on
@@ -2622,17 +2653,23 @@ func (a *MetalAgent) failMemoryCheck(
 
 // estimateModelMemory builds a MemoryEstimate for a model using the file on
 // disk (preferred), the Status.Size string, or a HEAD probe of an http(s)
-// source as a last resort, plus GGUF metadata when available. Cache types are
-// passed through so quantized KV caches (q8_0, turbo3, turbo4) produce a
+// source as a last resort, plus the GGUF attention shape from the Model status
+// or, failing that, from the header of the model file on this Mac (see
+// attentionShapeFor). Cache types are passed through so quantized KV caches (q8_0, turbo3, turbo4) produce a
 // realistic estimate instead of always assuming f16. The remote fallback
 // matters on fresh hosts: with no file on disk and a not-yet-populated status
 // size ("0"), the old chain errored out and the caller started the process
 // unchecked.
+//
+// parallelSlots is the InferenceService's spec.parallelSlots; it sizes the
+// recurrent state of a hybrid model, which llama-server keeps per sequence
+// (see recurrentSequences).
 func (a *MetalAgent) estimateModelMemory(
 	ctx context.Context,
 	model *inferencev1alpha1.Model,
 	contextSize int,
 	cacheTypeK, cacheTypeV string,
+	parallelSlots int,
 ) (MemoryEstimate, error) {
 	var fileSizeBytes uint64
 	var reasons []string
@@ -2645,12 +2682,22 @@ func (a *MetalAgent) estimateModelMemory(
 	// status/remote chain like any other unsized source; the executor's
 	// resolveLocalModelSource fails the load with a precise message if the
 	// path really does not exist.
-	if isLocalModelSource(model.Spec.Source) {
+	//
+	// headerPath is the file the attention shape is read from when the Model
+	// status lacks it: the file the agent will load, and only once it is on
+	// disk.
+	var headerPath string
+	var headerFollowsSymlinks bool
+	local := isLocalModelSource(model.Spec.Source)
+	if local {
 		src := localSourcePath(model.Spec.Source)
 		if !filepath.IsAbs(src) {
 			reasons = append(reasons, fmt.Sprintf("local source %q is not an absolute path", src))
 		} else if size, err := localModelSize(src); err == nil {
 			fileSizeBytes = size
+			// resolveLocalModelSource hands llama-server the cleaned path,
+			// links unresolved.
+			headerPath, headerFollowsSymlinks = filepath.Clean(src), true
 		} else {
 			reasons = append(reasons, fmt.Sprintf("local source not readable: %v", err))
 		}
@@ -2664,6 +2711,10 @@ func (a *MetalAgent) estimateModelMemory(
 	if fileSizeBytes == 0 {
 		if size, err := localModelSize(localPath); err == nil {
 			fileSizeBytes = size
+			// A local source is never loaded from the store slot.
+			if !local {
+				headerPath = localPath
+			}
 		} else {
 			reasons = append(reasons, fmt.Sprintf("file not found at %s", localPath))
 		}
@@ -2705,24 +2756,69 @@ func (a *MetalAgent) estimateModelMemory(
 		return MemoryEstimate{}, err
 	}
 
-	var layerCount, embeddingSize, headCount, headCountKV, keyLength, valueLength uint64
-	if model.Status.GGUF != nil {
-		layerCount = model.Status.GGUF.LayerCount
-		embeddingSize = model.Status.GGUF.EmbeddingSize
-		headCount = model.Status.GGUF.HeadCount
-		headCountKV = model.Status.GGUF.HeadCountKV
-		keyLength = model.Status.GGUF.KeyLength
-		valueLength = model.Status.GGUF.ValueLength
+	shape, notCounted := a.attentionShapeFor(model, headerPath, headerFollowsSymlinks)
+	seqs := recurrentSequences(parallelSlots)
+	recurrentState := shape.RecurrentStatePerSeq * seqs
+	if recurrentState/seqs != shape.RecurrentStatePerSeq {
+		recurrentState = math.MaxUint64 // overflow: the estimate takes its overflow fallback
 	}
+	estimate := EstimateModelMemoryWithOptions(fileSizeBytes, shape.LayerCount, shape.EmbeddingSize, contextSize,
+		EstimateOptions{
+			CacheTypeK:          cacheTypeK,
+			CacheTypeV:          cacheTypeV,
+			HeadCount:           shape.HeadCount,
+			HeadCountKV:         shape.HeadCountKV,
+			KeyLength:           shape.KeyLength,
+			ValueLength:         shape.ValueLength,
+			KVHeadLayers:        shape.KVHeadLayers,
+			RecurrentStateBytes: recurrentState,
+		})
+	if notCounted != "" && contextSize > defaultContextSize {
+		estimate.KVCacheNotCounted = notCounted
+		if a.ggufShapes.warnOnce(model.Namespace + "/" + model.Name + ": " + notCounted) {
+			a.logger.Warnw("memory estimate does not count the KV cache: no attention shape for the model",
+				"model", model.Namespace+"/"+model.Name, "contextSize", contextSize,
+				"estimate", formatMemory(estimate.TotalBytes), "reason", notCounted)
+		}
+	}
+	return estimate, nil
+}
 
-	return EstimateModelMemoryWithOptions(fileSizeBytes, layerCount, embeddingSize, contextSize, EstimateOptions{
-		CacheTypeK:  cacheTypeK,
-		CacheTypeV:  cacheTypeV,
-		HeadCount:   headCount,
-		HeadCountKV: headCountKV,
-		KeyLength:   keyLength,
-		ValueLength: valueLength,
-	}), nil
+// attentionShapeFor returns the attention shape the KV-cache estimate uses:
+// Model.status.gguf when the controller recorded one, else the GGUF header of
+// headerPath, the file the agent will load. The controller fills the status
+// only for http(s) and s3 sources it could read, so a local GGUF (the usual
+// case on a Mac), a source whose remote header read failed, and an hf://
+// source all rely on the header here. headerPath is empty when the model is
+// not on this Mac yet. notCounted says why there is no shape, if there is
+// none.
+func (a *MetalAgent) attentionShapeFor(
+	model *inferencev1alpha1.Model, headerPath string, followSymlinks bool,
+) (shape attentionShape, notCounted string) {
+	if shape = shapeFromStatus(model.Status.GGUF); shape.known() {
+		return shape, ""
+	}
+	if headerPath == "" {
+		return attentionShape{}, "the Model status has no GGUF attention shape and the model file is not on this Mac yet"
+	}
+	return a.ggufShapes.shapeOf(headerPath, followSymlinks)
+}
+
+// llamaServerAutoSlots is how many slots llama-server runs when --parallel is
+// not given: its default is auto, which it resolves to 4 with a unified KV
+// cache (tools/server/server.cpp, "n_parallel is set to auto"). The agent
+// omits the flag for spec.parallelSlots <= 1, so such a service runs 4 slots.
+const llamaServerAutoSlots = 4
+
+// recurrentSequences is the number of sequences llama-server sizes a hybrid
+// model's recurrent state for: one per slot (llama-model.cpp passes
+// max(1, n_seq_max) as the recurrent cache size). extraArgs are not read; a
+// --parallel there above the spec's value is not counted.
+func recurrentSequences(parallelSlots int) uint64 {
+	if parallelSlots <= 1 {
+		return llamaServerAutoSlots
+	}
+	return uint64(parallelSlots) //nolint:gosec // G115: positive here
 }
 
 // probeRemoteModelSize sizes an http(s) source with a HEAD for its
