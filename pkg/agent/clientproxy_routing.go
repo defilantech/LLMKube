@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/defilantech/llmkube/pkg/agent/ingress"
@@ -37,8 +38,8 @@ import (
 const maxProxyBodyBytes = 32 << 20
 
 // modelListTimeout bounds each child's GET /v1/models when the proxy merges
-// the listings or looks a model up in them.
-const modelListTimeout = 5 * time.Second
+// the listings or looks a model up in them. A variable so tests can shorten it.
+var modelListTimeout = 5 * time.Second
 
 // routeByModel picks the child that serves the model r names, for a proxy
 // with several children running. When it cannot pick one it writes the
@@ -156,13 +157,10 @@ func matchModel(bs []proxyBackend, model string) []proxyBackend {
 // report, a model a shared daemon serves outside LLMKube, and an engine
 // adopted from an agent that did not record its served name.
 func (p *ClientProxy) matchListedModel(ctx context.Context, bs []proxyBackend, model string) []proxyBackend {
+	listings := p.listAll(ctx, bs)
 	var out []proxyBackend
 	for _, b := range bs {
-		items, err := p.listModels(ctx, b)
-		if err != nil {
-			continue
-		}
-		for _, item := range items {
+		for _, item := range listings[b.addr].items {
 			var m struct {
 				ID string `json:"id"`
 			}
@@ -171,6 +169,43 @@ func (p *ClientProxy) matchListedModel(ctx context.Context, bs []proxyBackend, m
 				break
 			}
 		}
+	}
+	return out
+}
+
+// modelListing is one address's GET /v1/models answer.
+type modelListing struct {
+	items []json.RawMessage
+	err   error
+}
+
+// listAll asks every distinct child address for its models, in parallel, so a
+// child that hangs costs one modelListTimeout rather than one per child.
+// InferenceServices on one shared daemon share an address and are asked
+// once.
+func (p *ClientProxy) listAll(ctx context.Context, bs []proxyBackend) map[string]modelListing {
+	distinct := make([]proxyBackend, 0, len(bs))
+	seen := make(map[string]bool, len(bs))
+	for _, b := range bs {
+		if !seen[b.addr] {
+			seen[b.addr] = true
+			distinct = append(distinct, b)
+		}
+	}
+	results := make([]modelListing, len(distinct))
+	var wg sync.WaitGroup
+	for i, b := range distinct {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			items, err := p.listModels(ctx, b)
+			results[i] = modelListing{items: items, err: err}
+		}()
+	}
+	wg.Wait()
+	out := make(map[string]modelListing, len(distinct))
+	for i, b := range distinct {
+		out[b.addr] = results[i]
 	}
 	return out
 }
@@ -228,19 +263,26 @@ func modelNames(bs []proxyBackend) []string {
 
 // serveMergedModels answers GET /v1/models for a proxy with several children
 // running with one OpenAI list holding every child's entries, so a client
-// that discovers models through the proxy sees all of them. A child that
-// does not answer is left out; when none answers the response is a 502.
+// that discovers models through the proxy sees all of them. A shared daemon
+// serving several InferenceServices is listed once. A child that does not
+// answer is left out; when none answers the response is a 502.
 func (p *ClientProxy) serveMergedModels(w http.ResponseWriter, r *http.Request, bs []proxyBackend) {
+	listings := p.listAll(r.Context(), bs)
 	data := []json.RawMessage{}
 	answered := 0
+	listed := make(map[string]bool, len(bs))
 	for _, b := range bs {
-		items, err := p.listModels(r.Context(), b)
-		if err != nil {
-			p.logger.Warnw("client proxy could not list a child's models", "inferenceService", b.id, "err", err.Error())
+		if listed[b.addr] {
+			continue
+		}
+		listed[b.addr] = true
+		l := listings[b.addr]
+		if l.err != nil {
+			p.logger.Warnw("client proxy could not list a child's models", "inferenceService", b.id, "err", l.err.Error())
 			continue
 		}
 		answered++
-		data = append(data, items...)
+		data = append(data, l.items...)
 	}
 	if answered == 0 {
 		clientProxyRequests.WithLabelValues("5xx").Inc()

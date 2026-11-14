@@ -28,6 +28,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"go.uber.org/zap"
 	"k8s.io/utils/ptr"
@@ -363,5 +364,104 @@ func TestReconcileProcess_RecordsServedModel(t *testing.T) {
 	}
 	if p := f.tracked(); p == nil || f.exec.starts() != 1 || p.ServedModel != "served-name" {
 		t.Fatalf("tracked process = %+v after %d starts, want ServedModel %q", p, f.exec.starts(), "served-name")
+	}
+}
+
+// TestEngineServedName mirrors each executor: the proxy may match a request
+// on the agent's served name only where the engine answers to it.
+func TestEngineServedName(t *testing.T) {
+	cfg := func(extra ...string) ExecutorConfig {
+		return ExecutorConfig{Name: "svc", ServedModelName: "qwen3", ExtraArgs: extra}
+	}
+	tests := []struct {
+		runtime string
+		cfg     ExecutorConfig
+		want    string
+	}{
+		{runtimeLlamaServer, cfg(), "qwen3"},
+		{runtimeLlamaServer, cfg("--alias", "custom"), ""},
+		{runtimeLlamaCPP, cfg("--alias=custom"), ""},
+		{inferencev1alpha1.RuntimeOMLX, cfg(), "qwen3"},
+		{inferencev1alpha1.RuntimeTensorFold, cfg(), "qwen3"},
+		{inferencev1alpha1.RuntimeTensorFold, ExecutorConfig{Name: "svc"}, "svc"},
+		{inferencev1alpha1.RuntimeMLXServer, cfg(), ""},
+		{inferencev1alpha1.RuntimeVLLMSwift, cfg(), ""},
+		{inferencev1alpha1.RuntimeOllama, cfg(), ""},
+	}
+	for _, tc := range tests {
+		if got := engineServedName(tc.runtime, tc.cfg); got != tc.want {
+			t.Errorf("engineServedName(%s, extraArgs %v) = %q, want %q", tc.runtime, tc.cfg.ExtraArgs, got, tc.want)
+		}
+	}
+}
+
+// TestReconcileProcess_NoServedModelWhenExtraArgsSetAlias: an --alias in
+// extraArgs replaces the agent's, so the stamp must not claim modelRef. With
+// it, a second engine that really serves modelRef would make every request
+// for it a 409.
+func TestReconcileProcess_NoServedModelWhenExtraArgsSetAlias(t *testing.T) {
+	f := newRestartFixture(t, "aliased")
+	// The extraArgs policy refuses --alias unless the operator relaxes it.
+	f.agent.config.AllowUnsafeExtraArgs = true
+	changed := f.updateISVC(t, func(isvc *inferencev1alpha1.InferenceService) {
+		isvc.Spec.ExtraArgs = []string{"--alias", "custom"}
+	})
+	if err := f.agent.ensureProcess(context.Background(), changed); err != nil {
+		t.Fatalf("ensureProcess: %v", err)
+	}
+	if p := f.tracked(); p == nil || f.exec.starts() != 1 || p.ServedModel != "" {
+		t.Fatalf("tracked process = %+v after %d starts, want ServedModel empty", p, f.exec.starts())
+	}
+}
+
+// TestClientProxy_SeveralEngines_SharedDaemonListedOnce: two
+// InferenceServices on one shared daemon must not list its models twice.
+func TestClientProxy_SeveralEngines_SharedDaemonListedOnce(t *testing.T) {
+	daemon := newModelEngine(t, "qwen3:8b", "gemma3:4b")
+	p := agentProxy(
+		&ManagedProcess{Name: "qwen", Namespace: "default", Port: daemon.port, Healthy: true,
+			Runtime: runtimeLlamaServer, ModelID: "qwen3:8b"},
+		&ManagedProcess{Name: "gemma", Namespace: "default", Port: daemon.port, Healthy: true,
+			Runtime: runtimeLlamaServer, ModelID: "gemma3:4b"},
+	)
+	rec := proxyRequest(p, http.MethodGet, "/v1/models", "")
+	var list struct {
+		Data []json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil || len(list.Data) != 2 {
+		t.Fatalf("status %d, merged list %s; want the daemon's two models once", rec.Code, rec.Body.String())
+	}
+}
+
+// TestClientProxy_SeveralEngines_ListsInParallel: a hung engine costs the
+// listing one timeout, not one per engine.
+func TestClientProxy_SeveralEngines_ListsInParallel(t *testing.T) {
+	old := modelListTimeout
+	modelListTimeout = 250 * time.Millisecond
+	t.Cleanup(func() { modelListTimeout = old })
+
+	procs := make([]*ManagedProcess, 0, 3)
+	for i := range 3 {
+		srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			select {
+			case <-r.Context().Done():
+			case <-time.After(5 * time.Second):
+			}
+		}))
+		t.Cleanup(srv.Close)
+		_, portStr, _ := net.SplitHostPort(srv.Listener.Addr().String())
+		port, _ := strconv.Atoi(portStr)
+		procs = append(procs, llamaProc("default", fmt.Sprintf("hung-%d", i), fmt.Sprintf("m%d", i), port, true))
+	}
+	p := agentProxy(procs...)
+
+	start := time.Now()
+	rec := proxyRequest(p, http.MethodGet, "/v1/models", "")
+	elapsed := time.Since(start)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status %d, want 502 with every engine hung", rec.Code)
+	}
+	if elapsed > 600*time.Millisecond {
+		t.Errorf("listing three hung engines took %v, want about one 250ms timeout (serial would be 750ms)", elapsed)
 	}
 }
