@@ -252,9 +252,12 @@ Point any OpenAI-compatible client at that URL and it just works. The proxy serv
 | `POST /v1/rerank` | Reranking |
 | `POST /v1/messages` | Anthropic Messages API: Claude Code and the Anthropic SDKs |
 | `POST /v1/messages/count_tokens` | Anthropic token counting |
+| `POST /v1/<anything else>` | Any other endpoint the runtime serves, such as vLLM's `/v1/responses` or `/v1/decisions`, forwarded on the same path to local-tier backends only (see below) |
 | `GET /v1/models` | Model discovery: one entry per backend, under its `displayName`, else its `name`, the id `BackendNameMatch` resolves. An external backend's upstream `model` is not listed. |
 
 The two Anthropic routes are placed, balanced and session-bound exactly like chat completions, and headers such as `anthropic-version` and `anthropic-beta` pass through. The backend must serve them itself: vLLM does natively; a backend that does not returns its own `404`, which reaches the client unchanged and does not count against the backend. Token budgets charge Anthropic responses from their own usage fields (cached input included), and errors the router itself returns on these routes use the Anthropic error shape.
+
+A `POST` to any other `/v1` path is routed on its `model` field like the named routes and forwarded to the chosen backend on the same path, with the body unchanged, so routing rules, fail-closed, budgets and the audit log apply to every endpoint a runtime serves. The path goes upstream as the client escaped it. These paths reach **local-tier backends only**: a cloud-tier backend carries the router's provider key, and an endpoint the router does not name there (files, batches, fine-tuning) would spend it outside any budget. A rule whose backends include a cloud one falls through to its local backends, and a shadow rule mirrors these requests only to its local backends. A request whose route has no local backend gets a `404`. Budgets charge these responses from `prompt_tokens` and `completion_tokens`, or from `input_tokens` and `output_tokens` as the Responses API and vLLM's decisions endpoint report them, including the `response.completed` event of a Responses stream. The router does not add `stream_options` to these requests; it does that only on chat completions and completions, the two APIs that define it. Every endpoint a runtime serves under `/v1` becomes reachable through the router, so a runtime option that adds an administrative `/v1` endpoint (vLLM's runtime LoRA loading, for example) exposes it to the router's callers too. `GET` on a path the router does not name is still a `404`.
 
 `GET /v1/models` lists each backend under its `displayName`, else its `name`. Coding clients, and services that generate client config, read this list to decide whether a model takes images and how much context it holds. A backend publishes both when it declares `modelInfo`:
 
@@ -725,6 +728,8 @@ slow?" needs upstream metrics, not the proxy log.
 - `pool_activation_timeout` or `pool_incumbent_busy`: a ModelPool member
   was not resident in time (`503` with `Retry-After`).
 - `budget_exceeded`: a token budget was exhausted (`429`).
+- `path_local_only`: a request on a `/v1` path the router does not name
+  had no local-tier backend to go to (`404`).
 - `bad_request`: the request body could not be read or is not JSON
   (`400`). It is counted in the metrics below but writes no audit line.
 

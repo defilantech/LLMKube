@@ -20,6 +20,7 @@ import (
 	"math"
 	"net/http"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -216,14 +217,13 @@ func compileBudgetRules(budgets []Budget) []BudgetRule {
 // Mount wires up the OpenAI-compatible endpoints plus /health and /readyz on the
 // given mux. Callers attach the mux to an http.Server.
 func (p *Proxy) Mount(mux *http.ServeMux) {
-	mux.HandleFunc("POST /v1/chat/completions", p.handleCompletion("/v1/chat/completions"))
-	mux.HandleFunc("POST /v1/completions", p.handleCompletion("/v1/completions"))
-	mux.HandleFunc("POST /v1/embeddings", p.handleCompletion("/v1/embeddings"))
-	mux.HandleFunc("POST /v1/rerank", p.handleCompletion("/v1/rerank"))
-	// The Anthropic Messages API carries model and stream where chat
-	// completions does, so the same handler places and streams it.
-	mux.HandleFunc("POST /v1/messages", p.handleCompletion("/v1/messages"))
-	mux.HandleFunc("POST /v1/messages/count_tokens", p.handleCompletion("/v1/messages/count_tokens"))
+	for _, path := range namedPaths {
+		mux.HandleFunc("POST "+path, p.handleCompletion(path))
+	}
+	// Every other POST /v1 path goes to the model the request names, on the
+	// same path (#2470): the runtimes serve more /v1 endpoints than the
+	// router names, and handleCompletion reads only model and stream.
+	mux.HandleFunc("POST /v1/", p.handleOtherV1)
 	mux.HandleFunc("GET /v1/models", p.handleModels)
 	mux.HandleFunc("GET /health", p.handleHealth)
 	mux.HandleFunc("GET /healthz", p.handleHealth)
@@ -317,6 +317,50 @@ func (p *Proxy) handleModels(w http.ResponseWriter, _ *http.Request) {
 // endpoint must pass its own path: the surface the proxy fronts is not just
 // chat completions, and a hardcoded path silently turns an embeddings request
 // into a chat request at the upstream.
+// namedPaths are the POST paths the router names, each forwarded to any
+// backend a rule picks. The Anthropic Messages API carries model and stream
+// where chat completions does, so the same handler places and streams it.
+var namedPaths = []string{
+	"/v1/chat/completions",
+	"/v1/completions",
+	"/v1/embeddings",
+	"/v1/rerank",
+	"/v1/messages",
+	"/v1/messages/count_tokens",
+}
+
+// isNamedPath reports whether path is one of namedPaths.
+func isNamedPath(path string) bool {
+	return slices.Contains(namedPaths, path)
+}
+
+// reachesBackend reports whether a request on path may be sent to b. A named
+// path reaches every backend. Any other path reaches only local-tier
+// backends: a cloud backend carries the router's provider key, and an unnamed
+// path there (files, batches, fine-tuning) would spend it outside any budget.
+func reachesBackend(b *Backend, path string) bool {
+	return isNamedPath(path) || b.Tier == "local"
+}
+
+// ErrPathLocalOnly is the dispatch error when a request on a path the router
+// does not name has no local-tier backend to go to.
+var ErrPathLocalOnly = errors.New("the router forwards this path only to local-tier backends")
+
+// injectsStreamUsage reports whether a budgeted stream on path gets
+// stream_options.include_usage added: only chat completions and completions
+// define it. An Anthropic stream always reports usage, and the Responses API
+// rejects a parameter it does not know.
+func injectsStreamUsage(path string) bool {
+	return path == "/v1/chat/completions" || path == "/v1/completions"
+}
+
+// handleOtherV1 serves a POST to a /v1 path the router does not name. The
+// path goes upstream as the client escaped it, so an encoded character (a
+// "%3F") stays part of the path instead of turning into a query string.
+func (p *Proxy) handleOtherV1(w http.ResponseWriter, r *http.Request) {
+	p.handleCompletion(r.URL.EscapedPath())(w, r)
+}
+
 func (p *Proxy) handleCompletion(upstreamPath string) http.HandlerFunc {
 	anthropic := isAnthropicPath(upstreamPath)
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -382,7 +426,9 @@ func (p *Proxy) handleCompletion(upstreamPath string) http.HandlerFunc {
 		// is charged zero. The rewrite is gated on a budget applying to this
 		// request; unbudgeted traffic dispatches untouched.
 		// An Anthropic stream always reports usage and has no stream_options.
-		if isStream && len(scopeKeys) > 0 && !anthropic {
+		// Only chat completions and completions define stream_options; the
+		// Responses API, for one, rejects a parameter it does not know.
+		if isStream && len(scopeKeys) > 0 && injectsStreamUsage(upstreamPath) {
 			if injected, changed := InjectStreamUsage(body); changed {
 				body = injected
 			}
@@ -561,6 +607,15 @@ func (p *Proxy) writeDispatchError(
 			"fail_closed_runtime", elapsed, budgetAudit{})
 		p.observeRequest(features, decision, last, "fail_closed_runtime", elapsed)
 		p.observeFailClosed(features, decision)
+		return
+	}
+	// The request's path is one the router forwards only to local-tier
+	// backends, and its route has none: the path is not available through
+	// this route, which is what a 404 says.
+	if errors.Is(err, ErrPathLocalOnly) {
+		writeErrorFor(anthropic, w, http.StatusNotFound, err.Error())
+		p.audit(*features, *decision, nil, http.StatusNotFound, "path_local_only", elapsed, budgetAudit{})
+		p.observeRequest(features, decision, last, "path_local_only", elapsed)
 		return
 	}
 	// The last attempt ran out its header deadline (the rule, backend
@@ -864,6 +919,14 @@ func (p *Proxy) dispatchWithFallback(
 		b := p.matcher.BackendByName(name)
 		if b == nil {
 			lastErr = fmt.Errorf("backend %q not configured", name)
+			allIncumbentBusy = false
+			continue
+		}
+		if !reachesBackend(b, path) {
+			// Keep a real failure of an earlier backend as the cause.
+			if lastErr == nil {
+				lastErr = fmt.Errorf("%w; backend %q is %s-tier", ErrPathLocalOnly, name, b.Tier)
+			}
 			allIncumbentBusy = false
 			continue
 		}

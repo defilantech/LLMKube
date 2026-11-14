@@ -168,6 +168,11 @@ func (p *Proxy) mirror(f *RequestFeatures, dec *MatchResult, served *Backend, he
 	}
 	hdr := headers.Clone()
 	for _, b := range targets {
+		// A path the router does not name is mirrored only to local-tier
+		// backends, as it is dispatched (reachesBackend).
+		if !reachesBackend(b, path) {
+			continue
+		}
 		if !p.shadows.start(b.Name, func(ctx context.Context) {
 			p.runShadow(ctx, *f, dec, b, hdr, body, path)
 		}) {
