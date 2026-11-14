@@ -1959,6 +1959,8 @@ see "LAN download fails with `no route to host` after an upgrade" above, and
 
 On every poll (every 5 seconds) the agent looks up the Model each InferenceService references, to decide whether it is a Metal service this agent runs. When that lookup fails with anything other than NotFound (an API server timeout, throttling, a 5xx while the control plane restarts, `Forbidden`), the agent cannot tell, so it leaves the service as it was: a running engine keeps serving and keeps its Service and EndpointSlice, and a service it was not running yet is not started. While the lookup fails, changes to the InferenceService (`replicas: 0`, `suspend`, flag changes) do not take effect; deleting the InferenceService, or restoring the agent's access, does.
 
+A NotFound Model stops a running engine only once it has been missing for 5 minutes, so deleting and re-creating it (`kubectl replace --force`, a GitOps re-create) keeps the engine serving. Re-created with the same spec, nothing restarts; re-created with a different spec, the engine restarts on the new Model, as before. An in-place edit of a Model does not restart the engine.
+
 The agent retries on every poll. It logs this warning once when a service's lookup starts failing, Debug lines while it keeps failing, and `referenced model lookup recovered` at Info when it succeeds again, and the `llmkube_metal_agent_watch_model_lookup_failing_services` gauge counts the services currently in this state. A warning followed by a recovery line around a control-plane restart is expected. If the gauge stays above zero, check that the agent's credentials can still read Models in its namespace:
 
 ```bash

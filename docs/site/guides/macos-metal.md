@@ -1094,6 +1094,18 @@ agent's RBAC and its connection to the API server. Of the possible
 lookup results, only a deleted Model, or one that is no longer
 `accelerator: metal`, stops the service.
 
+**Agent log shows `referenced model not found; keeping the engine in case the model is re-created`**
+The `InferenceService`'s Model was deleted. The engine keeps serving
+for up to 5 minutes, so deleting and re-creating the Model
+(`kubectl replace --force`, a GitOps re-create) does not stop it.
+Meanwhile the controller reports the `InferenceService` as `Failed`
+with `Model not found`, and changes to the `InferenceService` wait
+until the Model is back. A re-created Model with the same spec keeps
+the engine, and the log says `referenced model found again`. One with
+a different spec (another `source`, for example) restarts the engine
+on it. A Model still missing after 5 minutes stops the engine:
+`referenced model still not found; stopping the engine`.
+
 **Agent log shows `replicas=0; stopping process` unexpectedly**
 A controller-side reconcile saw `spec.replicas=0` on the
 `InferenceService`. Check whether something scaled it down
