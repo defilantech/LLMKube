@@ -1697,7 +1697,27 @@ On a Metal InferenceService (`kubectl describe inferenceservice <name>`):
 - From the agent: `RelayNotAdopted`, `ExtraArgsRejected`,
   `EndpointNameConflict`, `ModelSourceNotAllowed`, `ServiceNameTooLong`,
   `ModelDigestMismatch`, `ModelDownloadTooLarge`, `SourceSecretNotAllowed`,
-  `RuntimeNotAvailable`, `SourceSecretUnlabeled` (Warning).
+  `RuntimeNotAvailable`, `SourceSecretUnlabeled`, `StartFailed`, `EngineExited`
+  (Warning).
+
+`StartFailed` means a start the agent did not refuse failed anyway (the engine
+exited while loading, the download failed, or the engine never answered its
+health check): the Event carries the error's first line and the path of the
+engine log on the Mac, `status.schedulingStatus` reads `StartFailed`, and the
+agent retries after 10 seconds, doubling up to 5 minutes, until an engine runs,
+the InferenceService is deleted or scaled to zero, or its spec changes (which
+retries at once).
+
+`EngineExited` means a running engine's process exited: the agent withdraws its
+endpoint at once and restarts the engine without waiting for failed health
+checks, the Event carries the exit status and the log's path, and the crashed
+run's log is kept as `<engine>-<namespace>-<name>.log.1` in the model store
+(`llama-server-...` for llama.cpp). The restart uses the same backoff as
+`StartFailed`, 10 seconds doubling up to 5 minutes, so an engine that keeps
+crashing is restarted less and less often.
+Neither Event carries engine log content, since Events are readable by anyone
+who can read the namespace and an engine log can hold request text; the last
+lines of the log go to the agent's own log.
 
 `ServiceNameTooLong` means the InferenceService name is too long for the
 `<isvc>-agent` Service (at most 57 characters, since the name plus `-agent`

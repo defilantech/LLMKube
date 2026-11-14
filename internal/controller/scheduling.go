@@ -58,9 +58,11 @@ var priorityValues = map[string]int32{
 }
 
 // agentRefusalReasons are the SchedulingStatus values the metal agent writes
-// when it declines to start a service (memory admission in pkg/agent/agent.go,
-// start refusals in pkg/agent/refusal.go). The agent clears them itself on the
-// next admitted start (#777); a stale heartbeat still replaces them.
+// and clears itself: its refusals to start a service (memory admission in
+// pkg/agent/agent.go, start refusals in pkg/agent/refusal.go) and StartFailed,
+// for a start that failed and is being retried on the restart backoff
+// (pkg/agent/start_failure.go). The agent clears them itself once an engine
+// runs (#777); a stale heartbeat still replaces them.
 //
 // Built from inferencev1alpha1.MetalAgentRefusalReasons rather than
 // hand-listed here: this map and the agent's own list used to be two

@@ -294,11 +294,65 @@ func tailLines(path string, n int) string {
 // withLogTail appends the tail of the child's log to a startup error, so the
 // reason a child failed travels with the error instead of only living on disk.
 func withLogTail(err error, logPath string) error {
-	tail := tailLines(logPath, processLogTailLines)
-	if tail == "" {
-		return fmt.Errorf("%w (log: %s)", err, logPath)
+	return &engineLogError{err: err, logPath: logPath, tail: tailLines(logPath, processLogTailLines)}
+}
+
+// engineLogError is a startup error with the tail of the engine's log
+// attached. Its text, which goes to the agent log, is the error followed by
+// the tail; the parts stay separate so an Event can say what failed and where
+// the log is without carrying the tail (summarizeForEvent).
+type engineLogError struct {
+	err     error
+	logPath string
+	tail    string
+}
+
+func (e *engineLogError) Error() string {
+	if e.tail == "" {
+		return fmt.Sprintf("%v (log: %s)", e.err, e.logPath)
 	}
-	return fmt.Errorf("%w; last lines of %s:\n%s", err, logPath, tail)
+	return fmt.Sprintf("%v; last lines of %s:\n%s", e.err, e.logPath, e.tail)
+}
+
+func (e *engineLogError) Unwrap() error { return e.err }
+
+// eventSummaryMaxBytes bounds the error summary an Event or the scheduling
+// status carries.
+const eventSummaryMaxBytes = 200
+
+// summarizeForEvent returns what an Event (and the scheduling status) may say
+// about err: its first line, without an attached engine log tail, cut to
+// eventSummaryMaxBytes, plus the engine log's path when one is attached.
+// Never the log's content: Events are readable by anyone who can read the
+// namespace and are commonly exported to central logging, and an engine log
+// can carry request text. The full error, tail included, goes to the agent
+// log only.
+func summarizeForEvent(err error) (summary, logPath string) {
+	text := err.Error()
+	var le *engineLogError
+	if errors.As(err, &le) {
+		text = strings.Replace(text, le.Error(), le.err.Error(), 1)
+		logPath = le.logPath
+	}
+	// The cut is what keeps log content out: engineLogError always puts the
+	// tail after a newline, so it holds even when a wrapper did not quote the
+	// engineLogError verbatim and the Replace above found nothing.
+	summary, _, _ = strings.Cut(text, "\n")
+	if len(summary) > eventSummaryMaxBytes {
+		summary = strings.ToValidUTF8(summary[:eventSummaryMaxBytes], "") + "..."
+	}
+	return summary, logPath
+}
+
+// engineLogHint tells an Event's reader where the engine's logs are on the
+// Mac, since the Event does not carry them: logPath for the run that failed,
+// logPath.1 for the run before it. Empty when no log is known.
+func engineLogHint(logPath string) string {
+	if logPath == "" {
+		return ""
+	}
+	return fmt.Sprintf(". Engine log on the Mac: %s (the run before it: %s.1); its last lines are in the agent log",
+		logPath, logPath)
 }
 
 // childTracker maps the PID of every child an executor spawned to its reaper,

@@ -63,6 +63,7 @@ var knownReasonConstants = map[string]string{
 	"EventReasonRuntimeNotAvailable":    EventReasonRuntimeNotAvailable,
 	"EventReasonMemoryCheckFailed":      EventReasonMemoryCheckFailed,
 	"EventReasonInsufficientMemory":     EventReasonInsufficientMemory,
+	"EventReasonStartFailed":            EventReasonStartFailed,
 }
 
 // emptyStringLit is the source text go/ast.BasicLit.Value carries for the
