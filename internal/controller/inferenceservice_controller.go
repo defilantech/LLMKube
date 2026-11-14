@@ -1586,7 +1586,7 @@ func (r *InferenceServiceReconciler) metalEndpointSnapshot(ctx context.Context, 
 // slices are not the agent's word.
 func metalAgentVersion(slices []discoveryv1.EndpointSlice) string {
 	for i := range slices {
-		if slices[i].Labels[inferencev1alpha1.LabelManagedBy] != "metal-agent" {
+		if slices[i].Labels[inferencev1alpha1.LabelManagedBy] != inferencev1alpha1.ManagedByMetalAgent {
 			continue
 		}
 		if v := slices[i].Annotations[inferencev1alpha1.AnnotationAgentVersion]; v != "" {

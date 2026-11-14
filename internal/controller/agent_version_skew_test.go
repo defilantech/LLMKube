@@ -108,7 +108,7 @@ func TestMetalAgentVersionReadsOnlyAgentSlices(t *testing.T) {
 	slices := []discoveryv1.EndpointSlice{
 		{ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{inferencev1alpha1.AnnotationAgentVersion: "0.11.0"}}},
 		{ObjectMeta: metav1.ObjectMeta{
-			Labels:      map[string]string{inferencev1alpha1.LabelManagedBy: "metal-agent"},
+			Labels:      map[string]string{inferencev1alpha1.LabelManagedBy: inferencev1alpha1.ManagedByMetalAgent},
 			Annotations: map[string]string{inferencev1alpha1.AnnotationAgentVersion: "0.10.17"},
 		}},
 	}

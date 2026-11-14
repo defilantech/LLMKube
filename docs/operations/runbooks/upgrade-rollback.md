@@ -123,7 +123,11 @@ controller checks every agent against it:
 
 The controller learns its own version from `--controller-version`, which
 the chart sets from the controller image tag (else the chart
-`appVersion`). An install without it reports `VersionUnknown`.
+`appVersion`). An install without it reports `VersionUnknown`. A
+controller image pinned by `controllerManager.image.digest` alone reports
+the chart's `appVersion`; when the digest is of another release, set
+`controllerManager.image.tag` to that release too (the digest still
+decides the image).
 
 Rolling a metal-agent back to a release that predates engine adoption
 silently doubles every model on that Mac: the engines the current agent
