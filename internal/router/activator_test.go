@@ -373,6 +373,112 @@ func TestActivatorCoalesceHoldsCrossModelUntilDrain(t *testing.T) {
 	}
 }
 
+// TestActivatorKeepsNewResidentForItsWaiters is the window right after a swap
+// completes (#2533). The swap goroutine makes judge resident and wakes every
+// held request at once. If a coder request takes the lock before the judge
+// requests that waited for that swap, judge has no in-flight request yet, so
+// it looked idle and coder started swapping it out again before a single
+// judge request was served: the requested model loads, the other one is
+// swapped in, then the requested one again. A resident with requests still
+// registered for it is about to serve them, so it counts as busy.
+func TestActivatorKeepsNewResidentForItsWaiters(t *testing.T) {
+	for _, mode := range []string{PoolActivationWait, PoolActivationIfIdle} {
+		t.Run(mode, func(t *testing.T) {
+			fake := newFakeMemberController()
+			fake.setPhase("judge", modelReadyPhase)
+			a := NewActivator(context.Background(), fake, "r", nil)
+
+			// The state the swap to judge leaves: judge resident and freshly
+			// verified, no swap running, and one judge request woken but not yet
+			// back under the lock (registered, nothing in flight).
+			a.mu.Lock()
+			pr := a.runtime(testPool("judge"))
+			pr.resident = "judge"
+			pr.residentCheckedAt = time.Now()
+			pr.waiting["judge"] = 1
+			a.mu.Unlock()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			defer cancel()
+			_, err := a.AcquireWithMode(ctx, testPool("coder"), mode)
+
+			if got := fake.activateCount("coder"); got != 0 {
+				t.Fatalf("coder activated %d times while a judge request waited for the swap to judge", got)
+			}
+			want := ErrHoldBudgetExceeded
+			if mode == PoolActivationIfIdle {
+				want = ErrIncumbentBusy
+			}
+			if !errors.Is(err, want) {
+				t.Errorf("coder Acquire err = %v, want %v", err, want)
+			}
+		})
+	}
+}
+
+// TestActivatorWakesWaitersWhenResidentSelfHeals: reconcileResident can move
+// the resident without a swap, when the member it believed in is gone and
+// another reports Ready (a pod lost out of band, a member scaled up by hand).
+// Requests already held for that member must be woken to take it. Left asleep,
+// they would also count as waiting for the resident and keep every other
+// member's request from swapping until their hold budget ran out (#2533).
+func TestActivatorWakesWaitersWhenResidentSelfHeals(t *testing.T) {
+	fake := newFakeMemberController()
+	fake.setPhase("judge", modelReadyPhase)
+	a := NewActivator(context.Background(), fake, "r", nil)
+
+	// judge resident and busy; a coder request is held behind it.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	judgeRel, err := a.Acquire(ctx, testPool("judge"))
+	if err != nil {
+		t.Fatalf("Acquire judge: %v", err)
+	}
+	defer judgeRel()
+	held := make(chan error, 1)
+	go func() {
+		hctx, hcancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer hcancel()
+		rel, e := a.Acquire(hctx, testPool("coder"))
+		if rel != nil {
+			rel()
+		}
+		held <- e
+	}()
+	select {
+	case e := <-held:
+		t.Fatalf("coder acquired while judge was busy (err=%v)", e)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	// Out of band, judge's pod goes and coder comes up Ready. The next request
+	// re-verifies the resident and adopts coder.
+	fake.setPhase("judge", "")
+	fake.setPhase("coder", modelReadyPhase)
+	a.InvalidateResident(testPool("coder"))
+	nctx, ncancel := context.WithTimeout(context.Background(), time.Second)
+	defer ncancel()
+	rel, err := a.Acquire(nctx, testPool("coder"))
+	if err != nil {
+		t.Fatalf("second coder Acquire: %v", err)
+	}
+	// Still in flight: its release would wake the held request on its own, so
+	// only the residency change may do it here.
+	defer rel()
+
+	select {
+	case e := <-held:
+		if e != nil {
+			t.Fatalf("held coder request: %v", e)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("the held coder request was not woken when coder became the resident")
+	}
+	if got := fake.activateCount("coder"); got != 0 {
+		t.Errorf("coder activated %d times; it was already Ready", got)
+	}
+}
+
 // TestActivatorSwapFailurePropagates verifies a failed activation surfaces an
 // error to the caller rather than hanging.
 func TestActivatorSwapFailurePropagates(t *testing.T) {

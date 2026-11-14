@@ -336,6 +336,14 @@ func validateMembers(
 // are gone), which would erase the activation signal. The in-progress owner is
 // therefore remembered in status.PendingMember and honored here even while it is
 // held at zero, so a deferred swap does not revert to the incumbent.
+//
+// A pending owner is not always one the router is waiting for, though: the
+// reconciler also loads spec.default into a cold pool and reclaims the slot for
+// it, and the router may have given up on an earlier target. The router scales
+// its target up once and then only waits, so a member it scaled up must not
+// lose to such an owner: it would be drained and the held request would wait
+// out spec.swapBudget for a member that never loads (#2533). routerTarget picks
+// that member first.
 func resolveSlotOwner(pool *inferencev1alpha1.ModelPool, members map[string]*inferencev1alpha1.InferenceService) string {
 	resident := pool.Status.ResidentMember
 	pending := pool.Status.PendingMember
@@ -369,8 +377,12 @@ func resolveSlotOwner(pool *inferencev1alpha1.ModelPool, members map[string]*inf
 
 	if resident == "" {
 		// Cold pool (no member has become resident yet).
-		// Continue an in-progress swap first, then honor a fresh activation,
-		// then spec.default, then declaration order, else stay cold.
+		// A member the router is holding a request for first, then continue an
+		// in-progress swap, then honor a fresh activation, then spec.default,
+		// then declaration order, else stay cold.
+		if target := routerTarget(pending, requested, members); target != "" {
+			return target
+		}
 		if pending != "" {
 			if _, ok := members[pending]; ok {
 				return pending
@@ -396,9 +408,13 @@ func resolveSlotOwner(pool *inferencev1alpha1.ModelPool, members map[string]*inf
 
 	// Warm pool with a recorded resident.
 	if len(newly) > 0 {
-		// A fresh activation supersedes. Prefer the in-progress pending swap
+		// A fresh activation supersedes. A member the router is holding a
+		// request for comes first; otherwise prefer the in-progress pending swap
 		// when it is still among the scaled-up members, else the first newly
 		// activated member.
+		if target := routerTarget(pending, newly, members); target != "" {
+			return target
+		}
 		if pending != "" {
 			for _, name := range newly {
 				if name == pending {
@@ -416,6 +432,65 @@ func resolveSlotOwner(pool *inferencev1alpha1.ModelPool, members map[string]*inf
 		}
 	}
 	return resident
+}
+
+// routerReplicaManagers are the field managers of the router-proxy's
+// activation: the one it names since #2302, and the name the API server gave a
+// build from before it, taken from its binary.
+var routerReplicaManagers = map[string]bool{
+	inferencev1alpha1.RouterProxyFieldManager: true,
+	legacyRouterProxyFieldManager:             true,
+}
+
+// routerWrite reports whether isvc is scaled up and the router wrote its
+// current spec.replicas, and when. The router writes with a merge patch, whose
+// entry the API server times; an entry without a time (a scale subresource
+// write) reads as the zero time and so sorts before any timed one. A
+// write that changes the field takes it from every other manager, so the router
+// still owning it means the pool has not drained or held the member since.
+func routerWrite(isvc *inferencev1alpha1.InferenceService) (time.Time, bool) {
+	if isvc == nil || replicasOf(isvc) < 1 {
+		return time.Time{}, false
+	}
+	for _, entry := range isvc.ManagedFields {
+		if routerReplicaManagers[entry.Manager] && ownsSpecReplicas(entry) {
+			if entry.Time != nil {
+				return entry.Time.Time, true
+			}
+			return time.Time{}, true
+		}
+	}
+	return time.Time{}, false
+}
+
+// routerTarget returns the candidate the router last scaled up, or "" when the
+// router owns none of their replica counts. A member the pool loaded without a
+// hold keeps the router's write, since the pool had no reason to write its
+// replicas, so a member the router asked for earlier can still read as its
+// request. A pooled ModelRouter runs one router-proxy replica (the deployment
+// builder pins it), and its Activator drives one swap per pool at a time, so
+// the latest write is the request that router holds now. Writes the API server
+// timed to the same second cannot be ordered; the pending one keeps the slot
+// among those, as between any two activations, else declaration order decides.
+//
+// Two router processes can still write: several ModelRouters fronting one pool,
+// or the old and new proxy Pod overlapping in a rollout. Then the latest write
+// wins and the other process's request waits out its swapBudget: with no
+// coordination between them, one of the two requests waits either way.
+func routerTarget(pending string, candidates []string, members map[string]*inferencev1alpha1.InferenceService) string {
+	best := ""
+	var bestAt time.Time
+	for _, name := range candidates {
+		at, ok := routerWrite(members[name])
+		switch {
+		case !ok:
+		case best == "", at.After(bestAt):
+			best, bestAt = name, at
+		case at.Equal(bestAt) && name == pending:
+			best = name
+		}
+	}
+	return best
 }
 
 // clearDepartedResident drops a resident that left spec.members. Status is the

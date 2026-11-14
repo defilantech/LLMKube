@@ -54,9 +54,16 @@ const (
 var llmkubeReplicaManagers = map[string]bool{
 	inferencev1alpha1.ModelPoolFieldManager:   true,
 	inferencev1alpha1.RouterProxyFieldManager: true,
-	"manager":      true,
-	"router-proxy": true,
+	legacyOperatorFieldManager:                true,
+	legacyRouterProxyFieldManager:             true,
 }
+
+// The field managers the API server gave LLMKube's replica writes before
+// #2302, taken from the binaries' user agents.
+const (
+	legacyOperatorFieldManager    = "manager"
+	legacyRouterProxyFieldManager = "router-proxy"
+)
 
 // externalScaleEvent is a scale-up to announce with a Warning event once the
 // pass's status write has landed.

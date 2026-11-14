@@ -497,7 +497,7 @@ var (
 	ModelPoolBusySkipsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "llmkube_modelpool_busy_skips_total",
-			Help: "Pooled backends skipped under IfIdle activation because the resident member was busy.",
+			Help: "Pooled backends skipped under IfIdle activation because the resident member was busy (requests in flight or waiting for it).",
 		},
 		[]string{labelRouter, "pool", "member"},
 	)

@@ -59,7 +59,7 @@ The router-proxy binary serves `RouterRegistry` ([`cmd/router-proxy/main.go`](ht
 
 | Metric | Type | Labels | Description |
 | --- | --- | --- | --- |
-| `llmkube_modelpool_busy_skips_total` | counter | `member`, `pool`, `router` | Pooled backends skipped under IfIdle activation because the resident member was busy. |
+| `llmkube_modelpool_busy_skips_total` | counter | `member`, `pool`, `router` | Pooled backends skipped under IfIdle activation because the resident member was busy (requests in flight or waiting for it). |
 | `llmkube_modelpool_coalesced_total` | counter | `member`, `pool`, `router` | Requests coalesced onto the resident member instead of triggering a swap. |
 | `llmkube_modelpool_held_requests` | gauge | `member`, `pool`, `router` | Requests currently held open waiting for a ModelPool member to activate. |
 | `llmkube_modelpool_hold_duration_seconds` | histogram | `member`, `pool`, `router` | Time the router held a request open waiting for its target member to become resident. |

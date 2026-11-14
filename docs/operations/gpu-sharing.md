@@ -276,8 +276,9 @@ autoscaled member is fixed. A pool that also has a missing member reports
 
 Removing a member from `spec.members` takes effect on the next reconcile. If the
 member that left was the resident, status stops naming it in that same pass, and
-the slot resolves the way a cold pool resolves it. A swap already in flight
-continues first. Otherwise, when no remaining member is scaled up, `spec.default`
+the slot resolves the way a cold pool resolves it. A member the router is
+holding a request for takes the slot first, then a swap already in flight
+continues. Otherwise, when no remaining member is scaled up, `spec.default`
 warms if it names one, and the pool stays cold if it does not. When members are
 scaled up, `spec.default` takes the slot if it is one of them, else the first
 scaled-up member in declaration order.
@@ -344,6 +345,13 @@ Two edits belong in the same apply:
 `swapPolicy: sticky` (the default) keeps the incumbent until a *different* member
 is requested.
 
+When requests for two members arrive together, the router serves them in turns
+rather than letting them take the slot from each other. A swap away from the
+incumbent starts only when it has no requests in flight and none waiting for
+it, so right after a swap the requests that waited for it are served before the
+slot moves again. Until then a request for the other member is held, or, with
+`poolActivation: IfIdle` (below), sent to the warm member.
+
 One consequence surprises operators, so it is worth stating plainly: **editing
 `spec.default` on a warm sticky pool does not move the slot.** `default` names the
 member to warm on a *cold* pool, before anything has picked an owner. Once a
@@ -384,6 +392,18 @@ reclaimed. Reclaims are counted in `llmkube_modelpool_reclaims_total`.
 A request for the resident can arrive after the reclaim has started draining it,
 before the default is up. The router then scales the resident back up, and that
 cancels the reclaim. The resident keeps the slot, and its idle clock starts over.
+
+A request for another member can arrive while the pool is loading the default,
+after a reclaim or to warm a cold pool. That member takes the slot: the default
+stops loading, and the requested member loads once the default's Pods are gone.
+The pool gives the slot to the member the router last scaled up, which it reads
+from the member's `spec.replicas` field manager: the router writes it as
+`llmkube-router-proxy`, and the pool as `llmkube-modelpool`. A scale-up by any
+other field manager, such as a GitOps tool, does not take the slot from a member
+the pool is already loading; otherwise it is a request for the slot like any
+other (see "GitOps" above). A pooled ModelRouter runs one proxy replica, so its scale-ups
+come one at a time; with several ModelRouters in front of one pool, the latest
+scale-up wins and the other router's request waits out `spec.swapBudget`.
 
 To tell this re-activation apart from the resident simply staying up, the pool
 marks every member it scales to zero with the annotation
@@ -457,7 +477,8 @@ basename for oMLX; otherwise the InferenceService name) rather than the alias
 the client asked for, so a runtime that validates the field accepts it instead
 of answering `404 The model ... does not exist`.
 
-"Busy" means requests the proxy itself is tracking. Traffic that reaches a
+"Busy" means requests the proxy itself is tracking: in flight on the member, or
+waiting for it, as right after a swap made it resident. Traffic that reaches a
 member's Service directly, bypassing the router, is invisible to this check
 (the controller's `/slots` drain still protects it at swap time). Route all
 pool traffic through the router if you rely on `IfIdle`. Skips are counted in
