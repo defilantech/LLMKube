@@ -521,10 +521,14 @@ type InferenceServiceSpec struct {
 	// Mode selects how the model is served: "chat" (default) for
 	// chat/completion, "embedding" for /v1/embeddings, "rerank" for /v1/rerank.
 	// For the llamacpp runtime it auto-appends the required flags (embedding ->
-	// --embedding --pooling last; rerank -> --reranking --embedding --pooling
-	// rank); any flag already set in spec.extraArgs wins. When unset, the mode is
-	// inferred from spec.extraArgs / spec.endpoint.path. The resolved value is
-	// always reported in status.mode.
+	// --embedding; rerank -> --reranking --embedding --pooling rank); any flag
+	// already set in spec.extraArgs wins. Embedding pooling follows the GGUF's
+	// pooling_type metadata instead of defaulting to last-token pooling.
+	// For GGUFs without pooling_type, set extraArgs: ["--pooling", "<value>"]
+	// to the model-appropriate value; otherwise /v1/embeddings fails with
+	// "Pooling type 'none' is not OAI compatible".
+	// When unset, the mode is inferred from spec.extraArgs / spec.endpoint.path.
+	// The resolved value is always reported in status.mode.
 	// +kubebuilder:validation:Enum=chat;embedding;rerank
 	// +optional
 	Mode string `json:"mode,omitempty"`

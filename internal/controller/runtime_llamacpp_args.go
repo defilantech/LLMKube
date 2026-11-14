@@ -198,9 +198,7 @@ func appendModeArgs(args []string, mode string, extraArgs []string) []string {
 		if !hasMatchingExtraArg(extraArgs, "embedding") {
 			args = append(args, "--embedding")
 		}
-		if !hasMatchingExtraArg(extraArgs, "pooling") {
-			args = append(args, "--pooling", "last")
-		}
+		// Leave pooling to GGUF metadata, matching the other runtime arg builder.
 		if !hasMatchingExtraArg(extraArgs, "cache-ram") {
 			args = append(args, "--cache-ram", "0")
 		}
