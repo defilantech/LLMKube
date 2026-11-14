@@ -45,6 +45,7 @@ const (
 	EventReasonServiceNameTooLong     = inferencev1alpha1.ReasonServiceNameTooLong
 	EventReasonModelDigestMismatch    = inferencev1alpha1.ReasonModelDigestMismatch
 	EventReasonModelDownloadTooLarge  = inferencev1alpha1.ReasonModelDownloadTooLarge
+	EventReasonModelDownloadNoSpace   = inferencev1alpha1.ReasonModelDownloadNoSpace
 	EventReasonSourceSecretNotAllowed = inferencev1alpha1.ReasonSourceSecretNotAllowed
 	EventReasonRuntimeNotAvailable    = inferencev1alpha1.ReasonRuntimeNotAvailable
 )
@@ -101,13 +102,16 @@ func (a *MetalAgent) refuseStart(
 // as ModelSourceNotAllowed. A *SourceSecretNotAllowedError (a sourceSecretRef
 // Secret that lost its marker or was deleted after checkSourceSecret ran) is
 // refused as SourceSecretNotAllowed. A transient failure to read the
-// sourceSecretRef Secret is retried on the next poll. Every other StartProcess
-// failure (an engine that exits while loading, a download that fails on a
-// full disk or a bad status, a health-check timeout, ...) is not a refusal: it
-// is reported as StartFailed and retried on the restart backoff (failStart,
-// #2404). Split out of reconcileProcess, rather than inlined as an extra
-// branch there, to keep its cyclomatic complexity from crossing the linter's
-// threshold.
+// sourceSecretRef Secret is retried on the next poll. A
+// *ModelDownloadNoSpaceError (a model store without room for the download,
+// checked before it or hit during it) is refused as ModelDownloadNoSpace and
+// deliberately not memoized: freeing disk writes nothing to the cluster, so
+// the refusal re-check is what retries it (#2409). Every other StartProcess
+// failure (an engine that exits while loading, a download that fails on a bad
+// status, a health-check timeout, ...) is not a refusal: it is reported as
+// StartFailed and retried on the restart backoff (failStart, #2404). Split
+// out of reconcileProcess, rather than inlined as an extra branch there, to
+// keep its cyclomatic complexity from crossing the linter's threshold.
 func (a *MetalAgent) handleStartProcessError(
 	ctx context.Context, isvc *inferencev1alpha1.InferenceService, model *inferencev1alpha1.Model, startErr error,
 ) error {
@@ -126,6 +130,12 @@ func (a *MetalAgent) handleStartProcessError(
 			model.Spec.Source, model.Spec.SHA256, tooLargeErr,
 		)
 		return a.refuseStart(ctx, isvc, EventReasonModelDownloadTooLarge, tooLargeErr.Error())
+	}
+	// Not memoized: freeing disk space writes nothing to the cluster, so the
+	// refusal re-check (publishRefusal) is what retries it.
+	var noSpaceErr *ModelDownloadNoSpaceError
+	if errors.As(startErr, &noSpaceErr) {
+		return a.refuseStart(ctx, isvc, EventReasonModelDownloadNoSpace, noSpaceErr.Error())
 	}
 	var slotErr *ModelCacheEntryNotRegularError
 	if errors.As(startErr, &slotErr) {

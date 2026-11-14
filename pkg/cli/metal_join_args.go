@@ -55,6 +55,7 @@ var metalAgentFlags = map[string]agentFlagKind{
 	"apple-power-enabled":                agentFlagBool,
 	"apple-power-interval":               agentFlagDuration,
 	"client-port":                        agentFlagInt,
+	"download-free-space-headroom":       agentFlagString,
 	"engine-env-passthrough":             agentFlagString,
 	"eviction-enabled":                   agentFlagBool,
 	"health-failure-threshold":           agentFlagInt,

@@ -986,10 +986,11 @@ stays there, check the agent log for the service's name:
 - Nothing about it: no agent serves it. The Mac is joined to another
   namespace (`kubectl get mn -A`), it is asleep or logged out, or an
   allowlist leaves the service out.
-- An error about it: the start failed (a download error, a full disk, an
-  engine that exited while loading). Such a failure is logged but not shown
-  on the InferenceService, and is tried again only when the InferenceService
-  changes or the agent restarts.
+- An error about it: the start failed (a download error, an engine that
+  exited while loading). The InferenceService shows `StartFailed`, and the
+  agent retries the start on its restart backoff. A model store without
+  room for the download is refused as `ModelDownloadNoSpace` instead, and
+  retried once space is freed (see below).
 
 **Mac drops out a few minutes after an upgrade**
 Local Network access did not carry over to the new binary. See
@@ -1034,6 +1035,17 @@ wrong, or, if the model really is that large, raise
 `--max-download-size` (`0` disables the cap) and restart the agent. See
 "`--max-download-size` flag (download cap)" in
 [`deployment/macos/README.md`](https://github.com/defilantech/LLMKube/blob/main/deployment/macos/README.md#--max-download-size-flag-download-cap).
+
+**InferenceService refused with `ModelDownloadNoSpace`**
+The model store's filesystem has no room for the download: the bytes
+still to fetch plus the agent's `--download-free-space-headroom`
+(default `10Gi`) are more than the free space, or the disk filled up
+during the copy. Free space there (old models under
+`<model-store>/<model>`) and the agent retries on its own; a partial
+download is kept and resumes. The
+`llmkube_metal_agent_model_store_free_bytes` gauge shows the free space.
+See "`--download-free-space-headroom` flag (disk preflight)" in
+[`deployment/macos/README.md`](https://github.com/defilantech/LLMKube/blob/main/deployment/macos/README.md#--download-free-space-headroom-flag-disk-preflight).
 
 **InferenceService refused with `SourceSecretNotAllowed`**
 The Model's `spec.sourceSecretRef` names a Secret the agent will not
