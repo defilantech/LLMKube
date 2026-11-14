@@ -1683,11 +1683,6 @@ func shouldWarnMissingSkipModelInit(model *inferencev1alpha1.Model, isvc *infere
 	return !needsSkipModelInit(isvc)
 }
 
-// emitSpecAdvisoryEvents emits the non-blocking spec-hygiene warnings in one
-// place: config that reconciliation tolerates but that predictably surprises
-// the operator later (host-RAM surprises, redundant init downloads, a
-// cpu-offload flag with an open upstream reliability report). Extracted from
-// Reconcile so each new advisory does not grow its cyclomatic complexity.
 // ReasonMetalReplicasAboveOne is the Warning Event reason for a Metal
 // InferenceService whose spec.replicas is above 1; see metalReplicas.
 const ReasonMetalReplicasAboveOne = "MetalReplicasAboveOne"
@@ -1711,6 +1706,11 @@ func (r *InferenceServiceReconciler) metalReplicas(
 	return 1
 }
 
+// emitSpecAdvisoryEvents emits the non-blocking spec-hygiene warnings in one
+// place: config that reconciliation tolerates but that predictably surprises
+// the operator later (host-RAM surprises, redundant init downloads, a
+// cpu-offload flag with an open upstream reliability report). Extracted from
+// Reconcile so each new advisory does not grow its cyclomatic complexity.
 func (r *InferenceServiceReconciler) emitSpecAdvisoryEvents(isvc *inferencev1alpha1.InferenceService, model *inferencev1alpha1.Model) {
 	if r.Recorder == nil {
 		return

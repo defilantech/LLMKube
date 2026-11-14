@@ -76,7 +76,9 @@ func TestEnsureProcess_RefreshesEvictionPolicyWithoutRespawn(t *testing.T) {
 	f.agent.mu.Unlock()
 	rss := map[string]uint64{}
 
+	f.agent.mu.RLock()
 	target, _ := pickEvictionTarget(f.agent.processes, rss)
+	f.agent.mu.RUnlock()
 	if target == nil || target.Name != "protect-me" {
 		t.Fatalf("eviction target before the edit = %+v, want protect-me (normal priority, unprotected)", target)
 	}
@@ -120,6 +122,18 @@ func TestComputeSpecHash_UnchangedForExistingSpecs(t *testing.T) {
 	const replicasUnset = "cb19f05c8f42987a75d6c6cb0ebc664182146c16a1441c222715a7d86391a852"
 	if got, want := computeSpecHash(isvc), replicasUnset; got != want {
 		t.Errorf("hash with replicas unset = %s, want %s", got, want)
+	}
+
+	// The hash an agent before #2410 wrote for a service running at
+	// replicas 2, which sameEngineSpec must still accept after the upgrade.
+	two := &inferencev1alpha1.InferenceService{Spec: inferencev1alpha1.InferenceServiceSpec{
+		ModelRef: "m", Replicas: ptr.To(int32(2)), ContextSize: ptr.To(int32(4096))}}
+	const replicasTwoBefore2410 = "98df9aa31460013c27bd2a2a6b01aef9bec07555c86f33341f0243854b033165"
+	if got := legacyHash(two); got != replicasTwoBefore2410 {
+		t.Errorf("pre-#2410 hash with replicas 2 = %s, want %s", got, replicasTwoBefore2410)
+	}
+	if !sameEngineSpec(replicasTwoBefore2410, two) {
+		t.Error("sameEngineSpec rejects the pre-#2410 record of a replicas 2 service: the upgrade would restart it")
 	}
 }
 
@@ -240,6 +254,9 @@ func TestSameEngineSpec(t *testing.T) {
 		{"unset to 3", unset, spec(ptr.To(int32(3)), 4096), true},
 		{"1 to 2", one, spec(ptr.To(int32(2)), 4096), true},
 		{"started at 2, edited to 3", computeSpecHash(spec(ptr.To(int32(2)), 4096)), spec(ptr.To(int32(3)), 4096), true},
+		// A record from before #2410 holds the raw count of a service that ran
+		// with replicas above 1: the agent upgrade must not restart it.
+		{"pre-#2410 record at 2", legacyHash(spec(ptr.To(int32(2)), 4096)), spec(ptr.To(int32(2)), 4096), true},
 		{"1 to 0", one, spec(ptr.To(int32(0)), 4096), false},
 		{"context changed", one, spec(ptr.To(int32(1)), 8192), false},
 		{"no stored hash", "", spec(nil, 4096), false},
@@ -297,4 +314,10 @@ func TestHandleMemoryPressure_RefreshDuringTickIsNotARace(t *testing.T) {
 	if len(a.processes) != 2 {
 		t.Errorf("managed processes = %d, want 2 (every process is protected)", len(a.processes))
 	}
+}
+
+// legacyHash is the spec hash an agent from before #2410 wrote: replicas as
+// the raw count.
+func legacyHash(isvc *inferencev1alpha1.InferenceService) string {
+	return specHashWithReplicas(isvc, isvc.Spec.Replicas)
 }
