@@ -34,21 +34,43 @@ import (
 	"github.com/defilantech/llmkube/pkg/agent/ingress"
 )
 
-// backendProvider returns the loopback address (host:port) and runtime of the
-// inference child the client proxy should currently forward to. runtime is
-// the same string the ingress uses for that child (ingress.Route.Runtime),
-// so ServeHTTP can apply the identical ingress.Allowed path policy. ok is
-// false when no child is running.
+// proxyBackend is one running inference child the client proxy can forward
+// to.
+type proxyBackend struct {
+	// id is the InferenceService's namespace/name.
+	id string
+	// addr is the child's loopback address (host:port).
+	addr string
+	// runtime is the same string the ingress uses for that child
+	// (ingress.Route.Runtime), so ServeHTTP can apply the identical
+	// ingress.Allowed path policy.
+	runtime string
+	healthy bool
+	// servedModel is the model ID the agent asked the engine to serve
+	// (ExecutorConfig.ServedModelName): the name GET /v1/models lists and
+	// clients send. Empty when the agent did not set one, for example on an
+	// engine adopted from an agent that did not record it.
+	servedModel string
+	// modelID is the shared daemon's model identifier (oMLX, Ollama).
+	modelID string
+}
+
+// backendProvider lists the inference children the client proxy can forward
+// to, in a stable order. It is empty when no child is running.
 type backendProvider interface {
-	currentBackend() (addr, runtime string, ok bool)
+	backends() []proxyBackend
 }
 
 // ClientProxy is a stable host-side HTTP listener that forwards requests to
-// whichever inference child the metal-agent is currently running. The child's
-// port is allocated dynamically per spawn, so host-side clients (opencode,
-// aider, curl) point at this fixed port and never have to track the moving
-// child port. In-cluster clients are unaffected; they reach the child via the
+// the inference children the metal-agent is running. The child's port is
+// allocated dynamically per spawn, so host-side clients (opencode, aider,
+// curl) point at this fixed port and never have to track the moving child
+// port. In-cluster clients are unaffected; they reach the child via the
 // agent's Endpoints registration. See #406.
+//
+// With one child running, every request goes to it, whatever model it names,
+// as before. With several, a request goes to the child its model names
+// (#2412); see selectBackend.
 type ClientProxy struct {
 	provider backendProvider
 	port     int
@@ -66,9 +88,11 @@ func NewClientProxy(provider backendProvider, port int, logger *zap.SugaredLogge
 
 // ServeHTTP applies, in order: a Host check (421) that rejects DNS rebinding
 // before anything else can learn whether a child is even running, the
-// existing no-backend check (503), then the same runtime path allowlist the
-// TLS ingress enforces (403, see ingress.Allowed). Only a request that clears
-// all three is proxied to the current child.
+// no-backend check (503), then the same runtime path allowlist the TLS
+// ingress enforces (403, see ingress.Allowed). With several children running
+// it then picks the one the request's model names (400, 404 or 409 when it
+// cannot), and checks the path against that child's runtime. Only a request
+// that clears every check is proxied.
 func (p *ClientProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !p.hostAllowed(r.Host) {
 		clientProxyRequests.WithLabelValues("bad_host").Inc()
@@ -77,18 +101,35 @@ func (p *ClientProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	addr, runtime, ok := p.provider.currentBackend()
-	if !ok {
+	bs := p.provider.backends()
+	if len(bs) == 0 {
 		clientProxyRequests.WithLabelValues("no_backend").Inc()
 		writeClientProxyError(w, http.StatusServiceUnavailable,
 			"no inference process is currently running on this agent")
 		return
 	}
 
-	if !ingress.Allowed(runtime, r.Method, r.URL.EscapedPath()) {
+	if !anyAllowed(bs, r.Method, r.URL.EscapedPath()) {
 		clientProxyRequests.WithLabelValues("path_forbidden").Inc()
 		writeClientProxyError(w, http.StatusForbidden, "path is not allowed for this runtime")
 		return
+	}
+
+	b := bs[0]
+	if len(bs) > 1 {
+		if r.Method == http.MethodGet && r.URL.Path == "/v1/models" {
+			p.serveMergedModels(w, r, bs)
+			return
+		}
+		var ok bool
+		if b, ok = p.routeByModel(w, r, bs); !ok {
+			return
+		}
+		if !ingress.Allowed(b.runtime, r.Method, r.URL.EscapedPath()) {
+			clientProxyRequests.WithLabelValues("path_forbidden").Inc()
+			writeClientProxyError(w, http.StatusForbidden, "path is not allowed for this runtime")
+			return
+		}
 	}
 
 	// Full duplex keeps the HTTP/1 server from closing r.Body when the first
@@ -96,10 +137,21 @@ func (p *ClientProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// see the matching call in pkg/agent/ingress/server.go's ServeHTTP. Every
 	// host-side client reaches this listener over plaintext HTTP/1.1.
 	_ = http.NewResponseController(w).EnableFullDuplex()
-	rp := p.reverseProxy(addr)
+	rp := p.reverseProxy(b.addr)
 	sw := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 	rp.ServeHTTP(sw, r)
 	clientProxyRequests.WithLabelValues(statusClass(sw.status)).Inc()
+}
+
+// anyAllowed reports whether some running child's runtime allows method and
+// rawPath, so a path no child serves is refused before the body is read.
+func anyAllowed(bs []proxyBackend, method, rawPath string) bool {
+	for _, b := range bs {
+		if ingress.Allowed(b.runtime, method, rawPath) {
+			return true
+		}
+	}
+	return false
 }
 
 // reverseProxy builds the reverse proxy to the current child on addr

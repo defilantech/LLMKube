@@ -238,12 +238,17 @@ var (
 	)
 )
 
-// clientProxyRequests counts host-side client-proxy requests by outcome
-// (no_backend, 2xx, 3xx, 4xx, 5xx, other). See ClientProxy / #406.
+// clientProxyRequests counts host-side client-proxy requests by outcome: a
+// refusal the proxy answers itself (bad_host, no_backend, path_forbidden,
+// and with several engines running bad_request, request_too_large,
+// model_required, model_not_found, model_ambiguous) or the status class of
+// the response (2xx, 3xx, 4xx, 5xx, other). See ClientProxy, #406 and #2412.
 var clientProxyRequests = prometheus.NewCounterVec(
 	prometheus.CounterOpts{
 		Name: "llmkube_metal_agent_client_proxy_requests_total",
-		Help: "Total host-side client-proxy requests, labeled by outcome.",
+		Help: "Total host-side client-proxy requests, labeled by outcome: a refusal the proxy answers itself " +
+			"(bad_host, no_backend, path_forbidden, bad_request, request_too_large, model_required, " +
+			"model_not_found, model_ambiguous) or the response's status class.",
 	},
 	[]string{"outcome"},
 )
