@@ -550,18 +550,6 @@ The default is the Mac's total physical memory. The agent wires model weights in
 llmkube-metal-agent --max-download-size=200Gi
 ```
 
-### `--download-free-space-headroom` flag (disk preflight)
-
-When the source declares its size (the HEAD probe, the response's `Content-Length`, or the s3 object size), the agent checks the free space on the model store's filesystem before the download writes anything. It refuses the start with reason `ModelDownloadNoSpace` when the bytes still to fetch plus the headroom are more than the space left. A body of unknown length is not checked up front; a disk it fills is caught as below. A resumed download counts only its remaining bytes, and its partial file is kept. The headroom keeps room for macOS itself (swap, updates) and for the engine's logs; it defaults to `10Gi`:
-
-```bash
-llmkube-metal-agent --download-free-space-headroom=20Gi
-```
-
-`0` still refuses a download that does not fit at all. A filesystem that fills up during the copy (another process writing at the same time) is the same refusal, and the partial file is kept so the download resumes. The refusal is retried on the agent's refusal re-check (backing off to once a minute, with no limit on attempts), so freeing space lets the next check start the service; a partial download resumes from where it stopped. When the agent cannot read the free space, the download proceeds as before. The check covers the downloads the agent makes for llama-server, like `--max-download-size`.
-
-`llmkube_metal_agent_model_store_used_bytes` and `llmkube_metal_agent_model_store_free_bytes` report the store's size and the free space every minute, so model churn can be alerted on before a start is refused. The agent does not delete models from the store yet; remove `<model-store>/<model>` for a model no InferenceService on this Mac uses to reclaim it (`llmkube cache clear` works on the cluster's cache claims, not on a Mac's store).
-
 To set this in the launchd plist:
 
 ```xml
@@ -574,6 +562,18 @@ The agent logs the effective cap as `maxDownloadBytes` at startup. It refuses to
 Like a digest mismatch, the refusal is remembered, so the agent does not download the same source up to the cap on every reconcile. Changing the Model's `source` (or `sha256`) retries, and so does restarting the agent, which is also how a raised cap takes effect. Deleting the `Model` or the `InferenceService` clears the memo too, once the agent's next poll (every 5 seconds) sees it gone, so recreate it after that. A file placed in the cache slot (`<model-store>/<model>/<file>`) by hand does not lift the refusal: the memo is checked before the agent looks for a cached file, so the start stays refused until one of those resets or an agent restart.
 
 Upgrade note: if you deliberately serve a model file larger than the Mac's physical memory (for example with a Model `spec.hardware.memoryBudget` above the Mac's RAM), raise `--max-download-size` or set it to `0` before upgrading, or the agent will refuse that download.
+
+### `--download-free-space-headroom` flag (disk preflight)
+
+When the source declares its size (the HEAD probe, the response's `Content-Length`, or the s3 object size), the agent checks the free space on the model store's filesystem before the download writes anything. It refuses the start with reason `ModelDownloadNoSpace` when the bytes still to fetch plus the headroom are more than the space left. A body of unknown length is not checked up front; a disk it fills is caught as below. A resumed download counts only its remaining bytes, and its partial file is kept. The headroom keeps room on the filesystem for macOS itself (swap, updates) and everything else on it; it defaults to `10Gi`:
+
+```bash
+llmkube-metal-agent --download-free-space-headroom=20Gi
+```
+
+`0` still refuses a download that does not fit at all. A filesystem that fills up during the copy (another process writing at the same time) is the same refusal, and the partial file is kept so the download resumes. The refusal is retried on the agent's refusal re-check (backing off to once a minute, with no limit on attempts), so freeing space lets the next check start the service; a partial download resumes from where it stopped. When the agent cannot read the free space, the download proceeds as before. The check covers the downloads the agent makes for llama-server, like `--max-download-size`.
+
+`llmkube_metal_agent_model_store_used_bytes` and `llmkube_metal_agent_model_store_free_bytes` report the store's size and the free space every minute, so model churn can be alerted on before a start is refused. The agent does not delete models from the store yet; remove `<model-store>/<model>` for a model no InferenceService on this Mac uses to reclaim it (`llmkube cache clear` works on the cluster's cache claims, not on a Mac's store).
 
 ### Model-source credentials Secrets (`sourceSecretRef`)
 
