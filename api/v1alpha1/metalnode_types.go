@@ -31,6 +31,12 @@ const (
 	// with a server whose certificate is the one the agent reported, names
 	// this MetalNode's UID and carries the reported SPKI pin.
 	MetalNodeConditionReachable = "Reachable"
+	// MetalNodeConditionAgentVersionSupported is True when the agent's
+	// version is inside the supported skew window of the controller's: the
+	// same minor release, and not newer than the controller. False names the
+	// side to upgrade; Unknown means either version is not a release version
+	// (a development build) or the agent has not reported one.
+	MetalNodeConditionAgentVersionSupported = "AgentVersionSupported"
 )
 
 // MetalNode condition reasons.
@@ -59,6 +65,18 @@ const (
 	// MetalNodeReasonCertificateUnbound: the agent's ingress certificate does
 	// not name this MetalNode's UID (yet), so no server can pass the check.
 	MetalNodeReasonCertificateUnbound = "CertificateUnbound"
+	// MetalNodeReasonVersionInSkewWindow: the agent's version is inside the
+	// supported skew window.
+	MetalNodeReasonVersionInSkewWindow = "InSkewWindow"
+	// MetalNodeReasonAgentNewerThanController: the agent is a newer release
+	// than the controller. Upgrade the chart first, then the agents.
+	MetalNodeReasonAgentNewerThanController = "AgentNewerThanController"
+	// MetalNodeReasonAgentMinorBehind: the agent is from an older minor
+	// release than the controller. Upgrade the agent.
+	MetalNodeReasonAgentMinorBehind = "AgentMinorBehind"
+	// MetalNodeReasonVersionUnknown: the controller or the agent version is
+	// not a release version, or the agent has not reported one.
+	MetalNodeReasonVersionUnknown = "VersionUnknown"
 )
 
 // LabelMetalNode names the MetalNode an object belongs to. The controller

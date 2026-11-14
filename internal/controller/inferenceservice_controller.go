@@ -146,6 +146,12 @@ type InferenceServiceReconciler struct {
 	// controller calls. cmd/main.go sets it to the reconcile deadline; nil
 	// leaves the reconcile path untouched.
 	ReconcileDecorator func(reconcile.Reconciler) reconcile.Reconciler
+
+	// ControllerVersion is this controller's release version
+	// (--controller-version). A Metal InferenceService whose serving agent is
+	// outside the supported skew window of it gets an AgentVersionSkew
+	// Warning Event (#2408). "dev" or empty checks nothing.
+	ControllerVersion string
 }
 
 func sanitizeDNSName(name string) string {
@@ -572,6 +578,7 @@ func (r *InferenceServiceReconciler) reconcileMetal(ctx context.Context, isvc *i
 		if snap.Kind == metalHBStale {
 			r.withdrawStaleMetalEndpoints(ctx, snap.staleSlices)
 		}
+		r.warnAgentVersionSkew(isvc, snap)
 		available, err := r.reconcileRelay(ctx, isvc, pin)
 		if apierrors.IsConflict(err) {
 			logf.FromContext(ctx).V(1).Info("Relay object changed under the reconcile; requeueing", "reason", err.Error())
@@ -604,6 +611,7 @@ func (r *InferenceServiceReconciler) reconcileMetal(ctx context.Context, isvc *i
 	if snap.Kind == metalHBStale {
 		r.withdrawStaleMetalEndpoints(ctx, snap.staleSlices)
 	}
+	r.warnAgentVersionSkew(isvc, snap)
 	return snap.ReadyReplicas, snap, nil, nil
 }
 
@@ -1466,6 +1474,9 @@ type metalSnapshot struct {
 	// staleSlices holds the listed slices when Kind == metalHBStale so the
 	// reconciler can withdraw their endpoints without a second List.
 	staleSlices []discoveryv1.EndpointSlice
+	// AgentVersion is the agent's llmkube.ai/agent-version annotation on the
+	// first metal-agent slice that carries one; empty when none does.
+	AgentVersion string
 }
 
 // metalEndpointSnapshot lists the EndpointSlices of the Service name (the
@@ -1496,6 +1507,7 @@ func (r *InferenceServiceReconciler) metalEndpointSnapshot(ctx context.Context, 
 	if len(slices.Items) == 0 {
 		return &metalSnapshot{Kind: metalHBNone}
 	}
+	agentVersion := metalAgentVersion(slices.Items)
 
 	// Pick the freshest heartbeat across all slices. A slice without the
 	// annotation contributes to the count but not to heartbeat freshness.
@@ -1537,13 +1549,15 @@ func (r *InferenceServiceReconciler) metalEndpointSnapshot(ctx context.Context, 
 		if age > inferencev1alpha1.DefaultAgentHeartbeatTimeout {
 			log.Info("Metal endpoint heartbeat stale; treating as not ready",
 				"name", name, "heartbeat", rawHeartbeat, "age", age.Round(time.Second), "timeout", inferencev1alpha1.DefaultAgentHeartbeatTimeout)
-			return &metalSnapshot{Kind: metalHBStale, RawHeartbeat: rawHeartbeat, staleSlices: slices.Items}
+			return &metalSnapshot{Kind: metalHBStale, RawHeartbeat: rawHeartbeat, staleSlices: slices.Items,
+				AgentVersion: agentVersion}
 		}
 	case hasAnnotation:
 		// Every heartbeat annotation present was unparseable.
 		log.Info("Metal endpoint heartbeat annotation unparseable; treating as not ready",
 			"name", name, "heartbeat", parseErrRaw, "parseError", parseErr)
-		return &metalSnapshot{Kind: metalHBUnparseable, RawHeartbeat: parseErrRaw, ParseErr: parseErr}
+		return &metalSnapshot{Kind: metalHBUnparseable, RawHeartbeat: parseErrRaw, ParseErr: parseErr,
+			AgentVersion: agentVersion}
 	}
 	// No annotation on any slice: legacy agent without heartbeats; fall
 	// through and count.
@@ -1564,8 +1578,40 @@ func (r *InferenceServiceReconciler) metalEndpointSnapshot(ctx context.Context, 
 	if hasAnnotation {
 		kind = metalHBFresh
 	}
-	return &metalSnapshot{ReadyReplicas: ready, Kind: kind, RawHeartbeat: rawHeartbeat}
+	return &metalSnapshot{ReadyReplicas: ready, Kind: kind, RawHeartbeat: rawHeartbeat, AgentVersion: agentVersion}
 }
+
+// metalAgentVersion returns the agent version stamped on the first slice the
+// metal-agent manages, or "" when none carries one. Mirrored and foreign
+// slices are not the agent's word.
+func metalAgentVersion(slices []discoveryv1.EndpointSlice) string {
+	for i := range slices {
+		if slices[i].Labels[inferencev1alpha1.LabelManagedBy] != inferencev1alpha1.ManagedByMetalAgent {
+			continue
+		}
+		if v := slices[i].Annotations[inferencev1alpha1.AnnotationAgentVersion]; v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// warnAgentVersionSkew records an AgentVersionSkew Warning Event when the
+// agent serving isvc is outside the supported skew window of this controller
+// (#2408). A version either side cannot parse records nothing; the
+// MetalNode's AgentVersionSupported condition reports that case.
+func (r *InferenceServiceReconciler) warnAgentVersionSkew(isvc *inferencev1alpha1.InferenceService, snap *metalSnapshot) {
+	if r.Recorder == nil || snap == nil || snap.AgentVersion == "" {
+		return
+	}
+	if status, _, msg := agentVersionSkew(r.ControllerVersion, snap.AgentVersion); status == metav1.ConditionFalse {
+		r.Recorder.Eventf(isvc, nil, corev1.EventTypeWarning, ReasonAgentVersionSkew, "Reconcile", "%s", msg)
+	}
+}
+
+// ReasonAgentVersionSkew is the Warning Event reason for a Metal
+// InferenceService served by an agent outside the supported skew window.
+const ReasonAgentVersionSkew = "AgentVersionSkew"
 
 // withdrawStaleMetalEndpoints marks the endpoints of metal-agent slices whose
 // heartbeat has expired as not ready and not serving, so kube-proxy stops
