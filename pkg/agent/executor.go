@@ -290,18 +290,18 @@ func WithAllowedDownloadHosts(entries []string) Option {
 	}
 }
 
-// WithMaxDownloadBytes caps the bytes one model download may write (the
-// --max-download-size flag). Zero or a negative value leaves downloads
-// uncapped.
 // WithDownloadFreeSpaceHeadroom sets the free space a download must leave on
 // the model store's filesystem (--download-free-space-headroom). Negative is
-// treated as zero.
+// treated as zero; zero still refuses a download that does not fit.
 func WithDownloadFreeSpaceHeadroom(n int64) Option {
 	return func(e *MetalExecutor) {
 		e.freeSpaceHeadroom = max(n, 0)
 	}
 }
 
+// WithMaxDownloadBytes caps the bytes one model download may write (the
+// --max-download-size flag). Zero or a negative value leaves downloads
+// uncapped.
 func WithMaxDownloadBytes(n int64) Option {
 	return func(e *MetalExecutor) {
 		e.maxDownloadBytes = max(n, 0)
@@ -1059,7 +1059,8 @@ func (e *MetalExecutor) copyToFileResume(
 		return err
 	}
 	// Refused before partPath is opened, and a partial already there is kept:
-	// it resumes once space is freed (#2409).
+	// it resumes once space is freed (#2409). A body of unknown length is
+	// not checked here; a disk it fills is caught by the copy below.
 	if contentLength > 0 {
 		if err := e.checkFreeSpace(filePath, contentLength-resumeFrom); err != nil {
 			return err
@@ -1075,7 +1076,7 @@ func (e *MetalExecutor) copyToFileResume(
 		out, err = createNoFollow(partPath)
 	}
 	if err != nil {
-		return err
+		return noSpace(filePath, err)
 	}
 	written, cerr := io.Copy(out, e.capReader(r, resumeFrom))
 	if e.overCap(resumeFrom + written) {
@@ -1172,7 +1173,13 @@ type ModelDownloadNoSpaceError struct {
 	Headroom   int64
 	Free       uint64
 	DuringCopy bool
+	// Err is the filesystem's error when the disk filled during the copy, so
+	// errors.Is(err, syscall.ENOSPC) still holds for the returned error.
+	Err error
 }
+
+// Unwrap returns the filesystem's error, if any.
+func (e *ModelDownloadNoSpaceError) Unwrap() error { return e.Err }
 
 func (e *ModelDownloadNoSpaceError) Error() string {
 	if e.DuringCopy {
@@ -1214,7 +1221,7 @@ func (e *MetalExecutor) checkFreeSpace(filePath string, need int64) error {
 // the filesystem running out of space, and err unchanged otherwise.
 func noSpace(filePath string, err error) error {
 	if errors.Is(err, syscall.ENOSPC) {
-		return &ModelDownloadNoSpaceError{Path: filePath, DuringCopy: true}
+		return &ModelDownloadNoSpaceError{Path: filePath, DuringCopy: true, Err: err}
 	}
 	return err
 }
