@@ -1223,22 +1223,22 @@ See also [global flags](#global-flags).
 
 ### llmkube metal join
 
-Join this Mac to the cluster with a join string
+Join this host to the cluster with a join string
 
 ```text
-Set up the Metal agent on this Mac with the join string an admin created
-with 'llmkube metal token create <mac>'.
+Set up the Metal agent on this host with the join string an admin created
+with 'llmkube metal token create <name>'.
 
 join trusts only the CA in the join string (no system roots) and prints its
 pin: compare it with the pin token create printed. It then mints the agent's
-own token for the Mac's ServiceAccount, writes it and a kubeconfig that reads
+own token for the host's ServiceAccount, writes it and a kubeconfig that reads
 it (both 0600) under ~/Library/Application Support/llmkube/metal-agent,
 deletes the join Secret so the string cannot be used again, installs and
 starts the com.llmkube.metal-agent LaunchAgent, and waits until the cluster
-reports the Mac's MetalNode Reachable.
+reports the host's MetalNode Reachable.
 
 The agent renews its token at half its lifetime (--token-lifetime, 7 days by
-default). A Mac that is off for longer needs a new join string. Running join
+default). A host that is off for longer needs a new join string. Running join
 again replaces the earlier setup; 'llmkube metal leave' removes it.
 
 --host-ip and --allowlist set the agent's --host-ip and
@@ -1258,6 +1258,16 @@ this user is logged in at the Mac (a LaunchAgent runs only in a GUI login
 session), and checks that the ports the agent binds (--port 9090 and
 --client-port 9999 on 127.0.0.1, --ingress-port 9443) are free or held by the
 agent it replaces.
+
+On a Linux host (experimental), join writes the kubeconfig and token under
+$XDG_DATA_HOME/llmkube/metal-agent (~/.local/share/...), installs the agent as
+the llmkube-metal-agent.service systemd user unit in
+$XDG_CONFIG_HOME/systemd/user (~/.config/...), and starts it with systemctl
+--user. Instead of a GUI session it checks that this user's systemd instance
+answers. Without lingering (loginctl enable-linger, which join only suggests)
+the agent stops at logout and starts at the next login. Without llama-server,
+join goes on when the agent's runtime is another one, such as
+--agent-arg runtime=ollama.
 ```
 
 **Usage**
@@ -1271,10 +1281,10 @@ llmkube metal join <join-string> [flags]
 ```text
       --agent-arg stringArray     Another agent flag as <flag>=<value>, such as port=9091 (repeatable; not the flags join sets itself)
       --agent-binary string       Path to llmkube-metal-agent (default: on PATH, else next to this llmkube)
-      --allowlist string          Comma-separated InferenceServices this Mac serves (agent --inference-service-allowlist; default: all)
-      --force                     Replace a com.llmkube.metal-agent LaunchAgent that join did not write (it is kept in the state directory)
-      --host-ip string            IPv4 address the agent registers for the cluster to reach this Mac (agent --host-ip; default: auto-detect)
-      --llama-server string       Path to llama-server, which the agent needs (default: Homebrew's, else on PATH)
+      --allowlist string          Comma-separated InferenceServices this host serves (agent --inference-service-allowlist; default: all)
+      --force                     Replace a com.llmkube.metal-agent LaunchAgent (on Linux, a llmkube-metal-agent.service unit) that join did not write (it is kept in the state directory)
+      --host-ip string            IPv4 address the agent registers for the cluster to reach this host (agent --host-ip; default: auto-detect)
+      --llama-server string       Path to llama-server, which the agent's llama.cpp runtime needs (default: the agent's search paths, else on PATH)
       --token-lifetime duration   Lifetime of the agent's token; the agent renews it at half (at least 10m) (default 168h0m0s)
       --wait duration             How long to wait for the MetalNode to report Reachable; 0 does not wait (default 3m0s)
 ```
@@ -1283,7 +1293,7 @@ See also [global flags](#global-flags).
 
 ### llmkube metal leave
 
-Stop the Metal agent on this Mac and remove what join set up
+Stop the Metal agent on this host and remove what join set up
 
 ```text
 Stop the com.llmkube.metal-agent LaunchAgent and remove its plist and the
@@ -1294,9 +1304,13 @@ removed; run leave again. The agent's ingress identity and model store stay. A
 LaunchAgent join did not write (make install-metal-agent, a playbook) is left
 running, and its engines with it.
 
-This only cleans up the Mac: the agent's token stays valid until it expires.
-To revoke it and delete the Mac's objects in the cluster, an admin runs
-'llmkube metal remove <mac> -n <namespace>'.
+This only cleans up the host: the agent's token stays valid until it expires.
+To revoke it and delete the host's objects in the cluster, an admin runs
+'llmkube metal remove <name> -n <namespace>'.
+
+On a Linux host, leave stops and disables the llmkube-metal-agent.service
+systemd user unit join installed, removes it, and reloads systemd --user. A
+unit join did not write is left running.
 ```
 
 **Usage**

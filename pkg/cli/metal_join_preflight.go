@@ -63,9 +63,14 @@ const lsofTimeout = 5 * time.Second
 // best effort: run as this user, lsof cannot see other users' sockets, and
 // any failure means "cannot tell".
 func lsofPortHolders(ctx context.Context, port int) []portHolder {
+	return lsofPortHoldersWith(ctx, "/usr/sbin/lsof", port)
+}
+
+// lsofPortHoldersWith is lsofPortHolders with the lsof binary lsof.
+func lsofPortHoldersWith(ctx context.Context, lsof string, port int) []portHolder {
 	ctx, cancel := context.WithTimeout(ctx, lsofTimeout)
 	defer cancel()
-	out, _ := exec.CommandContext(ctx, "/usr/sbin/lsof", "-nP", "-iTCP:"+strconv.Itoa(port),
+	out, _ := exec.CommandContext(ctx, lsof, "-nP", "-iTCP:"+strconv.Itoa(port),
 		"-sTCP:LISTEN", "-Fpc").Output()
 	return parseLsofHolders(out)
 }
@@ -91,8 +96,12 @@ func parseLsofHolders(out []byte) []portHolder {
 
 // metalAgentJobPID is the pid of the com.llmkube.metal-agent job join is
 // about to boot out, from launchctl print's top-level "pid = N" line, or 0
-// when it is not loaded or not running.
+// when it is not loaded or not running. On Linux it is the systemd unit's
+// main pid.
 func metalAgentJobPID(ctx context.Context, host metalHost) int {
+	if host.goos == goosLinux {
+		return systemdAgentMainPID(ctx, host)
+	}
 	out, err := host.launchctl(ctx, "print", "gui/"+strconv.Itoa(host.uid)+"/"+metalAgentLabel)
 	if err != nil {
 		return 0
@@ -155,7 +164,11 @@ func metalAgentPortError(host metalHost, p metalAgentPort, err error, holders []
 	if !errors.Is(err, syscall.EADDRINUSE) {
 		state = fmt.Sprintf("not available (%v)", err)
 	}
-	effect := "the agent would exit at startup, and launchd would restart it every 30 seconds"
+	supervisor, stop := "launchd", fmt.Sprintf("launchctl bootout gui/%d/%s", host.uid, metalAgentLabel)
+	if host.goos == goosLinux {
+		supervisor, stop = "systemd", "systemctl --user stop "+systemdAgentUnit
+	}
+	effect := "the agent would exit at startup, and " + supervisor + " would restart it every 30 seconds"
 	if !p.fatal {
 		effect = "the agent would run without it (" + p.flag + "=0 turns it off)"
 	}
@@ -163,8 +176,7 @@ func metalAgentPortError(host metalHost, p metalAgentPort, err error, holders []
 		"the agent another port with --agent-arg %s=<free port>", p.port, p.addr, p.what, p.flag, state, effect, p.flag)
 	if replaced > 0 && len(holders) == 0 {
 		// lsof could not tell; it may still be the agent join replaces.
-		msg += fmt.Sprintf(". If it is the agent join replaces (pid %d), stop it first: launchctl bootout gui/%d/%s",
-			replaced, host.uid, metalAgentLabel)
+		msg += fmt.Sprintf(". If it is the agent join replaces (pid %d), stop it first: %s", replaced, stop)
 	}
 	return errors.New(msg + ". The join string has not been used")
 }

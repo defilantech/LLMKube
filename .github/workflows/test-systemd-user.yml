@@ -1,0 +1,61 @@
+name: systemd user unit
+
+# Runs llmkube metal join's systemd user unit install and metal leave against
+# a real systemctl --user (TestSystemdAgentUnitLive in pkg/cli). The other
+# join tests use a fake systemctl; this one checks the unit file systemd reads
+# and the systemctl calls against systemd itself.
+#
+# Path-filtered, so not a required check and no merge_group trigger: GitHub
+# ignores paths filters for merge_group (#2379).
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'pkg/cli/metal_join*.go'
+      - '.github/workflows/test-systemd-user.yml'
+  pull_request:
+    paths:
+      - 'pkg/cli/metal_join*.go'
+      - '.github/workflows/test-systemd-user.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  systemd-user:
+    # Unique across workflows: a required status check is matched by job name
+    # alone (#2379).
+    name: systemd user unit (live)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Download Go modules
+        run: hack/go-mod-download.sh
+
+      # The runner has no login session, so its user has no systemd instance
+      # until lingering starts one.
+      - name: Start a systemd user instance
+        run: |
+          sudo loginctl enable-linger "$USER"
+          runtime_dir="/run/user/$(id -u)"
+          echo "XDG_RUNTIME_DIR=$runtime_dir" >> "$GITHUB_ENV"
+          for _ in $(seq 1 30); do
+            [ -S "$runtime_dir/bus" ] && break
+            sleep 1
+          done
+          XDG_RUNTIME_DIR="$runtime_dir" systemctl --user show-environment
+
+      - name: Live unit test
+        env:
+          LLMKUBE_TEST_SYSTEMD_USER: "1"
+        run: go test ./pkg/cli/ -run '^TestSystemdAgentUnitLive$' -count=1 -v

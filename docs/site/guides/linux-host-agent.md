@@ -1,6 +1,6 @@
 ---
 title: Linux Host Agent (experimental)
-description: Run the metal-agent on a Linux arm64 or amd64 host, joined to the cluster by hand, serving models through a daemon engine such as Ollama, or hailo-ollama on a Hailo-10H.
+description: Run the metal-agent on a Linux arm64 or amd64 host with systemd, joined with llmkube metal join, serving models through a daemon engine such as Ollama, or hailo-ollama on a Hailo-10H.
 ---
 
 # Linux Host Agent (experimental)
@@ -33,7 +33,7 @@ Tracking issue: [#2481](https://github.com/defilantech/LLMKube/issues/2481).
 | linux/amd64 | Builds. Untested on hardware |
 | Release artifacts | `LLMKube-metal-agent_<version>_linux_arm64.tar.gz` and `_linux_amd64.tar.gz` on the GitHub release, static (`CGO_ENABLED=0`), listed in `checksums.txt`. No Homebrew cask or distro package. The released binary is untested on hardware |
 | llama.cpp (`llama-server`) on Linux | Untested. The agent's llama.cpp defaults (flash attention, mlock) are tuned for Apple Silicon |
-| `llmkube metal join` | Refuses to run off macOS. [Join the host by hand](#join-the-host-by-hand) |
+| `llmkube metal join` | End to end on a Raspberry Pi 5: joined as a systemd user unit with lingering on, and back by itself after a power cut. Go tests cover it with a fake `systemctl`, and CI installs, starts and removes the unit with `metal leave` against a real `systemctl --user`. See [Join the host](#join-the-host) |
 | `MetalNode` hardware | Reported: memory (RAM under the agent's cgroup limit) and the board or CPU name from `/proc`. GPU cores and the Metal version are macOS only |
 | `llmkube deploy` for a Linux host | Untested. Write the Model and InferenceService by hand |
 
@@ -52,7 +52,7 @@ Or take it from a GitHub release that ships Linux archives:
 with their SHA-256 in the release's `checksums.txt`.
 
 The binary is static and needs nothing else from the host. Copy it to the
-host and put it on `PATH`.
+host and put it on `PATH`, or next to `llmkube`.
 
 ## Keep hosts apart
 
@@ -73,10 +73,78 @@ service in it, so keep a Linux host's services apart from other hosts':
 Making placement on a `MetalNode` explicit is proposed in
 [#2481](https://github.com/defilantech/LLMKube/issues/2481).
 
+## Join the host
+
+Where you have cluster access, create the namespace and the host's identity,
+as for a Mac. This creates its ServiceAccount (`llmkube-metal-<name>`), RBAC,
+Lease and `MetalNode`, plus a join Secret:
+
+```sh
+kubectl create namespace edge
+llmkube metal token create edge-1 -n edge
+```
+
+`token create` prints a `llmkube metal join <join-string>` line. On the host,
+as the user the agent runs as (not root), with `llmkube` and
+`llmkube-metal-agent` on `PATH` or next to each other, run it. Add the agent
+flags the host's engine needs; for Ollama:
+
+```sh
+llmkube metal join <join-string> \
+  --agent-arg runtime=ollama
+```
+
+As on a Mac, join trusts only the CA in the join string and prints its pin to
+compare. It mints the agent's own token, writes it and a kubeconfig (both
+0600) under `$XDG_DATA_HOME/llmkube/metal-agent` (`~/.local/share/...` when
+`XDG_DATA_HOME` is unset), deletes the join Secret, and waits up to `--wait`
+(3 minutes) for the `MetalNode` to report `Reachable=True`.
+
+Instead of a LaunchAgent, join installs the agent as the
+`llmkube-metal-agent.service` systemd user unit in
+`$XDG_CONFIG_HOME/systemd/user` (`~/.config/...`) and starts it with
+`systemctl --user daemon-reload` and `systemctl --user enable --now`. Its log
+is in the user journal:
+
+```sh
+journalctl --user -u llmkube-metal-agent.service -f
+```
+
+Before it spends the join string, join refuses to run as root, checks that
+this user's systemd instance answers (`systemctl --user show-environment`),
+and checks that the agent's ports are free, as on a Mac.
+
+A user's systemd instance runs only while that user has a login session,
+unless lingering is on. Without it the agent stops at logout and does not
+start at boot. join prints a hint when lingering is off and never turns it
+on itself. On a dedicated host, an admin runs:
+
+```sh
+sudo loginctl enable-linger <user>
+```
+
+Over SSH, join needs a session that sets `XDG_RUNTIME_DIR`, or lingering, to
+reach the user's instance.
+
+llama-server is optional when the agent's runtime is another one: without it,
+join goes on for `--agent-arg runtime=ollama` and leaves `--llama-server` out
+of the unit. For the default runtime it refuses, and looks in the agent's
+search paths (`/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`) and on
+`PATH`; `--llama-server` names one elsewhere.
+
+Running join again replaces the unit and keeps the agent arguments it does not
+set itself. join refuses to replace a `llmkube-metal-agent.service` it did not
+write unless `--force`, which keeps a copy under the state directory.
+`llmkube metal leave` stops and disables the unit, runs the agent's
+`stop-engines`, removes the unit, kubeconfig and token, and reloads systemd.
+
+The unit sets `KillMode=process`: stopping or restarting it stops the agent
+but not the engines it started, which the next agent adopts, as on a Mac.
+
 ## Join the host by hand
 
-`llmkube metal join` runs only on macOS, so on Linux you create the host's
-identity as for a Mac, mint its token yourself and write its kubeconfig.
+On a host without a systemd user instance, such as a container, create the
+host's identity as above, mint its token yourself and write its kubeconfig.
 
 Where you have cluster access, create the namespace and the host's identity.
 This creates its ServiceAccount (`llmkube-metal-<name>`), RBAC, Lease and
@@ -255,7 +323,8 @@ sudo loginctl enable-linger "$USER"
 ```
 
 Run the agent with `--runtime ollama --ollama-port 8000`, hailo-ollama's
-port.
+port; with `llmkube metal join`, pass them as `--agent-arg runtime=ollama
+--agent-arg ollama-port=8000`.
 
 ### Serve a hailo:// model
 

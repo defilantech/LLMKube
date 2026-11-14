@@ -17,6 +17,7 @@ limitations under the License.
 package cli
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"net"
@@ -105,10 +106,10 @@ var metalAgentFlags = map[string]agentFlagKind{
 // not carry them over from the previous LaunchAgent.
 var metalJoinManagedFlags = map[string]string{
 	"kubeconfig":                  "join writes the agent's kubeconfig",
-	"kube-context":                "join's kubeconfig has one context, the Mac's own",
+	"kube-context":                "join's kubeconfig has one context, the host's own",
 	"namespace":                   "the join string sets it",
 	"metal-node":                  "the join string sets it",
-	"metal-node-lease":            "the Mac's Lease is the one token create made",
+	"metal-node-lease":            "the host's Lease is the one token create made",
 	"renew-service-account-token": "join turns it on so the agent keeps its token current",
 	"llama-server":                "use join's --llama-server",
 	"host-ip":                     "use join's --host-ip",
@@ -236,7 +237,7 @@ func validateMetalJoinHostIP(s string) error {
 	case ip == nil || ip.To4() == nil || strings.Contains(s, ":"):
 		return fmt.Errorf("--host-ip %q is not an IPv4 address: the agent registers it in an IPv4 EndpointSlice", s)
 	case ip.IsUnspecified() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsMulticast():
-		return fmt.Errorf("--host-ip %s: the cluster cannot reach the Mac at a loopback, link-local, multicast "+
+		return fmt.Errorf("--host-ip %s: the cluster cannot reach the host at a loopback, link-local, multicast "+
 			"or unspecified address", s)
 	}
 	return nil
@@ -264,10 +265,26 @@ type metalJoinExtra struct {
 	drop bool
 }
 
+// agentServiceFile is the format of the file that runs the agent: a
+// LaunchAgent plist or a systemd unit.
+type agentServiceFile struct {
+	// marker is in every such file join writes.
+	marker string
+	// kind and argsKey name the file and the key that holds the command line;
+	// what names what it installs, and noun the machine, in join's notes.
+	kind, argsKey, what, noun string
+	// commandLine reads the agent's command line, binary first.
+	commandLine func(raw []byte) ([]string, error)
+}
+
+var launchAgentFile = agentServiceFile{marker: metalJoinPlistMarker, kind: "plist", argsKey: "ProgramArguments",
+	what: "LaunchAgent", noun: "Mac", commandLine: metalAgentPlistArgs}
+
 // previousJoinAgentArgs reads the agent's arguments after the binary from a
-// LaunchAgent an earlier join wrote. It returns nil for no plist, and for one
-// join did not write: --force replaces that one without taking its arguments.
-func previousJoinAgentArgs(path string) ([]agentArg, error) {
+// file in format f an earlier join wrote. It returns nil for no file, and for
+// one join did not write: --force replaces that one without taking its
+// arguments.
+func previousJoinAgentArgs(path string, f agentServiceFile) ([]agentArg, error) {
 	raw, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -275,12 +292,12 @@ func previousJoinAgentArgs(path string) ([]agentArg, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
-	if !isJoinPlist(raw) {
+	if !bytes.Contains(raw, []byte(f.marker)) {
 		return nil, nil
 	}
-	args, err := metalAgentPlistArgs(raw)
+	args, err := f.commandLine(raw)
 	if err == nil && len(args) == 0 {
-		err = errors.New("ProgramArguments is empty")
+		err = errors.New(f.argsKey + " is empty")
 	}
 	if err != nil {
 		return nil, fmt.Errorf("read the agent arguments the previous join wrote in %s, which join keeps: %w", path, err)
@@ -288,7 +305,7 @@ func previousJoinAgentArgs(path string) ([]agentArg, error) {
 	parsed, err := parseAgentArgs(args[1:])
 	if err != nil {
 		return nil, fmt.Errorf("read the agent arguments in %s, which join keeps: %w; "+
-			"fix the plist and run join again", path, err)
+			"fix the %s and run join again", path, err, f.kind)
 	}
 	return parsed, nil
 }
@@ -387,7 +404,7 @@ func metalAgentPorts(extras []agentArg) ([]metalAgentPort, error) {
 	ports := []metalAgentPort{
 		{flag: "port", what: "health and metrics server", fatal: true, port: 9090},
 		{flag: "ingress-port", what: "ingress, which the cluster dials", fatal: true, port: 9443},
-		{flag: "client-port", what: "client proxy for tools on this Mac", port: 9999},
+		{flag: "client-port", what: "client proxy for tools on this host", port: 9999},
 	}
 	var out []metalAgentPort
 	for _, p := range ports {

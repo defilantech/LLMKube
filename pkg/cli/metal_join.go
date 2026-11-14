@@ -27,6 +27,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	osuser "os/user"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -57,7 +58,7 @@ const (
 	// metalAgentBinary is the agent's file name in a release and in Homebrew.
 	metalAgentBinary = "llmkube-metal-agent"
 	// metalAgentTokenLifetimeDefault is the agent token join requests. The
-	// agent renews it at half its lifetime, so a Mac that is off for longer
+	// agent renews it at half its lifetime, so a host that is off for longer
 	// than that needs a new join string.
 	metalAgentTokenLifetimeDefault = 7 * 24 * time.Hour
 	metalJoinWaitDefault           = 3 * time.Minute
@@ -70,13 +71,33 @@ const (
 // Homebrew.
 var defaultLlamaServerPaths = []string{"/opt/homebrew/bin/llama-server", "/usr/local/bin/llama-server"}
 
-// metalHost is what join and leave need from the Mac. Tests replace it.
+// linuxLlamaServerPaths is the agent's whole search list
+// (cmd/metal-agent defaultLlamaServerPaths), which ends with a distribution
+// package's path.
+var linuxLlamaServerPaths = []string{
+	"/opt/homebrew/bin/llama-server", "/usr/local/bin/llama-server", "/usr/bin/llama-server",
+}
+
+const goosLinux = "linux"
+
+// metalHost is what join and leave need from the Mac or Linux host. Tests
+// replace it.
 type metalHost struct {
 	goos string
 	home string
 	uid  int
 	// launchctl runs /bin/launchctl with args and returns its output.
 	launchctl func(ctx context.Context, args ...string) (string, error)
+	// systemctl runs systemctl --user with args and returns its output.
+	systemctl func(ctx context.Context, args ...string) (string, error)
+	// xdgDataHome and xdgConfigHome are $XDG_DATA_HOME and $XDG_CONFIG_HOME.
+	xdgDataHome   string
+	xdgConfigHome string
+	// username names this user in the loginctl enable-linger hint.
+	username string
+	// lingering reports whether systemd keeps this user's instance running
+	// without a login session.
+	lingering func() bool
 	// lookPath finds a program on PATH.
 	lookPath func(string) (string, error)
 	// llamaServerPaths are where the agent looks for llama-server.
@@ -98,7 +119,7 @@ var newMetalHost = func() (metalHost, error) {
 	if err != nil {
 		return metalHost{}, fmt.Errorf("find the home directory: %w", err)
 	}
-	return metalHost{
+	h := metalHost{
 		goos: runtime.GOOS,
 		home: home,
 		uid:  os.Getuid(),
@@ -109,6 +130,17 @@ var newMetalHost = func() (metalHost, error) {
 			}
 			return string(out), nil
 		},
+		systemctl: func(ctx context.Context, args ...string) (string, error) {
+			out, err := exec.CommandContext(ctx, "systemctl", append([]string{"--user"}, args...)...).CombinedOutput()
+			if err != nil {
+				return "", fmt.Errorf("systemctl --user %s: %w: %s", strings.Join(args, " "), err,
+					strings.TrimSpace(string(out)))
+			}
+			return string(out), nil
+		},
+		xdgDataHome:      os.Getenv("XDG_DATA_HOME"),
+		xdgConfigHome:    os.Getenv("XDG_CONFIG_HOME"),
+		username:         currentUsername(),
 		lookPath:         exec.LookPath,
 		llamaServerPaths: defaultLlamaServerPaths,
 		executable:       os.Executable,
@@ -119,7 +151,27 @@ var newMetalHost = func() (metalHost, error) {
 		},
 		listen:      net.Listen,
 		portHolders: lsofPortHolders,
-	}, nil
+	}
+	h.lingering = func() bool {
+		if h.username == "" {
+			return false
+		}
+		_, err := os.Stat(filepath.Join("/var/lib/systemd/linger", h.username))
+		return err == nil
+	}
+	if h.goos == goosLinux {
+		h.llamaServerPaths = linuxLlamaServerPaths
+		// Distributions install lsof on PATH, not at /usr/sbin/lsof.
+		h.portHolders = func(ctx context.Context, port int) []portHolder { return lsofPortHoldersWith(ctx, "lsof", port) }
+	}
+	return h, nil
+}
+
+func currentUsername() string {
+	if u, err := osuser.Current(); err == nil {
+		return u.Username
+	}
+	return os.Getenv("USER")
 }
 
 // metalAgentPaths are the files join writes on the Mac.
@@ -137,6 +189,11 @@ type metalAgentPaths struct {
 	PlistBackup string
 	LogDir      string
 	Log         string
+	// Unit and UnitBackup are the Linux counterparts of Plist and
+	// PlistBackup: the systemd user unit, and the unit join replaced, kept
+	// outside every directory systemd loads units from.
+	Unit       string
+	UnitBackup string
 }
 
 func newMetalAgentPaths(home string) metalAgentPaths {
@@ -172,20 +229,20 @@ func newMetalJoinCommand() *cobra.Command {
 	opts := &metalJoinOptions{}
 	cmd := &cobra.Command{
 		Use:   "join <join-string>",
-		Short: "Join this Mac to the cluster with a join string",
-		Long: `Set up the Metal agent on this Mac with the join string an admin created
-with 'llmkube metal token create <mac>'.
+		Short: "Join this host to the cluster with a join string",
+		Long: `Set up the Metal agent on this host with the join string an admin created
+with 'llmkube metal token create <name>'.
 
 join trusts only the CA in the join string (no system roots) and prints its
 pin: compare it with the pin token create printed. It then mints the agent's
-own token for the Mac's ServiceAccount, writes it and a kubeconfig that reads
+own token for the host's ServiceAccount, writes it and a kubeconfig that reads
 it (both 0600) under ~/Library/Application Support/llmkube/metal-agent,
 deletes the join Secret so the string cannot be used again, installs and
 starts the com.llmkube.metal-agent LaunchAgent, and waits until the cluster
-reports the Mac's MetalNode Reachable.
+reports the host's MetalNode Reachable.
 
 The agent renews its token at half its lifetime (--token-lifetime, 7 days by
-default). A Mac that is off for longer needs a new join string. Running join
+default). A host that is off for longer needs a new join string. Running join
 again replaces the earlier setup; 'llmkube metal leave' removes it.
 
 --host-ip and --allowlist set the agent's --host-ip and
@@ -204,7 +261,17 @@ Before it uses the join string, join refuses to run as root, checks that
 this user is logged in at the Mac (a LaunchAgent runs only in a GUI login
 session), and checks that the ports the agent binds (--port 9090 and
 --client-port 9999 on 127.0.0.1, --ingress-port 9443) are free or held by the
-agent it replaces.`,
+agent it replaces.
+
+On a Linux host (experimental), join writes the kubeconfig and token under
+$XDG_DATA_HOME/llmkube/metal-agent (~/.local/share/...), installs the agent as
+the llmkube-metal-agent.service systemd user unit in
+$XDG_CONFIG_HOME/systemd/user (~/.config/...), and starts it with systemctl
+--user. Instead of a GUI session it checks that this user's systemd instance
+answers. Without lingering (loginctl enable-linger, which join only suggests)
+the agent stops at logout and starts at the next login. Without llama-server,
+join goes on when the agent's runtime is another one, such as
+--agent-arg runtime=ollama.`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.hostIPSet = cmd.Flags().Changed("host-ip")
@@ -217,24 +284,25 @@ agent it replaces.`,
 	cmd.Flags().StringVar(&opts.agentBinary, "agent-binary", "",
 		"Path to llmkube-metal-agent (default: on PATH, else next to this llmkube)")
 	cmd.Flags().StringVar(&opts.llamaServer, "llama-server", "",
-		"Path to llama-server, which the agent needs (default: Homebrew's, else on PATH)")
+		"Path to llama-server, which the agent's llama.cpp runtime needs (default: the agent's search paths, else on PATH)")
 	cmd.Flags().DurationVar(&opts.tokenLifetime, "token-lifetime", metalAgentTokenLifetimeDefault,
 		"Lifetime of the agent's token; the agent renews it at half (at least 10m)")
 	cmd.Flags().DurationVar(&opts.wait, "wait", metalJoinWaitDefault,
 		"How long to wait for the MetalNode to report Reachable; 0 does not wait")
 	cmd.Flags().BoolVar(&opts.force, "force", false,
-		"Replace a com.llmkube.metal-agent LaunchAgent that join did not write (it is kept in the state directory)")
+		"Replace a com.llmkube.metal-agent LaunchAgent (on Linux, a llmkube-metal-agent.service unit) that join "+
+			"did not write (it is kept in the state directory)")
 	cmd.Flags().StringVar(&opts.hostIP, "host-ip", "",
-		"IPv4 address the agent registers for the cluster to reach this Mac (agent --host-ip; default: auto-detect)")
+		"IPv4 address the agent registers for the cluster to reach this host (agent --host-ip; default: auto-detect)")
 	cmd.Flags().StringVar(&opts.allowlist, "allowlist", "",
-		"Comma-separated InferenceServices this Mac serves (agent --inference-service-allowlist; default: all)")
+		"Comma-separated InferenceServices this host serves (agent --inference-service-allowlist; default: all)")
 	cmd.Flags().StringArrayVar(&opts.agentArgs, "agent-arg", nil,
 		"Another agent flag as <flag>=<value>, such as port=9091 (repeatable; not the flags join sets itself)")
 	return cmd
 }
 
 // metalJoinExtras checks the agent arguments given on the command line,
-// before join looks at the Mac.
+// before join looks at the host.
 func metalJoinExtras(opts *metalJoinOptions) ([]metalJoinExtra, error) {
 	var extras []metalJoinExtra
 	seen := map[string]bool{}
@@ -288,8 +356,9 @@ func runMetalJoin(cmd *cobra.Command, joinString string, opts *metalJoinOptions)
 	if err != nil {
 		return err
 	}
-	if host.goos != "darwin" {
-		return fmt.Errorf("llmkube metal join sets up the Metal agent and runs on the Mac, not on %s", host.goos)
+	if host.goos != "darwin" && host.goos != goosLinux {
+		return fmt.Errorf("llmkube metal join sets up the Metal agent and runs on the Mac or a Linux host, not on %s",
+			host.goos)
 	}
 	if host.uid == 0 {
 		// launchd runs the agent in the GUI session of the user who joins,
@@ -308,16 +377,19 @@ func runMetalJoin(cmd *cobra.Command, joinString string, opts *metalJoinOptions)
 		ctx = context.Background()
 	}
 	out, log := cmd.OutOrStdout(), cmd.ErrOrStderr()
-	_, _ = fmt.Fprintf(log, "joining Mac %s in namespace %s at %s\n", p.Mac, p.Namespace, p.Server)
+	_, _ = fmt.Fprintf(log, "joining %s %s in namespace %s at %s\n", host.noun(), p.Mac, p.Namespace, p.Server)
 	_, _ = fmt.Fprintf(log, "CA pin: %s (compare it with the pin llmkube metal token create printed)\n", p.Pin)
+	if host.goos == goosLinux {
+		return runSystemdJoin(ctx, host, p, opts, given, out, log)
+	}
 
 	agentBin, err := findMetalAgentBinary(host, opts.agentBinary)
 	if err != nil {
 		return err
 	}
-	llamaServer, err := findLlamaServer(host, opts.llamaServer)
-	if err != nil {
-		return err
+	llamaServer, missingLlama := findLlamaServer(host, opts.llamaServer)
+	if missingLlama != nil && opts.llamaServer != "" {
+		return missingLlama
 	}
 	paths := newMetalAgentPaths(host.home)
 	if err := checkMetalAgentPlist(paths, opts.force); err != nil {
@@ -325,6 +397,9 @@ func runMetalJoin(cmd *cobra.Command, joinString string, opts *metalJoinOptions)
 	}
 	plan, err := planMetalJoinAgentArgs(paths, p, llamaServer, given, log)
 	if err != nil {
+		return err
+	}
+	if err := requireLlamaServer(plan, missingLlama, log); err != nil {
 		return err
 	}
 	ports, err := metalAgentPorts(plan.extras)
@@ -344,21 +419,38 @@ func runMetalJoin(cmd *cobra.Command, joinString string, opts *metalJoinOptions)
 	if err != nil {
 		return err
 	}
-	if opts.wait == 0 {
-		_, _ = fmt.Fprintf(out, "Mac %s joined; the agent is starting (log: %s)\n", p.Mac, paths.Log)
+	return finishMetalJoin(ctx, host, p, paths.Kubeconfig, started, opts.wait, paths.Log, out, log)
+}
+
+// noun is what join and leave call this machine.
+func (h metalHost) noun() string {
+	if h.goos == goosLinux {
+		return "host"
+	}
+	return "Mac"
+}
+
+// finishMetalJoin waits up to wait for the agent started at started to be
+// verified Reachable, and says where its log is.
+func finishMetalJoin(ctx context.Context, host metalHost, p metaljoin.Payload, kubeconfig string, started time.Time,
+	wait time.Duration, logAt string, out, log io.Writer) error {
+	noun := host.noun()
+	title := strings.ToUpper(noun[:1]) + noun[1:]
+	if wait == 0 {
+		_, _ = fmt.Fprintf(out, "%s %s joined; the agent is starting (log: %s)\n", title, p.Mac, logAt)
 		return nil
 	}
-	agentClient, err := metalAgentClient(paths.Kubeconfig)
+	agentClient, err := metalAgentClient(kubeconfig)
 	if err != nil {
 		return err
 	}
-	mn, err := waitMetalNodeReachable(ctx, agentClient, p.Namespace, p.Mac, started, opts.wait,
-		metalJoinPollInterval, log)
+	mn, err := waitMetalNodeReachable(ctx, agentClient, p.Namespace, p.Mac, started, wait,
+		metalJoinPollInterval, noun, log)
 	if err != nil {
-		return fmt.Errorf("%w; the agent is installed and keeps trying (log: %s)", err, paths.Log)
+		return fmt.Errorf("%w; the agent is installed and keeps trying (log: %s)", err, logAt)
 	}
-	_, _ = fmt.Fprintf(out, "Mac %s joined: the cluster reaches it at %s:%d (log: %s)\n",
-		p.Mac, mn.Status.HostIP, mn.Status.IngressPort, paths.Log)
+	_, _ = fmt.Fprintf(out, "%s %s joined: the cluster reaches it at %s:%d (log: %s)\n",
+		title, p.Mac, mn.Status.HostIP, mn.Status.IngressPort, logAt)
 	return nil
 }
 
@@ -390,10 +482,8 @@ func findMetalAgentBinary(host metalHost, flag string) (string, error) {
 }
 
 // findLlamaServer is --llama-server, else the first of the agent's own search
-// paths, else llama-server on PATH. The agent exits at startup without
-// llama-server, which from here would only show as a Mac that never reports,
-// so join refuses first. The agent gets the path join found: launchd's PATH
-// is not the shell's.
+// paths, else llama-server on PATH. The agent gets the path join found: the
+// service manager's PATH is not the shell's.
 func findLlamaServer(host metalHost, flag string) (string, error) {
 	candidates := []string{flag}
 	if flag == "" {
@@ -408,8 +498,44 @@ func findLlamaServer(host metalHost, flag string) (string, error) {
 	if flag != "" {
 		return "", fmt.Errorf("--llama-server %s is not an executable file", flag)
 	}
-	return "", fmt.Errorf("llama-server not found in %s or on PATH, and the agent cannot start without it; "+
-		"install it (brew install llama.cpp) or pass --llama-server", strings.Join(host.llamaServerPaths, ", "))
+	if host.goos == goosLinux {
+		return "", fmt.Errorf("llama-server not found in %s or on PATH, and the agent's default runtime needs it; "+
+			"install it (your distribution's llama.cpp package or a source build) and pass --llama-server, or "+
+			"choose another runtime, such as --agent-arg runtime=ollama", strings.Join(host.llamaServerPaths, ", "))
+	}
+	return "", fmt.Errorf("llama-server not found in %s or on PATH, and the agent's default runtime needs it; "+
+		"install it (brew install llama.cpp) and pass --llama-server, or choose another runtime, such as "+
+		"--agent-arg runtime=omlx", strings.Join(host.llamaServerPaths, ", "))
+}
+
+// requireLlamaServer returns missing, findLlamaServer's error, unless the
+// agent's runtime in plan is one it starts without llama-server (cmd/metal-agent
+// resolveDefaultLlamaServerBin); then it says what the agent will refuse. With
+// the llama.cpp runtime the agent exits at startup without llama-server, which
+// from here would only show as a host that never reports, so join refuses
+// first.
+func requireLlamaServer(plan metalJoinArgPlan, missing error, log io.Writer) error {
+	if missing == nil {
+		return nil
+	}
+	rt := planRuntime(plan)
+	if !inferencev1alpha1.IsMetalOnlyRuntime(rt) {
+		return missing
+	}
+	_, _ = fmt.Fprintf(log, "llama-server not found: the agent runs --runtime %s without llama.cpp, "+
+		"and refuses services that select llama.cpp\n", rt)
+	return nil
+}
+
+// planRuntime is the --runtime the agent gets from plan, or its default.
+func planRuntime(plan metalJoinArgPlan) string {
+	rt := "llama-server"
+	for _, a := range plan.extras {
+		if a.name == "runtime" {
+			rt = a.value
+		}
+	}
+	return rt
 }
 
 // firstExecutable returns the absolute path of the first candidate that is
@@ -494,7 +620,7 @@ func metalJoinSetup(ctx context.Context, p metaljoin.Payload, lifetime time.Dura
 }
 
 // explainJoinTokenError turns the API server's answer to the join token into
-// what the Mac's user can do about it. The join token is bound to the join
+// what the host's user can do about it. The join token is bound to the join
 // Secret, so a used string and an expired one look the same.
 func explainJoinTokenError(err error) error {
 	switch {
@@ -502,7 +628,7 @@ func explainJoinTokenError(err error) error {
 		return fmt.Errorf("the join string has expired or was already used; ask for a new one "+
 			"(llmkube metal token create): %w", err)
 	case apierrors.IsForbidden(err):
-		return fmt.Errorf("the join token may not mint the Mac's token; was the per-Mac Role changed? "+
+		return fmt.Errorf("the join token may not mint this host's token; was the per-Mac Role changed? "+
 			"Ask for a new join string (llmkube metal token create): %w", err)
 	}
 	return fmt.Errorf("mint the agent's token: %w", err)
@@ -560,7 +686,8 @@ func metalAgentClient(kubeconfig string) (client.Client, error) {
 }
 
 // metalJoinSets are the agent flags join writes from the join string and what
-// it found on the Mac.
+// it found on the host. An empty llamaServer is one join did not find, and
+// does not write.
 func metalJoinSets(paths metalAgentPaths, p metaljoin.Payload, llamaServer string) map[string]agentArg {
 	sets := map[string]agentArg{}
 	for _, a := range []agentArg{
@@ -570,6 +697,9 @@ func metalJoinSets(paths metalAgentPaths, p metaljoin.Payload, llamaServer strin
 		{name: "renew-service-account-token"},
 		{name: "llama-server", value: llamaServer, hasValue: true},
 	} {
+		if a.name == "llama-server" && llamaServer == "" {
+			continue
+		}
 		sets[a.name] = a
 	}
 	return sets
@@ -580,23 +710,32 @@ func metalJoinSets(paths metalAgentPaths, p metaljoin.Payload, llamaServer strin
 // over it. It prints what it keeps, replaces and drops.
 func planMetalJoinAgentArgs(paths metalAgentPaths, p metaljoin.Payload, llamaServer string, given []metalJoinExtra,
 	log io.Writer) (metalJoinArgPlan, error) {
-	previous, err := previousJoinAgentArgs(paths.Plist)
+	return planJoinAgentArgs(launchAgentFile, paths.Plist, paths.PlistBackup, metalJoinSets(paths, p, llamaServer),
+		given, log)
+}
+
+// planJoinAgentArgs is planMetalJoinAgentArgs for the file at path in format
+// f, which join keeps as backup when it did not write it.
+func planJoinAgentArgs(f agentServiceFile, path, backup string, sets map[string]agentArg, given []metalJoinExtra,
+	log io.Writer) (metalJoinArgPlan, error) {
+	previous, err := previousJoinAgentArgs(path, f)
 	if err != nil {
 		return metalJoinArgPlan{}, err
 	}
-	if exists, joined, _ := readMetalAgentPlist(paths.Plist); exists && !joined {
-		_, _ = fmt.Fprintf(log, "join does not keep the arguments of the LaunchAgent it replaces (it keeps the file "+
-			"as %s); pass the ones this Mac needs with --host-ip, --allowlist or --agent-arg\n", paths.PlistBackup)
+	if exists, joined, _ := readJoinMarkedFile(path, f.marker); exists && !joined {
+		_, _ = fmt.Fprintf(log, "join does not keep the arguments of the %s it replaces (it keeps the file "+
+			"as %s); pass the ones this %s needs with --host-ip, --allowlist or --agent-arg\n", f.what, backup, f.noun)
 	}
-	plan := planMetalAgentArgs(previous, given, metalJoinSets(paths, p, llamaServer))
+	plan := planMetalAgentArgs(previous, given, sets)
 	for _, n := range plan.notes {
 		_, _ = fmt.Fprintln(log, n)
 	}
 	return plan, nil
 }
 
-// metalAgentArgs is the agent's command line in the LaunchAgent: the flags
-// join sets, then plan's.
+// metalAgentArgs is the agent's command line in the LaunchAgent or systemd
+// unit: the flags join sets, then plan's. An empty llamaServer leaves
+// --llama-server out.
 func metalAgentArgs(agentBin string, paths metalAgentPaths, p metaljoin.Payload, llamaServer string,
 	plan metalJoinArgPlan) []string {
 	args := make([]string, 0, 12+len(plan.extras))
@@ -606,8 +745,10 @@ func metalAgentArgs(agentBin string, paths metalAgentPaths, p metaljoin.Payload,
 		"--metal-node", p.Mac,
 		"--renew-service-account-token",
 		"--log-level", plan.logLevel,
-		"--llama-server", llamaServer,
 	)
+	if llamaServer != "" {
+		args = append(args, "--llama-server", llamaServer)
+	}
 	for _, a := range plan.extras {
 		args = append(args, a.String())
 	}
@@ -623,6 +764,11 @@ const metalJoinPlistMarker = "<!-- Written by llmkube metal join; llmkube metal 
 // readMetalAgentPlist reports whether the LaunchAgent plist exists and
 // whether join wrote it.
 func readMetalAgentPlist(path string) (exists, joined bool, err error) {
+	return readJoinMarkedFile(path, metalJoinPlistMarker)
+}
+
+// readJoinMarkedFile reports whether path exists and carries marker.
+func readJoinMarkedFile(path, marker string) (exists, joined bool, err error) {
 	raw, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, false, nil
@@ -630,7 +776,7 @@ func readMetalAgentPlist(path string) (exists, joined bool, err error) {
 	if err != nil {
 		return false, false, fmt.Errorf("read %s: %w", path, err)
 	}
-	return true, isJoinPlist(raw), nil
+	return true, bytes.Contains(raw, []byte(marker)), nil
 }
 
 func isJoinPlist(raw []byte) bool { return bytes.Contains(raw, []byte(metalJoinPlistMarker)) }
@@ -792,15 +938,15 @@ func renderMetalAgentPlist(args []string, home, logFile string) ([]byte, error) 
 	return []byte(b.String()), nil
 }
 
-// waitMetalNodeReachable polls the Mac's MetalNode and its Lease until they
+// waitMetalNodeReachable polls the host's MetalNode and its Lease until they
 // show the agent join started connected and verified Reachable, printing
 // each change. Status left from an earlier agent does not count: on a
 // re-join it stays True for minutes after that agent is gone.
 func waitMetalNodeReachable(ctx context.Context, c client.Client, namespace, name string, started time.Time,
-	timeout, interval time.Duration, log io.Writer) (*inferencev1alpha1.MetalNode, error) {
+	timeout, interval time.Duration, noun string, log io.Writer) (*inferencev1alpha1.MetalNode, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	_, _ = fmt.Fprintf(log, "waiting up to %s for the cluster to verify it can reach this Mac\n", timeout)
+	_, _ = fmt.Fprintf(log, "waiting up to %s for the cluster to verify it can reach this %s\n", timeout, noun)
 	last := ""
 	for {
 		mn := &inferencev1alpha1.MetalNode{}
@@ -839,7 +985,7 @@ func waitMetalNodeReachable(ctx context.Context, c client.Client, namespace, nam
 // metalJoinVerified reports whether mn and its Lease show the agent started
 // at started connected and verified Reachable, and if not, what it still
 // waits for (empty while the conditions themselves say it). The agent stamps
-// the Lease's renewTime with this Mac's clock, the clock started comes from;
+// the Lease's renewTime with this host's clock, the clock started comes from;
 // the controller copies the Lease report's ingress key and port into status.
 func metalJoinVerified(mn *inferencev1alpha1.MetalNode, lease *coordinationv1.Lease,
 	started time.Time) (bool, string) {
@@ -892,7 +1038,7 @@ func metalNodeState(mn *inferencev1alpha1.MetalNode) string {
 func newMetalLeaveCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "leave",
-		Short: "Stop the Metal agent on this Mac and remove what join set up",
+		Short: "Stop the Metal agent on this host and remove what join set up",
 		Long: `Stop the com.llmkube.metal-agent LaunchAgent and remove its plist and the
 agent's kubeconfig and token that 'llmkube metal join' wrote. Engines outlive
 the agent, so once it has exited, leave runs the agent's stop-engines to stop
@@ -901,9 +1047,13 @@ removed; run leave again. The agent's ingress identity and model store stay. A
 LaunchAgent join did not write (make install-metal-agent, a playbook) is left
 running, and its engines with it.
 
-This only cleans up the Mac: the agent's token stays valid until it expires.
-To revoke it and delete the Mac's objects in the cluster, an admin runs
-'llmkube metal remove <mac> -n <namespace>'.`,
+This only cleans up the host: the agent's token stays valid until it expires.
+To revoke it and delete the host's objects in the cluster, an admin runs
+'llmkube metal remove <name> -n <namespace>'.
+
+On a Linux host, leave stops and disables the llmkube-metal-agent.service
+systemd user unit join installed, removes it, and reloads systemd --user. A
+unit join did not write is left running.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runMetalLeave(cmd)
@@ -916,8 +1066,8 @@ func runMetalLeave(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	if host.goos != "darwin" {
-		return fmt.Errorf("llmkube metal leave runs on the Mac, not on %s", host.goos)
+	if host.goos != "darwin" && host.goos != goosLinux {
+		return fmt.Errorf("llmkube metal leave runs on the Mac or a Linux host, not on %s", host.goos)
 	}
 	if host.uid == 0 {
 		// leave runs the agent binary its LaunchAgent names, a path the user
@@ -928,18 +1078,13 @@ func runMetalLeave(cmd *cobra.Command) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if host.goos == goosLinux {
+		return runSystemdLeave(ctx, host, cmd.OutOrStdout(), cmd.ErrOrStderr())
+	}
 	out := cmd.OutOrStdout()
 	paths := newMetalAgentPaths(host.home)
-	// Read which Mac this was before the kubeconfig goes, for the hint.
-	mac, namespace := "<mac>", "<namespace>"
-	if kc, err := clientcmd.LoadFromFile(paths.Kubeconfig); err == nil {
-		if ctxCfg := kc.Contexts[kc.CurrentContext]; ctxCfg != nil {
-			namespace = ctxCfg.Namespace
-			if m, ok := strings.CutPrefix(ctxCfg.AuthInfo, "llmkube-metal-"); ok {
-				mac = m
-			}
-		}
-	}
+	// Read which host this was before the kubeconfig goes, for the hint.
+	node, namespace := metalLeaveTarget(paths.Kubeconfig)
 	exists, joined, err := readMetalAgentPlist(paths.Plist)
 	if err != nil {
 		return err
@@ -959,6 +1104,50 @@ func runMetalLeave(cmd *cobra.Command) error {
 	case exists:
 		_, _ = fmt.Fprintf(out, "left %s running: llmkube metal join did not install it\n", paths.Plist)
 	}
+	removed, err := removeMetalJoinFiles(files, out)
+	if err != nil {
+		return err
+	}
+	if !reportMetalLeave(out, host.noun(), removed, node, namespace) {
+		return nil
+	}
+	if _, err := os.Stat(paths.PlistBackup); joined && err == nil {
+		_, _ = fmt.Fprintf(out, "join had replaced a LaunchAgent; to start it again: cp %q %q && launchctl bootstrap %s %q\n",
+			paths.PlistBackup, paths.Plist, domain, paths.Plist)
+	}
+	return nil
+}
+
+// metalLeaveTarget reads the Metal node and namespace from the agent's
+// kubeconfig, for leave's hint, with placeholders when it cannot.
+func metalLeaveTarget(kubeconfig string) (node, namespace string) {
+	node, namespace = "<name>", "<namespace>"
+	if kc, err := clientcmd.LoadFromFile(kubeconfig); err == nil {
+		if ctxCfg := kc.Contexts[kc.CurrentContext]; ctxCfg != nil {
+			namespace = ctxCfg.Namespace
+			if m, ok := strings.CutPrefix(ctxCfg.AuthInfo, "llmkube-metal-"); ok {
+				node = m
+			}
+		}
+	}
+	return node, namespace
+}
+
+// reportMetalLeave says what leave did on this noun, and reports whether
+// there was anything to remove.
+func reportMetalLeave(out io.Writer, noun string, removed int, node, namespace string) bool {
+	if removed == 0 {
+		_, _ = fmt.Fprintf(out, "nothing to remove: this %s has not joined\n", noun)
+		return false
+	}
+	_, _ = fmt.Fprintf(out, "left the cluster on this %s; to revoke its token and delete its objects, "+
+		"an admin runs: llmkube metal remove %s -n %s\n", noun, node, namespace)
+	return true
+}
+
+// removeMetalJoinFiles removes files, printing each, and counts the ones
+// that were there.
+func removeMetalJoinFiles(files []string, out io.Writer) (int, error) {
 	removed := 0
 	for _, f := range files {
 		err := os.Remove(f)
@@ -967,20 +1156,10 @@ func runMetalLeave(cmd *cobra.Command) error {
 			removed++
 			_, _ = fmt.Fprintf(out, "removed %s\n", f)
 		case !errors.Is(err, os.ErrNotExist):
-			return fmt.Errorf("remove %s: %w", f, err)
+			return removed, fmt.Errorf("remove %s: %w", f, err)
 		}
 	}
-	if removed == 0 {
-		_, _ = fmt.Fprintln(out, "nothing to remove: this Mac has not joined")
-		return nil
-	}
-	_, _ = fmt.Fprintf(out, "left the cluster on this Mac; to revoke its token and delete its objects, "+
-		"an admin runs: llmkube metal remove %s -n %s\n", mac, namespace)
-	if _, err := os.Stat(paths.PlistBackup); joined && err == nil {
-		_, _ = fmt.Fprintf(out, "join had replaced a LaunchAgent; to start it again: cp %q %q && launchctl bootstrap %s %q\n",
-			paths.PlistBackup, paths.Plist, domain, paths.Plist)
-	}
-	return nil
+	return removed, nil
 }
 
 // stopMetalEngines runs the joined agent's stop-engines: its engines outlive
@@ -1007,6 +1186,13 @@ func stopMetalEngines(ctx context.Context, host metalHost, paths metalAgentPaths
 	if err != nil {
 		return fmt.Errorf("read the agent's command line from %s: %w", paths.Plist, err)
 	}
+	return runAgentStopEngines(ctx, host, paths, args, out, errOut)
+}
+
+// runAgentStopEngines runs stop-engines with the binary and arguments of the
+// agent's command line args, when that binary has it.
+func runAgentStopEngines(ctx context.Context, host metalHost, paths metalAgentPaths, args []string,
+	out, errOut io.Writer) error {
 	bin := args[0]
 	supported, err := agentHasStopEngines(bin)
 	switch {
