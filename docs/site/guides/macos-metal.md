@@ -478,7 +478,6 @@ through the Mac fail while the agent itself is down.
 | An oMLX service | its model is unloaded | no: it reloads |
 | An engine still loading when the agent restarts, or one that misses its single 5-second health check | stopped | no: it reloads |
 | Logout, restart, macOS update | stop | no: every model reloads after the next login |
-
 | `llmkube metal leave`, or `llmkube-metal-agent stop-engines` | stopped on purpose | not applicable |
 
 An edit to an InferenceService field that changes the engine's command line
