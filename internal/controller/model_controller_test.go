@@ -2579,11 +2579,12 @@ var _ = Describe("Model spec.source re-resolve", func() {
 		rebaselined := &inferencev1alpha1.Model{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: modelName, Namespace: "default"}, rebaselined)).To(Succeed())
 		Expect(rebaselined.Status.SourceETag).To(Equal(`"etag-b"`))
-		for _, cond := range rebaselined.Status.Conditions {
-			if cond.Type == ConditionSourceDrifted {
-				Expect(cond.Reason).To(Equal("InSync"), "a spec change must not be reported as upstream drift")
-			}
-		}
+		drift := sourceDriftedCondition(rebaselined)
+		Expect(drift).NotTo(BeNil())
+		Expect(drift.Status).To(Equal(metav1.ConditionFalse), "a spec change must not be reported as upstream drift")
+		// The serving pod downloads an http source, so the controller reports
+		// the upstream unchanged, not a cached copy in sync (#2415).
+		Expect(drift.Reason).To(Equal("UpstreamUnchanged"), "a spec change must not be reported as upstream drift")
 	})
 
 	It("keeps a stable status when the spec is unchanged", func() {

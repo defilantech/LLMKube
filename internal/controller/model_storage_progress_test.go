@@ -30,6 +30,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/defilantech/llmkube/pkg/downloadprogress"
 )
 
 // Download progress (#1895) is only useful if it actually reaches kubectl
@@ -98,12 +100,15 @@ func TestDownloadWithProgress(t *testing.T) {
 	// because it tests the transfer's death before printing and a stub that ends
 	// on the second loses that comparison; the tenths poll prints the interval a
 	// transfer ends in, so two is deterministic there.
+	//
+	// llmkube deploy reads these lines through downloadprogress (#2415), so each
+	// case also parses the real output and checks the numbers it yields.
 	for _, v := range []struct {
-		name, helper, percent string
-		minLines              int
+		name, helper, percent, file string
+		minLines                    int
 	}{
-		{"serial", downloadProgressFn, "Downloaded 2 MiB of 4 MiB (50%)", 1},
-		{"labeled", labeled, "Downloaded 2 MiB of 4 MiB of m.bin (50%)", 2},
+		{"serial", downloadProgressFn, "Downloaded 2 MiB of 4 MiB (50%)", "", 1},
+		{"labeled", labeled, "Downloaded 2 MiB of 4 MiB of m.bin (50%)", "m.bin", 2},
 	} {
 		t.Run(v.name, func(t *testing.T) {
 			t.Run("percent when total is known", func(t *testing.T) {
@@ -117,6 +122,10 @@ func TestDownloadWithProgress(t *testing.T) {
 				if strings.ContainsRune(out, '\r') {
 					t.Errorf("output carries a carriage return, which kubectl collapses into the prior line:\n%q", out)
 				}
+				want := downloadprogress.Progress{DownloadedMiB: 2, TotalMiB: 4, Percent: 50, HasTotal: true, File: v.file}
+				if got, ok := downloadprogress.Last(out); !ok || got != want {
+					t.Errorf("downloadprogress.Last = %+v, %v; want %+v, true, from:\n%s", got, ok, want, out)
+				}
 			})
 
 			t.Run("bytes-only when total is unknown", func(t *testing.T) {
@@ -126,6 +135,10 @@ func TestDownloadWithProgress(t *testing.T) {
 				}
 				if strings.Contains(out, "%") {
 					t.Errorf("output contains a percent but total was empty:\n%s", out)
+				}
+				want := downloadprogress.Progress{DownloadedMiB: 2, File: v.file}
+				if got, ok := downloadprogress.Last(out); !ok || got != want {
+					t.Errorf("downloadprogress.Last = %+v, %v; want %+v, true, from:\n%s", got, ok, want, out)
 				}
 			})
 

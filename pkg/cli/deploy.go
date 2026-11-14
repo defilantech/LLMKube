@@ -29,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
@@ -385,8 +386,14 @@ func runDeploy(opts *deployOptions) error {
 	fmt.Printf("   ✅ InferenceService created\n")
 
 	if opts.wait {
+		// The log reader shows the serving pod's model download; without a
+		// clientset, deploy still waits on the status line alone.
+		var logs podLogTail
+		if clientset, err := kubernetes.NewForConfig(cfg); err == nil {
+			logs = clientsetLogTail(clientset)
+		}
 		fmt.Printf("\nWaiting for deployment to be ready (timeout: %s)...\n", opts.timeout)
-		if err := waitForReady(ctx, k8sClient, opts.name, opts.namespace, opts.timeout); err != nil {
+		if err := waitForReady(ctx, k8sClient, logs, opts.name, opts.namespace, opts.timeout); err != nil {
 			return err
 		}
 	}
@@ -514,29 +521,38 @@ func sanitizeServiceName(name string) string {
 	return strings.ReplaceAll(name, ".", "-")
 }
 
-func waitForReady(ctx context.Context, k8sClient client.Client, name, namespace string, timeout time.Duration) error {
+func waitForReady(
+	ctx context.Context, k8sClient client.Client, logs podLogTail, name, namespace string, timeout time.Duration,
+) error {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	ticker := time.NewTicker(2 * time.Second)
+	ticker := time.NewTicker(waitPollInterval)
 	defer ticker.Stop()
 
 	startTime := time.Now()
 	lastPhase := ""
 	lastHeartbeat := time.Time{}
+	downloads := newDownloadWatcher(k8sClient, logs, name, namespace)
 
 	for {
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("timeout waiting for deployment to be ready")
+			return waitTimedOut(name, namespace, timeout, downloads.report())
 		case <-ticker.C:
 			model := &inferencev1alpha1.Model{}
 			if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, model); err != nil {
+				if ctx.Err() != nil {
+					return waitTimedOut(name, namespace, timeout, downloads.report())
+				}
 				return fmt.Errorf("failed to get Model: %w", err)
 			}
 
 			isvc := &inferencev1alpha1.InferenceService{}
 			if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, isvc); err != nil {
+				if ctx.Err() != nil {
+					return waitTimedOut(name, namespace, timeout, downloads.report())
+				}
 				return fmt.Errorf("failed to get InferenceService: %w", err)
 			}
 
@@ -585,8 +601,30 @@ func waitForReady(ctx context.Context, k8sClient client.Client, name, namespace 
 			if isvc.Status.Phase == "Failed" {
 				return fmt.Errorf("inference service deployment failed")
 			}
+
+			// A Model with a remote source goes Ready before it is downloaded:
+			// the serving pod downloads it, and only its log shows how far it
+			// got. A Metal-served model downloads on the Mac and has no such pod.
+			if model.Status.Phase == phaseReady && !servedByMetal(model) {
+				if line := downloads.poll(ctx, time.Now()); line != "" {
+					elapsed := time.Since(startTime).Round(time.Second)
+					fmt.Printf("[%s] ⏳ %s\n", elapsed, line)
+				}
+			}
 		}
 	}
+}
+
+// servedByMetal reports whether the Metal agent serves the model on a Mac.
+func servedByMetal(model *inferencev1alpha1.Model) bool {
+	return model.Spec.Hardware != nil && model.Spec.Hardware.Accelerator == acceleratorMetal
+}
+
+// waitTimedOut prints what deploy knows at a --wait timeout and returns the
+// timeout as an error.
+func waitTimedOut(name, namespace string, timeout time.Duration, rep downloadReport) error {
+	fmt.Print(deployTimeoutHelp(name, namespace, timeout, rep))
+	return fmt.Errorf("timed out after %s waiting for %s/%s to be ready", timeout, namespace, name)
 }
 
 func printDeploySummary(opts *deployOptions) {

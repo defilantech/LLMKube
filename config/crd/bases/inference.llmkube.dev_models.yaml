@@ -1832,10 +1832,14 @@ spec:
                   Each condition has a unique type and reflects the status of a specific aspect of the resource.
 
                   Standard condition types include:
-                  - "Available": the model is downloaded and ready for use
+                  - "Available": the model is ready for use. A source the controller caches
+                    itself is downloaded by then; a remote source is fetched by the serving
+                    pod when it starts, so the download can still be running
                   - "Progressing": the model is being downloaded or processed
                   - "Degraded": the model download or setup failed
-                  - "SourceDrifted": the upstream source bytes differ from the cached copy
+                  - "SourceDrifted": the upstream source differs from what the controller
+                    last recorded: its cached copy for a source it caches, otherwise the
+                    fingerprint it recorded
 
                   The status of each condition is one of True, False, or Unknown.
                 items:

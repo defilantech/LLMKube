@@ -10,12 +10,14 @@ OpenAI-compatible endpoint. This works on a fresh kind, Minikube or Docker
 Desktop cluster and on real GPU clusters. To serve from an Apple Silicon Mac,
 see [Run it on a Mac](#run-it-on-a-mac).
 
-The recording below is the full happy path on a fresh kind cluster: deploy,
-wait for ready, query.
+The recording below shows the deploy, wait and query steps on a kind cluster
+whose model cache already held the weights. A first deploy also downloads the
+model, a few GB for the small catalog models, which takes several minutes on a
+slow link.
 
 <AsciinemaCast
   src="/casts/quickstart.cast"
-  title="Real-time recording on a kind cluster. ~50 seconds wall time, idle waits compressed."
+  title="Real-time recording on a kind cluster with the model weights already cached. About 50 seconds wall time, idle waits compressed."
 />
 
 ## Prerequisites
@@ -114,9 +116,13 @@ llmkube deploy tinyllama \
 
 ### Watch the rollout
 
-`llmkube deploy` waits until the model is ready (up to 10 minutes; `--wait=false`
-returns at once). To check on it from another terminal, use the name you
-deployed, `phi-4-mini` or `tinyllama`:
+`llmkube deploy` waits until the model is ready, up to 10 minutes by default,
+and prints the download's progress while the pod fetches the model. Showing the
+progress needs permission to list pods and read their logs in the namespace;
+without it, deploy prints the status line alone. For a large model or a slow
+link, pass a longer `--timeout`, or `--wait=false` to return at once. A timeout only stops the wait: the deployment keeps going in the cluster.
+To check on it from another terminal, use the name you deployed, `phi-4-mini`
+or `tinyllama`:
 
 ```bash
 MODEL=phi-4-mini   # or tinyllama
@@ -126,9 +132,11 @@ llmkube status "$MODEL"
 kubectl wait --for=condition=available --timeout=10m "inferenceservice/$MODEL"
 ```
 
-The operator downloads the model into the namespace's model cache, loads it
-with an init container, and serves an OpenAI-compatible HTTP endpoint behind a
-Service of the same name.
+The pod's `model-downloader` init container downloads the model into the
+namespace's model cache, then the server loads it and serves an
+OpenAI-compatible HTTP endpoint behind a Service of the same name. The Model
+reports `Ready` once its source checks out, before the download, so wait on the
+InferenceService, not the Model.
 
 ## 4. Test the API
 
@@ -227,7 +235,8 @@ Benchmark numbers are in the
 
 ### Model stuck in "Downloading"
 
-Check the init container's logs for download progress:
+`llmkube deploy` prints the download's progress while it waits. From another
+terminal, or after the wait timed out, read the init container's logs:
 
 ```bash
 kubectl logs <pod-name> -c model-downloader
