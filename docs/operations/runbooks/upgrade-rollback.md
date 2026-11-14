@@ -108,6 +108,23 @@ the relay pod would crashloop.
 If you roll the chart back (see Rollback below), roll the metal-agents
 back first, then roll back the chart, same order reversed.
 
+The supported skew window follows from that order: an agent must be on the
+controller's minor release (0.10.x with a 0.10.x controller) and must not
+be newer than the controller. An agent a few patch releases behind, while
+the Macs catch up after a chart upgrade, is inside the window. The
+controller checks every agent against it:
+
+- The MetalNode's `AgentVersionSupported` condition is `False` with
+  `AgentNewerThanController` (upgrade the chart) or `AgentMinorBehind`
+  (upgrade the agent), and `True` with `InSkewWindow` otherwise.
+  `kubectl get metalnodes -n <namespace> -o yaml` shows it.
+- Every Metal InferenceService that agent serves gets an
+  `AgentVersionSkew` Warning Event naming both versions.
+
+The controller learns its own version from `--controller-version`, which
+the chart sets from the controller image tag (else the chart
+`appVersion`). An install without it reports `VersionUnknown`.
+
 Rolling a metal-agent back to a release that predates engine adoption
 silently doubles every model on that Mac: the engines the current agent
 started keep running (they survive the agent by design), the older agent does

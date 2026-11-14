@@ -1651,6 +1651,10 @@ on schedule does not wake the controller; its 60 s resync does.
 | `Reachable` | `AgentNotConnected` | `Unknown`: the agent is not connected, so nothing is dialed and `hostIP` is empty. |
 | `Reachable` | `ReportInvalid` | `Unknown`: the agent's report on its Lease is invalid (see `AgentConnected`), so nothing is dialed and `hostIP` is empty. Fix the report, not the Mac's network. |
 | `Reachable` | `InvalidSpec` | `spec.hostIP` is not an IP address; nothing is dialed until it is fixed. |
+| `AgentVersionSupported` | `InSkewWindow` | The agent is on the controller's minor release and not newer than the controller. |
+| `AgentVersionSupported` | `AgentNewerThanController` | `False`: the agent is a newer release than the controller. Upgrade the chart; the controller must be at least as new as its agents. |
+| `AgentVersionSupported` | `AgentMinorBehind` | `False`: the agent is from an older minor release than the controller. Upgrade the agent. |
+| `AgentVersionSupported` | `VersionUnknown` | `Unknown`: the agent has not reported a version, or one side is a development build (the controller's version comes from `--controller-version`, which the Helm chart sets from the image tag). |
 
 ### Engine environment
 

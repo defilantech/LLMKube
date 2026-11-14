@@ -159,6 +159,10 @@ type MetalNodeReconciler struct {
 	AllowedCIDRs []netip.Prefix
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
+	// ControllerVersion is this controller's release version
+	// (--controller-version), which AgentVersionSupported compares the
+	// agent's with. "dev" or empty leaves the condition Unknown.
+	ControllerVersion string
 }
 
 // +kubebuilder:rbac:groups=inference.llmkube.dev,resources=metalnodes,verbs=get;list;watch
@@ -208,6 +212,8 @@ func (r *MetalNodeReconciler) reconcileFrom(ctx context.Context, mn *inferencev1
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+	status, reason, msg := agentVersionSkew(r.ControllerVersion, mn.Status.AgentVersion)
+	r.setCondition(mn, inferencev1alpha1.MetalNodeConditionAgentVersionSupported, status, reason, msg)
 	// A dial-back error (a Forbidden pod create, a failed list) must not
 	// cost the MetalNode its observed status: store what is known first,
 	// then return the error so the request is retried.
