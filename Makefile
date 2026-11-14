@@ -725,6 +725,10 @@ HAILO_SIM_PLATFORM ?= linux/$(shell go env GOARCH)
 docker-build-hailo-sim: ## Build the Hailo-10H simulator image for agent e2e (HAILO_SIM_PLATFORM, default the host's arch).
 	$(CONTAINER_TOOL) build --platform $(HAILO_SIM_PLATFORM) -t ${HAILO_SIM_IMG} test/hailosim
 
+.PHONY: test-e2e-host-agent
+test-e2e-host-agent: kustomize ## Run the Linux host agent e2e in kind against the Hailo-10H simulator (hack/e2e-host-agent.sh).
+	KUSTOMIZE=$(KUSTOMIZE) hack/e2e-host-agent.sh
+
 # PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
 # architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:
 # - be able to use docker buildx. More info: https://docs.docker.com/build/buildx/

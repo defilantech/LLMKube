@@ -167,6 +167,11 @@ func directoryOrientedRuntime(runtime string) bool {
 // the real Model.
 func validateRuntimePlacement(isvc *inferencev1alpha1.InferenceService, model *inferencev1alpha1.Model) error {
 	runtime := isvc.Spec.Runtime
+	if model != nil && inferencev1alpha1.IsHailoSource(model.Spec.Source) && runtime != "" &&
+		runtime != inferencev1alpha1.RuntimeOllama {
+		return fmt.Errorf("model %q has a hailo:// source, which only the ollama runtime (hailo-ollama) serves; "+
+			"spec.runtime is %q", model.Name, runtime)
+	}
 	if !inferencev1alpha1.IsMetalOnlyRuntime(runtime) || model == nil || isMetalModel(model) {
 		return nil
 	}

@@ -112,6 +112,12 @@ type MetalAgentConfig struct {
 	OMLXPort int
 	// OllamaPort is the port the Ollama daemon listens on (default 11434).
 	OllamaPort int
+	// HailoManifestsDir is hailo-ollama's model manifest directory. Empty
+	// searches the directories hailo-ollama itself reads.
+	HailoManifestsDir string
+	// HailoLibraryURL is the host hailo-ollama pulls HEFs from. Empty means
+	// DefaultHailoLibraryURL.
+	HailoLibraryURL string
 	// VLLMSwiftBin is the path to the vllm-swift binary. Only used when
 	// Runtime is "vllm-swift". Empty means auto-detect via $PATH.
 	VLLMSwiftBin string
@@ -1095,6 +1101,16 @@ func (a *MetalAgent) resolveRuntime(isvc *inferencev1alpha1.InferenceService) st
 	return runtimeLlamaServer
 }
 
+// checkHailoRuntime refuses a hailo:// Model on any runtime but ollama, whose
+// executor drives hailo-ollama; the llama.cpp path would try to download it.
+func checkHailoRuntime(model *inferencev1alpha1.Model, runtime string) error {
+	if inferencev1alpha1.IsHailoSource(model.Spec.Source) && runtime != runtimeOllama {
+		return fmt.Errorf("model %s has a hailo:// source, which only the ollama runtime (hailo-ollama) serves; "+
+			"the resolved runtime is %q", model.Name, runtime)
+	}
+	return nil
+}
+
 // validateRuntimeFormat returns an error if the model's format is incompatible
 // with the given runtime. Empty format defaults to "gguf".
 func (a *MetalAgent) validateRuntimeFormat(model *inferencev1alpha1.Model, runtime string) error {
@@ -1446,6 +1462,9 @@ func (a *MetalAgent) reconcileProcess(ctx context.Context, isvc *inferencev1alph
 		return err
 	}
 
+	if err := checkHailoRuntime(model, runtime); err != nil {
+		return err
+	}
 	if err := a.validateRuntimeFormat(model, runtime); err != nil {
 		return err
 	}
@@ -2729,6 +2748,34 @@ func (a *MetalAgent) estimateModelMemory(
 	}), nil
 }
 
+// hailoSizeProbe sizes a hailo:// source like an http(s) one, with a HEAD
+// through the download allowlist of the HEF hailo-ollama maps the tag to in
+// its manifests.
+func (a *MetalAgent) hailoSizeProbe(ctx context.Context, model *inferencev1alpha1.Model) (uint64, error) {
+	tag, _, err := inferencev1alpha1.HailoSourceTag(model.Spec.Source)
+	if err != nil {
+		return 0, err
+	}
+	dir := a.config.HailoManifestsDir
+	if dir == "" {
+		home, _ := os.UserHomeDir()
+		if dir, err = hailoManifestsDir(home, os.Getenv("XDG_DATA_HOME"), os.Getenv("XDG_DATA_DIRS")); err != nil {
+			return 0, err
+		}
+	}
+	digest, err := hailoHEFDigest(dir, tag)
+	if err != nil {
+		return 0, err
+	}
+	base := a.config.HailoLibraryURL
+	if base == "" {
+		base = DefaultHailoLibraryURL
+	}
+	probeClient := safehttp.NewClient(a.downloadAllow, 0, downloadHostsFlag)
+	defer probeClient.CloseIdleConnections()
+	return hailoBlobSize(ctx, probeClient, base, digest)
+}
+
 // probeRemoteModelSize sizes an http(s) source with a HEAD for its
 // Content-Length, or an s3:// source with a signed HEAD through the same
 // executor the download uses, since it needs the credential-bearing client.
@@ -2741,6 +2788,9 @@ func (a *MetalAgent) probeRemoteModelSize(
 		probeClient := safehttp.NewClient(a.downloadAllow, 0, downloadHostsFlag)
 		defer probeClient.CloseIdleConnections()
 		size, err = remoteModelSize(ctx, probeClient, model.Spec.Source)
+		return size, true, err
+	case inferencev1alpha1.IsHailoSource(model.Spec.Source):
+		size, err = a.hailoSizeProbe(ctx, model)
 		return size, true, err
 	case isS3Source(model.Spec.Source):
 		size, err = a.s3SizeProbe(ctx, model)

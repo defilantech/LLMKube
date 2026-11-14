@@ -70,6 +70,8 @@ type AgentConfig struct {
 	OMLXBin                   string
 	OMLXPort                  int
 	OllamaPort                int
+	HailoManifestsDir         string
+	HailoLibraryURL           string
 	VLLMSwiftBin              string
 	MLXServerBin              string
 	MLXServerPort             int
@@ -647,6 +649,10 @@ func main() {
 	flag.StringVar(&cfg.OMLXBin, "omlx-bin", "", "Path to omlx binary (auto-detected if not set)")
 	flag.IntVar(&cfg.OMLXPort, "omlx-port", 8000, "Port for oMLX server")
 	flag.IntVar(&cfg.OllamaPort, "ollama-port", 11434, "Port for Ollama server")
+	flag.StringVar(&cfg.HailoManifestsDir, "hailo-manifests-dir", "",
+		"hailo-ollama's model manifest directory (default: the directories hailo-ollama reads)")
+	flag.StringVar(&cfg.HailoLibraryURL, "hailo-library-url", agent.DefaultHailoLibraryURL,
+		"Host hailo-ollama pulls HEFs from, HEADed to size hailo:// sources")
 	flag.StringVar(&cfg.VLLMSwiftBin, "vllm-swift-bin", "", "Path to vllm-swift binary (auto-detected if not set)")
 	flag.StringVar(&cfg.MLXServerBin, "mlx-server-bin", "", "Path to mlx-server binary (auto-detected if not set)")
 	flag.IntVar(&cfg.MLXServerPort, "mlx-server-port", 8080, "Fixed port for the mlx-server runtime")
@@ -946,6 +952,8 @@ func main() {
 		OMLXBin:                   cfg.OMLXBin,
 		OMLXPort:                  cfg.OMLXPort,
 		OllamaPort:                cfg.OllamaPort,
+		HailoManifestsDir:         cfg.HailoManifestsDir,
+		HailoLibraryURL:           cfg.HailoLibraryURL,
 		VLLMSwiftBin:              cfg.VLLMSwiftBin,
 		MLXServerBin:              cfg.MLXServerBin,
 		MLXServerPort:             cfg.MLXServerPort,
