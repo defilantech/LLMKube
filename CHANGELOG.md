@@ -5,6 +5,50 @@ All notable changes to LLMKube will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.18](https://github.com/defilantech/LLMKube/compare/v0.10.17...v0.10.18) (2026-11-14)
+
+
+### Features
+
+* **agent:** read host memory from /proc and cgroup v2 on Linux ([#2531](https://github.com/defilantech/LLMKube/issues/2531)) ([b2f1fe1](https://github.com/defilantech/LLMKube/commit/b2f1fe1a62cd0d7459e6da2dd9bbc1c44f503694))
+* **chart:** add relabelings and metricRelabelings to the PodMonitors ([#2467](https://github.com/defilantech/LLMKube/issues/2467)) ([d0ae4f3](https://github.com/defilantech/LLMKube/commit/d0ae4f35b1b75c6146f93cd34effae4a09196811))
+* **inferenceservice:** per-service size for the model cache ([#2469](https://github.com/defilantech/LLMKube/issues/2469)) ([ec18285](https://github.com/defilantech/LLMKube/commit/ec182857747916b6a7216c3fd2bafb486aa8ab36))
+* **metal-agent:** default the model store and state dir under XDG_DATA_HOME off macOS ([#2528](https://github.com/defilantech/LLMKube/issues/2528)) ([883e1f8](https://github.com/defilantech/LLMKube/commit/883e1f8134acf718d9644c2c7f139bbe334044c5))
+* **metal-agent:** start without llama-server when --runtime selects another engine ([#2529](https://github.com/defilantech/LLMKube/issues/2529)) ([4f7bb4b](https://github.com/defilantech/LLMKube/commit/4f7bb4bd14f23a361a0880bb7f908fe9a59cc4ea))
+* **metal-relay:** preserve client source IP through the relay ([#2483](https://github.com/defilantech/LLMKube/issues/2483)) ([3892c27](https://github.com/defilantech/LLMKube/commit/3892c277e229729309405b76d066383c54320219))
+* **multinode:** drop the page cache and set vm sysctls on each member before boot ([#2527](https://github.com/defilantech/LLMKube/issues/2527)) ([e012e2e](https://github.com/defilantech/LLMKube/commit/e012e2e0033e363e68b156c257bb5ec74cf1802b))
+* **router:** gate router readiness on required local listeners ([#2468](https://github.com/defilantech/LLMKube/issues/2468)) ([033ca80](https://github.com/defilantech/LLMKube/commit/033ca80d181c45f215080679c444848266850e47))
+
+
+### Bug Fixes
+
+* avoid stale namespace reads in quota admission ([#2471](https://github.com/defilantech/LLMKube/issues/2471)) ([12af4c4](https://github.com/defilantech/LLMKube/commit/12af4c4da28300b5281e3d590c896ef0ef1cf99d))
+* **catalog:** correct llama-3.3-70b default context (fixes [#2477](https://github.com/defilantech/LLMKube/issues/2477)) ([#2484](https://github.com/defilantech/LLMKube/issues/2484)) ([2c1dd79](https://github.com/defilantech/LLMKube/commit/2c1dd79d8185287a8bb07a22028b1f80a39bb618))
+* **cli:** default qwen-2.5-14b to a 16K context within its trained 32K ([#2478](https://github.com/defilantech/LLMKube/issues/2478)) ([0dc14c2](https://github.com/defilantech/LLMKube/commit/0dc14c292114d4742c1e6b073150204ec262872d))
+* **config:** install the FederatedCluster CRD with kustomize ([#2515](https://github.com/defilantech/LLMKube/issues/2515)) ([071c1ab](https://github.com/defilantech/LLMKube/commit/071c1ab47c31161fae5ce6218c4704afc209b4f0))
+* **controller:** provision no model cache PVC for a Metal InferenceService ([#2513](https://github.com/defilantech/LLMKube/issues/2513)) ([896ee03](https://github.com/defilantech/LLMKube/commit/896ee03736273554ca564cd45ff7e582ffd75d96))
+* default qwen-2.5-coder-7b to its trained 32,768-token context ([#2497](https://github.com/defilantech/LLMKube/issues/2497)) ([c2bdde2](https://github.com/defilantech/LLMKube/commit/c2bdde20fae89bb6b05fd7a95a9ba488090073b8))
+* keep the requested pool member from losing the slot to another member ([#2536](https://github.com/defilantech/LLMKube/issues/2536)) ([c9f2dfb](https://github.com/defilantech/LLMKube/commit/c9f2dfb5655a9dda045c53ca8a8a8838694380f7))
+* **metal-agent:** stop pointing EndpointSlice endpoints at a Pod that does not exist ([#2537](https://github.com/defilantech/LLMKube/issues/2537)) ([375340c](https://github.com/defilantech/LLMKube/commit/375340c911f7770ba0e5e2c1fa1964ffef200c18))
+* **metal:** charge the KV cache for local GGUFs, counting only the layers that hold one ([#2496](https://github.com/defilantech/LLMKube/issues/2496)) ([4fc227e](https://github.com/defilantech/LLMKube/commit/4fc227efe51973aff0e2611e5b0c1c81373cc1bd))
+* **metal:** report failed starts and act on engine exits at once ([#2436](https://github.com/defilantech/LLMKube/issues/2436)) ([fa154fc](https://github.com/defilantech/LLMKube/commit/fa154fc416c5dfdd9ee333146e622c5fd44d31df))
+* **multinode:** cap memory sysctls in the controller and document the prep's limits ([#2538](https://github.com/defilantech/LLMKube/issues/2538)) ([79abe4d](https://github.com/defilantech/LLMKube/commit/79abe4d669032b4f5e35767f4fd92161a4646e33))
+* preserve unhealthy running engines during adoption ([#2462](https://github.com/defilantech/LLMKube/issues/2462)) ([1c0b05f](https://github.com/defilantech/LLMKube/commit/1c0b05ff952b9a1d7642bd6b3380599031567891))
+* show the first deploy's download and stop the Model claiming a cached copy ([#2532](https://github.com/defilantech/LLMKube/issues/2532)) ([c7ec64a](https://github.com/defilantech/LLMKube/commit/c7ec64ab1c168cb657a7f1f3b4e283dd720d6920))
+* warn about unmatched model file patterns ([#2472](https://github.com/defilantech/LLMKube/issues/2472)) ([fb75656](https://github.com/defilantech/LLMKube/commit/fb756566b7f0a13ce0d75de3006d05adbd7422b8))
+
+
+### Documentation
+
+* document the defilan-agent workflow for agent pull requests ([#2506](https://github.com/defilantech/LLMKube/issues/2506)) ([0fdda4c](https://github.com/defilantech/LLMKube/commit/0fdda4cddf50298bb081330d158f107486da7a2c))
+* say which checks the merge queue requires ([#2510](https://github.com/defilantech/LLMKube/issues/2510)) ([40259fd](https://github.com/defilantech/LLMKube/commit/40259fd8caf671aa6402a27682cec36a4d668c3b))
+* **site:** fix the broken pages the link check found, and run the check in CI ([#2503](https://github.com/defilantech/LLMKube/issues/2503)) ([2b03f2f](https://github.com/defilantech/LLMKube/commit/2b03f2fa31a8c6447f5a48cbbd7d444f6d8b6110))
+* **site:** link the install page to the site pages that replaced its GitHub copies ([#2505](https://github.com/defilantech/LLMKube/issues/2505)) ([4cb0d68](https://github.com/defilantech/LLMKube/commit/4cb0d681b6dcd5efdd16460a4c12060aba051ca4))
+* **site:** move "Install in 5 minutes" here and add a Mac path ([#2501](https://github.com/defilantech/LLMKube/issues/2501)) ([95893c6](https://github.com/defilantech/LLMKube/commit/95893c663fe8470374a26d36ed5cbe966af7c147))
+* **site:** publish the one-Mac quickstart on llmkube.com ([#2502](https://github.com/defilantech/LLMKube/issues/2502)) ([8643f2b](https://github.com/defilantech/LLMKube/commit/8643f2b883505453cee5484becc7f002e1a06fa9))
+* **site:** replace the docs placeholders with ported and generated pages ([#2504](https://github.com/defilantech/LLMKube/issues/2504)) ([b942257](https://github.com/defilantech/LLMKube/commit/b942257c3ef1a0a7e34f0f208cd813b00f008f3d))
+* **site:** run the one-Mac quickstart on Apple's container cluster ([#2512](https://github.com/defilantech/LLMKube/issues/2512)) ([401bda4](https://github.com/defilantech/LLMKube/commit/401bda44deb14da3e4aff96da7c64cc592a53a0a))
+
 ## [0.10.17](https://github.com/defilantech/LLMKube/compare/v0.10.16...v0.10.17) (2026-11-06)
 
 
