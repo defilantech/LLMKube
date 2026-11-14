@@ -1,0 +1,33 @@
+suite: controller version for agent skew checks
+templates:
+  - deployment.yaml
+
+tests:
+  # The controller compares each metal agent's version with its own (#2408).
+  # The image is built without the version stamped in, so the chart passes
+  # the release it deploys: the image tag, which defaults to appVersion.
+  - it: should pass the chart appVersion by default
+    chart:
+      appVersion: 9.9.9
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --controller-version=9.9.9
+
+  - it: should pass an explicit image tag
+    set:
+      controllerManager.image.tag: 0.10.16-main.g912dce7
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --controller-version=0.10.16-main.g912dce7
+
+  - it: should keep appVersion when the image is pinned by digest only
+    chart:
+      appVersion: 9.9.9
+    set:
+      controllerManager.image.digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --controller-version=9.9.9
