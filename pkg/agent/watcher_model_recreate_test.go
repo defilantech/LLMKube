@@ -89,16 +89,22 @@ func TestPoll_ModelDeletedAndRecreatedKeepsService(t *testing.T) {
 		t.Errorf("seen = %v while the model was missing, want %v", seen, before)
 	}
 
+	// The poll that finds the Model again delivers the service as Updated
+	// once: a no-op for this running engine (its spec hash is unchanged),
+	// and what starts one that stopped while the Model was missing.
 	f.createModel(t, fixtureModelSource)
+	if events := f.pollOnce(t, seen); len(events) != 1 || events[0].Type != EventTypeUpdated {
+		t.Errorf("poll 4 (same model re-created) events = %v, want one UPDATED", eventSummary(events))
+	}
 	if events := f.pollOnce(t, seen); len(events) != 0 {
-		t.Errorf("poll 4 (same model re-created) events = %v, want none", eventSummary(events))
+		t.Errorf("poll 5 (model back, nothing changed) events = %v, want none", eventSummary(events))
 	}
 
 	// A later deletion starts a new grace, not the old one's remainder.
 	advance(2 * defaultModelGoneGrace)
 	f.deleteModel(t)
 	if events := f.pollOnce(t, seen); len(events) != 0 {
-		t.Errorf("poll 5 (model deleted again much later) events = %v, want none", eventSummary(events))
+		t.Errorf("poll 6 (model deleted again much later) events = %v, want none", eventSummary(events))
 	}
 }
 

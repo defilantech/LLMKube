@@ -592,7 +592,13 @@ func (w *InferenceServiceWatcher) poll(
 //  2. Model.spec.hardware.accelerator check -- looks up the referenced
 //     Model and returns true only when its accelerator is "metal".
 //
-// A NotFound Model means the service is not ours. Any other lookup error (a
+// A NotFound Model means the service is not ours. The poll loop still keeps a
+// service it is serving for defaultModelGoneGrace before releasing it, so a
+// delete-and-recreate of the Model keeps the engine (#2411); callers outside
+// the poll (owns, claimsForRestart) see only this answer and act on it at
+// once: an evicted engine waiting to restart is dropped, and the poll that
+// finds its Model again delivers the service as Updated (noteModelBack),
+// which starts it. Any other lookup error (a
 // timeout, client-side throttling, a 5xx while the API server restarts) is
 // returned instead, because the answer is unknown: callers must leave the
 // service as it was rather than treat it as not ours, or one transient error
@@ -694,7 +700,12 @@ func (w *InferenceServiceWatcher) holdForMissingModel(isvc *inferencev1alpha1.In
 	return false
 }
 
-// noteModelBack ends the hold of isvc, if any, once its Model is found again.
+// noteModelBack ends the hold of isvc, if any, once its Model is found again,
+// and has this poll deliver the service as Updated. The hold sent no events,
+// so a service whose engine stopped meanwhile (an eviction whose restart was
+// dropped because the Model was missing) would otherwise wait for an
+// unrelated change to start again; for a running engine with an unchanged
+// spec the Updated is a no-op.
 func (w *InferenceServiceWatcher) noteModelBack(isvc *inferencev1alpha1.InferenceService) {
 	key := watchKey(isvc)
 	since, holding := w.modelGone[key]
@@ -702,6 +713,7 @@ func (w *InferenceServiceWatcher) noteModelBack(isvc *inferencev1alpha1.Inferenc
 		return
 	}
 	delete(w.modelGone, key)
+	w.Requeue(key)
 	w.logger.Infow("referenced model found again; the engine kept running",
 		"namespace", isvc.Namespace, "inferenceService", isvc.Name, "modelRef", isvc.Spec.ModelRef,
 		"missingFor", w.clock().Sub(since).Round(time.Second))
