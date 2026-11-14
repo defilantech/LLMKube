@@ -172,6 +172,11 @@ const multiNodeMemoryPrepContainer = "multinode-memory-prep"
 // path under /proc/sys in a privileged container, so an object that reached
 // the controller without that admission check (a CRD from an older chart)
 // must not be able to name anything outside /proc/sys/vm.
+//
+// multiNodeMaxSysctls is the CRD's maxProperties on the same field, repeated
+// for the same reason: every entry becomes one argument of that container.
+const multiNodeMaxSysctls = 16
+
 var (
 	multiNodeSysctlKey   = regexp.MustCompile(`^vm[.][a-z0-9_]+$`)
 	multiNodeSysctlValue = regexp.MustCompile(`^[0-9]+$`)
@@ -180,6 +185,9 @@ var (
 func validateMultiNodeMemory(mem *inferencev1alpha1.MultiNodeMemory) error {
 	if mem == nil {
 		return nil
+	}
+	if n := len(mem.Sysctls); n > multiNodeMaxSysctls {
+		return fmt.Errorf("multiNode.memory.sysctls has %d entries, at most %d are allowed", n, multiNodeMaxSysctls)
 	}
 	for k, v := range mem.Sysctls {
 		if !multiNodeSysctlKey.MatchString(k) {
