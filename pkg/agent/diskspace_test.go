@@ -223,3 +223,28 @@ func TestNewMetalAgent_PassesTheFreeSpaceHeadroomToTheExecutor(t *testing.T) {
 		t.Errorf("executor headroom = %d, want %d", exec.freeSpaceHeadroom, int64(7<<30))
 	}
 }
+
+// TestReportModelStore_KeepsTheLastValueWhenTheStoreIsUnreadable: a store the
+// agent cannot read leaves the used-bytes gauge at its last value instead of
+// reporting an empty store.
+func TestReportModelStore_KeepsTheLastValueWhenTheStoreIsUnreadable(t *testing.T) {
+	free := func(string) (uint64, error) { return 1 << 30, nil }
+	store := t.TempDir()
+	if err := os.WriteFile(filepath.Join(store, "model.gguf"), make([]byte, 700), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reportModelStore(store, free, newNopLogger())
+	reportModelStore(filepath.Join(store, "gone"), free, newNopLogger())
+	if got := testutil.ToFloat64(modelStoreUsedBytes); got != 700 {
+		t.Errorf("model store used bytes = %v after an unreadable store, want the last value 700", got)
+	}
+}
+
+// TestModelDownloadNoSpaceError_UnderOneGiBFree: the message does not round
+// a nearly full disk down to "0 GiB".
+func TestModelDownloadNoSpaceError_UnderOneGiBFree(t *testing.T) {
+	msg := (&ModelDownloadNoSpaceError{Path: "/m", Need: 1 << 30, Headroom: 10 << 30, Free: 300 << 20}).Error()
+	if !strings.Contains(msg, "has less than 1 GiB free") {
+		t.Errorf("message %q, want it to say less than 1 GiB free", msg)
+	}
+}

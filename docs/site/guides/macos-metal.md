@@ -986,10 +986,11 @@ stays there, check the agent log for the service's name:
 - Nothing about it: no agent serves it. The Mac is joined to another
   namespace (`kubectl get mn -A`), it is asleep or logged out, or an
   allowlist leaves the service out.
-- An error about it: the start failed (a download error, a full disk, an
-  engine that exited while loading). Such a failure is logged but not shown
-  on the InferenceService, and is tried again only when the InferenceService
-  changes or the agent restarts.
+- An error about it: the start failed (a download error, an engine that
+  exited while loading). The InferenceService shows `StartFailed`, and the
+  agent retries the start on its restart backoff. A model store without
+  room for the download is refused as `ModelDownloadNoSpace` instead, and
+  retried once space is freed (see below).
 
 **Mac drops out a few minutes after an upgrade**
 Local Network access did not carry over to the new binary. See

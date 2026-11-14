@@ -1186,11 +1186,17 @@ func (e *ModelDownloadNoSpaceError) Error() string {
 		return fmt.Sprintf("model download for %s ran out of disk space on the model store; the partial file is "+
 			"kept and the download resumes once space is freed", e.Path)
 	}
+	// Whole GiB: the refusal re-check republishes a changed message, so exact
+	// bytes would rewrite the status on every check.
+	free := fmt.Sprintf("about %d GiB", e.Free>>30)
+	if e.Free < 1<<30 {
+		free = "less than 1 GiB"
+	}
 	return fmt.Sprintf("refusing model download for %s: it needs %s free on the model store (%s still to "+
-		"download plus the agent's %s --download-free-space-headroom) and the filesystem has about %d GiB free; "+
+		"download plus the agent's %s --download-free-space-headroom) and the filesystem has %s free; "+
 		"free space there, or lower --download-free-space-headroom", e.Path,
 		formatMemory(uint64(e.Need+e.Headroom)), formatMemory(uint64(e.Need)), //nolint:gosec // G115: both non-negative
-		formatMemory(uint64(e.Headroom)), e.Free>>30) //nolint:gosec // G115: non-negative
+		formatMemory(uint64(e.Headroom)), free) //nolint:gosec // G115: non-negative
 }
 
 // checkFreeSpace refuses a download of need more bytes into filePath when the

@@ -50,8 +50,11 @@ var (
 // filesystem. A gauge it cannot measure keeps its last value.
 func reportModelStore(store string, freeBytes func(string) (uint64, error), logger *zap.SugaredLogger) {
 	var used int64
-	err := filepath.WalkDir(store, func(_ string, d fs.DirEntry, err error) error {
+	err := filepath.WalkDir(store, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
+			if path == store {
+				return err // the store itself is unreadable: keep the last value
+			}
 			return nil // a file removed during the walk, or one we cannot read
 		}
 		if d.Type().IsRegular() {
