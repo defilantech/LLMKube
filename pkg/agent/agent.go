@@ -254,6 +254,11 @@ type MetalAgentConfig struct {
 	// removed, and the start refused with ModelDownloadTooLarge. Zero means
 	// no cap.
 	MaxDownloadBytes int64
+	// DownloadFreeSpaceHeadroom is the free space a Model download must leave
+	// on the model store's filesystem (--download-free-space-headroom). A
+	// download that would leave less is refused with ModelDownloadNoSpace
+	// before it starts (#2409).
+	DownloadFreeSpaceHeadroom int64
 
 	// AllowUnsafeExtraArgs relaxes the extraArgs policy on a host whose
 	// InferenceService authors are fully trusted: unknown flags, stray
@@ -686,6 +691,7 @@ func (a *MetalAgent) buildLlamaCPPExecutor() {
 		WithAllowUnlabeledSourceSecrets(a.config.AllowUnlabeledSourceSecrets),
 		WithAllowedDownloadHosts(a.config.AllowedDownloadHosts),
 		WithMaxDownloadBytes(a.config.MaxDownloadBytes),
+		WithDownloadFreeSpaceHeadroom(a.config.DownloadFreeSpaceHeadroom),
 	)
 	if a.config.LlamaServerStartupTimeout > 0 {
 		metalExec.SetStartupTimeout(a.config.LlamaServerStartupTimeout)
@@ -888,6 +894,9 @@ func (a *MetalAgent) Start(ctx context.Context) error {
 
 	// Act on the exit of an adopted engine at once, as for a child (#2405).
 	a.watchAdoptedExits(ctx)
+
+	// Report the model store's used and free bytes (#2409).
+	go a.watchModelStore(ctx)
 
 	// Start health monitor
 	monitor := NewHealthMonitor(

@@ -1035,6 +1035,17 @@ wrong, or, if the model really is that large, raise
 "`--max-download-size` flag (download cap)" in
 [`deployment/macos/README.md`](https://github.com/defilantech/LLMKube/blob/main/deployment/macos/README.md#--max-download-size-flag-download-cap).
 
+**InferenceService refused with `ModelDownloadNoSpace`**
+The model store's filesystem has no room for the download: the bytes
+still to fetch plus the agent's `--download-free-space-headroom`
+(default `10Gi`) are more than the free space, or the disk filled up
+during the copy. Free space there (old models under
+`<model-store>/<model>`) and the agent retries on its own; a partial
+download is kept and resumes. The
+`llmkube_metal_agent_model_store_free_bytes` gauge shows the free space.
+See "`--download-free-space-headroom` flag (disk preflight)" in
+[`deployment/macos/README.md`](https://github.com/defilantech/LLMKube/blob/main/deployment/macos/README.md#--download-free-space-headroom-flag-disk-preflight).
+
 **InferenceService refused with `SourceSecretNotAllowed`**
 The Model's `spec.sourceSecretRef` names a Secret the agent will not
 read: it is not labeled
