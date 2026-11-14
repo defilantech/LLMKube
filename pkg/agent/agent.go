@@ -1205,6 +1205,21 @@ func isvcStopped(isvc *inferencev1alpha1.InferenceService) bool {
 	return isvc.Spec.Replicas != nil && *isvc.Spec.Replicas == 0
 }
 
+// refreshEvictionPolicy copies spec.priority and spec.evictionProtection onto
+// the running engine of key. Neither reaches the engine's arguments, so
+// editing them keeps the engine, but the memory-pressure selector reads them
+// from the process, which otherwise kept the values it started with (#2410).
+// The pressure loop copies each process under a.mu before reading them.
+func (a *MetalAgent) refreshEvictionPolicy(key string, isvc *inferencev1alpha1.InferenceService) {
+	protect := isvc.Spec.EvictionProtection != nil && *isvc.Spec.EvictionProtection
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if p := a.processes[key]; p != nil {
+		p.Priority = isvc.Spec.Priority
+		p.EvictionProtection = protect
+	}
+}
+
 func (a *MetalAgent) ensureProcess(ctx context.Context, isvc *inferencev1alpha1.InferenceService) error {
 	err := a.reconcileProcess(ctx, isvc)
 	if err != nil {
@@ -1387,7 +1402,8 @@ func (a *MetalAgent) reconcileProcess(ctx context.Context, isvc *inferencev1alph
 		return nil
 	}
 
-	if exists && existing.SpecHash == desiredHash {
+	if exists && sameEngineSpec(existing.SpecHash, isvc) {
+		a.refreshEvictionPolicy(key, isvc)
 		// An unhealthy process is left to the health monitor, which stops
 		// it and restarts it after healthFailureThreshold consecutive
 		// failed probes. Starting a new engine here would leave this one
@@ -2930,6 +2946,40 @@ func localTreeSize(path string, walked map[string]struct{}) (uint64, error) {
 // other side is updated to match (see the "Runtime-arg parity" subsection in
 // AGENTS.md), it must also be included here — otherwise a spec change would not
 // be detected and the process would keep running with stale flags.
+// hashedReplicas is spec.replicas as the spec hash sees it. A Mac runs one
+// engine per InferenceService, so any count above one hashes as one (#2410);
+// zero and unset keep their own values, so existing hashes are unchanged.
+func hashedReplicas(replicas *int32) *int32 {
+	if replicas != nil && *replicas > 1 {
+		one := int32(1)
+		return &one
+	}
+	return replicas
+}
+
+// sameEngineSpec reports whether an engine started with spec hash stored
+// already runs what isvc asks for: an equal hash, or the hash of the same
+// spec with replicas unset or 1. Unset, 1 and any higher count all run one
+// engine on a Mac, but unset and 1 hash differently in every record written
+// before #2410, so a replicas edit between them is not a reason to restart.
+func sameEngineSpec(stored string, isvc *inferencev1alpha1.InferenceService) bool {
+	if stored == computeSpecHash(isvc) {
+		return true
+	}
+	if isvc.Spec.Replicas != nil && *isvc.Spec.Replicas < 1 {
+		return false
+	}
+	one := int32(1)
+	alt := isvc.DeepCopy()
+	for _, r := range []*int32{nil, &one} {
+		alt.Spec.Replicas = r
+		if computeSpecHash(alt) == stored {
+			return true
+		}
+	}
+	return false
+}
+
 func computeSpecHash(isvc *inferencev1alpha1.InferenceService) string {
 	if isvc == nil {
 		return ""
@@ -2941,6 +2991,13 @@ func computeSpecHash(isvc *inferencev1alpha1.InferenceService) string {
 	// ModelRef is hashed because it also derives the --alias served model name
 	// (servedModelName); that derivation needs no separate entry, and a renamed
 	// Model is a new object rather than a spec change.
+	//
+	// An adopted engine keeps the hash its record holds, so a change to the
+	// encoding of a spec that does not use a field restarts every engine on
+	// the Mac when the agent is upgraded. A field added here is omitempty, and
+	// TestComputeSpecHash_UnchangedForExistingSpecs pins the encoding.
+	// TestComputeSpecHash_CoversEveryExecutorConfigField fails on a spec
+	// field buildExecutorConfig consumes that is missing here.
 	relevant := struct {
 		ModelRef               string
 		ContextSize            *int32
@@ -2970,6 +3027,7 @@ func computeSpecHash(isvc *inferencev1alpha1.InferenceService) string {
 		PagedSSDCacheDir       *string
 		HotCacheMaxSize        *string
 		PagedSSDCacheMaxSize   *string
+		RopeScaling            *inferencev1alpha1.RopeScalingSpec `json:",omitempty"`
 	}{
 		ModelRef:               isvc.Spec.ModelRef,
 		ContextSize:            isvc.Spec.ContextSize,
@@ -2992,13 +3050,14 @@ func computeSpecHash(isvc *inferencev1alpha1.InferenceService) string {
 		ReasoningBudget:        isvc.Spec.ReasoningBudget,
 		ReasoningBudgetMessage: isvc.Spec.ReasoningBudgetMessage,
 		Mode:                   isvc.Spec.Mode,
-		Replicas:               isvc.Spec.Replicas,
+		Replicas:               hashedReplicas(isvc.Spec.Replicas),
 		Suspend:                isvc.Spec.Suspend,
 		Runtime:                isvc.Spec.Runtime,
 		TurboQuantBits:         isvc.Spec.TurboQuantBits,
 		PagedSSDCacheDir:       isvc.Spec.PagedSSDCacheDir,
 		HotCacheMaxSize:        isvc.Spec.HotCacheMaxSize,
 		PagedSSDCacheMaxSize:   isvc.Spec.PagedSSDCacheMaxSize,
+		RopeScaling:            isvc.Spec.RopeScaling,
 	}
 	b, err := json.Marshal(relevant)
 	if err != nil {

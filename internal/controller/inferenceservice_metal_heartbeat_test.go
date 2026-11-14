@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -27,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -472,6 +474,44 @@ var _ = Describe("metal service scheduling status", func() {
 		Expect(got.Status.SchedulingStatus).To(BeEmpty(),
 			"a Ready metal service must not keep advertising AgentHeartbeatStale")
 		Expect(got.Status.SchedulingMessage).To(BeEmpty())
+	})
+
+	// #2410: a Mac serves one replica of an InferenceService, and a second
+	// Mac in the namespace overwrites the first one's registration rather
+	// than adding a replica, so replicas: 2 could never become Ready. The
+	// controller serves it as one replica and says why.
+	It("serves a metal service with replicas above 1 as one replica and warns", func() {
+		const isvcName = "sched-two-replicas-isvc"
+		isvc := readyMetalFixtures("sched-two-replicas-model", isvcName)
+		key := types.NamespacedName{Name: isvcName, Namespace: namespace}
+		Expect(k8sClient.Get(ctx, key, isvc)).To(Succeed())
+		isvc.Spec.Replicas = ptr.To(int32(2))
+		Expect(k8sClient.Update(ctx, isvc)).To(Succeed())
+
+		fresh := time.Now().UTC().Format(time.RFC3339)
+		slice := metalEndpoints(isvcName, fresh)
+		Expect(k8sClient.Create(ctx, slice)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, slice) })
+
+		recorder := events.NewFakeRecorder(20)
+		reconciler.Recorder = recorder
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+
+		got := &inferencev1alpha1.InferenceService{}
+		Expect(k8sClient.Get(ctx, key, got)).To(Succeed())
+		Expect(got.Status.Phase).To(Equal(PhaseReady),
+			"one Mac serving a replicas: 2 metal service is all a Mac can serve")
+		Expect(got.Status.DesiredReplicas).To(Equal(int32(1)))
+
+		var warned bool
+		for len(recorder.Events) > 0 {
+			if e := <-recorder.Events; strings.Contains(e, "Warning MetalReplicasAboveOne") &&
+				strings.Contains(e, "spec.replicas is 2") {
+				warned = true
+			}
+		}
+		Expect(warned).To(BeTrue(), "the controller must say why replicas: 2 is served as one")
 	})
 
 	It("keeps WaitingForMetalAgent while the agent has not registered", func() {

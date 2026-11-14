@@ -116,6 +116,9 @@ spec:
   evictionProtection: true
 ```
 
+Adding `evictionProtection` or changing `priority` on a running service
+takes effect at the next watchdog tick, without restarting its engine.
+
 ## Metrics worth alerting on
 
 The agent serves these on `127.0.0.1:9090/metrics` on the Mac. The
