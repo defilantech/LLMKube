@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"slices"
 	"testing"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
@@ -49,10 +50,10 @@ func TestResolveServingMode(t *testing.T) {
 }
 
 func TestAppendModeArgs(t *testing.T) {
-	t.Run("embedding adds --embedding and default pooling", func(t *testing.T) {
+	t.Run("embedding leaves pooling to model metadata", func(t *testing.T) {
 		args := appendModeArgs(nil, servingModeEmbedding, nil)
-		if !containsArg(args, "--embedding", "") || !containsArg(args, "--pooling", "last") {
-			t.Fatalf("missing embedding flags: %v", args)
+		if !containsArg(args, "--embedding", "") || slices.Contains(args, "--pooling") {
+			t.Fatalf("expected --embedding without --pooling: %v", args)
 		}
 	})
 	t.Run("rerank adds --reranking, --embedding and rank pooling", func(t *testing.T) {
