@@ -244,6 +244,11 @@ type MetalExecutor struct {
 	// counting bytes a resume already has on disk (the --max-download-size
 	// flag, set by WithMaxDownloadBytes). Zero, the default, is no cap.
 	maxDownloadBytes int64
+	// freeSpaceHeadroom is the free space a download must leave on the model
+	// store's filesystem (#2409). freeBytes reports that filesystem's free
+	// space; nil means filesystemFreeBytes. Tests set it.
+	freeSpaceHeadroom int64
+	freeBytes         func(path string) (uint64, error)
 
 	// helpProbe returns llama-server's --help output, run with env; a seam so
 	// tests can fake the binary. loadMode caches the result of probing it
@@ -288,6 +293,15 @@ func WithAllowedDownloadHosts(entries []string) Option {
 // WithMaxDownloadBytes caps the bytes one model download may write (the
 // --max-download-size flag). Zero or a negative value leaves downloads
 // uncapped.
+// WithDownloadFreeSpaceHeadroom sets the free space a download must leave on
+// the model store's filesystem (--download-free-space-headroom). Negative is
+// treated as zero.
+func WithDownloadFreeSpaceHeadroom(n int64) Option {
+	return func(e *MetalExecutor) {
+		e.freeSpaceHeadroom = max(n, 0)
+	}
+}
+
 func WithMaxDownloadBytes(n int64) Option {
 	return func(e *MetalExecutor) {
 		e.maxDownloadBytes = max(n, 0)
@@ -1044,6 +1058,13 @@ func (e *MetalExecutor) copyToFileResume(
 		_ = os.Remove(partPath)
 		return err
 	}
+	// Refused before partPath is opened, and a partial already there is kept:
+	// it resumes once space is freed (#2409).
+	if contentLength > 0 {
+		if err := e.checkFreeSpace(filePath, contentLength-resumeFrom); err != nil {
+			return err
+		}
+	}
 	var out *os.File
 	var err error
 	// Both branches refuse to follow a symlink planted at partPath inside the
@@ -1064,10 +1085,10 @@ func (e *MetalExecutor) copyToFileResume(
 	}
 	if cerr != nil {
 		_ = out.Close()
-		return cerr
+		return noSpace(filePath, cerr)
 	}
 	if err := out.Close(); err != nil {
-		return err
+		return noSpace(filePath, err)
 	}
 
 	total := resumeFrom + written
@@ -1135,6 +1156,67 @@ func (e *ModelDownloadTooLargeError) Error() string {
 	}
 	return fmt.Sprintf("refusing model download for %s: %s. If the model really is this large, raise "+
 		"--max-download-size (0 disables the cap) and restart the agent", e.Path, what)
+}
+
+// ModelDownloadNoSpaceError reports that the model store's filesystem has no
+// room for a download: before it starts, the bytes still to fetch plus the
+// --download-free-space-headroom exceed the free space; or the filesystem
+// ran out during the copy (DuringCopy). Any partial file is kept, so the
+// download resumes once space is freed. It is a distinct type so
+// handleStartProcessError refuses the start with
+// EventReasonModelDownloadNoSpace, which the refusal re-check retries, instead
+// of a start failure retried on the restart backoff (#2409).
+type ModelDownloadNoSpaceError struct {
+	Path       string
+	Need       int64
+	Headroom   int64
+	Free       uint64
+	DuringCopy bool
+}
+
+func (e *ModelDownloadNoSpaceError) Error() string {
+	if e.DuringCopy {
+		return fmt.Sprintf("model download for %s ran out of disk space on the model store; the partial file is "+
+			"kept and the download resumes once space is freed", e.Path)
+	}
+	return fmt.Sprintf("refusing model download for %s: it needs %s free on the model store (%s still to "+
+		"download plus the agent's %s --download-free-space-headroom) and the filesystem has about %d GiB free; "+
+		"free space there, or lower --download-free-space-headroom", e.Path,
+		formatMemory(uint64(e.Need+e.Headroom)), formatMemory(uint64(e.Need)), //nolint:gosec // G115: both non-negative
+		formatMemory(uint64(e.Headroom)), e.Free>>30) //nolint:gosec // G115: non-negative
+}
+
+// checkFreeSpace refuses a download of need more bytes into filePath when the
+// filesystem would be left with less than freeSpaceHeadroom free. A free
+// space it cannot read lets the download proceed: the copy still maps a full
+// disk to the same error.
+func (e *MetalExecutor) checkFreeSpace(filePath string, need int64) error {
+	if need <= 0 {
+		return nil
+	}
+	freeBytes := e.freeBytes
+	if freeBytes == nil {
+		freeBytes = filesystemFreeBytes
+	}
+	free, err := freeBytes(filepath.Dir(filePath))
+	if err != nil {
+		e.logger.Debugw("could not read the model store's free space; downloading without the preflight",
+			"path", filePath, "error", err)
+		return nil
+	}
+	if free >= uint64(need)+uint64(e.freeSpaceHeadroom) { //nolint:gosec // G115: both non-negative
+		return nil
+	}
+	return &ModelDownloadNoSpaceError{Path: filePath, Need: need, Headroom: e.freeSpaceHeadroom, Free: free}
+}
+
+// noSpace returns err as a ModelDownloadNoSpaceError for filePath when it is
+// the filesystem running out of space, and err unchanged otherwise.
+func noSpace(filePath string, err error) error {
+	if errors.Is(err, syscall.ENOSPC) {
+		return &ModelDownloadNoSpaceError{Path: filePath, DuringCopy: true}
+	}
+	return err
 }
 
 // ModelDigestMismatchError reports that a downloaded model's SHA256 does not

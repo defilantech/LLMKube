@@ -550,6 +550,18 @@ The default is the Mac's total physical memory. The agent wires model weights in
 llmkube-metal-agent --max-download-size=200Gi
 ```
 
+### `--download-free-space-headroom` flag (disk preflight)
+
+Before a download writes anything, the agent checks the free space on the model store's filesystem. It refuses the start with reason `ModelDownloadNoSpace` when the bytes still to fetch plus the headroom are more than the space left. A resumed download counts only its remaining bytes, and its partial file is kept. The headroom keeps room for macOS itself (swap, updates) and for the engine's logs; it defaults to `10Gi`:
+
+```bash
+llmkube-metal-agent --download-free-space-headroom=20Gi
+```
+
+`0` still refuses a download that does not fit at all. A filesystem that fills up during the copy (another process writing at the same time) is the same refusal, and the partial file is kept so the download resumes. The refusal is retried on the agent's refusal re-check, so freeing space lets the next check start the service. When the agent cannot read the free space, the download proceeds as before. The check covers the downloads the agent makes for llama-server, like `--max-download-size`.
+
+`llmkube_metal_agent_model_store_used_bytes` and `llmkube_metal_agent_model_store_free_bytes` report the store's size and the free space every minute, so model churn can be alerted on before a start is refused. The agent does not delete models from the store yet; remove `<model-store>/<model>` for a model no InferenceService on this Mac uses to reclaim it (`llmkube cache clear` works on the cluster's cache claims, not on a Mac's store).
+
 To set this in the launchd plist:
 
 ```xml
@@ -1261,6 +1273,8 @@ The Metal Agent exposes an HTTP server on `127.0.0.1:9090` (configurable via `--
 | `llmkube_metal_agent_evictions_total` | Counter | Processes the memory watchdog evicted under Critical pressure (only with `--eviction-enabled`). Each eviction also emits an `Evicted` Warning event |
 | `llmkube_metal_agent_engine_record_errors_total` | Counter | Engine record writes that failed and failed the start |
 | `llmkube_metal_agent_engines_adopted_total` | Counter | Engine records evaluated at startup, by outcome. Labels: `result` (`adopted`, `stopped`, `discarded`) |
+| `llmkube_metal_agent_model_store_used_bytes` | Gauge | Bytes of regular files under the model store, refreshed every minute |
+| `llmkube_metal_agent_model_store_free_bytes` | Gauge | Free bytes on the model store's filesystem, refreshed every minute |
 | `llmkube_metal_agent_evictions_skipped_total` | Counter | Times the watchdog was at Critical but did not evict. Labels: `reason` (`disabled`, `below_guard`, `empty`, `floor`, `all_protected`, `runtime_ineligible`) |
 | `llmkube_metal_agent_watch_consecutive_failures` | Gauge | Consecutive failed Kubernetes lists by the InferenceService watcher; resets to 0 on success. At `--max-watch-failures` the API counts as unreachable |
 | `llmkube_metal_agent_api_unreachable` | Gauge | 1 while the agent counts the Kubernetes API as unreachable (`--max-watch-failures` or more consecutive failed lists), 0 otherwise. The agent keeps running and its engines keep serving; see [API server outages](#api-server-outages) |
@@ -1362,6 +1376,10 @@ kubectl describe inferenceservice <name>
   `--max-download-size` (default: the Mac's total memory) is stopped, its
   partial removed, and refused. See "`--max-download-size` flag (download
   cap)" above.
+- **Disk space** (`ModelDownloadNoSpace`): a download that would leave less
+  than `--download-free-space-headroom` (default `10Gi`) free on the model
+  store, or that fills the disk, is refused and retried once space is freed.
+  See "`--download-free-space-headroom` flag (disk preflight)" above.
 - **Cache slot** (`ModelSourceNotAllowed`): for a downloaded source, the
   file at `<model-store>/<model>/<file>` must be a regular file the agent
   wrote. A symlink there is refused, not followed.
@@ -1696,7 +1714,7 @@ On a Metal InferenceService (`kubectl describe inferenceservice <name>`):
   `RelaySecretNotManaged` (Warning).
 - From the agent: `RelayNotAdopted`, `ExtraArgsRejected`,
   `EndpointNameConflict`, `ModelSourceNotAllowed`, `ServiceNameTooLong`,
-  `ModelDigestMismatch`, `ModelDownloadTooLarge`, `SourceSecretNotAllowed`,
+  `ModelDigestMismatch`, `ModelDownloadTooLarge`, `ModelDownloadNoSpace`, `SourceSecretNotAllowed`,
   `RuntimeNotAvailable`, `SourceSecretUnlabeled`, `StartFailed`, `EngineExited`
   (Warning).
 
@@ -1920,6 +1938,10 @@ The downloaded source's SHA256 does not match the Model's `spec.sha256`. The bad
 ### `ModelDownloadTooLarge`
 
 The Model's download went over `--max-download-size`: either the source declared a size over the cap (nothing was written) or the body ran past it (the partial was removed). The message says which, and names the cap in bytes. If the source is wrong, fix `spec.source`; the next reconcile retries. If the model really is that large, raise `--max-download-size` (or set it to `0`) and restart the agent. If the spec was already right and the source was fixed upstream, delete and recreate the Model (or the InferenceService), or restart the agent. Placing the file in the cache slot by hand is not enough: the remembered refusal is checked first, so it only lifts after one of those. See "`--max-download-size` flag (download cap)" above.
+
+### `ModelDownloadNoSpace`
+
+The model store's filesystem has no room for the download: the bytes still to fetch plus `--download-free-space-headroom` are more than the free space, or the disk filled up during the copy. The message gives the space needed and roughly what is free. Free space on that filesystem (for example by removing `<model-store>/<model>` for a model no InferenceService on this Mac uses) and the agent retries on its refusal re-check; a partial download is kept and resumes. Lowering `--download-free-space-headroom` also works but leaves less room for macOS. See "`--download-free-space-headroom` flag (disk preflight)" above.
 
 ### `SourceSecretNotAllowed`
 

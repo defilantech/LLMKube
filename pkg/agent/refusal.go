@@ -45,6 +45,7 @@ const (
 	EventReasonServiceNameTooLong     = inferencev1alpha1.ReasonServiceNameTooLong
 	EventReasonModelDigestMismatch    = inferencev1alpha1.ReasonModelDigestMismatch
 	EventReasonModelDownloadTooLarge  = inferencev1alpha1.ReasonModelDownloadTooLarge
+	EventReasonModelDownloadNoSpace   = inferencev1alpha1.ReasonModelDownloadNoSpace
 	EventReasonSourceSecretNotAllowed = inferencev1alpha1.ReasonSourceSecretNotAllowed
 	EventReasonRuntimeNotAvailable    = inferencev1alpha1.ReasonRuntimeNotAvailable
 )
@@ -126,6 +127,12 @@ func (a *MetalAgent) handleStartProcessError(
 			model.Spec.Source, model.Spec.SHA256, tooLargeErr,
 		)
 		return a.refuseStart(ctx, isvc, EventReasonModelDownloadTooLarge, tooLargeErr.Error())
+	}
+	// Not memoized: freeing disk space writes nothing to the cluster, so the
+	// refusal re-check (publishRefusal) is what retries it.
+	var noSpaceErr *ModelDownloadNoSpaceError
+	if errors.As(startErr, &noSpaceErr) {
+		return a.refuseStart(ctx, isvc, EventReasonModelDownloadNoSpace, noSpaceErr.Error())
 	}
 	var slotErr *ModelCacheEntryNotRegularError
 	if errors.As(startErr, &slotErr) {

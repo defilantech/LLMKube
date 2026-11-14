@@ -657,3 +657,43 @@ func TestStopEnginesParsesWhatLeaveSends(t *testing.T) {
 		}
 	}
 }
+
+// TestParseByteQuantity covers --download-free-space-headroom's parsing.
+func TestParseByteQuantity(t *testing.T) {
+	for _, tc := range []struct {
+		in      string
+		want    int64
+		wantErr bool
+	}{
+		{"10Gi", 10 << 30, false},
+		{"500M", 500_000_000, false},
+		{"1073741824", 1 << 30, false},
+		{"0", 0, false},
+		{"-1Gi", 0, true},
+		{"ten gigs", 0, true},
+	} {
+		got, err := parseByteQuantity("--download-free-space-headroom", tc.in)
+		if (err != nil) != tc.wantErr || got != tc.want {
+			t.Errorf("parseByteQuantity(%q) = %d, %v; want %d, error %t", tc.in, got, err, tc.want, tc.wantErr)
+		}
+	}
+}
+
+// TestResolveDownloadLimits: both download flags resolve together, and an
+// error names the flag that caused it.
+func TestResolveDownloadLimits(t *testing.T) {
+	mem := func() (uint64, error) { return 64 << 30, nil }
+	ok := &AgentConfig{MaxDownloadSize: "0", DownloadFreeSpaceHeadroom: "10Gi"}
+	maxBytes, headroom, err := resolveDownloadLimits(ok, mem)
+	if err != nil || maxBytes != 0 || headroom != 10<<30 {
+		t.Fatalf("resolveDownloadLimits = %d, %d, %v; want 0, 10Gi, nil", maxBytes, headroom, err)
+	}
+	for flagName, cfg := range map[string]*AgentConfig{
+		"--max-download-size":            {MaxDownloadSize: "lots", DownloadFreeSpaceHeadroom: "10Gi"},
+		"--download-free-space-headroom": {MaxDownloadSize: "0", DownloadFreeSpaceHeadroom: "lots"},
+	} {
+		if _, _, err := resolveDownloadLimits(cfg, mem); err == nil || !strings.Contains(err.Error(), flagName) {
+			t.Errorf("error for a bad %s = %v, want it to name the flag", flagName, err)
+		}
+	}
+}
