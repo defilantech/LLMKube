@@ -2937,17 +2937,6 @@ func localTreeSize(path string, walked map[string]struct{}) (uint64, error) {
 	return total, nil
 }
 
-// computeSpecHash returns a stable hash of the InferenceServiceSpec fields that,
-// if changed, require respawning the underlying llama-server process. Listing
-// fields explicitly (rather than hashing the full Spec) keeps the hash stable
-// across CRD additions that don't affect process invocation — adding a new
-// status-only or controller-only field won't trigger a spurious respawn.
-//
-// Runtime-arg parity: this hash must cover every field that buildExecutorConfig
-// feeds into buildLlamaServerArgs. If a new field is added to one side and the
-// other side is updated to match (see the "Runtime-arg parity" subsection in
-// AGENTS.md), it must also be included here — otherwise a spec change would not
-// be detected and the process would keep running with stale flags.
 // hashedReplicas is spec.replicas as the spec hash sees it. A Mac runs one
 // engine per InferenceService, so any count above one hashes as one (#2410);
 // zero and unset keep their own values, so existing hashes are unchanged.
@@ -2982,6 +2971,17 @@ func sameEngineSpec(stored string, isvc *inferencev1alpha1.InferenceService) boo
 	return false
 }
 
+// computeSpecHash returns a stable hash of the InferenceServiceSpec fields that,
+// if changed, require respawning the underlying llama-server process. Listing
+// fields explicitly (rather than hashing the full Spec) keeps the hash stable
+// across CRD additions that don't affect process invocation — adding a new
+// status-only or controller-only field won't trigger a spurious respawn.
+//
+// Runtime-arg parity: this hash must cover every field that buildExecutorConfig
+// feeds into buildLlamaServerArgs. If a new field is added to one side and the
+// other side is updated to match (see the "Runtime-arg parity" subsection in
+// AGENTS.md), it must also be included here — otherwise a spec change would not
+// be detected and the process would keep running with stale flags.
 func computeSpecHash(isvc *inferencev1alpha1.InferenceService) string {
 	if isvc == nil {
 		return ""

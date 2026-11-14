@@ -117,7 +117,9 @@ spec:
 ```
 
 Adding `evictionProtection` or changing `priority` on a running service
-takes effect at the next watchdog tick, without restarting its engine.
+takes effect without restarting its engine: the agent picks the edit up on
+its next poll of the InferenceService (every 5 seconds), and the watchdog
+ticks after that use it.
 
 ## Metrics worth alerting on
 
