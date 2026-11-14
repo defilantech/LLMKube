@@ -19,6 +19,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -125,6 +126,9 @@ func TestCopyToFileResume_DiskFullDuringCopyKeepsThePartial(t *testing.T) {
 	if !errors.As(err, &noSpace) || !noSpace.DuringCopy {
 		t.Fatalf("error = %v, want a ModelDownloadNoSpaceError during the copy", err)
 	}
+	if !errors.Is(err, syscall.ENOSPC) {
+		t.Errorf("error = %v no longer carries the filesystem's ENOSPC", err)
+	}
 	if got, _ := os.ReadFile(file + ".partial"); string(got) != "abcd" {
 		t.Errorf("partial = %q, want the 4 bytes written before the disk filled", got)
 	}
@@ -149,8 +153,9 @@ func TestEnsureProcess_NoSpaceRefusesWithItsOwnReason(t *testing.T) {
 	f.agent.mu.Lock()
 	delete(f.agent.processes, f.key)
 	f.agent.mu.Unlock()
-	f.exec.startErr = &ModelDownloadNoSpaceError{
-		Path: "/store/m/model.gguf", Need: 4 << 30, Headroom: 10 << 30, Free: 2 << 30}
+	// Wrapped as ensureModel wraps every download error.
+	f.exec.startErr = fmt.Errorf("failed to download model: %w", &ModelDownloadNoSpaceError{
+		Path: "/store/m/model.gguf", Need: 4 << 30, Headroom: 10 << 30, Free: 2 << 30})
 
 	_ = f.agent.ensureProcess(context.Background(), f.isvc)
 
