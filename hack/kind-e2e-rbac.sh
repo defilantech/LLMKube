@@ -190,14 +190,8 @@ apply_crd_dir() {
 }
 
 install_crds() {
-	log "installing CRDs (config/crd + federation) and PriorityClasses"
+	log "installing CRDs (config/crd) and PriorityClasses"
 	"${KUSTOMIZE}" build "${REPO_ROOT}/config/crd" | k apply --server-side --force-conflicts -f - >/dev/null
-	# The hub-mode FederatedCluster controller always runs, and its CRD ships in
-	# the chart but is not in config/crd, so install it here too.
-	local f
-	for f in "${REPO_ROOT}"/config/crd/bases/federation.llmkube.dev_*.yaml; do
-		k apply --server-side --force-conflicts -f "${f}" >/dev/null
-	done
 
 	# The PriorityClasses every install ships (config/manager, the chart's
 	# priority-classes.yaml). Without them the inference pods are never

@@ -9,6 +9,7 @@ resources:
 - bases/inference.llmkube.dev_modelpools.yaml
 - bases/inference.llmkube.dev_gpuquotas.yaml
 - bases/inference.llmkube.dev_metalnodes.yaml
+- bases/federation.llmkube.dev_federatedclusters.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:
