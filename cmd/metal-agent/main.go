@@ -275,7 +275,7 @@ func resolveLlamaServerBin(override string) (string, error) {
 	}
 	return "", fmt.Errorf(
 		"llama-server not found in default paths (%v); install with: %s, or pass --llama-server=/path/to/binary",
-		defaultLlamaServerPaths, llamaServerInstallHint(goruntime.GOOS))
+		defaultLlamaServerPaths, llamaServerInstallHint(hostGOOS))
 }
 
 // defaultOMLXPaths is the list of paths to search for the omlx binary.
@@ -528,6 +528,35 @@ func llamaServerInstallHint(goos string) string {
 	return "your distribution's llama.cpp package or a source build of llama-server"
 }
 
+// Host probes checkHostPlatform uses, replaced in tests.
+var (
+	detectCapabilities = platform.DetectCapabilities
+	hostGOOS           = goruntime.GOOS
+)
+
+// checkHostPlatform returns an error unless the host has Metal or is Linux,
+// where support is experimental and the engine brings its own accelerator. On
+// Linux it logs the accelerator devices it finds.
+func checkHostPlatform(logger *zap.SugaredLogger) (platform.Capabilities, error) {
+	logger.Infow("checking Metal support")
+	caps := detectCapabilities()
+	switch {
+	case caps.Metal:
+		logger.Infow("Metal support detected",
+			"gpuName", caps.GPUName,
+			"gpuCores", caps.GPUCores,
+			"metalVersion", caps.MetalVersion,
+		)
+	case hostGOOS == "linux":
+		logger.Warnw("Metal not available; Linux host support is experimental", "arch", caps.Arch)
+		logHailoDevices(logger)
+	default:
+		return caps, fmt.Errorf("metal support not detected on %s: the agent needs macOS with Apple Silicon, "+
+			"or Linux (experimental)", hostGOOS)
+	}
+	return caps, nil
+}
+
 // resolveOptionalRuntimeBins resolves the binaries of the non-default
 // runtimes. Each one is resolved when its binary flag is set or --runtime
 // selects it, so one agent can host several runtimes (#525). A runtime that
@@ -636,7 +665,7 @@ func main() {
 		"DEPRECATED, removed in a future release: bind engines on all interfaces without authentication and "+
 			"register them directly, as before the ingress. Only for a controller that predates relay support.")
 	flag.StringVar(&cfg.MetalNode, "metal-node", "",
-		"Name of this Mac's MetalNode in --namespace. When set, the agent renews the MetalNode's Lease every 15s "+
+		"Name of this host's MetalNode in --namespace. When set, the agent renews the MetalNode's Lease every 15s "+
 			"and reports its version, hardware, ingress pin and candidate addresses on it; it never writes the "+
 			"MetalNode itself. The Lease must already exist (llmkube metal token create). Empty (default) disables "+
 			"MetalNode reporting.")
@@ -676,8 +705,8 @@ func main() {
 	flag.StringVar(&cfg.InferenceServiceAllowlist, "inference-service-allowlist", "",
 		"Comma-separated list of InferenceService names this agent is permitted to claim. "+
 			"Empty (default) claims every metal-accelerator InferenceService in --namespace "+
-			"(v0.1 behavior). Set on multi-Mac fleets that share one Kubernetes cluster so "+
-			"each node claims only its own InferenceServices instead of racing with peers (#524).")
+			"(v0.1 behavior). Set on every host that shares one Kubernetes cluster and namespace so "+
+			"each host claims only its own InferenceServices instead of racing with peers (#524).")
 	flag.DurationVar(&cfg.LlamaServerStartupTimeout, "llama-server-startup-timeout",
 		agent.DefaultLlamaServerStartupTimeout,
 		"How long to wait for a freshly-spawned llama-server to respond on /health. "+
@@ -817,9 +846,6 @@ func main() {
 		"namespace", cfg.Namespace,
 		"modelStore", cfg.ModelStorePath,
 		"runtime", cfg.Runtime,
-		"llamaServerBin", cfg.LlamaServerBin,
-		"omlxBin", cfg.OMLXBin,
-		"vllmSwiftBin", cfg.VLLMSwiftBin,
 		"agentPort", cfg.Port,
 		"ingressPort", cfg.IngressPort,
 		"legacyDirectEndpoints", cfg.LegacyDirectEndpoints,
@@ -828,20 +854,11 @@ func main() {
 		"engineEnvPassthrough", engineEnvPassthrough,
 	)
 
-	// Verify Metal support
-	logger.Infow("checking Metal support")
-	caps := platform.DetectCapabilities()
-	if !caps.Metal {
-		logger.Errorw("Metal support not detected",
-			"requirement", "macOS with Apple Silicon (M1/M2/M3/M4)",
-		)
+	caps, err := checkHostPlatform(logger)
+	if err != nil {
+		logger.Errorw("unsupported host", "error", err)
 		os.Exit(1)
 	}
-	logger.Infow("Metal support detected",
-		"gpuName", caps.GPUName,
-		"gpuCores", caps.GPUCores,
-		"metalVersion", caps.MetalVersion,
-	)
 
 	maxDownloadBytes, err := resolveMaxDownloadBytes(cfg.MaxDownloadSize, agent.NewHostMemoryProvider().TotalMemory)
 	if err != nil {
