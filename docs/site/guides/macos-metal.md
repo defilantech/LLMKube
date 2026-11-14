@@ -1654,7 +1654,7 @@ on schedule does not wake the controller; its 60 s resync does.
 | `AgentVersionSupported` | `InSkewWindow` | The agent is on the controller's minor release and not newer than the controller. |
 | `AgentVersionSupported` | `AgentNewerThanController` | `False`: the agent is a newer release than the controller. Upgrade the chart; the controller must be at least as new as its agents. |
 | `AgentVersionSupported` | `AgentMinorBehind` | `False`: the agent is from an older minor release than the controller. Upgrade the agent. |
-| `AgentVersionSupported` | `VersionUnknown` | `Unknown`: the agent has not reported a version, or one side is a development build (the controller's version comes from `--controller-version`, which the Helm chart sets from the image tag). |
+| `AgentVersionSupported` | `VersionUnknown` | `Unknown`: the agent has not reported a version, or either side's version is not a release version, such as a development build (the controller's version comes from `--controller-version`, which the Helm chart sets from the image tag). |
 
 ### Engine environment
 
