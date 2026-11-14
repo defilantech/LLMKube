@@ -299,6 +299,8 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 	isMetal := isMetalModel(model)
 
+	desiredReplicas = r.metalReplicas(inferenceService, isMetal, desiredReplicas)
+
 	r.emitSpecAdvisoryEvents(inferenceService, model)
 
 	deployment, counts, metalSnap, result, err := r.reconcileWorkload(ctx, inferenceService, cache, model, draftModel, desiredReplicas, modelReady, isMetal)
@@ -1679,6 +1681,29 @@ func shouldWarnMissingSkipModelInit(model *inferencev1alpha1.Model, isvc *infere
 		return false
 	}
 	return !needsSkipModelInit(isvc)
+}
+
+// ReasonMetalReplicasAboveOne is the Warning Event reason for a Metal
+// InferenceService whose spec.replicas is above 1; see metalReplicas.
+const ReasonMetalReplicasAboveOne = "MetalReplicasAboveOne"
+
+// metalReplicas returns the replica count to serve: desired, except that a
+// Metal service asking for more than one is served as one, with a Warning
+// Event saying why. A Mac serves one replica of an InferenceService, and a
+// second Mac in the namespace overwrites the first one's registration rather
+// than adding a replica, so replicas above 1 could never become Ready (#2410).
+func (r *InferenceServiceReconciler) metalReplicas(
+	isvc *inferencev1alpha1.InferenceService, isMetal bool, desired int32,
+) int32 {
+	if !isMetal || desired <= 1 {
+		return desired
+	}
+	if r.Recorder != nil {
+		r.Recorder.Eventf(isvc, nil, corev1.EventTypeWarning, ReasonMetalReplicasAboveOne, "Reconcile",
+			"spec.replicas is %d, but a Mac serves one replica of an InferenceService, so it is served as one. "+
+				"To serve a model from several Macs, give each Mac its own InferenceService", desired)
+	}
+	return 1
 }
 
 // emitSpecAdvisoryEvents emits the non-blocking spec-hygiene warnings in one

@@ -480,6 +480,13 @@ through the Mac fail while the agent itself is down.
 | Logout, restart, macOS update | stop | no: every model reloads after the next login |
 | `llmkube metal leave`, or `llmkube-metal-agent stop-engines` | stopped on purpose | not applicable |
 
+An edit to an InferenceService field that changes the engine's command line
+(`contextSize`, `ropeScaling`, `extraArgs`, the cache types and the other
+llama.cpp tuning fields) restarts its engine with the new arguments.
+`priority` and `evictionProtection` take effect on the running engine at
+once, without a restart, and so does a change of `replicas` between 1 and
+any higher count.
+
 Upgrading from a release before 0.10.13, which had no adoption, reloads every
 model once. Adopted engines keep the flags, environment and llama.cpp build
 they started with. To apply new agent defaults or a new llama.cpp, stop the
@@ -527,6 +534,13 @@ you run `stop-engines` with the current binary first; see
 ["Agent restarts, upgrades and stopping engines"](https://github.com/defilantech/LLMKube/blob/main/deployment/macos/README.md#agent-restarts-upgrades-and-stopping-engines).
 
 ## More than one Mac
+
+A Mac serves one replica of an InferenceService, and a second Mac does not
+add one. An InferenceService with `spec.replicas` above 1 is served as one
+replica: the agent runs one engine and keeps it when the count changes, the
+service reports Ready with one replica, and the controller records a
+`MetalReplicasAboveOne` Warning Event saying so. To serve a model from
+several Macs, give each Mac its own InferenceService, as below.
 
 Each agent claims every `accelerator: metal` InferenceService in its
 namespace, and `join` sets no limit. Two Macs joined to the same namespace

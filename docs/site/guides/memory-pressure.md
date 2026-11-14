@@ -116,6 +116,11 @@ spec:
   evictionProtection: true
 ```
 
+Adding `evictionProtection` or changing `priority` on a running service
+takes effect without restarting its engine: the agent picks the edit up on
+its next poll of the InferenceService (every 5 seconds), and the watchdog
+ticks after that use it.
+
 ## Metrics worth alerting on
 
 The agent serves these on `127.0.0.1:9090/metrics` on the Mac. The
