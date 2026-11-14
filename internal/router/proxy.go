@@ -591,6 +591,19 @@ func (p *Proxy) writeDispatchError(
 		p.observeRequest(features, decision, last, "pool_incumbent_busy", elapsed)
 		return
 	}
+	// The request's path is one the router forwards only to local-tier
+	// backends, and its route has none: the path is not available through
+	// this route, which is what a 404 says. It comes before the fail-closed
+	// case: no backend was tried, so nothing failed and nothing egressed.
+	// The client is not told the backends' names; the audit line carries
+	// them in the error.
+	if errors.Is(err, ErrPathLocalOnly) {
+		writeErrorFor(anthropic, w, http.StatusNotFound, ErrPathLocalOnly.Error()+", and this request's route has none")
+		p.audit(*features, *decision, nil, http.StatusNotFound, "path_local_only", elapsed, budgetAudit{},
+			"error", err.Error())
+		p.observeRequest(features, decision, last, "path_local_only", elapsed)
+		return
+	}
 	// Runtime fail-closed: when every backend in a fail-closed
 	// rule's pool is unreachable, return 503 with a clear reason
 	// rather than 502. This is the runtime counterpart to the
@@ -607,15 +620,6 @@ func (p *Proxy) writeDispatchError(
 			"fail_closed_runtime", elapsed, budgetAudit{})
 		p.observeRequest(features, decision, last, "fail_closed_runtime", elapsed)
 		p.observeFailClosed(features, decision)
-		return
-	}
-	// The request's path is one the router forwards only to local-tier
-	// backends, and its route has none: the path is not available through
-	// this route, which is what a 404 says.
-	if errors.Is(err, ErrPathLocalOnly) {
-		writeErrorFor(anthropic, w, http.StatusNotFound, err.Error())
-		p.audit(*features, *decision, nil, http.StatusNotFound, "path_local_only", elapsed, budgetAudit{})
-		p.observeRequest(features, decision, last, "path_local_only", elapsed)
 		return
 	}
 	// The last attempt ran out its header deadline (the rule, backend

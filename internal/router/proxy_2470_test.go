@@ -192,24 +192,48 @@ func TestProxy2470_ResponsesStreamIsChargedAndNotRewritten(t *testing.T) {
 // the client escaped it, so an encoded '?' stays part of the path and never
 // becomes a query string on the backend.
 func TestProxy2470_OtherV1PathKeepsEncodedCharacters(t *testing.T) {
-	h := newProxyHarness(t)
-	rec := postRaw(t, h.handler, "/v1/decisions%3Fadmin=1", `{"model":"d3"}`, nil)
+	var escaped, query string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		escaped, query = r.URL.EscapedPath(), r.URL.RawQuery
+		_, _ = io.WriteString(w, `{}`)
+	}))
+	t.Cleanup(srv.Close)
+	cfg := &Config{
+		Backends:     []Backend{{Name: "local", Tier: "local", Address: srv.URL}},
+		DefaultRoute: "local",
+		Policy:       Policy{Classification: ClassificationPolicy{Mode: "header-only"}},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("config: %v", err)
+	}
+	mux := http.NewServeMux()
+	NewProxy(cfg, slog.Default()).Mount(mux)
+
+	rec := postRaw(t, mux, "/v1/decisions%3Fadmin=1", `{"model":"d3"}`, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body %q)", rec.Code, rec.Body.String())
 	}
-	if got := h.localBack.LastPath(); got != "/v1/decisions?admin=1" {
-		t.Errorf("backend decoded path = %q, want /v1/decisions?admin=1 (the '?' still in the path)", got)
+	if escaped != "/v1/decisions%3Fadmin=1" || query != "" {
+		t.Errorf("backend got path %q and query %q, want /v1/decisions%%3Fadmin=1 and no query", escaped, query)
 	}
 }
 
-// TestProxy2470_GetOnOtherV1PathIs404: the fallback route is POST only.
-func TestProxy2470_GetOnOtherV1PathIs404(t *testing.T) {
+// TestProxy2470_GetOnOtherV1PathIs405: the fallback route is POST only, so
+// ServeMux answers another method on an unnamed /v1 path with 405 and
+// Allow: POST, and GET /v1/models still reaches its own handler.
+func TestProxy2470_GetOnOtherV1PathIs405(t *testing.T) {
 	h := newProxyHarness(t)
 	req := httptest.NewRequest(http.MethodGet, "/v1/decisions", nil)
 	rec := httptest.NewRecorder()
 	h.handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusNotFound && rec.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("GET status = %d, want 404 or 405", rec.Code)
+	if rec.Code != http.StatusMethodNotAllowed || rec.Header().Get("Allow") != "POST" {
+		t.Fatalf("GET status = %d, Allow %q; want 405 and Allow: POST", rec.Code, rec.Header().Get("Allow"))
+	}
+	req = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	rec = httptest.NewRecorder()
+	h.handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("GET /v1/models status = %d, want 200", rec.Code)
 	}
 	if h.localBack.calls.Load() != 0 {
 		t.Errorf("backend got %d calls, want 0", h.localBack.calls.Load())
@@ -258,5 +282,37 @@ func TestProxy2470_LocalFailureIsTheCauseWhenCloudIsSkipped(t *testing.T) {
 	if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "local returned 500") || cloud.calls.Load() != 0 {
 		t.Fatalf("status %d body %q, cloud calls %d; want 502 naming the local failure and no cloud call",
 			rec.Code, rec.Body.String(), cloud.calls.Load())
+	}
+}
+
+// TestProxy2470_FailClosedCloudOnlyRouteIs404: a fail-closed rule whose
+// backends are all cloud-tier sends no request on an unnamed path, so the
+// client gets the 404 the path deserves, not a fail-closed 503 claiming the
+// backends failed.
+func TestProxy2470_FailClosedCloudOnlyRouteIs404(t *testing.T) {
+	local := newFakeBackend(t)
+	cloud := newFakeBackend(t)
+	cfg := &Config{
+		Backends: []Backend{
+			{Name: "local", Tier: "local", Address: local.URL()},
+			{Name: "cloud", Tier: "cloud", Address: cloud.URL(), Provider: "openai", Model: "gpt"},
+		},
+		Rules: []Rule{{Name: "fc", Match: RuleMatch{TaskComplexity: "complex"},
+			Route: RuleRoute{Backends: []string{"cloud"}}, FailClosed: true}},
+		DefaultRoute: "local",
+		Policy:       Policy{Classification: ClassificationPolicy{Mode: "header-only"}},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("config: %v", err)
+	}
+	mux := http.NewServeMux()
+	NewProxy(cfg, slog.Default()).Mount(mux)
+
+	rec := postRaw(t, mux, "/v1/decisions", `{"model":"d3"}`, map[string]string{"x-llmkube-task-complexity": "complex"})
+	if rec.Code != http.StatusNotFound || cloud.calls.Load() != 0 {
+		t.Fatalf("status %d body %q, cloud calls %d; want 404 and no call", rec.Code, rec.Body.String(), cloud.calls.Load())
+	}
+	if strings.Contains(rec.Body.String(), `\"cloud\"`) {
+		t.Errorf("404 body %q names a backend; the client should not learn backend names", rec.Body.String())
 	}
 }
