@@ -2,6 +2,31 @@ apiVersion: v1
 entries:
   foreman:
   - apiVersion: v2
+    appVersion: 0.10.18
+    created: "2026-11-14T18:37:07.866364159Z"
+    description: 'Foreman is an opt-in add-on for LLMKube that schedules agentic workloads
+      (Workload, AgenticTask) across a fleet of nodes (FleetNode). Installing LLMKube
+      alone does not install or require Foreman. Foreman is a SIBLING chart to llmkube,
+      not a subchart: install llmkube first (helm install llmkube defilantech/llmkube),
+      then install foreman alongside it. They share no Helm relationship at packaging
+      or install time; the only coupling is that the foreman-operator''s RBAC reads
+      inference.llmkube.dev CRDs that llmkube installs. '
+    digest: 2d6ca3ed54e347d04983059dc9e2c0f577e376d4b2cc4a250f30b58822d8e9ab
+    home: https://github.com/defilantech/LLMKube
+    keywords:
+    - llmkube
+    - foreman
+    - agentic
+    - workload
+    - orchestration
+    name: foreman
+    sources:
+    - https://github.com/defilantech/LLMKube
+    type: application
+    urls:
+    - https://github.com/defilantech/LLMKube/releases/download/foreman-0.10.18/foreman-0.10.18.tgz
+    version: 0.10.18
+  - apiVersion: v2
     appVersion: 0.10.17
     created: "2026-11-06T22:24:54.320305094Z"
     description: 'Foreman is an opt-in add-on for LLMKube that schedules agentic workloads
@@ -2002,6 +2027,33 @@ entries:
     - https://github.com/defilantech/LLMKube/releases/download/foreman-0.7.11/foreman-0.7.11.tgz
     version: 0.7.11
   llmkube:
+  - annotations:
+      helm.sh/resource-policy: keep
+    apiVersion: v2
+    appVersion: 0.10.18
+    created: "2026-11-14T18:37:08.031627301Z"
+    description: A Helm chart for LLMKube - Kubernetes operator for GPU-accelerated
+      LLM inference
+    digest: c4ce056ddb320e93397b26634893e08a68fda7974b8f710ba6a6da1d94e5853f
+    home: https://github.com/defilantech/LLMKube
+    keywords:
+    - llm
+    - kubernetes
+    - operator
+    - gpu
+    - inference
+    - ai
+    - machine-learning
+    maintainers:
+    - email: contact@defilan.com
+      name: Chris Maher
+    name: llmkube
+    sources:
+    - https://github.com/defilantech/LLMKube
+    type: application
+    urls:
+    - https://github.com/defilantech/LLMKube/releases/download/llmkube-0.10.18/llmkube-0.10.18.tgz
+    version: 0.10.18
   - annotations:
       helm.sh/resource-policy: keep
     apiVersion: v2
@@ -5107,4 +5159,4 @@ entries:
     urls:
     - https://defilantech.github.io/LLMKube/llmkube-0.3.3.tgz
     version: 0.3.3
-generated: "2026-11-06T22:24:54.555180243Z"
+generated: "2026-11-14T18:37:08.031989731Z"
