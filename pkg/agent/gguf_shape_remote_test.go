@@ -31,14 +31,14 @@ const qwopus35BMTPSource = "https://model-host.invalid/Qwopus3.6-35B-A3B-MTP-Q6_
 
 // qwopus35BMTPLayout is the header of that file: 41 blocks, 1 MTP layer, so
 // 10 interval attention layers plus the MTP layer hold a KV cache and 30 are
-// recurrent. head_count_kv is a scalar here; a real file stores it per layer,
-// which HeadCountKV() reads as 0 in the Model status.
+// recurrent. head_count_kv is stored per layer, 2 on the 11 attention layers
+// and 0 on the 30 recurrent ones, the encoding a real file uses.
 var qwopus35BMTPLayout = []ggufKV{
 	{"block_count", uint32(41)},
 	{"context_length", uint32(262144)},
 	{"embedding_length", uint32(2048)},
 	{"attention.head_count", uint32(16)},
-	{"attention.head_count_kv", uint32(2)},
+	{"attention.head_count_kv", qwopus35BMTPSteps(41, 4, 1)},
 	{"attention.key_length", uint32(256)},
 	{"attention.value_length", uint32(256)},
 	{"ssm.conv_kernel", uint32(4)},
@@ -49,9 +49,25 @@ var qwopus35BMTPLayout = []ggufKV{
 	{"nextn_predict_layers", uint32(1)},
 }
 
+// qwopus35BMTPSteps returns a per-layer head_count_kv array of n layers
+// whose last nextn are attention layers and, below them, every interval-th
+// one is: 2 on those, 0 elsewhere.
+func qwopus35BMTPSteps(n, interval, nextn int) []int32 {
+	out := make([]int32, n)
+	for i := 0; i < n-nextn; i++ {
+		if (i+1)%interval == 0 {
+			out[i] = 2
+		}
+	}
+	for i := n - nextn; i < n; i++ {
+		out[i] = 2
+	}
+	return out
+}
+
 // qwopus35BMTPStatus is the Model status shape the controller records for
-// that file: no per-layer layout, and no KV head count, because the file
-// stores head_count_kv as an array.
+// that file. It has no per-layer layout, and no KV head count, because
+// HeadCountKV() reads the per-layer array as unknown (0).
 var qwopus35BMTPStatus = &inferencev1alpha1.GGUFMetadata{
 	LayerCount:    41,
 	EmbeddingSize: 2048,

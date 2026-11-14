@@ -851,11 +851,13 @@ KV term does not scale with slot count. A hybrid model's recurrent
 state, above, is per sequence and does.
 
 A Model parsed by an older controller keeps the
-embedding-width estimate until its GGUF metadata is re-parsed, which
-happens on the next download, or after any change to the Model's spec
-when the Available condition records an older generation than the
-spec (a Ready status written before that condition existed has no
-such record and needs the Model recreated). Editing a local source's
+embedding-width estimate in its `status.gguf` until its metadata is
+re-parsed, which happens on the next download, or after any change to
+the Model's spec when the Available condition records an older
+generation than the spec (a Ready status written before that condition
+existed has no such record and needs the Model recreated). Once the
+file is on the Mac the agent charges from its header, so a stale
+`status.gguf` no longer sets the estimate. Editing a local source's
 file on disk does nothing under the default `IfNotPresent` refresh
 policy; with `refreshPolicy: OnChange` the size and mtime change
 counts as drift, triggering a re-download and a fresh parse.

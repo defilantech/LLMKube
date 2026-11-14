@@ -2670,9 +2670,10 @@ func (a *MetalAgent) failMemoryCheck(
 
 // estimateModelMemory builds a MemoryEstimate for a model using the file on
 // disk (preferred), the Status.Size string, or a HEAD probe of an http(s)
-// source as a last resort, plus the GGUF attention shape from the Model status
-// or, failing that, from the header of the model file on this Mac (see
-// attentionShapeFor). Cache types are passed through so quantized KV caches (q8_0, turbo3, turbo4) produce a
+// source as a last resort, plus the GGUF attention shape from the header of
+// the model file on this Mac or, while that file is not there, from the Model
+// status (see attentionShapeFor). Cache types are passed through so quantized
+// KV caches (q8_0, turbo3, turbo4) produce a
 // realistic estimate instead of always assuming f16. The remote fallback
 // matters on fresh hosts: with no file on disk and a not-yet-populated status
 // size ("0"), the old chain errored out and the caller started the process
