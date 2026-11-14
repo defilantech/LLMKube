@@ -384,6 +384,8 @@ func TestEngineServedName(t *testing.T) {
 		{inferencev1alpha1.RuntimeOMLX, cfg(), "qwen3"},
 		{inferencev1alpha1.RuntimeTensorFold, cfg(), "qwen3"},
 		{inferencev1alpha1.RuntimeTensorFold, ExecutorConfig{Name: "svc"}, "svc"},
+		{inferencev1alpha1.RuntimeTensorFold, cfg("--name", "custom"), ""},
+		{inferencev1alpha1.RuntimeTensorFold, cfg("--alias=custom"), ""},
 		{inferencev1alpha1.RuntimeMLXServer, cfg(), ""},
 		{inferencev1alpha1.RuntimeVLLMSwift, cfg(), ""},
 		{inferencev1alpha1.RuntimeOllama, cfg(), ""},

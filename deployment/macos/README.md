@@ -2297,8 +2297,10 @@ shared daemon's model ID first, then the InferenceService name, then
 every engine's list. A request with no `model`, a model no engine serves,
 or a name two engines answer to is refused with 400, 404 or 409, and the
 error names the models to choose from. The proxy reads at most 32 MiB of a
-request body to find the model. With one engine running it forwards every
-request to it, as before.
+request body to find the model, and forwards the `model` field unchanged:
+an engine that checks it (oMLX, Ollama, vllm-swift, mlx-server) needs the ID
+it lists, not the InferenceService name. With one engine running it forwards
+every request to it, as before.
 
 oMLX itself names each model after its model-store directory
 (`Llama-3.2-3B-Instruct-4bit` above). So that it answers to the served

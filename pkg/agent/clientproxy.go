@@ -46,10 +46,10 @@ type proxyBackend struct {
 	// ingress.Allowed path policy.
 	runtime string
 	healthy bool
-	// servedModel is the model ID the agent asked the engine to serve
-	// (ExecutorConfig.ServedModelName): the name GET /v1/models lists and
-	// clients send. Empty when the agent did not set one, for example on an
-	// engine adopted from an agent that did not record it.
+	// servedModel is the model ID the engine serves because the agent named
+	// it (engineServedName): the name GET /v1/models lists and clients send.
+	// Empty for an engine that names its model itself (an extraArgs override,
+	// mlx-server, vllm-swift, Ollama) and for an adopted engine.
 	servedModel string
 	// modelID is the shared daemon's model identifier (oMLX, Ollama).
 	modelID string
