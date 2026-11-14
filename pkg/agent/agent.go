@@ -475,11 +475,12 @@ type ManagedProcess struct {
 	StartedAt time.Time
 	Healthy   bool
 
-	// ServedModel is the model ID the agent asked the engine to serve
-	// (ExecutorConfig.ServedModelName), which the client proxy matches a
-	// request's model against. Empty on an adopted engine: the engine record
-	// does not carry it, and the proxy then finds the engine through the
-	// engine's own GET /v1/models.
+	// ServedModel is the model ID the engine serves under the name the agent
+	// gave it (engineServedName), which the client proxy matches a request's
+	// model against. Empty when the engine names its model itself (an
+	// --alias in extraArgs, mlx-server, vllm-swift, Ollama) and on an adopted
+	// engine, whose record does not carry it; the proxy then finds the
+	// engine through the engine's own GET /v1/models.
 	ServedModel string
 
 	// SpecHash captures the hash of InferenceServiceSpec fields that, if
@@ -1166,6 +1167,28 @@ func (a *MetalAgent) validateRuntimeFormat(model *inferencev1alpha1.Model, runti
 	)
 }
 
+// engineServedName returns the model ID an engine of runtime serves because
+// the agent named it (ExecutorConfig.ServedModelName), mirroring each
+// executor: llama-server gets it as --alias unless extraArgs sets its own
+// alias, oMLX as the model directory's model_alias, TensorFold as its served
+// name. It is "" for the runtimes that name the model themselves, so the
+// client proxy never matches a request on a name the engine does not answer
+// to.
+func engineServedName(runtime string, cfg ExecutorConfig) string {
+	switch runtime {
+	case runtimeLlamaServer, runtimeLlamaCPP:
+		if hasMatchingExtraArg(cfg.ExtraArgs, "alias") {
+			return ""
+		}
+		return cfg.ServedModelName
+	case inferencev1alpha1.RuntimeOMLX:
+		return cfg.ServedModelName
+	case inferencev1alpha1.RuntimeTensorFold:
+		return tensorFoldServedName(cfg)
+	}
+	return ""
+}
+
 // backends lists the running inference children with an allocated port for
 // the host-side client proxy, satisfying backendProvider (#406). Each entry
 // carries the runtime string the ingress uses (ManagedProcess.Runtime,
@@ -1552,7 +1575,7 @@ func (a *MetalAgent) reconcileProcess(ctx context.Context, isvc *inferencev1alph
 	process.Runtime = runtime
 	// The served model name lets the client proxy route a request that names
 	// it when several engines run (#2412).
-	process.ServedModel = cfg.ServedModelName
+	process.ServedModel = engineServedName(runtime, cfg)
 
 	// Store process and update metrics. The admission reservation moves onto
 	// the record in the same critical section, so the budget it holds is
