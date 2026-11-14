@@ -1084,7 +1084,7 @@ model" for the full flow.
 | `--ingress-port` | `9443` | TLS port of the ingress, on all interfaces. Open this port, not engine ports, in the macOS firewall. |
 | `--state-dir` | `~/Library/Application Support/llmkube/metal-agent`; off macOS, `$XDG_DATA_HOME/llmkube/metal-agent` (`~/.local/share/llmkube/metal-agent` when `XDG_DATA_HOME` is unset or not absolute) | Agent state: the ingress key and certificate in `<state-dir>/ingress/` (relay mode) and a record of each running engine in `<state-dir>/engines/` (both modes), which the next agent process uses to adopt engines that outlived the previous one (see [Agent restarts, upgrades and stopping engines](#agent-restarts-upgrades-and-stopping-engines)). `<state-dir>` and `engines/` are 0700; record files 0600. A leading `~` is expanded to the agent's home and a relative path is made absolute; the resolved path is logged at startup. |
 | `--legacy-direct-endpoints` | `false` | DEPRECATED, removed in a future release. Engines on all interfaces without authentication, registered directly, no ingress. Only for a controller that predates relay support. |
-| `--client-port` | `9999` | Listener on `127.0.0.1:<port>` that forwards `/v1/*` to the current engine, for clients on the Mac itself. `0` disables it. |
+| `--client-port` | `9999` | Listener on `127.0.0.1:<port>` that forwards `/v1/*` to an engine, for clients on the Mac itself: the one running, or with several running the one the request's `model` names (see "Model identifier"). `0` disables it. |
 
 `--ingress-port` must differ from `--port` and `--client-port`.
 
@@ -1272,7 +1272,7 @@ The Metal Agent exposes an HTTP server on `127.0.0.1:9090` (configurable via `--
 | `llmkube_metal_agent_apple_power_cpu_watts` | Gauge | CPU subsystem power. Zero unless `--apple-power-enabled`. |
 | `llmkube_metal_agent_apple_power_ane_watts` | Gauge | Apple Neural Engine power. Zero unless `--apple-power-enabled`. |
 | `llmkube_metal_agent_ingress_requests_total` | Counter | Requests answered by the authenticated ingress. Labels: `code` (HTTP status) |
-| `llmkube_metal_agent_client_proxy_requests_total` | Counter | Requests answered by the host-side client proxy. Labels: `outcome` (`bad_host`, `no_backend`, `path_forbidden`, or the response's status class) |
+| `llmkube_metal_agent_client_proxy_requests_total` | Counter | Requests answered by the host-side client proxy. Labels: `outcome` (`bad_host`, `no_backend`, `path_forbidden`; with several engines running `bad_request`, `request_too_large`, `model_required`, `model_not_found`, `model_ambiguous`; or the response's status class) |
 
 Standard Go runtime and process metrics (`go_*`, `process_*`) are also available.
 
@@ -2288,6 +2288,17 @@ A client that reaches the `<isvc>` Service directly or the agent's
 `model` field. For llama-server and oMLX that name is the served model
 name: the InferenceService's `spec.modelRef` (falling back to the Model
 name). With the example above it is `llama-3b-mlx`.
+
+With several InferenceServices running on the Mac, the `--client-port`
+proxy uses that field to pick the engine: the served model name or the
+shared daemon's model ID first, then the InferenceService name, then
+`<namespace>/<name>`, then any ID an engine's own `GET /v1/models` lists
+(an `--alias` set in `extraArgs`, for example). Its `GET /v1/models` merges
+every engine's list. A request with no `model`, a model no engine serves,
+or a name two engines answer to is refused with 400, 404 or 409, and the
+error names the models to choose from. The proxy reads at most 32 MiB of a
+request body to find the model. With one engine running it forwards every
+request to it, as before.
 
 oMLX itself names each model after its model-store directory
 (`Llama-3.2-3B-Instruct-4bit` above). So that it answers to the served

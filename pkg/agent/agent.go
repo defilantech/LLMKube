@@ -475,6 +475,13 @@ type ManagedProcess struct {
 	StartedAt time.Time
 	Healthy   bool
 
+	// ServedModel is the model ID the agent asked the engine to serve
+	// (ExecutorConfig.ServedModelName), which the client proxy matches a
+	// request's model against. Empty on an adopted engine: the engine record
+	// does not carry it, and the proxy then finds the engine through the
+	// engine's own GET /v1/models.
+	ServedModel string
+
 	// SpecHash captures the hash of InferenceServiceSpec fields that, if
 	// changed, require respawning the underlying process. Used by ensureProcess
 	// to detect spec drift on UPDATED events and respawn instead of no-oping.
@@ -1159,40 +1166,32 @@ func (a *MetalAgent) validateRuntimeFormat(model *inferencev1alpha1.Model, runti
 	)
 }
 
-// ensureProcess ensures a llama-server process is running for the InferenceService.
-// On UPDATED events, the spec is diffed against the running process's stored
-// hash; if it changed, the existing process is stopped before a fresh one is
-// spawned so the new flags actually take effect. Replicas=0 stops the process
-// without restarting.
-// currentBackend returns the loopback address and runtime of the inference
-// child the host-side client proxy should forward to, satisfying
-// backendProvider (#406). The runtime is the same string the ingress uses
-// (ManagedProcess.Runtime, mirrored into ingress.Route.Runtime by Route), so
-// the client proxy can apply the identical ingress.Allowed path policy. The
-// agent tracks one process per InferenceService but in practice runs one at a
-// time on a single host, so we return the first running child with an
-// allocated port, preferring a healthy one. ok is false when none is running.
-func (a *MetalAgent) currentBackend() (addr, runtime string, ok bool) {
+// backends lists the running inference children with an allocated port for
+// the host-side client proxy, satisfying backendProvider (#406). Each entry
+// carries the runtime string the ingress uses (ManagedProcess.Runtime,
+// mirrored into ingress.Route.Runtime by Route), so the proxy applies the
+// identical ingress.Allowed path policy, and the names a request's model can
+// use to pick it (#2412). Entries are ordered by namespace/name so the
+// proxy's choices and messages are stable.
+func (a *MetalAgent) backends() []proxyBackend {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	var fallbackAddr, fallbackRuntime string
+	bs := make([]proxyBackend, 0, len(a.processes))
 	for _, p := range a.processes {
 		if p == nil || p.Port <= 0 {
 			continue
 		}
-		candidate := fmt.Sprintf("127.0.0.1:%d", p.Port)
-		if p.Healthy {
-			return candidate, p.Runtime, true
-		}
-		if fallbackAddr == "" {
-			fallbackAddr = candidate
-			fallbackRuntime = p.Runtime
-		}
+		bs = append(bs, proxyBackend{
+			id:          p.Namespace + "/" + p.Name,
+			addr:        fmt.Sprintf("127.0.0.1:%d", p.Port),
+			runtime:     p.Runtime,
+			healthy:     p.Healthy,
+			servedModel: p.ServedModel,
+			modelID:     p.ModelID,
+		})
 	}
-	if fallbackAddr != "" {
-		return fallbackAddr, fallbackRuntime, true
-	}
-	return "", "", false
+	sort.Slice(bs, func(i, j int) bool { return bs[i].id < bs[j].id })
+	return bs
 }
 
 // isvcStopped reports whether the InferenceService desires zero running
@@ -1205,6 +1204,11 @@ func isvcStopped(isvc *inferencev1alpha1.InferenceService) bool {
 	return isvc.Spec.Replicas != nil && *isvc.Spec.Replicas == 0
 }
 
+// ensureProcess ensures a llama-server process is running for the InferenceService.
+// On UPDATED events, the spec is diffed against the running process's stored
+// hash; if it changed, the existing process is stopped before a fresh one is
+// spawned so the new flags actually take effect. Replicas=0 stops the process
+// without restarting.
 func (a *MetalAgent) ensureProcess(ctx context.Context, isvc *inferencev1alpha1.InferenceService) error {
 	err := a.reconcileProcess(ctx, isvc)
 	if err != nil {
@@ -1546,6 +1550,9 @@ func (a *MetalAgent) reconcileProcess(ctx context.Context, isvc *inferencev1alph
 	// Capture the runtime so deleteProcess and Shutdown can pick the
 	// correct executor even when the agent hosts multiple runtimes (#525).
 	process.Runtime = runtime
+	// The served model name lets the client proxy route a request that names
+	// it when several engines run (#2412).
+	process.ServedModel = cfg.ServedModelName
 
 	// Store process and update metrics. The admission reservation moves onto
 	// the record in the same critical section, so the budget it holds is

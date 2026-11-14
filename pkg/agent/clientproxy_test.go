@@ -38,15 +38,20 @@ import (
 // test against.
 const testClientProxyPort = 9443
 
-// fakeBackend is a test backendProvider standing in for the MetalAgent's
-// view of the currently-running child process.
+// fakeBackend is a test backendProvider standing in for the MetalAgent with
+// a single child running (ok) or none.
 type fakeBackend struct {
 	addr    string
 	runtime string
 	ok      bool
 }
 
-func (f *fakeBackend) currentBackend() (string, string, bool) { return f.addr, f.runtime, f.ok }
+func (f *fakeBackend) backends() []proxyBackend {
+	if !f.ok {
+		return nil
+	}
+	return []proxyBackend{{id: "default/only", addr: f.addr, runtime: f.runtime, healthy: true}}
+}
 
 // newRecordingBackend starts a backend that answers 200 with a small JSON
 // body and counts how many requests it actually received, so a test can
