@@ -62,6 +62,9 @@ type ModelSpec struct {
 	//     Kubernetes ImageVolume; requires Kubernetes >= 1.36 and containerd >= 2.1.0
 	//     or CRI-O >= 1.31 on the serving node; pin by digest)
 	//   - /mnt/models/Llama-3.2-3B-Instruct-4bit (MLX model directory)
+	//   - hailo://qwen2.5-instruct:1.5b (a HEF in Hailo's GenAI model zoo, pulled and served
+	//     by hailo-ollama through the host agent's ollama runtime; experimental,
+	//     needs hardware.accelerator: metal)
 	//
 	// Source may also name a repository or bucket PREFIX rather than a single
 	// object. In that case spec.files selects which artifacts to stage from it,
@@ -83,7 +86,7 @@ type ModelSpec struct {
 	// equivalent https://huggingface.co/.../<filename>.gguf URL which
 	// the runtime/init container resolves at deploy time.
 	// +optional
-	// +kubebuilder:validation:Pattern=`^(https?|file|pvc|hf|s3|oci)://.*|^/[^\s]+$|^[a-zA-Z0-9][\w\-\.\/]+$`
+	// +kubebuilder:validation:Pattern=`^(https?|file|pvc|hf|s3|oci|hailo)://.*|^/[^\s]+$|^[a-zA-Z0-9][\w\-\.\/]+$`
 	Source string `json:"source,omitempty"`
 
 	// SHA256 is the expected SHA256 hash of the model file for integrity

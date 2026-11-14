@@ -417,3 +417,30 @@ jobs:
         if: always()
         run: |
           minc delete || true
+
+  test-e2e-host-agent:
+    name: Run on Ubuntu (kind, Linux host agents with the Hailo-10H simulator)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Download Go modules
+        run: hack/go-mod-download.sh
+
+      - name: Install the latest version of kind
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/latest/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+
+      - name: Running the host agent e2e
+        env:
+          KIND_CLUSTER: llmkube-host-agent-e2e
+        run: make test-e2e-host-agent

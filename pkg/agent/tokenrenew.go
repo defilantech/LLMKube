@@ -51,7 +51,7 @@ const (
 // names as tokenFile, and client-go re-reads that file about once a minute,
 // so replacing it is all a renewal takes. The new token is requested with
 // the current one, through TokenRequest on the agent's own ServiceAccount,
-// which the per-Mac Role allows by resourceNames. Renewal is due at half the
+// which the per-host Role allows by resourceNames. Renewal is due at half the
 // token's lifetime; deleting the ServiceAccount (llmkube metal remove)
 // revokes the token and ends renewal with it.
 type tokenRenewer struct {
@@ -162,7 +162,7 @@ func (r *tokenRenewer) renewIfDue(ctx context.Context) time.Duration {
 	next, err := r.renew(ctx, cur)
 	if err != nil {
 		if now.After(cur.expires) {
-			r.logger.Errorw("the agent's token has expired and cannot be renewed; join the Mac again "+
+			r.logger.Errorw("the agent's token has expired and cannot be renewed; join the host again "+
 				"(llmkube metal token create, then llmkube metal join)", "expired", cur.expires, "error", err)
 		} else {
 			r.logger.Warnw("token renewal failed; retrying", "expires", cur.expires, "error", err)

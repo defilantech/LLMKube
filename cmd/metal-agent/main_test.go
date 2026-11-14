@@ -363,7 +363,8 @@ func TestPrepareModelStore(t *testing.T) {
 }
 
 // prepareModelStore refuses a store under /tmp, which the 0.10.0 plist
-// pinned, even though it creates the store 0700 and owns it.
+// pinned, even though it creates the store 0700 and owns it. On macOS the
+// refusal names the plist re-render.
 func TestPrepareModelStore_RefusesStoreUnderTmp(t *testing.T) {
 	prev := agent.SetSystemTempRootsForTest([]string{"/private/tmp", "/tmp", "/private/var/tmp", "/var/tmp"})
 	t.Cleanup(func() { agent.SetSystemTempRootsForTest(prev) })
@@ -375,8 +376,11 @@ func TestPrepareModelStore_RefusesStoreUnderTmp(t *testing.T) {
 	t.Cleanup(func() { _ = os.RemoveAll(base) })
 	store := filepath.Join(base, "llmkube-models")
 	_, err = prepareModelStore(store)
-	if err == nil || !strings.Contains(err.Error(), "make install-metal-agent") {
-		t.Fatalf("prepareModelStore(%s) = %v, want a refusal naming the plist re-render", store, err)
+	if err == nil || !strings.Contains(err.Error(), "outside /tmp") {
+		t.Fatalf("prepareModelStore(%s) = %v, want a refusal under /tmp", store, err)
+	}
+	if runtime.GOOS == "darwin" && !strings.Contains(err.Error(), "make install-metal-agent") {
+		t.Errorf("prepareModelStore(%s) = %v, want the refusal to name the plist re-render", store, err)
 	}
 }
 

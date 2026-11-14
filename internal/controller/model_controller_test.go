@@ -446,6 +446,43 @@ var _ = Describe("Model Controller Reconcile", func() {
 		Expect(foundCondition).To(BeTrue(), "expected Available/MetalAgentManaged condition")
 	})
 
+	// A hailo:// source names a HEF in Hailo's model zoo that hailo-ollama on
+	// the host agent pulls itself: Ready without a download on the metal
+	// path, Failed with the reason on any other accelerator or for a tag that
+	// could name another registry.
+	DescribeTable("hailo:// sources",
+		func(name, accelerator, source, wantPhase, wantReason string) {
+			model := &inferencev1alpha1.Model{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+				Spec: inferencev1alpha1.ModelSpec{
+					Source:   source,
+					Hardware: &inferencev1alpha1.HardwareSpec{Accelerator: accelerator},
+				},
+			}
+			Expect(k8sClient.Create(ctx, model)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, model) }()
+
+			reconciler := &ModelReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), StoragePath: GinkgoT().TempDir()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: name, Namespace: "default"},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := &inferencev1alpha1.Model{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: "default"}, updated)).To(Succeed())
+			Expect(updated.Status.Phase).To(Equal(wantPhase))
+			Expect(updated.Status.Size).To(BeEmpty(), "nothing was downloaded or measured")
+			reasons := make([]string, 0, len(updated.Status.Conditions))
+			for _, cond := range updated.Status.Conditions {
+				reasons = append(reasons, cond.Reason)
+			}
+			Expect(reasons).To(ContainElement(wantReason))
+		},
+		Entry("metal", "hailo-metal", "metal", "hailo://qwen2.5-instruct:1.5b", PhaseReady, "MetalAgentManaged"),
+		Entry("cpu", "hailo-cpu", "cpu", "hailo://qwen2.5-instruct:1.5b", PhaseFailed, ReasonInvalidSource),
+		Entry("registry in the tag", "hailo-registry", "metal", "hailo://evil.example.com/x:1", PhaseFailed, ReasonInvalidSource),
+	)
+
 	// Regression for #475: a Metal local-path model that wedged in the copy
 	// path under an older operator keeps stale Degraded/Progressing conditions
 	// after the no-download path marks it Ready. They must be cleared so a

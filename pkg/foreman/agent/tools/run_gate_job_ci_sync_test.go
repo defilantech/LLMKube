@@ -58,12 +58,14 @@ var gateExemptCIChecks = map[string]string{
 	"test-envtest": "the CI-only second-seed envtest pass (#1693); the gate deliberately runs " +
 		"`make test` single-pass, so gating this target would double the ordering coverage the " +
 		"gate was decided not to pay for (see the DefaultGateChecks comment)",
-	"setup-test-e2e":                "provisions an e2e cluster; lifecycle, not a branch check",
-	"cleanup-test-e2e":              "tears down an e2e cluster; lifecycle, not a branch check",
-	"test-e2e":                      "needs a live cluster the gate Job does not own",
-	"test-e2e-rbac":                 "creates a kind cluster (Docker) the gate Job neither has nor owns",
-	"test-e2e-apisix":               "creates a kind cluster (Docker) and installs APISIX; the gate Job has neither",
-	"test-e2e-multinode":            "creates a two-worker kind cluster (Docker); the gate Job has neither",
+	"setup-test-e2e":     "provisions an e2e cluster; lifecycle, not a branch check",
+	"cleanup-test-e2e":   "tears down an e2e cluster; lifecycle, not a branch check",
+	"test-e2e":           "needs a live cluster the gate Job does not own",
+	"test-e2e-rbac":      "creates a kind cluster (Docker) the gate Job neither has nor owns",
+	"test-e2e-apisix":    "creates a kind cluster (Docker) and installs APISIX; the gate Job has neither",
+	"test-e2e-multinode": "creates a two-worker kind cluster (Docker); the gate Job has neither",
+	"test-e2e-host-agent": "creates a kind cluster and runs agent and simulator containers (Docker); " +
+		"the gate Job has neither",
 	"docker-build":                  "image build, not a branch check",
 	"docker-build-foreman-agent":    "image build, not a branch check",
 	"docker-build-foreman-operator": "image build, not a branch check",

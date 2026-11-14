@@ -74,6 +74,9 @@ sections:
       - label: macOS Metal Agent
         slug: guides/macos-metal
         file: guides/macos-metal.md
+      - label: Linux Host Agent (experimental)
+        slug: guides/linux-host-agent
+        file: guides/linux-host-agent.md
       - label: Multi-GPU sharding
         slug: guides/multi-gpu
         file: guides/multi-gpu.md

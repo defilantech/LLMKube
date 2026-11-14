@@ -1,0 +1,70 @@
+name: GoReleaser check
+
+# Validates .goreleaser.yaml and builds the linux metal-agent release targets
+# with the GoReleaser version the release job pins. Builds only; nothing is
+# archived, signed or published.
+#
+# A path-filtered workflow is not a required check and has no merge_group
+# trigger: GitHub ignores paths filters for merge_group (#2379).
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.goreleaser.yaml'
+      - 'cmd/metal-agent/**'
+      - 'pkg/agent/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/goreleaser-check.yml'
+  pull_request:
+    paths:
+      - '.goreleaser.yaml'
+      - 'cmd/metal-agent/**'
+      - 'pkg/agent/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/goreleaser-check.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  goreleaser-check:
+    # Unique across workflows: a required status check is matched by job name
+    # alone (#2379).
+    name: GoReleaser config and linux metal-agent build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # No tags: the repository's foreman-* tags are not semver, and a
+      # snapshot build fails to parse one as the current tag.
+      - name: Clone the code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Download Go modules
+        # Once, before any step builds; retried on network errors only (#2380).
+        run: hack/go-mod-download.sh
+
+      - name: Install GoReleaser
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
+        with:
+          distribution: goreleaser
+          # Keep in step with the release job in release-please.yml.
+          version: 'v2.19.0'
+          install-only: true
+
+      - name: Check the GoReleaser config
+        run: goreleaser check
+
+      - name: Build the linux metal-agent targets (snapshot)
+        run: goreleaser build --snapshot --clean --id llmkube-metal-agent-linux
+
+      - name: Show the built binaries
+        run: file dist/llmkube-metal-agent-linux_*/llmkube-metal-agent

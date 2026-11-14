@@ -99,6 +99,28 @@ builds:
             - MACHOPLIST=./bin/machoplist
           output: true
 
+  # Linux host agent (experimental). A separate build so the darwin-only
+  # archive, cask, signing and notarization never pick up a linux binary.
+  - id: llmkube-metal-agent-linux
+    main: ./cmd/metal-agent
+    binary: llmkube-metal-agent
+
+    ldflags:
+      - -s -w
+      - -X main.Version={{.Version}}
+      - -X main.GitCommit={{.FullCommit}}
+      - -X main.BuildDate={{.Date}}
+
+    goos:
+      - linux
+
+    goarch:
+      - arm64
+      - amd64
+
+    env:
+      - CGO_ENABLED=0
+
   - id: llmkube-foreman-operator
     main: ./cmd/foreman-operator
     binary: foreman-operator
@@ -205,6 +227,17 @@ archives:
       - deployment/macos/*.plist
       - deployment/macos/*.yaml
       - deployment/macos/sudoers.d/*
+
+  # Not in homebrew_casks: the cask installs only the darwin archive above.
+  - id: llmkube-metal-agent-linux
+    ids:
+      - llmkube-metal-agent-linux
+
+    name_template: "{{ .ProjectName }}-metal-agent_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+    files:
+      - LICENSE
+      - README.md
 
   - id: llmkube-foreman-agent
     ids:
