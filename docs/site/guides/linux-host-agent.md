@@ -31,6 +31,7 @@ Tracking issue: [#2481](https://github.com/defilantech/LLMKube/issues/2481).
 | `runtime: ollama` against `hailo-ollama` 5.1.1 on a Hailo-10H | End to end on a Raspberry Pi 5 with an AI HAT+ 2: `qwen2.5-instruct:1.5b` and `llama3.2:3b` served through the relay to a kind cluster, and back by itself after a power loss with the agent and hailo-ollama under systemd. In CI against the [Hailo-10H simulator](#testing-without-a-hailo-10h) |
 | Linux arm64 host with a 16K-page kernel (Raspberry Pi 5) | The agent, Hailo's driver and runtime, and hailo-ollama run on Raspberry Pi OS's `6.18.50+rpt-rpi-2712` kernel, and the agent served a kind cluster on the same LAN |
 | linux/amd64 | Builds. Untested on hardware |
+| Release artifacts | `LLMKube-metal-agent_<version>_linux_arm64.tar.gz` and `_linux_amd64.tar.gz` on the GitHub release, static (`CGO_ENABLED=0`), listed in `checksums.txt`. No Homebrew cask or distro package. The released binary is untested on hardware |
 | llama.cpp (`llama-server`) on Linux | Untested. The agent's llama.cpp defaults (flash attention, mlock) are tuned for Apple Silicon |
 | `llmkube metal join` | Refuses to run off macOS. [Join the host by hand](#join-the-host-by-hand) |
 | `MetalNode` hardware | Reported: memory (RAM under the agent's cgroup limit) and the board or CPU name from `/proc`. GPU cores and the Metal version are macOS only |
@@ -38,13 +39,17 @@ Tracking issue: [#2481](https://github.com/defilantech/LLMKube/issues/2481).
 
 ## Get the agent
 
-There is no Linux release archive yet. Build the agent from a checkout, for
-the host's architecture (`arm64` or `amd64`):
+Build the agent from a checkout, for the host's architecture (`arm64` or
+`amd64`):
 
 ```sh
 GOOS=linux GOARCH=arm64 CGO_ENABLED=0 \
   go build -o llmkube-metal-agent ./cmd/metal-agent
 ```
+
+Or take it from a GitHub release that ships Linux archives:
+`LLMKube-metal-agent_<version>_linux_arm64.tar.gz` or `_linux_amd64.tar.gz`,
+with their SHA-256 in the release's `checksums.txt`.
 
 The binary is static and needs nothing else from the host. Copy it to the
 host and put it on `PATH`.
