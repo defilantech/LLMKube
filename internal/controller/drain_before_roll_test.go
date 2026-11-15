@@ -2687,6 +2687,61 @@ var _ = Describe("countOldPods", func() {
 		Expect(running).To(Equal(int32(0)))
 	})
 
+	It("should count the pods whose serving container is running", func() {
+		isvcName := "isvc-count-running"
+		isvc := &inferencev1alpha1.InferenceService{
+			ObjectMeta: metav1.ObjectMeta{Name: isvcName, Namespace: "default"},
+			Spec: inferencev1alpha1.InferenceServiceSpec{
+				ModelRef: "dummy",
+				Image:    "dummy",
+			},
+		}
+		Expect(k8sClient.Create(ctx, isvc)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, isvc) }()
+
+		states := []corev1.ContainerState{
+			{Running: &corev1.ContainerStateRunning{}},
+			{Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"}},
+			{Terminated: &corev1.ContainerStateTerminated{ExitCode: 1}},
+			{Running: &corev1.ContainerStateRunning{}},
+		}
+		for i, state := range states {
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      isvcName + "-" + string(rune('a'+i)),
+					Namespace: "default",
+					Labels: map[string]string{
+						"app":                           isvcName,
+						"inference.llmkube.dev/service": isvcName,
+					},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{Name: "llama-server", Image: "dummy"}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+			pod.Status = corev1.PodStatus{
+				Phase:      corev1.PodRunning,
+				Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionFalse}},
+				ContainerStatuses: []corev1.ContainerStatus{{
+					Name:  "llama-server",
+					State: state,
+				}},
+			}
+			Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
+		}
+
+		reconciler := &InferenceServiceReconciler{
+			Client:             k8sClient,
+			Scheme:             k8sClient.Scheme(),
+			InitContainerImage: "docker.io/curlimages/curl:8.18.0",
+		}
+		total, _, running, err := reconciler.countOldPods(ctx, isvc)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(total).To(Equal(int32(4)))
+		Expect(running).To(Equal(int32(2)))
+	})
+
 	It("should count zero ready when all pods are crashlooping", func() {
 		isvcName := "isvc-all-crashloop"
 		isvc := &inferencev1alpha1.InferenceService{

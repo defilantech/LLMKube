@@ -282,16 +282,14 @@ func (r *InferenceServiceReconciler) countOldPods(ctx context.Context, isvc *inf
 }
 
 // podServingContainerRunning reports whether the pod is currently running its
-// serving container. A pod under deletion counts as not running for the same
-// reason classifyMemberPods skips it: its container is on the way out.
+// serving container. A terminating pod still counts: its container keeps the
+// generations it already accepted until the process exits, so the rollout must
+// wait for it exactly as it waits for any other running container.
 //
 // The deployment builder gives the pod exactly one container
 // (deployment_builder.go), so a pod with a single reported container status
 // is that container even when its name differs from the runtime's.
 func podServingContainerRunning(pod *corev1.Pod, containerName string) bool {
-	if pod.DeletionTimestamp != nil {
-		return false
-	}
 	for _, cs := range pod.Status.ContainerStatuses {
 		if cs.Name == containerName || len(pod.Spec.Containers) == 1 {
 			return cs.State.Running != nil
@@ -374,13 +372,14 @@ func (r *InferenceServiceReconciler) reconcileRolloutPolicy(
 		}
 	}
 
-	if checkErr != nil && totalPods > 0 && runningPods == 0 {
+	if checkErr != nil && totalPods > 0 && runningPods == 0 && !errors.Is(checkErr, errNoEndpoints) {
 		// The probe could not answer for any pod, and none of them is running.
 		// An unanswered probe on a stopped container is not ambiguity: a
 		// container that is not running holds nothing (#2553). A running
 		// pod's unanswered probe still defers, which is what #1543 kept.
 		// With no pods listed at all the endpoints are the only evidence,
-		// so an unanswered probe there still defers.
+		// so an unanswered probe there still defers, and the errNoEndpoints
+		// switch above has already made that decision.
 		idle, checkErr = true, nil
 		log.Info("No serving container running; the failed idle check has nothing to protect, proceeding with rollout")
 	}

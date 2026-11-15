@@ -25,6 +25,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -179,6 +180,45 @@ func containerCreatingState() corev1.ContainerState {
 
 func runningState() corev1.ContainerState {
 	return corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}
+}
+
+// endpointSlice publishes an address for the service, so checkServiceIdle
+// probes it instead of taking the no-EndpointSlice fallback.
+func (f *rolloutFixture) endpointSlice(t *testing.T, addr string, ready bool) {
+	t.Helper()
+	ep := &discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			GenerateName: "eslice-",
+			Namespace:    f.key.Namespace,
+			Labels:       map[string]string{"kubernetes.io/service-name": f.key.Name},
+		},
+		AddressType: discoveryv1.AddressTypeIPv4,
+		Endpoints: []discoveryv1.Endpoint{{
+			Addresses:  []string{addr},
+			Conditions: discoveryv1.EndpointConditions{Ready: &ready},
+		}},
+	}
+	if err := f.c.Create(f.ctx, ep); err != nil {
+		t.Fatalf("create endpointslice: %v", err)
+	}
+}
+
+// setIdleEndpoint gives a generic runtime the annotation that makes it
+// idle-checkable, so checkServiceIdle reaches the endpoint list rather than
+// returning errIdleUnsupported.
+func setIdleEndpoint(t *testing.T, f *rolloutFixture, path string) {
+	t.Helper()
+	isvc := &inferencev1alpha1.InferenceService{}
+	if err := f.c.Get(f.ctx, f.key, isvc); err != nil {
+		t.Fatalf("get isvc: %v", err)
+	}
+	if isvc.Annotations == nil {
+		isvc.Annotations = map[string]string{}
+	}
+	isvc.Annotations[inferencev1alpha1.AnnotationIdleEndpoint] = path
+	if err := f.c.Update(f.ctx, isvc); err != nil {
+		t.Fatalf("annotate isvc: %v", err)
+	}
 }
 
 // reconcileAfterEdit changes the image and runs one reconcile, with a short
@@ -378,5 +418,47 @@ func TestRolloutProceedsWithOnlyATerminatingPod(t *testing.T) {
 
 	if got := f.deploymentImage(t); got != rolloutTestImageV2 {
 		t.Fatalf("deployment image is %q, want %q: an idle cluster with a terminating pod should roll", got, rolloutTestImageV2)
+	}
+}
+
+// No old pods, and an EndpointSlice whose single address the probe cannot
+// reach: both trees defer IdleCheckFailed. With no pod list to read, the
+// endpoint is the only evidence, so an unanswered probe there still holds.
+func TestRolloutStillDefersWithNoPodsAndAnEndpointSlice(t *testing.T) {
+	f := newRolloutFixture(t, "rollout-no-pods-slice", "generic")
+	setIdleEndpoint(t, f, "/idle")
+	f.endpointSlice(t, "10.0.0.21", false)
+
+	if _, err, _ := f.reconcileAfterEdit(t); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	if got := f.deploymentImage(t); got != rolloutTestImage {
+		t.Fatalf("deployment image is %q, want %q: an unanswered probe with no pod list must hold the rollout", got, rolloutTestImage)
+	}
+}
+
+// A lone terminating pod whose container is still running keeps holding the
+// rollout: its process can still be finishing an accepted generation. Base and
+// the branch both defer, and this pins that the running-container predicate
+// does not treat a terminating pod as stopped.
+func TestRolloutDefersWhileATerminatingRunningPodRemains(t *testing.T) {
+	f := newRolloutFixture(t, "rollout-term-running", "generic")
+	f.useIdleStub(t, http.StatusOK, "ok")
+	f.endpointSlice(t, "10.0.0.31", false)
+	pod := f.pod(t, "terminating", runningState())
+	if err := f.c.Delete(f.ctx, pod); err != nil {
+		t.Fatalf("delete pod: %v", err)
+	}
+
+	if _, err, _ := f.reconcileAfterEdit(t); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	if got := f.deploymentImage(t); got != rolloutTestImage {
+		t.Fatalf("deployment image is %q, want %q: a terminating pod with a running container must hold the rollout", got, rolloutTestImage)
+	}
+	if cond := f.rolloutCondition(t); cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Fatalf("RolloutDeferred = %+v, want True", cond)
 	}
 }
