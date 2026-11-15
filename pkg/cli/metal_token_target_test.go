@@ -78,6 +78,26 @@ func TestMetalTokenCreateNamesItsTarget(t *testing.T) {
 	if !strings.Contains(stderr, cfg.Host) {
 		t.Errorf("stderr does not name the API server %s: %q", cfg.Host, stderr)
 	}
+
+	// The line names the server the CLI talks to, not the one the Mac will:
+	// a --server the Mac can reach leaves the target line on cfg.Host.
+	u, perr := url.Parse(cfg.Host)
+	if perr != nil {
+		t.Fatal(perr)
+	}
+	_, stderr, err = runMetal(t, "token", "create", "mac-a2", "-n", ns,
+		"--server", "https://localhost:"+u.Port())
+	if err != nil {
+		t.Fatalf("token create --server: %v\n%s", err, stderr)
+	}
+	targetLine, _, _ := strings.Cut(stderr, "\n")
+	if !strings.Contains(targetLine, cfg.Host) {
+		t.Errorf("target line does not name the CLI's server %s: %q", cfg.Host, targetLine)
+	}
+	if strings.Contains(targetLine, "localhost") {
+		t.Errorf("target line names the join string's --server instead of the cluster token create writes to: %q",
+			targetLine)
+	}
 }
 
 // TestMetalTargetContextName lives in metal_token_advisory_test.go: it names
@@ -142,13 +162,17 @@ func TestMetalTokenCreateWarnsOnALoopbackServer(t *testing.T) {
 		t.Errorf("the warning does not name --server as the fix: %q", stderr)
 	}
 
-	// An explicit --server is the fix the warning asks for, so it silences it.
+	// A loopback --server is still loopback: it warns, and the warning
+	// cannot ask for the flag that was just given.
 	_, stderr, err = runMetal(t, "token", "create", "mac-a", "-n", ns, "--server", cfg.Host, "--assume-same-server")
 	if err != nil {
 		t.Fatalf("token create --server: %v\n%s", err, stderr)
 	}
-	if strings.Contains(stderr, "only a Mac on this machine") {
-		t.Errorf("--server was given, but the loopback warning still printed: %q", stderr)
+	if !strings.Contains(stderr, "only a Mac on this machine") {
+		t.Errorf("--server was itself loopback, but nothing warned: %q", stderr)
+	}
+	if !strings.Contains(stderr, "--server "+cfg.Host+" is a loopback address") {
+		t.Errorf("the --server warning does not name the address given: %q", stderr)
 	}
 }
 

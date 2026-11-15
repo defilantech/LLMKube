@@ -1405,6 +1405,7 @@ llmkube metal token create mac-studio -n inference --server https://100.64.0.1:6
 
 ```text
       --assume-same-server       When --server cannot be reached from here, check the certificate the kubeconfig's server presents instead, assuming --server is the same API server (the Mac still verifies it when it joins)
+      --context string           Kubeconfig context to write to and name in the output (default: the current context)
   -n, --namespace string         Namespace for the Mac's objects (default: the kubeconfig context's namespace, else default)
   -o, --output string            Output format: text or json (default "text")
       --server string            API server URL the Mac connects to (default: the current context's server)

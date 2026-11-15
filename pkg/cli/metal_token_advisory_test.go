@@ -32,10 +32,8 @@ import (
 // about nothing and does not fail the create.
 func TestMetalTokenCreateOtherMacWarningIsAdvisory(t *testing.T) {
 	var log bytes.Buffer
-	if err := warnAboutOtherMacs(context.Background(),
-		failingListReader{err: errors.New("metalnodes is forbidden")}, "ns", "mac-b", &log); err != nil {
-		t.Errorf("a failed MetalNode list failed the create: %v", err)
-	}
+	warnAboutOtherMacs(context.Background(),
+		failingListReader{err: errors.New("metalnodes is forbidden")}, "ns", "mac-b", &log)
 	if log.Len() != 0 {
 		t.Errorf("a failed MetalNode list warned anyway: %q", log.String())
 	}
@@ -86,16 +84,24 @@ func TestIsLoopbackHost(t *testing.T) {
 // server says nothing.
 func TestWarnLoopbackJoinServer(t *testing.T) {
 	var log bytes.Buffer
-	warnLoopbackJoinServer(&log, "https://127.0.0.1:6443")
+	warnLoopbackJoinServer(&log, "https://127.0.0.1:6443", false)
 	for _, want := range []string{"loopback", "only a Mac on this machine", "--server"} {
 		if !bytes.Contains(log.Bytes(), []byte(want)) {
 			t.Errorf("warning %q does not mention %q", log.String(), want)
 		}
 	}
 	log.Reset()
-	warnLoopbackJoinServer(&log, "https://10.0.0.1:6443")
+	warnLoopbackJoinServer(&log, "https://10.0.0.1:6443", false)
 	if log.Len() != 0 {
 		t.Errorf("a routable server warned: %q", log.String())
+	}
+	// A loopback --server warns too, and names the address given.
+	log.Reset()
+	warnLoopbackJoinServer(&log, "https://127.0.0.1:6443", true)
+	for _, want := range []string{"--server https://127.0.0.1:6443 is a loopback address", "only a Mac on this machine"} {
+		if !bytes.Contains(log.Bytes(), []byte(want)) {
+			t.Errorf("--server warning %q does not mention %q", log.String(), want)
+		}
 	}
 }
 

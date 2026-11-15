@@ -177,9 +177,7 @@ func runMetalTokenCreate(cmd *cobra.Command, mac string, opts *metalTokenOptions
 	if err != nil {
 		return err
 	}
-	if opts.server == "" {
-		warnLoopbackJoinServer(log, target.Server)
-	}
+	warnLoopbackJoinServer(log, target.Server, opts.server != "")
 	pin, err := metaljoin.CAPin(ca.Raw)
 	if err != nil {
 		return err
@@ -209,9 +207,7 @@ func runMetalTokenCreate(cmd *cobra.Command, mac string, opts *metalTokenOptions
 		return fmt.Errorf("create client: %w", err)
 	}
 
-	if err := warnAboutOtherMacs(ctx, c, target.Namespace, mac, log); err != nil {
-		return err
-	}
+	warnAboutOtherMacs(ctx, c, target.Namespace, mac, log)
 
 	issued, err := metalTokenCreate(ctx, c, target.Namespace, mac, opts.ttl, log)
 	if err != nil {
@@ -255,15 +251,19 @@ func metalTargetContextName(name string) string {
 }
 
 // warnLoopbackJoinServer warns when the join string's server is a loopback
-// address: only a Mac on the same machine can reach it. server is
-// target.Server, so a --server the user chose is not warned about; the caller
-// checks that.
-func warnLoopbackJoinServer(log io.Writer, server string) {
+// address, which only a Mac on the same machine can reach. fromFlag says the
+// address came from --server, so the warning cannot ask for it again.
+func warnLoopbackJoinServer(log io.Writer, server string, fromFlag bool) {
 	u, err := url.Parse(server)
 	if err != nil {
 		return
 	}
 	if !isLoopbackHost(u.Hostname()) {
+		return
+	}
+	if fromFlag {
+		_, _ = fmt.Fprintf(log, "warning: --server %s is a loopback address, so only a Mac on this machine can "+
+			"use this join string; pass a --server address the Mac reaches\n", server)
 		return
 	}
 	_, _ = fmt.Fprintf(log, "warning: %s is a loopback address, so only a Mac on this machine can use this "+
@@ -288,10 +288,10 @@ func isLoopbackHost(host string) bool {
 // InferenceService there, so traffic switches between them and the relay
 // restarts. The list is advisory, so a cluster without the MetalNode CRD, or
 // an admin who cannot list them, warns about nothing and does not fail.
-func warnAboutOtherMacs(ctx context.Context, c client.Reader, namespace, mac string, log io.Writer) error {
+func warnAboutOtherMacs(ctx context.Context, c client.Reader, namespace, mac string, log io.Writer) {
 	var macs inferencev1alpha1.MetalNodeList
 	if err := c.List(ctx, &macs, client.InNamespace(namespace)); err != nil {
-		return nil
+		return
 	}
 	var others []string
 	for i := range macs.Items {
@@ -302,13 +302,12 @@ func warnAboutOtherMacs(ctx context.Context, c client.Reader, namespace, mac str
 		others = append(others, mn.Name)
 	}
 	if len(others) == 0 {
-		return nil
+		return
 	}
 	slices.Sort(others)
 	_, _ = fmt.Fprintf(log, "warning: namespace %s already has %s; two Macs in one namespace both claim every "+
 		"Metal InferenceService there, so traffic switches between them. Use one namespace per Mac, or set "+
 		"--inference-service-allowlist on every Mac\n", namespace, strings.Join(others, ", "))
-	return nil
 }
 
 // writeMetalTokenText prints the join command alone on the first line, so it

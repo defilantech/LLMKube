@@ -192,9 +192,9 @@ CA pin: sha256:a5fee586b3b05aaff494d200d4c072e2e37126eaef344e2f295ad87479272655
 
 The target line names the kubeconfig context and API server `token create`
 writes to; `--context <name>` uses another context. A warning follows it when
-the API server in the join string is a loopback address (`127.0.0.1`,
-`::1`, `localhost`): only a Mac on this machine could reach it, so pass
-`--server` with an address the Mac reaches (see
+the server in the join string, the context's or the `--server` you passed, is
+a loopback address (`127.0.0.1`, `::1`, `localhost`): only a Mac on this
+machine could reach it, so pass `--server` with an address the Mac reaches (see
 [Network requirements](#network-requirements)). Another warning names the Macs
 already in the namespace: two Macs in one namespace both claim every Metal
 InferenceService there, so give each Mac its own namespace or set an allowlist
