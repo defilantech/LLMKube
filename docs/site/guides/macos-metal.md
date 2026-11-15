@@ -184,16 +184,28 @@ llmkube metal token create mac-studio -n metal
 ```
 
 ```
+target: context my-cluster, API server https://192.168.1.10:6443
 llmkube metal join llmkube://eyJ2IjoxLCJzZXJ2ZXIiOi...
 valid for 30 minutes (until 2026-11-04 15:04 PST), single use, Mac mac-studio in namespace metal
 CA pin: sha256:a5fee586b3b05aaff494d200d4c072e2e37126eaef344e2f295ad87479272655
 ```
 
+The target line names the kubeconfig context and API server `token create`
+writes to; `--context <name>` uses another context. A warning follows it when
+the API server in the join string is a loopback address (`127.0.0.1`,
+`::1`, `localhost`): only a Mac on this machine could reach it, so pass
+`--server` with an address the Mac reaches (see
+[Network requirements](#network-requirements)). Another warning names the Macs
+already in the namespace: two Macs in one namespace both claim every Metal
+InferenceService there, so give each Mac its own namespace or set an allowlist
+(see [More than one Mac](#more-than-one-mac)).
+
 `mac-studio` is the name the cluster will use for this Mac (a DNS label). The
-first line is the whole command to run on the Mac; progress messages go to
-stderr, so it copies cleanly. Until it is used or expires, the string is a
-credential for the Mac's identity: paste it only on the Mac. What the command
-creates is under [What `token create` creates](#what-token-create-creates).
+first stdout line is the whole command to run on the Mac; progress messages
+and warnings go to stderr, so it copies cleanly. Until it is used or expires,
+the string is a credential for the Mac's identity: paste it only on the Mac.
+What the command creates is under
+[What `token create` creates](#what-token-create-creates).
 
 ### On the Mac: join
 
@@ -531,8 +543,9 @@ you run `stop-engines` with the current binary first; see
 Each agent claims every `accelerator: metal` InferenceService in its
 namespace, and `join` sets no limit. Two Macs joined to the same namespace
 both start every Metal model there and overwrite each other's registration,
-so traffic switches between them and the relay keeps restarting. Nothing
-warns you. Use one of:
+so traffic switches between them and the relay keeps restarting. Nothing in
+the join stops you, but `token create` warns when the namespace already has
+a MetalNode for another Mac and names the two fixes below. Use one of:
 
 - **One namespace per Mac.** The simplest:
 

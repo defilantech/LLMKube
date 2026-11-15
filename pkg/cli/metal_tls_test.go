@@ -148,7 +148,7 @@ func TestLoadMetalTarget(t *testing.T) {
 
 	t.Run("context namespace and server", func(t *testing.T) {
 		writeKubeconfig(t, withCA("https://10.0.0.1:6443"), "team-a")
-		got, err := loadMetalTarget("", "")
+		got, err := loadMetalTarget("", "", "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -161,7 +161,7 @@ func TestLoadMetalTarget(t *testing.T) {
 	})
 	t.Run("no context namespace means default", func(t *testing.T) {
 		writeKubeconfig(t, withCA("https://10.0.0.1:6443"), "")
-		got, err := loadMetalTarget("", "")
+		got, err := loadMetalTarget("", "", "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -171,7 +171,7 @@ func TestLoadMetalTarget(t *testing.T) {
 	})
 	t.Run("flags override", func(t *testing.T) {
 		writeKubeconfig(t, withCA("https://10.0.0.1:6443"), "team-a")
-		got, err := loadMetalTarget("team-b", "https://100.64.0.9:6443")
+		got, err := loadMetalTarget("team-b", "https://100.64.0.9:6443", "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -181,7 +181,7 @@ func TestLoadMetalTarget(t *testing.T) {
 	})
 	t.Run("CA file", func(t *testing.T) {
 		writeKubeconfig(t, &clientcmdapi.Cluster{Server: "https://10.0.0.1:6443", CertificateAuthority: caFile}, "")
-		got, err := loadMetalTarget("", "")
+		got, err := loadMetalTarget("", "", "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -193,7 +193,7 @@ func TestLoadMetalTarget(t *testing.T) {
 		writeKubeconfig(t, &clientcmdapi.Cluster{
 			Server: "https://10.0.0.1:6443", CertificateAuthorityData: ca.pem(), TLSServerName: "kubernetes",
 		}, "")
-		got, err := loadMetalTarget("", "")
+		got, err := loadMetalTarget("", "", "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -217,7 +217,7 @@ func TestLoadMetalTarget(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			writeKubeconfig(t, tc.cluster, "")
-			_, err := loadMetalTarget("", tc.server)
+			_, err := loadMetalTarget("", tc.server, "")
 			if err == nil {
 				t.Fatal("loadMetalTarget accepted it")
 			}
