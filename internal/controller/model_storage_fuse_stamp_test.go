@@ -244,7 +244,6 @@ func TestFUSERecheckStamp(t *testing.T) {
 		wantWarning bool
 	}{
 		{name: "matching-triple", fs: "fuse", stamp: "-", wantAccept: true},
-		{name: "matching-triple-writes-nothing", fs: "fuse", stamp: "-", wantAccept: true},
 		{name: "fuse-stale-mtime", fs: "fuse", stamp: "-", mtimeDelta: 300, wantAccept: true, wantRefresh: true},
 		{name: "fuse-different-size", fs: "fuse", stamp: "-", sizeDelta: 3, wantAccept: false},
 		{name: "ext4-stale-mtime", fs: "ext4", stamp: "-", mtimeDelta: 300, wantAccept: false},
