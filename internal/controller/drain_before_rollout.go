@@ -350,9 +350,7 @@ func (r *InferenceServiceReconciler) reconcileRolloutPolicy(
 		// or a template change that landed while replicas was 0) has no
 		// in-flight work to protect. Treating the empty endpoint list as
 		// "busy" deadlocked the scale-up until idleTimeoutSeconds. When pods
-		// do exist but none of them is running, nothing can hold a request
-		// (#2553). When pods do exist and one is running but not addressable
-		// yet, keep the fail-closed path.
+		// do exist but none is addressable yet, keep the fail-closed path.
 		switch {
 		case countErr != nil:
 			// The pod list failed, so we cannot prove nothing is left to
@@ -364,25 +362,18 @@ func (r *InferenceServiceReconciler) reconcileRolloutPolicy(
 		case totalPods == 0:
 			idle, checkErr = true, nil
 			log.Info("No pods and no endpoints, nothing to drain; proceeding with rollout")
-		case runningPods == 0:
-			// Pods exist and none of them is running its serving container,
-			// so none can be holding a request (#2553).
-			idle, checkErr = true, nil
-			log.Info("No serving container is running; proceeding with rollout", "totalPods", totalPods)
 		default:
 			idle, checkErr = false, nil
 		}
 	}
 
-	if checkErr != nil && totalPods > 0 && runningPods == 0 {
-		// The probe could not answer for any pod, and none of them is running.
-		// An unanswered probe on a stopped container is not ambiguity: a
-		// container that is not running holds nothing (#2553). A running
-		// pod's unanswered probe still defers, which is what #1543 kept.
-		// errNoEndpoints never reaches here: every arm of the switch above
-		// replaces it, so the probe error is a per-endpoint failure.
+	if countErr == nil && totalPods > 0 && runningPods == 0 && !idle {
+		// No old pod is running its serving container, so none can hold a
+		// request (#2553), whether the probe could not answer or was never
+		// reached (no endpoint address). A running pod's unanswered probe
+		// still defers, which is what #1543 kept.
 		idle, checkErr = true, nil
-		log.Info("No serving container running; the failed idle check has nothing to protect, proceeding with rollout")
+		log.Info("No serving container is running; nothing to protect, proceeding with rollout", "totalPods", totalPods)
 	}
 
 	if checkErr == nil && idle {

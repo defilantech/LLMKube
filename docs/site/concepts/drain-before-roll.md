@@ -104,7 +104,7 @@ The `RolloutDeferred` condition communicates why a rollout is held:
 | `True` | `PodsBusy` | One or more replicas are actively processing requests |
 | `True` | `PodsCrashLooping` | Some old-generation pods are running their serving container while others are not; the rollout defers to protect in-flight work on the running pods |
 | `True` | `IdleCheckFailed` | The controller could not reach or parse the idle signal (network error, non-200 response) for a replica whose serving container is running, or when no old pod is listed and the endpoint is the only evidence |
-| `True` | `IdleCheckUnsupported` | The selected runtime does not implement idle detection, or `generic` without `idle-endpoint` annotation. The controller reports this before it reads any pod, so it applies whether or not a replica is running |
+| `True` | `IdleCheckUnsupported` | The selected runtime does not implement idle detection, or `generic` without `idle-endpoint` annotation, and a replica's serving container is running. With no running container the rollout proceeds instead |
 | `False` | `IdleTimeoutExceeded` | The `idleTimeoutSeconds` budget expired; rollout proceeded despite busy pods |
 
 The rollout eventually proceeds in one of four ways: when idle is confirmed, when no old pod's serving container is running, when the `idleTimeoutSeconds` budget expires, or when `force: true` bypasses the check. The timeout is a safety valve — it prevents an endlessly stuck rollout if a runtime hangs in a permanently busy state.

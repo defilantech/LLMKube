@@ -297,9 +297,11 @@ func TestRolloutProceedsWhenPodIsContainerCreating(t *testing.T) {
 	}
 }
 
+// A generic runtime with no idle-endpoint annotation never reaches the probe:
+// checkServiceIdle returns errIdleUnsupported before it lists endpoints. The
+// container being stopped is what lets the rollout through.
 func TestRolloutProceedsForUnsupportedRuntimeWhenContainerNotRunning(t *testing.T) {
 	f := newRolloutFixture(t, "rollout-unsupported-crashloop", "generic")
-	setIdleEndpoint(t, f, "/idle")
 	f.pod(t, "old", crashLoopState())
 	f.endpointSlice(t, "10.0.0.53")
 
