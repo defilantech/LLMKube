@@ -275,6 +275,9 @@ func warnLoopbackJoinServer(log io.Writer, server string, fromFlag bool) {
 // Only literals and that one name count, so a name that happens to resolve to
 // loopback from here is not detected (resolving it could pick the wrong
 // address family, or block).
+// pkg/agent's isLoopbackHost matches only 127.0.0.1 and ::1, for one proxy,
+// and validateMetalJoinHostIP rejects a wider set (unspecified, link-local and
+// multicast too). Each answers a different question, so they are not shared.
 func isLoopbackHost(host string) bool {
 	if strings.EqualFold(host, "localhost") {
 		return true
@@ -307,7 +310,8 @@ func warnAboutOtherMacs(ctx context.Context, c client.Reader, namespace, mac str
 	slices.Sort(others)
 	_, _ = fmt.Fprintf(log, "warning: namespace %s already has %s; two Macs in one namespace both claim every "+
 		"Metal InferenceService there, so traffic switches between them. Use one namespace per Mac, or set "+
-		"--inference-service-allowlist on every Mac\n", namespace, strings.Join(others, ", "))
+		"the agent's --inference-service-allowlist (metal join --allowlist) on every Mac\n",
+		namespace, strings.Join(others, ", "))
 }
 
 // writeMetalTokenText prints the join command alone on the first line, so it

@@ -1326,10 +1326,12 @@ gone are skipped, so running it twice is fine.
 Only objects labeled inference.llmkube.dev/metal-node=<mac-name> are deleted.
 Anything else with one of the Mac's names (another app's Lease, objects
 labeled for another Mac, objects applied by hand) is left in place and
-listed. --include-unlabeled also deletes unlabeled objects with the Mac's
-names, for a Mac set up by hand; objects labeled for another Mac are never
-deleted. If the ServiceAccount is left in place, nothing was revoked and the
-command fails.
+listed. The Lease is also deleted, with a warning, when the Mac's MetalNode,
+labeled for the Mac, names it as its Lease: the Mac can change its Lease's
+labels. --include-unlabeled also deletes unlabeled objects with the Mac's
+names, for a Mac set up by hand. Apart from that Lease, objects labeled for
+another Mac are never deleted. If the ServiceAccount is left in place, nothing
+was revoked and the command fails.
 
 This does not stop the agent on the Mac.
 ```
@@ -1378,7 +1380,9 @@ if missing), the Mac's Lease and MetalNode, and a join Secret. The join token
 is bound to that Secret, which the Mac deletes when it joins, so the string
 works once, and only until it expires (--ttl, 30 minutes by default). It
 refuses, before writing anything, when an object with one of the Mac's names
-exists and is not labeled for this Mac.
+exists and is not labeled for this Mac. The Lease is the exception: the Mac
+can change its labels, so it counts as the Mac's (and gets its label back)
+when the Mac's MetalNode, labeled for the Mac, names it as its Lease.
 
 Until it is used or expires, the string is a credential for the Mac's
 identity: whoever redeems it can mint the Mac's own tokens. Running this

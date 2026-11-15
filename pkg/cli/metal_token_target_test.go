@@ -40,6 +40,14 @@ import (
 // none.
 func writeKubeconfigWithContexts(t *testing.T, cfg *rest.Config, contexts []string, current string) {
 	t.Helper()
+	writeKubeconfigWithNamespaces(t, cfg, map[string]string{}, current, contexts...)
+}
+
+// writeKubeconfigWithNamespaces is writeKubeconfigWithContexts with each
+// context's namespace set from namespaces (unset means the default).
+func writeKubeconfigWithNamespaces(t *testing.T, cfg *rest.Config, namespaces map[string]string,
+	current string, contexts ...string) {
+	t.Helper()
 	kc := clientcmdapi.NewConfig()
 	kc.Clusters["envtest"] = &clientcmdapi.Cluster{
 		Server:                   cfg.Host,
@@ -52,7 +60,8 @@ func writeKubeconfigWithContexts(t *testing.T, cfg *rest.Config, contexts []stri
 		Token:                 cfg.BearerToken,
 	}
 	for _, name := range contexts {
-		kc.Contexts[name] = &clientcmdapi.Context{Cluster: "envtest", AuthInfo: "envtest"}
+		kc.Contexts[name] = &clientcmdapi.Context{Cluster: "envtest", AuthInfo: "envtest",
+			Namespace: namespaces[name]}
 	}
 	kc.CurrentContext = current
 	path := filepath.Join(t.TempDir(), "kubeconfig")
@@ -110,31 +119,45 @@ func TestMetalTokenCreateNamesItsTarget(t *testing.T) {
 func TestMetalTokenCreateContextSelectsTheCluster(t *testing.T) {
 	cfg, c, ns := metalEnvtest(t)
 	ctx := context.Background()
-	writeKubeconfigWithContexts(t, cfg, []string{"ctx-a", "ctx-b"}, "ctx-a")
+	// Each context carries its own namespace, so where the write lands says
+	// which context --context actually loaded.
+	nsA, nsB := ns+"-a", ns+"-b"
+	for _, name := range []string{nsA, nsB} {
+		if err := c.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeKubeconfigWithNamespaces(t, cfg, map[string]string{"ctx-a": nsA, "ctx-b": nsB}, "ctx-a", "ctx-a", "ctx-b")
 
-	_, stderr, err := runMetal(t, "token", "create", "mac-a", "-n", ns, "--context", "ctx-b")
+	// No -n: the namespace comes from the selected context.
+	_, stderr, err := runMetal(t, "token", "create", "mac-a", "--context", "ctx-b")
 	if err != nil {
 		t.Fatalf("token create --context ctx-b: %v\n%s", err, stderr)
 	}
 	if !strings.Contains(stderr, "context ctx-b") {
 		t.Errorf("stderr does not name the context --context selected: %q", stderr)
 	}
-	// The write landed in the cluster --context named: the Mac's objects exist.
 	n := newMetalNames("mac-a")
 	sa := &corev1.ServiceAccount{}
-	if err := c.Get(ctx, types.NamespacedName{Namespace: ns, Name: n.ServiceAccount}, sa); err != nil {
-		t.Fatalf("token create --context ctx-b wrote no ServiceAccount: %v", err)
+	if err := c.Get(ctx, types.NamespacedName{Namespace: nsB, Name: n.ServiceAccount}, sa); err != nil {
+		t.Fatalf("token create --context ctx-b wrote no ServiceAccount in ctx-b's namespace %s: %v", nsB, err)
+	}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: nsA, Name: n.ServiceAccount},
+		&corev1.ServiceAccount{}); err == nil {
+		t.Errorf("token create --context ctx-b wrote into ctx-a's namespace %s", nsA)
 	}
 
 	// An unknown --context fails before any write, naming the context.
-	_, _, err = runMetal(t, "token", "create", "mac-b", "-n", ns, "--context", "ctx-missing")
+	_, _, err = runMetal(t, "token", "create", "mac-b", "--context", "ctx-missing")
 	if err == nil || !strings.Contains(err.Error(), "ctx-missing") {
 		t.Fatalf("token create --context ctx-missing: err = %v, want a refusal naming ctx-missing", err)
 	}
 	mb := newMetalNames("mac-b")
-	if err := c.Get(ctx, types.NamespacedName{Namespace: ns, Name: mb.ServiceAccount},
-		&corev1.ServiceAccount{}); err == nil {
-		t.Error("a refused --context still wrote mac-b's ServiceAccount")
+	for _, name := range []string{nsA, nsB} {
+		if err := c.Get(ctx, types.NamespacedName{Namespace: name, Name: mb.ServiceAccount},
+			&corev1.ServiceAccount{}); err == nil {
+			t.Errorf("a refused --context still wrote mac-b's ServiceAccount into %s", name)
+		}
 	}
 }
 
@@ -200,7 +223,8 @@ func TestMetalTokenCreateWarnsAboutAnotherMacInTheNamespace(t *testing.T) {
 	if !strings.Contains(stderr, "mac-a") {
 		t.Errorf("stderr does not name the Mac already in the namespace: %q", stderr)
 	}
-	if !strings.Contains(stderr, "namespace per Mac") || !strings.Contains(stderr, "allowlist") {
+	if !strings.Contains(stderr, "namespace per Mac") || !strings.Contains(stderr, "--inference-service-allowlist") ||
+		!strings.Contains(stderr, "--allowlist") {
 		t.Errorf("the warning does not name the two fixes: %q", stderr)
 	}
 

@@ -20,7 +20,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"io"
 	"testing"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -115,5 +114,3 @@ func (f failingListReader) Get(context.Context, client.ObjectKey, client.Object,
 func (f failingListReader) List(context.Context, client.ObjectList, ...client.ListOption) error {
 	return f.err
 }
-
-var _ io.Writer = (*bytes.Buffer)(nil)
