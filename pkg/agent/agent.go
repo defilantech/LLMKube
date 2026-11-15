@@ -2670,9 +2670,10 @@ func (a *MetalAgent) failMemoryCheck(
 
 // estimateModelMemory builds a MemoryEstimate for a model using the file on
 // disk (preferred), the Status.Size string, or a HEAD probe of an http(s)
-// source as a last resort, plus the GGUF attention shape from the Model status
-// or, failing that, from the header of the model file on this Mac (see
-// attentionShapeFor). Cache types are passed through so quantized KV caches (q8_0, turbo3, turbo4) produce a
+// source as a last resort, plus the GGUF attention shape from the header of
+// the model file on this Mac or, while that file is not there, from the Model
+// status (see attentionShapeFor). Cache types are passed through so quantized
+// KV caches (q8_0, turbo3, turbo4) produce a
 // realistic estimate instead of always assuming f16. The remote fallback
 // matters on fresh hosts: with no file on disk and a not-yet-populated status
 // size ("0"), the old chain errored out and the caller started the process
@@ -2801,24 +2802,29 @@ func (a *MetalAgent) estimateModelMemory(
 	return estimate, nil
 }
 
-// attentionShapeFor returns the attention shape the KV-cache estimate uses:
-// Model.status.gguf when the controller recorded one, else the GGUF header of
-// headerPath, the file the agent will load. The controller fills the status
-// only for http(s) and s3 sources it could read, so a local GGUF (the usual
-// case on a Mac), a source whose remote header read failed, and an hf://
-// source all rely on the header here. headerPath is empty when the model is
-// not on this Mac yet. notCounted says why there is no shape, if there is
-// none.
+// attentionShapeFor returns the attention shape the KV-cache estimate uses.
+// The header of headerPath, the file llama-server loads, wins once that file
+// is on this Mac; the Model status covers the first start before the
+// download lands and a header that could not be read. The status records no
+// per-layer layout and no KV head count for a file that stores them per
+// layer, so a hybrid model sized from it is over-charged. headerPath is
+// empty when the model is not on this Mac yet. notCounted says why there is
+// no shape, if there is none.
 func (a *MetalAgent) attentionShapeFor(
 	model *inferencev1alpha1.Model, headerPath string, followSymlinks bool,
 ) (shape attentionShape, notCounted string) {
+	if headerPath != "" {
+		if shape, notCounted = a.ggufShapes.shapeOf(headerPath, followSymlinks); shape.known() {
+			return shape, ""
+		}
+	}
 	if shape = shapeFromStatus(model.Status.GGUF); shape.known() {
 		return shape, ""
 	}
 	if headerPath == "" {
 		return attentionShape{}, "the Model status has no GGUF attention shape and the model file is not on this Mac yet"
 	}
-	return a.ggufShapes.shapeOf(headerPath, followSymlinks)
+	return attentionShape{}, notCounted
 }
 
 // llamaServerAutoSlots is how many slots llama-server runs when --parallel is
