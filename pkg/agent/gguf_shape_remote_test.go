@@ -17,10 +17,14 @@ limitations under the License.
 package agent
 
 import (
+	"bytes"
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 )
@@ -109,5 +113,77 @@ func TestEstimateModelMemory_FileHeaderWinsOverStatusShape(t *testing.T) {
 	if est.RecurrentStateBytes != wantRecurrent {
 		t.Errorf("RecurrentStateBytes = %d, want %d (30 recurrent layers * 2 sequences)",
 			est.RecurrentStateBytes, wantRecurrent)
+	}
+}
+
+// headerServer serves data with Range support, the shape a model host uses for
+// a header-only read: HEAD for the size and Accept-Ranges, then ranged GETs.
+func headerServer(t *testing.T, data []byte) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.ServeContent(w, r, "model.gguf", time.Time{}, bytes.NewReader(data))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// #2552: on the first deploy the file is not in the model store yet, but the
+// remote source's header is readable. It carries the per-layer layout the
+// Model status cannot, so admission must size the model from it rather than
+// refusing a model that fits and never downloading it.
+func TestEstimateModelMemory_RemoteHeaderWinsOverStatusBeforeDownload(t *testing.T) {
+	srv := headerServer(t, buildLayoutGGUF(t, "qwen35moe", qwopus35BMTPLayout))
+	wantKV := uint64(11 * 2 * 262144 * (256 + 256) * 2)
+	wantRecurrent := uint64(30 * (3*(4096+2*16*128) + 128*4096) * 4 * 2)
+
+	for name, status := range map[string]*inferencev1alpha1.GGUFMetadata{
+		"status shape lacks the layout": qwopus35BMTPStatus,
+		"status shape absent":           nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			agent := newAdmissionTestAgent(t, nil, MetalAgentConfig{AllowedDownloadHosts: []string{"127.0.0.1"}})
+			model := newAdmissionTestModel(srv.URL+"/Qwopus3.6-35B-A3B-MTP-Q6_K.gguf", "4.0 KiB")
+			model.Status.GGUF = status
+
+			est, err := agent.estimateModelMemory(context.Background(), model, 262144, "", "", 2)
+			if err != nil {
+				t.Fatalf("estimateModelMemory: %v", err)
+			}
+			if est.KVCacheBytes != wantKV {
+				t.Errorf("KVCacheBytes = %d, want %d (10 interval layers + 1 MTP layer from the remote header)",
+					est.KVCacheBytes, wantKV)
+			}
+			if est.RecurrentStateBytes != wantRecurrent {
+				t.Errorf("RecurrentStateBytes = %d, want %d (30 recurrent layers * 2 sequences)",
+					est.RecurrentStateBytes, wantRecurrent)
+			}
+			if est.KVCacheNotCounted != "" {
+				t.Errorf("KVCacheNotCounted = %q, want empty: the remote header supplied the shape", est.KVCacheNotCounted)
+			}
+		})
+	}
+}
+
+// A source the agent cannot read over the remote path still falls back to the
+// status shape, as before.
+func TestEstimateModelMemory_UnreadableRemoteHeaderFallsBackToStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+
+	agent := newAdmissionTestAgent(t, nil, MetalAgentConfig{AllowedDownloadHosts: []string{"127.0.0.1"}})
+	model := newAdmissionTestModel(srv.URL+"/model.gguf", "4.0 KiB")
+	model.Status.GGUF = &inferencev1alpha1.GGUFMetadata{
+		LayerCount: 64, EmbeddingSize: 5120, HeadCount: 64, HeadCountKV: 8, KeyLength: 128, ValueLength: 128,
+	}
+
+	est, err := agent.estimateModelMemory(context.Background(), model, 131072, "", "", 0)
+	if err != nil {
+		t.Fatalf("estimateModelMemory: %v", err)
+	}
+	if est.KVCacheBytes != qwen3_32BKVAt131072 {
+		t.Errorf("KVCacheBytes = %d, want %d (the status shape after the remote header read failed)",
+			est.KVCacheBytes, qwen3_32BKVAt131072)
 	}
 }

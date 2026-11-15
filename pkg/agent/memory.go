@@ -504,19 +504,25 @@ func s3ObjectSize(ctx context.Context, exec *MetalExecutor, source string, key s
 	return remoteModelSize(ctx, client, objectURL)
 }
 
-// s3SizeProbe sizes an s3:// Model source for the pre-flight memory check.
-// It reuses the registered llama.cpp executor so the probe dials with the
-// same allowlist, resolver and CA trust as the download; a unit test that has
-// not called buildExecutors gets an equivalently wired stand-in.
-func (a *MetalAgent) s3SizeProbe(ctx context.Context, model *inferencev1alpha1.Model) (uint64, error) {
+// llamaServerExecutor returns the registered llama.cpp executor so a
+// pre-flight read dials with the same allowlist, resolver and CA trust as the
+// download; a unit test that has not called buildExecutors gets an equivalently
+// wired stand-in.
+func (a *MetalAgent) llamaServerExecutor() *MetalExecutor {
 	exec, _ := a.executors[runtimeLlamaServer].(*MetalExecutor)
-	if exec == nil {
-		exec = NewMetalExecutor(a.config.LlamaServerBin, a.config.ModelStorePath, a.logger,
-			WithKubeClient(a.config.K8sClient, nil),
-			WithAllowUnlabeledSourceSecrets(a.config.AllowUnlabeledSourceSecrets),
-			WithAllowedDownloadHosts(a.config.AllowedDownloadHosts))
+	if exec != nil {
+		return exec
 	}
-	return s3ObjectSize(ctx, exec, model.Spec.Source, sourceSecretKeyFor(model.Namespace, model.Spec.SourceSecretRef))
+	return NewMetalExecutor(a.config.LlamaServerBin, a.config.ModelStorePath, a.logger,
+		WithKubeClient(a.config.K8sClient, nil),
+		WithAllowUnlabeledSourceSecrets(a.config.AllowUnlabeledSourceSecrets),
+		WithAllowedDownloadHosts(a.config.AllowedDownloadHosts))
+}
+
+// s3SizeProbe sizes an s3:// Model source for the pre-flight memory check.
+func (a *MetalAgent) s3SizeProbe(ctx context.Context, model *inferencev1alpha1.Model) (uint64, error) {
+	return s3ObjectSize(ctx, a.llamaServerExecutor(), model.Spec.Source,
+		sourceSecretKeyFor(model.Namespace, model.Spec.SourceSecretRef))
 }
 
 // parseSize parses a human-readable size string (as produced by model_controller's

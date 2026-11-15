@@ -18,9 +18,12 @@ package agent
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	neturl "net/url"
 	"os"
 	"strings"
 	"sync"
@@ -409,6 +412,134 @@ func pathErrorCause(err error) error {
 		return pe.Err
 	}
 	return err
+}
+
+// remoteGGUFShapeTimeout bounds the header-only read of a remote source so a
+// hung or slow model host cannot hold up admission.
+const remoteGGUFShapeTimeout = 30 * time.Second
+
+// isRemoteGGUFSource reports whether source is one this agent can read a GGUF
+// header from without the file being on this Mac: an http(s) URL, or an hf://
+// source its resolver turns into one. An s3:// object is left out on purpose:
+// a range read would change the method its presigned probe signs for, so that
+// path keeps sizing from the Model status until it gets its own change.
+func isRemoteGGUFSource(source string) bool {
+	lower := strings.ToLower(source)
+	return strings.HasPrefix(lower, "http://") ||
+		strings.HasPrefix(lower, "https://") || strings.HasPrefix(lower, "hf://")
+}
+
+// remoteAttentionShape reads the attention shape from the GGUF header of a
+// remote source, through the same guarded clients and source credentials the
+// download uses. A failure is not fatal: the caller falls back to the Model
+// status shape.
+func (a *MetalAgent) remoteAttentionShape(
+	ctx context.Context, model *inferencev1alpha1.Model,
+) (attentionShape, string) {
+	if !isRemoteGGUFSource(model.Spec.Source) {
+		return attentionShape{}, ""
+	}
+	return a.llamaServerExecutor().remoteAttentionShape(ctx, model.Spec.Source,
+		sourceSecretKeyFor(model.Namespace, model.Spec.SourceSecretRef))
+}
+
+func (e *MetalExecutor) remoteAttentionShape(
+	ctx context.Context, source string, secretRef sourceSecretKey,
+) (attentionShape, string) {
+	client, url, release, err := e.remoteHeaderSource(ctx, source, secretRef)
+	if err != nil {
+		return attentionShape{}, fmt.Sprintf("the GGUF header of %s is unreadable: %v", source, err)
+	}
+	defer release()
+
+	ctx, cancel := context.WithTimeout(ctx, remoteGGUFShapeTimeout)
+	defer cancel()
+	return readRemoteGGUFShape(ctx, client, url)
+}
+
+// remoteHeaderSource returns the guarded client and URL for a header-only read
+// of source, plus a release func. s3:// goes through the signed download client
+// and sourceSecretRef credentials; everything else uses the download client,
+// the hf:// resolver, and the Hugging Face bearer token when the source is a
+// host that should see it.
+func (e *MetalExecutor) remoteHeaderSource(
+	ctx context.Context, source string, secretRef sourceSecretKey,
+) (*http.Client, string, func(), error) {
+	if isS3Source(source) {
+		creds, err := e.resolveS3Credentials(ctx, source, secretRef)
+		if err != nil {
+			return nil, "", nil, err
+		}
+		client, objectURL, err := e.s3DownloadClient(source, creds)
+		if err != nil {
+			return nil, "", nil, err
+		}
+		return client, objectURL, func() { client.CloseIdleConnections() }, nil
+	}
+
+	url := hfNormalize(source)
+	client := e.downloadClient()
+	release := func() { client.CloseIdleConnections() }
+
+	var token string
+	if secretRef != nil {
+		secretToken, hfEndpoint, err := e.resolveHFAuth(ctx, secretRef)
+		if err != nil {
+			release()
+			return nil, "", nil, err
+		}
+		if isHFAuthHostForEndpoint(source, hfEndpoint) {
+			token = secretToken
+		}
+	}
+	if token != "" {
+		host := ""
+		if u, err := neturl.Parse(url); err == nil {
+			host = u.Host
+		}
+		client.Transport = &hfHeaderAuthTransport{base: client.Transport, token: token, host: host}
+	}
+	return client, url, release, nil
+}
+
+// hfHeaderAuthTransport attaches a Hugging Face bearer token to the header
+// read's own-host requests, leaving a redirected host (the CDN) without it,
+// the same boundary hfRedirectStripper enforces for a download.
+type hfHeaderAuthTransport struct {
+	base  http.RoundTripper
+	token string
+	host  string
+}
+
+func (t *hfHeaderAuthTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.URL.Host == t.host && req.Header.Get("Authorization") == "" {
+		clone := req.Clone(req.Context())
+		clone.Header.Set("Authorization", "Bearer "+t.token)
+		req = clone
+	}
+	return t.base.RoundTrip(req)
+}
+
+func (t *hfHeaderAuthTransport) CloseIdleConnections() {
+	if c, ok := t.base.(interface{ CloseIdleConnections() }); ok {
+		c.CloseIdleConnections()
+	}
+}
+
+// readRemoteGGUFShape parses the header of url with pkg/gguf, which reads only
+// the metadata and tensor index over Range requests, and returns its attention
+// shape or why there is none.
+func readRemoteGGUFShape(ctx context.Context, client *http.Client, url string) (attentionShape, string) {
+	parsed, err := gguf.ParseFromURLWithClient(ctx, client, url)
+	if err != nil {
+		return attentionShape{}, fmt.Sprintf("the GGUF header of %s is unreadable: %v", url, err)
+	}
+	shape := shapeFromParsed(parsed)
+	if !shape.known() {
+		return attentionShape{}, fmt.Sprintf("the GGUF header of %s has no block count or embedding length "+
+			"for architecture %q", url, parsed.Architecture())
+	}
+	return shape, ""
 }
 
 // readGGUFShape parses the header of r with pkg/gguf, reading at most
