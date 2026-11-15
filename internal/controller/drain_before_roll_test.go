@@ -958,10 +958,19 @@ var _ = Describe("RolloutPolicy drain-before-rollout", func() {
 			}
 			Expect(k8sClient.Create(ctx, pod)).To(Succeed())
 			defer func() { _ = k8sClient.Delete(ctx, pod) }()
-			// Mark it Ready so this exercises the busy path rather than the
-			// crashloop path: a Ready pod the endpoint list has not caught up
-			// with yet is exactly what must not be rolled over.
-			pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+			// Mark it Ready with a running container so this exercises the
+			// busy path rather than the crashloop path: a Ready pod the
+			// endpoint list has not caught up with yet is exactly what must
+			// not be rolled over.
+			pod.Status = corev1.PodStatus{
+				Phase:      corev1.PodRunning,
+				Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}},
+				ContainerStatuses: []corev1.ContainerStatus{{
+					Name:  "llama-server",
+					Ready: true,
+					State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}},
+				}},
+			}
 			Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
 
 			result, err := reconciler.Reconcile(ctx, reconcile.Request{
@@ -1043,7 +1052,15 @@ var _ = Describe("RolloutPolicy drain-before-rollout", func() {
 			}
 			Expect(k8sClient.Create(ctx, pod)).To(Succeed())
 			defer func() { _ = k8sClient.Delete(ctx, pod) }()
-			pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+			pod.Status = corev1.PodStatus{
+				Phase:      corev1.PodRunning,
+				Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}},
+				ContainerStatuses: []corev1.ContainerStatus{{
+					Name:  "llama-server",
+					Ready: true,
+					State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}},
+				}},
+			}
 			Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
 
 			result, err := reconciler.Reconcile(ctx, reconcile.Request{
@@ -2615,10 +2632,11 @@ var _ = Describe("countOldPods", func() {
 			Scheme:             k8sClient.Scheme(),
 			InitContainerImage: "docker.io/curlimages/curl:8.18.0",
 		}
-		total, ready, err := reconciler.countOldPods(ctx, isvc)
+		total, ready, running, err := reconciler.countOldPods(ctx, isvc)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(total).To(Equal(int32(0)))
 		Expect(ready).To(Equal(int32(0)))
+		Expect(running).To(Equal(int32(0)))
 	})
 
 	It("should count all pods as ready when all are Ready", func() {
@@ -2662,10 +2680,11 @@ var _ = Describe("countOldPods", func() {
 			Scheme:             k8sClient.Scheme(),
 			InitContainerImage: "docker.io/curlimages/curl:8.18.0",
 		}
-		total, ready, err := reconciler.countOldPods(ctx, isvc)
+		total, ready, running, err := reconciler.countOldPods(ctx, isvc)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(total).To(Equal(int32(3)))
 		Expect(ready).To(Equal(int32(3)))
+		Expect(running).To(Equal(int32(0)))
 	})
 
 	It("should count zero ready when all pods are crashlooping", func() {
@@ -2709,10 +2728,11 @@ var _ = Describe("countOldPods", func() {
 			Scheme:             k8sClient.Scheme(),
 			InitContainerImage: "docker.io/curlimages/curl:8.18.0",
 		}
-		total, ready, err := reconciler.countOldPods(ctx, isvc)
+		total, ready, running, err := reconciler.countOldPods(ctx, isvc)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(total).To(Equal(int32(3)))
 		Expect(ready).To(Equal(int32(0)))
+		Expect(running).To(Equal(int32(0)))
 	})
 
 	It("should count mixed ready and crashlooping correctly", func() {
@@ -2780,10 +2800,11 @@ var _ = Describe("countOldPods", func() {
 			Scheme:             k8sClient.Scheme(),
 			InitContainerImage: "docker.io/curlimages/curl:8.18.0",
 		}
-		total, ready, err := reconciler.countOldPods(ctx, isvc)
+		total, ready, running, err := reconciler.countOldPods(ctx, isvc)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(total).To(Equal(int32(3)))
 		Expect(ready).To(Equal(int32(1)))
+		Expect(running).To(Equal(int32(0)))
 	})
 })
 
@@ -2791,7 +2812,7 @@ var _ = Describe("RolloutPolicy crashlooping pods", func() {
 	ctx := context.Background()
 
 	Context("when all old-generation pods are crashlooping", func() {
-		It("should defer rollout because nothing is reachable (undetermined)", func() {
+		It("should proceed with the rollout because no serving container is running", func() {
 			// Names must be unique across the shared "default" namespace: envtest
 			// has no pod GC, and this spec's crashlooping pods would otherwise
 			// leak into the countOldPods unit spec that reuses this label
@@ -2854,7 +2875,7 @@ var _ = Describe("RolloutPolicy crashlooping pods", func() {
 			dep := &appsv1.Deployment{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, dep)).To(Succeed())
 
-			// Create 3 crashlooping pods (not Ready)
+			// Create 3 crashlooping pods (not Ready, container waiting)
 			for i := 0; i < 3; i++ {
 				pod := &corev1.Pod{
 					ObjectMeta: metav1.ObjectMeta{
@@ -2877,7 +2898,7 @@ var _ = Describe("RolloutPolicy crashlooping pods", func() {
 					},
 					ContainerStatuses: []corev1.ContainerStatus{
 						{
-							Name:  isvcName,
+							Name:  dep.Spec.Template.Spec.Containers[0].Name,
 							Ready: false,
 							State: corev1.ContainerState{
 								Waiting: &corev1.ContainerStateWaiting{
@@ -2902,27 +2923,23 @@ var _ = Describe("RolloutPolicy crashlooping pods", func() {
 			updated.Spec.Image = "ghcr.io/ggml-org/llama.cpp:server-v2"
 			Expect(k8sClient.Update(ctx, updated)).To(Succeed())
 
-			// Second reconcile: all pods crashlooping and nothing reachable.
-			// The state is undetermined — the pods are not Ready but may still
-			// be processing accepted generations — so the rollout must NOT
-			// silently proceed. It defers (fail-closed) instead.
+			// Second reconcile: every pod's serving container is waiting, so
+			// none of them can be holding a request (#2553). The rollout goes.
 			result, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: isvcName, Namespace: "default"},
 			})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.RequeueAfter).To(BeNumerically(">", 0))
+			Expect(result.RequeueAfter).To(BeZero())
 
-			// Verify deployment was NOT updated (image unchanged)
+			// Verify deployment WAS updated
 			finalDep := &appsv1.Deployment{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, finalDep)).To(Succeed())
-			Expect(finalDep.Spec.Template.Spec.Containers[0].Image).To(Equal("ghcr.io/ggml-org/llama.cpp:server"))
+			Expect(finalDep.Spec.Template.Spec.Containers[0].Image).To(Equal("ghcr.io/ggml-org/llama.cpp:server-v2"))
 
-			// Verify RolloutDeferred condition IS set
+			// Verify no deferred condition
 			finalISVC := &inferencev1alpha1.InferenceService{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: isvcName, Namespace: "default"}, finalISVC)).To(Succeed())
-			cond := findRolloutDeferredCondition(finalISVC.Status.Conditions)
-			Expect(cond).NotTo(BeNil())
-			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+			Expect(findRolloutDeferredCondition(finalISVC.Status.Conditions)).To(BeNil())
 		})
 	})
 
@@ -3091,7 +3108,7 @@ var _ = Describe("RolloutPolicy crashlooping pods", func() {
 			Expect(cond).NotTo(BeNil())
 			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 			Expect(cond.Reason).To(Equal(ReasonPodsCrashLooping))
-			Expect(cond.Message).To(ContainSubstring("crashlooping"))
+			Expect(cond.Message).To(ContainSubstring("not running their serving container"))
 
 			// Verify deployment was NOT updated
 			notUpdated := &appsv1.Deployment{}
