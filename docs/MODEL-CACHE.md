@@ -200,7 +200,13 @@ container with bad weights.
   file size and its modification time, so a stamp can only vouch for the
   exact bytes that were hashed. A later start skips re-hashing gigabytes only
   while all three still agree; a missing, stale or differently-sized file is
-  hashed once and re-stamped. The stamp is written to a temp file and renamed,
+  hashed once and re-stamped. On a FUSE cache (`stat -f -c %t` reports
+  `65735546`, which includes BlobFuse and virtiofs) a stamp whose digest and
+  size match is a hit even when the modification time differs, and the stamp
+  is refreshed to the time this mount sees: a rename there can land a new
+  modification time that every other mount reports. A same-size in-place
+  rewrite is caught by the modification time only where every cache keeps the
+  full triple. The stamp is written to a temp file and renamed,
   so a concurrent reader never sees a truncated one. The metal agent's model
   store writes and reads the same triple, so a stamp from either side is
   legible to the other, and a bare-digest stamp from an older agent release is

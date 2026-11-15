@@ -577,8 +577,12 @@ fails the init container, so the pod never starts with bad weights.
 - A verified artifact gets a `<model>.sha256` stamp holding the digest plus
   the file size and modification time, so a stamp can only vouch for the exact
   bytes that were hashed. Later starts skip re-hashing while all three agree;
-  a missing, stale or differently-sized file is hashed once and re-stamped.
-  The stamp is written to a temp file and renamed, so a concurrent reader
+  a missing, stale or differently-sized file is hashed once and re-stamped. On
+  a FUSE cache (BlobFuse, virtiofs) a stamp whose digest and size match is a
+  hit even when the modification time differs, and the stamp is refreshed to
+  the time this mount sees; a same-size in-place rewrite is caught only where
+  the modification time is compared. The stamp is written to a temp file and
+  renamed, so a concurrent reader
   never sees a truncated one. The metal agent's model store writes and reads
   the same triple, so a stamp from either side is legible to the other, and a
   bare-digest stamp from an older agent release is hashed once and rewritten.
