@@ -22,6 +22,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
+	"net/url"
 	"slices"
 	"strings"
 	"time"
@@ -58,6 +60,7 @@ type metalTokenOptions struct {
 	namespace     string
 	ttl           time.Duration
 	server        string
+	context       string
 	tlsServerName string
 	output        string
 	// assumeSameServer lets an unreachable --server be checked against the
@@ -114,6 +117,8 @@ new one. The Mac never sees your credentials.`,
 	cmd.Flags().DurationVar(&opts.ttl, "ttl", metalTokenTTLDefault, "How long the join string works (10m to 24h)")
 	cmd.Flags().StringVar(&opts.server, "server", "",
 		"API server URL the Mac connects to (default: the current context's server)")
+	cmd.Flags().StringVar(&opts.context, "context", "",
+		"Kubeconfig context to write to and name in the output (default: the current context)")
 	cmd.Flags().StringVar(&opts.tlsServerName, "tls-server-name", "",
 		"Name the Mac verifies the API server's certificate against (default: set automatically when the "+
 			"server's address is not in the certificate)")
@@ -160,16 +165,19 @@ func runMetalTokenCreate(cmd *cobra.Command, mac string, opts *metalTokenOptions
 	}
 	log := cmd.ErrOrStderr()
 
-	target, err := loadMetalTarget(opts.namespace, opts.server)
+	target, err := loadMetalTarget(opts.namespace, opts.server, opts.context)
 	if err != nil {
 		return err
 	}
+	_, _ = fmt.Fprintf(log, "target: context %s, API server %s\n",
+		metalTargetContextName(target.Context), target.Config.Host)
 	// Settle what the Mac will trust before creating anything, so a join
 	// string that could not work leaves nothing behind.
 	ca, tlsServerName, err := resolveJoinTLS(ctx, target, opts.tlsServerName, opts.assumeSameServer, log)
 	if err != nil {
 		return err
 	}
+	warnLoopbackJoinServer(log, target.Server, opts.server != "")
 	pin, err := metaljoin.CAPin(ca.Raw)
 	if err != nil {
 		return err
@@ -198,6 +206,8 @@ func runMetalTokenCreate(cmd *cobra.Command, mac string, opts *metalTokenOptions
 	if err != nil {
 		return fmt.Errorf("create client: %w", err)
 	}
+
+	warnAboutOtherMacs(ctx, c, target.Namespace, mac, log)
 
 	issued, err := metalTokenCreate(ctx, c, target.Namespace, mac, opts.ttl, log)
 	if err != nil {
@@ -228,6 +238,80 @@ func runMetalTokenCreate(cmd *cobra.Command, mac string, opts *metalTokenOptions
 
 func metalJoinCommand(joinString string) string {
 	return "llmkube metal join " + joinString
+}
+
+// metalTargetContextName is the context name the target line prints. client-go
+// refuses a kubeconfig with no named current context before this runs, so the
+// fallback is only reached if that ever changes.
+func metalTargetContextName(name string) string {
+	if name == "" {
+		return "(current context)"
+	}
+	return name
+}
+
+// warnLoopbackJoinServer warns when the join string's server is a loopback
+// address, which only a Mac on the same machine can reach. fromFlag says the
+// address came from --server, so the warning cannot ask for it again.
+func warnLoopbackJoinServer(log io.Writer, server string, fromFlag bool) {
+	u, err := url.Parse(server)
+	if err != nil {
+		return
+	}
+	if !isLoopbackHost(u.Hostname()) {
+		return
+	}
+	if fromFlag {
+		_, _ = fmt.Fprintf(log, "warning: --server %s is a loopback address, so only a Mac on this machine can "+
+			"use this join string; pass a --server address the Mac reaches\n", server)
+		return
+	}
+	_, _ = fmt.Fprintf(log, "warning: %s is a loopback address, so only a Mac on this machine can use this "+
+		"join string; pass --server with an address the Mac reaches\n", server)
+}
+
+// isLoopbackHost reports whether host is a loopback address a remote machine
+// cannot reach: an IP literal in 127.0.0.0/8 or ::1, or the name localhost.
+// Only literals and that one name count, so a name that happens to resolve to
+// loopback from here is not detected (resolving it could pick the wrong
+// address family, or block).
+// pkg/agent's isLoopbackHost matches only 127.0.0.1 and ::1, for one proxy,
+// and validateMetalJoinHostIP rejects a wider set (unspecified, link-local and
+// multicast too). Each answers a different question, so they are not shared.
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// warnAboutOtherMacs warns when the namespace already has a MetalNode for a
+// Mac other than mac: two Macs in one namespace both claim every Metal
+// InferenceService there, so traffic switches between them and the relay
+// restarts. The list is advisory, so a cluster without the MetalNode CRD, or
+// an admin who cannot list them, warns about nothing and does not fail.
+func warnAboutOtherMacs(ctx context.Context, c client.Reader, namespace, mac string, log io.Writer) {
+	var macs inferencev1alpha1.MetalNodeList
+	if err := c.List(ctx, &macs, client.InNamespace(namespace)); err != nil {
+		return
+	}
+	var others []string
+	for i := range macs.Items {
+		mn := &macs.Items[i]
+		if mn.Name == mac || mn.Labels[inferencev1alpha1.LabelMetalNode] == mac {
+			continue
+		}
+		others = append(others, mn.Name)
+	}
+	if len(others) == 0 {
+		return
+	}
+	slices.Sort(others)
+	_, _ = fmt.Fprintf(log, "warning: namespace %s already has %s; two Macs in one namespace both claim every "+
+		"Metal InferenceService there, so traffic switches between them. Use one namespace per Mac, or set "+
+		"the agent's --inference-service-allowlist (metal join --allowlist) on every Mac\n",
+		namespace, strings.Join(others, ", "))
 }
 
 // writeMetalTokenText prints the join command alone on the first line, so it

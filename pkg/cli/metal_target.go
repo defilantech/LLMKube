@@ -48,17 +48,20 @@ type metalTarget struct {
 	Server string
 	// KubeServer is the kubeconfig cluster's server.
 	KubeServer string
+	// Context is the name of the kubeconfig context that was loaded.
+	Context string
 	// CAs are the certificates in the kubeconfig cluster's CA data or file.
 	CAs []*x509.Certificate
 	// TLSServerName is the kubeconfig cluster's tls-server-name, if any.
 	TLSServerName string
 }
 
-// loadMetalTarget reads the current kubeconfig context the way kubectl does
-// ($KUBECONFIG, else ~/.kube/config). It refuses a cluster entry the Mac
-// could not trust on its own: one that skips TLS verification or has no CA.
-func loadMetalTarget(namespaceFlag, serverFlag string) (*metalTarget, error) {
-	cfg, ns, err := loadMetalAdminConfig(namespaceFlag)
+// loadMetalTarget reads the kubeconfig context contextFlag names, else the
+// current one, the way kubectl does ($KUBECONFIG, else ~/.kube/config). It
+// refuses a cluster entry the Mac could not trust on its own: one that skips
+// TLS verification or has no CA.
+func loadMetalTarget(namespaceFlag, serverFlag, contextFlag string) (*metalTarget, error) {
+	cfg, ns, contextName, err := loadMetalAdminConfigForContext(namespaceFlag, contextFlag)
 	if err != nil {
 		return nil, err
 	}
@@ -93,6 +96,7 @@ func loadMetalTarget(namespaceFlag, serverFlag string) (*metalTarget, error) {
 		Namespace:     ns,
 		Server:        server,
 		KubeServer:    cfg.Host,
+		Context:       contextName,
 		CAs:           cas,
 		TLSServerName: cfg.ServerName,
 	}, nil
@@ -101,19 +105,44 @@ func loadMetalTarget(namespaceFlag, serverFlag string) (*metalTarget, error) {
 // loadMetalAdminConfig returns the current context's client config and the
 // namespace: namespaceFlag, else the context's, else "default".
 func loadMetalAdminConfig(namespaceFlag string) (*rest.Config, string, error) {
+	cfg, ns, _, err := loadMetalAdminConfigForContext(namespaceFlag, "")
+	return cfg, ns, err
+}
+
+// loadMetalAdminConfigForContext is loadMetalAdminConfig for the context
+// contextFlag names, else the current one, and reports which context it
+// loaded.
+func loadMetalAdminConfigForContext(namespaceFlag, contextFlag string) (*rest.Config, string, string, error) {
+	overrides := &clientcmd.ConfigOverrides{}
+	if contextFlag != "" {
+		overrides.CurrentContext = contextFlag
+	}
 	cc := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
-		clientcmd.NewDefaultClientConfigLoadingRules(), &clientcmd.ConfigOverrides{})
+		clientcmd.NewDefaultClientConfigLoadingRules(), overrides)
 	cfg, err := cc.ClientConfig()
 	if err != nil {
-		return nil, "", fmt.Errorf("load kubeconfig: %w", err)
+		if contextFlag != "" {
+			return nil, "", "", fmt.Errorf("load kubeconfig context %q: %w", contextFlag, err)
+		}
+		return nil, "", "", fmt.Errorf("load kubeconfig: %w", err)
 	}
-	ns := namespaceFlag
-	if ns == "" {
-		if ns, _, err = cc.Namespace(); err != nil {
-			return nil, "", fmt.Errorf("read the kubeconfig context's namespace: %w", err)
+	namespace := namespaceFlag
+	if namespace == "" {
+		if namespace, _, err = cc.Namespace(); err != nil {
+			return nil, "", "", fmt.Errorf("read the kubeconfig context's namespace: %w", err)
 		}
 	}
-	return cfg, ns, nil
+	// RawConfig reports the kubeconfig file's current-context, not one a
+	// --context override selected, so prefer the override.
+	contextName := contextFlag
+	if contextName == "" {
+		raw, err := cc.RawConfig()
+		if err != nil {
+			return nil, "", "", fmt.Errorf("read the kubeconfig: %w", err)
+		}
+		contextName = raw.CurrentContext
+	}
+	return cfg, namespace, contextName, nil
 }
 
 func checkHTTPSServer(server, what string) error {
