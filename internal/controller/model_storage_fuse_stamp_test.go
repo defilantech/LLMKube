@@ -291,10 +291,10 @@ func TestFUSERecheckStamp(t *testing.T) {
 				wantStamp = stampTriple(t, path, digest)
 			}
 			if tc.readOnly {
-				if err := os.Chmod(dir, 0o555); err != nil {
+				if err := os.Chmod(dir, 0o555); err != nil { // #nosec G302 -- the test needs a directory the uid cannot write
 					t.Fatal(err)
 				}
-				t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+				t.Cleanup(func() { _ = os.Chmod(dir, 0o755) }) // #nosec G302 -- restores the temp dir
 			}
 
 			// The gate set, then one check of model.gguf: the scene a restart
@@ -304,7 +304,6 @@ func TestFUSERecheckStamp(t *testing.T) {
 			if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\n"+script+"\n"), 0o755); err != nil {
 				t.Fatal(err)
 			}
-			_ = os.WriteFile("/tmp/full-cmd.txt", []byte(script), 0o644)
 			cmd := exec.Command("sh", scriptPath)
 			cmd.Args = []string{"sh", scriptPath, "model.gguf"}
 			cmd.Dir = dir

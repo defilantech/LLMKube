@@ -581,7 +581,7 @@ fails the init container, so the pod never starts with bad weights.
   a FUSE cache (BlobFuse, virtiofs) a stamp whose digest and size match is a
   hit even when the modification time differs, and the stamp is refreshed to
   the time this mount sees; a same-size in-place rewrite is caught only where
-  the modification time is compared. The stamp is written to a temp file and
+  the modification time is compared, so not on a FUSE cache. The stamp is written to a temp file and
   renamed, so a concurrent reader
   never sees a truncated one. The metal agent's model store writes and reads
   the same triple, so a stamp from either side is legible to the other, and a

@@ -205,8 +205,8 @@ container with bad weights.
   size match is a hit even when the modification time differs, and the stamp
   is refreshed to the time this mount sees: a rename there can land a new
   modification time that every other mount reports. A same-size in-place
-  rewrite is caught by the modification time only where every cache keeps the
-  full triple. The stamp is written to a temp file and renamed,
+  rewrite is caught by the modification time only where it is compared, so
+  not on a FUSE cache. The stamp is written to a temp file and renamed,
   so a concurrent reader never sees a truncated one. The metal agent's model
   store writes and reads the same triple, so a stamp from either side is
   legible to the other, and a bare-digest stamp from an older agent release is
