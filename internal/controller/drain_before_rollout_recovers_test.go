@@ -136,6 +136,13 @@ func (f *rolloutFixture) useIdleStub(t *testing.T, status int, body string) {
 // pod places an old-generation, not-Ready pod whose serving container is in
 // the given state.
 func (f *rolloutFixture) pod(t *testing.T, suffix string, state corev1.ContainerState) *corev1.Pod {
+	return f.podWithFinalizer(t, suffix, state, false)
+}
+
+// podWithFinalizer keeps the pod on the server after a delete, which is the
+// only way to observe a terminating pod from a reconcile in envtest (no
+// kubelet, so an unfinalized pod disappears at once).
+func (f *rolloutFixture) podWithFinalizer(t *testing.T, suffix string, state corev1.ContainerState, finalize bool) *corev1.Pod {
 	t.Helper()
 	container := f.servingContainerName(t)
 	pod := &corev1.Pod{
@@ -150,6 +157,9 @@ func (f *rolloutFixture) pod(t *testing.T, suffix string, state corev1.Container
 		Spec: corev1.PodSpec{
 			Containers: []corev1.Container{{Name: container, Image: rolloutTestImage}},
 		},
+	}
+	if finalize {
+		pod.Finalizers = []string{"test.llmkube.dev/hold"}
 	}
 	if err := f.c.Create(f.ctx, pod); err != nil {
 		t.Fatalf("create pod %s: %v", suffix, err)
@@ -184,8 +194,9 @@ func runningState() corev1.ContainerState {
 
 // endpointSlice publishes an address for the service, so checkServiceIdle
 // probes it instead of taking the no-EndpointSlice fallback.
-func (f *rolloutFixture) endpointSlice(t *testing.T, addr string, ready bool) {
+func (f *rolloutFixture) endpointSlice(t *testing.T, addr string) {
 	t.Helper()
+	ready := false
 	ep := &discoveryv1.EndpointSlice{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: "eslice-",
@@ -258,6 +269,7 @@ func (f *rolloutFixture) rolloutCondition(t *testing.T) *metav1.Condition {
 func TestRolloutProceedsWhenServingContainerIsCrashLooping(t *testing.T) {
 	f := newRolloutFixture(t, "rollout-crashloop", "")
 	f.pod(t, "old", crashLoopState())
+	f.endpointSlice(t, "10.0.0.51")
 
 	if _, err, _ := f.reconcileAfterEdit(t); err != nil {
 		t.Fatalf("reconcile: %v", err)
@@ -274,6 +286,7 @@ func TestRolloutProceedsWhenServingContainerIsCrashLooping(t *testing.T) {
 func TestRolloutProceedsWhenPodIsContainerCreating(t *testing.T) {
 	f := newRolloutFixture(t, "rollout-container-creating", "")
 	f.pod(t, "old", containerCreatingState())
+	f.endpointSlice(t, "10.0.0.52")
 
 	if _, err, _ := f.reconcileAfterEdit(t); err != nil {
 		t.Fatalf("reconcile: %v", err)
@@ -285,8 +298,10 @@ func TestRolloutProceedsWhenPodIsContainerCreating(t *testing.T) {
 }
 
 func TestRolloutProceedsForUnsupportedRuntimeWhenContainerNotRunning(t *testing.T) {
-	f := newRolloutFixture(t, "rollout-unsupported-crashloop", "personaplex")
+	f := newRolloutFixture(t, "rollout-unsupported-crashloop", "generic")
+	setIdleEndpoint(t, f, "/idle")
 	f.pod(t, "old", crashLoopState())
+	f.endpointSlice(t, "10.0.0.53")
 
 	if _, err, _ := f.reconcileAfterEdit(t); err != nil {
 		t.Fatalf("reconcile: %v", err)
@@ -329,11 +344,14 @@ func TestRolloutStillDefersWhenRunningPodAnswersBusy(t *testing.T) {
 		t.Fatalf("deployment image is %q, want %q: a busy running replica must hold the rollout", got, rolloutTestImage)
 	}
 	cond := f.rolloutCondition(t)
-	// The rollout is held either way. The reason differs: base reports
-	// PodsCrashLooping for a not-Ready pod before the probe answer matters,
-	// the branch reports PodsBusy because the pod is running and answered.
+	// The rollout is held either way. Base reports PodsCrashLooping for a
+	// not-Ready pod before the probe answer matters; the branch reports
+	// PodsBusy only for a running replica that answered.
 	if cond == nil || cond.Status != metav1.ConditionTrue {
 		t.Fatalf("RolloutDeferred = %+v, want True", cond)
+	}
+	if cond.Reason != ReasonPodsBusy && cond.Reason != ReasonPodsCrashLooping {
+		t.Fatalf("RolloutDeferred reason = %s, want PodsBusy or PodsCrashLooping", cond.Reason)
 	}
 }
 
@@ -427,7 +445,7 @@ func TestRolloutProceedsWithOnlyATerminatingPod(t *testing.T) {
 func TestRolloutStillDefersWithNoPodsAndAnEndpointSlice(t *testing.T) {
 	f := newRolloutFixture(t, "rollout-no-pods-slice", "generic")
 	setIdleEndpoint(t, f, "/idle")
-	f.endpointSlice(t, "10.0.0.21", false)
+	f.endpointSlice(t, "10.0.0.21")
 
 	if _, err, _ := f.reconcileAfterEdit(t); err != nil {
 		t.Fatalf("reconcile: %v", err)
@@ -445,10 +463,27 @@ func TestRolloutStillDefersWithNoPodsAndAnEndpointSlice(t *testing.T) {
 func TestRolloutDefersWhileATerminatingRunningPodRemains(t *testing.T) {
 	f := newRolloutFixture(t, "rollout-term-running", "generic")
 	f.useIdleStub(t, http.StatusOK, "ok")
-	f.endpointSlice(t, "10.0.0.31", false)
-	pod := f.pod(t, "terminating", runningState())
+	f.endpointSlice(t, "10.0.0.31")
+	pod := f.podWithFinalizer(t, "terminating", runningState(), true)
 	if err := f.c.Delete(f.ctx, pod); err != nil {
 		t.Fatalf("delete pod: %v", err)
+	}
+	live := &corev1.Pod{}
+	if err := f.c.Get(f.ctx, client.ObjectKeyFromObject(pod), live); err != nil {
+		t.Fatalf("get pod: %v", err)
+	}
+	if live.DeletionTimestamp == nil {
+		t.Fatalf("fixture: the pod is not terminating")
+	}
+	container := f.servingContainerName(t)
+	running := false
+	for _, cs := range live.Status.ContainerStatuses {
+		if cs.Name == container && cs.State.Running != nil {
+			running = true
+		}
+	}
+	if !running {
+		t.Fatalf("fixture: the terminating pod should still report a running serving container")
 	}
 
 	if _, err, _ := f.reconcileAfterEdit(t); err != nil {

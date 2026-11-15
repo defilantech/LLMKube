@@ -245,9 +245,11 @@ func (r *InferenceServiceReconciler) checkServiceIdle(ctx context.Context, isvc 
 // countOldPods lists the pods owned by the InferenceService and returns the
 // total count, how many are Ready and how many are running a serving container.
 // A pod is Ready when its PodReady condition is True. It is running when the
-// runtime's container reports State.Running and the pod is not terminating,
-// the same predicate classifyMemberPods applies in modelpool_idle.go: a pod
-// that is not running holds no in-flight request, whatever its readiness.
+// runtime's container reports State.Running, terminating pods included: a
+// container that is not running holds no in-flight request, whatever its
+// readiness. It differs from classifyMemberPods in modelpool_idle.go, which
+// skips terminating pods and accepts any running container; this side has to
+// name the serving container because the drain decision is about it alone.
 // reconcileRolloutPolicy uses the counts to decide whether there is in-flight
 // work to protect before deferring a rollout.
 //
@@ -372,14 +374,13 @@ func (r *InferenceServiceReconciler) reconcileRolloutPolicy(
 		}
 	}
 
-	if checkErr != nil && totalPods > 0 && runningPods == 0 && !errors.Is(checkErr, errNoEndpoints) {
+	if checkErr != nil && totalPods > 0 && runningPods == 0 {
 		// The probe could not answer for any pod, and none of them is running.
 		// An unanswered probe on a stopped container is not ambiguity: a
 		// container that is not running holds nothing (#2553). A running
 		// pod's unanswered probe still defers, which is what #1543 kept.
-		// With no pods listed at all the endpoints are the only evidence,
-		// so an unanswered probe there still defers, and the errNoEndpoints
-		// switch above has already made that decision.
+		// errNoEndpoints never reaches here: every arm of the switch above
+		// replaces it, so the probe error is a per-endpoint failure.
 		idle, checkErr = true, nil
 		log.Info("No serving container running; the failed idle check has nothing to protect, proceeding with rollout")
 	}
