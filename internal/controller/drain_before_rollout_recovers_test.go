@@ -346,14 +346,11 @@ func TestRolloutStillDefersWhenRunningPodAnswersBusy(t *testing.T) {
 		t.Fatalf("deployment image is %q, want %q: a busy running replica must hold the rollout", got, rolloutTestImage)
 	}
 	cond := f.rolloutCondition(t)
-	// The rollout is held either way. Base reports PodsCrashLooping for a
-	// not-Ready pod before the probe answer matters; the branch reports
-	// PodsBusy only for a running replica that answered.
-	if cond == nil || cond.Status != metav1.ConditionTrue {
-		t.Fatalf("RolloutDeferred = %+v, want True", cond)
-	}
-	if cond.Reason != ReasonPodsBusy && cond.Reason != ReasonPodsCrashLooping {
-		t.Fatalf("RolloutDeferred reason = %s, want PodsBusy or PodsCrashLooping", cond.Reason)
+	// A running replica answered busy, so the reason is PodsBusy. Base
+	// reports PodsCrashLooping here because it decides on readiness, and this
+	// asserts the running-count reason the branch chooses.
+	if cond == nil || cond.Status != metav1.ConditionTrue || cond.Reason != ReasonPodsBusy {
+		t.Fatalf("RolloutDeferred = %+v, want True/PodsBusy", cond)
 	}
 }
 
